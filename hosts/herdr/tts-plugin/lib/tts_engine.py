@@ -106,12 +106,30 @@ def extract_last_turn(raw_text: str) -> str:
 
     cleaned_lines = list(reversed(cleaned_end))
 
-    # 2. Find all prompt line indices in chronological order
-    prompt_indices = []
-    for idx, line in enumerate(cleaned_lines):
-        stripped = line.strip()
+    # 2. Find prompt ranges (start_idx to end_of_prompt_idx)
+    # A prompt starts with > or ❯ and may continue across indented lines (spaces)
+    prompts = []
+    i = 0
+    while i < len(cleaned_lines):
+        stripped = cleaned_lines[i].strip()
         if re.match(r"^(>|❯)\s+[A-Za-z0-9¿¡\/\.]+", stripped):
-            prompt_indices.append(idx)
+            p_start = i
+            p_end = i
+            while p_end + 1 < len(cleaned_lines):
+                next_line = cleaned_lines[p_end + 1]
+                next_stripped = next_line.strip()
+                if (
+                    next_line.startswith("  ")
+                    and not re.search(r"^[\u2800-\u28FF●○─━│┃═\-_*#=]", next_stripped)
+                    and not re.match(r"^(>|❯|\?)\s+", next_stripped)
+                ):
+                    p_end += 1
+                else:
+                    break
+            prompts.append((p_start, p_end))
+            i = p_end + 1
+        else:
+            i += 1
 
     # Helper to check if a slice of lines has substantive assistant content
     def get_substantive_text(lines_slice):
@@ -130,7 +148,11 @@ def extract_last_turn(raw_text: str) -> str:
                 continue
             if re.match(r"^[─━│┃═\-_*#=]{3,}\s*$", s) or "Conversation compacted" in s:
                 continue
-            if re.search(r"(Running command|thinking through|ctrl\+o to expand|Exited /artifact)", s, re.IGNORECASE):
+            if re.search(
+                r"(Running command|thinking through|ctrl\+o to expand|Exited /artifact|Press esc to interrupt)",
+                s,
+                re.IGNORECASE,
+            ):
                 continue
             if re.match(r"^└\s*Tip:", s):
                 continue
@@ -146,10 +168,10 @@ def extract_last_turn(raw_text: str) -> str:
         return body
 
     # 3. Search backwards from newest to oldest prompt for substantive assistant response
-    for i in range(len(prompt_indices) - 1, -1, -1):
-        p_idx = prompt_indices[i]
-        next_p_idx = prompt_indices[i + 1] if i + 1 < len(prompt_indices) else len(cleaned_lines)
-        sub_lines = cleaned_lines[p_idx + 1 : next_p_idx]
+    for idx in range(len(prompts) - 1, -1, -1):
+        _, p_end = prompts[idx]
+        next_p_start = prompts[idx + 1][0] if idx + 1 < len(prompts) else len(cleaned_lines)
+        sub_lines = cleaned_lines[p_end + 1 : next_p_start]
         body = get_substantive_text(sub_lines)
         # If this turn has at least 30 chars of substantive assistant text, that is our response
         if len(body) >= 30:
@@ -158,7 +180,7 @@ def extract_last_turn(raw_text: str) -> str:
     return "\n".join(cleaned_lines)
 
 
-def clean_agent_text(raw_text: str, max_chars: int = 4000) -> str:
+def clean_agent_text(raw_text: str, max_chars: int = 0) -> str:
     """Cleans terminal output and markdown formatting for natural voice reading."""
     if not raw_text:
         return ""
@@ -321,6 +343,29 @@ async def synthesize_and_play(
 
         miniaudio.wav_write_file(temp_wav, decoded)
 
+        # Show Herdr toast notification that audio playback has started
+        try:
+            duration_s = int(decoded.num_frames / decoded.sample_rate)
+            min_s = duration_s // 60
+            sec_s = duration_s % 60
+            dur_label = f"{min_s}:{sec_s:02d}" if min_s > 0 else f"{sec_s}s"
+            subprocess.run(
+                [
+                    "herdr",
+                    "notification",
+                    "show",
+                    "🔊 Reproduciendo voz",
+                    "--body",
+                    f"Duración: {dur_label} ({len(text)} caracteres)",
+                    "--sound",
+                    "none",
+                ],
+                stderr=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
+
         _active_process = spawn_player(temp_wav)
         _active_process.wait()
     except Exception as e:
@@ -340,7 +385,7 @@ def main():
     parser.add_argument("text", nargs="*", help="Text to speak (reads stdin if omitted)")
     parser.add_argument("--voice", "-v", default="elvira", help="Voice (elvira, alvaro, ximena, dalia, jorge)")
     parser.add_argument("--rate", "-r", default="+20%", help="Speed: +20%%, +10%%, +0%%")
-    parser.add_argument("--max-chars", "-m", type=int, default=4000, help="Max characters to speak (0 for unlimited)")
+    parser.add_argument("--max-chars", "-m", type=int, default=0, help="Max characters to speak (0 for unlimited)")
     parser.add_argument("--raw", action="store_true", help="Do not clean text")
 
     args = parser.parse_args()
