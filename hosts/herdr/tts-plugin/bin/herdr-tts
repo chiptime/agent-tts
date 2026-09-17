@@ -35,6 +35,9 @@ DEFAULT_MAX_CHARS="0" # 0 = unlimited
 DEFAULT_AUTO_SCOPE="focused" # "focused" = only speak active pane; "all" = speak any pane with mutex
 DEFAULT_NTFY_TOPIC=""
 DEFAULT_NTFY_SERVER="https://ntfy.sh"
+DEFAULT_WEB_URL=""
+DEFAULT_WEB_LABEL=""
+DEFAULT_CLICK_REDIRECT="off"
 DEFAULT_COLLIE_URL=""
 
 notify_herdr() {
@@ -56,7 +59,11 @@ TTS_MAX_CHARS="${TTS_MAX_CHARS:-$DEFAULT_MAX_CHARS}"
 TTS_AUTO_SCOPE="${TTS_AUTO_SCOPE:-$DEFAULT_AUTO_SCOPE}"
 NTFY_TOPIC="${NTFY_TOPIC:-${HERDR_NTFY_TOPIC:-$DEFAULT_NTFY_TOPIC}}"
 NTFY_SERVER="${NTFY_SERVER:-${HERDR_NTFY_SERVER:-$DEFAULT_NTFY_SERVER}}"
-COLLIE_URL="${COLLIE_URL:-${HERDR_COLLIE_URL:-$DEFAULT_COLLIE_URL}}"
+WEB_URL="${WEB_URL:-${COLLIE_URL:-${HERDR_WEB_URL:-${HERDR_COLLIE_URL:-$DEFAULT_WEB_URL}}}}"
+WEB_LABEL="${WEB_LABEL:-${HERDR_WEB_LABEL:-$DEFAULT_WEB_LABEL}}"
+CLICK_REDIRECT="${CLICK_REDIRECT:-$DEFAULT_CLICK_REDIRECT}"
+# Backwards compatibility alias
+COLLIE_URL="${WEB_URL}"
 
 save_config() {
   cat > "$CONFIG_FILE" <<EOF
@@ -66,7 +73,10 @@ TTS_MAX_CHARS="${TTS_MAX_CHARS}"
 TTS_AUTO_SCOPE="${TTS_AUTO_SCOPE}"
 NTFY_TOPIC="${NTFY_TOPIC}"
 NTFY_SERVER="${NTFY_SERVER}"
-COLLIE_URL="${COLLIE_URL}"
+WEB_URL="${WEB_URL}"
+WEB_LABEL="${WEB_LABEL}"
+CLICK_REDIRECT="${CLICK_REDIRECT}"
+COLLIE_URL="${WEB_URL}"
 EOF
 }
 
@@ -143,17 +153,33 @@ send_ntfy_push() {
 
   local ntfy_url="${NTFY_SERVER}/${NTFY_TOPIC}"
   local focus_cmd="herdr agent focus ${pane_id}"
-  local pane_url="${COLLIE_URL}${pane_id:+/pane/${pane_id}}"
   local display_name="${agent} (${pane_id})"
   if [[ -n "$title_desc" && "$title_desc" != "$agent" ]]; then
     display_name="${agent} [${title_desc}] (${pane_id})"
   fi
 
   local action_buttons=""
-  if [[ -n "$COLLIE_URL" ]]; then
-    action_buttons="view, 📱 Abrir Collie, ${pane_url}; view, 📋 Copiar comando, ${focus_cmd}, clear=true"
+  local target_url=""
+
+  if [[ -n "$WEB_URL" ]]; then
+    if [[ "$WEB_URL" == *"{pane_id}"* ]]; then
+      target_url="${WEB_URL//\{pane_id\}/${pane_id}}"
+    elif [[ -n "$pane_id" ]]; then
+      target_url="${WEB_URL%/}/pane/${pane_id}"
+    else
+      target_url="${WEB_URL}"
+    fi
+
+    local btn_label="Abrir Web"
+    if [[ -n "$WEB_LABEL" ]]; then
+      btn_label="Abrir ${WEB_LABEL}"
+    elif [[ "${WEB_URL,,}" =~ collie ]]; then
+      btn_label="Abrir Collie"
+    fi
+
+    action_buttons="view, 📱 ${btn_label}, ${target_url}; copy, 📋 Copiar comando, ${focus_cmd}, clear=true"
   else
-    action_buttons="view, 📋 Copiar comando, ${focus_cmd}, clear=true"
+    action_buttons="copy, 📋 Copiar comando, ${focus_cmd}, clear=true"
   fi
 
   local title=""
@@ -192,8 +218,8 @@ send_ntfy_push() {
     -H "Priority: ${priority}"
     -H "Tags: ${tags}"
   )
-  if [[ -n "$COLLIE_URL" ]]; then
-    headers+=(-H "Click: ${pane_url}")
+  if [[ -n "$target_url" && "$CLICK_REDIRECT" == "on" ]]; then
+    headers+=(-H "Click: ${target_url}")
   fi
   if [[ -n "$action_buttons" ]]; then
     headers+=(-H "Actions: ${action_buttons}")
@@ -386,8 +412,15 @@ show_status() {
   else
     echo "  Push móvil:   ⚪ Desactivado (opcional vía --ntfy-topic <topic>)"
   fi
-  if [[ -n "$COLLIE_URL" ]]; then
-    echo "  Collie URL:   📱 ${COLLIE_URL}"
+  if [[ -n "$WEB_URL" ]]; then
+    local label="${WEB_LABEL:-}"
+    if [[ -z "$label" ]]; then
+      [[ "${WEB_URL,,}" =~ collie ]] && label="Collie" || label="Web"
+    fi
+    echo "  Redirección:  📱 ${label} (${WEB_URL})"
+    echo "  Click directo: ${CLICK_REDIRECT} (on = abrir web al tocar notificación; off = abrir reproductor de audio)"
+  else
+    echo "  Redirección:  ⚪ Desactivada (opcional vía --web-url <url> o --collie-url <url>)"
   fi
 
   echo "  Plugin root:  ${PLUGIN_ROOT}"
@@ -569,16 +602,38 @@ case "${1:-}" in
     save_config
     echo "✓ Servidor ntfy configurado: $NTFY_SERVER"
     ;;
-  --collie-url)
-    if [[ "${2:-}" == "off" || "${2:-}" == "none" ]]; then
+  --web-url|--collie-url|--redirect-url)
+    opt="$1"
+    if [[ "${2:-}" == "off" || "${2:-}" == "none" || -z "${2:-}" ]]; then
+      WEB_URL=""
       COLLIE_URL=""
+      WEB_LABEL=""
       save_config
-      echo "✓ URL de Collie desactivada"
+      echo "✓ Redirección web desactivada (notificaciones estándar sin URL externa)"
     else
+      WEB_URL="$2"
       COLLIE_URL="$2"
+      if [[ "$opt" == "--collie-url" && -z "$WEB_LABEL" ]]; then
+        WEB_LABEL="Collie"
+      fi
       save_config
-      echo "✓ URL de Collie configurada: $COLLIE_URL"
+      echo "✓ URL de redirección configurada: $WEB_URL"
     fi
+    ;;
+  --web-label)
+    WEB_LABEL="${2:-}"
+    save_config
+    echo "✓ Etiqueta de botón web: ${WEB_LABEL:-auto}"
+    ;;
+  --click-redirect)
+    if [[ "${2:-}" == "on" || "${2:-}" == "true" || "${2:-}" == "1" ]]; then
+      CLICK_REDIRECT="on"
+      echo "✓ Click directo activado (abrirá navegador al pulsar la tarjeta de notificación)"
+    else
+      CLICK_REDIRECT="off"
+      echo "✓ Click directo desactivado (pulsar tarjeta abrirá ntfy con reproductor; botón abrirá web)"
+    fi
+    save_config
     ;;
   --play-file)
     play_audio_file "${2:-}"
@@ -623,11 +678,19 @@ Acciones principales:
   --toggle-auto (-t)       Alternar lectura automática de fondo (Tecla: prefix+v)
   --scope focused|all      'focused' (solo chat activo) | 'all' (cualquiera sin solapar)
 
-Configuración:
+Configuración de voz:
   --voice <nombre>         Cambiar voz (elvira, alvaro, ximena, dalia, jorge)
   --rate <velocidad>       Cambiar velocidad (+20%, +10%, +0%)
-  --ntfy-topic <topic>     Topic de ntfy.sh para push con audio a móvil (o 'off')
-  --collie-url <url>       URL base de Collie para deep-links de móvil (o 'off')
+
+Notificaciones móviles (opcional):
+  --ntfy-topic <topic>     Topic de ntfy.sh para recibir push con audio en móvil (o 'off')
+  --ntfy-server <url>      Servidor ntfy personalizado (default: https://ntfy.sh)
+  --web-url <url>          URL opcional de web UI / dashboard (p. ej. Collie) (o 'off')
+  --collie-url <url>       Alias de --web-url para Collie
+  --web-label <texto>      Etiqueta personalizada para el botón de acción web
+  --click-redirect on|off  Redirigir al tocar la tarjeta de notificación (default: off)
+
+Información:
   --status                 Ver estado actual, lock y configuración
 EOF
     ;;

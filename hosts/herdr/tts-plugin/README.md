@@ -35,7 +35,7 @@ When orchestrating multiple autonomous coding agents in Herdr (Claude Code, Open
 | **Parallel Chat Safety** | ❌ Voices collide & overlap | N/A (Single phone call) | 🟢 **Audio Mutex Lock** |
 | **Focus-Aware Filtering** | ❌ Speaks every background event | ❌ No | 🟢 **`scope: focused`** (default) |
 | **Mobile Audio Push** | ❌ No | ⚠️ Call only | 🟢 **Native `ntfy.sh` with inline MP3 player** |
-| **Collie PWA Integration** | ❌ No | ❌ No | 🟢 **Deep links straight to active pane** |
+| **Optional Web Deep-Linking** | ❌ No | ❌ No | 🟢 **Collie, custom dashboard, or standalone** |
 | **On-Demand Reading** | ❌ Passive trigger only | ⚠️ Phone only | 🟢 **`prefix + r`** (Play/Stop toggle) |
 | **Instant Kill-Switch** | ❌ No | ❌ No | 🟢 **`prefix + s`** (<0.2s instant halt) |
 | **Agent Terminal Cleaning** | ❌ Minimal (200 char hard limit) | ❌ LLM-generated summary | 🟢 **Deep cleaner** (ANSI, box, tokens) |
@@ -164,11 +164,13 @@ herdr-tts --toggle-play        # Play / Stop on the currently focused chat
 herdr-tts --stop               # Stop audio playback immediately (<0.2s)
 herdr-tts --toggle-auto        # Toggle background auto-speech (muted / active)
 herdr-tts --scope focused|all  # 'focused' (only active pane) | 'all' (any pane without overlapping)
-herdr-tts --status             # Show current status, voice, ntfy push, Collie URL, and active locks
+herdr-tts --status             # Show current status, voice, ntfy push, Web/Collie redirect, locks
 herdr-tts --voice alvaro       # Set voice (elvira, alvaro, ximena, dalia, jorge, en)
 herdr-tts --rate +25%          # Set speech speed (+0%, +20%, +35%)
 herdr-tts --ntfy-topic <topic> # Set ntfy.sh topic for mobile audio notifications (or 'off')
-herdr-tts --collie-url <url>   # Set Collie web base URL for mobile deep-links (or 'off')
+herdr-tts --web-url <url>      # Set optional web UI/dashboard base URL for deep-links (or 'off')
+herdr-tts --collie-url <url>   # Alias for --web-url (sets action button to 'Abrir Collie')
+herdr-tts --click-redirect on  # Optional: tap notification body to open web URL directly (default: off)
 herdr-tts --render-pane <pane> # Export clean assistant speech of a pane directly to .mp3
 herdr-tts --speak "Hello"      # Synthesize custom text directly
 ```
@@ -189,16 +191,32 @@ alias httt="herdr-tts --toggle-auto"
 
 ## 📱 Mobile Push Notifications (Optional via `ntfy.sh`)
 
-`herdr-tts` integrates seamlessly with [`ntfy.sh`](https://ntfy.sh) and [Collie](https://colliepwa.dev) to deliver rich, hands-free notifications to your phone whenever an agent finishes or requests human intervention:
+`herdr-tts` can forward agent completion and attention events to your phone using [`ntfy.sh`](https://ntfy.sh):
 
-* **Inline Mobile Audio Player:** The generated neural `.mp3` is attached to the notification payload. In the ntfy app (Android/iOS), you can press Play directly in the notification or notification feed without unlocking your phone or opening a terminal.
-* **Collie Deep-Linking:** Tapping the notification or the action button *"📱 Abrir Collie"* opens Collie straight to `/pane/<pane_id>`, allowing you to respond from your phone's keyboard or dictate voice input.
-* **Zero Additional Daemons:** Uses the same Herdr socket events and Edge TTS synthesis pass as the desktop voice engine—zero overhead or duplicate synthesis requests.
+* **Standalone & Audio-First:** The primary purpose of push integration is delivering the event notification and generated neural `.mp3` directly to your phone. In the ntfy app (Android/iOS), you can press Play directly in the notification or notification feed without unlocking your computer.
+* **Strictly Optional Web Redirection:** By default, notifications require zero web interface and do not force redirection. If you use [Collie](https://colliepwa.dev) or another web dashboard, you can configure an optional redirect URL. When enabled, a dedicated action button (*"📱 Abrir Collie"* or *"📱 Abrir Web"*) appears below the notification to jump straight to `/pane/<pane_id>` without hijacking the notification tap or audio player.
+* **Clipboard Helper:** Every notification includes a one-tap action button (*"📋 Copiar comando"*) to copy `herdr agent focus <pane_id>` to your clipboard.
+* **Zero Additional Daemons:** Runs within the existing `herdr-tts` daemon—zero extra background processes or duplicate TTS synthesis.
 
-To activate:
+### Quick Setup:
+
+1. Install the free **ntfy** app on Android or iOS.
+2. Subscribe to your private topic (e.g. `my-secret-topic-9k2`).
+3. Enable push in `herdr-tts`:
 ```bash
 herdr-tts --ntfy-topic "my-secret-topic-9k2"
+```
+
+To optionally add deep-links to Collie or a custom web UI:
+```bash
+# Optional Collie integration:
 herdr-tts --collie-url "https://my-desktop.tailscale.net"
+
+# Or generic web dashboard (supports {pane_id} template):
+herdr-tts --web-url "https://dashboard.example.com/panes/{pane_id}"
+
+# To disable web redirection at any time:
+herdr-tts --web-url off
 ```
 
 ---
@@ -208,7 +226,7 @@ herdr-tts --collie-url "https://my-desktop.tailscale.net"
 Set your preferred voice with `herdr-tts --voice <name>`:
 
 | Voice Identifier | Neural Voice Model | Accent / Language | Gender |
-| :--- | :--- | :--- | :---: |
+| :--- | :--- | :--- | :--- |
 | `elvira` *(default)* | `es-ES-ElviraNeural` | Spanish (Spain) | Female |
 | `alvaro` | `es-ES-AlvaroNeural` | Spanish (Spain) | Male |
 | `ximena` | `es-ES-XimenaNeural` | Spanish (Spain) | Female |
@@ -233,7 +251,11 @@ TTS_AUTO_SCOPE="focused"    # "focused" (recommended) or "all"
 # Mobile Push Notifications (Optional):
 NTFY_TOPIC="my-secret-topic-9k2"
 NTFY_SERVER="https://ntfy.sh"
-COLLIE_URL="https://my-desktop.tailscale.net"
+
+# Optional Web UI / Collie Deep-Linking (off by default):
+WEB_URL=""                  # Or "https://my-desktop.tailscale.net"
+WEB_LABEL="Collie"
+CLICK_REDIRECT="off"        # "off" = tap opens ntfy player; "on" = tap opens web URL
 ```
 
 ---
