@@ -107,21 +107,23 @@ def extract_last_turn(raw_text: str) -> str:
     cleaned_lines = list(reversed(cleaned_end))
 
     # 2. Find prompt ranges (start_idx to end_of_prompt_idx)
-    # A prompt starts with > or ❯ and may continue across indented lines (spaces)
+    # A true terminal user prompt starts at column 0 with > or ❯ (never indented)
     prompts = []
     i = 0
     while i < len(cleaned_lines):
-        stripped = cleaned_lines[i].strip()
-        if re.match(r"^(>|❯)\s+[A-Za-z0-9¿¡\/\.]+", stripped):
+        line = cleaned_lines[i]
+        # Column 0 prompt match (do NOT strip leading whitespace)
+        if re.match(r"^(>|❯|\?)\s+[A-Za-z0-9¿¡\/\.]+", line):
             p_start = i
             p_end = i
             while p_end + 1 < len(cleaned_lines):
                 next_line = cleaned_lines[p_end + 1]
                 next_stripped = next_line.strip()
+                # Continuation lines are indented and not dividers, spinners, or new column-0 prompts
                 if (
                     next_line.startswith("  ")
                     and not re.search(r"^[\u2800-\u28FF●○─━│┃═\-_*#=]", next_stripped)
-                    and not re.match(r"^(>|❯|\?)\s+", next_stripped)
+                    and not re.match(r"^(>|❯|\?)\s+", next_line)
                 ):
                     p_end += 1
                 else:
@@ -149,7 +151,7 @@ def extract_last_turn(raw_text: str) -> str:
             if re.match(r"^[─━│┃═\-_*#=]{3,}\s*$", s) or "Conversation compacted" in s:
                 continue
             if re.search(
-                r"(Running command|thinking through|ctrl\+o to expand|Exited /artifact|Press esc to interrupt)",
+                r"(Running command|thinking through|ctrl\+o|expand\)|Exited /artifact|Press esc to interrupt)",
                 s,
                 re.IGNORECASE,
             ):
@@ -222,7 +224,11 @@ def clean_agent_text(raw_text: str, max_chars: int = 0) -> str:
             continue
         if "Conversation compacted" in stripped:
             continue
-        if re.search(r"(Running command|thinking through|ctrl\+o to expand|Exited /artifact)", stripped, re.IGNORECASE):
+        if re.search(
+            r"(Running command|thinking through|ctrl\+o|expand\)|Exited /artifact|Press esc to interrupt)",
+            stripped,
+            re.IGNORECASE,
+        ):
             continue
         lines.append(stripped)
 
