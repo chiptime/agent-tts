@@ -190,6 +190,49 @@ read_current_pane() {
   speak_text "$text"
 }
 
+render_pane_audio() {
+  local target_pane="${1:-}"
+  local output_file="${2:-}"
+
+  if [[ -z "$target_pane" ]]; then
+    target_pane=$(get_focused_pane)
+  fi
+
+  if [[ -z "$target_pane" || -z "$output_file" ]]; then
+    echo "Uso: herdr-tts --render-pane <pane_id> <output_file.mp3>" >&2
+    return 1
+  fi
+
+  local text
+  text=$(read_pane_text "$target_pane")
+  if [[ -z "$text" || "$text" =~ ^[[:space:]]*$ ]]; then
+    return 1
+  fi
+
+  "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$TTS_VOICE" --rate "$TTS_RATE" --max-chars "$TTS_MAX_CHARS" --output "$output_file" --no-play
+}
+
+render_text_audio() {
+  local output_file="${1:-}"
+  shift || true
+  local text="$*"
+
+  if [[ -z "$output_file" ]]; then
+    echo "Uso: herdr-tts --render-text <output_file.mp3> [texto...]" >&2
+    return 1
+  fi
+
+  if [[ -z "$text" && ! -t 0 ]]; then
+    text=$(cat)
+  fi
+
+  if [[ -z "$text" ]]; then
+    return 1
+  fi
+
+  "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$TTS_VOICE" --rate "$TTS_RATE" --max-chars "$TTS_MAX_CHARS" --output "$output_file" --no-play
+}
+
 toggle_play() {
   local target_pane="${1:-}"
   if is_playing; then
@@ -371,6 +414,13 @@ case "${1:-}" in
       echo "Error: Scope debe ser 'focused' o 'all'" >&2
       exit 1
     fi
+    ;;
+  --render-pane)
+    render_pane_audio "${2:-}" "${3:-}"
+    ;;
+  --render-text)
+    shift
+    render_text_audio "$@"
     ;;
   --speak)
     shift

@@ -355,19 +355,22 @@ async def synthesize_and_play(
     rate: str = "+20%",
     volume: str = "+0%",
     pitch: str = "+0Hz",
+    output_file: Optional[str] = None,
+    no_play: bool = False,
 ) -> None:
-    """Synthesizes text with edge-tts, decodes to WAV in memory, and plays via audio backend."""
+    """Synthesizes text with edge-tts, optionally saves to file, and plays via audio backend unless no_play is set."""
     global _active_process
     resolved_voice = VOICE_MAP.get(voice.lower().strip(), voice)
 
-    # Write PID and lock
-    try:
-        with open(PID_FILE, "w") as f:
-            f.write(str(os.getpid()))
-        with open(LOCK_FILE, "w") as f:
-            f.write(str(os.getpid()))
-    except OSError:
-        pass
+    if not no_play:
+        # Write PID and lock for local playback
+        try:
+            with open(PID_FILE, "w") as f:
+                f.write(str(os.getpid()))
+            with open(LOCK_FILE, "w") as f:
+                f.write(str(os.getpid()))
+        except OSError:
+            pass
 
     temp_wav = None
     try:
@@ -388,6 +391,16 @@ async def synthesize_and_play(
             return
 
         mp3_data = b"".join(mp3_chunks)
+
+        if output_file:
+            out_dir = os.path.dirname(os.path.abspath(output_file))
+            if out_dir:
+                os.makedirs(out_dir, exist_ok=True)
+            with open(output_file, "wb") as f:
+                f.write(mp3_data)
+
+        if no_play:
+            return
 
         # Decode MP3 to PCM using miniaudio (in-memory C decoder)
         decoded = miniaudio.decode(mp3_data)
@@ -432,7 +445,8 @@ async def synthesize_and_play(
                 os.remove(temp_wav)
             except OSError:
                 pass
-        cleanup_locks()
+        if not no_play:
+            cleanup_locks()
 
 
 def main():
@@ -442,6 +456,8 @@ def main():
     parser.add_argument("--rate", "-r", default="+20%", help="Speed: +20%%, +10%%, +0%%")
     parser.add_argument("--max-chars", "-m", type=int, default=0, help="Max characters to speak (0 for unlimited)")
     parser.add_argument("--raw", action="store_true", help="Do not clean text")
+    parser.add_argument("--output", "-o", help="Save synthesized MP3 audio to file")
+    parser.add_argument("--no-play", action="store_true", help="Do not play audio locally")
 
     args = parser.parse_args()
 
@@ -464,6 +480,8 @@ def main():
                 text=speech_text,
                 voice=args.voice,
                 rate=args.rate,
+                output_file=args.output,
+                no_play=args.no_play,
             )
         )
     except KeyboardInterrupt:
