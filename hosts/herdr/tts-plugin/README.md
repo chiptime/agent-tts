@@ -222,10 +222,14 @@ We have an active vision to expand `herdr-tts` into the definitive audio layer f
   - Add interactive seeking controls (`prefix + [` to rewind 10s, `prefix + ]` to jump forward 10s) during playback of long architectural explanations.
 - [ ] 📈 **Dynamic Real-Time Speech Rate Adjustments:**
   - Quick hotkeys to step speed up or down on the fly (`prefix + =` / `prefix + -` for +10% / -10% increments) without restarting the daemon.
+- [ ] 🎙️ **Optional ElevenLabs Provider Backend:**
+  - Add an optional ElevenLabs streaming driver for users who already have an API key (`ELEVENLABS_API_KEY`) and want custom voice cloning or ultra-realistic voices, while preserving free Microsoft Edge Neural TTS as the zero-config default.
 - [ ] 🖍️ **Visual Word & Sentence Highlighting:**
   - Leverage Edge TTS boundary events (`WordBoundary` / `SentenceBoundary`) to stream synchronized visual highlights directly in terminal panes and Collie mobile PWA cards as the audio plays.
 - [ ] 💡 **Smart Architectural Summarizer:**
   - Lightweight heuristics or local summarizer toggle to condense massive terminal dumps (e.g. 50-file diff outputs) into punchy 2-sentence voice recaps before reading.
+
+
 
 ---
 

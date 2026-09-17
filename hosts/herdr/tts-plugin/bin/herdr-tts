@@ -98,18 +98,34 @@ speak_text() {
   # Stop any currently playing audio first (new request takes priority)
   stop_audio
 
-  "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$voice" --rate "$rate" --max-chars "$TTS_MAX_CHARS"
+  # Launch audio synthesis asynchronously in background so callers (and Herdr UI) never block
+  "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$voice" --rate "$rate" --max-chars "$TTS_MAX_CHARS" >> /tmp/herdr-tts.log 2>&1 &
 }
 
 get_focused_pane() {
-  herdr api snapshot 2>/dev/null | jq -r '.result.snapshot.focused_pane_id // empty' 2>/dev/null || true
+  local pane
+  pane=$(herdr api snapshot 2>/dev/null | jq -r '.result.snapshot.focused_pane_id // (.result.snapshot.panes[]? | select(.focused == true) | .pane_id) // empty' 2>/dev/null | head -n 1 || true)
+  if [[ -n "$pane" ]]; then
+    echo "$pane"
+    return 0
+  fi
+  echo "${HERDR_PANE_ID:-${HERDR_PANE:-}}"
 }
 
 read_pane_text() {
   local target_pane="$1"
-  local raw_json
-  raw_json=$(herdr agent read "$target_pane" --lines 35 --format text 2>/dev/null || true)
-  echo "$raw_json" | jq -r '.result.text // empty' 2>/dev/null || true
+  local raw
+  raw=$(herdr agent read "$target_pane" --lines 60 --format text 2>/dev/null || true)
+  # If output is JSON wrapped, extract result.text
+  if [[ "$raw" =~ ^[[:space:]]*\{.*"result" ]]; then
+    local parsed
+    parsed=$(echo "$raw" | jq -r '.result.text // .result // empty' 2>/dev/null || true)
+    if [[ -n "$parsed" ]]; then
+      echo "$parsed"
+      return 0
+    fi
+  fi
+  echo "$raw"
 }
 
 read_current_pane() {
@@ -124,7 +140,7 @@ read_current_pane() {
   local text
   text=$(read_pane_text "$focused_pane")
 
-  if [[ -z "$text" ]]; then
+  if [[ -z "$text" || "$text" =~ ^[[:space:]]*$ ]]; then
     echo "ℹ️ El pane ${focused_pane} no tiene texto para leer"
     return 0
   fi
