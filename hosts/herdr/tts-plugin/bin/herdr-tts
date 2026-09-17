@@ -31,8 +31,9 @@ ENGINE_SCRIPT="${PLUGIN_ROOT}/lib/tts_engine.py"
 # Defaults
 DEFAULT_VOICE="elvira"
 DEFAULT_RATE="+20%"
-DEFAULT_MAX_CHARS="500"
+DEFAULT_MAX_CHARS="4000"
 DEFAULT_AUTO_SCOPE="focused" # "focused" = only speak active pane; "all" = speak any pane with mutex
+
 
 # Load persisted settings if present
 if [[ -f "$CONFIG_FILE" ]]; then
@@ -100,6 +101,9 @@ speak_text() {
 
   # Launch audio synthesis asynchronously in background so callers (and Herdr UI) never block
   "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$voice" --rate "$rate" --max-chars "$TTS_MAX_CHARS" >> /tmp/herdr-tts.log 2>&1 &
+  local child_pid=$!
+  echo "$child_pid" > "$PID_FILE"
+  echo "$child_pid" > "$LOCK_FILE"
 }
 
 get_focused_pane() {
@@ -134,11 +138,11 @@ read_pane_text() {
   local raw=""
 
   # 1. Prefer herdr pane read (works for ANY pane: agents, OpenCode, Claude, shells)
-  raw=$(herdr pane read "$target_pane" --lines 100 --format text 2>/dev/null || true)
+  raw=$(herdr pane read "$target_pane" --lines 200 --format text 2>/dev/null || true)
 
   # 2. Fallback to herdr agent read if pane read was empty
   if [[ -z "$raw" || "$raw" =~ ^[[:space:]]*$ ]]; then
-    raw=$(herdr agent read "$target_pane" --lines 100 --format text 2>/dev/null || true)
+    raw=$(herdr agent read "$target_pane" --lines 200 --format text 2>/dev/null || true)
   fi
 
   # If output is JSON wrapped, extract result.text

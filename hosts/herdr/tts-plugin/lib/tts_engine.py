@@ -65,11 +65,12 @@ signal.signal(signal.SIGTERM, signal_handler)
 
 
 def extract_last_turn(raw_text: str) -> str:
-    """Isolates the most recent assistant response from a terminal scrollback."""
+    """Isolates the most recent completed assistant response from a terminal scrollback."""
     if not raw_text:
         return ""
     lines = raw_text.splitlines()
 
+    # 1. Clean end lines (status bar, empty prompt, dividers, spinners)
     cleaned_end = []
     for line in reversed(lines):
         stripped = line.strip()
@@ -88,12 +89,16 @@ def extract_last_turn(raw_text: str) -> str:
         # Ignore divider rules
         if re.match(r"^[─━│┃═\-_*#=]{3,}\s*$", stripped):
             continue
-        # Ignore in-flight indicators
-        if re.search(r"^(●|\⣟|\⠋|\⣯|\⡿|\⣾)\s*(Bash|Running|Thinking|Read|Write)", stripped, re.IGNORECASE):
+        # Ignore Braille spinners and in-flight indicators (●, ○, ⣾, ⣟, ⠋, ⢿, etc.)
+        if re.search(r"^[\u2800-\u28FF●○]", stripped):
+            continue
+        if re.match(r"^└\s*Tip:", stripped):
+            continue
+        if "Conversation compacted" in stripped:
             continue
 
         cleaned_end.append(line)
-        if len(cleaned_end) > 120:
+        if len(cleaned_end) > 300:
             break
 
     if not cleaned_end:
@@ -101,50 +106,91 @@ def extract_last_turn(raw_text: str) -> str:
 
     cleaned_lines = list(reversed(cleaned_end))
 
-    # Look backwards for the user's last prompt line (> user query)
-    start_idx = 0
-    for idx in range(len(cleaned_lines) - 1, -1, -1):
-        line = cleaned_lines[idx].strip()
-        if re.match(r"^(>|❯|\?)\s+\S+", line):
-            start_idx = idx + 1
-            break
+    # 2. Find all prompt line indices in chronological order
+    prompt_indices = []
+    for idx, line in enumerate(cleaned_lines):
+        stripped = line.strip()
+        if re.match(r"^(>|❯)\s+[A-Za-z0-9¿¡\/\.]+", stripped):
+            prompt_indices.append(idx)
 
-    # Skip tool call lines or dividers immediately following the prompt
-    while start_idx < len(cleaned_lines):
-        line = cleaned_lines[start_idx].strip()
-        if re.search(r"^(●|\⣟|\⠋|\⣯|\⡿|\⣾|\d+(\.\d+)?[kM]?\s*in\s*\||Tokens:|Quotas:)", line):
-            start_idx += 1
-        elif re.match(r"^[─━│┃═\-_*#=]{3,}\s*$", line):
-            start_idx += 1
-        elif not line:
-            start_idx += 1
-        else:
-            break
+    # Helper to check if a slice of lines has substantive assistant content
+    def get_substantive_text(lines_slice):
+        clean_slice = []
+        for l in lines_slice:
+            s = l.strip()
+            if not s:
+                continue
+            if re.search(r"^[\u2800-\u28FF●○]", s):
+                continue
+            if re.search(
+                r"(Tokens:\s*\d+|Quotas:\s*\[|Gemini\s*\d|Claude\s*\d|GPT-?\d|\d+(\.\d+)?[kM]?\s*in\s*\|\s*\d+(\.\d+)?[kM]?\s*out)",
+                s,
+                re.IGNORECASE,
+            ):
+                continue
+            if re.match(r"^[─━│┃═\-_*#=]{3,}\s*$", s) or "Conversation compacted" in s:
+                continue
+            if re.search(r"(Running command|thinking through|ctrl\+o to expand|Exited /artifact)", s, re.IGNORECASE):
+                continue
+            if re.match(r"^└\s*Tip:", s):
+                continue
+            clean_slice.append(l)
 
-    result = "\n".join(cleaned_lines[start_idx:])
-    return result if result.strip() else raw_text
+        body = "\n".join(clean_slice).strip()
+        # Strip ANSI codes
+        body = re.sub(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])", "", body)
+        # Strip divider box drawing characters
+        body = re.sub(r"[─━│┃┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬┄┅┆┇┈┉┊┋┌┐└┘╭╮╰╯]+", " ", body)
+        # Normalize whitespace
+        body = re.sub(r"\s+", " ", body).strip()
+        return body
+
+    # 3. Search backwards from newest to oldest prompt for substantive assistant response
+    for i in range(len(prompt_indices) - 1, -1, -1):
+        p_idx = prompt_indices[i]
+        next_p_idx = prompt_indices[i + 1] if i + 1 < len(prompt_indices) else len(cleaned_lines)
+        sub_lines = cleaned_lines[p_idx + 1 : next_p_idx]
+        body = get_substantive_text(sub_lines)
+        # If this turn has at least 30 chars of substantive assistant text, that is our response
+        if len(body) >= 30:
+            return "\n".join(sub_lines)
+
+    return "\n".join(cleaned_lines)
 
 
-def clean_agent_text(raw_text: str, max_chars: int = 600) -> str:
+def clean_agent_text(raw_text: str, max_chars: int = 4000) -> str:
     """Cleans terminal output and markdown formatting for natural voice reading."""
     if not raw_text:
         return ""
 
-    # 0. Isolate the latest turn if multiple turns/headers exist in the buffer
+    # 0. Isolate the latest completed turn if multiple turns exist in the buffer
     text = extract_last_turn(raw_text)
 
     # Strip ANSI escape codes
     text = re.sub(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])", "", text)
 
+    # Strip HTML/XML tags (e.g. <style>, <TextArea>, <div>) so Edge TTS SSML is not broken
+    text = re.sub(r"<[^>]+>", " ", text)
+
     # Remove box drawing characters and dividers
     text = re.sub(r"[─━│┃┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬┄┅┆┇┈┉┊┋┌┐└┘╭╮╰╯]+", " ", text)
     text = re.sub(r"^[=\-_*#]{3,}\s*$", "", text, flags=re.MULTILINE)
 
-    # Remove common terminal status lines / chrome
+    # Remove markdown header markers: "### Title" -> "Title"
+    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"#{1,6}\s+", " ", text)
+
+    # Remove bullet markers: "• Item" or "* Item" -> "Item"
+    text = re.sub(r"^\s*[•*+-]\s+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"\s+[•*+-]\s+", " ", text)
+
+    # Remove common terminal status lines / chrome / spinners
     lines = []
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped:
+            continue
+        if re.search(r"^[\u2800-\u28FF●○]", stripped):
             continue
         if re.search(r"Tokens:\s*\d+|Quotas:\s*\[|Gemini\s*\d|Claude\s*\d|GPT-?\d", stripped, re.IGNORECASE):
             continue
@@ -152,7 +198,9 @@ def clean_agent_text(raw_text: str, max_chars: int = 600) -> str:
             continue
         if re.match(r"^>\s*$", stripped) or re.match(r"^\?\s*$", stripped):
             continue
-        if re.match(r"^●\s*Bash\(", stripped) or re.match(r"^⣟\s*Running", stripped):
+        if "Conversation compacted" in stripped:
+            continue
+        if re.search(r"(Running command|thinking through|ctrl\+o to expand|Exited /artifact)", stripped, re.IGNORECASE):
             continue
         lines.append(stripped)
 
@@ -160,6 +208,7 @@ def clean_agent_text(raw_text: str, max_chars: int = 600) -> str:
 
     # Replace fenced code blocks with audio cue
     text = re.sub(r"```[a-zA-Z0-9_-]*\n[\s\S]*?```", " [bloque de código] ", text)
+    text = re.sub(r"```[\s\S]*?```", " [bloque de código] ", text)
 
     # Replace inline code backticks
     text = re.sub(r"`([^`]+)`", r"\1", text)
@@ -177,11 +226,16 @@ def clean_agent_text(raw_text: str, max_chars: int = 600) -> str:
     # Normalize multiple whitespace and newlines
     text = re.sub(r"\s+", " ", text).strip()
 
-    # Apply length cap if text is too long
-    if len(text) > max_chars:
+    # Apply length cap only if max_chars is specified and positive
+    if max_chars > 0 and len(text) > max_chars:
         truncated = text[:max_chars]
-        last_period = max(truncated.rfind(". "), truncated.rfind("! "), truncated.rfind("? "))
-        if last_period > max_chars // 2:
+        last_period = max(
+            truncated.rfind(". "),
+            truncated.rfind("! "),
+            truncated.rfind("? "),
+            truncated.rfind("; "),
+        )
+        if last_period > int(max_chars * 0.75):
             text = truncated[: last_period + 1] + " ... y más contenido."
         else:
             text = truncated.rstrip() + " ... y más contenido."
@@ -286,7 +340,7 @@ def main():
     parser.add_argument("text", nargs="*", help="Text to speak (reads stdin if omitted)")
     parser.add_argument("--voice", "-v", default="elvira", help="Voice (elvira, alvaro, ximena, dalia, jorge)")
     parser.add_argument("--rate", "-r", default="+20%", help="Speed: +20%%, +10%%, +0%%")
-    parser.add_argument("--max-chars", "-m", type=int, default=600, help="Max characters to speak")
+    parser.add_argument("--max-chars", "-m", type=int, default=4000, help="Max characters to speak (0 for unlimited)")
     parser.add_argument("--raw", action="store_true", help="Do not clean text")
 
     args = parser.parse_args()
