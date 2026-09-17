@@ -30,10 +30,16 @@ fi
 ENGINE_SCRIPT="${PLUGIN_ROOT}/lib/tts_engine.py"
 
 # Defaults
+DEFAULT_PROVIDER="edge"
 DEFAULT_VOICE="elvira"
 DEFAULT_RATE="+20%"
 DEFAULT_MAX_CHARS="0" # 0 = unlimited
 DEFAULT_AUTO_SCOPE="focused" # "focused" = only speak active pane; "all" = speak any pane with mutex
+DEFAULT_OPENAI_API_KEY=""
+DEFAULT_OPENAI_BASE_URL="https://api.openai.com/v1"
+DEFAULT_OPENAI_TTS_MODEL="tts-1"
+DEFAULT_ELEVENLABS_API_KEY=""
+DEFAULT_ELEVENLABS_MODEL="eleven_multilingual_v2"
 DEFAULT_NTFY_TOPIC=""
 DEFAULT_NTFY_SERVER="https://ntfy.sh"
 DEFAULT_WEB_URL=""
@@ -54,10 +60,16 @@ if [[ -f "$CONFIG_FILE" ]]; then
   source "$CONFIG_FILE"
 fi
 
+TTS_PROVIDER="${TTS_PROVIDER:-$DEFAULT_PROVIDER}"
 TTS_VOICE="${TTS_VOICE:-$DEFAULT_VOICE}"
 TTS_RATE="${TTS_RATE:-$DEFAULT_RATE}"
 TTS_MAX_CHARS="${TTS_MAX_CHARS:-$DEFAULT_MAX_CHARS}"
 TTS_AUTO_SCOPE="${TTS_AUTO_SCOPE:-$DEFAULT_AUTO_SCOPE}"
+OPENAI_API_KEY="${OPENAI_API_KEY:-$DEFAULT_OPENAI_API_KEY}"
+OPENAI_BASE_URL="${OPENAI_BASE_URL:-$DEFAULT_OPENAI_BASE_URL}"
+OPENAI_TTS_MODEL="${OPENAI_TTS_MODEL:-$DEFAULT_OPENAI_TTS_MODEL}"
+ELEVENLABS_API_KEY="${ELEVENLABS_API_KEY:-$DEFAULT_ELEVENLABS_API_KEY}"
+ELEVENLABS_MODEL="${ELEVENLABS_MODEL:-$DEFAULT_ELEVENLABS_MODEL}"
 NTFY_TOPIC="${NTFY_TOPIC:-${HERDR_NTFY_TOPIC:-$DEFAULT_NTFY_TOPIC}}"
 NTFY_SERVER="${NTFY_SERVER:-${HERDR_NTFY_SERVER:-$DEFAULT_NTFY_SERVER}}"
 WEB_URL="${WEB_URL:-${COLLIE_URL:-${HERDR_WEB_URL:-${HERDR_COLLIE_URL:-$DEFAULT_WEB_URL}}}}"
@@ -68,10 +80,16 @@ COLLIE_URL="${WEB_URL}"
 
 save_config() {
   cat > "$CONFIG_FILE" <<EOF
+TTS_PROVIDER="${TTS_PROVIDER}"
 TTS_VOICE="${TTS_VOICE}"
 TTS_RATE="${TTS_RATE}"
 TTS_MAX_CHARS="${TTS_MAX_CHARS}"
 TTS_AUTO_SCOPE="${TTS_AUTO_SCOPE}"
+OPENAI_API_KEY="${OPENAI_API_KEY}"
+OPENAI_BASE_URL="${OPENAI_BASE_URL}"
+OPENAI_TTS_MODEL="${OPENAI_TTS_MODEL}"
+ELEVENLABS_API_KEY="${ELEVENLABS_API_KEY}"
+ELEVENLABS_MODEL="${ELEVENLABS_MODEL}"
 NTFY_TOPIC="${NTFY_TOPIC}"
 NTFY_SERVER="${NTFY_SERVER}"
 WEB_URL="${WEB_URL}"
@@ -265,6 +283,15 @@ adjust_rate() {
   notify_herdr "⚡ Velocidad de voz" "${TTS_RATE}"
 }
 
+build_provider_flags() {
+  PROVIDER_FLAGS=(--provider "$TTS_PROVIDER")
+  [[ -n "$OPENAI_API_KEY" ]] && PROVIDER_FLAGS+=(--openai-key "$OPENAI_API_KEY")
+  [[ -n "$OPENAI_BASE_URL" ]] && PROVIDER_FLAGS+=(--openai-base-url "$OPENAI_BASE_URL")
+  [[ -n "$OPENAI_TTS_MODEL" ]] && PROVIDER_FLAGS+=(--openai-model "$OPENAI_TTS_MODEL")
+  [[ -n "$ELEVENLABS_API_KEY" ]] && PROVIDER_FLAGS+=(--eleven-key "$ELEVENLABS_API_KEY")
+  [[ -n "$ELEVENLABS_MODEL" ]] && PROVIDER_FLAGS+=(--eleven-model "$ELEVENLABS_MODEL")
+}
+
 speak_text() {
   local text="$1"
   local voice="${2:-$TTS_VOICE}"
@@ -273,8 +300,10 @@ speak_text() {
   # Stop any currently playing audio first (new request takes priority)
   stop_audio
 
+  build_provider_flags
+
   # Launch audio synthesis asynchronously in background so callers (and Herdr UI) never block
-  "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$voice" --rate "$rate" --max-chars "$TTS_MAX_CHARS" >> /tmp/herdr-tts.log 2>&1 &
+  "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$voice" --rate "$rate" --max-chars "$TTS_MAX_CHARS" "${PROVIDER_FLAGS[@]}" >> /tmp/herdr-tts.log 2>&1 &
   local child_pid=$!
   echo "$child_pid" > "$PID_FILE"
   echo "$child_pid" > "$LOCK_FILE"
@@ -485,7 +514,8 @@ render_pane_audio() {
     return 1
   fi
 
-  "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$TTS_VOICE" --rate "$TTS_RATE" --max-chars "$TTS_MAX_CHARS" --output "$output_file" --no-play
+  build_provider_flags
+  "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$TTS_VOICE" --rate "$TTS_RATE" --max-chars "$TTS_MAX_CHARS" --output "$output_file" --no-play "${PROVIDER_FLAGS[@]}"
 }
 
 render_text_audio() {
@@ -506,7 +536,8 @@ render_text_audio() {
     return 1
   fi
 
-  "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$TTS_VOICE" --rate "$TTS_RATE" --max-chars "$TTS_MAX_CHARS" --output "$output_file" --no-play
+  build_provider_flags
+  "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$TTS_VOICE" --rate "$TTS_RATE" --max-chars "$TTS_MAX_CHARS" --output "$output_file" --no-play "${PROVIDER_FLAGS[@]}"
 }
 
 toggle_play() {
@@ -573,6 +604,20 @@ show_status() {
   fi
 
   echo "  Alcance auto: ${TTS_AUTO_SCOPE} (focused = solo chat activo; all = cualquiera sin solaparse)"
+  echo "  Proveedor:    ${TTS_PROVIDER} (edge = Edge Neural TTS gratuito; openai = OpenAI TTS; elevenlabs = ElevenLabs)"
+  if [[ "$TTS_PROVIDER" == "openai" ]]; then
+    local masked_key="no configurada"
+    if [[ -n "$OPENAI_API_KEY" ]]; then
+      masked_key="${OPENAI_API_KEY:0:7}...${OPENAI_API_KEY: -4}"
+    fi
+    echo "  OpenAI TTS:   Modelo: ${OPENAI_TTS_MODEL} | Base URL: ${OPENAI_BASE_URL} | API Key: ${masked_key}"
+  elif [[ "$TTS_PROVIDER" =~ ^eleven ]]; then
+    local masked_key="no configurada"
+    if [[ -n "$ELEVENLABS_API_KEY" ]]; then
+      masked_key="${ELEVENLABS_API_KEY:0:5}...${ELEVENLABS_API_KEY: -4}"
+    fi
+    echo "  ElevenLabs:   Modelo: ${ELEVENLABS_MODEL} | API Key: ${masked_key}"
+  fi
   echo "  Voz:          ${TTS_VOICE}"
   echo "  Velocidad:    ${TTS_RATE}"
   echo "  Max chars:    ${TTS_MAX_CHARS}"
@@ -858,6 +903,52 @@ case "${1:-}" in
     echo "✓ Velocidad configurada: $TTS_RATE"
     speak_text "Velocidad ajustada."
     ;;
+  --provider)
+    prov="${2:-edge}"
+    prov="${prov,,}"
+    if [[ "$prov" == "edge" || "$prov" == "openai" || "$prov" == "elevenlabs" || "$prov" == "eleven" ]]; then
+      TTS_PROVIDER="$prov"
+      save_config
+      echo "✓ Proveedor TTS configurado: $TTS_PROVIDER"
+      notify_herdr "🎙️ Proveedor TTS" "$TTS_PROVIDER"
+    else
+      echo "Error: Proveedor inválido '$prov'. Opciones válidas: edge, openai, elevenlabs" >&2
+      exit 1
+    fi
+    ;;
+  --openai-key)
+    OPENAI_API_KEY="${2:-}"
+    save_config
+    if [[ -n "$OPENAI_API_KEY" ]]; then
+      echo "✓ OpenAI API Key configurada"
+    else
+      echo "✓ OpenAI API Key eliminada"
+    fi
+    ;;
+  --openai-base-url)
+    OPENAI_BASE_URL="${2:-https://api.openai.com/v1}"
+    save_config
+    echo "✓ OpenAI Base URL configurada: $OPENAI_BASE_URL"
+    ;;
+  --openai-model)
+    OPENAI_TTS_MODEL="${2:-tts-1}"
+    save_config
+    echo "✓ OpenAI TTS Model configurado: $OPENAI_TTS_MODEL"
+    ;;
+  --eleven-key|--elevenlabs-key)
+    ELEVENLABS_API_KEY="${2:-}"
+    save_config
+    if [[ -n "$ELEVENLABS_API_KEY" ]]; then
+      echo "✓ ElevenLabs API Key configurada"
+    else
+      echo "✓ ElevenLabs API Key eliminada"
+    fi
+    ;;
+  --eleven-model|--elevenlabs-model)
+    ELEVENLABS_MODEL="${2:-eleven_multilingual_v2}"
+    save_config
+    echo "✓ ElevenLabs Model configurado: $ELEVENLABS_MODEL"
+    ;;
   --status)
     show_status
     ;;
@@ -884,6 +975,14 @@ Configuración de voz y velocidad:
   --rate <velocidad>       Cambiar velocidad (+20%, +10%, +0%)
   --rate-up                Acelerar lectura +10% en caliente (Tecla: prefix+=)
   --rate-down              Ralentizar lectura -10% en caliente (Tecla: prefix+-)
+
+Proveedores de síntesis (TTS Providers):
+  --provider <motor>       Seleccionar proveedor: edge (gratis), openai, elevenlabs
+  --openai-key <key>       API key para OpenAI TTS
+  --openai-base-url <url>  Base URL personalizada (default: https://api.openai.com/v1)
+  --openai-model <model>   Modelo OpenAI TTS (default: tts-1)
+  --eleven-key <key>       API key para ElevenLabs
+  --eleven-model <model>   Modelo ElevenLabs (default: eleven_multilingual_v2)
 
 Notificaciones móviles (opcional):
   --ntfy-topic <topic>     Topic de ntfy.sh para recibir push con audio en móvil (o 'off')
