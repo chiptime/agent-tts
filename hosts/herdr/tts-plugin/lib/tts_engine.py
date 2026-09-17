@@ -64,13 +64,77 @@ signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
 
+def extract_last_turn(raw_text: str) -> str:
+    """Isolates the most recent assistant response from a terminal scrollback."""
+    if not raw_text:
+        return ""
+    lines = raw_text.splitlines()
+
+    cleaned_end = []
+    for line in reversed(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Ignore terminal status chrome
+        if re.search(
+            r"(Tokens:\s*\d+|Quotas:\s*\[|Gemini\s*\d|Claude\s*\d|GPT-?\d|\d+(\.\d+)?[kM]?\s*in\s*\|\s*\d+(\.\d+)?[kM]?\s*out)",
+            stripped,
+            re.IGNORECASE,
+        ):
+            continue
+        # Ignore empty prompt lines: ">", "?", "❯", "%", "$"
+        if re.match(r"^(>|\?|❯|%|\$)\s*$", stripped):
+            continue
+        # Ignore divider rules
+        if re.match(r"^[─━│┃═\-_*#=]{3,}\s*$", stripped):
+            continue
+        # Ignore in-flight indicators
+        if re.search(r"^(●|\⣟|\⠋|\⣯|\⡿|\⣾)\s*(Bash|Running|Thinking|Read|Write)", stripped, re.IGNORECASE):
+            continue
+
+        cleaned_end.append(line)
+        if len(cleaned_end) > 120:
+            break
+
+    if not cleaned_end:
+        return ""
+
+    cleaned_lines = list(reversed(cleaned_end))
+
+    # Look backwards for the user's last prompt line (> user query)
+    start_idx = 0
+    for idx in range(len(cleaned_lines) - 1, -1, -1):
+        line = cleaned_lines[idx].strip()
+        if re.match(r"^(>|❯|\?)\s+\S+", line):
+            start_idx = idx + 1
+            break
+
+    # Skip tool call lines or dividers immediately following the prompt
+    while start_idx < len(cleaned_lines):
+        line = cleaned_lines[start_idx].strip()
+        if re.search(r"^(●|\⣟|\⠋|\⣯|\⡿|\⣾|\d+(\.\d+)?[kM]?\s*in\s*\||Tokens:|Quotas:)", line):
+            start_idx += 1
+        elif re.match(r"^[─━│┃═\-_*#=]{3,}\s*$", line):
+            start_idx += 1
+        elif not line:
+            start_idx += 1
+        else:
+            break
+
+    result = "\n".join(cleaned_lines[start_idx:])
+    return result if result.strip() else raw_text
+
+
 def clean_agent_text(raw_text: str, max_chars: int = 600) -> str:
     """Cleans terminal output and markdown formatting for natural voice reading."""
     if not raw_text:
         return ""
 
+    # 0. Isolate the latest turn if multiple turns/headers exist in the buffer
+    text = extract_last_turn(raw_text)
+
     # Strip ANSI escape codes
-    text = re.sub(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])", "", raw_text)
+    text = re.sub(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])", "", text)
 
     # Remove box drawing characters and dividers
     text = re.sub(r"[─━│┃┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬┄┅┆┇┈┉┊┋┌┐└┘╭╮╰╯]+", " ", text)
