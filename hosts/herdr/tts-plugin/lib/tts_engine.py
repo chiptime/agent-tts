@@ -64,91 +64,107 @@ signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
 
+def is_user_prompt(line: str) -> bool:
+    """Detects whether a line is a user prompt marker across Antigravity CLI, Claude, and OpenCode."""
+    # Antigravity CLI, Claude Code, Gemini CLI: starts at column 0 with >, ❯, or ?
+    if re.match(r"^(>|❯|\?)\s+\S+", line):
+        return True
+    # OpenCode prompt line: indented with ┃ followed by user text
+    if re.match(r"^\s*┃\s+[A-Za-z0-9¿¡\/\.\"\']+", line) and not re.search(
+        r"(opencode-|Gentle-|Thought:)", line
+    ):
+        return True
+    return False
+
+
 def extract_last_turn(raw_text: str) -> str:
     """Isolates the most recent completed assistant response from a terminal scrollback."""
-    if not raw_text:
+    if not raw_text or not raw_text.strip():
         return ""
-    lines = raw_text.splitlines()
+    raw_lines = raw_text.splitlines()
 
-    # 1. Clean end lines (status bar, empty prompt, dividers, spinners)
-    cleaned_end = []
-    for line in reversed(lines):
-        stripped = line.strip()
-        if not stripped:
-            continue
-        # Ignore terminal status chrome
-        if re.search(
-            r"(Tokens:\s*\d+|Quotas:\s*\[|Gemini\s*\d|Claude\s*\d|GPT-?\d|\d+(\.\d+)?[kM]?\s*in\s*\|\s*\d+(\.\d+)?[kM]?\s*out)",
-            stripped,
-            re.IGNORECASE,
-        ):
-            continue
-        # Ignore empty prompt lines: ">", "?", "❯", "%", "$"
-        if re.match(r"^(>|\?|❯|%|\$)\s*$", stripped):
-            continue
-        # Ignore divider rules
-        if re.match(r"^[─━│┃═\-_*#=]{3,}\s*$", stripped):
-            continue
-        # Ignore Braille spinners and in-flight indicators (●, ○, ⣾, ⣟, ⠋, ⢿, etc.)
-        if re.search(r"^[\u2800-\u28FF●○]", stripped):
-            continue
-        if re.match(r"^└\s*Tip:", stripped):
-            continue
-        if "Conversation compacted" in stripped:
-            continue
-
-        cleaned_end.append(line)
-        if len(cleaned_end) > 300:
-            break
-
-    if not cleaned_end:
-        return ""
-
-    cleaned_lines = list(reversed(cleaned_end))
-
-    # 2. Find prompt ranges (start_idx to end_of_prompt_idx)
-    # A true terminal user prompt starts at column 0 with > or ❯ (never indented)
+    # 1. Identify all prompt locations in the raw scrollback
     prompts = []
     i = 0
-    while i < len(cleaned_lines):
-        line = cleaned_lines[i]
-        # Column 0 prompt match (do NOT strip leading whitespace)
-        if re.match(r"^(>|❯|\?)\s+[A-Za-z0-9¿¡\/\.]+", line):
+    while i < len(raw_lines):
+        line = raw_lines[i]
+        if is_user_prompt(line):
             p_start = i
             p_end = i
-            while p_end + 1 < len(cleaned_lines):
-                next_line = cleaned_lines[p_end + 1]
-                next_stripped = next_line.strip()
-                # Continuation lines are indented and not dividers, spinners, or new column-0 prompts
-                if (
-                    next_line.startswith("  ")
-                    and not re.search(r"^[\u2800-\u28FF●○─━│┃═\-_*#=]", next_stripped)
-                    and not re.match(r"^(>|❯|\?)\s+", next_line)
-                ):
-                    p_end += 1
-                else:
+            is_opencode = "┃" in line
+
+            # Check wrapped prompt continuation lines
+            while p_end + 1 < len(raw_lines) and (p_end - p_start) < 8:
+                next_l = raw_lines[p_end + 1]
+                s = next_l.strip()
+                # Blank lines strictly terminate the user prompt
+                if not s:
                     break
+                # Tool indicators or spinners strictly terminate the user prompt
+                if re.search(r"^[\u2800-\u28FF●○⏺]", s):
+                    break
+                # Status / token lines strictly terminate the user prompt
+                if re.search(
+                    r"(\d+(\.\d+)?[kM]?\s*in\s*\|\s*\d+(\.\d+)?[kM]?\s*out|Tokens:\s*\d+|Quotas:\s*\[)",
+                    s,
+                    re.IGNORECASE,
+                ):
+                    break
+                # Divider rules strictly terminate the user prompt
+                if re.match(r"^[─━│┃═\-_*#=┼]{3,}\s*$", s):
+                    break
+                # A new user prompt line begins
+                if is_user_prompt(next_l):
+                    break
+
+                if is_opencode:
+                    if re.match(r"^\s*┃\s+\S+", next_l) and not re.search(
+                        r"(opencode-|Gentle-|Thought:)", next_l
+                    ):
+                        p_end += 1
+                    else:
+                        break
+                else:
+                    # Antigravity/standard prompt continuation: indented, but NOT markdown headers, bullets, or tables
+                    if (
+                        next_l.startswith("  ")
+                        and not re.search(
+                            r"^(#{1,6}|[•*+-]|\d+\.|📄|🗺️|│|─|ℹ️|⚠️|❌|PASS|FAIL)",
+                            s,
+                        )
+                        and not re.match(r"^[A-Z][a-z]+:", s)
+                    ):
+                        p_end += 1
+                    else:
+                        break
+
             prompts.append((p_start, p_end))
             i = p_end + 1
         else:
             i += 1
 
-    # Helper to check if a slice of lines has substantive assistant content
-    def get_substantive_text(lines_slice):
-        clean_slice = []
+    def filter_assistant_lines(lines_slice):
+        clean = []
         for l in lines_slice:
-            s = l.strip()
+            # Strip OpenCode right-side status columns if present
+            cleaned_line = re.sub(
+                r"\s{6,}(?:󰚩|▼|●\s*\d|✕|Context|\$[\d,.]+|\d[\d,.]*\s*tokens|\d+%\s*used|•|LSP|Connection closed|SSE error).*$",
+                "",
+                l,
+            )
+            s = cleaned_line.strip()
             if not s:
                 continue
-            if re.search(r"^[\u2800-\u28FF●○]", s):
+            # Ignore spinners, tool calls, in-flight markers
+            if re.search(r"^[\u2800-\u28FF●○⏺]", s):
                 continue
             if re.search(
-                r"(Tokens:\s*\d+|Quotas:\s*\[|Gemini\s*\d|Claude\s*\d|GPT-?\d|\d+(\.\d+)?[kM]?\s*in\s*\|\s*\d+(\.\d+)?[kM]?\s*out)",
+                r"(\d+(\.\d+)?[kM]?\s*in\s*\|\s*\d+(\.\d+)?[kM]?\s*out|Tokens:\s*\d+|Quotas:\s*\[|Gemini\s*\d|Claude\s*\d|GPT-?\d)",
                 s,
                 re.IGNORECASE,
             ):
                 continue
-            if re.match(r"^[─━│┃═\-_*#=]{3,}\s*$", s) or "Conversation compacted" in s:
+            if re.match(r"^[─━│┃═\-_*#=┼]{3,}\s*$", s) or "Conversation compacted" in s:
                 continue
             if re.search(
                 r"(Running command|thinking through|ctrl\+o|expand\)|Exited /artifact|Press esc to interrupt)",
@@ -156,30 +172,31 @@ def extract_last_turn(raw_text: str) -> str:
                 re.IGNORECASE,
             ):
                 continue
+            if re.match(r"^(>|\?|❯|%|\$)\s*$", s):
+                continue
             if re.match(r"^└\s*Tip:", s):
                 continue
-            clean_slice.append(l)
+            if re.search(r"^(?:▣|╹▀▀|opencode-|Gentle-Orchestrator)", s):
+                continue
+            if re.search(r"^\+?\s*Thought:\s*\d+", s, re.IGNORECASE):
+                continue
+            clean.append(cleaned_line)
+        return clean
 
-        body = "\n".join(clean_slice).strip()
-        # Strip ANSI codes
-        body = re.sub(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])", "", body)
-        # Strip divider box drawing characters
-        body = re.sub(r"[─━│┃┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬┄┅┆┇┈┉┊┋┌┐└┘╭╮╰╯]+", " ", body)
-        # Normalize whitespace
-        body = re.sub(r"\s+", " ", body).strip()
-        return body
-
-    # 3. Search backwards from newest to oldest prompt for substantive assistant response
+    # 2. Search backwards from newest prompt for substantive assistant response
     for idx in range(len(prompts) - 1, -1, -1):
         _, p_end = prompts[idx]
-        next_p_start = prompts[idx + 1][0] if idx + 1 < len(prompts) else len(cleaned_lines)
-        sub_lines = cleaned_lines[p_end + 1 : next_p_start]
-        body = get_substantive_text(sub_lines)
-        # If this turn has at least 30 chars of substantive assistant text, that is our response
-        if len(body) >= 30:
+        next_p_start = (
+            prompts[idx + 1][0] if idx + 1 < len(prompts) else len(raw_lines)
+        )
+        sub_lines = filter_assistant_lines(raw_lines[p_end + 1 : next_p_start])
+        body = " ".join(sub_lines).strip()
+        body = re.sub(r"\s+", " ", body)
+        if len(body) >= 20:
             return "\n".join(sub_lines)
 
-    return "\n".join(cleaned_lines)
+    fallback = filter_assistant_lines(raw_lines)
+    return "\n".join(fallback)
 
 
 def clean_agent_text(raw_text: str, max_chars: int = 0) -> str:
@@ -196,7 +213,65 @@ def clean_agent_text(raw_text: str, max_chars: int = 0) -> str:
     # Strip HTML/XML tags (e.g. <style>, <TextArea>, <div>) so Edge TTS SSML is not broken
     text = re.sub(r"<[^>]+>", " ", text)
 
-    # Remove box drawing characters and dividers
+    # Remove common terminal status lines, chrome, spinners, and format tables
+    lines = []
+    for line in text.splitlines():
+        # Strip OpenCode right-side status columns if present
+        line = re.sub(
+            r"\s{6,}(?:󰚩|▼|●\s*\d|✕|Context|\$[\d,.]+|\d[\d,.]*\s*tokens|\d+%\s*used|•|LSP|Connection closed|SSE error).*$",
+            "",
+            line,
+        )
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        # Ignore lines without any alphanumeric character (divider lines, horizontal rules, empty borders)
+        if not re.search(r"[A-Za-z0-9áéíóúÁÉÍÓÚñÑ¿¡]", stripped):
+            continue
+
+        # Ignore terminal status chrome and spinners
+        if re.search(r"^[\u2800-\u28FF●○⏺]", stripped):
+            continue
+        if re.search(
+            r"Tokens:\s*\d+|Quotas:\s*\[|Gemini\s*\d|Claude\s*\d|GPT-?\d",
+            stripped,
+            re.IGNORECASE,
+        ):
+            continue
+        if re.search(
+            r"^\d+(\.\d+)?[kM]?\s*in\s*\|\s*\d+(\.\d+)?[kM]?\s*out", stripped
+        ):
+            continue
+        if re.match(r"^(>|\?|❯|%|\$)\s*$", stripped):
+            continue
+        if "Conversation compacted" in stripped:
+            continue
+        if re.search(
+            r"(Running command|thinking through|ctrl\+o|expand\)|Exited /artifact|Press esc to interrupt)",
+            stripped,
+            re.IGNORECASE,
+        ):
+            continue
+        if re.match(r"^└\s*Tip:", stripped):
+            continue
+        if re.search(r"^(?:▣|╹▀▀|opencode-|Gentle-Orchestrator)", stripped):
+            continue
+        if re.search(r"^\+?\s*Thought:\s*\d+", stripped, re.IGNORECASE):
+            continue
+
+        # Format table borders and cells into natural speech pauses
+        # 1. Remove leading/trailing box bars and markdown pipes
+        stripped = re.sub(r"^[─━│┃║|┌┐└┘├┤┬┴┼═╔╗╚╝╠╣╦╩╬]+\s*", "", stripped)
+        stripped = re.sub(r"\s*[─━│┃║|┌┐└┘├┤┬┴┼═╔╗╚╝╠╣╦╩╬]+$", "", stripped)
+        # 2. Convert internal cell separators to natural pause (" — ")
+        stripped = re.sub(r"\s*[│┃║|┼]\s*", " — ", stripped)
+
+        lines.append(stripped)
+
+    text = "\n".join(lines)
+
+    # Remove remaining box drawing characters
     text = re.sub(r"[─━│┃┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬┄┅┆┇┈┉┊┋┌┐└┘╭╮╰╯]+", " ", text)
     text = re.sub(r"^[=\-_*#]{3,}\s*$", "", text, flags=re.MULTILINE)
 
@@ -207,32 +282,6 @@ def clean_agent_text(raw_text: str, max_chars: int = 0) -> str:
     # Remove bullet markers: "• Item" or "* Item" -> "Item"
     text = re.sub(r"^\s*[•*+-]\s+", "", text, flags=re.MULTILINE)
     text = re.sub(r"\s+[•*+-]\s+", " ", text)
-
-    # Remove common terminal status lines / chrome / spinners
-    lines = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if re.search(r"^[\u2800-\u28FF●○]", stripped):
-            continue
-        if re.search(r"Tokens:\s*\d+|Quotas:\s*\[|Gemini\s*\d|Claude\s*\d|GPT-?\d", stripped, re.IGNORECASE):
-            continue
-        if re.search(r"^\d+(\.\d+)?[kM]?\s*in\s*\|\s*\d+(\.\d+)?[kM]?\s*out", stripped):
-            continue
-        if re.match(r"^>\s*$", stripped) or re.match(r"^\?\s*$", stripped):
-            continue
-        if "Conversation compacted" in stripped:
-            continue
-        if re.search(
-            r"(Running command|thinking through|ctrl\+o|expand\)|Exited /artifact|Press esc to interrupt)",
-            stripped,
-            re.IGNORECASE,
-        ):
-            continue
-        lines.append(stripped)
-
-    text = "\n".join(lines)
 
     # Replace fenced code blocks with audio cue
     text = re.sub(r"```[a-zA-Z0-9_-]*\n[\s\S]*?```", " [bloque de código] ", text)
