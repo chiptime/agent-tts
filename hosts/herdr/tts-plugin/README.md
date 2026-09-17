@@ -34,6 +34,8 @@ When orchestrating multiple autonomous coding agents in Herdr (Claude Code, Open
 | **Memory Footprint** | ~30–60 MB (Node / heavy runtime) | High (WebRTC SIP bridge) | 🟢 **~2.3 MB RAM, 0 VRAM** |
 | **Parallel Chat Safety** | ❌ Voices collide & overlap | N/A (Single phone call) | 🟢 **Audio Mutex Lock** |
 | **Focus-Aware Filtering** | ❌ Speaks every background event | ❌ No | 🟢 **`scope: focused`** (default) |
+| **Mobile Audio Push** | ❌ No | ⚠️ Call only | 🟢 **Native `ntfy.sh` with inline MP3 player** |
+| **Collie PWA Integration** | ❌ No | ❌ No | 🟢 **Deep links straight to active pane** |
 | **On-Demand Reading** | ❌ Passive trigger only | ⚠️ Phone only | 🟢 **`prefix + r`** (Play/Stop toggle) |
 | **Instant Kill-Switch** | ❌ No | ❌ No | 🟢 **`prefix + s`** (<0.2s instant halt) |
 | **Agent Terminal Cleaning** | ❌ Minimal (200 char hard limit) | ❌ LLM-generated summary | 🟢 **Deep cleaner** (ANSI, box, tokens) |
@@ -162,9 +164,12 @@ herdr-tts --toggle-play        # Play / Stop on the currently focused chat
 herdr-tts --stop               # Stop audio playback immediately (<0.2s)
 herdr-tts --toggle-auto        # Toggle background auto-speech (muted / active)
 herdr-tts --scope focused|all  # 'focused' (only active pane) | 'all' (any pane without overlapping)
-herdr-tts --status             # Show current status, voice, active locks, and PIDs
+herdr-tts --status             # Show current status, voice, ntfy push, Collie URL, and active locks
 herdr-tts --voice alvaro       # Set voice (elvira, alvaro, ximena, dalia, jorge, en)
 herdr-tts --rate +25%          # Set speech speed (+0%, +20%, +35%)
+herdr-tts --ntfy-topic <topic> # Set ntfy.sh topic for mobile audio notifications (or 'off')
+herdr-tts --collie-url <url>   # Set Collie web base URL for mobile deep-links (or 'off')
+herdr-tts --render-pane <pane> # Export clean assistant speech of a pane directly to .mp3
 herdr-tts --speak "Hello"      # Synthesize custom text directly
 ```
 
@@ -178,6 +183,22 @@ alias htx="herdr-tts --stop"
 alias htt="herdr-tts"
 alias htts="herdr-tts --status"
 alias httt="herdr-tts --toggle-auto"
+```
+
+---
+
+## 📱 Mobile Push Notifications (Optional via `ntfy.sh`)
+
+`herdr-tts` integrates seamlessly with [`ntfy.sh`](https://ntfy.sh) and [Collie](https://colliepwa.dev) to deliver rich, hands-free notifications to your phone whenever an agent finishes or requests human intervention:
+
+* **Inline Mobile Audio Player:** The generated neural `.mp3` is attached to the notification payload. In the ntfy app (Android/iOS), you can press Play directly in the notification or notification feed without unlocking your phone or opening a terminal.
+* **Collie Deep-Linking:** Tapping the notification or the action button *"📱 Abrir Collie"* opens Collie straight to `/pane/<pane_id>`, allowing you to respond from your phone's keyboard or dictate voice input.
+* **Zero Additional Daemons:** Uses the same Herdr socket events and Edge TTS synthesis pass as the desktop voice engine—zero overhead or duplicate synthesis requests.
+
+To activate:
+```bash
+herdr-tts --ntfy-topic "my-secret-topic-9k2"
+herdr-tts --collie-url "https://my-desktop.tailscale.net"
 ```
 
 ---
@@ -206,8 +227,13 @@ Persisted options live at `~/.config/herdr-tts/config.env`:
 ```bash
 TTS_VOICE="elvira"
 TTS_RATE="+20%"
-TTS_MAX_CHARS="500"
+TTS_MAX_CHARS="0"           # 0 = unlimited
 TTS_AUTO_SCOPE="focused"    # "focused" (recommended) or "all"
+
+# Mobile Push Notifications (Optional):
+NTFY_TOPIC="my-secret-topic-9k2"
+NTFY_SERVER="https://ntfy.sh"
+COLLIE_URL="https://my-desktop.tailscale.net"
 ```
 
 ---

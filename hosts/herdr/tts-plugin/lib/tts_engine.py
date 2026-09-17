@@ -449,6 +449,66 @@ async def synthesize_and_play(
             cleanup_locks()
 
 
+def play_mp3_file(mp3_path: str, label: str = "Audio") -> None:
+    """Decodes an existing MP3 file to PCM in memory and plays via audio backend."""
+    global _active_process
+    if not os.path.exists(mp3_path):
+        return
+
+    try:
+        with open(PID_FILE, "w") as f:
+            f.write(str(os.getpid()))
+        with open(LOCK_FILE, "w") as f:
+            f.write(str(os.getpid()))
+    except OSError:
+        pass
+
+    temp_wav = None
+    try:
+        with open(mp3_path, "rb") as f:
+            mp3_data = f.read()
+
+        decoded = miniaudio.decode(mp3_data)
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            temp_wav = f.name
+        miniaudio.wav_write_file(temp_wav, decoded)
+
+        try:
+            duration_s = int(decoded.num_frames / decoded.sample_rate)
+            min_s = duration_s // 60
+            sec_s = duration_s % 60
+            dur_label = f"{min_s}:{sec_s:02d}" if min_s > 0 else f"{sec_s}s"
+            subprocess.run(
+                [
+                    "herdr",
+                    "notification",
+                    "show",
+                    "🔊 Reproduciendo voz",
+                    "--body",
+                    f"Duración: {dur_label} ({label})",
+                    "--sound",
+                    "none",
+                ],
+                stderr=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
+
+        _active_process = spawn_player(temp_wav)
+        _active_process.wait()
+    except Exception as e:
+        print(f"Playback error: {e}", file=sys.stderr)
+    finally:
+        _active_process = None
+        if temp_wav and os.path.exists(temp_wav):
+            try:
+                os.remove(temp_wav)
+            except OSError:
+                pass
+        cleanup_locks()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Herdr Neural TTS Engine")
     parser.add_argument("text", nargs="*", help="Text to speak (reads stdin if omitted)")
@@ -458,8 +518,13 @@ def main():
     parser.add_argument("--raw", action="store_true", help="Do not clean text")
     parser.add_argument("--output", "-o", help="Save synthesized MP3 audio to file")
     parser.add_argument("--no-play", action="store_true", help="Do not play audio locally")
+    parser.add_argument("--play-file", help="Play an existing MP3 file directly without re-synthesizing")
 
     args = parser.parse_args()
+
+    if args.play_file:
+        play_mp3_file(args.play_file, label=os.path.basename(args.play_file))
+        sys.exit(0)
 
     input_text = ""
     if args.text:

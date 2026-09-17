@@ -33,6 +33,9 @@ DEFAULT_VOICE="elvira"
 DEFAULT_RATE="+20%"
 DEFAULT_MAX_CHARS="0" # 0 = unlimited
 DEFAULT_AUTO_SCOPE="focused" # "focused" = only speak active pane; "all" = speak any pane with mutex
+DEFAULT_NTFY_TOPIC=""
+DEFAULT_NTFY_SERVER="https://ntfy.sh"
+DEFAULT_COLLIE_URL=""
 
 notify_herdr() {
   local title="$1"
@@ -51,6 +54,9 @@ TTS_VOICE="${TTS_VOICE:-$DEFAULT_VOICE}"
 TTS_RATE="${TTS_RATE:-$DEFAULT_RATE}"
 TTS_MAX_CHARS="${TTS_MAX_CHARS:-$DEFAULT_MAX_CHARS}"
 TTS_AUTO_SCOPE="${TTS_AUTO_SCOPE:-$DEFAULT_AUTO_SCOPE}"
+NTFY_TOPIC="${NTFY_TOPIC:-${HERDR_NTFY_TOPIC:-$DEFAULT_NTFY_TOPIC}}"
+NTFY_SERVER="${NTFY_SERVER:-${HERDR_NTFY_SERVER:-$DEFAULT_NTFY_SERVER}}"
+COLLIE_URL="${COLLIE_URL:-${HERDR_COLLIE_URL:-$DEFAULT_COLLIE_URL}}"
 
 save_config() {
   cat > "$CONFIG_FILE" <<EOF
@@ -58,6 +64,9 @@ TTS_VOICE="${TTS_VOICE}"
 TTS_RATE="${TTS_RATE}"
 TTS_MAX_CHARS="${TTS_MAX_CHARS}"
 TTS_AUTO_SCOPE="${TTS_AUTO_SCOPE}"
+NTFY_TOPIC="${NTFY_TOPIC}"
+NTFY_SERVER="${NTFY_SERVER}"
+COLLIE_URL="${COLLIE_URL}"
 EOF
 }
 
@@ -111,6 +120,99 @@ speak_text() {
   local child_pid=$!
   echo "$child_pid" > "$PID_FILE"
   echo "$child_pid" > "$LOCK_FILE"
+}
+
+play_audio_file() {
+  local file="$1"
+  stop_audio
+  "$VENV_PYTHON" "$ENGINE_SCRIPT" --play-file "$file" >> /tmp/herdr-tts.log 2>&1 &
+  local child_pid=$!
+  echo "$child_pid" > "$PID_FILE"
+  echo "$child_pid" > "$LOCK_FILE"
+}
+
+send_ntfy_push() {
+  local pane_id="$1"
+  local agent="$2"
+  local state="$3"
+  local workspace="${4:-}"
+  local title_desc="${5:-}"
+  local audio_path="${6:-}"
+
+  [[ -z "$NTFY_TOPIC" ]] && return 0
+
+  local ntfy_url="${NTFY_SERVER}/${NTFY_TOPIC}"
+  local focus_cmd="herdr agent focus ${pane_id}"
+  local pane_url="${COLLIE_URL}${pane_id:+/pane/${pane_id}}"
+  local display_name="${agent} (${pane_id})"
+  if [[ -n "$title_desc" && "$title_desc" != "$agent" ]]; then
+    display_name="${agent} [${title_desc}] (${pane_id})"
+  fi
+
+  local action_buttons=""
+  if [[ -n "$COLLIE_URL" ]]; then
+    action_buttons="view, 📱 Abrir Collie, ${pane_url}; view, 📋 Copiar comando, ${focus_cmd}, clear=true"
+  else
+    action_buttons="view, 📋 Copiar comando, ${focus_cmd}, clear=true"
+  fi
+
+  local title=""
+  local body=""
+  local priority="default"
+  local tags="robot"
+
+  case "$state" in
+    done)
+      title="✅ ${display_name} terminó"
+      body="Agente ${display_name}${workspace:+ en ${workspace}} finalizó su tarea.\n\n→ Para ver: ${focus_cmd}"
+      priority="default"
+      tags="white_check_mark,robot"
+      [[ -n "$audio_path" && -s "$audio_path" ]] && tags="white_check_mark,robot,loudspeaker"
+      ;;
+    blocked)
+      title="🔴 ${display_name} necesita atención"
+      body="Agente ${display_name}${workspace:+ en ${workspace}} está bloqueado y espera input.\n\n→ Para ver: ${focus_cmd}"
+      priority="high"
+      tags="rotating_light,warning"
+      [[ -n "$audio_path" && -s "$audio_path" ]] && tags="rotating_light,warning,loudspeaker"
+      ;;
+    idle)
+      title="💤 ${display_name} idle"
+      body="Agente ${display_name}${workspace:+ en ${workspace}} pasó a idle."
+      priority="low"
+      tags="zzz"
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+
+  local -a headers=(
+    -H "Title: ${title}"
+    -H "Priority: ${priority}"
+    -H "Tags: ${tags}"
+  )
+  if [[ -n "$COLLIE_URL" ]]; then
+    headers+=(-H "Click: ${pane_url}")
+  fi
+  if [[ -n "$action_buttons" ]]; then
+    headers+=(-H "Actions: ${action_buttons}")
+  fi
+
+  if [[ -n "$audio_path" && -f "$audio_path" && -s "$audio_path" ]]; then
+    local safe_body="${body//$'\n'/ · }"
+    local audio_bytes
+    audio_bytes=$(stat -c%s "$audio_path" 2>/dev/null || echo "unknown")
+    headers+=(
+      -H "Message: ${safe_body}"
+      -H "Filename: ${pane_id//:/_}-response.mp3"
+    )
+    echo "[$(date +%H:%M:%S)] [ntfy] 📤 Enviando push con audio (${audio_bytes} bytes) para ${pane_id} a ${NTFY_TOPIC}"
+    curl -s --connect-timeout 5 --max-time 30 "${headers[@]}" -T "${audio_path}" "${ntfy_url}" > /dev/null 2>&1 || true
+  else
+    echo "[$(date +%H:%M:%S)] [ntfy] 📤 Enviando push de texto para ${pane_id} a ${NTFY_TOPIC}"
+    curl -s --connect-timeout 5 --max-time 15 "${headers[@]}" -d "${body}" "${ntfy_url}" > /dev/null 2>&1 || true
+  fi
 }
 
 get_focused_pane() {
@@ -269,15 +371,25 @@ show_status() {
   fi
 
   if is_auto_muted; then
-    echo "  Auto-lectura: 🔇 Silenciada (Solo manual vía prefix+r)"
+    echo "  Auto-lectura: 🔇 Silenciada en PC (Solo manual vía prefix+r)"
   else
-    echo "  Auto-lectura: 🔊 Activa"
+    echo "  Auto-lectura: 🔊 Activa en altavoces del PC"
   fi
 
   echo "  Alcance auto: ${TTS_AUTO_SCOPE} (focused = solo chat activo; all = cualquiera sin solaparse)"
   echo "  Voz:          ${TTS_VOICE}"
   echo "  Velocidad:    ${TTS_RATE}"
   echo "  Max chars:    ${TTS_MAX_CHARS}"
+
+  if [[ -n "$NTFY_TOPIC" ]]; then
+    echo "  Push móvil:   🔔 Activo (ntfy: ${NTFY_TOPIC} | Servidor: ${NTFY_SERVER})"
+  else
+    echo "  Push móvil:   ⚪ Desactivado (opcional vía --ntfy-topic <topic>)"
+  fi
+  if [[ -n "$COLLIE_URL" ]]; then
+    echo "  Collie URL:   📱 ${COLLIE_URL}"
+  fi
+
   echo "  Plugin root:  ${PLUGIN_ROOT}"
   echo "  Config:       ${CONFIG_FILE}"
 }
@@ -295,47 +407,69 @@ watch_agent_pane() {
       continue
     }
 
+    local info
+    info=$(herdr agent get "$pane_id" 2>/dev/null) || { sleep 3; continue; }
     local new_state
-    new_state=$(herdr agent get "$pane_id" 2>/dev/null | jq -r '.result.agent_status // "unknown"') || continue
+    new_state=$(echo "$info" | jq -r '.result.agent.agent_status // .result.agent_status // "unknown"' 2>/dev/null || echo "unknown")
 
     if [[ "$new_state" != "$prev_state" && "$new_state" != "working" && "$new_state" != "unknown" ]]; then
-      # 1. Skip if auto-read is muted
-      if is_auto_muted; then
-        prev_state="$new_state"
-        herdr agent wait "$pane_id" --until working 2>/dev/null || sleep 3
-        prev_state="working"
-        continue
-      fi
+      local workspace
+      workspace=$(echo "$info" | jq -r '.result.agent.workspace_id // .result.workspace_id // ""' 2>/dev/null || true)
+      local title_desc
+      title_desc=$(echo "$info" | jq -r '.result.agent.terminal_title_stripped // .result.agent.terminal_title // .result.terminal_title // ""' 2>/dev/null || true)
 
-      # 2. Scope check: if "focused", only speak if the user is looking at this pane
-      if [[ "$TTS_AUTO_SCOPE" == "focused" ]]; then
-        local current_focused
-        current_focused=$(get_focused_pane)
-        if [[ "$current_focused" != "$pane_id" ]]; then
-          echo "[$(date +%H:%M:%S)] ${agent_name} (${pane_id}): terminó en segundo plano (no enfocado, omitiendo voz)"
-          prev_state="$new_state"
-          herdr agent wait "$pane_id" --until working 2>/dev/null || sleep 3
-          prev_state="working"
-          continue
+      echo "[$(date +%H:%M:%S)] ${agent_name} (${pane_id}): ${prev_state} → ${new_state}"
+
+      if [[ "$new_state" == "done" || "$new_state" == "blocked" ]]; then
+        # 0.6s grace period for multiplexer scrollback flush
+        sleep 0.6
+
+        local pane_text
+        pane_text=$(read_pane_text "$pane_id")
+
+        if [[ -n "$pane_text" && ! "$pane_text" =~ ^[[:space:]]*$ ]]; then
+          local tmp_audio="/tmp/herdr-tts-${pane_id//:/_}-${BASHPID:-$$}-$RANDOM.mp3"
+
+          # 1. Synthesize audio file once
+          render_text_audio "$tmp_audio" "$pane_text" >/dev/null 2>&1 || true
+
+          # 2. Push notification (mobile via ntfy, if configured)
+          if [[ -n "$NTFY_TOPIC" ]]; then
+            send_ntfy_push "$pane_id" "$agent_name" "$new_state" "$workspace" "$title_desc" "$tmp_audio"
+          fi
+
+          # 3. Local desktop voice playback
+          local should_speak_local=true
+          if is_auto_muted; then
+            should_speak_local=false
+          elif [[ "$TTS_AUTO_SCOPE" == "focused" ]]; then
+            local current_focused
+            current_focused=$(get_focused_pane)
+            if [[ "$current_focused" != "$pane_id" ]]; then
+              echo "[$(date +%H:%M:%S)] ${agent_name} (${pane_id}): terminó en segundo plano (no enfocado, omitiendo voz local)"
+              should_speak_local=false
+            fi
+          fi
+
+          if is_playing; then
+            echo "[$(date +%H:%M:%S)] ${agent_name} (${pane_id}): ya hay otro chat hablando en local (omitido para evitar solapamiento)"
+            should_speak_local=false
+          fi
+
+          if [[ "$should_speak_local" == true && -s "$tmp_audio" ]]; then
+            echo "[$(date +%H:%M:%S)] ${agent_name} (${pane_id}): vocalizando en altavoces locales"
+            play_audio_file "$tmp_audio"
+          fi
+
+          # Clean up temporary audio file after local player decodes it
+          if [[ "$should_speak_local" == true ]]; then
+            ( sleep 6 && rm -f "$tmp_audio" ) &
+          else
+            rm -f "$tmp_audio"
+          fi
         fi
-      fi
-
-      # 3. Mutex check: DO NOT overlap if another chat is currently speaking
-      if is_playing; then
-        echo "[$(date +%H:%M:%S)] ${agent_name} (${pane_id}): terminó, pero ya hay otro chat hablando (omitido para evitar solapamiento)"
-        prev_state="$new_state"
-        herdr agent wait "$pane_id" --until working 2>/dev/null || sleep 3
-        prev_state="working"
-        continue
-      fi
-
-      echo "[$(date +%H:%M:%S)] ${agent_name} (${pane_id}): ${prev_state} → ${new_state} (vocalizando)"
-
-      local pane_text
-      pane_text=$(read_pane_text "$pane_id")
-
-      if [[ -n "$pane_text" ]]; then
-        speak_text "$pane_text" &
+      elif [[ "$new_state" == "idle" && "$prev_state" == "working" && -n "$NTFY_TOPIC" ]]; then
+        send_ntfy_push "$pane_id" "$agent_name" "idle" "$workspace" "$title_desc" ""
       fi
     fi
 
@@ -354,6 +488,7 @@ run_daemon() {
     for pid in "${CHILD_PIDS[@]:-}"; do
       kill "$pid" 2>/dev/null || true
     done
+    rm -f /tmp/herdr-tts-watcher-*.lock 2>/dev/null || true
     stop_audio
     exit 0
   }
@@ -367,15 +502,18 @@ run_daemon() {
       [[ -z "$pane_id" || "$pane_id" == "null" ]] && continue
 
       local lock_file="/tmp/herdr-tts-watcher-${pane_id//:/_}.lock"
-      if [[ -f "$lock_file" ]] && kill -0 "$(cat "$lock_file")" 2>/dev/null; then
-        continue
+      if [[ -f "$lock_file" ]]; then
+        local existing_pid
+        existing_pid=$(cat "$lock_file" 2>/dev/null || true)
+        if [[ -n "$existing_pid" ]] && kill -0 "$existing_pid" 2>/dev/null; then
+          continue
+        fi
       fi
 
-      (
-        echo "$$" > "$lock_file"
-        watch_agent_pane "$pane_id" "$agent_name"
-      ) &
-      CHILD_PIDS+=($!)
+      watch_agent_pane "$pane_id" "$agent_name" &
+      local child_pid=$!
+      echo "$child_pid" > "$lock_file"
+      CHILD_PIDS+=("$child_pid")
     done < <(echo "$raw_agents" | jq -r '.result.agents[]? | "\(.pane_id)\t\(.agent)"' 2>/dev/null || true)
 
     sleep 4
@@ -415,6 +553,36 @@ case "${1:-}" in
       exit 1
     fi
     ;;
+  --ntfy-topic)
+    if [[ "${2:-}" == "off" || "${2:-}" == "none" || -z "${2:-}" ]]; then
+      NTFY_TOPIC=""
+      save_config
+      echo "✓ Notificaciones móviles de ntfy desactivadas"
+    else
+      NTFY_TOPIC="$2"
+      save_config
+      echo "✓ Topic de ntfy configurado: $NTFY_TOPIC"
+    fi
+    ;;
+  --ntfy-server)
+    NTFY_SERVER="${2:-https://ntfy.sh}"
+    save_config
+    echo "✓ Servidor ntfy configurado: $NTFY_SERVER"
+    ;;
+  --collie-url)
+    if [[ "${2:-}" == "off" || "${2:-}" == "none" ]]; then
+      COLLIE_URL=""
+      save_config
+      echo "✓ URL de Collie desactivada"
+    else
+      COLLIE_URL="$2"
+      save_config
+      echo "✓ URL de Collie configurada: $COLLIE_URL"
+    fi
+    ;;
+  --play-file)
+    play_audio_file "${2:-}"
+    ;;
   --render-pane)
     render_pane_audio "${2:-}" "${3:-}"
     ;;
@@ -449,16 +617,18 @@ case "${1:-}" in
 Uso: herdr-tts [OPCIONES]
 
 Acciones principales:
-  --toggle-play (-r)   Play / Stop toggle en el pane actual enfocado (Tecla: prefix+r)
-  --stop (-s)          Detener inmediatamente cualquier audio sonando (Tecla: prefix+s)
-  --play (-p)          Leer la última respuesta del chat enfocado
-  --toggle-auto (-t)   Alternar lectura automática de fondo (Tecla: prefix+v)
-  --scope focused|all  'focused' (solo chat activo) | 'all' (cualquiera sin solapar)
+  --toggle-play (-r)       Play / Stop toggle en el pane actual enfocado (Tecla: prefix+r)
+  --stop (-s)              Detener inmediatamente cualquier audio sonando (Tecla: prefix+s)
+  --play (-p)              Leer la última respuesta del chat enfocado
+  --toggle-auto (-t)       Alternar lectura automática de fondo (Tecla: prefix+v)
+  --scope focused|all      'focused' (solo chat activo) | 'all' (cualquiera sin solapar)
 
 Configuración:
-  --voice <nombre>     Cambiar voz (elvira, alvaro, ximena, dalia, jorge)
-  --rate <velocidad>   Cambiar velocidad (+20%, +10%, +0%)
-  --status             Ver estado actual y lock
+  --voice <nombre>         Cambiar voz (elvira, alvaro, ximena, dalia, jorge)
+  --rate <velocidad>       Cambiar velocidad (+20%, +10%, +0%)
+  --ntfy-topic <topic>     Topic de ntfy.sh para push con audio a móvil (o 'off')
+  --collie-url <url>       URL base de Collie para deep-links de móvil (o 'off')
+  --status                 Ver estado actual, lock y configuración
 EOF
     ;;
   *)
