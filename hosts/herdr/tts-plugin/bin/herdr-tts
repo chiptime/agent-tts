@@ -19,6 +19,7 @@ CONFIG_FILE="${CONFIG_DIR}/config.env"
 AUTO_MUTE_FILE="${CONFIG_DIR}/auto_muted"
 LOCK_FILE="/tmp/herdr-tts-playing.lock"
 PID_FILE="/tmp/herdr-tts-current.pid"
+IPC_SOCKET="/tmp/herdr-tts-player.sock"
 
 # Auto-bootstrap python environment if missing
 VENV_PYTHON="${DATA_DIR}/venv/bin/python"
@@ -95,6 +96,11 @@ is_playing() {
 stop_audio() {
   local stopped=false
 
+  if [[ -S "$IPC_SOCKET" ]]; then
+    "$VENV_PYTHON" "$ENGINE_SCRIPT" --ipc-cmd stop >/dev/null 2>&1 || true
+    stopped=true
+  fi
+
   if [[ -f "$PID_FILE" ]]; then
     local pid
     pid=$(cat "$PID_FILE" 2>/dev/null || true)
@@ -109,12 +115,154 @@ stop_audio() {
     stopped=true
   fi
 
-  rm -f "$LOCK_FILE" "$PID_FILE"
+  rm -f "$LOCK_FILE" "$PID_FILE" "$IPC_SOCKET"
 
   if [[ "$stopped" == true ]]; then
     echo "⏹️ Audio detenido"
     notify_herdr "⏹️ Audio detenido" "Reproducción cancelada"
   fi
+}
+
+seek_audio() {
+  local delta="$1"
+  local res
+  res=$("$VENV_PYTHON" "$ENGINE_SCRIPT" --ipc-cmd "seek ${delta}" 2>/dev/null || true)
+  if [[ -z "$res" || "$res" == *"Error:"* ]]; then
+    echo "⏹️ No hay audio reproduciéndose actualmente"
+    return 1
+  fi
+
+  local pos total status
+  pos=$(echo "$res" | grep -o 'pos=[0-9.]*' | cut -d= -f2)
+  total=$(echo "$res" | grep -o 'total=[0-9.]*' | cut -d= -f2)
+  status=$(echo "$res" | grep -o 'status=[a-z]*' | cut -d= -f2)
+
+  local pos_int=${pos%.*}
+  local total_int=${total%.*}
+  [[ -z "$pos_int" ]] && pos_int=0
+  [[ -z "$total_int" ]] && total_int=0
+
+  local pos_m=$(( pos_int / 60 ))
+  local pos_s=$(( pos_int % 60 ))
+  local tot_m=$(( total_int / 60 ))
+  local tot_s=$(( total_int % 60 ))
+  local time_label
+  time_label=$(printf "%d:%02d / %d:%02d" "$pos_m" "$pos_s" "$tot_m" "$tot_s")
+
+  local sign="⏩ +"
+  [[ "$delta" =~ ^- ]] && sign="⏪ "
+
+  echo "${sign}${delta#+}s (${time_label})"
+  notify_herdr "${sign}${delta#+}s" "Posición: ${time_label}"
+}
+
+toggle_pause_audio() {
+  local res
+  res=$("$VENV_PYTHON" "$ENGINE_SCRIPT" --ipc-cmd "toggle-pause" 2>/dev/null || true)
+  if [[ -z "$res" || "$res" == *"Error:"* ]]; then
+    echo "⏹️ No hay audio reproduciéndose actualmente"
+    return 1
+  fi
+
+  local status pos total
+  status=$(echo "$res" | grep -o 'status=[a-z]*' | cut -d= -f2)
+  pos=$(echo "$res" | grep -o 'pos=[0-9.]*' | cut -d= -f2)
+  total=$(echo "$res" | grep -o 'total=[0-9.]*' | cut -d= -f2)
+
+  local pos_int=${pos%.*}
+  local total_int=${total%.*}
+  [[ -z "$pos_int" ]] && pos_int=0
+  [[ -z "$total_int" ]] && total_int=0
+
+  local pos_m=$(( pos_int / 60 ))
+  local pos_s=$(( pos_int % 60 ))
+  local tot_m=$(( total_int / 60 ))
+  local tot_s=$(( total_int % 60 ))
+  local time_label
+  time_label=$(printf "%d:%02d / %d:%02d" "$pos_m" "$pos_s" "$tot_m" "$tot_s")
+
+  if [[ "$status" == "paused" ]]; then
+    echo "⏸️ Audio pausado (${time_label})"
+    notify_herdr "⏸️ Audio pausado" "${time_label} (reanudable con prefix+p)"
+  else
+    echo "▶️ Audio reanudado (${time_label})"
+    notify_herdr "▶️ Audio reanudado" "${time_label}"
+  fi
+}
+
+pause_audio() {
+  local res
+  res=$("$VENV_PYTHON" "$ENGINE_SCRIPT" --ipc-cmd "status" 2>/dev/null || true)
+  if [[ "$res" == *"status=playing"* ]]; then
+    toggle_pause_audio
+  elif [[ "$res" == *"status=paused"* ]]; then
+    echo "⏸️ Audio ya está pausado"
+  else
+    echo "⏹️ No hay audio reproduciéndose actualmente"
+  fi
+}
+
+resume_audio() {
+  local res
+  res=$("$VENV_PYTHON" "$ENGINE_SCRIPT" --ipc-cmd "resume" 2>/dev/null || true)
+  if [[ -n "$res" && "$res" != *"Error:"* ]]; then
+    echo "▶️ Audio reanudado"
+    notify_herdr "▶️ Audio reanudado" ""
+  else
+    echo "⏹️ No hay audio reproduciéndose actualmente"
+  fi
+}
+
+get_player_status() {
+  local res
+  res=$("$VENV_PYTHON" "$ENGINE_SCRIPT" --ipc-cmd "status" 2>/dev/null || true)
+  if [[ -z "$res" || "$res" == *"Error:"* ]]; then
+    echo "⏹️ En reposo (sin reproducción activa)"
+    return 0
+  fi
+  local status pos total
+  status=$(echo "$res" | grep -o 'status=[a-z]*' | cut -d= -f2)
+  pos=$(echo "$res" | grep -o 'pos=[0-9.]*' | cut -d= -f2)
+  total=$(echo "$res" | grep -o 'total=[0-9.]*' | cut -d= -f2)
+
+  if [[ "$status" == "synthesizing" ]]; then
+    echo "⏳ Estado: sintetizando respuesta de voz..."
+    return 0
+  fi
+
+  local pos_int=${pos%.*}
+  local total_int=${total%.*}
+  [[ -z "$pos_int" ]] && pos_int=0
+  [[ -z "$total_int" ]] && total_int=0
+
+  local pos_m=$(( pos_int / 60 ))
+  local pos_s=$(( pos_int % 60 ))
+  local tot_m=$(( total_int / 60 ))
+  local tot_s=$(( total_int % 60 ))
+  local time_label
+  time_label=$(printf "%d:%02d / %d:%02d" "$pos_m" "$pos_s" "$tot_m" "$tot_s")
+
+  local icon="🔊"
+  [[ "$status" == "paused" ]] && icon="⏸️"
+  echo "${icon} Estado: ${status} (${time_label})"
+}
+
+adjust_rate() {
+  local step="$1" # +10 or -10
+  local current_num
+  current_num=$(echo "${TTS_RATE}" | tr -d '+%' | grep -o '[-0-9]*' || echo "20")
+  [[ -z "$current_num" ]] && current_num=20
+  local new_num=$(( current_num + step ))
+  (( new_num > 100 )) && new_num=100
+  (( new_num < -50 )) && new_num=-50
+  if (( new_num >= 0 )); then
+    TTS_RATE="+${new_num}%"
+  else
+    TTS_RATE="${new_num}%"
+  fi
+  save_config
+  echo "✓ Velocidad ajustada: ${TTS_RATE}"
+  notify_herdr "⚡ Velocidad de voz" "${TTS_RATE}"
 }
 
 speak_text() {
@@ -390,7 +538,29 @@ toggle_auto() {
 
 show_status() {
   echo "━━━ Herdr TTS Status ━━━"
-  if is_playing; then
+  local p_status
+  p_status=$("$VENV_PYTHON" "$ENGINE_SCRIPT" --ipc-cmd "status" 2>/dev/null || true)
+  if [[ -n "$p_status" && "$p_status" != *"Error:"* ]]; then
+    local status pos total
+    status=$(echo "$p_status" | grep -o 'status=[a-z]*' | cut -d= -f2)
+    pos=$(echo "$p_status" | grep -o 'pos=[0-9.]*' | cut -d= -f2)
+    total=$(echo "$p_status" | grep -o 'total=[0-9.]*' | cut -d= -f2)
+    local pos_int=${pos%.*}
+    local total_int=${total%.*}
+    local pos_m=$(( ${pos_int:-0} / 60 ))
+    local pos_s=$(( ${pos_int:-0} % 60 ))
+    local tot_m=$(( ${total_int:-0} / 60 ))
+    local tot_s=$(( ${total_int:-0} % 60 ))
+    local time_label
+    time_label=$(printf "%d:%02d / %d:%02d" "$pos_m" "$pos_s" "$tot_m" "$tot_s")
+    if [[ "$status" == "synthesizing" ]]; then
+      echo "  Reproducción: ⏳ Sintetizando respuesta de voz (Lock activo)"
+    elif [[ "$status" == "paused" ]]; then
+      echo "  Reproducción: ⏸️ Pausado en ${time_label} (Lock activo)"
+    else
+      echo "  Reproducción: 🔊 Hablando en ${time_label} (Lock activo)"
+    fi
+  elif is_playing; then
     echo "  Reproducción: 🔊 Hablando ahora (Lock activo)"
   else
     echo "  Reproducción: ⏹️ En reposo"
@@ -649,6 +819,33 @@ case "${1:-}" in
     shift
     speak_text "$*"
     ;;
+  --seek)
+    seek_audio "${2:-+10}"
+    ;;
+  --rewind)
+    seek_audio "-10"
+    ;;
+  --forward)
+    seek_audio "+10"
+    ;;
+  --pause)
+    pause_audio
+    ;;
+  --resume)
+    resume_audio
+    ;;
+  --toggle-pause)
+    toggle_pause_audio
+    ;;
+  --rate-up)
+    adjust_rate 10
+    ;;
+  --rate-down)
+    adjust_rate -10
+    ;;
+  --player-status)
+    get_player_status
+    ;;
   --voice)
     TTS_VOICE="$2"
     save_config
@@ -674,13 +871,19 @@ Uso: herdr-tts [OPCIONES]
 Acciones principales:
   --toggle-play (-r)       Play / Stop toggle en el pane actual enfocado (Tecla: prefix+r)
   --stop (-s)              Detener inmediatamente cualquier audio sonando (Tecla: prefix+s)
+  --toggle-pause           Pausar / Reanudar audio en reproducción (Tecla: prefix+p)
+  --seek <+/-s>            Avanzar o retroceder segundos (p. ej. +10 o -10)
+  --rewind                 Retroceder 10 segundos (Tecla: prefix+[)
+  --forward                Avanzar 10 segundos (Tecla: prefix+])
   --play (-p)              Leer la última respuesta del chat enfocado
   --toggle-auto (-t)       Alternar lectura automática de fondo (Tecla: prefix+v)
   --scope focused|all      'focused' (solo chat activo) | 'all' (cualquiera sin solapar)
 
-Configuración de voz:
+Configuración de voz y velocidad:
   --voice <nombre>         Cambiar voz (elvira, alvaro, ximena, dalia, jorge)
   --rate <velocidad>       Cambiar velocidad (+20%, +10%, +0%)
+  --rate-up                Acelerar lectura +10% en caliente (Tecla: prefix+=)
+  --rate-down              Ralentizar lectura -10% en caliente (Tecla: prefix+-)
 
 Notificaciones móviles (opcional):
   --ntfy-topic <topic>     Topic de ntfy.sh para recibir push con audio en móvil (o 'off')
