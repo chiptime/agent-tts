@@ -1,9 +1,9 @@
 id = "herdr.tts"
 name = "Herdr Neural TTS"
-version = "0.3.0"
+version = "0.4.0"
 min_herdr_version = "0.7.0"
 platforms = ["linux", "macos"]
-description = "Vocalizes agent responses and attention requests using Microsoft Edge Neural TTS with native audio playback, interactive controls, and mobile push. Concurrency-safe."
+description = "Vocalizes agent responses and attention requests using modular TTS backends (Edge Neural TTS, OpenAI TTS, ElevenLabs) with native audio playback, interactive controls, and mobile push. Concurrency-safe."
 
 [[build]]
 command = ["bash", "scripts/bootstrap.sh"]

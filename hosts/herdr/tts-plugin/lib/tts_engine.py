@@ -6,6 +6,7 @@ Supports Linux (PulseAudio / PipeWire / WSLg), macOS (afplay), and generic playe
 
 import argparse
 import asyncio
+import json
 import os
 import re
 import shutil
@@ -16,6 +17,8 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
 from typing import Optional
 
 try:
@@ -560,6 +563,266 @@ class AudioSession:
                 pass
 
 
+def parse_rate_to_multiplier(rate_str: str) -> float:
+    """Converts rate strings like '+20%', '-10%', '1.2' to float multiplier (e.g. 1.2)."""
+    if not rate_str:
+        return 1.0
+    s = str(rate_str).strip()
+    if s.endswith("%"):
+        try:
+            val = float(s[:-1])
+            return max(0.25, min(4.0, 1.0 + (val / 100.0)))
+        except ValueError:
+            return 1.0
+    try:
+        val = float(s)
+        return max(0.25, min(4.0, val))
+    except ValueError:
+        return 1.0
+
+
+class TTSProvider:
+    """Base interface for TTS synthesis backends."""
+    name: str = "base"
+
+    async def synthesize(
+        self,
+        text: str,
+        voice: str,
+        rate: str,
+        volume: str = "+0%",
+        pitch: str = "+0Hz",
+        stop_checker: Optional[callable] = None,
+    ) -> bytes:
+        raise NotImplementedError
+
+
+class EdgeTTSProvider(TTSProvider):
+    """Microsoft Edge Neural TTS (zero-config, high quality, free)."""
+    name = "edge"
+
+    def resolve_voice(self, voice: str) -> str:
+        v = (voice or "").lower().strip()
+        return VOICE_MAP.get(v, voice if voice else DEFAULT_VOICE)
+
+    async def synthesize(
+        self,
+        text: str,
+        voice: str,
+        rate: str,
+        volume: str = "+0%",
+        pitch: str = "+0Hz",
+        stop_checker: Optional[callable] = None,
+    ) -> bytes:
+        resolved = self.resolve_voice(voice)
+        communicate = edge_tts.Communicate(
+            text=text,
+            voice=resolved,
+            rate=rate,
+            volume=volume,
+            pitch=pitch,
+        )
+        mp3_chunks = []
+        async for chunk in communicate.stream():
+            if stop_checker and stop_checker():
+                return b""
+            if chunk["type"] == "audio":
+                mp3_chunks.append(chunk["data"])
+        return b"".join(mp3_chunks)
+
+
+class OpenAITTSProvider(TTSProvider):
+    """OpenAI Audio TTS provider (tts-1 / tts-1-hd)."""
+    name = "openai"
+
+    VOICE_FALLBACK = {
+        "elvira": "nova",
+        "ximena": "nova",
+        "dalia": "nova",
+        "alvaro": "onyx",
+        "álvaro": "onyx",
+        "jorge": "onyx",
+        "en": "alloy",
+    }
+    VALID_VOICES = {"alloy", "echo", "fable", "onyx", "nova", "shimmer"}
+
+    def __init__(
+        self,
+        api_key: str = "",
+        base_url: str = "https://api.openai.com/v1",
+        model: str = "tts-1",
+    ):
+        self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
+        self.base_url = (base_url or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")).rstrip("/")
+        self.model = model or os.environ.get("OPENAI_TTS_MODEL", "tts-1")
+
+    def resolve_voice(self, voice: str) -> str:
+        v = (voice or "").lower().strip()
+        if v in self.VALID_VOICES:
+            return v
+        return self.VOICE_FALLBACK.get(v, "nova")
+
+    def _sync_request(self, text: str, voice: str, speed: float) -> bytes:
+        if not self.api_key:
+            print("Error: OpenAI TTS requires an API key (set OPENAI_API_KEY or --openai-key)", file=sys.stderr)
+            return b""
+        url = f"{self.base_url}/audio/speech"
+        payload = json.dumps({
+            "model": self.model,
+            "input": text,
+            "voice": voice,
+            "response_format": "mp3",
+            "speed": speed,
+        }).encode("utf-8")
+
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+                "User-Agent": "herdr-tts/0.4.0",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return resp.read()
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8", errors="replace")
+            print(f"OpenAI TTS API error ({e.code}): {err_body}", file=sys.stderr)
+            return b""
+        except Exception as e:
+            print(f"OpenAI TTS network error: {e}", file=sys.stderr)
+            return b""
+
+    async def synthesize(
+        self,
+        text: str,
+        voice: str,
+        rate: str,
+        volume: str = "+0%",
+        pitch: str = "+0Hz",
+        stop_checker: Optional[callable] = None,
+    ) -> bytes:
+        if stop_checker and stop_checker():
+            return b""
+        target_voice = self.resolve_voice(voice)
+        speed = parse_rate_to_multiplier(rate)
+        return await asyncio.to_thread(self._sync_request, text, target_voice, speed)
+
+
+class ElevenLabsTTSProvider(TTSProvider):
+    """ElevenLabs TTS provider (multilingual, ultra-realistic)."""
+    name = "elevenlabs"
+
+    VOICE_MAP = {
+        "rachel": "21m00Tcm4TlvDq8ikWAM",
+        "bella": "EXAVITQu4vr4xnSDxMaL",
+        "antoni": "ErXwobaYiN019PkySvjV",
+        "adam": "pNInz6obpgDQGcFmaJgB",
+        "domi": "AZnzlk1XvdvUeBnXmlld",
+        "elli": "MF3mGyEYCl7XYWbV9V6O",
+        "josh": "TxGEqnHWrfWFTfGW9XjX",
+        "arnold": "VR6AewLTigWG4xSOukaG",
+        "sam": "yoZ06aMxZJJ28mfd3POQ",
+    }
+    DEFAULT_VOICE_ID = "21m00Tcm4TlvDq8ikWAM" # Rachel
+
+    def __init__(
+        self,
+        api_key: str = "",
+        model: str = "eleven_multilingual_v2",
+    ):
+        self.api_key = api_key or os.environ.get("ELEVENLABS_API_KEY", "")
+        self.model = model or os.environ.get("ELEVENLABS_MODEL", "eleven_multilingual_v2")
+
+    def resolve_voice_id(self, voice: str) -> str:
+        v = (voice or "").lower().strip()
+        if v in self.VOICE_MAP:
+            return self.VOICE_MAP[v]
+        if len(voice) >= 15 and not re.search(r"\s", voice):
+            return voice
+        return self.DEFAULT_VOICE_ID
+
+    def _sync_request(self, text: str, voice_id: str) -> bytes:
+        if not self.api_key:
+            print("Error: ElevenLabs TTS requires an API key (set ELEVENLABS_API_KEY or --eleven-key)", file=sys.stderr)
+            return b""
+        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+        payload = json.dumps({
+            "text": text,
+            "model_id": self.model,
+            "voice_settings": {
+                "stability": 0.5,
+                "similarity_boost": 0.75,
+            },
+        }).encode("utf-8")
+
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={
+                "xi-api-key": self.api_key,
+                "Content-Type": "application/json",
+                "Accept": "audio/mpeg",
+                "User-Agent": "herdr-tts/0.4.0",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return resp.read()
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8", errors="replace")
+            print(f"ElevenLabs TTS API error ({e.code}): {err_body}", file=sys.stderr)
+            return b""
+        except Exception as e:
+            print(f"ElevenLabs TTS network error: {e}", file=sys.stderr)
+            return b""
+
+    async def synthesize(
+        self,
+        text: str,
+        voice: str,
+        rate: str,
+        volume: str = "+0%",
+        pitch: str = "+0Hz",
+        stop_checker: Optional[callable] = None,
+    ) -> bytes:
+        if stop_checker and stop_checker():
+            return b""
+        voice_id = self.resolve_voice_id(voice)
+        return await asyncio.to_thread(self._sync_request, text, voice_id)
+
+
+def get_provider(
+    provider_name: str = "edge",
+    openai_key: Optional[str] = None,
+    openai_base_url: Optional[str] = None,
+    openai_model: Optional[str] = None,
+    eleven_key: Optional[str] = None,
+    eleven_model: Optional[str] = None,
+) -> TTSProvider:
+    name = (provider_name or "edge").lower().strip()
+    if name == "openai":
+        return OpenAITTSProvider(
+            api_key=openai_key or "",
+            base_url=openai_base_url or "https://api.openai.com/v1",
+            model=openai_model or "tts-1",
+        )
+    elif name in ("elevenlabs", "eleven"):
+        return ElevenLabsTTSProvider(
+            api_key=eleven_key or "",
+            model=eleven_model or "eleven_multilingual_v2",
+        )
+    elif name == "edge":
+        return EdgeTTSProvider()
+    else:
+        print(f"Warning: Unknown provider '{provider_name}', falling back to 'edge'", file=sys.stderr)
+        return EdgeTTSProvider()
+
+
 async def synthesize_and_play(
     text: str,
     voice: str = DEFAULT_VOICE,
@@ -568,10 +831,15 @@ async def synthesize_and_play(
     pitch: str = "+0Hz",
     output_file: Optional[str] = None,
     no_play: bool = False,
+    provider: str = "edge",
+    openai_key: Optional[str] = None,
+    openai_base_url: Optional[str] = None,
+    openai_model: Optional[str] = None,
+    eleven_key: Optional[str] = None,
+    eleven_model: Optional[str] = None,
 ) -> None:
-    """Synthesizes text with edge-tts, optionally saves to file, and plays via audio backend unless no_play is set."""
+    """Synthesizes text with selected provider, optionally saves to file, and plays via audio backend unless no_play is set."""
     global _active_process
-    resolved_voice = VOICE_MAP.get(voice.lower().strip(), voice)
 
     session = None
     if not no_play:
@@ -586,25 +854,29 @@ async def synthesize_and_play(
         session.start_ipc()
 
     try:
-        communicate = edge_tts.Communicate(
+        engine = get_provider(
+            provider_name=provider,
+            openai_key=openai_key,
+            openai_base_url=openai_base_url,
+            openai_model=openai_model,
+            eleven_key=eleven_key,
+            eleven_model=eleven_model,
+        )
+
+        def check_stop():
+            return session is not None and bool(session.state.get("stop", False))
+
+        mp3_data = await engine.synthesize(
             text=text,
-            voice=resolved_voice,
+            voice=voice,
             rate=rate,
             volume=volume,
             pitch=pitch,
+            stop_checker=check_stop,
         )
 
-        mp3_chunks = []
-        async for chunk in communicate.stream():
-            if session and session.state["stop"]:
-                return
-            if chunk["type"] == "audio":
-                mp3_chunks.append(chunk["data"])
-
-        if not mp3_chunks:
+        if not mp3_data or (session and session.state.get("stop")):
             return
-
-        mp3_data = b"".join(mp3_chunks)
 
         if output_file:
             out_dir = os.path.dirname(os.path.abspath(output_file))
@@ -688,6 +960,17 @@ def main():
         "--ipc-cmd",
         help="Send an IPC command to the active audio player (e.g. 'seek +10', 'seek -10', 'toggle-pause', 'status')",
     )
+    parser.add_argument(
+        "--provider",
+        default=os.environ.get("TTS_PROVIDER", "edge"),
+        choices=["edge", "openai", "elevenlabs", "eleven"],
+        help="TTS provider backend (edge, openai, elevenlabs)",
+    )
+    parser.add_argument("--openai-key", default=os.environ.get("OPENAI_API_KEY", ""), help="OpenAI API key")
+    parser.add_argument("--openai-base-url", default=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"), help="OpenAI custom base URL")
+    parser.add_argument("--openai-model", default=os.environ.get("OPENAI_TTS_MODEL", "tts-1"), help="OpenAI TTS model (tts-1, tts-1-hd)")
+    parser.add_argument("--eleven-key", default=os.environ.get("ELEVENLABS_API_KEY", ""), help="ElevenLabs API key")
+    parser.add_argument("--eleven-model", default=os.environ.get("ELEVENLABS_MODEL", "eleven_multilingual_v2"), help="ElevenLabs model")
 
     args = parser.parse_args()
 
@@ -725,6 +1008,12 @@ def main():
                 rate=args.rate,
                 output_file=args.output,
                 no_play=args.no_play,
+                provider=args.provider,
+                openai_key=args.openai_key,
+                openai_base_url=args.openai_base_url,
+                openai_model=args.openai_model,
+                eleven_key=args.eleven_key,
+                eleven_model=args.eleven_model,
             )
         )
     except KeyboardInterrupt:

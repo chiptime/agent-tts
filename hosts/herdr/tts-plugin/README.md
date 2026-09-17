@@ -29,7 +29,7 @@ When orchestrating multiple autonomous coding agents in Herdr (Claude Code, Open
 
 | Feature | Prior Art (e.g. `say-hook`) | Remote Call Bridges (`herdr-call`) | **`herdr-tts` (This Plugin)** |
 | :--- | :---: | :---: | :---: |
-| **API Keys & Cost** | ❌ Paid ElevenLabs key required | ❌ Paid ElevenLabs key required | 🟢 **100% Free** (Edge Neural TTS) |
+| **API Keys & Cost** | ❌ Paid ElevenLabs key required | ❌ Paid ElevenLabs key required | 🟢 **100% Free Default** (Edge TTS; optional OpenAI & ElevenLabs) |
 | **Linux & WSL2 Support** | ❌ No (macOS only fallback) | ⚠️ Tailscale / WebRTC only | 🟢 **Native Linux, WSLg & macOS** |
 | **Memory Footprint** | ~30–60 MB (Node / heavy runtime) | High (WebRTC SIP bridge) | 🟢 **~2.3 MB RAM, 0 VRAM** |
 | **Parallel Chat Safety** | ❌ Voices collide & overlap | N/A (Single phone call) | 🟢 **Audio Mutex Lock** |
@@ -203,8 +203,11 @@ herdr-tts --rate-down          # Decrease voice speed by -10% dynamically (prefi
 herdr-tts --player-status      # Live audio position, duration and playback state
 herdr-tts --toggle-auto        # Toggle background auto-speech (muted / active)
 herdr-tts --scope focused|all  # 'focused' (only active pane) | 'all' (any pane without overlapping)
-herdr-tts --status             # Show full service configuration and player state
-herdr-tts --voice alvaro       # Set voice (elvira, alvaro, ximena, dalia, jorge, en)
+herdr-tts --provider edge      # Select TTS provider: edge (free default), openai, elevenlabs
+herdr-tts --openai-key <key>   # Set OpenAI API key for tts-1 / tts-1-hd
+herdr-tts --eleven-key <key>   # Set ElevenLabs API key
+herdr-tts --status             # Show full service configuration, provider, and player state
+herdr-tts --voice alvaro       # Set voice (elvira, alvaro, ximena, dalia, jorge, en, nova, rachel)
 herdr-tts --rate +25%          # Set speech speed (+0%, +20%, +35%)
 herdr-tts --ntfy-topic <topic> # Set ntfy.sh topic for mobile audio notifications (or 'off')
 herdr-tts --web-url <url>      # Set optional web UI/dashboard base URL for deep-links (or 'off')
@@ -224,6 +227,39 @@ alias htx="herdr-tts --stop"
 alias htt="herdr-tts"
 alias htts="herdr-tts --status"
 alias httt="herdr-tts --toggle-auto"
+```
+
+---
+
+## 🎙️ Modular TTS Providers & Voices
+
+`herdr-tts` includes a modular synthesis backend supporting zero-cost Edge TTS as well as hyper-realistic commercial APIs:
+
+### 1. Microsoft Edge Neural TTS (Default — 100% Free)
+- **Zero Configuration:** No API keys or account required.
+- **Ultra-Low Latency:** High-quality neural voices directly streamed.
+- **Voices:** `elvira` *(default)*, `alvaro`, `ximena`, `dalia`, `jorge`, `en` (or any Edge voice code like `es-ES-ElviraNeural`).
+
+```bash
+herdr-tts --provider edge --voice elvira
+```
+
+### 2. OpenAI Audio TTS
+- **Models:** `tts-1` (default, fast/low latency) and `tts-1-hd` (high quality).
+- **Voices:** `nova`, `alloy`, `echo`, `fable`, `onyx`, `shimmer` (automatic mapping from Spanish defaults like `elvira` → `nova`).
+- **Setup:**
+```bash
+herdr-tts --openai-key "sk-..."
+herdr-tts --provider openai --voice nova
+```
+
+### 3. ElevenLabs
+- **Models:** `eleven_multilingual_v2` (default) and `eleven_turbo_v2_5`.
+- **Voices:** `rachel`, `bella`, `antoni`, `adam`, `domi`, `elli`, `josh`, `arnold`, `sam`, or any custom 20-character Voice ID.
+- **Setup:**
+```bash
+herdr-tts --eleven-key "xi-..."
+herdr-tts --provider elevenlabs --voice rachel
 ```
 
 ---
@@ -260,32 +296,23 @@ herdr-tts --web-url off
 
 ---
 
-## 🎙️ Available Neural Voices
-
-Set your preferred voice with `herdr-tts --voice <name>`:
-
-| Voice Identifier | Neural Voice Model | Accent / Language | Gender |
-| :--- | :--- | :--- | :--- |
-| `elvira` *(default)* | `es-ES-ElviraNeural` | Spanish (Spain) | Female |
-| `alvaro` | `es-ES-AlvaroNeural` | Spanish (Spain) | Male |
-| `ximena` | `es-ES-XimenaNeural` | Spanish (Spain) | Female |
-| `dalia` | `es-MX-DaliaNeural` | Spanish (Mexico) | Female |
-| `jorge` | `es-MX-JorgeNeural` | Spanish (Mexico) | Male |
-| `en` | `en-US-JennyNeural` | English (US) | Female |
-
-*You can also pass any full Microsoft Edge voice code (e.g. `en-GB-SoniaNeural`, `fr-FR-DeniseNeural`) directly.*
-
----
-
 ## ⚙️ Configuration
 
 Persisted options live at `~/.config/herdr-tts/config.env`:
 
 ```bash
+TTS_PROVIDER="edge"         # "edge" (free), "openai", or "elevenlabs"
 TTS_VOICE="elvira"
 TTS_RATE="+20%"
 TTS_MAX_CHARS="0"           # 0 = unlimited
 TTS_AUTO_SCOPE="focused"    # "focused" (recommended) or "all"
+
+# Optional Cloud TTS API Keys & Models:
+OPENAI_API_KEY=""
+OPENAI_BASE_URL="https://api.openai.com/v1"
+OPENAI_TTS_MODEL="tts-1"
+ELEVENLABS_API_KEY=""
+ELEVENLABS_MODEL="eleven_multilingual_v2"
 
 # Mobile Push Notifications (Optional):
 NTFY_TOPIC="my-secret-topic-9k2"
@@ -309,8 +336,8 @@ We have an active vision to expand `herdr-tts` into the definitive audio layer f
   - Quick hotkeys to step speed up or down on the fly (`prefix + =` / `prefix + -` for +10% / -10% increments) with instant notification feedback.
 - [x] 🪟 **Native Cross-Platform Audio Engine (Linux, macOS, Windows):**
   - Pure C audio playback via `miniaudio` directly outputting to PulseAudio/PipeWire (Linux), CoreAudio (macOS), and WASAPI (Windows) without requiring external media players (`mpv`, `paplay`, `afplay`).
-- [ ] 🎙️ **Optional ElevenLabs & OpenAI TTS Provider Backend:**
-  - Modular provider architecture allowing users with API keys to choose ultra-realistic voice models while preserving zero-cost Microsoft Edge Neural TTS as default.
+- [x] 🎙️ **Modular TTS Provider Backend (Edge, ElevenLabs & OpenAI TTS):**
+  - Modular provider architecture allowing users with API keys to choose ultra-realistic voice models (OpenAI `tts-1`, ElevenLabs) while preserving zero-cost Microsoft Edge Neural TTS as default.
 - [ ] 🖍️ **Visual Word & Sentence Highlighting:**
   - Leverage Edge TTS boundary events (`WordBoundary` / `SentenceBoundary`) to stream synchronized visual highlights directly in terminal panes as audio plays.
 - [ ] 💡 **Smart Architectural Summarizer:**
