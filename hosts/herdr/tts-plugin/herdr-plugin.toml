@@ -1,0 +1,37 @@
+id = "herdr.tts"
+name = "Herdr Neural TTS"
+version = "0.2.0"
+min_herdr_version = "0.7.0"
+platforms = ["linux", "macos"]
+description = "Vocalizes agent responses and attention requests using Microsoft Edge Neural TTS with PulseAudio/afplay. Concurrency-safe."
+
+[[build]]
+command = ["bash", "scripts/bootstrap.sh"]
+platforms = ["linux", "macos"]
+
+[[startup]]
+command = ["bin/herdr-tts", "_daemon"]
+
+[[actions]]
+id = "toggle-play"
+title = "Play / Stop Current Chat"
+contexts = ["workspace", "pane"]
+command = ["bin/herdr-tts", "--toggle-play"]
+
+[[actions]]
+id = "stop"
+title = "Stop Audio Playback"
+contexts = ["workspace", "pane"]
+command = ["bin/herdr-tts", "--stop"]
+
+[[actions]]
+id = "toggle-auto"
+title = "Toggle Automatic Voice Feedback"
+contexts = ["workspace", "pane"]
+command = ["bin/herdr-tts", "--toggle-auto"]
+
+[[actions]]
+id = "status"
+title = "Voice Feedback Status"
+contexts = ["workspace"]
+command = ["bin/herdr-tts", "--status"]

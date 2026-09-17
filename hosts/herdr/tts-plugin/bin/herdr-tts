@@ -1,0 +1,357 @@
+#!/usr/bin/env bash
+# ╔═══════════════════════════════════════════════════════════╗
+# ║  herdr-tts — Neural Text-To-Speech for Herdr agents       ║
+# ║  Portable, parallel-chat safe, interruptible             ║
+# ╚═══════════════════════════════════════════════════════════╝
+set -euo pipefail
+
+# Resolve plugin root portably (resolving symlinks if invoked via ~/bin)
+REAL_SCRIPT="$(readlink -f "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd "$(dirname "${REAL_SCRIPT}")" && pwd)"
+PLUGIN_ROOT="${HERDR_PLUGIN_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
+
+# Standard XDG paths
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/herdr-tts"
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/herdr-tts"
+mkdir -p "$CONFIG_DIR" "$DATA_DIR"
+
+CONFIG_FILE="${CONFIG_DIR}/config.env"
+AUTO_MUTE_FILE="${CONFIG_DIR}/auto_muted"
+LOCK_FILE="/tmp/herdr-tts-playing.lock"
+PID_FILE="/tmp/herdr-tts-current.pid"
+
+# Auto-bootstrap python environment if missing
+VENV_PYTHON="${DATA_DIR}/venv/bin/python"
+if [[ ! -x "$VENV_PYTHON" ]]; then
+  "${PLUGIN_ROOT}/scripts/bootstrap.sh"
+fi
+
+ENGINE_SCRIPT="${PLUGIN_ROOT}/lib/tts_engine.py"
+
+# Defaults
+DEFAULT_VOICE="elvira"
+DEFAULT_RATE="+20%"
+DEFAULT_MAX_CHARS="500"
+DEFAULT_AUTO_SCOPE="focused" # "focused" = only speak active pane; "all" = speak any pane with mutex
+
+# Load persisted settings if present
+if [[ -f "$CONFIG_FILE" ]]; then
+  # shellcheck source=/dev/null
+  source "$CONFIG_FILE"
+fi
+
+TTS_VOICE="${TTS_VOICE:-$DEFAULT_VOICE}"
+TTS_RATE="${TTS_RATE:-$DEFAULT_RATE}"
+TTS_MAX_CHARS="${TTS_MAX_CHARS:-$DEFAULT_MAX_CHARS}"
+TTS_AUTO_SCOPE="${TTS_AUTO_SCOPE:-$DEFAULT_AUTO_SCOPE}"
+
+save_config() {
+  cat > "$CONFIG_FILE" <<EOF
+TTS_VOICE="${TTS_VOICE}"
+TTS_RATE="${TTS_RATE}"
+TTS_MAX_CHARS="${TTS_MAX_CHARS}"
+TTS_AUTO_SCOPE="${TTS_AUTO_SCOPE}"
+EOF
+}
+
+is_playing() {
+  if [[ -f "$LOCK_FILE" ]]; then
+    local pid
+    pid=$(cat "$LOCK_FILE" 2>/dev/null || true)
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+  fi
+  rm -f "$LOCK_FILE" "$PID_FILE"
+  return 1
+}
+
+stop_audio() {
+  local stopped=false
+
+  if [[ -f "$PID_FILE" ]]; then
+    local pid
+    pid=$(cat "$PID_FILE" 2>/dev/null || true)
+    if [[ -n "$pid" ]]; then
+      kill -TERM "$pid" 2>/dev/null || true
+      stopped=true
+    fi
+  fi
+
+  # Kill any orphan player processes playing temp wav
+  if pkill -f "(paplay|afplay|mpv).*/tmp/.*\.wav" 2>/dev/null; then
+    stopped=true
+  fi
+
+  rm -f "$LOCK_FILE" "$PID_FILE"
+
+  if [[ "$stopped" == true ]]; then
+    echo "⏹️ Audio detenido"
+  fi
+}
+
+speak_text() {
+  local text="$1"
+  local voice="${2:-$TTS_VOICE}"
+  local rate="${3:-$TTS_RATE}"
+
+  # Stop any currently playing audio first (new request takes priority)
+  stop_audio
+
+  "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$voice" --rate "$rate" --max-chars "$TTS_MAX_CHARS"
+}
+
+get_focused_pane() {
+  herdr api snapshot 2>/dev/null | jq -r '.result.snapshot.focused_pane_id // empty' 2>/dev/null || true
+}
+
+read_pane_text() {
+  local target_pane="$1"
+  local raw_json
+  raw_json=$(herdr agent read "$target_pane" --lines 35 --format text 2>/dev/null || true)
+  echo "$raw_json" | jq -r '.result.text // empty' 2>/dev/null || true
+}
+
+read_current_pane() {
+  local focused_pane
+  focused_pane=$(get_focused_pane)
+
+  if [[ -z "$focused_pane" ]]; then
+    echo "⚠️ No hay ningún pane enfocado en Herdr" >&2
+    return 1
+  fi
+
+  local text
+  text=$(read_pane_text "$focused_pane")
+
+  if [[ -z "$text" ]]; then
+    echo "ℹ️ El pane ${focused_pane} no tiene texto para leer"
+    return 0
+  fi
+
+  echo "▶️ Leyendo respuesta en ${focused_pane}..."
+  speak_text "$text"
+}
+
+toggle_play() {
+  if is_playing; then
+    stop_audio
+  else
+    read_current_pane
+  fi
+}
+
+is_auto_muted() {
+  [[ -f "$AUTO_MUTE_FILE" ]]
+}
+
+toggle_auto() {
+  if is_auto_muted; then
+    rm -f "$AUTO_MUTE_FILE"
+    echo "🔊 Lectura automática de fondo activada"
+    speak_text "Lectura automática activada."
+  else
+    touch "$AUTO_MUTE_FILE"
+    echo "🔇 Lectura automática de fondo silenciada"
+    speak_text "Lectura automática silenciada."
+  fi
+}
+
+show_status() {
+  echo "━━━ Herdr TTS Status ━━━"
+  if is_playing; then
+    echo "  Reproducción: 🔊 Hablando ahora (Lock activo)"
+  else
+    echo "  Reproducción: ⏹️ En reposo"
+  fi
+
+  if is_auto_muted; then
+    echo "  Auto-lectura: 🔇 Silenciada (Solo manual vía prefix+r)"
+  else
+    echo "  Auto-lectura: 🔊 Activa"
+  fi
+
+  echo "  Alcance auto: ${TTS_AUTO_SCOPE} (focused = solo chat activo; all = cualquiera sin solaparse)"
+  echo "  Voz:          ${TTS_VOICE}"
+  echo "  Velocidad:    ${TTS_RATE}"
+  echo "  Max chars:    ${TTS_MAX_CHARS}"
+  echo "  Plugin root:  ${PLUGIN_ROOT}"
+  echo "  Config:       ${CONFIG_FILE}"
+}
+
+# ─── Watcher daemon ──────────────────────────────────────────
+
+watch_agent_pane() {
+  local pane_id="$1"
+  local agent_name="$2"
+  local prev_state="working"
+
+  while true; do
+    herdr agent wait "$pane_id" --until done --until blocked --until idle 2>/dev/null || {
+      sleep 3
+      continue
+    }
+
+    local new_state
+    new_state=$(herdr agent get "$pane_id" 2>/dev/null | jq -r '.result.agent_status // "unknown"') || continue
+
+    if [[ "$new_state" != "$prev_state" && "$new_state" != "working" && "$new_state" != "unknown" ]]; then
+      # 1. Skip if auto-read is muted
+      if is_auto_muted; then
+        prev_state="$new_state"
+        herdr agent wait "$pane_id" --until working 2>/dev/null || sleep 3
+        prev_state="working"
+        continue
+      fi
+
+      # 2. Scope check: if "focused", only speak if the user is looking at this pane
+      if [[ "$TTS_AUTO_SCOPE" == "focused" ]]; then
+        local current_focused
+        current_focused=$(get_focused_pane)
+        if [[ "$current_focused" != "$pane_id" ]]; then
+          echo "[$(date +%H:%M:%S)] ${agent_name} (${pane_id}): terminó en segundo plano (no enfocado, omitiendo voz)"
+          prev_state="$new_state"
+          herdr agent wait "$pane_id" --until working 2>/dev/null || sleep 3
+          prev_state="working"
+          continue
+        fi
+      fi
+
+      # 3. Mutex check: DO NOT overlap if another chat is currently speaking
+      if is_playing; then
+        echo "[$(date +%H:%M:%S)] ${agent_name} (${pane_id}): terminó, pero ya hay otro chat hablando (omitido para evitar solapamiento)"
+        prev_state="$new_state"
+        herdr agent wait "$pane_id" --until working 2>/dev/null || sleep 3
+        prev_state="working"
+        continue
+      fi
+
+      echo "[$(date +%H:%M:%S)] ${agent_name} (${pane_id}): ${prev_state} → ${new_state} (vocalizando)"
+
+      local pane_text
+      pane_text=$(read_pane_text "$pane_id")
+
+      if [[ -n "$pane_text" ]]; then
+        speak_text "$pane_text" &
+      fi
+    fi
+
+    prev_state="$new_state"
+    herdr agent wait "$pane_id" --until working 2>/dev/null || sleep 3
+    prev_state="working"
+  done
+}
+
+run_daemon() {
+  echo "🔊 Iniciando Herdr TTS Daemon (con Mutex y Scope ${TTS_AUTO_SCOPE})..."
+  show_status
+
+  CHILD_PIDS=()
+  cleanup() {
+    for pid in "${CHILD_PIDS[@]:-}"; do
+      kill "$pid" 2>/dev/null || true
+    done
+    stop_audio
+    exit 0
+  }
+  trap cleanup EXIT INT TERM
+
+  while true; do
+    local raw_agents
+    raw_agents=$(herdr agent list 2>/dev/null) || { sleep 4; continue; }
+
+    while IFS=$'\t' read -r pane_id agent_name; do
+      [[ -z "$pane_id" || "$pane_id" == "null" ]] && continue
+
+      local lock_file="/tmp/herdr-tts-watcher-${pane_id//:/_}.lock"
+      if [[ -f "$lock_file" ]] && kill -0 "$(cat "$lock_file")" 2>/dev/null; then
+        continue
+      fi
+
+      (
+        echo "$$" > "$lock_file"
+        watch_agent_pane "$pane_id" "$agent_name"
+      ) &
+      CHILD_PIDS+=($!)
+    done < <(echo "$raw_agents" | jq -r '.result.agents[]? | "\(.pane_id)\t\(.agent)"' 2>/dev/null || true)
+
+    sleep 4
+  done
+}
+
+# ─── CLI Entrypoint ──────────────────────────────────────────
+
+case "${1:-}" in
+  --play|-p|--read-current)
+    read_current_pane
+    ;;
+  --stop|-s)
+    stop_audio
+    ;;
+  --toggle-play|-r)
+    toggle_play
+    ;;
+  --toggle-auto|--toggle|-t)
+    toggle_auto
+    ;;
+  --auto-on)
+    rm -f "$AUTO_MUTE_FILE"
+    echo "🔊 Lectura automática activada"
+    ;;
+  --auto-off)
+    touch "$AUTO_MUTE_FILE"
+    echo "🔇 Lectura automática silenciada"
+    ;;
+  --scope)
+    if [[ "${2:-}" == "focused" || "${2:-}" == "all" ]]; then
+      TTS_AUTO_SCOPE="$2"
+      save_config
+      echo "✓ Alcance de auto-lectura: $TTS_AUTO_SCOPE"
+    else
+      echo "Error: Scope debe ser 'focused' o 'all'" >&2
+      exit 1
+    fi
+    ;;
+  --speak)
+    shift
+    speak_text "$*"
+    ;;
+  --voice)
+    TTS_VOICE="$2"
+    save_config
+    echo "✓ Voz configurada: $TTS_VOICE"
+    speak_text "Voz cambiada a ${TTS_VOICE}."
+    ;;
+  --rate)
+    TTS_RATE="$2"
+    save_config
+    echo "✓ Velocidad configurada: $TTS_RATE"
+    speak_text "Velocidad ajustada."
+    ;;
+  --status)
+    show_status
+    ;;
+  _daemon)
+    run_daemon
+    ;;
+  --help|-h)
+    cat <<EOF
+Uso: herdr-tts [OPCIONES]
+
+Acciones principales:
+  --toggle-play (-r)   Play / Stop toggle en el pane actual enfocado (Tecla: prefix+r)
+  --stop (-s)          Detener inmediatamente cualquier audio sonando (Tecla: prefix+s)
+  --play (-p)          Leer la última respuesta del chat enfocado
+  --toggle-auto (-t)   Alternar lectura automática de fondo (Tecla: prefix+v)
+  --scope focused|all  'focused' (solo chat activo) | 'all' (cualquiera sin solapar)
+
+Configuración:
+  --voice <nombre>     Cambiar voz (elvira, alvaro, ximena, dalia, jorge)
+  --rate <velocidad>   Cambiar velocidad (+20%, +10%, +0%)
+  --status             Ver estado actual y lock
+EOF
+    ;;
+  *)
+    run_daemon
+    ;;
+esac
