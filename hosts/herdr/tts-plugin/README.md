@@ -132,6 +132,36 @@ key = "prefix+s"
 type = "shell"
 command = "herdr-tts --stop"
 
+# Pause / Resume current audio playback
+[[keys.command]]
+key = "prefix+p"
+type = "shell"
+command = "herdr-tts --toggle-pause"
+
+# Fast-Forward 10 seconds
+[[keys.command]]
+key = "prefix+]"
+type = "shell"
+command = "herdr-tts --forward"
+
+# Rewind 10 seconds
+[[keys.command]]
+key = "prefix+["
+type = "shell"
+command = "herdr-tts --rewind"
+
+# Speed up voice reading by 10%
+[[keys.command]]
+key = "prefix+="
+type = "shell"
+command = "herdr-tts --rate-up"
+
+# Slow down voice reading by 10%
+[[keys.command]]
+key = "prefix+-"
+type = "shell"
+command = "herdr-tts --rate-down"
+
 # Toggle background automatic speech (Muted vs Active)
 [[keys.command]]
 key = "prefix+v"
@@ -152,19 +182,28 @@ herdr server reload-config
 
 1. **On-Demand (`prefix + r` / `htr`):**  
    Whenever an agent produces an explanation, diff review, or plan, press `prefix + r` (`Ctrl+b` → `r`). It cleans the text of the active pane and speaks it. Press `prefix + r` again to stop.
-2. **Passive Automatic Speech (`scope: focused`):**  
+2. **Interactive Control (`prefix + p`, `prefix + [ / ]`, `prefix + = / -`):**  
+   Pause or resume speech at any point (`prefix + p`). Rewind 10 seconds to re-listen to critical code paths (`prefix + [`), or skip ahead 10 seconds (`prefix + ]`). Adjust speed up or down on the fly (`prefix + =` / `prefix + -`).
+3. **Passive Automatic Speech (`scope: focused`):**  
    When enabled, as soon as the agent in your **active pane** finishes working, its response is spoken automatically. Background panes in other workspaces stay quiet to prevent disruptions.
-3. **Background Auto-Mute (`prefix + v` / `httt`):**  
-   Toggles auto-speech on or off. Even when auto-speech is muted, your explicit on-demand hotkey (`prefix + r`) continues to work whenever you want it.
+4. **Background Auto-Mute (`prefix + v` / `httt`):**  
+   Toggles auto-speech on or off. Even when auto-speech is muted, your explicit on-demand hotkeys continue to work whenever you want them.
 
 ### CLI Commands
 
 ```bash
 herdr-tts --toggle-play        # Play / Stop on the currently focused chat
 herdr-tts --stop               # Stop audio playback immediately (<0.2s)
+herdr-tts --toggle-pause       # Pause / Resume playback on the fly (prefix+p)
+herdr-tts --seek +10           # Jump forward or backward by N seconds
+herdr-tts --forward            # Jump forward 10 seconds (prefix+])
+herdr-tts --rewind             # Jump backward 10 seconds (prefix+[)
+herdr-tts --rate-up            # Increase voice speed by +10% dynamically (prefix+=)
+herdr-tts --rate-down          # Decrease voice speed by -10% dynamically (prefix+-)
+herdr-tts --player-status      # Live audio position, duration and playback state
 herdr-tts --toggle-auto        # Toggle background auto-speech (muted / active)
 herdr-tts --scope focused|all  # 'focused' (only active pane) | 'all' (any pane without overlapping)
-herdr-tts --status             # Show current status, voice, ntfy push, Web/Collie redirect, locks
+herdr-tts --status             # Show full service configuration and player state
 herdr-tts --voice alvaro       # Set voice (elvira, alvaro, ximena, dalia, jorge, en)
 herdr-tts --rate +25%          # Set speech speed (+0%, +20%, +35%)
 herdr-tts --ntfy-topic <topic> # Set ntfy.sh topic for mobile audio notifications (or 'off')
@@ -264,16 +303,16 @@ CLICK_REDIRECT="off"        # "off" = tap opens ntfy player; "on" = tap opens we
 
 We have an active vision to expand `herdr-tts` into the definitive audio layer for terminal-based agent harnesses:
 
-- [ ] 🪟 **Native Windows Support (without WSL):**
-  - Add native Windows audio pipeline support using WASAPI / Windows Media Foundation / `winsound` / PowerShell audio dispatchers for Windows Terminal users.
-- [ ] ⏪ ⏩ **Seek Rewind / Fast-Forward (±10s configurable):**
-  - Add interactive seeking controls (`prefix + [` to rewind 10s, `prefix + ]` to jump forward 10s) during playback of long architectural explanations.
-- [ ] 📈 **Dynamic Real-Time Speech Rate Adjustments:**
-  - Quick hotkeys to step speed up or down on the fly (`prefix + =` / `prefix + -` for +10% / -10% increments) without restarting the daemon.
-- [ ] 🎙️ **Optional ElevenLabs Provider Backend:**
-  - Add an optional ElevenLabs streaming driver for users who already have an API key (`ELEVENLABS_API_KEY`) and want custom voice cloning or ultra-realistic voices, while preserving free Microsoft Edge Neural TTS as the zero-config default.
+- [x] ⏪ ⏩ **Interactive Seek Controls (±10s rewind / forward):**
+  - Frame-accurate seek controls (`prefix + [` to rewind 10s, `prefix + ]` to jump forward 10s) and pause/resume (`prefix + p`) via low-latency Unix socket IPC.
+- [x] 📈 **Dynamic Real-Time Speech Rate Adjustments:**
+  - Quick hotkeys to step speed up or down on the fly (`prefix + =` / `prefix + -` for +10% / -10% increments) with instant notification feedback.
+- [x] 🪟 **Native Cross-Platform Audio Engine (Linux, macOS, Windows):**
+  - Pure C audio playback via `miniaudio` directly outputting to PulseAudio/PipeWire (Linux), CoreAudio (macOS), and WASAPI (Windows) without requiring external media players (`mpv`, `paplay`, `afplay`).
+- [ ] 🎙️ **Optional ElevenLabs & OpenAI TTS Provider Backend:**
+  - Modular provider architecture allowing users with API keys to choose ultra-realistic voice models while preserving zero-cost Microsoft Edge Neural TTS as default.
 - [ ] 🖍️ **Visual Word & Sentence Highlighting:**
-  - Leverage Edge TTS boundary events (`WordBoundary` / `SentenceBoundary`) to stream synchronized visual highlights directly in terminal panes and Collie mobile PWA cards as the audio plays.
+  - Leverage Edge TTS boundary events (`WordBoundary` / `SentenceBoundary`) to stream synchronized visual highlights directly in terminal panes as audio plays.
 - [ ] 💡 **Smart Architectural Summarizer:**
   - Lightweight heuristics or local summarizer toggle to condense massive terminal dumps (e.g. 50-file diff outputs) into punchy 2-sentence voice recaps before reading.
 

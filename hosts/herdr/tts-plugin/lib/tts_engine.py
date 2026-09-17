@@ -10,9 +10,12 @@ import os
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from typing import Optional
 
 try:
@@ -35,12 +38,14 @@ VOICE_MAP = {
 DEFAULT_VOICE = "es-ES-ElviraNeural"
 LOCK_FILE = "/tmp/herdr-tts-playing.lock"
 PID_FILE = "/tmp/herdr-tts-current.pid"
+IPC_SOCKET = "/tmp/herdr-tts-player.sock"
 
 _active_process: Optional[subprocess.Popen] = None
+_current_playback_state: Optional[dict] = None
 
 
 def cleanup_locks():
-    for f in (LOCK_FILE, PID_FILE):
+    for f in (LOCK_FILE, PID_FILE, IPC_SOCKET):
         try:
             if os.path.exists(f):
                 os.remove(f)
@@ -49,7 +54,9 @@ def cleanup_locks():
 
 
 def signal_handler(signum, frame):
-    global _active_process
+    global _active_process, _current_playback_state
+    if _current_playback_state:
+        _current_playback_state["stop"] = True
     if _active_process and _active_process.poll() is None:
         try:
             _active_process.terminate()
@@ -349,6 +356,210 @@ def spawn_player(wav_path: str) -> subprocess.Popen:
     raise RuntimeError("No suitable audio player found (tried afplay, paplay, mpv, ffplay, aplay)")
 
 
+class AudioSession:
+    """Manages audio playback state and Unix socket IPC server for dynamic seek/pause/resume/stop."""
+
+    def __init__(self, label: str = "Audio"):
+        self.label = label
+        self.state = {
+            "status": "synthesizing",
+            "pos": 0,
+            "paused": False,
+            "stop": False,
+            "total": 0,
+            "sr": 24000,
+            "label": label,
+        }
+        self.server: Optional[socket.socket] = None
+        self.ipc_thread: Optional[threading.Thread] = None
+
+    def start_ipc(self):
+        global _current_playback_state
+        _current_playback_state = self.state
+
+        if os.path.exists(IPC_SOCKET):
+            try:
+                os.remove(IPC_SOCKET)
+            except OSError:
+                pass
+        try:
+            self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.server.bind(IPC_SOCKET)
+            self.server.listen(2)
+            self.server.settimeout(0.2)
+        except Exception:
+            return
+
+        def run_server():
+            while not self.state["stop"]:
+                try:
+                    conn, _ = self.server.accept()
+                    raw_cmd = conn.recv(1024).decode("utf-8", errors="ignore").strip()
+                    if not raw_cmd:
+                        conn.close()
+                        continue
+
+                    parts = raw_cmd.split()
+                    cmd = parts[0].lower()
+
+                    sr = self.state["sr"]
+                    total_frames = self.state["total"]
+                    cur_pos = self.state["pos"]
+                    current_sec = cur_pos / sr if sr > 0 else 0.0
+                    total_sec = total_frames / sr if sr > 0 else 0.0
+                    status = self.state["status"]
+
+                    if cmd in ("pause", "toggle-pause"):
+                        if status == "playing":
+                            self.state["paused"] = True
+                            self.state["status"] = "paused"
+                        elif status == "paused":
+                            self.state["paused"] = False
+                            self.state["status"] = "playing"
+                        conn.sendall(f"status={self.state['status']} pos={current_sec:.1f} total={total_sec:.1f}\n".encode())
+                    elif cmd == "resume":
+                        if status == "paused":
+                            self.state["paused"] = False
+                            self.state["status"] = "playing"
+                        conn.sendall(f"status={self.state['status']} pos={current_sec:.1f} total={total_sec:.1f}\n".encode())
+                    elif cmd == "seek":
+                        delta = float(parts[1]) if len(parts) > 1 else 0.0
+                        if total_frames > 0:
+                            new_pos = max(0, min(total_frames, self.state["pos"] + int(delta * sr)))
+                            self.state["pos"] = new_pos
+                            new_sec = new_pos / sr
+                            conn.sendall(f"status={self.state['status']} pos={new_sec:.1f} total={total_sec:.1f}\n".encode())
+                        else:
+                            conn.sendall(f"status={self.state['status']} pos=0.0 total=0.0\n".encode())
+                    elif cmd == "status":
+                        conn.sendall(f"status={self.state['status']} pos={current_sec:.1f} total={total_sec:.1f}\n".encode())
+                    elif cmd == "stop":
+                        self.state["stop"] = True
+                        self.state["status"] = "stopped"
+                        conn.sendall(b"status=stopped\n")
+
+                    conn.close()
+                except socket.timeout:
+                    continue
+                except Exception:
+                    break
+
+        self.ipc_thread = threading.Thread(target=run_server, daemon=True)
+        self.ipc_thread.start()
+
+    def play(self, decoded: miniaudio.DecodedSoundFile):
+        global _active_process
+        total_frames = decoded.num_frames
+        sample_rate = decoded.sample_rate
+        nchannels = decoded.nchannels
+        samples = decoded.samples
+        sample_width = 2
+
+        self.state["status"] = "playing"
+        self.state["total"] = total_frames
+        self.state["sr"] = sample_rate
+
+        duration_s = total_frames / sample_rate if sample_rate > 0 else 0
+        min_s = int(duration_s) // 60
+        sec_s = int(duration_s) % 60
+        dur_label = f"{min_s}:{sec_s:02d}" if min_s > 0 else f"{sec_s}s"
+
+        try:
+            subprocess.run(
+                [
+                    "herdr",
+                    "notification",
+                    "show",
+                    "🔊 Reproduciendo voz",
+                    "--body",
+                    f"Duración: {dur_label} ({self.label})",
+                    "--sound",
+                    "none",
+                ],
+                stderr=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
+
+        def audio_generator():
+            num_frames = yield b""
+            bytes_per_frame = nchannels * sample_width
+            silence_cache = b"\x00" * (2048 * bytes_per_frame)
+
+            while not self.state["stop"] and self.state["pos"] < total_frames:
+                if self.state["paused"]:
+                    need_bytes = num_frames * bytes_per_frame
+                    if len(silence_cache) < need_bytes:
+                        silence_cache = b"\x00" * need_bytes
+                    num_frames = yield silence_cache[:need_bytes]
+                    continue
+
+                cur_pos = self.state["pos"]
+                end_frame = min(total_frames, cur_pos + num_frames)
+                start_sample = cur_pos * nchannels
+                end_sample = end_frame * nchannels
+                chunk = samples[start_sample:end_sample].tobytes()
+                self.state["pos"] = end_frame
+
+                need_bytes = num_frames * bytes_per_frame
+                if len(chunk) < need_bytes:
+                    chunk += b"\x00" * (need_bytes - len(chunk))
+
+                num_frames = yield chunk
+
+        native_ok = False
+        try:
+            gen = audio_generator()
+            next(gen)
+            with miniaudio.PlaybackDevice(
+                output_format=miniaudio.SampleFormat.SIGNED16,
+                nchannels=nchannels,
+                sample_rate=sample_rate,
+            ) as device:
+                device.start(gen)
+                native_ok = True
+                while not self.state["stop"] and self.state["pos"] < total_frames:
+                    time.sleep(0.05)
+        except Exception as e:
+            print(f"miniaudio PlaybackDevice fallback: {e}", file=sys.stderr)
+            native_ok = False
+
+        if not native_ok:
+            temp_wav = None
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                temp_wav = f.name
+            try:
+                miniaudio.wav_write_file(temp_wav, decoded)
+                _active_process = spawn_player(temp_wav)
+                _active_process.wait()
+            except Exception as e:
+                print(f"Playback error: {e}", file=sys.stderr)
+            finally:
+                _active_process = None
+                if temp_wav and os.path.exists(temp_wav):
+                    try:
+                        os.remove(temp_wav)
+                    except OSError:
+                        pass
+
+    def stop(self):
+        self.state["stop"] = True
+        self.state["status"] = "stopped"
+        if self.server:
+            try:
+                self.server.close()
+            except Exception:
+                pass
+        if self.ipc_thread:
+            self.ipc_thread.join(timeout=0.3)
+        if os.path.exists(IPC_SOCKET):
+            try:
+                os.remove(IPC_SOCKET)
+            except OSError:
+                pass
+
+
 async def synthesize_and_play(
     text: str,
     voice: str = DEFAULT_VOICE,
@@ -362,8 +573,8 @@ async def synthesize_and_play(
     global _active_process
     resolved_voice = VOICE_MAP.get(voice.lower().strip(), voice)
 
+    session = None
     if not no_play:
-        # Write PID and lock for local playback
         try:
             with open(PID_FILE, "w") as f:
                 f.write(str(os.getpid()))
@@ -371,8 +582,9 @@ async def synthesize_and_play(
                 f.write(str(os.getpid()))
         except OSError:
             pass
+        session = AudioSession(label=f"{len(text)} chars")
+        session.start_ipc()
 
-    temp_wav = None
     try:
         communicate = edge_tts.Communicate(
             text=text,
@@ -384,6 +596,8 @@ async def synthesize_and_play(
 
         mp3_chunks = []
         async for chunk in communicate.stream():
+            if session and session.state["stop"]:
+                return
             if chunk["type"] == "audio":
                 mp3_chunks.append(chunk["data"])
 
@@ -402,55 +616,37 @@ async def synthesize_and_play(
         if no_play:
             return
 
-        # Decode MP3 to PCM using miniaudio (in-memory C decoder)
         decoded = miniaudio.decode(mp3_data)
-
-        # Write temporary WAV file for player
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            temp_wav = f.name
-
-        miniaudio.wav_write_file(temp_wav, decoded)
-
-        # Show Herdr toast notification that audio playback has started
-        try:
-            duration_s = int(decoded.num_frames / decoded.sample_rate)
-            min_s = duration_s // 60
-            sec_s = duration_s % 60
-            dur_label = f"{min_s}:{sec_s:02d}" if min_s > 0 else f"{sec_s}s"
-            subprocess.run(
-                [
-                    "herdr",
-                    "notification",
-                    "show",
-                    "🔊 Reproduciendo voz",
-                    "--body",
-                    f"Duración: {dur_label} ({len(text)} caracteres)",
-                    "--sound",
-                    "none",
-                ],
-                stderr=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-            )
-        except Exception:
-            pass
-
-        _active_process = spawn_player(temp_wav)
-        _active_process.wait()
+        if session:
+            session.play(decoded)
     except Exception as e:
         print(f"Playback error: {e}", file=sys.stderr)
     finally:
         _active_process = None
-        if temp_wav and os.path.exists(temp_wav):
-            try:
-                os.remove(temp_wav)
-            except OSError:
-                pass
+        if session:
+            session.stop()
         if not no_play:
             cleanup_locks()
 
 
+def send_ipc_command(command: str) -> Optional[str]:
+    """Sends an IPC command to the currently running audio player."""
+    if not os.path.exists(IPC_SOCKET):
+        return None
+    try:
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.settimeout(1.0)
+        client.connect(IPC_SOCKET)
+        client.sendall(f"{command}\n".encode("utf-8"))
+        res = client.recv(1024).decode("utf-8", errors="ignore").strip()
+        client.close()
+        return res
+    except Exception:
+        return None
+
+
 def play_mp3_file(mp3_path: str, label: str = "Audio") -> None:
-    """Decodes an existing MP3 file to PCM in memory and plays via audio backend."""
+    """Decodes an existing MP3 file to PCM in memory and plays via native player."""
     global _active_process
     if not os.path.exists(mp3_path):
         return
@@ -463,49 +659,18 @@ def play_mp3_file(mp3_path: str, label: str = "Audio") -> None:
     except OSError:
         pass
 
-    temp_wav = None
+    session = AudioSession(label=label)
+    session.start_ipc()
     try:
         with open(mp3_path, "rb") as f:
             mp3_data = f.read()
 
         decoded = miniaudio.decode(mp3_data)
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            temp_wav = f.name
-        miniaudio.wav_write_file(temp_wav, decoded)
-
-        try:
-            duration_s = int(decoded.num_frames / decoded.sample_rate)
-            min_s = duration_s // 60
-            sec_s = duration_s % 60
-            dur_label = f"{min_s}:{sec_s:02d}" if min_s > 0 else f"{sec_s}s"
-            subprocess.run(
-                [
-                    "herdr",
-                    "notification",
-                    "show",
-                    "🔊 Reproduciendo voz",
-                    "--body",
-                    f"Duración: {dur_label} ({label})",
-                    "--sound",
-                    "none",
-                ],
-                stderr=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-            )
-        except Exception:
-            pass
-
-        _active_process = spawn_player(temp_wav)
-        _active_process.wait()
+        session.play(decoded)
     except Exception as e:
         print(f"Playback error: {e}", file=sys.stderr)
     finally:
-        _active_process = None
-        if temp_wav and os.path.exists(temp_wav):
-            try:
-                os.remove(temp_wav)
-            except OSError:
-                pass
+        session.stop()
         cleanup_locks()
 
 
@@ -519,8 +684,21 @@ def main():
     parser.add_argument("--output", "-o", help="Save synthesized MP3 audio to file")
     parser.add_argument("--no-play", action="store_true", help="Do not play audio locally")
     parser.add_argument("--play-file", help="Play an existing MP3 file directly without re-synthesizing")
+    parser.add_argument(
+        "--ipc-cmd",
+        help="Send an IPC command to the active audio player (e.g. 'seek +10', 'seek -10', 'toggle-pause', 'status')",
+    )
 
     args = parser.parse_args()
+
+    if args.ipc_cmd:
+        res = send_ipc_command(args.ipc_cmd)
+        if res is not None:
+            print(res)
+            sys.exit(0)
+        else:
+            print("Error: No active audio playback session found", file=sys.stderr)
+            sys.exit(1)
 
     if args.play_file:
         play_mp3_file(args.play_file, label=os.path.basename(args.play_file))

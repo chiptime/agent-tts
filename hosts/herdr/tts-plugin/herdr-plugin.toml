@@ -1,9 +1,9 @@
 id = "herdr.tts"
 name = "Herdr Neural TTS"
-version = "0.2.0"
+version = "0.3.0"
 min_herdr_version = "0.7.0"
 platforms = ["linux", "macos"]
-description = "Vocalizes agent responses and attention requests using Microsoft Edge Neural TTS with PulseAudio/afplay. Concurrency-safe."
+description = "Vocalizes agent responses and attention requests using Microsoft Edge Neural TTS with native audio playback, interactive controls, and mobile push. Concurrency-safe."
 
 [[build]]
 command = ["bash", "scripts/bootstrap.sh"]
@@ -23,6 +23,36 @@ id = "stop"
 title = "Stop Audio Playback"
 contexts = ["workspace", "pane"]
 command = ["bin/herdr-tts", "--stop"]
+
+[[actions]]
+id = "toggle-pause"
+title = "Pause / Resume Audio"
+contexts = ["workspace", "pane"]
+command = ["bin/herdr-tts", "--toggle-pause"]
+
+[[actions]]
+id = "forward"
+title = "Seek Forward 10s"
+contexts = ["workspace", "pane"]
+command = ["bin/herdr-tts", "--forward"]
+
+[[actions]]
+id = "rewind"
+title = "Seek Backward 10s"
+contexts = ["workspace", "pane"]
+command = ["bin/herdr-tts", "--rewind"]
+
+[[actions]]
+id = "rate-up"
+title = "Increase Voice Speed (+10%)"
+contexts = ["workspace", "pane"]
+command = ["bin/herdr-tts", "--rate-up"]
+
+[[actions]]
+id = "rate-down"
+title = "Decrease Voice Speed (-10%)"
+contexts = ["workspace", "pane"]
+command = ["bin/herdr-tts", "--rate-down"]
 
 [[actions]]
 id = "toggle-auto"
