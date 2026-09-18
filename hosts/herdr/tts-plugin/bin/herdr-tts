@@ -49,6 +49,7 @@ DEFAULT_COLLIE_URL=""
 DEFAULT_AUTO_LANG="off"
 DEFAULT_PODCAST_ENABLED="off"
 DEFAULT_PODCAST_PORT="8844"
+DEFAULT_PIPER_MODEL=""
 
 notify_herdr() {
   local title="$1"
@@ -76,6 +77,7 @@ OPENAI_BASE_URL="${OPENAI_BASE_URL:-$DEFAULT_OPENAI_BASE_URL}"
 OPENAI_TTS_MODEL="${OPENAI_TTS_MODEL:-$DEFAULT_OPENAI_TTS_MODEL}"
 ELEVENLABS_API_KEY="${ELEVENLABS_API_KEY:-$DEFAULT_ELEVENLABS_API_KEY}"
 ELEVENLABS_MODEL="${ELEVENLABS_MODEL:-$DEFAULT_ELEVENLABS_MODEL}"
+PIPER_MODEL="${PIPER_MODEL:-$DEFAULT_PIPER_MODEL}"
 NTFY_TOPIC="${NTFY_TOPIC:-${HERDR_NTFY_TOPIC:-$DEFAULT_NTFY_TOPIC}}"
 NTFY_SERVER="${NTFY_SERVER:-${HERDR_NTFY_SERVER:-$DEFAULT_NTFY_SERVER}}"
 WEB_URL="${WEB_URL:-${COLLIE_URL:-${HERDR_WEB_URL:-${HERDR_COLLIE_URL:-$DEFAULT_WEB_URL}}}}"
@@ -99,6 +101,7 @@ OPENAI_BASE_URL="${OPENAI_BASE_URL}"
 OPENAI_TTS_MODEL="${OPENAI_TTS_MODEL}"
 ELEVENLABS_API_KEY="${ELEVENLABS_API_KEY}"
 ELEVENLABS_MODEL="${ELEVENLABS_MODEL}"
+PIPER_MODEL="${PIPER_MODEL}"
 NTFY_TOPIC="${NTFY_TOPIC}"
 NTFY_SERVER="${NTFY_SERVER}"
 WEB_URL="${WEB_URL}"
@@ -339,8 +342,9 @@ build_provider_flags() {
   [[ -n "$OPENAI_API_KEY" ]] && PROVIDER_FLAGS+=(--openai-key "$OPENAI_API_KEY")
   [[ -n "$OPENAI_BASE_URL" ]] && PROVIDER_FLAGS+=(--openai-base-url "$OPENAI_BASE_URL")
   [[ -n "$OPENAI_TTS_MODEL" ]] && PROVIDER_FLAGS+=(--openai-model "$OPENAI_TTS_MODEL")
-  [[ -n "$ELEVENLABS_API_KEY" ]] && PROVIDER_FLAGS+=(--eleven-key "$ELEVENLABS_API_KEY")
+  [[ -n "$ELEVENLABS_KEY" || -n "$ELEVENLABS_API_KEY" ]] && PROVIDER_FLAGS+=(--eleven-key "${ELEVENLABS_API_KEY:-$ELEVENLABS_KEY}")
   [[ -n "$ELEVENLABS_MODEL" ]] && PROVIDER_FLAGS+=(--eleven-model "$ELEVENLABS_MODEL")
+  [[ -n "$PIPER_MODEL" ]] && PROVIDER_FLAGS+=(--piper-model "$PIPER_MODEL")
   [[ "$TTS_AUTO_LANG" == "on" || "$TTS_AUTO_LANG" == "true" || "$TTS_AUTO_LANG" == "1" ]] && PROVIDER_FLAGS+=(--auto-lang)
 }
 
@@ -729,7 +733,7 @@ show_status() {
   fi
 
   echo "  Alcance auto: ${TTS_AUTO_SCOPE} (focused = solo chat activo; all = cualquiera sin solaparse)"
-  echo "  Proveedor:    ${TTS_PROVIDER} (edge = Edge Neural TTS gratuito; openai = OpenAI TTS; elevenlabs = ElevenLabs)"
+  echo "  Proveedor:    ${TTS_PROVIDER} (edge = Edge Neural TTS gratuito; openai = OpenAI TTS; elevenlabs = ElevenLabs; piper = 100% Offline Local Neural)"
   if [[ "$TTS_PROVIDER" == "openai" ]]; then
     local masked_key="no configurada"
     if [[ -n "$OPENAI_API_KEY" ]]; then
@@ -742,6 +746,8 @@ show_status() {
       masked_key="${ELEVENLABS_API_KEY:0:5}...${ELEVENLABS_API_KEY: -4}"
     fi
     echo "  ElevenLabs:   Modelo: ${ELEVENLABS_MODEL} | API Key: ${masked_key}"
+  elif [[ "$TTS_PROVIDER" == "piper" || "$TTS_PROVIDER" == "local" ]]; then
+    echo "  Piper Local:  Modelo ONNX: ${PIPER_MODEL:-'(voz por defecto / PATH)'}"
   fi
   echo "  Voz:          ${TTS_VOICE}"
   echo "  Velocidad:    ${TTS_RATE}"
@@ -1053,14 +1059,23 @@ case "${1:-}" in
   --provider)
     prov="${2:-edge}"
     prov="${prov,,}"
-    if [[ "$prov" == "edge" || "$prov" == "openai" || "$prov" == "elevenlabs" || "$prov" == "eleven" ]]; then
+    if [[ "$prov" == "edge" || "$prov" == "openai" || "$prov" == "elevenlabs" || "$prov" == "eleven" || "$prov" == "piper" || "$prov" == "local" ]]; then
       TTS_PROVIDER="$prov"
       save_config
       echo "✓ Proveedor TTS configurado: $TTS_PROVIDER"
       notify_herdr "🎙️ Proveedor TTS" "$TTS_PROVIDER"
     else
-      echo "Error: Proveedor inválido '$prov'. Opciones válidas: edge, openai, elevenlabs" >&2
+      echo "Error: Proveedor inválido '$prov'. Opciones válidas: edge, openai, elevenlabs, piper, local" >&2
       exit 1
+    fi
+    ;;
+  --piper-model)
+    PIPER_MODEL="${2:-}"
+    save_config
+    if [[ -n "$PIPER_MODEL" ]]; then
+      echo "✓ Modelo Piper configurado: $PIPER_MODEL"
+    else
+      echo "✓ Modelo Piper reseteado a por defecto"
     fi
     ;;
   --openai-key)
@@ -1167,7 +1182,8 @@ Configuración de voz y velocidad:
   --rate-down              Ralentizar lectura -10% en caliente (Tecla: prefix+-)
 
 Proveedores de síntesis (TTS Providers):
-  --provider <motor>       Seleccionar proveedor: edge (gratis), openai, elevenlabs
+  --provider <motor>       Seleccionar proveedor: edge (gratis), openai, elevenlabs, piper (offline)
+  --piper-model <ruta>     Ruta al archivo de modelo Piper ONNX (.onnx)
   --openai-key <key>       API key para OpenAI TTS
   --openai-base-url <url>  Base URL personalizada (default: https://api.openai.com/v1)
   --openai-model <model>   Modelo OpenAI TTS (default: tts-1)
