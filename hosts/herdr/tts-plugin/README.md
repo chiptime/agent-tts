@@ -216,6 +216,10 @@ herdr-tts --toggle-pause       # Pause / Resume playback on the fly (prefix+p)
 herdr-tts --seek +10           # Jump forward or backward by N seconds
 herdr-tts --forward            # Jump forward 10 seconds (prefix+])
 herdr-tts --rewind             # Jump backward 10 seconds (prefix+[)
+herdr-tts --next-sentence      # Jump to next sentence (prefix+n)
+herdr-tts --prev-sentence      # Jump to previous sentence (prefix+N)
+herdr-tts --next-paragraph     # Jump to next paragraph in active playback
+herdr-tts --prev-paragraph     # Jump to previous paragraph in active playback
 herdr-tts --rate-up            # Increase voice speed by +10% dynamically (prefix+=)
 herdr-tts --rate-down          # Decrease voice speed by -10% dynamically (prefix+-)
 herdr-tts --player-status      # Live audio position, duration and playback state
@@ -376,9 +380,10 @@ We have an active vision to expand `herdr-tts` into the definitive audio layer f
 - [x] ⏪ **Smart Auto-Rewind on Resume:**
   - Automatically rewinds 2–3 seconds when resuming playback after a pause period, helping the developer immediately regain cognitive context without manual seeking.
 - [x] 📑 **Semantic Navigation (Jump by Sentence / Paragraph):**
-  - Advance or rewind by full grammatical sentence boundaries (`prefix + n` / `prefix + N`, `--next-sentence`, `--prev-sentence`) with intelligent sentence threshold auto-rewind.
+  - Advance or rewind by full grammatical sentence boundaries (`prefix + n` / `prefix + N`, `--next-sentence`, `--prev-sentence`) and multi-line paragraph boundaries (`--next-paragraph`, `--prev-paragraph`) with intelligent threshold auto-rewind.
 - [x] 🗣️ **Technical Pronunciation Lexicon & Text Normalization:**
   - Expanded developer lexicon and SSML phonetic normalization for developer jargon (PostgreSQL, Kubernetes, JWT, UUID, SSH, TLS, JSON, YAML, SQL, IPC, stdout/stderr, git rebase/merge, semver).
+  - Conversational currency formatting (`$45.20` → 45 dólares con 20 centavos, `€15` → 15 euros, `£`, `¥`) and common Spanish abbreviations (`p. ej.` → por ejemplo, `aprox.` → aproximadamente, `etc.` → etcétera, `Dr.` → doctor, `núm. 5` → número 5).
   - Conversational formatting for hardware/performance units (`ms`, `s`, `MB`, `GB`, `GHz`, `kHz`, `kbps`) and semantic version tags (`v1.2.3`).
   - User-extensible custom dictionary support via `~/.config/agent-tts/lexicon.json` or `~/.config/herdr-tts/lexicon.json`.
 - [x] 🌐 **Automatic Language Detection & Dynamic Voice Switching:**

@@ -222,6 +222,42 @@ prev_sentence_audio() {
   notify_herdr "⏮️ Frase anterior" "${sentence}"
 }
 
+next_paragraph_audio() {
+  local res
+  res=$("$VENV_PYTHON" "$ENGINE_SCRIPT" --ipc-cmd "next-paragraph" 2>/dev/null || true)
+  if [[ -z "$res" || "$res" == *"Error:"* ]]; then
+    echo "⏹️ No hay audio reproduciéndose actualmente"
+    return 1
+  fi
+
+  local paragraph
+  paragraph=$(echo "$res" | sed -n 's/.*paragraph=//p')
+  if [[ -z "$paragraph" ]]; then
+    paragraph="Fin de la locución"
+  fi
+
+  echo "⏭️ Siguiente párrafo: ${paragraph}"
+  notify_herdr "⏭️ Siguiente párrafo" "${paragraph}"
+}
+
+prev_paragraph_audio() {
+  local res
+  res=$("$VENV_PYTHON" "$ENGINE_SCRIPT" --ipc-cmd "prev-paragraph" 2>/dev/null || true)
+  if [[ -z "$res" || "$res" == *"Error:"* ]]; then
+    echo "⏹️ No hay audio reproduciéndose actualmente"
+    return 1
+  fi
+
+  local paragraph
+  paragraph=$(echo "$res" | sed -n 's/.*paragraph=//p')
+  if [[ -z "$paragraph" ]]; then
+    paragraph="Inicio de la locución"
+  fi
+
+  echo "⏮️ Párrafo anterior: ${paragraph}"
+  notify_herdr "⏮️ Párrafo anterior" "${paragraph}"
+}
+
 toggle_pause_audio() {
   local res
   res=$("$VENV_PYTHON" "$ENGINE_SCRIPT" --ipc-cmd "toggle-pause" 2>/dev/null || true)
@@ -1026,6 +1062,12 @@ case "${1:-}" in
   --prev-sentence)
     prev_sentence_audio
     ;;
+  --next-paragraph)
+    next_paragraph_audio
+    ;;
+  --prev-paragraph)
+    prev_paragraph_audio
+    ;;
   --pause)
     pause_audio
     ;;
@@ -1170,6 +1212,8 @@ Acciones principales:
   --forward                Avanzar 10 segundos (Tecla: prefix+])
   --next-sentence          Avanzar a la siguiente frase en reproducción (Tecla: prefix+n)
   --prev-sentence          Retroceder a la frase anterior en reproducción (Tecla: prefix+N)
+  --next-paragraph         Avanzar al siguiente párrafo en reproducción
+  --prev-paragraph         Retroceder al párrafo anterior en reproducción
   --play (-p)              Leer la última respuesta del chat enfocado
   --toggle-auto (-t)       Alternar lectura automática de fondo (Tecla: prefix+v)
   --scope focused|all      'focused' (solo chat activo) | 'all' (cualquiera sin solapar)
