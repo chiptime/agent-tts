@@ -46,6 +46,7 @@ DEFAULT_WEB_URL=""
 DEFAULT_WEB_LABEL=""
 DEFAULT_CLICK_REDIRECT="off"
 DEFAULT_COLLIE_URL=""
+DEFAULT_AUTO_LANG="off"
 
 notify_herdr() {
   local title="$1"
@@ -65,6 +66,7 @@ TTS_VOICE="${TTS_VOICE:-$DEFAULT_VOICE}"
 TTS_RATE="${TTS_RATE:-$DEFAULT_RATE}"
 TTS_MAX_CHARS="${TTS_MAX_CHARS:-$DEFAULT_MAX_CHARS}"
 TTS_AUTO_SCOPE="${TTS_AUTO_SCOPE:-$DEFAULT_AUTO_SCOPE}"
+TTS_AUTO_LANG="${TTS_AUTO_LANG:-$DEFAULT_AUTO_LANG}"
 OPENAI_API_KEY="${OPENAI_API_KEY:-$DEFAULT_OPENAI_API_KEY}"
 OPENAI_BASE_URL="${OPENAI_BASE_URL:-$DEFAULT_OPENAI_BASE_URL}"
 OPENAI_TTS_MODEL="${OPENAI_TTS_MODEL:-$DEFAULT_OPENAI_TTS_MODEL}"
@@ -85,6 +87,7 @@ TTS_VOICE="${TTS_VOICE}"
 TTS_RATE="${TTS_RATE}"
 TTS_MAX_CHARS="${TTS_MAX_CHARS}"
 TTS_AUTO_SCOPE="${TTS_AUTO_SCOPE}"
+TTS_AUTO_LANG="${TTS_AUTO_LANG}"
 OPENAI_API_KEY="${OPENAI_API_KEY}"
 OPENAI_BASE_URL="${OPENAI_BASE_URL}"
 OPENAI_TTS_MODEL="${OPENAI_TTS_MODEL}"
@@ -332,6 +335,7 @@ build_provider_flags() {
   [[ -n "$OPENAI_TTS_MODEL" ]] && PROVIDER_FLAGS+=(--openai-model "$OPENAI_TTS_MODEL")
   [[ -n "$ELEVENLABS_API_KEY" ]] && PROVIDER_FLAGS+=(--eleven-key "$ELEVENLABS_API_KEY")
   [[ -n "$ELEVENLABS_MODEL" ]] && PROVIDER_FLAGS+=(--eleven-model "$ELEVENLABS_MODEL")
+  [[ "$TTS_AUTO_LANG" == "on" || "$TTS_AUTO_LANG" == "true" || "$TTS_AUTO_LANG" == "1" ]] && PROVIDER_FLAGS+=(--auto-lang)
 }
 
 speak_text() {
@@ -692,6 +696,7 @@ show_status() {
   echo "  Voz:          ${TTS_VOICE}"
   echo "  Velocidad:    ${TTS_RATE}"
   echo "  Max chars:    ${TTS_MAX_CHARS}"
+  echo "  Idioma auto:  ${TTS_AUTO_LANG} (detección automática y cambio de voz entre ES y EN)"
 
   if [[ -n "$NTFY_TOPIC" ]]; then
     echo "  Push móvil:   🔔 Activo (ntfy: ${NTFY_TOPIC} | Servidor: ${NTFY_SERVER})"
@@ -1031,6 +1036,18 @@ case "${1:-}" in
     save_config
     echo "✓ ElevenLabs Model configurado: $ELEVENLABS_MODEL"
     ;;
+  --auto-lang)
+    if [[ "${2:-}" == "on" || "${2:-}" == "true" || "${2:-}" == "1" ]]; then
+      TTS_AUTO_LANG="on"
+      echo "✓ Detección de idioma y cambio dinámico de voz activado"
+      notify_herdr "🌐 Detección de idioma" "Activada (cambio dinámico de voz)"
+    else
+      TTS_AUTO_LANG="off"
+      echo "✓ Detección de idioma desactivada"
+      notify_herdr "🌐 Detección de idioma" "Desactivada"
+    fi
+    save_config
+    ;;
   --status)
     show_status
     ;;
@@ -1058,6 +1075,7 @@ Acciones principales:
 Configuración de voz y velocidad:
   --voice <nombre>         Cambiar voz (elvira, alvaro, ximena, dalia, jorge)
   --rate <velocidad>       Cambiar velocidad (+20%, +10%, +0%)
+  --auto-lang on|off       Detección automática de idioma y cambio dinámico de voz
   --rate-up                Acelerar lectura +10% en caliente (Tecla: prefix+=)
   --rate-down              Ralentizar lectura -10% en caliente (Tecla: prefix+-)
 
