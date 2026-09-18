@@ -20,6 +20,7 @@ from agent_tts.providers import (
     TTSProvider,
     get_provider,
 )
+from agent_tts.summarizer import summarize
 
 __all__ = [
     "__version__",
@@ -28,6 +29,7 @@ __all__ = [
     "clean_agent_text",
     "extract_last_turn",
     "strip_ansi",
+    "summarize",
     "AudioSession",
     "cleanup_locks",
     "play_mp3_data",

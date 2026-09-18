@@ -49,6 +49,27 @@ class TestCleaner(unittest.TestCase):
         self.assertNotIn("git status", last_turn)
         self.assertIn("The architecture consists of three modular layers.", last_turn)
 
+    def test_technical_lexicon_and_units(self):
+        raw = "El endpoint de la API con JWT y K8s tardó 150ms usando 2.5MB en v1.2.3."
+        cleaned = clean_agent_text(raw)
+        self.assertIn("A P I", cleaned)
+        self.assertIn("J W T", cleaned)
+        self.assertIn("Kubernetes", cleaned)
+        self.assertIn("150 milisegundos", cleaned)
+        self.assertIn("2.5 megabytes", cleaned)
+        self.assertIn("versión 1.2.3", cleaned)
+
+    def test_clean_agent_text_with_summarize_flag(self):
+        diff = (
+            "diff --git a/src/audio.py b/src/audio.py\n"
+            "--- a/src/audio.py\n"
+            "+++ b/src/audio.py\n"
+            "@@ -1,3 +1,4 @@\n"
+            "+new line\n"
+        )
+        res = clean_agent_text(diff, summarize=True)
+        self.assertIn("Diff de Git: 1 archivo con cambios", res)
+
 
 if __name__ == "__main__":
     unittest.main()

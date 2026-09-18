@@ -1,24 +1,101 @@
 """Text sanitization, normalization, and terminal cleaner for agent speech."""
 
+import json
+import os
 import re
+from typing import Dict, List, Optional, Tuple
 
 ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
-# Common developer technical replacements for clearer speech
-TECHNICAL_LEXICON = [
+# Comprehensive developer technical replacements for natural speech
+BASE_TECHNICAL_LEXICON: List[Tuple[str, str]] = [
+    # Git & workflows
     (r"\bPR\b", "pull request"),
     (r"\bPRs\b", "pull requests"),
     (r"\brepo\b", "repositorio"),
     (r"\brepos\b", "repositorios"),
+    (r"\bgit rebase\b", "git rebase"),
+    (r"\bgit merge\b", "git merge"),
+    (r"\bCI/CD\b", "C I C D"),
+    (r"\bCI\b", "integración continua"),
+    (r"\bCD\b", "despliegue continuo"),
+    (r"\bsemver\b", "versionado semántico"),
+    # Architecture & infra
     (r"\bCLI\b", "C L I"),
     (r"\bAPI\b", "A P I"),
     (r"\bAPIs\b", "A P Is"),
     (r"\bURL\b", "U R L"),
     (r"\bURLs\b", "U R Ls"),
     (r"\bDB\b", "base de datos"),
+    (r"\bDBs\b", "bases de datos"),
     (r"\bconfig\b", "configuración"),
     (r"\benv\b", "entorno"),
+    (r"\bK8s\b", "Kubernetes"),
+    (r"\bPostgreSQL\b", "Postgres"),
+    (r"\bPostgres\b", "Postgres"),
+    (r"\bUUID\b", "U U I D"),
+    (r"\bUUIDs\b", "U U I Ds"),
+    (r"\bJWT\b", "J W T"),
+    (r"\bJWTs\b", "J W Ts"),
+    (r"\bSSH\b", "S S H"),
+    (r"\bTLS\b", "T L S"),
+    (r"\bSSL\b", "S S L"),
+    (r"\bHTTP\b", "H T T P"),
+    (r"\bHTTPS\b", "H T T P S"),
+    (r"\bJSON\b", "Jeison"),
+    (r"\bYAML\b", "Yamel"),
+    (r"\bSQL\b", "S Q L"),
+    (r"\bSDK\b", "S D K"),
+    (r"\bSDKs\b", "S D Ks"),
+    (r"\bGUI\b", "G U I"),
+    (r"\bIDE\b", "I D E"),
+    (r"\bIDEs\b", "I D Es"),
+    (r"\bOS\b", "sistema operativo"),
+    (r"\bIPC\b", "I P C"),
+    (r"\bstdout\b", "salida estándar"),
+    (r"\bstderr\b", "error estándar"),
+    (r"\bstdin\b", "entrada estándar"),
+    (r"\bregex\b", "expresión regular"),
+    (r"\bregexp\b", "expresión regular"),
+    (r"\bSHA\b", "S H A"),
+    (r"\bMD5\b", "M D 5"),
+    (r"\basync/await\b", "async await"),
 ]
+
+# Hardware & performance unit normalizations
+UNIT_NORMALIZATIONS: List[Tuple[str, str]] = [
+    (r"\b(\d+)\s*ms\b", r"\1 milisegundos"),
+    (r"\b(\d+(?:\.\d+)?)\s*s\b", r"\1 segundos"),
+    (r"\b(\d+(?:\.\d+)?)\s*KB\b", r"\1 kilobytes"),
+    (r"\b(\d+(?:\.\d+)?)\s*MB\b", r"\1 megabytes"),
+    (r"\b(\d+(?:\.\d+)?)\s*GB\b", r"\1 gigabytes"),
+    (r"\b(\d+(?:\.\d+)?)\s*GHz\b", r"\1 gigahercios"),
+    (r"\b(\d+(?:\.\d+)?)\s*MHz\b", r"\1 megahercios"),
+    (r"\b(\d+(?:\.\d+)?)\s*kHz\b", r"\1 kilohercios"),
+    (r"\b(\d+(?:\.\d+)?)\s*kbps\b", r"\1 kilobits por segundo"),
+    (r"\b(\d+(?:\.\d+)?)\s*Mbps\b", r"\1 megabits por segundo"),
+    # Version tags: v1.2.3 -> versión 1.2.3
+    (r"\bv(\d+\.\d+(?:\.\d+)?)\b", r"versión \1"),
+]
+
+
+def load_user_lexicon() -> Dict[str, str]:
+    """Loads optional custom lexicon dictionary from user config."""
+    paths = [
+        os.environ.get("AGENT_TTS_LEXICON", ""),
+        os.path.expanduser("~/.config/agent-tts/lexicon.json"),
+        os.path.expanduser("~/.config/herdr-tts/lexicon.json"),
+    ]
+    for p in paths:
+        if p and os.path.isfile(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        return data
+            except Exception:
+                pass
+    return {}
 
 
 def strip_ansi(text: str) -> str:
@@ -27,10 +104,23 @@ def strip_ansi(text: str) -> str:
 
 
 def normalize_technical_terms(text: str) -> str:
-    """Replaces common developer acronyms with speakable expansions."""
+    """Replaces developer acronyms and units with speakable expansions."""
     res = text
-    for pattern, replacement in TECHNICAL_LEXICON:
+
+    # Apply units and version formatting
+    for pattern, replacement in UNIT_NORMALIZATIONS:
         res = re.sub(pattern, replacement, res, flags=re.IGNORECASE)
+
+    # Apply base developer lexicon
+    for pattern, replacement in BASE_TECHNICAL_LEXICON:
+        res = re.sub(pattern, replacement, res, flags=re.IGNORECASE)
+
+    # Apply user custom lexicon if provided
+    user_lexicon = load_user_lexicon()
+    for term, expansion in user_lexicon.items():
+        pattern = rf"\b{re.escape(term)}\b"
+        res = re.sub(pattern, expansion, res, flags=re.IGNORECASE)
+
     return res
 
 
@@ -60,12 +150,10 @@ def extract_last_turn(text: str) -> str:
                 break
 
     if last_prompt_idx != -1:
-        # Check for multi-line user prompt continuation
         response_start = last_prompt_idx + 1
         while response_start < len(lines):
             raw_line = lines[response_start]
             clean_line = strip_ansi(raw_line).strip()
-            # If line is indented or looks like prompt continuation without empty line
             if not clean_line:
                 response_start += 1
                 break
@@ -81,10 +169,17 @@ def extract_last_turn(text: str) -> str:
     return text
 
 
-def clean_agent_text(text: str, max_chars: int = 0) -> str:
-    """Deeply cleans terminal/agent prose, removing borders, token quotas, and code blocks."""
+def clean_agent_text(text: str, max_chars: int = 0, summarize: bool = False) -> str:
+    """Deeply cleans terminal/agent prose, removing borders, token quotas, and code blocks.
+    
+    If summarize is True, runs Smart Architectural Summarizer to condense text before speech.
+    """
     text = extract_last_turn(text)
     text = strip_ansi(text)
+
+    if summarize:
+        from agent_tts.summarizer import summarize as run_summarize
+        return run_summarize(text)
 
     # 1. Remove agent/harness metadata tags and banners (e.g. [Claude], [OpenCode], [Aider], [Herdr], [Codex])
     text = re.sub(r"^\[[A-Za-z0-9_.-]+\][^\n]*\n?", "", text, flags=re.MULTILINE)
@@ -119,7 +214,7 @@ def clean_agent_text(text: str, max_chars: int = 0) -> str:
     # 5. Clean URLs
     text = re.sub(r"https?://\S+", "enlace web", text)
 
-    # 6. Apply technical lexicon substitutions
+    # 6. Apply technical lexicon and unit normalizations
     text = normalize_technical_terms(text)
 
     # 7. Collapse excessive whitespace and blank lines

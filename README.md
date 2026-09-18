@@ -52,6 +52,11 @@ pip install -e .
 # Speak text directly with live visual word highlighting
 agent-tts "Hola, la compilación ha terminado con éxito." --highlight
 
+# Smart Architectural Summarizer (TL;DR pre-flight)
+git diff | agent-tts --tldr
+npm test | agent-tts --tldr --highlight
+cat long_build.log | agent-tts --summarize
+
 # Pipe output from any command or agent
 git status | agent-tts
 cat response.md | agent-tts --voice alvaro --rate +15%

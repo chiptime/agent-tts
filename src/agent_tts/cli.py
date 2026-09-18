@@ -166,6 +166,13 @@ def main():
     parser.add_argument("--prev-sentence", action="store_true", help="Jump to previous sentence in active playback")
     parser.add_argument("--current-sentence", action="store_true", help="Get current sentence text from active playback")
     parser.add_argument(
+        "--tldr",
+        "--summarize",
+        dest="summarize",
+        action="store_true",
+        help="Condense long logs, diffs, or verbose output into a punchy spoken summary before playback",
+    )
+    parser.add_argument(
         "--ipc-cmd",
         help="Send an IPC command to the active audio player (e.g. 'seek +10', 'seek -10', 'toggle-pause', 'status')",
     )
@@ -213,7 +220,7 @@ def main():
     if not input_text:
         sys.exit(0)
 
-    speech_text = input_text if args.raw else clean_agent_text(input_text, max_chars=args.max_chars)
+    speech_text = input_text if args.raw else clean_agent_text(input_text, max_chars=args.max_chars, summarize=args.summarize)
     if not speech_text:
         sys.exit(0)
 
