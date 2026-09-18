@@ -33,6 +33,7 @@ from agent_tts.providers import (
     TTSProvider,
     get_provider,
 )
+from agent_tts.redact import redact_secrets
 from agent_tts.summarizer import summarize
 
 __all__ = [
@@ -68,4 +69,5 @@ __all__ = [
     "OpenAITTSProvider",
     "ElevenLabsTTSProvider",
     "get_provider",
+    "redact_secrets",
 ]
