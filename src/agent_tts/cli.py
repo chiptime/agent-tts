@@ -196,6 +196,26 @@ async def synthesize(
     return mp3_data
 
 
+STREAM_AUTO_PROVIDERS = ("edge", "openai", "elevenlabs", "eleven")
+STREAM_AUTO_MIN_CHARS = 400
+
+
+def use_pipelined_stream(
+    provider: str,
+    stream: str,
+    no_play: bool,
+    output_file: Optional[str],
+    podcast: bool,
+    text_len: int,
+) -> bool:
+    """Decides whether playback should use pipelined sentence-group streaming."""
+    if no_play or stream not in ("auto", "on") or output_file or podcast:
+        return False
+    if stream == "on":
+        return True
+    return provider in STREAM_AUTO_PROVIDERS and text_len >= STREAM_AUTO_MIN_CHARS
+
+
 def split_sentence_groups(text: str, max_chars: int = 250) -> List[str]:
     """Splits text into greedy sentence groups of at most max_chars characters for pipelined synthesis."""
     if not text or not text.strip():
@@ -503,12 +523,13 @@ async def speak(
         session.start_ipc()
 
     # Pipelined streaming: playback starts after the first group while later groups synthesize.
-    use_stream = (
-        not no_play
-        and stream in ("auto", "on")
-        and not output_file
-        and not podcast
-        and (stream == "on" or (provider == "edge" and len(text) >= 400))
+    use_stream = use_pipelined_stream(
+        provider=provider,
+        stream=stream,
+        no_play=no_play,
+        output_file=output_file,
+        podcast=podcast,
+        text_len=len(text),
     )
 
     try:
@@ -668,7 +689,7 @@ def main():
         "--stream",
         choices=["auto", "on", "off"],
         default="auto",
-        help="Pipelined playback: synthesize sentence groups while playing (auto: edge, no output/podcast, >=400 chars)",
+        help="Pipelined playback: synthesize sentence groups while playing (auto: edge/openai/elevenlabs, no output/podcast, >=400 chars)",
     )
     parser.add_argument(
         "--playback",

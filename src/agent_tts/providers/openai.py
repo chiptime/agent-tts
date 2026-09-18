@@ -4,7 +4,7 @@ import asyncio
 import json
 import os
 import sys
-from typing import Callable, Optional
+from typing import Callable, Iterator, List, Optional
 import urllib.error
 import urllib.request
 
@@ -16,6 +16,9 @@ class OpenAITTSProvider(TTSProvider):
     """OpenAI Audio TTS provider."""
 
     name = "openai"
+    supports_stream = True
+
+    STREAM_CHUNK_SIZE = 8192
 
     VOICE_FALLBACK = {
         "elvira": "nova",
@@ -78,6 +81,81 @@ class OpenAITTSProvider(TTSProvider):
             print(f"OpenAI TTS network error: {e}", file=sys.stderr)
             return b""
 
+    def synthesize_stream(
+        self,
+        text: str,
+        voice: str,
+        rate: str = "+0%",
+        volume: str = "+0%",
+        pitch: str = "+0Hz",
+        stop_checker: Optional[Callable[[], bool]] = None,
+    ) -> Iterator[bytes]:
+        """Yields MP3 chunks incrementally from the OpenAI TTS streaming response."""
+        if not self.api_key:
+            raise RuntimeError("OpenAI TTS requires an API key (set OPENAI_API_KEY or --openai-key)")
+        return self._stream_chunks(text, self.resolve_voice(voice), parse_rate_to_multiplier(rate), stop_checker)
+
+    def _stream_chunks(self, text: str, voice: str, speed: float, stop_checker: Optional[Callable[[], bool]] = None) -> Iterator[bytes]:
+        """Yields MP3 chunks as the chunked HTTP response arrives."""
+        url = f"{self.base_url}/audio/speech"
+        payload = json.dumps({
+            "model": self.model,
+            "input": text,
+            "voice": voice,
+            "response_format": "mp3",
+            "speed": speed,
+            "stream": True,
+        }).encode("utf-8")
+
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+                "Accept": "audio/mpeg",
+                "User-Agent": "agent-tts/0.1.0",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            while True:
+                if stop_checker and stop_checker():
+                    return
+                chunk = resp.read(self.STREAM_CHUNK_SIZE)
+                if not chunk:
+                    return
+                yield chunk
+
+    def _sync_streamed(self, text: str, voice: str, speed: float, stop_checker: Optional[Callable[[], bool]] = None) -> Optional[bytes]:
+        """Returns MP3 bytes from the streaming endpoint.
+
+        Returns None when streaming could not deliver audio (missing key, network or
+        API failure mid-stream) so the caller can fall back to the full-response
+        request; returns b"" when synthesis was stopped and partial audio must be
+        discarded.
+        """
+        if not self.api_key:
+            return None
+        try:
+            chunks: List[bytes] = []
+            for chunk in self._stream_chunks(text, voice, speed, stop_checker):
+                chunks.append(chunk)
+        except Exception as e:
+            print(f"OpenAI TTS stream failed ({e}); falling back to full-response synthesis", file=sys.stderr)
+            return None
+        if stop_checker and stop_checker():
+            return b""
+        data = b"".join(chunks)
+        return data if data else None
+
+    def _synthesize_sync(self, text: str, voice: str, speed: float, stop_checker: Optional[Callable[[], bool]] = None) -> bytes:
+        """Streams MP3 chunks when possible; falls back to the full-response request otherwise."""
+        streamed = self._sync_streamed(text, voice, speed, stop_checker)
+        if streamed is not None:
+            return streamed
+        return self._sync_request(text, voice, speed)
+
     async def synthesize(
         self,
         text: str,
@@ -91,7 +169,7 @@ class OpenAITTSProvider(TTSProvider):
             return SynthesisResult(b"", BoundaryMap())
         target_voice = self.resolve_voice(voice)
         speed = parse_rate_to_multiplier(rate)
-        mp3_data = await asyncio.to_thread(self._sync_request, text, target_voice, speed)
+        mp3_data = await asyncio.to_thread(self._synthesize_sync, text, target_voice, speed, stop_checker)
         if not mp3_data:
             return SynthesisResult(b"", BoundaryMap())
 
