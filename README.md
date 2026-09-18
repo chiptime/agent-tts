@@ -26,7 +26,7 @@ Furthermore, raw agent terminal outputs (from Claude Code, OpenCode, Herdr, Aide
 7. **Zen Mode:** Distraction-free, centered high-contrast teleprompter reader with minimal progress HUD (`--zen`).
 8. **Pure C Native Audio (No Media Player Dependencies):** Direct low-latency PCM streaming via `miniaudio` into PulseAudio/PipeWire (Linux), CoreAudio (macOS), and WASAPI (Windows). No external `mpv`, `paplay`, or `afplay` processes needed.
 9. **Deep Terminal & Agent Prose Sanitization:** Strips ANSI styling, box borders, token usage telemetry, and converts Markdown/ASCII tables into conversational pauses.
-10. **Modular Synthesis Providers:** Works out of the box with zero configuration using high-quality Microsoft Edge Neural voices (100% free), with optional drop-in support for OpenAI Audio TTS (`tts-1`/`tts-1-hd`), ElevenLabs, and offline Piper.
+10. **Modular Synthesis Providers:** Works out of the box with zero configuration using high-quality Microsoft Edge Neural voices (100% free), with optional drop-in support for OpenAI Audio TTS (`tts-1`/`tts-1-hd`), ElevenLabs, offline Piper, and offline Kokoro-82M.
 11. **Tiny Footprint:** Runs in < 2.5 MB RAM with zero GPU/VRAM requirement.
 
 ---
@@ -175,7 +175,7 @@ PCM streams to the Windows host over TCP and plays natively there (WASAPI) — n
 
 ### Automatic PowerShell fallback (`wsl-ps`)
 
-If the winhost server is unreachable, one English warning is printed on stderr and the run falls back to zero-install PowerShell playback (each synthesized group plays sequentially via `powershell.exe` from WSL interop — correctness over latency). Use `--playback wsl-ps` to force that mode directly; a clear error exits non-zero when `powershell.exe` is missing or the process is not running under WSL.
+If the winhost server is unreachable, one English warning is printed on stderr and the run falls back to zero-install PowerShell playback: one persistent `powershell.exe` per run (from WSL interop) consumes length-prefixed WAV groups from stdin in a loop, so sentence groups play near-gaplessly instead of paying a process spawn per group; pause/resume/stop work at group granularity via pipe flow control. One-shot clips keep the previous behavior. Use `--playback wsl-ps` to force that mode directly; a clear error exits non-zero when `powershell.exe` is missing or the process is not running under WSL.
 
 ### Environment variables
 
@@ -236,14 +236,52 @@ send_ipc_command("toggle-pause")
 | :--- | :--- | :---: | :---: | :---: | :--- |
 | **`edge` (Default)** | Zero config (No keys required) | 🟢 Free | High (Neural) | ~150–250ms | ✅ `auto` (≥ 400 chars) |
 | **`piper` / `local`** | `--piper-model` / `PIPER_MODEL` | 🟢 Free (Offline) | Neural ONNX (Local CPU) | ~80–180ms | ➖ `--stream on` only |
+| **`kokoro`** | `AGENT_TTS_KOKORO_MODEL` + voice store (`agent-tts voice install kokoro`) | 🟢 Free (Offline) | Studio-grade Neural (Local CPU) | ~200–600ms | ➖ `--stream on` only |
 | **`openai`** | `--openai-key` / `OPENAI_API_KEY` | Paid API | Studio Quality | ~300–500ms | ✅ `auto` (≥ 400 chars) + chunked MP3 HTTP |
 | **`elevenlabs`** | `--eleven-key` / `ELEVENLABS_API_KEY` | Paid API | Ultra-realistic | ~350–600ms | ✅ `auto` (≥ 400 chars) + chunked MP3 HTTP |
 
 ### Voice Shortcuts:
 - **Edge:** `elvira` (*default Spanish*), `alvaro`, `ximena`, `dalia`, `jorge`, `en` (*US English Jenny*), or any standard Microsoft Edge voice identifier (e.g. `es-ES-ElviraNeural`).
-- **Piper:** Path to `.onnx` model (e.g. `es_ES-davefx-medium.onnx` or configured via `PIPER_MODEL`).
+- **Piper:** Path to `.onnx` model (e.g. `es_ES-davefx-medium.onnx` or configured via `PIPER_MODEL`), or any voice installed via `agent-tts voice install`.
+- **Kokoro:** Kokoro voice ids (`ef_dora` — *default Spanish*, `em_alex`, `em_santa`, `af_heart`, ...) resolved inside the voice store; override with `AGENT_TTS_KOKORO_VOICE` or `--voice`.
 - **OpenAI:** `nova`, `alloy`, `echo`, `fable`, `onyx`, `shimmer` (automatically maps Spanish defaults like `elvira` → `nova`, `alvaro` → `onyx`).
 - **ElevenLabs:** `rachel`, `bella`, `antoni`, `adam`, `domi`, `elli`, `josh`, `arnold`, `sam`, or any custom 20-character Voice ID.
+
+### Voice Model Store (`agent-tts voice`):
+
+Offline models live under `~/.local/share/agent-tts/voices/` (override with `AGENT_TTS_VOICES_DIR`), one directory per voice with a `voice.json` manifest:
+
+```
+agent-tts voice list                     # installed voices + provider (piper/kokoro), defaults marked
+agent-tts voice install kokoro           # Kokoro-82M v1.0 ONNX (~325 MB) + Spanish/EN voice embeddings + vocab
+agent-tts voice install es_ES-davefx     # piper voice: .onnx + .onnx.json (quality defaults to medium)
+agent-tts voice install es_ES-davefx-medium
+agent-tts voice remove es_ES-davefx-medium
+```
+
+- Downloads use the stdlib (no extra dependency), stream to stderr with progress, and are atomic (temporary file + move; a failed install leaves no partial voice).
+- Integrity is validated whenever the source provides it (server `Content-Length` match; optional `sha256` is verified when supplied).
+- Names are strictly validated: path separators and `..` are rejected and removals can never escape the store root.
+- Network errors print a clean message to stderr and exit non-zero.
+
+### Kokoro-82M Offline Provider (studio-grade local neural TTS):
+
+`--provider kokoro` runs the Kokoro-82M v1.0 ONNX model fully offline on CPU. Honest requirements:
+
+- **`onnxruntime`** (`pip install onnxruntime`) — imported lazily at synthesis time; if missing you get an actionable error, never an import-time crash.
+- **espeak-ng phonemization** — either the `phonemizer` Python package or the `espeak-ng` binary on PATH (`sudo apt-get install espeak-ng`). Also resolved lazily with an actionable error when absent.
+- **Model files** — `agent-tts voice install kokoro` downloads `model.onnx` (~325 MB) plus the `ef_dora`/`em_alex`/`em_santa` (Spanish) and `af_heart` (English) voice embeddings and the phoneme vocab from the official `onnx-community/Kokoro-82M-v1.0-ONNX` export (the original `hexgrad/Kokoro-82M-v1.0-onnx` release is gated behind HuggingFace auth; override the base with `AGENT_TTS_KOKORO_BASE_URL`).
+
+Behavior matrix:
+
+| onnxruntime | espeak-ng | Result |
+| :---: | :---: | :--- |
+| ✅ | ✅ | Offline synthesis works (WAV 16-bit/24 kHz mono) |
+| ✅ | ❌ | Actionable error at synthesis: install `espeak-ng` or `phonemizer` |
+| ❌ | ✅ | Actionable error at synthesis: `pip install onnxruntime` |
+| ❌ | ❌ | Actionable error at synthesis (onnxruntime is checked first) |
+
+Streaming note: Kokoro emits whole-utterance PCM per call, so `supports_stream` is `False`; interactive latency comes from the CLI's pipelined sentence-group streaming, which already synthesizes group-by-group.
 
 ---
 
@@ -256,7 +294,7 @@ usage: agent-tts [-h] [--voice VOICE] [--rate RATE] [--max-chars MAX_CHARS]
                  [--current-sentence] [--tldr] [--llm-summary] [--auto-lang] [--podcast]
                  [--podcast-title PODCAST_TITLE] [--podcast-serve [PORT]]
                  [--ipc-cmd IPC_CMD]
-                 [--provider {edge,openai,elevenlabs,eleven,piper,local}]
+                 [--provider {edge,openai,elevenlabs,eleven,piper,kokoro,local}]
                  [--stream {auto,on,off}]
                  [--playback {local,winhost,wsl-ps}] [--winhost]
                  [--winhost-host WINHOST_HOST] [--winhost-port WINHOST_PORT]
@@ -307,7 +345,7 @@ We have an active vision to expand `agent-tts` into the definitive neural TTS en
 - [x] 📡 **WSL → Windows `winhost` Transport:**
   - `--playback winhost` streams PCM over TCP to `agent-tts --winhost` on the Windows host and plays it natively there via WASAPI (loopback + gateway auto-detection, one active session with preemption, pause/resume/stop controls).
 - [x] 🔁 **Zero-Install PowerShell Fallback Mode (`wsl-ps`):**
-  - When the winhost server is unreachable, playback automatically falls back to per-group `powershell.exe` playback (`System.Media.SoundPlayer`); `--playback wsl-ps` forces it directly.
+  - When the winhost server is unreachable, playback automatically falls back to one persistent `powershell.exe` per run fed length-prefixed WAV groups over stdin (`System.Media.SoundPlayer` loop — near-gapless streaming, pause/resume/stop at group granularity via pipe flow control); `--playback wsl-ps` forces it directly.
 - [x] 🔌 **Agent Connectors (Structured Transcript Reading):**
   - With `--agent` + `--session-id` the engine reads the real last assistant message from the agent tool's local transcript (OpenCode SQLite, Claude Code / Codex CLI / Antigravity CLI JSONL, Aider markdown history) with automatic scrollback fallback.
 - [ ] 🎙️ **Per-Provider Pipelining (Piper):**
@@ -318,10 +356,10 @@ We have an active vision to expand `agent-tts` into the definitive neural TTS en
   - High-speed heuristic sanitizer that automatically redacts API keys (`sk-...`, `ghp_...`, `glpat-...`), JWTs, authorization headers, generic credential assignments, PEM private keys, and long hashes from terminal text before vocalization or publishing to RSS/ntfy feeds (runs once inside the shared cleaning stage).
 - [x] 🧠 **Hybrid High-Level LLM Summarizer (`--llm-summary`):**
   - Optional one-sentence executive synthesis delegating to locally installed CLIs (`claude -p`, `codex exec`, `ollama`) for long prose, with instant zero-cost fallback to offline `--tldr` heuristics.
-- [ ] 🔊 **Next-Gen Neural Local TTS (Kokoro-82M ONNX):**
-  - Ultra-natural local CPU neural synthesis via Kokoro 82M (<350MB weights), providing studio-grade offline voice synthesis with zero cloud reliance.
-- [ ] 📥 **Automated Voice Model Manager (`agent-tts voice install`):**
-  - Built-in CLI voice registry to discover, download, verify, and manage offline ONNX models (Piper & Kokoro) without manual filesystem configuration.
+- [x] 🔊 **Next-Gen Neural Local TTS (Kokoro-82M ONNX):**
+  - Ultra-natural local CPU neural synthesis via Kokoro 82M v1.0 (<350MB weights), providing studio-grade offline voice synthesis with zero cloud reliance (`--provider kokoro`; lazy `onnxruntime` + espeak-ng requirements with actionable errors).
+- [x] 📥 **Automated Voice Model Manager (`agent-tts voice install`):**
+  - Built-in CLI voice registry to discover, download, verify, and manage offline ONNX models (Piper & Kokoro) without manual filesystem configuration (`voice list` / `install` / `remove` with atomic downloads and `AGENT_TTS_VOICES_DIR` store).
 - [ ] 🪟 **Native Windows Audio/Service Parity Testing:**
   - Windows-native playback, `--winhost` server mode, and the WSL transport are implemented; add Windows CI coverage to validate the WASAPI and TCP loopback paths on real hardware.
 - [ ] ♿ **Orca screen reader integration (pending owner requirements — not currently used):**

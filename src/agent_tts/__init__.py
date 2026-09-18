@@ -29,6 +29,7 @@ from agent_tts.podcast import (
 from agent_tts.providers import (
     EdgeTTSProvider,
     ElevenLabsTTSProvider,
+    KokoroTTSProvider,
     OpenAITTSProvider,
     TTSProvider,
     get_provider,
