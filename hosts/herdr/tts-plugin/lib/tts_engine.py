@@ -29,6 +29,8 @@ try:
         speak,
         strip_ansi,
         synthesize,
+        apply_bionic_reading,
+        bionic_word,
     )
     from agent_tts.cli import main
     from agent_tts.constants import (
