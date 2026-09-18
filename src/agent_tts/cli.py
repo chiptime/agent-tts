@@ -3,15 +3,28 @@
 import argparse
 import asyncio
 import os
+import re
 import signal
 import sys
-from typing import Optional
+import threading
+from typing import List, Optional
 
 from agent_tts.audio import AudioSession, cleanup_locks, play_mp3_file
+from agent_tts.boundaries import (
+    BoundaryMap,
+    Paragraph,
+    Sentence,
+    Word,
+    estimate_boundaries_from_text,
+)
 from agent_tts.cleaner import clean_agent_text
 from agent_tts.constants import DEFAULT_RATE, DEFAULT_VOICE, LOCK_FILE, PID_FILE
 from agent_tts.ipc import send_ipc_command
+from agent_tts.playback_target import resolve_target
+from agent_tts.powershell_playback import is_wsl_ps_available
 from agent_tts.providers import get_provider
+from agent_tts.sources import read_last_agent_message
+from agent_tts.winhost_client import RemoteAudioSession
 import miniaudio
 
 
@@ -21,7 +34,10 @@ def signal_handler(signum, frame):
 
 
 signal.signal(signal.SIGINT, signal_handler)
-signal.signal(signal.SIGTERM, signal_handler)
+_sigterm = getattr(signal, "SIGTERM", None)
+if _sigterm is not None:
+    # SIGTERM is not delivered on Windows, but keep the guard portable.
+    signal.signal(_sigterm, signal_handler)
 
 
 async def synthesize(
@@ -180,6 +196,242 @@ async def synthesize(
     return mp3_data
 
 
+def split_sentence_groups(text: str, max_chars: int = 250) -> List[str]:
+    """Splits text into greedy sentence groups of at most max_chars characters for pipelined synthesis."""
+    if not text or not text.strip():
+        return []
+
+    raw_sentences: List[str] = []
+    for paragraph in text.strip().splitlines():
+        paragraph = paragraph.strip()
+        if not paragraph:
+            continue
+        raw_sentences.extend(s.strip() for s in re.split(r"(?<=[.!?])\s+", paragraph) if s.strip())
+    if not raw_sentences:
+        raw_sentences = [text.strip()]
+
+    # Very long single sentences may be split on commas when they exceed twice the budget.
+    sentences: List[str] = []
+    for sent in raw_sentences:
+        if len(sent) > max_chars * 2:
+            pieces = [p.strip() for p in sent.split(", ") if p.strip()]
+            sentences.extend(pieces if pieces else [sent])
+        else:
+            sentences.append(sent)
+
+    groups: List[str] = []
+    current = ""
+    for sent in sentences:
+        if current and len(current) + 1 + len(sent) <= max_chars:
+            current = f"{current} {sent}"
+        else:
+            if current:
+                groups.append(current)
+            current = sent
+    if current:
+        groups.append(current)
+    return groups
+
+
+def shift_boundary_map(
+    bmap: BoundaryMap,
+    offset_sec: float,
+    sent_index_base: int,
+    word_index_base: int,
+    paragraph_index_base: int,
+) -> BoundaryMap:
+    """Returns a copy of a BoundaryMap with times offset and sentence/word/paragraph indices rebased."""
+    sentences = [
+        Sentence(
+            index=s.index + sent_index_base,
+            start_sec=s.start_sec + offset_sec,
+            duration_sec=s.duration_sec,
+            text=s.text,
+            paragraph_index=s.paragraph_index + paragraph_index_base,
+        )
+        for s in bmap.sentences
+    ]
+    words = [
+        Word(
+            index=w.index + word_index_base,
+            sentence_index=w.sentence_index + sent_index_base,
+            start_sec=w.start_sec + offset_sec,
+            duration_sec=w.duration_sec,
+            text=w.text,
+        )
+        for w in bmap.words
+    ]
+    paragraphs = [
+        Paragraph(
+            index=p.index + paragraph_index_base,
+            start_sec=p.start_sec + offset_sec,
+            duration_sec=p.duration_sec,
+            text=p.text,
+            sentence_indices=[i + sent_index_base for i in p.sentence_indices],
+        )
+        for p in bmap.paragraphs
+    ]
+    return BoundaryMap(sentences=sentences, words=words, paragraphs=paragraphs)
+
+
+async def _speak_pipelined(
+    session: AudioSession,
+    text: str,
+    check_stop,
+    voice: str,
+    rate: str,
+    volume: str,
+    pitch: str,
+    provider: str,
+    openai_key: Optional[str],
+    openai_base_url: Optional[str],
+    openai_model: Optional[str],
+    eleven_key: Optional[str],
+    eleven_model: Optional[str],
+    piper_model: Optional[str],
+    auto_lang: bool,
+) -> None:
+    """Plays the first synthesized sentence group while remaining groups are synthesized and appended live."""
+    groups = split_sentence_groups(text)
+    progress = {
+        "offset": 0.0,
+        "sent": 0,
+        "word": 0,
+        "para": 0,
+        "produced": 0,
+        "next_idx": 0,
+    }
+
+    def merge_group(group_text: str, result, seg_duration: float) -> None:
+        """Shifts a group's boundaries by the accumulated offset and merges them into the session."""
+        bmap = getattr(result, "boundaries", None)
+        if bmap is None or not bmap.sentences:
+            bmap = estimate_boundaries_from_text(group_text, seg_duration)
+        shifted = shift_boundary_map(
+            bmap,
+            progress["offset"],
+            progress["sent"],
+            progress["word"],
+            progress["para"],
+        )
+        with session.lock:
+            session.boundaries.sentences.extend(shifted.sentences)
+            session.boundaries.words.extend(shifted.words)
+            session.boundaries.paragraphs.extend(shifted.paragraphs)
+        progress["offset"] += seg_duration
+        progress["sent"] += len(shifted.sentences)
+        progress["word"] += len(shifted.words)
+        progress["para"] += len(shifted.paragraphs)
+
+    async def synthesize_group(group_text: str):
+        return await synthesize(
+            text=group_text,
+            voice=voice,
+            rate=rate,
+            volume=volume,
+            pitch=pitch,
+            provider=provider,
+            openai_key=openai_key,
+            openai_base_url=openai_base_url,
+            openai_model=openai_model,
+            eleven_key=eleven_key,
+            eleven_model=eleven_model,
+            piper_model=piper_model,
+            stop_checker=check_stop,
+            auto_lang=auto_lang,
+        )
+
+    async def produce_first():
+        """Synthesizes groups in order until one decodable segment is ready; returns it decoded."""
+        for idx, group_text in enumerate(groups):
+            if check_stop():
+                return None
+            try:
+                result = await synthesize_group(group_text)
+            except Exception as e:
+                print(f"Stream: group {idx} failed: {e}", file=sys.stderr)
+                continue
+            if not result:
+                if check_stop():
+                    return None
+                print(f"Stream: group {idx} failed: empty audio", file=sys.stderr)
+                continue
+            try:
+                decoded = miniaudio.decode(result)
+            except Exception as e:
+                print(f"Stream: group {idx} failed: {e}", file=sys.stderr)
+                continue
+            seg_duration = len(decoded.samples) / float(decoded.sample_rate * decoded.nchannels)
+            merge_group(group_text, result, seg_duration)
+            progress["produced"] += 1
+            progress["next_idx"] = idx + 1
+            return decoded
+        return None
+
+    async def produce_remaining(start_idx: int) -> None:
+        """Synthesizes the remaining groups and appends each decoded segment to the live buffer."""
+        for idx in range(start_idx, len(groups)):
+            if check_stop():
+                break
+            group_text = groups[idx]
+            try:
+                result = await synthesize_group(group_text)
+            except Exception as e:
+                print(f"Stream: group {idx} failed: {e}", file=sys.stderr)
+                continue
+            if not result:
+                if check_stop():
+                    break
+                print(f"Stream: group {idx} failed: empty audio", file=sys.stderr)
+                continue
+            try:
+                decoded = miniaudio.decode(result)
+            except Exception as e:
+                print(f"Stream: group {idx} failed: {e}", file=sys.stderr)
+                continue
+            if not session.append_pcm(decoded):
+                continue
+            seg_duration = len(decoded.samples) / float(decoded.sample_rate * decoded.nchannels)
+            merge_group(group_text, result, seg_duration)
+            progress["produced"] += 1
+
+    def run_producer(start_idx: int) -> None:
+        """Runs the remaining production on a private event loop, then clears the producing flag."""
+        try:
+            asyncio.run(produce_remaining(start_idx))
+        except Exception as e:
+            print(f"Stream: producer stopped: {e}", file=sys.stderr)
+        finally:
+            with session.lock:
+                session.state["producing"] = False
+
+    with session.lock:
+        session.state["producing"] = True
+
+    first_decoded = await produce_first()
+    if first_decoded is None:
+        with session.lock:
+            session.state["producing"] = False
+        if progress["produced"] == 0:
+            if check_stop():
+                return
+            raise RuntimeError("Stream: synthesis produced no audio")
+        return
+
+    # Load the first segment into the playback buffer before the producer race can start;
+    # play() detects the preloaded buffer and skips re-initialization.
+    session.prepare_pcm(first_decoded)
+
+    producer = threading.Thread(target=run_producer, args=(progress["next_idx"],), daemon=True)
+    producer.start()
+    try:
+        session.play(first_decoded)
+    finally:
+        with session.lock:
+            session.state["producing"] = False
+        producer.join(timeout=5.0)
+
+
 async def speak(
     text: str,
     voice: str = DEFAULT_VOICE,
@@ -203,6 +455,8 @@ async def speak(
     auto_lang: bool = False,
     podcast: bool = False,
     podcast_title: str = "",
+    stream: str = "auto",
+    playback: str = "local",
 ) -> None:
     """Synthesizes and plays audio with interactive controls."""
     session = None
@@ -214,19 +468,72 @@ async def speak(
                 f.write(str(os.getpid()))
         except OSError:
             pass
-        session = AudioSession(
-            label=f"{len(text)} chars",
-            auto_rewind_sec=auto_rewind_sec,
-            highlight=highlight,
-            autoscroll=autoscroll,
-            bionic=bionic,
-            zen=zen,
-        )
+        if playback == "local":
+            session = AudioSession(
+                label=f"{len(text)} chars",
+                auto_rewind_sec=auto_rewind_sec,
+                highlight=highlight,
+                autoscroll=autoscroll,
+                bionic=bionic,
+                zen=zen,
+            )
+        else:
+            if playback == "wsl-ps" and not is_wsl_ps_available():
+                print(
+                    "Error: --playback wsl-ps requires powershell.exe on PATH and a WSL environment "
+                    "(WSL_DISTRO_NAME set or /proc/version mentioning Microsoft)",
+                    file=sys.stderr,
+                )
+                raise SystemExit(1)
+            if highlight or autoscroll or zen:
+                print(
+                    f"Note: --playback {playback} streams audio to the Windows host; "
+                    "terminal highlight/zen/autoscroll views are not rendered remotely",
+                    file=sys.stderr,
+                )
+            session = RemoteAudioSession(
+                label=f"{len(text)} chars",
+                auto_rewind_sec=auto_rewind_sec,
+                highlight=highlight,
+                autoscroll=autoscroll,
+                bionic=bionic,
+                zen=zen,
+                target=playback,
+            )
         session.start_ipc()
+
+    # Pipelined streaming: playback starts after the first group while later groups synthesize.
+    use_stream = (
+        not no_play
+        and stream in ("auto", "on")
+        and not output_file
+        and not podcast
+        and (stream == "on" or (provider == "edge" and len(text) >= 400))
+    )
 
     try:
         def check_stop():
             return session is not None and bool(session.state.get("stop", False))
+
+        if use_stream:
+            await _speak_pipelined(
+                session=session,
+                text=text,
+                check_stop=check_stop,
+                voice=voice,
+                rate=rate,
+                volume=volume,
+                pitch=pitch,
+                provider=provider,
+                openai_key=openai_key,
+                openai_base_url=openai_base_url,
+                openai_model=openai_model,
+                eleven_key=eleven_key,
+                eleven_model=eleven_model,
+                piper_model=piper_model,
+                auto_lang=auto_lang,
+            )
+            return
 
         mp3_data = await synthesize(
             text=text,
@@ -272,6 +579,7 @@ async def speak(
             session.play(decoded)
     except Exception as e:
         print(f"Playback error: {e}", file=sys.stderr)
+        raise
     finally:
         if session:
             session.stop()
@@ -356,6 +664,34 @@ def main():
         choices=["edge", "openai", "elevenlabs", "eleven", "piper", "local"],
         help="TTS provider backend (edge, openai, elevenlabs, piper, local)",
     )
+    parser.add_argument(
+        "--stream",
+        choices=["auto", "on", "off"],
+        default="auto",
+        help="Pipelined playback: synthesize sentence groups while playing (auto: edge, no output/podcast, >=400 chars)",
+    )
+    parser.add_argument(
+        "--playback",
+        choices=["local", "winhost", "wsl-ps"],
+        default=os.environ.get("AGENT_TTS_PLAYBACK", "local"),
+        help="Playback target: local device (default), winhost server on the Windows host, or zero-install PowerShell under WSL",
+    )
+    parser.add_argument(
+        "--winhost",
+        action="store_true",
+        help="Run the Windows host audio server: receive PCM over TCP and play it natively via WASAPI",
+    )
+    parser.add_argument(
+        "--winhost-host",
+        default=None,
+        help="Windows host address (client target, or server bind address with --winhost); default: auto-detect / AGENT_TTS_WINHOST_HOST or AGENT_TTS_WINHOST_BIND",
+    )
+    parser.add_argument(
+        "--winhost-port",
+        type=int,
+        default=None,
+        help="Windows host port for winhost playback (default: 7717 / AGENT_TTS_WINHOST_PORT)",
+    )
     parser.add_argument("--openai-key", default=os.environ.get("OPENAI_API_KEY", ""), help="OpenAI API key")
     parser.add_argument("--openai-base-url", default=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"), help="OpenAI custom base URL")
     parser.add_argument("--openai-model", default=os.environ.get("OPENAI_TTS_MODEL", "tts-1"), help="OpenAI TTS model (tts-1, tts-1-hd)")
@@ -366,8 +702,37 @@ def main():
         default=os.environ.get("PIPER_MODEL", ""),
         help="Path to Piper ONNX model file (.onnx)",
     )
+    parser.add_argument(
+        "--pre-extracted",
+        action="store_true",
+        help="Treat input text as the final message (e.g. provided by an integration layer that already resolved the chat transcript); skips terminal-scrollback turn extraction, keeps markdown-to-speech cleaning",
+    )
+    parser.add_argument(
+        "--agent",
+        default=None,
+        help="Agent tool name for the transcript connector layer (e.g. opencode, claude); unknown names are sniffed from the session id shape",
+    )
+    parser.add_argument(
+        "--session-id",
+        default=None,
+        help="Agent session id; resolves the last assistant message from the tool's structured transcript before falling back to the provided text",
+    )
 
     args = parser.parse_args()
+
+    # Flag overrides win over environment for the winhost transport settings.
+    if args.winhost_host:
+        os.environ["AGENT_TTS_WINHOST_HOST"] = args.winhost_host
+    if args.winhost_port:
+        os.environ["AGENT_TTS_WINHOST_PORT"] = str(args.winhost_port)
+
+    if args.winhost:
+        # Server mode: receive PCM on this (Windows) host and play it natively;
+        # text/synthesis arguments are ignored.
+        from agent_tts.winhost import run_winhost_server
+
+        run_winhost_server(host=args.winhost_host, port=args.winhost_port)
+        sys.exit(0)
 
     if args.podcast_serve:
         from agent_tts.podcast import run_podcast_server
@@ -419,7 +784,42 @@ def main():
     if not input_text:
         sys.exit(0)
 
-    speech_text = input_text if args.raw else clean_agent_text(input_text, max_chars=args.max_chars, summarize=args.summarize)
+    # Agent Connectors (Vision B): with an agent identity + session id, the
+    # engine itself resolves the last assistant message from the tool's
+    # structured transcript; the provided text remains the scrollback fallback.
+    source_result = None
+    if args.session_id:
+        source_result = read_last_agent_message(args.agent, args.session_id)
+        if source_result:
+            print(
+                f"Sources: last message via {source_result.source} ({len(source_result.text)} chars)",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"Sources: no transcript for {args.agent or 'auto'}/{args.session_id}, falling back to scrollback",
+                file=sys.stderr,
+            )
+
+    if source_result:
+        speech_text = (
+            source_result.text
+            if args.raw
+            else clean_agent_text(
+                source_result.text,
+                max_chars=args.max_chars,
+                summarize=args.summarize,
+                pre_extracted=True,
+            )
+        )
+    else:
+        # Host integrations (e.g. herdr-tts) may hand over text that is already
+        # the exact message to speak; scrollback turn extraction is then skipped
+        # while message cleaning (markdown-to-speech, tables, lexicon) still runs.
+        speech_text = input_text if args.raw else clean_agent_text(
+            input_text, max_chars=args.max_chars, summarize=args.summarize,
+            pre_extracted=args.pre_extracted,
+        )
     if not speech_text:
         sys.exit(0)
 
@@ -445,10 +845,15 @@ def main():
                 auto_lang=args.auto_lang,
                 podcast=args.podcast,
                 podcast_title=args.podcast_title,
+                stream=args.stream,
+                playback=resolve_target(args.playback, os.environ),
             )
         )
     except KeyboardInterrupt:
         cleanup_locks()
+    except Exception:
+        cleanup_locks()
+        sys.exit(1)
 
 
 if __name__ == "__main__":
