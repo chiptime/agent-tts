@@ -6,6 +6,21 @@ from typing import List, Optional
 
 
 @dataclass
+class Paragraph:
+    """Represents a spoken paragraph and its temporal bounds."""
+
+    index: int
+    start_sec: float
+    duration_sec: float
+    text: str
+    sentence_indices: List[int]
+
+    @property
+    def end_sec(self) -> float:
+        return self.start_sec + self.duration_sec
+
+
+@dataclass
 class Sentence:
     """Represents a spoken sentence and its temporal bounds."""
 
@@ -13,6 +28,7 @@ class Sentence:
     start_sec: float
     duration_sec: float
     text: str
+    paragraph_index: int = 0
 
     @property
     def end_sec(self) -> float:
@@ -35,15 +51,114 @@ class Word:
 
 
 class BoundaryMap:
-    """Tracks and indexes sentence and word boundaries for audio synchronization."""
+    """Tracks and indexes paragraph, sentence and word boundaries for audio synchronization."""
 
     def __init__(
         self,
         sentences: Optional[List[Sentence]] = None,
         words: Optional[List[Word]] = None,
+        paragraphs: Optional[List[Paragraph]] = None,
     ):
         self.sentences: List[Sentence] = sentences or []
         self.words: List[Word] = words or []
+        self.paragraphs: List[Paragraph] = paragraphs or self._build_paragraphs(self.sentences)
+
+    def _build_paragraphs(self, sentences: List[Sentence]) -> List[Paragraph]:
+        """Groups sentences into paragraphs based on paragraph_index or newlines."""
+        if not sentences:
+            return []
+
+        has_distinct_p = any(s.paragraph_index > 0 for s in sentences)
+        if has_distinct_p:
+            p_groups: dict = {}
+            for s in sentences:
+                p_groups.setdefault(s.paragraph_index, []).append(s)
+            paragraphs = []
+            for p_idx in sorted(p_groups.keys()):
+                p_sents = p_groups[p_idx]
+                start_sec = p_sents[0].start_sec
+                end_sec = p_sents[-1].end_sec
+                p_text = " ".join(sent.text.strip() for sent in p_sents)
+                paragraphs.append(
+                    Paragraph(
+                        index=p_idx,
+                        start_sec=start_sec,
+                        duration_sec=max(0.0, end_sec - start_sec),
+                        text=p_text,
+                        sentence_indices=[sent.index for sent in p_sents],
+                    )
+                )
+            return paragraphs
+
+        current_p_idx = 0
+        current_p_sents: List[Sentence] = []
+        paragraphs = []
+
+        for s in sentences:
+            current_p_sents.append(s)
+            s.paragraph_index = current_p_idx
+            if "\n" in s.text or s.text.endswith("\n"):
+                start_sec = current_p_sents[0].start_sec
+                end_sec = current_p_sents[-1].end_sec
+                p_text = " ".join(sent.text.strip() for sent in current_p_sents)
+                paragraphs.append(
+                    Paragraph(
+                        index=current_p_idx,
+                        start_sec=start_sec,
+                        duration_sec=max(0.0, end_sec - start_sec),
+                        text=p_text,
+                        sentence_indices=[sent.index for sent in current_p_sents],
+                    )
+                )
+                current_p_idx += 1
+                current_p_sents = []
+
+        if current_p_sents:
+            start_sec = current_p_sents[0].start_sec
+            end_sec = current_p_sents[-1].end_sec
+            p_text = " ".join(sent.text.strip() for sent in current_p_sents)
+            paragraphs.append(
+                Paragraph(
+                    index=current_p_idx,
+                    start_sec=start_sec,
+                    duration_sec=max(0.0, end_sec - start_sec),
+                    text=p_text,
+                    sentence_indices=[sent.index for sent in current_p_sents],
+                )
+            )
+
+        return paragraphs
+
+    def get_paragraph_at(self, pos: float) -> Optional[Paragraph]:
+        """Finds the paragraph active at the given playback position in seconds."""
+        if not self.paragraphs:
+            return None
+        if pos < self.paragraphs[0].start_sec:
+            return self.paragraphs[0]
+        if pos >= self.paragraphs[-1].end_sec:
+            return self.paragraphs[-1]
+        for p in self.paragraphs:
+            if (p.start_sec - 0.005) <= pos < (p.end_sec - 0.005):
+                return p
+        return self.paragraphs[-1]
+
+    def get_next_paragraph(self, pos: float) -> Optional[Paragraph]:
+        """Returns the next paragraph after current position."""
+        for p in self.paragraphs:
+            if p.start_sec > pos + 0.2:
+                return p
+        return None
+
+    def get_prev_paragraph(self, pos: float, replay_threshold: float = 2.0) -> Optional[Paragraph]:
+        """Returns previous paragraph, or start of current paragraph if > threshold seconds into it."""
+        current = self.get_paragraph_at(pos)
+        if not current:
+            return self.paragraphs[0] if self.paragraphs else None
+        if (pos - current.start_sec) > replay_threshold:
+            return current
+        if current.index > 0 and current.index - 1 < len(self.paragraphs):
+            return self.paragraphs[current.index - 1]
+        return current
 
     def get_sentence_at(self, pos: float) -> Optional[Sentence]:
         """Finds the sentence active at the given playback position in seconds."""
@@ -135,39 +250,72 @@ class SynthesisResult(bytes):
 
 
 def estimate_boundaries_from_text(text: str, total_duration_sec: float) -> BoundaryMap:
-    """Estimates sentence and word boundaries proportionally when provider doesn't yield native boundaries."""
-    raw_sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
-    if not raw_sentences:
-        raw_sentences = [text.strip()]
+    """Estimates paragraph, sentence and word boundaries proportionally when provider doesn't yield native boundaries."""
+    raw_paragraphs = [p.strip() for p in re.split(r"\n\s*\n+", text) if p.strip()]
+    if not raw_paragraphs:
+        raw_paragraphs = [text.strip()] if text.strip() else [""]
 
-    total_chars = sum(len(s) for s in raw_sentences) or 1
+    total_chars = sum(len(p) for p in raw_paragraphs) or 1
+    paragraphs: List[Paragraph] = []
     sentences: List[Sentence] = []
     words: List[Word] = []
     current_time = 0.0
+    sent_global_idx = 0
     word_global_idx = 0
 
-    for idx, s_text in enumerate(raw_sentences):
-        dur = (len(s_text) / total_chars) * total_duration_sec
-        sent = Sentence(index=idx, start_sec=current_time, duration_sec=dur, text=s_text)
-        sentences.append(sent)
+    for p_idx, p_text in enumerate(raw_paragraphs):
+        p_dur = (len(p_text) / total_chars) * total_duration_sec
+        p_start = current_time
+        p_sent_indices = []
 
-        raw_words = s_text.split()
-        if raw_words:
-            w_dur = dur / len(raw_words)
-            w_time = current_time
-            for w in raw_words:
-                words.append(
-                    Word(
-                        index=word_global_idx,
-                        sentence_index=idx,
-                        start_sec=w_time,
-                        duration_sec=w_dur,
-                        text=w,
+        raw_sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", p_text) if s.strip()]
+        if not raw_sentences:
+            raw_sentences = [p_text]
+
+        p_total_chars = sum(len(s) for s in raw_sentences) or 1
+        sent_time = p_start
+
+        for s_text in raw_sentences:
+            s_dur = (len(s_text) / p_total_chars) * p_dur
+            sent = Sentence(
+                index=sent_global_idx,
+                paragraph_index=p_idx,
+                start_sec=sent_time,
+                duration_sec=s_dur,
+                text=s_text,
+            )
+            sentences.append(sent)
+            p_sent_indices.append(sent_global_idx)
+
+            raw_words = s_text.split()
+            if raw_words:
+                w_dur = s_dur / len(raw_words)
+                w_time = sent_time
+                for w in raw_words:
+                    words.append(
+                        Word(
+                            index=word_global_idx,
+                            sentence_index=sent_global_idx,
+                            start_sec=w_time,
+                            duration_sec=w_dur,
+                            text=w,
+                        )
                     )
-                )
-                w_time += w_dur
-                word_global_idx += 1
+                    w_time += w_dur
+                    word_global_idx += 1
 
-        current_time += dur
+            sent_time += s_dur
+            sent_global_idx += 1
 
-    return BoundaryMap(sentences=sentences, words=words)
+        paragraphs.append(
+            Paragraph(
+                index=p_idx,
+                start_sec=p_start,
+                duration_sec=p_dur,
+                text=p_text,
+                sentence_indices=p_sent_indices,
+            )
+        )
+        current_time += p_dur
+
+    return BoundaryMap(sentences=sentences, words=words, paragraphs=paragraphs)

@@ -5,6 +5,7 @@ __version__ = "0.1.0"
 from agent_tts.audio import AudioSession, cleanup_locks, play_mp3_data, play_mp3_file
 from agent_tts.boundaries import (
     BoundaryMap,
+    Paragraph,
     Sentence,
     SynthesisResult,
     Word,
@@ -51,6 +52,7 @@ __all__ = [
     "play_mp3_data",
     "play_mp3_file",
     "BoundaryMap",
+    "Paragraph",
     "Sentence",
     "Word",
     "SynthesisResult",

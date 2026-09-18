@@ -70,6 +70,18 @@ class TestCleaner(unittest.TestCase):
         res = clean_agent_text(diff, summarize=True)
         self.assertIn("Diff de Git: 1 archivo con cambios", res)
 
+    def test_currencies_and_abbreviations(self):
+        raw = "El precio es $45.20 (o 15€ aprox., p. ej. en la pág. 12). El Dr. pagó 1€ y $1."
+        cleaned = clean_agent_text(raw)
+        self.assertIn("45 dólares con 20 centavos", cleaned)
+        self.assertIn("15 euros", cleaned)
+        self.assertIn("aproximadamente", cleaned)
+        self.assertIn("por ejemplo", cleaned)
+        self.assertIn("página 12", cleaned)
+        self.assertIn("doctor", cleaned)
+        self.assertIn("1 euro", cleaned)
+        self.assertIn("1 dólar", cleaned)
+
 
 if __name__ == "__main__":
     unittest.main()

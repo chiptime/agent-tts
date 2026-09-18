@@ -119,6 +119,46 @@ class TestBoundaries(unittest.TestCase):
         hl_res = session.handle_ipc_command("highlight")
         self.assertIn("Second", hl_res)
 
+    def test_paragraph_boundaries_and_navigation(self):
+        text = "Párrafo uno con dos frases. Segunda frase del uno.\n\nPárrafo dos que es independiente. Final del dos."
+        bmap = estimate_boundaries_from_text(text, total_duration_sec=10.0)
+        self.assertEqual(len(bmap.paragraphs), 2)
+        self.assertEqual(len(bmap.sentences), 4)
+
+        p0 = bmap.get_paragraph_at(1.0)
+        self.assertIsNotNone(p0)
+        self.assertEqual(p0.index, 0)
+        self.assertIn("Párrafo uno", p0.text)
+
+        # Next paragraph from middle of paragraph 0
+        p_next = bmap.get_next_paragraph(1.0)
+        self.assertIsNotNone(p_next)
+        self.assertEqual(p_next.index, 1)
+        self.assertIn("Párrafo dos", p_next.text)
+
+        # Prev paragraph from start of paragraph 1 (< 2.0s in) -> should go back to paragraph 0
+        p_prev = bmap.get_prev_paragraph(p_next.start_sec + 0.5, replay_threshold=2.0)
+        self.assertIsNotNone(p_prev)
+        self.assertEqual(p_prev.index, 0)
+
+        # AudioSession paragraph IPC commands
+        session = AudioSession(label="ParaTest", boundaries=bmap)
+        session.sample_rate = 24000
+        session.nchannels = 1
+        session.bytes_per_sample = 2
+        session.frame_size = 2
+        session.total_frames = 24000 * 10
+
+        # Jump to next paragraph
+        res = session.handle_ipc_command("next-paragraph")
+        self.assertIn("para_idx=1", res)
+        self.assertEqual(session.current_frame, round(p_next.start_sec * 24000))
+
+        # Check current paragraph command
+        cur_para = session.handle_ipc_command("paragraph")
+        self.assertIn("para_idx=1", cur_para)
+        self.assertIn("Párrafo dos", cur_para)
+
 
 if __name__ == "__main__":
     unittest.main()
