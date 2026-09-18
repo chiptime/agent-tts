@@ -3,6 +3,13 @@
 __version__ = "0.1.0"
 
 from agent_tts.audio import AudioSession, cleanup_locks, play_mp3_data, play_mp3_file
+from agent_tts.boundaries import (
+    BoundaryMap,
+    Sentence,
+    SynthesisResult,
+    Word,
+    estimate_boundaries_from_text,
+)
 from agent_tts.cleaner import clean_agent_text, extract_last_turn, strip_ansi
 from agent_tts.cli import speak, synthesize
 from agent_tts.ipc import IPCServer, send_ipc_command
@@ -25,6 +32,11 @@ __all__ = [
     "cleanup_locks",
     "play_mp3_data",
     "play_mp3_file",
+    "BoundaryMap",
+    "Sentence",
+    "Word",
+    "SynthesisResult",
+    "estimate_boundaries_from_text",
     "IPCServer",
     "send_ipc_command",
     "TTSProvider",

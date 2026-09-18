@@ -9,6 +9,7 @@ from typing import Callable, Optional
 import urllib.error
 import urllib.request
 
+from agent_tts.boundaries import BoundaryMap, SynthesisResult, estimate_boundaries_from_text
 from agent_tts.providers.base import TTSProvider
 
 
@@ -90,8 +91,14 @@ class ElevenLabsTTSProvider(TTSProvider):
         volume: str = "+0%",
         pitch: str = "+0Hz",
         stop_checker: Optional[Callable[[], bool]] = None,
-    ) -> bytes:
+    ) -> SynthesisResult:
         if stop_checker and stop_checker():
-            return b""
+            return SynthesisResult(b"", BoundaryMap())
         voice_id = self.resolve_voice_id(voice)
-        return await asyncio.to_thread(self._sync_request, text, voice_id)
+        mp3_data = await asyncio.to_thread(self._sync_request, text, voice_id)
+        if not mp3_data:
+            return SynthesisResult(b"", BoundaryMap())
+
+        est_duration = max(1.0, len(text) / 15.0)
+        boundaries = estimate_boundaries_from_text(text, est_duration)
+        return SynthesisResult(mp3_data, boundaries)
