@@ -34,6 +34,14 @@ class PiperTTSProvider(TTSProvider):
             os.path.expanduser("~/.local/share/herdr-tts/venv/bin/piper"),
             os.path.expanduser("/usr/local/bin/piper"),
         ]
+        if sys.platform == "win32":
+            # Windows-only hunt (additive; POSIX candidate order is unchanged).
+            local_app = os.environ.get("LOCALAPPDATA", "")
+            if local_app:
+                candidates.append(os.path.join(local_app, "Programs", "piper", "piper.exe"))
+            found_exe = shutil.which("piper.exe")
+            if found_exe:
+                candidates.append(found_exe)
         for c in candidates:
             if os.path.isfile(c) and os.access(c, os.X_OK):
                 return c
