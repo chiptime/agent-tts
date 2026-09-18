@@ -21,7 +21,7 @@ from agent_tts.cleaner import clean_agent_text
 from agent_tts.constants import DEFAULT_RATE, DEFAULT_VOICE, LOCK_FILE, PID_FILE
 from agent_tts.ipc import send_ipc_command
 from agent_tts.playback_target import resolve_target
-from agent_tts.powershell_playback import is_wsl_ps_available
+from agent_tts.powershell_playback import PowershellSession, is_wsl_ps_available
 from agent_tts.providers import get_provider
 from agent_tts.sources import read_last_agent_message
 from agent_tts.winhost_client import RemoteAudioSession
@@ -511,15 +511,27 @@ async def speak(
                     "terminal highlight/zen/autoscroll views are not rendered remotely",
                     file=sys.stderr,
                 )
-            session = RemoteAudioSession(
-                label=f"{len(text)} chars",
-                auto_rewind_sec=auto_rewind_sec,
-                highlight=highlight,
-                autoscroll=autoscroll,
-                bionic=bionic,
-                zen=zen,
-                target=playback,
-            )
+            if playback == "wsl-ps":
+                # Zero-install WSL target: one persistent powershell.exe for
+                # the whole run, fed length-prefixed WAV groups over stdin.
+                session = PowershellSession(
+                    label=f"{len(text)} chars",
+                    auto_rewind_sec=auto_rewind_sec,
+                    highlight=highlight,
+                    autoscroll=autoscroll,
+                    bionic=bionic,
+                    zen=zen,
+                )
+            else:
+                session = RemoteAudioSession(
+                    label=f"{len(text)} chars",
+                    auto_rewind_sec=auto_rewind_sec,
+                    highlight=highlight,
+                    autoscroll=autoscroll,
+                    bionic=bionic,
+                    zen=zen,
+                    target=playback,
+                )
         session.start_ipc()
 
     # Pipelined streaming: playback starts after the first group while later groups synthesize.
@@ -689,8 +701,8 @@ def main():
     parser.add_argument(
         "--provider",
         default=os.environ.get("TTS_PROVIDER", "edge"),
-        choices=["edge", "openai", "elevenlabs", "eleven", "piper", "local"],
-        help="TTS provider backend (edge, openai, elevenlabs, piper, local)",
+        choices=["edge", "openai", "elevenlabs", "eleven", "piper", "kokoro", "local"],
+        help="TTS provider backend (edge, openai, elevenlabs, piper, kokoro, local)",
     )
     parser.add_argument(
         "--stream",
@@ -747,6 +759,17 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # Voice manager subcommands (agent-tts voice list|install|remove) dispatch
+    # before normal synthesis; the store tooling lives in agent_tts.voices.
+    if args.text and args.text[0] == "voice" and len(args.text) > 1:
+        from agent_tts.voices import handle_voice_command
+
+        sys.exit(handle_voice_command(args.text[1:]))
+    if args.text == ["voice"]:
+        from agent_tts.voices import handle_voice_command
+
+        sys.exit(handle_voice_command(["list"]))
 
     # Flag overrides win over environment for the winhost transport settings.
     if args.winhost_host:

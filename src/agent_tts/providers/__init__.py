@@ -7,6 +7,7 @@ from typing import Optional
 from agent_tts.providers.base import TTSProvider
 from agent_tts.providers.edge import EdgeTTSProvider
 from agent_tts.providers.elevenlabs import ElevenLabsTTSProvider
+from agent_tts.providers.kokoro import KokoroTTSProvider
 from agent_tts.providers.openai import OpenAITTSProvider
 from agent_tts.providers.piper import PiperTTSProvider
 
@@ -35,6 +36,8 @@ def get_provider(
         )
     elif name in ("piper", "local"):
         return PiperTTSProvider(model_path=piper_model)
+    elif name == "kokoro":
+        return KokoroTTSProvider()
     elif name == "edge":
         return EdgeTTSProvider()
     else:
@@ -45,6 +48,7 @@ def get_provider(
 __all__ = [
     "TTSProvider",
     "EdgeTTSProvider",
+    "KokoroTTSProvider",
     "OpenAITTSProvider",
     "ElevenLabsTTSProvider",
     "PiperTTSProvider",
