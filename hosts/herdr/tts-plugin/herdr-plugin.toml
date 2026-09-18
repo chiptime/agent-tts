@@ -1,6 +1,6 @@
 id = "herdr.tts"
 name = "Herdr Neural TTS"
-version = "0.8.0"
+version = "0.9.0"
 min_herdr_version = "0.7.0"
 platforms = ["linux", "macos"]
 description = "Vocalizes agent responses and attention requests using modular TTS backends (Edge Neural TTS, OpenAI TTS, ElevenLabs) with native audio playback, interactive controls, and mobile push. Concurrency-safe."
@@ -95,6 +95,24 @@ id = "toggle-auto"
 title = "Toggle Automatic Voice Feedback"
 contexts = ["workspace", "pane"]
 command = ["bin/herdr-tts", "--toggle-auto"]
+
+[[actions]]
+id = "snooze-pane"
+title = "Cycle Pane Snooze (5m / 30m / 2h / off)"
+contexts = ["workspace", "pane"]
+command = ["bin/herdr-tts", "--snooze-pane"]
+
+[[actions]]
+id = "snooze-global"
+title = "Cycle Global Snooze (all agents)"
+contexts = ["workspace"]
+command = ["bin/herdr-tts", "--snooze-global"]
+
+[[actions]]
+id = "mute-pane"
+title = "Mute / Unmute Current Pane (auto-clears on close)"
+contexts = ["workspace", "pane"]
+command = ["bin/herdr-tts", "--mute-pane"]
 
 [[actions]]
 id = "status"

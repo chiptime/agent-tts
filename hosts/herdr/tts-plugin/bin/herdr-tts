@@ -20,6 +20,9 @@ AUTO_MUTE_FILE="${CONFIG_DIR}/auto_muted"
 LOCK_FILE="/tmp/herdr-tts-playing.lock"
 PID_FILE="/tmp/herdr-tts-current.pid"
 IPC_SOCKET="/tmp/herdr-tts-player.sock"
+# Lightweight gating state (snooze / mute / debounce timestamps). The default
+# lives in /tmp; the env override exists so tests can run hermetically.
+SNOOZE_STATE_FILE="${HERDR_TTS_SNOOZE_FILE:-/tmp/herdr-tts-snooze.json}"
 
 # Auto-bootstrap python environment if missing
 VENV_PYTHON="${DATA_DIR}/venv/bin/python"
@@ -50,12 +53,33 @@ DEFAULT_AUTO_LANG="off"
 DEFAULT_PODCAST_ENABLED="off"
 DEFAULT_PODCAST_PORT="8844"
 DEFAULT_PIPER_MODEL=""
+DEFAULT_DEBOUNCE_SECONDS="20" # anti-spam window per (pane, status); 0 disables
 
 notify_herdr() {
   local title="$1"
   local body="${2:-}"
   local sound="${3:-none}"
   herdr notification show "$title" --body "$body" --sound "$sound" 2>/dev/null || true
+}
+
+# Surface a captured TTS failure through the Herdr status popup.
+# Usage: report_tts_error <context-label> <captured-stderr-file> <exit-code>
+report_tts_error() {
+  local context="$1"
+  local err_file="$2"
+  local ret="${3:-1}"
+  cat "$err_file" >> /tmp/herdr-tts.log
+  local raw_err
+  raw_err=$(grep -iE "error|exception|fail|traceback" "$err_file" | tail -n 1)
+  if [[ -z "$raw_err" ]]; then
+    raw_err=$(tail -n 1 "$err_file")
+  fi
+  if [[ -z "$raw_err" ]]; then
+    raw_err="Fallo de síntesis o reproducción (código ${ret})"
+  fi
+  local clean_err
+  clean_err=$(echo "$raw_err" | sed -E 's/^[[:space:]]+//' | tr -d '\r\n' | cut -c1-80)
+  notify_herdr "❌ Error en TTS (${context})" "$clean_err" "request"
 }
 
 # Load persisted settings if present
@@ -72,6 +96,7 @@ TTS_AUTO_SCOPE="${TTS_AUTO_SCOPE:-$DEFAULT_AUTO_SCOPE}"
 TTS_AUTO_LANG="${TTS_AUTO_LANG:-$DEFAULT_AUTO_LANG}"
 PODCAST_ENABLED="${PODCAST_ENABLED:-$DEFAULT_PODCAST_ENABLED}"
 PODCAST_PORT="${PODCAST_PORT:-$DEFAULT_PODCAST_PORT}"
+TTS_DEBOUNCE_SECONDS="${TTS_DEBOUNCE_SECONDS:-$DEFAULT_DEBOUNCE_SECONDS}"
 OPENAI_API_KEY="${OPENAI_API_KEY:-$DEFAULT_OPENAI_API_KEY}"
 OPENAI_BASE_URL="${OPENAI_BASE_URL:-$DEFAULT_OPENAI_BASE_URL}"
 OPENAI_TTS_MODEL="${OPENAI_TTS_MODEL:-$DEFAULT_OPENAI_TTS_MODEL}"
@@ -96,6 +121,7 @@ TTS_AUTO_SCOPE="${TTS_AUTO_SCOPE}"
 TTS_AUTO_LANG="${TTS_AUTO_LANG}"
 PODCAST_ENABLED="${PODCAST_ENABLED}"
 PODCAST_PORT="${PODCAST_PORT}"
+TTS_DEBOUNCE_SECONDS="${TTS_DEBOUNCE_SECONDS}"
 OPENAI_API_KEY="${OPENAI_API_KEY}"
 OPENAI_BASE_URL="${OPENAI_BASE_URL}"
 OPENAI_TTS_MODEL="${OPENAI_TTS_MODEL}"
@@ -374,14 +400,17 @@ adjust_rate() {
 }
 
 build_provider_flags() {
-  PROVIDER_FLAGS=(--provider "$TTS_PROVIDER")
-  [[ -n "$OPENAI_API_KEY" ]] && PROVIDER_FLAGS+=(--openai-key "$OPENAI_API_KEY")
-  [[ -n "$OPENAI_BASE_URL" ]] && PROVIDER_FLAGS+=(--openai-base-url "$OPENAI_BASE_URL")
-  [[ -n "$OPENAI_TTS_MODEL" ]] && PROVIDER_FLAGS+=(--openai-model "$OPENAI_TTS_MODEL")
-  [[ -n "$ELEVENLABS_KEY" || -n "$ELEVENLABS_API_KEY" ]] && PROVIDER_FLAGS+=(--eleven-key "${ELEVENLABS_API_KEY:-$ELEVENLABS_KEY}")
-  [[ -n "$ELEVENLABS_MODEL" ]] && PROVIDER_FLAGS+=(--eleven-model "$ELEVENLABS_MODEL")
-  [[ -n "$PIPER_MODEL" ]] && PROVIDER_FLAGS+=(--piper-model "$PIPER_MODEL")
-  [[ "$TTS_AUTO_LANG" == "on" || "$TTS_AUTO_LANG" == "true" || "$TTS_AUTO_LANG" == "1" ]] && PROVIDER_FLAGS+=(--auto-lang)
+  PROVIDER_FLAGS=(--provider "${TTS_PROVIDER:-edge}")
+  [[ -n "${OPENAI_API_KEY:-}" ]] && PROVIDER_FLAGS+=(--openai-key "$OPENAI_API_KEY")
+  [[ -n "${OPENAI_BASE_URL:-}" ]] && PROVIDER_FLAGS+=(--openai-base-url "$OPENAI_BASE_URL")
+  [[ -n "${OPENAI_TTS_MODEL:-}" ]] && PROVIDER_FLAGS+=(--openai-model "$OPENAI_TTS_MODEL")
+  local el_key="${ELEVENLABS_API_KEY:-${ELEVENLABS_KEY:-}}"
+  [[ -n "$el_key" ]] && PROVIDER_FLAGS+=(--eleven-key "$el_key")
+  [[ -n "${ELEVENLABS_MODEL:-}" ]] && PROVIDER_FLAGS+=(--eleven-model "$ELEVENLABS_MODEL")
+  [[ -n "${PIPER_MODEL:-}" ]] && PROVIDER_FLAGS+=(--piper-model "$PIPER_MODEL")
+  if [[ "${TTS_AUTO_LANG:-off}" == "on" || "${TTS_AUTO_LANG:-off}" == "true" || "${TTS_AUTO_LANG:-off}" == "1" ]]; then
+    PROVIDER_FLAGS+=(--auto-lang)
+  fi
 }
 
 speak_text() {
@@ -389,6 +418,9 @@ speak_text() {
   local voice="${2:-$TTS_VOICE}"
   local rate="${3:-$TTS_RATE}"
   local tldr_flag="${4:-}"
+  local target_pane="${5:-}"
+  local agent_kind="${6:-}"
+  local session_id="${7:-}"
 
   # Stop any currently playing audio first (new request takes priority)
   stop_audio
@@ -400,8 +432,25 @@ speak_text() {
     extra_flags+=(--tldr)
   fi
 
-  # Launch audio synthesis asynchronously in background so callers (and Herdr UI) never block
-  "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$voice" --rate "$rate" --max-chars "$TTS_MAX_CHARS" "${extra_flags[@]}" "${PROVIDER_FLAGS[@]}" >> /tmp/herdr-tts.log 2>&1 &
+  # Agent Transcript Connectors (Vision B): the engine owns transcript
+  # knowledge; this host only hands over the agent identity + session id.
+  # Empty values (agy/shell panes) are omitted -> scrollback fallback.
+  [[ -n "$agent_kind" ]] && extra_flags+=(--agent "$agent_kind")
+  [[ -n "$session_id" ]] && extra_flags+=(--session-id "$session_id")
+
+  local err_tmp
+  err_tmp=$(mktemp "/tmp/herdr-tts-err.XXXXXX")
+
+  # Launch audio synthesis asynchronously in background and catch any runtime/synthesis errors
+  (
+    set +e
+    "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$voice" --rate "$rate" --max-chars "$TTS_MAX_CHARS" "${extra_flags[@]}" "${PROVIDER_FLAGS[@]}" > "$err_tmp" 2>&1
+    local ret=$?
+    if [[ $ret -ne 0 ]]; then
+      report_tts_error "${target_pane:-Herdr}" "$err_tmp" "$ret"
+    fi
+    rm -f "$err_tmp"
+  ) &
   local child_pid=$!
   echo "$child_pid" > "$PID_FILE"
   echo "$child_pid" > "$LOCK_FILE"
@@ -410,7 +459,18 @@ speak_text() {
 play_audio_file() {
   local file="$1"
   stop_audio
-  "$VENV_PYTHON" "$ENGINE_SCRIPT" --play-file "$file" >> /tmp/herdr-tts.log 2>&1 &
+  local err_tmp
+  err_tmp=$(mktemp "/tmp/herdr-tts-play-err.XXXXXX")
+  # Playback errors must surface through the status popup, not only the log
+  (
+    set +e
+    "$VENV_PYTHON" "$ENGINE_SCRIPT" --play-file "$file" > "$err_tmp" 2>&1
+    local ret=$?
+    if [[ $ret -ne 0 ]]; then
+      report_tts_error "reproducción local" "$err_tmp" "$ret"
+    fi
+    rm -f "$err_tmp"
+  ) &
   local child_pid=$!
   echo "$child_pid" > "$PID_FILE"
   echo "$child_pid" > "$LOCK_FILE"
@@ -567,6 +627,11 @@ read_pane_text() {
   echo "$raw"
 }
 
+# Structured transcript knowledge lives in the ENGINE (agent-tts): this host
+# only forwards the agent identity + session id via --agent/--session-id, and
+# agent-tts resolves the last assistant message with its connector layer
+# (OpenCode SQLite, Claude Code JSONL) or falls back to scrollback itself.
+
 publish_podcast_episode() {
   local title="$1"
   local description="$2"
@@ -633,14 +698,26 @@ read_current_pane() {
     return 0
   fi
 
+  # Agent identity for the connector layer: the engine (agent-tts) resolves
+  # the transcript itself from these two ids; agy/shell panes yield empty
+  # values and keep the scrollback path with turn extraction.
+  local agent_kind=""
+  local session_id=""
+  local agent_info
+  agent_info=$(herdr agent get "$target_pane" 2>/dev/null) || true
+  if [[ -n "$agent_info" ]]; then
+    agent_kind=$(echo "$agent_info" | jq -r '.result.agent.agent_session.agent // empty' 2>/dev/null || true)
+    session_id=$(echo "$agent_info" | jq -r '.result.agent.agent_session.value // empty' 2>/dev/null || true)
+  fi
+
   if [[ "$tldr_flag" == "--tldr" || "$tldr_flag" == "tldr" ]]; then
     echo "▶️ Resumiendo (TL;DR) y leyendo respuesta en ${target_pane}..."
     notify_herdr "Resumen TL;DR" "Sintetizando resumen para ${target_pane}..."
-    speak_text "$text" "$TTS_VOICE" "$TTS_RATE" "--tldr"
+    speak_text "$text" "$TTS_VOICE" "$TTS_RATE" "--tldr" "$target_pane" "$agent_kind" "$session_id"
   else
     echo "▶️ Transcribiendo y leyendo respuesta en ${target_pane}..."
     notify_herdr "Transcribiendo respuesta" "Sintetizando voz para ${target_pane}..."
-    speak_text "$text"
+    speak_text "$text" "$TTS_VOICE" "$TTS_RATE" "" "$target_pane" "$agent_kind" "$session_id"
   fi
 }
 
@@ -683,11 +760,29 @@ read_current_pane_visual() {
     return 0
   fi
 
+  # Agent identity for the connector layer (see read_current_pane): the
+  # engine resolves the transcript from these ids; scrollback text is the
+  # fallback the engine applies itself when no connector matches.
+  local agent_kind=""
+  local session_id=""
+  local agent_info
+  agent_info=$(herdr agent get "$target_pane" 2>/dev/null) || true
+  if [[ -n "$agent_info" ]]; then
+    agent_kind=$(echo "$agent_info" | jq -r '.result.agent.agent_session.agent // empty' 2>/dev/null || true)
+    session_id=$(echo "$agent_info" | jq -r '.result.agent.agent_session.value // empty' 2>/dev/null || true)
+  fi
+
+  local -a source_flags=()
+  [[ -n "$agent_kind" ]] && source_flags+=(--agent "$agent_kind")
+  [[ -n "$session_id" ]] && source_flags+=(--session-id "$session_id")
+
   stop_audio
   build_provider_flags
 
   echo "▶️ Iniciando lectura sincronizada en ${target_pane}..."
-  "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$TTS_VOICE" --rate "$TTS_RATE" --max-chars "$TTS_MAX_CHARS" "${visual_flags[@]}" "${PROVIDER_FLAGS[@]}"
+  if ! "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$TTS_VOICE" --rate "$TTS_RATE" --max-chars "$TTS_MAX_CHARS" "${visual_flags[@]}" "${source_flags[@]}" "${PROVIDER_FLAGS[@]}"; then
+    notify_herdr "❌ Error en TTS (${target_pane})" "Fallo en reproducción o lectura visual" "request"
+  fi
 }
 
 render_pane_audio() {
@@ -716,10 +811,28 @@ render_pane_audio() {
 render_text_audio() {
   local output_file="${1:-}"
   shift || true
-  local text="$*"
+  local -a source_flags=()
+  local -a text_args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --agent)
+        source_flags+=(--agent "${2:-}")
+        { [[ $# -ge 2 ]] && shift 2; } || shift
+        ;;
+      --session-id)
+        source_flags+=(--session-id "${2:-}")
+        { [[ $# -ge 2 ]] && shift 2; } || shift
+        ;;
+      *)
+        text_args+=("$1")
+        shift
+        ;;
+    esac
+  done
+  local text="${text_args[*]:-}"
 
   if [[ -z "$output_file" ]]; then
-    echo "Uso: herdr-tts --render-text <output_file.mp3> [texto...]" >&2
+    echo "Uso: herdr-tts --render-text <output_file.mp3> [texto...] [--agent <tipo>] [--session-id <id>]" >&2
     return 1
   fi
 
@@ -732,7 +845,7 @@ render_text_audio() {
   fi
 
   build_provider_flags
-  "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$TTS_VOICE" --rate "$TTS_RATE" --max-chars "$TTS_MAX_CHARS" --output "$output_file" --no-play "${PROVIDER_FLAGS[@]}"
+  "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$TTS_VOICE" --rate "$TTS_RATE" --max-chars "$TTS_MAX_CHARS" --output "$output_file" --no-play "${source_flags[@]}" "${PROVIDER_FLAGS[@]}"
 }
 
 toggle_play() {
@@ -814,6 +927,19 @@ show_status() {
     echo "  Auto-lectura: 🔊 Activa en altavoces del PC"
   fi
 
+  # Snooze / mute / debounce gating state
+  local gate_state g_until muted_list
+  gate_state=$(load_snooze_state)
+  g_until=$(jq -r '(.global_snooze_until // 0)' <<<"$gate_state")
+  if (( g_until > $(date +%s) )); then
+    echo "  Snooze global: 😴 activo hasta las $(fmt_epoch_clock "$g_until") (prefix+Z cicla 5m → 30m → 2h → off)"
+  else
+    echo "  Snooze global: ⚪ Desactivado (prefix+Z cicla 5m → 30m → 2h → off)"
+  fi
+  muted_list=$(jq -r '[.panes // {} | to_entries[] | select(.value.muted == true) | .key] | join(", ")' <<<"$gate_state")
+  echo "  Panes silenciados: ${muted_list:-ninguno} (prefix+m, se reactivan al cerrarse el pane)"
+  echo "  Debounce anti-spam: ${TTS_DEBOUNCE_SECONDS}s por (pane, estado) — TTS_DEBOUNCE_SECONDS / --debounce"
+
   echo "  Alcance auto: ${TTS_AUTO_SCOPE} (focused = solo chat activo; all = cualquiera sin solaparse)"
   echo "  Proveedor:    ${TTS_PROVIDER} (edge = Edge Neural TTS gratuito; openai = OpenAI TTS; elevenlabs = ElevenLabs; piper = 100% Offline Local Neural)"
   if [[ "$TTS_PROVIDER" == "openai" ]]; then
@@ -861,6 +987,198 @@ show_status() {
   echo "  Config:       ${CONFIG_FILE}"
 }
 
+# ─── Snooze / Mute / Debounce gating (pre-engine) ────────────
+# Lightweight timestamp state shared by all watchers and CLI toggles.
+# Writes are atomic (temp file + mv in the same directory); reads fail
+# open: a missing or corrupt file is treated as "no snooze, no mute"
+# so speech never breaks because of leftover state.
+
+SNOOZE_STAGE_SECONDS=(300 1800 7200) # 5m → 30m → 2h
+SNOOZE_STAGE_LABELS=("5 minutos" "30 minutos" "2 horas")
+
+fmt_epoch_clock() {
+  local epoch="$1"
+  date -d "@${epoch}" +%H:%M 2>/dev/null || date -r "$epoch" +%H:%M 2>/dev/null || echo "??:??"
+}
+
+load_snooze_state() {
+  if [[ -s "$SNOOZE_STATE_FILE" ]]; then
+    jq -c . "$SNOOZE_STATE_FILE" 2>/dev/null || echo '{}'
+  else
+    echo '{}'
+  fi
+}
+
+save_snooze_state() {
+  local json="$1"
+  local tmp
+  tmp=$(mktemp "${SNOOZE_STATE_FILE}.XXXXXX") 2>/dev/null || return 1
+  printf '%s' "$json" > "$tmp" && mv -f "$tmp" "$SNOOZE_STATE_FILE"
+}
+
+# Cycle snooze for the focused pane (scope=pane) or for all agents
+# (scope=global): 5m → 30m → 2h → off. Announces the new state.
+cycle_snooze() {
+  local scope="${1:-pane}" # pane | global
+  local target_pane=""
+
+  if [[ "$scope" == "pane" ]]; then
+    target_pane=$(get_focused_pane)
+    if [[ -z "$target_pane" ]]; then
+      echo "⚠️ No hay ningún pane enfocado en Herdr" >&2
+      notify_herdr "⚠️ Herdr Voice" "No hay ningún pane enfocado"
+      return 1
+    fi
+  fi
+
+  local now state stage until_ts new_stage new_until msg
+  now=$(date +%s)
+  state=$(load_snooze_state)
+
+  if [[ "$scope" == "pane" ]]; then
+    stage=$(jq -r --arg p "$target_pane" '(.panes[$p].snooze_stage // 0)' <<<"$state")
+    until_ts=$(jq -r --arg p "$target_pane" '(.panes[$p].snooze_until // 0)' <<<"$state")
+  else
+    stage=$(jq -r '(.global_snooze_stage // 0)' <<<"$state")
+    until_ts=$(jq -r '(.global_snooze_until // 0)' <<<"$state")
+  fi
+
+  # An expired snooze counts as off for the cycle
+  (( until_ts <= now )) && stage=0
+
+  new_stage=$(( stage + 1 ))
+  if (( new_stage > ${#SNOOZE_STAGE_SECONDS[@]} )); then
+    new_stage=0
+  fi
+
+  if (( new_stage > 0 )); then
+    new_until=$(( now + SNOOZE_STAGE_SECONDS[new_stage - 1] ))
+    local label="${SNOOZE_STAGE_LABELS[new_stage - 1]}"
+    local clock
+    clock=$(fmt_epoch_clock "$new_until")
+    if [[ "$scope" == "pane" ]]; then
+      msg="😴 Snooze ${target_pane}: ${label} (sin voz hasta las ${clock})"
+    else
+      msg="😴 Snooze GLOBAL: ${label} (todos los agentes en silencio hasta las ${clock})"
+    fi
+  else
+    new_until=0
+    if [[ "$scope" == "pane" ]]; then
+      msg="🔊 Snooze desactivado en ${target_pane}"
+    else
+      msg="🔊 Snooze GLOBAL desactivado (los agentes vuelven a hablar)"
+    fi
+  fi
+
+  if [[ "$scope" == "pane" ]]; then
+    state=$(jq -c --arg p "$target_pane" --argjson stage "$new_stage" --argjson until "$new_until" \
+      '.panes = ((.panes // {}) + {($p): ((.panes[$p] // {}) + {snooze_stage: $stage, snooze_until: $until})})' <<<"$state")
+  else
+    state=$(jq -c --argjson stage "$new_stage" --argjson until "$new_until" \
+      '. + {global_snooze_stage: $stage, global_snooze_until: $until}' <<<"$state")
+  fi
+  save_snooze_state "$state" || true
+
+  echo "$msg"
+  notify_herdr "😴 Herdr TTS Snooze" "$msg"
+}
+
+# Exclusive mute of the focused pane. Tied to the pane lifecycle, not to a
+# timer: the daemon prune drops the flag as soon as the pane disappears
+# from `herdr agent list`, so it auto-clears when the pane closes.
+toggle_pane_mute() {
+  local target_pane
+  target_pane=$(get_focused_pane)
+  if [[ -z "$target_pane" ]]; then
+    echo "⚠️ No hay ningún pane enfocado en Herdr" >&2
+    notify_herdr "⚠️ Herdr Voice" "No hay ningún pane enfocado"
+    return 1
+  fi
+
+  local state muted
+  state=$(load_snooze_state)
+  muted=$(jq -r --arg p "$target_pane" '(.panes[$p].muted // false)' <<<"$state")
+
+  if [[ "$muted" == "true" ]]; then
+    state=$(jq -c --arg p "$target_pane" '.panes[$p].muted = false' <<<"$state")
+    echo "🔊 Voz reactivada en ${target_pane}"
+    notify_herdr "🔊 Herdr TTS" "Voz reactivada en ${target_pane}"
+  else
+    state=$(jq -c --arg p "$target_pane" \
+      '.panes = ((.panes // {}) + {($p): ((.panes[$p] // {}) + {muted: true})})' <<<"$state")
+    echo "🔇 Pane ${target_pane} silenciado (se reactiva al cerrarse el pane)"
+    notify_herdr "🔇 Herdr TTS" "Pane ${target_pane} silenciado (auto al cerrar)"
+  fi
+  save_snooze_state "$state" || true
+}
+
+# Pane lifecycle hook: runs on every daemon sweep with the live agent list.
+# Mute (plus snooze/debounce leftovers) for panes that no longer exist are
+# dropped, which is what makes pane mute auto-clear when the pane closes.
+prune_snooze_state() {
+  local raw_agents="$1"
+  local panes now state pruned
+  panes=$(printf '%s' "$raw_agents" | jq -c '[.result.agents[]?.pane_id | select(. != null)]' 2>/dev/null) || return 0
+  now=$(date +%s)
+  state=$(load_snooze_state)
+  pruned=$(jq -c --argjson panes "$panes" --argjson now "$now" --argjson win "${TTS_DEBOUNCE_SECONDS:-20}" '
+    .panes = ((.panes // {}) | with_entries(select(.key as $k | ($panes | index($k)) != null)))
+    | .debounce = ((.debounce // {}) | with_entries(
+        select((.key as $k | ($panes | index($k)) != null)
+               and (($now - (.value.done // 0)) < $win))))' <<<"$state") || return 0
+  [[ "$pruned" == "$state" ]] || save_snooze_state "$pruned" || true
+}
+
+# Decide whether a watcher done/blocked event must be silenced BEFORE it
+# reaches the synthesis engine. Returns 0 = gate (no speech, no engine
+# call, log only), 1 = allow. Allowed events refresh the (pane, status)
+# debounce ledger; the same pane repeating the same status inside the
+# window is dropped, while a different status (done right after blocked)
+# is never debounced.
+gate_agent_event() {
+  local pane_id="$1"
+  local status="$2"
+  local agent_name="${3:-$pane_id}"
+  local now state muted until_ts last_seen
+
+  now=$(date +%s)
+  state=$(load_snooze_state)
+
+  # 1. Per-pane mute (lifecycle-tied, cleared on pane close)
+  muted=$(jq -r --arg p "$pane_id" '(.panes[$p].muted // false)' <<<"$state")
+  if [[ "$muted" == "true" ]]; then
+    echo "[$(date +%H:%M:%S)] ${agent_name} (${pane_id}): ${status} omitido (pane silenciado con prefix+m)"
+    return 0
+  fi
+
+  # 2. Per-pane snooze
+  until_ts=$(jq -r --arg p "$pane_id" '(.panes[$p].snooze_until // 0)' <<<"$state")
+  if (( until_ts > now )); then
+    echo "[$(date +%H:%M:%S)] ${agent_name} (${pane_id}): ${status} omitido (snooze hasta las $(fmt_epoch_clock "$until_ts"))"
+    return 0
+  fi
+
+  # 3. Global snooze (meetings / focus)
+  until_ts=$(jq -r '(.global_snooze_until // 0)' <<<"$state")
+  if (( until_ts > now )); then
+    echo "[$(date +%H:%M:%S)] ${agent_name} (${pane_id}): ${status} omitido (snooze GLOBAL hasta las $(fmt_epoch_clock "$until_ts"))"
+    return 0
+  fi
+
+  # 4. Anti-spam debounce keyed by (pane_id, status)
+  last_seen=$(jq -r --arg p "$pane_id" --arg s "$status" '(.debounce[$p][$s] // 0)' <<<"$state")
+  if (( now - last_seen < TTS_DEBOUNCE_SECONDS )); then
+    echo "[$(date +%H:%M:%S)] ${agent_name} (${pane_id}): ${status} repetido en menos de ${TTS_DEBOUNCE_SECONDS}s (debounce, omitido)"
+    return 0
+  fi
+
+  # Allowed: record this (pane, status) sighting atomically
+  state=$(jq -c --arg p "$pane_id" --arg s "$status" --argjson t "$now" \
+    '.debounce = ((.debounce // {}) + {($p): ((.debounce[$p] // {}) + {($s): $t})})' <<<"$state")
+  save_snooze_state "$state" || true
+  return 1
+}
+
 # ─── Watcher daemon ──────────────────────────────────────────
 
 watch_agent_pane() {
@@ -878,6 +1196,12 @@ watch_agent_pane() {
     info=$(herdr agent get "$pane_id" 2>/dev/null) || { sleep 3; continue; }
     local new_state
     new_state=$(echo "$info" | jq -r '.result.agent.agent_status // .result.agent_status // "unknown"' 2>/dev/null || echo "unknown")
+    # Agent identity for the connector layer: the engine (agent-tts) owns the
+    # transcript knowledge and resolves the last assistant message itself.
+    local agent_kind
+    agent_kind=$(echo "$info" | jq -r '.result.agent.agent_session.agent // empty' 2>/dev/null || true)
+    local session_id
+    session_id=$(echo "$info" | jq -r '.result.agent.agent_session.value // empty' 2>/dev/null || true)
 
     if [[ "$new_state" != "$prev_state" && "$new_state" != "working" && "$new_state" != "unknown" ]]; then
       local workspace
@@ -887,9 +1211,19 @@ watch_agent_pane() {
 
       echo "[$(date +%H:%M:%S)] ${agent_name} (${pane_id}): ${prev_state} → ${new_state}"
 
-      if [[ "$new_state" == "done" || "$new_state" == "blocked" ]]; then
+      # Pre-engine gating: snooze / mute / debounce. A gated event is
+      # logged and dropped before any synthesis, playback or push; the
+      # audio mutex below is untouched (it only serializes playback).
+      if [[ "$new_state" == "done" || "$new_state" == "blocked" ]] && ! gate_agent_event "$pane_id" "$new_state" "$agent_name"; then
         # 0.6s grace period for multiplexer scrollback flush
         sleep 0.6
+
+        # Connector flags only: the engine resolves the structured transcript
+        # (OpenCode SQLite, Claude Code JSONL) and falls back to the scrollback
+        # text on its own when no connector matches.
+        local -a render_flags=()
+        [[ -n "$agent_kind" ]] && render_flags+=(--agent "$agent_kind")
+        [[ -n "$session_id" ]] && render_flags+=(--session-id "$session_id")
 
         local pane_text
         pane_text=$(read_pane_text "$pane_id")
@@ -897,8 +1231,13 @@ watch_agent_pane() {
         if [[ -n "$pane_text" && ! "$pane_text" =~ ^[[:space:]]*$ ]]; then
           local tmp_audio="/tmp/herdr-tts-${pane_id//:/_}-${BASHPID:-$$}-$RANDOM.mp3"
 
-          # 1. Synthesize audio file once
-          render_text_audio "$tmp_audio" "$pane_text" >/dev/null 2>&1 || true
+          # 1. Synthesize audio file once, surfacing failures through the status popup
+          local synth_err
+          synth_err=$(mktemp "/tmp/herdr-tts-synth-err.XXXXXX")
+          if ! render_text_audio "$tmp_audio" "$pane_text" "${render_flags[@]}" > "$synth_err" 2>&1; then
+            report_tts_error "${pane_id}" "$synth_err" 1
+          fi
+          rm -f "$synth_err"
 
           # 2. Push notification (mobile via ntfy, if configured)
           if [[ -n "$NTFY_TOPIC" ]]; then
@@ -970,6 +1309,9 @@ run_daemon() {
     local raw_agents
     raw_agents=$(herdr agent list 2>/dev/null) || { sleep 4; continue; }
 
+    # Pane lifecycle: drop mute/snooze/debounce state for closed panes
+    prune_snooze_state "$raw_agents"
+
     while IFS=$'\t' read -r pane_id agent_name; do
       [[ -z "$pane_id" || "$pane_id" == "null" ]] && continue
 
@@ -994,6 +1336,9 @@ run_daemon() {
 
 # ─── CLI Entrypoint ──────────────────────────────────────────
 
+# Library mode: when sourced (tests/tooling), only define functions and
+# configuration; dispatch CLI arguments only when executed directly.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 case "${1:-}" in
   --play|-p|--read-current)
     read_current_pane "${2:-}"
@@ -1023,6 +1368,30 @@ case "${1:-}" in
     ;;
   --toggle-auto|--toggle|-t)
     toggle_auto
+    ;;
+  --snooze|--snooze-pane)
+    cycle_snooze pane
+    ;;
+  --snooze-global)
+    cycle_snooze global
+    ;;
+  --mute|--mute-pane)
+    toggle_pane_mute
+    ;;
+  --debounce)
+    if [[ "${2:-}" =~ ^[0-9]+$ ]]; then
+      TTS_DEBOUNCE_SECONDS="$2"
+      save_config
+      echo "✓ Ventana anti-spam (debounce): ${TTS_DEBOUNCE_SECONDS}s por (pane, estado); 0 = desactivado"
+    else
+      echo "Error: --debounce requiere un número de segundos (entero ≥ 0)" >&2
+      exit 1
+    fi
+    ;;
+  --gate-check)
+    # Diagnostic for the pre-engine gate: exit 0 = event would be gated,
+    # exit 1 = event would reach the engine.
+    if gate_agent_event "${2:-}" "${3:-}" "${4:-diagnostic}"; then exit 0; else exit 1; fi
     ;;
   --auto-on)
     rm -f "$AUTO_MUTE_FILE"
@@ -1241,8 +1610,10 @@ case "${1:-}" in
     echo "✓ Puerto de podcast configurado: $PODCAST_PORT"
     ;;
   --podcast-serve|--podcast-server)
-    local port="${2:-$PODCAST_PORT}"
-    local pod_dir="${DATA_DIR}/podcast"
+    # NOTE: no `local` here — this runs at script top level, where `local`
+    # is fatal under `set -euo pipefail`.
+    port="${2:-$PODCAST_PORT}"
+    pod_dir="${DATA_DIR}/podcast"
     mkdir -p "$pod_dir"
     echo "🎙️ Servidor de Podcast RSS iniciado en http://0.0.0.0:${port}/podcast.xml"
     "$VENV_PYTHON" -c "from agent_tts.podcast import run_podcast_server; run_podcast_server(port=${port}, podcast_dir='${pod_dir}')"
@@ -1282,6 +1653,14 @@ Experiencia visual y lectura sincronizada:
   --bionic                 Lectura biónica (fijación en negrita de las primeras letras)
   --zen                    Modo Zen (pantalla completa, alto contraste, sin distracciones)
 
+Silencio granular (snooze y mute por pane, antes de llamar al motor):
+  --snooze                 Snooze del pane enfocado: 5m → 30m → 2h → off (Tecla: prefix+z)
+  --snooze-global          Snooze GLOBAL de todos los agentes, ideal para reuniones (Tecla: prefix+Z)
+  --mute-pane              Silenciar el pane enfocado; se reactiva al cerrarse el pane (Tecla: prefix+m)
+  --debounce <segundos>    Ventana anti-spam por (pane, estado); 0 = desactivado (default: 20)
+  --gate-check <pane> <estado> [agente]
+                           Diagnóstico del gating: exit 0 = evento filtrado, exit 1 = llegaría al motor
+
 Configuración de voz y velocidad:
   --voice <nombre>         Cambiar voz (elvira, alvaro, ximena, dalia, jorge)
   --rate <velocidad>       Cambiar velocidad (+20%, +10%, +0%)
@@ -1320,3 +1699,4 @@ EOF
     run_daemon
     ;;
 esac
+fi

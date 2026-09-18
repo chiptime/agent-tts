@@ -94,6 +94,10 @@ When orchestrating multiple autonomous coding agents in Herdr (Claude Code, Open
                └──────────────────────────────┘
 ```
 
+### Agent Transcript Connectors
+
+herdr-tts is a **thin host**: it only forwards the agent identity + session id (`--agent` / `--session-id`, read from `herdr agent get` → `.result.agent.agent_session`) to the `agent-tts` engine, which **owns the connector layer** and resolves the real last assistant message itself — zero TUI chrome, no regex scraping. Connectors included in the engine today: **OpenCode** (local SQLite transcript, read-only), **Claude Code** (local JSONL sessions, reverse tail scan), and an automatic **terminal scrollback fallback** for panes without a structured source (Antigravity, shells, any agent the engine cannot resolve).
+
 ---
 
 ## 📦 Installation
@@ -185,6 +189,24 @@ command = "herdr-tts --rate-down"
 key = "prefix+v"
 type = "shell"
 command = "herdr-tts --toggle-auto"
+
+# Cycle snooze on the focused pane: 5m → 30m → 2h → off
+[[keys.command]]
+key = "prefix+z"
+type = "shell"
+command = "herdr-tts --snooze-pane"
+
+# Cycle GLOBAL snooze (all agents silenced — meetings / focus)
+[[keys.command]]
+key = "prefix+Z"
+type = "shell"
+command = "herdr-tts --snooze-global"
+
+# Exclusive mute of the focused pane (auto-clears when the pane closes)
+[[keys.command]]
+key = "prefix+m"
+type = "shell"
+command = "herdr-tts --mute-pane"
 ```
 
 Apply the changes to your running Herdr server:
@@ -228,6 +250,10 @@ herdr-tts --rate-up            # Increase voice speed by +10% dynamically (prefi
 herdr-tts --rate-down          # Decrease voice speed by -10% dynamically (prefix+-)
 herdr-tts --player-status      # Live audio position, duration and playback state
 herdr-tts --toggle-auto        # Toggle background auto-speech (muted / active)
+herdr-tts --snooze-pane        # Cycle snooze on the focused pane: 5m → 30m → 2h → off (prefix+z)
+herdr-tts --snooze-global      # Cycle GLOBAL snooze for all agents, e.g. meetings (prefix+Z)
+herdr-tts --mute-pane          # Mute/unmute the focused pane; auto-clears on pane close (prefix+m)
+herdr-tts --debounce 20        # Anti-spam window (seconds) per (pane, status); 0 disables
 herdr-tts --provider edge      # Select TTS provider: edge (free default), openai, elevenlabs, piper (offline)
 herdr-tts --piper-model <path> # Set local Piper ONNX model path (.onnx)
 herdr-tts --openai-key <key>   # Set OpenAI API key for tts-1 / tts-1-hd
@@ -373,8 +399,8 @@ We have an active vision to expand `herdr-tts` into the definitive audio layer f
   - Quick hotkeys to step speed up or down on the fly (`prefix + =` / `prefix + -` for +10% / -10% increments) with instant notification feedback.
 - [x] 🪟 **Native Cross-Platform Audio Engine (Linux, macOS, Windows):**
   - Pure C audio playback via `miniaudio` directly outputting to PulseAudio/PipeWire (Linux), CoreAudio (macOS), and WASAPI (Windows) without requiring external media players (`mpv`, `paplay`, `afplay`).
-- [x] 🎙️ **Modular TTS Provider Backend (Edge, ElevenLabs & OpenAI TTS):**
-  - Modular provider architecture allowing users with API keys to choose ultra-realistic voice models (OpenAI `tts-1`, ElevenLabs) while preserving zero-cost Microsoft Edge Neural TTS as default.
+- [x] 🎙️ **Modular TTS Provider Backend (Edge, OpenAI, ElevenLabs & Piper):**
+  - Modular provider architecture allowing users with API keys to choose ultra-realistic voice models (OpenAI `tts-1`, ElevenLabs) while preserving zero-cost Microsoft Edge Neural TTS as default, plus 100% offline local synthesis via Piper ONNX.
 - [x] 📦 **Standalone Core Library Decoupling (`agent-tts`):**
   - Extracted the playback engine, IPC socket server, provider abstractions, audio mutex lock, and text sanitizers into an independent, standalone Python package / CLI ([`chiptime/agent-tts`](https://github.com/chiptime/agent-tts)). `herdr-tts` now consumes it as a clean upstream dependency.
 - [x] 🖍️ **Visual Word & Sentence Highlighting:**
@@ -396,6 +422,16 @@ We have an active vision to expand `herdr-tts` into the definitive audio layer f
   - Export and sync generated audio sessions into a standard RSS 2.0 / iTunes XML feed with built-in zero-dependency HTTP server (`herdr-tts --podcast-serve`, `herdr-tts --podcast on`). Listen on mobile apps like Pocket Casts, Overcast, or Apple Podcasts.
 - [x] 🔒 **Zero-Cloud Local Neural Synthesis (Piper / Kokoro / Sherpa-ONNX):**
   - Fully offline, on-device neural TTS engine running 100% on CPU without requiring internet access or third-party APIs (`herdr-tts --provider piper`, `agent-tts --provider piper`).
+- [x] 🚀 **Low-Latency Streaming Playback:**
+  - Long agent responses now begin vocalizing in ~300–600ms because `herdr-tts` inherits `agent-tts`'s pipelined streaming synthesis: the first sentence group plays while the rest is still synthesizing.
+- [x] 🔕 **Granular Per-Pane Snooze & Temporary Mute:**
+  - Independent time-based snooze cycling per pane (`prefix + z`: 5m, 30m, 2h, off), global snooze (`prefix + Z`) and pane-level mute (`prefix + m`, auto-cleared when the pane closes), preventing notification fatigue in multi-agent workspaces without muting other active panes (clean-room design using local timestamp state).
+- [x] ⏱️ **Anti-Spam State Debouncing:**
+  - Configurable debounce window (`debounce_seconds = 20` via `TTS_DEBOUNCE_SECONDS` / `--debounce`) preventing rapid re-triggering of repeated completion or blocked states from the same pane within a short time window.
+- [ ] 📊 **Interactive TUI Dashboard Pane:**
+  - Native Herdr dashboard pane entrypoint displaying live agent speech states, recent audio logs, countdowns for snoozed panes, volume controls, and provider/voice toggles.
+- [ ] 🎙️ **Push-to-Talk Two-Way Intercom:**
+  - Dictate instructions directly to the focused agent pane via hotkey (`prefix + c`), transcribing locally via lightweight fast STT (Whisper.cpp / whisper-rs) and injecting the prompt directly into Herdr's active pane.
 
 
 
