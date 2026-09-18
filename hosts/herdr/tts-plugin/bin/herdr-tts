@@ -644,6 +644,52 @@ read_current_pane() {
   fi
 }
 
+read_current_pane_visual() {
+  local -a visual_flags=()
+  local target_pane=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --highlight|-H) visual_flags+=(--highlight); shift ;;
+      --autoscroll) visual_flags+=(--autoscroll); shift ;;
+      --bionic) visual_flags+=(--bionic); shift ;;
+      --zen) visual_flags+=(--zen); shift ;;
+      --tldr|--summarize) visual_flags+=(--tldr); shift ;;
+      *)
+        if [[ -z "$target_pane" && "$1" != -* ]]; then
+          target_pane="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$target_pane" ]]; then
+    target_pane=$(get_focused_pane)
+  fi
+
+  if [[ -z "$target_pane" ]]; then
+    echo "⚠️ No hay ningún pane enfocado en Herdr" >&2
+    notify_herdr "⚠️ Herdr Voice" "No hay ningún pane enfocado"
+    return 1
+  fi
+
+  local text
+  text=$(read_pane_text "$target_pane")
+
+  if [[ -z "$text" || "$text" =~ ^[[:space:]]*$ ]]; then
+    echo "ℹ️ El pane ${target_pane} no tiene contenido para leer"
+    notify_herdr "ℹ️ Herdr Voice" "El pane ${target_pane} no tiene contenido para leer"
+    return 0
+  fi
+
+  stop_audio
+  build_provider_flags
+
+  echo "▶️ Iniciando lectura sincronizada en ${target_pane}..."
+  "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$TTS_VOICE" --rate "$TTS_RATE" --max-chars "$TTS_MAX_CHARS" "${visual_flags[@]}" "${PROVIDER_FLAGS[@]}"
+}
+
 render_pane_audio() {
   local target_pane="${1:-}"
   local output_file="${2:-}"
@@ -952,6 +998,18 @@ case "${1:-}" in
   --play|-p|--read-current)
     read_current_pane "${2:-}"
     ;;
+  --highlight|-H)
+    read_current_pane_visual "$@"
+    ;;
+  --autoscroll)
+    read_current_pane_visual "$@"
+    ;;
+  --bionic)
+    read_current_pane_visual "$@"
+    ;;
+  --zen)
+    read_current_pane_visual "$@"
+    ;;
   --stop|-s)
     stop_audio
     ;;
@@ -1217,6 +1275,12 @@ Acciones principales:
   --play (-p)              Leer la última respuesta del chat enfocado
   --toggle-auto (-t)       Alternar lectura automática de fondo (Tecla: prefix+v)
   --scope focused|all      'focused' (solo chat activo) | 'all' (cualquiera sin solapar)
+
+Experiencia visual y lectura sincronizada:
+  --highlight (-H)         Leer respuesta en terminal con resaltado karaoke en tiempo real
+  --autoscroll             Leer con auto-scroll sincronizado al compás de la voz
+  --bionic                 Lectura biónica (fijación en negrita de las primeras letras)
+  --zen                    Modo Zen (pantalla completa, alto contraste, sin distracciones)
 
 Configuración de voz y velocidad:
   --voice <nombre>         Cambiar voz (elvira, alvaro, ximena, dalia, jorge)

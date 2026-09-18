@@ -220,6 +220,10 @@ herdr-tts --next-sentence      # Jump to next sentence (prefix+n)
 herdr-tts --prev-sentence      # Jump to previous sentence (prefix+N)
 herdr-tts --next-paragraph     # Jump to next paragraph in active playback
 herdr-tts --prev-paragraph     # Jump to previous paragraph in active playback
+herdr-tts --highlight          # Read focused chat with real-time karaoke word highlighting
+herdr-tts --autoscroll         # Read focused chat with synchronized auto-scroll reader
+herdr-tts --bionic             # Read focused chat with Bionic Reading (initial fixation bolding)
+herdr-tts --zen                # Distraction-free high-contrast Zen Mode teleprompter
 herdr-tts --rate-up            # Increase voice speed by +10% dynamically (prefix+=)
 herdr-tts --rate-down          # Decrease voice speed by -10% dynamically (prefix+-)
 herdr-tts --player-status      # Live audio position, duration and playback state
