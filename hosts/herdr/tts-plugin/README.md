@@ -370,8 +370,8 @@ We have an active vision to expand `herdr-tts` into the definitive audio layer f
   - Expanded developer lexicon and SSML phonetic normalization for developer jargon (PostgreSQL, Kubernetes, JWT, UUID, SSH, TLS, JSON, YAML, SQL, IPC, stdout/stderr, git rebase/merge, semver).
   - Conversational formatting for hardware/performance units (`ms`, `s`, `MB`, `GB`, `GHz`, `kHz`, `kbps`) and semantic version tags (`v1.2.3`).
   - User-extensible custom dictionary support via `~/.config/agent-tts/lexicon.json` or `~/.config/herdr-tts/lexicon.json`.
-- [ ] 🌐 **Automatic Language Detection & Dynamic Voice Switching:**
-  - Detect embedded language changes (e.g. English technical snippets or code documentation inside a Spanish explanation) and switch neural voices on the fly.
+- [x] 🌐 **Automatic Language Detection & Dynamic Voice Switching:**
+  - Fast, zero-dependency statistical language classifier detects embedded English code snippets, error traces, or documentation inside Spanish explanations and switches neural voices dynamically on the fly (`--auto-lang`, `herdr-tts --auto-lang on`).
 - [ ] 📻 **Private Podcast / Audio RSS Feed:**
   - Export and sync generated audio sessions into an optional local or remote private RSS podcast feed for listening on mobile podcast apps (Pocket Casts, Overcast, Apple Podcasts).
 - [ ] 🔒 **Zero-Cloud Local Neural Synthesis (Piper / Kokoro / Sherpa-ONNX):**
