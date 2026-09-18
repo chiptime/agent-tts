@@ -19,10 +19,12 @@ Furthermore, raw agent terminal outputs (from Claude Code, OpenCode, Herdr, Aide
 
 1. **Interactive IPC Controls:** Seek backward or forward (`seek -10`, `seek +10`), pause, resume, or stop on the fly via a high-speed Unix domain socket without restarting audio or blocking callers.
 2. **Smart Auto-Rewind on Resume:** When resuming playback after being paused, `agent-tts` automatically rewinds 2–3 seconds to help you effortlessly regain your cognitive train of thought.
-3. **Pure C Native Audio (No Media Player Dependencies):** Direct low-latency PCM streaming via `miniaudio` into PulseAudio/PipeWire (Linux), CoreAudio (macOS), and WASAPI (Windows). No external `mpv`, `paplay`, or `afplay` processes needed.
-4. **Deep Terminal & Agent Prose Sanitization:** Strips ANSI styling, box borders, token usage telemetry, and converts Markdown/ASCII tables into conversational pauses.
-5. **Modular Synthesis Providers:** Works out of the box with zero configuration using high-quality Microsoft Edge Neural voices (100% free), with optional drop-in support for OpenAI Audio TTS (`tts-1`/`tts-1-hd`) and ElevenLabs.
-6. **Tiny Footprint:** Runs in < 2.5 MB RAM with zero GPU/VRAM requirement.
+3. **Semantic Navigation:** Jump between sentences accurately (`--next-sentence`, `--prev-sentence`) instead of blindly seeking arbitrary seconds.
+4. **Visual Karaoke & Highlighting:** Real-time ANSI word and sentence highlighting in your terminal synchronized with audio (`--highlight`).
+5. **Pure C Native Audio (No Media Player Dependencies):** Direct low-latency PCM streaming via `miniaudio` into PulseAudio/PipeWire (Linux), CoreAudio (macOS), and WASAPI (Windows). No external `mpv`, `paplay`, or `afplay` processes needed.
+6. **Deep Terminal & Agent Prose Sanitization:** Strips ANSI styling, box borders, token usage telemetry, and converts Markdown/ASCII tables into conversational pauses.
+7. **Modular Synthesis Providers:** Works out of the box with zero configuration using high-quality Microsoft Edge Neural voices (100% free), with optional drop-in support for OpenAI Audio TTS (`tts-1`/`tts-1-hd`) and ElevenLabs.
+8. **Tiny Footprint:** Runs in < 2.5 MB RAM with zero GPU/VRAM requirement.
 
 ---
 
@@ -47,8 +49,8 @@ pip install -e .
 ### Basic Speech & Piping
 
 ```bash
-# Speak text directly
-agent-tts "Hola, la compilación ha terminado con éxito."
+# Speak text directly with live visual word highlighting
+agent-tts "Hola, la compilación ha terminado con éxito." --highlight
 
 # Pipe output from any command or agent
 git status | agent-tts
@@ -58,14 +60,19 @@ cat response.md | agent-tts --voice alvaro --rate +15%
 agent-tts "Report summary" --output /tmp/report.mp3 --no-play
 
 # Play an existing MP3 through the interactive player
-agent-tts --play-file /tmp/report.mp3
+agent-tts --play-file /tmp/report.mp3 --highlight
 ```
 
-### Interactive IPC Control (Seek, Pause, Status)
+### Interactive IPC & Semantic Sentence Navigation
 
 While `agent-tts` is speaking in the background, you can control playback instantly from another shell, tmux keybinding, or script:
 
 ```bash
+# Jump by sentence (Semantic Navigation)
+agent-tts --next-sentence
+agent-tts --prev-sentence
+agent-tts --current-sentence
+
 # Toggle pause / resume
 agent-tts --ipc-cmd toggle-pause
 
@@ -73,9 +80,9 @@ agent-tts --ipc-cmd toggle-pause
 agent-tts --ipc-cmd "seek +10"
 agent-tts --ipc-cmd "seek -10"
 
-# Check live playback position and duration
+# Check live playback position, current sentence, and duration
 agent-tts --ipc-cmd status
-# Output: status=playing pos=14.20 total=45.60 label=Audio
+# Output: status=playing pos=14.20 total=45.60 sent_idx=2 sentence=Compilación terminada con éxito.
 
 # Stop immediately
 agent-tts --ipc-cmd stop

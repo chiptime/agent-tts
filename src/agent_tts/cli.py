@@ -86,6 +86,7 @@ async def speak(
     eleven_key: Optional[str] = None,
     eleven_model: Optional[str] = None,
     auto_rewind_sec: float = 2.0,
+    highlight: bool = False,
 ) -> None:
     """Synthesizes and plays audio with interactive controls."""
     session = None
@@ -97,7 +98,11 @@ async def speak(
                 f.write(str(os.getpid()))
         except OSError:
             pass
-        session = AudioSession(label=f"{len(text)} chars", auto_rewind_sec=auto_rewind_sec)
+        session = AudioSession(
+            label=f"{len(text)} chars",
+            auto_rewind_sec=auto_rewind_sec,
+            highlight=highlight,
+        )
         session.start_ipc()
 
     try:
@@ -123,11 +128,19 @@ async def speak(
         if not mp3_data or (session and session.state.get("stop")):
             return
 
+        if hasattr(mp3_data, "boundaries") and mp3_data.boundaries and session:
+            session.boundaries = mp3_data.boundaries
+
         if no_play:
             return
 
         decoded = miniaudio.decode(mp3_data)
         if session:
+            if not session.boundaries.sentences:
+                from agent_tts.boundaries import estimate_boundaries_from_text
+                frame_size = session.nchannels * session.bytes_per_sample if session.nchannels else 4
+                total_duration = (len(decoded.samples) // frame_size) / float(decoded.sample_rate)
+                session.boundaries = estimate_boundaries_from_text(text, total_duration)
             session.play(decoded)
     except Exception as e:
         print(f"Playback error: {e}", file=sys.stderr)
@@ -148,6 +161,10 @@ def main():
     parser.add_argument("--output", "-o", help="Save synthesized MP3 audio to file")
     parser.add_argument("--no-play", action="store_true", help="Do not play audio locally")
     parser.add_argument("--play-file", help="Play an existing MP3 file directly without re-synthesizing")
+    parser.add_argument("--highlight", action="store_true", help="Enable live word and sentence highlighting in terminal")
+    parser.add_argument("--next-sentence", action="store_true", help="Jump to next sentence in active playback")
+    parser.add_argument("--prev-sentence", action="store_true", help="Jump to previous sentence in active playback")
+    parser.add_argument("--current-sentence", action="store_true", help="Get current sentence text from active playback")
     parser.add_argument(
         "--ipc-cmd",
         help="Send an IPC command to the active audio player (e.g. 'seek +10', 'seek -10', 'toggle-pause', 'status')",
@@ -166,8 +183,16 @@ def main():
 
     args = parser.parse_args()
 
-    if args.ipc_cmd:
-        res = send_ipc_command(args.ipc_cmd)
+    ipc_cmd = args.ipc_cmd
+    if args.next_sentence:
+        ipc_cmd = "next-sentence"
+    elif args.prev_sentence:
+        ipc_cmd = "prev-sentence"
+    elif args.current_sentence:
+        ipc_cmd = "sentence"
+
+    if ipc_cmd:
+        res = send_ipc_command(ipc_cmd)
         if res is not None:
             print(res)
             sys.exit(0)
@@ -176,7 +201,7 @@ def main():
             sys.exit(1)
 
     if args.play_file:
-        play_mp3_file(args.play_file, label=os.path.basename(args.play_file))
+        play_mp3_file(args.play_file, label=os.path.basename(args.play_file), highlight=args.highlight)
         sys.exit(0)
 
     input_text = ""
@@ -206,6 +231,7 @@ def main():
                 openai_model=args.openai_model,
                 eleven_key=args.eleven_key,
                 eleven_model=args.eleven_model,
+                highlight=args.highlight,
             )
         )
     except KeyboardInterrupt:

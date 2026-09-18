@@ -7,6 +7,7 @@ import time
 from typing import Optional
 import miniaudio
 
+from agent_tts.boundaries import BoundaryMap
 from agent_tts.constants import IPC_SOCKET, LOCK_FILE, PID_FILE
 from agent_tts.ipc import IPCServer
 
@@ -24,11 +25,19 @@ def cleanup_locks() -> None:
 
 
 class AudioSession:
-    """Interactive PCM audio playback session with frame-accurate seek and smart auto-rewind."""
+    """Interactive PCM audio playback session with frame-accurate seek, smart auto-rewind, and sentence navigation."""
 
-    def __init__(self, label: str = "Audio", auto_rewind_sec: float = 2.0):
+    def __init__(
+        self,
+        label: str = "Audio",
+        auto_rewind_sec: float = 2.0,
+        boundaries: Optional[BoundaryMap] = None,
+        highlight: bool = False,
+    ):
         self.label = label
         self.auto_rewind_sec = auto_rewind_sec
+        self.boundaries = boundaries or BoundaryMap()
+        self.highlight = highlight
         self.state = {
             "status": "synthesizing",
             "pos": 0.0,
@@ -63,7 +72,10 @@ class AudioSession:
             with self.lock:
                 pos = (self.current_frame / float(self.sample_rate)) if self.sample_rate else 0.0
                 total = (self.total_frames / float(self.sample_rate)) if self.sample_rate else 0.0
-                return f"status={self.state['status']} pos={pos:.2f} total={total:.2f} label={self.state['label']}"
+                sent = self.boundaries.get_sentence_at(pos)
+                sent_clean = sent.text.replace("\n", " ").strip() if sent else ""
+                sent_idx = sent.index if sent else -1
+                return f"status={self.state['status']} pos={pos:.2f} total={total:.2f} sent_idx={sent_idx} sentence={sent_clean}"
 
         elif action == "pause":
             with self.lock:
@@ -125,6 +137,40 @@ class AudioSession:
         elif action == "forward":
             return self.handle_ipc_command("seek +10")
 
+        elif action in ("next-sentence", "next_sentence", "next-sent"):
+            with self.lock:
+                pos = (self.current_frame / float(self.sample_rate)) if self.sample_rate else 0.0
+                next_sent = self.boundaries.get_next_sentence(pos)
+                if next_sent:
+                    self.current_frame = int(next_sent.start_sec * self.sample_rate)
+                    text_clean = next_sent.text.replace("\n", " ").strip()
+                    return f"status={self.state['status']} pos={next_sent.start_sec:.2f} sent_idx={next_sent.index} sentence={text_clean}"
+                return "status=playing at_end=true"
+
+        elif action in ("prev-sentence", "prev_sentence", "prev-sent"):
+            with self.lock:
+                pos = (self.current_frame / float(self.sample_rate)) if self.sample_rate else 0.0
+                prev_sent = self.boundaries.get_prev_sentence(pos)
+                if prev_sent:
+                    self.current_frame = int(prev_sent.start_sec * self.sample_rate)
+                    text_clean = prev_sent.text.replace("\n", " ").strip()
+                    return f"status={self.state['status']} pos={prev_sent.start_sec:.2f} sent_idx={prev_sent.index} sentence={text_clean}"
+                return "status=playing at_start=true"
+
+        elif action in ("sentence", "current-sentence", "current_sentence"):
+            with self.lock:
+                pos = (self.current_frame / float(self.sample_rate)) if self.sample_rate else 0.0
+                cur_sent = self.boundaries.get_sentence_at(pos)
+                if cur_sent:
+                    text_clean = cur_sent.text.replace("\n", " ").strip()
+                    return f"sent_idx={cur_sent.index} start={cur_sent.start_sec:.2f} end={cur_sent.end_sec:.2f} text={text_clean}"
+                return "sent_idx=-1 text="
+
+        elif action in ("highlight", "current-highlight"):
+            with self.lock:
+                pos = (self.current_frame / float(self.sample_rate)) if self.sample_rate else 0.0
+                return self.boundaries.format_highlighted_sentence(pos, ansi=True)
+
         return f"ERR: unknown command '{action}'"
 
     def play(self, decoded) -> None:
@@ -176,11 +222,34 @@ class AudioSession:
 
         try:
             device.start(stream_generator)
+            last_hl = ""
+            last_sent_idx = -1
             while not self.state["stop"] and self.current_frame < self.total_frames:
-                time.sleep(0.05)
+                if self.highlight and self.boundaries.sentences:
+                    with self.lock:
+                        pos = (self.current_frame / float(self.sample_rate)) if self.sample_rate else 0.0
+                    sent = self.boundaries.get_sentence_at(pos)
+                    curr_sent_idx = sent.index if sent else -1
+                    if curr_sent_idx != last_sent_idx and last_sent_idx != -1:
+                        # Advance to new line when crossing sentence boundary
+                        sys.stdout.write("\n")
+                        sys.stdout.flush()
+                        last_sent_idx = curr_sent_idx
+                    elif last_sent_idx == -1 and curr_sent_idx != -1:
+                        last_sent_idx = curr_sent_idx
+
+                    hl = self.boundaries.format_highlighted_sentence(pos, ansi=True)
+                    if hl != last_hl:
+                        sys.stdout.write(f"\r\x1b[K{hl}")
+                        sys.stdout.flush()
+                        last_hl = hl
+                time.sleep(0.04)
         except Exception as e:
             print(f"Device error: {e}", file=sys.stderr)
         finally:
+            if self.highlight:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
             try:
                 device.stop()
                 device.close()
@@ -197,7 +266,13 @@ class AudioSession:
             self.ipc_server = None
 
 
-def play_mp3_data(mp3_data: bytes, label: str = "Audio", auto_rewind_sec: float = 2.0) -> None:
+def play_mp3_data(
+    mp3_data: bytes,
+    label: str = "Audio",
+    auto_rewind_sec: float = 2.0,
+    boundaries: Optional[BoundaryMap] = None,
+    highlight: bool = False,
+) -> None:
     """Decodes in-memory MP3 bytes and plays them through a tracked AudioSession."""
     global _current_session
     try:
@@ -208,7 +283,15 @@ def play_mp3_data(mp3_data: bytes, label: str = "Audio", auto_rewind_sec: float 
     except OSError:
         pass
 
-    session = AudioSession(label=label, auto_rewind_sec=auto_rewind_sec)
+    if boundaries is None and hasattr(mp3_data, "boundaries"):
+        boundaries = getattr(mp3_data, "boundaries")
+
+    session = AudioSession(
+        label=label,
+        auto_rewind_sec=auto_rewind_sec,
+        boundaries=boundaries,
+        highlight=highlight,
+    )
     _current_session = session
     session.start_ipc()
     try:
@@ -222,10 +305,22 @@ def play_mp3_data(mp3_data: bytes, label: str = "Audio", auto_rewind_sec: float 
         cleanup_locks()
 
 
-def play_mp3_file(mp3_path: str, label: str = "Audio", auto_rewind_sec: float = 2.0) -> None:
+def play_mp3_file(
+    mp3_path: str,
+    label: str = "Audio",
+    auto_rewind_sec: float = 2.0,
+    boundaries: Optional[BoundaryMap] = None,
+    highlight: bool = False,
+) -> None:
     """Decodes an existing MP3 file to PCM in memory and plays via native player."""
     if not os.path.exists(mp3_path):
         return
     with open(mp3_path, "rb") as f:
         data = f.read()
-    play_mp3_data(data, label=label or os.path.basename(mp3_path), auto_rewind_sec=auto_rewind_sec)
+    play_mp3_data(
+        data,
+        label=label or os.path.basename(mp3_path),
+        auto_rewind_sec=auto_rewind_sec,
+        boundaries=boundaries,
+        highlight=highlight,
+    )

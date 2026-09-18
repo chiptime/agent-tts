@@ -8,6 +8,7 @@ from typing import Callable, Optional
 import urllib.error
 import urllib.request
 
+from agent_tts.boundaries import BoundaryMap, SynthesisResult, estimate_boundaries_from_text
 from agent_tts.providers.base import TTSProvider, parse_rate_to_multiplier
 
 
@@ -85,9 +86,15 @@ class OpenAITTSProvider(TTSProvider):
         volume: str = "+0%",
         pitch: str = "+0Hz",
         stop_checker: Optional[Callable[[], bool]] = None,
-    ) -> bytes:
+    ) -> SynthesisResult:
         if stop_checker and stop_checker():
-            return b""
+            return SynthesisResult(b"", BoundaryMap())
         target_voice = self.resolve_voice(voice)
         speed = parse_rate_to_multiplier(rate)
-        return await asyncio.to_thread(self._sync_request, text, target_voice, speed)
+        mp3_data = await asyncio.to_thread(self._sync_request, text, target_voice, speed)
+        if not mp3_data:
+            return SynthesisResult(b"", BoundaryMap())
+
+        est_duration = max(1.0, len(text) / (15.0 * speed))
+        boundaries = estimate_boundaries_from_text(text, est_duration)
+        return SynthesisResult(mp3_data, boundaries)
