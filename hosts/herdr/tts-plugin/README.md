@@ -267,6 +267,7 @@ herdr-tts --collie-url <url>   # Alias for --web-url (sets action button to 'Abr
 herdr-tts --click-redirect on  # Optional: tap notification body to open web URL directly (default: off)
 herdr-tts --render-pane <pane> # Export clean assistant speech of a pane directly to .mp3
 herdr-tts --speak "Hello"      # Synthesize custom text directly
+herdr-tts --dashboard          # Live TUI dashboard pane: snooze countdowns, per-pane gating, audio history
 ```
 
 ### Handy Shell Aliases
@@ -359,6 +360,24 @@ herdr-tts --web-url off
 
 ---
 
+## 🪟 Audio en Windows nativo (opcional)
+
+Si usas WSL2, `herdr-tts` puede enviar el audio al host Windows y reproducirlo allí de forma nativa (WASAPI), sin PulseAudio ni servidores intermedios:
+
+1. **Instala el motor en Windows:** `pip install agent-tts` (desde PowerShell en Windows).
+2. **Arranca el servidor de audio en Windows:** `agent-tts --winhost` (queda a la escucha en el puerto 7717).
+3. **Configura el modo en WSL:** añade `TTS_PLAYBACK="winhost"` en `~/.config/herdr-tts/config.env`.
+
+Modos disponibles de `TTS_PLAYBACK`:
+
+* `local` (por defecto): reproduce en el propio WSL; comportamiento idéntico al actual.
+* `winhost`: envía el PCM por TCP al servidor Windows. Si el servidor no responde, hay **fallback automático** a PowerShell (modo cero instalación) con un aviso en stderr.
+* `wsl-ps`: fuerza el modo cero instalación sin servidor: un único `powershell.exe` persistente por ejecución recibe los grupos de audio por stdin y los reproduce casi sin pausas entre frases.
+
+> ⚠️ **Seguridad:** `agent-tts --winhost` escucha por defecto en `0.0.0.0:7717` (puerto abierto en la LAN). Restringe el bind con `AGENT_TTS_WINHOST_BIND=127.0.0.1` o usa un firewall si no confías en tu red.
+
+---
+
 ## ⚙️ Configuration
 
 Persisted options live at `~/.config/herdr-tts/config.env`:
@@ -369,6 +388,7 @@ TTS_VOICE="elvira"
 TTS_RATE="+20%"
 TTS_MAX_CHARS="0"           # 0 = unlimited
 TTS_AUTO_SCOPE="focused"    # "focused" (recommended) or "all"
+TTS_PLAYBACK="local"        # "local", "winhost" (native audio on Windows host) or "wsl-ps"
 
 # Optional Cloud TTS API Keys & Models:
 OPENAI_API_KEY=""
@@ -386,6 +406,29 @@ WEB_URL=""                  # Or "https://my-desktop.tailscale.net"
 WEB_LABEL="Collie"
 CLICK_REDIRECT="off"        # "off" = tap opens ntfy player; "on" = tap opens web URL
 ```
+
+---
+
+## 📊 Panel de control (dashboard, v1)
+
+`herdr-tts --dashboard` arranca un panel TUI compacto (ANSI puro, sin dependencias externas) pensado para ejecutarse como pane de Herdr (entrypoint `[[panes]]` del plugin). Refresca ~1 vez por segundo y muestra:
+
+* **Estado global:** snooze global con cuenta atrás, motor (reproduciendo / en reposo según el lock local), auto-lectura, proveedor/voz/velocidad, modo de playback y ventana de debounce.
+* **Panes conocidos:** una línea por pane con su estado de voz — ▶️ activo, 🔇 SILENCIADO o 😴 SNOOZED con cuenta atrás mm:ss — más el último evento visto por el ledger de debounce y si el anti-spam sigue activo.
+* **Historial de audio (últimos 20):** cada audio renderizado se registra en `${XDG_STATE_HOME:-~/.local/state}/herdr-tts/history.log` (TSV: `fecha, pane, agente, duración`; el host escribe una línea por render) y se muestra del más reciente al más antiguo.
+
+El panel es de **solo lectura** frente al gate/mutex/watcher: toda mutación pasa por las funciones y flags existentes (`--mute-pane`, `--snooze-pane`, `--snooze-global`, `--rate-up/down`).
+
+| Tecla | Acción |
+| :--- | :--- |
+| `q` | Salir |
+| `j` / `k` | Mover el cursor entre panes |
+| `m` | Silenciar / reactivar el pane seleccionado (auto-clear al cerrar el pane) |
+| `z` | Ciclar snooze del pane seleccionado: 5m → 30m → 2h → off |
+| `Z` | Ciclar snooze GLOBAL (todos los agentes) |
+| `+` / `-` | Velocidad de voz +10% / −10% (persistida en config) |
+
+> **Alcance v1:** el panel no consulta el IPC del motor de audio (estado del motor vía lock local y línea estática de proveedor/voz del config) y la duración aún no se registra en el historial (columna `-`). Refresco configurable con `HERDR_TTS_DASHBOARD_REFRESH` (segundos, default `1`).
 
 ---
 
@@ -428,8 +471,8 @@ We have an active vision to expand `herdr-tts` into the definitive audio layer f
   - Independent time-based snooze cycling per pane (`prefix + z`: 5m, 30m, 2h, off), global snooze (`prefix + Z`) and pane-level mute (`prefix + m`, auto-cleared when the pane closes), preventing notification fatigue in multi-agent workspaces without muting other active panes (clean-room design using local timestamp state).
 - [x] ⏱️ **Anti-Spam State Debouncing:**
   - Configurable debounce window (`debounce_seconds = 20` via `TTS_DEBOUNCE_SECONDS` / `--debounce`) preventing rapid re-triggering of repeated completion or blocked states from the same pane within a short time window.
-- [ ] 📊 **Interactive TUI Dashboard Pane:**
-  - Native Herdr dashboard pane entrypoint displaying live agent speech states, recent audio logs, countdowns for snoozed panes, volume controls, and provider/voice toggles.
+- [x] 📊 **Interactive TUI Dashboard Pane:**
+  - Native Herdr dashboard pane entrypoint displaying live agent speech states, recent audio logs, countdowns for snoozed panes, volume controls, and provider/voice toggles. (v1: pure-ANSI clear+redraw, read-only gating view, controls reuse the existing mute/snooze/rate functions; audio history via `${XDG_STATE_HOME:-~/.local/state}/herdr-tts/history.log`.)
 - [ ] 🎙️ **Push-to-Talk Two-Way Intercom:**
   - Dictate instructions directly to the focused agent pane via hotkey (`prefix + c`), transcribing locally via lightweight fast STT (Whisper.cpp / whisper-rs) and injecting the prompt directly into Herdr's active pane.
 
