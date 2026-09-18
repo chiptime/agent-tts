@@ -31,6 +31,29 @@ Furthermore, raw agent terminal outputs (from Claude Code, OpenCode, Herdr, Aide
 
 ---
 
+## 🔌 Agent Connectors
+
+`agent-tts` is the universal voice layer for terminal coding agents, and the missing ecosystem piece is the connector that answers **"what did the agent just say?"** per tool. Text-to-audio is a solved problem; transcript/source knowledge lives here, in the engine (Vision B contract):
+
+> Hosts pass identity — the engine owns the transcript.
+
+Pass `--agent <tool> --session-id <id>` and `agent-tts` itself reads the real last assistant message from that tool's local structured transcript — zero TUI chrome, no regex scraping. Unknown agent names are sniffed from the session id shape (`ses_*` → OpenCode; UUID-like → Claude Code, then Codex, then Antigravity, keeping the first hit). If no connector resolves the session, the provided text is used as an automatic terminal-scrollback fallback.
+
+**Available connectors today:**
+
+| Connector | Agent | Source | Access |
+|---|---|---|---|
+| OpenCode | `opencode` | `~/.local/share/opencode/opencode.db` | SQLite, read-only URI |
+| Claude Code | `claude` | `~/.claude/projects/*/<session>.jsonl` | Reverse tail scan (≤ 8 MB cap) |
+| Codex CLI | `codex` | `~/.codex/sessions/*/*/*/rollout-*<session>.jsonl` | Reverse tail scan (≤ 8 MB cap) |
+| Antigravity CLI | `antigravity`, `agy` | `~/.gemini/antigravity-cli/brain/<session>/.system_generated/logs/transcript.jsonl` | Reverse tail scan (≤ 8 MB cap) |
+| Aider CLI | `aider` | `.aider.chat.history.md` in the project working directory (`AIDER_CHAT_HISTORY` override) | Markdown turn scan, fence-aware parsing |
+| Scrollback fallback | any | terminal pane text | legacy extraction + chrome cleaning |
+
+**Roadmap:** gemini-cli, goose, opencode web, auto-detection of the running agent tool.
+
+---
+
 ## 📦 Installation
 
 ```bash
@@ -84,6 +107,15 @@ agent-tts "Report summary" --output /tmp/report.mp3 --no-play
 agent-tts --play-file /tmp/report.mp3 --highlight
 ```
 
+### Low-Latency Streaming
+
+Long texts no longer wait for the full audio to be synthesized. With the default `--stream auto`, texts of 400+ characters spoken by the free `edge` provider start playing after the first ~250-character sentence group is synthesized (~300–600ms), while a background producer thread synthesizes the remaining sentence groups and appends them to the live PCM buffer in real time — karaoke word highlighting and sentence boundaries merge seamlessly on the fly. Use `--stream on` to force pipelined playback for any provider or length, or `--stream off` to revert to classic single-shot synthesis. Streaming is incompatible with `--output` and `--podcast`, which always synthesize complete files.
+
+```bash
+# Force pipelined streaming on any provider or length (--stream off = classic one-shot)
+git log -20 | agent-tts --stream on --highlight
+```
+
 ### Interactive IPC & Semantic Sentence Navigation
 
 While `agent-tts` is speaking in the background, you can control playback instantly from another shell, tmux keybinding, or script:
@@ -108,6 +140,51 @@ agent-tts --ipc-cmd status
 # Stop immediately
 agent-tts --ipc-cmd stop
 ```
+
+---
+
+## 🪟 Windows & WSL Playback
+
+### Native Windows
+
+`pip install agent-tts` on Windows just works: playback runs natively through WASAPI via miniaudio — no external audio servers. The CLI behaves as on Linux/macOS; transient files (locks, pid, IPC) live in the platform temp directory, and interactive IPC uses loopback TCP instead of Unix sockets.
+
+### Play WSL audio on the Windows host (`winhost`)
+
+Run the audio server once on Windows:
+
+```powershell
+pip install agent-tts
+agent-tts --winhost
+```
+
+Then, from WSL:
+
+```bash
+agent-tts "Build finished successfully" --playback winhost
+# or persist the choice: export AGENT_TTS_PLAYBACK=winhost
+```
+
+PCM streams to the Windows host over TCP and plays natively there (WASAPI) — no PulseAudio intermediaries. The client auto-detects the host: loopback first (WSL2 mirrored networking), then the WSL2 default gateway (classic NAT mode). Default behavior never changes: playback stays local unless `--playback`/`--winhost-host` or the env vars below are used.
+
+### Automatic PowerShell fallback (`wsl-ps`)
+
+If the winhost server is unreachable, one English warning is printed on stderr and the run falls back to zero-install PowerShell playback (each synthesized group plays sequentially via `powershell.exe` from WSL interop — correctness over latency). Use `--playback wsl-ps` to force that mode directly; a clear error exits non-zero when `powershell.exe` is missing or the process is not running under WSL.
+
+### Environment variables
+
+| Variable | Default | Purpose |
+| :--- | :--- | :--- |
+| `AGENT_TTS_PLAYBACK` | `local` | Default playback target (`local`, `winhost`, `wsl-ps`) |
+| `AGENT_TTS_WINHOST_HOST` | auto-detect | Explicit Windows host address for winhost clients |
+| `AGENT_TTS_WINHOST_PORT` | `7717` | TCP port for the winhost transport |
+| `AGENT_TTS_WINHOST_BIND` | `0.0.0.0` | Bind address for `agent-tts --winhost` |
+
+### Protocol note (v1)
+
+One JSON header line then raw s16 PCM over TCP: `{"v":1,"cmd":"play","rate":24000,"channels":1,"format":"s16"}` followed by the payload until the client half-closes; the server plays streaming as bytes arrive. Controls (`pause`, `resume`, `stop`) are one-line JSON messages on separate short-lived connections. The server keeps a single active playback; a new PLAY preempts the current one.
+
+> ⚠️ **Security:** `--winhost` binds `0.0.0.0` by default — the port is open on your LAN and accepts unauthenticated playback requests. Restrict it with `AGENT_TTS_WINHOST_BIND=127.0.0.1` (or a firewall rule) when in doubt.
 
 ---
 
@@ -173,13 +250,76 @@ usage: agent-tts [-h] [--voice VOICE] [--rate RATE] [--max-chars MAX_CHARS]
                  [--podcast-title PODCAST_TITLE] [--podcast-serve [PORT]]
                  [--ipc-cmd IPC_CMD]
                  [--provider {edge,openai,elevenlabs,eleven,piper,local}]
+                 [--stream {auto,on,off}]
+                 [--playback {local,winhost,wsl-ps}] [--winhost]
+                 [--winhost-host WINHOST_HOST] [--winhost-port WINHOST_PORT]
                  [--openai-key OPENAI_KEY] [--openai-base-url OPENAI_BASE_URL]
                  [--openai-model OPENAI_MODEL] [--eleven-key ELEVEN_KEY]
                  [--eleven-model ELEVEN_MODEL] [--piper-model PIPER_MODEL]
+                 [--pre-extracted] [--agent AGENT]
+                 [--session-id SESSION_ID]
                  [text ...]
 ```
 
+- **`--stream {auto,on,off}`** (default `auto`): Pipelined playback mode. `auto` streams long texts (≥ 400 chars) with the `edge` provider when playing locally; `on` forces streaming for any provider or length; `off` forces classic single-shot synthesis. `--output` and `--podcast` always use single-shot synthesis.
+
+- **`--pre-extracted`**: Treat input text as the final message (e.g. provided by an integration layer that already resolved the chat transcript); skips terminal-scrollback turn extraction, keeps markdown-to-speech cleaning.
+
+- **`--agent <tool>`**: Agent tool name for the transcript connector layer (e.g. `opencode`, `claude`); unknown names are sniffed from the session id shape.
+
+- **`--session-id <id>`**: Agent session id; resolves the last assistant message from the tool's structured transcript (see [Agent Connectors](#-agent-connectors)) before falling back to the provided text.
+
 ---
+
+## 🗺️ Roadmap & Future Capabilities
+
+We have an active vision to expand `agent-tts` into the definitive neural TTS engine for AI coding agents and terminal workflows:
+
+- [x] 🪟 **Pure C Native Audio with Interactive Seek/Pause IPC:**
+  - miniaudio-backed playback (PulseAudio/PipeWire, CoreAudio, WASAPI) with frame-accurate seek (`seek ±10`), pause/resume, and smart auto-rewind via a low-latency Unix domain socket.
+- [x] 📦 **Modular Provider Backend (Edge, OpenAI, ElevenLabs & Piper):**
+  - Zero-config Microsoft Edge Neural voices as the 100% free default, with drop-in OpenAI `tts-1`/`tts-1-hd`, ElevenLabs multilingual models, and fully offline Piper ONNX synthesis.
+- [x] 🖍️ **Real-Time Karaoke Highlighting & Synchronized Readers:**
+  - Live ANSI word/sentence highlighting (`--highlight`), synchronized auto-scroll reader (`--autoscroll`), Bionic Reading fixation bolding (`--bionic`), and Zen Mode teleprompter (`--zen`).
+- [x] 📑 **Semantic Sentence & Paragraph Navigation:**
+  - Jump between full sentences (`--next-sentence`, `--prev-sentence`) and paragraphs (`--next-paragraph`, `--prev-paragraph`) instead of blindly seeking arbitrary seconds.
+- [x] 💡 **Smart Architectural Summarizer & Technical Pronunciation Lexicon:**
+  - Offline TL;DR heuristics (`--tldr`) condense diffs, logs, and stack traces; extensible developer lexicon (`~/.config/agent-tts/lexicon.json`) normalizes jargon, currencies, and units into natural spoken prose.
+- [x] 🌐 **Automatic Language Detection with Dynamic Voice Switching:**
+  - Fast statistical classifier detects embedded language changes and switches neural voices on the fly (`--auto-lang`).
+- [x] 📻 **Private Podcast RSS Feed Generator & HTTP Server:**
+  - Publish sessions to an RSS 2.0 / iTunes XML feed (`--podcast`) served locally (`--podcast-serve`) for listening in mobile podcast apps.
+- [x] 🗣️ **Robust Terminal Scrollback Cleaning:**
+  - Strips ANSI styling, box-drawing borders, CLI spinners, and token counters, and converts Markdown/ASCII tables into conversational pauses before synthesis.
+- [x] 🚀 **Pipelined Streaming Synthesis (Low-Latency Playback):**
+  - Long texts start playing after the first ~250-character sentence group is synthesized (~300–600ms) while a producer thread appends the remaining groups to the live PCM buffer (`--stream auto`, Edge provider).
+- [x] 🪟 **Native Windows Playback (WASAPI, zero changes for POSIX users):**
+  - First-class Windows support: tempdir-based transient files, loopback-TCP IPC, and Windows piper binary discovery; playback stays local unless a target is requested.
+- [x] 📡 **WSL → Windows `winhost` Transport:**
+  - `--playback winhost` streams PCM over TCP to `agent-tts --winhost` on the Windows host and plays it natively there via WASAPI (loopback + gateway auto-detection, one active session with preemption, pause/resume/stop controls).
+- [x] 🔁 **Zero-Install PowerShell Fallback Mode (`wsl-ps`):**
+  - When the winhost server is unreachable, playback automatically falls back to per-group `powershell.exe` playback (`System.Media.SoundPlayer`); `--playback wsl-ps` forces it directly.
+- [x] 🔌 **Agent Connectors (Structured Transcript Reading):**
+  - With `--agent` + `--session-id` the engine reads the real last assistant message from the agent tool's local transcript (OpenCode SQLite, Claude Code / Codex CLI / Antigravity CLI JSONL, Aider markdown history) with automatic scrollback fallback.
+- [ ] 🎙️ **Per-Provider Pipelining (OpenAI, ElevenLabs & Piper):**
+  - Extend the pipelined producer to non-Edge backends; streaming synthesis is currently Edge-only.
+- [ ] ⚡ **Incremental MP3 Frame-Accurate Byte Streaming:**
+  - Replace sentence-group pipelining with frame-level MP3 byte streaming for even lower time-to-first-audio.
+- [x] 🔒 **Automated Secret & Credential Redaction Engine (`redact.py`):**
+  - High-speed heuristic sanitizer that automatically redacts API keys (`sk-...`, `ghp_...`, `glpat-...`), JWTs, authorization headers, generic credential assignments, PEM private keys, and long hashes from terminal text before vocalization or publishing to RSS/ntfy feeds (runs once inside the shared cleaning stage).
+- [ ] 🧠 **Hybrid High-Level LLM Summarizer (`--llm-summary`):**
+  - Optional one-sentence executive synthesis delegating to locally installed CLIs (`claude -p`, `codex exec`, `ollama`) for long prose, with instant zero-cost fallback to offline `--tldr` heuristics.
+- [ ] 🔊 **Next-Gen Neural Local TTS (Kokoro-82M ONNX):**
+  - Ultra-natural local CPU neural synthesis via Kokoro 82M (<350MB weights), providing studio-grade offline voice synthesis with zero cloud reliance.
+- [ ] 📥 **Automated Voice Model Manager (`agent-tts voice install`):**
+  - Built-in CLI voice registry to discover, download, verify, and manage offline ONNX models (Piper & Kokoro) without manual filesystem configuration.
+- [ ] 🪟 **Native Windows Audio/Service Parity Testing:**
+  - Windows-native playback, `--winhost` server mode, and the WSL transport are implemented; add Windows CI coverage to validate the WASAPI and TCP loopback paths on real hardware.
+- [ ] ♿ **Orca screen reader integration (pending owner requirements — not currently used):**
+
+---
+
+## 📄 License
 
 ## 📄 License
 
