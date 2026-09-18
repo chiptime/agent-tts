@@ -50,16 +50,19 @@ class AudioSession:
             "pos": 0.0,
             "total": 0.0,
             "stop": False,
+            "producing": False,
             "label": label,
         }
         self.paused_at: float = 0.0
         self.decoded_data = None
+        self.raw_bytes = b""
         self.sample_rate = 24000
         self.nchannels = 1
         self.bytes_per_sample = 2
         self.frame_size = 2
         self.total_frames = 0
         self.current_frame = 0
+        self._buffer_loaded = False
         self.lock = threading.Lock()
         self.ipc_server: Optional[IPCServer] = None
 
@@ -301,8 +304,8 @@ class AudioSession:
         sys.stdout.write(buf)
         sys.stdout.flush()
 
-    def play(self, decoded) -> None:
-        """Plays decoded PCM audio frames via miniaudio.PlaybackDevice."""
+    def _load_decoded_locked(self, decoded) -> None:
+        """Replaces the playback buffer with a freshly decoded segment. Caller must hold self.lock."""
         self.raw_bytes = decoded.samples.tobytes()
         self.sample_rate = decoded.sample_rate
         self.nchannels = decoded.nchannels
@@ -310,9 +313,84 @@ class AudioSession:
         self.frame_size = self.nchannels * self.bytes_per_sample
         self.total_frames = len(self.raw_bytes) // self.frame_size
         self.current_frame = 0
-
-        self.state["status"] = "playing"
         self.state["total"] = (self.total_frames / float(self.sample_rate)) if self.sample_rate else 0.0
+        self._buffer_loaded = True
+
+    def prepare_pcm(self, decoded) -> None:
+        """Preloads the playback buffer with the first decoded segment before streaming starts."""
+        with self.lock:
+            self._load_decoded_locked(decoded)
+
+    def append_pcm(self, decoded) -> bool:
+        """Appends a decoded PCM segment to the live playback buffer (streaming mode).
+
+        Returns True when the segment was appended. Segments whose sample rate,
+        channel count, or sample width differ from the session format are skipped
+        (resampling is out of scope); a warning is logged to stderr.
+        """
+        seg_rate = decoded.sample_rate
+        seg_channels = decoded.nchannels
+        seg_width = getattr(decoded, "sample_width", 2)
+        if seg_rate != self.sample_rate or seg_channels != self.nchannels or seg_width != self.bytes_per_sample:
+            print(
+                f"Stream: skipping segment with mismatched format "
+                f"({seg_rate}Hz/{seg_channels}ch/{seg_width * 8}bit vs "
+                f"{self.sample_rate}Hz/{self.nchannels}ch/{self.bytes_per_sample * 8}bit)",
+                file=sys.stderr,
+            )
+            return False
+        with self.lock:
+            self.raw_bytes += decoded.samples.tobytes()
+            self.total_frames = len(self.raw_bytes) // self.frame_size
+            self.state["total"] = (self.total_frames / float(self.sample_rate)) if self.sample_rate else 0.0
+        return True
+
+    def _stream_generator(self):
+        """Yields PCM frames to the device, holding in silence while synthesis is still producing."""
+        num_frames = yield b""
+        while not self.state["stop"]:
+            with self.lock:
+                status = self.state["status"]
+                producing = self.state.get("producing", False)
+                curr = self.current_frame
+                tot = self.total_frames
+
+            if status == "paused":
+                silence_frames = min(num_frames, 512)
+                num_frames = yield bytes(silence_frames * self.frame_size)
+                continue
+
+            if status != "playing":
+                break
+
+            frames_available = tot - curr
+            if frames_available <= 0:
+                if producing:
+                    # Buffer drained but more segments are on the way: bridge with silence.
+                    silence_frames = min(num_frames, 512)
+                    num_frames = yield bytes(silence_frames * self.frame_size)
+                    continue
+                break
+
+            frames_to_read = min(num_frames, frames_available)
+
+            start_byte = curr * self.frame_size
+            end_byte = start_byte + (frames_to_read * self.frame_size)
+            chunk = self.raw_bytes[start_byte:end_byte]
+
+            with self.lock:
+                self.current_frame += frames_to_read
+
+            num_frames = yield chunk
+
+        yield b""
+
+    def play(self, decoded) -> None:
+        """Plays decoded PCM frames via miniaudio.PlaybackDevice; supports live-buffer streaming."""
+        with self.lock:
+            if not self._buffer_loaded:
+                self._load_decoded_locked(decoded)
+            self.state["status"] = "playing"
 
         sample_fmt = getattr(decoded, "sample_format", miniaudio.SampleFormat.SIGNED16)
         device = miniaudio.PlaybackDevice(
@@ -321,37 +399,7 @@ class AudioSession:
             sample_rate=self.sample_rate,
         )
 
-        def stream_generator():
-            num_frames = yield b""
-            while not self.state["stop"] and self.current_frame < self.total_frames:
-                with self.lock:
-                    status = self.state["status"]
-                    curr = self.current_frame
-                    tot = self.total_frames
-
-                if status == "paused":
-                    silence_frames = min(num_frames, 512)
-                    num_frames = yield bytes(silence_frames * self.frame_size)
-                    continue
-
-                if status != "playing":
-                    break
-
-                frames_available = tot - curr
-                frames_to_read = min(num_frames, frames_available)
-
-                start_byte = curr * self.frame_size
-                end_byte = start_byte + (frames_to_read * self.frame_size)
-                chunk = self.raw_bytes[start_byte:end_byte]
-
-                with self.lock:
-                    self.current_frame += frames_to_read
-
-                num_frames = yield chunk
-
-            yield b""
-
-        stream = stream_generator()
+        stream = self._stream_generator()
         next(stream)  # Prime generator for miniaudio callback
 
         use_fullscreen = self.zen or self.autoscroll
@@ -365,7 +413,7 @@ class AudioSession:
             last_sent_idx = -1
             prev_lines = 1
 
-            while not self.state["stop"] and self.current_frame < self.total_frames:
+            while not self.state["stop"] and (self.state.get("producing") or self.current_frame < self.total_frames):
                 with self.lock:
                     pos = (self.current_frame / float(self.sample_rate)) if self.sample_rate else 0.0
                     tot = (self.total_frames / float(self.sample_rate)) if self.sample_rate else 0.0
@@ -407,6 +455,7 @@ class AudioSession:
                 time.sleep(0.03)
         except Exception as e:
             print(f"Device error: {e}", file=sys.stderr)
+            raise
         finally:
             if use_fullscreen:
                 sys.stdout.write("\x1b[?25h\x1b[?1049l\n")
