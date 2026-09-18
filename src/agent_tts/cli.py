@@ -286,6 +286,9 @@ def main():
     parser.add_argument("--next-sentence", action="store_true", help="Jump to next sentence in active playback")
     parser.add_argument("--prev-sentence", action="store_true", help="Jump to previous sentence in active playback")
     parser.add_argument("--current-sentence", action="store_true", help="Get current sentence text from active playback")
+    parser.add_argument("--next-paragraph", action="store_true", help="Jump to next paragraph in active playback")
+    parser.add_argument("--prev-paragraph", action="store_true", help="Jump to previous paragraph in active playback")
+    parser.add_argument("--current-paragraph", action="store_true", help="Get current paragraph text from active playback")
     parser.add_argument(
         "--tldr",
         "--summarize",
@@ -350,6 +353,12 @@ def main():
         ipc_cmd = "prev-sentence"
     elif args.current_sentence:
         ipc_cmd = "sentence"
+    elif args.next_paragraph:
+        ipc_cmd = "next-paragraph"
+    elif args.prev_paragraph:
+        ipc_cmd = "prev-paragraph"
+    elif args.current_paragraph:
+        ipc_cmd = "paragraph"
 
     if ipc_cmd:
         res = send_ipc_command(ipc_cmd)
