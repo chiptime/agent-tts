@@ -159,6 +159,51 @@ class TestBoundaries(unittest.TestCase):
         self.assertIn("para_idx=1", cur_para)
         self.assertIn("Párrafo dos", cur_para)
 
+    def test_bionic_reading_functions(self):
+        from agent_tts.boundaries import bionic_word, apply_bionic_reading
+
+        # Short word <= 3 chars: bold 1 char
+        self.assertEqual(bionic_word("el"), "\x1b[1me\x1b[22ml")
+        self.assertEqual(bionic_word("sol"), "\x1b[1ms\x1b[22mol")
+
+        # Medium word 4-6 chars: bold 2 chars
+        self.assertEqual(bionic_word("hola"), "\x1b[1mho\x1b[22mla")
+        self.assertEqual(bionic_word("mundo"), "\x1b[1mmu\x1b[22mndo")
+
+        # Punctuation handling
+        self.assertEqual(bionic_word("¡hola!"), "¡\x1b[1mho\x1b[22mla!")
+
+        # Full sentence formatting
+        bionic_text = apply_bionic_reading("El sol brilla en la ciudad.")
+        self.assertIn("\x1b[1m", bionic_text)
+        self.assertIn("\x1b[22m", bionic_text)
+
+        # Highlighting with bionic reading enabled
+        hl_bionic = self.bmap.format_highlighted_sentence(0.8, ansi=True, bionic=True)
+        self.assertIn("\x1b[1;33;4msentence\x1b[0m", hl_bionic)
+        # Upcoming word "here." should have bionic fixation
+        self.assertIn("\x1b[1mhe\x1b[22mre.", hl_bionic)
+
+    def test_autoscroll_and_scroll_info_ipc(self):
+        session = AudioSession(label="ScrollTest", boundaries=self.bmap, autoscroll=True, bionic=True, zen=True)
+        session.sample_rate = 24000
+        session.nchannels = 1
+        session.bytes_per_sample = 2
+        session.frame_size = 2
+        session.total_frames = 24000 * 10
+        session.current_frame = 24000 * 2  # 2.0s -> 20%
+
+        scroll_info = session.handle_ipc_command("scroll-info")
+        self.assertIn("pos=2.00", scroll_info)
+        self.assertIn("total=10.00", scroll_info)
+        self.assertIn("pct=20.0", scroll_info)
+        self.assertIn("sent_idx=1", scroll_info)
+        self.assertIn("total_sents=3", scroll_info)
+
+        # Highlight with bionic enabled on session
+        hl_res = session.handle_ipc_command("highlight")
+        self.assertIn("\x1b[1m", hl_res)
+
 
 if __name__ == "__main__":
     unittest.main()
