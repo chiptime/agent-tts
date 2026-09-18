@@ -75,7 +75,9 @@ class AudioSession:
                 sent = self.boundaries.get_sentence_at(pos)
                 sent_clean = sent.text.replace("\n", " ").strip() if sent else ""
                 sent_idx = sent.index if sent else -1
-                return f"status={self.state['status']} pos={pos:.2f} total={total:.2f} sent_idx={sent_idx} sentence={sent_clean}"
+                para = self.boundaries.get_paragraph_at(pos)
+                para_idx = para.index if para else -1
+                return f"status={self.state['status']} pos={pos:.2f} total={total:.2f} sent_idx={sent_idx} para_idx={para_idx} sentence={sent_clean}"
 
         elif action == "pause":
             with self.lock:
@@ -142,7 +144,7 @@ class AudioSession:
                 pos = (self.current_frame / float(self.sample_rate)) if self.sample_rate else 0.0
                 next_sent = self.boundaries.get_next_sentence(pos)
                 if next_sent:
-                    self.current_frame = int(next_sent.start_sec * self.sample_rate)
+                    self.current_frame = round(next_sent.start_sec * self.sample_rate)
                     text_clean = next_sent.text.replace("\n", " ").strip()
                     return f"status={self.state['status']} pos={next_sent.start_sec:.2f} sent_idx={next_sent.index} sentence={text_clean}"
                 return "status=playing at_end=true"
@@ -152,7 +154,7 @@ class AudioSession:
                 pos = (self.current_frame / float(self.sample_rate)) if self.sample_rate else 0.0
                 prev_sent = self.boundaries.get_prev_sentence(pos)
                 if prev_sent:
-                    self.current_frame = int(prev_sent.start_sec * self.sample_rate)
+                    self.current_frame = round(prev_sent.start_sec * self.sample_rate)
                     text_clean = prev_sent.text.replace("\n", " ").strip()
                     return f"status={self.state['status']} pos={prev_sent.start_sec:.2f} sent_idx={prev_sent.index} sentence={text_clean}"
                 return "status=playing at_start=true"
@@ -165,6 +167,41 @@ class AudioSession:
                     text_clean = cur_sent.text.replace("\n", " ").strip()
                     return f"sent_idx={cur_sent.index} start={cur_sent.start_sec:.2f} end={cur_sent.end_sec:.2f} text={text_clean}"
                 return "sent_idx=-1 text="
+
+        elif action in ("next-paragraph", "next_paragraph", "next-para"):
+            with self.lock:
+                pos = (self.current_frame / float(self.sample_rate)) if self.sample_rate else 0.0
+                next_p = self.boundaries.get_next_paragraph(pos)
+                if next_p:
+                    self.current_frame = round(next_p.start_sec * self.sample_rate)
+                    text_clean = next_p.text.replace("\n", " ").strip()
+                    if len(text_clean) > 80:
+                        text_clean = text_clean[:77] + "..."
+                    return f"status={self.state['status']} pos={next_p.start_sec:.2f} para_idx={next_p.index} paragraph={text_clean}"
+                return "status=playing at_end=true"
+
+        elif action in ("prev-paragraph", "prev_paragraph", "prev-para"):
+            with self.lock:
+                pos = (self.current_frame / float(self.sample_rate)) if self.sample_rate else 0.0
+                prev_p = self.boundaries.get_prev_paragraph(pos)
+                if prev_p:
+                    self.current_frame = round(prev_p.start_sec * self.sample_rate)
+                    text_clean = prev_p.text.replace("\n", " ").strip()
+                    if len(text_clean) > 80:
+                        text_clean = text_clean[:77] + "..."
+                    return f"status={self.state['status']} pos={prev_p.start_sec:.2f} para_idx={prev_p.index} paragraph={text_clean}"
+                return "status=playing at_start=true"
+
+        elif action in ("paragraph", "current-paragraph", "current_paragraph"):
+            with self.lock:
+                pos = (self.current_frame / float(self.sample_rate)) if self.sample_rate else 0.0
+                cur_p = self.boundaries.get_paragraph_at(pos)
+                if cur_p:
+                    text_clean = cur_p.text.replace("\n", " ").strip()
+                    if len(text_clean) > 80:
+                        text_clean = text_clean[:77] + "..."
+                    return f"para_idx={cur_p.index} start={cur_p.start_sec:.2f} end={cur_p.end_sec:.2f} text={text_clean}"
+                return "para_idx=-1 text="
 
         elif action in ("highlight", "current-highlight"):
             with self.lock:

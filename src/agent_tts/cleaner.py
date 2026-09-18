@@ -79,6 +79,75 @@ UNIT_NORMALIZATIONS: List[Tuple[str, str]] = [
 ]
 
 
+# Common Spanish abbreviations
+COMMON_ABBREVIATIONS: List[Tuple[str, str]] = [
+    (r"\bp\.?\s*ej\.", "por ejemplo"),
+    (r"\bej\.", "ejemplo"),
+    (r"\baprox\.", "aproximadamente"),
+    (r"\betc\.", "etcétera"),
+    (r"\bDr\.", "doctor"),
+    (r"\bDra\.", "doctora"),
+    (r"\bSr\.", "señor"),
+    (r"\bSra\.", "señora"),
+    (r"\bpág\.", "página"),
+    (r"\bpágs\.", "páginas"),
+    (r"\bvs\.?\b", "versus"),
+    (r"\bcap\.", "capítulo"),
+    (r"\bart\.", "artículo"),
+    (r"\bref\.", "referencia"),
+    (r"\btel\.", "teléfono"),
+    (r"\btfno\.", "teléfono"),
+    (r"\bEE\.?\s*UU\.?", "Estados Unidos"),
+    (r"\b(núm|nro|n°|Nº)\.?\s*(\d+)", r"número \2"),
+]
+
+
+def normalize_currency(text: str) -> str:
+    """Normalizes currency notations ($45.20, 10€, etc.) into natural spoken words."""
+    def _dollar_sub(m):
+        amount_int = m.group(1)
+        amount_dec = m.group(2) if m.lastindex and m.lastindex >= 2 else None
+        word = "dólar" if amount_int == "1" else "dólares"
+        if amount_dec:
+            dec_int = int(amount_dec[:2].ljust(2, "0"))
+            cents_word = "centavo" if dec_int == 1 else "centavos"
+            return f"{amount_int} {word} con {dec_int} {cents_word}"
+        return f"{amount_int} {word}"
+
+    # $45.20 or $45
+    text = re.sub(r"\$(\d+)(?:[.,](\d{1,2}))?\b", _dollar_sub, text)
+    # 45$ or 45.20$
+    text = re.sub(r"\b(\d+)(?:[.,](\d{1,2}))?\s*\$", _dollar_sub, text)
+
+    def _euro_sub(m):
+        amount_int = m.group(1)
+        amount_dec = m.group(2) if m.lastindex and m.lastindex >= 2 else None
+        word = "euro" if amount_int == "1" else "euros"
+        if amount_dec:
+            dec_int = int(amount_dec[:2].ljust(2, "0"))
+            cents_word = "céntimo" if dec_int == 1 else "céntimos"
+            return f"{amount_int} {word} con {dec_int} {cents_word}"
+        return f"{amount_int} {word}"
+
+    # €45.20 or €45
+    text = re.sub(r"€(\d+)(?:[.,](\d{1,2}))?\b", _euro_sub, text)
+    # 45€ or 45.20€
+    text = re.sub(r"\b(\d+)(?:[.,](\d{1,2}))?\s*€", _euro_sub, text)
+
+    def _pound_sub(m):
+        amount_int = m.group(1)
+        word = "libra" if amount_int == "1" else "libras"
+        return f"{amount_int} {word}"
+
+    text = re.sub(r"£(\d+)\b", _pound_sub, text)
+    text = re.sub(r"\b(\d+)\s*£", _pound_sub, text)
+
+    text = re.sub(r"[¥](\d+)\b", r"\1 yenes", text)
+    text = re.sub(r"\b(\d+)\s*[¥]", r"\1 yenes", text)
+
+    return text
+
+
 def load_user_lexicon() -> Dict[str, str]:
     """Loads optional custom lexicon dictionary from user config."""
     paths = [
@@ -104,18 +173,25 @@ def strip_ansi(text: str) -> str:
 
 
 def normalize_technical_terms(text: str) -> str:
-    """Replaces developer acronyms and units with speakable expansions."""
+    """Replaces developer acronyms, currencies, abbreviations and units with speakable expansions."""
     res = text
 
-    # Apply units and version formatting
+    # 1. Apply units and version formatting
     for pattern, replacement in UNIT_NORMALIZATIONS:
         res = re.sub(pattern, replacement, res, flags=re.IGNORECASE)
 
-    # Apply base developer lexicon
+    # 2. Apply currency normalizations ($45.20, €10, etc.)
+    res = normalize_currency(res)
+
+    # 3. Apply common abbreviations (ej., etc., aprox., Dr.)
+    for pattern, replacement in COMMON_ABBREVIATIONS:
+        res = re.sub(pattern, replacement, res, flags=re.IGNORECASE)
+
+    # 4. Apply base developer lexicon
     for pattern, replacement in BASE_TECHNICAL_LEXICON:
         res = re.sub(pattern, replacement, res, flags=re.IGNORECASE)
 
-    # Apply user custom lexicon if provided
+    # 5. Apply user custom lexicon if provided
     user_lexicon = load_user_lexicon()
     for term, expansion in user_lexicon.items():
         pattern = rf"\b{re.escape(term)}\b"
