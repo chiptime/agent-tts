@@ -86,10 +86,8 @@ def clean_agent_text(text: str, max_chars: int = 0) -> str:
     text = extract_last_turn(text)
     text = strip_ansi(text)
 
-    # 1. Remove Herdr / Collie metadata tags and banners
-    text = re.sub(r"\[Herdr\][^\n]*\n?", "", text)
-    text = re.sub(r"\[Claude\][^\n]*\n?", "", text)
-    text = re.sub(r"\[OpenCode\][^\n]*\n?", "", text)
+    # 1. Remove agent/harness metadata tags and banners (e.g. [Claude], [OpenCode], [Aider], [Herdr], [Codex])
+    text = re.sub(r"^\[[A-Za-z0-9_.-]+\][^\n]*\n?", "", text, flags=re.MULTILINE)
 
     # 2. Remove token count lines & CLI status indicators
     text = re.sub(r"(?i)\b\d+[\d\.,]*\s*[kKmM]?\s*(?:tokens?|in|out|cached|total)\b[^\n]*", "", text)
