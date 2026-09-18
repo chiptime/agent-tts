@@ -37,6 +37,7 @@ async def synthesize(
     openai_model: Optional[str] = None,
     eleven_key: Optional[str] = None,
     eleven_model: Optional[str] = None,
+    piper_model: Optional[str] = None,
     stop_checker=None,
     auto_lang: bool = False,
 ) -> bytes:
@@ -48,6 +49,7 @@ async def synthesize(
         openai_model=openai_model,
         eleven_key=eleven_key,
         eleven_model=eleven_model,
+        piper_model=piper_model,
     )
 
     if auto_lang:
@@ -192,6 +194,7 @@ async def speak(
     openai_model: Optional[str] = None,
     eleven_key: Optional[str] = None,
     eleven_model: Optional[str] = None,
+    piper_model: Optional[str] = None,
     auto_rewind_sec: float = 2.0,
     highlight: bool = False,
     auto_lang: bool = False,
@@ -232,6 +235,7 @@ async def speak(
             openai_model=openai_model,
             eleven_key=eleven_key,
             eleven_model=eleven_model,
+            piper_model=piper_model,
             stop_checker=check_stop,
             auto_lang=auto_lang,
         )
@@ -318,14 +322,19 @@ def main():
     parser.add_argument(
         "--provider",
         default=os.environ.get("TTS_PROVIDER", "edge"),
-        choices=["edge", "openai", "elevenlabs", "eleven"],
-        help="TTS provider backend (edge, openai, elevenlabs)",
+        choices=["edge", "openai", "elevenlabs", "eleven", "piper", "local"],
+        help="TTS provider backend (edge, openai, elevenlabs, piper, local)",
     )
     parser.add_argument("--openai-key", default=os.environ.get("OPENAI_API_KEY", ""), help="OpenAI API key")
     parser.add_argument("--openai-base-url", default=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"), help="OpenAI custom base URL")
     parser.add_argument("--openai-model", default=os.environ.get("OPENAI_TTS_MODEL", "tts-1"), help="OpenAI TTS model (tts-1, tts-1-hd)")
     parser.add_argument("--eleven-key", default=os.environ.get("ELEVENLABS_API_KEY", ""), help="ElevenLabs API key")
     parser.add_argument("--eleven-model", default=os.environ.get("ELEVENLABS_MODEL", "eleven_multilingual_v2"), help="ElevenLabs model")
+    parser.add_argument(
+        "--piper-model",
+        default=os.environ.get("PIPER_MODEL", ""),
+        help="Path to Piper ONNX model file (.onnx)",
+    )
 
     args = parser.parse_args()
 
@@ -382,6 +391,7 @@ def main():
                 openai_model=args.openai_model,
                 eleven_key=args.eleven_key,
                 eleven_model=args.eleven_model,
+                piper_model=args.piper_model,
                 highlight=args.highlight,
                 auto_lang=args.auto_lang,
                 podcast=args.podcast,

@@ -8,6 +8,7 @@ from agent_tts.providers.base import TTSProvider
 from agent_tts.providers.edge import EdgeTTSProvider
 from agent_tts.providers.elevenlabs import ElevenLabsTTSProvider
 from agent_tts.providers.openai import OpenAITTSProvider
+from agent_tts.providers.piper import PiperTTSProvider
 
 
 def get_provider(
@@ -17,6 +18,7 @@ def get_provider(
     openai_model: Optional[str] = None,
     eleven_key: Optional[str] = None,
     eleven_model: Optional[str] = None,
+    piper_model: Optional[str] = None,
 ) -> TTSProvider:
     """Returns an instantiated TTS provider backend."""
     name = (provider_name or "edge").lower().strip()
@@ -31,6 +33,8 @@ def get_provider(
             api_key=eleven_key or os.environ.get("ELEVENLABS_API_KEY", ""),
             model=eleven_model or os.environ.get("ELEVENLABS_MODEL", "eleven_multilingual_v2"),
         )
+    elif name in ("piper", "local"):
+        return PiperTTSProvider(model_path=piper_model)
     elif name == "edge":
         return EdgeTTSProvider()
     else:
@@ -43,5 +47,6 @@ __all__ = [
     "EdgeTTSProvider",
     "OpenAITTSProvider",
     "ElevenLabsTTSProvider",
+    "PiperTTSProvider",
     "get_provider",
 ]
