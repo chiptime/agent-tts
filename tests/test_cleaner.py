@@ -82,6 +82,18 @@ class TestCleaner(unittest.TestCase):
         self.assertIn("1 euro", cleaned)
         self.assertIn("1 dólar", cleaned)
 
+    def test_currencies_and_abbreviations_english(self):
+        raw = "Total cost is $45.20 (approx. 10€, e.g. see p. 5). Dr. Smith paid 1€ and $1."
+        cleaned = clean_agent_text(raw, lang="en")
+        self.assertIn("45 dollars and 20 cents", cleaned)
+        self.assertIn("10 euros", cleaned)
+        self.assertIn("approximately", cleaned)
+        self.assertIn("for example", cleaned)
+        self.assertIn("page 5", cleaned)
+        self.assertIn("Doctor", cleaned)
+        self.assertIn("1 euro", cleaned)
+        self.assertIn("1 dollar", cleaned)
+
 
 if __name__ == "__main__":
     unittest.main()
