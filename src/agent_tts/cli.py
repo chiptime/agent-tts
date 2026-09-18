@@ -38,6 +38,7 @@ async def synthesize(
     eleven_key: Optional[str] = None,
     eleven_model: Optional[str] = None,
     stop_checker=None,
+    auto_lang: bool = False,
 ) -> bytes:
     """Synthesizes text into MP3 bytes using the requested provider and optionally writes to output_file."""
     engine = get_provider(
@@ -48,6 +49,112 @@ async def synthesize(
         eleven_key=eleven_key,
         eleven_model=eleven_model,
     )
+
+    if auto_lang:
+        from agent_tts.lang_detector import segment_by_language, resolve_voice_for_language
+        from agent_tts.boundaries import BoundaryMap, Sentence, SynthesisResult, Word
+
+        segments = segment_by_language(text, default_lang="es")
+        detected_langs = {lang for lang, _ in segments}
+        if len(detected_langs) > 1:
+            chunks = []
+            combined_sentences = []
+            combined_words = []
+            current_time_offset = 0.0
+            global_sent_idx = 0
+            global_word_idx = 0
+
+            for lang, seg_text in segments:
+                if stop_checker and stop_checker():
+                    return SynthesisResult(b"", BoundaryMap())
+
+                seg_voice = resolve_voice_for_language(voice, lang, provider=provider)
+                seg_mp3 = await engine.synthesize(
+                    text=seg_text,
+                    voice=seg_voice,
+                    rate=rate,
+                    volume=volume,
+                    pitch=pitch,
+                    stop_checker=stop_checker,
+                )
+                if not seg_mp3:
+                    continue
+
+                chunks.append(bytes(seg_mp3))
+
+                if hasattr(seg_mp3, "boundaries") and seg_mp3.boundaries.sentences:
+                    bmap = seg_mp3.boundaries
+                    seg_dur = max(s.end_sec for s in bmap.sentences)
+                    for s in bmap.sentences:
+                        combined_sentences.append(
+                            Sentence(
+                                index=global_sent_idx,
+                                start_sec=s.start_sec + current_time_offset,
+                                duration_sec=s.duration_sec,
+                                text=s.text,
+                            )
+                        )
+                        global_sent_idx += 1
+
+                    for w in bmap.words:
+                        combined_words.append(
+                            Word(
+                                index=global_word_idx,
+                                sentence_index=w.sentence_index + (global_sent_idx - len(bmap.sentences)),
+                                start_sec=w.start_sec + current_time_offset,
+                                duration_sec=w.duration_sec,
+                                text=w.text,
+                            )
+                        )
+                        global_word_idx += 1
+
+                    current_time_offset += seg_dur
+                else:
+                    try:
+                        decoded = miniaudio.decode(bytes(seg_mp3))
+                        seg_dur = (len(decoded.samples) // (decoded.nchannels * 2)) / float(decoded.sample_rate)
+                        from agent_tts.boundaries import estimate_boundaries_from_text
+                        est_bmap = estimate_boundaries_from_text(seg_text, seg_dur)
+                        for s in est_bmap.sentences:
+                            combined_sentences.append(
+                                Sentence(
+                                    index=global_sent_idx,
+                                    start_sec=s.start_sec + current_time_offset,
+                                    duration_sec=s.duration_sec,
+                                    text=s.text,
+                                )
+                            )
+                            global_sent_idx += 1
+                        for w in est_bmap.words:
+                            combined_words.append(
+                                Word(
+                                    index=global_word_idx,
+                                    sentence_index=w.sentence_index + (global_sent_idx - len(est_bmap.sentences)),
+                                    start_sec=w.start_sec + current_time_offset,
+                                    duration_sec=w.duration_sec,
+                                    text=w.text,
+                                )
+                            )
+                            global_word_idx += 1
+                        current_time_offset += seg_dur
+                    except Exception:
+                        pass
+
+            combined_bytes = b"".join(chunks)
+            if not combined_bytes:
+                return SynthesisResult(b"", BoundaryMap())
+
+            boundary_map = BoundaryMap(sentences=combined_sentences, words=combined_words)
+            mp3_data = SynthesisResult(combined_bytes, boundary_map)
+
+            if output_file:
+                out_dir = os.path.dirname(os.path.abspath(output_file))
+                if out_dir:
+                    os.makedirs(out_dir, exist_ok=True)
+                with open(output_file, "wb") as f:
+                    f.write(mp3_data)
+
+            return mp3_data
 
     mp3_data = await engine.synthesize(
         text=text,
@@ -87,6 +194,7 @@ async def speak(
     eleven_model: Optional[str] = None,
     auto_rewind_sec: float = 2.0,
     highlight: bool = False,
+    auto_lang: bool = False,
 ) -> None:
     """Synthesizes and plays audio with interactive controls."""
     session = None
@@ -123,6 +231,7 @@ async def speak(
             eleven_key=eleven_key,
             eleven_model=eleven_model,
             stop_checker=check_stop,
+            auto_lang=auto_lang,
         )
 
         if not mp3_data or (session and session.state.get("stop")):
@@ -171,6 +280,11 @@ def main():
         dest="summarize",
         action="store_true",
         help="Condense long logs, diffs, or verbose output into a punchy spoken summary before playback",
+    )
+    parser.add_argument(
+        "--auto-lang",
+        action="store_true",
+        help="Automatically detect embedded language changes and switch neural voices on the fly",
     )
     parser.add_argument(
         "--ipc-cmd",
@@ -239,6 +353,7 @@ def main():
                 eleven_key=args.eleven_key,
                 eleven_model=args.eleven_model,
                 highlight=args.highlight,
+                auto_lang=args.auto_lang,
             )
         )
     except KeyboardInterrupt:

@@ -57,6 +57,9 @@ git diff | agent-tts --tldr
 npm test | agent-tts --tldr --highlight
 cat long_build.log | agent-tts --summarize
 
+# Automatic Language Detection & Dynamic Voice Switching
+agent-tts "He encontrado este error: fatal: remote origin already exists. Debemos cambiar el origen." --auto-lang
+
 # Pipe output from any command or agent
 git status | agent-tts
 cat response.md | agent-tts --voice alvaro --rate +15%

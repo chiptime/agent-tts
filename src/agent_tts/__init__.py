@@ -13,6 +13,11 @@ from agent_tts.boundaries import (
 from agent_tts.cleaner import clean_agent_text, extract_last_turn, strip_ansi
 from agent_tts.cli import speak, synthesize
 from agent_tts.ipc import IPCServer, send_ipc_command
+from agent_tts.lang_detector import (
+    detect_language,
+    resolve_voice_for_language,
+    segment_by_language,
+)
 from agent_tts.providers import (
     EdgeTTSProvider,
     ElevenLabsTTSProvider,
@@ -30,6 +35,9 @@ __all__ = [
     "extract_last_turn",
     "strip_ansi",
     "summarize",
+    "detect_language",
+    "segment_by_language",
+    "resolve_voice_for_language",
     "AudioSession",
     "cleanup_locks",
     "play_mp3_data",
