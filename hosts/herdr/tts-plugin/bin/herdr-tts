@@ -174,6 +174,42 @@ seek_audio() {
   notify_herdr "${sign}${delta#+}s" "Posición: ${time_label}"
 }
 
+next_sentence_audio() {
+  local res
+  res=$("$VENV_PYTHON" "$ENGINE_SCRIPT" --ipc-cmd "next-sentence" 2>/dev/null || true)
+  if [[ -z "$res" || "$res" == *"Error:"* ]]; then
+    echo "⏹️ No hay audio reproduciéndose actualmente"
+    return 1
+  fi
+
+  local sentence
+  sentence=$(echo "$res" | sed -n 's/.*sentence=//p')
+  if [[ -z "$sentence" ]]; then
+    sentence="Fin de la locución"
+  fi
+
+  echo "⏭️ Siguiente frase: ${sentence}"
+  notify_herdr "⏭️ Siguiente frase" "${sentence}"
+}
+
+prev_sentence_audio() {
+  local res
+  res=$("$VENV_PYTHON" "$ENGINE_SCRIPT" --ipc-cmd "prev-sentence" 2>/dev/null || true)
+  if [[ -z "$res" || "$res" == *"Error:"* ]]; then
+    echo "⏹️ No hay audio reproduciéndose actualmente"
+    return 1
+  fi
+
+  local sentence
+  sentence=$(echo "$res" | sed -n 's/.*sentence=//p')
+  if [[ -z "$sentence" ]]; then
+    sentence="Inicio de la locución"
+  fi
+
+  echo "⏮️ Frase anterior: ${sentence}"
+  notify_herdr "⏮️ Frase anterior" "${sentence}"
+}
+
 toggle_pause_audio() {
   local res
   res=$("$VENV_PYTHON" "$ENGINE_SCRIPT" --ipc-cmd "toggle-pause" 2>/dev/null || true)
@@ -242,6 +278,8 @@ get_player_status() {
   status=$(echo "$res" | grep -o 'status=[a-z]*' | cut -d= -f2)
   pos=$(echo "$res" | grep -o 'pos=[0-9.]*' | cut -d= -f2)
   total=$(echo "$res" | grep -o 'total=[0-9.]*' | cut -d= -f2)
+  local sent
+  sent=$(echo "$res" | sed -n 's/.*sentence=//p')
 
   if [[ "$status" == "synthesizing" ]]; then
     echo "⏳ Estado: sintetizando respuesta de voz..."
@@ -262,7 +300,11 @@ get_player_status() {
 
   local icon="🔊"
   [[ "$status" == "paused" ]] && icon="⏸️"
-  echo "${icon} Estado: ${status} (${time_label})"
+  if [[ -n "$sent" ]]; then
+    echo "${icon} Estado: ${status} (${time_label}) | Frase: \"${sent}\""
+  else
+    echo "${icon} Estado: ${status} (${time_label})"
+  fi
 }
 
 adjust_rate() {
@@ -873,6 +915,12 @@ case "${1:-}" in
   --forward)
     seek_audio "+10"
     ;;
+  --next-sentence)
+    next_sentence_audio
+    ;;
+  --prev-sentence)
+    prev_sentence_audio
+    ;;
   --pause)
     pause_audio
     ;;
@@ -966,6 +1014,8 @@ Acciones principales:
   --seek <+/-s>            Avanzar o retroceder segundos (p. ej. +10 o -10)
   --rewind                 Retroceder 10 segundos (Tecla: prefix+[)
   --forward                Avanzar 10 segundos (Tecla: prefix+])
+  --next-sentence          Avanzar a la siguiente frase en reproducción (Tecla: prefix+n)
+  --prev-sentence          Retroceder a la frase anterior en reproducción (Tecla: prefix+N)
   --play (-p)              Leer la última respuesta del chat enfocado
   --toggle-auto (-t)       Alternar lectura automática de fondo (Tecla: prefix+v)
   --scope focused|all      'focused' (solo chat activo) | 'all' (cualquiera sin solapar)

@@ -1,6 +1,6 @@
 id = "herdr.tts"
 name = "Herdr Neural TTS"
-version = "0.4.0"
+version = "0.5.0"
 min_herdr_version = "0.7.0"
 platforms = ["linux", "macos"]
 description = "Vocalizes agent responses and attention requests using modular TTS backends (Edge Neural TTS, OpenAI TTS, ElevenLabs) with native audio playback, interactive controls, and mobile push. Concurrency-safe."
@@ -41,6 +41,18 @@ id = "rewind"
 title = "Seek Backward 10s"
 contexts = ["workspace", "pane"]
 command = ["bin/herdr-tts", "--rewind"]
+
+[[actions]]
+id = "next-sentence"
+title = "Next Spoken Sentence"
+contexts = ["workspace", "pane"]
+command = ["bin/herdr-tts", "--next-sentence"]
+
+[[actions]]
+id = "prev-sentence"
+title = "Previous Spoken Sentence"
+contexts = ["workspace", "pane"]
+command = ["bin/herdr-tts", "--prev-sentence"]
 
 [[actions]]
 id = "rate-up"
