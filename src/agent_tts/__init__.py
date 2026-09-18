@@ -18,6 +18,11 @@ from agent_tts.lang_detector import (
     resolve_voice_for_language,
     segment_by_language,
 )
+from agent_tts.podcast import (
+    PodcastEpisode,
+    PodcastFeed,
+    run_podcast_server,
+)
 from agent_tts.providers import (
     EdgeTTSProvider,
     ElevenLabsTTSProvider,
@@ -38,6 +43,9 @@ __all__ = [
     "detect_language",
     "segment_by_language",
     "resolve_voice_for_language",
+    "PodcastEpisode",
+    "PodcastFeed",
+    "run_podcast_server",
     "AudioSession",
     "cleanup_locks",
     "play_mp3_data",
