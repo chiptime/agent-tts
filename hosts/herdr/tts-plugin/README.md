@@ -372,8 +372,8 @@ We have an active vision to expand `herdr-tts` into the definitive audio layer f
   - User-extensible custom dictionary support via `~/.config/agent-tts/lexicon.json` or `~/.config/herdr-tts/lexicon.json`.
 - [x] 🌐 **Automatic Language Detection & Dynamic Voice Switching:**
   - Fast, zero-dependency statistical language classifier detects embedded English code snippets, error traces, or documentation inside Spanish explanations and switches neural voices dynamically on the fly (`--auto-lang`, `herdr-tts --auto-lang on`).
-- [ ] 📻 **Private Podcast / Audio RSS Feed:**
-  - Export and sync generated audio sessions into an optional local or remote private RSS podcast feed for listening on mobile podcast apps (Pocket Casts, Overcast, Apple Podcasts).
+- [x] 📻 **Private Podcast / Audio RSS Feed:**
+  - Export and sync generated audio sessions into a standard RSS 2.0 / iTunes XML feed with built-in zero-dependency HTTP server (`herdr-tts --podcast-serve`, `herdr-tts --podcast on`). Listen on mobile apps like Pocket Casts, Overcast, or Apple Podcasts.
 - [ ] 🔒 **Zero-Cloud Local Neural Synthesis (Piper / Kokoro / Sherpa-ONNX):**
   - Optional fully offline, on-device neural TTS engine running 100% on CPU without requiring internet access or third-party APIs.
 

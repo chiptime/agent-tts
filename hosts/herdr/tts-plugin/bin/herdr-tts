@@ -47,6 +47,8 @@ DEFAULT_WEB_LABEL=""
 DEFAULT_CLICK_REDIRECT="off"
 DEFAULT_COLLIE_URL=""
 DEFAULT_AUTO_LANG="off"
+DEFAULT_PODCAST_ENABLED="off"
+DEFAULT_PODCAST_PORT="8844"
 
 notify_herdr() {
   local title="$1"
@@ -67,6 +69,8 @@ TTS_RATE="${TTS_RATE:-$DEFAULT_RATE}"
 TTS_MAX_CHARS="${TTS_MAX_CHARS:-$DEFAULT_MAX_CHARS}"
 TTS_AUTO_SCOPE="${TTS_AUTO_SCOPE:-$DEFAULT_AUTO_SCOPE}"
 TTS_AUTO_LANG="${TTS_AUTO_LANG:-$DEFAULT_AUTO_LANG}"
+PODCAST_ENABLED="${PODCAST_ENABLED:-$DEFAULT_PODCAST_ENABLED}"
+PODCAST_PORT="${PODCAST_PORT:-$DEFAULT_PODCAST_PORT}"
 OPENAI_API_KEY="${OPENAI_API_KEY:-$DEFAULT_OPENAI_API_KEY}"
 OPENAI_BASE_URL="${OPENAI_BASE_URL:-$DEFAULT_OPENAI_BASE_URL}"
 OPENAI_TTS_MODEL="${OPENAI_TTS_MODEL:-$DEFAULT_OPENAI_TTS_MODEL}"
@@ -88,6 +92,8 @@ TTS_RATE="${TTS_RATE}"
 TTS_MAX_CHARS="${TTS_MAX_CHARS}"
 TTS_AUTO_SCOPE="${TTS_AUTO_SCOPE}"
 TTS_AUTO_LANG="${TTS_AUTO_LANG}"
+PODCAST_ENABLED="${PODCAST_ENABLED}"
+PODCAST_PORT="${PODCAST_PORT}"
 OPENAI_API_KEY="${OPENAI_API_KEY}"
 OPENAI_BASE_URL="${OPENAI_BASE_URL}"
 OPENAI_TTS_MODEL="${OPENAI_TTS_MODEL}"
@@ -521,6 +527,50 @@ read_pane_text() {
   echo "$raw"
 }
 
+publish_podcast_episode() {
+  local title="$1"
+  local description="$2"
+  local audio_file="$3"
+
+  local pod_dir="${DATA_DIR}/podcast"
+  mkdir -p "$pod_dir"
+  "$VENV_PYTHON" -c "
+import sys
+from agent_tts.podcast import PodcastFeed
+with open('$audio_file', 'rb') as f:
+    data = f.read()
+feed = PodcastFeed(base_dir='$pod_dir', base_url='http://localhost:${PODCAST_PORT}')
+feed.add_episode(data, title='''$title''', description='''$description''')
+" 2>/dev/null || true
+  echo "[$(date +%H:%M:%S)] 🎙️ Episodio publicado en el feed privado de podcast"
+}
+
+publish_current_pane_podcast() {
+  local target_pane
+  target_pane=$(get_focused_pane)
+  if [[ -z "$target_pane" ]]; then
+    echo "⚠️ No hay ningún pane enfocado en Herdr" >&2
+    return 1
+  fi
+  local text
+  text=$(read_pane_text "$target_pane")
+  if [[ -z "$text" || "$text" =~ ^[[:space:]]*$ ]]; then
+    echo "ℹ️ El pane ${target_pane} no tiene contenido para publicar"
+    return 0
+  fi
+  local tmp_audio="/tmp/herdr-tts-pod-${target_pane//:/_}-$RANDOM.mp3"
+  echo "🎙️ Generando audio y publicando episodio en el feed de podcast..."
+  render_text_audio "$tmp_audio" "$text" >/dev/null 2>&1 || true
+  if [[ -s "$tmp_audio" ]]; then
+    publish_podcast_episode "Actualización en ${target_pane}" "$text" "$tmp_audio"
+    notify_herdr "🎙️ Podcast RSS" "Nuevo episodio publicado"
+    echo "✓ Episodio publicado con éxito. RSS: http://localhost:${PODCAST_PORT}/podcast.xml"
+    rm -f "$tmp_audio"
+  else
+    echo "Error: Falló la síntesis de audio" >&2
+  fi
+}
+
 read_current_pane() {
   local target_pane="${1:-}"
   local tldr_flag="${2:-}"
@@ -697,6 +747,11 @@ show_status() {
   echo "  Velocidad:    ${TTS_RATE}"
   echo "  Max chars:    ${TTS_MAX_CHARS}"
   echo "  Idioma auto:  ${TTS_AUTO_LANG} (detección automática y cambio de voz entre ES y EN)"
+  if [[ "$PODCAST_ENABLED" == "on" ]]; then
+    echo "  Podcast RSS:  🔔 Activo (http://localhost:${PODCAST_PORT}/podcast.xml | Servidor: --podcast-serve)"
+  else
+    echo "  Podcast RSS:  ⚪ Desactivado (opcional vía --podcast on | servidor vía --podcast-serve)"
+  fi
 
   if [[ -n "$NTFY_TOPIC" ]]; then
     echo "  Push móvil:   🔔 Activo (ntfy: ${NTFY_TOPIC} | Servidor: ${NTFY_SERVER})"
@@ -760,6 +815,11 @@ watch_agent_pane() {
           # 2. Push notification (mobile via ntfy, if configured)
           if [[ -n "$NTFY_TOPIC" ]]; then
             send_ntfy_push "$pane_id" "$agent_name" "$new_state" "$workspace" "$title_desc" "$tmp_audio"
+          fi
+
+          # 2.5 Private Podcast Feed (if enabled)
+          if [[ "$PODCAST_ENABLED" == "on" && -s "$tmp_audio" ]]; then
+            publish_podcast_episode "${agent_name} (${new_state}): ${title_desc:-$workspace}" "$pane_text" "$tmp_audio"
           fi
 
           # 3. Local desktop voice playback
@@ -1048,6 +1108,33 @@ case "${1:-}" in
     fi
     save_config
     ;;
+  --podcast)
+    if [[ "${2:-}" == "on" || "${2:-}" == "true" || "${2:-}" == "1" ]]; then
+      PODCAST_ENABLED="on"
+      echo "✓ Publicación automática en feed de podcast activada"
+      notify_herdr "🎙️ Podcast RSS" "Publicación activada"
+    else
+      PODCAST_ENABLED="off"
+      echo "✓ Publicación automática en feed de podcast desactivada"
+      notify_herdr "🎙️ Podcast RSS" "Publicación desactivada"
+    fi
+    save_config
+    ;;
+  --podcast-port)
+    PODCAST_PORT="${2:-8844}"
+    save_config
+    echo "✓ Puerto de podcast configurado: $PODCAST_PORT"
+    ;;
+  --podcast-serve|--podcast-server)
+    local port="${2:-$PODCAST_PORT}"
+    local pod_dir="${DATA_DIR}/podcast"
+    mkdir -p "$pod_dir"
+    echo "🎙️ Servidor de Podcast RSS iniciado en http://0.0.0.0:${port}/podcast.xml"
+    "$VENV_PYTHON" -c "from agent_tts.podcast import run_podcast_server; run_podcast_server(port=${port}, podcast_dir='${pod_dir}')"
+    ;;
+  --podcast-publish)
+    publish_current_pane_podcast
+    ;;
   --status)
     show_status
     ;;
@@ -1094,6 +1181,12 @@ Notificaciones móviles (opcional):
   --collie-url <url>       Alias de --web-url para Collie
   --web-label <texto>      Etiqueta personalizada para el botón de acción web
   --click-redirect on|off  Redirigir al tocar la tarjeta de notificación (default: off)
+
+Podcast RSS privado (para escuchar en móvil con Pocket Casts / Overcast / Apple Podcasts):
+  --podcast on|off         Activar publicación automática de audios en el feed RSS
+  --podcast-serve [puerto] Iniciar servidor local HTTP de podcast (default: 8844)
+  --podcast-port <puerto>  Cambiar puerto del servidor podcast (default: 8844)
+  --podcast-publish        Publicar respuesta actual directamente al feed de podcast
 
 Información:
   --status                 Ver estado actual, lock y configuración
