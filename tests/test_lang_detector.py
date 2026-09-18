@@ -58,6 +58,12 @@ class TestLangDetector(unittest.TestCase):
         self.assertEqual(resolve_voice_for_language("nova", "en", "openai"), "nova")
         self.assertEqual(resolve_voice_for_language("onyx", "es", "openai"), "onyx")
 
+        # Regional Spanish voices (e.g. Mexico es-MX: dalia, jorge)
+        self.assertEqual(resolve_voice_for_language("dalia", "es", "edge"), "dalia")
+        self.assertEqual(resolve_voice_for_language("jorge", "es", "edge"), "jorge")
+        self.assertEqual(resolve_voice_for_language("dalia", "en", "edge"), "en-US-JennyNeural")
+        self.assertEqual(resolve_voice_for_language("jorge", "en", "edge"), "en-US-GuyNeural")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -80,7 +80,7 @@ UNIT_NORMALIZATIONS: List[Tuple[str, str]] = [
 
 
 # Common Spanish abbreviations
-COMMON_ABBREVIATIONS: List[Tuple[str, str]] = [
+COMMON_ABBREVIATIONS_ES: List[Tuple[str, str]] = [
     (r"\bp\.?\s*ej\.", "por ejemplo"),
     (r"\bej\.", "ejemplo"),
     (r"\baprox\.", "aproximadamente"),
@@ -101,9 +101,61 @@ COMMON_ABBREVIATIONS: List[Tuple[str, str]] = [
     (r"\b(núm|nro|n°|Nº)\.?\s*(\d+)", r"número \2"),
 ]
 
+# Common English abbreviations
+COMMON_ABBREVIATIONS_EN: List[Tuple[str, str]] = [
+    (r"\be\.?\s*g\.", "for example"),
+    (r"\bi\.?\s*e\.", "that is"),
+    (r"\bapprox\.", "approximately"),
+    (r"\betc\.", "etcetera"),
+    (r"\bDr\.", "Doctor"),
+    (r"\bMr\.", "Mister"),
+    (r"\bMrs\.", "Missus"),
+    (r"\bMs\.", "Miz"),
+    (r"\bvs\.?\b", "versus"),
+    (r"\bp\.\s*(\d+)", r"page \1"),
+    (r"\bpp\.\s*(\d+)", r"pages \1"),
+    (r"\b(no|num)\.?\s*(\d+)", r"number \2"),
+]
 
-def normalize_currency(text: str) -> str:
-    """Normalizes currency notations ($45.20, 10€, etc.) into natural spoken words."""
+COMMON_ABBREVIATIONS = COMMON_ABBREVIATIONS_ES
+
+
+def normalize_currency(text: str, lang: str = "es") -> str:
+    """Normalizes currency notations ($45.20, 10€, etc.) into natural spoken words according to language."""
+    if lang == "en":
+        def _dollar_sub_en(m):
+            amount_int = m.group(1)
+            amount_dec = m.group(2) if m.lastindex and m.lastindex >= 2 else None
+            word = "dollar" if amount_int == "1" else "dollars"
+            if amount_dec:
+                dec_int = int(amount_dec[:2].ljust(2, "0"))
+                cents_word = "cent" if dec_int == 1 else "cents"
+                return f"{amount_int} {word} and {dec_int} {cents_word}"
+            return f"{amount_int} {word}"
+
+        text = re.sub(r"\$(\d+)(?:[.,](\d{1,2}))?\b", _dollar_sub_en, text)
+        text = re.sub(r"\b(\d+)(?:[.,](\d{1,2}))?\s*\$", _dollar_sub_en, text)
+
+        def _euro_sub_en(m):
+            amount_int = m.group(1)
+            amount_dec = m.group(2) if m.lastindex and m.lastindex >= 2 else None
+            word = "euro" if amount_int == "1" else "euros"
+            if amount_dec:
+                dec_int = int(amount_dec[:2].ljust(2, "0"))
+                cents_word = "cent" if dec_int == 1 else "cents"
+                return f"{amount_int} {word} and {dec_int} {cents_word}"
+            return f"{amount_int} {word}"
+
+        text = re.sub(r"€(\d+)(?:[.,](\d{1,2}))?\b", _euro_sub_en, text)
+        text = re.sub(r"\b(\d+)(?:[.,](\d{1,2}))?\s*€", _euro_sub_en, text)
+
+        text = re.sub(r"£(\d+)\b", r"\1 pounds", text)
+        text = re.sub(r"\b(\d+)\s*£", r"\1 pounds", text)
+        text = re.sub(r"[¥](\d+)\b", r"\1 yen", text)
+        text = re.sub(r"\b(\d+)\s*[¥]", r"\1 yen", text)
+        return text
+
+    # Spanish (default)
     def _dollar_sub(m):
         amount_int = m.group(1)
         amount_dec = m.group(2) if m.lastindex and m.lastindex >= 2 else None
@@ -114,9 +166,7 @@ def normalize_currency(text: str) -> str:
             return f"{amount_int} {word} con {dec_int} {cents_word}"
         return f"{amount_int} {word}"
 
-    # $45.20 or $45
     text = re.sub(r"\$(\d+)(?:[.,](\d{1,2}))?\b", _dollar_sub, text)
-    # 45$ or 45.20$
     text = re.sub(r"\b(\d+)(?:[.,](\d{1,2}))?\s*\$", _dollar_sub, text)
 
     def _euro_sub(m):
@@ -129,9 +179,7 @@ def normalize_currency(text: str) -> str:
             return f"{amount_int} {word} con {dec_int} {cents_word}"
         return f"{amount_int} {word}"
 
-    # €45.20 or €45
     text = re.sub(r"€(\d+)(?:[.,](\d{1,2}))?\b", _euro_sub, text)
-    # 45€ or 45.20€
     text = re.sub(r"\b(\d+)(?:[.,](\d{1,2}))?\s*€", _euro_sub, text)
 
     def _pound_sub(m):
@@ -172,7 +220,7 @@ def strip_ansi(text: str) -> str:
     return ANSI_ESCAPE.sub("", text)
 
 
-def normalize_technical_terms(text: str) -> str:
+def normalize_technical_terms(text: str, lang: str = "es") -> str:
     """Replaces developer acronyms, currencies, abbreviations and units with speakable expansions."""
     res = text
 
@@ -180,11 +228,12 @@ def normalize_technical_terms(text: str) -> str:
     for pattern, replacement in UNIT_NORMALIZATIONS:
         res = re.sub(pattern, replacement, res, flags=re.IGNORECASE)
 
-    # 2. Apply currency normalizations ($45.20, €10, etc.)
-    res = normalize_currency(res)
+    # 2. Apply currency normalizations
+    res = normalize_currency(res, lang=lang)
 
-    # 3. Apply common abbreviations (ej., etc., aprox., Dr.)
-    for pattern, replacement in COMMON_ABBREVIATIONS:
+    # 3. Apply common abbreviations according to language
+    abbr_list = COMMON_ABBREVIATIONS_EN if lang == "en" else COMMON_ABBREVIATIONS_ES
+    for pattern, replacement in abbr_list:
         res = re.sub(pattern, replacement, res, flags=re.IGNORECASE)
 
     # 4. Apply base developer lexicon
@@ -245,7 +294,12 @@ def extract_last_turn(text: str) -> str:
     return text
 
 
-def clean_agent_text(text: str, max_chars: int = 0, summarize: bool = False) -> str:
+def clean_agent_text(
+    text: str,
+    max_chars: int = 0,
+    summarize: bool = False,
+    lang: str = "es",
+) -> str:
     """Deeply cleans terminal/agent prose, removing borders, token quotas, and code blocks.
     
     If summarize is True, runs Smart Architectural Summarizer to condense text before speech.
@@ -291,7 +345,7 @@ def clean_agent_text(text: str, max_chars: int = 0, summarize: bool = False) -> 
     text = re.sub(r"https?://\S+", "enlace web", text)
 
     # 6. Apply technical lexicon and unit normalizations
-    text = normalize_technical_terms(text)
+    text = normalize_technical_terms(text, lang=lang)
 
     # 7. Collapse excessive whitespace and blank lines
     text = re.sub(r"[ \t]+", " ", text)

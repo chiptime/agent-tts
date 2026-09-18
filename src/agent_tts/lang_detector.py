@@ -90,17 +90,24 @@ def segment_by_language(text: str, default_lang: str = "es") -> List[Tuple[str, 
 
 
 def resolve_voice_for_language(base_voice: str, target_lang: str, provider: str = "edge") -> str:
-    """Selects an appropriate voice variant for the target language preserving gender."""
-    is_male = any(m in base_voice.lower() for m in ("alvaro", "jorge", "guy", "onyx", "echo", "adam", "arnold"))
+    """Selects an appropriate voice variant for the target language preserving gender and regional base voice."""
+    lower_base = (base_voice or "").lower()
+    is_male = any(m in lower_base for m in ("alvaro", "jorge", "guy", "onyx", "echo", "adam", "arnold", "tomas", "gonzalo"))
 
     if target_lang == "en":
+        if "en-" in lower_base or "jenny" in lower_base or "guy" in lower_base:
+            return base_voice
         if provider == "openai":
             return "onyx" if is_male else "nova"
         if provider.startswith("eleven"):
             return "adam" if is_male else "rachel"
         return "en-US-GuyNeural" if is_male else "en-US-JennyNeural"
 
-    # Default to Spanish
+    # Target is Spanish:
+    # If the user already configured a regional Spanish voice (e.g. dalia, jorge in Mexico, alvaro, etc.), respect it!
+    if base_voice and not lower_base.startswith("en"):
+        return base_voice
+
     if provider == "openai":
         return "onyx" if is_male else "nova"
     if provider.startswith("eleven"):
