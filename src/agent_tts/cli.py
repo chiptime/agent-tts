@@ -197,6 +197,9 @@ async def speak(
     piper_model: Optional[str] = None,
     auto_rewind_sec: float = 2.0,
     highlight: bool = False,
+    autoscroll: bool = False,
+    bionic: bool = False,
+    zen: bool = False,
     auto_lang: bool = False,
     podcast: bool = False,
     podcast_title: str = "",
@@ -215,6 +218,9 @@ async def speak(
             label=f"{len(text)} chars",
             auto_rewind_sec=auto_rewind_sec,
             highlight=highlight,
+            autoscroll=autoscroll,
+            bionic=bionic,
+            zen=zen,
         )
         session.start_ipc()
 
@@ -259,8 +265,9 @@ async def speak(
         if session:
             if not session.boundaries.sentences:
                 from agent_tts.boundaries import estimate_boundaries_from_text
-                frame_size = session.nchannels * session.bytes_per_sample if session.nchannels else 4
-                total_duration = (len(decoded.samples) // frame_size) / float(decoded.sample_rate)
+                total_duration = getattr(decoded, "duration", None) or (
+                    len(decoded.samples) / float(decoded.sample_rate * decoded.nchannels)
+                )
                 session.boundaries = estimate_boundaries_from_text(text, total_duration)
             session.play(decoded)
     except Exception as e:
@@ -282,13 +289,34 @@ def main():
     parser.add_argument("--output", "-o", help="Save synthesized MP3 audio to file")
     parser.add_argument("--no-play", action="store_true", help="Do not play audio locally")
     parser.add_argument("--play-file", help="Play an existing MP3 file directly without re-synthesizing")
-    parser.add_argument("--highlight", action="store_true", help="Enable live word and sentence highlighting in terminal")
+    parser.add_argument(
+        "--highlight",
+        "-H",
+        action="store_true",
+        help="Enable live word and sentence karaoke highlighting in terminal",
+    )
+    parser.add_argument(
+        "--autoscroll",
+        action="store_true",
+        help="Enable synchronized auto-scroll reader view tracking spoken sentences",
+    )
+    parser.add_argument(
+        "--bionic",
+        action="store_true",
+        help="Enable Bionic Reading (bold fixation on initial letters for rapid reading)",
+    )
+    parser.add_argument(
+        "--zen",
+        action="store_true",
+        help="Enable Zen Mode (minimalist high-contrast distraction-free reader with auto-scroll)",
+    )
     parser.add_argument("--next-sentence", action="store_true", help="Jump to next sentence in active playback")
     parser.add_argument("--prev-sentence", action="store_true", help="Jump to previous sentence in active playback")
     parser.add_argument("--current-sentence", action="store_true", help="Get current sentence text from active playback")
     parser.add_argument("--next-paragraph", action="store_true", help="Jump to next paragraph in active playback")
     parser.add_argument("--prev-paragraph", action="store_true", help="Jump to previous paragraph in active playback")
     parser.add_argument("--current-paragraph", action="store_true", help="Get current paragraph text from active playback")
+    parser.add_argument("--scroll-info", action="store_true", help="Get current synchronized scroll status from active playback")
     parser.add_argument(
         "--tldr",
         "--summarize",
@@ -359,6 +387,8 @@ def main():
         ipc_cmd = "prev-paragraph"
     elif args.current_paragraph:
         ipc_cmd = "paragraph"
+    elif args.scroll_info:
+        ipc_cmd = "scroll-info"
 
     if ipc_cmd:
         res = send_ipc_command(ipc_cmd)
@@ -370,7 +400,14 @@ def main():
             sys.exit(1)
 
     if args.play_file:
-        play_mp3_file(args.play_file, label=os.path.basename(args.play_file), highlight=args.highlight)
+        play_mp3_file(
+            args.play_file,
+            label=os.path.basename(args.play_file),
+            highlight=args.highlight,
+            autoscroll=args.autoscroll,
+            bionic=args.bionic,
+            zen=args.zen,
+        )
         sys.exit(0)
 
     input_text = ""
@@ -402,6 +439,9 @@ def main():
                 eleven_model=args.eleven_model,
                 piper_model=args.piper_model,
                 highlight=args.highlight,
+                autoscroll=args.autoscroll,
+                bionic=args.bionic,
+                zen=args.zen,
                 auto_lang=args.auto_lang,
                 podcast=args.podcast,
                 podcast_title=args.podcast_title,

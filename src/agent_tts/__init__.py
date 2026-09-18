@@ -9,6 +9,8 @@ from agent_tts.boundaries import (
     Sentence,
     SynthesisResult,
     Word,
+    apply_bionic_reading,
+    bionic_word,
     estimate_boundaries_from_text,
 )
 from agent_tts.cleaner import clean_agent_text, extract_last_turn, strip_ansi
@@ -57,6 +59,8 @@ __all__ = [
     "Word",
     "SynthesisResult",
     "estimate_boundaries_from_text",
+    "apply_bionic_reading",
+    "bionic_word",
     "IPCServer",
     "send_ipc_command",
     "TTSProvider",

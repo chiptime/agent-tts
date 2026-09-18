@@ -211,7 +211,12 @@ class BoundaryMap:
                 return w
         return self.words[-1]
 
-    def format_highlighted_sentence(self, pos: float, ansi: bool = True) -> str:
+    def format_highlighted_sentence(
+        self,
+        pos: float,
+        ansi: bool = True,
+        bionic: bool = False,
+    ) -> str:
         """Returns the active sentence with the currently spoken word highlighted in ANSI."""
         sent = self.get_sentence_at(pos)
         if not sent:
@@ -221,6 +226,8 @@ class BoundaryMap:
 
         words_in_sent = [w for w in self.words if w.sentence_index == sent.index]
         if not words_in_sent:
+            if bionic:
+                return apply_bionic_reading(sent.text)
             return f"\x1b[1;36m{sent.text}\x1b[0m"
 
         active_word = self.get_word_at(pos)
@@ -233,9 +240,36 @@ class BoundaryMap:
                 # Past word: Dimmed
                 parts.append(f"\x1b[2m{w.text}\x1b[0m")
             else:
-                # Upcoming word: Normal
-                parts.append(w.text)
+                # Upcoming word: Bionic fixation if enabled, else normal
+                if bionic:
+                    parts.append(bionic_word(w.text))
+                else:
+                    parts.append(w.text)
         return " ".join(parts)
+
+
+def bionic_word(word: str) -> str:
+    """Applies bionic reading fixation to a word (bolds the first 40-50% of the word core)."""
+    m = re.match(r"^([^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ]*)([a-zA-Z0-9áéíóúÁÉÍÓÚñÑ]+)(.*)$", word)
+    if not m:
+        return word
+    prefix, core, suffix = m.groups()
+    n = len(core)
+    if n <= 3:
+        fixation = 1
+    elif n <= 6:
+        fixation = 2
+    else:
+        fixation = max(2, int(round(n * 0.45)))
+    bold_part = core[:fixation]
+    rest_part = core[fixation:]
+    return f"{prefix}\x1b[1m{bold_part}\x1b[22m{rest_part}{suffix}"
+
+
+def apply_bionic_reading(text: str) -> str:
+    """Formats full text with bionic reading fixation on each word."""
+    words = text.split(" ")
+    return " ".join(bionic_word(w) for w in words)
 
 
 class SynthesisResult(bytes):
