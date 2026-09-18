@@ -44,6 +44,11 @@ venv.bak/
 .herdr/
 local_config.env
 
+# Internal / competitive benchmarks
+docs/community-comparison.md
+docs/*comparison*
+*community-comparison*
+
 # Editors / OS
 .DS_Store
 Thumbs.db
