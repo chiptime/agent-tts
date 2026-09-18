@@ -338,14 +338,20 @@ speak_text() {
   local text="$1"
   local voice="${2:-$TTS_VOICE}"
   local rate="${3:-$TTS_RATE}"
+  local tldr_flag="${4:-}"
 
   # Stop any currently playing audio first (new request takes priority)
   stop_audio
 
   build_provider_flags
 
+  local -a extra_flags=()
+  if [[ "$tldr_flag" == "--tldr" || "$tldr_flag" == "tldr" ]]; then
+    extra_flags+=(--tldr)
+  fi
+
   # Launch audio synthesis asynchronously in background so callers (and Herdr UI) never block
-  "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$voice" --rate "$rate" --max-chars "$TTS_MAX_CHARS" "${PROVIDER_FLAGS[@]}" >> /tmp/herdr-tts.log 2>&1 &
+  "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$voice" --rate "$rate" --max-chars "$TTS_MAX_CHARS" "${extra_flags[@]}" "${PROVIDER_FLAGS[@]}" >> /tmp/herdr-tts.log 2>&1 &
   local child_pid=$!
   echo "$child_pid" > "$PID_FILE"
   echo "$child_pid" > "$LOCK_FILE"
@@ -513,6 +519,7 @@ read_pane_text() {
 
 read_current_pane() {
   local target_pane="${1:-}"
+  local tldr_flag="${2:-}"
   if [[ -z "$target_pane" ]]; then
     target_pane=$(get_focused_pane)
   fi
@@ -532,9 +539,15 @@ read_current_pane() {
     return 0
   fi
 
-  echo "▶️ Transcribiendo y leyendo respuesta en ${target_pane}..."
-  notify_herdr "Transcribiendo respuesta" "Sintetizando voz para ${target_pane}..."
-  speak_text "$text"
+  if [[ "$tldr_flag" == "--tldr" || "$tldr_flag" == "tldr" ]]; then
+    echo "▶️ Resumiendo (TL;DR) y leyendo respuesta en ${target_pane}..."
+    notify_herdr "Resumen TL;DR" "Sintetizando resumen para ${target_pane}..."
+    speak_text "$text" "$TTS_VOICE" "$TTS_RATE" "--tldr"
+  else
+    echo "▶️ Transcribiendo y leyendo respuesta en ${target_pane}..."
+    notify_herdr "Transcribiendo respuesta" "Sintetizando voz para ${target_pane}..."
+    speak_text "$text"
+  fi
 }
 
 render_pane_audio() {
@@ -583,11 +596,27 @@ render_text_audio() {
 }
 
 toggle_play() {
-  local target_pane="${1:-}"
+  local target_pane=""
+  local tldr_flag=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --tldr|tldr)
+        tldr_flag="--tldr"
+        shift
+        ;;
+      *)
+        if [[ -z "$target_pane" ]]; then
+          target_pane="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
   if is_playing; then
     stop_audio
   else
-    read_current_pane "$target_pane"
+    read_current_pane "$target_pane" "$tldr_flag"
   fi
 }
 
@@ -820,7 +849,12 @@ case "${1:-}" in
     stop_audio
     ;;
   --toggle-play|-r)
-    toggle_play "${2:-}"
+    shift
+    toggle_play "$@"
+    ;;
+  --tldr|--summarize)
+    shift || true
+    read_current_pane "${1:-}" "--tldr"
     ;;
   --toggle-auto|--toggle|-t)
     toggle_auto
@@ -1009,6 +1043,7 @@ Uso: herdr-tts [OPCIONES]
 
 Acciones principales:
   --toggle-play (-r)       Play / Stop toggle en el pane actual enfocado (Tecla: prefix+r)
+  --tldr                   Resumen rápido TL;DR del pane actual enfocado (Tecla: prefix+t)
   --stop (-s)              Detener inmediatamente cualquier audio sonando (Tecla: prefix+s)
   --toggle-pause           Pausar / Reanudar audio en reproducción (Tecla: prefix+p)
   --seek <+/-s>            Avanzar o retroceder segundos (p. ej. +10 o -10)

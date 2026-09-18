@@ -126,6 +126,12 @@ key = "prefix+r"
 type = "shell"
 command = "herdr-tts --toggle-play"
 
+# TL;DR Quick Summary of the currently focused pane
+[[keys.command]]
+key = "prefix+t"
+type = "shell"
+command = "herdr-tts --tldr"
+
 # Stop all audio immediately (Emergency Mute)
 [[keys.command]]
 key = "prefix+s"
@@ -354,15 +360,16 @@ We have an active vision to expand `herdr-tts` into the definitive audio layer f
   - Extracted the playback engine, IPC socket server, provider abstractions, audio mutex lock, and text sanitizers into an independent, standalone Python package / CLI ([`chiptime/agent-tts`](https://github.com/chiptime/agent-tts)). `herdr-tts` now consumes it as a clean upstream dependency.
 - [x] 🖍️ **Visual Word & Sentence Highlighting:**
   - Real-time ANSI word and sentence highlighting in terminal panes synchronized with temporal audio boundaries (`agent-tts --highlight`).
-- [ ] 💡 **Smart Architectural Summarizer (TL;DR Pre-Flight):**
-  - Lightweight heuristics or local summarizer toggle to condense massive terminal dumps (e.g. 50-file diff outputs, long compiler stack traces) into punchy 2-sentence voice recaps before reading.
+- [x] 💡 **Smart Architectural Summarizer (TL;DR Pre-Flight):**
+  - Instant zero-latency, 100% offline heuristics to condense massive terminal dumps (git diffs, status, test runner logs, compiler stack traces) into crisp 1–2 sentence voice recaps (`herdr-tts --tldr`, `prefix + t`).
 - [x] ⏪ **Smart Auto-Rewind on Resume:**
   - Automatically rewinds 2–3 seconds when resuming playback after a pause period, helping the developer immediately regain cognitive context without manual seeking.
 - [x] 📑 **Semantic Navigation (Jump by Sentence / Paragraph):**
   - Advance or rewind by full grammatical sentence boundaries (`prefix + n` / `prefix + N`, `--next-sentence`, `--prev-sentence`) with intelligent sentence threshold auto-rewind.
-- [ ] 🗣️ **Technical Pronunciation Lexicon & Text Normalization:**
-  - Configurable phonetic dictionary and SSML overrides for developer jargon, CLI commands, and libraries (e.g., *PostgreSQL*, *Kubernetes*, *PR*, *UUIDs*, *git rebase*).
-  - Conversational formatting for ASCII / Markdown tables, units (`ms`, `GB`, `kHz`), and version tags.
+- [x] 🗣️ **Technical Pronunciation Lexicon & Text Normalization:**
+  - Expanded developer lexicon and SSML phonetic normalization for developer jargon (PostgreSQL, Kubernetes, JWT, UUID, SSH, TLS, JSON, YAML, SQL, IPC, stdout/stderr, git rebase/merge, semver).
+  - Conversational formatting for hardware/performance units (`ms`, `s`, `MB`, `GB`, `GHz`, `kHz`, `kbps`) and semantic version tags (`v1.2.3`).
+  - User-extensible custom dictionary support via `~/.config/agent-tts/lexicon.json` or `~/.config/herdr-tts/lexicon.json`.
 - [ ] 🌐 **Automatic Language Detection & Dynamic Voice Switching:**
   - Detect embedded language changes (e.g. English technical snippets or code documentation inside a Spanish explanation) and switch neural voices on the fly.
 - [ ] 📻 **Private Podcast / Audio RSS Feed:**
