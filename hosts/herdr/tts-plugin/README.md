@@ -150,6 +150,18 @@ key = "prefix+["
 type = "shell"
 command = "herdr-tts --rewind"
 
+# Next Spoken Sentence (Semantic Navigation)
+[[keys.command]]
+key = "prefix+n"
+type = "shell"
+command = "herdr-tts --next-sentence"
+
+# Previous Spoken Sentence (Semantic Navigation)
+[[keys.command]]
+key = "prefix+N"
+type = "shell"
+command = "herdr-tts --prev-sentence"
+
 # Speed up voice reading by 10%
 [[keys.command]]
 key = "prefix+="
@@ -340,14 +352,14 @@ We have an active vision to expand `herdr-tts` into the definitive audio layer f
   - Modular provider architecture allowing users with API keys to choose ultra-realistic voice models (OpenAI `tts-1`, ElevenLabs) while preserving zero-cost Microsoft Edge Neural TTS as default.
 - [x] 📦 **Standalone Core Library Decoupling (`agent-tts`):**
   - Extracted the playback engine, IPC socket server, provider abstractions, audio mutex lock, and text sanitizers into an independent, standalone Python package / CLI ([`chiptime/agent-tts`](https://github.com/chiptime/agent-tts)). `herdr-tts` now consumes it as a clean upstream dependency.
-- [ ] 🖍️ **Visual Word & Sentence Highlighting:**
-  - Leverage Edge TTS boundary events (`WordBoundary` / `SentenceBoundary`) to stream synchronized visual highlights directly in terminal panes as audio plays.
+- [x] 🖍️ **Visual Word & Sentence Highlighting:**
+  - Real-time ANSI word and sentence highlighting in terminal panes synchronized with temporal audio boundaries (`agent-tts --highlight`).
 - [ ] 💡 **Smart Architectural Summarizer (TL;DR Pre-Flight):**
   - Lightweight heuristics or local summarizer toggle to condense massive terminal dumps (e.g. 50-file diff outputs, long compiler stack traces) into punchy 2-sentence voice recaps before reading.
 - [x] ⏪ **Smart Auto-Rewind on Resume:**
   - Automatically rewinds 2–3 seconds when resuming playback after a pause period, helping the developer immediately regain cognitive context without manual seeking.
-- [ ] 📑 **Semantic Navigation (Jump by Sentence / Paragraph):**
-  - Support advancing or rewinding by grammatical sentence and paragraph boundaries in addition to fixed time intervals.
+- [x] 📑 **Semantic Navigation (Jump by Sentence / Paragraph):**
+  - Advance or rewind by full grammatical sentence boundaries (`prefix + n` / `prefix + N`, `--next-sentence`, `--prev-sentence`) with intelligent sentence threshold auto-rewind.
 - [ ] 🗣️ **Technical Pronunciation Lexicon & Text Normalization:**
   - Configurable phonetic dictionary and SSML overrides for developer jargon, CLI commands, and libraries (e.g., *PostgreSQL*, *Kubernetes*, *PR*, *UUIDs*, *git rebase*).
   - Conversational formatting for ASCII / Markdown tables, units (`ms`, `GB`, `kHz`), and version tags.
