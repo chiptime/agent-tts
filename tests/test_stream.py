@@ -1,9 +1,16 @@
 import array
+import asyncio
+import contextlib
+import io
+import json
 import unittest
+import urllib.error
+from unittest import mock
 
 from agent_tts.audio import AudioSession
 from agent_tts.boundaries import BoundaryMap, Paragraph, Sentence, Word
-from agent_tts.cli import shift_boundary_map, split_sentence_groups
+from agent_tts.cli import shift_boundary_map, split_sentence_groups, use_pipelined_stream
+from agent_tts.providers import ElevenLabsTTSProvider, OpenAITTSProvider
 
 
 def make_decoded(frames, sample_rate=24000, nchannels=1, sample_width=2):
@@ -190,6 +197,218 @@ class TestAudioSessionStreaming(unittest.TestCase):
         self.assertEqual(gen.send(100), b"")
         with self.assertRaises(StopIteration):
             gen.send(100)
+
+
+class FakeChunkedResponse:
+    """Stand-in for a urllib streaming response that hands out one MP3 chunk per read()."""
+
+    def __init__(self, chunks, fail_after=None):
+        self._chunks = list(chunks)
+        self._pos = 0
+        self._fail_after = fail_after
+        self.read_calls = 0
+
+    def read(self, amt=-1):
+        self.read_calls += 1
+        if self._fail_after is not None and self._pos >= self._fail_after:
+            raise ConnectionError("connection reset mid-stream")
+        if self._pos >= len(self._chunks):
+            return b""
+        chunk = self._chunks[self._pos]
+        self._pos += 1
+        return chunk
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def fake_urlopen(routes):
+    """Builds a urlopen stand-in serving responses by request; records every request seen."""
+
+    def handler(req, timeout=30):
+        outcome = routes(req)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    seen = []
+
+    def recording_handler(req, timeout=30):
+        seen.append(req)
+        return handler(req, timeout=timeout)
+
+    return recording_handler, seen
+
+
+def payload_of(req):
+    return json.loads(req.data.decode("utf-8"))
+
+
+class TestStreamGate(unittest.TestCase):
+    def test_auto_streams_edge_and_http_providers_for_long_texts(self):
+        for provider in ("edge", "openai", "elevenlabs", "eleven"):
+            self.assertTrue(use_pipelined_stream(provider, "auto", False, None, False, 400))
+            self.assertFalse(use_pipelined_stream(provider, "auto", False, None, False, 399))
+
+    def test_auto_excludes_providers_without_pipelining_support(self):
+        self.assertFalse(use_pipelined_stream("piper", "auto", False, None, False, 10000))
+
+    def test_on_forces_streaming_for_any_provider_or_length(self):
+        self.assertTrue(use_pipelined_stream("piper", "on", False, None, False, 10))
+
+    def test_output_podcast_and_no_play_disable_streaming(self):
+        base = {"provider": "edge", "stream": "auto", "no_play": False, "output_file": None, "podcast": False, "text_len": 1000}
+        for override in ({"output_file": "/tmp/a.mp3"}, {"podcast": True}, {"no_play": True}):
+            case = dict(base)
+            case.update(override)
+            self.assertFalse(use_pipelined_stream(**case))
+
+    def test_off_disables_streaming(self):
+        self.assertFalse(use_pipelined_stream("edge", "off", False, None, False, 10000))
+
+
+class TestElevenLabsStreaming(unittest.TestCase):
+    CHUNKS = [b"\x01" * 64, b"\x02" * 64, b"\x03" * 64]
+    FULL = b"FULL_MP3_BYTES"
+
+    def _provider(self):
+        return ElevenLabsTTSProvider(api_key="test-key")
+
+    def test_stream_chunks_arrive_incrementally(self):
+        handler, seen = fake_urlopen(lambda req: FakeChunkedResponse(self.CHUNKS))
+        with mock.patch("urllib.request.urlopen", handler):
+            out = list(self._provider().synthesize_stream("Hola mundo", "rachel"))
+        self.assertEqual(b"".join(out), b"".join(self.CHUNKS))
+        self.assertEqual(len(seen), 1)
+        self.assertIn("/text-to-speech/21m00Tcm4TlvDq8ikWAM/stream", seen[0].full_url)
+        self.assertIn("output_format=mp3_44100_128", seen[0].full_url)
+        headers = {k.lower(): v for k, v in seen[0].headers.items()}
+        self.assertEqual(headers.get("xi-api-key"), "test-key")
+
+    def test_stream_first_chunk_arrives_before_response_is_drained(self):
+        resp = FakeChunkedResponse(self.CHUNKS)
+        handler, _ = fake_urlopen(lambda req: resp)
+        out = []
+        with mock.patch("urllib.request.urlopen", handler):
+            for chunk in self._provider().synthesize_stream("Hola mundo", "rachel", stop_checker=lambda: bool(out)):
+                out.append(chunk)
+        # Only the first chunk was consumed: the consumer received it while the
+        # response still had unread data (a buffering client would have drained all 3).
+        self.assertEqual(len(out), 1)
+        self.assertEqual(resp.read_calls, 1)
+
+    def test_synthesize_falls_back_when_stream_endpoint_fails(self):
+        def routes(req):
+            if "/stream" in req.full_url:
+                return urllib.error.URLError("boom")
+            return FakeChunkedResponse([self.FULL])
+
+        handler, seen = fake_urlopen(routes)
+        stderr = io.StringIO()
+        with mock.patch("urllib.request.urlopen", handler), contextlib.redirect_stderr(stderr):
+            result = asyncio.run(self._provider().synthesize("Hola mundo", "rachel", "+0%"))
+        self.assertEqual(bytes(result), self.FULL)
+        self.assertEqual(len(seen), 2)
+        self.assertIn("/stream", seen[0].full_url)
+        self.assertNotIn("/stream", seen[1].full_url)
+        self.assertIn("falling back to full-response synthesis", stderr.getvalue())
+
+    def test_synthesize_falls_back_on_midstream_failure(self):
+        def routes(req):
+            if "/stream" in req.full_url:
+                return FakeChunkedResponse([b"partial"], fail_after=1)
+            return FakeChunkedResponse([self.FULL])
+
+        handler, seen = fake_urlopen(routes)
+        stderr = io.StringIO()
+        with mock.patch("urllib.request.urlopen", handler), contextlib.redirect_stderr(stderr):
+            result = asyncio.run(self._provider().synthesize("Hola mundo", "rachel", "+0%"))
+        self.assertEqual(bytes(result), self.FULL)
+        self.assertEqual(len(seen), 2)
+        self.assertIn("falling back to full-response synthesis", stderr.getvalue())
+
+    def test_synthesize_without_key_makes_no_requests(self):
+        def boom(req, timeout=30):
+            raise AssertionError("no request should be made without an API key")
+
+        stderr = io.StringIO()
+        with mock.patch("urllib.request.urlopen", boom), contextlib.redirect_stderr(stderr):
+            result = asyncio.run(ElevenLabsTTSProvider(api_key="").synthesize("Hola mundo", "rachel", "+0%"))
+        self.assertEqual(bytes(result), b"")
+        self.assertIn("requires an API key", stderr.getvalue())
+
+
+class TestOpenAIStreaming(unittest.TestCase):
+    CHUNKS = [b"\x01" * 64, b"\x02" * 64, b"\x03" * 64]
+    FULL = b"FULL_MP3_BYTES"
+
+    def _provider(self):
+        return OpenAITTSProvider(api_key="test-key")
+
+    def test_stream_chunks_arrive_incrementally(self):
+        handler, seen = fake_urlopen(lambda req: FakeChunkedResponse(self.CHUNKS))
+        with mock.patch("urllib.request.urlopen", handler):
+            out = list(self._provider().synthesize_stream("Hola mundo", "elvira"))
+        self.assertEqual(b"".join(out), b"".join(self.CHUNKS))
+        self.assertEqual(len(seen), 1)
+        self.assertTrue(seen[0].full_url.endswith("/audio/speech"))
+        payload = payload_of(seen[0])
+        self.assertTrue(payload["stream"])
+        self.assertEqual(payload["voice"], "nova")
+        self.assertEqual(payload["response_format"], "mp3")
+
+    def test_stream_first_chunk_arrives_before_response_is_drained(self):
+        resp = FakeChunkedResponse(self.CHUNKS)
+        handler, _ = fake_urlopen(lambda req: resp)
+        out = []
+        with mock.patch("urllib.request.urlopen", handler):
+            for chunk in self._provider().synthesize_stream("Hola mundo", "elvira", stop_checker=lambda: bool(out)):
+                out.append(chunk)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(resp.read_calls, 1)
+
+    def test_synthesize_falls_back_when_streaming_fails(self):
+        def routes(req):
+            if payload_of(req).get("stream"):
+                return urllib.error.URLError("boom")
+            return FakeChunkedResponse([self.FULL])
+
+        handler, seen = fake_urlopen(routes)
+        stderr = io.StringIO()
+        with mock.patch("urllib.request.urlopen", handler), contextlib.redirect_stderr(stderr):
+            result = asyncio.run(self._provider().synthesize("Hola mundo", "elvira", "+0%"))
+        self.assertEqual(bytes(result), self.FULL)
+        self.assertEqual(len(seen), 2)
+        self.assertTrue(payload_of(seen[0]).get("stream"))
+        self.assertNotIn("stream", payload_of(seen[1]))
+        self.assertIn("falling back to full-response synthesis", stderr.getvalue())
+
+    def test_synthesize_falls_back_on_midstream_failure(self):
+        def routes(req):
+            if payload_of(req).get("stream"):
+                return FakeChunkedResponse([b"partial"], fail_after=1)
+            return FakeChunkedResponse([self.FULL])
+
+        handler, seen = fake_urlopen(routes)
+        stderr = io.StringIO()
+        with mock.patch("urllib.request.urlopen", handler), contextlib.redirect_stderr(stderr):
+            result = asyncio.run(self._provider().synthesize("Hola mundo", "elvira", "+0%"))
+        self.assertEqual(bytes(result), self.FULL)
+        self.assertEqual(len(seen), 2)
+        self.assertIn("falling back to full-response synthesis", stderr.getvalue())
+
+    def test_synthesize_without_key_makes_no_requests(self):
+        def boom(req, timeout=30):
+            raise AssertionError("no request should be made without an API key")
+
+        stderr = io.StringIO()
+        with mock.patch("urllib.request.urlopen", boom), contextlib.redirect_stderr(stderr):
+            result = asyncio.run(OpenAITTSProvider(api_key="").synthesize("Hola mundo", "elvira", "+0%"))
+        self.assertEqual(bytes(result), b"")
+        self.assertIn("requires an API key", stderr.getvalue())
 
 
 if __name__ == "__main__":

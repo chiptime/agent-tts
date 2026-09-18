@@ -1,6 +1,6 @@
 """Base interface for TTS synthesis providers."""
 
-from typing import Callable, Optional
+from typing import Callable, Iterator, Optional
 
 
 def parse_rate_to_multiplier(rate_str: str) -> float:
@@ -25,6 +25,7 @@ class TTSProvider:
     """Base interface for TTS synthesis backends."""
 
     name: str = "base"
+    supports_stream: bool = False
 
     async def synthesize(
         self,
@@ -37,3 +38,19 @@ class TTSProvider:
     ) -> bytes:
         """Synthesizes text into raw MP3 bytes."""
         raise NotImplementedError
+
+    def synthesize_stream(
+        self,
+        text: str,
+        voice: str,
+        rate: str = "+0%",
+        volume: str = "+0%",
+        pitch: str = "+0Hz",
+        stop_checker: Optional[Callable[[], bool]] = None,
+    ) -> Iterator[bytes]:
+        """Yields raw MP3 chunks incrementally while the HTTP response is still streaming.
+
+        Only providers with supports_stream=True implement this; each yielded chunk
+        is a fragment of the same MP3 stream the blocking synthesize() would return.
+        """
+        raise NotImplementedError(f"{self.name} does not support chunked streaming")

@@ -109,7 +109,9 @@ agent-tts --play-file /tmp/report.mp3 --highlight
 
 ### Low-Latency Streaming
 
-Long texts no longer wait for the full audio to be synthesized. With the default `--stream auto`, texts of 400+ characters spoken by the free `edge` provider start playing after the first ~250-character sentence group is synthesized (~300–600ms), while a background producer thread synthesizes the remaining sentence groups and appends them to the live PCM buffer in real time — karaoke word highlighting and sentence boundaries merge seamlessly on the fly. Use `--stream on` to force pipelined playback for any provider or length, or `--stream off` to revert to classic single-shot synthesis. Streaming is incompatible with `--output` and `--podcast`, which always synthesize complete files.
+Long texts no longer wait for the full audio to be synthesized. With the default `--stream auto`, texts of 400+ characters spoken by the `edge`, `openai`, or `elevenlabs` providers start playing after the first ~250-character sentence group is synthesized (~300–600ms), while a background producer thread synthesizes the remaining sentence groups and appends them to the live PCM buffer in real time — karaoke word highlighting and sentence boundaries merge seamlessly on the fly.
+
+The OpenAI and ElevenLabs providers also consume their HTTP responses incrementally instead of waiting for the complete file: ElevenLabs uses its dedicated `/stream` endpoint and OpenAI streams the `/audio/speech` response chunks as they are encoded, so every group's audio reaches the pipeline as soon as the first MP3 chunks arrive. If a streaming request fails (network hiccup or API error mid-stream), synthesis transparently falls back to the classic full-response request and logs the fallback to stderr. Use `--stream on` to force pipelined playback for any provider or length, or `--stream off` to revert to classic single-shot synthesis. Streaming is incompatible with `--output` and `--podcast`, which always synthesize complete files.
 
 ```bash
 # Force pipelined streaming on any provider or length (--stream off = classic one-shot)
@@ -225,12 +227,12 @@ send_ipc_command("toggle-pause")
 
 ## 🎙️ Supported Providers
 
-| Provider | Config | Cost | Voice Quality | Typical Latency |
-| :--- | :--- | :---: | :---: | :---: |
-| **`edge` (Default)** | Zero config (No keys required) | 🟢 Free | High (Neural) | ~150–250ms |
-| **`piper` / `local`** | `--piper-model` / `PIPER_MODEL` | 🟢 Free (Offline) | Neural ONNX (Local CPU) | ~80–180ms |
-| **`openai`** | `--openai-key` / `OPENAI_API_KEY` | Paid API | Studio Quality | ~300–500ms |
-| **`elevenlabs`** | `--eleven-key` / `ELEVENLABS_API_KEY` | Paid API | Ultra-realistic | ~350–600ms |
+| Provider | Config | Cost | Voice Quality | Typical Latency | Pipelined Streaming |
+| :--- | :--- | :---: | :---: | :---: | :--- |
+| **`edge` (Default)** | Zero config (No keys required) | 🟢 Free | High (Neural) | ~150–250ms | ✅ `auto` (≥ 400 chars) |
+| **`piper` / `local`** | `--piper-model` / `PIPER_MODEL` | 🟢 Free (Offline) | Neural ONNX (Local CPU) | ~80–180ms | ➖ `--stream on` only |
+| **`openai`** | `--openai-key` / `OPENAI_API_KEY` | Paid API | Studio Quality | ~300–500ms | ✅ `auto` (≥ 400 chars) + chunked MP3 HTTP |
+| **`elevenlabs`** | `--eleven-key` / `ELEVENLABS_API_KEY` | Paid API | Ultra-realistic | ~350–600ms | ✅ `auto` (≥ 400 chars) + chunked MP3 HTTP |
 
 ### Voice Shortcuts:
 - **Edge:** `elvira` (*default Spanish*), `alvaro`, `ximena`, `dalia`, `jorge`, `en` (*US English Jenny*), or any standard Microsoft Edge voice identifier (e.g. `es-ES-ElviraNeural`).
@@ -261,7 +263,7 @@ usage: agent-tts [-h] [--voice VOICE] [--rate RATE] [--max-chars MAX_CHARS]
                  [text ...]
 ```
 
-- **`--stream {auto,on,off}`** (default `auto`): Pipelined playback mode. `auto` streams long texts (≥ 400 chars) with the `edge` provider when playing locally; `on` forces streaming for any provider or length; `off` forces classic single-shot synthesis. `--output` and `--podcast` always use single-shot synthesis.
+- **`--stream {auto,on,off}`** (default `auto`): Pipelined playback mode. `auto` streams long texts (≥ 400 chars) with the `edge`, `openai`, or `elevenlabs` providers when playing locally; `on` forces streaming for any provider or length; `off` forces classic single-shot synthesis. `--output` and `--podcast` always use single-shot synthesis.
 
 - **`--pre-extracted`**: Treat input text as the final message (e.g. provided by an integration layer that already resolved the chat transcript); skips terminal-scrollback turn extraction, keeps markdown-to-speech cleaning.
 
@@ -301,8 +303,8 @@ We have an active vision to expand `agent-tts` into the definitive neural TTS en
   - When the winhost server is unreachable, playback automatically falls back to per-group `powershell.exe` playback (`System.Media.SoundPlayer`); `--playback wsl-ps` forces it directly.
 - [x] 🔌 **Agent Connectors (Structured Transcript Reading):**
   - With `--agent` + `--session-id` the engine reads the real last assistant message from the agent tool's local transcript (OpenCode SQLite, Claude Code / Codex CLI / Antigravity CLI JSONL, Aider markdown history) with automatic scrollback fallback.
-- [ ] 🎙️ **Per-Provider Pipelining (OpenAI, ElevenLabs & Piper):**
-  - Extend the pipelined producer to non-Edge backends; streaming synthesis is currently Edge-only.
+- [ ] 🎙️ **Per-Provider Pipelining (Piper):**
+  - OpenAI and ElevenLabs now stream via chunked MP3 HTTP delivery with transparent full-response fallback (`--stream auto`, ≥ 400 chars); only the local Piper backend remains.
 - [ ] ⚡ **Incremental MP3 Frame-Accurate Byte Streaming:**
   - Replace sentence-group pipelining with frame-level MP3 byte streaming for even lower time-to-first-audio.
 - [x] 🔒 **Automated Secret & Credential Redaction Engine (`redact.py`):**
