@@ -13,7 +13,8 @@ PLUGIN_ROOT="${HERDR_PLUGIN_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 # Standard XDG paths
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/herdr-tts"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/herdr-tts"
-mkdir -p "$CONFIG_DIR" "$DATA_DIR"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/herdr-tts"
+mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$STATE_DIR"
 
 CONFIG_FILE="${CONFIG_DIR}/config.env"
 AUTO_MUTE_FILE="${CONFIG_DIR}/auto_muted"
@@ -23,6 +24,9 @@ IPC_SOCKET="/tmp/herdr-tts-player.sock"
 # Lightweight gating state (snooze / mute / debounce timestamps). The default
 # lives in /tmp; the env override exists so tests can run hermetically.
 SNOOZE_STATE_FILE="${HERDR_TTS_SNOOZE_FILE:-/tmp/herdr-tts-snooze.json}"
+# Append-only ledger of rendered audio (timestamp, pane, agent, duration)
+# shown in the dashboard history tail; env override keeps tests hermetic.
+HISTORY_FILE="${HERDR_TTS_HISTORY_FILE:-${STATE_DIR}/history.log}"
 
 # Auto-bootstrap python environment if missing
 VENV_PYTHON="${DATA_DIR}/venv/bin/python"
@@ -53,6 +57,9 @@ DEFAULT_AUTO_LANG="off"
 DEFAULT_PODCAST_ENABLED="off"
 DEFAULT_PODCAST_PORT="8844"
 DEFAULT_PIPER_MODEL=""
+# Playback target for agent-tts: "local" (default), "winhost" (audio on the
+# Windows host via agent-tts --winhost) or "wsl-ps" (PowerShell, zero install).
+DEFAULT_TTS_PLAYBACK="local"
 DEFAULT_DEBOUNCE_SECONDS="20" # anti-spam window per (pane, status); 0 disables
 
 notify_herdr() {
@@ -94,6 +101,7 @@ TTS_RATE="${TTS_RATE:-$DEFAULT_RATE}"
 TTS_MAX_CHARS="${TTS_MAX_CHARS:-$DEFAULT_MAX_CHARS}"
 TTS_AUTO_SCOPE="${TTS_AUTO_SCOPE:-$DEFAULT_AUTO_SCOPE}"
 TTS_AUTO_LANG="${TTS_AUTO_LANG:-$DEFAULT_AUTO_LANG}"
+TTS_PLAYBACK="${TTS_PLAYBACK:-$DEFAULT_TTS_PLAYBACK}"
 PODCAST_ENABLED="${PODCAST_ENABLED:-$DEFAULT_PODCAST_ENABLED}"
 PODCAST_PORT="${PODCAST_PORT:-$DEFAULT_PODCAST_PORT}"
 TTS_DEBOUNCE_SECONDS="${TTS_DEBOUNCE_SECONDS:-$DEFAULT_DEBOUNCE_SECONDS}"
@@ -119,6 +127,7 @@ TTS_RATE="${TTS_RATE}"
 TTS_MAX_CHARS="${TTS_MAX_CHARS}"
 TTS_AUTO_SCOPE="${TTS_AUTO_SCOPE}"
 TTS_AUTO_LANG="${TTS_AUTO_LANG}"
+TTS_PLAYBACK="${TTS_PLAYBACK}"
 PODCAST_ENABLED="${PODCAST_ENABLED}"
 PODCAST_PORT="${PODCAST_PORT}"
 TTS_DEBOUNCE_SECONDS="${TTS_DEBOUNCE_SECONDS}"
@@ -410,6 +419,11 @@ build_provider_flags() {
   [[ -n "${PIPER_MODEL:-}" ]] && PROVIDER_FLAGS+=(--piper-model "$PIPER_MODEL")
   if [[ "${TTS_AUTO_LANG:-off}" == "on" || "${TTS_AUTO_LANG:-off}" == "true" || "${TTS_AUTO_LANG:-off}" == "1" ]]; then
     PROVIDER_FLAGS+=(--auto-lang)
+  fi
+  # Optional playback target: forward to the engine only when not local
+  # (default behavior unchanged otherwise).
+  if [[ -n "${TTS_PLAYBACK:-}" && "${TTS_PLAYBACK}" != "local" ]]; then
+    PROVIDER_FLAGS+=(--playback "${TTS_PLAYBACK}")
   fi
 }
 
@@ -805,7 +819,12 @@ render_pane_audio() {
   fi
 
   build_provider_flags
-  "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$TTS_VOICE" --rate "$TTS_RATE" --max-chars "$TTS_MAX_CHARS" --output "$output_file" --no-play "${PROVIDER_FLAGS[@]}"
+  if "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$TTS_VOICE" --rate "$TTS_RATE" --max-chars "$TTS_MAX_CHARS" --output "$output_file" --no-play "${PROVIDER_FLAGS[@]}"; then
+    # Audio ledger for the dashboard history (best effort; no agent context here)
+    append_audio_history "$target_pane" "-" "-"
+    return 0
+  fi
+  return 1
 }
 
 render_text_audio() {
@@ -1017,13 +1036,16 @@ save_snooze_state() {
 }
 
 # Cycle snooze for the focused pane (scope=pane) or for all agents
-# (scope=global): 5m → 30m → 2h → off. Announces the new state.
+# (scope=global): 5m → 30m → 2h → off. Announces the new state. An
+# explicit pane id (used by the dashboard cursor) wins over focus.
 cycle_snooze() {
   local scope="${1:-pane}" # pane | global
-  local target_pane=""
+  local target_pane="${2:-}"
 
   if [[ "$scope" == "pane" ]]; then
-    target_pane=$(get_focused_pane)
+    if [[ -z "$target_pane" ]]; then
+      target_pane=$(get_focused_pane)
+    fi
     if [[ -z "$target_pane" ]]; then
       echo "⚠️ No hay ningún pane enfocado en Herdr" >&2
       notify_herdr "⚠️ Herdr Voice" "No hay ningún pane enfocado"
@@ -1083,12 +1105,15 @@ cycle_snooze() {
   notify_herdr "😴 Herdr TTS Snooze" "$msg"
 }
 
-# Exclusive mute of the focused pane. Tied to the pane lifecycle, not to a
+# Exclusive mute of the focused pane (or of an explicitly passed pane id,
+# as done by the dashboard cursor). Tied to the pane lifecycle, not to a
 # timer: the daemon prune drops the flag as soon as the pane disappears
 # from `herdr agent list`, so it auto-clears when the pane closes.
 toggle_pane_mute() {
-  local target_pane
-  target_pane=$(get_focused_pane)
+  local target_pane="${1:-}"
+  if [[ -z "$target_pane" ]]; then
+    target_pane=$(get_focused_pane)
+  fi
   if [[ -z "$target_pane" ]]; then
     echo "⚠️ No hay ningún pane enfocado en Herdr" >&2
     notify_herdr "⚠️ Herdr Voice" "No hay ningún pane enfocado"
@@ -1179,6 +1204,20 @@ gate_agent_event() {
   return 1
 }
 
+# ─── Audio history ledger ────────────────────────────────────
+# Append-only TSV ledger consumed by the dashboard: one line per rendered
+# audio — <ISO timestamp> <TAB> <pane> <TAB> <agent> <TAB> <duration>.
+# Duration is "-" in v1 (the engine owns playback timing). Best effort by
+# design: a history write failure must never break the speech path.
+append_audio_history() {
+  local pane_id="${1:--}"
+  local agent="${2:--}"
+  local duration="${3:--}"
+  mkdir -p "${HISTORY_FILE%/*}" 2>/dev/null || true
+  printf '%s\t%s\t%s\t%s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$pane_id" "$agent" "$duration" \
+    >> "$HISTORY_FILE" 2>/dev/null || true
+}
+
 # ─── Watcher daemon ──────────────────────────────────────────
 
 watch_agent_pane() {
@@ -1238,6 +1277,11 @@ watch_agent_pane() {
             report_tts_error "${pane_id}" "$synth_err" 1
           fi
           rm -f "$synth_err"
+
+          # Audio ledger for the dashboard history (best effort)
+          if [[ -s "$tmp_audio" ]]; then
+            append_audio_history "$pane_id" "${agent_kind:-$agent_name}" "-"
+          fi
 
           # 2. Push notification (mobile via ntfy, if configured)
           if [[ -n "$NTFY_TOPIC" ]]; then
@@ -1332,6 +1376,246 @@ run_daemon() {
 
     sleep 4
   done
+}
+
+# ─── Dashboard pane (v1) ─────────────────────────────────────
+# Compact in-terminal status panel (--dashboard), designed to run as a
+# Herdr plugin pane ([[panes]] entrypoint). Pure ANSI clear+redraw at a
+# ~1s cadence; zero external TUI dependencies. Read-only with respect to
+# the gate/mutex/watcher machinery: every mutation goes through the
+# existing mute / snooze / rate functions, never through side channels.
+
+DASHBOARD_HISTORY_LINES=20        # audio ledger rows rendered (newest first)
+DASHBOARD_ROSTER_REFRESH_TICKS=3  # `herdr agent list` every N ticks (cached)
+
+fmt_mmss() {
+  local secs="$1"
+  printf '%02d:%02d' $(( secs / 60 )) $(( secs % 60 ))
+}
+
+dashboard_cleanup() {
+  printf '\033[0m\033[?25h\033[2J\033[H'
+}
+
+# Pane roster from Herdr. Fails open: with no CLI or no agents the roster
+# stays empty and the pane section renders "sin datos".
+dashboard_refresh_roster() {
+  DASH_PANES=()
+  DASH_AGENTS=()
+  local raw
+  raw=$(herdr agent list 2>/dev/null) || return 0
+  local pid agent
+  while IFS=$'\t' read -r pid agent; do
+    [[ -z "$pid" || "$pid" == "null" ]] && continue
+    DASH_PANES+=("$pid")
+    DASH_AGENTS+=("${agent:-desconocido}")
+  done < <(printf '%s' "$raw" | jq -r '.result.agents[]? | "\(.pane_id)\t\(.agent)"' 2>/dev/null || true)
+}
+
+# Move the selection cursor inside the roster (delta +1 / -1, wrapping).
+dashboard_step_cursor() {
+  local current="$1" delta="$2"
+  local n=${#DASH_PANES[@]}
+  if (( n == 0 )); then
+    printf '%s' "$current"
+    return 0
+  fi
+  local idx i=0
+  for (( idx = 0; idx < n; idx++ )); do
+    if [[ "${DASH_PANES[$idx]}" == "$current" ]]; then
+      i=$idx
+      break
+    fi
+  done
+  i=$(( (i + delta + n) % n ))
+  printf '%s' "${DASH_PANES[$i]}"
+}
+
+# One screen of the dashboard. State reads reuse the existing gating
+# helpers (load_snooze_state, is_playing, is_auto_muted) and fail open:
+# a missing or corrupt state file renders "off / sin datos", never an error.
+dashboard_render() {
+  local selected="$1" msg="${2:-}" msg_time="${3:-}"
+  local now
+  now=$(date +%s)
+
+  printf '\033[2J\033[H'
+  printf '╔═══ 🎙️  herdr-tts · Panel de voz ════════════════════ %s ═╗\n' "$(date +%H:%M:%S)"
+
+  # Single jq pass over the cached gate state: line 1 = global summary,
+  # then one TSV row per tracked pane (muted, snooze_until, last event
+  # seen by the debounce ledger + its timestamp). Everything sanitized
+  # to numeric defaults so a hand-edited state file can't crash the loop.
+  local state
+  state=$(load_snooze_state)
+  local g_until=0 f1 f2 f3 f4 f5
+  local -A pane_muted pane_until pane_last_status pane_last_ts
+  while IFS=$'\t' read -r f1 f2 f3 f4 f5; do
+    if [[ "$f1" == "__GLOBAL__" ]]; then
+      [[ "$f2" =~ ^[0-9]+$ ]] && g_until="$f2"
+      continue
+    fi
+    [[ -z "$f1" ]] && continue
+    [[ "$f2" == "true" ]] && pane_muted["$f1"]="true"
+    [[ "$f3" =~ ^[0-9]+$ ]] && pane_until["$f1"]="$f3"
+    [[ -n "$f4" && "$f4" != "-" ]] && pane_last_status["$f1"]="$f4"
+    [[ "$f5" =~ ^[0-9]+$ ]] && pane_last_ts["$f1"]="$f5"
+  done < <(jq -r '
+    . as $root
+    | (["__GLOBAL__", ((.global_snooze_until // 0)|tostring)] | @tsv),
+      ((((.panes // {}) | keys) + (($root.debounce // {}) | keys) | unique) as $all
+      | $all[]
+      | . as $p
+      | (($root.panes[$p].muted // false)|tostring) as $m
+      | (($root.panes[$p].snooze_until // 0)|tostring) as $u
+      | (($root.debounce[$p] // {}) | to_entries | sort_by(.value) | (last // {key:"-", value:0})) as $e
+      | [ $p, $m, $u, ($e.key|tostring), ($e.value|tostring) ] | @tsv)
+  ' <<<"$state" 2>/dev/null || true)
+
+  if (( g_until > now )); then
+    printf '║ Global  😴 snooze GLOBAL activo · quedan %s (hasta %s)\n' \
+      "$(fmt_mmss $(( g_until - now )))" "$(fmt_epoch_clock "$g_until")"
+  else
+    printf '║ Global  ⚪ snooze global off · (Z cicla 5m → 30m → 2h → off)\n'
+  fi
+
+  # Engine state from the cheap local lock file; the agent-tts IPC is
+  # deliberately NOT queried in v1 (one python spawn per tick is not free).
+  local engine_label="⚪ En reposo" auto_label="🔊 activa"
+  if is_playing; then
+    engine_label="🔊 Reproduciendo"
+  fi
+  if is_auto_muted; then
+    auto_label="🔇 silenciada"
+  fi
+  printf '║ Motor   %s · auto-lectura %s\n' "$engine_label" "$auto_label"
+  printf '║ Config  proveedor %s · voz %s (%s) · playback %s · debounce %ss\n' \
+    "$TTS_PROVIDER" "$TTS_VOICE" "$TTS_RATE" "${TTS_PLAYBACK:-local}" "$TTS_DEBOUNCE_SECONDS"
+
+  printf '╠═══ Panes (j/k mueve el cursor) ══════════════════════════════\n'
+  local n=${#DASH_PANES[@]} i pid agent_label marker color status_txt last_txt ago
+  if (( n == 0 )); then
+    printf '║  (sin datos: Herdr no reporta panes de agente)\n'
+  fi
+  for (( i = 0; i < n; i++ )); do
+    pid="${DASH_PANES[$i]}"
+    agent_label="${DASH_AGENTS[$i]}"
+    marker="  "
+    [[ "$pid" == "$selected" ]] && marker="▸ "
+    if [[ "${pane_muted[$pid]:-false}" == "true" ]]; then
+      color=$'\033[31m'; status_txt="🔇 SILENCIADO"
+    elif (( ${pane_until[$pid]:-0} > now )); then
+      color=$'\033[33m'; status_txt="😴 SNOOZED $(fmt_mmss $(( ${pane_until[$pid]} - now )))"
+    else
+      color=$'\033[32m'; status_txt="▶️ activo"
+    fi
+    last_txt="sin eventos vistos"
+    if [[ -n "${pane_last_status[$pid]:-}" ]]; then
+      ago=$(( now - ${pane_last_ts[$pid]:-0} ))
+      last_txt="último: ${pane_last_status[$pid]} hace ${ago}s"
+      (( ago < TTS_DEBOUNCE_SECONDS )) && last_txt+=" · debounce activo"
+    fi
+    printf '║ %s%s%-13.13s %-22s %s\033[0m\n' "$marker" "$color" "$agent_label" "$status_txt" "$last_txt"
+  done
+
+  printf '╠═══ Últimos audios (%s, más reciente arriba) ═════════════════\n' "$DASHBOARD_HISTORY_LINES"
+  local -a hist=()
+  if [[ -f "$HISTORY_FILE" ]]; then
+    mapfile -t hist < <(tail -n "$DASHBOARD_HISTORY_LINES" "$HISTORY_FILE" 2>/dev/null || true)
+  fi
+  local j row ts hp ha hd
+  if (( ${#hist[@]} == 0 )); then
+    printf '║  (sin audios registrados aún)\n'
+  else
+    for (( j = ${#hist[@]} - 1; j >= 0; j-- )); do
+      row="${hist[$j]}"
+      IFS=$'\t' read -r ts hp ha hd <<<"$row"
+      printf '║  %s · %s · %s · %s\n' "${ts:-?}" "${hp:--}" "${ha:--}" "${hd:--}"
+    done
+  fi
+
+  printf '╚═══ q salir · j/k pane · m silenciar · z snooze pane · Z snooze global · +/- velocidad ═╝\n'
+  if [[ -n "$msg" ]]; then
+    printf '   » [%s] %s\n' "${msg_time:-}" "$msg"
+  fi
+}
+
+# adjust_rate mutates TTS_RATE in its own process: when invoked from the
+# key loop it runs in a command-substitution subshell, so the parent must
+# adopt the value the function just persisted or repeated presses would
+# all start from the stale session rate.
+dashboard_sync_rate() {
+  local new_rate
+  new_rate=$(printf '%s' "$1" | grep -oE '^[^:]*: [+-][0-9]+%$' | grep -oE '[+-][0-9]+%' | head -n 1) || return 0
+  [[ -n "$new_rate" ]] && TTS_RATE="$new_rate"
+  return 0
+}
+
+# Entry point of the dashboard pane. The key loop doubles as the refresh
+# loop: `read -t 1` waits up to one second for a key, so an idle dashboard
+# redraws at ~1Hz while keypresses are handled instantly. Only the pane
+# roster hits the Herdr CLI (every few ticks); everything else per tick is
+# local file reads.
+run_dashboard() {
+  local refresh_secs="${HERDR_TTS_DASHBOARD_REFRESH:-1}"
+  local selected="" msg="" msg_time="" key="" rc=0 tick=0
+  local -a DASH_PANES=() DASH_AGENTS=()
+
+  trap dashboard_cleanup EXIT
+  trap 'exit 0' INT TERM
+  printf '\033[?25l'
+
+  while true; do
+    if (( tick % DASHBOARD_ROSTER_REFRESH_TICKS == 0 )) || (( ${#DASH_PANES[@]} == 0 )); then
+      dashboard_refresh_roster
+    fi
+    tick=$(( tick + 1 ))
+
+    if [[ -z "$selected" ]] && (( ${#DASH_PANES[@]} > 0 )); then
+      selected="${DASH_PANES[0]}"
+    fi
+
+    dashboard_render "$selected" "$msg" "$msg_time"
+    msg="" msg_time=""
+
+    rc=0
+    key=""
+    read -rsn1 -t "$refresh_secs" key || rc=$?
+    if (( rc == 1 )); then
+      break # stdin closed: leave instead of spinning on EOF
+    fi
+    case "$key" in
+      q|Q) break ;;
+      j|J) selected=$(dashboard_step_cursor "$selected" 1) ;;
+      k|K) selected=$(dashboard_step_cursor "$selected" -1) ;;
+      m|M)
+        msg=$(toggle_pane_mute "$selected" 2>&1 || true)
+        msg="${msg%%$'\n'*}"; msg_time=$(date +%H:%M:%S)
+        ;;
+      z)
+        msg=$(cycle_snooze pane "$selected" 2>&1 || true)
+        msg="${msg%%$'\n'*}"; msg_time=$(date +%H:%M:%S)
+        ;;
+      Z)
+        msg=$(cycle_snooze global 2>&1 || true)
+        msg="${msg%%$'\n'*}"; msg_time=$(date +%H:%M:%S)
+        ;;
+      +|=)
+        msg=$(adjust_rate 10 2>&1 || true)
+        dashboard_sync_rate "$msg"
+        msg="${msg%%$'\n'*}"; msg_time=$(date +%H:%M:%S)
+        ;;
+      -|_)
+        msg=$(adjust_rate -10 2>&1 || true)
+        dashboard_sync_rate "$msg"
+        msg="${msg%%$'\n'*}"; msg_time=$(date +%H:%M:%S)
+        ;;
+      *) ;; # ignore anything else (arrow escapes, modifiers, ...)
+    esac
+  done
+
+  dashboard_cleanup
+  trap - EXIT INT TERM
 }
 
 # ─── CLI Entrypoint ──────────────────────────────────────────
@@ -1624,6 +1908,9 @@ case "${1:-}" in
   --status)
     show_status
     ;;
+  --dashboard)
+    run_dashboard
+    ;;
   _daemon)
     run_daemon
     ;;
@@ -1693,6 +1980,8 @@ Podcast RSS privado (para escuchar en móvil con Pocket Casts / Overcast / Apple
 
 Información:
   --status                 Ver estado actual, lock y configuración
+  --dashboard              Panel TUI en vivo (pane de Herdr): snoozes, panes e historial de audio
+                           (controles: q salir · j/k pane · m silenciar · z snooze pane · Z snooze global · +/- velocidad)
 EOF
     ;;
   *)
