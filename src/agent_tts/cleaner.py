@@ -490,10 +490,13 @@ def clean_agent_text(
     summarize: bool = False,
     lang: str = "es",
     pre_extracted: bool = False,
+    llm_summary: bool = False,
 ) -> str:
     """Deeply cleans terminal/agent prose, removing borders, token quotas, and code blocks.
     
     If summarize is True, runs Smart Architectural Summarizer to condense text before speech.
+    If llm_summary is also True, the LLM-powered one-sentence summarizer runs first inside
+    that branch and the offline heuristics remain the fallback for any LLM failure.
     When pre_extracted is True, the input is already the final agent response
     (e.g. read from a structured transcript), so the scrollback extraction
     stage (extract_last_turn) is skipped and only message cleaning runs.
@@ -509,6 +512,15 @@ def clean_agent_text(
     text = redact_secrets(text)
 
     if summarize:
+        # Optional LLM pre-flight: only reached with secrets already
+        # redacted above, so the prompt/input never carries credentials.
+        if llm_summary:
+            from agent_tts.llm_summary import summarize_with_llm
+            llm_result = summarize_with_llm(text)
+            if llm_result:
+                return llm_result
+            # Any LLM failure (CLI absent, timeout, bad output) falls
+            # through to the offline heuristics below.
         from agent_tts.summarizer import summarize as run_summarize
         return run_summarize(text)
 

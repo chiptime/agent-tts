@@ -654,6 +654,13 @@ def main():
         help="Condense long logs, diffs, or verbose output into a punchy spoken summary before playback",
     )
     parser.add_argument(
+        "--llm-summary",
+        action="store_true",
+        help="Produce ONE executive sentence via a locally installed LLM CLI "
+        "(claude -p, codex exec, ollama; model: AGENT_TTS_OLLAMA_MODEL); "
+        "falls back to --tldr heuristics on any failure. Wins when combined with --tldr",
+    )
+    parser.add_argument(
         "--auto-lang",
         action="store_true",
         help="Automatically detect embedded language changes and switch neural voices on the fly",
@@ -829,7 +836,8 @@ def main():
             else clean_agent_text(
                 source_result.text,
                 max_chars=args.max_chars,
-                summarize=args.summarize,
+                summarize=args.summarize or args.llm_summary,
+                llm_summary=args.llm_summary,
                 pre_extracted=True,
             )
         )
@@ -838,7 +846,10 @@ def main():
         # the exact message to speak; scrollback turn extraction is then skipped
         # while message cleaning (markdown-to-speech, tables, lexicon) still runs.
         speech_text = input_text if args.raw else clean_agent_text(
-            input_text, max_chars=args.max_chars, summarize=args.summarize,
+            input_text,
+            max_chars=args.max_chars,
+            summarize=args.summarize or args.llm_summary,
+            llm_summary=args.llm_summary,
             pre_extracted=args.pre_extracted,
         )
     if not speech_text:
