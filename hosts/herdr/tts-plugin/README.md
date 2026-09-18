@@ -338,10 +338,25 @@ We have an active vision to expand `herdr-tts` into the definitive audio layer f
   - Pure C audio playback via `miniaudio` directly outputting to PulseAudio/PipeWire (Linux), CoreAudio (macOS), and WASAPI (Windows) without requiring external media players (`mpv`, `paplay`, `afplay`).
 - [x] 🎙️ **Modular TTS Provider Backend (Edge, ElevenLabs & OpenAI TTS):**
   - Modular provider architecture allowing users with API keys to choose ultra-realistic voice models (OpenAI `tts-1`, ElevenLabs) while preserving zero-cost Microsoft Edge Neural TTS as default.
+- [ ] 📦 **Standalone Core Library Decoupling (`agent-tts-core`):**
+  - Extract the playback engine, IPC socket server, provider abstractions, audio mutex lock, and text sanitizers into an independent, standalone Python package / CLI. `herdr-tts` will consume it as a clean upstream dependency, enabling its use in other agent harnesses, CLI tools, and terminal workflows.
 - [ ] 🖍️ **Visual Word & Sentence Highlighting:**
   - Leverage Edge TTS boundary events (`WordBoundary` / `SentenceBoundary`) to stream synchronized visual highlights directly in terminal panes as audio plays.
-- [ ] 💡 **Smart Architectural Summarizer:**
-  - Lightweight heuristics or local summarizer toggle to condense massive terminal dumps (e.g. 50-file diff outputs) into punchy 2-sentence voice recaps before reading.
+- [ ] 💡 **Smart Architectural Summarizer (TL;DR Pre-Flight):**
+  - Lightweight heuristics or local summarizer toggle to condense massive terminal dumps (e.g. 50-file diff outputs, long compiler stack traces) into punchy 2-sentence voice recaps before reading.
+- [ ] ⏪ **Smart Auto-Rewind on Resume:**
+  - Automatically rewind 2–3 seconds when resuming playback after a pause, helping the developer immediately regain cognitive context.
+- [ ] 📑 **Semantic Navigation (Jump by Sentence / Paragraph):**
+  - Support advancing or rewinding by grammatical sentence and paragraph boundaries in addition to fixed time intervals.
+- [ ] 🗣️ **Technical Pronunciation Lexicon & Text Normalization:**
+  - Configurable phonetic dictionary and SSML overrides for developer jargon, CLI commands, and libraries (e.g., *PostgreSQL*, *Kubernetes*, *PR*, *UUIDs*, *git rebase*).
+  - Conversational formatting for ASCII / Markdown tables, units (`ms`, `GB`, `kHz`), and version tags.
+- [ ] 🌐 **Automatic Language Detection & Dynamic Voice Switching:**
+  - Detect embedded language changes (e.g. English technical snippets or code documentation inside a Spanish explanation) and switch neural voices on the fly.
+- [ ] 📻 **Private Podcast / Audio RSS Feed:**
+  - Export and sync generated audio sessions into an optional local or remote private RSS podcast feed for listening on mobile podcast apps (Pocket Casts, Overcast, Apple Podcasts).
+- [ ] 🔒 **Zero-Cloud Local Neural Synthesis (Piper / Kokoro / Sherpa-ONNX):**
+  - Optional fully offline, on-device neural TTS engine running 100% on CPU without requiring internet access or third-party APIs.
 
 
 
