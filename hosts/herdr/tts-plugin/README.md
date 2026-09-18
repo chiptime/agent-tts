@@ -220,8 +220,8 @@ herdr-tts --rate-up            # Increase voice speed by +10% dynamically (prefi
 herdr-tts --rate-down          # Decrease voice speed by -10% dynamically (prefix+-)
 herdr-tts --player-status      # Live audio position, duration and playback state
 herdr-tts --toggle-auto        # Toggle background auto-speech (muted / active)
-herdr-tts --scope focused|all  # 'focused' (only active pane) | 'all' (any pane without overlapping)
-herdr-tts --provider edge      # Select TTS provider: edge (free default), openai, elevenlabs
+herdr-tts --provider edge      # Select TTS provider: edge (free default), openai, elevenlabs, piper (offline)
+herdr-tts --piper-model <path> # Set local Piper ONNX model path (.onnx)
 herdr-tts --openai-key <key>   # Set OpenAI API key for tts-1 / tts-1-hd
 herdr-tts --eleven-key <key>   # Set ElevenLabs API key
 herdr-tts --status             # Show full service configuration, provider, and player state
@@ -278,6 +278,17 @@ herdr-tts --provider openai --voice nova
 ```bash
 herdr-tts --eleven-key "xi-..."
 herdr-tts --provider elevenlabs --voice rachel
+```
+
+### 4. Piper Local Neural TTS (100% Offline, Zero-Cloud)
+- **Zero Cloud & Zero Telemetry:** Runs entirely on your CPU using ONNX Runtime. Zero internet connection required.
+- **Ultra-Fast CPU Inference:** Real-time synthesis with minimal RAM footprint (< 50MB).
+- **Setup:**
+```bash
+# Install piper binary or pip package
+pip install piper-tts
+# Set provider to piper and specify your local model
+herdr-tts --provider piper --piper-model ~/.local/share/piper/models/es_ES-davefx-medium.onnx
 ```
 
 ---
@@ -374,8 +385,8 @@ We have an active vision to expand `herdr-tts` into the definitive audio layer f
   - Fast, zero-dependency statistical language classifier detects embedded English code snippets, error traces, or documentation inside Spanish explanations and switches neural voices dynamically on the fly (`--auto-lang`, `herdr-tts --auto-lang on`).
 - [x] 📻 **Private Podcast / Audio RSS Feed:**
   - Export and sync generated audio sessions into a standard RSS 2.0 / iTunes XML feed with built-in zero-dependency HTTP server (`herdr-tts --podcast-serve`, `herdr-tts --podcast on`). Listen on mobile apps like Pocket Casts, Overcast, or Apple Podcasts.
-- [ ] 🔒 **Zero-Cloud Local Neural Synthesis (Piper / Kokoro / Sherpa-ONNX):**
-  - Optional fully offline, on-device neural TTS engine running 100% on CPU without requiring internet access or third-party APIs.
+- [x] 🔒 **Zero-Cloud Local Neural Synthesis (Piper / Kokoro / Sherpa-ONNX):**
+  - Fully offline, on-device neural TTS engine running 100% on CPU without requiring internet access or third-party APIs (`herdr-tts --provider piper`, `agent-tts --provider piper`).
 
 
 
