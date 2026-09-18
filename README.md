@@ -142,11 +142,13 @@ send_ipc_command("toggle-pause")
 | Provider | Config | Cost | Voice Quality | Typical Latency |
 | :--- | :--- | :---: | :---: | :---: |
 | **`edge` (Default)** | Zero config (No keys required) | 🟢 Free | High (Neural) | ~150–250ms |
+| **`piper` / `local`** | `--piper-model` / `PIPER_MODEL` | 🟢 Free (Offline) | Neural ONNX (Local CPU) | ~80–180ms |
 | **`openai`** | `--openai-key` / `OPENAI_API_KEY` | Paid API | Studio Quality | ~300–500ms |
 | **`elevenlabs`** | `--eleven-key` / `ELEVENLABS_API_KEY` | Paid API | Ultra-realistic | ~350–600ms |
 
 ### Voice Shortcuts:
 - **Edge:** `elvira` (*default Spanish*), `alvaro`, `ximena`, `dalia`, `jorge`, `en` (*US English Jenny*), or any standard Microsoft Edge voice identifier (e.g. `es-ES-ElviraNeural`).
+- **Piper:** Path to `.onnx` model (e.g. `es_ES-davefx-medium.onnx` or configured via `PIPER_MODEL`).
 - **OpenAI:** `nova`, `alloy`, `echo`, `fable`, `onyx`, `shimmer` (automatically maps Spanish defaults like `elvira` → `nova`, `alvaro` → `onyx`).
 - **ElevenLabs:** `rachel`, `bella`, `antoni`, `adam`, `domi`, `elli`, `josh`, `arnold`, `sam`, or any custom 20-character Voice ID.
 
@@ -157,11 +159,14 @@ send_ipc_command("toggle-pause")
 ```
 usage: agent-tts [-h] [--voice VOICE] [--rate RATE] [--max-chars MAX_CHARS]
                  [--raw] [--output OUTPUT] [--no-play] [--play-file PLAY_FILE]
+                 [--highlight] [--next-sentence] [--prev-sentence]
+                 [--current-sentence] [--tldr] [--auto-lang] [--podcast]
+                 [--podcast-title PODCAST_TITLE] [--podcast-serve [PORT]]
                  [--ipc-cmd IPC_CMD]
-                 [--provider {edge,openai,elevenlabs,eleven}]
+                 [--provider {edge,openai,elevenlabs,eleven,piper,local}]
                  [--openai-key OPENAI_KEY] [--openai-base-url OPENAI_BASE_URL]
                  [--openai-model OPENAI_MODEL] [--eleven-key ELEVEN_KEY]
-                 [--eleven-model ELEVEN_MODEL]
+                 [--eleven-model ELEVEN_MODEL] [--piper-model PIPER_MODEL]
                  [text ...]
 ```
 
