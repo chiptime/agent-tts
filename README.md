@@ -60,6 +60,10 @@ cat long_build.log | agent-tts --summarize
 # Automatic Language Detection & Dynamic Voice Switching
 agent-tts "He encontrado este error: fatal: remote origin already exists. Debemos cambiar el origen." --auto-lang
 
+# Private Podcast RSS Feed (listen on mobile podcast apps)
+agent-tts "Resumen de cambios para el equipo" --podcast --podcast-title "Sprint Update"
+agent-tts --podcast-serve 8844  # Serves RSS feed at http://localhost:8844/podcast.xml
+
 # Pipe output from any command or agent
 git status | agent-tts
 cat response.md | agent-tts --voice alvaro --rate +15%

@@ -195,6 +195,8 @@ async def speak(
     auto_rewind_sec: float = 2.0,
     highlight: bool = False,
     auto_lang: bool = False,
+    podcast: bool = False,
+    podcast_title: str = "",
 ) -> None:
     """Synthesizes and plays audio with interactive controls."""
     session = None
@@ -236,6 +238,12 @@ async def speak(
 
         if not mp3_data or (session and session.state.get("stop")):
             return
+
+        if podcast and mp3_data:
+            from agent_tts.podcast import PodcastFeed
+            feed = PodcastFeed()
+            title = podcast_title or (text[:50] + "..." if len(text) > 50 else text)
+            feed.add_episode(bytes(mp3_data), title=title, description=text)
 
         if hasattr(mp3_data, "boundaries") and mp3_data.boundaries and session:
             session.boundaries = mp3_data.boundaries
@@ -287,6 +295,23 @@ def main():
         help="Automatically detect embedded language changes and switch neural voices on the fly",
     )
     parser.add_argument(
+        "--podcast",
+        action="store_true",
+        help="Publish this audio session as an episode to the local private podcast RSS feed",
+    )
+    parser.add_argument(
+        "--podcast-title",
+        default="",
+        help="Custom title for the podcast episode",
+    )
+    parser.add_argument(
+        "--podcast-serve",
+        nargs="?",
+        const=8844,
+        type=int,
+        help="Run the local podcast HTTP server (default port: 8844)",
+    )
+    parser.add_argument(
         "--ipc-cmd",
         help="Send an IPC command to the active audio player (e.g. 'seek +10', 'seek -10', 'toggle-pause', 'status')",
     )
@@ -303,6 +328,11 @@ def main():
     parser.add_argument("--eleven-model", default=os.environ.get("ELEVENLABS_MODEL", "eleven_multilingual_v2"), help="ElevenLabs model")
 
     args = parser.parse_args()
+
+    if args.podcast_serve:
+        from agent_tts.podcast import run_podcast_server
+        run_podcast_server(port=args.podcast_serve)
+        sys.exit(0)
 
     ipc_cmd = args.ipc_cmd
     if args.next_sentence:
@@ -354,6 +384,8 @@ def main():
                 eleven_model=args.eleven_model,
                 highlight=args.highlight,
                 auto_lang=args.auto_lang,
+                podcast=args.podcast,
+                podcast_title=args.podcast_title,
             )
         )
     except KeyboardInterrupt:
