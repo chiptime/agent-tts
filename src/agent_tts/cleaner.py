@@ -5,6 +5,8 @@ import os
 import re
 from typing import Dict, List, Optional, Tuple
 
+from agent_tts.redact import redact_secrets
+
 ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 # Comprehensive developer technical replacements for natural speech
@@ -249,49 +251,237 @@ def normalize_technical_terms(text: str, lang: str = "es") -> str:
     return res
 
 
+# --- Terminal chrome pre-filter -------------------------------------------
+#
+# OpenCode (and similar TUIs) render a footer status line, a right-hand
+# status sidebar, and model/plan banners. When terminal scrollback is
+# captured, all of that chrome arrives glued to (or deeply indented next
+# to) the real content. The helpers below drop or trim those artifacts
+# before turn extraction and deep cleaning run.
+
+# Box-drawing, scrollbar and section glyphs that are pure decoration.
+# NOTE: the light '|' and '│' are intentionally NOT listed here:
+# clean_agent_text() converts table cell dividers into speech pauses
+# ("col — col"), so they must survive this filter.
+CHROME_BORDER_RE = re.compile("[▏▎▌▐┃┆╹▀▄■⬝█▣━─═]")
+
+# 'cat -A' encodings of the same glyphs (e.g. M-bM-^TM-^C is U+2503) that
+# survive when scrollback was captured through a `cat -A` pipe; the '$'
+# suffix is cat -A's end-of-line marker glued right after the glyph.
+CAT_A_JUNK_RE = re.compile(r"(?:(?:M-\^\S)|(?:M-[A-Za-z]))+\$?")
+
+# Tokens that mark footer/sidebar material when they directly follow a run
+# of 4+ spaces (TUIs glue sidebar columns to content with padding spaces).
+CHROME_TOKEN_RE = re.compile(
+    r"(?i)(?:"
+    r"\bContext\b"
+    r"|\d[\d,.]*\s*tokens"
+    r"|\d+\s*%\s*used"
+    r"|\$\d+(?:\.\d+)?\s*spent"
+    r"|\bMCP\b"
+    r"|\bLSP\b"
+    r"|ctrl\+\w"
+    r"|\besc\b"
+    r"|OpenCode\s+v?\d"
+    r"|[\w~.][\w./-]*:master"
+    r"|\w[\w.-]*\s+Connected"
+    r"|[•▼▲↳●]"
+    r"|\[?[✓✔✕]\]?"
+    r")"
+)
+
+SPACE_RUN_RE = re.compile(r"(?:\t| {4,})")
+SPINNER_RE = re.compile(r"[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]{2,}")
+CONTEXT_USAGE_RE = re.compile(r"\d+(?:\.\d+)?[KMk]?\s*\(\d+%\)")
+CTRL_HINT_RE = re.compile(r"(?i)ctrl\+\w+\s+(?:commands|shortcuts)")
+ESC_INTERRUPT_RE = re.compile(r"(?i)esc\s+(?:to\s+)?interrupt")
+OPENCODE_VERSION_RE = re.compile(r"(?i)OpenCode\s+v?\d+(?:\.\d+)+")
+CLICK_EXPAND_RE = re.compile(r"(?i)Click to expand")
+THOUGHT_TIMING_RE = re.compile(
+    r"^\s*\+?\s*Thought\s*[:·]?\s*[\d.]+\s*(?:ms|m|s)(?:\s*\d+\s*(?:ms|m|s))*(?![a-zA-Z])"
+)
+
+# Sidebar material and its wrapped continuations live at deep indentation;
+# real prose and code never indent this far.
+CHROME_INDENT_COLUMNS = 40
+
+# Extended noise classifiers (used by extract_last_turn). They are
+# deliberately narrow: only unambiguous chrome matches.
+CHROME_BORDER_ONLY_RE = re.compile(r"^[\s▏▎▌▐┃┆╹▀▄■⬝█▣━─═—│|┌┐└┘├┤┬┴┼╭╮╯╰]+$")
+CHROME_KEYWORD_RE = re.compile(r"^(?:Context|MCP|LSP)$")
+CHROME_NUMBER_UNIT_RE = re.compile(
+    r"^\$?\d[\d.,]*[KMk]?%?\s*(?:(?:tokens|used|spent)(?:\s|$)|$)"
+)
+CHROME_CONNECTED_RE = re.compile(r"^\w[\w.-]*\s+Connected$")
+CHROME_MODEL_RE = re.compile(
+    r"(?i)(?:Flash|Opus|Sonnet|Haiku|GPT|Gemini|GLM|Claude|Kimi|Qwen|DeepSeek|Grok|Mistral|Llama)"
+)
+CHROME_PLAN_RE = re.compile(r"(?i)(?:Coding Plan|Pro Plan|Max Plan|Free Plan)")
+CHROME_KEYBIND_RE = re.compile(r"(?i)^\s*(?:press|type)?\s*(?:ctrl|alt|esc|shift)\s*\+")
+
+
+def _leading_columns(line: str) -> int:
+    """Returns the width of the leading whitespace with tabs expanded to 8."""
+    columns = 0
+    for ch in line:
+        if ch == " ":
+            columns += 1
+        elif ch == "\t":
+            columns += 8 - (columns % 8)
+        else:
+            break
+    return columns
+
+
+def _cut_sidebar_glue(line: str) -> str:
+    """Trims right-sidebar chunks glued to content after runs of 4+ spaces.
+
+    Repeats the cut at the LAST qualifying run until none remains, so the
+    left-side content always survives while every sidebar chunk goes away.
+    """
+    while True:
+        cut_at = None
+        for run in SPACE_RUN_RE.finditer(line):
+            if CHROME_TOKEN_RE.match(line, run.end()):
+                cut_at = run.start()
+        if cut_at is None:
+            return line
+        line = line[:cut_at]
+
+
+def _strip_chrome_line(line: str) -> Optional[str]:
+    """Applies the terminal chrome pre-filter to a single scrollback line.
+
+    Returns the cleaned line, or None when the line is chrome-only and must
+    be dropped entirely.
+    """
+    line = strip_ansi(line)
+
+    # Decode 'cat -A' border artifacts first (they encode box glyphs as
+    # plain ASCII), dropping the trailing end-of-line marker '$' they add.
+    had_cat_a = bool(CAT_A_JUNK_RE.search(line))
+    if had_cat_a:
+        line = CAT_A_JUNK_RE.sub(" ", line)
+        line = re.sub(r"\$\s*$", "", line)
+
+    # Replace border/scrollbar glyphs with spaces so the indentation
+    # analysis below measures real layout columns.
+    line = CHROME_BORDER_RE.sub(" ", line)
+
+    # 1. Deep-indented lines are sidebar material or its wrapped
+    #    continuations: drop them entirely.
+    if _leading_columns(line) >= CHROME_INDENT_COLUMNS:
+        return None
+
+    # 2. Cut same-line sidebar chunks glued after 4+ space runs.
+    line = _cut_sidebar_glue(line)
+
+    # 3. Remove unambiguous inline chrome tokens (spinners, usage meters,
+    #    keybind hints, version banners, collapsible-section markers).
+    line = SPINNER_RE.sub(" ", line)
+    line = CONTEXT_USAGE_RE.sub(" ", line)
+    line = CTRL_HINT_RE.sub(" ", line)
+    line = ESC_INTERRUPT_RE.sub(" ", line)
+    line = OPENCODE_VERSION_RE.sub(" ", line)
+    line = CLICK_EXPAND_RE.sub(" ", line)
+    line = THOUGHT_TIMING_RE.sub("", line)
+
+    # 4. Inline removals can expose padding runs (e.g. dropping a leading
+    #    '+ Thought: 2m 6s' leaves the wrapped sidebar continuation deeply
+    #    indented): cut and re-check indentation once more.
+    line = _cut_sidebar_glue(line)
+    if _leading_columns(line) >= CHROME_INDENT_COLUMNS:
+        return None
+
+    # Keep the leading whitespace: prompt detection relies on it so that
+    # indented code comments are never mistaken for prompt lines.
+    if not line.strip():
+        return None
+    return line.rstrip()
+
+
 def extract_last_turn(text: str) -> str:
     """Extracts only the last agent response from a terminal scrollback."""
-    lines = text.splitlines()
+    lines = []
+    for raw_line in text.splitlines():
+        cleaned = _strip_chrome_line(raw_line)
+        if cleaned is not None:
+            lines.append(cleaned)
     if not lines:
-        return text
+        # Everything was chrome; never fall back to the raw noisy text.
+        return ""
+    prefiltered = "\n".join(lines)
 
-    # Common terminal prompts
+    # Common terminal prompts (must be at start of line, not indented code comments)
     prompt_patterns = [
-        re.compile(r"^❯\s+"),
-        re.compile(r"^>\s+"),
-        re.compile(r"^\$\s+"),
-        re.compile(r"^#\s+"),
-        re.compile(r"^USER:\s+", re.IGNORECASE),
-        re.compile(r"^Human:\s+", re.IGNORECASE),
-        re.compile(r"^User:\s+", re.IGNORECASE),
+        re.compile(r"^[❯>]\s+\S+"),
+        re.compile(r"^(?:\$|#)\s+\S+"),
+        re.compile(r"^(?:USER|Human|User):\s+\S+", re.IGNORECASE),
     ]
 
-    last_prompt_idx = -1
+    tool_line_re = re.compile(r"^[●○◐◑◒◓◔◕⣾⣽⣻⢿⡿⣟⣯⣷]\s+(?:[A-Za-z]+\(|Running\b)")
+
+    def is_terminal_noise(cl: str) -> bool:
+        if not cl or cl in (">", "❯", "$", "#", "└"):
+            return True
+        if tool_line_re.match(cl):
+            return True
+        if re.search(r"(?i)(?:tokens?:|tokens\b|\bthinking\b|\brunning command|\btip: press|gemini \d|\bquotas:)", cl):
+            return True
+        # Unambiguous TUI chrome classifiers: border-only lines, bare
+        # sidebar keywords, number+unit meters, "* Connected" status lines,
+        # model/plan banners ("Name · Model · Plan") and keybind hints.
+        if CHROME_BORDER_ONLY_RE.match(cl):
+            return True
+        if CHROME_KEYWORD_RE.match(cl):
+            return True
+        if CHROME_NUMBER_UNIT_RE.match(cl):
+            return True
+        if CHROME_CONNECTED_RE.match(cl):
+            return True
+        if "·" in cl and (CHROME_MODEL_RE.search(cl) or CHROME_PLAN_RE.search(cl)):
+            return True
+        if CHROME_KEYBIND_RE.match(cl):
+            return True
+        return False
+
+    prompt_indices = []
     for idx, line in enumerate(lines):
-        clean_l = strip_ansi(line).strip()
+        cl = strip_ansi(line)  # Do NOT lstrip to avoid matching indented comments
         for p in prompt_patterns:
-            if p.match(clean_l):
-                last_prompt_idx = idx
+            if p.match(cl):
+                prompt_indices.append(idx)
                 break
 
-    if last_prompt_idx != -1:
-        response_start = last_prompt_idx + 1
-        while response_start < len(lines):
-            raw_line = lines[response_start]
-            clean_line = strip_ansi(raw_line).strip()
-            if not clean_line:
-                response_start += 1
-                break
-            if raw_line.startswith("   ") or raw_line.startswith("\t"):
-                response_start += 1
-            else:
-                break
+    def get_clean_slice(slice_lines):
+        filtered = []
+        for l in slice_lines:
+            cl = strip_ansi(l).strip()
+            if not is_terminal_noise(cl):
+                filtered.append(l)
+        return "\n".join(filtered).strip()
 
-        turn_lines = lines[response_start:]
-        if turn_lines:
-            return "\n".join(turn_lines)
+    if not prompt_indices:
+        return get_clean_slice(lines) or prefiltered
 
-    return text
+    last_idx = prompt_indices[-1]
+    candidate = get_clean_slice(lines[last_idx + 1 :])
+    candidate_words = re.findall(r"[a-zA-ZáéíóúÁÉÍÓÚñÑ]{3,}", candidate)
+
+    # If the candidate has fewer than 6 real words, the agent hasn't responded to the last prompt yet!
+    # Fall back to the previous completed turn:
+    if len(candidate_words) < 6:
+        if len(prompt_indices) >= 2:
+            prev_idx = prompt_indices[-2]
+            completed = get_clean_slice(lines[prev_idx + 1 : last_idx])
+            if len(re.findall(r"[a-zA-ZáéíóúÁÉÍÓÚñÑ]{3,}", completed)) >= 6:
+                return completed
+        else:
+            before = get_clean_slice(lines[:last_idx])
+            if len(re.findall(r"[a-zA-ZáéíóúÁÉÍÓÚñÑ]{3,}", before)) >= 6:
+                return before
+
+    return candidate or prefiltered
 
 
 def clean_agent_text(
@@ -299,13 +489,24 @@ def clean_agent_text(
     max_chars: int = 0,
     summarize: bool = False,
     lang: str = "es",
+    pre_extracted: bool = False,
 ) -> str:
     """Deeply cleans terminal/agent prose, removing borders, token quotas, and code blocks.
     
     If summarize is True, runs Smart Architectural Summarizer to condense text before speech.
+    When pre_extracted is True, the input is already the final agent response
+    (e.g. read from a structured transcript), so the scrollback extraction
+    stage (extract_last_turn) is skipped and only message cleaning runs.
     """
-    text = extract_last_turn(text)
+    if not pre_extracted:
+        text = extract_last_turn(text)
     text = strip_ansi(text)
+
+    # Redact secrets once, before any other stage (including the TL;DR
+    # summarizer branch below, which echoes input sentences): every
+    # downstream consumer — speech, ntfy.sh notifications, podcast RSS —
+    # then inherits sanitized text.
+    text = redact_secrets(text)
 
     if summarize:
         from agent_tts.summarizer import summarize as run_summarize

@@ -94,6 +94,21 @@ class TestCleaner(unittest.TestCase):
         self.assertIn("1 euro", cleaned)
         self.assertIn("1 dollar", cleaned)
 
+    def test_pre_extracted_skips_turn_extraction(self):
+        # Contract: with pre_extracted=True the input is already the exact
+        # message to speak, so scrollback turn extraction is skipped and even
+        # terminal-chrome-looking lines survive, while message cleaning still
+        # runs. Without the flag, the banner is chrome and gets filtered.
+        chrome_banner = "OpenCode · GLM Flash · Coding Plan\nLa compilación terminó correctamente."
+
+        pre = clean_agent_text(chrome_banner, pre_extracted=True)
+        self.assertIn("OpenCode · GLM Flash · Coding Plan", pre)
+        self.assertIn("La compilación terminó correctamente.", pre)
+
+        extracted = clean_agent_text(chrome_banner)
+        self.assertNotIn("GLM Flash", extracted)
+        self.assertIn("La compilación terminó correctamente.", extracted)
+
 
 if __name__ == "__main__":
     unittest.main()
