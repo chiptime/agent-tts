@@ -89,6 +89,10 @@ git diff | agent-tts --tldr
 npm test | agent-tts --tldr --highlight
 cat long_build.log | agent-tts --summarize
 
+# LLM-powered one-sentence executive summary (claude -p / codex exec / ollama)
+# with instant fallback to the offline --tldr heuristics on any failure
+cat long_report.md | agent-tts --llm-summary
+
 # Automatic Language Detection & Dynamic Voice Switching
 agent-tts "He encontrado este error: fatal: remote origin already exists. Debemos cambiar el origen." --auto-lang
 
@@ -178,6 +182,7 @@ If the winhost server is unreachable, one English warning is printed on stderr a
 | Variable | Default | Purpose |
 | :--- | :--- | :--- |
 | `AGENT_TTS_PLAYBACK` | `local` | Default playback target (`local`, `winhost`, `wsl-ps`) |
+| `AGENT_TTS_OLLAMA_MODEL` | `qwen2.5:0.5b` | Ollama model used by `--llm-summary` |
 | `AGENT_TTS_WINHOST_HOST` | auto-detect | Explicit Windows host address for winhost clients |
 | `AGENT_TTS_WINHOST_PORT` | `7717` | TCP port for the winhost transport |
 | `AGENT_TTS_WINHOST_BIND` | `0.0.0.0` | Bind address for `agent-tts --winhost` |
@@ -248,7 +253,7 @@ send_ipc_command("toggle-pause")
 usage: agent-tts [-h] [--voice VOICE] [--rate RATE] [--max-chars MAX_CHARS]
                  [--raw] [--output OUTPUT] [--no-play] [--play-file PLAY_FILE]
                  [--highlight] [--next-sentence] [--prev-sentence]
-                 [--current-sentence] [--tldr] [--auto-lang] [--podcast]
+                 [--current-sentence] [--tldr] [--llm-summary] [--auto-lang] [--podcast]
                  [--podcast-title PODCAST_TITLE] [--podcast-serve [PORT]]
                  [--ipc-cmd IPC_CMD]
                  [--provider {edge,openai,elevenlabs,eleven,piper,local}]
@@ -264,6 +269,8 @@ usage: agent-tts [-h] [--voice VOICE] [--rate RATE] [--max-chars MAX_CHARS]
 ```
 
 - **`--stream {auto,on,off}`** (default `auto`): Pipelined playback mode. `auto` streams long texts (≥ 400 chars) with the `edge`, `openai`, or `elevenlabs` providers when playing locally; `on` forces streaming for any provider or length; `off` forces classic single-shot synthesis. `--output` and `--podcast` always use single-shot synthesis.
+
+- **`--llm-summary`**: Produce ONE executive sentence for long outputs by delegating to a locally installed LLM CLI. Provider chain (first installed wins): `claude -p` → `codex exec` → `ollama run <model>` (default model `qwen2.5:0.5b`, override with `AGENT_TTS_OLLAMA_MODEL`). The prompt is always piped through stdin with no shell involved (no command-injection surface) and requests a single concise sentence in the same language as the input. Any failure — CLI absent, non-zero exit, 10s timeout, empty or oversized output — transparently falls back to the offline `--tldr` heuristics (with the reason logged to stderr). When combined with `--tldr`, `--llm-summary` wins.
 
 - **`--pre-extracted`**: Treat input text as the final message (e.g. provided by an integration layer that already resolved the chat transcript); skips terminal-scrollback turn extraction, keeps markdown-to-speech cleaning.
 
@@ -309,7 +316,7 @@ We have an active vision to expand `agent-tts` into the definitive neural TTS en
   - Replace sentence-group pipelining with frame-level MP3 byte streaming for even lower time-to-first-audio.
 - [x] 🔒 **Automated Secret & Credential Redaction Engine (`redact.py`):**
   - High-speed heuristic sanitizer that automatically redacts API keys (`sk-...`, `ghp_...`, `glpat-...`), JWTs, authorization headers, generic credential assignments, PEM private keys, and long hashes from terminal text before vocalization or publishing to RSS/ntfy feeds (runs once inside the shared cleaning stage).
-- [ ] 🧠 **Hybrid High-Level LLM Summarizer (`--llm-summary`):**
+- [x] 🧠 **Hybrid High-Level LLM Summarizer (`--llm-summary`):**
   - Optional one-sentence executive synthesis delegating to locally installed CLIs (`claude -p`, `codex exec`, `ollama`) for long prose, with instant zero-cost fallback to offline `--tldr` heuristics.
 - [ ] 🔊 **Next-Gen Neural Local TTS (Kokoro-82M ONNX):**
   - Ultra-natural local CPU neural synthesis via Kokoro 82M (<350MB weights), providing studio-grade offline voice synthesis with zero cloud reliance.

@@ -109,6 +109,20 @@ class TestCleaner(unittest.TestCase):
         self.assertNotIn("GLM Flash", extracted)
         self.assertIn("La compilación terminó correctamente.", extracted)
 
+    def test_redaction_runs_before_summarizer(self):
+        # Contract: secrets are redacted BEFORE the TL;DR branch echoes input
+        # sentences, so a spoken summary can never leak raw credentials.
+        secret = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+        prose = (
+            f"Configuré el cliente con el token {secret} en el entorno de producción. "
+            "Tras revisar los logs el despliegue terminó correctamente y sin errores visibles."
+        )
+        res = clean_agent_text(prose, summarize=True)
+        self.assertNotIn(secret, res)
+        self.assertNotIn("ghp_", res)
+        # The summary is still produced (both sentences fit the heuristic budget).
+        self.assertIn("Configuré el cliente", res)
+
 
 if __name__ == "__main__":
     unittest.main()
