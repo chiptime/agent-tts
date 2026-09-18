@@ -4,7 +4,13 @@ tts_engine.py — Bridge adapter between Herdr and the agent-tts standalone engi
 Delegates audio synthesis, miniaudio C playback, IPC controls, and text cleaning to agent_tts.
 """
 
+import os
 import sys
+
+# Configure Herdr-specific socket and lock file locations for the agent-tts core
+os.environ.setdefault("AGENT_TTS_LOCK_FILE", "/tmp/herdr-tts-playing.lock")
+os.environ.setdefault("AGENT_TTS_PID_FILE", "/tmp/herdr-tts-current.pid")
+os.environ.setdefault("AGENT_TTS_SOCKET", "/tmp/herdr-tts-player.sock")
 
 try:
     from agent_tts import (
