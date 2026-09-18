@@ -19,12 +19,15 @@ Furthermore, raw agent terminal outputs (from Claude Code, OpenCode, Herdr, Aide
 
 1. **Interactive IPC Controls:** Seek backward or forward (`seek -10`, `seek +10`), pause, resume, or stop on the fly via a high-speed Unix domain socket without restarting audio or blocking callers.
 2. **Smart Auto-Rewind on Resume:** When resuming playback after being paused, `agent-tts` automatically rewinds 2–3 seconds to help you effortlessly regain your cognitive train of thought.
-3. **Semantic Navigation:** Jump between sentences accurately (`--next-sentence`, `--prev-sentence`) instead of blindly seeking arbitrary seconds.
-4. **Visual Karaoke & Highlighting:** Real-time ANSI word and sentence highlighting in your terminal synchronized with audio (`--highlight`).
-5. **Pure C Native Audio (No Media Player Dependencies):** Direct low-latency PCM streaming via `miniaudio` into PulseAudio/PipeWire (Linux), CoreAudio (macOS), and WASAPI (Windows). No external `mpv`, `paplay`, or `afplay` processes needed.
-6. **Deep Terminal & Agent Prose Sanitization:** Strips ANSI styling, box borders, token usage telemetry, and converts Markdown/ASCII tables into conversational pauses.
-7. **Modular Synthesis Providers:** Works out of the box with zero configuration using high-quality Microsoft Edge Neural voices (100% free), with optional drop-in support for OpenAI Audio TTS (`tts-1`/`tts-1-hd`) and ElevenLabs.
-8. **Tiny Footprint:** Runs in < 2.5 MB RAM with zero GPU/VRAM requirement.
+3. **Semantic Navigation:** Jump between sentences accurately (`--next-sentence`, `--prev-sentence`) and paragraphs (`--next-paragraph`, `--prev-paragraph`) instead of blindly seeking arbitrary seconds.
+4. **Visual Karaoke & Word Highlighting:** Real-time ANSI word and sentence highlighting in your terminal synchronized with audio (`--highlight`).
+5. **Synchronized Auto-Scroll Reader:** Viewport automatically descends at the pace of the spoken voice (`--autoscroll`).
+6. **Bionic Reading Mode:** Bold fixation on initial letters for lightning-fast reading comprehension while listening (`--bionic`).
+7. **Zen Mode:** Distraction-free, centered high-contrast teleprompter reader with minimal progress HUD (`--zen`).
+8. **Pure C Native Audio (No Media Player Dependencies):** Direct low-latency PCM streaming via `miniaudio` into PulseAudio/PipeWire (Linux), CoreAudio (macOS), and WASAPI (Windows). No external `mpv`, `paplay`, or `afplay` processes needed.
+9. **Deep Terminal & Agent Prose Sanitization:** Strips ANSI styling, box borders, token usage telemetry, and converts Markdown/ASCII tables into conversational pauses.
+10. **Modular Synthesis Providers:** Works out of the box with zero configuration using high-quality Microsoft Edge Neural voices (100% free), with optional drop-in support for OpenAI Audio TTS (`tts-1`/`tts-1-hd`), ElevenLabs, and offline Piper.
+11. **Tiny Footprint:** Runs in < 2.5 MB RAM with zero GPU/VRAM requirement.
 
 ---
 
@@ -51,6 +54,12 @@ pip install -e .
 ```bash
 # Speak text directly with live visual word highlighting
 agent-tts "Hola, la compilación ha terminado con éxito." --highlight
+
+# Zen Mode: Minimalist distraction-free teleprompter reader
+agent-tts "Hola mundo, esto es una lectura en modo Zen." --zen
+
+# Synchronized Auto-Scroll Reader with Bionic Reading
+agent-tts "Lectura rápida asistida con fijación biónica en la terminal." --autoscroll --bionic
 
 # Smart Architectural Summarizer (TL;DR pre-flight)
 git diff | agent-tts --tldr

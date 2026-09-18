@@ -1,13 +1,14 @@
 """Audio playback engine with miniaudio C backend and frame-accurate seek/pause."""
 
 import os
+import shutil
 import sys
 import threading
 import time
 from typing import Optional
 import miniaudio
 
-from agent_tts.boundaries import BoundaryMap
+from agent_tts.boundaries import BoundaryMap, apply_bionic_reading
 from agent_tts.constants import IPC_SOCKET, LOCK_FILE, PID_FILE
 from agent_tts.ipc import IPCServer
 
@@ -33,11 +34,17 @@ class AudioSession:
         auto_rewind_sec: float = 2.0,
         boundaries: Optional[BoundaryMap] = None,
         highlight: bool = False,
+        autoscroll: bool = False,
+        bionic: bool = False,
+        zen: bool = False,
     ):
         self.label = label
         self.auto_rewind_sec = auto_rewind_sec
         self.boundaries = boundaries or BoundaryMap()
         self.highlight = highlight
+        self.autoscroll = autoscroll
+        self.bionic = bionic
+        self.zen = zen
         self.state = {
             "status": "synthesizing",
             "pos": 0.0,
@@ -206,30 +213,116 @@ class AudioSession:
         elif action in ("highlight", "current-highlight"):
             with self.lock:
                 pos = (self.current_frame / float(self.sample_rate)) if self.sample_rate else 0.0
-                return self.boundaries.format_highlighted_sentence(pos, ansi=True)
+                return self.boundaries.format_highlighted_sentence(pos, ansi=True, bionic=self.bionic)
+
+        elif action in ("scroll-info", "autoscroll-info", "autoscroll"):
+            with self.lock:
+                pos = (self.current_frame / float(self.sample_rate)) if self.sample_rate else 0.0
+                tot = (self.total_frames / float(self.sample_rate)) if self.sample_rate else 0.0
+                sent = self.boundaries.get_sentence_at(pos)
+                sent_idx = sent.index if sent else -1
+                total_sents = len(self.boundaries.sentences)
+                para = self.boundaries.get_paragraph_at(pos)
+                para_idx = para.index if para else -1
+                total_paras = len(self.boundaries.paragraphs)
+                pct = (pos / tot * 100.0) if tot > 0 else 0.0
+                return (
+                    f"pos={pos:.2f} total={tot:.2f} pct={pct:.1f} "
+                    f"sent_idx={sent_idx} total_sents={total_sents} "
+                    f"para_idx={para_idx} total_paras={total_paras}"
+                )
 
         return f"ERR: unknown command '{action}'"
 
+    def _render_fullscreen_view(self, pos: float, tot: float) -> None:
+        """Renders distraction-free full-screen reader view with synchronized auto-scroll."""
+        cols, rows = shutil.get_terminal_size((80, 24))
+        if cols < 20 or rows < 5:
+            return
+
+        sent = self.boundaries.get_sentence_at(pos)
+        curr_sent_idx = sent.index if sent else 0
+        total_sents = len(self.boundaries.sentences)
+
+        # 1. Title Header
+        title = "─── ZEN MODE ───" if self.zen else "─── AUTO-SCROLL READER ───"
+        pad_top = max(0, (cols - len(title)) // 2)
+        header = f"\x1b[2m{' ' * pad_top}{title}\x1b[0m"
+
+        # 2. Content lines (surrounding sentences centered vertically)
+        prev_sents = []
+        if curr_sent_idx > 0:
+            for idx in range(max(0, curr_sent_idx - 2), curr_sent_idx):
+                s = self.boundaries.sentences[idx]
+                txt = apply_bionic_reading(s.text) if self.bionic else s.text
+                prev_sents.append(f"\x1b[2;37m{txt}\x1b[0m")
+
+        curr_hl = self.boundaries.format_highlighted_sentence(pos, ansi=True, bionic=self.bionic)
+
+        next_sents = []
+        if curr_sent_idx + 1 < total_sents:
+            for idx in range(curr_sent_idx + 1, min(total_sents, curr_sent_idx + 3)):
+                s = self.boundaries.sentences[idx]
+                txt = apply_bionic_reading(s.text) if self.bionic else s.text
+                next_sents.append(f"\x1b[2;37m{txt}\x1b[0m")
+
+        all_content = prev_sents + [curr_hl] + next_sents
+        content_rows = max(1, rows - 3)
+        top_padding = max(1, (content_rows - len(all_content)) // 2)
+
+        # 3. Progress Bar Footer (pinned at bottom row)
+        elapsed_m, elapsed_s = divmod(int(pos), 60)
+        total_m, total_s = divmod(int(tot), 60)
+        pct = (pos / tot * 100.0) if tot > 0 else 0.0
+
+        bar_width = max(10, min(30, cols - 45))
+        filled_len = int(bar_width * (pos / tot)) if tot > 0 else 0
+        filled_len = min(bar_width, max(0, filled_len))
+        bar_chars = (
+            "━" * max(0, filled_len - 1)
+            + ("╸" if 0 < filled_len < bar_width else ("━" if filled_len == bar_width else ""))
+            + "━" * (bar_width - filled_len)
+        )
+
+        status_left = f"▶ {elapsed_m:02d}:{elapsed_s:02d} / {total_m:02d}:{total_s:02d}  {bar_chars} {pct:3.0f}%"
+        status_right = f"Oración {curr_sent_idx + 1}/{total_sents}"
+        gap = max(2, cols - len(status_left) - len(status_right) - 2)
+        footer = f"\x1b[7m {status_left}{' ' * gap}{status_right} \x1b[0m"
+
+        output_lines = [header]
+        for _ in range(top_padding):
+            output_lines.append("")
+        output_lines.extend(all_content)
+        while len(output_lines) < rows - 1:
+            output_lines.append("")
+        output_lines.append(footer)
+
+        buf = "\x1b[H" + "\n".join(l + "\x1b[K" for l in output_lines[:rows])
+        sys.stdout.write(buf)
+        sys.stdout.flush()
+
     def play(self, decoded) -> None:
         """Plays decoded PCM audio frames via miniaudio.PlaybackDevice."""
-        self.decoded_data = decoded.samples
+        self.raw_bytes = decoded.samples.tobytes()
         self.sample_rate = decoded.sample_rate
         self.nchannels = decoded.nchannels
-        self.bytes_per_sample = 2  # miniaudio default is s16
+        self.bytes_per_sample = getattr(decoded, "sample_width", 2)
         self.frame_size = self.nchannels * self.bytes_per_sample
-        self.total_frames = len(self.decoded_data) // self.frame_size
+        self.total_frames = len(self.raw_bytes) // self.frame_size
         self.current_frame = 0
 
         self.state["status"] = "playing"
-        self.state["total"] = self.total_frames / float(self.sample_rate)
+        self.state["total"] = (self.total_frames / float(self.sample_rate)) if self.sample_rate else 0.0
 
+        sample_fmt = getattr(decoded, "sample_format", miniaudio.SampleFormat.SIGNED16)
         device = miniaudio.PlaybackDevice(
-            output_format=decoded.format,
+            output_format=sample_fmt,
             nchannels=self.nchannels,
             sample_rate=self.sample_rate,
         )
 
-        def stream_generator(num_frames: int):
+        def stream_generator():
+            num_frames = yield b""
             while not self.state["stop"] and self.current_frame < self.total_frames:
                 with self.lock:
                     status = self.state["status"]
@@ -237,9 +330,8 @@ class AudioSession:
                     tot = self.total_frames
 
                 if status == "paused":
-                    # Emit silence while paused to keep device stream alive
                     silence_frames = min(num_frames, 512)
-                    yield bytes(silence_frames * self.frame_size)
+                    num_frames = yield bytes(silence_frames * self.frame_size)
                     continue
 
                 if status != "playing":
@@ -250,41 +342,76 @@ class AudioSession:
 
                 start_byte = curr * self.frame_size
                 end_byte = start_byte + (frames_to_read * self.frame_size)
-                chunk = self.decoded_data[start_byte:end_byte]
+                chunk = self.raw_bytes[start_byte:end_byte]
 
                 with self.lock:
                     self.current_frame += frames_to_read
 
-                yield chunk
+                num_frames = yield chunk
+
+            yield b""
+
+        stream = stream_generator()
+        next(stream)  # Prime generator for miniaudio callback
+
+        use_fullscreen = self.zen or self.autoscroll
+        if use_fullscreen:
+            sys.stdout.write("\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H")
+            sys.stdout.flush()
 
         try:
-            device.start(stream_generator)
+            device.start(stream)
             last_hl = ""
             last_sent_idx = -1
+            prev_lines = 1
+
             while not self.state["stop"] and self.current_frame < self.total_frames:
-                if self.highlight and self.boundaries.sentences:
-                    with self.lock:
-                        pos = (self.current_frame / float(self.sample_rate)) if self.sample_rate else 0.0
+                with self.lock:
+                    pos = (self.current_frame / float(self.sample_rate)) if self.sample_rate else 0.0
+                    tot = (self.total_frames / float(self.sample_rate)) if self.sample_rate else 0.0
+
+                if use_fullscreen and self.boundaries.sentences:
+                    self._render_fullscreen_view(pos, tot)
+                elif self.highlight and self.boundaries.sentences:
                     sent = self.boundaries.get_sentence_at(pos)
                     curr_sent_idx = sent.index if sent else -1
+
                     if curr_sent_idx != last_sent_idx and last_sent_idx != -1:
-                        # Advance to new line when crossing sentence boundary
-                        sys.stdout.write("\n")
+                        # Print completed previous sentence and advance line
+                        if prev_lines > 1:
+                            sys.stdout.write(f"\x1b[{prev_lines - 1}A")
+                        sys.stdout.write("\r\x1b[J")
+                        if 0 <= last_sent_idx < len(self.boundaries.sentences):
+                            p_sent = self.boundaries.sentences[last_sent_idx]
+                            p_text = apply_bionic_reading(p_sent.text) if self.bionic else p_sent.text
+                            sys.stdout.write(f"\x1b[2m{p_text}\x1b[0m\n")
+                        else:
+                            sys.stdout.write("\n")
                         sys.stdout.flush()
+                        prev_lines = 1
                         last_sent_idx = curr_sent_idx
                     elif last_sent_idx == -1 and curr_sent_idx != -1:
                         last_sent_idx = curr_sent_idx
 
-                    hl = self.boundaries.format_highlighted_sentence(pos, ansi=True)
+                    hl = self.boundaries.format_highlighted_sentence(pos, ansi=True, bionic=self.bionic)
                     if hl != last_hl:
-                        sys.stdout.write(f"\r\x1b[K{hl}")
+                        cols, _ = shutil.get_terminal_size((80, 24))
+                        if prev_lines > 1:
+                            sys.stdout.write(f"\x1b[{prev_lines - 1}A")
+                        sys.stdout.write(f"\r\x1b[J{hl}")
                         sys.stdout.flush()
                         last_hl = hl
-                time.sleep(0.04)
+                        if sent:
+                            prev_lines = max(1, (len(sent.text) + cols - 1) // cols)
+
+                time.sleep(0.03)
         except Exception as e:
             print(f"Device error: {e}", file=sys.stderr)
         finally:
-            if self.highlight:
+            if use_fullscreen:
+                sys.stdout.write("\x1b[?25h\x1b[?1049l\n")
+                sys.stdout.flush()
+            elif self.highlight:
                 sys.stdout.write("\n")
                 sys.stdout.flush()
             try:
@@ -309,6 +436,9 @@ def play_mp3_data(
     auto_rewind_sec: float = 2.0,
     boundaries: Optional[BoundaryMap] = None,
     highlight: bool = False,
+    autoscroll: bool = False,
+    bionic: bool = False,
+    zen: bool = False,
 ) -> None:
     """Decodes in-memory MP3 bytes and plays them through a tracked AudioSession."""
     global _current_session
@@ -328,6 +458,9 @@ def play_mp3_data(
         auto_rewind_sec=auto_rewind_sec,
         boundaries=boundaries,
         highlight=highlight,
+        autoscroll=autoscroll,
+        bionic=bionic,
+        zen=zen,
     )
     _current_session = session
     session.start_ipc()
@@ -348,6 +481,9 @@ def play_mp3_file(
     auto_rewind_sec: float = 2.0,
     boundaries: Optional[BoundaryMap] = None,
     highlight: bool = False,
+    autoscroll: bool = False,
+    bionic: bool = False,
+    zen: bool = False,
 ) -> None:
     """Decodes an existing MP3 file to PCM in memory and plays via native player."""
     if not os.path.exists(mp3_path):
@@ -360,4 +496,7 @@ def play_mp3_file(
         auto_rewind_sec=auto_rewind_sec,
         boundaries=boundaries,
         highlight=highlight,
+        autoscroll=autoscroll,
+        bionic=bionic,
+        zen=zen,
     )
