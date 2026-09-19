@@ -29,13 +29,22 @@ from agent_tts.podcast import (
 from agent_tts.providers import (
     EdgeTTSProvider,
     ElevenLabsTTSProvider,
-    KokoroTTSProvider,
     OpenAITTSProvider,
     TTSProvider,
     get_provider,
 )
 from agent_tts.redact import redact_secrets
 from agent_tts.summarizer import summarize
+
+
+def __getattr__(name: str):
+    # KokoroTTSProvider is OPTIONAL: resolved lazily (PEP 562) so importing
+    # agent_tts never pulls the kokoro module graph or its heavy extras.
+    if name == "KokoroTTSProvider":
+        from agent_tts.providers import KokoroTTSProvider
+
+        return KokoroTTSProvider
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
     "__version__",
