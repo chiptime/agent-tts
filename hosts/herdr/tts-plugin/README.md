@@ -121,7 +121,143 @@ herdr plugin link ~/Code/personal/herdr-tts
 
 ## ⌨️ Recommended Keybindings
 
-Add these bindings to your `~/.config/herdr/config.toml`:
+**How Herdr keys work:** every binding is a single `prefix + X` chord — Herdr core has **no key sequences** (no leader chains like `prefix+u` then `r`). That constraint matters: a one-chord-per-command voice map competes for letters that Herdr core already owns (`r`, `v`, `z`, `n`/`p`, `[`/`]`). Pick **one** of the three options below and add it to `~/.config/herdr/config.toml`.
+
+### Option 1 — Compact map (recommended): one key opens the voice menu
+
+The plugin ships a **voice menu popup**. Bind one free core letter (`u` is free in Herdr core defaults): the popup opens with the full cheat sheet, you press one more key, the action runs, and the popup closes itself (focus is restored). Zero collisions with Herdr core, and the whole command surface stays on screen instead of memorized.
+
+```toml
+# Open the voice menu popup (u is free in Herdr core defaults)
+[[keys.command]]
+key = "prefix+u"
+type = "shell"
+command = "herdr plugin pane open --plugin herdr.tts --entrypoint tts-menu"
+```
+
+Keys inside the menu (actions target the focused chat):
+
+| Tecla | Acción |
+|---|---|
+| `r` | Play / Stop del chat enfocado |
+| `p` | Pausar / Reanudar |
+| `s` | Stop inmediato |
+| `t` | TL;DR del chat |
+| `v` | Auto-lectura on/off |
+| `[` / `]` | Rebobinar / Avanzar 10 s |
+| `n` / `N` | Frase siguiente / anterior |
+| `m` | Mute del pane (auto al cerrarse) |
+| `z` | Snooze del pane (5m → 30m → 2h → off) |
+| `Z` | Snooze GLOBAL (reuniones) |
+| `+` / `-` | Velocidad ±10% |
+| `d` / `o` | Abrir dashboard / paleta de voz |
+| `q` / `Esc` | Salir |
+
+### Option 2 — ctrl+alt family (no prefix, no collisions)
+
+Herdr core does not own the `ctrl+alt` family, so every voice command gets its own direct chord with zero conflicts. These are plain chords — no prefix involved. **Caveat:** `ctrl+alt+t` launches a terminal on Ubuntu/Fedora desktops, so TL;DR lives on `ctrl+alt+l`.
+
+```toml
+# Play / Stop reading the currently focused pane
+[[keys.command]]
+key = "ctrl+alt+r"
+type = "shell"
+command = "herdr-tts --toggle-play"
+
+# TL;DR quick summary (NOT ctrl+alt+t: that opens a terminal on Ubuntu/Fedora)
+[[keys.command]]
+key = "ctrl+alt+l"
+type = "shell"
+command = "herdr-tts --tldr"
+
+# Stop all audio immediately (Emergency Mute)
+[[keys.command]]
+key = "ctrl+alt+s"
+type = "shell"
+command = "herdr-tts --stop"
+
+# Pause / Resume current audio playback
+[[keys.command]]
+key = "ctrl+alt+p"
+type = "shell"
+command = "herdr-tts --toggle-pause"
+
+# Toggle background automatic speech
+[[keys.command]]
+key = "ctrl+alt+v"
+type = "shell"
+command = "herdr-tts --toggle-auto"
+
+# Rewind / Forward 10 seconds
+[[keys.command]]
+key = "ctrl+alt+b"
+type = "shell"
+command = "herdr-tts --rewind"
+
+[[keys.command]]
+key = "ctrl+alt+f"
+type = "shell"
+command = "herdr-tts --forward"
+
+# Next / Previous spoken sentence
+[[keys.command]]
+key = "ctrl+alt+n"
+type = "shell"
+command = "herdr-tts --next-sentence"
+
+[[keys.command]]
+key = "ctrl+alt+shift+n"
+type = "shell"
+command = "herdr-tts --prev-sentence"
+
+# Speed up / Slow down voice reading by 10%
+[[keys.command]]
+key = "ctrl+alt+u"
+type = "shell"
+command = "herdr-tts --rate-up"
+
+[[keys.command]]
+key = "ctrl+alt+d"
+type = "shell"
+command = "herdr-tts --rate-down"
+
+# Cycle snooze on the focused pane / GLOBAL snooze
+[[keys.command]]
+key = "ctrl+alt+z"
+type = "shell"
+command = "herdr-tts --snooze-pane"
+
+[[keys.command]]
+key = "ctrl+alt+shift+z"
+type = "shell"
+command = "herdr-tts --snooze-global"
+
+# Exclusive mute of the focused pane (auto-clears when the pane closes)
+[[keys.command]]
+key = "ctrl+alt+x"
+type = "shell"
+command = "herdr-tts --mute-pane"
+```
+
+### Option 3 — Direct map (power users)
+
+The original one-chord-per-command map: fastest to press, but several letters **shadow Herdr core defaults** — while this map is installed, those core bindings are unreachable. Opt in knowingly:
+
+| Tecla | Comando de voz | Conflicto con Herdr core |
+|---|---|---|
+| `prefix+r` | Play / Stop | ⚠️ `resize` |
+| `prefix+p` | Pausa / Reanudar | ⚠️ tab anterior |
+| `prefix+v` | Auto-lectura on/off | ⚠️ split right |
+| `prefix+z` | Snooze pane | ⚠️ zoom |
+| `prefix+n` | Frase siguiente | ⚠️ tab siguiente |
+| `prefix+[` | Rebobinar 10 s | ⚠️ copy mode |
+| `prefix+]` | Avanzar 10 s | ⚠️ copy mode |
+| `prefix+t` | TL;DR | libre |
+| `prefix+s` | Stop | libre |
+| `prefix+N` | Frase anterior | libre |
+| `prefix+Z` | Snooze global | libre |
+| `prefix+m` | Mute pane | libre |
+| `prefix+=` / `prefix+-` | Velocidad ±10% | libre |
 
 ```toml
 # Play / Stop reading the currently focused pane on-demand

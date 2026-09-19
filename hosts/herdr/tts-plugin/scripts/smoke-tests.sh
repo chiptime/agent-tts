@@ -16,6 +16,9 @@
 #         empty history, no-herdr fail-open, fzf-missing actionable error
 #   14    history snippet: sanitize + 5-field append + legacy fallback
 #   15    dashboard renders mixed 4/5-field history rows
+#   16    voice menu: dispatch map (stub-verified, one key = one existing
+#         function), single-write frame, quit/Esc/unknown/EOF paths,
+#         width+height clamp reuse, manifest/README wiring
 set -uo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -636,6 +639,126 @@ if grep -q $'\t' <(sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' "$T/out.txt"); then
 else
   ok "15 snippets never leak raw tabs into the frame"
 fi
+
+echo "── 16. voice menu: dispatch map, single write, quit/unknown/EOF, clamps"
+
+# 16a. Dispatch map: every key fires the EXISTING implementation function
+#      (stub-verified via overrides) and nothing else.
+new_env s16
+FX="$T/fixture.json"; make_fixture "$FX"
+write_herdr_stub "$FX"
+lib_run '
+  toggle_play()        { echo "STUB toggle-play"; }
+  toggle_pause_audio() { echo "STUB toggle-pause"; }
+  stop_audio()         { echo "STUB stop"; }
+  read_current_pane()  { echo "STUB tldr:${2:-}"; }
+  toggle_auto()        { echo "STUB toggle-auto"; }
+  seek_audio()         { echo "STUB seek:${1:-}"; }
+  next_sentence_audio(){ echo "STUB next-sentence"; }
+  prev_sentence_audio(){ echo "STUB prev-sentence"; }
+  toggle_pane_mute()   { echo "STUB mute:${1:-}"; }
+  cycle_snooze()       { echo "STUB snooze:${1:-}:${2:-}"; }
+  adjust_rate()        { echo "STUB rate:${1:-}"; }
+  herdr()              { printf '%s\n' "$*" >> "$T/menu-herdr.log"; }
+  for k in r p s t v "[" "]" n N m z Z + - = _ d o; do
+    if menu_dispatch "$k" >/dev/null; then
+      printf "%s→%s\n" "$k" "$MENU_RESULT"
+    else
+      printf "%s→ERROR\n" "$k"
+    fi
+  done
+  if menu_dispatch "@" >/dev/null 2>&1; then echo "@→accepted"; else echo "@→rejected"; fi
+' > "$T/out.txt"
+assert_grep "16a r → toggle_play"              '^r→STUB toggle-play$' "$T/out.txt"
+assert_grep "16a p → toggle_pause_audio"       '^p→STUB toggle-pause$' "$T/out.txt"
+assert_grep "16a s → stop_audio"               '^s→STUB stop$' "$T/out.txt"
+assert_grep "16a t → read_current_pane --tldr" '^t→STUB tldr:--tldr$' "$T/out.txt"
+assert_grep "16a v → toggle_auto"              '^v→STUB toggle-auto$' "$T/out.txt"
+assert_grep "16a [ → seek -10"                 '^\[→STUB seek:-10$' "$T/out.txt"
+assert_grep "16a ] → seek +10"                 '^\]→STUB seek:\+10$' "$T/out.txt"
+assert_grep "16a n → next_sentence_audio"      '^n→STUB next-sentence$' "$T/out.txt"
+assert_grep "16a N → prev_sentence_audio"      '^N→STUB prev-sentence$' "$T/out.txt"
+assert_grep "16a m → toggle_pane_mute (focused default)" '^m→STUB mute:$' "$T/out.txt"
+assert_grep "16a z → cycle_snooze pane (focused default)" '^z→STUB snooze:pane:$' "$T/out.txt"
+assert_grep "16a Z → cycle_snooze global"      '^Z→STUB snooze:global:$' "$T/out.txt"
+assert_grep "16a + → adjust_rate +10"          '^\+→STUB rate:10$' "$T/out.txt"
+assert_grep "16a = → adjust_rate +10"          '^=→STUB rate:10$' "$T/out.txt"
+assert_grep "16a - → adjust_rate -10"          '^-→STUB rate:-10$' "$T/out.txt"
+assert_grep "16a _ → adjust_rate -10"          '^_→STUB rate:-10$' "$T/out.txt"
+assert_grep "16a d → confirmation label"       '^d→.*Abriendo el dashboard' "$T/out.txt"
+assert_grep "16a d → opens tts-dashboard entrypoint" 'plugin pane open --plugin herdr.tts --entrypoint tts-dashboard' "$T/menu-herdr.log"
+assert_grep "16a o → confirmation label"       '^o→.*Abriendo la paleta' "$T/out.txt"
+assert_grep "16a o → opens tts-palette entrypoint" 'plugin pane open --plugin herdr.tts --entrypoint tts-palette' "$T/menu-herdr.log"
+assert_grep "16a unknown key rejected"         '^@→rejected$' "$T/out.txt"
+
+# 16b. End-to-end 'm': ONE physical frame write + one-line confirmation +
+#      the action actually applied through the focused-pane default.
+new_env s16b
+FX="$T/fixture.json"; make_fixture "$FX"
+cat > "$T/bin/herdr" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "pane" && "${2:-}" == "current" ]]; then
+  echo '{"result":{"pane":{"pane_id":"w4:p4"}}}'
+  exit 0
+fi
+exit 0
+EOF
+chmod +x "$T/bin/herdr"
+export HERDR_TTS_MENU_CONFIRM_SECS=0.2
+printf 'm' | timeout 10 "$SCRIPT" --voice-menu > "$T/out.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "16b menu exited rc=0" || bad "16b menu rc!=0"
+hv=$(esc_count "$T/out.txt" $'\033[H')
+[[ "$hv" -eq 1 ]] && ok "16b exactly one frame home-move (single write) ($hv)" || bad "16b H-moves=$hv (want 1)"
+jv=$(esc_count "$T/out.txt" $'\033[J')
+[[ "$jv" -eq 1 ]] && ok "16b erase-below present once ($jv)" || bad "16b J=$jv (want 1)"
+cj=$(esc_count "$T/out.txt" $'\033[2J')
+[[ "$cj" -eq 0 ]] && ok "16b no full-clear in menu path ($cj)" || bad "16b 2J=$cj (want 0)"
+assert_grep "16b frame content rendered" 'Menú de voz' "$T/out.txt"
+assert_grep "16b one-line Spanish confirmation" '^✓ .*(silenciado|reactivada)' "$T/out.txt"
+jq -e '.panes["w4:p4"].muted == true' "$HERDR_TTS_SNOOZE_FILE" >/dev/null \
+  && ok "16b m muted the FOCUSED pane (stub pane current → w4:p4)" || bad "16b focused-pane default not honored"
+
+# 16c. q / Esc: frame renders, no confirmation, silent exit (no dwell).
+printf 'q' | timeout 10 "$SCRIPT" --voice-menu > "$T/out.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "16c q exits rc=0" || bad "16c q rc!=0"
+assert_grep "16c q still renders the frame" 'Menú de voz' "$T/out.txt"
+assert_no_grep "16c q path is silent (no confirmation)" '✓|Tecla no reconocida' "$T/out.txt"
+printf '\033' | timeout 10 "$SCRIPT" --voice-menu > "$T/out.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "16c Esc exits rc=0" || bad "16c Esc rc!=0"
+assert_no_grep "16c Esc path is silent" '✓|Tecla no reconocida' "$T/out.txt"
+
+# 16d. Unknown key → brief Spanish notice, rc 0.
+printf '@' | timeout 10 "$SCRIPT" --voice-menu > "$T/out.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "16d unknown key exits rc=0" || bad "16d rc!=0"
+assert_grep "16d unknown key notice" 'Tecla no reconocida \(@\)' "$T/out.txt"
+
+# 16e. Fail-open: EOF (no tty / closed stdin) → rc 0, never any action.
+timeout 10 "$SCRIPT" --voice-menu < /dev/null > "$T/out.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "16e EOF exits rc=0 (fail-open)" || bad "16e EOF rc!=0"
+assert_no_grep "16e EOF fires no action" '✓|Tecla no reconocida' "$T/out.txt"
+
+# 16f. Clamp reuse: COLUMNS=90 / LINES=10 → width ≤ 90, rows ≤ LINES-1.
+new_env s16f
+FX="$T/fixture.json"; make_fixture "$FX"
+write_herdr_stub "$FX"
+export COLUMNS=90 LINES=10
+printf 'q' | timeout 10 "$SCRIPT" --voice-menu > "$T/out.txt" 2>>"$T/err.log"
+read stats < <(visible_stats "$T/out.txt"); sl=${stats%% *}; nl=${stats#* }
+[[ "$sl" -le 90 ]] && ok "16f no line exceeds 90 visible chars (max=$sl)" || bad "16f max width $sl > 90"
+[[ "$nl" -le 9 ]] && ok "16f frame rows ≤ LINES-1 = 9 ($nl)" || bad "16f rows $nl > 9"
+unset COLUMNS LINES # restore for the wiring greps below
+
+# 16g. Manifest + README wiring shipped with the feature.
+assert_grep "16g manifest declares tts-menu pane" 'id = "tts-menu"' "$REPO/herdr-plugin.toml" -F
+assert_grep "16g tts-menu runs --voice-menu" 'command = \["bin/herdr-tts", "--voice-menu"\]' "$REPO/herdr-plugin.toml"
+assert_grep "16g tts-menu popup is 60%x45%" 'width = "60%"' "$REPO/herdr-plugin.toml" -F
+assert_grep "16g open-menu action wired" '"--entrypoint", "tts-menu"' "$REPO/herdr-plugin.toml" -F
+assert_grep "16g version bumped to 0.12.0" 'version = "0.12.0"' "$REPO/herdr-plugin.toml" -F
+assert_grep "16g README option 1 (menu, recommended)" '### Option 1 — Compact map \(recommended\)' "$REPO/README.md"
+assert_grep "16g README option 2 (ctrl+alt family)" '### Option 2 — ctrl\+alt family' "$REPO/README.md"
+assert_grep "16g README option 3 (direct map + conflicts)" '### Option 3 — Direct map \(power users\)' "$REPO/README.md"
+assert_grep "16g README binds prefix+u to the menu" '"prefix+u"' "$REPO/README.md" -F
+assert_grep "16g README documents the ctrl+alt+t caveat" 'ctrl\+alt\+t` launches a terminal' "$REPO/README.md"
 
 echo
 echo "═══ RESULT: $PASS passed, $FAIL failed ═══"
