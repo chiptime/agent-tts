@@ -9,10 +9,28 @@ from typing import Optional
 import miniaudio
 
 from agent_tts.boundaries import BoundaryMap, apply_bionic_reading
-from agent_tts.constants import IPC_SOCKET, LOCK_FILE, PID_FILE
+from agent_tts.cleaner import strip_ansi
+from agent_tts.constants import DEFAULT_VOICE, IPC_SOCKET, LOCK_FILE, PID_FILE
 from agent_tts.ipc import IPCServer
 
+# Length cap for the sanitized text snippet carried by the IPC status payload.
+STATUS_SNIPPET_MAX_CHARS = 60
+
 _current_session: Optional["AudioSession"] = None
+
+
+def _sanitize_snippet(text: str, limit: int = STATUS_SNIPPET_MAX_CHARS) -> str:
+    """Collapses sentence text into a single-line, control-char-free display snippet.
+
+    Strips ANSI escapes and non-printable characters, collapses whitespace, and
+    caps the result at ``limit`` chars (longer text gets a trailing ellipsis).
+    """
+    cleaned = strip_ansi(text or "")
+    cleaned = "".join(ch for ch in cleaned if ch.isprintable())
+    cleaned = " ".join(cleaned.split())
+    if len(cleaned) > limit:
+        cleaned = cleaned[: limit - 3] + "..."
+    return cleaned
 
 
 def cleanup_locks() -> None:
@@ -37,6 +55,8 @@ class AudioSession:
         autoscroll: bool = False,
         bionic: bool = False,
         zen: bool = False,
+        provider: str = "",
+        voice: str = "",
     ):
         self.label = label
         self.auto_rewind_sec = auto_rewind_sec
@@ -45,6 +65,17 @@ class AudioSession:
         self.autoscroll = autoscroll
         self.bionic = bionic
         self.zen = zen
+        # Engine metadata surfaced by the IPC status payload. Resolution order:
+        # explicit arg > AGENT_TTS_PROVIDER / AGENT_TTS_VOICE env (settable by
+        # hosts launching the CLI) > TTS_PROVIDER env (same default source the
+        # CLI uses) > built-in CLI defaults.
+        self.provider = (
+            provider
+            or os.environ.get("AGENT_TTS_PROVIDER", "")
+            or os.environ.get("TTS_PROVIDER", "")
+            or "edge"
+        )
+        self.voice = voice or os.environ.get("AGENT_TTS_VOICE", "") or DEFAULT_VOICE
         self.state = {
             "status": "synthesizing",
             "pos": 0.0,
@@ -87,7 +118,15 @@ class AudioSession:
                 sent_idx = sent.index if sent else -1
                 para = self.boundaries.get_paragraph_at(pos)
                 para_idx = para.index if para else -1
-                return f"status={self.state['status']} pos={pos:.2f} total={total:.2f} sent_idx={sent_idx} para_idx={para_idx} sentence={sent_clean}"
+                # Single-line kv payload: legacy fields first (clients parsing
+                # just the state word or pos/total keep working), engine
+                # metadata appended at the end for dashboard consumers.
+                return (
+                    f"status={self.state['status']} pos={pos:.2f} total={total:.2f} "
+                    f"sent_idx={sent_idx} para_idx={para_idx} sentence={sent_clean} "
+                    f"provider={self.provider} voice={self.voice} "
+                    f"text={_sanitize_snippet(sent_clean)}"
+                )
 
         elif action == "pause":
             with self.lock:
@@ -488,6 +527,8 @@ def play_mp3_data(
     autoscroll: bool = False,
     bionic: bool = False,
     zen: bool = False,
+    provider: str = "",
+    voice: str = "",
 ) -> None:
     """Decodes in-memory MP3 bytes and plays them through a tracked AudioSession."""
     global _current_session
@@ -510,6 +551,8 @@ def play_mp3_data(
         autoscroll=autoscroll,
         bionic=bionic,
         zen=zen,
+        provider=provider,
+        voice=voice,
     )
     _current_session = session
     session.start_ipc()
@@ -533,6 +576,8 @@ def play_mp3_file(
     autoscroll: bool = False,
     bionic: bool = False,
     zen: bool = False,
+    provider: str = "",
+    voice: str = "",
 ) -> None:
     """Decodes an existing MP3 file to PCM in memory and plays via native player."""
     if not os.path.exists(mp3_path):
@@ -548,4 +593,6 @@ def play_mp3_file(
         autoscroll=autoscroll,
         bionic=bionic,
         zen=zen,
+        provider=provider,
+        voice=voice,
     )
