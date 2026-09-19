@@ -6,12 +6,17 @@ Targets:
   Windows host (native WASAPI playback there).
 - "wsl-ps": zero-install WSL mode; pipe WAV bytes to PowerShell on the
   Windows host.
+- "auto": environment-based selection (see :func:`resolve_target`); picks
+  "winhost" under WSL when powershell.exe is reachable, "local" elsewhere.
 """
 
 import os
+import shutil
 import subprocess
+import sys
 
 VALID_TARGETS = ("local", "winhost", "wsl-ps")
+AUTO_TARGET = "auto"
 
 ENV_PLAYBACK = "AGENT_TTS_PLAYBACK"
 ENV_WINHOST_HOST = "AGENT_TTS_WINHOST_HOST"
@@ -30,24 +35,63 @@ class InvalidPlaybackTarget(ValueError):
 
 
 def normalize_target(value: str) -> str:
-    """Validates and normalizes a playback target value."""
+    """Validates and normalizes a playback target value (or "auto")."""
     value = (value or "").strip().lower()
-    if value not in VALID_TARGETS:
+    known = VALID_TARGETS + (AUTO_TARGET,)
+    if value not in known:
         raise InvalidPlaybackTarget(
-            f"invalid playback target {value!r} (expected one of: {', '.join(VALID_TARGETS)})"
+            f"invalid playback target {value!r} (expected one of: {', '.join(known)})"
         )
     return value
 
 
+def _proc_version_text() -> str:
+    try:
+        with open("/proc/version", "r", encoding="utf-8", errors="ignore") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def under_wsl(env=None) -> bool:
+    """True when this process runs under WSL (distro env var or /proc/version marker)."""
+    env = os.environ if env is None else env
+    if env.get("WSL_DISTRO_NAME"):
+        return True
+    return "microsoft" in _proc_version_text().lower()
+
+
+def resolve_auto_target(env) -> str:
+    """Picks the concrete playback target from the environment.
+
+    Native Windows plays locally (miniaudio WASAPI is native playback
+    there). Under WSL, powershell.exe on PATH means the zero-install
+    wsl-ps fallback machinery exists, so "winhost" is safe (it degrades
+    to wsl-ps automatically when the server is absent). Anything else
+    (native Linux, WSL without powershell.exe) plays locally.
+    """
+    if sys.platform == "win32":
+        return "local"
+    if under_wsl(env) and shutil.which("powershell.exe"):
+        return "winhost"
+    return "local"
+
+
 def resolve_target(flag_value, env=None) -> str:
-    """Resolves the active playback target: CLI flag wins, then AGENT_TTS_PLAYBACK, then "local"."""
+    """Resolves the active playback target: CLI flag wins, then AGENT_TTS_PLAYBACK, then "local".
+
+    The special value "auto" (flag or env) selects the concrete target
+    from the environment via :func:`resolve_auto_target`.
+    """
     env = os.environ if env is None else env
     if flag_value:
-        return normalize_target(flag_value)
-    env_value = env.get(ENV_PLAYBACK, "")
-    if env_value:
-        return normalize_target(env_value)
-    return "local"
+        value = normalize_target(flag_value)
+    else:
+        env_value = env.get(ENV_PLAYBACK, "")
+        value = normalize_target(env_value) if env_value else "local"
+    if value == AUTO_TARGET:
+        return resolve_auto_target(env)
+    return value
 
 
 def winhost_port(env=None) -> int:
