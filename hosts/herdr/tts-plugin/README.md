@@ -410,7 +410,7 @@ CLICK_REDIRECT="off"        # "off" = tap opens ntfy player; "on" = tap opens we
 
 ---
 
-## 📊 Panel de control (dashboard, v2)
+## 📊 Panel de control (dashboard, v3)
 
 **Abrir el panel directamente en Herdr:**
 
@@ -427,25 +427,26 @@ type = "shell"
 command = "herdr plugin pane open --plugin herdr.tts --entrypoint tts-dashboard"
 ```
 
-`herdr-tts --dashboard` arranca el mismo panel TUI compacto (ANSI puro, sin dependencias externas). Refresca ~1 vez por segundo y muestra:
+`herdr-tts --dashboard` arranca el mismo panel TUI compacto (ANSI puro, sin dependencias externas). Refresca ~1 vez por segundo y, desde la **v3**, se organiza **por chat** en lugar de por estado interno de TTS:
 
 * **Estado global:** snooze global con cuenta atrás, auto-lectura, proveedor/voz/velocidad, modo de playback y ventana de debounce.
 * **Línea de motor en vivo (v2):** cada 3 ticks el panel consulta el estado del motor por IPC (la misma vía que `--toggle-pause`) y renderiza estado con color (▶ reproduciendo / ⏸ pausado / ⏹ detenido / ⌛ sintetizando), progreso mm:ss (`00:12 / 00:48`), proveedor y voz activos, y un fragmento del texto en lectura. Si el motor no responde, la línea muestra el fallback estático del lock local con la nota explícita **"motor: no responde"** (fail-open, nunca rompe el panel).
-* **Panes conocidos:** una línea por pane con su estado de voz — ▶️ activo, 🔇 SILENCIADO o 😴 SNOOZED con cuenta atrás mm:ss — más el último evento visto por el ledger de debounce y si el anti-spam sigue activo.
-* **Historial de audio (últimos 20):** cada audio renderizado se registra en `${XDG_STATE_HOME:-~/.local/state}/herdr-tts/history.log` (TSV: `fecha, pane, agente, duración`) y se muestra del más reciente al más antiguo. (v2) la duración es real en segundos: tras cada render el host decodifica el MP3 con el propio `miniaudio` del venv (una invocación extra por audio, best-effort; si falla, la columna vuelve a `-`).
+* **Roster por chat (v3):** una línea por **chat**, fusionando tres fuentes bajo la misma clave `pane_id`: `herdr agent list` (estado del agente + título de la conversación), el ledger de snooze/mute y el de debounce. Cada línea muestra el estado del agente con icono y color — `▶` working (verde), `✔` done/blocked (amarillo, pide atención), `·` idle (tenue); valores desconocidos se muestran tal cual —, el título del chat truncado a 40 caracteres, el tipo de agente y las incidencias de voz acumuladas: 🔇 silenciado, 😴 con cuenta atrás mm:ss si está snoozed, ⏱ con los segundos restantes si la ventana anti-spam (debounce) sigue reteniendo el evento. Orden *needs-attention first*: done/blocked → working → idle; a igualdad, primero el chat con el audio más reciente. Sin CLI de Herdr o sin agentes, la sección muestra "sin datos de herdr" (fail-open).
+* **Historial agrupado por chat (v3):** los audios de `history.log` se agrupan por chat: cabecera `── <título> · N audios · último hace Xm` seguida de sus últimos 3 audios (duración mm:ss + antigüedad). Los chats se ordenan por su audio más reciente y el presupuesto global de la sección es de ~24 líneas. Los chats cerrados (pane sin entrada en `herdr agent list`) siguen apareciendo identificados por su `pane_id`; sin historial, la sección se oculta por completo.
+* **Presupuesto de pantalla (v3):** el popup tiene ~50-55 filas útiles al 90%: global + motor ≈ 4 líneas, roster 1 línea por chat, historial ≤ 24, pie 1. Si hay más chats que filas, se ocultan primero los idle con el audio más antiguo y se avisa con *"… y N chats más"*; **los chats que piden atención (done/blocked) nunca se ocultan**.
 
 El panel es de **solo lectura** frente al gate/mutex/watcher: toda mutación pasa por las funciones y flags existentes (`--mute-pane`, `--snooze-pane`, `--snooze-global`, `--rate-up/down`).
 
 | Tecla | Acción |
 | :--- | :--- |
 | `q` | Salir |
-| `j` / `k` | Mover el cursor entre panes |
-| `m` | Silenciar / reactivar el pane seleccionado (auto-clear al cerrar el pane) |
-| `z` | Ciclar snooze del pane seleccionado: 5m → 30m → 2h → off |
+| `j` / `k` | Mover el cursor entre chats |
+| `m` | Silenciar / reactivar el chat seleccionado (auto-clear al cerrarse el pane) |
+| `z` | Ciclar snooze del chat seleccionado: 5m → 30m → 2h → off |
 | `Z` | Ciclar snooze GLOBAL (todos los agentes) |
 | `+` / `-` | Velocidad de voz +10% / −10% (persistida en config) |
 
-> **Disciplina de coste v2:** la consulta de estado del motor comparte cadencia de caché con el roster (`herdr agent list`): un solo spawn de python cada N ticks (default 3) para TODO el panel, nunca un subshell por pane por tick. Refresco configurable con `HERDR_TTS_DASHBOARD_REFRESH` (segundos, default `1`).
+> **Disciplina de coste v3:** `herdr agent list` se consulta cada N ticks (default 3) con caché, el estado del motor comparte esa cadencia, y el historial se agrupa en **una sola pasada de python** por tick (el mismo intérprete del venv del motor; agrupa, ordena por recencia y convierte las marcas locales a epoch con reglas DST correctas por fecha). Todo lo demás por tick es lectura local de ficheros y bash sin forks: nunca un subshell por línea renderizada. Refresco configurable con `HERDR_TTS_DASHBOARD_REFRESH` (segundos, default `1`).
 
 ---
 
@@ -491,6 +492,7 @@ We have an active vision to expand `herdr-tts` into the definitive audio layer f
 - [x] 📊 **Interactive TUI Dashboard Pane:**
   - Native Herdr dashboard pane entrypoint displaying live agent speech states, recent audio logs, countdowns for snoozed panes, volume controls, and provider/voice toggles. (v1: pure-ANSI clear+redraw, read-only gating view, controls reuse the existing mute/snooze/rate functions; audio history via `${XDG_STATE_HOME:-~/.local/state}/herdr-tts/history.log`.)
   - v2: live engine line via the engine IPC status (state with color, mm:ss progress, active provider/voice and text snippet) on a shared every-N-ticks cache cadence, fail-open "motor: no responde" fallback, and real durations in the audio history ledger (MP3 decoded with the engine's own miniaudio, one best-effort probe per render).
+  - v3: **per-chat view** — the roster merges `herdr agent list` (agent state + chat title), the snooze/mute ledger and the debounce ledger under the same `pane_id` key, rendering one line per chat with needs-attention-first sorting (done/blocked → working → idle, most-recent-audio tiebreak), voice overlays (🔇 muted, 😴 snooze countdown, ⏱ debounce hold) and a screen-row budget that drops oldest-idle chats first and never hides chats needing attention; the audio history renders **grouped per chat** (`── <title> · N audios · último hace Xm` + last 3 audios each) via a single python pass per tick with correct per-date DST handling, keeping closed panes visible by pane id and hiding the section entirely when the ledger is empty.
 - [ ] 🎙️ **Push-to-Talk Two-Way Intercom:**
   - Dictate instructions directly to the focused agent pane via hotkey (`prefix + c`), transcribing locally via lightweight fast STT (Whisper.cpp / whisper-rs) and injecting the prompt directly into Herdr's active pane.
 

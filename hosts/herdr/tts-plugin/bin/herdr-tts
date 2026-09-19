@@ -1397,40 +1397,109 @@ run_daemon() {
   done
 }
 
-# ─── Dashboard pane (v1) ─────────────────────────────────────
+# ─── Dashboard pane (v3, per-chat view) ──────────────────────
 # Compact in-terminal status panel (--dashboard), designed to run as a
 # Herdr plugin pane ([[panes]] entrypoint). Pure ANSI clear+redraw at a
-# ~1s cadence; zero external TUI dependencies. Read-only with respect to
-# the gate/mutex/watcher machinery: every mutation goes through the
-# existing mute / snooze / rate functions, never through side channels.
+# ~1s cadence; zero external TUI dependencies. v3 reorganizes the panel
+# around CHATS instead of TTS internals: the roster merges `herdr agent
+# list` (agent state + chat title), the snooze/mute ledger and the
+# debounce ledger under the same pane_id merge key, and the audio history
+# renders grouped per chat. Read-only with respect to the gate/mutex/
+# watcher machinery: every mutation goes through the existing mute /
+# snooze / rate functions, never through side channels.
 
-DASHBOARD_HISTORY_LINES=20        # audio ledger rows rendered (newest first)
-DASHBOARD_ROSTER_REFRESH_TICKS=3  # `herdr agent list` every N ticks (cached)
-DASHBOARD_ENGINE_REFRESH_TICKS=3  # engine IPC status every N ticks (cached, v2)
-DASHBOARD_SNIPPET_MAX_CHARS=48    # width cap for the engine text snippet
+DASHBOARD_ROSTER_REFRESH_TICKS=3   # `herdr agent list` every N ticks (cached)
+DASHBOARD_ENGINE_REFRESH_TICKS=3   # engine IPC status every N ticks (cached, v2)
+DASHBOARD_SNIPPET_MAX_CHARS=48     # width cap for the engine text snippet
+DASHBOARD_ROSTER_TITLE_CHARS=40    # chat title width cap in the roster
+DASHBOARD_HISTORY_TITLE_CHARS=30   # chat title width cap in history headers
+DASHBOARD_HISTORY_BUDGET=24        # global row budget for the history section
+DASHBOARD_HISTORY_AUDIO_ROWS=3     # audios rendered per chat group
+DASHBOARD_HISTORY_SCAN_LINES=400   # ledger tail scanned per tick (bounded cost)
+DASH_ROW_BUDGET=48                 # total rows the 90% popup can safely draw
+
+# Globals shared between refresh / scan / order / render ticks.
+declare -A DASH_TITLE_BY_PANE=()   # pane_id -> chat title (from agent list)
+declare -A HIST_RANK=()            # pane_id -> audio recency rank (0 = newest)
+DASH_DROPPED=0                     # chats hidden by the roster overflow cap
+DASH_HIST_ROWS_TOTAL=0             # rows the full history render would need
+HIST_PANES=(); HIST_COUNTS=(); HIST_LASTTS=(); HIST_LASTEPOCH=(); HIST_ITEMS=()
 
 fmt_mmss() {
   local secs="$1"
   printf '%02d:%02d' $(( secs / 60 )) $(( secs % 60 ))
 }
 
+# Fit a string to a fixed CHARACTER width (truncate with an ellipsis, or
+# pad with spaces) into <out-var>. Bash parameter expansion is multibyte
+# aware, unlike printf field precision which counts bytes and breaks
+# UTF-8 chat titles. Var-setting on purpose: render loops call this per
+# line and must not fork a subshell per row.
+dashboard_fit() { # <out-var> <string> <width>
+  local s="$2" w="$3"
+  if (( ${#s} > w )); then
+    s="${s:0:w-1}…"
+  fi
+  while (( ${#s} < w )); do
+    s+=" "
+  done
+  printf -v "$1" '%s' "$s"
+}
+
+# Sets <out-var> to a compact Spanish age label: 42s / 5m / 2h.
+dashboard_fmt_age() { # <out-var> <secs>
+  local secs="$2"
+  (( secs < 0 )) && secs=0
+  if (( secs < 60 )); then
+    printf -v "$1" '%ss' "$secs"
+  elif (( secs < 3600 )); then
+    printf -v "$1" '%sm' "$(( secs / 60 ))"
+  else
+    printf -v "$1" '%sh' "$(( secs / 3600 ))"
+  fi
+  return 0
+}
+
+# Sets <out-var> to the duration label: numeric seconds -> mm:ss; anything
+# else (the "-" probe-failure marker from the ledger) passes through.
+dashboard_fmt_dur() { # <out-var> <value>
+  local d="$2"
+  if [[ "$d" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    printf -v "$1" '%02d:%02d' $(( ${d%%.*} / 60 )) $(( ${d%%.*} % 60 ))
+  else
+    printf -v "$1" '%s' "$d"
+  fi
+}
+
 dashboard_cleanup() {
   printf '\033[0m\033[?25h\033[2J\033[H'
 }
 
-# Pane roster from Herdr. Fails open: with no CLI or no agents the roster
-# stays empty and the pane section renders "sin datos".
+# Chat roster from Herdr (v3): pane_id, agent kind, agent_status and chat
+# title in a single jq pass. Fails open: with no CLI or no agents the
+# roster stays empty and the chats section renders "sin datos de herdr".
 dashboard_refresh_roster() {
   DASH_PANES=()
   DASH_AGENTS=()
+  DASH_STATUSES=()
+  DASH_TITLES=()
+  DASH_TITLE_BY_PANE=()
   local raw
   raw=$(herdr agent list 2>/dev/null) || return 0
-  local pid agent
-  while IFS=$'\t' read -r pid agent; do
+  local pid agent st title
+  while IFS=$'\t' read -r pid agent st title; do
     [[ -z "$pid" || "$pid" == "null" ]] && continue
+    agent="${agent:-desconocido}"
+    st="${st:-unknown}"
     DASH_PANES+=("$pid")
-    DASH_AGENTS+=("${agent:-desconocido}")
-  done < <(printf '%s' "$raw" | jq -r '.result.agents[]? | "\(.pane_id)\t\(.agent)"' 2>/dev/null || true)
+    DASH_AGENTS+=("$agent")
+    DASH_STATUSES+=("$st")
+    DASH_TITLES+=("$title")
+    DASH_TITLE_BY_PANE["$pid"]="$title"
+  done < <(printf '%s' "$raw" | jq -r '
+      .result.agents[]?
+      | "\(.pane_id // "")\t\(.agent // "")\t\(.agent_status // "")\t\((.terminal_title_stripped // .terminal_title // "") | gsub("[\\t\\r\\n]"; " "))"
+    ' 2>/dev/null || true)
 }
 
 # Live engine status (v2) through the same host→engine invocation the
@@ -1471,6 +1540,166 @@ dashboard_engine_state_label() {
     synthesizing) printf '⌛ sintetizando' ;;
     *)            printf '%s' "${1:-desconocido}" ;;
   esac
+}
+
+# Audio history grouped per chat (v3): ONE python pass over the ledger
+# tail does the grouping, the last-audio recency ordering and the
+# local-time -> epoch conversion (datetime applies per-date DST rules,
+# which a hand-rolled calendar or a cached zone offset cannot). It emits
+# TSV rows — `H <pane> <count> <last_iso> <last_epoch>` group headers,
+# each followed by `A <iso> <epoch> <dur>` audio rows in chronological
+# order (the render walks them backwards for newest-first). Per-chat
+# counts are computed within the scanned window so cost stays bounded on
+# a ledger that is append-only and never rotated. Fails open: no file,
+# no python or corrupt rows leave the history arrays empty and the
+# section hidden.
+dashboard_scan_history() {
+  HIST_PANES=(); HIST_COUNTS=(); HIST_LASTTS=(); HIST_LASTEPOCH=(); HIST_ITEMS=()
+  HIST_RANK=()
+  DASH_HIST_ROWS_TOTAL=0
+  [[ -s "$HISTORY_FILE" ]] || return 0
+  local rows
+  rows=$(tail -n "$DASHBOARD_HISTORY_SCAN_LINES" "$HISTORY_FILE" 2>/dev/null | "$VENV_PYTHON" -c '
+import sys
+from datetime import datetime
+
+def epoch(ts):
+    try:
+        return str(int(datetime.fromisoformat(ts).timestamp()))
+    except ValueError:
+        return "-"
+
+rows = []
+for line in sys.stdin.read().split("\n"):
+    f = line.split("\t")
+    if len(f) < 2 or not f[1]:
+        continue
+    rows.append(f)
+groups = {}
+for idx, f in enumerate(rows):
+    ts = f[0] if f[0] else "-"
+    dur = f[3] if len(f) > 3 else "-"
+    g = groups.setdefault(f[1], {"count": 0, "last": 0, "items": []})
+    g["count"] += 1
+    g["last"] = idx
+    g["items"].append((ts, dur))
+    del g["items"][:-3]
+out = []
+for pane, g in sorted(groups.items(), key=lambda kv: -kv[1]["last"]):
+    items = g["items"]
+    last_ts = items[-1][0] if items else "-"
+    out.append("\t".join(["H", pane, str(g["count"]), last_ts, epoch(last_ts)]))
+    for ts, dur in items:
+        out.append("\t".join(["A", ts, epoch(ts), dur]))
+sys.stdout.write("\n".join(out) + ("\n" if out else ""))
+' 2>/dev/null) || rows=""
+  [[ -z "$rows" ]] && return 0
+  local kind f2 f3 f4 f5 gi=-1
+  while IFS=$'\t' read -r kind f2 f3 f4 f5; do
+    case "$kind" in
+      H)
+        gi=$(( gi + 1 ))
+        HIST_PANES[gi]="$f2"
+        HIST_COUNTS[gi]="$f3"
+        HIST_LASTTS[gi]="$f4"
+        HIST_LASTEPOCH[gi]="$f5"
+        HIST_ITEMS[gi]=""
+        ;;
+      A)
+        (( gi >= 0 )) && HIST_ITEMS[gi]+="${f2}|${f3}|${f4};"
+        ;;
+    esac
+  done <<<"$rows"
+  local i shown
+  for (( i = 0; i < ${#HIST_PANES[@]}; i++ )); do
+    HIST_RANK[${HIST_PANES[$i]}]="$i"
+    shown=$(( HIST_COUNTS[i] < DASHBOARD_HISTORY_AUDIO_ROWS ? HIST_COUNTS[i] : DASHBOARD_HISTORY_AUDIO_ROWS ))
+    DASH_HIST_ROWS_TOTAL=$(( DASH_HIST_ROWS_TOTAL + 1 + shown ))
+  done
+  return 0
+}
+
+# Sort the roster into visible order (v3): needs-attention first
+# (done/blocked -> working -> idle -> unknown), ties broken by most recent
+# audio in the history ledger, then by agent-list order (stable insertion
+# sort). The visible order is written back into the DASH_* arrays so the
+# j/k cursor walks exactly what is on screen. The overflow cap drops from
+# the tail — the oldest-idle chats — and never hides needs-attention
+# (done/blocked) chats.
+dashboard_order_roster() {
+  local cap="$1"
+  DASH_DROPPED=0
+  local n=${#DASH_PANES[@]}
+  if (( n == 0 )); then
+    return 0
+  fi
+  (( cap >= 1 )) || cap=1
+  local -a pri=() rank=() idx=()
+  local i p pri0=0
+  for (( i = 0; i < n; i++ )); do
+    p="${DASH_STATUSES[$i]}"
+    case "$p" in
+      done|blocked) pri[i]=0 ;;
+      working)      pri[i]=1 ;;
+      idle)         pri[i]=2 ;;
+      *)            pri[i]=3 ;; # unknown states render literally, sort last
+    esac
+    rank[i]=${HIST_RANK[${DASH_PANES[$i]}]:-999999}
+    idx[i]=$i
+    (( pri[i] == 0 )) && pri0=$(( pri0 + 1 ))
+  done
+  # Needs-attention chats are never dropped, even when the cap is tight.
+  (( cap < pri0 )) && cap=$pri0
+  local a b j
+  for (( i = 1; i < n; i++ )); do
+    a=${idx[i]}
+    j=$(( i - 1 ))
+    while (( j >= 0 )); do
+      b=${idx[j]}
+      if (( pri[b] < pri[a] || (pri[b] == pri[a] && rank[b] <= rank[a]) )); then
+        break
+      fi
+      idx[$(( j + 1 ))]=$b
+      j=$(( j - 1 ))
+    done
+    idx[$(( j + 1 ))]=$a
+  done
+  if (( n > cap )); then
+    local keep=$(( cap - 1 )) # reserve one row for the "more chats" notice
+    (( keep < pri0 )) && keep=$pri0
+    DASH_DROPPED=$(( n - keep ))
+    n=$keep
+  fi
+  local -a np=() na=() ns=() nt=()
+  for (( i = 0; i < n; i++ )); do
+    a=${idx[i]}
+    np+=("${DASH_PANES[a]}")
+    na+=("${DASH_AGENTS[a]}")
+    ns+=("${DASH_STATUSES[a]}")
+    nt+=("${DASH_TITLES[a]}")
+  done
+  DASH_PANES=("${np[@]}")
+  DASH_AGENTS=("${na[@]}")
+  DASH_STATUSES=("${ns[@]}")
+  DASH_TITLES=("${nt[@]}")
+}
+
+# Keep the cursor on a rendered chat: after a resort or an overflow cap
+# the previously selected pane may no longer be visible; snap to the
+# first visible chat instead of aiming m/z at a hidden row.
+dashboard_cursor_ensure() {
+  local current="$1" i n=${#DASH_PANES[@]}
+  if (( n == 0 )); then
+    printf ''
+    return 0
+  fi
+  for (( i = 0; i < n; i++ )); do
+    if [[ "${DASH_PANES[i]}" == "$current" ]]; then
+      printf '%s' "$current"
+      return 0
+    fi
+  done
+  printf '%s' "${DASH_PANES[0]}"
 }
 
 # Move the selection cursor inside the roster (delta +1 / -1, wrapping).
@@ -1580,49 +1809,110 @@ dashboard_render() {
   printf '║ Config  proveedor %s · voz %s (%s) · playback %s · debounce %ss\n' \
     "$TTS_PROVIDER" "$TTS_VOICE" "$TTS_RATE" "${TTS_PLAYBACK:-local}" "$TTS_DEBOUNCE_SECONDS"
 
-  printf '╠═══ Panes (j/k mueve el cursor) ══════════════════════════════\n'
-  local n=${#DASH_PANES[@]} i pid agent_label marker color status_txt last_txt ago
+  # v3 layout budget: the popup has ~50-55 usable rows at 90%. Fixed cost
+  # is header + global + motor + config + roster header (5) plus footer
+  # (1); the history section takes what it needs (≤ budget, hidden when
+  # empty) and the chat roster gets whatever rows are left. The scan runs
+  # before printing because the roster sort needs per-chat audio recency
+  # and the cap needs the history row count.
+  dashboard_scan_history
+  local hist_cost=0 msg_cost=0
+  if (( ${#HIST_PANES[@]} > 0 )); then
+    hist_cost=$(( DASH_HIST_ROWS_TOTAL < DASHBOARD_HISTORY_BUDGET ? DASH_HIST_ROWS_TOTAL : DASHBOARD_HISTORY_BUDGET ))
+    hist_cost=$(( hist_cost + 1 )) # history section header
+  fi
+  [[ -n "$msg" ]] && msg_cost=1
+  dashboard_order_roster $(( DASH_ROW_BUDGET - 5 - hist_cost - msg_cost ))
+
+  printf '╠═══ Chats (j/k mueve el cursor · m silencia · z snooze) ══════\n'
+  local n=${#DASH_PANES[@]} i pid agent st title marker color icon overlay overlay_lbl
   if (( n == 0 )); then
-    printf '║  (sin datos: Herdr no reporta panes de agente)\n'
+    printf '║  (sin datos de herdr: CLI no disponible o sin agentes)\n'
   fi
   for (( i = 0; i < n; i++ )); do
-    pid="${DASH_PANES[$i]}"
-    agent_label="${DASH_AGENTS[$i]}"
+    pid="${DASH_PANES[i]}"
+    agent="${DASH_AGENTS[i]}"
+    st="${DASH_STATUSES[i]}"
+    title="${DASH_TITLES[i]}"
     marker="  "
     [[ "$pid" == "$selected" ]] && marker="▸ "
+    # Agent state icon + color: needs-attention states first by design.
+    case "$st" in
+      working)      color=$'\033[32m'; icon="▶" ;;
+      done|blocked) color=$'\033[33m'; icon="✔" ;;
+      idle)         color=$'\033[90m'; icon="·" ;;
+      *)            color=$'\033[90m'; icon="$st" ;; # unknown: literal value
+    esac
+    # Voice overlays appended after the agent kind: mute, active snooze
+    # countdown, then the anti-spam (debounce) hold with its remaining
+    # window. All three can stack on the same chat line.
+    overlay=""
     if [[ "${pane_muted[$pid]:-false}" == "true" ]]; then
-      color=$'\033[31m'; status_txt="🔇 SILENCIADO"
-    elif (( ${pane_until[$pid]:-0} > now )); then
-      color=$'\033[33m'; status_txt="😴 SNOOZED $(fmt_mmss $(( ${pane_until[$pid]} - now )))"
-    else
-      color=$'\033[32m'; status_txt="▶️ activo"
+      overlay+=" 🔇"
     fi
-    last_txt="sin eventos vistos"
-    if [[ -n "${pane_last_status[$pid]:-}" ]]; then
-      ago=$(( now - ${pane_last_ts[$pid]:-0} ))
-      last_txt="último: ${pane_last_status[$pid]} hace ${ago}s"
-      (( ago < TTS_DEBOUNCE_SECONDS )) && last_txt+=" · debounce activo"
+    if (( ${pane_until[$pid]:-0} > now )); then
+      printf -v overlay_lbl '%02d:%02d' \
+        $(( (${pane_until[$pid]} - now) / 60 )) $(( (${pane_until[$pid]} - now) % 60 ))
+      overlay+=" 😴 ${overlay_lbl}"
     fi
-    printf '║ %s%s%-13.13s %-22s %s\033[0m\n' "$marker" "$color" "$agent_label" "$status_txt" "$last_txt"
+    if (( TTS_DEBOUNCE_SECONDS > 0 )) \
+       && [[ -n "${pane_last_status[$pid]:-}" ]] \
+       && (( now - ${pane_last_ts[$pid]:-0} < TTS_DEBOUNCE_SECONDS )); then
+      overlay+=" ⏱$(( now - ${pane_last_ts[$pid]} ))s"
+    fi
+    dashboard_fit title "$title" "$DASHBOARD_ROSTER_TITLE_CHARS"
+    printf '║ %s%s%s %s %-9s%s\033[0m\n' "$marker" "$color" "$icon" "$title" "$agent" "$overlay"
   done
-
-  printf '╠═══ Últimos audios (%s, más reciente arriba) ═════════════════\n' "$DASHBOARD_HISTORY_LINES"
-  local -a hist=()
-  if [[ -f "$HISTORY_FILE" ]]; then
-    mapfile -t hist < <(tail -n "$DASHBOARD_HISTORY_LINES" "$HISTORY_FILE" 2>/dev/null || true)
+  if (( DASH_DROPPED > 0 )); then
+    printf '║  … y %d chats más (los que piden atención nunca se ocultan)\n' "$DASH_DROPPED"
   fi
-  local j row ts hp ha hd
-  if (( ${#hist[@]} == 0 )); then
-    printf '║  (sin audios registrados aún)\n'
-  else
-    for (( j = ${#hist[@]} - 1; j >= 0; j-- )); do
-      row="${hist[$j]}"
-      IFS=$'\t' read -r ts hp ha hd <<<"$row"
-      printf '║  %s · %s · %s · %s\n' "${ts:-?}" "${hp:--}" "${ha:--}" "${hd:--}"
+
+  # History grouped per chat (v3): header + last audios per group, newest
+  # group first (the scan already ordered groups by last-audio recency).
+  # Fully hidden when the ledger is empty or missing.
+  if (( ${#HIST_PANES[@]} > 0 )); then
+    printf '╠═══ Historial por chat (más reciente arriba) ════════════════\n'
+    local remaining=$DASHBOARD_HISTORY_BUDGET gi k ts epoch dur age_lbl dur_lbl gtitle gcount audio_word
+    local -a parts_arr=()
+    for (( gi = 0; gi < ${#HIST_PANES[@]} && remaining > 0; gi++ )); do
+      pid="${HIST_PANES[gi]}"
+      gtitle="${DASH_TITLE_BY_PANE[$pid]:-}"
+      # Closed panes (no agent-list entry anymore) keep their audio group,
+      # labeled by pane id so the ledger never loses the thread.
+      [[ -z "$gtitle" ]] && gtitle="$pid"
+      gcount="${HIST_COUNTS[gi]}"
+      audio_word="audios"
+      (( gcount == 1 )) && audio_word="audio"
+      epoch="${HIST_LASTEPOCH[gi]}"
+      if [[ "$epoch" =~ ^[0-9]+$ ]]; then
+        dashboard_fmt_age age_lbl $(( now - epoch ))
+      else
+        age_lbl="-"
+      fi
+      dashboard_fit gtitle "$gtitle" "$DASHBOARD_HISTORY_TITLE_CHARS"
+      printf '║ ── %s · %d %s · último hace %s\n' "$gtitle" "$gcount" "$audio_word" "$age_lbl"
+      remaining=$(( remaining - 1 ))
+      # Last ≤3 audios, newest first (items are stored chronological as
+      # iso|epoch|duration triples).
+      parts_arr=()
+      IFS=';' read -r -a parts_arr <<< "${HIST_ITEMS[gi]%;}"
+      for (( k = ${#parts_arr[@]} - 1; k >= 0 && remaining > 0; k-- )); do
+        ts="${parts_arr[k]%%|*}"
+        epoch="${parts_arr[k]#*|}"; epoch="${epoch%%|*}"
+        dur="${parts_arr[k]##*|}"
+        if [[ "$epoch" =~ ^[0-9]+$ ]]; then
+          dashboard_fmt_age age_lbl $(( now - epoch ))
+        else
+          age_lbl="-"
+        fi
+        dashboard_fmt_dur dur_lbl "$dur"
+        printf '║    · %s · hace %s\n' "$dur_lbl" "$age_lbl"
+        remaining=$(( remaining - 1 ))
+      done
     done
   fi
 
-  printf '╚═══ q salir · j/k pane · m silenciar · z snooze pane · Z snooze global · +/- velocidad ═╝\n'
+  printf '╚═══ q salir · j/k chat · m silenciar · z snooze pane · Z snooze global · +/- velocidad ═╝\n'
   if [[ -n "$msg" ]]; then
     printf '   » [%s] %s\n' "${msg_time:-}" "$msg"
   fi
@@ -1641,13 +1931,14 @@ dashboard_sync_rate() {
 
 # Entry point of the dashboard pane. The key loop doubles as the refresh
 # loop: `read -t 1` waits up to one second for a key, so an idle dashboard
-# redraws at ~1Hz while keypresses are handled instantly. Only the pane
+# redraws at ~1Hz while keypresses are handled instantly. Only the chat
 # roster and the engine status hit external processes, both on the same
-# every-N-ticks cache cadence; everything else per tick is a local file read.
+# every-N-ticks cache cadence; the history scan is one tail + one jq pass
+# per tick and everything else is local, fork-free bash.
 run_dashboard() {
   local refresh_secs="${HERDR_TTS_DASHBOARD_REFRESH:-1}"
   local selected="" msg="" msg_time="" key="" rc=0 tick=0
-  local -a DASH_PANES=() DASH_AGENTS=()
+  local -a DASH_PANES=() DASH_AGENTS=() DASH_STATUSES=() DASH_TITLES=()
   local DASH_ENGINE_STATUS=""
 
   trap dashboard_cleanup EXIT
@@ -1669,6 +1960,10 @@ run_dashboard() {
 
     dashboard_render "$selected" "$msg" "$msg_time"
     msg="" msg_time=""
+    # The render may have re-sorted or overflow-capped the roster; keep
+    # the cursor on a chat that is actually on screen so m/z never fire
+    # against a hidden row.
+    selected=$(dashboard_cursor_ensure "$selected")
 
     rc=0
     key=""
@@ -2072,8 +2367,9 @@ Podcast RSS privado (para escuchar en móvil con Pocket Casts / Overcast / Apple
 
 Información:
   --status                 Ver estado actual, lock y configuración
-  --dashboard              Panel TUI en vivo (pane de Herdr): snoozes, panes e historial de audio
-                           (controles: q salir · j/k pane · m silenciar · z snooze pane · Z snooze global · +/- velocidad)
+  --dashboard              Panel TUI en vivo (pane de Herdr): estado por chat,
+                           audios agrupados por chat, snoozes e historial
+                           (controles: q salir · j/k chat · m silenciar · z snooze pane · Z snooze global · +/- velocidad)
 EOF
     ;;
   *)
