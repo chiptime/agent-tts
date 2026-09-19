@@ -16,6 +16,7 @@ import threading
 import pytest
 
 import agent_tts.powershell_playback as psp
+from agent_tts import playback_target as pt
 from agent_tts.wav import pcm_to_wav
 
 
@@ -404,10 +405,10 @@ def test_availability_gate(monkeypatch):
     assert psp.is_wsl_ps_available(env={"WSL_DISTRO_NAME": "Ubuntu"}) is True
 
     # Without the env marker, /proc/version must mention microsoft.
-    monkeypatch.setattr(psp, "_proc_version_text", lambda: "Linux version 5.15.0 (generic)")
+    monkeypatch.setattr(pt, "_proc_version_text", lambda: "Linux version 5.15.0 (generic)")
     assert psp.is_wsl_ps_available(env={}) is False
     monkeypatch.setattr(
-        psp,
+        pt,
         "_proc_version_text",
         lambda: "Linux version 5.15.90.1-microsoft-standard-WSL2",
     )

@@ -27,6 +27,79 @@ class TestResolveTarget:
         assert pt.resolve_target(" WinHost ", env={}) == "winhost"
 
 
+class TestResolveTargetAuto:
+    def _patch_wsl_with_powershell(self, monkeypatch):
+        monkeypatch.setattr(
+            pt.shutil,
+            "which",
+            lambda name: "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        )
+        monkeypatch.setattr(
+            pt,
+            "_proc_version_text",
+            lambda: "Linux version 5.15.90.1-microsoft-standard-WSL2",
+        )
+
+    def test_auto_on_native_windows_is_local(self, monkeypatch):
+        # Even with WSL markers and powershell.exe present, native Windows plays locally.
+        monkeypatch.setattr(pt.sys, "platform", "win32")
+        self._patch_wsl_with_powershell(monkeypatch)
+        assert pt.resolve_target("auto", env={}) == "local"
+
+    def test_auto_under_wsl_with_powershell_is_winhost(self, monkeypatch):
+        monkeypatch.setattr(pt.sys, "platform", "linux")
+        self._patch_wsl_with_powershell(monkeypatch)
+        assert pt.resolve_target("auto", env={}) == "winhost"
+        # WSL marker via env var instead of /proc/version.
+        monkeypatch.setattr(pt, "_proc_version_text", lambda: "Linux version 5.15.0 (generic)")
+        assert pt.resolve_target("auto", env={"WSL_DISTRO_NAME": "Ubuntu"}) == "winhost"
+
+    def test_auto_under_wsl_without_powershell_is_local(self, monkeypatch):
+        monkeypatch.setattr(pt.sys, "platform", "linux")
+        monkeypatch.setattr(pt.shutil, "which", lambda name: None)
+        monkeypatch.setattr(
+            pt,
+            "_proc_version_text",
+            lambda: "Linux version 5.15.90.1-microsoft-standard-WSL2",
+        )
+        assert pt.resolve_target("auto", env={}) == "local"
+
+    def test_auto_without_wsl_is_local(self, monkeypatch):
+        monkeypatch.setattr(pt.sys, "platform", "linux")
+        monkeypatch.setattr(
+            pt.shutil,
+            "which",
+            lambda name: "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        )
+        monkeypatch.setattr(pt, "_proc_version_text", lambda: "Linux version 6.1.0-generic")
+        assert pt.resolve_target("auto", env={}) == "local"
+
+    def test_auto_env_value_resolves(self, monkeypatch):
+        monkeypatch.setattr(pt.sys, "platform", "linux")
+        self._patch_wsl_with_powershell(monkeypatch)
+        assert pt.resolve_target(None, env={"AGENT_TTS_PLAYBACK": "auto"}) == "winhost"
+
+    def test_auto_is_normalized(self, monkeypatch):
+        monkeypatch.setattr(pt.sys, "platform", "linux")
+        self._patch_wsl_with_powershell(monkeypatch)
+        assert pt.resolve_target(" Auto ", env={}) == "winhost"
+
+    def test_flag_still_wins_over_env(self, monkeypatch):
+        monkeypatch.setattr(pt.sys, "platform", "linux")
+        self._patch_wsl_with_powershell(monkeypatch)
+        assert pt.resolve_target("local", env={"AGENT_TTS_PLAYBACK": "auto"}) == "local"
+
+    def test_flag_auto_wins_over_env_target(self, monkeypatch):
+        monkeypatch.setattr(pt.sys, "platform", "linux")
+        self._patch_wsl_with_powershell(monkeypatch)
+        # env says wsl-ps, but the "auto" flag takes precedence and resolves to winhost.
+        assert pt.resolve_target("auto", env={"AGENT_TTS_PLAYBACK": "wsl-ps"}) == "winhost"
+
+    def test_invalid_auto_variant_raises(self):
+        with pytest.raises(pt.InvalidPlaybackTarget):
+            pt.resolve_target("autos", env={})
+
+
 class TestCandidateHosts:
     def test_explicit_env_host_wins(self, monkeypatch):
         monkeypatch.setattr(pt, "default_route_gateway", lambda: "10.9.8.7")

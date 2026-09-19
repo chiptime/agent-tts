@@ -7,6 +7,7 @@ import re
 import signal
 import sys
 import threading
+import time
 from typing import List, Optional
 
 from agent_tts.audio import AudioSession, cleanup_locks, play_mp3_file
@@ -198,6 +199,11 @@ async def synthesize(
 
 STREAM_AUTO_PROVIDERS = ("edge", "openai", "elevenlabs", "eleven")
 STREAM_AUTO_MIN_CHARS = 400
+# Safety bound for the streaming producer: if it goes this long without
+# finishing a new group (and is still alive), the pipeline aborts with an
+# explicit error instead of hanging forever. Generous by design: a slow
+# network synthesis run must never be cut by it in practice.
+STREAM_PRODUCER_STALL_SEC = 300.0
 
 
 def use_pipelined_stream(
@@ -415,12 +421,20 @@ async def _speak_pipelined(
             merge_group(group_text, result, seg_duration)
             progress["produced"] += 1
 
+    producer_error = []
+
     def run_producer(start_idx: int) -> None:
-        """Runs the remaining production on a private event loop, then clears the producing flag."""
+        """Runs the remaining production on a private event loop, then clears the producing flag.
+
+        A fatal producer exception (e.g. the playback process died mid-write)
+        is recorded so the drain wait can re-raise it on the main thread; the
+        per-group failures above are already handled inline.
+        """
         try:
             asyncio.run(produce_remaining(start_idx))
         except Exception as e:
             print(f"Stream: producer stopped: {e}", file=sys.stderr)
+            producer_error.append(e)
         finally:
             with session.lock:
                 session.state["producing"] = False
@@ -446,6 +460,27 @@ async def _speak_pipelined(
     producer.start()
     try:
         session.play(first_decoded)
+        # play() may return before every group has been produced and played
+        # (the wsl-ps/remote sessions feed groups from the producer thread and
+        # return immediately). Keep the pipeline alive until the producer has
+        # exited or an IPC stop was requested, so the final clean drain covers
+        # the whole text instead of truncating after the first groups.
+        last_seen = progress["produced"]
+        last_progress = time.monotonic()
+        while producer.is_alive() and not check_stop():
+            producer.join(timeout=0.1)
+            if progress["produced"] != last_seen:
+                last_seen = progress["produced"]
+                last_progress = time.monotonic()
+            elif time.monotonic() - last_progress > STREAM_PRODUCER_STALL_SEC:
+                raise RuntimeError(
+                    f"Stream: producer made no progress for {STREAM_PRODUCER_STALL_SEC:.0f}s; "
+                    "aborting stream playback"
+                )
+        if producer_error and not check_stop():
+            # Surface the fatal producer error through the normal error path
+            # (stderr / exit non-zero) instead of silently dropping the tail.
+            raise producer_error[0]
     finally:
         with session.lock:
             session.state["producing"] = False
@@ -712,9 +747,9 @@ def main():
     )
     parser.add_argument(
         "--playback",
-        choices=["local", "winhost", "wsl-ps"],
+        choices=["local", "winhost", "wsl-ps", "auto"],
         default=os.environ.get("AGENT_TTS_PLAYBACK", "local"),
-        help="Playback target: local device (default), winhost server on the Windows host, or zero-install PowerShell under WSL",
+        help="Playback target: local device (default), winhost server on the Windows host, zero-install PowerShell under WSL, or auto: environment-based selection",
     )
     parser.add_argument(
         "--winhost",

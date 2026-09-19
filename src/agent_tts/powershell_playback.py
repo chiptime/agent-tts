@@ -19,6 +19,7 @@ import time
 
 from agent_tts.boundaries import BoundaryMap
 from agent_tts.ipc import IPCServer
+from agent_tts.playback_target import under_wsl
 from agent_tts.wav import pcm_to_wav
 
 # Persistent reader loop (PowerShell 5.1 compatible, no PS7-only syntax).
@@ -69,22 +70,12 @@ _FINISH_TIMEOUT_SEC = 60.0
 _REAP_TIMEOUT_SEC = 2.0
 
 
-def _proc_version_text() -> str:
-    try:
-        with open("/proc/version", "r", encoding="utf-8", errors="ignore") as f:
-            return f.read()
-    except OSError:
-        return ""
-
-
 def is_wsl_ps_available(env=None) -> bool:
     """True when powershell.exe is reachable and this process runs under WSL."""
     env = os.environ if env is None else env
     if shutil.which("powershell.exe") is None:
         return False
-    if env.get("WSL_DISTRO_NAME"):
-        return True
-    return "microsoft" in _proc_version_text().lower()
+    return under_wsl(env)
 
 
 

@@ -177,11 +177,15 @@ PCM streams to the Windows host over TCP and plays natively there (WASAPI) — n
 
 If the winhost server is unreachable, one English warning is printed on stderr and the run falls back to zero-install PowerShell playback: one persistent `powershell.exe` per run (from WSL interop) consumes length-prefixed WAV groups from stdin in a loop, so sentence groups play near-gaplessly instead of paying a process spawn per group; pause/resume/stop work at group granularity via pipe flow control. One-shot clips keep the previous behavior. Use `--playback wsl-ps` to force that mode directly; a clear error exits non-zero when `powershell.exe` is missing or the process is not running under WSL.
 
+### Environment-based selection (`auto`)
+
+`--playback auto` (or `AGENT_TTS_PLAYBACK=auto`) picks the concrete target from the environment: it resolves to `winhost` under WSL when `powershell.exe` is on PATH (falling back to `wsl-ps` automatically when the winhost server is absent), and to `local` everywhere else — native Windows, native Linux, or WSL without PowerShell interop. Ideal for one shared config synced across machines: playback adapts per environment without hardcoding a mode.
+
 ### Environment variables
 
 | Variable | Default | Purpose |
 | :--- | :--- | :--- |
-| `AGENT_TTS_PLAYBACK` | `local` | Default playback target (`local`, `winhost`, `wsl-ps`) |
+| `AGENT_TTS_PLAYBACK` | `local` | Default playback target (`local`, `winhost`, `wsl-ps`, `auto`) |
 | `AGENT_TTS_OLLAMA_MODEL` | `qwen2.5:0.5b` | Ollama model used by `--llm-summary` |
 | `AGENT_TTS_WINHOST_HOST` | auto-detect | Explicit Windows host address for winhost clients |
 | `AGENT_TTS_WINHOST_PORT` | `7717` | TCP port for the winhost transport |
@@ -268,7 +272,7 @@ agent-tts voice remove es_ES-davefx-medium
 
 `--provider kokoro` runs the Kokoro-82M v1.0 ONNX model fully offline on CPU. Honest requirements:
 
-- **`onnxruntime`** (`pip install onnxruntime`) — imported lazily at synthesis time; if missing you get an actionable error, never an import-time crash.
+- **`onnxruntime`** (`pip install 'agent-tts[kokoro]'`) — an optional extra: the default install never needs it. Imported lazily at synthesis time; if missing you get an actionable error naming the extra, never an import-time crash.
 - **espeak-ng phonemization** — either the `phonemizer` Python package or the `espeak-ng` binary on PATH (`sudo apt-get install espeak-ng`). Also resolved lazily with an actionable error when absent.
 - **Model files** — `agent-tts voice install kokoro` downloads `model.onnx` (~325 MB) plus the `ef_dora`/`em_alex`/`em_santa` (Spanish) and `af_heart` (English) voice embeddings and the phoneme vocab from the official `onnx-community/Kokoro-82M-v1.0-ONNX` export (the original `hexgrad/Kokoro-82M-v1.0-onnx` release is gated behind HuggingFace auth; override the base with `AGENT_TTS_KOKORO_BASE_URL`).
 
@@ -278,7 +282,7 @@ Behavior matrix:
 | :---: | :---: | :--- |
 | ✅ | ✅ | Offline synthesis works (WAV 16-bit/24 kHz mono) |
 | ✅ | ❌ | Actionable error at synthesis: install `espeak-ng` or `phonemizer` |
-| ❌ | ✅ | Actionable error at synthesis: `pip install onnxruntime` |
+| ❌ | ✅ | Actionable error at synthesis: `pip install 'agent-tts[kokoro]'` |
 | ❌ | ❌ | Actionable error at synthesis (onnxruntime is checked first) |
 
 Streaming note: Kokoro emits whole-utterance PCM per call, so `supports_stream` is `False`; interactive latency comes from the CLI's pipelined sentence-group streaming, which already synthesizes group-by-group.
@@ -296,7 +300,7 @@ usage: agent-tts [-h] [--voice VOICE] [--rate RATE] [--max-chars MAX_CHARS]
                  [--ipc-cmd IPC_CMD]
                  [--provider {edge,openai,elevenlabs,eleven,piper,kokoro,local}]
                  [--stream {auto,on,off}]
-                 [--playback {local,winhost,wsl-ps}] [--winhost]
+                 [--playback {local,winhost,wsl-ps,auto}] [--winhost]
                  [--winhost-host WINHOST_HOST] [--winhost-port WINHOST_PORT]
                  [--openai-key OPENAI_KEY] [--openai-base-url OPENAI_BASE_URL]
                  [--openai-model OPENAI_MODEL] [--eleven-key ELEVEN_KEY]
