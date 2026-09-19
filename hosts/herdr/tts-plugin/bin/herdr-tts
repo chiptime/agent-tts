@@ -29,6 +29,9 @@ SNOOZE_STATE_FILE="${HERDR_TTS_SNOOZE_FILE:-/tmp/herdr-tts-snooze.json}"
 # Append-only ledger of rendered audio (timestamp, pane, agent, duration)
 # shown in the dashboard history tail; env override keeps tests hermetic.
 HISTORY_FILE="${HERDR_TTS_HISTORY_FILE:-${STATE_DIR}/history.log}"
+# Declarative, user-editable keymap (herdr-tts keymap init|check|emit).
+# Env override keeps tests hermetic.
+KEYMAP_FILE="${HERDR_TTS_KEYMAP_FILE:-${CONFIG_DIR}/keymap.json}"
 
 # Auto-bootstrap python environment if missing
 VENV_PYTHON="${DATA_DIR}/venv/bin/python"
@@ -2660,6 +2663,518 @@ run_voice_menu() {
 
 # Library mode: when sourced (tests/tooling), only define functions and
 # configuration; dispatch CLI arguments only when executed directly.
+# ═════════════════════════════════════════════════════════════════════════
+# Declarative keymap: `herdr-tts keymap init|check|emit`
+#
+# Voice-command bindings live in a user-editable JSON file (default
+# ${XDG_CONFIG_HOME:-~/.config}/herdr-tts/keymap.json, override with
+# HERDR_TTS_KEYMAP_FILE). Each stable command id maps to a chord:
+#   "prefix+X"          uppercase X = shift (prefix+N ≠ prefix+n)
+#   "ctrl+alt+X"        or "ctrl+alt+shift+X"
+#   null                unassigned
+# Modifiers must be written literally (they are NOT reordered); whitespace
+# is tolerated. `check` validates the file and conflicts it against the
+# embedded Herdr core prefix defaults; `emit` renders ready-to-paste
+# [[keys.command]] TOML blocks for ~/.config/herdr/config.toml.
+# ═════════════════════════════════════════════════════════════════════════
+
+# Stable command ids (this exact set, template order). One per voice command.
+KEYMAP_COMMAND_IDS=(
+  play pause stop tldr auto seek_back seek_fwd sentence_next sentence_prev
+  paragraph_next paragraph_prev mute snooze snooze_global rate_up rate_down
+  dashboard palette menu
+)
+
+# Herdr v0.9.1 core prefix defaults (docs/keyboard.mdx). Canonical chords
+# use lowercase modifiers; a single uppercase key letter is expanded to
+# shift+<lowercase> (typing prefix+N IS shift+n physically).
+keymap_core_defaults() {
+  cat <<'EOF'
+prefix+c|new tab
+prefix+v|split right
+prefix+-|split down
+prefix+h|focus pane left
+prefix+j|focus pane down
+prefix+k|focus pane up
+prefix+l|focus pane right
+prefix+shift+h|swap pane left
+prefix+shift+j|swap pane down
+prefix+shift+k|swap pane up
+prefix+shift+l|swap pane right
+prefix+z|zoom pane
+prefix+x|close pane
+prefix+r|resize pane
+prefix+[|enter copy mode
+prefix+n|next tab
+prefix+p|previous tab
+prefix+shift+t|rename tab
+prefix+shift+x|close tab
+prefix+1|jump to tab 1
+prefix+2|jump to tab 2
+prefix+3|jump to tab 3
+prefix+4|jump to tab 4
+prefix+5|jump to tab 5
+prefix+6|jump to tab 6
+prefix+7|jump to tab 7
+prefix+8|jump to tab 8
+prefix+9|jump to tab 9
+prefix+shift+n|new workspace
+prefix+shift+w|rename workspace
+prefix+shift+d|close workspace
+prefix+g|goto picker
+prefix+b|toggle sidebar
+prefix+w|workspace nav
+prefix+q|detach
+EOF
+}
+
+keymap_default_json() { # default template: README direct map + nulls for the rest
+  cat <<'EOF'
+{
+  "style": "direct",
+  "bindings": {
+    "play": "prefix+r",
+    "pause": "prefix+p",
+    "stop": "prefix+s",
+    "tldr": "prefix+t",
+    "auto": "prefix+v",
+    "seek_back": "prefix+[",
+    "seek_fwd": "prefix+]",
+    "sentence_next": "prefix+n",
+    "sentence_prev": "prefix+N",
+    "paragraph_next": null,
+    "paragraph_prev": null,
+    "mute": "prefix+m",
+    "snooze": "prefix+z",
+    "snooze_global": "prefix+Z",
+    "rate_up": "prefix+=",
+    "rate_down": "prefix+-",
+    "dashboard": null,
+    "palette": null,
+    "menu": null
+  }
+}
+EOF
+}
+
+keymap_cmd_for() { # $1 = command id → shell invocation Herdr must run
+  case "$1" in
+    play)            printf '%s\n' "herdr-tts --toggle-play" ;;
+    pause)           printf '%s\n' "herdr-tts --toggle-pause" ;;
+    stop)            printf '%s\n' "herdr-tts --stop" ;;
+    tldr)            printf '%s\n' "herdr-tts --tldr" ;;
+    auto)            printf '%s\n' "herdr-tts --toggle-auto" ;;
+    seek_back)       printf '%s\n' "herdr-tts --rewind" ;;
+    seek_fwd)        printf '%s\n' "herdr-tts --forward" ;;
+    sentence_next)   printf '%s\n' "herdr-tts --next-sentence" ;;
+    sentence_prev)   printf '%s\n' "herdr-tts --prev-sentence" ;;
+    paragraph_next)  printf '%s\n' "herdr-tts --next-paragraph" ;;
+    paragraph_prev)  printf '%s\n' "herdr-tts --prev-paragraph" ;;
+    mute)            printf '%s\n' "herdr-tts --mute-pane" ;;
+    snooze)          printf '%s\n' "herdr-tts --snooze-pane" ;;
+    snooze_global)   printf '%s\n' "herdr-tts --snooze-global" ;;
+    rate_up)         printf '%s\n' "herdr-tts --rate-up" ;;
+    rate_down)       printf '%s\n' "herdr-tts --rate-down" ;;
+    dashboard)       printf '%s\n' "herdr plugin pane open --plugin herdr.tts --entrypoint tts-dashboard" ;;
+    palette)         printf '%s\n' "herdr plugin pane open --plugin herdr.tts --entrypoint tts-palette" ;;
+    menu)            printf '%s\n' "herdr plugin pane open --plugin herdr.tts --entrypoint tts-menu" ;;
+  esac
+}
+
+keymap_label_for() { # $1 = command id → human label (emit comments)
+  case "$1" in
+    play)            printf '%s\n' "Play / Stop reading the currently focused pane" ;;
+    pause)           printf '%s\n' "Pause / Resume current audio playback" ;;
+    stop)            printf '%s\n' "Stop all audio immediately (Emergency Mute)" ;;
+    tldr)            printf '%s\n' "TL;DR quick summary of the currently focused pane" ;;
+    auto)            printf '%s\n' "Toggle background automatic speech" ;;
+    seek_back)       printf '%s\n' "Rewind 10 seconds" ;;
+    seek_fwd)        printf '%s\n' "Fast-forward 10 seconds" ;;
+    sentence_next)   printf '%s\n' "Next spoken sentence (semantic navigation)" ;;
+    sentence_prev)   printf '%s\n' "Previous spoken sentence (semantic navigation)" ;;
+    paragraph_next)  printf '%s\n' "Next spoken paragraph" ;;
+    paragraph_prev)  printf '%s\n' "Previous spoken paragraph" ;;
+    mute)            printf '%s\n' "Exclusive mute of the focused pane (auto-clears when the pane closes)" ;;
+    snooze)          printf '%s\n' "Cycle snooze on the focused pane: 5m / 30m / 2h / off" ;;
+    snooze_global)   printf '%s\n' "Cycle GLOBAL snooze (all agents silenced: meetings / focus)" ;;
+    rate_up)         printf '%s\n' "Speed up voice reading by 10%" ;;
+    rate_down)       printf '%s\n' "Slow down voice reading by 10%" ;;
+    dashboard)       printf '%s\n' "Open the TTS dashboard popup" ;;
+    palette)         printf '%s\n' "Open the voice palette popup" ;;
+    menu)            printf '%s\n' "Open the one-key voice menu popup (u is free in Herdr core defaults)" ;;
+  esac
+}
+
+keymap_ctrlalt_for() { # $1 = command id → suggested ctrl+alt chord (rc 1 = no suggestion)
+  case "$1" in
+    play)            printf '%s\n' "ctrl+alt+r" ;;
+    pause)           printf '%s\n' "ctrl+alt+p" ;;
+    stop)            printf '%s\n' "ctrl+alt+s" ;;
+    tldr)            printf '%s\n' "ctrl+alt+l" ;; # NOT ctrl+alt+t: that launches a terminal on Ubuntu/Fedora
+    auto)            printf '%s\n' "ctrl+alt+v" ;;
+    mute)            printf '%s\n' "ctrl+alt+m" ;;
+    snooze)          printf '%s\n' "ctrl+alt+z" ;;
+    snooze_global)   printf '%s\n' "ctrl+alt+g" ;;
+    seek_back)       printf '%s\n' "ctrl+alt+[" ;;
+    seek_fwd)        printf '%s\n' "ctrl+alt+]" ;;
+    sentence_next)   printf '%s\n' "ctrl+alt+n" ;;
+    sentence_prev)   printf '%s\n' "ctrl+alt+shift+n" ;;
+    rate_up)         printf '%s\n' "ctrl+alt+=" ;;
+    rate_down)       printf '%s\n' "ctrl+alt+-" ;;
+    dashboard)       printf '%s\n' "ctrl+alt+d" ;;
+    palette)         printf '%s\n' "ctrl+alt+o" ;;
+    menu)            printf '%s\n' "ctrl+alt+u" ;;
+    *)               return 1 ;;
+  esac
+}
+
+keymap_is_known_id() { # $1 = candidate command id
+  local id
+  for id in "${KEYMAP_COMMAND_IDS[@]}"; do
+    [[ "$id" == "$1" ]] && return 0
+  done
+  return 1
+}
+
+keymap_normalize_chord() { # $1 = raw chord → canonical chord on stdout; rc 1 = invalid syntax
+  local c="${1//[[:space:]]/}" lc key mods
+  [[ -n "$c" ]] || return 1
+  lc="${c,,}"
+  if [[ "$lc" == "prefix+"* ]]; then
+    key="${c:7}"; mods="prefix"
+  elif [[ "$lc" == "ctrl+alt+shift+"* ]]; then
+    key="${c:15}"; mods="ctrl+alt+shift"
+  elif [[ "$lc" == "ctrl+alt+"* ]]; then
+    key="${c:9}"; mods="ctrl+alt"
+  else
+    return 1
+  fi
+  [[ -n "$key" && "$key" != *"+"* ]] || return 1
+  # A single uppercase key letter without an explicit shift modifier IS
+  # shift: prefix+N and prefix+shift+n are the same physical chord.
+  if [[ "$mods" != *"shift"* && "$key" =~ ^[A-Z]$ ]]; then
+    mods="${mods}+shift"
+    key="${key,,}"
+  fi
+  printf '%s+%s\n' "$mods" "$key"
+}
+
+keymap_file_mtime() { # $1 = file → human-readable mtime (GNU stat, BSD fallback)
+  if stat -c %y "$1" >/dev/null 2>&1; then
+    stat -c %y "$1" | cut -d'.' -f1
+  else
+    stat -f '%Sm' "$1"
+  fi
+}
+
+keymap_help() {
+  cat <<EOF
+Uso: herdr-tts keymap <subcomando> [opciones]
+
+Keymap declarativo y editable por el usuario: un archivo JSON
+(${KEYMAP_FILE}) que mapea cada comando de voz a un acorde.
+
+  keymap init [--force]   Escribir la plantilla por defecto (nunca
+                          sobrescribe un archivo existente; --force reemplaza)
+  keymap check [--json]   Validar el archivo (JSON, ids conocidos, sintaxis de
+                          acordes, duplicados) y detectar sombras sobre los
+                          defaults de Herdr core. Exit 1 solo con errores.
+  keymap emit [--style S] Imprimir bloques TOML [[keys.command]] listos para
+                          pegar en ~/.config/herdr/config.toml. Estilos:
+                          direct (default: usa los acordes del archivo),
+                          ctrlalt (familia ctrl+alt sugerida),
+                          menu (un solo acorde libre → popup del menú de voz)
+
+Acordes válidos: "prefix+X" (X en mayúscula = shift, p. ej. prefix+N),
+"ctrl+alt+X", "ctrl+alt+shift+X", o null (sin asignar). Los modificadores
+se escriben literalmente; el whitespace se tolera. Override de ruta para
+tests: HERDR_TTS_KEYMAP_FILE.
+EOF
+}
+
+# Validated keymap state (filled by keymap_load)
+KEYMAP_STYLE=""
+KEYMAP_ERRORS=0
+KEYMAP_WARNINGS=0
+KEYMAP_IDS=()
+KEYMAP_CHORDS=()   # raw chord as written ("" = unassigned)
+KEYMAP_CANON=()    # canonical chord ("" = unassigned/invalid)
+KEYMAP_STATUS=()   # ok | warn | error
+KEYMAP_CORE=()     # core action label when shadowing
+KEYMAP_ERR=()      # error message when invalid
+
+keymap_load() { # [quiet] parse + fully validate $KEYMAP_FILE; rc 1 = structural failure.
+  # "quiet" suppresses human error messages (check --json prints its own payload).
+  local quiet="${1:-}"
+  local parse_err bad_keys tmp
+  keymap_err() { [[ "$quiet" == "quiet" ]] || echo "$1" >&2; }
+  if [[ ! -f "$KEYMAP_FILE" ]]; then
+    keymap_err "❌ No keymap file at $KEYMAP_FILE"
+    keymap_err "   Run: herdr-tts keymap init   (then edit the chords and re-run)"
+    return 1
+  fi
+  if ! parse_err="$(jq -e . "$KEYMAP_FILE" 2>&1 >/dev/null)"; then
+    keymap_err "❌ $KEYMAP_FILE is not valid JSON: $parse_err"
+    return 1
+  fi
+  bad_keys="$(jq -r 'keys[]? | select(. != "style" and . != "bindings")' "$KEYMAP_FILE" || true)"
+  if [[ -n "$bad_keys" ]]; then
+    keymap_err "❌ Unknown top-level key(s) in $KEYMAP_FILE: $(echo "$bad_keys" | tr '\n' ' ')"
+    keymap_err '   Only "style" and "bindings" are allowed.'
+    return 1
+  fi
+  KEYMAP_STYLE="$(jq -r '.style // "direct"' "$KEYMAP_FILE")"
+  case "$KEYMAP_STYLE" in
+    direct|ctrlalt|menu) ;;
+    *)
+      keymap_err "❌ Invalid style \"$KEYMAP_STYLE\" (must be direct, ctrlalt or menu)"
+      return 1
+      ;;
+  esac
+  if [[ "$(jq -r '.bindings // {} | type' "$KEYMAP_FILE")" != "object" ]]; then
+    keymap_err '❌ "bindings" must be a JSON object (command id → chord or null)'
+    return 1
+  fi
+
+  KEYMAP_IDS=(); KEYMAP_CHORDS=(); KEYMAP_CANON=()
+  KEYMAP_STATUS=(); KEYMAP_CORE=(); KEYMAP_ERR=()
+  local id chord
+  while IFS=$'\t' read -r id chord; do
+    KEYMAP_IDS+=("$id"); KEYMAP_CHORDS+=("$chord")
+  done < <(jq -r '.bindings // {} | to_entries[] | [ .key, (if .value == null then "" else .value end) ] | @tsv' "$KEYMAP_FILE")
+
+  local -i n=${#KEYMAP_IDS[@]} i j
+  for ((i = 0; i < n; i++)); do
+    KEYMAP_STATUS+=(ok); KEYMAP_CORE+=(""); KEYMAP_ERR+=(""); KEYMAP_CANON+=("")
+  done
+
+  local hit
+  for ((i = 0; i < n; i++)); do
+    if ! keymap_is_known_id "${KEYMAP_IDS[$i]}"; then
+      KEYMAP_STATUS[$i]=error
+      KEYMAP_ERR[$i]="unknown command id (stable ids: ${KEYMAP_COMMAND_IDS[*]})"
+      continue
+    fi
+    [[ -n "${KEYMAP_CHORDS[$i]}" ]] || continue # unassigned → ok
+    if ! tmp="$(keymap_normalize_chord "${KEYMAP_CHORDS[$i]}")"; then
+      KEYMAP_STATUS[$i]=error
+      KEYMAP_ERR[$i]="invalid chord syntax (write prefix+X, ctrl+alt+X, ctrl+alt+shift+X, or null)"
+      continue
+    fi
+    KEYMAP_CANON[$i]="$tmp"
+    hit="$(keymap_core_defaults | grep -F -- "${KEYMAP_CANON[$i]}|" | head -1 || true)"
+    if [[ -n "$hit" ]]; then
+      KEYMAP_STATUS[$i]=warn
+      KEYMAP_CORE[$i]="${hit#*|}"
+    fi
+  done
+
+  # Duplicate chords (same canonical form, two bindings) are hard errors.
+  for ((i = 0; i < n; i++)); do
+    [[ -n "${KEYMAP_CANON[$i]}" ]] || continue
+    for ((j = i + 1; j < n; j++)); do
+      [[ "${KEYMAP_CANON[$j]}" == "${KEYMAP_CANON[$i]}" ]] || continue
+      KEYMAP_STATUS[$i]=error; KEYMAP_STATUS[$j]=error
+      KEYMAP_ERR[$i]="duplicate chord ${KEYMAP_CHORDS[$i]} (also bound by '${KEYMAP_IDS[$j]}')"
+      KEYMAP_ERR[$j]="duplicate chord ${KEYMAP_CHORDS[$j]} (also bound by '${KEYMAP_IDS[$i]}')"
+    done
+  done
+
+  KEYMAP_ERRORS=0; KEYMAP_WARNINGS=0
+  for ((i = 0; i < n; i++)); do
+    case "${KEYMAP_STATUS[$i]}" in
+      error) KEYMAP_ERRORS=$((KEYMAP_ERRORS + 1)) ;;
+      warn)  KEYMAP_WARNINGS=$((KEYMAP_WARNINGS + 1)) ;;
+    esac
+  done
+  return 0
+}
+
+keymap_check() { # $1 = "" | --json
+  local json_mode=0
+  [[ "${1:-}" == "--json" ]] && json_mode=1
+  local load_rc=0
+  keymap_load "$([[ $json_mode -eq 1 ]] && echo quiet)" || load_rc=1
+  if (( load_rc )); then
+    if (( json_mode )); then
+      printf '{"file":"%s","style":null,"ok":false,"error_count":1,"warning_count":0,"bindings":[],"error":"invalid or missing keymap file (run: herdr-tts keymap init)"}\n' "$KEYMAP_FILE"
+    fi
+    return 1
+  fi
+
+  local -i n=${#KEYMAP_IDS[@]} i
+  if (( json_mode )); then
+    local tmpj
+    tmpj="$(mktemp)"
+    for ((i = 0; i < n; i++)); do
+      jq -cn --arg command "${KEYMAP_IDS[$i]}" --arg chord "${KEYMAP_CHORDS[$i]}" \
+        --arg status "${KEYMAP_STATUS[$i]}" --arg core "${KEYMAP_CORE[$i]}" \
+        --arg error "${KEYMAP_ERR[$i]}" \
+        '{command: $command,
+          chord: (if $chord == "" then null else $chord end),
+          status: $status,
+          core: (if $core == "" then null else $core end),
+          error: (if $error == "" then null else $error end)}' >> "$tmpj"
+    done
+    jq -s --arg file "$KEYMAP_FILE" --arg style "$KEYMAP_STYLE" \
+      --argjson error_count "$KEYMAP_ERRORS" --argjson warning_count "$KEYMAP_WARNINGS" \
+      '{file: $file, style: $style,
+        ok: ($error_count == 0),
+        error_count: $error_count, warning_count: $warning_count,
+        bindings: .}' "$tmpj"
+    rm -f "$tmpj"
+  else
+    echo "Checking $KEYMAP_FILE (style: $KEYMAP_STYLE)"
+    for ((i = 0; i < n; i++)); do
+      case "${KEYMAP_STATUS[$i]}" in
+        warn)
+          echo "⚠️  SHADOWS CORE (${KEYMAP_CORE[$i]}): ${KEYMAP_IDS[$i]} = ${KEYMAP_CHORDS[$i]}"
+          ;;
+        error)
+          echo "❌ ${KEYMAP_ERR[$i]}: ${KEYMAP_IDS[$i]} = ${KEYMAP_CHORDS[$i]}"
+          ;;
+        *)
+          if [[ -n "${KEYMAP_CHORDS[$i]}" ]]; then
+            echo "✓ OK: ${KEYMAP_IDS[$i]} = ${KEYMAP_CHORDS[$i]}"
+          else
+            echo "✓ OK: ${KEYMAP_IDS[$i]} = (unassigned)"
+          fi
+          ;;
+      esac
+    done
+    if (( KEYMAP_ERRORS > 0 )); then
+      echo "❌ $n bindings · $KEYMAP_ERRORS error(s) · $KEYMAP_WARNINGS shadow warning(s)"
+    else
+      echo "✓ $n bindings · 0 errors · $KEYMAP_WARNINGS shadow warning(s) — keymap OK"
+    fi
+  fi
+  (( KEYMAP_ERRORS == 0 ))
+}
+
+keymap_emit_block() { # $1 = chord, $2 = shell command, $3 = label
+  printf '\n# %s\n[[keys.command]]\nkey = "%s"\ntype = "shell"\ncommand = "%s"\n' "$3" "$1" "$2"
+}
+
+keymap_emit() { # $1 = "" | direct | ctrlalt | menu
+  local style="${1:-}"
+  case "$style" in
+    ""|direct|ctrlalt|menu) ;;
+    *)
+      echo "❌ unknown style: $style (direct, ctrlalt or menu)" >&2
+      return 1
+      ;;
+  esac
+  if [[ ! -f "$KEYMAP_FILE" ]]; then
+    echo "❌ No keymap file at $KEYMAP_FILE" >&2
+    echo "   Run: herdr-tts keymap init   (then edit the chords and re-run)" >&2
+    return 1
+  fi
+  # Emit renders hard-valid files only (parse, ids, chord syntax); core
+  # shadow warnings do NOT block rendering — `keymap check` reports those.
+  if ! keymap_load; then
+    return 1
+  fi
+  if (( KEYMAP_ERRORS > 0 )); then
+    echo "❌ $KEYMAP_FILE has $KEYMAP_ERRORS error(s) — run: herdr-tts keymap check" >&2
+    return 1
+  fi
+
+  echo "# herdr-tts keymap — paste the blocks below into ~/.config/herdr/config.toml"
+  echo "# generated by: herdr-tts keymap emit${style:+ --style $style}"
+  echo "# source: $KEYMAP_FILE (modified $(keymap_file_mtime "$KEYMAP_FILE"))"
+
+  if [[ "$style" == "menu" ]]; then
+    keymap_emit_block "prefix+u" \
+      "herdr plugin pane open --plugin herdr.tts --entrypoint tts-menu" \
+      "Open the one-key voice menu popup (u is free in Herdr core defaults)"
+    return 0
+  fi
+
+  if [[ "$style" == "ctrlalt" ]]; then
+    echo "# Herdr core does not own the ctrl+alt family: zero core collisions."
+    echo "# TL;DR deliberately avoids ctrl+alt+t: that launches a terminal on Ubuntu/Fedora."
+    local cid chord
+    for cid in "${KEYMAP_COMMAND_IDS[@]}"; do
+      chord="$(keymap_ctrlalt_for "$cid")" || continue
+      keymap_emit_block "$chord" "$(keymap_cmd_for "$cid")" "$(keymap_label_for "$cid")"
+    done
+    echo "# note: paragraph_next / paragraph_prev have no suggested ctrl+alt chord — assign them in keymap.json"
+    return 0
+  fi
+
+  # direct (default): render the file's own bindings, stable id order.
+  local -A chord_of=()
+  local -i n=${#KEYMAP_IDS[@]} i
+  for ((i = 0; i < n; i++)); do
+    chord_of[${KEYMAP_IDS[$i]}]="${KEYMAP_CHORDS[$i]}"
+  done
+  local cid chord emitted=0
+  for cid in "${KEYMAP_COMMAND_IDS[@]}"; do
+    chord="${chord_of[$cid]:-}"
+    [[ -n "$chord" ]] || continue
+    keymap_emit_block "$chord" "$(keymap_cmd_for "$cid")" "$(keymap_label_for "$cid")"
+    emitted=1
+  done
+  if (( ! emitted )); then
+    echo "# (no chords assigned in the keymap file)"
+  fi
+}
+
+keymap_main() {
+  local sub="${1:-}"
+  [[ $# -gt 0 ]] && shift
+  case "$sub" in
+    init)
+      local flag="${1:-}"
+      if [[ -n "$flag" && "$flag" != "--force" ]]; then
+        echo "❌ unknown option: $flag (keymap init accepts --force)" >&2
+        return 1
+      fi
+      if [[ -e "$KEYMAP_FILE" && "$flag" != "--force" ]]; then
+        echo "✋ $KEYMAP_FILE already exists — refusing to overwrite."
+        echo "   Edit it in place, or run: herdr-tts keymap init --force"
+        return 1
+      fi
+      keymap_default_json > "$KEYMAP_FILE"
+      echo "✓ Keymap template written to $KEYMAP_FILE"
+      echo "  Next: edit the chords, then run 'herdr-tts keymap check'"
+      ;;
+    check)
+      local flag="${1:-}"
+      if [[ -n "$flag" && "$flag" != "--json" ]]; then
+        echo "❌ unknown option: $flag (keymap check accepts --json)" >&2
+        return 1
+      fi
+      keymap_check "$flag"
+      ;;
+    emit)
+      local style="" val
+      if [[ "${1:-}" == "--style" ]]; then
+        if [[ $# -lt 2 ]]; then
+          echo "❌ --style requires a value (direct, ctrlalt or menu)" >&2
+          return 1
+        fi
+        style="$2"
+      elif [[ -n "${1:-}" ]]; then
+        echo "❌ unknown option: $1 (keymap emit accepts --style direct|ctrlalt|menu)" >&2
+        return 1
+      fi
+      keymap_emit "$style"
+      ;;
+    help|-h|--help)
+      keymap_help
+      ;;
+    "")
+      keymap_help
+      ;;
+    *)
+      echo "❌ unknown subcommand: $sub (use init, check or emit)" >&2
+      keymap_help >&2
+      return 1
+      ;;
+  esac
+}
+
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 case "${1:-}" in
   --play|-p|--read-current)
@@ -2962,6 +3477,10 @@ case "${1:-}" in
   --palette-preview)
     palette_preview "${2:-}"
     ;;
+  keymap)
+    shift
+    keymap_main "$@"
+    ;;
   _daemon)
     run_daemon
     ;;
@@ -3028,6 +3547,14 @@ Podcast RSS privado (para escuchar en móvil con Pocket Casts / Overcast / Apple
   --podcast-serve [puerto] Iniciar servidor local HTTP de podcast (default: 8844)
   --podcast-port <puerto>  Cambiar puerto del servidor podcast (default: 8844)
   --podcast-publish        Publicar respuesta actual directamente al feed de podcast
+
+Keymap declarativo (teclas editables por el usuario, validables):
+  keymap init [--force]    Crear ${XDG_CONFIG_HOME:-~/.config}/herdr-tts/keymap.json
+                           (plantilla con el mapa directo del README; nunca sobrescribe)
+  keymap check [--json]    Validar el keymap y detectar sombras sobre los
+                           defaults de Herdr core (exit 1 solo con errores)
+  keymap emit [--style S]  Bloques TOML [[keys.command]] listos para pegar
+                           en config.toml (S: direct | ctrlalt | menu)
 
 Información:
    --status                 Ver estado actual, lock y configuración

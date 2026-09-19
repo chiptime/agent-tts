@@ -121,18 +121,50 @@ herdr plugin link ~/Code/personal/herdr-tts
 
 ## ⌨️ Recommended Keybindings
 
-**How Herdr keys work:** every binding is a single `prefix + X` chord — Herdr core has **no key sequences** (no leader chains like `prefix+u` then `r`). That constraint matters: a one-chord-per-command voice map competes for letters that Herdr core already owns (`r`, `v`, `z`, `n`/`p`, `[`/`]`). Pick **one** of the three options below and add it to `~/.config/herdr/config.toml`.
+**How Herdr keys work:** every binding is a single `prefix + X` chord — Herdr core has **no key sequences** (no leader chains like `prefix+u` then `r`). That constraint matters: a one-chord-per-command voice map competes for letters that Herdr core already owns (`r`, `v`, `z`, `n`/`p`, `[`/`]`). Pick **one** of the three styles below.
+
+### The supported flow: `keymap init → check → emit`
+
+Key assignment is **declarative and user-editable**: bindings live in a JSON keymap file, not in hardcoded docs. The `herdr-tts keymap` subcommand family is THE supported way to manage them — no more copying TOML blocks by hand:
+
+```bash
+herdr-tts keymap init     # write the default template (never overwrites; --force replaces)
+$EDITOR "${XDG_CONFIG_HOME:-$HOME/.config}/herdr-tts/keymap.json"
+herdr-tts keymap check    # validate + conflict-check against Herdr core defaults
+herdr-tts keymap emit     # print ready-to-paste [[keys.command]] TOML blocks
+herdr server reload-config
+```
+
+The file maps each **stable command id** to a chord or `null` (unassigned):
+
+```json
+{
+  "style": "direct",
+  "bindings": {
+    "play": "prefix+r",
+    "tldr": "prefix+t",
+    "stop": null
+  }
+}
+```
+
+Chord syntax: `"prefix+X"` (an uppercase key means shift — `prefix+N` ≠ `prefix+n`), `"ctrl+alt+X"`, `"ctrl+alt+shift+X"`, or `null`. Write modifiers literally (they are not reordered); spacing is tolerated. `keymap check` prints one line per binding — `OK`, `⚠️ SHADOWS CORE (<action>)` when the chord collides with a Herdr core default, or `❌` for hard errors — and `keymap emit` renders the paste-ready blocks (`--style ctrlalt` for the suggested ctrl+alt family, `--style menu` for the one-key popup). Path override for scripting and tests: `HERDR_TTS_KEYMAP_FILE`.
 
 ### Option 1 — Compact map (recommended): one key opens the voice menu
 
-The plugin ships a **voice menu popup**. Bind one free core letter (`u` is free in Herdr core defaults): the popup opens with the full cheat sheet, you press one more key, the action runs, and the popup closes itself (focus is restored). Zero collisions with Herdr core, and the whole command surface stays on screen instead of memorized.
+The plugin ships a **voice menu popup**. Bind one free core letter (`u` is free in Herdr core defaults): the popup opens with the full cheat sheet, you press one more key, the action runs, and the popup closes itself (focus is restored). Zero collisions with Herdr core, and the whole command surface stays on screen instead of memorized. In `keymap.json`:
 
-```toml
-# Open the voice menu popup (u is free in Herdr core defaults)
-[[keys.command]]
-key = "prefix+u"
-type = "shell"
-command = "herdr plugin pane open --plugin herdr.tts --entrypoint tts-menu"
+```json
+{
+  "style": "menu",
+  "bindings": { "menu": "prefix+u" }
+}
+```
+
+Render the paste-ready block (and a file-mtime header) with:
+
+```bash
+herdr-tts keymap emit --style menu
 ```
 
 Keys inside the menu (actions target the focused chat):
@@ -155,93 +187,27 @@ Keys inside the menu (actions target the focused chat):
 
 ### Option 2 — ctrl+alt family (no prefix, no collisions)
 
-Herdr core does not own the `ctrl+alt` family, so every voice command gets its own direct chord with zero conflicts. These are plain chords — no prefix involved. **Caveat:** `ctrl+alt+t` launches a terminal on Ubuntu/Fedora desktops, so TL;DR lives on `ctrl+alt+l`.
+Herdr core does not own the `ctrl+alt` family, so every voice command gets its own direct chord with zero conflicts. These are plain chords — no prefix involved. **Caveat:** `ctrl+alt+t` launches a terminal on Ubuntu/Fedora desktops, so TL;DR lives on `ctrl+alt+l` — `keymap emit --style ctrlalt` never suggests `ctrl+alt+t`.
 
-```toml
-# Play / Stop reading the currently focused pane
-[[keys.command]]
-key = "ctrl+alt+r"
-type = "shell"
-command = "herdr-tts --toggle-play"
+Suggested family (deterministic — `herdr-tts keymap emit --style ctrlalt` renders exactly this):
 
-# TL;DR quick summary (NOT ctrl+alt+t: that opens a terminal on Ubuntu/Fedora)
-[[keys.command]]
-key = "ctrl+alt+l"
-type = "shell"
-command = "herdr-tts --tldr"
+| Command id | Chord | Command id | Chord |
+|---|---|---|---|
+| `play` | `ctrl+alt+r` | `seek_back` | `ctrl+alt+[` |
+| `pause` | `ctrl+alt+p` | `seek_fwd` | `ctrl+alt+]` |
+| `stop` | `ctrl+alt+s` | `sentence_next` | `ctrl+alt+n` |
+| `tldr` | `ctrl+alt+l` | `sentence_prev` | `ctrl+alt+shift+n` |
+| `auto` | `ctrl+alt+v` | `rate_up` | `ctrl+alt+=` |
+| `mute` | `ctrl+alt+m` | `rate_down` | `ctrl+alt+-` |
+| `snooze` | `ctrl+alt+z` | `dashboard` | `ctrl+alt+d` |
+| `snooze_global` | `ctrl+alt+g` | `palette` | `ctrl+alt+o` |
+| `menu` | `ctrl+alt+u` | | |
 
-# Stop all audio immediately (Emergency Mute)
-[[keys.command]]
-key = "ctrl+alt+s"
-type = "shell"
-command = "herdr-tts --stop"
-
-# Pause / Resume current audio playback
-[[keys.command]]
-key = "ctrl+alt+p"
-type = "shell"
-command = "herdr-tts --toggle-pause"
-
-# Toggle background automatic speech
-[[keys.command]]
-key = "ctrl+alt+v"
-type = "shell"
-command = "herdr-tts --toggle-auto"
-
-# Rewind / Forward 10 seconds
-[[keys.command]]
-key = "ctrl+alt+b"
-type = "shell"
-command = "herdr-tts --rewind"
-
-[[keys.command]]
-key = "ctrl+alt+f"
-type = "shell"
-command = "herdr-tts --forward"
-
-# Next / Previous spoken sentence
-[[keys.command]]
-key = "ctrl+alt+n"
-type = "shell"
-command = "herdr-tts --next-sentence"
-
-[[keys.command]]
-key = "ctrl+alt+shift+n"
-type = "shell"
-command = "herdr-tts --prev-sentence"
-
-# Speed up / Slow down voice reading by 10%
-[[keys.command]]
-key = "ctrl+alt+u"
-type = "shell"
-command = "herdr-tts --rate-up"
-
-[[keys.command]]
-key = "ctrl+alt+d"
-type = "shell"
-command = "herdr-tts --rate-down"
-
-# Cycle snooze on the focused pane / GLOBAL snooze
-[[keys.command]]
-key = "ctrl+alt+z"
-type = "shell"
-command = "herdr-tts --snooze-pane"
-
-[[keys.command]]
-key = "ctrl+alt+shift+z"
-type = "shell"
-command = "herdr-tts --snooze-global"
-
-# Exclusive mute of the focused pane (auto-clears when the pane closes)
-[[keys.command]]
-key = "ctrl+alt+x"
-type = "shell"
-command = "herdr-tts --mute-pane"
-```
+(`paragraph_next` / `paragraph_prev` have no suggested chord — assign them yourself in `keymap.json` and `keymap emit` renders them too.)
 
 ### Option 3 — Direct map (power users)
 
-The original one-chord-per-command map: fastest to press, but several letters **shadow Herdr core defaults** — while this map is installed, those core bindings are unreachable. Opt in knowingly:
+The original one-chord-per-command map: fastest to press, but several letters **shadow Herdr core defaults** — while this map is installed, those core bindings are unreachable. Opt in knowingly. This is also the default `keymap init` template, so `keymap check` reports every shadow below:
 
 | Tecla | Comando de voz | Conflicto con Herdr core |
 |---|---|---|
@@ -251,7 +217,7 @@ The original one-chord-per-command map: fastest to press, but several letters **
 | `prefix+z` | Snooze pane | ⚠️ zoom |
 | `prefix+n` | Frase siguiente | ⚠️ tab siguiente |
 | `prefix+[` | Rebobinar 10 s | ⚠️ copy mode |
-| `prefix+]` | Avanzar 10 s | ⚠️ copy mode |
+| `prefix+]` | Avanzar 10 s | libre en core |
 | `prefix+t` | TL;DR | libre |
 | `prefix+s` | Stop | libre |
 | `prefix+N` | Frase anterior | libre |
@@ -259,90 +225,11 @@ The original one-chord-per-command map: fastest to press, but several letters **
 | `prefix+m` | Mute pane | libre |
 | `prefix+=` / `prefix+-` | Velocidad ±10% | libre |
 
-```toml
-# Play / Stop reading the currently focused pane on-demand
-[[keys.command]]
-key = "prefix+r"
-type = "shell"
-command = "herdr-tts --toggle-play"
+Emit the paste-ready blocks (one `[[keys.command]]` per assigned chord) with:
 
-# TL;DR Quick Summary of the currently focused pane
-[[keys.command]]
-key = "prefix+t"
-type = "shell"
-command = "herdr-tts --tldr"
-
-# Stop all audio immediately (Emergency Mute)
-[[keys.command]]
-key = "prefix+s"
-type = "shell"
-command = "herdr-tts --stop"
-
-# Pause / Resume current audio playback
-[[keys.command]]
-key = "prefix+p"
-type = "shell"
-command = "herdr-tts --toggle-pause"
-
-# Fast-Forward 10 seconds
-[[keys.command]]
-key = "prefix+]"
-type = "shell"
-command = "herdr-tts --forward"
-
-# Rewind 10 seconds
-[[keys.command]]
-key = "prefix+["
-type = "shell"
-command = "herdr-tts --rewind"
-
-# Next Spoken Sentence (Semantic Navigation)
-[[keys.command]]
-key = "prefix+n"
-type = "shell"
-command = "herdr-tts --next-sentence"
-
-# Previous Spoken Sentence (Semantic Navigation)
-[[keys.command]]
-key = "prefix+N"
-type = "shell"
-command = "herdr-tts --prev-sentence"
-
-# Speed up voice reading by 10%
-[[keys.command]]
-key = "prefix+="
-type = "shell"
-command = "herdr-tts --rate-up"
-
-# Slow down voice reading by 10%
-[[keys.command]]
-key = "prefix+-"
-type = "shell"
-command = "herdr-tts --rate-down"
-
-# Toggle background automatic speech (Muted vs Active)
-[[keys.command]]
-key = "prefix+v"
-type = "shell"
-command = "herdr-tts --toggle-auto"
-
-# Cycle snooze on the focused pane: 5m → 30m → 2h → off
-[[keys.command]]
-key = "prefix+z"
-type = "shell"
-command = "herdr-tts --snooze-pane"
-
-# Cycle GLOBAL snooze (all agents silenced — meetings / focus)
-[[keys.command]]
-key = "prefix+Z"
-type = "shell"
-command = "herdr-tts --snooze-global"
-
-# Exclusive mute of the focused pane (auto-clears when the pane closes)
-[[keys.command]]
-key = "prefix+m"
-type = "shell"
-command = "herdr-tts --mute-pane"
+```bash
+herdr-tts keymap check   # review the ⚠️ SHADOWS CORE lines first
+herdr-tts keymap emit
 ```
 
 Apply the changes to your running Herdr server:
