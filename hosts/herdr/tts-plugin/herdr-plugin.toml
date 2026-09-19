@@ -14,9 +14,13 @@ command = ["bin/herdr-tts", "_daemon"]
 
 # Interactive dashboard pane: live voice-gating status rendered by the
 # plugin itself (pure ANSI clear+redraw, no external TUI dependencies).
+# Popup placement: transient session-modal, restores focus when it exits (q).
 [[panes]]
 id = "tts-dashboard"
 title = "TTS Dashboard"
+placement = "popup"
+width = "90%"
+height = "90%"
 command = ["bin/herdr-tts", "--dashboard"]
 
 [[actions]]
@@ -126,3 +130,9 @@ id = "status"
 title = "Voice Feedback Status"
 contexts = ["workspace"]
 command = ["bin/herdr-tts", "--status"]
+
+[[actions]]
+id = "open-dashboard"
+title = "Open TTS Dashboard (popup)"
+contexts = ["workspace"]
+command = ["herdr", "plugin", "pane", "open", "--plugin", "herdr.tts", "--entrypoint", "tts-dashboard"]

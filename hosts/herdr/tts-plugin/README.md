@@ -373,6 +373,7 @@ Modos disponibles de `TTS_PLAYBACK`:
 * `local` (por defecto): reproduce en el propio WSL; comportamiento idéntico al actual.
 * `winhost`: envía el PCM por TCP al servidor Windows. Si el servidor no responde, hay **fallback automático** a PowerShell (modo cero instalación) con un aviso en stderr.
 * `wsl-ps`: fuerza el modo cero instalación sin servidor: un único `powershell.exe` persistente por ejecución recibe los grupos de audio por stdin y los reproduce casi sin pausas entre frases.
+* `auto`: opción que se adapta al entorno — resuelve a `winhost` bajo WSL cuando `powershell.exe` está disponible (con fallback automático a `wsl-ps`) y a `local` en cualquier otro caso (Windows nativo, Linux nativo, o WSL sin interop). Ideal para una config sincronizada entre máquinas: no hay que fijar el modo a mano en cada entorno.
 
 > ⚠️ **Seguridad:** `agent-tts --winhost` escucha por defecto en `0.0.0.0:7717` (puerto abierto en la LAN). Restringe el bind con `AGENT_TTS_WINHOST_BIND=127.0.0.1` o usa un firewall si no confías en tu red.
 
@@ -388,7 +389,7 @@ TTS_VOICE="elvira"
 TTS_RATE="+20%"
 TTS_MAX_CHARS="0"           # 0 = unlimited
 TTS_AUTO_SCOPE="focused"    # "focused" (recommended) or "all"
-TTS_PLAYBACK="local"        # "local", "winhost" (native audio on Windows host) or "wsl-ps"
+TTS_PLAYBACK="local"        # "local", "winhost" (native audio on Windows host), "wsl-ps" or "auto"
 
 # Optional Cloud TTS API Keys & Models:
 OPENAI_API_KEY=""
@@ -411,7 +412,22 @@ CLICK_REDIRECT="off"        # "off" = tap opens ntfy player; "on" = tap opens we
 
 ## 📊 Panel de control (dashboard, v2)
 
-`herdr-tts --dashboard` arranca un panel TUI compacto (ANSI puro, sin dependencias externas) pensado para ejecutarse como pane de Herdr (entrypoint `[[panes]]` del plugin). Refresca ~1 vez por segundo y muestra:
+**Abrir el panel directamente en Herdr:**
+
+```bash
+herdr plugin pane open --plugin herdr.tts --entrypoint tts-dashboard
+```
+
+Se abre como **popup** (`placement = "popup"`, 90%×90%): modal de sesión que no toca el layout en mosaico y recupera el foco al salir (`q`). Para ligarlo a una tecla, añade esto al `config.toml` de Herdr:
+
+```toml
+[[keys.command]]
+key = "prefix+d"
+type = "shell"
+command = "herdr plugin pane open --plugin herdr.tts --entrypoint tts-dashboard"
+```
+
+`herdr-tts --dashboard` arranca el mismo panel TUI compacto (ANSI puro, sin dependencias externas). Refresca ~1 vez por segundo y muestra:
 
 * **Estado global:** snooze global con cuenta atrás, auto-lectura, proveedor/voz/velocidad, modo de playback y ventana de debounce.
 * **Línea de motor en vivo (v2):** cada 3 ticks el panel consulta el estado del motor por IPC (la misma vía que `--toggle-pause`) y renderiza estado con color (▶ reproduciendo / ⏸ pausado / ⏹ detenido / ⌛ sintetizando), progreso mm:ss (`00:12 / 00:48`), proveedor y voz activos, y un fragmento del texto en lectura. Si el motor no responde, la línea muestra el fallback estático del lock local con la nota explícita **"motor: no responde"** (fail-open, nunca rompe el panel).
