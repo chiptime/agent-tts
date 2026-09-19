@@ -75,6 +75,7 @@ flowchart TD
 - **Auto-Rewind Cognitivo:** Al reanudar una reproducción en pausa, retrocede automáticamente 2.0 segundos para recuperar el hilo mental de la explicación.
 - **Sanitizador Profundo (`cleaner.py`):** Elimina códigos ANSI, spinners, bordes de cajas y contadores de tokens; convierte tablas Markdown/ASCII en pausas conversacionales.
 - **Pipelined Streaming:** Reproduce la primera frase en ~300–600ms mientras continúa sintetizando el resto del texto en un hilo de fondo.
+- **Transporte de Audio a Windows (`winhost` / `wsl-ps`):** En WSL2 el motor puede enviar el PCM por TCP al host Windows (`agent-tts --winhost`, reproducción nativa vía WASAPI) con fallback automático a PowerShell en modo cero instalación; el host solo propaga la opción (`TTS_PLAYBACK`), sin cambios en su flujo por defecto.
 
 ---
 
