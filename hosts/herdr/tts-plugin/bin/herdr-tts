@@ -1416,7 +1416,11 @@ DASHBOARD_HISTORY_TITLE_CHARS=30   # chat title width cap in history headers
 DASHBOARD_HISTORY_BUDGET=24        # global row budget for the history section
 DASHBOARD_HISTORY_AUDIO_ROWS=3     # audios rendered per chat group
 DASHBOARD_HISTORY_SCAN_LINES=400   # ledger tail scanned per tick (bounded cost)
-DASH_ROW_BUDGET=48                 # total rows the 90% popup can safely draw
+DASH_TERM_FALLBACK_LINES=40        # pty-size fallback when LINES/COLUMNS/tput fail
+DASH_TERM_FALLBACK_COLS=100
+DASH_WIDTH_BASE=110                # field caps scale down below this popup width
+DASH_ANSI_RE=$'\e\[[0-9;?]*[a-zA-Z]' # CSI matcher for visible-width math
+DASH_LAST_FRAME=""                 # previous tick's frame (change-detection)
 
 # Globals shared between refresh / scan / order / render ticks.
 declare -A DASH_TITLE_BY_PANE=()   # pane_id -> chat title (from agent list)
@@ -1473,6 +1477,98 @@ dashboard_fmt_dur() { # <out-var> <value>
 
 dashboard_cleanup() {
   printf '\033[0m\033[?25h\033[2J\033[H'
+}
+
+# ─── Render pipeline (v3.1): atomic single-write frames ──────
+# The popup is repainted by building the WHOLE frame in a buffer and
+# emitting it once (cursor-home + content + erase-below), never with a
+# full-screen clear or per-line writes. Every line is clamped to the
+# real popup width and the frame height is capped at LINES-1 so long
+# lines and tall frames can never wrap or scroll the layout apart.
+
+# Resolve the popup pty size each tick: exported LINES/COLUMNS first,
+# then tput against the tty, then a fixed 40x100 fallback. Both values
+# are validated so a stale or garbage source can't poison the clamps.
+dashboard_term_size() { # sets DASH_LINES / DASH_COLS
+  if [[ "${LINES:-}" =~ ^[0-9]+$ && "${COLUMNS:-}" =~ ^[0-9]+$ ]] \
+     && (( LINES > 2 && COLUMNS > 10 )); then
+    DASH_LINES=$LINES
+    DASH_COLS=$COLUMNS
+    return 0
+  fi
+  local l="" c=""
+  if command -v tput >/dev/null 2>&1; then
+    l=$(tput lines 2>/dev/null) || l=""
+    c=$(tput cols 2>/dev/null) || c=""
+  fi
+  if [[ "$l" =~ ^[0-9]+$ && "$c" =~ ^[0-9]+$ ]] && (( l > 2 && c > 10 )); then
+    DASH_LINES=$l
+    DASH_COLS=$c
+    return 0
+  fi
+  DASH_LINES=$DASH_TERM_FALLBACK_LINES
+  DASH_COLS=$DASH_TERM_FALLBACK_COLS
+}
+
+# Dynamic field widths: below DASH_WIDTH_BASE columns the padded
+# title/agent/snippet fields shrink proportionally (with floors) so the
+# worst-case composed line still lands inside the popup width. Exact
+# wcwidth is impossible in pure bash; these caps plus the per-line clamp
+# below are the wrap guarantee.
+dashboard_calc_widths() { # $1 = COLUMNS
+  local cols="$1"
+  DASH_W_ROSTER_TITLE=$DASHBOARD_ROSTER_TITLE_CHARS
+  DASH_W_AGENT=9
+  DASH_W_HIST_TITLE=$DASHBOARD_HISTORY_TITLE_CHARS
+  DASH_W_SNIPPET=$DASHBOARD_SNIPPET_MAX_CHARS
+  if (( cols >= DASH_WIDTH_BASE )); then
+    return 0
+  fi
+  DASH_W_ROSTER_TITLE=$(( cols * DASHBOARD_ROSTER_TITLE_CHARS / DASH_WIDTH_BASE ))
+  DASH_W_AGENT=$(( cols * 9 / DASH_WIDTH_BASE ))
+  DASH_W_HIST_TITLE=$(( cols * DASHBOARD_HISTORY_TITLE_CHARS / DASH_WIDTH_BASE ))
+  DASH_W_SNIPPET=$(( cols * DASHBOARD_SNIPPET_MAX_CHARS / DASH_WIDTH_BASE ))
+  if (( DASH_W_ROSTER_TITLE < 10 )); then DASH_W_ROSTER_TITLE=10; fi
+  if (( DASH_W_AGENT < 3 )); then DASH_W_AGENT=3; fi
+  if (( DASH_W_HIST_TITLE < 8 )); then DASH_W_HIST_TITLE=8; fi
+  if (( DASH_W_SNIPPET < 8 )); then DASH_W_SNIPPET=8; fi
+}
+
+# Truncate a raw line to <max> visible chars. ANSI escapes are not
+# counted and always survive (trailing SGR resets can never be cut, so
+# colors never leak across lines); visible width is the codepoint count
+# of the ANSI-free text — an upper bound of the rendered column width,
+# which is exactly the safe direction for wrap-avoidance. Fork-free:
+# the render loop calls this once per line.
+dashboard_clamp_line() { # <out-var> <raw-line> <max-visible>
+  # Internal names are clamp-prefixed on purpose: `printf -v "$1"` must
+  # reach the CALLER's variable, so no local may shadow a plausible
+  # out-var name like `out` or `line`.
+  local _clamp_buf="" _clamp_rest="$2" _clamp_max="$3" _clamp_run=""
+  while [[ -n "$_clamp_rest" ]]; do
+    if [[ "$_clamp_rest" =~ ^($DASH_ANSI_RE) ]]; then
+      _clamp_buf+="${BASH_REMATCH[0]}"
+      _clamp_rest="${_clamp_rest#"${BASH_REMATCH[0]}"}"
+    else
+      _clamp_run="${_clamp_rest%%$'\033'*}"
+      _clamp_rest="${_clamp_rest#"$_clamp_run"}"
+      if (( _clamp_max > 0 )); then
+        if (( ${#_clamp_run} > _clamp_max )); then _clamp_run="${_clamp_run:0:_clamp_max}"; fi
+        _clamp_buf+="$_clamp_run"
+        _clamp_max=$(( _clamp_max - ${#_clamp_run} ))
+      fi
+    fi
+  done
+  printf -v "$1" '%s' "$_clamp_buf"
+}
+
+# Frame-buffer append: format one line, clamp it to the popup width and
+# append it to the caller's `frame` variable (dynamic scoping). Fork-free.
+_dash_add() { # <fmt> [args...]
+  local out
+  printf -v out "$@"
+  dashboard_clamp_line out "$out" "$DASH_COLS"
+  frame+="$out"$'\n'
 }
 
 # Chat roster from Herdr (v3): pane_id, agent kind, agent_status and chat
@@ -1729,8 +1825,14 @@ dashboard_render() {
   local now
   now=$(date +%s)
 
-  printf '\033[2J\033[H'
-  printf '╔═══ 🎙️  herdr-tts · Panel de voz ════════════════════ %s ═╗\n' "$(date +%H:%M:%S)"
+  # v3.1: resolve the popup pty size and scale the padded field widths
+  # before composing anything.
+  dashboard_term_size
+  dashboard_calc_widths "$DASH_COLS"
+  local frame="" roster_fmt
+  roster_fmt="║ %s%s%s %s %-${DASH_W_AGENT}s%s\033[0m"
+
+  _dash_add '╔═══ 🎙️  herdr-tts · Panel de voz ════════════════════ %s ═╗' "$(date +%H:%M:%S)"
 
   # Single jq pass over the cached gate state: line 1 = global summary,
   # then one TSV row per tracked pane (muted, snooze_until, last event
@@ -1763,10 +1865,10 @@ dashboard_render() {
   ' <<<"$state" 2>/dev/null || true)
 
   if (( g_until > now )); then
-    printf '║ Global  😴 snooze GLOBAL activo · quedan %s (hasta %s)\n' \
+    _dash_add '║ Global  😴 snooze GLOBAL activo · quedan %s (hasta %s)' \
       "$(fmt_mmss $(( g_until - now )))" "$(fmt_epoch_clock "$g_until")"
   else
-    printf '║ Global  ⚪ snooze global off · (Z cicla 5m → 30m → 2h → off)\n'
+    _dash_add '║ Global  ⚪ snooze global off · (Z cicla 5m → 30m → 2h → off)'
   fi
 
   # Motor line (v2): live IPC status when the engine answers — colored
@@ -1793,41 +1895,59 @@ dashboard_render() {
       synthesizing) e_color=$'\033[36m' ;;
       *)            e_color=$'\033[90m' ;;
     esac
-    printf '║ Motor   %s%s · %s / %s · %s · %s · %.*s\033[0m · auto-lectura %s\n' \
+    _dash_add '║ Motor   %s%s · %s / %s · %s · %s · %.*s\033[0m · auto-lectura %s' \
       "$e_color" "$(dashboard_engine_state_label "$e_state")" \
       "$(fmt_mmss "${e_pos%%.*}")" "$(fmt_mmss "${e_total%%.*}")" \
       "${e_provider:-?}" "${e_voice:-?}" \
-      "$DASHBOARD_SNIPPET_MAX_CHARS" "${e_text:-—}" \
+      "$DASH_W_SNIPPET" "${e_text:-—}" \
       "$auto_label"
   else
     local engine_label="⚪ En reposo"
     if is_playing; then
       engine_label="🔊 Reproduciendo"
     fi
-    printf '║ Motor   %s · motor: no responde · auto-lectura %s\n' "$engine_label" "$auto_label"
+    _dash_add '║ Motor   %s · motor: no responde · auto-lectura %s' "$engine_label" "$auto_label"
   fi
-  printf '║ Config  proveedor %s · voz %s (%s) · playback %s · debounce %ss\n' \
+  _dash_add '║ Config  proveedor %s · voz %s (%s) · playback %s · debounce %ss' \
     "$TTS_PROVIDER" "$TTS_VOICE" "$TTS_RATE" "${TTS_PLAYBACK:-local}" "$TTS_DEBOUNCE_SECONDS"
 
-  # v3 layout budget: the popup has ~50-55 usable rows at 90%. Fixed cost
-  # is header + global + motor + config + roster header (5) plus footer
-  # (1); the history section takes what it needs (≤ budget, hidden when
-  # empty) and the chat roster gets whatever rows are left. The scan runs
-  # before printing because the roster sort needs per-chat audio recency
-  # and the cap needs the history row count.
+  # v3.1 height budget: the frame may never exceed LINES-1 rows (the
+  # last line's newline lands on the bottom row without scrolling).
+  # Fixed cost is header + global + motor + config + roster header +
+  # footer; under height pressure the history budget shrinks first
+  # (24 → 0) and only then the roster cap drops oldest-idle chats —
+  # needs-attention chats and the fixed lines are never sacrificed.
+  # The scan runs before printing because the roster sort needs per-chat
+  # audio recency and the cap needs the history row count.
   dashboard_scan_history
-  local hist_cost=0 msg_cost=0
-  if (( ${#HIST_PANES[@]} > 0 )); then
-    hist_cost=$(( DASH_HIST_ROWS_TOTAL < DASHBOARD_HISTORY_BUDGET ? DASH_HIST_ROWS_TOTAL : DASHBOARD_HISTORY_BUDGET ))
-    hist_cost=$(( hist_cost + 1 )) # history section header
+  local rows_cap=$(( DASH_LINES - 1 ))
+  if (( rows_cap < 1 )); then rows_cap=1; fi
+  local n=${#DASH_PANES[@]}
+  local hist_budget=$DASHBOARD_HISTORY_BUDGET
+  if (( hist_budget > DASH_HIST_ROWS_TOTAL )); then hist_budget=$DASH_HIST_ROWS_TOTAL; fi
+  local fixed=6 # header + global + motor + config + roster header + footer
+  if [[ -n "$msg" ]]; then fixed=$(( fixed + 1 )); fi
+  local avail=$(( rows_cap - fixed ))
+  local hist_header=0
+  if (( hist_budget > 0 && avail >= 2 )); then
+    hist_header=1
+    avail=$(( avail - 1 ))
   fi
-  [[ -n "$msg" ]] && msg_cost=1
-  dashboard_order_roster $(( DASH_ROW_BUDGET - 5 - hist_cost - msg_cost ))
+  if (( hist_budget + n > avail )); then
+    hist_budget=$(( avail - n ))
+    if (( hist_budget < 0 )); then hist_budget=0; fi
+    if (( hist_budget == 0 && hist_header == 1 )); then
+      hist_header=0
+      avail=$(( avail + 1 ))
+    fi
+  fi
+  dashboard_order_roster $(( avail - hist_budget ))
+  n=${#DASH_PANES[@]} # the roster cap may have shrunk the visible roster
 
-  printf '╠═══ Chats (j/k mueve el cursor · m silencia · z snooze) ══════\n'
-  local n=${#DASH_PANES[@]} i pid agent st title marker color icon overlay overlay_lbl
+  _dash_add '╠═══ Chats (j/k mueve el cursor · m silencia · z snooze) ══════'
+  local i pid agent st title marker color icon overlay overlay_lbl
   if (( n == 0 )); then
-    printf '║  (sin datos de herdr: CLI no disponible o sin agentes)\n'
+    _dash_add '║  (sin datos de herdr: CLI no disponible o sin agentes)'
   fi
   for (( i = 0; i < n; i++ )); do
     pid="${DASH_PANES[i]}"
@@ -1860,19 +1980,20 @@ dashboard_render() {
        && (( now - ${pane_last_ts[$pid]:-0} < TTS_DEBOUNCE_SECONDS )); then
       overlay+=" ⏱$(( now - ${pane_last_ts[$pid]} ))s"
     fi
-    dashboard_fit title "$title" "$DASHBOARD_ROSTER_TITLE_CHARS"
-    printf '║ %s%s%s %s %-9s%s\033[0m\n' "$marker" "$color" "$icon" "$title" "$agent" "$overlay"
+    dashboard_fit title "$title" "$DASH_W_ROSTER_TITLE"
+    _dash_add "$roster_fmt" "$marker" "$color" "$icon" "$title" "$agent" "$overlay"
   done
   if (( DASH_DROPPED > 0 )); then
-    printf '║  … y %d chats más (los que piden atención nunca se ocultan)\n' "$DASH_DROPPED"
+    _dash_add '║  … y %d chats más (los que piden atención nunca se ocultan)' "$DASH_DROPPED"
   fi
 
   # History grouped per chat (v3): header + last audios per group, newest
   # group first (the scan already ordered groups by last-audio recency).
-  # Fully hidden when the ledger is empty or missing.
-  if (( ${#HIST_PANES[@]} > 0 )); then
-    printf '╠═══ Historial por chat (más reciente arriba) ════════════════\n'
-    local remaining=$DASHBOARD_HISTORY_BUDGET gi k ts epoch dur age_lbl dur_lbl gtitle gcount audio_word
+  # Hidden when the ledger is empty OR when the height budget shrank it
+  # away (hist_budget == 0).
+  if (( hist_budget > 0 )); then
+    _dash_add '╠═══ Historial por chat (más reciente arriba) ════════════════'
+    local remaining=$hist_budget gi k ts epoch dur age_lbl dur_lbl gtitle gcount audio_word
     local -a parts_arr=()
     for (( gi = 0; gi < ${#HIST_PANES[@]} && remaining > 0; gi++ )); do
       pid="${HIST_PANES[gi]}"
@@ -1889,8 +2010,8 @@ dashboard_render() {
       else
         age_lbl="-"
       fi
-      dashboard_fit gtitle "$gtitle" "$DASHBOARD_HISTORY_TITLE_CHARS"
-      printf '║ ── %s · %d %s · último hace %s\n' "$gtitle" "$gcount" "$audio_word" "$age_lbl"
+      dashboard_fit gtitle "$gtitle" "$DASH_W_HIST_TITLE"
+      _dash_add '║ ── %s · %d %s · último hace %s' "$gtitle" "$gcount" "$audio_word" "$age_lbl"
       remaining=$(( remaining - 1 ))
       # Last ≤3 audios, newest first (items are stored chronological as
       # iso|epoch|duration triples).
@@ -1906,15 +2027,26 @@ dashboard_render() {
           age_lbl="-"
         fi
         dashboard_fmt_dur dur_lbl "$dur"
-        printf '║    · %s · hace %s\n' "$dur_lbl" "$age_lbl"
+        _dash_add '║    · %s · hace %s' "$dur_lbl" "$age_lbl"
         remaining=$(( remaining - 1 ))
       done
     done
   fi
 
-  printf '╚═══ q salir · j/k chat · m silenciar · z snooze pane · Z snooze global · +/- velocidad ═╝\n'
+  _dash_add '╚═══ q salir · j/k chat · m silenciar · z snooze pane · Z snooze global · +/- velocidad ═╝'
   if [[ -n "$msg" ]]; then
-    printf '   » [%s] %s\n' "${msg_time:-}" "$msg"
+    _dash_add '   » [%s] %s' "${msg_time:-}" "$msg"
+  fi
+
+  # v3.1 atomic repaint: ONE physical write per tick — cursor-home, the
+  # whole frame, erase-below. No full-screen clear (which scrolled and
+  # painted progressively) and no per-line output. A frame byte-identical
+  # to the previous tick skips the write; the clock line is part of the
+  # frame, so a live dashboard still redraws at ~1Hz while an idle one
+  # stays perfectly still.
+  if [[ "$frame" != "$DASH_LAST_FRAME" ]]; then
+    printf '\033[H%s\033[J' "$frame"
+    DASH_LAST_FRAME=$frame
   fi
 }
 
