@@ -2530,6 +2530,132 @@ palette_preview() { # <pane_id>
   return 0
 }
 
+# ─── Voice menu (v0.12, one-key popup) ───────────────────────
+# Herdr core has no key sequences: every binding is a single prefix+X
+# chord, so a literal "prefix + namespace + command" chain cannot be
+# expressed. The voice menu simulates it with ONE free core letter
+# (suggested binding: prefix+u → the open-menu action): the popup
+# renders a static cheat sheet, reads exactly one key and dispatches it
+# to the same functions/flags the CLI flags, the palette and the
+# dashboard already use (no explicit pane id → focused pane, the same
+# default as --mute-pane / --snooze-pane). Herdr closes a popup when
+# its command exits, so one key = one action = popup closes = focus
+# restored.
+
+MENU_CONFIRM_SECS="${HERDR_TTS_MENU_CONFIRM_SECS:-1.5}"
+[[ "$MENU_CONFIRM_SECS" =~ ^[0-9]+([.][0-9]+)?$ ]] || MENU_CONFIRM_SECS=1.5
+
+# Cheat-sheet data: two columns of key + description, zipped at render
+# time. Static on purpose — the menu never queries Herdr, so the frame
+# costs nothing and is always a single physical write.
+MENU_L_KEYS=("r" "p" "s" "t" "v" "[" "]" "n" "N")
+MENU_L_DESC=("▶ Play / Stop del chat enfocado" "⏸ Pausar / Reanudar" "⏹ Stop inmediato" "⚡ TL;DR del chat" "🔊 Auto-lectura on/off" "⏪ Rebobinar 10s" "⏩ Avanzar 10s" "⏭ Frase siguiente" "⏮ Frase anterior")
+MENU_R_KEYS=("m" "z" "Z" "+/-" "d" "o" "q/Esc")
+MENU_R_DESC=("🔇 Mute pane" "😴 Snooze pane" "😴 Snooze GLOBAL" "🎙 Velocidad ±10%" "📊 Dashboard" "🎛️ Paleta de voz" "Salir del menú")
+
+# Height cap: keep at most <max-rows> lines of the buffered frame, the
+# same LINES-1 discipline the dashboard render enforces.
+menu_cap_rows() { # <max-rows>
+  local max_rows="$1" rest="$frame" line
+  frame=""
+  while [[ -n "$rest" ]]; do
+    if (( max_rows <= 0 )); then break; fi
+    line="${rest%%$'\n'*}"
+    frame+="$line"$'\n'
+    max_rows=$(( max_rows - 1 ))
+    if [[ "$rest" == *$'\n'* ]]; then rest="${rest#*$'\n'}"; else rest=""; fi
+  done
+}
+
+# ONE static frame, ONE physical write: reuses the dashboard render
+# helpers verbatim — dashboard_term_size (popup pty → DASH_LINES /
+# DASH_COLS with a validated 40x100 fallback) and _dash_add (per-line
+# visible-width clamp via dashboard_clamp_line). No clamp logic here.
+menu_render() {
+  dashboard_term_size
+  local frame="" row_l half i kl dl kr dr
+  half=$(( DASH_COLS / 2 - 2 ))
+  (( half < 20 )) && half=20
+  _dash_add $'\e[1m⌨️  herdr-tts · Menú de voz\e[0m'
+  _dash_add 'Pulsa UNA tecla: la acción se ejecuta y el menú se cierra solo.'
+  _dash_add ''
+  for (( i = 0; i < ${#MENU_L_KEYS[@]} || i < ${#MENU_R_KEYS[@]}; i++ )); do
+    kl="${MENU_L_KEYS[i]:-}"; dl="${MENU_L_DESC[i]:-}"
+    kr="${MENU_R_KEYS[i]:-}"; dr="${MENU_R_DESC[i]:-}"
+    dashboard_fit row_l " ${kl}  ${dl}" "$half"
+    _dash_add '%s│ %s  %s' "$row_l" "$kr" "$dr"
+  done
+  menu_cap_rows $(( DASH_LINES - 1 ))
+  printf '\033[H%s\033[J' "$frame"
+}
+
+# One key → one action, always through the EXISTING implementation path
+# (the exact functions/flags the CLI cases call). Command substitution
+# keeps the functions in a subshell, like the dashboard key loop does.
+# Returns 1 on an unrecognized key; MENU_RESULT carries the first line
+# of the action's output for the one-line confirmation.
+menu_dispatch() { # <key>
+  MENU_RESULT=""
+  local out=""
+  case "$1" in
+    r|R) out=$(toggle_play 2>&1 || true) ;;
+    p|P) out=$(toggle_pause_audio 2>&1 || true) ;;
+    s|S) out=$(stop_audio 2>&1 || true) ;;
+    t|T) out=$(read_current_pane "" "--tldr" 2>&1 || true) ;;
+    v|V) out=$(toggle_auto 2>&1 || true) ;;
+    "[") out=$(seek_audio -10 2>&1 || true) ;;
+    "]") out=$(seek_audio +10 2>&1 || true) ;;
+    n)   out=$(next_sentence_audio 2>&1 || true) ;;
+    N)   out=$(prev_sentence_audio 2>&1 || true) ;;
+    m|M) out=$(toggle_pane_mute 2>&1 || true) ;;
+    z)   out=$(cycle_snooze pane 2>&1 || true) ;;
+    Z)   out=$(cycle_snooze global 2>&1 || true) ;;
+    +|=) out=$(adjust_rate 10 2>&1 || true) ;;
+    -|_) out=$(adjust_rate -10 2>&1 || true) ;;
+    d|D)
+      herdr plugin pane open --plugin herdr.tts --entrypoint tts-dashboard >/dev/null 2>&1 || true
+      out="📊 Abriendo el dashboard…"
+      ;;
+    o|O)
+      herdr plugin pane open --plugin herdr.tts --entrypoint tts-palette >/dev/null 2>&1 || true
+      out="🎛️ Abriendo la paleta de voz…"
+      ;;
+    *) return 1 ;;
+  esac
+  out="${out%%$'\n'*}"
+  MENU_RESULT="${out:-Comando de voz ejecutado}"
+  return 0
+}
+
+# Popup entrypoint: render once, read ONE key, confirm briefly, exit.
+# The ~1.5s dwell lets the confirmation be read; Herdr then closes the
+# popup and restores focus. Fail-open: EOF / read failure (no tty,
+# closed pipe) → exit 0 silently. q/Esc exits without a message. Note:
+# an arrow key sends its ESC prefix byte first, so it quits the menu —
+# deliberate, matching the dashboard's "ignore exotic input" stance.
+run_voice_menu() {
+  local key=""
+  menu_render # one static frame, one physical write — then a single read
+  if ! read -rsn1 key; then
+    exit 0
+  fi
+  case "$key" in
+    q|Q|$'\e')
+      ;; # silent exit
+    *)
+      if menu_dispatch "$key"; then
+        # Leading newline: the frame write leaves the cursor right after
+        # the last row, so the confirmation must claim a fresh line.
+        printf '\n✓ %s\n' "$MENU_RESULT"
+      else
+        printf '\n❓ Tecla no reconocida (%s) — pulsa q para salir\n' "$key"
+      fi
+      sleep "$MENU_CONFIRM_SECS"
+      ;;
+  esac
+  exit 0
+}
+
 # ─── CLI Entrypoint ──────────────────────────────────────────
 
 # Library mode: when sourced (tests/tooling), only define functions and
@@ -2830,6 +2956,9 @@ case "${1:-}" in
   --voice-palette)
     run_voice_palette
     ;;
+  --voice-menu)
+    run_voice_menu
+    ;;
   --palette-preview)
     palette_preview "${2:-}"
     ;;
@@ -2905,9 +3034,12 @@ Información:
    --dashboard              Panel TUI en vivo (pane de Herdr): estado por chat,
                             audios agrupados por chat, snoozes e historial
                             (controles: q salir · j/k chat · m silenciar · z snooze pane · Z snooze global · +/- velocidad)
-   --voice-palette          Selector interactivo (fzf, pane de Herdr) de chats y
+    --voice-palette          Selector interactivo (fzf, pane de Herdr) de chats y
                             audios: enter enfoca, ctrl-m silencia, ctrl-z snooze
-   --palette-preview <pane> Cabecera de chat + turnos de audio del pane (preview fzf)
+    --voice-menu             Menú de voz de una sola tecla (popup): muestra los
+                            comandos, lee una tecla, la ejecuta y se cierra
+                            (suggested: prefix+u → action open-menu)
+    --palette-preview <pane> Cabecera de chat + turnos de audio del pane (preview fzf)
 EOF
     ;;
   *)

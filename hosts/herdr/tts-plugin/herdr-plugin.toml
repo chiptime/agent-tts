@@ -1,6 +1,6 @@
 id = "herdr.tts"
 name = "Herdr Neural TTS"
-version = "0.11.0"
+version = "0.12.0"
 min_herdr_version = "0.7.0"
 platforms = ["linux", "macos"]
 description = "Vocalizes agent responses and attention requests using modular TTS backends (Edge Neural TTS, OpenAI TTS, ElevenLabs) with native audio playback, interactive controls, and mobile push. Concurrency-safe."
@@ -33,6 +33,18 @@ placement = "popup"
 width = "80%"
 height = "70%"
 command = ["bin/herdr-tts", "--voice-palette"]
+
+# One-key voice menu: Herdr core has no key sequences, so this popup
+# simulates the "prefix + namespace + command" chord — one free core
+# letter (prefix+u via the open-menu action) opens the cheat sheet, the
+# next single key runs the command and the popup closes on its own.
+[[panes]]
+id = "tts-menu"
+title = "TTS Voice Menu"
+placement = "popup"
+width = "60%"
+height = "45%"
+command = ["bin/herdr-tts", "--voice-menu"]
 
 [[actions]]
 id = "toggle-play"
@@ -153,3 +165,9 @@ id = "open-palette"
 title = "Open TTS Voice Palette (popup)"
 contexts = ["workspace"]
 command = ["herdr", "plugin", "pane", "open", "--plugin", "herdr.tts", "--entrypoint", "tts-palette"]
+
+[[actions]]
+id = "open-menu"
+title = "Open TTS Voice Menu (popup)"
+contexts = ["workspace"]
+command = ["herdr", "plugin", "pane", "open", "--plugin", "herdr.tts", "--entrypoint", "tts-menu"]
