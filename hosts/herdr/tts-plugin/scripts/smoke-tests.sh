@@ -19,6 +19,9 @@
 #   16    voice menu: dispatch map (stub-verified, one key = one existing
 #         function), single-write frame, quit/Esc/unknown/EOF paths,
 #         width+height clamp reuse, manifest/README wiring
+#   17    keymap: init (template, no-overwrite, --force), check (core
+#         shadow warnings, --json), emit (direct/ctrlalt/menu TOML),
+#         invalid ids/chords/duplicates rejected, missing file actionable
 set -uo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -753,12 +756,169 @@ assert_grep "16g manifest declares tts-menu pane" 'id = "tts-menu"' "$REPO/herdr
 assert_grep "16g tts-menu runs --voice-menu" 'command = \["bin/herdr-tts", "--voice-menu"\]' "$REPO/herdr-plugin.toml"
 assert_grep "16g tts-menu popup is 60%x45%" 'width = "60%"' "$REPO/herdr-plugin.toml" -F
 assert_grep "16g open-menu action wired" '"--entrypoint", "tts-menu"' "$REPO/herdr-plugin.toml" -F
-assert_grep "16g version bumped to 0.12.0" 'version = "0.12.0"' "$REPO/herdr-plugin.toml" -F
+assert_grep "16g version bumped to 0.13.0" 'version = "0.13.0"' "$REPO/herdr-plugin.toml" -F
 assert_grep "16g README option 1 (menu, recommended)" '### Option 1 — Compact map \(recommended\)' "$REPO/README.md"
 assert_grep "16g README option 2 (ctrl+alt family)" '### Option 2 — ctrl\+alt family' "$REPO/README.md"
 assert_grep "16g README option 3 (direct map + conflicts)" '### Option 3 — Direct map \(power users\)' "$REPO/README.md"
 assert_grep "16g README binds prefix+u to the menu" '"prefix+u"' "$REPO/README.md" -F
 assert_grep "16g README documents the ctrl+alt+t caveat" 'ctrl\+alt\+t` launches a terminal' "$REPO/README.md"
+
+echo "── 17. keymap: init / check / emit (declarative, conflict-checked)"
+new_env s17
+export HERDR_TTS_KEYMAP_FILE="$T/keymap.json"
+km="$HERDR_TTS_KEYMAP_FILE"
+run_km() { timeout 10 "$SCRIPT" keymap "$@" > "$T/out.txt" 2>&1; }
+
+# 17a. init: template created; refuses silent overwrite; --force replaces.
+run_km init
+[[ $? -eq 0 ]] && ok "17a init exits rc=0" || bad "17a init rc!=0"
+[[ -f "$km" ]] && ok "17a keymap.json created" || bad "17a no keymap file"
+jq -e '.style == "direct" and (.bindings | length == 19)' "$km" >/dev/null \
+  && ok "17a template: style=direct, 19 stable command ids" || bad "17a template shape"
+jq -e '.bindings.play == "prefix+r" and .bindings.snooze_global == "prefix+Z" and .bindings.menu == null' "$km" >/dev/null \
+  && ok "17a template prefilled with README direct map (menu=null)" || bad "17a template prefill"
+cp "$km" "$T/km.bak"
+run_km init
+[[ $? -ne 0 ]] && ok "17a init refuses overwrite without --force (rc!=0)" || bad "17a silent overwrite allowed"
+assert_grep "17a refusal is actionable (--force hint)" 'keymap init --force' "$T/out.txt" -F
+cmp -s "$km" "$T/km.bak" && ok "17a refused init left file untouched" || bad "17a file mutated"
+run_km init --force
+[[ $? -eq 0 ]] && ok "17a init --force replaces the file" || bad "17a --force rc!=0"
+cmp -s "$km" "$T/km.bak" && ok "17a --force rewrote the template" || bad "17a --force content mismatch"
+
+# 17b. check on the default direct map: shadows r/v/z/n/p, warnings only, rc 0.
+run_km check
+[[ $? -eq 0 ]] && ok "17b check exits rc=0 with warnings only" || bad "17b check rc!=0"
+assert_grep "17b prefix+r SHADOWS CORE (resize pane)"     'SHADOWS CORE \(resize pane\): play = prefix\+r' "$T/out.txt"
+assert_grep "17b prefix+v SHADOWS CORE (split right)"     'SHADOWS CORE \(split right\): auto = prefix\+v' "$T/out.txt"
+assert_grep "17b prefix+z SHADOWS CORE (zoom pane)"       'SHADOWS CORE \(zoom pane\): snooze = prefix\+z' "$T/out.txt"
+assert_grep "17b prefix+n SHADOWS CORE (next tab)"        'SHADOWS CORE \(next tab\): sentence_next = prefix\+n' "$T/out.txt"
+assert_grep "17b prefix+p SHADOWS CORE (previous tab)"    'SHADOWS CORE \(previous tab\): pause = prefix\+p' "$T/out.txt"
+assert_grep "17b prefix+t stays OK (free letter)"          '✓ OK: tldr = prefix\+t' "$T/out.txt"
+assert_grep "17b unassigned binding renders OK"            '✓ OK: menu = \(unassigned\)' "$T/out.txt"
+assert_grep "17b summary line: zero errors"                '0 errors' "$T/out.txt"
+
+# 17c. check --json: machine-readable, jq-friendly.
+run_km check --json
+[[ $? -eq 0 ]] && ok "17c check --json exits rc=0" || bad "17c check --json rc!=0"
+jq -e '.ok == true and .error_count == 0 and .warning_count >= 5' "$T/out.txt" >/dev/null \
+  && ok "17c json: ok=true, 0 errors, ≥5 warnings" || bad "17c json summary fields"
+jq -e '(.bindings | length) == 19 and (.bindings[0].command == "play")' "$T/out.txt" >/dev/null \
+  && ok "17c json: 19 bindings, file order preserved" || bad "17c json bindings array"
+jq -e '.bindings[] | select(.command == "play" and .chord == "prefix+r" and .status == "warn" and .core == "resize pane")' "$T/out.txt" >/dev/null \
+  && ok "17c json: play binding carries core=resize pane" || bad "17c json warn detail"
+jq -e '.bindings[] | select(.command == "menu" and .chord == null and .status == "ok")' "$T/out.txt" >/dev/null \
+  && ok "17c json: null chord serializes as null" || bad "17c json null chord"
+jq -e '.bindings[] | select(.command == "sentence_prev" and .chord == "prefix+N" and .core == "new workspace")' "$T/out.txt" >/dev/null \
+  && ok "17c json: uppercase key treated as shift (N → new workspace)" || bad "17c json shift expansion"
+
+# 17d. emit (direct): ready-to-paste TOML, header carries file mtime.
+run_km emit > /dev/null
+cp "$T/out.txt" "$T/emit-direct.toml"
+[[ $? -eq 0 ]] && ok "17d emit exits rc=0" || bad "17d emit rc!=0"
+assert_grep "17d header names the source file"  "^# source: $km \(modified " "$T/emit-direct.toml"
+python3 - "$T/emit-direct.toml" <<'PY' > "$T/py.out" 2>&1 \
+  && ok "17d output parses as TOML with 14 shell blocks" || { bad "17d TOML invalid"; cat "$T/py.out"; }
+import sys, tomllib
+doc = tomllib.loads(open(sys.argv[1]).read())
+blocks = doc["keys"]["command"]
+assert len(blocks) == 14, f"want 14 blocks, got {len(blocks)}"
+assert all(b["type"] == "shell" for b in blocks)
+by_key = {b["key"]: b["command"] for b in blocks}
+assert by_key["prefix+r"] == "herdr-tts --toggle-play", by_key["prefix+r"]
+assert by_key["prefix+N"] == "herdr-tts --prev-sentence"
+assert by_key["prefix+Z"] == "herdr-tts --snooze-global"
+PY
+
+# 17e. emit --style ctrlalt: suggested family, no ctrl+alt+t, valid TOML.
+run_km emit --style ctrlalt > /dev/null
+cp "$T/out.txt" "$T/emit-ctrlalt.toml"
+[[ $? -eq 0 ]] && ok "17e emit --style ctrlalt exits rc=0" || bad "17e rc!=0"
+assert_no_grep_f "17e ctrl+alt+t never suggested as a key" 'key = "ctrl+alt+t"' "$T/emit-ctrlalt.toml"
+assert_grep "17e TL;DR lives on ctrl+alt+l"       'key = "ctrl\+alt\+l"' "$T/emit-ctrlalt.toml"
+assert_grep "17e caveat documented in output"      'ctrl\+alt\+t.*terminal' "$T/emit-ctrlalt.toml"
+python3 - "$T/emit-ctrlalt.toml" <<'PY' > "$T/py.out" 2>&1 \
+  && ok "17e ctrlalt TOML valid: 17 distinct chords" || { bad "17e TOML invalid"; cat "$T/py.out"; }
+import sys, tomllib
+doc = tomllib.loads(open(sys.argv[1]).read())
+blocks = doc["keys"]["command"]
+keys = [b["key"] for b in blocks]
+assert len(blocks) == 17, f"want 17 blocks, got {len(blocks)}"
+assert len(set(keys)) == len(keys), "duplicate chords in suggested family"
+assert "ctrl+alt+shift+n" in keys
+by_key = dict(zip(keys, (b["command"] for b in blocks)))
+assert by_key["ctrl+alt+r"] == "herdr-tts --toggle-play"
+assert by_key["ctrl+alt+d"] == "herdr plugin pane open --plugin herdr.tts --entrypoint tts-dashboard"
+PY
+
+# 17f. emit --style menu: one block, prefix+u → tts-menu popup.
+run_km emit --style menu > /dev/null
+cp "$T/out.txt" "$T/emit-menu.toml"
+python3 - "$T/emit-menu.toml" <<'PY' > "$T/py.out" 2>&1 \
+  && ok "17f menu TOML valid: exactly 1 block (prefix+u → tts-menu)" || { bad "17f TOML invalid"; cat "$T/py.out"; }
+import sys, tomllib
+doc = tomllib.loads(open(sys.argv[1]).read())
+blocks = doc["keys"]["command"]
+assert len(blocks) == 1, f"want 1 block, got {len(blocks)}"
+assert blocks[0]["key"] == "prefix+u"
+assert "tts-menu" in blocks[0]["command"]
+PY
+
+# 17g. unknown command id → hard error, rc 1, in both human and JSON modes.
+jq '.bindings.volume = "prefix+q"' "$km" > "$T/km.tmp" && mv "$T/km.tmp" "$km"
+run_km check
+[[ $? -ne 0 ]] && ok "17g unknown id rejected (rc!=0)" || bad "17g unknown id accepted"
+assert_grep "17g unknown id message" 'unknown command id.*volume' "$T/out.txt"
+run_km check --json
+[[ $? -ne 0 ]] && ok "17g unknown id rejected in --json (rc!=0)" || bad "17g json rc"
+jq -e '.ok == false and (.bindings[] | select(.command == "volume" and .status == "error"))' "$T/out.txt" >/dev/null \
+  && ok "17g json marks the unknown binding as error" || bad "17g json error detail"
+run_km emit
+[[ $? -ne 0 ]] && ok "17g emit refuses a file with unknown ids" || bad "17g emit accepted unknown id"
+
+# 17h. duplicate chord → hard error on both rows.
+run_km init --force >/dev/null
+jq '.bindings.play = "prefix+u" | .bindings.stop = "prefix+u"' "$km" > "$T/km.tmp" && mv "$T/km.tmp" "$km"
+run_km check
+[[ $? -ne 0 ]] && ok "17h duplicate chord rejected (rc!=0)" || bad "17h duplicate accepted"
+assert_grep "17h play flagged as duplicate"  "duplicate chord prefix\\+u \\(also bound by 'stop'\\)" "$T/out.txt"
+assert_grep "17h stop flagged as duplicate"  "duplicate chord prefix\\+u \\(also bound by 'play'\\)" "$T/out.txt"
+
+# 17i. invalid chord syntax → hard error.
+run_km init --force >/dev/null
+jq '.bindings.play = "alt+x"' "$km" > "$T/km.tmp" && mv "$T/km.tmp" "$km"
+run_km check
+[[ $? -ne 0 ]] && ok "17i invalid chord 'alt+x' rejected (rc!=0)" || bad "17i alt+x accepted"
+assert_grep "17i invalid chord message" 'invalid chord syntax.*play = alt\+x' "$T/out.txt"
+jq '.bindings.play = "prefix+a+b"' "$km" > "$T/km.tmp" && mv "$T/km.tmp" "$km"
+run_km check
+[[ $? -ne 0 ]] && ok "17i multi-key chord 'prefix+a+b' rejected" || bad "17i prefix+a+b accepted"
+
+# 17j. missing keymap file → actionable fail-open (check and emit).
+rm -f "$km"; export HERDR_TTS_KEYMAP_FILE="$T/absent.json"
+run_km check
+[[ $? -eq 1 ]] && ok "17j check exits rc=1 on missing file" || bad "17j check rc"
+assert_grep "17j check suggests keymap init" 'keymap init' "$T/out.txt" -F
+run_km emit
+[[ $? -eq 1 ]] && ok "17j emit exits rc=1 on missing file" || bad "17j emit rc"
+assert_grep "17j emit suggests keymap init" 'keymap init' "$T/out.txt" -F
+run_km check --json
+[[ $? -eq 1 ]] && ok "17j check --json missing file rc=1" || bad "17j json rc"
+jq -e '.ok == false and .error' "$T/out.txt" >/dev/null \
+  && ok "17j json missing-file payload is still valid JSON" || bad "17j json payload"
+
+# 17k. help wiring: main --help, keymap --help, unknown subcommand.
+"$SCRIPT" --help > "$T/out.txt" 2>&1
+assert_grep "17k main --help documents keymap init"  'keymap init \[--force\]' "$T/out.txt"
+assert_grep "17k main --help documents keymap check" 'keymap check \[--json\]' "$T/out.txt"
+assert_grep "17k main --help documents keymap emit"  'keymap emit \[--style S\]' "$T/out.txt"
+run_km --help
+[[ $? -eq 0 ]] && ok "17k keymap --help exits rc=0" || bad "17k keymap --help rc"
+assert_grep "17k keymap help documents init"  'keymap init \[--force\]' "$T/out.txt"
+assert_grep "17k keymap help documents check" 'keymap check \[--json\]' "$T/out.txt"
+assert_grep "17k keymap help documents emit"  'keymap emit \[--style S\]' "$T/out.txt"
+run_km bogus
+[[ $? -ne 0 ]] && ok "17k unknown subcommand rejected" || bad "17k bogus accepted"
 
 echo
 echo "═══ RESULT: $PASS passed, $FAIL failed ═══"
