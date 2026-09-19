@@ -32,3 +32,4 @@ htmlcov/
 *.sock
 *.pid
 /tmp/agent-tts*
+.codegraph/
