@@ -130,8 +130,10 @@ class KokoroTTSProvider(TTSProvider):
             import onnxruntime as ort
         except ImportError as e:
             raise _kokoro_error(
-                "Kokoro synthesis requires onnxruntime. Install it with:\n"
-                "  pip install onnxruntime\n"
+                "Kokoro synthesis requires the optional 'kokoro' dependencies, which are not installed.\n"
+                "Install them with:\n"
+                "  pip install 'agent-tts[kokoro]'\n"
+                "(equivalent to: pip install onnxruntime)\n"
                 "Then make sure the model is downloaded: agent-tts voice install kokoro"
             ) from e
         factory = self.session_factory or (
@@ -224,8 +226,9 @@ class KokoroTTSProvider(TTSProvider):
             import numpy as np
         except ImportError as e:
             raise _kokoro_error(
-                "Kokoro inference requires numpy (installed automatically with onnxruntime):\n"
-                "  pip install onnxruntime"
+                "Kokoro inference requires numpy (installed with the 'kokoro' extra).\n"
+                "Install it with:\n"
+                "  pip install 'agent-tts[kokoro]'"
             ) from e
         outputs = session.run(
             None,

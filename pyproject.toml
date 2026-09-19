@@ -29,6 +29,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Optional extras: the default install (edge/openai/elevenlabs/piper) needs
+# none of these. numpy is not listed here on purpose: it arrives with
+# onnxruntime and is already pulled in transitively by miniaudio.
+kokoro = [
+    "onnxruntime>=1.16",
+]
 dev = [
     "pytest>=7.0.0",
 ]
