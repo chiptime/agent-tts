@@ -409,13 +409,14 @@ CLICK_REDIRECT="off"        # "off" = tap opens ntfy player; "on" = tap opens we
 
 ---
 
-## 📊 Panel de control (dashboard, v1)
+## 📊 Panel de control (dashboard, v2)
 
 `herdr-tts --dashboard` arranca un panel TUI compacto (ANSI puro, sin dependencias externas) pensado para ejecutarse como pane de Herdr (entrypoint `[[panes]]` del plugin). Refresca ~1 vez por segundo y muestra:
 
-* **Estado global:** snooze global con cuenta atrás, motor (reproduciendo / en reposo según el lock local), auto-lectura, proveedor/voz/velocidad, modo de playback y ventana de debounce.
+* **Estado global:** snooze global con cuenta atrás, auto-lectura, proveedor/voz/velocidad, modo de playback y ventana de debounce.
+* **Línea de motor en vivo (v2):** cada 3 ticks el panel consulta el estado del motor por IPC (la misma vía que `--toggle-pause`) y renderiza estado con color (▶ reproduciendo / ⏸ pausado / ⏹ detenido / ⌛ sintetizando), progreso mm:ss (`00:12 / 00:48`), proveedor y voz activos, y un fragmento del texto en lectura. Si el motor no responde, la línea muestra el fallback estático del lock local con la nota explícita **"motor: no responde"** (fail-open, nunca rompe el panel).
 * **Panes conocidos:** una línea por pane con su estado de voz — ▶️ activo, 🔇 SILENCIADO o 😴 SNOOZED con cuenta atrás mm:ss — más el último evento visto por el ledger de debounce y si el anti-spam sigue activo.
-* **Historial de audio (últimos 20):** cada audio renderizado se registra en `${XDG_STATE_HOME:-~/.local/state}/herdr-tts/history.log` (TSV: `fecha, pane, agente, duración`; el host escribe una línea por render) y se muestra del más reciente al más antiguo.
+* **Historial de audio (últimos 20):** cada audio renderizado se registra en `${XDG_STATE_HOME:-~/.local/state}/herdr-tts/history.log` (TSV: `fecha, pane, agente, duración`) y se muestra del más reciente al más antiguo. (v2) la duración es real en segundos: tras cada render el host decodifica el MP3 con el propio `miniaudio` del venv (una invocación extra por audio, best-effort; si falla, la columna vuelve a `-`).
 
 El panel es de **solo lectura** frente al gate/mutex/watcher: toda mutación pasa por las funciones y flags existentes (`--mute-pane`, `--snooze-pane`, `--snooze-global`, `--rate-up/down`).
 
@@ -428,7 +429,7 @@ El panel es de **solo lectura** frente al gate/mutex/watcher: toda mutación pas
 | `Z` | Ciclar snooze GLOBAL (todos los agentes) |
 | `+` / `-` | Velocidad de voz +10% / −10% (persistida en config) |
 
-> **Alcance v1:** el panel no consulta el IPC del motor de audio (estado del motor vía lock local y línea estática de proveedor/voz del config) y la duración aún no se registra en el historial (columna `-`). Refresco configurable con `HERDR_TTS_DASHBOARD_REFRESH` (segundos, default `1`).
+> **Disciplina de coste v2:** la consulta de estado del motor comparte cadencia de caché con el roster (`herdr agent list`): un solo spawn de python cada N ticks (default 3) para TODO el panel, nunca un subshell por pane por tick. Refresco configurable con `HERDR_TTS_DASHBOARD_REFRESH` (segundos, default `1`).
 
 ---
 
@@ -473,6 +474,7 @@ We have an active vision to expand `herdr-tts` into the definitive audio layer f
   - Configurable debounce window (`debounce_seconds = 20` via `TTS_DEBOUNCE_SECONDS` / `--debounce`) preventing rapid re-triggering of repeated completion or blocked states from the same pane within a short time window.
 - [x] 📊 **Interactive TUI Dashboard Pane:**
   - Native Herdr dashboard pane entrypoint displaying live agent speech states, recent audio logs, countdowns for snoozed panes, volume controls, and provider/voice toggles. (v1: pure-ANSI clear+redraw, read-only gating view, controls reuse the existing mute/snooze/rate functions; audio history via `${XDG_STATE_HOME:-~/.local/state}/herdr-tts/history.log`.)
+  - v2: live engine line via the engine IPC status (state with color, mm:ss progress, active provider/voice and text snippet) on a shared every-N-ticks cache cadence, fail-open "motor: no responde" fallback, and real durations in the audio history ledger (MP3 decoded with the engine's own miniaudio, one best-effort probe per render).
 - [ ] 🎙️ **Push-to-Talk Two-Way Intercom:**
   - Dictate instructions directly to the focused agent pane via hotkey (`prefix + c`), transcribing locally via lightweight fast STT (Whisper.cpp / whisper-rs) and injecting the prompt directly into Herdr's active pane.
 
