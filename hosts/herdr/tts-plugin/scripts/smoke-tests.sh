@@ -1,0 +1,642 @@
+#!/usr/bin/env bash
+# Hermetic smoke tests for herdr-tts.
+# Stubs: herdr CLI (fixture JSON, optionally stateful across pane renames),
+# venv python, isolated XDG dirs, date/tput stubs for the render pipeline.
+#
+# Scenarios
+#   0-10  dashboard v3.1 regressions (roster, overlays, history grouping,
+#         controls, overflow, fail-open, frame budget, width/height clamps)
+#   11    ambient title glyphs: lifecycle (prefix → idempotent → state clears
+#         → exact restore → integration adoption → multi-glyph → cache purge
+#         on close) + TTS_TITLE_GLYPHS=0 zero-spawn + piggyback (no extra
+#         `herdr agent list`)
+#   12    palette entry building: hidden fields parse, legacy 4-field rows,
+#         newest-first order, zero-audio chats, title truncation
+#   13    palette preview: chat header, gating, turn rows (legacy shows "-"),
+#         empty history, no-herdr fail-open, fzf-missing actionable error
+#   14    history snippet: sanitize + 5-field append + legacy fallback
+#   15    dashboard renders mixed 4/5-field history rows
+set -uo pipefail
+
+REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+SCRIPT="$REPO/bin/herdr-tts"
+ROOT="${SMOKE_ROOT:-/tmp/opencode/herdr-tts-smoke}"
+rm -rf "$ROOT"; mkdir -p "$ROOT"
+PASS=0; FAIL=0
+
+ok()  { PASS=$((PASS+1)); echo "  ok   $1"; }
+bad() { FAIL=$((FAIL+1)); echo "  FAIL $1"; }
+assert_grep() { # desc pattern file [-F]
+  if [[ "${4:-}" == "-F" ]]; then grep -qF -- "$2" "$3" && ok "$1" || bad "$1 (missing: $2)";
+  else grep -qE -- "$2" "$3" && ok "$1" || bad "$1 (no match: $2)"; fi
+}
+assert_no_grep() { # desc pattern file
+  grep -qE -- "$2" "$3" && bad "$1 (unexpected: $2)" || ok "$1";
+}
+assert_no_grep_f() { # desc fixed-string file
+  grep -qF -- "$2" "$3" && bad "$1 (unexpected: $2)" || ok "$1";
+}
+# ANSI-free visible length stats of a raw dashboard capture.
+visible_stats() { # $1 = out file -> prints "max_lines rows"
+  python3 - "$1" <<'PY'
+import re, sys
+data = open(sys.argv[1]).read()
+lines = [l for l in data.split('\n') if re.sub(r'\x1b\[[0-9;?]*[a-zA-Z]', '', l)]
+mx = max((len(re.sub(r'\x1b\[[0-9;?]*[a-zA-Z]', '', l)) for l in lines), default=0)
+print(f"{mx} {len(lines)}")
+PY
+}
+esc_count() { # $1 = out file, $2 = escape seq -> occurrence count
+  python3 - "$1" "$2" <<'PY'
+import sys
+print(open(sys.argv[1]).read().count(sys.argv[2]))
+PY
+}
+
+new_env() { # $1 = scenario dir name
+  T="$ROOT/$1"
+  rm -rf "$T"; mkdir -p "$T/bin" "$T/data/herdr-tts/venv/bin" "$T/conf" "$T/state"
+  # venv python stub: delegates to the real python3 (the history scan and
+  # the palette need a working interpreter); engine IPC probes fail open.
+  printf '#!/usr/bin/env bash\nexec python3 "$@"\n' > "$T/data/herdr-tts/venv/bin/python"
+  chmod +x "$T/data/herdr-tts/venv/bin/python"
+  export XDG_CONFIG_HOME="$T/conf" XDG_DATA_HOME="$T/data" XDG_STATE_HOME="$T/state"
+  export HERDR_TTS_SNOOZE_FILE="$T/snooze.json"
+  export HERDR_TTS_HISTORY_FILE="$T/history.log"
+  export LINES=40 COLUMNS=110
+  export PATH="$T/bin:$PATH" # stubbed herdr CLI wins over the real one
+  : > "$T/err.log"
+}
+
+write_herdr_stub() { # $1 fixture file
+  cat > "$T/bin/herdr" <<EOF
+#!/usr/bin/env bash
+if [[ "\${1:-}" == "agent" && "\${2:-}" == "list" ]]; then
+  cat "$1"
+  exit 0
+fi
+exit 0
+EOF
+  chmod +x "$T/bin/herdr"
+}
+
+# Stateful herdr stub: `pane rename` updates the served fixture (so later
+# `agent list` output reflects the rename, like the real multiplexer) and
+# EVERY invocation is logged, which makes spawn counts assertable.
+write_stateful_herdr_stub() { # $1 fixture file, $2 log file
+  cat > "$T/bin/herdr" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "herdr \$*" >> "$2"
+if [[ "\${1:-}" == "agent" && "\${2:-}" == "list" ]]; then
+  cat "$1"
+  exit 0
+fi
+if [[ "\${1:-}" == "pane" && "\${2:-}" == "rename" && -n "\${3:-}" ]]; then
+  tmp=\$(mktemp)
+  jq --arg p "\${3:-}" --arg l "\${4:-}" \
+    '(.result.agents[] | select(.pane_id == \$p)) |= (.terminal_title = \$l | .terminal_title_stripped = \$l)' \
+    "$1" > "\$tmp" && mv "\$tmp" "$1"
+  exit 0
+fi
+exit 0
+EOF
+  chmod +x "$T/bin/herdr"
+}
+
+# Library-mode harness: source the plugin script (functions only, no CLI
+# dispatch) and eval a snippet, all inside one isolated bash process.
+LIBRUN="$ROOT/librun.sh"
+cat > "$LIBRUN" <<'EOF'
+#!/bin/bash
+SCRIPT_PATH="$1"; shift
+source "$SCRIPT_PATH"
+eval "$1"
+EOF
+chmod +x "$LIBRUN"
+export T FX # snippets reference the current scenario dir / fixture
+lib_run() { # $1 snippet — call after new_env so the env is hermetic
+  /bin/bash "$LIBRUN" "$SCRIPT" "$1" 2>>"$T/err.log"
+}
+
+# Tool-only PATH used to prove behavior when herdr/fzf are absent.
+make_nobin() { # $1 dir
+  local d="$1" f
+  rm -rf "$d"; mkdir -p "$d"
+  for f in /usr/bin/* /bin/*; do
+    ln -s "$f" "$d/" 2>/dev/null || true
+  done
+  rm -f "$d/herdr" "$d/fzf" "$d/fzf-tmux"
+}
+
+# Fixture mirroring the real `herdr agent list` shape (verified live).
+make_fixture() { # $1 out file
+  cat > "$1" <<'EOF'
+{"result":{"agents":[
+ {"agent":"opencode","agent_session":{"agent":"opencode","kind":"id","source":"herdr:opencode","value":"ses_a"},"agent_status":"done","cwd":"/x","focused":false,"pane_id":"w4:p1","revision":4,"state_change_seq":9,"tab_id":"w4:t1","terminal_id":"t1","terminal_title":"OC | Priorización features herdr-tts y siguientes pasos del roadmap","terminal_title_stripped":"OC | Priorización features herdr-tts y siguientes pasos del roadmap","workspace_id":"w4"},
+ {"agent":"agy","agent_session":{"agent":"agy","kind":"id","source":"herdr:agy","value":"ses_b"},"agent_status":"working","cwd":"/x","focused":false,"pane_id":"w4:p2","revision":2,"state_change_seq":3,"tab_id":"w4:t1","terminal_id":"t2","terminal_title":"AGY | Refactor del watcher daemon","terminal_title_stripped":"AGY | Refactor del watcher daemon","workspace_id":"w4"},
+ {"agent":"opencode","agent_session":{"agent":"opencode","kind":"id","source":"herdr:opencode","value":"ses_c"},"agent_status":"idle","cwd":"/x","focused":false,"pane_id":"w4:p3","revision":7,"state_change_seq":11,"tab_id":"w4:t2","terminal_id":"t3","terminal_title":"OC | Repositorio limpio y tests en verde","terminal_title_stripped":"OC | Repositorio limpio y tests en verde","workspace_id":"w4"},
+ {"agent":"gemini","agent_session":{"agent":"gemini","kind":"id","source":"herdr:gemini","value":"ses_d"},"agent_status":"working","cwd":"/x","focused":true,"pane_id":"w4:p4","revision":1,"state_change_seq":1,"tab_id":"w4:t3","terminal_id":"t4","terminal_title":"Gem | Revisar PR 42","terminal_title_stripped":"Gem | Revisar PR 42","workspace_id":"w4"}
+]}}
+EOF
+}
+
+make_history() { # $1 out file (timestamps relative to now for age checks)
+  {
+    printf '%s\tw4:p3\topencode\t12.5\n' "$(date -d '-95 minutes' +%Y-%m-%dT%H:%M:%S)"
+    printf '%s\tw4:p3\topencode\t8.0\n'  "$(date -d '-70 minutes' +%Y-%m-%dT%H:%M:%S)"
+    printf '%s\tw4:p3\topencode\t30.2\n' "$(date -d '-45 minutes' +%Y-%m-%dT%H:%M:%S)"
+    printf '%s\tw4:p3\topencode\t5.0\n'  "$(date -d '-40 minutes' +%Y-%m-%dT%H:%M:%S)"
+    printf '%s\tw9:p9\topencode\t45.0\n' "$(date -d '-25 minutes' +%Y-%m-%dT%H:%M:%S)"
+    printf '%s\tw4:p1\topencode\t21.3\n' "$(date -d '-12 minutes' +%Y-%m-%dT%H:%M:%S)"
+    printf '%s\tw4:p1\topencode\t60.0\n' "$(date -d '-2 minutes'  +%Y-%m-%dT%H:%M:%S)"
+  } > "$1"
+}
+
+make_gate_state() { # mute w4:p3, snooze w4:p2 (+275s), debounce on w4:p1 (done 5s ago)
+  jq -n --argjson now "$(date +%s)" '{
+    panes: { "w4:p3": {muted: true}, "w4:p2": {snooze_until: ($now + 275)} },
+    debounce: { "w4:p1": {done: ($now - 5)} }
+  }' > "$HERDR_TTS_SNOOZE_FILE"
+}
+
+capture() { # $1 keys (printf %b), $2 out file
+  printf '%b' "$1" | timeout 30 "$SCRIPT" --dashboard > "$2" 2>>"$T/err.log"
+  local rc=$?
+  [[ $rc -ne 0 ]] && bad "dashboard exited rc=$rc (see $T/err.log)"
+  return 0
+}
+
+echo "── 0. bash -n"
+bash -n "$SCRIPT" && ok "bash -n clean" || bad "bash -n failed"
+
+echo "── 1. roster merge + sort + overlays + history grouping (regression)"
+new_env s1
+FX="$T/fixture.json"; make_fixture "$FX"
+write_herdr_stub "$FX"
+make_history "$HERDR_TTS_HISTORY_FILE"
+make_gate_state
+capture 'q\n' "$T/out.txt"
+
+T1="OC | Priorización features herdr-tts y siguientes pasos del roadmap"
+assert_grep "done chat rendered with truncated title" "${T1:0:39}…" "$T/out.txt" -F
+assert_grep "done line shows agent kind" '✔ .*opencode' "$T/out.txt"
+assert_grep "working icon present" '▶ ' "$T/out.txt"
+assert_grep "idle icon present" '· ' "$T/out.txt"
+d=$(grep -n 'Priorización' "$T/out.txt" | head -1 | cut -d: -f1)
+w=$(grep -n 'Refactor del watcher' "$T/out.txt" | head -1 | cut -d: -f1)
+i=$(grep -n 'Repositorio limpio' "$T/out.txt" | head -1 | cut -d: -f1)
+[[ -n "$d" && -n "$w" && -n "$i" && "$d" -lt "$w" && "$w" -lt "$i" ]] \
+  && ok "sort: done($d) < working($w) < idle($i)" || bad "sort order wrong (done=$d working=$w idle=$i)"
+assert_grep "mute overlay 🔇 on w4:p3" 'Repositorio limpio.*🔇' "$T/out.txt"
+assert_grep "snooze overlay 😴 mm:ss on w4:p2" 'Refactor del watcher.*😴 04:3[0-9]' "$T/out.txt"
+assert_grep "debounce overlay ⏱Ns on w4:p1" 'Priorización.*⏱[0-9]+s' "$T/out.txt"
+assert_grep "history section header" 'Historial por chat' "$T/out.txt"
+assert_grep "group header counts p1 (2 audios)" '· 2 audios · último hace' "$T/out.txt"
+assert_grep "group header counts p3 (4 audios)" '· 4 audios · último hace' "$T/out.txt"
+assert_grep "closed pane group labeled by pane id" '── w9:p9 ' "$T/out.txt"
+h1=$(grep -n '· 2 audios' "$T/out.txt" | head -1 | cut -d: -f1)
+h9=$(grep -n 'w9:p9' "$T/out.txt" | head -1 | cut -d: -f1)
+h3=$(grep -n '· 4 audios' "$T/out.txt" | head -1 | cut -d: -f1)
+[[ -n "$h1" && -n "$h9" && -n "$h3" && "$h1" -lt "$h9" && "$h9" -lt "$h3" ]] \
+  && ok "history groups sorted by last-audio recency (p1 < p9 < p3)" || bad "history group order wrong ($h1/$h9/$h3)"
+na=$(grep -cE '^║    · [0-9]{2}:[0-9]{2} · hace [0-9]+[smh]$' "$T/out.txt")
+[[ "$na" -eq 6 ]] && ok "audio rows: 2+1+3 = 6 (max 3 per group)" || bad "audio rows = $na (want 6)"
+assert_grep "duration+age: 01:00 two minutes ago" '· 01:00 · hace 2m' "$T/out.txt"
+assert_grep "duration+age: 00:21 twelve minutes ago" '· 00:21 · hace 12m' "$T/out.txt"
+assert_grep "duration+age: 00:45 twentyfive minutes ago (closed pane)" '· 00:45 · hace 25m' "$T/out.txt"
+assert_grep "p1 header age: último hace 2m" '── .* · 2 audios · último hace 2m' "$T/out.txt"
+assert_grep "engine fallback line intact (v2 regression)" 'motor: no responde' "$T/out.txt"
+assert_grep "global state line intact" 'snooze global off' "$T/out.txt"
+assert_grep "config line intact" 'proveedor edge' "$T/out.txt"
+# v3.1 single-tick frame: exactly one frame emit; full-clear only from cleanup
+hv=$(esc_count "$T/out.txt" $'\033[H')
+jv=$(esc_count "$T/out.txt" $'\033[J')
+cj=$(esc_count "$T/out.txt" $'\033[2J')
+[[ "$hv" -eq 2 ]] && ok "single tick → 1 frame home (H-moves=2 incl. cleanup) ($hv)" || bad "H-moves=$hv (want 2)"
+[[ "$jv" -eq 1 ]] && ok "erase-below present once ($jv)" || bad "erase-below=$jv (want 1)"
+[[ "$cj" -eq 1 ]] && ok "no full-clear in render path (2J only from cleanup) ($cj)" || bad "2J=$cj (want 1: cleanup)"
+
+echo "── 2. controls: j/m/z/Z/+/- regressions"
+new_env s2
+FX="$T/fixture.json"; make_fixture "$FX"
+write_herdr_stub "$FX"
+capture 'jmzZ+-q\n' "$T/out.txt"
+jq -e '.panes["w4:p2"].muted == true' "$HERDR_TTS_SNOOZE_FILE" >/dev/null \
+  && ok "m muted the selected chat w4:p2 (2nd after j)" || bad "m did not mute w4:p2"
+jq -e --argjson now "$(date +%s)" '.panes["w4:p2"].snooze_until > $now' "$HERDR_TTS_SNOOZE_FILE" >/dev/null \
+  && ok "z cycled snooze on selected chat" || bad "z did not snooze w4:p2"
+jq -e --argjson now "$(date +%s)" '.global_snooze_until > $now' "$HERDR_TTS_SNOOZE_FILE" >/dev/null \
+  && ok "Z cycled GLOBAL snooze" || bad "Z did not set global snooze"
+grep -qE '^TTS_RATE="\+20%"$' "$T/conf/herdr-tts/config.env" \
+  && ok "+/- adjusted rate (net +20% after + then -)" || bad "rate +/- not persisted as expected"
+frames=$(grep -c 'Panel de voz' "$T/out.txt")
+[[ "$frames" -ge 2 ]] && ok "multiple frames rendered ($frames)" || bad "only $frames frame(s)"
+last_frame=$(awk '/Panel de voz/{buf=""} {buf=buf $0 "\n"} END{printf "%s", buf}' "$T/out.txt")
+printf '%s' "$last_frame" > "$T/last_frame.txt"
+m1=$(grep -n '▸ ' "$T/last_frame.txt" | head -1 | cut -d: -f1)
+c2=$(grep -n 'Refactor del watcher' "$T/last_frame.txt" | head -1 | cut -d: -f1)
+[[ -n "$m1" && -n "$c2" && "$m1" -eq "$c2" ]] \
+  && ok "j moved cursor to 2nd roster line (working chat)" || bad "cursor mismatch (marker=$m1 line2=$c2)"
+assert_grep "snoozed chat shows 😴 overlay after z" 'Refactor del watcher.*😴' "$T/last_frame.txt"
+assert_grep "mute msg surfaced in panel" 'silenciado' "$T/out.txt"
+read stats < <(visible_stats "$T/last_frame.txt"); sl=${stats%% *}
+[[ "$sl" -le 110 ]] && ok "last frame max visible width ≤ 110 ($sl)" || bad "last frame max width $sl"
+
+echo "── 3. overflow cap (30 idle + 2 done, never hide needs-attention)"
+new_env s3
+{ printf '{"result":{"agents":['
+  printf '{"agent":"opencode","agent_status":"done","pane_id":"w1:p1","terminal_title_stripped":"DONEONE revisión crítica","agent_session":{"value":"s1"}},'
+  printf '{"agent":"opencode","agent_status":"done","pane_id":"w1:p2","terminal_title_stripped":"DONETWO revisión crítica","agent_session":{"value":"s2"}}'
+  for k in $(seq 1 60); do
+    printf ',{"agent":"agy","agent_status":"idle","pane_id":"w2:p%02d","terminal_title_stripped":"Chat idle numero %02d del listado largo","agent_session":{"value":"s%d"}}' "$k" "$k" "$k"
+  done
+  printf ']}}'
+} > "$T/fixture.json"
+rm -f "$HERDR_TTS_HISTORY_FILE"
+write_herdr_stub "$T/fixture.json"
+FX="$T/fixture.json"
+capture 'q\n' "$T/out.txt"
+assert_grep "DONEONE visible" 'DONEONE' "$T/out.txt"
+assert_grep "DONETWO visible" 'DONETWO' "$T/out.txt"
+assert_grep "overflow notice present" 'y [0-9]+ chats más' "$T/out.txt"
+read stats < <(visible_stats "$T/out.txt"); sl=${stats#* }
+[[ "$sl" -le 39 ]] && ok "total frame rows ≤ LINES-1 = 39 ($sl)" || bad "frame overflow: $sl rows"
+assert_no_grep "history section hidden without ledger" 'Historial por chat' "$T/out.txt"
+
+echo "── 4. fail-open: no herdr CLI"
+new_env s4
+make_history "$HERDR_TTS_HISTORY_FILE"
+env PATH="/usr/bin:/bin" HOME="$HOME" LINES=40 COLUMNS=110 timeout 30 "$SCRIPT" --dashboard < /dev/null > "$T/out.txt" 2>>"$T/err.log" || true
+assert_grep "roster shows sin datos de herdr" 'sin datos de herdr' "$T/out.txt"
+assert_grep "history still renders from ledger" 'Historial por chat' "$T/out.txt"
+assert_grep "closed-pane labels survive without roster" '── w4:p3 ' "$T/out.txt"
+
+echo "── 5. empty history → section hidden"
+new_env s5
+FX="$T/fixture.json"; make_fixture "$FX"
+write_herdr_stub "$FX"
+rm -f "$HERDR_TTS_HISTORY_FILE"
+capture 'q\n' "$T/out.txt"
+assert_no_grep "history section hidden" 'Historial por chat' "$T/out.txt"
+assert_grep "roster still renders" 'Chats \(j/k' "$T/out.txt"
+
+echo "── 6. CLI regressions (v2 flags)"
+new_env s6
+FX="$T/fixture.json"; make_fixture "$FX"
+write_herdr_stub "$FX"
+"$SCRIPT" --help 2>/dev/null | grep -q 'j/k chat' && ok "--help mentions chat controls" || bad "--help dashboard blurb stale"
+"$SCRIPT" --help 2>/dev/null | grep -q -- '--voice-palette' && ok "--help mentions voice palette" || bad "--help missing --voice-palette"
+timeout 10 "$SCRIPT" --status >/dev/null 2>&1 && ok "--status runs" || bad "--status failed"
+
+echo "── 7. single-write per tick + change-detection (fifo, date stubs)"
+new_env s7
+FX="$T/fixture.json"; make_fixture "$FX"
+write_herdr_stub "$FX"
+make_history "$HERDR_TTS_HISTORY_FILE"
+# 7a. LIVE clock stub: +%H:%M:%S increments per call (per tick), +%s real.
+CALLS="$T/date.calls"; : > "$CALLS"
+cat > "$T/bin/date" <<EOF
+#!/usr/bin/env bash
+if [[ "\${1:-}" == "+%H:%M:%S" ]]; then
+  echo x >> "$CALLS"
+  n=\$(cat "$T/cnt" 2>/dev/null || echo 0); n=\$((n+1)); echo "\$n" > "$T/cnt"
+  printf '12:00:%02d' "\$n"
+else
+  exec /bin/date "\$@"
+fi
+EOF
+chmod +x "$T/bin/date"
+mkfifo "$T/in"
+timeout 30 "$SCRIPT" --dashboard < "$T/in" > "$T/out.txt" 2>>"$T/err.log" &
+DPID=$!
+exec 3>"$T/in" # hold the fifo open so reads block on timeout instead of EOF
+sleep 0.3
+sleep 2.6      # ≥ two 1s read-timeouts → ≥3 ticks total
+printf 'q' >&3
+exec 3>&-
+wait "$DPID"; rc=$?
+[[ $rc -eq 0 ]] && ok "fifo session exited clean (rc=0)" || bad "fifo session rc=$rc"
+ticks=$(wc -l < "$CALLS")
+[[ "$ticks" -ge 3 ]] && ok "clock stub proves ≥3 ticks ran ($ticks)" || bad "only $ticks clock call(s)"
+hv=$(esc_count "$T/out.txt" $'\033[H')
+[[ "$hv" -ge 4 ]] && ok "changing clock → every tick written (H-moves=$hv ≥ 3 frames + cleanup)" || bad "H-moves=$hv with changing clock (want ≥4)"
+# 7b. FROZEN clock stub: identical frames → change-detection must skip writes.
+new_env s7b
+FX="$T/fixture.json"; make_fixture "$FX"
+write_herdr_stub "$FX"
+make_history "$HERDR_TTS_HISTORY_FILE"
+CALLS="$T/date.calls"; : > "$CALLS"
+cat > "$T/bin/date" <<EOF
+#!/usr/bin/env bash
+if [[ "\${1:-}" == "+%H:%M:%S" ]]; then
+  echo x >> "$CALLS"
+  printf '12:00:00'
+else
+  exec /bin/date "\$@"
+fi
+EOF
+chmod +x "$T/bin/date"
+mkfifo "$T/in"
+timeout 30 "$SCRIPT" --dashboard < "$T/in" > "$T/out.txt" 2>>"$T/err.log" &
+DPID=$!
+exec 3>"$T/in"
+sleep 0.3
+sleep 2.6
+printf 'q' >&3
+exec 3>&-
+wait "$DPID"; rc=$?
+[[ $rc -eq 0 ]] && ok "frozen session exited clean (rc=0)" || bad "frozen session rc=$rc"
+ticks=$(wc -l < "$CALLS")
+[[ "$ticks" -ge 3 ]] && ok "frozen clock: ≥3 ticks ran ($ticks)" || bad "only $ticks clock call(s)"
+hv=$(esc_count "$T/out.txt" $'\033[H')
+[[ "$hv" -eq 2 ]] && ok "identical ticks → change-detection: exactly 1 physical frame write (H=2 incl cleanup)" || bad "H-moves=$hv for identical frames (want 2)"
+frames=$(grep -c 'Panel de voz' "$T/out.txt")
+[[ "$frames" -eq 1 ]] && ok "exactly 1 frame of content in output ($frames)" || bad "$frames frame(s) in output (want 1)"
+
+echo "── 8. width clamp: COLUMNS=90 → no line exceeds 90 visible chars"
+new_env s8
+export COLUMNS=90
+LONG="OC | Título larguisimo de más de noventa columnas para forzar el wrap del popup y reventar el layout entero"
+{ printf '{"result":{"agents":['
+  printf '{"agent":"opencode","agent_status":"done","pane_id":"w8:p1","terminal_title_stripped":"%s","agent_session":{"value":"a"}},' "$LONG"
+  printf '{"agent":"agy","agent_status":"working","pane_id":"w8:p2","terminal_title_stripped":"AGY | Refactor del watcher daemon","agent_session":{"value":"b"}},'
+  printf '{"agent":"opencode","agent_status":"idle","pane_id":"w8:p3","terminal_title_stripped":"OC | Repositorio limpio y tests en verde","agent_session":{"value":"c"}}'
+  printf ']}}'
+} > "$T/fixture.json"
+write_herdr_stub "$T/fixture.json"
+FX="$T/fixture.json"
+make_history "$HERDR_TTS_HISTORY_FILE"
+make_gate_state
+capture 'q\n' "$T/out.txt"
+read stats < <(visible_stats "$T/out.txt"); sl=${stats%% *}; nl=${stats#* }
+[[ "$sl" -le 90 ]] && ok "no line exceeds 90 visible chars (max=$sl, lines=$nl)" || bad "max visible width $sl > 90"
+LONGT32="${LONG:0:31}…"
+if grep -qF -- "$LONGT32" "$T/out.txt"; then
+  ok "roster title truncated to dynamic width 32 (90 cols < 110 base)"
+else
+  bad "roster title not truncated to 32 (got: $(grep -oF "${LONG:0:20}" "$T/out.txt" | head -1)…)"
+fi
+LONG40="${LONG:0:39}…"
+assert_no_grep_f "old fixed width 40 no longer used at 90 cols" "$LONG40" "$T/out.txt"
+echo "  → measured max line length at COLUMNS=90: $sl visible chars"
+
+echo "── 9. height clamp: LINES=30 → history gone, idle dropped, done kept"
+new_env s9
+export LINES=30
+{ printf '{"result":{"agents":['
+  printf '{"agent":"opencode","agent_status":"done","pane_id":"w9:p1","terminal_title_stripped":"DONEONE revisión crítica","agent_session":{"value":"s1"}},'
+  printf '{"agent":"opencode","agent_status":"done","pane_id":"w9:p2","terminal_title_stripped":"DONETWO revisión crítica","agent_session":{"value":"s2"}}'
+  for k in $(seq 1 30); do
+    printf ',{"agent":"agy","agent_status":"idle","pane_id":"w9:i%02d","terminal_title_stripped":"Chat idle numero %02d del panel","agent_session":{"value":"i%d"}}' "$k" "$k" "$k"
+  done
+  printf ']}}'
+} > "$T/fixture.json"
+write_herdr_stub "$T/fixture.json"
+FX="$T/fixture.json"
+make_history "$HERDR_TTS_HISTORY_FILE"
+capture 'q\n' "$T/out.txt"
+read stats < <(visible_stats "$T/out.txt"); nl=${stats#* }
+[[ "$nl" -le 29 ]] && ok "frame rows ≤ LINES-1 = 29 ($nl)" || bad "frame rows $nl > 29"
+assert_no_grep "history shrunk away first (budget 24 → 0)" 'Historial por chat' "$T/out.txt"
+assert_grep "done chat DONEONE kept" 'DONEONE' "$T/out.txt"
+assert_grep "done chat DONETWO kept" 'DONETWO' "$T/out.txt"
+assert_grep "idle chats dropped with notice" 'y [0-9]+ chats más' "$T/out.txt"
+echo "── 9b. minimum fit: LINES=10 → fixed lines + 2 chats + notice = 9 rows"
+new_env s9b
+export LINES=10
+cp "$ROOT/s9/fixture.json" "$T/fixture.json"
+write_herdr_stub "$T/fixture.json"
+FX="$T/fixture.json"
+make_history "$HERDR_TTS_HISTORY_FILE"
+capture 'q\n' "$T/out.txt"
+read stats < <(visible_stats "$T/out.txt"); nl=${stats#* }
+[[ "$nl" -eq 9 ]] && ok "minimum frame: exactly 9 rows (LINES-1) ($nl)" || bad "minimum frame rows = $nl (want 9)"
+assert_grep "footer survives the minimum fit" 'q salir' "$T/out.txt"
+assert_grep "done chats survive the minimum fit" 'DONEONE' "$T/out.txt"
+assert_grep "'+N chats' notice rendered" 'y 30 chats más' "$T/out.txt"
+
+echo "── 10. size fallback chain: env unset + failing tput → 40x100"
+new_env s10
+unset LINES COLUMNS
+printf '#!/usr/bin/env bash\nexit 1\n' > "$T/bin/tput"; chmod +x "$T/bin/tput"
+LONG="OC | Título larguisimo de más de noventa columnas para forzar el wrap del popup y reventar el layout entero"
+{ printf '{"result":{"agents":['
+  printf '{"agent":"opencode","agent_status":"done","pane_id":"wA:p1","terminal_title_stripped":"%s","agent_session":{"value":"a"}}' "$LONG"
+  printf ']}}'
+} > "$T/fixture.json"
+write_herdr_stub "$T/fixture.json"
+FX="$T/fixture.json"
+rm -f "$HERDR_TTS_HISTORY_FILE"
+capture 'q\n' "$T/out.txt"
+LONG36="${LONG:0:35}…"
+grep -qF -- "$LONG36" "$T/out.txt" \
+  && ok "fallback cols=100 → roster title width 36 (100*40/110)" || bad "title not at fallback width 36"
+LONG40="${LONG:0:39}…"
+assert_no_grep_f "fallback did not use full width 40" "$LONG40" "$T/out.txt"
+read stats < <(visible_stats "$T/out.txt"); nl=${stats#* }
+[[ "$nl" -le 39 ]] && ok "fallback lines=40 → frame rows ≤ 39 ($nl)" || bad "frame rows $nl > 39"
+
+echo "── 11. title glyphs: lifecycle + opt-out + piggyback"
+new_env s11
+FX="$T/fixture.json"
+cat > "$FX" <<'EOF'
+{"result":{"agents":[
+ {"agent":"opencode","agent_status":"done","pane_id":"w4:p1","terminal_title":"OC | Chat Original","terminal_title_stripped":"OC | Chat Original"},
+ {"agent":"agy","agent_status":"working","pane_id":"w4:p2","terminal_title":"AGY | Refactor del watcher","terminal_title_stripped":"AGY | Refactor del watcher"},
+ {"agent":"opencode","agent_status":"idle","pane_id":"w4:p3","terminal_title":"OC | Repositorio limpio","terminal_title_stripped":"OC | Repositorio limpio"}
+]}}
+EOF
+write_stateful_herdr_stub "$FX" "$T/herdr.log"
+: > "$T/herdr.log"
+
+# 11a. prefix: done pane gets ✔, original cached, others untouched
+lib_run 'sync_pane_titles "$(cat "$FX")"'
+assert_grep "11a rename to ✔-prefixed title" 'herdr pane rename w4:p1 ✔ \| OC \| Chat Original$' "$T/herdr.log"
+[[ "$(jq -r '.panes["w4:p1"].title_original' "$HERDR_TTS_SNOOZE_FILE" 2>/dev/null)" == "OC | Chat Original" ]] \
+  && ok "11a original title cached in snooze state" || bad "11a title_original missing/wrong"
+grep -q 'rename w4:p2' "$T/herdr.log" && bad "11a working pane renamed (must not)" || ok "11a working pane untouched"
+grep -q 'rename w4:p3' "$T/herdr.log" && bad "11a idle pane renamed (must not)" || ok "11a idle pane untouched"
+[[ "$(jq -r '.result.agents[] | select(.pane_id=="w4:p1") | .terminal_title_stripped' "$FX")" == "✔ | OC | Chat Original" ]] \
+  && ok "11a stateful stub applied the rename to the live title" || bad "11a stub did not apply rename"
+
+# 11b. idempotent: second sweep renames nothing
+: > "$T/herdr.log"
+lib_run 'sync_pane_titles "$(cat "$FX")"'
+[[ "$(wc -l < "$T/herdr.log")" -eq 0 ]] \
+  && ok "11b rename-only-on-change: 2nd sweep spawned nothing" || bad "11b 2nd sweep spawned: $(cat "$T/herdr.log")"
+grep -q 'agent list' "$T/herdr.log" && bad "11b sync spawned herdr agent list" || ok "11b piggyback: sync itself never spawns agent list"
+
+# 11c. state clears → exact restore + cache dropped
+jq '(.result.agents[] | select(.pane_id == "w4:p1")).agent_status = "working"' "$FX" > "$T/f2" && mv "$T/f2" "$FX"
+: > "$T/herdr.log"
+lib_run 'sync_pane_titles "$(cat "$FX")"'
+assert_grep "11c restore renames to original" 'herdr pane rename w4:p1 OC \| Chat Original$' "$T/herdr.log"
+[[ "$(jq -r '.panes["w4:p1"].title_original // "NO-CACHE"' "$HERDR_TTS_SNOOZE_FILE")" == "NO-CACHE" ]] \
+  && ok "11c title_original dropped after restore" || bad "11c cache not dropped"
+
+# 11d. integration rename mid-session → adopt as new original
+lib_run 'toggle_pane_mute w4:p1 >/dev/null' # 🔇 glyph via the ledger
+"$T/bin/herdr" pane rename w4:p1 "INTEGRATION | Renamed by tool" # foreign rename
+: > "$T/herdr.log"
+lib_run 'sync_pane_titles "$(cat "$FX")"'
+assert_grep "11d muted+renamed pane gets 🔇 prefix on ADOPTED title" 'herdr pane rename w4:p1 🔇 \| INTEGRATION \| Renamed by tool$' "$T/herdr.log"
+[[ "$(jq -r '.panes["w4:p1"].title_original' "$HERDR_TTS_SNOOZE_FILE")" == "INTEGRATION | Renamed by tool" ]] \
+  && ok "11d integration title adopted as new original" || bad "11d adoption failed"
+
+# 11e. multi-glyph stacking in fixed order (✔ done, 🔇 mute, 😴 snooze)
+lib_run 'cycle_snooze pane w4:p1 >/dev/null'
+jq '(.result.agents[] | select(.pane_id == "w4:p1")).agent_status = "done"' "$FX" > "$T/f2" && mv "$T/f2" "$FX"
+: > "$T/herdr.log"
+lib_run 'sync_pane_titles "$(cat "$FX")"'
+assert_grep "11e done+mute+snooze stacks ✔🔇😴" 'herdr pane rename w4:p1 ✔🔇😴 \| INTEGRATION \| Renamed by tool$' "$T/herdr.log"
+
+# 11f. glyphs vanish → exact restore of the adopted original
+jq 'del(.panes["w4:p1"].snooze_until)' "$HERDR_TTS_SNOOZE_FILE" > "$T/s2" && mv "$T/s2" "$HERDR_TTS_SNOOZE_FILE"
+lib_run 'toggle_pane_mute w4:p1 >/dev/null' # unmute
+jq '(.result.agents[] | select(.pane_id == "w4:p1")).agent_status = "working"' "$FX" > "$T/f2" && mv "$T/f2" "$FX"
+: > "$T/herdr.log"
+lib_run 'sync_pane_titles "$(cat "$FX")"'
+assert_grep "11f exact restore after glyphs vanish" 'herdr pane rename w4:p1 INTEGRATION \| Renamed by tool$' "$T/herdr.log"
+[[ "$(jq -r '.panes["w4:p1"].title_original // "NO-CACHE"' "$HERDR_TTS_SNOOZE_FILE")" == "NO-CACHE" ]] \
+  && ok "11f cache dropped again" || bad "11f cache not dropped"
+
+# 11g. panes that close purge their cache in the prune sweep
+jq -c '.panes = ((.panes // {}) + {"w4:p1": {title_original: "Cached Title", muted: true}})' \
+  "$HERDR_TTS_SNOOZE_FILE" > "$T/s2" && mv "$T/s2" "$HERDR_TTS_SNOOZE_FILE"
+jq 'del(.result.agents[] | select(.pane_id == "w4:p1"))' "$FX" > "$T/f2" && mv "$T/f2" "$FX"
+lib_run 'prune_snooze_state "$(cat "$FX")"'
+[[ "$(jq -r '.panes["w4:p1"].title_original // null' "$HERDR_TTS_SNOOZE_FILE")" == "null" ]] \
+  && ok "11g closed pane purged title cache in prune" || bad "11g cache survived pane close"
+
+# 11h. TTS_TITLE_GLYPHS=0 → daemon_title_sync spawns NOTHING
+: > "$T/herdr.log"
+lib_run 'TTS_TITLE_GLYPHS=0 daemon_title_sync "$(cat "$FX")"'
+[[ "$(wc -l < "$T/herdr.log")" -eq 0 ]] \
+  && ok "11h TTS_TITLE_GLYPHS=0 → zero spawns" || bad "11h spawned with glyphs off: $(cat "$T/herdr.log")"
+
+echo "── 12. palette entries: hidden fields, legacy rows, zero-audio chats"
+new_env s12
+FX="$T/fixture.json"
+cat > "$FX" <<'EOF'
+{"result":{"agents":[
+ {"agent":"opencode","agent_status":"done","pane_id":"w4:p1","terminal_title":"OC | Chat Uno","terminal_title_stripped":"OC | Chat Uno"},
+ {"agent":"agy","agent_status":"working","pane_id":"w4:p2","terminal_title":"AGY | Chat Dos","terminal_title_stripped":"AGY | Chat Dos"},
+ {"agent":"gemini","agent_status":"idle","pane_id":"w4:p3","terminal_title":"Gem | Sin audios todavia","terminal_title_stripped":"Gem | Sin audios todavia"}
+]}}
+EOF
+write_herdr_stub "$FX"
+# chronological order (append-only ledger): p1 snippet row, p1 legacy row, p2 row
+{
+  printf '%s\tw4:p1\topencode\t21.3\tPrimera vuelta del chat uno\n' "$(date -d '-12 minutes' +%Y-%m-%dT%H:%M:%S)"
+  printf '%s\tw4:p1\topencode\t60.0\n' "$(date -d '-2 minutes' +%Y-%m-%dT%H:%M:%S)"
+  printf '%s\tw4:p2\tagy\t8.0\tRespuesta mas reciente de todas\n' "$(date -d 'now' +%Y-%m-%dT%H:%M:%S)"
+} > "$HERDR_TTS_HISTORY_FILE"
+lib_run 'palette_build_entries' > "$T/out.txt"
+[[ "$(wc -l < "$T/out.txt")" -eq 4 ]] \
+  && ok "12 4 entries: 3 audios + 1 zero-audio chat" || bad "12 entry count = $(wc -l < "$T/out.txt") (want 4)"
+nfields=$(awk -F'\t' '{print NF}' "$T/out.txt" | sort -u | tr '\n' ' ')
+[[ "$nfields" == "3 " ]] && ok "12 every entry has 3 tab-delimited fields" || bad "12 field counts: $nfields"
+mapfile -t plines < "$T/out.txt"
+l1="${plines[0]:-}"; l2="${plines[1]:-}"; l3="${plines[2]:-}"; l4="${plines[3]:-}"
+[[ "${l1%%$'\t'*}" == *"· 00:08 · Respuesta mas reciente de todas" ]] \
+  && ok "12 newest audio first (p2 row leads)" || bad "12 first entry not newest: ${l1%%$'\t'*}"
+[[ "${l2%%$'\t'*}" == *"· 01:00 · -" ]] \
+  && ok "12 legacy 4-field row renders '-' snippet" || bad "12 legacy row wrong: ${l2%%$'\t'*}"
+[[ "$(printf '%s' "$l2" | cut -f2)" == "w4:p1" && "$(printf '%s' "$l2" | cut -f3)" =~ ^[0-9]+$ ]] \
+  && ok "12 hidden fields parse: pane_id + numeric epoch" || bad "12 hidden fields wrong: $l2"
+[[ "$l4" == "(sin audios) · Gem | Sin audios todavia"$'\t'"w4:p3"$'\t'"chat" ]] \
+  && ok "12 zero-audio chat entry format exact" || bad "12 zero-audio entry: $l4"
+
+echo "── 13. palette preview: header, gating, turns, fail-open, no-fzf"
+new_env s13
+FX="$T/fixture.json"
+cat > "$FX" <<'EOF'
+{"result":{"agents":[
+ {"agent":"opencode","agent_status":"done","pane_id":"w4:p1","terminal_title":"OC | Chat Uno","terminal_title_stripped":"OC | Chat Uno"}
+]}}
+EOF
+write_herdr_stub "$FX"
+make_gate_state # w4:p3 muted/debounce entries don't apply; w4:p1 clean
+{
+  printf '%s\tw4:p1\topencode\t21.3\tPrimera vuelta del chat uno\n' "$(date -d '-12 minutes' +%Y-%m-%dT%H:%M:%S)"
+  printf '%s\tw4:p1\topencode\t60.0\n' "$(date -d '-2 minutes' +%Y-%m-%dT%H:%M:%S)"
+} > "$HERDR_TTS_HISTORY_FILE"
+lib_run 'palette_preview w4:p1' > "$T/out.txt"
+assert_grep "13 header shows chat title" '^📌 OC \| Chat Uno$' "$T/out.txt"
+assert_grep "13 header shows agent+status" 'agente: opencode · estado: done' "$T/out.txt"
+assert_grep "13 gating shows the active debounce hold" 'gating: .*⏱ debounce activo \([0-9]+s\)' "$T/out.txt"
+assert_grep "13 newest turn first with legacy '-' snippet" '· 01:00 · -$' "$T/out.txt"
+assert_grep "13 older turn shows snippet" '· 00:21 · Primera vuelta del chat uno$' "$T/out.txt"
+t1=$(grep -n '· 01:00 · -' "$T/out.txt" | head -1 | cut -d: -f1)
+t2=$(grep -n '· 00:21 · Primera' "$T/out.txt" | head -1 | cut -d: -f1)
+[[ -n "$t1" && -n "$t2" && "$t1" -lt "$t2" ]] \
+  && ok "13 turns sorted newest first" || bad "13 turn order wrong"
+lib_run 'palette_preview w9:zz' > "$T/out2.txt"
+assert_grep "13 empty history → sin turnos" '^sin turnos$' "$T/out2.txt"
+make_nobin "$T/nobin"
+env PATH="$T/nobin" HOME="$HOME" XDG_CONFIG_HOME="$T/conf" XDG_DATA_HOME="$T/data" \
+  XDG_STATE_HOME="$T/state" HERDR_TTS_SNOOZE_FILE="$HERDR_TTS_SNOOZE_FILE" HERDR_TTS_HISTORY_FILE="$HERDR_TTS_HISTORY_FILE" \
+  /bin/bash "$LIBRUN" "$SCRIPT" 'palette_preview w4:p1' > "$T/out3.txt" 2>/dev/null
+assert_grep "13 no herdr CLI → explicit note" 'herdr CLI no disponible' "$T/out3.txt"
+assert_grep "13 no-herdr preview still lists turns" '· 00:21 · Primera' "$T/out3.txt"
+env PATH="$T/nobin" HOME="$HOME" XDG_CONFIG_HOME="$T/conf" XDG_DATA_HOME="$T/data" \
+  XDG_STATE_HOME="$T/state" HERDR_TTS_SNOOZE_FILE="$HERDR_TTS_SNOOZE_FILE" HERDR_TTS_HISTORY_FILE="$HERDR_TTS_HISTORY_FILE" \
+  /bin/bash "$LIBRUN" "$SCRIPT" 'run_voice_palette' > "$T/out4.txt" 2>&1
+assert_grep "13 no fzf → actionable Spanish error" 'fzf no está instalado' "$T/out4.txt"
+assert_grep "13 no-fzf error suggests install command" 'apt install fzf|brew install fzf' "$T/out4.txt"
+
+echo "── 14. history snippet: sanitize, 5-field append, legacy fallback"
+new_env s14
+FX="$T/fixture.json"; make_fixture "$FX"
+write_herdr_stub "$FX"
+lib_run '
+  s=""
+  history_snippet s "$(printf "Hola\r\nmundo\t  con   \x1b[31mANSI\x1b[0m colorea  y\nsigue ")"
+  echo "[$s]"
+  append_audio_history w4:p1 opencode 12.5 "texto limpio de prueba"
+  append_audio_history w4:p2 agy 3.0 ""
+' > "$T/out.txt"
+assert_grep "14 snippet single-line + ANSI stripped + whitespace collapsed" '^\[Hola mundo con ANSI colorea y sigue\]$' "$T/out.txt"
+[[ "$(awk -F'\t' 'NR==1{print NF}' "$HERDR_TTS_HISTORY_FILE")" -eq 5 ]] \
+  && ok "14 non-empty snippet → 5-field row" || bad "14 first row not 5-field"
+grep -qE $'^[^\t]+\tw4:p1\topencode\t12\.5\ttexto limpio de prueba$' "$HERDR_TTS_HISTORY_FILE" \
+  && ok "14 row schema ts/pane/agent/duration/snippet" || bad "14 row schema wrong: $(head -1 "$HERDR_TTS_HISTORY_FILE" | cat -A)"
+[[ "$(awk -F'\t' 'NR==2{print NF}' "$HERDR_TTS_HISTORY_FILE")" -eq 4 ]] \
+  && ok "14 empty snippet → legacy 4-field row (no empty tail)" || bad "14 second row not 4-field"
+lib_run '
+  big="$(printf "pad %.0s" $(seq 1 200))"
+  s=""
+  history_snippet s "$big"
+  echo "${#s}"
+' > "$T/out2.txt"
+[[ "$(cat "$T/out2.txt")" -le 120 ]] \
+  && ok "14 snippet capped at ~120 chars ($(cat "$T/out2.txt"))" || bad "14 snippet too long: $(cat "$T/out2.txt")"
+
+echo "── 15. dashboard renders mixed 4/5-field history rows"
+new_env s15
+FX="$T/fixture.json"; make_fixture "$FX"
+write_herdr_stub "$FX"
+{
+  printf '%s\tw4:p3\topencode\t12.5\n' "$(date -d '-95 minutes' +%Y-%m-%dT%H:%M:%S)"
+  printf '%s\tw4:p3\topencode\t8.0\tRevision con snippet nuevo\n' "$(date -d '-70 minutes' +%Y-%m-%dT%H:%M:%S)"
+  printf '%s\tw4:p3\topencode\t30.2\n' "$(date -d '-45 minutes' +%Y-%m-%dT%H:%M:%S)"
+  printf '%s\tw9:p9\topencode\t45.0\tOtro snippet de chat cerrado\n' "$(date -d '-25 minutes' +%Y-%m-%dT%H:%M:%S)"
+  printf '%s\tw4:p1\topencode\t21.3\n' "$(date -d '-12 minutes' +%Y-%m-%dT%H:%M:%S)"
+  printf '%s\tw4:p1\topencode\t60.0\tCierre con detalle final\n' "$(date -d '-2 minutes'  +%Y-%m-%dT%H:%M:%S)"
+} > "$HERDR_TTS_HISTORY_FILE"
+capture 'q\n' "$T/out.txt"
+assert_grep "15 history section renders with mixed rows" 'Historial por chat' "$T/out.txt"
+assert_grep "15 group header counts p3 (3 audios)" '· 3 audios · último hace' "$T/out.txt"
+na=$(grep -cE '^║    · [0-9]{2}:[0-9]{2} · hace [0-9]+[smh]$' "$T/out.txt")
+[[ "$na" -eq 6 ]] && ok "15 audio rows intact (max 3/group): $na" || bad "15 audio rows = $na (want 6)"
+assert_grep "15 legacy row renders (00:12)" '· 00:12 · hace 1h' "$T/out.txt"
+assert_grep "15 5-field row renders (01:00)" '· 01:00 · hace 2m' "$T/out.txt"
+if grep -q $'\t' <(sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' "$T/out.txt"); then
+  bad "15 snippets leaked raw tabs into the frame"
+else
+  ok "15 snippets never leak raw tabs into the frame"
+fi
+
+echo
+echo "═══ RESULT: $PASS passed, $FAIL failed ═══"
+exit $(( FAIL > 0 ? 1 : 0 ))

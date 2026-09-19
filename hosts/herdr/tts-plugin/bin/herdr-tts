@@ -9,6 +9,8 @@ set -euo pipefail
 REAL_SCRIPT="$(readlink -f "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "${REAL_SCRIPT}")" && pwd)"
 PLUGIN_ROOT="${HERDR_PLUGIN_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
+# Canonical path for re-invocations spawned by children (fzf preview/binds)
+SCRIPT="${REAL_SCRIPT}"
 
 # Standard XDG paths
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/herdr-tts"
@@ -61,6 +63,9 @@ DEFAULT_PIPER_MODEL=""
 # Windows host via agent-tts --winhost) or "wsl-ps" (PowerShell, zero install).
 DEFAULT_TTS_PLAYBACK="local"
 DEFAULT_DEBOUNCE_SECONDS="20" # anti-spam window per (pane, status); 0 disables
+# Ambient pane-title glyphs (done/blocked ✔, mute 🔇, snooze 😴) synced on the
+# daemon sweep; 0 = fully off (the sweep spawns nothing for titles).
+DEFAULT_TTS_TITLE_GLYPHS="1"
 
 notify_herdr() {
   local title="$1"
@@ -105,6 +110,7 @@ TTS_PLAYBACK="${TTS_PLAYBACK:-$DEFAULT_TTS_PLAYBACK}"
 PODCAST_ENABLED="${PODCAST_ENABLED:-$DEFAULT_PODCAST_ENABLED}"
 PODCAST_PORT="${PODCAST_PORT:-$DEFAULT_PODCAST_PORT}"
 TTS_DEBOUNCE_SECONDS="${TTS_DEBOUNCE_SECONDS:-$DEFAULT_DEBOUNCE_SECONDS}"
+TTS_TITLE_GLYPHS="${TTS_TITLE_GLYPHS:-$DEFAULT_TTS_TITLE_GLYPHS}"
 OPENAI_API_KEY="${OPENAI_API_KEY:-$DEFAULT_OPENAI_API_KEY}"
 OPENAI_BASE_URL="${OPENAI_BASE_URL:-$DEFAULT_OPENAI_BASE_URL}"
 OPENAI_TTS_MODEL="${OPENAI_TTS_MODEL:-$DEFAULT_OPENAI_TTS_MODEL}"
@@ -131,6 +137,7 @@ TTS_PLAYBACK="${TTS_PLAYBACK}"
 PODCAST_ENABLED="${PODCAST_ENABLED}"
 PODCAST_PORT="${PODCAST_PORT}"
 TTS_DEBOUNCE_SECONDS="${TTS_DEBOUNCE_SECONDS}"
+TTS_TITLE_GLYPHS="${TTS_TITLE_GLYPHS}"
 OPENAI_API_KEY="${OPENAI_API_KEY}"
 OPENAI_BASE_URL="${OPENAI_BASE_URL}"
 OPENAI_TTS_MODEL="${OPENAI_TTS_MODEL}"
@@ -820,8 +827,11 @@ render_pane_audio() {
 
   build_provider_flags
   if "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$TTS_VOICE" --rate "$TTS_RATE" --max-chars "$TTS_MAX_CHARS" --output "$output_file" --no-play "${PROVIDER_FLAGS[@]}"; then
-    # Audio ledger for the dashboard history (best effort; no agent context here)
-    append_audio_history "$target_pane" "-" "$(audio_duration_secs "$output_file")"
+    # Audio ledger for the dashboard history (best effort; no agent context
+    # here). The 5th field carries the first ~120 chars of the spoken text.
+    local hist_snippet
+    history_snippet hist_snippet "$text"
+    append_audio_history "$target_pane" "-" "$(audio_duration_secs "$output_file")" "$hist_snippet"
     return 0
   fi
   return 1
@@ -1154,6 +1164,139 @@ prune_snooze_state() {
   [[ "$pruned" == "$state" ]] || save_snooze_state "$pruned" || true
 }
 
+# ─── Ambient pane-title glyphs (v0.11) ───────────────────────
+# The daemon sweep piggybacks a title sync: agent panes whose voice state
+# needs attention (done/blocked, muted, snoozed) get a glyph prefix on
+# their pane title. Idempotent and rename-only-on-change: the pane's
+# ORIGINAL title is cached once in the snooze state file (field
+# `title_original` under the pane key — the existing prune sweep drops it
+# for free when the pane closes) and every sweep only calls
+# `herdr pane rename` when the live title drifted from the expected one.
+# RESTORE is sacred: as soon as no glyph applies, the pane goes back to
+# its cached original title and the cache entry is dropped; without a
+# cache, any leading run of our own markers is stripped instead. Titles
+# that match neither the expected value nor our marker pattern (and have
+# no cache) are ADOPTED as the new original so integrations that rename
+# panes are never fought over.
+
+TITLE_GLYPH_DONE="✔"     # agent_status done/blocked
+TITLE_GLYPH_MUTE="🔇"    # pane muted in the gating ledger
+TITLE_GLYPH_SNOOZE="😴"  # per-pane snooze active in the gating ledger
+TITLE_GLYPH_SEP=" | "    # joins the glyph block with the original title
+# Leading marker run matcher/stripper (literal alternation, multibyte-safe).
+TITLE_GLYPHS_RE='^((✔|🔇|😴)[[:space:]]?)+\|[[:space:]]?'
+
+strip_title_glyphs() { # <out-var> <title>
+  local _sg_s="$2"
+  while [[ "$_sg_s" =~ $TITLE_GLYPHS_RE ]]; do
+    _sg_s="${_sg_s#${BASH_REMATCH[0]}}"
+  done
+  printf -v "$1" '%s' "$_sg_s"
+}
+
+# One sweep of title sync over the agent list the daemon already fetched:
+# ONE jq pass over the agents snapshot + ONE over the gating ledger, then
+# only the drifted panes get a `herdr pane rename` spawn. Fails open: no
+# agents snapshot or no jq output means nothing to do.
+sync_pane_titles() { # <raw_agents_json>
+  local now state rows
+  now=$(date +%s)
+  state=$(load_snooze_state)
+  rows=$(printf '%s' "$1" | jq -r '
+      .result.agents[]?
+      | "\(.pane_id // "")\t\(.agent_status // "")\t\((.terminal_title_stripped // .terminal_title // "") | gsub("[\\t\\r\\n]"; " "))"
+    ' 2>/dev/null) || return 0
+  [[ -z "$rows" ]] && return 0
+
+  # Single pass over the gating ledger: muted flag, active per-pane snooze
+  # and any cached original title, keyed by pane_id.
+  local -A s_muted=() s_snoozed=() s_orig=()
+  local kp km ku ko
+  while IFS=$'\t' read -r kp km ku ko; do
+    [[ -z "$kp" ]] && continue
+    [[ "$km" == "true" ]] && s_muted["$kp"]=1
+    if [[ "$ku" =~ ^[0-9]+$ ]] && (( ku > now )); then
+      s_snoozed["$kp"]=1
+    fi
+    [[ -n "$ko" ]] && s_orig["$kp"]="$ko"
+  done < <(jq -r '
+      ((.panes // {}) | to_entries[])
+      | [ .key,
+          ((.value.muted // false)|tostring),
+          ((.value.snooze_until // 0)|tostring),
+          ((.value.title_original // "")|tostring) ] | @tsv
+    ' <<<"$state" 2>/dev/null || true)
+
+  local changed=false
+  local p st title glyphs original expected clean
+  while IFS=$'\t' read -r p st title; do
+    # Never touch panes without an agent entry or without a title to guard.
+    [[ -z "$p" || "$p" == "null" || -z "$title" ]] && continue
+    original="${s_orig[$p]:-}"
+
+    glyphs=""
+    case "$st" in done|blocked) glyphs+="$TITLE_GLYPH_DONE" ;; esac
+    [[ -n "${s_muted[$p]:-}" ]] && glyphs+="$TITLE_GLYPH_MUTE"
+    [[ -n "${s_snoozed[$p]:-}" ]] && glyphs+="$TITLE_GLYPH_SNOOZE"
+
+    if [[ -z "$glyphs" ]]; then
+      # Restore path: no glyph applies anymore.
+      if [[ -n "$original" ]]; then
+        if [[ "$title" != "$original" ]]; then
+          herdr pane rename "$p" "$original" >/dev/null 2>&1 || true
+          changed=true
+        fi
+        state=$(jq -c --arg p "$p" 'del(.panes[$p].title_original)' <<<"$state")
+        changed=true
+      else
+        strip_title_glyphs clean "$title"
+        if [[ "$clean" != "$title" ]]; then
+          herdr pane rename "$p" "$clean" >/dev/null 2>&1 || true
+          changed=true
+        fi
+      fi
+      continue
+    fi
+
+    # Prefix path: recover (or adopt) the original title first.
+    if [[ -z "$original" ]]; then
+      if [[ "$title" =~ $TITLE_GLYPHS_RE ]]; then
+        strip_title_glyphs clean "$title" # daemon restarted, cache lost
+      else
+        clean="$title"
+      fi
+      original="$clean"
+      state=$(jq -c --arg p "$p" --arg o "$original" \
+        '.panes = ((.panes // {}) + {($p): ((.panes[$p] // {}) + {title_original: $o})})' <<<"$state")
+      changed=true
+    elif [[ "$title" != "$original" && ! "$title" =~ $TITLE_GLYPHS_RE ]]; then
+      # Integration renamed the pane mid-session: adopt its title as the
+      # new original instead of fighting over the label.
+      original="$title"
+      state=$(jq -c --arg p "$p" --arg o "$original" \
+        '.panes = ((.panes // {}) + {($p): ((.panes[$p] // {}) + {title_original: $o})})' <<<"$state")
+      changed=true
+    fi
+    expected="${glyphs}${TITLE_GLYPH_SEP}${original}"
+    if [[ "$title" != "$expected" ]]; then
+      herdr pane rename "$p" "$expected" >/dev/null 2>&1 || true
+      changed=true
+    fi
+  done <<<"$rows"
+
+  if [[ "$changed" == true ]]; then
+    save_snooze_state "$state" || true
+  fi
+  return 0
+}
+
+# Daemon call-site guard: with TTS_TITLE_GLYPHS=0 the title sync is fully
+# off and the sweep spawns NOTHING for titles (not even a jq pass).
+daemon_title_sync() { # <raw_agents_json>
+  [[ "${TTS_TITLE_GLYPHS:-1}" == "0" ]] && return 0
+  sync_pane_titles "$1"
+}
+
 # Decide whether a watcher done/blocked event must be silenced BEFORE it
 # reaches the synthesis engine. Returns 0 = gate (no speech, no engine
 # call, log only), 1 = allow. Allowed events refresh the (pane, status)
@@ -1206,7 +1349,10 @@ gate_agent_event() {
 
 # ─── Audio history ledger ────────────────────────────────────
 # Append-only TSV ledger consumed by the dashboard: one line per rendered
-# audio — <ISO timestamp> <TAB> <pane> <TAB> <agent> <TAB> <duration>.
+# audio — <ISO timestamp> <TAB> <pane> <TAB> <agent> <TAB> <duration>
+# [<TAB> <snippet>]. v0.11 added the 5th field: the first ~120 chars of
+# the spoken text, single-line sanitized. Consumers must treat each row
+# as 4-field (legacy) or 5-field; rows are never rewritten in place.
 # Best effort by design: a history write failure must never break the
 # speech path.
 
@@ -1226,15 +1372,39 @@ print(len(decoded.samples) / float(decoded.sample_rate * decoded.nchannels))
 ' "$audio_file" 2>/dev/null || true
 }
 
-append_audio_history() {
+# First ~120 chars of the spoken text as a single sanitized line: ANSI
+# escape sequences stripped, CR/LF/tabs folded to spaces, control chars
+# dropped, whitespace collapsed. Internal names are _hs_-prefixed on
+# purpose: printf -v must reach the CALLER's variable, so no local may
+# shadow a plausible out-var name (same discipline as dashboard_clamp_line).
+history_snippet() { # <out-var> <text>
+  local _hs_esc=$'\033' _hs_buf
+  _hs_buf=$(printf '%s' "$2" \
+    | sed -E -e "s/${_hs_esc}\\[[0-9;?]*[a-zA-Z]//g" -e "s/${_hs_esc}[@-Z\\\\-_]//g" \
+    | tr '\n\t\r' '   ' \
+    | tr -d '\000-\010\013\014\016-\037\177' \
+    | tr -s ' ' \
+    | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+  printf -v "$1" '%s' "${_hs_buf:0:120}"
+}
+
+append_audio_history() { # <pane_id> <agent> <duration> [snippet]
   local pane_id="${1:--}"
   local agent="${2:--}"
   local duration="${3:--}"
+  local snippet
+  history_snippet snippet "${4:-}"
   # An empty probe result (engine decode failed) keeps the v1 "-" column.
   [[ -n "$duration" ]] || duration="-"
   mkdir -p "${HISTORY_FILE%/*}" 2>/dev/null || true
-  printf '%s\t%s\t%s\t%s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$pane_id" "$agent" "$duration" \
-    >> "$HISTORY_FILE" 2>/dev/null || true
+  if [[ -n "$snippet" ]]; then
+    printf '%s\t%s\t%s\t%s\t%s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$pane_id" "$agent" "$duration" "$snippet" \
+      >> "$HISTORY_FILE" 2>/dev/null || true
+  else
+    # No usable snippet → keep the plain legacy 4-field row (no empty tail).
+    printf '%s\t%s\t%s\t%s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$pane_id" "$agent" "$duration" \
+      >> "$HISTORY_FILE" 2>/dev/null || true
+  fi
 }
 
 # ─── Watcher daemon ──────────────────────────────────────────
@@ -1297,9 +1467,12 @@ watch_agent_pane() {
           fi
           rm -f "$synth_err"
 
-          # Audio ledger for the dashboard history (best effort)
+          # Audio ledger for the dashboard history (best effort). The
+          # 5th field carries the first ~120 chars of the spoken text.
           if [[ -s "$tmp_audio" ]]; then
-            append_audio_history "$pane_id" "${agent_kind:-$agent_name}" "$(audio_duration_secs "$tmp_audio")"
+            local hist_snippet
+            history_snippet hist_snippet "$pane_text"
+            append_audio_history "$pane_id" "${agent_kind:-$agent_name}" "$(audio_duration_secs "$tmp_audio")" "$hist_snippet"
           fi
 
           # 2. Push notification (mobile via ntfy, if configured)
@@ -1374,6 +1547,10 @@ run_daemon() {
 
     # Pane lifecycle: drop mute/snooze/debounce state for closed panes
     prune_snooze_state "$raw_agents"
+
+    # Ambient title glyphs (done/muted/snoozed) piggyback on this sweep —
+    # no extra `herdr agent list`, only rename spawns for drifted panes.
+    daemon_title_sync "$raw_agents"
 
     while IFS=$'\t' read -r pane_id agent_name; do
       [[ -z "$pane_id" || "$pane_id" == "null" ]] && continue
@@ -2137,6 +2314,222 @@ run_dashboard() {
   trap - EXIT INT TERM
 }
 
+# ─── Voice palette (v0.11, fzf popup) ────────────────────────
+# `--voice-palette` renders an fzf picker inside a Herdr popup pane with
+# one entry per audio turn (newest first, from the history ledger) plus
+# one entry per agent chat with zero audios. Snapshot per open: no live
+# loop. Accept focuses the chat; ctrl-m / ctrl-z apply mute / snooze to
+# the selected pane through the existing CLI flags (they accept an
+# optional explicit pane id) and exit without focusing anything.
+
+PALETTE_TITLE_CHARS=35         # chat title cap in the entry line
+PALETTE_SNIPPET_CHARS=60       # snippet cap in the entry line
+PALETTE_HISTORY_SCAN_LINES=400 # ledger tail scanned per palette open
+
+palette_trunc() { # <out-var> <string> <width> — truncate with ellipsis, no padding
+  local _pt_s="$2" _pt_w="$3"
+  if (( ${#_pt_s} > _pt_w )); then
+    _pt_s="${_pt_s:0:_pt_w-1}…"
+  fi
+  printf -v "$1" '%s' "$_pt_s"
+}
+
+# Reversed history rows (newest first) as TSV: hhmm, pane, dur, snippet,
+# epoch. ONE python pass (same interpreter as the dashboard scan) because
+# datetime applies per-date DST rules to the epoch column, which a
+# hand-rolled calendar cannot. Legacy 4-field rows yield snippet "-".
+# Fails open: no file, no python or corrupt rows → empty output.
+palette_history_rows() { # [scan_lines] (omit = whole ledger)
+  local cap="${1:-}" input_lines
+  [[ -s "$HISTORY_FILE" ]] || return 0
+  if [[ -n "$cap" ]]; then
+    input_lines=$(tail -n "$cap" "$HISTORY_FILE" 2>/dev/null) || return 0
+  else
+    input_lines=$(cat "$HISTORY_FILE" 2>/dev/null) || return 0
+  fi
+  [[ -z "$input_lines" ]] && return 0
+  printf '%s\n' "$input_lines" | "$VENV_PYTHON" -c '
+import sys
+from datetime import datetime
+
+rows = []
+for line in sys.stdin.read().split("\n"):
+    f = line.split("\t")
+    if len(f) < 4 or not f[1]:
+        continue
+    ts, pane, dur = f[0], f[1], f[3]
+    snippet = f[4] if len(f) > 4 and f[4] else "-"
+    hhmm = ts[11:16] if len(ts) >= 16 else "??:??"
+    try:
+        epoch = str(int(datetime.fromisoformat(ts).timestamp()))
+    except ValueError:
+        epoch = "0"
+    rows.append("\t".join([hhmm, pane, dur, snippet, epoch]))
+sys.stdout.write("".join(r + "\n" for r in reversed(rows)))
+' 2>/dev/null || return 0
+}
+
+# Palette entries, one per line: display field + tab-delimited hidden
+# fields (<pane_id> <ts_epoch>, or <pane_id> "chat" for zero-audio rows).
+# Audio turns come newest first; zero-audio chats follow in agent-list
+# order. Prints to stdout so the smoke battery can diff the format.
+palette_build_entries() {
+  local -A p_title=()
+  local -a p_order=()
+  local raw pid title
+  raw=$(herdr agent list 2>/dev/null) || raw=""
+  if [[ -n "$raw" ]]; then
+    while IFS=$'\t' read -r pid title; do
+      [[ -z "$pid" || "$pid" == "null" ]] && continue
+      p_title["$pid"]="${title:-$pid}"
+      p_order+=("$pid")
+    done < <(printf '%s' "$raw" | jq -r '
+        .result.agents[]?
+        | "\(.pane_id // "")\t\((.terminal_title_stripped // .terminal_title // "") | gsub("[\\t\\r\\n]"; " "))"
+      ' 2>/dev/null || true)
+  fi
+
+  local -a entries=()
+  local -A has_audio=()
+  local hhmm pane dur snippet epoch line chat_title dur_lbl
+  while IFS=$'\t' read -r hhmm pane dur snippet epoch; do
+    [[ -z "$pane" ]] && continue
+    has_audio["$pane"]=1
+    chat_title="${p_title[$pane]:-$pane}"
+    palette_trunc chat_title "$chat_title" "$PALETTE_TITLE_CHARS"
+    palette_trunc snippet "$snippet" "$PALETTE_SNIPPET_CHARS"
+    dashboard_fmt_dur dur_lbl "$dur"
+    printf -v line '%s · %s · %s · %s\t%s\t%s' "$hhmm" "$chat_title" "$dur_lbl" "$snippet" "$pane" "$epoch"
+    entries+=("$line")
+  done < <(palette_history_rows "$PALETTE_HISTORY_SCAN_LINES")
+
+  local pid2
+  for pid2 in ${p_order[@]+"${p_order[@]}"}; do
+    [[ -n "${has_audio[$pid2]:-}" ]] && continue
+    chat_title="${p_title[$pid2]:-$pid2}"
+    palette_trunc chat_title "$chat_title" "$PALETTE_TITLE_CHARS"
+    entries+=("(sin audios) · ${chat_title}"$'\t'"${pid2}"$'\t'"chat")
+  done
+
+  local e
+  for e in ${entries[@]+"${entries[@]}"}; do
+    printf '%s\n' "$e"
+  done
+  return 0
+}
+
+run_voice_palette() {
+  if ! command -v fzf >/dev/null 2>&1; then
+    echo "❌ fzf no está instalado: la paleta de voz lo necesita para funcionar" >&2
+    echo "   Instálalo (p. ej. 'sudo apt install fzf' o 'brew install fzf') y vuelve a abrirla." >&2
+    return 1
+  fi
+
+  local -a entries=()
+  mapfile -t entries < <(palette_build_entries)
+  if (( ${#entries[@]} == 0 )); then
+    echo "ℹ️ Sin chats ni audios que mostrar en la paleta"
+    return 0
+  fi
+
+  local sel pane_id
+  # Snapshot-per-open: fzf exits on accept (enter / ctrl-o) or on the
+  # ctrl-m / ctrl-z actions (execute-silent applies the mutation through
+  # the CLI flags and abort skips the accept path entirely).
+  sel=$(printf '%s\n' "${entries[@]}" | fzf \
+    --delimiter '\t' \
+    --with-nth 1 \
+    --reverse \
+    --height 100% \
+    --header 'enter/ctrl-o: enfocar chat · ctrl-m: silenciar pane · ctrl-z: snooze pane · esc: salir' \
+    --preview "'$SCRIPT' --palette-preview {2}" \
+    --preview-window 'right:50%:wrap' \
+    --bind 'ctrl-o:accept' \
+    --bind "ctrl-m:execute-silent('$SCRIPT' --mute-pane {2})+abort" \
+    --bind "ctrl-z:execute-silent('$SCRIPT' --snooze-pane {2})+abort") || return 0
+
+  pane_id=$(printf '%s' "$sel" | cut -f2)
+  [[ -z "$pane_id" ]] && return 0
+  herdr pane focus "$pane_id" >/dev/null 2>&1 || true
+  echo "🎯 Chat ${pane_id} enfocado (la paleta se cierra en 2s)"
+  sleep 2
+  return 0
+}
+
+# fzf preview helper: chat header (title, agent+state, voice gating) plus
+# ALL history turns of the pane, newest first. Fails open everywhere.
+palette_preview() { # <pane_id>
+  local pane_id="${1:-}"
+  if [[ -z "$pane_id" ]]; then
+    echo "Uso: herdr-tts --palette-preview <pane_id>" >&2
+    return 1
+  fi
+
+  # Chat header: title/agent/status from the agent roster (fail-open: no
+  # herdr CLI still renders the pane id and an explicit note).
+  local raw="" pid agent st title=""
+  raw=$(herdr agent list 2>/dev/null) || raw=""
+  if [[ -n "$raw" ]]; then
+    while IFS=$'\t' read -r pid agent st title; do
+      if [[ "$pid" == "$pane_id" ]]; then
+        break
+      fi
+      title=""
+    done < <(printf '%s' "$raw" | jq -r '
+        .result.agents[]?
+        | "\(.pane_id // "")\t\(.agent // "")\t\(.agent_status // "")\t\((.terminal_title_stripped // .terminal_title // "") | gsub("[\\t\\r\\n]"; " "))"
+      ' 2>/dev/null || true)
+  fi
+  [[ -z "$title" ]] && title="$pane_id"
+  echo "📌 ${title}"
+  if [[ -z "$raw" ]]; then
+    echo "   ⚠️ herdr CLI no disponible (sin datos de agente)"
+  else
+    echo "   agente: ${agent:-?} · estado: ${st:-?}"
+  fi
+
+  # Voice gating state for the pane, mirroring the dashboard overlays.
+  local now state muted until_ts last_status last_ts gate=""
+  now=$(date +%s)
+  state=$(load_snooze_state)
+  muted=$(jq -r --arg p "$pane_id" '(.panes[$p].muted // false)' <<<"$state" 2>/dev/null) || muted=false
+  until_ts=$(jq -r --arg p "$pane_id" '(.panes[$p].snooze_until // 0)' <<<"$state" 2>/dev/null) || until_ts=0
+  last_status=$(jq -r --arg p "$pane_id" \
+    '(.debounce[$p] // {} | to_entries | sort_by(.value) | (last // {key:"",value:0}).key)' \
+    <<<"$state" 2>/dev/null) || last_status=""
+  last_ts=$(jq -r --arg p "$pane_id" \
+    '(.debounce[$p] // {} | to_entries | sort_by(.value) | (last // {key:"",value:0}).value)' \
+    <<<"$state" 2>/dev/null) || last_ts=0
+  if [[ "$muted" == "true" ]]; then
+    gate="🔇 silenciado"
+  fi
+  if [[ "$until_ts" =~ ^[0-9]+$ ]] && (( until_ts > now )); then
+    gate+="${gate:+ · }😴 snooze $(fmt_mmss $(( until_ts - now ))) restantes (hasta $(fmt_epoch_clock "$until_ts"))"
+  fi
+  if (( TTS_DEBOUNCE_SECONDS > 0 )) \
+     && [[ -n "$last_status" && "$last_status" != "null" ]] \
+     && [[ "$last_ts" =~ ^[0-9]+$ ]] \
+     && (( now - last_ts < TTS_DEBOUNCE_SECONDS )); then
+    gate+="${gate:+ · }⏱ debounce activo ($(( TTS_DEBOUNCE_SECONDS - (now - last_ts) ))s)"
+  fi
+  [[ -z "$gate" ]] && gate="🔊 voz activa"
+  echo "   gating: ${gate}"
+  echo
+
+  echo "── Turnos de audio (recientes primero) ──"
+  local hhmm pid dur snippet epoch dur_lbl n=0
+  while IFS=$'\t' read -r hhmm pid dur snippet epoch; do
+    [[ "$pid" != "$pane_id" ]] && continue
+    dashboard_fmt_dur dur_lbl "$dur"
+    echo "${hhmm} · ${dur_lbl} · ${snippet}"
+    n=$(( n + 1 ))
+  done < <(palette_history_rows) # whole ledger, newest first
+  if (( n == 0 )); then
+    echo "sin turnos"
+  fi
+  return 0
+}
+
 # ─── CLI Entrypoint ──────────────────────────────────────────
 
 # Library mode: when sourced (tests/tooling), only define functions and
@@ -2173,13 +2566,17 @@ case "${1:-}" in
     toggle_auto
     ;;
   --snooze|--snooze-pane)
-    cycle_snooze pane
+    # Optional explicit pane id (used by the voice palette); without one
+    # the focused pane is targeted, as before.
+    cycle_snooze pane "${2:-}"
     ;;
   --snooze-global)
     cycle_snooze global
     ;;
   --mute|--mute-pane)
-    toggle_pane_mute
+    # Optional explicit pane id (used by the voice palette); without one
+    # the focused pane is targeted, as before.
+    toggle_pane_mute "${2:-}"
     ;;
   --debounce)
     if [[ "${2:-}" =~ ^[0-9]+$ ]]; then
@@ -2430,6 +2827,12 @@ case "${1:-}" in
   --dashboard)
     run_dashboard
     ;;
+  --voice-palette)
+    run_voice_palette
+    ;;
+  --palette-preview)
+    palette_preview "${2:-}"
+    ;;
   _daemon)
     run_daemon
     ;;
@@ -2498,10 +2901,13 @@ Podcast RSS privado (para escuchar en móvil con Pocket Casts / Overcast / Apple
   --podcast-publish        Publicar respuesta actual directamente al feed de podcast
 
 Información:
-  --status                 Ver estado actual, lock y configuración
-  --dashboard              Panel TUI en vivo (pane de Herdr): estado por chat,
-                           audios agrupados por chat, snoozes e historial
-                           (controles: q salir · j/k chat · m silenciar · z snooze pane · Z snooze global · +/- velocidad)
+   --status                 Ver estado actual, lock y configuración
+   --dashboard              Panel TUI en vivo (pane de Herdr): estado por chat,
+                            audios agrupados por chat, snoozes e historial
+                            (controles: q salir · j/k chat · m silenciar · z snooze pane · Z snooze global · +/- velocidad)
+   --voice-palette          Selector interactivo (fzf, pane de Herdr) de chats y
+                            audios: enter enfoca, ctrl-m silencia, ctrl-z snooze
+   --palette-preview <pane> Cabecera de chat + turnos de audio del pane (preview fzf)
 EOF
     ;;
   *)

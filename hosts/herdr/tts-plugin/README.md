@@ -268,6 +268,7 @@ herdr-tts --click-redirect on  # Optional: tap notification body to open web URL
 herdr-tts --render-pane <pane> # Export clean assistant speech of a pane directly to .mp3
 herdr-tts --speak "Hello"      # Synthesize custom text directly
 herdr-tts --dashboard          # Live TUI dashboard pane: snooze countdowns, per-pane gating, audio history
+herdr-tts --voice-palette      # fzf picker of chats and audio turns (focus / mute / snooze)
 ```
 
 ### Handy Shell Aliases
@@ -406,6 +407,9 @@ NTFY_SERVER="https://ntfy.sh"
 WEB_URL=""                  # Or "https://my-desktop.tailscale.net"
 WEB_LABEL="Collie"
 CLICK_REDIRECT="off"        # "off" = tap opens ntfy player; "on" = tap opens web URL
+
+# Ambient pane-title glyphs (default on):
+TTS_TITLE_GLYPHS="1"        # 1 = ✔/🔇/😴 prefixes on pane titles; 0 = fully off
 ```
 
 ---
@@ -447,6 +451,51 @@ El panel es de **solo lectura** frente al gate/mutex/watcher: toda mutación pas
 | `+` / `-` | Velocidad de voz +10% / −10% (persistida en config) |
 
 > **Disciplina de coste v3:** `herdr agent list` se consulta cada N ticks (default 3) con caché, el estado del motor comparte esa cadencia, y el historial se agrupa en **una sola pasada de python** por tick (el mismo intérprete del venv del motor; agrupa, ordena por recencia y convierte las marcas locales a epoch con reglas DST correctas por fecha). Todo lo demás por tick es lectura local de ficheros y bash sin forks: nunca un subshell por línea renderizada. Refresco configurable con `HERDR_TTS_DASHBOARD_REFRESH` (segundos, default `1`).
+
+---
+
+## 🏷️ Glifos de estado en el título del pane (v0.11)
+
+El daemon sincroniza el **título del pane** con el estado de voz del chat, aprovechando el barrido que ya hace cada ~4s (un único `herdr agent list` por barrido, cero spawns extra):
+
+* `✔` — el agente terminó o está bloqueado (`done` / `blocked`).
+* `🔇` — el chat está silenciado (`prefix+m`).
+* `😴` — el chat tiene un snooze activo (`prefix+z`). Los glifos se acumulan: `✔😴 | <título>`.
+
+Reglas de convivencia:
+
+* **Idempotente y rename-only-on-change:** el título original del pane se guarda una sola vez en el fichero de estado (`title_original`) y solo se llama a `herdr pane rename` cuando el título vivo difiere del esperado.
+* **La restauración es sagrada:** en cuanto ningún glifo aplica, el pane vuelve a su título original y la caché se borra. Si la caché no existe, se pelan los prefijos conocidos del título actual.
+* **Nunca se pelea con otras integraciones:** si el título actual no encaja con lo esperado ni empieza por nuestros marcadores (y no hay caché), se **adopta** como nuevo título original.
+* **Opt-out total:** `TTS_TITLE_GLYPHS="0"` en `config.env` desactiva la función por completo — el barrido no genera ni un spawn para títulos. Los panes cerrados purgan su caché en la misma poda del daemon.
+
+---
+
+## 🎛️ Paleta de voz (v0.11, fzf)
+
+Selector interactivo de chats y audios pensado para vivir en un **popup de Herdr** (`tts-palette`, 80%×70%):
+
+```bash
+herdr plugin pane open --plugin herdr.tts --entrypoint tts-palette
+```
+
+Cada fila muestra `HH:MM · título · duración · fragmento` del texto hablado (los chats sin audios aparecen como `(sin audios)`), con el título del chat truncado y el fragmento real de la última locución. Es una **foto por apertura** (sin bucle en vivo) y el preview muestra la cabecera del chat (agente, estado y gating) con **todos** sus turnos de audio, del más reciente al más antiguo.
+
+| Tecla | Acción |
+| :--- | :--- |
+| `enter` / `ctrl-o` | Enfocar el chat seleccionado (`herdr pane focus`), confirmación 2s y cierre |
+| `ctrl-m` | Silenciar el pane seleccionado (equivale a `prefix+m`) y salir |
+| `ctrl-z` | Ciclar snooze del pane seleccionado (5m → 30m → 2h → off) y salir |
+| `esc` | Salir sin hacer nada |
+
+Requiere `fzf` en el `PATH` (si falta, se muestra un error accionable). Keybinding sugerido para abrir la paleta desde la shell:
+
+```toml
+[[keys.command]]
+key = "prefix+o"
+type = "shell"
+command = "herdr plugin pane open --plugin herdr.tts --entrypoint tts-palette"
+```
 
 ---
 
