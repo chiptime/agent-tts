@@ -821,7 +821,7 @@ render_pane_audio() {
   build_provider_flags
   if "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$TTS_VOICE" --rate "$TTS_RATE" --max-chars "$TTS_MAX_CHARS" --output "$output_file" --no-play "${PROVIDER_FLAGS[@]}"; then
     # Audio ledger for the dashboard history (best effort; no agent context here)
-    append_audio_history "$target_pane" "-" "-"
+    append_audio_history "$target_pane" "-" "$(audio_duration_secs "$output_file")"
     return 0
   fi
   return 1
@@ -1207,12 +1207,31 @@ gate_agent_event() {
 # ─── Audio history ledger ────────────────────────────────────
 # Append-only TSV ledger consumed by the dashboard: one line per rendered
 # audio — <ISO timestamp> <TAB> <pane> <TAB> <agent> <TAB> <duration>.
-# Duration is "-" in v1 (the engine owns playback timing). Best effort by
-# design: a history write failure must never break the speech path.
+# Best effort by design: a history write failure must never break the
+# speech path.
+
+# Duration (seconds, 1 decimal) of a finished render. The engine prints no
+# duration on --no-play renders and no IPC session survives them, so the
+# real value comes from decoding the MP3 with the engine's own miniaudio
+# (already in the venv). Budget: one extra engine-environment invocation
+# per completed render, best effort, never blocking on failure.
+audio_duration_secs() {
+  local audio_file="$1"
+  [[ -s "$audio_file" ]] || return 0
+  "$VENV_PYTHON" -c '
+import sys
+import miniaudio
+decoded = miniaudio.decode(open(sys.argv[1], "rb").read())
+print(len(decoded.samples) / float(decoded.sample_rate * decoded.nchannels))
+' "$audio_file" 2>/dev/null || true
+}
+
 append_audio_history() {
   local pane_id="${1:--}"
   local agent="${2:--}"
   local duration="${3:--}"
+  # An empty probe result (engine decode failed) keeps the v1 "-" column.
+  [[ -n "$duration" ]] || duration="-"
   mkdir -p "${HISTORY_FILE%/*}" 2>/dev/null || true
   printf '%s\t%s\t%s\t%s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$pane_id" "$agent" "$duration" \
     >> "$HISTORY_FILE" 2>/dev/null || true
@@ -1280,7 +1299,7 @@ watch_agent_pane() {
 
           # Audio ledger for the dashboard history (best effort)
           if [[ -s "$tmp_audio" ]]; then
-            append_audio_history "$pane_id" "${agent_kind:-$agent_name}" "-"
+            append_audio_history "$pane_id" "${agent_kind:-$agent_name}" "$(audio_duration_secs "$tmp_audio")"
           fi
 
           # 2. Push notification (mobile via ntfy, if configured)
@@ -1387,6 +1406,8 @@ run_daemon() {
 
 DASHBOARD_HISTORY_LINES=20        # audio ledger rows rendered (newest first)
 DASHBOARD_ROSTER_REFRESH_TICKS=3  # `herdr agent list` every N ticks (cached)
+DASHBOARD_ENGINE_REFRESH_TICKS=3  # engine IPC status every N ticks (cached, v2)
+DASHBOARD_SNIPPET_MAX_CHARS=48    # width cap for the engine text snippet
 
 fmt_mmss() {
   local secs="$1"
@@ -1410,6 +1431,46 @@ dashboard_refresh_roster() {
     DASH_PANES+=("$pid")
     DASH_AGENTS+=("${agent:-desconocido}")
   done < <(printf '%s' "$raw" | jq -r '.result.agents[]? | "\(.pane_id)\t\(.agent)"' 2>/dev/null || true)
+}
+
+# Live engine status (v2) through the same host→engine invocation the
+# --toggle-pause flow uses. Queried on the roster cache cadence: one python
+# spawn every N ticks for the WHOLE dashboard, never per pane. Fails open:
+# with no engine session the cache stays empty and the Motor line renders
+# the static fallback plus an explicit "motor: no responde" note.
+dashboard_refresh_engine() {
+  DASH_ENGINE_STATUS=""
+  local res
+  res=$("$VENV_PYTHON" "$ENGINE_SCRIPT" --ipc-cmd status 2>/dev/null) || return 0
+  [[ -z "$res" || "$res" == *"Error:"* ]] && return 0
+  DASH_ENGINE_STATUS="$res"
+}
+
+# Word-field extraction from the single-line engine payload (`key=value`
+# tokens whose values never contain spaces). First match wins: engine
+# fields precede the free-text fields, so a snippet containing e.g.
+# "pos=" can never shadow the real field. Set-e safe via `|| true`.
+dashboard_engine_field() {
+  local payload="$1" key="$2" value=""
+  value=$(printf '%s' "$payload" | grep -o "${key}=[^ ]*" | head -n 1 | cut -d= -f2) || true
+  printf '%s' "$value"
+}
+
+# Trailing free-text snippet (may contain spaces): everything after the
+# last `text=` marker, v1's `sed -n 's/.*key=//p'` convention.
+dashboard_engine_text() {
+  printf '%s' "$1" | sed -n 's/.*text=//p'
+}
+
+# Spanish label for the engine state word reported by the IPC payload.
+dashboard_engine_state_label() {
+  case "$1" in
+    playing)      printf '▶ reproduciendo' ;;
+    paused)       printf '⏸ pausado' ;;
+    stopped)      printf '⏹ detenido' ;;
+    synthesizing) printf '⌛ sintetizando' ;;
+    *)            printf '%s' "${1:-desconocido}" ;;
+  esac
 }
 
 # Move the selection cursor inside the roster (delta +1 / -1, wrapping).
@@ -1479,16 +1540,43 @@ dashboard_render() {
     printf '║ Global  ⚪ snooze global off · (Z cicla 5m → 30m → 2h → off)\n'
   fi
 
-  # Engine state from the cheap local lock file; the agent-tts IPC is
-  # deliberately NOT queried in v1 (one python spawn per tick is not free).
-  local engine_label="⚪ En reposo" auto_label="🔊 activa"
-  if is_playing; then
-    engine_label="🔊 Reproduciendo"
-  fi
+  # Motor line (v2): live IPC status when the engine answers — colored
+  # state, mm:ss progress, provider/voice and a truncated text snippet.
+  # Otherwise the v1 static lock-file fallback stays, upgraded with an
+  # explicit "motor: no responde" fail-open note.
+  local auto_label="🔊 activa"
   if is_auto_muted; then
     auto_label="🔇 silenciada"
   fi
-  printf '║ Motor   %s · auto-lectura %s\n' "$engine_label" "$auto_label"
+  if [[ -n "${DASH_ENGINE_STATUS:-}" ]]; then
+    local e_state e_pos e_total e_provider e_voice e_text e_color
+    e_state=$(dashboard_engine_field "$DASH_ENGINE_STATUS" status)
+    e_pos=$(dashboard_engine_field "$DASH_ENGINE_STATUS" pos)
+    e_total=$(dashboard_engine_field "$DASH_ENGINE_STATUS" total)
+    e_provider=$(dashboard_engine_field "$DASH_ENGINE_STATUS" provider)
+    e_voice=$(dashboard_engine_field "$DASH_ENGINE_STATUS" voice)
+    e_text=$(dashboard_engine_text "$DASH_ENGINE_STATUS")
+    if ! [[ "$e_pos" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then e_pos=0; fi
+    if ! [[ "$e_total" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then e_total=0; fi
+    case "$e_state" in
+      playing)      e_color=$'\033[32m' ;;
+      paused)       e_color=$'\033[33m' ;;
+      synthesizing) e_color=$'\033[36m' ;;
+      *)            e_color=$'\033[90m' ;;
+    esac
+    printf '║ Motor   %s%s · %s / %s · %s · %s · %.*s\033[0m · auto-lectura %s\n' \
+      "$e_color" "$(dashboard_engine_state_label "$e_state")" \
+      "$(fmt_mmss "${e_pos%%.*}")" "$(fmt_mmss "${e_total%%.*}")" \
+      "${e_provider:-?}" "${e_voice:-?}" \
+      "$DASHBOARD_SNIPPET_MAX_CHARS" "${e_text:-—}" \
+      "$auto_label"
+  else
+    local engine_label="⚪ En reposo"
+    if is_playing; then
+      engine_label="🔊 Reproduciendo"
+    fi
+    printf '║ Motor   %s · motor: no responde · auto-lectura %s\n' "$engine_label" "$auto_label"
+  fi
   printf '║ Config  proveedor %s · voz %s (%s) · playback %s · debounce %ss\n' \
     "$TTS_PROVIDER" "$TTS_VOICE" "$TTS_RATE" "${TTS_PLAYBACK:-local}" "$TTS_DEBOUNCE_SECONDS"
 
@@ -1554,12 +1642,13 @@ dashboard_sync_rate() {
 # Entry point of the dashboard pane. The key loop doubles as the refresh
 # loop: `read -t 1` waits up to one second for a key, so an idle dashboard
 # redraws at ~1Hz while keypresses are handled instantly. Only the pane
-# roster hits the Herdr CLI (every few ticks); everything else per tick is
-# local file reads.
+# roster and the engine status hit external processes, both on the same
+# every-N-ticks cache cadence; everything else per tick is a local file read.
 run_dashboard() {
   local refresh_secs="${HERDR_TTS_DASHBOARD_REFRESH:-1}"
   local selected="" msg="" msg_time="" key="" rc=0 tick=0
   local -a DASH_PANES=() DASH_AGENTS=()
+  local DASH_ENGINE_STATUS=""
 
   trap dashboard_cleanup EXIT
   trap 'exit 0' INT TERM
@@ -1568,6 +1657,9 @@ run_dashboard() {
   while true; do
     if (( tick % DASHBOARD_ROSTER_REFRESH_TICKS == 0 )) || (( ${#DASH_PANES[@]} == 0 )); then
       dashboard_refresh_roster
+    fi
+    if (( tick % DASHBOARD_ENGINE_REFRESH_TICKS == 0 )); then
+      dashboard_refresh_engine
     fi
     tick=$(( tick + 1 ))
 
