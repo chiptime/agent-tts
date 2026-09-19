@@ -15,6 +15,10 @@ from typing import Callable, Optional
 from agent_tts.constants import IPC_PORT_FILE, IPC_SOCKET
 
 CLIENT_TIMEOUT_SEC = 1.0
+# Upper bound for a single reply. The server answers with one line, so the
+# client keeps reading until the newline (or EOF/cap) instead of trusting a
+# single recv() — long status payloads must not be truncated mid-field.
+MAX_REPLY_BYTES = 8192
 
 
 def _is_windows() -> bool:
@@ -79,8 +83,24 @@ def send_ipc_command(command: str, socket_path: str = IPC_SOCKET) -> Optional[st
         return None
     try:
         client.sendall(f"{command.strip()}\n".encode("utf-8"))
-        res = client.recv(1024).decode("utf-8", errors="ignore").strip()
-        return res
+        chunks = []
+        received = 0
+        try:
+            while received < MAX_REPLY_BYTES:
+                chunk = client.recv(1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                received += len(chunk)
+                if b"\n" in chunk:
+                    break
+        except Exception:
+            # Fall through with whatever arrived before the failure; only an
+            # empty exchange degrades to None (same as the old single recv).
+            pass
+        if not chunks:
+            return None
+        return b"".join(chunks).decode("utf-8", errors="ignore").strip()
     except Exception:
         return None
     finally:
