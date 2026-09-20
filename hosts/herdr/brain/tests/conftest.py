@@ -28,3 +28,10 @@ SETTINGS_KWARGS = dict(
 @pytest.fixture
 def settings() -> Settings:
     return Settings(**SETTINGS_KWARGS)
+
+
+@pytest.fixture(autouse=True)
+def hermetic_stores(tmp_path, monkeypatch):
+    """Never let tests touch the real transcript stores on this machine."""
+    monkeypatch.setenv("OPENCODE_DB", str(tmp_path / "nonexistent-opencode.db"))
+    monkeypatch.setenv("CLAUDE_PROJECTS_ROOT", str(tmp_path / "nonexistent-claude"))
