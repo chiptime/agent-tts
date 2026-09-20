@@ -100,15 +100,23 @@ write_stateful_herdr_stub() { # $1 fixture file, $2 log file
   cat > "$T/bin/herdr" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "herdr \$*" >> "$2"
-if [[ "\${1:-}" == "agent" && "\${2:-}" == "list" ]]; then
-  cat "$1"
+# Reality (verified live): pane rename sets the pane LABEL; agent list never
+# reflects it. The stub keeps labels in a JSONL sidecar, last write wins.
+if [[ "\${1:-}" == "pane" && "\${2:-}" == "rename" && -n "\${3:-}" ]]; then
+  jq -n --arg p "\${3:-}" --arg l "\${4:-}" '{pane_id:\$p,label:\$l}' >> "$1.labels"
   exit 0
 fi
-if [[ "\${1:-}" == "pane" && "\${2:-}" == "rename" && -n "\${3:-}" ]]; then
-  tmp=\$(mktemp)
-  jq --arg p "\${3:-}" --arg l "\${4:-}" \
-    '(.result.agents[] | select(.pane_id == \$p)) |= (.terminal_title = \$l | .terminal_title_stripped = \$l)' \
-    "$1" > "\$tmp" && mv "\$tmp" "$1"
+if [[ "\${1:-}" == "pane" && "\${2:-}" == "list" ]]; then
+  jq -s --slurpfile fx "$1" '
+    (reduce .[] as \$u ({}; .[\$u.pane_id] = \$u.label)) as \$labels
+    | {result:{panes:[\$fx[0].result.agents[]
+        | .pane_id as \$p | . + {label:(\$labels[\$p] // .terminal_title_stripped)}]}}' \
+      "$1.labels" 2>/dev/null \
+    || jq '{result:{panes:[.result.agents[] | . + {label:.terminal_title_stripped}]}}' "$1"
+  exit 0
+fi
+if [[ "\${1:-}" == "agent" && "\${2:-}" == "list" ]]; then
+  cat "$1"
   exit 0
 fi
 exit 0
@@ -469,14 +477,17 @@ assert_grep "11a rename to ✔-prefixed title" 'herdr pane rename w4:p1 ✔ \| O
   && ok "11a original title cached in snooze state" || bad "11a title_original missing/wrong"
 grep -q 'rename w4:p2' "$T/herdr.log" && bad "11a working pane renamed (must not)" || ok "11a working pane untouched"
 grep -q 'rename w4:p3' "$T/herdr.log" && bad "11a idle pane renamed (must not)" || ok "11a idle pane untouched"
-[[ "$(jq -r '.result.agents[] | select(.pane_id=="w4:p1") | .terminal_title_stripped' "$FX")" == "✔ | OC | Chat Original" ]] \
-  && ok "11a stateful stub applied the rename to the live title" || bad "11a stub did not apply rename"
+[[ "$(jq -r '.result.agents[] | select(.pane_id=="w4:p1") | .terminal_title_stripped' "$FX")" == "OC | Chat Original" ]] \
+  && ok "11a rename surface is the LABEL (fixture/terminal_title untouched)" || bad "11a rename leaked into fixture"
+[[ "$("$T/bin/herdr" pane list | jq -r '.result.panes[] | select(.pane_id=="w4:p1") | .label')" == "✔ | OC | Chat Original" ]] \
+  && ok "11a stateful stub applied the rename to the live label" || bad "11a stub did not apply label rename"
 
 # 11b. idempotent: second sweep renames nothing
 : > "$T/herdr.log"
 lib_run 'sync_pane_titles "$(cat "$FX")"'
-[[ "$(wc -l < "$T/herdr.log")" -eq 0 ]] \
-  && ok "11b rename-only-on-change: 2nd sweep spawned nothing" || bad "11b 2nd sweep spawned: $(cat "$T/herdr.log")"
+[[ "$(grep -c 'pane rename' "$T/herdr.log")" -eq 0 ]] \
+  && ok "11b rename-only-on-change: 2nd sweep renamed nothing" || bad "11b 2nd sweep renamed: $(grep 'pane rename' "$T/herdr.log")"
+grep -q 'pane list' "$T/herdr.log" && ok "11b sync consults pane labels (pane list)" || bad "11b no pane list consult"
 grep -q 'agent list' "$T/herdr.log" && bad "11b sync spawned herdr agent list" || ok "11b piggyback: sync itself never spawns agent list"
 
 # 11c. state clears → exact restore + cache dropped

@@ -1230,8 +1230,18 @@ sync_pane_titles() { # <raw_agents_json>
           ((.value.title_original // "")|tostring) ] | @tsv
     ' <<<"$state" 2>/dev/null || true)
 
+  # Rename surface: `herdr pane rename` sets the pane LABEL — terminal_title
+  # never changes after a rename (verified live). Compare against current
+  # labels, falling back to the terminal title when pane list is unavailable.
+  local -A s_label=()
+  local lp ll
+  while IFS=$'\t' read -r lp ll; do
+    [[ -z "$lp" ]] && continue
+    s_label["$lp"]="$ll"
+  done < <(herdr pane list 2>/dev/null | jq -r '.result.panes[]? | "\(.pane_id)\t\(.label // "")"' 2>/dev/null)
+
   local changed=false
-  local p st title glyphs original expected clean
+  local p st title glyphs original expected clean current
   while IFS=$'\t' read -r p st title; do
     # Never touch panes without an agent entry or without a title to guard.
     [[ -z "$p" || "$p" == "null" || -z "$title" ]] && continue
@@ -1244,16 +1254,17 @@ sync_pane_titles() { # <raw_agents_json>
 
     if [[ -z "$glyphs" ]]; then
       # Restore path: no glyph applies anymore.
+      current="${s_label[$p]:-$title}"
       if [[ -n "$original" ]]; then
-        if [[ "$title" != "$original" ]]; then
+        if [[ "$current" != "$original" ]]; then
           herdr pane rename "$p" "$original" >/dev/null 2>&1 || true
           changed=true
         fi
         state=$(jq -c --arg p "$p" 'del(.panes[$p].title_original)' <<<"$state")
         changed=true
       else
-        strip_title_glyphs clean "$title"
-        if [[ "$clean" != "$title" ]]; then
+        strip_title_glyphs clean "$current"
+        if [[ "$clean" != "$current" ]]; then
           herdr pane rename "$p" "$clean" >/dev/null 2>&1 || true
           changed=true
         fi
@@ -1262,26 +1273,27 @@ sync_pane_titles() { # <raw_agents_json>
     fi
 
     # Prefix path: recover (or adopt) the original title first.
+    current="${s_label[$p]:-$title}"
     if [[ -z "$original" ]]; then
-      if [[ "$title" =~ $TITLE_GLYPHS_RE ]]; then
-        strip_title_glyphs clean "$title" # daemon restarted, cache lost
+      if [[ "$current" =~ $TITLE_GLYPHS_RE ]]; then
+        strip_title_glyphs clean "$current" # daemon restarted, cache lost
       else
-        clean="$title"
+        clean="$current"
       fi
       original="$clean"
       state=$(jq -c --arg p "$p" --arg o "$original" \
         '.panes = ((.panes // {}) + {($p): ((.panes[$p] // {}) + {title_original: $o})})' <<<"$state")
       changed=true
-    elif [[ "$title" != "$original" && ! "$title" =~ $TITLE_GLYPHS_RE ]]; then
+    elif [[ "$current" != *"$original"* && ! "$current" =~ $TITLE_GLYPHS_RE ]]; then
       # Integration renamed the pane mid-session: adopt its title as the
       # new original instead of fighting over the label.
-      original="$title"
+      original="$current"
       state=$(jq -c --arg p "$p" --arg o "$original" \
         '.panes = ((.panes // {}) + {($p): ((.panes[$p] // {}) + {title_original: $o})})' <<<"$state")
       changed=true
     fi
     expected="${glyphs}${TITLE_GLYPH_SEP}${original}"
-    if [[ "$title" != "$expected" ]]; then
+    if [[ "$current" != "$expected" ]]; then
       herdr pane rename "$p" "$expected" >/dev/null 2>&1 || true
       changed=true
     fi
