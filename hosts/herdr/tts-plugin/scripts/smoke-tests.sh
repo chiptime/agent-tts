@@ -14,8 +14,10 @@
 #         newest-first order, zero-audio chats, title truncation
 #   13    palette preview: chat header, gating, turn rows (legacy shows "-"),
 #         empty history, no-herdr fail-open, fzf-missing actionable error
-#   14    history snippet: sanitize + 5-field append + legacy fallback
-#   15    dashboard renders mixed 4/5-field history rows
+#   14    history snippet: sanitize + 4/5/6-field append matrix (stored
+#         audio path, literal "-" mid-row when snippet empty)
+#   15    dashboard renders mixed 4/5/6-field history rows; ▶ replay marker
+#         only on rows whose stored file exists
 #   16    voice menu: dispatch map (stub-verified, one key = one existing
 #         function), single-write frame, quit/Esc/unknown/EOF paths,
 #         width+height clamp reuse, manifest/README wiring
@@ -29,6 +31,13 @@
 #         refuses, herdr-check failure → rollback, herdr missing → skip
 #         note, adopt (require --style, idempotent, refuses modified
 #         without --force, ctrlalt/menu maps, seeds missing file)
+#   21    palette ctrl-r replay bind: stubbed fzf argv records the
+#         --play-file {4} bind and the header hint; entries carry the
+#         stored path as the 4th hidden field
+#   22    play_audio_file: mutex stop + engine --play-file spawn on a real
+#         file, graceful rc=1 + no spawn on a missing/empty path
+#   23    audio_retention_days knob precedence (HERDR_ > AGENT_ > TTS_ >
+#         default 7, invalid → 7, 0/negative disables) + audio_store_dir
 set -uo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -182,15 +191,17 @@ make_fixture() { # $1 out file
 EOF
 }
 
-make_history() { # $1 out file (timestamps relative to now for age checks)
+make_history() { # $1 out file, $2 optional stored-audio path (6th field on every row)
+  local audio_path="${2:-}" pfx=""
+  [[ -n "$audio_path" ]] && pfx=$'\t'"$audio_path"
   {
-    printf '%s\tw4:p3\topencode\t12.5\n' "$(date -d '-95 minutes' +%Y-%m-%dT%H:%M:%S)"
-    printf '%s\tw4:p3\topencode\t8.0\n'  "$(date -d '-70 minutes' +%Y-%m-%dT%H:%M:%S)"
-    printf '%s\tw4:p3\topencode\t30.2\n' "$(date -d '-45 minutes' +%Y-%m-%dT%H:%M:%S)"
-    printf '%s\tw4:p3\topencode\t5.0\n'  "$(date -d '-40 minutes' +%Y-%m-%dT%H:%M:%S)"
-    printf '%s\tw9:p9\topencode\t45.0\n' "$(date -d '-25 minutes' +%Y-%m-%dT%H:%M:%S)"
-    printf '%s\tw4:p1\topencode\t21.3\n' "$(date -d '-12 minutes' +%Y-%m-%dT%H:%M:%S)"
-    printf '%s\tw4:p1\topencode\t60.0\n' "$(date -d '-2 minutes'  +%Y-%m-%dT%H:%M:%S)"
+    printf '%s\tw4:p3\topencode\t12.5%s\n' "$(date -d '-95 minutes' +%Y-%m-%dT%H:%M:%S)" "$pfx"
+    printf '%s\tw4:p3\topencode\t8.0%s\n'  "$(date -d '-70 minutes' +%Y-%m-%dT%H:%M:%S)" "$pfx"
+    printf '%s\tw4:p3\topencode\t30.2%s\n' "$(date -d '-45 minutes' +%Y-%m-%dT%H:%M:%S)" "$pfx"
+    printf '%s\tw4:p3\topencode\t5.0%s\n'  "$(date -d '-40 minutes' +%Y-%m-%dT%H:%M:%S)" "$pfx"
+    printf '%s\tw9:p9\topencode\t45.0%s\n' "$(date -d '-25 minutes' +%Y-%m-%dT%H:%M:%S)" "$pfx"
+    printf '%s\tw4:p1\topencode\t21.3%s\n' "$(date -d '-12 minutes' +%Y-%m-%dT%H:%M:%S)" "$pfx"
+    printf '%s\tw4:p1\topencode\t60.0%s\n' "$(date -d '-2 minutes'  +%Y-%m-%dT%H:%M:%S)" "$pfx"
   } > "$1"
 }
 
@@ -570,26 +581,30 @@ cat > "$FX" <<'EOF'
 ]}}
 EOF
 write_herdr_stub "$FX"
-# chronological order (append-only ledger): p1 snippet row, p1 legacy row, p2 row
+# chronological order (append-only ledger): p1 snippet row, p1 legacy row,
+# p2 row with a stored-audio path (6th ledger field)
+STORE12="$T/store/p2-turn.mp3"
 {
   printf '%s\tw4:p1\topencode\t21.3\tPrimera vuelta del chat uno\n' "$(date -d '-12 minutes' +%Y-%m-%dT%H:%M:%S)"
   printf '%s\tw4:p1\topencode\t60.0\n' "$(date -d '-2 minutes' +%Y-%m-%dT%H:%M:%S)"
-  printf '%s\tw4:p2\tagy\t8.0\tRespuesta mas reciente de todas\n' "$(date -d 'now' +%Y-%m-%dT%H:%M:%S)"
+  printf '%s\tw4:p2\tagy\t8.0\tRespuesta mas reciente de todas\t%s\n' "$(date -d 'now' +%Y-%m-%dT%H:%M:%S)" "$STORE12"
 } > "$HERDR_TTS_HISTORY_FILE"
 lib_run 'palette_build_entries' > "$T/out.txt"
 [[ "$(wc -l < "$T/out.txt")" -eq 4 ]] \
   && ok "12 4 entries: 3 audios + 1 zero-audio chat" || bad "12 entry count = $(wc -l < "$T/out.txt") (want 4)"
 nfields=$(awk -F'\t' '{print NF}' "$T/out.txt" | sort -u | tr '\n' ' ')
-[[ "$nfields" == "3 " ]] && ok "12 every entry has 3 tab-delimited fields" || bad "12 field counts: $nfields"
+[[ "$nfields" == "4 " ]] && ok "12 every entry has 4 tab-delimited fields" || bad "12 field counts: $nfields"
 mapfile -t plines < "$T/out.txt"
 l1="${plines[0]:-}"; l2="${plines[1]:-}"; l3="${plines[2]:-}"; l4="${plines[3]:-}"
 [[ "${l1%%$'\t'*}" == *"· 00:08 · Respuesta mas reciente de todas" ]] \
   && ok "12 newest audio first (p2 row leads)" || bad "12 first entry not newest: ${l1%%$'\t'*}"
+[[ "$(printf '%s' "$l1" | cut -f4)" == "$STORE12" ]] \
+  && ok "12 stored path rides as the 4th hidden field" || bad "12 4th field wrong: $(printf '%s' "$l1" | cut -f4)"
 [[ "${l2%%$'\t'*}" == *"· 01:00 · -" ]] \
   && ok "12 legacy 4-field row renders '-' snippet" || bad "12 legacy row wrong: ${l2%%$'\t'*}"
 [[ "$(printf '%s' "$l2" | cut -f2)" == "w4:p1" && "$(printf '%s' "$l2" | cut -f3)" =~ ^[0-9]+$ ]] \
   && ok "12 hidden fields parse: pane_id + numeric epoch" || bad "12 hidden fields wrong: $l2"
-[[ "$l4" == "(sin audios) · Gem | Sin audios todavia"$'\t'"w4:p3"$'\t'"chat" ]] \
+[[ "$l4" == "(sin audios) · Gem | Sin audios todavia"$'\t'"w4:p3"$'\t'"chat"$'\t'"-" ]] \
   && ok "12 zero-audio chat entry format exact" || bad "12 zero-audio entry: $l4"
 
 echo "── 13. palette preview: header, gating, turns, fail-open, no-fzf"
@@ -630,16 +645,19 @@ env PATH="$T/nobin" HOME="$HOME" XDG_CONFIG_HOME="$T/conf" XDG_DATA_HOME="$T/dat
 assert_grep "13 no fzf → actionable Spanish error" 'fzf no está instalado' "$T/out4.txt"
 assert_grep "13 no-fzf error suggests install command" 'apt install fzf|brew install fzf' "$T/out4.txt"
 
-echo "── 14. history snippet: sanitize, 5-field append, legacy fallback"
+echo "── 14. history snippet: sanitize, 4/5/6-field append matrix"
 new_env s14
 FX="$T/fixture.json"; make_fixture "$FX"
 write_herdr_stub "$FX"
+mkdir -p "$T/store"
 lib_run '
   s=""
   history_snippet s "$(printf "Hola\r\nmundo\t  con   \x1b[31mANSI\x1b[0m colorea  y\nsigue ")"
   echo "[$s]"
   append_audio_history w4:p1 opencode 12.5 "texto limpio de prueba"
   append_audio_history w4:p2 agy 3.0 ""
+  append_audio_history w4:p3 gemini 7.5 "" "'"$T"'/store/p3-turn.mp3"
+  append_audio_history w4:p4 claude 9.9 "Con path y snippet" "'"$T"'/store/p4-turn.mp3"
 ' > "$T/out.txt"
 assert_grep "14 snippet single-line + ANSI stripped + whitespace collapsed" '^\[Hola mundo con ANSI colorea y sigue\]$' "$T/out.txt"
 [[ "$(awk -F'\t' 'NR==1{print NF}' "$HERDR_TTS_HISTORY_FILE")" -eq 5 ]] \
@@ -648,6 +666,16 @@ grep -qE $'^[^\t]+\tw4:p1\topencode\t12\.5\ttexto limpio de prueba$' "$HERDR_TTS
   && ok "14 row schema ts/pane/agent/duration/snippet" || bad "14 row schema wrong: $(head -1 "$HERDR_TTS_HISTORY_FILE" | cat -A)"
 [[ "$(awk -F'\t' 'NR==2{print NF}' "$HERDR_TTS_HISTORY_FILE")" -eq 4 ]] \
   && ok "14 empty snippet → legacy 4-field row (no empty tail)" || bad "14 second row not 4-field"
+row3=$(sed -n '3p' "$HERDR_TTS_HISTORY_FILE")
+[[ "$(printf '%s' "$row3" | awk -F'\t' '{print NF}')" -eq 6 ]] \
+  && ok "14 path + empty snippet → 6-field row" || bad "14 third row not 6-field: $row3"
+[[ "$(printf '%s' "$row3" | cut -f5)" == "-" && "$(printf '%s' "$row3" | cut -f6)" == "$T/store/p3-turn.mp3" ]] \
+  && ok "14 empty mid-row snippet becomes literal '-'" || bad "14 field5/6 wrong: $row3"
+row4=$(sed -n '4p' "$HERDR_TTS_HISTORY_FILE")
+[[ "$(printf '%s' "$row4" | awk -F'\t' '{print NF}')" -eq 6 \
+   && "$(printf '%s' "$row4" | cut -f5)" == "Con path y snippet" \
+   && "$(printf '%s' "$row4" | cut -f6)" == "$T/store/p4-turn.mp3" ]] \
+  && ok "14 path + snippet → 6-field row, both columns intact" || bad "14 fourth row wrong: $row4"
 lib_run '
   big="$(printf "pad %.0s" $(seq 1 200))"
   s=""
@@ -657,25 +685,32 @@ lib_run '
 [[ "$(cat "$T/out2.txt")" -le 120 ]] \
   && ok "14 snippet capped at ~120 chars ($(cat "$T/out2.txt"))" || bad "14 snippet too long: $(cat "$T/out2.txt")"
 
-echo "── 15. dashboard renders mixed 4/5-field history rows"
+echo "── 15. dashboard renders mixed 4/5/6-field history rows (▶ = stored file exists)"
 new_env s15
 FX="$T/fixture.json"; make_fixture "$FX"
 write_herdr_stub "$FX"
+mkdir -p "$T/store"
+STORE15="$T/store/p1-latest.mp3"
+touch "$STORE15" # only this stored audio exists on disk
 {
   printf '%s\tw4:p3\topencode\t12.5\n' "$(date -d '-95 minutes' +%Y-%m-%dT%H:%M:%S)"
-  printf '%s\tw4:p3\topencode\t8.0\tRevision con snippet nuevo\n' "$(date -d '-70 minutes' +%Y-%m-%dT%H:%M:%S)"
+  printf '%s\tw4:p3\topencode\t8.0\tRevision con snippet nuevo\t%s\n' "$(date -d '-70 minutes' +%Y-%m-%dT%H:%M:%S)" "$T/store/p3-gone.mp3"
   printf '%s\tw4:p3\topencode\t30.2\n' "$(date -d '-45 minutes' +%Y-%m-%dT%H:%M:%S)"
-  printf '%s\tw9:p9\topencode\t45.0\tOtro snippet de chat cerrado\n' "$(date -d '-25 minutes' +%Y-%m-%dT%H:%M:%S)"
+  printf '%s\tw9:p9\topencode\t45.0\tOtro snippet de chat cerrado\t-\n' "$(date -d '-25 minutes' +%Y-%m-%dT%H:%M:%S)"
   printf '%s\tw4:p1\topencode\t21.3\n' "$(date -d '-12 minutes' +%Y-%m-%dT%H:%M:%S)"
-  printf '%s\tw4:p1\topencode\t60.0\tCierre con detalle final\n' "$(date -d '-2 minutes'  +%Y-%m-%dT%H:%M:%S)"
+  printf '%s\tw4:p1\topencode\t60.0\tCierre con detalle final\t%s\n' "$(date -d '-2 minutes'  +%Y-%m-%dT%H:%M:%S)" "$STORE15"
 } > "$HERDR_TTS_HISTORY_FILE"
 capture 'q\n' "$T/out.txt"
 assert_grep "15 history section renders with mixed rows" 'Historial por chat' "$T/out.txt"
 assert_grep "15 group header counts p3 (3 audios)" '· 3 audios · último hace' "$T/out.txt"
 na=$(grep -cE '^║    · [0-9]{2}:[0-9]{2} · hace [0-9]+[smh]$' "$T/out.txt")
-[[ "$na" -eq 6 ]] && ok "15 audio rows intact (max 3/group): $na" || bad "15 audio rows = $na (want 6)"
+[[ "$na" -eq 5 ]] && ok "15 unmarked audio rows = 5 (max 3/group): $na" || bad "15 unmarked rows = $na (want 5)"
+nm=$(grep -cE '^║    · ▶ [0-9]{2}:[0-9]{2} · hace [0-9]+[smh]$' "$T/out.txt")
+[[ "$nm" -eq 1 ]] && ok "15 exactly one ▶ marked row: $nm" || bad "15 marked rows = $nm (want 1)"
+assert_grep "15 ▶ on the row whose stored file exists" '· ▶ 01:00 · hace 2m' "$T/out.txt"
+assert_no_grep_f "15 no ▶ when the stored file is gone" '▶ 00:08' "$T/out.txt"
+assert_no_grep_f "15 no ▶ for the literal '-' path column" '▶ 00:45' "$T/out.txt"
 assert_grep "15 legacy row renders (00:12)" '· 00:12 · hace 1h' "$T/out.txt"
-assert_grep "15 5-field row renders (01:00)" '· 01:00 · hace 2m' "$T/out.txt"
 if grep -q $'\t' <(sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' "$T/out.txt"); then
   bad "15 snippets leaked raw tabs into the frame"
 else
@@ -795,7 +830,7 @@ assert_grep "16g manifest declares tts-menu pane" 'id = "tts-menu"' "$REPO/herdr
 assert_grep "16g tts-menu runs --voice-menu" 'command = \["bin/herdr-tts", "--voice-menu"\]' "$REPO/herdr-plugin.toml"
 assert_grep "16g tts-menu popup is 60%x45%" 'width = "60%"' "$REPO/herdr-plugin.toml" -F
 assert_grep "16g open-menu action wired" '"--entrypoint", "tts-menu"' "$REPO/herdr-plugin.toml" -F
-assert_grep "16g version bumped to 0.14.1" 'version = "0.14.1"' "$REPO/herdr-plugin.toml" -F
+assert_grep "16g version bumped to 0.15.0" 'version = "0.15.0"' "$REPO/herdr-plugin.toml" -F
 assert_grep "16g README option 1 (menu, recommended)" '### Option 1 — Compact map \(recommended\)' "$REPO/README.md"
 assert_grep "16g README option 2 (ctrl+alt family)" '### Option 2 — ctrl\+alt family' "$REPO/README.md"
 assert_grep "16g README option 3 (direct map + conflicts)" '### Option 3 — Direct map \(power users\)' "$REPO/README.md"
@@ -1226,6 +1261,122 @@ rc19=$(cat "$T/rc19"); out19=$(cat "$T/out19.txt")
 [[ $rc19 -eq 0 ]] && ok "19d corrupt keymap non-fatal rc" || bad "19d rc=$rc19"
 grep -q 'keymap apply falló' <<<"$out19" && ok "19d warning surfaced" || bad "19d no warning: $out19"
 grep -q '>>> herdr-tts keymap' "$cfg19" && ok "19d target untouched by failed apply" || bad "19d target modified"
+
+echo "── 21. palette ctrl-r replay bind (stubbed fzf records argv)"
+new_env s21
+FX="$T/fixture.json"
+cat > "$FX" <<'EOF'
+{"result":{"agents":[
+ {"agent":"opencode","agent_status":"done","pane_id":"w4:p1","terminal_title":"OC | Chat Uno","terminal_title_stripped":"OC | Chat Uno"}
+]}}
+EOF
+write_herdr_stub "$FX"
+mkdir -p "$T/store"
+STORE21="$T/store/2026-09-20-1-w4_p1.mp3"
+touch "$STORE21"
+{
+  printf '%s\tw4:p1\topencode\t21.3\tVieja sin almacenar\n' "$(date -d '-12 minutes' +%Y-%m-%dT%H:%M:%S)"
+  printf '%s\tw4:p1\topencode\t60.0\tCierre con audio persistido\t%s\n' "$(date -d '-2 minutes' +%Y-%m-%dT%H:%M:%S)" "$STORE21"
+} > "$HERDR_TTS_HISTORY_FILE"
+# 21a. entries carry the stored path as the 4th hidden field (fzf {4})
+lib_run 'palette_build_entries' > "$T/out.txt"
+nfields=$(awk -F'\t' '{print NF}' "$T/out.txt" | sort -u | tr '\n' ' ')
+[[ "$nfields" == "4 " ]] && ok "21a every entry has 4 tab-delimited fields" || bad "21a field counts: $nfields"
+grep -qF "$STORE21" "$T/out.txt" \
+  && ok "21a newest entry carries the stored path" || bad "21a stored path missing from entries"
+[[ "$(printf '%s\n' "$(tail -n 1 "$T/out.txt")" | cut -f4)" == "-" ]] \
+  && ok "21a legacy row falls back to literal '-' path" || bad "21a legacy 4th field: $(tail -n 1 "$T/out.txt")"
+# 21b. stub fzf: record argv, accept the first entry
+cat > "$T/bin/fzf" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" > "$T/fzf.argv"
+cat > /dev/null
+head -n 1
+exit 0
+EOF
+chmod +x "$T/bin/fzf"
+timeout 20 "$SCRIPT" --voice-palette > "$T/out2.txt" 2>>"$T/err.log"
+[[ -s "$T/fzf.argv" ]] && ok "21b fzf invoked by the palette" || bad "21b fzf argv file empty"
+grep -qF "ctrl-r:execute-silent(" "$T/fzf.argv" \
+  && ok "21b ctrl-r execute-silent bind present" || bad "21b no ctrl-r bind: $(cat "$T/fzf.argv")"
+grep -qF "'$SCRIPT' --play-file {4}" "$T/fzf.argv" \
+  && ok "21b bind replays {4} through --play-file" || bad "21b no --play-file {4} in: $(cat "$T/fzf.argv")"
+grep -qF "+abort" "$T/fzf.argv" \
+  && ok "21b bind aborts after replay (snapshot-per-open)" || bad "21b bind missing +abort"
+grep -qF "ctrl-r: reproducir audio" "$T/fzf.argv" \
+  && ok "21c header advertises ctrl-r replay" || bad "21c header hint missing"
+
+echo "── 22. play_audio_file: mutex stop + engine --play-file + missing-file guard"
+new_env s22
+ENGINE_CALLS="$T/engine.calls"; : > "$ENGINE_CALLS"
+export ENGINE_CALLS
+cat > "$T/bin/pystub" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "\$ENGINE_CALLS"
+exit 0
+EOF
+chmod +x "$T/bin/pystub"
+printf 'ID3x' > "$T/real.mp3" # non-empty: the -s guard must accept it
+lib_run '
+  VENV_PYTHON="$T/bin/pystub"; ENGINE_SCRIPT="$T/engine.py"
+  PID_FILE="$T/pid"; LOCK_FILE="$T/lock"; IPC_SOCKET="$T/player.sock"
+  play_audio_file "$T/real.mp3"
+  rc=$?; echo "rc=$rc" > "$T/rc22"
+  # reap the spawned engine so its argv line is flushed before asserts
+  wait "$(cat "$T/pid" 2>/dev/null)" 2>/dev/null || true
+'
+grep -q 'rc=0' "$T/rc22" && ok "22a real file → rc 0" || bad "22a rc: $(cat "$T/rc22")"
+grep -qF -- "--play-file $T/real.mp3" "$ENGINE_CALLS" \
+  && ok "22a engine spawned with --play-file <file>" || bad "22a engine argv: $(cat "$ENGINE_CALLS")"
+grep -qE '^[0-9]+$' "$T/pid" \
+  && ok "22a mutex pid file written (player registered)" || bad "22a pid file missing/invalid"
+[[ "$(wc -l < "$ENGINE_CALLS")" -eq 1 ]] \
+  && ok "22a exactly one engine spawn" || bad "22a engine spawns: $(wc -l < "$ENGINE_CALLS")"
+lib_run '
+  VENV_PYTHON="$T/bin/pystub"; ENGINE_SCRIPT="$T/engine.py"
+  PID_FILE="$T/pid"; LOCK_FILE="$T/lock"; IPC_SOCKET="$T/player.sock"
+  rm -f "$PID_FILE" "$LOCK_FILE"
+  rc=0
+  play_audio_file "$T/missing.mp3" 2> "$T/miss.err" || rc=$?
+  echo "rc=$rc" > "$T/rc22b"
+'
+grep -q 'rc=1' "$T/rc22b" && ok "22b missing path → rc 1" || bad "22b rc: $(cat "$T/rc22b")"
+assert_grep "22b graceful Spanish message on stderr" 'Nada que reproducir' "$T/miss.err"
+[[ "$(wc -l < "$ENGINE_CALLS")" -eq 1 ]] \
+  && ok "22b no engine spawn for a missing path" || bad "22b engine spawned: $(cat "$ENGINE_CALLS")"
+
+echo "── 23. audio_retention_days precedence + guards, audio_store_dir"
+new_env s23
+lib_run '
+  unset HERDR_TTS_AUDIO_RETENTION_DAYS AGENT_TTS_AUDIO_RETENTION_DAYS TTS_AUDIO_RETENTION_DAYS AGENT_TTS_AUDIO_DIR
+  echo "default:$(audio_retention_days)"
+  HERDR_TTS_AUDIO_RETENTION_DAYS=3 AGENT_TTS_AUDIO_RETENTION_DAYS=9 TTS_AUDIO_RETENTION_DAYS=11
+  echo "herdr:$(audio_retention_days)"
+  unset HERDR_TTS_AUDIO_RETENTION_DAYS
+  echo "agent:$(audio_retention_days)"
+  unset AGENT_TTS_AUDIO_RETENTION_DAYS
+  echo "tts:$(audio_retention_days)"
+  unset TTS_AUDIO_RETENTION_DAYS
+  HERDR_TTS_AUDIO_RETENTION_DAYS=nope
+  echo "invalid:$(audio_retention_days)"
+  HERDR_TTS_AUDIO_RETENTION_DAYS=0
+  echo "zero:$(audio_retention_days)"
+  HERDR_TTS_AUDIO_RETENTION_DAYS=-2
+  echo "negative:$(audio_retention_days)"
+  unset HERDR_TTS_AUDIO_RETENTION_DAYS
+  echo "store_default:$(audio_store_dir)"
+  AGENT_TTS_AUDIO_DIR=/tmp/custom-store
+  echo "store_custom:$(audio_store_dir)"
+' > "$T/out.txt"
+assert_grep "23 no knobs → default 7" '^default:7$' "$T/out.txt"
+assert_grep "23 HERDR_TTS_ wins" '^herdr:3$' "$T/out.txt"
+assert_grep "23 AGENT_TTS_ second" '^agent:9$' "$T/out.txt"
+assert_grep "23 TTS_ third" '^tts:11$' "$T/out.txt"
+assert_grep "23 non-integer → default 7" '^invalid:7$' "$T/out.txt"
+assert_grep "23 zero disables retention" '^zero:0$' "$T/out.txt"
+assert_grep "23 negative disables retention" '^negative:0$' "$T/out.txt"
+assert_grep "23 store dir default" '^store_default:' "$T/out.txt"
+assert_grep "23 store dir override" '^store_custom:/tmp/custom-store$' "$T/out.txt"
 
 echo
 echo "═══ RESULT: $PASS passed, $FAIL failed ═══"

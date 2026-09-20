@@ -482,6 +482,12 @@ speak_text() {
 
 play_audio_file() {
   local file="$1"
+  # Cheap guard: palette ctrl-r on a "-" placeholder or a deleted stored
+  # path must fail gracefully instead of spawning a doomed engine run.
+  if [[ ! -s "$file" ]]; then
+    echo "⚠️ Nada que reproducir: el audio no existe o está vacío" >&2
+    return 1
+  fi
   stop_audio
   local err_tmp
   err_tmp=$(mktemp "/tmp/herdr-tts-play-err.XXXXXX")
@@ -1365,11 +1371,38 @@ gate_agent_event() {
 # ─── Audio history ledger ────────────────────────────────────
 # Append-only TSV ledger consumed by the dashboard: one line per rendered
 # audio — <ISO timestamp> <TAB> <pane> <TAB> <agent> <TAB> <duration>
-# [<TAB> <snippet>]. v0.11 added the 5th field: the first ~120 chars of
-# the spoken text, single-line sanitized. Consumers must treat each row
-# as 4-field (legacy) or 5-field; rows are never rewritten in place.
+# [<TAB> <snippet> [<TAB> <audio path>]]. v0.11 added the 5th field: the
+# first ~120 chars of the spoken text, single-line sanitized. The optional
+# 6th field carries the path of the audio persisted in the agent-tts audio
+# store while retention is on; "-" means retention is off, the turn was
+# streamed without storage, or the render belongs to the caller. Consumers
+# must treat each row as 4-field (legacy), 5-field or 6-field; rows are
+# never rewritten in place. Mid-row fields are NEVER empty: bash `read`
+# with tab IFS collapses adjacent delimiters, so an empty field would
+# corrupt downstream parsing (a literal "-" is written instead).
 # Best effort by design: a history write failure must never break the
 # speech path.
+
+# How many days the agent-tts audio store keeps finished-turn audio.
+# First non-empty of the HERDR_TTS_/AGENT_TTS_/TTS_-prefixed knobs wins;
+# a non-integer value falls back to the 7-day default and values <= 0
+# disable persistence (0 → the watcher keeps the legacy tmp + rm flow).
+# Fork-free on purpose: pure parameter expansion, [[ ]] tests and
+# arithmetic (no self-referencing assignments inside (( ))).
+audio_retention_days() {
+  local raw="${HERDR_TTS_AUDIO_RETENTION_DAYS:-${AGENT_TTS_AUDIO_RETENTION_DAYS:-${TTS_AUDIO_RETENTION_DAYS:-7}}}"
+  [[ "$raw" =~ ^-?[0-9]+$ ]] || raw=7
+  if (( raw > 0 )); then
+    printf '%s\n' "$raw"
+  else
+    printf '0\n'
+  fi
+}
+
+# Root directory of the agent-tts audio store (one dated folder per day).
+audio_store_dir() {
+  printf '%s\n' "${AGENT_TTS_AUDIO_DIR:-$HOME/.local/share/agent-tts/audio}"
+}
 
 # Duration (seconds, 1 decimal) of a finished render. The engine prints no
 # duration on --no-play renders and no IPC session survives them, so the
@@ -1403,21 +1436,34 @@ history_snippet() { # <out-var> <text>
   printf -v "$1" '%s' "${_hs_buf:0:120}"
 }
 
-append_audio_history() { # <pane_id> <agent> <duration> [snippet]
+append_audio_history() { # <pane_id> <agent> <duration> [snippet] [audio_path]
   local pane_id="${1:--}"
   local agent="${2:--}"
   local duration="${3:--}"
   local snippet
   history_snippet snippet "${4:-}"
+  local audio_path="${5:-}"
   # An empty probe result (engine decode failed) keeps the v1 "-" column.
   [[ -n "$duration" ]] || duration="-"
   mkdir -p "${HISTORY_FILE%/*}" 2>/dev/null || true
-  if [[ -n "$snippet" ]]; then
-    printf '%s\t%s\t%s\t%s\t%s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$pane_id" "$agent" "$duration" "$snippet" \
+  local ts
+  ts=$(date +%Y-%m-%dT%H:%M:%S)
+  if [[ -n "$audio_path" ]]; then
+    # Stored audio → ALWAYS 6 fields; the snippet column becomes a
+    # literal "-" when empty (never an empty mid-row TSV field).
+    if [[ -n "$snippet" ]]; then
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$ts" "$pane_id" "$agent" "$duration" "$snippet" "$audio_path" \
+        >> "$HISTORY_FILE" 2>/dev/null || true
+    else
+      printf '%s\t%s\t%s\t%s\t-\t%s\n' "$ts" "$pane_id" "$agent" "$duration" "$audio_path" \
+        >> "$HISTORY_FILE" 2>/dev/null || true
+    fi
+  elif [[ -n "$snippet" ]]; then
+    printf '%s\t%s\t%s\t%s\t%s\n' "$ts" "$pane_id" "$agent" "$duration" "$snippet" \
       >> "$HISTORY_FILE" 2>/dev/null || true
   else
     # No usable snippet → keep the plain legacy 4-field row (no empty tail).
-    printf '%s\t%s\t%s\t%s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$pane_id" "$agent" "$duration" \
+    printf '%s\t%s\t%s\t%s\n' "$ts" "$pane_id" "$agent" "$duration" \
       >> "$HISTORY_FILE" 2>/dev/null || true
   fi
 }
@@ -1472,32 +1518,53 @@ watch_agent_pane() {
         pane_text=$(read_pane_text "$pane_id")
 
         if [[ -n "$pane_text" && ! "$pane_text" =~ ^[[:space:]]*$ ]]; then
-          local tmp_audio="/tmp/herdr-tts-${pane_id//:/_}-${BASHPID:-$$}-$RANDOM.mp3"
+          # Turn-audio persistence: with retention on, the render lands
+          # DIRECTLY in the agent-tts audio store (no tmp file, no
+          # cross-filesystem mv) and retention owns the file lifecycle.
+          # An uncreatable store dir fails open to the legacy tmp flow so
+          # speech never depends on the store; with retention off the
+          # tmp + rm flow runs exactly as before.
+          local hist_audio=""
+          if (( $(audio_retention_days) > 0 )); then
+            local store_dir
+            store_dir="$(audio_store_dir)/$(date +%F)"
+            mkdir -p "$store_dir" 2>/dev/null || true
+            if [[ -d "$store_dir" ]]; then
+              hist_audio="${store_dir}/$(date +%s)-${pane_id//[^A-Za-z0-9_-]/_}.mp3"
+            fi
+          fi
+          local render_target="${hist_audio:-/tmp/herdr-tts-${pane_id//:/_}-${BASHPID:-$$}-$RANDOM.mp3}"
 
           # 1. Synthesize audio file once, surfacing failures through the status popup
           local synth_err
           synth_err=$(mktemp "/tmp/herdr-tts-synth-err.XXXXXX")
-          if ! render_text_audio "$tmp_audio" "$pane_text" "${render_flags[@]}" > "$synth_err" 2>&1; then
+          if ! render_text_audio "$render_target" "$pane_text" "${render_flags[@]}" > "$synth_err" 2>&1; then
             report_tts_error "${pane_id}" "$synth_err" 1
           fi
           rm -f "$synth_err"
 
           # Audio ledger for the dashboard history (best effort). The
-          # 5th field carries the first ~120 chars of the spoken text.
-          if [[ -s "$tmp_audio" ]]; then
+          # 5th field carries the first ~120 chars of the spoken text;
+          # the 6th carries the stored audio path (only when retention
+          # actually kept the file).
+          if [[ -s "$render_target" ]]; then
             local hist_snippet
             history_snippet hist_snippet "$pane_text"
-            append_audio_history "$pane_id" "${agent_kind:-$agent_name}" "$(audio_duration_secs "$tmp_audio")" "$hist_snippet"
+            if [[ -n "$hist_audio" ]]; then
+              append_audio_history "$pane_id" "${agent_kind:-$agent_name}" "$(audio_duration_secs "$render_target")" "$hist_snippet" "$hist_audio"
+            else
+              append_audio_history "$pane_id" "${agent_kind:-$agent_name}" "$(audio_duration_secs "$render_target")" "$hist_snippet"
+            fi
           fi
 
           # 2. Push notification (mobile via ntfy, if configured)
           if [[ -n "$NTFY_TOPIC" ]]; then
-            send_ntfy_push "$pane_id" "$agent_name" "$new_state" "$workspace" "$title_desc" "$tmp_audio"
+            send_ntfy_push "$pane_id" "$agent_name" "$new_state" "$workspace" "$title_desc" "$render_target"
           fi
 
           # 2.5 Private Podcast Feed (if enabled)
-          if [[ "$PODCAST_ENABLED" == "on" && -s "$tmp_audio" ]]; then
-            publish_podcast_episode "${agent_name} (${new_state}): ${title_desc:-$workspace}" "$pane_text" "$tmp_audio"
+          if [[ "$PODCAST_ENABLED" == "on" && -s "$render_target" ]]; then
+            publish_podcast_episode "${agent_name} (${new_state}): ${title_desc:-$workspace}" "$pane_text" "$render_target"
           fi
 
           # 3. Local desktop voice playback
@@ -1518,16 +1585,20 @@ watch_agent_pane() {
             should_speak_local=false
           fi
 
-          if [[ "$should_speak_local" == true && -s "$tmp_audio" ]]; then
+          if [[ "$should_speak_local" == true && -s "$render_target" ]]; then
             echo "[$(date +%H:%M:%S)] ${agent_name} (${pane_id}): vocalizando en altavoces locales"
-            play_audio_file "$tmp_audio"
+            play_audio_file "$render_target"
           fi
 
-          # Clean up temporary audio file after local player decodes it
-          if [[ "$should_speak_local" == true ]]; then
-            ( sleep 6 && rm -f "$tmp_audio" ) &
-          else
-            rm -f "$tmp_audio"
+          # Clean up temporary audio file after local player decodes it.
+          # With retention on the stored file IS the product: cleanup is
+          # skipped and the retention job owns its lifecycle.
+          if [[ -z "$hist_audio" ]]; then
+            if [[ "$should_speak_local" == true ]]; then
+              ( sleep 6 && rm -f "$render_target" ) &
+            else
+              rm -f "$render_target"
+            fi
           fi
         fi
       elif [[ "$new_state" == "idle" && "$prev_state" == "working" && -n "$NTFY_TOPIC" ]]; then
@@ -1879,8 +1950,8 @@ dashboard_engine_state_label() {
 # local-time -> epoch conversion (datetime applies per-date DST rules,
 # which a hand-rolled calendar or a cached zone offset cannot). It emits
 # TSV rows — `H <pane> <count> <last_iso> <last_epoch>` group headers,
-# each followed by `A <iso> <epoch> <dur>` audio rows in chronological
-# order (the render walks them backwards for newest-first). Per-chat
+# each followed by `A <iso> <epoch> <dur> <path>` audio rows in
+# chronological order (the render walks them backwards for newest-first). Per-chat
 # counts are computed within the scanned window so cost stays bounded on
 # a ledger that is append-only and never rotated. Fails open: no file,
 # no python or corrupt rows leave the history arrays empty and the
@@ -1911,18 +1982,19 @@ groups = {}
 for idx, f in enumerate(rows):
     ts = f[0] if f[0] else "-"
     dur = f[3] if len(f) > 3 else "-"
+    path = f[5] if len(f) > 5 else "-"
     g = groups.setdefault(f[1], {"count": 0, "last": 0, "items": []})
     g["count"] += 1
     g["last"] = idx
-    g["items"].append((ts, dur))
+    g["items"].append((ts, dur, path))
     del g["items"][:-3]
 out = []
 for pane, g in sorted(groups.items(), key=lambda kv: -kv[1]["last"]):
     items = g["items"]
     last_ts = items[-1][0] if items else "-"
     out.append("\t".join(["H", pane, str(g["count"]), last_ts, epoch(last_ts)]))
-    for ts, dur in items:
-        out.append("\t".join(["A", ts, epoch(ts), dur]))
+    for ts, dur, path in items:
+        out.append("\t".join(["A", ts, epoch(ts), dur, path]))
 sys.stdout.write("\n".join(out) + ("\n" if out else ""))
 ' 2>/dev/null) || rows=""
   [[ -z "$rows" ]] && return 0
@@ -1938,7 +2010,10 @@ sys.stdout.write("\n".join(out) + ("\n" if out else ""))
         HIST_ITEMS[gi]=""
         ;;
       A)
-        (( gi >= 0 )) && HIST_ITEMS[gi]+="${f2}|${f3}|${f4};"
+        # f5 absorbs the trailing path column (the python pass always
+        # emits it, "-" when the audio was not persisted); paths are
+        # charset-safe by construction, never containing | or ;.
+        (( gi >= 0 )) && HIST_ITEMS[gi]+="${f2}|${f3}|${f4}|${f5};"
         ;;
     esac
   done <<<"$rows"
@@ -2230,6 +2305,7 @@ dashboard_render() {
   if (( hist_budget > 0 )); then
     _dash_add '╠═══ Historial por chat (más reciente arriba) ════════════════'
     local remaining=$hist_budget gi k ts epoch dur age_lbl dur_lbl gtitle gcount audio_word
+    local rest hist_audio replay_marker
     local -a parts_arr=()
     for (( gi = 0; gi < ${#HIST_PANES[@]} && remaining > 0; gi++ )); do
       pid="${HIST_PANES[gi]}"
@@ -2250,20 +2326,31 @@ dashboard_render() {
       _dash_add '║ ── %s · %d %s · último hace %s' "$gtitle" "$gcount" "$audio_word" "$age_lbl"
       remaining=$(( remaining - 1 ))
       # Last ≤3 audios, newest first (items are stored chronological as
-      # iso|epoch|duration triples).
+      # iso|epoch|duration|path quads; path is "-" when the audio was
+      # not persisted in the store).
       parts_arr=()
       IFS=';' read -r -a parts_arr <<< "${HIST_ITEMS[gi]%;}"
       for (( k = ${#parts_arr[@]} - 1; k >= 0 && remaining > 0; k-- )); do
         ts="${parts_arr[k]%%|*}"
-        epoch="${parts_arr[k]#*|}"; epoch="${epoch%%|*}"
-        dur="${parts_arr[k]##*|}"
+        rest="${parts_arr[k]#*|}"         # epoch|dur|path
+        epoch="${rest%%|*}"
+        rest="${rest#*|}"                 # dur|path
+        dur="${rest%%|*}"
+        hist_audio="${rest#*|}"
         if [[ "$epoch" =~ ^[0-9]+$ ]]; then
           dashboard_fmt_age age_lbl $(( now - epoch ))
         else
           age_lbl="-"
         fi
         dashboard_fmt_dur dur_lbl "$dur"
-        _dash_add '║    · %s · hace %s' "$dur_lbl" "$age_lbl"
+        # ▶ marks audios that still exist in the store and can be replayed
+        # from the palette. Builtin-only discipline: no subshell or command
+        # substitution per row.
+        replay_marker=""
+        if [[ -n "$hist_audio" && "$hist_audio" != "-" && -f "$hist_audio" ]]; then
+          replay_marker="▶ "
+        fi
+        _dash_add '║    · %s%s · hace %s' "$replay_marker" "$dur_lbl" "$age_lbl"
         remaining=$(( remaining - 1 ))
       done
     done
@@ -2394,10 +2481,11 @@ palette_trunc() { # <out-var> <string> <width> — truncate with ellipsis, no pa
 }
 
 # Reversed history rows (newest first) as TSV: hhmm, pane, dur, snippet,
-# epoch. ONE python pass (same interpreter as the dashboard scan) because
-# datetime applies per-date DST rules to the epoch column, which a
-# hand-rolled calendar cannot. Legacy 4-field rows yield snippet "-".
-# Fails open: no file, no python or corrupt rows → empty output.
+# epoch, audio path. ONE python pass (same interpreter as the dashboard
+# scan) because datetime applies per-date DST rules to the epoch column,
+# which a hand-rolled calendar cannot. Legacy 4-field rows yield snippet
+# "-" and path "-". Fails open: no file, no python or corrupt rows →
+# empty output.
 palette_history_rows() { # [scan_lines] (omit = whole ledger)
   local cap="${1:-}" input_lines
   [[ -s "$HISTORY_FILE" ]] || return 0
@@ -2418,20 +2506,22 @@ for line in sys.stdin.read().split("\n"):
         continue
     ts, pane, dur = f[0], f[1], f[3]
     snippet = f[4] if len(f) > 4 and f[4] else "-"
+    path = f[5] if len(f) > 5 and f[5] else "-"
     hhmm = ts[11:16] if len(ts) >= 16 else "??:??"
     try:
         epoch = str(int(datetime.fromisoformat(ts).timestamp()))
     except ValueError:
         epoch = "0"
-    rows.append("\t".join([hhmm, pane, dur, snippet, epoch]))
+    rows.append("\t".join([hhmm, pane, dur, snippet, epoch, path]))
 sys.stdout.write("".join(r + "\n" for r in reversed(rows)))
 ' 2>/dev/null || return 0
 }
 
 # Palette entries, one per line: display field + tab-delimited hidden
-# fields (<pane_id> <ts_epoch>, or <pane_id> "chat" for zero-audio rows).
-# Audio turns come newest first; zero-audio chats follow in agent-list
-# order. Prints to stdout so the smoke battery can diff the format.
+# fields (<pane_id> <ts_epoch> <audio_path>, or <pane_id> "chat" "-" for
+# zero-audio rows). Audio turns come newest first; zero-audio chats
+# follow in agent-list order. Prints to stdout so the smoke battery can
+# diff the format.
 palette_build_entries() {
   local -A p_title=()
   local -a p_order=()
@@ -2450,15 +2540,17 @@ palette_build_entries() {
 
   local -a entries=()
   local -A has_audio=()
-  local hhmm pane dur snippet epoch line chat_title dur_lbl
-  while IFS=$'\t' read -r hhmm pane dur snippet epoch; do
+  local hhmm pane dur snippet epoch path line chat_title dur_lbl
+  while IFS=$'\t' read -r hhmm pane dur snippet epoch path; do
     [[ -z "$pane" ]] && continue
     has_audio["$pane"]=1
     chat_title="${p_title[$pane]:-$pane}"
     palette_trunc chat_title "$chat_title" "$PALETTE_TITLE_CHARS"
     palette_trunc snippet "$snippet" "$PALETTE_SNIPPET_CHARS"
     dashboard_fmt_dur dur_lbl "$dur"
-    printf -v line '%s · %s · %s · %s\t%s\t%s' "$hhmm" "$chat_title" "$dur_lbl" "$snippet" "$pane" "$epoch"
+    # 4 hidden positional fields: pane, epoch, stored-audio path — fzf
+    # {4} feeds the ctrl-r replay bind; "-" when nothing was stored.
+    printf -v line '%s · %s · %s · %s\t%s\t%s\t%s' "$hhmm" "$chat_title" "$dur_lbl" "$snippet" "$pane" "$epoch" "$path"
     entries+=("$line")
   done < <(palette_history_rows "$PALETTE_HISTORY_SCAN_LINES")
 
@@ -2467,7 +2559,8 @@ palette_build_entries() {
     [[ -n "${has_audio[$pid2]:-}" ]] && continue
     chat_title="${p_title[$pid2]:-$pid2}"
     palette_trunc chat_title "$chat_title" "$PALETTE_TITLE_CHARS"
-    entries+=("(sin audios) · ${chat_title}"$'\t'"${pid2}"$'\t'"chat")
+    # Trailing "-" keeps fzf {4} positional stability across all rows.
+    entries+=("(sin audios) · ${chat_title}"$'\t'"${pid2}"$'\t'"chat"$'\t'"-")
   done
 
   local e
@@ -2493,19 +2586,21 @@ run_voice_palette() {
 
   local sel pane_id
   # Snapshot-per-open: fzf exits on accept (enter / ctrl-o) or on the
-  # ctrl-m / ctrl-z actions (execute-silent applies the mutation through
-  # the CLI flags and abort skips the accept path entirely).
+  # ctrl-m / ctrl-z / ctrl-r actions (execute-silent applies the mutation
+  # or the stored-audio replay through the CLI flags and abort skips the
+  # accept path entirely).
   sel=$(printf '%s\n' "${entries[@]}" | fzf \
     --delimiter '\t' \
     --with-nth 1 \
     --reverse \
     --height 100% \
-    --header 'enter/ctrl-o: enfocar chat · ctrl-m: silenciar pane · ctrl-z: snooze pane · esc: salir' \
+    --header 'enter/ctrl-o: enfocar chat · ctrl-m: silenciar pane · ctrl-z: snooze pane · ctrl-r: reproducir audio · esc: salir' \
     --preview "'$SCRIPT' --palette-preview {2}" \
     --preview-window 'right:50%:wrap' \
     --bind 'ctrl-o:accept' \
     --bind "ctrl-m:execute-silent('$SCRIPT' --mute-pane {2})+abort" \
-    --bind "ctrl-z:execute-silent('$SCRIPT' --snooze-pane {2})+abort") || return 0
+    --bind "ctrl-z:execute-silent('$SCRIPT' --snooze-pane {2})+abort" \
+    --bind "ctrl-r:execute-silent('$SCRIPT' --play-file {4})+abort") || return 0
 
   pane_id=$(printf '%s' "$sel" | cut -f2)
   [[ -z "$pane_id" ]] && return 0
@@ -2576,8 +2671,10 @@ palette_preview() { # <pane_id>
   echo
 
   echo "── Turnos de audio (recientes primero) ──"
-  local hhmm pid dur snippet epoch dur_lbl n=0
-  while IFS=$'\t' read -r hhmm pid dur snippet epoch; do
+  local hhmm pid dur snippet epoch path dur_lbl n=0
+  # The explicit 6th read var matters: without it `epoch` would absorb
+  # "epoch<TAB>path" as the trailing remainder and corrupt the display.
+  while IFS=$'\t' read -r hhmm pid dur snippet epoch path; do
     [[ "$pid" != "$pane_id" ]] && continue
     dashboard_fmt_dur dur_lbl "$dur"
     echo "${hhmm} · ${dur_lbl} · ${snippet}"

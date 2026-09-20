@@ -435,6 +435,12 @@ CLICK_REDIRECT="off"        # "off" = tap opens ntfy player; "on" = tap opens we
 
 # Ambient pane-title glyphs (default on):
 TTS_TITLE_GLYPHS="1"        # 1 = ✔/🔇/😴 prefixes on pane titles; 0 = fully off
+
+# Stored turn audio (agent-tts audio store). Precedence:
+# HERDR_TTS_ > AGENT_TTS_ > TTS_; default 7 days, 0 disables persistence:
+HERDR_TTS_AUDIO_RETENTION_DAYS="7"
+# Store root override (default $HOME/.local/share/agent-tts/audio):
+# AGENT_TTS_AUDIO_DIR="/path/to/audio-store"
 ```
 
 ---
@@ -461,7 +467,8 @@ command = "herdr plugin pane open --plugin herdr.tts --entrypoint tts-dashboard"
 * **Estado global:** snooze global con cuenta atrás, auto-lectura, proveedor/voz/velocidad, modo de playback y ventana de debounce.
 * **Línea de motor en vivo (v2):** cada 3 ticks el panel consulta el estado del motor por IPC (la misma vía que `--toggle-pause`) y renderiza estado con color (▶ reproduciendo / ⏸ pausado / ⏹ detenido / ⌛ sintetizando), progreso mm:ss (`00:12 / 00:48`), proveedor y voz activos, y un fragmento del texto en lectura. Si el motor no responde, la línea muestra el fallback estático del lock local con la nota explícita **"motor: no responde"** (fail-open, nunca rompe el panel).
 * **Roster por chat (v3):** una línea por **chat**, fusionando tres fuentes bajo la misma clave `pane_id`: `herdr agent list` (estado del agente + título de la conversación), el ledger de snooze/mute y el de debounce. Cada línea muestra el estado del agente con icono y color — `▶` working (verde), `✔` done/blocked (amarillo, pide atención), `·` idle (tenue); valores desconocidos se muestran tal cual —, el título del chat truncado a 40 caracteres, el tipo de agente y las incidencias de voz acumuladas: 🔇 silenciado, 😴 con cuenta atrás mm:ss si está snoozed, ⏱ con los segundos restantes si la ventana anti-spam (debounce) sigue reteniendo el evento. Orden *needs-attention first*: done/blocked → working → idle; a igualdad, primero el chat con el audio más reciente. Sin CLI de Herdr o sin agentes, la sección muestra "sin datos de herdr" (fail-open).
-* **Historial agrupado por chat (v3):** los audios de `history.log` se agrupan por chat: cabecera `── <título> · N audios · último hace Xm` seguida de sus últimos 3 audios (duración mm:ss + antigüedad). Los chats se ordenan por su audio más reciente y el presupuesto global de la sección es de ~24 líneas. Los chats cerrados (pane sin entrada en `herdr agent list`) siguen apareciendo identificados por su `pane_id`; sin historial, la sección se oculta por completo.
+* **Historial agrupado por chat (v3):** los audios de `history.log` se agrupan por chat: cabecera `── <título> · N audios · último hace Xm` seguida de sus últimos 3 audios (duración mm:ss + antigüedad). Con la retención activa, el watcher persiste el audio de cada turno terminado en el almacén de agent-tts y cada fila cuyo fichero sigue en disco muestra el marcador `▶` (reponible desde la paleta con ctrl-r). Los chats se ordenan por su audio más reciente y el presupuesto global de la sección es de ~24 líneas. Los chats cerrados (pane sin entrada en `herdr agent list`) siguen apareciendo identificados por su `pane_id`; sin historial, la sección se oculta por completo.
+* **Audio almacenado y retención:** `history.log` gana un 6.º campo TSV opcional con la ruta del audio almacenado (`-` = retención apagada, turno sin almacenar o render propio del llamador; las filas siguen siendo de 4, 5 o 6 campos y nunca se reescriben). Los días de retención se resuelven con precedencia `HERDR_TTS_AUDIO_RETENTION_DAYS` → `AGENT_TTS_AUDIO_RETENTION_DAYS` → `TTS_AUDIO_RETENTION_DAYS` (default **7**; un valor no numérico cae al default; **`0` desactiva el almacenamiento** y el watcher conserva el flujo temporal de siempre: fichero en `/tmp` + borrado tras la reproducción).
 * **Presupuesto de pantalla (v3):** el popup tiene ~50-55 filas útiles al 90%: global + motor ≈ 4 líneas, roster 1 línea por chat, historial ≤ 24, pie 1. Si hay más chats que filas, se ocultan primero los idle con el audio más antiguo y se avisa con *"… y N chats más"*; **los chats que piden atención (done/blocked) nunca se ocultan**.
 
 El panel es de **solo lectura** frente al gate/mutex/watcher: toda mutación pasa por las funciones y flags existentes (`--mute-pane`, `--snooze-pane`, `--snooze-global`, `--rate-up/down`).
@@ -511,7 +518,10 @@ Cada fila muestra `HH:MM · título · duración · fragmento` del texto hablado
 | `enter` / `ctrl-o` | Enfocar el chat seleccionado (`herdr pane focus`), confirmación 2s y cierre |
 | `ctrl-m` | Silenciar el pane seleccionado (equivale a `prefix+m`) y salir |
 | `ctrl-z` | Ciclar snooze del pane seleccionado (5m → 30m → 2h → off) y salir |
+| `ctrl-r` | Reproducir el audio almacenado del turno seleccionado (`▶` en el historial) y salir |
 | `esc` | Salir sin hacer nada |
+
+La reposición con `ctrl-r` pasa por el **mismo camino de reproducción** que el daemon (`stop_audio` —el mutex que evita solapamientos— y el motor vía `--play-file`); nunca hay un segundo reproductor. Si el fichero almacenado ya no existe (retención vencida o borrado manual), muestra un aviso y no llega a spawnear el motor.
 
 Requiere `fzf` en el `PATH` (si falta, se muestra un error accionable). Keybinding sugerido para abrir la paleta desde la shell:
 
