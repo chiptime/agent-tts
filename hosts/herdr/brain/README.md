@@ -1,8 +1,148 @@
 # herdr-brain
 
-Conversational brain service that lets a user talk to AI coding agents managed
-by [Herdr](https://herdr.dev). This phase is the brain only: HTTP + CLI, no UI.
+Conversational brain service that lets a user talk to AI coding agents
+managed by [Herdr](https://herdr.dev). This phase is the **brain only**,
+testable over HTTP and CLI — no UI, no mic. (The phone PWA arrives later and
+will consume the same HTTP surface.)
 
-> Full setup, environment variables and usage are documented in this README as
-> the project lands. This stub keeps `pip install -e .` working from the first
-> commit.
+```
+voice (later PWA) ──►  herdr-brain  ──►  herdr CLI  ──►  agent pane (opencode/claude/…)
+                          │  ▲
+                          │  └── agent-tts transcript stores (SQLite/JSONL, read-only)
+                          └───── agent-tts engine (mp3 synthesis, --no-play)
+```
+
+The brain is the **only** component allowed to write to Herdr, through a
+single tool: `send_to_session`.
+
+## Safety model
+
+- Secrets never enter the repo. LLM access uses the OpenAI-compatible client
+  with `GLM_API_KEY` / `GLM_BASE_URL` / `GLM_MODEL` environment variables.
+- `send_to_session` (→ `herdr agent prompt --wait`) writes into **real live
+  agent sessions owned by the user**. Every unit test mocks subprocess for
+  all write paths; only read-only checks run live (`scripts/smoke_readonly.sh`).
+- Newlines are stripped from prompt text before sending: a literal `\n` is a
+  real Enter in the target pane.
+- Screen reads are clamped to 60 lines: reading beyond the viewport scrolls
+  the operator's real screen on alt-screen agents.
+- Audio is synthesized with `--no-play`; playback happens on the client
+  (phone/PC browser), never on PC speakers.
+
+## Setup
+
+```bash
+cd ~/Code/personal/herdr-brain
+scripts/bootstrap.sh          # creates .venv, installs deps, runs tests
+```
+
+### Environment variables
+
+Add your key to `~/.dotfiles/shell/private-env.sh` (symlinked **outside** the
+repo — never commit it) and re-source your shell:
+
+```bash
+# in ~/.dotfiles/shell/private-env.sh
+export GLM_API_KEY="…"
+```
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `GLM_API_KEY` | *(required)* | LLM key (OpenAI-compatible endpoint) |
+| `GLM_BASE_URL` | `https://api.z.ai/api/paas/v4/` | LLM base URL |
+| `GLM_MODEL` | `glm-5` | LLM model |
+| `HERDR_BIN` | `herdr` | herdr CLI path |
+| `HERDR_TTS_PYTHON` | `~/.local/share/herdr-tts/venv/bin/python` | venv python that hosts the agent-tts engine |
+| `HERDR_TTS_ENGINE` | `~/Code/personal/herdr-tts/lib/tts_engine.py` | agent-tts engine script |
+| `HERDR_BRAIN_VOICE` / `HERDR_BRAIN_RATE` / `HERDR_BRAIN_MAX_CHARS` | `elvira` / `+0%` / `300` | synthesis knobs |
+| `HERDR_BRAIN_TTS_ARGS` | *(empty)* | extra engine flags (e.g. `--piper`, `--tldr`) |
+| `HERDR_BRAIN_AUDIO_DIR` | `~/.local/state/herdr-brain/audio` | rendered mp3 directory |
+| `HERDR_BRAIN_PROMPT_TIMEOUT_MS` | `180000` | default wait for `send_to_session` |
+| `HERDR_BRAIN_MAX_TOOL_ROUNDS` | `4` | LLM tool-loop guard |
+| `HERDR_BRAIN_SCREEN_LINES` | `40` | default visible lines for `read_screen` |
+| `OPENCODE_DB` / `CLAUDE_PROJECTS_ROOT` | store defaults | transcript store overrides (tests) |
+
+## Run
+
+```bash
+# HTTP service (127.0.0.1:8741)
+.venv/bin/python -m herdr_brain.server
+
+# CLI ask — no mic needed; --no-audio skips TTS entirely
+.venv/bin/python -m herdr_brain.ask "dime en que estas trabajando" --no-audio
+.venv/bin/python -m herdr_brain.ask "resume what you just did"
+```
+
+### HTTP surface
+
+```bash
+curl -s localhost:8741/health
+curl -s localhost:8741/ask -H 'content-type: application/json' \
+     -d '{"text":"en que estas trabajando?"}'
+# → {"answer":"…","pane_id":"w7:p4","agent":"opencode","audio_url":"/audio/<hex>.mp3"}
+
+curl -s localhost:8741/tts -H 'content-type: application/json' \
+     -d '{"text":"eco local del PWA"}'
+curl -sO localhost:8741/audio/<hex>.mp3    # play on the CLIENT
+```
+
+## Tools exposed to the LLM (fase 1: active pane only)
+
+| Tool | Reads/Writes | Purpose |
+|---|---|---|
+| `get_status` | read | agent kind, status, pane id, session id, cwd, title |
+| `read_transcript(n_turns)` | read | recent user/assistant turns (preferred for Q&A) |
+| `read_screen(n_lines)` | read | visible terminal text (fallback) |
+| `send_to_session(text, timeout_ms?)` | **write** | forward new work, wait for completion |
+
+Routing policy is baked into the system prompt: state/history/summary
+questions are answered from `read_transcript` (or `read_screen`); new work is
+forwarded with `send_to_session` and then reported. Answers are voice-first:
+at most three short, speakable sentences, no markdown dumps.
+
+## Transcripts
+
+`read_transcript` reuses the store contracts of the
+[agent-tts](https://github.com/…) connector layer (`agent_tts/sources/`), but
+with multi-turn queries (that layer only exposes the last assistant message):
+
+- **OpenCode** (`ses_*` ids, agent `opencode`): read-only SQLite at
+  `~/.local/share/opencode/opencode.db`, `message`/`part` JSON filtering.
+- **Claude Code** (UUID-like ids, agents `claude`/`codex`/`antigravity`):
+  reverse tail scan (8 MB cap) of `~/.claude/projects/<munged>/<uuid>.jsonl`.
+- Anything else: connector returns nothing → screen fallback.
+
+## Tests and smoke
+
+```bash
+.venv/bin/python -m pytest -q        # unit tests; ALL herdr/agent-tts subprocess mocked
+scripts/smoke_readonly.sh           # live READ-ONLY checks only, never sends prompts
+```
+
+`smoke_readonly.sh` exercises: `herdr agent list` parsing, active pane
+detection, a transcript read for the focused session, and `/health` on a
+locally started server.
+
+## Verified herdr CLI flags (from `--help`)
+
+```text
+herdr agent list
+herdr agent read <TARGET> [--source visible|recent|recent-unwrapped|detection]
+                   [--lines N] [--format text|ansi] [--ansi]
+herdr agent prompt <TARGET> <TEXT> [--wait]
+                    [--until idle|working|blocked|done|unknown] [--timeout MS]
+```
+
+`agent prompt` rejects submissions when the agent is blocked
+(`agent_blocked`), requires an observed working/blocked state within 5 s of
+`--wait` (else `agent_prompt_stalled`), and returns `timeout` when the caller
+timeout expires first.
+
+## Known limitations (fase 1)
+
+- Active pane only; multi-pane targeting arrives with the PWA phase.
+- Multi-turn transcripts are implemented for OpenCode and Claude-shaped
+  stores; `codex`/`antigravity` sessions fall back to `read_screen` unless
+  their stores match the Claude JSONL shape.
+- TTS defaults follow the engine (voice `elvira`); provider flags can be
+  injected via `HERDR_BRAIN_TTS_ARGS`.
