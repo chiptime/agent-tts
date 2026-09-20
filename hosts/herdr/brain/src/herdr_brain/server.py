@@ -65,6 +65,30 @@ def create_app(
     def health() -> dict:
         return {"status": "ok", "version": __version__}
 
+    @app.get("/state")
+    def state() -> dict:
+        """Active agent pane snapshot for the PWA header (read-only)."""
+        active = tools.active_status()
+        if active is None:
+            return {
+                "active": False,
+                "pane_id": None,
+                "agent": None,
+                "agent_status": None,
+                "title": None,
+                "cwd": None,
+                "session_id": None,
+            }
+        return {
+            "active": True,
+            "pane_id": active.pane_id,
+            "agent": active.agent,
+            "agent_status": active.status,
+            "title": active.title,
+            "cwd": active.cwd,
+            "session_id": active.session_value,
+        }
+
     @app.post("/ask")
     def ask(body: TextRequest) -> dict:
         try:

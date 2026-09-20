@@ -28,6 +28,10 @@ class BrainTools:
 
     # -- tools --------------------------------------------------------------
 
+    def active_status(self) -> Optional[AgentInfo]:
+        """Fetches the active agent pane (structured) and tracks it."""
+        return self._track(self._herdr.active_agent())
+
     def get_status(self) -> str:
         """JSON status of the active agent pane."""
         active = self._track(self._herdr.active_agent())

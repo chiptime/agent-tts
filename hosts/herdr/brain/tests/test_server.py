@@ -64,6 +64,55 @@ class TestHealth:
         assert resp.json()["status"] == "ok"
         assert resp.json()["version"]
 
+
+class TestState:
+    def test_state_active(self, settings, audio_dir, active_agent, monkeypatch):
+        import herdr_brain.server as server_module
+
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+
+        class FakeTools:
+            def __init__(self, cfg):
+                self.last_active = active_agent
+
+            def active_status(self):
+                self.last_active = active_agent
+                return active_agent
+
+        monkeypatch.setattr(server_module, "BrainTools", FakeTools)
+        client = TestClient(server_module.create_app(settings=cfg))
+        resp = client.get("/state")
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "active": True,
+            "pane_id": active_agent.pane_id,
+            "agent": active_agent.agent,
+            "agent_status": active_agent.status,
+            "title": active_agent.title,
+            "cwd": active_agent.cwd,
+            "session_id": active_agent.session_value,
+        }
+
+    def test_state_no_active_pane(self, settings, audio_dir, monkeypatch):
+        import herdr_brain.server as server_module
+
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+
+        class FakeTools:
+            def __init__(self, cfg):
+                self.last_active = None
+
+            def active_status(self):
+                return None
+
+        monkeypatch.setattr(server_module, "BrainTools", FakeTools)
+        client = TestClient(server_module.create_app(settings=cfg))
+        resp = client.get("/state")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["active"] is False
+        assert body["pane_id"] is None
+
     def test_health_and_tts_work_without_llm_key(self, settings, audio_dir, monkeypatch):
         """No GLM_API_KEY: service still boots; only /ask is unavailable."""
         monkeypatch.delenv("GLM_API_KEY", raising=False)
