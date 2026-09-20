@@ -3,7 +3,6 @@
 import argparse
 import asyncio
 import os
-import re
 import signal
 import sys
 import threading
@@ -25,6 +24,7 @@ from agent_tts.playback_target import resolve_target
 from agent_tts.powershell_playback import PowershellSession, is_wsl_ps_available
 from agent_tts.providers import get_provider
 from agent_tts.sources import read_last_agent_message
+from agent_tts.text import split_sentence_groups
 from agent_tts.winhost_client import RemoteAudioSession
 import miniaudio
 
@@ -222,41 +222,16 @@ def use_pipelined_stream(
     return provider in STREAM_AUTO_PROVIDERS and text_len >= STREAM_AUTO_MIN_CHARS
 
 
-def split_sentence_groups(text: str, max_chars: int = 250) -> List[str]:
-    """Splits text into greedy sentence groups of at most max_chars characters for pipelined synthesis."""
-    if not text or not text.strip():
-        return []
+def group_for_chunk(groups: List[str], chunk_idx: int) -> Optional[str]:
+    """Maps a stream chunk to its sentence group by index, or None beyond the known groups.
 
-    raw_sentences: List[str] = []
-    for paragraph in text.strip().splitlines():
-        paragraph = paragraph.strip()
-        if not paragraph:
-            continue
-        raw_sentences.extend(s.strip() for s in re.split(r"(?<=[.!?])\s+", paragraph) if s.strip())
-    if not raw_sentences:
-        raw_sentences = [text.strip()]
-
-    # Very long single sentences may be split on commas when they exceed twice the budget.
-    sentences: List[str] = []
-    for sent in raw_sentences:
-        if len(sent) > max_chars * 2:
-            pieces = [p.strip() for p in sent.split(", ") if p.strip()]
-            sentences.extend(pieces if pieces else [sent])
-        else:
-            sentences.append(sent)
-
-    groups: List[str] = []
-    current = ""
-    for sent in sentences:
-        if current and len(current) + 1 + len(sent) <= max_chars:
-            current = f"{current} {sent}"
-        else:
-            if current:
-                groups.append(current)
-            current = sent
-    if current:
-        groups.append(current)
-    return groups
+    The streaming provider and this orchestration split the text with the same
+    shared splitter, so chunk order matches group order; a None result means
+    the stream produced more chunks than groups (degraded boundaries).
+    """
+    if 0 <= chunk_idx < len(groups):
+        return groups[chunk_idx]
+    return None
 
 
 def shift_boundary_map(
@@ -349,6 +324,123 @@ async def _speak_pipelined(
         progress["word"] += len(shifted.words)
         progress["para"] += len(shifted.paragraphs)
 
+    # Capability-driven streaming: the producer consumes synthesize_stream()
+    # ONCE only when the engine's stream yields one chunk per sentence group
+    # (one persistent piper process), so chunks map to groups by index.
+    # Stream-capable engines whose chunks are raw fragments (openai,
+    # elevenlabs) keep the per-group path and its aligned boundaries.
+    engine = None
+    try:
+        engine = get_provider(
+            provider_name=provider,
+            openai_key=openai_key,
+            openai_base_url=openai_base_url,
+            openai_model=openai_model,
+            eleven_key=eleven_key,
+            eleven_model=eleven_model,
+            piper_model=piper_model,
+        )
+    except Exception:
+        engine = None  # the per-group path below surfaces the construction error as today
+
+    # auto-lang switches voices per language segment, which a single text-level
+    # stream cannot do: it keeps the per-group path.
+    stream_gen = None
+    if (
+        not auto_lang
+        and engine is not None
+        and getattr(engine, "supports_stream", False)
+        and getattr(engine, "stream_yields_group_chunks", False)
+    ):
+        stream_gen = engine.synthesize_stream(text, voice, rate, volume, pitch, stop_checker=check_stop)
+
+    stream_state = {"failed": False, "warned_extra": False}
+
+    def warn_extra_chunks() -> None:
+        """Prints the extra-chunks warning once (degraded boundaries, never fatal)."""
+        if not stream_state["warned_extra"]:
+            stream_state["warned_extra"] = True
+            print(
+                "Stream: more chunks than sentence groups; appending extra audio without boundaries",
+                file=sys.stderr,
+            )
+
+    async def pull_chunk(idx: int) -> Optional[bytes]:
+        """Pulls the next stream chunk off the event loop; None at end of stream or on failure."""
+        try:
+            # The generator is blocking/sync: next() runs on a worker thread so
+            # the producer loop (and its stall watchdog) stays responsive.
+            return await asyncio.to_thread(next, stream_gen, None)
+        except Exception as e:
+            stream_state["failed"] = True
+            print(f"Stream: group {idx} failed: {e}", file=sys.stderr)
+            return None
+
+    async def stream_first():
+        """Consumes stream chunks until one decodes; returns the first decoded segment."""
+        idx = 0
+        while not check_stop():
+            chunk = await pull_chunk(idx)
+            if chunk is None:
+                return None
+            group_text = group_for_chunk(groups, idx)
+            if group_text is None:
+                warn_extra_chunks()
+            try:
+                decoded = miniaudio.decode(chunk)
+            except Exception as e:
+                print(f"Stream: group {idx} failed: {e}", file=sys.stderr)
+                idx += 1
+                continue
+            if group_text is not None:
+                seg_duration = len(decoded.samples) / float(decoded.sample_rate * decoded.nchannels)
+                merge_group(group_text, chunk, seg_duration)
+            progress["produced"] += 1
+            progress["next_idx"] = idx + 1
+            return decoded
+        return None
+
+    async def stream_remaining(start_idx: int) -> None:
+        """Appends the remaining stream chunks live, merging boundaries by chunk index."""
+        idx = start_idx
+        try:
+            while not check_stop():
+                chunk = await pull_chunk(idx)
+                if chunk is None:
+                    break
+                group_text = group_for_chunk(groups, idx)
+                if group_text is None:
+                    warn_extra_chunks()
+                try:
+                    decoded = miniaudio.decode(chunk)
+                except Exception as e:
+                    print(f"Stream: group {idx} failed: {e}", file=sys.stderr)
+                    idx += 1
+                    continue
+                if not session.append_pcm(decoded):
+                    idx += 1
+                    continue
+                if group_text is not None:
+                    seg_duration = len(decoded.samples) / float(decoded.sample_rate * decoded.nchannels)
+                    merge_group(group_text, chunk, seg_duration)
+                progress["produced"] += 1
+                idx += 1
+            if not stream_state["failed"] and not check_stop():
+                missing = len(groups) - min(idx, len(groups))
+                if missing > 0 and progress["produced"] > 0:
+                    print(
+                        f"Stream: {missing} of {len(groups)} sentence groups produced no chunk; "
+                        "boundaries degraded",
+                        file=sys.stderr,
+                    )
+        finally:
+            # Close the sync generator so the persistent piper process (its
+            # finally) shuts down even when the pipeline stops early.
+            try:
+                await asyncio.to_thread(stream_gen.close)
+            except Exception:
+                pass
+
     async def synthesize_group(group_text: str):
         return await synthesize(
             text=group_text,
@@ -369,6 +461,8 @@ async def _speak_pipelined(
 
     async def produce_first():
         """Synthesizes groups in order until one decodable segment is ready; returns it decoded."""
+        if stream_gen is not None:
+            return await stream_first()
         for idx, group_text in enumerate(groups):
             if check_stop():
                 return None
@@ -396,6 +490,8 @@ async def _speak_pipelined(
 
     async def produce_remaining(start_idx: int) -> None:
         """Synthesizes the remaining groups and appends each decoded segment to the live buffer."""
+        if stream_gen is not None:
+            return await stream_remaining(start_idx)
         for idx in range(start_idx, len(groups)):
             if check_stop():
                 break
@@ -442,49 +538,59 @@ async def _speak_pipelined(
     with session.lock:
         session.state["producing"] = True
 
-    first_decoded = await produce_first()
-    if first_decoded is None:
-        with session.lock:
-            session.state["producing"] = False
-        if progress["produced"] == 0:
-            if check_stop():
-                return
-            raise RuntimeError("Stream: synthesis produced no audio")
-        return
-
-    # Load the first segment into the playback buffer before the producer race can start;
-    # play() detects the preloaded buffer and skips re-initialization.
-    session.prepare_pcm(first_decoded)
-
-    producer = threading.Thread(target=run_producer, args=(progress["next_idx"],), daemon=True)
-    producer.start()
     try:
-        session.play(first_decoded)
-        # play() may return before every group has been produced and played
-        # (the wsl-ps/remote sessions feed groups from the producer thread and
-        # return immediately). Keep the pipeline alive until the producer has
-        # exited or an IPC stop was requested, so the final clean drain covers
-        # the whole text instead of truncating after the first groups.
-        last_seen = progress["produced"]
-        last_progress = time.monotonic()
-        while producer.is_alive() and not check_stop():
-            producer.join(timeout=0.1)
-            if progress["produced"] != last_seen:
-                last_seen = progress["produced"]
-                last_progress = time.monotonic()
-            elif time.monotonic() - last_progress > STREAM_PRODUCER_STALL_SEC:
-                raise RuntimeError(
-                    f"Stream: producer made no progress for {STREAM_PRODUCER_STALL_SEC:.0f}s; "
-                    "aborting stream playback"
-                )
-        if producer_error and not check_stop():
-            # Surface the fatal producer error through the normal error path
-            # (stderr / exit non-zero) instead of silently dropping the tail.
-            raise producer_error[0]
+        first_decoded = await produce_first()
+        if first_decoded is None:
+            with session.lock:
+                session.state["producing"] = False
+            if progress["produced"] == 0:
+                if check_stop():
+                    return
+                raise RuntimeError("Stream: synthesis produced no audio")
+            return
+
+        # Load the first segment into the playback buffer before the producer race can start;
+        # play() detects the preloaded buffer and skips re-initialization.
+        session.prepare_pcm(first_decoded)
+
+        producer = threading.Thread(target=run_producer, args=(progress["next_idx"],), daemon=True)
+        producer.start()
+        try:
+            session.play(first_decoded)
+            # play() may return before every group has been produced and played
+            # (the wsl-ps/remote sessions feed groups from the producer thread and
+            # return immediately). Keep the pipeline alive until the producer has
+            # exited or an IPC stop was requested, so the final clean drain covers
+            # the whole text instead of truncating after the first groups.
+            last_seen = progress["produced"]
+            last_progress = time.monotonic()
+            while producer.is_alive() and not check_stop():
+                producer.join(timeout=0.1)
+                if progress["produced"] != last_seen:
+                    last_seen = progress["produced"]
+                    last_progress = time.monotonic()
+                elif time.monotonic() - last_progress > STREAM_PRODUCER_STALL_SEC:
+                    raise RuntimeError(
+                        f"Stream: producer made no progress for {STREAM_PRODUCER_STALL_SEC:.0f}s; "
+                        "aborting stream playback"
+                    )
+            if producer_error and not check_stop():
+                # Surface the fatal producer error through the normal error path
+                # (stderr / exit non-zero) instead of silently dropping the tail.
+                raise producer_error[0]
+        finally:
+            with session.lock:
+                session.state["producing"] = False
+            producer.join(timeout=5.0)
     finally:
-        with session.lock:
-            session.state["producing"] = False
-        producer.join(timeout=5.0)
+        if stream_gen is not None:
+            # Safety net: the generator is normally exhausted (or closed by
+            # stream_remaining); this also covers first-phase stops and errors
+            # so the persistent piper process never outlives the pipeline.
+            try:
+                await asyncio.to_thread(stream_gen.close)
+            except Exception:
+                pass
 
 
 async def speak(
