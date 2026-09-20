@@ -287,6 +287,23 @@ Behavior matrix:
 
 Streaming note: Kokoro emits whole-utterance PCM per call, so `supports_stream` is `False`; interactive latency comes from the CLI's pipelined sentence-group streaming, which already synthesizes group-by-group.
 
+Kokoro on-device notes (CPU, measured):
+
+- **Download shape:** `voice install kokoro` fetches the fp32 export — `model.onnx` (~325 MB) plus the 4 voice bins (`ef_dora`, `em_alex`, `em_santa`, `af_heart`) from `onnx-community/Kokoro-82M-v1.0-ONNX`, and the phoneme vocab `config.json` from `hexgrad/Kokoro-82M`. The upstream quantized `model_quantized.onnx` (~92 MB) exists but is **not wired yet**; mirror hosts can override the base URL with `AGENT_TTS_KOKORO_BASE_URL`.
+- **Latency:** cold model load + first inference ≈ 1.75 s; warm, ≈ 0.6 s per 250-char group (~5× realtime). Time-to-first-audio with `--stream` is ≈ 2 s thanks to sentence-group pipelining.
+- **Voice:** `ef_dora` is the recommended default for Spanish (already the provider default).
+- **Phoneme caveat:** phonemization is espeak-ng IPA mapped against the Kokoro vocab. Spanish coverage is verified **full** (including `ɲ β ɾ θ ɣ`); unknown symbols would be silently dropped by the tokenizer, so exotic loanwords may sound anglicized (espeak-ng `es` voice), but no phoneme loss occurs for standard Spanish.
+
+---
+
+## 🔊 Rendered Audio Retention
+
+Rendered turn audio persists under `~/.local/share/agent-tts/audio/YYYY-MM-DD/<epoch>-<pane>.mp3` (override the root with `AGENT_TTS_AUDIO_DIR`). The `.mp3` name is conventional, not a promise: kokoro/piper emit WAV bytes and miniaudio sniffs the container on replay.
+
+- **Knob:** `AGENT_TTS_AUDIO_RETENTION_DAYS` (legacy `TTS_AUDIO_RETENTION_DAYS` is honored), default **7**; `0` disables retention.
+- **Pruning:** runs best-effort at every CLI start (fail-open) and removes whole expired date-partition directories — never individual files inside a current partition.
+- **Writer:** the herdr-tts watcher renders finished turn audio directly into this store when retention is on.
+
 ---
 
 ## ⚙️ CLI Reference
