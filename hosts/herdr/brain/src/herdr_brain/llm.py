@@ -49,10 +49,11 @@ def summarize_tool_args(args: Dict[str, Any]) -> str:
     """Renders tool arguments for the audit log without full payloads."""
     parts = []
     for key in sorted(args):
-        rendered = str(args[key])
-        if len(rendered) > _MAX_LOGGED_ARG_CHARS:
+        value = args[key]
+        rendered = str(value)
+        if isinstance(value, str) and len(rendered) > _MAX_LOGGED_ARG_CHARS:
             rendered = rendered[: _MAX_LOGGED_ARG_CHARS - 3] + "..."
-        parts.append(f"{key}={rendered!r}")
+        parts.append(f"{key}={rendered!r}" if isinstance(value, str) else f"{key}={rendered}")
     return " ".join(parts) if parts else "-"
 
 
