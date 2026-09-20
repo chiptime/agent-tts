@@ -13,10 +13,12 @@ from typing import Callable, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import __version__
 from .config import Settings
+from .herdr import HerdrError
 from .llm import BrainLLM, BrainLLMError
 from .tools import BrainTools
 from .tts import new_audio_path, render_mp3
@@ -25,6 +27,7 @@ _TTSRenderer = Callable[[Settings, str, Path], Path]
 _LLMFactory = Callable[[Settings, BrainTools], BrainLLM]
 
 _SAFE_FILENAME = re.compile(r"^[A-Za-z0-9._-]+$")
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
 class TextRequest(BaseModel):
@@ -68,7 +71,11 @@ def create_app(
     @app.get("/state")
     def state() -> dict:
         """Active agent pane snapshot for the PWA header (read-only)."""
-        active = tools.active_status()
+        try:
+            active = tools.active_status()
+        except HerdrError:
+            # A polling endpoint must degrade gracefully when herdr hiccups.
+            active = None
         if active is None:
             return {
                 "active": False,
@@ -127,6 +134,9 @@ def create_app(
         if not path.is_file():
             raise HTTPException(status_code=404, detail="not found")
         return FileResponse(path, media_type="audio/mpeg")
+
+    # Static PWA assets, mounted last so every API route above wins.
+    app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
 
     return app
 

@@ -164,6 +164,83 @@ class TestTts:
         assert resp.status_code == 502
 
 
+class TestStatic:
+    """The PWA is served same-origin from the brain server (zero CORS)."""
+
+    def test_index_served_with_call_button(self, settings, audio_dir):
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        client = TestClient(create_app(settings=cfg, llm_factory=lambda c, t: FakeLLM()))
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert 'id="call-btn"' in resp.text
+        assert "/app.js" in resp.text
+        assert "/manifest.webmanifest" in resp.text
+
+    def test_static_assets_served(self, settings, audio_dir):
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        client = TestClient(create_app(settings=cfg, llm_factory=lambda c, t: FakeLLM()))
+        assert client.get("/app.js").status_code == 200
+        assert client.get("/sw.js").status_code == 200
+        assert client.get("/icon.svg").status_code == 200
+        manifest = client.get("/manifest.webmanifest")
+        assert manifest.status_code == 200
+        assert manifest.json()["name"] == "herdr-brain"
+
+    def test_api_routes_take_precedence_over_static_mount(self, settings, audio_dir):
+        import herdr_brain.server as server_module
+
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+
+        class FakeTools:
+            def __init__(self, cfg):
+                self.last_active = None
+
+            def active_status(self):
+                return None
+
+        app = create_app(settings=cfg, llm_factory=lambda c, t: FakeLLM())
+        # Re-register is not possible; instead patch tools on a fresh app.
+        original_tools = server_module.BrainTools
+        server_module.BrainTools = FakeTools
+        try:
+            app = create_app(settings=cfg, llm_factory=lambda c, t: FakeLLM())
+        finally:
+            server_module.BrainTools = original_tools
+        client = TestClient(app)
+        assert client.get("/health").status_code == 200
+        assert client.get("/state").status_code == 200
+
+    def test_state_degrades_when_herdr_fails(self, settings, audio_dir):
+        """herdr CLI missing/failing: poll returns inactive, not a 500."""
+        from herdr_brain.herdr import HerdrError
+
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+
+        class FailingTools:
+            def __init__(self, cfg):
+                self.last_active = None
+
+            def active_status(self):
+                raise HerdrError("herdr exited with 1: boom")
+
+        import herdr_brain.server as server_module
+
+        original_tools = server_module.BrainTools
+        server_module.BrainTools = FailingTools
+        try:
+            app = create_app(settings=cfg, llm_factory=lambda c, t: FakeLLM())
+        finally:
+            server_module.BrainTools = original_tools
+        resp = TestClient(app).get("/state")
+        assert resp.status_code == 200
+        assert resp.json()["active"] is False
+
+    def test_unknown_static_path_404(self, settings, audio_dir):
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        client = TestClient(create_app(settings=cfg, llm_factory=lambda c, t: FakeLLM()))
+        assert client.get("/nope.js").status_code == 404
+
+
 class TestAudioServing:
     def test_serves_rendered_file(self, client_factory):
         client = client_factory()

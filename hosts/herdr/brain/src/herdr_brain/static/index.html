@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>herdr-brain</title>
+  <meta name="theme-color" content="#0f1115">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #171a21;
+      --text: #e6e9ef;
+      --muted: #8b93a3;
+      --accent: #4ade80;
+      --danger: #f87171;
+      --warn: #fbbf24;
+      --blue: #60a5fa;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 16px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      padding: calc(env(safe-area-inset-top, 0px) + 10px) 14px 10px;
+      background: var(--panel);
+      border-bottom: 1px solid #232833;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .chip {
+      display: inline-block;
+      min-width: 74px;
+      text-align: center;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 600;
+      background: #2a2f3a;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+    .chip.working { background: #3b2f11; color: var(--warn); }
+    .chip.idle    { background: #11321c; color: var(--accent); }
+    .chip.blocked { background: #3a1414; color: var(--danger); }
+    .chip.done    { background: #14293a; color: var(--blue); }
+    #pane-title {
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    main#conversation {
+      flex: 1;
+      overflow-y: auto;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .turn { max-width: 86%; padding: 9px 13px; border-radius: 14px; white-space: pre-wrap; }
+    .turn.user   { align-self: flex-end; background: #234c31; border-bottom-right-radius: 4px; }
+    .turn.brain  { align-self: flex-start; background: var(--panel); border: 1px solid #232833; border-bottom-left-radius: 4px; }
+    .turn .who { display: block; font-size: 11px; color: var(--muted); margin-bottom: 3px; }
+    #interim {
+      padding: 0 14px 6px;
+      color: var(--muted);
+      font-style: italic;
+      min-height: 1.4em;
+    }
+    .banner {
+      margin: 0 14px 10px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: #3a1414;
+      color: #fecaca;
+      font-size: 14px;
+    }
+    footer {
+      padding: 10px 14px calc(env(safe-area-inset-bottom, 0px) + 14px);
+      background: var(--panel);
+      border-top: 1px solid #232833;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .controls { display: flex; gap: 10px; }
+    button {
+      font: inherit;
+      border: 0;
+      border-radius: 12px;
+      cursor: pointer;
+    }
+    #call-btn {
+      flex: 1;
+      padding: 16px;
+      font-size: 18px;
+      font-weight: 700;
+      color: #05210f;
+      background: var(--accent);
+    }
+    #call-btn.listening { background: var(--danger); color: #fff; }
+    #call-btn:disabled { opacity: 0.55; cursor: default; }
+    #stop-audio {
+      padding: 12px 16px;
+      font-weight: 600;
+      background: #2a2f3a;
+      color: var(--text);
+    }
+    #text-fallback { display: flex; gap: 8px; }
+    #text-fallback input {
+      flex: 1;
+      font: inherit;
+      padding: 11px 12px;
+      border-radius: 10px;
+      border: 1px solid #2a2f3a;
+      background: #0d0f13;
+      color: var(--text);
+    }
+    #text-fallback button {
+      padding: 11px 18px;
+      font-weight: 600;
+      background: #2a2f3a;
+      color: var(--text);
+    }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <header>
+    <span id="status-chip" class="chip">…</span>
+    <span id="pane-title">connecting…</span>
+  </header>
+
+  <main id="conversation" aria-live="polite"></main>
+
+  <div id="interim" class="hidden"></div>
+  <div id="banner" class="banner hidden" role="alert"></div>
+
+  <footer>
+    <div class="controls">
+      <button id="call-btn">● Call</button>
+      <button id="stop-audio" class="hidden">■ Stop audio</button>
+    </div>
+    <form id="text-fallback" class="hidden">
+      <input id="text-input" type="text" placeholder="Speech unavailable — type instead…" autocomplete="off">
+      <button type="submit">Send</button>
+    </form>
+  </footer>
+
+  <audio id="player"></audio>
+  <script src="/app.js"></script>
+</body>
+</html>
