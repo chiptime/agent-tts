@@ -124,6 +124,27 @@ EOF
   chmod +x "$T/bin/herdr"
 }
 
+
+echo "── 20. daemon_takeover (single-instance guard)"
+new_env s20
+export HERDR_CONFIG_DIR="$T/conf"
+export HERDR_TTS_DAEMON_PID_FILE="$T/daemon.pid"
+# 20a. unrelated process (no herdr-tts in cmdline) is spared
+sleep 60 & UNRELATED=$!
+printf '%s\n' "$UNRELATED" > "$HERDR_TTS_DAEMON_PID_FILE"
+lib_run 'daemon_takeover'
+kill -0 "$UNRELATED" 2>/dev/null && ok "20a unrelated process spared" || bad "20a killed an unrelated process"
+kill "$UNRELATED" 2>/dev/null; wait "$UNRELATED" 2>/dev/null
+# 20b. stale herdr-tts daemon (cmdline matches) is taken over
+bash -c 'exec -a "herdr-tts-daemon-stale" sleep 60' & STALE=$!
+printf '%s\n' "$STALE" > "$HERDR_TTS_DAEMON_PID_FILE"
+lib_run 'daemon_takeover'
+sleep 0.5
+wait "$STALE" 2>/dev/null || true   # reap the killed child or kill -0 sees a zombie
+! kill -0 "$STALE" 2>/dev/null && ok "20b stale daemon taken over (killed)" || { bad "20b stale daemon survived"; kill -9 "$STALE" 2>/dev/null; }
+# 20c. takeover writes its own pid
+grep -qE '^[0-9]+$' "$HERDR_TTS_DAEMON_PID_FILE" && ok "20c pid file written" || bad "20c pid file missing/invalid"
+
 # Library-mode harness: source the plugin script (functions only, no CLI
 # dispatch) and eval a snippet, all inside one isolated bash process.
 LIBRUN="$ROOT/librun.sh"
@@ -774,7 +795,7 @@ assert_grep "16g manifest declares tts-menu pane" 'id = "tts-menu"' "$REPO/herdr
 assert_grep "16g tts-menu runs --voice-menu" 'command = \["bin/herdr-tts", "--voice-menu"\]' "$REPO/herdr-plugin.toml"
 assert_grep "16g tts-menu popup is 60%x45%" 'width = "60%"' "$REPO/herdr-plugin.toml" -F
 assert_grep "16g open-menu action wired" '"--entrypoint", "tts-menu"' "$REPO/herdr-plugin.toml" -F
-assert_grep "16g version bumped to 0.14.0" 'version = "0.14.0"' "$REPO/herdr-plugin.toml" -F"$REPO/herdr-plugin.toml" -F
+assert_grep "16g version bumped to 0.14.1" 'version = "0.14.1"' "$REPO/herdr-plugin.toml" -F
 assert_grep "16g README option 1 (menu, recommended)" '### Option 1 — Compact map \(recommended\)' "$REPO/README.md"
 assert_grep "16g README option 2 (ctrl+alt family)" '### Option 2 — ctrl\+alt family' "$REPO/README.md"
 assert_grep "16g README option 3 (direct map + conflicts)" '### Option 3 — Direct map \(power users\)' "$REPO/README.md"

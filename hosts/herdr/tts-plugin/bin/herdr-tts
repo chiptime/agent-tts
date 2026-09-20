@@ -1561,9 +1561,27 @@ daemon_keymap_autostart() {
   fi
 }
 
+# Single-instance takeover: exactly one daemon may gate events. At startup,
+# a live previous daemon (orphan from a prior session/launch) is terminated
+# before this one proceeds. PID reuse is guarded by checking /proc cmdline.
+DAEMON_PID_FILE="${HERDR_TTS_DAEMON_PID_FILE:-/tmp/herdr-tts-daemon.pid}"
+daemon_takeover() {
+  if [[ -f "$DAEMON_PID_FILE" ]]; then
+    local old_pid
+    old_pid=$(cat "$DAEMON_PID_FILE" 2>/dev/null || true)
+    if [[ "$old_pid" =~ ^[0-9]+$ && "$old_pid" != "$$" ]] \
+       && grep -aq "herdr-tts" "/proc/$old_pid/cmdline" 2>/dev/null; then
+      kill "$old_pid" 2>/dev/null || true
+      sleep 0.3
+    fi
+  fi
+  printf '%s\n' "$$" > "$DAEMON_PID_FILE"
+}
+
 run_daemon() {
   echo "🔊 Iniciando Herdr TTS Daemon (con Mutex y Scope ${TTS_AUTO_SCOPE})..."
   show_status
+  daemon_takeover
 
   # Startup auto-apply of the declarative keymap (Bruno's flow: edit
   # keymap.json → restart Herdr → bindings land). Never auto-inits; a
@@ -1576,6 +1594,7 @@ run_daemon() {
       kill "$pid" 2>/dev/null || true
     done
     rm -f /tmp/herdr-tts-watcher-*.lock 2>/dev/null || true
+    rm -f "$DAEMON_PID_FILE" 2>/dev/null || true
     stop_audio
     exit 0
   }
