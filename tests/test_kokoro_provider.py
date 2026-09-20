@@ -25,19 +25,49 @@ def _fake_audio_f32() -> bytes:
     return struct.pack(f"<{SAMPLES}f", *([0.1 * (i % 10) - 0.4 for i in range(SAMPLES)]))
 
 
-class FakeSession:
-    """Stand-in for onnxruntime.InferenceSession recording the run inputs."""
+class _InputInfo:
+    """Mimics onnxruntime NodeArg: `.name` and `.shape` feed rank negotiation."""
 
-    def __init__(self):
+    def __init__(self, name: str, shape=None):
+        self.name = name
+        self.shape = shape if shape is not None else []
+
+
+class FakeSession:
+    """Stand-in for onnxruntime.InferenceSession recording the run inputs.
+
+    By default it mirrors the real onnx-community/Kokoro-82M-v1.0-ONNX
+    export: token input named ``input_ids`` and a rank-1 ``speed`` input
+    (the regressions that shipped as synthesis failures on the real model).
+    """
+
+    def __init__(self, token_input_name: str = "input_ids", introspectable: bool = True):
+        self.token_input_name = token_input_name
+        self.introspectable = introspectable
+        self.return_numpy = False  # True mimics real onnxruntime float32 output
         self.calls = []
+
+    def get_inputs(self):
+        if not self.introspectable:
+            raise RuntimeError("fake session cannot introspect inputs")
+        return [
+            _InputInfo(self.token_input_name),
+            _InputInfo("style", shape=[1, 256]),
+            _InputInfo("speed", shape=[1]),  # rank-1, as in the shipped export
+        ]
 
     def run(self, output_names, input_feed):
         self.calls.append(dict(input_feed))
-        assert set(input_feed) == {"tokens", "style", "speed"}
-        tokens = input_feed["tokens"]
+        assert set(input_feed) == {self.token_input_name, "style", "speed"}
+        tokens = input_feed[self.token_input_name]
         assert tokens.dtype.name == "int64" and tokens.shape[0] == 1
         style = input_feed["style"]
         assert style.dtype.name == "float32" and tuple(style.shape) == (1, 256)
+        if self.return_numpy:
+            import numpy as np
+
+            values = struct.unpack(f"<{SAMPLES}f", _fake_audio_f32())
+            return [np.array(values, dtype=np.float32).reshape(1, SAMPLES)]
         return [_fake_audio_f32()]
 
 
@@ -170,9 +200,110 @@ class TestKokoroSynthesis(unittest.TestCase):
             # Inference inputs: padded token ids, 1x256 style, speed scalar.
             self.assertEqual(len(session.calls), 1)
             feed = session.calls[0]
-            tokens = feed["tokens"].tolist()[0]
+            tokens = feed["input_ids"].tolist()[0]
             self.assertEqual(tokens, [0, 50, 57, 54, 43, 0])  # pad + hola + pad
-            self.assertEqual(float(feed["speed"]), 1.0)
+            self.assertEqual(float(feed["speed"][0]), 1.0)
+
+    def test_legacy_tokens_export_falls_back_to_tokens_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_store(tmp)
+            session = FakeSession(token_input_name="tokens")
+            prov = KokoroTTSProvider(
+                store_root=tmp,
+                session_factory=lambda p: session,
+                phonemize_fn=lambda text, voice: "hola",
+            )
+            asyncio.run(prov.synthesize("Hola", "ef_dora", "+0%"))
+            self.assertIn("tokens", session.calls[0])
+            self.assertNotIn("input_ids", session.calls[0])
+
+    def test_non_introspectable_session_falls_back_to_tokens_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_store(tmp)
+            session = FakeSession(token_input_name="tokens", introspectable=False)
+            prov = KokoroTTSProvider(
+                store_root=tmp,
+                session_factory=lambda p: session,
+                phonemize_fn=lambda text, voice: "hola",
+            )
+            asyncio.run(prov.synthesize("Hola", "ef_dora", "+0%"))
+            self.assertIn("tokens", session.calls[0])
+
+    def test_speed_rank_matches_declared_model_shape(self):
+        # Shipped export: speed declared [1] -> rank-1 feed.
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_store(tmp)
+            session = FakeSession()  # declares shape [1]
+            prov = KokoroTTSProvider(
+                store_root=tmp,
+                session_factory=lambda p: session,
+                phonemize_fn=lambda text, voice: "hola",
+            )
+            asyncio.run(prov.synthesize("Hola", "ef_dora", "+20%"))
+            import numpy as np
+
+            speed = session.calls[0]["speed"]
+            self.assertIsInstance(speed, np.ndarray)
+            self.assertEqual(speed.shape, (1,))
+            self.assertAlmostEqual(float(speed[0]), 1.2)
+
+        # Legacy rank-0 export: speed declared [] -> scalar feed.
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_store(tmp)
+
+            class Rank0Session(FakeSession):
+                def get_inputs(self):
+                    return [
+                        _InputInfo(self.token_input_name),
+                        _InputInfo("style", shape=[1, 256]),
+                        _InputInfo("speed", shape=[]),
+                    ]
+
+            session = Rank0Session()
+            prov = KokoroTTSProvider(
+                store_root=tmp,
+                session_factory=lambda p: session,
+                phonemize_fn=lambda text, voice: "hola",
+            )
+            asyncio.run(prov.synthesize("Hola", "ef_dora", "+0%"))
+            self.assertIsInstance(session.calls[0]["speed"], float)
+
+    def test_token_input_name_is_cached_per_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_store(tmp)
+            session = FakeSession()
+            prov = KokoroTTSProvider(
+                store_root=tmp,
+                session_factory=lambda p: session,
+                phonemize_fn=lambda text, voice: "hola",
+            )
+            name_first = prov._token_input_name_for(session)
+            session.introspectable = False  # would raise on a second introspection
+            self.assertEqual(prov._token_input_name_for(session), name_first)
+
+    @unittest.skipUnless(NUMPY_AVAILABLE, "numpy required for real session output shape")
+    def test_numpy_session_output_is_normalized_to_f32_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_store(tmp)
+            session = FakeSession()
+            session.return_numpy = True  # real sessions: 2-D float32 arrays
+            prov = KokoroTTSProvider(
+                store_root=tmp,
+                session_factory=lambda p: session,
+                phonemize_fn=lambda text, voice: "hola",
+            )
+            result = asyncio.run(prov.synthesize("Hola", "ef_dora", "+0%"))
+            self.assertTrue(bytes(result).startswith(b"RIFF"))
+            pcm_len = len(bytes(result)) - 44
+            self.assertEqual(pcm_len, SAMPLES * 2)  # 16-bit samples out of 32 f32
+            # Determinism: same fake waveform, same PCM bytes.
+            import struct as _struct
+
+            expected = b"".join(
+                _struct.pack("<h", int(max(-1.0, min(1.0, v)) * 32767))
+                for v in struct.unpack(f"<{SAMPLES}f", _fake_audio_f32())
+            )
+            self.assertEqual(bytes(result)[44:], expected)
 
     def test_rate_maps_to_speed_multiplier(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -184,7 +315,7 @@ class TestKokoroSynthesis(unittest.TestCase):
                 phonemize_fn=lambda text, voice: "hola",
             )
             asyncio.run(prov.synthesize("Hola", "ef_dora", "+20%"))
-            self.assertAlmostEqual(float(session.calls[0]["speed"]), 1.2)
+            self.assertAlmostEqual(float(session.calls[0]["speed"][0]), 1.2)
 
     def test_stop_checker_discards_synthesis(self):
         with tempfile.TemporaryDirectory() as tmp:
