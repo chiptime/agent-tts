@@ -1468,6 +1468,48 @@ append_audio_history() { # <pane_id> <agent> <duration> [snippet] [audio_path]
   fi
 }
 
+# ─── Audio-store retention prune (daemon sweep) ──────────────
+# Today the retention sweep only runs when the engine CLI starts, so an
+# idle machine never prunes expired audio. The daemon sweep piggybacks
+# the prune: it spawns the engine venv python OFF the audio critical
+# path (after the sweep's pane work, at most once per hour) and fails
+# open — a broken venv or a failed sweep is logged once and never
+# affects the daemon loop. With retention off (0 days) it does nothing:
+# no spawn, no timestamp bookkeeping.
+
+AUDIO_PRUNE_STAMP="${STATE_DIR}/last-audio-prune" # hourly gate (file mtime)
+AUDIO_PRUNE_MIN_SECS=3600
+
+audio_store_prune() {
+  # Retention disabled → nothing to prune and nothing to track.
+  local days
+  days=$(audio_retention_days)
+  (( days > 0 )) || return 0
+
+  # Hourly gate, fork-free: epoch now comes from the printf builtin and
+  # the age comparison is plain bash arithmetic. The stamp's mtime is
+  # the last attempt (success or failure), so a broken engine retries
+  # at most once per hour instead of flooding every sweep. Freshly
+  # declared locals are assigned before use — no self-referencing
+  # assignment inside (( )) (an undeclared name silently evaluates to
+  # 0 there).
+  local now mtime=0 age
+  printf -v now '%(%s)T' -1
+  if [[ -f "$AUDIO_PRUNE_STAMP" ]]; then
+    mtime=$(stat -c %Y "$AUDIO_PRUNE_STAMP" 2>/dev/null) || mtime=0
+    [[ "$mtime" =~ ^[0-9]+$ ]] || mtime=0
+  fi
+  age=$(( now - mtime ))
+  (( age >= AUDIO_PRUNE_MIN_SECS )) || return 0
+
+  # Arm the gate before spawning: one attempt per hour even on failure.
+  touch "$AUDIO_PRUNE_STAMP" 2>/dev/null || true
+  if ! "$VENV_PYTHON" -c 'from agent_tts.audio_store import prune_expired; prune_expired()' >/dev/null 2>&1; then
+    echo "[$(date +%H:%M:%S)] [retención] ⚠️ Purga del almacén de audio falló (reintento en la próxima hora)"
+  fi
+  return 0
+}
+
 # ─── Watcher daemon ──────────────────────────────────────────
 
 watch_agent_pane() {
@@ -1699,6 +1741,11 @@ run_daemon() {
       echo "$child_pid" > "$lock_file"
       CHILD_PIDS+=("$child_pid")
     done < <(echo "$raw_agents" | jq -r '.result.agents[]? | "\(.pane_id)\t\(.agent)"' 2>/dev/null || true)
+
+    # Retention prune (hour-gated): runs AFTER the sweep's audio work
+    # (gating, title glyphs, watcher spawning) so it can never delay or
+    # block audio; itself best-effort and fail-open.
+    audio_store_prune
 
     sleep 4
   done
