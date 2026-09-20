@@ -1529,9 +1529,34 @@ watch_agent_pane() {
   done
 }
 
+# Apply the declarative keymap once at daemon startup (idempotent; refuses
+# on hard keymap errors without touching the target; shadow warnings are
+# non-fatal and go to stderr). Missing keymap.json → silent no-op: bindings
+# stay as they are until the user runs `keymap init`.
+daemon_keymap_autostart() {
+  [[ -f "$KEYMAP_FILE" ]] || return 0
+  # Announce only when the target actually changed (apply is rc-0 on no-op).
+  local target="${HERDR_CONFIG_DIR:-$HOME/.config}/herdr/config.toml"
+  local before="" after=""
+  [[ -f "$target" ]] && before=$(md5sum "$target" 2>/dev/null | cut -d' ' -f1)
+  if keymap_apply "" 0 >/dev/null 2>&1; then
+    [[ -f "$target" ]] && after=$(md5sum "$target" 2>/dev/null | cut -d' ' -f1)
+    [[ -n "$after" && "$after" != "$before" ]] \
+      && echo "🔊 Keymap aplicado desde $(basename "$KEYMAP_FILE")"
+  else
+    echo "⚠️ keymap apply falló en el arranque; atajos sin cambios." >&2
+    echo "   Revísalo con: herdr-tts keymap check" >&2
+  fi
+}
+
 run_daemon() {
   echo "🔊 Iniciando Herdr TTS Daemon (con Mutex y Scope ${TTS_AUTO_SCOPE})..."
   show_status
+
+  # Startup auto-apply of the declarative keymap (Bruno's flow: edit
+  # keymap.json → restart Herdr → bindings land). Never auto-inits; a
+  # missing/broken keymap.json is skipped with a warning, bindings stay.
+  daemon_keymap_autostart
 
   CHILD_PIDS=()
   cleanup() {

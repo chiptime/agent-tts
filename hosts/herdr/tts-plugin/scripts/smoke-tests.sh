@@ -1153,6 +1153,48 @@ run_km bogus
 [[ $? -ne 0 ]] && ok "18l unknown subcommand rejected" || bad "18l rc"
 assert_grep "18l unknown message lists the family" 'init, check, emit, apply or adopt' "$T/out.txt" -F
 
+echo "── 19. daemon_keymap_autostart (startup auto-apply)"
+new_env s19
+export HERDR_CONFIG_DIR="$T/conf"
+mkdir -p "$HERDR_CONFIG_DIR/herdr"
+export HERDR_TTS_KEYMAP_FILE="$T/keymap19.json"
+km19="$HERDR_TTS_KEYMAP_FILE"
+cfg19="$HERDR_CONFIG_DIR/herdr/config.toml"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$T/bin/herdr"
+chmod +x "$T/bin/herdr"
+
+# 19a. no keymap file → silent no-op, target never created
+lib_run 'daemon_keymap_autostart >"$T/out19.txt" 2>&1; echo $? > "$T/rc19"'
+rc19=$(cat "$T/rc19"); out19=$(cat "$T/out19.txt")
+[[ $rc19 -eq 0 && ! -e "$cfg19" && -z "$out19" ]] \
+  && ok "19a missing keymap: silent no-op, no target" || bad "19a rc=$rc19 out='$out19' target=$([[ -e "$cfg19" ]] && echo yes)"
+
+# 19b. valid keymap + user content → block applied once, user lines intact
+HERDR_TTS_KEYMAP_FILE="$km19" timeout 10 "$SCRIPT" keymap init >/dev/null 2>&1
+printf '# mi binding manual\n' > "$cfg19"
+bak_before=$(ls "$cfg19".bak-* 2>/dev/null | wc -l)
+lib_run 'daemon_keymap_autostart >"$T/out19.txt" 2>&1; echo $? > "$T/rc19"'
+rc19=$(cat "$T/rc19"); out19=$(cat "$T/out19.txt")
+grep -q '>>> herdr-tts keymap' "$cfg19" && ok "19b managed block written" || bad "19b no block"
+grep -q 'mi binding manual' "$cfg19" && ok "19b user content preserved" || bad "19b user content lost"
+grep -q 'Keymap aplicado' <<<"$out19" && ok "19b success notice shown" || bad "19b notice: $out19"
+[[ $rc19 -eq 0 ]] && ok "19b rc 0" || bad "19b rc=$rc19"
+
+# 19c. unchanged re-run → no write, no extra backup
+bak_after=$(ls "$cfg19".bak-* 2>/dev/null | wc -l)
+lib_run 'daemon_keymap_autostart >"$T/out19.txt" 2>&1'
+bak_final=$(ls "$cfg19".bak-* 2>/dev/null | wc -l)
+[[ $bak_before -eq 0 && $bak_after -eq 1 && $bak_final -eq 1 && ! -s "$T/out19.txt" ]] \
+  && ok "19c idempotent: one backup total, silent re-run" || bad "19c backups $bak_before/$bak_after/$bak_final out='$(cat "$T/out19.txt")'"
+
+# 19d. corrupt keymap → non-fatal warning, target untouched
+printf 'not json {{{' > "$km19"
+lib_run 'daemon_keymap_autostart >"$T/out19.txt" 2>&1; echo $? > "$T/rc19"'
+rc19=$(cat "$T/rc19"); out19=$(cat "$T/out19.txt")
+[[ $rc19 -eq 0 ]] && ok "19d corrupt keymap non-fatal rc" || bad "19d rc=$rc19"
+grep -q 'keymap apply falló' <<<"$out19" && ok "19d warning surfaced" || bad "19d no warning: $out19"
+grep -q '>>> herdr-tts keymap' "$cfg19" && ok "19d target untouched by failed apply" || bad "19d target modified"
+
 echo
 echo "═══ RESULT: $PASS passed, $FAIL failed ═══"
 exit $(( FAIL > 0 ? 1 : 0 ))
