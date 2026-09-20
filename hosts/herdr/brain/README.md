@@ -1,9 +1,9 @@
 # herdr-brain
 
 Conversational brain service that lets a user talk to AI coding agents
-managed by [Herdr](https://herdr.dev). This phase is the **brain only**,
-testable over HTTP and CLI — no UI, no mic. (The phone PWA arrives later and
-will consume the same HTTP surface.)
+managed by [Herdr](https://herdr.dev). The brain is fully usable over HTTP
+and CLI, and ships a thin installable PWA (one-tap call: browser-side speech
+recognition → /ask → text + spoken mp3 on the phone).
 
 ```
 voice (later PWA) ──►  herdr-brain  ──►  herdr CLI  ──►  agent pane (opencode/claude/…)
@@ -77,6 +77,10 @@ export GLM_API_KEY="…"
 
 ```bash
 curl -s localhost:8741/health
+curl -s localhost:8741/state
+# → {"active":true,"pane_id":"w7:p4","agent":"opencode","agent_status":"working",
+#     "title":"OpenCode","cwd":"/repo","session_id":"ses_…"}
+
 curl -s localhost:8741/ask -H 'content-type: application/json' \
      -d '{"text":"en que estas trabajando?"}'
 # → {"answer":"…","pane_id":"w7:p4","agent":"opencode","audio_url":"/audio/<hex>.mp3"}
@@ -85,6 +89,40 @@ curl -s localhost:8741/tts -H 'content-type: application/json' \
      -d '{"text":"eco local del PWA"}'
 curl -sO localhost:8741/audio/<hex>.mp3    # play on the CLIENT
 ```
+
+The brain also serves its mobile PWA same-origin at `/` (static assets in
+`src/herdr_brain/static/`, mounted after the API routes): no CORS anywhere.
+
+## Phone access over Tailscale (PWA)
+
+The brain listens on `127.0.0.1:8741`. To reach it from the phone over your
+tailnet (this is documentation, not something the repo runs):
+
+```bash
+tailscale serve --bg --https=443 http://127.0.0.1:8741
+```
+
+Open on the phone:
+
+```text
+https://<machine-name>.<tailnet-name>.ts.net/
+```
+
+Install to home screen (Android, Chrome):
+
+1. Open the URL above and allow the microphone permission when prompted.
+2. Chrome menu (⋮) → **Add to Home screen** / **Install app**.
+3. Launch from the home screen — it runs standalone (no browser chrome).
+4. Tap **● Call**, speak; the interim transcript shows live, then the answer
+   appears as text and the spoken mp3 plays in the earbuds. **■ Stop audio**
+   kills playback anytime.
+
+Browsers without the Web Speech API (e.g. Firefox) automatically show a text
+input with the same ask flow, which also makes desktop testing trivial.
+
+Tool calls the LLM makes during `/ask` are audit-logged to the
+`herdr_brain.tool_calls` logger with name + truncated arguments (never full
+payloads).
 
 ## Tools exposed to the LLM (fase 1: active pane only)
 
