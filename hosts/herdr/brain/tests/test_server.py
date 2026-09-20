@@ -64,6 +64,17 @@ class TestHealth:
         assert resp.json()["status"] == "ok"
         assert resp.json()["version"]
 
+    def test_health_and_tts_work_without_llm_key(self, settings, audio_dir, monkeypatch):
+        """No GLM_API_KEY: service still boots; only /ask is unavailable."""
+        monkeypatch.delenv("GLM_API_KEY", raising=False)
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir), "glm_api_key": None})
+        client = TestClient(create_app(settings=cfg, tts_renderer=FakeTTS()))
+        assert client.get("/health").status_code == 200
+        assert client.post("/tts", json={"text": "hola"}).status_code == 200
+        resp = client.post("/ask", json={"text": "hola"})
+        assert resp.status_code == 503
+        assert "GLM_API_KEY" in resp.json()["detail"]
+
 
 class TestAsk:
     def test_ask_returns_answer_and_audio(self, client_factory, audio_dir):

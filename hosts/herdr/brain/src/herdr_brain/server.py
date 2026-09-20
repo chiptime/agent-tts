@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from . import __version__
 from .config import Settings
-from .llm import BrainLLM
+from .llm import BrainLLM, BrainLLMError
 from .tools import BrainTools
 from .tts import new_audio_path, render_mp3
 
@@ -48,8 +48,16 @@ def create_app(
     cfg = settings
 
     tools = BrainTools(cfg)
-    llm = (llm_factory or default_llm_factory)(cfg, tools)
     synth = tts_renderer or render_mp3
+
+    # The LLM client is built lazily: /health and /tts work without
+    # GLM_API_KEY, and /ask reports the missing configuration as a 503.
+    llm_holder: dict = {}
+
+    def get_llm() -> BrainLLM:
+        if "instance" not in llm_holder:
+            llm_holder["instance"] = (llm_factory or default_llm_factory)(cfg, tools)
+        return llm_holder["instance"]
 
     app = FastAPI(title="herdr-brain", version=__version__)
 
@@ -59,7 +67,10 @@ def create_app(
 
     @app.post("/ask")
     def ask(body: TextRequest) -> dict:
-        result = llm.ask(body.text)
+        try:
+            result = get_llm().ask(body.text)
+        except BrainLLMError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         audio_url: Optional[str] = None
         if result.get("answer"):
             out_path = new_audio_path(cfg)
