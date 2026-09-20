@@ -186,6 +186,43 @@ class TestKeyHandling:
             BrainLLM(no_key, BrainTools(no_key, herdr=make_stub()))
 
 
+class TestToolCallLogging:
+    def test_tool_calls_logged_with_truncated_args(self, settings, make_stub, caplog):
+        import logging as logging_module
+
+        long_text = "x" * 300
+        llm, _ = make_brain(
+            settings, make_stub(),
+            responses=[
+                tool_call_response("c1", "send_to_session", {"text": long_text, "timeout_ms": 5000}),
+                text_response("done"),
+            ],
+        )
+        with caplog.at_level(logging_module.INFO, logger="herdr_brain.tool_calls"):
+            llm.ask("do it")
+        records = [r.getMessage() for r in caplog.records]
+        assert any("name=send_to_session" in m for m in records)
+        logged = next(m for m in records if "name=send_to_session" in m)
+        assert "timeout_ms=5000" in logged
+        # Full payload never lands in the log, only the truncated excerpt.
+        assert long_text not in logged
+        assert logged.count("x") <= 80
+
+    def test_read_transcript_call_logged(self, settings, make_stub, caplog):
+        import logging as logging_module
+
+        llm, _ = make_brain(
+            settings, make_stub(),
+            responses=[
+                tool_call_response("c1", "read_transcript", {"n_turns": 3}),
+                text_response("ok"),
+            ],
+        )
+        with caplog.at_level(logging_module.INFO, logger="herdr_brain.tool_calls"):
+            llm.ask("status?")
+        assert any("name=read_transcript" in r.getMessage() for r in caplog.records)
+
+
 class TestSystemPromptPolicy:
     def test_policy_baked_in(self):
         assert "read_transcript" in SYSTEM_PROMPT

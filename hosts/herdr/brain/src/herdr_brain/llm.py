@@ -15,12 +15,17 @@ System prompt policy (baked in):
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 
 from .config import Settings
 from .tools import BrainTools, TOOLS_SCHEMA
+
+LOGGER = logging.getLogger("herdr_brain.tool_calls")
+
+_MAX_LOGGED_ARG_CHARS = 80
 
 SYSTEM_PROMPT = """You are herdr-brain, the voice assistant for a developer's AI coding agents managed by Herdr. Exactly ONE agent pane is active; your tools operate on it.
 
@@ -38,6 +43,17 @@ Answer style (voice-first):
 
 class BrainLLMError(RuntimeError):
     """Raised when the LLM cannot produce a final answer."""
+
+
+def summarize_tool_args(args: Dict[str, Any]) -> str:
+    """Renders tool arguments for the audit log without full payloads."""
+    parts = []
+    for key in sorted(args):
+        rendered = str(args[key])
+        if len(rendered) > _MAX_LOGGED_ARG_CHARS:
+            rendered = rendered[: _MAX_LOGGED_ARG_CHARS - 3] + "..."
+        parts.append(f"{key}={rendered!r}")
+    return " ".join(parts) if parts else "-"
 
 
 class BrainLLM:
@@ -118,4 +134,5 @@ class BrainLLM:
                 raise ValueError("arguments must be a JSON object")
         except (json.JSONDecodeError, ValueError) as exc:
             return f"error: invalid tool arguments: {exc}"
+        LOGGER.info("tool call name=%s args=%s", call.function.name, summarize_tool_args(arguments))
         return self._tools.dispatch(call.function.name, arguments)
