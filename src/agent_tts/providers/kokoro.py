@@ -12,6 +12,9 @@ Model files live in the voice store managed by Mission A
 (``agent-tts voice install kokoro``):
 
 - ``<store>/kokoro/model.onnx``     — Kokoro-82M v1.0 ONNX weights (~325 MB fp32)
+- ``<store>/kokoro/model_quantized.onnx`` — optional ~92 MB quantized export
+  (installed instead of model.onnx via ``AGENT_TTS_KOKORO_VARIANT=quantized``;
+  preferred automatically when present)
 - ``<store>/kokoro/voices/*.bin``   — per-voice style embeddings (float32 banks)
 - ``<store>/kokoro/config.json``    — model config including the phoneme vocab
 
@@ -78,12 +81,18 @@ class KokoroTTSProvider(TTSProvider):
         session_factory: Optional[Callable[[str], object]] = None,
         phonemize_fn: Optional[Callable[[str, str], str]] = None,
     ):
-        from agent_tts.voices import kokoro_model_dir
+        from agent_tts.voices import kokoro_model_dir, kokoro_variant_model_path
 
         bundle = kokoro_model_dir(store_root)
+        # Resolution order: explicit path arg > AGENT_TTS_KOKORO_MODEL >
+        # variant preference (AGENT_TTS_KOKORO_VARIANT=quantized and
+        # <bundle>/model_quantized.onnx present) > fp32 model.onnx. When the
+        # quantized export is requested but missing, the fp32 model is used
+        # silently so is_available() stays truthful.
         self.model_path = (
             model_path
             or os.environ.get("AGENT_TTS_KOKORO_MODEL", "")
+            or kokoro_variant_model_path(bundle)
             or os.path.join(bundle, "model.onnx")
         )
         self.voices_dir = voices_dir or os.environ.get(

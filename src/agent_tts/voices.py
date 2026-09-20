@@ -13,7 +13,8 @@ Layout (one directory per installed voice, plus a ``voice.json`` manifest):
         es_ES-davefx-medium.onnx.json
       kokoro/                       (kokoro-82M model bundle)
         voice.json
-        model.onnx
+        model.onnx                  (fp32 export; model_quantized.onnx when
+                                    installed with AGENT_TTS_KOKORO_VARIANT=quantized)
         config.json
         voices/ef_dora.bin
         voices/em_alex.bin
@@ -76,6 +77,16 @@ KOKORO_CONFIG_URL = "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/conf
 KOKORO_VOICE_BINS = ("ef_dora", "em_alex", "em_santa", "af_heart")
 KOKORO_ALIASES = {"kokoro", "kokoro-82m", "kokoro-82M"}
 
+# Kokoro bundle variant selected via AGENT_TTS_KOKORO_VARIANT: "fp32" (the
+# default ~325 MB export, installed as model.onnx) or "quantized" (the ~92 MB
+# ONNX export, installed as model_quantized.onnx INSTEAD of model.onnx;
+# config.json and the voice bins are identical for both variants).
+ENV_KOKORO_VARIANT = "AGENT_TTS_KOKORO_VARIANT"
+KOKORO_VARIANT_FP32 = "fp32"
+KOKORO_VARIANT_QUANTIZED = "quantized"
+KOKORO_VARIANTS = (KOKORO_VARIANT_FP32, KOKORO_VARIANT_QUANTIZED)
+KOKORO_QUANTIZED_MODEL = "model_quantized.onnx"
+
 # Piper voice name: <lang>_<COUNTRY>-<speaker>[-<quality>]; quality defaults
 # to medium when omitted (e.g. es_ES-davefx -> es_ES-davefx-medium).
 PIPER_NAME_RE = re.compile(r"^([a-z]{2,3})_([A-Za-z]{2})-([a-z0-9_]+)(?:-([a-z]{2,8}))?$")
@@ -101,10 +112,33 @@ def piper_voice_urls(name: str) -> Tuple[str, str]:
     return f"{base}/{full_name}.onnx", f"{base}/{full_name}.onnx.json"
 
 
-def _kokoro_plan() -> List[Tuple[str, str]]:
-    """Relative-path -> URL plan for the kokoro-82M model bundle."""
+def kokoro_variant_from_env(env=None) -> str:
+    """Reads the kokoro bundle variant from AGENT_TTS_KOKORO_VARIANT.
+
+    Returns "fp32" when unset; "quantized" selects the ~92 MB export.
+    Any other value raises VoiceStoreError with the accepted values.
+    """
+    env = os.environ if env is None else env
+    raw = (env.get(ENV_KOKORO_VARIANT, "") or "").strip().lower()
+    if not raw:
+        return KOKORO_VARIANT_FP32
+    if raw in KOKORO_VARIANTS:
+        return raw
+    raise VoiceStoreError(
+        f"invalid {ENV_KOKORO_VARIANT}: {raw!r} (expected one of: {', '.join(KOKORO_VARIANTS)})"
+    )
+
+
+def _kokoro_plan(variant: str = KOKORO_VARIANT_FP32) -> List[Tuple[str, str]]:
+    """Relative-path -> URL plan for the kokoro-82M model bundle.
+
+    The quantized variant installs ``model_quantized.onnx`` (~92 MB) instead
+    of the fp32 ``model.onnx`` (~325 MB); config.json and the voice bins are
+    shared by both variants.
+    """
+    model_name = KOKORO_QUANTIZED_MODEL if variant == KOKORO_VARIANT_QUANTIZED else "model.onnx"
     plan: List[Tuple[str, str]] = [
-        ("model.onnx", f"{KOKORO_ONNX_BASE}/onnx/model.onnx"),
+        (model_name, f"{KOKORO_ONNX_BASE}/onnx/{model_name}"),
         ("config.json", KOKORO_CONFIG_URL),
     ]
     for voice in KOKORO_VOICE_BINS:
@@ -231,8 +265,10 @@ def install_voice(
     if os.path.exists(target):
         raise VoiceStoreError(f"Voice '{clean}' is already installed at {target} (remove it first to reinstall)")
 
+    variant: Optional[str] = None
     if clean.lower() in {a.lower() for a in KOKORO_ALIASES}:
-        display, provider, plan = "kokoro", "kokoro", _kokoro_plan()
+        variant = kokoro_variant_from_env()
+        display, provider, plan = "kokoro", "kokoro", _kokoro_plan(variant)
     else:
         display, provider = clean, "piper"
         onnx_url, json_url = piper_voice_urls(clean)
@@ -251,9 +287,12 @@ def install_voice(
         manifest = {
             "name": display,
             "provider": provider,
-            "installed_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "files": {rel: url for rel, url in plan},
         }
+        if variant is not None:
+            # Kokoro-only: which model export this bundle carries.
+            manifest["variant"] = variant
+        manifest["installed_utc"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        manifest["files"] = {rel: url for rel, url in plan}
         with open(os.path.join(tmp_dir, "voice.json"), "w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=2, ensure_ascii=False)
         os.replace(tmp_dir, target)
@@ -345,6 +384,22 @@ def remove_voice(name: str, store_root: Optional[str] = None) -> str:
 def kokoro_model_dir(store_root: Optional[str] = None) -> str:
     """Default installed location of the kokoro-82M bundle inside the store."""
     return os.path.join(store_root or get_store_root(), "kokoro")
+
+
+def kokoro_variant_model_path(bundle: str, env=None) -> str:
+    """Returns the bundle's quantized model path when the variant requests it and the file exists.
+
+    AGENT_TTS_KOKORO_VARIANT=quantized prefers ``<bundle>/model_quantized.onnx``.
+    Any other value (including unset) resolves to "" so callers fall back to
+    the fp32 ``model.onnx``; a requested-but-missing quantized export also
+    returns "" so provider availability stays truthful.
+    """
+    env = os.environ if env is None else env
+    raw = (env.get(ENV_KOKORO_VARIANT, "") or "").strip().lower()
+    if raw != KOKORO_VARIANT_QUANTIZED:
+        return ""
+    path = os.path.join(bundle, KOKORO_QUANTIZED_MODEL)
+    return path if os.path.isfile(path) else ""
 
 
 # --- CLI ---------------------------------------------------------------------

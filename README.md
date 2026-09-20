@@ -276,6 +276,8 @@ agent-tts voice remove es_ES-davefx-medium
 - **espeak-ng phonemization** — either the `phonemizer` Python package or the `espeak-ng` binary on PATH (`sudo apt-get install espeak-ng`). Also resolved lazily with an actionable error when absent.
 - **Model files** — `agent-tts voice install kokoro` downloads `model.onnx` (~325 MB) plus the `ef_dora`/`em_alex`/`em_santa` (Spanish) and `af_heart` (English) voice embeddings and the phoneme vocab from the official `onnx-community/Kokoro-82M-v1.0-ONNX` export (the original `hexgrad/Kokoro-82M-v1.0-onnx` release is gated behind HuggingFace auth; override the base with `AGENT_TTS_KOKORO_BASE_URL`).
 
+**Quantized variant:** `AGENT_TTS_KOKORO_VARIANT=quantized agent-tts voice install kokoro` installs the ~92 MB quantized export as `model_quantized.onnx` instead of the fp32 `model.onnx` (same config and voice embeddings). The provider picks it up automatically while `AGENT_TTS_KOKORO_VARIANT=quantized` is set at play time; an explicit `AGENT_TTS_KOKORO_MODEL` still wins, and the fp32 model is used silently when the quantized export is absent.
+
 Behavior matrix:
 
 | onnxruntime | espeak-ng | Result |
@@ -289,7 +291,7 @@ Streaming note: Kokoro emits whole-utterance PCM per call, so `supports_stream` 
 
 Kokoro on-device notes (CPU, measured):
 
-- **Download shape:** `voice install kokoro` fetches the fp32 export — `model.onnx` (~325 MB) plus the 4 voice bins (`ef_dora`, `em_alex`, `em_santa`, `af_heart`) from `onnx-community/Kokoro-82M-v1.0-ONNX`, and the phoneme vocab `config.json` from `hexgrad/Kokoro-82M`. The upstream quantized `model_quantized.onnx` (~92 MB) exists but is **not wired yet**; mirror hosts can override the base URL with `AGENT_TTS_KOKORO_BASE_URL`.
+- **Download shape:** `voice install kokoro` fetches the fp32 export — `model.onnx` (~325 MB) plus the 4 voice bins (`ef_dora`, `em_alex`, `em_santa`, `af_heart`) from `onnx-community/Kokoro-82M-v1.0-ONNX`, and the phoneme vocab `config.json` from `hexgrad/Kokoro-82M`. The ~92 MB quantized export is now wired as an opt-in via `AGENT_TTS_KOKORO_VARIANT=quantized` (see the Quantized variant note above); mirror hosts can override the base URL with `AGENT_TTS_KOKORO_BASE_URL`.
 - **Latency:** cold model load + first inference ≈ 1.75 s; warm, ≈ 0.6 s per 250-char group (~5× realtime). Time-to-first-audio with `--stream` is ≈ 2 s thanks to sentence-group pipelining.
 - **Voice:** `ef_dora` is the recommended default for Spanish (already the provider default).
 - **Phoneme caveat:** phonemization is espeak-ng IPA mapped against the Kokoro vocab. Spanish coverage is verified **full** (including `ɲ β ɾ θ ɣ`); unknown symbols would be silently dropped by the tokenizer, so exotic loanwords may sound anglicized (espeak-ng `es` voice), but no phoneme loss occurs for standard Spanish.
@@ -303,6 +305,7 @@ Rendered turn audio persists under `~/.local/share/agent-tts/audio/YYYY-MM-DD/<e
 - **Knob:** `AGENT_TTS_AUDIO_RETENTION_DAYS` (legacy `TTS_AUDIO_RETENTION_DAYS` is honored), default **7**; `0` disables retention.
 - **Pruning:** runs best-effort at every CLI start (fail-open) and removes whole expired date-partition directories — never individual files inside a current partition.
 - **Writer:** the herdr-tts watcher renders finished turn audio directly into this store when retention is on.
+- **Replay:** replay through the palette or `--play-file` honors `AGENT_TTS_PLAYBACK` — remote targets stream the stored file to the Windows host / PowerShell session, with one English warning and local playback as the fallback when the remote target is unreachable.
 
 ---
 
