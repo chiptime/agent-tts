@@ -656,6 +656,15 @@ async def speak(
 
 
 def main():
+    # Retention sweep; fail-open (audio_store is imported lazily so `import
+    # cli` never pays for it).
+    try:
+        from agent_tts.audio_store import prune_expired
+
+        prune_expired()
+    except Exception:
+        pass
+
     parser = argparse.ArgumentParser(description="Agent Neural TTS Engine")
     parser.add_argument("text", nargs="*", help="Text to speak (reads stdin if omitted)")
     parser.add_argument("--voice", "-v", default=DEFAULT_VOICE, help="Voice (e.g. elvira, alvaro, nova, rachel)")

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-tts"
-version = "0.1.0"
+version = "0.2.0"
 description = "Lightweight, cross-platform neural TTS engine with interactive IPC seek/pause controls for AI coding agents & terminal workflows."
 readme = "README.md"
 requires-python = ">=3.9"
