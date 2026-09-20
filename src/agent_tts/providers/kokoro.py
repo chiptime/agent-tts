@@ -95,6 +95,8 @@ class KokoroTTSProvider(TTSProvider):
         self.session_factory = session_factory
         self.phonemize_fn = phonemize_fn
         self._session = None
+        self._token_input_name: Optional[str] = None
+        self._speed_rank1: Optional[bool] = None
 
     # --- Availability & voice resolution ------------------------------------
 
@@ -219,6 +221,52 @@ class KokoroTTSProvider(TTSProvider):
             raise _kokoro_error(f"Kokoro voice file is truncated: {voice_file}")
         return data
 
+    def _token_input_name_for(self, session) -> str:
+        """Resolves the model's token input name from the session itself.
+
+        ONNX exports of Kokoro disagree on the token input name: the
+        onnx-community/Kokoro-82M-v1.0-ONNX bundle names it ``input_ids``
+        while other exports call it ``tokens``. Introspection (cached per
+        session) keeps both working; sessions that cannot be introspected
+        (test fakes) fall back to the original ``tokens`` name.
+        """
+        if self._token_input_name is not None:
+            return self._token_input_name
+        name = "tokens"
+        try:
+            input_names = [i.name for i in session.get_inputs()]
+        except Exception:
+            input_names = []
+        if "input_ids" in input_names:
+            name = "input_ids"
+        self._token_input_name = name
+        return name
+
+    def _speed_input_for(self, session, speed: float):
+        """Builds the ``speed`` feed value matching the model's declared rank.
+
+        ONNX exports disagree here too: the onnx-community bundle declares
+        ``speed`` with shape ``[1]`` (rank 1) while other exports use a
+        rank-0 scalar. The declared shape decides; sessions that cannot be
+        introspected fall back to the original rank-0 scalar.
+        """
+        if self._speed_rank1 is None:
+            rank1 = False
+            try:
+                for info in session.get_inputs():
+                    if info.name == "speed":
+                        shape = list(getattr(info, "shape", None) or [])
+                        rank1 = bool(shape)  # [] -> rank 0; [1]/[...] -> rank 1
+                        break
+            except Exception:
+                rank1 = False
+            self._speed_rank1 = rank1
+        if self._speed_rank1:
+            import numpy as np
+
+            return np.array([speed], dtype=np.float32)
+        return speed
+
     def _infer(self, tokens: List[int], style: bytes, speed: float) -> bytes:
         """Runs the ONNX model and returns raw little-endian float32 PCM bytes."""
         session = self._get_session()
@@ -233,12 +281,25 @@ class KokoroTTSProvider(TTSProvider):
         outputs = session.run(
             None,
             {
-                "tokens": np.array([tokens], dtype=np.int64),
+                self._token_input_name_for(session): np.array([tokens], dtype=np.int64),
                 "style": np.frombuffer(style, dtype=np.float32).reshape(1, STYLE_DIM),
-                "speed": np.float32(speed),
+                # Rank negotiated per model: onnxruntime rejects bare numpy
+                # scalars for rank-1 inputs and vice versa.
+                "speed": self._speed_input_for(session, speed),
             },
         )
-        return bytes(outputs[0])
+        audio = outputs[0]
+        if isinstance(audio, (bytes, bytearray)):
+            return bytes(audio)
+        # Real sessions return a numpy float32 array (often 2-D, e.g. (1, N));
+        # bytes() on it would iterate numpy scalars and fail. Normalize to
+        # contiguous little-endian float32 bytes instead.
+        return (
+            np.asarray(audio, dtype=np.float32)
+            .reshape(-1)
+            .astype("<f4", copy=False)
+            .tobytes()
+        )
 
     @staticmethod
     def _floats_to_wav(raw_f32: bytes, sample_rate: int = 24000) -> bytes:
