@@ -58,6 +58,13 @@ class Settings:
     max_tool_rounds: int
     screen_lines: int
 
+    def __post_init__(self):
+        # Accept plain strings for path fields regardless of the caller.
+        for field in ("tts_python", "tts_engine", "audio_dir"):
+            value = getattr(self, field)
+            if not isinstance(value, Path):
+                object.__setattr__(self, field, Path(value).expanduser())
+
 
 def load_settings(env: Optional[dict] = None) -> Settings:
     """Builds Settings from ``env`` (defaults to ``os.environ``)."""
