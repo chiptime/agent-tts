@@ -12,6 +12,7 @@ from agent_tts.boundaries import BoundaryMap, apply_bionic_reading
 from agent_tts.cleaner import strip_ansi
 from agent_tts.constants import DEFAULT_VOICE, IPC_SOCKET, LOCK_FILE, PID_FILE
 from agent_tts.ipc import IPCServer
+from agent_tts.playback_target import InvalidPlaybackTarget, resolve_target
 
 # Length cap for the sanitized text snippet carried by the IPC status payload.
 STATUS_SNIPPET_MAX_CHARS = 60
@@ -41,6 +42,81 @@ def cleanup_locks() -> None:
                 os.remove(f)
         except OSError:
             pass
+
+
+def _write_player_locks() -> None:
+    """Writes LOCK_FILE/PID_FILE with this process id (best-effort mutex markers)."""
+    try:
+        with open(PID_FILE, "w") as f:
+            f.write(str(os.getpid()))
+        with open(LOCK_FILE, "w") as f:
+            f.write(str(os.getpid()))
+    except OSError:
+        pass
+
+
+def _resolve_replay_target() -> str:
+    """Resolves the replay playback target from the environment.
+
+    Fails open: an invalid or unknown AGENT_TTS_PLAYBACK value warns once and
+    resolves to "local" instead of aborting the replay.
+    """
+    try:
+        return resolve_target(None, os.environ)
+    except InvalidPlaybackTarget as e:
+        print(f"Playback target invalid ({e}); falling back to local playback", file=sys.stderr)
+        return "local"
+
+
+def _remote_replay_session(
+    target: str,
+    label: str,
+    auto_rewind_sec: float = 2.0,
+    boundaries: Optional[BoundaryMap] = None,
+    highlight: bool = False,
+    autoscroll: bool = False,
+    bionic: bool = False,
+    zen: bool = False,
+):
+    """Builds the remote session for replaying a file, mirroring the speak path.
+
+    "wsl-ps" routes through one persistent PowershellSession; "winhost" and
+    "windows" route through RemoteAudioSession with its own unreachable-host
+    fallback semantics. Returns None when the target is unavailable (missing
+    powershell.exe) or unknown — the caller warns once and falls back to the
+    local device. winhost_client imports this module, so the import stays
+    function-local to avoid a circular import.
+    """
+    if target == "wsl-ps":
+        from agent_tts.powershell_playback import PowershellSession, is_wsl_ps_available
+
+        if not is_wsl_ps_available():
+            return None
+        return PowershellSession(
+            label=label,
+            auto_rewind_sec=auto_rewind_sec,
+            boundaries=boundaries,
+            highlight=highlight,
+            autoscroll=autoscroll,
+            bionic=bionic,
+            zen=zen,
+            env=os.environ,
+        )
+    if target in ("winhost", "windows"):
+        from agent_tts.winhost_client import RemoteAudioSession
+
+        return RemoteAudioSession(
+            label=label,
+            auto_rewind_sec=auto_rewind_sec,
+            boundaries=boundaries,
+            highlight=highlight,
+            autoscroll=autoscroll,
+            bionic=bionic,
+            zen=zen,
+            target=target,
+            env=os.environ,
+        )
+    return None
 
 
 class AudioSession:
@@ -532,13 +608,7 @@ def play_mp3_data(
 ) -> None:
     """Decodes in-memory MP3 bytes and plays them through a tracked AudioSession."""
     global _current_session
-    try:
-        with open(PID_FILE, "w") as f:
-            f.write(str(os.getpid()))
-        with open(LOCK_FILE, "w") as f:
-            f.write(str(os.getpid()))
-    except OSError:
-        pass
+    _write_player_locks()
 
     if boundaries is None and hasattr(mp3_data, "boundaries"):
         boundaries = getattr(mp3_data, "boundaries")
@@ -579,11 +649,52 @@ def play_mp3_file(
     provider: str = "",
     voice: str = "",
 ) -> None:
-    """Decodes an existing MP3 file to PCM in memory and plays via native player."""
+    """Decodes an existing MP3 file and plays it via the resolved playback target.
+
+    Replays honor AGENT_TTS_PLAYBACK like the speak path: remote targets
+    ("wsl-ps", "winhost", "windows") receive the decoded audio through the
+    same remote session classes the speak path uses, under the same lock/pid
+    protocol as play_mp3_data so the playback mutex contract holds. When
+    remote setup or playback fails (or the target is unknown), one English
+    warning is printed on stderr and playback falls back to the local device.
+    """
     if not os.path.exists(mp3_path):
         return
     with open(mp3_path, "rb") as f:
         data = f.read()
+
+    target = _resolve_replay_target()
+    if target != "local":
+        session = _remote_replay_session(
+            target,
+            label=label or os.path.basename(mp3_path),
+            auto_rewind_sec=auto_rewind_sec,
+            boundaries=boundaries,
+            highlight=highlight,
+            autoscroll=autoscroll,
+            bionic=bionic,
+            zen=zen,
+        )
+        if session is None:
+            print(
+                f"Playback target '{target}' unavailable; falling back to local playback",
+                file=sys.stderr,
+            )
+        else:
+            try:
+                _write_player_locks()
+                session.start_ipc()
+                session.play(miniaudio.decode(data))
+                return
+            except Exception as e:
+                print(
+                    f"Playback target '{target}' failed ({e}); falling back to local playback",
+                    file=sys.stderr,
+                )
+            finally:
+                session.stop()
+                cleanup_locks()
+
     play_mp3_data(
         data,
         label=label or os.path.basename(mp3_path),
