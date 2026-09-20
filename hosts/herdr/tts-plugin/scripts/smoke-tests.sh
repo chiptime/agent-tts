@@ -22,6 +22,13 @@
 #   17    keymap: init (template, no-overwrite, --force), check (core
 #         shadow warnings, --json), emit (direct/ctrlalt/menu TOML),
 #         invalid ids/chords/duplicates rejected, missing file actionable
+#   18    keymap apply / adopt: managed block into a fixture config.toml
+#         (user content byte-identical, in-place replace, lockstep with
+#         emit), idempotent re-apply, null-binding removal, backups
+#         created + pruned to 3, dry-run zero writes, invalid keymap
+#         refuses, herdr-check failure → rollback, herdr missing → skip
+#         note, adopt (require --style, idempotent, refuses modified
+#         without --force, ctrlalt/menu maps, seeds missing file)
 set -uo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -756,7 +763,7 @@ assert_grep "16g manifest declares tts-menu pane" 'id = "tts-menu"' "$REPO/herdr
 assert_grep "16g tts-menu runs --voice-menu" 'command = \["bin/herdr-tts", "--voice-menu"\]' "$REPO/herdr-plugin.toml"
 assert_grep "16g tts-menu popup is 60%x45%" 'width = "60%"' "$REPO/herdr-plugin.toml" -F
 assert_grep "16g open-menu action wired" '"--entrypoint", "tts-menu"' "$REPO/herdr-plugin.toml" -F
-assert_grep "16g version bumped to 0.13.0" 'version = "0.13.0"' "$REPO/herdr-plugin.toml" -F
+assert_grep "16g version bumped to 0.14.0" 'version = "0.14.0"' "$REPO/herdr-plugin.toml" -F"$REPO/herdr-plugin.toml" -F
 assert_grep "16g README option 1 (menu, recommended)" '### Option 1 — Compact map \(recommended\)' "$REPO/README.md"
 assert_grep "16g README option 2 (ctrl+alt family)" '### Option 2 — ctrl\+alt family' "$REPO/README.md"
 assert_grep "16g README option 3 (direct map + conflicts)" '### Option 3 — Direct map \(power users\)' "$REPO/README.md"
@@ -919,6 +926,232 @@ assert_grep "17k keymap help documents check" 'keymap check \[--json\]' "$T/out.
 assert_grep "17k keymap help documents emit"  'keymap emit \[--style S\]' "$T/out.txt"
 run_km bogus
 [[ $? -ne 0 ]] && ok "17k unknown subcommand rejected" || bad "17k bogus accepted"
+
+echo "── 18. keymap apply / adopt (managed block, backups, rollback)"
+new_env s18
+export HERDR_CONFIG_DIR="$T/conf"
+mkdir -p "$HERDR_CONFIG_DIR/herdr"
+export HERDR_TTS_KEYMAP_FILE="$T/keymap.json"
+km="$HERDR_TTS_KEYMAP_FILE"
+cfg="$HERDR_CONFIG_DIR/herdr/config.toml"
+run_km() { timeout 10 "$SCRIPT" keymap "$@" > "$T/out.txt" 2>&1; }
+bak_count() { local f c=0; for f in "$cfg".bak-*; do if [[ -e "$f" ]]; then c=$((c + 1)); fi; done; printf '%s\n' "$c"; }
+# Permissive herdr stub: `herdr config check` passes (rc 0). Every apply in
+# this scenario runs against $cfg — never the real ~/.config/herdr config.
+printf '#!/usr/bin/env bash\nexit 0\n' > "$T/bin/herdr"
+chmod +x "$T/bin/herdr"
+
+# 18a. apply without a keymap refuses; with one, it creates a missing target.
+run_km apply
+[[ $? -ne 0 ]] && ok "18a apply refuses without keymap file" || bad "18a apply rc"
+assert_grep "18a refusal suggests keymap init" 'keymap init' "$T/out.txt" -F
+[[ ! -e "$cfg" ]] && ok "18a no target touched on refused apply" || bad "18a target created"
+run_km init >/dev/null
+[[ $? -eq 0 ]] && ok "18a init seeds the keymap" || bad "18a init rc"
+run_km apply
+[[ $? -eq 0 ]] && ok "18a apply creates a missing target config" || bad "18a apply rc"
+[[ -f "$cfg" ]] && ok "18a target config written" || bad "18a no target"
+assert_grep "18a start marker present"  '^# >>> herdr-tts keymap \(managed; edits inside are overwritten\) >>>$' "$cfg"
+assert_grep "18a end marker present"    '^# <<< herdr-tts keymap <<<$' "$cfg"
+assert_grep "18a final hint: reload-config" 'herdr server reload-config' "$T/out.txt" -F
+[[ $(grep -c '^\[\[keys.command\]\]' "$cfg") -eq 14 ]] \
+  && ok "18a template apply renders 14 blocks" || bad "18a block count $(grep -c '^\[\[keys.command\]\]' "$cfg")"
+run_km apply --config "$T/other-config.toml"
+[[ $? -eq 0 ]] && ok "18a --config override honored" || bad "18a --config rc"
+assert_grep "18a block written into override path" '^# >>> herdr-tts keymap' "$T/other-config.toml"
+
+# 18b. user content: byte-identical, block appended at END, valid TOML.
+cat > "$cfg" <<'EOF'
+# bruno's theme
+theme = "tokyonight"
+
+[font]
+size = 11.0
+EOF
+cp "$cfg" "$T/user-only.toml"
+run_km apply
+[[ $? -eq 0 ]] && ok "18b apply rc=0 over user content" || bad "18b apply rc"
+nlines=$(wc -l < "$T/user-only.toml")
+head -n "$nlines" "$cfg" > "$T/head.out"
+cmp -s "$T/head.out" "$T/user-only.toml" \
+  && ok "18b user lines byte-identical (block appended after)" || bad "18b user content mutated"
+[[ $(grep -cF '# >>> herdr-tts keymap' "$cfg") -eq 1 ]] \
+  && ok "18b exactly one managed block" || bad "18b duplicate markers"
+python3 - "$cfg" <<'PY' > "$T/py.out" 2>&1 \
+  && ok "18b result parses as TOML: user keys intact + 14 shell blocks" || { bad "18b TOML invalid"; cat "$T/py.out"; }
+import sys, tomllib
+doc = tomllib.loads(open(sys.argv[1]).read())
+assert doc["theme"] == "tokyonight" and doc["font"]["size"] == 11.0
+blocks = doc["keys"]["command"]
+assert len(blocks) == 14 and all(b["type"] == "shell" for b in blocks)
+by_key = {b["key"]: b["command"] for b in blocks}
+assert by_key["prefix+r"] == "herdr-tts --toggle-play"
+PY
+assert_grep "18b shadow warnings printed (allowed, not blocking)" 'SHADOWS CORE \(resize pane\): play = prefix\+r' "$T/out.txt"
+[[ $(bak_count) -eq 1 ]] && ok "18b one backup after the content-changing write" || bad "18b backups=$(bak_count)"
+
+# 18c. lockstep: managed block body == `keymap emit` output (minus headers).
+run_km emit
+tail -n +4 "$T/out.txt" > "$T/emit-body.toml"
+awk '/^# >>> herdr-tts keymap \(managed/{f=1;next} /^# <<< herdr-tts keymap <<<$/{f=0;next} f' "$cfg" \
+  | grep -v '^# generated by:' > "$T/block-body.toml"
+cmp -s "$T/emit-body.toml" "$T/block-body.toml" \
+  && ok "18c managed block == emit output (lockstep)" || bad "18c emit/apply diverged"
+
+# 18d. idempotent re-apply: no write, no backup.
+cp "$cfg" "$T/before-idem.toml"
+run_km apply
+[[ $? -eq 0 ]] && ok "18d idempotent apply rc=0" || bad "18d rc"
+assert_grep "18d already-up-to-date message" 'already up to date' "$T/out.txt" -F
+cmp -s "$cfg" "$T/before-idem.toml" && ok "18d file byte-identical on re-apply" || bad "18d file mutated"
+[[ $(bak_count) -eq 1 ]] && ok "18d no backup on a no-op apply" || bad "18d backups=$(bak_count)"
+
+# 18e. null-binding removal + user content placed AFTER the block.
+printf '\n# my manual footer\ninjected = true\n' >> "$cfg"
+jq '.bindings.tldr = null' "$km" > "$T/km.tmp" && mv "$T/km.tmp" "$km"
+run_km apply
+[[ $? -eq 0 ]] && ok "18e apply after nulling tldr rc=0" || bad "18e rc"
+[[ $(grep -c '^\[\[keys.command\]\]' "$cfg") -eq 13 ]] \
+  && ok "18e tldr block removed (13 blocks)" || bad "18e block count"
+assert_no_grep_f "18e --tldr command gone from config" 'herdr-tts --tldr' "$cfg"
+assert_grep "18e user footer preserved" '^injected = true$' "$cfg"
+eline=$(grep -nF '# <<< herdr-tts keymap' "$cfg" | cut -d: -f1)
+fline=$(grep -n '^injected = true$' "$cfg" | cut -d: -f1)
+[[ "$fline" -gt "$eline" ]] \
+  && ok "18e user content after the block stays after (in-place replace)" || bad "18e footer moved"
+[[ $(bak_count) -eq 2 ]] && ok "18e second backup created" || bad "18e backups=$(bak_count)"
+
+# 18f. backups pruned to the last 3 across changing applies.
+for c in q w e; do
+  jq --arg c "prefix+$c" '.bindings.play = $c' "$km" > "$T/km.tmp" && mv "$T/km.tmp" "$km"
+  run_km apply >/dev/null
+  sleep 1 # distinct backup timestamps → deterministic prune order
+done
+[[ $? -eq 0 ]] && ok "18f three changing applies rc=0" || bad "18f rc"
+[[ $(bak_count) -eq 3 ]] && ok "18f backups pruned to 3" || bad "18f backups=$(bak_count)"
+assert_grep "18f newest state applied" '^key = "prefix\+e"$' "$cfg"
+newest="$(ls -1 "$cfg".bak-* | sort | tail -1)"
+grep -q '^key = "prefix+w"$' "$newest" \
+  && ok "18f newest backup holds the previous chord (w)" || bad "18f newest backup content wrong"
+
+# 18g. dry-run: prints the diff, writes nothing.
+cp "$cfg" "$T/pre-dry.toml"
+jq '.bindings.tldr = "prefix+t"' "$km" > "$T/km.tmp" && mv "$T/km.tmp" "$km"
+run_km apply --dry-run
+[[ $? -eq 0 ]] && ok "18g dry-run rc=0" || bad "18g rc"
+assert_grep "18g diff shows the added block" '^\+\[\[keys.command\]\]' "$T/out.txt"
+assert_grep "18g diff header present" '^--- ' "$T/out.txt"
+cmp -s "$cfg" "$T/pre-dry.toml" && ok "18g config byte-identical after dry-run" || bad "18g config written"
+[[ $(bak_count) -eq 3 ]] && ok "18g no backup from dry-run" || bad "18g backups=$(bak_count)"
+run_km apply >/dev/null
+run_km apply --dry-run
+assert_grep "18g dry-run on unchanged state: up to date" 'already up to date' "$T/out.txt" -F
+
+# 18h. hard-error keymap refuses to apply, writes nothing.
+cp "$cfg" "$T/pre-err.toml"
+jq '.bindings.play = "alt+bad"' "$km" > "$T/km.tmp" && mv "$T/km.tmp" "$km"
+run_km apply
+[[ $? -ne 0 ]] && ok "18h invalid keymap refuses apply" || bad "18h rc"
+assert_grep "18h refusal is actionable" 'refusing to apply' "$T/out.txt"
+cmp -s "$cfg" "$T/pre-err.toml" && ok "18h config untouched on refusal" || bad "18h config mutated"
+[[ $(bak_count) -eq 3 ]] && ok "18h no backup on refusal" || bad "18h backups=$(bak_count)"
+
+# 18i. herdr config check failure → automatic rollback.
+run_km init --force >/dev/null # reset: 18h left an invalid chord on purpose
+cat > "$T/bin/herdr" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "config" && "${2:-}" == "check" ]]; then
+  echo "error: invalid key binding in config" >&2
+  exit 1
+fi
+exit 0
+EOF
+chmod +x "$T/bin/herdr"
+cp "$cfg" "$T/pre-rollback.toml"
+jq '.bindings.snooze = "prefix+y"' "$km" > "$T/km.tmp" && mv "$T/km.tmp" "$km"
+run_km apply
+[[ $? -ne 0 ]] && ok "18i apply fails when herdr config check fails" || bad "18i rc"
+cmp -s "$cfg" "$T/pre-rollback.toml" \
+  && ok "18i config rolled back byte-identical" || bad "18i rollback mismatch"
+assert_grep "18i rollback message" 'rolled back' "$T/out.txt"
+assert_grep "18i herdr error surfaced" 'invalid key binding in config' "$T/out.txt" -F
+printf '#!/usr/bin/env bash\nexit 0\n' > "$T/bin/herdr"; chmod +x "$T/bin/herdr"
+
+# 18j. herdr missing from PATH → skip note, apply still succeeds.
+OLDPATH="$PATH"
+PATH="/usr/bin:/bin"
+if command -v herdr >/dev/null 2>&1; then
+  bad "18j test env: herdr unexpectedly present in /usr/bin:/bin"
+else
+  ok "18j test env: herdr hidden (PATH=/usr/bin:/bin)"
+fi
+jq '.bindings.snooze = "prefix+z"' "$km" > "$T/km.tmp" && mv "$T/km.tmp" "$km"
+run_km apply
+[[ $? -eq 0 ]] && ok "18j apply succeeds without herdr binary" || bad "18j rc"
+assert_grep "18j skip note when herdr absent" "skipped post-write config validation" "$T/out.txt" -F
+PATH="$OLDPATH"
+
+# 18k. adopt: require --style, idempotent, refuses modified, --force, seeds.
+run_km init --force >/dev/null
+run_km adopt
+[[ $? -ne 0 ]] && ok "18k adopt without --style rejected" || bad "18k rc"
+assert_grep "18k usage hint names --style" 'requires --style' "$T/out.txt"
+run_km adopt --style bogus
+[[ $? -ne 0 ]] && ok "18k unknown style rejected" || bad "18k rc"
+cp "$km" "$T/km-direct.bak"
+run_km adopt --style direct
+[[ $? -eq 0 ]] && ok "18k adopt direct on pristine template: already adopted" || bad "18k rc"
+assert_grep "18k already-adopted message" 'already adopts' "$T/out.txt" -F
+cmp -s "$km" "$T/km-direct.bak" && ok "18k already-adopted left file untouched" || bad "18k file mutated"
+run_km adopt --style ctrlalt
+[[ $? -eq 0 ]] && ok "18k adopt ctrlalt rc=0" || bad "18k rc"
+jq -e '.style == "ctrlalt"' "$km" >/dev/null && ok "18k style field updated" || bad "18k style"
+jq -e '[.bindings | to_entries[] | select(.value != null)] | length == 17' "$km" >/dev/null \
+  && ok "18k 17 non-null ctrlalt bindings" || bad "18k binding count"
+jq -e '.bindings.play == "ctrl+alt+r" and .bindings.tldr == "ctrl+alt+l" and .bindings.dashboard == "ctrl+alt+d"' "$km" >/dev/null \
+  && ok "18k chords match the suggested family" || bad "18k chords"
+jq -e '.bindings.paragraph_next == null and .bindings.paragraph_prev == null' "$km" >/dev/null \
+  && ok "18k chords without a ctrlalt suggestion stay null" || bad "18k nulls"
+assert_no_grep_f "18k ctrl+alt+t never written" '"ctrl+alt+t"' "$km"
+[[ -n "$(ls "$km".bak-* 2>/dev/null)" ]] \
+  && ok "18k keymap backup created on adopt" || bad "18k no keymap backup"
+cp "$km" "$T/km-ctrlalt.bak"
+run_km adopt --style ctrlalt
+[[ $? -eq 0 ]] && ok "18k adopt ctrlalt idempotent" || bad "18k rc"
+assert_grep "18k idempotent message" 'already adopts' "$T/out.txt" -F
+cmp -s "$km" "$T/km-ctrlalt.bak" && ok "18k idempotent left file untouched" || bad "18k mutated"
+jq '.bindings.play = "prefix+q"' "$km" > "$T/km.tmp" && mv "$T/km.tmp" "$km"
+cp "$km" "$T/km-modified.bak"
+run_km adopt --style menu
+[[ $? -ne 0 ]] && ok "18k adopt refuses a modified keymap" || bad "18k rc"
+assert_grep "18k refusal names --force" 'adopt --style menu --force' "$T/out.txt" -F
+cmp -s "$km" "$T/km-modified.bak" && ok "18k refusal left file untouched" || bad "18k mutated"
+run_km adopt --style menu --force
+[[ $? -eq 0 ]] && ok "18k forced adopt rc=0" || bad "18k rc"
+jq -e '.style == "menu" and .bindings.menu == "prefix+u"' "$km" >/dev/null \
+  && ok "18k menu map: menu=prefix+u" || bad "18k menu chord"
+jq -e '[.bindings | to_entries[] | select(.value != null)] | length == 1' "$km" >/dev/null \
+  && ok "18k menu map: exactly one binding" || bad "18k menu count"
+run_km adopt --style menu
+[[ $? -eq 0 ]] && ok "18k adopt menu idempotent" || bad "18k rc"
+assert_grep "18k menu idempotent message" 'already adopts' "$T/out.txt" -F
+rm -f "$km"
+run_km adopt --style ctrlalt
+[[ $? -eq 0 ]] && ok "18k adopt seeds a missing keymap file" || bad "18k rc"
+jq -e '.style == "ctrlalt" and .bindings.play == "ctrl+alt+r"' "$km" >/dev/null \
+  && ok "18k seeded file holds the ctrlalt map" || bad "18k seed content"
+
+# 18l. help wiring for the new subcommands.
+"$SCRIPT" --help > "$T/out.txt" 2>&1
+assert_grep "18l main --help documents keymap apply" 'keymap apply' "$T/out.txt"
+assert_grep "18l main --help documents keymap adopt" 'keymap adopt --style' "$T/out.txt"
+run_km --help
+[[ $? -eq 0 ]] && ok "18l keymap --help rc=0" || bad "18l rc"
+assert_grep "18l help documents apply" 'keymap apply \[--config P\] \[--dry-run\]' "$T/out.txt"
+assert_grep "18l help documents adopt" 'keymap adopt --style S' "$T/out.txt"
+run_km bogus
+[[ $? -ne 0 ]] && ok "18l unknown subcommand rejected" || bad "18l rc"
+assert_grep "18l unknown message lists the family" 'init, check, emit, apply or adopt' "$T/out.txt" -F
 
 echo
 echo "═══ RESULT: $PASS passed, $FAIL failed ═══"

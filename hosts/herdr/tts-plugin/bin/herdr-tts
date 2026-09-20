@@ -29,7 +29,7 @@ SNOOZE_STATE_FILE="${HERDR_TTS_SNOOZE_FILE:-/tmp/herdr-tts-snooze.json}"
 # Append-only ledger of rendered audio (timestamp, pane, agent, duration)
 # shown in the dashboard history tail; env override keeps tests hermetic.
 HISTORY_FILE="${HERDR_TTS_HISTORY_FILE:-${STATE_DIR}/history.log}"
-# Declarative, user-editable keymap (herdr-tts keymap init|check|emit).
+# Declarative, user-editable keymap (herdr-tts keymap init|check|emit|apply|adopt).
 # Env override keeps tests hermetic.
 KEYMAP_FILE="${HERDR_TTS_KEYMAP_FILE:-${CONFIG_DIR}/keymap.json}"
 
@@ -2664,7 +2664,7 @@ run_voice_menu() {
 # Library mode: when sourced (tests/tooling), only define functions and
 # configuration; dispatch CLI arguments only when executed directly.
 # ═════════════════════════════════════════════════════════════════════════
-# Declarative keymap: `herdr-tts keymap init|check|emit`
+# Declarative keymap: `herdr-tts keymap init|check|emit|apply|adopt`
 #
 # Voice-command bindings live in a user-editable JSON file (default
 # ${XDG_CONFIG_HOME:-~/.config}/herdr-tts/keymap.json, override with
@@ -2674,8 +2674,11 @@ run_voice_menu() {
 #   null                unassigned
 # Modifiers must be written literally (they are NOT reordered); whitespace
 # is tolerated. `check` validates the file and conflicts it against the
-# embedded Herdr core prefix defaults; `emit` renders ready-to-paste
-# [[keys.command]] TOML blocks for ~/.config/herdr/config.toml.
+# embedded Herdr core prefix defaults. `apply` installs the bindings into
+# ${HERDR_CONFIG_DIR:-~/.config}/herdr/config.toml as a managed block
+# (timestamped backups, post-write `herdr config check` with rollback).
+# `adopt` rewrites keymap.json with a whole suggested style map. `emit`
+# still renders ready-to-paste [[keys.command]] TOML blocks.
 # ═════════════════════════════════════════════════════════════════════════
 
 # Stable command ids (this exact set, template order). One per voice command.
@@ -2884,6 +2887,16 @@ Keymap declarativo y editable por el usuario: un archivo JSON
                           direct (default: usa los acordes del archivo),
                           ctrlalt (familia ctrl+alt sugerida),
                           menu (un solo acorde libre → popup del menú de voz)
+  keymap apply [--config P] [--dry-run]
+                          Escribir los bindings validados como BLOQUE
+                          GESTIONADO en ${HERDR_CONFIG_DIR:-~/.config}/herdr/config.toml
+                          (backup .bak-<ts>, se conservan 3; rollback
+                          automático si 'herdr config check' falla;
+                          --dry-run muestra el diff sin escribir)
+  keymap adopt --style S [--force]
+                          Sobrescribir keymap.json con el mapa sugerido del
+                          estilo S (direct, ctrlalt o menu); pide --force si
+                          el archivo tiene modificaciones de usuario
 
 Acordes válidos: "prefix+X" (X en mayúscula = shift, p. ej. prefix+N),
 "ctrl+alt+X", "ctrl+alt+shift+X", o null (sin asignar). Los modificadores
@@ -3103,6 +3116,19 @@ keymap_emit() { # $1 = "" | direct | ctrlalt | menu
   fi
 
   # direct (default): render the file's own bindings, stable id order.
+  keymap_render_bindings
+}
+
+# ─── keymap apply / adopt ────────────────────────────────────
+# `apply` installs the validated bindings into the Herdr config as a
+# managed block between exact markers; user content outside the markers
+# is never touched. Every content-changing write is preceded by a
+# timestamped backup (last 3 kept) and followed by `herdr config check`
+# (when the herdr binary is on PATH) with automatic rollback on failure.
+# `adopt` rewrites keymap.json with a whole suggested style map so the
+# loop closes: init → (adopt) → check → apply.
+
+keymap_render_bindings() { # print [[keys.command]] blocks for the loaded bindings, stable id order
   local -A chord_of=()
   local -i n=${#KEYMAP_IDS[@]} i
   for ((i = 0; i < n; i++)); do
@@ -3111,13 +3137,359 @@ keymap_emit() { # $1 = "" | direct | ctrlalt | menu
   local cid chord emitted=0
   for cid in "${KEYMAP_COMMAND_IDS[@]}"; do
     chord="${chord_of[$cid]:-}"
-    [[ -n "$chord" ]] || continue
-    keymap_emit_block "$chord" "$(keymap_cmd_for "$cid")" "$(keymap_label_for "$cid")"
-    emitted=1
+    if [[ -n "$chord" ]]; then
+      keymap_emit_block "$chord" "$(keymap_cmd_for "$cid")" "$(keymap_label_for "$cid")"
+      emitted=1
+    fi
   done
   if (( ! emitted )); then
     echo "# (no chords assigned in the keymap file)"
   fi
+}
+
+# Managed block markers: generated bindings live exclusively between them.
+KEYMAP_BLOCK_START='# >>> herdr-tts keymap (managed; edits inside are overwritten) >>>'
+KEYMAP_BLOCK_END='# <<< herdr-tts keymap <<<'
+
+keymap_suggested_bindings() { # $1 = style → "id<TAB>chord" lines (empty chord = null)
+  local cid chord
+  case "$1" in
+    direct)
+      keymap_default_json | jq -r '.bindings | to_entries[] | [ .key, (if .value == null then "" else .value end) ] | @tsv'
+      ;;
+    ctrlalt)
+      for cid in "${KEYMAP_COMMAND_IDS[@]}"; do
+        chord="$(keymap_ctrlalt_for "$cid")" || chord=""
+        printf '%s\t%s\n' "$cid" "$chord"
+      done
+      ;;
+    menu)
+      for cid in "${KEYMAP_COMMAND_IDS[@]}"; do
+        if [[ "$cid" == "menu" ]]; then chord="prefix+u"; else chord=""; fi
+        printf '%s\t%s\n' "$cid" "$chord"
+      done
+      ;;
+    *)
+      echo "❌ unknown style: $1 (direct, ctrlalt or menu)" >&2
+      return 1
+      ;;
+  esac
+}
+
+keymap_backup_file() { # $1 = existing file → copy to <file>.bak-YYYYmmdd-HHMMSS (prints the path)
+  local ts b
+  ts="$(date +%Y%m%d-%H%M%S)" || return 1
+  b="${1}.bak-${ts}"
+  if [[ -e "$b" ]]; then b="${b}.$RANDOM"; fi # same-second collision fallback (still sorts after)
+  cp -p "$1" "$b" || return 1
+  keymap_prune_backups "$1"
+  printf '%s\n' "$b"
+}
+
+keymap_prune_backups() { # $1 = base file — keep only the 3 newest <file>.bak-* copies
+  local -a baks=()
+  local f
+  for f in "${1}".bak-*; do
+    if [[ -e "$f" ]]; then baks+=("$f"); fi
+  done
+  local -i n=${#baks[@]}
+  if (( n > 3 )); then
+    rm -f "${baks[@]:0:$((n - 3))}"
+  fi
+}
+
+keymap_write_style_map() { # $1 = style — atomically write that style's suggested map into $KEYMAP_FILE (with backup)
+  local style="$1"
+  local bindings_json json parent backup tmp
+  bindings_json="$(keymap_suggested_bindings "$style" | jq -Rsc '
+    split("\n") | map(select(length > 0))
+    | map(split("\t") | { (.[0]): (if .[1] == "" then null else .[1] end) })
+    | add // {}')" || return 1
+  json="$(printf '{"style": "%s", "bindings": %s}\n' "$style" "$bindings_json" | jq .)" || return 1
+  parent="$(dirname "$KEYMAP_FILE")"
+  mkdir -p "$parent" || return 1
+  backup=""
+  if [[ -f "$KEYMAP_FILE" ]]; then
+    backup="$(keymap_backup_file "$KEYMAP_FILE")" || backup=""
+  fi
+  tmp="$(mktemp "$KEYMAP_FILE.XXXXXX")" || return 1
+  if printf '%s\n' "$json" > "$tmp" && mv -f "$tmp" "$KEYMAP_FILE"; then
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
+}
+
+keymap_apply() { # $1 = config path override ("" = default), $2 = 1 when --dry-run
+  local target
+  if [[ -n "${1:-}" ]]; then
+    target="$1"
+  else
+    target="${HERDR_CONFIG_DIR:-$HOME/.config}/herdr/config.toml"
+  fi
+  local dry_run="${2:-0}"
+
+  if [[ ! -f "$KEYMAP_FILE" ]]; then
+    echo "❌ No keymap file at $KEYMAP_FILE" >&2
+    echo "   Run: herdr-tts keymap init   (then edit the chords and re-run)" >&2
+    return 1
+  fi
+  # Hard errors (unknown ids, chord syntax, duplicates) refuse to apply;
+  # core shadow warnings are allowed but printed.
+  if ! keymap_load; then
+    return 1
+  fi
+  if (( KEYMAP_ERRORS > 0 )); then
+    echo "❌ $KEYMAP_FILE has $KEYMAP_ERRORS error(s) — refusing to apply. Run: herdr-tts keymap check" >&2
+    return 1
+  fi
+  local -i i
+  if (( KEYMAP_WARNINGS > 0 )); then
+    echo "⚠️  $KEYMAP_WARNINGS shadow warning(s) against Herdr core (not blocking):"
+    for ((i = 0; i < ${#KEYMAP_IDS[@]}; i++)); do
+      if [[ "${KEYMAP_STATUS[$i]}" == "warn" ]]; then
+        echo "⚠️  SHADOWS CORE (${KEYMAP_CORE[$i]}): ${KEYMAP_IDS[$i]} = ${KEYMAP_CHORDS[$i]}"
+      fi
+    done
+  fi
+
+  # Read the target preserving exact bytes (including trailing newlines).
+  local content="" had_markers=0 pre="" post="" scan ns ne
+  if [[ -f "$target" ]]; then
+    if ! content="$(cat "$target"; printf x)"; then
+      echo "❌ cannot read $target" >&2
+      return 1
+    fi
+    content="${content%x}"
+    ns=0; scan="$content"
+    while [[ "$scan" == *"$KEYMAP_BLOCK_START"* ]]; do ns=$((ns + 1)); scan="${scan#*"$KEYMAP_BLOCK_START"}"; done
+    ne=0; scan="$content"
+    while [[ "$scan" == *"$KEYMAP_BLOCK_END"* ]]; do ne=$((ne + 1)); scan="${scan#*"$KEYMAP_BLOCK_END"}"; done
+    if (( ns > 1 || ne > 1 )); then
+      echo "❌ $target has duplicate herdr-tts managed-block markers — keep exactly one block (fix manually)." >&2
+      return 1
+    fi
+    if (( ns == 1 && ne == 0 )); then
+      echo "❌ $target has an unterminated herdr-tts managed block (missing '$KEYMAP_BLOCK_END') — close it or remove both markers manually." >&2
+      return 1
+    fi
+    if (( ns == 0 && ne == 1 )); then
+      echo "❌ $target has a stray herdr-tts block end marker without a start marker (fix manually)." >&2
+      return 1
+    fi
+    if (( ns == 1 )); then
+      had_markers=1
+      pre="${content%%"$KEYMAP_BLOCK_START"*}"
+      post="${content#*"$KEYMAP_BLOCK_END"}"
+    fi
+  fi
+
+  # Managed block body: same generator as `emit`'s direct path (lockstep).
+  local block
+  block="# generated by: herdr-tts keymap apply — source: $KEYMAP_FILE"
+  block+=$'\n'$(keymap_render_bindings)
+
+  local new_content
+  if (( had_markers )); then
+    # Replace the managed region in place; bytes outside it are untouched.
+    new_content="${pre}${KEYMAP_BLOCK_START}"$'\n'"${block}"$'\n'"${KEYMAP_BLOCK_END}${post}"
+  else
+    local base="$content"
+    while [[ "$base" == *$'\n' ]]; do base="${base%$'\n'}"; done
+    if [[ -n "$base" ]]; then
+      new_content="${base}"$'\n\n'"${KEYMAP_BLOCK_START}"$'\n'"${block}"$'\n'"${KEYMAP_BLOCK_END}"$'\n'
+    else
+      new_content="${KEYMAP_BLOCK_START}"$'\n'"${block}"$'\n'"${KEYMAP_BLOCK_END}"$'\n'
+    fi
+  fi
+
+  if [[ -f "$target" && "$new_content" == "$content" ]]; then
+    echo "✓ $target already up to date (managed block unchanged)"
+    echo "  Apply live with: herdr server reload-config"
+    return 0
+  fi
+
+  if [[ "$dry_run" == "1" ]]; then
+    echo "── dry-run: no files were modified ──"
+    if [[ -f "$target" ]]; then
+      local dtmp
+      dtmp="$(mktemp "${TMPDIR:-/tmp}/herdr-tts-dryrun.XXXXXX")" || return 1
+      printf '%s' "$new_content" > "$dtmp"
+      diff -u --label "$target (current)" --label "$target (after apply)" "$target" "$dtmp" || true
+      rm -f "$dtmp"
+    else
+      echo "target $target does not exist yet; the following block would be created:"
+      printf '%s\n' "$new_content"
+    fi
+    return 0
+  fi
+
+  # Backup → atomic write (temp file in the same directory + mv).
+  local parent backup=""
+  parent="$(dirname "$target")"
+  if ! mkdir -p "$parent"; then
+    echo "❌ cannot create directory $parent" >&2
+    return 1
+  fi
+  if [[ -f "$target" ]]; then
+    backup="$(keymap_backup_file "$target")" || {
+      echo "❌ backup of $target failed — aborting write" >&2
+      return 1
+    }
+    echo "  backup: $backup"
+  fi
+  local wtmp mode
+  wtmp="$(mktemp "$parent/.herdr-tts-apply.XXXXXX")" || return 1
+  if ! printf '%s' "$new_content" > "$wtmp"; then
+    rm -f "$wtmp"
+    return 1
+  fi
+  if [[ -n "$backup" ]]; then
+    mode="$(stat -c %a "$backup" 2>/dev/null || stat -f %Lp "$backup")"
+    chmod "$mode" "$wtmp" 2>/dev/null || true
+  else
+    chmod 644 "$wtmp" 2>/dev/null || true
+  fi
+  if ! mv -f "$wtmp" "$target"; then
+    rm -f "$wtmp"
+    echo "❌ atomic write to $target failed" >&2
+    return 1
+  fi
+
+  # Post-write validation: let the real herdr binary judge the config.
+  local chkrc=0 chkout=""
+  if command -v herdr >/dev/null 2>&1; then
+    chkout="$(herdr config check 2>&1)" || chkrc=$?
+    if (( chkrc != 0 )); then
+      if [[ -n "$backup" ]]; then
+        if mv -f "$backup" "$target"; then
+          echo "❌ herdr config check failed — config rolled back to the previous state:" >&2
+        else
+          echo "❌ herdr config check failed AND rollback failed (backup kept at $backup):" >&2
+        fi
+      else
+        rm -f "$target"
+        echo "❌ herdr config check failed — newly created config removed:" >&2
+      fi
+      printf '%s\n' "$chkout" | sed 's/^/    /' >&2
+      echo "   Fix the keymap (herdr-tts keymap check) and re-run: herdr-tts keymap apply" >&2
+      return 1
+    fi
+  else
+    echo "  note: 'herdr' not found on PATH — skipped post-write config validation"
+  fi
+
+  local -i nbound=0
+  for ((i = 0; i < ${#KEYMAP_CHORDS[@]}; i++)); do
+    if [[ -n "${KEYMAP_CHORDS[$i]}" ]]; then nbound=$((nbound + 1)); fi
+  done
+  echo "✓ Managed keymap block written to $target ($nbound binding(s))"
+  echo "  Apply live with: herdr server reload-config"
+}
+
+keymap_adopt() { # $1 = style, $2 = 1 when --force
+  local style="$1" force="${2:-0}"
+  local id chord canon
+  case "$style" in
+    direct|ctrlalt|menu) ;;
+    *)
+      echo "❌ unknown style: $style (direct, ctrlalt or menu)" >&2
+      return 1
+      ;;
+  esac
+
+  # Target map for the requested style: id → canonical chord ("" = null).
+  local -A tgt=()
+  while IFS=$'\t' read -r id chord; do
+    if [[ -n "$chord" ]]; then
+      if canon="$(keymap_normalize_chord "$chord")"; then :; else canon="<invalid>"; fi
+    else
+      canon=""
+    fi
+    tgt[$id]="$canon"
+  done < <(keymap_suggested_bindings "$style")
+
+  if [[ ! -f "$KEYMAP_FILE" ]]; then
+    # Nothing to clobber: seed the file straight from the suggested map.
+    if keymap_write_style_map "$style"; then
+      echo "✓ No keymap file found — wrote the $style suggested map to $KEYMAP_FILE"
+      echo "  Next: herdr-tts keymap check, then herdr-tts keymap apply"
+      return 0
+    fi
+    echo "❌ could not write $KEYMAP_FILE" >&2
+    return 1
+  fi
+
+  if ! keymap_load; then
+    echo "   Fix the file (herdr-tts keymap check) or reset it (herdr-tts keymap init --force)." >&2
+    return 1
+  fi
+
+  # Current file bindings, canonical (invalid chords get a sentinel so they
+  # never compare equal to null).
+  local -A cur=()
+  local -i n=${#KEYMAP_IDS[@]} i
+  for ((i = 0; i < n; i++)); do
+    if [[ -n "${KEYMAP_CHORDS[$i]}" ]]; then
+      if canon="$(keymap_normalize_chord "${KEYMAP_CHORDS[$i]}")"; then :; else canon="<invalid>"; fi
+    else
+      canon=""
+    fi
+    cur[${KEYMAP_IDS[$i]}]="$canon"
+  done
+
+  # Already adopted? (bindings equal the target style's map, no unknown ids)
+  local already=1
+  for id in "${KEYMAP_COMMAND_IDS[@]}"; do
+    if [[ "${cur[$id]:-}" != "${tgt[$id]:-}" ]]; then already=0; break; fi
+  done
+  if (( already )); then
+    for ((i = 0; i < n; i++)); do
+      if ! keymap_is_known_id "${KEYMAP_IDS[$i]}"; then already=0; fi
+    done
+  fi
+  if (( already )); then
+    echo "✓ $KEYMAP_FILE already adopts the $style map — nothing to do"
+    return 0
+  fi
+
+  # "Modified" = any binding differing from the CURRENT style's suggested map.
+  local -A sug=()
+  while IFS=$'\t' read -r id chord; do
+    if [[ -n "$chord" ]]; then
+      if canon="$(keymap_normalize_chord "$chord")"; then :; else canon="<invalid>"; fi
+    else
+      canon=""
+    fi
+    sug[$id]="$canon"
+  done < <(keymap_suggested_bindings "$KEYMAP_STYLE")
+
+  local modified=0
+  for id in "${KEYMAP_COMMAND_IDS[@]}"; do
+    if [[ "${cur[$id]:-}" != "${sug[$id]:-}" ]]; then modified=1; break; fi
+  done
+  if (( ! modified )); then
+    for ((i = 0; i < n; i++)); do
+      if ! keymap_is_known_id "${KEYMAP_IDS[$i]}"; then modified=1; fi
+    done
+  fi
+
+  if (( modified && ! force )); then
+    echo "✋ $KEYMAP_FILE has user modifications (differs from the '$KEYMAP_STYLE' suggested map) — refusing to overwrite."
+    echo "   Keep your edits and switch manually, or force with: herdr-tts keymap adopt --style $style --force"
+    return 1
+  fi
+
+  if ! keymap_write_style_map "$style"; then
+    echo "❌ could not write $KEYMAP_FILE" >&2
+    return 1
+  fi
+  if (( modified )); then
+    echo "✓ Forced adoption: $style suggested map written to $KEYMAP_FILE (previous file backed up)"
+  else
+    echo "✓ Adopted the $style suggested map into $KEYMAP_FILE"
+  fi
+  echo "  Next: herdr-tts keymap check, then herdr-tts keymap apply"
 }
 
 keymap_main() {
@@ -3161,6 +3533,54 @@ keymap_main() {
       fi
       keymap_emit "$style"
       ;;
+    apply)
+      local cfg="" dry=0
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --config)
+            if [[ $# -lt 2 ]]; then
+              echo "❌ --config requires a path" >&2
+              return 1
+            fi
+            cfg="$2"; shift 2
+            ;;
+          --dry-run)
+            dry=1; shift
+            ;;
+          *)
+            echo "❌ unknown option: $1 (keymap apply accepts --config <path> and --dry-run)" >&2
+            return 1
+            ;;
+        esac
+      done
+      keymap_apply "$cfg" "$dry"
+      ;;
+    adopt)
+      local style="" force=0
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --style)
+            if [[ $# -lt 2 ]]; then
+              echo "❌ --style requires a value (direct, ctrlalt or menu)" >&2
+              return 1
+            fi
+            style="$2"; shift 2
+            ;;
+          --force)
+            force=1; shift
+            ;;
+          *)
+            echo "❌ unknown option: $1 (keymap adopt accepts --style direct|ctrlalt|menu and --force)" >&2
+            return 1
+            ;;
+        esac
+      done
+      if [[ -z "$style" ]]; then
+        echo "❌ keymap adopt requires --style direct|ctrlalt|menu" >&2
+        return 1
+      fi
+      keymap_adopt "$style" "$force"
+      ;;
     help|-h|--help)
       keymap_help
       ;;
@@ -3168,7 +3588,7 @@ keymap_main() {
       keymap_help
       ;;
     *)
-      echo "❌ unknown subcommand: $sub (use init, check or emit)" >&2
+      echo "❌ unknown subcommand: $sub (use init, check, emit, apply or adopt)" >&2
       keymap_help >&2
       return 1
       ;;
@@ -3554,7 +3974,12 @@ Keymap declarativo (teclas editables por el usuario, validables):
   keymap check [--json]    Validar el keymap y detectar sombras sobre los
                            defaults de Herdr core (exit 1 solo con errores)
   keymap emit [--style S]  Bloques TOML [[keys.command]] listos para pegar
-                           en config.toml (S: direct | ctrlalt | menu)
+                            en config.toml (S: direct | ctrlalt | menu)
+  keymap apply [--config P] [--dry-run]
+                            Instalar los bindings en config.toml como bloque
+                            gestionado (backup + rollback; --dry-run = diff)
+  keymap adopt --style S    Escribir el mapa sugerido (direct | ctrlalt | menu)
+                            en keymap.json (--force para sobrescribir cambios)
 
 Información:
    --status                 Ver estado actual, lock y configuración

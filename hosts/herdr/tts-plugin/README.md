@@ -123,15 +123,16 @@ herdr plugin link ~/Code/personal/herdr-tts
 
 **How Herdr keys work:** every binding is a single `prefix + X` chord — Herdr core has **no key sequences** (no leader chains like `prefix+u` then `r`). That constraint matters: a one-chord-per-command voice map competes for letters that Herdr core already owns (`r`, `v`, `z`, `n`/`p`, `[`/`]`). Pick **one** of the three styles below.
 
-### The supported flow: `keymap init → check → emit`
+### The supported flow: `keymap init → (adopt) → check → apply`
 
-Key assignment is **declarative and user-editable**: bindings live in a JSON keymap file, not in hardcoded docs. The `herdr-tts keymap` subcommand family is THE supported way to manage them — no more copying TOML blocks by hand:
+Key assignment is **declarative and user-editable**: bindings live in a JSON keymap file, not in hardcoded docs. The `herdr-tts keymap` subcommand family manages the whole loop — `apply` writes the blocks into Herdr's config for you:
 
 ```bash
 herdr-tts keymap init     # write the default template (never overwrites; --force replaces)
+herdr-tts keymap adopt --style ctrlalt   # optional: switch the whole map to a preset family
 $EDITOR "${XDG_CONFIG_HOME:-$HOME/.config}/herdr-tts/keymap.json"
 herdr-tts keymap check    # validate + conflict-check against Herdr core defaults
-herdr-tts keymap emit     # print ready-to-paste [[keys.command]] TOML blocks
+herdr-tts keymap apply    # write the bindings into config.toml (managed block + backup)
 herdr server reload-config
 ```
 
@@ -148,7 +149,7 @@ The file maps each **stable command id** to a chord or `null` (unassigned):
 }
 ```
 
-Chord syntax: `"prefix+X"` (an uppercase key means shift — `prefix+N` ≠ `prefix+n`), `"ctrl+alt+X"`, `"ctrl+alt+shift+X"`, or `null`. Write modifiers literally (they are not reordered); spacing is tolerated. `keymap check` prints one line per binding — `OK`, `⚠️ SHADOWS CORE (<action>)` when the chord collides with a Herdr core default, or `❌` for hard errors — and `keymap emit` renders the paste-ready blocks (`--style ctrlalt` for the suggested ctrl+alt family, `--style menu` for the one-key popup). Path override for scripting and tests: `HERDR_TTS_KEYMAP_FILE`.
+Chord syntax: `"prefix+X"` (an uppercase key means shift — `prefix+N` ≠ `prefix+n`), `"ctrl+alt+X"`, `"ctrl+alt+shift+X"`, or `null`. Write modifiers literally (they are not reordered); spacing is tolerated. `keymap check` prints one line per binding — `OK`, `⚠️ SHADOWS CORE (<action>)` when the chord collides with a Herdr core default, or `❌` for hard errors — and `keymap apply` installs them into `${HERDR_CONFIG_DIR:-$HOME/.config}/herdr/config.toml` as a managed block between `# >>> herdr-tts keymap >>>` markers: user content outside the markers is never touched, every content-changing write leaves a `config.toml.bak-<timestamp>` backup (last 3 kept), and a failed `herdr config check` rolls the write back automatically. Prefer pasting by hand? `keymap emit` still prints the blocks (`--style ctrlalt` / `--style menu` render preset families). Path override for scripting and tests: `HERDR_TTS_KEYMAP_FILE`.
 
 ### Option 1 — Compact map (recommended): one key opens the voice menu
 
@@ -161,10 +162,11 @@ The plugin ships a **voice menu popup**. Bind one free core letter (`u` is free 
 }
 ```
 
-Render the paste-ready block (and a file-mtime header) with:
+Install it with:
 
 ```bash
-herdr-tts keymap emit --style menu
+herdr-tts keymap adopt --style menu   # write this map into keymap.json
+herdr-tts keymap apply                # install it into config.toml
 ```
 
 Keys inside the menu (actions target the focused chat):
@@ -189,7 +191,7 @@ Keys inside the menu (actions target the focused chat):
 
 Herdr core does not own the `ctrl+alt` family, so every voice command gets its own direct chord with zero conflicts. These are plain chords — no prefix involved. **Caveat:** `ctrl+alt+t` launches a terminal on Ubuntu/Fedora desktops, so TL;DR lives on `ctrl+alt+l` — `keymap emit --style ctrlalt` never suggests `ctrl+alt+t`.
 
-Suggested family (deterministic — `herdr-tts keymap emit --style ctrlalt` renders exactly this):
+Suggested family (deterministic — `herdr-tts keymap adopt --style ctrlalt` writes exactly this into keymap.json, `keymap apply` installs it):
 
 | Command id | Chord | Command id | Chord |
 |---|---|---|---|
@@ -203,7 +205,7 @@ Suggested family (deterministic — `herdr-tts keymap emit --style ctrlalt` rend
 | `snooze_global` | `ctrl+alt+g` | `palette` | `ctrl+alt+o` |
 | `menu` | `ctrl+alt+u` | | |
 
-(`paragraph_next` / `paragraph_prev` have no suggested chord — assign them yourself in `keymap.json` and `keymap emit` renders them too.)
+(`paragraph_next` / `paragraph_prev` have no suggested chord — assign them yourself in `keymap.json` and `keymap apply` installs them too.)
 
 ### Option 3 — Direct map (power users)
 
@@ -225,11 +227,11 @@ The original one-chord-per-command map: fastest to press, but several letters **
 | `prefix+m` | Mute pane | libre |
 | `prefix+=` / `prefix+-` | Velocidad ±10% | libre |
 
-Emit the paste-ready blocks (one `[[keys.command]]` per assigned chord) with:
+Install the map (one `[[keys.command]]` per assigned chord) with:
 
 ```bash
 herdr-tts keymap check   # review the ⚠️ SHADOWS CORE lines first
-herdr-tts keymap emit
+herdr-tts keymap apply
 ```
 
 Apply the changes to your running Herdr server:
