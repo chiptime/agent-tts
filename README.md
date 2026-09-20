@@ -239,7 +239,7 @@ send_ipc_command("toggle-pause")
 | Provider | Config | Cost | Voice Quality | Typical Latency | Pipelined Streaming |
 | :--- | :--- | :---: | :---: | :---: | :--- |
 | **`edge` (Default)** | Zero config (No keys required) | 🟢 Free | High (Neural) | ~150–250ms | ✅ `auto` (≥ 400 chars) |
-| **`piper` / `local`** | `--piper-model` / `PIPER_MODEL` | 🟢 Free (Offline) | Neural ONNX (Local CPU) | ~80–180ms | ➖ `--stream on` only |
+| **`piper` / `local`** | `--piper-model` / `PIPER_MODEL` | 🟢 Free (Offline) | Neural ONNX (Local CPU) | ~80–180ms | ✅ `--stream on` only (never `auto`) |
 | **`kokoro`** | `AGENT_TTS_KOKORO_MODEL` + voice store (`agent-tts voice install kokoro`) | 🟢 Free (Offline) | Studio-grade Neural (Local CPU) | ~200–600ms | ➖ `--stream on` only |
 | **`openai`** | `--openai-key` / `OPENAI_API_KEY` | Paid API | Studio Quality | ~300–500ms | ✅ `auto` (≥ 400 chars) + chunked MP3 HTTP |
 | **`elevenlabs`** | `--eleven-key` / `ELEVENLABS_API_KEY` | Paid API | Ultra-realistic | ~350–600ms | ✅ `auto` (≥ 400 chars) + chunked MP3 HTTP |

@@ -26,6 +26,11 @@ class TTSProvider:
 
     name: str = "base"
     supports_stream: bool = False
+    # True when synthesize_stream() yields exactly one chunk per sentence
+    # group (split with the same shared splitter as the orchestration), so
+    # chunks map to groups by index. Raw HTTP fragment streams keep the
+    # per-group path until they adopt this contract.
+    stream_yields_group_chunks: bool = False
 
     async def synthesize(
         self,
