@@ -2883,7 +2883,10 @@ menu_render() {
     _dash_add '%s│ %s  %s' "$row_l" "$kr" "$dr"
   done
   menu_cap_rows $(( DASH_LINES - 1 ))
-  printf '\033[H%s\033[J' "$frame"
+  # ESC[K per line: the popup alternates frames of different widths, and
+  # ESC[J only clears BELOW the cursor — without per-line erase, the tails
+  # of a wider previous frame survive to the right of shorter lines.
+  printf '\033[H%s\033[K\033[J' "${frame//$'\n'/$'\033[K\n'}"
 }
 
 # One key → one action, always through the EXISTING implementation path
@@ -3078,7 +3081,8 @@ settings_render() {
   _dash_add ''
   _dash_add ' q/Esc salir'
   menu_cap_rows $(( DASH_LINES - 1 ))
-  printf '\033[H%s\033[J' "$frame"
+  # Same per-line erase discipline as menu_render (see comment there).
+  printf '\033[H%s\033[K\033[J' "${frame//$'\n'/$'\033[K\n'}"
 }
 
 # Popup entrypoint: render, read one key, cycle + persist + re-render.
