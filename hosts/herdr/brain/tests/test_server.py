@@ -14,15 +14,21 @@ from herdr_brain.server import create_app
 class FakeLLM:
     def __init__(self, result=None):
         self.calls: list = []
+        self.session_ids: list = []
         self.result = result or {
             "answer": "Estás en la fase 2 del brain; todo verde.",
             "pane_id": "w1:p9",
             "agent": "opencode",
+            "session_id": "default",
         }
 
-    def ask(self, text):
+    def attach_store(self, store):
+        self.attached_store = store
+
+    def ask(self, text, session_id=None):
         self.calls.append(text)
-        return dict(self.result)
+        self.session_ids.append(session_id)
+        return dict(self.result, session_id=session_id or "default")
 
 
 class FakeTTS:
@@ -150,6 +156,115 @@ class TestAsk:
     def test_empty_text_rejected(self, client_factory):
         resp = client_factory().post("/ask", json={"text": ""})
         assert resp.status_code == 422
+
+
+class TestSessions:
+    def test_ask_without_session_uses_default(self, client_factory):
+        llm = FakeLLM()
+        resp = client_factory(llm=llm).post("/ask", json={"text": "hola"})
+        assert resp.status_code == 200
+        assert llm.session_ids == [None]
+        assert resp.json()["session_id"] == "default"
+
+    def test_ask_with_session_id_echoes_it(self, client_factory):
+        llm = FakeLLM()
+        resp = client_factory(llm=llm).post(
+            "/ask", json={"text": "hola", "session_id": "phone-abc"}
+        )
+        assert resp.status_code == 200
+        assert llm.session_ids == ["phone-abc"]
+        assert resp.json()["session_id"] == "phone-abc"
+
+    def test_ask_reset_clears_store_before_answer(self, settings, audio_dir, monkeypatch):
+        import herdr_brain.server as server_module
+
+        resets: list = []
+
+        class SpyStore:
+            def __init__(self, *a, **k):
+                pass
+
+            def reset(self, session_id):
+                resets.append(session_id)
+
+            @staticmethod
+            def normalize(session_id):
+                return session_id or "default"
+
+        monkeypatch.setattr(server_module, "ConversationStore", SpyStore)
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        llm = FakeLLM()
+        client = TestClient(create_app(settings=cfg, llm_factory=lambda c, t: llm))
+        resp = client.post(
+            "/ask", json={"text": "hola", "session_id": "s1", "reset": True}
+        )
+        assert resp.status_code == 200
+        assert resets == ["s1"]
+
+    def test_reset_endpoint(self, settings, audio_dir, monkeypatch):
+        import herdr_brain.server as server_module
+
+        resets: list = []
+
+        class SpyStore:
+            def __init__(self, *a, **k):
+                pass
+
+            def reset(self, session_id):
+                resets.append(session_id)
+
+            @staticmethod
+            def normalize(session_id):
+                return session_id or "default"
+
+        monkeypatch.setattr(server_module, "ConversationStore", SpyStore)
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        client = TestClient(create_app(settings=cfg, llm_factory=lambda c, t: FakeLLM()))
+        resp = client.post("/reset", json={"session_id": "s1"})
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "session_id": "s1"}
+        assert resets == ["s1"]
+
+    def test_reset_works_keyless(self, settings, audio_dir, monkeypatch):
+        monkeypatch.delenv("GLM_API_KEY", raising=False)
+        cfg = Settings(
+            **{**settings.__dict__, "audio_dir": str(audio_dir), "glm_api_key": None}
+        )
+        client = TestClient(create_app(settings=cfg))
+        resp = client.post("/reset", json={})
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "session_id": "default"}
+
+    def test_store_shared_between_llm_and_reset(self, settings, audio_dir, monkeypatch):
+        """attach_store binds the same store instance /reset uses."""
+        import herdr_brain.server as server_module
+
+        instances: list = []
+        resets: list = []
+
+        class SpyStore:
+            def __init__(self, *a, **k):
+                instances.append(self)
+
+            def reset(self, session_id):
+                resets.append(session_id)
+
+            @staticmethod
+            def normalize(session_id):
+                return session_id or "default"
+
+        monkeypatch.setattr(server_module, "ConversationStore", SpyStore)
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        llm = FakeLLM()
+        client = TestClient(create_app(settings=cfg, llm_factory=lambda c, t: llm))
+
+        client.post("/ask", json={"text": "hola", "session_id": "s9"})  # builds LLM
+        client.post("/reset", json={"session_id": "s9"})
+
+        # Exactly one store exists, and it is the one the LLM holds.
+        assert len(instances) == 1
+        assert llm.attached_store is instances[0]
+        assert resets == ["s9"]
 
 
 class TestTts:

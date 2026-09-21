@@ -20,6 +20,7 @@ from . import __version__
 from .config import Settings
 from .herdr import HerdrError
 from .llm import BrainLLM, BrainLLMError
+from .memory import ConversationStore
 from .tools import BrainTools
 from .tts import new_audio_path, render_mp3
 
@@ -28,10 +29,17 @@ _LLMFactory = Callable[[Settings, BrainTools], BrainLLM]
 
 _SAFE_FILENAME = re.compile(r"^[A-Za-z0-9._-]+$")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+MAX_SESSION_ID_CHARS = 128
 
 
 class TextRequest(BaseModel):
     text: str = Field(min_length=1, max_length=4_000)
+    session_id: Optional[str] = Field(default=None, max_length=MAX_SESSION_ID_CHARS)
+    reset: bool = False
+
+
+class ResetRequest(BaseModel):
+    session_id: Optional[str] = Field(default=None, max_length=MAX_SESSION_ID_CHARS)
 
 
 def default_llm_factory(settings: Settings, tools: BrainTools) -> BrainLLM:
@@ -52,6 +60,7 @@ def create_app(
 
     tools = BrainTools(cfg)
     synth = tts_renderer or render_mp3
+    store = ConversationStore()
 
     # The LLM client is built lazily: /health and /tts work without
     # GLM_API_KEY, and /ask reports the missing configuration as a 503.
@@ -59,7 +68,12 @@ def create_app(
 
     def get_llm() -> BrainLLM:
         if "instance" not in llm_holder:
-            llm_holder["instance"] = (llm_factory or default_llm_factory)(cfg, tools)
+            llm = (llm_factory or default_llm_factory)(cfg, tools)
+            # Custom factories may not wire a store; bind the shared one so
+            # /reset and /ask always see the same conversation memory.
+            if hasattr(llm, "attach_store"):
+                llm.attach_store(store)
+            llm_holder["instance"] = llm
         return llm_holder["instance"]
 
     app = FastAPI(title="herdr-brain", version=__version__)
@@ -67,6 +81,11 @@ def create_app(
     @app.get("/health")
     def health() -> dict:
         return {"status": "ok", "version": __version__}
+
+    @app.post("/reset")
+    def reset(body: ResetRequest) -> dict:
+        store.reset(body.session_id)
+        return {"ok": True, "session_id": ConversationStore.normalize(body.session_id)}
 
     @app.get("/state")
     def state() -> dict:
@@ -98,8 +117,10 @@ def create_app(
 
     @app.post("/ask")
     def ask(body: TextRequest) -> dict:
+        if body.reset:
+            store.reset(body.session_id)
         try:
-            result = get_llm().ask(body.text)
+            result = get_llm().ask(body.text, session_id=body.session_id)
         except BrainLLMError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         audio_url: Optional[str] = None
@@ -114,6 +135,7 @@ def create_app(
             "answer": result.get("answer"),
             "pane_id": result.get("pane_id"),
             "agent": result.get("agent"),
+            "session_id": result.get("session_id"),
             "audio_url": audio_url,
         }
 
