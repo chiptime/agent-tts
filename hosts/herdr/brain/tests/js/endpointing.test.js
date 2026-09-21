@@ -95,3 +95,53 @@ test("leading silence before speech does not trip the hard cap", () => {
   clock.advance(1000);
   assert.equal(ep.shouldFinalize(), false);  // cap counts from speech start
 });
+
+test("snapshot exposes the stable diagnostic shape", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now, silenceMs: 1200, hardCapMs: 15000 });
+  const idle = ep.snapshot();
+  assert.deepEqual(Object.keys(idle).sort(), [
+    "buffer", "bufferChars", "capRemainingMs", "hardCapMs", "hasSpeech",
+    "lastChangeAt", "shouldFinalize", "silenceMs", "silenceRemainingMs",
+    "speechStartedAt"
+  ]);
+  assert.equal(idle.bufferChars, 0);
+  assert.equal(idle.hasSpeech, false);
+  assert.equal(idle.silenceRemainingMs, null);  // no speech: nothing to count
+  assert.equal(idle.capRemainingMs, null);
+
+  ep.push("hola");
+  clock.advance(400);
+  const active = ep.snapshot();
+  assert.equal(active.buffer, "hola");
+  assert.equal(active.bufferChars, 4);
+  assert.equal(active.hasSpeech, true);
+  assert.equal(active.silenceRemainingMs, 800);
+  assert.equal(active.capRemainingMs, 14600);
+  assert.equal(active.shouldFinalize, false);
+});
+
+test("snapshot: unchanged interim does not reset the silence countdown", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now, silenceMs: 1200 });
+  ep.push("hola");
+  clock.advance(500);
+  ep.push("hola");  // same text: NOT new activity
+  clock.advance(500);
+  let snap = ep.snapshot();
+  assert.equal(snap.silenceRemainingMs, 200);  // 1000ms of real silence elapsed
+  clock.advance(200);
+  snap = ep.snapshot();
+  assert.equal(snap.silenceRemainingMs, 0);
+  assert.equal(snap.shouldFinalize, true);
+});
+
+test("snapshot: cap remaining never goes negative", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now, hardCapMs: 15000 });
+  ep.push("hablando sin parar");
+  clock.advance(99_000);
+  const snap = ep.snapshot();
+  assert.equal(snap.capRemainingMs, 0);
+  assert.equal(snap.shouldFinalize, true);
+});

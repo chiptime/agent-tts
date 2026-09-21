@@ -192,7 +192,17 @@
       .turn.user { background: #234c31; }
     }
     .turn .who { display: block; font-size: 11px; color: var(--muted); margin-bottom: 3px; }
-    #interim { padding: 0 14px; color: var(--muted); font-style: italic; min-height: 1.4em; }
+    #interim {
+      min-height: 1.6em;
+      max-height: 3.2em;
+      overflow: hidden;
+      padding: 0 var(--sp-4) var(--sp-2);
+      text-align: center;
+      font-size: 20px;
+      font-weight: 700;
+      line-height: 1.4;
+      color: var(--text);
+    }
     .banner {
       margin: 0 14px 8px;
       padding: 10px 12px;
@@ -211,10 +221,13 @@
       bottom: calc(env(safe-area-inset-bottom, 0px) + 108px);
       z-index: 8;
       min-height: 48px;
-      padding: var(--sp-2) var(--sp-3);
+      padding: var(--sp-1) var(--sp-3);
       border-radius: 999px;
       font-size: var(--fs-md);
       font-weight: 700;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
       background: var(--panel);
       border: 1px solid var(--line);
       color: var(--text);
@@ -224,6 +237,8 @@
     #state-pill.thinking  { color: var(--warn); }
     #state-pill.speaking  { color: var(--blue); cursor: pointer; }
     #state-pill.paused    { color: var(--muted); }
+    #pill-sub { font-size: var(--fs-xs); font-weight: 600; color: var(--danger); }
+    #pill-sub.hidden { display: none; }
 
     /* Toast */
     #toast {
@@ -324,6 +339,37 @@
     #sheet-note { padding: var(--sp-2) var(--sp-3) 0; font-size: var(--fs-xs); color: var(--muted); font-style: italic; }
     #sheet-diag { padding: var(--sp-1) var(--sp-3) var(--sp-2); font-size: var(--fs-xs); color: var(--muted); border-top: 1px solid var(--line); }
     .sheet-body { flex: 1; overflow-y: auto; padding: var(--sp-3) var(--sp-3) calc(env(safe-area-inset-bottom, 0px) + var(--sp-4)); background: var(--bg); }
+    #diag-panel {
+      position: fixed;
+      inset: 0;
+      z-index: 30;
+      background: var(--bg);
+      display: flex;
+      flex-direction: column;
+    }
+    #diag-text {
+      flex: 1;
+      overflow-y: auto;
+      margin: var(--sp-3);
+      padding: var(--sp-3);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      font: var(--fs-sm)/1.7 ui-monospace, SFMono-Regular, Menlo, monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--text);
+    }
+    #version-footer {
+      position: fixed;
+      right: var(--sp-2);
+      bottom: calc(env(safe-area-inset-bottom, 0px) + 2px);
+      z-index: 7;
+      font-size: 10px;
+      color: var(--muted);
+      opacity: 0.8;
+      pointer-events: none;
+    }
     #sheet-conversation { max-width: 36em; margin: 0 auto; }
     #sheet-conversation .c-turn { margin-bottom: var(--sp-3); }
     #sheet-conversation .c-role {
@@ -369,7 +415,7 @@
 
   <div id="interim" class="hidden"></div>
   <div id="banner" class="banner hidden" role="alert"></div>
-  <button id="state-pill" class="hidden"></button>
+  <button id="state-pill" class="hidden"><span id="pill-main"></span><span id="pill-sub" class="hidden"></span></button>
 
   <footer>
     <div id="mic-note" class="hidden"></div>
@@ -400,6 +446,16 @@
       <div id="sheet-conversation"></div>
       <pre id="sheet-screen" class="hidden"></pre>
     </div>
+  </section>
+
+  <div id="version-footer">v<span id="app-version">dev</span></div>
+
+  <section id="diag-panel" class="hidden">
+    <div class="sheet-head">
+      <span id="diag-title" style="flex:1;font-weight:700;">Diagnóstico de voz</span>
+      <button id="diag-close" style="min-height:48px;padding:0 16px;font-weight:800;background:var(--chip-bg);color:var(--text);">✕ Cerrar</button>
+    </div>
+    <div class="sheet-body"><pre id="diag-text">Cargando…</pre></div>
   </section>
 
   <audio id="player"></audio>
