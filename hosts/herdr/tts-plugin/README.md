@@ -285,6 +285,7 @@ herdr-tts --piper-model <path> # Set local Piper ONNX model path (.onnx)
 herdr-tts --openai-key <key>   # Set OpenAI API key for tts-1 / tts-1-hd
 herdr-tts --eleven-key <key>   # Set ElevenLabs API key
 herdr-tts --status             # Show full service configuration, provider, and player state
+herdr-tts --restart-daemon     # Restart the TTS daemon (applies pending provider/playback settings)
 herdr-tts --voice alvaro       # Set voice (elvira, alvaro, ximena, dalia, jorge, en, nova, rachel)
 herdr-tts --rate +25%          # Set speech speed (+0%, +20%, +35%)
 herdr-tts --ntfy-topic <topic> # Set ntfy.sh topic for mobile audio notifications (or 'off')
@@ -557,7 +558,8 @@ command = "herdr plugin pane open --plugin herdr.tts --entrypoint tts-palette"
 * Dentro del menú, `q` / `Esc` / `Enter` **vuelven al menú principal**. Para acceso directo sigue existiendo el popup independiente (`herdr-tts --voice-settings`, acción `voice-settings` del plugin, entrypoint `tts-settings`), donde `q` / `Esc` cierra el popup. `settings` sigue siendo un id ligable en `keymap.json`, pero **sin acorde por defecto**: los ajustes no gastan una tecla de core.
 * Kokoro y Piper requieren instalar el modelo antes: `agent-tts voice install <modelo>`.
 * La escritura es **gestionada**: solo toca las claves `TTS_PROVIDER`, `TTS_PLAYBACK` y `HERDR_TTS_AUDIO_RETENTION_DAYS` de `config.env` — reescribe la línea existente o añade un bloque gestionado al final, preserva el resto del fichero byte a byte, escribe de forma atómica (tmp + mv) y deja la versión previa en `config.env.bak`.
-* Los cambios aplican a **nuevos procesos**: reinicia el daemon para que el watcher los herede.
+* La tecla `R` (mayúscula — distinta de la `r` que cicla retención) **reinicia el daemon** al instante y confirma en pantalla con `✓ Daemon reiniciado`; equivale a `herdr-tts --restart-daemon`.
+* Los cambios aplican a **nuevos procesos**: `p` y `d` aplican al reiniciar el daemon — ahora con una tecla (`R` en Ajustes) o `herdr-tts --restart-daemon`.
 
 ---
 

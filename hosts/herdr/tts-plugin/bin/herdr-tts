@@ -9,8 +9,10 @@ set -euo pipefail
 REAL_SCRIPT="$(readlink -f "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "${REAL_SCRIPT}")" && pwd)"
 PLUGIN_ROOT="${HERDR_PLUGIN_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
-# Canonical path for re-invocations spawned by children (fzf preview/binds)
-SCRIPT="${REAL_SCRIPT}"
+# Canonical path for re-invocations spawned by children (fzf preview/binds,
+# daemon_restart relaunch). The env override exists so tests can point the
+# re-invocation at a recorder stub (same hermetic convention as CONFIG_FILE).
+SCRIPT="${HERDR_TTS_SCRIPT:-${REAL_SCRIPT}}"
 
 # Standard XDG paths
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/herdr-tts"
@@ -1088,6 +1090,14 @@ show_status() {
   else
     echo "  Audio retenido: apagado (no definido) — HERDR_TTS_AUDIO_RETENTION_DAYS"
   fi
+  # Daemon liveness: pidfile + /proc check (PID-reuse guarded, same as takeover).
+  local d_pid
+  d_pid=$(daemon_pid)
+  if [[ -n "$d_pid" ]]; then
+    echo "  Daemon TTS: vivo (pid ${d_pid})"
+  else
+    echo "  Daemon TTS: no corriendo (arranca con el plugin o --restart-daemon)"
+  fi
   if [[ "$TTS_PROVIDER" == "openai" ]]; then
     local masked_key="no configurada"
     if [[ -n "$OPENAI_API_KEY" ]]; then
@@ -1823,6 +1833,132 @@ daemon_takeover() {
     fi
   fi
   printf '%s\n' "$$" > "$DAEMON_PID_FILE"
+}
+
+# ─── Daemon lifecycle: pid / stop / restart ─────────────────
+# Liveness probe for the current daemon: the pidfile pid is trusted only
+# while the process is alive AND its /proc cmdline mentions herdr-tts
+# (same PID-reuse guard as daemon_takeover). Prints the pid when alive,
+# nothing otherwise; rc is always 0 so `x=$(daemon_pid)` is set -e safe.
+daemon_pid() {
+  local pid
+  pid=$(cat "${DAEMON_PID_FILE}" 2>/dev/null || true)
+  if [[ "$pid" =~ ^[0-9]+$ ]] \
+     && kill -0 "$pid" 2>/dev/null \
+     && grep -aq "herdr-tts" "/proc/$pid/cmdline" 2>/dev/null; then
+    printf '%s\n' "$pid"
+  fi
+  return 0
+}
+
+# Bounded wait (~2s) for a pid to disappear. A zombie counts as gone: the
+# process is dead, its entry just lingers unreaped by the parent.
+daemon_wait_gone() { # <pid>
+  local pid="$1" i stat state
+  for (( i = 0; i < 20; i++ )); do
+    kill -0 "$pid" 2>/dev/null || return 0
+    stat=$(cat "/proc/$pid/stat" 2>/dev/null || true)
+    state="${stat##*) }"
+    state="${state%% *}"
+    [[ "$state" == "Z" ]] && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+# Best-effort stop of any live TTS daemon. Preferred path: the pidfile
+# (kill + bounded wait). Legacy daemons predate the pidfile: fall back to
+# a cmdline sweep of `bin/herdr-tts _daemon` (our own invocation never
+# matches — it is not a _daemon). Fail-open throughout: a missing pidfile,
+# a dead pid or a sweep with no match all exit 0. What happened is
+# reported through the optional out-var ("pidfile" | "fallback" | "none");
+# without one, non-noop results go to stderr.
+# Legacy-daemon sweep for daemons the pidfile does not know about (pre-
+# v0.14.1 starts). Strict argv match instead of `pkill -f`: a process only
+# counts when one of its arguments ends with "herdr-tts" AND another is
+# EXACTLY "_daemon". A substring sweep (pkill -f) would also kill innocent
+# processes that merely mention the string inside a larger argument — e.g.
+# an AI session or an editor holding this script's text. Fork-free /proc
+# walk; never touches our own pid or our parent's.
+daemon_sweep_legacy() { # [out-var] → "killed" | "none"
+  local d pid arg prev="" _dsl_result="none"
+  for d in /proc/[0-9]*; do
+    pid="${d#/proc/}"
+    [[ "$pid" == "$$" || "$pid" == "$PPID" ]] && continue
+    [[ -r "$d/cmdline" ]] || continue
+    prev=""
+    while IFS= read -r -d '' arg; do
+      # Adjacent-argv signature: <...herdr-tts> <_daemon> — exactly how the
+      # startup hook and daemon_restart launch it. Embedded mentions inside
+      # a larger single argument (AI sessions, editors) never match.
+      if [[ -n "$prev" && "$prev" == *herdr-tts && "$arg" == "_daemon" ]]; then
+        kill "$pid" 2>/dev/null || true
+        daemon_wait_gone "$pid" || true
+        _dsl_result="killed"
+        break
+      fi
+      prev="$arg"
+    done < "$d/cmdline"
+  done
+  if [[ -n "${1:-}" ]]; then
+    printf -v "$1" '%s' "$_dsl_result"
+  fi
+  [[ "$_dsl_result" == "killed" ]]
+}
+
+daemon_stop_running() { # [out-var]
+  # NOTE: the result local is function-prefixed so a caller's out-var can
+  # never collide with it (printf -v would write the local, lost on return).
+  local out_var="${1:-}" pid _dsr_result="none" _dsr_sweep="none"
+  pid=$(daemon_pid)
+  if [[ -n "$pid" ]]; then
+    kill "$pid" 2>/dev/null || true
+    daemon_wait_gone "$pid" || true
+    _dsr_result="pidfile"
+  elif daemon_sweep_legacy _dsr_sweep; then
+    sleep 0.2 # grace so the swept daemon settles before any relaunch
+    _dsr_result="fallback"
+  fi
+  if [[ -n "$out_var" ]]; then
+    printf -v "$out_var" '%s' "$_dsr_result"
+  elif [[ "$_dsr_result" != "none" ]]; then
+    echo "daemon stop: ${_dsr_result}" >&2
+  fi
+  return 0
+}
+
+# User-facing restart: stop whatever is running, relaunch detached through
+# the SCRIPT re-invocation mechanism (setsid so it survives terminal
+# close; plain nohup fallback when setsid is unavailable), then wait up to
+# ~3s for the new daemon to claim the pidfile. Fail-open: a pidfile that
+# never shows up still exits 0 (the daemon may still be initializing —
+# venv bootstrap, keymap autostart); only an unusable spawn target is rc 1.
+daemon_restart() {
+  local prev_pid="" new_pid="" spawn_pid="" i
+  [[ -f "$DAEMON_PID_FILE" ]] && prev_pid=$(cat "$DAEMON_PID_FILE" 2>/dev/null || true)
+  daemon_stop_running
+  if [[ ! -x "$SCRIPT" ]]; then
+    echo "⚠️ No se pudo relanzar el daemon: $SCRIPT no es ejecutable" >&2
+    return 1
+  fi
+  if command -v setsid >/dev/null 2>&1; then
+    setsid nohup "$SCRIPT" _daemon >/dev/null 2>&1 &
+  else
+    nohup "$SCRIPT" _daemon >/dev/null 2>&1 &
+  fi
+  spawn_pid=$!
+  for (( i = 0; i < 30; i++ )); do
+    if [[ -f "$DAEMON_PID_FILE" ]]; then
+      new_pid=$(cat "$DAEMON_PID_FILE" 2>/dev/null || true)
+      if [[ "$new_pid" =~ ^[0-9]+$ && "$new_pid" != "$prev_pid" ]]; then
+        echo "✓ Daemon reiniciado (pid ${new_pid})" >&2
+        return 0
+      fi
+    fi
+    sleep 0.1
+  done
+  echo "⚠️ Daemon relanzado (pid ${spawn_pid}) pero el pidfile no apareció; puede seguir inicializando" >&2
+  return 0
 }
 
 run_daemon() {
@@ -2972,8 +3108,9 @@ menu_dispatch() { # <key>
 # reads ONE key and confirms briefly: one key = one action = popup closes
 # = focus restored (the ~1.5s dwell lets the confirmation be read).
 # Pressing `a` switches to the SETTINGS view (the same frame the
-# standalone settings popup renders): p/d/r cycle + persist a knob, and
-# q/Esc/Enter returns to the MAIN view — a re-render, not an exit.
+# standalone settings popup renders): p/d/r cycle + persist a knob, R
+# restarts the daemon, and q/Esc/Enter returns to the MAIN view — a
+# re-render, not an exit.
 # Fail-open: EOF / read failure (no tty, closed pipe) → exit 0 silently
 # from either view. q/Esc in the main view exits without a message.
 # Note: an arrow key sends its ESC prefix byte first, so it quits the
@@ -2983,10 +3120,11 @@ run_voice_menu() {
   while :; do
     if [[ "$view" == "settings" ]]; then
       settings_render
-      # Clear AFTER the render: a warning set by the previous keypress is
-      # visible on exactly the render that reports it (same discipline as
-      # the standalone settings popup).
+      # Clear AFTER the render: a warning or note set by the previous
+      # keypress is visible on exactly the render that reports it (same
+      # discipline as the standalone settings popup).
       SETTINGS_WARN=""
+      SETTINGS_NOTE=""
       if ! read -rsn1 key; then
         exit 0 # EOF: fail-open, nothing changed by us
       fi
@@ -3061,6 +3199,9 @@ settings_cycle_value() { # <provider|target|retention> <current> → next value 
 # the NEXT value of its table, persists it through config_set and updates
 # the live env; a write failure keeps the old value and sets SETTINGS_WARN
 # (rendered inline by the next frame), as does an unrecognized key.
+# Uppercase R (case-sensitive on purpose, distinct from the r cycle) calls
+# daemon_restart: on success it sets SETTINGS_NOTE, on a failed spawn it
+# sets SETTINGS_WARN — both render inline on the next frame.
 # Returns 1 when the key closes the view (q / Esc / Enter); any other key
 # returns 0 so the caller re-renders.
 settings_handle_key() { # <key>
@@ -3085,7 +3226,7 @@ settings_handle_key() { # <key>
         SETTINGS_WARN="No se pudo guardar TTS_PLAYBACK en config.env"
       fi
       ;;
-    r|R)
+    r)
       local cur_ret
       config_get_retention_raw cur_ret
       next="$(settings_cycle_value retention "${cur_ret:-0}")"
@@ -3093,6 +3234,15 @@ settings_handle_key() { # <key>
         HERDR_TTS_AUDIO_RETENTION_DAYS="$next"
       else
         SETTINGS_WARN="No se pudo guardar HERDR_TTS_AUDIO_RETENTION_DAYS en config.env"
+      fi
+      ;;
+    R)
+      # Restart the daemon in place: applies pending p/d changes without
+      # leaving the view. Uppercase by design (lowercase r cycles retention).
+      if daemon_restart; then
+        SETTINGS_NOTE="✓ Daemon reiniciado"
+      else
+        SETTINGS_WARN="No se pudo relanzar el daemon"
       fi
       ;;
     *)
@@ -3105,7 +3255,8 @@ settings_handle_key() { # <key>
 # ONE static frame, ONE physical write per render: same discipline as
 # menu_render (dashboard_term_size + _dash_add clamping reused verbatim,
 # frame buffered and written once). SETTINGS_WARN, when set, renders as
-# an inline warning row instead of a silent failure.
+# an inline warning row instead of a silent failure; SETTINGS_NOTE (e.g.
+# the daemon-restart confirmation) renders right after it.
 settings_render() {
   dashboard_term_size
   # Retention current comes from the tiered read (env > live file), NOT
@@ -3124,8 +3275,11 @@ settings_render() {
   if [[ -n "${SETTINGS_WARN:-}" ]]; then
     _dash_add ' ⚠️  %s' "$SETTINGS_WARN"
   fi
+  if [[ -n "${SETTINGS_NOTE:-}" ]]; then
+    _dash_add ' %s' "$SETTINGS_NOTE"
+  fi
   _dash_add ' Kokoro/Piper requieren instalar el modelo: agent-tts voice install <modelo>'
-  _dash_add ' r aplica al vuelo (el watcher re-lee config.env); p y d requieren reiniciar el daemon.'
+  _dash_add ' r cicla retención · R reinicia el daemon (aplica p y d)'
   _dash_add ''
   _dash_add ' q/Esc salir'
   menu_cap_rows $(( DASH_LINES - 1 ))
@@ -3142,12 +3296,14 @@ settings_render() {
 run_voice_settings() {
   local key=""
   SETTINGS_WARN=""
+  SETTINGS_NOTE=""
   while :; do
     settings_render
     # Clear AFTER the render: a warning set by the previous keypress is
     # visible on exactly the render that reports it, then the frame goes
     # back to clean while the next key is awaited.
     SETTINGS_WARN=""
+    SETTINGS_NOTE=""
     if ! read -rsn1 key; then
       break # EOF: fail-open, nothing changed by us
     fi
@@ -4409,6 +4565,9 @@ case "${1:-}" in
   _daemon)
     run_daemon
     ;;
+  --restart-daemon)
+    daemon_restart
+    ;;
   --help|-h)
     cat <<EOF
 Uso: herdr-tts [OPCIONES]
@@ -4488,6 +4647,9 @@ Keymap declarativo (teclas editables por el usuario, validables):
 
 Información:
    --status                 Ver estado actual, lock y configuración
+    --restart-daemon         Reinicia el daemon TTS: para el anterior (pidfile
+                             o fallback) y relanza detached; aplica los cambios
+                             de p/d de los Ajustes sin esperar al próximo arranque
    --dashboard              Panel TUI en vivo (pane de Herdr): estado por chat,
                             audios agrupados por chat, snoozes e historial
                             (controles: q salir · j/k chat · m silenciar · z snooze pane · Z snooze global · +/- velocidad)
