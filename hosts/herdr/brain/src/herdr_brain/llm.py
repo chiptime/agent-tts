@@ -26,6 +26,7 @@ from .config import Settings
 from .herdr import AgentInfo, HerdrError
 from .memory import ConversationStore
 from .tools import BrainTools, TOOLS_SCHEMA
+from .view import PendingAction, SCREEN_TAIL_LINES, detect_pending
 
 LOGGER = logging.getLogger("herdr_brain.tool_calls")
 
@@ -40,6 +41,10 @@ Capabilities:
 
 Honesty rules:
 - NEVER invent or guess transcript or screen content. If a read comes back empty or unreadable, or a tool fails, say in one plain sentence what happened and suggest trying again. No stack traces, no apology theater.
+
+Pending prompts:
+- When the live context shows a pending prompt, surface it to the user proactively in your answer.
+- If the user tells you to answer a pending prompt (e.g. "dile que sí"), FIRST read_screen to see exactly what would be confirmed and state it, THEN send_to_session with the user's answer. Never send a blind yes to something you have not read.
 
 Routing policy:
 - Questions about state, history, summaries, or doubts about what happened: answer yourself using read_transcript (preferred — cheap and local) or read_screen. NEVER send anything to the agent session for these.
@@ -56,7 +61,9 @@ Answer style (voice-first):
 
 
 def build_live_context(
-    active: Optional[AgentInfo], now: Optional[datetime] = None
+    active: Optional[AgentInfo],
+    now: Optional[datetime] = None,
+    pending: Optional[PendingAction] = None,
 ) -> str:
     """Renders the per-request live block appended to the system message."""
     # Naive datetimes are assumed local so %Z never renders empty.
@@ -77,7 +84,29 @@ def build_live_context(
                 f"Working directory: {active.cwd or 'unknown'}",
             ]
         )
+        if pending is not None and pending.detected:
+            lines.append(_pending_hint_line(active, pending))
     return "\n".join(lines)
+
+
+_PENDING_KIND_PHRASES = {
+    "permission": "requesting permission",
+    "error": "reporting an error",
+    "question": "asking a question",
+    None: "waiting for input",
+}
+
+
+def _pending_hint_line(active: AgentInfo, pending: PendingAction) -> str:
+    """One ATTENTION line describing the likely unresolved prompt."""
+    phrase = _PENDING_KIND_PHRASES.get(pending.kind, "waiting for input")
+    if (active.status or "").lower() == "blocked":
+        line = f"ATTENTION: the agent is BLOCKED and appears to be {phrase}"
+    else:
+        line = f"ATTENTION: the agent terminal suggests a pending {pending.kind or 'prompt'}"
+    if pending.excerpt:
+        line += f': "{pending.excerpt}"'
+    return line
 
 
 class BrainLLMError(RuntimeError):
@@ -192,7 +221,11 @@ class BrainLLM:
             active = self._tools.active_status()
         except HerdrError:
             active = None
-        return build_live_context(active)
+        pending = None
+        if active is not None:
+            screen = self._tools.screen_tail(active, SCREEN_TAIL_LINES)
+            pending = detect_pending(screen or "", active.status)
+        return build_live_context(active, pending=pending)
 
     def _invoke(self, call: Any) -> str:
         """Dispatches one tool call, turning every failure into a string."""
