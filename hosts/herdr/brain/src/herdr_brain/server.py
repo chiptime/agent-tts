@@ -142,11 +142,17 @@ def create_app(
 
 
 def main() -> None:  # pragma: no cover - manual entrypoint
+    import os
+
     import uvicorn
 
     from .config import load_settings
 
-    uvicorn.run(create_app(load_settings()), host="127.0.0.1", port=8741)
+    # Default loopback; override (e.g. 0.0.0.0 under WSL2 with a Windows-side
+    # tailscale serve proxy) via HERDR_BRAIN_HOST.
+    host = os.getenv("HERDR_BRAIN_HOST", "127.0.0.1")
+    port = int(os.getenv("HERDR_BRAIN_PORT", "8741"))
+    uvicorn.run(create_app(load_settings()), host=host, port=port)
 
 
 if __name__ == "__main__":  # pragma: no cover
