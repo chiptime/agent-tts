@@ -95,6 +95,15 @@ curl -N localhost:8741/events
 
 
 curl -s "localhost:8741/view?pane_id=w1:p2"   # any herd member (default: focused)
+
+curl -s "localhost:8741/conversation?pane_id=w1:p2"
+# → {"pane_id":"w1:p2","agent":"opencode","session_id":"ses_…",
+#     "turns":[{"role":"user","text":"…full text…"},…],"window":20}
+# Last 20 turns, full text (capped at 4000 chars/turn as a token guard).
+# The transcript readers have no cursor, so there is no older-page fetch.
+
+curl -s "localhost:8741/screen?pane_id=w1:p2"
+# → {"pane_id":"w1:p2","agent":"opencode","screen":"…last ~120 scrollback lines…"}
 # → {"status": {…same as /state…},
 #     "transcript": [{"role":"user","text":"…"},{"role":"assistant","text":"…"}],
 #     "screen": "…last ~12 visible lines…",
@@ -200,7 +209,22 @@ every agent in the herd (status-colored, tap to select — persisted across
 reloads), and the **agent view panel** shows the selected agent's pending
 banner (amber = question, red = error, blue = permission), its last
 transcript turns and a dimmed screen tail. Questions spoken or typed after
-selecting a chip target that agent.
+selecting a chip target that agent. Tapping the panel opens a full-screen
+sheet with two tabs — **Conversación** (last 20 turns, full text) and
+**Pantalla** (~120 scrollback lines) — with a manual refresh button.
+
+### The call is continuous
+
+One tap starts the call; it stays open. The state machine is
+`listening → thinking → speaking → listening`: speech recognition restarts
+automatically after each answer (with backoff after empty takes), the mic is
+forced off while any audio plays so it never hears its own voice, tapping
+the state pill while speaking is barge-in (cuts the audio, back to
+listening), and a pause button shuts the mic up without ending the call.
+Persistent recognition failure falls back to keyboard input with a notice.
+All user-facing labels are Spanish; the UI follows light/dark automatically.
+Answers are spoken in full — the renderer's char guard is 4000 chars and
+digest shortening (`--tldr`) is never applied to chat answers.
 
 Browsers without the Web Speech API (e.g. Firefox) automatically show a text
 input with the same ask flow, which also makes desktop testing trivial.
