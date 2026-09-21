@@ -278,6 +278,70 @@ class TestPendingHint:
         assert "surface it to the user proactively" in SYSTEM_PROMPT
 
 
+class TestSelection:
+    @staticmethod
+    def _other(active):
+        return AgentInfo(
+            pane_id="w1:p2", agent="opencode", status="idle", session_kind="id",
+            session_value="ses_t0000000002", cwd="/other", title="Other",
+            focused=False,
+        )
+
+    def test_live_context_marks_selection_and_focus(self, settings, make_stub, active_agent):
+        llm, _ = make_brain(settings, make_stub(), responses=[text_response("ok")])
+        llm.ask("hi")
+        system = llm._client.create_kwargs[0]["messages"][0]["content"]
+        assert "Selected agent: opencode (working) — focused: yes" in system
+
+    def test_ask_with_pane_id_targets_that_agent(self, settings, make_stub, active_agent):
+        other = self._other(active_agent)
+        stub = make_stub(agents=[active_agent, other], screen="other tail")
+        llm, _ = make_brain(
+            settings, stub,
+            responses=[
+                tool_call_response("c1", "send_to_session", {"text": "run lint"}),
+                text_response("Done: lint passed on the other agent."),
+            ],
+        )
+        result = llm.ask("corre lint en el otro", pane_id="w1:p2")
+        # Live context reflects the selected, non-focused agent.
+        system = llm._client.create_kwargs[0]["messages"][0]["content"]
+        assert "Selected agent: opencode (idle) — focused: no" in system
+        assert "Pane: w1:p2" in system
+        # The write went to the selected pane, not the focused one.
+        assert stub.prompt_calls == [
+            {"pane_id": "w1:p2", "text": "run lint", "timeout_ms": None}
+        ]
+        assert result["pane_id"] == "w1:p2"
+
+    def test_stale_pane_id_falls_back_to_focused(self, settings, make_stub, active_agent):
+        stub = make_stub(agents=[active_agent])
+        llm, _ = make_brain(settings, stub, responses=[text_response("ok")])
+        result = llm.ask("hi", pane_id="w9:gone")
+        assert result["pane_id"] == active_agent.pane_id
+
+    def test_pending_hint_ties_to_selected_agent(self, settings, make_stub, active_agent):
+        other = self._other(active_agent)
+        stub = make_stub(
+            agents=[active_agent, other],
+            screen="Working normally",  # focused pane: quiet
+        )
+
+        original_read = stub.read_screen
+
+        def read_screen(pane_id, n_lines=None):
+            if pane_id == "w1:p2":
+                return "Continue with deploy? (y/n)"
+            return original_read(pane_id, n_lines=n_lines)
+
+        stub.read_screen = read_screen
+        llm, _ = make_brain(settings, stub, responses=[text_response("ok")])
+        llm.ask("estado", pane_id="w1:p2")
+        system = llm._client.create_kwargs[0]["messages"][0]["content"]
+        assert "ATTENTION" in system
+        assert "Continue with deploy?" in system
+
+
 class TestLoopRobustness:
     def test_plain_answer_without_tools(self, settings, make_stub):
         llm, _ = make_brain(settings, make_stub(), responses=[text_response("Hello there.")])

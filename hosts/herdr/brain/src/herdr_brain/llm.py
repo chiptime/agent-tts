@@ -73,11 +73,12 @@ def build_live_context(
         f"Local time: {timestamp}",
     ]
     if active is None:
-        lines.append("Active agent: none right now — no agent panes are running.")
+        lines.append("Selected agent: none right now — no agent panes are running.")
     else:
+        focused = "yes" if active.focused else "no"
         lines.extend(
             [
-                f"Active agent: {active.agent} ({active.status})",
+                f"Selected agent: {active.agent} ({active.status}) — focused: {focused}",
                 f"Pane: {active.pane_id}",
                 f"Session: {active.session_value or 'unknown'}",
                 f"Terminal title: {active.title or 'unknown'}",
@@ -139,6 +140,7 @@ class BrainLLM:
         self._tools = tools
         self._client = client
         self._store = store
+        self._request_target: Optional[AgentInfo] = None
         if self._client is None:
             if not settings.glm_api_key:
                 raise BrainLLMError(
@@ -151,12 +153,23 @@ class BrainLLM:
         """Binds a shared conversation store (used by the HTTP server)."""
         self._store = store
 
-    def ask(self, question: str, session_id: Optional[str] = None) -> Dict[str, Optional[str]]:
-        """Returns ``{answer, pane_id, agent, session_id}`` for one question."""
+    def ask(
+        self,
+        question: str,
+        session_id: Optional[str] = None,
+        pane_id: Optional[str] = None,
+    ) -> Dict[str, Optional[str]]:
+        """Returns ``{answer, pane_id, agent, session_id}`` for one question.
+
+        ``pane_id`` selects which agent the conversation targets; when
+        omitted (or stale) the focused pane is used.
+        """
         store = self._store or ConversationStore()
         key = ConversationStore.normalize(session_id)
+        target = self._tools.resolve_target(pane_id)
+        self._request_target = target
 
-        live = self._live_context()
+        live = self._live_context(target)
         messages: List[Dict[str, Any]] = [
             {"role": "system", "content": f"{SYSTEM_PROMPT}\n\n{live}"},
             *[{"role": m.role, "content": m.content} for m in store.history(key)],
@@ -207,25 +220,20 @@ class BrainLLM:
         store.append(key, "user", question)
         store.append(key, "assistant", answer)
 
-        active = self._tools.last_active
         return {
             "answer": answer,
-            "pane_id": active.pane_id if active else None,
-            "agent": active.agent if active else None,
+            "pane_id": target.pane_id if target else None,
+            "agent": target.agent if target else None,
             "session_id": key,
         }
 
-    def _live_context(self) -> str:
-        """Builds the live block from the current active pane, best-effort."""
-        try:
-            active = self._tools.active_status()
-        except HerdrError:
-            active = None
+    def _live_context(self, target: Optional[AgentInfo]) -> str:
+        """Builds the live block for the selected pane, best-effort."""
         pending = None
-        if active is not None:
-            screen = self._tools.screen_tail(active, SCREEN_TAIL_LINES)
-            pending = detect_pending(screen or "", active.status)
-        return build_live_context(active, pending=pending)
+        if target is not None:
+            screen = self._tools.screen_tail(target, SCREEN_TAIL_LINES)
+            pending = detect_pending(screen or "", target.status)
+        return build_live_context(target, pending=pending)
 
     def _invoke(self, call: Any) -> str:
         """Dispatches one tool call, turning every failure into a string."""
@@ -236,4 +244,6 @@ class BrainLLM:
         except (json.JSONDecodeError, ValueError) as exc:
             return f"error: invalid tool arguments: {exc}"
         LOGGER.info("tool call name=%s args=%s", call.function.name, summarize_tool_args(arguments))
-        return self._tools.dispatch(call.function.name, arguments)
+        return self._tools.dispatch(
+            call.function.name, arguments, target=self._request_target
+        )
