@@ -15,6 +15,8 @@ Contract:
 
 import array
 import asyncio
+import os
+import tempfile
 import threading
 import time
 import unittest
@@ -106,6 +108,14 @@ def _pipelined(session, text):
 
 
 class TestStreamDrain(unittest.TestCase):
+    def setUp(self):
+        # A clean drain now auto-persists rendered audio; point the store at a
+        # throwaway directory so tests never touch the developer's real one.
+        store = tempfile.mkdtemp(prefix="agent-tts-drain-audio-")
+        patcher = mock.patch.dict(os.environ, {"AGENT_TTS_AUDIO_DIR": store})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _patch_synthesis(self):
         """Patches cli.synthesize (instant fake) and cli.miniaudio.decode."""
         async def fake_synthesize(**kwargs):

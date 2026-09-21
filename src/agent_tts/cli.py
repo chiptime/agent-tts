@@ -214,8 +214,14 @@ def use_pipelined_stream(
     podcast: bool,
     text_len: int,
 ) -> bool:
-    """Decides whether playback should use pipelined sentence-group streaming."""
-    if no_play or stream not in ("auto", "on") or output_file or podcast:
+    """Decides whether playback should use pipelined sentence-group streaming.
+
+    An ``output_file`` no longer refuses streaming: the pipeline plays
+    normally and the merged audio is written to the file once playback
+    completes — the file appears at the end of the run, not progressively.
+    Podcast mode and ``no_play`` keep refusing (unchanged semantics).
+    """
+    if no_play or stream not in ("auto", "on") or podcast:
         return False
     if stream == "on":
         return True
@@ -291,9 +297,20 @@ async def _speak_pipelined(
     eleven_model: Optional[str],
     piper_model: Optional[str],
     auto_lang: bool,
+    output_file: Optional[str] = None,
+    podcast: bool = False,
+    persist_name: Optional[str] = None,
 ) -> None:
-    """Plays the first synthesized sentence group while remaining groups are synthesized and appended live."""
+    """Plays the first synthesized sentence group while remaining groups are synthesized and appended live.
+
+    Every successfully produced group/chunk is kept in ``rendered_chunks``;
+    at a clean end of the pipeline the bytes are merged and persisted once
+    (to ``output_file`` or the rendered-audio store). A stopped, interrupted,
+    or failed run never persists: partial audio is worthless.
+    """
     groups = split_sentence_groups(text)
+    # Raw bytes of every successfully produced group/chunk, in playback order.
+    rendered_chunks: List[bytes] = []
     progress = {
         "offset": 0.0,
         "sent": 0,
@@ -365,6 +382,43 @@ async def _speak_pipelined(
                 file=sys.stderr,
             )
 
+    def persist_rendered() -> None:
+        """Persists the rendered audio exactly once, at a clean end of the pipeline.
+
+        Fail-open by contract (playback already succeeded): merge or store
+        errors print one English stderr line and are otherwise swallowed.
+        Called only after the drain loop completed without a stop, interrupt,
+        or fatal error — partial audio is never persisted.
+        """
+        if not rendered_chunks or check_stop():
+            return
+        try:
+            from agent_tts.audio_store import merge_chunks_to_audio, retention_days, store_path
+
+            try:
+                merged = merge_chunks_to_audio(rendered_chunks)
+            except Exception as e:
+                print(
+                    f"Stream: rendered audio could not be merged; skipping persistence: {e}",
+                    file=sys.stderr,
+                )
+                return
+            if output_file:
+                out_dir = os.path.dirname(os.path.abspath(output_file))
+                if out_dir:
+                    os.makedirs(out_dir, exist_ok=True)
+                with open(output_file, "wb") as f:
+                    f.write(merged)
+                return
+            if podcast or retention_days() == 0:
+                return
+            path = store_path(persist_name or "cli")
+            with open(path, "wb") as f:
+                f.write(merged)
+            print(f"Stored: {path}", file=sys.stderr)
+        except Exception as e:
+            print(f"Stream: could not persist rendered audio: {e}", file=sys.stderr)
+
     async def pull_chunk(idx: int) -> Optional[bytes]:
         """Pulls the next stream chunk off the event loop; None at end of stream or on failure."""
         try:
@@ -392,6 +446,7 @@ async def _speak_pipelined(
                 print(f"Stream: group {idx} failed: {e}", file=sys.stderr)
                 idx += 1
                 continue
+            rendered_chunks.append(chunk)
             if group_text is not None:
                 seg_duration = len(decoded.samples) / float(decoded.sample_rate * decoded.nchannels)
                 merge_group(group_text, chunk, seg_duration)
@@ -417,6 +472,7 @@ async def _speak_pipelined(
                     print(f"Stream: group {idx} failed: {e}", file=sys.stderr)
                     idx += 1
                     continue
+                rendered_chunks.append(chunk)
                 if not session.append_pcm(decoded):
                     idx += 1
                     continue
@@ -481,6 +537,7 @@ async def _speak_pipelined(
             except Exception as e:
                 print(f"Stream: group {idx} failed: {e}", file=sys.stderr)
                 continue
+            rendered_chunks.append(bytes(result))
             seg_duration = len(decoded.samples) / float(decoded.sample_rate * decoded.nchannels)
             merge_group(group_text, result, seg_duration)
             progress["produced"] += 1
@@ -511,6 +568,7 @@ async def _speak_pipelined(
             except Exception as e:
                 print(f"Stream: group {idx} failed: {e}", file=sys.stderr)
                 continue
+            rendered_chunks.append(bytes(result))
             if not session.append_pcm(decoded):
                 continue
             seg_duration = len(decoded.samples) / float(decoded.sample_rate * decoded.nchannels)
@@ -578,6 +636,9 @@ async def _speak_pipelined(
                 # Surface the fatal producer error through the normal error path
                 # (stderr / exit non-zero) instead of silently dropping the tail.
                 raise producer_error[0]
+            # Clean end of the pipeline: playback drained without stop or error;
+            # persist the rendered audio once (fail-open).
+            persist_rendered()
         finally:
             with session.lock:
                 session.state["producing"] = False
@@ -618,6 +679,7 @@ async def speak(
     podcast_title: str = "",
     stream: str = "auto",
     playback: str = "local",
+    persist_name: Optional[str] = None,
 ) -> None:
     """Synthesizes and plays audio with interactive controls."""
     session = None
@@ -706,6 +768,9 @@ async def speak(
                 eleven_model=eleven_model,
                 piper_model=piper_model,
                 auto_lang=auto_lang,
+                output_file=output_file,
+                podcast=podcast,
+                persist_name=persist_name,
             )
             return
 
@@ -858,13 +923,15 @@ def main():
         "--stream",
         choices=["auto", "on", "off"],
         default="auto",
-        help="Pipelined playback: synthesize sentence groups while playing (auto: edge/openai/elevenlabs, no output/podcast, >=400 chars)",
+        help="Pipelined playback: synthesize sentence groups while playing (auto: edge/openai/elevenlabs, no podcast, >=400 chars); with --output the merged file is written after playback",
     )
     parser.add_argument(
         "--playback",
-        choices=["local", "winhost", "wsl-ps", "auto"],
+        choices=["local", "winhost", "wsl-ps", "windows", "auto"],
         default=os.environ.get("AGENT_TTS_PLAYBACK", "local"),
-        help="Playback target: local device (default), winhost server on the Windows host, zero-install PowerShell under WSL, or auto: environment-based selection",
+        help="Playback target: local device (default), winhost server on the Windows host, "
+        "zero-install PowerShell under WSL, windows: Windows host with local-device fallback "
+        "(never PowerShell), or auto: environment-based selection",
     )
     parser.add_argument(
         "--winhost",
@@ -1052,6 +1119,7 @@ def main():
                 podcast_title=args.podcast_title,
                 stream=args.stream,
                 playback=resolve_target(args.playback, os.environ),
+                persist_name=args.agent or args.session_id or "cli",
             )
         )
     except KeyboardInterrupt:

@@ -115,7 +115,7 @@ agent-tts --play-file /tmp/report.mp3 --highlight
 
 Long texts no longer wait for the full audio to be synthesized. With the default `--stream auto`, texts of 400+ characters spoken by the `edge`, `openai`, or `elevenlabs` providers start playing after the first ~250-character sentence group is synthesized (~300–600ms), while a background producer thread synthesizes the remaining sentence groups and appends them to the live PCM buffer in real time — karaoke word highlighting and sentence boundaries merge seamlessly on the fly.
 
-The OpenAI and ElevenLabs providers also consume their HTTP responses incrementally instead of waiting for the complete file: ElevenLabs uses its dedicated `/stream` endpoint and OpenAI streams the `/audio/speech` response chunks as they are encoded, so every group's audio reaches the pipeline as soon as the first MP3 chunks arrive. If a streaming request fails (network hiccup or API error mid-stream), synthesis transparently falls back to the classic full-response request and logs the fallback to stderr. Use `--stream on` to force pipelined playback for any provider or length, or `--stream off` to revert to classic single-shot synthesis. Streaming is incompatible with `--output` and `--podcast`, which always synthesize complete files.
+The OpenAI and ElevenLabs providers also consume their HTTP responses incrementally instead of waiting for the complete file: ElevenLabs uses its dedicated `/stream` endpoint and OpenAI streams the `/audio/speech` response chunks as they are encoded, so every group's audio reaches the pipeline as soon as the first MP3 chunks arrive. If a streaming request fails (network hiccup or API error mid-stream), synthesis transparently falls back to the classic full-response request and logs the fallback to stderr. Use `--stream on` to force pipelined playback for any provider or length, or `--stream off` to revert to classic single-shot synthesis. Only `--podcast` remains incompatible with streaming; `--output FILE` now works with it — the pipelined run plays first and writes the merged audio to the file once playback completes (the file appears at the end of the run, not progressively).
 
 ```bash
 # Force pipelined streaming on any provider or length (--stream off = classic one-shot)
@@ -305,6 +305,7 @@ Rendered turn audio persists under `~/.local/share/agent-tts/audio/YYYY-MM-DD/<e
 - **Knob:** `AGENT_TTS_AUDIO_RETENTION_DAYS` (legacy `TTS_AUDIO_RETENTION_DAYS` is honored), default **7**; `0` disables retention.
 - **Pruning:** runs best-effort at every CLI start (fail-open) and removes whole expired date-partition directories — never individual files inside a current partition.
 - **Writer:** the herdr-tts watcher renders finished turn audio directly into this store when retention is on.
+- **Streamed playback auto-persist:** a pipelined `--stream` run also persists its merged audio here when retention is on — the filename carries the agent or session id (from `--agent`/`--session-id`, else `cli`), podcasts are excluded, and the `Stored: <path>` line on stderr confirms the write. Runs stopped mid-playback never persist partial audio.
 - **Replay:** replay through the palette or `--play-file` honors `AGENT_TTS_PLAYBACK` — remote targets stream the stored file to the Windows host / PowerShell session, with one English warning and local playback as the fallback when the remote target is unreachable.
 
 ---
@@ -330,7 +331,7 @@ usage: agent-tts [-h] [--voice VOICE] [--rate RATE] [--max-chars MAX_CHARS]
                  [text ...]
 ```
 
-- **`--stream {auto,on,off}`** (default `auto`): Pipelined playback mode. `auto` streams long texts (≥ 400 chars) with the `edge`, `openai`, or `elevenlabs` providers when playing locally; `on` forces streaming for any provider or length; `off` forces classic single-shot synthesis. `--output` and `--podcast` always use single-shot synthesis.
+- **`--stream {auto,on,off}`** (default `auto`): Pipelined playback mode. `auto` streams long texts (≥ 400 chars) with the `edge`, `openai`, or `elevenlabs` providers when playing locally; `on` forces streaming for any provider or length; `off` forces classic single-shot synthesis. `--podcast` always uses single-shot synthesis; `--output` works with streaming — the merged audio is written once playback completes.
 
 - **`--llm-summary`**: Produce ONE executive sentence for long outputs by delegating to a locally installed LLM CLI. Provider chain (first installed wins): `claude -p` → `codex exec` → `ollama run <model>` (default model `qwen2.5:0.5b`, override with `AGENT_TTS_OLLAMA_MODEL`). The prompt is always piped through stdin with no shell involved (no command-injection surface) and requests a single concise sentence in the same language as the input. Any failure — CLI absent, non-zero exit, 10s timeout, empty or oversized output — transparently falls back to the offline `--tldr` heuristics (with the reason logged to stderr). When combined with `--tldr`, `--llm-summary` wins.
 
@@ -364,6 +365,7 @@ We have an active vision to expand `agent-tts` into the definitive neural TTS en
   - Strips ANSI styling, box-drawing borders, CLI spinners, and token counters, and converts Markdown/ASCII tables into conversational pauses before synthesis.
 - [x] 🚀 **Pipelined Streaming Synthesis (Low-Latency Playback):**
   - Long texts start playing after the first ~250-character sentence group is synthesized (~300–600ms) while a producer thread appends the remaining groups to the live PCM buffer (`--stream auto`, Edge provider).
+  - `--stream on --output FILE` now works: playback stays pipelined and the merged audio (WAV groups re-merged into one canonical WAV, MP3 chunks plainly joined) is written to the file once playback completes.
 - [x] 🪟 **Native Windows Playback (WASAPI, zero changes for POSIX users):**
   - First-class Windows support: tempdir-based transient files, loopback-TCP IPC, and Windows piper binary discovery; playback stays local unless a target is requested.
 - [x] 📡 **WSL → Windows `winhost` Transport:**
