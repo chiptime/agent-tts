@@ -37,7 +37,7 @@
 #   22    play_audio_file: mutex stop + engine --play-file spawn on a real
 #         file, graceful rc=1 + no spawn on a missing/empty path
 #   23    audio_retention_days knob precedence (HERDR_ > AGENT_ > TTS_ >
-#         default 7, invalid → 7, 0/negative disables) + audio_store_dir
+#         default 0 = opt-in, invalid → 0, positive days enables) + audio_store_dir
 #   24    audio_store_prune from the daemon sweep: stateful stub records
 #         the engine retention spawn; first call spawns + arms the hourly
 #         stamp (silent on success), immediate second call is gated,
@@ -1374,11 +1374,11 @@ lib_run '
   AGENT_TTS_AUDIO_DIR=/tmp/custom-store
   echo "store_custom:$(audio_store_dir)"
 ' > "$T/out.txt"
-assert_grep "23 no knobs → default 7" '^default:7$' "$T/out.txt"
+assert_grep "23 no knobs → default 0 (opt-in)" '^default:0$' "$T/out.txt"
 assert_grep "23 HERDR_TTS_ wins" '^herdr:3$' "$T/out.txt"
 assert_grep "23 AGENT_TTS_ second" '^agent:9$' "$T/out.txt"
 assert_grep "23 TTS_ third" '^tts:11$' "$T/out.txt"
-assert_grep "23 non-integer → default 7" '^invalid:7$' "$T/out.txt"
+assert_grep "23 non-integer → default 0" '^invalid:0$' "$T/out.txt"
 assert_grep "23 zero disables retention" '^zero:0$' "$T/out.txt"
 assert_grep "23 negative disables retention" '^negative:0$' "$T/out.txt"
 assert_grep "23 store dir default" '^store_default:' "$T/out.txt"
@@ -1410,7 +1410,7 @@ sed -n '/^run_daemon()/,/^}/p' "$SCRIPT" | grep -q 'audio_store_prune' \
   && ok "24w run_daemon sweep invokes audio_store_prune" || bad "24w no audio_store_prune inside run_daemon"
 # 24a. first sweep: prune spawned, hourly stamp armed, stdout silent
 write_prune_stub 0
-run_prune
+run_prune 'HERDR_TTS_AUDIO_RETENTION_DAYS=7'
 [[ "$(wc -l < "$PRUNE_CALLS")" -eq 1 ]] \
   && ok "24a first sweep spawns the retention prune" || bad "24a spawns: $(wc -l < "$PRUNE_CALLS")"
 grep -qF 'import prune_expired' "$PRUNE_CALLS" \
@@ -1419,7 +1419,7 @@ grep -qF 'import prune_expired' "$PRUNE_CALLS" \
 grep -q '^rc=0$' "$T/rc24" && ok "24a rc 0 on success" || bad "24a rc: $(cat "$T/rc24")"
 [[ ! -s "$T/out24.txt" ]] && ok "24a silent on success" || bad "24a unexpected stdout: $(cat "$T/out24.txt")"
 # 24b. immediate second sweep: the hour gate blocks the spawn
-run_prune
+run_prune 'HERDR_TTS_AUDIO_RETENTION_DAYS=7'
 [[ "$(wc -l < "$PRUNE_CALLS")" -eq 1 ]] \
   && ok "24b hour gate blocks the immediate second spawn" || bad "24b spawns: $(wc -l < "$PRUNE_CALLS")"
 # 24c. retention 0: no spawn at all and no timestamp file
@@ -1431,7 +1431,7 @@ run_prune 'HERDR_TTS_AUDIO_RETENTION_DAYS=0'
   && ok "24c retention 0 → no stamp file" || bad "24c stamp exists"
 # 24d. stale stamp (>1h via touch -d): the gate re-arms and it spawns again
 touch -d '2 hours ago' "$STAMP24"
-run_prune
+run_prune 'HERDR_TTS_AUDIO_RETENTION_DAYS=7'
 [[ "$(wc -l < "$PRUNE_CALLS")" -eq 2 ]] \
   && ok "24d stale stamp (touch -d) triggers a fresh spawn" || bad "24d spawns: $(wc -l < "$PRUNE_CALLS")"
 [[ -f "$STAMP24" ]] \
@@ -1439,7 +1439,7 @@ run_prune
 # 24e. failing engine (non-zero exit): daemon continues, failure logged
 write_prune_stub 7
 touch -d '2 hours ago' "$STAMP24"
-run_prune
+run_prune 'HERDR_TTS_AUDIO_RETENTION_DAYS=7'
 [[ "$(wc -l < "$PRUNE_CALLS")" -eq 3 ]] \
   && ok "24e failing engine attempted (still once per hour)" || bad "24e spawns: $(wc -l < "$PRUNE_CALLS")"
 grep -q '^rc=0$' "$T/rc24" \

@@ -1390,8 +1390,8 @@ gate_agent_event() {
 # Fork-free on purpose: pure parameter expansion, [[ ]] tests and
 # arithmetic (no self-referencing assignments inside (( ))).
 audio_retention_days() {
-  local raw="${HERDR_TTS_AUDIO_RETENTION_DAYS:-${AGENT_TTS_AUDIO_RETENTION_DAYS:-${TTS_AUDIO_RETENTION_DAYS:-7}}}"
-  [[ "$raw" =~ ^-?[0-9]+$ ]] || raw=7
+  local raw="${HERDR_TTS_AUDIO_RETENTION_DAYS:-${AGENT_TTS_AUDIO_RETENTION_DAYS:-${TTS_AUDIO_RETENTION_DAYS:-0}}}"
+  [[ "$raw" =~ ^-?[0-9]+$ ]] || raw=0
   if (( raw > 0 )); then
     printf '%s\n' "$raw"
   else
