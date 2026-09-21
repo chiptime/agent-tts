@@ -293,6 +293,8 @@ class TestStatic:
         assert resp.status_code == 200
         assert 'id="call-btn"' in resp.text
         assert 'id="new-conversation"' in resp.text
+        assert 'id="agent-view"' in resp.text
+        assert 'id="pending-banner"' in resp.text
         assert "/app.js" in resp.text
         assert "/manifest.webmanifest" in resp.text
 
