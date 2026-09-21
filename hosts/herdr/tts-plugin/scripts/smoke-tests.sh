@@ -766,6 +766,9 @@ lib_run '
   cycle_snooze()       { echo "STUB snooze:${1:-}:${2:-}"; }
   adjust_rate()        { echo "STUB rate:${1:-}"; }
   herdr()              { printf '%s\n' "$*" >> "$T/menu-herdr.log"; }
+  # d/o open popups from a DETACHED session (setsid bash -c): only
+  # exported functions are visible there, so export the stub too.
+  export -f herdr
   for k in r p s t v "[" "]" n N m z Z + - = _ d o; do
     if menu_dispatch "$k" >/dev/null; then
       printf "%s→%s\n" "$k" "$MENU_RESULT"
@@ -791,9 +794,16 @@ assert_grep "16a + → adjust_rate +10"          '^\+→STUB rate:10$' "$T/out.t
 assert_grep "16a = → adjust_rate +10"          '^=→STUB rate:10$' "$T/out.txt"
 assert_grep "16a - → adjust_rate -10"          '^-→STUB rate:-10$' "$T/out.txt"
 assert_grep "16a _ → adjust_rate -10"          '^_→STUB rate:-10$' "$T/out.txt"
-assert_grep "16a d → confirmation label"       '^d→.*Abriendo el dashboard' "$T/out.txt"
+assert_grep "16a d → confirmation label"       '^d→.*abriendo el dashboard' "$T/out.txt"
+assert_grep "16a o → confirmation label"       '^o→.*abriendo la paleta' "$T/out.txt"
+# The d/o opens run in a DETACHED session now (setsid) — wait for both
+# invocations to land in the stub log before asserting.
+for _ in $(seq 1 30); do
+  grep -q 'entrypoint tts-palette' "$T/menu-herdr.log" 2>/dev/null \
+    && grep -q 'entrypoint tts-dashboard' "$T/menu-herdr.log" 2>/dev/null && break
+  sleep 0.1
+done
 assert_grep "16a d → opens tts-dashboard entrypoint" 'plugin pane open --plugin herdr.tts --entrypoint tts-dashboard' "$T/menu-herdr.log"
-assert_grep "16a o → confirmation label"       '^o→.*Abriendo la paleta' "$T/out.txt"
 assert_grep "16a o → opens tts-palette entrypoint" 'plugin pane open --plugin herdr.tts --entrypoint tts-palette' "$T/menu-herdr.log"
 assert_grep "16a unknown key rejected"         '^@→rejected$' "$T/out.txt"
 
@@ -1784,6 +1794,37 @@ grep -q 'working → done' "$T/watchA.log" \
 rm -f "$T/flip_working"; : > "$T/wait_n"
 timeout 8 /bin/bash "$LIBRUN" "$SCRIPT" 'TTS_SETTLE_SECONDS=1; watch_agent_pane w6:p2 opencode' > "$T/watchB.log" 2>>"$T/err.log"
 assert_grep "27c held done reaches the pipeline branch" 'working → done' "$T/watchB.log"
+
+# 27d. menu_open_after_exit: Herdr allows one popup at a time (ui_busy
+#      while the menu itself is alive) → the deferred open retries until
+#      the slot frees and lands on the right entrypoint.
+: > "$T/open_n"; rm -f "$T/opened.log"
+cat > "$T/bin/herdr" <<'STUB2'
+#!/usr/bin/env bash
+d="$SETTLE_SCENARIO_DIR"
+case "$1 $2 $3" in
+  "plugin pane open")
+    n=$(cat "$d/open_n" 2>/dev/null || echo 0); printf '%s' $((n+1)) > "$d/open_n"
+    if (( n < 2 )); then printf '%s' '{"error":{"code":"ui_busy"}}'; exit 1; fi
+    printf 'opened:%s\n' "$7" >> "$d/opened.log"; exit 0 ;;
+  *) exit 0 ;;
+esac
+STUB2
+chmod +x "$T/bin/herdr"
+HERDR_TTS_MENU_OPEN_RETRIES=20 lib_run 'menu_open_after_exit tts-dashboard; sleep 1.5; cat "$SETTLE_SCENARIO_DIR/opened.log" 2>/dev/null' > "$T/out.txt"
+assert_grep "27d deferred open retries through ui_busy then opens" '^opened:tts-dashboard$' "$T/out.txt"
+
+# 27e. exhausted retries land in the open log instead of being swallowed.
+rm -f "$T/opened.log" "$T/menu.log"
+cat > "$T/bin/herdr" <<'STUB3'
+#!/usr/bin/env bash
+printf '%s' '{"error":{"code":"ui_busy"}}'
+exit 1
+STUB3
+chmod +x "$T/bin/herdr"
+HERDR_TTS_MENU_OPEN_RETRIES=3 HERDR_TTS_MENU_OPEN_LOG="$T/menu.log" \
+  lib_run 'menu_open_after_exit tts-palette; sleep 1' > "$T/out.txt"
+assert_grep "27e exhausted retries are logged" 'open tts-palette falló tras 3 intentos' "$T/menu.log"
 
 echo
 echo "═══ RESULT: $PASS passed, $FAIL failed ═══"

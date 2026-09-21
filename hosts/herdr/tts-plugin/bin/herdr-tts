@@ -3048,6 +3048,52 @@ palette_preview() { # <pane_id>
 MENU_CONFIRM_SECS="${HERDR_TTS_MENU_CONFIRM_SECS:-1.5}"
 [[ "$MENU_CONFIRM_SECS" =~ ^[0-9]+([.][0-9]+)?$ ]] || MENU_CONFIRM_SECS=1.5
 
+# Herdr allows ONE popup pane at a time (server replies ui_busy: "a popup
+# pane is already open"). The menu IS a popup, so opening the dashboard or
+# palette from a menu key fails while the menu is still alive — the old
+# fire-and-forget call was silently swallowed and the user only saw the
+# menu close. Two traps handled here:
+#   1. The popup slot is busy until the menu exits → retry every 0.1s.
+#   2. Herdr kills the popup's PROCESS GROUP on exit → a plain disowned
+#      subshell dies with the menu before it can succeed (observed live:
+#      no success, no exhausted-retries log line). The retry loop must run
+#      in its OWN SESSION (setsid) to survive the teardown.
+# Every attempt outcome is logged (ok with attempt number, or exhausted),
+# never silently dropped.
+MENU_OPEN_LOG="${HERDR_TTS_MENU_OPEN_LOG:-/tmp/herdr-tts-menu.log}"
+MENU_OPEN_RETRIES="${HERDR_TTS_MENU_OPEN_RETRIES:-50}" # × 0.1s = 5s ceiling
+
+_menu_open_retry() { # <entrypoint> — runs inside the detached session
+  local entry="$1" log="${HERDR_TTS_MENU_OPEN_LOG:-/tmp/herdr-tts-menu.log}"
+  local max="${HERDR_TTS_MENU_OPEN_RETRIES:-50}" err="" i=0
+  while (( i < max )); do
+    if err=$(herdr plugin pane open --plugin herdr.tts --entrypoint "$entry" 2>&1); then
+      printf '[%s] [menu] open %s: ok (intento %d)\n' \
+        "$(date +%H:%M:%S)" "$entry" "$(( i + 1 ))" >> "$log"
+      return 0
+    fi
+    sleep 0.1
+    i=$(( i + 1 ))
+  done
+  printf '[%s] [menu] open %s falló tras %s intentos: %s\n' \
+    "$(date +%H:%M:%S)" "$entry" "$max" "${err:-sin salida}" >> "$log"
+  return 1
+}
+
+menu_open_after_exit() { # <entrypoint>
+  export -f _menu_open_retry 2>/dev/null || true
+  if command -v setsid >/dev/null 2>&1; then
+    HERDR_TTS_MENU_OPEN_LOG="$MENU_OPEN_LOG" HERDR_TTS_MENU_OPEN_RETRIES="$MENU_OPEN_RETRIES" \
+      setsid bash -c '_menu_open_retry "$@"' _ "$1" >/dev/null 2>&1 </dev/null &
+  else
+    # macOS: no setsid — legacy background subshell (best effort).
+    HERDR_TTS_MENU_OPEN_LOG="$MENU_OPEN_LOG" HERDR_TTS_MENU_OPEN_RETRIES="$MENU_OPEN_RETRIES" \
+      bash -c '_menu_open_retry "$@"' _ "$1" >/dev/null 2>&1 </dev/null &
+  fi
+  disown 2>/dev/null || true
+  return 0
+}
+
 # Cheat-sheet data: two columns of key + description, zipped at render
 # time. Static on purpose — the menu never queries Herdr, so the frame
 # costs nothing and is always a single physical write.
@@ -3119,12 +3165,12 @@ menu_dispatch() { # <key>
     +|=) out=$(adjust_rate 10 2>&1 || true) ;;
     -|_) out=$(adjust_rate -10 2>&1 || true) ;;
     d|D)
-      herdr plugin pane open --plugin herdr.tts --entrypoint tts-dashboard >/dev/null 2>&1 || true
-      out="📊 Abriendo el dashboard…"
+      menu_open_after_exit tts-dashboard
+      out="📊 Cerrando el menú y abriendo el dashboard…"
       ;;
     o|O)
-      herdr plugin pane open --plugin herdr.tts --entrypoint tts-palette >/dev/null 2>&1 || true
-      out="🎛️ Abriendo la paleta de voz…"
+      menu_open_after_exit tts-palette
+      out="🎛️ Cerrando el menú y abriendo la paleta de voz…"
       ;;
     *) return 1 ;;
   esac
