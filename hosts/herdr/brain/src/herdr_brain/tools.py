@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from typing import Callable, Dict, Optional
 
-from .config import Settings
+from .config import MAX_SCREEN_LINES, Settings
 from .herdr import AgentInfo, HerdrClient, HerdrError, pick_active
 from .memory import clip_content
 from .transcripts import read_transcript, read_turns
@@ -198,7 +198,11 @@ class BrainTools:
         }
 
     def screen_full(self, pane_id: Optional[str] = None) -> dict:
-        """Last ~120 scrollback lines of one pane (reading view)."""
+        """Last ~120 scrollback lines of one pane (reading view).
+
+        Alt-screen TUI agents report empty scrollback, so an empty ``recent``
+        read falls back to the visible viewport (60-line clamp).
+        """
         target = self.resolve_target(pane_id)
         if target is None:
             return {"pane_id": pane_id, "agent": None, "screen": None}
@@ -208,6 +212,11 @@ class BrainTools:
             )
         except HerdrError:
             text = None
+        if not text or not text.strip():
+            try:
+                text = self._herdr.read_screen(target.pane_id, MAX_SCREEN_LINES)
+            except HerdrError:
+                text = None
         return {
             "pane_id": target.pane_id,
             "agent": target.agent,
