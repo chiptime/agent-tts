@@ -308,14 +308,29 @@ class TestStatic:
         client = TestClient(create_app(settings=cfg, llm_factory=lambda c, t: FakeLLM()))
         resp = client.get("/")
         assert resp.status_code == 200
-        assert 'id="call-btn"' in resp.text
-        assert 'id="new-conversation"' in resp.text
-        assert 'id="agent-view"' in resp.text
-        assert 'id="pending-banner"' in resp.text
-        assert 'id="herd-strip"' in resp.text
-        assert 'id="herd-note"' in resp.text
-        assert "/app.js" in resp.text
-        assert "/manifest.webmanifest" in resp.text
+        html = resp.text
+        for element_id in (
+            "call-btn", "pause-btn", "state-pill", "new-conversation",
+            "agent-view", "pending-banner", "herd-strip", "herd-note",
+            "sheet", "sheet-title", "sheet-conversation", "sheet-screen",
+            "sheet-refresh", "sheet-close", "tab-conv", "tab-screen",
+        ):
+            assert f'id="{element_id}"' in html, f"missing #{element_id}"
+        assert "/app.js" in html
+        assert "/manifest.webmanifest" in html
+
+    def test_index_spanish_labels(self, settings, audio_dir):
+        """User-facing labels are Spanish (single Spanish-speaking owner)."""
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        client = TestClient(create_app(settings=cfg, llm_factory=lambda c, t: FakeLLM()))
+        html = client.get("/").text
+        assert "📞 Llamar" in html
+        assert "⏸ Pausa" in html
+        assert "Parar audio" in html
+        assert "Conversación" in html
+        assert "Pantalla" in html
+        assert "Enviar" in html
+        assert "Escribe en su lugar…" in html
 
     def test_static_assets_served(self, settings, audio_dir):
         cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})

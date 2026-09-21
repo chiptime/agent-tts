@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="es">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -9,14 +9,30 @@
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <style>
     :root {
-      --bg: #0f1115;
-      --panel: #171a21;
-      --text: #e6e9ef;
-      --muted: #8b93a3;
-      --accent: #4ade80;
-      --danger: #f87171;
-      --warn: #fbbf24;
-      --blue: #60a5fa;
+      --bg: #f4f6f9;
+      --panel: #ffffff;
+      --text: #17202b;
+      --muted: #5b6572;
+      --line: #d9dee6;
+      --accent: #12855c;
+      --danger: #c62f2f;
+      --warn: #8a6100;
+      --blue: #1d5fbf;
+      --chip-bg: #e9edf3;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f1115;
+        --panel: #171a21;
+        --text: #e6e9ef;
+        --muted: #8b93a3;
+        --line: #232833;
+        --accent: #4ade80;
+        --danger: #f87171;
+        --warn: #fbbf24;
+        --blue: #60a5fa;
+        --chip-bg: #2a2f3a;
+      }
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; }
@@ -28,31 +44,34 @@
       display: flex;
       flex-direction: column;
     }
+    button { font: inherit; border: 0; border-radius: 12px; cursor: pointer; }
+    .hidden { display: none !important; }
+
     header {
       padding: calc(env(safe-area-inset-top, 0px) + 10px) 14px 10px;
       background: var(--panel);
-      border-bottom: 1px solid #232833;
+      border-bottom: 1px solid var(--line);
       display: flex;
       align-items: center;
       gap: 10px;
     }
     .chip {
       display: inline-block;
-      min-width: 74px;
+      min-width: 76px;
       text-align: center;
-      padding: 3px 10px;
+      padding: 4px 10px;
       border-radius: 999px;
       font-size: 13px;
-      font-weight: 600;
-      background: #2a2f3a;
+      font-weight: 700;
+      background: var(--chip-bg);
       color: var(--muted);
       text-transform: uppercase;
       letter-spacing: 0.4px;
     }
-    .chip.working { background: #3b2f11; color: var(--warn); }
-    .chip.idle    { background: #11321c; color: var(--accent); }
-    .chip.blocked { background: #3a1414; color: var(--danger); }
-    .chip.done    { background: #14293a; color: var(--blue); }
+    .chip.working { color: var(--warn); }
+    .chip.idle    { color: var(--accent); }
+    .chip.blocked { color: var(--danger); }
+    .chip.done    { color: var(--blue); }
     #pane-title {
       flex: 1;
       white-space: nowrap;
@@ -61,38 +80,17 @@
       color: var(--muted);
       font-size: 14px;
     }
-    #new-conversation {
-      padding: 7px 12px;
-      font-size: 13px;
-      font-weight: 600;
-      background: #2a2f3a;
-      color: var(--text);
-      border-radius: 9px;
-    }
-    #mute-btn {
-      padding: 7px 10px;
+    .head-btn {
+      padding: 8px 10px;
       font-size: 15px;
-      background: #2a2f3a;
+      background: var(--chip-bg);
       color: var(--text);
       border-radius: 9px;
     }
-    #mute-btn.muted { opacity: 0.6; }
-    #toast {
-      position: fixed;
-      top: calc(env(safe-area-inset-top, 0px) + 64px);
-      left: 14px;
-      right: 14px;
-      z-index: 10;
-      padding: 11px 14px;
-      border-radius: 12px;
-      background: #1d2530f2;
-      color: var(--text);
-      font-size: 14px;
-      line-height: 1.4;
-      box-shadow: 0 6px 20px #0009;
-      border: 1px solid #2a3140;
-    }
-    /* Herd strip: one chip per agent, horizontal scroll. */
+    #mute-btn.muted { opacity: 0.55; }
+    #new-conversation { font-weight: 700; }
+
+    /* Herd strip */
     #herd-strip {
       display: flex;
       gap: 8px;
@@ -102,14 +100,14 @@
     }
     .herd-chip {
       flex: 0 0 auto;
-      max-width: 190px;
-      padding: 7px 12px;
-      font-size: 13px;
+      max-width: 200px;
+      padding: 11px 14px;   /* taller thumb target */
+      font-size: 14px;
       font-weight: 600;
-      border-radius: 999px;
-      border: 1px solid #2a2f3a;
-      background: transparent;
-      color: var(--muted);
+      border-radius: 14px;
+      border: 2px solid var(--line);
+      background: var(--panel);
+      color: var(--text);
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -119,24 +117,22 @@
     .herd-chip .st.idle    { color: var(--accent); }
     .herd-chip .st.blocked { color: var(--danger); }
     .herd-chip .st.done    { color: var(--blue); }
-    .herd-chip.selected {
-      background: var(--panel);
-      border-color: var(--accent);
-      color: var(--text);
-    }
+    .herd-chip.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
     #herd-note {
       margin: 4px 14px 0;
       font-size: 12px;
       color: var(--muted);
       font-style: italic;
     }
-    /* Agent view panel: pending banner is the visual anchor. */
+
+    /* Agent view panel (glance) */
     #agent-view {
       margin: 10px 14px 0;
-      border: 1px solid #232833;
+      border: 1px solid var(--line);
       border-radius: 12px;
       background: var(--panel);
       overflow: hidden;
+      cursor: pointer;
     }
     #pending-banner {
       padding: 12px 14px;
@@ -144,9 +140,14 @@
       font-weight: 700;
       line-height: 1.35;
     }
-    #pending-banner.question   { background: #3b2f11; color: var(--warn); }
-    #pending-banner.error      { background: #3a1414; color: var(--danger); }
-    #pending-banner.permission { background: #14293a; color: var(--blue); }
+    #pending-banner.question   { background: #f4e8c3; color: var(--warn); }
+    #pending-banner.error      { background: #f6d7d7; color: var(--danger); }
+    #pending-banner.permission { background: #d8e6f8; color: var(--blue); }
+    @media (prefers-color-scheme: dark) {
+      #pending-banner.question   { background: #3b2f11; }
+      #pending-banner.error      { background: #3a1414; }
+      #pending-banner.permission { background: #14293a; }
+    }
     .view-transcript { padding: 10px 12px 4px; display: flex; flex-direction: column; gap: 6px; }
     .view-turn { font-size: 13px; line-height: 1.4; }
     .view-turn .role { color: var(--accent); font-weight: 700; margin-right: 6px; }
@@ -154,7 +155,7 @@
     .view-screen {
       margin: 6px 12px 12px;
       padding: 8px 10px;
-      background: #0d0f13;
+      background: var(--chip-bg);
       border-radius: 8px;
       color: var(--muted);
       font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -163,115 +164,226 @@
       max-height: 132px;
       overflow: hidden;
     }
+    .view-hint { font-size: 11px; color: var(--muted); text-align: center; padding: 0 0 8px; }
+
+    /* Conversation */
     main#conversation {
       flex: 1;
       overflow-y: auto;
       padding: 14px;
+      padding-bottom: 150px;
       display: flex;
       flex-direction: column;
       gap: 10px;
     }
     .turn { max-width: 86%; padding: 9px 13px; border-radius: 14px; white-space: pre-wrap; }
-    .turn.user   { align-self: flex-end; background: #234c31; border-bottom-right-radius: 4px; }
-    .turn.brain  { align-self: flex-start; background: var(--panel); border: 1px solid #232833; border-bottom-left-radius: 4px; }
-    .turn .who { display: block; font-size: 11px; color: var(--muted); margin-bottom: 3px; }
-    #interim {
-      padding: 0 14px 6px;
-      color: var(--muted);
-      font-style: italic;
-      min-height: 1.4em;
+    .turn.user   { align-self: flex-end; background: #d9efe2; border-bottom-right-radius: 4px; }
+    .turn.brain  { align-self: flex-start; background: var(--panel); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+    @media (prefers-color-scheme: dark) {
+      .turn.user { background: #234c31; }
     }
+    .turn .who { display: block; font-size: 11px; color: var(--muted); margin-bottom: 3px; }
+    #interim { padding: 0 14px; color: var(--muted); font-style: italic; min-height: 1.4em; }
     .banner {
-      margin: 0 14px 10px;
+      margin: 0 14px 8px;
       padding: 10px 12px;
       border-radius: 10px;
-      background: #3a1414;
-      color: #fecaca;
+      background: #f6d7d7;
+      color: #7c1d1d;
       font-size: 14px;
     }
-    footer {
-      padding: 10px 14px calc(env(safe-area-inset-bottom, 0px) + 14px);
+    @media (prefers-color-scheme: dark) { .banner { background: #3a1414; color: #fecaca; } }
+
+    /* State pill */
+    #state-pill {
+      position: fixed;
+      left: 50%;
+      transform: translateX(-50%);
+      bottom: calc(env(safe-area-inset-bottom, 0px) + 108px);
+      z-index: 8;
+      padding: 10px 18px;
+      border-radius: 999px;
+      font-size: 15px;
+      font-weight: 700;
       background: var(--panel);
-      border-top: 1px solid #232833;
+      border: 1px solid var(--line);
+      color: var(--text);
+      box-shadow: 0 4px 14px #0003;
+    }
+    #state-pill.listening { color: var(--accent); }
+    #state-pill.thinking  { color: var(--warn); }
+    #state-pill.speaking  { color: var(--blue); cursor: pointer; }
+    #state-pill.paused    { color: var(--muted); }
+
+    /* Toast */
+    #toast {
+      position: fixed;
+      top: calc(env(safe-area-inset-top, 0px) + 64px);
+      left: 14px;
+      right: 14px;
+      z-index: 12;
+      padding: 11px 14px;
+      border-radius: 12px;
+      background: var(--panel);
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.4;
+      box-shadow: 0 6px 20px #0006;
+      border: 1px solid var(--line);
+    }
+
+    /* Bottom call bar */
+    footer {
+      position: fixed;
+      left: 0; right: 0; bottom: 0;
+      z-index: 9;
+      padding: 10px 14px calc(env(safe-area-inset-bottom, 0px) + 12px);
+      background: var(--panel);
+      border-top: 1px solid var(--line);
       display: flex;
       flex-direction: column;
       gap: 10px;
     }
-    .controls { display: flex; gap: 10px; }
-    button {
-      font: inherit;
-      border: 0;
-      border-radius: 12px;
-      cursor: pointer;
+    .controls { display: flex; gap: 10px; align-items: stretch; }
+    .side-btn {
+      padding: 12px 14px;
+      font-weight: 600;
+      font-size: 14px;
+      background: var(--chip-bg);
+      color: var(--text);
+      white-space: nowrap;
     }
     #call-btn {
       flex: 1;
-      padding: 16px;
-      font-size: 18px;
-      font-weight: 700;
-      color: #05210f;
+      padding: 18px;
+      font-size: 20px;
+      font-weight: 800;
+      color: #fff;
       background: var(--accent);
+      letter-spacing: 0.3px;
     }
-    #call-btn.listening { background: var(--danger); color: #fff; }
+    #call-btn.oncall { background: var(--danger); }
     #call-btn:disabled { opacity: 0.55; cursor: default; }
-    #stop-audio {
-      padding: 12px 16px;
-      font-weight: 600;
-      background: #2a2f3a;
-      color: var(--text);
-    }
+    #stop-audio { background: var(--chip-bg); }
     #text-fallback { display: flex; gap: 8px; }
     #text-fallback input {
       flex: 1;
       font: inherit;
-      padding: 11px 12px;
+      padding: 12px;
       border-radius: 10px;
-      border: 1px solid #2a2f3a;
-      background: #0d0f13;
+      border: 1px solid var(--line);
+      background: var(--bg);
       color: var(--text);
     }
-    #text-fallback button {
-      padding: 11px 18px;
-      font-weight: 600;
-      background: #2a2f3a;
+    #text-fallback button { padding: 12px 18px; font-weight: 600; background: var(--chip-bg); color: var(--text); }
+    #mic-note { font-size: 12px; color: var(--muted); text-align: center; }
+
+    /* Full-screen sheet */
+    #sheet {
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      background: var(--bg);
+      display: flex;
+      flex-direction: column;
+    }
+    .sheet-head {
+      padding: calc(env(safe-area-inset-top, 0px) + 10px) 14px 10px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    #sheet-title { flex: 1; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #sheet-refresh { padding: 8px 12px; font-weight: 600; background: var(--chip-bg); color: var(--text); }
+    #sheet-close { padding: 8px 14px; font-weight: 800; background: var(--chip-bg); color: var(--text); }
+    .sheet-tabs { display: flex; gap: 8px; padding: 10px 14px 0; }
+    .sheet-tabs button {
+      flex: 1;
+      padding: 12px;
+      font-weight: 700;
+      background: var(--chip-bg);
+      color: var(--muted);
+      border-radius: 12px;
+    }
+    .sheet-tabs button.active { background: var(--panel); color: var(--text); border: 2px solid var(--accent); }
+    #sheet-note { padding: 8px 14px 0; font-size: 12px; color: var(--muted); font-style: italic; }
+    .sheet-body { flex: 1; overflow-y: auto; padding: 12px 14px calc(env(safe-area-inset-bottom, 0px) + 16px); }
+    #sheet-conversation .c-turn { margin-bottom: 12px; }
+    #sheet-conversation .c-role {
+      font-size: 12px; font-weight: 800; text-transform: uppercase;
+      color: var(--accent); margin-bottom: 2px;
+    }
+    #sheet-conversation .c-role.user { color: var(--warn); }
+    #sheet-conversation .c-text { font-size: 15px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+    #sheet-screen {
+      margin: 0;
+      padding: 12px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
       color: var(--text);
     }
-    .hidden { display: none !important; }
   </style>
 </head>
 <body>
   <header>
     <span id="status-chip" class="chip">…</span>
-    <span id="pane-title">connecting…</span>
-    <button id="mute-btn" title="Toggle announcements">🔊</button>
-    <button id="new-conversation" title="Start a new conversation">↺ New</button>
+    <span id="pane-title">conectando…</span>
+    <button id="mute-btn" class="head-btn" title="Silenciar anuncios">🔊</button>
+    <button id="new-conversation" class="head-btn" title="Empezar una conversación nueva">↺ Nueva</button>
   </header>
   <div id="toast" class="hidden"></div>
 
-  <nav id="herd-strip" aria-label="Agents"></nav>
+  <nav id="herd-strip" aria-label="Agentes"></nav>
   <div id="herd-note" class="hidden"></div>
 
-  <section id="agent-view" class="hidden">
+  <section id="agent-view" class="hidden" title="Tocar para leer la conversación completa">
     <div id="pending-banner" class="pending hidden"></div>
     <div id="view-transcript"></div>
     <pre id="view-screen" class="view-screen hidden"></pre>
+    <div class="view-hint">Toca para ver el texto completo</div>
   </section>
 
   <main id="conversation" aria-live="polite"></main>
 
   <div id="interim" class="hidden"></div>
   <div id="banner" class="banner hidden" role="alert"></div>
+  <button id="state-pill" class="hidden"></button>
 
   <footer>
+    <div id="mic-note" class="hidden"></div>
     <div class="controls">
-      <button id="call-btn">● Call</button>
-      <button id="stop-audio" class="hidden">■ Stop audio</button>
+      <button id="pause-btn" class="side-btn hidden">⏸ Pausa</button>
+      <button id="call-btn">📞 Llamar</button>
+      <button id="stop-audio" class="side-btn hidden">■ Parar audio</button>
     </div>
     <form id="text-fallback" class="hidden">
-      <input id="text-input" type="text" placeholder="Speech unavailable — type instead…" autocomplete="off">
-      <button type="submit">Send</button>
+      <input id="text-input" type="text" placeholder="Escribe en su lugar…" autocomplete="off">
+      <button type="submit">Enviar</button>
     </form>
   </footer>
+
+  <section id="sheet" class="hidden">
+    <div class="sheet-head">
+      <span id="sheet-title">Agente</span>
+      <button id="sheet-refresh">⟳ Actualizar</button>
+      <button id="sheet-close">✕ Cerrar</button>
+    </div>
+    <div class="sheet-tabs">
+      <button id="tab-conv" class="active">Conversación</button>
+      <button id="tab-screen">Pantalla</button>
+    </div>
+    <div id="sheet-note"></div>
+    <div class="sheet-body">
+      <div id="sheet-conversation"></div>
+      <pre id="sheet-screen" class="hidden"></pre>
+    </div>
+  </section>
 
   <audio id="player"></audio>
   <script src="/app.js"></script>
