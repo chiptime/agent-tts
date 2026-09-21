@@ -203,7 +203,7 @@ Suggested family (deterministic — `herdr-tts keymap adopt --style ctrlalt` wri
 | `mute` | `ctrl+alt+m` | `rate_down` | `ctrl+alt+-` |
 | `snooze` | `ctrl+alt+z` | `dashboard` | `ctrl+alt+d` |
 | `snooze_global` | `ctrl+alt+g` | `palette` | `ctrl+alt+o` |
-| `menu` | `ctrl+alt+u` | | |
+| `menu` | `ctrl+alt+u` | `settings` | `ctrl+alt+shift+u` |
 
 (`paragraph_next` / `paragraph_prev` have no suggested chord — assign them yourself in `keymap.json` and `keymap apply` installs them too.)
 
@@ -226,6 +226,7 @@ The original one-chord-per-command map: fastest to press, but several letters **
 | `prefix+Z` | Snooze global | libre |
 | `prefix+m` | Mute pane | libre |
 | `prefix+=` / `prefix+-` | Velocidad ±10% | libre |
+| `prefix+u` | Ajustes de voz y audio (popup, ver [Ajustes](#️-ajustes-de-voz-y-audio-prefixu)) | libre en core |
 
 Install the map (one `[[keys.command]]` per assigned chord) with:
 
@@ -415,7 +416,7 @@ TTS_VOICE="elvira"
 TTS_RATE="+20%"
 TTS_MAX_CHARS="0"           # 0 = unlimited
 TTS_AUTO_SCOPE="focused"    # "focused" (recommended) or "all"
-TTS_PLAYBACK="local"        # "local", "winhost" (native audio on Windows host), "wsl-ps" or "auto"
+TTS_PLAYBACK="local"        # "local", "winhost" (native audio on Windows host), "wsl-ps", "windows" or "auto"
 
 # Optional Cloud TTS API Keys & Models:
 OPENAI_API_KEY=""
@@ -442,6 +443,11 @@ TTS_TITLE_GLYPHS="1"        # 1 = ✔/🔇/😴 prefixes on pane titles; 0 = ful
 # HERDR_TTS_AUDIO_RETENTION_DAYS="7"
 # Store root override (default $HOME/.local/share/agent-tts/audio):
 # AGENT_TTS_AUDIO_DIR="/path/to/audio-store"
+
+# Managed by the voice settings popup (prefix+u): TTS_PROVIDER,
+# TTS_PLAYBACK and HERDR_TTS_AUDIO_RETENTION_DAYS. The popup rewrites
+# them in place (every other line is preserved byte-for-byte) and keeps
+# the previous version in config.env.bak.
 ```
 
 ---
