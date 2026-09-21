@@ -22,37 +22,42 @@ Para resolver esto, la suite se estructura en dos capas independientes y complem
 ```mermaid
 flowchart TD
     subgraph HostLayer["1. CAPA HOST: herdr-tts (Herdr Plugin)"]
-        HS[Socket de Eventos Herdr] --> EVT[Gestor de Eventos]
-        KB[Atajos de Teclado prefix+r/p/s/n/N] --> CLI[CLI Dispatcher]
-        
-        EVT --> FOC{Filtro de Foco\nscope: focused?}
-        FOC -->|Pane en background| MUTE[Silencio / Log]
-        FOC -->|Pane activo| AMUTEX
-        CLI --> AMUTEX{Audio Mutex Lock\n/tmp/herdr-tts-playing.lock\nencola, nunca interrumpe}
-        
-        AMUTEX --> FWD{Delegación de Extracción\nagente conocido?}
-        FWD -->|Sí| IPCFWD[Forward al Motor\n--agent / --session-id]
-        FWD -->|Shell genérico| SCROLL[Terminal Scrollback\n--pre-extracted]
-        
-        CLI -.-> NTFY[Push Móvil ntfy.sh\nAudio inline + Enlace Collie]
+        HS[Socket de Eventos Herdr\nherdr agent wait — un watcher por pane] --> SET{Ventana de Asentamiento\nTTS_SETTLE_SECONDS = 5s\ndone intermedio → descartado}
+        SET -->|sigue working| DROP[Descartado: paso intermedio\nsin síntesis ni push]
+        SET -->|done real / blocked| GATE{Ledger de Compuertas\nmute por pane · snooze 5m/30m/2h global\ndebounce 20s por pane+estado}
+        GATE -->|compuerta activa| DROP
+        GATE -->|permitido| ACQ{Adquisición de Texto}
+        ACQ -->|agente conocido| IPCFWD[Forward al Motor\n--agent / --session-id]
+        ACQ -->|shell genérico| SCROLL[Terminal Scrollback\n--pre-extracted]
+
+        KB[keymap.json declarativo\nprefix+r/p/s/t/v · paleta · menú] --> CLI[CLI Dispatcher]
+        CLI --> DASH[Dashboard TUI v3.1 · Paleta fzf\nMenú de voz · Popup de Ajustes]
+        DASH -.->|mute · snooze · proveedor\nsettle · reinicio daemon| GATE
+
+        FILE[Fichero MP3 sintetizado] --> OUT{Fan-out de Salidas}
+        OUT --> NTFY[Push Móvil ntfy.sh\naudio inline · deep link Collie]
+        OUT --> HIST[Historial por chat\n+ almacén con retención]
+        OUT --> GLYPH[Glifos de título del pane\nhecho / mute / snooze]
+        OUT --> POD[Episodio de Podcast RSS]
+        OUT --> LOCALG{Compuertas de Voz Local\nauto-mute · scope focused · audio mutex}
+        LOCALG -->|todo libre| PLAYBACK[Reproducción Nativa\nminiaudio · Pulse/PipeWire\nWSLg · winhost/wsl-ps]
     end
 
     subgraph CoreLayer["2. CAPA MOTOR: agent-tts (Core Engine)"]
-        IPCFWD --> SRC[Capa Conectores sources/\nopencode.py SQLite · claude.py JSONL]
+        IPCFWD --> SRC[Capa Conectores sources/\nopencode SQLite · claude/codex JSONL\nantigravity JSONL · aider markdown]
         SRC & SCROLL --> SANIT[cleaner.py: Sanitizador Profundo\nANSI, Boxes, Spinners, Tokens, Tablas]
-        SANIT --> STREAM{Pipelined Streaming\n--stream auto}
-        
-        STREAM --> PROV{Proveedores TTS}
+        SANIT --> REDACT[redact.py: Redactor de Secretos\nsk- · ghp_ · JWT · Authorization · PEM]
+        REDACT --> STREAM{Pipelined Streaming\n--stream auto}
+        STREAM --> PROV{Proveedores TTS\nvoice manager install/list/remove}
         PROV -->|Gratuito por defecto| EDGE[Microsoft Edge Neural]
         PROV -->|Offline local CPU| PIPER[Piper ONNX Runtime]
+        PROV -->|Offline calidad estudio| KOK[Kokoro-82M ONNX]
         PROV -->|API de pago| OAI_EL[OpenAI / ElevenLabs]
-        
-        PROV --> DRV[miniaudio Native C Audio Driver\nALSA / PulseAudio / PipeWire / CoreAudio / WASAPI]
-        
+        PROV --> FILE
         SOCK[Unix Domain Socket\n/tmp/agent-tts.sock] --> IPC_SRV[Servidor IPC]
-        IPC_SRV -->|toggle-pause con auto-rewind 2s| DRV
+        IPC_SRV -->|toggle-pause con auto-rewind 2s| DRV[miniaudio Native C Audio Driver\nALSA / PulseAudio / PipeWire / CoreAudio / WASAPI]
         IPC_SRV -->|seek ±10s / next-prev sentence| DRV
-        
+        DRV --> PLAYBACK
         DRV -.-> HUD[Visual Karaoke HUD\n--highlight / --autoscroll / --bionic / --zen]
         DRV -.-> RSS[Servidor Podcast RSS\n--podcast-serve :8844]
     end
@@ -100,24 +105,35 @@ flowchart TD
 
 1. **Microsoft Edge Neural (Default — 100% Free):** Voces naturales fluidas (`elvira`, `alvaro`, `en`) con latencia reducida y cero configuración de claves API.
 2. **Piper ONNX (100% Offline — CPU):** Síntesis neuronal local ejecutada íntegramente en CPU mediante ONNX Runtime para entornos sin conexión o de alta privacidad.
-3. **OpenAI Audio TTS:** Modelos `tts-1` y `tts-1-hd` (`nova`, `alloy`, `onyx`) para máxima fidelidad de estudio.
-4. **ElevenLabs:** Voces ultra-realistas multilingües (`eleven_multilingual_v2`).
+3. **OpenAI Audio TTS:** Modelos `tts-1` y `tts-1-hd` (`nova`, `alloy`, `onyx`) para máxima fidelidad de estudio, con streaming pipelined por HTTP chunked.
+4. **ElevenLabs:** Voces ultra-realistas multilingües (`eleven_multilingual_v2`), con streaming pipelined por HTTP chunked.
+5. **Kokoro-82M ONNX (100% Offline — CPU):** Motor neural local de última generación (~325 MB), calidad de estudio sin cloud ni API keys (`agent-tts voice install kokoro`).
 
 ---
 
-## 5. Hoja de Ruta y Principio Clean-Room
+## 5. Estado de Implementación y Roadmap
 
-Todas las funcionalidades planificadas se desarrollan bajo el principio de **implementación limpia e independiente (Clean-Room)**: se extrae la necesidad funcional y operativa detectada en el flujo de trabajo multi-agente, diseñando una arquitectura nativa propia sin reutilizar ni replicar código de proyectos de terceros.
+### Estado Actual (Septiembre 2026)
 
-### Próximas Implementaciones Host (`herdr-tts`)
-- **Snooze Granular & Mute por Pane:** Ciclos temporales de silenciado independiente (`prefix + z` para 5m/30m/2h/off y `prefix + m` para mute exclusivo de pane) con gestión atómica de estados.
-- **Anti-Spam State Debouncing:** Ventana de enfriamiento (`debounce_seconds = 20`) para evitar repeticiones sonoras cuando un agente genera micro-turnos o estados de bloqueo consecutivos.
-- **Dashboard TUI de Control en Herdr:** Entrypoint de pane nativo para supervisión de colas de audio, visualización de temporizadores de snooze y control interactivo de parámetros.
-- **Intercomunicador Push-to-Talk (`prefix + c`):** Captura de micrófono e inferencia STT local (Whisper.cpp) en el motor; el host solo recibe el texto transcrito y lo inyecta en el pane activo.
+Todas las funcionalidades planificadas se desarrollan bajo el principio de **implementación limpia e independiente (Clean-Room)**: se extrae la necesidad funcional detectada en el flujo de trabajo multi-agente, diseñando arquitectura propia sin reutilizar código de proyectos de terceros.
 
-### Próximas Implementaciones Motor (`agent-tts`)
-- **Conectores Adicionales (`sources/`):** Adaptadores para aider (historial de chat markdown), gemini-cli y goose, con auto-detección del agente activo.
-- **Redactor Preventivo de Credenciales (`cleaner.py`):** Detección heurística ultrarrápida de API keys, tokens JWT y contraseñas para evitar fugas sonoras o en feeds RSS/ntfy.
-- **Resumen Híbrido LLM Opcional (`--llm-summary`):** Destilado de alto nivel delegando a CLIs locales (`claude`, `codex`, `ollama`) con fallback automático a las heurísticas offline `--tldr`.
-- **Integración de Kokoro-82M ONNX:** Máxima calidad neural offline ejecutada en CPU (<350MB).
-- **Gestor Integrado de Modelos de Voz (`agent-tts voice install`):** Descarga, verificación y configuración desatendida de modelos ONNX sin fricción manual.
+#### ✅ `herdr-tts` (Host Layer) — Completado
+- **Snooze Granular & Mute por Pane**: Ciclos `prefix+z` (5m/30m/2h/off), mute por pane `prefix+m` con auto-clear al cerrar pane, snooze global `prefix+Z`. Estado persistido en ficheros de timestamp.
+- **Anti-Spam Debouncing**: Ventana `TTS_DEBOUNCE_SECONDS` (default 20s) que suprime re-disparos del mismo `pane_id`+`status` sin bloquear la ejecución principal.
+- **Ventana de Asentamiento (Settle Window)**: `TTS_SETTLE_SECONDS` (default 5s). Un `done` solo dispara el pipeline si sigue en `done` tras la ventana; los parpadeos `working→done→working` de pasos intermedios (batches de herramientas, subagentes, thinking) se descartan sin síntesis ni push. Si durante la ventana el estado pasa a `blocked`, el evento se re-apunta como bloqueado. `0` la desactiva.
+- **Dashboard TUI v3.1 & Superficies Interactivas**: Panel ANSI con frames atómicos de escritura única (roster de chats reordenado por atención, historial de audio por chat, estado vivo del motor vía IPC), paleta de voz fzf, menú de voz de una tecla, popup de ajustes con ciclo persistente (proveedor, destino de reproducción, retención, settle) y keymap declarativo JSON (`herdr-tts keymap init/adopt/check/apply`).
+- **Glifos de Título Ambientales**: prefijo ✔/🔇/😴 en el título del pane según estado (hecho/bloqueado, mute, snooze), con restauración del título original y sync idempotente en el sweep del daemon.
+- **Transporte WSL → Windows (`winhost`/`wsl-ps`)**: Modos de reproducción `local`, `winhost` (TCP PCM → WASAPI en el host Windows) y `wsl-ps` (PowerShell stdin fallback), configurables con `TTS_PLAYBACK`.
+
+#### ✅ `agent-tts` (Motor) — Completado
+- **Redactor de Secretos (`redact.py`)**: Limpia API keys (`sk-...`, `ghp_...`, `glpat-...`), tokens JWT, cabeceras `Authorization`, claves privadas PEM y hashes largos antes de sintetizar o publicar a RSS/ntfy.
+- **Resumen LLM Híbrido (`--llm-summary`)**: Cadena `claude -p → codex exec → ollama run qwen2.5:0.5b` con fallback automático a `--tldr` offline. Sin superficie de inyección de comandos (prompt por stdin).
+- **Kokoro-82M ONNX Provider**: `--provider kokoro` con lazy load de `onnxruntime` y fonematización por `phonemizer`/`espeak-ng`. Mapeado de voces por familia (americano, británico, español...).
+- **Voice Model Manager**: `agent-tts voice list/install/remove` con descargas atómicas, validación de integridad y store en `~/.local/share/agent-tts/voices/`.
+- **Streaming Pipelined en todos los Providers**: Edge (sentence-group, `--stream auto`), OpenAI y ElevenLabs (HTTP chunked MP3), Piper (pendiente — sólo `--stream on` funciona).
+- **Agent Connectors**: Lectura estructurada desde OpenCode SQLite, Claude Code JSONL, Codex CLI JSONL, Antigravity CLI JSONL y Aider markdown history. Routing por `--agent + --session-id`.
+- **Windows WASAPI / WSL Transports**: `winhost`, `wsl-ps`, y loopback IPC por TCP para sesiones de Herdr en WSL2.
+
+#### ⏳ Pendiente
+- **`herdr-tts`**: Intercomunicador Push-to-Talk (`prefix + c`) con STT local (Whisper.cpp).
+- **`agent-tts`**: Streaming frame-level para Piper; CI en Windows (WASAPI + TCP loopback).

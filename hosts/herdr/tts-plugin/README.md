@@ -34,6 +34,7 @@ When orchestrating multiple autonomous coding agents in Herdr (Claude Code, Open
 | **Memory Footprint** | ~30–60 MB (Node / heavy runtime) | High (WebRTC SIP bridge) | 🟢 **~2.3 MB RAM, 0 VRAM** |
 | **Parallel Chat Safety** | ❌ Voices collide & overlap | N/A (Single phone call) | 🟢 **Audio Mutex Lock** |
 | **Focus-Aware Filtering** | ❌ Speaks every background event | ❌ No | 🟢 **`scope: focused`** (default) |
+| **Intermediate-Step Filtering** | ❌ No | ❌ No | 🟢 **Settle window** (intermediate `done` flickers dropped) |
 | **Mobile Audio Push** | ❌ No | ⚠️ Call only | 🟢 **Native `ntfy.sh` with inline MP3 player** |
 | **Optional Web Deep-Linking** | ❌ No | ❌ No | 🟢 **Collie, custom dashboard, or standalone** |
 | **On-Demand Reading** | ❌ Passive trigger only | ⚠️ Phone only | 🟢 **`prefix + r`** (Play/Stop toggle) |
@@ -45,53 +46,68 @@ When orchestrating multiple autonomous coding agents in Herdr (Claude Code, Open
 ## 🧠 Core Architecture
 
 ```
-                                  ┌────────────────────────┐
-                                  │   Herdr Socket API     │
-                                  │ (pane & agent events)  │
-                                  └───────────┬────────────┘
-                                              │
-                                              ▼
-┌──────────────────────┐           ┌────────────────────────┐
-│ User Keybinding / CLI│           │ herdr-tts Background   │
-│ (prefix+r, htr, etc.)│           │ Daemon Listener        │
-└──────────┬───────────┘           └──────────┬─────────────┘
-           │                                  │
-           └──────────────────┬───────────────┘
-                              │
-                              ▼
-               ┌──────────────────────────────┐
-               │    Focus & Scope Filter      │
-               │  Is this pane focused?       │
-               │  Is auto-speech muted?       │
-               └──────────────┬───────────────┘
-                              │
-                              ▼
-               ┌──────────────────────────────┐
-               │     Audio Mutex Lock         │
-               │ (/tmp/herdr-tts-playing.lock)│
-               │   *Prevents Voice Clashes*   │
-               └──────────────┬───────────────┘
-                              │
-                              ▼
-               ┌──────────────────────────────┐
-               │   Text Normalization Engine  │
-               │  Strips ANSI, borders, code  │
-               │  blocks, and token quotas    │
-               └──────────────┬───────────────┘
-                              │
-                              ▼
-               ┌──────────────────────────────┐
-               │  Microsoft Edge Neural TTS   │
-               │     In-Memory PCM Stream     │
-               └──────────────┬───────────────┘
-                              │
-                              ▼
-               ┌──────────────────────────────┐
-               │   Native Audio Dispatcher    │
-               │ Linux: PulseAudio / PipeWire │
-               │ WSL2:  /mnt/wslg/PulseServer │
-               │ macOS: afplay                │
-               └──────────────────────────────┘
+                      ┌──────────────────────────────────────────┐
+                      │ Herdr Socket API                         │
+                      │ herdr agent wait / agent get / pane read │
+                      └──────────────────────────────────────────┘
+                                            │  one watcher per agent pane
+                                            ▼
+                   ┌────────────────────────────────────────────────┐
+                   │ 1. SETTLE WINDOW  ·  TTS_SETTLE_SECONDS = 5s   │
+                   │ a done must keep holding to fire the pipeline: │
+                   │ an intermediate working→done→working flicker   │
+                   │ (tool batch, subagent, thinking) is dropped —  │
+                   │ no synthesis, no mobile push.  0 = off         │
+                   └────────────────────────────────────────────────┘
+                                            ▼
+                    ┌──────────────────────────────────────────────┐
+                    │ 2. GATING LEDGER  (snooze state file)        │
+                    │ per-pane mute · snooze 5m/30m/2h pane/global │
+                    │ anti-spam debounce 20s per (pane, status)    │
+                    └──────────────────────────────────────────────┘
+                                            ▼
+                    ┌──────────────────────────────────────────────┐
+                    │ 3. TEXT ACQUISITION                          │
+                    │ known agent → --agent + --session-id forward │
+                    │ generic shell → raw scrollback capture       │
+                    └──────────────────────────────────────────────┘
+                                            ▼
+                ┌──────────────────────────────────────────────────────┐
+                │ 4. agent-tts ENGINE SYNTHESIS                        │
+                │ deep cleaner (ANSI, boxes, spinners, tokens, tables) │
+                │ secret redactor · providers: edge (free) · piper ·   │
+                │ kokoro · openai · elevenlabs — pipelined streaming   │
+                └──────────────────────────────────────────────────────┘
+                                            │
+                  ┬─────────────────┬───────┴─────────┬─────────────────┬
+                  ▼                 ▼                 ▼                 ▼
+          ┌───────────────┐  ┌─────────────┐  ┌───────────────┐  ┌────────────┐
+          │ MOBILE PUSH   │  │ PODCAST RSS │  │ AUDIO HISTORY │  │ PANE TITLE │
+          │ ntfy.sh push, │  │ episode to  │  │ ledger +      │  │ glyphs     │
+          │ inline MP3 +  │  │ the :8844   │  │ retention     │  │ done/mute/ │
+          │ deep links    │  │ feed        │  │ audio store   │  │ snooze     │
+          └───────────────┘  └─────────────┘  └───────────────┘  └────────────┘
+                  │
+                  ▼  local voice only — re-checked at play time
+              ┌──────────────────────────────────────────────────────────┐
+              │ 5. LOCAL VOICE GATES: auto-mute off? · scope=focused and │
+              │ pane on screen? · audio mutex free (no voice clashes)?   │
+              └──────────────────────────────────────────────────────────┘
+                                            ▼
+             ┌────────────────────────────────────────────────────────────┐
+             │ NATIVE PLAYBACK   miniaudio → PulseAudio/PipeWire (Linux), │
+             │ /mnt/wslg/PulseServer (WSL2), winhost TCP→WASAPI, wsl-ps,  │
+             │ afplay (macOS)                                             │
+             └────────────────────────────────────────────────────────────┘
+
+INTERACTIVE SURFACES (user-initiated — never wait for events)
+─────────────────────────────────────────────────────────────
+declarative keymap.json → prefix chords: r play/stop · p pause
+· s stop · t TL;DR · v auto-mute · [ ] seek ±10s · n/N sentence
+· m pane mute · z/Z snooze · +/- rate
+→ fzf voice palette · one-key voice menu · settings popup
+→ dashboard TUI: chat roster, per-chat history, live engine
+  status (pause/seek/next ride the engine Unix-socket IPC)
 ```
 
 ### Agent Transcript Connectors
@@ -354,6 +370,15 @@ pip install piper-tts
 herdr-tts --provider piper --piper-model ~/.local/share/piper/models/es_ES-davefx-medium.onnx
 ```
 
+### 5. Kokoro-82M ONNX (100% Offline, Studio Quality)
+- **State-of-the-Art Local Neural TTS:** ~325 MB model delivering studio-grade quality fully on CPU — zero cloud, zero API keys.
+- **Voice Families:** American, British, Spanish and more, mapped through the engine's voice manager.
+- **Setup:**
+```bash
+agent-tts voice install kokoro
+herdr-tts --provider kokoro
+```
+
 ---
 
 ## 📱 Mobile Push Notifications (Optional via `ntfy.sh`)
@@ -439,6 +464,12 @@ CLICK_REDIRECT="off"        # "off" = tap opens ntfy player; "on" = tap opens we
 # Ambient pane-title glyphs (default on):
 TTS_TITLE_GLYPHS="1"        # 1 = ✔/🔇/😴 prefixes on pane titles; 0 = fully off
 
+# Event filtering windows (seconds):
+TTS_DEBOUNCE_SECONDS="20"   # anti-spam window per (pane, status); 0 = off
+TTS_SETTLE_SECONDS="5"      # a done must keep holding this long to fire;
+                            # intermediate working→done→working flickers are
+                            # dropped (no TTS, no push); 0 = off
+
 # Stored turn audio (agent-tts audio store). Persistence is opt-in — set
 # a retention window in days to enable it. Precedence:
 # HERDR_TTS_ > AGENT_TTS_ > TTS_; default 0 = off:
@@ -448,14 +479,15 @@ TTS_TITLE_GLYPHS="1"        # 1 = ✔/🔇/😴 prefixes on pane titles; 0 = ful
 
 # Managed by the voice settings view (voice menu → `a`, or
 # `herdr-tts --voice-settings`): TTS_PROVIDER,
-# TTS_PLAYBACK and HERDR_TTS_AUDIO_RETENTION_DAYS. The popup rewrites
+# TTS_PLAYBACK, HERDR_TTS_AUDIO_RETENTION_DAYS and TTS_SETTLE_SECONDS.
+# The popup rewrites
 # them in place (every other line is preserved byte-for-byte) and keeps
 # the previous version in config.env.bak.
 ```
 
 ---
 
-## 📊 Panel de control (dashboard, v3)
+## 📊 Panel de control (dashboard, v3.1)
 
 **Abrir el panel directamente en Herdr:**
 
@@ -494,6 +526,8 @@ El panel es de **solo lectura** frente al gate/mutex/watcher: toda mutación pas
 | `+` / `-` | Velocidad de voz +10% / −10% (persistida en config) |
 
 > **Disciplina de coste v3:** `herdr agent list` se consulta cada N ticks (default 3) con caché, el estado del motor comparte esa cadencia, y el historial se agrupa en **una sola pasada de python** por tick (el mismo intérprete del venv del motor; agrupa, ordena por recencia y convierte las marcas locales a epoch con reglas DST correctas por fecha). Todo lo demás por tick es lectura local de ficheros y bash sin forks: nunca un subshell por línea renderizada. Refresco configurable con `HERDR_TTS_DASHBOARD_REFRESH` (segundos, default `1`).
+>
+> **Frames atómicos (v3.1):** el popup se repinta construyendo el frame completo en un buffer y emitiéndolo en **una sola escritura física** (cursor-home + frame + erase-below): nunca clear completo ni escrituras por línea. Cada línea se recorta al ancho real del popup (los anchos de los campos encogen proporcionalmente bajo presión de columnas) y la altura se limita a `LINES-1`: bajo presión de filas el presupuesto encoge primero el historial y luego el roster — los chats que piden atención y las líneas fijas nunca se sacrifican. Un frame idéntico al anterior no escribe nada.
 
 ---
 
@@ -547,19 +581,20 @@ command = "herdr plugin pane open --plugin herdr.tts --entrypoint tts-palette"
 
 ## ⚙️ Ajustes de voz y audio
 
-`prefix+u` abre el **menú de voz**; dentro del menú, la tecla `a` abre esta vista de **Ajustes**: tres ajustes opcionales que se **ciclan con una tecla** y se guardan al momento en `~/.config/herdr-tts/config.env`:
+`prefix+u` abre el **menú de voz**; dentro del menú, la tecla `a` abre esta vista de **Ajustes**: cuatro ajustes opcionales que se **ciclan con una tecla** y se guardan al momento en `~/.config/herdr-tts/config.env`:
 
 | Tecla | Ajuste | Ciclo |
 |---|---|---|
 | `p` | Proveedor TTS | `edge` (gratuito, por defecto) → `openai` → `elevenlabs` → `piper` → `kokoro` |
 | `d` | Destino de reproducción | `local` → `winhost` → `wsl-ps` → `windows` → `auto` |
 | `r` | Audio retenido (días) | `0` (apagado) → `1` → `3` → `7` → `14` |
+| `s` | Asentamiento done (segundos) | `0` (instantáneo) → `2` → `5` → `10` → `15` → `30` |
 
 * Dentro del menú, `q` / `Esc` / `Enter` **vuelven al menú principal**. Para acceso directo sigue existiendo el popup independiente (`herdr-tts --voice-settings`, acción `voice-settings` del plugin, entrypoint `tts-settings`), donde `q` / `Esc` cierra el popup. `settings` sigue siendo un id ligable en `keymap.json`, pero **sin acorde por defecto**: los ajustes no gastan una tecla de core.
 * Kokoro y Piper requieren instalar el modelo antes: `agent-tts voice install <modelo>`.
-* La escritura es **gestionada**: solo toca las claves `TTS_PROVIDER`, `TTS_PLAYBACK` y `HERDR_TTS_AUDIO_RETENTION_DAYS` de `config.env` — reescribe la línea existente o añade un bloque gestionado al final, preserva el resto del fichero byte a byte, escribe de forma atómica (tmp + mv) y deja la versión previa en `config.env.bak`.
+* La escritura es **gestionada**: solo toca las claves `TTS_PROVIDER`, `TTS_PLAYBACK`, `HERDR_TTS_AUDIO_RETENTION_DAYS` y `TTS_SETTLE_SECONDS` de `config.env` — reescribe la línea existente o añade un bloque gestionado al final, preserva el resto del fichero byte a byte, escribe de forma atómica (tmp + mv) y deja la versión previa en `config.env.bak`.
 * La tecla `R` (mayúscula — distinta de la `r` que cicla retención) **reinicia el daemon** al instante y confirma en pantalla con `✓ Daemon reiniciado`; equivale a `herdr-tts --restart-daemon`.
-* Los cambios aplican a **nuevos procesos**: `p` y `d` aplican al reiniciar el daemon — ahora con una tecla (`R` en Ajustes) o `herdr-tts --restart-daemon`.
+* Los cambios aplican a **nuevos procesos**: `p`, `d` y `s` aplican al reiniciar el daemon — ahora con una tecla (`R` en Ajustes) o `herdr-tts --restart-daemon`.
 
 ---
 
@@ -602,6 +637,8 @@ We have an active vision to expand `herdr-tts` into the definitive audio layer f
   - Independent time-based snooze cycling per pane (`prefix + z`: 5m, 30m, 2h, off), global snooze (`prefix + Z`) and pane-level mute (`prefix + m`, auto-cleared when the pane closes), preventing notification fatigue in multi-agent workspaces without muting other active panes (clean-room design using local timestamp state).
 - [x] ⏱️ **Anti-Spam State Debouncing:**
   - Configurable debounce window (`debounce_seconds = 20` via `TTS_DEBOUNCE_SECONDS` / `--debounce`) preventing rapid re-triggering of repeated completion or blocked states from the same pane within a short time window.
+- [x] 🧘 **Settle Window (Intermediate-Step Filtering):**
+  - A `done` only fires the pipeline if it still holds after `TTS_SETTLE_SECONDS` (default 5s, also in Ajustes): the `working→done→working` flickers between the steps of one logical turn (tool batches, subagents, thinking phases) are dropped before synthesis and mobile push. A state change during the window re-targets the event (`done→blocked` fires as blocked); `0` disables it.
 - [x] 📊 **Interactive TUI Dashboard Pane:**
   - Native Herdr dashboard pane entrypoint displaying live agent speech states, recent audio logs, countdowns for snoozed panes, volume controls, and provider/voice toggles. (v1: pure-ANSI clear+redraw, read-only gating view, controls reuse the existing mute/snooze/rate functions; audio history via `${XDG_STATE_HOME:-~/.local/state}/herdr-tts/history.log`.)
   - v2: live engine line via the engine IPC status (state with color, mm:ss progress, active provider/voice and text snippet) on a shared every-N-ticks cache cadence, fail-open "motor: no responde" fallback, and real durations in the audio history ledger (MP3 decoded with the engine's own miniaudio, one best-effort probe per render).
