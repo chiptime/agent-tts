@@ -400,9 +400,26 @@ class TestFullTextReads:
         result = tools.screen_full()
         assert result["pane_id"] == active_agent.pane_id
         assert result["screen"] == "line1\nline2"
-        assert stub.screen_calls == [
-            {"pane_id": active_agent.pane_id, "n_lines": 120, "source": "recent"}
-        ]
+        assert stub.screen_calls[0] == {
+            "pane_id": active_agent.pane_id, "n_lines": 120, "source": "recent"
+        }
+
+    def test_screen_full_falls_back_to_visible_when_scrollback_empty(
+        self, settings, make_stub, active_agent
+    ):
+        """Alt-screen TUI agents report empty recent scrollback."""
+        stub = make_stub(screen="visible viewport text")
+        original = stub.read_screen
+
+        def read_screen(pane_id, n_lines=None, source="visible"):
+            if source == "recent":
+                return ""  # alt-screen: empty scrollback
+            return original(pane_id, n_lines=n_lines)
+
+        stub.read_screen = read_screen
+        result = BrainTools(settings, herdr=stub).screen_full()
+        assert result["screen"] == "visible viewport text"
+        assert stub.screen_calls[-1]["source"] == "visible"
 
     def test_screen_full_failure_isolated(self, settings, make_stub):
         tools = BrainTools(settings, herdr=make_stub(fail_screen=True))
