@@ -61,6 +61,14 @@
       color: var(--muted);
       font-size: 14px;
     }
+    #new-conversation {
+      padding: 7px 12px;
+      font-size: 13px;
+      font-weight: 600;
+      background: #2a2f3a;
+      color: var(--text);
+      border-radius: 9px;
+    }
     main#conversation {
       flex: 1;
       overflow-y: auto;
@@ -141,6 +149,7 @@
   <header>
     <span id="status-chip" class="chip">…</span>
     <span id="pane-title">connecting…</span>
+    <button id="new-conversation" title="Start a new conversation">↺ New</button>
   </header>
 
   <main id="conversation" aria-live="polite"></main>

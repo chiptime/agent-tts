@@ -22,6 +22,15 @@
   var listening = false;
   var thinking = false;
 
+  /* Stable per-install client session so the brain keeps conversation
+   * memory across page loads; a fresh id is minted only if none exists. */
+  var SESSION_KEY = "herdr-brain-session";
+  var sessionId = localStorage.getItem(SESSION_KEY);
+  if (!sessionId) {
+    sessionId = "s-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
+    localStorage.setItem(SESSION_KEY, sessionId);
+  }
+
   /* ---------- conversation view ---------- */
 
   function addTurn(role, text) {
@@ -110,7 +119,7 @@
     return fetch("/ask", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text: text })
+      body: JSON.stringify({ text: text, session_id: sessionId })
     })
       .then(function (resp) {
         if (resp.status === 503) {
@@ -228,6 +237,25 @@
     if (!text) return;
     textInput.value = "";
     ask(text);
+  });
+
+  /* ---------- new conversation ---------- */
+
+  $("new-conversation").addEventListener("click", function () {
+    if (thinking) return;
+    stopAudio();
+    stopListening();
+    conv.textContent = "";
+    interimEl.textContent = "";
+    interimEl.classList.add("hidden");
+    hideBanner();
+    fetch("/reset", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId })
+    }).catch(function () {
+      showBanner("Could not reset the conversation on the server.");
+    });
   });
 
   function initSpeech() {
