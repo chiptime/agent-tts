@@ -15,6 +15,7 @@ class FakeLLM:
     def __init__(self, result=None):
         self.calls: list = []
         self.session_ids: list = []
+        self.pane_ids: list = []
         self.result = result or {
             "answer": "Estás en la fase 2 del brain; todo verde.",
             "pane_id": "w1:p9",
@@ -25,10 +26,15 @@ class FakeLLM:
     def attach_store(self, store):
         self.attached_store = store
 
-    def ask(self, text, session_id=None):
+    def ask(self, text, session_id=None, pane_id=None):
         self.calls.append(text)
         self.session_ids.append(session_id)
-        return dict(self.result, session_id=session_id or "default")
+        self.pane_ids.append(pane_id)
+        return dict(
+            self.result,
+            session_id=session_id or "default",
+            pane_id=pane_id or self.result["pane_id"],
+        )
 
 
 class FakeTTS:
@@ -178,6 +184,15 @@ class TestSessions:
         assert resp.status_code == 200
         assert llm.session_ids == ["phone-abc"]
         assert resp.json()["session_id"] == "phone-abc"
+
+    def test_ask_with_pane_id_targets_selection(self, client_factory):
+        llm = FakeLLM()
+        resp = client_factory(llm=llm).post(
+            "/ask", json={"text": "hola", "session_id": "s1", "pane_id": "w7:p4"}
+        )
+        assert resp.status_code == 200
+        assert llm.pane_ids == ["w7:p4"]
+        assert resp.json()["pane_id"] == "w7:p4"
 
     def test_ask_reset_clears_store_before_answer(self, settings, audio_dir, monkeypatch):
         import herdr_brain.server as server_module
@@ -401,6 +416,8 @@ class TestView:
 
     @staticmethod
     def _tools_class(agent_view_result=None, raise_agent_view=False):
+        views_requested: list = []
+
         class FakeTools:
             def __init__(self, cfg):
                 self.last_active = None
@@ -410,11 +427,13 @@ class TestView:
 
                 return status_payload(None)
 
-            def agent_view(self):
+            def agent_view(self, pane_id=None):
+                views_requested.append(pane_id)
                 if raise_agent_view:
                     raise RuntimeError("compose blew up")
                 return agent_view_result
 
+        FakeTools.views_requested = views_requested
         return FakeTools
 
     def _client(self, settings, audio_dir, tools_cls, monkeypatch):
@@ -482,12 +501,26 @@ class TestView:
             "transcript": None, "screen": None,
             "pending": {"detected": False, "kind": None, "excerpt": None},
         }
-        client = self._client(
-            settings, audio_dir, self._tools_class(agent_view_result=result), monkeypatch
-        )
+        tools_cls = self._tools_class(agent_view_result=result)
+        client = self._client(settings, audio_dir, tools_cls, monkeypatch)
         resp = client.get("/view")
         assert resp.status_code == 200
         assert resp.headers["content-type"].startswith("application/json")
+
+    def test_view_honors_pane_id_param(self, settings, audio_dir, monkeypatch):
+        result = {
+            "status": {"active": True, "pane_id": "w1:p2", "agent": "opencode",
+                       "agent_status": "idle", "title": "Other", "cwd": "/o",
+                       "session_id": "ses_x"},
+            "transcript": None, "screen": None,
+            "pending": {"detected": False, "kind": None, "excerpt": None},
+        }
+        tools_cls = self._tools_class(agent_view_result=result)
+        client = self._client(settings, audio_dir, tools_cls, monkeypatch)
+        resp = client.get("/view", params={"pane_id": "w1:p2"})
+        assert resp.status_code == 200
+        assert resp.json()["status"]["pane_id"] == "w1:p2"
+        assert tools_cls.views_requested == ["w1:p2"]
 
     def test_unknown_static_path_404(self, settings, audio_dir):
         cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})

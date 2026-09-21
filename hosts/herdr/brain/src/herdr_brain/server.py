@@ -36,6 +36,7 @@ MAX_SESSION_ID_CHARS = 128
 class TextRequest(BaseModel):
     text: str = Field(min_length=1, max_length=4_000)
     session_id: Optional[str] = Field(default=None, max_length=MAX_SESSION_ID_CHARS)
+    pane_id: Optional[str] = Field(default=None, max_length=MAX_SESSION_ID_CHARS)
     reset: bool = False
 
 
@@ -105,10 +106,10 @@ def create_app(
             return []
 
     @app.get("/view")
-    def view() -> dict:
-        """Superset of /state: transcript tail, screen tail, pending hint."""
+    def view(pane_id: Optional[str] = None) -> dict:
+        """Superset of /state for one pane (default: focused)."""
         try:
-            return tools.agent_view()
+            return tools.agent_view(pane_id)
         except Exception:  # noqa: BLE001 — the view endpoint never 500s
             return {
                 "status": _status_payload(None),
@@ -122,7 +123,9 @@ def create_app(
         if body.reset:
             store.reset(body.session_id)
         try:
-            result = get_llm().ask(body.text, session_id=body.session_id)
+            result = get_llm().ask(
+                body.text, session_id=body.session_id, pane_id=body.pane_id
+            )
         except BrainLLMError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         audio_url: Optional[str] = None
