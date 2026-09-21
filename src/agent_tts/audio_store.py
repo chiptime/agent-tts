@@ -23,10 +23,13 @@ honored), default 7 days; a value of ``0`` disables retention entirely.
 import os
 import re
 import shutil
+import struct
 import time
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
+
+import miniaudio
 
 ENV_AUDIO_DIR = "AGENT_TTS_AUDIO_DIR"
 ENV_RETENTION_DAYS = "AGENT_TTS_AUDIO_RETENTION_DAYS"
@@ -83,6 +86,68 @@ def store_path(pane: str, suffix: str = ".mp3", now: Optional[float] = None) -> 
     os.makedirs(date_dir, exist_ok=True)
     safe = _PANE_SAFE_RE.sub("_", pane) or "-"
     return os.path.join(date_dir, f"{epoch}-{safe}{suffix}")
+
+
+def _pcm_to_wav(pcm: bytes, sample_rate: int, nchannels: int) -> bytes:
+    """Wraps 16-bit PCM bytes in one canonical 44-byte-header WAV.
+
+    Same header layout as ``providers/kokoro.py``'s ``_floats_to_wav``
+    (PCM format 1, 16 bits per sample), generalized over channel count.
+    """
+    header = b"RIFF" + struct.pack("<I", 36 + len(pcm)) + b"WAVE"
+    header += b"fmt " + struct.pack(
+        "<IHHIIHH",
+        16,
+        1,
+        nchannels,
+        sample_rate,
+        sample_rate * nchannels * 2,
+        nchannels * 2,
+        16,
+    )
+    header += b"data" + struct.pack("<I", len(pcm))
+    return header + pcm
+
+
+def merge_chunks_to_audio(chunks: list[bytes]) -> bytes:
+    """Merges pipelined-rendered chunks into one playable audio blob.
+
+    Two modes, sniffed from the FIRST chunk:
+
+    - WAV (first chunk starts with ``b"RIFF"``): every chunk is decoded with
+      miniaudio and all chunks must share the same sample rate and channel
+      count (otherwise ``ValueError``); the 16-bit samples are concatenated
+      in playback order into ONE canonical 44-byte-header WAV built by
+      :func:`_pcm_to_wav` (same header layout as ``providers/kokoro.py``).
+    - MP3 (anything else): MP3 frames concatenate legitimately, so the chunks
+      are simply joined byte-wise.
+
+    An empty list yields ``b""``. Undecodable WAV chunks raise ``ValueError``;
+    callers are expected to fail open (playback already succeeded).
+    """
+    if not chunks:
+        return b""
+    if not chunks[0].startswith(b"RIFF"):
+        return b"".join(chunks)
+
+    sample_rate = 0
+    nchannels = 0
+    pcm_parts = []
+    for idx, chunk in enumerate(chunks):
+        try:
+            decoded = miniaudio.decode(bytes(chunk))
+        except Exception as e:
+            raise ValueError(f"chunk {idx} is not decodable audio: {e}") from e
+        if sample_rate == 0:
+            sample_rate = decoded.sample_rate
+            nchannels = decoded.nchannels
+        elif decoded.sample_rate != sample_rate or decoded.nchannels != nchannels:
+            raise ValueError(
+                f"chunk {idx} format mismatch: {decoded.sample_rate}Hz/{decoded.nchannels}ch "
+                f"!= {sample_rate}Hz/{nchannels}ch"
+            )
+        pcm_parts.append(decoded.samples.tobytes())
+    return _pcm_to_wav(b"".join(pcm_parts), sample_rate, nchannels)
 
 
 def prune_expired(now: Optional[float] = None) -> int:
