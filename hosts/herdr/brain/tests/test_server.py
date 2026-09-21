@@ -362,7 +362,7 @@ class TestStatic:
         assert client.get("/icon.svg").status_code == 200
         manifest = client.get("/manifest.webmanifest")
         assert manifest.status_code == 200
-        assert manifest.json()["name"] == "herdr-brain"
+        assert manifest.json()["name"] == "Herdr Voz"
 
     def test_api_routes_take_precedence_over_static_mount(self, settings, audio_dir):
         import herdr_brain.server as server_module
