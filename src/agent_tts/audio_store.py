@@ -17,7 +17,8 @@ Contract (kept deliberately boring):
 Layout: ``<audio_dir>/YYYY-MM-DD/<epoch>-<pane><suffix>``, e.g.
 ``~/.local/share/agent-tts/audio/2026-09-20/1758360000-p0.mp3``.
 Knob: ``AGENT_TTS_AUDIO_RETENTION_DAYS`` (legacy ``TTS_AUDIO_RETENTION_DAYS``
-honored), default 7 days; a value of ``0`` disables retention entirely.
+honored), default 0 (persistence is opt-in); a positive value enables
+persistence and defines the pruning window in days.
 """
 
 import os
@@ -35,7 +36,7 @@ ENV_AUDIO_DIR = "AGENT_TTS_AUDIO_DIR"
 ENV_RETENTION_DAYS = "AGENT_TTS_AUDIO_RETENTION_DAYS"
 ENV_RETENTION_DAYS_LEGACY = "TTS_AUDIO_RETENTION_DAYS"
 
-DEFAULT_RETENTION_DAYS = 7
+DEFAULT_RETENTION_DAYS = 0
 
 # Date-partition directory names are strictly YYYY-MM-DD; anything else in
 # the store root is foreign and must be left alone.
@@ -58,7 +59,7 @@ def audio_dir() -> str:
 
 
 def retention_days() -> int:
-    """Returns the retention window in days (default 7; <= 0 disables pruning)."""
+    """Returns the retention window in days (default 0: persistence off; > 0 enables)."""
     raw = (
         os.environ.get(ENV_RETENTION_DAYS, "")
         or os.environ.get(ENV_RETENTION_DAYS_LEGACY, "")

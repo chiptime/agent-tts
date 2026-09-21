@@ -35,10 +35,10 @@ def store(tmp_path, monkeypatch):
 
 
 class TestRetentionDays:
-    def test_default_is_seven(self, monkeypatch):
+    def test_default_is_zero_opt_in(self, monkeypatch):
         monkeypatch.delenv("AGENT_TTS_AUDIO_RETENTION_DAYS", raising=False)
         monkeypatch.delenv("TTS_AUDIO_RETENTION_DAYS", raising=False)
-        assert audio_store.retention_days() == 7
+        assert audio_store.retention_days() == 0
 
     def test_agent_tts_env_override(self, monkeypatch):
         monkeypatch.setenv("AGENT_TTS_AUDIO_RETENTION_DAYS", "14")
@@ -58,7 +58,7 @@ class TestRetentionDays:
     def test_invalid_string_falls_back_to_default(self, monkeypatch):
         monkeypatch.setenv("AGENT_TTS_AUDIO_RETENTION_DAYS", "soon")
         monkeypatch.delenv("TTS_AUDIO_RETENTION_DAYS", raising=False)
-        assert audio_store.retention_days() == 7
+        assert audio_store.retention_days() == 0
 
     def test_zero_disables_retention(self, monkeypatch):
         monkeypatch.setenv("AGENT_TTS_AUDIO_RETENTION_DAYS", "0")
@@ -90,7 +90,8 @@ class TestStorePath:
 
 
 class TestPruneExpired:
-    def test_removes_only_strictly_expired_partitions(self, store):
+    def test_removes_only_strictly_expired_partitions(self, store, monkeypatch):
+        monkeypatch.setenv("AGENT_TTS_AUDIO_RETENTION_DAYS", "7")
         _make_partition(store, _d(-30))
         _make_partition(store, _d(-8))
         boundary = _make_partition(store, _d(-7))  # exactly retention_days ago: kept
@@ -106,7 +107,8 @@ class TestPruneExpired:
         assert today.is_dir()
         assert future.is_dir()
 
-    def test_skips_malformed_names_and_plain_files(self, store):
+    def test_skips_malformed_names_and_plain_files(self, store, monkeypatch):
+        monkeypatch.setenv("AGENT_TTS_AUDIO_RETENTION_DAYS", "7")
         _make_partition(store, _d(-30))
         malformed = _make_partition(store, "not-a-date")
         plain_file = store / "2020-01-01"

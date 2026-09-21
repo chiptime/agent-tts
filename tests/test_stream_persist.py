@@ -202,7 +202,12 @@ def _pipelined(session, text, output_file=None, podcast=False, persist_name=None
 class TestPipelinePersistence(unittest.TestCase):
     def setUp(self):
         self.audio_dir = tempfile.mkdtemp(prefix="agent-tts-persist-audio-")
-        patcher = mock.patch.dict(os.environ, {"AGENT_TTS_AUDIO_DIR": self.audio_dir})
+        # Opt-in retention: the positive-persist tests enable a window
+        # explicitly; the default is off (DEFAULT_RETENTION_DAYS = 0).
+        patcher = mock.patch.dict(
+            os.environ,
+            {"AGENT_TTS_AUDIO_DIR": self.audio_dir, "AGENT_TTS_AUDIO_RETENTION_DAYS": "7"},
+        )
         patcher.start()
         self.addCleanup(patcher.stop)
 
