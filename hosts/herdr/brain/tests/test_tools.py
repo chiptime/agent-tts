@@ -198,11 +198,8 @@ class TestHerd:
 
 class TestAgentView:
     def test_composes_status_screen_and_pending(self, settings, make_stub, active_agent):
-        stub = make_stub(screen="Shall I deploy to prod? (y/n)")
-        # Make the stub agent report blocked so the strong signal is active.
-        stub.active_agent = lambda: active_agent.__class__(**{
-            **active_agent.__dict__, "status": "blocked"
-        })
+        blocked = AgentInfo(**{**active_agent.__dict__, "status": "blocked"})
+        stub = make_stub(agents=[blocked], screen="Shall I deploy to prod? (y/n)")
         tools = BrainTools(settings, herdr=stub)
         view = tools.agent_view()
         assert view["status"]["agent_status"] == "blocked"
@@ -242,6 +239,97 @@ class TestAgentView:
         assert view["transcript"] is not None
         assert len(view["transcript"][0]["text"]) == 300
         assert view["pending"]["detected"] is False
+
+
+class TestTargeting:
+    @staticmethod
+    def _agent(pane, value, focused=False, title="T"):
+        return AgentInfo(
+            pane_id=pane, agent="opencode", status="working", session_kind="id",
+            session_value=value, cwd="/repo", title=title, focused=focused,
+        )
+
+    def test_resolve_target_explicit_pane(self, settings, make_stub):
+        focused = self._agent("w1:p1", "ses_t0000000001", focused=True)
+        other = self._agent("w1:p2", "ses_t0000000002")
+        stub = make_stub(agents=[focused, other])
+        tools = BrainTools(settings, herdr=stub)
+        assert tools.resolve_target("w1:p2").pane_id == "w1:p2"
+
+    def test_resolve_target_falls_back_to_focused(self, settings, make_stub, active_agent):
+        stub = make_stub(agents=[active_agent])
+        tools = BrainTools(settings, herdr=stub)
+        assert tools.resolve_target("w9:missing").pane_id == active_agent.pane_id
+        assert tools.resolve_target(None).pane_id == active_agent.pane_id
+
+    def test_resolve_target_none_on_herdr_failure(self, settings, make_stub):
+        stub = make_stub(agents=[])
+
+        def boom():
+            raise HerdrError("list failed")
+
+        stub.list_agents = boom
+        assert BrainTools(settings, herdr=stub).resolve_target("x") is None
+
+    def test_send_to_session_honors_explicit_target(self, settings, make_stub, active_agent):
+        other = self._agent("w1:p2", "ses_t0000000002")
+        stub = make_stub(agents=[active_agent, other])
+        tools = BrainTools(settings, herdr=stub)
+        result = json.loads(tools.send_to_session("do it", target=other))
+        assert stub.prompt_calls == [
+            {"pane_id": "w1:p2", "text": "do it", "timeout_ms": None}
+        ]
+        assert result["pane_id"] == "w1:p2"
+
+    def test_read_screen_honors_explicit_target(self, settings, make_stub, active_agent):
+        other = self._agent("w1:p2", "ses_t0000000002")
+        stub = make_stub(agents=[active_agent, other], screen="other screen")
+        tools = BrainTools(settings, herdr=stub)
+        assert tools.read_screen(30, target=other) == "other screen"
+        assert stub.screen_calls == [{"pane_id": "w1:p2", "n_lines": 30}]
+
+    def test_read_transcript_honors_explicit_target(
+        self, settings, make_stub, active_agent, monkeypatch, tmp_path
+    ):
+        import sqlite3
+
+        other = self._agent("w1:p2", "ses_t0000000002")
+        db = tmp_path / "target.db"
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INT, data TEXT)")
+        conn.execute("CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INT, data TEXT)")
+        conn.execute(
+            "INSERT INTO message VALUES ('m1', ?, 1, ?)",
+            (other.session_value, json.dumps({"role": "assistant"})),
+        )
+        conn.execute(
+            "INSERT INTO part VALUES ('m1-p1', 'm1', ?, 1, ?)",
+            (other.session_value, json.dumps({"type": "text", "text": "Pantalla del otro agente."})),
+        )
+        conn.commit()
+        conn.close()
+        monkeypatch.setenv("OPENCODE_DB", str(db))
+
+        stub = make_stub(agents=[active_agent, other])
+        tools = BrainTools(settings, herdr=stub)
+        out = tools.read_transcript(target=other)
+        assert "Pantalla del otro agente." in out
+        assert "transcript unavailable" not in out
+
+    def test_dispatch_passes_target_through(self, settings, make_stub, active_agent):
+        other = self._agent("w1:p2", "ses_t0000000002")
+        stub = make_stub(agents=[active_agent, other])
+        tools = BrainTools(settings, herdr=stub)
+        tools.dispatch("read_screen", {"n_lines": 20}, target=other)
+        assert stub.screen_calls[0]["pane_id"] == "w1:p2"
+
+    def test_agent_view_targets_pane(self, settings, make_stub, active_agent):
+        other = self._agent("w1:p2", "ses_t0000000002")
+        stub = make_stub(agents=[active_agent, other], screen="tail of other")
+        tools = BrainTools(settings, herdr=stub)
+        view = tools.agent_view("w1:p2")
+        assert view["status"]["pane_id"] == "w1:p2"
+        assert stub.screen_calls == [{"pane_id": "w1:p2", "n_lines": 12}]
 
 
 class TestDispatch:
