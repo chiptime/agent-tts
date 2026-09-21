@@ -59,7 +59,8 @@ def build_live_context(
     active: Optional[AgentInfo], now: Optional[datetime] = None
 ) -> str:
     """Renders the per-request live block appended to the system message."""
-    timestamp = (now or datetime.now().astimezone()).strftime("%Y-%m-%d %H:%M (%Z)")
+    # Naive datetimes are assumed local so %Z never renders empty.
+    timestamp = (now or datetime.now()).astimezone().strftime("%Y-%m-%d %H:%M (%Z)")
     lines = [
         "---- LIVE CONTEXT (refreshed every request; not part of the conversation) ----",
         f"Local time: {timestamp}",
