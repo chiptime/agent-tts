@@ -46,6 +46,16 @@ width = "60%"
 height = "45%"
 command = ["bin/herdr-tts", "--voice-menu"]
 
+# Voice/audio settings popup (prefix+u): cycles provider, playback target
+# and audio retention, writing the managed keys to config.env atomically.
+[[panes]]
+id = "tts-settings"
+title = "TTS Settings"
+placement = "popup"
+width = "60%"
+height = "45%"
+command = ["bin/herdr-tts", "--voice-settings"]
+
 [[actions]]
 id = "toggle-play"
 title = "Play / Stop Current Chat"

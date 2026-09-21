@@ -842,6 +842,8 @@ unset COLUMNS LINES # restore for the wiring greps below
 assert_grep "16g manifest declares tts-menu pane" 'id = "tts-menu"' "$REPO/herdr-plugin.toml" -F
 assert_grep "16g tts-menu runs --voice-menu" 'command = \["bin/herdr-tts", "--voice-menu"\]' "$REPO/herdr-plugin.toml"
 assert_grep "16g tts-menu popup is 60%x45%" 'width = "60%"' "$REPO/herdr-plugin.toml" -F
+assert_grep "16g tts-settings entrypoint wired" '"--voice-settings"' "$REPO/herdr-plugin.toml" -F
+assert_grep "16g tts-settings popup id" 'id = "tts-settings"' "$REPO/herdr-plugin.toml" -F
 assert_grep "16g open-menu action wired" '"--entrypoint", "tts-menu"' "$REPO/herdr-plugin.toml" -F
 assert_grep "16g manifest declares voice-settings action" 'id = "voice-settings"' "$REPO/herdr-plugin.toml" -F
 assert_grep "16g voice-settings runs --voice-settings" 'command = \["bin/herdr-tts", "--voice-settings"\]' "$REPO/herdr-plugin.toml"
