@@ -12,6 +12,7 @@ from typing import Callable, Dict, Optional
 
 from .config import Settings
 from .herdr import AgentInfo, HerdrClient, HerdrError, pick_active
+from .memory import clip_content
 from .transcripts import read_transcript, read_turns
 from .tts import render_mp3  # noqa: F401  (re-exported for server wiring)
 from .view import (
@@ -24,6 +25,8 @@ from .view import (
 
 MAX_SEND_EXCERPT = 500
 HERD_LAST_TURN_CHARS = 160
+CONVERSATION_WINDOW = 20
+SCREEN_FULL_LINES = 120
 
 
 def status_payload(active: Optional[AgentInfo]) -> dict:
@@ -161,6 +164,55 @@ class BrainTools:
             {"role": turn.role, "text": truncate_text(turn.text, VIEW_TEXT_TRUNCATE)}
             for turn in turns
         ]
+
+    def conversation(self, pane_id: Optional[str] = None) -> dict:
+        """Full-text recent conversation for one pane (reading view).
+
+        Last ``CONVERSATION_WINDOW`` (20) turns with texts clipped at 4000
+        chars each. The transcript readers have no cursor, so there is no
+        older-page fetch: the window is documented, not paged.
+        """
+        target = self.resolve_target(pane_id)
+        if target is None:
+            return {
+                "pane_id": pane_id, "agent": None, "session_id": None,
+                "turns": [], "window": CONVERSATION_WINDOW,
+            }
+        turns = []
+        if target.session_value:
+            try:
+                raw = read_turns(target.agent, target.session_value, CONVERSATION_WINDOW)
+            except Exception:  # noqa: BLE001 — reading must degrade gracefully
+                raw = None
+            if raw:
+                turns = [
+                    {"role": turn.role, "text": clip_content(turn.text)}
+                    for turn in raw
+                ]
+        return {
+            "pane_id": target.pane_id,
+            "agent": target.agent,
+            "session_id": target.session_value or None,
+            "turns": turns,
+            "window": CONVERSATION_WINDOW,
+        }
+
+    def screen_full(self, pane_id: Optional[str] = None) -> dict:
+        """Last ~120 scrollback lines of one pane (reading view)."""
+        target = self.resolve_target(pane_id)
+        if target is None:
+            return {"pane_id": pane_id, "agent": None, "screen": None}
+        try:
+            text = self._herdr.read_screen(
+                target.pane_id, SCREEN_FULL_LINES, source="recent"
+            )
+        except HerdrError:
+            text = None
+        return {
+            "pane_id": target.pane_id,
+            "agent": target.agent,
+            "screen": text if text and text.strip() else None,
+        }
 
     def agent_view(self, pane_id: Optional[str] = None) -> dict:
         """Composes everything GET /view needs, never raising.

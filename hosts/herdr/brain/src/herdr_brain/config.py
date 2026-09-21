@@ -36,6 +36,9 @@ DEFAULT_TTS_TIMEOUT_S = 120
 # operator's real screen for alt-screen agents (herdr caveat).
 MAX_SCREEN_LINES = 60
 DEFAULT_SCREEN_LINES = 40
+# Explicit full-screen reads (GET /screen) read scrollback instead; the
+# larger window is justified by explicit user intent to READ, not glance.
+MAX_BACKLOG_LINES = 120
 
 DEFAULT_PROMPT_TIMEOUT_MS = 180_000
 DEFAULT_MAX_TOOL_ROUNDS = 4
