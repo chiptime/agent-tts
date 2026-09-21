@@ -37,10 +37,24 @@ class TestRenderMp3:
             "hello world",
             "--voice", "elvira",
             "--rate", "+0%",
-            "--max-chars", "300",
+            "--max-chars", "4000",
             "--output", str(out),
             "--no-play",
         ]
+
+    def test_full_answer_reaches_engine_untouched(self, settings: Settings, tmp_path: Path):
+        """Regression: answers must render in full -- no --max-chars clipping,
+        no --tldr digest. The engine truncates at --max-chars, which cut
+        readings mid-sentence when the default was 300."""
+        long_answer = ("Este es un informe largo con muchos detalles. " * 20).strip()  # >1000 chars
+        runner = FakeRunner()
+        render_mp3(settings, long_answer, tmp_path / "a.mp3", runner=runner)
+        cmd = runner.calls[0]["cmd"]
+        # The whole answer is argv (only whitespace-sanitized), so the engine
+        # receives every word regardless of how --max-chars is set.
+        assert cmd[2] == " ".join(long_answer.split())
+        assert "--tldr" not in cmd
+        assert str(settings.tts_max_chars) in cmd
 
     def test_includes_extra_provider_flags(self, settings: Settings):
         extra = Settings(**{**settings.__dict__, "tts_extra_args": ("--tldr",)})
