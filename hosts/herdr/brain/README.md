@@ -236,6 +236,32 @@ Every async surface has Spanish loading/empty/error states, and the agent
 sheet shows a diagnostics line (**Última consulta / Último error**) to make
 reporting issues easy.
 
+### Build versioning and cache discipline
+
+`GET /` is served with `Cache-Control: no-cache` and every asset reference
+carries a build stamp: `/app.js?v=<git short hash>`. The PWA footer shows
+the same hash (`v<hash>`) so the phone's loaded build is always verifiable
+at a glance. JS/manifest/icon routes also send `no-cache`; the service
+worker is a pure pass-through (it never caches anything). Net effect: the
+phone always revalidates against the server and runs the deployed build.
+`If-None-Match` revalidation still yields 304s (files carry ETags), which
+only skips the body download — freshness is enforced on every load. The
+hash is resolved once at server startup: restart the server after pulling
+a new build.
+
+### Voice diagnostics overlay
+
+Long-press the state pill (~0.6 s) to open **Diagnóstico de voz**: call
+state, listening-since, interim char count and the last raw interim text,
+endpointing internals (silence/cap remaining), recognition error count +
+last error, `/ask` dispatch count + last dispatch text, and the build hash.
+It refreshes every 0.5 s while open — include a screenshot when reporting
+that "no te oigo". The pill also self-reports: **5 s listening with zero
+captured characters** shows "No te oigo — comprueba el micro", and a
+blocked microphone raises a red banner (not a silent fallback). `/ask`
+itself has a 30 s timeout so a hung request returns the call to listening
+instead of wedging it.
+
 Browsers without the Web Speech API (e.g. Firefox) automatically show a text
 input with the same ask flow, which also makes desktop testing trivial.
 
