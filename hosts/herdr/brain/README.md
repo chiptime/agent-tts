@@ -82,13 +82,29 @@ curl -s localhost:8741/state
 #     "title":"OpenCode","cwd":"/repo","session_id":"ses_…"}
 
 curl -s localhost:8741/ask -H 'content-type: application/json' \
-     -d '{"text":"en que estas trabajando?"}'
-# → {"answer":"…","pane_id":"w7:p4","agent":"opencode","audio_url":"/audio/<hex>.mp3"}
+     -d '{"text":"en que estas trabajando?","session_id":"phone-abc"}'
+# → {"answer":"…","pane_id":"w7:p4","agent":"opencode","session_id":"phone-abc",
+#     "audio_url":"/audio/<hex>.mp3"}
+
+# start a fresh conversation for one session (also: {"reset":true} on /ask)
+curl -s localhost:8741/reset -H 'content-type: application/json' \
+     -d '{"session_id":"phone-abc"}'
 
 curl -s localhost:8741/tts -H 'content-type: application/json' \
      -d '{"text":"eco local del PWA"}'
 curl -sO localhost:8741/audio/<hex>.mp3    # play on the CLIENT
 ```
+
+### Conversation memory
+
+`/ask` keeps the last 16 user/assistant turns per `session_id` (in process,
+each message clipped at 4000 chars). Omitting `session_id` uses the `default`
+session, so old callers keep working. The system message is rebuilt on every
+request: static identity/policy text plus a **live context block** (active
+agent kind and status, terminal title, cwd, pane id, session id, local time)
+that is refreshed each turn and never stored in history. Follow-ups like
+"¿y qué más?" resolve against prior turns; `POST /reset` (or `reset: true`
+on `/ask`) starts fresh.
 
 The brain also serves its mobile PWA same-origin at `/` (static assets in
 `src/herdr_brain/static/`, mounted after the API routes): no CORS anywhere.
@@ -138,10 +154,16 @@ payloads).
 | `read_screen(n_lines)` | read | visible terminal text (fallback) |
 | `send_to_session(text, timeout_ms?)` | **write** | forward new work, wait for completion |
 
-Routing policy is baked into the system prompt: state/history/summary
-questions are answered from `read_transcript` (or `read_screen`); new work is
-forwarded with `send_to_session` and then reported. Answers are voice-first:
-at most three short, speakable sentences, no markdown dumps.
+The system prompt carries the full harness: the collie identity, concrete
+capabilities, honesty rules (never invent transcript or screen content; a
+failed read becomes one plain sentence plus a retry hint), routing policy
+(state/history/summary questions are answered from `read_transcript` or
+`read_screen`; new work is forwarded with `send_to_session` and then
+reported), and the voice-first style cap of three short, speakable
+sentences. Tool descriptions encode the economics: `read_transcript` is
+cheap and local (use first), `send_to_session` is slow and waits for real
+completion, `get_status` is rarely needed because live context is already
+injected every turn.
 
 ## Transcripts
 
