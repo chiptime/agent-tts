@@ -156,6 +156,90 @@ COLLIE_URL="${WEB_URL}"
 EOF
 }
 
+# ─── Managed config writer (settings popup) ──────────────────
+# The settings popup persists exactly three knobs. This writer rewrites
+# CONFIG_FILE preserving every unknown line and comment byte-for-byte:
+# a managed `KEY="value"` line is replaced in place (exact KEY match,
+# any value), otherwise a small managed block is appended at the end.
+# Writes are atomic (tmp + mv) and the first write of the process keeps
+# one ${CONFIG_FILE}.bak copy of the previous version. Fail-open: an
+# unwritable location warns on stderr and returns 1 — never crashes.
+# Values are always written quoted and rejected when they contain a
+# double quote, so the file stays bash-sourceable (the block above
+# sources it at startup).
+
+CONFIG_SETTINGS_BLOCK_START='# >>> herdr-tts settings (managed by the settings popup) >>>'
+CONFIG_SETTINGS_BLOCK_END='# <<< herdr-tts settings <<<'
+CONFIG_SET_BACKED_UP=0
+
+config_set() { # <KEY> <VALUE> → rc 1 on rejection or write failure (warning on stderr)
+  local key="$1" value="$2"
+  case "$key" in
+    TTS_PROVIDER|TTS_PLAYBACK|HERDR_TTS_AUDIO_RETENTION_DAYS) ;;
+    *)
+      echo "config_set: unmanaged key '${key}' (allowed: TTS_PROVIDER, TTS_PLAYBACK, HERDR_TTS_AUDIO_RETENTION_DAYS)" >&2
+      return 1
+      ;;
+  esac
+  if [[ "$value" == *'"'* ]]; then
+    echo "config_set: refused: value for '${key}' must not contain double quotes" >&2
+    return 1
+  fi
+
+  local dir
+  dir="$(dirname "$CONFIG_FILE")"
+  if ! mkdir -p "$dir" 2>/dev/null || [[ ! -w "$dir" ]]; then
+    echo "config_set: config directory is not writable: ${dir} (change skipped)" >&2
+    return 1
+  fi
+
+  # One backup per invocation: snapshot the previous version only
+  # before the first write of this process.
+  if (( ! CONFIG_SET_BACKED_UP )) && [[ -f "$CONFIG_FILE" ]]; then
+    cp -p "$CONFIG_FILE" "${CONFIG_FILE}.bak" 2>/dev/null || true
+  fi
+  CONFIG_SET_BACKED_UP=1
+
+  local tmp="${CONFIG_FILE}.tmp.$$"
+  local line replaced=0 inserted=0 in_block=0 write_rc=0
+  {
+    if [[ -f "$CONFIG_FILE" ]]; then
+      while IFS= read -r line || [[ -n "$line" ]]; do
+        if [[ "$line" == "$CONFIG_SETTINGS_BLOCK_START" ]]; then
+          in_block=1
+        elif [[ "$line" == "$CONFIG_SETTINGS_BLOCK_END" ]]; then
+          in_block=0
+        fi
+        if [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?${key}= ]]; then
+          printf '%s="%s"\n' "$key" "$value"
+          replaced=1
+        else
+          printf '%s\n' "$line"
+          # Absent key + our managed block already exists → add the
+          # line right after the block start instead of a new block.
+          if (( in_block && ! replaced && ! inserted )); then
+            printf '%s="%s"\n' "$key" "$value"
+            inserted=1
+          fi
+        fi
+      done < "$CONFIG_FILE"
+    fi
+    if (( ! replaced && ! inserted )); then
+      if [[ -f "$CONFIG_FILE" && -s "$CONFIG_FILE" ]]; then
+        printf '\n'
+      fi
+      printf '%s\n%s="%s"\n%s\n' \
+        "$CONFIG_SETTINGS_BLOCK_START" "$key" "$value" "$CONFIG_SETTINGS_BLOCK_END"
+    fi
+  } > "$tmp" || write_rc=$?
+  if (( write_rc != 0 )) || ! mv -f "$tmp" "$CONFIG_FILE" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    echo "config_set: failed to write ${CONFIG_FILE} (change skipped)" >&2
+    return 1
+  fi
+  return 0
+}
+
 is_playing() {
   if [[ -f "$LOCK_FILE" ]]; then
     local pid
@@ -980,6 +1064,14 @@ show_status() {
 
   echo "  Alcance auto: ${TTS_AUTO_SCOPE} (focused = solo chat activo; all = cualquiera sin solaparse)"
   echo "  Proveedor:    ${TTS_PROVIDER} (edge = Edge Neural TTS gratuito; openai = OpenAI TTS; elevenlabs = ElevenLabs; piper = 100% Offline Local Neural)"
+  local ret_raw="${HERDR_TTS_AUDIO_RETENTION_DAYS:-}"
+  if [[ "$ret_raw" =~ ^[1-9][0-9]*$ ]] && (( ret_raw > 0 )); then
+    echo "  Audio retenido: ${ret_raw} días (${ret_raw}) — HERDR_TTS_AUDIO_RETENTION_DAYS"
+  elif [[ -n "$ret_raw" ]]; then
+    echo "  Audio retenido: apagado (${ret_raw}) — HERDR_TTS_AUDIO_RETENTION_DAYS"
+  else
+    echo "  Audio retenido: apagado (no definido) — HERDR_TTS_AUDIO_RETENTION_DAYS"
+  fi
   if [[ "$TTS_PROVIDER" == "openai" ]]; then
     local masked_key="no configurada"
     if [[ -n "$OPENAI_API_KEY" ]]; then
@@ -2859,6 +2951,117 @@ run_voice_menu() {
   exit 0
 }
 
+# ─── Voice settings popup (v0.15, cycle knobs) ───────────────
+# One popup for the optional knobs: TTS provider, playback target and
+# audio-retention days. Each key press cycles the value to the NEXT
+# entry of its table and persists it through config_set (managed-key
+# writer above). Values shown come from the live env the script sourced
+# from config.env at startup; changes reach NEW processes only.
+
+# Cycle tables: ordered, first element = the recommended default.
+SETTINGS_PROVIDERS=(edge openai elevenlabs piper kokoro) # edge first = gratuito, por defecto
+SETTINGS_TARGETS=(local winhost wsl-ps windows auto)
+SETTINGS_RETENTION=(0 1 3 7 14) # 0 = retención apagada
+
+# Print the NEXT value of a cycle table. Pure and fork-free (no subshell
+# spawns): safe to call per keypress. An unknown current value (user
+# hand-edited config) restarts at the first element.
+settings_cycle_value() { # <provider|target|retention> <current> → next value on stdout
+  local -a vals=()
+  local cur="$2" i n
+  case "$1" in
+    provider)  vals=("${SETTINGS_PROVIDERS[@]}") ;;
+    target)    vals=("${SETTINGS_TARGETS[@]}") ;;
+    retention) vals=("${SETTINGS_RETENTION[@]}") ;;
+    *) echo "settings_cycle_value: unknown key '${1}' (provider, target or retention)" >&2; return 1 ;;
+  esac
+  n=${#vals[@]}
+  for (( i = 0; i < n; i++ )); do
+    if [[ "${vals[i]}" == "$cur" ]]; then
+      printf '%s\n' "${vals[$(( (i + 1) % n ))]}"
+      return 0
+    fi
+  done
+  printf '%s\n' "${vals[0]}"
+}
+
+# ONE static frame, ONE physical write per render: same discipline as
+# menu_render (dashboard_term_size + _dash_add clamping reused verbatim,
+# frame buffered and written once). SETTINGS_WARN, when set, renders as
+# an inline warning row instead of a silent failure.
+settings_render() {
+  dashboard_term_size
+  local frame="" ret="${HERDR_TTS_AUDIO_RETENTION_DAYS:-0}"
+  _dash_add $'\e[1m⚙️  herdr-tts · Ajustes de voz y audio\e[0m'
+  _dash_add 'Pulsa la tecla del ajuste para ciclar su valor.'
+  _dash_add ''
+  _dash_add ' p  Proveedor TTS:        %s   (edge = gratuito, por defecto)' "$TTS_PROVIDER"
+  _dash_add ' d  Destino reproducción: %s' "$TTS_PLAYBACK"
+  _dash_add ' r  Audio retenido:       %s días   (0 = apagado)' "$ret"
+  _dash_add ''
+  if [[ -n "${SETTINGS_WARN:-}" ]]; then
+    _dash_add ' ⚠️  %s' "$SETTINGS_WARN"
+  fi
+  _dash_add ' Kokoro/Piper requieren instalar el modelo: agent-tts voice install <modelo>'
+  _dash_add ' Los cambios aplican a nuevos procesos; reinicia el daemon para que el watcher los herede.'
+  _dash_add ''
+  _dash_add ' q/Esc salir'
+  menu_cap_rows $(( DASH_LINES - 1 ))
+  printf '\033[H%s\033[J' "$frame"
+}
+
+# Popup entrypoint: render, read one key, cycle + persist + re-render.
+# q/Esc/Enter exit; EOF (no tty / closed pipe) exits fail-open. Every
+# change re-renders so the frame always reflects the persisted state;
+# a config_set failure keeps the old value and shows the warning inline.
+run_voice_settings() {
+  local key="" next=""
+  SETTINGS_WARN=""
+  while :; do
+    settings_render
+    # Clear AFTER the render: a warning set by the previous keypress is
+    # visible on exactly the render that reports it, then the frame goes
+    # back to clean while the next key is awaited.
+    SETTINGS_WARN=""
+    if ! read -rsn1 key; then
+      break # EOF: fail-open, nothing changed by us
+    fi
+    case "$key" in
+      q|Q|$'\e'|"")
+        break
+        ;;
+      p|P)
+        next="$(settings_cycle_value provider "$TTS_PROVIDER")"
+        if config_set TTS_PROVIDER "$next"; then
+          TTS_PROVIDER="$next"
+        else
+          SETTINGS_WARN="No se pudo guardar TTS_PROVIDER en config.env"
+        fi
+        ;;
+      d|D)
+        next="$(settings_cycle_value target "$TTS_PLAYBACK")"
+        if config_set TTS_PLAYBACK "$next"; then
+          TTS_PLAYBACK="$next"
+        else
+          SETTINGS_WARN="No se pudo guardar TTS_PLAYBACK en config.env"
+        fi
+        ;;
+      r|R)
+        next="$(settings_cycle_value retention "${HERDR_TTS_AUDIO_RETENTION_DAYS:-0}")"
+        if config_set HERDR_TTS_AUDIO_RETENTION_DAYS "$next"; then
+          HERDR_TTS_AUDIO_RETENTION_DAYS="$next"
+        else
+          SETTINGS_WARN="No se pudo guardar HERDR_TTS_AUDIO_RETENTION_DAYS en config.env"
+        fi
+        ;;
+      *)
+        SETTINGS_WARN="Tecla no reconocida (${key}) — p/d/r cicla un ajuste, q sale"
+        ;;
+    esac
+  done
+  exit 0
+}
+
 # ─── CLI Entrypoint ──────────────────────────────────────────
 
 # Library mode: when sourced (tests/tooling), only define functions and
@@ -2885,7 +3088,7 @@ run_voice_menu() {
 KEYMAP_COMMAND_IDS=(
   play pause stop tldr auto seek_back seek_fwd sentence_next sentence_prev
   paragraph_next paragraph_prev mute snooze snooze_global rate_up rate_down
-  dashboard palette menu
+  dashboard palette menu settings
 )
 
 # Herdr v0.9.1 core prefix defaults (docs/keyboard.mdx). Canonical chords
@@ -2954,7 +3157,8 @@ keymap_default_json() { # default template: README direct map + nulls for the re
     "rate_down": "prefix+-",
     "dashboard": null,
     "palette": null,
-    "menu": null
+    "menu": null,
+    "settings": "prefix+u"
   }
 }
 EOF
@@ -2981,6 +3185,7 @@ keymap_cmd_for() { # $1 = command id → shell invocation Herdr must run
     dashboard)       printf '%s\n' "herdr plugin pane open --plugin herdr.tts --entrypoint tts-dashboard" ;;
     palette)         printf '%s\n' "herdr plugin pane open --plugin herdr.tts --entrypoint tts-palette" ;;
     menu)            printf '%s\n' "herdr plugin pane open --plugin herdr.tts --entrypoint tts-menu" ;;
+    settings)        printf '%s\n' "herdr-tts --voice-settings" ;;
   esac
 }
 
@@ -3005,6 +3210,7 @@ keymap_label_for() { # $1 = command id → human label (emit comments)
     dashboard)       printf '%s\n' "Open the TTS dashboard popup" ;;
     palette)         printf '%s\n' "Open the voice palette popup" ;;
     menu)            printf '%s\n' "Open the one-key voice menu popup (u is free in Herdr core defaults)" ;;
+    settings)        printf '%s\n' "Open the voice/audio settings popup (TTS provider, playback target, audio retention)" ;;
   esac
 }
 
@@ -3027,6 +3233,7 @@ keymap_ctrlalt_for() { # $1 = command id → suggested ctrl+alt chord (rc 1 = no
     dashboard)       printf '%s\n' "ctrl+alt+d" ;;
     palette)         printf '%s\n' "ctrl+alt+o" ;;
     menu)            printf '%s\n' "ctrl+alt+u" ;;
+    settings)        printf '%s\n' "ctrl+alt+shift+u" ;;
     *)               return 1 ;;
   esac
 }
@@ -4094,6 +4301,9 @@ case "${1:-}" in
   --voice-menu)
     run_voice_menu
     ;;
+  --voice-settings)
+    run_voice_settings
+    ;;
   --palette-preview)
     palette_preview "${2:-}"
     ;;
@@ -4191,6 +4401,9 @@ Información:
     --voice-menu             Menú de voz de una sola tecla (popup): muestra los
                             comandos, lee una tecla, la ejecuta y se cierra
                             (suggested: prefix+u → action open-menu)
+    --voice-settings         Ajustes de voz y audio (popup, suggested prefix+u):
+                            cicla proveedor TTS, destino de reproducción y
+                            días de retención de audio (escribe config.env)
     --palette-preview <pane> Cabecera de chat + turnos de audio del pane (preview fzf)
 EOF
     ;;

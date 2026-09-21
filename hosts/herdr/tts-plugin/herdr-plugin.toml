@@ -171,3 +171,12 @@ id = "open-menu"
 title = "Open TTS Voice Menu (popup)"
 contexts = ["workspace"]
 command = ["herdr", "plugin", "pane", "open", "--plugin", "herdr.tts", "--entrypoint", "tts-menu"]
+
+# Voice/audio settings popup: cycles TTS provider, playback target and
+# audio-retention days. Each change goes through the managed config_set
+# writer (byte-preserving rewrite of config.env + .bak backup).
+[[actions]]
+id = "voice-settings"
+title = "Configuración de voz y audio"
+contexts = ["workspace", "pane"]
+command = ["bin/herdr-tts", "--voice-settings"]

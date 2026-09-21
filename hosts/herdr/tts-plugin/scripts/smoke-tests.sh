@@ -44,6 +44,13 @@
 #         retention 0 skips without spawn or stamp, a stale stamp (touch
 #         -d) re-arms the spawn, and a failing engine is logged once with
 #         the daemon loop unharmed
+#   25    settings popup: config_set managed-key writer (in-place replace,
+#         managed-block append, byte-for-byte unknown lines, .bak backup,
+#         unmanaged key + quote-in-value rejected, unwritable dir fail-open,
+#         missing file created sourceable), settings_cycle_value full-cycle
+#         wrap + unknown-current fallback per key, run_voice_settings with
+#         piped keys (frame + persisted config.env + re-render), and the
+#         --voice-settings dispatch smoke
 set -uo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -836,6 +843,9 @@ assert_grep "16g manifest declares tts-menu pane" 'id = "tts-menu"' "$REPO/herdr
 assert_grep "16g tts-menu runs --voice-menu" 'command = \["bin/herdr-tts", "--voice-menu"\]' "$REPO/herdr-plugin.toml"
 assert_grep "16g tts-menu popup is 60%x45%" 'width = "60%"' "$REPO/herdr-plugin.toml" -F
 assert_grep "16g open-menu action wired" '"--entrypoint", "tts-menu"' "$REPO/herdr-plugin.toml" -F
+assert_grep "16g manifest declares voice-settings action" 'id = "voice-settings"' "$REPO/herdr-plugin.toml" -F
+assert_grep "16g voice-settings runs --voice-settings" 'command = \["bin/herdr-tts", "--voice-settings"\]' "$REPO/herdr-plugin.toml"
+assert_grep "16g voice-settings title in Spanish" 'title = "Configuración de voz y audio"' "$REPO/herdr-plugin.toml" -F
 assert_grep "16g version bumped to 0.15.0" 'version = "0.15.0"' "$REPO/herdr-plugin.toml" -F
 assert_grep "16g README option 1 (menu, recommended)" '### Option 1 — Compact map \(recommended\)' "$REPO/README.md"
 assert_grep "16g README option 2 (ctrl+alt family)" '### Option 2 — ctrl\+alt family' "$REPO/README.md"
@@ -853,8 +863,8 @@ run_km() { timeout 10 "$SCRIPT" keymap "$@" > "$T/out.txt" 2>&1; }
 run_km init
 [[ $? -eq 0 ]] && ok "17a init exits rc=0" || bad "17a init rc!=0"
 [[ -f "$km" ]] && ok "17a keymap.json created" || bad "17a no keymap file"
-jq -e '.style == "direct" and (.bindings | length == 19)' "$km" >/dev/null \
-  && ok "17a template: style=direct, 19 stable command ids" || bad "17a template shape"
+jq -e '.style == "direct" and (.bindings | length == 20)' "$km" >/dev/null \
+  && ok "17a template: style=direct, 20 stable command ids" || bad "17a template shape"
 jq -e '.bindings.play == "prefix+r" and .bindings.snooze_global == "prefix+Z" and .bindings.menu == null' "$km" >/dev/null \
   && ok "17a template prefilled with README direct map (menu=null)" || bad "17a template prefill"
 cp "$km" "$T/km.bak"
@@ -883,8 +893,8 @@ run_km check --json
 [[ $? -eq 0 ]] && ok "17c check --json exits rc=0" || bad "17c check --json rc!=0"
 jq -e '.ok == true and .error_count == 0 and .warning_count >= 5' "$T/out.txt" >/dev/null \
   && ok "17c json: ok=true, 0 errors, ≥5 warnings" || bad "17c json summary fields"
-jq -e '(.bindings | length) == 19 and (.bindings[0].command == "play")' "$T/out.txt" >/dev/null \
-  && ok "17c json: 19 bindings, file order preserved" || bad "17c json bindings array"
+jq -e '(.bindings | length) == 20 and (.bindings[0].command == "play")' "$T/out.txt" >/dev/null \
+  && ok "17c json: 20 bindings, file order preserved" || bad "17c json bindings array"
 jq -e '.bindings[] | select(.command == "play" and .chord == "prefix+r" and .status == "warn" and .core == "resize pane")' "$T/out.txt" >/dev/null \
   && ok "17c json: play binding carries core=resize pane" || bad "17c json warn detail"
 jq -e '.bindings[] | select(.command == "menu" and .chord == null and .status == "ok")' "$T/out.txt" >/dev/null \
@@ -898,16 +908,17 @@ cp "$T/out.txt" "$T/emit-direct.toml"
 [[ $? -eq 0 ]] && ok "17d emit exits rc=0" || bad "17d emit rc!=0"
 assert_grep "17d header names the source file"  "^# source: $km \(modified " "$T/emit-direct.toml"
 python3 - "$T/emit-direct.toml" <<'PY' > "$T/py.out" 2>&1 \
-  && ok "17d output parses as TOML with 14 shell blocks" || { bad "17d TOML invalid"; cat "$T/py.out"; }
+  && ok "17d output parses as TOML with 15 shell blocks" || { bad "17d TOML invalid"; cat "$T/py.out"; }
 import sys, tomllib
 doc = tomllib.loads(open(sys.argv[1]).read())
 blocks = doc["keys"]["command"]
-assert len(blocks) == 14, f"want 14 blocks, got {len(blocks)}"
+assert len(blocks) == 15, f"want 15 blocks, got {len(blocks)}"
 assert all(b["type"] == "shell" for b in blocks)
 by_key = {b["key"]: b["command"] for b in blocks}
 assert by_key["prefix+r"] == "herdr-tts --toggle-play", by_key["prefix+r"]
 assert by_key["prefix+N"] == "herdr-tts --prev-sentence"
 assert by_key["prefix+Z"] == "herdr-tts --snooze-global"
+assert by_key["prefix+u"] == "herdr-tts --voice-settings", by_key["prefix+u"]
 PY
 
 # 17e. emit --style ctrlalt: suggested family, no ctrl+alt+t, valid TOML.
@@ -918,17 +929,18 @@ assert_no_grep_f "17e ctrl+alt+t never suggested as a key" 'key = "ctrl+alt+t"' 
 assert_grep "17e TL;DR lives on ctrl+alt+l"       'key = "ctrl\+alt\+l"' "$T/emit-ctrlalt.toml"
 assert_grep "17e caveat documented in output"      'ctrl\+alt\+t.*terminal' "$T/emit-ctrlalt.toml"
 python3 - "$T/emit-ctrlalt.toml" <<'PY' > "$T/py.out" 2>&1 \
-  && ok "17e ctrlalt TOML valid: 17 distinct chords" || { bad "17e TOML invalid"; cat "$T/py.out"; }
+  && ok "17e ctrlalt TOML valid: 18 distinct chords" || { bad "17e TOML invalid"; cat "$T/py.out"; }
 import sys, tomllib
 doc = tomllib.loads(open(sys.argv[1]).read())
 blocks = doc["keys"]["command"]
 keys = [b["key"] for b in blocks]
-assert len(blocks) == 17, f"want 17 blocks, got {len(blocks)}"
+assert len(blocks) == 18, f"want 18 blocks, got {len(blocks)}"
 assert len(set(keys)) == len(keys), "duplicate chords in suggested family"
 assert "ctrl+alt+shift+n" in keys
 by_key = dict(zip(keys, (b["command"] for b in blocks)))
 assert by_key["ctrl+alt+r"] == "herdr-tts --toggle-play"
 assert by_key["ctrl+alt+d"] == "herdr plugin pane open --plugin herdr.tts --entrypoint tts-dashboard"
+assert by_key["ctrl+alt+shift+u"] == "herdr-tts --voice-settings"
 PY
 
 # 17f. emit --style menu: one block, prefix+u → tts-menu popup.
@@ -958,7 +970,9 @@ run_km emit
 
 # 17h. duplicate chord → hard error on both rows.
 run_km init --force >/dev/null
-jq '.bindings.play = "prefix+u" | .bindings.stop = "prefix+u"' "$km" > "$T/km.tmp" && mv "$T/km.tmp" "$km"
+# settings owns prefix+u in the default template now — null it so the
+# collision below stays a clean two-way play/stop duplicate.
+jq '.bindings.play = "prefix+u" | .bindings.stop = "prefix+u" | .bindings.settings = null' "$km" > "$T/km.tmp" && mv "$T/km.tmp" "$km"
 run_km check
 [[ $? -ne 0 ]] && ok "17h duplicate chord rejected (rc!=0)" || bad "17h duplicate accepted"
 assert_grep "17h play flagged as duplicate"  "duplicate chord prefix\\+u \\(also bound by 'stop'\\)" "$T/out.txt"
@@ -1027,8 +1041,8 @@ run_km apply
 assert_grep "18a start marker present"  '^# >>> herdr-tts keymap \(managed; edits inside are overwritten\) >>>$' "$cfg"
 assert_grep "18a end marker present"    '^# <<< herdr-tts keymap <<<$' "$cfg"
 assert_grep "18a final hint: reload-config" 'herdr server reload-config' "$T/out.txt" -F
-[[ $(grep -c '^\[\[keys.command\]\]' "$cfg") -eq 14 ]] \
-  && ok "18a template apply renders 14 blocks" || bad "18a block count $(grep -c '^\[\[keys.command\]\]' "$cfg")"
+[[ $(grep -c '^\[\[keys.command\]\]' "$cfg") -eq 15 ]] \
+  && ok "18a template apply renders 15 blocks" || bad "18a block count $(grep -c '^\[\[keys.command\]\]' "$cfg")"
 run_km apply --config "$T/other-config.toml"
 [[ $? -eq 0 ]] && ok "18a --config override honored" || bad "18a --config rc"
 assert_grep "18a block written into override path" '^# >>> herdr-tts keymap' "$T/other-config.toml"
@@ -1051,12 +1065,12 @@ cmp -s "$T/head.out" "$T/user-only.toml" \
 [[ $(grep -cF '# >>> herdr-tts keymap' "$cfg") -eq 1 ]] \
   && ok "18b exactly one managed block" || bad "18b duplicate markers"
 python3 - "$cfg" <<'PY' > "$T/py.out" 2>&1 \
-  && ok "18b result parses as TOML: user keys intact + 14 shell blocks" || { bad "18b TOML invalid"; cat "$T/py.out"; }
+  && ok "18b result parses as TOML: user keys intact + 15 shell blocks" || { bad "18b TOML invalid"; cat "$T/py.out"; }
 import sys, tomllib
 doc = tomllib.loads(open(sys.argv[1]).read())
 assert doc["theme"] == "tokyonight" and doc["font"]["size"] == 11.0
 blocks = doc["keys"]["command"]
-assert len(blocks) == 14 and all(b["type"] == "shell" for b in blocks)
+assert len(blocks) == 15 and all(b["type"] == "shell" for b in blocks)
 by_key = {b["key"]: b["command"] for b in blocks}
 assert by_key["prefix+r"] == "herdr-tts --toggle-play"
 PY
@@ -1084,8 +1098,8 @@ printf '\n# my manual footer\ninjected = true\n' >> "$cfg"
 jq '.bindings.tldr = null' "$km" > "$T/km.tmp" && mv "$T/km.tmp" "$km"
 run_km apply
 [[ $? -eq 0 ]] && ok "18e apply after nulling tldr rc=0" || bad "18e rc"
-[[ $(grep -c '^\[\[keys.command\]\]' "$cfg") -eq 13 ]] \
-  && ok "18e tldr block removed (13 blocks)" || bad "18e block count"
+[[ $(grep -c '^\[\[keys.command\]\]' "$cfg") -eq 14 ]] \
+  && ok "18e tldr block removed (14 blocks)" || bad "18e block count"
 assert_no_grep_f "18e --tldr command gone from config" 'herdr-tts --tldr' "$cfg"
 assert_grep "18e user footer preserved" '^injected = true$' "$cfg"
 eline=$(grep -nF '# <<< herdr-tts keymap' "$cfg" | cut -d: -f1)
@@ -1179,8 +1193,8 @@ cmp -s "$km" "$T/km-direct.bak" && ok "18k already-adopted left file untouched" 
 run_km adopt --style ctrlalt
 [[ $? -eq 0 ]] && ok "18k adopt ctrlalt rc=0" || bad "18k rc"
 jq -e '.style == "ctrlalt"' "$km" >/dev/null && ok "18k style field updated" || bad "18k style"
-jq -e '[.bindings | to_entries[] | select(.value != null)] | length == 17' "$km" >/dev/null \
-  && ok "18k 17 non-null ctrlalt bindings" || bad "18k binding count"
+jq -e '[.bindings | to_entries[] | select(.value != null)] | length == 18' "$km" >/dev/null \
+  && ok "18k 18 non-null ctrlalt bindings" || bad "18k binding count"
 jq -e '.bindings.play == "ctrl+alt+r" and .bindings.tldr == "ctrl+alt+l" and .bindings.dashboard == "ctrl+alt+d"' "$km" >/dev/null \
   && ok "18k chords match the suggested family" || bad "18k chords"
 jq -e '.bindings.paragraph_next == null and .bindings.paragraph_prev == null' "$km" >/dev/null \
@@ -1448,6 +1462,122 @@ grep -qE '\[retención\].*(fall|Purga)' "$T/out24.txt" \
   && ok "24e failure logged (Spanish daemon-log line)" || bad "24e no failure log: $(cat "$T/out24.txt")"
 [[ -f "$STAMP24" ]] \
   && ok "24e failure still arms the hour gate (no retry storm)" || bad "24e stamp missing after failure"
+
+echo "── 25. settings popup: config_set writer, cycle tables, --voice-settings"
+new_env s25
+CONFIG_DIR_S25="$T/conf/herdr-tts"
+CONFIG_FILE="$CONFIG_DIR_S25/config.env" # mirrors the script's XDG default
+mkdir -p "$CONFIG_DIR_S25"
+
+# 25a. config_set: managed-key writer with byte-preserving rewrite.
+cat > "$CONFIG_FILE" <<'EOFX'
+# mi config a mano
+TTS_PROVIDER="openai"
+# comentario suelto
+TTS_PLAYBACK="wsl-ps"
+
+OPENAI_API_KEY="sk-test"
+EOFX
+cp "$CONFIG_FILE" "$T/before25a.env"
+lib_run '
+  r1=0; config_set TTS_PROVIDER kokoro || r1=$?
+  r2=0; config_set HERDR_TTS_AUDIO_RETENTION_DAYS 7 || r2=$?
+  r3=0; config_set NOT_MANAGED x >/dev/null 2>&1 || r3=$?
+  r4=0; config_set TTS_PROVIDER bad\"quote >/dev/null 2>&1 || r4=$?
+  echo "r1=$r1 r2=$r2 r3=$r3 r4=$r4"
+' > "$T/out.txt"
+assert_grep "25a managed updates accepted, rejections rc 1" '^r1=0 r2=0 r3=1 r4=1$' "$T/out.txt"
+cat > "$T/expected25a.env" <<'EOFX'
+# mi config a mano
+TTS_PROVIDER="kokoro"
+# comentario suelto
+TTS_PLAYBACK="wsl-ps"
+
+OPENAI_API_KEY="sk-test"
+
+# >>> herdr-tts settings (managed by the settings popup) >>>
+HERDR_TTS_AUDIO_RETENTION_DAYS="7"
+# <<< herdr-tts settings <<<
+EOFX
+cmp -s "$CONFIG_FILE" "$T/expected25a.env" \
+  && ok "25a unknown lines/comments byte-identical, key replaced in place, block appended" \
+  || bad "25a config.env drifted from the expected rewrite"
+cmp -s "$CONFIG_FILE.bak" "$T/before25a.env" \
+  && ok "25a .bak holds the previous version" || bad "25a .bak missing or wrong content"
+bash -c 'source "$1" >/dev/null 2>&1 && printf "src:%s|%s\n" "$TTS_PROVIDER" "$HERDR_TTS_AUDIO_RETENTION_DAYS"' \
+  _ "$CONFIG_FILE" > "$T/out.txt"
+assert_grep "25a rewritten file stays bash-sourceable" '^src:kokoro|7$' "$T/out.txt"
+# Fail-open: unwritable config directory → rc 1 + English stderr warning, no crash.
+chmod 500 "$CONFIG_DIR_S25"
+/bin/bash "$LIBRUN" "$SCRIPT" 'r=0; config_set TTS_PROVIDER edge 2>"$T/ro25.err" || r=$?; echo "ro_rc=$r"' > "$T/out.txt"
+chmod 755 "$CONFIG_DIR_S25"
+assert_grep "25a unwritable dir → rc 1 (fail-open)" '^ro_rc=1$' "$T/out.txt"
+assert_grep "25a unwritable dir → English stderr warning" 'not writable' "$T/ro25.err"
+
+# 25b. settings_cycle_value: full-cycle wrap + unknown-current fallback.
+lib_run '
+  k=edge; line="provider:$k"
+  for i in 1 2 3 4 5 6; do k=$(settings_cycle_value provider "$k"); line+=">$k"; done
+  echo "$line"
+  echo "provider_unknown:$(settings_cycle_value provider weird)"
+  k=local; line="target:$k"
+  for i in 1 2 3 4 5 6; do k=$(settings_cycle_value target "$k"); line+=">$k"; done
+  echo "$line"
+  echo "target_unknown:$(settings_cycle_value target notamode)"
+  k=0; line="retention:$k"
+  for i in 1 2 3 4 5 6; do k=$(settings_cycle_value retention "$k"); line+=">$k"; done
+  echo "$line"
+  echo "retention_unknown:$(settings_cycle_value retention 9)"
+' > "$T/out.txt"
+assert_grep "25b provider cycles with wrap" '^provider:edge>openai>elevenlabs>piper>kokoro>edge>openai$' "$T/out.txt"
+assert_grep "25b unknown provider current → first element" '^provider_unknown:edge$' "$T/out.txt"
+assert_grep "25b target cycles with wrap" '^target:local>winhost>wsl-ps>windows>auto>local>winhost$' "$T/out.txt"
+assert_grep "25b unknown target current → first element" '^target_unknown:local$' "$T/out.txt"
+assert_grep "25b retention cycles with wrap" '^retention:0>1>3>7>14>0>1$' "$T/out.txt"
+assert_grep "25b unknown retention current → first element" '^retention_unknown:0$' "$T/out.txt"
+
+# 25c. run_voice_settings with piped keys: frame renders, values cycle,
+#      config.env persists, every change re-renders (one H-move each).
+printf 'prq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "25c settings popup exited rc=0" || bad "25c rc!=0"
+assert_grep "25c frame renders in Spanish" 'Ajustes de voz y audio' "$T/out.txt"
+hv=$(esc_count "$T/out.txt" $'\033[H')
+[[ "$hv" -eq 3 ]] && ok "25c initial render + 2 change re-renders ($hv H-moves)" || bad "25c H-moves=$hv (want 3)"
+grep -q 'TTS_PROVIDER="edge"' "$CONFIG_FILE" \
+  && ok "25c p cycled provider kokoro→edge into config.env" || bad "25c provider not persisted"
+grep -q 'HERDR_TTS_AUDIO_RETENTION_DAYS="14"' "$CONFIG_FILE" \
+  && ok "25c r cycled retention 7→14 in place" || bad "25c retention not persisted"
+grep -q 'TTS_PLAYBACK="wsl-ps"' "$CONFIG_FILE" \
+  && ok "25c untouched knob survives popup writes" || bad "25c playback knob mutated"
+# q-only run: one render, no re-render, file untouched.
+printf 'q' | timeout 10 "$SCRIPT" --voice-settings > "$T/out2.txt" 2>>"$T/err.log"
+hv=$(esc_count "$T/out2.txt" $'\033[H')
+[[ "$hv" -eq 1 ]] && ok "25c q exits after a single render ($hv H-move)" || bad "25c q H-moves=$hv (want 1)"
+# Unknown key → warning rendered inline on the re-render, then q exits.
+printf '@q' | timeout 10 "$SCRIPT" --voice-settings > "$T/out3.txt" 2>>"$T/err.log"
+assert_grep "25c unknown key shows the warning inline" 'Tecla no reconocida' "$T/out3.txt"
+
+# 25d. --voice-settings dispatch smoke: the flag runs the popup (a daemon
+#      start would hang and hit the timeout instead of exiting rc 0).
+timeout 10 "$SCRIPT" --voice-settings </dev/null > "$T/out.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "25d --voice-settings dispatch exits rc=0 (EOF fail-open)" || bad "25d rc!=0"
+assert_grep "25d dispatch renders the settings frame" 'Ajustes de voz y audio' "$T/out.txt"
+hv=$(esc_count "$T/out.txt" $'\033[H')
+[[ "$hv" -eq 1 ]] && ok "25d EOF path renders exactly once ($hv H-move)" || bad "25d H-moves=$hv (want 1)"
+sed -n '/--voice-settings)/,/;;/p' "$SCRIPT" | grep -q 'run_voice_settings' \
+  && ok "25d argparse case wires --voice-settings → run_voice_settings" || bad "25d no dispatch wiring"
+
+# 25e. config.env without the file → created and bash-sourceable.
+rm -f "$CONFIG_FILE" "$CONFIG_FILE.bak"
+lib_run '
+  r=0; config_set TTS_PLAYBACK auto || r=$?
+  echo "create_rc=$r"
+  if bash -n "$CONFIG_FILE" 2>/dev/null; then echo "syntax-ok"; else echo "syntax-bad"; fi
+' > "$T/out.txt"
+assert_grep "25e config_set creates a missing config.env (rc 0)" '^create_rc=0$' "$T/out.txt"
+assert_grep "25e created file passes bash -n" '^syntax-ok$' "$T/out.txt"
+bash -c 'source "$1" >/dev/null 2>&1 && printf "src:%s\n" "$TTS_PLAYBACK"' _ "$CONFIG_FILE" > "$T/out.txt"
+assert_grep "25e created file sources with the written value" '^src:auto$' "$T/out.txt"
 
 echo
 echo "═══ RESULT: $PASS passed, $FAIL failed ═══"
