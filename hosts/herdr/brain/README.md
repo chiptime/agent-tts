@@ -86,6 +86,14 @@ curl -s localhost:8741/herd
 #     "cwd":"/repo","session_id":"ses_…","focused":true,
 #     "last_turn":{"role":"assistant","text":"…"}}, …]
 
+# live announcements (SSE): transitions into done/blocked
+curl -N localhost:8741/events
+# → : connected
+# → data: {"type":"transition","pane_id":"w1:p2","agent":"opencode","status":"done",
+#          "label":"opencode repo","text":"opencode repo terminó: Migración aplicada",
+#          "audio_url":"/audio/ann-<hex>.mp3"}
+
+
 curl -s "localhost:8741/view?pane_id=w1:p2"   # any herd member (default: focused)
 # → {"status": {…same as /state…},
 #     "transcript": [{"role":"user","text":"…"},{"role":"assistant","text":"…"}],
@@ -117,6 +125,31 @@ that is refreshed each turn and never stored in history. When the pending
 detector fires, the block ends with an `ATTENTION: …` line. Follow-ups like
 "¿y qué más?" resolve against prior turns; `POST /reset` (or `reset: true`
 on `/ask`) starts fresh.
+
+### Announcements ("the call tells you when an agent finishes or needs you")
+
+A background watcher polls the agent list every ~4s and announces
+**transitions into `done` or `blocked`** over `GET /events` (Server-Sent
+Events). Design choices:
+
+- **Digests, not streaming**: template-based text (no LLM call — instant and
+  free), at most two short speakable sentences. `done` uses the first
+  sentence of the agent's latest transcript turn (or first screen line);
+  `blocked` prefers the pending excerpt. Fallback: "sin detalle disponible".
+- **Boot silence**: the first poll snapshots state as a baseline —
+  pre-existing agents are never announced.
+- **Debounce**: the same pane+status is not re-announced within 60 s.
+- **Text never blocks on TTS**: the mp3 renders best-effort; on failure the
+  event still arrives with `audio_url: null`. Announcement files (`ann-*.mp3`)
+  are garbage-collected after ~1 h.
+- Transitions into `idle` are intentionally not announced in v1.
+
+On the PWA, the **Call tap** opens the EventSource (the user gesture unlocks
+autoplay); announcements queue behind any in-flight audio and play through
+the same element with a toast showing the digest. The speaker toggle mutes
+announcement audio only (a silent toast still appears); chat answers always
+play. Install note: if the phone never plays announcements, tap Call once
+after reload — browsers require one gesture per session before autoplay.
 
 ### Pending-action detection (heuristic)
 
