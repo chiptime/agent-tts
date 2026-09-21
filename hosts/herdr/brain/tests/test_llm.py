@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from herdr_brain.config import Settings
+from herdr_brain.herdr import AgentInfo
 from herdr_brain.llm import SYSTEM_PROMPT, BrainLLM, BrainLLMError
 from herdr_brain.memory import ConversationStore
 from herdr_brain.tools import BrainTools
@@ -245,6 +246,36 @@ class TestConversationMemory:
 
         llm, _ = make_brain(settings, make_stub(), responses=[text_response("hi")])
         assert llm.ask("hello")["session_id"] == DEFAULT_SESSION
+
+
+class TestPendingHint:
+    def test_attention_line_when_screen_asks_permission(self, settings, make_stub, active_agent):
+        stub = make_stub(screen="Do you want to allow this? (y/n)")
+        llm, _ = make_brain(settings, stub, responses=[text_response("ok")])
+        llm.ask("cual es el estado?")
+        system = llm._client.create_kwargs[0]["messages"][0]["content"]
+        assert "ATTENTION" in system
+        assert "pending permission" in system
+        assert "Do you want to allow this?" in system
+
+    def test_blocked_status_hint_even_without_text_match(self, settings, make_stub, active_agent):
+        blocked = AgentInfo(**{**active_agent.__dict__, "status": "blocked"})
+        stub = make_stub(agents=[blocked], screen="Press any key")
+        llm, _ = make_brain(settings, stub, responses=[text_response("ok")])
+        llm.ask("estado")
+        system = llm._client.create_kwargs[0]["messages"][0]["content"]
+        assert "the agent is BLOCKED" in system
+
+    def test_no_attention_when_all_quiet(self, settings, make_stub):
+        llm, _ = make_brain(settings, make_stub(), responses=[text_response("ok")])
+        llm.ask("estado")
+        system = llm._client.create_kwargs[0]["messages"][0]["content"]
+        assert "ATTENTION" not in system
+
+    def test_read_before_confirm_rule_in_static_prompt(self):
+        assert "Never send a blind yes" in SYSTEM_PROMPT
+        assert "FIRST read_screen" in SYSTEM_PROMPT
+        assert "surface it to the user proactively" in SYSTEM_PROMPT
 
 
 class TestLoopRobustness:
