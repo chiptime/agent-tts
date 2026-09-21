@@ -20,10 +20,14 @@
 #         only on rows whose stored file exists
 #   16    voice menu: dispatch map (stub-verified, one key = one existing
 #         function), single-write frame, quit/Esc/unknown/EOF paths,
-#         width+height clamp reuse, manifest/README wiring
+#         width+height clamp reuse, manifest/README wiring, two views
+#         (`a` opens the settings view inside the menu, `q` returns to
+#         the main frame, provider cycle persists into a hermetic
+#         config.env via HERDR_TTS_CONFIG_FILE)
 #   17    keymap: init (template, no-overwrite, --force), check (core
 #         shadow warnings, --json), emit (direct/ctrlalt/menu TOML),
 #         invalid ids/chords/duplicates rejected, missing file actionable
+#         (settings ships UNASSIGNED: it lives inside the voice menu)
 #   18    keymap apply / adopt: managed block into a fixture config.toml
 #         (user content byte-identical, in-place replace, lockstep with
 #         emit), idempotent re-apply, null-binding removal, backups
@@ -855,6 +859,27 @@ assert_grep "16g README option 3 (direct map + conflicts)" '### Option 3 — Dir
 assert_grep "16g README binds prefix+u to the menu" '"prefix+u"' "$REPO/README.md" -F
 assert_grep "16g README documents the ctrl+alt+t caveat" 'ctrl\+alt\+t` launches a terminal' "$REPO/README.md"
 
+# 16h. Two-view menu: `a` opens the settings view INSIDE the menu, `p`
+#      cycles the provider into a hermetic config.env (HERDR_TTS_CONFIG_FILE
+#      override, same convention as HERDR_TTS_KEYMAP_FILE), `q` returns to
+#      the main frame (re-render, NOT exit) and the second `q` exits rc 0.
+new_env s16h
+FX="$T/fixture.json"; make_fixture "$FX"
+write_herdr_stub "$FX"
+export HERDR_TTS_CONFIG_FILE="$T/config.env"
+printf 'apqq' | timeout 10 "$SCRIPT" --voice-menu > "$T/out.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "16h two-view menu exits rc=0 on the final q" || bad "16h rc!=0"
+hv=$(esc_count "$T/out.txt" $'\033[H')
+[[ "$hv" -eq 4 ]] && ok "16h 4 frame writes: main, settings, re-render, main again ($hv)" || bad "16h H-moves=$hv (want 4)"
+[[ $(grep -cF '· Menú de voz' "$T/out.txt") -eq 2 ]] \
+  && ok "16h q returns to the MAIN frame (re-rendered, not exit)" || bad "16h main frame count $(grep -cF '· Menú de voz' "$T/out.txt")"
+[[ $(grep -cF '· Ajustes de voz y audio' "$T/out.txt") -eq 2 ]] \
+  && ok "16h a opens the settings view (+1 re-render after p)" || bad "16h settings frame count $(grep -cF '· Ajustes de voz y audio' "$T/out.txt")"
+grep -q 'TTS_PROVIDER="openai"' "$HERDR_TTS_CONFIG_FILE" \
+  && ok "16h p cycled provider edge→openai into config.env" || bad "16h provider not persisted"
+assert_no_grep "16h a/p/q path fires no action" '✓|Tecla no reconocida' "$T/out.txt"
+unset HERDR_TTS_CONFIG_FILE # scenario 25 derives CONFIG_FILE from the XDG paths
+
 echo "── 17. keymap: init / check / emit (declarative, conflict-checked)"
 new_env s17
 export HERDR_TTS_KEYMAP_FILE="$T/keymap.json"
@@ -910,17 +935,17 @@ cp "$T/out.txt" "$T/emit-direct.toml"
 [[ $? -eq 0 ]] && ok "17d emit exits rc=0" || bad "17d emit rc!=0"
 assert_grep "17d header names the source file"  "^# source: $km \(modified " "$T/emit-direct.toml"
 python3 - "$T/emit-direct.toml" <<'PY' > "$T/py.out" 2>&1 \
-  && ok "17d output parses as TOML with 15 shell blocks" || { bad "17d TOML invalid"; cat "$T/py.out"; }
+  && ok "17d output parses as TOML with 14 shell blocks" || { bad "17d TOML invalid"; cat "$T/py.out"; }
 import sys, tomllib
 doc = tomllib.loads(open(sys.argv[1]).read())
 blocks = doc["keys"]["command"]
-assert len(blocks) == 15, f"want 15 blocks, got {len(blocks)}"
+assert len(blocks) == 14, f"want 14 blocks, got {len(blocks)}"
 assert all(b["type"] == "shell" for b in blocks)
 by_key = {b["key"]: b["command"] for b in blocks}
 assert by_key["prefix+r"] == "herdr-tts --toggle-play", by_key["prefix+r"]
 assert by_key["prefix+N"] == "herdr-tts --prev-sentence"
 assert by_key["prefix+Z"] == "herdr-tts --snooze-global"
-assert by_key["prefix+u"] == "herdr-tts --voice-settings", by_key["prefix+u"]
+assert "prefix+u" not in by_key, "settings ships unassigned (lives inside the voice menu)"
 PY
 
 # 17e. emit --style ctrlalt: suggested family, no ctrl+alt+t, valid TOML.
@@ -931,18 +956,18 @@ assert_no_grep_f "17e ctrl+alt+t never suggested as a key" 'key = "ctrl+alt+t"' 
 assert_grep "17e TL;DR lives on ctrl+alt+l"       'key = "ctrl\+alt\+l"' "$T/emit-ctrlalt.toml"
 assert_grep "17e caveat documented in output"      'ctrl\+alt\+t.*terminal' "$T/emit-ctrlalt.toml"
 python3 - "$T/emit-ctrlalt.toml" <<'PY' > "$T/py.out" 2>&1 \
-  && ok "17e ctrlalt TOML valid: 18 distinct chords" || { bad "17e TOML invalid"; cat "$T/py.out"; }
+  && ok "17e ctrlalt TOML valid: 17 distinct chords" || { bad "17e TOML invalid"; cat "$T/py.out"; }
 import sys, tomllib
 doc = tomllib.loads(open(sys.argv[1]).read())
 blocks = doc["keys"]["command"]
 keys = [b["key"] for b in blocks]
-assert len(blocks) == 18, f"want 18 blocks, got {len(blocks)}"
+assert len(blocks) == 17, f"want 17 blocks, got {len(blocks)}"
 assert len(set(keys)) == len(keys), "duplicate chords in suggested family"
 assert "ctrl+alt+shift+n" in keys
+assert "ctrl+alt+shift+u" not in keys, "settings has no suggested ctrl+alt chord anymore"
 by_key = dict(zip(keys, (b["command"] for b in blocks)))
 assert by_key["ctrl+alt+r"] == "herdr-tts --toggle-play"
 assert by_key["ctrl+alt+d"] == "herdr plugin pane open --plugin herdr.tts --entrypoint tts-dashboard"
-assert by_key["ctrl+alt+shift+u"] == "herdr-tts --voice-settings"
 PY
 
 # 17f. emit --style menu: one block, prefix+u → tts-menu popup.
@@ -972,9 +997,9 @@ run_km emit
 
 # 17h. duplicate chord → hard error on both rows.
 run_km init --force >/dev/null
-# settings owns prefix+u in the default template now — null it so the
-# collision below stays a clean two-way play/stop duplicate.
-jq '.bindings.play = "prefix+u" | .bindings.stop = "prefix+u" | .bindings.settings = null' "$km" > "$T/km.tmp" && mv "$T/km.tmp" "$km"
+# settings is null in the default template since it moved inside the voice
+# menu, so the collision below is already a clean two-way play/stop duplicate.
+jq '.bindings.play = "prefix+u" | .bindings.stop = "prefix+u"' "$km" > "$T/km.tmp" && mv "$T/km.tmp" "$km"
 run_km check
 [[ $? -ne 0 ]] && ok "17h duplicate chord rejected (rc!=0)" || bad "17h duplicate accepted"
 assert_grep "17h play flagged as duplicate"  "duplicate chord prefix\\+u \\(also bound by 'stop'\\)" "$T/out.txt"
@@ -1043,8 +1068,8 @@ run_km apply
 assert_grep "18a start marker present"  '^# >>> herdr-tts keymap \(managed; edits inside are overwritten\) >>>$' "$cfg"
 assert_grep "18a end marker present"    '^# <<< herdr-tts keymap <<<$' "$cfg"
 assert_grep "18a final hint: reload-config" 'herdr server reload-config' "$T/out.txt" -F
-[[ $(grep -c '^\[\[keys.command\]\]' "$cfg") -eq 15 ]] \
-  && ok "18a template apply renders 15 blocks" || bad "18a block count $(grep -c '^\[\[keys.command\]\]' "$cfg")"
+[[ $(grep -c '^\[\[keys.command\]\]' "$cfg") -eq 14 ]] \
+  && ok "18a template apply renders 14 blocks" || bad "18a block count $(grep -c '^\[\[keys.command\]\]' "$cfg")"
 run_km apply --config "$T/other-config.toml"
 [[ $? -eq 0 ]] && ok "18a --config override honored" || bad "18a --config rc"
 assert_grep "18a block written into override path" '^# >>> herdr-tts keymap' "$T/other-config.toml"
@@ -1067,12 +1092,12 @@ cmp -s "$T/head.out" "$T/user-only.toml" \
 [[ $(grep -cF '# >>> herdr-tts keymap' "$cfg") -eq 1 ]] \
   && ok "18b exactly one managed block" || bad "18b duplicate markers"
 python3 - "$cfg" <<'PY' > "$T/py.out" 2>&1 \
-  && ok "18b result parses as TOML: user keys intact + 15 shell blocks" || { bad "18b TOML invalid"; cat "$T/py.out"; }
+  && ok "18b result parses as TOML: user keys intact + 14 shell blocks" || { bad "18b TOML invalid"; cat "$T/py.out"; }
 import sys, tomllib
 doc = tomllib.loads(open(sys.argv[1]).read())
 assert doc["theme"] == "tokyonight" and doc["font"]["size"] == 11.0
 blocks = doc["keys"]["command"]
-assert len(blocks) == 15 and all(b["type"] == "shell" for b in blocks)
+assert len(blocks) == 14 and all(b["type"] == "shell" for b in blocks)
 by_key = {b["key"]: b["command"] for b in blocks}
 assert by_key["prefix+r"] == "herdr-tts --toggle-play"
 PY
@@ -1100,8 +1125,8 @@ printf '\n# my manual footer\ninjected = true\n' >> "$cfg"
 jq '.bindings.tldr = null' "$km" > "$T/km.tmp" && mv "$T/km.tmp" "$km"
 run_km apply
 [[ $? -eq 0 ]] && ok "18e apply after nulling tldr rc=0" || bad "18e rc"
-[[ $(grep -c '^\[\[keys.command\]\]' "$cfg") -eq 14 ]] \
-  && ok "18e tldr block removed (14 blocks)" || bad "18e block count"
+[[ $(grep -c '^\[\[keys.command\]\]' "$cfg") -eq 13 ]] \
+  && ok "18e tldr block removed (13 blocks)" || bad "18e block count"
 assert_no_grep_f "18e --tldr command gone from config" 'herdr-tts --tldr' "$cfg"
 assert_grep "18e user footer preserved" '^injected = true$' "$cfg"
 eline=$(grep -nF '# <<< herdr-tts keymap' "$cfg" | cut -d: -f1)
@@ -1195,8 +1220,8 @@ cmp -s "$km" "$T/km-direct.bak" && ok "18k already-adopted left file untouched" 
 run_km adopt --style ctrlalt
 [[ $? -eq 0 ]] && ok "18k adopt ctrlalt rc=0" || bad "18k rc"
 jq -e '.style == "ctrlalt"' "$km" >/dev/null && ok "18k style field updated" || bad "18k style"
-jq -e '[.bindings | to_entries[] | select(.value != null)] | length == 18' "$km" >/dev/null \
-  && ok "18k 18 non-null ctrlalt bindings" || bad "18k binding count"
+jq -e '[.bindings | to_entries[] | select(.value != null)] | length == 17' "$km" >/dev/null \
+  && ok "18k 17 non-null ctrlalt bindings (settings has no suggested chord)" || bad "18k binding count"
 jq -e '.bindings.play == "ctrl+alt+r" and .bindings.tldr == "ctrl+alt+l" and .bindings.dashboard == "ctrl+alt+d"' "$km" >/dev/null \
   && ok "18k chords match the suggested family" || bad "18k chords"
 jq -e '.bindings.paragraph_next == null and .bindings.paragraph_prev == null' "$km" >/dev/null \

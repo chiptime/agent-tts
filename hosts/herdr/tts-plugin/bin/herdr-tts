@@ -18,7 +18,8 @@ DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/herdr-tts"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/herdr-tts"
 mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$STATE_DIR"
 
-CONFIG_FILE="${CONFIG_DIR}/config.env"
+# Managed settings store (config.env). Env override keeps tests hermetic.
+CONFIG_FILE="${HERDR_TTS_CONFIG_FILE:-${CONFIG_DIR}/config.env}"
 AUTO_MUTE_FILE="${CONFIG_DIR}/auto_muted"
 LOCK_FILE="/tmp/herdr-tts-playing.lock"
 PID_FILE="/tmp/herdr-tts-current.pid"
@@ -2835,7 +2836,8 @@ palette_preview() { # <pane_id>
 # dashboard already use (no explicit pane id → focused pane, the same
 # default as --mute-pane / --snooze-pane). Herdr closes a popup when
 # its command exits, so one key = one action = popup closes = focus
-# restored.
+# restored. v0.15: the settings popup lives INSIDE the menu as a second
+# view (key `a`), so the settings never spend a core chord of their own.
 
 MENU_CONFIRM_SECS="${HERDR_TTS_MENU_CONFIRM_SECS:-1.5}"
 [[ "$MENU_CONFIRM_SECS" =~ ^[0-9]+([.][0-9]+)?$ ]] || MENU_CONFIRM_SECS=1.5
@@ -2845,8 +2847,8 @@ MENU_CONFIRM_SECS="${HERDR_TTS_MENU_CONFIRM_SECS:-1.5}"
 # costs nothing and is always a single physical write.
 MENU_L_KEYS=("r" "p" "s" "t" "v" "[" "]" "n" "N")
 MENU_L_DESC=("▶ Play / Stop del chat enfocado" "⏸ Pausar / Reanudar" "⏹ Stop inmediato" "⚡ TL;DR del chat" "🔊 Auto-lectura on/off" "⏪ Rebobinar 10s" "⏩ Avanzar 10s" "⏭ Frase siguiente" "⏮ Frase anterior")
-MENU_R_KEYS=("m" "z" "Z" "+/-" "d" "o" "q/Esc")
-MENU_R_DESC=("🔇 Mute pane" "😴 Snooze pane" "😴 Snooze GLOBAL" "🎙 Velocidad ±10%" "📊 Dashboard" "🎛️ Paleta de voz" "Salir del menú")
+MENU_R_KEYS=("m" "z" "Z" "+/-" "d" "o" "a" "q/Esc")
+MENU_R_DESC=("🔇 Mute pane" "😴 Snooze pane" "😴 Snooze GLOBAL" "🎙 Velocidad ±10%" "📊 Dashboard" "🎛️ Paleta de voz" "⚙️ Ajustes de voz y audio" "Salir del menú")
 
 # Height cap: keep at most <max-rows> lines of the buffered frame, the
 # same LINES-1 discipline the dashboard render enforces.
@@ -2872,7 +2874,7 @@ menu_render() {
   half=$(( DASH_COLS / 2 - 2 ))
   (( half < 20 )) && half=20
   _dash_add $'\e[1m⌨️  herdr-tts · Menú de voz\e[0m'
-  _dash_add 'Pulsa UNA tecla: la acción se ejecuta y el menú se cierra solo.'
+  _dash_add 'Pulsa UNA tecla: la acción se ejecuta y el menú se cierra (a = ajustes, sin cerrar).'
   _dash_add ''
   for (( i = 0; i < ${#MENU_L_KEYS[@]} || i < ${#MENU_R_KEYS[@]}; i++ )); do
     kl="${MENU_L_KEYS[i]:-}"; dl="${MENU_L_DESC[i]:-}"
@@ -2922,33 +2924,58 @@ menu_dispatch() { # <key>
   return 0
 }
 
-# Popup entrypoint: render once, read ONE key, confirm briefly, exit.
-# The ~1.5s dwell lets the confirmation be read; Herdr then closes the
-# popup and restores focus. Fail-open: EOF / read failure (no tty,
-# closed pipe) → exit 0 silently. q/Esc exits without a message. Note:
-# an arrow key sends its ESC prefix byte first, so it quits the menu —
-# deliberate, matching the dashboard's "ignore exotic input" stance.
+# Popup entrypoint: a two-view input loop. The MAIN view renders once,
+# reads ONE key and confirms briefly: one key = one action = popup closes
+# = focus restored (the ~1.5s dwell lets the confirmation be read).
+# Pressing `a` switches to the SETTINGS view (the same frame the
+# standalone settings popup renders): p/d/r cycle + persist a knob, and
+# q/Esc/Enter returns to the MAIN view — a re-render, not an exit.
+# Fail-open: EOF / read failure (no tty, closed pipe) → exit 0 silently
+# from either view. q/Esc in the main view exits without a message.
+# Note: an arrow key sends its ESC prefix byte first, so it quits the
+# menu — deliberate, matching the dashboard's "ignore exotic input" stance.
 run_voice_menu() {
-  local key=""
-  menu_render # one static frame, one physical write — then a single read
-  if ! read -rsn1 key; then
-    exit 0
-  fi
-  case "$key" in
-    q|Q|$'\e')
-      ;; # silent exit
-    *)
-      if menu_dispatch "$key"; then
-        # Leading newline: the frame write leaves the cursor right after
-        # the last row, so the confirmation must claim a fresh line.
-        printf '\n✓ %s\n' "$MENU_RESULT"
-      else
-        printf '\n❓ Tecla no reconocida (%s) — pulsa q para salir\n' "$key"
+  local key="" view="main"
+  while :; do
+    if [[ "$view" == "settings" ]]; then
+      settings_render
+      # Clear AFTER the render: a warning set by the previous keypress is
+      # visible on exactly the render that reports it (same discipline as
+      # the standalone settings popup).
+      SETTINGS_WARN=""
+      if ! read -rsn1 key; then
+        exit 0 # EOF: fail-open, nothing changed by us
       fi
-      sleep "$MENU_CONFIRM_SECS"
-      ;;
-  esac
-  exit 0
+      if settings_handle_key "$key"; then
+        continue # re-render with the new value (or the inline warning)
+      fi
+      view="main" # q / Esc / Enter → back to the main view, still inside the popup
+      continue
+    fi
+    menu_render # one static frame, one physical write — then a single read
+    if ! read -rsn1 key; then
+      exit 0
+    fi
+    case "$key" in
+      q|Q|$'\e')
+        exit 0 # silent exit
+        ;;
+      a|A)
+        view="settings" # Ajustes live inside the menu: no extra chord spent
+        ;;
+      *)
+        if menu_dispatch "$key"; then
+          # Leading newline: the frame write leaves the cursor right after
+          # the last row, so the confirmation must claim a fresh line.
+          printf '\n✓ %s\n' "$MENU_RESULT"
+        else
+          printf '\n❓ Tecla no reconocida (%s) — pulsa q para salir\n' "$key"
+        fi
+        sleep "$MENU_CONFIRM_SECS"
+        exit 0 # one key = one action = popup closes
+        ;;
+    esac
+  done
 }
 
 # ─── Voice settings popup (v0.15, cycle knobs) ───────────────
@@ -2985,6 +3012,50 @@ settings_cycle_value() { # <provider|target|retention> <current> → next value 
   printf '%s\n' "${vals[0]}"
 }
 
+# One settings keypress, shared by the standalone popup (run_voice_settings)
+# and the settings view inside run_voice_menu: cycles the matching knob to
+# the NEXT value of its table, persists it through config_set and updates
+# the live env; a write failure keeps the old value and sets SETTINGS_WARN
+# (rendered inline by the next frame), as does an unrecognized key.
+# Returns 1 when the key closes the view (q / Esc / Enter); any other key
+# returns 0 so the caller re-renders.
+settings_handle_key() { # <key>
+  local key="$1" next=""
+  case "$key" in
+    q|Q|$'\e'|"")
+      return 1
+      ;;
+    p|P)
+      next="$(settings_cycle_value provider "$TTS_PROVIDER")"
+      if config_set TTS_PROVIDER "$next"; then
+        TTS_PROVIDER="$next"
+      else
+        SETTINGS_WARN="No se pudo guardar TTS_PROVIDER en config.env"
+      fi
+      ;;
+    d|D)
+      next="$(settings_cycle_value target "$TTS_PLAYBACK")"
+      if config_set TTS_PLAYBACK "$next"; then
+        TTS_PLAYBACK="$next"
+      else
+        SETTINGS_WARN="No se pudo guardar TTS_PLAYBACK en config.env"
+      fi
+      ;;
+    r|R)
+      next="$(settings_cycle_value retention "${HERDR_TTS_AUDIO_RETENTION_DAYS:-0}")"
+      if config_set HERDR_TTS_AUDIO_RETENTION_DAYS "$next"; then
+        HERDR_TTS_AUDIO_RETENTION_DAYS="$next"
+      else
+        SETTINGS_WARN="No se pudo guardar HERDR_TTS_AUDIO_RETENTION_DAYS en config.env"
+      fi
+      ;;
+    *)
+      SETTINGS_WARN="Tecla no reconocida (${key}) — p/d/r cicla un ajuste, q sale"
+      ;;
+  esac
+  return 0
+}
+
 # ONE static frame, ONE physical write per render: same discipline as
 # menu_render (dashboard_term_size + _dash_add clamping reused verbatim,
 # frame buffered and written once). SETTINGS_WARN, when set, renders as
@@ -3014,8 +3085,10 @@ settings_render() {
 # q/Esc/Enter exit; EOF (no tty / closed pipe) exits fail-open. Every
 # change re-renders so the frame always reflects the persisted state;
 # a config_set failure keeps the old value and shows the warning inline.
+# Standalone direct access (`--voice-settings` / tts-settings entrypoint);
+# the same knobs are also reachable INSIDE the voice menu (key `a`).
 run_voice_settings() {
-  local key="" next=""
+  local key=""
   SETTINGS_WARN=""
   while :; do
     settings_render
@@ -3026,38 +3099,7 @@ run_voice_settings() {
     if ! read -rsn1 key; then
       break # EOF: fail-open, nothing changed by us
     fi
-    case "$key" in
-      q|Q|$'\e'|"")
-        break
-        ;;
-      p|P)
-        next="$(settings_cycle_value provider "$TTS_PROVIDER")"
-        if config_set TTS_PROVIDER "$next"; then
-          TTS_PROVIDER="$next"
-        else
-          SETTINGS_WARN="No se pudo guardar TTS_PROVIDER en config.env"
-        fi
-        ;;
-      d|D)
-        next="$(settings_cycle_value target "$TTS_PLAYBACK")"
-        if config_set TTS_PLAYBACK "$next"; then
-          TTS_PLAYBACK="$next"
-        else
-          SETTINGS_WARN="No se pudo guardar TTS_PLAYBACK en config.env"
-        fi
-        ;;
-      r|R)
-        next="$(settings_cycle_value retention "${HERDR_TTS_AUDIO_RETENTION_DAYS:-0}")"
-        if config_set HERDR_TTS_AUDIO_RETENTION_DAYS "$next"; then
-          HERDR_TTS_AUDIO_RETENTION_DAYS="$next"
-        else
-          SETTINGS_WARN="No se pudo guardar HERDR_TTS_AUDIO_RETENTION_DAYS en config.env"
-        fi
-        ;;
-      *)
-        SETTINGS_WARN="Tecla no reconocida (${key}) — p/d/r cicla un ajuste, q sale"
-        ;;
-    esac
+    settings_handle_key "$key" || break
   done
   exit 0
 }
@@ -3158,7 +3200,7 @@ keymap_default_json() { # default template: README direct map + nulls for the re
     "dashboard": null,
     "palette": null,
     "menu": null,
-    "settings": "prefix+u"
+    "settings": null
   }
 }
 EOF
@@ -3233,7 +3275,8 @@ keymap_ctrlalt_for() { # $1 = command id → suggested ctrl+alt chord (rc 1 = no
     dashboard)       printf '%s\n' "ctrl+alt+d" ;;
     palette)         printf '%s\n' "ctrl+alt+o" ;;
     menu)            printf '%s\n' "ctrl+alt+u" ;;
-    settings)        printf '%s\n' "ctrl+alt+shift+u" ;;
+    # settings: no suggested chord — the settings view lives inside the
+    # voice menu (key `a`); users can still bind the id manually.
     *)               return 1 ;;
   esac
 }
@@ -3518,7 +3561,7 @@ keymap_emit() { # $1 = "" | direct | ctrlalt | menu
       chord="$(keymap_ctrlalt_for "$cid")" || continue
       keymap_emit_block "$chord" "$(keymap_cmd_for "$cid")" "$(keymap_label_for "$cid")"
     done
-    echo "# note: paragraph_next / paragraph_prev have no suggested ctrl+alt chord — assign them in keymap.json"
+    echo "# note: paragraph_next / paragraph_prev / settings have no suggested ctrl+alt chord — assign them in keymap.json (settings also lives inside the voice menu, key \`a\`)"
     return 0
   fi
 
@@ -4399,11 +4442,13 @@ Información:
     --voice-palette          Selector interactivo (fzf, pane de Herdr) de chats y
                             audios: enter enfoca, ctrl-m silencia, ctrl-z snooze
     --voice-menu             Menú de voz de una sola tecla (popup): muestra los
-                            comandos, lee una tecla, la ejecuta y se cierra
+                            comandos, lee una tecla, la ejecuta y se cierra;
+                            la tecla a abre los Ajustes dentro del menú
                             (suggested: prefix+u → action open-menu)
-    --voice-settings         Ajustes de voz y audio (popup, suggested prefix+u):
-                            cicla proveedor TTS, destino de reproducción y
-                            días de retención de audio (escribe config.env)
+    --voice-settings         Ajustes de voz y audio (popup de acceso directo;
+                            también dentro del menú de voz, tecla a): cicla
+                            proveedor TTS, destino de reproducción y días de
+                            retención de audio (escribe config.env)
     --palette-preview <pane> Cabecera de chat + turnos de audio del pane (preview fzf)
 EOF
     ;;
