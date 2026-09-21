@@ -69,6 +69,44 @@
       color: var(--text);
       border-radius: 9px;
     }
+    /* Herd strip: one chip per agent, horizontal scroll. */
+    #herd-strip {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding: 10px 14px 2px;
+      scrollbar-width: thin;
+    }
+    .herd-chip {
+      flex: 0 0 auto;
+      max-width: 190px;
+      padding: 7px 12px;
+      font-size: 13px;
+      font-weight: 600;
+      border-radius: 999px;
+      border: 1px solid #2a2f3a;
+      background: transparent;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .herd-chip .st { margin-right: 6px; }
+    .herd-chip .st.working { color: var(--warn); }
+    .herd-chip .st.idle    { color: var(--accent); }
+    .herd-chip .st.blocked { color: var(--danger); }
+    .herd-chip .st.done    { color: var(--blue); }
+    .herd-chip.selected {
+      background: var(--panel);
+      border-color: var(--accent);
+      color: var(--text);
+    }
+    #herd-note {
+      margin: 4px 14px 0;
+      font-size: 12px;
+      color: var(--muted);
+      font-style: italic;
+    }
     /* Agent view panel: pending banner is the visual anchor. */
     #agent-view {
       margin: 10px 14px 0;
@@ -184,6 +222,9 @@
     <span id="pane-title">connecting…</span>
     <button id="new-conversation" title="Start a new conversation">↺ New</button>
   </header>
+
+  <nav id="herd-strip" aria-label="Agents"></nav>
+  <div id="herd-note" class="hidden"></div>
 
   <section id="agent-view" class="hidden">
     <div id="pending-banner" class="pending hidden"></div>
