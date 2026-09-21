@@ -69,6 +69,11 @@ DEFAULT_PIPER_MODEL=""
 # Windows host via agent-tts --winhost) or "wsl-ps" (PowerShell, zero install).
 DEFAULT_TTS_PLAYBACK="local"
 DEFAULT_DEBOUNCE_SECONDS="20" # anti-spam window per (pane, status); 0 disables
+# Settle window: seconds a done must keep holding before the watcher fires
+# the pipeline. Filters the working→done→working flickers of ONE logical
+# turn (tool batches, subagents, thinking) that are NOT the end of the
+# turn; only a done that survives the window reaches TTS + ntfy. 0 = off.
+DEFAULT_SETTLE_SECONDS="5"
 # Ambient pane-title glyphs (done/blocked ✔, mute 🔇, snooze 😴) synced on the
 # daemon sweep; 0 = fully off (the sweep spawns nothing for titles).
 DEFAULT_TTS_TITLE_GLYPHS="1"
@@ -130,6 +135,9 @@ TTS_PLAYBACK="${TTS_PLAYBACK:-$DEFAULT_TTS_PLAYBACK}"
 PODCAST_ENABLED="${PODCAST_ENABLED:-$DEFAULT_PODCAST_ENABLED}"
 PODCAST_PORT="${PODCAST_PORT:-$DEFAULT_PODCAST_PORT}"
 TTS_DEBOUNCE_SECONDS="${TTS_DEBOUNCE_SECONDS:-$DEFAULT_DEBOUNCE_SECONDS}"
+TTS_SETTLE_SECONDS="${TTS_SETTLE_SECONDS:-$DEFAULT_SETTLE_SECONDS}"
+# Invalid hand-edited values fall back to the default instead of breaking sleep.
+[[ "$TTS_SETTLE_SECONDS" =~ ^[0-9]+([.][0-9]+)?$ ]] || TTS_SETTLE_SECONDS="$DEFAULT_SETTLE_SECONDS"
 TTS_TITLE_GLYPHS="${TTS_TITLE_GLYPHS:-$DEFAULT_TTS_TITLE_GLYPHS}"
 OPENAI_API_KEY="${OPENAI_API_KEY:-$DEFAULT_OPENAI_API_KEY}"
 OPENAI_BASE_URL="${OPENAI_BASE_URL:-$DEFAULT_OPENAI_BASE_URL}"
@@ -157,6 +165,7 @@ TTS_PLAYBACK="${TTS_PLAYBACK}"
 PODCAST_ENABLED="${PODCAST_ENABLED}"
 PODCAST_PORT="${PODCAST_PORT}"
 TTS_DEBOUNCE_SECONDS="${TTS_DEBOUNCE_SECONDS}"
+TTS_SETTLE_SECONDS="${TTS_SETTLE_SECONDS}"
 TTS_TITLE_GLYPHS="${TTS_TITLE_GLYPHS}"
 OPENAI_API_KEY="${OPENAI_API_KEY}"
 OPENAI_BASE_URL="${OPENAI_BASE_URL}"
@@ -174,7 +183,7 @@ EOF
 }
 
 # ─── Managed config writer (settings popup) ──────────────────
-# The settings popup persists exactly three knobs. This writer rewrites
+# The settings popup persists exactly four knobs. This writer rewrites
 # CONFIG_FILE preserving every unknown line and comment byte-for-byte:
 # a managed `KEY="value"` line is replaced in place (exact KEY match,
 # any value), otherwise a small managed block is appended at the end.
@@ -192,9 +201,9 @@ CONFIG_SET_BACKED_UP=0
 config_set() { # <KEY> <VALUE> → rc 1 on rejection or write failure (warning on stderr)
   local key="$1" value="$2"
   case "$key" in
-    TTS_PROVIDER|TTS_PLAYBACK|HERDR_TTS_AUDIO_RETENTION_DAYS) ;;
+    TTS_PROVIDER|TTS_PLAYBACK|HERDR_TTS_AUDIO_RETENTION_DAYS|TTS_SETTLE_SECONDS) ;;
     *)
-      echo "config_set: unmanaged key '${key}' (allowed: TTS_PROVIDER, TTS_PLAYBACK, HERDR_TTS_AUDIO_RETENTION_DAYS)" >&2
+      echo "config_set: unmanaged key '${key}' (allowed: TTS_PROVIDER, TTS_PLAYBACK, HERDR_TTS_AUDIO_RETENTION_DAYS, TTS_SETTLE_SECONDS)" >&2
       return 1
       ;;
   esac
@@ -1671,6 +1680,26 @@ watch_agent_pane() {
     info=$(herdr agent get "$pane_id" 2>/dev/null) || { sleep 3; continue; }
     local new_state
     new_state=$(echo "$info" | jq -r '.result.agent.agent_status // .result.agent_status // "unknown"' 2>/dev/null || echo "unknown")
+
+    # Settle window (v0.16): agents flicker working→done→working between the
+    # steps of ONE logical turn (tool batches, subagents, thinking), and
+    # every flicker used to fire the full synthesis + ntfy push pipeline as
+    # if the turn had ended. Only a done that STILL holds after
+    # TTS_SETTLE_SECONDS is treated as the real end of turn; one that
+    # reverted to working is logged and dropped. A state change DURING the
+    # window re-targets the event (a done that became blocked fires as
+    # blocked). 0 disables the window (legacy immediate fire).
+    if [[ "$new_state" == "done" && "$TTS_SETTLE_SECONDS" != "0" ]]; then
+      sleep "$TTS_SETTLE_SECONDS"
+      local settled_state
+      settled_state=$(herdr agent get "$pane_id" 2>/dev/null | jq -r '.result.agent.agent_status // .result.agent_status // "unknown"' 2>/dev/null || echo "unknown")
+      if [[ "$settled_state" == "working" ]]; then
+        echo "[$(date +%H:%M:%S)] ${agent_name} (${pane_id}): done intermedio descartado (volvió a working dentro de la ventana de asentamiento de ${TTS_SETTLE_SECONDS}s)"
+        new_state="working"
+      elif [[ "$settled_state" != "unknown" && "$settled_state" != "$new_state" ]]; then
+        new_state="$settled_state"
+      fi
+    fi
     # Agent identity for the connector layer: the engine (agent-tts) owns the
     # transcript knowledge and resolves the last assistant message itself.
     local agent_kind
@@ -3161,28 +3190,31 @@ run_voice_menu() {
 }
 
 # ─── Voice settings popup (v0.15, cycle knobs) ───────────────
-# One popup for the optional knobs: TTS provider, playback target and
-# audio-retention days. Each key press cycles the value to the NEXT
-# entry of its table and persists it through config_set (managed-key
-# writer above). Values shown come from the live env the script sourced
-# from config.env at startup; changes reach NEW processes only.
+# One popup for the optional knobs: TTS provider, playback target,
+# audio-retention days and the done settle window. Each key press cycles
+# the value to the NEXT entry of its table and persists it through
+# config_set (managed-key writer above). Values shown come from the live
+# env the script sourced from config.env at startup; changes reach NEW
+# processes only.
 
 # Cycle tables: ordered, first element = the recommended default.
 SETTINGS_PROVIDERS=(edge openai elevenlabs piper kokoro) # edge first = gratuito, por defecto
 SETTINGS_TARGETS=(local winhost wsl-ps windows auto)
 SETTINGS_RETENTION=(0 1 3 7 14) # 0 = retención apagada
+SETTINGS_SETTLE=(0 2 5 10 15 30) # 0 = notifica al instante (sin ventana)
 
 # Print the NEXT value of a cycle table. Pure and fork-free (no subshell
 # spawns): safe to call per keypress. An unknown current value (user
 # hand-edited config) restarts at the first element.
-settings_cycle_value() { # <provider|target|retention> <current> → next value on stdout
+settings_cycle_value() { # <provider|target|retention|settle> <current> → next value on stdout
   local -a vals=()
   local cur="$2" i n
   case "$1" in
     provider)  vals=("${SETTINGS_PROVIDERS[@]}") ;;
     target)    vals=("${SETTINGS_TARGETS[@]}") ;;
     retention) vals=("${SETTINGS_RETENTION[@]}") ;;
-    *) echo "settings_cycle_value: unknown key '${1}' (provider, target or retention)" >&2; return 1 ;;
+    settle)    vals=("${SETTINGS_SETTLE[@]}") ;;
+    *) echo "settings_cycle_value: unknown key '${1}' (provider, target, retention or settle)" >&2; return 1 ;;
   esac
   n=${#vals[@]}
   for (( i = 0; i < n; i++ )); do
@@ -3236,8 +3268,16 @@ settings_handle_key() { # <key>
         SETTINGS_WARN="No se pudo guardar HERDR_TTS_AUDIO_RETENTION_DAYS en config.env"
       fi
       ;;
+    s|S)
+      next="$(settings_cycle_value settle "$TTS_SETTLE_SECONDS")"
+      if config_set TTS_SETTLE_SECONDS "$next"; then
+        TTS_SETTLE_SECONDS="$next"
+      else
+        SETTINGS_WARN="No se pudo guardar TTS_SETTLE_SECONDS en config.env"
+      fi
+      ;;
     R)
-      # Restart the daemon in place: applies pending p/d changes without
+      # Restart the daemon in place: applies pending p/d/s changes without
       # leaving the view. Uppercase by design (lowercase r cycles retention).
       if daemon_restart; then
         SETTINGS_NOTE="✓ Daemon reiniciado"
@@ -3246,7 +3286,7 @@ settings_handle_key() { # <key>
       fi
       ;;
     *)
-      SETTINGS_WARN="Tecla no reconocida (${key}) — p/d/r cicla un ajuste, q sale"
+      SETTINGS_WARN="Tecla no reconocida (${key}) — p/d/r/s cicla un ajuste, q sale"
       ;;
   esac
   return 0
@@ -3271,6 +3311,7 @@ settings_render() {
   _dash_add ' p  Proveedor TTS:        %s   (edge = gratuito, por defecto)' "$TTS_PROVIDER"
   _dash_add ' d  Destino reproducción: %s' "$TTS_PLAYBACK"
   _dash_add ' r  Audio retenido:       %s días   (0 = apagado)' "$ret"
+  _dash_add ' s  Asentamiento done:    %ss   (0 = notifica al instante)' "$TTS_SETTLE_SECONDS"
   _dash_add ''
   if [[ -n "${SETTINGS_WARN:-}" ]]; then
     _dash_add ' ⚠️  %s' "$SETTINGS_WARN"
@@ -3280,7 +3321,7 @@ settings_render() {
   fi
   _dash_add ' Kokoro/Piper requieren instalar el modelo: agent-tts voice install <modelo>'
   _dash_add ' r  cicla retención · se aplica al vuelo (sin reiniciar)'
-  _dash_add ' R  reinicia el daemon → aplica proveedor y destino al instante'
+  _dash_add ' R  reinicia el daemon → aplica proveedor, destino y asentamiento al instante'
   _dash_add ''
   _dash_add ' q/Esc salir'
   menu_cap_rows $(( DASH_LINES - 1 ))
