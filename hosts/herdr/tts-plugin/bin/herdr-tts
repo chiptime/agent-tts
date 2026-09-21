@@ -99,10 +99,24 @@ report_tts_error() {
 }
 
 # Load persisted settings if present
+# Retention is HOT: the watcher re-reads it per event via
+# audio_retention_days(), so a value that only came from config.env must
+# NOT linger as a startup snapshot (it would shadow later file edits).
+# Snapshot which retention keys were already set BEFORE the source
+# (${var+x} is nounset-safe); after the source, keep only those — they
+# are a real environment override (tests, user session) and outrank the
+# file by design. File-sourced values get neutralized.
+_had_herdr_ret=${HERDR_TTS_AUDIO_RETENTION_DAYS+x}
+_had_agent_ret=${AGENT_TTS_AUDIO_RETENTION_DAYS+x}
+_had_tts_ret=${TTS_AUDIO_RETENTION_DAYS+x}
 if [[ -f "$CONFIG_FILE" ]]; then
   # shellcheck source=/dev/null
   source "$CONFIG_FILE"
+  [[ -n "$_had_herdr_ret" ]] || unset HERDR_TTS_AUDIO_RETENTION_DAYS
+  [[ -n "$_had_agent_ret" ]] || unset AGENT_TTS_AUDIO_RETENTION_DAYS
+  [[ -n "$_had_tts_ret" ]] || unset TTS_AUDIO_RETENTION_DAYS
 fi
+unset _had_herdr_ret _had_agent_ret _had_tts_ret
 
 TTS_PROVIDER="${TTS_PROVIDER:-$DEFAULT_PROVIDER}"
 TTS_VOICE="${TTS_VOICE:-$DEFAULT_VOICE}"
@@ -1065,7 +1079,8 @@ show_status() {
 
   echo "  Alcance auto: ${TTS_AUTO_SCOPE} (focused = solo chat activo; all = cualquiera sin solaparse)"
   echo "  Proveedor:    ${TTS_PROVIDER} (edge = Edge Neural TTS gratuito; openai = OpenAI TTS; elevenlabs = ElevenLabs; piper = 100% Offline Local Neural)"
-  local ret_raw="${HERDR_TTS_AUDIO_RETENTION_DAYS:-}"
+  local ret_raw
+  config_get_retention_raw ret_raw
   if [[ "$ret_raw" =~ ^[1-9][0-9]*$ ]] && (( ret_raw > 0 )); then
     echo "  Audio retenido: ${ret_raw} días (${ret_raw}) — HERDR_TTS_AUDIO_RETENTION_DAYS"
   elif [[ -n "$ret_raw" ]]; then
@@ -1482,8 +1497,34 @@ gate_agent_event() {
 # disable persistence (0 → the watcher keeps the legacy tmp + rm flow).
 # Fork-free on purpose: pure parameter expansion, [[ ]] tests and
 # arithmetic (no self-referencing assignments inside (( ))).
+config_get_retention_raw() { # <out-var> — raw retention ("" = unset everywhere)
+  # Shared tier read: tier 1 = process variables (a real environment
+  # override; the config loader unsets file-sourced startup values so they
+  # cannot shadow later edits), tier 2 = the live config.env line (what the
+  # settings menu writes). printf -v keeps this fork-free.
+  local _cgr="${HERDR_TTS_AUDIO_RETENTION_DAYS:-${AGENT_TTS_AUDIO_RETENTION_DAYS:-${TTS_AUDIO_RETENTION_DAYS:-}}}"
+  if [[ -z "$_cgr" && -r "$CONFIG_FILE" ]]; then
+    local line fh="" fa="" ft="" v
+    while IFS= read -r line; do
+      case "$line" in
+        HERDR_TTS_AUDIO_RETENTION_DAYS=*)
+          [[ -n "$fh" ]] || { v="${line#*=}"; v="${v%\"}"; v="${v#\"}"; fh="$v"; } ;;
+        AGENT_TTS_AUDIO_RETENTION_DAYS=*)
+          [[ -n "$fa" ]] || { v="${line#*=}"; v="${v%\"}"; v="${v#\"}"; fa="$v"; } ;;
+        TTS_AUDIO_RETENTION_DAYS=*)
+          [[ -n "$ft" ]] || { v="${line#*=}"; v="${v%\"}"; v="${v#\"}"; ft="$v"; } ;;
+      esac
+    done < "$CONFIG_FILE"
+    _cgr="${fh:-${fa:-${ft:-}}}"
+  fi
+  printf -v "$1" '%s' "$_cgr"
+}
+
 audio_retention_days() {
-  local raw="${HERDR_TTS_AUDIO_RETENTION_DAYS:-${AGENT_TTS_AUDIO_RETENTION_DAYS:-${TTS_AUDIO_RETENTION_DAYS:-0}}}"
+  # HOT knob (see config_get_retention_raw): normalized to 0 when unset or
+  # invalid; a positive value enables the store with that pruning window.
+  local raw
+  config_get_retention_raw raw
   [[ "$raw" =~ ^-?[0-9]+$ ]] || raw=0
   if (( raw > 0 )); then
     printf '%s\n' "$raw"
@@ -3045,7 +3086,9 @@ settings_handle_key() { # <key>
       fi
       ;;
     r|R)
-      next="$(settings_cycle_value retention "${HERDR_TTS_AUDIO_RETENTION_DAYS:-0}")"
+      local cur_ret
+      config_get_retention_raw cur_ret
+      next="$(settings_cycle_value retention "${cur_ret:-0}")"
       if config_set HERDR_TTS_AUDIO_RETENTION_DAYS "$next"; then
         HERDR_TTS_AUDIO_RETENTION_DAYS="$next"
       else
@@ -3065,7 +3108,12 @@ settings_handle_key() { # <key>
 # an inline warning row instead of a silent failure.
 settings_render() {
   dashboard_term_size
-  local frame="" ret="${HERDR_TTS_AUDIO_RETENTION_DAYS:-0}"
+  # Retention current comes from the tiered read (env > live file), NOT
+  # from the neutralized startup variable: after the loader unsets it,
+  # the file is the only source of truth for what the user last chose.
+  local frame="" ret
+  config_get_retention_raw ret
+  ret="${ret:-0}"
   _dash_add $'\e[1m⚙️  herdr-tts · Ajustes de voz y audio\e[0m'
   _dash_add 'Pulsa la tecla del ajuste para ciclar su valor.'
   _dash_add ''
@@ -3077,7 +3125,7 @@ settings_render() {
     _dash_add ' ⚠️  %s' "$SETTINGS_WARN"
   fi
   _dash_add ' Kokoro/Piper requieren instalar el modelo: agent-tts voice install <modelo>'
-  _dash_add ' Los cambios aplican a nuevos procesos; reinicia el daemon para que el watcher los herede.'
+  _dash_add ' r aplica al vuelo (el watcher re-lee config.env); p y d requieren reiniciar el daemon.'
   _dash_add ''
   _dash_add ' q/Esc salir'
   menu_cap_rows $(( DASH_LINES - 1 ))

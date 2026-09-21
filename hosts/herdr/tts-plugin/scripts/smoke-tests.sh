@@ -1425,6 +1425,39 @@ assert_grep "23 negative disables retention" '^negative:0$' "$T/out.txt"
 assert_grep "23 store dir default" '^store_default:' "$T/out.txt"
 assert_grep "23 store dir override" '^store_custom:/tmp/custom-store$' "$T/out.txt"
 
+# 23h. HOT read: the watcher resolves retention from the LIVE config.env
+# (tier 2) after exported env (tier 1); a startup file snapshot must never
+# shadow a later file edit. Each case re-runs lib_run so the script is
+# sourced fresh, mirroring a daemon start. new_env uses
+# XDG_CONFIG_HOME="$T/conf" → CONFIG_FILE = "$T/conf/herdr-tts/config.env".
+CFG23="$T/conf/herdr-tts/config.env"
+# 23h-a. Value only in the file, written AFTER load → hot read picks it up.
+mkdir -p "${CFG23%/*}"
+lib_run '
+  echo "HERDR_TTS_AUDIO_RETENTION_DAYS=\"5\"" >> "$CONFIG_FILE"
+  echo "file-only:$(audio_retention_days)"
+' > "$T/out23h.txt"
+assert_grep "23h file-only value is read live" '^file-only:5$' "$T/out23h.txt"
+# 23h-b. Stale startup snapshot must NOT shadow a later file edit: config
+# says 9 at load, the menu (config_set) rewrites it to 5, function → 5.
+mkdir -p "${CFG23%/*}" && printf 'HERDR_TTS_AUDIO_RETENTION_DAYS="9"\n' > "$CFG23"
+lib_run '
+  printf "HERDR_TTS_AUDIO_RETENTION_DAYS=\"5\"\n" > "$CONFIG_FILE"
+  echo "hot:$(audio_retention_days)"
+' > "$T/out23h.txt"
+assert_grep "23h menu rewrite applies without restart (stale snapshot neutralized)" '^hot:5$' "$T/out23h.txt"
+# 23h-c. Exported env (tier 1) beats the live file (tier 2).
+printf 'HERDR_TTS_AUDIO_RETENTION_DAYS="5"\n' > "$CFG23"
+lib_run '
+  export HERDR_TTS_AUDIO_RETENTION_DAYS=9
+  echo "env-wins:$(audio_retention_days)"
+' > "$T/out23h.txt"
+assert_grep "23h exported env beats live file" '^env-wins:9$' "$T/out23h.txt"
+# 23h-d. Invalid value in the file → falls back to default 0.
+printf 'HERDR_TTS_AUDIO_RETENTION_DAYS="soon"\n' > "$CFG23"
+lib_run 'echo "invalid-file:$(audio_retention_days)"' > "$T/out23h.txt"
+assert_grep "23h invalid file value → default 0" '^invalid-file:0$' "$T/out23h.txt"
+
 echo "── 24. audio_store_prune: hourly retention prune from the daemon sweep"
 new_env s24
 PRUNE_CALLS="$T/prune.calls"; : > "$PRUNE_CALLS"
