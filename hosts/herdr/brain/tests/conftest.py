@@ -56,8 +56,10 @@ class StubHerdr:
 
         return pick_active(self._agents)
 
-    def read_screen(self, pane_id, n_lines=None):
-        self.screen_calls.append({"pane_id": pane_id, "n_lines": n_lines})
+    def read_screen(self, pane_id, n_lines=None, source="visible"):
+        self.screen_calls.append(
+            {"pane_id": pane_id, "n_lines": n_lines, "source": source}
+        )
         if self._fail_screen:
             raise HerdrError("read failed")
         return self._screen

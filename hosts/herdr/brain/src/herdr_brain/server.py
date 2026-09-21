@@ -179,6 +179,23 @@ def create_app(
                 "pending": {"detected": False, "kind": None, "excerpt": None},
             }
 
+    @app.get("/conversation")
+    def conversation(pane_id: Optional[str] = None) -> dict:
+        """Full-text recent conversation of one pane (last 20 turns)."""
+        try:
+            return tools.conversation(pane_id)
+        except Exception:  # noqa: BLE001
+            return {"pane_id": pane_id, "agent": None, "session_id": None,
+                    "turns": [], "window": 20}
+
+    @app.get("/screen")
+    def screen(pane_id: Optional[str] = None) -> dict:
+        """Full screen tail (~120 scrollback lines) of one pane."""
+        try:
+            return tools.screen_full(pane_id)
+        except Exception:  # noqa: BLE001
+            return {"pane_id": pane_id, "agent": None, "screen": None}
+
     @app.post("/ask")
     def ask(body: TextRequest) -> dict:
         if body.reset:

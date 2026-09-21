@@ -66,7 +66,7 @@ class TestReadTranscript:
         out = tools.read_transcript()
         assert out.startswith("[transcript unavailable")
         assert "visible text" in out
-        assert stub.screen_calls == [{"pane_id": active_agent.pane_id, "n_lines": None}]
+        assert stub.screen_calls == [{"pane_id": active_agent.pane_id, "n_lines": None, "source": "visible"}]
 
     def test_no_active_agent(self, settings, make_stub):
         tools = BrainTools(settings, herdr=make_stub(agents=[]))
@@ -286,7 +286,7 @@ class TestTargeting:
         stub = make_stub(agents=[active_agent, other], screen="other screen")
         tools = BrainTools(settings, herdr=stub)
         assert tools.read_screen(30, target=other) == "other screen"
-        assert stub.screen_calls == [{"pane_id": "w1:p2", "n_lines": 30}]
+        assert stub.screen_calls == [{"pane_id": "w1:p2", "n_lines": 30, "source": "visible"}]
 
     def test_read_transcript_honors_explicit_target(
         self, settings, make_stub, active_agent, monkeypatch, tmp_path
@@ -329,7 +329,89 @@ class TestTargeting:
         tools = BrainTools(settings, herdr=stub)
         view = tools.agent_view("w1:p2")
         assert view["status"]["pane_id"] == "w1:p2"
-        assert stub.screen_calls == [{"pane_id": "w1:p2", "n_lines": 12}]
+        assert stub.screen_calls == [{"pane_id": "w1:p2", "n_lines": 12, "source": "visible"}]
+
+
+class TestFullTextReads:
+    """GET /conversation and /screen backing methods (fase 2c)."""
+
+    def _db_with_turns(self, tmp_path, session_value, turns):
+        import sqlite3
+
+        db = tmp_path / "conv.db"
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INT, data TEXT)")
+        conn.execute("CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INT, data TEXT)")
+        for i, (role, text) in enumerate(turns):
+            mid = f"m{i}"
+            conn.execute(
+                "INSERT INTO message VALUES (?, ?, ?, ?)",
+                (mid, session_value, 1000 + i, json.dumps({"role": role})),
+            )
+            conn.execute(
+                "INSERT INTO part VALUES (?, ?, ?, ?, ?)",
+                (f"{mid}-p1", mid, session_value, 1000 + i, json.dumps({"type": "text", "text": text})),
+            )
+        conn.commit()
+        conn.close()
+        return str(db)
+
+    def test_conversation_returns_full_text_window(
+        self, settings, make_stub, active_agent, monkeypatch, tmp_path
+    ):
+        from herdr_brain.tools import CONVERSATION_WINDOW
+
+        turns = [(("user" if i % 2 == 0 else "assistant"), f"mensaje numero {i} " + "x" * 50)
+                 for i in range(CONVERSATION_WINDOW + 5)]
+        monkeypatch.setenv("OPENCODE_DB", self._db_with_turns(tmp_path, active_agent.session_value, turns))
+
+        tools = BrainTools(settings, herdr=make_stub())
+        result = tools.conversation()
+        assert result["pane_id"] == active_agent.pane_id
+        assert len(result["turns"]) == CONVERSATION_WINDOW
+        # Most recent turns kept: the last message is present.
+        assert result["turns"][-1]["text"].startswith("mensaje numero 24")
+        # FULL text, not glance-truncated: a 300+ char turn stays intact.
+        assert all(len(t["text"]) > 50 for t in result["turns"])
+
+    def test_conversation_clips_turns_at_4000(self, settings, make_stub, active_agent, monkeypatch, tmp_path):
+        huge = "y" * 5000
+        monkeypatch.setenv(
+            "OPENCODE_DB",
+            self._db_with_turns(tmp_path, active_agent.session_value, [("assistant", huge)]),
+        )
+        tools = BrainTools(settings, herdr=make_stub())
+        result = tools.conversation()
+        assert len(result["turns"][0]["text"]) == 4000
+
+    def test_conversation_without_session_or_store(self, settings, make_stub):
+        agent_no_session = AgentInfo(
+            pane_id="p", agent="opencode", status="idle", session_kind="none",
+            session_value="", cwd="/c", title="t", focused=True,
+        )
+        tools = BrainTools(settings, herdr=make_stub(agents=[agent_no_session]))
+        result = tools.conversation()
+        assert result["turns"] == []
+        assert result["session_id"] is None
+
+    def test_screen_full_uses_recent_source_and_120_lines(self, settings, make_stub, active_agent):
+        stub = make_stub(screen="line1\nline2")
+        tools = BrainTools(settings, herdr=stub)
+        result = tools.screen_full()
+        assert result["pane_id"] == active_agent.pane_id
+        assert result["screen"] == "line1\nline2"
+        assert stub.screen_calls == [
+            {"pane_id": active_agent.pane_id, "n_lines": 120, "source": "recent"}
+        ]
+
+    def test_screen_full_failure_isolated(self, settings, make_stub):
+        tools = BrainTools(settings, herdr=make_stub(fail_screen=True))
+        assert tools.screen_full()["screen"] is None
+
+    def test_conversation_via_dispatch_not_exposed_to_llm(self, settings, make_stub):
+        """Reading views are API-only: the LLM tool set stays as before."""
+        tools = BrainTools(settings, herdr=make_stub())
+        assert tools.dispatch("conversation", {}).startswith("error: unknown tool")
 
 
 class TestDispatch:

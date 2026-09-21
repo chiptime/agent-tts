@@ -20,7 +20,7 @@ import subprocess
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
-from .config import MAX_SCREEN_LINES, Settings
+from .config import MAX_BACKLOG_LINES, MAX_SCREEN_LINES, Settings
 
 Runner = Callable[..., subprocess.CompletedProcess]
 
@@ -139,18 +139,23 @@ class HerdrClient:
     def active_agent(self) -> Optional[AgentInfo]:
         return pick_active(self.list_agents())
 
-    def read_screen(self, pane_id: str, n_lines: Optional[int] = None) -> str:
-        """Reads the visible terminal of a pane (read-only).
+    def read_screen(
+        self, pane_id: str, n_lines: Optional[int] = None, source: str = "visible"
+    ) -> str:
+        """Reads terminal output of a pane (read-only).
 
-        Line count is clamped to ``MAX_SCREEN_LINES``: reading beyond the
-        viewport can scroll the operator's real screen on alt-screen agents.
+        ``source`` is a verified CLI flag: ``visible`` glances at the current
+        viewport (clamped to 60 lines to avoid scrolling the operator's real
+        screen); ``recent`` reads the scrollback backlog for explicit
+        full-text reads (clamped to 120 lines).
         """
         requested = n_lines if n_lines and n_lines > 0 else self._settings.screen_lines
-        clamped = min(requested, MAX_SCREEN_LINES)
+        cap = MAX_BACKLOG_LINES if source == "recent" else MAX_SCREEN_LINES
+        clamped = min(requested, cap)
         proc = self._run_cli(
             [
                 "agent", "read", pane_id,
-                "--source", "visible",
+                "--source", source,
                 "--lines", str(clamped),
                 "--format", "text",
             ],

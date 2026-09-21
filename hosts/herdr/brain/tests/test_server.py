@@ -532,6 +532,86 @@ class TestView:
         assert client.get("/nope.js").status_code == 404
 
 
+class TestFullTextEndpoints:
+    def test_conversation_route(self, settings, audio_dir, monkeypatch):
+        import herdr_brain.server as server_module
+
+        calls: list = []
+        result = {"pane_id": "w1:p2", "agent": "opencode", "session_id": "ses_x",
+                  "turns": [{"role": "user", "text": "pregunta completa " + "x" * 400}],
+                  "window": 20}
+
+        class FakeTools:
+            def __init__(self, cfg):
+                self.last_active = None
+
+            def conversation(self, pane_id=None):
+                calls.append(pane_id)
+                return result
+
+        monkeypatch.setattr(server_module, "BrainTools", FakeTools)
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        resp = TestClient(server_module.create_app(settings=cfg)).get(
+            "/conversation", params={"pane_id": "w1:p2"}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["turns"][0]["text"] == result["turns"][0]["text"]
+        assert calls == ["w1:p2"]
+
+    def test_conversation_never_500s(self, settings, audio_dir, monkeypatch):
+        import herdr_brain.server as server_module
+
+        class FailingTools:
+            def __init__(self, cfg):
+                self.last_active = None
+
+            def conversation(self, pane_id=None):
+                raise RuntimeError("boom")
+
+        monkeypatch.setattr(server_module, "BrainTools", FailingTools)
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        resp = TestClient(server_module.create_app(settings=cfg)).get("/conversation")
+        assert resp.status_code == 200
+        assert resp.json()["turns"] == []
+
+    def test_screen_route(self, settings, audio_dir, monkeypatch):
+        import herdr_brain.server as server_module
+
+        result = {"pane_id": "w1:p2", "agent": "opencode", "screen": "line\n" * 120}
+
+        class FakeTools:
+            def __init__(self, cfg):
+                self.last_active = None
+
+            def screen_full(self, pane_id=None):
+                return result
+
+        monkeypatch.setattr(server_module, "BrainTools", FakeTools)
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        resp = TestClient(server_module.create_app(settings=cfg)).get(
+            "/screen", params={"pane_id": "w1:p2"}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["screen"].count("line") == 120
+
+    def test_screen_never_500s(self, settings, audio_dir, monkeypatch):
+        import herdr_brain.server as server_module
+
+        class FailingTools:
+            def __init__(self, cfg):
+                self.last_active = None
+
+            def screen_full(self, pane_id=None):
+                raise RuntimeError("boom")
+
+        monkeypatch.setattr(server_module, "BrainTools", FailingTools)
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        resp = TestClient(server_module.create_app(settings=cfg)).get("/screen")
+        assert resp.status_code == 200
+        assert resp.json()["screen"] is None
+
+
 class TestEvents:
     """SSE endpoint delivery (finite streams via sse_stream_limit).
 
