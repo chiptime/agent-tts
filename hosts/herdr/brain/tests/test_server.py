@@ -649,6 +649,38 @@ class TestFullTextEndpoints:
         assert resp.json()["screen"] is None
 
 
+class TestVersioning:
+    """Kill stale-JS: versioned asset refs + no-cache headers + visible build."""
+
+    def test_index_stamps_asset_refs_and_footer(self, settings, audio_dir):
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        client = TestClient(create_app(settings=cfg, version="abc1234", llm_factory=lambda c, t: FakeLLM()))
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert resp.headers["cache-control"] == "no-cache"
+        assert 'src="/app.js?v=abc1234"' in resp.text
+        assert 'src="/endpointing.js?v=abc1234"' in resp.text
+        assert 'href="/manifest.webmanifest?v=abc1234"' in resp.text
+        assert 'id="app-version">vabc1234<' in resp.text
+        assert 'src="/app.js"></script>' not in resp.text  # no unversioned refs left
+
+    def test_static_assets_served_no_cache(self, settings, audio_dir):
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        client = TestClient(create_app(settings=cfg, version="abc1234", llm_factory=lambda c, t: FakeLLM()))
+        for path in ("/app.js", "/endpointing.js", "/sw.js"):
+            resp = client.get(path)
+            assert resp.status_code == 200
+            assert resp.headers["cache-control"] == "no-cache"
+
+    def test_default_version_resolves_something(self, settings, audio_dir):
+        """No explicit version: git hash or 'dev' fallback — footer always present."""
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        client = TestClient(create_app(settings=cfg, llm_factory=lambda c, t: FakeLLM()))
+        resp = client.get("/")
+        assert 'id="app-version">v' in resp.text
+        assert "?v=" in resp.text
+
+
 class TestEvents:
     """SSE endpoint delivery (finite streams via sse_stream_limit).
 

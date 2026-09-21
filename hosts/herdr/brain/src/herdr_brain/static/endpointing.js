@@ -68,13 +68,37 @@
       speechStartedAt = null;
     }
 
+    function snapshot() {
+      /* Pure read for diagnostics overlays: shape is stable, relative
+       * remaining times are null when the utterance has not started. */
+      var t = now();
+      var speaking = hasSpeech();
+      return {
+        buffer: buffer,
+        bufferChars: buffer.length,
+        hasSpeech: speaking,
+        speechStartedAt: speechStartedAt,
+        lastChangeAt: lastChangeAt,
+        silenceMs: silenceMs,
+        hardCapMs: hardCapMs,
+        silenceRemainingMs: speaking && lastChangeAt !== null
+          ? Math.max(0, silenceMs - (t - lastChangeAt))
+          : null,
+        capRemainingMs: speaking && speechStartedAt !== null
+          ? Math.max(0, hardCapMs - (t - speechStartedAt))
+          : null,
+        shouldFinalize: shouldFinalize()
+      };
+    }
+
     return {
       push: push,
       hasSpeech: hasSpeech,
       shouldFinalize: shouldFinalize,
       silenceFor: silenceFor,
       finalize: finalize,
-      reset: reset
+      reset: reset,
+      snapshot: snapshot
     };
   }
 

@@ -11,11 +11,13 @@ import asyncio
 import json
 import queue as queue_module
 import re
+import subprocess
+from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Optional
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -35,6 +37,44 @@ _LLMFactory = Callable[[Settings, BrainTools], BrainLLM]
 _SAFE_FILENAME = re.compile(r"^[A-Za-z0-9._-]+$")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 MAX_SESSION_ID_CHARS = 128
+
+# The phone MUST be able to tell which build it runs: index.html is served
+# with no-cache and every asset reference carries ?v=<git short hash>.
+_NO_CACHE_HEADERS = {"Cache-Control": "no-cache"}
+_VERSIONED_REFS = (
+    ('src="/app.js"', 'src="/app.js?v={v}"'),
+    ('src="/endpointing.js"', 'src="/endpointing.js?v={v}"'),
+    ('href="/manifest.webmanifest"', 'href="/manifest.webmanifest?v={v}"'),
+    ('href="/icon.svg"', 'href="/icon.svg?v={v}"'),
+)
+_VERSION_PLACEHOLDER = '<span id="app-version">dev</span>'
+
+
+@lru_cache(maxsize=1)
+def resolve_version() -> str:
+    """Git short hash of the running build, cached at startup ('dev' fallback)."""
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=str(Path(__file__).resolve().parents[2]),
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip()
+    except Exception:  # noqa: BLE001 — a missing git must never break the server
+        pass
+    return "dev"
+
+
+def render_index(version: str) -> str:
+    """Static index.html with versioned asset refs and the visible version."""
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    for old, new in _VERSIONED_REFS:
+        html = html.replace(old, new.format(v=version))
+    html = html.replace(_VERSION_PLACEHOLDER, f'<span id="app-version">v{version}</span>')
+    return html
 
 
 class TextRequest(BaseModel):
@@ -59,6 +99,7 @@ def create_app(
     watcher: Optional[AgentWatcher] = None,
     sse_heartbeat_s: float = 15.0,
     sse_stream_limit: Optional[int] = None,
+    version: Optional[str] = None,
 ) -> FastAPI:
     """Builds the FastAPI app with injectable backends for tests.
 
@@ -101,6 +142,50 @@ def create_app(
     app.state.watcher = watcher
     app.state.sse_heartbeat_s = sse_heartbeat_s
     app.state.sse_stream_limit = sse_stream_limit
+
+    build = version if version is not None else resolve_version()
+    app.state.build = build
+    index_html = render_index(build)
+
+    @app.get("/", include_in_schema=False)
+    def index() -> HTMLResponse:
+        return HTMLResponse(content=index_html, headers=dict(_NO_CACHE_HEADERS))
+
+    @app.get("/app.js", include_in_schema=False)
+    def app_js() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "app.js", media_type="text/javascript",
+            headers=dict(_NO_CACHE_HEADERS),
+        )
+
+    @app.get("/endpointing.js", include_in_schema=False)
+    def endpointing_js() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "endpointing.js", media_type="text/javascript",
+            headers=dict(_NO_CACHE_HEADERS),
+        )
+
+    @app.get("/sw.js", include_in_schema=False)
+    def sw_js() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "sw.js", media_type="text/javascript",
+            headers=dict(_NO_CACHE_HEADERS),
+        )
+
+    @app.get("/manifest.webmanifest", include_in_schema=False)
+    def manifest() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "manifest.webmanifest",
+            media_type="application/manifest+json",
+            headers=dict(_NO_CACHE_HEADERS),
+        )
+
+    @app.get("/icon.svg", include_in_schema=False)
+    def icon() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "icon.svg", media_type="image/svg+xml",
+            headers=dict(_NO_CACHE_HEADERS),
+        )
 
     @app.get("/events")
     async def events(request: Request) -> StreamingResponse:

@@ -27,6 +27,8 @@
   var fallbackForm = $("text-fallback");
   var textInput = $("text-input");
   var statePill = $("state-pill");
+  var pillMain = $("pill-main");
+  var pillSub = $("pill-sub");
   var agentView = $("agent-view");
   var viewEmpty = $("view-empty");
   var pendingBanner = $("pending-banner");
@@ -39,6 +41,8 @@
   var sheetTitle = $("sheet-title");
   var sheetNote = $("sheet-note");
   var sheetDiag = $("sheet-diag");
+  var diagPanel = $("diag-panel");
+  var diagText = $("diag-text");
   var sheetConv = $("sheet-conversation");
   var sheetScreen = $("sheet-screen");
   var tabConv = $("tab-conv");
@@ -54,6 +58,11 @@
   var recFailures = 0;
   var epTick = null;            // endpointing timer
   var endpointer = null;        // Endpointing.createEndpointer()
+  var listeningStartedAt = null;
+  var lastInterimRaw = "";
+  var askCount = 0;
+  var lastDispatch = "ninguna";
+  var lastRecError = "ninguno";
   var textMode = false;         // mic unavailable: keyboard fallback
 
   /* Persistent per-install ids. */
@@ -84,12 +93,14 @@
     callState = state;
     if (state === "idle") {
       statePill.classList.add("hidden");
+      pillSub.classList.add("hidden");
       callBtn.textContent = "📞 Llamar";
       callBtn.classList.remove("oncall");
       pauseBtn.classList.add("hidden");
       return;
     }
-    statePill.textContent = PILL_TEXT[state] || state;
+    pillMain.textContent = PILL_TEXT[state] || state;
+    pillSub.classList.add("hidden");
     statePill.className = state;
     statePill.classList.remove("hidden");
     callBtn.textContent = "🔴 Colgar";
@@ -384,8 +395,71 @@
   player.addEventListener("ended", onAudioEnded);
   stopBtn.addEventListener("click", stopAudio);
 
+  var pressTimer = null;
+  var longPressFired = false;
+
+  statePill.addEventListener("pointerdown", function () {
+    longPressFired = false;
+    pressTimer = setTimeout(function () {
+      longPressFired = true;
+      openDiag();
+    }, 600);
+  });
+  ["pointerup", "pointercancel", "pointerleave"].forEach(function (ev) {
+    statePill.addEventListener(ev, function () {
+      if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+    });
+  });
+
   statePill.addEventListener("click", function () {
+    if (longPressFired) { longPressFired = false; return; }
     if (callState === "speaking") stopAudio();  // barge-in
+  });
+
+  /* ---------------- voice diagnostics overlay ---------------- */
+
+  var diagTimer = null;
+
+  function renderVoiceDiag() {
+    var snap = endpointer ? endpointer.snapshot() : null;
+    var versionEl = document.getElementById("app-version");
+    var lines = [
+      "build:            " + (versionEl ? versionEl.textContent : "?"),
+      "callState:        " + callState,
+      "inCall:           " + inCall,
+      "listening:        " + listening,
+      "dispatching:      " + dispatching,
+      "textMode:         " + textMode,
+      "escuchando desde: " + (listeningStartedAt ? new Date(listeningStartedAt).toLocaleTimeString() : "—"),
+      "errores recon.:   " + recFailures + " (último: " + lastRecError + ")",
+      "preguntas /ask:   " + askCount,
+      "último envío:     " + lastDispatch,
+      "interim chars:    " + (snap ? snap.bufferChars : 0),
+      "último interim:   " + (lastInterimRaw ? '"' + lastInterimRaw.slice(-80) + '"' : "(vacío)")
+    ];
+    if (snap) {
+      lines.push(
+        "silencio restante: " + (snap.silenceRemainingMs === null ? "—" : snap.silenceRemainingMs + " ms"),
+        "cap restante:      " + (snap.capRemainingMs === null ? "—" : snap.capRemainingMs + " ms"),
+        "hasSpeech:         " + snap.hasSpeech
+      );
+    } else {
+      lines.push("endpointer:        (sin sesión activa)");
+    }
+    lines.push("diagnóstico:      " + diag.lastError);
+    diagText.textContent = lines.join("\n");
+  }
+
+  function openDiag() {
+    diagPanel.classList.remove("hidden");
+    renderVoiceDiag();
+    if (diagTimer) clearInterval(diagTimer);
+    diagTimer = setInterval(renderVoiceDiag, 500);
+  }
+
+  $("diag-close").addEventListener("click", function () {
+    diagPanel.classList.add("hidden");
+    if (diagTimer) { clearInterval(diagTimer); diagTimer = null; }
   });
 
   /* ---------------- toast ---------------- */
@@ -442,6 +516,24 @@
     };
   }
 
+  /* ---------------- fetch with hard timeout ---------------- */
+
+  function fetchWithTimeout(url, options, timeoutMs) {
+    var controller = new AbortController();
+    var timer = setTimeout(function () { controller.abort(); }, timeoutMs || 30000);
+    return fetch(url, Object.assign({}, options || {}, { signal: controller.signal }))
+      .then(
+        function (resp) { clearTimeout(timer); return resp; },
+        function (err) {
+          clearTimeout(timer);
+          if (err && err.name === "AbortError") {
+            err = new Error("timeout: el brain tardó demasiado en responder");
+          }
+          throw err;
+        }
+      );
+  }
+
   /* ---------------- ask pipeline ---------------- */
 
   function afterAnswer() {
@@ -456,10 +548,12 @@
 
   function ask(text) {
     if (callState === "thinking") return Promise.resolve();
+    askCount += 1;
+    lastDispatch = text;
     addTurn("user", text);
     setCallState("thinking");
     stopListening();  // the mic must not hear the answer
-    return fetch("/ask", {
+    return fetchWithTimeout("/ask", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -467,7 +561,7 @@
         session_id: sessionId,
         pane_id: selectedPane || null
       })
-    })
+    }, 30000)
       .then(function (resp) {
         if (resp.status === 503) {
           showBanner("El brain no está configurado: falta GLM_API_KEY en el servidor. " +
@@ -484,8 +578,12 @@
           else afterAnswer();
         });
       })
-      .catch(function () {
-        showBanner("Error de red hablando con el brain.");
+      .catch(function (err) {
+        if (err && /timeout/.test(String(err.message || err))) {
+          showBanner("El brain tardó demasiado — vuelve a intentarlo.");
+        } else {
+          showBanner("Error de red hablando con el brain.");
+        }
       })
       .then(function () {
         interimEl.textContent = "";
@@ -528,6 +626,8 @@
     hideBanner();
     interimEl.classList.remove("hidden");
     interimEl.textContent = "…";
+    listeningStartedAt = Date.now();
+    lastInterimRaw = "";
     endpointer = window.Endpointing.createEndpointer();
 
     recognition = new SR();
@@ -542,16 +642,23 @@
         if (event.results[i].isFinal) {
           recRestartDelay = 300;
           recFailures = 0;
+          lastInterimRaw = interim;
           dispatchUtterance();
           return;
         }
       }
       if (endpointer) endpointer.push(interim);
-      interimEl.textContent = interim || "…";
+      lastInterimRaw = interim;
+      pillSub.classList.add("hidden");
+      // tail truncation: keep the newest words visible
+      interimEl.textContent = interim.length > 120 ? "…" + interim.slice(-120) : (interim || "…");
     };
 
     recognition.onerror = function (event) {
+      lastRecError = event.error || "desconocido";
       if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+        showBanner("Micrófono BLOQUEADO: concede el permiso en el navegador " +
+          "(menú ⋮ → Ajustes del sitio → Micrófono) y vuelve a llamar.");
         enterTextMode("Micrófono bloqueado — usa el teclado o concede el permiso en el navegador.");
         return;
       }
@@ -580,7 +687,20 @@
       listening = true;
       recognition.start();
       epTick = setInterval(function () {
-        if (endpointer && endpointer.shouldFinalize()) dispatchUtterance();
+        if (!endpointer) return;
+        if (endpointer.shouldFinalize()) {
+          dispatchUtterance();
+          return;
+        }
+        // H2 feedback: if the mic has been up 5s with zero captured chars,
+        // say it out loud in the pill.
+        var elapsed = Date.now() - listeningStartedAt;
+        if (!endpointer.hasSpeech() && elapsed > 5000) {
+          pillSub.textContent = "No te oigo — comprueba el micro";
+          pillSub.classList.remove("hidden");
+        } else if (endpointer.hasSpeech()) {
+          pillSub.classList.add("hidden");
+        }
       }, 200);
     } catch (err) {
       listening = false;
