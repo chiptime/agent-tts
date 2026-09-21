@@ -78,7 +78,11 @@ def render_mp3(
     return out_path
 
 
-def new_audio_path(settings: Settings) -> Path:
-    """Returns a fresh unique MP3 path inside the audio dir (created)."""
+def new_audio_path(settings: Settings, prefix: str = "") -> Path:
+    """Returns a fresh unique MP3 path inside the audio dir (created).
+
+    Announcements use the ``ann-`` prefix so the watcher can garbage-collect
+    its own files without touching chat-answer audio.
+    """
     settings.audio_dir.mkdir(parents=True, exist_ok=True)
-    return settings.audio_dir / f"{uuid.uuid4().hex}{MP3_SUFFIX}"
+    return settings.audio_dir / f"{prefix}{uuid.uuid4().hex}{MP3_SUFFIX}"
