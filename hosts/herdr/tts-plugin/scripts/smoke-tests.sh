@@ -55,6 +55,13 @@
 #         wrap + unknown-current fallback per key, run_voice_settings with
 #         piped keys (frame + persisted config.env + re-render), and the
 #         --voice-settings dispatch smoke
+#   26    daemon lifecycle: daemon_stop_running (pidfile kill + cmdline
+#         guard, legacy pkill fallback without pidfile, nothing-running
+#         "none" fail-open), daemon_restart success path through the
+#         SCRIPT re-invocation (HERDR_TTS_SCRIPT points at a recorder stub
+#         that logs its argv and writes the pidfile; the timeout warning
+#         path is NOT exercised here), settings key R renders the
+#         confirmation note inline, and the --restart-daemon dispatch smoke
 set -uo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -1638,6 +1645,80 @@ assert_grep "25e config_set creates a missing config.env (rc 0)" '^create_rc=0$'
 assert_grep "25e created file passes bash -n" '^syntax-ok$' "$T/out.txt"
 bash -c 'source "$1" >/dev/null 2>&1 && printf "src:%s\n" "$TTS_PLAYBACK"' _ "$CONFIG_FILE" > "$T/out.txt"
 assert_grep "25e created file sources with the written value" '^src:auto$' "$T/out.txt"
+
+echo "── 26. daemon stop/restart: pidfile kill, legacy fallback, settings R, --restart-daemon"
+new_env s26
+export HERDR_TTS_DAEMON_PID_FILE="$T/daemon.pid"
+
+# 26a. pidfile path: a live fake daemon (cmdline guarded like the real one)
+#      is killed through the pidfile; the out-var reports "pidfile".
+bash -c 'exec -a "bin/herdr-tts _daemon" sleep 30' & FAKE26=$!
+printf '%s\n' "$FAKE26" > "$HERDR_TTS_DAEMON_PID_FILE"
+lib_run 'daemon_stop_running stop_how; rc=$?; echo "how=$stop_how rc=$rc"' > "$T/out.txt"
+wait "$FAKE26" 2>/dev/null || true
+! kill -0 "$FAKE26" 2>/dev/null && ok "26a pidfile kill removes the fake daemon" || { bad "26a fake daemon survived"; kill -9 "$FAKE26" 2>/dev/null || true; }
+assert_grep "26a out-var says pidfile, rc 0" '^how=pidfile rc=0$' "$T/out.txt"
+
+# 26b. legacy fallback: same fake process WITHOUT a pidfile → the cmdline
+#      sweep kills it and the out-var reports "fallback". The fake mirrors
+#      the real daemon's argv shape (adjacent <...herdr-tts> <_daemon>),
+#      which is exactly what the strict adjacency sweep matches.
+rm -f "$HERDR_TTS_DAEMON_PID_FILE"
+bash -c 'while :; do sleep 0.5; done' herdr-tts _daemon & FAKE26B=$!
+lib_run 'daemon_stop_running stop_how; echo "how=$stop_how"' > "$T/out.txt"
+wait "$FAKE26B" 2>/dev/null || true
+! kill -0 "$FAKE26B" 2>/dev/null && ok "26b legacy fallback kills a daemon without pidfile" || { bad "26b fake daemon survived"; kill -9 "$FAKE26B" 2>/dev/null || true; }
+assert_grep "26b out-var says fallback" '^how=fallback$' "$T/out.txt"
+
+# 26c. nothing running → "none", rc 0 (fail-open). The sweep matches only
+#      the strict adjacent-argv daemon signature, so ambient processes that
+#      merely mention the string in a larger argument are never touched.
+lib_run 'daemon_stop_running stop_how; rc=$?; echo "how=$stop_how rc=$rc"' > "$T/out.txt"
+assert_grep "26c nothing running → none, rc 0" '^how=none rc=0$' "$T/out.txt"
+
+# 26d. daemon_restart SUCCESS path (documented choice over the timeout
+#      path): SCRIPT is pointed at a recorder stub that logs its argv and
+#      WRITES the pidfile itself, so the pidfile wait succeeds and the
+#      Spanish confirmation fires with the new pid.
+cat > "$T/recorder.sh" <<EOF
+#!/usr/bin/env bash
+printf 'args=%s\n' "\$*" >> "$T/restart.log"
+printf '%s\n' "\$\$" > "\${HERDR_TTS_DAEMON_PID_FILE:?}"
+EOF
+chmod +x "$T/recorder.sh"
+rm -f "$T/restart.log" "$HERDR_TTS_DAEMON_PID_FILE"
+lib_run 'SCRIPT="$T/recorder.sh"; daemon_restart 2>"$T/restart.err"; rc=$?; echo "rc=$rc"' > "$T/out.txt"
+assert_grep "26d daemon_restart exits rc 0" '^rc=0$' "$T/out.txt"
+assert_grep "26d re-invocation reached the stub with _daemon" '^args=_daemon$' "$T/restart.log"
+assert_grep "26d Spanish confirmation with the new pid" '^✓ Daemon reiniciado \(pid [0-9]+\)$' "$T/restart.err"
+
+# 26e. Settings view key R: piped `aRq` through --voice-menu with the
+#      hermetic SCRIPT override — R restarts via the stub and the
+#      confirmation note renders inline on exactly one frame.
+rm -f "$T/restart.log" "$HERDR_TTS_DAEMON_PID_FILE"
+( export HERDR_TTS_SCRIPT="$T/recorder.sh"
+  printf 'aRq' | timeout 10 "$SCRIPT" --voice-menu > "$T/out.txt" 2>>"$T/err.log" )
+[[ $? -eq 0 ]] && ok "26e aRq menu path exits rc=0" || bad "26e rc!=0"
+assert_grep "26e settings frame rendered" 'Ajustes de voz y audio' "$T/out.txt"
+[[ $(grep -cF '✓ Daemon reiniciado' "$T/out.txt") -eq 1 ]] \
+  && ok "26e R renders the confirmation note on exactly the re-render" \
+  || bad "26e note count $(grep -cF '✓ Daemon reiniciado' "$T/out.txt") (want 1)"
+assert_grep "26e R hit the restart path (stub invoked)" '^args=_daemon$' "$T/restart.log"
+hv=$(esc_count "$T/out.txt" $'\033[H')
+[[ "$hv" -eq 4 ]] && ok "26e 4 frame writes: main, settings, R re-render, main ($hv)" || bad "26e H-moves=$hv (want 4)"
+
+# 26f. --restart-daemon dispatch smoke (like 25d): the flag exits rc 0
+#      with the confirmation on stderr and the case wiring calls
+#      daemon_restart.
+rm -f "$T/restart.log" "$HERDR_TTS_DAEMON_PID_FILE"
+( export HERDR_TTS_SCRIPT="$T/recorder.sh"
+  timeout 10 "$SCRIPT" --restart-daemon </dev/null > "$T/out.txt" 2>"$T/restart2.err" )
+[[ $? -eq 0 ]] && ok "26f --restart-daemon exits rc=0" || bad "26f rc!=0"
+assert_grep "26f confirmation on stderr" 'Daemon reiniciado' "$T/restart2.err"
+assert_grep "26f dispatch spawned the daemon entrypoint" '^args=_daemon$' "$T/restart.log"
+sed -n '/--restart-daemon)/,/;;/p' "$SCRIPT" | grep -q 'daemon_restart' \
+  && ok "26f argparse case wires --restart-daemon → daemon_restart" || bad "26f no dispatch wiring"
+unset HERDR_TTS_DAEMON_PID_FILE
 
 echo
 echo "═══ RESULT: $PASS passed, $FAIL failed ═══"
