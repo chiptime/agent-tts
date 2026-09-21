@@ -3,12 +3,12 @@
 /* herdr-brain PWA: continuous hands-free call.
  *
  * Call state machine: idle -> listening -> thinking -> speaking -> listening…
- * - Speech recognition auto-restarts (with backoff) while listening.
- * - Recognition is stopped while thinking/speaking so the mic never hears
- *   the TTS. Tapping the pill while speaking is barge-in.
- * - The pause button silences the mic without ending the call.
+ * - ONE recognition lifecycle per listening session (continuous=true) with
+ *   SELF-ENDPOINTING (static/endpointing.js): dispatch on isFinal, on 1200ms
+ *   of interim silence, or on a 15s hard cap. No mic during /ask or TTS.
  * - Announcements arrive over SSE and queue behind any in-flight audio.
- * - No SpeechRecognition (or persistent mic failure): text input fallback.
+ * - Every poll render is guarded: one render error never kills the loop and
+ *   every surface has a Spanish empty/error state (no dead ends).
  * User-facing strings are Spanish on purpose (single Spanish-speaking owner).
  */
 
@@ -28,6 +28,7 @@
   var textInput = $("text-input");
   var statePill = $("state-pill");
   var agentView = $("agent-view");
+  var viewEmpty = $("view-empty");
   var pendingBanner = $("pending-banner");
   var viewTranscript = $("view-transcript");
   var viewScreen = $("view-screen");
@@ -37,6 +38,7 @@
   var sheet = $("sheet");
   var sheetTitle = $("sheet-title");
   var sheetNote = $("sheet-note");
+  var sheetDiag = $("sheet-diag");
   var sheetConv = $("sheet-conversation");
   var sheetScreen = $("sheet-screen");
   var tabConv = $("tab-conv");
@@ -44,12 +46,15 @@
 
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   var recognition = null;
-  var listening = false;       // a recognition object is actually running
-  var manualStop = false;      // we stopped the mic on purpose this turn
+  var listening = false;        // a recognition object is running
+  var manualStop = false;       // we stopped the mic on purpose
+  var dispatching = false;      // an utterance is being processed
   var recRestartTimer = null;
   var recRestartDelay = 300;
   var recFailures = 0;
-  var textMode = false;        // mic unavailable: keyboard fallback
+  var epTick = null;            // endpointing timer
+  var endpointer = null;        // Endpointing.createEndpointer()
+  var textMode = false;         // mic unavailable: keyboard fallback
 
   /* Persistent per-install ids. */
   var SESSION_KEY = "herdr-brain-session";
@@ -61,6 +66,7 @@
     localStorage.setItem(SESSION_KEY, sessionId);
   }
   var selectedPane = localStorage.getItem(PANE_KEY);
+  var lastViewJson = "";  // render cache — set only AFTER a successful render
 
   /* ---------------- call state machine ----------------
    * idle | listening | thinking | speaking | paused  */
@@ -81,7 +87,6 @@
       callBtn.textContent = "📞 Llamar";
       callBtn.classList.remove("oncall");
       pauseBtn.classList.add("hidden");
-      callBtn.disabled = false;
       return;
     }
     statePill.textContent = PILL_TEXT[state] || state;
@@ -89,11 +94,41 @@
     statePill.classList.remove("hidden");
     callBtn.textContent = "🔴 Colgar";
     callBtn.classList.add("oncall");
-    callBtn.disabled = false;
     var micControllable = state === "listening" || state === "paused";
     pauseBtn.classList.toggle("hidden", !micControllable);
     pauseBtn.textContent = state === "paused" ? "▶ Reanudar" : "⏸ Pausa";
     interimEl.classList.toggle("hidden", state !== "listening");
+  }
+
+  /* ---------------- diagnostics ---------------- */
+
+  var diag = { lastPoll: null, lastError: "ninguno" };
+
+  function markPollOk() {
+    diag.lastPoll = new Date();
+    diag.lastError = "ninguno";
+    renderDiag();
+  }
+
+  function markPollError(scope, err) {
+    var msg = err && err.message ? err.message : String(err);
+    diag.lastPoll = new Date();
+    diag.lastError = scope + ": " + msg;
+    renderDiag();
+  }
+
+  function renderDiag() {
+    if (!sheetDiag) return;
+    var when = diag.lastPoll ? diag.lastPoll.toLocaleTimeString() : "—";
+    sheetDiag.textContent = "Última consulta: " + when + " · Último error: " + diag.lastError;
+  }
+
+  function safeRender(name, fn, arg) {
+    try {
+      fn(arg);
+    } catch (err) {
+      markPollError(name, err);
+    }
   }
 
   /* ---------------- conversation view ---------------- */
@@ -126,14 +161,10 @@
     micNote.classList.remove("hidden");
   }
 
-  function hideMicNote() {
-    micNote.classList.add("hidden");
-  }
-
   function enterTextMode(reason) {
     if (textMode) return;
     textMode = true;
-    if (inCall && callState !== "paused") endCall();
+    if (inCall) endCall();
     fallbackForm.classList.remove("hidden");
     showMicNote(reason);
   }
@@ -233,8 +264,6 @@
       line.appendChild(document.createTextNode(turns[i].text));
       viewTranscript.appendChild(line);
     }
-    var interesting = view && (turns.length || view.screen || (view.pending && view.pending.detected));
-    agentView.classList.toggle("hidden", !interesting);
     if (view && view.screen) {
       viewScreen.textContent = view.screen;
       viewScreen.classList.remove("hidden");
@@ -242,32 +271,49 @@
       viewScreen.textContent = "";
       viewScreen.classList.add("hidden");
     }
+    /* NO dead ends: the panel is never blank; explicit empty state with retry. */
+    var hasContent = turns.length > 0 || !!(view && view.screen);
+    if (hasContent) {
+      viewEmpty.classList.add("hidden");
+    } else {
+      viewEmpty.textContent = "Sin datos del agente — toca para reintentar";
+      viewEmpty.classList.remove("hidden");
+    }
+    agentView.classList.remove("hidden");
   }
 
   function renderView(view) {
     if (!view) return;
-    renderStatus(view.status);
-    renderPending(view.pending);
-    var tailJson = JSON.stringify([view.transcript, view.screen]);
-    if (tailJson !== lastViewJson) {
-      lastViewJson = tailJson;
-      renderViewTail(view);
-    }
+    safeRender("status", renderStatus, view.status);
+    safeRender("pending", renderPending, view.pending);
+    safeRender("tail", renderViewTail, view);
+    lastViewJson = JSON.stringify([view.transcript, view.screen, view.pending]);
+    markPollOk();
   }
 
   function refreshView() {
     var qs = selectedPane ? "?pane_id=" + encodeURIComponent(selectedPane) : "";
     fetch("/view" + qs)
-      .then(function (resp) { return resp.ok ? resp.json() : null; })
+      .then(function (resp) {
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        return resp.json();
+      })
       .then(renderView)
-      .catch(function () { /* keep last known state */ });
+      .catch(function (err) {
+        markPollError("view", err);
+      });
   }
 
   function refreshState() {
     fetch("/herd")
-      .then(function (resp) { return resp.ok ? resp.json() : []; })
-      .then(renderHerd)
-      .catch(function () { /* keep last known strip */ });
+      .then(function (resp) {
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        return resp.json();
+      })
+      .then(function (herd) { safeRender("herd", renderHerd, herd); })
+      .catch(function (err) {
+        markPollError("herd", err);
+      });
     refreshView();
   }
 
@@ -448,37 +494,60 @@
       });
   }
 
-  /* ---------------- speech recognition ---------------- */
+  /* ---------------- speech recognition (self-endpointing) ----------------
+   *
+   * ONE recognition lifecycle per listening session, continuous=true.
+   * Chrome often never finalizes interim results, so endpointing.js decides:
+   * dispatch on isFinal, on 1200ms of interim silence, or at a 15s hard cap.
+   * After dispatch the mic stays off through /ask + TTS; onAudioEnded
+   * restarts it. onend restarts ONLY while listening, single-flight.
+   */
+
+  function teardownRecognition() {
+    if (epTick) { clearInterval(epTick); epTick = null; }
+    if (recognition) {
+      try { recognition.stop(); } catch (err) { /* already stopped */ }
+    }
+    listening = false;
+  }
+
+  function dispatchUtterance() {
+    if (dispatching || callState !== "listening" || !endpointer) return;
+    var text = endpointer.finalize();
+    if (!text) { endpointer.reset(); return; }
+    dispatching = true;
+    interimEl.textContent = "";
+    teardownRecognition();
+    setCallState("thinking");
+    ask(text).then(function () { dispatching = false; });
+  }
 
   function startListening() {
-    if (textMode || !SR || callState !== "listening" || listening) return;
+    if (textMode || !SR || callState !== "listening" || listening || dispatching) return;
     manualStop = false;
     hideBanner();
     interimEl.classList.remove("hidden");
     interimEl.textContent = "…";
+    endpointer = window.Endpointing.createEndpointer();
 
     recognition = new SR();
     recognition.lang = navigator.language || "es-ES";
     recognition.interimResults = true;
-    recognition.continuous = false;
+    recognition.continuous = true;
 
     recognition.onresult = function (event) {
       var interim = "";
-      var finalText = "";
       for (var i = event.resultIndex; i < event.results.length; i++) {
-        var result = event.results[i];
-        if (result.isFinal) finalText += result[0].transcript;
-        else interim += result[0].transcript;
+        interim += event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          recRestartDelay = 300;
+          recFailures = 0;
+          dispatchUtterance();
+          return;
+        }
       }
+      if (endpointer) endpointer.push(interim);
       interimEl.textContent = interim || "…";
-      if (finalText && callState === "listening") {
-        recRestartDelay = 300;
-        recFailures = 0;
-        interimEl.textContent = "";
-        interimEl.classList.add("hidden");
-        stopListening();
-        ask(finalText.trim());
-      }
     };
 
     recognition.onerror = function (event) {
@@ -491,12 +560,13 @@
       if (recFailures > 8) {
         enterTextMode("El reconocimiento de voz falla repetidamente — cambiado a teclado.");
       }
-      /* no-speech and friends: silent quick restart with backoff (onend). */
+      /* no-speech and friends: silent restart with backoff (onend). */
     };
 
     recognition.onend = function () {
       listening = false;
-      recognition = null;
+      if (dispatching) return;  // deliberate stop: ask() owns the next transition
+      if (epTick) { clearInterval(epTick); epTick = null; }
       if (callState === "listening" && !manualStop && !textMode) {
         recRestartTimer = setTimeout(startListening, recRestartDelay);
         recRestartDelay = Math.min(recRestartDelay * 2, 3000);
@@ -509,6 +579,9 @@
     try {
       listening = true;
       recognition.start();
+      epTick = setInterval(function () {
+        if (endpointer && endpointer.shouldFinalize()) dispatchUtterance();
+      }, 200);
     } catch (err) {
       listening = false;
       recRestartTimer = setTimeout(startListening, recRestartDelay);
@@ -519,6 +592,7 @@
   function stopListening() {
     manualStop = true;
     if (recRestartTimer) { clearTimeout(recRestartTimer); recRestartTimer = null; }
+    if (epTick) { clearInterval(epTick); epTick = null; }
     if (recognition) {
       try { recognition.stop(); } catch (err) { /* already stopped */ }
     }
@@ -596,7 +670,6 @@
 
   /* ---------------- full-text agent sheet ---------------- */
 
-  var sheetOpen = false;
   var sheetTab = "conv";
 
   function renderSheetConversation(data) {
@@ -631,38 +704,51 @@
   }
 
   function loadSheetConversation() {
+    sheetConv.textContent = "Cargando…";
     var qs = selectedPane ? "?pane_id=" + encodeURIComponent(selectedPane) : "";
     fetch("/conversation" + qs)
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(renderSheetConversation)
-      .catch(function () {
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        renderSheetConversation(data);
+        markPollOk();
+      })
+      .catch(function (err) {
         sheetConv.textContent = "No se pudo cargar la conversación.";
+        markPollError("conversación", err);
       });
   }
 
   function loadSheetScreen() {
+    sheetScreen.textContent = "Cargando…";
     var qs = selectedPane ? "?pane_id=" + encodeURIComponent(selectedPane) : "";
     fetch("/screen" + qs)
-      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
       .then(function (data) {
         sheetScreen.textContent = (data && data.screen) || "(pantalla no disponible)";
+        markPollOk();
       })
-      .catch(function () {
+      .catch(function (err) {
         sheetScreen.textContent = "(pantalla no disponible)";
+        markPollError("pantalla", err);
       });
   }
 
   function renderSheetTab() {
-    var conv = sheetTab === "conv";
-    tabConv.className = conv ? "active" : "";
-    tabScreen.className = conv ? "" : "active";
-    sheetConv.classList.toggle("hidden", !conv);
-    sheetScreen.classList.toggle("hidden", conv);
-    sheetNote.classList.toggle("hidden", !conv || sheetNote.textContent.indexOf("Últimas") !== 0);
+    var isConv = sheetTab === "conv";
+    tabConv.className = isConv ? "active" : "";
+    tabScreen.className = isConv ? "" : "active";
+    sheetConv.classList.toggle("hidden", !isConv);
+    sheetScreen.classList.toggle("hidden", isConv);
+    sheetNote.classList.toggle("hidden", !isConv || sheetNote.textContent.indexOf("Últimas") !== 0);
   }
 
   function openSheet() {
-    sheetOpen = true;
     sheetTitle.textContent = paneTitle.textContent || "Agente";
     sheet.classList.remove("hidden");
     sheetTab = "conv";
@@ -671,14 +757,16 @@
   }
 
   function closeSheet() {
-    sheetOpen = false;
     sheet.classList.add("hidden");
   }
 
-  agentView.addEventListener("click", openSheet);
+  agentView.addEventListener("click", function () {
+    refreshView();  // "toca para reintentar": refresh glance, then show the sheet
+    openSheet();
+  });
   $("sheet-close").addEventListener("click", closeSheet);
   $("sheet-refresh").addEventListener("click", function () {
-    if (!sheetOpen) return;
+    if (sheet.classList.contains("hidden")) return;
     if (sheetTab === "conv") loadSheetConversation();
     else loadSheetScreen();
   });
@@ -688,6 +776,7 @@
   /* ---------------- boot ---------------- */
 
   initSpeech();
+  renderDiag();
   refreshState();
   setInterval(refreshState, 5000);
 
