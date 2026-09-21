@@ -62,6 +62,11 @@
 #         that logs its argv and writes the pidfile; the timeout warning
 #         path is NOT exercised here), settings key R renders the
 #         confirmation note inline, and the --restart-daemon dispatch smoke
+#   27    watcher settle window: TTS_SETTLE_SECONDS sanitization +
+#         config_set acceptance, an intermediate working→done→working
+#         flicker inside the window is logged and dropped BEFORE the
+#         pipeline, and a done that holds past the window reaches the
+#         pipeline branch
 set -uo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -1595,6 +1600,10 @@ lib_run '
   for i in 1 2 3 4 5 6; do k=$(settings_cycle_value retention "$k"); line+=">$k"; done
   echo "$line"
   echo "retention_unknown:$(settings_cycle_value retention 9)"
+  k=0; line="settle:$k"
+  for i in 1 2 3 4 5 6; do k=$(settings_cycle_value settle "$k"); line+=">$k"; done
+  echo "$line"
+  echo "settle_unknown:$(settings_cycle_value settle 7)"
 ' > "$T/out.txt"
 assert_grep "25b provider cycles with wrap" '^provider:edge>openai>elevenlabs>piper>kokoro>edge>openai$' "$T/out.txt"
 assert_grep "25b unknown provider current → first element" '^provider_unknown:edge$' "$T/out.txt"
@@ -1602,6 +1611,8 @@ assert_grep "25b target cycles with wrap" '^target:local>winhost>wsl-ps>windows>
 assert_grep "25b unknown target current → first element" '^target_unknown:local$' "$T/out.txt"
 assert_grep "25b retention cycles with wrap" '^retention:0>1>3>7>14>0>1$' "$T/out.txt"
 assert_grep "25b unknown retention current → first element" '^retention_unknown:0$' "$T/out.txt"
+assert_grep "25b settle cycles with wrap" '^settle:0>2>5>10>15>30>0$' "$T/out.txt"
+assert_grep "25b unknown settle current → first element" '^settle_unknown:0$' "$T/out.txt"
 
 # 25c. run_voice_settings with piped keys: frame renders, values cycle,
 #      config.env persists, every change re-renders (one H-move each).
@@ -1719,6 +1730,60 @@ assert_grep "26f dispatch spawned the daemon entrypoint" '^args=_daemon$' "$T/re
 sed -n '/--restart-daemon)/,/;;/p' "$SCRIPT" | grep -q 'daemon_restart' \
   && ok "26f argparse case wires --restart-daemon → daemon_restart" || bad "26f no dispatch wiring"
 unset HERDR_TTS_DAEMON_PID_FILE
+
+echo "── 27. watcher settle window: intermediate done dropped, held done fires"
+new_env s27
+CONFIG_FILE="$T/conf/herdr-tts/config.env" # mirrors the script's XDG default
+# Fake herdr CLI: agent wait succeeds once then blocks (the agent is back
+# at work), agent get answers from the scenario files, pane/agent read
+# return empty so a held done never reaches real synthesis in the test.
+export SETTLE_SCENARIO_DIR="$T"
+cat > "$T/bin/herdr" <<'STUB'
+#!/usr/bin/env bash
+d="$SETTLE_SCENARIO_DIR"
+case "$1 $2" in
+  "pane read"|"agent read") exit 0 ;;
+  "agent wait")
+    n=$(cat "$d/wait_n" 2>/dev/null || echo 0); printf '%s' $((n+1)) > "$d/wait_n"
+    if (( n == 0 )); then exit 0; fi
+    sleep 60 ;;
+  "agent get")
+    if [[ -f "$d/flip_working" ]]; then
+      printf '%s' '{"result":{"agent":{"agent_status":"working"}}}'
+    else
+      printf '%s' '{"result":{"agent":{"agent_status":"done"}}}'
+    fi ;;
+  *) printf '%s' '{"result":{}}' ;;
+esac
+STUB
+chmod +x "$T/bin/herdr"
+
+# 27a. invalid env value sanitized to the default + config_set acceptance.
+TTS_SETTLE_SECONDS=banana lib_run 'printf %s "$TTS_SETTLE_SECONDS"' > "$T/out.txt"
+assert_grep "27a invalid env value sanitized to default 5" '^5$' "$T/out.txt"
+lib_run 'r=0; config_set TTS_SETTLE_SECONDS 10 || r=$?; echo "rc=$r"' > "$T/out.txt"
+assert_grep "27a config_set accepts the settle key" '^rc=0$' "$T/out.txt"
+grep -q 'TTS_SETTLE_SECONDS="10"' "$CONFIG_FILE" \
+  && ok "27a settle value persisted to config.env" || bad "27a settle not persisted"
+
+# 27b. intermediate step: done reverts to working inside the window →
+#      logged discard, the pipeline (synthesis + ntfy) never fires.
+: > "$T/wait_n"
+( timeout 8 /bin/bash "$LIBRUN" "$SCRIPT" 'TTS_SETTLE_SECONDS=2; watch_agent_pane w6:p1 opencode' > "$T/watchA.log" 2>>"$T/err.log" ) &
+flipper=$!
+sleep 1
+touch "$T/flip_working" # the agent goes back to working DURING the window
+wait $flipper
+assert_grep "27b intermediate done discarded" 'done intermedio descartado' "$T/watchA.log"
+grep -q 'working → done' "$T/watchA.log" \
+  && bad "27b pipeline fired for an intermediate step" \
+  || ok "27b pipeline never fired for the intermediate step"
+
+# 27c. real end of turn: done still holds after the window → the watcher
+#      proceeds to the pipeline branch (empty pane text skips synthesis).
+rm -f "$T/flip_working"; : > "$T/wait_n"
+timeout 8 /bin/bash "$LIBRUN" "$SCRIPT" 'TTS_SETTLE_SECONDS=1; watch_agent_pane w6:p2 opencode' > "$T/watchB.log" 2>>"$T/err.log"
+assert_grep "27c held done reaches the pipeline branch" 'working → done' "$T/watchB.log"
 
 echo
 echo "═══ RESULT: $PASS passed, $FAIL failed ═══"
