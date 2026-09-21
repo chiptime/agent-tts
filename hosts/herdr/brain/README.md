@@ -81,6 +81,12 @@ curl -s localhost:8741/state
 # → {"active":true,"pane_id":"w7:p4","agent":"opencode","agent_status":"working",
 #     "title":"OpenCode","cwd":"/repo","session_id":"ses_…"}
 
+curl -s localhost:8741/view
+# → {"status": {…same as /state…},
+#     "transcript": [{"role":"user","text":"…"},{"role":"assistant","text":"…"}],
+#     "screen": "…last ~12 visible lines…",
+#     "pending": {"detected":true,"kind":"permission","excerpt":"…allow? (y/n)"}}
+
 curl -s localhost:8741/ask -H 'content-type: application/json' \
      -d '{"text":"en que estas trabajando?","session_id":"phone-abc"}'
 # → {"answer":"…","pane_id":"w7:p4","agent":"opencode","session_id":"phone-abc",
@@ -102,9 +108,22 @@ each message clipped at 4000 chars). Omitting `session_id` uses the `default`
 session, so old callers keep working. The system message is rebuilt on every
 request: static identity/policy text plus a **live context block** (active
 agent kind and status, terminal title, cwd, pane id, session id, local time)
-that is refreshed each turn and never stored in history. Follow-ups like
+that is refreshed each turn and never stored in history. When the pending
+detector fires, the block ends with an `ATTENTION: …` line. Follow-ups like
 "¿y qué más?" resolve against prior turns; `POST /reset` (or `reset: true`
 on `/ask`) starts fresh.
+
+### Pending-action detection (heuristic)
+
+`/view.pending` and the LLM hint come from `detect_pending`, which is
+**explicitly a heuristic**: it matches the bottom of the visible screen for
+permission markers (`y/n`, `allow`, `deny`, `permit`, `approve`,
+`confirm`…), error markers (`error`, `failed`, `traceback`) and question
+shapes (a line ending in `?`, "press enter"); a `blocked` agent status is a
+strong signal by itself. It can false-positive on ordinary output — treat
+it as a hint, not ground truth. The brain's prompt enforces the safety
+rule that matters: to answer a pending prompt on the user's behalf it must
+first `read_screen` and state what would be confirmed — never a blind yes.
 
 The brain also serves its mobile PWA same-origin at `/` (static assets in
 `src/herdr_brain/static/`, mounted after the API routes): no CORS anywhere.
@@ -137,6 +156,11 @@ Install to home screen (Android, Chrome):
 4. Tap **● Call**, speak; the interim transcript shows live, then the answer
    appears as text and the spoken mp3 plays in the earbuds. **■ Stop audio**
    kills playback anytime.
+
+The header polls `/view` every 5s: the status chip follows the agent state
+and the **agent view panel** shows the pending banner (amber = question,
+red = error, blue = permission), the last transcript turns and a dimmed
+screen tail, so pending OK/permission prompts are visible hands-free.
 
 Browsers without the Web Speech API (e.g. Firefox) automatically show a text
 input with the same ask flow, which also makes desktop testing trivial.
