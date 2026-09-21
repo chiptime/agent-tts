@@ -1,6 +1,11 @@
 /* herdr-brain service worker: installability only.
- * Deliberately no caching — the API, audio and UI assets always hit the
- * network so the brain's answers are never served stale. */
+ *
+ * Cache discipline (deliberate): this worker NEVER caches anything. The
+ * server sends Cache-Control: no-cache on index.html and every asset, and
+ * asset URLs are build-stamped (?v=<git hash>), so the phone always
+ * revalidates and runs the deployed build. The pass-through fetch handler
+ * exists solely to satisfy PWA installability.
+ */
 
 self.addEventListener("install", function (event) {
   self.skipWaiting();
