@@ -153,7 +153,7 @@ Chord syntax: `"prefix+X"` (an uppercase key means shift — `prefix+N` ≠ `pre
 
 ### Option 1 — Compact map (recommended): one key opens the voice menu
 
-The plugin ships a **voice menu popup**. Bind one free core letter (`u` is free in Herdr core defaults): the popup opens with the full cheat sheet, you press one more key, the action runs, and the popup closes itself (focus is restored). Zero collisions with Herdr core, and the whole command surface stays on screen instead of memorized. In `keymap.json`:
+The plugin ships a **voice menu popup**. Bind one free core letter (`u` is free in Herdr core defaults): the popup opens with the full cheat sheet, you press one more key, the action runs, and the popup closes itself (focus is restored) — press `a` instead and the **Ajustes de voz y audio** view opens *inside* the same popup (see [Ajustes de voz y audio](#️-ajustes-de-voz-y-audio)). Zero collisions with Herdr core, and the whole command surface stays on screen instead of memorized. In `keymap.json`:
 
 ```json
 {
@@ -185,6 +185,7 @@ Keys inside the menu (actions target the focused chat):
 | `Z` | Snooze GLOBAL (reuniones) |
 | `+` / `-` | Velocidad ±10% |
 | `d` / `o` | Abrir dashboard / paleta de voz |
+| `a` | Abrir Ajustes de voz y audio (dentro del menú; `q`/`Esc`/`Enter` vuelve al menú) |
 | `q` / `Esc` | Salir |
 
 ### Option 2 — ctrl+alt family (no prefix, no collisions)
@@ -203,9 +204,9 @@ Suggested family (deterministic — `herdr-tts keymap adopt --style ctrlalt` wri
 | `mute` | `ctrl+alt+m` | `rate_down` | `ctrl+alt+-` |
 | `snooze` | `ctrl+alt+z` | `dashboard` | `ctrl+alt+d` |
 | `snooze_global` | `ctrl+alt+g` | `palette` | `ctrl+alt+o` |
-| `menu` | `ctrl+alt+u` | `settings` | `ctrl+alt+shift+u` |
+| `menu` | `ctrl+alt+u` | — | — |
 
-(`paragraph_next` / `paragraph_prev` have no suggested chord — assign them yourself in `keymap.json` and `keymap apply` installs them too.)
+(`paragraph_next` / `paragraph_prev` have no suggested chord, and `settings` ships without one too — the settings view lives inside the voice menu (key `a`); bind any of them yourself in `keymap.json` and `keymap apply` installs them too.)
 
 ### Option 3 — Direct map (power users)
 
@@ -226,7 +227,6 @@ The original one-chord-per-command map: fastest to press, but several letters **
 | `prefix+Z` | Snooze global | libre |
 | `prefix+m` | Mute pane | libre |
 | `prefix+=` / `prefix+-` | Velocidad ±10% | libre |
-| `prefix+u` | Ajustes de voz y audio (popup, ver [Ajustes](#️-ajustes-de-voz-y-audio-prefixu)) | libre en core |
 
 Install the map (one `[[keys.command]]` per assigned chord) with:
 
@@ -444,7 +444,8 @@ TTS_TITLE_GLYPHS="1"        # 1 = ✔/🔇/😴 prefixes on pane titles; 0 = ful
 # Store root override (default $HOME/.local/share/agent-tts/audio):
 # AGENT_TTS_AUDIO_DIR="/path/to/audio-store"
 
-# Managed by the voice settings popup (prefix+u): TTS_PROVIDER,
+# Managed by the voice settings view (voice menu → `a`, or
+# `herdr-tts --voice-settings`): TTS_PROVIDER,
 # TTS_PLAYBACK and HERDR_TTS_AUDIO_RETENTION_DAYS. The popup rewrites
 # them in place (every other line is preserved byte-for-byte) and keeps
 # the previous version in config.env.bak.
@@ -539,6 +540,23 @@ key = "prefix+o"
 type = "shell"
 command = "herdr plugin pane open --plugin herdr.tts --entrypoint tts-palette"
 ```
+
+---
+
+## ⚙️ Ajustes de voz y audio
+
+`prefix+u` abre el **menú de voz**; dentro del menú, la tecla `a` abre esta vista de **Ajustes**: tres ajustes opcionales que se **ciclan con una tecla** y se guardan al momento en `~/.config/herdr-tts/config.env`:
+
+| Tecla | Ajuste | Ciclo |
+|---|---|---|
+| `p` | Proveedor TTS | `edge` (gratuito, por defecto) → `openai` → `elevenlabs` → `piper` → `kokoro` |
+| `d` | Destino de reproducción | `local` → `winhost` → `wsl-ps` → `windows` → `auto` |
+| `r` | Audio retenido (días) | `0` (apagado) → `1` → `3` → `7` → `14` |
+
+* Dentro del menú, `q` / `Esc` / `Enter` **vuelven al menú principal**. Para acceso directo sigue existiendo el popup independiente (`herdr-tts --voice-settings`, acción `voice-settings` del plugin, entrypoint `tts-settings`), donde `q` / `Esc` cierra el popup. `settings` sigue siendo un id ligable en `keymap.json`, pero **sin acorde por defecto**: los ajustes no gastan una tecla de core.
+* Kokoro y Piper requieren instalar el modelo antes: `agent-tts voice install <modelo>`.
+* La escritura es **gestionada**: solo toca las claves `TTS_PROVIDER`, `TTS_PLAYBACK` y `HERDR_TTS_AUDIO_RETENTION_DAYS` de `config.env` — reescribe la línea existente o añade un bloque gestionado al final, preserva el resto del fichero byte a byte, escribe de forma atómica (tmp + mv) y deja la versión previa en `config.env.bak`.
+* Los cambios aplican a **nuevos procesos**: reinicia el daemon para que el watcher los herede.
 
 ---
 
