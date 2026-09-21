@@ -7,12 +7,15 @@ never on PC speakers. POST /tts is plain TTS for the PWA's local echo.
 
 from __future__ import annotations
 
+import asyncio
+import json
+import queue as queue_module
 import re
 from pathlib import Path
 from typing import Callable, Optional
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -24,6 +27,7 @@ from .memory import ConversationStore
 from .tools import BrainTools
 from .tools import status_payload as _status_payload
 from .tts import new_audio_path, render_mp3
+from .watcher import AgentWatcher
 
 _TTSRenderer = Callable[[Settings, str, Path], Path]
 _LLMFactory = Callable[[Settings, BrainTools], BrainLLM]
@@ -52,8 +56,19 @@ def create_app(
     settings: Optional[Settings] = None,
     llm_factory: Optional[_LLMFactory] = None,
     tts_renderer: Optional[_TTSRenderer] = None,
+    watcher: Optional[AgentWatcher] = None,
+    sse_heartbeat_s: float = 15.0,
+    sse_stream_limit: Optional[int] = None,
 ) -> FastAPI:
-    """Builds the FastAPI app with injectable LLM and TTS backends for tests."""
+    """Builds the FastAPI app with injectable backends for tests.
+
+    An injected ``watcher`` is NOT started as a thread (tests drive
+    ``poll_once`` manually); without one, a watcher thread is created and
+    started for production. ``sse_stream_limit`` ends the /events stream
+    after N events/heartbeats — a test hook only (starlette's TestClient
+    buffers whole responses, so infinite streams cannot be asserted);
+    production never sets it.
+    """
     if settings is None:
         from .config import load_settings
 
@@ -63,6 +78,10 @@ def create_app(
     tools = BrainTools(cfg)
     synth = tts_renderer or render_mp3
     store = ConversationStore()
+
+    if watcher is None:
+        watcher = AgentWatcher(cfg, tts_renderer=synth)
+        watcher.start()
 
     # The LLM client is built lazily: /health and /tts work without
     # GLM_API_KEY, and /ask reports the missing configuration as a 503.
@@ -79,6 +98,48 @@ def create_app(
         return llm_holder["instance"]
 
     app = FastAPI(title="herdr-brain", version=__version__)
+    app.state.watcher = watcher
+    app.state.sse_heartbeat_s = sse_heartbeat_s
+    app.state.sse_stream_limit = sse_stream_limit
+
+    @app.get("/events")
+    async def events(request: Request) -> StreamingResponse:
+        """SSE stream of agent transition announcements.
+
+        Event payload: {type, pane_id, agent, status, label, text, audio_url}.
+        Comment heartbeats keep intermediaries from closing the stream.
+        """
+        hub = app.state.watcher.hub
+        heartbeat = app.state.sse_heartbeat_s
+        stream_limit = app.state.sse_stream_limit
+        sub_id, announcements = hub.subscribe()
+        loop = asyncio.get_running_loop()
+
+        def _next_event():
+            try:
+                return announcements.get(timeout=heartbeat)
+            except queue_module.Empty:
+                return None
+
+        async def generator():
+            try:
+                yield ": connected\n\n"
+                emitted = 0
+                while stream_limit is None or emitted < stream_limit:
+                    announcement = await loop.run_in_executor(None, _next_event)
+                    if announcement is None:
+                        yield ": heartbeat\n\n"
+                    else:
+                        yield "data: " + json.dumps(announcement, ensure_ascii=False) + "\n\n"
+                    emitted += 1
+            finally:
+                hub.unsubscribe(sub_id)
+
+        return StreamingResponse(
+            generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/health")
     def health() -> dict:

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from herdr_brain.config import Settings
+from herdr_brain.herdr import AgentInfo
 from herdr_brain.server import create_app
 
 
@@ -528,6 +530,105 @@ class TestView:
         cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
         client = TestClient(create_app(settings=cfg, llm_factory=lambda c, t: FakeLLM()))
         assert client.get("/nope.js").status_code == 404
+
+
+class TestEvents:
+    """SSE endpoint delivery (finite streams via sse_stream_limit).
+
+    starlette's TestClient buffers whole responses before returning, so a
+    live watcher publish cannot be observed mid-stream from the test thread.
+    These tests therefore pre-load the hub; watcher publish semantics are
+    covered in tests/test_watcher.py, and the live pipeline is verified with
+    curl -N against the running server.
+    """
+
+    @staticmethod
+    def _preloaded_hub(events):
+        import queue as queue_module
+
+        class PreloadedHub:
+            def __init__(self, items):
+                self._q = queue_module.Queue()
+                for item in items:
+                    self._q.put(item)
+                self.unsubscribed: list = []
+
+            def subscribe(self):
+                return 0, self._q
+
+            def unsubscribe(self, sub_id):
+                self.unsubscribed.append(sub_id)
+
+        return PreloadedHub(events)
+
+    def _app(self, settings, audio_dir, hub, limit):
+        import herdr_brain.server as server_module
+        from herdr_brain.watcher import AgentWatcher
+
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        watcher = AgentWatcher(cfg, tts_renderer=_write_dummy_tts)
+        watcher.hub = hub
+        app = server_module.create_app(
+            settings=cfg, watcher=watcher, sse_heartbeat_s=0.2, sse_stream_limit=limit
+        )
+        return app, watcher
+
+    def test_stream_delivers_transition_event(self, settings, audio_dir):
+        announcement = {
+            "type": "transition",
+            "pane_id": "w1:p1",
+            "agent": "opencode",
+            "status": "done",
+            "label": "opencode repo",
+            "text": "opencode repo terminó: Todo verde",
+            "audio_url": "/audio/ann-abc.mp3",
+        }
+        hub = self._preloaded_hub([announcement])
+        app, _ = self._app(settings, audio_dir, hub, limit=1)
+        client = TestClient(app)
+
+        with client.stream("GET", "/events") as resp:
+            assert resp.headers["content-type"].startswith("text/event-stream")
+            lines = [l for l in resp.iter_lines() if l]
+        assert lines == [
+            ": connected",
+            "data: " + json.dumps(announcement, ensure_ascii=False),
+        ]
+
+    def test_stream_heartbeat_when_quiet(self, settings, audio_dir):
+        hub = self._preloaded_hub([])
+        app, _ = self._app(settings, audio_dir, hub, limit=1)
+        client = TestClient(app)
+
+        with client.stream("GET", "/events") as resp:
+            lines = [l for l in resp.iter_lines() if l]
+        assert lines == [": connected", ": heartbeat"]
+
+    def test_event_unsubscribes_after_stream_ends(self, settings, audio_dir):
+        hub = self._preloaded_hub([])
+        app, _ = self._app(settings, audio_dir, hub, limit=1)
+        client = TestClient(app)
+        with client.stream("GET", "/events"):
+            pass  # connected + heartbeat, then clean end
+        assert hub.unsubscribed == [0]
+
+    def test_data_and_heartbeat_interleave_in_order(self, settings, audio_dir):
+        a1 = {"type": "transition", "pane_id": "p", "agent": "opencode",
+              "status": "done", "label": "l", "text": "t", "audio_url": None}
+        hub = self._preloaded_hub([a1])
+        app, _ = self._app(settings, audio_dir, hub, limit=2)
+        client = TestClient(app)
+        with client.stream("GET", "/events") as resp:
+            lines = [l for l in resp.iter_lines() if l]
+        assert lines[0] == ": connected"
+        assert lines[1].startswith("data: ")
+        assert lines[2] == ": heartbeat"  # queue drained -> heartbeat
+
+
+def _write_dummy_tts(settings, text, out_path):
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(out_path).write_bytes(b"ID3")
+    return out_path
 
 
 class TestAudioServing:
