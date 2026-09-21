@@ -26,7 +26,10 @@ DEFAULT_AUDIO_DIR = "~/.local/state/herdr-brain/audio"
 
 DEFAULT_TTS_VOICE = "elvira"
 DEFAULT_TTS_RATE = "+0%"
-DEFAULT_TTS_MAX_CHARS = 300
+# Hard guard cap only: the engine truncates synthesis at --max-chars, so this
+# must stay generous or full answers get cut mid-read (never use --tldr for
+# chat answers).
+DEFAULT_TTS_MAX_CHARS = 4000
 DEFAULT_TTS_TIMEOUT_S = 120
 
 # Conservative cap: reading more lines than the viewport scrolls the
