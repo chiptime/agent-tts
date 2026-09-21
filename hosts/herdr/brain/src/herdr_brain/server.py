@@ -48,6 +48,7 @@ _VERSIONED_REFS = (
     ('href="/icon.svg"', 'href="/icon.svg?v={v}"'),
 )
 _VERSION_PLACEHOLDER = '<span id="app-version">dev</span>'
+_HEADER_VERSION_PLACEHOLDER = '<span id="app-version-header">?</span>'
 
 
 @lru_cache(maxsize=1)
@@ -74,6 +75,7 @@ def render_index(version: str) -> str:
     for old, new in _VERSIONED_REFS:
         html = html.replace(old, new.format(v=version))
     html = html.replace(_VERSION_PLACEHOLDER, f'<span id="app-version">v{version}</span>')
+    html = html.replace(_HEADER_VERSION_PLACEHOLDER, f'<span id="app-version-header">v{version}</span>')
     return html
 
 
