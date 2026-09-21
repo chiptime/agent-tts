@@ -98,14 +98,19 @@ The brain also serves its mobile PWA same-origin at `/` (static assets in
 The brain listens on `127.0.0.1:8741`. To reach it from the phone over your
 tailnet (this is documentation, not something the repo runs):
 
+> **IMPORTANT — never use port 443.** The root HTTPS port of this node is
+> owned by Collie's bridge (127.0.0.1:8787), a third-party Herdr plugin.
+> Serving the brain there stomps Collie for every device on the tailnet.
+> The brain gets its own port:
+
 ```bash
-tailscale serve --bg --https=443 http://127.0.0.1:8741
+tailscale serve --bg --https=8443 http://127.0.0.1:8741
 ```
 
-Open on the phone:
+Open on the phone (note the port):
 
 ```text
-https://<machine-name>.<tailnet-name>.ts.net/
+https://<machine-name>.<tailnet-name>.ts.net:8443/
 ```
 
 Install to home screen (Android, Chrome):
