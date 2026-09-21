@@ -3279,7 +3279,8 @@ settings_render() {
     _dash_add ' %s' "$SETTINGS_NOTE"
   fi
   _dash_add ' Kokoro/Piper requieren instalar el modelo: agent-tts voice install <modelo>'
-  _dash_add ' r cicla retención · R reinicia el daemon (aplica p y d)'
+  _dash_add ' r  cicla retención · se aplica al vuelo (sin reiniciar)'
+  _dash_add ' R  reinicia el daemon → aplica proveedor y destino al instante'
   _dash_add ''
   _dash_add ' q/Esc salir'
   menu_cap_rows $(( DASH_LINES - 1 ))
