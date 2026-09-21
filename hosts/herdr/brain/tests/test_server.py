@@ -81,9 +81,11 @@ class TestState:
             def __init__(self, cfg):
                 self.last_active = active_agent
 
-            def active_status(self):
+            def status_payload(self):
+                from herdr_brain.tools import status_payload
+
                 self.last_active = active_agent
-                return active_agent
+                return status_payload(active_agent)
 
         monkeypatch.setattr(server_module, "BrainTools", FakeTools)
         client = TestClient(server_module.create_app(settings=cfg))
@@ -108,8 +110,10 @@ class TestState:
             def __init__(self, cfg):
                 self.last_active = None
 
-            def active_status(self):
-                return None
+            def status_payload(self):
+                from herdr_brain.tools import status_payload
+
+                return status_payload(None)
 
         monkeypatch.setattr(server_module, "BrainTools", FakeTools)
         client = TestClient(server_module.create_app(settings=cfg))
@@ -326,7 +330,7 @@ class TestStatic:
         assert client.get("/health").status_code == 200
         assert client.get("/state").status_code == 200
 
-    def test_state_degrades_when_herdr_fails(self, settings, audio_dir):
+    def test_state_degrades_when_herdr_fails(self, settings, audio_dir, monkeypatch):
         """herdr CLI missing/failing: poll returns inactive, not a 500."""
         from herdr_brain.herdr import HerdrError
 
@@ -336,20 +340,109 @@ class TestStatic:
             def __init__(self, cfg):
                 self.last_active = None
 
-            def active_status(self):
+            def status_payload(self):
                 raise HerdrError("herdr exited with 1: boom")
 
         import herdr_brain.server as server_module
 
-        original_tools = server_module.BrainTools
-        server_module.BrainTools = FailingTools
-        try:
-            app = create_app(settings=cfg, llm_factory=lambda c, t: FakeLLM())
-        finally:
-            server_module.BrainTools = original_tools
-        resp = TestClient(app).get("/state")
+        monkeypatch.setattr(server_module, "BrainTools", FailingTools)
+        resp = TestClient(server_module.create_app(settings=cfg)).get("/state")
         assert resp.status_code == 200
         assert resp.json()["active"] is False
+
+
+class TestView:
+    """GET /view: status superset with transcript, screen and pending hint."""
+
+    @staticmethod
+    def _tools_class(agent_view_result=None, raise_agent_view=False):
+        class FakeTools:
+            def __init__(self, cfg):
+                self.last_active = None
+
+            def status_payload(self):
+                from herdr_brain.tools import status_payload
+
+                return status_payload(None)
+
+            def agent_view(self):
+                if raise_agent_view:
+                    raise RuntimeError("compose blew up")
+                return agent_view_result
+
+        return FakeTools
+
+    def _client(self, settings, audio_dir, tools_cls, monkeypatch):
+        import herdr_brain.server as server_module
+
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        monkeypatch.setattr(server_module, "BrainTools", tools_cls)
+        return TestClient(server_module.create_app(settings=cfg))
+
+    def test_view_blocked_with_permission_prompt(self, settings, audio_dir, monkeypatch):
+        result = {
+            "status": {"active": True, "pane_id": "w1:p9", "agent": "opencode",
+                       "agent_status": "blocked", "title": "OpenCode",
+                       "cwd": "/repo", "session_id": "ses_x"},
+            "transcript": [{"role": "assistant", "text": "Need permission to run bash."}],
+            "screen": "Do you want to allow this? (y/n)",
+            "pending": {"detected": True, "kind": "permission",
+                        "excerpt": "Do you want to allow this? (y/n)"},
+        }
+        client = self._client(
+            settings, audio_dir, self._tools_class(agent_view_result=result), monkeypatch
+        )
+        resp = client.get("/view")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"]["agent_status"] == "blocked"
+        assert body["pending"]["detected"] is True
+        assert body["pending"]["kind"] == "permission"
+        assert "(y/n)" in body["pending"]["excerpt"]
+
+    def test_view_never_500s_when_composition_fails(self, settings, audio_dir, monkeypatch):
+        client = self._client(
+            settings, audio_dir, self._tools_class(raise_agent_view=True), monkeypatch
+        )
+        resp = client.get("/view")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"]["active"] is False
+        assert body["transcript"] is None
+        assert body["screen"] is None
+        assert body["pending"] == {"detected": False, "kind": None, "excerpt": None}
+
+    def test_view_transcript_truncation(self, settings, audio_dir, monkeypatch):
+        long_text = "y" * 800
+        result = {
+            "status": {"active": True, "pane_id": "p", "agent": "opencode",
+                       "agent_status": "working", "title": "T", "cwd": "/c",
+                       "session_id": "ses_x"},
+            "transcript": [{"role": "assistant", "text": long_text[:297] + "..."}],
+            "screen": None,
+            "pending": {"detected": False, "kind": None, "excerpt": None},
+        }
+        client = self._client(
+            settings, audio_dir, self._tools_class(agent_view_result=result), monkeypatch
+        )
+        body = client.get("/view").json()
+        assert len(body["transcript"][0]["text"]) == 300
+        assert body["transcript"][0]["text"].endswith("...")
+
+    def test_view_route_beats_static_mount(self, settings, audio_dir, monkeypatch):
+        result = {
+            "status": {"active": False, "pane_id": None, "agent": None,
+                       "agent_status": None, "title": None, "cwd": None,
+                       "session_id": None},
+            "transcript": None, "screen": None,
+            "pending": {"detected": False, "kind": None, "excerpt": None},
+        }
+        client = self._client(
+            settings, audio_dir, self._tools_class(agent_view_result=result), monkeypatch
+        )
+        resp = client.get("/view")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("application/json")
 
     def test_unknown_static_path_404(self, settings, audio_dir):
         cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})

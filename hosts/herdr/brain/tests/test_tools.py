@@ -114,6 +114,54 @@ class TestSendToSession:
         assert tools.send_to_session("x").startswith("error sending prompt")
 
 
+class TestAgentView:
+    def test_composes_status_screen_and_pending(self, settings, make_stub, active_agent):
+        stub = make_stub(screen="Shall I deploy to prod? (y/n)")
+        # Make the stub agent report blocked so the strong signal is active.
+        stub.active_agent = lambda: active_agent.__class__(**{
+            **active_agent.__dict__, "status": "blocked"
+        })
+        tools = BrainTools(settings, herdr=stub)
+        view = tools.agent_view()
+        assert view["status"]["agent_status"] == "blocked"
+        assert view["transcript"] is None  # hermetic store: no transcript
+        assert view["screen"].endswith("(y/n)")
+        assert view["pending"]["detected"] is True
+        assert view["pending"]["kind"] == "permission"
+
+    def test_screen_failure_degrades(self, settings, make_stub):
+        tools = BrainTools(settings, herdr=make_stub(fail_screen=True))
+        view = tools.agent_view()
+        assert view["screen"] is None
+        assert view["pending"]["detected"] is False
+
+    def test_transcript_tail_truncates(self, settings, make_stub, active_agent, real_transcript, monkeypatch, tmp_path):
+        import sqlite3
+
+        db = tmp_path / "long.db"
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INT, data TEXT)")
+        conn.execute("CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INT, data TEXT)")
+        long_text = "z" * 900
+        conn.execute(
+            "INSERT INTO message VALUES ('m1', ?, 1, ?)",
+            (active_agent.session_value, json.dumps({"role": "assistant"})),
+        )
+        conn.execute(
+            "INSERT INTO part VALUES ('m1-p1', 'm1', ?, 1, ?)",
+            (active_agent.session_value, json.dumps({"type": "text", "text": long_text})),
+        )
+        conn.commit()
+        conn.close()
+        monkeypatch.setenv("OPENCODE_DB", str(db))
+
+        tools = BrainTools(settings, herdr=make_stub(screen="all good"))
+        view = tools.agent_view()
+        assert view["transcript"] is not None
+        assert len(view["transcript"][0]["text"]) == 300
+        assert view["pending"]["detected"] is False
+
+
 class TestDispatch:
     def test_unknown_tool(self, settings, make_stub):
         tools = BrainTools(settings, herdr=make_stub())
