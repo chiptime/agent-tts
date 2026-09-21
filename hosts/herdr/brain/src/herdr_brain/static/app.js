@@ -16,6 +16,11 @@
   var paneTitle = $("pane-title");
   var fallbackForm = $("text-fallback");
   var textInput = $("text-input");
+  var agentView = $("agent-view");
+  var pendingBanner = $("pending-banner");
+  var viewTranscript = $("view-transcript");
+  var viewScreen = $("view-screen");
+  var lastViewJson = "";
 
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   var recognition = null;
@@ -58,7 +63,7 @@
 
   /* ---------- active-pane state polling ---------- */
 
-  function renderState(state) {
+  function renderStatus(state) {
     if (!state || !state.active) {
       chip.textContent = "none";
       chip.className = "chip";
@@ -71,10 +76,62 @@
     paneTitle.textContent = title + (state.cwd ? " — " + state.cwd : "");
   }
 
+  function renderPending(pending) {
+    if (!pending || !pending.detected) {
+      pendingBanner.classList.add("hidden");
+      pendingBanner.className = "pending hidden";
+      return;
+    }
+    var kind = pending.kind || "question";
+    var headline = {
+      permission: "Permission requested",
+      error: "Agent error",
+      question: "Agent is asking"
+    }[pending.kind] || "Agent needs input";
+    pendingBanner.textContent = headline + ": " + (pending.excerpt || "check the terminal");
+    pendingBanner.className = "pending " + kind;
+  }
+
+  function renderViewTail(view) {
+    /* transcript turns (secondary, compact) */
+    viewTranscript.textContent = "";
+    var turns = (view && view.transcript) || [];
+    for (var i = 0; i < turns.length; i++) {
+      var line = document.createElement("div");
+      line.className = "view-turn " + turns[i].role;
+      var role = document.createElement("span");
+      role.className = "role";
+      role.textContent = turns[i].role === "user" ? "you" : "agent";
+      line.appendChild(role);
+      line.appendChild(document.createTextNode(turns[i].text));
+      viewTranscript.appendChild(line);
+    }
+    agentView.classList.toggle("hidden", !view || (!turns.length && !view.screen && !(view.pending && view.pending.detected)));
+    /* dimmed screen tail */
+    if (view && view.screen) {
+      viewScreen.textContent = view.screen;
+      viewScreen.classList.remove("hidden");
+    } else {
+      viewScreen.textContent = "";
+      viewScreen.classList.add("hidden");
+    }
+  }
+
+  function renderView(view) {
+    if (!view) return;
+    renderStatus(view.status);
+    renderPending(view.pending);
+    var tailJson = JSON.stringify([view.transcript, view.screen]);
+    if (tailJson !== lastViewJson) {
+      lastViewJson = tailJson;
+      renderViewTail(view);
+    }
+  }
+
   function refreshState() {
-    fetch("/state")
+    fetch("/view")
       .then(function (resp) { return resp.ok ? resp.json() : null; })
-      .then(renderState)
+      .then(renderView)
       .catch(function () { /* keep last known state */ });
   }
 

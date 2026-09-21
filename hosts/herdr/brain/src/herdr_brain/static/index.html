@@ -69,6 +69,39 @@
       color: var(--text);
       border-radius: 9px;
     }
+    /* Agent view panel: pending banner is the visual anchor. */
+    #agent-view {
+      margin: 10px 14px 0;
+      border: 1px solid #232833;
+      border-radius: 12px;
+      background: var(--panel);
+      overflow: hidden;
+    }
+    #pending-banner {
+      padding: 12px 14px;
+      font-size: 15px;
+      font-weight: 700;
+      line-height: 1.35;
+    }
+    #pending-banner.question   { background: #3b2f11; color: var(--warn); }
+    #pending-banner.error      { background: #3a1414; color: var(--danger); }
+    #pending-banner.permission { background: #14293a; color: var(--blue); }
+    .view-transcript { padding: 10px 12px 4px; display: flex; flex-direction: column; gap: 6px; }
+    .view-turn { font-size: 13px; line-height: 1.4; }
+    .view-turn .role { color: var(--accent); font-weight: 700; margin-right: 6px; }
+    .view-turn.user .role { color: var(--warn); }
+    .view-screen {
+      margin: 6px 12px 12px;
+      padding: 8px 10px;
+      background: #0d0f13;
+      border-radius: 8px;
+      color: var(--muted);
+      font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 132px;
+      overflow: hidden;
+    }
     main#conversation {
       flex: 1;
       overflow-y: auto;
@@ -151,6 +184,12 @@
     <span id="pane-title">connecting…</span>
     <button id="new-conversation" title="Start a new conversation">↺ New</button>
   </header>
+
+  <section id="agent-view" class="hidden">
+    <div id="pending-banner" class="pending hidden"></div>
+    <div id="view-transcript"></div>
+    <pre id="view-screen" class="view-screen hidden"></pre>
+  </section>
 
   <main id="conversation" aria-live="polite"></main>
 
