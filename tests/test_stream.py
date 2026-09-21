@@ -259,12 +259,18 @@ class TestStreamGate(unittest.TestCase):
     def test_on_forces_streaming_for_any_provider_or_length(self):
         self.assertTrue(use_pipelined_stream("piper", "on", False, None, False, 10))
 
-    def test_output_podcast_and_no_play_disable_streaming(self):
+    def test_podcast_and_no_play_disable_streaming(self):
         base = {"provider": "edge", "stream": "auto", "no_play": False, "output_file": None, "podcast": False, "text_len": 1000}
-        for override in ({"output_file": "/tmp/a.mp3"}, {"podcast": True}, {"no_play": True}):
+        for override in ({"podcast": True}, {"no_play": True}):
             case = dict(base)
             case.update(override)
             self.assertFalse(use_pipelined_stream(**case))
+
+    def test_output_file_no_longer_disables_streaming(self):
+        # The merged audio is written to the file after playback completes.
+        self.assertTrue(use_pipelined_stream("edge", "on", False, "/tmp/a.mp3", False, 10))
+        self.assertTrue(use_pipelined_stream("edge", "auto", False, "/tmp/a.mp3", False, 1000))
+        self.assertFalse(use_pipelined_stream("edge", "auto", False, "/tmp/a.mp3", False, 399))
 
     def test_off_disables_streaming(self):
         self.assertFalse(use_pipelined_stream("edge", "off", False, None, False, 10000))
