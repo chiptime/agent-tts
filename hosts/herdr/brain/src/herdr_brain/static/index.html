@@ -69,6 +69,29 @@
       color: var(--text);
       border-radius: 9px;
     }
+    #mute-btn {
+      padding: 7px 10px;
+      font-size: 15px;
+      background: #2a2f3a;
+      color: var(--text);
+      border-radius: 9px;
+    }
+    #mute-btn.muted { opacity: 0.6; }
+    #toast {
+      position: fixed;
+      top: calc(env(safe-area-inset-top, 0px) + 64px);
+      left: 14px;
+      right: 14px;
+      z-index: 10;
+      padding: 11px 14px;
+      border-radius: 12px;
+      background: #1d2530f2;
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.4;
+      box-shadow: 0 6px 20px #0009;
+      border: 1px solid #2a3140;
+    }
     /* Herd strip: one chip per agent, horizontal scroll. */
     #herd-strip {
       display: flex;
@@ -220,8 +243,10 @@
   <header>
     <span id="status-chip" class="chip">…</span>
     <span id="pane-title">connecting…</span>
+    <button id="mute-btn" title="Toggle announcements">🔊</button>
     <button id="new-conversation" title="Start a new conversation">↺ New</button>
   </header>
+  <div id="toast" class="hidden"></div>
 
   <nav id="herd-strip" aria-label="Agents"></nav>
   <div id="herd-note" class="hidden"></div>

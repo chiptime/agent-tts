@@ -202,26 +202,127 @@
     refreshView();
   }
 
-  /* ---------- audio playback ---------- */
+  /* ---------- audio playback (single queue: chat + announcements) ---------- */
 
-  function play(url) {
-    player.src = url;
+  var audioQueue = [];
+  var audioBusy = false;
+
+  function enqueueAudio(url, announcement) {
+    audioQueue.push({ url: url, announcement: announcement || null });
+    pumpAudio();
+  }
+
+  function pumpAudio() {
+    if (audioBusy || !audioQueue.length) return;
+    var item = audioQueue.shift();
+    audioBusy = true;
+    audioQueue.finishedItem = item;
+    if (item.announcement) {
+      showToast("🔊 " + item.announcement.label + ": " + item.announcement.text);
+    }
+    player.src = item.url;
     stopBtn.classList.remove("hidden");
-    var p = player.play();
-    if (p && p.catch) p.catch(function () { /* autoplay blocked; text is shown */ });
+    var pending = player.play();
+    if (pending && pending.catch) {
+      pending.catch(function () {
+        /* autoplay blocked: drop the item, keep the queue moving */
+        audioBusy = false;
+        if (item.announcement) hideToast();
+        pumpAudio();
+      });
+    }
+  }
+
+  function onAudioEnded() {
+    var finished = audioQueue.finishedItem;
+    audioBusy = false;
+    if (finished && finished.announcement) hideToast();
+    if (audioQueue.length === 0) stopBtn.classList.add("hidden");
+    pumpAudio();
   }
 
   function stopAudio() {
+    audioQueue.length = 0;
+    audioQueue.finishedItem = null;
+    audioBusy = false;
     player.pause();
     player.removeAttribute("src");
     player.load();
     stopBtn.classList.add("hidden");
+    hideToast();
   }
 
-  player.addEventListener("ended", function () {
-    stopBtn.classList.add("hidden");
-  });
+  player.addEventListener("ended", onAudioEnded);
   stopBtn.addEventListener("click", stopAudio);
+
+  /* ---------- toast ---------- */
+
+  var toastTimer = null;
+
+  function showToast(text, durationMs) {
+    toastEl.textContent = text;
+    toastEl.classList.remove("hidden");
+    if (toastTimer) clearTimeout(toastTimer);
+    if (durationMs) {
+      toastTimer = setTimeout(hideToast, durationMs);
+    }
+  }
+
+  function hideToast() {
+    if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
+    toastEl.classList.add("hidden");
+  }
+
+  /* ---------- announcements over SSE ---------- */
+
+  var MUTE_KEY = "herdr-brain-mute";
+  var eventsOpened = false;
+  var muteBtn = $("mute-btn");
+  var toastEl = $("toast");
+
+  function muted() {
+    return localStorage.getItem(MUTE_KEY) === "1";
+  }
+
+  function renderMute() {
+    muteBtn.textContent = muted() ? "🔇" : "🔊";
+    muteBtn.classList.toggle("muted", muted());
+  }
+
+  muteBtn.addEventListener("click", function () {
+    if (muted()) {
+      localStorage.removeItem(MUTE_KEY);
+    } else {
+      localStorage.setItem(MUTE_KEY, "1");
+    }
+    renderMute();
+  });
+  renderMute();
+
+  /* EventSource is opened on the first Call tap: the user gesture unlocks
+   * audio autoplay for the announcements that arrive later. */
+  function openEvents() {
+    if (eventsOpened || !window.EventSource) return;
+    eventsOpened = true;
+    var source = new EventSource("/events");
+    source.onmessage = function (event) {
+      var ann;
+      try { ann = JSON.parse(event.data); } catch (err) { return; }
+      if (!ann || ann.type !== "transition") return;
+      if (muted()) {
+        showToast("🔇 " + ann.label + ": " + ann.text, 6000);
+        return;
+      }
+      if (ann.audio_url) {
+        enqueueAudio(ann.audio_url, ann);
+      } else {
+        showToast("🔊 " + ann.label + ": " + ann.text, 6000);
+      }
+    };
+    /* EventSource reconnects on its own; nothing else to manage. */
+  }
+
+  /* ---------- audio playback (chat answers) ---------- */
 
   /* ---------- ask pipeline ---------- */
 
@@ -261,7 +362,7 @@
         }
         return resp.json().then(function (data) {
           addTurn("brain", data.answer || "(empty answer)");
-          if (data.audio_url) play(data.audio_url);
+          if (data.audio_url) enqueueAudio(data.audio_url, null);
         });
       })
       .catch(function () {
@@ -348,6 +449,7 @@
   }
 
   callBtn.addEventListener("click", function () {
+    openEvents();  // user gesture: unlocks autoplay for announcements
     if (thinking) return;
     if (listening) {
       stopListening();
