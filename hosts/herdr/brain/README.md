@@ -216,15 +216,25 @@ sheet with two tabs — **Conversación** (last 20 turns, full text) and
 ### The call is continuous
 
 One tap starts the call; it stays open. The state machine is
-`listening → thinking → speaking → listening`: speech recognition restarts
-automatically after each answer (with backoff after empty takes), the mic is
-forced off while any audio plays so it never hears its own voice, tapping
-the state pill while speaking is barge-in (cuts the audio, back to
-listening), and a pause button shuts the mic up without ending the call.
-Persistent recognition failure falls back to keyboard input with a notice.
-All user-facing labels are Spanish; the UI follows light/dark automatically.
-Answers are spoken in full — the renderer's char guard is 4000 chars and
-digest shortening (`--tldr`) is never applied to chat answers.
+`listening → thinking → speaking → listening`: the mic is forced off while
+any audio plays so it never hears its own voice, tapping the state pill
+while speaking is barge-in (cuts the audio, back to listening), and a pause
+button shuts the mic up without ending the call. Persistent recognition
+failure falls back to keyboard input with a notice.
+
+Voice turns are **self-endpointed** (`static/endpointing.js`, pure logic,
+unit-tested with `node:test`): Chrome often never finalizes interim
+results, so the brain dispatches on `isFinal`, on **1200 ms of interim
+silence**, or at a **15 s hard cap** from speech start — whichever comes
+first. After dispatch the mic stays off through `/ask` + TTS and restarts
+when the answer finishes. All user-facing labels are Spanish; the UI
+follows light/dark automatically. Answers are spoken in full — the
+renderer's char guard is 4000 chars and digest shortening (`--tldr`) is
+never applied to chat answers.
+
+Every async surface has Spanish loading/empty/error states, and the agent
+sheet shows a diagnostics line (**Última consulta / Último error**) to make
+reporting issues easy.
 
 Browsers without the Web Speech API (e.g. Firefox) automatically show a text
 input with the same ask flow, which also makes desktop testing trivial.
