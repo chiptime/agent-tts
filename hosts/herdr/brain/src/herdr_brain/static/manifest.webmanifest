@@ -1,6 +1,7 @@
 {
-  "name": "herdr-brain",
-  "short_name": "brain",
+  "id": "/",
+  "name": "Herdr Voz",
+  "short_name": "Voz",
   "description": "Talk to your AI coding agents managed by Herdr.",
   "start_url": "/",
   "display": "standalone",
