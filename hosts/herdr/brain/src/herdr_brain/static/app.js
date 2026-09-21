@@ -20,7 +20,14 @@
   var pendingBanner = $("pending-banner");
   var viewTranscript = $("view-transcript");
   var viewScreen = $("view-screen");
+  var herdStrip = $("herd-strip");
+  var herdNote = $("herd-note");
   var lastViewJson = "";
+
+  /* Persisted per-install selection; falls back to the focused pane when
+   * the selected one disappears from the herd. */
+  var PANE_KEY = "herdr-brain-pane";
+  var selectedPane = localStorage.getItem(PANE_KEY);
 
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   var recognition = null;
@@ -61,7 +68,58 @@
     bannerEl.classList.add("hidden");
   }
 
-  /* ---------- active-pane state polling ---------- */
+  /* ---------- herd strip (all agents) + selection ---------- */
+
+  function effectiveSelected(herd) {
+    if (selectedPane && herd.some(function (a) { return a.pane_id === selectedPane; })) {
+      return selectedPane;
+    }
+    var focused = null;
+    for (var i = 0; i < herd.length; i++) {
+      if (herd[i].focused) { focused = herd[i]; break; }
+    }
+    var fallback = focused || herd[0];
+    return fallback ? fallback.pane_id : null;
+  }
+
+  function renderHerd(herd) {
+    if (!Array.isArray(herd)) herd = [];
+    var effective = effectiveSelected(herd);
+    var fellBack = !!(selectedPane && effective !== selectedPane);
+    herdNote.classList.toggle("hidden", !fellBack);
+    if (fellBack) {
+      herdNote.textContent = "Selected agent is gone — back to the focused one.";
+      selectedPane = effective;
+      if (effective) localStorage.setItem(PANE_KEY, effective);
+    }
+
+    herdStrip.textContent = "";
+    for (var i = 0; i < herd.length; i++) {
+      var agent = herd[i];
+      var chipEl = document.createElement("button");
+      chipEl.className = "herd-chip" + (agent.pane_id === effective ? " selected" : "");
+      chipEl.title = (agent.cwd || "") + (agent.last_turn ? " — " + agent.last_turn.text : "");
+      var st = document.createElement("span");
+      st.className = "st " + (agent.agent_status || "");
+      st.textContent = "● " + (agent.agent_status || "?");
+      chipEl.appendChild(st);
+      chipEl.appendChild(document.createTextNode(agent.title || agent.agent || agent.pane_id));
+      chipEl.addEventListener("click", function (paneId) {
+        return function () { selectAgent(paneId); };
+      }(agent.pane_id));
+      herdStrip.appendChild(chipEl);
+    }
+  }
+
+  function selectAgent(paneId) {
+    if (selectedPane === paneId) return;
+    selectedPane = paneId;
+    localStorage.setItem(PANE_KEY, paneId);
+    lastViewJson = "";  // force a panel refresh for the new target
+    refreshView();
+  }
+
+  /* ---------- state polling ---------- */
 
   function renderStatus(state) {
     if (!state || !state.active) {
@@ -128,11 +186,20 @@
     }
   }
 
-  function refreshState() {
-    fetch("/view")
+  function refreshView() {
+    var qs = selectedPane ? "?pane_id=" + encodeURIComponent(selectedPane) : "";
+    fetch("/view" + qs)
       .then(function (resp) { return resp.ok ? resp.json() : null; })
       .then(renderView)
       .catch(function () { /* keep last known state */ });
+  }
+
+  function refreshState() {
+    fetch("/herd")
+      .then(function (resp) { return resp.ok ? resp.json() : []; })
+      .then(renderHerd)
+      .catch(function () { /* keep last known strip */ });
+    refreshView();
   }
 
   /* ---------- audio playback ---------- */
@@ -176,7 +243,11 @@
     return fetch("/ask", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text: text, session_id: sessionId })
+      body: JSON.stringify({
+        text: text,
+        session_id: sessionId,
+        pane_id: selectedPane || null
+      })
     })
       .then(function (resp) {
         if (resp.status === 503) {

@@ -310,6 +310,8 @@ class TestStatic:
         assert 'id="new-conversation"' in resp.text
         assert 'id="agent-view"' in resp.text
         assert 'id="pending-banner"' in resp.text
+        assert 'id="herd-strip"' in resp.text
+        assert 'id="herd-note"' in resp.text
         assert "/app.js" in resp.text
         assert "/manifest.webmanifest" in resp.text
 
