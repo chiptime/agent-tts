@@ -140,8 +140,9 @@ TOOLS_SCHEMA = [
         "function": {
             "name": "get_status",
             "description": (
-                "Get the status of the active agent pane: agent kind, status "
-                "(working/idle/blocked/done), pane id, session id, cwd and title."
+                "Rarely needed: live context (agent kind, status, terminal title, "
+                "cwd, pane and session id) is already injected into your system "
+                "message every turn. Use only to re-check after your own actions."
             ),
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
@@ -151,9 +152,9 @@ TOOLS_SCHEMA = [
         "function": {
             "name": "read_transcript",
             "description": (
-                "Read recent user/assistant turns of the active agent session's "
-                "transcript. Preferred for questions about state, history or "
-                "summaries of what happened."
+                "Cheap and local: the recent real user/assistant turns of the "
+                "active agent session. Use this FIRST for anything about what "
+                "happened, state, history or summaries."
             ),
             "parameters": {
                 "type": "object",
@@ -172,8 +173,8 @@ TOOLS_SCHEMA = [
         "function": {
             "name": "read_screen",
             "description": (
-                "Read the visible terminal text of the active agent pane. "
-                "Fallback when the transcript is unavailable."
+                "Fallback when the transcript is unavailable: what the agent's "
+                "terminal shows right now (visible lines only)."
             ),
             "parameters": {
                 "type": "object",
@@ -192,9 +193,9 @@ TOOLS_SCHEMA = [
         "function": {
             "name": "send_to_session",
             "description": (
-                "Forward new work or an action to the active agent session and "
-                "wait until it finishes the turn. Use only when the user asks "
-                "for new work or an action, not for state/history questions."
+                "SLOW: submits the text to the active agent and WAITS for it to "
+                "actually finish — seconds to minutes. Use only for real new work "
+                "or actions the user asked for, never for state/history questions."
             ),
             "parameters": {
                 "type": "object",
