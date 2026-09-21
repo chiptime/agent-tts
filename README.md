@@ -302,7 +302,7 @@ Kokoro on-device notes (CPU, measured):
 
 Rendered turn audio persists under `~/.local/share/agent-tts/audio/YYYY-MM-DD/<epoch>-<pane>.mp3` (override the root with `AGENT_TTS_AUDIO_DIR`). The `.mp3` name is conventional, not a promise: kokoro/piper emit WAV bytes and miniaudio sniffs the container on replay.
 
-- **Knob:** `AGENT_TTS_AUDIO_RETENTION_DAYS` (legacy `TTS_AUDIO_RETENTION_DAYS` is honored), default **7**; `0` disables retention.
+- **Knob:** `AGENT_TTS_AUDIO_RETENTION_DAYS` (legacy `TTS_AUDIO_RETENTION_DAYS` is honored), default **0** — persistence is **opt-in**: nothing is stored until you set a window (e.g. `7` enables the store and 7-day pruning); `0` keeps it off.
 - **Pruning:** runs best-effort at every CLI start (fail-open) and removes whole expired date-partition directories — never individual files inside a current partition.
 - **Writer:** the herdr-tts watcher renders finished turn audio directly into this store when retention is on.
 - **Streamed playback auto-persist:** a pipelined `--stream` run also persists its merged audio here when retention is on — the filename carries the agent or session id (from `--agent`/`--session-id`, else `cli`), podcasts are excluded, and the `Stored: <path>` line on stderr confirms the write. Runs stopped mid-playback never persist partial audio.
