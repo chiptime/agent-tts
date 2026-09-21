@@ -81,7 +81,12 @@ curl -s localhost:8741/state
 # → {"active":true,"pane_id":"w7:p4","agent":"opencode","agent_status":"working",
 #     "title":"OpenCode","cwd":"/repo","session_id":"ses_…"}
 
-curl -s localhost:8741/view
+curl -s localhost:8741/herd
+# → [{"pane_id":"w7:p4","agent":"opencode","agent_status":"working","title":"OpenCode",
+#     "cwd":"/repo","session_id":"ses_…","focused":true,
+#     "last_turn":{"role":"assistant","text":"…"}}, …]
+
+curl -s "localhost:8741/view?pane_id=w1:p2"   # any herd member (default: focused)
 # → {"status": {…same as /state…},
 #     "transcript": [{"role":"user","text":"…"},{"role":"assistant","text":"…"}],
 #     "screen": "…last ~12 visible lines…",
@@ -157,10 +162,12 @@ Install to home screen (Android, Chrome):
    appears as text and the spoken mp3 plays in the earbuds. **■ Stop audio**
    kills playback anytime.
 
-The header polls `/view` every 5s: the status chip follows the agent state
-and the **agent view panel** shows the pending banner (amber = question,
-red = error, blue = permission), the last transcript turns and a dimmed
-screen tail, so pending OK/permission prompts are visible hands-free.
+The header polls `/herd` and `/view` every 5s: a scrollable chip strip shows
+every agent in the herd (status-colored, tap to select — persisted across
+reloads), and the **agent view panel** shows the selected agent's pending
+banner (amber = question, red = error, blue = permission), its last
+transcript turns and a dimmed screen tail. Questions spoken or typed after
+selecting a chip target that agent.
 
 Browsers without the Web Speech API (e.g. Firefox) automatically show a text
 input with the same ask flow, which also makes desktop testing trivial.
@@ -177,6 +184,13 @@ payloads).
 | `read_transcript(n_turns)` | read | recent user/assistant turns (preferred for Q&A) |
 | `read_screen(n_lines)` | read | visible terminal text (fallback) |
 | `send_to_session(text, timeout_ms?)` | **write** | forward new work, wait for completion |
+
+Every endpoint and tool is **target-aware**: pass `pane_id` (/view query
+param, /ask body field) to operate on any agent in the herd; the default is
+the focused pane. The live context block marks the selection explicitly
+(`Selected agent: … — focused: yes/no`), and a stale pane_id falls back to
+the focused one. Conversation memory stays keyed by the client session id —
+selection is per-request.
 
 The system prompt carries the full harness: the collie identity, concrete
 capabilities, honesty rules (never invent transcript or screen content; a
