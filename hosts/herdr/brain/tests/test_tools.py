@@ -127,3 +127,10 @@ class TestDispatch:
     def test_schema_names(self):
         names = {tool["function"]["name"] for tool in TOOLS_SCHEMA}
         assert names == {"get_status", "read_transcript", "read_screen", "send_to_session"}
+
+    def test_descriptions_carry_cost_hints(self):
+        by_name = {tool["function"]["name"]: tool["function"]["description"] for tool in TOOLS_SCHEMA}
+        assert "FIRST" in by_name["read_transcript"]
+        assert "Fallback" in by_name["read_screen"]
+        assert "SLOW" in by_name["send_to_session"]
+        assert "Rarely needed" in by_name["get_status"]
