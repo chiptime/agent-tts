@@ -22,6 +22,7 @@ from .herdr import HerdrError
 from .llm import BrainLLM, BrainLLMError
 from .memory import ConversationStore
 from .tools import BrainTools
+from .tools import status_payload as _status_payload
 from .tts import new_audio_path, render_mp3
 
 _TTSRenderer = Callable[[Settings, str, Path], Path]
@@ -91,29 +92,22 @@ def create_app(
     def state() -> dict:
         """Active agent pane snapshot for the PWA header (read-only)."""
         try:
-            active = tools.active_status()
-        except HerdrError:
-            # A polling endpoint must degrade gracefully when herdr hiccups.
-            active = None
-        if active is None:
+            return tools.status_payload()
+        except Exception:  # noqa: BLE001 — a polling endpoint never 500s
+            return _status_payload(None)
+
+    @app.get("/view")
+    def view() -> dict:
+        """Superset of /state: transcript tail, screen tail, pending hint."""
+        try:
+            return tools.agent_view()
+        except Exception:  # noqa: BLE001 — the view endpoint never 500s
             return {
-                "active": False,
-                "pane_id": None,
-                "agent": None,
-                "agent_status": None,
-                "title": None,
-                "cwd": None,
-                "session_id": None,
+                "status": _status_payload(None),
+                "transcript": None,
+                "screen": None,
+                "pending": {"detected": False, "kind": None, "excerpt": None},
             }
-        return {
-            "active": True,
-            "pane_id": active.pane_id,
-            "agent": active.agent,
-            "agent_status": active.status,
-            "title": active.title,
-            "cwd": active.cwd,
-            "session_id": active.session_value,
-        }
 
     @app.post("/ask")
     def ask(body: TextRequest) -> dict:

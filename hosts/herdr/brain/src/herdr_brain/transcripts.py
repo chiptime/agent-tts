@@ -136,14 +136,14 @@ class ClaudeTranscript:
         return turns
 
 
-def read_transcript(
+def read_turns(
     agent: str,
     session_id: str,
     n_turns: int = 10,
     opencode: Optional[OpencodeTranscript] = None,
     claude: Optional[ClaudeTranscript] = None,
-) -> Optional[str]:
-    """Routes to the matching connector and returns formatted turns.
+) -> Optional[List[Turn]]:
+    """Routes to the matching connector and returns structured turns.
 
     Routing mirrors agent-tts: match by agent name first, then sniff the
     session id shape. Returns ``None`` when no connector matches or nothing
@@ -167,6 +167,18 @@ def read_transcript(
     else:
         return None
 
+    return turns or None
+
+
+def read_transcript(
+    agent: str,
+    session_id: str,
+    n_turns: int = 10,
+    opencode: Optional[OpencodeTranscript] = None,
+    claude: Optional[ClaudeTranscript] = None,
+) -> Optional[str]:
+    """Same routing as :func:`read_turns`, formatted as text for the LLM."""
+    turns = read_turns(agent, session_id, n_turns, opencode=opencode, claude=claude)
     if not turns:
         return None
     return format_turns(turns)

@@ -12,10 +12,40 @@ from typing import Callable, Dict, Optional
 
 from .config import Settings
 from .herdr import AgentInfo, HerdrClient, HerdrError
-from .transcripts import read_transcript
+from .transcripts import read_transcript, read_turns
 from .tts import render_mp3  # noqa: F401  (re-exported for server wiring)
+from .view import (
+    SCREEN_TAIL_LINES,
+    TRANSCRIPT_TAIL_TURNS,
+    VIEW_TEXT_TRUNCATE,
+    detect_pending,
+    truncate_text,
+)
 
 MAX_SEND_EXCERPT = 500
+
+
+def status_payload(active: Optional[AgentInfo]) -> dict:
+    """Shapes the active-pane status shared by /state and /view."""
+    if active is None:
+        return {
+            "active": False,
+            "pane_id": None,
+            "agent": None,
+            "agent_status": None,
+            "title": None,
+            "cwd": None,
+            "session_id": None,
+        }
+    return {
+        "active": True,
+        "pane_id": active.pane_id,
+        "agent": active.agent,
+        "agent_status": active.status,
+        "title": active.title,
+        "cwd": active.cwd,
+        "session_id": active.session_value,
+    }
 
 
 class BrainTools:
@@ -31,6 +61,70 @@ class BrainTools:
     def active_status(self) -> Optional[AgentInfo]:
         """Fetches the active agent pane (structured) and tracks it."""
         return self._track(self._herdr.active_agent())
+
+    def status_payload(self) -> dict:
+        """Active-pane status dict, degrading to {active: false} on errors."""
+        try:
+            active = self._track(self._herdr.active_agent())
+        except HerdrError:
+            active = None
+        return status_payload(active)
+
+    def screen_tail(
+        self, active: AgentInfo, n_lines: int = SCREEN_TAIL_LINES
+    ) -> Optional[str]:
+        """Visible screen tail for a known pane; None on failure."""
+        try:
+            text = self._herdr.read_screen(active.pane_id, n_lines)
+        except HerdrError:
+            return None
+        return text if text and text.strip() else None
+
+    def transcript_tail(
+        self, active: AgentInfo, n_turns: int = TRANSCRIPT_TAIL_TURNS
+    ) -> Optional[list]:
+        """Recent turns (role + truncated text) for a known pane; None if unavailable."""
+        if not active.session_value:
+            return None
+        try:
+            turns = read_turns(active.agent, active.session_value, n_turns)
+        except Exception:  # noqa: BLE001 — the view must degrade gracefully
+            return None
+        if not turns:
+            return None
+        return [
+            {"role": turn.role, "text": truncate_text(turn.text, VIEW_TEXT_TRUNCATE)}
+            for turn in turns
+        ]
+
+    def agent_view(self) -> dict:
+        """Composes everything GET /view needs, never raising.
+
+        Superset of the status payload: recent transcript turns, the visible
+        screen tail, and the heuristic pending-action detection.
+        """
+        try:
+            active = self._track(self._herdr.active_agent())
+        except HerdrError:
+            active = None
+
+        transcript: Optional[list] = None
+        screen: Optional[str] = None
+        if active is not None:
+            transcript = self.transcript_tail(active)
+            screen = self.screen_tail(active)
+
+        pending = detect_pending(screen or "", active.status if active else "")
+        return {
+            "status": status_payload(active),
+            "transcript": transcript,
+            "screen": screen,
+            "pending": {
+                "detected": pending.detected,
+                "kind": pending.kind,
+                "excerpt": pending.excerpt,
+            },
+        }
 
     def get_status(self) -> str:
         """JSON status of the active agent pane."""
