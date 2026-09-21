@@ -41,15 +41,20 @@ class StubHerdr:
     """HerdrClient test double: canned agents, screen and prompt results."""
 
     def __init__(self, agents=None, screen="screen body", prompt=None, fail_screen=False):
-        self._agents = agents
+        self._agents = agents or []
         self._screen = screen
         self._prompt = prompt or {"ok": True, "status": "done", "output": "did it"}
         self._fail_screen = fail_screen
         self.screen_calls: list = []
         self.prompt_calls: list = []
 
+    def list_agents(self):
+        return list(self._agents)
+
     def active_agent(self):
-        return self._agents[0] if self._agents else None
+        from herdr_brain.herdr import pick_active
+
+        return pick_active(self._agents)
 
     def read_screen(self, pane_id, n_lines=None):
         self.screen_calls.append({"pane_id": pane_id, "n_lines": n_lines})

@@ -353,6 +353,49 @@ class TestStatic:
         assert resp.json()["active"] is False
 
 
+class TestHerdEndpoint:
+    def test_herd_returns_array(self, settings, audio_dir, monkeypatch):
+        import herdr_brain.server as server_module
+
+        herd = [
+            {"pane_id": "w1:p1", "agent": "opencode", "agent_status": "working",
+             "title": "A", "cwd": "/a", "session_id": "ses_1", "focused": True,
+             "last_turn": {"role": "assistant", "text": "hi"}},
+            {"pane_id": "w1:p2", "agent": "claude", "agent_status": "idle",
+             "title": "B", "cwd": "/b", "session_id": None, "focused": False,
+             "last_turn": None},
+        ]
+
+        class FakeTools:
+            def __init__(self, cfg):
+                self.last_active = None
+
+            def herd(self):
+                return herd
+
+        monkeypatch.setattr(server_module, "BrainTools", FakeTools)
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        resp = TestClient(server_module.create_app(settings=cfg)).get("/herd")
+        assert resp.status_code == 200
+        assert resp.json() == herd
+
+    def test_herd_never_500s(self, settings, audio_dir, monkeypatch):
+        import herdr_brain.server as server_module
+
+        class FailingTools:
+            def __init__(self, cfg):
+                self.last_active = None
+
+            def herd(self):
+                raise RuntimeError("boom")
+
+        monkeypatch.setattr(server_module, "BrainTools", FailingTools)
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        resp = TestClient(server_module.create_app(settings=cfg)).get("/herd")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+
 class TestView:
     """GET /view: status superset with transcript, screen and pending hint."""
 

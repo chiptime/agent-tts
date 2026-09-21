@@ -96,6 +96,14 @@ def create_app(
         except Exception:  # noqa: BLE001 — a polling endpoint never 500s
             return _status_payload(None)
 
+    @app.get("/herd")
+    def herd() -> list:
+        """All agent panes with status and their latest transcript turn."""
+        try:
+            return tools.herd()
+        except Exception:  # noqa: BLE001 — the herd endpoint never 500s
+            return []
+
     @app.get("/view")
     def view() -> dict:
         """Superset of /state: transcript tail, screen tail, pending hint."""
