@@ -114,6 +114,88 @@ class TestSendToSession:
         assert tools.send_to_session("x").startswith("error sending prompt")
 
 
+class TestHerd:
+    @staticmethod
+    def _agent(pane, value, status="idle", focused=False, kind="id", title="T"):
+        return AgentInfo(
+            pane_id=pane, agent="opencode", status=status, session_kind=kind,
+            session_value=value, cwd="/repo", title=title, focused=focused,
+        )
+
+    def test_herd_lists_all_agents_with_last_turn(self, settings, make_stub, monkeypatch, tmp_path):
+        import sqlite3
+
+        first = self._agent("w1:p1", "ses_herd0000aaa", status="working", focused=True)
+        second = self._agent("w1:p2", "ses_herd0000bbb")
+        db = tmp_path / "herd.db"
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INT, data TEXT)")
+        conn.execute("CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INT, data TEXT)")
+        conn.execute(
+            "INSERT INTO message VALUES ('m1', ?, 1, ?)",
+            ("ses_herd0000aaa", json.dumps({"role": "assistant"})),
+        )
+        conn.execute(
+            "INSERT INTO part VALUES ('m1-p1', 'm1', ?, 1, ?)",
+            ("ses_herd0000aaa", json.dumps({"type": "text", "text": "Trabajando en el despliegue."})),
+        )
+        conn.commit()
+        conn.close()
+        monkeypatch.setenv("OPENCODE_DB", str(db))
+
+        tools = BrainTools(settings, herdr=make_stub(agents=[first, second]))
+        herd = tools.herd()
+        assert [e["pane_id"] for e in herd] == ["w1:p1", "w1:p2"]
+        assert herd[0]["agent_status"] == "working"
+        assert herd[0]["focused"] is True
+        assert herd[0]["last_turn"] == {
+            "role": "assistant", "text": "Trabajando en el despliegue."
+        }
+        # Second agent's store does not exist: isolated failure, null turn.
+        assert herd[1]["last_turn"] is None
+
+    def test_herd_session_id_only_for_id_kind(self, settings, make_stub):
+        plain = self._agent("w1:p3", "whatever", kind="none")
+        tools = BrainTools(settings, herdr=make_stub(agents=[plain]))
+        herd = tools.herd()
+        assert herd[0]["session_id"] is None
+        assert herd[0]["last_turn"] is None
+
+    def test_herd_empty_on_list_failure(self, settings, make_stub):
+        stub = make_stub(agents=[])
+
+        def boom():
+            raise HerdrError("list failed")
+
+        stub.list_agents = boom
+        assert BrainTools(settings, herdr=stub).herd() == []
+
+    def test_last_turn_truncated(self, settings, make_stub, monkeypatch, tmp_path):
+        import sqlite3
+
+        agent = self._agent("w1:p1", "ses_herd0000ccc")
+        db = tmp_path / "long.db"
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INT, data TEXT)")
+        conn.execute("CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INT, data TEXT)")
+        conn.execute(
+            "INSERT INTO message VALUES ('m1', ?, 1, ?)",
+            ("ses_herd0000ccc", json.dumps({"role": "assistant"})),
+        )
+        conn.execute(
+            "INSERT INTO part VALUES ('m1-p1', 'm1', ?, 1, ?)",
+            ("ses_herd0000ccc", json.dumps({"type": "text", "text": "w" * 500})),
+        )
+        conn.commit()
+        conn.close()
+        monkeypatch.setenv("OPENCODE_DB", str(db))
+
+        tools = BrainTools(settings, herdr=make_stub(agents=[agent]))
+        turn = tools.last_turn(agent)
+        assert len(turn["text"]) == 160
+        assert turn["text"].endswith("...")
+
+
 class TestAgentView:
     def test_composes_status_screen_and_pending(self, settings, make_stub, active_agent):
         stub = make_stub(screen="Shall I deploy to prod? (y/n)")

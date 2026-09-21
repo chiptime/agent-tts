@@ -23,6 +23,7 @@ from .view import (
 )
 
 MAX_SEND_EXCERPT = 500
+HERD_LAST_TURN_CHARS = 160
 
 
 def status_payload(active: Optional[AgentInfo]) -> dict:
@@ -69,6 +70,45 @@ class BrainTools:
         except HerdrError:
             active = None
         return status_payload(active)
+
+    def last_turn(self, agent: AgentInfo) -> Optional[dict]:
+        """Latest transcript turn for one agent, or None on any failure."""
+        if not agent.session_value:
+            return None
+        try:
+            turns = read_turns(agent.agent, agent.session_value, 1)
+        except Exception:  # noqa: BLE001 — per-agent failure must not spread
+            return None
+        if not turns:
+            return None
+        turn = turns[-1]
+        return {"role": turn.role, "text": truncate_text(turn.text, HERD_LAST_TURN_CHARS)}
+
+    def herd(self) -> list:
+        """Every agent pane with status and its latest transcript turn.
+
+        Never raises: a failed agent listing yields an empty herd, and a
+        per-agent transcript failure yields ``last_turn: null``.
+        """
+        try:
+            agents = self._herdr.list_agents()
+        except HerdrError:
+            return []
+        entries = []
+        for agent in agents:
+            entries.append(
+                {
+                    "pane_id": agent.pane_id,
+                    "agent": agent.agent,
+                    "agent_status": agent.status,
+                    "title": agent.title,
+                    "cwd": agent.cwd,
+                    "session_id": agent.session_value if agent.session_kind == "id" else None,
+                    "focused": agent.focused,
+                    "last_turn": self.last_turn(agent),
+                }
+            )
+        return entries
 
     def screen_tail(
         self, active: AgentInfo, n_lines: int = SCREEN_TAIL_LINES
