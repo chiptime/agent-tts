@@ -12,6 +12,7 @@ import pytest
 
 from herdr_brain.config import Settings
 from herdr_brain.llm import SYSTEM_PROMPT, BrainLLM, BrainLLMError
+from herdr_brain.memory import ConversationStore
 from herdr_brain.tools import BrainTools
 
 
@@ -129,7 +130,121 @@ class TestRoutingPolicy:
         assert {t["function"]["name"] for t in first["tools"]} == {
             "get_status", "read_transcript", "read_screen", "send_to_session",
         }
-        assert first["messages"][0]["content"] == SYSTEM_PROMPT
+        system = first["messages"][0]["content"]
+        assert system.startswith(SYSTEM_PROMPT)
+        assert "LIVE CONTEXT" in system
+
+
+class TestLiveContext:
+    def test_block_with_active_pane(self, active_agent):
+        from datetime import datetime
+
+        from herdr_brain.llm import build_live_context
+
+        block = build_live_context(active_agent, now=datetime(2026, 9, 21, 14, 30))
+        assert "LIVE CONTEXT" in block
+        assert "opencode (working)" in block
+        assert f"Pane: {active_agent.pane_id}" in block
+        assert f"Session: {active_agent.session_value}" in block
+        assert "Working directory: /repo" in block
+        assert "2026-09-21 14:30" in block
+
+    def test_block_without_active_pane(self):
+        from herdr_brain.llm import build_live_context
+
+        block = build_live_context(None)
+        assert "none right now" in block
+
+    def test_system_message_reflects_stubbed_active_pane(self, settings, make_stub, active_agent):
+        llm, _ = make_brain(settings, make_stub(), responses=[text_response("ok")])
+        llm.ask("who is active?")
+        system = llm._client.create_kwargs[0]["messages"][0]["content"]
+        assert f"Pane: {active_agent.pane_id}" in system
+        assert "Working directory: /repo" in system
+
+    def test_live_context_not_stored_in_memory(self, settings, make_stub):
+        store = ConversationStore()
+        llm, _ = make_brain(settings, make_stub(), responses=[text_response("ok")])
+        llm.attach_store(store)
+        llm.ask("hello", session_id="s1")
+        stored = store.history("s1")
+        assert [m.role for m in stored] == ["user", "assistant"]
+        assert all("LIVE CONTEXT" not in m.content for m in stored)
+
+
+class TestConversationMemory:
+    def test_follow_up_sees_prior_turns(self, settings, make_stub):
+        store = ConversationStore()
+        llm, _ = make_brain(
+            settings, make_stub(),
+            responses=[
+                text_response("Estoy refactorizando el módulo de auth."),
+                text_response("Además de eso, dejé los tests en verde."),
+            ],
+        )
+        llm.attach_store(store)
+        llm.ask("en que estas trabajando?", session_id="s1")
+        llm.ask("y ¿qué más?", session_id="s1")
+
+        second = llm._client.create_kwargs[1]["messages"]
+        roles = [m["role"] for m in second]
+        assert roles == ["system", "user", "assistant", "user"]
+        assert second[1]["content"] == "en que estas trabajando?"
+        assert second[2]["content"] == "Estoy refactorizando el módulo de auth."
+        assert second[3]["content"] == "y ¿qué más?"
+
+    def test_reset_clears_history(self, settings, make_stub):
+        store = ConversationStore()
+        llm, _ = make_brain(settings, make_stub(), responses=[text_response("a1")])
+        llm.attach_store(store)
+        llm.ask("first", session_id="s1")
+        store.reset("s1")
+        llm._client.create_kwargs.clear()
+        llm._client.responses.append(text_response("a2"))
+        llm.ask("second", session_id="s1")
+        second = llm._client.create_kwargs[0]["messages"]
+        assert [m["role"] for m in second] == ["system", "user"]
+
+    def test_sessions_are_independent(self, settings, make_stub):
+        store = ConversationStore()
+        llm, _ = make_brain(
+            settings, make_stub(),
+            responses=[
+                text_response("answer one"),
+                text_response("answer two"),
+                text_response("check"),
+            ],
+        )
+        llm.attach_store(store)
+        llm.ask("q1", session_id="s1")
+        llm.ask("q2", session_id="s2")
+        llm.ask("context?", session_id="s1")
+        third = llm._client.create_kwargs[2]["messages"]
+        contents = [m.get("content", "") for m in third]
+        assert "q1" in contents and "answer one" in contents
+        assert "q2" not in contents
+
+    def test_ring_cap_bounds_stored_messages(self, settings, make_stub):
+        from herdr_brain.memory import MAX_MESSAGES
+
+        store = ConversationStore()
+        responses = [text_response(f"r{i}") for i in range(MAX_MESSAGES + 2)]
+        llm, _ = make_brain(settings, make_stub(), responses=responses)
+        llm.attach_store(store)
+        for i in range(MAX_MESSAGES + 2):
+            llm.ask(f"q{i}", session_id="s1")
+        assert len(store.history("s1")) == MAX_MESSAGES
+
+    def test_response_includes_session_id(self, settings, make_stub):
+        llm, _ = make_brain(settings, make_stub(), responses=[text_response("hi")])
+        result = llm.ask("hello", session_id="abc")
+        assert result["session_id"] == "abc"
+
+    def test_default_session_when_omitted(self, settings, make_stub):
+        from herdr_brain.memory import DEFAULT_SESSION
+
+        llm, _ = make_brain(settings, make_stub(), responses=[text_response("hi")])
+        assert llm.ask("hello")["session_id"] == DEFAULT_SESSION
 
 
 class TestLoopRobustness:
