@@ -7,7 +7,7 @@ import json
 import pytest
 
 from herdr_brain.config import Settings
-from herdr_brain.herdr import HerdrError
+from herdr_brain.herdr import AgentInfo, HerdrError
 from herdr_brain.tools import TOOLS_SCHEMA, BrainTools
 
 
