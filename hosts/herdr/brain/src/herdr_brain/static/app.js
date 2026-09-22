@@ -529,7 +529,8 @@
       "errores recon.:   " + recFailures + " (último: " + lastRecError + ")",
       "preguntas /ask:   " + askCount,
       "último envío:     " + lastDispatch,
-      "interim chars:    " + (snap ? snap.bufferChars : 0),
+      "committed chars:  " + (snap ? snap.committedChars : 0),
+      "interim chars:    " + (snap ? snap.interimChars : 0),
       "último interim:   " + (lastInterimRaw ? '"' + lastInterimRaw.slice(-80) + '"' : "(vacío)")
     ];
     if (snap) {
@@ -711,8 +712,17 @@
     dispatching = true;
     interimEl.textContent = "";
     teardownRecognition();
-    setCallState("thinking");
-    ask(text).then(function () { dispatching = false; });
+    // ask() owns the transition to "thinking" — setting it here would trip
+    // ask()'s re-entrancy guard (callState === "thinking") and silently
+    // swallow the dispatch (the 'never dispatched' half of the voice bug).
+    // afterAnswer() inside ask's chain cannot restart the mic either (it
+    // runs while dispatching is still true, so startBrowserListening's
+    // guard blocks it): re-evaluate the resume once the ask is fully done
+    // and dispatching is cleared.
+    ask(text).then(function () {
+      dispatching = false;
+      afterAnswer();
+    });
   }
 
   function startBrowserListening() {
@@ -720,10 +730,15 @@
     manualStop = false;
     hideBanner();
     interimEl.classList.remove("hidden");
-    interimEl.textContent = "…";
     listeningStartedAt = Date.now();
-    lastInterimRaw = "";
-    endpointer = window.Endpointing.createEndpointer();
+    // The endpointer SURVIVES recognition session restarts (Chrome ends
+    // sessions every few seconds; committed text must carry over). Only a
+    // dispatch (finalize), hang-up or new conversation resets it.
+    if (!endpointer) endpointer = window.Endpointing.createEndpointer();
+    lastInterimRaw = endpointer.text();
+    interimEl.textContent = lastInterimRaw.length > 120
+      ? "…" + lastInterimRaw.slice(-120)
+      : (lastInterimRaw || "…");
 
     recognition = new SR();
     recognition.lang = navigator.language || "es-ES";
@@ -731,22 +746,28 @@
     recognition.continuous = true;
 
     recognition.onresult = function (event) {
+      if (!endpointer) return;
       var interim = "";
+      var finals = "";
       for (var i = event.resultIndex; i < event.results.length; i++) {
-        interim += event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          recRestartDelay = 300;
-          recFailures = 0;
-          lastInterimRaw = interim;
-          dispatchUtterance();
-          return;
-        }
+        var transcript = event.results[i][0].transcript || "";
+        if (event.results[i].isFinal) finals += (finals ? " " : "") + transcript;
+        else interim += transcript;
       }
-      if (endpointer) endpointer.push(interim);
-      lastInterimRaw = interim;
+      if (finals) {
+        // Finalized chunk (typically flushed when a session ends): COMMIT,
+        // never dispatch — Chrome finalizes per phrase, not per utterance;
+        // the silence/cap endpointing decides when the utterance is done.
+        endpointer.commit(finals);
+        recRestartDelay = 300;
+        recFailures = 0;
+      }
+      if (interim) endpointer.push(interim);
+      lastInterimRaw = (finals ? finals + (interim ? " " : "") : "") + interim;
       pillSub.classList.add("hidden");
       // tail truncation: keep the newest words visible
-      interimEl.textContent = interim.length > 120 ? "…" + interim.slice(-120) : (interim || "…");
+      var text = endpointer.text();
+      interimEl.textContent = text.length > 120 ? "…" + text.slice(-120) : (text || "…");
     };
 
     recognition.onerror = function (event) {
@@ -1046,6 +1067,7 @@
     inCall = false;
     stopListening();
     teardownServerCall();  // release the getUserMedia stream + AudioContext
+    if (endpointer) endpointer.reset();  // no stale partial in the next call
     stopAudio();
     hideToast();
     setCallState("idle");
@@ -1132,6 +1154,7 @@
   $("new-conversation").addEventListener("click", function () {
     stopAudio();
     stopListening();
+    if (endpointer) endpointer.reset();  // fresh conversation, fresh utterance
     conv.textContent = "";
     interimEl.textContent = "";
     interimEl.classList.add("hidden");
