@@ -181,6 +181,10 @@ EOF
 
 echo "── 20. daemon_takeover (single-instance guard)"
 new_env s20
+# Smoke-suite marker: the legacy-daemon sweep only kills processes that
+# carry it too, so a REAL daemon running on this machine can never be
+# caught in scenario 26b's live sweep.
+export HERDR_TTS_SMOKE=1
 export HERDR_CONFIG_DIR="$T/conf"
 export HERDR_TTS_DAEMON_PID_FILE="$T/daemon.pid"
 # 20a. unrelated process (no herdr-tts in cmdline) is spared
@@ -1713,6 +1717,15 @@ assert_grep "26b out-var says fallback" '^how=fallback$' "$T/out.txt"
 lib_run 'daemon_stop_running stop_how; rc=$?; echo "how=$stop_how rc=$rc"' > "$T/out.txt"
 assert_grep "26c nothing running → none, rc 0" '^how=none rc=0$' "$T/out.txt"
 
+# 26c-2. smoke-safety: a REAL daemon on this machine (same argv shape, no
+#        HERDR_TTS_SMOKE marker in its environ) must survive the suite's
+#        sweep — the battery can never take down live voice feedback.
+env -u HERDR_TTS_SMOKE bash -c 'while :; do sleep 0.5; done' herdr-tts _daemon & REAL26=$!
+lib_run 'daemon_stop_running stop_how; echo "how=$stop_how"' > "$T/out.txt"
+kill -0 "$REAL26" 2>/dev/null && ok "26c-2 unmarked real-shape daemon spared by the suite sweep" || bad "26c-2 sweep killed an unmarked daemon"
+kill "$REAL26" 2>/dev/null || true; wait "$REAL26" 2>/dev/null || true
+assert_grep "26c-2 sweep finds nothing to kill" '^how=none$' "$T/out.txt"
+
 # 26d. daemon_restart SUCCESS path (documented choice over the timeout
 #      path): SCRIPT is pointed at a recorder stub that logs its argv and
 #      WRITES the pidfile itself, so the pidfile wait succeeds and the
@@ -1726,7 +1739,7 @@ chmod +x "$T/recorder.sh"
 rm -f "$T/restart.log" "$HERDR_TTS_DAEMON_PID_FILE"
 lib_run 'SCRIPT="$T/recorder.sh"; daemon_restart 2>"$T/restart.err"; rc=$?; echo "rc=$rc"' > "$T/out.txt"
 assert_grep "26d daemon_restart exits rc 0" '^rc=0$' "$T/out.txt"
-assert_grep "26d re-invocation reached the stub with _daemon" '^args=_daemon$' "$T/restart.log"
+assert_grep "26d re-invocation reached the stub with _daemon-supervised" '^args=_daemon-supervised$' "$T/restart.log"
 assert_grep "26d Spanish confirmation with the new pid" '^✓ Daemon reiniciado \(pid [0-9]+\)$' "$T/restart.err"
 
 # 26e. Settings view key R: piped `aRq` through --voice-menu with the
@@ -1740,7 +1753,7 @@ assert_grep "26e settings frame rendered" 'Ajustes de voz y audio' "$T/out.txt"
 [[ $(grep -cF '✓ Daemon reiniciado' "$T/out.txt") -eq 1 ]] \
   && ok "26e R renders the confirmation note on exactly the re-render" \
   || bad "26e note count $(grep -cF '✓ Daemon reiniciado' "$T/out.txt") (want 1)"
-assert_grep "26e R hit the restart path (stub invoked)" '^args=_daemon$' "$T/restart.log"
+assert_grep "26e R hit the restart path (stub invoked)" '^args=_daemon-supervised$' "$T/restart.log"
 hv=$(esc_count "$T/out.txt" $'\033[H')
 [[ "$hv" -eq 4 ]] && ok "26e 4 frame writes: main, settings, R re-render, main ($hv)" || bad "26e H-moves=$hv (want 4)"
 
@@ -1752,7 +1765,7 @@ rm -f "$T/restart.log" "$HERDR_TTS_DAEMON_PID_FILE"
   timeout 10 "$SCRIPT" --restart-daemon </dev/null > "$T/out.txt" 2>"$T/restart2.err" )
 [[ $? -eq 0 ]] && ok "26f --restart-daemon exits rc=0" || bad "26f rc!=0"
 assert_grep "26f confirmation on stderr" 'Daemon reiniciado' "$T/restart2.err"
-assert_grep "26f dispatch spawned the daemon entrypoint" '^args=_daemon$' "$T/restart.log"
+assert_grep "26f dispatch spawned the supervised entrypoint" '^args=_daemon-supervised$' "$T/restart.log"
 sed -n '/--restart-daemon)/,/;;/p' "$SCRIPT" | grep -q 'daemon_restart' \
   && ok "26f argparse case wires --restart-daemon → daemon_restart" || bad "26f no dispatch wiring"
 unset HERDR_TTS_DAEMON_PID_FILE
@@ -1887,4 +1900,97 @@ printf 'cq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out4.txt" 2>>"$T/err.l
 grep -qF 'CLICK_REDIRECT="off"' "$CONFIG_FILE" \
   && ok "28d CLICK_REDIRECT=off persisted after the wrap" || bad "28d off not persisted"
 assert_grep "28d off note mirrors the CLI wording" 'Click directo desactivado' "$T/out4.txt"
+
+echo "── 29. daemon supervisor: stop-flag semantics, relaunch decision, lifecycle logging"
+new_env s29
+export HERDR_TTS_DAEMON_PID_FILE="$T/daemon.pid"
+export HERDR_TTS_SUPERVISOR_STOP_FILE="$T/supervisor.stop"
+export HERDR_TTS_DAEMON_LOG="$T/daemon.log"
+SUPERVISOR_STOP_FLAG="$T/supervisor.stop" # mirrors the env override
+
+# 29a. decision fn, flag present → stop + one-shot consumption. The
+#      harness shell runs under set -e, so the rc-1 outcome is captured
+#      through an if (a bare call would abort the eval).
+touch "$SUPERVISOR_STOP_FLAG"
+lib_run 'if ! daemon_supervisor_should_relaunch 3; then rel=1; else rel=0; fi; echo "rel=$rel"; [[ -e "$SUPERVISOR_STOP_FLAG" ]] && echo flag-there || echo flag-consumed' > "$T/out.txt"
+assert_grep "29a flag present → no relaunch (rc 1)" '^rel=1$' "$T/out.txt"
+assert_grep "29a flag consumed by the decision (one-shot)" '^flag-consumed$' "$T/out.txt"
+
+# 29b. decision fn, no flag → relaunch.
+lib_run 'daemon_supervisor_should_relaunch 0; echo "rel=$?"' > "$T/out.txt"
+assert_grep "29b no flag → relaunch (rc 0)" '^rel=0$' "$T/out.txt"
+
+# 29c. end-to-end stop-flag semantics: the flag is armed AFTER supervisor
+#      start (like a real daemon_stop_running kill) and the child dies.
+#      The supervisor must consume it, exit rc 0 and NEVER respawn.
+cat > "$T/stopped.sh" <<EOF
+#!/usr/bin/env bash
+echo "child \$\$ args=\$*" >> "$T/children.log"
+: > "$SUPERVISOR_STOP_FLAG" # what daemon_stop_running arms before the kill
+exit 3
+EOF
+chmod +x "$T/stopped.sh"
+rm -f "$T/children.log" "$HERDR_TTS_DAEMON_LOG" "$SUPERVISOR_STOP_FLAG"
+HERDR_TTS_SCRIPT="$T/stopped.sh" timeout 10 "$SCRIPT" _daemon-supervised </dev/null >"$T/out.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "29c flag armed → supervisor exits rc 0 without relaunching" || bad "29c rc!=0"
+[[ $(wc -l < "$T/children.log") -eq 1 ]] \
+  && ok "29c exactly one child spawn (death did NOT relaunch)" || bad "29c spawns=$(wc -l < "$T/children.log") (want 1)"
+assert_grep "29c deliberate stop logged to daemon.log" 'parada deliberada del daemon \(rc=3\)' "$HERDR_TTS_DAEMON_LOG"
+[[ ! -e "$SUPERVISOR_STOP_FLAG" ]] && ok "29c flag consumed (removed)" || bad "29c flag left behind"
+
+# 29d. relaunch path: no flag, child dies rc 3, short backoff override →
+#      the supervisor relaunches (≥2 spawns) and logs every relaunch. A
+#      stale flag preset BEFORE start must be cleared, or this would stop.
+cat > "$T/dying.sh" <<EOF
+#!/usr/bin/env bash
+echo "child \$\$ args=\$*" >> "$T/children.log"
+exit 3
+EOF
+chmod +x "$T/dying.sh"
+rm -f "$T/children.log" "$HERDR_TTS_DAEMON_LOG"
+touch "$SUPERVISOR_STOP_FLAG" # stale flag from a dead supervisor
+HERDR_TTS_SCRIPT="$T/dying.sh" HERDR_TTS_SUPERVISOR_BACKOFF=0.2 \
+  timeout 2 "$SCRIPT" _daemon-supervised </dev/null >"$T/out.txt" 2>>"$T/err.log"
+rc29d=$?
+[[ "$rc29d" -eq 124 ]] && ok "29d supervisor kept the loop until the timeout TERM (rc 124)" || bad "29d rc=$rc29d (want 124)"
+spawns=$(wc -l < "$T/children.log")
+[[ "$spawns" -ge 2 ]] && ok "29d child relaunched after unplanned death ($spawns spawns)" || bad "29d spawns=$spawns (want ≥2)"
+assert_grep "29d relaunch logged to daemon.log" 'daemon murió \(rc=3\) — relanzando en 0.2s' "$HERDR_TTS_DAEMON_LOG"
+[[ ! -e "$SUPERVISOR_STOP_FLAG" ]] && ok "29d stale flag cleared on supervisor start" || bad "29d stale flag swallowed the relaunch"
+
+# 29e. TERM forwarding + clean exit, no orphan child: a blocking child is
+#      running when the supervisor gets TERM → child receives TERM and
+#      dies, supervisor exits rc 0, nothing left behind.
+cat > "$T/blocking.sh" <<EOF
+#!/usr/bin/env bash
+echo "child \$\$ args=\$*" >> "$T/children.log"
+trap 'exit 0' TERM
+while :; do sleep 0.2; done
+EOF
+chmod +x "$T/blocking.sh"
+rm -f "$T/children.log" "$HERDR_TTS_DAEMON_LOG"
+HERDR_TTS_SCRIPT="$T/blocking.sh" "$SCRIPT" _daemon-supervised </dev/null >"$T/out.txt" 2>>"$T/err.log" &
+SUP29=$!
+sleep 1
+child29=$(cat "$T/children.log" | head -1 | sed 's/child \([0-9]*\).*/\1/')
+kill -TERM "$SUP29" 2>/dev/null
+wait "$SUP29" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "29e supervisor exits rc 0 on TERM" || bad "29e supervisor rc!=0"
+sleep 0.5
+! kill -0 "$child29" 2>/dev/null && ok "29e child got TERM and died (no orphan)" || { bad "29e child orphaned"; kill -9 "$child29" 2>/dev/null || true; }
+assert_grep "29e forwarded-stop logged" 'TERM recibido — parada con el daemon' "$HERDR_TTS_DAEMON_LOG"
+
+# 29f. wiring: dispatch case, manifest startup, run_daemon observability,
+#      and the daemon_log helper line format.
+sed -n '/_daemon-supervised)/,/;;/p' "$SCRIPT" | grep -q 'run_daemon_supervised' \
+  && ok "29f dispatch wires _daemon-supervised → run_daemon_supervised" || bad "29f no dispatch wiring"
+grep -qF '"_daemon-supervised"' "$REPO/herdr-plugin.toml" \
+  && ok "29f plugin manifest startup runs the supervised entrypoint" || bad "29f manifest still launches the bare daemon"
+sed -n '/^run_daemon() {/,/^}/p' "$SCRIPT" | grep -q 'daemon_log' \
+  && ok "29f run_daemon writes the startup line to daemon.log" || bad "29f run_daemon silent"
+sed -n '/^run_daemon() {/,/^}/p' "$SCRIPT" | grep -q 'DAEMON_EXIT_REASON' \
+  && ok "29f cleanup logs the exit reason (signal vs clean)" || bad "29f cleanup silent"
+lib_run 'daemon_log "prueba de escritura"' > /dev/null
+assert_grep "29f daemon_log appends the [HH:MM:SS] line" '^\[[0-9]{2}:[0-9]{2}:[0-9]{2}\] prueba de escritura$' "$HERDR_TTS_DAEMON_LOG"
+unset HERDR_TTS_DAEMON_PID_FILE HERDR_TTS_SUPERVISOR_STOP_FILE HERDR_TTS_DAEMON_LOG
 

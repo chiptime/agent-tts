@@ -314,6 +314,8 @@ herdr-tts --dashboard          # Live TUI dashboard pane: snooze countdowns, per
 herdr-tts --voice-palette      # fzf picker of chats and audio turns (focus / mute / snooze)
 ```
 
+* **Supervised daemon startup:** the plugin's `[[startup]]` runs `_daemon-supervised` — a foreground watchdog that relaunches the daemon if it dies unplanned (5s backoff). Deliberate stops (`--restart-daemon`, the `R` key, single-instance takeover) arm a stop flag the supervisor consumes, so restarts are never fought over. Starts, deaths, relaunches and exit reasons land in `~/.local/state/herdr-tts/daemon.log`, so a silent death can't happen unnoticed.
+
 ### Handy Shell Aliases
 
 Add to your `~/.zshrc` or `~/.bashrc`:
