@@ -204,9 +204,9 @@ CONFIG_SET_BACKED_UP=0
 config_set() { # <KEY> <VALUE> → rc 1 on rejection or write failure (warning on stderr)
   local key="$1" value="$2"
   case "$key" in
-    TTS_PROVIDER|TTS_PLAYBACK|HERDR_TTS_AUDIO_RETENTION_DAYS|TTS_SETTLE_SECONDS|WEB_URL|WEB_LABEL|CLICK_REDIRECT|COLLIE_URL) ;;
+    TTS_PROVIDER|TTS_PLAYBACK|HERDR_TTS_AUDIO_RETENTION_DAYS|TTS_SETTLE_SECONDS|WEB_URL|WEB_LABEL|CLICK_REDIRECT|COLLIE_URL|TTS_AUTO_SCOPE|TTS_AUTO_LANG|PODCAST_ENABLED|TTS_DEBOUNCE_SECONDS|NTFY_TOPIC|TTS_VOICE) ;;
     *)
-      echo "config_set: unmanaged key '${key}' (allowed: TTS_PROVIDER, TTS_PLAYBACK, HERDR_TTS_AUDIO_RETENTION_DAYS, TTS_SETTLE_SECONDS, WEB_URL, WEB_LABEL, CLICK_REDIRECT, COLLIE_URL)" >&2
+      echo "config_set: unmanaged key '${key}' (allowed: TTS_PROVIDER, TTS_PLAYBACK, HERDR_TTS_AUDIO_RETENTION_DAYS, TTS_SETTLE_SECONDS, WEB_URL, WEB_LABEL, CLICK_REDIRECT, COLLIE_URL, TTS_AUTO_SCOPE, TTS_AUTO_LANG, PODCAST_ENABLED, TTS_DEBOUNCE_SECONDS, NTFY_TOPIC, TTS_VOICE)" >&2
       return 1
       ;;
   esac
@@ -307,10 +307,9 @@ stop_audio() {
     fi
   fi
 
-  # Kill any orphan player processes playing temp wav
-  if pkill -f "(paplay|afplay|mpv).*/tmp/.*\.wav" 2>/dev/null; then
-    stopped=true
-  fi
+  # RF-HT-13-1: no orphan-player sweep. The engine plays in-process
+  # (miniaudio) by contract; external players (paplay/afplay/mpv) are not
+  # part of any playback path, so there is nothing legitimate to pkill.
 
   rm -f "$LOCK_FILE" "$PID_FILE" "$IPC_SOCKET"
 
@@ -318,6 +317,17 @@ stop_audio() {
     echo "⏹️ Audio detenido"
     notify_herdr "⏹️ Audio detenido" "Reproducción cancelada"
   fi
+}
+
+# RF-HT-13-6: SINGLE parser for the engine's human IPC payload
+# (`key=value` tokens whose values never contain spaces; engine fields
+# precede free-text fields, so a snippet containing e.g. "pos=" can never
+# shadow the real field). Every status consumer goes through this helper —
+# a core format change breaks exactly one place.
+engine_status_field() { # <payload> <key> → value on stdout ("" if absent)
+  local value=""
+  value=$(printf '%s' "$1" | grep -o "${2}=[^ ]*" | head -n 1 | cut -d= -f2) || true
+  printf '%s' "$value"
 }
 
 seek_audio() {
@@ -330,9 +340,9 @@ seek_audio() {
   fi
 
   local pos total status
-  pos=$(echo "$res" | grep -o 'pos=[0-9.]*' | cut -d= -f2)
-  total=$(echo "$res" | grep -o 'total=[0-9.]*' | cut -d= -f2)
-  status=$(echo "$res" | grep -o 'status=[a-z]*' | cut -d= -f2)
+  pos=$(engine_status_field "$res" pos)
+  total=$(engine_status_field "$res" total)
+  status=$(engine_status_field "$res" status)
 
   local pos_int=${pos%.*}
   local total_int=${total%.*}
@@ -791,14 +801,19 @@ publish_podcast_episode() {
 
   local pod_dir="${DATA_DIR}/podcast"
   mkdir -p "$pod_dir"
+  # RF-HT-13-1: publish via the engine's PUBLIC API (`from agent_tts
+  # import PodcastFeed`, 0.3.0 surface) — never the internal module path.
+  # Arguments travel via argv so titles/descriptions can never break out
+  # of the script string (the old '''$title''' interpolation was
+  # injection-prone and mangled quotes).
   "$VENV_PYTHON" -c "
 import sys
-from agent_tts.podcast import PodcastFeed
-with open('$audio_file', 'rb') as f:
+from agent_tts import PodcastFeed
+with open(sys.argv[1], 'rb') as f:
     data = f.read()
-feed = PodcastFeed(base_dir='$pod_dir', base_url='http://localhost:${PODCAST_PORT}')
-feed.add_episode(data, title='''$title''', description='''$description''')
-" 2>/dev/null || true
+feed = PodcastFeed(base_dir=sys.argv[2], base_url='http://localhost:' + sys.argv[3])
+feed.add_episode(data, title=sys.argv[4], description=sys.argv[5])
+" "$audio_file" "$pod_dir" "$PODCAST_PORT" "$title" "$description" 2>/dev/null || true
   echo "[$(date +%H:%M:%S)] 🎙️ Episodio publicado en el feed privado de podcast"
 }
 
@@ -856,6 +871,7 @@ read_current_pane() {
   local agent_kind=""
   local session_id=""
   local agent_info
+  local pv
   agent_info=$(herdr agent get "$target_pane" 2>/dev/null) || true
   if [[ -n "$agent_info" ]]; then
     agent_kind=$(echo "$agent_info" | jq -r '.result.agent.agent_session.agent // empty' 2>/dev/null || true)
@@ -865,11 +881,13 @@ read_current_pane() {
   if [[ "$tldr_flag" == "--tldr" || "$tldr_flag" == "tldr" ]]; then
     echo "▶️ Resumiendo (TL;DR) y leyendo respuesta en ${target_pane}..."
     notify_herdr "Resumen TL;DR" "Sintetizando resumen para ${target_pane}..."
-    speak_text "$text" "$TTS_VOICE" "$TTS_RATE" "--tldr" "$target_pane" "$agent_kind" "$session_id"
+    pv="$(resolve_voice "$target_pane" "$agent_kind")"
+    speak_text "$(spoken_prefix "$agent_kind")$text" "$pv" "$TTS_RATE" "--tldr" "$target_pane" "$agent_kind" "$session_id"
   else
     echo "▶️ Transcribiendo y leyendo respuesta en ${target_pane}..."
     notify_herdr "Transcribiendo respuesta" "Sintetizando voz para ${target_pane}..."
-    speak_text "$text" "$TTS_VOICE" "$TTS_RATE" "" "$target_pane" "$agent_kind" "$session_id"
+    pv="$(resolve_voice "$target_pane" "$agent_kind")"
+    speak_text "$(spoken_prefix "$agent_kind")$text" "$pv" "$TTS_RATE" "" "$target_pane" "$agent_kind" "$session_id"
   fi
 }
 
@@ -957,7 +975,7 @@ render_pane_audio() {
   fi
 
   build_provider_flags
-  if "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$TTS_VOICE" --rate "$TTS_RATE" --max-chars "$TTS_MAX_CHARS" --output "$output_file" --no-play "${PROVIDER_FLAGS[@]}"; then
+  if "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$(resolve_voice "$target_pane")" --rate "$TTS_RATE" --max-chars "$TTS_MAX_CHARS" --output "$output_file" --no-play "${PROVIDER_FLAGS[@]}"; then
     # Audio ledger for the dashboard history (best effort; no agent context
     # here). The 5th field carries the first ~120 chars of the spoken text.
     local hist_snippet
@@ -1005,7 +1023,7 @@ render_text_audio() {
   fi
 
   build_provider_flags
-  "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$TTS_VOICE" --rate "$TTS_RATE" --max-chars "$TTS_MAX_CHARS" --output "$output_file" --no-play "${source_flags[@]}" "${PROVIDER_FLAGS[@]}"
+  "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "${HERDR_TTS_VOICE_OVERRIDE:-$TTS_VOICE}" --rate "$TTS_RATE" --max-chars "$TTS_MAX_CHARS" --output "$output_file" --no-play "${source_flags[@]}" "${PROVIDER_FLAGS[@]}"
 }
 
 toggle_play() {
@@ -1051,15 +1069,174 @@ toggle_auto() {
   fi
 }
 
+# ─── Voice identity per chat / agent type (PRD HT-02) ──────
+# Durable rules in voices.json (RF-HT-02-1): { "agent": {tipo: voz},
+# "pane": {pane_id: voz}, "prefix": bool, "auto_assign": bool }.
+# Precedence pane > agent_type > global TTS_VOICE (RF-HT-02-2). The map
+# refreshes lazily on mtime change (jq only on change, pure-bash lookup
+# afterwards → zero spawns per event, RNF-HT-02-2). A malformed file
+# fails open to the global voice with one actionable daemon.log line
+# per change (RF-HT-02-3); it never crashes the watcher.
+VOICE_MAP_FILE="${HERDR_TTS_VOICES_FILE:-${CONFIG_DIR}/voices.json}"
+VM_MTIME="" VM_LOGGED_ERROR=""
+VM_PANE_KEYS=() VM_PANE_VALS=() VM_AGENT_KEYS=() VM_AGENT_VALS=()
+VM_PREFIX=false VM_AUTO_ASSIGN=false
+
+voice_map_refresh() { # reload rules only when the file's mtime changed
+  local mtime
+  mtime=$(stat -c %Y "$VOICE_MAP_FILE" 2>/dev/null) || mtime=""
+  [[ "$mtime" == "$VM_MTIME" ]] && return 0
+  VM_MTIME="$mtime"
+  VM_PANE_KEYS=(); VM_PANE_VALS=(); VM_AGENT_KEYS=(); VM_AGENT_VALS=()
+  VM_PREFIX=false; VM_AUTO_ASSIGN=false
+  [[ -z "$mtime" ]] && return 0 # no file (yet): no rules, not an error
+  if ! jq -e 'type == "object"' "$VOICE_MAP_FILE" >/dev/null 2>&1; then
+    if [[ "$VM_LOGGED_ERROR" != "$mtime" ]]; then
+      daemon_log "⚠️ voices.json inválido (se espera {agent:{},pane:{},prefix:bool}): fail-open a la voz global ${TTS_VOICE}"
+      VM_LOGGED_ERROR="$mtime"
+    fi
+    return 0
+  fi
+  local k v
+  while IFS=$'\t' read -r k v; do
+    [[ -n "$k" ]] && { VM_PANE_KEYS+=("$k"); VM_PANE_VALS+=("$v"); }
+  done < <(jq -r '(.pane // {}) | to_entries[] | "\(.key)\t\(.value)"' "$VOICE_MAP_FILE" 2>/dev/null)
+  while IFS=$'\t' read -r k v; do
+    [[ -n "$k" ]] && { VM_AGENT_KEYS+=("$k"); VM_AGENT_VALS+=("$v"); }
+  done < <(jq -r '(.agent // {}) | to_entries[] | "\(.key)\t\(.value)"' "$VOICE_MAP_FILE" 2>/dev/null)
+  VM_PREFIX=$(jq -r '(.prefix // false) or false' "$VOICE_MAP_FILE" 2>/dev/null)
+  VM_AUTO_ASSIGN=$(jq -r '(.auto_assign // false) or false' "$VOICE_MAP_FILE" 2>/dev/null)
+}
+
+resolve_voice() { # <pane_id> [agent_kind] → pane > agent > global (RF-HT-02-2)
+  voice_map_refresh
+  local pane="$1" agent="${2:-}" i
+  for (( i = 0; i < ${#VM_PANE_KEYS[@]}; i++ )); do
+    [[ "${VM_PANE_KEYS[i]}" == "$pane" && -n "${VM_PANE_VALS[i]}" ]] \
+      && { printf '%s\n' "${VM_PANE_VALS[i]}"; return 0; }
+  done
+  for (( i = 0; i < ${#VM_AGENT_KEYS[@]}; i++ )); do
+    [[ "${VM_AGENT_KEYS[i]}" == "$agent" && -n "${VM_AGENT_VALS[i]}" ]] \
+      && { printf '%s\n' "${VM_AGENT_VALS[i]}"; return 0; }
+  done
+  if [[ "$VM_AUTO_ASSIGN" == "true" && -n "$agent" ]]; then
+    voice_auto_assign "$agent"
+    return 0
+  fi
+  printf '%s\n' "$TTS_VOICE"
+}
+
+# ─── Engine voice/provider catalog (RF-HT-13-4/5) ──────────
+# The ENGINE is the single source of truth for providers and per-provider
+# voices (agent-tts >= 0.3.0 `voice list --json`). Queried once per
+# process and cached in globals; on engine failure every consumer falls
+# back to its legacy static table (fail-open, RNF-HT-13-2) — those
+# fallbacks are removal candidates once the engine dependency is
+# guaranteed everywhere.
+ENGINE_CAT_PROVIDERS=""
+declare -A ENGINE_CAT_VOICES
+
+engine_catalog_refresh() { # populate caches; empty providers = engine unavailable
+  [[ -n "$ENGINE_CAT_PROVIDERS" ]] && return 0
+  local json p v
+  json=$("$VENV_PYTHON" "$ENGINE_SCRIPT" voice list --json 2>/dev/null) || return 1
+  [[ "$json" == "{"* ]] || return 1
+  p=$(jq -r '.providers | join(" ")' <<<"$json" 2>/dev/null) || return 1
+  [[ -n "$p" ]] || return 1
+  ENGINE_CAT_PROVIDERS="$p"
+  while IFS=$'\t' read -r p v; do
+    [[ -n "$p" ]] && ENGINE_CAT_VOICES["$p"]="$v"
+  done < <(jq -r '.voices | to_entries[] | "\(.key)\t\(.value | join(" "))"' <<<"$json" 2>/dev/null)
+}
+
+# Map the core's accepted provider aliases (get_provider) to canonical
+# catalog names, so hosts never re-declare the alias table in more than
+# one shape.
+engine_catalog_canonical() { # <provider> → canonical name on stdout
+  case "${1,,}" in
+    eleven) printf 'elevenlabs\n' ;;
+    local)  printf 'piper\n' ;;
+    *)      printf '%s\n' "${1,,}" ;;
+  esac
+}
+
+# Deterministic rotation (RF-HT-02-7, opt-in via "auto_assign": true):
+# short palette per provider, picked by a stable hash of the agent_type.
+# RF-HT-13-4: the palette comes from the engine catalog (first 4 sorted
+# voices of the provider); the static tables below are only the
+# engine-down fallback. Providers without catalog voices (piper/kokoro,
+# model-dependent) fall back to the global voice — never rotate into an
+# uninstalled engine.
+VOICE_ROTATION_EDGE=(elvira alvaro ximena dalia)
+VOICE_ROTATION_OPENAI=(nova alloy echo fable)
+voice_auto_assign() { # <agent_type> → rotated voice for the active provider
+  local -a palette=()
+  local canon prov_voices
+  canon=$(engine_catalog_canonical "$TTS_PROVIDER")
+  case "$canon" in
+    edge|openai)
+      prov_voices="${ENGINE_CAT_VOICES[$canon]:-}"
+      if [[ -z "$prov_voices" ]] && engine_catalog_refresh; then
+        prov_voices="${ENGINE_CAT_VOICES[$canon]:-}"
+      fi
+      if [[ -n "$prov_voices" ]]; then
+        read -r -a palette <<<"$prov_voices"
+        palette=("${palette[@]:0:4}") # deterministic short palette
+      else
+        case "$canon" in
+          edge)   palette=("${VOICE_ROTATION_EDGE[@]}") ;;
+          openai) palette=("${VOICE_ROTATION_OPENAI[@]}") ;;
+        esac
+      fi
+      ;;
+    *)      printf '%s\n' "$TTS_VOICE"; return 0 ;;
+  esac
+  local i h sum=0
+  for (( i = 0; i < ${#1}; i++ )); do
+    printf -v h '%d' "'${1:$i:1}"
+    sum=$(( (sum * 31 + h) % 1000003 ))
+  done
+  printf '%s\n' "${palette[$(( sum % ${#palette[@]} ))]}"
+}
+
+voice_map_set() { # <agent|pane> <id> <voz|off> — jq read-modify-write, atomic tmp+mv
+  local kind="$1" id="$2" voice="$3" tmp="${VOICE_MAP_FILE}.tmp.$$"
+  [[ -f "$VOICE_MAP_FILE" ]] || printf '{}\n' > "$VOICE_MAP_FILE" 2>/dev/null || { echo "No se pudo crear ${VOICE_MAP_FILE}" >&2; return 1; }
+  if [[ "$voice" == "off" || "$voice" == "global" || "$voice" == "none" ]]; then
+    jq --arg k "$kind" --arg id "$id" 'del(.[$k][$id])' "$VOICE_MAP_FILE" > "$tmp" 2>/dev/null \
+      || { rm -f "$tmp"; echo "voices.json inválido: corrígelo o bórralo para gestionar voces" >&2; return 1; }
+  else
+    jq --arg k "$kind" --arg id "$id" --arg v "$voice" '.[$k] = ((.[$k] // {}) + {($id): $v})' "$VOICE_MAP_FILE" > "$tmp" 2>/dev/null \
+      || { rm -f "$tmp"; echo "voices.json inválido: corrígelo o bórralo para gestionar voces" >&2; return 1; }
+  fi
+  mv "$tmp" "$VOICE_MAP_FILE"
+  VM_MTIME="" # force refresh on the next resolve
+}
+
+voice_map_set_flag() { # <prefix|auto_assign> <on|off> — persist a boolean flag
+  local flag="$1" on="$2" tmp="${VOICE_MAP_FILE}.tmp.$$"
+  [[ "$on" == "on" || "$on" == "true" || "$on" == "1" ]] && on=true || on=false
+  [[ -f "$VOICE_MAP_FILE" ]] || printf '{}\n' > "$VOICE_MAP_FILE" 2>/dev/null || return 1
+  jq --arg f "$flag" --argjson b "$on" '.[$f] = $b' "$VOICE_MAP_FILE" > "$tmp" 2>/dev/null \
+    || { rm -f "$tmp"; echo "voices.json inválido: corrígelo o bórralo" >&2; return 1; }
+  mv "$tmp" "$VOICE_MAP_FILE"
+  VM_MTIME=""
+}
+
+spoken_prefix() { # <agent_kind> → "Claude: " when prefix is on (RF-HT-02-5)
+  voice_map_refresh # self-contained: cheap no-op when the map is current
+  [[ "$VM_PREFIX" == "true" && -n "${1:-}" ]] && printf '%s: ' "$1"
+}
+
 show_status() {
   echo "━━━ Herdr TTS Status ━━━"
   local p_status
   p_status=$("$VENV_PYTHON" "$ENGINE_SCRIPT" --ipc-cmd "status" 2>/dev/null || true)
   if [[ -n "$p_status" && "$p_status" != *"Error:"* ]]; then
     local status pos total
-    status=$(echo "$p_status" | grep -o 'status=[a-z]*' | cut -d= -f2)
-    pos=$(echo "$p_status" | grep -o 'pos=[0-9.]*' | cut -d= -f2)
-    total=$(echo "$p_status" | grep -o 'total=[0-9.]*' | cut -d= -f2)
+    status=$(engine_status_field "$p_status" status)
+    pos=$(engine_status_field "$p_status" pos)
+    total=$(engine_status_field "$p_status" total)
     local pos_int=${pos%.*}
     local total_int=${total%.*}
     local pos_m=$(( ${pos_int:-0} / 60 ))
@@ -1569,20 +1746,31 @@ audio_store_dir() {
   printf '%s\n' "${AGENT_TTS_AUDIO_DIR:-$HOME/.local/share/agent-tts/audio}"
 }
 
+# RF-HT-13-3: single-sourced retention semantics. The CORE owns parsing
+# and pruning (audio_store.retention_days / prune_expired); the host keeps
+# its config tier as the source of truth and exports the resolved value so
+# every engine spawn (CLI-start prune, audio_store_prune) sees the same
+# knob. Without this export the core pruned with its own default (0 =
+# off) while the host believed retention was on — a silent semantic fork.
+export_core_retention() {
+  local raw
+  config_get_retention_raw raw
+  [[ "$raw" =~ ^-?[0-9]+$ ]] || raw=0
+  (( raw > 0 )) || raw=0
+  export AGENT_TTS_AUDIO_RETENTION_DAYS="$raw"
+}
+
 # Duration (seconds, 1 decimal) of a finished render. The engine prints no
 # duration on --no-play renders and no IPC session survives them, so the
-# real value comes from decoding the MP3 with the engine's own miniaudio
-# (already in the venv). Budget: one extra engine-environment invocation
-# per completed render, best effort, never blocking on failure.
+# real value comes from the engine itself. RF-HT-13-2: one `--probe` call
+# replaces the old inline miniaudio decode loop — decoding belongs to the
+# engine, never re-implemented in the host. Budget: one extra
+# engine-environment invocation per completed render, best effort, never
+# blocking on failure.
 audio_duration_secs() {
   local audio_file="$1"
   [[ -s "$audio_file" ]] || return 0
-  "$VENV_PYTHON" -c '
-import sys
-import miniaudio
-decoded = miniaudio.decode(open(sys.argv[1], "rb").read())
-print(len(decoded.samples) / float(decoded.sample_rate * decoded.nchannels))
-' "$audio_file" 2>/dev/null || true
+  "$VENV_PYTHON" "$ENGINE_SCRIPT" --probe "$audio_file" 2>/dev/null || true
 }
 
 # First ~120 chars of the spoken text as a single sanitized line: ANSI
@@ -1669,7 +1857,7 @@ audio_store_prune() {
 
   # Arm the gate before spawning: one attempt per hour even on failure.
   touch "$AUDIO_PRUNE_STAMP" 2>/dev/null || true
-  if ! "$VENV_PYTHON" -c 'from agent_tts.audio_store import prune_expired; prune_expired()' >/dev/null 2>&1; then
+  if ! "$VENV_PYTHON" -c 'from agent_tts import audio_store; audio_store.prune_expired()' >/dev/null 2>&1; then
     echo "[$(date +%H:%M:%S)] [retención] ⚠️ Purga del almacén de audio falló (reintento en la próxima hora)"
   fi
   return 0
@@ -1765,7 +1953,8 @@ watch_agent_pane() {
           # 1. Synthesize audio file once, surfacing failures through the status popup
           local synth_err
           synth_err=$(mktemp "/tmp/herdr-tts-synth-err.XXXXXX")
-          if ! render_text_audio "$render_target" "$pane_text" "${render_flags[@]}" > "$synth_err" 2>&1; then
+          if ! HERDR_TTS_VOICE_OVERRIDE="$(resolve_voice "$pane_id" "${agent_kind:-$agent_name}")" \
+            render_text_audio "$render_target" "$(spoken_prefix "${agent_kind:-$agent_name}")$pane_text" "${render_flags[@]}" > "$synth_err" 2>&1; then
             report_tts_error "${pane_id}" "$synth_err" 1
           fi
           rm -f "$synth_err"
@@ -2381,14 +2570,11 @@ dashboard_refresh_engine() {
   DASH_ENGINE_STATUS="$res"
 }
 
-# Word-field extraction from the single-line engine payload (`key=value`
-# tokens whose values never contain spaces). First match wins: engine
-# fields precede the free-text fields, so a snippet containing e.g.
-# "pos=" can never shadow the real field. Set-e safe via `|| true`.
+# Word-field extraction from the single-line engine payload. RF-HT-13-6:
+# thin delegate — the canonical parser is engine_status_field, so a core
+# format change breaks exactly one place.
 dashboard_engine_field() {
-  local payload="$1" key="$2" value=""
-  value=$(printf '%s' "$payload" | grep -o "${key}=[^ ]*" | head -n 1 | cut -d= -f2) || true
-  printf '%s' "$value"
+  engine_status_field "$1" "$2"
 }
 
 # Trailing free-text snippet (may contain spaces): everything after the
@@ -2719,7 +2905,7 @@ dashboard_render() {
   n=${#DASH_PANES[@]} # the roster cap may have shrunk the visible roster
 
   _dash_add '╠═══ Chats (j/k mueve el cursor · m silencia · z snooze) ══════'
-  local i pid agent st title marker color icon overlay overlay_lbl
+  local i pid agent st title marker color icon overlay overlay_lbl rv
   if (( n == 0 )); then
     _dash_add '║  (sin datos de herdr: CLI no disponible o sin agentes)'
   fi
@@ -2754,6 +2940,10 @@ dashboard_render() {
        && (( now - ${pane_last_ts[$pid]:-0} < TTS_DEBOUNCE_SECONDS )); then
       overlay+=" ⏱$(( now - ${pane_last_ts[$pid]} ))s"
     fi
+    # Voice identity (RF-HT-02-4): when the chat resolves to a voice of
+    # its own (pane or agent rule), show its initial next to the overlays.
+    rv=$(resolve_voice "$pid" "$agent")
+    [[ "$rv" != "$TTS_VOICE" ]] && overlay+=" 🗣${rv:0:1}"
     dashboard_fit title "$title" "$DASH_W_ROSTER_TITLE"
     _dash_add "$roster_fmt" "$marker" "$color" "$icon" "$title" "$agent" "$overlay"
   done
@@ -2924,6 +3114,28 @@ run_dashboard() {
 }
 
 # ─── Voice palette (v0.11, fzf popup) ────────────────────────
+run_voice_for_picker() { # <agent|pane> <id> — fzf voice picker (RF-HT-02-6, HT-11)
+  if ! command -v fzf >/dev/null 2>&1; then
+    echo "❌ fzf no está instalado: el selector de voz por chat lo necesita" >&2
+    echo "   Instálalo (p. ej. 'sudo apt install fzf' o 'brew install fzf') y vuelve a abrirlo." >&2
+    return 1
+  fi
+  local sel
+  sel=$( { printf '(global) → volver a la voz por defecto (%s)\n' "$TTS_VOICE"; printf '%s\n' "${SETTINGS_VOICES[@]}"; } | fzf \
+    --reverse \
+    --height 100% \
+    --header "Voz para $1 $2 · enter aplica · esc cancela") || return 0
+  if [[ "$sel" == \(*\)* ]]; then
+    voice_map_set "$1" "$2" off || return 1
+    echo "✓ ${1} ${2}: vuelve a la voz global (${TTS_VOICE})"
+    speak_text "Voz global restaurada."
+  else
+    voice_map_set "$1" "$2" "$sel" || return 1
+    echo "✓ ${1} ${2}: voz ${sel}"
+    speak_text "Voz de este chat cambiada." "$sel"
+  fi
+}
+
 # `--voice-palette` renders an fzf picker inside a Herdr popup pane with
 # one entry per audio turn (newest first, from the history ledger) plus
 # one entry per agent chat with zero audios. Snapshot per open: no live
@@ -3057,13 +3269,14 @@ run_voice_palette() {
     --with-nth 1 \
     --reverse \
     --height 100% \
-    --header 'enter/ctrl-o: enfocar chat · ctrl-m: silenciar pane · ctrl-z: snooze pane · ctrl-r: reproducir audio · esc: salir' \
+    --header 'enter/ctrl-o: enfocar chat · ctrl-m: silenciar pane · ctrl-z: snooze pane · ctrl-r: reproducir audio · ctrl-v: voz del chat · esc: salir' \
     --preview "'$SCRIPT' --palette-preview {2}" \
     --preview-window 'right:50%:wrap' \
     --bind 'ctrl-o:accept' \
     --bind "ctrl-m:execute-silent('$SCRIPT' --mute-pane {2})+abort" \
     --bind "ctrl-z:execute-silent('$SCRIPT' --snooze-pane {2})+abort" \
-    --bind "ctrl-r:execute-silent('$SCRIPT' --play-file {4})+abort") || return 0
+    --bind "ctrl-r:execute-silent('$SCRIPT' --play-file {4})+abort" \
+    --bind "ctrl-v:execute-silent('$SCRIPT' --voice-for pane {2})+abort") || return 0
 
   pane_id=$(printf '%s' "$sel" | cut -f2)
   [[ -z "$pane_id" ]] && return 0
@@ -3102,7 +3315,15 @@ palette_preview() { # <pane_id>
   if [[ -z "$raw" ]]; then
     echo "   ⚠️ herdr CLI no disponible (sin datos de agente)"
   else
-    echo "   agente: ${agent:-?} · estado: ${st:-?}"
+    # Voice identity (RF-HT-02-4): surface the chat's resolved voice in
+    # the preview header when it has its own pane/agent rule.
+    local pvoice
+    pvoice=$(resolve_voice "$pane_id" "$agent")
+    if [[ "$pvoice" != "$TTS_VOICE" ]]; then
+      echo "   agente: ${agent:-?} · estado: ${st:-?} · 🗣 voz: ${pvoice}"
+    else
+      echo "   agente: ${agent:-?} · estado: ${st:-?}"
+    fi
   fi
 
   # Voice gating state for the pane, mirroring the dashboard overlays.
@@ -3299,10 +3520,10 @@ menu_dispatch() { # <key>
 # Popup entrypoint: a two-view input loop. The MAIN view renders once,
 # reads ONE key and confirms briefly: one key = one action = popup closes
 # = focus restored (the ~1.5s dwell lets the confirmation be read).
-# Pressing `a` switches to the SETTINGS view (the same frame the
-# standalone settings popup renders): p/d/r cycle + persist a knob, R
-# restarts the daemon, and q/Esc/Enter returns to the MAIN view — a
-# re-render, not an exit.
+# Pressing `a` switches to the SETTINGS view — the same two-level popup
+# the standalone settings entrypoint renders (category index → category
+# views): q/Esc/Enter on the index returns to the MAIN view (a
+# re-render, not an exit) after backing out of any category first.
 # Fail-open: EOF / read failure (no tty, closed pipe) → exit 0 silently
 # from either view. q/Esc in the main view exits without a message.
 # Note: an arrow key sends its ESC prefix byte first, so it quits the
@@ -3336,6 +3557,7 @@ run_voice_menu() {
         ;;
       a|A)
         view="settings" # Ajustes live inside the menu: no extra chord spent
+        SETTINGS_CATEGORY="index" # two-level: land on the category index
         ;;
       *)
         if menu_dispatch "$key"; then
@@ -3352,12 +3574,31 @@ run_voice_menu() {
   done
 }
 
-# ─── Voice settings popup (v0.15, cycle knobs) ───────────────
-# One popup for the optional knobs: TTS provider, playback target,
-# audio-retention days and the done settle window, plus the web redirect
-# (w: free-text URL, empty clears; c: click-directo on/off). Cycle keys
-# advance to the NEXT entry of their table and persist it through
-# config_set (managed-key writer above). Values shown come from the live
+# ─── Voice settings popup (v0.15 cycle knobs, v0.16 two-level) ─
+# One popup for the optional knobs, navigated in TWO levels since v0.16.
+# The INDEX view (the entry view for `a` in the voice menu and for the
+# standalone --voice-settings popup) lists the four categories; each
+# category view renders ONLY its own cycle knobs — same paradigm as the
+# old flat list: press key → settings_cycle_value → config_set →
+# re-render.
+#
+# Final index keys — chosen for Spanish mnemonics; 4 distinct letters
+# with no collision against the reserved bindings R (restart) / q / Esc:
+#   v 🎙 Voz · a 🔊 Audio · n 🔔 Notificaciones · l ⚙️ Lectura automática
+# (`a` ALSO opens Ajustes from the voice menu's MAIN view — different
+# view, no clash: inside this popup `a` means Audio.) q/Esc/Enter inside
+# a category returns to the index; from the index it leaves the settings
+# UI (back to the main view when entered via `a`, full exit when
+# standalone). Uppercase R (daemon restart) lives on the INDEX only —
+# one place, one Esc away from every category.
+#
+# Knobs per category — voz: p proveedor, g voz global, n prefijo
+# hablado, u auto-asignación, i idioma · audio: d destino, c click
+# directo, r retención, s asentamiento · notificaciones: t topic ntfy,
+# f podcast feed, w redirección web · lectura automática: v
+# auto-lectura, a alcance, b debounce. Cycle keys advance to the NEXT
+# entry of their table and persist it through config_set (managed-key
+# writer above). Values shown come from the live
 # env the script sourced from config.env at startup; changes reach NEW
 # processes only.
 
@@ -3366,6 +3607,11 @@ SETTINGS_PROVIDERS=(edge openai elevenlabs piper kokoro) # edge first = gratuito
 SETTINGS_TARGETS=(local winhost wsl-ps windows auto)
 SETTINGS_RETENTION=(0 1 3 7 14) # 0 = retención apagada
 SETTINGS_SETTLE=(0 2 5 10 15 30) # 0 = notifica al instante (sin ventana)
+SETTINGS_SCOPES=(focused all) # alcance de la auto-lectura de fondo
+SETTINGS_LANGS=(off on) # detección automática de idioma ES/EN
+SETTINGS_PODCAST=(off on) # publicación de audios en el feed RSS
+SETTINGS_DEBOUNCE=(0 10 20 30 60) # ventana anti-spam por (pane, estado); 0 = desactivada
+SETTINGS_VOICES=(elvira alvaro ximena dalia jorge en nova rachel) # legacy fallback (RF-HT-13-4): only used when the engine catalog is unavailable
 
 # Print the NEXT value of a cycle table. Pure and fork-free (no subshell
 # spawns): safe to call per keypress. An unknown current value (user
@@ -3378,7 +3624,27 @@ settings_cycle_value() { # <provider|target|retention|settle> <current> → next
     target)    vals=("${SETTINGS_TARGETS[@]}") ;;
     retention) vals=("${SETTINGS_RETENTION[@]}") ;;
     settle)    vals=("${SETTINGS_SETTLE[@]}") ;;
-    *) echo "settings_cycle_value: unknown key '${1}' (provider, target, retention or settle)" >&2; return 1 ;;
+    scope)     vals=("${SETTINGS_SCOPES[@]}") ;;
+    lang)      vals=("${SETTINGS_LANGS[@]}") ;;
+    podcast)   vals=("${SETTINGS_PODCAST[@]}") ;;
+    debounce)  vals=("${SETTINGS_DEBOUNCE[@]}") ;;
+    voice)
+      # RF-HT-13-4: voices come from the engine catalog for the ACTIVE
+      # provider (first keypress of a process pays one cached engine
+      # call); the static table is only the engine-down fallback.
+      local _canon _cv
+      _canon=$(engine_catalog_canonical "$TTS_PROVIDER")
+      _cv="${ENGINE_CAT_VOICES[$_canon]:-}"
+      if [[ -z "$_cv" ]] && engine_catalog_refresh; then
+        _cv="${ENGINE_CAT_VOICES[$_canon]:-}"
+      fi
+      if [[ -n "$_cv" ]]; then
+        read -r -a vals <<<"$_cv"
+      else
+        vals=("${SETTINGS_VOICES[@]}")
+      fi
+      ;;
+    *) echo "settings_cycle_value: unknown key '${1}' (provider, target, scope, lang, podcast, debounce, voice, retention or settle)" >&2; return 1 ;;
   esac
   n=${#vals[@]}
   for (( i = 0; i < n; i++ )); do
@@ -3391,145 +3657,303 @@ settings_cycle_value() { # <provider|target|retention|settle> <current> → next
 }
 
 # One settings keypress, shared by the standalone popup (run_voice_settings)
-# and the settings view inside run_voice_menu: cycles the matching knob to
-# the NEXT value of its table, persists it through config_set and updates
-# the live env; a write failure keeps the old value and sets SETTINGS_WARN
-# (rendered inline by the next frame), as does an unrecognized key.
-# Uppercase R (case-sensitive on purpose, distinct from the r cycle) calls
+# and the settings view inside run_voice_menu. TWO-LEVEL dispatch on
+# SETTINGS_CATEGORY: the INDEX view answers the four category keys
+# (v/a/n/l, see the section comment), R (daemon restart) and q/Esc/Enter
+# (close the settings UI). A CATEGORY view dispatches ONLY its own knobs
+# — the same cycle-persist-update arms the flat list always had, scoped
+# so a foreign key warns instead of silently changing a knob the user
+# cannot see. q/Esc/Enter in a category returns to the index (re-render,
+# not an exit). A write failure keeps the old value and sets
+# SETTINGS_WARN (rendered inline by the next frame), as does an
+# unrecognized key. Uppercase R (case-sensitive on purpose) calls
 # daemon_restart: on success it sets SETTINGS_NOTE, on a failed spawn it
 # sets SETTINGS_WARN — both render inline on the next frame.
-# w reads one free-text line from the popup pane (a real terminal): the
-# URL persists to WEB_URL + COLLIE_URL verbatim ({pane_id} placeholder
-# included) and an empty line clears the redirect (and the label), while
-# a collie URL seeds WEB_LABEL="Collie" when it is still unset. c toggles
-# CLICK_REDIRECT on/off; both notes mirror the CLI wording.
-# Returns 1 when the key closes the view (q / Esc / Enter); any other key
-# returns 0 so the caller re-renders.
+# w/t read one free-text line from the popup pane (a real terminal):
+# the URL persists to WEB_URL + COLLIE_URL verbatim ({pane_id}
+# placeholder included) and an empty line clears the redirect (and the
+# label), while a collie URL seeds WEB_LABEL="Collie" when it is still
+# unset; t reads the ntfy topic the same way (empty = off). All notes
+# mirror the CLI wording.
+# Returns 1 when the key closes the settings UI (q / Esc / Enter on the
+# index); any other key returns 0 so the caller re-renders.
 settings_handle_key() { # <key>
   local key="$1" next=""
+  if [[ "${SETTINGS_CATEGORY:-index}" == "index" ]]; then
+    # ── INDEX: pick a category, restart the daemon, or leave ──
+    case "$key" in
+      q|Q|$'\e'|"")
+        return 1
+        ;;
+      v|V) SETTINGS_CATEGORY="voz" ;;
+      a|A) SETTINGS_CATEGORY="audio" ;;
+      n|N) SETTINGS_CATEGORY="notif" ;;
+      l|L) SETTINGS_CATEGORY="lectura" ;;
+      R)
+        # Restart the daemon in place: applies pending provider/audio
+        # changes without leaving the popup. INDEX-only by design (see
+        # the section comment) — one place, one Esc away from categories.
+        if daemon_restart; then
+          SETTINGS_NOTE="✓ Daemon reiniciado"
+        else
+          SETTINGS_WARN="No se pudo relanzar el daemon"
+        fi
+        ;;
+      *)
+        SETTINGS_WARN="Tecla no reconocida (${key}) — v voz, a audio, n notificaciones, l lectura automática, R reinicia el daemon, q sale"
+        ;;
+    esac
+    return 0
+  fi
   case "$key" in
     q|Q|$'\e'|"")
-      return 1
+      SETTINGS_CATEGORY="index" # category → back to the index (re-render)
+      return 0
       ;;
-    p|P)
-      next="$(settings_cycle_value provider "$TTS_PROVIDER")"
-      if config_set TTS_PROVIDER "$next"; then
-        TTS_PROVIDER="$next"
-      else
-        SETTINGS_WARN="No se pudo guardar TTS_PROVIDER en config.env"
-      fi
-      ;;
-    d|D)
-      next="$(settings_cycle_value target "$TTS_PLAYBACK")"
-      if config_set TTS_PLAYBACK "$next"; then
-        TTS_PLAYBACK="$next"
-      else
-        SETTINGS_WARN="No se pudo guardar TTS_PLAYBACK en config.env"
-      fi
-      ;;
-    r)
-      local cur_ret
-      config_get_retention_raw cur_ret
-      next="$(settings_cycle_value retention "${cur_ret:-0}")"
-      if config_set HERDR_TTS_AUDIO_RETENTION_DAYS "$next"; then
-        HERDR_TTS_AUDIO_RETENTION_DAYS="$next"
-      else
-        SETTINGS_WARN="No se pudo guardar HERDR_TTS_AUDIO_RETENTION_DAYS en config.env"
-      fi
-      ;;
-    s|S)
-      next="$(settings_cycle_value settle "$TTS_SETTLE_SECONDS")"
-      if config_set TTS_SETTLE_SECONDS "$next"; then
-        TTS_SETTLE_SECONDS="$next"
-      else
-        SETTINGS_WARN="No se pudo guardar TTS_SETTLE_SECONDS en config.env"
-      fi
-      ;;
-    w|W)
-      # Free-text input inside the popup (a real terminal): one line is the
-      # URL, an empty line clears the redirect. Persisted through the managed
-      # writer like every other key: WEB_URL and COLLIE_URL ride together
-      # (same pair the CLI --web-url path writes), and a collie URL seeds
-      # WEB_LABEL="Collie" while it is still unset. The {pane_id}
-      # placeholder is stored verbatim — send_ntfy_push expands it.
-      local new_url=""
-      printf '\n URL de redirección web\n   ej.: https://collie.midominio.com/chat/{pane_id}\n   sin {pane_id} se añade /pane/<id> · Enter vacío = desactivar\n > '
-      if ! read -r new_url; then
-        SETTINGS_WARN="Entrada cancelada: no se pudo leer la URL"
-        return 0
-      fi
-      if [[ -z "$new_url" ]]; then
-        if config_set WEB_URL "" && config_set COLLIE_URL "" && config_set WEB_LABEL ""; then
-          WEB_URL=""
-          COLLIE_URL=""
-          WEB_LABEL=""
-          SETTINGS_NOTE="✓ Redirección web desactivada (notificaciones estándar sin URL externa)"
-        else
-          SETTINGS_WARN="No se pudo guardar WEB_URL en config.env"
-        fi
-      else
-        if config_set WEB_URL "$new_url" && config_set COLLIE_URL "$new_url"; then
-          WEB_URL="$new_url"
-          COLLIE_URL="$new_url"
-          if [[ "${new_url,,}" =~ collie && -z "$WEB_LABEL" ]] && config_set WEB_LABEL "Collie"; then
-            WEB_LABEL="Collie"
+  esac
+  case "$SETTINGS_CATEGORY" in
+    voz)
+      case "$key" in
+        p|P)
+          next="$(settings_cycle_value provider "$TTS_PROVIDER")"
+          if config_set TTS_PROVIDER "$next"; then
+            TTS_PROVIDER="$next"
+          else
+            SETTINGS_WARN="No se pudo guardar TTS_PROVIDER en config.env"
           fi
-          SETTINGS_NOTE="✓ URL de redirección configurada: ${new_url}"
-        else
-          SETTINGS_WARN="No se pudo guardar WEB_URL en config.env"
-        fi
-      fi
+          ;;
+        g|G)
+          next="$(settings_cycle_value voice "$TTS_VOICE")"
+          if config_set TTS_VOICE "$next"; then
+            TTS_VOICE="$next"
+            SETTINGS_NOTE="✓ Voz global: ${next} (la paleta asigna voces por chat)"
+          else
+            SETTINGS_WARN="No se pudo guardar TTS_VOICE en config.env"
+          fi
+          ;;
+        n|N)
+          # Spoken agent prefix (RF-HT-02-5): voices.json "prefix", applies
+          # al vuelo (the daemon refreshes the map by mtime on every event).
+          if [[ "$VM_PREFIX" == "true" ]]; then next="off"; else next="on"; fi
+          if voice_map_set_flag prefix "$next"; then
+            VM_PREFIX="$next"
+            SETTINGS_NOTE="✓ Prefijo hablado: ${next} (dice \"agente: \" antes del texto)"
+          else
+            SETTINGS_WARN="No se pudo escribir voices.json"
+          fi
+          ;;
+        u|U)
+          # Auto-assign rotation (RF-HT-02-7): voices.json "auto_assign".
+          if [[ "$VM_AUTO_ASSIGN" == "true" ]]; then next="off"; else next="on"; fi
+          if voice_map_set_flag auto_assign "$next"; then
+            VM_AUTO_ASSIGN="$next"
+            SETTINGS_NOTE="✓ Auto-asignación: ${next} (rota voces del proveedor activo por agent_type)"
+          else
+            SETTINGS_WARN="No se pudo escribir voices.json"
+          fi
+          ;;
+        i|I)
+          next="$(settings_cycle_value lang "$TTS_AUTO_LANG")"
+          if config_set TTS_AUTO_LANG "$next"; then
+            TTS_AUTO_LANG="$next"
+            if [[ "$next" == "on" ]]; then
+              SETTINGS_NOTE="✓ Detección de idioma activada (ES/EN al vuelo)"
+            else
+              SETTINGS_NOTE="✓ Detección de idioma desactivada"
+            fi
+          else
+            SETTINGS_WARN="No se pudo guardar TTS_AUTO_LANG en config.env"
+          fi
+          ;;
+        *)
+          SETTINGS_WARN="Tecla no reconocida (${key}) — p proveedor, g voz global, n prefijo, u auto-asignación, i idioma, q vuelve al índice"
+          ;;
+      esac
       ;;
-    c|C)
-      # Click directo: ntfy Click header (tocar la tarjeta abre el navegador).
-      # on/off cycle; the notes mirror the CLI --click-redirect wording.
-      if [[ "$CLICK_REDIRECT" == "on" ]]; then
-        next="off"
-      else
-        next="on"
-      fi
-      if config_set CLICK_REDIRECT "$next"; then
-        CLICK_REDIRECT="$next"
-        if [[ "$next" == "on" ]]; then
-          SETTINGS_NOTE="✓ Click directo activado (abrirá navegador al pulsar la tarjeta de notificación)"
-        else
-          SETTINGS_NOTE="✓ Click directo desactivado (pulsar la tarjeta abrirá ntfy con reproductor; el botón abrirá web)"
-        fi
-      else
-        SETTINGS_WARN="No se pudo guardar CLICK_REDIRECT en config.env"
-      fi
+    audio)
+      case "$key" in
+        d|D)
+          next="$(settings_cycle_value target "$TTS_PLAYBACK")"
+          if config_set TTS_PLAYBACK "$next"; then
+            TTS_PLAYBACK="$next"
+          else
+            SETTINGS_WARN="No se pudo guardar TTS_PLAYBACK en config.env"
+          fi
+          ;;
+        c|C)
+          # Click directo: ntfy Click header (tocar la tarjeta abre el
+          # navegador). on/off cycle; the notes mirror the CLI
+          # --click-redirect wording.
+          if [[ "$CLICK_REDIRECT" == "on" ]]; then
+            next="off"
+          else
+            next="on"
+          fi
+          if config_set CLICK_REDIRECT "$next"; then
+            CLICK_REDIRECT="$next"
+            if [[ "$next" == "on" ]]; then
+              SETTINGS_NOTE="✓ Click directo activado (abrirá navegador al pulsar la tarjeta de notificación)"
+            else
+              SETTINGS_NOTE="✓ Click directo desactivado (pulsar la tarjeta abrirá ntfy con reproductor; el botón abrirá web)"
+            fi
+          else
+            SETTINGS_WARN="No se pudo guardar CLICK_REDIRECT en config.env"
+          fi
+          ;;
+        r)
+          # Lowercase-only on purpose: uppercase R stays the restart chord
+          # (index view) and cannot shadow the retention cycle here.
+          local cur_ret
+          config_get_retention_raw cur_ret
+          next="$(settings_cycle_value retention "${cur_ret:-0}")"
+          if config_set HERDR_TTS_AUDIO_RETENTION_DAYS "$next"; then
+            HERDR_TTS_AUDIO_RETENTION_DAYS="$next"
+          else
+            SETTINGS_WARN="No se pudo guardar HERDR_TTS_AUDIO_RETENTION_DAYS en config.env"
+          fi
+          ;;
+        s|S)
+          next="$(settings_cycle_value settle "$TTS_SETTLE_SECONDS")"
+          if config_set TTS_SETTLE_SECONDS "$next"; then
+            TTS_SETTLE_SECONDS="$next"
+          else
+            SETTINGS_WARN="No se pudo guardar TTS_SETTLE_SECONDS en config.env"
+          fi
+          ;;
+        *)
+          SETTINGS_WARN="Tecla no reconocida (${key}) — d destino, c click directo, r retención, s asentamiento, q vuelve al índice"
+          ;;
+      esac
       ;;
-    v|V)
-      # Auto-lectura de fondo on/off. The auto_muted marker stays the
-      # single source of truth (the daemon stats the live file on every
-      # event, so this applies al vuelo — no daemon restart needed, no
-      # config.env key). The toggle here is silent on purpose: the voice
-      # menu `v` is the one that speaks the spoken confirmation.
-      if is_auto_muted; then
-        if rm -f "$AUTO_MUTE_FILE"; then
-          SETTINGS_NOTE="✓ Auto-lectura activada (te lee al terminar cada agente)"
-        else
-          SETTINGS_WARN="No se pudo eliminar ${AUTO_MUTE_FILE}"
-        fi
-      else
-        if touch "$AUTO_MUTE_FILE"; then
-          SETTINGS_NOTE="✓ Auto-lectura silenciada (solo manual: prefix+r / htr bajo demanda)"
-        else
-          SETTINGS_WARN="No se pudo crear ${AUTO_MUTE_FILE}"
-        fi
-      fi
+    notif)
+      case "$key" in
+        t|T)
+          # Topic ntfy: free-text input like w (one line; empty/off/none =
+          # off). The topic is push-credential-like on ntfy.sh — same trust
+          # model as the CLI flag, typed locally in the popup pane.
+          local new_topic=""
+          printf '\n Topic de ntfy\n   ej.: herdr-agents\n   Enter vacío = desactivar push\n > '
+          if ! read -r new_topic; then
+            SETTINGS_WARN="Entrada cancelada: no se pudo leer el topic"
+            return 0
+          fi
+          if [[ -z "$new_topic" || "$new_topic" == "off" || "$new_topic" == "none" ]]; then
+            if config_set NTFY_TOPIC ""; then
+              NTFY_TOPIC=""
+              SETTINGS_NOTE="✓ Notificaciones móviles de ntfy desactivadas"
+            else
+              SETTINGS_WARN="No se pudo guardar NTFY_TOPIC en config.env"
+            fi
+          else
+            if config_set NTFY_TOPIC "$new_topic"; then
+              NTFY_TOPIC="$new_topic"
+              SETTINGS_NOTE="✓ Topic de ntfy configurado: ${new_topic}"
+            else
+              SETTINGS_WARN="No se pudo guardar NTFY_TOPIC en config.env"
+            fi
+          fi
+          ;;
+        f|F)
+          next="$(settings_cycle_value podcast "$PODCAST_ENABLED")"
+          if config_set PODCAST_ENABLED "$next"; then
+            PODCAST_ENABLED="$next"
+            if [[ "$next" == "on" ]]; then
+              SETTINGS_NOTE="✓ Publicación automática en feed de podcast activada"
+            else
+              SETTINGS_NOTE="✓ Publicación automática en feed de podcast desactivada"
+            fi
+          else
+            SETTINGS_WARN="No se pudo guardar PODCAST_ENABLED en config.env"
+          fi
+          ;;
+        w|W)
+          # Free-text input inside the popup (a real terminal): one line is the
+          # URL, an empty line clears the redirect. Persisted through the managed
+          # writer like every other key: WEB_URL and COLLIE_URL ride together
+          # (same pair the CLI --web-url path writes), and a collie URL seeds
+          # WEB_LABEL="Collie" while it is still unset. The {pane_id}
+          # placeholder is stored verbatim — send_ntfy_push expands it.
+          local new_url=""
+          printf '\n URL de redirección web\n   ej.: https://collie.midominio.com/chat/{pane_id}\n   sin {pane_id} se añade /pane/<id> · Enter vacío = desactivar\n > '
+          if ! read -r new_url; then
+            SETTINGS_WARN="Entrada cancelada: no se pudo leer la URL"
+            return 0
+          fi
+          if [[ -z "$new_url" ]]; then
+            if config_set WEB_URL "" && config_set COLLIE_URL "" && config_set WEB_LABEL ""; then
+              WEB_URL=""
+              COLLIE_URL=""
+              WEB_LABEL=""
+              SETTINGS_NOTE="✓ Redirección web desactivada (notificaciones estándar sin URL externa)"
+            else
+              SETTINGS_WARN="No se pudo guardar WEB_URL en config.env"
+            fi
+          else
+            if config_set WEB_URL "$new_url" && config_set COLLIE_URL "$new_url"; then
+              WEB_URL="$new_url"
+              COLLIE_URL="$new_url"
+              if [[ "${new_url,,}" =~ collie && -z "$WEB_LABEL" ]] && config_set WEB_LABEL "Collie"; then
+                WEB_LABEL="Collie"
+              fi
+              SETTINGS_NOTE="✓ URL de redirección configurada: ${new_url}"
+            else
+              SETTINGS_WARN="No se pudo guardar WEB_URL en config.env"
+            fi
+          fi
+          ;;
+        *)
+          SETTINGS_WARN="Tecla no reconocida (${key}) — t topic ntfy, f podcast, w URL web, q vuelve al índice"
+          ;;
+      esac
       ;;
-    R)
-      # Restart the daemon in place: applies pending p/d/s changes without
-      # leaving the view. Uppercase by design (lowercase r cycles retention).
-      if daemon_restart; then
-        SETTINGS_NOTE="✓ Daemon reiniciado"
-      else
-        SETTINGS_WARN="No se pudo relanzar el daemon"
-      fi
-      ;;
-    *)
-      SETTINGS_WARN="Tecla no reconocida (${key}) — p/d/r/s cicla un ajuste, v auto-lectura, w URL web, c click directo, q sale"
+    lectura)
+      case "$key" in
+        v|V)
+          # Auto-lectura de fondo on/off. The auto_muted marker stays the
+          # single source of truth (the daemon stats the live file on every
+          # event, so this applies al vuelo — no daemon restart needed, no
+          # config.env key). The toggle here is silent on purpose: the voice
+          # menu `v` is the one that speaks the spoken confirmation.
+          if is_auto_muted; then
+            if rm -f "$AUTO_MUTE_FILE"; then
+              SETTINGS_NOTE="✓ Auto-lectura activada (te lee al terminar cada agente)"
+            else
+              SETTINGS_WARN="No se pudo eliminar ${AUTO_MUTE_FILE}"
+            fi
+          else
+            if touch "$AUTO_MUTE_FILE"; then
+              SETTINGS_NOTE="✓ Auto-lectura silenciada (solo manual: prefix+r / htr bajo demanda)"
+            else
+              SETTINGS_WARN="No se pudo crear ${AUTO_MUTE_FILE}"
+            fi
+          fi
+          ;;
+        a|A)
+          next="$(settings_cycle_value scope "$TTS_AUTO_SCOPE")"
+          if config_set TTS_AUTO_SCOPE "$next"; then
+            TTS_AUTO_SCOPE="$next"
+            SETTINGS_NOTE="✓ Alcance de auto-lectura: ${next}"
+          else
+            SETTINGS_WARN="No se pudo guardar TTS_AUTO_SCOPE en config.env"
+          fi
+          ;;
+        b|B)
+          next="$(settings_cycle_value debounce "$TTS_DEBOUNCE_SECONDS")"
+          if config_set TTS_DEBOUNCE_SECONDS "$next"; then
+            TTS_DEBOUNCE_SECONDS="$next"
+            if [[ "$next" == "0" ]]; then
+              SETTINGS_NOTE="✓ Debounce desactivado (cada done notifica al instante)"
+            else
+              SETTINGS_NOTE="✓ Ventana anti-spam (debounce): ${next}s por (pane, estado)"
+            fi
+          else
+            SETTINGS_WARN="No se pudo guardar TTS_DEBOUNCE_SECONDS en config.env"
+          fi
+          ;;
+        *)
+          SETTINGS_WARN="Tecla no reconocida (${key}) — v auto-lectura, a alcance, b debounce, q vuelve al índice"
+          ;;
+      esac
       ;;
   esac
   return 0
@@ -3537,40 +3961,86 @@ settings_handle_key() { # <key>
 
 # ONE static frame, ONE physical write per render: same discipline as
 # menu_render (dashboard_term_size + _dash_add clamping reused verbatim,
-# frame buffered and written once). SETTINGS_WARN, when set, renders as
-# a bottom status row just above the exit hint; SETTINGS_NOTE (e.g.
-# the daemon-restart confirmation) renders right after it.
+# frame buffered and written once). The view follows SETTINGS_CATEGORY:
+# the INDEX (four category rows + the R restart hint) or one category
+# view with ONLY its own knobs, in the same cycle-knob rows the flat
+# list always rendered (labels byte-identical, just regrouped).
+# SETTINGS_WARN, when set, renders as a bottom status row just above
+# the exit hint; SETTINGS_NOTE (e.g. the daemon-restart confirmation)
+# renders right after it.
 settings_render() {
   dashboard_term_size
-  # Retention current comes from the tiered read (env > live file), NOT
-  # from the neutralized startup variable: after the loader unsets it,
-  # the file is the only source of truth for what the user last chose.
   local frame="" ret
-  config_get_retention_raw ret
-  ret="${ret:-0}"
-  _dash_add $'\e[1m⚙️  herdr-tts · Ajustes de voz y audio\e[0m'
-  _dash_add 'Pulsa la tecla del ajuste para ciclar su valor.'
-  _dash_add ''
-  _dash_add ' p  Proveedor TTS:        %s   (edge = gratuito, por defecto)' "$TTS_PROVIDER"
-  # Install hint only for providers that need a local model; as an
-  # annotation it belongs directly under the row it qualifies.
-  if [[ "$TTS_PROVIDER" == "piper" || "$TTS_PROVIDER" == "kokoro" ]]; then
-    _dash_add '    ⚠️  Requiere instalar el modelo antes: agent-tts voice install %s' "$TTS_PROVIDER"
-  fi
-  local auto_label="🔊 activa (te lee al terminar cada agente)"
-  is_auto_muted && auto_label="🔇 silenciada (solo manual: prefix+r / htr bajo demanda)"
-  _dash_add ' v  Auto-lectura:         %s' "$auto_label"
-  _dash_add ' d  Destino reproducción: %s' "$TTS_PLAYBACK"
-  _dash_add ' r  Audio retenido:       %s días   (0 = apagado)' "$ret"
-  _dash_add ' s  Asentamiento done:    %ss   (0 = notifica al instante)' "$TTS_SETTLE_SECONDS"
-  _dash_add ' w  Redirección web:      %s   (Enter vacío en w = desactiva)' "${WEB_URL:-Desactivada}"
-  _dash_add ' c  Click directo:        %s   (on = navegador, off = reproductor)' "$CLICK_REDIRECT"
-  _dash_add ''
-  _dash_add ' r  cicla retención · se aplica al vuelo (sin reiniciar)'
-  _dash_add ' R  reinicia el daemon → aplica proveedor, destino, asentamiento y redirección web al instante'
+  case "${SETTINGS_CATEGORY:-index}" in
+    voz)
+      voice_map_refresh # n/u rows show the live voices.json flags
+      _dash_add $'\e[1m🎙  herdr-tts · Ajustes · Voz\e[0m'
+      _dash_add 'Pulsa la tecla del ajuste para ciclar su valor.'
+      _dash_add ''
+      _dash_add ' p  Proveedor TTS:        %s   (edge = gratuito, por defecto)' "$TTS_PROVIDER"
+      # Install hint only for providers that need a local model; as an
+      # annotation it belongs directly under the row it qualifies.
+      if [[ "$TTS_PROVIDER" == "piper" || "$TTS_PROVIDER" == "kokoro" ]]; then
+        _dash_add '    ⚠️  Requiere instalar el modelo antes: agent-tts voice install %s' "$TTS_PROVIDER"
+      fi
+      _dash_add ' g  Voz global:          %s   (default; la paleta asigna voces por chat)' "$TTS_VOICE"
+      _dash_add ' n  Prefijo hablado:      %s   (dice "agente: " antes del texto)' "$([[ "$VM_PREFIX" == "true" ]] && echo on || echo off)"
+      _dash_add ' u  Auto-asignación:      %s   (rota voces del proveedor activo por agent_type)' "$([[ "$VM_AUTO_ASSIGN" == "true" ]] && echo on || echo off)"
+      _dash_add ' i  Idioma auto:          %s   (ES/EN al vuelo)' "$TTS_AUTO_LANG"
+      ;;
+    audio)
+      # Retention current comes from the tiered read (env > live file), NOT
+      # from the neutralized startup variable: after the loader unsets it,
+      # the file is the only source of truth for what the user last chose.
+      config_get_retention_raw ret
+      ret="${ret:-0}"
+      _dash_add $'\e[1m🔊  herdr-tts · Ajustes · Audio\e[0m'
+      _dash_add 'Pulsa la tecla del ajuste para ciclar su valor.'
+      _dash_add ''
+      _dash_add ' d  Destino reproducción: %s' "$TTS_PLAYBACK"
+      _dash_add ' c  Click directo:        %s   (on = navegador, off = reproductor)' "$CLICK_REDIRECT"
+      _dash_add ' r  Audio retenido:       %s días   (0 = apagado)' "$ret"
+      _dash_add ' s  Asentamiento done:    %ss   (0 = notifica al instante)' "$TTS_SETTLE_SECONDS"
+      _dash_add ''
+      _dash_add ' r  cicla retención · se aplica al vuelo (sin reiniciar)'
+      ;;
+    notif)
+      _dash_add $'\e[1m🔔  herdr-tts · Ajustes · Notificaciones\e[0m'
+      _dash_add 'Pulsa la tecla del ajuste para ciclar su valor.'
+      _dash_add ''
+      _dash_add ' t  Topic ntfy:           %s   (Enter vacío en t = desactiva)' "${NTFY_TOPIC:-Desactivado}"
+      _dash_add ' f  Podcast feed:         %s   (publica audios en RSS)' "$PODCAST_ENABLED"
+      _dash_add ' w  Redirección web:      %s   (Enter vacío en w = desactiva)' "${WEB_URL:-Desactivada}"
+      ;;
+    lectura)
+      local auto_label="🔊 activa (te lee al terminar cada agente)"
+      is_auto_muted && auto_label="🔇 silenciada (solo manual: prefix+r / htr bajo demanda)"
+      _dash_add $'\e[1m⚙️  herdr-tts · Ajustes · Lectura automática\e[0m'
+      _dash_add 'Pulsa la tecla del ajuste para ciclar su valor.'
+      _dash_add ''
+      _dash_add ' v  Auto-lectura:         %s' "$auto_label"
+      _dash_add ' a  Alcance auto-lectura: %s   (focused = solo chat activo)' "$TTS_AUTO_SCOPE"
+      _dash_add ' b  Debounce anti-spam:   %ss   (0 = desactivado)' "$TTS_DEBOUNCE_SECONDS"
+      ;;
+    *)
+      _dash_add $'\e[1m⚙️  herdr-tts · Ajustes de voz y audio\e[0m'
+      _dash_add 'Elige una categoría con su tecla:'
+      _dash_add ''
+      _dash_add ' v  🎙 Voz                  proveedor, voz global, prefijo hablado, auto-asignación, idioma'
+      _dash_add ' a  🔊 Audio               destino reproducción, click directo, retención, asentamiento'
+      _dash_add ' n  🔔 Notificaciones      topic ntfy, podcast feed, redirección web'
+      _dash_add ' l  ⚙️  Lectura automática  auto-lectura, alcance, debounce'
+      _dash_add ''
+      _dash_add ' R  reinicia el daemon → aplica el resto de ajustes al instante'
+      ;;
+  esac
   # Transient feedback (warn/note) lives at the BOTTOM, just above the exit
   # hint, so it reads as a status line for the whole popup instead of an
-  # extra settings row.
+  # extra settings row. A blank row keeps it visually separated from the
+  # knob block above (only when there is something to report).
+  if [[ -n "${SETTINGS_WARN:-}" || -n "${SETTINGS_NOTE:-}" ]]; then
+    _dash_add ''
+  fi
   if [[ -n "${SETTINGS_WARN:-}" ]]; then
     _dash_add ' ⚠️  %s' "$SETTINGS_WARN"
   fi
@@ -3578,22 +4048,29 @@ settings_render() {
     _dash_add ' %s' "$SETTINGS_NOTE"
   fi
   _dash_add ''
-  _dash_add ' q/Esc salir'
+  if [[ "${SETTINGS_CATEGORY:-index}" == "index" ]]; then
+    _dash_add ' q/Esc salir'
+  else
+    _dash_add ' q/Esc volver al índice'
+  fi
   menu_cap_rows $(( DASH_LINES - 1 ))
   # Same per-line erase discipline as menu_render (see comment there).
   printf '\033[H%s\033[K\033[J' "${frame//$'\n'/$'\033[K\n'}"
 }
 
 # Popup entrypoint: render, read one key, cycle + persist + re-render.
-# q/Esc/Enter exit; EOF (no tty / closed pipe) exits fail-open. Every
-# change re-renders so the frame always reflects the persisted state;
-# a config_set failure keeps the old value and shows the warning inline.
-# Standalone direct access (`--voice-settings` / tts-settings entrypoint);
-# the same knobs are also reachable INSIDE the voice menu (key `a`).
+# Lands on the category INDEX (same view `a` opens inside the voice
+# menu); q/Esc/Enter on the index exit, inside a category they go back
+# to the index. EOF (no tty / closed pipe) exits fail-open from any
+# view. Every change re-renders so the frame always reflects the
+# persisted state; a config_set failure keeps the old value and shows
+# the warning inline. Standalone direct access (`--voice-settings` /
+# tts-settings entrypoint).
 run_voice_settings() {
   local key=""
   SETTINGS_WARN=""
   SETTINGS_NOTE=""
+  SETTINGS_CATEGORY="index" # two-level: land on the category index
   while :; do
     settings_render
     # Clear AFTER the render: a warning set by the previous keypress is
@@ -4551,6 +5028,7 @@ keymap_main() {
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+export_core_retention # RF-HT-13-3: the core prunes with the host's resolved knob
 case "${1:-}" in
   --play|-p|--read-current)
     read_current_pane "${2:-}"
@@ -4735,6 +5213,40 @@ case "${1:-}" in
     echo "✓ Voz configurada: $TTS_VOICE"
     speak_text "Voz cambiada a ${TTS_VOICE}."
     ;;
+  --voice-for)
+    # PRD HT-02 (RF-HT-02-6): --voice-for agent|pane <id> [voz|off]; with
+    # no voice argument the fzf picker opens (palette ctrl-v path).
+    VF_KIND="${2:-}"; VF_ID="${3:-}"; VF_VOICE="${4:-}"
+    if [[ "$VF_KIND" != "agent" && "$VF_KIND" != "pane" || -z "$VF_ID" ]]; then
+      echo "Uso: herdr-tts --voice-for agent|pane <id> [voz|off]" >&2
+      exit 1
+    fi
+    if [[ -n "$VF_VOICE" ]]; then
+      if [[ "$VF_VOICE" == "off" || "$VF_VOICE" == "global" || "$VF_VOICE" == "none" ]]; then
+        voice_map_set "$VF_KIND" "$VF_ID" off || exit 1
+        echo "✓ ${VF_KIND} ${VF_ID}: vuelve a la voz global (${TTS_VOICE})"
+      else
+        voice_map_set "$VF_KIND" "$VF_ID" "$VF_VOICE" || exit 1
+        echo "✓ ${VF_KIND} ${VF_ID}: voz ${VF_VOICE}"
+        speak_text "Voz de este chat cambiada." "$VF_VOICE"
+      fi
+    else
+      run_voice_for_picker "$VF_KIND" "$VF_ID"
+    fi
+    ;;
+  --voice-prefix)
+    # RF-HT-02-5: spoken agent-type prefix before the text ("Claude: ...").
+    case "${2:-}" in
+      on|off)
+        voice_map_set_flag prefix "$2" || exit 1
+        echo "✓ Prefijo hablado: $2"
+        ;;
+      *)
+        echo "Uso: herdr-tts --voice-prefix on|off" >&2
+        exit 1
+        ;;
+    esac
+    ;;
   --rate)
     TTS_RATE="$2"
     save_config
@@ -4742,15 +5254,23 @@ case "${1:-}" in
     speak_text "Velocidad ajustada."
     ;;
   --provider)
+    # RF-HT-13-5: the allowed set is derived from the ENGINE catalog
+    # (fixes drift, e.g. kokoro missing from the old hardcoded list);
+    # core aliases (eleven, local) map to canonical names first. Engine
+    # unavailable → legacy fallback set, fail-open per RNF-HT-13-2.
     prov="${2:-edge}"
     prov="${prov,,}"
-    if [[ "$prov" == "edge" || "$prov" == "openai" || "$prov" == "elevenlabs" || "$prov" == "eleven" || "$prov" == "piper" || "$prov" == "local" ]]; then
+    canon_prov=$(engine_catalog_canonical "$prov")
+    engine_catalog_refresh || true
+    valid_providers="$ENGINE_CAT_PROVIDERS"
+    [[ -z "$valid_providers" ]] && valid_providers="edge openai elevenlabs piper"
+    if [[ " $valid_providers " == *" $canon_prov "* ]]; then
       TTS_PROVIDER="$prov"
       save_config
       echo "✓ Proveedor TTS configurado: $TTS_PROVIDER"
       notify_herdr "🎙️ Proveedor TTS" "$TTS_PROVIDER"
     else
-      echo "Error: Proveedor inválido '$prov'. Opciones válidas: edge, openai, elevenlabs, piper, local" >&2
+      echo "Error: Proveedor inválido '$prov'. Opciones válidas: ${valid_providers// /, }" >&2
       exit 1
     fi
     ;;
@@ -4832,7 +5352,13 @@ case "${1:-}" in
     pod_dir="${DATA_DIR}/podcast"
     mkdir -p "$pod_dir"
     echo "🎙️ Servidor de Podcast RSS iniciado en http://0.0.0.0:${port}/podcast.xml"
-    "$VENV_PYTHON" -c "from agent_tts.podcast import run_podcast_server; run_podcast_server(port=${port}, podcast_dir='${pod_dir}')"
+    # RF-HT-13-1: public API import; port/dir travel via argv so a pod_dir
+    # with quotes or spaces can never break out of the script string.
+    "$VENV_PYTHON" -c "
+import sys
+from agent_tts import run_podcast_server
+run_podcast_server(port=int(sys.argv[1]), podcast_dir=sys.argv[2])
+" "$port" "$pod_dir"
     ;;
   --podcast-publish)
     publish_current_pane_podcast
@@ -4877,6 +5403,8 @@ Acciones principales:
   --tldr                   Resumen rápido TL;DR del pane actual enfocado (Tecla: prefix+t)
   --stop (-s)              Detener inmediatamente cualquier audio sonando (Tecla: prefix+s)
   --toggle-pause           Pausar / Reanudar audio en reproducción (Tecla: prefix+p)
+  --pause                  Pausar la reproducción actual
+  --resume                 Reanudar la reproducción pausada
   --seek <+/-s>            Avanzar o retroceder segundos (p. ej. +10 o -10)
   --rewind                 Retroceder 10 segundos (Tecla: prefix+[)
   --forward                Avanzar 10 segundos (Tecla: prefix+])
@@ -4885,6 +5413,9 @@ Acciones principales:
   --next-paragraph         Avanzar al siguiente párrafo en reproducción
   --prev-paragraph         Retroceder al párrafo anterior en reproducción
   --play (-p)              Leer la última respuesta del chat enfocado
+  --speak <texto>          Síntesis directa: habla el texto indicado y sale
+  --play-file <archivo>    Reproducir un archivo de audio (.mp3/.wav) con el motor
+  --player-status          Estado del reproductor: posición, duración y estado
   --toggle-auto (-t)       Alternar lectura automática de fondo (Tecla: prefix+v)
   --auto-on                Auto-lectura siempre activa: te lee al terminar cada agente (default)
   --auto-off               Silenciar la auto-lectura: solo lectura manual (Tecla: prefix+r)
@@ -4908,6 +5439,9 @@ Configuración de voz y velocidad:
   --voice <nombre>         Cambiar voz (elvira, alvaro, ximena, dalia, jorge)
   --rate <velocidad>       Cambiar velocidad (+20%, +10%, +0%)
   --auto-lang on|off       Detección automática de idioma y cambio dinámico de voz
+  --voice-for agent|pane <id> [voz]
+                           Voz por agente o chat (PRD HT-02); 'off' = voz global; sin voz abre selector fzf
+  --voice-prefix on|off    Prefijo hablado con el nombre del agente antes del texto (voices.json "prefix")
   --rate-up                Acelerar lectura +10% en caliente (Tecla: prefix+=)
   --rate-down              Ralentizar lectura -10% en caliente (Tecla: prefix+-)
 
@@ -4951,7 +5485,7 @@ Información:
    --status                 Ver estado actual, lock y configuración
     --restart-daemon         Reinicia el daemon TTS: para el anterior (pidfile
                              o fallback) y relanza detached; aplica los cambios
-                             de p/d de los Ajustes sin esperar al próximo arranque
+                             de los Ajustes sin esperar al próximo arranque
    --dashboard              Panel TUI en vivo (pane de Herdr): estado por chat,
                             audios agrupados por chat, snoozes e historial
                             (controles: q salir · j/k chat · m silenciar · z snooze pane · Z snooze global · +/- velocidad)
@@ -4961,11 +5495,13 @@ Información:
                             comandos, lee una tecla, la ejecuta y se cierra;
                             la tecla a abre los Ajustes dentro del menú
                             (suggested: prefix+u → action open-menu)
-    --voice-settings         Ajustes de voz y audio (popup de acceso directo;
-                            también dentro del menú de voz, tecla a): cicla
-                            proveedor TTS, destino de reproducción y días de
-                            retención de audio (escribe config.env)
-    --palette-preview <pane> Cabecera de chat + turnos de audio del pane (preview fzf)
+     --voice-settings         Ajustes de voz y audio (popup de acceso directo;
+                             también dentro del menú de voz, tecla a): cicla
+                             proveedor, auto-lectura, alcance, destino, idioma,
+                             podcast, debounce, retención y asentamiento; escribe
+                             topic ntfy y URL web a texto libre (config.env)
+     --palette-preview <pane> Cabecera de chat + turnos de audio del pane (preview fzf)
+  --help, -h               Mostrar esta ayuda
 EOF
     ;;
   *)

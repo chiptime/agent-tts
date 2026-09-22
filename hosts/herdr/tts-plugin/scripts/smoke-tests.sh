@@ -21,10 +21,13 @@
 #   16    voice menu: dispatch map (stub-verified, one key = one existing
 #         function), single-write frame, quit/Esc/unknown/EOF paths,
 #         width+height clamp reuse, manifest/README wiring, two views
-#         (`a` opens the settings view inside the menu, `q` returns to
-#         the main frame, provider cycle persists into a hermetic
-#         config.env via HERDR_TTS_CONFIG_FILE), settings `v` toggles
-#         the auto_muted marker both ways with inline notes
+#         (`a` opens the settings INDEX inside the menu, `v` enters the
+#         Voz category, `q` backs out to the index and then the main
+#         frame, provider cycle persists into a hermetic config.env via
+#         HERDR_TTS_CONFIG_FILE), settings `v` (Lectura) toggles the
+#         auto_muted marker both ways with inline notes, a/i/f/b cycles
+#         persist scope/lang/podcast/debounce, t free-text topic (empty
+#         clears), transient status row separated by a blank row
 #   17    keymap: init (template, no-overwrite, --force), check (core
 #         shadow warnings, --json), emit (direct/ctrlalt/menu TOML),
 #         invalid ids/chords/duplicates rejected, missing file actionable
@@ -81,9 +84,21 @@
 #         dispatch + manifest wiring, run_daemon startup/exit-reason
 #         logging through the daemon.log helper
 #   30    config_set upsert dedupe: duplicate keys inside (and across)
+#   31    voz por agente/chat (PRD HT-02): voices.json rules via
+#         --voice-for (pane/agent, off deletes), precedence pane >
+#         agent > global + spoken prefix, malformed file fail-open with
+#         daemon.log line, deterministic auto_assign rotation, fzf
+#         picker persists, palette ctrl-v routes --voice-for pane
 #         the managed block collapse to exactly one line with the new
 #         value, repeated writes never grow the block, unknown lines and
 #         markers stay byte-identical, file stays bash-sourceable
+#   32    ajustes two-level navigation: the index renders the 4
+#         categories (v voz, a audio, n notificaciones, l lectura
+#         automática) and no raw knobs, each category view renders
+#         exactly its own knobs, in-category cycles persist through the
+#         writer, Esc from a category returns to the index, Esc/q from
+#         the index exits, R restarts from the standalone index,
+#         unknown keys warn with category-scoped hints
 set -uo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -902,47 +917,119 @@ assert_grep "16g README option 3 (direct map + conflicts)" '### Option 3 — Dir
 assert_grep "16g README binds prefix+u to the menu" '"prefix+u"' "$REPO/README.md" -F
 assert_grep "16g README documents the ctrl+alt+t caveat" 'ctrl\+alt\+t` launches a terminal' "$REPO/README.md"
 
-# 16h. Two-view menu: `a` opens the settings view INSIDE the menu, `p`
-#      cycles the provider into a hermetic config.env (HERDR_TTS_CONFIG_FILE
-#      override, same convention as HERDR_TTS_KEYMAP_FILE), `q` returns to
-#      the main frame (re-render, NOT exit) and the second `q` exits rc 0.
+# 16h. Two-view menu: `a` opens the settings INDEX inside the menu, `v`
+#      enters the Voz category, `p` cycles the provider into a hermetic
+#      config.env (HERDR_TTS_CONFIG_FILE override, same convention as
+#      HERDR_TTS_KEYMAP_FILE), `q` backs out to the index and the second
+#      `q` returns to the MAIN frame (re-render, NOT exit); EOF after the
+#      last `q` (main view) exits rc 0.
 new_env s16h
 FX="$T/fixture.json"; make_fixture "$FX"
 write_herdr_stub "$FX"
 export HERDR_TTS_CONFIG_FILE="$T/config.env"
-printf 'apqq' | timeout 10 "$SCRIPT" --voice-menu > "$T/out.txt" 2>>"$T/err.log"
+printf 'avpqq' | timeout 10 "$SCRIPT" --voice-menu > "$T/out.txt" 2>>"$T/err.log"
 [[ $? -eq 0 ]] && ok "16h two-view menu exits rc=0 on the final q" || bad "16h rc!=0"
 hv=$(esc_count "$T/out.txt" $'\033[H')
-[[ "$hv" -eq 4 ]] && ok "16h 4 frame writes: main, settings, re-render, main again ($hv)" || bad "16h H-moves=$hv (want 4)"
+[[ "$hv" -eq 6 ]] && ok "16h 6 frame writes: main, index, voz, p re-render, index, main ($hv)" || bad "16h H-moves=$hv (want 6)"
 [[ $(grep -cF '· Menú de voz' "$T/out.txt") -eq 2 ]] \
-  && ok "16h q returns to the MAIN frame (re-rendered, not exit)" || bad "16h main frame count $(grep -cF '· Menú de voz' "$T/out.txt")"
+  && ok "16h final q returns to the MAIN frame (re-rendered, not exit)" || bad "16h main frame count $(grep -cF '· Menú de voz' "$T/out.txt")"
 [[ $(grep -cF '· Ajustes de voz y audio' "$T/out.txt") -eq 2 ]] \
-  && ok "16h a opens the settings view (+1 re-render after p)" || bad "16h settings frame count $(grep -cF '· Ajustes de voz y audio' "$T/out.txt")"
+  && ok "16h a opens the settings INDEX (+1 re-render after the category q)" || bad "16h index frame count $(grep -cF '· Ajustes de voz y audio' "$T/out.txt")"
+[[ $(grep -cF '· Ajustes · Voz' "$T/out.txt") -eq 2 ]] \
+  && ok "16h v enters the Voz category (+1 re-render after p)" || bad "16h voz frame count $(grep -cF '· Ajustes · Voz' "$T/out.txt")"
 grep -q 'TTS_PROVIDER="openai"' "$HERDR_TTS_CONFIG_FILE" \
   && ok "16h p cycled provider edge→openai into config.env" || bad "16h provider not persisted"
-assert_no_grep "16h a/p/q path fires no action" '✓|Tecla no reconocida' "$T/out.txt"
+assert_no_grep "16h a/v/p/q path fires no action" '✓|Tecla no reconocida' "$T/out.txt"
 unset HERDR_TTS_CONFIG_FILE # scenario 25 derives CONFIG_FILE from the XDG paths
 
-# 16i. Settings `v`: toggles the auto_muted marker both ways with inline
-#      notes. The marker lives in the hermetic XDG conf dir (AUTO_MUTE_FILE
-#      derives from CONFIG_DIR), NOT config.env — same source of truth as
-#      --toggle-auto / --auto-on / --auto-off. One `v` per run (it is a
-#      toggle, not a cycle).
+# 16i. Settings `v` (inside Lectura automática): toggles the auto_muted
+#      marker both ways with inline notes. The marker lives in the
+#      hermetic XDG conf dir (AUTO_MUTE_FILE derives from CONFIG_DIR),
+#      NOT config.env — same source of truth as --toggle-auto /
+#      --auto-on / --auto-off. One `v` per run (it is a toggle, not a
+#      cycle).
 new_env s16i
 FX="$T/fixture.json"; make_fixture "$FX"
 write_herdr_stub "$FX"
 export HERDR_TTS_CONFIG_FILE="$T/config.env"
-printf 'vq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
+printf 'lvq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
 [[ $? -eq 0 ]] && ok "16i v toggle rc=0 (on→off)" || bad "16i rc!=0"
 [[ -f "$T/conf/herdr-tts/auto_muted" ]] \
   && ok "16i v creates the auto_muted marker" || bad "16i auto_muted marker missing"
 assert_grep "16i off note renders inline" 'Auto-lectura silenciada' "$T/out.txt"
-printf 'vq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
+printf 'lvq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
 [[ $? -eq 0 ]] && ok "16i second v rc=0 (off→on)" || bad "16i second run rc!=0"
 [[ ! -f "$T/conf/herdr-tts/auto_muted" ]] \
   && ok "16i second v clears the auto_muted marker" || bad "16i marker still present"
 assert_grep "16i on note renders inline" 'Auto-lectura activada' "$T/out.txt"
-assert_grep "16i settings frame lists the v row" ' v  Auto-lectura:' "$T/out.txt"
+assert_grep "16i lectura view lists the v row" ' v  Auto-lectura:' "$T/out.txt"
+unset HERDR_TTS_CONFIG_FILE
+
+# 16j. Category cycles persist into a hermetic config.env (fresh
+#      defaults: scope=focused, lang=off, podcast=off, debounce=20):
+#      l→lectura (a scope), v→voz (i lang), n→notif (f podcast),
+#      l→lectura again (b debounce), backing out to the index between
+#      category views.
+new_env s16j
+FX="$T/fixture.json"; make_fixture "$FX"
+write_herdr_stub "$FX"
+export HERDR_TTS_CONFIG_FILE="$T/config.env"
+printf 'laqviqnfqlbq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "16j category cycles rc=0" || bad "16j rc!=0"
+grep -q 'TTS_AUTO_SCOPE="all"' "$HERDR_TTS_CONFIG_FILE" \
+  && ok "16j a cycled scope focused→all" || bad "16j scope not persisted"
+grep -q 'TTS_AUTO_LANG="on"' "$HERDR_TTS_CONFIG_FILE" \
+  && ok "16j i cycled auto-lang off→on" || bad "16j lang not persisted"
+grep -q 'PODCAST_ENABLED="on"' "$HERDR_TTS_CONFIG_FILE" \
+  && ok "16j f cycled podcast off→on" || bad "16j podcast not persisted"
+db=$(grep -oE 'TTS_DEBOUNCE_SECONDS="[0-9]+"' "$HERDR_TTS_CONFIG_FILE" | grep -oE '[0-9]+' | head -1)
+[[ "$db" == "30" ]] && ok "16j b cycled debounce 20→30" || bad "16j debounce='$db' (want 30)"
+assert_no_grep "16j cycles fire no warn" 'Tecla no reconocida|⚠️' "$T/out.txt"
+unset HERDR_TTS_CONFIG_FILE
+
+# 16k. Settings `t` (inside Notificaciones): free-text ntfy topic like
+#      w; empty line clears the push (off), a written topic persists
+#      verbatim, inline notes render.
+new_env s16k
+FX="$T/fixture.json"; make_fixture "$FX"
+write_herdr_stub "$FX"
+export HERDR_TTS_CONFIG_FILE="$T/config.env"
+printf 'ntMiTopic\nq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "16k t write rc=0" || bad "16k write rc!=0"
+grep -q 'NTFY_TOPIC="MiTopic"' "$HERDR_TTS_CONFIG_FILE" \
+  && ok "16k t persists the topic verbatim" || bad "16k topic not persisted"
+assert_grep "16k topic note renders inline" 'Topic de ntfy configurado' "$T/out.txt"
+printf 'nt\nq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "16k t clear rc=0" || bad "16k clear rc!=0"
+grep -q 'NTFY_TOPIC=""' "$HERDR_TTS_CONFIG_FILE" \
+  && ok "16k empty line clears the topic" || bad "16k topic not cleared"
+assert_grep "16k off note renders inline" 'Notificaciones móviles de ntfy desactivadas' "$T/out.txt"
+unset HERDR_TTS_CONFIG_FILE
+
+# 16l. Settings `g` (inside Voz): cycles the global voice and persists
+#      TTS_VOICE.
+new_env s16l
+FX="$T/fixture.json"; make_fixture "$FX"
+write_herdr_stub "$FX"
+export HERDR_TTS_CONFIG_FILE="$T/config.env"
+printf 'vgq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "16l g cycle rc=0" || bad "16l rc!=0"
+grep -q 'TTS_VOICE="alvaro"' "$HERDR_TTS_CONFIG_FILE" \
+  && ok "16l g cycled voice elvira→alvaro" || bad "16l voice not persisted"
+unset HERDR_TTS_CONFIG_FILE
+
+# 16m. Settings `n`/`u` (inside Voz): persist the voices.json flags
+#      (prefix, auto_assign).
+new_env s16m
+FX="$T/fixture.json"; make_fixture "$FX"
+write_herdr_stub "$FX"
+export HERDR_TTS_CONFIG_FILE="$T/config.env"
+printf 'vnuq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "16m n/u toggles rc=0" || bad "16m rc!=0"
+jq -e '(.prefix == true) and (.auto_assign == true)' "$XDG_CONFIG_HOME/herdr-tts/voices.json" >/dev/null \
+  && ok "16m n/u persist prefix + auto_assign" || bad "16m voices.json flags not persisted"
+assert_grep "16m voz view lists the n row" ' n  Prefijo hablado:' "$T/out.txt"
+assert_grep "16m voz view lists the u row" ' u  Auto-asignación:' "$T/out.txt"
 unset HERDR_TTS_CONFIG_FILE
 
 echo "── 17. keymap: init / check / emit (declarative, conflict-checked)"
@@ -1552,7 +1639,7 @@ write_prune_stub 0
 run_prune 'HERDR_TTS_AUDIO_RETENTION_DAYS=7'
 [[ "$(wc -l < "$PRUNE_CALLS")" -eq 1 ]] \
   && ok "24a first sweep spawns the retention prune" || bad "24a spawns: $(wc -l < "$PRUNE_CALLS")"
-grep -qF 'import prune_expired' "$PRUNE_CALLS" \
+grep -qF 'prune_expired' "$PRUNE_CALLS" \
   && ok "24a spawn runs the engine retention sweep" || bad "24a argv: $(cat "$PRUNE_CALLS")"
 [[ -f "$STAMP24" ]] && ok "24a hourly stamp written" || bad "24a stamp missing at $STAMP24"
 grep -q '^rc=0$' "$T/rc24" && ok "24a rc 0 on success" || bad "24a rc: $(cat "$T/rc24")"
@@ -1667,13 +1754,16 @@ assert_grep "25b unknown retention current → first element" '^retention_unknow
 assert_grep "25b settle cycles with wrap" '^settle:0>2>5>10>15>30>0$' "$T/out.txt"
 assert_grep "25b unknown settle current → first element" '^settle_unknown:0$' "$T/out.txt"
 
-# 25c. run_voice_settings with piped keys: frame renders, values cycle,
-#      config.env persists, every change re-renders (one H-move each).
-printf 'prq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
+# 25c. run_voice_settings with piped keys: index frame renders, values
+#      cycle inside their categories (v→voz p, a→audio r), config.env
+#      persists, every change re-renders (one H-move each).
+printf 'vpqarqq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
 [[ $? -eq 0 ]] && ok "25c settings popup exited rc=0" || bad "25c rc!=0"
-assert_grep "25c frame renders in Spanish" 'Ajustes de voz y audio' "$T/out.txt"
+assert_grep "25c index frame renders in Spanish" 'Ajustes de voz y audio' "$T/out.txt"
+assert_grep "25c voz category frame renders" 'Ajustes · Voz' "$T/out.txt"
+assert_grep "25c audio category frame renders" 'Ajustes · Audio' "$T/out.txt"
 hv=$(esc_count "$T/out.txt" $'\033[H')
-[[ "$hv" -eq 3 ]] && ok "25c initial render + 2 change re-renders ($hv H-moves)" || bad "25c H-moves=$hv (want 3)"
+[[ "$hv" -eq 7 ]] && ok "25c index, voz, p re-render, index, audio, r re-render, index ($hv H-moves)" || bad "25c H-moves=$hv (want 7)"
 grep -q 'TTS_PROVIDER="edge"' "$CONFIG_FILE" \
   && ok "25c p cycled provider kokoro→edge into config.env" || bad "25c provider not persisted"
 grep -q 'HERDR_TTS_AUDIO_RETENTION_DAYS="14"' "$CONFIG_FILE" \
@@ -1884,21 +1974,22 @@ CONFIG_DIR_S28="$T/conf/herdr-tts"
 CONFIG_FILE="$CONFIG_DIR_S28/config.env" # mirrors the script's XDG default
 mkdir -p "$CONFIG_DIR_S28"
 
-# 28a. empty URL: frame renders "Desactivada", w with an empty line keeps
-#      the redirect off (empty WEB_URL/COLLIE_URL written by the writer).
-printf 'w\nq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
+# 28a. empty URL: notif view renders "Desactivada", w with an empty line
+#      keeps the redirect off (empty WEB_URL/COLLIE_URL written by the
+#      writer); a pass through the Audio view shows the untouched c row.
+printf 'nw\nqaq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
 [[ $? -eq 0 ]] && ok "28a popup exits rc=0 on empty-URL clear" || bad "28a rc!=0"
 assert_grep "28a web row renders Desactivada with no URL" 'w  Redirección web: +Desactivada' "$T/out.txt"
 assert_grep "28a click row renders off" 'c  Click directo: +off ' "$T/out.txt"
 grep -qF 'WEB_URL=""' "$CONFIG_FILE" \
   && ok "28a empty WEB_URL persisted to config.env" || bad "28a WEB_URL not persisted"
-assert_grep "28a restart hint line names the web redirect" 'R +reinicia el daemon.*redirección web' "$T/out.txt"
+assert_grep "28a index keeps the restart hint line" 'R +reinicia el daemon.*resto de ajustes' "$T/out.txt"
 
 # 28b. w + collie URL with the {pane_id} placeholder: stored verbatim,
 #      COLLIE_URL rides along, and a collie URL seeds WEB_LABEL="Collie"
 #      (it was empty); the frame shows the configured URL.
 URL28="https://collie.example.com/ui/pane/{pane_id}"
-printf 'w%s\nq' "$URL28" | timeout 10 "$SCRIPT" --voice-settings > "$T/out2.txt" 2>>"$T/err.log"
+printf 'nw%s\nq' "$URL28" | timeout 10 "$SCRIPT" --voice-settings > "$T/out2.txt" 2>>"$T/err.log"
 [[ $? -eq 0 ]] && ok "28b URL popup exits rc=0" || bad "28b rc!=0"
 grep -qF "WEB_URL=\"$URL28\"" "$CONFIG_FILE" \
   && ok "28b WEB_URL persisted verbatim ({pane_id} intact)" || bad "28b WEB_URL not persisted"
@@ -1908,15 +1999,15 @@ grep -qF 'WEB_LABEL="Collie"' "$CONFIG_FILE" \
   && ok "28b collie URL seeds WEB_LABEL=Collie when empty" || bad "28b WEB_LABEL not seeded"
 assert_grep "28b frame shows the configured URL" "Redirección web: +https://collie.example.com/ui/pane/[{]pane_id" "$T/out2.txt"
 
-# 28c. c cycles off → on: persisted + CLI-parity note rendered.
-printf 'cq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out3.txt" 2>>"$T/err.log"
+# 28c. c cycles off → on (inside Audio): persisted + CLI-parity note.
+printf 'acq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out3.txt" 2>>"$T/err.log"
 [[ $? -eq 0 ]] && ok "28c on-cycle popup exits rc=0" || bad "28c rc!=0"
 grep -qF 'CLICK_REDIRECT="on"' "$CONFIG_FILE" \
   && ok "28c CLICK_REDIRECT=on persisted" || bad "28c on not persisted"
 assert_grep "28c on note mirrors the CLI wording" 'Click directo activado \(abrirá navegador al pulsar la tarjeta' "$T/out3.txt"
 
 # 28d. c again cycles on → off, wording included.
-printf 'cq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out4.txt" 2>>"$T/err.log"
+printf 'acq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out4.txt" 2>>"$T/err.log"
 grep -qF 'CLICK_REDIRECT="off"' "$CONFIG_FILE" \
   && ok "28d CLICK_REDIRECT=off persisted after the wrap" || bad "28d off not persisted"
 assert_grep "28d off note mirrors the CLI wording" 'Click directo desactivado' "$T/out4.txt"
@@ -2084,6 +2175,170 @@ grep -qF 'HERDR_TTS_AUDIO_RETENTION_DAYS="14"' "$CONFIG_FILE" \
 bash -c 'source "$1" >/dev/null 2>&1 && printf "src:%s\n" "$HERDR_TTS_AUDIO_RETENTION_DAYS"' _ "$CONFIG_FILE" > "$T/out.txt"
 assert_grep "30c file stays bash-sourceable" '^src:14$' "$T/out.txt"
 
+echo "── 31. voz por agente/chat (PRD HT-02): voices.json + --voice-for + paleta ctrl-v"
+new_env s31
+FX="$T/fixture.json"; make_fixture "$FX"
+write_herdr_stub "$FX"
+# 31a CLI writes: pane and agent rules land in voices.json; 'off' deletes (RF-HT-02-6)
+timeout 10 "$SCRIPT" --voice-for pane w4:p4 alvaro > "$T/out.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "31a voice-for pane set rc=0" || bad "31a rc!=0"
+jq -e '.pane["w4:p4"] == "alvaro"' "$XDG_CONFIG_HOME/herdr-tts/voices.json" >/dev/null \
+  && ok "31a pane rule persisted" || bad "31a pane rule missing"
+timeout 10 "$SCRIPT" --voice-for agent claude-code ximena > /dev/null 2>>"$T/err.log"
+jq -e '.agent["claude-code"] == "ximena"' "$XDG_CONFIG_HOME/herdr-tts/voices.json" >/dev/null \
+  && ok "31a agent rule persisted" || bad "31a agent rule missing"
+timeout 10 "$SCRIPT" --voice-for pane w4:p4 off > /dev/null 2>>"$T/err.log"
+jq -e '(.pane // {}) | has("w4:p4") | not' "$XDG_CONFIG_HOME/herdr-tts/voices.json" >/dev/null \
+  && ok "31a off deletes the pane rule" || bad "31a clear failed"
+# 31b precedence pane > agent > global + spoken prefix (RF-HT-02-2 / RF-HT-02-5)
+export HERDR_TTS_VOICES_FILE="$XDG_CONFIG_HOME/herdr-tts/voices.json"
+printf '{\n  "agent": {"claude-code": "ximena"},\n  "pane": {"w4:p4": "alvaro"},\n  "prefix": true\n}\n' > "$HERDR_TTS_VOICES_FILE"
+lib_run 'v1=$(resolve_voice w4:p4 claude-code); v2=$(resolve_voice w9:p9 claude-code); v3=$(resolve_voice w9:p9 otro-agente); printf "%s %s %s" "$v1" "$v2" "$v3"' > "$T/out.txt"
+assert_grep "31b pane beats agent beats global (RF-HT-02-2)" '^alvaro ximena elvira$' "$T/out.txt"
+lib_run 'printf "%s" "$(spoken_prefix claude-code)"' > "$T/out.txt"
+assert_grep "31b spoken prefix renders when prefix=true (RF-HT-02-5)" '^claude-code: $' "$T/out.txt"
+# 31c invalid voices.json fails open to the global voice + daemon.log line (RF-HT-02-3)
+printf 'no-soy-json' > "$HERDR_TTS_VOICES_FILE"
+export HERDR_TTS_DAEMON_LOG="$T/daemon.log"
+lib_run 'printf "%s" "$(resolve_voice w4:p4 claude-code)"' > "$T/out.txt"
+assert_grep "31c malformed file fails open to global" '^elvira$' "$T/out.txt"
+grep -q 'voices.json inválido' "$T/daemon.log" \
+  && ok "31c fail-open logged to daemon.log" || bad "31c no daemon.log line"
+# 31d auto_assign rotation: deterministic per agent_type, provider palette only (RF-HT-02-7)
+printf '{"auto_assign": true}' > "$HERDR_TTS_VOICES_FILE"
+lib_run 'a1=$(resolve_voice w1:p1 claude-code); a2=$(resolve_voice w1:p1 claude-code); a3=$(resolve_voice w1:p1 openai-code); printf "%s %s %s" "$a1" "$a2" "$a3"' > "$T/out.txt"
+r1=$(cut -d' ' -f1 "$T/out.txt"); r2=$(cut -d' ' -f2 "$T/out.txt")
+case "$r1" in elvira|alvaro|ximena|dalia) ok "31d rotation picks from the active-provider palette" ;; *) bad "31d '$r1' not in the edge rotation palette" ;; esac
+[[ "$r1" == "$r2" ]] && ok "31d rotation is deterministic per agent_type" || bad "31d unstable rotation ($r1 vs $r2)"
+# 31e picker: stub fzf returns "ximena" → pane rule persisted via --voice-for
+cat > "$T/bin/fzf" <<'EOF'
+#!/usr/bin/env bash
+cat > /dev/null
+printf '%s\n' "ximena"
+exit 0
+EOF
+chmod +x "$T/bin/fzf"
+timeout 10 "$SCRIPT" --voice-for pane w4:p4 > "$T/out.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "31e picker rc=0" || bad "31e rc!=0"
+jq -e '.pane["w4:p4"] == "ximena"' "$HERDR_TTS_VOICES_FILE" >/dev/null \
+  && ok "31e picker persists the chosen voice" || bad "31e picker did not persist"
+# 31f palette advertises and routes ctrl-v through --voice-for pane {2}
+cat > "$T/bin/fzf" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" > "$T/fzf31.argv"
+cat > /dev/null
+head -n 1
+exit 0
+EOF
+chmod +x "$T/bin/fzf"
+timeout 20 "$SCRIPT" --voice-palette > /dev/null 2>>"$T/err.log"
+grep -qF "ctrl-v:execute-silent(" "$T/fzf31.argv" \
+  && ok "31f ctrl-v voice bind present" || bad "31f no ctrl-v bind"
+grep -qF -- "--voice-for pane {2}" "$T/fzf31.argv" \
+  && ok "31f bind routes {2} through --voice-for pane" || bad "31f no --voice-for pane {2} in: $(cat "$T/fzf31.argv")"
+grep -qF "ctrl-v: voz del chat" "$T/fzf31.argv" \
+  && ok "31f header advertises ctrl-v" || bad "31f header hint missing"
+
+echo "── 32. ajustes two-level: category index, scoped knobs, Esc semantics"
+new_env s32
+FX="$T/fixture.json"; make_fixture "$FX"
+write_herdr_stub "$FX"
+export HERDR_TTS_CONFIG_FILE="$T/config.env"
+
+# 32a. the index renders the four categories and no flat knob rows.
+printf 'q' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "32a index-only run exits rc=0" || bad "32a rc!=0"
+assert_grep "32a index lists Voz"                ' v  🎙 Voz' "$T/out.txt" -F
+assert_grep "32a index lists Audio"              ' a  🔊 Audio' "$T/out.txt" -F
+assert_grep "32a index lists Notificaciones"     ' n  🔔 Notificaciones' "$T/out.txt" -F
+assert_grep "32a index lists Lectura automática" ' l  ⚙️  Lectura automática' "$T/out.txt" -F
+assert_no_grep "32a index shows no raw knob rows" 'Proveedor TTS:|Destino reproducción:|Topic ntfy:|Debounce anti-spam' "$T/out.txt"
+assert_grep "32a index keeps the R restart hint" 'R +reinicia el daemon' "$T/out.txt"
+
+# 32b. each category view renders EXACTLY its own knobs (scoped dispatch:
+#      the key set of one category never leaks into another view).
+while IFS='|' read -r cat key rows; do
+  printf '%sq' "$key" | timeout 10 "$SCRIPT" --voice-settings > "$T/cat.txt" 2>>"$T/err.log"
+  IFS='|' read -ra wanted <<< "$rows"
+  for row in "${wanted[@]}"; do
+    assert_grep "32b ${cat} renders '${row}'" "$row" "$T/cat.txt" -F
+  done
+done <<'EOF'
+voz|v| p  Proveedor TTS:| g  Voz global:| n  Prefijo hablado:| u  Auto-asignación:| i  Idioma auto:
+audio|a| d  Destino reproducción:| c  Click directo:| r  Audio retenido:| s  Asentamiento done:
+notif|n| t  Topic ntfy:| f  Podcast feed:| w  Redirección web:
+lectura|l| v  Auto-lectura:| a  Alcance auto-lectura:| b  Debounce anti-spam:
+EOF
+printf 'vq'  | timeout 10 "$SCRIPT" --voice-settings > "$T/voz.txt"   2>>"$T/err.log"
+printf 'aq'  | timeout 10 "$SCRIPT" --voice-settings > "$T/audio.txt" 2>>"$T/err.log"
+printf 'nq'  | timeout 10 "$SCRIPT" --voice-settings > "$T/notif.txt" 2>>"$T/err.log"
+printf 'lq'  | timeout 10 "$SCRIPT" --voice-settings > "$T/lect.txt"  2>>"$T/err.log"
+assert_no_grep "32b voz view free of audio rows"     'Destino reproducción:|Click directo:|Audio retenido:' "$T/voz.txt"
+assert_no_grep "32b voz view free of notif rows"     'Topic ntfy:|Podcast feed:|Redirección web:' "$T/voz.txt"
+assert_no_grep "32b audio view free of voz rows"     'Proveedor TTS:|Voz global:|Idioma auto:' "$T/audio.txt"
+assert_no_grep "32b notif view free of lectura rows" 'Auto-lectura:|Debounce anti-spam:' "$T/notif.txt"
+assert_no_grep "32b lectura view free of notif rows" 'Topic ntfy:|Redirección web:|Click directo:' "$T/lect.txt"
+
+# 32c. cycling a knob inside a category persists through the config writer.
+printf 'vpq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "32c in-category cycle rc=0" || bad "32c rc!=0"
+grep -q 'TTS_PROVIDER="openai"' "$HERDR_TTS_CONFIG_FILE" \
+  && ok "32c p cycled provider edge→openai via config_set" || bad "32c provider not persisted"
+
+# 32d. Esc from a category returns to the INDEX (re-render, not exit):
+#      3 H-moves (index, voz, index) and the trailing q is consumed by
+#      the index — a category-Esc exit would leave it unread at EOF.
+printf 'v\033q' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "32d Esc-from-category path exits rc=0" || bad "32d rc!=0"
+hv=$(esc_count "$T/out.txt" $'\033[H')
+[[ "$hv" -eq 3 ]] && ok "32d index → voz → index ($hv H-moves)" || bad "32d H-moves=$hv (want 3)"
+[[ $(grep -cF '· Ajustes de voz y audio' "$T/out.txt") -eq 2 ]] \
+  && ok "32d Esc lands back on the index" || bad "32d index frame count $(grep -cF '· Ajustes de voz y audio' "$T/out.txt")"
+
+# 32e. Esc from the index exits the standalone popup after one render.
+printf '\033' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "32e Esc-from-index exits rc=0" || bad "32e rc!=0"
+hv=$(esc_count "$T/out.txt" $'\033[H')
+[[ "$hv" -eq 1 ]] && ok "32e exactly one render before the exit ($hv H-move)" || bad "32e H-moves=$hv (want 1)"
+
+# 32f. R reachable from the standalone INDEX through the restart path
+#      (26e covers the same key via the voice menu `a` entry).
+cat > "$T/recorder.sh" <<EOF
+#!/usr/bin/env bash
+printf 'args=%s\n' "\$*" >> "$T/restart32.log"
+printf '%s\n' "\$\$" > "\${HERDR_TTS_DAEMON_PID_FILE:?}"
+EOF
+chmod +x "$T/recorder.sh"
+rm -f "$T/restart32.log" "$T/daemon32.pid"
+( export HERDR_TTS_SCRIPT="$T/recorder.sh" HERDR_TTS_DAEMON_PID_FILE="$T/daemon32.pid"
+  printf 'Rq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log" )
+[[ $? -eq 0 ]] && ok "32f R-from-index exits rc=0" || bad "32f rc!=0"
+assert_grep "32f R renders the confirmation inline" '✓ Daemon reiniciado' "$T/out.txt"
+assert_grep "32f R hit the restart path (stub invoked)" '^args=_daemon-supervised$' "$T/restart32.log"
+
+# 32g. unknown key inside a category warns with the category-scoped hint.
+printf 'v@q' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
+assert_grep "32g unknown key in voz warns" 'Tecla no reconocida \(@\)' "$T/out.txt"
+assert_grep "32g voz warning hints its own keys" 'p proveedor, g voz global' "$T/out.txt"
+
+# 32h. write failure keeps the old value (Persistence on Cycle): a
+#      read-only config dir makes config_set fail at its writability
+#      guard — the cycle warns inline and the old value stays put.
+mkdir "$T/roconf"
+printf 'TTS_PROVIDER="edge"\n' > "$T/roconf/config.env"
+export HERDR_TTS_CONFIG_FILE="$T/roconf/config.env"
+chmod 555 "$T/roconf" # unwritable dir → config_set rc 1 (dir guard)
+printf 'vpq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "32h failed-write run exits rc=0 (fail-open)" || bad "32h rc!=0"
+assert_grep "32h failed save warns inline" '⚠️.*No se pudo guardar TTS_PROVIDER' "$T/out.txt"
+assert_grep "32h config_set rejected the unwritable dir" 'config directory is not writable' "$T/err.log"
+assert_grep "32h old provider value still renders" 'Proveedor TTS: +edge' "$T/out.txt"
+assert_no_grep "32h cycled value never renders" 'Proveedor TTS: +openai' "$T/out.txt"
+assert_grep "32h config keeps the old value" 'TTS_PROVIDER="edge"' "$HERDR_TTS_CONFIG_FILE" -F
+assert_no_grep_f "32h failed write never persisted openai" 'TTS_PROVIDER="openai"' "$HERDR_TTS_CONFIG_FILE"
+chmod 755 "$T/roconf" # restore: keep the suite's rm -rf temp cleanup working
+unset HERDR_TTS_CONFIG_FILE
+
 # ═════════════════════════════════════════════════════════════════════════
 # 33. bootstrap.sh contract (PM-01): pip-free installs (uv pip / python -m
 #     pip — the venv's bin/pip is NEVER invoked), immutable agent-tts pin
@@ -2225,6 +2480,7 @@ bt_run --
 assert_grep "33g arbitrary location installs the pinned source" "$PIN_RE" "$BT/logs/uv.log"
 BT_SCRIPT="$REPO/scripts/bootstrap.sh"
 unset BT UVLOG PYLOG BT_SCRIPT PIN_RE PIN_PY_RE
+
 echo "── 34. install.sh: preflight, fresh e2e, upgrade guard, keymap policy"
 new_env s34
 
@@ -2402,6 +2658,7 @@ grep -qE 'uv pip install .*agent-tts\.git@[0-9a-f]{40}' "$INS/logs/uv.log" \
   && ok "34h agent-tts stays SHA-pinned regardless" || bad "34h agent-tts pin loosened"
 unset INS INS_PATH INS_TEMPLATE
 unset HERDR_CONFIG_DIR
+
 echo
 echo "═══ RESULT: $PASS passed, $FAIL failed ═══"
 exit $(( FAIL > 0 ? 1 : 0 ))
