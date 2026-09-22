@@ -28,9 +28,10 @@ DEFAULT_TTS_VOICE = "elvira"
 DEFAULT_TTS_RATE = "+0%"
 # Hard guard cap only: the engine truncates synthesis at --max-chars, so this
 # must stay generous or full answers get cut mid-read (never use --tldr for
-# chat answers).
-DEFAULT_TTS_MAX_CHARS = 4000
-DEFAULT_TTS_TIMEOUT_S = 120
+# chat answers). Agent answers routinely exceed 4000 chars; 8000 covers them
+# while still bounding pathological inputs. Timeout scales with the cap.
+DEFAULT_TTS_MAX_CHARS = 8000
+DEFAULT_TTS_TIMEOUT_S = 240
 
 # Conservative cap: reading more lines than the viewport scrolls the
 # operator's real screen for alt-screen agents (herdr caveat).

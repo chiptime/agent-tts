@@ -154,8 +154,70 @@
     body.textContent = text;
     turn.appendChild(who);
     turn.appendChild(body);
+    if (role === "brain") attachReplay(conv, turn, function () { return text; }, "brain");
     conv.appendChild(turn);
     conv.scrollTop = conv.scrollHeight;
+  }
+
+  /* Replay pill: within one container, only the newest kept turn has it.
+   * getText resolves the text at tap time (the /view tail is truncated for
+   * glancing, so the agent view resolves the full text from /conversation). */
+  function attachReplay(container, turn, getText, label) {
+    var prev = container.querySelector(".replay-btn");
+    if (prev) prev.remove();
+    var btn = document.createElement("button");
+    btn.className = "replay-btn";
+    btn.type = "button";
+    btn.setAttribute("aria-label", "Leer esta respuesta en voz alta");
+    btn.title = "Leer en voz alta";
+    btn.textContent = "🔊 Escuchar";
+    btn.addEventListener("click", function (event) {
+      event.stopPropagation();  // never trigger the agent-view "open sheet" tap
+      Promise.resolve(getText()).then(function (text) {
+        speakText(text, label);
+      });
+    });
+    turn.appendChild(btn);
+  }
+
+  /* The /view transcript tail caps each turn for glancing; replay reads the
+   * full turn text from /conversation, falling back to the tail on failure. */
+  function fetchFullAgentText(fallback) {
+    var qs = selectedPane ? "?pane_id=" + encodeURIComponent(selectedPane) : "";
+    return fetch("/conversation" + qs)
+      .then(function (resp) {
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        return resp.json();
+      })
+      .then(function (data) {
+        var turns = (data && data.turns) || [];
+        for (var i = turns.length - 1; i >= 0; i--) {
+          if (turns[i].role !== "user") return turns[i].text;
+        }
+        return fallback;
+      })
+      .catch(function () { return fallback; });
+  }
+
+  function speakText(text, label) {
+    fetch("/tts", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: text })
+    })
+      .then(function (resp) {
+        if (!resp.ok) {
+          showBanner("No pude sintetizar el audio (HTTP " + resp.status + ").");
+          return;
+        }
+        return resp.json().then(function (data) {
+          var toastText = text.length > 160 ? text.slice(0, 157) + "…" : text;
+          enqueueAudio(data.audio_url, { label: label || "agente", text: toastText });
+        });
+      })
+      .catch(function () {
+        showBanner("No pude sintetizar el audio — revisa la conexión.");
+      });
   }
 
   function showBanner(message) {
@@ -265,6 +327,8 @@
   function renderViewTail(view) {
     viewTranscript.textContent = "";
     var turns = (view && view.transcript) || [];
+    var lastAgentTurn = null;
+    var lastAgentText = "";
     for (var i = 0; i < turns.length; i++) {
       var line = document.createElement("div");
       line.className = "view-turn " + turns[i].role;
@@ -274,6 +338,15 @@
       line.appendChild(role);
       line.appendChild(document.createTextNode(turns[i].text));
       viewTranscript.appendChild(line);
+      if (turns[i].role !== "user") {
+        lastAgentTurn = line;
+        lastAgentText = turns[i].text;
+      }
+    }
+    if (lastAgentTurn) {
+      attachReplay(viewTranscript, lastAgentTurn, function () {
+        return fetchFullAgentText(lastAgentText);
+      }, "agente");
     }
     if (view && view.screen) {
       viewScreen.textContent = view.screen;
@@ -802,6 +875,8 @@
       sheetConv.appendChild(empty);
       return;
     }
+    var lastAgentBlock = null;
+    var lastAgentText = "";
     for (var i = 0; i < turns.length; i++) {
       var block = document.createElement("div");
       block.className = "c-turn";
@@ -814,7 +889,12 @@
       block.appendChild(role);
       block.appendChild(text);
       sheetConv.appendChild(block);
+      if (turns[i].role !== "user") {
+        lastAgentBlock = block;
+        lastAgentText = turns[i].text;
+      }
     }
+    if (lastAgentBlock) attachReplay(sheetConv, lastAgentBlock, function () { return lastAgentText; }, "agente");
     if (data && data.window && turns.length >= data.window) {
       sheetNote.textContent = "Últimas " + data.window + " intervenciones (ventana fija).";
       sheetNote.classList.remove("hidden");
