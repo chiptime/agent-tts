@@ -923,6 +923,11 @@ def main():
         help="Send an IPC command to the active audio player (e.g. 'seek +10', 'seek -10', 'toggle-pause', 'status')",
     )
     parser.add_argument(
+        "--ipc-json",
+        action="store_true",
+        help="With --ipc-cmd: print the reply as a single-line JSON object instead of the human string",
+    )
+    parser.add_argument(
         "--provider",
         default=os.environ.get("TTS_PROVIDER", "edge"),
         choices=["edge", "openai", "elevenlabs", "eleven", "piper", "kokoro", "local"],
@@ -1024,7 +1029,12 @@ def main():
     if ipc_cmd:
         res = send_ipc_command(ipc_cmd)
         if res is not None:
-            print(res)
+            if args.ipc_json:
+                from agent_tts.ipc import ipc_reply_json
+
+                print(ipc_reply_json(res))
+            else:
+                print(res)
             sys.exit(0)
         else:
             print("Error: No active audio playback session found", file=sys.stderr)

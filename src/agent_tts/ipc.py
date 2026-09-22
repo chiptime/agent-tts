@@ -73,6 +73,33 @@ def connect_to_server(socket_path: str = IPC_SOCKET) -> Optional[socket.socket]:
     return sock
 
 
+def ipc_reply_json(reply: str) -> str:
+    """Converts one engine IPC reply into a single-line JSON object.
+
+    The reply wire format is `key=value` tokens whose values never contain
+    spaces, optionally followed by ONE free-text field (`text=...`) that
+    keeps its spaces. Unknown shapes degrade to {"raw": reply} — this never
+    raises, so hosts can switch to it without new failure modes.
+    """
+    import json
+
+    obj: dict = {}
+    rest = reply
+    if reply.startswith("text="):
+        obj["text"] = reply[len("text="):]
+        rest = ""
+    elif " text=" in reply:
+        rest, text = reply.split(" text=", 1)
+        obj["text"] = text
+    for token in rest.split():
+        if "=" in token:
+            key, value = token.split("=", 1)
+            obj[key] = value
+    if not obj:
+        obj = {"raw": reply}
+    return json.dumps(obj, ensure_ascii=False)
+
+
 def send_ipc_command(command: str, socket_path: str = IPC_SOCKET) -> Optional[str]:
     """Sends an IPC command to the currently running audio player."""
     try:
