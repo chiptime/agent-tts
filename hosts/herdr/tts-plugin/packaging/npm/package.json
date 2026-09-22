@@ -1,0 +1,31 @@
+{
+  "name": "herdr-tts",
+  "version": "0.16.0",
+  "description": "Thin npm wrapper that runs the tag-pinned herdr-tts one-line installer (neural TTS voice notifications for Herdr agents).",
+  "license": "MIT",
+  "homepage": "https://github.com/chiptime/herdr-tts",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chiptime/herdr-tts.git",
+    "directory": "packaging/npm"
+  },
+  "bugs": "https://github.com/chiptime/herdr-tts/issues",
+  "keywords": [
+    "tts",
+    "voice",
+    "notifications",
+    "agents",
+    "herdr",
+    "cli"
+  ],
+  "bin": {
+    "herdr-tts": "bin/herdr-tts"
+  },
+  "files": [
+    "bin/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=14"
+  }
+}
