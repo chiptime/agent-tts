@@ -1007,15 +1007,25 @@ assert_grep "16k off note renders inline" 'Notificaciones móviles de ntfy desac
 unset HERDR_TTS_CONFIG_FILE
 
 # 16l. Settings `g` (inside Voz): cycles the global voice and persists
-#      TTS_VOICE.
+#      TTS_VOICE. The venv stub answers the engine catalog query (RF-HT-13-4:
+#      the cycle list IS the engine catalog, no static table anymore).
 new_env s16l
 FX="$T/fixture.json"; make_fixture "$FX"
 write_herdr_stub "$FX"
+cat > "$T/data/herdr-tts/venv/bin/python" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${*}" == *"voice list --json" ]]; then
+  printf '%s\n' '{"providers": ["edge", "openai", "elevenlabs", "piper", "kokoro"], "voices": {"edge": ["alvaro", "dalia", "elvira", "en", "jorge", "ximena"], "openai": ["alloy", "echo", "fable", "nova", "onyx", "shimmer"], "elevenlabs": ["adam", "rachel"], "piper": [], "kokoro": ["af_heart"]}}'
+  exit 0
+fi
+exec python3 "$@"
+EOF
+chmod +x "$T/data/herdr-tts/venv/bin/python"
 export HERDR_TTS_CONFIG_FILE="$T/config.env"
 printf 'vgq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
 [[ $? -eq 0 ]] && ok "16l g cycle rc=0" || bad "16l rc!=0"
-grep -q 'TTS_VOICE="alvaro"' "$HERDR_TTS_CONFIG_FILE" \
-  && ok "16l g cycled voice elvira→alvaro" || bad "16l voice not persisted"
+grep -q 'TTS_VOICE="en"' "$HERDR_TTS_CONFIG_FILE" \
+  && ok "16l g cycled voice elvira→en (engine catalog order)" || bad "16l voice not persisted"
 unset HERDR_TTS_CONFIG_FILE
 
 # 16m. Settings `n`/`u` (inside Voz): persist the voices.json flags
@@ -2658,6 +2668,108 @@ grep -qE 'uv pip install .*agent-tts\.git@[0-9a-f]{40}' "$INS/logs/uv.log" \
   && ok "34h agent-tts stays SHA-pinned regardless" || bad "34h agent-tts pin loosened"
 unset INS INS_PATH INS_TEMPLATE
 unset HERDR_CONFIG_DIR
+
+# ═════════════════════════════════════════════════════════════════════════
+# 35. agent skill distribution: skill install publishes the managed
+#     SKILL.md into each agent's user-level directory (hermetic via
+#     HERDR_TTS_SKILLS_HOME), idempotent re-run (identical content is a
+#     no-op success), never-overwrite adoption policy (modified file
+#     refuses without --force, --force replaces), marker-guarded
+#     uninstall (idempotent, foreign content refused), list state,
+#     unknown agent/option/subcommand rejection, dispatch + help wiring.
+# ═════════════════════════════════════════════════════════════════════════
+echo "── 35. skill: install, never-overwrite policy, uninstall, list"
+new_env s35
+export HERDR_TTS_SKILLS_HOME="$T/skills"
+run_sk() { timeout 10 "$SCRIPT" skill "$@" > "$T/out.txt" 2>&1; }
+sk_file() { # $1 = agent-relative subpath → SKILL.md path under the fake HOME
+  printf '%s/%s\n' "$HERDR_TTS_SKILLS_HOME" "$1"
+}
+
+# 35a. install claude-code: documented path, frontmatter, agent ops, marker.
+run_sk install claude-code
+[[ $? -eq 0 ]] && ok "35a install claude-code exits rc=0" || bad "35a rc!=0"
+CC="$(sk_file .claude/skills/herdr-tts/SKILL.md)"
+[[ -f "$CC" ]] && ok "35a SKILL.md at the documented Claude Code path" || bad "35a missing $CC"
+grep -q '^name: herdr-tts' "$CC" && ok "35a frontmatter names the skill" || bad "35a no name frontmatter"
+grep -q '^description:' "$CC" && ok "35a frontmatter carries a description" || bad "35a no description"
+assert_grep "35a teaches --status" 'herdr-tts --status' "$CC" -F
+assert_grep "35a teaches mute" 'herdr-tts --mute-pane' "$CC" -F
+assert_grep "35a teaches pane snooze" 'herdr-tts --snooze' "$CC" -F
+assert_grep "35a teaches replay" 'herdr-tts --play' "$CC" -F
+assert_grep "35a teaches keymap check" 'herdr-tts keymap check' "$CC" -F
+assert_grep "35a carries the managed marker" 'managed-by: herdr-tts skill install' "$CC" -F
+
+# 35b. idempotence: identical re-run succeeds and leaves the file untouched.
+cp "$CC" "$T/sk.bak"
+run_sk install claude-code
+[[ $? -eq 0 ]] && ok "35b identical re-run exits rc=0 (idempotent)" || bad "35b rc!=0"
+cmp -s "$CC" "$T/sk.bak" && ok "35b identical re-run left the file untouched" || bad "35b file mutated"
+
+# 35c. never-overwrite: modified file refuses without --force, --force replaces.
+printf '\n# my local tweak\n' >> "$CC"
+cp "$CC" "$T/sk.mod"
+run_sk install claude-code
+[[ $? -ne 0 ]] && ok "35c modified file refuses without --force (rc!=0)" || bad "35c silent overwrite allowed"
+assert_grep "35c refusal is actionable (--force hint)" 'skill install claude-code --force' "$T/out.txt" -F
+cmp -s "$CC" "$T/sk.mod" && ok "35c refused install left the file untouched" || bad "35c file mutated"
+run_sk install claude-code --force
+[[ $? -eq 0 ]] && ok "35c --force replaces the file" || bad "35c --force rc!=0"
+cmp -s "$CC" "$T/sk.bak" && ok "35c --force restored the managed content" || bad "35c --force content mismatch"
+
+# 35d. uninstall: removes file + empty dir; second run is a no-op success.
+run_sk uninstall claude-code
+[[ $? -eq 0 ]] && ok "35d uninstall exits rc=0" || bad "35d rc!=0"
+[[ ! -e "$CC" ]] && ok "35d SKILL.md removed" || bad "35d file still present"
+[[ ! -d "$(dirname "$CC")" ]] && ok "35d empty skill dir pruned" || bad "35d dir left behind"
+run_sk uninstall claude-code
+[[ $? -eq 0 ]] && ok "35d uninstall is idempotent (nothing to do)" || bad "35d rc!=0"
+
+# 35e. uninstall refuses a foreign SKILL.md (no managed marker).
+mkdir -p "$(dirname "$CC")"
+printf -- '---\nname: herdr-tts\ndescription: mine\n---\nmy own rules\n' > "$CC"
+run_sk uninstall claude-code
+[[ $? -ne 0 ]] && ok "35e foreign SKILL.md refuses deletion (rc!=0)" || bad "35e deleted a foreign file"
+[[ -f "$CC" ]] && ok "35e foreign file untouched" || bad "35e file removed"
+rm -f "$CC" # clean slate for the all-agents pass below
+
+# 35f. list: installed vs not-installed rows for every supported agent.
+run_sk install pi
+run_sk list
+[[ $? -eq 0 ]] && ok "35f list exits rc=0" || bad "35f rc!=0"
+assert_grep "35f pi row installed" '✓ +pi ' "$T/out.txt"
+assert_grep "35f claude-code row not installed" 'claude-code.*not installed' "$T/out.txt"
+for a in opencode codex; do
+  assert_grep "35f $a row present" "$a" "$T/out.txt"
+done
+
+# 35g. every supported agent lands in its documented user-level subpath.
+for pair in "claude-code:.claude/skills" "opencode:.config/opencode/skills" \
+            "codex:.codex/skills" "pi:.pi/agent/skills"; do
+  a="${pair%%:*}"; sub="${pair#*:}"
+  run_sk install "$a"
+  [[ $? -eq 0 ]] && ok "35g install $a exits rc=0" || bad "35g $a rc!=0"
+  [[ -f "$HERDR_TTS_SKILLS_HOME/$sub/herdr-tts/SKILL.md" ]] \
+    && ok "35g $a SKILL.md at $sub/herdr-tts/" || bad "35g $a wrong path"
+done
+
+# 35h. argument hygiene + dispatch/help wiring.
+run_sk install not-an-agent
+[[ $? -ne 0 ]] && ok "35h unknown agent rejected" || bad "35h rc==0 for unknown agent"
+assert_grep "35h error lists supported agents" 'claude-code, opencode, codex, pi' "$T/out.txt" -F
+run_sk install claude-code --bogus
+[[ $? -ne 0 ]] && ok "35h unknown option rejected" || bad "35h rc==0 for unknown option"
+run_sk install
+[[ $? -ne 0 ]] && ok "35h missing agent rejected" || bad "35h rc==0 without agent"
+run_sk frobnicate
+[[ $? -ne 0 ]] && ok "35h unknown subcommand rejected" || bad "35h rc==0 for unknown subcommand"
+assert_grep "35h unknown subcommand hints usage" 'use install, uninstall or list' "$T/out.txt" -F
+run_sk help
+grep -q 'skill install' "$T/out.txt" && ok "35h skill help renders" || bad "35h no help output"
+timeout 10 "$SCRIPT" --help 2>&1 | grep -q 'skill install <agent>' \
+  && ok "35h top-level --help documents the skill family" || bad "35h missing from --help"
+
+unset HERDR_TTS_SKILLS_HOME
 
 echo
 echo "═══ RESULT: $PASS passed, $FAIL failed ═══"
