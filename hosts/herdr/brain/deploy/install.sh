@@ -77,9 +77,13 @@ fi
 # ------------------------------------------------- stop stray manual runs
 # A manual `nohup` server on :8741 would block the unit's bind. Only stop
 # listeners that are NOT the systemd unit's MainPID.
+port_listener_pid() {
+  ss -tlnp "sport = :$PORT" 2>/dev/null | grep -oE 'pid=[0-9]+' | head -n1 | cut -d= -f2 || true
+}
+
 unit_main_pid="$(systemctl --user show -P MainPID --value "$UNIT_NAME" 2>/dev/null || true)"
 [[ -n "$unit_main_pid" ]] || unit_main_pid=0
-listener_pid="$(ss -tlnp 2>/dev/null | awk -v port=":$PORT " '$4 ~ port {print}' | grep -oE 'pid=[0-9]+' | head -n1 | cut -d= -f2 || true)"
+listener_pid="$(port_listener_pid)"
 
 if [[ -n "${listener_pid:-}" && "$listener_pid" != "0" && "$listener_pid" != "$unit_main_pid" ]]; then
   log "Deteniendo instancia manual suelta (PID $listener_pid) en el puerto $PORT…"
@@ -115,12 +119,18 @@ fi
 log "Unidad habilitada (auto-arranque + linger)."
 
 # ------------------------------------------------------------ health gate
+# /health alone can false-pass while a STRAY process still owns the port
+# (that exact bug shipped the first version of this script), so also prove
+# the unit's own process is the listener before declaring victory.
 log "Comprobando $HEALTH_URL (hasta 10s)…"
 healthy=0
 for _ in $(seq 1 20); do
   if curl -fsS -m 2 "$HEALTH_URL" >/dev/null 2>&1; then
-    healthy=1
-    break
+    unit_main_pid="$(systemctl --user show -P MainPID --value "$UNIT_NAME" 2>/dev/null || true)"
+    if [[ -n "$unit_main_pid" && "$unit_main_pid" != "0" && "$(port_listener_pid)" == "$unit_main_pid" ]]; then
+      healthy=1
+      break
+    fi
   fi
   sleep 0.5
 done
