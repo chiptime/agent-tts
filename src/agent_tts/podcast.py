@@ -21,6 +21,13 @@ DEFAULT_PODCAST_DIR = os.environ.get(
     os.path.expanduser("~/.local/share/agent-tts/podcast"),
 )
 
+# Base URL used in the RSS XML and enclosure links. Hosts that serve the
+# feed on a non-default port override it via this env var (read live).
+DEFAULT_PODCAST_BASE_URL = os.environ.get(
+    "AGENT_TTS_PODCAST_BASE_URL",
+    "http://localhost:8844",
+)
+
 
 @dataclass
 class PodcastEpisode:
@@ -41,9 +48,9 @@ class PodcastFeed:
     def __init__(
         self,
         base_dir: str = DEFAULT_PODCAST_DIR,
-        feed_title: str = "Herdr & Agent Audio Feed",
+        feed_title: str = "Agent Audio Feed",
         feed_description: str = "Private audio updates and voice syntheses from AI coding agents",
-        base_url: str = "http://localhost:8844",
+        base_url: str = DEFAULT_PODCAST_BASE_URL,
     ):
         self.base_dir = os.path.abspath(base_dir)
         self.audio_dir = os.path.join(self.base_dir, "audio")
