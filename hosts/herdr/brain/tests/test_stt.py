@@ -261,6 +261,63 @@ class TestBootPolicy:
         assert client.get("/health").json()["stt"] == "loading"
 
 
+class TestModelPresence:
+    """Offline presence check — never raises, never downloads."""
+
+    def test_local_path_shortcut(self, tmp_path):
+        from herdr_brain.stt import model_is_cached
+
+        assert model_is_cached(str(tmp_path)) is True
+
+    def test_all_model_files_present(self, monkeypatch):
+        import huggingface_hub
+
+        from herdr_brain.stt import model_is_cached
+
+        monkeypatch.setattr(
+            huggingface_hub, "try_to_load_from_cache", lambda repo, f: "/cache/" + f
+        )
+        assert model_is_cached("small") is True
+
+    def test_missing_model_bin_means_absent(self, monkeypatch):
+        import huggingface_hub
+
+        from herdr_brain.stt import model_is_cached
+
+        def lookup(repo, filename):
+            return None if filename == "model.bin" else "/cache/" + filename
+
+        monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lookup)
+        assert model_is_cached("small") is False
+
+    def test_interrupted_snapshot_with_weights_still_counts(self, monkeypatch):
+        """An interrupted first download leaves README/.gitattributes
+        missing; the weights are complete and usable — presence must be
+        True (the check only asks for inference files, no full snapshot)."""
+        import huggingface_hub
+
+        from herdr_brain.stt import model_is_cached
+
+        def lookup(repo, filename):
+            # Every inference file resolves; snapshot_download would still
+            # raise IncompleteSnapshotError for the missing metadata files.
+            return "/cache/" + filename if filename != "README.md" else None
+
+        monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lookup)
+        assert model_is_cached("small") is True
+
+    def test_hub_errors_mean_absent(self, monkeypatch):
+        import huggingface_hub
+
+        from herdr_brain.stt import model_is_cached
+
+        def boom(repo, filename):
+            raise RuntimeError("offline")
+
+        monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", boom)
+        assert model_is_cached("small") is False
+
+
 class TestCli:
     def test_module_help_exits_zero(self):
         proc = subprocess.run(

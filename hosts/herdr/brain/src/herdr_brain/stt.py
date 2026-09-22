@@ -57,16 +57,27 @@ def model_is_cached(model_name: str) -> bool:
     """True when the model files are already local. NEVER touches the network.
 
     Accepts faster-whisper size aliases, explicit HF repo ids (checked in the
-    default HF cache) and local CT2 directory / file paths.
+    default HF cache) and local CT2 directory / file paths. Checks exactly
+    the file set faster-whisper's download_model allow_patterns requests —
+    a full-snapshot check would be too strict: an interrupted first download
+    leaves README/.gitattributes missing while the model itself is complete
+    and perfectly usable offline.
     """
     if Path(model_name).exists():
         return True  # explicit local path
     repo_id = _SIZE_ALIASES.get(model_name, model_name)
     try:
-        from huggingface_hub import snapshot_download
+        from huggingface_hub import try_to_load_from_cache
 
-        snapshot_download(repo_id=repo_id, local_files_only=True)
-        return True
+        for filename in ("config.json", "model.bin", "tokenizer.json"):
+            if try_to_load_from_cache(repo_id, filename) is None:
+                return False
+        # Vocabulary ships as .txt (Systran CT2 models) or .json.
+        vocab = (
+            try_to_load_from_cache(repo_id, "vocabulary.txt"),
+            try_to_load_from_cache(repo_id, "vocabulary.json"),
+        )
+        return any(v is not None for v in vocab)
     except Exception:  # noqa: BLE001 — anything means "not cached here"
         return False
 
