@@ -78,6 +78,10 @@ def make_settings(**overrides) -> Settings:
         prompt_timeout_ms=5_000,
         max_tool_rounds=4,
         screen_lines=40,
+        stt_model="small",
+        stt_device="auto",
+        stt_compute="auto",
+        stt_warmup=False,  # tests: never start the warmup thread / touch the model
     )
     base.update(overrides)
     return Settings(**base)

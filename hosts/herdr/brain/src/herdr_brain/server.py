@@ -16,7 +16,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -26,6 +26,7 @@ from .config import Settings
 from .herdr import HerdrError
 from .llm import BrainLLM, BrainLLMError
 from .memory import ConversationStore
+from .stt import STATE_READY, STATE_UNAVAILABLE, UNAVAILABLE_HINT, Transcriber
 from .tools import BrainTools
 from .tools import status_payload as _status_payload
 from .tts import new_audio_path, render_mp3
@@ -102,6 +103,7 @@ def create_app(
     sse_heartbeat_s: float = 15.0,
     sse_stream_limit: Optional[int] = None,
     version: Optional[str] = None,
+    transcriber: Optional[Transcriber] = None,
 ) -> FastAPI:
     """Builds the FastAPI app with injectable backends for tests.
 
@@ -110,7 +112,11 @@ def create_app(
     started for production. ``sse_stream_limit`` ends the /events stream
     after N events/heartbeats — a test hook only (starlette's TestClient
     buffers whole responses, so infinite streams cannot be asserted);
-    production never sets it.
+    production never sets it. An injected ``transcriber`` skips the STT boot
+    path entirely (tests fake the engine); without one, the real engine is
+    created and warmed in the background ONLY when the model files are
+    already local and ``settings.stt_warmup`` is on (default in production,
+    off in tests) — the server never downloads the model by itself.
     """
     if settings is None:
         from .config import load_settings
@@ -125,6 +131,13 @@ def create_app(
     if watcher is None:
         watcher = AgentWatcher(cfg, tts_renderer=synth)
         watcher.start()
+
+    if transcriber is None:
+        transcriber = Transcriber(cfg)
+        if cfg.stt_warmup:
+            # Warm from local files only; flips to unavailable (with the
+            # pull hint) when the model was never pulled. NEVER downloads.
+            transcriber.maybe_start_warmup()
 
     # The LLM client is built lazily: /health and /tts work without
     # GLM_API_KEY, and /ask reports the missing configuration as a 503.
@@ -142,6 +155,7 @@ def create_app(
 
     app = FastAPI(title="herdr-brain", version=__version__)
     app.state.watcher = watcher
+    app.state.transcriber = transcriber
     app.state.sse_heartbeat_s = sse_heartbeat_s
     app.state.sse_stream_limit = sse_stream_limit
 
@@ -230,7 +244,35 @@ def create_app(
 
     @app.get("/health")
     def health() -> dict:
-        return {"status": "ok", "version": __version__}
+        return {"status": "ok", "version": __version__, "stt": transcriber.state}
+
+    @app.post("/transcribe")
+    async def transcribe(audio: UploadFile = File(...)) -> dict:
+        """Server-side STT: multipart field 'audio' (webm/opus from
+        MediaRecorder, or any media faster-whisper decodes via PyAV) ->
+        ``{"text": "..."}``."""
+        if transcriber.state == STATE_UNAVAILABLE:
+            raise HTTPException(
+                status_code=503,
+                detail="Transcripción no disponible: " + UNAVAILABLE_HINT + ".",
+            )
+        if transcriber.state != STATE_READY:
+            raise HTTPException(
+                status_code=503,
+                detail="El modelo de voz se está cargando — prueba de nuevo "
+                "en unos segundos.",
+            )
+        data = await audio.read()
+        if not data:
+            raise HTTPException(status_code=400, detail="Audio vacío.")
+        loop = asyncio.get_running_loop()
+        try:
+            text = await loop.run_in_executor(None, transcriber.transcribe_bytes, data)
+        except Exception as exc:  # noqa: BLE001 — decode/transcribe failures → 503
+            raise HTTPException(
+                status_code=503, detail=f"No se pudo transcribir el audio: {exc}"
+            ) from exc
+        return {"text": text.strip()}
 
     @app.post("/reset")
     def reset(body: ResetRequest) -> dict:
