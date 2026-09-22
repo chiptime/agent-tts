@@ -62,12 +62,49 @@ export GLM_API_KEY="…"
 | `HERDR_BRAIN_SCREEN_LINES` | `40` | default visible lines for `read_screen` |
 | `OPENCODE_DB` / `CLAUDE_PROJECTS_ROOT` | store defaults | transcript store overrides (tests) |
 
-## Run
+## Deployment (the way to run it)
+
+The service runs as a **systemd user unit** — auto-started, restarted on
+failure, and with a stable environment that does not depend on any
+interactive shell having sourced the dotfiles:
 
 ```bash
-# HTTP service (127.0.0.1:8741)
-.venv/bin/python -m herdr_brain.server
+deploy/install.sh    # idempotent: env file + unit + linger + health gate
+```
 
+What the installer does (safe to re-run):
+
+- extracts `GLM_API_KEY` from `~/.dotfiles/shell/private-env.sh` into
+  `~/.config/herdr-brain/env` (outside the repo, mode 600; the value is
+  never printed and the file is only rewritten when the key changes),
+- stops any stray manual instance listening on :8741,
+- installs `deploy/herdr-brain.service` as a user unit, enables linger and
+  starts it (`Restart=on-failure`, `RestartSec=3`),
+- polls `/health` for up to 10s and prints the journal on failure.
+
+```bash
+systemctl --user status herdr-brain     # state + recent log lines
+journalctl --user -u herdr-brain -f     # follow
+systemctl --user restart herdr-brain    # bounces in ~3s, config included
+```
+
+### Manual run (debugging ONLY)
+
+```bash
+# Requires the key in THIS shell, or /ask will 503:
+source ~/.dotfiles/shell/private-env.sh
+HERDR_BRAIN_HOST=0.0.0.0 .venv/bin/python -m herdr_brain.server
+```
+
+> **Warning:** manual `nohup` restarts from tool shells lose
+> `GLM_API_KEY` (it lives in `private-env.sh`, sourced only by interactive
+> shells) and `/ask` fails with 503 while `/health` stays green. This is
+> the exact incident that made the unit the supported path — after
+> debugging, re-run `deploy/install.sh` to hand the port back to systemd.
+
+### CLI ask
+
+```bash
 # CLI ask — no mic needed; --no-audio skips TTS entirely
 .venv/bin/python -m herdr_brain.ask "dime en que estas trabajando" --no-audio
 .venv/bin/python -m herdr_brain.ask "resume what you just did"
