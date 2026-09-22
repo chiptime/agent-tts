@@ -58,7 +58,16 @@ def provider_voices(provider: str) -> List[str]:
     raw = (provider or "").strip().lower()
     key = _CATALOG_PROVIDER_ALIASES.get(raw, raw)
     if key == "edge":
-        return sorted(set(VOICE_MAP.values()) | {DEFAULT_VOICE})
+        # User-facing short ids (VOICE_MAP keys) — they are what --voice
+        # accepts and what hosts store/display; full neural names resolve
+        # through the same map at synthesis time. When two short names map
+        # to the same neural voice (alvaro/álvaro) the ASCII one wins.
+        short_by_full: dict = {}
+        for short, full in VOICE_MAP.items():
+            existing = short_by_full.get(full)
+            if existing is None or (short < existing and short.isascii()):
+                short_by_full[full] = short
+        return sorted(short_by_full.values())
     if key == "openai":
         return sorted(OpenAITTSProvider.VALID_VOICES)
     if key == "elevenlabs":

@@ -274,7 +274,7 @@ class TestVoiceListCatalog(unittest.TestCase):
             payload["providers"], ["edge", "openai", "elevenlabs", "piper", "kokoro"]
         )
         self.assertEqual(set(payload["voices"]), set(payload["providers"]))
-        self.assertIn("es-ES-ElviraNeural", payload["voices"]["edge"])
+        self.assertIn("elvira", payload["voices"]["edge"])
         self.assertIn("nova", payload["voices"]["openai"])
         self.assertIn("rachel", payload["voices"]["elevenlabs"])
 
@@ -285,7 +285,7 @@ class TestVoiceListCatalog(unittest.TestCase):
         self.assertIsInstance(payload, list)
         self.assertTrue(payload)
         self.assertTrue(all(isinstance(v, str) for v in payload))
-        self.assertIn("es-ES-ElviraNeural", payload)
+        self.assertIn("elvira", payload)
 
     def test_plain_single_provider_prints_one_voice_per_line(self):
         code, raw = self._run(["list", "openai"])
