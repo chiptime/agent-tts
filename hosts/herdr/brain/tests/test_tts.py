@@ -7,8 +7,18 @@ from pathlib import Path
 
 import pytest
 
-from herdr_brain.config import Settings
-from herdr_brain.tts import TTSError, new_audio_path, render_mp3, sanitize_for_speech
+from herdr_brain.config import Settings, load_settings
+from herdr_brain.tts import (
+    TTS_BACKEND_MISSING,
+    TTS_BACKEND_MIN_VERSION,
+    TTS_BACKEND_NAME,
+    TTS_BACKEND_OK,
+    TTSError,
+    new_audio_path,
+    render_mp3,
+    sanitize_for_speech,
+    tts_backend_status,
+)
 
 
 class FakeRunner:
@@ -32,8 +42,8 @@ class TestRenderMp3:
         out = tmp_path / "a.mp3"
         render_mp3(settings, "hello world", out, runner=runner)
         assert runner.calls[0]["cmd"] == [
-            "/venv/bin/python",
-            "/engine/tts_engine.py",
+            "/tmp/herdr-brain-test-tts/venv/bin/python",
+            "/tmp/herdr-brain-test-tts/engine/tts_engine.py",
             "hello world",
             "--voice", "elvira",
             "--rate", "+0%",
@@ -105,3 +115,63 @@ class TestAudioPaths:
 class TestSanitize:
     def test_collapses_all_whitespace(self):
         assert sanitize_for_speech("a\nb\r\nc\td  e") == "a b c d e"
+
+
+class TestBackendContract:
+    """The herdr-tts dependency is an explicit contract, fail-soft."""
+
+    def _cfg(self, settings: Settings, **overrides) -> Settings:
+        return Settings(**{**settings.__dict__, **overrides})
+
+    def test_status_ok_with_stubs(self, settings: Settings):
+        status, detail = tts_backend_status(settings)
+        assert status == TTS_BACKEND_OK
+        assert TTS_BACKEND_NAME in detail
+
+    def test_status_missing_names_both_absent_pieces(self, settings: Settings, tmp_path):
+        cfg = self._cfg(
+            settings,
+            tts_venv=tmp_path / "nowhere",
+            tts_python=tmp_path / "nowhere/venv/bin/python",
+            tts_engine=tmp_path / "nowhere/lib/tts_engine.py",
+        )
+        status, detail = tts_backend_status(cfg)
+        assert status == TTS_BACKEND_MISSING
+        assert TTS_BACKEND_NAME in detail
+        assert "venv python" in detail and "engine entry" in detail
+        assert TTS_BACKEND_MIN_VERSION in detail  # the explicit versioned contract
+
+    def test_status_missing_engine_only(self, settings: Settings, tmp_path):
+        cfg = self._cfg(settings, tts_engine=tmp_path / "nope.py")
+        status, detail = tts_backend_status(cfg)
+        assert status == TTS_BACKEND_MISSING
+        assert "engine entry" in detail and "venv python" not in detail
+
+    def test_render_raises_contract_error_without_running(self, settings: Settings, tmp_path):
+        cfg = self._cfg(
+            settings,
+            tts_python=tmp_path / "nowhere/bin/python",
+            tts_engine=tmp_path / "nowhere/lib/tts_engine.py",
+        )
+        runner = FakeRunner()
+        with pytest.raises(TTSError, match=TTS_BACKEND_NAME):
+            render_mp3(cfg, "hi", tmp_path / "a.mp3", runner=runner)
+        assert runner.calls == []  # the contract check precedes any subprocess
+
+
+class TestTtsVenvConfig:
+    """HERDR_TTS_VENV is the contract root; the python derives from it."""
+
+    def test_venv_default_derives_python(self):
+        cfg = load_settings(env={})
+        assert cfg.tts_venv.as_posix().endswith("herdr-tts/venv")
+        assert cfg.tts_python == cfg.tts_venv / "bin" / "python"
+
+    def test_venv_override_moves_derived_python(self):
+        cfg = load_settings(env={"HERDR_TTS_VENV": "/custom/venv"})
+        assert cfg.tts_venv.as_posix() == "/custom/venv"
+        assert cfg.tts_python.as_posix() == "/custom/venv/bin/python"
+
+    def test_explicit_python_still_wins(self):
+        cfg = load_settings(env={"HERDR_TTS_VENV": "/custom/venv", "HERDR_TTS_PYTHON": "/other/python"})
+        assert cfg.tts_python.as_posix() == "/other/python"

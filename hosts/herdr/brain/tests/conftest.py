@@ -2,18 +2,26 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from herdr_brain.config import Settings
 from herdr_brain.herdr import AgentInfo, HerdrError, sanitize_prompt_text
+
+# Stub speech-backend layout: render_mp3 checks the herdr-tts contract
+# (venv python + engine entry must exist) before invoking the (mocked)
+# subprocess, so tests materialize stub files at these fixed paths.
+TTS_STUB_ROOT = Path("/tmp/herdr-brain-test-tts")
 
 SETTINGS_KWARGS = dict(
     herdr_bin="herdr-fake",
     glm_api_key="test-key",
     glm_base_url="https://example.invalid/",
     glm_model="glm-5",
-    tts_python="/venv/bin/python",
-    tts_engine="/engine/tts_engine.py",
+    tts_venv=str(TTS_STUB_ROOT / "venv"),
+    tts_python=str(TTS_STUB_ROOT / "venv/bin/python"),
+    tts_engine=str(TTS_STUB_ROOT / "engine/tts_engine.py"),
     tts_voice="elvira",
     tts_rate="+0%",
     tts_max_chars=4000,
@@ -28,6 +36,20 @@ SETTINGS_KWARGS = dict(
     stt_compute="auto",
     stt_warmup=False,  # tests: never start the warmup thread / touch the model
 )
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _tts_backend_stubs():
+    """Materializes the stub herdr-tts backend files once per session."""
+    venv_python = TTS_STUB_ROOT / "venv/bin/python"
+    engine = TTS_STUB_ROOT / "engine/tts_engine.py"
+    venv_python.parent.mkdir(parents=True, exist_ok=True)
+    engine.parent.mkdir(parents=True, exist_ok=True)
+    venv_python.write_text("#!/bin/sh\n# test stub for the herdr-tts venv python\n")
+    venv_python.chmod(0o755)
+    engine.write_text("# test stub for the agent-tts engine entry\n")
+    yield
+    # Left in /tmp on purpose: harmless and reused across sessions.
 
 ACTIVE_AGENT = AgentInfo(
     pane_id="w1:p9",

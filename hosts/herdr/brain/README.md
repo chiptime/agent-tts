@@ -52,6 +52,7 @@ export GLM_API_KEY="…"
 | `GLM_BASE_URL` | `https://api.z.ai/api/paas/v4/` | LLM base URL |
 | `GLM_MODEL` | `glm-5` | LLM model |
 | `HERDR_BIN` | `herdr` | herdr CLI path |
+| `HERDR_TTS_VENV` | `~/.local/share/herdr-tts/venv` | herdr-tts venv (speech backend contract root; the venv python derives from it) |
 | `HERDR_TTS_PYTHON` | `~/.local/share/herdr-tts/venv/bin/python` | venv python that hosts the agent-tts engine |
 | `HERDR_TTS_ENGINE` | `~/Code/personal/herdr-tts/lib/tts_engine.py` | agent-tts engine script |
 | `HERDR_BRAIN_VOICE` / `HERDR_BRAIN_RATE` / `HERDR_BRAIN_MAX_CHARS` | `elvira` / `+0%` / `300` | synthesis knobs |
@@ -61,6 +62,24 @@ export GLM_API_KEY="…"
 | `HERDR_BRAIN_MAX_TOOL_ROUNDS` | `4` | LLM tool-loop guard |
 | `HERDR_BRAIN_SCREEN_LINES` | `40` | default visible lines for `read_screen` |
 | `OPENCODE_DB` / `CLAUDE_PROJECTS_ROOT` | store defaults | transcript store overrides (tests) |
+
+## Speech backend contract
+
+**herdr-tts is the brain's official speech backend** — a designed
+dependency, not an accidental borrow. herdr-tts is the TUI-native voice
+layer *and* the engine that renders every answer and announcement the
+PWA plays: herdr-brain requires **herdr-tts >= v0.14** installed with its
+venv (default `~/.local/share/herdr-tts/venv`, override with
+`HERDR_TTS_VENV`; `HERDR_TTS_PYTHON` / `HERDR_TTS_ENGINE` still override
+the individual paths).
+
+The contract is verified fail-soft at startup and surfaced in `/health`
+as `"tts": "ok" | "missing"` (parity with the `stt` field). When the
+backend is missing the server does NOT crash: text answers keep working
+(`/ask` degrades to `audio_url: null`, which the PWA already tolerates),
+announcements are skipped, and render failures log an explicit
+`herdr-tts not found` error naming the contract instead of a bare
+subprocess traceback.
 
 ## Deployment (the way to run it)
 
