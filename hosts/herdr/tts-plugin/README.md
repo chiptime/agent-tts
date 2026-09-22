@@ -58,6 +58,27 @@ The TTS/voice-notification space for AI agents is growing fast, but existing sol
 
 ## 🧠 Core Architecture
 
+### Surface contract v1 (for external consumers)
+
+herdr-tts is the OFFICIAL speech backend of herdr-brain, which consumes
+ONLY this versioned CLI surface — the engine underneath (venv, python
+entrypoints) is herdr-tts's private detail and may change freely:
+
+```bash
+bin/herdr-tts --contract-version          # prints "1"; gate on >= 1
+bin/herdr-tts --render-text <out.mp3> [texto...] \
+      [--voice <voz>] [--rate <vel>] \
+      [--agent <tipo>] [--session-id <id>]  # render to MP3, no playback
+bin/herdr-tts --speak <texto>               # speak on PC speakers, exit
+```
+
+- `--render-text` reads the text from argv (or stdin when piped), renders
+  a valid MP3 to the given path and exits 0; any other exit is a failure.
+- `--voice`/`--rate` are v1 passthrough (default: the
+  `HERDR_TTS_VOICE_OVERRIDE`/config voice and rate).
+- The command is self-sufficient: it bootstraps its own venv on first
+  use. Consumers must not invoke venv internals.
+
 ```
                       ┌──────────────────────────────────────────┐
                       │ Herdr Socket API                         │

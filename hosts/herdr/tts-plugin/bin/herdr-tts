@@ -48,6 +48,9 @@ ENGINE_SCRIPT="${PLUGIN_ROOT}/lib/tts_engine.py"
 DEFAULT_PROVIDER="edge"
 DEFAULT_VOICE="elvira"
 DEFAULT_RATE="+20%"
+# Surface contract version (see README "Surface contract v1"): external
+# consumers (herdr-brain) gate on `--contract-version` printing >= this.
+SURFACE_CONTRACT_VERSION="1"
 DEFAULT_MAX_CHARS="0" # 0 = unlimited
 DEFAULT_AUTO_SCOPE="focused" # "focused" = only speak active pane; "all" = speak any pane with mutex
 DEFAULT_OPENAI_API_KEY=""
@@ -989,6 +992,11 @@ render_pane_audio() {
 render_text_audio() {
   local output_file="${1:-}"
   shift || true
+  # Surface contract v1 passthrough (consumers like herdr-brain): optional
+  # --voice/--rate override the HERDR_TTS_VOICE_OVERRIDE/TTS_RATE path;
+  # internal callers keep using the env/config defaults.
+  local voice_override=""
+  local rate_override=""
   local -a source_flags=()
   local -a text_args=()
   while [[ $# -gt 0 ]]; do
@@ -1001,6 +1009,14 @@ render_text_audio() {
         source_flags+=(--session-id "${2:-}")
         { [[ $# -ge 2 ]] && shift 2; } || shift
         ;;
+      --voice)
+        voice_override="${2:-}"
+        { [[ $# -ge 2 ]] && shift 2; } || shift
+        ;;
+      --rate)
+        rate_override="${2:-}"
+        { [[ $# -ge 2 ]] && shift 2; } || shift
+        ;;
       *)
         text_args+=("$1")
         shift
@@ -1010,7 +1026,7 @@ render_text_audio() {
   local text="${text_args[*]:-}"
 
   if [[ -z "$output_file" ]]; then
-    echo "Uso: herdr-tts --render-text <output_file.mp3> [texto...] [--agent <tipo>] [--session-id <id>]" >&2
+    echo "Uso: herdr-tts --render-text <output_file.mp3> [texto...] [--voice <voz>] [--rate <velocidad>] [--agent <tipo>] [--session-id <id>]" >&2
     return 1
   fi
 
@@ -1022,8 +1038,10 @@ render_text_audio() {
     return 1
   fi
 
+  local render_voice="${voice_override:-${HERDR_TTS_VOICE_OVERRIDE:-$TTS_VOICE}}"
+  local render_rate="${rate_override:-$TTS_RATE}"
   build_provider_flags
-  "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "${HERDR_TTS_VOICE_OVERRIDE:-$TTS_VOICE}" --rate "$TTS_RATE" --max-chars "$TTS_MAX_CHARS" --output "$output_file" --no-play "${source_flags[@]}" "${PROVIDER_FLAGS[@]}"
+  "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$render_voice" --rate "$render_rate" --max-chars "$TTS_MAX_CHARS" --output "$output_file" --no-play "${source_flags[@]}" "${PROVIDER_FLAGS[@]}"
 }
 
 toggle_play() {
@@ -5160,6 +5178,12 @@ case "${1:-}" in
   --render-pane)
     render_pane_audio "${2:-}" "${3:-}"
     ;;
+  --contract-version)
+    # Surface contract v1: machine-readable gate for external consumers
+    # (herdr-brain boots against this). Early exit, no venv, no engine.
+    echo "$SURFACE_CONTRACT_VERSION"
+    exit 0
+    ;;
   --render-text)
     shift
     render_text_audio "$@"
@@ -5414,6 +5438,9 @@ Acciones principales:
   --prev-paragraph         Retroceder al párrafo anterior en reproducción
   --play (-p)              Leer la última respuesta del chat enfocado
   --speak <texto>          Síntesis directa: habla el texto indicado y sale
+  --render-text <salida.mp3> [texto...] [--voice <voz>] [--rate <vel>] [--agent <tipo>] [--session-id <id>]
+                           Render a MP3 sin reproducir (superficie contrato v1, para consumidores externos)
+  --contract-version       Imprime la versión del contrato de superficie (v1) y sale
   --play-file <archivo>    Reproducir un archivo de audio (.mp3/.wav) con el motor
   --player-status          Estado del reproductor: posición, duración y estado
   --toggle-auto (-t)       Alternar lectura automática de fondo (Tecla: prefix+v)
