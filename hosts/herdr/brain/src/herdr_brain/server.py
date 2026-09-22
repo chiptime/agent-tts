@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import queue as queue_module
 import re
 import subprocess
@@ -29,13 +30,15 @@ from .memory import ConversationStore
 from .stt import STATE_READY, STATE_UNAVAILABLE, UNAVAILABLE_HINT, Transcriber
 from .tools import BrainTools
 from .tools import status_payload as _status_payload
-from .tts import new_audio_path, render_mp3
+from .tts import new_audio_path, render_mp3, tts_backend_status
 from .watcher import AgentWatcher
 
 _TTSRenderer = Callable[[Settings, str, Path], Path]
 _LLMFactory = Callable[[Settings, BrainTools], BrainLLM]
 
 _SAFE_FILENAME = re.compile(r"^[A-Za-z0-9._-]+$")
+
+logger = logging.getLogger("herdr_brain.server")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 MAX_SESSION_ID_CHARS = 128
 
@@ -139,6 +142,14 @@ def create_app(
             # Warm from local files only; flips to unavailable (with the
             # pull hint) when the model was never pulled. NEVER downloads.
             transcriber.maybe_start_warmup()
+
+    # Speech backend contract (fail-soft): a missing herdr-tts must never
+    # crash the server — text answers keep working, only speech degrades.
+    tts_status, tts_detail = tts_backend_status(cfg)
+    if tts_status != "ok":
+        logger.warning("speech backend MISSING: %s", tts_detail)
+    else:
+        logger.info("speech backend contract ok: %s", tts_detail)
 
     # The LLM client is built lazily: /health and /tts work without
     # GLM_API_KEY, and /ask reports the missing configuration as a 503.
@@ -252,7 +263,12 @@ def create_app(
 
     @app.get("/health")
     def health() -> dict:
-        return {"status": "ok", "version": __version__, "stt": transcriber.state}
+        return {
+            "status": "ok",
+            "version": __version__,
+            "stt": transcriber.state,
+            "tts": tts_status,
+        }
 
     @app.post("/transcribe")
     async def transcribe(audio: UploadFile = File(...)) -> dict:
@@ -349,7 +365,10 @@ def create_app(
             try:
                 synth(cfg, result["answer"], out_path)
                 audio_url = f"/audio/{out_path.name}"
-            except Exception:  # noqa: BLE001 — TTS must never break the answer
+            except Exception as exc:  # noqa: BLE001 — TTS must never break the answer
+                # Degrade to a text-only answer, but never silently: the log
+                # names the speech backend contract when that is the cause.
+                logger.warning("TTS render failed — answer degrades to text-only: %s", exc)
                 audio_url = None
         return {
             "answer": result.get("answer"),
