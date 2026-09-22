@@ -2084,6 +2084,147 @@ grep -qF 'HERDR_TTS_AUDIO_RETENTION_DAYS="14"' "$CONFIG_FILE" \
 bash -c 'source "$1" >/dev/null 2>&1 && printf "src:%s\n" "$HERDR_TTS_AUDIO_RETENTION_DAYS"' _ "$CONFIG_FILE" > "$T/out.txt"
 assert_grep "30c file stays bash-sourceable" '^src:14$' "$T/out.txt"
 
+# ═════════════════════════════════════════════════════════════════════════
+# 33. bootstrap.sh contract (PM-01): pip-free installs (uv pip / python -m
+#     pip — the venv's bin/pip is NEVER invoked), immutable agent-tts pin
+#     (tag or full 40-char SHA, never bare main), HERDR_TTS_DEV gate,
+#     HERDR_TTS_UPGRADE/--upgrade refresh, checkout-location agnosticism.
+#     Harness: PATH-level recorder stubs on a restricted PATH — tool
+#     absence is a PATH fact, not a mock. uv venv deliberately creates a
+#     pip-less venv (uv's Seed::Disabled default, verified in research).
+# ═════════════════════════════════════════════════════════════════════════
+bt_init() { # $1 sub-case name → fresh $BT with a restricted-stub bin dir
+  BT="$T/bt-$1"; rm -rf "$BT"; mkdir -p "$BT/bin" "$BT/logs" "$BT/data" "$BT/home"
+  # mkdir passthrough: bootstrap may mkdir before installing; coreutils
+  # must stay reachable while uv/python3 stay OFF the PATH.
+  printf '#!/bin/bash\nexec /bin/mkdir "$@"\n' > "$BT/bin/mkdir"; chmod +x "$BT/bin/mkdir"
+}
+bt_uv() { # recorder uv: `uv venv DIR` creates a pip-less venv
+  cat > "$BT/bin/uv" <<'EOF'
+#!/bin/bash
+printf 'uv %s\n' "$*" >> "${UVLOG:?}"
+if [[ "${1:-}" == venv && -n "${2:-}" ]]; then
+  /bin/mkdir -p "$2/bin"
+  printf '#!/bin/bash\nexit 0\n' > "$2/bin/python"
+  /bin/chmod +x "$2/bin/python"
+fi
+exit 0
+EOF
+  chmod +x "$BT/bin/uv"
+}
+bt_py() { # recorder python3: `-m venv` plants a recorder venv python plus a
+  # sentinel bin/pip — any invocation of venv bin/pip shows as `venv-pip`.
+  # Only builtins and absolute coreutils: this stub runs on a restricted PATH.
+  cat > "$BT/bin/python3" <<'EOF'
+#!/bin/bash
+printf 'python3 %s\n' "$*" >> "${PYLOG:?}"
+if [[ "${1:-}" == -m && "${2:-}" == venv && -n "${3:-}" ]]; then
+  /bin/mkdir -p "$3/bin"
+  {
+    printf '%s\n' '#!/bin/bash'
+    printf '%s\n' 'printf "venv-python %s\n" "$*" >> "${PYLOG:?}"'
+    printf '%s\n' 'exit 0'
+  } > "$3/bin/python"
+  /bin/chmod +x "$3/bin/python"
+  {
+    printf '%s\n' '#!/bin/bash'
+    printf '%s\n' 'printf "venv-pip %s\n" "$*" >> "${PYLOG:?}"'
+    printf '%s\n' 'exit 0'
+  } > "$3/bin/pip"
+  /bin/chmod +x "$3/bin/pip"
+fi
+exit 0
+EOF
+  chmod +x "$BT/bin/python3"
+}
+bt_run() { # KEY=VAL env pairs, then --, then bootstrap argv
+  local -a e=( -u HERDR_TTS_DEV -u HERDR_TTS_UPGRADE -u HERDR_AGENT_TTS_REF )
+  while [[ "$1" != -- ]]; do e+=( "$1" ); shift; done; shift
+  env "${e[@]}" PATH="$BT/bin" HOME="$BT/home" XDG_DATA_HOME="$BT/data" \
+    UVLOG="$BT/logs/uv.log" PYLOG="$BT/logs/py.log" \
+    /bin/bash "$BT_SCRIPT" "$@" > "$BT/out.log" 2> "$BT/err.log"
+}
+BT_SCRIPT="$REPO/scripts/bootstrap.sh"
+PIN_RE='git\+https://github\.com/chiptime/agent-tts\.git@[0-9a-f]{40}$'
+PIN_PY_RE='git\+https://github\.com/chiptime/agent-tts\.git@[0-9a-f]{40}( |$)'
+
+echo "── 33. bootstrap: pip-free installs, immutable pin, dev gate, upgrade"
+new_env s33
+
+# 33a. uv-only machine (python3 unavailable): installs route through
+#      `uv pip install --python <venv>/bin/python`; venv stays pip-less.
+bt_init uvonly; bt_uv
+bt_run --
+[[ $? -eq 0 ]] && ok "33a uv-only machine exits rc=0" || bad "33a rc!=0 (out: $(tail -1 "$BT/out.log" 2>/dev/null))"
+grep -q '^uv venv ' "$BT/logs/uv.log" && ok "33a venv created via uv" || bad "33a no uv-venv call recorded"
+assert_grep "33a uv pip owns the install (pinned source)" "$PIN_RE" "$BT/logs/uv.log"
+[[ ! -e "$BT/data/herdr-tts/venv/bin/pip" ]] \
+  && ok "33a venv stays pip-less (no bin/pip needed)" || bad "33a bootstrap created/used venv bin/pip"
+
+# 33b. python3-only machine (uv unavailable): venv via python3 -m venv and
+#      installs via `venv/bin/python -m pip`; the sentinel bin/pip that the
+#      stub plants must never run.
+bt_init pyonly; bt_py
+bt_run --
+[[ $? -eq 0 ]] && ok "33b python3-only machine exits rc=0" || bad "33b rc!=0 (out: $(tail -1 "$BT/out.log" 2>/dev/null))"
+grep -q '^python3 -m venv ' "$BT/logs/py.log" && ok "33b venv created via python3 -m venv" || bad "33b no python3-venv call recorded"
+assert_grep "33b python -m pip owns the install (pinned source)" "$PIN_PY_RE" "$BT/logs/py.log"
+assert_no_grep "33b venv bin/pip never invoked" '^venv-pip ' "$BT/logs/py.log"
+[[ ! -e "$BT/logs/uv.log" ]] && ok "33b uv never called (absent from PATH)" || bad "33b uv.log exists on a uv-less machine"
+
+# 33c. no python tooling at all: abort in English BEFORE creating anything.
+bt_init notool
+bt_run --
+[[ $? -ne 0 ]] && ok "33c no-tooling machine exits non-zero" || bad "33c rc==0 without python3/uv"
+grep -qiE 'python3|uv' "$BT/err.log" && ok "33c error names the missing prerequisite" || bad "33c error does not name python3/uv"
+assert_no_grep "33c failure output is English" 'Instalando|Configurando|Usando|Entorno|Se requiere' "$BT/err.log"
+[[ ! -e "$BT/data/herdr-tts" ]] \
+  && ok "33c aborts before mkdir (no partial state)" || bad "33c created state before aborting"
+
+# 33d. decoy dev checkout in HOME is ignored unless HERDR_TTS_DEV=1.
+bt_init decoy; bt_uv; mkdir -p "$BT/home/Code/personal/agent-tts"
+bt_run --
+[[ $? -eq 0 ]] && ok "33d public install with decoy HOME exits rc=0" || bad "33d rc!=0"
+assert_grep "33d decoy HOME still installs the pinned remote source" "$PIN_RE" "$BT/logs/uv.log"
+assert_no_grep_f "33d recorded install never references the decoy path" "$BT/home/Code/personal/agent-tts" "$BT/logs/uv.log"
+assert_no_grep "33d progress output is English" 'Instalando|Configurando|Usando|Entorno' "$BT/out.log"
+
+# 33e. explicit dev opt-in: editable install from the local checkout.
+bt_init devopt; bt_uv; mkdir -p "$BT/home/Code/personal/agent-tts"
+bt_run HERDR_TTS_DEV=1 --
+[[ $? -eq 0 ]] && ok "33e HERDR_TTS_DEV=1 exits rc=0" || bad "33e rc!=0"
+grep -qF -- "-e $BT/home/Code/personal/agent-tts" "$BT/logs/uv.log" \
+  && ok "33e dev opt-in installs editable from the checkout" || bad "33e no editable install recorded"
+
+# 33f. upgrade path: healthy venv short-circuits by default; the upgrade
+#      mode (env var AND --upgrade argv) refreshes the pinned ref.
+bt_init upg; bt_uv
+mkdir -p "$BT/data/herdr-tts/venv/bin"
+printf '#!/bin/bash\nexit 0\n' > "$BT/data/herdr-tts/venv/bin/python"
+chmod +x "$BT/data/herdr-tts/venv/bin/python"
+bt_run --
+[[ $? -eq 0 ]] && ok "33f healthy venv re-run exits rc=0" || bad "33f re-run rc!=0"
+[[ ! -s "$BT/logs/uv.log" ]] && ok "33f default re-run installs nothing" || bad "33f default re-run re-installed"
+bt_run HERDR_TTS_UPGRADE=1 --
+[[ $? -eq 0 ]] && ok "33f HERDR_TTS_UPGRADE=1 exits rc=0" || bad "33f upgrade rc!=0"
+grep -qE -- '--upgrade.*agent-tts\.git@[0-9a-f]{40}' "$BT/logs/uv.log" \
+  && ok "33f env upgrade refreshes the pinned ref" || bad "33f no --upgrade install recorded"
+bt_run -- --upgrade
+[[ $? -eq 0 ]] && ok "33f --upgrade argv exits rc=0" || bad "33f --upgrade rc!=0"
+[[ $(grep -c -- '--upgrade' "$BT/logs/uv.log") -eq 2 ]] \
+  && ok "33f --upgrade argv is a synonym (2 recorded upgrades)" || bad "33f upgrade count $(grep -c -- '--upgrade' "$BT/logs/uv.log") != 2"
+
+# 33g. checkout-location agnostic: running from a non-canonical copy of
+#      scripts/ behaves identically (no repo-relative or $HOME-relative
+#      expectations beyond the dev-gated shortcut).
+bt_init spot; bt_uv
+mkdir -p "$BT/elsewhere"; cp -r "$REPO/scripts" "$BT/elsewhere/scripts"
+BT_SCRIPT="$BT/elsewhere/scripts/bootstrap.sh"
+bt_run --
+[[ $? -eq 0 ]] && ok "33g arbitrary checkout location exits rc=0" || bad "33g rc!=0"
+assert_grep "33g arbitrary location installs the pinned source" "$PIN_RE" "$BT/logs/uv.log"
+BT_SCRIPT="$REPO/scripts/bootstrap.sh"
+unset BT UVLOG PYLOG BT_SCRIPT PIN_RE PIN_PY_RE
 echo
 echo "═══ RESULT: $PASS passed, $FAIL failed ═══"
 exit $(( FAIL > 0 ? 1 : 0 ))
