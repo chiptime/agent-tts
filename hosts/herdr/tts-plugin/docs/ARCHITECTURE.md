@@ -28,7 +28,7 @@ flowchart TD
         GATE -->|compuerta activa| DROP
         GATE -->|permitido| ACQ{Adquisición de Texto}
         ACQ -->|agente conocido| IPCFWD[Forward al Motor\n--agent / --session-id]
-        ACQ -->|shell genérico| SCROLL[Terminal Scrollback\n--pre-extracted]
+        ACQ -->|shell genérico| SCROLL[Terminal Scrollback\ntexto bruto → extrae el motor]
 
         KB[keymap.json declarativo\nprefix+r/p/s/t/v · paleta · menú] --> CLI[CLI Dispatcher]
         CLI --> DASH[Dashboard TUI v3.1 · Paleta fzf\nMenú de voz · Popup de Ajustes]
@@ -69,7 +69,7 @@ flowchart TD
 - **Responsabilidad:** Integración con el multiplexor Herdr, gestión de concurrencia y ciclo de vida de agentes. El host **no sabe leer agentes**: detecta que algo pasó y delega.
 - **Audio Mutex Lock:** Cerrojo en `/tmp/herdr-tts-playing.lock` que serializa los eventos concurrentes (encola o descarta) **sin interrumpir jamás la reproducción en curso**. Vive en el host porque aquí nace la concurrencia (múltiples panes lanzando eventos); el motor es *connection-scoped*: atiende la conexión que entra sin conocer cuántas existen ni su tipología.
 - **Filtrado por Foco (`scope: focused`):** Solo vocaliza automáticamente el pane que el usuario está observando activamente.
-- **Delegación de Extracción (Agent Forwarding):** Para agentes conocidos, el host solo identifica `agent_kind` + `session_id` y delega la lectura al motor (`--agent` / `--session-id`). Para shells genéricas, captura el scrollback y lo entrega ya extraído (`--pre-extracted`).
+- **Delegación de Extracción (Agent Forwarding):** Para agentes conocidos, el host solo identifica `agent_kind` + `session_id` y delega la lectura al motor (`--agent` / `--session-id`). Para shells genéricas, captura el scrollback y lo entrega en bruto: el motor extrae el último turno. El flag `--pre-extracted` existe para hosts que ya conocen el mensaje exacto (p. ej. herdr-brain vía eventos) y no lo usa este host.
 - **Notificaciones Push Móviles:** Envío del fichero de audio sintetizado a la app `ntfy.sh` en Android/iOS con reproductor en pantalla de bloqueo y deep links a la interfaz web (Collie).
 
 ### Nivel 2: `agent-tts` (Standalone Speech Engine)
