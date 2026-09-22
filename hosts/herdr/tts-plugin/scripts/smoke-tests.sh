@@ -895,7 +895,7 @@ assert_grep "16g open-menu action wired" '"--entrypoint", "tts-menu"' "$REPO/her
 assert_grep "16g manifest declares voice-settings action" 'id = "voice-settings"' "$REPO/herdr-plugin.toml" -F
 assert_grep "16g voice-settings runs --voice-settings" 'command = \["bin/herdr-tts", "--voice-settings"\]' "$REPO/herdr-plugin.toml"
 assert_grep "16g voice-settings title in Spanish" 'title = "Configuración de voz y audio"' "$REPO/herdr-plugin.toml" -F
-assert_grep "16g version bumped to 0.15.0" 'version = "0.15.0"' "$REPO/herdr-plugin.toml" -F
+assert_grep "16g version bumped to 0.16.0" 'version = "0.16.0"' "$REPO/herdr-plugin.toml" -F
 assert_grep "16g README option 1 (menu, recommended)" '### Option 1 — Compact map \(recommended\)' "$REPO/README.md"
 assert_grep "16g README option 2 (ctrl+alt family)" '### Option 2 — ctrl\+alt family' "$REPO/README.md"
 assert_grep "16g README option 3 (direct map + conflicts)" '### Option 3 — Direct map \(power users\)' "$REPO/README.md"
