@@ -581,7 +581,7 @@ command = "herdr plugin pane open --plugin herdr.tts --entrypoint tts-palette"
 
 ## ⚙️ Ajustes de voz y audio
 
-`prefix+u` abre el **menú de voz**; dentro del menú, la tecla `a` abre esta vista de **Ajustes**: cuatro ajustes opcionales que se **ciclan con una tecla** y se guardan al momento en `~/.config/herdr-tts/config.env`:
+`prefix+u` abre el **menú de voz**; dentro del menú, la tecla `a` abre esta vista de **Ajustes**: seis ajustes opcionales — cuatro se **cícian con una tecla** (`p` `d` `r` `s`), la redirección web se escribe **a texto libre** (`w`) y el click directo **alterna on/off** (`c`) — y todo se guarda al momento en `~/.config/herdr-tts/config.env`:
 
 | Tecla | Ajuste | Ciclo |
 |---|---|---|
@@ -589,12 +589,14 @@ command = "herdr plugin pane open --plugin herdr.tts --entrypoint tts-palette"
 | `d` | Destino de reproducción | `local` → `winhost` → `wsl-ps` → `windows` → `auto` |
 | `r` | Audio retenido (días) | `0` (apagado) → `1` → `3` → `7` → `14` |
 | `s` | Asentamiento done (segundos) | `0` (instantáneo) → `2` → `5` → `10` → `15` → `30` |
+| `w` | Redirección web | texto libre: escribe la URL (`Enter` vacío = desactivar); guarda `WEB_URL` y `COLLIE_URL`; una URL con "collie" fija `WEB_LABEL="Collie"` si la etiqueta está vacía; el marcador `{pane_id}` se guarda tal cual |
+| `c` | Click directo | `off` ↔ `on` (con `on`, tocar la tarjeta de notificación abre el navegador) |
 
 * Dentro del menú, `q` / `Esc` / `Enter` **vuelven al menú principal**. Para acceso directo sigue existiendo el popup independiente (`herdr-tts --voice-settings`, acción `voice-settings` del plugin, entrypoint `tts-settings`), donde `q` / `Esc` cierra el popup. `settings` sigue siendo un id ligable en `keymap.json`, pero **sin acorde por defecto**: los ajustes no gastan una tecla de core.
 * Kokoro y Piper requieren instalar el modelo antes: `agent-tts voice install <modelo>`.
-* La escritura es **gestionada**: solo toca las claves `TTS_PROVIDER`, `TTS_PLAYBACK`, `HERDR_TTS_AUDIO_RETENTION_DAYS` y `TTS_SETTLE_SECONDS` de `config.env` — reescribe la línea existente o añade un bloque gestionado al final, preserva el resto del fichero byte a byte, escribe de forma atómica (tmp + mv) y deja la versión previa en `config.env.bak`.
+* La escritura es **gestionada**: solo toca las claves `TTS_PROVIDER`, `TTS_PLAYBACK`, `HERDR_TTS_AUDIO_RETENTION_DAYS`, `TTS_SETTLE_SECONDS`, `WEB_URL`, `COLLIE_URL`, `WEB_LABEL` y `CLICK_REDIRECT` de `config.env` — reescribe la línea existente o añade un bloque gestionado al final, preserva el resto del fichero byte a byte, escribe de forma atómica (tmp + mv) y deja la versión previa en `config.env.bak`.
 * La tecla `R` (mayúscula — distinta de la `r` que cicla retención) **reinicia el daemon** al instante y confirma en pantalla con `✓ Daemon reiniciado`; equivale a `herdr-tts --restart-daemon`.
-* Los cambios aplican a **nuevos procesos**: `p`, `d` y `s` aplican al reiniciar el daemon — ahora con una tecla (`R` en Ajustes) o `herdr-tts --restart-daemon`.
+* Los cambios aplican a **nuevos procesos**: `p`, `d`, `s`, `w` y `c` aplican al reiniciar el daemon — ahora con una tecla (`R` en Ajustes) o `herdr-tts --restart-daemon`.
 
 ---
 

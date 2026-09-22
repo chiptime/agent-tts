@@ -3237,8 +3237,9 @@ run_voice_menu() {
 
 # ─── Voice settings popup (v0.15, cycle knobs) ───────────────
 # One popup for the optional knobs: TTS provider, playback target,
-# audio-retention days and the done settle window. Each key press cycles
-# the value to the NEXT entry of its table and persists it through
+# audio-retention days and the done settle window, plus the web redirect
+# (w: free-text URL, empty clears; c: click-directo on/off). Cycle keys
+# advance to the NEXT entry of their table and persist it through
 # config_set (managed-key writer above). Values shown come from the live
 # env the script sourced from config.env at startup; changes reach NEW
 # processes only.
@@ -3280,6 +3281,11 @@ settings_cycle_value() { # <provider|target|retention|settle> <current> → next
 # Uppercase R (case-sensitive on purpose, distinct from the r cycle) calls
 # daemon_restart: on success it sets SETTINGS_NOTE, on a failed spawn it
 # sets SETTINGS_WARN — both render inline on the next frame.
+# w reads one free-text line from the popup pane (a real terminal): the
+# URL persists to WEB_URL + COLLIE_URL verbatim ({pane_id} placeholder
+# included) and an empty line clears the redirect (and the label), while
+# a collie URL seeds WEB_LABEL="Collie" when it is still unset. c toggles
+# CLICK_REDIRECT on/off; both notes mirror the CLI wording.
 # Returns 1 when the key closes the view (q / Esc / Enter); any other key
 # returns 0 so the caller re-renders.
 settings_handle_key() { # <key>
@@ -3322,6 +3328,60 @@ settings_handle_key() { # <key>
         SETTINGS_WARN="No se pudo guardar TTS_SETTLE_SECONDS en config.env"
       fi
       ;;
+    w|W)
+      # Free-text input inside the popup (a real terminal): one line is the
+      # URL, an empty line clears the redirect. Persisted through the managed
+      # writer like every other key: WEB_URL and COLLIE_URL ride together
+      # (same pair the CLI --web-url path writes), and a collie URL seeds
+      # WEB_LABEL="Collie" while it is still unset. The {pane_id}
+      # placeholder is stored verbatim — send_ntfy_push expands it.
+      local new_url=""
+      printf '\n URL de redirección web\n   ej.: https://collie.midominio.com/chat/{pane_id}\n   sin {pane_id} se añade /pane/<id> · Enter vacío = desactivar\n > '
+      if ! read -r new_url; then
+        SETTINGS_WARN="Entrada cancelada: no se pudo leer la URL"
+        return 0
+      fi
+      if [[ -z "$new_url" ]]; then
+        if config_set WEB_URL "" && config_set COLLIE_URL "" && config_set WEB_LABEL ""; then
+          WEB_URL=""
+          COLLIE_URL=""
+          WEB_LABEL=""
+          SETTINGS_NOTE="✓ Redirección web desactivada (notificaciones estándar sin URL externa)"
+        else
+          SETTINGS_WARN="No se pudo guardar WEB_URL en config.env"
+        fi
+      else
+        if config_set WEB_URL "$new_url" && config_set COLLIE_URL "$new_url"; then
+          WEB_URL="$new_url"
+          COLLIE_URL="$new_url"
+          if [[ "${new_url,,}" =~ collie && -z "$WEB_LABEL" ]] && config_set WEB_LABEL "Collie"; then
+            WEB_LABEL="Collie"
+          fi
+          SETTINGS_NOTE="✓ URL de redirección configurada: ${new_url}"
+        else
+          SETTINGS_WARN="No se pudo guardar WEB_URL en config.env"
+        fi
+      fi
+      ;;
+    c|C)
+      # Click directo: ntfy Click header (tocar la tarjeta abre el navegador).
+      # on/off cycle; the notes mirror the CLI --click-redirect wording.
+      if [[ "$CLICK_REDIRECT" == "on" ]]; then
+        next="off"
+      else
+        next="on"
+      fi
+      if config_set CLICK_REDIRECT "$next"; then
+        CLICK_REDIRECT="$next"
+        if [[ "$next" == "on" ]]; then
+          SETTINGS_NOTE="✓ Click directo activado (abrirá navegador al pulsar la tarjeta de notificación)"
+        else
+          SETTINGS_NOTE="✓ Click directo desactivado (pulsar la tarjeta abrirá ntfy con reproductor; el botón abrirá web)"
+        fi
+      else
+        SETTINGS_WARN="No se pudo guardar CLICK_REDIRECT en config.env"
+      fi
+      ;;
     R)
       # Restart the daemon in place: applies pending p/d/s changes without
       # leaving the view. Uppercase by design (lowercase r cycles retention).
@@ -3332,7 +3392,7 @@ settings_handle_key() { # <key>
       fi
       ;;
     *)
-      SETTINGS_WARN="Tecla no reconocida (${key}) — p/d/r/s cicla un ajuste, q sale"
+      SETTINGS_WARN="Tecla no reconocida (${key}) — p/d/r/s cicla un ajuste, w URL web, c click directo, q sale"
       ;;
   esac
   return 0
@@ -3341,7 +3401,7 @@ settings_handle_key() { # <key>
 # ONE static frame, ONE physical write per render: same discipline as
 # menu_render (dashboard_term_size + _dash_add clamping reused verbatim,
 # frame buffered and written once). SETTINGS_WARN, when set, renders as
-# an inline warning row instead of a silent failure; SETTINGS_NOTE (e.g.
+# a bottom status row just above the exit hint; SETTINGS_NOTE (e.g.
 # the daemon-restart confirmation) renders right after it.
 settings_render() {
   dashboard_term_size
@@ -3355,19 +3415,28 @@ settings_render() {
   _dash_add 'Pulsa la tecla del ajuste para ciclar su valor.'
   _dash_add ''
   _dash_add ' p  Proveedor TTS:        %s   (edge = gratuito, por defecto)' "$TTS_PROVIDER"
+  # Install hint only for providers that need a local model; as an
+  # annotation it belongs directly under the row it qualifies.
+  if [[ "$TTS_PROVIDER" == "piper" || "$TTS_PROVIDER" == "kokoro" ]]; then
+    _dash_add '    ⚠️  Requiere instalar el modelo antes: agent-tts voice install %s' "$TTS_PROVIDER"
+  fi
   _dash_add ' d  Destino reproducción: %s' "$TTS_PLAYBACK"
   _dash_add ' r  Audio retenido:       %s días   (0 = apagado)' "$ret"
   _dash_add ' s  Asentamiento done:    %ss   (0 = notifica al instante)' "$TTS_SETTLE_SECONDS"
+  _dash_add ' w  Redirección web:      %s   (Enter vacío en w = desactiva)' "${WEB_URL:-Desactivada}"
+  _dash_add ' c  Click directo:        %s   (on = navegador, off = reproductor)' "$CLICK_REDIRECT"
   _dash_add ''
+  _dash_add ' r  cicla retención · se aplica al vuelo (sin reiniciar)'
+  _dash_add ' R  reinicia el daemon → aplica proveedor, destino, asentamiento y redirección web al instante'
+  # Transient feedback (warn/note) lives at the BOTTOM, just above the exit
+  # hint, so it reads as a status line for the whole popup instead of an
+  # extra settings row.
   if [[ -n "${SETTINGS_WARN:-}" ]]; then
     _dash_add ' ⚠️  %s' "$SETTINGS_WARN"
   fi
   if [[ -n "${SETTINGS_NOTE:-}" ]]; then
     _dash_add ' %s' "$SETTINGS_NOTE"
   fi
-  _dash_add ' Kokoro/Piper requieren instalar el modelo: agent-tts voice install <modelo>'
-  _dash_add ' r  cicla retención · se aplica al vuelo (sin reiniciar)'
-  _dash_add ' R  reinicia el daemon → aplica proveedor, destino y asentamiento al instante'
   _dash_add ''
   _dash_add ' q/Esc salir'
   menu_cap_rows $(( DASH_LINES - 1 ))

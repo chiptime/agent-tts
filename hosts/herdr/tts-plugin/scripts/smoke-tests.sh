@@ -67,6 +67,22 @@
 #         flicker inside the window is logged and dropped BEFORE the
 #         pipeline, and a done that holds past the window reaches the
 #         pipeline branch
+#   28    settings popup web redirect: w free-text URL input (verbatim
+#         {pane_id}, COLLIE_URL rides along, collie seeds WEB_LABEL,
+#         empty input clears) and c click-directo on/off cycle, both
+#         persisted to a hermetic config.env through the managed writer;
+#         frame rows render Desactivada/the URL and the restart hint
+#         line names the web redirect
+#   29    daemon supervisor: stop-flag semantics (flag armed after start
+#         → child death does NOT relaunch and the flag is consumed; no
+#         flag → relaunch is logged), stale flag cleared on start,
+#         TERM/INT forwarded to the child with a clean orphan-free exit,
+#         dispatch + manifest wiring, run_daemon startup/exit-reason
+#         logging through the daemon.log helper
+#   30    config_set upsert dedupe: duplicate keys inside (and across)
+#         the managed block collapse to exactly one line with the new
+#         value, repeated writes never grow the block, unknown lines and
+#         markers stay byte-identical, file stays bash-sourceable
 set -uo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -1829,3 +1845,46 @@ assert_grep "27e exhausted retries are logged" 'open tts-palette falló tras 3 i
 echo
 echo "═══ RESULT: $PASS passed, $FAIL failed ═══"
 exit $(( FAIL > 0 ? 1 : 0 ))
+echo "── 28. settings popup: web redirect URL input/clear + click directo on/off"
+new_env s28
+CONFIG_DIR_S28="$T/conf/herdr-tts"
+CONFIG_FILE="$CONFIG_DIR_S28/config.env" # mirrors the script's XDG default
+mkdir -p "$CONFIG_DIR_S28"
+
+# 28a. empty URL: frame renders "Desactivada", w with an empty line keeps
+#      the redirect off (empty WEB_URL/COLLIE_URL written by the writer).
+printf 'w\nq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "28a popup exits rc=0 on empty-URL clear" || bad "28a rc!=0"
+assert_grep "28a web row renders Desactivada with no URL" 'w  Redirección web: +Desactivada' "$T/out.txt"
+assert_grep "28a click row renders off" 'c  Click directo: +off ' "$T/out.txt"
+grep -qF 'WEB_URL=""' "$CONFIG_FILE" \
+  && ok "28a empty WEB_URL persisted to config.env" || bad "28a WEB_URL not persisted"
+assert_grep "28a restart hint line names the web redirect" 'R +reinicia el daemon.*redirección web' "$T/out.txt"
+
+# 28b. w + collie URL with the {pane_id} placeholder: stored verbatim,
+#      COLLIE_URL rides along, and a collie URL seeds WEB_LABEL="Collie"
+#      (it was empty); the frame shows the configured URL.
+URL28="https://collie.example.com/ui/pane/{pane_id}"
+printf 'w%s\nq' "$URL28" | timeout 10 "$SCRIPT" --voice-settings > "$T/out2.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "28b URL popup exits rc=0" || bad "28b rc!=0"
+grep -qF "WEB_URL=\"$URL28\"" "$CONFIG_FILE" \
+  && ok "28b WEB_URL persisted verbatim ({pane_id} intact)" || bad "28b WEB_URL not persisted"
+grep -qF "COLLIE_URL=\"$URL28\"" "$CONFIG_FILE" \
+  && ok "28b COLLIE_URL written alongside (CLI parity)" || bad "28b COLLIE_URL missing"
+grep -qF 'WEB_LABEL="Collie"' "$CONFIG_FILE" \
+  && ok "28b collie URL seeds WEB_LABEL=Collie when empty" || bad "28b WEB_LABEL not seeded"
+assert_grep "28b frame shows the configured URL" "Redirección web: +https://collie.example.com/ui/pane/[{]pane_id" "$T/out2.txt"
+
+# 28c. c cycles off → on: persisted + CLI-parity note rendered.
+printf 'cq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out3.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "28c on-cycle popup exits rc=0" || bad "28c rc!=0"
+grep -qF 'CLICK_REDIRECT="on"' "$CONFIG_FILE" \
+  && ok "28c CLICK_REDIRECT=on persisted" || bad "28c on not persisted"
+assert_grep "28c on note mirrors the CLI wording" 'Click directo activado \(abrirá navegador al pulsar la tarjeta' "$T/out3.txt"
+
+# 28d. c again cycles on → off, wording included.
+printf 'cq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out4.txt" 2>>"$T/err.log"
+grep -qF 'CLICK_REDIRECT="off"' "$CONFIG_FILE" \
+  && ok "28d CLICK_REDIRECT=off persisted after the wrap" || bad "28d off not persisted"
+assert_grep "28d off note mirrors the CLI wording" 'Click directo desactivado' "$T/out4.txt"
+
