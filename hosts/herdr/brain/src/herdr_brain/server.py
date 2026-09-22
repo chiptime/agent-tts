@@ -80,7 +80,7 @@ def render_index(version: str) -> str:
 
 
 class TextRequest(BaseModel):
-    text: str = Field(min_length=1, max_length=4_000)
+    text: str = Field(min_length=1, max_length=8_000)
     session_id: Optional[str] = Field(default=None, max_length=MAX_SESSION_ID_CHARS)
     pane_id: Optional[str] = Field(default=None, max_length=MAX_SESSION_ID_CHARS)
     reset: bool = False
