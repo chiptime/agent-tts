@@ -12,7 +12,7 @@ def test_all_names_resolve_to_real_attributes():
 
 
 def test_host_facing_surface_is_exported():
-    for name in ("main", "audio_store", "audio_duration", "provider_names", "provider_voices"):
+    for name in ("main", "audio_store", "audio_duration", "provider_names", "provider_voices", "ipc_reply_json"):
         assert name in agent_tts.__all__
     # The audio_store module surface hosts rely on.
     for attr in ("prune_expired", "store_path", "audio_dir", "retention_days", "audio_duration"):

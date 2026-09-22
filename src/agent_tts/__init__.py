@@ -17,7 +17,7 @@ from agent_tts.boundaries import (
 )
 from agent_tts.cleaner import clean_agent_text, extract_last_turn, strip_ansi
 from agent_tts.cli import main, speak, synthesize
-from agent_tts.ipc import IPCServer, send_ipc_command
+from agent_tts.ipc import IPCServer, ipc_reply_json, send_ipc_command
 from agent_tts.lang_detector import (
     detect_language,
     resolve_voice_for_language,
@@ -80,6 +80,7 @@ __all__ = [
     "apply_bionic_reading",
     "bionic_word",
     "IPCServer",
+    "ipc_reply_json",
     "send_ipc_command",
     "TTSProvider",
     "EdgeTTSProvider",
