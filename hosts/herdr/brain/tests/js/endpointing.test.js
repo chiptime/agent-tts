@@ -101,11 +101,13 @@ test("snapshot exposes the stable diagnostic shape", () => {
   const ep = createEndpointer({ now: clock.now, silenceMs: 1200, hardCapMs: 15000 });
   const idle = ep.snapshot();
   assert.deepEqual(Object.keys(idle).sort(), [
-    "buffer", "bufferChars", "capRemainingMs", "hardCapMs", "hasSpeech",
-    "lastChangeAt", "shouldFinalize", "silenceMs", "silenceRemainingMs",
-    "speechStartedAt"
+    "buffer", "bufferChars", "capRemainingMs", "committedChars", "hardCapMs",
+    "hasSpeech", "interimChars", "lastChangeAt", "shouldFinalize",
+    "silenceMs", "silenceRemainingMs", "speechStartedAt"
   ]);
   assert.equal(idle.bufferChars, 0);
+  assert.equal(idle.committedChars, 0);
+  assert.equal(idle.interimChars, 0);
   assert.equal(idle.hasSpeech, false);
   assert.equal(idle.silenceRemainingMs, null);  // no speech: nothing to count
   assert.equal(idle.capRemainingMs, null);
@@ -115,6 +117,8 @@ test("snapshot exposes the stable diagnostic shape", () => {
   const active = ep.snapshot();
   assert.equal(active.buffer, "hola");
   assert.equal(active.bufferChars, 4);
+  assert.equal(active.committedChars, 0);   // nothing finalized yet
+  assert.equal(active.interimChars, 4);     // it is all live interim
   assert.equal(active.hasSpeech, true);
   assert.equal(active.silenceRemainingMs, 800);
   assert.equal(active.capRemainingMs, 14600);
@@ -144,4 +148,117 @@ test("snapshot: cap remaining never goes negative", () => {
   const snap = ep.snapshot();
   assert.equal(snap.capRemainingMs, 0);
   assert.equal(snap.shouldFinalize, true);
+});
+
+/* ---- session-boundary accumulation (the Fase 2g fix) ----
+ * Chrome ends recognition sessions every few seconds; the app restarts
+ * them. Finals flushed at session end COMMIT text that must survive the
+ * restart; a fresh session's short/empty interim must never wipe it. */
+
+test("utterance accumulates across recognition session boundaries", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now });
+  // Session 1: interims, then Chrome flushes a final and ends the session.
+  ep.push("el rebaño");
+  ep.commit("el rebaño");
+  // Session 2 starts: short/empty interims arrive while the mic restarts.
+  assert.equal(ep.push(""), false);       // empty new-session interim: ignored
+  assert.equal(ep.push("está"), true);    // fresh session interim
+  assert.equal(ep.text(), "el rebaño está");
+  assert.equal(ep.hasSpeech(), true);
+  // And the combined utterance survives to the silence dispatch.
+  clock.advance(1200);
+  assert.equal(ep.shouldFinalize(), true);
+  assert.equal(ep.finalize(), "el rebaño está");
+});
+
+test("commit appends with a single space and clears the interim", () => {
+  const ep = createEndpointer();
+  ep.push("ho");
+  ep.commit("hola");
+  ep.push("qué");
+  ep.commit("qué tal");
+  assert.equal(ep.text(), "hola qué tal");  // interim never duplicated
+  assert.equal(ep.finalize(), "hola qué tal");
+});
+
+test("empty interim never wipes captured text", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now });
+  ep.push("hola que tal");
+  assert.equal(ep.push(""), false);
+  assert.equal(ep.push("   "), false);
+  assert.equal(ep.hasSpeech(), true);
+  assert.equal(ep.finalize(), "hola que tal");
+});
+
+test("push after commit never shortens committed", () => {
+  const ep = createEndpointer();
+  ep.commit("primera parte larga");
+  ep.push("segunda");         // shorter than committed: fine, appended
+  assert.equal(ep.text(), "primera parte larga segunda");
+  ep.push("s");               // revision of the interim only
+  assert.equal(ep.text(), "primera parte larga s");
+});
+
+test("commit counts as combined-text change and resets the silence timer", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now, silenceMs: 1200 });
+  ep.push("hola");
+  clock.advance(1100);
+  ep.commit("hola que");      // change at t=1100
+  clock.advance(1100);
+  assert.equal(ep.shouldFinalize(), false);  // only 1100ms since the commit
+  clock.advance(100);
+  assert.equal(ep.shouldFinalize(), true);
+});
+
+test("ignored empty push does not extend the silence clock", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now, silenceMs: 1200 });
+  ep.push("hola");
+  clock.advance(600);
+  ep.push("");                // session restart hiccup: ignored, NOT activity
+  clock.advance(600);
+  assert.equal(ep.shouldFinalize(), true);  // 1200ms since the real change
+});
+
+test("hard cap spans sessions: measured from first captured text", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now, hardCapMs: 15000, silenceMs: 1200 });
+  ep.commit("parte uno");     // session 1 final at t=0
+  for (let t = 3000; t <= 12000; t += 3000) {
+    clock.advance(3000);
+    ep.commit("parte " + t);  // a final per session, no silence gap
+  }
+  clock.advance(2500);
+  assert.equal(ep.shouldFinalize(), true);  // 14.5s+ since speech began
+});
+
+test("finalize returns the combined text and resets everything", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now });
+  ep.commit("ya está");
+  ep.push("listo");
+  assert.equal(ep.finalize(), "ya está listo");
+  assert.equal(ep.hasSpeech(), false);
+  assert.equal(ep.finalize(), "");           // nothing left
+  const snap = ep.snapshot();
+  assert.equal(snap.committedChars, 0);
+  assert.equal(snap.interimChars, 0);
+  // Fresh utterance on the same instance works immediately.
+  ep.push("otra cosa");
+  assert.equal(ep.hasSpeech(), true);
+});
+
+test("snapshot splits committed vs interim after a session boundary", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now });
+  ep.commit("el rebaño");
+  ep.push("está");
+  const snap = ep.snapshot();
+  assert.equal(snap.committedChars, "el rebaño".length);
+  assert.equal(snap.interimChars, "está".length);
+  assert.equal(snap.bufferChars, "el rebaño está".length);
+  assert.equal(snap.hasSpeech, true);
 });

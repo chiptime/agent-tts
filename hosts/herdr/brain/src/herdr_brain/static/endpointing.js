@@ -1,14 +1,25 @@
 /* Voice endpointing for the continuous call — PURE logic, no DOM.
  *
- * Chrome's continuous recognition often emits interim results without ever
- * finalizing, so the brain self-endpoints the utterance:
+ * Chrome's continuous recognition ends sessions every few seconds and
+ * scopes interim results to the CURRENT session, so one user utterance
+ * typically spans several recognition sessions (app.js restarts them on
+ * onend). The utterance model accumulates across those boundaries:
  *
- * - push(interimText): accumulates the latest interim transcript. Any text
- *   change marks "speech activity" and resets the silence timer.
- * - shouldFinalize(now): true when there is speech AND either
- *   (a) silence_ms elapsed since the last change, or
+ * - committed: text finalized (isFinal) in PREVIOUS recognition sessions.
+ *   It persists across session restarts and can only grow via commit().
+ * - commit(finalText): appends a finalized chunk (single-space join) and
+ *   clears the current interim — the final transcript already contains
+ *   that interim hypothesis.
+ * - push(interimText): sets the CURRENT session's interim only; it can
+ *   never shorten committed. An EMPTY interim is ignored outright: a
+ *   fresh session must never wipe what earlier sessions captured. Any
+ *   change of the COMBINED text (committed + interim) marks speech
+ *   activity and resets the silence timer.
+ * - shouldFinalize(): true when there is speech AND either
+ *   (a) silence_ms elapsed since the last combined-text change, or
  *   (b) hard_cap_ms elapsed since speech began.
- * - finalize(): returns the accumulated text and resets the utterance.
+ * - finalize(): returns the combined text and resets everything.
+ * - text(): the combined text, for live display.
  *
  * Dual environment: browser global (window.Endpointing) and CommonJS for
  * node --test.
@@ -25,22 +36,41 @@
     var hardCapMs = typeof options.hardCapMs === "number" ? options.hardCapMs : DEFAULT_HARD_CAP_MS;
     var now = options.now || function () { return Date.now(); };
 
-    var buffer = "";          // latest interim transcript
-    var lastChangeAt = null;  // time of last buffer change (since speech began)
-    var speechStartedAt = null; // time the first non-empty interim arrived
+    var committed = "";       // finalized in PREVIOUS recognition sessions
+    var interim = "";         // latest interim of the CURRENT session
+    var lastChangeAt = null;  // time of last combined-text change
+    var speechStartedAt = null; // time the first captured text arrived
+
+    function combined() {
+      if (!committed) return interim;
+      if (!interim) return committed;
+      return committed + " " + interim;
+    }
 
     function push(interimText) {
       var text = (interimText || "").trim();
-      if (text === buffer) return false;  // no change: silence timer keeps running
+      if (!text) return false;             // empty interim never wipes anything
+      if (text === interim) return false;  // no change: silence timer keeps running
       var t = now();
-      if (!speechStartedAt && text) speechStartedAt = t;
-      buffer = text;
+      if (speechStartedAt === null) speechStartedAt = t;
+      interim = text;
+      lastChangeAt = t;
+      return true;
+    }
+
+    function commit(finalText) {
+      var text = (finalText || "").trim();
+      if (!text) return false;
+      var t = now();
+      if (speechStartedAt === null) speechStartedAt = t;
+      committed = committed ? committed + " " + text : text;
+      interim = "";  // the final transcript already contains it
       lastChangeAt = t;
       return true;
     }
 
     function hasSpeech() {
-      return buffer.length > 0;
+      return combined().length > 0;
     }
 
     function shouldFinalize() {
@@ -57,13 +87,14 @@
     }
 
     function finalize() {
-      var text = buffer;
+      var text = combined();
       reset();
       return text;
     }
 
     function reset() {
-      buffer = "";
+      committed = "";
+      interim = "";
       lastChangeAt = null;
       speechStartedAt = null;
     }
@@ -74,8 +105,10 @@
       var t = now();
       var speaking = hasSpeech();
       return {
-        buffer: buffer,
-        bufferChars: buffer.length,
+        buffer: combined(),
+        bufferChars: combined().length,
+        committedChars: committed.length,
+        interimChars: interim.length,
         hasSpeech: speaking,
         speechStartedAt: speechStartedAt,
         lastChangeAt: lastChangeAt,
@@ -93,11 +126,13 @@
 
     return {
       push: push,
+      commit: commit,
       hasSpeech: hasSpeech,
       shouldFinalize: shouldFinalize,
       silenceFor: silenceFor,
       finalize: finalize,
       reset: reset,
+      text: combined,
       snapshot: snapshot
     };
   }
