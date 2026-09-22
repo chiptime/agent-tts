@@ -23,7 +23,8 @@
 #         width+height clamp reuse, manifest/README wiring, two views
 #         (`a` opens the settings view inside the menu, `q` returns to
 #         the main frame, provider cycle persists into a hermetic
-#         config.env via HERDR_TTS_CONFIG_FILE)
+#         config.env via HERDR_TTS_CONFIG_FILE), settings `v` toggles
+#         the auto_muted marker both ways with inline notes
 #   17    keymap: init (template, no-overwrite, --force), check (core
 #         shadow warnings, --json), emit (direct/ctrlalt/menu TOML),
 #         invalid ids/chords/duplicates rejected, missing file actionable
@@ -921,6 +922,28 @@ grep -q 'TTS_PROVIDER="openai"' "$HERDR_TTS_CONFIG_FILE" \
   && ok "16h p cycled provider edge→openai into config.env" || bad "16h provider not persisted"
 assert_no_grep "16h a/p/q path fires no action" '✓|Tecla no reconocida' "$T/out.txt"
 unset HERDR_TTS_CONFIG_FILE # scenario 25 derives CONFIG_FILE from the XDG paths
+
+# 16i. Settings `v`: toggles the auto_muted marker both ways with inline
+#      notes. The marker lives in the hermetic XDG conf dir (AUTO_MUTE_FILE
+#      derives from CONFIG_DIR), NOT config.env — same source of truth as
+#      --toggle-auto / --auto-on / --auto-off. One `v` per run (it is a
+#      toggle, not a cycle).
+new_env s16i
+FX="$T/fixture.json"; make_fixture "$FX"
+write_herdr_stub "$FX"
+export HERDR_TTS_CONFIG_FILE="$T/config.env"
+printf 'vq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "16i v toggle rc=0 (on→off)" || bad "16i rc!=0"
+[[ -f "$T/conf/herdr-tts/auto_muted" ]] \
+  && ok "16i v creates the auto_muted marker" || bad "16i auto_muted marker missing"
+assert_grep "16i off note renders inline" 'Auto-lectura silenciada' "$T/out.txt"
+printf 'vq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "16i second v rc=0 (off→on)" || bad "16i second run rc!=0"
+[[ ! -f "$T/conf/herdr-tts/auto_muted" ]] \
+  && ok "16i second v clears the auto_muted marker" || bad "16i marker still present"
+assert_grep "16i on note renders inline" 'Auto-lectura activada' "$T/out.txt"
+assert_grep "16i settings frame lists the v row" ' v  Auto-lectura:' "$T/out.txt"
+unset HERDR_TTS_CONFIG_FILE
 
 echo "── 17. keymap: init / check / emit (declarative, conflict-checked)"
 new_env s17

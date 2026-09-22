@@ -3499,6 +3499,26 @@ settings_handle_key() { # <key>
         SETTINGS_WARN="No se pudo guardar CLICK_REDIRECT en config.env"
       fi
       ;;
+    v|V)
+      # Auto-lectura de fondo on/off. The auto_muted marker stays the
+      # single source of truth (the daemon stats the live file on every
+      # event, so this applies al vuelo — no daemon restart needed, no
+      # config.env key). The toggle here is silent on purpose: the voice
+      # menu `v` is the one that speaks the spoken confirmation.
+      if is_auto_muted; then
+        if rm -f "$AUTO_MUTE_FILE"; then
+          SETTINGS_NOTE="✓ Auto-lectura activada (te lee al terminar cada agente)"
+        else
+          SETTINGS_WARN="No se pudo eliminar ${AUTO_MUTE_FILE}"
+        fi
+      else
+        if touch "$AUTO_MUTE_FILE"; then
+          SETTINGS_NOTE="✓ Auto-lectura silenciada (solo manual: prefix+r / htr bajo demanda)"
+        else
+          SETTINGS_WARN="No se pudo crear ${AUTO_MUTE_FILE}"
+        fi
+      fi
+      ;;
     R)
       # Restart the daemon in place: applies pending p/d/s changes without
       # leaving the view. Uppercase by design (lowercase r cycles retention).
@@ -3509,7 +3529,7 @@ settings_handle_key() { # <key>
       fi
       ;;
     *)
-      SETTINGS_WARN="Tecla no reconocida (${key}) — p/d/r/s cicla un ajuste, w URL web, c click directo, q sale"
+      SETTINGS_WARN="Tecla no reconocida (${key}) — p/d/r/s cicla un ajuste, v auto-lectura, w URL web, c click directo, q sale"
       ;;
   esac
   return 0
@@ -3537,6 +3557,9 @@ settings_render() {
   if [[ "$TTS_PROVIDER" == "piper" || "$TTS_PROVIDER" == "kokoro" ]]; then
     _dash_add '    ⚠️  Requiere instalar el modelo antes: agent-tts voice install %s' "$TTS_PROVIDER"
   fi
+  local auto_label="🔊 activa (te lee al terminar cada agente)"
+  is_auto_muted && auto_label="🔇 silenciada (solo manual: prefix+r / htr bajo demanda)"
+  _dash_add ' v  Auto-lectura:         %s' "$auto_label"
   _dash_add ' d  Destino reproducción: %s' "$TTS_PLAYBACK"
   _dash_add ' r  Audio retenido:       %s días   (0 = apagado)' "$ret"
   _dash_add ' s  Asentamiento done:    %ss   (0 = notifica al instante)' "$TTS_SETTLE_SECONDS"
@@ -4863,6 +4886,8 @@ Acciones principales:
   --prev-paragraph         Retroceder al párrafo anterior en reproducción
   --play (-p)              Leer la última respuesta del chat enfocado
   --toggle-auto (-t)       Alternar lectura automática de fondo (Tecla: prefix+v)
+  --auto-on                Auto-lectura siempre activa: te lee al terminar cada agente (default)
+  --auto-off               Silenciar la auto-lectura: solo lectura manual (Tecla: prefix+r)
   --scope focused|all      'focused' (solo chat activo) | 'all' (cualquiera sin solapar)
 
 Experiencia visual y lectura sincronizada:
