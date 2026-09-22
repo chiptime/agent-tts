@@ -47,17 +47,19 @@ id = "tts-menu"
 title = "TTS Voice Menu"
 placement = "popup"
 width = "60%"
-height = "45%"
+height = "55%"
 command = ["bin/herdr-tts", "--voice-menu"]
 
-# Voice/audio settings popup (prefix+u): cycles provider, playback target
-# and audio retention, writing the managed keys to config.env atomically.
+# Voice/audio settings popup (prefix+u): cycles provider, global voice,
+# auto-read, scope, language, podcast, debounce, playback, retention and
+# settle; writes the managed keys to config.env atomically (web URL and
+# ntfy topic are free-text inputs).
 [[panes]]
 id = "tts-settings"
 title = "TTS Settings"
 placement = "popup"
 width = "60%"
-height = "45%"
+height = "55%"
 command = ["bin/herdr-tts", "--voice-settings"]
 
 [[actions]]
