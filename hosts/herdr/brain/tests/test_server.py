@@ -99,15 +99,15 @@ class TestTtsBackendContract:
         cfg = Settings(**{
             **SETTINGS_KWARGS,
             "audio_dir": "/tmp/herdr-brain-test-audio",
-            "tts_python": "/nowhere/venv/bin/python",
-            "tts_engine": "/nowhere/lib/tts_engine.py",
+            "tts_home": "/nowhere/herdr-tts",
+            "tts_bin": "/nowhere/herdr-tts/bin/herdr-tts",
         })
         client = TestClient(create_app(settings=cfg, daemon_probe=lambda: "up"))
         assert client.get("/health").json()["tts"] == "missing"
 
     def test_health_reports_tts_missing_and_server_survives(self, settings, audio_dir, monkeypatch, caplog):
-        """Fail-soft: a missing backend must never crash the server; text
-        answers keep working, only speech is degraded."""
+        """Fail-soft: a missing surface contract must never crash the server;
+        text answers keep working, only speech is degraded."""
         import logging
 
         from herdr_brain.tts import TTS_BACKEND_MISSING, TTS_BACKEND_NAME
@@ -115,9 +115,8 @@ class TestTtsBackendContract:
         cfg = Settings(**{
             **settings.__dict__,
             "audio_dir": str(audio_dir),
-            "tts_venv": audio_dir / "nowhere-venv",
-            "tts_python": audio_dir / "nowhere-venv/bin/python",
-            "tts_engine": audio_dir / "nowhere-engine/tts_engine.py",
+            "tts_home": audio_dir / "nowhere-tts",
+            "tts_bin": audio_dir / "nowhere-tts/bin/herdr-tts",
         })
         with caplog.at_level(logging.WARNING, logger="herdr_brain.server"):
             client = TestClient(create_app(settings=cfg, llm_factory=lambda c, t: FakeLLM()))
@@ -132,19 +131,16 @@ class TestTtsBackendContract:
         assert resp.json()["audio_url"] is None
 
     def test_ask_degradation_log_names_backend_contract(self, settings, audio_dir, caplog):
-        """Render failure with a missing backend logs the contract, not a
+        """Render failure with a missing surface logs the contract, not a
         bare traceback."""
         import logging
-
-        from herdr_brain.tts import TTSError, tts_backend_status
 
         cfg = Settings(**{
             **settings.__dict__,
             "audio_dir": str(audio_dir),
-            "tts_python": audio_dir / "nowhere/bin/python",
-            "tts_engine": audio_dir / "nowhere/lib/tts_engine.py",
+            "tts_home": audio_dir / "nowhere-tts",
+            "tts_bin": audio_dir / "nowhere-tts/bin/herdr-tts",
         })
-        _status, detail = tts_backend_status(cfg)  # the REAL renderer, no injection
 
         with caplog.at_level(logging.WARNING, logger="herdr_brain.server"):
             client = TestClient(create_app(settings=cfg, llm_factory=lambda c, t: FakeLLM()))
@@ -152,7 +148,6 @@ class TestTtsBackendContract:
         assert resp.status_code == 200
         assert resp.json()["audio_url"] is None
         assert any("herdr-tts" in r.message and "text-only" in r.message for r in caplog.records)
-        assert TTSError.__name__  # sanity: the contract error type exists
 
 
 class TestState:

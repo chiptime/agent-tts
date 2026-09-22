@@ -15,11 +15,11 @@ cmdline mention of "herdr-tts" guards against PID reuse (same guard
 daemon_takeover uses).
 
 REJECTED: the playback IPC socket (/tmp/herdr-tts-player.sock). It is
-NOT daemon-lifecycle-owned — agent-tts creates the IPCServer per
-AudioSession (agent-tts audio.py: IPCServer().start() on playback,
-.stop() at session end), so the socket exists only while audio is
-playing. Verified live on this machine: daemon up for hours, no socket
-file. A socket handshake would report "down" between utterances.
+NOT daemon-lifecycle-owned — herdr-tts's engine creates the IPCServer per
+playback AudioSession (started on playback, stopped at session end), so
+the socket exists only while audio is playing. Verified live on this
+machine: daemon up for hours, no socket file. A socket handshake would
+report "down" between utterances.
 
 The probe is pure file I/O (pidfile + /proc read): nothing can block, so
 the <=1.5s budget is trivially met and it is safe from any background
