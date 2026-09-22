@@ -193,6 +193,6 @@ command = ["herdr", "plugin", "pane", "open", "--plugin", "herdr.tts", "--entryp
 # writer (byte-preserving rewrite of config.env + .bak backup).
 [[actions]]
 id = "voice-settings"
-title = "Configuración de voz y audio"
+title = "Open TTS Settings (popup)"
 contexts = ["workspace", "pane"]
 command = ["bin/herdr-tts", "--voice-settings"]
