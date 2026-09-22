@@ -23,6 +23,7 @@ try:
         cleanup_locks,
         extract_last_turn,
         get_provider,
+        main,
         play_mp3_data,
         play_mp3_file,
         send_ipc_command,
@@ -31,15 +32,6 @@ try:
         synthesize,
         apply_bionic_reading,
         bionic_word,
-    )
-    from agent_tts.cli import main
-    from agent_tts.constants import (
-        DEFAULT_RATE,
-        DEFAULT_VOICE,
-        IPC_SOCKET,
-        LOCK_FILE,
-        PID_FILE,
-        VOICE_MAP,
     )
 
     # Backwards-compatible alias
