@@ -308,24 +308,24 @@ i=$(grep -n 'Repositorio limpio' "$T/out.txt" | head -1 | cut -d: -f1)
 assert_grep "mute overlay 🔇 on w4:p3" 'Repositorio limpio.*🔇' "$T/out.txt"
 assert_grep "snooze overlay 😴 mm:ss on w4:p2" 'Refactor del watcher.*😴 04:3[0-9]' "$T/out.txt"
 assert_grep "debounce overlay ⏱Ns on w4:p1" 'Priorización.*⏱[0-9]+s' "$T/out.txt"
-assert_grep "history section header" 'Historial por chat' "$T/out.txt"
-assert_grep "group header counts p1 (2 audios)" '· 2 audios · último hace' "$T/out.txt"
-assert_grep "group header counts p3 (4 audios)" '· 4 audios · último hace' "$T/out.txt"
+assert_grep "history section header" 'History per chat' "$T/out.txt"
+assert_grep "group header counts p1 (2 audios)" '· 2 audios · last' "$T/out.txt"
+assert_grep "group header counts p3 (4 audios)" '· 4 audios · last' "$T/out.txt"
 assert_grep "closed pane group labeled by pane id" '── w9:p9 ' "$T/out.txt"
 h1=$(grep -n '· 2 audios' "$T/out.txt" | head -1 | cut -d: -f1)
 h9=$(grep -n 'w9:p9' "$T/out.txt" | head -1 | cut -d: -f1)
 h3=$(grep -n '· 4 audios' "$T/out.txt" | head -1 | cut -d: -f1)
 [[ -n "$h1" && -n "$h9" && -n "$h3" && "$h1" -lt "$h9" && "$h9" -lt "$h3" ]] \
   && ok "history groups sorted by last-audio recency (p1 < p9 < p3)" || bad "history group order wrong ($h1/$h9/$h3)"
-na=$(grep -cE '^║    · [0-9]{2}:[0-9]{2} · hace [0-9]+[smh]$' "$T/out.txt")
+na=$(grep -cE '^║    · [0-9]{2}:[0-9]{2} · [0-9]+[smh] ago$' "$T/out.txt")
 [[ "$na" -eq 6 ]] && ok "audio rows: 2+1+3 = 6 (max 3 per group)" || bad "audio rows = $na (want 6)"
-assert_grep "duration+age: 01:00 two minutes ago" '· 01:00 · hace 2m' "$T/out.txt"
-assert_grep "duration+age: 00:21 twelve minutes ago" '· 00:21 · hace 12m' "$T/out.txt"
-assert_grep "duration+age: 00:45 twentyfive minutes ago (closed pane)" '· 00:45 · hace 25m' "$T/out.txt"
-assert_grep "p1 header age: último hace 2m" '── .* · 2 audios · último hace 2m' "$T/out.txt"
-assert_grep "engine fallback line intact (v2 regression)" 'motor: no responde' "$T/out.txt"
-assert_grep "global state line intact" 'snooze global off' "$T/out.txt"
-assert_grep "config line intact" 'proveedor edge' "$T/out.txt"
+assert_grep "duration+age: 01:00 two minutes ago" '· 01:00 · 2m ago' "$T/out.txt"
+assert_grep "duration+age: 00:21 twelve minutes ago" '· 00:21 · 12m ago' "$T/out.txt"
+assert_grep "duration+age: 00:45 twentyfive minutes ago (closed pane)" '· 00:45 · 25m ago' "$T/out.txt"
+assert_grep "p1 header age: last 2m ago" '── .* · 2 audios · last 2m ago' "$T/out.txt"
+assert_grep "engine fallback line intact (v2 regression)" 'engine: not responding' "$T/out.txt"
+assert_grep "global state line intact" 'global snooze off' "$T/out.txt"
+assert_grep "config line intact" 'provider edge' "$T/out.txt"
 # v3.1 single-tick frame: exactly one frame emit; full-clear only from cleanup
 hv=$(esc_count "$T/out.txt" $'\033[H')
 jv=$(esc_count "$T/out.txt" $'\033[J')
@@ -347,16 +347,16 @@ jq -e --argjson now "$(date +%s)" '.global_snooze_until > $now' "$HERDR_TTS_SNOO
   && ok "Z cycled GLOBAL snooze" || bad "Z did not set global snooze"
 grep -qE '^TTS_RATE="\+20%"$' "$T/conf/herdr-tts/config.env" \
   && ok "+/- adjusted rate (net +20% after + then -)" || bad "rate +/- not persisted as expected"
-frames=$(grep -c 'Panel de voz' "$T/out.txt")
+frames=$(grep -c 'Voice Panel' "$T/out.txt")
 [[ "$frames" -ge 2 ]] && ok "multiple frames rendered ($frames)" || bad "only $frames frame(s)"
-last_frame=$(awk '/Panel de voz/{buf=""} {buf=buf $0 "\n"} END{printf "%s", buf}' "$T/out.txt")
+last_frame=$(awk '/Voice Panel/{buf=""} {buf=buf $0 "\n"} END{printf "%s", buf}' "$T/out.txt")
 printf '%s' "$last_frame" > "$T/last_frame.txt"
 m1=$(grep -n '▸ ' "$T/last_frame.txt" | head -1 | cut -d: -f1)
 c2=$(grep -n 'Refactor del watcher' "$T/last_frame.txt" | head -1 | cut -d: -f1)
 [[ -n "$m1" && -n "$c2" && "$m1" -eq "$c2" ]] \
   && ok "j moved cursor to 2nd roster line (working chat)" || bad "cursor mismatch (marker=$m1 line2=$c2)"
 assert_grep "snoozed chat shows 😴 overlay after z" 'Refactor del watcher.*😴' "$T/last_frame.txt"
-assert_grep "mute msg surfaced in panel" 'silenciado' "$T/out.txt"
+assert_grep "mute msg surfaced in panel" 'muted' "$T/out.txt"
 read stats < <(visible_stats "$T/last_frame.txt"); sl=${stats%% *}
 [[ "$sl" -le 110 ]] && ok "last frame max visible width ≤ 110 ($sl)" || bad "last frame max width $sl"
 
@@ -376,17 +376,17 @@ FX="$T/fixture.json"
 capture 'q\n' "$T/out.txt"
 assert_grep "DONEONE visible" 'DONEONE' "$T/out.txt"
 assert_grep "DONETWO visible" 'DONETWO' "$T/out.txt"
-assert_grep "overflow notice present" 'y [0-9]+ chats más' "$T/out.txt"
+assert_grep "overflow notice present" 'and [0-9]+ more chats' "$T/out.txt"
 read stats < <(visible_stats "$T/out.txt"); sl=${stats#* }
 [[ "$sl" -le 39 ]] && ok "total frame rows ≤ LINES-1 = 39 ($sl)" || bad "frame overflow: $sl rows"
-assert_no_grep "history section hidden without ledger" 'Historial por chat' "$T/out.txt"
+assert_no_grep "history section hidden without ledger" 'History per chat' "$T/out.txt"
 
 echo "── 4. fail-open: no herdr CLI"
 new_env s4
 make_history "$HERDR_TTS_HISTORY_FILE"
 env PATH="/usr/bin:/bin" HOME="$HOME" LINES=40 COLUMNS=110 timeout 30 "$SCRIPT" --dashboard < /dev/null > "$T/out.txt" 2>>"$T/err.log" || true
-assert_grep "roster shows sin datos de herdr" 'sin datos de herdr' "$T/out.txt"
-assert_grep "history still renders from ledger" 'Historial por chat' "$T/out.txt"
+assert_grep "roster shows no herdr data" 'no herdr data' "$T/out.txt"
+assert_grep "history still renders from ledger" 'History per chat' "$T/out.txt"
 assert_grep "closed-pane labels survive without roster" '── w4:p3 ' "$T/out.txt"
 
 echo "── 5. empty history → section hidden"
@@ -395,7 +395,7 @@ FX="$T/fixture.json"; make_fixture "$FX"
 write_herdr_stub "$FX"
 rm -f "$HERDR_TTS_HISTORY_FILE"
 capture 'q\n' "$T/out.txt"
-assert_no_grep "history section hidden" 'Historial por chat' "$T/out.txt"
+assert_no_grep "history section hidden" 'History per chat' "$T/out.txt"
 assert_grep "roster still renders" 'Chats \(j/k' "$T/out.txt"
 
 echo "── 6. CLI regressions (v2 flags)"
@@ -468,7 +468,7 @@ ticks=$(wc -l < "$CALLS")
 [[ "$ticks" -ge 3 ]] && ok "frozen clock: ≥3 ticks ran ($ticks)" || bad "only $ticks clock call(s)"
 hv=$(esc_count "$T/out.txt" $'\033[H')
 [[ "$hv" -eq 2 ]] && ok "identical ticks → change-detection: exactly 1 physical frame write (H=2 incl cleanup)" || bad "H-moves=$hv for identical frames (want 2)"
-frames=$(grep -c 'Panel de voz' "$T/out.txt")
+frames=$(grep -c 'Voice Panel' "$T/out.txt")
 [[ "$frames" -eq 1 ]] && ok "exactly 1 frame of content in output ($frames)" || bad "$frames frame(s) in output (want 1)"
 
 echo "── 8. width clamp: COLUMNS=90 → no line exceeds 90 visible chars"
@@ -515,10 +515,10 @@ make_history "$HERDR_TTS_HISTORY_FILE"
 capture 'q\n' "$T/out.txt"
 read stats < <(visible_stats "$T/out.txt"); nl=${stats#* }
 [[ "$nl" -le 29 ]] && ok "frame rows ≤ LINES-1 = 29 ($nl)" || bad "frame rows $nl > 29"
-assert_no_grep "history shrunk away first (budget 24 → 0)" 'Historial por chat' "$T/out.txt"
+assert_no_grep "history shrunk away first (budget 24 → 0)" 'History per chat' "$T/out.txt"
 assert_grep "done chat DONEONE kept" 'DONEONE' "$T/out.txt"
 assert_grep "done chat DONETWO kept" 'DONETWO' "$T/out.txt"
-assert_grep "idle chats dropped with notice" 'y [0-9]+ chats más' "$T/out.txt"
+assert_grep "idle chats dropped with notice" 'and [0-9]+ more chats' "$T/out.txt"
 echo "── 9b. minimum fit: LINES=10 → fixed lines + 2 chats + notice = 9 rows"
 new_env s9b
 export LINES=10
@@ -529,9 +529,9 @@ make_history "$HERDR_TTS_HISTORY_FILE"
 capture 'q\n' "$T/out.txt"
 read stats < <(visible_stats "$T/out.txt"); nl=${stats#* }
 [[ "$nl" -eq 9 ]] && ok "minimum frame: exactly 9 rows (LINES-1) ($nl)" || bad "minimum frame rows = $nl (want 9)"
-assert_grep "footer survives the minimum fit" 'q salir' "$T/out.txt"
+assert_grep "footer survives the minimum fit" 'q quit' "$T/out.txt"
 assert_grep "done chats survive the minimum fit" 'DONEONE' "$T/out.txt"
-assert_grep "'+N chats' notice rendered" 'y 30 chats más' "$T/out.txt"
+assert_grep "'+N chats' notice rendered" 'and 30 more chats' "$T/out.txt"
 
 echo "── 10. size fallback chain: env unset + failing tput → 40x100"
 new_env s10
@@ -669,7 +669,7 @@ l1="${plines[0]:-}"; l2="${plines[1]:-}"; l3="${plines[2]:-}"; l4="${plines[3]:-
   && ok "12 legacy 4-field row renders '-' snippet" || bad "12 legacy row wrong: ${l2%%$'\t'*}"
 [[ "$(printf '%s' "$l2" | cut -f2)" == "w4:p1" && "$(printf '%s' "$l2" | cut -f3)" =~ ^[0-9]+$ ]] \
   && ok "12 hidden fields parse: pane_id + numeric epoch" || bad "12 hidden fields wrong: $l2"
-[[ "$l4" == "(sin audios) · Gem | Sin audios todavia"$'\t'"w4:p3"$'\t'"chat"$'\t'"-" ]] \
+[[ "$l4" == "(no audios) · Gem | Sin audios todavia"$'\t'"w4:p3"$'\t'"chat"$'\t'"-" ]] \
   && ok "12 zero-audio chat entry format exact" || bad "12 zero-audio entry: $l4"
 
 echo "── 13. palette preview: header, gating, turns, fail-open, no-fzf"
@@ -688,8 +688,8 @@ make_gate_state # w4:p3 muted/debounce entries don't apply; w4:p1 clean
 } > "$HERDR_TTS_HISTORY_FILE"
 lib_run 'palette_preview w4:p1' > "$T/out.txt"
 assert_grep "13 header shows chat title" '^📌 OC \| Chat Uno$' "$T/out.txt"
-assert_grep "13 header shows agent+status" 'agente: opencode · estado: done' "$T/out.txt"
-assert_grep "13 gating shows the active debounce hold" 'gating: .*⏱ debounce activo \([0-9]+s\)' "$T/out.txt"
+assert_grep "13 header shows agent+status" 'agent: opencode · status: done' "$T/out.txt"
+assert_grep "13 gating shows the active debounce hold" 'gating: .*⏱ debounce active \([0-9]+s\)' "$T/out.txt"
 assert_grep "13 newest turn first with legacy '-' snippet" '· 01:00 · -$' "$T/out.txt"
 assert_grep "13 older turn shows snippet" '· 00:21 · Primera vuelta del chat uno$' "$T/out.txt"
 t1=$(grep -n '· 01:00 · -' "$T/out.txt" | head -1 | cut -d: -f1)
@@ -697,17 +697,17 @@ t2=$(grep -n '· 00:21 · Primera' "$T/out.txt" | head -1 | cut -d: -f1)
 [[ -n "$t1" && -n "$t2" && "$t1" -lt "$t2" ]] \
   && ok "13 turns sorted newest first" || bad "13 turn order wrong"
 lib_run 'palette_preview w9:zz' > "$T/out2.txt"
-assert_grep "13 empty history → sin turnos" '^sin turnos$' "$T/out2.txt"
+assert_grep "13 empty history → no turns" '^no turns$' "$T/out2.txt"
 make_nobin "$T/nobin"
 env PATH="$T/nobin" HOME="$HOME" XDG_CONFIG_HOME="$T/conf" XDG_DATA_HOME="$T/data" \
   XDG_STATE_HOME="$T/state" HERDR_TTS_SNOOZE_FILE="$HERDR_TTS_SNOOZE_FILE" HERDR_TTS_HISTORY_FILE="$HERDR_TTS_HISTORY_FILE" \
   /bin/bash "$LIBRUN" "$SCRIPT" 'palette_preview w4:p1' > "$T/out3.txt" 2>/dev/null
-assert_grep "13 no herdr CLI → explicit note" 'herdr CLI no disponible' "$T/out3.txt"
+assert_grep "13 no herdr CLI → explicit note" 'herdr CLI unavailable' "$T/out3.txt"
 assert_grep "13 no-herdr preview still lists turns" '· 00:21 · Primera' "$T/out3.txt"
 env PATH="$T/nobin" HOME="$HOME" XDG_CONFIG_HOME="$T/conf" XDG_DATA_HOME="$T/data" \
   XDG_STATE_HOME="$T/state" HERDR_TTS_SNOOZE_FILE="$HERDR_TTS_SNOOZE_FILE" HERDR_TTS_HISTORY_FILE="$HERDR_TTS_HISTORY_FILE" \
   /bin/bash "$LIBRUN" "$SCRIPT" 'run_voice_palette' > "$T/out4.txt" 2>&1
-assert_grep "13 no fzf → actionable Spanish error" 'fzf no está instalado' "$T/out4.txt"
+assert_grep "13 no fzf → actionable error" 'fzf is not installed' "$T/out4.txt"
 assert_grep "13 no-fzf error suggests install command" 'apt install fzf|brew install fzf' "$T/out4.txt"
 
 echo "── 14. history snippet: sanitize, 4/5/6-field append matrix"
@@ -766,16 +766,16 @@ touch "$STORE15" # only this stored audio exists on disk
   printf '%s\tw4:p1\topencode\t60.0\tCierre con detalle final\t%s\n' "$(date -d '-2 minutes'  +%Y-%m-%dT%H:%M:%S)" "$STORE15"
 } > "$HERDR_TTS_HISTORY_FILE"
 capture 'q\n' "$T/out.txt"
-assert_grep "15 history section renders with mixed rows" 'Historial por chat' "$T/out.txt"
-assert_grep "15 group header counts p3 (3 audios)" '· 3 audios · último hace' "$T/out.txt"
-na=$(grep -cE '^║    · [0-9]{2}:[0-9]{2} · hace [0-9]+[smh]$' "$T/out.txt")
+assert_grep "15 history section renders with mixed rows" 'History per chat' "$T/out.txt"
+assert_grep "15 group header counts p3 (3 audios)" '· 3 audios · last' "$T/out.txt"
+na=$(grep -cE '^║    · [0-9]{2}:[0-9]{2} · [0-9]+[smh] ago$' "$T/out.txt")
 [[ "$na" -eq 5 ]] && ok "15 unmarked audio rows = 5 (max 3/group): $na" || bad "15 unmarked rows = $na (want 5)"
-nm=$(grep -cE '^║    · ▶ [0-9]{2}:[0-9]{2} · hace [0-9]+[smh]$' "$T/out.txt")
+nm=$(grep -cE '^║    · ▶ [0-9]{2}:[0-9]{2} · [0-9]+[smh] ago$' "$T/out.txt")
 [[ "$nm" -eq 1 ]] && ok "15 exactly one ▶ marked row: $nm" || bad "15 marked rows = $nm (want 1)"
-assert_grep "15 ▶ on the row whose stored file exists" '· ▶ 01:00 · hace 2m' "$T/out.txt"
+assert_grep "15 ▶ on the row whose stored file exists" '· ▶ 01:00 · 2m ago' "$T/out.txt"
 assert_no_grep_f "15 no ▶ when the stored file is gone" '▶ 00:08' "$T/out.txt"
 assert_no_grep_f "15 no ▶ for the literal '-' path column" '▶ 00:45' "$T/out.txt"
-assert_grep "15 legacy row renders (00:12)" '· 00:12 · hace 1h' "$T/out.txt"
+assert_grep "15 legacy row renders (00:12)" '· 00:12 · 1h ago' "$T/out.txt"
 if grep -q $'\t' <(sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' "$T/out.txt"); then
   bad "15 snippets leaked raw tabs into the frame"
 else
@@ -830,8 +830,8 @@ assert_grep "16a + → adjust_rate +10"          '^\+→STUB rate:10$' "$T/out.t
 assert_grep "16a = → adjust_rate +10"          '^=→STUB rate:10$' "$T/out.txt"
 assert_grep "16a - → adjust_rate -10"          '^-→STUB rate:-10$' "$T/out.txt"
 assert_grep "16a _ → adjust_rate -10"          '^_→STUB rate:-10$' "$T/out.txt"
-assert_grep "16a d → confirmation label"       '^d→.*abriendo el dashboard' "$T/out.txt"
-assert_grep "16a o → confirmation label"       '^o→.*abriendo la paleta' "$T/out.txt"
+assert_grep "16a d → confirmation label"       '^d→.*opening the dashboard' "$T/out.txt"
+assert_grep "16a o → confirmation label"       '^o→.*opening the voice palette' "$T/out.txt"
 # The d/o opens run in a DETACHED session now (setsid) — wait for both
 # invocations to land in the stub log before asserting.
 for _ in $(seq 1 30); do
@@ -865,29 +865,29 @@ jv=$(esc_count "$T/out.txt" $'\033[J')
 [[ "$jv" -eq 1 ]] && ok "16b erase-below present once ($jv)" || bad "16b J=$jv (want 1)"
 cj=$(esc_count "$T/out.txt" $'\033[2J')
 [[ "$cj" -eq 0 ]] && ok "16b no full-clear in menu path ($cj)" || bad "16b 2J=$cj (want 0)"
-assert_grep "16b frame content rendered" 'Menú de voz' "$T/out.txt"
-assert_grep "16b one-line Spanish confirmation" '^✓ .*(silenciado|reactivada)' "$T/out.txt"
+assert_grep "16b frame content rendered" 'Voice Menu' "$T/out.txt"
+assert_grep "16b one-line confirmation" '^✓ .*(muted|re-enabled)' "$T/out.txt"
 jq -e '.panes["w4:p4"].muted == true' "$HERDR_TTS_SNOOZE_FILE" >/dev/null \
   && ok "16b m muted the FOCUSED pane (stub pane current → w4:p4)" || bad "16b focused-pane default not honored"
 
 # 16c. q / Esc: frame renders, no confirmation, silent exit (no dwell).
 printf 'q' | timeout 10 "$SCRIPT" --voice-menu > "$T/out.txt" 2>>"$T/err.log"
 [[ $? -eq 0 ]] && ok "16c q exits rc=0" || bad "16c q rc!=0"
-assert_grep "16c q still renders the frame" 'Menú de voz' "$T/out.txt"
-assert_no_grep "16c q path is silent (no confirmation)" '✓|Tecla no reconocida' "$T/out.txt"
+assert_grep "16c q still renders the frame" 'Voice Menu' "$T/out.txt"
+assert_no_grep "16c q path is silent (no confirmation)" '✓|Unrecognized key' "$T/out.txt"
 printf '\033' | timeout 10 "$SCRIPT" --voice-menu > "$T/out.txt" 2>>"$T/err.log"
 [[ $? -eq 0 ]] && ok "16c Esc exits rc=0" || bad "16c Esc rc!=0"
-assert_no_grep "16c Esc path is silent" '✓|Tecla no reconocida' "$T/out.txt"
+assert_no_grep "16c Esc path is silent" '✓|Unrecognized key' "$T/out.txt"
 
 # 16d. Unknown key → brief Spanish notice, rc 0.
 printf '@' | timeout 10 "$SCRIPT" --voice-menu > "$T/out.txt" 2>>"$T/err.log"
 [[ $? -eq 0 ]] && ok "16d unknown key exits rc=0" || bad "16d rc!=0"
-assert_grep "16d unknown key notice" 'Tecla no reconocida \(@\)' "$T/out.txt"
+assert_grep "16d unknown key notice" 'Unrecognized key \(@\)' "$T/out.txt"
 
 # 16e. Fail-open: EOF (no tty / closed stdin) → rc 0, never any action.
 timeout 10 "$SCRIPT" --voice-menu < /dev/null > "$T/out.txt" 2>>"$T/err.log"
 [[ $? -eq 0 ]] && ok "16e EOF exits rc=0 (fail-open)" || bad "16e EOF rc!=0"
-assert_no_grep "16e EOF fires no action" '✓|Tecla no reconocida' "$T/out.txt"
+assert_no_grep "16e EOF fires no action" '✓|Unrecognized key' "$T/out.txt"
 
 # 16f. Clamp reuse: COLUMNS=90 / LINES=10 → width ≤ 90, rows ≤ LINES-1.
 new_env s16f
@@ -931,15 +931,15 @@ printf 'avpqq' | timeout 10 "$SCRIPT" --voice-menu > "$T/out.txt" 2>>"$T/err.log
 [[ $? -eq 0 ]] && ok "16h two-view menu exits rc=0 on the final q" || bad "16h rc!=0"
 hv=$(esc_count "$T/out.txt" $'\033[H')
 [[ "$hv" -eq 6 ]] && ok "16h 6 frame writes: main, index, voz, p re-render, index, main ($hv)" || bad "16h H-moves=$hv (want 6)"
-[[ $(grep -cF '· Menú de voz' "$T/out.txt") -eq 2 ]] \
-  && ok "16h final q returns to the MAIN frame (re-rendered, not exit)" || bad "16h main frame count $(grep -cF '· Menú de voz' "$T/out.txt")"
-[[ $(grep -cF '· Ajustes de voz y audio' "$T/out.txt") -eq 2 ]] \
-  && ok "16h a opens the settings INDEX (+1 re-render after the category q)" || bad "16h index frame count $(grep -cF '· Ajustes de voz y audio' "$T/out.txt")"
-[[ $(grep -cF '· Ajustes · Voz' "$T/out.txt") -eq 2 ]] \
-  && ok "16h v enters the Voz category (+1 re-render after p)" || bad "16h voz frame count $(grep -cF '· Ajustes · Voz' "$T/out.txt")"
+[[ $(grep -cF '· Voice Menu' "$T/out.txt") -eq 2 ]] \
+  && ok "16h final q returns to the MAIN frame (re-rendered, not exit)" || bad "16h main frame count $(grep -cF '· Voice Menu' "$T/out.txt")"
+[[ $(grep -cF '· Voice & Audio Settings' "$T/out.txt") -eq 2 ]] \
+  && ok "16h a opens the settings INDEX (+1 re-render after the category q)" || bad "16h index frame count $(grep -cF '· Voice & Audio Settings' "$T/out.txt")"
+[[ $(grep -cF '· Settings · Voice' "$T/out.txt") -eq 2 ]] \
+  && ok "16h v enters the Voz category (+1 re-render after p)" || bad "16h voz frame count $(grep -cF '· Settings · Voice' "$T/out.txt")"
 grep -q 'TTS_PROVIDER="openai"' "$HERDR_TTS_CONFIG_FILE" \
   && ok "16h p cycled provider edge→openai into config.env" || bad "16h provider not persisted"
-assert_no_grep "16h a/v/p/q path fires no action" '✓|Tecla no reconocida' "$T/out.txt"
+assert_no_grep "16h a/v/p/q path fires no action" '✓|Unrecognized key' "$T/out.txt"
 unset HERDR_TTS_CONFIG_FILE # scenario 25 derives CONFIG_FILE from the XDG paths
 
 # 16i. Settings `v` (inside Lectura automática): toggles the auto_muted
@@ -956,13 +956,13 @@ printf 'lvq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.l
 [[ $? -eq 0 ]] && ok "16i v toggle rc=0 (on→off)" || bad "16i rc!=0"
 [[ -f "$T/conf/herdr-tts/auto_muted" ]] \
   && ok "16i v creates the auto_muted marker" || bad "16i auto_muted marker missing"
-assert_grep "16i off note renders inline" 'Auto-lectura silenciada' "$T/out.txt"
+assert_grep "16i off note renders inline" 'Auto-read muted' "$T/out.txt"
 printf 'lvq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
 [[ $? -eq 0 ]] && ok "16i second v rc=0 (off→on)" || bad "16i second run rc!=0"
 [[ ! -f "$T/conf/herdr-tts/auto_muted" ]] \
   && ok "16i second v clears the auto_muted marker" || bad "16i marker still present"
-assert_grep "16i on note renders inline" 'Auto-lectura activada' "$T/out.txt"
-assert_grep "16i lectura view lists the v row" ' v  Auto-lectura:' "$T/out.txt"
+assert_grep "16i on note renders inline" 'Auto-read enabled' "$T/out.txt"
+assert_grep "16i lectura view lists the v row" ' v  Auto-read:' "$T/out.txt"
 unset HERDR_TTS_CONFIG_FILE
 
 # 16j. Category cycles persist into a hermetic config.env (fresh
@@ -984,7 +984,7 @@ grep -q 'PODCAST_ENABLED="on"' "$HERDR_TTS_CONFIG_FILE" \
   && ok "16j f cycled podcast off→on" || bad "16j podcast not persisted"
 db=$(grep -oE 'TTS_DEBOUNCE_SECONDS="[0-9]+"' "$HERDR_TTS_CONFIG_FILE" | grep -oE '[0-9]+' | head -1)
 [[ "$db" == "30" ]] && ok "16j b cycled debounce 20→30" || bad "16j debounce='$db' (want 30)"
-assert_no_grep "16j cycles fire no warn" 'Tecla no reconocida|⚠️' "$T/out.txt"
+assert_no_grep "16j cycles fire no warn" 'Unrecognized key|⚠️' "$T/out.txt"
 unset HERDR_TTS_CONFIG_FILE
 
 # 16k. Settings `t` (inside Notificaciones): free-text ntfy topic like
@@ -998,12 +998,12 @@ printf 'ntMiTopic\nq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>
 [[ $? -eq 0 ]] && ok "16k t write rc=0" || bad "16k write rc!=0"
 grep -q 'NTFY_TOPIC="MiTopic"' "$HERDR_TTS_CONFIG_FILE" \
   && ok "16k t persists the topic verbatim" || bad "16k topic not persisted"
-assert_grep "16k topic note renders inline" 'Topic de ntfy configurado' "$T/out.txt"
+assert_grep "16k topic note renders inline" 'ntfy topic set' "$T/out.txt"
 printf 'nt\nq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
 [[ $? -eq 0 ]] && ok "16k t clear rc=0" || bad "16k clear rc!=0"
 grep -q 'NTFY_TOPIC=""' "$HERDR_TTS_CONFIG_FILE" \
   && ok "16k empty line clears the topic" || bad "16k topic not cleared"
-assert_grep "16k off note renders inline" 'Notificaciones móviles de ntfy desactivadas' "$T/out.txt"
+assert_grep "16k off note renders inline" 'ntfy mobile notifications disabled' "$T/out.txt"
 unset HERDR_TTS_CONFIG_FILE
 
 # 16l. Settings `g` (inside Voz): cycles the global voice and persists
@@ -1038,8 +1038,8 @@ printf 'vnuq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.
 [[ $? -eq 0 ]] && ok "16m n/u toggles rc=0" || bad "16m rc!=0"
 jq -e '(.prefix == true) and (.auto_assign == true)' "$XDG_CONFIG_HOME/herdr-tts/voices.json" >/dev/null \
   && ok "16m n/u persist prefix + auto_assign" || bad "16m voices.json flags not persisted"
-assert_grep "16m voz view lists the n row" ' n  Prefijo hablado:' "$T/out.txt"
-assert_grep "16m voz view lists the u row" ' u  Auto-asignación:' "$T/out.txt"
+assert_grep "16m voz view lists the n row" ' n  Spoken prefix:' "$T/out.txt"
+assert_grep "16m voz view lists the u row" ' u  Auto-assign:' "$T/out.txt"
 unset HERDR_TTS_CONFIG_FILE
 
 echo "── 17. keymap: init / check / emit (declarative, conflict-checked)"
@@ -1453,7 +1453,7 @@ lib_run 'daemon_keymap_autostart >"$T/out19.txt" 2>&1; echo $? > "$T/rc19"'
 rc19=$(cat "$T/rc19"); out19=$(cat "$T/out19.txt")
 grep -q '>>> herdr-tts keymap' "$cfg19" && ok "19b managed block written" || bad "19b no block"
 grep -q 'mi binding manual' "$cfg19" && ok "19b user content preserved" || bad "19b user content lost"
-grep -q 'Keymap aplicado' <<<"$out19" && ok "19b success notice shown" || bad "19b notice: $out19"
+grep -q 'Keymap applied' <<<"$out19" && ok "19b success notice shown" || bad "19b notice: $out19"
 [[ $rc19 -eq 0 ]] && ok "19b rc 0" || bad "19b rc=$rc19"
 
 # 19c. unchanged re-run → no write, no extra backup
@@ -1468,7 +1468,7 @@ printf 'not json {{{' > "$km19"
 lib_run 'daemon_keymap_autostart >"$T/out19.txt" 2>&1; echo $? > "$T/rc19"'
 rc19=$(cat "$T/rc19"); out19=$(cat "$T/out19.txt")
 [[ $rc19 -eq 0 ]] && ok "19d corrupt keymap non-fatal rc" || bad "19d rc=$rc19"
-grep -q 'keymap apply falló' <<<"$out19" && ok "19d warning surfaced" || bad "19d no warning: $out19"
+grep -q 'keymap apply failed' <<<"$out19" && ok "19d warning surfaced" || bad "19d no warning: $out19"
 grep -q '>>> herdr-tts keymap' "$cfg19" && ok "19d target untouched by failed apply" || bad "19d target modified"
 
 echo "── 21. palette ctrl-r replay bind (stubbed fzf records argv)"
@@ -1512,7 +1512,7 @@ grep -qF "'$SCRIPT' --play-file {4}" "$T/fzf.argv" \
   && ok "21b bind replays {4} through --play-file" || bad "21b no --play-file {4} in: $(cat "$T/fzf.argv")"
 grep -qF "+abort" "$T/fzf.argv" \
   && ok "21b bind aborts after replay (snapshot-per-open)" || bad "21b bind missing +abort"
-grep -qF "ctrl-r: reproducir audio" "$T/fzf.argv" \
+grep -qF "ctrl-r: play audio" "$T/fzf.argv" \
   && ok "21c header advertises ctrl-r replay" || bad "21c header hint missing"
 
 echo "── 22. play_audio_file: mutex stop + engine --play-file + missing-file guard"
@@ -1550,7 +1550,7 @@ lib_run '
   echo "rc=$rc" > "$T/rc22b"
 '
 grep -q 'rc=1' "$T/rc22b" && ok "22b missing path → rc 1" || bad "22b rc: $(cat "$T/rc22b")"
-assert_grep "22b graceful Spanish message on stderr" 'Nada que reproducir' "$T/miss.err"
+assert_grep "22b graceful missing-file message on stderr" 'Nothing to play' "$T/miss.err"
 [[ "$(wc -l < "$ENGINE_CALLS")" -eq 1 ]] \
   && ok "22b no engine spawn for a missing path" || bad "22b engine spawned: $(cat "$ENGINE_CALLS")"
 
@@ -1680,7 +1680,7 @@ run_prune 'HERDR_TTS_AUDIO_RETENTION_DAYS=7'
   && ok "24e failing engine attempted (still once per hour)" || bad "24e spawns: $(wc -l < "$PRUNE_CALLS")"
 grep -q '^rc=0$' "$T/rc24" \
   && ok "24e failure never breaks the caller (rc 0, no crash)" || bad "24e rc: $(cat "$T/rc24")"
-grep -qE '\[retención\].*(fall|Purga)' "$T/out24.txt" \
+grep -qE '\[retention\].*prune failed' "$T/out24.txt" \
   && ok "24e failure logged (Spanish daemon-log line)" || bad "24e no failure log: $(cat "$T/out24.txt")"
 [[ -f "$STAMP24" ]] \
   && ok "24e failure still arms the hour gate (no retry storm)" || bad "24e stamp missing after failure"
@@ -1769,9 +1769,9 @@ assert_grep "25b unknown settle current → first element" '^settle_unknown:0$' 
 #      persists, every change re-renders (one H-move each).
 printf 'vpqarqq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
 [[ $? -eq 0 ]] && ok "25c settings popup exited rc=0" || bad "25c rc!=0"
-assert_grep "25c index frame renders in Spanish" 'Ajustes de voz y audio' "$T/out.txt"
-assert_grep "25c voz category frame renders" 'Ajustes · Voz' "$T/out.txt"
-assert_grep "25c audio category frame renders" 'Ajustes · Audio' "$T/out.txt"
+assert_grep "25c index frame renders" 'Voice & Audio Settings' "$T/out.txt"
+assert_grep "25c voz category frame renders" 'Settings · Voice' "$T/out.txt"
+assert_grep "25c audio category frame renders" 'Settings · Audio' "$T/out.txt"
 hv=$(esc_count "$T/out.txt" $'\033[H')
 [[ "$hv" -eq 7 ]] && ok "25c index, voz, p re-render, index, audio, r re-render, index ($hv H-moves)" || bad "25c H-moves=$hv (want 7)"
 grep -q 'TTS_PROVIDER="edge"' "$CONFIG_FILE" \
@@ -1786,13 +1786,13 @@ hv=$(esc_count "$T/out2.txt" $'\033[H')
 [[ "$hv" -eq 1 ]] && ok "25c q exits after a single render ($hv H-move)" || bad "25c q H-moves=$hv (want 1)"
 # Unknown key → warning rendered inline on the re-render, then q exits.
 printf '@q' | timeout 10 "$SCRIPT" --voice-settings > "$T/out3.txt" 2>>"$T/err.log"
-assert_grep "25c unknown key shows the warning inline" 'Tecla no reconocida' "$T/out3.txt"
+assert_grep "25c unknown key shows the warning inline" 'Unrecognized key' "$T/out3.txt"
 
 # 25d. --voice-settings dispatch smoke: the flag runs the popup (a daemon
 #      start would hang and hit the timeout instead of exiting rc 0).
 timeout 10 "$SCRIPT" --voice-settings </dev/null > "$T/out.txt" 2>>"$T/err.log"
 [[ $? -eq 0 ]] && ok "25d --voice-settings dispatch exits rc=0 (EOF fail-open)" || bad "25d rc!=0"
-assert_grep "25d dispatch renders the settings frame" 'Ajustes de voz y audio' "$T/out.txt"
+assert_grep "25d dispatch renders the settings frame" 'Voice & Audio Settings' "$T/out.txt"
 hv=$(esc_count "$T/out.txt" $'\033[H')
 [[ "$hv" -eq 1 ]] && ok "25d EOF path renders exactly once ($hv H-move)" || bad "25d H-moves=$hv (want 1)"
 sed -n '/--voice-settings)/,/;;/p' "$SCRIPT" | grep -q 'run_voice_settings' \
@@ -1863,7 +1863,7 @@ rm -f "$T/restart.log" "$HERDR_TTS_DAEMON_PID_FILE"
 lib_run 'SCRIPT="$T/recorder.sh"; daemon_restart 2>"$T/restart.err"; rc=$?; echo "rc=$rc"' > "$T/out.txt"
 assert_grep "26d daemon_restart exits rc 0" '^rc=0$' "$T/out.txt"
 assert_grep "26d re-invocation reached the stub with _daemon-supervised" '^args=_daemon-supervised$' "$T/restart.log"
-assert_grep "26d Spanish confirmation with the new pid" '^✓ Daemon reiniciado \(pid [0-9]+\)$' "$T/restart.err"
+assert_grep "26d restart confirmation with the new pid" '^✓ Daemon restarted \(pid [0-9]+\)$' "$T/restart.err"
 
 # 26e. Settings view key R: piped `aRq` through --voice-menu with the
 #      hermetic SCRIPT override — R restarts via the stub and the
@@ -1872,10 +1872,10 @@ rm -f "$T/restart.log" "$HERDR_TTS_DAEMON_PID_FILE"
 ( export HERDR_TTS_SCRIPT="$T/recorder.sh"
   printf 'aRq' | timeout 10 "$SCRIPT" --voice-menu > "$T/out.txt" 2>>"$T/err.log" )
 [[ $? -eq 0 ]] && ok "26e aRq menu path exits rc=0" || bad "26e rc!=0"
-assert_grep "26e settings frame rendered" 'Ajustes de voz y audio' "$T/out.txt"
-[[ $(grep -cF '✓ Daemon reiniciado' "$T/out.txt") -eq 1 ]] \
+assert_grep "26e settings frame rendered" 'Voice & Audio Settings' "$T/out.txt"
+[[ $(grep -cF '✓ Daemon restarted' "$T/out.txt") -eq 1 ]] \
   && ok "26e R renders the confirmation note on exactly the re-render" \
-  || bad "26e note count $(grep -cF '✓ Daemon reiniciado' "$T/out.txt") (want 1)"
+  || bad "26e note count $(grep -cF '✓ Daemon restarted' "$T/out.txt") (want 1)"
 assert_grep "26e R hit the restart path (stub invoked)" '^args=_daemon-supervised$' "$T/restart.log"
 hv=$(esc_count "$T/out.txt" $'\033[H')
 [[ "$hv" -eq 4 ]] && ok "26e 4 frame writes: main, settings, R re-render, main ($hv)" || bad "26e H-moves=$hv (want 4)"
@@ -1887,7 +1887,7 @@ rm -f "$T/restart.log" "$HERDR_TTS_DAEMON_PID_FILE"
 ( export HERDR_TTS_SCRIPT="$T/recorder.sh"
   timeout 10 "$SCRIPT" --restart-daemon </dev/null > "$T/out.txt" 2>"$T/restart2.err" )
 [[ $? -eq 0 ]] && ok "26f --restart-daemon exits rc=0" || bad "26f rc!=0"
-assert_grep "26f confirmation on stderr" 'Daemon reiniciado' "$T/restart2.err"
+assert_grep "26f confirmation on stderr" 'Daemon restarted' "$T/restart2.err"
 assert_grep "26f dispatch spawned the supervised entrypoint" '^args=_daemon-supervised$' "$T/restart.log"
 sed -n '/--restart-daemon)/,/;;/p' "$SCRIPT" | grep -q 'daemon_restart' \
   && ok "26f argparse case wires --restart-daemon → daemon_restart" || bad "26f no dispatch wiring"
@@ -1936,7 +1936,7 @@ flipper=$!
 sleep 1
 touch "$T/flip_working" # the agent goes back to working DURING the window
 wait $flipper
-assert_grep "27b intermediate done discarded" 'done intermedio descartado' "$T/watchA.log"
+assert_grep "27b intermediate done discarded" 'intermediate done discarded' "$T/watchA.log"
 grep -q 'working → done' "$T/watchA.log" \
   && bad "27b pipeline fired for an intermediate step" \
   || ok "27b pipeline never fired for the intermediate step"
@@ -1976,7 +1976,7 @@ STUB3
 chmod +x "$T/bin/herdr"
 HERDR_TTS_MENU_OPEN_RETRIES=3 HERDR_TTS_MENU_OPEN_LOG="$T/menu.log" \
   lib_run 'menu_open_after_exit tts-palette; sleep 1' > "$T/out.txt"
-assert_grep "27e exhausted retries are logged" 'open tts-palette falló tras 3 intentos' "$T/menu.log"
+assert_grep "27e exhausted retries are logged" 'open tts-palette failed after 3 attempts' "$T/menu.log"
 
 echo "── 28. settings popup: web redirect URL input/clear + click directo on/off"
 new_env s28
@@ -1989,11 +1989,11 @@ mkdir -p "$CONFIG_DIR_S28"
 #      writer); a pass through the Audio view shows the untouched c row.
 printf 'nw\nqaq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
 [[ $? -eq 0 ]] && ok "28a popup exits rc=0 on empty-URL clear" || bad "28a rc!=0"
-assert_grep "28a web row renders Desactivada with no URL" 'w  Redirección web: +Desactivada' "$T/out.txt"
-assert_grep "28a click row renders off" 'c  Click directo: +off ' "$T/out.txt"
+assert_grep "28a web row renders Off with no URL" 'w  Web redirect: +Off' "$T/out.txt"
+assert_grep "28a click row renders off" 'c  Click-through: +off ' "$T/out.txt"
 grep -qF 'WEB_URL=""' "$CONFIG_FILE" \
   && ok "28a empty WEB_URL persisted to config.env" || bad "28a WEB_URL not persisted"
-assert_grep "28a index keeps the restart hint line" 'R +reinicia el daemon.*resto de ajustes' "$T/out.txt"
+assert_grep "28a index keeps the restart hint line" 'R +restarts the daemon.*other settings' "$T/out.txt"
 
 # 28b. w + collie URL with the {pane_id} placeholder: stored verbatim,
 #      COLLIE_URL rides along, and a collie URL seeds WEB_LABEL="Collie"
@@ -2007,20 +2007,20 @@ grep -qF "COLLIE_URL=\"$URL28\"" "$CONFIG_FILE" \
   && ok "28b COLLIE_URL written alongside (CLI parity)" || bad "28b COLLIE_URL missing"
 grep -qF 'WEB_LABEL="Collie"' "$CONFIG_FILE" \
   && ok "28b collie URL seeds WEB_LABEL=Collie when empty" || bad "28b WEB_LABEL not seeded"
-assert_grep "28b frame shows the configured URL" "Redirección web: +https://collie.example.com/ui/pane/[{]pane_id" "$T/out2.txt"
+assert_grep "28b frame shows the configured URL" "Web redirect: +https://collie.example.com/ui/pane/[{]pane_id" "$T/out2.txt"
 
 # 28c. c cycles off → on (inside Audio): persisted + CLI-parity note.
 printf 'acq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out3.txt" 2>>"$T/err.log"
 [[ $? -eq 0 ]] && ok "28c on-cycle popup exits rc=0" || bad "28c rc!=0"
 grep -qF 'CLICK_REDIRECT="on"' "$CONFIG_FILE" \
   && ok "28c CLICK_REDIRECT=on persisted" || bad "28c on not persisted"
-assert_grep "28c on note mirrors the CLI wording" 'Click directo activado \(abrirá navegador al pulsar la tarjeta' "$T/out3.txt"
+assert_grep "28c on note mirrors the CLI wording" 'Click-through enabled \(opens the browser' "$T/out3.txt"
 
 # 28d. c again cycles on → off, wording included.
 printf 'acq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out4.txt" 2>>"$T/err.log"
 grep -qF 'CLICK_REDIRECT="off"' "$CONFIG_FILE" \
   && ok "28d CLICK_REDIRECT=off persisted after the wrap" || bad "28d off not persisted"
-assert_grep "28d off note mirrors the CLI wording" 'Click directo desactivado' "$T/out4.txt"
+assert_grep "28d off note mirrors the CLI wording" 'Click-through disabled' "$T/out4.txt"
 
 echo "── 29. daemon supervisor: stop-flag semantics, relaunch decision, lifecycle logging"
 new_env s29
@@ -2056,7 +2056,7 @@ HERDR_TTS_SCRIPT="$T/stopped.sh" timeout 10 "$SCRIPT" _daemon-supervised </dev/n
 [[ $? -eq 0 ]] && ok "29c flag armed → supervisor exits rc 0 without relaunching" || bad "29c rc!=0"
 [[ $(wc -l < "$T/children.log") -eq 1 ]] \
   && ok "29c exactly one child spawn (death did NOT relaunch)" || bad "29c spawns=$(wc -l < "$T/children.log") (want 1)"
-assert_grep "29c deliberate stop logged to daemon.log" 'parada deliberada del daemon \(rc=3\)' "$HERDR_TTS_DAEMON_LOG"
+assert_grep "29c deliberate stop logged to daemon.log" 'deliberate daemon stop \(rc=3\)' "$HERDR_TTS_DAEMON_LOG"
 [[ ! -e "$SUPERVISOR_STOP_FLAG" ]] && ok "29c flag consumed (removed)" || bad "29c flag left behind"
 
 # 29d. relaunch path: no flag, child dies rc 3, short backoff override →
@@ -2076,7 +2076,7 @@ rc29d=$?
 [[ "$rc29d" -eq 124 ]] && ok "29d supervisor kept the loop until the timeout TERM (rc 124)" || bad "29d rc=$rc29d (want 124)"
 spawns=$(wc -l < "$T/children.log")
 [[ "$spawns" -ge 2 ]] && ok "29d child relaunched after unplanned death ($spawns spawns)" || bad "29d spawns=$spawns (want ≥2)"
-assert_grep "29d relaunch logged to daemon.log" 'daemon murió \(rc=3\) — relanzando en 0.2s' "$HERDR_TTS_DAEMON_LOG"
+assert_grep "29d relaunch logged to daemon.log" 'daemon died \(rc=3\) — relaunching in 0.2s' "$HERDR_TTS_DAEMON_LOG"
 [[ ! -e "$SUPERVISOR_STOP_FLAG" ]] && ok "29d stale flag cleared on supervisor start" || bad "29d stale flag swallowed the relaunch"
 
 # 29e. TERM forwarding + clean exit, no orphan child: a blocking child is
@@ -2099,7 +2099,7 @@ wait "$SUP29" 2>>"$T/err.log"
 [[ $? -eq 0 ]] && ok "29e supervisor exits rc 0 on TERM" || bad "29e supervisor rc!=0"
 sleep 0.5
 ! kill -0 "$child29" 2>/dev/null && ok "29e child got TERM and died (no orphan)" || { bad "29e child orphaned"; kill -9 "$child29" 2>/dev/null || true; }
-assert_grep "29e forwarded-stop logged" 'TERM recibido — parada con el daemon' "$HERDR_TTS_DAEMON_LOG"
+assert_grep "29e forwarded-stop logged" 'TERM received — stopping with the daemon' "$HERDR_TTS_DAEMON_LOG"
 
 # 29f. wiring: dispatch case, manifest startup, run_daemon observability,
 #      and the daemon_log helper line format.
@@ -2212,7 +2212,7 @@ printf 'no-soy-json' > "$HERDR_TTS_VOICES_FILE"
 export HERDR_TTS_DAEMON_LOG="$T/daemon.log"
 lib_run 'printf "%s" "$(resolve_voice w4:p4 claude-code)"' > "$T/out.txt"
 assert_grep "31c malformed file fails open to global" '^elvira$' "$T/out.txt"
-grep -q 'voices.json inválido' "$T/daemon.log" \
+grep -q 'invalid voices.json' "$T/daemon.log" \
   && ok "31c fail-open logged to daemon.log" || bad "31c no daemon.log line"
 # 31d auto_assign rotation: deterministic per agent_type, provider palette only (RF-HT-02-7)
 printf '{"auto_assign": true}' > "$HERDR_TTS_VOICES_FILE"
@@ -2246,7 +2246,7 @@ grep -qF "ctrl-v:execute-silent(" "$T/fzf31.argv" \
   && ok "31f ctrl-v voice bind present" || bad "31f no ctrl-v bind"
 grep -qF -- "--voice-for pane {2}" "$T/fzf31.argv" \
   && ok "31f bind routes {2} through --voice-for pane" || bad "31f no --voice-for pane {2} in: $(cat "$T/fzf31.argv")"
-grep -qF "ctrl-v: voz del chat" "$T/fzf31.argv" \
+grep -qF "ctrl-v: chat voice" "$T/fzf31.argv" \
   && ok "31f header advertises ctrl-v" || bad "31f header hint missing"
 
 echo "── 32. ajustes two-level: category index, scoped knobs, Esc semantics"
@@ -2258,12 +2258,12 @@ export HERDR_TTS_CONFIG_FILE="$T/config.env"
 # 32a. the index renders the four categories and no flat knob rows.
 printf 'q' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
 [[ $? -eq 0 ]] && ok "32a index-only run exits rc=0" || bad "32a rc!=0"
-assert_grep "32a index lists Voz"                ' v  🎙 Voz' "$T/out.txt" -F
+assert_grep "32a index lists Voice"              ' v  🎙 Voice' "$T/out.txt" -F
 assert_grep "32a index lists Audio"              ' a  🔊 Audio' "$T/out.txt" -F
-assert_grep "32a index lists Notificaciones"     ' n  🔔 Notificaciones' "$T/out.txt" -F
-assert_grep "32a index lists Lectura automática" ' l  ⚙️  Lectura automática' "$T/out.txt" -F
-assert_no_grep "32a index shows no raw knob rows" 'Proveedor TTS:|Destino reproducción:|Topic ntfy:|Debounce anti-spam' "$T/out.txt"
-assert_grep "32a index keeps the R restart hint" 'R +reinicia el daemon' "$T/out.txt"
+assert_grep "32a index lists Notifications"      ' n  🔔 Notifications' "$T/out.txt" -F
+assert_grep "32a index lists Auto-read" ' l  ⚙️  Auto-read' "$T/out.txt" -F
+assert_no_grep "32a index shows no raw knob rows" 'TTS provider:|Playback target:|ntfy topic:|Anti-spam debounce:' "$T/out.txt"
+assert_grep "32a index keeps the R restart hint" 'R +restarts the daemon' "$T/out.txt"
 
 # 32b. each category view renders EXACTLY its own knobs (scoped dispatch:
 #      the key set of one category never leaks into another view).
@@ -2274,20 +2274,20 @@ while IFS='|' read -r cat key rows; do
     assert_grep "32b ${cat} renders '${row}'" "$row" "$T/cat.txt" -F
   done
 done <<'EOF'
-voz|v| p  Proveedor TTS:| g  Voz global:| n  Prefijo hablado:| u  Auto-asignación:| i  Idioma auto:
-audio|a| d  Destino reproducción:| c  Click directo:| r  Audio retenido:| s  Asentamiento done:
-notif|n| t  Topic ntfy:| f  Podcast feed:| w  Redirección web:
-lectura|l| v  Auto-lectura:| a  Alcance auto-lectura:| b  Debounce anti-spam:
+voz|v| p  TTS provider:| g  Global voice:| n  Spoken prefix:| u  Auto-assign:| i  Auto language:
+audio|a| d  Playback target:| c  Click-through:| r  Audio retention:| s  Done settle:
+notif|n| t  ntfy topic:| f  Podcast feed:| w  Web redirect:
+lectura|l| v  Auto-read:| a  Auto-read scope:| b  Anti-spam debounce:
 EOF
 printf 'vq'  | timeout 10 "$SCRIPT" --voice-settings > "$T/voz.txt"   2>>"$T/err.log"
 printf 'aq'  | timeout 10 "$SCRIPT" --voice-settings > "$T/audio.txt" 2>>"$T/err.log"
 printf 'nq'  | timeout 10 "$SCRIPT" --voice-settings > "$T/notif.txt" 2>>"$T/err.log"
 printf 'lq'  | timeout 10 "$SCRIPT" --voice-settings > "$T/lect.txt"  2>>"$T/err.log"
-assert_no_grep "32b voz view free of audio rows"     'Destino reproducción:|Click directo:|Audio retenido:' "$T/voz.txt"
-assert_no_grep "32b voz view free of notif rows"     'Topic ntfy:|Podcast feed:|Redirección web:' "$T/voz.txt"
-assert_no_grep "32b audio view free of voz rows"     'Proveedor TTS:|Voz global:|Idioma auto:' "$T/audio.txt"
-assert_no_grep "32b notif view free of lectura rows" 'Auto-lectura:|Debounce anti-spam:' "$T/notif.txt"
-assert_no_grep "32b lectura view free of notif rows" 'Topic ntfy:|Redirección web:|Click directo:' "$T/lect.txt"
+assert_no_grep "32b voz view free of audio rows"     'Playback target:|Click-through:|Audio retention:' "$T/voz.txt"
+assert_no_grep "32b voz view free of notif rows"     'ntfy topic:|Podcast feed:|Web redirect:' "$T/voz.txt"
+assert_no_grep "32b audio view free of voz rows"     'TTS provider:|Global voice:|Auto language:' "$T/audio.txt"
+assert_no_grep "32b notif view free of lectura rows" 'Auto-read:|Anti-spam debounce:' "$T/notif.txt"
+assert_no_grep "32b lectura view free of notif rows" 'ntfy topic:|Web redirect:|Click-through:' "$T/lect.txt"
 
 # 32c. cycling a knob inside a category persists through the config writer.
 printf 'vpq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
@@ -2302,8 +2302,8 @@ printf 'v\033q' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/er
 [[ $? -eq 0 ]] && ok "32d Esc-from-category path exits rc=0" || bad "32d rc!=0"
 hv=$(esc_count "$T/out.txt" $'\033[H')
 [[ "$hv" -eq 3 ]] && ok "32d index → voz → index ($hv H-moves)" || bad "32d H-moves=$hv (want 3)"
-[[ $(grep -cF '· Ajustes de voz y audio' "$T/out.txt") -eq 2 ]] \
-  && ok "32d Esc lands back on the index" || bad "32d index frame count $(grep -cF '· Ajustes de voz y audio' "$T/out.txt")"
+[[ $(grep -cF '· Voice & Audio Settings' "$T/out.txt") -eq 2 ]] \
+  && ok "32d Esc lands back on the index" || bad "32d index frame count $(grep -cF '· Voice & Audio Settings' "$T/out.txt")"
 
 # 32e. Esc from the index exits the standalone popup after one render.
 printf '\033' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
@@ -2323,13 +2323,13 @@ rm -f "$T/restart32.log" "$T/daemon32.pid"
 ( export HERDR_TTS_SCRIPT="$T/recorder.sh" HERDR_TTS_DAEMON_PID_FILE="$T/daemon32.pid"
   printf 'Rq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log" )
 [[ $? -eq 0 ]] && ok "32f R-from-index exits rc=0" || bad "32f rc!=0"
-assert_grep "32f R renders the confirmation inline" '✓ Daemon reiniciado' "$T/out.txt"
+assert_grep "32f R renders the confirmation inline" '✓ Daemon restarted' "$T/out.txt"
 assert_grep "32f R hit the restart path (stub invoked)" '^args=_daemon-supervised$' "$T/restart32.log"
 
 # 32g. unknown key inside a category warns with the category-scoped hint.
 printf 'v@q' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
-assert_grep "32g unknown key in voz warns" 'Tecla no reconocida \(@\)' "$T/out.txt"
-assert_grep "32g voz warning hints its own keys" 'p proveedor, g voz global' "$T/out.txt"
+assert_grep "32g unknown key in voz warns" 'Unrecognized key \(@\)' "$T/out.txt"
+assert_grep "32g voz warning hints its own keys" 'p provider, g global voice' "$T/out.txt"
 
 # 32h. write failure keeps the old value (Persistence on Cycle): a
 #      read-only config dir makes config_set fail at its writability
@@ -2340,10 +2340,10 @@ export HERDR_TTS_CONFIG_FILE="$T/roconf/config.env"
 chmod 555 "$T/roconf" # unwritable dir → config_set rc 1 (dir guard)
 printf 'vpq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
 [[ $? -eq 0 ]] && ok "32h failed-write run exits rc=0 (fail-open)" || bad "32h rc!=0"
-assert_grep "32h failed save warns inline" '⚠️.*No se pudo guardar TTS_PROVIDER' "$T/out.txt"
+assert_grep "32h failed save warns inline" '⚠️.*Could not save TTS_PROVIDER' "$T/out.txt"
 assert_grep "32h config_set rejected the unwritable dir" 'config directory is not writable' "$T/err.log"
-assert_grep "32h old provider value still renders" 'Proveedor TTS: +edge' "$T/out.txt"
-assert_no_grep "32h cycled value never renders" 'Proveedor TTS: +openai' "$T/out.txt"
+assert_grep "32h old provider value still renders" 'TTS provider: +edge' "$T/out.txt"
+assert_no_grep "32h cycled value never renders" 'TTS provider: +openai' "$T/out.txt"
 assert_grep "32h config keeps the old value" 'TTS_PROVIDER="edge"' "$HERDR_TTS_CONFIG_FILE" -F
 assert_no_grep_f "32h failed write never persisted openai" 'TTS_PROVIDER="openai"' "$HERDR_TTS_CONFIG_FILE"
 chmod 755 "$T/roconf" # restore: keep the suite's rm -rf temp cleanup working
@@ -2770,6 +2770,29 @@ timeout 10 "$SCRIPT" --help 2>&1 | grep -q 'skill install <agent>' \
   && ok "35h top-level --help documents the skill family" || bad "35h missing from --help"
 
 unset HERDR_TTS_SKILLS_HOME
+
+echo "── 36. UI language (HERDR_TTS_LANG): EN default, es dictionary, invalid fallback"
+
+# 36a. Default (no env var, no config key): a known runtime label renders
+#      in English — zero Spanish reaches the terminal with default config.
+rm -f "$T/lang.env"
+( export HERDR_TTS_CONFIG_FILE="$T/lang.env"
+  unset HERDR_TTS_LANG
+  timeout 10 "$SCRIPT" --player-status > "$T/out36a.txt" 2>/dev/null ) || true
+assert_grep "36a default renders the idle label in English" 'Idle \(no active playback\)' "$T/out36a.txt"
+assert_no_grep "36a default leaks no Spanish" 'En reposo' "$T/out36a.txt"
+
+# 36b. HERDR_TTS_LANG=es: the same label renders its Spanish equivalent.
+( export HERDR_TTS_CONFIG_FILE="$T/lang.env" HERDR_TTS_LANG=es
+  timeout 10 "$SCRIPT" --player-status > "$T/out36b.txt" 2>/dev/null ) || true
+assert_grep "36b es renders the Spanish idle label" 'En reposo \(sin reproducción activa\)' "$T/out36b.txt"
+
+# 36c. Invalid values fall back to English silently — the same
+#      validation style as the other knobs (never break the run).
+( export HERDR_TTS_CONFIG_FILE="$T/lang.env" HERDR_TTS_LANG=fr
+  timeout 10 "$SCRIPT" --player-status > "$T/out36c.txt" 2>/dev/null ) || true
+assert_grep "36c invalid lang falls back to English" 'Idle \(no active playback\)' "$T/out36c.txt"
+assert_no_grep "36c invalid lang renders no Spanish" 'En reposo' "$T/out36c.txt"
 
 echo
 echo "═══ RESULT: $PASS passed, $FAIL failed ═══"

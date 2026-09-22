@@ -72,6 +72,8 @@ DEFAULT_PIPER_MODEL=""
 # Windows host via agent-tts --winhost) or "wsl-ps" (PowerShell, zero install).
 DEFAULT_TTS_PLAYBACK="local"
 DEFAULT_DEBOUNCE_SECONDS="20" # anti-spam window per (pane, status); 0 disables
+# UI language for terminal / notification / TUI text: "en" (default) | "es".
+DEFAULT_LANG="en"
 # Settle window: seconds a done must keep holding before the watcher fires
 # the pipeline. Filters the working→done→working flickers of ONE logical
 # turn (tool batches, subagents, thinking) that are NOT the end of the
@@ -101,11 +103,11 @@ report_tts_error() {
     raw_err=$(tail -n 1 "$err_file")
   fi
   if [[ -z "$raw_err" ]]; then
-    raw_err="Fallo de síntesis o reproducción (código ${ret})"
+    raw_err="$(tt err.tts.generic "$ret")"
   fi
   local clean_err
   clean_err=$(echo "$raw_err" | sed -E 's/^[[:space:]]+//' | tr -d '\r\n' | cut -c1-80)
-  notify_herdr "❌ Error en TTS (${context})" "$clean_err" "request"
+  notify_herdr "$(tt err.tts.title "${context}")" "$clean_err" "request"
 }
 
 # Load persisted settings if present
@@ -119,6 +121,10 @@ report_tts_error() {
 _had_herdr_ret=${HERDR_TTS_AUDIO_RETENTION_DAYS+x}
 _had_agent_ret=${AGENT_TTS_AUDIO_RETENTION_DAYS+x}
 _had_tts_ret=${TTS_AUDIO_RETENTION_DAYS+x}
+# UI language knob: snapshot the ENV value before the source below —
+# `source` overwrites variables, and for this knob the documented
+# precedence is env HERDR_TTS_LANG > config.env HERDR_TTS_LANG > "en".
+_herdr_lang_env="${HERDR_TTS_LANG:-}"
 if [[ -f "$CONFIG_FILE" ]]; then
   # shellcheck source=/dev/null
   source "$CONFIG_FILE"
@@ -155,6 +161,980 @@ WEB_LABEL="${WEB_LABEL:-${HERDR_WEB_LABEL:-$DEFAULT_WEB_LABEL}}"
 CLICK_REDIRECT="${CLICK_REDIRECT:-$DEFAULT_CLICK_REDIRECT}"
 # Backwards compatibility alias
 COLLIE_URL="${WEB_URL}"
+
+# ─── UI language & user-facing text (i18n) ───────────────────
+# Every user-facing string (echo / printf / notify / TUI frames / help)
+# renders through tt <key> from the tables below. Keys are SEMANTIC, not
+# source text, so wording can evolve per language. TT_EN is the English
+# default; TT_ES is the Spanish dictionary selected by HERDR_TTS_LANG=es.
+# Resolution order: env HERDR_TTS_LANG > config.env HERDR_TTS_LANG > "en"
+# (the env value was snapshotted before the config source above, because
+# `source` would otherwise overwrite it). Invalid values fall back to "en"
+# silently — same validation style as TTS_SETTLE_SECONDS.
+HERDR_TTS_LANG="${_herdr_lang_env:-${HERDR_TTS_LANG:-$DEFAULT_LANG}}"
+[[ "$HERDR_TTS_LANG" == "es" ]] || HERDR_TTS_LANG="en"
+unset _herdr_lang_env
+
+declare -A TT_EN=() TT_ES=()
+
+# ── English (default) ── every value is a printf FORMAT: literal % → %%
+TT_EN[err.tts.generic]="Synthesis or playback failed (code %s)"
+TT_EN[err.tts.title]="❌ TTS error (%s)"
+TT_EN[player.stopped]="⏹️ Audio stopped"
+TT_EN[player.stopped.body]="Playback cancelled"
+TT_EN[player.no_audio]="⏹️ No audio currently playing"
+TT_EN[player.position]="Position: %s"
+TT_EN[player.speech_end]="End of speech"
+TT_EN[player.speech_start]="Start of speech"
+TT_EN[player.next_sentence]="⏭️ Next sentence: %s"
+TT_EN[player.prev_sentence]="⏮️ Previous sentence: %s"
+TT_EN[player.next_paragraph]="⏭️ Next paragraph: %s"
+TT_EN[player.prev_paragraph]="⏮️ Previous paragraph: %s"
+TT_EN[player.next_sentence.title]="⏭️ Next sentence"
+TT_EN[player.prev_sentence.title]="⏮️ Previous sentence"
+TT_EN[player.next_paragraph.title]="⏭️ Next paragraph"
+TT_EN[player.prev_paragraph.title]="⏮️ Previous paragraph"
+TT_EN[player.paused]="⏸️ Audio paused (%s)"
+TT_EN[player.paused.title]="⏸️ Audio paused"
+TT_EN[player.paused.body]="%s (resumable with prefix+p)"
+TT_EN[player.resumed]="▶️ Audio resumed (%s)"
+TT_EN[player.resumed.plain]="▶️ Audio resumed"
+TT_EN[player.already_paused]="⏸️ Audio is already paused"
+TT_EN[player.idle]="⏹️ Idle (no active playback)"
+TT_EN[player.synthesizing]="⏳ Status: synthesizing voice response..."
+TT_EN[player.state]="%s Status: %s (%s)"
+TT_EN[player.state_sentence]="%s Status: %s (%s) | Sentence: \"%s\""
+TT_EN[player.rate_adjusted]="✓ Rate adjusted: %s"
+TT_EN[player.rate_title]="⚡ Voice rate"
+TT_EN[play.missing]="⚠️ Nothing to play: the audio file is missing or empty"
+TT_EN[play.ctx.local]="local playback"
+TT_EN[ntfy.open_web]="Open Web"
+TT_EN[ntfy.open_label]="Open %s"
+TT_EN[ntfy.open_collie]="Open Collie"
+TT_EN[ntfy.copy_cmd]="📋 Copy command"
+TT_EN[ntfy.done.title]="✅ %s finished"
+TT_EN[ntfy.done.body]="Agent %s%s finished its task.\n\n→ To view: %s"
+TT_EN[ntfy.done.in]=" in %s"
+TT_EN[ntfy.blocked.title]="🔴 %s needs attention"
+TT_EN[ntfy.blocked.body]="Agent %s%s is blocked and waiting for input.\n\n→ To view: %s"
+TT_EN[ntfy.idle.title]="💤 %s idle"
+TT_EN[ntfy.idle.body]="Agent %s%s went idle."
+TT_EN[ntfy.push.audio]="[ntfy] 📤 Sending audio push (%s bytes) for %s to %s"
+TT_EN[ntfy.push.text]="[ntfy] 📤 Sending text push for %s to %s"
+TT_EN[podcast.published]="🎙️ Episode published to the private podcast feed"
+TT_EN[podcast.no_pane]="⚠️ No focused pane in Herdr"
+TT_EN[podcast.pane_empty_pub]="ℹ️ Pane %s has no content to publish"
+TT_EN[podcast.generating]="🎙️ Generating audio and publishing the podcast episode..."
+TT_EN[podcast.episode_title]="Update on %s"
+TT_EN[podcast.new_episode]="New episode published"
+TT_EN[podcast.published_ok]="✓ Episode published successfully. RSS: http://localhost:%s/podcast.xml"
+TT_EN[podcast.synth_failed]="Error: audio synthesis failed"
+TT_EN[read.no_pane]="⚠️ No focused pane in Herdr"
+TT_EN[read.notify.no_pane]="No focused pane"
+TT_EN[read.pane_empty]="ℹ️ Pane %s has no content to read"
+TT_EN[read.tldr.start]="▶️ Summarizing (TL;DR) and reading the response in %s..."
+TT_EN[read.tldr.notify.title]="TL;DR summary"
+TT_EN[read.tldr.notify.body]="Synthesizing summary for %s..."
+TT_EN[read.start]="▶️ Transcribing and reading the response in %s..."
+TT_EN[read.notify.title]="Transcribing response"
+TT_EN[read.notify.body]="Synthesizing voice for %s..."
+TT_EN[read.visual.start]="▶️ Starting synchronized reading in %s..."
+TT_EN[read.visual.failed]="Playback or visual reading failed"
+TT_EN[usage.render_pane]="Usage: herdr-tts --render-pane <pane_id> <output_file.mp3>"
+TT_EN[usage.render_text]="Usage: herdr-tts --render-text <output_file.mp3> [text...] [--voice <voice>] [--rate <rate>] [--agent <type>] [--session-id <id>]"
+TT_EN[auto.enabled]="🔊 Background auto-read enabled"
+TT_EN[auto.enabled.notify]="Automatic reading enabled"
+TT_EN[auto.enabled.spoken]="Automatic reading enabled."
+TT_EN[auto.muted]="🔇 Background auto-read muted"
+TT_EN[auto.muted.notify]="Auto-read muted (manual only)"
+TT_EN[auto.muted.spoken]="Auto-read muted."
+TT_EN[voice.map.invalid]="⚠️ invalid voices.json (expected {agent:{},pane:{},prefix:bool}): fail-open to global voice %s"
+TT_EN[voice.map.create_failed]="Could not create %s"
+TT_EN[voice.map.invalid.manage]="invalid voices.json: fix or delete it to manage voices"
+TT_EN[voice.map.invalid.plain]="invalid voices.json: fix or delete it"
+TT_EN[voice.picker.need_fzf]="❌ fzf is not installed: the per-chat voice picker needs it"
+TT_EN[voice.palette.need_fzf]="❌ fzf is not installed: the voice palette needs it to run"
+TT_EN[voice.need_fzf.hint]="   Install it (e.g. 'sudo apt install fzf' or 'brew install fzf') and reopen."
+TT_EN[voice.picker.global]="(global) → back to the default voice (%s)"
+TT_EN[voice.picker.header]="Voice for %s %s · enter applies · esc cancels"
+TT_EN[voice.picker.reset]="✓ %s %s: back to the global voice (%s)"
+TT_EN[voice.picker.reset.spoken]="Global voice restored."
+TT_EN[voice.picker.set]="✓ %s %s: voice %s"
+TT_EN[voice.picker.set.spoken]="Voice for this chat changed."
+TT_EN[voice.prefix.spoken]="agent: "
+TT_EN[status.title]="━━━ Herdr TTS Status ━━━"
+TT_EN[status.synth]="  Playback: ⏳ Synthesizing voice response (lock held)"
+TT_EN[status.paused]="  Playback: ⏸️ Paused at %s (lock held)"
+TT_EN[status.speaking_at]="  Playback: 🔊 Speaking at %s (lock held)"
+TT_EN[status.speaking_now]="  Playback: 🔊 Speaking now (lock held)"
+TT_EN[status.idle]="  Playback: ⏹️ Idle"
+TT_EN[status.auto_muted]="  Auto-read: 🔇 Muted on PC (manual only via prefix+r)"
+TT_EN[status.auto_on]="  Auto-read: 🔊 Active on PC speakers"
+TT_EN[status.global_snooze_on]="  Global snooze: 😴 active until %s (prefix+Z cycles 5m → 30m → 2h → off)"
+TT_EN[status.global_snooze_off]="  Global snooze: ⚪ Off (prefix+Z cycles 5m → 30m → 2h → off)"
+TT_EN[status.muted_panes]="  Muted panes: %s (prefix+m, re-enables when the pane closes)"
+TT_EN[status.none]="none"
+TT_EN[status.debounce]="  Anti-spam debounce: %ss per (pane, status) — TTS_DEBOUNCE_SECONDS / --debounce"
+TT_EN[status.scope]="  Auto scope: %s (focused = active chat only; all = any pane, mutex-serialized)"
+TT_EN[status.provider]="  Provider:    %s (edge = free Edge Neural TTS; openai = OpenAI TTS; elevenlabs = ElevenLabs; piper = 100%% offline local neural)"
+TT_EN[status.retention_days]="  Audio retention: %s days (%s) — HERDR_TTS_AUDIO_RETENTION_DAYS"
+TT_EN[status.retention_off_set]="  Audio retention: off (%s) — HERDR_TTS_AUDIO_RETENTION_DAYS"
+TT_EN[status.retention_off_unset]="  Audio retention: off (not set) — HERDR_TTS_AUDIO_RETENTION_DAYS"
+TT_EN[status.daemon_alive]="  TTS daemon: alive (pid %s)"
+TT_EN[status.daemon_down]="  TTS daemon: not running (starts with the plugin or --restart-daemon)"
+TT_EN[status.key_not_set]="not set"
+TT_EN[status.openai]="  OpenAI TTS:   Model: %s | Base URL: %s | API Key: %s"
+TT_EN[status.eleven]="  ElevenLabs:   Model: %s | API Key: %s"
+TT_EN[status.piper]="  Piper Local:  ONNX model: %s"
+TT_EN[status.piper.model_default]="(default voice / PATH)"
+TT_EN[status.voice]="  Voice:        %s"
+TT_EN[status.rate]="  Rate:         %s"
+TT_EN[status.max_chars]="  Max chars:    %s"
+TT_EN[status.auto_lang]="  Auto language: %s (automatic detection and voice switching between ES and EN)"
+TT_EN[status.podcast_on]="  Podcast RSS:  🔔 Active (http://localhost:%s/podcast.xml | Server: --podcast-serve)"
+TT_EN[status.podcast_off]="  Podcast RSS:  ⚪ Off (optional via --podcast on | server via --podcast-serve)"
+TT_EN[status.ntfy_on]="  Mobile push:  🔔 Active (ntfy: %s | Server: %s)"
+TT_EN[status.ntfy_off]="  Mobile push:  ⚪ Off (optional via --ntfy-topic <topic>)"
+TT_EN[status.redirect_on]="  Redirect:     📱 %s (%s)"
+TT_EN[status.click_through]="  Click-through: %s (on = open web when tapping the notification; off = open the audio player)"
+TT_EN[status.redirect_off]="  Redirect:     ⚪ Off (optional via --web-url <url> or --collie-url <url>)"
+TT_EN[snooze.stage.1]="5 minutes"
+TT_EN[snooze.stage.2]="30 minutes"
+TT_EN[snooze.stage.3]="2 hours"
+TT_EN[snooze.pane.on]="😴 Snooze %s: %s (no voice until %s)"
+TT_EN[snooze.global.on]="😴 GLOBAL snooze: %s (all agents silenced until %s)"
+TT_EN[snooze.pane.off]="🔊 Snooze off in %s"
+TT_EN[snooze.global.off]="🔊 GLOBAL snooze off (agents speak again)"
+TT_EN[mute.unmuted]="🔊 Voice re-enabled in %s"
+TT_EN[mute.muted]="🔇 Pane %s muted (re-enables when the pane closes)"
+TT_EN[mute.muted.notify]="Pane %s muted (auto on close)"
+TT_EN[gate.muted]="%s (%s): %s omitted (pane muted with prefix+m)"
+TT_EN[gate.snoozed]="%s (%s): %s omitted (snoozed until %s)"
+TT_EN[gate.snoozed_global]="%s (%s): %s omitted (GLOBAL snooze until %s)"
+TT_EN[gate.debounced]="%s (%s): %s repeated within %ss (debounced, omitted)"
+TT_EN[prune.failed]="[retention] ⚠️ Audio store prune failed (retrying within the next hour)"
+TT_EN[watcher.settle_dropped]="intermediate done discarded (returned to working within the %ss settle window)"
+TT_EN[watcher.background_done]="finished in the background (not focused, skipping local voice)"
+TT_EN[watcher.busy_local]="another chat is already speaking locally (omitted to avoid overlap)"
+TT_EN[watcher.local_speak]="speaking on local speakers"
+TT_EN[daemon.keymap_applied]="🔊 Keymap applied from %s"
+TT_EN[daemon.keymap_failed]="⚠️ keymap apply failed at startup; keybindings unchanged."
+TT_EN[daemon.keymap_failed.hint]="   Review it with: herdr-tts keymap check"
+TT_EN[daemon.relaunch_failed]="⚠️ Could not relaunch the daemon: %s is not executable"
+TT_EN[daemon.restarted]="✓ Daemon restarted (pid %s)"
+TT_EN[daemon.restarted_nopid]="⚠️ Daemon relaunched (pid %s) but the pidfile did not appear; it may still be initializing"
+TT_EN[daemon.started_log]="🔊 daemon started (pid %s, scope %s)"
+TT_EN[daemon.starting]="🔊 Starting Herdr TTS Daemon (mutex + scope %s)..."
+TT_EN[daemon.exit_clean]="clean shutdown"
+TT_EN[daemon.exit_term]="TERM signal received"
+TT_EN[daemon.exit_int]="INT signal received"
+TT_EN[daemon.stopped_log]="🛑 daemon stopped (pid %s — %s)"
+TT_EN[daemon.sup.active]="🛰️ daemon supervisor active (pid %s, relaunch after %ss)"
+TT_EN[daemon.sup.no_child]="🛑 supervisor: %s with no daemon child — exiting (pid %s)"
+TT_EN[daemon.sup.stopping]="🛑 supervisor: %s received — stopping with the daemon (rc=%s)"
+TT_EN[daemon.sup.deliberate]="🛑 supervisor: deliberate daemon stop (rc=%s) — not relaunching"
+TT_EN[daemon.died]="⚠️ daemon died (rc=%s) — relaunching in %ss"
+TT_EN[dash.unknown]="unknown"
+TT_EN[dash.title]="╔═══ 🎙️  herdr-tts · Voice Panel ════════════════════ %s ═╗"
+TT_EN[dash.global_on]="║ Global  😴 GLOBAL snooze active · %s left (until %s)"
+TT_EN[dash.global_off]="║ Global  ⚪ global snooze off · (Z cycles 5m → 30m → 2h → off)"
+TT_EN[dash.auto_on]="🔊 on"
+TT_EN[dash.auto_muted]="🔇 muted"
+TT_EN[dash.engine]="║ Engine  %s%s · %s / %s · %s · %s · %.*s\033[0m · auto-read %s"
+TT_EN[dash.engine_fallback_idle]="⚪ Idle"
+TT_EN[dash.engine_fallback_playing]="🔊 Playing"
+TT_EN[dash.engine_noanswer]="║ Engine  %s · engine: not responding · auto-read %s"
+TT_EN[dash.config]="║ Config  provider %s · voice %s (%s) · playback %s · debounce %ss"
+TT_EN[dash.roster_header]="╠═══ Chats (j/k move the cursor · m mutes · z snooze) ═════════"
+TT_EN[dash.no_data]="║  (no herdr data: CLI unavailable or no agents)"
+TT_EN[dash.dropped]="║  … and %d more chats (attention seekers are never hidden)"
+TT_EN[dash.hist_header]="╠═══ History per chat (newest first) ══════════════════════════"
+TT_EN[dash.hist_group]="║ ── %s · %d %s · last %s ago"
+TT_EN[dash.hist_row]="║    · %s%s · %s ago"
+TT_EN[dash.footer]="╚═══ q quit · j/k chat · m mute · z snooze pane · Z snooze global · +/- speed ═╝"
+TT_EN[dash.state_playing]="▶ playing"
+TT_EN[dash.state_paused]="⏸ paused"
+TT_EN[dash.state_stopped]="⏹ stopped"
+TT_EN[dash.state_synthesizing]="⌛ synthesizing"
+TT_EN[palette.no_entries]="ℹ️ No chats or audios to show in the palette"
+TT_EN[palette.header]="enter/ctrl-o: focus chat · ctrl-m: mute pane · ctrl-z: snooze pane · ctrl-r: play audio · ctrl-v: chat voice · esc: quit"
+TT_EN[palette.focused]="🎯 Chat %s focused (the palette closes in 2s)"
+TT_EN[palette.no_audios]="(no audios) · %s"
+TT_EN[palette.preview.usage]="Usage: herdr-tts --palette-preview <pane_id>"
+TT_EN[palette.preview.no_herdr]="   ⚠️ herdr CLI unavailable (no agent data)"
+TT_EN[palette.preview.agent]="   agent: %s · status: %s · 🗣 voice: %s"
+TT_EN[palette.preview.agent_plain]="   agent: %s · status: %s"
+TT_EN[palette.gate.muted]="🔇 muted"
+TT_EN[palette.gate.snooze]="😴 snooze %s left (until %s)"
+TT_EN[palette.gate.debounce]="⏱ debounce active (%ss)"
+TT_EN[palette.gate.active]="🔊 voice active"
+TT_EN[palette.turns_header]="── Audio turns (recent first) ──"
+TT_EN[palette.no_turns]="no turns"
+TT_EN[menu.open_ok]="[%s] [menu] open %s: ok (attempt %s)"
+TT_EN[menu.open_failed]="[%s] [menu] open %s failed after %s attempts: %s"
+TT_EN[menu.no_output]="no output"
+TT_EN[menu.desc.play]="▶ Play / Stop of the focused chat"
+TT_EN[menu.desc.pause]="⏸ Pause / Resume"
+TT_EN[menu.desc.stop]="⏹ Stop immediately"
+TT_EN[menu.desc.tldr]="⚡ Chat TL;DR"
+TT_EN[menu.desc.auto]="🔊 Auto-read on/off"
+TT_EN[menu.desc.rewind]="⏪ Rewind 10s"
+TT_EN[menu.desc.forward]="⏩ Forward 10s"
+TT_EN[menu.desc.next_sentence]="⏭ Next sentence"
+TT_EN[menu.desc.prev_sentence]="⏮ Previous sentence"
+TT_EN[menu.desc.mute]="🔇 Mute pane"
+TT_EN[menu.desc.snooze]="😴 Snooze pane"
+TT_EN[menu.desc.snooze_global]="😴 Snooze GLOBAL"
+TT_EN[menu.desc.rate]="🎙 Speed ±10%%"
+TT_EN[menu.desc.dashboard]="📊 Dashboard"
+TT_EN[menu.desc.palette]="🎛️ Voice palette"
+TT_EN[menu.desc.settings]="⚙️ Voice & audio settings"
+TT_EN[menu.desc.quit]="Quit the menu"
+TT_EN[menu.title]="\e[1m⌨️  herdr-tts · Voice Menu\e[0m"
+TT_EN[menu.hint]="Press ONE key: the action runs and the menu closes (a = settings, stays open)."
+TT_EN[menu.open_dashboard]="📊 Closing the menu and opening the dashboard…"
+TT_EN[menu.open_palette]="🎛️ Closing the menu and opening the voice palette…"
+TT_EN[menu.executed]="Voice command executed"
+TT_EN[menu.unknown_key]="\n❓ Unrecognized key (%s) — press q to quit\n"
+TT_EN[settings.restarted]="✓ Daemon restarted"
+TT_EN[settings.relaunch_failed]="Could not relaunch the daemon"
+TT_EN[settings.unknown_key.index]="Unrecognized key (%s) — v voice, a audio, n notifications, l auto-read, R restarts the daemon, q quits"
+TT_EN[settings.save_failed]="Could not save %s to config.env"
+TT_EN[settings.voices.write_failed]="Could not write voices.json"
+TT_EN[settings.voice.global]="✓ Global voice: %s (the palette assigns voices per chat)"
+TT_EN[settings.voice.catalog_down]="Voice catalog unavailable (engine not responding): voice unchanged"
+TT_EN[settings.voice.prefix]="✓ Spoken prefix: %s (says \"agent: \" before the text)"
+TT_EN[settings.voice.autoassign]="✓ Auto-assign: %s (rotates active-provider voices by agent_type)"
+TT_EN[settings.voice.autolang_on]="✓ Language detection enabled (ES/EN on the fly)"
+TT_EN[settings.voice.autolang_off]="✓ Language detection disabled"
+TT_EN[settings.audio.click_on]="✓ Click-through enabled (opens the browser when the notification card is tapped)"
+TT_EN[settings.audio.click_off]="✓ Click-through disabled (tapping the card opens ntfy with the player; the button opens web)"
+TT_EN[settings.notif.input_title]="\n ntfy topic\n   e.g.: herdr-agents\n   empty Enter = disable push\n > "
+TT_EN[settings.notif.input_cancelled]="Input cancelled: could not read the topic"
+TT_EN[settings.notif.off]="✓ ntfy mobile notifications disabled"
+TT_EN[settings.notif.topic_set]="✓ ntfy topic set: %s"
+TT_EN[settings.notif.podcast_on]="✓ Automatic podcast feed publishing enabled"
+TT_EN[settings.notif.podcast_off]="✓ Automatic podcast feed publishing disabled"
+TT_EN[settings.notif.web_input_title]="\n Web redirect URL\n   e.g.: https://collie.mydomain.com/chat/{pane_id}\n   without {pane_id} /pane/<id> is appended · empty Enter = disable\n > "
+TT_EN[settings.notif.web_input_cancelled]="Input cancelled: could not read the URL"
+TT_EN[settings.notif.web_off]="✓ Web redirect disabled (standard notifications, no external URL)"
+TT_EN[settings.notif.web_set]="✓ Web redirect URL set: %s"
+TT_EN[settings.autoread.on]="✓ Auto-read enabled (reads to you when each agent finishes)"
+TT_EN[settings.autoread.off]="✓ Auto-read muted (manual only: prefix+r / htr on demand)"
+TT_EN[settings.autoread.rm_failed]="Could not remove %s"
+TT_EN[settings.autoread.touch_failed]="Could not create %s"
+TT_EN[settings.autoread.scope]="✓ Auto-read scope: %s"
+TT_EN[settings.autoread.debounce_off]="✓ Debounce disabled (every done notifies instantly)"
+TT_EN[settings.autoread.debounce_on]="✓ Anti-spam window (debounce): %ss per (pane, status)"
+TT_EN[settings.unknown_key.voice]="Unrecognized key (%s) — p provider, g global voice, n spoken prefix, u auto-assign, i language, q back to the index"
+TT_EN[settings.unknown_key.audio]="Unrecognized key (%s) — d playback target, c click-through, r retention, s settle, q back to the index"
+TT_EN[settings.unknown_key.notif]="Unrecognized key (%s) — t ntfy topic, f podcast, w web URL, q back to the index"
+TT_EN[settings.unknown_key.autoread]="Unrecognized key (%s) — v auto-read, a scope, b debounce, q back to the index"
+TT_EN[settings.view.voice]="\e[1m🎙  herdr-tts · Settings · Voice\e[0m"
+TT_EN[settings.view.audio]="\e[1m🔊  herdr-tts · Settings · Audio\e[0m"
+TT_EN[settings.view.notif]="\e[1m🔔  herdr-tts · Settings · Notifications\e[0m"
+TT_EN[settings.view.autoread]="\e[1m⚙️  herdr-tts · Settings · Auto-read\e[0m"
+TT_EN[settings.view.index]="\e[1m⚙️  herdr-tts · Voice & Audio Settings\e[0m"
+TT_EN[settings.view.hint]="Press the key of a setting to cycle its value."
+TT_EN[settings.row.provider]=" p  TTS provider:        %s   (edge = free, default)"
+TT_EN[settings.row.provider_install]="    ⚠️  Install the model first: agent-tts voice install %s"
+TT_EN[settings.row.voice_global]=" g  Global voice:        %s   (default; the palette assigns voices per chat)"
+TT_EN[settings.row.prefix]=" n  Spoken prefix:       %s   (says \"agent: \" before the text)"
+TT_EN[settings.row.autoassign]=" u  Auto-assign:         %s   (rotates active-provider voices by agent_type)"
+TT_EN[settings.row.autolang]=" i  Auto language:       %s   (ES/EN on the fly)"
+TT_EN[settings.row.target]=" d  Playback target:     %s"
+TT_EN[settings.row.click]=" c  Click-through:       %s   (on = browser, off = player)"
+TT_EN[settings.row.retention]=" r  Audio retention:     %s days   (0 = off)"
+TT_EN[settings.row.settle]=" s  Done settle:         %ss   (0 = notify instantly)"
+TT_EN[settings.row.retention_note]=" r  cycles retention · applies on the fly (no restart)"
+TT_EN[settings.row.ntfy]=" t  ntfy topic:          %s   (empty Enter on t = disables)"
+TT_EN[settings.row.podcast]=" f  Podcast feed:        %s   (publishes audios to RSS)"
+TT_EN[settings.row.web]=" w  Web redirect:        %s   (empty Enter on w = disables)"
+TT_EN[settings.row.off]="Off"
+TT_EN[settings.row.off_f]="Off"
+TT_EN[settings.row.autoread]=" v  Auto-read:           %s"
+TT_EN[settings.autoread.label_on]="🔊 on (reads to you when each agent finishes)"
+TT_EN[settings.autoread.label_muted]="🔇 muted (manual only: prefix+r / htr on demand)"
+TT_EN[settings.row.scope]=" a  Auto-read scope:     %s   (focused = active chat only)"
+TT_EN[settings.row.debounce]=" b  Anti-spam debounce:  %ss   (0 = disabled)"
+TT_EN[settings.index.pick]="Pick a category with its key:"
+TT_EN[settings.index.voice]=" v  🎙 Voice           provider, global voice, spoken prefix, auto-assign, language"
+TT_EN[settings.index.audio]=" a  🔊 Audio            playback target, click-through, retention, settle"
+TT_EN[settings.index.notif]=" n  🔔 Notifications    ntfy topic, podcast feed, web redirect"
+TT_EN[settings.index.autoread]=" l  ⚙️  Auto-read       auto-read, scope, debounce"
+TT_EN[settings.index.restart]=" R  restarts the daemon → applies the other settings instantly"
+TT_EN[settings.exit.quit]=" q/Esc quit"
+TT_EN[settings.exit.index]=" q/Esc back to the index"
+TT_EN[cli.debounce.set]="✓ Anti-spam window (debounce): %ss per (pane, status); 0 = disabled"
+TT_EN[cli.debounce.invalid]="Error: --debounce requires a number of seconds (integer ≥ 0)"
+TT_EN[cli.auto.on]="🔊 Auto-read enabled"
+TT_EN[cli.auto.off]="🔇 Auto-read muted"
+TT_EN[cli.scope.set]="✓ Auto-read scope: %s"
+TT_EN[cli.scope.invalid]="Error: Scope must be 'focused' or 'all'"
+TT_EN[cli.ntfy.off]="✓ ntfy mobile notifications disabled"
+TT_EN[cli.ntfy.set]="✓ ntfy topic set: %s"
+TT_EN[cli.ntfy.server]="✓ ntfy server set: %s"
+TT_EN[cli.web.off]="✓ Web redirect disabled (standard notifications, no external URL)"
+TT_EN[cli.web.set]="✓ Web redirect URL set: %s"
+TT_EN[cli.web.label]="✓ Web button label: %s"
+TT_EN[cli.web.label_auto]="✓ Web button label: auto"
+TT_EN[cli.voice.set]="✓ Voice set: %s"
+TT_EN[cli.voice.spoken]="Voice changed to %s."
+TT_EN[cli.usage.voice_for]="Usage: herdr-tts --voice-for agent|pane <id> [voice|off]"
+TT_EN[cli.voice_prefix.set]="✓ Spoken prefix: %s"
+TT_EN[cli.usage.voice_prefix]="Usage: herdr-tts --voice-prefix on|off"
+TT_EN[cli.rate.set]="✓ Rate set: %s"
+TT_EN[cli.rate.spoken]="Rate adjusted."
+TT_EN[cli.provider.set]="✓ TTS provider set: %s"
+TT_EN[cli.provider.title]="🎙️ TTS provider"
+TT_EN[cli.provider.invalid]="Error: Invalid provider '%s'. Valid options: %s"
+TT_EN[cli.piper.set]="✓ Piper model set: %s"
+TT_EN[cli.piper.reset]="✓ Piper model reset to default"
+TT_EN[cli.openai.key_set]="✓ OpenAI API Key set"
+TT_EN[cli.openai.key_removed]="✓ OpenAI API Key removed"
+TT_EN[cli.openai.base_set]="✓ OpenAI Base URL set: %s"
+TT_EN[cli.openai.model_set]="✓ OpenAI TTS Model set: %s"
+TT_EN[cli.eleven.key_set]="✓ ElevenLabs API Key set"
+TT_EN[cli.eleven.key_removed]="✓ ElevenLabs API Key removed"
+TT_EN[cli.eleven.model_set]="✓ ElevenLabs Model set: %s"
+TT_EN[cli.autolang.on]="✓ Language detection and dynamic voice switching enabled"
+TT_EN[cli.autolang.notify_on]="Enabled (dynamic voice switching)"
+TT_EN[cli.autolang.title]="🌐 Language detection"
+TT_EN[cli.autolang.off]="✓ Language detection disabled"
+TT_EN[cli.autolang.notify_off]="Disabled"
+TT_EN[cli.podcast.on]="✓ Automatic podcast feed publishing enabled"
+TT_EN[cli.podcast.notify_on]="Publishing enabled"
+TT_EN[cli.podcast.title]="🎙️ Podcast RSS"
+TT_EN[cli.podcast.off]="✓ Automatic podcast feed publishing disabled"
+TT_EN[cli.podcast.notify_off]="Publishing disabled"
+TT_EN[cli.podcast.port]="✓ Podcast port set: %s"
+TT_EN[cli.podcast.serve]="🎙️ Podcast RSS server started at http://0.0.0.0:%s/podcast.xml"
+TT_EN[skill.published]="✓ Skill published to %s"
+TT_EN[skill.published.hint]="  The agent picks it up on its next session; preview with: cat \"%s\""
+TT_EN[skill.up_to_date]="✓ Skill already installed at %s (up to date)"
+TT_EN[skill.exists]="✋ %s already exists — refusing to overwrite."
+TT_EN[skill.exists.hint]="   Keep your edits, or run: herdr-tts skill install %s --force"
+TT_EN[skill.not_regular]="❌ %s exists and is not a regular file — remove it first"
+TT_EN[skill.removed]="✓ Skill removed from %s"
+TT_EN[skill.not_installed]="✓ %s: no skill installed at %s (nothing to do)"
+TT_EN[skill.not_managed]="✋ %s does not carry the herdr-tts managed marker — refusing to delete."
+TT_EN[skill.not_managed.hint]="   It looks user-customized; remove it manually if that is intended."
+TT_EN[skill.list_header]="herdr-tts skills (user-level):"
+TT_EN[skill.list_missing]="  — %-12s %s (not installed)"
+
+TT_EN[help.usage]="Usage: herdr-tts [OPTIONS]"
+TT_EN[help.main.header]="Main actions:"
+TT_EN[help.toggle_play]="  --toggle-play (-r)       Play / Stop toggle on the currently focused pane (Key: prefix+r)"
+TT_EN[help.tldr]="  --tldr                   Quick TL;DR summary of the focused pane (Key: prefix+t)"
+TT_EN[help.stop]="  --stop (-s)              Stop any playing audio immediately (Key: prefix+s)"
+TT_EN[help.toggle_pause]="  --toggle-pause           Pause / Resume the audio being played (Key: prefix+p)"
+TT_EN[help.pause]="  --pause                  Pause the current playback"
+TT_EN[help.resume]="  --resume                 Resume the paused playback"
+TT_EN[help.seek]="  --seek <+/-s>            Move forward or backward by seconds (e.g. +10 or -10)"
+TT_EN[help.rewind]="  --rewind                 Rewind 10 seconds (Key: prefix+[)"
+TT_EN[help.forward]="  --forward                Forward 10 seconds (Key: prefix+])"
+TT_EN[help.next_sentence]="  --next-sentence          Skip to the next sentence in playback (Key: prefix+n)"
+TT_EN[help.prev_sentence]="  --prev-sentence          Go back to the previous sentence in playback (Key: prefix+N)"
+TT_EN[help.next_paragraph]="  --next-paragraph         Skip to the next paragraph in playback"
+TT_EN[help.prev_paragraph]="  --prev-paragraph         Go back to the previous paragraph in playback"
+TT_EN[help.play]="  --play (-p)              Read the last response of the focused chat"
+TT_EN[help.speak]="  --speak <text>           Direct synthesis: speak the given text and exit"
+TT_EN[help.render_text.args]="  --render-text <out.mp3> [text...] [--voice <voice>] [--rate <rate>] [--agent <type>] [--session-id <id>]"
+TT_EN[help.render_text.desc]="                           Render to MP3 without playing (surface contract v1, for external consumers)"
+TT_EN[help.contract_version]="  --contract-version       Print the surface contract version (v1) and exit"
+TT_EN[help.play_file]="  --play-file <file>       Play an audio file (.mp3/.wav) with the engine"
+TT_EN[help.player_status]="  --player-status          Player status: position, duration and state"
+TT_EN[help.toggle_auto]="  --toggle-auto (-t)       Toggle background auto-read (Key: prefix+v)"
+TT_EN[help.auto_on]="  --auto-on                Auto-read always on: reads to you when each agent finishes (default)"
+TT_EN[help.auto_off]="  --auto-off               Mute auto-read: manual reading only (Key: prefix+r)"
+TT_EN[help.scope]="  --scope focused|all      'focused' (active chat only) | 'all' (any pane, no overlap)"
+TT_EN[help.visual.header]="Visual experience and synchronized reading:"
+TT_EN[help.highlight]="  --highlight (-H)         Read the response in the terminal with real-time karaoke highlighting"
+TT_EN[help.autoscroll]="  --autoscroll             Read with auto-scroll synced to the voice pace"
+TT_EN[help.bionic]="  --bionic                 Bionic reading (bold fixation of the first letters)"
+TT_EN[help.zen]="  --zen                    Zen mode (full screen, high contrast, distraction free)"
+TT_EN[help.silence.header]="Granular silencing (snooze and mute per pane, before calling the engine):"
+TT_EN[help.snooze]="  --snooze                 Snooze the focused pane: 5m → 30m → 2h → off (Key: prefix+z)"
+TT_EN[help.snooze_global]="  --snooze-global          GLOBAL snooze of every agent, ideal for meetings (Key: prefix+Z)"
+TT_EN[help.mute_pane]="  --mute-pane              Mute the focused pane; re-enables when the pane closes (Key: prefix+m)"
+TT_EN[help.debounce]="  --debounce <seconds>     Anti-spam window per (pane, status); 0 = disabled (default: 20)"
+TT_EN[help.gate_check.args]="  --gate-check <pane> <status> [agent]"
+TT_EN[help.gate_check.desc]="                           Gating diagnostic: exit 0 = event filtered, exit 1 = would reach the engine"
+TT_EN[help.voice.header]="Voice and rate settings:"
+TT_EN[help.voice]="  --voice <name>           Change voice (elvira, alvaro, ximena, dalia, jorge)"
+TT_EN[help.rate]="  --rate <rate>            Change rate (+20%%, +10%%, +0%%)"
+TT_EN[help.auto_lang]="  --auto-lang on|off       Automatic language detection and dynamic voice switching"
+TT_EN[help.voice_for.args]="  --voice-for agent|pane <id> [voice]"
+TT_EN[help.voice_for.desc]="                           Voice per agent or chat (PRD HT-02); 'off' = global voice; no voice opens the fzf picker"
+TT_EN[help.voice_prefix]="  --voice-prefix on|off    Spoken prefix with the agent name before the text (voices.json \"prefix\")"
+TT_EN[help.rate_up]="  --rate-up                Speed up reading +10%% on the fly (Key: prefix+=)"
+TT_EN[help.rate_down]="  --rate-down              Slow down reading -10%% on the fly (Key: prefix+-)"
+TT_EN[help.providers.header]="Synthesis providers (TTS Providers):"
+TT_EN[help.provider]="  --provider <engine>      Select provider: edge (free), openai, elevenlabs, piper (offline)"
+TT_EN[help.piper_model]="  --piper-model <path>     Path to the Piper ONNX model file (.onnx)"
+TT_EN[help.openai_key]="  --openai-key <key>       API key for OpenAI TTS"
+TT_EN[help.openai_base_url]="  --openai-base-url <url>  Custom base URL (default: https://api.openai.com/v1)"
+TT_EN[help.openai_model]="  --openai-model <model>   OpenAI TTS model (default: tts-1)"
+TT_EN[help.eleven_key]="  --eleven-key <key>       API key for ElevenLabs"
+TT_EN[help.eleven_model]="  --eleven-model <model>   ElevenLabs model (default: eleven_multilingual_v2)"
+TT_EN[help.notif.header]="Mobile notifications (optional):"
+TT_EN[help.ntfy_topic]="  --ntfy-topic <topic>     ntfy.sh topic to receive pushes with audio on mobile (or 'off')"
+TT_EN[help.ntfy_server]="  --ntfy-server <url>      Custom ntfy server (default: https://ntfy.sh)"
+TT_EN[help.web_url]="  --web-url <url>          Optional web UI / dashboard URL (e.g. Collie) (or 'off')"
+TT_EN[help.collie_url]="  --collie-url <url>       Alias of --web-url for Collie"
+TT_EN[help.web_label]="  --web-label <text>       Custom label for the web action button"
+TT_EN[help.click_redirect]="  --click-redirect on|off  Redirect when tapping the notification card (default: off)"
+TT_EN[help.podcast.header]="Private RSS podcast (to listen on mobile with Pocket Casts / Overcast / Apple Podcasts):"
+TT_EN[help.podcast]="  --podcast on|off         Enable automatic publishing of audios to the RSS feed"
+TT_EN[help.podcast_serve]="  --podcast-serve [port]   Start the local podcast HTTP server (default: 8844)"
+TT_EN[help.podcast_port]="  --podcast-port <port>    Change the podcast server port (default: 8844)"
+TT_EN[help.podcast_publish]="  --podcast-publish        Publish the current response directly to the podcast feed"
+TT_EN[help.keymap.header]="Declarative keymap (user-editable keys, validatable):"
+TT_EN[help.keymap.init]="  keymap init [--force]    Create %%s"
+TT_EN[help.keymap.init2]="                           (template with the README direct map; never overwrites)"
+TT_EN[help.keymap.check]="  keymap check [--json]    Validate the keymap and detect shadows over the"
+TT_EN[help.keymap.check2]="                           Herdr core defaults (exit 1 only on errors)"
+TT_EN[help.keymap.emit]="  keymap emit [--style S]  TOML [[keys.command]] blocks ready to paste"
+TT_EN[help.keymap.emit2]="                            into config.toml (S: direct | ctrlalt | menu)"
+TT_EN[help.keymap.apply]="  keymap apply [--config P] [--dry-run]"
+TT_EN[help.keymap.apply2]="                            Install the bindings into config.toml as a managed"
+TT_EN[help.keymap.apply3]="                            block (backup + rollback; --dry-run = diff)"
+TT_EN[help.keymap.adopt]="   keymap adopt --style S    Write the suggested map (direct | ctrlalt | menu)"
+TT_EN[help.keymap.adopt2]="                             into keymap.json (--force to overwrite changes)"
+TT_EN[help.info.header]="Information:"
+TT_EN[help.status]="   --status                 See the current status, lock and configuration"
+TT_EN[help.restart_daemon]="    --restart-daemon         Restart the TTS daemon: stops the previous one (pidfile"
+TT_EN[help.restart_daemon2]="                             or fallback) and relaunches detached; applies the Settings"
+TT_EN[help.restart_daemon3]="                             changes without waiting for the next start"
+TT_EN[help.dashboard]="   --dashboard              Live TUI panel (Herdr pane): per-chat status,"
+TT_EN[help.dashboard2]="                            audios grouped by chat, snoozes and history"
+TT_EN[help.dashboard3]="                            (controls: q quit · j/k chat · m mute · z snooze pane · Z snooze global · +/- speed)"
+TT_EN[help.voice_palette]="    --voice-palette          Interactive picker (fzf, Herdr pane) of chats and"
+TT_EN[help.voice_palette2]="                            audios: enter focuses, ctrl-m mutes, ctrl-z snoozes"
+TT_EN[help.voice_menu]="    --voice-menu             One-key voice menu (popup): shows the commands,"
+TT_EN[help.voice_menu2]="                            reads one key, runs it and closes; the a key opens"
+TT_EN[help.voice_menu3]="                            the Settings inside the menu"
+TT_EN[help.voice_menu4]="                            (suggested: prefix+u → action open-menu)"
+TT_EN[help.voice_settings]="     --voice-settings         Voice & audio settings (direct-access popup;"
+TT_EN[help.voice_settings2]="                             also inside the voice menu, a key): cycles"
+TT_EN[help.voice_settings3]="                             provider, auto-read, scope, target, language,"
+TT_EN[help.voice_settings4]="                             podcast, debounce, retention and settle; free-text"
+TT_EN[help.voice_settings5]="                             ntfy topic and web URL (config.env)"
+TT_EN[help.palette_preview]="     --palette-preview <pane> Chat header + audio turns of the pane (fzf preview)"
+TT_EN[help.exit]="  --help, -h               Show this help"
+TT_EN[km.usage]="Usage: herdr-tts keymap <subcommand> [options]"
+TT_EN[km.intro.1]="User-editable declarative keymap: a JSON file"
+TT_EN[km.intro.2]="(%%s) mapping every voice command to a chord."
+TT_EN[km.init.1]="  keymap init [--force]   Write the default template (never"
+TT_EN[km.init.2]="                          overwrites an existing file; --force replaces it)"
+TT_EN[km.check.1]="  keymap check [--json]   Validate the file (JSON, known ids, chord"
+TT_EN[km.check.2]="                          syntax, duplicates) and detect shadows over the"
+TT_EN[km.check.3]="                          Herdr core defaults. Exit 1 only on errors."
+TT_EN[km.emit.1]="  keymap emit [--style S] Print TOML [[keys.command]] blocks ready to"
+TT_EN[km.emit.2]="                          paste into ~/.config/herdr/config.toml. Styles:"
+TT_EN[km.emit.3]="                          direct (default: uses the file's chords),"
+TT_EN[km.emit.4]="                          ctrlalt (suggested ctrl+alt family),"
+TT_EN[km.emit.5]="                          menu (one free chord → voice menu popup)"
+TT_EN[km.apply.1]="  keymap apply [--config P] [--dry-run]"
+TT_EN[km.apply.2]="                          Write the validated bindings as a MANAGED"
+TT_EN[km.apply.3]="                          block in %%s/herdr/config.toml"
+TT_EN[km.apply.4]="                          (.bak-<ts> backups, 3 kept; automatic"
+TT_EN[km.apply.5]="                          rollback if 'herdr config check' fails;"
+TT_EN[km.apply.6]="                          --dry-run shows the diff without writing)"
+TT_EN[km.adopt.1]="  keymap adopt --style S [--force]"
+TT_EN[km.adopt.2]="                          Overwrite keymap.json with the style's suggested"
+TT_EN[km.adopt.3]="                          map (direct, ctrlalt or menu); requires --force"
+TT_EN[km.adopt.4]="                          when the file has user modifications"
+TT_EN[km.chords.1]="Valid chords: \"prefix+X\" (uppercase X = shift, e.g. prefix+N),"
+TT_EN[km.chords.2]="\"ctrl+alt+X\", \"ctrl+alt+shift+X\", or null (unassigned). Modifiers"
+TT_EN[km.chords.3]="are written literally; whitespace is tolerated. Path override for"
+TT_EN[km.chords.4]="tests: HERDR_TTS_KEYMAP_FILE."
+
+# ── Spanish (HERDR_TTS_LANG=es) ── same keys, faithful translations
+TT_ES[err.tts.generic]="Fallo de síntesis o reproducción (código %s)"
+TT_ES[err.tts.title]="❌ Error en TTS (%s)"
+TT_ES[player.stopped]="⏹️ Audio detenido"
+TT_ES[player.stopped.body]="Reproducción cancelada"
+TT_ES[player.no_audio]="⏹️ No hay audio reproduciéndose actualmente"
+TT_ES[player.position]="Posición: %s"
+TT_ES[player.speech_end]="Fin de la locución"
+TT_ES[player.speech_start]="Inicio de la locución"
+TT_ES[player.next_sentence]="⏭️ Siguiente frase: %s"
+TT_ES[player.prev_sentence]="⏮️ Frase anterior: %s"
+TT_ES[player.next_paragraph]="⏭️ Siguiente párrafo: %s"
+TT_ES[player.prev_paragraph]="⏮️ Párrafo anterior: %s"
+TT_ES[player.next_sentence.title]="⏭️ Siguiente frase"
+TT_ES[player.prev_sentence.title]="⏮️ Frase anterior"
+TT_ES[player.next_paragraph.title]="⏭️ Siguiente párrafo"
+TT_ES[player.prev_paragraph.title]="⏮️ Párrafo anterior"
+TT_ES[player.paused]="⏸️ Audio pausado (%s)"
+TT_ES[player.paused.title]="⏸️ Audio pausado"
+TT_ES[player.paused.body]="%s (reanudable con prefix+p)"
+TT_ES[player.resumed]="▶️ Audio reanudado (%s)"
+TT_ES[player.resumed.plain]="▶️ Audio reanudado"
+TT_ES[player.already_paused]="⏸️ Audio ya está pausado"
+TT_ES[player.idle]="⏹️ En reposo (sin reproducción activa)"
+TT_ES[player.synthesizing]="⏳ Estado: sintetizando respuesta de voz..."
+TT_ES[player.state]="%s Estado: %s (%s)"
+TT_ES[player.state_sentence]="%s Estado: %s (%s) | Frase: \"%s\""
+TT_ES[player.rate_adjusted]="✓ Velocidad ajustada: %s"
+TT_ES[player.rate_title]="⚡ Velocidad de voz"
+TT_ES[play.missing]="⚠️ Nada que reproducir: el audio no existe o está vacío"
+TT_ES[play.ctx.local]="reproducción local"
+TT_ES[ntfy.open_web]="Abrir Web"
+TT_ES[ntfy.open_label]="Abrir %s"
+TT_ES[ntfy.open_collie]="Abrir Collie"
+TT_ES[ntfy.copy_cmd]="📋 Copiar comando"
+TT_ES[ntfy.done.title]="✅ %s terminó"
+TT_ES[ntfy.done.body]="Agente %s%s finalizó su tarea.\n\n→ Para ver: %s"
+TT_ES[ntfy.done.in]=" en %s"
+TT_ES[ntfy.blocked.title]="🔴 %s necesita atención"
+TT_ES[ntfy.blocked.body]="Agente %s%s está bloqueado y espera input.\n\n→ Para ver: %s"
+TT_ES[ntfy.idle.title]="💤 %s idle"
+TT_ES[ntfy.idle.body]="Agente %s%s pasó a idle."
+TT_ES[ntfy.push.audio]="[ntfy] 📤 Enviando push con audio (%s bytes) para %s a %s"
+TT_ES[ntfy.push.text]="[ntfy] 📤 Enviando push de texto para %s a %s"
+TT_ES[podcast.published]="🎙️ Episodio publicado en el feed privado de podcast"
+TT_ES[podcast.no_pane]="⚠️ No hay ningún pane enfocado en Herdr"
+TT_ES[podcast.pane_empty_pub]="ℹ️ El pane %s no tiene contenido para publicar"
+TT_ES[podcast.generating]="🎙️ Generando audio y publicando episodio en el feed de podcast..."
+TT_ES[podcast.episode_title]="Actualización en %s"
+TT_ES[podcast.new_episode]="Nuevo episodio publicado"
+TT_ES[podcast.published_ok]="✓ Episodio publicado con éxito. RSS: http://localhost:%s/podcast.xml"
+TT_ES[podcast.synth_failed]="Error: Falló la síntesis de audio"
+TT_ES[read.no_pane]="⚠️ No hay ningún pane enfocado en Herdr"
+TT_ES[read.notify.no_pane]="No hay ningún pane enfocado"
+TT_ES[read.pane_empty]="ℹ️ El pane %s no tiene contenido para leer"
+TT_ES[read.tldr.start]="▶️ Resumiendo (TL;DR) y leyendo respuesta en %s..."
+TT_ES[read.tldr.notify.title]="Resumen TL;DR"
+TT_ES[read.tldr.notify.body]="Sintetizando resumen para %s..."
+TT_ES[read.start]="▶️ Transcribiendo y leyendo respuesta en %s..."
+TT_ES[read.notify.title]="Transcribiendo respuesta"
+TT_ES[read.notify.body]="Sintetizando voz para %s..."
+TT_ES[read.visual.start]="▶️ Iniciando lectura sincronizada en %s..."
+TT_ES[read.visual.failed]="Fallo en reproducción o lectura visual"
+TT_ES[usage.render_pane]="Uso: herdr-tts --render-pane <pane_id> <output_file.mp3>"
+TT_ES[usage.render_text]="Uso: herdr-tts --render-text <output_file.mp3> [texto...] [--voice <voz>] [--rate <velocidad>] [--agent <tipo>] [--session-id <id>]"
+TT_ES[auto.enabled]="🔊 Lectura automática de fondo activada"
+TT_ES[auto.enabled.notify]="Lectura automática activada"
+TT_ES[auto.enabled.spoken]="Lectura automática activada."
+TT_ES[auto.muted]="🔇 Lectura automática de fondo silenciada"
+TT_ES[auto.muted.notify]="Lectura automática silenciada (solo manual)"
+TT_ES[auto.muted.spoken]="Lectura automática silenciada."
+TT_ES[voice.map.invalid]="⚠️ voices.json inválido (se espera {agent:{},pane:{},prefix:bool}): fail-open a la voz global %s"
+TT_ES[voice.map.create_failed]="No se pudo crear %s"
+TT_ES[voice.map.invalid.manage]="voices.json inválido: corrígelo o bórralo para gestionar voces"
+TT_ES[voice.map.invalid.plain]="voices.json inválido: corrígelo o bórralo"
+TT_ES[voice.picker.need_fzf]="❌ fzf no está instalado: el selector de voz por chat lo necesita"
+TT_ES[voice.palette.need_fzf]="❌ fzf no está instalado: la paleta de voz lo necesita para funcionar"
+TT_ES[voice.need_fzf.hint]="   Instálalo (p. ej. 'sudo apt install fzf' o 'brew install fzf') y vuelve a abrirlo."
+TT_ES[voice.picker.global]="(global) → volver a la voz por defecto (%s)"
+TT_ES[voice.picker.header]="Voz para %s %s · enter aplica · esc cancela"
+TT_ES[voice.picker.reset]="✓ %s %s: vuelve a la voz global (%s)"
+TT_ES[voice.picker.reset.spoken]="Voz global restaurada."
+TT_ES[voice.picker.set]="✓ %s %s: voz %s"
+TT_ES[voice.picker.set.spoken]="Voz de este chat cambiada."
+TT_ES[voice.prefix.spoken]="agente: "
+TT_ES[status.title]="━━━ Herdr TTS Status ━━━"
+TT_ES[status.synth]="  Reproducción: ⏳ Sintetizando respuesta de voz (Lock activo)"
+TT_ES[status.paused]="  Reproducción: ⏸️ Pausado en %s (Lock activo)"
+TT_ES[status.speaking_at]="  Reproducción: 🔊 Hablando en %s (Lock activo)"
+TT_ES[status.speaking_now]="  Reproducción: 🔊 Hablando ahora (Lock activo)"
+TT_ES[status.idle]="  Reproducción: ⏹️ En reposo"
+TT_ES[status.auto_muted]="  Auto-lectura: 🔇 Silenciada en PC (Solo manual vía prefix+r)"
+TT_ES[status.auto_on]="  Auto-lectura: 🔊 Activa en altavoces del PC"
+TT_ES[status.global_snooze_on]="  Snooze global: 😴 activo hasta las %s (prefix+Z cicla 5m → 30m → 2h → off)"
+TT_ES[status.global_snooze_off]="  Snooze global: ⚪ Desactivado (prefix+Z cicla 5m → 30m → 2h → off)"
+TT_ES[status.muted_panes]="  Panes silenciados: %s (prefix+m, se reactivan al cerrarse el pane)"
+TT_ES[status.none]="ninguno"
+TT_ES[status.debounce]="  Debounce anti-spam: %ss por (pane, estado) — TTS_DEBOUNCE_SECONDS / --debounce"
+TT_ES[status.scope]="  Alcance auto: %s (focused = solo chat activo; all = cualquiera sin solaparse)"
+TT_ES[status.provider]="  Proveedor:    %s (edge = Edge Neural TTS gratuito; openai = OpenAI TTS; elevenlabs = ElevenLabs; piper = 100%% Offline Local Neural)"
+TT_ES[status.retention_days]="  Audio retenido: %s días (%s) — HERDR_TTS_AUDIO_RETENTION_DAYS"
+TT_ES[status.retention_off_set]="  Audio retenido: apagado (%s) — HERDR_TTS_AUDIO_RETENTION_DAYS"
+TT_ES[status.retention_off_unset]="  Audio retenido: apagado (no definido) — HERDR_TTS_AUDIO_RETENTION_DAYS"
+TT_ES[status.daemon_alive]="  Daemon TTS: vivo (pid %s)"
+TT_ES[status.daemon_down]="  Daemon TTS: no corriendo (arranca con el plugin o --restart-daemon)"
+TT_ES[status.key_not_set]="no configurada"
+TT_ES[status.openai]="  OpenAI TTS:   Modelo: %s | Base URL: %s | API Key: %s"
+TT_ES[status.eleven]="  ElevenLabs:   Modelo: %s | API Key: %s"
+TT_ES[status.piper]="  Piper Local:  Modelo ONNX: %s"
+TT_ES[status.piper.model_default]="(voz por defecto / PATH)"
+TT_ES[status.voice]="  Voz:          %s"
+TT_ES[status.rate]="  Velocidad:    %s"
+TT_ES[status.max_chars]="  Max chars:    %s"
+TT_ES[status.auto_lang]="  Idioma auto:  %s (detección automática y cambio de voz entre ES y EN)"
+TT_ES[status.podcast_on]="  Podcast RSS:  🔔 Activo (http://localhost:%s/podcast.xml | Servidor: --podcast-serve)"
+TT_ES[status.podcast_off]="  Podcast RSS:  ⚪ Desactivado (opcional vía --podcast on | servidor vía --podcast-serve)"
+TT_ES[status.ntfy_on]="  Push móvil:   🔔 Activo (ntfy: %s | Servidor: %s)"
+TT_ES[status.ntfy_off]="  Push móvil:   ⚪ Desactivado (opcional vía --ntfy-topic <topic>)"
+TT_ES[status.redirect_on]="  Redirección:  📱 %s (%s)"
+TT_ES[status.click_through]="  Click directo: %s (on = abrir web al tocar notificación; off = abrir reproductor de audio)"
+TT_ES[status.redirect_off]="  Redirección:  ⚪ Desactivada (opcional vía --web-url <url> o --collie-url <url>)"
+TT_ES[snooze.stage.1]="5 minutos"
+TT_ES[snooze.stage.2]="30 minutos"
+TT_ES[snooze.stage.3]="2 horas"
+TT_ES[snooze.pane.on]="😴 Snooze %s: %s (sin voz hasta las %s)"
+TT_ES[snooze.global.on]="😴 Snooze GLOBAL: %s (todos los agentes en silencio hasta las %s)"
+TT_ES[snooze.pane.off]="🔊 Snooze desactivado en %s"
+TT_ES[snooze.global.off]="🔊 Snooze GLOBAL desactivado (los agentes vuelven a hablar)"
+TT_ES[mute.unmuted]="🔊 Voz reactivada en %s"
+TT_ES[mute.muted]="🔇 Pane %s silenciado (se reactiva al cerrarse el pane)"
+TT_ES[mute.muted.notify]="Pane %s silenciado (auto al cerrar)"
+TT_ES[gate.muted]="%s (%s): %s omitido (pane silenciado con prefix+m)"
+TT_ES[gate.snoozed]="%s (%s): %s omitido (snooze hasta las %s)"
+TT_ES[gate.snoozed_global]="%s (%s): %s omitido (snooze GLOBAL hasta las %s)"
+TT_ES[gate.debounced]="%s (%s): %s repetido en menos de %ss (debounce, omitido)"
+TT_ES[prune.failed]="[retención] ⚠️ Purga del almacén de audio falló (reintento en la próxima hora)"
+TT_ES[watcher.settle_dropped]="done intermedio descartado (volvió a working dentro de la ventana de asentamiento de %ss)"
+TT_ES[watcher.background_done]="terminó en segundo plano (no enfocado, omitiendo voz local)"
+TT_ES[watcher.busy_local]="ya hay otro chat hablando en local (omitido para evitar solapamiento)"
+TT_ES[watcher.local_speak]="vocalizando en altavoces locales"
+TT_ES[daemon.keymap_applied]="🔊 Keymap aplicado desde %s"
+TT_ES[daemon.keymap_failed]="⚠️ keymap apply falló en el arranque; atajos sin cambios."
+TT_ES[daemon.keymap_failed.hint]="   Revísalo con: herdr-tts keymap check"
+TT_ES[daemon.relaunch_failed]="⚠️ No se pudo relanzar el daemon: %s no es ejecutable"
+TT_ES[daemon.restarted]="✓ Daemon reiniciado (pid %s)"
+TT_ES[daemon.restarted_nopid]="⚠️ Daemon relanzado (pid %s) pero el pidfile no apareció; puede seguir inicializando"
+TT_ES[daemon.started_log]="🔊 daemon iniciado (pid %s, scope %s)"
+TT_ES[daemon.starting]="🔊 Iniciando Herdr TTS Daemon (con Mutex y Scope %s)..."
+TT_ES[daemon.exit_clean]="apagado limpio"
+TT_ES[daemon.exit_term]="señal TERM recibida"
+TT_ES[daemon.exit_int]="señal INT recibida"
+TT_ES[daemon.stopped_log]="🛑 daemon detenido (pid %s — %s)"
+TT_ES[daemon.sup.active]="🛰️ supervisor de daemon activo (pid %s, relanzamiento en %ss)"
+TT_ES[daemon.sup.no_child]="🛑 supervisor: %s sin daemon hijo — saliendo (pid %s)"
+TT_ES[daemon.sup.stopping]="🛑 supervisor: %s recibido — parada con el daemon (rc=%s)"
+TT_ES[daemon.sup.deliberate]="🛑 supervisor: parada deliberada del daemon (rc=%s) — sin relanzamiento"
+TT_ES[daemon.died]="⚠️ daemon murió (rc=%s) — relanzando en %ss"
+TT_ES[dash.unknown]="desconocido"
+TT_ES[dash.title]="╔═══ 🎙️  herdr-tts · Panel de voz ════════════════════ %s ═╗"
+TT_ES[dash.global_on]="║ Global  😴 snooze GLOBAL activo · quedan %s (hasta %s)"
+TT_ES[dash.global_off]="║ Global  ⚪ snooze global off · (Z cicla 5m → 30m → 2h → off)"
+TT_ES[dash.auto_on]="🔊 activa"
+TT_ES[dash.auto_muted]="🔇 silenciada"
+TT_ES[dash.engine]="║ Motor   %s%s · %s / %s · %s · %s · %.*s\033[0m · auto-lectura %s"
+TT_ES[dash.engine_fallback_idle]="⚪ En reposo"
+TT_ES[dash.engine_fallback_playing]="🔊 Reproduciendo"
+TT_ES[dash.engine_noanswer]="║ Motor   %s · motor: no responde · auto-lectura %s"
+TT_ES[dash.config]="║ Config  proveedor %s · voz %s (%s) · playback %s · debounce %ss"
+TT_ES[dash.roster_header]="╠═══ Chats (j/k mueve el cursor · m silencia · z snooze) ══════"
+TT_ES[dash.no_data]="║  (sin datos de herdr: CLI no disponible o sin agentes)"
+TT_ES[dash.dropped]="║  … y %d chats más (los que piden atención nunca se ocultan)"
+TT_ES[dash.hist_header]="╠═══ Historial por chat (más reciente arriba) ════════════════"
+TT_ES[dash.hist_group]="║ ── %s · %d %s · último hace %s"
+TT_ES[dash.hist_row]="║    · %s%s · hace %s"
+TT_ES[dash.footer]="╚═══ q salir · j/k chat · m silenciar · z snooze pane · Z snooze global · +/- velocidad ═╝"
+TT_ES[dash.state_playing]="▶ reproduciendo"
+TT_ES[dash.state_paused]="⏸ pausado"
+TT_ES[dash.state_stopped]="⏹ detenido"
+TT_ES[dash.state_synthesizing]="⌛ sintetizando"
+TT_ES[palette.no_entries]="ℹ️ Sin chats ni audios que mostrar en la paleta"
+TT_ES[palette.header]="enter/ctrl-o: enfocar chat · ctrl-m: silenciar pane · ctrl-z: snooze pane · ctrl-r: reproducir audio · ctrl-v: voz del chat · esc: salir"
+TT_ES[palette.focused]="🎯 Chat %s enfocado (la paleta se cierra en 2s)"
+TT_ES[palette.no_audios]="(sin audios) · %s"
+TT_ES[palette.preview.usage]="Uso: herdr-tts --palette-preview <pane_id>"
+TT_ES[palette.preview.no_herdr]="   ⚠️ herdr CLI no disponible (sin datos de agente)"
+TT_ES[palette.preview.agent]="   agente: %s · estado: %s · 🗣 voz: %s"
+TT_ES[palette.preview.agent_plain]="   agente: %s · estado: %s"
+TT_ES[palette.gate.muted]="🔇 silenciado"
+TT_ES[palette.gate.snooze]="😴 snooze %s restantes (hasta %s)"
+TT_ES[palette.gate.debounce]="⏱ debounce activo (%ss)"
+TT_ES[palette.gate.active]="🔊 voz activa"
+TT_ES[palette.turns_header]="── Turnos de audio (recientes primero) ──"
+TT_ES[palette.no_turns]="sin turnos"
+TT_ES[menu.open_ok]="[%s] [menu] open %s: ok (intento %s)"
+TT_ES[menu.open_failed]="[%s] [menu] open %s falló tras %s intentos: %s"
+TT_ES[menu.no_output]="sin salida"
+TT_ES[menu.desc.play]="▶ Play / Stop del chat enfocado"
+TT_ES[menu.desc.pause]="⏸ Pausar / Reanudar"
+TT_ES[menu.desc.stop]="⏹ Stop inmediato"
+TT_ES[menu.desc.tldr]="⚡ TL;DR del chat"
+TT_ES[menu.desc.auto]="🔊 Auto-lectura on/off"
+TT_ES[menu.desc.rewind]="⏪ Rebobinar 10s"
+TT_ES[menu.desc.forward]="⏩ Avanzar 10s"
+TT_ES[menu.desc.next_sentence]="⏭ Frase siguiente"
+TT_ES[menu.desc.prev_sentence]="⏮ Frase anterior"
+TT_ES[menu.desc.mute]="🔇 Mute pane"
+TT_ES[menu.desc.snooze]="😴 Snooze pane"
+TT_ES[menu.desc.snooze_global]="😴 Snooze GLOBAL"
+TT_ES[menu.desc.rate]="🎙 Velocidad ±10%%"
+TT_ES[menu.desc.dashboard]="📊 Dashboard"
+TT_ES[menu.desc.palette]="🎛️ Paleta de voz"
+TT_ES[menu.desc.settings]="⚙️ Ajustes de voz y audio"
+TT_ES[menu.desc.quit]="Salir del menú"
+TT_ES[menu.title]="\e[1m⌨️  herdr-tts · Menú de voz\e[0m"
+TT_ES[menu.hint]="Pulsa UNA tecla: la acción se ejecuta y el menú se cierra (a = ajustes, sin cerrar)."
+TT_ES[menu.open_dashboard]="📊 Cerrando el menú y abriendo el dashboard…"
+TT_ES[menu.open_palette]="🎛️ Cerrando el menú y abriendo la paleta de voz…"
+TT_ES[menu.executed]="Comando de voz ejecutado"
+TT_ES[menu.unknown_key]="\n❓ Tecla no reconocida (%s) — pulsa q para salir\n"
+TT_ES[settings.restarted]="✓ Daemon reiniciado"
+TT_ES[settings.relaunch_failed]="No se pudo relanzar el daemon"
+TT_ES[settings.unknown_key.index]="Tecla no reconocida (%s) — v voz, a audio, n notificaciones, l lectura automática, R reinicia el daemon, q sale"
+TT_ES[settings.save_failed]="No se pudo guardar %s en config.env"
+TT_ES[settings.voices.write_failed]="No se pudo escribir voices.json"
+TT_ES[settings.voice.global]="✓ Voz global: %s (la paleta asigna voces por chat)"
+TT_ES[settings.voice.catalog_down]="Catálogo de voces no disponible (motor sin respuesta): no se cambia la voz"
+TT_ES[settings.voice.prefix]="✓ Prefijo hablado: %s (dice \"agente: \" antes del texto)"
+TT_ES[settings.voice.autoassign]="✓ Auto-asignación: %s (rota voces del proveedor activo por agent_type)"
+TT_ES[settings.voice.autolang_on]="✓ Detección de idioma activada (ES/EN al vuelo)"
+TT_ES[settings.voice.autolang_off]="✓ Detección de idioma desactivada"
+TT_ES[settings.audio.click_on]="✓ Click directo activado (abrirá navegador al pulsar la tarjeta de notificación)"
+TT_ES[settings.audio.click_off]="✓ Click directo desactivado (pulsar la tarjeta abrirá ntfy con reproductor; el botón abrirá web)"
+TT_ES[settings.notif.input_title]="\n Topic de ntfy\n   ej.: herdr-agents\n   Enter vacío = desactivar push\n > "
+TT_ES[settings.notif.input_cancelled]="Entrada cancelada: no se pudo leer el topic"
+TT_ES[settings.notif.off]="✓ Notificaciones móviles de ntfy desactivadas"
+TT_ES[settings.notif.topic_set]="✓ Topic de ntfy configurado: %s"
+TT_ES[settings.notif.podcast_on]="✓ Publicación automática en feed de podcast activada"
+TT_ES[settings.notif.podcast_off]="✓ Publicación automática en feed de podcast desactivada"
+TT_ES[settings.notif.web_input_title]="\n URL de redirección web\n   ej.: https://collie.midominio.com/chat/{pane_id}\n   sin {pane_id} se añade /pane/<id> · Enter vacío = desactivar\n > "
+TT_ES[settings.notif.web_input_cancelled]="Entrada cancelada: no se pudo leer la URL"
+TT_ES[settings.notif.web_off]="✓ Redirección web desactivada (notificaciones estándar sin URL externa)"
+TT_ES[settings.notif.web_set]="✓ URL de redirección configurada: %s"
+TT_ES[settings.autoread.on]="✓ Auto-lectura activada (te lee al terminar cada agente)"
+TT_ES[settings.autoread.off]="✓ Auto-lectura silenciada (solo manual: prefix+r / htr bajo demanda)"
+TT_ES[settings.autoread.rm_failed]="No se pudo eliminar %s"
+TT_ES[settings.autoread.touch_failed]="No se pudo crear %s"
+TT_ES[settings.autoread.scope]="✓ Alcance de auto-lectura: %s"
+TT_ES[settings.autoread.debounce_off]="✓ Debounce desactivado (cada done notifica al instante)"
+TT_ES[settings.autoread.debounce_on]="✓ Ventana anti-spam (debounce): %ss por (pane, estado)"
+TT_ES[settings.unknown_key.voice]="Tecla no reconocida (%s) — p proveedor, g voz global, n prefijo, u auto-asignación, i idioma, q vuelve al índice"
+TT_ES[settings.unknown_key.audio]="Tecla no reconocida (%s) — d destino, c click directo, r retención, s asentamiento, q vuelve al índice"
+TT_ES[settings.unknown_key.notif]="Tecla no reconocida (%s) — t topic ntfy, f podcast, w URL web, q vuelve al índice"
+TT_ES[settings.unknown_key.autoread]="Tecla no reconocida (%s) — v auto-lectura, a alcance, b debounce, q vuelve al índice"
+TT_ES[settings.view.voice]="\e[1m🎙  herdr-tts · Ajustes · Voz\e[0m"
+TT_ES[settings.view.audio]="\e[1m🔊  herdr-tts · Ajustes · Audio\e[0m"
+TT_ES[settings.view.notif]="\e[1m🔔  herdr-tts · Ajustes · Notificaciones\e[0m"
+TT_ES[settings.view.autoread]="\e[1m⚙️  herdr-tts · Ajustes · Lectura automática\e[0m"
+TT_ES[settings.view.index]="\e[1m⚙️  herdr-tts · Ajustes de voz y audio\e[0m"
+TT_ES[settings.view.hint]="Pulsa la tecla del ajuste para ciclar su valor."
+TT_ES[settings.row.provider]=" p  Proveedor TTS:        %s   (edge = gratuito, por defecto)"
+TT_ES[settings.row.provider_install]="    ⚠️  Requiere instalar el modelo antes: agent-tts voice install %s"
+TT_ES[settings.row.voice_global]=" g  Voz global:          %s   (default; la paleta asigna voces por chat)"
+TT_ES[settings.row.prefix]=" n  Prefijo hablado:      %s   (dice \"agente: \" antes del texto)"
+TT_ES[settings.row.autoassign]=" u  Auto-asignación:      %s   (rota voces del proveedor activo por agent_type)"
+TT_ES[settings.row.autolang]=" i  Idioma auto:          %s   (ES/EN al vuelo)"
+TT_ES[settings.row.target]=" d  Destino reproducción: %s"
+TT_ES[settings.row.click]=" c  Click directo:        %s   (on = navegador, off = reproductor)"
+TT_ES[settings.row.retention]=" r  Audio retenido:       %s días   (0 = apagado)"
+TT_ES[settings.row.settle]=" s  Asentamiento done:    %ss   (0 = notifica al instante)"
+TT_ES[settings.row.retention_note]=" r  cicla retención · se aplica al vuelo (sin reiniciar)"
+TT_ES[settings.row.ntfy]=" t  Topic ntfy:           %s   (Enter vacío en t = desactiva)"
+TT_ES[settings.row.podcast]=" f  Podcast feed:         %s   (publica audios en RSS)"
+TT_ES[settings.row.web]=" w  Redirección web:      %s   (Enter vacío en w = desactiva)"
+TT_ES[settings.row.off]="Desactivado"
+TT_ES[settings.row.off_f]="Desactivada"
+TT_ES[settings.row.autoread]=" v  Auto-lectura:         %s"
+TT_ES[settings.autoread.label_on]="🔊 activa (te lee al terminar cada agente)"
+TT_ES[settings.autoread.label_muted]="🔇 silenciada (solo manual: prefix+r / htr bajo demanda)"
+TT_ES[settings.row.scope]=" a  Alcance auto-lectura: %s   (focused = solo chat activo)"
+TT_ES[settings.row.debounce]=" b  Debounce anti-spam:   %ss   (0 = desactivado)"
+TT_ES[settings.index.pick]="Elige una categoría con su tecla:"
+TT_ES[settings.index.voice]=" v  🎙 Voz                  proveedor, voz global, prefijo hablado, auto-asignación, idioma"
+TT_ES[settings.index.audio]=" a  🔊 Audio               destino reproducción, click directo, retención, asentamiento"
+TT_ES[settings.index.notif]=" n  🔔 Notificaciones      topic ntfy, podcast feed, redirección web"
+TT_ES[settings.index.autoread]=" l  ⚙️  Lectura automática  auto-lectura, alcance, debounce"
+TT_ES[settings.index.restart]=" R  reinicia el daemon → aplica el resto de ajustes al instante"
+TT_ES[settings.exit.quit]=" q/Esc salir"
+TT_ES[settings.exit.index]=" q/Esc volver al índice"
+TT_ES[cli.debounce.set]="✓ Ventana anti-spam (debounce): %ss por (pane, estado); 0 = desactivado"
+TT_ES[cli.debounce.invalid]="Error: --debounce requiere un número de segundos (entero ≥ 0)"
+TT_ES[cli.auto.on]="🔊 Lectura automática activada"
+TT_ES[cli.auto.off]="🔇 Lectura automática silenciada"
+TT_ES[cli.scope.set]="✓ Alcance de auto-lectura: %s"
+TT_ES[cli.scope.invalid]="Error: Scope debe ser 'focused' o 'all'"
+TT_ES[cli.ntfy.off]="✓ Notificaciones móviles de ntfy desactivadas"
+TT_ES[cli.ntfy.set]="✓ Topic de ntfy configurado: %s"
+TT_ES[cli.ntfy.server]="✓ Servidor ntfy configurado: %s"
+TT_ES[cli.web.off]="✓ Redirección web desactivada (notificaciones estándar sin URL externa)"
+TT_ES[cli.web.set]="✓ URL de redirección configurada: %s"
+TT_ES[cli.web.label]="✓ Etiqueta de botón web: %s"
+TT_ES[cli.web.label_auto]="✓ Etiqueta de botón web: auto"
+TT_ES[cli.voice.set]="✓ Voz configurada: %s"
+TT_ES[cli.voice.spoken]="Voz cambiada a %s."
+TT_ES[cli.usage.voice_for]="Uso: herdr-tts --voice-for agent|pane <id> [voz|off]"
+TT_ES[cli.voice_prefix.set]="✓ Prefijo hablado: %s"
+TT_ES[cli.usage.voice_prefix]="Uso: herdr-tts --voice-prefix on|off"
+TT_ES[cli.rate.set]="✓ Velocidad configurada: %s"
+TT_ES[cli.rate.spoken]="Velocidad ajustada."
+TT_ES[cli.provider.set]="✓ Proveedor TTS configurado: %s"
+TT_ES[cli.provider.title]="🎙️ Proveedor TTS"
+TT_ES[cli.provider.invalid]="Error: Proveedor inválido '%s'. Opciones válidas: %s"
+TT_ES[cli.piper.set]="✓ Modelo Piper configurado: %s"
+TT_ES[cli.piper.reset]="✓ Modelo Piper reseteado a por defecto"
+TT_ES[cli.openai.key_set]="✓ OpenAI API Key configurada"
+TT_ES[cli.openai.key_removed]="✓ OpenAI API Key eliminada"
+TT_ES[cli.openai.base_set]="✓ OpenAI Base URL configurada: %s"
+TT_ES[cli.openai.model_set]="✓ OpenAI TTS Model configurado: %s"
+TT_ES[cli.eleven.key_set]="✓ ElevenLabs API Key configurada"
+TT_ES[cli.eleven.key_removed]="✓ ElevenLabs API Key eliminada"
+TT_ES[cli.eleven.model_set]="✓ ElevenLabs Model configurado: %s"
+TT_ES[cli.autolang.on]="✓ Detección de idioma y cambio dinámico de voz activado"
+TT_ES[cli.autolang.notify_on]="Activada (cambio dinámico de voz)"
+TT_ES[cli.autolang.title]="🌐 Detección de idioma"
+TT_ES[cli.autolang.off]="✓ Detección de idioma desactivada"
+TT_ES[cli.autolang.notify_off]="Desactivada"
+TT_ES[cli.podcast.on]="✓ Publicación automática en feed de podcast activada"
+TT_ES[cli.podcast.notify_on]="Publicación activada"
+TT_ES[cli.podcast.title]="🎙️ Podcast RSS"
+TT_ES[cli.podcast.off]="✓ Publicación automática en feed de podcast desactivada"
+TT_ES[cli.podcast.notify_off]="Publicación desactivada"
+TT_ES[cli.podcast.port]="✓ Puerto de podcast configurado: %s"
+TT_ES[cli.podcast.serve]="🎙️ Servidor de Podcast RSS iniciado en http://0.0.0.0:%s/podcast.xml"
+TT_ES[skill.published]="✓ Skill publicada en %s"
+TT_ES[skill.published.hint]="  El agente la detecta en su próxima sesión; previsualízala con: cat \"%s\""
+TT_ES[skill.up_to_date]="✓ Skill ya instalada en %s (al día)"
+TT_ES[skill.exists]="✋ %s ya existe — no se sobrescribe."
+TT_ES[skill.exists.hint]="   Conserva tus edits, o ejecuta: herdr-tts skill install %s --force"
+TT_ES[skill.not_regular]="❌ %s existe y no es un fichero regular — elimínalo primero"
+TT_ES[skill.removed]="✓ Skill eliminada de %s"
+TT_ES[skill.not_installed]="✓ %s: no hay skill instalada en %s (nada que hacer)"
+TT_ES[skill.not_managed]="✋ %s no lleva el marcador gestionado por herdr-tts — no se elimina."
+TT_ES[skill.not_managed.hint]="   Parece personalizada; elimínala a mano si eso es lo previsto."
+TT_ES[skill.list_header]="skills de herdr-tts (nivel usuario):"
+TT_ES[skill.list_missing]="  — %-12s %s (no instalada)"
+
+TT_ES[help.usage]="Uso: herdr-tts [OPCIONES]"
+TT_ES[help.main.header]="Acciones principales:"
+TT_ES[help.toggle_play]="  --toggle-play (-r)       Play / Stop toggle en el pane actual enfocado (Tecla: prefix+r)"
+TT_ES[help.tldr]="  --tldr                   Resumen rápido TL;DR del pane actual enfocado (Tecla: prefix+t)"
+TT_ES[help.stop]="  --stop (-s)              Detener inmediatamente cualquier audio sonando (Tecla: prefix+s)"
+TT_ES[help.toggle_pause]="  --toggle-pause           Pausar / Reanudar audio en reproducción (Tecla: prefix+p)"
+TT_ES[help.pause]="  --pause                  Pausar la reproducción actual"
+TT_ES[help.resume]="  --resume                 Reanudar la reproducción pausada"
+TT_ES[help.seek]="  --seek <+/-s>            Avanzar o retroceder segundos (p. ej. +10 o -10)"
+TT_ES[help.rewind]="  --rewind                 Retroceder 10 segundos (Tecla: prefix+[)"
+TT_ES[help.forward]="  --forward                Avanzar 10 segundos (Tecla: prefix+])"
+TT_ES[help.next_sentence]="  --next-sentence          Avanzar a la siguiente frase en reproducción (Tecla: prefix+n)"
+TT_ES[help.prev_sentence]="  --prev-sentence          Retroceder a la frase anterior en reproducción (Tecla: prefix+N)"
+TT_ES[help.next_paragraph]="  --next-paragraph         Avanzar al siguiente párrafo en reproducción"
+TT_ES[help.prev_paragraph]="  --prev-paragraph         Retroceder al párrafo anterior en reproducción"
+TT_ES[help.play]="  --play (-p)              Leer la última respuesta del chat enfocado"
+TT_ES[help.speak]="  --speak <texto>          Síntesis directa: habla el texto indicado y sale"
+TT_ES[help.render_text.args]="  --render-text <salida.mp3> [texto...] [--voice <voz>] [--rate <vel>] [--agent <tipo>] [--session-id <id>]"
+TT_ES[help.render_text.desc]="                           Render a MP3 sin reproducir (superficie contrato v1, para consumidores externos)"
+TT_ES[help.contract_version]="  --contract-version       Imprime la versión del contrato de superficie (v1) y sale"
+TT_ES[help.play_file]="  --play-file <archivo>    Reproducir un archivo de audio (.mp3/.wav) con el motor"
+TT_ES[help.player_status]="  --player-status          Estado del reproductor: posición, duración y estado"
+TT_ES[help.toggle_auto]="  --toggle-auto (-t)       Alternar lectura automática de fondo (Tecla: prefix+v)"
+TT_ES[help.auto_on]="  --auto-on                Auto-lectura siempre activa: te lee al terminar cada agente (default)"
+TT_ES[help.auto_off]="  --auto-off               Silenciar la auto-lectura: solo lectura manual (Tecla: prefix+r)"
+TT_ES[help.scope]="  --scope focused|all      'focused' (solo chat activo) | 'all' (cualquiera sin solapar)"
+TT_ES[help.visual.header]="Experiencia visual y lectura sincronizada:"
+TT_ES[help.highlight]="  --highlight (-H)         Leer respuesta en terminal con resaltado karaoke en tiempo real"
+TT_ES[help.autoscroll]="  --autoscroll             Leer con auto-scroll sincronizado al compás de la voz"
+TT_ES[help.bionic]="  --bionic                 Lectura biónica (fijación en negrita de las primeras letras)"
+TT_ES[help.zen]="  --zen                    Modo Zen (pantalla completa, alto contraste, sin distracciones)"
+TT_ES[help.silence.header]="Silencio granular (snooze y mute por pane, antes de llamar al motor):"
+TT_ES[help.snooze]="  --snooze                 Snooze del pane enfocado: 5m → 30m → 2h → off (Tecla: prefix+z)"
+TT_ES[help.snooze_global]="  --snooze-global          Snooze GLOBAL de todos los agentes, ideal para reuniones (Tecla: prefix+Z)"
+TT_ES[help.mute_pane]="  --mute-pane              Silenciar el pane enfocado; se reactiva al cerrarse el pane (Tecla: prefix+m)"
+TT_ES[help.debounce]="  --debounce <segundos>    Ventana anti-spam por (pane, estado); 0 = desactivado (default: 20)"
+TT_ES[help.gate_check.args]="  --gate-check <pane> <estado> [agente]"
+TT_ES[help.gate_check.desc]="                           Diagnóstico del gating: exit 0 = evento filtrado, exit 1 = llegaría al motor"
+TT_ES[help.voice.header]="Configuración de voz y velocidad:"
+TT_ES[help.voice]="  --voice <nombre>         Cambiar voz (elvira, alvaro, ximena, dalia, jorge)"
+TT_ES[help.rate]="  --rate <velocidad>       Cambiar velocidad (+20%%, +10%%, +0%%)"
+TT_ES[help.auto_lang]="  --auto-lang on|off       Detección automática de idioma y cambio dinámico de voz"
+TT_ES[help.voice_for.args]="  --voice-for agent|pane <id> [voz]"
+TT_ES[help.voice_for.desc]="                           Voz por agente o chat (PRD HT-02); 'off' = voz global; sin voz abre selector fzf"
+TT_ES[help.voice_prefix]="  --voice-prefix on|off    Prefijo hablado con el nombre del agente antes del texto (voices.json \"prefix\")"
+TT_ES[help.rate_up]="  --rate-up                Acelerar lectura +10%% en caliente (Tecla: prefix+=)"
+TT_ES[help.rate_down]="  --rate-down              Ralentizar lectura -10%% en caliente (Tecla: prefix+-)"
+TT_ES[help.providers.header]="Proveedores de síntesis (TTS Providers):"
+TT_ES[help.provider]="  --provider <motor>       Seleccionar proveedor: edge (gratis), openai, elevenlabs, piper (offline)"
+TT_ES[help.piper_model]="  --piper-model <ruta>     Ruta al archivo de modelo Piper ONNX (.onnx)"
+TT_ES[help.openai_key]="  --openai-key <key>       API key para OpenAI TTS"
+TT_ES[help.openai_base_url]="  --openai-base-url <url>  Base URL personalizada (default: https://api.openai.com/v1)"
+TT_ES[help.openai_model]="  --openai-model <model>   Modelo OpenAI TTS (default: tts-1)"
+TT_ES[help.eleven_key]="  --eleven-key <key>       API key para ElevenLabs"
+TT_ES[help.eleven_model]="  --eleven-model <model>   Modelo ElevenLabs (default: eleven_multilingual_v2)"
+TT_ES[help.notif.header]="Notificaciones móviles (opcional):"
+TT_ES[help.ntfy_topic]="  --ntfy-topic <topic>     Topic de ntfy.sh para recibir push con audio en móvil (o 'off')"
+TT_ES[help.ntfy_server]="  --ntfy-server <url>      Servidor ntfy personalizado (default: https://ntfy.sh)"
+TT_ES[help.web_url]="  --web-url <url>          URL opcional de web UI / dashboard (p. ej. Collie) (o 'off')"
+TT_ES[help.collie_url]="  --collie-url <url>       Alias de --web-url para Collie"
+TT_ES[help.web_label]="  --web-label <texto>      Etiqueta personalizada para el botón de acción web"
+TT_ES[help.click_redirect]="  --click-redirect on|off  Redirigir al tocar la tarjeta de notificación (default: off)"
+TT_ES[help.podcast.header]="Podcast RSS privado (para escuchar en móvil con Pocket Casts / Overcast / Apple Podcasts):"
+TT_ES[help.podcast]="  --podcast on|off         Activar publicación automática de audios en el feed RSS"
+TT_ES[help.podcast_serve]="  --podcast-serve [puerto] Iniciar servidor local HTTP de podcast (default: 8844)"
+TT_ES[help.podcast_port]="  --podcast-port <puerto>  Cambiar puerto del servidor podcast (default: 8844)"
+TT_ES[help.podcast_publish]="  --podcast-publish        Publicar respuesta actual directamente al feed de podcast"
+TT_ES[help.keymap.header]="Keymap declarativo (teclas editables por el usuario, validables):"
+TT_ES[help.keymap.init]="  keymap init [--force]    Crear %%s"
+TT_ES[help.keymap.init2]="                           (plantilla con el mapa directo del README; nunca sobrescribe)"
+TT_ES[help.keymap.check]="  keymap check [--json]    Validar el keymap y detectar sombras sobre los"
+TT_ES[help.keymap.check2]="                           defaults de Herdr core (exit 1 solo con errores)"
+TT_ES[help.keymap.emit]="  keymap emit [--style S]  Bloques TOML [[keys.command]] listos para pegar"
+TT_ES[help.keymap.emit2]="                            en config.toml (S: direct | ctrlalt | menu)"
+TT_ES[help.keymap.apply]="  keymap apply [--config P] [--dry-run]"
+TT_ES[help.keymap.apply2]="                            Instalar los bindings en config.toml como bloque"
+TT_ES[help.keymap.apply3]="                            gestionado (backup + rollback; --dry-run = diff)"
+TT_ES[help.keymap.adopt]="   keymap adopt --style S    Escribir el mapa sugerido (direct | ctrlalt | menu)"
+TT_ES[help.keymap.adopt2]="                             en keymap.json (--force para sobrescribir cambios)"
+TT_ES[help.info.header]="Información:"
+TT_ES[help.status]="   --status                 Ver estado actual, lock y configuración"
+TT_ES[help.restart_daemon]="    --restart-daemon         Reinicia el daemon TTS: para el anterior (pidfile"
+TT_ES[help.restart_daemon2]="                             o fallback) y relanza detached; aplica los cambios"
+TT_ES[help.restart_daemon3]="                             de los Ajustes sin esperar al próximo arranque"
+TT_ES[help.dashboard]="   --dashboard              Panel TUI en vivo (pane de Herdr): estado por chat,"
+TT_ES[help.dashboard2]="                            audios agrupados por chat, snoozes e historial"
+TT_ES[help.dashboard3]="                            (controles: q salir · j/k chat · m silenciar · z snooze pane · Z snooze global · +/- velocidad)"
+TT_ES[help.voice_palette]="    --voice-palette          Selector interactivo (fzf, pane de Herdr) de chats y"
+TT_ES[help.voice_palette2]="                            audios: enter enfoca, ctrl-m silencia, ctrl-z snooze"
+TT_ES[help.voice_menu]="    --voice-menu             Menú de voz de una sola tecla (popup): muestra los"
+TT_ES[help.voice_menu2]="                            comandos, lee una tecla, la ejecuta y se cierra;"
+TT_ES[help.voice_menu3]="                            la tecla a abre los Ajustes dentro del menú"
+TT_ES[help.voice_menu4]="                            (suggested: prefix+u → action open-menu)"
+TT_ES[help.voice_settings]="     --voice-settings         Ajustes de voz y audio (popup de acceso directo;"
+TT_ES[help.voice_settings2]="                             también dentro del menú de voz, tecla a): cicla"
+TT_ES[help.voice_settings3]="                             proveedor, auto-lectura, alcance, destino, idioma,"
+TT_ES[help.voice_settings4]="                             podcast, debounce, retención y asentamiento; escribe"
+TT_ES[help.voice_settings5]="                             topic ntfy y URL web a texto libre (config.env)"
+TT_ES[help.palette_preview]="     --palette-preview <pane> Cabecera de chat + turnos de audio del pane (preview fzf)"
+TT_ES[help.exit]="  --help, -h               Mostrar esta ayuda"
+TT_ES[km.usage]="Uso: herdr-tts keymap <subcomando> [opciones]"
+TT_ES[km.intro.1]="Keymap declarativo y editable por el usuario: un archivo JSON"
+TT_ES[km.intro.2]="(%%s) que mapea cada comando de voz a un acorde."
+TT_ES[km.init.1]="  keymap init [--force]   Escribir la plantilla por defecto (nunca"
+TT_ES[km.init.2]="                          sobrescribe un archivo existente; --force reemplaza)"
+TT_ES[km.check.1]="  keymap check [--json]   Validar el archivo (JSON, ids conocidos, sintaxis de"
+TT_ES[km.check.2]="                          acordes, duplicados) y detectar sombras sobre los"
+TT_ES[km.check.3]="                          defaults de Herdr core. Exit 1 solo con errores."
+TT_ES[km.emit.1]="  keymap emit [--style S] Imprimir bloques TOML [[keys.command]] listos para"
+TT_ES[km.emit.2]="                          pegar en ~/.config/herdr/config.toml. Estilos:"
+TT_ES[km.emit.3]="                          direct (default: usa los acordes del archivo),"
+TT_ES[km.emit.4]="                          ctrlalt (familia ctrl+alt sugerida),"
+TT_ES[km.emit.5]="                          menu (un solo acorde libre → popup del menú de voz)"
+TT_ES[km.apply.1]="  keymap apply [--config P] [--dry-run]"
+TT_ES[km.apply.2]="                          Escribir los bindings validados como BLOQUE"
+TT_ES[km.apply.3]="                          GESTIONADO en %%s/herdr/config.toml"
+TT_ES[km.apply.4]="                          (backup .bak-<ts>, se conservan 3; rollback"
+TT_ES[km.apply.5]="                          automático si 'herdr config check' falla;"
+TT_ES[km.apply.6]="                          --dry-run muestra el diff sin escribir)"
+TT_ES[km.adopt.1]="  keymap adopt --style S [--force]"
+TT_ES[km.adopt.2]="                          Sobrescribir keymap.json con el mapa sugerido del"
+TT_ES[km.adopt.3]="                          estilo S (direct, ctrlalt o menu); pide --force si"
+TT_ES[km.adopt.4]="                          el archivo tiene modificaciones de usuario"
+TT_ES[km.chords.1]="Acordes válidos: \"prefix+X\" (X en mayúscula = shift, p. ej. prefix+N),"
+TT_ES[km.chords.2]="\"ctrl+alt+X\", \"ctrl+alt+shift+X\", o null (sin asignar). Los modificadores"
+TT_ES[km.chords.3]="se escriben literalmente; el whitespace se tolera. Override de ruta para"
+TT_ES[km.chords.4]="tests: HERDR_TTS_KEYMAP_FILE."
+
+# The translator: printf-style. Values are FORMAT strings (literal % is
+# written %%). ES wins only when the language is es AND the key exists in
+# TT_ES; a missing EN key falls back to the key name itself so a typo is
+# visible instead of silently empty output.
+tt() { # <key> [printf-args...] → translated text on stdout
+  local key="$1"; shift
+  local msg="${TT_EN[$key]:-$key}"
+  if [[ "$HERDR_TTS_LANG" == "es" && -n "${TT_ES[$key]:-}" ]]; then
+    msg="${TT_ES[$key]}"
+  fi
+  printf "$msg" "$@"
+}
 
 save_config() {
   cat > "$CONFIG_FILE" <<EOF
@@ -317,8 +1297,8 @@ stop_audio() {
   rm -f "$LOCK_FILE" "$PID_FILE" "$IPC_SOCKET"
 
   if [[ "$stopped" == true ]]; then
-    echo "⏹️ Audio detenido"
-    notify_herdr "⏹️ Audio detenido" "Reproducción cancelada"
+    echo "$(tt player.stopped)"
+    notify_herdr "$(tt player.stopped)" "$(tt player.stopped.body)"
   fi
 }
 
@@ -338,7 +1318,7 @@ seek_audio() {
   local res
   res=$("$VENV_PYTHON" "$ENGINE_SCRIPT" --ipc-cmd "seek ${delta}" 2>/dev/null || true)
   if [[ -z "$res" || "$res" == *"Error:"* ]]; then
-    echo "⏹️ No hay audio reproduciéndose actualmente"
+    echo "$(tt player.no_audio)"
     return 1
   fi
 
@@ -363,86 +1343,86 @@ seek_audio() {
   [[ "$delta" =~ ^- ]] && sign="⏪ "
 
   echo "${sign}${delta#+}s (${time_label})"
-  notify_herdr "${sign}${delta#+}s" "Posición: ${time_label}"
+  notify_herdr "${sign}${delta#+}s" "$(tt player.position "$time_label")"
 }
 
 next_sentence_audio() {
   local res
   res=$("$VENV_PYTHON" "$ENGINE_SCRIPT" --ipc-cmd "next-sentence" 2>/dev/null || true)
   if [[ -z "$res" || "$res" == *"Error:"* ]]; then
-    echo "⏹️ No hay audio reproduciéndose actualmente"
+    echo "$(tt player.no_audio)"
     return 1
   fi
 
   local sentence
   sentence=$(echo "$res" | sed -n 's/.*sentence=//p')
   if [[ -z "$sentence" ]]; then
-    sentence="Fin de la locución"
+    sentence="$(tt player.speech_end)"
   fi
 
-  echo "⏭️ Siguiente frase: ${sentence}"
-  notify_herdr "⏭️ Siguiente frase" "${sentence}"
+  echo "$(tt player.next_sentence "$sentence")"
+  notify_herdr "$(tt player.next_sentence.title)" "${sentence}"
 }
 
 prev_sentence_audio() {
   local res
   res=$("$VENV_PYTHON" "$ENGINE_SCRIPT" --ipc-cmd "prev-sentence" 2>/dev/null || true)
   if [[ -z "$res" || "$res" == *"Error:"* ]]; then
-    echo "⏹️ No hay audio reproduciéndose actualmente"
+    echo "$(tt player.no_audio)"
     return 1
   fi
 
   local sentence
   sentence=$(echo "$res" | sed -n 's/.*sentence=//p')
   if [[ -z "$sentence" ]]; then
-    sentence="Inicio de la locución"
+    sentence="$(tt player.speech_start)"
   fi
 
-  echo "⏮️ Frase anterior: ${sentence}"
-  notify_herdr "⏮️ Frase anterior" "${sentence}"
+  echo "$(tt player.prev_sentence "$sentence")"
+  notify_herdr "$(tt player.prev_sentence.title)" "${sentence}"
 }
 
 next_paragraph_audio() {
   local res
   res=$("$VENV_PYTHON" "$ENGINE_SCRIPT" --ipc-cmd "next-paragraph" 2>/dev/null || true)
   if [[ -z "$res" || "$res" == *"Error:"* ]]; then
-    echo "⏹️ No hay audio reproduciéndose actualmente"
+    echo "$(tt player.no_audio)"
     return 1
   fi
 
   local paragraph
   paragraph=$(echo "$res" | sed -n 's/.*paragraph=//p')
   if [[ -z "$paragraph" ]]; then
-    paragraph="Fin de la locución"
+    paragraph="$(tt player.speech_end)"
   fi
 
-  echo "⏭️ Siguiente párrafo: ${paragraph}"
-  notify_herdr "⏭️ Siguiente párrafo" "${paragraph}"
+  echo "$(tt player.next_paragraph "$paragraph")"
+  notify_herdr "$(tt player.next_paragraph.title)" "${paragraph}"
 }
 
 prev_paragraph_audio() {
   local res
   res=$("$VENV_PYTHON" "$ENGINE_SCRIPT" --ipc-cmd "prev-paragraph" 2>/dev/null || true)
   if [[ -z "$res" || "$res" == *"Error:"* ]]; then
-    echo "⏹️ No hay audio reproduciéndose actualmente"
+    echo "$(tt player.no_audio)"
     return 1
   fi
 
   local paragraph
   paragraph=$(echo "$res" | sed -n 's/.*paragraph=//p')
   if [[ -z "$paragraph" ]]; then
-    paragraph="Inicio de la locución"
+    paragraph="$(tt player.speech_start)"
   fi
 
-  echo "⏮️ Párrafo anterior: ${paragraph}"
-  notify_herdr "⏮️ Párrafo anterior" "${paragraph}"
+  echo "$(tt player.prev_paragraph "$paragraph")"
+  notify_herdr "$(tt player.prev_paragraph.title)" "${paragraph}"
 }
 
 toggle_pause_audio() {
   local res
   res=$("$VENV_PYTHON" "$ENGINE_SCRIPT" --ipc-cmd "toggle-pause" 2>/dev/null || true)
   if [[ -z "$res" || "$res" == *"Error:"* ]]; then
-    echo "⏹️ No hay audio reproduciéndose actualmente"
+    echo "$(tt player.no_audio)"
     return 1
   fi
 
@@ -464,11 +1444,11 @@ toggle_pause_audio() {
   time_label=$(printf "%d:%02d / %d:%02d" "$pos_m" "$pos_s" "$tot_m" "$tot_s")
 
   if [[ "$status" == "paused" ]]; then
-    echo "⏸️ Audio pausado (${time_label})"
-    notify_herdr "⏸️ Audio pausado" "${time_label} (reanudable con prefix+p)"
+    echo "$(tt player.paused "$time_label")"
+    notify_herdr "$(tt player.paused.title)" "$(tt player.paused.body "$time_label")"
   else
-    echo "▶️ Audio reanudado (${time_label})"
-    notify_herdr "▶️ Audio reanudado" "${time_label}"
+    echo "$(tt player.resumed "$time_label")"
+    notify_herdr "$(tt player.resumed.plain)" "${time_label}"
   fi
 }
 
@@ -478,9 +1458,9 @@ pause_audio() {
   if [[ "$res" == *"status=playing"* ]]; then
     toggle_pause_audio
   elif [[ "$res" == *"status=paused"* ]]; then
-    echo "⏸️ Audio ya está pausado"
+    echo "$(tt player.already_paused)"
   else
-    echo "⏹️ No hay audio reproduciéndose actualmente"
+    echo "$(tt player.no_audio)"
   fi
 }
 
@@ -488,10 +1468,10 @@ resume_audio() {
   local res
   res=$("$VENV_PYTHON" "$ENGINE_SCRIPT" --ipc-cmd "resume" 2>/dev/null || true)
   if [[ -n "$res" && "$res" != *"Error:"* ]]; then
-    echo "▶️ Audio reanudado"
-    notify_herdr "▶️ Audio reanudado" ""
+    echo "$(tt player.resumed.plain)"
+    notify_herdr "$(tt player.resumed.plain)" ""
   else
-    echo "⏹️ No hay audio reproduciéndose actualmente"
+    echo "$(tt player.no_audio)"
   fi
 }
 
@@ -499,7 +1479,7 @@ get_player_status() {
   local res
   res=$("$VENV_PYTHON" "$ENGINE_SCRIPT" --ipc-cmd "status" 2>/dev/null || true)
   if [[ -z "$res" || "$res" == *"Error:"* ]]; then
-    echo "⏹️ En reposo (sin reproducción activa)"
+    echo "$(tt player.idle)"
     return 0
   fi
   local status pos total
@@ -510,7 +1490,7 @@ get_player_status() {
   sent=$(echo "$res" | sed -n 's/.*sentence=//p')
 
   if [[ "$status" == "synthesizing" ]]; then
-    echo "⏳ Estado: sintetizando respuesta de voz..."
+    echo "$(tt player.synthesizing)"
     return 0
   fi
 
@@ -529,9 +1509,9 @@ get_player_status() {
   local icon="🔊"
   [[ "$status" == "paused" ]] && icon="⏸️"
   if [[ -n "$sent" ]]; then
-    echo "${icon} Estado: ${status} (${time_label}) | Frase: \"${sent}\""
+    echo "$(tt player.state_sentence "$icon" "$status" "$time_label" "$sent")"
   else
-    echo "${icon} Estado: ${status} (${time_label})"
+    echo "$(tt player.state "$icon" "$status" "$time_label")"
   fi
 }
 
@@ -549,8 +1529,8 @@ adjust_rate() {
     TTS_RATE="${new_num}%"
   fi
   save_config
-  echo "✓ Velocidad ajustada: ${TTS_RATE}"
-  notify_herdr "⚡ Velocidad de voz" "${TTS_RATE}"
+  echo "$(tt player.rate_adjusted "$TTS_RATE")"
+  notify_herdr "$(tt player.rate_title)" "${TTS_RATE}"
 }
 
 build_provider_flags() {
@@ -620,7 +1600,7 @@ play_audio_file() {
   # Cheap guard: palette ctrl-r on a "-" placeholder or a deleted stored
   # path must fail gracefully instead of spawning a doomed engine run.
   if [[ ! -s "$file" ]]; then
-    echo "⚠️ Nada que reproducir: el audio no existe o está vacío" >&2
+    echo "$(tt play.missing)" >&2
     return 1
   fi
   stop_audio
@@ -632,7 +1612,7 @@ play_audio_file() {
     "$VENV_PYTHON" "$ENGINE_SCRIPT" --play-file "$file" > "$err_tmp" 2>&1
     local ret=$?
     if [[ $ret -ne 0 ]]; then
-      report_tts_error "reproducción local" "$err_tmp" "$ret"
+      report_tts_error "$(tt play.ctx.local)" "$err_tmp" "$ret"
     fi
     rm -f "$err_tmp"
   ) &
@@ -670,16 +1650,17 @@ send_ntfy_push() {
       target_url="${WEB_URL}"
     fi
 
-    local btn_label="Abrir Web"
+    local btn_label
+    btn_label="$(tt ntfy.open_web)"
     if [[ -n "$WEB_LABEL" ]]; then
-      btn_label="Abrir ${WEB_LABEL}"
+      btn_label="$(tt ntfy.open_label "$WEB_LABEL")"
     elif [[ "${WEB_URL,,}" =~ collie ]]; then
-      btn_label="Abrir Collie"
+      btn_label="$(tt ntfy.open_collie)"
     fi
 
-    action_buttons="view, 📱 ${btn_label}, ${target_url}; copy, 📋 Copiar comando, ${focus_cmd}, clear=true"
+    action_buttons="view, 📱 ${btn_label}, ${target_url}; copy, $(tt ntfy.copy_cmd), ${focus_cmd}, clear=true"
   else
-    action_buttons="copy, 📋 Copiar comando, ${focus_cmd}, clear=true"
+    action_buttons="copy, $(tt ntfy.copy_cmd), ${focus_cmd}, clear=true"
   fi
 
   local title=""
@@ -689,22 +1670,22 @@ send_ntfy_push() {
 
   case "$state" in
     done)
-      title="✅ ${display_name} terminó"
-      body="Agente ${display_name}${workspace:+ en ${workspace}} finalizó su tarea.\n\n→ Para ver: ${focus_cmd}"
+      title="$(tt ntfy.done.title "$display_name")"
+      body="$(tt ntfy.done.body "$display_name" "${workspace:+$(tt ntfy.done.in "$workspace")}" "$focus_cmd")"
       priority="default"
       tags="white_check_mark,robot"
       [[ -n "$audio_path" && -s "$audio_path" ]] && tags="white_check_mark,robot,loudspeaker"
       ;;
     blocked)
-      title="🔴 ${display_name} necesita atención"
-      body="Agente ${display_name}${workspace:+ en ${workspace}} está bloqueado y espera input.\n\n→ Para ver: ${focus_cmd}"
+      title="$(tt ntfy.blocked.title "$display_name")"
+      body="$(tt ntfy.blocked.body "$display_name" "${workspace:+$(tt ntfy.done.in "$workspace")}" "$focus_cmd")"
       priority="high"
       tags="rotating_light,warning"
       [[ -n "$audio_path" && -s "$audio_path" ]] && tags="rotating_light,warning,loudspeaker"
       ;;
     idle)
-      title="💤 ${display_name} idle"
-      body="Agente ${display_name}${workspace:+ en ${workspace}} pasó a idle."
+      title="$(tt ntfy.idle.title "$display_name")"
+      body="$(tt ntfy.idle.body "$display_name" "${workspace:+$(tt ntfy.done.in "$workspace")}")"
       priority="low"
       tags="zzz"
       ;;
@@ -733,10 +1714,10 @@ send_ntfy_push() {
       -H "Message: ${safe_body}"
       -H "Filename: ${pane_id//:/_}-response.mp3"
     )
-    echo "[$(date +%H:%M:%S)] [ntfy] 📤 Enviando push con audio (${audio_bytes} bytes) para ${pane_id} a ${NTFY_TOPIC}"
+    echo "[$(date +%H:%M:%S)] $(tt ntfy.push.audio "$audio_bytes" "$pane_id" "$NTFY_TOPIC")"
     curl -s --connect-timeout 5 --max-time 30 "${headers[@]}" -T "${audio_path}" "${ntfy_url}" > /dev/null 2>&1 || true
   else
-    echo "[$(date +%H:%M:%S)] [ntfy] 📤 Enviando push de texto para ${pane_id} a ${NTFY_TOPIC}"
+    echo "[$(date +%H:%M:%S)] $(tt ntfy.push.text "$pane_id" "$NTFY_TOPIC")"
     curl -s --connect-timeout 5 --max-time 15 "${headers[@]}" -d "${body}" "${ntfy_url}" > /dev/null 2>&1 || true
   fi
 }
@@ -817,32 +1798,32 @@ with open(sys.argv[1], 'rb') as f:
 feed = PodcastFeed(base_dir=sys.argv[2], base_url='http://localhost:' + sys.argv[3])
 feed.add_episode(data, title=sys.argv[4], description=sys.argv[5])
 " "$audio_file" "$pod_dir" "$PODCAST_PORT" "$title" "$description" 2>/dev/null || true
-  echo "[$(date +%H:%M:%S)] 🎙️ Episodio publicado en el feed privado de podcast"
+  echo "[$(date +%H:%M:%S)] $(tt podcast.published)"
 }
 
 publish_current_pane_podcast() {
   local target_pane
   target_pane=$(get_focused_pane)
   if [[ -z "$target_pane" ]]; then
-    echo "⚠️ No hay ningún pane enfocado en Herdr" >&2
+    echo "$(tt read.no_pane)" >&2
     return 1
   fi
   local text
   text=$(read_pane_text "$target_pane")
   if [[ -z "$text" || "$text" =~ ^[[:space:]]*$ ]]; then
-    echo "ℹ️ El pane ${target_pane} no tiene contenido para publicar"
+    echo "$(tt podcast.pane_empty_pub "$target_pane")"
     return 0
   fi
   local tmp_audio="/tmp/herdr-tts-pod-${target_pane//:/_}-$RANDOM.mp3"
-  echo "🎙️ Generando audio y publicando episodio en el feed de podcast..."
+  echo "$(tt podcast.generating)"
   render_text_audio "$tmp_audio" "$text" >/dev/null 2>&1 || true
   if [[ -s "$tmp_audio" ]]; then
-    publish_podcast_episode "Actualización en ${target_pane}" "$text" "$tmp_audio"
-    notify_herdr "🎙️ Podcast RSS" "Nuevo episodio publicado"
-    echo "✓ Episodio publicado con éxito. RSS: http://localhost:${PODCAST_PORT}/podcast.xml"
+    publish_podcast_episode "$(tt podcast.episode_title "$target_pane")" "$text" "$tmp_audio"
+    notify_herdr "$(tt cli.podcast.title)" "$(tt podcast.new_episode)"
+    echo "$(tt podcast.published_ok "$PODCAST_PORT")"
     rm -f "$tmp_audio"
   else
-    echo "Error: Falló la síntesis de audio" >&2
+    echo "$(tt podcast.synth_failed)" >&2
   fi
 }
 
@@ -854,8 +1835,8 @@ read_current_pane() {
   fi
 
   if [[ -z "$target_pane" ]]; then
-    echo "⚠️ No hay ningún pane enfocado en Herdr" >&2
-    notify_herdr "⚠️ Herdr Voice" "No hay ningún pane enfocado"
+    echo "$(tt read.no_pane)" >&2
+    notify_herdr "⚠️ Herdr Voice" "$(tt read.notify.no_pane)"
     return 1
   fi
 
@@ -863,8 +1844,8 @@ read_current_pane() {
   text=$(read_pane_text "$target_pane")
 
   if [[ -z "$text" || "$text" =~ ^[[:space:]]*$ ]]; then
-    echo "ℹ️ El pane ${target_pane} no tiene contenido para leer"
-    notify_herdr "ℹ️ Herdr Voice" "El pane ${target_pane} no tiene contenido para leer"
+    echo "$(tt read.pane_empty "$target_pane")"
+    notify_herdr "ℹ️ Herdr Voice" "$(tt read.pane_empty "$target_pane")"
     return 0
   fi
 
@@ -882,13 +1863,13 @@ read_current_pane() {
   fi
 
   if [[ "$tldr_flag" == "--tldr" || "$tldr_flag" == "tldr" ]]; then
-    echo "▶️ Resumiendo (TL;DR) y leyendo respuesta en ${target_pane}..."
-    notify_herdr "Resumen TL;DR" "Sintetizando resumen para ${target_pane}..."
+    echo "$(tt read.tldr.start "$target_pane")"
+    notify_herdr "$(tt read.tldr.notify.title)" "$(tt read.tldr.notify.body "$target_pane")"
     pv="$(resolve_voice "$target_pane" "$agent_kind")"
     speak_text "$(spoken_prefix "$agent_kind")$text" "$pv" "$TTS_RATE" "--tldr" "$target_pane" "$agent_kind" "$session_id"
   else
-    echo "▶️ Transcribiendo y leyendo respuesta en ${target_pane}..."
-    notify_herdr "Transcribiendo respuesta" "Sintetizando voz para ${target_pane}..."
+    echo "$(tt read.start "$target_pane")"
+    notify_herdr "$(tt read.notify.title)" "$(tt read.notify.body "$target_pane")"
     pv="$(resolve_voice "$target_pane" "$agent_kind")"
     speak_text "$(spoken_prefix "$agent_kind")$text" "$pv" "$TTS_RATE" "" "$target_pane" "$agent_kind" "$session_id"
   fi
@@ -919,8 +1900,8 @@ read_current_pane_visual() {
   fi
 
   if [[ -z "$target_pane" ]]; then
-    echo "⚠️ No hay ningún pane enfocado en Herdr" >&2
-    notify_herdr "⚠️ Herdr Voice" "No hay ningún pane enfocado"
+    echo "$(tt read.no_pane)" >&2
+    notify_herdr "⚠️ Herdr Voice" "$(tt read.notify.no_pane)"
     return 1
   fi
 
@@ -928,8 +1909,8 @@ read_current_pane_visual() {
   text=$(read_pane_text "$target_pane")
 
   if [[ -z "$text" || "$text" =~ ^[[:space:]]*$ ]]; then
-    echo "ℹ️ El pane ${target_pane} no tiene contenido para leer"
-    notify_herdr "ℹ️ Herdr Voice" "El pane ${target_pane} no tiene contenido para leer"
+    echo "$(tt read.pane_empty "$target_pane")"
+    notify_herdr "ℹ️ Herdr Voice" "$(tt read.pane_empty "$target_pane")"
     return 0
   fi
 
@@ -952,9 +1933,9 @@ read_current_pane_visual() {
   stop_audio
   build_provider_flags
 
-  echo "▶️ Iniciando lectura sincronizada en ${target_pane}..."
+  echo "$(tt read.visual.start "$target_pane")"
   if ! "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$TTS_VOICE" --rate "$TTS_RATE" --max-chars "$TTS_MAX_CHARS" "${visual_flags[@]}" "${source_flags[@]}" "${PROVIDER_FLAGS[@]}"; then
-    notify_herdr "❌ Error en TTS (${target_pane})" "Fallo en reproducción o lectura visual" "request"
+    notify_herdr "$(tt err.tts.title "$target_pane")" "$(tt read.visual.failed)" "request"
   fi
 }
 
@@ -967,7 +1948,7 @@ render_pane_audio() {
   fi
 
   if [[ -z "$target_pane" || -z "$output_file" ]]; then
-    echo "Uso: herdr-tts --render-pane <pane_id> <output_file.mp3>" >&2
+    echo "$(tt usage.render_pane)" >&2
     return 1
   fi
 
@@ -1026,7 +2007,7 @@ render_text_audio() {
   local text="${text_args[*]:-}"
 
   if [[ -z "$output_file" ]]; then
-    echo "Uso: herdr-tts --render-text <output_file.mp3> [texto...] [--voice <voz>] [--rate <velocidad>] [--agent <tipo>] [--session-id <id>]" >&2
+    echo "$(tt usage.render_text)" >&2
     return 1
   fi
 
@@ -1076,14 +2057,14 @@ is_auto_muted() {
 toggle_auto() {
   if is_auto_muted; then
     rm -f "$AUTO_MUTE_FILE"
-    echo "🔊 Lectura automática de fondo activada"
-    notify_herdr "🔊 Herdr Voice" "Lectura automática activada"
-    speak_text "Lectura automática activada."
+    echo "$(tt auto.enabled)"
+    notify_herdr "🔊 Herdr Voice" "$(tt auto.enabled.notify)"
+    speak_text "$(tt auto.enabled.spoken)"
   else
     touch "$AUTO_MUTE_FILE"
-    echo "🔇 Lectura automática de fondo silenciada"
-    notify_herdr "🔇 Herdr Voice" "Lectura automática silenciada (solo manual)"
-    speak_text "Lectura automática silenciada."
+    echo "$(tt auto.muted)"
+    notify_herdr "🔇 Herdr Voice" "$(tt auto.muted.notify)"
+    speak_text "$(tt auto.muted.spoken)"
   fi
 }
 
@@ -1110,7 +2091,7 @@ voice_map_refresh() { # reload rules only when the file's mtime changed
   [[ -z "$mtime" ]] && return 0 # no file (yet): no rules, not an error
   if ! jq -e 'type == "object"' "$VOICE_MAP_FILE" >/dev/null 2>&1; then
     if [[ "$VM_LOGGED_ERROR" != "$mtime" ]]; then
-      daemon_log "⚠️ voices.json inválido (se espera {agent:{},pane:{},prefix:bool}): fail-open a la voz global ${TTS_VOICE}"
+      daemon_log "$(tt voice.map.invalid "$TTS_VOICE")"
       VM_LOGGED_ERROR="$mtime"
     fi
     return 0
@@ -1209,13 +2190,13 @@ voice_auto_assign() { # <agent_type> → rotated voice for the active provider
 
 voice_map_set() { # <agent|pane> <id> <voz|off> — jq read-modify-write, atomic tmp+mv
   local kind="$1" id="$2" voice="$3" tmp="${VOICE_MAP_FILE}.tmp.$$"
-  [[ -f "$VOICE_MAP_FILE" ]] || printf '{}\n' > "$VOICE_MAP_FILE" 2>/dev/null || { echo "No se pudo crear ${VOICE_MAP_FILE}" >&2; return 1; }
+  [[ -f "$VOICE_MAP_FILE" ]] || printf '{}\n' > "$VOICE_MAP_FILE" 2>/dev/null || { echo "$(tt voice.map.create_failed "$VOICE_MAP_FILE")" >&2; return 1; }
   if [[ "$voice" == "off" || "$voice" == "global" || "$voice" == "none" ]]; then
     jq --arg k "$kind" --arg id "$id" 'del(.[$k][$id])' "$VOICE_MAP_FILE" > "$tmp" 2>/dev/null \
-      || { rm -f "$tmp"; echo "voices.json inválido: corrígelo o bórralo para gestionar voces" >&2; return 1; }
+      || { rm -f "$tmp"; echo "$(tt voice.map.invalid.manage)" >&2; return 1; }
   else
     jq --arg k "$kind" --arg id "$id" --arg v "$voice" '.[$k] = ((.[$k] // {}) + {($id): $v})' "$VOICE_MAP_FILE" > "$tmp" 2>/dev/null \
-      || { rm -f "$tmp"; echo "voices.json inválido: corrígelo o bórralo para gestionar voces" >&2; return 1; }
+      || { rm -f "$tmp"; echo "$(tt voice.map.invalid.manage)" >&2; return 1; }
   fi
   mv "$tmp" "$VOICE_MAP_FILE"
   VM_MTIME="" # force refresh on the next resolve
@@ -1226,7 +2207,7 @@ voice_map_set_flag() { # <prefix|auto_assign> <on|off> — persist a boolean fla
   [[ "$on" == "on" || "$on" == "true" || "$on" == "1" ]] && on=true || on=false
   [[ -f "$VOICE_MAP_FILE" ]] || printf '{}\n' > "$VOICE_MAP_FILE" 2>/dev/null || return 1
   jq --arg f "$flag" --argjson b "$on" '.[$f] = $b' "$VOICE_MAP_FILE" > "$tmp" 2>/dev/null \
-    || { rm -f "$tmp"; echo "voices.json inválido: corrígelo o bórralo" >&2; return 1; }
+    || { rm -f "$tmp"; echo "$(tt voice.map.invalid.plain)" >&2; return 1; }
   mv "$tmp" "$VOICE_MAP_FILE"
   VM_MTIME=""
 }
@@ -1237,7 +2218,7 @@ spoken_prefix() { # <agent_kind> → "Claude: " when prefix is on (RF-HT-02-5)
 }
 
 show_status() {
-  echo "━━━ Herdr TTS Status ━━━"
+  echo "$(tt status.title)"
   local p_status
   p_status=$("$VENV_PYTHON" "$ENGINE_SCRIPT" --ipc-cmd "status" 2>/dev/null || true)
   if [[ -n "$p_status" && "$p_status" != *"Error:"* ]]; then
@@ -1254,22 +2235,22 @@ show_status() {
     local time_label
     time_label=$(printf "%d:%02d / %d:%02d" "$pos_m" "$pos_s" "$tot_m" "$tot_s")
     if [[ "$status" == "synthesizing" ]]; then
-      echo "  Reproducción: ⏳ Sintetizando respuesta de voz (Lock activo)"
+      echo "$(tt status.synth)"
     elif [[ "$status" == "paused" ]]; then
-      echo "  Reproducción: ⏸️ Pausado en ${time_label} (Lock activo)"
+      echo "$(tt status.paused "$time_label")"
     else
-      echo "  Reproducción: 🔊 Hablando en ${time_label} (Lock activo)"
+      echo "$(tt status.speaking_at "$time_label")"
     fi
   elif is_playing; then
-    echo "  Reproducción: 🔊 Hablando ahora (Lock activo)"
+    echo "$(tt status.speaking_now)"
   else
-    echo "  Reproducción: ⏹️ En reposo"
+    echo "$(tt status.idle)"
   fi
 
   if is_auto_muted; then
-    echo "  Auto-lectura: 🔇 Silenciada en PC (Solo manual vía prefix+r)"
+    echo "$(tt status.auto_muted)"
   else
-    echo "  Auto-lectura: 🔊 Activa en altavoces del PC"
+    echo "$(tt status.auto_on)"
   fi
 
   # Snooze / mute / debounce gating state
@@ -1277,72 +2258,74 @@ show_status() {
   gate_state=$(load_snooze_state)
   g_until=$(jq -r '(.global_snooze_until // 0)' <<<"$gate_state")
   if (( g_until > $(date +%s) )); then
-    echo "  Snooze global: 😴 activo hasta las $(fmt_epoch_clock "$g_until") (prefix+Z cicla 5m → 30m → 2h → off)"
+    echo "$(tt status.global_snooze_on "$(fmt_epoch_clock "$g_until")")"
   else
-    echo "  Snooze global: ⚪ Desactivado (prefix+Z cicla 5m → 30m → 2h → off)"
+    echo "$(tt status.global_snooze_off)"
   fi
   muted_list=$(jq -r '[.panes // {} | to_entries[] | select(.value.muted == true) | .key] | join(", ")' <<<"$gate_state")
-  echo "  Panes silenciados: ${muted_list:-ninguno} (prefix+m, se reactivan al cerrarse el pane)"
-  echo "  Debounce anti-spam: ${TTS_DEBOUNCE_SECONDS}s por (pane, estado) — TTS_DEBOUNCE_SECONDS / --debounce"
+  echo "$(tt status.muted_panes "${muted_list:-$(tt status.none)}")"
+  echo "$(tt status.debounce "$TTS_DEBOUNCE_SECONDS")"
 
-  echo "  Alcance auto: ${TTS_AUTO_SCOPE} (focused = solo chat activo; all = cualquiera sin solaparse)"
-  echo "  Proveedor:    ${TTS_PROVIDER} (edge = Edge Neural TTS gratuito; openai = OpenAI TTS; elevenlabs = ElevenLabs; piper = 100% Offline Local Neural)"
+  echo "$(tt status.scope "$TTS_AUTO_SCOPE")"
+  echo "$(tt status.provider "$TTS_PROVIDER")"
   local ret_raw
   config_get_retention_raw ret_raw
   if [[ "$ret_raw" =~ ^[1-9][0-9]*$ ]] && (( ret_raw > 0 )); then
-    echo "  Audio retenido: ${ret_raw} días (${ret_raw}) — HERDR_TTS_AUDIO_RETENTION_DAYS"
+    echo "$(tt status.retention_days "$ret_raw" "$ret_raw")"
   elif [[ -n "$ret_raw" ]]; then
-    echo "  Audio retenido: apagado (${ret_raw}) — HERDR_TTS_AUDIO_RETENTION_DAYS"
+    echo "$(tt status.retention_off_set "$ret_raw")"
   else
-    echo "  Audio retenido: apagado (no definido) — HERDR_TTS_AUDIO_RETENTION_DAYS"
+    echo "$(tt status.retention_off_unset)"
   fi
   # Daemon liveness: pidfile + /proc check (PID-reuse guarded, same as takeover).
   local d_pid
   d_pid=$(daemon_pid)
   if [[ -n "$d_pid" ]]; then
-    echo "  Daemon TTS: vivo (pid ${d_pid})"
+    echo "$(tt status.daemon_alive "$d_pid")"
   else
-    echo "  Daemon TTS: no corriendo (arranca con el plugin o --restart-daemon)"
+    echo "$(tt status.daemon_down)"
   fi
   if [[ "$TTS_PROVIDER" == "openai" ]]; then
-    local masked_key="no configurada"
+    local masked_key
+    masked_key="$(tt status.key_not_set)"
     if [[ -n "$OPENAI_API_KEY" ]]; then
       masked_key="${OPENAI_API_KEY:0:7}...${OPENAI_API_KEY: -4}"
     fi
-    echo "  OpenAI TTS:   Modelo: ${OPENAI_TTS_MODEL} | Base URL: ${OPENAI_BASE_URL} | API Key: ${masked_key}"
+    echo "$(tt status.openai "$OPENAI_TTS_MODEL" "$OPENAI_BASE_URL" "$masked_key")"
   elif [[ "$TTS_PROVIDER" =~ ^eleven ]]; then
-    local masked_key="no configurada"
+    local masked_key
+    masked_key="$(tt status.key_not_set)"
     if [[ -n "$ELEVENLABS_API_KEY" ]]; then
       masked_key="${ELEVENLABS_API_KEY:0:5}...${ELEVENLABS_API_KEY: -4}"
     fi
-    echo "  ElevenLabs:   Modelo: ${ELEVENLABS_MODEL} | API Key: ${masked_key}"
+    echo "$(tt status.eleven "$ELEVENLABS_MODEL" "$masked_key")"
   elif [[ "$TTS_PROVIDER" == "piper" || "$TTS_PROVIDER" == "local" ]]; then
-    echo "  Piper Local:  Modelo ONNX: ${PIPER_MODEL:-'(voz por defecto / PATH)'}"
+    echo "$(tt status.piper "${PIPER_MODEL:-$(tt status.piper.model_default)}")"
   fi
-  echo "  Voz:          ${TTS_VOICE}"
-  echo "  Velocidad:    ${TTS_RATE}"
-  echo "  Max chars:    ${TTS_MAX_CHARS}"
-  echo "  Idioma auto:  ${TTS_AUTO_LANG} (detección automática y cambio de voz entre ES y EN)"
+  echo "$(tt status.voice "$TTS_VOICE")"
+  echo "$(tt status.rate "$TTS_RATE")"
+  echo "$(tt status.max_chars "$TTS_MAX_CHARS")"
+  echo "$(tt status.auto_lang "$TTS_AUTO_LANG")"
   if [[ "$PODCAST_ENABLED" == "on" ]]; then
-    echo "  Podcast RSS:  🔔 Activo (http://localhost:${PODCAST_PORT}/podcast.xml | Servidor: --podcast-serve)"
+    echo "$(tt status.podcast_on "$PODCAST_PORT")"
   else
-    echo "  Podcast RSS:  ⚪ Desactivado (opcional vía --podcast on | servidor vía --podcast-serve)"
+    echo "$(tt status.podcast_off)"
   fi
 
   if [[ -n "$NTFY_TOPIC" ]]; then
-    echo "  Push móvil:   🔔 Activo (ntfy: ${NTFY_TOPIC} | Servidor: ${NTFY_SERVER})"
+    echo "$(tt status.ntfy_on "$NTFY_TOPIC" "$NTFY_SERVER")"
   else
-    echo "  Push móvil:   ⚪ Desactivado (opcional vía --ntfy-topic <topic>)"
+    echo "$(tt status.ntfy_off)"
   fi
   if [[ -n "$WEB_URL" ]]; then
     local label="${WEB_LABEL:-}"
     if [[ -z "$label" ]]; then
       [[ "${WEB_URL,,}" =~ collie ]] && label="Collie" || label="Web"
     fi
-    echo "  Redirección:  📱 ${label} (${WEB_URL})"
-    echo "  Click directo: ${CLICK_REDIRECT} (on = abrir web al tocar notificación; off = abrir reproductor de audio)"
+    echo "$(tt status.redirect_on "$label" "$WEB_URL")"
+    echo "$(tt status.click_through "$CLICK_REDIRECT")"
   else
-    echo "  Redirección:  ⚪ Desactivada (opcional vía --web-url <url> o --collie-url <url>)"
+    echo "$(tt status.redirect_off)"
   fi
 
   echo "  Plugin root:  ${PLUGIN_ROOT}"
@@ -1356,7 +2339,7 @@ show_status() {
 # so speech never breaks because of leftover state.
 
 SNOOZE_STAGE_SECONDS=(300 1800 7200) # 5m → 30m → 2h
-SNOOZE_STAGE_LABELS=("5 minutos" "30 minutos" "2 horas")
+SNOOZE_STAGE_LABELS=("$(tt snooze.stage.1)" "$(tt snooze.stage.2)" "$(tt snooze.stage.3)")
 
 fmt_epoch_clock() {
   local epoch="$1"
@@ -1390,8 +2373,8 @@ cycle_snooze() {
       target_pane=$(get_focused_pane)
     fi
     if [[ -z "$target_pane" ]]; then
-      echo "⚠️ No hay ningún pane enfocado en Herdr" >&2
-      notify_herdr "⚠️ Herdr Voice" "No hay ningún pane enfocado"
+      echo "$(tt read.no_pane)" >&2
+      notify_herdr "⚠️ Herdr Voice" "$(tt read.notify.no_pane)"
       return 1
     fi
   fi
@@ -1422,16 +2405,16 @@ cycle_snooze() {
     local clock
     clock=$(fmt_epoch_clock "$new_until")
     if [[ "$scope" == "pane" ]]; then
-      msg="😴 Snooze ${target_pane}: ${label} (sin voz hasta las ${clock})"
+      msg="$(tt snooze.pane.on "$target_pane" "$label" "$clock")"
     else
-      msg="😴 Snooze GLOBAL: ${label} (todos los agentes en silencio hasta las ${clock})"
+      msg="$(tt snooze.global.on "$label" "$clock")"
     fi
   else
     new_until=0
     if [[ "$scope" == "pane" ]]; then
-      msg="🔊 Snooze desactivado en ${target_pane}"
+      msg="$(tt snooze.pane.off "$target_pane")"
     else
-      msg="🔊 Snooze GLOBAL desactivado (los agentes vuelven a hablar)"
+      msg="$(tt snooze.global.off)"
     fi
   fi
 
@@ -1458,8 +2441,8 @@ toggle_pane_mute() {
     target_pane=$(get_focused_pane)
   fi
   if [[ -z "$target_pane" ]]; then
-    echo "⚠️ No hay ningún pane enfocado en Herdr" >&2
-    notify_herdr "⚠️ Herdr Voice" "No hay ningún pane enfocado"
+    echo "$(tt read.no_pane)" >&2
+    notify_herdr "⚠️ Herdr Voice" "$(tt read.notify.no_pane)"
     return 1
   fi
 
@@ -1469,13 +2452,13 @@ toggle_pane_mute() {
 
   if [[ "$muted" == "true" ]]; then
     state=$(jq -c --arg p "$target_pane" '.panes[$p].muted = false' <<<"$state")
-    echo "🔊 Voz reactivada en ${target_pane}"
-    notify_herdr "🔊 Herdr TTS" "Voz reactivada en ${target_pane}"
+    echo "$(tt mute.unmuted "$target_pane")"
+    notify_herdr "🔊 Herdr TTS" "$(tt mute.unmuted "$target_pane")"
   else
     state=$(jq -c --arg p "$target_pane" \
       '.panes = ((.panes // {}) + {($p): ((.panes[$p] // {}) + {muted: true})})' <<<"$state")
-    echo "🔇 Pane ${target_pane} silenciado (se reactiva al cerrarse el pane)"
-    notify_herdr "🔇 Herdr TTS" "Pane ${target_pane} silenciado (auto al cerrar)"
+    echo "$(tt mute.muted "$target_pane")"
+    notify_herdr "🔇 Herdr TTS" "$(tt mute.muted.notify "$target_pane")"
   fi
   save_snooze_state "$state" || true
 }
@@ -1660,28 +2643,28 @@ gate_agent_event() {
   # 1. Per-pane mute (lifecycle-tied, cleared on pane close)
   muted=$(jq -r --arg p "$pane_id" '(.panes[$p].muted // false)' <<<"$state")
   if [[ "$muted" == "true" ]]; then
-    echo "[$(date +%H:%M:%S)] ${agent_name} (${pane_id}): ${status} omitido (pane silenciado con prefix+m)"
+    echo "[$(date +%H:%M:%S)] $(tt gate.muted "$agent_name" "$pane_id" "$status")"
     return 0
   fi
 
   # 2. Per-pane snooze
   until_ts=$(jq -r --arg p "$pane_id" '(.panes[$p].snooze_until // 0)' <<<"$state")
   if (( until_ts > now )); then
-    echo "[$(date +%H:%M:%S)] ${agent_name} (${pane_id}): ${status} omitido (snooze hasta las $(fmt_epoch_clock "$until_ts"))"
+    echo "[$(date +%H:%M:%S)] $(tt gate.snoozed "$agent_name" "$pane_id" "$status" "$(fmt_epoch_clock "$until_ts")")"
     return 0
   fi
 
   # 3. Global snooze (meetings / focus)
   until_ts=$(jq -r '(.global_snooze_until // 0)' <<<"$state")
   if (( until_ts > now )); then
-    echo "[$(date +%H:%M:%S)] ${agent_name} (${pane_id}): ${status} omitido (snooze GLOBAL hasta las $(fmt_epoch_clock "$until_ts"))"
+    echo "[$(date +%H:%M:%S)] $(tt gate.snoozed_global "$agent_name" "$pane_id" "$status" "$(fmt_epoch_clock "$until_ts")")"
     return 0
   fi
 
   # 4. Anti-spam debounce keyed by (pane_id, status)
   last_seen=$(jq -r --arg p "$pane_id" --arg s "$status" '(.debounce[$p][$s] // 0)' <<<"$state")
   if (( now - last_seen < TTS_DEBOUNCE_SECONDS )); then
-    echo "[$(date +%H:%M:%S)] ${agent_name} (${pane_id}): ${status} repetido en menos de ${TTS_DEBOUNCE_SECONDS}s (debounce, omitido)"
+    echo "[$(date +%H:%M:%S)] $(tt gate.debounced "$agent_name" "$pane_id" "$status" "$TTS_DEBOUNCE_SECONDS")"
     return 0
   fi
 
@@ -1866,7 +2849,7 @@ audio_store_prune() {
   # Arm the gate before spawning: one attempt per hour even on failure.
   touch "$AUDIO_PRUNE_STAMP" 2>/dev/null || true
   if ! "$VENV_PYTHON" -c 'from agent_tts import audio_store; audio_store.prune_expired()' >/dev/null 2>&1; then
-    echo "[$(date +%H:%M:%S)] [retención] ⚠️ Purga del almacén de audio falló (reintento en la próxima hora)"
+    echo "[$(date +%H:%M:%S)] $(tt prune.failed)"
   fi
   return 0
 }
@@ -1902,7 +2885,7 @@ watch_agent_pane() {
       local settled_state
       settled_state=$(herdr agent get "$pane_id" 2>/dev/null | jq -r '.result.agent.agent_status // .result.agent_status // "unknown"' 2>/dev/null || echo "unknown")
       if [[ "$settled_state" == "working" ]]; then
-        echo "[$(date +%H:%M:%S)] ${agent_name} (${pane_id}): done intermedio descartado (volvió a working dentro de la ventana de asentamiento de ${TTS_SETTLE_SECONDS}s)"
+        echo "[$(date +%H:%M:%S)] ${agent_name} (${pane_id}): $(tt watcher.settle_dropped "$TTS_SETTLE_SECONDS")"
         new_state="working"
       elif [[ "$settled_state" != "unknown" && "$settled_state" != "$new_state" ]]; then
         new_state="$settled_state"
@@ -1999,18 +2982,18 @@ watch_agent_pane() {
             local current_focused
             current_focused=$(get_focused_pane)
             if [[ "$current_focused" != "$pane_id" ]]; then
-              echo "[$(date +%H:%M:%S)] ${agent_name} (${pane_id}): terminó en segundo plano (no enfocado, omitiendo voz local)"
+              echo "[$(date +%H:%M:%S)] ${agent_name} (${pane_id}): $(tt watcher.background_done)"
               should_speak_local=false
             fi
           fi
 
           if is_playing; then
-            echo "[$(date +%H:%M:%S)] ${agent_name} (${pane_id}): ya hay otro chat hablando en local (omitido para evitar solapamiento)"
+            echo "[$(date +%H:%M:%S)] ${agent_name} (${pane_id}): $(tt watcher.busy_local)"
             should_speak_local=false
           fi
 
           if [[ "$should_speak_local" == true && -s "$render_target" ]]; then
-            echo "[$(date +%H:%M:%S)] ${agent_name} (${pane_id}): vocalizando en altavoces locales"
+            echo "[$(date +%H:%M:%S)] ${agent_name} (${pane_id}): $(tt watcher.local_speak)"
             play_audio_file "$render_target"
           fi
 
@@ -2049,10 +3032,10 @@ daemon_keymap_autostart() {
   if keymap_apply "" 0 >/dev/null 2>&1; then
     [[ -f "$target" ]] && after=$(md5sum "$target" 2>/dev/null | cut -d' ' -f1)
     [[ -n "$after" && "$after" != "$before" ]] \
-      && echo "🔊 Keymap aplicado desde $(basename "$KEYMAP_FILE")"
+      && echo "$(tt daemon.keymap_applied "$(basename "$KEYMAP_FILE")")"
   else
-    echo "⚠️ keymap apply falló en el arranque; atajos sin cambios." >&2
-    echo "   Revísalo con: herdr-tts keymap check" >&2
+    echo "$(tt daemon.keymap_failed)" >&2
+    echo "$(tt daemon.keymap_failed.hint)" >&2
   fi
 }
 
@@ -2206,7 +3189,7 @@ daemon_restart() {
   [[ -f "$DAEMON_PID_FILE" ]] && prev_pid=$(cat "$DAEMON_PID_FILE" 2>/dev/null || true)
   daemon_stop_running
   if [[ ! -x "$SCRIPT" ]]; then
-    echo "⚠️ No se pudo relanzar el daemon: $SCRIPT no es ejecutable" >&2
+    echo "$(tt daemon.relaunch_failed "$SCRIPT")" >&2
     return 1
   fi
   if command -v setsid >/dev/null 2>&1; then
@@ -2219,21 +3202,21 @@ daemon_restart() {
     if [[ -f "$DAEMON_PID_FILE" ]]; then
       new_pid=$(cat "$DAEMON_PID_FILE" 2>/dev/null || true)
       if [[ "$new_pid" =~ ^[0-9]+$ && "$new_pid" != "$prev_pid" ]]; then
-        echo "✓ Daemon reiniciado (pid ${new_pid})" >&2
+        echo "$(tt daemon.restarted "$new_pid")" >&2
         return 0
       fi
     fi
     sleep 0.1
   done
-  echo "⚠️ Daemon relanzado (pid ${spawn_pid}) pero el pidfile no apareció; puede seguir inicializando" >&2
+  echo "$(tt daemon.restarted_nopid "$spawn_pid")" >&2
   return 0
 }
 
 run_daemon() {
   # Startup line lands in daemon.log even when stdout is /dev/null (a
   # --restart-daemon relaunch): a silent start or death can never happen.
-  daemon_log "🔊 daemon iniciado (pid $$, scope ${TTS_AUTO_SCOPE})"
-  echo "🔊 Iniciando Herdr TTS Daemon (con Mutex y Scope ${TTS_AUTO_SCOPE})..."
+  daemon_log "$(tt daemon.started_log "$$" "$TTS_AUTO_SCOPE")"
+  echo "$(tt daemon.starting "$TTS_AUTO_SCOPE")"
   show_status
   daemon_takeover
 
@@ -2243,7 +3226,7 @@ run_daemon() {
   daemon_keymap_autostart
 
   CHILD_PIDS=()
-  DAEMON_EXIT_REASON="apagado limpio"
+  DAEMON_EXIT_REASON="$(tt daemon.exit_clean)"
   cleanup() {
     for pid in "${CHILD_PIDS[@]:-}"; do
       kill "$pid" 2>/dev/null || true
@@ -2251,13 +3234,13 @@ run_daemon() {
     rm -f /tmp/herdr-tts-watcher-*.lock 2>/dev/null || true
     rm -f "$DAEMON_PID_FILE" 2>/dev/null || true
     stop_audio
-    daemon_log "🛑 daemon detenido (pid $$ — ${DAEMON_EXIT_REASON})"
+    daemon_log "$(tt daemon.stopped_log "$$" "$DAEMON_EXIT_REASON")"
     exit 0
   }
   # Signals mark the exit reason and reuse the EXIT cleanup (trap order:
   # TERM/INT handlers exit, which fires the cleanup trap last).
-  trap 'DAEMON_EXIT_REASON="señal TERM recibida"; exit 0' TERM
-  trap 'DAEMON_EXIT_REASON="señal INT recibida"; exit 0' INT
+  trap "DAEMON_EXIT_REASON=\"$(tt daemon.exit_term)\"; exit 0" TERM
+  trap "DAEMON_EXIT_REASON=\"$(tt daemon.exit_int)\"; exit 0" INT
   trap cleanup EXIT
 
   while true; do
@@ -2327,7 +3310,7 @@ run_daemon_supervised() {
     if [[ -n "${child_pid:-}" ]] && kill -0 "$child_pid" 2>/dev/null; then
       kill -"$forward_sig" "$child_pid" 2>/dev/null || true
     else
-      daemon_log "🛑 supervisor: ${forward_sig} sin daemon hijo — saliendo (pid $$)"
+      daemon_log "$(tt daemon.sup.no_child "$forward_sig" "$$")"
       exit 0
     fi
   }
@@ -2341,7 +3324,7 @@ run_daemon_supervised() {
   trap '_sup_forward TERM' TERM
   trap '_sup_reap' EXIT
 
-  daemon_log "🛰️ supervisor de daemon activo (pid $$, relanzamiento en ${SUPERVISOR_BACKOFF}s)"
+  daemon_log "$(tt daemon.sup.active "$$" "$SUPERVISOR_BACKOFF")"
   while true; do
     forward_sig=""
     "$SCRIPT" _daemon &
@@ -2351,15 +3334,15 @@ run_daemon_supervised() {
     if [[ -n "$forward_sig" ]]; then
       wait "$child_pid" 2>/dev/null || true # reap the signaled child
       child_pid=""
-      daemon_log "🛑 supervisor: ${forward_sig} recibido — parada con el daemon (rc=${rc})"
+      daemon_log "$(tt daemon.sup.stopping "$forward_sig" "$rc")"
       exit 0
     fi
     child_pid=""
     if ! daemon_supervisor_should_relaunch "$rc"; then
-      daemon_log "🛑 supervisor: parada deliberada del daemon (rc=${rc}) — sin relanzamiento"
+      daemon_log "$(tt daemon.sup.deliberate "$rc")"
       exit 0
     fi
-    daemon_log "⚠️ daemon murió (rc=${rc}) — relanzando en ${SUPERVISOR_BACKOFF}s"
+    daemon_log "$(tt daemon.died "$rc" "$SUPERVISOR_BACKOFF")"
     sleep "$SUPERVISOR_BACKOFF"
   done
 }
@@ -2591,14 +3574,14 @@ dashboard_engine_text() {
   printf '%s' "$1" | sed -n 's/.*text=//p'
 }
 
-# Spanish label for the engine state word reported by the IPC payload.
+# Localized label for the engine state word reported by the IPC payload.
 dashboard_engine_state_label() {
   case "$1" in
-    playing)      printf '▶ reproduciendo' ;;
-    paused)       printf '⏸ pausado' ;;
-    stopped)      printf '⏹ detenido' ;;
-    synthesizing) printf '⌛ sintetizando' ;;
-    *)            printf '%s' "${1:-desconocido}" ;;
+    playing)      printf '%s' "$(tt dash.state_playing)" ;;
+    paused)       printf '%s' "$(tt dash.state_paused)" ;;
+    stopped)      printf '%s' "$(tt dash.state_stopped)" ;;
+    synthesizing) printf '%s' "$(tt dash.state_synthesizing)" ;;
+    *)            printf '%s' "${1:-$(tt dash.unknown)}" ;;
   esac
 }
 
@@ -2800,7 +3783,7 @@ dashboard_render() {
   local frame="" roster_fmt
   roster_fmt="║ %s%s%s %s %-${DASH_W_AGENT}s%s\033[0m"
 
-  _dash_add '╔═══ 🎙️  herdr-tts · Panel de voz ════════════════════ %s ═╗' "$(date +%H:%M:%S)"
+  _dash_add '%s' "$(tt dash.title "$(date +%H:%M:%S)")"
 
   # Single jq pass over the cached gate state: line 1 = global summary,
   # then one TSV row per tracked pane (muted, snooze_until, last event
@@ -2833,19 +3816,19 @@ dashboard_render() {
   ' <<<"$state" 2>/dev/null || true)
 
   if (( g_until > now )); then
-    _dash_add '║ Global  😴 snooze GLOBAL activo · quedan %s (hasta %s)' \
-      "$(fmt_mmss $(( g_until - now )))" "$(fmt_epoch_clock "$g_until")"
+    _dash_add '%s' "$(tt dash.global_on "$(fmt_mmss $(( g_until - now )))" "$(fmt_epoch_clock "$g_until")")"
   else
-    _dash_add '║ Global  ⚪ snooze global off · (Z cicla 5m → 30m → 2h → off)'
+    _dash_add '%s' "$(tt dash.global_off)"
   fi
 
   # Motor line (v2): live IPC status when the engine answers — colored
   # state, mm:ss progress, provider/voice and a truncated text snippet.
   # Otherwise the v1 static lock-file fallback stays, upgraded with an
   # explicit "motor: no responde" fail-open note.
-  local auto_label="🔊 activa"
+  local auto_label
+  auto_label="$(tt dash.auto_on)"
   if is_auto_muted; then
-    auto_label="🔇 silenciada"
+    auto_label="$(tt dash.auto_muted)"
   fi
   if [[ -n "${DASH_ENGINE_STATUS:-}" ]]; then
     local e_state e_pos e_total e_provider e_voice e_text e_color
@@ -2863,21 +3846,20 @@ dashboard_render() {
       synthesizing) e_color=$'\033[36m' ;;
       *)            e_color=$'\033[90m' ;;
     esac
-    _dash_add '║ Motor   %s%s · %s / %s · %s · %s · %.*s\033[0m · auto-lectura %s' \
-      "$e_color" "$(dashboard_engine_state_label "$e_state")" \
+    _dash_add '%s' "$(tt dash.engine "$e_color" "$(dashboard_engine_state_label "$e_state")" \
       "$(fmt_mmss "${e_pos%%.*}")" "$(fmt_mmss "${e_total%%.*}")" \
       "${e_provider:-?}" "${e_voice:-?}" \
       "$DASH_W_SNIPPET" "${e_text:-—}" \
-      "$auto_label"
+      "$auto_label")"
   else
-    local engine_label="⚪ En reposo"
+    local engine_label
+    engine_label="$(tt dash.engine_fallback_idle)"
     if is_playing; then
-      engine_label="🔊 Reproduciendo"
+      engine_label="$(tt dash.engine_fallback_playing)"
     fi
-    _dash_add '║ Motor   %s · motor: no responde · auto-lectura %s' "$engine_label" "$auto_label"
+    _dash_add '%s' "$(tt dash.engine_noanswer "$engine_label" "$auto_label")"
   fi
-  _dash_add '║ Config  proveedor %s · voz %s (%s) · playback %s · debounce %ss' \
-    "$TTS_PROVIDER" "$TTS_VOICE" "$TTS_RATE" "${TTS_PLAYBACK:-local}" "$TTS_DEBOUNCE_SECONDS"
+  _dash_add '%s' "$(tt dash.config "$TTS_PROVIDER" "$TTS_VOICE" "$TTS_RATE" "${TTS_PLAYBACK:-local}" "$TTS_DEBOUNCE_SECONDS")"
 
   # v3.1 height budget: the frame may never exceed LINES-1 rows (the
   # last line's newline lands on the bottom row without scrolling).
@@ -2912,10 +3894,10 @@ dashboard_render() {
   dashboard_order_roster $(( avail - hist_budget ))
   n=${#DASH_PANES[@]} # the roster cap may have shrunk the visible roster
 
-  _dash_add '╠═══ Chats (j/k mueve el cursor · m silencia · z snooze) ══════'
+  _dash_add '%s' "$(tt dash.roster_header)"
   local i pid agent st title marker color icon overlay overlay_lbl rv
   if (( n == 0 )); then
-    _dash_add '║  (sin datos de herdr: CLI no disponible o sin agentes)'
+    _dash_add '%s' "$(tt dash.no_data)"
   fi
   for (( i = 0; i < n; i++ )); do
     pid="${DASH_PANES[i]}"
@@ -2956,7 +3938,7 @@ dashboard_render() {
     _dash_add "$roster_fmt" "$marker" "$color" "$icon" "$title" "$agent" "$overlay"
   done
   if (( DASH_DROPPED > 0 )); then
-    _dash_add '║  … y %d chats más (los que piden atención nunca se ocultan)' "$DASH_DROPPED"
+    _dash_add '%s' "$(tt dash.dropped "$DASH_DROPPED")"
   fi
 
   # History grouped per chat (v3): header + last audios per group, newest
@@ -2964,7 +3946,7 @@ dashboard_render() {
   # Hidden when the ledger is empty OR when the height budget shrank it
   # away (hist_budget == 0).
   if (( hist_budget > 0 )); then
-    _dash_add '╠═══ Historial por chat (más reciente arriba) ════════════════'
+    _dash_add '%s' "$(tt dash.hist_header)"
     local remaining=$hist_budget gi k ts epoch dur age_lbl dur_lbl gtitle gcount audio_word
     local rest hist_audio replay_marker
     local -a parts_arr=()
@@ -2984,7 +3966,7 @@ dashboard_render() {
         age_lbl="-"
       fi
       dashboard_fit gtitle "$gtitle" "$DASH_W_HIST_TITLE"
-      _dash_add '║ ── %s · %d %s · último hace %s' "$gtitle" "$gcount" "$audio_word" "$age_lbl"
+      _dash_add '%s' "$(tt dash.hist_group "$gtitle" "$gcount" "$audio_word" "$age_lbl")"
       remaining=$(( remaining - 1 ))
       # Last ≤3 audios, newest first (items are stored chronological as
       # iso|epoch|duration|path quads; path is "-" when the audio was
@@ -3011,13 +3993,13 @@ dashboard_render() {
         if [[ -n "$hist_audio" && "$hist_audio" != "-" && -f "$hist_audio" ]]; then
           replay_marker="▶ "
         fi
-        _dash_add '║    · %s%s · hace %s' "$replay_marker" "$dur_lbl" "$age_lbl"
+        _dash_add '%s' "$(tt dash.hist_row "$replay_marker" "$dur_lbl" "$age_lbl")"
         remaining=$(( remaining - 1 ))
       done
     done
   fi
 
-  _dash_add '╚═══ q salir · j/k chat · m silenciar · z snooze pane · Z snooze global · +/- velocidad ═╝'
+  _dash_add '%s' "$(tt dash.footer)"
   if [[ -n "$msg" ]]; then
     _dash_add '   » [%s] %s' "${msg_time:-}" "$msg"
   fi
@@ -3124,8 +4106,8 @@ run_dashboard() {
 # ─── Voice palette (v0.11, fzf popup) ────────────────────────
 run_voice_for_picker() { # <agent|pane> <id> — fzf voice picker (RF-HT-02-6, HT-11)
   if ! command -v fzf >/dev/null 2>&1; then
-    echo "❌ fzf no está instalado: el selector de voz por chat lo necesita" >&2
-    echo "   Instálalo (p. ej. 'sudo apt install fzf' o 'brew install fzf') y vuelve a abrirlo." >&2
+    echo "$(tt voice.picker.need_fzf)" >&2
+    echo "$(tt voice.need_fzf.hint)" >&2
     return 1
   fi
   local sel
@@ -3140,22 +4122,22 @@ run_voice_for_picker() { # <agent|pane> <id> — fzf voice picker (RF-HT-02-6, H
   if [[ -z "$_cv" ]] && engine_catalog_refresh; then
     _cv="${ENGINE_CAT_VOICES[$_canon]:-}"
   fi
-  printf -v picker_lines '(global) → volver a la voz por defecto (%s)\n' "$TTS_VOICE"
+  printf -v picker_lines '%s\n' "$(tt voice.picker.global "$TTS_VOICE")"
   if [[ -n "$_cv" ]]; then
     picker_lines+="$(printf '%s\n' $_cv)"
   fi
   sel=$(printf '%s' "$picker_lines" | fzf \
     --reverse \
     --height 100% \
-    --header "Voz para $1 $2 · enter aplica · esc cancela") || return 0
+    --header "$(tt voice.picker.header "$1" "$2")") || return 0
   if [[ "$sel" == \(*\)* ]]; then
     voice_map_set "$1" "$2" off || return 1
-    echo "✓ ${1} ${2}: vuelve a la voz global (${TTS_VOICE})"
-    speak_text "Voz global restaurada."
+    echo "$(tt voice.picker.reset "$1" "$2" "$TTS_VOICE")"
+    speak_text "$(tt voice.picker.reset.spoken)" "$sel"
   else
     voice_map_set "$1" "$2" "$sel" || return 1
-    echo "✓ ${1} ${2}: voz ${sel}"
-    speak_text "Voz de este chat cambiada." "$sel"
+    echo "$(tt voice.picker.set "$1" "$2" "$sel")"
+    speak_text "$(tt voice.picker.set.spoken)" "$sel"
   fi
 }
 
@@ -3258,7 +4240,7 @@ palette_build_entries() {
     chat_title="${p_title[$pid2]:-$pid2}"
     palette_trunc chat_title "$chat_title" "$PALETTE_TITLE_CHARS"
     # Trailing "-" keeps fzf {4} positional stability across all rows.
-    entries+=("(sin audios) · ${chat_title}"$'\t'"${pid2}"$'\t'"chat"$'\t'"-")
+    entries+=("$(tt palette.no_audios "$chat_title")"$'\t'"${pid2}"$'\t'"chat"$'\t'"-")
   done
 
   local e
@@ -3270,15 +4252,15 @@ palette_build_entries() {
 
 run_voice_palette() {
   if ! command -v fzf >/dev/null 2>&1; then
-    echo "❌ fzf no está instalado: la paleta de voz lo necesita para funcionar" >&2
-    echo "   Instálalo (p. ej. 'sudo apt install fzf' o 'brew install fzf') y vuelve a abrirla." >&2
+    echo "$(tt voice.palette.need_fzf)" >&2
+    echo "$(tt voice.need_fzf.hint)" >&2
     return 1
   fi
 
   local -a entries=()
   mapfile -t entries < <(palette_build_entries)
   if (( ${#entries[@]} == 0 )); then
-    echo "ℹ️ Sin chats ni audios que mostrar en la paleta"
+    echo "$(tt palette.no_entries)"
     return 0
   fi
 
@@ -3292,7 +4274,7 @@ run_voice_palette() {
     --with-nth 1 \
     --reverse \
     --height 100% \
-    --header 'enter/ctrl-o: enfocar chat · ctrl-m: silenciar pane · ctrl-z: snooze pane · ctrl-r: reproducir audio · ctrl-v: voz del chat · esc: salir' \
+    --header "$(tt palette.header)" \
     --preview "'$SCRIPT' --palette-preview {2}" \
     --preview-window 'right:50%:wrap' \
     --bind 'ctrl-o:accept' \
@@ -3304,7 +4286,7 @@ run_voice_palette() {
   pane_id=$(printf '%s' "$sel" | cut -f2)
   [[ -z "$pane_id" ]] && return 0
   herdr pane focus "$pane_id" >/dev/null 2>&1 || true
-  echo "🎯 Chat ${pane_id} enfocado (la paleta se cierra en 2s)"
+  echo "$(tt palette.focused "$pane_id")"
   sleep 2
   return 0
 }
@@ -3314,7 +4296,7 @@ run_voice_palette() {
 palette_preview() { # <pane_id>
   local pane_id="${1:-}"
   if [[ -z "$pane_id" ]]; then
-    echo "Uso: herdr-tts --palette-preview <pane_id>" >&2
+    echo "$(tt palette.preview.usage)" >&2
     return 1
   fi
 
@@ -3336,16 +4318,16 @@ palette_preview() { # <pane_id>
   [[ -z "$title" ]] && title="$pane_id"
   echo "📌 ${title}"
   if [[ -z "$raw" ]]; then
-    echo "   ⚠️ herdr CLI no disponible (sin datos de agente)"
+    echo "$(tt palette.preview.no_herdr)"
   else
     # Voice identity (RF-HT-02-4): surface the chat's resolved voice in
     # the preview header when it has its own pane/agent rule.
     local pvoice
     pvoice=$(resolve_voice "$pane_id" "$agent")
     if [[ "$pvoice" != "$TTS_VOICE" ]]; then
-      echo "   agente: ${agent:-?} · estado: ${st:-?} · 🗣 voz: ${pvoice}"
+      echo "$(tt palette.preview.agent "${agent:-?}" "${st:-?}" "$pvoice")"
     else
-      echo "   agente: ${agent:-?} · estado: ${st:-?}"
+      echo "$(tt palette.preview.agent_plain "${agent:-?}" "${st:-?}")"
     fi
   fi
 
@@ -3362,22 +4344,22 @@ palette_preview() { # <pane_id>
     '(.debounce[$p] // {} | to_entries | sort_by(.value) | (last // {key:"",value:0}).value)' \
     <<<"$state" 2>/dev/null) || last_ts=0
   if [[ "$muted" == "true" ]]; then
-    gate="🔇 silenciado"
+    gate="$(tt palette.gate.muted)"
   fi
   if [[ "$until_ts" =~ ^[0-9]+$ ]] && (( until_ts > now )); then
-    gate+="${gate:+ · }😴 snooze $(fmt_mmss $(( until_ts - now ))) restantes (hasta $(fmt_epoch_clock "$until_ts"))"
+    gate+="${gate:+ · }$(tt palette.gate.snooze "$(fmt_mmss $(( until_ts - now )))" "$(fmt_epoch_clock "$until_ts")")"
   fi
   if (( TTS_DEBOUNCE_SECONDS > 0 )) \
      && [[ -n "$last_status" && "$last_status" != "null" ]] \
      && [[ "$last_ts" =~ ^[0-9]+$ ]] \
      && (( now - last_ts < TTS_DEBOUNCE_SECONDS )); then
-    gate+="${gate:+ · }⏱ debounce activo ($(( TTS_DEBOUNCE_SECONDS - (now - last_ts) ))s)"
+    gate+="${gate:+ · }$(tt palette.gate.debounce "$(( TTS_DEBOUNCE_SECONDS - (now - last_ts) ))")"
   fi
-  [[ -z "$gate" ]] && gate="🔊 voz activa"
+  [[ -z "$gate" ]] && gate="$(tt palette.gate.active)"
   echo "   gating: ${gate}"
   echo
 
-  echo "── Turnos de audio (recientes primero) ──"
+  echo "$(tt palette.turns_header)"
   local hhmm pid dur snippet epoch path dur_lbl n=0
   # The explicit 6th read var matters: without it `epoch` would absorb
   # "epoch<TAB>path" as the trailing remainder and corrupt the display.
@@ -3388,7 +4370,7 @@ palette_preview() { # <pane_id>
     n=$(( n + 1 ))
   done < <(palette_history_rows) # whole ledger, newest first
   if (( n == 0 )); then
-    echo "sin turnos"
+    echo "$(tt palette.no_turns)"
   fi
   return 0
 }
@@ -3424,25 +4406,35 @@ MENU_CONFIRM_SECS="${HERDR_TTS_MENU_CONFIRM_SECS:-1.5}"
 MENU_OPEN_LOG="${HERDR_TTS_MENU_OPEN_LOG:-/tmp/herdr-tts-menu.log}"
 MENU_OPEN_RETRIES="${HERDR_TTS_MENU_OPEN_RETRIES:-50}" # × 0.1s = 5s ceiling
 
+# The retry loop runs DETACHED (own session), so it cannot call tt():
+# functions and arrays do not survive into that child. The parent
+# pre-renders the log formats (placeholders intact) into env vars; the
+# child only printf's them.
 _menu_open_retry() { # <entrypoint> — runs inside the detached session
   local entry="$1" log="${HERDR_TTS_MENU_OPEN_LOG:-/tmp/herdr-tts-menu.log}"
   local max="${HERDR_TTS_MENU_OPEN_RETRIES:-50}" err="" i=0
+  local fmt_ok="${HERDR_TTS_MENU_FMT_OK:-[%s] [menu] open %s: ok (attempt %s)}"
+  local fmt_fail="${HERDR_TTS_MENU_FMT_FAIL:-[%s] [menu] open %s failed after %s attempts: %s}"
+  local no_out="${HERDR_TTS_MENU_MSG_NO_OUTPUT:-no output}"
   while (( i < max )); do
     if err=$(herdr plugin pane open --plugin herdr.tts --entrypoint "$entry" 2>&1); then
-      printf '[%s] [menu] open %s: ok (intento %d)\n' \
-        "$(date +%H:%M:%S)" "$entry" "$(( i + 1 ))" >> "$log"
+      printf "$fmt_ok\n" "$(date +%H:%M:%S)" "$entry" "$(( i + 1 ))" >> "$log"
       return 0
     fi
     sleep 0.1
     i=$(( i + 1 ))
   done
-  printf '[%s] [menu] open %s falló tras %s intentos: %s\n' \
-    "$(date +%H:%M:%S)" "$entry" "$max" "${err:-sin salida}" >> "$log"
+  printf "$fmt_fail\n" "$(date +%H:%M:%S)" "$entry" "$max" "${err:-$no_out}" >> "$log"
   return 1
 }
 
 menu_open_after_exit() { # <entrypoint>
   export -f _menu_open_retry 2>/dev/null || true
+  # Localization travels via env: the detached child has no tt()/tables.
+  export HERDR_TTS_MENU_FMT_OK HERDR_TTS_MENU_FMT_FAIL HERDR_TTS_MENU_MSG_NO_OUTPUT
+  HERDR_TTS_MENU_FMT_OK="$(tt menu.open_ok '%s' '%s' '%s')"
+  HERDR_TTS_MENU_FMT_FAIL="$(tt menu.open_failed '%s' '%s' '%s' '%s')"
+  HERDR_TTS_MENU_MSG_NO_OUTPUT="$(tt menu.no_output)"
   if command -v setsid >/dev/null 2>&1; then
     HERDR_TTS_MENU_OPEN_LOG="$MENU_OPEN_LOG" HERDR_TTS_MENU_OPEN_RETRIES="$MENU_OPEN_RETRIES" \
       setsid bash -c '_menu_open_retry "$@"' _ "$1" >/dev/null 2>&1 </dev/null &
@@ -3459,9 +4451,9 @@ menu_open_after_exit() { # <entrypoint>
 # time. Static on purpose — the menu never queries Herdr, so the frame
 # costs nothing and is always a single physical write.
 MENU_L_KEYS=("r" "p" "s" "t" "v" "[" "]" "n" "N")
-MENU_L_DESC=("▶ Play / Stop del chat enfocado" "⏸ Pausar / Reanudar" "⏹ Stop inmediato" "⚡ TL;DR del chat" "🔊 Auto-lectura on/off" "⏪ Rebobinar 10s" "⏩ Avanzar 10s" "⏭ Frase siguiente" "⏮ Frase anterior")
+MENU_L_DESC=("$(tt menu.desc.play)" "$(tt menu.desc.pause)" "$(tt menu.desc.stop)" "$(tt menu.desc.tldr)" "$(tt menu.desc.auto)" "$(tt menu.desc.rewind)" "$(tt menu.desc.forward)" "$(tt menu.desc.next_sentence)" "$(tt menu.desc.prev_sentence)")
 MENU_R_KEYS=("m" "z" "Z" "+/-" "d" "o" "a" "q/Esc")
-MENU_R_DESC=("🔇 Mute pane" "😴 Snooze pane" "😴 Snooze GLOBAL" "🎙 Velocidad ±10%" "📊 Dashboard" "🎛️ Paleta de voz" "⚙️ Ajustes de voz y audio" "Salir del menú")
+MENU_R_DESC=("$(tt menu.desc.mute)" "$(tt menu.desc.snooze)" "$(tt menu.desc.snooze_global)" "$(tt menu.desc.rate)" "$(tt menu.desc.dashboard)" "$(tt menu.desc.palette)" "$(tt menu.desc.settings)" "$(tt menu.desc.quit)")
 
 # Height cap: keep at most <max-rows> lines of the buffered frame, the
 # same LINES-1 discipline the dashboard render enforces.
@@ -3486,8 +4478,8 @@ menu_render() {
   local frame="" row_l half i kl dl kr dr
   half=$(( DASH_COLS / 2 - 2 ))
   (( half < 20 )) && half=20
-  _dash_add $'\e[1m⌨️  herdr-tts · Menú de voz\e[0m'
-  _dash_add 'Pulsa UNA tecla: la acción se ejecuta y el menú se cierra (a = ajustes, sin cerrar).'
+  _dash_add '%s' "$(tt menu.title)"
+  _dash_add '%s' "$(tt menu.hint)"
   _dash_add ''
   for (( i = 0; i < ${#MENU_L_KEYS[@]} || i < ${#MENU_R_KEYS[@]}; i++ )); do
     kl="${MENU_L_KEYS[i]:-}"; dl="${MENU_L_DESC[i]:-}"
@@ -3527,16 +4519,16 @@ menu_dispatch() { # <key>
     -|_) out=$(adjust_rate -10 2>&1 || true) ;;
     d|D)
       menu_open_after_exit tts-dashboard
-      out="📊 Cerrando el menú y abriendo el dashboard…"
+      out="$(tt menu.open_dashboard)"
       ;;
     o|O)
       menu_open_after_exit tts-palette
-      out="🎛️ Cerrando el menú y abriendo la paleta de voz…"
+      out="$(tt menu.open_palette)"
       ;;
     *) return 1 ;;
   esac
   out="${out%%$'\n'*}"
-  MENU_RESULT="${out:-Comando de voz ejecutado}"
+  MENU_RESULT="${out:-$(tt menu.executed)}"
   return 0
 }
 
@@ -3588,7 +4580,7 @@ run_voice_menu() {
           # the last row, so the confirmation must claim a fresh line.
           printf '\n✓ %s\n' "$MENU_RESULT"
         else
-          printf '\n❓ Tecla no reconocida (%s) — pulsa q para salir\n' "$key"
+          printf '%s' "$(tt menu.unknown_key "$key")"
         fi
         sleep "$MENU_CONFIRM_SECS"
         exit 0 # one key = one action = popup closes
@@ -3716,13 +4708,13 @@ settings_handle_key() { # <key>
         # changes without leaving the popup. INDEX-only by design (see
         # the section comment) — one place, one Esc away from categories.
         if daemon_restart; then
-          SETTINGS_NOTE="✓ Daemon reiniciado"
+          SETTINGS_NOTE="$(tt settings.restarted)"
         else
-          SETTINGS_WARN="No se pudo relanzar el daemon"
+          SETTINGS_WARN="$(tt settings.relaunch_failed)"
         fi
         ;;
       *)
-        SETTINGS_WARN="Tecla no reconocida (${key}) — v voz, a audio, n notificaciones, l lectura automática, R reinicia el daemon, q sale"
+        SETTINGS_WARN="$(tt settings.unknown_key.index "$key")"
         ;;
     esac
     return 0
@@ -3741,19 +4733,19 @@ settings_handle_key() { # <key>
           if config_set TTS_PROVIDER "$next"; then
             TTS_PROVIDER="$next"
           else
-            SETTINGS_WARN="No se pudo guardar TTS_PROVIDER en config.env"
+            SETTINGS_WARN="$(tt settings.save_failed TTS_PROVIDER)"
           fi
           ;;
         g|G)
           if next="$(settings_cycle_value voice "$TTS_VOICE")"; then
             if config_set TTS_VOICE "$next"; then
               TTS_VOICE="$next"
-              SETTINGS_NOTE="✓ Voz global: ${next} (la paleta asigna voces por chat)"
+              SETTINGS_NOTE="$(tt settings.voice.global "$next")"
             else
-              SETTINGS_WARN="No se pudo guardar TTS_VOICE en config.env"
+              SETTINGS_WARN="$(tt settings.save_failed TTS_VOICE)"
             fi
           else
-            SETTINGS_WARN="Catálogo de voces no disponible (motor sin respuesta): no se cambia la voz"
+            SETTINGS_WARN="$(tt settings.voice.catalog_down)"
           fi
           ;;
         n|N)
@@ -3762,9 +4754,9 @@ settings_handle_key() { # <key>
           if [[ "$VM_PREFIX" == "true" ]]; then next="off"; else next="on"; fi
           if voice_map_set_flag prefix "$next"; then
             VM_PREFIX="$next"
-            SETTINGS_NOTE="✓ Prefijo hablado: ${next} (dice \"agente: \" antes del texto)"
+            SETTINGS_NOTE="$(tt settings.voice.prefix "$next")"
           else
-            SETTINGS_WARN="No se pudo escribir voices.json"
+            SETTINGS_WARN="$(tt settings.voices.write_failed)"
           fi
           ;;
         u|U)
@@ -3772,9 +4764,9 @@ settings_handle_key() { # <key>
           if [[ "$VM_AUTO_ASSIGN" == "true" ]]; then next="off"; else next="on"; fi
           if voice_map_set_flag auto_assign "$next"; then
             VM_AUTO_ASSIGN="$next"
-            SETTINGS_NOTE="✓ Auto-asignación: ${next} (rota voces del proveedor activo por agent_type)"
+            SETTINGS_NOTE="$(tt settings.voice.autoassign "$next")"
           else
-            SETTINGS_WARN="No se pudo escribir voices.json"
+            SETTINGS_WARN="$(tt settings.voices.write_failed)"
           fi
           ;;
         i|I)
@@ -3782,16 +4774,16 @@ settings_handle_key() { # <key>
           if config_set TTS_AUTO_LANG "$next"; then
             TTS_AUTO_LANG="$next"
             if [[ "$next" == "on" ]]; then
-              SETTINGS_NOTE="✓ Detección de idioma activada (ES/EN al vuelo)"
+              SETTINGS_NOTE="$(tt settings.voice.autolang_on)"
             else
-              SETTINGS_NOTE="✓ Detección de idioma desactivada"
+              SETTINGS_NOTE="$(tt settings.voice.autolang_off)"
             fi
           else
-            SETTINGS_WARN="No se pudo guardar TTS_AUTO_LANG en config.env"
+            SETTINGS_WARN="$(tt settings.save_failed TTS_AUTO_LANG)"
           fi
           ;;
         *)
-          SETTINGS_WARN="Tecla no reconocida (${key}) — p proveedor, g voz global, n prefijo, u auto-asignación, i idioma, q vuelve al índice"
+          SETTINGS_WARN="$(tt settings.unknown_key.voice "$key")"
           ;;
       esac
       ;;
@@ -3802,7 +4794,7 @@ settings_handle_key() { # <key>
           if config_set TTS_PLAYBACK "$next"; then
             TTS_PLAYBACK="$next"
           else
-            SETTINGS_WARN="No se pudo guardar TTS_PLAYBACK en config.env"
+            SETTINGS_WARN="$(tt settings.save_failed TTS_PLAYBACK)"
           fi
           ;;
         c|C)
@@ -3817,12 +4809,12 @@ settings_handle_key() { # <key>
           if config_set CLICK_REDIRECT "$next"; then
             CLICK_REDIRECT="$next"
             if [[ "$next" == "on" ]]; then
-              SETTINGS_NOTE="✓ Click directo activado (abrirá navegador al pulsar la tarjeta de notificación)"
+              SETTINGS_NOTE="$(tt settings.audio.click_on)"
             else
-              SETTINGS_NOTE="✓ Click directo desactivado (pulsar la tarjeta abrirá ntfy con reproductor; el botón abrirá web)"
+              SETTINGS_NOTE="$(tt settings.audio.click_off)"
             fi
           else
-            SETTINGS_WARN="No se pudo guardar CLICK_REDIRECT en config.env"
+            SETTINGS_WARN="$(tt settings.save_failed CLICK_REDIRECT)"
           fi
           ;;
         r)
@@ -3834,7 +4826,7 @@ settings_handle_key() { # <key>
           if config_set HERDR_TTS_AUDIO_RETENTION_DAYS "$next"; then
             HERDR_TTS_AUDIO_RETENTION_DAYS="$next"
           else
-            SETTINGS_WARN="No se pudo guardar HERDR_TTS_AUDIO_RETENTION_DAYS en config.env"
+            SETTINGS_WARN="$(tt settings.save_failed HERDR_TTS_AUDIO_RETENTION_DAYS)"
           fi
           ;;
         s|S)
@@ -3842,11 +4834,11 @@ settings_handle_key() { # <key>
           if config_set TTS_SETTLE_SECONDS "$next"; then
             TTS_SETTLE_SECONDS="$next"
           else
-            SETTINGS_WARN="No se pudo guardar TTS_SETTLE_SECONDS en config.env"
+            SETTINGS_WARN="$(tt settings.save_failed TTS_SETTLE_SECONDS)"
           fi
           ;;
         *)
-          SETTINGS_WARN="Tecla no reconocida (${key}) — d destino, c click directo, r retención, s asentamiento, q vuelve al índice"
+          SETTINGS_WARN="$(tt settings.unknown_key.audio "$key")"
           ;;
       esac
       ;;
@@ -3857,24 +4849,24 @@ settings_handle_key() { # <key>
           # off). The topic is push-credential-like on ntfy.sh — same trust
           # model as the CLI flag, typed locally in the popup pane.
           local new_topic=""
-          printf '\n Topic de ntfy\n   ej.: herdr-agents\n   Enter vacío = desactivar push\n > '
+          printf '%s' "$(tt settings.notif.input_title)"
           if ! read -r new_topic; then
-            SETTINGS_WARN="Entrada cancelada: no se pudo leer el topic"
+            SETTINGS_WARN="$(tt settings.notif.input_cancelled)"
             return 0
           fi
           if [[ -z "$new_topic" || "$new_topic" == "off" || "$new_topic" == "none" ]]; then
             if config_set NTFY_TOPIC ""; then
               NTFY_TOPIC=""
-              SETTINGS_NOTE="✓ Notificaciones móviles de ntfy desactivadas"
+              SETTINGS_NOTE="$(tt settings.notif.off)"
             else
-              SETTINGS_WARN="No se pudo guardar NTFY_TOPIC en config.env"
+              SETTINGS_WARN="$(tt settings.save_failed NTFY_TOPIC)"
             fi
           else
             if config_set NTFY_TOPIC "$new_topic"; then
               NTFY_TOPIC="$new_topic"
-              SETTINGS_NOTE="✓ Topic de ntfy configurado: ${new_topic}"
+              SETTINGS_NOTE="$(tt settings.notif.topic_set "$new_topic")"
             else
-              SETTINGS_WARN="No se pudo guardar NTFY_TOPIC en config.env"
+              SETTINGS_WARN="$(tt settings.save_failed NTFY_TOPIC)"
             fi
           fi
           ;;
@@ -3883,12 +4875,12 @@ settings_handle_key() { # <key>
           if config_set PODCAST_ENABLED "$next"; then
             PODCAST_ENABLED="$next"
             if [[ "$next" == "on" ]]; then
-              SETTINGS_NOTE="✓ Publicación automática en feed de podcast activada"
+              SETTINGS_NOTE="$(tt settings.notif.podcast_on)"
             else
-              SETTINGS_NOTE="✓ Publicación automática en feed de podcast desactivada"
+              SETTINGS_NOTE="$(tt settings.notif.podcast_off)"
             fi
           else
-            SETTINGS_WARN="No se pudo guardar PODCAST_ENABLED en config.env"
+            SETTINGS_WARN="$(tt settings.save_failed PODCAST_ENABLED)"
           fi
           ;;
         w|W)
@@ -3899,9 +4891,9 @@ settings_handle_key() { # <key>
           # WEB_LABEL="Collie" while it is still unset. The {pane_id}
           # placeholder is stored verbatim — send_ntfy_push expands it.
           local new_url=""
-          printf '\n URL de redirección web\n   ej.: https://collie.midominio.com/chat/{pane_id}\n   sin {pane_id} se añade /pane/<id> · Enter vacío = desactivar\n > '
+          printf '%s' "$(tt settings.notif.web_input_title)"
           if ! read -r new_url; then
-            SETTINGS_WARN="Entrada cancelada: no se pudo leer la URL"
+            SETTINGS_WARN="$(tt settings.notif.web_input_cancelled)"
             return 0
           fi
           if [[ -z "$new_url" ]]; then
@@ -3909,9 +4901,9 @@ settings_handle_key() { # <key>
               WEB_URL=""
               COLLIE_URL=""
               WEB_LABEL=""
-              SETTINGS_NOTE="✓ Redirección web desactivada (notificaciones estándar sin URL externa)"
+              SETTINGS_NOTE="$(tt settings.notif.web_off)"
             else
-              SETTINGS_WARN="No se pudo guardar WEB_URL en config.env"
+              SETTINGS_WARN="$(tt settings.save_failed WEB_URL)"
             fi
           else
             if config_set WEB_URL "$new_url" && config_set COLLIE_URL "$new_url"; then
@@ -3920,14 +4912,14 @@ settings_handle_key() { # <key>
               if [[ "${new_url,,}" =~ collie && -z "$WEB_LABEL" ]] && config_set WEB_LABEL "Collie"; then
                 WEB_LABEL="Collie"
               fi
-              SETTINGS_NOTE="✓ URL de redirección configurada: ${new_url}"
+              SETTINGS_NOTE="$(tt settings.notif.web_set "$new_url")"
             else
-              SETTINGS_WARN="No se pudo guardar WEB_URL en config.env"
+              SETTINGS_WARN="$(tt settings.save_failed WEB_URL)"
             fi
           fi
           ;;
         *)
-          SETTINGS_WARN="Tecla no reconocida (${key}) — t topic ntfy, f podcast, w URL web, q vuelve al índice"
+          SETTINGS_WARN="$(tt settings.unknown_key.notif "$key")"
           ;;
       esac
       ;;
@@ -3941,15 +4933,15 @@ settings_handle_key() { # <key>
           # menu `v` is the one that speaks the spoken confirmation.
           if is_auto_muted; then
             if rm -f "$AUTO_MUTE_FILE"; then
-              SETTINGS_NOTE="✓ Auto-lectura activada (te lee al terminar cada agente)"
+              SETTINGS_NOTE="$(tt settings.autoread.on)"
             else
-              SETTINGS_WARN="No se pudo eliminar ${AUTO_MUTE_FILE}"
+              SETTINGS_WARN="$(tt settings.autoread.rm_failed "$AUTO_MUTE_FILE")"
             fi
           else
             if touch "$AUTO_MUTE_FILE"; then
-              SETTINGS_NOTE="✓ Auto-lectura silenciada (solo manual: prefix+r / htr bajo demanda)"
+              SETTINGS_NOTE="$(tt settings.autoread.off)"
             else
-              SETTINGS_WARN="No se pudo crear ${AUTO_MUTE_FILE}"
+              SETTINGS_WARN="$(tt settings.autoread.touch_failed "$AUTO_MUTE_FILE")"
             fi
           fi
           ;;
@@ -3957,9 +4949,9 @@ settings_handle_key() { # <key>
           next="$(settings_cycle_value scope "$TTS_AUTO_SCOPE")"
           if config_set TTS_AUTO_SCOPE "$next"; then
             TTS_AUTO_SCOPE="$next"
-            SETTINGS_NOTE="✓ Alcance de auto-lectura: ${next}"
+            SETTINGS_NOTE="$(tt settings.autoread.scope "$next")"
           else
-            SETTINGS_WARN="No se pudo guardar TTS_AUTO_SCOPE en config.env"
+            SETTINGS_WARN="$(tt settings.save_failed TTS_AUTO_SCOPE)"
           fi
           ;;
         b|B)
@@ -3967,16 +4959,16 @@ settings_handle_key() { # <key>
           if config_set TTS_DEBOUNCE_SECONDS "$next"; then
             TTS_DEBOUNCE_SECONDS="$next"
             if [[ "$next" == "0" ]]; then
-              SETTINGS_NOTE="✓ Debounce desactivado (cada done notifica al instante)"
+              SETTINGS_NOTE="$(tt settings.autoread.debounce_off)"
             else
-              SETTINGS_NOTE="✓ Ventana anti-spam (debounce): ${next}s por (pane, estado)"
+              SETTINGS_NOTE="$(tt settings.autoread.debounce_on "$next")"
             fi
           else
-            SETTINGS_WARN="No se pudo guardar TTS_DEBOUNCE_SECONDS en config.env"
+            SETTINGS_WARN="$(tt settings.save_failed TTS_DEBOUNCE_SECONDS)"
           fi
           ;;
         *)
-          SETTINGS_WARN="Tecla no reconocida (${key}) — v auto-lectura, a alcance, b debounce, q vuelve al índice"
+          SETTINGS_WARN="$(tt settings.unknown_key.autoread "$key")"
           ;;
       esac
       ;;
@@ -3999,19 +4991,19 @@ settings_render() {
   case "${SETTINGS_CATEGORY:-index}" in
     voz)
       voice_map_refresh # n/u rows show the live voices.json flags
-      _dash_add $'\e[1m🎙  herdr-tts · Ajustes · Voz\e[0m'
-      _dash_add 'Pulsa la tecla del ajuste para ciclar su valor.'
+      _dash_add '%s' "$(tt settings.view.voice)"
+      _dash_add '%s' "$(tt settings.view.hint)"
       _dash_add ''
-      _dash_add ' p  Proveedor TTS:        %s   (edge = gratuito, por defecto)' "$TTS_PROVIDER"
+      _dash_add '%s' "$(tt settings.row.provider "$TTS_PROVIDER")"
       # Install hint only for providers that need a local model; as an
       # annotation it belongs directly under the row it qualifies.
       if [[ "$TTS_PROVIDER" == "piper" || "$TTS_PROVIDER" == "kokoro" ]]; then
-        _dash_add '    ⚠️  Requiere instalar el modelo antes: agent-tts voice install %s' "$TTS_PROVIDER"
+        _dash_add '%s' "$(tt settings.row.provider_install "$TTS_PROVIDER")"
       fi
-      _dash_add ' g  Voz global:          %s   (default; la paleta asigna voces por chat)' "$TTS_VOICE"
-      _dash_add ' n  Prefijo hablado:      %s   (dice "agente: " antes del texto)' "$([[ "$VM_PREFIX" == "true" ]] && echo on || echo off)"
-      _dash_add ' u  Auto-asignación:      %s   (rota voces del proveedor activo por agent_type)' "$([[ "$VM_AUTO_ASSIGN" == "true" ]] && echo on || echo off)"
-      _dash_add ' i  Idioma auto:          %s   (ES/EN al vuelo)' "$TTS_AUTO_LANG"
+      _dash_add '%s' "$(tt settings.row.voice_global "$TTS_VOICE")"
+      _dash_add '%s' "$(tt settings.row.prefix "$([[ "$VM_PREFIX" == "true" ]] && echo on || echo off)")"
+      _dash_add '%s' "$(tt settings.row.autoassign "$([[ "$VM_AUTO_ASSIGN" == "true" ]] && echo on || echo off)")"
+      _dash_add '%s' "$(tt settings.row.autolang "$TTS_AUTO_LANG")"
       ;;
     audio)
       # Retention current comes from the tiered read (env > live file), NOT
@@ -4019,44 +5011,45 @@ settings_render() {
       # the file is the only source of truth for what the user last chose.
       config_get_retention_raw ret
       ret="${ret:-0}"
-      _dash_add $'\e[1m🔊  herdr-tts · Ajustes · Audio\e[0m'
-      _dash_add 'Pulsa la tecla del ajuste para ciclar su valor.'
+      _dash_add '%s' "$(tt settings.view.audio)"
+      _dash_add '%s' "$(tt settings.view.hint)"
       _dash_add ''
-      _dash_add ' d  Destino reproducción: %s' "$TTS_PLAYBACK"
-      _dash_add ' c  Click directo:        %s   (on = navegador, off = reproductor)' "$CLICK_REDIRECT"
-      _dash_add ' r  Audio retenido:       %s días   (0 = apagado)' "$ret"
-      _dash_add ' s  Asentamiento done:    %ss   (0 = notifica al instante)' "$TTS_SETTLE_SECONDS"
+      _dash_add '%s' "$(tt settings.row.target "$TTS_PLAYBACK")"
+      _dash_add '%s' "$(tt settings.row.click "$CLICK_REDIRECT")"
+      _dash_add '%s' "$(tt settings.row.retention "$ret")"
+      _dash_add '%s' "$(tt settings.row.settle "$TTS_SETTLE_SECONDS")"
       _dash_add ''
-      _dash_add ' r  cicla retención · se aplica al vuelo (sin reiniciar)'
+      _dash_add '%s' "$(tt settings.row.retention_note)"
       ;;
     notif)
-      _dash_add $'\e[1m🔔  herdr-tts · Ajustes · Notificaciones\e[0m'
-      _dash_add 'Pulsa la tecla del ajuste para ciclar su valor.'
+      _dash_add '%s' "$(tt settings.view.notif)"
+      _dash_add '%s' "$(tt settings.view.hint)"
       _dash_add ''
-      _dash_add ' t  Topic ntfy:           %s   (Enter vacío en t = desactiva)' "${NTFY_TOPIC:-Desactivado}"
-      _dash_add ' f  Podcast feed:         %s   (publica audios en RSS)' "$PODCAST_ENABLED"
-      _dash_add ' w  Redirección web:      %s   (Enter vacío en w = desactiva)' "${WEB_URL:-Desactivada}"
+      _dash_add '%s' "$(tt settings.row.ntfy "${NTFY_TOPIC:-$(tt settings.row.off)}")"
+      _dash_add '%s' "$(tt settings.row.podcast "$PODCAST_ENABLED")"
+      _dash_add '%s' "$(tt settings.row.web "${WEB_URL:-$(tt settings.row.off_f)}")"
       ;;
     lectura)
-      local auto_label="🔊 activa (te lee al terminar cada agente)"
-      is_auto_muted && auto_label="🔇 silenciada (solo manual: prefix+r / htr bajo demanda)"
-      _dash_add $'\e[1m⚙️  herdr-tts · Ajustes · Lectura automática\e[0m'
-      _dash_add 'Pulsa la tecla del ajuste para ciclar su valor.'
+      local auto_label
+      auto_label="$(tt settings.autoread.label_on)"
+      is_auto_muted && auto_label="$(tt settings.autoread.label_muted)"
+      _dash_add '%s' "$(tt settings.view.autoread)"
+      _dash_add '%s' "$(tt settings.view.hint)"
       _dash_add ''
-      _dash_add ' v  Auto-lectura:         %s' "$auto_label"
-      _dash_add ' a  Alcance auto-lectura: %s   (focused = solo chat activo)' "$TTS_AUTO_SCOPE"
-      _dash_add ' b  Debounce anti-spam:   %ss   (0 = desactivado)' "$TTS_DEBOUNCE_SECONDS"
+      _dash_add '%s' "$(tt settings.row.autoread "$auto_label")"
+      _dash_add '%s' "$(tt settings.row.scope "$TTS_AUTO_SCOPE")"
+      _dash_add '%s' "$(tt settings.row.debounce "$TTS_DEBOUNCE_SECONDS")"
       ;;
     *)
-      _dash_add $'\e[1m⚙️  herdr-tts · Ajustes de voz y audio\e[0m'
-      _dash_add 'Elige una categoría con su tecla:'
+      _dash_add '%s' "$(tt settings.view.index)"
+      _dash_add '%s' "$(tt settings.index.pick)"
       _dash_add ''
-      _dash_add ' v  🎙 Voz                  proveedor, voz global, prefijo hablado, auto-asignación, idioma'
-      _dash_add ' a  🔊 Audio               destino reproducción, click directo, retención, asentamiento'
-      _dash_add ' n  🔔 Notificaciones      topic ntfy, podcast feed, redirección web'
-      _dash_add ' l  ⚙️  Lectura automática  auto-lectura, alcance, debounce'
+      _dash_add '%s' "$(tt settings.index.voice)"
+      _dash_add '%s' "$(tt settings.index.audio)"
+      _dash_add '%s' "$(tt settings.index.notif)"
+      _dash_add '%s' "$(tt settings.index.autoread)"
       _dash_add ''
-      _dash_add ' R  reinicia el daemon → aplica el resto de ajustes al instante'
+      _dash_add '%s' "$(tt settings.index.restart)"
       ;;
   esac
   # Transient feedback (warn/note) lives at the BOTTOM, just above the exit
@@ -4074,9 +5067,9 @@ settings_render() {
   fi
   _dash_add ''
   if [[ "${SETTINGS_CATEGORY:-index}" == "index" ]]; then
-    _dash_add ' q/Esc salir'
+    _dash_add '%s' "$(tt settings.exit.quit)"
   else
-    _dash_add ' q/Esc volver al índice'
+    _dash_add '%s' "$(tt settings.exit.index)"
   fi
   menu_cap_rows $(( DASH_LINES - 1 ))
   # Same per-line erase discipline as menu_render (see comment there).
@@ -4328,38 +5321,39 @@ keymap_file_mtime() { # $1 = file → human-readable mtime (GNU stat, BSD fallba
 }
 
 keymap_help() {
-  cat <<EOF
-Uso: herdr-tts keymap <subcomando> [opciones]
-
-Keymap declarativo y editable por el usuario: un archivo JSON
-(${KEYMAP_FILE}) que mapea cada comando de voz a un acorde.
-
-  keymap init [--force]   Escribir la plantilla por defecto (nunca
-                          sobrescribe un archivo existente; --force reemplaza)
-  keymap check [--json]   Validar el archivo (JSON, ids conocidos, sintaxis de
-                          acordes, duplicados) y detectar sombras sobre los
-                          defaults de Herdr core. Exit 1 solo con errores.
-  keymap emit [--style S] Imprimir bloques TOML [[keys.command]] listos para
-                          pegar en ~/.config/herdr/config.toml. Estilos:
-                          direct (default: usa los acordes del archivo),
-                          ctrlalt (familia ctrl+alt sugerida),
-                          menu (un solo acorde libre → popup del menú de voz)
-  keymap apply [--config P] [--dry-run]
-                          Escribir los bindings validados como BLOQUE
-                          GESTIONADO en ${HERDR_CONFIG_DIR:-~/.config}/herdr/config.toml
-                          (backup .bak-<ts>, se conservan 3; rollback
-                          automático si 'herdr config check' falla;
-                          --dry-run muestra el diff sin escribir)
-  keymap adopt --style S [--force]
-                          Sobrescribir keymap.json con el mapa sugerido del
-                          estilo S (direct, ctrlalt o menu); pide --force si
-                          el archivo tiene modificaciones de usuario
-
-Acordes válidos: "prefix+X" (X en mayúscula = shift, p. ej. prefix+N),
-"ctrl+alt+X", "ctrl+alt+shift+X", o null (sin asignar). Los modificadores
-se escriben literalmente; el whitespace se tolera. Override de ruta para
-tests: HERDR_TTS_KEYMAP_FILE.
-EOF
+  local -a _lines=(
+    "$(tt km.usage)"
+    ""
+    "$(tt km.intro.1)"
+    "$(tt km.intro.2 "$KEYMAP_FILE")"
+    ""
+    "$(tt km.init.1)"
+    "$(tt km.init.2)"
+    "$(tt km.check.1)"
+    "$(tt km.check.2)"
+    "$(tt km.check.3)"
+    "$(tt km.emit.1)"
+    "$(tt km.emit.2)"
+    "$(tt km.emit.3)"
+    "$(tt km.emit.4)"
+    "$(tt km.emit.5)"
+    "$(tt km.apply.1)"
+    "$(tt km.apply.2)"
+    "$(tt km.apply.3 "${HERDR_CONFIG_DIR:-~/.config}")"
+    "$(tt km.apply.4)"
+    "$(tt km.apply.5)"
+    "$(tt km.apply.6)"
+    "$(tt km.adopt.1)"
+    "$(tt km.adopt.2)"
+    "$(tt km.adopt.3)"
+    "$(tt km.adopt.4)"
+    ""
+    "$(tt km.chords.1)"
+    "$(tt km.chords.2)"
+    "$(tt km.chords.3)"
+    "$(tt km.chords.4)"
+  )
+  printf '%s\n' "${_lines[@]}"
 }
 
 # Validated keymap state (filled by keymap_load)
@@ -5140,24 +6134,24 @@ skill_install() { # $1 = agent id, $2 = 1 when --force
   dir="$root/$SKILL_NAME"
   file="$dir/SKILL.md"
   if [[ -e "$file" && ! -f "$file" ]]; then
-    echo "❌ $file exists and is not a regular file — remove it first" >&2
+    echo "$(tt skill.not_regular "$file")" >&2
     return 1
   fi
   if [[ -f "$file" ]]; then
     if cmp -s <(skill_content) "$file"; then
-      echo "✓ Skill already installed at $file (up to date)"
+      echo "$(tt skill.up_to_date "$file")"
       return 0
     fi
     if [[ "$force" -ne 1 ]]; then
-      echo "✋ $file already exists — refusing to overwrite."
-      echo "   Keep your edits, or run: herdr-tts skill install $agent --force"
+      echo "$(tt skill.exists "$file")"
+      echo "$(tt skill.exists.hint "$agent")"
       return 1
     fi
   fi
   mkdir -p "$dir"
   skill_content > "$file"
-  echo "✓ Skill published to $file"
-  echo "  The agent picks it up on its next session; preview with: cat \"$file\""
+  echo "$(tt skill.published "$file")"
+  echo "$(tt skill.published.hint "$file")"
 }
 
 skill_uninstall() { # $1 = agent id
@@ -5166,36 +6160,36 @@ skill_uninstall() { # $1 = agent id
   dir="$root/$SKILL_NAME"
   file="$dir/SKILL.md"
   if [[ ! -e "$file" ]]; then
-    echo "✓ $agent: no skill installed at $file (nothing to do)"
+    echo "$(tt skill.not_installed "$agent" "$file")"
     return 0
   fi
   if ! grep -qF "$SKILL_MARKER" "$file"; then
-    echo "✋ $file does not carry the herdr-tts managed marker — refusing to delete."
-    echo "   It looks user-customized; remove it manually if that is intended."
+    echo "$(tt skill.not_managed "$file")"
+    echo "$(tt skill.not_managed.hint)"
     return 1
   fi
   rm -f "$file"
   rmdir "$dir" 2>/dev/null || true
-  echo "✓ Skill removed from $dir"
+  echo "$(tt skill.removed "$dir")"
 }
 
 skill_list() {
   local agent root file
-  echo "herdr-tts skills (user-level):"
+  echo "$(tt skill.list_header)"
   while IFS= read -r agent; do
     root="$(skill_agent_root "$agent")"
     file="$root/$SKILL_NAME/SKILL.md"
     if [[ -f "$file" ]]; then
       printf '  ✓ %-12s %s\n' "$agent" "$file"
     else
-      printf '  — %-12s %s (not installed)\n' "$agent" "$file"
+      printf '%s\n' "$(tt skill.list_missing "$agent" "$file")"
     fi
   done < <(skill_agents)
 }
 
 skill_help() {
   cat <<EOF
-Uso: herdr-tts skill <subcommand> [options]
+Usage: herdr-tts skill <subcommand> [options]
 
 Publish a managed SKILL.md into a coding agent's user-level skills
 directory so the agent can operate the plugin itself: mute, snooze,
@@ -5348,9 +6342,9 @@ case "${1:-}" in
     if [[ "${2:-}" =~ ^[0-9]+$ ]]; then
       TTS_DEBOUNCE_SECONDS="$2"
       save_config
-      echo "✓ Ventana anti-spam (debounce): ${TTS_DEBOUNCE_SECONDS}s por (pane, estado); 0 = desactivado"
+      echo "$(tt cli.debounce.set "$TTS_DEBOUNCE_SECONDS")"
     else
-      echo "Error: --debounce requiere un número de segundos (entero ≥ 0)" >&2
+      echo "$(tt cli.debounce.invalid)" >&2
       exit 1
     fi
     ;;
@@ -5361,19 +6355,19 @@ case "${1:-}" in
     ;;
   --auto-on)
     rm -f "$AUTO_MUTE_FILE"
-    echo "🔊 Lectura automática activada"
+    echo "$(tt cli.auto.on)"
     ;;
   --auto-off)
     touch "$AUTO_MUTE_FILE"
-    echo "🔇 Lectura automática silenciada"
+    echo "$(tt cli.auto.off)"
     ;;
   --scope)
     if [[ "${2:-}" == "focused" || "${2:-}" == "all" ]]; then
       TTS_AUTO_SCOPE="$2"
       save_config
-      echo "✓ Alcance de auto-lectura: $TTS_AUTO_SCOPE"
+      echo "$(tt cli.scope.set "$TTS_AUTO_SCOPE")"
     else
-      echo "Error: Scope debe ser 'focused' o 'all'" >&2
+      echo "$(tt cli.scope.invalid)" >&2
       exit 1
     fi
     ;;
@@ -5381,17 +6375,17 @@ case "${1:-}" in
     if [[ "${2:-}" == "off" || "${2:-}" == "none" || -z "${2:-}" ]]; then
       NTFY_TOPIC=""
       save_config
-      echo "✓ Notificaciones móviles de ntfy desactivadas"
+      echo "$(tt cli.ntfy.off)"
     else
       NTFY_TOPIC="$2"
       save_config
-      echo "✓ Topic de ntfy configurado: $NTFY_TOPIC"
+      echo "$(tt cli.ntfy.set "$NTFY_TOPIC")"
     fi
     ;;
   --ntfy-server)
     NTFY_SERVER="${2:-https://ntfy.sh}"
     save_config
-    echo "✓ Servidor ntfy configurado: $NTFY_SERVER"
+    echo "$(tt cli.ntfy.server "$NTFY_SERVER")"
     ;;
   --web-url|--collie-url|--redirect-url)
     opt="$1"
@@ -5400,7 +6394,7 @@ case "${1:-}" in
       COLLIE_URL=""
       WEB_LABEL=""
       save_config
-      echo "✓ Redirección web desactivada (notificaciones estándar sin URL externa)"
+      echo "$(tt cli.web.off)"
     else
       WEB_URL="$2"
       COLLIE_URL="$2"
@@ -5408,21 +6402,21 @@ case "${1:-}" in
         WEB_LABEL="Collie"
       fi
       save_config
-      echo "✓ URL de redirección configurada: $WEB_URL"
+      echo "$(tt cli.web.set "$WEB_URL")"
     fi
     ;;
   --web-label)
     WEB_LABEL="${2:-}"
     save_config
-    echo "✓ Etiqueta de botón web: ${WEB_LABEL:-auto}"
+    echo "$(tt cli.web.label "${WEB_LABEL:-auto}")"
     ;;
   --click-redirect)
     if [[ "${2:-}" == "on" || "${2:-}" == "true" || "${2:-}" == "1" ]]; then
       CLICK_REDIRECT="on"
-      echo "✓ Click directo activado (abrirá navegador al pulsar la tarjeta de notificación)"
+      echo "$(tt settings.audio.click_on)"
     else
       CLICK_REDIRECT="off"
-      echo "✓ Click directo desactivado (pulsar tarjeta abrirá ntfy con reproductor; botón abrirá web)"
+      echo "$(tt settings.audio.click_off)"
     fi
     save_config
     ;;
@@ -5488,25 +6482,25 @@ case "${1:-}" in
   --voice)
     TTS_VOICE="$2"
     save_config
-    echo "✓ Voz configurada: $TTS_VOICE"
-    speak_text "Voz cambiada a ${TTS_VOICE}."
+    echo "$(tt cli.voice.set "$TTS_VOICE")"
+    speak_text "$(tt cli.voice.spoken "$TTS_VOICE")"
     ;;
   --voice-for)
     # PRD HT-02 (RF-HT-02-6): --voice-for agent|pane <id> [voz|off]; with
     # no voice argument the fzf picker opens (palette ctrl-v path).
     VF_KIND="${2:-}"; VF_ID="${3:-}"; VF_VOICE="${4:-}"
     if [[ "$VF_KIND" != "agent" && "$VF_KIND" != "pane" || -z "$VF_ID" ]]; then
-      echo "Uso: herdr-tts --voice-for agent|pane <id> [voz|off]" >&2
+      echo "$(tt cli.usage.voice_for)" >&2
       exit 1
     fi
     if [[ -n "$VF_VOICE" ]]; then
       if [[ "$VF_VOICE" == "off" || "$VF_VOICE" == "global" || "$VF_VOICE" == "none" ]]; then
         voice_map_set "$VF_KIND" "$VF_ID" off || exit 1
-        echo "✓ ${VF_KIND} ${VF_ID}: vuelve a la voz global (${TTS_VOICE})"
+        echo "$(tt voice.picker.reset "$VF_KIND" "$VF_ID" "$TTS_VOICE")"
       else
         voice_map_set "$VF_KIND" "$VF_ID" "$VF_VOICE" || exit 1
-        echo "✓ ${VF_KIND} ${VF_ID}: voz ${VF_VOICE}"
-        speak_text "Voz de este chat cambiada." "$VF_VOICE"
+        echo "$(tt voice.picker.set "$VF_KIND" "$VF_ID" "$VF_VOICE")"
+        speak_text "$(tt voice.picker.set.spoken)" "$VF_VOICE"
       fi
     else
       run_voice_for_picker "$VF_KIND" "$VF_ID"
@@ -5517,10 +6511,10 @@ case "${1:-}" in
     case "${2:-}" in
       on|off)
         voice_map_set_flag prefix "$2" || exit 1
-        echo "✓ Prefijo hablado: $2"
+        echo "$(tt cli.voice_prefix.set "$2")"
         ;;
       *)
-        echo "Uso: herdr-tts --voice-prefix on|off" >&2
+        echo "$(tt cli.usage.voice_prefix)" >&2
         exit 1
         ;;
     esac
@@ -5528,8 +6522,8 @@ case "${1:-}" in
   --rate)
     TTS_RATE="$2"
     save_config
-    echo "✓ Velocidad configurada: $TTS_RATE"
-    speak_text "Velocidad ajustada."
+    echo "$(tt cli.rate.set "$TTS_RATE")"
+    speak_text "$(tt cli.rate.spoken)"
     ;;
   --provider)
     # RF-HT-13-5: the allowed set is derived from the ENGINE catalog
@@ -5545,10 +6539,10 @@ case "${1:-}" in
     if [[ " $valid_providers " == *" $canon_prov "* ]]; then
       TTS_PROVIDER="$prov"
       save_config
-      echo "✓ Proveedor TTS configurado: $TTS_PROVIDER"
-      notify_herdr "🎙️ Proveedor TTS" "$TTS_PROVIDER"
+      echo "$(tt cli.provider.set "$TTS_PROVIDER")"
+      notify_herdr "$(tt cli.provider.title)" "$TTS_PROVIDER"
     else
-      echo "Error: Proveedor inválido '$prov'. Opciones válidas: ${valid_providers// /, }" >&2
+      echo "$(tt cli.provider.invalid "$prov" "${valid_providers// /, }")" >&2
       exit 1
     fi
     ;;
@@ -5556,72 +6550,72 @@ case "${1:-}" in
     PIPER_MODEL="${2:-}"
     save_config
     if [[ -n "$PIPER_MODEL" ]]; then
-      echo "✓ Modelo Piper configurado: $PIPER_MODEL"
+      echo "$(tt cli.piper.set "$PIPER_MODEL")"
     else
-      echo "✓ Modelo Piper reseteado a por defecto"
+      echo "$(tt cli.piper.reset)"
     fi
     ;;
   --openai-key)
     OPENAI_API_KEY="${2:-}"
     save_config
     if [[ -n "$OPENAI_API_KEY" ]]; then
-      echo "✓ OpenAI API Key configurada"
+      echo "$(tt cli.openai.key_set)"
     else
-      echo "✓ OpenAI API Key eliminada"
+      echo "$(tt cli.openai.key_removed)"
     fi
     ;;
   --openai-base-url)
     OPENAI_BASE_URL="${2:-https://api.openai.com/v1}"
     save_config
-    echo "✓ OpenAI Base URL configurada: $OPENAI_BASE_URL"
+    echo "$(tt cli.openai.base_set "$OPENAI_BASE_URL")"
     ;;
   --openai-model)
     OPENAI_TTS_MODEL="${2:-tts-1}"
     save_config
-    echo "✓ OpenAI TTS Model configurado: $OPENAI_TTS_MODEL"
+    echo "$(tt cli.openai.model_set "$OPENAI_TTS_MODEL")"
     ;;
   --eleven-key|--elevenlabs-key)
     ELEVENLABS_API_KEY="${2:-}"
     save_config
     if [[ -n "$ELEVENLABS_API_KEY" ]]; then
-      echo "✓ ElevenLabs API Key configurada"
+      echo "$(tt cli.eleven.key_set)"
     else
-      echo "✓ ElevenLabs API Key eliminada"
+      echo "$(tt cli.eleven.key_removed)"
     fi
     ;;
   --eleven-model|--elevenlabs-model)
     ELEVENLABS_MODEL="${2:-eleven_multilingual_v2}"
     save_config
-    echo "✓ ElevenLabs Model configurado: $ELEVENLABS_MODEL"
+    echo "$(tt cli.eleven.model_set "$ELEVENLABS_MODEL")"
     ;;
   --auto-lang)
     if [[ "${2:-}" == "on" || "${2:-}" == "true" || "${2:-}" == "1" ]]; then
       TTS_AUTO_LANG="on"
-      echo "✓ Detección de idioma y cambio dinámico de voz activado"
-      notify_herdr "🌐 Detección de idioma" "Activada (cambio dinámico de voz)"
+      echo "$(tt cli.autolang.on)"
+      notify_herdr "$(tt cli.autolang.title)" "$(tt cli.autolang.notify_on)"
     else
       TTS_AUTO_LANG="off"
-      echo "✓ Detección de idioma desactivada"
-      notify_herdr "🌐 Detección de idioma" "Desactivada"
+      echo "$(tt cli.autolang.off)"
+      notify_herdr "$(tt cli.autolang.title)" "$(tt cli.autolang.notify_off)"
     fi
     save_config
     ;;
   --podcast)
     if [[ "${2:-}" == "on" || "${2:-}" == "true" || "${2:-}" == "1" ]]; then
       PODCAST_ENABLED="on"
-      echo "✓ Publicación automática en feed de podcast activada"
-      notify_herdr "🎙️ Podcast RSS" "Publicación activada"
+      echo "$(tt cli.podcast.on)"
+      notify_herdr "$(tt cli.podcast.title)" "$(tt cli.podcast.notify_on)"
     else
       PODCAST_ENABLED="off"
-      echo "✓ Publicación automática en feed de podcast desactivada"
-      notify_herdr "🎙️ Podcast RSS" "Publicación desactivada"
+      echo "$(tt cli.podcast.off)"
+      notify_herdr "$(tt cli.podcast.title)" "$(tt cli.podcast.notify_off)"
     fi
     save_config
     ;;
   --podcast-port)
     PODCAST_PORT="${2:-8844}"
     save_config
-    echo "✓ Puerto de podcast configurado: $PODCAST_PORT"
+    echo "$(tt cli.podcast.port "$PODCAST_PORT")"
     ;;
   --podcast-serve|--podcast-server)
     # NOTE: no `local` here — this runs at script top level, where `local`
@@ -5629,7 +6623,7 @@ case "${1:-}" in
     port="${2:-$PODCAST_PORT}"
     pod_dir="${DATA_DIR}/podcast"
     mkdir -p "$pod_dir"
-    echo "🎙️ Servidor de Podcast RSS iniciado en http://0.0.0.0:${port}/podcast.xml"
+    echo "$(tt cli.podcast.serve "$port")"
     # RF-HT-13-1: public API import; port/dir travel via argv so a pod_dir
     # with quotes or spaces can never break out of the script string.
     "$VENV_PYTHON" -c "
@@ -5677,126 +6671,128 @@ run_podcast_server(port=int(sys.argv[1]), podcast_dir=sys.argv[2])
     daemon_restart
     ;;
   --help|-h)
-    cat <<EOF
-Uso: herdr-tts [OPCIONES]
-
-Acciones principales:
-  --toggle-play (-r)       Play / Stop toggle en el pane actual enfocado (Tecla: prefix+r)
-  --tldr                   Resumen rápido TL;DR del pane actual enfocado (Tecla: prefix+t)
-  --stop (-s)              Detener inmediatamente cualquier audio sonando (Tecla: prefix+s)
-  --toggle-pause           Pausar / Reanudar audio en reproducción (Tecla: prefix+p)
-  --pause                  Pausar la reproducción actual
-  --resume                 Reanudar la reproducción pausada
-  --seek <+/-s>            Avanzar o retroceder segundos (p. ej. +10 o -10)
-  --rewind                 Retroceder 10 segundos (Tecla: prefix+[)
-  --forward                Avanzar 10 segundos (Tecla: prefix+])
-  --next-sentence          Avanzar a la siguiente frase en reproducción (Tecla: prefix+n)
-  --prev-sentence          Retroceder a la frase anterior en reproducción (Tecla: prefix+N)
-  --next-paragraph         Avanzar al siguiente párrafo en reproducción
-  --prev-paragraph         Retroceder al párrafo anterior en reproducción
-  --play (-p)              Leer la última respuesta del chat enfocado
-  --speak <texto>          Síntesis directa: habla el texto indicado y sale
-  --render-text <salida.mp3> [texto...] [--voice <voz>] [--rate <vel>] [--agent <tipo>] [--session-id <id>]
-                           Render a MP3 sin reproducir (superficie contrato v1, para consumidores externos)
-  --contract-version       Imprime la versión del contrato de superficie (v1) y sale
-  --play-file <archivo>    Reproducir un archivo de audio (.mp3/.wav) con el motor
-  --player-status          Estado del reproductor: posición, duración y estado
-  --toggle-auto (-t)       Alternar lectura automática de fondo (Tecla: prefix+v)
-  --auto-on                Auto-lectura siempre activa: te lee al terminar cada agente (default)
-  --auto-off               Silenciar la auto-lectura: solo lectura manual (Tecla: prefix+r)
-  --scope focused|all      'focused' (solo chat activo) | 'all' (cualquiera sin solapar)
-
-Experiencia visual y lectura sincronizada:
-  --highlight (-H)         Leer respuesta en terminal con resaltado karaoke en tiempo real
-  --autoscroll             Leer con auto-scroll sincronizado al compás de la voz
-  --bionic                 Lectura biónica (fijación en negrita de las primeras letras)
-  --zen                    Modo Zen (pantalla completa, alto contraste, sin distracciones)
-
-Silencio granular (snooze y mute por pane, antes de llamar al motor):
-  --snooze                 Snooze del pane enfocado: 5m → 30m → 2h → off (Tecla: prefix+z)
-  --snooze-global          Snooze GLOBAL de todos los agentes, ideal para reuniones (Tecla: prefix+Z)
-  --mute-pane              Silenciar el pane enfocado; se reactiva al cerrarse el pane (Tecla: prefix+m)
-  --debounce <segundos>    Ventana anti-spam por (pane, estado); 0 = desactivado (default: 20)
-  --gate-check <pane> <estado> [agente]
-                           Diagnóstico del gating: exit 0 = evento filtrado, exit 1 = llegaría al motor
-
-Configuración de voz y velocidad:
-  --voice <nombre>         Cambiar voz (elvira, alvaro, ximena, dalia, jorge)
-  --rate <velocidad>       Cambiar velocidad (+20%, +10%, +0%)
-  --auto-lang on|off       Detección automática de idioma y cambio dinámico de voz
-  --voice-for agent|pane <id> [voz]
-                           Voz por agente o chat (PRD HT-02); 'off' = voz global; sin voz abre selector fzf
-  --voice-prefix on|off    Prefijo hablado con el nombre del agente antes del texto (voices.json "prefix")
-  --rate-up                Acelerar lectura +10% en caliente (Tecla: prefix+=)
-  --rate-down              Ralentizar lectura -10% en caliente (Tecla: prefix+-)
-
-Proveedores de síntesis (TTS Providers):
-  --provider <motor>       Seleccionar proveedor: edge (gratis), openai, elevenlabs, piper (offline)
-  --piper-model <ruta>     Ruta al archivo de modelo Piper ONNX (.onnx)
-  --openai-key <key>       API key para OpenAI TTS
-  --openai-base-url <url>  Base URL personalizada (default: https://api.openai.com/v1)
-  --openai-model <model>   Modelo OpenAI TTS (default: tts-1)
-  --eleven-key <key>       API key para ElevenLabs
-  --eleven-model <model>   Modelo ElevenLabs (default: eleven_multilingual_v2)
-
-Notificaciones móviles (opcional):
-  --ntfy-topic <topic>     Topic de ntfy.sh para recibir push con audio en móvil (o 'off')
-  --ntfy-server <url>      Servidor ntfy personalizado (default: https://ntfy.sh)
-  --web-url <url>          URL opcional de web UI / dashboard (p. ej. Collie) (o 'off')
-  --collie-url <url>       Alias de --web-url para Collie
-  --web-label <texto>      Etiqueta personalizada para el botón de acción web
-  --click-redirect on|off  Redirigir al tocar la tarjeta de notificación (default: off)
-
-Podcast RSS privado (para escuchar en móvil con Pocket Casts / Overcast / Apple Podcasts):
-  --podcast on|off         Activar publicación automática de audios en el feed RSS
-  --podcast-serve [puerto] Iniciar servidor local HTTP de podcast (default: 8844)
-  --podcast-port <puerto>  Cambiar puerto del servidor podcast (default: 8844)
-  --podcast-publish        Publicar respuesta actual directamente al feed de podcast
-
-Keymap declarativo (teclas editables por el usuario, validables):
-  keymap init [--force]    Crear ${XDG_CONFIG_HOME:-~/.config}/herdr-tts/keymap.json
-                           (plantilla con el mapa directo del README; nunca sobrescribe)
-  keymap check [--json]    Validar el keymap y detectar sombras sobre los
-                           defaults de Herdr core (exit 1 solo con errores)
-  keymap emit [--style S]  Bloques TOML [[keys.command]] listos para pegar
-                            en config.toml (S: direct | ctrlalt | menu)
-  keymap apply [--config P] [--dry-run]
-                            Instalar los bindings en config.toml como bloque
-                            gestionado (backup + rollback; --dry-run = diff)
-   keymap adopt --style S    Escribir el mapa sugerido (direct | ctrlalt | menu)
-                             en keymap.json (--force para sobrescribir cambios)
-
-Agent skill distribution (SKILL.md for coding agents):
-  skill install <agent> [--force]
-                           Publish the managed SKILL.md into the agent's
-                           user-level skills directory (never overwrites;
-                           --force replaces)
-  skill uninstall <agent>  Remove the published skill (marker-guarded)
-  skill list               Supported agents and install state
-                           (claude-code, opencode, codex, pi)
-
-Información:
-   --status                 Ver estado actual, lock y configuración
-    --restart-daemon         Reinicia el daemon TTS: para el anterior (pidfile
-                             o fallback) y relanza detached; aplica los cambios
-                             de los Ajustes sin esperar al próximo arranque
-   --dashboard              Panel TUI en vivo (pane de Herdr): estado por chat,
-                            audios agrupados por chat, snoozes e historial
-                            (controles: q salir · j/k chat · m silenciar · z snooze pane · Z snooze global · +/- velocidad)
-    --voice-palette          Selector interactivo (fzf, pane de Herdr) de chats y
-                            audios: enter enfoca, ctrl-m silencia, ctrl-z snooze
-    --voice-menu             Menú de voz de una sola tecla (popup): muestra los
-                            comandos, lee una tecla, la ejecuta y se cierra;
-                            la tecla a abre los Ajustes dentro del menú
-                            (suggested: prefix+u → action open-menu)
-     --voice-settings         Ajustes de voz y audio (popup de acceso directo;
-                             también dentro del menú de voz, tecla a): cicla
-                             proveedor, auto-lectura, alcance, destino, idioma,
-                             podcast, debounce, retención y asentamiento; escribe
-                             topic ntfy y URL web a texto libre (config.env)
-     --palette-preview <pane> Cabecera de chat + turnos de audio del pane (preview fzf)
-  --help, -h               Mostrar esta ayuda
-EOF
+    # Top-level case: no `local` (fatal outside a function under set -e).
+    _help_lines=(
+    "$(tt help.usage)"
+    ""
+    "$(tt help.main.header)"
+    "$(tt help.toggle_play)"
+    "$(tt help.tldr)"
+    "$(tt help.stop)"
+    "$(tt help.toggle_pause)"
+    "$(tt help.pause)"
+    "$(tt help.resume)"
+    "$(tt help.seek)"
+    "$(tt help.rewind)"
+    "$(tt help.forward)"
+    "$(tt help.next_sentence)"
+    "$(tt help.prev_sentence)"
+    "$(tt help.next_paragraph)"
+    "$(tt help.prev_paragraph)"
+    "$(tt help.play)"
+    "$(tt help.speak)"
+    "$(tt help.render_text.args)"
+    "$(tt help.render_text.desc)"
+    "$(tt help.contract_version)"
+    "$(tt help.play_file)"
+    "$(tt help.player_status)"
+    "$(tt help.toggle_auto)"
+    "$(tt help.auto_on)"
+    "$(tt help.auto_off)"
+    "$(tt help.scope)"
+    ""
+    "$(tt help.visual.header)"
+    "$(tt help.highlight)"
+    "$(tt help.autoscroll)"
+    "$(tt help.bionic)"
+    "$(tt help.zen)"
+    ""
+    "$(tt help.silence.header)"
+    "$(tt help.snooze)"
+    "$(tt help.snooze_global)"
+    "$(tt help.mute_pane)"
+    "$(tt help.debounce)"
+    "$(tt help.gate_check.args)"
+    "$(tt help.gate_check.desc)"
+    ""
+    "$(tt help.voice.header)"
+    "$(tt help.voice)"
+    "$(tt help.rate)"
+    "$(tt help.auto_lang)"
+    "$(tt help.voice_for.args)"
+    "$(tt help.voice_for.desc)"
+    "$(tt help.voice_prefix)"
+    "$(tt help.rate_up)"
+    "$(tt help.rate_down)"
+    ""
+    "$(tt help.providers.header)"
+    "$(tt help.provider)"
+    "$(tt help.piper_model)"
+    "$(tt help.openai_key)"
+    "$(tt help.openai_base_url)"
+    "$(tt help.openai_model)"
+    "$(tt help.eleven_key)"
+    "$(tt help.eleven_model)"
+    ""
+    "$(tt help.notif.header)"
+    "$(tt help.ntfy_topic)"
+    "$(tt help.ntfy_server)"
+    "$(tt help.web_url)"
+    "$(tt help.collie_url)"
+    "$(tt help.web_label)"
+    "$(tt help.click_redirect)"
+    ""
+    "$(tt help.podcast.header)"
+    "$(tt help.podcast)"
+    "$(tt help.podcast_serve)"
+    "$(tt help.podcast_port)"
+    "$(tt help.podcast_publish)"
+    ""
+    "$(tt help.keymap.header)"
+    "$(tt help.keymap.init "${XDG_CONFIG_HOME:-~/.config}/herdr-tts/keymap.json")"
+    "$(tt help.keymap.init2)"
+    "$(tt help.keymap.check)"
+    "$(tt help.keymap.check2)"
+    "$(tt help.keymap.emit)"
+    "$(tt help.keymap.emit2)"
+    "$(tt help.keymap.apply)"
+    "$(tt help.keymap.apply2)"
+    "$(tt help.keymap.apply3)"
+    "$(tt help.keymap.adopt)"
+    "$(tt help.keymap.adopt2)"
+    ""
+    'Agent skill distribution (SKILL.md for coding agents):'
+    '  skill install <agent> [--force]'
+    '                           Publish the managed SKILL.md into the agent'\''s'
+    '                           user-level skills directory (never overwrites;'
+    '                           --force replaces)'
+    '  skill uninstall <agent>  Remove the published skill (marker-guarded)'
+    '  skill list               Supported agents and install state'
+    '                           (claude-code, opencode, codex, pi)'
+    ""
+    "$(tt help.info.header)"
+    "$(tt help.status)"
+    "$(tt help.restart_daemon)"
+    "$(tt help.restart_daemon2)"
+    "$(tt help.restart_daemon3)"
+    "$(tt help.dashboard)"
+    "$(tt help.dashboard2)"
+    "$(tt help.dashboard3)"
+    "$(tt help.voice_palette)"
+    "$(tt help.voice_palette2)"
+    "$(tt help.voice_menu)"
+    "$(tt help.voice_menu2)"
+    "$(tt help.voice_menu3)"
+    "$(tt help.voice_menu4)"
+    "$(tt help.voice_settings)"
+    "$(tt help.voice_settings2)"
+    "$(tt help.voice_settings3)"
+    "$(tt help.voice_settings4)"
+    "$(tt help.voice_settings5)"
+    "$(tt help.palette_preview)"
+    "$(tt help.exit)"
+    )
+    printf '%s\n' "${_help_lines[@]}"
     ;;
   *)
     run_daemon

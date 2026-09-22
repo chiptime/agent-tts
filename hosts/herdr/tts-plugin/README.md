@@ -202,6 +202,56 @@ export HERDR_TTS_DEV=1   # agent-tts editable from ~/Code/personal/agent-tts
 bash scripts/bootstrap.sh
 ```
 
+### 4. Hand It to a Coding Agent (Paste-Ready)
+
+Paste this into Claude Code, OpenCode, Codex or Pi and the agent installs and verifies the plugin itself:
+
+```text
+Install the herdr-tts voice-notification plugin for my Herdr setup.
+
+1. Check the prerequisites first: git, jq, the `herdr` CLI, and either `uv`
+   or `python3` must be on PATH. Abort and report if any is missing.
+2. Run the tag-pinned installer:
+   curl -fsSL https://raw.githubusercontent.com/chiptime/herdr-tts/v0.16.0/scripts/install.sh | bash
+3. Verify: `herdr-tts --contract-version` must print 1, and
+   `herdr-tts --status` must print the current state. Report both outputs.
+4. Publish your operator skill so you can drive the plugin later:
+   herdr-tts skill install <your-agent>   # claude-code | opencode | codex | pi
+5. WARNING: never run `herdr server stop` to restart or reset anything
+   TTS-related — it stops the WHOLE Herdr server and kills every agent pane.
+   For TTS use `herdr-tts --restart-daemon` (daemon) or `herdr-tts --stop`
+   (audio only).
+6. Do not edit ~/.config/herdr-tts/config.env directly; use the CLI flags.
+Report the final `herdr-tts --status` output when done.
+```
+
+### Tested Platforms
+
+Honest coverage as of `v0.16.0`:
+
+- **Linux** — primary target; the platform the smoke suite (`scripts/smoke-tests.sh`) runs on.
+- **WSL2** — covered by the installer: the same XDG/bash installer applies, and audio goes through WSLg PulseAudio or the `winhost`/`wsl-ps` Windows-host playback modes.
+- **macOS** — covered by the installer (bash + XDG paths, BSD-safe `stat` in the codebase, CoreAudio via the engine); best-effort: no automated suite runs on it yet.
+
+There is **no CI matrix**: the repository ships no GitHub Actions workflows, so "covered" above means the installer and code paths are written and reviewed for these platforms, and the automated smoke suite currently runs on Linux only.
+
+### 5. Publish the Skill into Your Coding Agent
+
+`herdr-tts skill install <agent>` writes a managed `SKILL.md` into the agent's user-level skills directory so it can operate the plugin itself — mute, snooze, status, replay and keymap checks — through the real CLI. Same never-overwrite policy as the keymap: an existing or user-modified file is never replaced without `--force`, and uninstall refuses files that do not carry the managed marker.
+
+```bash
+herdr-tts skill install claude-code    # or: opencode | codex | pi
+herdr-tts skill list                   # supported agents + install state
+herdr-tts skill uninstall claude-code  # marker-guarded removal
+```
+
+| Agent | User-level skills directory |
+|---|---|
+| Claude Code | `~/.claude/skills/herdr-tts/SKILL.md` |
+| OpenCode | `~/.config/opencode/skills/herdr-tts/SKILL.md` |
+| Codex | `~/.codex/skills/herdr-tts/SKILL.md` (`CODEX_HOME` honored) |
+| Pi | `~/.pi/agent/skills/herdr-tts/SKILL.md` |
+
 ---
 
 ## ⌨️ Recommended Keybindings
@@ -575,6 +625,11 @@ TTS_SETTLE_SECONDS="5"      # a done must keep holding this long to fire;
 # Store root override (default $HOME/.local/share/agent-tts/audio):
 # AGENT_TTS_AUDIO_DIR="/path/to/audio-store"
 
+# UI language for terminal, notifications and TUI text:
+# "en" (default) or "es". The env var HERDR_TTS_LANG overrides the
+# config value; anything else falls back to English.
+HERDR_TTS_LANG="en"
+
 # Managed by the voice settings view (voice menu → `a`, or
 # `herdr-tts --voice-settings`): TTS_PROVIDER,
 # TTS_PLAYBACK, HERDR_TTS_AUDIO_RETENTION_DAYS and TTS_SETTLE_SECONDS.
@@ -806,7 +861,7 @@ We have an active vision to expand `herdr-tts` into the definitive audio layer f
 - [ ] 🎙️ **Push-to-Talk Two-Way Intercom:**
   - Dictate instructions directly to the focused agent pane via hotkey (`prefix + c`), transcribing locally via lightweight fast STT (Whisper.cpp / whisper-rs) and injecting the prompt directly into Herdr's active pane.
 - [x] 📦 **One-Line Install & Packaging:**
-  - Idempotent one-command installer (`scripts/install.sh`, tag-pinned `v0.16.0` with a `HERDR_TTS_REF`/`@main` escape hatch), uv-pip bootstrap immune to pip-less uv venvs, immutable agent-tts pin, `--no-keymap` adoption policy and documented uninstall steps. (Homebrew/npm wrappers remain future work.)
+  - Idempotent one-command installer (`scripts/install.sh`, tag-pinned `v0.16.0` with a `HERDR_TTS_REF`/`@main` escape hatch), uv-pip bootstrap immune to pip-less uv venvs, immutable agent-tts pin, `--no-keymap` adoption policy and documented uninstall steps. (Homebrew and npm wrappers ship as opt-in scaffolds under `packaging/` — `packaging/npm` delegates to this installer and `packaging/homebrew` holds a tap-ready formula; publishing either remains a deliberate maintainer step.)
 - [ ] 🎚️ **Gating Presets & First-Run Experience:**
   - `herdr-tts --preset chatty|focused|quiet|mobile` writes an opinionated, human-readable config block over the existing gating ledger, and `keymap init` offers a preset as its final step — full gating power without reading five config vars first.
 - [ ] 🔀 **Provider Failover Chain:**
@@ -823,10 +878,10 @@ We have an active vision to expand `herdr-tts` into the definitive audio layer f
   - Expose `herdr.tts.daemon-restart` as a plugin action and document the post-install `herdr plugin action invoke` — start or restart the daemon without `herdr server stop`, matching the ecosystem-idiomatic install flow.
 - [ ] ⚡ **Native `plugin_action` Key Bindings:**
   - Migrate the managed keymap block from `type = "shell"` commands to Herdr's `plugin_action` binding type — no shell spawn per keystroke.
-- [ ] 🤖 **Agent Skill Distribution:**
-  - `herdr-tts skill install <agent>` publishes a SKILL.md into user-level skill directories (Claude Code, Codex, OpenCode, Pi, …) so coding agents can operate the plugin themselves: mute, snooze, status, replay.
-- [ ] 📋 **Agent-Install Docs Block & Platform Matrix:**
-  - A paste-ready "hand it to an agent" install prompt (with the do-NOT-`herdr server stop` warning) and an honest tested-platforms line in the README.
+- [x] 🤖 **Agent Skill Distribution:**
+  - `herdr-tts skill install|uninstall|list` publishes a managed SKILL.md into the user-level skills directory of Claude Code, OpenCode, Codex and Pi so coding agents can operate the plugin themselves — mute, snooze, status, replay — with the keymap's never-overwrite policy (`--force` to replace).
+- [x] 📋 **Agent-Install Docs Block & Platform Matrix:**
+  - A paste-ready "hand it to an agent" install prompt (with the do-NOT-`herdr server stop` warning) and an honest tested-platforms line now live in the Installation section.
 
 
 
