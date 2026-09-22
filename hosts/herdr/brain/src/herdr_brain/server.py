@@ -403,11 +403,20 @@ def create_app(
 
 
 def main() -> None:  # pragma: no cover - manual entrypoint
+    import logging
     import os
 
     import uvicorn
 
     from .config import load_settings
+
+    # Under systemd the journal only sees what Python actually emits:
+    # configure the root logger so the contract/startup INFO lines (speech
+    # backend ok, etc.) reach it, not just warnings.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 
     # Default loopback; override (e.g. 0.0.0.0 under WSL2 with a Windows-side
     # tailscale serve proxy) via HERDR_BRAIN_HOST.
