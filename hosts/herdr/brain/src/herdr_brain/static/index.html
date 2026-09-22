@@ -76,11 +76,19 @@
     .chip.done    { color: var(--blue); }
     #pane-title {
       flex: 1;
+      /* Explicit: the title may shrink to nothing and ellipsize; it must
+       * never push the version chip off-screen on narrow phones. */
+      min-width: 0;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
       color: var(--muted);
       font-size: 14px;
+    }
+    #header-version {
+      /* The version chip is a deployment check: it must stay visible even
+       * on a 360px viewport, so it never shrinks. */
+      flex-shrink: 0;
     }
     .head-btn {
       padding: 8px 10px;
@@ -91,6 +99,17 @@
     }
     #mute-btn.muted { opacity: 0.55; }
     #new-conversation { font-weight: 700; }
+
+    /* Narrow phones (~360px): five header items cannot keep their wide
+     * labels. Chips size to their content (no 76px floor), the "Nueva"
+     * button keeps only its icon and the row gap tightens — that frees
+     * enough width for a readable ellipsized title AND the version chip. */
+    @media (max-width: 480px) {
+      header { gap: 7px; }
+      header .chip { min-width: 0; padding: 4px 8px; }
+      #new-conversation .btn-text { display: none; }
+      #new-conversation { padding: 8px; }
+    }
 
     /* Herd strip */
     #herd-strip {
@@ -405,7 +424,7 @@
     <span id="pane-title">conectando…</span>
     <span id="header-version" class="chip">v<span id="app-version-header">?</span></span>
     <button id="mute-btn" class="head-btn" title="Silenciar anuncios">🔊</button>
-    <button id="new-conversation" class="head-btn" title="Empezar una conversación nueva">↺ Nueva</button>
+    <button id="new-conversation" class="head-btn" title="Empezar una conversación nueva">↺<span class="btn-text"> Nueva</span></button>
   </header>
   <div id="toast" class="hidden"></div>
 
