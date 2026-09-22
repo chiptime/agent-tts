@@ -7,7 +7,6 @@ import pytest
 
 from agent_tts.cleaner import clean_agent_text
 from agent_tts.sources import SourceResult, read_last_agent_message
-from agent_tts.sources import aider as aider_module
 from agent_tts.sources import antigravity as antigravity_module
 from agent_tts.sources import claude as claude_module
 from agent_tts.sources import codex as codex_module
@@ -666,13 +665,34 @@ def test_aider_env_override_history_path(monkeypatch, tmp_path):
     root = tmp_path / "elsewhere"
     root.mkdir()
     path = _write_aider_history(root, "#### Assistant:\nrespuesta desde la ruta alternativa\n")
-    monkeypatch.setenv("AIDER_CHAT_HISTORY", str(path))
+    monkeypatch.setenv("AGENT_TTS_AIDER_HISTORY", str(path))
     source = AiderSource()
     assert source.read(AIDER_SESSION) == "respuesta desde la ruta alternativa"
 
 
-def test_aider_default_constants():
-    assert ".aider.chat.history.md" in aider_module.DEFAULT_HISTORY_PATH
+def test_aider_env_relative_path_raises_value_error(monkeypatch):
+    monkeypatch.setenv("AGENT_TTS_AIDER_HISTORY", "relative/.aider.chat.history.md")
+    with pytest.raises(ValueError) as ctx:
+        AiderSource()
+    assert "absolute" in str(ctx.value)
+    assert "AGENT_TTS_AIDER_HISTORY" in str(ctx.value)
+
+
+def test_aider_env_unset_raises_actionable_error(monkeypatch):
+    # No silent CWD fallback: the engine may run from a different directory
+    # than the user's aider session, so the path must be provided.
+    monkeypatch.delenv("AGENT_TTS_AIDER_HISTORY", raising=False)
+    with pytest.raises(SystemExit) as ctx:
+        AiderSource()
+    message = str(ctx.value)
+    assert "AGENT_TTS_AIDER_HISTORY" in message
+    assert "absolute" in message
+
+
+def test_aider_unconfigured_fails_loudly_through_routing(monkeypatch):
+    monkeypatch.delenv("AGENT_TTS_AIDER_HISTORY", raising=False)
+    with pytest.raises(SystemExit):
+        read_last_agent_message("aider", AIDER_SESSION)
 
 
 def test_aider_message_flows_redacted_through_cleaner(aider_history):

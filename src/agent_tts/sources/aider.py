@@ -2,10 +2,15 @@
 
 Aider (AI pair programming CLI) appends every conversation turn to a markdown
 file, by default ``.aider.chat.history.md`` in the project working directory
-(user-configurable via aider's ``--chat-history-file``, mirrored here through
-the ``AIDER_CHAT_HISTORY`` environment variable). There is no daemon or session
-store: the whole file IS the session, so the session id handed over by the host
-is a pass-through label and only its presence is validated.
+(user-configurable via aider's ``--chat-history-file``). There is no daemon or
+session store: the whole file IS the session, so the session id handed over by
+the host is a pass-through label and only its presence is validated.
+
+The engine may run from a different working directory than the user's aider
+session, so a CWD-relative default would silently read the wrong file. The
+history path must therefore be provided explicitly through the
+``AGENT_TTS_AIDER_HISTORY`` environment variable (absolute path); hosts that
+already know the exact file can also inject it as the ``history_path`` argument.
 
 Turn boundaries are ``#### User:`` / ``#### Assistant:`` headings followed by
 prose that routinely contains fenced code blocks. A line that *looks* like a
@@ -20,8 +25,9 @@ import os
 import re
 from typing import List, Optional, Tuple
 
-# Aider's default: the history file lives in the project working directory.
-DEFAULT_HISTORY_PATH = ".aider.chat.history.md"
+# Env override that points at aider's chat history file. It must be an
+# absolute path: the engine cannot guess the aider project's directory.
+ENV_HISTORY_PATH = "AGENT_TTS_AIDER_HISTORY"
 
 # Turn headings ("#### User:" / "#### Assistant:"). Lenient about trailing
 # text after the colon; slash-command records ("#### /add ...") never match.
@@ -58,12 +64,29 @@ class AiderSource:
     """Read-only connector over aider's markdown chat history file."""
 
     def __init__(self, history_path: Optional[str] = None):
-        # Injectable path for tests; env override mirrors aider's
-        # --chat-history-file. Default is the project working directory.
-        self.history_path = (
-            history_path
-            or os.environ.get("AIDER_CHAT_HISTORY")
-            or DEFAULT_HISTORY_PATH
+        # Resolution order: explicit injectable path (tests/hosts that already
+        # know the file) > AGENT_TTS_AIDER_HISTORY (absolute). There is
+        # deliberately NO CWD-relative fallback: the engine often runs from a
+        # different directory than the user's aider session, and silently
+        # reading the wrong file is worse than failing loudly.
+        if history_path:
+            self.history_path = history_path
+            return
+        env_path = os.environ.get(ENV_HISTORY_PATH, "").strip()
+        if env_path:
+            if not os.path.isabs(env_path):
+                raise ValueError(
+                    f"{ENV_HISTORY_PATH} must be an absolute path, got the relative path "
+                    f"{env_path!r}. Point it at the absolute path of aider's chat history "
+                    "file (the one aider writes via its --chat-history-file option)."
+                )
+            self.history_path = env_path
+            return
+        raise SystemExit(
+            f"Error: the aider history path is not configured. Set {ENV_HISTORY_PATH} to the "
+            "absolute path of aider's chat history file (by default .aider.chat.history.md in "
+            "the aider project's working directory). A CWD-relative default is ambiguous "
+            "because the engine may run from a different directory than the aider session."
         )
 
     def read(self, session_id: str) -> Optional[str]:
