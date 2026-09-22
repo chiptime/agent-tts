@@ -1,5 +1,10 @@
+import json
+import os
+import tempfile
 import unittest
-from agent_tts.cleaner import clean_agent_text, extract_last_turn, strip_ansi
+from unittest import mock
+
+from agent_tts.cleaner import clean_agent_text, extract_last_turn, load_user_lexicon, strip_ansi
 
 
 class TestCleaner(unittest.TestCase):
@@ -122,6 +127,39 @@ class TestCleaner(unittest.TestCase):
         self.assertNotIn("ghp_", res)
         # The summary is still produced (both sentences fit the heuristic budget).
         self.assertIn("Configuré el cliente", res)
+
+
+class TestUserLexicon(unittest.TestCase):
+    """Chain: AGENT_TTS_LEXICON env > ~/.config/agent-tts/lexicon.json > defaults."""
+
+    def test_env_var_lexicon_wins(self):
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".json", delete=False, encoding="utf-8"
+        ) as f:
+            json.dump({"k8s": "kates"}, f)
+            path = f.name
+        self.addCleanup(os.remove, path)
+        with mock.patch.dict(os.environ, {"AGENT_TTS_LEXICON": path}):
+            self.assertEqual(load_user_lexicon(), {"k8s": "kates"})
+
+    def test_chain_never_probes_host_specific_paths(self):
+        probed = []
+
+        def fake_isfile(path):
+            probed.append(path)
+            return False
+
+        with mock.patch.dict(os.environ, {"AGENT_TTS_LEXICON": ""}):
+            with mock.patch.object(os.path, "isfile", fake_isfile):
+                self.assertEqual(load_user_lexicon(), {})
+        self.assertTrue(probed)  # the fallback chain was actually walked
+        for path in probed:
+            self.assertNotIn("herdr", path)
+
+    def test_no_user_lexicon_falls_back_to_builtin_defaults(self):
+        with mock.patch.dict(os.environ, {"AGENT_TTS_LEXICON": ""}):
+            with mock.patch.object(os.path, "isfile", return_value=False):
+                self.assertEqual(load_user_lexicon(), {})
 
 
 if __name__ == "__main__":

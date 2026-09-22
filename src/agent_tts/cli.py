@@ -836,6 +836,14 @@ def main():
     except Exception:
         pass
 
+    # Voice manager subcommands (agent-tts voice list|install|remove) have
+    # their own argument grammar (e.g. `voice list --json`), so they dispatch
+    # BEFORE the synthesis parser; the store tooling lives in agent_tts.voices.
+    if len(sys.argv) > 1 and sys.argv[1] == "voice":
+        from agent_tts.voices import handle_voice_command
+
+        sys.exit(handle_voice_command(sys.argv[2:] or ["list"]))
+
     parser = argparse.ArgumentParser(description="Agent Neural TTS Engine")
     parser.add_argument("text", nargs="*", help="Text to speak (reads stdin if omitted)")
     parser.add_argument("--voice", "-v", default=DEFAULT_VOICE, help="Voice (e.g. elvira, alvaro, nova, rachel)")
@@ -845,6 +853,7 @@ def main():
     parser.add_argument("--output", "-o", help="Save synthesized MP3 audio to file")
     parser.add_argument("--no-play", action="store_true", help="Do not play audio locally")
     parser.add_argument("--play-file", help="Play an existing MP3 file directly without re-synthesizing")
+    parser.add_argument("--probe", help="Print the duration in seconds of an audio file and exit")
     parser.add_argument(
         "--highlight",
         "-H",
@@ -977,17 +986,6 @@ def main():
 
     args = parser.parse_args()
 
-    # Voice manager subcommands (agent-tts voice list|install|remove) dispatch
-    # before normal synthesis; the store tooling lives in agent_tts.voices.
-    if args.text and args.text[0] == "voice" and len(args.text) > 1:
-        from agent_tts.voices import handle_voice_command
-
-        sys.exit(handle_voice_command(args.text[1:]))
-    if args.text == ["voice"]:
-        from agent_tts.voices import handle_voice_command
-
-        sys.exit(handle_voice_command(["list"]))
-
     # Flag overrides win over environment for the winhost transport settings.
     if args.winhost_host:
         os.environ["AGENT_TTS_WINHOST_HOST"] = args.winhost_host
@@ -1031,6 +1029,19 @@ def main():
         else:
             print("Error: No active audio playback session found", file=sys.stderr)
             sys.exit(1)
+
+    if args.probe:
+        # Host-facing utility mode: duration of one audio file as a plain
+        # float (one line), so bash hosts need no Python of their own.
+        from agent_tts.audio_store import audio_duration
+
+        try:
+            duration = audio_duration(args.probe)
+        except Exception as e:
+            print(f"Error: cannot probe {args.probe}: {e}", file=sys.stderr)
+            sys.exit(1)
+        print(f"{duration:.3f}")
+        sys.exit(0)
 
     if args.play_file:
         play_mp3_file(
@@ -1082,7 +1093,7 @@ def main():
             )
         )
     else:
-        # Host integrations (e.g. herdr-tts) may hand over text that is already
+        # Host integrations may hand over text that is already
         # the exact message to speak; scrollback turn extraction is then skipped
         # while message cleaning (markdown-to-speech, tables, lexicon) still runs.
         speech_text = input_text if args.raw else clean_agent_text(

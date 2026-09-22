@@ -411,7 +411,17 @@ def handle_voice_command(argv: List[str], store_root: Optional[str] = None, out=
     parser = argparse.ArgumentParser(prog="agent-tts voice", description="Manage offline voice models")
     sub = parser.add_subparsers(dest="action", required=True)
 
-    sub.add_parser("list", help="List installed voices and their provider")
+    p_list = sub.add_parser("list", help="List installed voices and their provider")
+    p_list.add_argument(
+        "provider",
+        nargs="?",
+        help="Only list this provider's voices (see the catalog with --json)",
+    )
+    p_list.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the voice catalog as JSON (all providers, or one provider's list)",
+    )
 
     p_install = sub.add_parser("install", help="Download a voice model into the store")
     p_install.add_argument("name", help="Voice name: 'kokoro' or a piper voice (e.g. es_ES-davefx-medium)")
@@ -423,6 +433,29 @@ def handle_voice_command(argv: List[str], store_root: Optional[str] = None, out=
     out = out or sys.stdout
 
     if args.action == "list":
+        # Catalog mode: with a provider argument and/or --json, print the
+        # built-in catalog (provider_names/provider_voices) instead of the
+        # installed-voice store listing.
+        if args.provider or args.json:
+            from agent_tts.providers import provider_names, provider_voices
+
+            if args.provider:
+                try:
+                    names = provider_voices(args.provider)
+                except ValueError as e:
+                    print(f"Error: {e}", file=sys.stderr)
+                    return 1
+                if args.json:
+                    print(json.dumps(names), file=out)
+                else:
+                    for name in names:
+                        print(name, file=out)
+                return 0
+            names = provider_names()
+            catalog = {"providers": names, "voices": {p: provider_voices(p) for p in names}}
+            print(json.dumps(catalog), file=out)
+            return 0
+
         entries = list_voices(store_root=store_root)
         if not entries:
             print(f"No voices installed in {store_root or get_store_root()}", file=out)

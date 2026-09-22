@@ -1,8 +1,10 @@
 """agent-tts: Lightweight neural TTS engine with interactive controls for AI agents."""
 
-__version__ = "0.1.0"
+__version__ = "0.3.0"
 
+from agent_tts import audio_store
 from agent_tts.audio import AudioSession, cleanup_locks, play_mp3_data, play_mp3_file
+from agent_tts.audio_store import audio_duration
 from agent_tts.boundaries import (
     BoundaryMap,
     Paragraph,
@@ -14,7 +16,7 @@ from agent_tts.boundaries import (
     estimate_boundaries_from_text,
 )
 from agent_tts.cleaner import clean_agent_text, extract_last_turn, strip_ansi
-from agent_tts.cli import speak, synthesize
+from agent_tts.cli import main, speak, synthesize
 from agent_tts.ipc import IPCServer, send_ipc_command
 from agent_tts.lang_detector import (
     detect_language,
@@ -32,6 +34,8 @@ from agent_tts.providers import (
     OpenAITTSProvider,
     TTSProvider,
     get_provider,
+    provider_names,
+    provider_voices,
 )
 from agent_tts.redact import redact_secrets
 from agent_tts.summarizer import summarize
@@ -48,8 +52,11 @@ def __getattr__(name: str):
 
 __all__ = [
     "__version__",
+    "main",
     "speak",
     "synthesize",
+    "audio_store",
+    "audio_duration",
     "clean_agent_text",
     "extract_last_turn",
     "strip_ansi",
@@ -79,5 +86,7 @@ __all__ = [
     "OpenAITTSProvider",
     "ElevenLabsTTSProvider",
     "get_provider",
+    "provider_names",
+    "provider_voices",
     "redact_secrets",
 ]

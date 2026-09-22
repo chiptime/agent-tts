@@ -156,3 +156,57 @@ def test_cli_main_runs_retention_sweep_once(tmp_path, monkeypatch):
     cli.main()
 
     mock_prune.assert_called_once()
+
+
+class TestAudioDuration:
+    """audio_duration decodes a file and returns its length in seconds."""
+
+    def _write_wav(self, root, name: str, samples: int, sample_rate: int = 8000) -> str:
+        pcm = b"\x00\x00" * samples  # mono 16-bit silence
+        path = root / name
+        path.write_bytes(audio_store._pcm_to_wav(pcm, sample_rate, 1))
+        return str(path)
+
+    def test_one_second_wav(self, tmp_path):
+        path = self._write_wav(tmp_path, "one-second.wav", samples=8000)
+        assert audio_store.audio_duration(path) == pytest.approx(1.0)
+
+    def test_fractional_duration(self, tmp_path):
+        path = self._write_wav(tmp_path, "half.wav", samples=4000)
+        assert audio_store.audio_duration(path) == pytest.approx(0.5)
+
+    def test_missing_file_raises_os_error(self, tmp_path):
+        with pytest.raises(OSError):
+            audio_store.audio_duration(str(tmp_path / "missing.wav"))
+
+    def test_undecodable_file_raises(self, tmp_path):
+        path = tmp_path / "garbage.wav"
+        path.write_bytes(b"not audio at all")
+        with pytest.raises(Exception):
+            audio_store.audio_duration(str(path))
+
+
+def test_cli_probe_prints_duration_as_plain_float(tmp_path, monkeypatch, capsys):
+    from agent_tts import cli
+
+    pcm = b"\x00\x00" * 8000  # one second of mono 16-bit silence at 8 kHz
+    wav = tmp_path / "probe.wav"
+    wav.write_bytes(audio_store._pcm_to_wav(pcm, 8000, 1))
+
+    monkeypatch.setattr(sys, "argv", ["cli.py", "--probe", str(wav)])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+
+    assert exc.value.code == 0
+    assert capsys.readouterr().out.strip() == "1.000"
+
+
+def test_cli_probe_missing_file_fails_clean(tmp_path, monkeypatch, capsys):
+    from agent_tts import cli
+
+    monkeypatch.setattr(sys, "argv", ["cli.py", "--probe", str(tmp_path / "nope.wav")])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+
+    assert exc.value.code == 1
+    assert "Error" in capsys.readouterr().err
