@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from herdr_brain.config import Settings
 from herdr_brain.herdr import AgentInfo
 from herdr_brain.server import create_app
+from tests.conftest import SETTINGS_KWARGS
 
 
 class FakeLLM:
@@ -83,8 +84,26 @@ class TestTtsBackendContract:
     """The herdr-tts backend contract: /health field + fail-soft boot."""
 
     def test_health_reports_tts_ok_with_stub_backend(self, client_factory):
-        body = client_factory().get("/health").json()
-        assert body["tts"] == "ok"  # conftest materializes stub backend files
+        # client_factory cannot inject the daemon probe; build directly so
+        # the 'ok' expectation is deterministic (probe stubbed UP).
+        cfg = Settings(**{**SETTINGS_KWARGS, "audio_dir": "/tmp/herdr-brain-test-audio"})
+        client = TestClient(create_app(settings=cfg, daemon_probe=lambda: "up"))
+        assert client.get("/health").json()["tts"] == "ok"
+
+    def test_health_degraded_when_daemon_down(self):
+        cfg = Settings(**{**SETTINGS_KWARGS, "audio_dir": "/tmp/herdr-brain-test-audio"})
+        client = TestClient(create_app(settings=cfg, daemon_probe=lambda: "down"))
+        assert client.get("/health").json()["tts"] == "degraded"
+
+    def test_health_missing_contract_dominates_daemon_state(self):
+        cfg = Settings(**{
+            **SETTINGS_KWARGS,
+            "audio_dir": "/tmp/herdr-brain-test-audio",
+            "tts_python": "/nowhere/venv/bin/python",
+            "tts_engine": "/nowhere/lib/tts_engine.py",
+        })
+        client = TestClient(create_app(settings=cfg, daemon_probe=lambda: "up"))
+        assert client.get("/health").json()["tts"] == "missing"
 
     def test_health_reports_tts_missing_and_server_survives(self, settings, audio_dir, monkeypatch, caplog):
         """Fail-soft: a missing backend must never crash the server; text
