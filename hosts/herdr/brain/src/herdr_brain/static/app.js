@@ -47,6 +47,7 @@
   var sheetScreen = $("sheet-screen");
   var tabConv = $("tab-conv");
   var tabScreen = $("tab-screen");
+  var voiceEngineBtn = $("voice-engine-btn");
 
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   var recognition = null;
@@ -64,6 +65,22 @@
   var lastDispatch = "ninguna";
   var lastRecError = "ninguno";
   var textMode = false;         // mic unavailable: keyboard fallback
+
+  /* Voice engine v2: "servidor" (getUserMedia + VAD + /transcribe) is the
+   * default — Android Chrome's SpeechRecognition ignores BT headset mics
+   * and returns zero results, while getUserMedia does honor them. The old
+   * Web Speech path stays as "navegador" fallback; the choice persists. */
+  var VOICE_KEY = "herdr-brain-voice-engine";
+  var voiceEngine = localStorage.getItem(VOICE_KEY) === "navegador" ? "navegador" : "servidor";
+  var mediaStream = null;       // getUserMedia stream, live for the whole call
+  var audioContext = null;
+  var analyser = null;
+  var vadSampleBuf = null;      // reused Float32Array for RMS frames
+  var vad = null;               // Vad.createVad()
+  var vadTick = null;           // VAD sampling interval
+  var recorder = null;          // MediaRecorder for the CURRENT utterance
+  var recorderChunks = [];
+  var serverMicBusy = false;    // a server-engine capture is starting up
 
   /* Persistent per-install ids. */
   var SESSION_KEY = "herdr-brain-session";
@@ -84,6 +101,8 @@
 
   var PILL_TEXT = {
     listening: "● Escuchando",
+    recording: "● Grabando — habla",
+    transcribing: "⏳ Entendiendo…",
     thinking: "⏳ Pensando…",
     speaking: "🔊 Hablando — toca para cortar",
     paused: "⏸ Micrófono en pausa"
@@ -105,10 +124,11 @@
     statePill.classList.remove("hidden");
     callBtn.textContent = "🔴 Colgar";
     callBtn.classList.add("oncall");
-    var micControllable = state === "listening" || state === "paused";
+    var micControllable = state === "listening" || state === "recording" || state === "paused";
     pauseBtn.classList.toggle("hidden", !micControllable);
     pauseBtn.textContent = state === "paused" ? "▶ Reanudar" : "⏸ Pausa";
-    interimEl.classList.toggle("hidden", state !== "listening");
+    // The interim strip carries the live transcript of Web Speech only.
+    interimEl.classList.toggle("hidden", !(state === "listening" && voiceEngine === "navegador"));
   }
 
   /* ---------------- diagnostics ---------------- */
@@ -498,12 +518,14 @@
     var versionEl = document.getElementById("app-version");
     var lines = [
       "build:            " + (versionEl ? versionEl.textContent : "?"),
+      "motor de voz:     " + voiceEngine,
       "callState:        " + callState,
       "inCall:           " + inCall,
       "listening:        " + listening,
       "dispatching:      " + dispatching,
       "textMode:         " + textMode,
       "escuchando desde: " + (listeningStartedAt ? new Date(listeningStartedAt).toLocaleTimeString() : "—"),
+      "ruido de sala:    " + (vad ? vad.floor().toFixed(4) : "—"),
       "errores recon.:   " + recFailures + " (último: " + lastRecError + ")",
       "preguntas /ask:   " + askCount,
       "último envío:     " + lastDispatch,
@@ -665,7 +687,7 @@
       });
   }
 
-  /* ---------------- speech recognition (self-endpointing) ----------------
+  /* ---------------- speech recognition: browser engine (Web Speech) -----
    *
    * ONE recognition lifecycle per listening session, continuous=true.
    * Chrome often never finalizes interim results, so endpointing.js decides:
@@ -693,7 +715,7 @@
     ask(text).then(function () { dispatching = false; });
   }
 
-  function startListening() {
+  function startBrowserListening() {
     if (textMode || !SR || callState !== "listening" || listening || dispatching) return;
     manualStop = false;
     hideBanner();
@@ -782,7 +804,7 @@
     }
   }
 
-  function stopListening() {
+  function stopBrowserListening() {
     manualStop = true;
     if (recRestartTimer) { clearTimeout(recRestartTimer); recRestartTimer = null; }
     if (epTick) { clearInterval(epTick); epTick = null; }
@@ -792,7 +814,226 @@
     listening = false;
   }
 
-  /* ---------------- call button / pause ---------------- */
+  /* ---------------- voice engine v2: servidor ----------------
+   *
+   * getUserMedia (echoCancellation + noiseSuppression) is kept open for the
+   * whole call — unlike SpeechRecognition it honors BT headset mics. vad.js
+   * bounds each utterance (adaptive noise floor + hysteresis; end after
+   * 1.2s below threshold or 15s hard cap); one MediaRecorder per utterance
+   * captures webm/opus, POSTs it to /transcribe and the text enters the
+   * same dispatch pipeline as Web Speech (thinking → speak → resume).
+   * Between utterances the recorder and the VAD loop are torn down so the
+   * mic never hears the agent's own TTS; the stream itself stays live.
+   */
+
+  function serverEngineSupported() {
+    return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia &&
+      typeof window.MediaRecorder !== "undefined" && window.Vad);
+  }
+
+  function frameRms() {
+    analyser.getFloatTimeDomainData(vadSampleBuf);
+    var sum = 0;
+    for (var i = 0; i < vadSampleBuf.length; i++) sum += vadSampleBuf[i] * vadSampleBuf[i];
+    return Math.sqrt(sum / vadSampleBuf.length);
+  }
+
+  function pickRecorderMime() {
+    var candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
+    for (var i = 0; i < candidates.length; i++) {
+      if (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(candidates[i])) {
+        return candidates[i];
+      }
+    }
+    return "";  // let the browser choose
+  }
+
+  function releaseServerMic() {
+    releaseVadLoopOnly();
+    if (recorder && recorder.state !== "inactive") {
+      try { recorder.onstop = null; recorder.stop(); } catch (err) { /* noop */ }
+    }
+    recorder = null;
+    recorderChunks = [];
+    analyser = null;
+    vad = null;
+  }
+
+  function teardownServerCall() {
+    releaseServerMic();
+    if (audioContext) {
+      try { audioContext.close(); } catch (err) { /* already closed */ }
+      audioContext = null;
+    }
+    if (mediaStream) {
+      mediaStream.getTracks().forEach(function (track) { track.stop(); });
+      mediaStream = null;
+    }
+  }
+
+  function dispatchServerUtterance(blob) {
+    dispatching = true;
+    setCallState("transcribing");  // ⏳ Entendiendo…
+    var form = new FormData();
+    form.append("audio", blob, "clip.webm");
+    fetchWithTimeout("/transcribe", { method: "POST", body: form }, 60000)
+      .then(function (resp) {
+        if (!resp.ok) {
+          return resp.json().catch(function () { return {}; }).then(function (data) {
+            var detail = data && data.detail ? data.detail : ("HTTP " + resp.status);
+            showBanner("No pude transcribir (HTTP " + resp.status + "): " + detail);
+          });
+        }
+        return resp.json().then(function (data) {
+          var text = (data && data.text ? data.text : "").trim();
+          if (!text) {
+            showBanner("No entendí el audio — inténtalo de nuevo.");
+            return;
+          }
+          ask(text);  // sets thinking; its chain resumes listening afterwards
+        });
+      })
+      .catch(function (err) {
+        showBanner("No pude enviar el audio al servidor — " +
+          (err && err.message ? err.message : "error de red") + ".");
+      })
+      .then(function () {
+        dispatching = false;
+        interimEl.textContent = "";
+        interimEl.classList.add("hidden");
+        if (callState === "transcribing") afterAnswer();
+      });
+  }
+
+  function finishServerUtterance() {
+    if (!recorder || recorder.state === "inactive") return;
+    releaseVadLoopOnly();
+    var capturedMime = recorder.mimeType || "";
+    var onStop = function () {
+      recorder = null;
+      var blob = new Blob(recorderChunks, { type: capturedMime || "audio/webm" });
+      recorderChunks = [];
+      if (blob.size < 1000) {  // a sliver: no real audio captured
+        if (inCall && callState === "recording") setCallState("listening");
+        if (callState === "listening") startServerListening();
+        return;
+      }
+      dispatchServerUtterance(blob);
+    };
+    recorder.onstop = onStop;
+    try { recorder.stop(); } catch (err) { onStop(); }
+  }
+
+  function releaseVadLoopOnly() {
+    if (vadTick) { clearInterval(vadTick); vadTick = null; }
+  }
+
+  function startServerListening() {
+    if (textMode || callState !== "listening" || dispatching || serverMicBusy) return;
+    if (!serverEngineSupported()) {
+      showBanner("Este navegador no soporta el motor Servidor — usa el motor Navegador.");
+      return;
+    }
+    serverMicBusy = true;
+    listeningStartedAt = Date.now();
+
+    var armUtterance = function () {
+      vad = window.Vad.createVad();
+      recorderChunks = [];
+      var mime = pickRecorderMime();
+      try {
+        recorder = mime ? new MediaRecorder(mediaStream, { mimeType: mime })
+                        : new MediaRecorder(mediaStream);
+      } catch (err) {
+        serverMicBusy = false;
+        showBanner("No pude abrir la grabación — prueba el motor Navegador.");
+        return;
+      }
+      recorder.ondataavailable = function (event) {
+        // Real MediaRecorder emits Blobs (.size); tolerate typed arrays too.
+        if (event.data && (event.data.size || event.data.length)) {
+          recorderChunks.push(event.data);
+        }
+      };
+      recorder.start(250);  // flush chunks regularly; we stop at the boundary
+      releaseVadLoopOnly();
+      vadTick = setInterval(function () {
+        if (!vad) return;
+        var speaking = vad.push(frameRms());
+        if (callState === "listening") {
+          setCallState(speaking || vad.hasSpeech() ? "recording" : "listening");
+        }
+        if (vad.shouldFinalize()) {
+          finishServerUtterance();
+          return;
+        }
+        // Parity with the browser engine: 5s of dead mic gets called out.
+        var elapsed = Date.now() - listeningStartedAt;
+        if (!vad.hasSpeech() && elapsed > 5000) {
+          pillSub.textContent = "No te oigo — comprueba el micro";
+          pillSub.classList.remove("hidden");
+        } else if (vad.hasSpeech()) {
+          pillSub.classList.add("hidden");
+        }
+      }, 100);
+      serverMicBusy = false;
+    };
+
+    if (mediaStream && audioContext) {
+      armUtterance();
+      return;
+    }
+    var openStream = navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true }
+    });
+    openStream.then(function (stream) {
+      mediaStream = stream;  // kept for the whole call
+      var Ctx = window.AudioContext || window.webkitAudioContext;
+      audioContext = new Ctx();
+      var source = audioContext.createMediaStreamSource(stream);
+      analyser = audioContext.createAnalyser();
+      analyser.fftSize = 1024;
+      source.connect(analyser);
+      vadSampleBuf = new Float32Array(analyser.fftSize);
+      armUtterance();
+    }).catch(function (err) {
+      serverMicBusy = false;
+      var name = err && err.name ? err.name : "";
+      if (name === "NotAllowedError" || name === "SecurityError") {
+        showBanner("Micrófono BLOQUEADO: concede el permiso en el navegador " +
+          "(menú ⋮ → Ajustes del sitio → Micrófono) y vuelve a llamar.");
+        enterTextMode("Micrófono bloqueado — usa el teclado o concede el permiso en el navegador.");
+      } else {
+        showBanner("No pude abrir el micrófono (" + (name || "error") +
+          ") — prueba el motor Navegador.");
+        if (inCall && callState === "listening") setCallState("paused");
+      }
+    });
+  }
+
+  function stopServerListening() {
+    manualStop = true;
+    releaseVadLoopOnly();
+    if (recorder && recorder.state !== "inactive") {
+      try { recorder.onstop = null; recorder.stop(); } catch (err) { /* noop */ }
+    }
+    recorder = null;
+    recorderChunks = [];
+    vad = null;
+  }
+
+  /* Engine dispatch: one name pair, both engines. */
+  function startListening() {
+    if (voiceEngine === "servidor") startServerListening();
+    else startBrowserListening();
+  }
+
+  function stopListening() {
+    if (voiceEngine === "servidor") stopServerListening();
+    else stopBrowserListening();
+  }
+
+  /* ---------------- call button / pause / voice engine toggle ------------- */
 
   function startCall() {
     inCall = true;
@@ -804,6 +1045,7 @@
   function endCall() {
     inCall = false;
     stopListening();
+    teardownServerCall();  // release the getUserMedia stream + AudioContext
     stopAudio();
     hideToast();
     setCallState("idle");
@@ -815,12 +1057,50 @@
   });
 
   pauseBtn.addEventListener("click", function () {
-    if (callState === "listening") {
+    if (callState === "listening" || callState === "recording") {
       stopListening();
       setCallState("paused");
     } else if (callState === "paused") {
       setCallState("listening");
       startListening();
+    }
+  });
+
+  function renderVoiceEngine() {
+    voiceEngineBtn.textContent = "Voz: " +
+      (voiceEngine === "servidor" ? "Servidor" : "Navegador");
+    voiceEngineBtn.title = voiceEngine === "servidor"
+      ? "Motor Servidor: tu voz se transcribe en el servidor (funciona con auriculares BT). Toca para cambiar al Navegador."
+      : "Motor Navegador: reconocimiento del navegador (Web Speech). Toca para cambiar al Servidor.";
+  }
+
+  voiceEngineBtn.addEventListener("click", function () {
+    var next = voiceEngine === "servidor" ? "navegador" : "servidor";
+    if (next === "navegador" && !SR) {
+      showBanner("El motor Navegador no está disponible en este navegador.");
+      return;
+    }
+    if (next === "servidor" && !serverEngineSupported()) {
+      showBanner("El motor Servidor no está disponible en este navegador.");
+      return;
+    }
+    voiceEngine = next;
+    localStorage.setItem(VOICE_KEY, voiceEngine);
+    renderVoiceEngine();
+    hideBanner();
+    if (inCall) {
+      // Switch live: tear the running engine down and boot the new one.
+      stopListening();
+      teardownServerCall();
+      teardownRecognition();
+      if (callState === "recording" || callState === "transcribing") {
+        dispatching = false;  // abandon the in-flight utterance cleanly
+        setCallState("listening");
+      }
+      if (callState === "listening" || callState === "paused") {
+        setCallState("listening");
+        startListening();
+      }
     }
   });
 
@@ -835,11 +1115,16 @@
   });
 
   function initSpeech() {
-    if (!SR) {
+    if (!SR && !serverEngineSupported()) {
       pauseBtn.classList.add("hidden");
       fallbackForm.classList.remove("hidden");
-      enterTextMode("Reconocimiento de voz no disponible en este navegador — modo teclado.");
+      enterTextMode("Ni reconocimiento de voz ni micrófono disponibles en este navegador — modo teclado.");
+    } else if (!SR) {
+      // Web Speech missing (e.g. desktop Firefox): servidor is the only engine.
+      voiceEngine = "servidor";
+      localStorage.setItem(VOICE_KEY, voiceEngine);
     }
+    renderVoiceEngine();
   }
 
   /* ---------------- new conversation ---------------- */

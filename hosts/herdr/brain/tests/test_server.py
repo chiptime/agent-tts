@@ -319,6 +319,7 @@ class TestStatic:
             assert f'id="{element_id}"' in html, f"missing #{element_id}"
         assert "/app.js" in html
         assert "/endpointing.js" in html
+        assert "/vad.js" in html
         assert "/manifest.webmanifest" in html
 
     def test_view_payload_shape_for_nonfocused_panes(self, settings, make_stub, active_agent):
@@ -660,6 +661,7 @@ class TestVersioning:
         assert resp.headers["cache-control"] == "no-cache"
         assert 'src="/app.js?v=abc1234"' in resp.text
         assert 'src="/endpointing.js?v=abc1234"' in resp.text
+        assert 'src="/vad.js?v=abc1234"' in resp.text
         assert 'href="/manifest.webmanifest?v=abc1234"' in resp.text
         assert 'id="app-version">vabc1234<' in resp.text
         assert 'src="/app.js"></script>' not in resp.text  # no unversioned refs left
@@ -667,7 +669,7 @@ class TestVersioning:
     def test_static_assets_served_no_cache(self, settings, audio_dir):
         cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
         client = TestClient(create_app(settings=cfg, version="abc1234", llm_factory=lambda c, t: FakeLLM()))
-        for path in ("/app.js", "/endpointing.js", "/sw.js"):
+        for path in ("/app.js", "/endpointing.js", "/vad.js", "/sw.js"):
             resp = client.get(path)
             assert resp.status_code == 200
             assert resp.headers["cache-control"] == "no-cache"

@@ -264,6 +264,16 @@
     #state-pill.thinking  { color: var(--warn); }
     #state-pill.speaking  { color: var(--blue); cursor: pointer; }
     #state-pill.paused    { color: var(--muted); }
+    /* Voice engine v2: capturing an utterance (red pulsing dot) and
+     * waiting for the server transcription. */
+    #state-pill.recording     { color: var(--danger); }
+    #state-pill.transcribing  { color: var(--warn); }
+    @keyframes rec-pulse {
+      0%   { box-shadow: 0 0 0 0 rgba(220, 60, 60, 0.55), 0 4px 14px #0003; }
+      70%  { box-shadow: 0 0 0 12px rgba(220, 60, 60, 0), 0 4px 14px #0003; }
+      100% { box-shadow: 0 0 0 0 rgba(220, 60, 60, 0), 0 4px 14px #0003; }
+    }
+    #state-pill.recording { animation: rec-pulse 1.3s ease-out infinite; }
     #pill-sub { font-size: var(--fs-xs); font-weight: 600; color: var(--danger); }
     #pill-sub.hidden { display: none; }
 
@@ -283,6 +293,19 @@
       box-shadow: 0 6px 20px #0006;
       border: 1px solid var(--line);
     }
+
+    #voice-engine-row { display: flex; justify-content: flex-end; }
+    #voice-engine-btn {
+      min-height: 36px;
+      padding: 4px 14px;
+      font-size: var(--fs-sm);
+      font-weight: 600;
+      background: var(--chip-bg);
+      color: var(--muted);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+    }
+    #voice-engine-btn:active { transform: scale(0.96); }
 
     /* Bottom call bar */
     footer {
@@ -447,6 +470,7 @@
 
   <footer>
     <div id="mic-note" class="hidden"></div>
+    <div id="voice-engine-row"><button id="voice-engine-btn" type="button">Voz: Servidor</button></div>
     <div class="controls">
       <button id="pause-btn" class="side-btn hidden">⏸ Pausa</button>
       <button id="call-btn">📞 Llamar</button>
@@ -488,6 +512,7 @@
 
   <audio id="player"></audio>
   <script src="/endpointing.js"></script>
+  <script src="/vad.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>
