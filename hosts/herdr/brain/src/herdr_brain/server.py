@@ -1,8 +1,9 @@
 """HTTP surface of the brain: /ask, /tts, /audio/<file>, /health.
 
-POST /ask runs the LLM tool loop, renders the answer to MP3 (Piper/agent-tts
-engine, --no-play) and returns an audio_url; playback happens on the CLIENT,
-never on PC speakers. POST /tts is plain TTS for the PWA's local echo.
+POST /ask runs the LLM tool loop, renders the answer to MP3 through the
+herdr-tts CLI surface (contract v1) and returns an audio_url; playback
+happens on the CLIENT, never on PC speakers. POST /tts is plain TTS for
+the PWA's local echo.
 """
 
 from __future__ import annotations
@@ -291,12 +292,12 @@ def create_app(
 
     @app.get("/health")
     def health() -> dict:
-        # Three-state tts: 'missing' (no backend contract at all) dominates;
-        # with the contract present, daemon liveness splits ok | degraded
+        # Three-state tts: 'missing' (surface contract unmet — computed once
+        # at boot, the CLI version is static per run) dominates; with the
+        # contract present, daemon liveness splits ok | degraded
         # (degraded = PC-speaker channel dead, phone channel still alive).
-        contract, _detail = tts_backend_status(cfg)
-        if contract == TTS_BACKEND_MISSING:
-            tts_field: str = TTS_BACKEND_MISSING
+        if tts_status != TTS_BACKEND_OK:
+            tts_field: str = tts_status
         else:
             try:
                 tts_field = "ok" if daemon_probe_fn() == DAEMON_UP else "degraded"

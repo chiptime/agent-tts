@@ -9,9 +9,9 @@ import pytest
 from herdr_brain.config import Settings
 from herdr_brain.herdr import AgentInfo, HerdrError, sanitize_prompt_text
 
-# Stub speech-backend layout: render_mp3 checks the herdr-tts contract
-# (venv python + engine entry must exist) before invoking the (mocked)
-# subprocess, so tests materialize stub files at these fixed paths.
+# Stub speech-backend SURFACE: the brain consumes herdr-tts only through
+# its CLI contract, so tests materialize a stub bin/herdr-tts that answers
+# --contract-version and writes a fake MP3 for --render-text.
 TTS_STUB_ROOT = Path("/tmp/herdr-brain-test-tts")
 
 SETTINGS_KWARGS = dict(
@@ -19,13 +19,10 @@ SETTINGS_KWARGS = dict(
     glm_api_key="test-key",
     glm_base_url="https://example.invalid/",
     glm_model="glm-5",
-    tts_venv=str(TTS_STUB_ROOT / "venv"),
-    tts_python=str(TTS_STUB_ROOT / "venv/bin/python"),
-    tts_engine=str(TTS_STUB_ROOT / "engine/tts_engine.py"),
+    tts_home=str(TTS_STUB_ROOT),
+    tts_bin=str(TTS_STUB_ROOT / "bin/herdr-tts"),
     tts_voice="elvira",
     tts_rate="+0%",
-    tts_max_chars=4000,
-    tts_extra_args=(),
     tts_timeout_s=10,
     audio_dir="/tmp/herdr-brain-test-audio",
     prompt_timeout_ms=5_000,
@@ -37,17 +34,29 @@ SETTINGS_KWARGS = dict(
     stt_warmup=False,  # tests: never start the warmup thread / touch the model
 )
 
+_STUB_BIN = """#!/bin/sh
+# herdr-tts surface stub (session fixture) — contract v1.
+if [ "${1:-}" = "--contract-version" ]; then
+  echo 1
+  exit 0
+fi
+if [ "${1:-}" = "--render-text" ]; then
+  out="$2"
+  printf 'ID3-stub-mp3' > "$out"
+  exit 0
+fi
+exit 2
+"""
+
 
 @pytest.fixture(autouse=True, scope="session")
 def _tts_backend_stubs():
-    """Materializes the stub herdr-tts backend files once per session."""
-    venv_python = TTS_STUB_ROOT / "venv/bin/python"
-    engine = TTS_STUB_ROOT / "engine/tts_engine.py"
-    venv_python.parent.mkdir(parents=True, exist_ok=True)
-    engine.parent.mkdir(parents=True, exist_ok=True)
-    venv_python.write_text("#!/bin/sh\n# test stub for the herdr-tts venv python\n")
-    venv_python.chmod(0o755)
-    engine.write_text("# test stub for the agent-tts engine entry\n")
+    """Materializes the stub herdr-tts surface CLI once per session."""
+    bin_dir = TTS_STUB_ROOT / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    stub = bin_dir / "herdr-tts"
+    stub.write_text(_STUB_BIN)
+    stub.chmod(0o755)
     yield
     # Left in /tmp on purpose: harmless and reused across sessions.
 

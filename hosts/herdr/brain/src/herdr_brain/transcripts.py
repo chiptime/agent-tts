@@ -1,16 +1,15 @@
 """Multi-turn transcript readers for the brain's ``read_transcript`` tool.
 
-Modeled on the agent-tts connector layer (``agent_tts/sources/``), which only
-exposes the *last* assistant message; the brain needs recent user/assistant
-turns, so the same store contracts are implemented here with multi-turn
-queries:
+The voice layer's connectors only expose the *last* assistant message;
+the brain needs recent user/assistant turns, so the same store contracts
+are implemented here with multi-turn queries:
 
 - OpenCode: read-only SQLite at ``~/.local/share/opencode/opencode.db``
   (``message``/``part`` tables, JSON ``$.role`` / ``$.type`` filters).
 - Claude Code: JSONL sessions at ``~/.claude/projects/<munged-cwd>/<uuid>.jsonl``
   with a reverse tail scan capped at 8 MB.
 
-Session-id shapes follow the agent-tts sniffing rules: ``ses_*`` routes to
+Session-id shapes follow the voice layer's sniffing rules: ``ses_*`` routes to
 OpenCode, UUID-like ids to the Claude-style stores. All access is read-only.
 """
 
@@ -25,14 +24,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
-# Session id shapes (same as agent_tts.sources.base).
+# Session id shapes (shared with the voice layer's connectors).
 OPENCODE_SESSION_RE = re.compile(r"^ses_[A-Za-z0-9_-]{6,}$")
 CLAUDE_SESSION_RE = re.compile(r"^[\da-fA-F-]{16,}$")
 
 DEFAULT_OPENCODE_DB = "~/.local/share/opencode/opencode.db"
 DEFAULT_CLAUDE_ROOT = "~/.claude/projects"
 
-# Safety caps borrowed from the agent-tts connectors.
+# Safety caps matching the voice layer's connectors.
 _CLAUDE_SCAN_CAP_BYTES = 8 * 1024 * 1024
 _CHUNK_SIZE = 64 * 1024
 MAX_TURNS = 50
@@ -145,7 +144,7 @@ def read_turns(
 ) -> Optional[List[Turn]]:
     """Routes to the matching connector and returns structured turns.
 
-    Routing mirrors agent-tts: match by agent name first, then sniff the
+    Routing mirrors the voice layer: match by agent name first, then sniff the
     session id shape. Returns ``None`` when no connector matches or nothing
     readable is found, so callers can fall back to a terminal screen read.
     """
@@ -228,7 +227,7 @@ def _claude_event_text(event: dict) -> Optional[str]:
 def _reverse_tail_lines(path: str, cap_bytes: int):
     """Yields complete lines of a file newest-first, capped to ``cap_bytes``.
 
-    Same chunked reverse-scan approach as ``agent_tts.sources.claude``.
+    Same chunked reverse-scan approach as the Claude-style voice connectors.
     """
     try:
         size = os.path.getsize(path)

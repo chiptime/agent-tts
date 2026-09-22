@@ -1,38 +1,34 @@
 """Environment-driven configuration for herdr-brain.
 
 Every knob is overridable through environment variables so the service can run
-on any machine; defaults point at the verified live layout (herdr-tts venv,
-agent-tts engine script). Secrets (GLM_API_KEY) are only read from the
-environment and must never be committed.
+on any machine; defaults point at the verified live layout (the herdr-tts
+repo with its versioned CLI surface). Secrets (GLM_API_KEY) are only read
+from the environment and must never be committed.
 """
 
 from __future__ import annotations
 
 import os
-import shlex
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 DEFAULT_GLM_BASE_URL = "https://api.z.ai/api/paas/v4/"
 DEFAULT_GLM_MODEL = "glm-5"
 
-# Verified live layout: herdr-tts ships a venv with the agent-tts engine
-# importable, and its lib/tts_engine.py IS the agent-tts engine entrypoint.
-# The venv is the CONTRACT root: tts_python defaults to <venv>/bin/python
-# (HERDR_TTS_PYTHON still overrides it explicitly).
-DEFAULT_TTS_VENV = "~/.local/share/herdr-tts/venv"
-DEFAULT_TTS_ENGINE = "~/Code/personal/herdr-tts/lib/tts_engine.py"
+# Verified live layout: herdr-tts is the speech backend, consumed ONLY
+# through its versioned CLI surface (contract v1). The home points at the
+# herdr-tts repo root; the CLI derives everything else (including its own
+# venv) internally.
+DEFAULT_TTS_HOME = "~/Code/personal/herdr-tts"
+TTS_SURFACE_BIN = "bin/herdr-tts"
 
 DEFAULT_AUDIO_DIR = "~/.local/state/herdr-brain/audio"
 
 DEFAULT_TTS_VOICE = "elvira"
 DEFAULT_TTS_RATE = "+0%"
-# Hard guard cap only: the engine truncates synthesis at --max-chars, so this
-# must stay generous or full answers get cut mid-read (never use --tldr for
-# chat answers). Agent answers routinely exceed 4000 chars; 8000 covers them
-# while still bounding pathological inputs. Timeout scales with the cap.
-DEFAULT_TTS_MAX_CHARS = 8000
+# Length capping is herdr-tts's own concern now (surface v1 has no
+# --max-chars; its default is unlimited so full answers render).
 DEFAULT_TTS_TIMEOUT_S = 240
 
 # Conservative cap: reading more lines than the viewport scrolls the
@@ -64,13 +60,10 @@ class Settings:
     glm_api_key: Optional[str]
     glm_base_url: str
     glm_model: str
-    tts_venv: Path
-    tts_python: Path
-    tts_engine: Path
+    tts_home: Path
+    tts_bin: Path
     tts_voice: str
     tts_rate: str
-    tts_max_chars: int
-    tts_extra_args: Tuple[str, ...]
     tts_timeout_s: int
     audio_dir: Path
     prompt_timeout_ms: int
@@ -83,7 +76,7 @@ class Settings:
 
     def __post_init__(self):
         # Accept plain strings for path fields regardless of the caller.
-        for field in ("tts_venv", "tts_python", "tts_engine", "audio_dir"):
+        for field in ("tts_home", "tts_bin", "audio_dir"):
             value = getattr(self, field)
             if not isinstance(value, Path):
                 object.__setattr__(self, field, Path(value).expanduser())
@@ -96,25 +89,22 @@ def load_settings(env: Optional[dict] = None) -> Settings:
     def getenv(name: str, default: str = "") -> str:
         return environ.get(name, default)
 
-    tts_extra = tuple(shlex.split(getenv("HERDR_BRAIN_TTS_ARGS")))
 
-    # Speech backend contract: HERDR_TTS_VENV names the herdr-tts venv
-    # (the contract root); the venv python derives from it unless
-    # HERDR_TTS_PYTHON says otherwise.
-    tts_venv = Path(getenv("HERDR_TTS_VENV", DEFAULT_TTS_VENV)).expanduser()
+    # Speech backend contract v1: HERDR_TTS_HOME names the herdr-tts repo
+    # root; the surface CLI derives from it. The legacy HERDR_TTS_VENV /
+    # HERDR_TTS_PYTHON / HERDR_TTS_ENGINE overrides are RETIRED (the brain
+    # no longer knows about the venv or engine — surface only).
+    tts_home = Path(getenv("HERDR_TTS_HOME", DEFAULT_TTS_HOME)).expanduser()
 
     return Settings(
         herdr_bin=getenv("HERDR_BIN", "herdr"),
         glm_api_key=getenv("GLM_API_KEY") or None,
         glm_base_url=getenv("GLM_BASE_URL", DEFAULT_GLM_BASE_URL),
         glm_model=getenv("GLM_MODEL", DEFAULT_GLM_MODEL),
-        tts_venv=tts_venv,
-        tts_python=Path(getenv("HERDR_TTS_PYTHON", str(tts_venv / "bin" / "python"))).expanduser(),
-        tts_engine=Path(getenv("HERDR_TTS_ENGINE", DEFAULT_TTS_ENGINE)).expanduser(),
+        tts_home=tts_home,
+        tts_bin=tts_home / TTS_SURFACE_BIN,
         tts_voice=getenv("HERDR_BRAIN_VOICE", DEFAULT_TTS_VOICE),
         tts_rate=getenv("HERDR_BRAIN_RATE", DEFAULT_TTS_RATE),
-        tts_max_chars=int(getenv("HERDR_BRAIN_MAX_CHARS", str(DEFAULT_TTS_MAX_CHARS))),
-        tts_extra_args=tts_extra,
         tts_timeout_s=int(getenv("HERDR_BRAIN_TTS_TIMEOUT_S", str(DEFAULT_TTS_TIMEOUT_S))),
         audio_dir=Path(getenv("HERDR_BRAIN_AUDIO_DIR", DEFAULT_AUDIO_DIR)).expanduser(),
         prompt_timeout_ms=int(getenv("HERDR_BRAIN_PROMPT_TIMEOUT_MS", str(DEFAULT_PROMPT_TIMEOUT_MS))),
