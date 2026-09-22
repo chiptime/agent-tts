@@ -45,6 +45,7 @@ _NO_CACHE_HEADERS = {"Cache-Control": "no-cache"}
 _VERSIONED_REFS = (
     ('src="/app.js"', 'src="/app.js?v={v}"'),
     ('src="/endpointing.js"', 'src="/endpointing.js?v={v}"'),
+    ('src="/vad.js"', 'src="/vad.js?v={v}"'),
     ('href="/manifest.webmanifest"', 'href="/manifest.webmanifest?v={v}"'),
     ('href="/icon.svg"', 'href="/icon.svg?v={v}"'),
 )
@@ -178,6 +179,13 @@ def create_app(
     def endpointing_js() -> FileResponse:
         return FileResponse(
             STATIC_DIR / "endpointing.js", media_type="text/javascript",
+            headers=dict(_NO_CACHE_HEADERS),
+        )
+
+    @app.get("/vad.js", include_in_schema=False)
+    def vad_js() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "vad.js", media_type="text/javascript",
             headers=dict(_NO_CACHE_HEADERS),
         )
 
