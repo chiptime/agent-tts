@@ -41,6 +41,19 @@ When orchestrating multiple autonomous coding agents in Herdr (Claude Code, Open
 | **Instant Kill-Switch** | ❌ No | ❌ No | 🟢 **`prefix + s`** (<0.2s instant halt) |
 | **Agent Terminal Cleaning** | ❌ Minimal (200 char hard limit) | ❌ LLM-generated summary | 🟢 **Deep cleaner** (ANSI, box, tokens) |
 
+### Where it stands in the 2026 landscape
+
+The TTS/voice-notification space for AI agents is growing fast, but existing solutions are typically **single-agent and hook-bound**: they serve one host's events, speak everything by default, stop at text-only remote notifications, and read your terminal verbatim — ANSI noise and secrets included. `herdr-tts` is built around the six capabilities below, and it is the only project in its space that checks all six at once.
+
+**The six boxes only `herdr-tts` checks at once:**
+
+1. **Multi-agent events with real transcript extraction** — OpenCode SQLite, Claude/Codex JSONL connectors plus scrollback fallback, from one plugin.
+2. **Full anti-fatigue gating** — settle window (intermediate `done` flickers dropped) + per-pane/global mute & snooze + debounce.
+3. **Remote surfaces with audio** — ntfy push with inline MP3 player + private podcast RSS feed. No verified competitor offers any remote audio surface.
+4. **Secret redaction & deep terminal cleaning** before anything is spoken, pushed or feeded.
+5. **Interactive playback** — pause/seek/sentence navigation with cognitive auto-rewind, TUI dashboard and fzf palette.
+6. **Zero-cost zero-config default** — Edge Neural, no API keys, no downloads, native C playback under 2.5 MB RAM.
+
 ---
 
 ## 🧠 Core Architecture
@@ -292,6 +305,8 @@ herdr-tts --rate-up            # Increase voice speed by +10% dynamically (prefi
 herdr-tts --rate-down          # Decrease voice speed by -10% dynamically (prefix+-)
 herdr-tts --player-status      # Live audio position, duration and playback state
 herdr-tts --toggle-auto        # Toggle background auto-speech (muted / active)
+herdr-tts --auto-on            # Force background auto-speech on: read every finished agent (default)
+herdr-tts --auto-off           # Mute background auto-speech: manual only (prefix+r / htr on demand)
 herdr-tts --snooze-pane        # Cycle snooze on the focused pane: 5m → 30m → 2h → off (prefix+z)
 herdr-tts --snooze-global      # Cycle GLOBAL snooze for all agents, e.g. meetings (prefix+Z)
 herdr-tts --mute-pane          # Mute/unmute the focused pane; auto-clears on pane close (prefix+m)
@@ -343,6 +358,8 @@ alias httt="herdr-tts --toggle-auto"
 herdr-tts --provider edge --voice elvira
 ```
 
+> **Honesty note:** Edge is free but **not contractual** — it rides an undocumented Microsoft service that can throttle or block. It stays the default because it costs you nothing (no keys, no downloads, works out of the box); if that risk matters to you, Kokoro below is the recommended one-command upgrade.
+
 ### 2. OpenAI Audio TTS
 - **Models:** `tts-1` (default, fast/low latency) and `tts-1-hd` (high quality).
 - **Voices:** `nova`, `alloy`, `echo`, `fable`, `onyx`, `shimmer` (automatic mapping from Spanish defaults like `elvira` → `nova`).
@@ -372,8 +389,9 @@ pip install piper-tts
 herdr-tts --provider piper --piper-model ~/.local/share/piper/models/es_ES-davefx-medium.onnx
 ```
 
-### 5. Kokoro-82M ONNX (100% Offline, Studio Quality)
+### 5. Kokoro-82M ONNX (100% Offline, Studio Quality) — The Recommended Upgrade
 - **State-of-the-Art Local Neural TTS:** ~325 MB model delivering studio-grade quality fully on CPU — zero cloud, zero API keys.
+- **The direct upgrade from Edge:** one command, no API keys ever; the only cost is a one-time ~325 MB model download, and it becomes a fully on-device default immune to rate limits.
 - **Voice Families:** American, British, Spanish and more, mapped through the engine's voice manager.
 - **Setup:**
 ```bash
@@ -432,6 +450,28 @@ Modos disponibles de `TTS_PLAYBACK`:
 * `auto`: opción que se adapta al entorno — resuelve a `winhost` bajo WSL cuando `powershell.exe` está disponible (con fallback automático a `wsl-ps`) y a `local` en cualquier otro caso (Windows nativo, Linux nativo, o WSL sin interop). Ideal para una config sincronizada entre máquinas: no hay que fijar el modo a mano en cada entorno.
 
 > ⚠️ **Seguridad:** `agent-tts --winhost` escucha por defecto en `0.0.0.0:7717` (puerto abierto en la LAN). Restringe el bind con `AGENT_TTS_WINHOST_BIND=127.0.0.1` o usa un firewall si no confías en tu red.
+
+---
+
+## 🔒 Privacy & Security
+
+herdr-tts speaks your terminal out loud and can push audio to your phone — here is exactly what happens with your data, by default and by option.
+
+**What never leaves your machine:**
+
+* Transcript acquisition, terminal cleaning, secret redaction and — with local providers — synthesis all happen locally. The plugin adds no telemetry, no analytics, no phoning home.
+* The LLM summary chain, when wired up, is **strictly opt-in**: nothing is sent to any model unless you configure it yourself.
+
+**What can leave, and how it is protected:**
+
+* **Edge TTS (default):** the sanitized text of the spoken turn is sent to Microsoft's speech endpoint for synthesis. That is the only network call on the default path — and the reason it needs no keys. Fully on-device alternative: Piper or Kokoro.
+* **ntfy push (optional):** the event MP3 and title go to your configured ntfy server. Your topic string is the bearer credential — pick an unguessable one, and point `NTFY_SERVER` at a self-hosted instance for sensitive fleets.
+* **Podcast feed (`--podcast-serve`):** serves your generated episodes over HTTP on port 8844 — run it on a trusted network only.
+
+**Built-in hygiene, on by default:**
+
+* **Secret redactor (`redact.py`):** common credential shapes (`sk-…`, `ghp_…`, JWTs, `Authorization` headers, PEM blocks) are stripped before anything is synthesized, pushed or feeded — a hygiene step that is rare to nonexistent in this space.
+* **Deep terminal cleaner (`cleaner.py`):** ANSI escapes, box borders, spinners and token counters are removed so what gets spoken is prose — never raw terminal soup.
 
 ---
 
@@ -583,11 +623,12 @@ command = "herdr plugin pane open --plugin herdr.tts --entrypoint tts-palette"
 
 ## ⚙️ Ajustes de voz y audio
 
-`prefix+u` abre el **menú de voz**; dentro del menú, la tecla `a` abre esta vista de **Ajustes**: seis ajustes opcionales — cuatro se **cícian con una tecla** (`p` `d` `r` `s`), la redirección web se escribe **a texto libre** (`w`) y el click directo **alterna on/off** (`c`) — y todo se guarda al momento en `~/.config/herdr-tts/config.env`:
+`prefix+u` abre el **menú de voz**; dentro del menú, la tecla `a` abre esta vista de **Ajustes**: siete ajustes opcionales — cuatro se **cícian con una tecla** (`p` `d` `r` `s`), la auto-lectura **alterna activa/silenciada** (`v`), la redirección web se escribe **a texto libre** (`w`) y el click directo **alterna on/off** (`c`) — y todo se guarda al momento en `~/.config/herdr-tts/config.env`:
 
 | Tecla | Ajuste | Ciclo |
 |---|---|---|
 | `p` | Proveedor TTS | `edge` (gratuito, por defecto) → `openai` → `elevenlabs` → `piper` → `kokoro` |
+| `v` | Auto-lectura | activa (te lee al terminar cada agente) ↔ silenciada (solo manual: `prefix+r` / `htr` bajo demanda); persiste en el marcador `auto_muted` — el mismo de `--toggle-auto` — y aplica al vuelo, sin reiniciar el daemon |
 | `d` | Destino de reproducción | `local` → `winhost` → `wsl-ps` → `windows` → `auto` |
 | `r` | Audio retenido (días) | `0` (apagado) → `1` → `3` → `7` → `14` |
 | `s` | Asentamiento done (segundos) | `0` (instantáneo) → `2` → `5` → `10` → `15` → `30` |
@@ -596,7 +637,7 @@ command = "herdr plugin pane open --plugin herdr.tts --entrypoint tts-palette"
 
 * Dentro del menú, `q` / `Esc` / `Enter` **vuelven al menú principal**. Para acceso directo sigue existiendo el popup independiente (`herdr-tts --voice-settings`, acción `voice-settings` del plugin, entrypoint `tts-settings`), donde `q` / `Esc` cierra el popup. `settings` sigue siendo un id ligable en `keymap.json`, pero **sin acorde por defecto**: los ajustes no gastan una tecla de core.
 * Kokoro y Piper requieren instalar el modelo antes: `agent-tts voice install <modelo>`.
-* La escritura es **gestionada**: solo toca las claves `TTS_PROVIDER`, `TTS_PLAYBACK`, `HERDR_TTS_AUDIO_RETENTION_DAYS`, `TTS_SETTLE_SECONDS`, `WEB_URL`, `COLLIE_URL`, `WEB_LABEL` y `CLICK_REDIRECT` de `config.env` — reescribe la línea existente o añade un bloque gestionado al final, preserva el resto del fichero byte a byte, escribe de forma atómica (tmp + mv) y deja la versión previa en `config.env.bak`.
+* La escritura es **gestionada**: solo toca las claves `TTS_PROVIDER`, `TTS_PLAYBACK`, `HERDR_TTS_AUDIO_RETENTION_DAYS`, `TTS_SETTLE_SECONDS`, `WEB_URL`, `COLLIE_URL`, `WEB_LABEL` y `CLICK_REDIRECT` de `config.env` — reescribe la línea existente o añade un bloque gestionado al final, preserva el resto del fichero byte a byte, escribe de forma atómica (tmp + mv) y deja la versión previa en `config.env.bak` (la excepción es `v`: usa el marcador `auto_muted`, no `config.env`).
 * La tecla `R` (mayúscula — distinta de la `r` que cicla retención) **reinicia el daemon** al instante y confirma en pantalla con `✓ Daemon reiniciado`; equivale a `herdr-tts --restart-daemon`.
 * Los cambios aplican a **nuevos procesos**: `p`, `d`, `s`, `w` y `c` aplican al reiniciar el daemon — ahora con una tecla (`R` en Ajustes) o `herdr-tts --restart-daemon`.
 
@@ -649,6 +690,20 @@ We have an active vision to expand `herdr-tts` into the definitive audio layer f
   - v3: **per-chat view** — the roster merges `herdr agent list` (agent state + chat title), the snooze/mute ledger and the debounce ledger under the same `pane_id` key, rendering one line per chat with needs-attention-first sorting (done/blocked → working → idle, most-recent-audio tiebreak), voice overlays (🔇 muted, 😴 snooze countdown, ⏱ debounce hold) and a screen-row budget that drops oldest-idle chats first and never hides chats needing attention; the audio history renders **grouped per chat** (`── <title> · N audios · último hace Xm` + last 3 audios each) via a single python pass per tick with correct per-date DST handling, keeping closed panes visible by pane id and hiding the section entirely when the ledger is empty.
 - [ ] 🎙️ **Push-to-Talk Two-Way Intercom:**
   - Dictate instructions directly to the focused agent pane via hotkey (`prefix + c`), transcribing locally via lightweight fast STT (Whisper.cpp / whisper-rs) and injecting the prompt directly into Herdr's active pane.
+- [ ] 📦 **One-Line Install & Packaging:**
+  - Idempotent one-command installer plus Homebrew/npm distribution wrappers, so adopting the plugin takes 60 seconds instead of a clone-and-venv dance.
+- [ ] 🎚️ **Gating Presets & First-Run Experience:**
+  - `herdr-tts --preset chatty|focused|quiet|mobile` writes an opinionated, human-readable config block over the existing gating ledger, and `keymap init` offers a preset as its final step — full gating power without reading five config vars first.
+- [ ] 🔀 **Provider Failover Chain:**
+  - `TTS_PROVIDER_CHAIN="edge,kokoro,piper"` — Edge stays the zero-cost zero-config default, but if it throttles or blocks, the engine degrades to the next installed provider with an actionable note (never a silent download) and logs the switch to `daemon.log`.
+- [ ] 🪝 **agent-tts Hook Adapters (outside Herdr):**
+  - Thin `agent-tts hook claude-code` / `codex` adapters riding each host's native event hooks, bringing the engine, cleaner, secret redactor and simple gating to single-agent setups — Herdr fleets keep the full multi-agent surfaces.
+- [ ] 🔍 **`--audit` Mode (what would it say):**
+  - Replay the last 24h of events through cleaner + redactor and show exactly what would have been spoken or pushed — a trust-building demo and a redactor regression test in one command.
+- [ ] 📊 **Published Benchmarks:**
+  - Reproducible `bench/` script measuring first-audio latency per provider, host+engine resident RAM and end-to-end event→audio latency with the settle window active; results land in `docs/benchmarks.md` with hardware and date.
+- [ ] ⏩ **Piper Frame-Level Streaming (benchmark-gated):**
+  - Incremental ONNX synthesis streaming into the miniaudio pipeline for long offline reads — pursued only if the benchmark shows Piper winning a scenario over Kokoro, the recommended offline upgrade.
 
 
 
