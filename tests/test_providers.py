@@ -101,8 +101,10 @@ class TestVoiceCatalog(unittest.TestCase):
 
     def test_map_backed_providers_derive_from_existing_voice_data(self):
         edge = provider_voices("edge")
-        self.assertIn("es-ES-ElviraNeural", edge)
-        self.assertIn("en-US-JennyNeural", edge)
+        # User-facing short ids, one per distinct neural voice.
+        self.assertIn("elvira", edge)
+        self.assertIn("en", edge)
+        self.assertNotIn("álvaro", edge)  # duplicate of alvaro (same neural voice)
         self.assertEqual(edge, sorted(set(edge)))
         self.assertIn("nova", provider_voices("openai"))
         self.assertIn("rachel", provider_voices("elevenlabs"))
