@@ -562,8 +562,9 @@
 
   var toastTimer = null;
 
-  function showToast(text, durationMs) {
+  function showToast(text, durationMs, kind) {
     toastEl.textContent = text;
+    toastEl.classList.toggle("warning", kind === "warning");
     toastEl.classList.remove("hidden");
     if (toastTimer) clearTimeout(toastTimer);
     if (durationMs) toastTimer = setTimeout(hideToast, durationMs);
@@ -602,6 +603,15 @@
     source.onmessage = function (event) {
       var ann;
       try { ann = JSON.parse(event.data); } catch (err) { return; }
+      if (ann && ann.type === "system") {
+        // System warnings (e.g. herdr-tts daemon down): the toast always
+        // shows — even muted, this is the surviving channel speaking.
+        var isWarning = ann.kind === "warning";
+        showToast((isWarning ? "⚠️ " : "✅ ") + ann.text, isWarning ? 8000 : 5000,
+          isWarning ? "warning" : null);
+        if (!muted() && ann.audio_url) enqueueAudio(ann.audio_url, ann);
+        return;
+      }
       if (!ann || ann.type !== "transition") return;
       if (muted()) {
         showToast("🔇 " + ann.label + ": " + ann.text, 6000);

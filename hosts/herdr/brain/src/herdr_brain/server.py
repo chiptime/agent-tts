@@ -30,7 +30,14 @@ from .memory import ConversationStore
 from .stt import STATE_READY, STATE_UNAVAILABLE, UNAVAILABLE_HINT, Transcriber
 from .tools import BrainTools
 from .tools import status_payload as _status_payload
-from .tts import new_audio_path, render_mp3, tts_backend_status
+from .tts import (
+    TTS_BACKEND_MISSING,
+    TTS_BACKEND_OK,
+    new_audio_path,
+    render_mp3,
+    tts_backend_status,
+)
+from .tts_daemon import DAEMON_UP, DaemonWatcher, daemon_status
 from .watcher import AgentWatcher
 
 _TTSRenderer = Callable[[Settings, str, Path], Path]
@@ -108,6 +115,7 @@ def create_app(
     sse_stream_limit: Optional[int] = None,
     version: Optional[str] = None,
     transcriber: Optional[Transcriber] = None,
+    daemon_probe: Optional[Callable[[], str]] = None,
 ) -> FastAPI:
     """Builds the FastAPI app with injectable backends for tests.
 
@@ -146,10 +154,29 @@ def create_app(
     # Speech backend contract (fail-soft): a missing herdr-tts must never
     # crash the server — text answers keep working, only speech degrades.
     tts_status, tts_detail = tts_backend_status(cfg)
-    if tts_status != "ok":
+    if tts_status != TTS_BACKEND_OK:
         logger.warning("speech backend MISSING: %s", tts_detail)
     else:
         logger.info("speech backend contract ok: %s", tts_detail)
+
+    # herdr-tts DAEMON liveness (the PC-speaker announcement channel): the
+    # probe is fail-soft and injectable; the watcher warns on the surviving
+    # channel (SSE) when the daemon dies. Both announce channels are
+    # always-on BY DESIGN (fail-noisy for approval flows).
+    daemon_probe_fn: Callable[[], str] = daemon_probe or daemon_status
+    try:
+        _daemon_now = daemon_probe_fn()
+    except Exception:  # noqa: BLE001 — a broken probe must never kill boot
+        _daemon_now = "down"
+    logger.info(
+        "herdr-tts daemon probe: %s (PC announcement channel %s)",
+        _daemon_now,
+        "alive" if _daemon_now == DAEMON_UP else "DEAD — brain will warn over SSE",
+    )
+    daemon_watcher = DaemonWatcher(
+        cfg, hub=watcher.hub, tts_renderer=synth, probe=daemon_probe_fn
+    )
+    daemon_watcher.start()
 
     # The LLM client is built lazily: /health and /tts work without
     # GLM_API_KEY, and /ask reports the missing configuration as a 503.
@@ -167,6 +194,7 @@ def create_app(
 
     app = FastAPI(title="herdr-brain", version=__version__)
     app.state.watcher = watcher
+    app.state.daemon_watcher = daemon_watcher
     app.state.transcriber = transcriber
     app.state.sse_heartbeat_s = sse_heartbeat_s
     app.state.sse_stream_limit = sse_stream_limit
@@ -263,11 +291,22 @@ def create_app(
 
     @app.get("/health")
     def health() -> dict:
+        # Three-state tts: 'missing' (no backend contract at all) dominates;
+        # with the contract present, daemon liveness splits ok | degraded
+        # (degraded = PC-speaker channel dead, phone channel still alive).
+        contract, _detail = tts_backend_status(cfg)
+        if contract == TTS_BACKEND_MISSING:
+            tts_field: str = TTS_BACKEND_MISSING
+        else:
+            try:
+                tts_field = "ok" if daemon_probe_fn() == DAEMON_UP else "degraded"
+            except Exception:  # noqa: BLE001 — health must never raise
+                tts_field = "degraded"
         return {
             "status": "ok",
             "version": __version__,
             "stt": transcriber.state,
-            "tts": tts_status,
+            "tts": tts_field,
         }
 
     @app.post("/transcribe")
