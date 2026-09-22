@@ -199,11 +199,15 @@ def normalize_currency(text: str, lang: str = "es") -> str:
 
 
 def load_user_lexicon() -> Dict[str, str]:
-    """Loads optional custom lexicon dictionary from user config."""
+    """Loads the optional user lexicon: env override, then the agent-tts user config.
+
+    Resolution chain (first existing file wins; an empty result means callers
+    fall back to the built-in default lexicon): ``AGENT_TTS_LEXICON`` env var,
+    then ``~/.config/agent-tts/lexicon.json``.
+    """
     paths = [
         os.environ.get("AGENT_TTS_LEXICON", ""),
         os.path.expanduser("~/.config/agent-tts/lexicon.json"),
-        os.path.expanduser("~/.config/herdr-tts/lexicon.json"),
     ]
     for p in paths:
         if p and os.path.isfile(p):

@@ -251,5 +251,58 @@ class TestVoiceCommandHandler(unittest.TestCase):
         self.assertIn("kokoro", KOKORO_ALIASES)
 
 
+class TestVoiceListCatalog(unittest.TestCase):
+    """`voice list [--json] [provider]` prints the built-in voice catalog."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="agent-tts-catalog-test-")
+        self.store = os.path.join(self.tmp, "store")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def _run(self, argv):
+        out = tempfile.TemporaryFile("w+")
+        self.addCleanup(out.close)
+        code = handle_voice_command(argv, store_root=self.store, out=out)
+        out.seek(0)
+        return code, out.read()
+
+    def test_json_catalog_shape(self):
+        code, raw = self._run(["list", "--json"])
+        self.assertEqual(code, 0)
+        payload = json.loads(raw)
+        self.assertEqual(
+            payload["providers"], ["edge", "openai", "elevenlabs", "piper", "kokoro"]
+        )
+        self.assertEqual(set(payload["voices"]), set(payload["providers"]))
+        self.assertIn("es-ES-ElviraNeural", payload["voices"]["edge"])
+        self.assertIn("nova", payload["voices"]["openai"])
+        self.assertIn("rachel", payload["voices"]["elevenlabs"])
+
+    def test_json_single_provider_is_a_list(self):
+        code, raw = self._run(["list", "edge", "--json"])
+        self.assertEqual(code, 0)
+        payload = json.loads(raw)
+        self.assertIsInstance(payload, list)
+        self.assertTrue(payload)
+        self.assertTrue(all(isinstance(v, str) for v in payload))
+        self.assertIn("es-ES-ElviraNeural", payload)
+
+    def test_plain_single_provider_prints_one_voice_per_line(self):
+        code, raw = self._run(["list", "openai"])
+        self.assertEqual(code, 0)
+        lines = [line for line in raw.splitlines() if line.strip()]
+        self.assertTrue(lines)
+        self.assertIn("nova", lines)
+
+    def test_unknown_provider_exits_non_zero(self):
+        code, _ = self._run(["list", "no-such-provider"])
+        self.assertEqual(code, 1)
+
+    def test_without_json_or_provider_keeps_installed_listing(self):
+        code, raw = self._run(["list"])
+        self.assertEqual(code, 0)
+        self.assertIn("No voices installed", raw)
+
+
 if __name__ == "__main__":
     unittest.main()

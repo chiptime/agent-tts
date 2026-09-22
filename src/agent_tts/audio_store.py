@@ -2,7 +2,7 @@
 
 Contract (kept deliberately boring):
 
-- WHO WRITES: the herdr-tts bash watcher (separate repo) renders finished
+- WHO WRITES: the host watcher (a separate program) renders finished
   turn audio directly into this store, passing the path returned by
   :func:`store_path` to the engine via the existing ``--output`` flag.
   This module only owns the convention (directory, naming), never the bytes.
@@ -42,7 +42,8 @@ DEFAULT_RETENTION_DAYS = 0
 # the store root is foreign and must be left alone.
 _DATE_NAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
-# Panes come from external tools (tmux, herdr); keep only filesystem-safe chars.
+# Panes come from external tools (tmux, host orchestrators); keep only
+# filesystem-safe chars.
 _PANE_SAFE_RE = re.compile(r"[^A-Za-z0-9_-]")
 
 
@@ -79,7 +80,7 @@ def store_path(pane: str, suffix: str = ".mp3", now: Optional[float] = None) -> 
     """Returns (and prepares) the store path for one rendered turn.
 
     Shape: ``<audio_dir>/<YYYY-MM-DD>/<int(epoch)>-<sanitized-pane><suffix>``.
-    The date directory is created eagerly so the caller (the herdr watcher)
+    The date directory is created eagerly so the caller (the host watcher)
     can write straight into it.
     """
     epoch = int(time.time() if now is None else now)
@@ -149,6 +150,25 @@ def merge_chunks_to_audio(chunks: list[bytes]) -> bytes:
             )
         pcm_parts.append(decoded.samples.tobytes())
     return _pcm_to_wav(b"".join(pcm_parts), sample_rate, nchannels)
+
+
+def audio_duration(path: str) -> float:
+    """Returns the duration of an audio file (WAV, MP3, ...) in seconds.
+
+    Hosts use this to inspect rendered store entries instead of re-implement
+    their own decode loop. Decoding goes through miniaudio with the same
+    duration formula as the CLI playback path: the decoded ``duration`` when
+    miniaudio reports it, else sample count over (sample rate * channels).
+    Raises OSError when the file cannot be read and a decode error when the
+    bytes are not decodable audio.
+    """
+    with open(path, "rb") as f:
+        data = f.read()
+    decoded = miniaudio.decode(data)
+    return float(
+        getattr(decoded, "duration", None)
+        or (len(decoded.samples) / float(decoded.sample_rate * decoded.nchannels))
+    )
 
 
 def prune_expired(now: Optional[float] = None) -> int:

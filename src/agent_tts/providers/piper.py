@@ -103,28 +103,16 @@ class PiperTTSProvider(TTSProvider):
         self.binary_path = binary_path or self._find_piper_binary()
 
     def _find_piper_binary(self) -> Optional[str]:
-        """Locates the piper executable in PATH or standard user directories."""
-        found = shutil.which("piper")
-        if found:
-            return found
+        """Locates the piper executable: AGENT_TTS_PIPER_BIN override, then PATH.
 
-        candidates = [
-            os.path.expanduser("~/.local/bin/piper"),
-            os.path.expanduser("~/.local/share/herdr-tts/venv/bin/piper"),
-            os.path.expanduser("/usr/local/bin/piper"),
-        ]
-        if sys.platform == "win32":
-            # Windows-only hunt (additive; POSIX candidate order is unchanged).
-            local_app = os.environ.get("LOCALAPPDATA", "")
-            if local_app:
-                candidates.append(os.path.join(local_app, "Programs", "piper", "piper.exe"))
-            found_exe = shutil.which("piper.exe")
-            if found_exe:
-                candidates.append(found_exe)
-        for c in candidates:
-            if os.path.isfile(c) and os.access(c, os.X_OK):
-                return c
-        return None
+        Host-agnostic resolution: (a) the AGENT_TTS_PIPER_BIN env var when it
+        points at an existing file, (b) ``shutil.which("piper")``. A set but
+        missing env value falls through to PATH instead of failing hard.
+        """
+        env_bin = os.environ.get("AGENT_TTS_PIPER_BIN", "")
+        if env_bin and os.path.isfile(env_bin):
+            return env_bin
+        return shutil.which("piper")
 
     def is_available(self) -> bool:
         """Checks whether Piper binary is installed and executable."""

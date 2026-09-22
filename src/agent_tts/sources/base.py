@@ -1,6 +1,6 @@
 """Orchestrator for the agent transcript connector layer (Vision B).
 
-Contract: hosts (herdr-tts, shell wrappers, ...) pass an agent identity and a
+Contract: hosts (shell wrappers, agent integrations, ...) pass an agent identity and a
 session id; the engine owns all transcript/source knowledge and resolves the
 last assistant message itself. If no connector matches, callers keep their
 terminal-scrollback fallback text untouched.
