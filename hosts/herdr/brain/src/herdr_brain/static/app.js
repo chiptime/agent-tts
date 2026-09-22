@@ -1045,6 +1045,10 @@
 
   /* Engine dispatch: one name pair, both engines. */
   function startListening() {
+    // The "No te oigo" 5s hint must judge the CURRENT listening window:
+    // refresh the timestamp on every start attempt (a failed dispatch can
+    // resume through here while the old window's timestamp lingers).
+    listeningStartedAt = Date.now();
     if (voiceEngine === "servidor") startServerListening();
     else startBrowserListening();
   }
