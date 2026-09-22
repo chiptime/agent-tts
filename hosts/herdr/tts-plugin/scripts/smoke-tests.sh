@@ -1855,9 +1855,6 @@ HERDR_TTS_MENU_OPEN_RETRIES=3 HERDR_TTS_MENU_OPEN_LOG="$T/menu.log" \
   lib_run 'menu_open_after_exit tts-palette; sleep 1' > "$T/out.txt"
 assert_grep "27e exhausted retries are logged" 'open tts-palette falló tras 3 intentos' "$T/menu.log"
 
-echo
-echo "═══ RESULT: $PASS passed, $FAIL failed ═══"
-exit $(( FAIL > 0 ? 1 : 0 ))
 echo "── 28. settings popup: web redirect URL input/clear + click directo on/off"
 new_env s28
 CONFIG_DIR_S28="$T/conf/herdr-tts"
@@ -1994,3 +1991,76 @@ lib_run 'daemon_log "prueba de escritura"' > /dev/null
 assert_grep "29f daemon_log appends the [HH:MM:SS] line" '^\[[0-9]{2}:[0-9]{2}:[0-9]{2}\] prueba de escritura$' "$HERDR_TTS_DAEMON_LOG"
 unset HERDR_TTS_DAEMON_PID_FILE HERDR_TTS_SUPERVISOR_STOP_FILE HERDR_TTS_DAEMON_LOG
 
+echo "── 30. config_set upsert: duplicate keys collapse to exactly one line"
+new_env s30
+CONFIG_DIR_S30="$T/conf/herdr-tts"
+CONFIG_FILE="$CONFIG_DIR_S30/config.env" # mirrors the script's XDG default
+mkdir -p "$CONFIG_DIR_S30"
+
+# 30a. the real-world corruption: the key repeated INSIDE the managed
+#      block (appends grew it) → one config_set collapses to one line.
+cat > "$CONFIG_FILE" <<'EOFX'
+TTS_PROVIDER="edge"
+
+# >>> herdr-tts settings (managed by the settings popup) >>>
+HERDR_TTS_AUDIO_RETENTION_DAYS="7"
+HERDR_TTS_AUDIO_RETENTION_DAYS="7"
+HERDR_TTS_AUDIO_RETENTION_DAYS="7"
+# <<< herdr-tts settings <<<
+EOFX
+lib_run 'r=0; config_set HERDR_TTS_AUDIO_RETENTION_DAYS 14 || r=$?; echo "rc=$r"' > "$T/out.txt"
+assert_grep "30a config_set rc 0" '^rc=0$' "$T/out.txt"
+n=$(grep -c '^HERDR_TTS_AUDIO_RETENTION_DAYS=' "$CONFIG_FILE")
+[[ "$n" -eq 1 ]] && ok "30a exactly one retention line remains (had 3)" || bad "30a $n retention lines (want 1)"
+grep -qF 'HERDR_TTS_AUDIO_RETENTION_DAYS="14"' "$CONFIG_FILE" \
+  && ok "30a value upserted" || bad "30a value not updated"
+assert_no_grep_f "30a old duplicate values gone" 'HERDR_TTS_AUDIO_RETENTION_DAYS="7"' "$CONFIG_FILE"
+cat > "$T/expected30a.env" <<'EOFX'
+TTS_PROVIDER="edge"
+
+# >>> herdr-tts settings (managed by the settings popup) >>>
+HERDR_TTS_AUDIO_RETENTION_DAYS="14"
+# <<< herdr-tts settings <<<
+EOFX
+cmp -s "$CONFIG_FILE" "$T/expected30a.env" \
+  && ok "30a unknown lines and block markers byte-identical" || bad "30a file drifted"
+
+# 30b. duplicate OUTSIDE + inside the block: first occurrence (top) is
+#      replaced in place, the later one is dropped.
+cat > "$CONFIG_FILE" <<'EOFX'
+HERDR_TTS_AUDIO_RETENTION_DAYS="3"
+# >>> herdr-tts settings (managed by the settings popup) >>>
+HERDR_TTS_AUDIO_RETENTION_DAYS="7"
+# <<< herdr-tts settings <<<
+EOFX
+lib_run 'r=0; config_set HERDR_TTS_AUDIO_RETENTION_DAYS 14 || r=$?; echo "rc=$r"' > "$T/out.txt"
+assert_grep "30b config_set rc 0" '^rc=0$' "$T/out.txt"
+n=$(grep -c '^HERDR_TTS_AUDIO_RETENTION_DAYS=' "$CONFIG_FILE")
+[[ "$n" -eq 1 ]] && ok "30b exactly one line after cross-block dedupe" || bad "30b $n lines (want 1)"
+[[ $(head -1 "$CONFIG_FILE") == 'HERDR_TTS_AUDIO_RETENTION_DAYS="14"' ]] \
+  && ok "30b first occurrence replaced in place (position kept)" || bad "30b top line drifted"
+
+# 30c. regression of the append-instead-of-replace growth: the same key
+#      written twice in a row must NOT grow the block (old code: +1
+#      duplicate per write when the key line followed the block start).
+cat > "$CONFIG_FILE" <<'EOFX'
+# >>> herdr-tts settings (managed by the settings popup) >>>
+TTS_PROVIDER="edge"
+# <<< herdr-tts settings <<<
+EOFX
+lib_run '
+  r1=0; config_set HERDR_TTS_AUDIO_RETENTION_DAYS 7 || r1=$?
+  r2=0; config_set HERDR_TTS_AUDIO_RETENTION_DAYS 14 || r2=$?
+  echo "r1=$r1 r2=$r2"
+' > "$T/out.txt"
+assert_grep "30c both writes accepted" '^r1=0 r2=0$' "$T/out.txt"
+n=$(grep -c '^HERDR_TTS_AUDIO_RETENTION_DAYS=' "$CONFIG_FILE")
+[[ "$n" -eq 1 ]] && ok "30c repeated writes stay at exactly one line" || bad "30c $n lines (want 1, growth regression)"
+grep -qF 'HERDR_TTS_AUDIO_RETENTION_DAYS="14"' "$CONFIG_FILE" \
+  && ok "30c second write wins" || bad "30c value stale"
+bash -c 'source "$1" >/dev/null 2>&1 && printf "src:%s\n" "$HERDR_TTS_AUDIO_RETENTION_DAYS"' _ "$CONFIG_FILE" > "$T/out.txt"
+assert_grep "30c file stays bash-sourceable" '^src:14$' "$T/out.txt"
+
+echo
+echo "═══ RESULT: $PASS passed, $FAIL failed ═══"
+exit $(( FAIL > 0 ? 1 : 0 ))
