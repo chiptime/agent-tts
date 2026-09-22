@@ -249,7 +249,7 @@ Keys inside the menu (actions target the focused chat):
 | `Z` | Snooze GLOBAL (reuniones) |
 | `+` / `-` | Velocidad ±10% |
 | `d` / `o` | Abrir dashboard / paleta de voz |
-| `a` | Abrir Ajustes de voz y audio (dentro del menú; `q`/`Esc`/`Enter` vuelve al menú) |
+| `a` | Abrir Ajustes de voz y audio (dentro del menú; índice de categorías → `q`/`Esc`/`Enter` vuelve al índice y luego al menú) |
 | `q` / `Esc` | Salir |
 
 ### Option 2 — ctrl+alt family (no prefix, no collisions)
@@ -658,23 +658,82 @@ command = "herdr plugin pane open --plugin herdr.tts --entrypoint tts-palette"
 
 ## ⚙️ Ajustes de voz y audio
 
-`prefix+u` abre el **menú de voz**; dentro del menú, la tecla `a` abre esta vista de **Ajustes**: siete ajustes opcionales — cuatro se **cícian con una tecla** (`p` `d` `r` `s`), la auto-lectura **alterna activa/silenciada** (`v`), la redirección web se escribe **a texto libre** (`w`) y el click directo **alterna on/off** (`c`) — y todo se guarda al momento en `~/.config/herdr-tts/config.env`:
+`prefix+u` abre el **menú de voz**; dentro del menú, la tecla `a` abre los **Ajustes** — ahora en dos niveles: primero un **índice de categorías** y, dentro de cada una, **solo sus ajustes** con el mismo paradigma de siempre (una tecla cicla el valor y se guarda al momento en `~/.config/herdr-tts/config.env`):
+
+| Tecla | Categoría | Ajustes dentro |
+|---|---|---|
+| `v` | 🎙 Voz | proveedor, voz global, prefijo hablado, auto-asignación, idioma |
+| `a` | 🔊 Audio | destino de reproducción, click directo, retención, asentamiento |
+| `n` | 🔔 Notificaciones | topic ntfy, podcast feed, redirección web |
+| `l` | ⚙️ Lectura automática | auto-lectura, alcance, debounce |
+
+### 🎙 Voz (`v`)
 
 | Tecla | Ajuste | Ciclo |
 |---|---|---|
 | `p` | Proveedor TTS | `edge` (gratuito, por defecto) → `openai` → `elevenlabs` → `piper` → `kokoro` |
-| `v` | Auto-lectura | activa (te lee al terminar cada agente) ↔ silenciada (solo manual: `prefix+r` / `htr` bajo demanda); persiste en el marcador `auto_muted` — el mismo de `--toggle-auto` — y aplica al vuelo, sin reiniciar el daemon |
-| `d` | Destino de reproducción | `local` → `winhost` → `wsl-ps` → `windows` → `auto` |
-| `r` | Audio retenido (días) | `0` (apagado) → `1` → `3` → `7` → `14` |
-| `s` | Asentamiento done (segundos) | `0` (instantáneo) → `2` → `5` → `10` → `15` → `30` |
-| `w` | Redirección web | texto libre: escribe la URL (`Enter` vacío = desactivar); guarda `WEB_URL` y `COLLIE_URL`; una URL con "collie" fija `WEB_LABEL="Collie"` si la etiqueta está vacía; el marcador `{pane_id}` se guarda tal cual |
-| `c` | Click directo | `off` ↔ `on` (con `on`, tocar la tarjeta de notificación abre el navegador) |
+| `g` | Voz global | cicla `elvira` (default) → `alvaro` → `ximena` → `dalia` → `jorge` → `en` → `nova` → `rachel`; es la voz por defecto para los chats sin voz propia asignada en la paleta |
+| `n` | Prefijo hablado | `off` ↔ `on` (sintetiza `"agente: "` antes del texto con la voz del chat); escribe `"prefix"` en `voices.json` y aplica al vuelo |
+| `u` | Auto-asignación | `off` ↔ `on` (los `agent_type` sin regla rotan una voz determinista del proveedor activo); escribe `"auto_assign"` en `voices.json` y aplica al vuelo |
+| `i` | Detección de idioma | `off` ↔ `on` (cambia de voz ES/EN al vuelo según el texto) |
 
-* Dentro del menú, `q` / `Esc` / `Enter` **vuelven al menú principal**. Para acceso directo sigue existiendo el popup independiente (`herdr-tts --voice-settings`, acción `voice-settings` del plugin, entrypoint `tts-settings`), donde `q` / `Esc` cierra el popup. `settings` sigue siendo un id ligable en `keymap.json`, pero **sin acorde por defecto**: los ajustes no gastan una tecla de core.
+### 🔊 Audio (`a`)
+
+| Tecla | Ajuste | Ciclo |
+|---|---|---|
+| `d` | Destino de reproducción | `local` → `winhost` → `wsl-ps` → `windows` → `auto` |
+| `c` | Click directo | `off` ↔ `on` (con `on`, tocar la tarjeta de notificación abre el navegador) |
+| `r` | Audio retenido (días) | `0` (apagado) → `1` → `3` → `7` → `14`; se aplica al vuelo, sin reiniciar |
+| `s` | Asentamiento done (segundos) | `0` (instantáneo) → `2` → `5` → `10` → `15` → `30` |
+
+### 🔔 Notificaciones (`n`)
+
+| Tecla | Ajuste | Ciclo |
+|---|---|---|
+| `t` | Topic ntfy | texto libre: escribe el topic (`Enter` vacío, `off` o `none` = desactivar push); el topic actúa de credencial en ntfy.sh — compártelo solo con tus dispositivos |
+| `f` | Podcast feed | `off` ↔ `on` (publica cada audio en el feed RSS privado) |
+| `w` | Redirección web | texto libre: escribe la URL (`Enter` vacío = desactivar); guarda `WEB_URL` y `COLLIE_URL`; una URL con "collie" fija `WEB_LABEL="Collie"` si la etiqueta está vacía; el marcador `{pane_id}` se guarda tal cual |
+
+### ⚙️ Lectura automática (`l`)
+
+| Tecla | Ajuste | Ciclo |
+|---|---|---|
+| `v` | Auto-lectura | activa (te lee al terminar cada agente) ↔ silenciada (solo manual: `prefix+r` / `htr` bajo demanda); persiste en el marcador `auto_muted` — el mismo de `--toggle-auto` — y aplica al vuelo, sin reiniciar el daemon |
+| `a` | Alcance auto-lectura | `focused` (solo el chat en foco) ↔ `all` (cualquiera sin solapar) |
+| `b` | Debounce anti-spam | `0` (desactivado) → `10` → `20` → `30` → `60` segundos por (pane, estado) |
+
+* **Navegación**: dentro de una categoría, `q` / `Esc` / `Enter` **vuelven al índice**; desde el índice salen de los Ajustes — al menú principal si entraste con `a`, o cierre directo en el popup independiente (`herdr-tts --voice-settings`, acción `voice-settings` del plugin, entrypoint `tts-settings`). `settings` sigue siendo un id ligable en `keymap.json`, pero **sin acorde por defecto**: los ajustes no gastan una tecla de core.
 * Kokoro y Piper requieren instalar el modelo antes: `agent-tts voice install <modelo>`.
-* La escritura es **gestionada**: solo toca las claves `TTS_PROVIDER`, `TTS_PLAYBACK`, `HERDR_TTS_AUDIO_RETENTION_DAYS`, `TTS_SETTLE_SECONDS`, `WEB_URL`, `COLLIE_URL`, `WEB_LABEL` y `CLICK_REDIRECT` de `config.env` — reescribe la línea existente o añade un bloque gestionado al final, preserva el resto del fichero byte a byte, escribe de forma atómica (tmp + mv) y deja la versión previa en `config.env.bak` (la excepción es `v`: usa el marcador `auto_muted`, no `config.env`).
-* La tecla `R` (mayúscula — distinta de la `r` que cicla retención) **reinicia el daemon** al instante y confirma en pantalla con `✓ Daemon reiniciado`; equivale a `herdr-tts --restart-daemon`.
-* Los cambios aplican a **nuevos procesos**: `p`, `d`, `s`, `w` y `c` aplican al reiniciar el daemon — ahora con una tecla (`R` en Ajustes) o `herdr-tts --restart-daemon`.
+* La escritura es **gestionada**: solo toca las claves `TTS_PROVIDER`, `TTS_AUTO_SCOPE`, `TTS_AUTO_LANG`, `PODCAST_ENABLED`, `TTS_DEBOUNCE_SECONDS`, `NTFY_TOPIC`, `TTS_VOICE`, `TTS_PLAYBACK`, `HERDR_TTS_AUDIO_RETENTION_DAYS`, `TTS_SETTLE_SECONDS`, `WEB_URL`, `COLLIE_URL`, `WEB_LABEL` y `CLICK_REDIRECT` de `config.env` — reescribe la línea existente o añade un bloque gestionado al final, preserva el resto del fichero byte a byte, escribe de forma atómica (tmp + mv) y deja la versión previa en `config.env.bak` (las excepciones son `v`, que usa el marcador `auto_muted`, y `n`/`u`, que escriben los flags de `voices.json`).
+* La tecla `R` (mayúscula, en el **índice**) **reinicia el daemon** al instante y confirma en pantalla con `✓ Daemon reiniciado`; equivale a `herdr-tts --restart-daemon`.
+* Los cambios aplican a **nuevos procesos**: `p`, `g`, `i`, `f`, `b`, `d`, `s`, `t` y `w` aplican al reiniciar el daemon — ahora con una tecla (`R` en el índice de Ajustes) o `herdr-tts --restart-daemon`. Las excepciones son `v`, `n`, `u` y `r`: se consultan en cada evento, así que cambian **al vuelo**, sin reiniciar.
+
+---
+
+## 🗣️ Voz por agente y chat (PRD HT-02)
+
+Cada chat —o tipo de agente— puede tener su propia voz para saber **quién** habla sin mirar la pantalla. Las reglas viven en `~/.config/herdr-tts/voices.json` con precedencia **pane > agent_type > voz global** (`g` en Ajustes → Voz). El watcher resuelve la voz en memoria (caché por mtime, cero spawns por evento) y si el fichero es inválido hace fail-open a la voz global con una línea accionable en `daemon.log`.
+
+```json
+{
+  "agent":      { "claude-code": "alvaro", "opencode": "ximena" },
+  "pane":       { "w4:p4": "dalia" },
+  "prefix":     false,
+  "auto_assign": false
+}
+```
+
+```bash
+herdr-tts --voice-for pane w4:p4                 # Selector fzf de voz para ese chat
+herdr-tts --voice-for agent claude-code alvaro   # Voz por tipo de agente
+herdr-tts --voice-for pane w4:p4 off             # Volver a la voz global
+herdr-tts --voice-prefix on                      # Prefijo hablado ("claude-code: …") antes del texto
+```
+
+* En la **paleta de voz**, `ctrl-v` abre el selector de voz del chat seleccionado; el **dashboard** y el preview de la paleta muestran la inicial de la voz (🗣A) cuando el chat tiene regla propia.
+* **`prefix: true`** sintetiza el nombre corto del agente antes del texto, con la propia voz del agente (RF-HT-02-5).
+* **`auto_assign: true`** (opt-in, default off): los `agent_type` sin regla toman por rotación determinista una voz de la paleta corta del proveedor activo (edge: elvira/alvaro/ximena/dalia · openai: nova/alloy/echo/fable). Piper/kokoro no rotan (su voz depende del modelo instalado).
+* Las reglas aplican a la lectura automática, al `play`/`TL;DR` bajo demanda y a los audios renderizados del pane.
 
 ---
 
@@ -725,8 +784,8 @@ We have an active vision to expand `herdr-tts` into the definitive audio layer f
   - v3: **per-chat view** — the roster merges `herdr agent list` (agent state + chat title), the snooze/mute ledger and the debounce ledger under the same `pane_id` key, rendering one line per chat with needs-attention-first sorting (done/blocked → working → idle, most-recent-audio tiebreak), voice overlays (🔇 muted, 😴 snooze countdown, ⏱ debounce hold) and a screen-row budget that drops oldest-idle chats first and never hides chats needing attention; the audio history renders **grouped per chat** (`── <title> · N audios · último hace Xm` + last 3 audios each) via a single python pass per tick with correct per-date DST handling, keeping closed panes visible by pane id and hiding the section entirely when the ledger is empty.
 - [ ] 🎙️ **Push-to-Talk Two-Way Intercom:**
   - Dictate instructions directly to the focused agent pane via hotkey (`prefix + c`), transcribing locally via lightweight fast STT (Whisper.cpp / whisper-rs) and injecting the prompt directly into Herdr's active pane.
-- [ ] 📦 **One-Line Install & Packaging:**
-  - Idempotent one-command installer plus Homebrew/npm distribution wrappers, so adopting the plugin takes 60 seconds instead of a clone-and-venv dance.
+- [x] 📦 **One-Line Install & Packaging:**
+  - Idempotent one-command installer (`scripts/install.sh`, tag-pinned `v0.16.0` with a `HERDR_TTS_REF`/`@main` escape hatch), uv-pip bootstrap immune to pip-less uv venvs, immutable agent-tts pin, `--no-keymap` adoption policy and documented uninstall steps. (Homebrew/npm wrappers remain future work.)
 - [ ] 🎚️ **Gating Presets & First-Run Experience:**
   - `herdr-tts --preset chatty|focused|quiet|mobile` writes an opinionated, human-readable config block over the existing gating ledger, and `keymap init` offers a preset as its final step — full gating power without reading five config vars first.
 - [ ] 🔀 **Provider Failover Chain:**
@@ -739,6 +798,14 @@ We have an active vision to expand `herdr-tts` into the definitive audio layer f
   - Reproducible `bench/` script measuring first-audio latency per provider, host+engine resident RAM and end-to-end event→audio latency with the settle window active; results land in `docs/benchmarks.md` with hardware and date.
 - [ ] ⏩ **Piper Frame-Level Streaming (benchmark-gated):**
   - Incremental ONNX synthesis streaming into the miniaudio pipeline for long offline reads — pursued only if the benchmark shows Piper winning a scenario over Kokoro, the recommended offline upgrade.
+- [ ] 🔁 **Daemon Lifecycle Action:**
+  - Expose `herdr.tts.daemon-restart` as a plugin action and document the post-install `herdr plugin action invoke` — start or restart the daemon without `herdr server stop`, matching the ecosystem-idiomatic install flow.
+- [ ] ⚡ **Native `plugin_action` Key Bindings:**
+  - Migrate the managed keymap block from `type = "shell"` commands to Herdr's `plugin_action` binding type — no shell spawn per keystroke.
+- [ ] 🤖 **Agent Skill Distribution:**
+  - `herdr-tts skill install <agent>` publishes a SKILL.md into user-level skill directories (Claude Code, Codex, OpenCode, Pi, …) so coding agents can operate the plugin themselves: mute, snooze, status, replay.
+- [ ] 📋 **Agent-Install Docs Block & Platform Matrix:**
+  - A paste-ready "hand it to an agent" install prompt (with the do-NOT-`herdr server stop` warning) and an honest tested-platforms line in the README.
 
 
 
