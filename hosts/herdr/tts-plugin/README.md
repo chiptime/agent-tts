@@ -131,19 +131,54 @@ herdr-tts is a **thin host**: it only forwards the agent identity + session id (
 
 ## 📦 Installation
 
-### 1. From Herdr Plugin Registry (Recommended)
+### 1. From the Herdr Plugin Registry (Recommended)
 
 ```bash
 herdr plugin install chiptime/herdr-tts
 ```
 
-*Herdr automatically runs the `[[build]]` hook, bootstrapping an isolated, lightweight Python virtual environment with `edge-tts` and `miniaudio`.*
+Herdr runs the `[[build]]` hook (`scripts/bootstrap.sh`), which creates an isolated Python venv and installs the `agent-tts` engine from an **immutable pinned ref** (full commit SHA while agent-tts publishes no tags). The build works on `uv`-only and `python3`-only machines alike: installs route through `uv pip` or `python -m pip`, never through a venv `bin/pip` that may not exist.
 
-### 2. Local Development / From Source
+There is no `plugin update` in Herdr v1 — reinstall from the registry to refresh, or re-run the installer below (its re-run performs a guarded in-place upgrade).
+
+### 2. curl | sh Fallback (Non-Registry)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/chiptime/herdr-tts/v0.16.0/scripts/install.sh | bash
+```
+
+The installer is **tag-pinned** (`v0.16.0` by default) and, in order: verifies prerequisites (`git`, `jq`, `herdr`, plus `uv` or `python3`) before touching anything; refuses to install over a linked dev checkout and tells you the exact `plugin unlink` / `plugin uninstall` command to migrate; clones to `~/.local/share/herdr-tts/plugin`; bootstraps the venv; adopts the collision-free `menu` keymap unless a `keymap.json` already exists (never overwrites; `--no-keymap` skips the step entirely); verifies the daemon and prints the manual uninstall steps.
+
+Re-running it upgrades in place: the checkout's `origin` remote is compared against the canonical URL, the tag is re-fetched, and `agent-tts` is refreshed past the plugin's never-upgrade gate. A mismatched remote aborts before writing anything.
+
+**Escape hatch (mutable ref — use deliberately):**
+
+```bash
+# track main instead of the pinned tag
+HERDR_TTS_REF=main curl -fsSL https://raw.githubusercontent.com/chiptime/herdr-tts/main/scripts/install.sh | bash
+```
+
+### Uninstall
+
+The installer prints these steps at the end of every run:
+
+1. `herdr plugin uninstall herdr.tts` (or `herdr plugin unlink` for a linked checkout)
+2. Stop the daemon: `herdr-tts --stop` (or the pid recorded in `~/.local/state/herdr-tts/daemon.pid`)
+3. `rm -rf ~/.local/share/herdr-tts` — removes the checkout and the venv
+4. Remove the managed keymap block (the lines between the herdr-tts markers) from your herdr config
+
+### 3. Local Development / From Source
 
 ```bash
 git clone https://github.com/chiptime/herdr-tts.git ~/Code/personal/herdr-tts
 herdr plugin link ~/Code/personal/herdr-tts
+```
+
+Editable installs of the engine are **opt-in**: `bootstrap.sh` only uses a local `~/Code/personal/agent-tts` checkout when `HERDR_TTS_DEV=1` is set — public installs always resolve the pinned remote ref, regardless of what exists on the machine.
+
+```bash
+export HERDR_TTS_DEV=1   # agent-tts editable from ~/Code/personal/agent-tts
+bash scripts/bootstrap.sh
 ```
 
 ---
