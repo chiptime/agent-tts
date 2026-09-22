@@ -398,7 +398,7 @@ TT_EN[menu.executed]="Voice command executed"
 TT_EN[menu.unknown_key]="\n❓ Unrecognized key (%s) — press q to quit\n"
 TT_EN[settings.restarted]="✓ Daemon restarted"
 TT_EN[settings.relaunch_failed]="Could not relaunch the daemon"
-TT_EN[settings.unknown_key.index]="Unrecognized key (%s) — v voice, a audio, n notifications, l auto-read, R restarts the daemon, q quits"
+TT_EN[settings.unknown_key.index]="Unrecognized key (%s) — v voice, a audio, n notifications, r auto-read, l language, R restarts the daemon, q quits"
 TT_EN[settings.save_failed]="Could not save %s to config.env"
 TT_EN[settings.voices.write_failed]="Could not write voices.json"
 TT_EN[settings.voice.global]="✓ Global voice: %s (the palette assigns voices per chat)"
@@ -428,12 +428,12 @@ TT_EN[settings.autoread.debounce_off]="✓ Debounce disabled (every done notifie
 TT_EN[settings.autoread.debounce_on]="✓ Anti-spam window (debounce): %ss per (pane, status)"
 TT_EN[settings.unknown_key.voice]="Unrecognized key (%s) — p provider, g global voice, n spoken prefix, u auto-assign, i language, q back to the index"
 TT_EN[settings.unknown_key.audio]="Unrecognized key (%s) — d playback target, c click-through, r retention, s settle, q back to the index"
-TT_EN[settings.unknown_key.notif]="Unrecognized key (%s) — t ntfy topic, f podcast, w web URL, q back to the index"
-TT_EN[settings.unknown_key.autoread]="Unrecognized key (%s) — v auto-read, a scope, b debounce, q back to the index"
+TT_EN[settings.unknown_key.notifications]="Unrecognized key (%s) — t ntfy topic, f podcast, w web URL, q back to the index"
+TT_EN[settings.unknown_key.reading]="Unrecognized key (%s) — v auto-read, a scope, b debounce, q back to the index"
 TT_EN[settings.view.voice]="\e[1m🎙  herdr-tts · Settings · Voice\e[0m"
 TT_EN[settings.view.audio]="\e[1m🔊  herdr-tts · Settings · Audio\e[0m"
-TT_EN[settings.view.notif]="\e[1m🔔  herdr-tts · Settings · Notifications\e[0m"
-TT_EN[settings.view.autoread]="\e[1m⚙️  herdr-tts · Settings · Auto-read\e[0m"
+TT_EN[settings.view.notifications]="\e[1m🔔  herdr-tts · Settings · Notifications\e[0m"
+TT_EN[settings.view.reading]="\e[1m⚙️  herdr-tts · Settings · Auto-read\e[0m"
 TT_EN[settings.view.index]="\e[1m⚙️  herdr-tts · Voice & Audio Settings\e[0m"
 TT_EN[settings.view.hint]="Press the key of a setting to cycle its value."
 TT_EN[settings.row.provider]=" p  TTS provider:        %s   (edge = free, default)"
@@ -460,8 +460,12 @@ TT_EN[settings.row.debounce]=" b  Anti-spam debounce:  %ss   (0 = disabled)"
 TT_EN[settings.index.pick]="Pick a category with its key:"
 TT_EN[settings.index.voice]=" v  🎙 Voice           provider, global voice, spoken prefix, auto-assign, language"
 TT_EN[settings.index.audio]=" a  🔊 Audio            playback target, click-through, retention, settle"
-TT_EN[settings.index.notif]=" n  🔔 Notifications    ntfy topic, podcast feed, web redirect"
-TT_EN[settings.index.autoread]=" l  ⚙️  Auto-read       auto-read, scope, debounce"
+TT_EN[settings.index.notifications]=" n  🔔 Notifications    ntfy topic, podcast feed, web redirect"
+TT_EN[settings.index.reading]=" r  ⚙️  Auto-read       auto-read, scope, debounce"
+TT_EN[settings.index.lang]=" l  🌐  Language        %s"
+TT_EN[settings.lang.label.en]="English"
+TT_EN[settings.lang.label.es]="Español"
+TT_EN[settings.index.lang_note]="✓ Interface language: %s (new processes pick it up from config.env)"
 TT_EN[settings.index.restart]=" R  restarts the daemon → applies the other settings instantly"
 TT_EN[settings.exit.quit]=" q/Esc quit"
 TT_EN[settings.exit.index]=" q/Esc back to the index"
@@ -619,7 +623,7 @@ TT_EN[help.voice_settings]="     --voice-settings         Voice & audio settings
 TT_EN[help.voice_settings2]="                             also inside the voice menu, a key): cycles"
 TT_EN[help.voice_settings3]="                             provider, auto-read, scope, target, language,"
 TT_EN[help.voice_settings4]="                             podcast, debounce, retention and settle; free-text"
-TT_EN[help.voice_settings5]="                             ntfy topic and web URL (config.env)"
+TT_EN[help.voice_settings5]="                             ntfy topic and web URL; UI language en/es (config.env)"
 TT_EN[help.palette_preview]="     --palette-preview <pane> Chat header + audio turns of the pane (fzf preview)"
 TT_EN[help.exit]="  --help, -h               Show this help"
 TT_EN[km.usage]="Usage: herdr-tts keymap <subcommand> [options]"
@@ -871,7 +875,7 @@ TT_ES[menu.executed]="Comando de voz ejecutado"
 TT_ES[menu.unknown_key]="\n❓ Tecla no reconocida (%s) — pulsa q para salir\n"
 TT_ES[settings.restarted]="✓ Daemon reiniciado"
 TT_ES[settings.relaunch_failed]="No se pudo relanzar el daemon"
-TT_ES[settings.unknown_key.index]="Tecla no reconocida (%s) — v voz, a audio, n notificaciones, l lectura automática, R reinicia el daemon, q sale"
+TT_ES[settings.unknown_key.index]="Tecla no reconocida (%s) — v voz, a audio, n notificaciones, r lectura automática, l idioma, R reinicia el daemon, q sale"
 TT_ES[settings.save_failed]="No se pudo guardar %s en config.env"
 TT_ES[settings.voices.write_failed]="No se pudo escribir voices.json"
 TT_ES[settings.voice.global]="✓ Voz global: %s (la paleta asigna voces por chat)"
@@ -901,12 +905,12 @@ TT_ES[settings.autoread.debounce_off]="✓ Debounce desactivado (cada done notif
 TT_ES[settings.autoread.debounce_on]="✓ Ventana anti-spam (debounce): %ss por (pane, estado)"
 TT_ES[settings.unknown_key.voice]="Tecla no reconocida (%s) — p proveedor, g voz global, n prefijo, u auto-asignación, i idioma, q vuelve al índice"
 TT_ES[settings.unknown_key.audio]="Tecla no reconocida (%s) — d destino, c click directo, r retención, s asentamiento, q vuelve al índice"
-TT_ES[settings.unknown_key.notif]="Tecla no reconocida (%s) — t topic ntfy, f podcast, w URL web, q vuelve al índice"
-TT_ES[settings.unknown_key.autoread]="Tecla no reconocida (%s) — v auto-lectura, a alcance, b debounce, q vuelve al índice"
+TT_ES[settings.unknown_key.notifications]="Tecla no reconocida (%s) — t topic ntfy, f podcast, w URL web, q vuelve al índice"
+TT_ES[settings.unknown_key.reading]="Tecla no reconocida (%s) — v auto-lectura, a alcance, b debounce, q vuelve al índice"
 TT_ES[settings.view.voice]="\e[1m🎙  herdr-tts · Ajustes · Voz\e[0m"
 TT_ES[settings.view.audio]="\e[1m🔊  herdr-tts · Ajustes · Audio\e[0m"
-TT_ES[settings.view.notif]="\e[1m🔔  herdr-tts · Ajustes · Notificaciones\e[0m"
-TT_ES[settings.view.autoread]="\e[1m⚙️  herdr-tts · Ajustes · Lectura automática\e[0m"
+TT_ES[settings.view.notifications]="\e[1m🔔  herdr-tts · Ajustes · Notificaciones\e[0m"
+TT_ES[settings.view.reading]="\e[1m⚙️  herdr-tts · Ajustes · Lectura automática\e[0m"
 TT_ES[settings.view.index]="\e[1m⚙️  herdr-tts · Ajustes de voz y audio\e[0m"
 TT_ES[settings.view.hint]="Pulsa la tecla del ajuste para ciclar su valor."
 TT_ES[settings.row.provider]=" p  Proveedor TTS:        %s   (edge = gratuito, por defecto)"
@@ -933,8 +937,12 @@ TT_ES[settings.row.debounce]=" b  Debounce anti-spam:   %ss   (0 = desactivado)"
 TT_ES[settings.index.pick]="Elige una categoría con su tecla:"
 TT_ES[settings.index.voice]=" v  🎙 Voz                  proveedor, voz global, prefijo hablado, auto-asignación, idioma"
 TT_ES[settings.index.audio]=" a  🔊 Audio               destino reproducción, click directo, retención, asentamiento"
-TT_ES[settings.index.notif]=" n  🔔 Notificaciones      topic ntfy, podcast feed, redirección web"
-TT_ES[settings.index.autoread]=" l  ⚙️  Lectura automática  auto-lectura, alcance, debounce"
+TT_ES[settings.index.notifications]=" n  🔔 Notificaciones      topic ntfy, podcast feed, redirección web"
+TT_ES[settings.index.reading]=" r  ⚙️  Lectura automática  auto-lectura, alcance, debounce"
+TT_ES[settings.index.lang]=" l  🌐  Idioma              %s"
+TT_ES[settings.lang.label.en]="English"
+TT_ES[settings.lang.label.es]="Español"
+TT_ES[settings.index.lang_note]="✓ Idioma de la interfaz: %s (los procesos nuevos lo leen de config.env)"
 TT_ES[settings.index.restart]=" R  reinicia el daemon → aplica el resto de ajustes al instante"
 TT_ES[settings.exit.quit]=" q/Esc salir"
 TT_ES[settings.exit.index]=" q/Esc volver al índice"
@@ -1092,7 +1100,7 @@ TT_ES[help.voice_settings]="     --voice-settings         Ajustes de voz y audio
 TT_ES[help.voice_settings2]="                             también dentro del menú de voz, tecla a): cicla"
 TT_ES[help.voice_settings3]="                             proveedor, auto-lectura, alcance, destino, idioma,"
 TT_ES[help.voice_settings4]="                             podcast, debounce, retención y asentamiento; escribe"
-TT_ES[help.voice_settings5]="                             topic ntfy y URL web a texto libre (config.env)"
+TT_ES[help.voice_settings5]="                             topic ntfy y URL web; idioma en/es (config.env)"
 TT_ES[help.palette_preview]="     --palette-preview <pane> Cabecera de chat + turnos de audio del pane (preview fzf)"
 TT_ES[help.exit]="  --help, -h               Mostrar esta ayuda"
 TT_ES[km.usage]="Uso: herdr-tts keymap <subcomando> [opciones]"
@@ -1187,9 +1195,9 @@ CONFIG_SET_BACKED_UP=0
 config_set() { # <KEY> <VALUE> → rc 1 on rejection or write failure (warning on stderr)
   local key="$1" value="$2"
   case "$key" in
-    TTS_PROVIDER|TTS_PLAYBACK|HERDR_TTS_AUDIO_RETENTION_DAYS|TTS_SETTLE_SECONDS|WEB_URL|WEB_LABEL|CLICK_REDIRECT|COLLIE_URL|TTS_AUTO_SCOPE|TTS_AUTO_LANG|PODCAST_ENABLED|TTS_DEBOUNCE_SECONDS|NTFY_TOPIC|TTS_VOICE) ;;
+    TTS_PROVIDER|TTS_PLAYBACK|HERDR_TTS_AUDIO_RETENTION_DAYS|TTS_SETTLE_SECONDS|WEB_URL|WEB_LABEL|CLICK_REDIRECT|COLLIE_URL|TTS_AUTO_SCOPE|TTS_AUTO_LANG|PODCAST_ENABLED|TTS_DEBOUNCE_SECONDS|NTFY_TOPIC|TTS_VOICE|HERDR_TTS_LANG) ;;
     *)
-      echo "config_set: unmanaged key '${key}' (allowed: TTS_PROVIDER, TTS_PLAYBACK, HERDR_TTS_AUDIO_RETENTION_DAYS, TTS_SETTLE_SECONDS, WEB_URL, WEB_LABEL, CLICK_REDIRECT, COLLIE_URL, TTS_AUTO_SCOPE, TTS_AUTO_LANG, PODCAST_ENABLED, TTS_DEBOUNCE_SECONDS, NTFY_TOPIC, TTS_VOICE)" >&2
+      echo "config_set: unmanaged key '${key}' (allowed: TTS_PROVIDER, TTS_PLAYBACK, HERDR_TTS_AUDIO_RETENTION_DAYS, TTS_SETTLE_SECONDS, WEB_URL, WEB_LABEL, CLICK_REDIRECT, COLLIE_URL, TTS_AUTO_SCOPE, TTS_AUTO_LANG, PODCAST_ENABLED, TTS_DEBOUNCE_SECONDS, NTFY_TOPIC, TTS_VOICE, HERDR_TTS_LANG)" >&2
       return 1
       ;;
   esac
@@ -4597,25 +4605,36 @@ run_voice_menu() {
 # old flat list: press key → settings_cycle_value → config_set →
 # re-render.
 #
-# Final index keys — chosen for Spanish mnemonics; 4 distinct letters
-# with no collision against the reserved bindings R (restart) / q / Esc:
-#   v 🎙 Voz · a 🔊 Audio · n 🔔 Notificaciones · l ⚙️ Lectura automática
+# Final index keys — English mnemonics; 4 distinct letters with
+# no collision against the reserved bindings R (restart) / q / Esc:
+#   v 🎙 Voice · a 🔊 Audio · n 🔔 Notifications · r ⚙️ Auto-read
 # (`a` ALSO opens Ajustes from the voice menu's MAIN view — different
-# view, no clash: inside this popup `a` means Audio.) q/Esc/Enter inside
-# a category returns to the index; from the index it leaves the settings
-# UI (back to the main view when entered via `a`, full exit when
-# standalone). Uppercase R (daemon restart) lives on the INDEX only —
-# one place, one Esc away from every category.
+# view, no clash: inside this popup `a` means Audio.) The reading
+# category is lowercase-only `r` on purpose: uppercase R stays the
+# daemon-restart chord on the index, so `r` mirrors the retention key's
+# lowercase-only discipline inside Audio. The ES dictionary documents
+# these ENGLISH chords in its help text (ES users press the same keys).
+# q/Esc/Enter inside a category returns to the index; from the index it
+# leaves the settings UI (back to the main view when entered via `a`,
+# full exit when standalone). Uppercase R (daemon restart) lives on the
+# INDEX only — one place, one Esc away from every category.
 #
-# Knobs per category — voz: p proveedor, g voz global, n prefijo
-# hablado, u auto-asignación, i idioma · audio: d destino, c click
-# directo, r retención, s asentamiento · notificaciones: t topic ntfy,
-# f podcast feed, w redirección web · lectura automática: v
-# auto-lectura, a alcance, b debounce. Cycle keys advance to the NEXT
+# Knobs per category — voice: p provider, g global voice, n spoken
+# prefix, u auto-assign, i auto language · audio: d playback target,
+# c click-through, r retention, s settle · notifications: t ntfy topic,
+# f podcast feed, w web redirect · reading (auto-read): v auto-read,
+# a scope, b debounce. Cycle keys advance to the NEXT
 # entry of their table and persist it through config_set (managed-key
 # writer above). Values shown come from the live
 # env the script sourced from config.env at startup; changes reach NEW
 # processes only.
+#
+# Index-level extras (global actions that belong to no category, like
+# R restart): `l` cycles the interface language HERDR_TTS_LANG
+# en ↔ es (SETTINGS_UI_LANGS) and also flips THIS process's variable,
+# so the popup re-renders in the new language immediately; the label
+# shown is the language's native name from the tt tables
+# (settings.lang.label.*).
 
 # Cycle tables: ordered, first element = the recommended default.
 SETTINGS_PROVIDERS=(edge openai elevenlabs piper kokoro) # edge first = gratuito, por defecto
@@ -4624,6 +4643,7 @@ SETTINGS_RETENTION=(0 1 3 7 14) # 0 = retención apagada
 SETTINGS_SETTLE=(0 2 5 10 15 30) # 0 = notifica al instante (sin ventana)
 SETTINGS_SCOPES=(focused all) # alcance de la auto-lectura de fondo
 SETTINGS_LANGS=(off on) # detección automática de idioma ES/EN
+SETTINGS_UI_LANGS=(en es) # interface language (HERDR_TTS_LANG): en first = English default
 SETTINGS_PODCAST=(off on) # publicación de audios en el feed RSS
 SETTINGS_DEBOUNCE=(0 10 20 30 60) # ventana anti-spam por (pane, estado); 0 = desactivada
 # (Las voces ya no tienen tabla estática: RF-HT-13-4 — el catálogo del
@@ -4642,6 +4662,7 @@ settings_cycle_value() { # <provider|target|retention|settle> <current> → next
     settle)    vals=("${SETTINGS_SETTLE[@]}") ;;
     scope)     vals=("${SETTINGS_SCOPES[@]}") ;;
     lang)      vals=("${SETTINGS_LANGS[@]}") ;;
+    ui_lang)   vals=("${SETTINGS_UI_LANGS[@]}") ;;
     podcast)   vals=("${SETTINGS_PODCAST[@]}") ;;
     debounce)  vals=("${SETTINGS_DEBOUNCE[@]}") ;;
     voice)
@@ -4658,7 +4679,7 @@ settings_cycle_value() { # <provider|target|retention|settle> <current> → next
       [[ -n "$_cv" ]] || return 1
       read -r -a vals <<<"$_cv"
       ;;
-    *) echo "settings_cycle_value: unknown key '${1}' (provider, target, scope, lang, podcast, debounce, voice, retention or settle)" >&2; return 1 ;;
+    *) echo "settings_cycle_value: unknown key '${1}' (provider, target, scope, lang, ui_lang, podcast, debounce, voice, retention or settle)" >&2; return 1 ;;
   esac
   n=${#vals[@]}
   for (( i = 0; i < n; i++ )); do
@@ -4673,8 +4694,9 @@ settings_cycle_value() { # <provider|target|retention|settle> <current> → next
 # One settings keypress, shared by the standalone popup (run_voice_settings)
 # and the settings view inside run_voice_menu. TWO-LEVEL dispatch on
 # SETTINGS_CATEGORY: the INDEX view answers the four category keys
-# (v/a/n/l, see the section comment), R (daemon restart) and q/Esc/Enter
-# (close the settings UI). A CATEGORY view dispatches ONLY its own knobs
+# (v/a/n/r, see the section comment), l (interface language), R (daemon
+# restart) and q/Esc/Enter (close the settings UI). A CATEGORY view
+# dispatches ONLY its own knobs
 # — the same cycle-persist-update arms the flat list always had, scoped
 # so a foreign key warns instead of silently changing a knob the user
 # cannot see. q/Esc/Enter in a category returns to the index (re-render,
@@ -4699,10 +4721,28 @@ settings_handle_key() { # <key>
       q|Q|$'\e'|"")
         return 1
         ;;
-      v|V) SETTINGS_CATEGORY="voz" ;;
+      v|V) SETTINGS_CATEGORY="voice" ;;
       a|A) SETTINGS_CATEGORY="audio" ;;
-      n|N) SETTINGS_CATEGORY="notif" ;;
-      l|L) SETTINGS_CATEGORY="lectura" ;;
+      n|N) SETTINGS_CATEGORY="notifications" ;;
+      r)
+        # Lowercase-only on purpose: uppercase R stays the restart chord
+        # on this same index and cannot be shadowed by the reading
+        # category (same discipline as the retention `r` inside Audio).
+        SETTINGS_CATEGORY="reading" ;;
+      l|L)
+        # Interface language (index-level extra like R restart — a global
+        # setting that belongs to no category). Cycles HERDR_TTS_LANG
+        # en ↔ es, persists through the managed writer AND flips this
+        # process's variable so the very next frame re-renders in the
+        # new language (tt reads HERDR_TTS_LANG on every call).
+        next="$(settings_cycle_value ui_lang "$HERDR_TTS_LANG")"
+        if config_set HERDR_TTS_LANG "$next"; then
+          HERDR_TTS_LANG="$next"
+          SETTINGS_NOTE="$(tt settings.index.lang_note "$(tt settings.lang.label.$next)")"
+        else
+          SETTINGS_WARN="$(tt settings.save_failed HERDR_TTS_LANG)"
+        fi
+        ;;
       R)
         # Restart the daemon in place: applies pending provider/audio
         # changes without leaving the popup. INDEX-only by design (see
@@ -4726,7 +4766,7 @@ settings_handle_key() { # <key>
       ;;
   esac
   case "$SETTINGS_CATEGORY" in
-    voz)
+    voice)
       case "$key" in
         p|P)
           next="$(settings_cycle_value provider "$TTS_PROVIDER")"
@@ -4842,7 +4882,7 @@ settings_handle_key() { # <key>
           ;;
       esac
       ;;
-    notif)
+    notifications)
       case "$key" in
         t|T)
           # Topic ntfy: free-text input like w (one line; empty/off/none =
@@ -4919,11 +4959,11 @@ settings_handle_key() { # <key>
           fi
           ;;
         *)
-          SETTINGS_WARN="$(tt settings.unknown_key.notif "$key")"
+          SETTINGS_WARN="$(tt settings.unknown_key.notifications "$key")"
           ;;
       esac
       ;;
-    lectura)
+    reading)
       case "$key" in
         v|V)
           # Auto-lectura de fondo on/off. The auto_muted marker stays the
@@ -4968,7 +5008,7 @@ settings_handle_key() { # <key>
           fi
           ;;
         *)
-          SETTINGS_WARN="$(tt settings.unknown_key.autoread "$key")"
+          SETTINGS_WARN="$(tt settings.unknown_key.reading "$key")"
           ;;
       esac
       ;;
@@ -4989,7 +5029,7 @@ settings_render() {
   dashboard_term_size
   local frame="" ret
   case "${SETTINGS_CATEGORY:-index}" in
-    voz)
+    voice)
       voice_map_refresh # n/u rows show the live voices.json flags
       _dash_add '%s' "$(tt settings.view.voice)"
       _dash_add '%s' "$(tt settings.view.hint)"
@@ -5021,19 +5061,19 @@ settings_render() {
       _dash_add ''
       _dash_add '%s' "$(tt settings.row.retention_note)"
       ;;
-    notif)
-      _dash_add '%s' "$(tt settings.view.notif)"
+    notifications)
+      _dash_add '%s' "$(tt settings.view.notifications)"
       _dash_add '%s' "$(tt settings.view.hint)"
       _dash_add ''
       _dash_add '%s' "$(tt settings.row.ntfy "${NTFY_TOPIC:-$(tt settings.row.off)}")"
       _dash_add '%s' "$(tt settings.row.podcast "$PODCAST_ENABLED")"
       _dash_add '%s' "$(tt settings.row.web "${WEB_URL:-$(tt settings.row.off_f)}")"
       ;;
-    lectura)
+    reading)
       local auto_label
       auto_label="$(tt settings.autoread.label_on)"
       is_auto_muted && auto_label="$(tt settings.autoread.label_muted)"
-      _dash_add '%s' "$(tt settings.view.autoread)"
+      _dash_add '%s' "$(tt settings.view.reading)"
       _dash_add '%s' "$(tt settings.view.hint)"
       _dash_add ''
       _dash_add '%s' "$(tt settings.row.autoread "$auto_label")"
@@ -5041,14 +5081,18 @@ settings_render() {
       _dash_add '%s' "$(tt settings.row.debounce "$TTS_DEBOUNCE_SECONDS")"
       ;;
     *)
+      # Interface language row: index-level extra like R restart. The
+      # label is the language's native name (English / Español) from
+      # the tt tables, so the row reads correctly in BOTH languages.
       _dash_add '%s' "$(tt settings.view.index)"
       _dash_add '%s' "$(tt settings.index.pick)"
       _dash_add ''
       _dash_add '%s' "$(tt settings.index.voice)"
       _dash_add '%s' "$(tt settings.index.audio)"
-      _dash_add '%s' "$(tt settings.index.notif)"
-      _dash_add '%s' "$(tt settings.index.autoread)"
+      _dash_add '%s' "$(tt settings.index.notifications)"
+      _dash_add '%s' "$(tt settings.index.reading)"
       _dash_add ''
+      _dash_add '%s' "$(tt settings.index.lang "$(tt settings.lang.label.$HERDR_TTS_LANG)")"
       _dash_add '%s' "$(tt settings.index.restart)"
       ;;
   esac

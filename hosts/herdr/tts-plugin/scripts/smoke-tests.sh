@@ -93,8 +93,9 @@
 #         value, repeated writes never grow the block, unknown lines and
 #         markers stay byte-identical, file stays bash-sourceable
 #   32    ajustes two-level navigation: the index renders the 4
-#         categories (v voz, a audio, n notificaciones, l lectura
-#         automática) and no raw knobs, each category view renders
+#         categories (v voice, a audio, n notifications, r reading —
+#         English mnemonics; r is lowercase-only because R restarts)
+#         plus the index-level l language row, and no raw knobs, each category view renders
 #         exactly its own knobs, in-category cycles persist through the
 #         writer, Esc from a category returns to the index, Esc/q from
 #         the index exits, R restarts from the standalone index,
@@ -909,7 +910,7 @@ assert_grep "16g tts-settings popup id" 'id = "tts-settings"' "$REPO/herdr-plugi
 assert_grep "16g open-menu action wired" '"--entrypoint", "tts-menu"' "$REPO/herdr-plugin.toml" -F
 assert_grep "16g manifest declares voice-settings action" 'id = "voice-settings"' "$REPO/herdr-plugin.toml" -F
 assert_grep "16g voice-settings runs --voice-settings" 'command = \["bin/herdr-tts", "--voice-settings"\]' "$REPO/herdr-plugin.toml"
-assert_grep "16g voice-settings title in Spanish" 'title = "Configuración de voz y audio"' "$REPO/herdr-plugin.toml" -F
+assert_grep "16g voice-settings title in English" 'title = "Open TTS Settings (popup)"' "$REPO/herdr-plugin.toml" -F
 assert_grep "16g version bumped to 0.16.0" 'version = "0.16.0"' "$REPO/herdr-plugin.toml" -F
 assert_grep "16g README option 1 (menu, recommended)" '### Option 1 — Compact map \(recommended\)' "$REPO/README.md"
 assert_grep "16g README option 2 (ctrl+alt family)" '### Option 2 — ctrl\+alt family' "$REPO/README.md"
@@ -918,7 +919,7 @@ assert_grep "16g README binds prefix+u to the menu" '"prefix+u"' "$REPO/README.m
 assert_grep "16g README documents the ctrl+alt+t caveat" 'ctrl\+alt\+t` launches a terminal' "$REPO/README.md"
 
 # 16h. Two-view menu: `a` opens the settings INDEX inside the menu, `v`
-#      enters the Voz category, `p` cycles the provider into a hermetic
+#      enters the Voice category, `p` cycles the provider into a hermetic
 #      config.env (HERDR_TTS_CONFIG_FILE override, same convention as
 #      HERDR_TTS_KEYMAP_FILE), `q` backs out to the index and the second
 #      `q` returns to the MAIN frame (re-render, NOT exit); EOF after the
@@ -936,45 +937,46 @@ hv=$(esc_count "$T/out.txt" $'\033[H')
 [[ $(grep -cF '· Voice & Audio Settings' "$T/out.txt") -eq 2 ]] \
   && ok "16h a opens the settings INDEX (+1 re-render after the category q)" || bad "16h index frame count $(grep -cF '· Voice & Audio Settings' "$T/out.txt")"
 [[ $(grep -cF '· Settings · Voice' "$T/out.txt") -eq 2 ]] \
-  && ok "16h v enters the Voz category (+1 re-render after p)" || bad "16h voz frame count $(grep -cF '· Settings · Voice' "$T/out.txt")"
+  && ok "16h v enters the Voice category (+1 re-render after p)" || bad "16h voice frame count $(grep -cF '· Settings · Voice' "$T/out.txt")"
 grep -q 'TTS_PROVIDER="openai"' "$HERDR_TTS_CONFIG_FILE" \
   && ok "16h p cycled provider edge→openai into config.env" || bad "16h provider not persisted"
 assert_no_grep "16h a/v/p/q path fires no action" '✓|Unrecognized key' "$T/out.txt"
 unset HERDR_TTS_CONFIG_FILE # scenario 25 derives CONFIG_FILE from the XDG paths
 
-# 16i. Settings `v` (inside Lectura automática): toggles the auto_muted
+# 16i. Settings `v` (inside reading/auto-read): toggles the auto_muted
 #      marker both ways with inline notes. The marker lives in the
 #      hermetic XDG conf dir (AUTO_MUTE_FILE derives from CONFIG_DIR),
 #      NOT config.env — same source of truth as --toggle-auto /
 #      --auto-on / --auto-off. One `v` per run (it is a toggle, not a
-#      cycle).
+#      cycle). Entry key is `r` (English mnemonic; lowercase-only on the
+#      index because uppercase R stays the daemon restart).
 new_env s16i
 FX="$T/fixture.json"; make_fixture "$FX"
 write_herdr_stub "$FX"
 export HERDR_TTS_CONFIG_FILE="$T/config.env"
-printf 'lvq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
+printf 'rvq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
 [[ $? -eq 0 ]] && ok "16i v toggle rc=0 (on→off)" || bad "16i rc!=0"
 [[ -f "$T/conf/herdr-tts/auto_muted" ]] \
   && ok "16i v creates the auto_muted marker" || bad "16i auto_muted marker missing"
 assert_grep "16i off note renders inline" 'Auto-read muted' "$T/out.txt"
-printf 'lvq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
+printf 'rvq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
 [[ $? -eq 0 ]] && ok "16i second v rc=0 (off→on)" || bad "16i second run rc!=0"
 [[ ! -f "$T/conf/herdr-tts/auto_muted" ]] \
   && ok "16i second v clears the auto_muted marker" || bad "16i marker still present"
 assert_grep "16i on note renders inline" 'Auto-read enabled' "$T/out.txt"
-assert_grep "16i lectura view lists the v row" ' v  Auto-read:' "$T/out.txt"
+assert_grep "16i reading view lists the v row" ' v  Auto-read:' "$T/out.txt"
 unset HERDR_TTS_CONFIG_FILE
 
 # 16j. Category cycles persist into a hermetic config.env (fresh
 #      defaults: scope=focused, lang=off, podcast=off, debounce=20):
-#      l→lectura (a scope), v→voz (i lang), n→notif (f podcast),
-#      l→lectura again (b debounce), backing out to the index between
-#      category views.
+#      r→reading (a scope), v→voice (i lang), n→notifications (f
+#      podcast), r→reading again (b debounce), backing out to the index
+#      between category views.
 new_env s16j
 FX="$T/fixture.json"; make_fixture "$FX"
 write_herdr_stub "$FX"
 export HERDR_TTS_CONFIG_FILE="$T/config.env"
-printf 'laqviqnfqlbq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
+printf 'raqviqnfqrbq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
 [[ $? -eq 0 ]] && ok "16j category cycles rc=0" || bad "16j rc!=0"
 grep -q 'TTS_AUTO_SCOPE="all"' "$HERDR_TTS_CONFIG_FILE" \
   && ok "16j a cycled scope focused→all" || bad "16j scope not persisted"
@@ -1765,12 +1767,12 @@ assert_grep "25b settle cycles with wrap" '^settle:0>2>5>10>15>30>0$' "$T/out.tx
 assert_grep "25b unknown settle current → first element" '^settle_unknown:0$' "$T/out.txt"
 
 # 25c. run_voice_settings with piped keys: index frame renders, values
-#      cycle inside their categories (v→voz p, a→audio r), config.env
+#      cycle inside their categories (v→voice p, a→audio r), config.env
 #      persists, every change re-renders (one H-move each).
 printf 'vpqarqq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
 [[ $? -eq 0 ]] && ok "25c settings popup exited rc=0" || bad "25c rc!=0"
 assert_grep "25c index frame renders" 'Voice & Audio Settings' "$T/out.txt"
-assert_grep "25c voz category frame renders" 'Settings · Voice' "$T/out.txt"
+assert_grep "25c voice category frame renders" 'Settings · Voice' "$T/out.txt"
 assert_grep "25c audio category frame renders" 'Settings · Audio' "$T/out.txt"
 hv=$(esc_count "$T/out.txt" $'\033[H')
 [[ "$hv" -eq 7 ]] && ok "25c index, voz, p re-render, index, audio, r re-render, index ($hv H-moves)" || bad "25c H-moves=$hv (want 7)"
@@ -2261,7 +2263,9 @@ printf 'q' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log
 assert_grep "32a index lists Voice"              ' v  🎙 Voice' "$T/out.txt" -F
 assert_grep "32a index lists Audio"              ' a  🔊 Audio' "$T/out.txt" -F
 assert_grep "32a index lists Notifications"      ' n  🔔 Notifications' "$T/out.txt" -F
-assert_grep "32a index lists Auto-read" ' l  ⚙️  Auto-read' "$T/out.txt" -F
+assert_grep "32a index lists Auto-read" ' r  ⚙️  Auto-read' "$T/out.txt" -F
+assert_grep "32a index lists the language row" ' l  🌐  Language' "$T/out.txt" -F
+assert_grep "32a language row shows the native label" 'Language +English' "$T/out.txt"
 assert_no_grep "32a index shows no raw knob rows" 'TTS provider:|Playback target:|ntfy topic:|Anti-spam debounce:' "$T/out.txt"
 assert_grep "32a index keeps the R restart hint" 'R +restarts the daemon' "$T/out.txt"
 
@@ -2274,20 +2278,20 @@ while IFS='|' read -r cat key rows; do
     assert_grep "32b ${cat} renders '${row}'" "$row" "$T/cat.txt" -F
   done
 done <<'EOF'
-voz|v| p  TTS provider:| g  Global voice:| n  Spoken prefix:| u  Auto-assign:| i  Auto language:
+voice|v| p  TTS provider:| g  Global voice:| n  Spoken prefix:| u  Auto-assign:| i  Auto language:
 audio|a| d  Playback target:| c  Click-through:| r  Audio retention:| s  Done settle:
-notif|n| t  ntfy topic:| f  Podcast feed:| w  Web redirect:
-lectura|l| v  Auto-read:| a  Auto-read scope:| b  Anti-spam debounce:
+notifications|n| t  ntfy topic:| f  Podcast feed:| w  Web redirect:
+reading|r| v  Auto-read:| a  Auto-read scope:| b  Anti-spam debounce:
 EOF
-printf 'vq'  | timeout 10 "$SCRIPT" --voice-settings > "$T/voz.txt"   2>>"$T/err.log"
-printf 'aq'  | timeout 10 "$SCRIPT" --voice-settings > "$T/audio.txt" 2>>"$T/err.log"
-printf 'nq'  | timeout 10 "$SCRIPT" --voice-settings > "$T/notif.txt" 2>>"$T/err.log"
-printf 'lq'  | timeout 10 "$SCRIPT" --voice-settings > "$T/lect.txt"  2>>"$T/err.log"
-assert_no_grep "32b voz view free of audio rows"     'Playback target:|Click-through:|Audio retention:' "$T/voz.txt"
-assert_no_grep "32b voz view free of notif rows"     'ntfy topic:|Podcast feed:|Web redirect:' "$T/voz.txt"
-assert_no_grep "32b audio view free of voz rows"     'TTS provider:|Global voice:|Auto language:' "$T/audio.txt"
-assert_no_grep "32b notif view free of lectura rows" 'Auto-read:|Anti-spam debounce:' "$T/notif.txt"
-assert_no_grep "32b lectura view free of notif rows" 'ntfy topic:|Web redirect:|Click-through:' "$T/lect.txt"
+printf 'vq'  | timeout 10 "$SCRIPT" --voice-settings > "$T/voice.txt"  2>>"$T/err.log"
+printf 'aq'  | timeout 10 "$SCRIPT" --voice-settings > "$T/audio.txt"  2>>"$T/err.log"
+printf 'nq'  | timeout 10 "$SCRIPT" --voice-settings > "$T/notif.txt"  2>>"$T/err.log"
+printf 'rq'  | timeout 10 "$SCRIPT" --voice-settings > "$T/read.txt"   2>>"$T/err.log"
+assert_no_grep "32b voice view free of audio rows"     'Playback target:|Click-through:|Audio retention:' "$T/voice.txt"
+assert_no_grep "32b voice view free of notif rows"     'ntfy topic:|Podcast feed:|Web redirect:' "$T/voice.txt"
+assert_no_grep "32b audio view free of voice rows"     'TTS provider:|Global voice:|Auto language:' "$T/audio.txt"
+assert_no_grep "32b notif view free of reading rows" 'Auto-read:|Anti-spam debounce:' "$T/notif.txt"
+assert_no_grep "32b reading view free of notif rows" 'ntfy topic:|Web redirect:|Click-through:' "$T/read.txt"
 
 # 32c. cycling a knob inside a category persists through the config writer.
 printf 'vpq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
@@ -2296,7 +2300,7 @@ grep -q 'TTS_PROVIDER="openai"' "$HERDR_TTS_CONFIG_FILE" \
   && ok "32c p cycled provider edge→openai via config_set" || bad "32c provider not persisted"
 
 # 32d. Esc from a category returns to the INDEX (re-render, not exit):
-#      3 H-moves (index, voz, index) and the trailing q is consumed by
+#      3 H-moves (index, voice, index) and the trailing q is consumed by
 #      the index — a category-Esc exit would leave it unread at EOF.
 printf 'v\033q' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
 [[ $? -eq 0 ]] && ok "32d Esc-from-category path exits rc=0" || bad "32d rc!=0"
@@ -2328,8 +2332,8 @@ assert_grep "32f R hit the restart path (stub invoked)" '^args=_daemon-supervise
 
 # 32g. unknown key inside a category warns with the category-scoped hint.
 printf 'v@q' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
-assert_grep "32g unknown key in voz warns" 'Unrecognized key \(@\)' "$T/out.txt"
-assert_grep "32g voz warning hints its own keys" 'p provider, g global voice' "$T/out.txt"
+assert_grep "32g unknown key in voice warns" 'Unrecognized key \(@\)' "$T/out.txt"
+assert_grep "32g voice warning hints its own keys" 'p provider, g global voice' "$T/out.txt"
 
 # 32h. write failure keeps the old value (Persistence on Cycle): a
 #      read-only config dir makes config_set fail at its writability
@@ -2793,6 +2797,45 @@ assert_grep "36b es renders the Spanish idle label" 'En reposo \(sin reproducci�
   timeout 10 "$SCRIPT" --player-status > "$T/out36c.txt" 2>/dev/null ) || true
 assert_grep "36c invalid lang falls back to English" 'Idle \(no active playback\)' "$T/out36c.txt"
 assert_no_grep "36c invalid lang renders no Spanish" 'En reposo' "$T/out36c.txt"
+
+# 36d. Settings index `l`: the interface-language row cycles en↔es,
+#      persists through the managed writer (config_set HERDR_TTS_LANG)
+#      and the popup re-renders in the new language on the very next
+#      frame — the ES index documents the ENGLISH chords (r reading).
+new_env s36d
+unset HERDR_TTS_LANG # deterministic start: no env override, fresh config
+export HERDR_TTS_CONFIG_FILE="$T/config.env"
+printf 'lq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out36d.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "36d language cycle run exits rc=0" || bad "36d rc!=0"
+assert_grep "36d first frame renders the EN index" 'Voice & Audio Settings' "$T/out36d.txt"
+grep -q 'HERDR_TTS_LANG="es"' "$HERDR_TTS_CONFIG_FILE" \
+  && ok "36d l persisted HERDR_TTS_LANG en→es via config_set" || bad "36d HERDR_TTS_LANG not persisted"
+assert_grep "36d re-render flips to the ES index" 'Ajustes de voz y audio' "$T/out36d.txt"
+assert_grep "36d ES index documents the English reading chord" ' r  ⚙️  Lectura automática' "$T/out36d.txt" -F
+assert_grep "36d ES note confirms the switch" 'Idioma de la interfaz: Español' "$T/out36d.txt" -F
+printf 'lq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out36d2.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "36d second run exits rc=0" || bad "36d second run rc!=0"
+grep -q 'HERDR_TTS_LANG="en"' "$HERDR_TTS_CONFIG_FILE" \
+  && ok "36d second l cycles back es→en" || bad "36d es→en round trip failed"
+assert_grep "36d second run re-renders the EN index" 'Voice & Audio Settings' "$T/out36d2.txt"
+unset HERDR_TTS_CONFIG_FILE
+
+# 36e. config_set accepts HERDR_TTS_LANG (managed-key allowlist): rc 0,
+#      value upserted into the hermetic config.env, file stays
+#      bash-sourceable.
+new_env s36e
+mkdir -p "$T/conf/herdr-tts"
+printf 'TTS_PROVIDER="edge"\n' > "$T/conf/herdr-tts/config.env"
+lib_run '
+  r=0; config_set HERDR_TTS_LANG es || r=$?
+  echo "rc=$r"
+' > "$T/out36e.txt"
+assert_grep "36e config_set accepts HERDR_TTS_LANG (rc 0)" '^rc=0$' "$T/out36e.txt"
+grep -q 'HERDR_TTS_LANG="es"' "$T/conf/herdr-tts/config.env" \
+  && ok "36e HERDR_TTS_LANG=\"es\" persisted into config.env" || bad "36e HERDR_TTS_LANG not persisted"
+bash -c 'source "$1" >/dev/null 2>&1 && printf "src:%s\n" "$HERDR_TTS_LANG"' \
+  _ "$T/conf/herdr-tts/config.env" > "$T/out36e2.txt"
+assert_grep "36e rewritten file stays bash-sourceable" '^src:es$' "$T/out36e2.txt"
 
 echo
 echo "═══ RESULT: $PASS passed, $FAIL failed ═══"

@@ -632,7 +632,9 @@ HERDR_TTS_LANG="en"
 
 # Managed by the voice settings view (voice menu → `a`, or
 # `herdr-tts --voice-settings`): TTS_PROVIDER,
-# TTS_PLAYBACK, HERDR_TTS_AUDIO_RETENTION_DAYS and TTS_SETTLE_SECONDS.
+# TTS_PLAYBACK, HERDR_TTS_AUDIO_RETENTION_DAYS, TTS_SETTLE_SECONDS and
+# HERDR_TTS_LANG (interface language, `l` on the settings index; the
+# full key list lives in the Ajustes section).
 # The popup rewrites
 # them in place (every other line is preserved byte-for-byte) and keeps
 # the previous version in config.env.bak.
@@ -741,7 +743,9 @@ command = "herdr plugin pane open --plugin herdr.tts --entrypoint tts-palette"
 | `v` | 🎙 Voz | proveedor, voz global, prefijo hablado, auto-asignación, idioma |
 | `a` | 🔊 Audio | destino de reproducción, click directo, retención, asentamiento |
 | `n` | 🔔 Notificaciones | topic ntfy, podcast feed, redirección web |
-| `l` | ⚙️ Lectura automática | auto-lectura, alcance, debounce |
+| `r` | ⚙️ Lectura automática | auto-lectura, alcance, debounce |
+
+En el **índice** hay además dos teclas globales: `l` cicla el **idioma de la interfaz** (`en` ↔ `es`, se guarda en `HERDR_TTS_LANG` y el propio popup se re-renderiza al instante en el idioma elegido; los procesos nuevos lo leen de `config.env`) y `R` **reinicia el daemon**.
 
 ### 🎙 Voz (`v`)
 
@@ -770,7 +774,7 @@ command = "herdr plugin pane open --plugin herdr.tts --entrypoint tts-palette"
 | `f` | Podcast feed | `off` ↔ `on` (publica cada audio en el feed RSS privado) |
 | `w` | Redirección web | texto libre: escribe la URL (`Enter` vacío = desactivar); guarda `WEB_URL` y `COLLIE_URL`; una URL con "collie" fija `WEB_LABEL="Collie"` si la etiqueta está vacía; el marcador `{pane_id}` se guarda tal cual |
 
-### ⚙️ Lectura automática (`l`)
+### ⚙️ Lectura automática (`r`)
 
 | Tecla | Ajuste | Ciclo |
 |---|---|---|
@@ -780,9 +784,9 @@ command = "herdr plugin pane open --plugin herdr.tts --entrypoint tts-palette"
 
 * **Navegación**: dentro de una categoría, `q` / `Esc` / `Enter` **vuelven al índice**; desde el índice salen de los Ajustes — al menú principal si entraste con `a`, o cierre directo en el popup independiente (`herdr-tts --voice-settings`, acción `voice-settings` del plugin, entrypoint `tts-settings`). `settings` sigue siendo un id ligable en `keymap.json`, pero **sin acorde por defecto**: los ajustes no gastan una tecla de core.
 * Kokoro y Piper requieren instalar el modelo antes: `agent-tts voice install <modelo>`.
-* La escritura es **gestionada**: solo toca las claves `TTS_PROVIDER`, `TTS_AUTO_SCOPE`, `TTS_AUTO_LANG`, `PODCAST_ENABLED`, `TTS_DEBOUNCE_SECONDS`, `NTFY_TOPIC`, `TTS_VOICE`, `TTS_PLAYBACK`, `HERDR_TTS_AUDIO_RETENTION_DAYS`, `TTS_SETTLE_SECONDS`, `WEB_URL`, `COLLIE_URL`, `WEB_LABEL` y `CLICK_REDIRECT` de `config.env` — reescribe la línea existente o añade un bloque gestionado al final, preserva el resto del fichero byte a byte, escribe de forma atómica (tmp + mv) y deja la versión previa en `config.env.bak` (las excepciones son `v`, que usa el marcador `auto_muted`, y `n`/`u`, que escriben los flags de `voices.json`).
+* La escritura es **gestionada**: solo toca las claves `TTS_PROVIDER`, `TTS_AUTO_SCOPE`, `TTS_AUTO_LANG`, `PODCAST_ENABLED`, `TTS_DEBOUNCE_SECONDS`, `NTFY_TOPIC`, `TTS_VOICE`, `TTS_PLAYBACK`, `HERDR_TTS_AUDIO_RETENTION_DAYS`, `TTS_SETTLE_SECONDS`, `WEB_URL`, `COLLIE_URL`, `WEB_LABEL`, `CLICK_REDIRECT` y `HERDR_TTS_LANG` de `config.env` — reescribe la línea existente o añade un bloque gestionado al final, preserva el resto del fichero byte a byte, escribe de forma atómica (tmp + mv) y deja la versión previa en `config.env.bak` (las excepciones son `v`, que usa el marcador `auto_muted`, y `n`/`u`, que escriben los flags de `voices.json`).
 * La tecla `R` (mayúscula, en el **índice**) **reinicia el daemon** al instante y confirma en pantalla con `✓ Daemon reiniciado`; equivale a `herdr-tts --restart-daemon`.
-* Los cambios aplican a **nuevos procesos**: `p`, `g`, `i`, `f`, `b`, `d`, `s`, `t` y `w` aplican al reiniciar el daemon — ahora con una tecla (`R` en el índice de Ajustes) o `herdr-tts --restart-daemon`. Las excepciones son `v`, `n`, `u` y `r`: se consultan en cada evento, así que cambian **al vuelo**, sin reiniciar.
+* Los cambios aplican a **nuevos procesos**: `p`, `g`, `i`, `f`, `b`, `d`, `s`, `t` y `w` aplican al reiniciar el daemon — ahora con una tecla (`R` en el índice de Ajustes) o `herdr-tts --restart-daemon`. Las excepciones son `v`, `n`, `u` y `r`: se consultan en cada evento, así que cambian **al vuelo**, sin reiniciar. El idioma de la interfaz (`l`) también cambia al vuelo **dentro del popup** (re-renderiza al instante); el resto de procesos lo aplican al arrancar, con precedencia `HERDR_TTS_LANG` de entorno > `config.env` > `en`.
 
 ---
 
