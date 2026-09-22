@@ -2225,6 +2225,183 @@ bt_run --
 assert_grep "33g arbitrary location installs the pinned source" "$PIN_RE" "$BT/logs/uv.log"
 BT_SCRIPT="$REPO/scripts/bootstrap.sh"
 unset BT UVLOG PYLOG BT_SCRIPT PIN_RE PIN_PY_RE
+echo "── 34. install.sh: preflight, fresh e2e, upgrade guard, keymap policy"
+new_env s34
+
+# ═════════════════════════════════════════════════════════════════════════
+# 34. install.sh contract (PM-01): preflight before mutation (jq missing,
+#     linked checkout refusal), fresh end-to-end install, upgrade vs
+#     remote-mismatch, keymap adoption policy (default/never-overwrite/
+#     --no-keymap), uninstall print, English output, tag-pinned default
+#     (v0.16.0) with HERDR_TTS_REF escape hatch, absolute clone target
+#     via `git -C` from an unrelated cwd.
+# ═════════════════════════════════════════════════════════════════════════
+INS_TEMPLATE="$T/repo-template"
+mkdir -p "$INS_TEMPLATE"
+cp -r "$REPO/bin" "$REPO/scripts" "$REPO/lib" "$REPO/herdr-plugin.toml" "$INS_TEMPLATE/" 2>/dev/null
+export HERDR_CONFIG_DIR="$T/conf" # keymap apply target stays hermetic
+ins_init() { # $1 case → $INS with stub bin/, isolated data/logs
+  INS="$T/ins-$1"; rm -rf "$INS"; mkdir -p "$INS/bin" "$INS/logs" "$INS/data" "$INS/home"
+  INS_PATH="$INS/bin:/usr/bin:/bin" # real jq reachable; stubs shadow git/uv/herdr
+  cat > "$INS/bin/git" <<'EOF'
+#!/bin/bash
+printf 'git %s\n' "$*" >> "${INSLOG:?}/git.log"
+if [[ "${1:-}" == clone ]]; then
+  /bin/cp -r "${SRC_TEMPLATE:?}/." "${@: -1}"
+elif [[ "${1:-}" == -C && "${3:-}" == remote && "${4:-}" == get-url ]]; then
+  /bin/cat "${REMOTE_FIXTURE:?}"; exit 0
+fi
+exit 0
+EOF
+  chmod +x "$INS/bin/git"
+  cat > "$INS/bin/herdr" <<'EOF'
+#!/bin/bash
+printf 'herdr %s\n' "$*" >> "${INSLOG:?}/herdr.log"
+if [[ "${1:-}" == plugin && "${2:-}" == list ]]; then
+  /bin/cat "${PLUGIN_FIXTURE:?}"; exit 0
+fi
+exit 0
+EOF
+  chmod +x "$INS/bin/herdr"
+  cat > "$INS/bin/uv" <<'EOF'
+#!/bin/bash
+printf 'uv %s\n' "$*" >> "${UVLOG:?}"
+if [[ "${1:-}" == venv && -n "${2:-}" ]]; then
+  /bin/mkdir -p "$2/bin"
+  printf '#!/bin/bash\nexit 0\n' > "$2/bin/python"
+  /bin/chmod +x "$2/bin/python"
+fi
+exit 0
+EOF
+  chmod +x "$INS/bin/uv"
+}
+ins_plugins() { # $1 kind → fixture for `herdr plugin list --json`
+  printf '{"result":{"plugins":[{"plugin_id":"herdr.tts","source":{"kind":"%s"},"plugin_root":"/x"}]}}\n' "$1" > "$INS/plugins.json"
+}
+ins_run() { # KEY=VAL env pairs, then --, then installer argv
+  local -a e=( -u HERDR_TTS_REF -u HERDR_TTS_DEV -u HERDR_TTS_UPGRADE -u HERDR_TTS_KEYMAP_FILE )
+  while [[ "$1" != -- ]]; do e+=( "$1" ); shift; done; shift
+  env "${e[@]}" PATH="$INS_PATH" HOME="$INS/home" XDG_DATA_HOME="$INS/data" \
+    INSLOG="$INS/logs" UVLOG="$INS/logs/uv.log" \
+    SRC_TEMPLATE="$INS_TEMPLATE" REMOTE_FIXTURE="$INS/remote.txt" \
+    PLUGIN_FIXTURE="$INS/plugins.json" \
+    /bin/bash "$REPO/scripts/install.sh" "$@" > "$INS/out.log" 2> "$INS/err.log"
+}
+
+# 34a. jq missing: abort naming jq before any mutation (in-1, in-6).
+ins_init nojq; ins_plugins github
+printf 'https://github.com/chiptime/herdr-tts.git\n' > "$INS/remote.txt"
+INS_PATH="$INS/bin" # restricted: no system jq anywhere
+ins_run --
+[[ $? -ne 0 ]] && ok "34a jq-missing exits non-zero" || bad "34a rc==0 without jq"
+grep -q 'jq' "$INS/err.log" && ok "34a error names jq" || bad "34a jq not named"
+[[ ! -e "$INS/data/herdr-tts" ]] && ok "34a no clone/venv artifacts on abort" || bad "34a artifacts created before abort"
+[[ ! -e "$T/conf/herdr-tts/keymap.json" && ! -e "$T/conf/herdr/config.toml" ]] \
+  && ok "34a no keymap artifacts on abort" || bad "34a keymap artifacts created"
+assert_no_grep "34a failure output is English" 'Instalando|Configurando|Usando|Entorno|Se requiere' "$INS/err.log"
+
+# 34b. linked dev checkout: refuse before mutating, guide migration (in-1).
+ins_init linked; ins_plugins local
+printf 'https://github.com/chiptime/herdr-tts.git\n' > "$INS/remote.txt"
+ins_run --
+[[ $? -ne 0 ]] && ok "34b linked checkout exits non-zero" || bad "34b rc==0 over a linked checkout"
+grep -q 'plugin unlink' "$INS/err.log" && grep -q 'plugin uninstall' "$INS/err.log" \
+  && ok "34b guides unlink/uninstall migration" || bad "34b migration guidance missing"
+[[ ! -e "$INS/data/herdr-tts" ]] && ok "34b mutates nothing" || bad "34b wrote despite refusal"
+
+# 34c. fresh end-to-end: clone (absolute TARGET, from an unrelated cwd),
+#      bootstrap, keymap adopt+apply+reload, daemon verify, status pointer,
+#      uninstall print, tag-pinned default (in-2, in-5, in-7).
+ins_init fresh; ins_plugins github
+printf 'https://github.com/chiptime/herdr-tts.git\n' > "$INS/remote.txt"
+sleep 60 & DAEMON_PID=$!
+mkdir -p "$T/state/herdr-tts"; printf '%s\n' "$DAEMON_PID" > "$T/state/herdr-tts/daemon.pid"
+mkdir -p "$T/unrelated-cwd"
+( cd "$T/unrelated-cwd" && ins_run -- )
+[[ $? -eq 0 ]] && ok "34c fresh install exits rc=0" || bad "34c rc!=0 (err: $(tail -1 "$INS/err.log" 2>/dev/null))"
+grep -qF -- "--branch v0.16.0 https://github.com/chiptime/herdr-tts.git $INS/data/herdr-tts/plugin" "$INS/logs/git.log" \
+  && ok "34c clones the pinned tag to the absolute TARGET from an unrelated cwd" \
+  || bad "34c clone argv wrong: $(grep clone "$INS/logs/git.log" 2>/dev/null)"
+[[ -x "$INS/data/herdr-tts/plugin/bin/herdr-tts" ]] && ok "34c checkout materialized at TARGET" || bad "34c no checkout at TARGET"
+grep -qE 'uv pip install .*agent-tts\.git@[0-9a-f]{40}' "$INS/logs/uv.log" \
+  && ok "34c bootstrap ran inside the install (pinned agent-tts)" || bad "34c no pinned install recorded"
+[[ -f "$T/conf/herdr-tts/keymap.json" ]] && ok "34c menu-style keymap adopted" || bad "34c keymap.json missing"
+grep -q 'generated by: herdr-tts keymap apply' "$T/conf/herdr/config.toml" \
+  && ok "34c managed keymap block landed in the resolved config" || bad "34c no managed block in config"
+first_pl=$(grep -n 'plugin list' "$INS/logs/herdr.log" | head -1 | cut -d: -f1)
+reload_ln=$(grep -n 'server reload-config' "$INS/logs/herdr.log" | head -1 | cut -d: -f1)
+[[ -n "$reload_ln" && "$reload_ln" -gt "$first_pl" ]] \
+  && ok "34c reload-config runs after preflight (stage order)" || bad "34c reload-config missing or out of order"
+grep -q 'daemon is running' "$INS/out.log" && ok "34c daemon verification reports the live pid" || bad "34c no daemon-verify line"
+grep -q -- '--status' "$INS/out.log" && ok "34c prints the --status pointer" || bad "34c no --status pointer"
+grep -q -- 'rm -rf' "$INS/out.log" && grep -q 'daemon' "$INS/out.log" && grep -q 'keymap block' "$INS/out.log" \
+  && ok "34c uninstall print: daemon stop, data removal, keymap block" || bad "34c uninstall steps incomplete"
+kill "$DAEMON_PID" 2>/dev/null; wait "$DAEMON_PID" 2>/dev/null
+
+# 34d. matching remote: re-run upgrades — fetch+checkout of the tag and an
+#      agent-tts refresh past the never-upgrade gate (in-3).
+ins_init upg; ins_plugins github
+printf 'https://github.com/chiptime/herdr-tts.git\n' > "$INS/remote.txt"
+ins_run --
+ins_run --
+[[ $? -eq 0 ]] && ok "34d matching-remote re-run exits rc=0" || bad "34d rc!=0"
+grep -qF -- "-C $INS/data/herdr-tts/plugin fetch origin v0.16.0" "$INS/logs/git.log" \
+  && ok "34d upgrade fetches the tag via git -C TARGET" || bad "34d no fetch recorded"
+grep -qF -- "-C $INS/data/herdr-tts/plugin checkout v0.16.0" "$INS/logs/git.log" \
+  && ok "34d upgrade checks out the tag" || bad "34d no checkout recorded"
+grep -qE -- '--upgrade.*agent-tts\.git@[0-9a-f]{40}' "$INS/logs/uv.log" \
+  && ok "34d agent-tts refreshed past the never-upgrade gate" || bad "34d no --upgrade install recorded"
+
+# 34e. mismatched remote: abort naming the mismatch, write nothing (in-3).
+ins_init mism; ins_plugins github
+printf 'https://github.com/chiptime/herdr-tts.git\n' > "$INS/remote.txt"
+ins_run --
+before_tree=$(find "$INS/data/herdr-tts/plugin" -type f | sort | xargs md5sum | md5sum)
+before_writes=$(grep -cE 'clone|fetch|checkout' "$INS/logs/git.log"); before_uv=$(wc -l < "$INS/logs/uv.log")
+printf 'https://evil.example.com/other.git\n' > "$INS/remote.txt"
+ins_run --
+[[ $? -ne 0 ]] && ok "34e mismatched remote exits non-zero" || bad "34e rc==0"
+grep -q 'remote' "$INS/err.log" && ok "34e error names the remote mismatch" || bad "34e mismatch not named"
+[[ $(grep -cE 'clone|fetch|checkout' "$INS/logs/git.log") -eq "$before_writes" && $(wc -l < "$INS/logs/uv.log") -eq "$before_uv" ]] \
+  && ok "34e zero write commands and zero installs after the mismatch" || bad "34e write/install ran after mismatch"
+[[ $(find "$INS/data/herdr-tts/plugin" -type f | sort | xargs md5sum | md5sum) == "$before_tree" ]] \
+  && ok "34e checkout tree byte-identical" || bad "34e checkout mutated"
+
+# 34f. existing keymap.json: byte-identical, no adopt/apply/reload (in-4).
+ins_init keep; ins_plugins github
+printf 'https://github.com/chiptime/herdr-tts.git\n' > "$INS/remote.txt"
+mkdir -p "$T/conf/herdr-tts"
+printf '{\n  "style": "direct",\n  "bindings": { "play": "prefix+F9" }\n}\n' > "$T/conf/herdr-tts/keymap.json"
+cp "$T/conf/herdr-tts/keymap.json" "$INS/expected-keymap.json"
+ins_run --
+[[ $? -eq 0 ]] && ok "34f re-run with existing keymap exits rc=0" || bad "34f rc!=0"
+cmp -s "$T/conf/herdr-tts/keymap.json" "$INS/expected-keymap.json" \
+  && ok "34f existing keymap byte-identical" || bad "34f keymap overwritten"
+grep -q 'server reload-config' "$INS/logs/herdr.log" \
+  && bad "34f reload ran despite existing keymap" || ok "34f no reload-config without adoption"
+rm -f "$T/conf/herdr-tts/keymap.json" "$T/conf/herdr/config.toml"
+
+# 34g. --no-keymap: zero keymap artifacts of any kind (in-4).
+ins_init nokey; ins_plugins github
+printf 'https://github.com/chiptime/herdr-tts.git\n' > "$INS/remote.txt"
+ins_run -- --no-keymap
+[[ $? -eq 0 ]] && ok "34g --no-keymap exits rc=0" || bad "34g rc!=0"
+[[ ! -e "$T/conf/herdr-tts/keymap.json" && ! -e "$T/conf/herdr/config.toml" ]] \
+  && ok "34g no keymap.json or managed block" || bad "34g keymap artifacts exist"
+grep -q 'server reload-config' "$INS/logs/herdr.log" \
+  && bad "34g reload-config ran" || ok "34g no reload-config invocation"
+
+# 34h. HERDR_TTS_REF escape hatch: mutable ref only when explicit (in-7).
+ins_init hatch; ins_plugins github
+printf 'https://github.com/chiptime/herdr-tts.git\n' > "$INS/remote.txt"
+ins_run HERDR_TTS_REF=main --
+[[ $? -eq 0 ]] && ok "34h HERDR_TTS_REF=main exits rc=0" || bad "34h rc!=0"
+grep -qF -- '--branch main' "$INS/logs/git.log" \
+  && ok "34h explicit hatch clones main" || bad "34h main not used"
+grep -qE 'uv pip install .*agent-tts\.git@[0-9a-f]{40}' "$INS/logs/uv.log" \
+  && ok "34h agent-tts stays SHA-pinned regardless" || bad "34h agent-tts pin loosened"
+unset INS INS_PATH INS_TEMPLATE
+unset HERDR_CONFIG_DIR
 echo
 echo "═══ RESULT: $PASS passed, $FAIL failed ═══"
 exit $(( FAIL > 0 ? 1 : 0 ))
