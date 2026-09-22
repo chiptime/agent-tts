@@ -9,8 +9,12 @@ description = "Vocalizes agent responses and attention requests using modular TT
 command = ["bash", "scripts/bootstrap.sh"]
 platforms = ["linux", "macos"]
 
+# Startup runs the supervised daemon: a foreground watchdog that relaunches
+# `bin/herdr-tts _daemon` if it dies unplanned (deliberate stops go through
+# a stop flag, so restarts are never fought). Deaths and relaunches land in
+# ~/.local/state/herdr-tts/daemon.log.
 [[startup]]
-command = ["bin/herdr-tts", "_daemon"]
+command = ["bin/herdr-tts", "_daemon-supervised"]
 
 # Interactive dashboard pane: live voice-gating status rendered by the
 # plugin itself (pure ANSI clear+redraw, no external TUI dependencies).

@@ -1851,12 +1851,29 @@ daemon_keymap_autostart() {
 # a live previous daemon (orphan from a prior session/launch) is terminated
 # before this one proceeds. PID reuse is guarded by checking /proc cmdline.
 DAEMON_PID_FILE="${HERDR_TTS_DAEMON_PID_FILE:-/tmp/herdr-tts-daemon.pid}"
+# Daemon observability + supervisor coordination. daemon.log is appended
+# directly by the daemon/supervisor (a silent death must leave a trace
+# even when stdout goes to /dev/null). The stop flag is armed BEFORE any
+# intentional daemon kill (stop paths, single-instance takeover): the
+# supervisor consumes it and exits instead of relaunching. Env overrides
+# keep tests hermetic.
+DAEMON_LOG="${HERDR_TTS_DAEMON_LOG:-${STATE_DIR}/daemon.log}"
+SUPERVISOR_STOP_FLAG="${HERDR_TTS_SUPERVISOR_STOP_FILE:-${STATE_DIR}/daemon-supervisor.stop}"
+SUPERVISOR_BACKOFF="${HERDR_TTS_SUPERVISOR_BACKOFF:-5}"
+
+daemon_log() { # <msg> → timestamped line appended to daemon.log (fail-open)
+  echo "[$(date +%H:%M:%S)] $*" >> "$DAEMON_LOG" 2>/dev/null || true
+}
+
 daemon_takeover() {
   if [[ -f "$DAEMON_PID_FILE" ]]; then
     local old_pid
     old_pid=$(cat "$DAEMON_PID_FILE" 2>/dev/null || true)
     if [[ "$old_pid" =~ ^[0-9]+$ && "$old_pid" != "$$" ]] \
        && grep -aq "herdr-tts" "/proc/$old_pid/cmdline" 2>/dev/null; then
+      # The old daemon's supervisor must not read this death as a crash:
+      # arm the stop flag BEFORE the kill (it consumes the flag and exits).
+      { : > "$SUPERVISOR_STOP_FLAG"; } 2>/dev/null || true
       kill "$old_pid" 2>/dev/null || true
       sleep 0.3
     fi
@@ -1918,9 +1935,18 @@ daemon_sweep_legacy() { # [out-var] → "killed" | "none"
     prev=""
     while IFS= read -r -d '' arg; do
       # Adjacent-argv signature: <...herdr-tts> <_daemon> — exactly how the
-      # startup hook and daemon_restart launch it. Embedded mentions inside
-      # a larger single argument (AI sessions, editors) never match.
+      # supervisor and daemon_restart spawn the daemon CHILD (the supervisor
+      # itself runs _daemon-supervised and never matches). Embedded mentions
+      # inside a larger single argument (AI sessions, editors) never match.
       if [[ -n "$prev" && "$prev" == *herdr-tts && "$arg" == "_daemon" ]]; then
+        # Smoke-suite safety: when the sweep itself runs under the suite
+        # marker, only kill daemons that carry it too — a REAL daemon on
+        # this machine (no marker) must survive a test battery run.
+        if [[ "${HERDR_TTS_SMOKE:-}" == 1 ]] \
+           && ! grep -aq HERDR_TTS_SMOKE "/proc/$pid/environ" 2>/dev/null; then
+          prev="$arg"
+          continue
+        fi
         kill "$pid" 2>/dev/null || true
         daemon_wait_gone "$pid" || true
         _dsl_result="killed"
@@ -1939,6 +1965,10 @@ daemon_stop_running() { # [out-var]
   # NOTE: the result local is function-prefixed so a caller's out-var can
   # never collide with it (printf -v would write the local, lost on return).
   local out_var="${1:-}" pid _dsr_result="none" _dsr_sweep="none"
+  # Deliberate-stop coordination: arm the supervisor stop flag BEFORE the
+  # kill so the supervisor consumes it and exits instead of relaunching a
+  # daemon this stop (restart paths) meant to end.
+  { : > "$SUPERVISOR_STOP_FLAG"; } 2>/dev/null || true
   pid=$(daemon_pid)
   if [[ -n "$pid" ]]; then
     kill "$pid" 2>/dev/null || true
@@ -1971,9 +2001,9 @@ daemon_restart() {
     return 1
   fi
   if command -v setsid >/dev/null 2>&1; then
-    setsid nohup "$SCRIPT" _daemon >/dev/null 2>&1 &
+    setsid nohup "$SCRIPT" _daemon-supervised >/dev/null 2>&1 &
   else
-    nohup "$SCRIPT" _daemon >/dev/null 2>&1 &
+    nohup "$SCRIPT" _daemon-supervised >/dev/null 2>&1 &
   fi
   spawn_pid=$!
   for (( i = 0; i < 30; i++ )); do
@@ -1991,6 +2021,9 @@ daemon_restart() {
 }
 
 run_daemon() {
+  # Startup line lands in daemon.log even when stdout is /dev/null (a
+  # --restart-daemon relaunch): a silent start or death can never happen.
+  daemon_log "🔊 daemon iniciado (pid $$, scope ${TTS_AUTO_SCOPE})"
   echo "🔊 Iniciando Herdr TTS Daemon (con Mutex y Scope ${TTS_AUTO_SCOPE})..."
   show_status
   daemon_takeover
@@ -2001,6 +2034,7 @@ run_daemon() {
   daemon_keymap_autostart
 
   CHILD_PIDS=()
+  DAEMON_EXIT_REASON="apagado limpio"
   cleanup() {
     for pid in "${CHILD_PIDS[@]:-}"; do
       kill "$pid" 2>/dev/null || true
@@ -2008,9 +2042,14 @@ run_daemon() {
     rm -f /tmp/herdr-tts-watcher-*.lock 2>/dev/null || true
     rm -f "$DAEMON_PID_FILE" 2>/dev/null || true
     stop_audio
+    daemon_log "🛑 daemon detenido (pid $$ — ${DAEMON_EXIT_REASON})"
     exit 0
   }
-  trap cleanup EXIT INT TERM
+  # Signals mark the exit reason and reuse the EXIT cleanup (trap order:
+  # TERM/INT handlers exit, which fires the cleanup trap last).
+  trap 'DAEMON_EXIT_REASON="señal TERM recibida"; exit 0' TERM
+  trap 'DAEMON_EXIT_REASON="señal INT recibida"; exit 0' INT
+  trap cleanup EXIT
 
   while true; do
     local raw_agents
@@ -2047,6 +2086,72 @@ run_daemon() {
     audio_store_prune
 
     sleep 4
+  done
+}
+
+# ─── Daemon supervisor (plugin-native watchdog) ──────────────
+# Foreground loop re-invoking `"$SCRIPT" _daemon` as a child: an UNPLANNED
+# daemon death is logged and the child relaunched after SUPERVISOR_BACKOFF
+# seconds; a death armed via the stop flag (daemon_stop_running before an
+# intentional kill, daemon_takeover before a takeover) is consumed and ends
+# supervision. run_daemon is NEVER called in-process — its cleanup trap
+# exits the shell, which would kill the supervisor itself. TERM/INT are
+# forwarded to the child and the supervisor exits without orphaning it.
+
+daemon_supervisor_should_relaunch() { # <rc> → 0 = relaunch, 1 = stop
+  # Deliberate-stop coordination: a present flag means this death was
+  # asked for — consume it (one-shot) and do not relaunch.
+  if [[ -f "$SUPERVISOR_STOP_FLAG" ]]; then
+    rm -f "$SUPERVISOR_STOP_FLAG" 2>/dev/null || true
+    return 1
+  fi
+  return 0
+}
+
+run_daemon_supervised() {
+  local child_pid="" rc=0 forward_sig=""
+  # A stale flag (armed by a stop whose supervisor died before consuming)
+  # must not swallow this session's first real stop: start clean.
+  rm -f "$SUPERVISOR_STOP_FLAG" 2>/dev/null || true
+  _sup_forward() { # INT/TERM: relay to the live child, else die at once
+    forward_sig="${1:-TERM}"
+    if [[ -n "${child_pid:-}" ]] && kill -0 "$child_pid" 2>/dev/null; then
+      kill -"$forward_sig" "$child_pid" 2>/dev/null || true
+    else
+      daemon_log "🛑 supervisor: ${forward_sig} sin daemon hijo — saliendo (pid $$)"
+      exit 0
+    fi
+  }
+  _sup_reap() { # EXIT guard: never orphan the daemon child
+    if [[ -n "${child_pid:-}" ]] && kill -0 "$child_pid" 2>/dev/null; then
+      kill "$child_pid" 2>/dev/null || true
+      wait "$child_pid" 2>/dev/null || true
+    fi
+  }
+  trap '_sup_forward INT' INT
+  trap '_sup_forward TERM' TERM
+  trap '_sup_reap' EXIT
+
+  daemon_log "🛰️ supervisor de daemon activo (pid $$, relanzamiento en ${SUPERVISOR_BACKOFF}s)"
+  while true; do
+    forward_sig=""
+    "$SCRIPT" _daemon &
+    child_pid=$!
+    rc=0
+    wait "$child_pid" || rc=$?
+    if [[ -n "$forward_sig" ]]; then
+      wait "$child_pid" 2>/dev/null || true # reap the signaled child
+      child_pid=""
+      daemon_log "🛑 supervisor: ${forward_sig} recibido — parada con el daemon (rc=${rc})"
+      exit 0
+    fi
+    child_pid=""
+    if ! daemon_supervisor_should_relaunch "$rc"; then
+      daemon_log "🛑 supervisor: parada deliberada del daemon (rc=${rc}) — sin relanzamiento"
+      exit 0
+    fi
+    daemon_log "⚠️ daemon murió (rc=${rc}) — relanzando en ${SUPERVISOR_BACKOFF}s"
+    sleep "$SUPERVISOR_BACKOFF"
   done
 }
 
@@ -4721,6 +4826,9 @@ case "${1:-}" in
     ;;
   _daemon)
     run_daemon
+    ;;
+  _daemon-supervised)
+    run_daemon_supervised
     ;;
   --restart-daemon)
     daemon_restart
