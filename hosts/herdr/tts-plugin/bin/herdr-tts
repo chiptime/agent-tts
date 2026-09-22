@@ -1181,12 +1181,8 @@ engine_catalog_canonical() { # <provider> → canonical name on stdout
 # Deterministic rotation (RF-HT-02-7, opt-in via "auto_assign": true):
 # short palette per provider, picked by a stable hash of the agent_type.
 # RF-HT-13-4: the palette comes from the engine catalog (first 4 sorted
-# voices of the provider); the static tables below are only the
-# engine-down fallback. Providers without catalog voices (piper/kokoro,
-# model-dependent) fall back to the global voice — never rotate into an
-# uninstalled engine.
-VOICE_ROTATION_EDGE=(elvira alvaro ximena dalia)
-VOICE_ROTATION_OPENAI=(nova alloy echo fable)
+# voices of the provider). Engine down → no rotation: the global voice is
+# the honest degradation, never invented voices the engine does not know.
 voice_auto_assign() { # <agent_type> → rotated voice for the active provider
   local -a palette=()
   local canon prov_voices
@@ -1197,15 +1193,9 @@ voice_auto_assign() { # <agent_type> → rotated voice for the active provider
       if [[ -z "$prov_voices" ]] && engine_catalog_refresh; then
         prov_voices="${ENGINE_CAT_VOICES[$canon]:-}"
       fi
-      if [[ -n "$prov_voices" ]]; then
-        read -r -a palette <<<"$prov_voices"
-        palette=("${palette[@]:0:4}") # deterministic short palette
-      else
-        case "$canon" in
-          edge)   palette=("${VOICE_ROTATION_EDGE[@]}") ;;
-          openai) palette=("${VOICE_ROTATION_OPENAI[@]}") ;;
-        esac
-      fi
+      [[ -n "$prov_voices" ]] || { printf '%s\n' "$TTS_VOICE"; return 0; }
+      read -r -a palette <<<"$prov_voices"
+      palette=("${palette[@]:0:4}") # deterministic short palette
       ;;
     *)      printf '%s\n' "$TTS_VOICE"; return 0 ;;
   esac
@@ -3139,7 +3129,22 @@ run_voice_for_picker() { # <agent|pane> <id> — fzf voice picker (RF-HT-02-6, H
     return 1
   fi
   local sel
-  sel=$( { printf '(global) → volver a la voz por defecto (%s)\n' "$TTS_VOICE"; printf '%s\n' "${SETTINGS_VOICES[@]}"; } | fzf \
+  # RF-HT-13-4: the picker lists the engine catalog for the ACTIVE
+  # provider. Engine down → only the global-reset option remains (honest
+  # degradation: never offer voices the engine does not know). The list is
+  # built BEFORE the pipeline: a short-circuiting group would trip
+  # `set -o pipefail` and kill the picker even when fzf answered.
+  local _canon _cv picker_lines
+  _canon=$(engine_catalog_canonical "$TTS_PROVIDER")
+  _cv="${ENGINE_CAT_VOICES[$_canon]:-}"
+  if [[ -z "$_cv" ]] && engine_catalog_refresh; then
+    _cv="${ENGINE_CAT_VOICES[$_canon]:-}"
+  fi
+  printf -v picker_lines '(global) → volver a la voz por defecto (%s)\n' "$TTS_VOICE"
+  if [[ -n "$_cv" ]]; then
+    picker_lines+="$(printf '%s\n' $_cv)"
+  fi
+  sel=$(printf '%s' "$picker_lines" | fzf \
     --reverse \
     --height 100% \
     --header "Voz para $1 $2 · enter aplica · esc cancela") || return 0
@@ -3629,7 +3634,8 @@ SETTINGS_SCOPES=(focused all) # alcance de la auto-lectura de fondo
 SETTINGS_LANGS=(off on) # detección automática de idioma ES/EN
 SETTINGS_PODCAST=(off on) # publicación de audios en el feed RSS
 SETTINGS_DEBOUNCE=(0 10 20 30 60) # ventana anti-spam por (pane, estado); 0 = desactivada
-SETTINGS_VOICES=(elvira alvaro ximena dalia jorge en nova rachel) # legacy fallback (RF-HT-13-4): only used when the engine catalog is unavailable
+# (Las voces ya no tienen tabla estática: RF-HT-13-4 — el catálogo del
+# motor es la única fuente; sin motor, el ciclo `g` avisa y no cambia.)
 
 # Print the NEXT value of a cycle table. Pure and fork-free (no subshell
 # spawns): safe to call per keypress. An unknown current value (user
@@ -3649,18 +3655,16 @@ settings_cycle_value() { # <provider|target|retention|settle> <current> → next
     voice)
       # RF-HT-13-4: voices come from the engine catalog for the ACTIVE
       # provider (first keypress of a process pays one cached engine
-      # call); the static table is only the engine-down fallback.
+      # call). Engine down → rc 1: the caller shows an actionable warning
+      # instead of cycling voices the engine does not know.
       local _canon _cv
       _canon=$(engine_catalog_canonical "$TTS_PROVIDER")
       _cv="${ENGINE_CAT_VOICES[$_canon]:-}"
       if [[ -z "$_cv" ]] && engine_catalog_refresh; then
         _cv="${ENGINE_CAT_VOICES[$_canon]:-}"
       fi
-      if [[ -n "$_cv" ]]; then
-        read -r -a vals <<<"$_cv"
-      else
-        vals=("${SETTINGS_VOICES[@]}")
-      fi
+      [[ -n "$_cv" ]] || return 1
+      read -r -a vals <<<"$_cv"
       ;;
     *) echo "settings_cycle_value: unknown key '${1}' (provider, target, scope, lang, podcast, debounce, voice, retention or settle)" >&2; return 1 ;;
   esac
@@ -3741,12 +3745,15 @@ settings_handle_key() { # <key>
           fi
           ;;
         g|G)
-          next="$(settings_cycle_value voice "$TTS_VOICE")"
-          if config_set TTS_VOICE "$next"; then
-            TTS_VOICE="$next"
-            SETTINGS_NOTE="✓ Voz global: ${next} (la paleta asigna voces por chat)"
+          if next="$(settings_cycle_value voice "$TTS_VOICE")"; then
+            if config_set TTS_VOICE "$next"; then
+              TTS_VOICE="$next"
+              SETTINGS_NOTE="✓ Voz global: ${next} (la paleta asigna voces por chat)"
+            else
+              SETTINGS_WARN="No se pudo guardar TTS_VOICE en config.env"
+            fi
           else
-            SETTINGS_WARN="No se pudo guardar TTS_VOICE en config.env"
+            SETTINGS_WARN="Catálogo de voces no disponible (motor sin respuesta): no se cambia la voz"
           fi
           ;;
         n|N)
@@ -5045,6 +5052,253 @@ keymap_main() {
   esac
 }
 
+# ─────────────────────────────────────────────────────────────────────────
+# Agent skill distribution (herdr-tts skill install|uninstall|list).
+# Publishes a managed SKILL.md into each supported coding agent's
+# user-level skills directory so the agent can operate the plugin itself.
+# Verified upstream paths: Claude Code ~/.claude/skills, OpenCode
+# ~/.config/opencode/skills, Codex ~/.codex/skills (CODEX_HOME honored),
+# Pi ~/.pi/agent/skills. HERDR_TTS_SKILLS_HOME replaces $HOME for every
+# agent root — the test override keeps the smoke suite hermetic.
+# Adoption policy mirrors the keymap: an existing SKILL.md is never
+# overwritten without --force (an identical re-run is a no-op success).
+# ─────────────────────────────────────────────────────────────────────────
+SKILL_NAME="herdr-tts"
+SKILL_MARKER='managed-by: herdr-tts skill install'
+
+skill_agents() { printf '%s\n' claude-code opencode codex pi; }
+
+skill_agent_root() { # $1 = agent id → user-level skills root (printed, never created)
+  local sub=""
+  case "$1" in
+    claude-code) sub=".claude/skills" ;;
+    opencode)    sub=".config/opencode/skills" ;;
+    codex)       sub=".codex/skills" ;;
+    pi)          sub=".pi/agent/skills" ;;
+  esac
+  if [[ -n "${HERDR_TTS_SKILLS_HOME:-}" ]]; then
+    printf '%s/%s\n' "${HERDR_TTS_SKILLS_HOME%/}" "$sub"
+    return
+  fi
+  case "$1" in
+    opencode) printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/opencode/skills" ;;
+    codex)    printf '%s\n' "${CODEX_HOME:-$HOME/.codex}/skills" ;;
+    *)        printf '%s/%s\n' "$HOME" "$sub" ;;
+  esac
+}
+
+skill_content() {
+  cat <<'EOF'
+---
+name: herdr-tts
+description: Operate the herdr-tts voice-notification plugin for the Herdr ADE from the CLI - mute or snooze agent speech, inspect status, replay the last response, and validate keybindings. Use when the user asks to silence, snooze, replay, or check Herdr voice/TTS notifications.
+---
+
+# herdr-tts - voice notifications for Herdr agents
+
+herdr-tts is the official speech backend of the Herdr ADE: it announces
+agent state changes (done / blocked) as neural TTS audio, with per-pane
+mute/snooze gating. Operate it through the herdr-tts CLI only - never
+reach into its venv or Python internals.
+
+## Core operations
+
+| Goal | Command |
+|---|---|
+| Current state, daemon pid, config | herdr-tts --status |
+| Mute the focused pane (auto-clears when the pane closes) | herdr-tts --mute-pane |
+| Snooze the focused pane (cycles 5m -> 30m -> 2h -> off) | herdr-tts --snooze |
+| Snooze ALL agents (meetings) | herdr-tts --snooze-global |
+| Replay the focused chat's last response | herdr-tts --play |
+| Stop audio immediately | herdr-tts --stop |
+| Validate user keybindings + core collisions | herdr-tts keymap check |
+| Restart the TTS daemon after config changes | herdr-tts --restart-daemon |
+
+## Hard rules
+
+- NEVER run "herdr server stop" to restart or reset TTS: it stops the
+  WHOLE Herdr server and kills every agent pane. For TTS use
+  "herdr-tts --restart-daemon" (daemon) or "herdr-tts --stop" (audio only).
+- Mute and snooze are per-pane runtime state, not config edits - prefer
+  them over touching ~/.config/herdr-tts/config.env.
+- Provider/voice/rate settings apply on daemon restart: after changing
+  them run "herdr-tts --restart-daemon" once, then verify with --status.
+
+## Diagnostics
+
+- "herdr-tts --status" is always safe: it never plays audio and never
+  stops the daemon.
+- Daemon log: ~/.local/state/herdr-tts/daemon.log
+<!-- managed-by: herdr-tts skill install (regenerate with: herdr-tts skill install <agent> --force) -->
+EOF
+}
+
+skill_install() { # $1 = agent id, $2 = 1 when --force
+  local agent="$1" force="${2:-0}"
+  local root dir file
+  root="$(skill_agent_root "$agent")"
+  dir="$root/$SKILL_NAME"
+  file="$dir/SKILL.md"
+  if [[ -e "$file" && ! -f "$file" ]]; then
+    echo "❌ $file exists and is not a regular file — remove it first" >&2
+    return 1
+  fi
+  if [[ -f "$file" ]]; then
+    if cmp -s <(skill_content) "$file"; then
+      echo "✓ Skill already installed at $file (up to date)"
+      return 0
+    fi
+    if [[ "$force" -ne 1 ]]; then
+      echo "✋ $file already exists — refusing to overwrite."
+      echo "   Keep your edits, or run: herdr-tts skill install $agent --force"
+      return 1
+    fi
+  fi
+  mkdir -p "$dir"
+  skill_content > "$file"
+  echo "✓ Skill published to $file"
+  echo "  The agent picks it up on its next session; preview with: cat \"$file\""
+}
+
+skill_uninstall() { # $1 = agent id
+  local agent="$1" root dir file
+  root="$(skill_agent_root "$agent")"
+  dir="$root/$SKILL_NAME"
+  file="$dir/SKILL.md"
+  if [[ ! -e "$file" ]]; then
+    echo "✓ $agent: no skill installed at $file (nothing to do)"
+    return 0
+  fi
+  if ! grep -qF "$SKILL_MARKER" "$file"; then
+    echo "✋ $file does not carry the herdr-tts managed marker — refusing to delete."
+    echo "   It looks user-customized; remove it manually if that is intended."
+    return 1
+  fi
+  rm -f "$file"
+  rmdir "$dir" 2>/dev/null || true
+  echo "✓ Skill removed from $dir"
+}
+
+skill_list() {
+  local agent root file
+  echo "herdr-tts skills (user-level):"
+  while IFS= read -r agent; do
+    root="$(skill_agent_root "$agent")"
+    file="$root/$SKILL_NAME/SKILL.md"
+    if [[ -f "$file" ]]; then
+      printf '  ✓ %-12s %s\n' "$agent" "$file"
+    else
+      printf '  — %-12s %s (not installed)\n' "$agent" "$file"
+    fi
+  done < <(skill_agents)
+}
+
+skill_help() {
+  cat <<EOF
+Uso: herdr-tts skill <subcommand> [options]
+
+Publish a managed SKILL.md into a coding agent's user-level skills
+directory so the agent can operate the plugin itself: mute, snooze,
+status, replay and keymap checks.
+
+  skill install <agent> [--force]
+                          Write the herdr-tts SKILL.md (never overwrites an
+                          existing/modified file; --force replaces it)
+  skill uninstall <agent> Remove the published skill (refuses files that
+                          do not carry the herdr-tts managed marker)
+  skill list              Show every supported agent and its install state
+
+Agents: claude-code (~/.claude/skills) · opencode
+(~/.config/opencode/skills) · codex (~/.codex/skills, CODEX_HOME honored)
+· pi (~/.pi/agent/skills).
+
+Path override for tests: HERDR_TTS_SKILLS_HOME (replaces \$HOME for every
+agent root).
+EOF
+}
+
+skill_main() {
+  local sub="${1:-}"
+  [[ $# -gt 0 ]] && shift
+  case "$sub" in
+    install)
+      local agent="" force=0
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --force)
+            force=1; shift
+            ;;
+          -*)
+            echo "❌ unknown option: $1 (skill install accepts --force)" >&2
+            return 1
+            ;;
+          *)
+            if [[ -n "$agent" ]]; then
+              echo "❌ unexpected argument: $1 (skill install takes one agent)" >&2
+              return 1
+            fi
+            agent="$1"; shift
+            ;;
+        esac
+      done
+      if [[ -z "$agent" ]]; then
+        echo "❌ skill install requires an agent (claude-code, opencode, codex or pi)" >&2
+        return 1
+      fi
+      if ! skill_agents | grep -qx -- "$agent"; then
+        echo "❌ unknown agent: $agent (supported: claude-code, opencode, codex, pi)" >&2
+        return 1
+      fi
+      skill_install "$agent" "$force"
+      ;;
+    uninstall)
+      local agent=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          -*)
+            echo "❌ unknown option: $1 (skill uninstall takes no options)" >&2
+            return 1
+            ;;
+          *)
+            if [[ -n "$agent" ]]; then
+              echo "❌ unexpected argument: $1 (skill uninstall takes one agent)" >&2
+              return 1
+            fi
+            agent="$1"; shift
+            ;;
+        esac
+      done
+      if [[ -z "$agent" ]]; then
+        echo "❌ skill uninstall requires an agent (claude-code, opencode, codex or pi)" >&2
+        return 1
+      fi
+      if ! skill_agents | grep -qx -- "$agent"; then
+        echo "❌ unknown agent: $agent (supported: claude-code, opencode, codex, pi)" >&2
+        return 1
+      fi
+      skill_uninstall "$agent"
+      ;;
+    list)
+      if [[ -n "${1:-}" ]]; then
+        echo "❌ unknown option: $1 (skill list takes no options)" >&2
+        return 1
+      fi
+      skill_list
+      ;;
+    help|-h|--help)
+      skill_help
+      ;;
+    "")
+      skill_help
+      ;;
+    *)
+      echo "❌ unknown subcommand: $sub (use install, uninstall or list)" >&2
+      skill_help >&2
+      return 1
+      ;;
+  esac
+}
+
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 export_core_retention # RF-HT-13-3: the core prunes with the host's resolved knob
 case "${1:-}" in
@@ -5409,6 +5663,10 @@ run_podcast_server(port=int(sys.argv[1]), podcast_dir=sys.argv[2])
     shift
     keymap_main "$@"
     ;;
+  skill)
+    shift
+    skill_main "$@"
+    ;;
   _daemon)
     run_daemon
     ;;
@@ -5505,8 +5763,17 @@ Keymap declarativo (teclas editables por el usuario, validables):
   keymap apply [--config P] [--dry-run]
                             Instalar los bindings en config.toml como bloque
                             gestionado (backup + rollback; --dry-run = diff)
-  keymap adopt --style S    Escribir el mapa sugerido (direct | ctrlalt | menu)
-                            en keymap.json (--force para sobrescribir cambios)
+   keymap adopt --style S    Escribir el mapa sugerido (direct | ctrlalt | menu)
+                             en keymap.json (--force para sobrescribir cambios)
+
+Agent skill distribution (SKILL.md for coding agents):
+  skill install <agent> [--force]
+                           Publish the managed SKILL.md into the agent's
+                           user-level skills directory (never overwrites;
+                           --force replaces)
+  skill uninstall <agent>  Remove the published skill (marker-guarded)
+  skill list               Supported agents and install state
+                           (claude-code, opencode, codex, pi)
 
 Información:
    --status                 Ver estado actual, lock y configuración
