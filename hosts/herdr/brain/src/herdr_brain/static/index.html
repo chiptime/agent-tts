@@ -351,6 +351,8 @@
     /* The user's own turns: soft but noticeable tint, role label aligned
      * to the right so "tú" reads as coming from your side of the pane. */
     .gturn.user {
+      width: 88%;              /* a bit narrower than agent turns */
+      margin-left: auto;       /* right-shifted: left margin does the offset */
       background: var(--user-wash);
       border-color: var(--user-line);
     }
