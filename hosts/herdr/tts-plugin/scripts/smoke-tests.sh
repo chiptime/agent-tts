@@ -3733,6 +3733,45 @@ assert_grep "40f help still lists --speak" '\-\-speak' "$T/f-help.txt"
 assert_grep "40f help lists --render-html" '\-\-render-html' "$T/f-help.txt"
 HERDR_TTS_LANG=es timeout 10 "$SCRIPT" --help > "$T/f-help-es.txt" 2>&1
 assert_grep "40f ES help lists --render-html" '\-\-render-html' "$T/f-help-es.txt"
+# redaction failure (rc 2), fail closed: agent_tts.redact_secrets patched to
+# raise BEFORE the engine bridge imports reader_pipeline, so the fault rides
+# the REAL driver path (bin/herdr-tts -> venv python -> tts_engine ->
+# render_to_files) while the input file itself stays perfectly readable —
+# unlike the unreadable-input branch above, this exercises the sanitize()
+# fail-closed catch (W-1): exit 2 AND not a single output artifact.
+cat > "$T/data/herdr-tts/venv/bin/python" <<EOF
+#!/usr/bin/env bash
+# smoke 40f fault-injection wrapper: patch the pinned engine's redact_secrets
+# to raise, then run the real tts_engine.py unmodified (runpy keeps the
+# script-dir sys.path semantics of a direct "\$VENV_PY \$ENGINE_SCRIPT" call).
+exec "$REAL_VENV_PY" -c '
+import os, runpy, sys
+import agent_tts
+
+def _redact_fail(text):
+    raise RuntimeError("injected redaction failure")
+
+agent_tts.redact_secrets = _redact_fail
+sys.argv = sys.argv[1:]
+sys.path.insert(0, os.path.dirname(os.path.abspath(sys.argv[0])))
+runpy.run_path(sys.argv[0], run_name="__main__")
+' "\$@"
+EOF
+chmod +x "$T/data/herdr-tts/venv/bin/python"
+timeout 10 "$SCRIPT" --render-html "$T/in.txt" "$T/out3.html" > "$T/f-redact.txt" 2>&1
+[[ $? -eq 2 ]] && ok "40f redaction failure exits 2" || bad "40f redact rc=$(head -c 120 "$T/f-redact.txt" | tr '\n' ' ')"
+assert_grep "40f redaction failure surfaced (injected fault)" 'render failed: injected redaction failure' "$T/f-redact.txt"
+[[ ! -e "$T/out3.html" ]] && ok "40f redaction failure: no output file" || bad "40f redact-fail wrote output"
+timeout 10 "$SCRIPT" --render-html "$T/in.txt" "$T/out4.html" --map "$T/f-map2.json" > "$T/f-redact2.txt" 2>&1
+[[ $? -eq 2 ]] && ok "40f redaction failure with --map exits 2" || bad "40f redact-map rc=$(head -c 120 "$T/f-redact2.txt" | tr '\n' ' ')"
+[[ ! -e "$T/out4.html" && ! -e "$T/f-map2.json" ]] \
+  && ok "40f redaction failure: no HTML, no sidecar (fail closed)" || bad "40f redact-fail wrote output/sidecar"
+# restore the plain real-venv wrapper so 40g (and later blocks) run clean
+cat > "$T/data/herdr-tts/venv/bin/python" <<EOF
+#!/usr/bin/env bash
+exec "$REAL_VENV_PY" "\$@"
+EOF
+chmod +x "$T/data/herdr-tts/venv/bin/python"
 
 # 40g. (R7) zero new dependencies + transient process (exits, no daemon)
 assert_grep "40g bootstrap pin still SHA-pinned" 'AGENT_TTS_REF="\$\{HERDR_AGENT_TTS_REF:-[0-9a-f]{40}\}"' "$REPO/scripts/bootstrap.sh"
