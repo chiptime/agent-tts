@@ -91,11 +91,23 @@ def server_socket(socket_path: str = IPC_SOCKET) -> Optional[socket.socket]:
             os.remove(socket_path)
             retry.bind(socket_path)
             return retry
-        except OSError:
+        except OSError as exc:
             try:
                 retry.close()
             except OSError:
                 pass
+            # Warn for the same reason as the non-EADDRINUSE bind failure
+            # above: this process won the election, so a silent None here
+            # leaves the channel dead with no explanation. The OSError may
+            # come from the remove (orphan still on disk) or from the rebind
+            # (path already cleared and left unusable), so the wording must
+            # not claim the file's fate — only that the reclaim failed,
+            # which is true in both cases.
+            print(
+                f"ipc: cannot reclaim orphaned control socket {socket_path}: {exc}; "
+                "interactive control unavailable",
+                file=sys.stderr,
+            )
             return None
 
 
