@@ -3234,6 +3234,15 @@ lib_run '
 assert_grep "39a hand-edited solarized normalizes to dark" $'\033[90m' "$T/c-solarized.txt" -F
 assert_no_grep_f "39a solarized never renders the light muted byte" $'\033[30m' "$T/c-solarized.txt"
 
+# 39b. Theme-note copy: the appearance view discloses the instant
+#      dashboard adoption in both languages (roster disclosure kept —
+#      38c asserts that half on the rendered popup).
+lib_run 'tt settings.row.theme_note' > "$T/note-en.txt"
+assert_grep "39b EN note documents the instant dashboard adoption" 'instant on the running dashboard' "$T/note-en.txt"
+( export HERDR_TTS_LANG=es
+  lib_run 'tt settings.row.theme_note' > "$T/note-es.txt" )
+assert_grep "39b ES note documents the instant dashboard adoption" 'el dashboard lo adopta al vuelo' "$T/note-es.txt"
+
 echo
 echo "═══ RESULT: $PASS passed, $FAIL failed ═══"
 exit $(( FAIL > 0 ? 1 : 0 ))
