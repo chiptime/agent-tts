@@ -106,6 +106,19 @@
       text-overflow: ellipsis;
       text-align: left;
     }
+    #pane-picker-sub {
+      /* Gray workspace tail after the session name: "name · workspace". */
+      flex: 1;
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      text-align: left;
+      font-weight: 400;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    #pane-picker-sub::before { content: "· "; }
     #header-version {
       /* The version chip is a deployment check: it must stay visible even
        * on a 360px viewport, so it never shrinks. */
@@ -245,9 +258,9 @@
     }
     .conv-row .st { flex: 0 0 auto; font-size: 13px; }
     .conv-row .st.working { color: var(--warn); }
-    .conv-row .st.idle    { color: var(--accent); }
+    .conv-row .st.idle    { color: var(--muted); }
     .conv-row .st.blocked { color: var(--danger); }
-    .conv-row .st.done    { color: var(--blue); }
+    .conv-row .st.done    { color: var(--accent); }
     .cr-main {
       flex: 1;
       min-width: 0;
@@ -279,6 +292,9 @@
       background: var(--chip-bg);
       color: var(--muted);
     }
+    .cr-status.working { color: var(--warn); }
+    .cr-status.blocked { color: var(--danger); }
+    .cr-status.done    { color: var(--accent); }
     .cr-check { flex: 0 0 auto; color: var(--accent); font-weight: 800; }
     .conv-row.current {
       /* 2px inset accent rail marks the current conversation. */
@@ -876,7 +892,7 @@
 <body>
   <header>
     <span id="status-chip" class="chip">…</span>
-    <button id="pane-picker" type="button" aria-haspopup="dialog" aria-expanded="false" title="Cambiar de conversación"><span class="pp-caret" aria-hidden="true">▾</span><span id="pane-picker-label">conectando…</span></button>
+    <button id="pane-picker" type="button" aria-haspopup="dialog" aria-expanded="false" title="Cambiar de conversación"><span class="pp-caret" aria-hidden="true">▾</span><span id="pane-picker-label">conectando…</span><span id="pane-picker-sub" class="hidden"></span></button>
     <span id="header-version" class="chip">v<span id="app-version-header">?</span></span>
     <button id="settings-btn" class="head-btn" title="Ajustes">⚙</button>
     <button id="mute-btn" class="head-btn" title="Silenciar anuncios">🔊</button>

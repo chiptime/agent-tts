@@ -42,6 +42,7 @@
   var chip = $("status-chip");
   var panePicker = $("pane-picker");
   var panePickerLabel = $("pane-picker-label");
+  var panePickerSub = $("pane-picker-sub");
   var fallbackForm = $("text-fallback");
   var textInput = $("text-input");
   var statePill = $("state-pill");
@@ -624,6 +625,7 @@
     var wanted = [];
     var seen = {};
     var pickerName = "";
+    var pickerSub = "";
     for (i = 0; i < herd.length; i++) {
       var agent = herd[i];
       var id = agent.pane_id;
@@ -676,17 +678,19 @@
       var subNode = nameNode.nextSibling;
       var statusNode = mainNode.nextSibling;
       var subText = agentWorkspaceSub(agent);
+      var pillCls = "cr-status" + (statusText ? " " + status : "");
       if (dotNode.className !== dotCls) dotNode.className = dotCls;
       if (nameNode.textContent !== name) nameNode.textContent = name;
       if (subNode.textContent !== subText) subNode.textContent = subText;
       subNode.classList.toggle("hidden", !subText);
+      if (statusNode.className !== pillCls) statusNode.className = pillCls;
       if (statusNode.textContent !== statusText) statusNode.textContent = statusText;
       statusNode.classList.toggle("hidden", !statusText);
       if (el.className !== cls) el.className = cls;
       if (el.getAttribute("aria-current") !== ariaNow) el.setAttribute("aria-current", ariaNow);
       if (el.title !== title) el.title = title;
       wanted.push(el);
-      if (id === effective) pickerName = name;
+      if (id === effective) { pickerName = name; pickerSub = subText; }
     }
     var stale = [];
     for (i = 0; i < convList.children.length; i++) {
@@ -700,9 +704,12 @@
     if (!sameOrder) {
       for (i = 0; i < wanted.length; i++) convList.appendChild(wanted[i]);
     }
-    /* Picker trigger label: the effective pane's display name. */
+    /* Picker trigger label: the effective pane's display name, with the
+     * workspace as a gray tail ("name · workspace"). */
     var label = pickerName || "sin agente";
     if (panePickerLabel.textContent !== label) panePickerLabel.textContent = label;
+    if (panePickerSub.textContent !== pickerSub) panePickerSub.textContent = pickerSub;
+    panePickerSub.classList.toggle("hidden", !pickerSub);
     renderGlanceLabel();       // lastHerd just refreshed: recompute name
     renderPending(lastPending);  // blocked-agent counts may have changed
   }
