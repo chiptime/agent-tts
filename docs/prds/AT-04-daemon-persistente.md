@@ -6,6 +6,8 @@
 
 > **Nota de revisión (22/09/2026, vía única)**: La revisión contra el código real declara inviable el camino dual daemon/modo clásico: el CLI es SIEMPRE un cliente; si no hay daemon alcanzable, lo arranca y delega (vía única con auto-arranque transparente; precedente: tmux, emacsclient, gpg-agent, ssh ControlMaster). `--no-daemon` desaparece como semántica alternativa y `--foreground` queda solo como opción de despliegue/debug, no como segundo comportamiento bajo test. RF-AT-04-4 se retira (absorbida por RF-AT-09-1/RF-AT-09-2 de AT-09: elección por `flock` con liberación por kernel a la muerte del proceso); RF-AT-04-5 y RNF-AT-04-3 se reescriben para la vía única; se añaden RF-AT-04-7, RF-AT-04-8 y RNF-AT-04-5; la dependencia de AT-09 pasa a ser dura. El esfuerzo se mantiene en L: crece el trabajo de ciclo de vida (caché de proveedores nueva, health check, idle timeout) pero se retira la superficie del camino clásico.
 
+> **Nota de revisión (22/09/2026, idle timeout)**: RF-AT-04-7 define el idle timeout por defecto y su ámbito: 30 minutos para el daemon arrancado implícitamente por auto-arranque, sin timeout para el arranque explícito (`--serve`/`--foreground`); ambos configurables. RNF-AT-04-4 y su métrica de éxito asociada se reacotan al daemon de arranque explícito, único contexto donde las 8 h en reposo son medibles. La open question sobre mantener `--serve` y `--foreground` como flags separados queda resuelta: se mantienen, porque cargan políticas de vida distintas.
+
 # PRD-AT-04 — Modo daemon persistente del motor (`--serve`)
 
 **Prioridad**: Alta · **Esfuerzo**: L
@@ -20,7 +22,7 @@ En una flota de N agentes que notifica por voz, cada evento (done, blocked, work
 
 ### Propuesta
 
-`agent-tts --serve` arranca un proceso largo que: (1) abre el mismo socket IPC que hoy usa el playback interactivo y acepta los comandos existentes más `play`, `enqueue`, `ping`, `shutdown`; (2) resuelve el playback target una vez (local/winhost/wsl-ps) y lo reutiliza; (3) mantiene en caché el último proveedor usado, con kokoro cargado en memoria y el proceso piper vivo entre solicitudes (trabajo de ciclo de vida nuevo, no reutilización; ver RNF-AT-04-5). El cliente `agent-tts "texto"` es siempre cliente: verifica el canal de control (propiedad garantizada por AT-09) y la salud del daemon (`ping`); si no hay daemon alcanzable, lo arranca y delega (auto-arranque transparente). No existe un segundo camino semántico: `--no-daemon` desaparece; `--foreground` queda únicamente como opción de despliegue/debug (proceso adjunto a la terminal, pensado para systemd/journalctl y depuración), no como un comportamiento aparte bajo test. Se documenta una unit de systemd user como ejemplo de arranque.
+`agent-tts --serve` arranca un proceso largo que: (1) abre el mismo socket IPC que hoy usa el playback interactivo y acepta los comandos existentes más `play`, `enqueue`, `ping`, `shutdown`; (2) resuelve el playback target una vez (local/winhost/wsl-ps) y lo reutiliza; (3) mantiene en caché el último proveedor usado, con kokoro cargado en memoria y el proceso piper vivo entre solicitudes (trabajo de ciclo de vida nuevo, no reutilización; ver RNF-AT-04-5). El cliente `agent-tts "texto"` es siempre cliente: verifica el canal de control (propiedad garantizada por AT-09) y la salud del daemon (`ping`); si no hay daemon alcanzable, lo arranca y delega (auto-arranque transparente). No existe un segundo camino semántico: `--no-daemon` desaparece; `--foreground` queda como opción de despliegue/debug (proceso adjunto a la terminal, pensado para systemd/journalctl y depuración), no como un comportamiento aparte bajo test. Arranque explícito y auto-arranque no difieren en el camino de ejecución, solo en la política de vida del daemon (RF-AT-04-7): el auto-arrancado expira por inactividad, el explícito no. Se documenta una unit de systemd user como ejemplo de arranque.
 
 ### Historias de usuario (US-AT-04-1, ...)
 
@@ -36,7 +38,7 @@ En una flota de N agentes que notifica por voz, cada evento (done, blocked, work
 - RF-AT-04-4: ~~Detección de socket huérfano: si el pid del PID_FILE no vive, el daemon lo reclama; si vive otro daemon, error claro y no arranque.~~ **RETIRADA (22/09/2026)**: absorbida por RF-AT-09-1 y RF-AT-09-2 de AT-09 — la elección atómica por `flock` hace innecesaria la comprobación de vida del pid (el kernel libera el lock a la muerte del dueño, incluido SIGKILL), el socket huérfano solo se reclama tras ganar la elección, y la colisión con otro daemon vivo se resuelve perdiendo la elección.
 - RF-AT-04-5 (reescrita 22/09/2026, vía única): El cliente CLI es siempre cliente: si `ping` no responde en 200 ms, arranca un daemon (auto-arranque transparente), verifica de nuevo y delega; si el arranque o el reintento fallan, error explícito — ya no existe ejecución CLI clásica como fallback.
 - RF-AT-04-6: El daemon respeta AGENT_TTS_PLAYBACK en el arranque y por solicitud (un evento puede forzar target).
-- RF-AT-04-7: Política de vida del daemon: tras un periodo configurable sin solicitudes (idle timeout) el daemon termina ordenadamente y libera el canal según la propiedad de AT-09; el valor por defecto del timeout debe definirse en implementación (no existe número previo en estas PRDs que reutilizar).
+- RF-AT-04-7: Política de vida del daemon: tras un periodo configurable sin solicitudes (idle timeout) el daemon termina ordenadamente y libera el canal según la propiedad de AT-09. Valor por defecto definido (22/09/2026) y acotado al modo de arranque: 30 minutos de inactividad para un daemon arrancado implícitamente por el auto-arranque del cliente; sin timeout para un daemon arrancado explícitamente (`--serve`/`--foreground`, por ejemplo gestionado por una unit de systemd user), porque quien lo arranca explícitamente ya decidió mantenerlo vivo y un timeout bajo un supervisor solo produce flapping. Ambos valores siguen siendo configurables. Los 30 minutos son una decisión de juicio, no una cifra derivada, calibrada sobre el hueco largo más común de una jornada (una reunión): el arranque frío de kokoro (~1.75 s) supera por ~7x el presupuesto p95 (RNF-AT-04-1), así que el timeout debe sobrevivir los huecos naturales de una sesión de trabajo; con edge, el proveedor por defecto, el daemon en reposo se mantiene por debajo de 80 MB (RNF-AT-04-2) y mantenerlo vivo es casi gratis; y la cota de 700 MB de RNF-AT-04-2 solo aplica con kokoro, de modo que un timeout corto castigaría con ese arranque frío precisamente a los usuarios que esa cota quiere proteger.
 - RF-AT-04-8: Health check en la conexión del cliente: un daemon colgado (canal vivo pero `ping` sin respuesta) se mata y se rearranca antes de delegar (kill-and-respawn), motivado por el riesgo de daemon wedged reteniendo el dispositivo de audio que la vía única introduce.
 
 ### Requisitos no funcionales (RNF-AT-04-...)
@@ -44,7 +46,7 @@ En una flota de N agentes que notifica por voz, cada evento (done, blocked, work
 - RNF-AT-04-1: Latencia evento-a-audio con daemon caliente menor de 250 ms p95 con edge para textos cortos (menos de 200 caracteres).
 - RNF-AT-04-2: RAM en reposo con kokoro caliente por debajo de 700 MB; sin modelo local cargado, por debajo de 80 MB.
 - RNF-AT-04-3 (reescrita 22/09/2026, vía única): Un fallo del daemon nunca deja al usuario sin voz: kill-and-respawn (RF-AT-04-8) y reintento; si persiste, error claro y registrado — no hay camino clásico al que caer.
-- RNF-AT-04-4: Estabilidad: 8 h en reposo sin crecimiento de RAM ni fugas de sesiones de audio (prueba de humo automatizada).
+- RNF-AT-04-4 (reacotada 22/09/2026): Estabilidad: 8 h en reposo sin crecimiento de RAM ni fugas de sesiones de audio (prueba de humo automatizada), sobre un daemon de arranque explícito (`--serve`/`--foreground`) — un daemon auto-arrancado termina a los 30 minutos por defecto de RF-AT-04-7 y no vive lo suficiente para completar la prueba.
 - RNF-AT-04-5: La caché de proveedores es trabajo de ciclo de vida NUEVO, no reutilización: hoy `get_provider()` (providers/__init__.py) construye una instancia por llamada — kokoro cachea su sesión ONNX por instancia, no globalmente, así que la instancia nueva recarga el modelo — y piper spawnea un subproceso por llamada que muere en el `finally` de `synthesize_stream()`. Mantener instancias vivas en el daemon es esfuerzo adicional que no debe subestimarse.
 
 ### Encaje en la arquitectura actual
@@ -69,7 +71,7 @@ Dependencia dura: AT-09 (propiedad del canal de control: socket, lock y framing)
 
 - Reducción de latencia evento-a-audio p95 mayor o igual a 40% frente a spawn CLI, medida con edge y kokoro.
 - Cero regresiones en la suite IPC/playback actual.
-- RAM estable (delta menor de 5%) tras 8 h de operación simulada.
+- RAM estable (delta menor de 5%) tras 8 h de operación simulada, sobre el daemon de arranque explícito (ámbito de RNF-AT-04-4).
 
 ### Fuera de alcance
 
@@ -77,6 +79,8 @@ Autenticación multiusuario, escucha en red (el socket sigue siendo local), bala
 
 ### Open questions
 
-¿Protocolo de recarga de modelo kokoro sin reinicio (comando `reload`)? ¿Se mantienen `--serve` y `--foreground` como flags separados (arranque canónico del daemon frente a despliegue adjunto) o se fusionan en uno solo?
+¿Protocolo de recarga de modelo kokoro sin reinicio (comando `reload`)?
 
 Resuelta (22/09/2026) — ¿debería el daemon poseer ya la cola AT-08 desde el día uno para evitar dos migraciones?: sí. El daemon se construye desde el inicio como dueño de la cola para que AT-08 encaje sin una segunda migración de semántica de playback; la cola en sí entrega en el bloque posterior del paquete P1.
+
+Resuelta (22/09/2026) — ¿se mantienen `--serve` y `--foreground` como flags separados (arranque canónico del daemon frente a despliegue adjunto) o se fusionan en uno solo?: se mantienen separados. No son meras variantes de despliegue: cargan políticas de vida distintas (RF-AT-04-7) — el daemon arrancado implícitamente por el auto-arranque del cliente expira a los 30 minutos por defecto y el arrancado explícitamente no expira —, así que fusionarlos borraría una diferencia real de comportamiento, no solo de forma de arranque.
