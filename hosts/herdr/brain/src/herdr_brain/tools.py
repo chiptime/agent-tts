@@ -186,10 +186,16 @@ class BrainTools:
             except Exception:  # noqa: BLE001 — reading must degrade gracefully
                 raw = None
             if raw:
-                turns = [
-                    {"role": turn.role, "text": turn.text}
-                    for turn in raw
-                ]
+                # Coalesce consecutive same-role messages: OpenCode stores
+                # one assistant turn as SEVERAL messages (one per tool-loop
+                # step), so the reading view would render every narration
+                # fragment as its own turn — fragments typically end in ":"
+                # right before a tool call.
+                for turn in raw:
+                    if turns and turns[-1]["role"] == turn.role:
+                        turns[-1]["text"] += "\n\n" + turn.text
+                    else:
+                        turns.append({"role": turn.role, "text": turn.text})
         return {
             "pane_id": target.pane_id,
             "agent": target.agent,
