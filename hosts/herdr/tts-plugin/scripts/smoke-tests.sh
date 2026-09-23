@@ -113,6 +113,12 @@
 #         light map + compound-width parity, Apariencia category: t
 #         opens/cycles the theme, persists across 10 cold starts, scoped
 #         warnings, bilingual copy
+#   39    reader popup (HT-16): lib/herdr_reader.py no-playback fail-open
+#         (stderr notice, rc 0), live frames from a canned unix-socket IPC
+#         server (alternate screen, dim header, karaoke SGR, word wrap,
+#         q exit), --reader inline delegation outside tmux, launcher path
+#         inside tmux, menu R row + dispatch, keymap reader_open template/
+#         check/emit, manifest tts-reader wiring
 set -uo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -1133,8 +1139,8 @@ run_km() { timeout 10 "$SCRIPT" keymap "$@" > "$T/out.txt" 2>&1; }
 run_km init
 [[ $? -eq 0 ]] && ok "17a init exits rc=0" || bad "17a init rc!=0"
 [[ -f "$km" ]] && ok "17a keymap.json created" || bad "17a no keymap file"
-jq -e '.style == "direct" and (.bindings | length == 20)' "$km" >/dev/null \
-  && ok "17a template: style=direct, 20 stable command ids" || bad "17a template shape"
+jq -e '.style == "direct" and (.bindings | length == 21)' "$km" >/dev/null \
+  && ok "17a template: style=direct, 21 stable command ids" || bad "17a template shape"
 jq -e '.bindings.play == "prefix+r" and .bindings.snooze_global == "prefix+Z" and .bindings.menu == null' "$km" >/dev/null \
   && ok "17a template prefilled with README direct map (menu=null)" || bad "17a template prefill"
 cp "$km" "$T/km.bak"
@@ -1163,8 +1169,8 @@ run_km check --json
 [[ $? -eq 0 ]] && ok "17c check --json exits rc=0" || bad "17c check --json rc!=0"
 jq -e '.ok == true and .error_count == 0 and .warning_count >= 5' "$T/out.txt" >/dev/null \
   && ok "17c json: ok=true, 0 errors, ≥5 warnings" || bad "17c json summary fields"
-jq -e '(.bindings | length) == 20 and (.bindings[0].command == "play")' "$T/out.txt" >/dev/null \
-  && ok "17c json: 20 bindings, file order preserved" || bad "17c json bindings array"
+jq -e '(.bindings | length) == 21 and (.bindings[0].command == "play")' "$T/out.txt" >/dev/null \
+  && ok "17c json: 21 bindings, file order preserved" || bad "17c json bindings array"
 jq -e '.bindings[] | select(.command == "play" and .chord == "prefix+r" and .status == "warn" and .core == "resize pane")' "$T/out.txt" >/dev/null \
   && ok "17c json: play binding carries core=resize pane" || bad "17c json warn detail"
 jq -e '.bindings[] | select(.command == "menu" and .chord == null and .status == "ok")' "$T/out.txt" >/dev/null \
@@ -1178,11 +1184,11 @@ cp "$T/out.txt" "$T/emit-direct.toml"
 [[ $? -eq 0 ]] && ok "17d emit exits rc=0" || bad "17d emit rc!=0"
 assert_grep "17d header names the source file"  "^# source: $km \(modified " "$T/emit-direct.toml"
 python3 - "$T/emit-direct.toml" <<'PY' > "$T/py.out" 2>&1 \
-  && ok "17d output parses as TOML with 14 shell blocks" || { bad "17d TOML invalid"; cat "$T/py.out"; }
+  && ok "17d output parses as TOML with 15 shell blocks" || { bad "17d TOML invalid"; cat "$T/py.out"; }
 import sys, tomllib
 doc = tomllib.loads(open(sys.argv[1]).read())
 blocks = doc["keys"]["command"]
-assert len(blocks) == 14, f"want 14 blocks, got {len(blocks)}"
+assert len(blocks) == 15, f"want 15 blocks, got {len(blocks)}"
 assert all(b["type"] == "shell" for b in blocks)
 by_key = {b["key"]: b["command"] for b in blocks}
 assert by_key["prefix+r"] == "herdr-tts --toggle-play", by_key["prefix+r"]
@@ -1199,12 +1205,12 @@ assert_no_grep_f "17e ctrl+alt+t never suggested as a key" 'key = "ctrl+alt+t"' 
 assert_grep "17e TL;DR lives on ctrl+alt+l"       'key = "ctrl\+alt\+l"' "$T/emit-ctrlalt.toml"
 assert_grep "17e caveat documented in output"      'ctrl\+alt\+t.*terminal' "$T/emit-ctrlalt.toml"
 python3 - "$T/emit-ctrlalt.toml" <<'PY' > "$T/py.out" 2>&1 \
-  && ok "17e ctrlalt TOML valid: 17 distinct chords" || { bad "17e TOML invalid"; cat "$T/py.out"; }
+  && ok "17e ctrlalt TOML valid: 18 distinct chords" || { bad "17e TOML invalid"; cat "$T/py.out"; }
 import sys, tomllib
 doc = tomllib.loads(open(sys.argv[1]).read())
 blocks = doc["keys"]["command"]
 keys = [b["key"] for b in blocks]
-assert len(blocks) == 17, f"want 17 blocks, got {len(blocks)}"
+assert len(blocks) == 18, f"want 18 blocks, got {len(blocks)}"
 assert len(set(keys)) == len(keys), "duplicate chords in suggested family"
 assert "ctrl+alt+shift+n" in keys
 assert "ctrl+alt+shift+u" not in keys, "settings has no suggested ctrl+alt chord anymore"
@@ -1311,8 +1317,8 @@ run_km apply
 assert_grep "18a start marker present"  '^# >>> herdr-tts keymap \(managed; edits inside are overwritten\) >>>$' "$cfg"
 assert_grep "18a end marker present"    '^# <<< herdr-tts keymap <<<$' "$cfg"
 assert_grep "18a final hint: reload-config" 'herdr server reload-config' "$T/out.txt" -F
-[[ $(grep -c '^\[\[keys.command\]\]' "$cfg") -eq 14 ]] \
-  && ok "18a template apply renders 14 blocks" || bad "18a block count $(grep -c '^\[\[keys.command\]\]' "$cfg")"
+[[ $(grep -c '^\[\[keys.command\]\]' "$cfg") -eq 15 ]] \
+  && ok "18a template apply renders 15 blocks" || bad "18a block count $(grep -c '^\[\[keys.command\]\]' "$cfg")"
 run_km apply --config "$T/other-config.toml"
 [[ $? -eq 0 ]] && ok "18a --config override honored" || bad "18a --config rc"
 assert_grep "18a block written into override path" '^# >>> herdr-tts keymap' "$T/other-config.toml"
@@ -1335,12 +1341,12 @@ cmp -s "$T/head.out" "$T/user-only.toml" \
 [[ $(grep -cF '# >>> herdr-tts keymap' "$cfg") -eq 1 ]] \
   && ok "18b exactly one managed block" || bad "18b duplicate markers"
 python3 - "$cfg" <<'PY' > "$T/py.out" 2>&1 \
-  && ok "18b result parses as TOML: user keys intact + 14 shell blocks" || { bad "18b TOML invalid"; cat "$T/py.out"; }
+  && ok "18b result parses as TOML: user keys intact + 15 shell blocks" || { bad "18b TOML invalid"; cat "$T/py.out"; }
 import sys, tomllib
 doc = tomllib.loads(open(sys.argv[1]).read())
 assert doc["theme"] == "tokyonight" and doc["font"]["size"] == 11.0
 blocks = doc["keys"]["command"]
-assert len(blocks) == 14 and all(b["type"] == "shell" for b in blocks)
+assert len(blocks) == 15 and all(b["type"] == "shell" for b in blocks)
 by_key = {b["key"]: b["command"] for b in blocks}
 assert by_key["prefix+r"] == "herdr-tts --toggle-play"
 PY
@@ -1368,8 +1374,8 @@ printf '\n# my manual footer\ninjected = true\n' >> "$cfg"
 jq '.bindings.tldr = null' "$km" > "$T/km.tmp" && mv "$T/km.tmp" "$km"
 run_km apply
 [[ $? -eq 0 ]] && ok "18e apply after nulling tldr rc=0" || bad "18e rc"
-[[ $(grep -c '^\[\[keys.command\]\]' "$cfg") -eq 13 ]] \
-  && ok "18e tldr block removed (13 blocks)" || bad "18e block count"
+[[ $(grep -c '^\[\[keys.command\]\]' "$cfg") -eq 14 ]] \
+  && ok "18e tldr block removed (14 blocks)" || bad "18e block count"
 assert_no_grep_f "18e --tldr command gone from config" 'herdr-tts --tldr' "$cfg"
 assert_grep "18e user footer preserved" '^injected = true$' "$cfg"
 eline=$(grep -nF '# <<< herdr-tts keymap' "$cfg" | cut -d: -f1)
@@ -1463,8 +1469,8 @@ cmp -s "$km" "$T/km-direct.bak" && ok "18k already-adopted left file untouched" 
 run_km adopt --style ctrlalt
 [[ $? -eq 0 ]] && ok "18k adopt ctrlalt rc=0" || bad "18k rc"
 jq -e '.style == "ctrlalt"' "$km" >/dev/null && ok "18k style field updated" || bad "18k style"
-jq -e '[.bindings | to_entries[] | select(.value != null)] | length == 17' "$km" >/dev/null \
-  && ok "18k 17 non-null ctrlalt bindings (settings has no suggested chord)" || bad "18k binding count"
+jq -e '[.bindings | to_entries[] | select(.value != null)] | length == 18' "$km" >/dev/null \
+  && ok "18k 18 non-null ctrlalt bindings (settings has no suggested chord)" || bad "18k binding count"
 jq -e '.bindings.play == "ctrl+alt+r" and .bindings.tldr == "ctrl+alt+l" and .bindings.dashboard == "ctrl+alt+d"' "$km" >/dev/null \
   && ok "18k chords match the suggested family" || bad "18k chords"
 jq -e '.bindings.paragraph_next == null and .bindings.paragraph_prev == null' "$km" >/dev/null \
@@ -3204,6 +3210,174 @@ assert_grep "38e engine line carries light accent" $'\033[34m' "$T/e-light.txt" 
 [[ "$(visible_stats "$T/e-dark.txt")" == "$(visible_stats "$T/e-light.txt")" ]] \
   && ok "38e compound 1;33 strips cleanly (visible-width parity dark vs light)" \
   || bad "38e width parity broke: $(visible_stats "$T/e-dark.txt") vs $(visible_stats "$T/e-light.txt")"
+
+# 39. Reader popup (HT-16): the renderer is a READ-ONLY IPC consumer, so
+#     every test speaks to a stub — the real daemon socket is never touched.
+#     agent_tts is not importable by the stub venv python (plain python3),
+#     so a byte-compatible send_ipc_command shim rides on PYTHONPATH.
+echo "── 39. reader popup (HT-16): renderer paths, --reader wiring, menu/keymap rows"
+new_env s39
+unset TMUX # hermetic default: the CLI delegation below must run INLINE
+READER_PY="$REPO/lib/herdr_reader.py"
+mkdir -p "$T/py"
+cat > "$T/py/agent_tts.py" <<'PYEOF'
+import os, socket
+
+def send_ipc_command(command, socket_path=None):
+    path = socket_path or os.environ.get("AGENT_TTS_SOCKET", "/tmp/herdr-tts-player.sock")
+    if not os.path.exists(path):
+        return None
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(1.0)
+        s.connect(path)
+    except Exception:
+        return None
+    try:
+        s.sendall(command.strip().encode() + b"\n")
+        chunks = []
+        while sum(len(c) for c in chunks) < 8192:
+            chunk = s.recv(1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            if b"\n" in chunk:
+                break
+        if not chunks:
+            return None
+        return b"".join(chunks).decode("utf-8", "ignore").strip()
+    except Exception:
+        return None
+    finally:
+        try:
+            s.close()
+        except OSError:
+            pass
+PYEOF
+export PYTHONPATH="$T/py"
+export AGENT_TTS_SOCKET="$T/absent.sock"
+
+# 39a. --help documents --reader (bilingual dictionaries both carry it).
+timeout 10 "$SCRIPT" --help > "$T/help.txt" 2>>"$T/err.log"
+assert_grep "39a help lists --reader" '--reader' "$T/help.txt"
+HERDR_TTS_LANG=es timeout 10 "$SCRIPT" --help > "$T/help-es.txt" 2>>"$T/err.log"
+assert_grep "39a ES help lists --reader" '--reader' "$T/help-es.txt"
+
+# 39b. No playback (socket path points nowhere): rc 0, one English line on
+#      stderr, stdout untouched — the alternate screen is never entered.
+timeout 10 python3 "$READER_PY" > "$T/np-out.txt" 2> "$T/np-err.txt"
+[[ $? -eq 0 ]] && ok "39b no-playback renderer exits rc=0" || bad "39b renderer rc!=0"
+assert_grep "39b stderr carries the English notice" '^No playback in progress\.$' "$T/np-err.txt"
+[[ ! -s "$T/np-out.txt" ]] && ok "39b stdout stays empty (no alt-screen)" || bad "39b stdout not empty"
+# Same path through the full CLI flag: outside tmux --reader delegates
+# INLINE to the renderer (stub venv python → python3 + PYTHONPATH shim).
+timeout 10 "$SCRIPT" --reader > "$T/np-cli.txt" 2> "$T/np-cli-err.txt"
+[[ $? -eq 0 ]] && ok "39b --reader (no tmux) runs inline rc=0" || bad "39b cli rc!=0"
+assert_grep "39b CLI inline path prints the notice" 'No playback in progress\.' "$T/np-cli-err.txt"
+[[ ! -s "$T/np-cli.txt" ]] && ok "39b CLI stdout stays empty" || bad "39b cli stdout not empty"
+
+# 39c. Live frames from a canned IPC server: alternate screen + dim header
+#      + karaoke SGR + word wrap + clean q exit.
+cat > "$T/ipc_server.py" <<'PYEOF'
+import os, socket, sys, threading
+path = sys.argv[1]
+try: os.unlink(path)
+except FileNotFoundError: pass
+srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+srv.bind(path); srv.listen(4)
+HL = "\x1b[2m primero segundo\x1b[0m \x1b[1;33;4mtercero\x1b[0m cuarto quinto sexto"
+SI = "pos=2.00 total=8.50 pct=23.5 sent_idx=2 total_sents=3 para_idx=0 total_paras=1"
+def serve(conn):
+    conn.settimeout(2.0)
+    buf = b""
+    try:
+        while True:
+            data = conn.recv(4096)
+            if not data: return
+            buf += data
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                cmd = line.decode().strip()
+                if cmd == "highlight": rep = HL
+                elif cmd == "scroll-info": rep = SI
+                else: rep = "Error: unknown command"
+                conn.sendall(rep.encode() + b"\n")
+    except Exception: pass
+    finally: conn.close()
+while True:
+    try:
+        conn, _ = srv.accept()
+    except OSError: break
+    threading.Thread(target=serve, args=(conn,), daemon=True).start()
+PYEOF
+python3 "$T/ipc_server.py" "$T/reader.sock" & SRV39=$!
+for _ in $(seq 1 30); do [[ -S "$T/reader.sock" ]] && break; sleep 0.1; done
+AGENT_TTS_SOCKET="$T/reader.sock" timeout 10 python3 "$READER_PY" \
+  > "$T/live-out.txt" 2> "$T/live-err.txt" < <(sleep 0.8; printf 'q')
+[[ $? -eq 0 ]] && ok "39c live renderer exits rc=0 on q" || bad "39c rc!=0"
+assert_grep "39c enters the alternate screen" $'\033[?1049h' "$T/live-out.txt" -F
+assert_grep "39c restores the alternate screen on exit" $'\033[?1049l' "$T/live-out.txt" -F
+assert_grep "39c header: pct + sentence from scroll-info" 'herdr reader · 23.5% · sentence 3/3' "$T/live-out.txt" -F
+assert_grep "39c bold-yellow current-word SGR" $'\033[1;33;4m' "$T/live-out.txt" -F
+assert_grep "39c dim past-word SGR" $'\033[2m' "$T/live-out.txt" -F
+assert_grep "39c upcoming words render plain" 'cuarto quinto' "$T/live-out.txt" -F
+[[ ! -s "$T/live-err.txt" ]] && ok "39c stderr stays clean while live" || bad "39c stderr: $(cat "$T/live-err.txt")"
+# Word wrap by VISIBLE width: at COLUMNS=40 the canned line leaves `sexto`
+# alone on the last body line (SGR codes never counted nor split).
+AGENT_TTS_SOCKET="$T/reader.sock" COLUMNS=40 timeout 10 python3 "$READER_PY" \
+  > "$T/wrap-out.txt" 2>>"$T/err.log" < <(sleep 0.8; printf 'q')
+assert_grep "39c word wrap by visible width (sexto wraps alone)" '^sexto$' "$T/wrap-out.txt"
+kill "$SRV39" 2>/dev/null || true
+
+# 39d. Keymap: template binds reader_open, check stays shadow-free, both
+#      emit styles carry the reader chord.
+export HERDR_TTS_KEYMAP_FILE="$T/keymap.json"
+timeout 10 "$SCRIPT" keymap init > /dev/null 2>&1
+jq -e '.bindings.reader_open == "prefix+R"' "$HERDR_TTS_KEYMAP_FILE" >/dev/null \
+  && ok "39d template binds reader_open = prefix+R" || bad "39d template binding"
+timeout 10 "$SCRIPT" keymap check > "$T/km-check.txt" 2>&1
+assert_grep "39d check: prefix+R stays OK (no core shadow)" '✓ OK: reader_open = prefix\+R' "$T/km-check.txt"
+timeout 10 "$SCRIPT" keymap emit > "$T/km-emit.txt" 2>&1
+assert_grep "39d emit direct: reader block on prefix+R" 'key = "prefix\+R"' "$T/km-emit.txt"
+assert_grep "39d emit direct: reader opens the tts-reader entrypoint" 'entrypoint tts-reader' "$T/km-emit.txt"
+assert_grep "39d reader label documented" 'Open live reader popup for current playback' "$T/km-emit.txt" -F
+timeout 10 "$SCRIPT" keymap emit --style ctrlalt > "$T/km-ctrlalt.txt" 2>&1
+assert_grep "39d emit ctrlalt: reader on ctrl+alt+shift+r" 'key = "ctrl\+alt\+shift\+r"' "$T/km-ctrlalt.txt"
+
+# 39e. Voice menu: the cheat sheet lists the R row and R dispatches to the
+#      tts-reader popup launcher (16a d/o pattern, stub-verified).
+FX="$T/fixture.json"; make_fixture "$FX"
+write_herdr_stub "$FX"
+printf 'q' | timeout 10 "$SCRIPT" --voice-menu > "$T/menu.txt" 2>>"$T/err.log"
+assert_grep "39e menu frame lists the R reader row" 'R  📖 Live reader \(karaoke\)' "$T/menu.txt"
+lib_run '
+  herdr() { printf "%s\n" "$*" >> "$T/menu-herdr.log"; }
+  export -f herdr
+  menu_dispatch R > /dev/null
+'
+for _ in $(seq 1 30); do
+  grep -q 'entrypoint tts-reader' "$T/menu-herdr.log" 2>/dev/null && break
+  sleep 0.1
+done
+assert_grep "39e menu R opens tts-reader entrypoint" 'plugin pane open --plugin herdr.tts --entrypoint tts-reader' "$T/menu-herdr.log"
+# Launcher branch: inside tmux --reader delegates to the popup launcher,
+# NOT to the inline renderer (which would print the no-playback notice).
+lib_run '
+  herdr() { printf "%s\n" "$*" >> "$T/launch-herdr.log"; }
+  export -f herdr
+  TMUX=stub-session run_reader
+' > "$T/launch-out.txt" 2>>"$T/err.log"
+for _ in $(seq 1 30); do
+  grep -q 'entrypoint tts-reader' "$T/launch-herdr.log" 2>/dev/null && break
+  sleep 0.1
+done
+assert_grep "39e --reader inside tmux opens the tts-reader popup" 'plugin pane open --plugin herdr.tts --entrypoint tts-reader' "$T/launch-herdr.log"
+
+# 39f. Manifest wiring: popup pane + inner command + open action (16g style).
+assert_grep "39f manifest declares the tts-reader pane" 'id = "tts-reader"' "$REPO/herdr-plugin.toml" -F
+assert_grep "39f tts-reader runs the internal _reader command" 'command = \["bin/herdr-tts", "_reader"\]' "$REPO/herdr-plugin.toml"
+assert_grep "39f open-reader action wired" 'id = "open-reader"' "$REPO/herdr-plugin.toml" -F
+assert_grep "39f open-reader targets the entrypoint" '"--entrypoint", "tts-reader"' "$REPO/herdr-plugin.toml" -F
 
 echo
 echo "═══ RESULT: $PASS passed, $FAIL failed ═══"

@@ -395,11 +395,13 @@ TT_EN[menu.desc.rate]="🎙 Speed ±10%%"
 TT_EN[menu.desc.dashboard]="📊 Dashboard"
 TT_EN[menu.desc.palette]="🎛️ Voice palette"
 TT_EN[menu.desc.settings]="⚙️ Voice & audio settings"
+TT_EN[menu.desc.reader]="📖 Live reader (karaoke)"
 TT_EN[menu.desc.quit]="Quit the menu"
 TT_EN[menu.title]="\e[1m⌨️  herdr-tts · Voice Menu\e[0m"
 TT_EN[menu.hint]="Press ONE key: the action runs and the menu closes (a = settings, stays open)."
 TT_EN[menu.open_dashboard]="📊 Closing the menu and opening the dashboard…"
 TT_EN[menu.open_palette]="🎛️ Closing the menu and opening the voice palette…"
+TT_EN[menu.open.reader]="📖 Closing the menu and opening the live reader…"
 TT_EN[menu.executed]="Voice command executed"
 TT_EN[menu.unknown_key]="\n❓ Unrecognized key (%s) — press q to quit\n"
 TT_EN[menu.transcribing]="⏳ Transcribing the response… audio starts when the voice is ready"
@@ -639,6 +641,9 @@ TT_EN[help.voice_settings2]="                             also inside the voice 
 TT_EN[help.voice_settings3]="                             provider, auto-read, scope, target, language,"
 TT_EN[help.voice_settings4]="                             podcast, debounce, retention and settle; free-text"
 TT_EN[help.voice_settings5]="                             ntfy topic and web URL; UI language en/es (config.env)"
+TT_EN[help.reader]="    --reader                 Live reader popup for the CURRENT playback:"
+TT_EN[help.reader2]="                            karaoke word highlighting + progress header"
+TT_EN[help.reader3]="                            (suggested: prefix+R → action reader_open)"
 TT_EN[help.palette_preview]="     --palette-preview <pane> Chat header + audio turns of the pane (fzf preview)"
 TT_EN[help.exit]="  --help, -h               Show this help"
 TT_EN[km.usage]="Usage: herdr-tts keymap <subcommand> [options]"
@@ -881,11 +886,13 @@ TT_ES[menu.desc.rate]="🎙 Velocidad ±10%%"
 TT_ES[menu.desc.dashboard]="📊 Dashboard"
 TT_ES[menu.desc.palette]="🎛️ Paleta de voz"
 TT_ES[menu.desc.settings]="⚙️ Ajustes de voz y audio"
+TT_ES[menu.desc.reader]="📖 Lector en vivo (karaoke)"
 TT_ES[menu.desc.quit]="Salir del menú"
 TT_ES[menu.title]="\e[1m⌨️  herdr-tts · Menú de voz\e[0m"
 TT_ES[menu.hint]="Pulsa UNA tecla: la acción se ejecuta y el menú se cierra (a = ajustes, sin cerrar)."
 TT_ES[menu.open_dashboard]="📊 Cerrando el menú y abriendo el dashboard…"
 TT_ES[menu.open_palette]="🎛️ Cerrando el menú y abriendo la paleta de voz…"
+TT_ES[menu.open.reader]="📖 Cerrando el menú y abriendo el lector en vivo…"
 TT_ES[menu.executed]="Comando de voz ejecutado"
 TT_ES[menu.unknown_key]="\n❓ Tecla no reconocida (%s) — pulsa q para salir\n"
 TT_ES[menu.transcribing]="⏳ Transcribiendo la respuesta… el audio empezará cuando la voz esté lista"
@@ -1125,6 +1132,9 @@ TT_ES[help.voice_settings2]="                             también dentro del me
 TT_ES[help.voice_settings3]="                             proveedor, auto-lectura, alcance, destino, idioma,"
 TT_ES[help.voice_settings4]="                             podcast, debounce, retención y asentamiento; escribe"
 TT_ES[help.voice_settings5]="                             topic ntfy y URL web; idioma en/es (config.env)"
+TT_ES[help.reader]="    --reader                 Popup de lectura en vivo de la reproducción"
+TT_ES[help.reader2]="                            ACTUAL: resaltado tipo karaoke por palabra"
+TT_ES[help.reader3]="                            y cabecera de progreso (sugerido: prefix+R)"
 TT_ES[help.palette_preview]="     --palette-preview <pane> Cabecera de chat + turnos de audio del pane (preview fzf)"
 TT_ES[help.exit]="  --help, -h               Mostrar esta ayuda"
 TT_ES[km.usage]="Uso: herdr-tts keymap <subcomando> [opciones]"
@@ -4531,8 +4541,8 @@ menu_open_after_exit() { # <entrypoint>
 # time. Static on purpose — the menu never queries Herdr, so the frame
 # costs nothing and is always a single physical write.
 MENU_STATUS="" # transient loading line under the hint (set for slow keys r/t)
-MENU_L_KEYS=("r" "p" "s" "t" "v" "[" "]" "n" "N")
-MENU_L_DESC=("$(tt menu.desc.play)" "$(tt menu.desc.pause)" "$(tt menu.desc.stop)" "$(tt menu.desc.tldr)" "$(tt menu.desc.auto)" "$(tt menu.desc.rewind)" "$(tt menu.desc.forward)" "$(tt menu.desc.next_sentence)" "$(tt menu.desc.prev_sentence)")
+MENU_L_KEYS=("r" "p" "s" "t" "v" "[" "]" "n" "N" "R")
+MENU_L_DESC=("$(tt menu.desc.play)" "$(tt menu.desc.pause)" "$(tt menu.desc.stop)" "$(tt menu.desc.tldr)" "$(tt menu.desc.auto)" "$(tt menu.desc.rewind)" "$(tt menu.desc.forward)" "$(tt menu.desc.next_sentence)" "$(tt menu.desc.prev_sentence)" "$(tt menu.desc.reader)")
 MENU_R_KEYS=("m" "z" "Z" "+/-" "d" "o" "a" "q/Esc")
 MENU_R_DESC=("$(tt menu.desc.mute)" "$(tt menu.desc.snooze)" "$(tt menu.desc.snooze_global)" "$(tt menu.desc.rate)" "$(tt menu.desc.dashboard)" "$(tt menu.desc.palette)" "$(tt menu.desc.settings)" "$(tt menu.desc.quit)")
 
@@ -4587,7 +4597,7 @@ menu_dispatch() { # <key>
   MENU_RESULT=""
   local out=""
   case "$1" in
-    r|R) out=$(toggle_play 2>&1 || true) ;;
+    r)   out=$(toggle_play 2>&1 || true) ;; # R used to alias play; HT-16 moved uppercase R to the live reader
     p|P) out=$(toggle_pause_audio 2>&1 || true) ;;
     s|S) out=$(stop_audio 2>&1 || true) ;;
     t|T) out=$(read_current_pane "" "--tldr" 2>&1 || true) ;;
@@ -4608,6 +4618,10 @@ menu_dispatch() { # <key>
     o|O)
       menu_open_after_exit tts-palette
       out="$(tt menu.open_palette)"
+      ;;
+    R)
+      menu_open_after_exit tts-reader
+      out="$(tt menu.open.reader)"
       ;;
     *) return 1 ;;
   esac
@@ -4678,6 +4692,33 @@ run_voice_menu() {
         ;;
     esac
   done
+}
+
+# ─── Live reader popup (HT-16) ─────────────────────────────────
+# Karaoke follow-along of the CURRENT daemon playback, rendered by
+# lib/herdr_reader.py: a READ-ONLY IPC consumer (highlight + scroll-info)
+# that never starts audio. Two entries mirroring the voice-menu split
+# between launcher and popup command:
+#   --reader  user-facing launcher: inside tmux it opens the Herdr popup
+#             (entrypoint tts-reader — the same launcher `keymap emit`
+#             prints); outside tmux it renders inline in the current
+#             terminal (fail-open if the popup cannot open).
+#   _reader   internal popup command (the [[panes]] entry): ALWAYS the
+#             inline renderer — the popup pane already provides the
+#             terminal, and re-entering the launcher would loop forever
+#             (same internal-entrypoint discipline as _daemon).
+run_reader_inline() {
+  exec "$VENV_PYTHON" "$PLUGIN_ROOT/lib/herdr_reader.py"
+}
+
+run_reader() {
+  if [[ -n "${TMUX:-}" ]] && command -v herdr >/dev/null 2>&1; then
+    if herdr plugin pane open --plugin herdr.tts --entrypoint tts-reader; then
+      return 0
+    fi
+    # Fail-open: popup unavailable → render inline instead of erroring out.
+  fi
+  run_reader_inline
 }
 
 # ─── Voice settings popup (v0.15 cycle knobs, v0.16 two-level) ─
@@ -5308,7 +5349,7 @@ run_voice_settings() {
 KEYMAP_COMMAND_IDS=(
   play pause stop tldr auto seek_back seek_fwd sentence_next sentence_prev
   paragraph_next paragraph_prev mute snooze snooze_global rate_up rate_down
-  dashboard palette menu settings
+  dashboard palette menu settings reader_open
 )
 
 # Herdr v0.9.1 core prefix defaults (docs/keyboard.mdx). Canonical chords
@@ -5378,7 +5419,8 @@ keymap_default_json() { # default template: README direct map + nulls for the re
     "dashboard": null,
     "palette": null,
     "menu": null,
-    "settings": null
+    "settings": null,
+    "reader_open": "prefix+R"
   }
 }
 EOF
@@ -5406,6 +5448,7 @@ keymap_cmd_for() { # $1 = command id → shell invocation Herdr must run
     palette)         printf '%s\n' "herdr plugin pane open --plugin herdr.tts --entrypoint tts-palette" ;;
     menu)            printf '%s\n' "herdr plugin pane open --plugin herdr.tts --entrypoint tts-menu" ;;
     settings)        printf '%s\n' "herdr-tts --voice-settings" ;;
+    reader_open)     printf '%s\n' "herdr plugin pane open --plugin herdr.tts --entrypoint tts-reader" ;;
   esac
 }
 
@@ -5431,6 +5474,7 @@ keymap_label_for() { # $1 = command id → human label (emit comments)
     palette)         printf '%s\n' "Open the voice palette popup" ;;
     menu)            printf '%s\n' "Open the one-key voice menu popup (u is free in Herdr core defaults)" ;;
     settings)        printf '%s\n' "Open the voice/audio settings popup (TTS provider, playback target, audio retention)" ;;
+    reader_open)     printf '%s\n' "Open live reader popup for current playback" ;;
   esac
 }
 
@@ -5453,6 +5497,7 @@ keymap_ctrlalt_for() { # $1 = command id → suggested ctrl+alt chord (rc 1 = no
     dashboard)       printf '%s\n' "ctrl+alt+d" ;;
     palette)         printf '%s\n' "ctrl+alt+o" ;;
     menu)            printf '%s\n' "ctrl+alt+u" ;;
+    reader_open)     printf '%s\n' "ctrl+alt+shift+r" ;;
     # settings: no suggested chord — the settings view lives inside the
     # voice menu (key `a`); users can still bind the id manually.
     *)               return 1 ;;
@@ -6825,6 +6870,12 @@ run_podcast_server(port=int(sys.argv[1]), podcast_dir=sys.argv[2])
   --voice-menu)
     run_voice_menu
     ;;
+  --reader)
+    run_reader
+    ;;
+  _reader)
+    run_reader_inline
+    ;;
   --voice-settings)
     run_voice_settings
     ;;
@@ -6967,6 +7018,9 @@ run_podcast_server(port=int(sys.argv[1]), podcast_dir=sys.argv[2])
     "$(tt help.voice_settings3)"
     "$(tt help.voice_settings4)"
     "$(tt help.voice_settings5)"
+    "$(tt help.reader)"
+    "$(tt help.reader2)"
+    "$(tt help.reader3)"
     "$(tt help.palette_preview)"
     "$(tt help.exit)"
     )

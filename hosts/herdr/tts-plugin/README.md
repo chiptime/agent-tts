@@ -320,6 +320,7 @@ Keys inside the menu (actions target the focused chat):
 | `Z` | Snooze GLOBAL (reuniones) |
 | `+` / `-` | Velocidad ±10% |
 | `d` / `o` | Abrir dashboard / paleta de voz |
+| `R` | Lector en vivo de la reproducción actual (popup karaoke; `q` / `Esc` cierran) |
 | `a` | Abrir Ajustes de voz y audio (dentro del menú; índice de categorías → `q`/`Esc`/`Enter` vuelve al índice y luego al menú) |
 | `q` / `Esc` | Salir |
 
@@ -339,7 +340,7 @@ Suggested family (deterministic — `herdr-tts keymap adopt --style ctrlalt` wri
 | `mute` | `ctrl+alt+m` | `rate_down` | `ctrl+alt+-` |
 | `snooze` | `ctrl+alt+z` | `dashboard` | `ctrl+alt+d` |
 | `snooze_global` | `ctrl+alt+g` | `palette` | `ctrl+alt+o` |
-| `menu` | `ctrl+alt+u` | — | — |
+| `menu` | `ctrl+alt+u` | `reader_open` | `ctrl+alt+shift+r` |
 
 (`paragraph_next` / `paragraph_prev` have no suggested chord, and `settings` ships without one too — the settings view lives inside the voice menu (key `a`); bind any of them yourself in `keymap.json` and `keymap apply` installs them too.)
 
@@ -362,6 +363,7 @@ The original one-chord-per-command map: fastest to press, but several letters **
 | `prefix+Z` | Snooze global | libre |
 | `prefix+m` | Mute pane | libre |
 | `prefix+=` / `prefix+-` | Velocidad ±10% | libre |
+| `prefix+R` | Lector en vivo (karaoke) | libre |
 
 Install the map (one `[[keys.command]]` per assigned chord) with:
 
@@ -433,6 +435,7 @@ herdr-tts --render-pane <pane> # Export clean assistant speech of a pane directl
 herdr-tts --speak "Hello"      # Synthesize custom text directly
 herdr-tts --dashboard          # Live TUI dashboard pane: snooze countdowns, per-pane gating, audio history
 herdr-tts --voice-palette      # fzf picker of chats and audio turns (focus / mute / snooze)
+herdr-tts --reader             # Live reader popup: karaoke follow-along of the current playback
 ```
 
 * **Supervised daemon startup:** the plugin's `[[startup]]` runs `_daemon-supervised` — a foreground watchdog that relaunches the daemon if it dies unplanned (5s backoff). Deliberate stops (`--restart-daemon`, the `R` key, single-instance takeover) arm a stop flag the supervisor consumes, so restarts are never fought over. Starts, deaths, relaunches and exit reasons land in `~/.local/state/herdr-tts/daemon.log`, so a silent death can't happen unnoticed.
