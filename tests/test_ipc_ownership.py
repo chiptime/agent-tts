@@ -6,6 +6,7 @@ live player's socket, expose its own channel, or clobber its marker files.
 """
 
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -214,8 +215,6 @@ def test_owner_killed_with_sigkill_leaves_channel_reclaimable(channel):
     wins the election and reclaims the orphaned socket with no manual
     intervention — the stale socket file is never removed by hand.
     """
-    import signal
-
     child_code = (
         "import sys\n"
         "import time\n"
@@ -256,6 +255,99 @@ def test_owner_killed_with_sigkill_leaves_channel_reclaimable(channel):
 
     # Next startup wins the election (the kernel already dropped the flock)
     # and reclaims the channel; no test removes the stale socket by hand.
+    audio._write_player_locks()
+    assert ownership.owns_channel()
+    successor = ipc.IPCServer(
+        command_handler=lambda cmd: "status=playing owner=successor",
+        socket_path=channel["sock"],
+    )
+    successor.start()
+    try:
+        assert successor.server_sock is not None
+        assert _wait_for_reply("status=playing owner=successor", channel["sock"]) == (
+            "status=playing owner=successor"
+        )
+    finally:
+        successor.stop()
+        audio.cleanup_locks()
+
+
+# --- Transport parity contract (RF-AT-09-5) -----------------------------------------
+
+_OWNER_CHILD = (
+    "import sys\n"
+    "import time\n"
+    "import agent_tts.audio as audio\n"
+    "import agent_tts.ipc as ipc\n"
+    "sock, marker, transport = sys.argv[1], sys.argv[2], sys.argv[3]\n"
+    "if transport == 'tcp':\n"
+    "    ipc._is_windows = lambda: True\n"
+    "    ipc.IPC_PORT_FILE = marker\n"
+    "audio._write_player_locks()\n"
+    "server = ipc.IPCServer(\n"
+    "    command_handler=lambda cmd: 'status=playing owner=A',\n"
+    "    socket_path=sock,\n"
+    ")\n"
+    "server.start()\n"
+    "print('READY', flush=True)\n"
+    "time.sleep(60)\n"
+)
+
+
+@pytest.mark.parametrize("transport", ["unix", "tcp"])
+def test_ownership_election_contract_over_both_transports(
+    transport, channel, tmp_path, monkeypatch
+):
+    """RF-AT-09-5: the same election scenario over AF_UNIX and TCP loopback.
+
+    Windows has no AF_UNIX, so its transport is TCP + IPC_PORT_FILE; this
+    runs the identical owner/loser/successor scenario through both transport
+    branches (the TCP side reuses the existing _is_windows branch) to prove
+    the ownership semantics do not diverge per transport.
+    """
+    marker = str(tmp_path / "ipc.port")
+    if transport == "tcp":
+        monkeypatch.setattr(ipc, "_is_windows", lambda: True)
+        monkeypatch.setattr(ipc, "IPC_PORT_FILE", marker)
+
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _OWNER_CHILD, channel["sock"], marker, transport],
+        env=_child_env(channel),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        # Player A owns the channel and serves over this transport.
+        assert _wait_for_reply("status=playing owner=A", channel["sock"]) == (
+            "status=playing owner=A"
+        )
+
+        # Player B starts while A lives: loses the election, never exposes
+        # the channel, and A keeps answering.
+        audio._write_player_locks()
+        assert not ownership.owns_channel()
+        b = ipc.IPCServer(
+            command_handler=lambda cmd: "status=playing owner=B", socket_path=channel["sock"]
+        )
+        b.start()
+        try:
+            assert b.server_sock is None
+            assert ipc.send_ipc_command("status", socket_path=channel["sock"]) == (
+                "status=playing owner=A"
+            )
+        finally:
+            b.stop()
+
+        proc.send_signal(signal.SIGKILL)
+        proc.wait(timeout=10)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+    # The successor wins the election and reclaims the channel over the
+    # same transport: AF_UNIX orphan path or stale TCP port marker.
     audio._write_player_locks()
     assert ownership.owns_channel()
     successor = ipc.IPCServer(
