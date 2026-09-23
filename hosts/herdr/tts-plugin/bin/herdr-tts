@@ -467,7 +467,7 @@ TT_EN[settings.row.debounce]=" b  Anti-spam debounce:  %ss   (0 = disabled)"
 TT_EN[settings.row.theme]=" t  Theme:               %s   (dark = default)"
 TT_EN[settings.theme.label.dark]="Dark"
 TT_EN[settings.theme.label.light]="Light"
-TT_EN[settings.row.theme_note]=" t  cycles the theme · the chat roster adopts it too, whatever profile each agent pane uses"
+TT_EN[settings.row.theme_note]=" t  cycles the theme · instant on the running dashboard · the chat roster adopts it too, any pane profile"
 TT_EN[settings.appearance.theme_note]="✓ Theme: %s (applies to every surface herdr-tts renders)"
 TT_EN[settings.unknown_key.appearance]="Unrecognized key (%s) — t theme, q back to the index"
 TT_EN[settings.index.pick]="Pick a category with its key:"
@@ -952,7 +952,7 @@ TT_ES[settings.row.debounce]=" b  Debounce anti-spam:   %ss   (0 = desactivado)"
 TT_ES[settings.row.theme]=" t  Tema:                 %s   (oscuro = por defecto)"
 TT_ES[settings.theme.label.dark]="Oscuro"
 TT_ES[settings.theme.label.light]="Claro"
-TT_ES[settings.row.theme_note]=" t  cicla el tema · el roster de chats también lo adopta, use el perfil que use cada panel de agente"
+TT_ES[settings.row.theme_note]=" t  cicla el tema · el dashboard lo adopta al vuelo · el roster de chats también, cualquier perfil de panel"
 TT_ES[settings.appearance.theme_note]="✓ Tema: %s (se aplica a todo lo que dibuja herdr-tts)"
 TT_ES[settings.unknown_key.appearance]="Tecla no reconocida (%s) — t tema, q vuelve al índice"
 TT_ES[settings.index.pick]="Elige una categoría con su tecla:"
@@ -1300,6 +1300,31 @@ config_set() { # <KEY> <VALUE> → rc 1 on rejection or write failure (warning o
     echo "config_set: failed to write ${CONFIG_FILE} (change skipped)" >&2
     return 1
   fi
+  return 0
+}
+
+# Live theme adoption (US-HT-14-2): TTS_THEME is snapshotted once at
+# startup (source "$CONFIG_FILE"), but the settings popup persists a new
+# value from a SEPARATE short-lived process — a long-running dashboard
+# would never see it. Re-read the key per frame, builtin-only (no
+# grep/awk/sed forks: this rides the ~1Hz render loop). Semantics mirror
+# the startup precedence config.env > env > dark: absent key, unreadable
+# or missing file keep the CURRENT value (fail open); any other value
+# normalizes to dark; the LAST TTS_THEME line wins, exactly like source.
+theme_sync() {
+  local line val=""
+  [[ -r "$CONFIG_FILE" ]] || return 0
+  while IFS= read -r line; do
+    case "$line" in
+      TTS_THEME=*)
+        val="${line#TTS_THEME=}"
+        # config_set writes key="value"; tolerate unquoted hand edits.
+        [[ "$val" == \"*\" && "$val" == *\" ]] && { val="${val#\"}"; val="${val%\"}"; }
+        ;;
+    esac
+  done < "$CONFIG_FILE"
+  [[ -n "$val" ]] || return 0
+  [[ "$val" == "light" ]] && TTS_THEME=light || TTS_THEME=dark
   return 0
 }
 
@@ -3844,6 +3869,10 @@ dashboard_render() {
   dashboard_calc_widths "$DASH_COLS"
   local frame="" roster_fmt c_ok c_warn c_accent c_muted
   roster_fmt="║ %s%s%s %s %-${DASH_W_AGENT}s%s\033[0m"
+  # Live adoption first (US-HT-14-2): adopt a theme persisted by another
+  # process (the settings popup) from the NEXT frame on — the same
+  # per-frame state discipline as load_snooze_state / is_playing above.
+  theme_sync
   # Theme tokens resolve ONCE per frame into locals (RF-HT-14-2): the two
   # state cases below only read variables — zero forks in the render loops.
   theme_color c_ok     ok
