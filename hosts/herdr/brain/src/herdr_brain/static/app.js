@@ -454,7 +454,7 @@
     body.textContent = text;
     turn.appendChild(who);
     turn.appendChild(body);
-    if (role === "brain") attachReplay(conv, turn, function () { return text; }, "brain");
+    if (role === "brain") attachReplay(turn, function () { return text; }, "brain");
     conv.appendChild(turn);
     conv.scrollTop = conv.scrollHeight;
   }
@@ -472,15 +472,18 @@
     body.textContent = text || "";
     turn.appendChild(who);
     turn.appendChild(body);
+    attachReplay(turn, function () { return text; }, label || "agente");
     conv.appendChild(turn);
     conv.scrollTop = conv.scrollHeight;
   }
 
-  /* Replay pill: within one container, only the newest kept turn has it.
-   * getText resolves the text at tap time (the glance turns already carry
-   * the full /conversation text, so no extra fetch is needed). */
-  function attachReplay(container, turn, getText, label) {
-    var prev = container.querySelector(".replay-btn");
+  /* Replay pill on EVERY speakable turn (call turns and glance turns):
+   * removal is scoped to the turn, never to the container, so older
+   * turns keep their own button. getText resolves the text at tap time
+   * (the glance turns already carry the full /conversation text, so no
+   * extra fetch is needed). */
+  function attachReplay(turn, getText, label) {
+    var prev = turn.querySelector(".replay-btn");
     if (prev) prev.remove();
     var btn = document.createElement("button");
     btn.className = "replay-btn";
@@ -490,15 +493,29 @@
     btn.textContent = "🔊 Escuchar";
     btn.addEventListener("click", function (event) {
       event.stopPropagation();  // never bubble into container-level taps
-      Promise.resolve(getText()).then(function (text) {
-        speakText(text, label);
-      });
+      if (btn.disabled) return;
+      // Loading state: /tts synthesis takes seconds on mobile; without
+      // this the tap looks dead. The button recovers as soon as the
+      // audio is enqueued (or the request fails — banner already shown).
+      btn.disabled = true;
+      btn.setAttribute("aria-busy", "true");
+      btn.textContent = "⏳ Sintetizando…";
+      var restore = function () {
+        btn.disabled = false;
+        btn.removeAttribute("aria-busy");
+        btn.textContent = "🔊 Escuchar";
+      };
+      Promise.resolve(getText())
+        .then(function (text) { return speakText(text, label); })
+        .then(restore, restore);
     });
     turn.appendChild(btn);
   }
 
   function speakText(text, label) {
-    fetch("/tts", {
+    // Returns the request chain so callers can react to completion
+    // (the replay button restores itself once audio is enqueued).
+    return fetch("/tts", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ text: text })
@@ -563,10 +580,20 @@
   var lastEffectivePane = null;
 
   /* Agent display name (picker trigger, sheet rows, glance label):
-   * basename of cwd, else title, else the agent id. */
+   * herdr's own session title (terminal_title_stripped) with the "OC | "
+   * kind prefix stripped, else cwd basename, else the agent id. */
   function agentDisplayName(agent) {
-    return (agent.cwd || "").split("/").filter(Boolean).pop() ||
-      agent.title || agent.agent || "";
+    var title = (agent.title || "").replace(/^[A-Za-z]{2,4}\s\|\s/, "").trim();
+    return title || (agent.cwd || "").split("/").filter(Boolean).pop() ||
+      agent.agent || "";
+  }
+
+  /* Gray second line under the name: the workspace (cwd basename). Only
+   * shown when the name IS herdr's session title — otherwise it would
+   * just repeat the fallback name. */
+  function agentWorkspaceSub(agent) {
+    if (!(agent.title || "").trim()) return "";
+    return (agent.cwd || "").split("/").filter(Boolean).pop() || "";
   }
 
   /* Small Spanish label for a sheet row's status pill (idle hides it). */
@@ -614,9 +641,15 @@
         dotEl.className = "st";
         dotEl.textContent = "●";
         el.appendChild(dotEl);
+        var mainEl = document.createElement("span");
+        mainEl.className = "cr-main";
+        el.appendChild(mainEl);
         var nameEl = document.createElement("span");
         nameEl.className = "cr-name";
-        el.appendChild(nameEl);
+        mainEl.appendChild(nameEl);
+        var subEl = document.createElement("span");
+        subEl.className = "cr-sub";
+        mainEl.appendChild(subEl);
         var statusEl = document.createElement("span");
         statusEl.className = "cr-status";
         el.appendChild(statusEl);
@@ -638,10 +671,15 @@
       var dotCls = "st " + status;
       var ariaNow = id === effective ? "true" : "false";
       var dotNode = el.firstChild;
-      var nameNode = dotNode.nextSibling;
-      var statusNode = nameNode.nextSibling;
+      var mainNode = dotNode.nextSibling;
+      var nameNode = mainNode.firstChild;
+      var subNode = nameNode.nextSibling;
+      var statusNode = mainNode.nextSibling;
+      var subText = agentWorkspaceSub(agent);
       if (dotNode.className !== dotCls) dotNode.className = dotCls;
       if (nameNode.textContent !== name) nameNode.textContent = name;
+      if (subNode.textContent !== subText) subNode.textContent = subText;
+      subNode.classList.toggle("hidden", !subText);
       if (statusNode.textContent !== statusText) statusNode.textContent = statusText;
       statusNode.classList.toggle("hidden", !statusText);
       if (el.className !== cls) el.className = cls;
@@ -897,7 +935,6 @@
           btn.setAttribute("aria-expanded", "true");
           btn.textContent = "ver menos";
         }
-        measureVerMas(el, t.text);
       }
       if (el.getAttribute("data-key") !== key) el.setAttribute("data-key", key);
       wanted.push(el);
@@ -915,17 +952,27 @@
       for (i = 0; i < wanted.length; i++) scroll.appendChild(wanted[i]);
     }
 
-    /* Replay on the newest agent turn: the glance already carries the
-     * full /conversation text, so no fetch is needed. */
-    var lastAgent = null;
-    for (i = wanted.length - 1; i >= 0; i--) {
-      if (wanted[i].getAttribute("data-role") !== "user") { lastAgent = wanted[i]; break; }
+    /* Measure clamping AFTER the nodes are in the document: a detached
+     * element has no layout (scrollHeight === 0), so measuring at build
+     * time silently disabled the overflow check and clamped turns showed
+     * the line-clamp "…" without a "ver más" button. Re-measuring every
+     * render also heals stale flags after rotation/resize. */
+    for (i = 0; i < wanted.length; i++) {
+      measureVerMas(wanted[i], turns[i].text);
     }
-    var replay = scroll.querySelector(".replay-btn");
-    if (lastAgent && (!replay || replay.parentNode !== lastAgent)) {
-      attachReplay(scroll, lastAgent, (function (node) {
-        return function () { return node.querySelector(".gt-text").textContent; };
-      })(lastAgent), "agente");
+
+    /* Replay on EVERY agent turn: each glance turn already carries the
+     * full /conversation text, so no fetch is needed. Pooled nodes are
+     * only reused under the same role+text key, so a button never lands
+     * on a user turn, and reused nodes re-resolve the text at tap. */
+    for (i = 0; i < wanted.length; i++) {
+      var gnode = wanted[i];
+      if (gnode.getAttribute("data-role") === "user") continue;
+      if (!gnode.querySelector(".replay-btn")) {
+        attachReplay(gnode, (function (node) {
+          return function () { return node.querySelector(".gt-text").textContent; };
+        })(gnode), "agente");
+      }
     }
 
     if (!turns.length && !lastScreenText) glanceEmpty.classList.remove("hidden");
