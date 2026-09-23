@@ -14,6 +14,8 @@
 | HT-11 | [HT-11-audicion-voces.md](HT-11-audicion-voces.md) | Audición de voces en la paleta | P1 | Aprobada | S |
 | HT-13 | [HT-13-consumo-api-publica-motor.md](HT-13-consumo-api-publica-motor.md) | Consumo de la API pública del motor (de-duplicación del host) | P1 | Implementada | M |
 | HT-03 | [HT-03-radio-mode.md](HT-03-radio-mode.md) | Radio mode (triaje por voz) | P2 | Aprobada | M |
+| HT-14 | [HT-14-tema-claro.md](HT-14-tema-claro.md) | Tema claro configurable (Ajustes → Apariencia) | P2 | Borrador | S |
+| HT-15 | [HT-15-markdown-html-pipeline.md](HT-15-markdown-html-pipeline.md) | Transformación Markdown/HTML para lectura sincronizada | Pendiente | Borrador | M |
 | HT-01 | [HT-01-push-to-talk-intercom.md](HT-01-push-to-talk-intercom.md) | Push-to-Talk intercom (hablar al agente) | P4 | Postergada | M-L |
 | HT-06 | [HT-06-auto-snooze-reunion.md](HT-06-auto-snooze-reunion.md) | Auto-snooze contextual (modo reunión) | P4 | Postergada | M |
 | HT-07 | [HT-07-filtro-semantico.md](HT-07-filtro-semantico.md) | Filtro semántico de importancia | P4 | Postergada | M |
