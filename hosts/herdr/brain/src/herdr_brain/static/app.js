@@ -2,11 +2,12 @@
 
 /* herdr-brain PWA: continuous hands-free call over a cockpit-first layout.
  *
- * Layout (PRD call-drawer-redesign):
- * - BASE SCREEN = agent cockpit: herd strip, glance turn list (fed by
- *   GET /conversation: 20 turns, 4000-char clip) with real scroll +
- *   "ver más" inline expansion, and the terminal preview (fed by /view)
- *   with real scroll. The old full-screen sheet is gone.
+ * Layout (PRD call-drawer-redesign + conversation-sheet redesign):
+ * - BASE SCREEN = agent cockpit: glance turn list (fed by
+ *   GET /conversation) with real scroll + "ver más" inline expansion,
+ *   and the terminal preview (fed by /view) with real scroll. Agent /
+ *   conversation selection lives in the CONVERSATION SHEET, opened from
+ *   the header picker trigger (the old #herd-strip chips are gone).
  * - THE CALL = bottom drawer anchored above the footer: auto-opens on
  *   call start, closes without hanging up, reopens from the state pill.
  *   Engine-dependent interim strip (navegador: live text; servidor:
@@ -17,9 +18,9 @@
  *   SELF-ENDPOINTING (static/endpointing.js): dispatch on isFinal, on 1200ms
  *   of interim silence, or on a 15s hard cap. No mic during /ask or TTS.
  * - Announcements arrive over SSE and queue behind any in-flight audio.
- * - Every poll render is KEYED (FR10): herd chips and glance turns are
- *   updated in place per id/content, so the 5s poll never swallows taps,
- *   resets scroll. One render error never
+ * - Every poll render is KEYED (FR10): conversation sheet rows and glance
+ *   turns are updated in place per id/content, so the 5s poll never
+ *   swallows taps, resets scroll. One render error never
  *   kills the loop and every surface has a Spanish empty/error state.
  * User-facing strings are Spanish on purpose (single Spanish-speaking owner).
  */
@@ -39,7 +40,8 @@
   var micNote = $("mic-note");
   var player = $("player");
   var chip = $("status-chip");
-  var paneTitle = $("pane-title");
+  var panePicker = $("pane-picker");
+  var panePickerLabel = $("pane-picker-label");
   var fallbackForm = $("text-fallback");
   var textInput = $("text-input");
   var statePill = $("state-pill");
@@ -48,7 +50,7 @@
   var agentView = $("agent-view");
   var pendingBanner = $("pending-banner");
   var viewScreen = $("view-screen");
-  var herdStrip = $("herd-strip");
+  var convList = $("conv-list");
   var herdNote = $("herd-note");
   var toastEl = $("toast");
   var drawer = $("call-drawer");
@@ -56,6 +58,10 @@
   var settingsSheet = $("settings-sheet");
   var settingsBtn = $("settings-btn");
   var settingsCloseBtn = $("settings-close");
+  var convSheet = $("conv-sheet");
+  var convBackdrop = $("conv-backdrop");
+  var convCloseBtn = $("conv-close");
+  var convNewBtn = $("conv-new");
   var callTimerEl = $("call-timer");
   var dPendingEl = $("d-pending");
   var glanceTurns = $("glance-turns");
@@ -128,6 +134,7 @@
   var inCall = false;
   var drawerOpen = false;
   var settingsOpen = false;
+  var convSheetOpen = false;
   var callStartedAt = null;
   var timerTick = null;
   var utteranceStartedAt = null;  // servidor: current utterance (for the strip timer)
@@ -250,21 +257,31 @@
   }
 
   window.addEventListener("popstate", function () {
-    /* Android back with an overlay open: close the topmost one, never exit
-     * the PWA. Settings sits above the drawer, so it closes first. */
-    if (settingsOpen) {
+    /* Android back with an overlay open: close the overlay whose OWN
+     * history entry was popped, never exit the PWA (FR16/AC14). Overlay
+     * entries stack (drawer < settings < conversation sheet): an overlay
+     * whose entry still sits in the stack — under a newer one or on top
+     * — stays open. Each close*() clears its flag BEFORE its own
+     * history.back(), so deliberate closes no-op here. */
+    var st = history.state || {};
+    if (settingsOpen && !st.herdrSettings) {
       settingsOpen = false;
       settingsSheet.classList.remove("open");
       settingsSheet.setAttribute("inert", "");
       try { settingsBtn.focus({ preventScroll: true }); } catch (err) { /* noop */ }
-      return;
     }
-    if (!drawerOpen) return;
-    drawerOpen = false;
-    drawer.classList.remove("open");
-    drawer.setAttribute("inert", "");
-    renderPill();
-    focusAfterDrawerClose();
+    if (convSheetOpen && !st.herdrConvSheet) {
+      convSheetOpen = false;
+      setConvSheet(false);
+      try { panePicker.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
+    }
+    if (drawerOpen && !st.herdrDrawer && !st.herdrConvSheet && !st.herdrSettings) {
+      drawerOpen = false;
+      drawer.classList.remove("open");
+      drawer.setAttribute("inert", "");
+      renderPill();
+      focusAfterDrawerClose();
+    }
   });
 
   function openSettings() {
@@ -289,6 +306,48 @@
     if (settingsOpen) closeSettings(); else openSettings();
   });
   settingsCloseBtn.addEventListener("click", closeSettings);
+
+  /* ---------------- conversation sheet ----------------
+   * Collie-style session switcher: the header picker trigger opens a
+   * bottom sheet anchored above the footer. "＋ Nueva conversación"
+   * (the old header ↺ button) sits FIRST, then one keyed row per herd
+   * agent (the old #herd-strip chips live here now). ✕ / backdrop /
+   * Escape / Android back all close it; focus returns to the trigger. */
+
+  function setConvSheet(open) {
+    convBackdrop.classList.toggle("open", open);
+    convSheet.classList.toggle("open", open);
+    if (open) convSheet.removeAttribute("inert");
+    else convSheet.setAttribute("inert", "");
+    panePicker.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+
+  function openConvSheet() {
+    if (convSheetOpen) return;
+    convSheetOpen = true;
+    setConvSheet(true);
+    try { history.pushState({ herdrConvSheet: true }, ""); } catch (err) { /* non-http origins */ }
+    try { convCloseBtn.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
+  }
+
+  function closeConvSheet() {
+    if (!convSheetOpen) return;
+    convSheetOpen = false;
+    setConvSheet(false);
+    if (history.state && history.state.herdrConvSheet) history.back();  // pop our entry; popstate no-ops
+    try { panePicker.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
+  }
+
+  panePicker.addEventListener("click", function () {
+    if (convSheetOpen) closeConvSheet();
+    else openConvSheet();
+  });
+  convCloseBtn.addEventListener("click", closeConvSheet);
+  convBackdrop.addEventListener("click", closeConvSheet);
+  document.addEventListener("keydown", function (event) {
+    /* Escape closes the sheet — never from under the settings sheet. */
+    if (event.key === "Escape" && convSheetOpen && !settingsOpen) closeConvSheet();
+  });
 
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", function () {
@@ -503,9 +562,19 @@
   var pendingBannerTapPane = null;
   var lastEffectivePane = null;
 
-  /* Keyed in-place update (FR10/AC8): chips are reused per pane_id and
-   * touched only when their content changed, so the 5s poll can never
-   * swallow a tap on the strip. */
+  /* Agent display name (picker trigger, sheet rows, glance label):
+   * basename of cwd, else title, else the agent id. */
+  function agentDisplayName(agent) {
+    return (agent.cwd || "").split("/").filter(Boolean).pop() ||
+      agent.title || agent.agent || "";
+  }
+
+  /* Small Spanish label for a sheet row's status pill (idle hides it). */
+  var AGENT_STATUS_TEXT = { working: "trabajando", blocked: "bloqueado", done: "listo" };
+
+  /* Keyed in-place update (FR10/AC8): sheet rows are reused per pane_id
+   * and touched only when their content changed, so the 5s poll can
+   * never swallow a tap or reset the sheet's scroll. */
   function renderHerd(herd) {
     if (!Array.isArray(herd)) herd = [];
     lastHerd = herd;
@@ -521,52 +590,81 @@
 
     var existing = {};
     var i, el;
-    for (i = 0; i < herdStrip.children.length; i++) {
-      el = herdStrip.children[i];
+    for (i = 0; i < convList.children.length; i++) {
+      el = convList.children[i];
       existing[el.getAttribute("data-pane")] = el;
     }
     var wanted = [];
     var seen = {};
+    var pickerName = "";
     for (i = 0; i < herd.length; i++) {
       var agent = herd[i];
       var id = agent.pane_id;
       seen[id] = true;
-      var base = (agent.cwd || "").split("/").filter(Boolean).pop() || agent.title || agent.agent;
+      var name = agentDisplayName(agent);
       var title = (agent.title || "") + (agent.last_turn ? " — " + agent.last_turn.text : "");
-      var cls = "herd-chip" + (id === effective ? " selected" : "");
+      var cls = "conv-row" + (id === effective ? " current" : "");
       el = existing[id];
       if (!el) {
         el = document.createElement("button");
         el.type = "button";
-        el.className = "herd-chip";
+        el.className = "conv-row";
         el.setAttribute("data-pane", id);
-        var stEl = document.createElement("span");
-        el.appendChild(stEl);
-        var labelEl = document.createElement("span");
-        el.appendChild(labelEl);
+        var dotEl = document.createElement("span");
+        dotEl.className = "st";
+        dotEl.textContent = "●";
+        el.appendChild(dotEl);
+        var nameEl = document.createElement("span");
+        nameEl.className = "cr-name";
+        el.appendChild(nameEl);
+        var statusEl = document.createElement("span");
+        statusEl.className = "cr-status";
+        el.appendChild(statusEl);
+        var checkEl = document.createElement("span");
+        checkEl.className = "cr-check";
+        checkEl.setAttribute("aria-hidden", "true");
+        checkEl.textContent = "✓";
+        el.appendChild(checkEl);
         el.addEventListener("click", (function (paneId) {
-          return function () { selectAgent(paneId); };
+          return function () {
+            selectAgent(paneId);
+            closeConvSheet();
+          };
         })(id));
       }
-      var stCls = "st " + (agent.agent_status || "");
-      if (el.firstChild.className !== stCls) el.firstChild.className = stCls;
-      if (el.firstChild.nextSibling.textContent !== base) el.firstChild.nextSibling.textContent = base;
+      var status = agent.agent_status || "";
+      var statusText = status && status !== "idle"
+        ? (AGENT_STATUS_TEXT[status] || status) : "";
+      var dotCls = "st " + status;
+      var ariaNow = id === effective ? "true" : "false";
+      var dotNode = el.firstChild;
+      var nameNode = dotNode.nextSibling;
+      var statusNode = nameNode.nextSibling;
+      if (dotNode.className !== dotCls) dotNode.className = dotCls;
+      if (nameNode.textContent !== name) nameNode.textContent = name;
+      if (statusNode.textContent !== statusText) statusNode.textContent = statusText;
+      statusNode.classList.toggle("hidden", !statusText);
       if (el.className !== cls) el.className = cls;
+      if (el.getAttribute("aria-current") !== ariaNow) el.setAttribute("aria-current", ariaNow);
       if (el.title !== title) el.title = title;
       wanted.push(el);
+      if (id === effective) pickerName = name;
     }
     var stale = [];
-    for (i = 0; i < herdStrip.children.length; i++) {
-      if (!seen[herdStrip.children[i].getAttribute("data-pane")]) stale.push(herdStrip.children[i]);
+    for (i = 0; i < convList.children.length; i++) {
+      if (!seen[convList.children[i].getAttribute("data-pane")]) stale.push(convList.children[i]);
     }
     for (i = 0; i < stale.length; i++) stale[i].remove();
-    var sameOrder = wanted.length === herdStrip.children.length;
+    var sameOrder = wanted.length === convList.children.length;
     for (i = 0; sameOrder && i < wanted.length; i++) {
-      if (herdStrip.children[i] !== wanted[i]) sameOrder = false;
+      if (convList.children[i] !== wanted[i]) sameOrder = false;
     }
     if (!sameOrder) {
-      for (i = 0; i < wanted.length; i++) herdStrip.appendChild(wanted[i]);
+      for (i = 0; i < wanted.length; i++) convList.appendChild(wanted[i]);
     }
+    /* Picker trigger label: the effective pane's display name. */
+    var label = pickerName || "sin agente";
+    if (panePickerLabel.textContent !== label) panePickerLabel.textContent = label;
     renderGlanceLabel();       // lastHerd just refreshed: recompute name
     renderPending(lastPending);  // blocked-agent counts may have changed
   }
@@ -587,20 +685,16 @@
   /* ---------------- status / pending / terminal (from /view) ---------------- */
 
   function renderStatus(state) {
-    var chipText, chipClass, titleText;
+    var chipText, chipClass;
     if (!state || !state.active) {
       chipText = "nadie";
       chipClass = "chip";
-      titleText = "sin agente activo";
     } else {
       chipText = state.agent_status || "?";
       chipClass = "chip " + (state.agent_status || "");
-      var title = state.title || state.agent || "";
-      titleText = title + (state.cwd ? " — " + state.cwd : "");
     }
     if (chip.textContent !== chipText) chip.textContent = chipText;
     if (chip.className !== chipClass) chip.className = chipClass;
-    if (paneTitle.textContent !== titleText) paneTitle.textContent = titleText;
   }
 
   function blockedAgents() {
@@ -749,8 +843,7 @@
     var name = "";
     for (var i = 0; i < lastHerd.length; i++) {
       if (lastHerd[i].pane_id === paneId) {
-        var a = lastHerd[i];
-        name = (a.cwd || "").split("/").filter(Boolean).pop() || a.title || a.agent || "";
+        name = agentDisplayName(lastHerd[i]);
         break;
       }
     }
@@ -1703,9 +1796,9 @@
     renderVoiceEngine();
   }
 
-  /* ---------------- new conversation ---------------- */
+  /* ---------------- new conversation (sheet action row) ---------------- */
 
-  $("new-conversation").addEventListener("click", function () {
+  convNewBtn.addEventListener("click", function () {
     stopAudio();
     stopListening();
     if (endpointer) endpointer.reset();  // fresh conversation, fresh utterance
@@ -1713,10 +1806,13 @@
     resetInterimContent();
     updateGhost();
     hideBanner();
+    closeConvSheet();
     fetch("/reset", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ session_id: sessionId })
+    }).then(function (resp) {
+      if (resp.ok) showToast("Conversación nueva iniciada", 4000);
     }).catch(function () {
       showBanner("No se pudo reiniciar la conversación en el servidor.");
     });

@@ -381,17 +381,22 @@ class TestStatic:
         assert resp.status_code == 200
         html = resp.text
         # PRD-call-drawer-redesign contract: the full-screen sheet is gone
-        # (absorbed by the cockpit); the call lives in #call-drawer and the
-        # voice-engine toggle sits in the header, reachable while idle.
+        # (absorbed by the cockpit); the call lives in #call-drawer. The
+        # Collie-style header picker (#pane-picker) + #conv-sheet own
+        # conversation selection; the old #herd-strip and the cryptic
+        # #new-conversation header button are absorbed by the sheet.
         for element_id in (
-            "call-btn", "pause-btn", "state-pill", "new-conversation",
-            "agent-view", "pending-banner", "herd-strip", "herd-note",
+            "call-btn", "pause-btn", "state-pill", "pane-picker",
+            "conv-sheet", "conv-list", "conv-new",
+            "agent-view", "pending-banner", "herd-note",
             "call-drawer", "drawer-close", "call-timer", "d-pending",
             "conversation", "glance-turns", "glance-empty", "glance-label",
-            "voice-engine-btn", "interim", "meter-cells", "diag-panel",
+            "interim", "meter-cells", "diag-panel",
         ):
             assert f'id="{element_id}"' in html, f"missing #{element_id}"
         assert 'id="sheet"' not in html, "the sheet must stay removed (PRD FR5)"
+        for removed_id in ("new-conversation", "herd-strip"):
+            assert f'id="{removed_id}"' not in html, f"#{removed_id} must stay removed"
         assert "/app.js" in html
         assert "/endpointing.js" in html
         assert "/vad.js" in html

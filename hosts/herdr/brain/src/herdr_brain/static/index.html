@@ -80,16 +80,31 @@
     .chip.idle    { color: var(--accent); }
     .chip.blocked { color: var(--danger); }
     .chip.done    { color: var(--blue); }
-    #pane-title {
+    #pane-picker {
+      /* Conversation picker trigger: keeps the old title's slot (flex:1,
+       * shrinkable, ellipsized) but reads as a tappable bordered pill in
+       * the header's button language. Opens the #conv-sheet. */
       flex: 1;
-      /* Explicit: the title may shrink to nothing and ellipsize; it must
-       * never push the version chip off-screen on narrow phones. */
+      min-width: 0;
+      min-height: 48px;
+      padding: 8px 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: transparent;
+      color: var(--text);
+      font-weight: 600;
+      font-size: 14px;
+    }
+    #pane-picker .pp-caret { flex: 0 0 auto; color: var(--muted); font-size: 12px; }
+    #pane-picker-label {
       min-width: 0;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      color: var(--muted);
-      font-size: 14px;
+      text-align: left;
     }
     #header-version {
       /* The version chip is a deployment check: it must stay visible even
@@ -106,48 +121,157 @@
       border-radius: 9px;
     }
     #mute-btn.muted { opacity: 0.55; }
-    #new-conversation { font-weight: 700; }
 
-    /* Narrow phones (~360px): five header items cannot keep their wide
-     * labels. Chips size to their content (no 76px floor), the "Nueva"
-     * button keeps only its icon and the row gap tightens — that frees
-     * enough width for a readable ellipsized title AND the version chip. */
+    /* Narrow phones (~360px): header items drop their wide labels. Chips
+     * size to their content (no 76px floor), the picker tightens its
+     * padding and the row gap narrows — that frees enough width for a
+     * readable ellipsized picker label AND the version chip. */
     @media (max-width: 480px) {
       header { gap: 7px; }
       header .chip { min-width: 0; padding: 4px 8px; }
-      #new-conversation .btn-text { display: none; }
-      #new-conversation { padding: 8px; }
+      #pane-picker { padding: 8px 10px; gap: 5px; }
     }
 
-    /* Herd strip */
-    #herd-strip {
-      display: flex;
-      gap: var(--sp-2);
-      overflow-x: auto;
-      padding: var(--sp-2) var(--sp-3) var(--sp-1);
-      scrollbar-width: thin;
+    /* ── CONVERSATION SHEET (Collie-style session switcher) ──────────
+     * The header picker opens a bottom sheet anchored above the footer
+     * like the drawer: "＋ Nueva conversación" FIRST, then one keyed
+     * row per herd agent (the old #herd-strip chips live here now).
+     * Backdrop tap / ✕ / Escape / Android back all close it. */
+    #conv-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 19;            /* dims drawer (15) and settings (17); sheet is 20 */
+      background: rgba(9, 12, 18, 0.5);
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.28s ease, visibility 0s 0.28s;
     }
-    .herd-chip {
-      flex: 0 0 auto;
-      max-width: 200px;
-      min-height: 48px;      /* touch target >= 48px */
-      padding: 12px 16px;
-      font-size: 14px;
-      font-weight: 600;
-      border-radius: 14px;
-      border: 2px solid var(--line);
+    #conv-backdrop.open {
+      opacity: 1;
+      visibility: visible;
+      transition: opacity 0.28s ease;
+    }
+    #conv-sheet {
+      position: fixed;
+      left: 0; right: 0;
+      bottom: calc(env(safe-area-inset-bottom, 0px) + 96px);
+      /* Wide viewports: same centered 760px column as the cockpit. */
+      max-width: 760px;
+      margin-inline: auto;
+      max-height: 60dvh;
+      display: flex;
+      flex-direction: column;
       background: var(--panel);
+      border: 1px solid var(--line);
+      border-bottom: 0;
+      border-radius: 18px 18px 0 0;
+      box-shadow: 0 -12px 40px #0006;
+      z-index: 20;            /* above drawer/settings; below toast (25), diag (30) */
+      overflow: hidden;
+      transform: translateY(calc(100% + 32px));
+      visibility: hidden;
+      transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1), visibility 0s 0.28s;
+    }
+    #conv-sheet.open {
+      transform: translateY(0);
+      visibility: visible;
+      transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+    .cs-head {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 14px 14px 8px;
+      border-bottom: 1px solid var(--line);
+    }
+    .cs-title { flex: 1; min-width: 0; font-size: 15px; font-weight: 700; }
+    #conv-close {
+      flex: 0 0 auto;
+      width: 48px;
+      height: 48px;
+      font-size: 16px;
+      font-weight: 700;
+      background: var(--chip-bg);
       color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+    }
+    /* Action row FIRST, clearly separated from the agent rows. */
+    .cs-actions {
+      flex: 0 0 auto;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+    }
+    #conv-new {
+      width: 100%;
+      min-height: 48px;       /* touch target >= 48px */
+      padding: 10px 14px;
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--accent);
+      background: var(--chip-bg);
+      border: 1px dashed var(--line);
+      border-radius: 12px;
+    }
+    #conv-list {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      padding: 4px 0 8px;
+    }
+    #conv-list:empty::after {
+      content: "Sin agentes conectados";
+      display: block;
+      padding: var(--sp-3);
+      font-size: var(--fs-sm);
+      color: var(--muted);
+      font-style: italic;
+      text-align: center;
+    }
+    .conv-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      min-height: 52px;       /* touch target >= 48px */
+      padding: 10px 14px;
+      background: none;
+      border-radius: 0;
+      text-align: left;
+      font-size: 15px;
+      color: var(--text);
+    }
+    .conv-row .st { flex: 0 0 auto; font-size: 13px; }
+    .conv-row .st.working { color: var(--warn); }
+    .conv-row .st.idle    { color: var(--accent); }
+    .conv-row .st.blocked { color: var(--danger); }
+    .conv-row .st.done    { color: var(--blue); }
+    .cr-name {
+      flex: 1;
+      min-width: 0;
+      font-weight: 600;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
-    .herd-chip .st { margin-right: 6px; }
-    .herd-chip .st.working { color: var(--warn); }
-    .herd-chip .st.idle    { color: var(--accent); }
-    .herd-chip .st.blocked { color: var(--danger); }
-    .herd-chip .st.done    { color: var(--blue); }
-    .herd-chip.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+    .cr-status {
+      flex: 0 0 auto;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      background: var(--chip-bg);
+      color: var(--muted);
+    }
+    .cr-check { flex: 0 0 auto; color: var(--accent); font-weight: 800; }
+    .conv-row.current {
+      /* 2px inset accent rail marks the current conversation. */
+      box-shadow: inset 2px 0 0 0 var(--accent);
+    }
     #herd-note {
       margin: var(--sp-1) var(--sp-3) 0;
       font-size: var(--fs-xs);
@@ -164,6 +288,10 @@
       display: flex;
       flex-direction: column;
       margin: var(--sp-2) var(--sp-3) 0;
+      /* Wide viewports: a centered column so the cockpit never
+       * stretches absurdly. */
+      max-width: 760px;
+      margin-inline: auto;
       border: 1px solid var(--line);
       border-radius: 12px;
       background: var(--panel);
@@ -303,6 +431,14 @@
       overscroll-behavior: contain;
     }
 
+    /* Narrow phones: buy the cockpit text horizontal room. */
+    @media (max-width: 480px) {
+      #agent-view { margin: var(--sp-2) 10px 0; }
+      #glance-turns { padding: 6px 8px; }
+      .gturn { padding: 7px 10px; }
+      .gscreen-wrap { padding: 0 10px 10px; }
+    }
+
     /* State pill: exists ONLY while calling with the drawer closed
      * (or after an interrupted reload). Tap = reopen the drawer. */
     #state-pill {
@@ -436,6 +572,9 @@
     #call-drawer {
       position: fixed;
       left: 0; right: 0;
+      /* Wide viewports: same centered 760px column as the cockpit. */
+      max-width: 760px;
+      margin-inline: auto;
       bottom: calc(env(safe-area-inset-bottom, 0px) + 96px);
       height: min(58vh, calc(100vh - 260px));
       height: min(58%, calc(100dvh - 260px));
@@ -682,6 +821,8 @@
       #interim-text::after { animation: none; }
       #call-drawer, #call-drawer.open { transition: none; }
       #settings-sheet, #settings-sheet.open { transition: none; }
+      #conv-sheet, #conv-sheet.open { transition: none; }
+      #conv-backdrop, #conv-backdrop.open { transition: none; }
     }
 
     /* ── Settings sheet (⚙ in the header): engine toggle and future
@@ -720,16 +861,14 @@
 <body>
   <header>
     <span id="status-chip" class="chip">…</span>
-    <span id="pane-title">conectando…</span>
+    <button id="pane-picker" type="button" aria-haspopup="dialog" aria-expanded="false" title="Cambiar de conversación"><span class="pp-caret" aria-hidden="true">▾</span><span id="pane-picker-label">conectando…</span></button>
     <span id="header-version" class="chip">v<span id="app-version-header">?</span></span>
     <button id="settings-btn" class="head-btn" title="Ajustes">⚙</button>
     <button id="mute-btn" class="head-btn" title="Silenciar anuncios">🔊</button>
-    <button id="new-conversation" class="head-btn" title="Empezar una conversación nueva">↺<span class="btn-text"> Nueva</span></button>
   </header>
   <div id="toast" class="hidden"></div>
   <div id="banner" class="banner hidden" role="alert"></div>
 
-  <nav id="herd-strip" aria-label="Agentes"></nav>
   <div id="herd-note" class="hidden"></div>
 
   <section id="agent-view" class="hidden">
@@ -786,6 +925,18 @@
       </div>
       <span class="s-hint">Servidor: transcribe en el back con whisper (robusto). Navegador: Web Speech de Chrome (más rápido, menos fiable en Android).</span>
     </div>
+  </section>
+
+  <div id="conv-backdrop" aria-hidden="true"></div>
+  <section id="conv-sheet" role="dialog" aria-modal="true" aria-label="Conversaciones" inert>
+    <div class="cs-head">
+      <span class="cs-title">Conversaciones</span>
+      <button id="conv-close" type="button" title="Cerrar">✕</button>
+    </div>
+    <div class="cs-actions">
+      <button id="conv-new" type="button">＋ Nueva conversación</button>
+    </div>
+    <div id="conv-list"></div>
   </section>
 
   <div id="version-footer">v<span id="app-version">dev</span></div>
