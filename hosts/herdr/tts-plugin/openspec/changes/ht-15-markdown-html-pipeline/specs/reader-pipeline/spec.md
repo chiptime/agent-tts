@@ -4,7 +4,7 @@ New capability: an on-demand host-layer pipeline (`lib/reader_pipeline.py`) turn
 
 ## ADDED Requirements
 
-### Requirement: Formatting-Preserving Sanitization (Smoke: 39a)
+### Requirement: Formatting-Preserving Sanitization (Smoke: 40a)
 
 The pipeline MUST compose, in order: `strip_ansi` (cleaner.py:224, removes ANSI escape codes) → `redact_secrets` (redact.py:107-119, ordered credential families) → chrome filtering that preserves Markdown structure. Fences (```), table pipes (`|`), heading and list markers MUST survive verbatim. The speech mutations of `clean_agent_text` (cleaner.py:541-565: code-block omission, `|`→` — `, URL→`enlace web`, acronym expansion) MUST NOT reach reader output.
 
@@ -14,7 +14,7 @@ The pipeline MUST compose, in order: `strip_ansi` (cleaner.py:224, removes ANSI 
 - WHEN the pipeline sanitizes it
 - THEN no ANSI escapes remain, fences/pipes/markers and the URL survive verbatim, AND `[bloque de código omitido]`/`enlace web` never appear
 
-### Requirement: Redaction Before Transformation (Smoke: 39b)
+### Requirement: Redaction Before Transformation (Smoke: 40b)
 
 Secret redaction MUST complete before any Markdown/HTML transformation. Placeholders MUST appear verbatim in both the HTML text and the anchor mapping; raw secrets MUST NOT appear in either, including inside fenced code.
 
@@ -24,7 +24,7 @@ Secret redaction MUST complete before any Markdown/HTML transformation. Placehol
 - WHEN HTML and mapping are produced
 - THEN both carry the redaction placeholder and never `ab12cd34ef56`
 
-### Requirement: Deterministic Plain-to-Markdown Heuristics (Smoke: 39c)
+### Requirement: Deterministic Plain-to-Markdown Heuristics (Smoke: 40c)
 
 Unformatted text MUST convert deterministically (identical input → identical output): trailing-`:`/section lines become headings; Unicode bullets (`•◦▪▸`) and numbered items (`1.`, `2)`) become Markdown lists; blank-line clusters become paragraphs. Malformed input MUST degrade to fully-escaped text — never crash, never emit raw HTML.
 
@@ -36,7 +36,7 @@ Unformatted text MUST convert deterministically (identical input → identical o
 
 - GIVEN an unclosed code fence, WHEN the pipeline runs, THEN it exits 0 with fully escaped output and zero raw HTML tags
 
-### Requirement: GFM-Subset HTML With Total Escaping (Smoke: 39d)
+### Requirement: GFM-Subset HTML With Total Escaping (Smoke: 40d)
 
 The converter MUST support h1–h4, paragraphs, fenced code with language tag (`<pre><code class="language-X">`), blockquotes, GFM tables, `ul`/`ol`, bold/italic/inline-code, links. It MUST unconditionally `html.escape` all text and attribute values and MUST NOT pass raw input HTML through. Links MUST allow only `http`/`https`; other schemes render as plain text.
 
@@ -48,7 +48,7 @@ The converter MUST support h1–h4, paragraphs, fenced code with language tag (`
 
 - GIVEN `[x](javascript:alert(1))`, WHEN HTML renders, THEN no anchor carries a `javascript:` href
 
-### Requirement: Sentence Anchors With Engine-Oracle Parity (Smoke: 39e)
+### Requirement: Sentence Anchors With Engine-Oracle Parity (Smoke: 40e)
 
 Every text span MUST carry `data-sent-idx`, `data-para-idx`, `id="tts-sent-<idx>"`. Indices MUST match the enumeration pinned in `estimate_boundaries_from_text` (boundaries.py:286-307): paragraphs split on `\n\s*\n+` (stripped, empties dropped); sentences split per paragraph on `(?<=[.!?])\s+`; sentence index 0-based, continuous across paragraphs; paragraph index 0-based. The pipeline MUST return a mapping whose entry `i` corresponds to `data-sent-idx="i"` with the span's redacted text. Parity acceptance MUST run the pinned `agent_tts` package as oracle (`estimate_boundaries_from_text` over the `clean_agent_text`-normalized source), asserting equal count, order, and paragraph mapping; fixtures MUST cover preserved code, tables, links, and acronym expansion (`PR`→`pull request`). Shared-regex claims alone do not qualify.
 
@@ -64,7 +64,7 @@ Every text span MUST carry `data-sent-idx`, `data-para-idx`, `id="tts-sent-<idx>
 
 - GIVEN rendered HTML with N spans, WHEN the mapping is inspected, THEN entry `i` text equals span `i` text for all i
 
-### Requirement: Opt-In Host Access Without Contract Change (Smoke: 39f)
+### Requirement: Opt-In Host Access Without Contract Change (Smoke: 40f)
 
 Host access MUST be on-demand: a Python bridge via `lib/tts_engine.py` plus a minimal CLI `--render-html <in> <out>`. New user-facing strings MUST exist in both `TT_EN` and `TT_ES`. Surface Contract v1 (`--contract-version` stays `1`), `--render-text`, `--speak`, and default speech behavior MUST remain unchanged.
 
@@ -76,7 +76,7 @@ Host access MUST be on-demand: a Python bridge via `lib/tts_engine.py` plus a mi
 
 - GIVEN the hermetic suite, WHEN contract and legacy flags are exercised, THEN version prints `1` and `--render-text`/`--speak` behave as before
 
-### Requirement: Zero-Dependency, On-Demand Operation (Smoke: 39g)
+### Requirement: Zero-Dependency, On-Demand Operation (Smoke: 40g)
 
 The pipeline MUST use only the Python stdlib plus the already-pinned `agent_tts` package: no new pip installs; `scripts/bootstrap.sh` and its pin untouched. Execution MUST be transient per invocation — no resident daemon process or resident memory.
 
