@@ -202,3 +202,72 @@ def test_owner_cleanup_removes_channel_files(channel):
     assert not os.path.exists(channel["lock"])
     assert not os.path.exists(channel["pid"])
     assert not ownership.owns_channel()
+
+
+# --- Crash recovery (US-AT-09-2, RNF-AT-09-3) ---------------------------------------
+
+
+def test_owner_killed_with_sigkill_leaves_channel_reclaimable(channel):
+    """US-AT-09-2/RNF-AT-09-3: a SIGKILLed owner frees the channel by itself.
+
+    The kernel drops the flock when the owner dies, so the next startup
+    wins the election and reclaims the orphaned socket with no manual
+    intervention — the stale socket file is never removed by hand.
+    """
+    import signal
+
+    child_code = (
+        "import sys\n"
+        "import time\n"
+        "import agent_tts.audio as audio\n"
+        "import agent_tts.ipc as ipc\n"
+        "audio._write_player_locks()\n"
+        "server = ipc.IPCServer(\n"
+        "    command_handler=lambda cmd: 'status=playing owner=child',\n"
+        "    socket_path=sys.argv[1],\n"
+        ")\n"
+        "server.start()\n"
+        "print('READY', flush=True)\n"
+        "time.sleep(60)\n"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", child_code, channel["sock"]],
+        env=_child_env(channel),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        # The child owns the channel and serves commands.
+        assert _wait_for_reply("status=playing owner=child", channel["sock"]) == (
+            "status=playing owner=child"
+        )
+        assert os.path.exists(channel["sock"])
+
+        proc.send_signal(signal.SIGKILL)
+        proc.wait(timeout=10)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+    # The owner died without cleanup: the socket file remains, orphaned.
+    assert os.path.exists(channel["sock"])
+
+    # Next startup wins the election (the kernel already dropped the flock)
+    # and reclaims the channel; no test removes the stale socket by hand.
+    audio._write_player_locks()
+    assert ownership.owns_channel()
+    successor = ipc.IPCServer(
+        command_handler=lambda cmd: "status=playing owner=successor",
+        socket_path=channel["sock"],
+    )
+    successor.start()
+    try:
+        assert successor.server_sock is not None
+        assert _wait_for_reply("status=playing owner=successor", channel["sock"]) == (
+            "status=playing owner=successor"
+        )
+    finally:
+        successor.stop()
+        audio.cleanup_locks()
