@@ -12,6 +12,11 @@ from agent_tts.boundaries import BoundaryMap, apply_bionic_reading
 from agent_tts.cleaner import strip_ansi
 from agent_tts.constants import DEFAULT_VOICE, IPC_SOCKET, LOCK_FILE, PID_FILE
 from agent_tts.ipc import IPCServer
+from agent_tts.ownership import (
+    acquire_channel_ownership,
+    owns_channel,
+    release_channel_ownership,
+)
 from agent_tts.playback_target import InvalidPlaybackTarget, resolve_target
 
 # Length cap for the sanitized text snippet carried by the IPC status payload.
@@ -35,17 +40,33 @@ def _sanitize_snippet(text: str, limit: int = STATUS_SNIPPET_MAX_CHARS) -> str:
 
 
 def cleanup_locks() -> None:
-    """Removes all transient lock, pid, and socket files."""
+    """Removes the transient lock, pid, and socket files this process owns.
+
+    Ownership-aware (RF-AT-09-3): a process only deletes channel files when
+    it holds the ownership lock, and drops that lock afterwards so the next
+    startup can win the election. A losing process removes nothing.
+    """
+    if not owns_channel():
+        return
     for f in (LOCK_FILE, PID_FILE, IPC_SOCKET):
         try:
             if os.path.exists(f):
                 os.remove(f)
         except OSError:
             pass
+    release_channel_ownership()
 
 
 def _write_player_locks() -> None:
-    """Writes LOCK_FILE/PID_FILE with this process id (best-effort mutex markers)."""
+    """Elects control-channel ownership; the owner writes LOCK_FILE/PID_FILE.
+
+    The flock (POSIX) or byte-range lock (Windows) is the real mutex: winning
+    it is what makes this process the channel owner (RF-AT-09-1). The pid
+    markers keep their informational content, written only by the owner so a
+    losing process never clobbers the winner's files.
+    """
+    if not acquire_channel_ownership(LOCK_FILE):
+        return
     try:
         with open(PID_FILE, "w") as f:
             f.write(str(os.getpid()))
