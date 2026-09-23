@@ -57,8 +57,9 @@ Heredados de AT-09, con su mitigación:
 
 1. Criterios de aceptación anteriores medidos y registrados (tests de regresión del escenario A/B y de `kill -9` en verde).
 2. Suite IPC/playback en verde.
-3. Trazabilidad del sub-bloque: RF-AT-09-1 a RF-AT-09-5, RNF-AT-09-1 a RNF-AT-09-3 y US-AT-09-1 a US-AT-09-3 cubiertos; ninguna pieza de AT-09 queda fuera.
+3. Trazabilidad del sub-bloque: RF-AT-09-1 a RF-AT-09-5, RNF-AT-09-1 a RNF-AT-09-3 y US-AT-09-1 a US-AT-09-3 cubiertos; ninguna pieza de AT-09 queda fuera, con la excepción registrada en el punto 5.
 4. Repositorio estable: el BLOQUE 1.2 puede arrancar sobre este suelo.
+5. **Cobertura pendiente y aplazada — primitiva de bloqueo en Windows (RF-AT-09-5)**: el criterio de aceptación del test de contrato cubre la mitad de *transporte* (la rama Windows de `server_socket` se ejerce desde Linux parcheando `_is_windows`), pero **no** la mitad de *primitiva*: `msvcrt.locking` con `LK_NBLCK` sobre un byte centinela en el offset 4096 de `IPC_PORT_FILE` no se ejecuta nunca fuera de Windows, y el job Windows de CI es `continue-on-error`, así que tampoco avisa. Decisión (22/09/2026): se aplaza a una verificación posterior; el bloque cierra con esta cobertura explícitamente pendiente en lugar de darla por satisfecha. Verificación requerida antes de confiar en el canal bajo Windows: smoke manual de elección concurrente en Windows real. La elección entre `LockFileEx` y un named mutex sigue siendo open question de AT-09; se implementó la variante de bloqueo de fichero por ser la lectura literal de RF-AT-09-5.
 
 ### Referencias
 
