@@ -119,6 +119,14 @@
 #         q exit), --reader inline delegation outside tmux, launcher path
 #         inside tmux, menu R row + dispatch, keymap reader_open template/
 #         check/emit, manifest tts-reader wiring
+#   40    reader pipeline (HT-15): lib/reader_pipeline.py sanitize →
+#         plain-to-markdown → GFM-subset HTML with engine-oracle sentence
+#         anchors. 40a structure-preserving sanitize (no speech mutations),
+#         40b redaction before transformation (incl. in-fence), 40c
+#         deterministic heuristics + unclosed-fence safe degradation, 40d
+#         total escaping + http/https-only links, 40e pinned-oracle parity
+#         fixtures F1–F9 + sidecar map, 40f --render-html CLI + untouched
+#         contract v1, 40g zero new dependencies + transient process
 set -uo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -3378,6 +3386,108 @@ assert_grep "39f manifest declares the tts-reader pane" 'id = "tts-reader"' "$RE
 assert_grep "39f tts-reader runs the internal _reader command" 'command = \["bin/herdr-tts", "_reader"\]' "$REPO/herdr-plugin.toml"
 assert_grep "39f open-reader action wired" 'id = "open-reader"' "$REPO/herdr-plugin.toml" -F
 assert_grep "39f open-reader targets the entrypoint" '"--entrypoint", "tts-reader"' "$REPO/herdr-plugin.toml" -F
+
+# ═══ 40. reader pipeline (HT-15): sanitize → markdown/html, oracle anchors ═══
+# Hermeticity (design Parity Fixture Strategy): the lexicon is stubbed to a
+# fixture file, HOME/XDG stay isolated, and block 39's PYTHONPATH shim is
+# unset so `import agent_tts` resolves to the REAL pinned package. The
+# pipeline imports the engine through its public API only, so every python
+# run here uses the real plugin venv — the interpreter production uses.
+echo "── 40. reader pipeline (HT-15): sanitize, redaction, heuristics, escaping"
+new_env s40
+unset PYTHONPATH # 39's agent_tts.py IPC shim must not shadow the real engine
+REAL_VENV_PY="${HERDR_TTS_REAL_VENV:-$HOME/.local/share/herdr-tts/venv/bin/python}"
+[[ -x "$REAL_VENV_PY" ]] && ok "40 harness: real venv python present" || bad "40 harness: real venv python missing ($REAL_VENV_PY)"
+export AGENT_TTS_LEXICON="$T/lexicon.json" # fixture lexicon: empty = built-ins only
+printf '{}\n' > "$T/lexicon.json"
+mkdir -p "$T/home"
+export HOME="$T/home" # no real ~/.config/agent-tts can leak into normalization
+LIB="$REPO/lib"
+RPY="$LIB/reader_pipeline.py"
+[[ -f "$RPY" ]] && ok "40 harness: lib/reader_pipeline.py exists" || bad "40 harness: lib/reader_pipeline.py missing"
+
+# 40a. (R1) sanitize keeps fences/pipes/markers/URL verbatim; strips ANSI;
+#      never applies speech mutations (those belong to clean_agent_text only).
+printf 'T\033[1mitulo\033[0m listo.\n• alpha\nSee https://example.com/docs?a=1 now.\n| col1 | col2 |\n|---|---|\n| 1 | 2 |\n```python\nx = 1\n```\n' > "$T/in-a.txt"
+"$REAL_VENV_PY" - "$LIB" "$T/in-a.txt" "$T/a-san.txt" <<'PY' > "$T/a-driver.log" 2>&1
+import sys
+sys.path.insert(0, sys.argv[1])
+import reader_pipeline as rp
+raw = open(sys.argv[2], encoding="utf-8").read()
+open(sys.argv[3], "w", encoding="utf-8").write(rp.sanitize(raw))
+PY
+[[ -s "$T/a-san.txt" ]] && ok "40a sanitize driver produced output" \
+  || bad "40a sanitize produced nothing: $(head -2 "$T/a-driver.log")"
+if [[ -s "$T/a-san.txt" ]] && ! grep -q $'\x1b' "$T/a-san.txt"; then ok "40a no ANSI escapes survive sanitize"; else bad "40a ANSI escapes survived (or no output)"; fi
+assert_grep "40a fence kept verbatim" '^```python$' "$T/a-san.txt"
+assert_grep "40a table pipes kept verbatim" '^\| col1 \| col2 \|$' "$T/a-san.txt"
+assert_grep "40a URL kept verbatim" 'https://example\.com/docs\?a=1' "$T/a-san.txt"
+assert_grep "40a list marker kept verbatim" '^• alpha$' "$T/a-san.txt"
+assert_no_grep_f "40a no speech mutation (code omission)" '[bloque de código omitido]' "$T/a-san.txt"
+assert_no_grep_f "40a no speech mutation (URL rewritten)" 'enlace web' "$T/a-san.txt"
+
+# 40b. (R2) secrets redact BEFORE any transformation: placeholder inside the
+#      fence in the HTML output, raw token never present.
+printf 'Config:\n```\ntoken=ab12cd34ef56\ny = 2\n```\nDone.' > "$T/in-b.txt"
+"$REAL_VENV_PY" - "$LIB" "$T/in-b.txt" "$T/b.html" <<'PY' > "$T/b-driver.log" 2>&1
+import sys
+sys.path.insert(0, sys.argv[1])
+import reader_pipeline as rp
+raw = open(sys.argv[2], encoding="utf-8").read()
+r = rp.sanitize(raw)
+open(sys.argv[3], "w", encoding="utf-8").write(rp.markdown_to_html(rp.plain_to_markdown(r)))
+PY
+assert_grep "40b HTML carries the redaction placeholder in the fence" 'token=[clave omitida]' "$T/b.html" -F
+assert_no_grep_f "40b secret never reaches the HTML" 'ab12cd34ef56' "$T/b.html"
+
+# 40c. (R3) deterministic heuristics: Unicode bullets → Markdown list
+#      (byte-identical), numbered markers survive verbatim (both are valid
+#      Markdown), unclosed fence degrades fully escaped with exit 0.
+printf '• alpha\n• beta\n' > "$T/in-c1.txt"
+printf '1) uno\n2) dos\n' > "$T/in-c2.txt"
+printf 'Intro.\n```\nvar <script>alert(1)</script>\n' > "$T/in-c3.txt"
+"$REAL_VENV_PY" - "$LIB" "$T/in-c1.txt" "$T/in-c2.txt" "$T/in-c3.txt" "$T/c1-out.md" "$T/c2-out.md" "$T/c3-out.html" "$T/c3-rc" <<'PY' > "$T/c-driver.log" 2>&1
+import sys
+sys.path.insert(0, sys.argv[1])
+import reader_pipeline as rp
+one = open(sys.argv[2], encoding="utf-8").read()
+two = open(sys.argv[3], encoding="utf-8").read()
+three = open(sys.argv[4], encoding="utf-8").read()
+# determinism is part of the contract: identical input → identical output
+once = rp.plain_to_markdown(one)
+assert once == rp.plain_to_markdown(one)
+open(sys.argv[5], "w", encoding="utf-8").write(once)
+open(sys.argv[6], "w", encoding="utf-8").write(rp.plain_to_markdown(two))
+try:
+    html = rp.markdown_to_html(rp.plain_to_markdown(rp.sanitize(three)))
+    open(sys.argv[7], "w", encoding="utf-8").write(html)
+    open(sys.argv[8], "w").write("0")
+except Exception:
+    open(sys.argv[8], "w").write("2")
+PY
+[[ $(cat "$T/c1-out.md" 2>/dev/null) == $'- alpha\n- beta' ]] \
+  && ok "40c unicode bullets normalize byte-identically" || bad "40c bullets: $(tr '\n' '|' < "$T/c1-out.md" 2>/dev/null)"
+[[ $(cat "$T/c2-out.md" 2>/dev/null) == $'1) uno\n2) dos' ]] \
+  && ok "40c numbered markers survive verbatim (already Markdown)" || bad "40c numbered: $(tr '\n' '|' < "$T/c2-out.md" 2>/dev/null)"
+[[ $(cat "$T/c3-rc" 2>/dev/null) == "0" ]] && ok "40c unclosed fence exits 0" || bad "40c unclosed fence rc=$(cat "$T/c3-rc" 2>/dev/null)"
+assert_grep "40c unclosed fence: input tags fully escaped" '&lt;script&gt;' "$T/c3-out.html"
+assert_no_grep_f "40c unclosed fence: zero raw script tags" '<script>' "$T/c3-out.html"
+
+# 40d. (R4) total escaping + scheme allowlist: script injection neutralized,
+#      javascript: demoted to plain text, http/https links stay real anchors.
+printf 'Plain <script>alert(1)</script> here.\n\n[x](javascript:alert(1)) and [ok](https://example.com/x)\n' > "$T/in-d.txt"
+"$REAL_VENV_PY" - "$LIB" "$T/in-d.txt" "$T/d.html" <<'PY' > "$T/d-driver.log" 2>&1
+import sys
+sys.path.insert(0, sys.argv[1])
+import reader_pipeline as rp
+raw = open(sys.argv[2], encoding="utf-8").read()
+r = rp.sanitize(raw)
+open(sys.argv[3], "w", encoding="utf-8").write(rp.markdown_to_html(rp.plain_to_markdown(r)))
+PY
+assert_grep "40d script injection neutralized as escaped text" '&lt;script&gt;alert\(1\)&lt;/script&gt;' "$T/d.html"
+assert_no_grep_f "40d no script element in output" '<script' "$T/d.html"
+assert_no_grep_f "40d javascript: href demoted (no anchor href)" 'href="javascript:' "$T/d.html"
+assert_grep "40d https link renders as a real anchor" 'href="https://example\.com/x"' "$T/d.html"
 
 echo
 echo "═══ RESULT: $PASS passed, $FAIL failed ═══"
