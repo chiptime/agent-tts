@@ -7,7 +7,7 @@
 
 ### Objetivo del sub-bloque
 
-Entregar el daemon persistente (`agent-tts --serve`) por vía única: el CLI es siempre un cliente y, si no hay daemon alcanzable, lo arranca y delega (auto-arranque transparente). No existe un segundo camino semántico: `--no-daemon` desaparece y `--foreground` queda únicamente como opción de despliegue y depuración (proceso adjunto a la terminal, pensado para systemd/journalctl), no como un comportamiento aparte bajo test. El daemon se construye desde el primer commit como dueño del estado de playback — el punto de montaje de la cola vive encima de `AudioSession` desde el día uno — para que la cola del BLOQUE 1.3 encaje sin una segunda migración de semántica de playback.
+Entregar el daemon persistente (`agent-tts --serve`) por vía única: el CLI es siempre un cliente y, si no hay daemon alcanzable, lo arranca y delega (auto-arranque transparente). No existe un segundo camino semántico: `--no-daemon` desaparece y `--foreground` queda como opción de despliegue y depuración (proceso adjunto a la terminal, pensado para systemd/journalctl), no como un comportamiento aparte bajo test; los dos arranques difieren únicamente en la política de vida del daemon (RF-AT-04-7): idle timeout para el daemon que el cliente auto-arranca implícitamente, ninguno para el arranque explícito — una diferencia de ciclo de vida, no un segundo camino de ejecución. El daemon se construye desde el primer commit como dueño del estado de playback — el punto de montaje de la cola vive encima de `AudioSession` desde el día uno — para que la cola del BLOQUE 1.3 encaje sin una segunda migración de semántica de playback.
 
 ### Alcance (cita a PRD fuente)
 
@@ -17,12 +17,12 @@ Entregar el daemon persistente (`agent-tts --serve`) por vía única: el CLI es 
 - RF-AT-04-4: retirada; absorbida por RF-AT-09-1 y RF-AT-09-2 del BLOQUE 1.1 (elección atómica por `flock`; el huérfano solo se reclama tras ganar la elección; la colisión con otro daemon vivo se resuelve perdiendo la elección).
 - RF-AT-04-5 (reescrita, vía única): el cliente CLI es siempre cliente; si `ping` no responde en 200 ms, arranca un daemon, verifica de nuevo y delega; si el arranque o el reintento fallan, error explícito. No existe ejecución CLI clásica como fallback.
 - RF-AT-04-6: el daemon respeta AGENT_TTS_PLAYBACK en el arranque y por solicitud (un evento puede forzar target).
-- RF-AT-04-7: política de vida del daemon: tras un periodo configurable sin solicitudes (idle timeout) termina ordenadamente y libera el canal según la propiedad del BLOQUE 1.1. El valor por defecto del timeout debe definirse en implementación; no existe número previo en estas PRDs que reutilizar.
+- RF-AT-04-7: política de vida del daemon: tras un periodo configurable sin solicitudes (idle timeout) termina ordenadamente y libera el canal según la propiedad del BLOQUE 1.1. Valor por defecto (definido 22/09/2026): 30 minutos para el daemon arrancado implícitamente por el auto-arranque del cliente; sin timeout para el arranque explícito (`--serve`/`--foreground`); ambos configurables.
 - RF-AT-04-8: health check en la conexión del cliente: un daemon colgado (canal vivo pero `ping` sin respuesta) se mata y se rearranca antes de delegar (kill-and-respawn).
 - RNF-AT-04-1: latencia evento-audio con daemon caliente menor de 250 ms p95 con edge para textos de menos de 200 caracteres.
 - RNF-AT-04-2: RAM en reposo con kokoro caliente por debajo de 700 MB; sin modelo local cargado, por debajo de 80 MB.
 - RNF-AT-04-3 (reescrita, vía única): un fallo del daemon nunca deja al usuario sin voz: kill-and-respawn (RF-AT-04-8) y reintento; si persiste, error claro y registrado.
-- RNF-AT-04-4: 8 h en reposo sin crecimiento de RAM ni fugas de sesiones de audio (prueba de humo automatizada).
+- RNF-AT-04-4 (reacotada 22/09/2026): 8 h en reposo sin crecimiento de RAM ni fugas de sesiones de audio (prueba de humo automatizada), sobre un daemon de arranque explícito — el auto-arrancado termina a los 30 minutos por defecto de RF-AT-04-7 y no vive lo suficiente para completar la prueba.
 - RNF-AT-04-5: la caché de proveedores es trabajo de ciclo de vida nuevo, no reutilización (hoy `get_provider()` construye una instancia por llamada; mantener instancias vivas en el daemon es esfuerzo adicional que no debe subestimarse).
 - US-AT-04-1 (daemon sin pagar arranque de Python por notificación), US-AT-04-2 (reescrita: `agent-tts "algo"` funciona idéntico haya o no daemon corriendo, por delegación transparente con auto-arranque), US-AT-04-3 (`status` con proveedor cargado y uptime; la cola pendiente llega con RF-AT-08-5 en el BLOQUE 1.3).
 
@@ -33,7 +33,7 @@ Fuera de alcance (sección correspondiente de AT-04): autenticación multiusuari
 - p95 evento-audio por debajo de 250 ms con edge, textos de menos de 200 caracteres, daemon caliente (RNF-AT-04-1); la medición se registra junto con la comparación frente a spawn CLI (objetivo: reducción igual o mayor al 40%, métrica de éxito de AT-04).
 - Delegación transparente verificada por test: una invocación con daemon corriendo y la misma invocación tras matar al daemon producen el mismo comportamiento observable para el usuario (US-AT-04-2); el arranque automático respeta la puerta de 200 ms de RF-AT-04-5.
 - Daemon colgado (canal vivo, `ping` sin respuesta): kill-and-respawn verificado por test; el usuario no se queda sin voz (RNF-AT-04-3, RF-AT-04-8).
-- 8 h en reposo sin fuga de RAM ni de sesiones de audio (RNF-AT-04-4), con cotas de RAM en reposo verificadas (RNF-AT-04-2).
+- 8 h en reposo sin fuga de RAM ni de sesiones de audio (RNF-AT-04-4), sobre un daemon de arranque explícito (el auto-arrancado termina a los 30 minutos por defecto), con cotas de RAM en reposo verificadas (RNF-AT-04-2).
 - Suite IPC/playback existente en verde, en la vía única (RNF heredado de la suite; no existe un segundo modo contra el que ejecutarla).
 
 ### Dependencias y prerrequisitos
@@ -59,10 +59,10 @@ Fuera de alcance (sección correspondiente de AT-04): autenticación multiusuari
 
 ### Definición de done
 
-1. Criterios de aceptación anteriores medidos y registrados: p95 evento-audio y reducción frente a spawn CLI, delta de RAM a 8 h, cotas de RAM en reposo, tests de delegación transparente y de kill-and-respawn.
+1. Criterios de aceptación anteriores medidos y registrados: p95 evento-audio y reducción frente a spawn CLI, delta de RAM a 8 h sobre el daemon de arranque explícito, cotas de RAM en reposo, tests de delegación transparente y de kill-and-respawn.
 2. Suite IPC/playback en verde, en la vía única.
 3. Trazabilidad del sub-bloque: RF-AT-04-1 a RF-AT-04-8, RNF-AT-04-1 a RNF-AT-04-5 y US-AT-04-1 a US-AT-04-3 cubiertos según la tabla del paraguas (RF-AT-04-4 retirada y absorbida por 1.1).
-4. El valor por defecto del idle timeout de RF-AT-04-7 queda definido y documentado, o el aplazamiento de esa decisión queda registrado explícitamente.
+4. Políticas de vida de RF-AT-04-7 verificadas por test: el daemon arrancado implícitamente por auto-arranque termina ordenadamente al expirar el timeout por defecto (30 minutos) liberando el canal según el BLOQUE 1.1, y el daemon de arranque explícito (`--serve`/`--foreground`), sin timeout por defecto, sigue vivo tras el periodo de inactividad; el timeout configurable se respeta en ambos modos.
 5. Repositorio estable: el BLOQUE 1.3 puede arrancar sobre este suelo.
 
 ### Referencias

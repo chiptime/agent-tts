@@ -56,7 +56,7 @@ Tabla completa de cada RF, RNF y US de las tres PRDs fuente a su sub-bloque, ret
 | RF-AT-04-4 | Retirada: absorbida por RF-AT-09-1 y RF-AT-09-2 (BLOQUE 1.1) |
 | RF-AT-04-5 | BLOQUE 1.2 |
 | RF-AT-04-6 | BLOQUE 1.2 |
-| RF-AT-04-7 | BLOQUE 1.2 (valor por defecto del idle timeout: por definir en implementación) |
+| RF-AT-04-7 | BLOQUE 1.2 (idle timeout por defecto: 30 min en auto-arranque implícito; sin timeout en arranque explícito) |
 | RF-AT-04-8 | BLOQUE 1.2 |
 | RNF-AT-04-1 | BLOQUE 1.2 |
 | RNF-AT-04-2 | BLOQUE 1.2 |
