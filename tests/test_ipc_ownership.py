@@ -363,3 +363,28 @@ def test_ownership_election_contract_over_both_transports(
     finally:
         successor.stop()
         audio.cleanup_locks()
+
+
+# --- Bind-failure diagnostics -------------------------------------------------------
+
+
+def test_unexpected_bind_failure_warns_on_stderr(tmp_path, capsys):
+    """A bind failure that is not EADDRINUSE must not be silent.
+
+    EADDRINUSE is the expected contended-channel case and handled
+    deliberately; any other errno (missing parent directory, permissions,
+    path too long, read-only fs) means interactive control is unavailable
+    for a reason the user must see. The normal None returns (live channel,
+    lost election, Windows non-owner) stay quiet — one warning line only
+    here.
+    """
+    # Missing parent directory: bind fails with ENOENT, not EADDRINUSE.
+    unbindable = str(tmp_path / "no-such-dir" / "player.sock")
+
+    assert ipc.server_socket(socket_path=unbindable) is None
+
+    err = capsys.readouterr().err
+    assert "ipc:" in err  # component-prefixed, like "winhost:" in winhost.py
+    assert unbindable in err  # names what failed
+    assert "No such file or directory" in err  # carries the underlying error
+    assert "interactive control unavailable" in err  # states the consequence
