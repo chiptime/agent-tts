@@ -402,6 +402,7 @@ TT_EN[menu.open_dashboard]="📊 Closing the menu and opening the dashboard…"
 TT_EN[menu.open_palette]="🎛️ Closing the menu and opening the voice palette…"
 TT_EN[menu.executed]="Voice command executed"
 TT_EN[menu.unknown_key]="\n❓ Unrecognized key (%s) — press q to quit\n"
+TT_EN[menu.transcribing]="⏳ Transcribing the response… audio starts when the voice is ready"
 TT_EN[settings.restarted]="✓ Daemon restarted"
 TT_EN[settings.relaunch_failed]="Could not relaunch the daemon"
 TT_EN[settings.unknown_key.index]="Unrecognized key (%s) — v voice, a audio, n notifications, r auto-read, t appearance, l language, R restarts the daemon, q quits"
@@ -887,6 +888,7 @@ TT_ES[menu.open_dashboard]="📊 Cerrando el menú y abriendo el dashboard…"
 TT_ES[menu.open_palette]="🎛️ Cerrando el menú y abriendo la paleta de voz…"
 TT_ES[menu.executed]="Comando de voz ejecutado"
 TT_ES[menu.unknown_key]="\n❓ Tecla no reconocida (%s) — pulsa q para salir\n"
+TT_ES[menu.transcribing]="⏳ Transcribiendo la respuesta… el audio empezará cuando la voz esté lista"
 TT_ES[settings.restarted]="✓ Daemon reiniciado"
 TT_ES[settings.relaunch_failed]="No se pudo relanzar el daemon"
 TT_ES[settings.unknown_key.index]="Tecla no reconocida (%s) — v voz, a audio, n notificaciones, r lectura automática, t apariencia, l idioma, R reinicia el daemon, q sale"
@@ -1903,6 +1905,15 @@ read_current_pane() {
   fi
 
   local text
+  # Announce BEFORE the fetch: read_pane_text runs up to two herdr CLI
+  # calls (the "transcribing" phase) and used to sit ahead of any output,
+  # so pressing play felt frozen. The pane-empty branch below still
+  # reports honestly after this (now visible) kickoff line.
+  if [[ "$tldr_flag" == "--tldr" || "$tldr_flag" == "tldr" ]]; then
+    echo "$(tt read.tldr.start "$target_pane")"
+  else
+    echo "$(tt read.start "$target_pane")"
+  fi
   text=$(read_pane_text "$target_pane")
 
   if [[ -z "$text" || "$text" =~ ^[[:space:]]*$ ]]; then
@@ -1925,12 +1936,13 @@ read_current_pane() {
   fi
 
   if [[ "$tldr_flag" == "--tldr" || "$tldr_flag" == "tldr" ]]; then
-    echo "$(tt read.tldr.start "$target_pane")"
+    # The kickoff echo already printed before the fetch; the notification
+    # fires here because synthesis genuinely starts now (speak_text
+    # backgrounds the engine right after).
     notify_herdr "$(tt read.tldr.notify.title)" "$(tt read.tldr.notify.body "$target_pane")"
     pv="$(resolve_voice "$target_pane" "$agent_kind")"
     speak_text "$(spoken_prefix "$agent_kind")$text" "$pv" "$TTS_RATE" "--tldr" "$target_pane" "$agent_kind" "$session_id"
   else
-    echo "$(tt read.start "$target_pane")"
     notify_herdr "$(tt read.notify.title)" "$(tt read.notify.body "$target_pane")"
     pv="$(resolve_voice "$target_pane" "$agent_kind")"
     speak_text "$(spoken_prefix "$agent_kind")$text" "$pv" "$TTS_RATE" "" "$target_pane" "$agent_kind" "$session_id"
@@ -4518,6 +4530,7 @@ menu_open_after_exit() { # <entrypoint>
 # Cheat-sheet data: two columns of key + description, zipped at render
 # time. Static on purpose — the menu never queries Herdr, so the frame
 # costs nothing and is always a single physical write.
+MENU_STATUS="" # transient loading line under the hint (set for slow keys r/t)
 MENU_L_KEYS=("r" "p" "s" "t" "v" "[" "]" "n" "N")
 MENU_L_DESC=("$(tt menu.desc.play)" "$(tt menu.desc.pause)" "$(tt menu.desc.stop)" "$(tt menu.desc.tldr)" "$(tt menu.desc.auto)" "$(tt menu.desc.rewind)" "$(tt menu.desc.forward)" "$(tt menu.desc.next_sentence)" "$(tt menu.desc.prev_sentence)")
 MENU_R_KEYS=("m" "z" "Z" "+/-" "d" "o" "a" "q/Esc")
@@ -4548,6 +4561,9 @@ menu_render() {
   (( half < 20 )) && half=20
   _dash_add '%s' "$(tt menu.title)"
   _dash_add '%s' "$(tt menu.hint)"
+  # Transient loading line (read/tldr): set just before the blocking
+  # dispatch so the frame visibly reacts while the engine works.
+  [[ -n "$MENU_STATUS" ]] && _dash_add '%s' "$MENU_STATUS"
   _dash_add ''
   for (( i = 0; i < ${#MENU_L_KEYS[@]} || i < ${#MENU_R_KEYS[@]}; i++ )); do
     kl="${MENU_L_KEYS[i]:-}"; dl="${MENU_L_DESC[i]:-}"
@@ -4643,6 +4659,13 @@ run_voice_menu() {
         SETTINGS_CATEGORY="index" # two-level: land on the category index
         ;;
       *)
+        # Loading state for the slow keys (read / tldr): re-render the
+        # frame with the transcribing line BEFORE the blocking dispatch,
+        # otherwise the popup sits frozen on the old frame and looks
+        # broken until the confirmation prints.
+        case "$key" in
+          r|R|t|T) MENU_STATUS="$(tt menu.transcribing)"; menu_render ;;
+        esac
         if menu_dispatch "$key"; then
           # Leading newline: the frame write leaves the cursor right after
           # the last row, so the confirmation must claim a fresh line.

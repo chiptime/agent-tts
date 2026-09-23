@@ -1070,6 +1070,59 @@ assert_grep "16m voz view lists the n row" ' n  Spoken prefix:' "$T/out.txt"
 assert_grep "16m voz view lists the u row" ' u  Auto-assign:' "$T/out.txt"
 unset HERDR_TTS_CONFIG_FILE
 
+# 16n. Loading state on `r`: the popup re-renders the frame with the
+#      transcribing line BEFORE the blocking dispatch, so pressing play
+#      never looks frozen. End-to-end through --voice-menu with the same
+#      herdr stub as 16b (focused pane w4:p4, empty scrollback → the
+#      pane-empty branch, honest after the visible kickoff).
+new_env s16n
+FX="$T/fixture.json"; make_fixture "$FX"
+cat > "$T/bin/herdr" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "pane" && "${2:-}" == "current" ]]; then
+  echo '{"result":{"pane":{"pane_id":"w4:p4"}}}'
+  exit 0
+fi
+exit 0
+EOF
+chmod +x "$T/bin/herdr"
+export HERDR_TTS_MENU_CONFIRM_SECS=0.2
+printf 'r' | timeout 10 "$SCRIPT" --voice-menu > "$T/out.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "16n r exits rc=0" || bad "16n rc!=0"
+hv=$(esc_count "$T/out.txt" $'\033[H')
+[[ "$hv" -eq 2 ]] && ok "16n two frame writes: main + loading re-render ($hv)" || bad "16n H-moves=$hv (want 2)"
+assert_grep "16n loading line rendered before dispatch" 'Transcribing the response' "$T/out.txt"
+lt=$(grep -n 'Transcribing the response' "$T/out.txt" | head -1 | cut -d: -f1)
+lc=$(grep -n '^✓ ' "$T/out.txt" | head -1 | cut -d: -f1)
+[[ -n "$lt" && -n "$lc" && "$lt" -lt "$lc" ]] \
+  && ok "16n loading frame precedes the confirmation ($lt < $lc)" || bad "16n loading/confirm order broken ($lt vs $lc)"
+assert_grep "16n read.start is the confirmation line" '✓ .*Transcribing and reading the response in w4:p4' "$T/out.txt"
+
+# 16o. read_current_pane announces BEFORE fetching: with an empty pane the
+#      kickoff line must be line 1 (old code echoed nothing until after
+#      the fetch/empty-check). Happy path pins the same order.
+new_env s16o
+lib_run '
+  read_pane_text() { echo ""; }
+  herdr()          { return 0; }
+  read_current_pane w4:p1
+' > "$T/out.txt"
+first=$(sed -n '1p' "$T/out.txt")
+[[ "$first" == *"Transcribing and reading the response in w4:p1"* ]] \
+  && ok "16o kickoff is line 1 even on an empty pane" || bad "16o first line was: $first"
+assert_grep "16o pane-empty still reports honestly" 'has no content to read' "$T/out.txt"
+lib_run '
+  read_pane_text() { echo "pane body"; }
+  resolve_voice()  { echo "alvaro"; }
+  speak_text()     { echo "SPOKEN:$1"; }
+  herdr()          { return 0; }
+  read_current_pane w4:p1
+' > "$T/out.txt"
+first=$(sed -n '1p' "$T/out.txt")
+[[ "$first" == *"Transcribing and reading the response in w4:p1"* ]] \
+  && ok "16o happy path keeps kickoff as line 1" || bad "16o happy first line was: $first"
+assert_grep "16o text reaches the engine" 'SPOKEN:pane body' "$T/out.txt"
+
 echo "── 17. keymap: init / check / emit (declarative, conflict-checked)"
 new_env s17
 export HERDR_TTS_KEYMAP_FILE="$T/keymap.json"
