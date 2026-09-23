@@ -389,6 +389,30 @@ class TestFullTextReads:
             result = tools.conversation()
             assert len(result["turns"][0]["text"]) == size
 
+    def test_conversation_coalesces_consecutive_same_role(
+        self, settings, make_stub, active_agent, monkeypatch, tmp_path
+    ):
+        """OpenCode stores one assistant turn as several messages (one per
+        tool-loop step); the reading view merges them so narration
+        fragments ending in ":" don't render as separate turns."""
+        turns = [
+            ("user", "revisa el puerto"),
+            ("assistant", "Voy a verificar el acceso:"),
+            ("assistant", "Busco el puerto correcto:"),
+            ("assistant", "Ya tengo el cuadro completo. Te resumo:"),
+        ]
+        monkeypatch.setenv("OPENCODE_DB", self._db_with_turns(tmp_path, active_agent.session_value, turns))
+
+        tools = BrainTools(settings, herdr=make_stub())
+        result = tools.conversation()
+        assert len(result["turns"]) == 2
+        assert result["turns"][0]["role"] == "user"
+        assert result["turns"][1]["role"] == "assistant"
+        assert result["turns"][1]["text"] == (
+            "Voy a verificar el acceso:\n\nBusco el puerto correcto:\n\n"
+            "Ya tengo el cuadro completo. Te resumo:"
+        )
+
     def test_conversation_without_session_or_store(self, settings, make_stub):
         agent_no_session = AgentInfo(
             pane_id="p", agent="opencode", status="idle", session_kind="none",
