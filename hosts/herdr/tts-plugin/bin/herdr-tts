@@ -82,6 +82,8 @@ DEFAULT_SETTLE_SECONDS="5"
 # Ambient pane-title glyphs (done/blocked ✔, mute 🔇, snooze 😴) synced on the
 # daemon sweep; 0 = fully off (the sweep spawns nothing for titles).
 DEFAULT_TTS_TITLE_GLYPHS="1"
+# Terminal theme for every plugin-rendered color: "dark" (default) | "light".
+DEFAULT_THEME="dark"
 
 notify_herdr() {
   local title="$1"
@@ -148,6 +150,10 @@ TTS_SETTLE_SECONDS="${TTS_SETTLE_SECONDS:-$DEFAULT_SETTLE_SECONDS}"
 # Invalid hand-edited values fall back to the default instead of breaking sleep.
 [[ "$TTS_SETTLE_SECONDS" =~ ^[0-9]+([.][0-9]+)?$ ]] || TTS_SETTLE_SECONDS="$DEFAULT_SETTLE_SECONDS"
 TTS_TITLE_GLYPHS="${TTS_TITLE_GLYPHS:-$DEFAULT_TTS_TITLE_GLYPHS}"
+TTS_THEME="${TTS_THEME:-$DEFAULT_THEME}"
+# Invalid hand-edited values fall back to dark — the byte-identical
+# baseline (same validation style as TTS_SETTLE_SECONDS / HERDR_TTS_LANG).
+[[ "$TTS_THEME" == "light" ]] || TTS_THEME="dark"
 OPENAI_API_KEY="${OPENAI_API_KEY:-$DEFAULT_OPENAI_API_KEY}"
 OPENAI_BASE_URL="${OPENAI_BASE_URL:-$DEFAULT_OPENAI_BASE_URL}"
 OPENAI_TTS_MODEL="${OPENAI_TTS_MODEL:-$DEFAULT_OPENAI_TTS_MODEL}"
@@ -398,7 +404,7 @@ TT_EN[menu.executed]="Voice command executed"
 TT_EN[menu.unknown_key]="\n❓ Unrecognized key (%s) — press q to quit\n"
 TT_EN[settings.restarted]="✓ Daemon restarted"
 TT_EN[settings.relaunch_failed]="Could not relaunch the daemon"
-TT_EN[settings.unknown_key.index]="Unrecognized key (%s) — v voice, a audio, n notifications, r auto-read, l language, R restarts the daemon, q quits"
+TT_EN[settings.unknown_key.index]="Unrecognized key (%s) — v voice, a audio, n notifications, r auto-read, t appearance, l language, R restarts the daemon, q quits"
 TT_EN[settings.save_failed]="Could not save %s to config.env"
 TT_EN[settings.voices.write_failed]="Could not write voices.json"
 TT_EN[settings.voice.global]="✓ Global voice: %s (the palette assigns voices per chat)"
@@ -434,6 +440,7 @@ TT_EN[settings.view.voice]="\e[1m🎙  herdr-tts · Settings · Voice\e[0m"
 TT_EN[settings.view.audio]="\e[1m🔊  herdr-tts · Settings · Audio\e[0m"
 TT_EN[settings.view.notifications]="\e[1m🔔  herdr-tts · Settings · Notifications\e[0m"
 TT_EN[settings.view.reading]="\e[1m⚙️  herdr-tts · Settings · Auto-read\e[0m"
+TT_EN[settings.view.appearance]="\e[1m🎨  herdr-tts · Settings · Appearance\e[0m"
 TT_EN[settings.view.index]="\e[1m⚙️  herdr-tts · Voice & Audio Settings\e[0m"
 TT_EN[settings.view.hint]="Press the key of a setting to cycle its value."
 TT_EN[settings.row.provider]=" p  TTS provider:        %s   (edge = free, default)"
@@ -457,11 +464,18 @@ TT_EN[settings.autoread.label_on]="🔊 on (reads to you when each agent finishe
 TT_EN[settings.autoread.label_muted]="🔇 muted (manual only: prefix+r / htr on demand)"
 TT_EN[settings.row.scope]=" a  Auto-read scope:     %s   (focused = active chat only)"
 TT_EN[settings.row.debounce]=" b  Anti-spam debounce:  %ss   (0 = disabled)"
+TT_EN[settings.row.theme]=" t  Theme:               %s   (dark = default)"
+TT_EN[settings.theme.label.dark]="Dark"
+TT_EN[settings.theme.label.light]="Light"
+TT_EN[settings.row.theme_note]=" t  cycles the theme · the chat roster adopts it too, whatever profile each agent pane uses"
+TT_EN[settings.appearance.theme_note]="✓ Theme: %s (applies to every surface herdr-tts renders)"
+TT_EN[settings.unknown_key.appearance]="Unrecognized key (%s) — t theme, q back to the index"
 TT_EN[settings.index.pick]="Pick a category with its key:"
 TT_EN[settings.index.voice]=" v  🎙 Voice           provider, global voice, spoken prefix, auto-assign, language"
 TT_EN[settings.index.audio]=" a  🔊 Audio            playback target, click-through, retention, settle"
 TT_EN[settings.index.notifications]=" n  🔔 Notifications    ntfy topic, podcast feed, web redirect"
 TT_EN[settings.index.reading]=" r  ⚙️  Auto-read       auto-read, scope, debounce"
+TT_EN[settings.index.appearance]=" t  🎨 Appearance      theme (dark / light)"
 TT_EN[settings.index.lang]=" l  🌐  Language        %s"
 TT_EN[settings.lang.label.en]="English"
 TT_EN[settings.lang.label.es]="Español"
@@ -875,7 +889,7 @@ TT_ES[menu.executed]="Comando de voz ejecutado"
 TT_ES[menu.unknown_key]="\n❓ Tecla no reconocida (%s) — pulsa q para salir\n"
 TT_ES[settings.restarted]="✓ Daemon reiniciado"
 TT_ES[settings.relaunch_failed]="No se pudo relanzar el daemon"
-TT_ES[settings.unknown_key.index]="Tecla no reconocida (%s) — v voz, a audio, n notificaciones, r lectura automática, l idioma, R reinicia el daemon, q sale"
+TT_ES[settings.unknown_key.index]="Tecla no reconocida (%s) — v voz, a audio, n notificaciones, r lectura automática, t apariencia, l idioma, R reinicia el daemon, q sale"
 TT_ES[settings.save_failed]="No se pudo guardar %s en config.env"
 TT_ES[settings.voices.write_failed]="No se pudo escribir voices.json"
 TT_ES[settings.voice.global]="✓ Voz global: %s (la paleta asigna voces por chat)"
@@ -911,6 +925,7 @@ TT_ES[settings.view.voice]="\e[1m🎙  herdr-tts · Ajustes · Voz\e[0m"
 TT_ES[settings.view.audio]="\e[1m🔊  herdr-tts · Ajustes · Audio\e[0m"
 TT_ES[settings.view.notifications]="\e[1m🔔  herdr-tts · Ajustes · Notificaciones\e[0m"
 TT_ES[settings.view.reading]="\e[1m⚙️  herdr-tts · Ajustes · Lectura automática\e[0m"
+TT_ES[settings.view.appearance]="\e[1m🎨  herdr-tts · Ajustes · Apariencia\e[0m"
 TT_ES[settings.view.index]="\e[1m⚙️  herdr-tts · Ajustes de voz y audio\e[0m"
 TT_ES[settings.view.hint]="Pulsa la tecla del ajuste para ciclar su valor."
 TT_ES[settings.row.provider]=" p  Proveedor TTS:        %s   (edge = gratuito, por defecto)"
@@ -934,11 +949,18 @@ TT_ES[settings.autoread.label_on]="🔊 activa (te lee al terminar cada agente)"
 TT_ES[settings.autoread.label_muted]="🔇 silenciada (solo manual: prefix+r / htr bajo demanda)"
 TT_ES[settings.row.scope]=" a  Alcance auto-lectura: %s   (focused = solo chat activo)"
 TT_ES[settings.row.debounce]=" b  Debounce anti-spam:   %ss   (0 = desactivado)"
+TT_ES[settings.row.theme]=" t  Tema:                 %s   (oscuro = por defecto)"
+TT_ES[settings.theme.label.dark]="Oscuro"
+TT_ES[settings.theme.label.light]="Claro"
+TT_ES[settings.row.theme_note]=" t  cicla el tema · el roster de chats también lo adopta, use el perfil que use cada panel de agente"
+TT_ES[settings.appearance.theme_note]="✓ Tema: %s (se aplica a todo lo que dibuja herdr-tts)"
+TT_ES[settings.unknown_key.appearance]="Tecla no reconocida (%s) — t tema, q vuelve al índice"
 TT_ES[settings.index.pick]="Elige una categoría con su tecla:"
 TT_ES[settings.index.voice]=" v  🎙 Voz                  proveedor, voz global, prefijo hablado, auto-asignación, idioma"
 TT_ES[settings.index.audio]=" a  🔊 Audio               destino reproducción, click directo, retención, asentamiento"
 TT_ES[settings.index.notifications]=" n  🔔 Notificaciones      topic ntfy, podcast feed, redirección web"
 TT_ES[settings.index.reading]=" r  ⚙️  Lectura automática  auto-lectura, alcance, debounce"
+TT_ES[settings.index.appearance]=" t  🎨 Apariencia            tema (oscuro / claro)"
 TT_ES[settings.index.lang]=" l  🌐  Idioma              %s"
 TT_ES[settings.lang.label.en]="English"
 TT_ES[settings.lang.label.es]="Español"
@@ -1195,9 +1217,9 @@ CONFIG_SET_BACKED_UP=0
 config_set() { # <KEY> <VALUE> → rc 1 on rejection or write failure (warning on stderr)
   local key="$1" value="$2"
   case "$key" in
-    TTS_PROVIDER|TTS_PLAYBACK|HERDR_TTS_AUDIO_RETENTION_DAYS|TTS_SETTLE_SECONDS|WEB_URL|WEB_LABEL|CLICK_REDIRECT|COLLIE_URL|TTS_AUTO_SCOPE|TTS_AUTO_LANG|PODCAST_ENABLED|TTS_DEBOUNCE_SECONDS|NTFY_TOPIC|TTS_VOICE|HERDR_TTS_LANG) ;;
+    TTS_PROVIDER|TTS_PLAYBACK|HERDR_TTS_AUDIO_RETENTION_DAYS|TTS_SETTLE_SECONDS|WEB_URL|WEB_LABEL|CLICK_REDIRECT|COLLIE_URL|TTS_AUTO_SCOPE|TTS_AUTO_LANG|PODCAST_ENABLED|TTS_DEBOUNCE_SECONDS|NTFY_TOPIC|TTS_VOICE|HERDR_TTS_LANG|TTS_THEME) ;;
     *)
-      echo "config_set: unmanaged key '${key}' (allowed: TTS_PROVIDER, TTS_PLAYBACK, HERDR_TTS_AUDIO_RETENTION_DAYS, TTS_SETTLE_SECONDS, WEB_URL, WEB_LABEL, CLICK_REDIRECT, COLLIE_URL, TTS_AUTO_SCOPE, TTS_AUTO_LANG, PODCAST_ENABLED, TTS_DEBOUNCE_SECONDS, NTFY_TOPIC, TTS_VOICE, HERDR_TTS_LANG)" >&2
+      echo "config_set: unmanaged key '${key}' (allowed: TTS_PROVIDER, TTS_PLAYBACK, HERDR_TTS_AUDIO_RETENTION_DAYS, TTS_SETTLE_SECONDS, WEB_URL, WEB_LABEL, CLICK_REDIRECT, COLLIE_URL, TTS_AUTO_SCOPE, TTS_AUTO_LANG, PODCAST_ENABLED, TTS_DEBOUNCE_SECONDS, NTFY_TOPIC, TTS_VOICE, HERDR_TTS_LANG, TTS_THEME)" >&2
       return 1
       ;;
   esac
@@ -1205,6 +1227,18 @@ config_set() { # <KEY> <VALUE> → rc 1 on rejection or write failure (warning o
     echo "config_set: refused: value for '${key}' must not contain double quotes" >&2
     return 1
   fi
+
+  # Key-specific value admission (RF-HT-14-1): fires BEFORE any filesystem
+  # side effect (pre-mkdir / pre-.bak / pre-tmp), so a rejected value leaves
+  # the stored config and the backup byte-unchanged.
+  case "$key" in
+    TTS_THEME)
+      if [[ "$value" != "dark" && "$value" != "light" ]]; then
+        echo "config_set: refused: TTS_THEME must be 'dark' or 'light' (got '${value}')" >&2
+        return 1
+      fi
+      ;;
+  esac
 
   local dir
   dir="$(dirname "$CONFIG_FILE")"
@@ -1267,6 +1301,26 @@ config_set() { # <KEY> <VALUE> → rc 1 on rejection or write failure (warning o
     return 1
   fi
   return 0
+}
+
+# Sole color-SGR emitter (RF-HT-14-2). Out-var first, like dashboard_fit /
+# config_get_retention_raw. printf -v keeps it fork-free: safe per frame.
+# The maps carry SGR PARAMETERS only; the escape is composed here and
+# nowhere else, so no literal color sequence exists anywhere in the script.
+theme_color() { # <out-var> <ok|warn|error|accent|muted|title|reset>
+  local __tc
+  if [[ "${TTS_THEME:-$DEFAULT_THEME}" == "light" ]]; then
+    case "$2" in
+      ok) __tc=32 ;; warn) __tc='1;33' ;; error) __tc=31 ;;
+      accent) __tc=34 ;; muted) __tc=30 ;; title) __tc=1 ;; *) __tc=0 ;;
+    esac
+  else
+    case "$2" in
+      ok) __tc=32 ;; warn) __tc=33 ;; error) __tc=31 ;;
+      accent) __tc=36 ;; muted) __tc=90 ;; title) __tc=1 ;; *) __tc=0 ;;
+    esac
+  fi
+  printf -v "$1" '\033[%sm' "$__tc"
 }
 
 is_playing() {
@@ -3788,8 +3842,14 @@ dashboard_render() {
   # before composing anything.
   dashboard_term_size
   dashboard_calc_widths "$DASH_COLS"
-  local frame="" roster_fmt
+  local frame="" roster_fmt c_ok c_warn c_accent c_muted
   roster_fmt="║ %s%s%s %s %-${DASH_W_AGENT}s%s\033[0m"
+  # Theme tokens resolve ONCE per frame into locals (RF-HT-14-2): the two
+  # state cases below only read variables — zero forks in the render loops.
+  theme_color c_ok     ok
+  theme_color c_warn   warn
+  theme_color c_accent accent
+  theme_color c_muted  muted
 
   _dash_add '%s' "$(tt dash.title "$(date +%H:%M:%S)")"
 
@@ -3849,10 +3909,10 @@ dashboard_render() {
     if ! [[ "$e_pos" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then e_pos=0; fi
     if ! [[ "$e_total" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then e_total=0; fi
     case "$e_state" in
-      playing)      e_color=$'\033[32m' ;;
-      paused)       e_color=$'\033[33m' ;;
-      synthesizing) e_color=$'\033[36m' ;;
-      *)            e_color=$'\033[90m' ;;
+      playing)      e_color="$c_ok" ;;
+      paused)       e_color="$c_warn" ;;
+      synthesizing) e_color="$c_accent" ;;
+      *)            e_color="$c_muted" ;;
     esac
     _dash_add '%s' "$(tt dash.engine "$e_color" "$(dashboard_engine_state_label "$e_state")" \
       "$(fmt_mmss "${e_pos%%.*}")" "$(fmt_mmss "${e_total%%.*}")" \
@@ -3916,10 +3976,10 @@ dashboard_render() {
     [[ "$pid" == "$selected" ]] && marker="▸ "
     # Agent state icon + color: needs-attention states first by design.
     case "$st" in
-      working)      color=$'\033[32m'; icon="▶" ;;
-      done|blocked) color=$'\033[33m'; icon="✔" ;;
-      idle)         color=$'\033[90m'; icon="·" ;;
-      *)            color=$'\033[90m'; icon="$st" ;; # unknown: literal value
+      working)      color="$c_ok"; icon="▶" ;;
+      done|blocked) color="$c_warn"; icon="✔" ;;
+      idle)         color="$c_muted"; icon="·" ;;
+      *)            color="$c_muted"; icon="$st" ;; # unknown: literal value
     esac
     # Voice overlays appended after the agent kind: mute, active snooze
     # countdown, then the anti-spam (debounce) hold with its remaining
@@ -4637,6 +4697,11 @@ run_voice_menu() {
 # (settings.lang.label.*).
 
 # Cycle tables: ordered, first element = the recommended default.
+# SETTINGS_PROVIDERS is NOT the live source: settings_cycle_value derives
+# the provider list from the engine catalog (RF-HT-13-5) and only lands
+# on this static table when the engine is unavailable (fail-open,
+# RNF-HT-13-2 — removal candidate once the engine dependency is
+# guaranteed everywhere).
 SETTINGS_PROVIDERS=(edge openai elevenlabs piper kokoro) # edge first = gratuito, por defecto
 SETTINGS_TARGETS=(local winhost wsl-ps windows auto)
 SETTINGS_RETENTION=(0 1 3 7 14) # 0 = retención apagada
@@ -4644,6 +4709,7 @@ SETTINGS_SETTLE=(0 2 5 10 15 30) # 0 = notifica al instante (sin ventana)
 SETTINGS_SCOPES=(focused all) # alcance de la auto-lectura de fondo
 SETTINGS_LANGS=(off on) # detección automática de idioma ES/EN
 SETTINGS_UI_LANGS=(en es) # interface language (HERDR_TTS_LANG): en first = English default
+SETTINGS_THEMES=(dark light) # terminal theme (TTS_THEME): dark first = default/baseline
 SETTINGS_PODCAST=(off on) # publicación de audios en el feed RSS
 SETTINGS_DEBOUNCE=(0 10 20 30 60) # ventana anti-spam por (pane, estado); 0 = desactivada
 # (Las voces ya no tienen tabla estática: RF-HT-13-4 — el catálogo del
@@ -4656,13 +4722,26 @@ settings_cycle_value() { # <provider|target|retention|settle> <current> → next
   local -a vals=()
   local cur="$2" i n
   case "$1" in
-    provider)  vals=("${SETTINGS_PROVIDERS[@]}") ;;
+    provider)
+      # RF-HT-13-5: the cycle list IS the engine catalog (same source as
+      # --provider validation), never a second hardcoded table. Engine
+      # unavailable → the static SETTINGS_PROVIDERS legacy table (same
+      # fail-open budget as the voice cycle: one cached engine call on
+      # the first keypress).
+      engine_catalog_refresh || true
+      if [[ -n "$ENGINE_CAT_PROVIDERS" ]]; then
+        read -r -a vals <<<"$ENGINE_CAT_PROVIDERS"
+      else
+        vals=("${SETTINGS_PROVIDERS[@]}")
+      fi
+      ;;
     target)    vals=("${SETTINGS_TARGETS[@]}") ;;
     retention) vals=("${SETTINGS_RETENTION[@]}") ;;
     settle)    vals=("${SETTINGS_SETTLE[@]}") ;;
     scope)     vals=("${SETTINGS_SCOPES[@]}") ;;
     lang)      vals=("${SETTINGS_LANGS[@]}") ;;
     ui_lang)   vals=("${SETTINGS_UI_LANGS[@]}") ;;
+    theme)     vals=("${SETTINGS_THEMES[@]}") ;;
     podcast)   vals=("${SETTINGS_PODCAST[@]}") ;;
     debounce)  vals=("${SETTINGS_DEBOUNCE[@]}") ;;
     voice)
@@ -4679,7 +4758,7 @@ settings_cycle_value() { # <provider|target|retention|settle> <current> → next
       [[ -n "$_cv" ]] || return 1
       read -r -a vals <<<"$_cv"
       ;;
-    *) echo "settings_cycle_value: unknown key '${1}' (provider, target, scope, lang, ui_lang, podcast, debounce, voice, retention or settle)" >&2; return 1 ;;
+    *) echo "settings_cycle_value: unknown key '${1}' (provider, target, scope, lang, ui_lang, theme, podcast, debounce, voice, retention or settle)" >&2; return 1 ;;
   esac
   n=${#vals[@]}
   for (( i = 0; i < n; i++ )); do
@@ -4693,8 +4772,8 @@ settings_cycle_value() { # <provider|target|retention|settle> <current> → next
 
 # One settings keypress, shared by the standalone popup (run_voice_settings)
 # and the settings view inside run_voice_menu. TWO-LEVEL dispatch on
-# SETTINGS_CATEGORY: the INDEX view answers the four category keys
-# (v/a/n/r, see the section comment), l (interface language), R (daemon
+# SETTINGS_CATEGORY: the INDEX view answers the five category keys
+# (v/a/n/r/t, see the section comment), l (interface language), R (daemon
 # restart) and q/Esc/Enter (close the settings UI). A CATEGORY view
 # dispatches ONLY its own knobs
 # — the same cycle-persist-update arms the flat list always had, scoped
@@ -4729,6 +4808,7 @@ settings_handle_key() { # <key>
         # on this same index and cannot be shadowed by the reading
         # category (same discipline as the retention `r` inside Audio).
         SETTINGS_CATEGORY="reading" ;;
+      t|T) SETTINGS_CATEGORY="appearance" ;;
       l|L)
         # Interface language (index-level extra like R restart — a global
         # setting that belongs to no category). Cycles HERDR_TTS_LANG
@@ -5012,6 +5092,26 @@ settings_handle_key() { # <key>
           ;;
       esac
       ;;
+    appearance)
+      case "$key" in
+        t|T)
+          # Theme cycle: persists through the managed writer AND flips
+          # this process's variable, so the popup re-renders in the new
+          # theme immediately (the dashboard process adopts it on
+          # restart — the config.env value is what crosses the boundary).
+          next="$(settings_cycle_value theme "$TTS_THEME")"
+          if config_set TTS_THEME "$next"; then
+            TTS_THEME="$next"
+            SETTINGS_NOTE="$(tt settings.appearance.theme_note "$(tt settings.theme.label.$next)")"
+          else
+            SETTINGS_WARN="$(tt settings.save_failed TTS_THEME)"
+          fi
+          ;;
+        *)
+          SETTINGS_WARN="$(tt settings.unknown_key.appearance "$key")"
+          ;;
+      esac
+      ;;
   esac
   return 0
 }
@@ -5019,7 +5119,7 @@ settings_handle_key() { # <key>
 # ONE static frame, ONE physical write per render: same discipline as
 # menu_render (dashboard_term_size + _dash_add clamping reused verbatim,
 # frame buffered and written once). The view follows SETTINGS_CATEGORY:
-# the INDEX (four category rows + the R restart hint) or one category
+# the INDEX (five category rows + the R restart hint) or one category
 # view with ONLY its own knobs, in the same cycle-knob rows the flat
 # list always rendered (labels byte-identical, just regrouped).
 # SETTINGS_WARN, when set, renders as a bottom status row just above
@@ -5080,6 +5180,16 @@ settings_render() {
       _dash_add '%s' "$(tt settings.row.scope "$TTS_AUTO_SCOPE")"
       _dash_add '%s' "$(tt settings.row.debounce "$TTS_DEBOUNCE_SECONDS")"
       ;;
+    appearance)
+      # The label follows the live theme (Dark/Light) via the same
+      # dynamic-key lookup as settings.lang.label.*; the note row is the
+      # roster-adoption disclosure required by the spec.
+      _dash_add '%s' "$(tt settings.view.appearance)"
+      _dash_add '%s' "$(tt settings.view.hint)"
+      _dash_add ''
+      _dash_add '%s' "$(tt settings.row.theme "$(tt settings.theme.label.$TTS_THEME)")"
+      _dash_add '%s' "$(tt settings.row.theme_note)"
+      ;;
     *)
       # Interface language row: index-level extra like R restart. The
       # label is the language's native name (English / Español) from
@@ -5091,6 +5201,7 @@ settings_render() {
       _dash_add '%s' "$(tt settings.index.audio)"
       _dash_add '%s' "$(tt settings.index.notifications)"
       _dash_add '%s' "$(tt settings.index.reading)"
+      _dash_add '%s' "$(tt settings.index.appearance)"
       _dash_add ''
       _dash_add '%s' "$(tt settings.index.lang "$(tt settings.lang.label.$HERDR_TTS_LANG)")"
       _dash_add '%s' "$(tt settings.index.restart)"
