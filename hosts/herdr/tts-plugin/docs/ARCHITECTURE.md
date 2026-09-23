@@ -137,3 +137,31 @@ Todas las funcionalidades planificadas se desarrollan bajo el principio de **imp
 #### ⏳ Pendiente
 - **`herdr-tts`**: Intercomunicador Push-to-Talk (`prefix + c`) con STT local (Whisper.cpp).
 - **`agent-tts`**: Streaming frame-level para Piper; CI en Windows (WASAPI + TCP loopback).
+
+## 6. Canal de Lectura HTML (HT-15, `lib/reader_pipeline.py`)
+
+Superficie opt-in y transitoria (`bin/herdr-tts --render-html <in> <out.html> [--map <map.json>]`) que convierte la salida de un agente en HTML estructurado con anclas de frase alineadas 1:1 con la enumeración del motor. No hay UI aquí: HT-16 consume el HTML y el mapa lateral.
+
+### Autoridad del oráculo
+
+Los índices NUNCA se recalculan en el host: provienen textualmente de `estimate_boundaries_from_text(clean_agent_text(R), 1.0)` sobre el texto saneado `R`. Compartir la expresión regular del motor no basta — la normalización de voz (omisión de bloques, `URL → enlace web`, `etc. → etcétera`, colapso de tablas) desplaza los cortes en ambas direcciones; por eso el host proyecta cada bloque a través de `clean_agent_text` y valida su firma contra el oráculo global (puerta de firma):
+
+- **exact** (puerta superada): correspondencia 1:1 bloque↔frase; los bloques de prosa se dividen por reconciliación de conteos con los cortes crudos.
+- **coverage** (puerta fallida, p. ej. tablas): puntero doble monótono sobre tokens de palabra; los índices siguen siendo exactos y el resaltado, más grueso.
+
+Cada frase posee exactamente un ancla primaria (`class="tts-sent"` + `id="tts-sent-<idx>"`); el resto son fragmentos `tts-sent-cont`, preservando `count(.tts-sent) == entradas del mapa == conteo del oráculo`.
+
+### Flujo y garantías
+
+```text
+CLI --render-html → lib/tts_engine.py (antes de main) → reader_pipeline
+  sanitize: strip_ansi → redact_secrets → filtro de ruido que preserva estructura
+  plain_to_markdown (heurísticas deterministas, neutras ante el oráculo)
+  clean_agent_text(R) → estimate_boundaries  ← ÚNICA autoridad de índices
+  puerta de firma → exact | coverage → HTML (html.escape total, enlaces http/https)
+  → out.html + out.map.json (tupla de vigencia: lang/max_chars/summarize/lexicon_fp)
+```
+
+- La redacción de secretos ocurre ANTES de cualquier transformación y se verifica en HTML y mapa (fallo cerrado: sin archivo, salida 2).
+- Códigos de salida: 0 éxito (incluye coverage/entrada malformada), 1 uso, 2 entrada ilegible o redacción fallida, 3 motor no disponible.
+- Sin dependencias nuevas (stdlib + `agent_tts` fijado) y sin proceso residente.
