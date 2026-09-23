@@ -55,4 +55,4 @@ Mixed tree (HT-02/pm-01): slice per unit, never whole-tree.
 
 - [x] 4.1 README settings section: index table + four category tables + navigation/`R`/managed-write bullets (README.md L659-709, read-only).
 - [x] 4.2 Forward contract: future knobs go scenario-32 RED first, then dispatch+render pair in one edit (design.md).
-- [ ] 4.3 Chain-strategy decision (stacked-to-main vs feature-branch-chain): pending; apply/commits deferred.
+- [x] 4.3 Chain-strategy decision: resolved 2026-09-23 as NOT APPLICABLE — code and change artifacts were already delivered via direct-main on `origin/main` before the decision came due (retro change, verified 631/631 green, no feature branches exist). Retroactive 3-PR chain rejected: it would require rewriting pushed history for zero benefit. Future changes set chain strategy at tasks phase, before apply.
