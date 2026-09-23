@@ -4,8 +4,14 @@ POSIX keeps the original AF_UNIX socket behavior byte-identical. Windows
 (sys.platform == "win32") uses TCP on 127.0.0.1 with an ephemeral port
 persisted to the ``agent-tts-ipc.port`` marker file next to the lock/pid
 files; the client picks the transport by which marker/socket file exists.
+
+The channel is owned, never stolen (RF-AT-09-2): an existing transport that
+answers connections belongs to a live server and is left alone; an orphaned
+one is detected by connection failure and reclaimed only by the process
+that won the ownership election (see agent_tts.ownership).
 """
 
+import errno
 import os
 import socket
 import sys
@@ -13,6 +19,7 @@ import threading
 from typing import Callable, Optional
 
 from agent_tts.constants import IPC_PORT_FILE, IPC_SOCKET
+from agent_tts.ownership import owns_channel
 
 CLIENT_TIMEOUT_SEC = 1.0
 # Upper bound for a single reply. The server answers with one line, so the
@@ -25,9 +32,19 @@ def _is_windows() -> bool:
     return sys.platform == "win32"
 
 
-def server_socket(socket_path: str = IPC_SOCKET) -> socket.socket:
-    """Creates the bound-but-not-listening IPC server socket for the current platform."""
+def server_socket(socket_path: str = IPC_SOCKET) -> Optional[socket.socket]:
+    """Creates the bound IPC server socket for the current platform.
+
+    Never steals a live channel (RF-AT-09-2): a socket path that answers
+    connections belongs to a live server and is left untouched; an orphaned
+    path (connection refused) is reclaimed only by the flock-elected owner.
+    On Windows the port marker is the channel: a non-owner never overwrites
+    a marker it does not own (RF-AT-09-5). Returns None — no channel — when
+    this process may not expose the transport.
+    """
     if _is_windows():
+        if os.path.exists(IPC_PORT_FILE) and not owns_channel():
+            return None
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind(("127.0.0.1", 0))
@@ -38,14 +55,54 @@ def server_socket(socket_path: str = IPC_SOCKET) -> socket.socket:
         except OSError:
             pass
         return sock
-    if os.path.exists(socket_path):
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.bind(socket_path)
+        return sock
+    except OSError as exc:
         try:
-            os.remove(socket_path)
+            sock.close()
         except OSError:
             pass
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    sock.bind(socket_path)
-    return sock
+        if exc.errno != errno.EADDRINUSE:
+            return None
+        if _channel_is_live(socket_path):
+            # Live server on this path: the channel is never stolen.
+            return None
+        if not owns_channel():
+            # Orphaned path, but the election was lost: no reclaim either.
+            return None
+        retry = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            os.remove(socket_path)
+            retry.bind(socket_path)
+            return retry
+        except OSError:
+            try:
+                retry.close()
+            except OSError:
+                pass
+            return None
+
+
+def _channel_is_live(socket_path: str) -> bool:
+    """Returns True when a server answers on the existing socket path.
+
+    Orphan detection for RF-AT-09-2: a connect that is refused means no
+    process serves the path anymore, so the file is a leftover, not a
+    channel. A successful probe connects and closes without sending data.
+    """
+    try:
+        probe = connect_to_server(socket_path)
+    except Exception:
+        return False
+    if probe is None:
+        return False
+    try:
+        probe.close()
+    except OSError:
+        pass
+    return True
 
 
 def connect_to_server(socket_path: str = IPC_SOCKET) -> Optional[socket.socket]:
@@ -152,9 +209,16 @@ class IPCServer:
         self._running = False
 
     def start(self) -> None:
-        """Binds to socket and starts background listener thread."""
+        """Binds to socket and starts background listener thread.
+
+        A process that may not expose the channel (lost the ownership
+        election, or a live server owns the transport) simply runs without
+        IPC: start() leaves the server unset instead of stealing anything.
+        """
         try:
             self.server_sock = server_socket(self.socket_path)
+            if self.server_sock is None:
+                return
             self.server_sock.listen(5)
             self.server_sock.settimeout(0.5)
             self._running = True
@@ -184,7 +248,7 @@ class IPCServer:
                 pass
 
     def stop(self) -> None:
-        """Stops listener and removes transport marker files."""
+        """Stops listener and removes the transport markers this process owns."""
         self._running = False
         if self.server_sock:
             try:
@@ -195,8 +259,12 @@ class IPCServer:
         if self.thread:
             self.thread.join(timeout=0.3)
             self.thread = None
+        # Ownership-aware transport cleanup (RF-AT-09-3): only the elected
+        # owner removes the marker; a losing process leaves the winner's
+        # transport in place.
+        owned = owns_channel()
         for path in self._cleanup_paths():
-            if os.path.exists(path):
+            if owned and os.path.exists(path):
                 try:
                     os.remove(path)
                 except OSError:
