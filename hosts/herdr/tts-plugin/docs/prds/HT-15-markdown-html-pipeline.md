@@ -1,5 +1,5 @@
 **ID**: PRD-HT-15 · **Proyecto**: herdr-tts
-**Prioridad final (2026-09-23)**: Pendiente de priorización · **Estado**: Borrador
+**Prioridad final (2026-09-23)**: Pendiente de priorización · **Estado**: Implementada (2026-09-24, HT-15)
 **Dependencias**: API existente de `agent-tts`; separación host/motor de HT-13
 
 # PRD-HT-15 — Transformación Markdown/HTML para lectura sincronizada
