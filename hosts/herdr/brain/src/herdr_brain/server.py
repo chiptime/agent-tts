@@ -202,11 +202,17 @@ def create_app(
 
     build = version if version is not None else resolve_version()
     app.state.build = build
-    index_html = render_index(build)
 
     @app.get("/", include_in_schema=False)
     def index() -> HTMLResponse:
-        return HTMLResponse(content=index_html, headers=dict(_NO_CACHE_HEADERS))
+        # Re-read per request: caching the rendered HTML at boot served a
+        # stale page after static edits, so the phone mixed fresh JS with
+        # an old DOM and rendered nothing. Page loads are rare (PWA), the
+        # file is small, and the no-cache header already promises fresh.
+        return HTMLResponse(
+            content=render_index(build),
+            headers=dict(_NO_CACHE_HEADERS),
+        )
 
     @app.get("/app.js", include_in_schema=False)
     def app_js() -> FileResponse:
