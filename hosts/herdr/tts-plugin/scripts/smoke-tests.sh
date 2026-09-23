@@ -3680,6 +3680,84 @@ done < "$T/e-checks.txt"
 [[ $n_checks -ge 40 ]] && ok "40e full check matrix ran ($n_checks checks)" \
   || bad "40e check matrix truncated ($n_checks checks)"
 
+# 40f. (R6) --render-html CLI: transient bridge, exit-code contract
+#      (0 ok / 1 usage / 2 input+redaction fail-closed / 3 engine down),
+#      bilingual strings, Surface Contract v1 untouched.
+new_env s40f
+unset PYTHONPATH
+mkdir -p "$T/home"; export HOME="$T/home"
+export AGENT_TTS_LEXICON="$T/lexicon.json"; printf '{}\n' > "$T/lexicon.json"
+printf 'Hola mundo. Segunda frase.' > "$T/in.txt"
+timeout 10 "$SCRIPT" --render-html > "$T/f-usage.txt" 2>&1
+[[ $? -eq 1 ]] && ok "40f usage error exits 1" || bad "40f usage rc=$?"
+assert_grep "40f EN usage names --render-html" 'Usage: herdr-tts --render-html <input_file> <output_html>' "$T/f-usage.txt"
+HERDR_TTS_LANG=es timeout 10 "$SCRIPT" --render-html > "$T/f-usage-es.txt" 2>&1
+assert_grep "40f ES usage present (neutral)" 'Uso: herdr-tts --render-html' "$T/f-usage-es.txt"
+# engine down (rc 3): the fresh stub venv python (plain python3) has no agent_tts
+timeout 10 "$SCRIPT" --render-html "$T/in.txt" "$T/out.html" > "$T/f-eng.txt" 2>&1
+[[ $? -eq 3 ]] && ok "40f engine down exits 3" || bad "40f engine rc=$(head -c 120 "$T/f-eng.txt" | tr '\n' ' ')"
+assert_grep "40f EN engine message" 'engine unavailable' "$T/f-eng.txt"
+HERDR_TTS_LANG=es timeout 10 "$SCRIPT" --render-html "$T/in.txt" "$T/out.html" > "$T/f-eng-es.txt" 2>&1
+assert_grep "40f ES engine message (neutral)" 'motor agent-tts no está disponible' "$T/f-eng-es.txt"
+[[ ! -e "$T/out.html" ]] && ok "40f engine down: no partial HTML" || bad "40f engine down wrote output"
+# unreadable input (rc 2), fail closed: real venv, missing file
+cat > "$T/data/herdr-tts/venv/bin/python" <<EOF
+#!/usr/bin/env bash
+exec "$REAL_VENV_PY" "\$@"
+EOF
+chmod +x "$T/data/herdr-tts/venv/bin/python"
+timeout 10 "$SCRIPT" --render-html "$T/missing.txt" "$T/out2.html" > "$T/f-in.txt" 2>&1
+[[ $? -eq 2 ]] && ok "40f unreadable input exits 2" || bad "40f input rc=$(head -c 120 "$T/f-in.txt" | tr '\n' ' ')"
+assert_grep "40f EN input message" 'cannot read the input' "$T/f-in.txt"
+HERDR_TTS_LANG=es timeout 10 "$SCRIPT" --render-html "$T/missing.txt" "$T/out2.html" > "$T/f-in-es.txt" 2>&1
+assert_grep "40f ES input message (neutral)" 'no se puede leer el archivo de entrada' "$T/f-in-es.txt"
+[[ ! -e "$T/out2.html" ]] && ok "40f unreadable input: fail closed, no file" || bad "40f rc=2 wrote output"
+# success (rc 0): anchored HTML; sidecar only with --map (design default off)
+timeout 10 "$SCRIPT" --render-html "$T/in.txt" "$T/f-ok.html" > "$T/f-ok.txt" 2>&1
+[[ $? -eq 0 ]] && ok "40f --render-html exits 0" || bad "40f success rc: $(tail -1 "$T/f-ok.txt")"
+assert_grep "40f anchored HTML written (primary span)" 'id="tts-sent-0"' "$T/f-ok.html"
+assert_grep "40f paragraph anchor present" 'data-para-idx="0"' "$T/f-ok.html"
+assert_grep "40f escaped text in HTML" 'Hola mundo\.' "$T/f-ok.html"
+timeout 10 "$SCRIPT" --render-html "$T/in.txt" "$T/f-ok2.html" --map "$T/f.map.json" > "$T/f-ok2.txt" 2>&1
+[[ $? -eq 0 ]] && ok "40f --map sidecar run exits 0" || bad "40f map rc"
+assert_grep "40f sidecar written with --map" 'reader-pipeline/anchors@1' "$T/f.map.json"
+assert_grep "40f sidecar mirrors sentence count" '"total_sents": 2' "$T/f.map.json"
+# Surface Contract v1 + legacy flags untouched
+[[ $(timeout 10 "$SCRIPT" --contract-version 2>/dev/null) == "1" ]] \
+  && ok "40f --contract-version stays 1" || bad "40f contract version changed"
+timeout 10 "$SCRIPT" --render-text > "$T/f-rt.txt" 2>&1
+[[ $? -eq 1 ]] && ok "40f --render-text usage still rc 1" || bad "40f render-text rc"
+assert_grep "40f --render-text usage unchanged" 'Usage: herdr-tts --render-text' "$T/f-rt.txt"
+timeout 10 "$SCRIPT" --help > "$T/f-help.txt" 2>&1
+assert_grep "40f help still lists --speak" '\-\-speak' "$T/f-help.txt"
+assert_grep "40f help lists --render-html" '\-\-render-html' "$T/f-help.txt"
+HERDR_TTS_LANG=es timeout 10 "$SCRIPT" --help > "$T/f-help-es.txt" 2>&1
+assert_grep "40f ES help lists --render-html" '\-\-render-html' "$T/f-help-es.txt"
+
+# 40g. (R7) zero new dependencies + transient process (exits, no daemon)
+assert_grep "40g bootstrap pin still SHA-pinned" 'AGENT_TTS_REF="\$\{HERDR_AGENT_TTS_REF:-[0-9a-f]{40}\}"' "$REPO/scripts/bootstrap.sh"
+"$REAL_VENV_PY" - "$LIB" <<'PY' > "$T/g-imports.txt" 2>&1
+import ast, sys
+tree = ast.parse(open(sys.argv[1] + "/reader_pipeline.py", encoding="utf-8").read())
+mods = set()
+for node in ast.walk(tree):
+    if isinstance(node, ast.Import):
+        mods.update(a.name.split(".")[0] for a in node.names)
+    elif isinstance(node, ast.ImportFrom) and node.module:
+        mods.add(node.module.split(".")[0])
+allowed = {"agent_tts"} | set(sys.stdlib_module_names)
+extra = sorted(mods - allowed)
+print("EXTRA:" + ",".join(extra) if extra else "CLEAN")
+PY
+grep -q '^CLEAN$' "$T/g-imports.txt" \
+  && ok "40g reader_pipeline imports stdlib + agent_tts only" \
+  || bad "40g unexpected deps: $(cat "$T/g-imports.txt")"
+export AGENT_TTS_SOCKET="$T/agent.sock" AGENT_TTS_LOCK_FILE="$T/agent.lock" AGENT_TTS_PID_FILE="$T/agent.pid"
+timeout 10 "$SCRIPT" --render-html "$T/in.txt" "$T/g-out.html" > "$T/g-run.txt" 2>&1
+[[ $? -eq 0 ]] && ok "40g render run is transient (exited within timeout)" || bad "40g run rc"
+[[ ! -e "$T/agent.sock" && ! -e "$T/agent.pid" && ! -e "$T/agent.lock" ]] \
+  && ok "40g no daemon artifacts (socket/pid/lock absent)" || bad "40g daemon artifacts left behind"
+
 # ═══ 41. reader vs remote-engine ERR replies (karaoke IPC hardening) ═══
 # A remote-playback engine without the read-only karaoke family answers
 # "ERR: command '...' is not supported..." on a LIVE socket. fetch() must
