@@ -3493,6 +3493,193 @@ assert_grep "40d script injection neutralized as escaped text" '&lt;script&gt;al
 assert_no_grep_f "40d no script element in output" '<script' "$T/d.html"
 assert_no_grep_f "40d javascript: href demoted (no anchor href)" 'href="javascript:' "$T/d.html"
 assert_grep "40d https link renders as a real anchor" 'href="https://example\.com/x"' "$T/d.html"
+# 40e. (R5) engine-oracle parity F1–F9 + sidecar map. The oracle runs the
+#      PINNED agent_tts directly (estimate_boundaries over clean_agent_text)
+#      and the pipeline must agree verbatim: count, sent-idx order 0..n-1,
+#      para-idx sequence, one primary span per sentence, mapping mirrors
+#      spans. Harness safeguard first: the venv may hold agent_tts editable
+#      at dev HEAD — oracle file identity (boundaries/cleaner/redact) is
+#      verified against the bootstrap pin before any fixture executes.
+cat > "$T/e-driver.py" <<'PYEOF'
+import json, os, re, subprocess, sys
+
+sys.path.insert(0, sys.argv[1])
+OUT = sys.argv[2]
+results = []
+
+def check(label, cond, detail=""):
+    results.append(("OK" if cond else "ERR", label, str(detail)))
+
+# --- identity safeguard: pinned oracle, fail loudly -----------------------
+import agent_tts
+from agent_tts import clean_agent_text, estimate_boundaries_from_text
+
+boot = open(os.path.join(sys.argv[3], "scripts/bootstrap.sh"), encoding="utf-8").read()
+m = re.search(r"AGENT_TTS_REF=\"\$\{HERDR_AGENT_TTS_REF:-(\w{40})\}\"", boot)
+pin = m.group(1) if m else ""
+check("40e pin parsed from bootstrap.sh", bool(pin), pin or "no SHA-40 pin found")
+pkg_dir = os.path.dirname(agent_tts.__file__)
+repo = pkg_dir
+while repo != os.path.dirname(repo) and not os.path.isdir(os.path.join(repo, ".git")):
+    repo = os.path.dirname(repo)
+identity_ok, identity_detail = True, "regular install"
+if os.path.isdir(os.path.join(repo, ".git")):  # editable: compare oracle blobs
+    rel = os.path.relpath(pkg_dir, repo).replace(os.sep, "/")
+    for fname in ("boundaries.py", "cleaner.py", "redact.py"):
+        try:
+            pinned = subprocess.run(
+                ["git", "-C", repo, "rev-parse", f"{pin}:{rel}/{fname}"],
+                capture_output=True, text=True).stdout.strip()
+            local = subprocess.run(
+                ["git", "-C", repo, "hash-object", os.path.join(pkg_dir, fname)],
+                capture_output=True, text=True).stdout.strip()
+        except Exception as exc:
+            identity_ok, identity_detail = False, f"{fname}: {exc}"
+            break
+        if pinned != local:
+            identity_ok, identity_detail = False, f"{fname} drifts from pin {pin[:8]}"
+            break
+    else:
+        identity_detail = f"editable install, oracle files == pin {pin[:8]}"
+check("40e oracle file identity == pinned ref", identity_ok, identity_detail)
+
+import reader_pipeline as rp
+
+def oracle_of(raw):
+    n = clean_agent_text(rp.sanitize(raw), pre_extracted=True)
+    bm = estimate_boundaries_from_text(n, 1.0)
+    return [(s.index, s.paragraph_index, s.text) for s in bm.sentences]
+
+FIXTURES = {
+    "F1": "Alpha uno. Beta dos. Gamma tres.",
+    "F2": "Intro aquí.\n```python\nx = 1. \ny = 2\n```\nCierre final.",
+    "F3": "Ejecuta esto:\n```\nls -la\n```\nY sigue adelante. Más texto.",
+    "F4": "See https://ex.com/a. Next one.",
+    "F5": "Tablas, etc. Y luego más.",
+    "F6": "Open the PR now. Second sentence here.",
+    "F7": "Head:\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\nTail.",
+    "F8": "",
+    "F9": "Intro.\n```\nvar <script>alert(1)</script>\n",
+}
+
+rendered = {}
+for name, raw in FIXTURES.items():
+    res = rp.render(raw, pre_extracted=True)
+    rendered[name] = res
+    S = oracle_of(raw)
+    idx_seq = [a.sent_idx for a in res.anchors]
+    para_seq = [a.para_idx for a in res.anchors]
+    primaries = res.html.count('class="tts-sent"')
+    check(f"40e {name} anchor count == oracle count", len(res.anchors) == len(S),
+          f"anchors={len(res.anchors)} oracle={len(S)}")
+    check(f"40e {name} data-sent-idx sequence == 0..n-1 in order",
+          idx_seq == list(range(len(S))), idx_seq)
+    check(f"40e {name} data-para-idx sequence == oracle paragraph mapping",
+          para_seq == [p for (_, p, _) in S], para_seq)
+    check(f"40e {name} primary spans == sentence count", primaries == len(S),
+          f"primaries={primaries} sents={len(S)}")
+
+# Fixture-specific contracts (design Parity Fixtures table).
+r1 = rendered["F1"]
+check("40e F1 alignment exact", r1.alignment == "exact", r1.alignment)
+check("40e F1 mapping texts are the raw sentences",
+      [a.text for a in r1.anchors] == ["Alpha uno.", "Beta dos.", "Gamma tres."],
+      [a.text for a in r1.anchors])
+r2 = rendered["F2"]
+check("40e F2 alignment exact (fence drift absorbed)", r2.alignment == "exact", r2.alignment)
+check("40e F2 primary sentence 1 sits on the fence block",
+      'id="tts-sent-1"' in r2.html and "<pre" in r2.html, "")
+check("40e F2 continuation span present", 'class="tts-sent-cont"' in r2.html, "")
+r3 = rendered["F3"]
+check("40e F3 sentence 0 continues across blocks (cont spans)",
+      r3.html.count('class="tts-sent-cont"') >= 2, r3.html.count('class="tts-sent-cont"'))
+check("40e F3 mapping texts stay raw", [a.text for a in r3.anchors][1] == "Más texto.",
+      [a.text for a in r3.anchors])
+r4 = rendered["F4"]
+check("40e F4 URL drift absorbed into one anchor",
+      len(r4.anchors) == 1 and r4.anchors[0].text == "See https://ex.com/a. Next one.",
+      [a.text for a in r4.anchors])
+r5 = rendered["F5"]
+check("40e F5 etc. drift absorbed into one anchor",
+      len(r5.anchors) == 1 and r5.anchors[0].text == "Tablas, etc. Y luego más.",
+      [a.text for a in r5.anchors])
+r6 = rendered["F6"]
+check("40e F6 index from oracle, mapping text raw (PR not expanded)",
+      [a.text for a in r6.anchors] == ["Open the PR now.", "Second sentence here."],
+      [a.text for a in r6.anchors])
+r7 = rendered["F7"]
+check("40e F7 table collapse: coverage alignment recorded",
+      r7.alignment == "coverage", r7.alignment)
+check("40e F7 one sentence spans heading+table+tail (primary + conts)",
+      r7.html.count('class="tts-sent-cont"') >= 2, r7.html.count('class="tts-sent-cont"'))
+check("40e F7 table element carries a sentence anchor",
+      "<table" in r7.html and 'data-sent-idx="0"' in r7.html, "")
+r8 = rendered["F8"]
+check("40e F8 empty input: exactly one anchor with empty text",
+      len(r8.anchors) == 1 and r8.anchors[0].text == "", [a.text for a in r8.anchors])
+rc8 = rp.render_to_files("", os.path.join(os.path.dirname(OUT), "f8.html"))
+check("40e F8 render_to_files exits 0", rc8 == 0, rc8)
+r9 = rendered["F9"]
+check("40e F9 unclosed fence: escaped, zero raw tags",
+      "&lt;script&gt;" in r9.html and "<script" not in r9.html, "")
+rc9 = rp.render_to_files(FIXTURES["F9"], os.path.join(os.path.dirname(OUT), "f9.html"))
+check("40e F9 render_to_files exits 0", rc9 == 0, rc9)
+
+# --- sidecar map contract (R5 + design Data Contracts) --------------------
+d = os.path.dirname(OUT)
+mpath = os.path.join(d, "f1.map.json")
+rp.render_to_files(FIXTURES["F1"], os.path.join(d, "f1.html"), mpath)
+side = json.loads(open(mpath, encoding="utf-8").read())
+check("40e sidecar schema: version/contract/alignment/totals present",
+      side.get("version") == 1 and side.get("contract") == "reader-pipeline/anchors@1"
+      and side.get("alignment") in ("exact", "coverage")
+      and side.get("total_sents") == 3 and side.get("total_paras") == 1, sorted(side))
+eng = side.get("engine", {})
+check("40e sidecar staleness tuple: lang/max_chars/summarize/lexicon_fp",
+      eng.get("lang") == "es" and eng.get("max_chars") == 0
+      and eng.get("summarize") is False
+      and re.match(r"^sha256:[0-9a-f]{64}$", eng.get("lexicon_fp", "")), eng)
+check("40e sidecar sentence entries mirror spans",
+      [s["text"] for s in side["sentences"]] == ["Alpha uno.", "Beta dos.", "Gamma tres."]
+      and side["sentences"][0]["selector"] == "#tts-sent-0"
+      and side["sentences"][0]["exact"] is True, side["sentences"][0])
+side7 = json.loads(rp.mapping_json(r7))
+check("40e sidecar records coverage alignment on gate failure (F7)",
+      side7.get("alignment") == "coverage" and side7["sentences"][0]["exact"] is False,
+      side7.get("alignment"))
+check("40e sidecar mapping count == primary span count",
+      len(side7["sentences"]) == r7.html.count('class="tts-sent"') == len(r7.anchors),
+      len(side7["sentences"]))
+# --- R2 completion: redaction reaches the MAPPING too ----------------------
+sec = rp.render("Config:\n```\ntoken=ab12cd34ef56\ny = 2\n```\nDone.", pre_extracted=True)
+msec = rp.mapping_json(sec)
+check("40e redaction placeholder present in the mapping",
+      "token=[clave omitida]" in msec, "")
+check("40e secret never reaches the mapping", "ab12cd34ef56" not in msec, "")
+
+with open(OUT, "w", encoding="utf-8") as fh:
+    for verdict, label, detail in results:
+        fh.write(f"{verdict} {label}" + (f" :: {detail}" if detail else "") + "\n")
+    fh.write(f"OK 40e checks emitted ({len(results)})\n")
+print(f"{len(results)} checks")
+PYEOF
+"$REAL_VENV_PY" "$T/e-driver.py" "$LIB" "$T/e-checks.txt" "$REPO" > "$T/e-driver.log" 2>&1
+DRIVER_RC=$?
+if [[ -s "$T/e-checks.txt" && $DRIVER_RC -eq 0 ]]; then
+  ok "40e parity driver completed (rc 0)"
+else
+  bad "40e parity driver crashed: $(tail -2 "$T/e-driver.log" | tr '\n' ' ')"
+fi
+n_checks=0
+while IFS= read -r line; do
+  verdict="${line%% *}"; rest="${line#* }"
+  lbl="${rest%% :: *}"; det="${rest#* :: }"
+  if [[ "$verdict" == "OK" ]]; then ok "$lbl"; else bad "$lbl ($det)"; fi
+  n_checks=$((n_checks+1))
+done < "$T/e-checks.txt"
+[[ $n_checks -ge 40 ]] && ok "40e full check matrix ran ($n_checks checks)" \
+  || bad "40e check matrix truncated ($n_checks checks)"
+
 # ═══ 41. reader vs remote-engine ERR replies (karaoke IPC hardening) ═══
 # A remote-playback engine without the read-only karaoke family answers
 # "ERR: command '...' is not supported..." on a LIVE socket. fetch() must
