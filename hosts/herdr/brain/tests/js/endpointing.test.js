@@ -262,3 +262,55 @@ test("snapshot splits committed vs interim after a session boundary", () => {
   assert.equal(snap.bufferChars, "el rebaño está".length);
   assert.equal(snap.hasSpeech, true);
 });
+
+/* ---- growing-final dedup (the Chrome restart soup fix) ----
+ * Chrome Android re-emits the whole utterance as a growing final after
+ * each mid-utterance session restart. Blind appends turned one spoken
+ * sentence into "cuantas cuantas sesiones cuantas sesiones tengo…". */
+
+test("growing finals across session restarts merge instead of duplicating", () => {
+  const ep = createEndpointer();
+  ep.commit("cuantas");
+  ep.commit("cuantas sesiones");
+  ep.commit("cuantas sesiones tengo");
+  ep.commit("cuantas sesiones tengo levantadas");
+  assert.equal(ep.finalize(), "cuantas sesiones tengo levantadas");
+});
+
+test("partial overlap appends only the new tail", () => {
+  const ep = createEndpointer();
+  ep.commit("el rebaño está");
+  ep.commit("está funcionando muy mal");
+  assert.equal(ep.finalize(), "el rebaño está funcionando muy mal");
+});
+
+test("growing finals merge regardless of a carried interim", () => {
+  const ep = createEndpointer();
+  ep.commit("cuantas");
+  ep.push("cuantas sesiones");  // interim snapshot carried across restart
+  ep.commit("cuantas sesiones tengo");
+  assert.equal(ep.finalize(), "cuantas sesiones tengo");
+});
+
+test("overlap match ignores case and punctuation drift", () => {
+  const ep = createEndpointer();
+  ep.commit("La escucha,");
+  ep.commit("la escucha está mal!");
+  // The final's own rendering wins for the overlapping region — the point
+  // is that the drift never defeats the match and nothing duplicates.
+  assert.equal(ep.finalize(), "la escucha está mal!");
+});
+
+test("disjoint finals still append without merging", () => {
+  const ep = createEndpointer();
+  ep.commit("primera parte");
+  ep.commit("segunda parte");
+  assert.equal(ep.finalize(), "primera parte segunda parte");
+});
+
+test("genuine repetition inside one final survives the merge", () => {
+  const ep = createEndpointer();
+  ep.commit("hola hola");
+  ep.commit("hola hola cómo estás");
+  assert.equal(ep.finalize(), "hola hola cómo estás");
+});
