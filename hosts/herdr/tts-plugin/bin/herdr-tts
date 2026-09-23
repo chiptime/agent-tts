@@ -248,6 +248,10 @@ TT_EN[read.visual.start]="▶️ Starting synchronized reading in %s..."
 TT_EN[read.visual.failed]="Playback or visual reading failed"
 TT_EN[usage.render_pane]="Usage: herdr-tts --render-pane <pane_id> <output_file.mp3>"
 TT_EN[usage.render_text]="Usage: herdr-tts --render-text <output_file.mp3> [text...] [--voice <voice>] [--rate <rate>] [--agent <type>] [--session-id <id>]"
+TT_EN[usage.render_html]="Usage: herdr-tts --render-html <input_file> <output_html> [--map <map.json>]"
+TT_EN[help.render_html]="     --render-html <in> <out>    Convert an agent message to anchored HTML for reading consumers"
+TT_EN[error.render_html.input]="render-html: cannot read the input file (no output written)"
+TT_EN[error.render_html.engine]="render-html: agent-tts engine unavailable (run scripts/bootstrap.sh)"
 TT_EN[auto.enabled]="🔊 Background auto-read enabled"
 TT_EN[auto.enabled.notify]="Automatic reading enabled"
 TT_EN[auto.enabled.spoken]="Automatic reading enabled."
@@ -739,6 +743,10 @@ TT_ES[read.visual.start]="▶️ Iniciando lectura sincronizada en %s..."
 TT_ES[read.visual.failed]="Fallo en reproducción o lectura visual"
 TT_ES[usage.render_pane]="Uso: herdr-tts --render-pane <pane_id> <output_file.mp3>"
 TT_ES[usage.render_text]="Uso: herdr-tts --render-text <output_file.mp3> [texto...] [--voice <voz>] [--rate <velocidad>] [--agent <tipo>] [--session-id <id>]"
+TT_ES[usage.render_html]="Uso: herdr-tts --render-html <archivo_entrada> <salida_html> [--map <mapa.json>]"
+TT_ES[help.render_html]="     --render-html <in> <out>    Convierte un mensaje del agente en HTML con anclas para lectura"
+TT_ES[error.render_html.input]="render-html: no se puede leer el archivo de entrada (no se escribió ninguna salida)"
+TT_ES[error.render_html.engine]="render-html: el motor agent-tts no está disponible (ejecuta scripts/bootstrap.sh)"
 TT_ES[auto.enabled]="🔊 Lectura automática de fondo activada"
 TT_ES[auto.enabled.notify]="Lectura automática activada"
 TT_ES[auto.enabled.spoken]="Lectura automática activada."
@@ -2107,6 +2115,43 @@ render_text_audio() {
   local render_rate="${rate_override:-$TTS_RATE}"
   build_provider_flags
   "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$render_voice" --rate "$render_rate" --max-chars "$TTS_MAX_CHARS" --output "$output_file" --no-play "${source_flags[@]}" "${PROVIDER_FLAGS[@]}"
+}
+
+# HT-15 reader pipeline host access: transient on-demand HTML render with
+# engine-oracle sentence anchors (lib/reader_pipeline.py behind the engine
+# bridge). Exit codes (design Data Contracts): 0 success (including
+# coverage alignment / empty / malformed input), 1 usage, 2 input
+# unreadable or redaction failure (fail closed — no file written),
+# 3 agent_tts unavailable. The sidecar map is opt-in via --map (default
+# off per design Open Questions).
+render_html() { # <input_file> <output_html> [--map <map.json>]
+  local in_file="${1:-}"
+  local out_file="${2:-}"
+  local -a map_arg=()
+  if [[ $# -gt 2 ]]; then
+    shift 2
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --map)
+          map_arg+=(--map "${2:-}")
+          { [[ $# -ge 2 ]] && shift 2; } || shift
+          ;;
+        *) shift ;;
+      esac
+    done
+  fi
+  if [[ -z "$in_file" || -z "$out_file" ]]; then
+    echo "$(tt usage.render_html)" >&2
+    return 1
+  fi
+  local rc=0
+  "$VENV_PYTHON" "$ENGINE_SCRIPT" --render-html "$in_file" "$out_file" "${map_arg[@]}" || rc=$?
+  if [[ $rc -eq 2 ]]; then
+    echo "$(tt error.render_html.input)" >&2
+  elif [[ $rc -eq 3 ]]; then
+    echo "$(tt error.render_html.engine)" >&2
+  fi
+  return "$rc"
 }
 
 toggle_play() {
@@ -6659,6 +6704,10 @@ case "${1:-}" in
     shift
     render_text_audio "$@"
     ;;
+  --render-html)
+    shift
+    render_html "$@"
+    ;;
   --speak)
     shift
     speak_text "$*"
@@ -6922,6 +6971,7 @@ run_podcast_server(port=int(sys.argv[1]), podcast_dir=sys.argv[2])
     "$(tt help.speak)"
     "$(tt help.render_text.args)"
     "$(tt help.render_text.desc)"
+    "$(tt help.render_html)"
     "$(tt help.contract_version)"
     "$(tt help.play_file)"
     "$(tt help.player_status)"
