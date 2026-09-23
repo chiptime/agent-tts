@@ -9,7 +9,7 @@ import threading
 import time
 from typing import List, Optional
 
-from agent_tts.audio import AudioSession, cleanup_locks, play_mp3_file
+from agent_tts.audio import AudioSession, _write_player_locks, cleanup_locks, play_mp3_file
 from agent_tts.boundaries import (
     BoundaryMap,
     Paragraph,
@@ -18,7 +18,7 @@ from agent_tts.boundaries import (
     estimate_boundaries_from_text,
 )
 from agent_tts.cleaner import clean_agent_text
-from agent_tts.constants import DEFAULT_RATE, DEFAULT_VOICE, LOCK_FILE, PID_FILE
+from agent_tts.constants import DEFAULT_RATE, DEFAULT_VOICE
 from agent_tts.ipc import send_ipc_command
 from agent_tts.playback_target import resolve_target
 from agent_tts.powershell_playback import PowershellSession, is_wsl_ps_available
@@ -684,13 +684,9 @@ async def speak(
     """Synthesizes and plays audio with interactive controls."""
     session = None
     if not no_play:
-        try:
-            with open(PID_FILE, "w") as f:
-                f.write(str(os.getpid()))
-            with open(LOCK_FILE, "w") as f:
-                f.write(str(os.getpid()))
-        except OSError:
-            pass
+        # Single lock/pid protocol shared with play_mp3_data: the ownership
+        # election happens here, before any IPC server binds the channel.
+        _write_player_locks()
         if playback == "local":
             session = AudioSession(
                 label=f"{len(text)} chars",
