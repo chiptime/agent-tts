@@ -1,14 +1,26 @@
 "use strict";
 
-/* herdr-brain PWA: continuous hands-free call.
+/* herdr-brain PWA: continuous hands-free call over a cockpit-first layout.
+ *
+ * Layout (PRD call-drawer-redesign):
+ * - BASE SCREEN = agent cockpit: herd strip, glance turn list (fed by
+ *   GET /conversation: 20 turns, 4000-char clip) with real scroll +
+ *   "ver más" inline expansion, and the terminal preview (fed by /view)
+ *   with real scroll. The old full-screen sheet is gone.
+ * - THE CALL = bottom drawer anchored above the footer: auto-opens on
+ *   call start, closes without hanging up, reopens from the state pill.
+ *   Engine-dependent interim strip (navegador: live text; servidor:
+ *   recording dot + VAD level meter + utterance timer — never fake text).
  *
  * Call state machine: idle -> listening -> thinking -> speaking -> listening…
  * - ONE recognition lifecycle per listening session (continuous=true) with
  *   SELF-ENDPOINTING (static/endpointing.js): dispatch on isFinal, on 1200ms
  *   of interim silence, or on a 15s hard cap. No mic during /ask or TTS.
  * - Announcements arrive over SSE and queue behind any in-flight audio.
- * - Every poll render is guarded: one render error never kills the loop and
- *   every surface has a Spanish empty/error state (no dead ends).
+ * - Every poll render is KEYED (FR10): herd chips and glance turns are
+ *   updated in place per id/content, so the 5s poll never swallows taps,
+ *   resets scroll or collapses an expanded turn. One render error never
+ *   kills the loop and every surface has a Spanish empty/error state.
  * User-facing strings are Spanish on purpose (single Spanish-speaking owner).
  */
 
@@ -18,7 +30,11 @@
   var pauseBtn = $("pause-btn");
   var stopBtn = $("stop-audio");
   var conv = $("conversation");
-  var interimEl = $("interim");
+  var interimTextEl = $("interim-text");
+  var recMeterEl = $("rec-meter");
+  var recElapsedEl = $("rec-elapsed");
+  var stripStatusEl = $("strip-status");
+  var meterCellsEl = $("meter-cells");
   var bannerEl = $("banner");
   var micNote = $("mic-note");
   var player = $("player");
@@ -30,23 +46,21 @@
   var pillMain = $("pill-main");
   var pillSub = $("pill-sub");
   var agentView = $("agent-view");
-  var viewEmpty = $("view-empty");
   var pendingBanner = $("pending-banner");
-  var viewTranscript = $("view-transcript");
   var viewScreen = $("view-screen");
   var herdStrip = $("herd-strip");
   var herdNote = $("herd-note");
   var toastEl = $("toast");
-  var sheet = $("sheet");
-  var sheetTitle = $("sheet-title");
-  var sheetNote = $("sheet-note");
-  var sheetDiag = $("sheet-diag");
+  var drawer = $("call-drawer");
+  var drawerCloseBtn = $("drawer-close");
+  var callTimerEl = $("call-timer");
+  var dPendingEl = $("d-pending");
+  var glanceTurns = $("glance-turns");
+  var glanceEmpty = $("glance-empty");
+  var glanceLabel = $("glance-label");
   var diagPanel = $("diag-panel");
   var diagText = $("diag-text");
-  var sheetConv = $("sheet-conversation");
-  var sheetScreen = $("sheet-screen");
-  var tabConv = $("tab-conv");
-  var tabScreen = $("tab-screen");
+  var diagStatus = $("diag-status");
   var voiceEngineBtn = $("voice-engine-btn");
 
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -92,44 +106,200 @@
     localStorage.setItem(SESSION_KEY, sessionId);
   }
   var selectedPane = localStorage.getItem(PANE_KEY);
-  var lastViewJson = "";  // render cache — set only AFTER a successful render
+
+  /* Mid-call reload marker (FR15): boot shows "Llamada cortada" and NEVER
+   * auto-resumes the mic; a tap starts a fresh call. */
+  var CALL_INTENT_KEY = "herdr-brain-call-intent";
+  var interruptedFromReload = false;
+  function markCallIntent() {
+    try { sessionStorage.setItem(CALL_INTENT_KEY, "1"); } catch (err) { /* private mode */ }
+  }
+  function clearCallIntent() {
+    try { sessionStorage.removeItem(CALL_INTENT_KEY); } catch (err) { /* noop */ }
+  }
 
   /* ---------------- call state machine ----------------
-   * idle | listening | thinking | speaking | paused  */
+   * idle | listening | thinking | speaking | paused
+   * (+ recording/transcribing: servidor engine sub-states) */
   var callState = "idle";
   var inCall = false;
+  var drawerOpen = false;
+  var callStartedAt = null;
+  var timerTick = null;
+  var utteranceStartedAt = null;  // servidor: current utterance (for the strip timer)
+  var lastElapsedShown = -1;
+  var wakeLock = null;
+  var METER_CELLS = 12;
+  var meterLit = -1;
 
   var PILL_TEXT = {
     listening: "● Escuchando",
     recording: "● Grabando — habla",
     transcribing: "⏳ Entendiendo…",
     thinking: "⏳ Pensando…",
-    speaking: "🔊 Hablando — toca para cortar",
+    speaking: "🔊 Hablando",
     paused: "⏸ Micrófono en pausa"
   };
 
   function setCallState(state) {
     callState = state;
+    if (state !== "recording" && utteranceStartedAt) {
+      utteranceStartedAt = null;
+      lastElapsedShown = -1;
+      recElapsedEl.textContent = "0:00";
+    }
+    pillSub.classList.add("hidden");
     if (state === "idle") {
-      statePill.classList.add("hidden");
-      pillSub.classList.add("hidden");
       callBtn.textContent = "📞 Llamar";
       callBtn.classList.remove("oncall");
       pauseBtn.classList.add("hidden");
+    } else {
+      callBtn.textContent = "🔴 Colgar";
+      callBtn.classList.add("oncall");
+      var micControllable = state === "listening" || state === "recording" || state === "paused";
+      pauseBtn.classList.toggle("hidden", !micControllable);
+      pauseBtn.textContent = state === "paused" ? "▶ Reanudar" : "⏸ Pausa";
+    }
+    renderPill();
+    renderInterimStrip();
+  }
+
+  /* Pill exists ONLY while calling with the drawer closed (state machine
+   * rows 8–13), or in the reload-interrupted boot state (row 17). Idle
+   * and drawer-open are pill-free (FR12). */
+  function renderPill() {
+    if (interruptedFromReload && !inCall) {
+      pillMain.textContent = "Llamada cortada — ¿Volver a llamar?";
+      statePill.className = "interrupted";
+      statePill.classList.remove("hidden");
       return;
     }
-    pillMain.textContent = PILL_TEXT[state] || state;
-    pillSub.classList.add("hidden");
-    statePill.className = state;
-    statePill.classList.remove("hidden");
-    callBtn.textContent = "🔴 Colgar";
-    callBtn.classList.add("oncall");
-    var micControllable = state === "listening" || state === "recording" || state === "paused";
-    pauseBtn.classList.toggle("hidden", !micControllable);
-    pauseBtn.textContent = state === "paused" ? "▶ Reanudar" : "⏸ Pausa";
-    // The interim strip carries the live transcript of Web Speech only.
-    interimEl.classList.toggle("hidden", !(state === "listening" && voiceEngine === "navegador"));
+    if (inCall && !drawerOpen && !textMode && callState !== "idle") {
+      pillMain.textContent = (PILL_TEXT[callState] || callState) + " ▲";
+      statePill.className = callState;
+      statePill.classList.remove("hidden");
+      return;
+    }
+    statePill.classList.add("hidden");
   }
+
+  /* Interim strip (FR8) — engine-dependent, lives at the drawer top:
+   * navegador -> live interim text; servidor -> recording indicator +
+   * level meter + elapsed utterance time (never simulated text). */
+  function renderInterimStrip() {
+    var active = inCall && !textMode;
+    var st = callState;
+    var browser = voiceEngine === "navegador";
+    interimTextEl.classList.toggle("hidden", !(active && browser && st === "listening"));
+    var meterOn = active && !browser && (st === "listening" || st === "recording");
+    recMeterEl.classList.toggle("hidden", !meterOn);
+    var status = "";
+    if (active && !browser) {
+      if (st === "listening") status = "○ escuchando…";
+      else if (st === "transcribing") status = "⏳ transcribiendo…";
+      else if (st === "paused") status = "⏸ micrófono en pausa";
+    }
+    if (status) {
+      if (stripStatusEl.textContent !== status) stripStatusEl.textContent = status;
+      stripStatusEl.classList.remove("hidden");
+    } else {
+      stripStatusEl.classList.add("hidden");
+    }
+  }
+
+  function resetInterimContent() {
+    interimTextEl.textContent = "";
+    meterLit = -1;          // force the meter to repaint on next push
+    lastElapsedShown = -1;
+    recElapsedEl.textContent = "0:00";
+    renderInterimStrip();
+  }
+
+  /* ---------------- call drawer ----------------
+   * Close NEVER hangs up (AC2); the pill reopens (AC3); Android back
+   * closes instead of exiting the PWA (FR16/AC14). */
+
+  function focusAfterDrawerClose() {
+    var target = !statePill.classList.contains("hidden") ? statePill : callBtn;
+    try { target.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
+  }
+
+  function openDrawer() {
+    if (drawerOpen) return;
+    drawerOpen = true;
+    drawer.classList.add("open");
+    drawer.removeAttribute("inert");
+    try { history.pushState({ herdrDrawer: true }, ""); } catch (err) { /* non-http origins */ }
+    conv.scrollTop = conv.scrollHeight;  // newest turn (AC1/AC3)
+    renderPill();
+    try { drawerCloseBtn.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
+  }
+
+  function closeDrawer() {
+    if (!drawerOpen) return;
+    drawerOpen = false;
+    drawer.classList.remove("open");
+    drawer.setAttribute("inert", "");
+    if (history.state && history.state.herdrDrawer) history.back();  // pop our entry; popstate no-ops
+    renderPill();
+    focusAfterDrawerClose();
+  }
+
+  window.addEventListener("popstate", function () {
+    /* Android back with the drawer open: close it, never exit the PWA. */
+    if (!drawerOpen) return;
+    drawerOpen = false;
+    drawer.classList.remove("open");
+    drawer.setAttribute("inert", "");
+    renderPill();
+    focusAfterDrawerClose();
+  });
+
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", function () {
+      /* FR11: the drawer and the soft keyboard never coexist. */
+      if (drawerOpen && window.visualViewport.height < window.innerHeight * 0.75) closeDrawer();
+    });
+  }
+
+  function startCallTimer() {
+    stopCallTimer();
+    callTimerEl.textContent = "00:00";
+    timerTick = setInterval(function () {
+      var s = Math.max(0, Math.floor((Date.now() - callStartedAt) / 1000));
+      var m = Math.floor(s / 60);
+      s = s % 60;
+      callTimerEl.textContent = (m < 10 ? "0" + m : m) + ":" + (s < 10 ? "0" + s : s);
+    }, 1000);
+  }
+
+  function stopCallTimer() {
+    if (timerTick) { clearInterval(timerTick); timerTick = null; }
+  }
+
+  /* ---------------- wake lock (FR17) ---------------- */
+
+  function requestWakeLock() {
+    try {
+      if (navigator.wakeLock && navigator.wakeLock.request) {
+        navigator.wakeLock.request("screen").then(function (lock) {
+          wakeLock = lock;
+        }, function () { /* unsupported/denied: silent fail */ });
+      }
+    } catch (err) { /* unsupported: silent fail */ }
+  }
+
+  function releaseWakeLock() {
+    if (wakeLock) {
+      try { wakeLock.release(); } catch (err) { /* already released */ }
+      wakeLock = null;
+    }
+  }
+
+  document.addEventListener("visibilitychange", function () {
+    /* Chrome silently drops wake locks on tab hide: re-acquire mid-call. */
+    if (document.visibilityState === "visible" && inCall) requestWakeLock();
+  });
 
   /* ---------------- diagnostics ---------------- */
 
@@ -149,9 +319,9 @@
   }
 
   function renderDiag() {
-    if (!sheetDiag) return;
+    if (!diagStatus) return;
     var when = diag.lastPoll ? diag.lastPoll.toLocaleTimeString() : "—";
-    sheetDiag.textContent = "Última consulta: " + when + " · Último error: " + diag.lastError;
+    diagStatus.textContent = "Última consulta: " + when + " · Último error: " + diag.lastError;
   }
 
   function safeRender(name, fn, arg) {
@@ -162,9 +332,25 @@
     }
   }
 
-  /* ---------------- conversation view ---------------- */
+  /* ---------------- conversation (drawer body) ---------------- */
+
+  function updateGhost() {
+    /* FR9: ghost bubble until the first turn of the call. */
+    var ghost = document.getElementById("ghost-bubble");
+    var hasTurns = !!conv.querySelector(".turn");
+    if (!hasTurns && !ghost) {
+      ghost = document.createElement("div");
+      ghost.id = "ghost-bubble";
+      ghost.textContent = "Di algo — te escucho";
+      conv.appendChild(ghost);
+    } else if (hasTurns && ghost) {
+      ghost.remove();
+    }
+  }
 
   function addTurn(role, text) {
+    var ghost = document.getElementById("ghost-bubble");
+    if (ghost) ghost.remove();
     var turn = document.createElement("div");
     turn.className = "turn " + role;
     var who = document.createElement("span");
@@ -179,9 +365,26 @@
     conv.scrollTop = conv.scrollHeight;
   }
 
+  /* FR13: SSE announcements append a VISUALLY DISTINCT bubble to the call. */
+  function addAnnouncementTurn(label, text) {
+    var ghost = document.getElementById("ghost-bubble");
+    if (ghost) ghost.remove();
+    var turn = document.createElement("div");
+    turn.className = "turn announce";
+    var who = document.createElement("span");
+    who.className = "who";
+    who.textContent = "🔊 anuncio · " + (label || "agente");
+    var body = document.createElement("span");
+    body.textContent = text || "";
+    turn.appendChild(who);
+    turn.appendChild(body);
+    conv.appendChild(turn);
+    conv.scrollTop = conv.scrollHeight;
+  }
+
   /* Replay pill: within one container, only the newest kept turn has it.
-   * getText resolves the text at tap time (the /view tail is truncated for
-   * glancing, so the agent view resolves the full text from /conversation). */
+   * getText resolves the text at tap time (the glance turns already carry
+   * the full /conversation text, so no extra fetch is needed). */
   function attachReplay(container, turn, getText, label) {
     var prev = container.querySelector(".replay-btn");
     if (prev) prev.remove();
@@ -192,31 +395,12 @@
     btn.title = "Leer en voz alta";
     btn.textContent = "🔊 Escuchar";
     btn.addEventListener("click", function (event) {
-      event.stopPropagation();  // never trigger the agent-view "open sheet" tap
+      event.stopPropagation();  // never bubble into container-level taps
       Promise.resolve(getText()).then(function (text) {
         speakText(text, label);
       });
     });
     turn.appendChild(btn);
-  }
-
-  /* The /view transcript tail caps each turn for glancing; replay reads the
-   * full turn text from /conversation, falling back to the tail on failure. */
-  function fetchFullAgentText(fallback) {
-    var qs = selectedPane ? "?pane_id=" + encodeURIComponent(selectedPane) : "";
-    return fetch("/conversation" + qs)
-      .then(function (resp) {
-        if (!resp.ok) throw new Error("HTTP " + resp.status);
-        return resp.json();
-      })
-      .then(function (data) {
-        var turns = (data && data.turns) || [];
-        for (var i = turns.length - 1; i >= 0; i--) {
-          if (turns[i].role !== "user") return turns[i].text;
-        }
-        return fallback;
-      })
-      .catch(function () { return fallback; });
   }
 
   function speakText(text, label) {
@@ -257,9 +441,12 @@
   function enterTextMode(reason) {
     if (textMode) return;
     textMode = true;
-    if (inCall) endCall();
+    if (inCall) endCall();  // endCall closes the drawer (AC4/AC11)
+    else closeDrawer();     // FR11: the drawer and the soft keyboard never coexist
     fallbackForm.classList.remove("hidden");
     showMicNote(reason);
+    renderPill();
+    renderInterimStrip();
   }
 
   /* ---------------- herd + selected agent ---------------- */
@@ -276,9 +463,19 @@
     return fallback ? fallback.pane_id : null;
   }
 
+  var lastHerd = [];
+  var lastPending = { detected: false };
+  var pendingBannerTapPane = null;
+  var lastEffectivePane = null;
+
+  /* Keyed in-place update (FR10/AC8): chips are reused per pane_id and
+   * touched only when their content changed, so the 5s poll can never
+   * swallow a tap on the strip. */
   function renderHerd(herd) {
     if (!Array.isArray(herd)) herd = [];
+    lastHerd = herd;
     var effective = effectiveSelected(herd);
+    lastEffectivePane = effective;
     var fellBack = !!(selectedPane && effective !== selectedPane);
     herdNote.classList.toggle("hidden", !fellBack);
     if (fellBack) {
@@ -287,111 +484,342 @@
       if (effective) localStorage.setItem(PANE_KEY, effective);
     }
 
-    herdStrip.textContent = "";
-    for (var i = 0; i < herd.length; i++) {
-      var agent = herd[i];
-      var chipEl = document.createElement("button");
-      chipEl.className = "herd-chip" + (agent.pane_id === effective ? " selected" : "");
-      var base = (agent.cwd || "").split("/").filter(Boolean).pop() || agent.title || agent.agent;
-      chipEl.title = (agent.title || "") + (agent.last_turn ? " — " + agent.last_turn.text : "");
-      var st = document.createElement("span");
-      st.className = "st " + (agent.agent_status || "");
-      st.textContent = "●";
-      chipEl.appendChild(st);
-      chipEl.appendChild(document.createTextNode(base));
-      chipEl.addEventListener("click", function (paneId) {
-        return function () { selectAgent(paneId); };
-      }(agent.pane_id));
-      herdStrip.appendChild(chipEl);
+    var existing = {};
+    var i, el;
+    for (i = 0; i < herdStrip.children.length; i++) {
+      el = herdStrip.children[i];
+      existing[el.getAttribute("data-pane")] = el;
     }
+    var wanted = [];
+    var seen = {};
+    for (i = 0; i < herd.length; i++) {
+      var agent = herd[i];
+      var id = agent.pane_id;
+      seen[id] = true;
+      var base = (agent.cwd || "").split("/").filter(Boolean).pop() || agent.title || agent.agent;
+      var title = (agent.title || "") + (agent.last_turn ? " — " + agent.last_turn.text : "");
+      var cls = "herd-chip" + (id === effective ? " selected" : "");
+      el = existing[id];
+      if (!el) {
+        el = document.createElement("button");
+        el.type = "button";
+        el.className = "herd-chip";
+        el.setAttribute("data-pane", id);
+        var stEl = document.createElement("span");
+        el.appendChild(stEl);
+        var labelEl = document.createElement("span");
+        el.appendChild(labelEl);
+        el.addEventListener("click", (function (paneId) {
+          return function () { selectAgent(paneId); };
+        })(id));
+      }
+      var stCls = "st " + (agent.agent_status || "");
+      if (el.firstChild.className !== stCls) el.firstChild.className = stCls;
+      if (el.firstChild.nextSibling.textContent !== base) el.firstChild.nextSibling.textContent = base;
+      if (el.className !== cls) el.className = cls;
+      if (el.title !== title) el.title = title;
+      wanted.push(el);
+    }
+    var stale = [];
+    for (i = 0; i < herdStrip.children.length; i++) {
+      if (!seen[herdStrip.children[i].getAttribute("data-pane")]) stale.push(herdStrip.children[i]);
+    }
+    for (i = 0; i < stale.length; i++) stale[i].remove();
+    var sameOrder = wanted.length === herdStrip.children.length;
+    for (i = 0; sameOrder && i < wanted.length; i++) {
+      if (herdStrip.children[i] !== wanted[i]) sameOrder = false;
+    }
+    if (!sameOrder) {
+      for (i = 0; i < wanted.length; i++) herdStrip.appendChild(wanted[i]);
+    }
+    renderGlanceLabel();       // lastHerd just refreshed: recompute name
+    renderPending(lastPending);  // blocked-agent counts may have changed
   }
 
   function selectAgent(paneId) {
     if (selectedPane === paneId) return;
     selectedPane = paneId;
     localStorage.setItem(PANE_KEY, paneId);
-    lastViewJson = "";
+    /* Restyle chips NOW (no fetch): selection feedback must not wait for
+     * the next 5s /herd poll. */
+    safeRender("herd-restyle", renderHerd, lastHerd);
+    glanceNeedsWipe = true;  // another agent's turns: full keyed-cache reset
+    lastScreenText = null;
     refreshView();
+    refreshConversation();
+  }
+
+  /* ---------------- status / pending / terminal (from /view) ---------------- */
+
+  function renderStatus(state) {
+    var chipText, chipClass, titleText;
+    if (!state || !state.active) {
+      chipText = "nadie";
+      chipClass = "chip";
+      titleText = "sin agente activo";
+    } else {
+      chipText = state.agent_status || "?";
+      chipClass = "chip " + (state.agent_status || "");
+      var title = state.title || state.agent || "";
+      titleText = title + (state.cwd ? " — " + state.cwd : "");
+    }
+    if (chip.textContent !== chipText) chip.textContent = chipText;
+    if (chip.className !== chipClass) chip.className = chipClass;
+    if (paneTitle.textContent !== titleText) paneTitle.textContent = titleText;
+  }
+
+  function blockedAgents() {
+    var out = [];
+    for (var i = 0; i < lastHerd.length; i++) {
+      if ((lastHerd[i].agent_status || "").toLowerCase() === "blocked") out.push(lastHerd[i]);
+    }
+    return out;
+  }
+
+  /* Pending banner (FR4): the three kinds keep their colors; multiple
+   * pending agents aggregate and tapping selects (cycles to) the next
+   * blocked agent. The compact #d-pending strip mirrors the banner inside
+   * the drawer on short screens (AC12, CSS media query). */
+  function renderPending(pending) {
+    lastPending = pending && pending.detected ? pending : { detected: false };
+    var detected = lastPending.detected;
+    var blocked = blockedAgents();
+    var selBlocked = false;
+    var otherBlocked = null;
+    var i;
+    for (i = 0; i < blocked.length; i++) {
+      if (blocked[i].pane_id === selectedPane) selBlocked = true;
+      else if (!otherBlocked) otherBlocked = blocked[i];
+    }
+    var count = blocked.length + (detected && !selBlocked ? 1 : 0);
+    var actionable = false;
+    var tapPane = null;
+    if (count >= 2) {
+      pendingBanner.className = "pending permission actionable";
+      pendingBanner.textContent = count + " agentes esperan tu OK — toca para atender";
+      actionable = true;
+      if (otherBlocked) {
+        tapPane = otherBlocked.pane_id;
+      } else {
+        for (i = 0; i < blocked.length; i++) {
+          if (blocked[i].pane_id !== selectedPane) { tapPane = blocked[i].pane_id; break; }
+        }
+      }
+    } else if (detected) {
+      var kind = lastPending.kind || "question";
+      var headline = {
+        permission: "Pide permiso",
+        error: "Error del agente",
+        question: "El agente pregunta"
+      }[lastPending.kind] || "Necesita tu atención";
+      pendingBanner.className = "pending " + kind;
+      pendingBanner.textContent = headline + ": " + (lastPending.excerpt || "mira la pantalla");
+    } else if (blocked.length === 1) {
+      pendingBanner.className = "pending permission actionable";
+      pendingBanner.textContent = (blocked[0].title || blocked[0].agent || "Un agente") +
+        " espera tu OK — toca para verlo";
+      actionable = true;
+      tapPane = blocked[0].pane_id;
+    } else {
+      pendingBanner.className = "pending hidden";
+    }
+    var hidden = pendingBanner.classList.contains("hidden");
+    if (!hidden) {
+      if (actionable) {
+        pendingBanner.setAttribute("role", "button");
+        pendingBanner.setAttribute("tabindex", "0");
+      } else {
+        pendingBanner.setAttribute("role", "presentation");
+        pendingBanner.removeAttribute("tabindex");
+      }
+      dPendingEl.textContent = pendingBanner.textContent;
+    } else {
+      dPendingEl.textContent = "";
+    }
+    pendingBannerTapPane = tapPane;
+  }
+
+  pendingBanner.addEventListener("click", function () {
+    if (pendingBannerTapPane && pendingBannerTapPane !== selectedPane) {
+      selectAgent(pendingBannerTapPane);
+    }
+  });
+
+  /* Terminal preview (FR3): set textContent ONLY on change so the user's
+   * scroll position inside the preview survives the poll. */
+  var lastScreenText = null;
+
+  function renderScreen(view) {
+    var wrap = viewScreen.parentElement;  // .gscreen-wrap
+    var text = (view && view.screen) || "";
+    if (text) {
+      if (text !== lastScreenText) {
+        lastScreenText = text;
+        viewScreen.textContent = text;
+      }
+      wrap.classList.remove("hidden");
+    } else {
+      lastScreenText = null;
+      viewScreen.textContent = "";
+      wrap.classList.add("hidden");
+    }
+    agentView.classList.remove("hidden");  // reveal even if /conversation fails
+  }
+
+  /* ---------------- glance turn list (from /conversation) ---------------- */
+
+  var glanceNeedsWipe = true;
+
+  function buildGlanceTurn(role, text) {
+    var el = document.createElement("div");
+    el.className = "gturn " + role;
+    el.setAttribute("data-role", role);
+    var roleEl = document.createElement("span");
+    roleEl.className = "gt-role";
+    roleEl.textContent = role === "user" ? "tú" : "agente";
+    var textEl = document.createElement("span");
+    textEl.className = "gt-text";
+    textEl.textContent = text;
+    /* FR2: full-width <button aria-expanded> row — never an inline span. */
+    var moreBtn = document.createElement("button");
+    moreBtn.type = "button";
+    moreBtn.className = "ver-mas";
+    moreBtn.setAttribute("aria-expanded", "false");
+    moreBtn.textContent = "ver más";
+    moreBtn.addEventListener("click", function (event) {
+      event.stopPropagation();
+      var expanded = el.classList.toggle("expanded");
+      moreBtn.setAttribute("aria-expanded", expanded ? "true" : "false");
+      moreBtn.textContent = expanded ? "ver menos" : "ver más";
+    });
+    el.appendChild(roleEl);
+    el.appendChild(textEl);
+    el.appendChild(moreBtn);
+    return el;
+  }
+
+  function measureVerMas(el, text) {
+    if (el.classList.contains("expanded")) {
+      el.classList.add("has-more");  // it was expandable before: keep it
+      return;
+    }
+    var textEl = el.querySelector(".gt-text");
+    var overflow = textEl.scrollHeight > textEl.clientHeight + 2 ||
+      text.length > 260 || text.split("\n").length >= 5;
+    el.classList.toggle("has-more", overflow);
+  }
+
+  function renderGlanceLabel() {
+    var paneId = lastEffectivePane || selectedPane;
+    var name = "";
+    for (var i = 0; i < lastHerd.length; i++) {
+      if (lastHerd[i].pane_id === paneId) {
+        var a = lastHerd[i];
+        name = (a.cwd || "").split("/").filter(Boolean).pop() || a.title || a.agent || "";
+        break;
+      }
+    }
+    var label = "Vista del agente" + (name ? " · " + name : "");
+    if (glanceLabel.textContent !== label) glanceLabel.textContent = label;
+  }
+
+  /* Keyed in-place turn list (FR10/AC7/AC8): turns are reused by content
+   * key, expansion state and scroll survive the 5s poll, and elements are
+   * deleted only when their content really disappeared. */
+  function renderGlance(data) {
+    var turns = (data && data.turns) || [];
+    var scroll = glanceTurns;
+    var beforeTop = scroll.scrollTop;
+    var beforeHeight = scroll.scrollHeight;
+    var atBottom = beforeTop + scroll.clientHeight >= beforeHeight - 4;
+
+    var existing = [];
+    var i, el;
+    for (i = 0; i < scroll.children.length; i++) {
+      el = scroll.children[i];
+      if (el.classList.contains("gturn")) existing.push(el);
+    }
+    if (glanceNeedsWipe) {
+      for (i = 0; i < existing.length; i++) existing[i].remove();
+      existing = [];
+      glanceNeedsWipe = false;
+    }
+
+    var free = {};
+    for (i = 0; i < existing.length; i++) {
+      var k = existing[i].getAttribute("data-key");
+      (free[k] || (free[k] = [])).push(existing[i]);
+    }
+    var wanted = [];
+    for (i = 0; i < turns.length; i++) {
+      var t = turns[i];
+      var key = t.role + "\u0000" + t.text;
+      var pool = free[key];
+      if (pool && pool.length) {
+        el = pool.shift();
+      } else {
+        el = buildGlanceTurn(t.role, t.text);
+        /* Expansion carry-over (AC7): if the turn that used to sit at
+         * this position was expanded, the rebuilt one stays expanded. */
+        var oldHere = existing[i];
+        if (oldHere && oldHere.classList.contains("expanded") &&
+            oldHere.getAttribute("data-role") === t.role) {
+          el.classList.add("expanded");
+          var btn = el.querySelector(".ver-mas");
+          btn.setAttribute("aria-expanded", "true");
+          btn.textContent = "ver menos";
+        }
+        measureVerMas(el, t.text);
+      }
+      if (el.getAttribute("data-key") !== key) el.setAttribute("data-key", key);
+      wanted.push(el);
+    }
+    var kept = {};
+    for (i = 0; i < wanted.length; i++) kept[wanted[i]] = true;
+    for (i = 0; i < existing.length; i++) {
+      if (!kept[existing[i]]) existing[i].remove();
+    }
+    var sameOrder = wanted.length === scroll.children.length;
+    for (i = 0; sameOrder && i < wanted.length; i++) {
+      if (scroll.children[i] !== wanted[i]) sameOrder = false;
+    }
+    if (!sameOrder) {
+      for (i = 0; i < wanted.length; i++) scroll.appendChild(wanted[i]);
+    }
+
+    /* Replay on the newest agent turn: the glance already carries the
+     * full /conversation text, so no fetch is needed. */
+    var lastAgent = null;
+    for (i = wanted.length - 1; i >= 0; i--) {
+      if (wanted[i].getAttribute("data-role") !== "user") { lastAgent = wanted[i]; break; }
+    }
+    var replay = scroll.querySelector(".replay-btn");
+    if (lastAgent && (!replay || replay.parentNode !== lastAgent)) {
+      attachReplay(scroll, lastAgent, (function (node) {
+        return function () { return node.querySelector(".gt-text").textContent; };
+      })(lastAgent), "agente");
+    }
+
+    if (!turns.length && !lastScreenText) glanceEmpty.classList.remove("hidden");
+    else glanceEmpty.classList.add("hidden");
+    agentView.classList.remove("hidden");
+
+    /* Scroll preservation (AC7): pinned-at-bottom stays pinned; content
+     * removed above the viewport shifts scrollTop by the height delta. */
+    var afterHeight = scroll.scrollHeight;
+    if (atBottom) scroll.scrollTop = scroll.scrollHeight;
+    else if (afterHeight !== beforeHeight) {
+      scroll.scrollTop = Math.max(0, beforeTop + (afterHeight - beforeHeight));
+    }
   }
 
   /* ---------------- status / view polling ---------------- */
-
-  function renderStatus(state) {
-    if (!state || !state.active) {
-      chip.textContent = "nadie";
-      chip.className = "chip";
-      paneTitle.textContent = "sin agente activo";
-      return;
-    }
-    chip.textContent = state.agent_status || "?";
-    chip.className = "chip " + (state.agent_status || "");
-    var title = state.title || state.agent || "";
-    paneTitle.textContent = title + (state.cwd ? " — " + state.cwd : "");
-  }
-
-  function renderPending(pending) {
-    if (!pending || !pending.detected) {
-      pendingBanner.className = "pending hidden";
-      return;
-    }
-    var kind = pending.kind || "question";
-    var headline = {
-      permission: "Pide permiso",
-      error: "Error del agente",
-      question: "El agente pregunta"
-    }[pending.kind] || "Necesita tu atención";
-    pendingBanner.textContent = headline + ": " + (pending.excerpt || "mira la pantalla");
-    pendingBanner.className = "pending " + kind;
-  }
-
-  function renderViewTail(view) {
-    viewTranscript.textContent = "";
-    var turns = (view && view.transcript) || [];
-    var lastAgentTurn = null;
-    var lastAgentText = "";
-    for (var i = 0; i < turns.length; i++) {
-      var line = document.createElement("div");
-      line.className = "view-turn " + turns[i].role;
-      var role = document.createElement("span");
-      role.className = "role";
-      role.textContent = turns[i].role === "user" ? "tú" : "agente";
-      line.appendChild(role);
-      line.appendChild(document.createTextNode(turns[i].text));
-      viewTranscript.appendChild(line);
-      if (turns[i].role !== "user") {
-        lastAgentTurn = line;
-        lastAgentText = turns[i].text;
-      }
-    }
-    if (lastAgentTurn) {
-      attachReplay(viewTranscript, lastAgentTurn, function () {
-        return fetchFullAgentText(lastAgentText);
-      }, "agente");
-    }
-    if (view && view.screen) {
-      viewScreen.textContent = view.screen;
-      viewScreen.classList.remove("hidden");
-    } else {
-      viewScreen.textContent = "";
-      viewScreen.classList.add("hidden");
-    }
-    /* NO dead ends: the panel is never blank; explicit empty state with retry. */
-    var hasContent = turns.length > 0 || !!(view && view.screen);
-    if (hasContent) {
-      viewEmpty.classList.add("hidden");
-    } else {
-      viewEmpty.textContent = "Sin datos del agente — toca para reintentar";
-      viewEmpty.classList.remove("hidden");
-    }
-    agentView.classList.remove("hidden");
-  }
 
   function renderView(view) {
     if (!view) return;
     safeRender("status", renderStatus, view.status);
     safeRender("pending", renderPending, view.pending);
-    safeRender("tail", renderViewTail, view);
-    lastViewJson = JSON.stringify([view.transcript, view.screen, view.pending]);
+    safeRender("screen", renderScreen, view);
     markPollOk();
   }
 
@@ -408,6 +836,23 @@
       });
   }
 
+  function refreshConversation() {
+    var qs = selectedPane ? "?pane_id=" + encodeURIComponent(selectedPane) : "";
+    fetch("/conversation" + qs)
+      .then(function (resp) {
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        return resp.json();
+      })
+      .then(function (data) {
+        renderGlanceLabel();
+        safeRender("glance", renderGlance, data);
+        markPollOk();
+      })
+      .catch(function (err) {
+        markPollError("conversación", err);
+      });
+  }
+
   function refreshState() {
     fetch("/herd")
       .then(function (resp) {
@@ -419,6 +864,7 @@
         markPollError("herd", err);
       });
     refreshView();
+    refreshConversation();
   }
 
   /* ---------------- audio playback (single queue) ---------------- */
@@ -439,6 +885,8 @@
     audioFinished = item;
     if (item.announcement) {
       showToast("🔊 " + item.announcement.label + ": " + item.announcement.text);
+      /* FR13: distinct anuncio bubble in the call + toast above drawer. */
+      if (inCall) addAnnouncementTurn(item.announcement.label, item.announcement.text);
     }
     if (inCall) {
       if (callState === "listening") stopListening();  // never hear our own audio
@@ -488,25 +936,19 @@
   player.addEventListener("ended", onAudioEnded);
   stopBtn.addEventListener("click", stopAudio);
 
-  var pressTimer = null;
-  var longPressFired = false;
-
-  statePill.addEventListener("pointerdown", function () {
-    longPressFired = false;
-    pressTimer = setTimeout(function () {
-      longPressFired = true;
-      openDiag();
-    }, 600);
-  });
-  ["pointerup", "pointercancel", "pointerleave"].forEach(function (ev) {
-    statePill.addEventListener(ev, function () {
-      if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
-    });
-  });
+  /* ---------------- state pill (rows 8–13, 17) ----------------
+   * Tap = REOPEN the drawer, always — never state-dependent (FR12).
+   * Barge-in stays on the footer ⏹. The old pill long-press/parse is
+   * gone: diagnostics moved to an idle-only long-press on 📞. */
 
   statePill.addEventListener("click", function () {
-    if (longPressFired) { longPressFired = false; return; }
-    if (callState === "speaking") stopAudio();  // barge-in
+    if (interruptedFromReload && !inCall) {
+      /* Reload boot pill (FR15/AC13): tap = NEW call, never auto-resume. */
+      interruptedFromReload = false;
+      startCall();
+      return;
+    }
+    if (inCall && !drawerOpen) openDrawer();
   });
 
   /* ---------------- voice diagnostics overlay ---------------- */
@@ -521,6 +963,7 @@
       "motor de voz:     " + voiceEngine,
       "callState:        " + callState,
       "inCall:           " + inCall,
+      "drawer abierto:   " + drawerOpen,
       "listening:        " + listening,
       "dispatching:      " + dispatching,
       "textMode:         " + textMode,
@@ -556,6 +999,25 @@
   $("diag-close").addEventListener("click", function () {
     diagPanel.classList.add("hidden");
     if (diagTimer) { clearInterval(diagTimer); diagTimer = null; }
+  });
+
+  /* Diagnostics entry point (FR12): idle-only long-press (>= 800ms) on
+   * the call button; NEVER fires during a call. */
+  var pressTimer = null;
+  var longPressFired = false;
+
+  callBtn.addEventListener("pointerdown", function () {
+    if (inCall) return;  // idle only: a call in progress disables it
+    longPressFired = false;
+    pressTimer = setTimeout(function () {
+      longPressFired = true;
+      openDiag();
+    }, 800);
+  });
+  ["pointerup", "pointercancel", "pointerleave"].forEach(function (ev) {
+    callBtn.addEventListener(ev, function () {
+      if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+    });
   });
 
   /* ---------------- toast ---------------- */
@@ -692,20 +1154,20 @@
         }
       })
       .then(function () {
-        interimEl.textContent = "";
-        interimEl.classList.add("hidden");
+        interimTextEl.textContent = "";
+        renderInterimStrip();
         if (callState === "thinking") afterAnswer();
       });
   }
 
   /* ---------------- speech recognition: browser engine (Web Speech) -----
-   *
-   * ONE recognition lifecycle per listening session, continuous=true.
-   * Chrome often never finalizes interim results, so endpointing.js decides:
-   * dispatch on isFinal, on 1200ms of interim silence, or at a 15s hard cap.
-   * After dispatch the mic stays off through /ask + TTS; onAudioEnded
-   * restarts it. onend restarts ONLY while listening, single-flight.
-   */
+    *
+    * ONE recognition lifecycle per listening session, continuous=true.
+    * Chrome often never finalizes interim results, so endpointing.js decides:
+    * dispatch on isFinal, on 1200ms of interim silence, or at a 15s hard cap.
+    * After dispatch the mic stays off through /ask + TTS; onAudioEnded
+    * restarts it. onend restarts ONLY while listening, single-flight.
+    */
 
   function teardownRecognition() {
     if (epTick) { clearInterval(epTick); epTick = null; }
@@ -720,7 +1182,7 @@
     var text = endpointer.finalize();
     if (!text) { endpointer.reset(); return; }
     dispatching = true;
-    interimEl.textContent = "";
+    interimTextEl.textContent = "";
     teardownRecognition();
     // ask() owns the transition to "thinking" — setting it here would trip
     // ask()'s re-entrancy guard (callState === "thinking") and silently
@@ -739,14 +1201,13 @@
     if (textMode || !SR || callState !== "listening" || listening || dispatching) return;
     manualStop = false;
     hideBanner();
-    interimEl.classList.remove("hidden");
     listeningStartedAt = Date.now();
     // The endpointer SURVIVES recognition session restarts (Chrome ends
     // sessions every few seconds; committed text must carry over). Only a
     // dispatch (finalize), hang-up or new conversation resets it.
     if (!endpointer) endpointer = window.Endpointing.createEndpointer();
     lastInterimRaw = endpointer.text();
-    interimEl.textContent = lastInterimRaw.length > 120
+    interimTextEl.textContent = lastInterimRaw.length > 120
       ? "…" + lastInterimRaw.slice(-120)
       : (lastInterimRaw || "…");
 
@@ -777,7 +1238,7 @@
       pillSub.classList.add("hidden");
       // tail truncation: keep the newest words visible
       var text = endpointer.text();
-      interimEl.textContent = text.length > 120 ? "…" + text.slice(-120) : (text || "…");
+      interimTextEl.textContent = text.length > 120 ? "…" + text.slice(-120) : (text || "…");
     };
 
     recognition.onerror = function (event) {
@@ -803,9 +1264,8 @@
       if (callState === "listening" && !manualStop && !textMode) {
         recRestartTimer = setTimeout(startListening, recRestartDelay);
         recRestartDelay = Math.min(recRestartDelay * 2, 3000);
-      } else if (interimEl.textContent === "…") {
-        interimEl.textContent = "";
-        interimEl.classList.add("hidden");
+      } else if (interimTextEl.textContent === "…") {
+        interimTextEl.textContent = "";
       }
     };
 
@@ -846,16 +1306,18 @@
   }
 
   /* ---------------- voice engine v2: servidor ----------------
-   *
-   * getUserMedia (echoCancellation + noiseSuppression) is kept open for the
-   * whole call — unlike SpeechRecognition it honors BT headset mics. vad.js
-   * bounds each utterance (adaptive noise floor + hysteresis; end after
-   * 1.2s below threshold or 15s hard cap); one MediaRecorder per utterance
-   * captures webm/opus, POSTs it to /transcribe and the text enters the
-   * same dispatch pipeline as Web Speech (thinking → speak → resume).
-   * Between utterances the recorder and the VAD loop are torn down so the
-   * mic never hears the agent's own TTS; the stream itself stays live.
-   */
+    *
+    * getUserMedia (echoCancellation + noiseSuppression) is kept open for the
+    * whole call — unlike SpeechRecognition it honors BT headset mics. vad.js
+    * bounds each utterance (adaptive noise floor + hysteresis; end after
+    * 1.2s below threshold or 15s hard cap); one MediaRecorder per utterance
+    * captures webm/opus, POSTs it to /transcribe and the text enters the
+    * same dispatch pipeline as Web Speech (thinking → speak → resume).
+    * Between utterances the recorder and the VAD loop are torn down so the
+    * mic never hears the agent's own TTS; the stream itself stays live.
+    * The drawer strip shows a live level meter from the SAME RMS frames
+    * the VAD consumes (FR8) — never simulated text.
+    */
 
   function serverEngineSupported() {
     return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia &&
@@ -867,6 +1329,27 @@
     var sum = 0;
     for (var i = 0; i < vadSampleBuf.length; i++) sum += vadSampleBuf[i] * vadSampleBuf[i];
     return Math.sqrt(sum / vadSampleBuf.length);
+  }
+
+  function updateRecMeter(rms) {
+    if (!vad) return;
+    var floor = vad.floor();
+    var ratio = Math.min(1, Math.max(0, (rms - floor) / 0.06));
+    var lit = Math.round(ratio * METER_CELLS);
+    if (lit === meterLit) return;  // paint only on change
+    meterLit = lit;
+    var cells = meterCellsEl.children;
+    for (var i = 0; i < cells.length; i++) {
+      cells[i].className = i < lit ? "lit" : "";
+    }
+  }
+
+  function updateRecElapsed() {
+    if (!utteranceStartedAt) return;
+    var s = Math.floor((Date.now() - utteranceStartedAt) / 1000);
+    if (s === lastElapsedShown) return;
+    lastElapsedShown = s;
+    recElapsedEl.textContent = Math.floor(s / 60) + ":" + (s % 60 < 10 ? "0" : "") + (s % 60);
   }
 
   function pickRecorderMime() {
@@ -918,7 +1401,7 @@
         return resp.json().then(function (data) {
           var text = (data && data.text ? data.text : "").trim();
           if (!text) {
-            showBanner("No entendí el audio — inténtalo de nuevo.");
+            showBanner("No entendí el audio — inténtalo otra vez.");
             return;
           }
           ask(text);  // sets thinking; its chain resumes listening afterwards
@@ -930,8 +1413,8 @@
       })
       .then(function () {
         dispatching = false;
-        interimEl.textContent = "";
-        interimEl.classList.add("hidden");
+        interimTextEl.textContent = "";
+        renderInterimStrip();
         if (callState === "transcribing") afterAnswer();
       });
   }
@@ -990,9 +1473,16 @@
       releaseVadLoopOnly();
       vadTick = setInterval(function () {
         if (!vad) return;
-        var speaking = vad.push(frameRms());
+        var rms = frameRms();
+        var speaking = vad.push(rms);
+        updateRecMeter(rms);  // FR8: level meter from the live VAD RMS
         if (callState === "listening") {
-          setCallState(speaking || vad.hasSpeech() ? "recording" : "listening");
+          if (speaking || vad.hasSpeech()) {
+            if (!utteranceStartedAt) utteranceStartedAt = Date.now();
+            setCallState("recording");
+          }
+        } else if (callState === "recording") {
+          updateRecElapsed();  // FR8: elapsed utterance time
         }
         if (vad.shouldFinalize()) {
           finishServerUtterance();
@@ -1071,23 +1561,36 @@
   /* ---------------- call button / pause / voice engine toggle ------------- */
 
   function startCall() {
+    interruptedFromReload = false;
+    clearCallIntent();
     inCall = true;
+    callStartedAt = Date.now();
+    markCallIntent();
+    startCallTimer();
+    requestWakeLock();
     openEvents();  // user gesture: unlocks autoplay for announcements
     setCallState("listening");
     startListening();
+    openDrawer();  // AC1: the drawer auto-opens on call start
   }
 
   function endCall() {
     inCall = false;
+    closeDrawer();  // AC4: drawer closes on hang up
     stopListening();
     teardownServerCall();  // release the getUserMedia stream + AudioContext
     if (endpointer) endpointer.reset();  // no stale partial in the next call
     stopAudio();
     hideToast();
-    setCallState("idle");
+    stopCallTimer();
+    releaseWakeLock();
+    clearCallIntent();
+    resetInterimContent();
+    setCallState("idle");  // pill disappears; idle is pill-free (FR12)
   }
 
   callBtn.addEventListener("click", function () {
+    if (longPressFired) { longPressFired = false; return; }  // diag opened: swallow
     if (inCall) endCall();
     else startCall();
   });
@@ -1108,6 +1611,7 @@
     voiceEngineBtn.title = voiceEngine === "servidor"
       ? "Motor Servidor: tu voz se transcribe en el servidor (funciona con auriculares BT). Toca para cambiar al Navegador."
       : "Motor Navegador: reconocimiento del navegador (Web Speech). Toca para cambiar al Servidor.";
+    renderInterimStrip();
   }
 
   voiceEngineBtn.addEventListener("click", function () {
@@ -1124,6 +1628,7 @@
     localStorage.setItem(VOICE_KEY, voiceEngine);
     renderVoiceEngine();
     hideBanner();
+    resetInterimContent();
     if (inCall) {
       // Switch live: tear the running engine down and boot the new one.
       stopListening();
@@ -1170,8 +1675,8 @@
     stopListening();
     if (endpointer) endpointer.reset();  // fresh conversation, fresh utterance
     conv.textContent = "";
-    interimEl.textContent = "";
-    interimEl.classList.add("hidden");
+    resetInterimContent();
+    updateGhost();
     hideBanner();
     fetch("/reset", {
       method: "POST",
@@ -1183,124 +1688,29 @@
     if (inCall && callState === "listening") startListening();
   });
 
-  /* ---------------- full-text agent sheet ---------------- */
-
-  var sheetTab = "conv";
-
-  function renderSheetConversation(data) {
-    sheetConv.textContent = "";
-    var turns = (data && data.turns) || [];
-    if (!turns.length) {
-      var empty = document.createElement("div");
-      empty.className = "c-turn";
-      empty.textContent = "Sin conversación legible para este agente.";
-      sheetConv.appendChild(empty);
-      return;
-    }
-    var lastAgentBlock = null;
-    var lastAgentText = "";
-    for (var i = 0; i < turns.length; i++) {
-      var block = document.createElement("div");
-      block.className = "c-turn";
-      var role = document.createElement("div");
-      role.className = "c-role " + turns[i].role;
-      role.textContent = turns[i].role === "user" ? "tú" : "agente";
-      var text = document.createElement("div");
-      text.className = "c-text";
-      text.textContent = turns[i].text;
-      block.appendChild(role);
-      block.appendChild(text);
-      sheetConv.appendChild(block);
-      if (turns[i].role !== "user") {
-        lastAgentBlock = block;
-        lastAgentText = turns[i].text;
-      }
-    }
-    if (lastAgentBlock) attachReplay(sheetConv, lastAgentBlock, function () { return lastAgentText; }, "agente");
-    if (data && data.window && turns.length >= data.window) {
-      sheetNote.textContent = "Últimas " + data.window + " intervenciones (ventana fija).";
-      sheetNote.classList.remove("hidden");
-    } else {
-      sheetNote.classList.add("hidden");
-    }
-  }
-
-  function loadSheetConversation() {
-    sheetConv.textContent = "Cargando…";
-    var qs = selectedPane ? "?pane_id=" + encodeURIComponent(selectedPane) : "";
-    fetch("/conversation" + qs)
-      .then(function (r) {
-        if (!r.ok) throw new Error("HTTP " + r.status);
-        return r.json();
-      })
-      .then(function (data) {
-        renderSheetConversation(data);
-        markPollOk();
-      })
-      .catch(function (err) {
-        sheetConv.textContent = "No se pudo cargar la conversación.";
-        markPollError("conversación", err);
-      });
-  }
-
-  function loadSheetScreen() {
-    sheetScreen.textContent = "Cargando…";
-    var qs = selectedPane ? "?pane_id=" + encodeURIComponent(selectedPane) : "";
-    fetch("/screen" + qs)
-      .then(function (r) {
-        if (!r.ok) throw new Error("HTTP " + r.status);
-        return r.json();
-      })
-      .then(function (data) {
-        sheetScreen.textContent = (data && data.screen) || "(pantalla no disponible)";
-        markPollOk();
-      })
-      .catch(function (err) {
-        sheetScreen.textContent = "(pantalla no disponible)";
-        markPollError("pantalla", err);
-      });
-  }
-
-  function renderSheetTab() {
-    var isConv = sheetTab === "conv";
-    tabConv.className = isConv ? "active" : "";
-    tabScreen.className = isConv ? "" : "active";
-    sheetConv.classList.toggle("hidden", !isConv);
-    sheetScreen.classList.toggle("hidden", isConv);
-    sheetNote.classList.toggle("hidden", !isConv || sheetNote.textContent.indexOf("Últimas") !== 0);
-  }
-
-  function openSheet() {
-    sheetTitle.textContent = paneTitle.textContent || "Agente";
-    sheet.classList.remove("hidden");
-    sheetTab = "conv";
-    renderSheetTab();
-    loadSheetConversation();
-  }
-
-  function closeSheet() {
-    sheet.classList.add("hidden");
-  }
-
-  agentView.addEventListener("click", function () {
-    refreshView();  // "toca para reintentar": refresh glance, then show the sheet
-    openSheet();
-  });
-  $("sheet-close").addEventListener("click", closeSheet);
-  $("sheet-refresh").addEventListener("click", function () {
-    if (sheet.classList.contains("hidden")) return;
-    if (sheetTab === "conv") loadSheetConversation();
-    else loadSheetScreen();
-  });
-  tabConv.addEventListener("click", function () { sheetTab = "conv"; renderSheetTab(); });
-  tabScreen.addEventListener("click", function () { sheetTab = "screen"; renderSheetTab(); loadSheetScreen(); });
-
   /* ---------------- boot ---------------- */
+
+  function buildMeterCells() {
+    for (var i = 0; i < METER_CELLS; i++) {
+      meterCellsEl.appendChild(document.createElement("i"));
+    }
+  }
 
   initSpeech();
   renderDiag();
+  buildMeterCells();
+  updateGhost();
   refreshState();
   setInterval(refreshState, 5000);
+
+  /* FR15/AC13: after a mid-call reload the app boots IDLE with a
+   * "call was cut" pill; the mic never resumes without a tap. */
+  try {
+    if (sessionStorage.getItem(CALL_INTENT_KEY) === "1") {
+      interruptedFromReload = true;
+      renderPill();
+    }
+  } catch (err) { /* private mode: normal idle boot */ }
 
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js").catch(function () { /* best effort */ });
