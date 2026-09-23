@@ -26,6 +26,10 @@ CLIENT_TIMEOUT_SEC = 1.0
 # client keeps reading until the newline (or EOF/cap) instead of trusting a
 # single recv() — long status payloads must not be truncated mid-field.
 MAX_REPLY_BYTES = 8192
+# Server-side mirror of MAX_REPLY_BYTES (RF-AT-09-4): commands are one line
+# too, so the server reads until the newline (or cap) — a future one-line
+# JSON command payload must not be truncated by a single recv() either.
+MAX_COMMAND_BYTES = 8192
 
 
 def _is_windows() -> bool:
@@ -194,6 +198,26 @@ def send_ipc_command(command: str, socket_path: str = IPC_SOCKET) -> Optional[st
             pass
 
 
+def _recv_command(conn: socket.socket) -> str:
+    """Reads one newline-terminated command from the connection.
+
+    Symmetric to the client's reply loop: keeps recv()ing until the newline
+    (or the MAX_COMMAND_BYTES cap / EOF), so a command larger than one
+    packet arrives complete instead of truncated (RF-AT-09-4).
+    """
+    chunks = []
+    received = 0
+    while received < MAX_COMMAND_BYTES:
+        chunk = conn.recv(1024)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        received += len(chunk)
+        if b"\n" in chunk:
+            break
+    return b"".join(chunks).decode("utf-8", errors="ignore").strip()
+
+
 class IPCServer:
     """Threaded IPC server (AF_UNIX on POSIX, TCP loopback on Windows) for controlling playback sessions."""
 
@@ -239,7 +263,7 @@ class IPCServer:
 
             try:
                 conn.settimeout(1.0)
-                data = conn.recv(1024).decode("utf-8", errors="ignore").strip()
+                data = _recv_command(conn)
                 if data:
                     reply = self.command_handler(data)
                     conn.sendall(f"{reply}\n".encode("utf-8"))
