@@ -374,28 +374,20 @@ class TestFullTextReads:
         # FULL text, not glance-truncated: a 300+ char turn stays intact.
         assert all(len(t["text"]) > 50 for t in result["turns"])
 
-    def test_conversation_shows_turns_complete_until_display_ceiling(self, settings, make_stub, active_agent, monkeypatch, tmp_path):
-        """Reading view shows messages complete (user request): a 5k turn
-        passes through untouched; only past the 20k ceiling it is clipped."""
-        huge = "y" * 5000
-        monkeypatch.setenv(
-            "OPENCODE_DB",
-            self._db_with_turns(tmp_path, active_agent.session_value, [("assistant", huge)]),
-        )
-        tools = BrainTools(settings, herdr=make_stub())
-        result = tools.conversation()
-        assert len(result["turns"][0]["text"]) == 5000
-
-    def test_conversation_clips_pathological_turns_at_display_ceiling(self, settings, make_stub, active_agent, monkeypatch, tmp_path):
-        from herdr_brain.memory import DISPLAY_MESSAGE_CHARS
-        huge = "y" * (DISPLAY_MESSAGE_CHARS + 1000)
-        monkeypatch.setenv(
-            "OPENCODE_DB",
-            self._db_with_turns(tmp_path, active_agent.session_value, [("assistant", huge)]),
-        )
-        tools = BrainTools(settings, herdr=make_stub())
-        result = tools.conversation()
-        assert len(result["turns"][0]["text"]) == DISPLAY_MESSAGE_CHARS
+    def test_conversation_returns_turns_unclipped(self, settings, make_stub, active_agent, monkeypatch, tmp_path):
+        """Reading view shows messages complete (user request): turns come
+        back unclipped regardless of length — the UI clamps for display."""
+        for size in (5_000, 25_000):
+            subdir = tmp_path / str(size)
+            subdir.mkdir()
+            monkeypatch.setenv(
+                "OPENCODE_DB",
+                self._db_with_turns(subdir, active_agent.session_value,
+                                    [("assistant", "y" * size)]),
+            )
+            tools = BrainTools(settings, herdr=make_stub())
+            result = tools.conversation()
+            assert len(result["turns"][0]["text"]) == size
 
     def test_conversation_without_session_or_store(self, settings, make_stub):
         agent_no_session = AgentInfo(

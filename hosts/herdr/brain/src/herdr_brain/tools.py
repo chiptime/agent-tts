@@ -12,7 +12,7 @@ from typing import Callable, Dict, Optional
 
 from .config import MAX_SCREEN_LINES, Settings
 from .herdr import AgentInfo, HerdrClient, HerdrError, pick_active
-from .memory import DISPLAY_MESSAGE_CHARS, clip_content
+from .memory import clip_content
 from .transcripts import read_transcript, read_turns
 from .tts import render_mp3  # noqa: F401  (re-exported for server wiring)
 from .view import (
@@ -168,9 +168,8 @@ class BrainTools:
     def conversation(self, pane_id: Optional[str] = None) -> dict:
         """Full-text recent conversation for one pane (reading view).
 
-        Last ``CONVERSATION_WINDOW`` (20) turns with texts clipped at
-        ``DISPLAY_MESSAGE_CHARS`` (20k) — the reading view shows messages
-        complete; only pathological dumps hit that ceiling. The transcript
+        Last ``CONVERSATION_WINDOW`` (20) turns, unclipped — the reading
+        view shows every message complete (user request). The transcript
         readers have no cursor, so there is no older-page fetch: the window
         is documented, not paged.
         """
@@ -188,8 +187,7 @@ class BrainTools:
                 raw = None
             if raw:
                 turns = [
-                    {"role": turn.role,
-                     "text": clip_content(turn.text, limit=DISPLAY_MESSAGE_CHARS)}
+                    {"role": turn.role, "text": turn.text}
                     for turn in raw
                 ]
         return {

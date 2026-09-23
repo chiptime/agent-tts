@@ -220,8 +220,32 @@
     .gt-text {
       white-space: pre-wrap;
       word-break: break-word;
-      /* Full text, always (user request): the panel itself scrolls. */
+      /* Clamp long turns to ~4 lines; "ver más" expands inline. */
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 4;
+      overflow: hidden;
     }
+    .gturn.expanded .gt-text {
+      display: block;
+      -webkit-line-clamp: none;
+      overflow: visible;
+    }
+    .ver-mas {
+      display: none;               /* only shown on .has-more turns */
+      width: 100%;
+      min-height: 48px;            /* touch target >= 48px */
+      margin-top: 6px;
+      align-items: center;
+      justify-content: center;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      color: var(--accent);
+      font-size: var(--fs-sm);
+      font-weight: 700;
+    }
+    .gturn.has-more .ver-mas { display: flex; }
     #glance-empty {
       padding: var(--sp-3);
       font-size: var(--fs-sm);
@@ -643,7 +667,40 @@
       .live-dot, .rec-dot { animation: none; }
       #interim-text::after { animation: none; }
       #call-drawer, #call-drawer.open { transition: none; }
+      #settings-sheet, #settings-sheet.open { transition: none; }
     }
+
+    /* ── Settings sheet (⚙ in the header): engine toggle and future
+     * preferences. Sits above the drawer so it opens over a live call. */
+    #settings-sheet {
+      position: fixed;
+      left: 0; right: 0; bottom: 0;
+      background: var(--panel);
+      border-top: 1px solid var(--line);
+      border-radius: 18px 18px 0 0;
+      box-shadow: 0 -12px 40px #0006;
+      transform: translateY(105%);
+      transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+      z-index: 17;
+      padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    }
+    #settings-sheet.open { transform: translateY(0); }
+    .s-head {
+      display: flex; align-items: center; gap: 8px;
+      padding: 14px 16px 10px;
+      border-bottom: 1px solid var(--line);
+    }
+    .s-title { flex: 1; font-size: 14px; font-weight: 700; }
+    #settings-close {
+      min-width: 44px; min-height: 44px;
+      border: 1px solid var(--line); border-radius: 10px;
+      background: var(--panel-2); color: var(--text);
+      font-size: 15px; cursor: pointer;
+    }
+    .s-body { padding: 14px 16px 2px; display: flex; flex-direction: column; gap: 10px; }
+    .s-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .s-label { font-size: 14px; }
+    .s-hint { font-size: 12px; color: var(--muted); line-height: 1.5; }
   </style>
 </head>
 <body>
@@ -651,7 +708,7 @@
     <span id="status-chip" class="chip">…</span>
     <span id="pane-title">conectando…</span>
     <span id="header-version" class="chip">v<span id="app-version-header">?</span></span>
-    <button id="voice-engine-btn" type="button" title="Cambiar motor de voz">Voz: Servidor</button>
+    <button id="settings-btn" class="head-btn" title="Ajustes">⚙</button>
     <button id="mute-btn" class="head-btn" title="Silenciar anuncios">🔊</button>
     <button id="new-conversation" class="head-btn" title="Empezar una conversación nueva">↺<span class="btn-text"> Nueva</span></button>
   </header>
@@ -701,6 +758,20 @@
       <span id="strip-status" class="hidden"></span>
     </div>
     <main id="conversation" aria-live="polite"></main>
+  </section>
+
+  <section id="settings-sheet" role="dialog" aria-modal="false" aria-label="Ajustes" inert>
+    <div class="s-head">
+      <span class="s-title">Ajustes</span>
+      <button id="settings-close" type="button" title="Cerrar ajustes">✕</button>
+    </div>
+    <div class="s-body">
+      <div class="s-row">
+        <span class="s-label">Motor de voz</span>
+        <button id="voice-engine-btn" type="button">Voz: Servidor</button>
+      </div>
+      <span class="s-hint">Servidor: transcribe en el back con whisper (robusto). Navegador: Web Speech de Chrome (más rápido, menos fiable en Android).</span>
+    </div>
   </section>
 
   <div id="version-footer">v<span id="app-version">dev</span></div>
