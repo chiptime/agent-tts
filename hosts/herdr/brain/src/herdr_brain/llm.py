@@ -24,7 +24,7 @@ from openai import OpenAI
 
 from .config import Settings
 from .herdr import AgentInfo, HerdrError
-from .memory import ConversationStore
+from .memory import ConversationStore, clip_content
 from .tools import BrainTools, TOOLS_SCHEMA
 from .view import PendingAction, SCREEN_TAIL_LINES, detect_pending
 
@@ -178,7 +178,10 @@ class BrainLLM:
         live = self._live_context(target)
         messages: List[Dict[str, Any]] = [
             {"role": "system", "content": f"{SYSTEM_PROMPT}\n\n{live}"},
-            *[{"role": m.role, "content": m.content} for m in store.history(key)],
+            # The store keeps turns in full (display reads them unclipped);
+            # the LLM prompt is where the token budget is enforced.
+            *[{"role": m.role, "content": clip_content(m.content)}
+              for m in store.history(key)],
             {"role": "user", "content": question},
         ]
 
