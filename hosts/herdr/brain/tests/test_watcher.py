@@ -107,7 +107,13 @@ class TestDigestText:
         agent = make_agent(value=active_agent.session_value, status="working")
         stub = make_stub(agents=[agent])
         clock = FakeClock()
-        watcher = AgentWatcher(settings, herdr=stub, tts_renderer=fake_tts(), clock=clock)
+        spoken = []
+
+        def recording_tts(settings, text, out_path):
+            spoken.append(text)
+            return fake_tts()(settings, text, out_path)
+
+        watcher = AgentWatcher(settings, herdr=stub, tts_renderer=recording_tts, clock=clock)
         watcher.poll_once()  # baseline
 
         stub._agents = [make_agent(value=active_agent.session_value, status="done")]
@@ -119,16 +125,25 @@ class TestDigestText:
         assert ann["label"] == "opencode repo"
         assert ann["text"] == "opencode repo terminó: Migración aplicada"
         assert ann["audio_url"] and ann["audio_url"].startswith("/audio/ann-")
+        # Live audio is the SHORT aviso; the digest stays text-only.
+        assert spoken == ["opencode repo ha terminado"]
 
     def test_blocked_announcement_uses_pending_excerpt(self, settings, make_stub):
         stub = make_stub(agents=[make_agent(status="working")], screen="Do you want to allow this? (y/n)")
-        watcher = AgentWatcher(settings, herdr=stub, tts_renderer=fake_tts(), clock=FakeClock())
+        spoken = []
+
+        def recording_tts(settings, text, out_path):
+            spoken.append(text)
+            return fake_tts()(settings, text, out_path)
+
+        watcher = AgentWatcher(settings, herdr=stub, tts_renderer=recording_tts, clock=FakeClock())
         watcher.poll_once()
         stub._agents = [make_agent(status="blocked")]
         produced = watcher.poll_once()
         assert produced[0]["text"] == (
             "opencode repo necesita tu atención: Do you want to allow this? (y/n)"
         )
+        assert spoken == ["opencode repo necesita tu atención"]
 
     def test_fallback_detail_when_all_reads_fail(self, settings, make_stub):
         stub = make_stub(agents=[make_agent(status="working")], fail_screen=True)

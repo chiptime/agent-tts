@@ -1,9 +1,11 @@
 """Background watcher announcing agent state transitions over SSE.
 
-Design (deliberate, fase 2b): transition-triggered DIGESTS, not streaming
-everything agents say. A template-based digest text (no LLM call: instant
-and free) is produced when an agent's status transitions INTO "done" or
-"blocked". Transitions into "idle" are intentionally skipped in v1 to keep
+Design (deliberate, fase 2b): transition-triggered AVISOS, not streaming
+everything agents say. When an agent's status transitions INTO "done" or
+"blocked", a template-based event aviso is spoken (no LLM call: instant
+and free) while the digest detail travels as TEXT in the same event —
+spoken only on demand through the announcement turn's replay button.
+Transitions into "idle" are intentionally skipped in v1 to keep
 the channel quiet.
 
 Behavioral guarantees:
@@ -182,15 +184,22 @@ class AgentWatcher:
 
     def _build_announcement(self, agent: AgentInfo) -> dict:
         label = agent_label(agent)
+        # Live audio is the SHORT event aviso (herdr-tts vocabulary: "%s
+        # terminó" / "%s necesita atención"); the digest detail stays in
+        # `text` for silent reading and is only spoken on demand — the
+        # announcement turn's 🔊 Escuchar button routes it through /tts.
+        # Speaking full digests on every transition was too chatty.
         if agent.status == "blocked":
             text = f"{label} necesita tu atención: {self._blocked_detail(agent)}"
+            aviso = f"{label} necesita tu atención"
         else:
             text = f"{label} terminó: {self._done_detail(agent)}"
+            aviso = f"{label} ha terminado"
 
         audio_url: Optional[str] = None
         try:
             out_path = new_audio_path(self._settings, prefix=ANNOUNCEMENT_PREFIX)
-            self._tts(self._settings, text, out_path)
+            self._tts(self._settings, aviso, out_path)
             audio_url = f"/audio/{out_path.name}"
         except Exception:  # noqa: BLE001 — text must never block on TTS
             audio_url = None
