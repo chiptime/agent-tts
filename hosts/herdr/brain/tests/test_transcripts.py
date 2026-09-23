@@ -94,6 +94,46 @@ class TestOpencodeTranscript:
         source = OpencodeTranscript(db_path=opencode_db)
         assert source.read("not-a-session", n_turns=5) == []
 
+    def test_multi_part_message_joins_all_text_parts(self, tmp_path):
+        """A long answer split across text parts arrives complete.
+
+        OpenCode stores one assistant message as SEVERAL text parts; the
+        old one-part-per-message read made the reading view truncated.
+        Parts must reassemble in chronological order regardless of the
+        order the DB happens to return them in.
+        """
+        db = tmp_path / "opencode.db"
+        conn = sqlite3.connect(db)
+        conn.execute(
+            "CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, data TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO message VALUES ('m1', 'ses_aaaabbbbcccc', 1, ?)",
+            (json.dumps({"role": "assistant"}),),
+        )
+        # Inserted deliberately out of part order: the query's ASC part
+        # ordering must win.
+        for pid, ts, chunk in (
+            ("m1-p3", 3, "tercer fragmento"),
+            ("m1-p1", 1, "primer fragmento,"),
+            ("m1-p2", 2, "segundo fragmento,"),
+        ):
+            conn.execute(
+                "INSERT INTO part VALUES (?, 'm1', 'ses_aaaabbbbcccc', ?, ?)",
+                (pid, ts, json.dumps({"type": "text", "text": chunk})),
+            )
+        conn.commit()
+        conn.close()
+
+        source = OpencodeTranscript(db_path=str(db))
+        turns = source.read("ses_aaaabbbbcccc", n_turns=10)
+        assert len(turns) == 1
+        assert turns[0].role == "assistant"
+        assert turns[0].text == "primer fragmento,\nsegundo fragmento,\ntercer fragmento"
+
     def test_missing_db_returns_empty(self, tmp_path):
         source = OpencodeTranscript(db_path=str(tmp_path / "missing.db"))
         assert source.read("ses_aaaabbbbcccc", n_turns=5) == []
