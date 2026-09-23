@@ -49,7 +49,10 @@ def fetch(command):
         reply = send_ipc_command(command)
     except Exception:
         return None
-    if not reply or reply.startswith("Error"):
+    # "Error" = local engine errors; "ERR:" = remote-playback IPC refusals
+    # (e.g. an engine without the karaoke family). Both mean "no usable
+    # body" — degrade to the no-playback path instead of rendering them.
+    if not reply or reply.startswith(("Error", "ERR")):
         return None
     return reply
 
