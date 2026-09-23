@@ -16,6 +16,7 @@
 | HT-03 | [HT-03-radio-mode.md](HT-03-radio-mode.md) | Radio mode (triaje por voz) | P2 | Aprobada | M |
 | HT-14 | [HT-14-tema-claro.md](HT-14-tema-claro.md) | Tema claro configurable (Ajustes → Apariencia) | P2 | Borrador | S |
 | HT-15 | [HT-15-markdown-html-pipeline.md](HT-15-markdown-html-pipeline.md) | Transformación Markdown/HTML para lectura sincronizada | Pendiente | Borrador | M |
+| HT-16 | [HT-16-reader-popup.md](HT-16-reader-popup.md) | Popup de lectura en vivo (karaoke sobre la reproducción) | P2 | Implementada | S |
 | HT-01 | [HT-01-push-to-talk-intercom.md](HT-01-push-to-talk-intercom.md) | Push-to-Talk intercom (hablar al agente) | P4 | Postergada | M-L |
 | HT-06 | [HT-06-auto-snooze-reunion.md](HT-06-auto-snooze-reunion.md) | Auto-snooze contextual (modo reunión) | P4 | Postergada | M |
 | HT-07 | [HT-07-filtro-semantico.md](HT-07-filtro-semantico.md) | Filtro semántico de importancia | P4 | Postergada | M |
