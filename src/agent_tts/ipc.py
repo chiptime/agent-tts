@@ -4,8 +4,14 @@ POSIX keeps the original AF_UNIX socket behavior byte-identical. Windows
 (sys.platform == "win32") uses TCP on 127.0.0.1 with an ephemeral port
 persisted to the ``agent-tts-ipc.port`` marker file next to the lock/pid
 files; the client picks the transport by which marker/socket file exists.
+
+The channel is owned, never stolen (RF-AT-09-2): an existing transport that
+answers connections belongs to a live server and is left alone; an orphaned
+one is detected by connection failure and reclaimed only by the process
+that won the ownership election (see agent_tts.ownership).
 """
 
+import errno
 import os
 import socket
 import sys
@@ -13,21 +19,36 @@ import threading
 from typing import Callable, Optional
 
 from agent_tts.constants import IPC_PORT_FILE, IPC_SOCKET
+from agent_tts.ownership import owns_channel
 
 CLIENT_TIMEOUT_SEC = 1.0
 # Upper bound for a single reply. The server answers with one line, so the
 # client keeps reading until the newline (or EOF/cap) instead of trusting a
 # single recv() — long status payloads must not be truncated mid-field.
 MAX_REPLY_BYTES = 8192
+# Server-side mirror of MAX_REPLY_BYTES (RF-AT-09-4): commands are one line
+# too, so the server reads until the newline (or cap) — a future one-line
+# JSON command payload must not be truncated by a single recv() either.
+MAX_COMMAND_BYTES = 8192
 
 
 def _is_windows() -> bool:
     return sys.platform == "win32"
 
 
-def server_socket(socket_path: str = IPC_SOCKET) -> socket.socket:
-    """Creates the bound-but-not-listening IPC server socket for the current platform."""
+def server_socket(socket_path: str = IPC_SOCKET) -> Optional[socket.socket]:
+    """Creates the bound IPC server socket for the current platform.
+
+    Never steals a live channel (RF-AT-09-2): a socket path that answers
+    connections belongs to a live server and is left untouched; an orphaned
+    path (connection refused) is reclaimed only by the flock-elected owner.
+    On Windows the port marker is the channel: a non-owner never overwrites
+    a marker it does not own (RF-AT-09-5). Returns None — no channel — when
+    this process may not expose the transport.
+    """
     if _is_windows():
+        if os.path.exists(IPC_PORT_FILE) and not owns_channel():
+            return None
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind(("127.0.0.1", 0))
@@ -38,14 +59,76 @@ def server_socket(socket_path: str = IPC_SOCKET) -> socket.socket:
         except OSError:
             pass
         return sock
-    if os.path.exists(socket_path):
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.bind(socket_path)
+        return sock
+    except OSError as exc:
         try:
-            os.remove(socket_path)
+            sock.close()
         except OSError:
             pass
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    sock.bind(socket_path)
-    return sock
+        if exc.errno != errno.EADDRINUSE:
+            # Only this branch warns: any other errno (permissions, missing
+            # parent directory, path too long, read-only fs) silently kills
+            # interactive control, and the user must know why. The remaining
+            # None returns (live channel, lost election, Windows non-owner)
+            # are normal, expected operation and stay quiet.
+            print(
+                f"ipc: cannot bind control socket {socket_path}: {exc}; "
+                "interactive control unavailable",
+                file=sys.stderr,
+            )
+            return None
+        if _channel_is_live(socket_path):
+            # Live server on this path: the channel is never stolen.
+            return None
+        if not owns_channel():
+            # Orphaned path, but the election was lost: no reclaim either.
+            return None
+        retry = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            os.remove(socket_path)
+            retry.bind(socket_path)
+            return retry
+        except OSError as exc:
+            try:
+                retry.close()
+            except OSError:
+                pass
+            # Warn for the same reason as the non-EADDRINUSE bind failure
+            # above: this process won the election, so a silent None here
+            # leaves the channel dead with no explanation. The OSError may
+            # come from the remove (orphan still on disk) or from the rebind
+            # (path already cleared and left unusable), so the wording must
+            # not claim the file's fate — only that the reclaim failed,
+            # which is true in both cases.
+            print(
+                f"ipc: cannot reclaim orphaned control socket {socket_path}: {exc}; "
+                "interactive control unavailable",
+                file=sys.stderr,
+            )
+            return None
+
+
+def _channel_is_live(socket_path: str) -> bool:
+    """Returns True when a server answers on the existing socket path.
+
+    Orphan detection for RF-AT-09-2: a connect that is refused means no
+    process serves the path anymore, so the file is a leftover, not a
+    channel. A successful probe connects and closes without sending data.
+    """
+    try:
+        probe = connect_to_server(socket_path)
+    except Exception:
+        return False
+    if probe is None:
+        return False
+    try:
+        probe.close()
+    except OSError:
+        pass
+    return True
 
 
 def connect_to_server(socket_path: str = IPC_SOCKET) -> Optional[socket.socket]:
@@ -137,6 +220,26 @@ def send_ipc_command(command: str, socket_path: str = IPC_SOCKET) -> Optional[st
             pass
 
 
+def _recv_command(conn: socket.socket) -> str:
+    """Reads one newline-terminated command from the connection.
+
+    Symmetric to the client's reply loop: keeps recv()ing until the newline
+    (or the MAX_COMMAND_BYTES cap / EOF), so a command larger than one
+    packet arrives complete instead of truncated (RF-AT-09-4).
+    """
+    chunks = []
+    received = 0
+    while received < MAX_COMMAND_BYTES:
+        chunk = conn.recv(1024)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        received += len(chunk)
+        if b"\n" in chunk:
+            break
+    return b"".join(chunks).decode("utf-8", errors="ignore").strip()
+
+
 class IPCServer:
     """Threaded IPC server (AF_UNIX on POSIX, TCP loopback on Windows) for controlling playback sessions."""
 
@@ -152,9 +255,16 @@ class IPCServer:
         self._running = False
 
     def start(self) -> None:
-        """Binds to socket and starts background listener thread."""
+        """Binds to socket and starts background listener thread.
+
+        A process that may not expose the channel (lost the ownership
+        election, or a live server owns the transport) simply runs without
+        IPC: start() leaves the server unset instead of stealing anything.
+        """
         try:
             self.server_sock = server_socket(self.socket_path)
+            if self.server_sock is None:
+                return
             self.server_sock.listen(5)
             self.server_sock.settimeout(0.5)
             self._running = True
@@ -175,7 +285,7 @@ class IPCServer:
 
             try:
                 conn.settimeout(1.0)
-                data = conn.recv(1024).decode("utf-8", errors="ignore").strip()
+                data = _recv_command(conn)
                 if data:
                     reply = self.command_handler(data)
                     conn.sendall(f"{reply}\n".encode("utf-8"))
@@ -184,7 +294,7 @@ class IPCServer:
                 pass
 
     def stop(self) -> None:
-        """Stops listener and removes transport marker files."""
+        """Stops listener and removes the transport markers this process owns."""
         self._running = False
         if self.server_sock:
             try:
@@ -195,8 +305,12 @@ class IPCServer:
         if self.thread:
             self.thread.join(timeout=0.3)
             self.thread = None
+        # Ownership-aware transport cleanup (RF-AT-09-3): only the elected
+        # owner removes the marker; a losing process leaves the winner's
+        # transport in place.
+        owned = owns_channel()
         for path in self._cleanup_paths():
-            if os.path.exists(path):
+            if owned and os.path.exists(path):
                 try:
                     os.remove(path)
                 except OSError:
