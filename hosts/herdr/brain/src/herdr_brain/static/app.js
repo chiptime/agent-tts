@@ -53,6 +53,9 @@
   var toastEl = $("toast");
   var drawer = $("call-drawer");
   var drawerCloseBtn = $("drawer-close");
+  var settingsSheet = $("settings-sheet");
+  var settingsBtn = $("settings-btn");
+  var settingsCloseBtn = $("settings-close");
   var callTimerEl = $("call-timer");
   var dPendingEl = $("d-pending");
   var glanceTurns = $("glance-turns");
@@ -124,6 +127,7 @@
   var callState = "idle";
   var inCall = false;
   var drawerOpen = false;
+  var settingsOpen = false;
   var callStartedAt = null;
   var timerTick = null;
   var utteranceStartedAt = null;  // servidor: current utterance (for the strip timer)
@@ -246,7 +250,15 @@
   }
 
   window.addEventListener("popstate", function () {
-    /* Android back with the drawer open: close it, never exit the PWA. */
+    /* Android back with an overlay open: close the topmost one, never exit
+     * the PWA. Settings sits above the drawer, so it closes first. */
+    if (settingsOpen) {
+      settingsOpen = false;
+      settingsSheet.classList.remove("open");
+      settingsSheet.setAttribute("inert", "");
+      try { settingsBtn.focus({ preventScroll: true }); } catch (err) { /* noop */ }
+      return;
+    }
     if (!drawerOpen) return;
     drawerOpen = false;
     drawer.classList.remove("open");
@@ -254,6 +266,29 @@
     renderPill();
     focusAfterDrawerClose();
   });
+
+  function openSettings() {
+    if (settingsOpen) return;
+    settingsOpen = true;
+    settingsSheet.classList.add("open");
+    settingsSheet.removeAttribute("inert");
+    try { history.pushState({ herdrSettings: true }, ""); } catch (err) { /* non-http */ }
+    try { settingsCloseBtn.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
+  }
+
+  function closeSettings() {
+    if (!settingsOpen) return;
+    settingsOpen = false;
+    settingsSheet.classList.remove("open");
+    settingsSheet.setAttribute("inert", "");
+    if (history.state && history.state.herdrSettings) history.back();  // pop our entry
+    try { settingsBtn.focus({ preventScroll: true }); } catch (err) { /* noop */ }
+  }
+
+  settingsBtn.addEventListener("click", function () {
+    if (settingsOpen) closeSettings(); else openSettings();
+  });
+  settingsCloseBtn.addEventListener("click", closeSettings);
 
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", function () {
@@ -679,10 +714,34 @@
     roleEl.textContent = role === "user" ? "tú" : "agente";
     var textEl = document.createElement("span");
     textEl.className = "gt-text";
-    textEl.textContent = text;  // full text, always — the panel scrolls
+    textEl.textContent = text;
+    /* Full-width <button aria-expanded> row — never an inline span. */
+    var moreBtn = document.createElement("button");
+    moreBtn.type = "button";
+    moreBtn.className = "ver-mas";
+    moreBtn.setAttribute("aria-expanded", "false");
+    moreBtn.textContent = "ver más";
+    moreBtn.addEventListener("click", function (event) {
+      event.stopPropagation();
+      var expanded = el.classList.toggle("expanded");
+      moreBtn.setAttribute("aria-expanded", expanded ? "true" : "false");
+      moreBtn.textContent = expanded ? "ver menos" : "ver más";
+    });
     el.appendChild(roleEl);
     el.appendChild(textEl);
+    el.appendChild(moreBtn);
     return el;
+  }
+
+  function measureVerMas(el, text) {
+    if (el.classList.contains("expanded")) {
+      el.classList.add("has-more");  // it was expandable before: keep it
+      return;
+    }
+    var textEl = el.querySelector(".gt-text");
+    var overflow = textEl.scrollHeight > textEl.clientHeight + 2 ||
+      text.length > 260 || text.split("\n").length >= 5;
+    el.classList.toggle("has-more", overflow);
   }
 
   function renderGlanceLabel() {
@@ -735,6 +794,17 @@
         el = pool.shift();
       } else {
         el = buildGlanceTurn(t.role, t.text);
+        /* Expansion carry-over (AC7): if the turn that used to sit at
+         * this position was expanded, the rebuilt one stays expanded. */
+        var oldHere = existing[i];
+        if (oldHere && oldHere.classList.contains("expanded") &&
+            oldHere.getAttribute("data-role") === t.role) {
+          el.classList.add("expanded");
+          var btn = el.querySelector(".ver-mas");
+          btn.setAttribute("aria-expanded", "true");
+          btn.textContent = "ver menos";
+        }
+        measureVerMas(el, t.text);
       }
       if (el.getAttribute("data-key") !== key) el.setAttribute("data-key", key);
       wanted.push(el);

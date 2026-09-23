@@ -14,9 +14,6 @@ from dataclasses import dataclass
 
 MAX_MESSAGES = 16
 MAX_MESSAGE_CHARS = 4_000
-# UI-facing ceiling (memory.py stores full text; consumers clip for their
-# own budget). Generous enough that only pathological dumps hit it.
-DISPLAY_MESSAGE_CHARS = 20_000
 DEFAULT_SESSION = "default"
 
 
