@@ -3152,6 +3152,97 @@ assert_grep "38e engine line carries light accent" $'\033[34m' "$T/e-light.txt" 
   && ok "38e compound 1;33 strips cleanly (visible-width parity dark vs light)" \
   || bad "38e width parity broke: $(visible_stats "$T/e-dark.txt") vs $(visible_stats "$T/e-light.txt")"
 
+# 39a. Live Theme Adoption (US-HT-14-2): the dashboard is a LONG-RUNNING
+#      process whose TTS_THEME was snapshotted at startup; the settings
+#      popup persists a new theme from a SEPARATE process. The render loop
+#      must re-read the key from config.env per frame (same per-frame state
+#      discipline as load_snooze_state / is_playing / is_auto_muted), so
+#      the RUNNING dashboard adopts the write on its next frame. Fail-open
+#      controls: missing/unreadable config and an absent key keep the
+#      current value; a hand-edited solarized normalizes to dark; the
+#      per-frame read adds no writes (H-move budget unchanged).
+new_env s39a
+FX="$T/fixture.json"; make_fixture "$FX"
+write_herdr_stub "$FX"
+make_history "$HERDR_TTS_HISTORY_FILE"
+write_engine_status_stub
+printf 'TTS_THEME="dark"\n' > "$T/conf/herdr-tts/config.env"
+capture 'q\n' "$T/cap-dark.txt"
+assert_grep "39a dark capture carries the dark muted byte" $'\033[90m' "$T/cap-dark.txt" -F
+
+# Differential pair from ONE hermetic process: frame 1 in dark, then an
+# external-style write — config_set touches the FILE only, the live var
+# provably stays dark, which is exactly what the popup's write looks like
+# to the running dashboard — then frame 2 in the SAME process.
+lib_run '
+  dashboard_refresh_roster
+  DASH_LAST_FRAME=""
+  dashboard_render "" > "$T/f1.txt"
+  config_set TTS_THEME light
+  printf "live=%s\n" "$TTS_THEME" > "$T/live.txt"
+  DASH_LAST_FRAME=""
+  dashboard_render "" > "$T/f2.txt"
+'
+assert_grep "39a frame 1 (before the write) is dark" $'\033[90m' "$T/f1.txt" -F
+assert_grep "39a the file write leaves the dashboard live var untouched" '^live=dark$' "$T/live.txt"
+assert_grep "39a frame 2 (after the write) adopts light" $'\033[30m' "$T/f2.txt" -F
+assert_no_grep_f "39a frame 2 drops the dark muted byte" $'\033[90m' "$T/f2.txt"
+
+# The persisted light also drives a FRESH dashboard process, and the
+# frame budget is unchanged by the re-read.
+capture 'q\n' "$T/cap-light.txt"
+assert_grep "39a light capture carries the light muted byte" $'\033[30m' "$T/cap-light.txt" -F
+h39d=$(esc_count "$T/cap-dark.txt" $'\033[H')
+h39l=$(esc_count "$T/cap-light.txt" $'\033[H')
+[[ "$h39d" -ge 1 && "$h39d" -eq "$h39l" ]] \
+  && ok "39a frame budget unchanged (H-moves dark=$h39d light=$h39l)" \
+  || bad "39a frame budget changed (H-moves dark=$h39d light=$h39l)"
+
+# Fail-open controls, each a fresh process whose current value is light.
+lib_run '
+  TTS_THEME=light
+  rm -f "$CONFIG_FILE"
+  dashboard_refresh_roster
+  DASH_LAST_FRAME=""
+  dashboard_render "" > "$T/c-missing.txt"
+'
+assert_grep "39a missing config keeps rendering (fail open, light kept)" $'\033[30m' "$T/c-missing.txt" -F
+printf 'TTS_VOICE="elvira"\n' > "$T/conf/herdr-tts/config.env"
+lib_run '
+  TTS_THEME=light
+  chmod 000 "$CONFIG_FILE"
+  dashboard_refresh_roster
+  DASH_LAST_FRAME=""
+  dashboard_render "" > "$T/c-unreadable.txt"
+  chmod 644 "$CONFIG_FILE"
+'
+assert_grep "39a unreadable config keeps the current theme (light)" $'\033[30m' "$T/c-unreadable.txt" -F
+lib_run '
+  TTS_THEME=light
+  dashboard_refresh_roster
+  DASH_LAST_FRAME=""
+  dashboard_render "" > "$T/c-absent.txt"
+'
+assert_grep "39a absent key keeps the current theme (light)" $'\033[30m' "$T/c-absent.txt" -F
+printf 'TTS_THEME="solarized"\n' > "$T/conf/herdr-tts/config.env"
+lib_run '
+  TTS_THEME=light
+  dashboard_refresh_roster
+  DASH_LAST_FRAME=""
+  dashboard_render "" > "$T/c-solarized.txt"
+'
+assert_grep "39a hand-edited solarized normalizes to dark" $'\033[90m' "$T/c-solarized.txt" -F
+assert_no_grep_f "39a solarized never renders the light muted byte" $'\033[30m' "$T/c-solarized.txt"
+
+# 39b. Theme-note copy: the appearance view discloses the instant
+#      dashboard adoption in both languages (roster disclosure kept —
+#      38c asserts that half on the rendered popup).
+lib_run 'tt settings.row.theme_note' > "$T/note-en.txt"
+assert_grep "39b EN note documents the instant dashboard adoption" 'instant on the running dashboard' "$T/note-en.txt"
+( export HERDR_TTS_LANG=es
+  lib_run 'tt settings.row.theme_note' > "$T/note-es.txt" )
+assert_grep "39b ES note documents the instant dashboard adoption" 'el dashboard lo adopta al vuelo' "$T/note-es.txt"
+
 echo
 echo "═══ RESULT: $PASS passed, $FAIL failed ═══"
 exit $(( FAIL > 0 ? 1 : 0 ))
