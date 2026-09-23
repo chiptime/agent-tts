@@ -69,6 +69,16 @@ def server_socket(socket_path: str = IPC_SOCKET) -> Optional[socket.socket]:
         except OSError:
             pass
         if exc.errno != errno.EADDRINUSE:
+            # Only this branch warns: any other errno (permissions, missing
+            # parent directory, path too long, read-only fs) silently kills
+            # interactive control, and the user must know why. The remaining
+            # None returns (live channel, lost election, Windows non-owner)
+            # are normal, expected operation and stay quiet.
+            print(
+                f"ipc: cannot bind control socket {socket_path}: {exc}; "
+                "interactive control unavailable",
+                file=sys.stderr,
+            )
             return None
         if _channel_is_live(socket_path):
             # Live server on this path: the channel is never stolen.
