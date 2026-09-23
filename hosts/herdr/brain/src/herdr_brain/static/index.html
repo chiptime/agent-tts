@@ -21,6 +21,8 @@
       --warn: #8a6100;
       --blue: #1d5fbf;
       --chip-bg: #e9edf3;
+      --user-wash: rgba(18, 133, 92, 0.07);   /* soft tint for the user's own turns */
+      --user-line: rgba(18, 133, 92, 0.28);
     }
     @media (prefers-color-scheme: dark) {
       :root {
@@ -34,6 +36,8 @@
         --warn: #fbbf24;
         --blue: #60a5fa;
         --chip-bg: #2a2f3a;
+        --user-wash: rgba(74, 222, 128, 0.09);
+        --user-line: rgba(74, 222, 128, 0.30);
       }
     }
     * { box-sizing: border-box; }
@@ -216,7 +220,17 @@
       color: var(--accent);
       margin-bottom: 2px;
     }
-    .gturn.user .gt-role { color: var(--warn); }
+    /* The user's own turns: soft but noticeable tint, role label aligned
+     * to the right so "tú" reads as coming from your side of the pane. */
+    .gturn.user {
+      background: var(--user-wash);
+      border-color: var(--user-line);
+    }
+    .gturn.user .gt-role {
+      color: var(--warn);
+      text-align: right;
+      padding-left: 12px;
+    }
     .gt-text {
       white-space: pre-wrap;
       word-break: break-word;
