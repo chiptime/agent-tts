@@ -20,7 +20,7 @@ import time
 from agent_tts.boundaries import BoundaryMap
 from agent_tts.ipc import IPCServer
 from agent_tts.playback_target import under_wsl
-from agent_tts.wav import pcm_to_wav
+from agent_tts.wav import WAV_HEADER_FMT, pcm_to_wav
 
 # Persistent reader loop (PowerShell 5.1 compatible, no PS7-only syntax).
 # Framing contract: per group, Python writes struct.pack("<Q", len(wav)) +
@@ -58,6 +58,9 @@ assert '"' not in _PS_STREAM_SCRIPT and "\n" not in _PS_STREAM_SCRIPT
 
 # 8-byte little-endian length prefix per group (must match _PS_STREAM_SCRIPT).
 _GROUP_HEADER = struct.Struct("<Q")
+
+# PCM frames of a framed group derive from its WAV container length.
+_WAV_HEADER_BYTES = struct.calcsize(WAV_HEADER_FMT)
 
 # Grace period before a hard stop escalates to kill().
 _STOP_GRACE_SEC = 0.3
@@ -143,6 +146,14 @@ class PowershellSession:
         self.frame_size = 2
         self.total_frames = 0
         self.current_frame = 0
+        # Position clock for IPC karaoke queries. SoundPlayer reports nothing
+        # back, so pos derives from the bytes handed to the pipe: pipe
+        # backpressure paces the writer to within ~one group of real
+        # playback. _sent_frames counts accepted frames (the ramp cap); the
+        # ramp interpolates inside the group handed off last, frozen while
+        # paused (_ramp_time None).
+        self._sent_frames = 0
+        self._ramp_time = None
         self._buffer_loaded = False
         self.lock = threading.Lock()
         self.ipc_server = None
@@ -215,14 +226,62 @@ class PowershellSession:
             self._hard_stop()
             return "status=stopped"
 
+        # Read-only karaoke family, byte-compatible with the local
+        # AudioSession replies; position comes from the pipe-handoff ramp.
+        if action in ("highlight", "current-highlight"):
+            with self.lock:
+                pos = self._pos_sec_locked()
+                return self.boundaries.format_highlighted_sentence(pos, ansi=True, bionic=self.bionic)
+
+        if action in ("scroll-info", "autoscroll-info", "autoscroll"):
+            with self.lock:
+                pos = self._pos_sec_locked()
+                tot = (self.total_frames / float(self.sample_rate)) if self.sample_rate else 0.0
+                sent = self.boundaries.get_sentence_at(pos)
+                sent_idx = sent.index if sent else -1
+                total_sents = len(self.boundaries.sentences)
+                para = self.boundaries.get_paragraph_at(pos)
+                para_idx = para.index if para else -1
+                total_paras = len(self.boundaries.paragraphs)
+                pct = (pos / tot * 100.0) if tot > 0 else 0.0
+                return (
+                    f"pos={pos:.2f} total={tot:.2f} pct={pct:.1f} "
+                    f"sent_idx={sent_idx} total_sents={total_sents} "
+                    f"para_idx={para_idx} total_paras={total_paras}"
+                )
+
+        if action in ("sentence", "current-sentence", "current_sentence"):
+            with self.lock:
+                pos = self._pos_sec_locked()
+                cur_sent = self.boundaries.get_sentence_at(pos)
+                if cur_sent:
+                    text_clean = cur_sent.text.replace("\n", " ").strip()
+                    return f"sent_idx={cur_sent.index} start={cur_sent.start_sec:.2f} end={cur_sent.end_sec:.2f} text={text_clean}"
+                return "sent_idx=-1 text="
+
+        if action in ("paragraph", "current-paragraph", "current_paragraph"):
+            with self.lock:
+                pos = self._pos_sec_locked()
+                cur_p = self.boundaries.get_paragraph_at(pos)
+                if cur_p:
+                    text_clean = cur_p.text.replace("\n", " ").strip()
+                    if len(text_clean) > 80:
+                        text_clean = text_clean[:77] + "..."
+                    return f"para_idx={cur_p.index} start={cur_p.start_sec:.2f} end={cur_p.end_sec:.2f} text={text_clean}"
+                return "para_idx=-1 text="
+
+        # Navigation (seek/rewind/forward/next-*/prev-*) stays unsupported:
+        # groups already handed to the pipe cannot be un-played, so remote
+        # position jumps are future work (they need a drain+replay cycle).
         return (
             f"ERR: command '{action}' is not supported for wsl-ps playback "
-            "(supported: status, pause, resume, toggle-pause, stop)"
+            "(supported: status, pause, resume, toggle-pause, stop, "
+            "highlight, scroll-info, sentence, paragraph)"
         )
 
     def _ipc_status(self) -> str:
         with self.lock:
-            pos = (self.current_frame / float(self.sample_rate)) if self.sample_rate else 0.0
+            pos = self._pos_sec_locked()
             total = (self.total_frames / float(self.sample_rate)) if self.sample_rate else 0.0
             sent = self.boundaries.get_sentence_at(pos)
             sent_clean = sent.text.replace("\n", " ").strip() if sent else ""
@@ -234,14 +293,49 @@ class PowershellSession:
                 f"sent_idx={sent_idx} para_idx={para_idx} sentence={sent_clean}"
             )
 
+    def _pos_sec_locked(self) -> float:
+        """Playback position in seconds; caller must hold self.lock."""
+        return (self._pos_frames_locked() / float(self.sample_rate)) if self.sample_rate else 0.0
+
+    def _pos_frames_locked(self) -> int:
+        """Playback position in frames; caller must hold self.lock.
+
+        Frozen (ramp unset) returns the last frozen frame count; otherwise
+        the frame count advanced by wall time since the last pipe handoff,
+        capped at the frames actually handed to the pipe.
+        """
+        if self._ramp_time is None or not self.sample_rate:
+            return self.current_frame
+        elapsed = time.monotonic() - self._ramp_time
+        return min(
+            self.current_frame + int(elapsed * self.sample_rate),
+            self._sent_frames,
+        )
+
+    def pos_frames(self) -> int:
+        """Thread-safe playback position in frames (IPC karaoke consumers)."""
+        with self.lock:
+            return self._pos_frames_locked()
+
     # -- flow control ---------------------------------------------------------
 
     def pause(self) -> None:
-        """Blocks subsequent group writes until resume(); returns immediately."""
+        """Blocks subsequent group writes until resume(); returns immediately.
+
+        The position ramp freezes at the current estimate; the group already
+        in flight still plays out (pause granularity is one group), but the
+        cap keeps the estimate from running past its bytes.
+        """
+        with self.lock:
+            self.current_frame = self._pos_frames_locked()
+            self._ramp_time = None
         self._gate.clear()
 
     def resume(self) -> None:
-        """Unblocks group writes after a pause."""
+        """Unblocks group writes after a pause; re-arms the position ramp."""
+        with self.lock:
+            if self._ramp_time is None:
+                self._ramp_time = time.monotonic()
         self._gate.set()
 
     # -- PCM pipeline (mirrors local AudioSession) ---------------------------
@@ -255,6 +349,8 @@ class PowershellSession:
         self.frame_size = self.nchannels * self.bytes_per_sample
         self.total_frames = len(self.raw_bytes) // self.frame_size
         self.current_frame = 0
+        self._sent_frames = 0
+        self._ramp_time = None
         self.state["total"] = (self.total_frames / float(self.sample_rate)) if self.sample_rate else 0.0
         self._buffer_loaded = True
 
@@ -414,6 +510,15 @@ class PowershellSession:
                     raise BrokenPipeError("process exited")
                 proc.stdin.write(_GROUP_HEADER.pack(len(wav)) + wav)
                 proc.stdin.flush()
+                # Group handed to the pipe: the blocked write only returns
+                # once the reader consumed enough, so playback is at (about)
+                # this group's start. Resync the ramp there and raise the
+                # cap; backpressure keeps the estimate within ~one group.
+                pcm_frames = (len(wav) - _WAV_HEADER_BYTES) // self.frame_size
+                with self.lock:
+                    self.current_frame = self._sent_frames
+                    self._sent_frames += max(0, pcm_frames)
+                    self._ramp_time = time.monotonic()
             except (BrokenPipeError, ValueError, OSError) as e:
                 raise self._fail_after_write_error(e) from e
             except KeyboardInterrupt:
@@ -478,11 +583,14 @@ class PowershellSession:
 
         kill() comes FIRST: closing stdin before the kill would block on the
         io lock while a backpressured producer write is in flight (paced by
-        the current group's playback), delaying the cut by seconds. After the
-        kill the writer fails fast with EPIPE, so the close is instant. The
-        exit code is swallowed: a stop is not an error.
+        the current group's playback), delaying the cut by seconds. After
+        the kill the writer fails fast with EPIPE, so the close is instant.
+        The exit code is swallowed: a stop is not an error.
         """
         self._gate.set()  # unblock a paused writer first
+        with self.lock:  # the cut kills audio: freeze the position estimate
+            self.current_frame = self._pos_frames_locked()
+            self._ramp_time = None
         proc = self._proc
         if proc is None:
             return
