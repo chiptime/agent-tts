@@ -79,20 +79,29 @@ class OpencodeTranscript:
         except (sqlite3.Error, OSError):
             return []
 
-        turns: List[Turn] = []
-        seen: set = set()
+        # Group every text part under its message, preserving the parts'
+        # chronological order: OpenCode splits long answers across several
+        # text parts, and keeping only the first one made the reading view
+        # arrive truncated ("ver más" had nothing more to reveal).
+        order: List[str] = []
+        roles: dict = {}
+        parts: dict = {}
         for message_id, role, data in rows:
-            if message_id in seen:
-                continue  # part of an already-captured message
-            if len(turns) >= n_turns:
-                break
             if role not in ("user", "assistant"):
                 continue
             text = _opencode_part_text(data)
             if not text:
                 continue
-            seen.add(message_id)
-            turns.append(Turn(role=role, text=text))
+            if message_id not in parts:
+                parts[message_id] = []
+                roles[message_id] = role
+                order.append(message_id)
+            parts[message_id].append(text)
+        turns: List[Turn] = []
+        for message_id in order:
+            if len(turns) >= n_turns:
+                break
+            turns.append(Turn(role=roles[message_id], text="\n".join(parts[message_id])))
         turns.reverse()
         return turns
 
