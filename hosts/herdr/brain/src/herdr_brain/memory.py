@@ -14,6 +14,9 @@ from dataclasses import dataclass
 
 MAX_MESSAGES = 16
 MAX_MESSAGE_CHARS = 4_000
+# UI-facing ceiling (memory.py stores full text; consumers clip for their
+# own budget). Generous enough that only pathological dumps hit it.
+DISPLAY_MESSAGE_CHARS = 20_000
 DEFAULT_SESSION = "default"
 
 
@@ -25,12 +28,12 @@ class Message:
     content: str
 
 
-def clip_content(text: str) -> str:
-    """Bounds a message's stored length to keep the token budget finite."""
+def clip_content(text: str, limit: int = MAX_MESSAGE_CHARS) -> str:
+    """Bounds a text's length to the given budget (default: LLM prompt)."""
     text = text or ""
-    if len(text) <= MAX_MESSAGE_CHARS:
+    if len(text) <= limit:
         return text
-    return text[: MAX_MESSAGE_CHARS - 3] + "..."
+    return text[: limit - 3] + "..."
 
 
 class ConversationStore:
@@ -54,11 +57,11 @@ class ConversationStore:
             return list(ring) if ring else []
 
     def append(self, session_id: str | None, role: str, content: str) -> None:
-        """Stores one turn, clipped and evicting the oldest when full."""
+        """Stores one turn in full, evicting the oldest when the ring is full."""
         key = self.normalize(session_id)
         with self._lock:
             ring = self._sessions.setdefault(key, deque(maxlen=self._max_messages))
-            ring.append(Message(role=role, content=clip_content(content)))
+            ring.append(Message(role=role, content=content or ""))
 
     def reset(self, session_id: str | None) -> None:
         """Drops the whole conversation for one session."""

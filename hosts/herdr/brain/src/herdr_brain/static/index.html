@@ -220,32 +220,8 @@
     .gt-text {
       white-space: pre-wrap;
       word-break: break-word;
-      /* Clamp long turns to ~4 lines; "ver más" expands inline. */
-      display: -webkit-box;
-      -webkit-box-orient: vertical;
-      -webkit-line-clamp: 4;
-      overflow: hidden;
+      /* Full text, always (user request): the panel itself scrolls. */
     }
-    .gturn.expanded .gt-text {
-      display: block;
-      -webkit-line-clamp: none;
-      overflow: visible;
-    }
-    .ver-mas {
-      display: none;               /* only shown on .has-more turns */
-      width: 100%;
-      min-height: 48px;            /* touch target >= 48px */
-      margin-top: 6px;
-      align-items: center;
-      justify-content: center;
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      color: var(--accent);
-      font-size: var(--fs-sm);
-      font-weight: 700;
-    }
-    .gturn.has-more .ver-mas { display: flex; }
     #glance-empty {
       padding: var(--sp-3);
       font-size: var(--fs-sm);
@@ -478,9 +454,9 @@
     }
     #voice-engine-btn {
       flex: 0 0 auto;
-      min-height: 48px;
+      min-height: 44px;
       padding: 4px 12px;
-      font-size: 13px;
+      font-size: 12.5px;
       font-weight: 600;
       background: var(--chip-bg);
       color: var(--muted);
@@ -675,6 +651,7 @@
     <span id="status-chip" class="chip">…</span>
     <span id="pane-title">conectando…</span>
     <span id="header-version" class="chip">v<span id="app-version-header">?</span></span>
+    <button id="voice-engine-btn" type="button" title="Cambiar motor de voz">Voz: Servidor</button>
     <button id="mute-btn" class="head-btn" title="Silenciar anuncios">🔊</button>
     <button id="new-conversation" class="head-btn" title="Empezar una conversación nueva">↺<span class="btn-text"> Nueva</span></button>
   </header>
@@ -715,7 +692,6 @@
     <div class="d-head">
       <span class="d-title"><span class="live-dot" aria-hidden="true">●</span> Llamada con brain</span>
       <span id="call-timer" aria-hidden="true">00:00</span>
-      <button id="voice-engine-btn" type="button">Voz: Servidor</button>
       <button id="drawer-close" type="button" title="Minimizar la llamada (sigue en marcha)">▼</button>
     </div>
     <div id="d-pending"></div>

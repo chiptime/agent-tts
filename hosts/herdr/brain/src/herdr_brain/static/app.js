@@ -19,7 +19,7 @@
  * - Announcements arrive over SSE and queue behind any in-flight audio.
  * - Every poll render is KEYED (FR10): herd chips and glance turns are
  *   updated in place per id/content, so the 5s poll never swallows taps,
- *   resets scroll or collapses an expanded turn. One render error never
+ *   resets scroll. One render error never
  *   kills the loop and every surface has a Spanish empty/error state.
  * User-facing strings are Spanish on purpose (single Spanish-speaking owner).
  */
@@ -679,34 +679,10 @@
     roleEl.textContent = role === "user" ? "tú" : "agente";
     var textEl = document.createElement("span");
     textEl.className = "gt-text";
-    textEl.textContent = text;
-    /* FR2: full-width <button aria-expanded> row — never an inline span. */
-    var moreBtn = document.createElement("button");
-    moreBtn.type = "button";
-    moreBtn.className = "ver-mas";
-    moreBtn.setAttribute("aria-expanded", "false");
-    moreBtn.textContent = "ver más";
-    moreBtn.addEventListener("click", function (event) {
-      event.stopPropagation();
-      var expanded = el.classList.toggle("expanded");
-      moreBtn.setAttribute("aria-expanded", expanded ? "true" : "false");
-      moreBtn.textContent = expanded ? "ver menos" : "ver más";
-    });
+    textEl.textContent = text;  // full text, always — the panel scrolls
     el.appendChild(roleEl);
     el.appendChild(textEl);
-    el.appendChild(moreBtn);
     return el;
-  }
-
-  function measureVerMas(el, text) {
-    if (el.classList.contains("expanded")) {
-      el.classList.add("has-more");  // it was expandable before: keep it
-      return;
-    }
-    var textEl = el.querySelector(".gt-text");
-    var overflow = textEl.scrollHeight > textEl.clientHeight + 2 ||
-      text.length > 260 || text.split("\n").length >= 5;
-    el.classList.toggle("has-more", overflow);
   }
 
   function renderGlanceLabel() {
@@ -759,17 +735,6 @@
         el = pool.shift();
       } else {
         el = buildGlanceTurn(t.role, t.text);
-        /* Expansion carry-over (AC7): if the turn that used to sit at
-         * this position was expanded, the rebuilt one stays expanded. */
-        var oldHere = existing[i];
-        if (oldHere && oldHere.classList.contains("expanded") &&
-            oldHere.getAttribute("data-role") === t.role) {
-          el.classList.add("expanded");
-          var btn = el.querySelector(".ver-mas");
-          btn.setAttribute("aria-expanded", "true");
-          btn.textContent = "ver menos";
-        }
-        measureVerMas(el, t.text);
       }
       if (el.getAttribute("data-key") !== key) el.setAttribute("data-key", key);
       wanted.push(el);

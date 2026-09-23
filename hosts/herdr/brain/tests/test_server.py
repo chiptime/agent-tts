@@ -380,14 +380,18 @@ class TestStatic:
         resp = client.get("/")
         assert resp.status_code == 200
         html = resp.text
+        # PRD-call-drawer-redesign contract: the full-screen sheet is gone
+        # (absorbed by the cockpit); the call lives in #call-drawer and the
+        # voice-engine toggle sits in the header, reachable while idle.
         for element_id in (
             "call-btn", "pause-btn", "state-pill", "new-conversation",
             "agent-view", "pending-banner", "herd-strip", "herd-note",
-            "sheet", "sheet-title", "sheet-conversation", "sheet-screen",
-            "sheet-refresh", "sheet-close", "tab-conv", "tab-screen",
-            "view-empty", "sheet-diag",
+            "call-drawer", "drawer-close", "call-timer", "d-pending",
+            "conversation", "glance-turns", "glance-empty", "glance-label",
+            "voice-engine-btn", "interim", "meter-cells", "diag-panel",
         ):
             assert f'id="{element_id}"' in html, f"missing #{element_id}"
+        assert 'id="sheet"' not in html, "the sheet must stay removed (PRD FR5)"
         assert "/app.js" in html
         assert "/endpointing.js" in html
         assert "/vad.js" in html
@@ -421,8 +425,8 @@ class TestStatic:
         assert "📞 Llamar" in html
         assert "⏸ Pausa" in html
         assert "Parar audio" in html
-        assert "Conversación" in html
-        assert "Pantalla" in html
+        assert "Llamada con brain" in html
+        assert "Vista del agente" in html
         assert "Enviar" in html
         assert "Escribe en su lugar…" in html
 
