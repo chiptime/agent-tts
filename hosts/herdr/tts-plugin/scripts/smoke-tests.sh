@@ -127,6 +127,11 @@
 #         total escaping + http/https-only links, 40e pinned-oracle parity
 #         fixtures F1–F9 + sidecar map, 40f --render-html CLI + untouched
 #         contract v1, 40g zero new dependencies + transient process
+#   41    reader vs remote-engine ERR replies: a live socket answering
+#         "ERR: command '...' is not supported..." (remote engine without
+#         the karaoke family) degrades to the clean no-playback path —
+#         rc 0, English stderr notice, stdout empty (never the alternate
+#         screen nor the ERR text rendered)
 set -uo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -3488,6 +3493,92 @@ assert_grep "40d script injection neutralized as escaped text" '&lt;script&gt;al
 assert_no_grep_f "40d no script element in output" '<script' "$T/d.html"
 assert_no_grep_f "40d javascript: href demoted (no anchor href)" 'href="javascript:' "$T/d.html"
 assert_grep "40d https link renders as a real anchor" 'href="https://example\.com/x"' "$T/d.html"
+# ═══ 41. reader vs remote-engine ERR replies (karaoke IPC hardening) ═══
+# A remote-playback engine without the read-only karaoke family answers
+# "ERR: command '...' is not supported..." on a LIVE socket. fetch() must
+# treat that as absence of playback: rc 0, one English line on stderr, and
+# NOTHING on stdout — the alternate screen is never entered and the ERR
+# text is never rendered as the karaoke body.
+echo "── 41. reader degrades to no-playback when the engine replies ERR"
+new_env s41
+unset TMUX
+READER_PY="$REPO/lib/herdr_reader.py"
+mkdir -p "$T/py"
+cat > "$T/py/agent_tts.py" <<'PYEOF'
+import os, socket
+
+def send_ipc_command(command, socket_path=None):
+    path = socket_path or os.environ.get("AGENT_TTS_SOCKET", "/tmp/herdr-tts-player.sock")
+    if not os.path.exists(path):
+        return None
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(1.0)
+        s.connect(path)
+    except Exception:
+        return None
+    try:
+        s.sendall(command.strip().encode() + b"\n")
+        chunks = []
+        while sum(len(c) for c in chunks) < 8192:
+            chunk = s.recv(1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            if b"\n" in chunk:
+                break
+        if not chunks:
+            return None
+        return b"".join(chunks).decode("utf-8", "ignore").strip()
+    except Exception:
+        return None
+    finally:
+        try:
+            s.close()
+        except OSError:
+            pass
+PYEOF
+export PYTHONPATH="$T/py"
+cat > "$T/err_server.py" <<'PYEOF'
+import os, socket, sys, threading
+path = sys.argv[1]
+try: os.unlink(path)
+except FileNotFoundError: pass
+srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+srv.bind(path); srv.listen(4)
+ERR = ("ERR: command '%s' is not supported for windows playback "
+       "(supported: status, pause, resume, toggle-pause, stop)")
+def serve(conn):
+    conn.settimeout(2.0)
+    buf = b""
+    try:
+        while True:
+            data = conn.recv(4096)
+            if not data: return
+            buf += data
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                cmd = line.decode().strip().split()[0] if line.strip() else "highlight"
+                conn.sendall((ERR % cmd).encode() + b"\n")
+    except Exception: pass
+    finally: conn.close()
+while True:
+    try:
+        conn, _ = srv.accept()
+    except OSError: break
+    threading.Thread(target=serve, args=(conn,), daemon=True).start()
+PYEOF
+python3 "$T/err_server.py" "$T/err.sock" & SRV41=$!
+for _ in $(seq 1 30); do [[ -S "$T/err.sock" ]] && break; sleep 0.1; done
+AGENT_TTS_SOCKET="$T/err.sock" timeout 10 python3 "$READER_PY" \
+  > "$T/err-out.txt" 2> "$T/err-err.txt" < /dev/null
+rc=$?
+[[ $rc -eq 0 ]] && ok "41 renderer exits rc=0 on ERR replies" || bad "41 renderer rc=$rc"
+assert_grep "41 stderr carries the English notice" '^No playback in progress\.$' "$T/err-err.txt"
+[[ ! -s "$T/err-out.txt" ]] && ok "41 stdout stays empty" || bad "41 stdout not empty: $(head -c 120 "$T/err-out.txt")"
+assert_no_grep_f "41 never writes the alternate-screen ON sequence" $'\033[?1049h' "$T/err-out.txt"
+assert_no_grep_f "41 never renders the ERR text as the body" 'ERR: command' "$T/err-out.txt"
+kill "$SRV41" 2>/dev/null || true
 
 echo
 echo "═══ RESULT: $PASS passed, $FAIL failed ═══"
