@@ -100,6 +100,13 @@
 #         writer, Esc from a category returns to the index, Esc/q from
 #         the index exits, R restarts from the standalone index,
 #         unknown keys warn with category-scoped hints
+#   37    layer boundary audit (RF-HT-13): the provider cycle list comes
+#         from the engine catalog (a catalog-only canary provider is
+#         reachable) and wraps through the static legacy table when the
+#         engine is down (fail-open, RNF-HT-13-2); static audit over the
+#         host: no static voice catalog (RF-HT-13-4), no inline audio
+#         decode (RF-HT-13-2), no internal engine module imports (public
+#         `from agent_tts import` surface only)
 set -uo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -2836,6 +2843,46 @@ grep -q 'HERDR_TTS_LANG="es"' "$T/conf/herdr-tts/config.env" \
 bash -c 'source "$1" >/dev/null 2>&1 && printf "src:%s\n" "$HERDR_TTS_LANG"' \
   _ "$T/conf/herdr-tts/config.env" > "$T/out36e2.txt"
 assert_grep "36e rewritten file stays bash-sourceable" '^src:es$' "$T/out36e2.txt"
+
+echo "── 37. layer boundary audit (RF-HT-13): host consumes the engine, never re-implements it"
+
+# 37a. The provider cycle list IS the engine catalog: a canary provider
+#      that exists ONLY in the engine answer must be reachable from the
+#      cycle (the static SETTINGS_PROVIDERS table would wrap to edge).
+new_env s37a
+FX="$T/fixture.json"; make_fixture "$FX"
+write_herdr_stub "$FX"
+cat > "$T/data/herdr-tts/venv/bin/python" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${*}" == *"voice list --json" ]]; then
+  printf '%s\n' '{"providers": ["edge", "openai", "elevenlabs", "piper", "kokoro", "futureprov"], "voices": {"edge": ["elvira"], "futureprov": ["canary"]}}'
+  exit 0
+fi
+exec python3 "$@"
+EOF
+chmod +x "$T/data/herdr-tts/venv/bin/python"
+lib_run 'settings_cycle_value provider kokoro' > "$T/out.txt"
+grep -qx 'futureprov' "$T/out.txt" \
+  && ok "37a provider cycle reaches the catalog canary (kokoro→futureprov)" || bad "37a cycle answered: $(cat "$T/out.txt")"
+
+# 37b. Engine down → fail-open to the static legacy table (RNF-HT-13-2):
+#      kokoro is last there, so the cycle wraps to edge.
+new_env s37b
+FX="$T/fixture.json"; make_fixture "$FX"
+write_herdr_stub "$FX"
+printf '#!/usr/bin/env bash\nif [[ "${*}" == *"voice list --json" ]]; then exit 1; fi\nexec python3 "$@"\n' > "$T/data/herdr-tts/venv/bin/python"
+chmod +x "$T/data/herdr-tts/venv/bin/python"
+lib_run 'settings_cycle_value provider kokoro' > "$T/out.txt"
+grep -qx 'edge' "$T/out.txt" \
+  && ok "37b engine down → legacy table wraps kokoro→edge (fail-open)" || bad "37b cycle answered: $(cat "$T/out.txt")"
+
+# 37c. Static audit: patterns that would re-introduce engine semantics in
+#      the host. Comment-only lines are stripped first (history notes
+#      mention retired code on purpose).
+grep -v '^[[:space:]]*#' "$SCRIPT" > "$T/code-only.sh"
+assert_no_grep_f "37c no static voice catalog (RF-HT-13-4)" 'SETTINGS_VOICES' "$T/code-only.sh"
+assert_no_grep "37c no inline audio decode in the host (RF-HT-13-2)" 'miniaudio' "$T/code-only.sh"
+assert_no_grep "37c no internal engine module imports (public API only)" 'from agent_tts\.|import agent_tts\.' "$T/code-only.sh"
 
 echo
 echo "═══ RESULT: $PASS passed, $FAIL failed ═══"
