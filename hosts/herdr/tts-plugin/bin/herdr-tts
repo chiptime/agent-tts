@@ -1303,6 +1303,31 @@ config_set() { # <KEY> <VALUE> → rc 1 on rejection or write failure (warning o
   return 0
 }
 
+# Live theme adoption (US-HT-14-2): TTS_THEME is snapshotted once at
+# startup (source "$CONFIG_FILE"), but the settings popup persists a new
+# value from a SEPARATE short-lived process — a long-running dashboard
+# would never see it. Re-read the key per frame, builtin-only (no
+# grep/awk/sed forks: this rides the ~1Hz render loop). Semantics mirror
+# the startup precedence config.env > env > dark: absent key, unreadable
+# or missing file keep the CURRENT value (fail open); any other value
+# normalizes to dark; the LAST TTS_THEME line wins, exactly like source.
+theme_sync() {
+  local line val=""
+  [[ -r "$CONFIG_FILE" ]] || return 0
+  while IFS= read -r line; do
+    case "$line" in
+      TTS_THEME=*)
+        val="${line#TTS_THEME=}"
+        # config_set writes key="value"; tolerate unquoted hand edits.
+        [[ "$val" == \"*\" && "$val" == *\" ]] && { val="${val#\"}"; val="${val%\"}"; }
+        ;;
+    esac
+  done < "$CONFIG_FILE"
+  [[ -n "$val" ]] || return 0
+  [[ "$val" == "light" ]] && TTS_THEME=light || TTS_THEME=dark
+  return 0
+}
+
 # Sole color-SGR emitter (RF-HT-14-2). Out-var first, like dashboard_fit /
 # config_get_retention_raw. printf -v keeps it fork-free: safe per frame.
 # The maps carry SGR PARAMETERS only; the escape is composed here and
@@ -3844,6 +3869,10 @@ dashboard_render() {
   dashboard_calc_widths "$DASH_COLS"
   local frame="" roster_fmt c_ok c_warn c_accent c_muted
   roster_fmt="║ %s%s%s %s %-${DASH_W_AGENT}s%s\033[0m"
+  # Live adoption first (US-HT-14-2): adopt a theme persisted by another
+  # process (the settings popup) from the NEXT frame on — the same
+  # per-frame state discipline as load_snooze_state / is_playing above.
+  theme_sync
   # Theme tokens resolve ONCE per frame into locals (RF-HT-14-2): the two
   # state cases below only read variables — zero forks in the render loops.
   theme_color c_ok     ok
