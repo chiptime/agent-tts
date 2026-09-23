@@ -17,6 +17,10 @@ Type=simple
 WorkingDirectory=%h/Code/personal/herdr-brain
 ExecStart=%h/Code/personal/herdr-brain/.venv/bin/python -m herdr_brain.server
 Environment=HERDR_BRAIN_HOST=0.0.0.0
+# The systemd user manager PATH is minimal and excludes linuxbrew, where the
+# herdr CLI lives. Without an absolute HERDR_BIN every `herdr agent list`
+# fails to execute and /herd fail-softs to an empty herd ("NADIE, sin datos").
+Environment=HERDR_BIN=/home/linuxbrew/.linuxbrew/bin/herdr
 EnvironmentFile=%h/.config/herdr-brain/env
 Restart=on-failure
 RestartSec=3
