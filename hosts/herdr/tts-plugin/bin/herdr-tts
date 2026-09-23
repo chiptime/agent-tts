@@ -82,6 +82,8 @@ DEFAULT_SETTLE_SECONDS="5"
 # Ambient pane-title glyphs (done/blocked ✔, mute 🔇, snooze 😴) synced on the
 # daemon sweep; 0 = fully off (the sweep spawns nothing for titles).
 DEFAULT_TTS_TITLE_GLYPHS="1"
+# Terminal theme for every plugin-rendered color: "dark" (default) | "light".
+DEFAULT_THEME="dark"
 
 notify_herdr() {
   local title="$1"
@@ -148,6 +150,10 @@ TTS_SETTLE_SECONDS="${TTS_SETTLE_SECONDS:-$DEFAULT_SETTLE_SECONDS}"
 # Invalid hand-edited values fall back to the default instead of breaking sleep.
 [[ "$TTS_SETTLE_SECONDS" =~ ^[0-9]+([.][0-9]+)?$ ]] || TTS_SETTLE_SECONDS="$DEFAULT_SETTLE_SECONDS"
 TTS_TITLE_GLYPHS="${TTS_TITLE_GLYPHS:-$DEFAULT_TTS_TITLE_GLYPHS}"
+TTS_THEME="${TTS_THEME:-$DEFAULT_THEME}"
+# Invalid hand-edited values fall back to dark — the byte-identical
+# baseline (same validation style as TTS_SETTLE_SECONDS / HERDR_TTS_LANG).
+[[ "$TTS_THEME" == "light" ]] || TTS_THEME="dark"
 OPENAI_API_KEY="${OPENAI_API_KEY:-$DEFAULT_OPENAI_API_KEY}"
 OPENAI_BASE_URL="${OPENAI_BASE_URL:-$DEFAULT_OPENAI_BASE_URL}"
 OPENAI_TTS_MODEL="${OPENAI_TTS_MODEL:-$DEFAULT_OPENAI_TTS_MODEL}"
@@ -1195,9 +1201,9 @@ CONFIG_SET_BACKED_UP=0
 config_set() { # <KEY> <VALUE> → rc 1 on rejection or write failure (warning on stderr)
   local key="$1" value="$2"
   case "$key" in
-    TTS_PROVIDER|TTS_PLAYBACK|HERDR_TTS_AUDIO_RETENTION_DAYS|TTS_SETTLE_SECONDS|WEB_URL|WEB_LABEL|CLICK_REDIRECT|COLLIE_URL|TTS_AUTO_SCOPE|TTS_AUTO_LANG|PODCAST_ENABLED|TTS_DEBOUNCE_SECONDS|NTFY_TOPIC|TTS_VOICE|HERDR_TTS_LANG) ;;
+    TTS_PROVIDER|TTS_PLAYBACK|HERDR_TTS_AUDIO_RETENTION_DAYS|TTS_SETTLE_SECONDS|WEB_URL|WEB_LABEL|CLICK_REDIRECT|COLLIE_URL|TTS_AUTO_SCOPE|TTS_AUTO_LANG|PODCAST_ENABLED|TTS_DEBOUNCE_SECONDS|NTFY_TOPIC|TTS_VOICE|HERDR_TTS_LANG|TTS_THEME) ;;
     *)
-      echo "config_set: unmanaged key '${key}' (allowed: TTS_PROVIDER, TTS_PLAYBACK, HERDR_TTS_AUDIO_RETENTION_DAYS, TTS_SETTLE_SECONDS, WEB_URL, WEB_LABEL, CLICK_REDIRECT, COLLIE_URL, TTS_AUTO_SCOPE, TTS_AUTO_LANG, PODCAST_ENABLED, TTS_DEBOUNCE_SECONDS, NTFY_TOPIC, TTS_VOICE, HERDR_TTS_LANG)" >&2
+      echo "config_set: unmanaged key '${key}' (allowed: TTS_PROVIDER, TTS_PLAYBACK, HERDR_TTS_AUDIO_RETENTION_DAYS, TTS_SETTLE_SECONDS, WEB_URL, WEB_LABEL, CLICK_REDIRECT, COLLIE_URL, TTS_AUTO_SCOPE, TTS_AUTO_LANG, PODCAST_ENABLED, TTS_DEBOUNCE_SECONDS, NTFY_TOPIC, TTS_VOICE, HERDR_TTS_LANG, TTS_THEME)" >&2
       return 1
       ;;
   esac
@@ -1205,6 +1211,18 @@ config_set() { # <KEY> <VALUE> → rc 1 on rejection or write failure (warning o
     echo "config_set: refused: value for '${key}' must not contain double quotes" >&2
     return 1
   fi
+
+  # Key-specific value admission (RF-HT-14-1): fires BEFORE any filesystem
+  # side effect (pre-mkdir / pre-.bak / pre-tmp), so a rejected value leaves
+  # the stored config and the backup byte-unchanged.
+  case "$key" in
+    TTS_THEME)
+      if [[ "$value" != "dark" && "$value" != "light" ]]; then
+        echo "config_set: refused: TTS_THEME must be 'dark' or 'light' (got '${value}')" >&2
+        return 1
+      fi
+      ;;
+  esac
 
   local dir
   dir="$(dirname "$CONFIG_FILE")"
@@ -1267,6 +1285,26 @@ config_set() { # <KEY> <VALUE> → rc 1 on rejection or write failure (warning o
     return 1
   fi
   return 0
+}
+
+# Sole color-SGR emitter (RF-HT-14-2). Out-var first, like dashboard_fit /
+# config_get_retention_raw. printf -v keeps it fork-free: safe per frame.
+# The maps carry SGR PARAMETERS only; the escape is composed here and
+# nowhere else, so no literal color sequence exists anywhere in the script.
+theme_color() { # <out-var> <ok|warn|error|accent|muted|title|reset>
+  local __tc
+  if [[ "${TTS_THEME:-$DEFAULT_THEME}" == "light" ]]; then
+    case "$2" in
+      ok) __tc=32 ;; warn) __tc='1;33' ;; error) __tc=31 ;;
+      accent) __tc=34 ;; muted) __tc=30 ;; title) __tc=1 ;; *) __tc=0 ;;
+    esac
+  else
+    case "$2" in
+      ok) __tc=32 ;; warn) __tc=33 ;; error) __tc=31 ;;
+      accent) __tc=36 ;; muted) __tc=90 ;; title) __tc=1 ;; *) __tc=0 ;;
+    esac
+  fi
+  printf -v "$1" '\033[%sm' "$__tc"
 }
 
 is_playing() {
@@ -3788,8 +3826,14 @@ dashboard_render() {
   # before composing anything.
   dashboard_term_size
   dashboard_calc_widths "$DASH_COLS"
-  local frame="" roster_fmt
+  local frame="" roster_fmt c_ok c_warn c_accent c_muted
   roster_fmt="║ %s%s%s %s %-${DASH_W_AGENT}s%s\033[0m"
+  # Theme tokens resolve ONCE per frame into locals (RF-HT-14-2): the two
+  # state cases below only read variables — zero forks in the render loops.
+  theme_color c_ok     ok
+  theme_color c_warn   warn
+  theme_color c_accent accent
+  theme_color c_muted  muted
 
   _dash_add '%s' "$(tt dash.title "$(date +%H:%M:%S)")"
 
@@ -3849,10 +3893,10 @@ dashboard_render() {
     if ! [[ "$e_pos" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then e_pos=0; fi
     if ! [[ "$e_total" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then e_total=0; fi
     case "$e_state" in
-      playing)      e_color=$'\033[32m' ;;
-      paused)       e_color=$'\033[33m' ;;
-      synthesizing) e_color=$'\033[36m' ;;
-      *)            e_color=$'\033[90m' ;;
+      playing)      e_color="$c_ok" ;;
+      paused)       e_color="$c_warn" ;;
+      synthesizing) e_color="$c_accent" ;;
+      *)            e_color="$c_muted" ;;
     esac
     _dash_add '%s' "$(tt dash.engine "$e_color" "$(dashboard_engine_state_label "$e_state")" \
       "$(fmt_mmss "${e_pos%%.*}")" "$(fmt_mmss "${e_total%%.*}")" \
@@ -3916,10 +3960,10 @@ dashboard_render() {
     [[ "$pid" == "$selected" ]] && marker="▸ "
     # Agent state icon + color: needs-attention states first by design.
     case "$st" in
-      working)      color=$'\033[32m'; icon="▶" ;;
-      done|blocked) color=$'\033[33m'; icon="✔" ;;
-      idle)         color=$'\033[90m'; icon="·" ;;
-      *)            color=$'\033[90m'; icon="$st" ;; # unknown: literal value
+      working)      color="$c_ok"; icon="▶" ;;
+      done|blocked) color="$c_warn"; icon="✔" ;;
+      idle)         color="$c_muted"; icon="·" ;;
+      *)            color="$c_muted"; icon="$st" ;; # unknown: literal value
     esac
     # Voice overlays appended after the agent kind: mute, active snooze
     # countdown, then the anti-spam (debounce) hold with its remaining

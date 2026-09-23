@@ -107,6 +107,12 @@
 #         host: no static voice catalog (RF-HT-13-4), no inline audio
 #         decode (RF-HT-13-2), no internal engine module imports (public
 #         `from agent_tts import` surface only)
+#   38    tema claro (HT-14): TTS_THEME managed key (accept/reject, no
+#         filesystem side effect on reject), theme_color sole-emitter
+#         static gate + dark byte-identity via differential captures,
+#         light map + compound-width parity, Apariencia category: t
+#         opens/cycles the theme, persists across 10 cold starts, scoped
+#         warnings, bilingual copy
 set -uo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -142,6 +148,19 @@ esc_count() { # $1 = out file, $2 = escape seq -> occurrence count
 import sys
 print(open(sys.argv[1]).read().count(sys.argv[2]))
 PY
+}
+strip_ansi() { # $1 = file -> ANSI-free copy on stdout (plain-text diffs)
+  python3 - "$1" <<'PY'
+import re, sys
+sys.stdout.write(re.sub(r'\x1b\[[0-9;?]*[a-zA-Z]', '', open(sys.argv[1]).read()))
+PY
+}
+# Clock/age-blanked frame copy (colors intact) for stable capture diffs:
+# the dashboard embeds date +%H:%M:%S and per-second age labels, so raw
+# captures can never diff byte-for-byte across runs.
+norm_frame() { # $1 = file -> normalized copy on stdout
+  sed -E -e 's/[0-9]{2}:[0-9]{2}:[0-9]{2}/HH:MM:SS/g' \
+         -e 's/[0-9]+[smh] ago/Nm ago/g' "$1"
 }
 
 new_env() { # $1 = scenario dir name
@@ -2883,6 +2902,153 @@ grep -v '^[[:space:]]*#' "$SCRIPT" > "$T/code-only.sh"
 assert_no_grep_f "37c no static voice catalog (RF-HT-13-4)" 'SETTINGS_VOICES' "$T/code-only.sh"
 assert_no_grep "37c no inline audio decode in the host (RF-HT-13-2)" 'miniaudio' "$T/code-only.sh"
 assert_no_grep "37c no internal engine module imports (public API only)" 'from agent_tts\.|import agent_tts\.' "$T/code-only.sh"
+
+# ═══ 38. tema claro (HT-14): TTS_THEME, theme_color, Apariencia ═══
+# Engine IPC stub shared by the capture sub-scenarios: one synthesizing
+# status so the Motor line renders the accent color (the roster fixture
+# already covers ok/warn/muted); everything else delegates to python3.
+write_engine_status_stub() {
+  cat > "$T/data/herdr-tts/venv/bin/python" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${*}" == *"--ipc-cmd status"* ]]; then
+  printf '%s\n' 'status=synthesizing pos=1.0 total=42.0 provider=edge voice=elvira text=prueba del tema'
+  exit 0
+fi
+exec python3 "$@"
+EOF
+  chmod +x "$T/data/herdr-tts/venv/bin/python"
+}
+
+# 38a. Managed Theme Key: config_set accepts dark/light (rc 0, persisted,
+#      markers + per-process .bak) and rejects anything else BEFORE any
+#      filesystem side effect (rc 1, named values on stderr, stored config
+#      byte-unchanged, no .bak from the rejected call). 36e pattern.
+new_env s38a
+mkdir -p "$T/conf/herdr-tts"
+printf 'TTS_PROVIDER="edge"\n' > "$T/conf/herdr-tts/config.env"
+cp "$T/conf/herdr-tts/config.env" "$T/config.pre"
+lib_run '
+  r=0; config_set TTS_THEME solarized 2>"$T/reject.err" || r=$?
+  echo "rc=$r"
+' > "$T/out38a.txt"
+assert_grep "38a solarized rejected (rc 1)" '^rc=1$' "$T/out38a.txt"
+assert_grep "38a rejection names the allowed values" "must be 'dark' or 'light' \(got 'solarized'\)" "$T/reject.err"
+cmp -s "$T/config.pre" "$T/conf/herdr-tts/config.env" \
+  && ok "38a rejected call leaves the stored config byte-unchanged" || bad "38a reject mutated config.env"
+[[ ! -e "$T/conf/herdr-tts/config.env.bak" ]] \
+  && ok "38a rejected call creates no .bak (gate fires pre-I/O)" || bad "38a reject left a .bak"
+lib_run 'r=0; config_set TTS_THEME dark || r=$?; echo "rc=$r"' > "$T/out38a.txt"
+assert_grep "38a config_set accepts dark (rc 0)" '^rc=0$' "$T/out38a.txt"
+grep -q 'TTS_THEME="dark"' "$T/conf/herdr-tts/config.env" \
+  && ok "38a dark persisted into config.env" || bad "38a dark not persisted"
+assert_grep "38a managed block markers written" '>>> herdr-tts settings' "$T/conf/herdr-tts/config.env"
+cmp -s "$T/config.pre" "$T/conf/herdr-tts/config.env.bak" \
+  && ok "38a accepted write preserves the .bak snapshot" || bad "38a .bak missing or divergent"
+lib_run 'r=0; config_set TTS_THEME light || r=$?; echo "rc=$r"' > "$T/out38a.txt"
+assert_grep "38a config_set accepts light (rc 0)" '^rc=0$' "$T/out38a.txt"
+bash -c 'source "$1" >/dev/null 2>&1 && printf "src:%s\n" "$TTS_THEME"' \
+  _ "$T/conf/herdr-tts/config.env" > "$T/out38a2.txt"
+assert_grep "38a rewritten file stays bash-sourceable" '^src:light$' "$T/out38a2.txt"
+
+# 38b. Sole Color Emitter / Dark Byte-Identity / Born-Off Default:
+#      differential captures from ONE hermetic run (no committed golden —
+#      the frame embeds a wall clock, so identity = color byte pins +
+#      normalized-structure diffs). Dark pins are the four shipped byte
+#      sequences; unset ≡ dark; light differs ONLY in color bytes;
+#      round-trip light→dark restores the baseline.
+new_env s38b
+FX="$T/fixture.json"; make_fixture "$FX"
+write_herdr_stub "$FX"
+make_history "$HERDR_TTS_HISTORY_FILE"
+write_engine_status_stub
+capture 'q\n' "$T/dark-unset.txt"
+TTS_THEME=dark capture 'q\n' "$T/dark.txt"
+TTS_THEME=light capture 'q\n' "$T/light.txt"
+assert_grep "38b dark byte pin: ok green" $'\033[32m' "$T/dark.txt" -F
+assert_grep "38b dark byte pin: warn yellow" $'\033[33m' "$T/dark.txt" -F
+assert_grep "38b dark byte pin: accent cyan" $'\033[36m' "$T/dark.txt" -F
+assert_grep "38b dark byte pin: muted bright-black" $'\033[90m' "$T/dark.txt" -F
+sed -e $'s/\033\\[32m//g' -e $'s/\033\\[33m//g' -e $'s/\033\\[36m//g' -e $'s/\033\\[90m//g' \
+  "$T/dark.txt" > "$T/dark-stripped.txt"
+assert_no_grep "38b dark frame carries no other foreground color" $'\033\[[0-9;]*(3[0-7]|9[0-7])m' "$T/dark-stripped.txt"
+diff <(norm_frame "$T/dark-unset.txt") <(norm_frame "$T/dark.txt") > /dev/null \
+  && ok "38b unset ≡ dark (born-off default)" || bad "38b unset frame differs from dark"
+diff <(strip_ansi "$T/dark.txt") <(strip_ansi "$T/light.txt") > /dev/null \
+  && ok "38b plain text untouched (dark vs light differ only in color)" || bad "38b plain text drifted between themes"
+# Round-trip + precedence: config.env is written light (captured), env dark
+# must NOT override it, then config_set dark restores the dark baseline.
+lib_run 'config_set TTS_THEME light' > /dev/null
+capture 'q\n' "$T/rt-light.txt"
+assert_grep "38b round-trip: config.env light drives the frame" $'\033[30m' "$T/rt-light.txt" -F
+TTS_THEME=dark capture 'q\n' "$T/pref.txt"
+assert_grep "38b precedence: config.env light outranks env dark" $'\033[30m' "$T/pref.txt" -F
+lib_run 'config_set TTS_THEME dark' > /dev/null
+capture 'q\n' "$T/rt-dark.txt"
+diff <(norm_frame "$T/rt-dark.txt") <(norm_frame "$T/dark.txt") > /dev/null \
+  && ok "38b round-trip restores the dark baseline" || bad "38b round-trip ≠ dark baseline"
+
+# 38d. Sole-emitter static gate (37c comment-strip pattern, no exemption
+#      list): the maps hold numeric SGR parameters only and theme_color
+#      composes the escape, so NO literal foreground color SGR may exist
+#      anywhere in the host script, and no wide-gamut code may appear.
+new_env s38d
+grep -v '^[[:space:]]*#' "$SCRIPT" > "$T/code-only.sh"
+assert_no_grep "38d no literal color SGR anywhere" '\\(033|e)\[[0-9;]*(3[0-7]|9[0-7])m' "$T/code-only.sh"
+assert_no_grep "38d no 256-color/truecolor SGR" '(38|48);(5|2);' "$T/code-only.sh"
+
+# 38e. Light Contrast Minimums + Surface Coverage: exact resolver bytes
+#      for the 6 tokens × 2 themes (printf %q), unknown token → reset,
+#      unknown theme value → the dark map (fail-safe), the light frame
+#      carries the light map (32/30/34/1;33) and never the dark-only
+#      codes, roster rows adopt it, and the compound 1;33 strips cleanly
+#      (visible-width parity with dark).
+new_env s38e
+FX="$T/fixture.json"; make_fixture "$FX"
+write_herdr_stub "$FX"
+make_history "$HERDR_TTS_HISTORY_FILE"
+write_engine_status_stub
+# Expected lines are encoded with printf %q on BOTH sides (theme_color
+# composes the raw bytes, the expected side re-composes the spec bytes and
+# %q-encodes them) so the assertion stays byte-exact across bash versions
+# (5.2 renders ESC as \E, older as \033).
+check_theme_map() { # $1 label, $2 file, then token:param pairs
+  local label="$1" file="$2" tok param want38
+  shift 2
+  while [[ $# -gt 0 ]]; do
+    tok="$1"; param="$2"; shift 2
+    printf -v want38 '\033[%sm' "$param"
+    grep -qxF "${tok}=$(printf '%q' "$want38")" "$file" \
+      && ok "38e ${label} resolver: ${tok} → ${param}" \
+      || bad "38e ${label} resolver: ${tok} (want ${param})"
+  done
+}
+TTS_THEME=dark lib_run 'for t in ok warn error accent muted title; do theme_color v "$t"; printf "%s=%q\n" "$t" "$v"; done' > "$T/res-dark.txt"
+check_theme_map dark "$T/res-dark.txt" ok 32 warn 33 error 31 accent 36 muted 90 title 1
+TTS_THEME=light lib_run 'for t in ok warn error accent muted title; do theme_color v "$t"; printf "%s=%q\n" "$t" "$v"; done' > "$T/res-light.txt"
+check_theme_map light "$T/res-light.txt" ok 32 warn '1;33' error 31 accent 34 muted 30 title 1
+TTS_THEME=solarized lib_run 'theme_color v accent; printf "accent=%q\n" "$v"' > "$T/res-fb.txt"
+printf -v want38 '\033[36m'
+grep -qxF "accent=$(printf '%q' "$want38")" "$T/res-fb.txt" \
+  && ok "38e unknown theme value falls back to the dark map" || bad "38e unknown theme did not fall back to dark"
+TTS_THEME=light lib_run 'theme_color v unexpected; printf "unknown=%q\n" "$v"' > "$T/res-unk.txt"
+printf -v want38 '\033[0m'
+grep -qxF "unknown=$(printf '%q' "$want38")" "$T/res-unk.txt" \
+  && ok "38e unknown token resolves to reset" || bad "38e unknown token did not resolve to reset"
+capture 'q\n' "$T/e-dark.txt"
+TTS_THEME=light capture 'q\n' "$T/e-light.txt"
+assert_grep "38e light frame: ok stays green" $'\033[32m' "$T/e-light.txt" -F
+assert_grep "38e light frame: muted 30" $'\033[30m' "$T/e-light.txt" -F
+assert_grep "38e light frame: accent 34" $'\033[34m' "$T/e-light.txt" -F
+assert_grep "38e light frame: warn bold 1;33" $'\033[1;33m' "$T/e-light.txt" -F
+assert_no_grep_f "38e light frame drops the dark muted 90" $'\033[90m' "$T/e-light.txt"
+assert_no_grep_f "38e light frame drops the dark accent 36" $'\033[36m' "$T/e-light.txt"
+assert_grep "38e roster working row keeps ok green" $'\033[32m▶' "$T/e-light.txt" -F
+assert_grep "38e roster done row carries light warn" $'\033[1;33m✔' "$T/e-light.txt" -F
+assert_grep "38e roster idle row carries light muted" $'\033[30m·' "$T/e-light.txt" -F
+assert_grep "38e engine line carries light accent" $'\033[34m' "$T/e-light.txt" -F
+[[ "$(visible_stats "$T/e-dark.txt")" == "$(visible_stats "$T/e-light.txt")" ]] \
+  && ok "38e compound 1;33 strips cleanly (visible-width parity dark vs light)" \
+  || bad "38e width parity broke: $(visible_stats "$T/e-dark.txt") vs $(visible_stats "$T/e-light.txt")"
 
 echo
 echo "═══ RESULT: $PASS passed, $FAIL failed ═══"
