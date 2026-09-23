@@ -4637,6 +4637,11 @@ run_voice_menu() {
 # (settings.lang.label.*).
 
 # Cycle tables: ordered, first element = the recommended default.
+# SETTINGS_PROVIDERS is NOT the live source: settings_cycle_value derives
+# the provider list from the engine catalog (RF-HT-13-5) and only lands
+# on this static table when the engine is unavailable (fail-open,
+# RNF-HT-13-2 — removal candidate once the engine dependency is
+# guaranteed everywhere).
 SETTINGS_PROVIDERS=(edge openai elevenlabs piper kokoro) # edge first = gratuito, por defecto
 SETTINGS_TARGETS=(local winhost wsl-ps windows auto)
 SETTINGS_RETENTION=(0 1 3 7 14) # 0 = retención apagada
@@ -4656,7 +4661,19 @@ settings_cycle_value() { # <provider|target|retention|settle> <current> → next
   local -a vals=()
   local cur="$2" i n
   case "$1" in
-    provider)  vals=("${SETTINGS_PROVIDERS[@]}") ;;
+    provider)
+      # RF-HT-13-5: the cycle list IS the engine catalog (same source as
+      # --provider validation), never a second hardcoded table. Engine
+      # unavailable → the static SETTINGS_PROVIDERS legacy table (same
+      # fail-open budget as the voice cycle: one cached engine call on
+      # the first keypress).
+      engine_catalog_refresh || true
+      if [[ -n "$ENGINE_CAT_PROVIDERS" ]]; then
+        read -r -a vals <<<"$ENGINE_CAT_PROVIDERS"
+      else
+        vals=("${SETTINGS_PROVIDERS[@]}")
+      fi
+      ;;
     target)    vals=("${SETTINGS_TARGETS[@]}") ;;
     retention) vals=("${SETTINGS_RETENTION[@]}") ;;
     settle)    vals=("${SETTINGS_SETTLE[@]}") ;;
