@@ -388,3 +388,42 @@ def test_unexpected_bind_failure_warns_on_stderr(tmp_path, capsys):
     assert unbindable in err  # names what failed
     assert "No such file or directory" in err  # carries the underlying error
     assert "interactive control unavailable" in err  # states the consequence
+
+
+def test_orphan_reclaim_failure_warns_on_stderr(tmp_path, monkeypatch, capsys):
+    """A reclaim failure after winning the election must not be silent.
+
+    By the retry point this process owns the channel, so a failed reclaim
+    leaves it without interactive control — and when the rebind is what
+    fails, the old socket file is already gone. The warning therefore
+    reports the failed reclaim without claiming the file's fate: the
+    OSError may come from the remove (orphan still on disk — the real
+    read-only-directory case forced here) or from the rebind (path
+    cleared, then left unusable).
+    """
+    monkeypatch.setattr(audio, "LOCK_FILE", str(tmp_path / "playing.lock"))
+    monkeypatch.setattr(audio, "PID_FILE", str(tmp_path / "current.pid"))
+    monkeypatch.setattr(audio, "IPC_SOCKET", str(tmp_path / "player.sock"))
+
+    sockdir = tmp_path / "sockdir"
+    sockdir.mkdir()
+    orphan = str(sockdir / "player.sock")
+    stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    stale.bind(orphan)
+    stale.close()  # crash leftover: path exists, nobody serves it
+
+    audio._write_player_locks()  # win the election: the reclaim is authorized
+    sockdir.chmod(0o500)  # remove() inside now fails with EACCES
+
+    try:
+        assert ipc.server_socket(socket_path=orphan) is None
+        assert os.path.exists(orphan)  # the remove failed: orphan survives
+    finally:
+        sockdir.chmod(0o700)
+        audio.cleanup_locks()
+
+    err = capsys.readouterr().err
+    assert "ipc:" in err  # component-prefixed, like the bind-failure warning
+    assert orphan in err  # names what failed
+    assert "Permission denied" in err  # carries the underlying error
+    assert "interactive control unavailable" in err  # states the consequence
