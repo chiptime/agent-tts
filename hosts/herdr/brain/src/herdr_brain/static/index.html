@@ -494,6 +494,9 @@
     #state-pill.thinking  { color: var(--warn); }
     #state-pill.speaking  { color: var(--blue); }
     #state-pill.paused    { color: var(--muted); }
+    /* Action approval gate: the brain waits for a decision (amber,
+     * like every attention-pending state). */
+    #state-pill.confirming { color: var(--warn); }
     /* Voice engine v2: capturing an utterance (red pulsing dot) and
      * waiting for the server transcription. */
     #state-pill.recording     { color: var(--danger); }
@@ -984,6 +987,7 @@
   <audio id="player"></audio>
   <script src="/endpointing.js"></script>
   <script src="/vad.js"></script>
+  <script src="/approval.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

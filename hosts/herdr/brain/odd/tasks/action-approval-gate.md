@@ -82,10 +82,13 @@ supersede; expiry at touch; resolve reprompt→reject; 404 on unknown/terminal
 gate ids.
 Route: delegated-direct.
 
-### [ ] T5 — Client confirming state + voice routing
-Files: `src/herdr_brain/static/app.js`, `tests/js/`.
+### [x] T5 — Client confirming state + voice routing
+Files: `src/herdr_brain/static/app.js`, `src/herdr_brain/static/approval.js`
+(new pure module), `src/herdr_brain/static/index.html` (script + pill
+CSS), `src/herdr_brain/server.py` (versioned ref + no-cache route),
+`tests/js/approval.test.js` (new), `tests/test_server.py` (asserts).
 `callState "confirming"` + PILL_TEXT entry; STT results route to
-`/approval/{id}/resolve` (never `/ask`); handle
+`/approval/{id}/resolve` (never /ask); handle
 approve/reject/listen_replace (one dictation round → PATCH → re-confirm);
 reprompt re-echo; countdown from `expires_in_s`; `thinking` during approve
 replay; return to `listening` after resolution.
@@ -183,7 +186,21 @@ Route: inline (copy + smoke are per-action).
     leaves the gate untouched (client dictates ONE round → PATCH →
     re-confirm); PATCH has no re-echo audio (client re-echoes via
     `POST /tts`); approve response = exact /ask shape; reject is silent.
+- T5 done — `node --test tests/js/` → 56 passed (20 new in
+  `tests/js/approval.test.js`); `.venv/bin/python -m pytest -q` → 368
+  passed (1 pre-existing starlette/anyio DeprecationWarning, unrelated);
+  baseline stays 368 (server asserts folded into existing tests). Pure
+  flow lives in `static/approval.js` (`window.ApprovalFlow`,
+  endpointing.js-style dual-env module, injected clock+fetch); app.js
+  wires it: PILL_TEXT `confirming: "Confirmar"` (pill renders
+  "Confirmar ▲"), both STT engines dispatch through `routeUtterance()`
+  (live gate → resolve, else /ask), mic keeps running under confirming,
+  `micBaseState()` returns listening|confirming everywhere the audio
+  queue resumes the mic, 1 s always-on `approvalFlow.tick()` owns the
+  countdown, dictation utterances go to /resolve first (PRD §5
+  precedence) and only a non-command (reprompt) result PATCHes the text.
+  Commit hash recorded by orchestrator.
 
 ## Next Step
 
-T5 (client confirming state + voice routing).
+T6 (approval card UI + edit flows).

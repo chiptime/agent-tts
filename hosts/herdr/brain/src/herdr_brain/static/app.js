@@ -129,8 +129,11 @@
   }
 
   /* ---------------- call state machine ----------------
-   * idle | listening | thinking | speaking | paused
-   * (+ recording/transcribing: servidor engine sub-states) */
+   * idle | listening | thinking | speaking | paused | confirming
+   * (+ recording/transcribing: servidor engine sub-states).
+   * "confirming" = a send_to_session approval gate is live (PRD
+   * action-approval-gate §5): the mic keeps listening, but utterances
+   * route to /approval/{id}/resolve instead of /ask. */
   var callState = "idle";
   var inCall = false;
   var drawerOpen = false;
@@ -150,7 +153,8 @@
     transcribing: "⏳ Entendiendo…",
     thinking: "⏳ Pensando…",
     speaking: "🔊 Hablando",
-    paused: "⏸ Micrófono en pausa"
+    paused: "⏸ Micrófono en pausa",
+    confirming: "Confirmar"
   };
 
   function setCallState(state) {
@@ -168,7 +172,8 @@
     } else {
       callBtn.textContent = "🔴 Colgar";
       callBtn.classList.add("oncall");
-      var micControllable = state === "listening" || state === "recording" || state === "paused";
+      var micControllable = state === "listening" || state === "recording" ||
+        state === "paused" || state === "confirming";
       pauseBtn.classList.toggle("hidden", !micControllable);
       pauseBtn.textContent = state === "paused" ? "▶ Reanudar" : "⏸ Pausa";
     }
@@ -197,17 +202,20 @@
 
   /* Interim strip (FR8) — engine-dependent, lives at the drawer top:
    * navegador -> live interim text; servidor -> recording indicator +
-   * level meter + elapsed utterance time (never simulated text). */
+   * level meter + elapsed utterance time (never simulated text).
+   * "confirming" renders like listening: the mic stays live, only the
+   * dispatch routing changes (approval resolve instead of /ask). */
   function renderInterimStrip() {
     var active = inCall && !textMode;
     var st = callState;
     var browser = voiceEngine === "navegador";
-    interimTextEl.classList.toggle("hidden", !(active && browser && st === "listening"));
-    var meterOn = active && !browser && (st === "listening" || st === "recording");
+    var micOn = st === "listening" || st === "confirming";
+    interimTextEl.classList.toggle("hidden", !(active && browser && micOn));
+    var meterOn = active && !browser && (micOn || st === "recording");
     recMeterEl.classList.toggle("hidden", !meterOn);
     var status = "";
     if (active && !browser) {
-      if (st === "listening") status = "○ escuchando…";
+      if (micOn) status = "○ escuchando…";
       else if (st === "transcribing") status = "⏳ transcribiendo…";
       else if (st === "paused") status = "⏸ micrófono en pausa";
     }
@@ -1071,7 +1079,8 @@
       if (inCall) addAnnouncementTurn(item.announcement.label, item.announcement.text);
     }
     if (inCall) {
-      if (callState === "listening") stopListening();  // never hear our own audio
+      // The confirming mic is live too: never hear our own audio.
+      if (callState === "listening" || callState === "confirming") stopListening();
       setCallState("speaking");
     }
     player.src = item.url;
@@ -1093,7 +1102,7 @@
     if (finished && finished.announcement) hideToast();
     if (!audioQueue.length) stopBtn.classList.add("hidden");
     if (!audioQueue.length && inCall && callState === "speaking") {
-      setCallState("listening");
+      setCallState(micBaseState());
       startListening();
     } else {
       pumpAudio();
@@ -1110,7 +1119,7 @@
     stopBtn.classList.add("hidden");
     hideToast();
     if (inCall && callState === "speaking") {
-      setCallState("listening");
+      setCallState(micBaseState());
       startListening();
     }
   }
@@ -1284,12 +1293,50 @@
       );
   }
 
+  /* ---------------- action approval gate (T5) ----------------
+   * The gate lives server-side (T3/T4); approval.js holds the pure
+   * client flow (confirming countdown, resolve routing, dictation ->
+   * PATCH -> re-confirm — tested in tests/js). Here we wire it to the
+   * callState pill, the audio queue and the mic lifecycle. */
+
+  var approvalFlow = window.ApprovalFlow.createApprovalFlow({
+    request: function (url, options) { return fetchWithTimeout(url, options, 30000); },
+    setState: approvalSetState,
+    renderAnswer: function (answer) {
+      // Approve replay: SAME render path as a normal /ask answer.
+      addTurn("brain", answer.answer || "(respuesta vacía)");
+      if (answer.audio_url) enqueueAudio(answer.audio_url, null);
+    },
+    playAudio: function (url) { enqueueAudio(url, null); },
+    onExpired: function () { /* silent (PRD §6): the drawer note lands with T6 */ },
+    banner: showBanner
+  });
+
+  function approvalSetState(state) {
+    if (!inCall) return;  // no call: no pill, no mic routing
+    if (state === "listening" || state === "confirming") {
+      if (audioBusy) return;  // the audio queue owns the resume (onAudioEnded)
+      stopListening();        // cleanly end any capture under the old state
+      setCallState(state);
+      startListening();
+      return;
+    }
+    setCallState(state);      // thinking: the mic must stay off
+  }
+
+  function micBaseState() {
+    return approvalFlow.active() ? "confirming" : "listening";
+  }
+
+  /* Always-on 1s tick: the flow itself is inert without a live gate. */
+  setInterval(function () { approvalFlow.tick(); }, 1000);
+
   /* ---------------- ask pipeline ---------------- */
 
   function afterAnswer() {
-    if (audioBusy) return;  // still speaking: onAudioEnded returns us to listening
+    if (audioBusy) return;  // still speaking: onAudioEnded returns us to the mic
     if (inCall && callState !== "paused") {
-      setCallState("listening");
+      setCallState(micBaseState());
       startListening();
     } else if (!inCall) {
       setCallState("idle");
@@ -1324,6 +1371,14 @@
         }
         return resp.json().then(function (data) {
           addTurn("brain", data.answer || "(respuesta vacía)");
+          if (data.approval) {
+            // A gate opened (PRD §4): enter confirming with the countdown
+            // while the spoken echo ("… ¿Se envía?") plays through the
+            // normal queue; onAudioEnded re-arms the mic under confirming.
+            if (data.audio_url) enqueueAudio(data.audio_url, null);
+            approvalFlow.open(data.approval);
+            return;
+          }
           if (data.audio_url) enqueueAudio(data.audio_url, null);
           else afterAnswer();
         });
@@ -1359,8 +1414,16 @@
     listening = false;
   }
 
+  /* Utterance routing: a live gate OWNS the mic — confirming utterances
+   * go to /approval/{id}/resolve, never /ask (PRD §5). */
+  function routeUtterance(text) {
+    if (approvalFlow.routeUtterance(text)) return Promise.resolve();
+    return ask(text);
+  }
+
   function dispatchUtterance() {
-    if (dispatching || callState !== "listening" || !endpointer) return;
+    if (dispatching || !endpointer) return;
+    if (callState !== "listening" && callState !== "confirming") return;
     var text = endpointer.finalize();
     if (!text) { endpointer.reset(); return; }
     dispatching = true;
@@ -1373,14 +1436,16 @@
     // runs while dispatching is still true, so startBrowserListening's
     // guard blocks it): re-evaluate the resume once the ask is fully done
     // and dispatching is cleared.
-    ask(text).then(function () {
+    routeUtterance(text).then(function () {
       dispatching = false;
       afterAnswer();
     });
   }
 
   function startBrowserListening() {
-    if (textMode || !SR || callState !== "listening" || listening || dispatching) return;
+    if (textMode || !SR) return;
+    if (callState !== "listening" && callState !== "confirming") return;
+    if (listening || dispatching) return;
     manualStop = false;
     hideBanner();
     listeningStartedAt = Date.now();
@@ -1443,7 +1508,8 @@
       listening = false;
       if (dispatching) return;  // deliberate stop: ask() owns the next transition
       if (epTick) { clearInterval(epTick); epTick = null; }
-      if (callState === "listening" && !manualStop && !textMode) {
+      var micLive = callState === "listening" || callState === "confirming";
+      if (micLive && !manualStop && !textMode) {
         recRestartTimer = setTimeout(startListening, recRestartDelay);
         recRestartDelay = Math.min(recRestartDelay * 2, 3000);
       } else if (interimTextEl.textContent === "…") {
@@ -1586,7 +1652,7 @@
             showBanner("No entendí el audio — inténtalo otra vez.");
             return;
           }
-          ask(text);  // sets thinking; its chain resumes listening afterwards
+          return routeUtterance(text);  // confirming -> gate resolve; else /ask
         });
       })
       .catch(function (err) {
@@ -1597,7 +1663,11 @@
         dispatching = false;
         interimTextEl.textContent = "";
         renderInterimStrip();
-        if (callState === "transcribing") afterAnswer();
+        // Resume the mic for every state a routed dispatch can leave
+        // behind: mid-flight (transcribing/thinking) or already resolved
+        // back to listening/confirming without audio. The speaking,
+        // paused and idle states own their own resume path.
+        if (callState !== "speaking" && callState !== "paused" && callState !== "idle") afterAnswer();
       });
   }
 
@@ -1610,8 +1680,8 @@
       var blob = new Blob(recorderChunks, { type: capturedMime || "audio/webm" });
       recorderChunks = [];
       if (blob.size < 1000) {  // a sliver: no real audio captured
-        if (inCall && callState === "recording") setCallState("listening");
-        if (callState === "listening") startServerListening();
+        if (inCall && callState === "recording") setCallState(micBaseState());
+        if (callState === "listening" || callState === "confirming") startServerListening();
         return;
       }
       dispatchServerUtterance(blob);
@@ -1625,7 +1695,8 @@
   }
 
   function startServerListening() {
-    if (textMode || callState !== "listening" || dispatching || serverMicBusy) return;
+    if (textMode || dispatching || serverMicBusy) return;
+    if (callState !== "listening" && callState !== "confirming") return;
     if (!serverEngineSupported()) {
       showBanner("Este navegador no soporta el motor Servidor — usa el motor Navegador.");
       return;
@@ -1658,7 +1729,7 @@
         var rms = frameRms();
         var speaking = vad.push(rms);
         updateRecMeter(rms);  // FR8: level meter from the live VAD RMS
-        if (callState === "listening") {
+        if (callState === "listening" || callState === "confirming") {
           if (speaking || vad.hasSpeech()) {
             if (!utteranceStartedAt) utteranceStartedAt = Date.now();
             setCallState("recording");
@@ -1758,6 +1829,7 @@
 
   function endCall() {
     inCall = false;
+    approvalFlow.cancel();  // hang up drops any live gate silently
     closeDrawer();  // AC4: drawer closes on hang up
     stopListening();
     teardownServerCall();  // release the getUserMedia stream + AudioContext
@@ -1778,11 +1850,11 @@
   });
 
   pauseBtn.addEventListener("click", function () {
-    if (callState === "listening" || callState === "recording") {
+    if (callState === "listening" || callState === "recording" || callState === "confirming") {
       stopListening();
       setCallState("paused");
     } else if (callState === "paused") {
-      setCallState("listening");
+      setCallState(micBaseState());  // a live gate resumes under confirming
       startListening();
     }
   });
@@ -1818,10 +1890,10 @@
       teardownRecognition();
       if (callState === "recording" || callState === "transcribing") {
         dispatching = false;  // abandon the in-flight utterance cleanly
-        setCallState("listening");
+        setCallState(micBaseState());
       }
-      if (callState === "listening" || callState === "paused") {
-        setCallState("listening");
+      if (callState === "listening" || callState === "confirming" || callState === "paused") {
+        setCallState(micBaseState());
         startListening();
       }
     }
@@ -1855,6 +1927,7 @@
   convNewBtn.addEventListener("click", function () {
     stopAudio();
     stopListening();
+    approvalFlow.cancel();  // a fresh conversation retires the live gate
     if (endpointer) endpointer.reset();  // fresh conversation, fresh utterance
     conv.textContent = "";
     resetInterimContent();
