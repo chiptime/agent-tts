@@ -1725,7 +1725,7 @@ speak_text() {
       done < <(printf '%s' "$text" | tr '.!?\r' '\n\n\n\n')
       (( max_len == 0 )) && max_len=${#text}
       body_lines=$(( (max_len + 59) / 60 ))
-      (( body_lines < 2 )) && body_lines=2
+      (( body_lines < 1 )) && body_lines=1
       (( body_lines > 9 )) && body_lines=9
       command -v herdr >/dev/null 2>&1 \
         && herdr plugin pane open --plugin herdr.tts --entrypoint tts-reader \
