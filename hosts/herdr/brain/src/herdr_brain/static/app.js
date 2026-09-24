@@ -1113,6 +1113,14 @@
         audioBusy = false;
         if (item.announcement) hideToast();
         pumpAudio();
+        // Play() rejection (autoplay policy, media error): without this
+        // the queue leaves the call stuck in "speaking" with a dead mic.
+        // audioBusy guard: pumpAudio() above may have started the NEXT
+        // item — only resume when nothing else owns the audio.
+        if (!audioBusy && !audioQueue.length && inCall && callState === "speaking") {
+          setCallState(micBaseState());
+          startListening();
+        }
       });
     }
   }
@@ -1147,6 +1155,7 @@
   }
 
   player.addEventListener("ended", onAudioEnded);
+  player.addEventListener("error", onAudioEnded);  // stalled/errored media: same resume path
   stopBtn.addEventListener("click", stopAudio);
 
   /* ---------------- state pill (rows 8–13, 17) ----------------
@@ -1331,7 +1340,7 @@
   var approvalCardDismissTimer = null;
 
   var approvalFlow = window.ApprovalFlow.createApprovalFlow({
-    request: function (url, options) { return fetchWithTimeout(url, options, 30000); },
+    request: function (url, options, timeoutMs) { return fetchWithTimeout(url, options, timeoutMs || 30000); },
     setState: approvalSetState,
     renderAnswer: function (answer) {
       // Approve replay: SAME render path as a normal /ask answer. The
@@ -1393,6 +1402,16 @@
   setInterval(function () {
     approvalFlow.tick();
     renderApprovalCard();
+    // Mic watchdog: Android can kill SpeechRecognition (audio focus,
+    // silent SR crash) without a usable onend restart, leaving a live
+    // call micless while the state expects listening. Re-arm when
+    // nothing else owns the mic; startListening is single-flight, and
+    // a pending scheduled restart keeps its own backoff.
+    if (inCall && !audioBusy && !dispatching && !manualStop && !textMode &&
+        !listening && !recRestartTimer &&
+        (callState === "listening" || callState === "confirming")) {
+      startListening();
+    }
   }, 1000);
 
   /* ---- approval card (T6) ----

@@ -108,12 +108,21 @@
       }
     }
 
-    function post(url, body) {
+    function post(url, body, timeoutMs) {
       return request(url, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body)
-      });
+      }, timeoutMs);
+    }
+
+    /* The approve replay blocks server-side until the agent completes
+     * the frozen send (up to timeout_ms) plus the report round-trip —
+     * the request needs that budget plus margin, not the caller's short
+     * default: a mid-replay client timeout would strand an approved
+     * gate with no report. */
+    function replayTimeoutMs() {
+      return (gate && gate.timeout_ms ? gate.timeout_ms : 120000) + 30000;
     }
 
     /* Re-echo after PATCH: the server sends no audio on revision (locked
@@ -183,7 +192,7 @@
       if (!gate || expired || resolving) return false;
       resolving = true;
       setState("thinking");
-      post("/approval/" + encodeURIComponent(gate.gate_id) + "/approve", {})
+      post("/approval/" + encodeURIComponent(gate.gate_id) + "/approve", {}, replayTimeoutMs())
         .then(function (resp) {
           if (resp.status === 404) return null;
           if (!resp.ok) throw new Error("HTTP " + resp.status);
@@ -316,7 +325,7 @@
       setState("thinking");
       post("/approval/" + encodeURIComponent(gate.gate_id) + "/resolve", {
         utterance: text
-      })
+      }, replayTimeoutMs())
         .then(function (resp) {
           if (resp.status === 404) return null;
           if (!resp.ok) throw new Error("HTTP " + resp.status);
