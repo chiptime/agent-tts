@@ -27,7 +27,17 @@ from agent_tts.winhost_client import RemoteAudioSession
 import miniaudio
 
 
+# Set while a playback is delegated to the daemon: during a delegation
+# Ctrl-C must take the KeyboardInterrupt path (delegate_play then
+# forwards a best-effort stop so the audio does not outlive the
+# interrupted client), instead of exiting silently and leaving the daemon
+# playing (SOS-2).
+_delegated_playback = threading.Event()
+
+
 def signal_handler(signum, frame):
+    if _delegated_playback.is_set():
+        raise KeyboardInterrupt
     cleanup_locks()
     sys.exit(0)
 
@@ -1298,19 +1308,25 @@ def _delegate_and_exit(payload: dict) -> None:
     The CLI is always a client (RF-AT-04-5): the daemon is auto-started
     transparently when missing, respawned when wedged, and the reply maps
     onto the classic CLI's observable contract — silence and exit 0 on
-    success, one stderr line and exit 1 on failure.
+    success, one stderr line and exit 1 on failure. An interrupt during
+    the delegation forwards a best-effort stop and exits 130 (classic
+    Ctrl-C semantics).
     """
     from agent_tts.daemon import DaemonUnavailableError, delegate_play
 
+    _delegated_playback.set()
     try:
-        reply = delegate_play(payload)
-    except KeyboardInterrupt:
-        # delegate_play already forwarded a best-effort stop, so audio does
-        # not outlive the interrupted client (classic Ctrl-C semantics).
-        sys.exit(130)
-    except DaemonUnavailableError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
+        try:
+            reply = delegate_play(payload)
+        except KeyboardInterrupt:
+            # delegate_play already forwarded a best-effort stop, so audio does
+            # not outlive the interrupted client (classic Ctrl-C semantics).
+            sys.exit(130)
+        except DaemonUnavailableError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+    finally:
+        _delegated_playback.clear()
     if reply is None or reply.startswith("ERR"):
         detail = reply if reply else "daemon closed the connection during playback"
         print(f"Error: {detail}", file=sys.stderr)
