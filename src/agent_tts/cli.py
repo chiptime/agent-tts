@@ -22,7 +22,7 @@ from agent_tts.constants import DEFAULT_RATE, DEFAULT_VOICE
 from agent_tts.ipc import send_ipc_command
 from agent_tts.playback_target import resolve_target
 from agent_tts.powershell_playback import PowershellSession, is_wsl_ps_available
-from agent_tts.providers import get_provider
+from agent_tts.providers import TTSProvider, get_provider
 from agent_tts.sources import read_last_agent_message
 from agent_tts.text import split_sentence_groups
 from agent_tts.winhost_client import RemoteAudioSession
@@ -57,17 +57,24 @@ async def synthesize(
     piper_model: Optional[str] = None,
     stop_checker=None,
     auto_lang: bool = False,
+    engine: Optional[TTSProvider] = None,
 ) -> bytes:
-    """Synthesizes text into MP3 bytes using the requested provider and optionally writes to output_file."""
-    engine = get_provider(
-        provider_name=provider,
-        openai_key=openai_key,
-        openai_base_url=openai_base_url,
-        openai_model=openai_model,
-        eleven_key=eleven_key,
-        eleven_model=eleven_model,
-        piper_model=piper_model,
-    )
+    """Synthesizes text into MP3 bytes using the requested provider and optionally writes to output_file.
+
+    ``engine`` overrides provider construction (the daemon passes its cached
+    instance so the model stays warm between requests, RNF-AT-04-5); by
+    default a fresh provider is built per call, exactly as before.
+    """
+    if engine is None:
+        engine = get_provider(
+            provider_name=provider,
+            openai_key=openai_key,
+            openai_base_url=openai_base_url,
+            openai_model=openai_model,
+            eleven_key=eleven_key,
+            eleven_model=eleven_model,
+            piper_model=piper_model,
+        )
 
     if auto_lang:
         from agent_tts.lang_detector import segment_by_language, resolve_voice_for_language
@@ -300,13 +307,15 @@ async def _speak_pipelined(
     output_file: Optional[str] = None,
     podcast: bool = False,
     persist_name: Optional[str] = None,
+    engine: Optional[TTSProvider] = None,
 ) -> None:
     """Plays the first synthesized sentence group while remaining groups are synthesized and appended live.
 
     Every successfully produced group/chunk is kept in ``rendered_chunks``;
     at a clean end of the pipeline the bytes are merged and persisted once
     (to ``output_file`` or the rendered-audio store). A stopped, interrupted,
-    or failed run never persists: partial audio is worthless.
+    or failed run never persists: partial audio is worthless. ``engine``
+    overrides per-group provider construction (daemon's warm cache).
     """
     groups = split_sentence_groups(text)
     # Raw bytes of every successfully produced group/chunk, in playback order.
@@ -346,19 +355,19 @@ async def _speak_pipelined(
     # (one persistent piper process), so chunks map to groups by index.
     # Stream-capable engines whose chunks are raw fragments (openai,
     # elevenlabs) keep the per-group path and its aligned boundaries.
-    engine = None
-    try:
-        engine = get_provider(
-            provider_name=provider,
-            openai_key=openai_key,
-            openai_base_url=openai_base_url,
-            openai_model=openai_model,
-            eleven_key=eleven_key,
-            eleven_model=eleven_model,
-            piper_model=piper_model,
-        )
-    except Exception:
-        engine = None  # the per-group path below surfaces the construction error as today
+    if engine is None:
+        try:
+            engine = get_provider(
+                provider_name=provider,
+                openai_key=openai_key,
+                openai_base_url=openai_base_url,
+                openai_model=openai_model,
+                eleven_key=eleven_key,
+                eleven_model=eleven_model,
+                piper_model=piper_model,
+            )
+        except Exception:
+            engine = None  # the per-group path below surfaces the construction error as today
 
     # auto-lang switches voices per language segment, which a single text-level
     # stream cannot do: it keeps the per-group path.
@@ -513,6 +522,7 @@ async def _speak_pipelined(
             piper_model=piper_model,
             stop_checker=check_stop,
             auto_lang=auto_lang,
+            engine=engine,
         )
 
     async def produce_first():
@@ -736,12 +746,14 @@ async def _play_speech(
     podcast_title: str = "",
     stream: str = "auto",
     persist_name: Optional[str] = None,
+    engine: Optional[TTSProvider] = None,
 ) -> None:
     """Runs the synthesis + playback pipeline over a prepared session.
 
     No channel or session lifecycle here: the caller owns the ownership
     election, the IPC exposure, and the session teardown. ``session`` is
     None only in no-play mode (synthesis/podcast/output without audio).
+    ``engine`` overrides provider construction (the daemon's warm cache).
     """
     # Pipelined streaming: playback starts after the first group while later groups synthesize.
     use_stream = use_pipelined_stream(
@@ -776,6 +788,7 @@ async def _play_speech(
             output_file=output_file,
             podcast=podcast,
             persist_name=persist_name,
+            engine=engine,
         )
         return
 
@@ -795,6 +808,7 @@ async def _play_speech(
         piper_model=piper_model,
         stop_checker=check_stop,
         auto_lang=auto_lang,
+        engine=engine,
     )
 
     if not mp3_data or (session and session.state.get("stop")):
