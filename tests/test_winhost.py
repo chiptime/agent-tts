@@ -12,6 +12,7 @@ import time
 import pytest
 
 import agent_tts.winhost_client as wc
+from agent_tts.constants import DEFAULT_VOICE
 from agent_tts.winhost import WinhostServer
 from agent_tts.winhost_client import (
     RemoteAudioSession,
@@ -92,9 +93,12 @@ class FakePSSession:
     instances = []
 
     def __init__(self, label="Audio", auto_rewind_sec=2.0, boundaries=None,
-                 highlight=False, autoscroll=False, bionic=False, zen=False, env=None):
+                 highlight=False, autoscroll=False, bionic=False, zen=False,
+                 provider="", voice="", env=None):
         self.calls = []
         self.state = {"stop": False}
+        self.provider = provider
+        self.voice = voice
         FakePSSession.instances.append(self)
 
     def prepare_pcm(self, decoded):
@@ -378,6 +382,27 @@ def test_remote_ipc_pause_and_stop_forward_to_ps_session(monkeypatch):
     assert ("pause",) in ps.calls
     assert ("resume",) in ps.calls
     assert ("stop",) in ps.calls
+
+
+def test_remote_ipc_status_reports_requested_provider_and_voice(monkeypatch):
+    """RS-2 (SOS-1/B5): winhost status carries the request's engine metadata."""
+    for var in ("AGENT_TTS_PROVIDER", "AGENT_TTS_VOICE", "TTS_PROVIDER"):
+        monkeypatch.delenv(var, raising=False)
+    session = RemoteAudioSession(provider="piper", voice="es-ES-AlvaroNeural")
+    session.state["status"] = "playing"
+
+    status = session.handle_ipc_command("status")
+    assert " provider=piper" in status
+    assert " voice=es-ES-AlvaroNeural" in status
+
+    # Without explicit args the same resolution as the local session
+    # applies (env fallbacks, then engine defaults).
+    default_session = RemoteAudioSession()
+    assert default_session.provider == "edge"
+    assert default_session.voice == DEFAULT_VOICE
+    default_status = default_session.handle_ipc_command("status")
+    assert " provider=edge" in default_status
+    assert f" voice={DEFAULT_VOICE}" in default_status
 
 
 def test_remote_ipc_status_and_stop(winserver, monkeypatch):
