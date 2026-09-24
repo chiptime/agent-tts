@@ -942,6 +942,22 @@ def main():
     parser.add_argument("--output", "-o", help="Save synthesized MP3 audio to file")
     parser.add_argument("--no-play", action="store_true", help="Do not play audio locally")
     parser.add_argument("--play-file", help="Play an existing MP3 file directly without re-synthesizing")
+    parser.add_argument(
+        "--play-chain",
+        nargs="+",
+        metavar="FILE",
+        help="Play audio files back-to-back gapless in ONE session, in the order given "
+        "(seeks, pause and phrase navigation address the whole chain; combined with "
+        "--chain-gap to insert silence between items)",
+    )
+    parser.add_argument(
+        "--chain-gap",
+        type=float,
+        default=None,
+        metavar="MS",
+        help="Silence inserted between --play-chain items in milliseconds (default 0: "
+        "gapless, nothing inserted)",
+    )
     parser.add_argument("--probe", help="Print the duration in seconds of an audio file and exit")
     parser.add_argument(
         "--highlight",
@@ -1137,6 +1153,29 @@ def main():
 
     args = parser.parse_args()
 
+    # Chain flag coherence (client-side, before any daemon contact).
+    if args.play_chain and args.play_file:
+        print(
+            "Error: --play-chain cannot combine with --play-file: chain the file "
+            "with --play-chain instead",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if args.chain_gap is not None:
+        if not args.play_chain:
+            print(
+                "Error: --chain-gap only applies to --play-chain",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if args.chain_gap < 0:
+            print(
+                f"Error: --chain-gap must be a non-negative number of milliseconds "
+                f"(got {args.chain_gap})",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
     # Flag overrides win over environment for the winhost transport settings.
     if args.winhost_host:
         os.environ["AGENT_TTS_WINHOST_HOST"] = args.winhost_host
@@ -1266,6 +1305,33 @@ def main():
                 # The winhost endpoint resolved client-side above (flags
                 # won over env); it must cross the IPC boundary so the
                 # daemon-side session reaches THIS client's Windows host.
+                "winhost_host": os.environ.get("AGENT_TTS_WINHOST_HOST"),
+                "winhost_port": os.environ.get("AGENT_TTS_WINHOST_PORT"),
+            },
+            queue_controls,
+        )
+
+    if args.play_chain:
+        # Error discipline first (A3): a missing file is a client-side
+        # failure — stderr + exit 1 — BEFORE the daemon is contacted.
+        from agent_tts.chain import missing_chain_files
+
+        missing = missing_chain_files(args.play_chain)
+        if missing:
+            print(f"Error: chain file(s) not found: {', '.join(missing)}", file=sys.stderr)
+            sys.exit(1)
+        chain_label = f"chain: {os.path.basename(args.play_chain[0])}"
+        if len(args.play_chain) > 1:
+            chain_label += f" +{len(args.play_chain) - 1} more"
+        _delegate_and_exit(
+            {
+                "chain": [os.path.abspath(path) for path in args.play_chain],
+                "chain_gap_ms": args.chain_gap or 0,
+                "label": chain_label,
+                "highlight": args.highlight,
+                "autoscroll": args.autoscroll,
+                "bionic": args.bionic,
+                "zen": args.zen,
                 "winhost_host": os.environ.get("AGENT_TTS_WINHOST_HOST"),
                 "winhost_port": os.environ.get("AGENT_TTS_WINHOST_PORT"),
             },

@@ -170,6 +170,10 @@ Daemon(socket_path={sock!r}, provider_cache=ProviderCache(factory=lambda **kw: S
 class DaemonRun:
     """One real daemon subprocess + live parsing of its queue trace lines."""
 
+    # Trace line kinds this run parses ( subclasses extend the tuple —
+    # scripts/chain_metrics.py adds the T6 "chain-item" seam ).
+    TRACE_KINDS = ("dispatch", "finalize", "audio-start", "audio-end")
+
     def __init__(self, target: str, hold_sec: float, item_sec: float):
         self.target = target
         self.run_dir = tempfile.mkdtemp(prefix=f"agent-tts-queue-metrics-{target}-")
@@ -225,7 +229,7 @@ class DaemonRun:
         import re
 
         pattern = re.compile(
-            r"agent-tts-queue: (dispatch|finalize|audio-start|audio-end) (.*)"
+            r"agent-tts-queue: (" + "|".join(self.TRACE_KINDS) + r") (.*)"
         )
         kv = re.compile(r"(\w+)=(?:'([^']*)'|\"([^\"]*)\"|(\S+))")
         for line in self._proc.stderr:
@@ -237,27 +241,31 @@ class DaemonRun:
             kind, rest = match.groups()
             fields = {k: (a or b or c) for k, a, b, c in kv.findall(rest)}
             with self._lock:
-                if kind in ("dispatch", "finalize"):
-                    item_id = int(fields["item"])
-                    t = float(fields["t"])
-                    self.trace_order.append((kind, item_id, t))
-                    if kind == "dispatch":
-                        self.dispatch[item_id] = {
-                            "label": fields.get("label", ""),
-                            "prio": fields.get("prio", ""),
-                            "coalesced": int(fields.get("coalesced", 1)),
-                            "t": t,
-                        }
-                    else:
-                        self.finalize[item_id] = {"outcome": fields.get("outcome", ""), "t": t}
-                else:
-                    label = fields.get("label", "")
-                    t = float(fields["t"])
-                    if kind == "audio-start":
-                        self.audio_start[label] = t
-                        self.audio_order.append(label)
-                    else:
-                        self.audio_end[label] = t
+                self._record_trace(kind, fields)
+
+    def _record_trace(self, kind: str, fields: dict) -> None:
+        """Files one parsed trace line (caller holds the records lock)."""
+        if kind in ("dispatch", "finalize"):
+            item_id = int(fields["item"])
+            t = float(fields["t"])
+            self.trace_order.append((kind, item_id, t))
+            if kind == "dispatch":
+                self.dispatch[item_id] = {
+                    "label": fields.get("label", ""),
+                    "prio": fields.get("prio", ""),
+                    "coalesced": int(fields.get("coalesced", 1)),
+                    "t": t,
+                }
+            else:
+                self.finalize[item_id] = {"outcome": fields.get("outcome", ""), "t": t}
+        else:
+            label = fields.get("label", "")
+            t = float(fields["t"])
+            if kind == "audio-start":
+                self.audio_start[label] = t
+                self.audio_order.append(label)
+            else:
+                self.audio_end[label] = t
 
     def stop(self):
         import agent_tts.ipc as ipc

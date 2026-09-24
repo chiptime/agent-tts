@@ -227,3 +227,99 @@ winhost-related was added or measured.
   the combined `BoundaryMap`, chain-as-one-queue-item policy.
 - Contract freeze communication to herdr-tts (HT-03/HT-10) at sub-bloque
   closure.
+
+---
+
+## Hito Cadena — implementation traceability and registered measurements (T6, 24/09/2026)
+
+> Section written in English per unit instructions; structure follows the
+> Hito Cola (T5) section above. Scope: the **Hito Cadena** acceptance
+> criteria, measured and registered. Chain is a local-target milestone
+> (T6): wsl-ps/winhost play the chain as one stream but keep their
+> documented pre-existing `ERR` for position-jump/phrase controls, so no
+> chain-specific work or measurement exists for them here.
+
+Implementation landed in `feat/at-08-cola-y-cadena` (T6): the chain
+assembly module (`agent_tts/chain.py`) with the combined `BoundaryMap`,
+the chain wire fields on `play`/`enqueue` plus the one-session runner
+path and the `chain-item` trace seam (`daemon.py`), the
+`--play-chain`/`--chain-gap` CLI flags (`cli.py`), and the measurement
+harness (`scripts/chain_metrics.py`). The boundary-composition primitive
+`shift_boundary_map` moved from `cli.py` to `boundaries.py` (re-exported
+from `cli`; the streaming path and its tests are unchanged) so the chain
+composition and the streaming merge share one primitive instead of two.
+
+| Requirement | Implementation | Verification |
+|---|---|---|
+| RF-AT-08-4 | `--play-chain FILE...` + `chain`/`chain_gap_ms` play/enqueue payload fields (mutually exclusive with `text`/`file`, never `no_play`); files decode through the `--play-file` decode path into ONE continuous PCM stream with configurable inter-item silence (default 0 ms) in one session | `tests/test_chain.py` assembly + session + daemon suites; `tests/test_cli_chain_flags.py` |
+| RF-AT-08-4 (combined map) | `assemble_chain` composes per-file maps (or one synthetic navigation unit per metadata-less file) onto chain-global positions via `boundaries.shift_boundary_map`; seek/pause/phrase navigation address chain-global positions | `test_combined_map_rebases_sentences_words_paragraphs_chain_globally`, `test_seek_addresses_chain_global_positions`, `test_phrase_navigation_crosses_file_boundaries`, `test_chain_controls_over_the_whole_chain_via_ipc` |
+| RF-AT-08-2 applied to the chain | The chain enters the queue as ONE item with the same priority/policy machinery (D4 mapping for a plain `play` with a chain) | `test_chain_queued_behind_active_item_dispatches_by_policy`; `--priority`/`--policy` composition in `tests/test_cli_chain_flags.py` |
+| RF-AT-08-6 (invariant kept) | One session build, one `play()` call per chain; session unmounted before finalize (unchanged load-bearing order) | `test_chain_plays_once_in_order_gapless_as_one_queue_item` (one session, one start, byte-exact stream) |
+| T5 terminate convention | One continuous buffer means one stop flag: a queue-side terminate cuts mid-stream, remaining files never play | `test_chain_honors_stop_flag_mid_file_remaining_files_not_played` |
+| RNF-AT-08-1 (chain application) | `chain-item` trace seam: the daemon's watcher observes the playback cursor crossing each item's chain-global start (5 ms poll) | Measured: max 9.803 ms « 50 ms (below) |
+| US-AT-08-3 | Default 0 ms inserts nothing: the device stream is the byte-exact concatenation of the decoded files, one session | `test_chain_plays_once_in_order_gapless_as_one_queue_item`; harness `us_at_08_3_nothing_inserted` |
+
+### Registered measurements (DoD — Hito Cadena)
+
+Method (same discipline as the queue metric — observable, not
+tautological): `scripts/chain_metrics.py` drives a REAL daemon
+subprocess over the real IPC channel. The files are real WAVs
+(44100 Hz/stereo — the decode-native passthrough format), decoded by
+the real miniaudio path, dispatched by the real queue, assembled by the
+real chain code, and observed by the daemon's real chain-boundary
+watcher. Only the audio DEVICE is stubbed (no device exists in the
+measurement WSL environment): the local play seam simulates a device
+consuming the continuous buffer at the real sample rate, advancing the
+same session cursor the watcher polls.
+
+Seam definition (the T5 open point, now precise): the daemon prints
+`agent-tts-queue: chain-item item=<id> index=<i> pos=<sec> t=<CLOCK_MONOTONIC>`
+when the playback cursor crosses chain item i's chain-global start
+(item 0 included: chain playback began). "The previous chain item ends"
+when the cursor leaves its audio; "the next item starts" at the
+crossing of its start. The measured slack is
+`(t_item[i+1] − t_item[i]) − (start[i+1] − start[i])` — the wall-clock
+hole between consecutive items minus the audio time between their
+starts (item duration + gap). On one continuous buffer this is zero by
+construction; it would grow exactly by a per-file session
+teardown/rebuild if the chain were played as N separate sessions (the
+approach this milestone replaces), which is what the < 50 ms budget
+bounds.
+
+| Metric | Threshold | local |
+|---|---|---|
+| RNF-AT-08-1 chain item-to-item slack (10 files, gap 0 ms, n=9 boundaries) | < 50 ms | **max 9.803 / p95 9.803 ms** (mean 7.343 ms) |
+| RNF-AT-08-1 (supplementary: 5 files, gap 120 ms, n=4) | info | max 11.174 / p95 11.174 ms |
+| One audio session per whole chain (both scenarios) | 1 | **1** (one audio-start/-end pair per chain) |
+| US-AT-08-3 nothing inserted at gap 0 | byte-exact | **pass** — stream == decoded(a) + decoded(b) |
+| enqueue → dispatch (idle queue) | info | 0.381 ms / 0.370 ms (gap 0 / gap 120 scenarios) |
+
+Environment: WSL2, kernel 6.6.87.2-microsoft-standard-WSL2, 28 CPUs,
+Python 3.14.7, 2026-09-24. Reproduce with:
+
+    PYTHONPATH=src .venv/bin/python scripts/chain_metrics.py --target local
+
+Machine-readable record: `metrics/chain/chain-metrics-local-20260924T214218Z.json`.
+
+CI enforcement (timing-free, same flake discipline as T5):
+`tests/test_chain.py` asserts the structural contract — byte-exact
+gapless stream, one session, combined-map navigation through the real
+IPC channel, stop-flag semantics, queue-policy application, and the
+`chain-item` trace sequence — while the < 50 ms thresholds live only in
+the harness.
+
+### Wire surface added (freeze-relevant, for T7/T8)
+
+- `play`/`enqueue` payloads: `chain` (non-empty list of file path
+  strings, exclusive with `text`/`file`) and `chain_gap_ms`
+  (non-negative number, default 0). Typed errors:
+  `chain must be a list of file paths`, `play accepts one of text,
+  file, or chain, not a combination`, `chain_gap_ms must be a
+  non-negative number of milliseconds: <value>`, `no_play cannot
+  combine with chain (a chain owns no synthesis)`.
+- The empty-payload error text changed from `play requires text or
+  file` to `play requires text, file, or chain` (one pinned assertion
+  updated; taken before the T8 freeze, same `ok=false error=` schema).
+- Daemon stderr gained one trace kind: `agent-tts-queue: chain-item
+  item= index= pos= t=` (documentation lives in `_queue_trace`).
+
