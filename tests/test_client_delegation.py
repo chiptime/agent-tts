@@ -4,7 +4,10 @@ The CLI is always a client: probe with the 200 ms gate, transparent
 auto-start, kill-and-respawn of a wedged daemon, clear errors when
 nothing works, and observable parity with or without a running daemon.
 All scenarios run against an isolated channel; the suite never touches
-the real system channel nor spawns real detached daemons.
+the real system channel. The A6 end-to-end test is the one exception on
+spawning: it starts a REAL detached daemon, pinned to an isolated tmp
+channel (isolated lock/pid env, decoy socket default, self-exit idle
+timeout) so it can never touch the system channel either.
 """
 
 import json
@@ -31,6 +34,7 @@ from agent_tts.daemon import (
     ensure_daemon,
     probe_daemon,
     send_control_command,
+    send_play,
 )
 
 
@@ -287,6 +291,73 @@ def test_ensure_daemon_foreign_owner_is_a_clear_error(channel):
     finally:
         server.stop()
         audio.cleanup_locks()
+
+
+# --- A6: the requested channel reaches the spawned daemon -------------------------------
+
+
+def test_spawn_daemon_forwards_requested_socket_on_the_command_line(monkeypatch, tmp_path):
+    """A6: _spawn_daemon must hand the requested channel to the child CLI.
+
+    The child's module default is env-derived (AGENT_TTS_SOCKET or the
+    platform path), which is only correct when the caller's non-default
+    path arrived through the inherited environment. An explicit
+    socket_path parameter travels only through the command line.
+    """
+    requested = str(tmp_path / "requested.sock")
+    captured = {}
+
+    class FakePopen:
+        def __init__(self, command, **kwargs):
+            captured["command"] = command
+
+    monkeypatch.setattr(daemon_mod, "DAEMON_LOG_FILE", str(tmp_path / "daemon.log"))
+    monkeypatch.setattr(daemon_mod.subprocess, "Popen", FakePopen)
+    daemon_mod._spawn_daemon(30.0, requested)
+    command = captured["command"]
+    assert command[:4] == [sys.executable, "-m", "agent_tts.daemon", "--implicit"]
+    assert "--socket" in command
+    assert command[command.index("--socket") + 1] == requested
+    assert command[command.index("--idle-timeout") + 1] == "30.0"
+
+
+def test_ensure_daemon_real_spawn_serves_the_requested_non_default_socket(tmp_path, monkeypatch):
+    """A6, end to end without the fake-spawn mask: a REAL detached daemon.
+
+    The child environment carries a DECOY AGENT_TTS_SOCKET default plus an
+    isolated lock/pid pair: the daemon can only answer on the requested
+    path if _spawn_daemon forwarded that path on the command line.
+    """
+    requested = str(tmp_path / "requested.sock")
+    decoy = str(tmp_path / "decoy.sock")
+    monkeypatch.setenv("AGENT_TTS_LOCK_FILE", str(tmp_path / "playing.lock"))
+    monkeypatch.setenv("AGENT_TTS_PID_FILE", str(tmp_path / "current.pid"))
+    monkeypatch.setenv("AGENT_TTS_SOCKET", decoy)
+    monkeypatch.setenv("AGENT_TTS_DAEMON_LOG", str(tmp_path / "daemon.log"))
+    # Containment: a daemon leaked by a failure self-exits after 6 idle s.
+    monkeypatch.setenv("AGENT_TTS_IDLE_TIMEOUT", "6")
+    monkeypatch.setattr(daemon_mod, "DAEMON_LOG_FILE", str(tmp_path / "daemon.log"))
+    try:
+        reply = ensure_daemon(socket_path=requested, autostart_timeout_sec=20.0)
+        assert reply and reply.startswith("pong")
+
+        # The channel really is the requested one: control commands and
+        # play requests both round-trip over it.
+        status = ipc.send_ipc_command("status", socket_path=requested)
+        assert status and status.startswith("status=idle")
+        # A deterministic protocol error for an empty payload exercises
+        # send_play's full send/blocking-reply path over the channel
+        # without touching an audio device or a network provider.
+        assert send_play({}, socket_path=requested) == "ERR: play requires text or file"
+    finally:
+        for path in (requested, decoy):
+            try:
+                ipc.send_ipc_command("shutdown", socket_path=path)
+            except Exception:
+                pass
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and os.path.exists(requested):
+            time.sleep(0.05)
 
 
 # --- Kill-and-respawn (RF-AT-04-8, RNF-AT-04-3) ----------------------------------------
