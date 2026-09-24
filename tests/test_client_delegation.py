@@ -410,6 +410,56 @@ def test_delegate_play_interrupt_forwards_stop(channel, monkeypatch):
         _stop_inprocess_daemon(d)
 
 
+def test_signal_handler_exits_zero_when_not_delegating(channel):
+    """Legacy handler contract: outside a delegation, SIGINT cleans up and exits 0."""
+    import signal as signal_mod
+
+    from agent_tts import cli
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.signal_handler(signal_mod.SIGINT, None)
+    assert excinfo.value.code == 0
+
+
+def test_signal_handler_raises_interrupt_while_delegating():
+    """During a delegated playback the handler takes the KeyboardInterrupt path."""
+    import signal as signal_mod
+
+    from agent_tts import cli
+
+    cli._delegated_playback.set()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            cli.signal_handler(signal_mod.SIGINT, None)
+    finally:
+        cli._delegated_playback.clear()
+
+
+def test_sigint_during_delegated_playback_forwards_stop_and_exits_130(channel, monkeypatch):
+    """SOS-2: a real SIGINT mid-delegation forwards stop to the daemon before exiting."""
+    import signal as signal_mod
+
+    from agent_tts import cli
+
+    def blocking_send_play(payload, socket_path=None):
+        # Blocks like a real delegated playback; the real SIGINT must
+        # interrupt it in the main thread.
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            time.sleep(0.02)
+
+    with mock.patch.object(daemon_mod, "ensure_daemon", return_value="pong"):
+        with mock.patch.object(daemon_mod, "send_play", side_effect=blocking_send_play):
+            with mock.patch.object(daemon_mod, "send_ipc_command") as stop_recorder:
+                interrupter = threading.Timer(0.4, os.kill, args=(os.getpid(), signal_mod.SIGINT))
+                interrupter.daemon = True
+                interrupter.start()
+                with pytest.raises(SystemExit) as excinfo:
+                    cli._delegate_and_exit({"text": "interrupted"})
+    assert excinfo.value.code == 130  # the classic Ctrl-C exit code
+    stop_recorder.assert_called_once_with("stop", socket_path=daemon_mod.IPC_SOCKET)
+
+
 # --- US-AT-04-2: observable parity with and without a daemon ---------------------------
 
 
