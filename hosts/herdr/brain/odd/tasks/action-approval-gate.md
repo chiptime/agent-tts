@@ -286,8 +286,9 @@ Route: inline (copy + smoke are per-action).
   re-arms a micless live call, and approve()/resolve carry a replay
   timeout (gate.timeout_ms + 30 s margin; reject/PATCH stay short).
   Checks: node --test tests/js/ 77 pass, pytest 368 pass, node --check
-  both statics OK. Smoke re-run still owed (T8 stays unchecked).
-  Commit hash recorded by orchestrator.
+   both statics OK. Smoke re-run still owed (T8 stays unchecked).
+- Full-suite baseline going forward: 368 pytest / 77 js after the smoke fixes.
+  - `e128f86` fix(approval): survive audio-focus mic loss and long approve replays
 
 ## Next Step
 
