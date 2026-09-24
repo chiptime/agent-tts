@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Product** | herdr-brain (voice-assistant PWA) |
-| **Status** | draft — reorganized per user decision 2026-09-24 (engine-agnostic first, v2 capabilities phased); pending user approval of D2–D5 |
+| **Status** | APPROVED (user, 2026-09-24) — reorganized engine-agnostic first, v2 capabilities phased; D2–D5 approved as drafted. Implementation not started (planning phase pending). |
 | **Date** | 2026-09-24 |
 | **Effort** | TBD (client + server, planning phase pending) |
 
@@ -96,7 +96,7 @@ quick wins, implementable now on either engine (D4, D5, D3).
 **Fase 2** — the v2-conditional barge-in capability, a graceful no-op on
 v1 with no engine switch forced (D2).
 
-## 2. Design Notes — D2–D5 (ALL PENDING USER APPROVAL)
+## 2. Design Notes — D2–D5 (ALL USER-APPROVED 2026-09-24)
 
 > **D1 retired — folded into D2 capability note.** Per the 2026-09-24
 > user decision there is no v2-only gate on conversation mode: duplex /
@@ -106,10 +106,10 @@ v1 with no engine switch forced (D2).
 
 | # | Decision (one line) | Phase | Status |
 |---|---|---|---|
-| D4 | Conversation endpointing: ~700 ms silence proposal, 15 s cap kept | **Fase 1** — engine-agnostic | **PENDING** |
-| D5 | Announcements never steal the floor; spoken only between turns | **Fase 1** — engine-agnostic | **PENDING** |
-| D3 | First-sentence audio split within the existing herdr-tts surface v1 | **Fase 1** — engine-agnostic | **PENDING** |
-| D2 | Speech during playback cancels the in-flight answer + queue; requires v2; route-gated | **Fase 2** — v2-conditional | **PENDING** |
+| D4 | Conversation endpointing: ~700 ms silence proposal, 15 s cap kept | **Fase 1** — engine-agnostic | **APPROVED** |
+| D5 | Announcements never steal the floor; spoken only between turns | **Fase 1** — engine-agnostic | **APPROVED** |
+| D3 | First-sentence audio split within the existing herdr-tts surface v1 | **Fase 1** — engine-agnostic | **APPROVED** |
+| D2 | Speech during playback cancels the in-flight answer + queue; requires v2; route-gated | **Fase 2** — v2-conditional | **APPROVED** |
 
 ### Fase 1 — engine-agnostic quick wins (implementable now, either engine)
 
