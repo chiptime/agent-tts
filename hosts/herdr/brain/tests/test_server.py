@@ -434,6 +434,37 @@ class TestApproveEndpoint:
         assert llm.session_ids == ["s1"]
         assert llm.pane_ids == ["w7:p4"]
 
+    def test_approve_report_prompt_carries_delivery_truth_on_timeout(
+        self, settings, audio_dir, monkeypatch
+    ):
+        tools_cls = make_replay_tools(
+            tool_result=(
+                '{"ok": false, "status": "timeout", "pane_id": "w7:p4", '
+                '"delivered": true, "output_excerpt": "still running", '
+                '"note": "the prompt WAS delivered and the agent is still working on it"}'
+            )
+        )
+        llm = FakeLLM(result={
+            "answer": "Enviado; el agente sigue trabajando.",
+            "pane_id": "w7:p4", "agent": "opencode", "session_id": "s1",
+        })
+        app = approval_app(
+            settings, audio_dir, monkeypatch, llm=llm, tools_cls=tools_cls
+        )
+        gate = app.state.approval_store.propose(
+            "s1", text="corre los tests", timeout_ms=300000,
+            pane_id="w7:p4", agent="opencode",
+        )
+        resp = TestClient(app).post(f"/approval/{gate.gate_id}/approve")
+        assert resp.status_code == 200
+        # The report LLM's prompt must tell the delivery truth: sent AND
+        # still working, with an explicit no-retry instruction.
+        assert len(llm.calls) == 1
+        prompt = llm.calls[0]
+        assert "delivered to opencode" in prompt
+        assert "still working" in prompt
+        assert "do NOT" in prompt
+
     def test_approve_executes_exactly_once(self, settings, audio_dir, monkeypatch):
         tools_cls = make_replay_tools()
         app = approval_app(settings, audio_dir, monkeypatch, tools_cls=tools_cls)

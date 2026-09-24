@@ -603,11 +603,13 @@ def create_app(
             target=target,
         )
         report_prompt = (
-            f"The approved prompt was sent to {gate.action.agent or 'the agent'} "
-            f"(pane {gate.action.pane_id or 'unknown'}) and the agent finished "
-            f"with:\n\n{tool_result}\n\n"
-            "Report this outcome to the user in one or two short spoken "
-            "sentences. Do not send anything else."
+            f"The approved prompt was delivered to {gate.action.agent or 'the agent'} "
+            f"(pane {gate.action.pane_id or 'unknown'}). Tool result:\n\n{tool_result}\n\n"
+            "Report the outcome to the user in one or two short spoken sentences. "
+            'If the tool result status is "timeout" or "stalled": the message WAS '
+            "delivered and the agent is still working on it — say that, and do NOT "
+            "offer to resend or retry (it would duplicate the prompt). "
+            'Only "blocked" means the message did not go through.'
         )
         try:
             result = get_llm().ask(

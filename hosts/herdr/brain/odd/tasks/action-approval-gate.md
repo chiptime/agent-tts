@@ -313,6 +313,17 @@ Route: inline (copy + smoke are per-action).
   Checks: node --check OK, node --test 102 pass, pytest 424 pass (suite
   grew with parallel reader work). `57ebdae`. Smoke re-run still owed
   (T8 stays unchecked): typed gate + voice gate must both surface.
+- Defect round 4 (delivery-vs-completion conflation): a timeout report
+  said "el agente tardó demasiado, ¿lo reintento?" even though the prompt
+  visibly entered the pane instantly — a retry would duplicate it. Fixed:
+  send_to_session JSON now carries `"delivered"` (false only for blocked)
+  plus a timeout note ("delivered, agent still working, never resend"),
+  the timeout_ms schema says the wait is for FINISHING after immediate
+  delivery, and replay_and_report's report prompt states the delivery
+  truth for every status and forbids retry offers on timeout/stalled.
+  Checks: pytest tests/test_herdr.py tests/test_server.py 112 pass, full
+  suite 427 pass (3 new tests). Commit hash recorded by orchestrator.
+  Smoke re-run still owed (T8 stays unchecked).
 
 ## Next Step
 
