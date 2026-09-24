@@ -670,6 +670,9 @@ def _build_playback_session(
     autoscroll: bool = False,
     bionic: bool = False,
     zen: bool = False,
+    provider: str = "",
+    voice: str = "",
+    env=None,
 ):
     """Builds the playback session for an already-resolved target.
 
@@ -678,6 +681,12 @@ def _build_playback_session(
     RemoteAudioSession. Callers own the session's lifecycle (IPC exposure
     and teardown): speak() for the classic in-process path, the daemon for
     the vía única.
+
+    ``provider``/``voice`` seed the local session's status metadata
+    (engine defaults apply when empty). ``env`` overrides the environment
+    the remote targets resolve their winhost endpoint against — the
+    daemon passes a per-request overlay so the delegating client's host
+    and port win over its inherited environment.
     """
     if playback == "local":
         return AudioSession(
@@ -687,6 +696,8 @@ def _build_playback_session(
             autoscroll=autoscroll,
             bionic=bionic,
             zen=zen,
+            provider=provider,
+            voice=voice,
         )
     if playback == "wsl-ps" and not is_wsl_ps_available():
         print(
@@ -711,6 +722,7 @@ def _build_playback_session(
             autoscroll=autoscroll,
             bionic=bionic,
             zen=zen,
+            env=env,
         )
     return RemoteAudioSession(
         label=label,
@@ -720,6 +732,7 @@ def _build_playback_session(
         bionic=bionic,
         zen=zen,
         target=playback,
+        env=env,
     )
 
 
@@ -1184,6 +1197,11 @@ def main():
                 "autoscroll": args.autoscroll,
                 "bionic": args.bionic,
                 "zen": args.zen,
+                # The winhost endpoint resolved client-side above (flags
+                # won over env); it must cross the IPC boundary so the
+                # daemon-side session reaches THIS client's Windows host.
+                "winhost_host": os.environ.get("AGENT_TTS_WINHOST_HOST"),
+                "winhost_port": os.environ.get("AGENT_TTS_WINHOST_PORT"),
             }
         )
 
@@ -1265,6 +1283,11 @@ def main():
             # Raw flag value: the daemon resolves it per request (RF-AT-04-6);
             # absent means the daemon's startup AGENT_TTS_PLAYBACK applies.
             "playback": args.playback,
+            # The winhost endpoint resolved client-side above (flags won
+            # over env); it must cross the IPC boundary so the daemon-side
+            # session reaches THIS client's Windows host.
+            "winhost_host": os.environ.get("AGENT_TTS_WINHOST_HOST"),
+            "winhost_port": os.environ.get("AGENT_TTS_WINHOST_PORT"),
         }
     )
 
