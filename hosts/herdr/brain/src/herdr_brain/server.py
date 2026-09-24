@@ -122,6 +122,7 @@ _VERSIONED_REFS = (
     ('src="/endpointing.js"', 'src="/endpointing.js?v={v}"'),
     ('src="/vad.js"', 'src="/vad.js?v={v}"'),
     ('src="/approval.js"', 'src="/approval.js?v={v}"'),
+    ('src="/reader.js"', 'src="/reader.js?v={v}"'),
     ('href="/manifest.webmanifest"', 'href="/manifest.webmanifest?v={v}"'),
     ('href="/icon.svg"', 'href="/icon.svg?v={v}"'),
 )
@@ -325,6 +326,13 @@ def create_app(
     def approval_js() -> FileResponse:
         return FileResponse(
             STATIC_DIR / "approval.js", media_type="text/javascript",
+            headers=dict(_NO_CACHE_HEADERS),
+        )
+
+    @app.get("/reader.js", include_in_schema=False)
+    def reader_js() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "reader.js", media_type="text/javascript",
             headers=dict(_NO_CACHE_HEADERS),
         )
 

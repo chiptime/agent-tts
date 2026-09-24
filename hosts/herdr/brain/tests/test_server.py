@@ -1400,6 +1400,31 @@ class TestReaderCsp:
             assert resp.headers["cache-control"] == "no-cache"
 
 
+class TestReaderAsset:
+    """/reader.js: versioned static asset under the no-cache discipline."""
+
+    def test_reader_js_served_no_cache(self, settings, audio_dir):
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        client = TestClient(
+            create_app(settings=cfg, llm_factory=lambda c, t: FakeLLM())
+        )
+        resp = client.get("/reader.js")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/javascript")
+        assert resp.headers["cache-control"] == "no-cache"
+        assert "content-security-policy" not in resp.headers  # assets stay plain
+
+    def test_reader_js_reference_is_versioned(self, settings, audio_dir):
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        client = TestClient(
+            create_app(settings=cfg, version="abc1234",
+                       llm_factory=lambda c, t: FakeLLM())
+        )
+        html = client.get("/").text
+        assert 'src="/reader.js?v=abc1234"' in html
+        assert 'src="/reader.js"></script>' not in html  # no unversioned ref
+
+
 class TestRenderedConversation:
     """GET /conversation/{pane_id}/rendered — contract with injected fakes."""
 
