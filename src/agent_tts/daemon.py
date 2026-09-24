@@ -448,28 +448,37 @@ class Daemon:
 
         session = None
         if not no_play:
+            session_kwargs = dict(
+                auto_rewind_sec=float(payload.get("auto_rewind_sec", 2.0)),
+                highlight=bool(payload.get("highlight")),
+                autoscroll=bool(payload.get("autoscroll")),
+                bionic=bool(payload.get("bionic")),
+                zen=bool(payload.get("zen")),
+                # The session's status metadata mirrors the request
+                # (same defaults _play_speech applies to synthesis),
+                # and remote targets resolve the winhost endpoint
+                # against the client's per-request overlay.
+                provider=payload.get("provider") or "edge",
+                voice=payload.get("voice") or DEFAULT_VOICE,
+                env=_session_env(payload),
+            )
             try:
-                session = cli._build_playback_session(
-                    target,
-                    label,
-                    auto_rewind_sec=float(payload.get("auto_rewind_sec", 2.0)),
-                    highlight=bool(payload.get("highlight")),
-                    autoscroll=bool(payload.get("autoscroll")),
-                    bionic=bool(payload.get("bionic")),
-                    zen=bool(payload.get("zen")),
-                    # The session's status metadata mirrors the request
-                    # (same defaults _play_speech applies to synthesis),
-                    # and remote targets resolve the winhost endpoint
-                    # against the client's per-request overlay.
-                    provider=payload.get("provider") or "edge",
-                    voice=payload.get("voice") or DEFAULT_VOICE,
-                    env=_session_env(payload),
-                )
+                session = cli._build_playback_session(target, label, **session_kwargs)
             except SystemExit as e:
-                # _build_playback_session exits(1) with its own message when
-                # the requested target is unavailable; surface it as an ERR
-                # reply instead of killing the daemon.
-                return f"ERR: playback target unavailable (exit {e.code})"
+                if not file_path:
+                    # Speak-path contract: _build_playback_session exits(1)
+                    # with its own message when the requested target is
+                    # unavailable; surface it as an ERR reply instead of
+                    # killing the daemon.
+                    return f"ERR: playback target unavailable (exit {e.code})"
+                # Replay contract (legacy play_mp3_file, README replay
+                # section): an unavailable remote target degrades to the
+                # local device with one warning, not a hard error.
+                print(
+                    f"Playback target '{target}' unavailable; falling back to local playback",
+                    file=sys.stderr,
+                )
+                session = cli._build_playback_session("local", label, **session_kwargs)
 
         # Claim the channel for audio under the lock: an audible play
         # while another is active is a deterministic error, a no_play
