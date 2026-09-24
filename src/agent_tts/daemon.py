@@ -226,6 +226,20 @@ class ProviderCache:
             return instance
 
 
+def _queue_trace(message: str) -> None:
+    """One queue lifecycle trace line on stderr (T5 measurement seam).
+
+    ``dispatch`` prints when an item leaves pending (runner invocation =
+    dispatch start); ``finalize`` prints when its audio path has fully
+    ended, immediately before the queue finalizes the item. The gap
+    between one item's finalize and the next item's dispatch is the
+    RNF-AT-08-1 dispatch latency, observable for a real daemon
+    subprocess from its stderr. Timestamps are CLOCK_MONOTONIC
+    (comparable across processes on Linux).
+    """
+    print(f"agent-tts-queue: {message}", file=sys.stderr, flush=True)
+
+
 def _inject_daemon_fields(reply: str, fields: str) -> str:
     """Inserts daemon-level kv fields into a session status reply.
 
@@ -793,6 +807,12 @@ class Daemon:
         session that flips to ``playing`` resets the silent clock through
         the status token change.
         """
+        label = str((item.payload or {}).get("label") or item.event_type or "")
+        _queue_trace(
+            f"dispatch item={item.id} label={label!r} "
+            f"prio={item.priority.name.lower()} coalesced={item.coalesced} "
+            f"t={time.monotonic():.9f}"
+        )
         payload = dict(item.payload or {})
         waiter = None
         token = payload.pop(self.WAITER_KEY, None)
@@ -876,6 +896,10 @@ class Daemon:
                 # and unmounted BEFORE the queue finalizes this item, so
                 # the next dispatch finds a free active-session slot and
                 # playback never overlaps.
+                _queue_trace(
+                    f"finalize item={item.id} outcome={outcome.value} "
+                    f"t={time.monotonic():.9f}"
+                )
                 try:
                     on_finished(outcome, error)
                 except Exception:

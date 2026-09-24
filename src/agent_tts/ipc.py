@@ -409,7 +409,11 @@ class IPCServer:
             )
             if self.server_sock is None:
                 return
-            self.server_sock.listen(5)
+            # A generous accept backlog: concurrent event hosts (the
+            # AT-08 burst scenario fires tens of enqueues at once) must
+            # not see transient connection refusals while the accept
+            # loop is between accepts.
+            self.server_sock.listen(128)
             self.server_sock.settimeout(0.5)
             self._running = True
 

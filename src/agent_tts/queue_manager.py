@@ -188,6 +188,12 @@ class AudioSessionHandle:
         return self._session.state.get("status") == "paused"
 
     def terminate(self) -> None:
+        # A queue-side termination (preempt or watchdog) must CUT, not
+        # drain: targets that distinguish a user stop from a natural end
+        # (wsl-ps plays out its current group on drain) hard-stop only
+        # when the stop flag is already set — without this, preempting a
+        # wsl-ps announcement waits out the whole playing group.
+        self._session.state["stop"] = True
         self._session.stop()
 
 
