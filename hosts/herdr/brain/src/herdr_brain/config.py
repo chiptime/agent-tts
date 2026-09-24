@@ -55,6 +55,13 @@ DEFAULT_STT_MODEL = "small"
 DEFAULT_STT_DEVICE = "auto"
 DEFAULT_STT_COMPUTE = "auto"
 
+# Reader (formatted conversation rendering). Distinct from tts_timeout_s
+# (240 s, calibrated for speech): an interactive reader turn is a fast
+# local transform, so 30 s bounds a hung renderer without pinning the
+# reader semaphore for minutes.
+DEFAULT_READER_TIMEOUT_S = 30
+DEFAULT_READER_CONCURRENCY = 2
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -78,6 +85,12 @@ class Settings:
     stt_device: str
     stt_compute: str
     stt_warmup: bool
+    # Reader knobs are appended WITH defaults: every pre-existing field is
+    # non-default and tests construct Settings(**SETTINGS_KWARGS), so a
+    # required field here would break every existing construction (and
+    # dataclass ordering forbids non-default after default anyway).
+    reader_timeout_s: int = DEFAULT_READER_TIMEOUT_S
+    reader_concurrency: int = DEFAULT_READER_CONCURRENCY
 
     def __post_init__(self):
         # Accept plain strings for path fields regardless of the caller.
@@ -120,4 +133,10 @@ def load_settings(env: Optional[dict] = None) -> Settings:
         stt_device=getenv("HERDR_BRAIN_STT_DEVICE", DEFAULT_STT_DEVICE),
         stt_compute=getenv("HERDR_BRAIN_STT_COMPUTE", DEFAULT_STT_COMPUTE),
         stt_warmup=getenv("HERDR_BRAIN_STT_WARMUP", "1") not in ("0", "false", "no"),
+        reader_timeout_s=int(getenv(
+            "HERDR_BRAIN_READER_TIMEOUT_S", str(DEFAULT_READER_TIMEOUT_S)
+        )),
+        reader_concurrency=int(getenv(
+            "HERDR_BRAIN_READER_CONCURRENCY", str(DEFAULT_READER_CONCURRENCY)
+        )),
     )

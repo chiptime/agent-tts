@@ -46,6 +46,24 @@ if [ "${1:-}" = "--render-text" ]; then
   printf 'ID3-stub-mp3' > "$out"
   exit 0
 fi
+# --render-html INPUT OUTPUT --map MAP (reader-pipeline/anchors@1).
+# Env switches keep one stub covering the whole reader failure matrix:
+#   STUB_RENDER_EXIT — exit N before writing any output (exit 2 per the
+#                     upstream contract writes NEITHER output file)
+#   STUB_RENDER_HANG — sleep N seconds (timeout probe)
+#   STUB_BAD_MAP=1  — write an unparseable sidecar
+if [ "${1:-}" = "--render-html" ]; then
+  in="$2"; out="$3"; map="$5"
+  if [ -n "${STUB_RENDER_EXIT:-}" ]; then exit "$STUB_RENDER_EXIT"; fi
+  if [ -n "${STUB_RENDER_HANG:-}" ]; then sleep "$STUB_RENDER_HANG"; fi
+  printf '<p><span class="tts-sent" data-sent-idx="0" data-para-idx="0" id="tts-sent-0">%s</span></p>' "$(cat "$in")" > "$out"
+  if [ "${STUB_BAD_MAP:-}" = "1" ]; then
+    printf 'not json{' > "$map"
+  else
+    printf '{"version":1,"contract":"reader-pipeline/anchors@1","alignment":"exact","total_sents":1,"total_paras":1,"engine":{"lang":"es","max_chars":0,"summarize":false,"lexicon_fp":"stub"},"sentences":[]}' > "$map"
+  fi
+  exit 0
+fi
 exit 2
 """
 

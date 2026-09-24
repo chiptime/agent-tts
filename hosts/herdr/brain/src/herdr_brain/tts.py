@@ -18,6 +18,7 @@ version. Tests inject a runner so no real subprocess runs.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import uuid
 from pathlib import Path
@@ -40,6 +41,17 @@ CONTRACT_PROBE_TIMEOUT_S = 5.0
 
 class TTSError(RuntimeError):
     """Raised when the speech backend fails to render audio."""
+
+
+class ReaderError(RuntimeError):
+    """Raised when the reader backend fails to produce an HTML/map pair."""
+
+
+# Reader surface: herdr-tts --render-html INPUT OUTPUT --map MAP renders a
+# whole Markdown document to anchored HTML plus the reader-pipeline/anchors@1
+# sidecar. Same binary, same versioned CLI contract as speech.
+READER_HTML_FLAG = "--render-html"
+READER_MAP_FLAG = "--map"
 
 
 def _contract_detail(reason: str) -> str:
@@ -148,3 +160,77 @@ def new_audio_path(settings: Settings, prefix: str = "") -> Path:
     """
     settings.audio_dir.mkdir(parents=True, exist_ok=True)
     return settings.audio_dir / f"{prefix}{uuid.uuid4().hex}{MP3_SUFFIX}"
+
+
+def render_html(
+    settings: Settings,
+    text: str,
+    workdir: Optional[Path] = None,
+    runner: Optional[Runner] = None,
+) -> tuple[str, dict]:
+    """Renders ``text`` to ``(html, sidecar)`` through the herdr-tts surface.
+
+    The COMPLETE text travels as one UTF-8 document file (the CLI runs
+    pre_extracted=True, so leading headings are preserved); argv carries
+    only server-generated paths — transcript text NEVER enters argv. One
+    ``TemporaryDirectory`` (mode 0o700) per invocation holds ``input.md``,
+    ``out.html`` and ``out.map.json`` and is removed on every outcome:
+    success, failure, timeout. Raises ``ReaderError`` on missing binary,
+    exit 1/2/3, timeout, missing outputs, or undecodable output — the
+    caller (reader cache) maps that to a fail-soft null pair.
+    """
+    import tempfile
+
+    run: Runner = runner if runner is not None else subprocess.run
+    if not settings.tts_bin.is_file():
+        raise ReaderError(f"no reader CLI at {settings.tts_bin}")
+    with tempfile.TemporaryDirectory(
+        prefix="reader-render-",
+        dir=None if workdir is None else str(workdir),
+        ignore_cleanup_errors=True,
+    ) as tmp:
+        tmp_dir = Path(tmp)
+        in_path = tmp_dir / "input.md"
+        html_path = tmp_dir / "out.html"
+        map_path = tmp_dir / "out.map.json"
+        in_path.write_text(text, encoding="utf-8")
+        cmd = [
+            str(settings.tts_bin),
+            READER_HTML_FLAG,
+            str(in_path),
+            str(html_path),
+            READER_MAP_FLAG,
+            str(map_path),
+        ]
+        try:
+            proc = run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=settings.reader_timeout_s,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ReaderError(
+                f"reader render timed out after {settings.reader_timeout_s}s"
+            ) from exc
+        except OSError as exc:
+            raise ReaderError(
+                f"cannot execute reader CLI {settings.tts_bin}: {exc}"
+            ) from exc
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "").strip()
+            raise ReaderError(
+                f"reader render exited with {proc.returncode}: {detail[:200]}"
+            )
+        if not html_path.is_file() or not map_path.is_file():
+            raise ReaderError("reader render produced no outputs")
+        try:
+            html = html_path.read_text(encoding="utf-8", errors="strict")
+            raw_map = map_path.read_text(encoding="utf-8", errors="strict")
+        except UnicodeDecodeError as exc:
+            raise ReaderError(f"reader output is not UTF-8: {exc}") from exc
+        try:
+            sidecar = json.loads(raw_map)
+        except ValueError as exc:
+            raise ReaderError(f"reader sidecar is not JSON: {exc}") from exc
+        return html, sidecar
