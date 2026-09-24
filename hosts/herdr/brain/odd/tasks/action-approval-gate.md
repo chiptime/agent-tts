@@ -299,6 +299,10 @@ Route: inline (copy + smoke are per-action).
   node --test tests/js/ 79 pass, pytest 368 pass, node --check both
   statics OK. Commit hash recorded by orchestrator. Smoke re-run still
   owed (T8 stays unchecked).
+- Full-suite baseline going forward: 368 pytest / 79 js after the defect round.
+  - `4d2112c` fix(approval): honest card state during replay and live mic watchdog
+  - Note: patchText (manual edit) intentionally does not set resolving —
+    the busy state covers approve/reject/resolve rounds only.
 
 ## Next Step
 
