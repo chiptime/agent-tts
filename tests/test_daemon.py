@@ -307,6 +307,40 @@ def test_play_with_file_plays_through_session(channel, monkeypatch, tmp_path):
         _stop_daemon(d)
 
 
+# --- CONF-1: large delegated payloads over the real IPC framing ------------------------
+
+
+def test_large_play_payload_round_trips_through_the_channel(channel, monkeypatch):
+    """A >= 1 MB delegated play crosses the socket complete, not truncated."""
+    d = _start_daemon(channel, monkeypatch)
+    try:
+        from agent_tts.daemon import send_play
+
+        big_text = "a" * (1024 * 1024)
+        reply = send_play({"text": big_text, "no_play": True}, socket_path=channel["sock"])
+        assert reply == "status=done"
+        # The daemon synthesized the FULL text: framing did not drop bytes.
+        assert d._test_engine.calls and d._test_engine.calls[0]["text"] == big_text
+    finally:
+        _stop_daemon(d)
+
+
+def test_oversized_play_payload_beyond_hard_cap_fails_clearly(channel, monkeypatch):
+    """Beyond the documented hard cap the reply is a clear error, never a
+    silent truncation that surfaces as an invalid-JSON parse failure."""
+    d = _start_daemon(channel, monkeypatch)
+    try:
+        from agent_tts.daemon import send_play
+
+        from agent_tts.ipc import MAX_COMMAND_BYTES
+
+        runaway = "b" * (MAX_COMMAND_BYTES + 2048)
+        reply = send_play({"text": runaway, "no_play": True}, socket_path=channel["sock"])
+        assert reply is not None and reply.startswith("ERR: command too large"), reply
+    finally:
+        _stop_daemon(d)
+
+
 # --- RF-AT-04-6: playback target at startup and per request --------------------------
 
 
