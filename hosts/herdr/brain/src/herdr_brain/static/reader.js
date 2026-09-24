@@ -17,6 +17,10 @@
  *  - Snapshot discipline: the generation counter lives HERE; responses
  *    resolved after an identity change are discarded, never merged, and
  *    the snapshot is replaced as a unit keyed by turn_id.
+ *  - reader-always-formatted: loadRendered() is the load/refresh-time
+ *    mount path — every turn the surface reports gets mounted formatted
+ *    regardless of any expansion/truncation state; html-less turns keep
+ *    their text until a later response upgrades them (progressive fill).
  */
 
 (function (global) {
@@ -130,8 +134,12 @@
           if (token !== generation) return;   /* THE single discard point */
           var turns = (data && data.turns) || [];
           var byId = {};
-          for (var i = 0; i < turns.length; i++) byId[turns[i].turn_id] = turns[i];
-          snapshot = { byId: byId, order: turns.slice() };   /* wholesale */
+          var byKey = {};   /* role \u0000 text -> turn: host re-application key */
+          for (var i = 0; i < turns.length; i++) {
+            byId[turns[i].turn_id] = turns[i];
+            byKey[turns[i].role + "\u0000" + turns[i].text] = turns[i];
+          }
+          snapshot = { byId: byId, byKey: byKey, order: turns.slice() };  /* wholesale */
           return turns;
         })
         .catch(function () {
@@ -139,10 +147,46 @@
         });
     }
 
+    function htmlFor(role, text) {
+      /* Held-snapshot lookup by the host's content key (role \u0000 text —
+       * the same key renderGlance reconciles on). Null until the rendered
+       * payload for the CURRENT identity arrives: text stays until then. */
+      if (!snapshot) return null;
+      var turn = snapshot.byKey[role + "\u0000" + text];
+      return turn && typeof turn.html === "string" ? turn.html : null;
+    }
+
+    function loadRendered(pane, session, getPairs) {
+      /* reader-always-formatted load-time mount path: fetch the snapshot
+       * for the viewed pane (generation-guarded, replaced as a unit by
+       * turn_id — both live in requestSnapshot) and mount every turn the
+       * surface reports RIGHT NOW. Pairs are read AFTER the response
+       * resolves, so a surface rebuilt mid-flight is honored; a stale
+       * response mounts nothing. Expansion/truncation state on the
+       * pairs is deliberately ignored — "ver más" never gates rendering. */
+      return requestSnapshot(pane, session).then(function (turns) {
+        if (!turns) return turns;   /* stale (discarded) or failed: text stays */
+        if (typeof getPairs === "function") {
+          var pairs = getPairs() || [];
+          for (var i = 0; i < pairs.length; i++) {
+            var pair = pairs[i] || {};
+            var turn = pair.turn || {};
+            mountTurn(pair.container, {
+              text: turn.text,
+              html: htmlFor(turn.role, turn.text)
+            });
+          }
+        }
+        return turns;
+      });
+    }
+
     return {
       syncIdentity: syncIdentity,
       requestSnapshot: requestSnapshot,
+      loadRendered: loadRendered,
       mountTurn: mountTurn,
+      htmlFor: htmlFor,
       selectSentence: selectSentence,
       currentGeneration: function () { return generation; }
     };

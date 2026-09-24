@@ -448,39 +448,39 @@
     }
   }
 
-  /* ---------------- formatted reader (reader-html-integration) ----------------
-   * reader.js owns the snapshot/generation discipline; this wiring only
-   * feeds it identity changes, fetches ON EXPLICIT EXPANSION ONLY (never
-   * on the 5s poll), and re-applies held HTML by the same role+text
-   * content key renderGlance reconciles on. */
+  /* ---------------- formatted reader (reader-always-formatted) ----------------
+   * reader.js owns the snapshot/generation discipline; this wiring feeds
+   * it identity changes, requests the rendered snapshot on surface load
+   * AND on every 5s refresh (formatted reading is the DEFAULT; "ver más"
+   * is truncation-only and never gates the fetch), and re-applies held
+   * HTML by the same role+text content key renderGlance reconciles on. */
 
   var reader = Reader.createReader({ doc: document, http: fetch });
-  var readerHtml = {};   /* role \u0000 text -> rendered html (applied snapshots) */
   var readerPane = null;
   var readerSession = null;
   var lastConversationData = null;
 
   function readerSync(pane, session) {
-    if (reader.syncIdentity(pane, session)) readerHtml = {};  /* identity changed */
+    /* Identity change: reader.js discards the held snapshot as a unit
+     * (generation bump), so held-HTML lookups go null until the new
+     * pane's rendered payload arrives — text always shows first. */
+    reader.syncIdentity(pane, session);
   }
 
   function requestReaderSnapshot() {
     if (!readerPane) return;   /* nothing resolved yet: plain text stays */
-    reader.requestSnapshot(readerPane, readerSession).then(function (turns) {
+    reader.loadRendered(readerPane, readerSession).then(function (turns) {
       if (!turns) return;      /* stale (discarded) or failed: keep text */
-      readerHtml = {};
-      for (var i = 0; i < turns.length; i++) {
-        if (turns[i] && typeof turns[i].html === "string") {
-          readerHtml[turns[i].role + "\u0000" + turns[i].text] = turns[i].html;
-        }
-      }
+      /* Mount every turn through renderGlance: mountReader re-applies
+       * held html per content key while still-cold turns keep text
+       * (progressive fill across the poll cycle). */
       safeRender("glance", renderGlance, lastConversationData);
     });
   }
 
   function mountReader(el, turn) {
     if (!turn) return;
-    var html = readerHtml[turn.role + "\u0000" + turn.text] || null;
+    var html = reader.htmlFor(turn.role, turn.text);
     var content = el.querySelector(".reader-content");
     if (!html) {
       if (content) content.remove();   /* no formatted payload: plain text */
@@ -951,8 +951,9 @@
       var expanded = el.classList.toggle("expanded");
       moreBtn.setAttribute("aria-expanded", expanded ? "true" : "false");
       moreBtn.textContent = expanded ? "ver menos" : "ver más";
-      /* Reading intent: fetch the formatted snapshot on expansion only. */
-      if (expanded) requestReaderSnapshot();
+      /* Truncation-only control (reader-always-formatted): the rendered
+       * fetch runs on surface load and on every refresh; this gesture
+       * neither triggers nor suppresses it. */
     });
     el.appendChild(roleEl);
     el.appendChild(textEl);
@@ -1071,8 +1072,9 @@
     }
 
     /* Reader mounts: re-apply held formatted HTML (if any) by the same
-     * content key — zero rendered requests during polling; no html means
-     * the plain .gt-text surface stays exactly as before. */
+     * content key; the rendered fetch itself runs per refresh (see
+     * requestReaderSnapshot). No html yet means the plain .gt-text
+     * surface stays until the formatted payload arrives. */
     for (i = 0; i < wanted.length; i++) {
       mountReader(wanted[i], turns[i]);
     }
@@ -1127,6 +1129,7 @@
         readerSync(readerPane, readerSession);  // session change discards stale reader state
         renderGlanceLabel();
         safeRender("glance", renderGlance, data);
+        requestReaderSnapshot();  // always-formatted: rendered fetch on load AND every refresh
         markPollOk();
       })
       .catch(function (err) {
