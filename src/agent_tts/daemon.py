@@ -223,6 +223,11 @@ class Daemon:
         self._last_request = time.time()
         self._inflight = 0
         self._stop = threading.Event()
+        # Set under _lock at the top of _shutdown: once teardown has
+        # started, new play registrations are refused with a
+        # deterministic error so no audible session can register after
+        # the stop-snapshot and escape the stop (RS-1).
+        self._shutting_down = False
         self.ipc_server: Optional[IPCServer] = None
         self._cli = None  # set by run(); lazily imported otherwise
 
@@ -314,8 +319,15 @@ class Daemon:
         return 0
 
     def _shutdown(self) -> None:
-        """Orderly teardown: stop playback, drain requests, free the channel."""
+        """Orderly teardown: stop playback, drain requests, free the channel.
+
+        New play registrations are refused from the moment this starts
+        (the flag and the session snapshot share the lock): a play that
+        registers after the snapshot would otherwise run through the
+        drain without ever receiving stop (RS-1).
+        """
         with self._lock:
+            self._shutting_down = True
             sessions = list(self._sessions)
         for session in sessions:
             try:
@@ -460,9 +472,13 @@ class Daemon:
                 return f"ERR: playback target unavailable (exit {e.code})"
 
         # Claim the channel for audio under the lock: an audible play
-        # while another is active is a deterministic error, and a no_play
-        # request never touches active_session (it owns no audio).
+        # while another is active is a deterministic error, a no_play
+        # request never touches active_session (it owns no audio), and a
+        # play arriving once teardown has started is refused instead of
+        # registering into a snapshot that already happened (RS-1).
         with self._lock:
+            if self._shutting_down:
+                return "ERR: daemon shutting down"
             if session is not None and self.active_session is not None:
                 return "ERR: playback already in progress"
             if session is not None:
