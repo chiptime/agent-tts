@@ -106,6 +106,17 @@ def approval_payload(gate: ApprovalGate, timeout_s: int, now: Optional[float] = 
 # The phone MUST be able to tell which build it runs: index.html is served
 # with no-cache and every asset reference carries ?v=<git short hash>.
 _NO_CACHE_HEADERS = {"Cache-Control": "no-cache"}
+# Pinned CSP for the index response ONLY (design CSP audit): every JS file
+# is same-origin, no inline <script>, no eval — but the inline <style>
+# block and two style="…" attributes REQUIRE style-src 'unsafe-inline'.
+# Do NOT tighten it away: the PWA breaks. Asset routes keep plain
+# no-cache headers; the policy never leaks off the index.
+READER_CSP = (
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+    "media-src 'self' blob:; connect-src 'self'; object-src 'none'; "
+    "base-uri 'none'"
+)
+_INDEX_HEADERS = {**_NO_CACHE_HEADERS, "Content-Security-Policy": READER_CSP}
 _VERSIONED_REFS = (
     ('src="/app.js"', 'src="/app.js?v={v}"'),
     ('src="/endpointing.js"', 'src="/endpointing.js?v={v}"'),
@@ -286,7 +297,7 @@ def create_app(
         # file is small, and the no-cache header already promises fresh.
         return HTMLResponse(
             content=render_index(build),
-            headers=dict(_NO_CACHE_HEADERS),
+            headers=dict(_INDEX_HEADERS),
         )
 
     @app.get("/app.js", include_in_schema=False)
