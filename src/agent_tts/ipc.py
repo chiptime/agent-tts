@@ -77,6 +77,29 @@ def _probe_past_cap(conn: socket.socket) -> bool:
             conn.settimeout(None)
 
 
+def _discard_line_remainder(conn: socket.socket) -> None:
+    """Discards the rest of an oversized line, bounded by cap and timeout.
+
+    Keeps recv()ing (and throwing away) bytes until the newline, EOF, an
+    additional MAX_COMMAND_BYTES bound, or a receive timeout — whichever
+    comes first — so an over-cap sender can finish its sendall and read
+    the explicit error reply instead of dying on a broken pipe (RS-4).
+    """
+    discarded = 0
+    while discarded < MAX_COMMAND_BYTES:
+        try:
+            chunk = conn.recv(65536)
+        except socket.timeout:
+            return
+        except OSError:
+            return
+        if not chunk:
+            return
+        discarded += len(chunk)
+        if b"\n" in chunk:
+            return
+
+
 def _is_windows() -> bool:
     return sys.platform == "win32"
 
@@ -359,15 +382,27 @@ class IPCServer:
                 data = _recv_command(conn)
             except CommandTooLargeError as e:
                 # Oversized input gets an explicit error reply, never a
-                # silent truncation (CONF-1).
+                # silent truncation (CONF-1). Drain the remainder of the
+                # line FIRST (bounded): a client still inside sendall
+                # would otherwise hit a broken pipe when this connection
+                # goes away and never see the error (RS-4).
+                _discard_line_remainder(conn)
                 conn.sendall(f"ERR: {e}\n".encode("utf-8"))
                 return
             if data:
                 reply = self.command_handler(data)
                 conn.sendall(f"{reply}\n".encode("utf-8"))
-            conn.close()
         except Exception:
             pass
+        finally:
+            # Every exit path closes the connection explicitly: an
+            # abandoned socket object is only reclaimed by a gc cycle
+            # (the handler's traceback keeps its frame alive), which a
+            # peer blocked in sendall never triggers.
+            try:
+                conn.close()
+            except OSError:
+                pass
 
     def stop(self) -> None:
         """Stops listener and removes the transport markers this process owns."""
