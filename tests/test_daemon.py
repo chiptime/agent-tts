@@ -520,6 +520,80 @@ def test_play_status_reports_requested_provider_and_voice(channel, monkeypatch):
         _stop_daemon(d)
 
 
+@pytest.mark.parametrize("target", ["wsl-ps", "winhost"])
+def test_play_status_reports_requested_provider_and_voice_for_remote_targets(
+    channel, monkeypatch, target
+):
+    """RS-2 (SOS-1/B5): daemon status honors provider/voice for remote targets too.
+
+    The pipeline is faked at _play_speech: what is under test is the
+    session metadata the daemon constructs (through the real
+    _build_playback_session) and surfaces over IPC.
+    """
+    import agent_tts.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "is_wsl_ps_available", lambda: True)
+
+    async def fake_play_speech(session, text, **kw):
+        deadline = time.monotonic() + 5.0
+        while not session.state.get("stop") and time.monotonic() < deadline:
+            time.sleep(0.02)
+
+    d = _start_daemon(channel, monkeypatch)
+    try:
+        with mock.patch.object(d._cli, "_play_speech", fake_play_speech):
+            box, play_thread = _play_async(
+                d,
+                {
+                    "text": "remoto",
+                    "playback": target,
+                    "provider": "piper",
+                    "voice": "es-ES-AlvaroNeural",
+                },
+            )
+            _wait_session_registered(d)
+            reply = None
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                reply = ipc.send_ipc_command("status", socket_path=channel["sock"])
+                if reply and "status=" in reply and "ERR" not in reply:
+                    break
+                time.sleep(0.02)
+            assert reply and "provider=piper" in reply, reply
+            assert "voice=es-ES-AlvaroNeural" in reply, reply
+
+            ipc.send_ipc_command("stop", socket_path=channel["sock"])
+            play_thread.join(timeout=5.0)
+            assert box == ["status=stopped"]
+    finally:
+        _stop_daemon(d)
+
+
+def test_build_playback_session_forwards_provider_voice_to_remote_sessions(monkeypatch):
+    """RS-2: the requested provider/voice reach the remote session objects."""
+    import agent_tts.cli as cli_mod
+    from agent_tts.powershell_playback import PowershellSession
+    from agent_tts.winhost_client import RemoteAudioSession
+
+    for var in ("AGENT_TTS_PROVIDER", "AGENT_TTS_VOICE", "TTS_PROVIDER"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(cli_mod, "is_wsl_ps_available", lambda: True)
+
+    ps = cli_mod._build_playback_session(
+        "wsl-ps", "L", provider="piper", voice="es-ES-AlvaroNeural"
+    )
+    assert isinstance(ps, PowershellSession)
+    assert ps.provider == "piper"
+    assert ps.voice == "es-ES-AlvaroNeural"
+
+    remote = cli_mod._build_playback_session(
+        "winhost", "L", provider="elevenlabs", voice="rachel"
+    )
+    assert isinstance(remote, RemoteAudioSession)
+    assert remote.provider == "elevenlabs"
+    assert remote.voice == "rachel"
+
+
 def test_play_winhost_endpoint_crosses_ipc_boundary(channel, monkeypatch):
     d = _start_daemon(channel, monkeypatch)
     builds = []
