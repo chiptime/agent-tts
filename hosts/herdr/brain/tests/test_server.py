@@ -1300,3 +1300,316 @@ class TestAudioServing:
     )
     def test_path_traversal_and_unsafe_names_404(self, client_factory, name):
         assert client_factory().get(f"/audio/{name}").status_code == 404
+
+
+# -- rendered conversation endpoint (reader-html-integration) --
+
+READER_MAP = {
+    "version": 1,
+    "contract": "reader-pipeline/anchors@1",
+    "alignment": "exact",
+    "total_sents": 1,
+    "total_paras": 1,
+    "engine": {"lang": "es", "max_chars": 0, "summarize": False,
+               "lexicon_fp": "stub"},
+    "sentences": [
+        {"sent_idx": 0, "para_idx": 0, "text": "hola", "selector": "#tts-sent-0",
+         "block_ids": ["b0"], "fragments": [[0, 4]], "fragment_texts": ["hola"],
+         "exact": True},
+    ],
+}
+
+CONVERSATION_RESULT = {
+    "pane_id": "w1:p9",
+    "agent": "opencode",
+    "session_id": "ses_test0000session",
+    "turns": [
+        {"role": "user", "text": "pregunta del usuario"},
+        {"role": "assistant", "text": "# Respuesta\nCuerpo del informe."},
+    ],
+    "window": 20,
+}
+
+
+class FakeReaderRenderer:
+    """reader_renderer seam double: returns a valid pair, counts calls."""
+
+    def __init__(self, fail: bool = False):
+        self.fail = fail
+        self.calls: list[str] = []
+
+    def __call__(self, settings, text, workdir):
+        self.calls.append(text)
+        if self.fail:
+            from herdr_brain.tts import ReaderError
+
+            raise ReaderError("fake renderer boom")
+        return '<p><span class="tts-sent" data-sent-idx="0">hola</span></p>', READER_MAP
+
+
+def make_conversation_tools(result=None, unresolved_panes=()):
+    """BrainTools double serving a canned conversation payload."""
+    requested: list = []
+
+    class FakeTools:
+        def __init__(self, cfg):
+            self.last_active = None
+
+        def conversation(self, pane_id=None):
+            requested.append(pane_id)
+            if result is not None and pane_id not in unresolved_panes:
+                canned = dict(result)
+                canned["pane_id"] = pane_id or result["pane_id"]
+                return canned
+            return {"pane_id": pane_id, "agent": None, "session_id": None,
+                    "turns": [], "window": 20}
+
+    FakeTools.requested = requested
+    return FakeTools
+
+
+class TestRenderedConversation:
+    """GET /conversation/{pane_id}/rendered — contract with injected fakes."""
+
+    def _client(self, settings, audio_dir, monkeypatch, reader=None,
+                tools_result=None, unresolved_panes=()):
+        import herdr_brain.server as server_module
+
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        monkeypatch.setattr(
+            server_module, "BrainTools",
+            make_conversation_tools(tools_result, unresolved_panes),
+        )
+        return TestClient(
+            server_module.create_app(settings=cfg, reader_renderer=reader)
+        )
+
+    def test_rendered_contract_shape(self, settings, audio_dir, monkeypatch):
+        reader = FakeReaderRenderer()
+        client = self._client(
+            settings, audio_dir, monkeypatch,
+            reader=reader, tools_result=CONVERSATION_RESULT,
+        )
+        resp = client.get("/conversation/w1:p9/rendered")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert set(body) == {"pane_id", "session_id", "turns"}
+        assert body["pane_id"] == "w1:p9"
+        assert body["session_id"] == "ses_test0000session"
+        assert len(body["turns"]) == len(CONVERSATION_RESULT["turns"])
+        for turn, source in zip(body["turns"], CONVERSATION_RESULT["turns"]):
+            assert set(turn) == {"turn_id", "role", "text", "html", "map"}
+            assert turn["role"] == source["role"]
+            assert turn["text"] == source["text"]  # fallback always present
+            assert turn["turn_id"]
+            assert turn["html"] is not None and turn["map"] == READER_MAP
+        assert len(reader.calls) == 2  # one render per turn, counted via seam
+
+    def test_turns_preserve_source_order(self, settings, audio_dir, monkeypatch):
+        client = self._client(
+            settings, audio_dir, monkeypatch, tools_result=CONVERSATION_RESULT,
+        )
+        turns = client.get("/conversation/w1:p9/rendered").json()["turns"]
+        texts = [t["text"] for t in turns]
+        assert texts == [t["text"] for t in CONVERSATION_RESULT["turns"]]
+
+    def test_turn_ids_stable_across_identical_requests(
+        self, settings, audio_dir, monkeypatch
+    ):
+        client = self._client(
+            settings, audio_dir, monkeypatch, tools_result=CONVERSATION_RESULT,
+        )
+        first = client.get("/conversation/w1:p9/rendered").json()["turns"]
+        second = client.get("/conversation/w1:p9/rendered").json()["turns"]
+        assert [t["turn_id"] for t in first] == [t["turn_id"] for t in second]
+        # Duplicate role+text within one snapshot still cannot collide.
+        assert len({t["turn_id"] for t in first}) == len(first)
+
+    def test_empty_conversation_returns_empty_list(
+        self, settings, audio_dir, monkeypatch
+    ):
+        empty = {**CONVERSATION_RESULT, "turns": []}
+        client = self._client(settings, audio_dir, monkeypatch, tools_result=empty)
+        resp = client.get("/conversation/w1:p9/rendered")
+        assert resp.status_code == 200
+        assert resp.json()["turns"] == []
+
+    def test_unknown_pane_returns_404(self, settings, audio_dir, monkeypatch):
+        client = self._client(
+            settings, audio_dir, monkeypatch,
+            tools_result=CONVERSATION_RESULT, unresolved_panes=("w9:p9",),
+        )
+        resp = client.get("/conversation/w9:p9/rendered")
+        assert resp.status_code == 404
+        assert "turns" not in resp.json()  # never a reader fallback body
+
+    def test_no_map_url_field(self, settings, audio_dir, monkeypatch):
+        client = self._client(
+            settings, audio_dir, monkeypatch, tools_result=CONVERSATION_RESULT,
+        )
+        body = client.get("/conversation/w1:p9/rendered").json()
+        assert "map_url" not in body
+        for turn in body["turns"]:
+            assert "map_url" not in turn
+
+    def test_map_travels_inline_complete(self, settings, audio_dir, monkeypatch):
+        client = self._client(
+            settings, audio_dir, monkeypatch,
+            reader=FakeReaderRenderer(), tools_result=CONVERSATION_RESULT,
+        )
+        turns = client.get("/conversation/w1:p9/rendered").json()["turns"]
+        assert turns[1]["map"] == READER_MAP  # complete sidecar, inline
+
+    def test_pane_id_traversal_does_not_escape(
+        self, settings, audio_dir, monkeypatch
+    ):
+        import herdr_brain.server as server_module
+
+        tools_cls = make_conversation_tools(CONVERSATION_RESULT)
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        monkeypatch.setattr(server_module, "BrainTools", tools_cls)
+        client = TestClient(
+            server_module.create_app(settings=cfg, reader_renderer=FakeReaderRenderer())
+        )
+        resp = client.get("/conversation/..%2F..%2Fetc%2Fpasswd/rendered")
+        # Traversal-shaped ids never resolve a conversation: rejected with
+        # 404 BEFORE any resolution or filesystem touch (routing decodes
+        # the %2F runs into extra path segments, which match no route).
+        assert resp.status_code == 404
+        assert tools_cls.requested == []  # nothing reached resolution
+        # The length ceiling applies like every addressed id.
+        oversized = client.get(f"/conversation/{'x' * 200}/rendered")
+        assert oversized.status_code == 422
+
+
+class TestReaderFailSoft:
+    """Fail-soft matrix driving the REAL stub binary via env switches."""
+
+    def _client(self, settings, audio_dir, reader=None, **overrides):
+        kwargs = {"audio_dir": str(audio_dir)}
+        kwargs.update(overrides)
+        cfg = Settings(**{**settings.__dict__, **kwargs})
+        return TestClient(
+            create_app(
+                settings=cfg,
+                llm_factory=lambda c, t: FakeLLM(),
+                tts_renderer=FakeTTS(),
+                reader_renderer=reader,
+            )
+        )
+
+    def _conversation_tools(self, monkeypatch, turns=None):
+        import herdr_brain.server as server_module
+
+        result = {
+            "pane_id": "w1:p9", "agent": "opencode",
+            "session_id": "ses_x",
+            "turns": turns if turns is not None else
+            [{"role": "assistant", "text": "SECRETO-texto-del-turno"}],
+            "window": 20,
+        }
+        monkeypatch.setattr(
+            server_module, "BrainTools",
+            make_conversation_tools(result),
+        )
+
+    def test_cache_hit_spawns_no_subprocess(
+        self, settings, audio_dir, monkeypatch
+    ):
+        from herdr_brain.tts import render_html
+
+        self._conversation_tools(monkeypatch)
+        calls: list[str] = []
+
+        def counting_renderer(cfg, text, workdir):
+            calls.append(text)
+            return render_html(cfg, text, workdir)
+
+        client = self._client(settings, audio_dir, reader=counting_renderer)
+        first = client.get("/conversation/w1:p9/rendered")
+        assert first.status_code == 200
+        assert first.json()["turns"][0]["html"] is not None
+        spawns_after_first = len(calls)
+        second = client.get("/conversation/w1:p9/rendered")
+        assert second.status_code == 200
+        assert second.json()["turns"][0]["html"] is not None
+        assert len(calls) == spawns_after_first  # warm hit: flat counter
+
+    def test_missing_binary_nulls_pair(self, settings, audio_dir, monkeypatch):
+        self._conversation_tools(monkeypatch)
+        client = self._client(
+            settings, audio_dir, tts_bin=audio_dir / "nowhere/herdr-tts"
+        )
+        resp = client.get("/conversation/w1:p9/rendered")
+        assert resp.status_code == 200
+        turn = resp.json()["turns"][0]
+        assert turn["html"] is None and turn["map"] is None
+        assert turn["text"] == "SECRETO-texto-del-turno"
+
+    @pytest.mark.parametrize("code", [1, 2, 3])
+    def test_exit_codes_null_pair(self, settings, audio_dir, monkeypatch, code):
+        self._conversation_tools(monkeypatch)
+        monkeypatch.setenv("STUB_RENDER_EXIT", str(code))
+        client = self._client(settings, audio_dir)
+        resp = client.get("/conversation/w1:p9/rendered")
+        assert resp.status_code == 200
+        turn = resp.json()["turns"][0]
+        assert turn["html"] is None and turn["map"] is None
+        assert turn["text"]
+
+    def test_timeout_nulls_pair(self, settings, audio_dir, monkeypatch):
+        self._conversation_tools(monkeypatch)
+        monkeypatch.setenv("STUB_RENDER_HANG", "5")
+        client = self._client(settings, audio_dir, reader_timeout_s=1)
+        resp = client.get("/conversation/w1:p9/rendered")
+        assert resp.status_code == 200
+        turn = resp.json()["turns"][0]
+        assert turn["html"] is None and turn["map"] is None
+
+    def test_malformed_sidecar_nulls_pair(self, settings, audio_dir, monkeypatch):
+        self._conversation_tools(monkeypatch)
+        monkeypatch.setenv("STUB_BAD_MAP", "1")
+        client = self._client(settings, audio_dir)
+        resp = client.get("/conversation/w1:p9/rendered")
+        assert resp.status_code == 200
+        turn = resp.json()["turns"][0]
+        assert turn["html"] is None and turn["map"] is None
+
+    def test_unwritable_cache_still_200(self, settings, audio_dir, monkeypatch):
+        self._conversation_tools(monkeypatch)
+        # cache_dir = audio_dir.parent/reader_cache/… → parent is a FILE:
+        # mkdir fails, publish degrades, the request still answers 200.
+        client = self._client(settings, audio_dir / "sentinel" / "audio")
+        resp = client.get("/conversation/w1:p9/rendered")
+        assert resp.status_code == 200
+        turn = resp.json()["turns"][0]
+        assert turn["html"] is not None  # memory-only serving, renderer fine
+
+    def test_warning_omits_transcript_payload(
+        self, settings, audio_dir, monkeypatch, caplog
+    ):
+        import logging
+        import re as re_module
+
+        self._conversation_tools(monkeypatch)
+        monkeypatch.setenv("STUB_RENDER_EXIT", "1")
+        client = self._client(settings, audio_dir)
+        with caplog.at_level(logging.WARNING):
+            resp = client.get("/conversation/w1:p9/rendered")
+        assert resp.status_code == 200
+        assert "SECRETO" not in caplog.text  # never the transcript payload
+        assert re_module.search(r"\[[0-9a-f]{8}\]", caplog.text)  # key prefix
+
+    def test_speech_unaffected_by_reader_failure(
+        self, settings, audio_dir, monkeypatch
+    ):
+        self._conversation_tools(monkeypatch)
+        monkeypatch.setenv("STUB_RENDER_EXIT", "1")
+        client = self._client(settings, audio_dir)
+        tts_resp = client.post("/tts", json={"text": "hola"})
+        assert tts_resp.status_code == 200
+        assert tts_resp.json()["audio_url"].startswith("/audio/")
+        ask_resp = client.post("/ask", json={"text": "hola"})
+        assert ask_resp.status_code == 200
+        assert ask_resp.json()["answer"]
+        assert ask_resp.json()["audio_url"].startswith("/audio/")

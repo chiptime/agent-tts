@@ -24,7 +24,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Optional
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, HTTPException, Path as PathParam, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -49,6 +49,7 @@ from .config import Settings
 from .herdr import HerdrError
 from .llm import BrainLLM, BrainLLMError
 from .memory import ConversationStore
+from .reader import ReaderCache, turn_id
 from .stt import STATE_READY, STATE_UNAVAILABLE, UNAVAILABLE_HINT, Transcriber
 from .tools import BrainTools
 from .tools import status_payload as _status_payload
@@ -56,6 +57,7 @@ from .tts import (
     TTS_BACKEND_MISSING,
     TTS_BACKEND_OK,
     new_audio_path,
+    render_html,
     render_mp3,
     tts_backend_status,
 )
@@ -63,6 +65,7 @@ from .tts_daemon import DAEMON_UP, DaemonWatcher, daemon_status
 from .watcher import AgentWatcher
 
 _TTSRenderer = Callable[[Settings, str, Path], Path]
+_ReaderRenderer = Callable[[Settings, str, Path], "tuple[str, dict]"]
 _LLMFactory = Callable[[Settings, BrainTools], BrainLLM]
 
 _SAFE_FILENAME = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -172,6 +175,7 @@ def create_app(
     settings: Optional[Settings] = None,
     llm_factory: Optional[_LLMFactory] = None,
     tts_renderer: Optional[_TTSRenderer] = None,
+    reader_renderer: Optional[_ReaderRenderer] = None,
     watcher: Optional[AgentWatcher] = None,
     sse_heartbeat_s: float = 15.0,
     sse_stream_limit: Optional[int] = None,
@@ -200,6 +204,10 @@ def create_app(
 
     tools = BrainTools(cfg)
     synth = tts_renderer or render_mp3
+    # One reader cache per app instance (mirrors the tts_renderer seam):
+    # production rides the real herdr-tts --render-html surface, tests
+    # inject a counting fake to prove cache hits spawn no subprocess.
+    reader_cache = ReaderCache(cfg, renderer=reader_renderer or render_html)
     store = ConversationStore()
     approval_store = ApprovalGateStore(timeout_s=cfg.approval_timeout_s)
 
@@ -460,6 +468,42 @@ def create_app(
         except Exception:  # noqa: BLE001
             return {"pane_id": pane_id, "agent": None, "session_id": None,
                     "turns": [], "window": 20}
+
+    @app.get("/conversation/{pane_id}/rendered")
+    def conversation_rendered(
+        pane_id: str = PathParam(max_length=MAX_SESSION_ID_CHARS),
+    ) -> dict:
+        """Rendered conversation snapshot for the reader surface.
+
+        Same resolution convention as /conversation but STRICTER on the
+        unknown-pane case: an unresolved pane is a 404 (an addressed
+        resource that does not exist), never a reader fallback body — the
+        client must distinguish "pane gone" from "nothing rendered".
+        Rendered fields are fail-soft: html/map null TOGETHER with text
+        always present; the reader cache logs failure classes with the
+        cache-key prefix only.
+        """
+        data = tools.conversation(pane_id)
+        if not data.get("agent"):
+            raise HTTPException(status_code=404, detail="conversation not found")
+        session_id = data.get("session_id")
+        rendered = reader_cache.render_snapshot(data.get("turns") or [])
+        return {
+            "pane_id": data.get("pane_id", pane_id),
+            "session_id": session_id,
+            "turns": [
+                {
+                    "turn_id": turn_id(
+                        session_id, index, turn.get("role", ""), turn.get("text", "")
+                    ),
+                    "role": turn.get("role"),
+                    "text": turn.get("text"),
+                    "html": turn.get("html"),
+                    "map": turn.get("map"),
+                }
+                for index, turn in enumerate(rendered)
+            ],
+        }
 
     @app.get("/screen")
     def screen(pane_id: Optional[str] = None) -> dict:
