@@ -191,7 +191,11 @@
       statePill.classList.remove("hidden");
       return;
     }
-    if (inCall && !drawerOpen && !textMode && callState !== "idle") {
+    /* Text mode is pill-free (FR12) EXCEPT for a live approval gate:
+     * the gate must always be reachable ("Confirmar ▲" reopens the
+     * drawer) or a typing user never sees the popup at all. */
+    if (inCall && !drawerOpen && callState !== "idle" &&
+        (!textMode || (approvalFlow && approvalFlow.active()))) {
       pillMain.textContent = (PILL_TEXT[callState] || callState) + " ▲";
       statePill.className = callState;
       statePill.classList.remove("hidden");
@@ -1722,9 +1726,11 @@
             // normal queue; onAudioEnded re-arms the mic under confirming.
             if (data.audio_url) enqueueAudio(data.audio_url, null);
             approvalFlow.open(data.approval);
-            // PRD §8: the drawer auto-opens with the gate (never in text
-            // mode — FR11 keeps drawer and soft keyboard apart).
-            if (!textMode) openDrawer();
+            // PRD §8: the drawer auto-opens with the gate — ALSO in text
+            // mode: the gate demands attention and expires in 60 s, and
+            // inside a closed drawer it would be invisible to a typing
+            // user. FR11's keyboard coexistence only guards the edit box.
+            openDrawer();
             return;
           }
           if (data.audio_url) enqueueAudio(data.audio_url, null);
@@ -2336,12 +2342,13 @@
   /* T7 reload recovery (PRD §5): ask the server whether the session
    * still has a live gate (mid-gate reload). A live payload re-enters
    * confirming — card restored with the remaining countdown — and the
-   * drawer re-opens with it (PRD §8, never in text mode). Async and
-   * failure-silent: boot neither waits nor breaks, and the mic stays
-   * off until the user taps back in (FR15); the call then resumes
-   * under confirming via micBaseState() in startCall(). */
+   * drawer re-opens with it (PRD §8, text mode included: the gate must
+   * be visible to a typing user). Async and failure-silent: boot
+   * neither waits nor breaks, and the mic stays off until the user
+   * taps back in (FR15); the call then resumes under confirming via
+   * micBaseState() in startCall(). */
   approvalFlow.recover(sessionId).then(function (payload) {
-    if (payload && !textMode) openDrawer();
+    if (payload) openDrawer();
   });
 
   if ("serviceWorker" in navigator) {
