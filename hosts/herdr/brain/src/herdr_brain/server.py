@@ -1,9 +1,13 @@
-"""HTTP surface of the brain: /ask, /tts, /audio/<file>, /health.
+"""HTTP surface of the brain: /ask, /approval/*, /tts, /audio/<file>, /health.
 
 POST /ask runs the LLM tool loop, renders the answer to MP3 through the
 herdr-tts CLI surface (contract v1) and returns an audio_url; playback
 happens on the CLIENT, never on PC speakers. POST /tts is plain TTS for
-the PWA's local echo.
+the PWA's local echo. The /approval/* endpoints resolve the action gates
+/ask opens: approve replays the frozen send, reject cancels, resolve maps
+a voice utterance through the lexicon, PATCH edits the text, and
+/approval/current recovers a live gate after reload
+(PRD-action-approval-gate §5).
 """
 
 from __future__ import annotations
@@ -26,7 +30,21 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import __version__
-from .approval import ApprovalGate, ApprovalGateStore
+from .approval import (
+    DECISION_APPROVE,
+    DECISION_REJECT,
+    DECISION_REPROMPT,
+    PROPOSED,
+    SEND_TO_SESSION,
+    ApprovalGate,
+    ApprovalGateStore,
+)
+from .approval_lexicon import (
+    OUTCOME_APPROVE,
+    OUTCOME_REJECT,
+    OUTCOME_REPLACE_INTENT,
+    resolve_utterance,
+)
 from .config import Settings
 from .herdr import HerdrError
 from .llm import BrainLLM, BrainLLMError
@@ -57,6 +75,10 @@ MAX_SESSION_ID_CHARS = 128
 # server-side to the spoken answer whenever a gate opens — the question
 # wording never depends on the model. Product copy; keep verbatim.
 APPROVAL_CLOSER = "¿Se envía?"
+
+# Spoken re-prompt after one ambiguous confirming utterance
+# (PRD-action-approval-gate §4). Product copy; keep verbatim.
+REPROMPT_LINE = "¿Sí o no?"
 
 
 def approval_payload(gate: ApprovalGate, timeout_s: int, now: Optional[float] = None) -> dict:
@@ -129,6 +151,16 @@ class TextRequest(BaseModel):
 
 class ResetRequest(BaseModel):
     session_id: Optional[str] = Field(default=None, max_length=MAX_SESSION_ID_CHARS)
+
+
+class ResolveRequest(BaseModel):
+    # Empty STT captures are allowed: the lexicon resolves them to
+    # unknown, which feeds the reprompt budget (safe direction).
+    utterance: str = Field(default="", max_length=8_000)
+
+
+class ApprovalPatchRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=8_000)
 
 
 def default_llm_factory(settings: Settings, tools: BrainTools) -> BrainLLM:
@@ -429,6 +461,104 @@ def create_app(
         except Exception:  # noqa: BLE001
             return {"pane_id": pane_id, "agent": None, "screen": None}
 
+    # -- answer shaping + approval resolution (shared by /ask and approve) --
+
+    def speak_answer(answer: Optional[str]) -> Optional[str]:
+        """Renders an answer to MP3, fail-soft: TTS never breaks answers."""
+        if not answer:
+            return None
+        out_path = new_audio_path(cfg)
+        try:
+            synth(cfg, answer, out_path)
+            return f"/audio/{out_path.name}"
+        except Exception as exc:  # noqa: BLE001 — TTS must never break the answer
+            # Degrade to a text-only answer, but never silently: the log
+            # names the speech backend contract when that is the cause.
+            logger.warning("TTS render failed — answer degrades to text-only: %s", exc)
+            return None
+
+    def shape_ask_response(result: dict) -> dict:
+        """Shapes an LLM turn the /ask way: approval{}, deterministic
+        closer, TTS audio_url. The approve replay reuses this so its
+        response follows the exact /ask conventions."""
+        answer: Optional[str] = result.get("answer")
+        gate: Optional[ApprovalGate] = result.get("approval")
+        approval: Optional[dict] = None
+        if gate is not None:
+            approval = approval_payload(gate, cfg.approval_timeout_s)
+            # Deterministic closer, spoken and shown — appended AFTER the
+            # model's echo so the approval question never depends on it.
+            answer = f"{answer} {APPROVAL_CLOSER}" if answer else APPROVAL_CLOSER
+        return {
+            "answer": answer,
+            "pane_id": result.get("pane_id"),
+            "agent": result.get("agent"),
+            "session_id": result.get("session_id"),
+            "audio_url": speak_answer(answer),
+            "approval": approval,
+        }
+
+    def gate_gone() -> HTTPException:
+        """404 for unknown, expired, superseded or already-resolved gates.
+
+        Lazy expiry fires on the get() touch, so an elapsed window surfaces
+        here exactly like an unknown id — silent, toward cancel (PRD §6).
+        """
+        return HTTPException(
+            status_code=404,
+            detail="approval gate not found or no longer active",
+        )
+
+    def live_gate_or_404(gate_id: str) -> ApprovalGate:
+        gate = approval_store.get(gate_id)
+        if gate is None or gate.state != PROPOSED:
+            raise gate_gone()
+        return gate
+
+    def replay_and_report(gate: ApprovalGate) -> dict:
+        """Executes the frozen send and reports the outcome.
+
+        This is THE approve execution (AC6 — exactly once, guaranteed by
+        the store's approve-once resolve): the replay rides the exact path
+        a live tool call would take — ``dispatch("send_to_session", ...)``
+        on the re-resolved target — so sanitization and error handling
+        match the ungated flow; then the model reports the completion
+        through the normal loop entry and the answer is shaped like /ask.
+        """
+        target = tools.resolve_target(gate.action.pane_id)
+        tool_result = tools.dispatch(
+            SEND_TO_SESSION,
+            {"text": gate.action.text, "timeout_ms": gate.action.timeout_ms},
+            target=target,
+        )
+        report_prompt = (
+            f"The approved prompt was sent to {gate.action.agent or 'the agent'} "
+            f"(pane {gate.action.pane_id or 'unknown'}) and the agent finished "
+            f"with:\n\n{tool_result}\n\n"
+            "Report this outcome to the user in one or two short spoken "
+            "sentences. Do not send anything else."
+        )
+        try:
+            result = get_llm().ask(
+                report_prompt,
+                session_id=gate.session_id,
+                pane_id=gate.action.pane_id,
+            )
+        except BrainLLMError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return shape_ask_response(result)
+
+    @app.get("/approval/current")
+    def approval_current(session_id: Optional[str] = None) -> dict:
+        """The session's live gate or ``{approval: null}`` — reload
+        recovery for the PWA (PRD §5). Same session-id source as /ask:
+        absent id normalizes to the default session."""
+        gate = approval_store.current(session_id)
+        approval = (
+            approval_payload(gate, cfg.approval_timeout_s) if gate is not None else None
+        )
+        return {"approval": approval}
+
     @app.post("/ask")
     def ask(body: TextRequest) -> dict:
         if body.reset:
@@ -443,33 +573,87 @@ def create_app(
             )
         except BrainLLMError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-        answer: Optional[str] = result.get("answer")
-        gate: Optional[ApprovalGate] = result.get("approval")
-        approval: Optional[dict] = None
-        if gate is not None:
-            approval = approval_payload(gate, cfg.approval_timeout_s)
-            # Deterministic closer, spoken and shown — appended AFTER the
-            # model's echo so the approval question never depends on it.
-            answer = f"{answer} {APPROVAL_CLOSER}" if answer else APPROVAL_CLOSER
-        audio_url: Optional[str] = None
-        if answer:
-            out_path = new_audio_path(cfg)
-            try:
-                synth(cfg, answer, out_path)
-                audio_url = f"/audio/{out_path.name}"
-            except Exception as exc:  # noqa: BLE001 — TTS must never break the answer
-                # Degrade to a text-only answer, but never silently: the log
-                # names the speech backend contract when that is the cause.
-                logger.warning("TTS render failed — answer degrades to text-only: %s", exc)
-                audio_url = None
+        return shape_ask_response(result)
+
+    @app.post("/approval/{gate_id}/approve")
+    def approval_approve(gate_id: str) -> dict:
+        """Replays the frozen send exactly once and reports the outcome.
+
+        Same response shape as /ask (report answer + TTS audio_url). The
+        replay IS the single approve execution; a second approve finds a
+        terminal gate and 404s (approve-once, AC6).
+        """
+        live_gate_or_404(gate_id)
+        resolved, applied = approval_store.resolve(gate_id, DECISION_APPROVE)
+        if not applied:
+            raise gate_gone()
+        return replay_and_report(resolved)
+
+    @app.post("/approval/{gate_id}/reject")
+    def approval_reject(gate_id: str) -> dict:
+        """Silent cancellation: no TTS is generated server-side (PRD §5)."""
+        live_gate_or_404(gate_id)
+        resolved, applied = approval_store.resolve(gate_id, DECISION_REJECT)
+        if not applied:
+            raise gate_gone()
+        return {"ok": True, "state": resolved.state}
+
+    @app.post("/approval/{gate_id}/resolve")
+    def approval_resolve(gate_id: str, body: ResolveRequest) -> dict:
+        """Voice path: maps a confirming-state STT utterance onto the gate.
+
+        Response: ``{decision, answer, audio_url, approval}`` where decision
+        is approve / reject / listen_replace / reprompt (PRD §5). answer +
+        audio_url carry the report (approve) or the spoken re-prompt; the
+        reject and listen_replace outcomes stay silent server-side.
+        """
+        gate = live_gate_or_404(gate_id)
+        outcome = resolve_utterance(body.utterance)
+        if outcome == OUTCOME_APPROVE:
+            resolved, applied = approval_store.resolve(gate_id, DECISION_APPROVE)
+            if not applied:
+                raise gate_gone()
+            turn = replay_and_report(resolved)
+            return {
+                "decision": "approve",
+                "answer": turn["answer"],
+                "audio_url": turn["audio_url"],
+                "approval": turn["approval"],
+            }
+        if outcome == OUTCOME_REJECT:
+            resolved, applied = approval_store.resolve(gate_id, DECISION_REJECT)
+            if not applied:
+                raise gate_gone()
+            return {"decision": "reject", "answer": None, "audio_url": None, "approval": None}
+        if outcome == OUTCOME_REPLACE_INTENT:
+            # The gate stays live and untouched: the replacement text is
+            # NOT in this utterance. The client runs ONE dictation round
+            # and PATCHes the new text, which restarts the timer (PRD §5).
+            return {"decision": "listen_replace", "answer": None, "audio_url": None, "approval": None}
+        # Unknown/ambiguous: one spoken reprompt, a second auto-rejects
+        # toward the safe direction (PRD §4).
+        if gate.reprompt_count >= 1:
+            resolved, applied = approval_store.resolve(gate_id, DECISION_REJECT)
+            if not applied:
+                raise gate_gone()
+            return {"decision": "reject", "answer": None, "audio_url": None, "approval": None}
+        approval_store.resolve(gate_id, DECISION_REPROMPT)
         return {
-            "answer": answer,
-            "pane_id": result.get("pane_id"),
-            "agent": result.get("agent"),
-            "session_id": result.get("session_id"),
-            "audio_url": audio_url,
-            "approval": approval,
+            "decision": "reprompt",
+            "answer": REPROMPT_LINE,
+            "audio_url": speak_answer(REPROMPT_LINE),
+            "approval": None,
         }
+
+    @app.patch("/approval/{gate_id}")
+    def approval_patch(gate_id: str, body: ApprovalPatchRequest) -> dict:
+        """Manual edit or voice re-dictation result: swaps the frozen text
+        and restarts the timer (the store resets created_at)."""
+        live_gate_or_404(gate_id)
+        updated = approval_store.patch(gate_id, body.text)
+        if updated is None:
+            raise gate_gone()
+        return {"ok": True, "approval": approval_payload(updated, cfg.approval_timeout_s)}
 
     @app.post("/tts")
     def tts(body: TextRequest) -> dict:

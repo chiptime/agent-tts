@@ -71,7 +71,7 @@ target+text when gated, never narrate as done. `create_app`: store wiring.
 Checks: fake-LLM injection tests — gate opens, no herdr send call happened.
 Route: delegated-direct.
 
-### [ ] T4 — Approval endpoints
+### [x] T4 — Approval endpoints
 Files: `src/herdr_brain/server.py`, `tests/test_server.py`.
 `POST /approval/{id}/approve` (replay frozen args via LLM re-entry →
 report answer + TTS `audio_url`), `/reject`, `/resolve` (lexicon +
@@ -166,7 +166,18 @@ Route: inline (copy + smoke are per-action).
   - Replay note (T4): frozen args live at `gate.action.{text, timeout_ms,
     pane_id, agent}`; `text` is dispatch-raw — sanitization happens inside
     `herdr.send_prompt` at replay, identical to the live path.
+- T4 done — `.venv/bin/python -m pytest tests/test_server.py -q` → 71 passed;
+  `.venv/bin/python -m pytest -q` → 368 passed (1 pre-existing
+  starlette/anyio DeprecationWarning, unrelated); new baseline 368. Approve
+  replays the frozen args through `tools.dispatch` on the re-resolved
+  target and reports via the normal `ask()` entry (response shaped exactly
+  like /ask); unknown/terminal/expired/superseded gate ids → 404 (lazy
+  expiry at touch); resolve maps the lexicon → approve / reject /
+  listen_replace (gate untouched, client dictates then PATCHes) / reprompt
+  (×1 budget, spoken "¿Sí o no?" verbatim) → auto-reject; PATCH restarts
+  the timer; GET /approval/current returns `{approval: …|null}`. Commit
+  hash recorded by orchestrator.
 
 ## Next Step
 
-T4 (approval endpoints: approve/reject/resolve/PATCH/current).
+T5 (client confirming state + voice routing).
