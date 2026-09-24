@@ -393,3 +393,172 @@ test("a failed PATCH keeps or drops the gate with a banner, never silently stuck
   assert.equal(h.states[h.states.length - 1], "confirming");
   assert.equal(h.banners.length, 1);
 });
+
+/* ---- button entry points (T6 card): approve / reject / patch / redictate ----
+ *
+ * The card's DOM lives in app.js (no DOM harness in this runner); these
+ * tests pin the button SEMANTICS on the flow: which endpoint each button
+ * hits, the state emissions, and the guards. Visual layout + drawer
+ * wiring are covered by the T8 manual smoke pass. */
+
+test("approve(): POST /approve renders the report and returns to listening", async () => {
+  const h = harness({
+    plan: [{ json: { answer: "Enviado y listo", audio_url: null, approval: null } }]
+  });
+  h.flow.open({ ...GATE });
+  assert.equal(h.flow.approve(), true);
+  await flush();
+  assert.equal(h.http.calls.length, 1);
+  assert.equal(h.http.calls[0].url, "/approval/a1b2c3d4e5f6/approve");
+  assert.equal(h.http.calls[0].options.method, "POST");
+  assert.deepEqual(h.answers, [{ answer: "Enviado y listo", audio_url: null }]);
+  assert.equal(h.flow.active(), false);
+  assert.deepEqual(h.states, ["confirming", "thinking", "listening"]);
+});
+
+test("approve() with audio hands the return to listening to the audio queue", async () => {
+  const h = harness({
+    plan: [{ json: { answer: "Enviado", audio_url: "/audio/x.mp3", approval: null } }]
+  });
+  h.flow.open({ ...GATE });
+  h.flow.approve();
+  await flush();
+  assert.deepEqual(h.states, ["confirming", "thinking"]);  // queue resumes at listening
+  assert.equal(h.flow.active(), false);
+});
+
+test("approve() on 404 (expired at touch) is a silent terminal", async () => {
+  const h = harness({
+    plan: [{ status: 404, json: { detail: "approval gate not found or no longer active" } }]
+  });
+  h.flow.open({ ...GATE });
+  h.flow.approve();
+  await flush();
+  assert.deepEqual(h.states, ["confirming", "thinking", "listening"]);
+  assert.equal(h.flow.active(), false);
+  assert.deepEqual(h.answers, []);
+  assert.deepEqual(h.banners, []);
+});
+
+test("approve() is refused without a live gate or mid-round", async () => {
+  const http = deferredHttp();
+  const h = harness({ http });
+  assert.equal(h.flow.approve(), false);  // no gate at all
+  h.flow.open({ ...GATE });
+  h.flow.routeUtterance("sí");            // a round is in flight
+  assert.equal(h.flow.approve(), false);  // resolving: swallowed
+  assert.equal(h.http.calls.length, 1);   // only the resolve call happened
+  http.respond({ json: { decision: "reject" } });
+  await flush();
+  assert.equal(h.flow.active(), false);
+});
+
+test("approve() network failure keeps the gate live with a banner", async () => {
+  const h = harness({ http: { request: () => Promise.reject(new Error("boom")), calls: [] } });
+  h.flow.open({ ...GATE });
+  h.flow.approve();
+  await flush();
+  assert.equal(h.flow.active(), true);
+  assert.equal(h.states[h.states.length - 1], "confirming");
+  assert.equal(h.banners.length, 1);
+});
+
+test("reject(): POST /reject is silent, nothing rendered, back to listening", async () => {
+  const h = harness({ plan: [{ json: { ok: true, state: "rejected" } }] });
+  h.flow.open({ ...GATE });
+  assert.equal(h.flow.reject(), true);
+  await flush();
+  assert.equal(h.http.calls.length, 1);
+  assert.equal(h.http.calls[0].url, "/approval/a1b2c3d4e5f6/reject");
+  assert.equal(h.http.calls[0].options.method, "POST");
+  assert.deepEqual(h.answers, []);
+  assert.deepEqual(h.played, []);
+  assert.deepEqual(h.banners, []);
+  assert.equal(h.flow.active(), false);
+  assert.deepEqual(h.states, ["confirming", "thinking", "listening"]);
+});
+
+test("reject() on 404 is a silent terminal too", async () => {
+  const h = harness({
+    plan: [{ status: 404, json: { detail: "approval gate not found or no longer active" } }]
+  });
+  h.flow.open({ ...GATE });
+  h.flow.reject();
+  await flush();
+  assert.equal(h.states[h.states.length - 1], "listening");
+  assert.equal(h.flow.active(), false);
+  assert.deepEqual(h.banners, []);
+});
+
+test("patchText() (manual edit): PATCH new text, timer restarts, /tts re-echo", async () => {
+  const h = harness({
+    plan: [
+      { status: 200, json: { ok: true, approval: { ...GATE, text: "texto editado a mano", expires_in_s: 60 } } },
+      { json: { audio_url: "/audio/echo.mp3" } }
+    ]
+  });
+  h.flow.open({ ...GATE });
+  h.clock.advance(50_000);  // 10 s left on the old window
+  assert.equal(h.flow.patchText("texto editado a mano"), true);
+  await flush();
+  assert.equal(h.http.calls.length, 2);
+  assert.equal(h.http.calls[0].url, PATCH_URL);
+  assert.equal(h.http.calls[0].options.method, "PATCH");
+  assert.deepEqual(bodyOf(h.http.calls[0]), { text: "texto editado a mano" });
+  assert.equal(h.http.calls[1].url, "/tts");  // client-side re-echo (locked T4 contract)
+  assert.deepEqual(bodyOf(h.http.calls[1]), { text: "texto editado a mano" });
+  assert.deepEqual(h.played, ["/audio/echo.mp3"]);
+  assert.equal(h.flow.active(), true);
+  assert.equal(h.flow.gate().text, "texto editado a mano");
+  assert.equal(h.flow.remainingSeconds(), 60);  // restarted, not the old 10
+});
+
+test("patchText() on 404 is a silent terminal (expired while editing)", async () => {
+  const h = harness({
+    plan: [{ status: 404, json: { detail: "approval gate not found or no longer active" } }]
+  });
+  h.flow.open({ ...GATE });
+  assert.equal(h.flow.patchText("ya da igual"), true);
+  await flush();
+  assert.equal(h.states[h.states.length - 1], "listening");
+  assert.equal(h.flow.active(), false);
+  assert.deepEqual(h.banners, []);
+});
+
+test("redictate(): enters the dictation round with no network round", () => {
+  const h = harness();
+  h.flow.open({ ...GATE });
+  assert.equal(h.flow.redictate(), true);
+  assert.equal(h.flow.isDictating(), true);
+  assert.equal(h.http.calls.length, 0);
+  assert.equal(h.states[h.states.length - 1], "confirming");
+});
+
+test("redictate() is refused without a live gate and when expired", () => {
+  const h = harness();
+  assert.equal(h.flow.redictate(), false);
+  h.flow.open({ ...GATE });
+  h.clock.advance(60_000);
+  h.flow.tick();  // silent expiry
+  assert.equal(h.flow.redictate(), false);
+  assert.equal(h.flow.isDictating(), false);
+});
+
+test("redictate() round: a non-command utterance still PATCHes as new text", async () => {
+  const h = harness({
+    plan: [
+      { json: { decision: "reprompt", answer: "¿Sí o no?", audio_url: null, approval: null } },
+      { status: 200, json: { ok: true, approval: { ...GATE, text: "texto redictado", expires_in_s: 60 } } },
+      { json: { audio_url: "/audio/echo.mp3" } }
+    ]
+  });
+  h.flow.open({ ...GATE });
+  h.flow.redictate();                       // the [🎙 Re-dictar] button
+  h.flow.routeUtterance("texto redictado");  // resolves FIRST (PRD §5 precedence)
+  await flush();
+  assert.equal(h.http.calls[0].url, RESOLVE_URL);
+  assert.equal(h.http.calls[1].url, PATCH_URL);
+  assert.deepEqual(bodyOf(h.http.calls[1]), { text: "texto redictado" });
+  assert.equal(h.flow.gate().text, "texto redictado");
+  assert.equal(h.flow.isDictating(), false);
+});
