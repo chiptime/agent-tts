@@ -1368,6 +1368,38 @@ def make_conversation_tools(result=None, unresolved_panes=()):
     return FakeTools
 
 
+class TestReaderCsp:
+    """Slice B: pinned CSP on the index response ONLY (Req 12)."""
+
+    PINNED_CSP = (
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+        "media-src 'self' blob:; connect-src 'self'; object-src 'none'; "
+        "base-uri 'none'"
+    )
+
+    def test_index_carries_exact_csp(self, settings, audio_dir):
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        client = TestClient(
+            create_app(settings=cfg, version="abc1234",
+                       llm_factory=lambda c, t: FakeLLM())
+        )
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert resp.headers["content-security-policy"] == self.PINNED_CSP
+        assert resp.headers["cache-control"] == "no-cache"  # unchanged
+
+    def test_csp_absent_on_asset_routes(self, settings, audio_dir):
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        client = TestClient(
+            create_app(settings=cfg, llm_factory=lambda c, t: FakeLLM())
+        )
+        for path in ("/app.js", "/approval.js", "/sw.js", "/manifest.webmanifest"):
+            resp = client.get(path)
+            assert resp.status_code == 200
+            assert "content-security-policy" not in resp.headers
+            assert resp.headers["cache-control"] == "no-cache"
+
+
 class TestRenderedConversation:
     """GET /conversation/{pane_id}/rendered — contract with injected fakes."""
 
