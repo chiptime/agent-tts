@@ -16,7 +16,10 @@ active session with zero protocol changes; ``play <json-payload>`` runs
 one synthesis+playback (text + synthesis options in one JSON line),
 ``enqueue <json-payload>`` is the queue-aware variant (priority/policy/
 event_type/identifiers fields alongside the play payload), ``ping``
-answers version and uptime, ``shutdown`` terminates the daemon.
+answers version and uptime, ``shutdown`` terminates the daemon. Play
+payloads may carry a ``chain`` of files instead of text/file
+(RF-AT-08-4, see ``_chain_payload_error``): the chain plays as ONE
+queued session over the assembled continuous stream.
 
 Reply schema (A3, freeze-critical — see README "Wire format"): every
 daemon-level ERROR is ``ok=false error=<free text>`` with ``error=`` as
@@ -68,6 +71,7 @@ import miniaudio
 from agent_tts import __version__
 from agent_tts import audio as audio_mod
 from agent_tts.audio import _write_player_locks, cleanup_locks
+from agent_tts.chain import ChainError, assemble_chain_files
 from agent_tts.constants import (
     DAEMON_LOG_FILE,
     DAEMON_START_TIMEOUT_SEC,
@@ -236,8 +240,20 @@ def _queue_trace(message: str) -> None:
     RNF-AT-08-1 dispatch latency, observable for a real daemon
     subprocess from its stderr. Timestamps are CLOCK_MONOTONIC
     (comparable across processes on Linux).
+
+    ``chain-item`` (T6) prints when a chain's playback cursor crosses a
+    chain item's chain-global start (item 0 included: chain playback
+    began) — the RNF-AT-08-1 chain-application seam: the wall-clock
+    delta between consecutive crossings minus the audio time between
+    them (item duration + gap) is the scheduling hole the chain must
+    not have.
     """
     print(f"agent-tts-queue: {message}", file=sys.stderr, flush=True)
+
+
+# Chain boundary watcher cadence: fine enough that one poll interval
+# never dominates the 50 ms RNF-AT-08-1 chain budget.
+CHAIN_TRACE_POLL_SEC = 0.005
 
 
 def _inject_daemon_fields(reply: str, fields: str) -> str:
@@ -260,6 +276,33 @@ def _resolve_or_local(value: str, env=None) -> str:
     except InvalidPlaybackTarget as e:
         print(f"Playback target invalid ({e}); falling back to local playback", file=sys.stderr)
         return "local"
+
+
+def _chain_payload_error(payload: dict) -> Optional[str]:
+    """Typed-error text for an invalid chain payload shape, or None when valid.
+
+    The chain wire fields (freeze-critical, documented in README next to
+    the enqueue schema): ``chain`` = non-empty list of file path strings,
+    mutually exclusive with ``text``/``file``; ``chain_gap_ms`` = a
+    non-negative number of milliseconds of inter-item silence (default
+    0). A chain is replayed audio, never synthesis: ``no_play`` cannot
+    combine with it.
+    """
+    chain = payload.get("chain")
+    if chain is None:
+        return None
+    if not isinstance(chain, list) or not chain or not all(
+        isinstance(path, str) and path.strip() for path in chain
+    ):
+        return "chain must be a list of file paths"
+    if (payload.get("text") or "").strip() or payload.get("file"):
+        return "play accepts one of text, file, or chain, not a combination"
+    gap = payload.get("chain_gap_ms", 0)
+    if isinstance(gap, bool) or not isinstance(gap, (int, float)) or gap < 0:
+        return f"chain_gap_ms must be a non-negative number of milliseconds: {gap!r}"
+    if payload.get("no_play"):
+        return "no_play cannot combine with chain (a chain owns no synthesis)"
+    return None
 
 
 def _session_env(payload: dict) -> Optional[dict]:
@@ -633,8 +676,11 @@ class Daemon:
 
         text = (payload.get("text") or "").strip()
         file_path = payload.get("file") or ""
-        if not text and not file_path:
-            return "ok=false error=play requires text or file"
+        if not text and not file_path and payload.get("chain") is None:
+            return "ok=false error=play requires text, file, or chain"
+        chain_error = _chain_payload_error(payload)
+        if chain_error is not None:
+            return f"ok=false error={chain_error}"
         no_play = bool(payload.get("no_play"))
         if no_play:
             return self._run_direct_synthesis(cli, payload)
@@ -753,8 +799,15 @@ class Daemon:
 
         if payload.get("no_play"):
             return "ok=false error=enqueue does not support no_play (use play)"
-        if not (payload.get("text") or "").strip() and not payload.get("file"):
-            return "ok=false error=play requires text or file"
+        chain_error = _chain_payload_error(payload)
+        if chain_error is not None:
+            return f"ok=false error={chain_error}"
+        if (
+            not (payload.get("text") or "").strip()
+            and not payload.get("file")
+            and payload.get("chain") is None
+        ):
+            return "ok=false error=play requires text, file, or chain"
 
         with self._lock:
             if self._shutting_down:
@@ -848,7 +901,11 @@ class Daemon:
             outcome = PlaybackOutcome.COMPLETED
             error: Optional[str] = None
             try:
-                if payload.get("file"):
+                if payload.get("chain"):
+                    self._play_chain(
+                        session, payload["chain"], payload.get("chain_gap_ms", 0), item.id
+                    )
+                elif payload.get("file"):
                     self._play_file(session, payload["file"])
                 else:
                     asyncio.run(
@@ -917,18 +974,26 @@ class Daemon:
 
         Mirrors the request semantics of the pre-queue play path: session
         metadata from the request, per-request target, winhost endpoint
-        overlay, and the replay local-fallback contract (B6) — a file
-        play whose remote target is unavailable degrades to local with
-        one warning, a text play surfaces the unavailability as a typed
-        error.
+        overlay, and the replay local-fallback contract (B6) — a file or
+        chain play whose remote target is unavailable degrades to local
+        with one warning, a text play surfaces the unavailability as a
+        typed error.
         """
         cli = self._ensure_cli()
         text = (payload.get("text") or "").strip()
         file_path = payload.get("file") or ""
+        chain_files = payload.get("chain") or []
         target = self._request_target(payload.get("playback") or "")
-        label = payload.get("label") or (
-            f"{len(text)} chars" if text else os.path.basename(file_path)
-        )
+        if payload.get("label"):
+            label = payload["label"]
+        elif chain_files:
+            # One readable identity for the whole chain: the first file
+            # plus how many more follow it.
+            label = f"chain: {os.path.basename(chain_files[0])}"
+            if len(chain_files) > 1:
+                label += f" +{len(chain_files) - 1} more"
+        else:
+            label = f"{len(text)} chars" if text else os.path.basename(file_path)
         session_kwargs = dict(
             auto_rewind_sec=float(payload.get("auto_rewind_sec", 2.0)),
             highlight=bool(payload.get("highlight")),
@@ -946,7 +1011,7 @@ class Daemon:
         try:
             return cli._build_playback_session(target, label, **session_kwargs)
         except SystemExit as e:
-            if not file_path:
+            if not file_path and not chain_files:
                 # Speak-path contract: _build_playback_session exits(1)
                 # with its own message when the requested target is
                 # unavailable; surface it as a typed error instead of
@@ -954,7 +1019,8 @@ class Daemon:
                 raise RuntimeError(f"playback target unavailable (exit {e.code})") from e
             # Replay contract (legacy play_mp3_file, README replay
             # section): an unavailable remote target degrades to the
-            # local device with one warning, not a hard error.
+            # local device with one warning, not a hard error. A chain
+            # is replayed audio and follows the same contract.
             print(
                 f"Playback target '{target}' unavailable; falling back to local playback",
                 file=sys.stderr,
@@ -967,6 +1033,75 @@ class Daemon:
         with open(file_path, "rb") as f:
             data = f.read()
         session.play(miniaudio.decode(data))
+
+    def _play_chain(self, session, files: list, gap_ms, item_id: int) -> None:
+        """Plays the chain as ONE session over the assembled stream (RF-AT-08-4).
+
+        The files decode into one continuous PCM stream with the
+        configurable inter-item silence (agent_tts.chain); the session's
+        boundary map becomes the COMBINED chain-global map before play
+        begins, so every control (seek/pause/phrase navigation) mounted
+        on the session addresses the whole chain from the first frame.
+        One session, one play() call: gapless by construction, and a
+        queue-side terminate (stop flag) cuts mid-stream so the files
+        after the cut are never played.
+
+        A ChainError (missing/undecodable file, format mismatch) raises
+        RuntimeError: the worker marks the item FAILED with the message
+        (A5 visibility).
+        """
+        try:
+            assembled = assemble_chain_files(files, float(gap_ms or 0))
+        except ChainError as e:
+            raise RuntimeError(str(e)) from e
+        with session.lock:
+            session.boundaries = assembled.boundaries
+
+        done = threading.Event()
+        watcher = threading.Thread(
+            target=self._watch_chain_boundaries,
+            args=(session, assembled, item_id, done),
+            name="agent-tts-chain-trace",
+            daemon=True,
+        )
+        watcher.start()
+        try:
+            session.play(assembled.decoded)
+        finally:
+            done.set()
+            watcher.join(timeout=1.0)  # flush late chain-item traces before finalize
+
+    @staticmethod
+    def _watch_chain_boundaries(session, assembled, item_id: int, done: threading.Event) -> None:
+        """Traces each chain item's start as the playback cursor crosses it.
+
+        The seam definition (RNF-AT-08-1 chain application): the trace
+        timestamp of item i+1 minus the trace timestamp of item i, minus
+        the audio time between their chain-global starts (item i's
+        duration + the gap), is the wall-clock hole between chain items
+        — the quantity the < 50 ms budget bounds. Position comes from
+        the session itself (``pos_frames`` when the target exposes it,
+        else the frame cursor), so the seam rides targets that report a
+        live position and stays quiet on those that do not.
+        """
+        pending = [(item.index, item.start_sec) for item in assembled.items]
+        position_of = getattr(session, "pos_frames", None)
+        while pending and not done.is_set():
+            state = session.state
+            if state.get("stop") or state.get("status") == "stopped":
+                return
+            if state.get("status") == "playing":
+                rate = session.sample_rate or 0
+                if rate:
+                    frames = position_of() if callable(position_of) else session.current_frame
+                    pos = frames / float(rate)
+                    while pending and pending[0][1] <= pos:
+                        index, start = pending.pop(0)
+                        _queue_trace(
+                            f"chain-item item={item_id} index={index} "
+                            f"pos={pos:.3f} t={time.monotonic():.9f}"
+                        )
+            time.sleep(CHAIN_TRACE_POLL_SEC)
 
 
 def run_daemon(
