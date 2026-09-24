@@ -692,11 +692,11 @@ def _build_playback_session(
     and teardown): speak() for the classic in-process path, the daemon for
     the vía única.
 
-    ``provider``/``voice`` seed the local session's status metadata
-    (engine defaults apply when empty). ``env`` overrides the environment
-    the remote targets resolve their winhost endpoint against — the
-    daemon passes a per-request overlay so the delegating client's host
-    and port win over its inherited environment.
+    ``provider``/``voice`` seed every session kind's status metadata —
+    local and remote alike (engine defaults apply when empty). ``env``
+    overrides the environment the remote targets resolve their winhost
+    endpoint against — the daemon passes a per-request overlay so the
+    delegating client's host and port win over its inherited environment.
     """
     if playback == "local":
         return AudioSession(
@@ -732,6 +732,8 @@ def _build_playback_session(
             autoscroll=autoscroll,
             bionic=bionic,
             zen=zen,
+            provider=provider,
+            voice=voice,
             env=env,
         )
     return RemoteAudioSession(
@@ -742,6 +744,8 @@ def _build_playback_session(
         bionic=bionic,
         zen=zen,
         target=playback,
+        provider=provider,
+        voice=voice,
         env=env,
     )
 
