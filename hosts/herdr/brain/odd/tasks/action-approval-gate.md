@@ -144,8 +144,13 @@ Route: inline (copy + smoke are per-action).
     review runs; ordinary checks only.
 - T2 done — `.venv/bin/python -m pytest tests/test_approval_lexicon.py -q`
   → 64 passed; `.venv/bin/python -m pytest -q` → 342 passed (1
-  pre-existing starlette/anyio DeprecationWarning, unrelated). Commit
-  hash recorded by orchestrator.
+  pre-existing starlette/anyio DeprecationWarning, unrelated).
+- Full-suite baseline going forward: 342 after T2 (T1's 27 were inside
+  its 278 — no double count).
+  - `b03767e` feat(approval): add voice resolve lexicon for approval gates
+  - Locked tradeoff (PRD-literal): matching is literal startswith, no word
+    boundary — "sigue"→approve, "paraguas"→reject. Pinned in
+    TestLiteralStartswithSemantics.
 
 ## Next Step
 
