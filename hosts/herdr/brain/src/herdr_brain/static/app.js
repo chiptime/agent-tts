@@ -444,6 +444,57 @@
     }
   }
 
+  /* ---------------- formatted reader (reader-html-integration) ----------------
+   * reader.js owns the snapshot/generation discipline; this wiring only
+   * feeds it identity changes, fetches ON EXPLICIT EXPANSION ONLY (never
+   * on the 5s poll), and re-applies held HTML by the same role+text
+   * content key renderGlance reconciles on. */
+
+  var reader = Reader.createReader({ doc: document, http: fetch });
+  var readerHtml = {};   /* role \u0000 text -> rendered html (applied snapshots) */
+  var readerPane = null;
+  var readerSession = null;
+  var lastConversationData = null;
+
+  function readerSync(pane, session) {
+    if (reader.syncIdentity(pane, session)) readerHtml = {};  /* identity changed */
+  }
+
+  function requestReaderSnapshot() {
+    if (!readerPane) return;   /* nothing resolved yet: plain text stays */
+    reader.requestSnapshot(readerPane, readerSession).then(function (turns) {
+      if (!turns) return;      /* stale (discarded) or failed: keep text */
+      readerHtml = {};
+      for (var i = 0; i < turns.length; i++) {
+        if (turns[i] && typeof turns[i].html === "string") {
+          readerHtml[turns[i].role + "\u0000" + turns[i].text] = turns[i].html;
+        }
+      }
+      safeRender("glance", renderGlance, lastConversationData);
+    });
+  }
+
+  function mountReader(el, turn) {
+    if (!turn) return;
+    var html = readerHtml[turn.role + "\u0000" + turn.text] || null;
+    var content = el.querySelector(".reader-content");
+    if (!html) {
+      if (content) content.remove();   /* no formatted payload: plain text */
+      el.classList.remove("has-rendered");
+      return;
+    }
+    if (!content) {
+      content = document.createElement("div");
+      content.className = "reader-content";
+      el.appendChild(content);
+    }
+    el.classList.add("has-rendered");
+    var target = content;
+    safeRender("reader", function (pair) {
+      reader.mountTurn(target, pair);  /* insertion throw degrades like any render */
+    }, { text: turn.text, html: html });
+  }
+
   /* ---------------- conversation (drawer body) ---------------- */
 
   function updateGhost() {
@@ -752,6 +803,7 @@
      * the next 5s /herd poll. */
     safeRender("herd-restyle", renderHerd, lastHerd);
     glanceNeedsWipe = true;  // another agent's turns: full keyed-cache reset
+    readerSync(paneId, null);  // reader snapshot from the old pane is stale
     lastScreenText = null;
     refreshView();
     refreshConversation();
@@ -895,6 +947,8 @@
       var expanded = el.classList.toggle("expanded");
       moreBtn.setAttribute("aria-expanded", expanded ? "true" : "false");
       moreBtn.textContent = expanded ? "ver menos" : "ver más";
+      /* Reading intent: fetch the formatted snapshot on expansion only. */
+      if (expanded) requestReaderSnapshot();
     });
     el.appendChild(roleEl);
     el.appendChild(textEl);
@@ -1012,6 +1066,13 @@
       }
     }
 
+    /* Reader mounts: re-apply held formatted HTML (if any) by the same
+     * content key — zero rendered requests during polling; no html means
+     * the plain .gt-text surface stays exactly as before. */
+    for (i = 0; i < wanted.length; i++) {
+      mountReader(wanted[i], turns[i]);
+    }
+
     if (!turns.length && !lastScreenText) glanceEmpty.classList.remove("hidden");
     else glanceEmpty.classList.add("hidden");
     agentView.classList.remove("hidden");
@@ -1056,6 +1117,10 @@
         return resp.json();
       })
       .then(function (data) {
+        readerPane = (data && data.pane_id) || null;
+        readerSession = (data && data.session_id) || null;
+        lastConversationData = data;
+        readerSync(readerPane, readerSession);  // session change discards stale reader state
         renderGlanceLabel();
         safeRender("glance", renderGlance, data);
         markPollOk();

@@ -1,0 +1,158 @@
+/* Formatted conversation reader (reader-html-integration).
+ *
+ * Pure UMD module following the approval.js house pattern: every DOM
+ * touch goes through the injected surface ({ doc, http }) — this file
+ * references no browser global at all, so the Node suite drives it
+ * against a plain fake DOM (Decision 1).
+ *
+ * Safety contract:
+ *  - innerHTML is assigned ONLY on .reader-content containers and ONLY
+ *    with server-rendered reader payloads; raw transcript text always
+ *    renders through textContent.
+ *  - After insertion, script tags and inline handlers are neutralized
+ *    and links are hardened (http/https only, target=_blank,
+ *    rel=noopener noreferrer); other schemes degrade to plain text.
+ *  - Every failure path (null html, insertion throw, hostile payload)
+ *    falls back to strict textContent — a turn is never left empty.
+ *  - Snapshot discipline: the generation counter lives HERE; responses
+ *    resolved after an identity change are discarded, never merged, and
+ *    the snapshot is replaced as a unit keyed by turn_id.
+ */
+
+(function (global) {
+  /* Common inline event handlers stripped after insertion. Upstream
+   * escapes all of these; this is defense in depth at our own boundary,
+   * restricted to the attribute API of the injected surface. */
+  var HANDLER_ATTRS = [
+    "onload", "onerror", "onclick", "ondblclick", "onmousedown", "onmouseup",
+    "onmousemove", "onmouseover", "onmouseenter", "onmouseleave", "onmouseout",
+    "onkeydown", "onkeyup", "onkeypress", "onfocus", "onblur", "oninput",
+    "onchange", "onsubmit", "onreset", "onselect", "onwheel", "onscroll",
+    "oncontextmenu", "ondragstart", "ondragover", "ondrop", "onpointerdown",
+    "onpointerup", "onpointermove", "onpointerover", "onpointerout",
+    "onpointerenter", "onpointerleave", "ontouchstart", "ontouchend",
+    "ontouchmove", "onanimationstart", "onanimationend", "ontransitionend",
+    "onplay", "onpause", "onended"
+  ];
+
+  function createReader(deps) {
+    var doc = deps && deps.doc;
+    var http = deps && deps.http;
+    var generation = 0;
+    var curPane = null;
+    var curSession = null;
+    var snapshot = null;   /* { byId: {turn_id: turn}, order: [turn, ...] } */
+
+    function syncIdentity(pane, session) {
+      if (pane === curPane && session === curSession) return false;
+      curPane = pane;
+      curSession = session;
+      generation += 1;     /* every in-flight response is now stale */
+      snapshot = null;     /* reader state is replaced as a unit */
+      return true;
+    }
+
+    function neutralize(container) {
+      var scripts = container.querySelectorAll("script");
+      for (var i = 0; i < scripts.length; i++) {
+        var s = scripts[i];
+        if (s.parentNode) s.parentNode.removeChild(s);
+      }
+      var all = container.querySelectorAll("*");
+      for (var j = 0; j < all.length; j++) {
+        var el = all[j];
+        for (var k = 0; k < HANDLER_ATTRS.length; k++) {
+          if (el.getAttribute(HANDLER_ATTRS[k]) !== null) {
+            el.removeAttribute(HANDLER_ATTRS[k]);
+          }
+        }
+      }
+    }
+
+    function hardenLinks(container) {
+      var anchors = container.querySelectorAll("a");
+      for (var i = 0; i < anchors.length; i++) {
+        var a = anchors[i];
+        var href = a.getAttribute("href") || "";
+        if (/^https?:/i.test(href)) {
+          a.setAttribute("target", "_blank");
+          a.setAttribute("rel", "noopener noreferrer");
+        } else if (a.parentNode) {
+          /* Non-HTTP scheme: the content survives as plain text, never
+           * as an anchor. */
+          a.parentNode.replaceChild(doc.createTextNode(a.textContent), a);
+        }
+      }
+    }
+
+    function mountTurn(container, turn) {
+      var source = turn || {};
+      var text = source.text == null ? "" : String(source.text);
+      var html = typeof source.html === "string" ? source.html : null;
+      try {
+        if (html && container.classList.contains("reader-content")) {
+          container.innerHTML = html;   /* the ONLY innerHTML assignment */
+          neutralize(container);
+          hardenLinks(container);
+          if (!container.textContent) container.textContent = text;
+          return true;
+        }
+      } catch (err) {
+        /* Insertion failure: strict text fallback below. */
+      }
+      container.textContent = text;
+      return false;
+    }
+
+    function selectSentence(container, sentIdx) {
+      /* Scoped to the owning turn's container — NEVER a global id lookup:
+       * upstream anchor ids restart per rendered turn. One query matches
+       * the primary .tts-sent, every .tts-sent-cont continuation and
+       * container-borne anchors alike; alignment mode is irrelevant. */
+      var prev = container.querySelectorAll(".tts-selected");
+      for (var i = 0; i < prev.length; i++) prev[i].classList.remove("tts-selected");
+      var hits = container.querySelectorAll(
+        '[data-sent-idx="' + String(sentIdx) + '"]'
+      );
+      for (var j = 0; j < hits.length; j++) hits[j].classList.add("tts-selected");
+      return hits.length;   /* 0 is legal: empty virtual span */
+    }
+
+    function requestSnapshot(pane, session) {
+      syncIdentity(pane, session);
+      var token = generation;   /* captured at REQUEST time */
+      return http("/conversation/" + encodeURIComponent(String(pane)) + "/rendered")
+        .then(function (r) {
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          return r.json();
+        })
+        .then(function (data) {
+          if (token !== generation) return;   /* THE single discard point */
+          var turns = (data && data.turns) || [];
+          var byId = {};
+          for (var i = 0; i < turns.length; i++) byId[turns[i].turn_id] = turns[i];
+          snapshot = { byId: byId, order: turns.slice() };   /* wholesale */
+          return turns;
+        })
+        .catch(function () {
+          return undefined;   /* text stays; never empty, never an error out */
+        });
+    }
+
+    return {
+      syncIdentity: syncIdentity,
+      requestSnapshot: requestSnapshot,
+      mountTurn: mountTurn,
+      selectSentence: selectSentence,
+      currentGeneration: function () { return generation; }
+    };
+  }
+
+  var api = { createReader: createReader };
+
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = api;
+  } else {
+    global.Reader = api;
+  }
+})(typeof window !== "undefined" ? window : globalThis);
