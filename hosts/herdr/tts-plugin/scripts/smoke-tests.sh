@@ -113,6 +113,25 @@
 #         light map + compound-width parity, Apariencia category: t
 #         opens/cycles the theme, persists across 10 cold starts, scoped
 #         warnings, bilingual copy
+#   39    reader popup (HT-16): lib/herdr_reader.py no-playback fail-open
+#         (stderr notice, rc 0), live frames from a canned unix-socket IPC
+#         server (alternate screen, dim header, karaoke SGR, word wrap,
+#         q exit), --reader inline delegation outside tmux, launcher path
+#         inside tmux, menu R row + dispatch, keymap reader_open template/
+#         check/emit, manifest tts-reader wiring
+#   40    reader pipeline (HT-15): lib/reader_pipeline.py sanitize →
+#         plain-to-markdown → GFM-subset HTML with engine-oracle sentence
+#         anchors. 40a structure-preserving sanitize (no speech mutations),
+#         40b redaction before transformation (incl. in-fence), 40c
+#         deterministic heuristics + unclosed-fence safe degradation, 40d
+#         total escaping + http/https-only links, 40e pinned-oracle parity
+#         fixtures F1–F9 + sidecar map, 40f --render-html CLI + untouched
+#         contract v1, 40g zero new dependencies + transient process
+#   41    reader vs remote-engine ERR replies: a live socket answering
+#         "ERR: command '...' is not supported..." (remote engine without
+#         the karaoke family) degrades to the clean no-playback path —
+#         rc 0, English stderr notice, stdout empty (never the alternate
+#         screen nor the ERR text rendered)
 set -uo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -1073,6 +1092,59 @@ assert_grep "16m voz view lists the n row" ' n  Spoken prefix:' "$T/out.txt"
 assert_grep "16m voz view lists the u row" ' u  Auto-assign:' "$T/out.txt"
 unset HERDR_TTS_CONFIG_FILE
 
+# 16n. Loading state on `r`: the popup re-renders the frame with the
+#      transcribing line BEFORE the blocking dispatch, so pressing play
+#      never looks frozen. End-to-end through --voice-menu with the same
+#      herdr stub as 16b (focused pane w4:p4, empty scrollback → the
+#      pane-empty branch, honest after the visible kickoff).
+new_env s16n
+FX="$T/fixture.json"; make_fixture "$FX"
+cat > "$T/bin/herdr" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "pane" && "${2:-}" == "current" ]]; then
+  echo '{"result":{"pane":{"pane_id":"w4:p4"}}}'
+  exit 0
+fi
+exit 0
+EOF
+chmod +x "$T/bin/herdr"
+export HERDR_TTS_MENU_CONFIRM_SECS=0.2
+printf 'r' | timeout 10 "$SCRIPT" --voice-menu > "$T/out.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "16n r exits rc=0" || bad "16n rc!=0"
+hv=$(esc_count "$T/out.txt" $'\033[H')
+[[ "$hv" -eq 2 ]] && ok "16n two frame writes: main + loading re-render ($hv)" || bad "16n H-moves=$hv (want 2)"
+assert_grep "16n loading line rendered before dispatch" 'Transcribing the response' "$T/out.txt"
+lt=$(grep -n 'Transcribing the response' "$T/out.txt" | head -1 | cut -d: -f1)
+lc=$(grep -n '^✓ ' "$T/out.txt" | head -1 | cut -d: -f1)
+[[ -n "$lt" && -n "$lc" && "$lt" -lt "$lc" ]] \
+  && ok "16n loading frame precedes the confirmation ($lt < $lc)" || bad "16n loading/confirm order broken ($lt vs $lc)"
+assert_grep "16n read.start is the confirmation line" '✓ .*Transcribing and reading the response in w4:p4' "$T/out.txt"
+
+# 16o. read_current_pane announces BEFORE fetching: with an empty pane the
+#      kickoff line must be line 1 (old code echoed nothing until after
+#      the fetch/empty-check). Happy path pins the same order.
+new_env s16o
+lib_run '
+  read_pane_text() { echo ""; }
+  herdr()          { return 0; }
+  read_current_pane w4:p1
+' > "$T/out.txt"
+first=$(sed -n '1p' "$T/out.txt")
+[[ "$first" == *"Transcribing and reading the response in w4:p1"* ]] \
+  && ok "16o kickoff is line 1 even on an empty pane" || bad "16o first line was: $first"
+assert_grep "16o pane-empty still reports honestly" 'has no content to read' "$T/out.txt"
+lib_run '
+  read_pane_text() { echo "pane body"; }
+  resolve_voice()  { echo "alvaro"; }
+  speak_text()     { echo "SPOKEN:$1"; }
+  herdr()          { return 0; }
+  read_current_pane w4:p1
+' > "$T/out.txt"
+first=$(sed -n '1p' "$T/out.txt")
+[[ "$first" == *"Transcribing and reading the response in w4:p1"* ]] \
+  && ok "16o happy path keeps kickoff as line 1" || bad "16o happy first line was: $first"
+assert_grep "16o text reaches the engine" 'SPOKEN:pane body' "$T/out.txt"
+
 echo "── 17. keymap: init / check / emit (declarative, conflict-checked)"
 new_env s17
 export HERDR_TTS_KEYMAP_FILE="$T/keymap.json"
@@ -1083,8 +1155,8 @@ run_km() { timeout 10 "$SCRIPT" keymap "$@" > "$T/out.txt" 2>&1; }
 run_km init
 [[ $? -eq 0 ]] && ok "17a init exits rc=0" || bad "17a init rc!=0"
 [[ -f "$km" ]] && ok "17a keymap.json created" || bad "17a no keymap file"
-jq -e '.style == "direct" and (.bindings | length == 20)' "$km" >/dev/null \
-  && ok "17a template: style=direct, 20 stable command ids" || bad "17a template shape"
+jq -e '.style == "direct" and (.bindings | length == 21)' "$km" >/dev/null \
+  && ok "17a template: style=direct, 21 stable command ids" || bad "17a template shape"
 jq -e '.bindings.play == "prefix+r" and .bindings.snooze_global == "prefix+Z" and .bindings.menu == null' "$km" >/dev/null \
   && ok "17a template prefilled with README direct map (menu=null)" || bad "17a template prefill"
 cp "$km" "$T/km.bak"
@@ -1113,8 +1185,8 @@ run_km check --json
 [[ $? -eq 0 ]] && ok "17c check --json exits rc=0" || bad "17c check --json rc!=0"
 jq -e '.ok == true and .error_count == 0 and .warning_count >= 5' "$T/out.txt" >/dev/null \
   && ok "17c json: ok=true, 0 errors, ≥5 warnings" || bad "17c json summary fields"
-jq -e '(.bindings | length) == 20 and (.bindings[0].command == "play")' "$T/out.txt" >/dev/null \
-  && ok "17c json: 20 bindings, file order preserved" || bad "17c json bindings array"
+jq -e '(.bindings | length) == 21 and (.bindings[0].command == "play")' "$T/out.txt" >/dev/null \
+  && ok "17c json: 21 bindings, file order preserved" || bad "17c json bindings array"
 jq -e '.bindings[] | select(.command == "play" and .chord == "prefix+r" and .status == "warn" and .core == "resize pane")' "$T/out.txt" >/dev/null \
   && ok "17c json: play binding carries core=resize pane" || bad "17c json warn detail"
 jq -e '.bindings[] | select(.command == "menu" and .chord == null and .status == "ok")' "$T/out.txt" >/dev/null \
@@ -1128,11 +1200,11 @@ cp "$T/out.txt" "$T/emit-direct.toml"
 [[ $? -eq 0 ]] && ok "17d emit exits rc=0" || bad "17d emit rc!=0"
 assert_grep "17d header names the source file"  "^# source: $km \(modified " "$T/emit-direct.toml"
 python3 - "$T/emit-direct.toml" <<'PY' > "$T/py.out" 2>&1 \
-  && ok "17d output parses as TOML with 14 shell blocks" || { bad "17d TOML invalid"; cat "$T/py.out"; }
+  && ok "17d output parses as TOML with 15 shell blocks" || { bad "17d TOML invalid"; cat "$T/py.out"; }
 import sys, tomllib
 doc = tomllib.loads(open(sys.argv[1]).read())
 blocks = doc["keys"]["command"]
-assert len(blocks) == 14, f"want 14 blocks, got {len(blocks)}"
+assert len(blocks) == 15, f"want 15 blocks, got {len(blocks)}"
 assert all(b["type"] == "shell" for b in blocks)
 by_key = {b["key"]: b["command"] for b in blocks}
 assert by_key["prefix+r"] == "herdr-tts --toggle-play", by_key["prefix+r"]
@@ -1149,12 +1221,12 @@ assert_no_grep_f "17e ctrl+alt+t never suggested as a key" 'key = "ctrl+alt+t"' 
 assert_grep "17e TL;DR lives on ctrl+alt+l"       'key = "ctrl\+alt\+l"' "$T/emit-ctrlalt.toml"
 assert_grep "17e caveat documented in output"      'ctrl\+alt\+t.*terminal' "$T/emit-ctrlalt.toml"
 python3 - "$T/emit-ctrlalt.toml" <<'PY' > "$T/py.out" 2>&1 \
-  && ok "17e ctrlalt TOML valid: 17 distinct chords" || { bad "17e TOML invalid"; cat "$T/py.out"; }
+  && ok "17e ctrlalt TOML valid: 18 distinct chords" || { bad "17e TOML invalid"; cat "$T/py.out"; }
 import sys, tomllib
 doc = tomllib.loads(open(sys.argv[1]).read())
 blocks = doc["keys"]["command"]
 keys = [b["key"] for b in blocks]
-assert len(blocks) == 17, f"want 17 blocks, got {len(blocks)}"
+assert len(blocks) == 18, f"want 18 blocks, got {len(blocks)}"
 assert len(set(keys)) == len(keys), "duplicate chords in suggested family"
 assert "ctrl+alt+shift+n" in keys
 assert "ctrl+alt+shift+u" not in keys, "settings has no suggested ctrl+alt chord anymore"
@@ -1261,8 +1333,8 @@ run_km apply
 assert_grep "18a start marker present"  '^# >>> herdr-tts keymap \(managed; edits inside are overwritten\) >>>$' "$cfg"
 assert_grep "18a end marker present"    '^# <<< herdr-tts keymap <<<$' "$cfg"
 assert_grep "18a final hint: reload-config" 'herdr server reload-config' "$T/out.txt" -F
-[[ $(grep -c '^\[\[keys.command\]\]' "$cfg") -eq 14 ]] \
-  && ok "18a template apply renders 14 blocks" || bad "18a block count $(grep -c '^\[\[keys.command\]\]' "$cfg")"
+[[ $(grep -c '^\[\[keys.command\]\]' "$cfg") -eq 15 ]] \
+  && ok "18a template apply renders 15 blocks" || bad "18a block count $(grep -c '^\[\[keys.command\]\]' "$cfg")"
 run_km apply --config "$T/other-config.toml"
 [[ $? -eq 0 ]] && ok "18a --config override honored" || bad "18a --config rc"
 assert_grep "18a block written into override path" '^# >>> herdr-tts keymap' "$T/other-config.toml"
@@ -1285,12 +1357,12 @@ cmp -s "$T/head.out" "$T/user-only.toml" \
 [[ $(grep -cF '# >>> herdr-tts keymap' "$cfg") -eq 1 ]] \
   && ok "18b exactly one managed block" || bad "18b duplicate markers"
 python3 - "$cfg" <<'PY' > "$T/py.out" 2>&1 \
-  && ok "18b result parses as TOML: user keys intact + 14 shell blocks" || { bad "18b TOML invalid"; cat "$T/py.out"; }
+  && ok "18b result parses as TOML: user keys intact + 15 shell blocks" || { bad "18b TOML invalid"; cat "$T/py.out"; }
 import sys, tomllib
 doc = tomllib.loads(open(sys.argv[1]).read())
 assert doc["theme"] == "tokyonight" and doc["font"]["size"] == 11.0
 blocks = doc["keys"]["command"]
-assert len(blocks) == 14 and all(b["type"] == "shell" for b in blocks)
+assert len(blocks) == 15 and all(b["type"] == "shell" for b in blocks)
 by_key = {b["key"]: b["command"] for b in blocks}
 assert by_key["prefix+r"] == "herdr-tts --toggle-play"
 PY
@@ -1318,8 +1390,8 @@ printf '\n# my manual footer\ninjected = true\n' >> "$cfg"
 jq '.bindings.tldr = null' "$km" > "$T/km.tmp" && mv "$T/km.tmp" "$km"
 run_km apply
 [[ $? -eq 0 ]] && ok "18e apply after nulling tldr rc=0" || bad "18e rc"
-[[ $(grep -c '^\[\[keys.command\]\]' "$cfg") -eq 13 ]] \
-  && ok "18e tldr block removed (13 blocks)" || bad "18e block count"
+[[ $(grep -c '^\[\[keys.command\]\]' "$cfg") -eq 14 ]] \
+  && ok "18e tldr block removed (14 blocks)" || bad "18e block count"
 assert_no_grep_f "18e --tldr command gone from config" 'herdr-tts --tldr' "$cfg"
 assert_grep "18e user footer preserved" '^injected = true$' "$cfg"
 eline=$(grep -nF '# <<< herdr-tts keymap' "$cfg" | cut -d: -f1)
@@ -1413,8 +1485,8 @@ cmp -s "$km" "$T/km-direct.bak" && ok "18k already-adopted left file untouched" 
 run_km adopt --style ctrlalt
 [[ $? -eq 0 ]] && ok "18k adopt ctrlalt rc=0" || bad "18k rc"
 jq -e '.style == "ctrlalt"' "$km" >/dev/null && ok "18k style field updated" || bad "18k style"
-jq -e '[.bindings | to_entries[] | select(.value != null)] | length == 17' "$km" >/dev/null \
-  && ok "18k 17 non-null ctrlalt bindings (settings has no suggested chord)" || bad "18k binding count"
+jq -e '[.bindings | to_entries[] | select(.value != null)] | length == 18' "$km" >/dev/null \
+  && ok "18k 18 non-null ctrlalt bindings (settings has no suggested chord)" || bad "18k binding count"
 jq -e '.bindings.play == "ctrl+alt+r" and .bindings.tldr == "ctrl+alt+l" and .bindings.dashboard == "ctrl+alt+d"' "$km" >/dev/null \
   && ok "18k chords match the suggested family" || bad "18k chords"
 jq -e '.bindings.paragraph_next == null and .bindings.paragraph_prev == null' "$km" >/dev/null \
@@ -3155,7 +3227,675 @@ assert_grep "38e engine line carries light accent" $'\033[34m' "$T/e-light.txt" 
   && ok "38e compound 1;33 strips cleanly (visible-width parity dark vs light)" \
   || bad "38e width parity broke: $(visible_stats "$T/e-dark.txt") vs $(visible_stats "$T/e-light.txt")"
 
-# 39a. Live Theme Adoption (US-HT-14-2): the dashboard is a LONG-RUNNING
+# 39. Reader popup (HT-16): the renderer is a READ-ONLY IPC consumer, so
+#     every test speaks to a stub — the real daemon socket is never touched.
+#     agent_tts is not importable by the stub venv python (plain python3),
+#     so a byte-compatible send_ipc_command shim rides on PYTHONPATH.
+echo "── 39. reader popup (HT-16): renderer paths, --reader wiring, menu/keymap rows"
+new_env s39
+unset TMUX # hermetic default: the CLI delegation below must run INLINE
+READER_PY="$REPO/lib/herdr_reader.py"
+mkdir -p "$T/py"
+cat > "$T/py/agent_tts.py" <<'PYEOF'
+import os, socket
+
+def send_ipc_command(command, socket_path=None):
+    path = socket_path or os.environ.get("AGENT_TTS_SOCKET", "/tmp/herdr-tts-player.sock")
+    if not os.path.exists(path):
+        return None
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(1.0)
+        s.connect(path)
+    except Exception:
+        return None
+    try:
+        s.sendall(command.strip().encode() + b"\n")
+        chunks = []
+        while sum(len(c) for c in chunks) < 8192:
+            chunk = s.recv(1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            if b"\n" in chunk:
+                break
+        if not chunks:
+            return None
+        return b"".join(chunks).decode("utf-8", "ignore").strip()
+    except Exception:
+        return None
+    finally:
+        try:
+            s.close()
+        except OSError:
+            pass
+PYEOF
+export PYTHONPATH="$T/py"
+export AGENT_TTS_SOCKET="$T/absent.sock"
+
+# 39a. --help documents --reader (bilingual dictionaries both carry it).
+timeout 10 "$SCRIPT" --help > "$T/help.txt" 2>>"$T/err.log"
+assert_grep "39a help lists --reader" '--reader' "$T/help.txt"
+HERDR_TTS_LANG=es timeout 10 "$SCRIPT" --help > "$T/help-es.txt" 2>>"$T/err.log"
+assert_grep "39a ES help lists --reader" '--reader' "$T/help-es.txt"
+
+# 39b. No playback (socket path points nowhere, lock isolated): rc 0 after a
+#      READABLE in-popup notice — the renderer enters the alternate screen,
+#      shows the English line long enough to see (NOTICE_SECS), restores the
+#      screen and exits; stderr carries the same notice for CLI use.
+AGENT_TTS_SOCKET="$T/dead.sock" AGENT_TTS_LOCK_FILE="$T/nonexistent.lock" \
+  timeout 10 python3 "$READER_PY" > "$T/np-out.txt" 2> "$T/np-err.txt"
+[[ $? -eq 0 ]] && ok "39b no-playback renderer exits rc=0" || bad "39b renderer rc!=0"
+assert_grep "39b stderr carries the English notice" '^No playback in progress\.$' "$T/np-err.txt"
+assert_grep "39b notice rendered inside the popup" 'No playback in progress\.' "$T/np-out.txt"
+assert_grep "39b alt-screen ON entered for the notice" $'\033[?1049h' "$T/np-out.txt" -F
+assert_grep "39b alt-screen restored after the notice" $'\033[?1049l' "$T/np-out.txt" -F
+# Same path through the full CLI flag: outside tmux --reader delegates
+# INLINE to the renderer (stub venv python → python3 + PYTHONPATH shim).
+AGENT_TTS_SOCKET="$T/dead.sock" AGENT_TTS_LOCK_FILE="$T/nonexistent.lock" \
+  timeout 10 "$SCRIPT" --reader > "$T/np-cli.txt" 2> "$T/np-cli-err.txt"
+[[ $? -eq 0 ]] && ok "39b --reader (no tmux) runs inline rc=0" || bad "39b cli rc!=0"
+assert_grep "39b CLI inline path prints the notice" 'No playback in progress\.' "$T/np-cli-err.txt"
+
+# 39c. Live frames from a canned IPC server: alternate screen + dim header
+#      + karaoke SGR + word wrap + clean q exit.
+cat > "$T/ipc_server.py" <<'PYEOF'
+import os, socket, sys, threading
+path = sys.argv[1]
+try: os.unlink(path)
+except FileNotFoundError: pass
+srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+srv.bind(path); srv.listen(4)
+HL = "\x1b[2m primero segundo\x1b[0m \x1b[1;33;4mtercero\x1b[0m cuarto quinto sexto"
+SI = "pos=2.00 total=8.50 pct=23.5 sent_idx=2 total_sents=3 para_idx=0 total_paras=1"
+def serve(conn):
+    conn.settimeout(2.0)
+    buf = b""
+    try:
+        while True:
+            data = conn.recv(4096)
+            if not data: return
+            buf += data
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                cmd = line.decode().strip()
+                if cmd == "highlight": rep = HL
+                elif cmd == "scroll-info": rep = SI
+                else: rep = "Error: unknown command"
+                conn.sendall(rep.encode() + b"\n")
+    except Exception: pass
+    finally: conn.close()
+while True:
+    try:
+        conn, _ = srv.accept()
+    except OSError: break
+    threading.Thread(target=serve, args=(conn,), daemon=True).start()
+PYEOF
+python3 "$T/ipc_server.py" "$T/reader.sock" & SRV39=$!
+for _ in $(seq 1 30); do [[ -S "$T/reader.sock" ]] && break; sleep 0.1; done
+AGENT_TTS_SOCKET="$T/reader.sock" timeout 10 python3 "$READER_PY" \
+  > "$T/live-out.txt" 2> "$T/live-err.txt" < <(sleep 0.8; printf 'q')
+[[ $? -eq 0 ]] && ok "39c live renderer exits rc=0 on q" || bad "39c rc!=0"
+assert_grep "39c enters the alternate screen" $'\033[?1049h' "$T/live-out.txt" -F
+assert_grep "39c restores the alternate screen on exit" $'\033[?1049l' "$T/live-out.txt" -F
+assert_grep "39c header: pct + sentence from scroll-info" 'herdr reader · 23.5% · sentence 3/3' "$T/live-out.txt" -F
+assert_grep "39c bold-yellow current-word SGR" $'\033[1;33;4m' "$T/live-out.txt" -F
+assert_grep "39c dim past-word SGR" $'\033[2m' "$T/live-out.txt" -F
+assert_grep "39c upcoming words render plain" 'cuarto quinto' "$T/live-out.txt" -F
+[[ ! -s "$T/live-err.txt" ]] && ok "39c stderr stays clean while live" || bad "39c stderr: $(cat "$T/live-err.txt")"
+# Word wrap by VISIBLE width: at COLUMNS=40 the canned line leaves `sexto`
+# alone on the last body line (SGR codes never counted nor split).
+AGENT_TTS_SOCKET="$T/reader.sock" COLUMNS=40 timeout 10 python3 "$READER_PY" \
+  > "$T/wrap-out.txt" 2>>"$T/err.log" < <(sleep 0.8; printf 'q')
+assert_grep "39c word wrap by visible width (sexto wraps alone)" '^sexto$' "$T/wrap-out.txt"
+kill "$SRV39" 2>/dev/null || true
+
+# 39d. Keymap: template binds reader_open, check stays shadow-free, both
+#      emit styles carry the reader chord.
+export HERDR_TTS_KEYMAP_FILE="$T/keymap.json"
+timeout 10 "$SCRIPT" keymap init > /dev/null 2>&1
+jq -e '.bindings.reader_open == "prefix+R"' "$HERDR_TTS_KEYMAP_FILE" >/dev/null \
+  && ok "39d template binds reader_open = prefix+R" || bad "39d template binding"
+timeout 10 "$SCRIPT" keymap check > "$T/km-check.txt" 2>&1
+assert_grep "39d check: prefix+R stays OK (no core shadow)" '✓ OK: reader_open = prefix\+R' "$T/km-check.txt"
+timeout 10 "$SCRIPT" keymap emit > "$T/km-emit.txt" 2>&1
+assert_grep "39d emit direct: reader block on prefix+R" 'key = "prefix\+R"' "$T/km-emit.txt"
+assert_grep "39d emit direct: reader opens the tts-reader entrypoint" 'entrypoint tts-reader' "$T/km-emit.txt"
+assert_grep "39d reader label documented" 'Open live reader popup for current playback' "$T/km-emit.txt" -F
+timeout 10 "$SCRIPT" keymap emit --style ctrlalt > "$T/km-ctrlalt.txt" 2>&1
+assert_grep "39d emit ctrlalt: reader on ctrl+alt+shift+r" 'key = "ctrl\+alt\+shift\+r"' "$T/km-ctrlalt.txt"
+
+# 39e. Voice menu: the cheat sheet lists the R row and R dispatches to the
+#      tts-reader popup launcher (16a d/o pattern, stub-verified).
+FX="$T/fixture.json"; make_fixture "$FX"
+write_herdr_stub "$FX"
+printf 'q' | timeout 10 "$SCRIPT" --voice-menu > "$T/menu.txt" 2>>"$T/err.log"
+assert_grep "39e menu frame lists the R reader row" 'R  📖 Live reader \(karaoke\)' "$T/menu.txt"
+lib_run '
+  herdr() { printf "%s\n" "$*" >> "$T/menu-herdr.log"; }
+  export -f herdr
+  menu_dispatch R > /dev/null
+'
+for _ in $(seq 1 30); do
+  grep -q 'entrypoint tts-reader' "$T/menu-herdr.log" 2>/dev/null && break
+  sleep 0.1
+done
+assert_grep "39e menu R opens tts-reader entrypoint" 'plugin pane open --plugin herdr.tts --entrypoint tts-reader' "$T/menu-herdr.log"
+# Launcher branch: inside tmux --reader delegates to the popup launcher,
+# NOT to the inline renderer (which would print the no-playback notice).
+lib_run '
+  herdr() { printf "%s\n" "$*" >> "$T/launch-herdr.log"; }
+  export -f herdr
+  TMUX=stub-session run_reader
+' > "$T/launch-out.txt" 2>>"$T/err.log"
+for _ in $(seq 1 30); do
+  grep -q 'entrypoint tts-reader' "$T/launch-herdr.log" 2>/dev/null && break
+  sleep 0.1
+done
+assert_grep "39e --reader inside tmux opens the tts-reader popup" 'plugin pane open --plugin herdr.tts --entrypoint tts-reader' "$T/launch-herdr.log"
+
+# 39f. Manifest wiring: popup pane + inner command + open action (16g style).
+assert_grep "39f manifest declares the tts-reader pane" 'id = "tts-reader"' "$REPO/herdr-plugin.toml" -F
+assert_grep "39f tts-reader runs the internal _reader command" 'command = \["bin/herdr-tts", "_reader"\]' "$REPO/herdr-plugin.toml"
+assert_grep "39f open-reader action wired" 'id = "open-reader"' "$REPO/herdr-plugin.toml" -F
+assert_grep "39f open-reader targets the entrypoint" '"--entrypoint", "tts-reader"' "$REPO/herdr-plugin.toml" -F
+
+# ═══ 40. reader pipeline (HT-15): sanitize → markdown/html, oracle anchors ═══
+# Hermeticity (design Parity Fixture Strategy): the lexicon is stubbed to a
+# fixture file, HOME/XDG stay isolated, and block 39's PYTHONPATH shim is
+# unset so `import agent_tts` resolves to the REAL pinned package. The
+# pipeline imports the engine through its public API only, so every python
+# run here uses the real plugin venv — the interpreter production uses.
+echo "── 40. reader pipeline (HT-15): sanitize, redaction, heuristics, escaping"
+new_env s40
+unset PYTHONPATH # 39's agent_tts.py IPC shim must not shadow the real engine
+REAL_VENV_PY="${HERDR_TTS_REAL_VENV:-$HOME/.local/share/herdr-tts/venv/bin/python}"
+[[ -x "$REAL_VENV_PY" ]] && ok "40 harness: real venv python present" || bad "40 harness: real venv python missing ($REAL_VENV_PY)"
+export AGENT_TTS_LEXICON="$T/lexicon.json" # fixture lexicon: empty = built-ins only
+printf '{}\n' > "$T/lexicon.json"
+mkdir -p "$T/home"
+export HOME="$T/home" # no real ~/.config/agent-tts can leak into normalization
+LIB="$REPO/lib"
+RPY="$LIB/reader_pipeline.py"
+[[ -f "$RPY" ]] && ok "40 harness: lib/reader_pipeline.py exists" || bad "40 harness: lib/reader_pipeline.py missing"
+
+# 40a. (R1) sanitize keeps fences/pipes/markers/URL verbatim; strips ANSI;
+#      never applies speech mutations (those belong to clean_agent_text only).
+printf 'T\033[1mitulo\033[0m listo.\n• alpha\nSee https://example.com/docs?a=1 now.\n| col1 | col2 |\n|---|---|\n| 1 | 2 |\n```python\nx = 1\n```\n' > "$T/in-a.txt"
+"$REAL_VENV_PY" - "$LIB" "$T/in-a.txt" "$T/a-san.txt" <<'PY' > "$T/a-driver.log" 2>&1
+import sys
+sys.path.insert(0, sys.argv[1])
+import reader_pipeline as rp
+raw = open(sys.argv[2], encoding="utf-8").read()
+open(sys.argv[3], "w", encoding="utf-8").write(rp.sanitize(raw))
+PY
+[[ -s "$T/a-san.txt" ]] && ok "40a sanitize driver produced output" \
+  || bad "40a sanitize produced nothing: $(head -2 "$T/a-driver.log")"
+if [[ -s "$T/a-san.txt" ]] && ! grep -q $'\x1b' "$T/a-san.txt"; then ok "40a no ANSI escapes survive sanitize"; else bad "40a ANSI escapes survived (or no output)"; fi
+assert_grep "40a fence kept verbatim" '^```python$' "$T/a-san.txt"
+assert_grep "40a table pipes kept verbatim" '^\| col1 \| col2 \|$' "$T/a-san.txt"
+assert_grep "40a URL kept verbatim" 'https://example\.com/docs\?a=1' "$T/a-san.txt"
+assert_grep "40a list marker kept verbatim" '^• alpha$' "$T/a-san.txt"
+assert_no_grep_f "40a no speech mutation (code omission)" '[bloque de código omitido]' "$T/a-san.txt"
+assert_no_grep_f "40a no speech mutation (URL rewritten)" 'enlace web' "$T/a-san.txt"
+
+# 40b. (R2) secrets redact BEFORE any transformation: placeholder inside the
+#      fence in the HTML output, raw token never present.
+printf 'Config:\n```\ntoken=ab12cd34ef56\ny = 2\n```\nDone.' > "$T/in-b.txt"
+"$REAL_VENV_PY" - "$LIB" "$T/in-b.txt" "$T/b.html" <<'PY' > "$T/b-driver.log" 2>&1
+import sys
+sys.path.insert(0, sys.argv[1])
+import reader_pipeline as rp
+raw = open(sys.argv[2], encoding="utf-8").read()
+r = rp.sanitize(raw)
+open(sys.argv[3], "w", encoding="utf-8").write(rp.markdown_to_html(rp.plain_to_markdown(r)))
+PY
+assert_grep "40b HTML carries the redaction placeholder in the fence" 'token=[clave omitida]' "$T/b.html" -F
+assert_no_grep_f "40b secret never reaches the HTML" 'ab12cd34ef56' "$T/b.html"
+
+# 40c. (R3) deterministic heuristics: Unicode bullets → Markdown list
+#      (byte-identical), numbered markers survive verbatim (both are valid
+#      Markdown), unclosed fence degrades fully escaped with exit 0.
+printf '• alpha\n• beta\n' > "$T/in-c1.txt"
+printf '1) uno\n2) dos\n' > "$T/in-c2.txt"
+printf 'Intro.\n```\nvar <script>alert(1)</script>\n' > "$T/in-c3.txt"
+"$REAL_VENV_PY" - "$LIB" "$T/in-c1.txt" "$T/in-c2.txt" "$T/in-c3.txt" "$T/c1-out.md" "$T/c2-out.md" "$T/c3-out.html" "$T/c3-rc" <<'PY' > "$T/c-driver.log" 2>&1
+import sys
+sys.path.insert(0, sys.argv[1])
+import reader_pipeline as rp
+one = open(sys.argv[2], encoding="utf-8").read()
+two = open(sys.argv[3], encoding="utf-8").read()
+three = open(sys.argv[4], encoding="utf-8").read()
+# determinism is part of the contract: identical input → identical output
+once = rp.plain_to_markdown(one)
+assert once == rp.plain_to_markdown(one)
+open(sys.argv[5], "w", encoding="utf-8").write(once)
+open(sys.argv[6], "w", encoding="utf-8").write(rp.plain_to_markdown(two))
+try:
+    html = rp.markdown_to_html(rp.plain_to_markdown(rp.sanitize(three)))
+    open(sys.argv[7], "w", encoding="utf-8").write(html)
+    open(sys.argv[8], "w").write("0")
+except Exception:
+    open(sys.argv[8], "w").write("2")
+PY
+[[ $(cat "$T/c1-out.md" 2>/dev/null) == $'- alpha\n- beta' ]] \
+  && ok "40c unicode bullets normalize byte-identically" || bad "40c bullets: $(tr '\n' '|' < "$T/c1-out.md" 2>/dev/null)"
+[[ $(cat "$T/c2-out.md" 2>/dev/null) == $'1) uno\n2) dos' ]] \
+  && ok "40c numbered markers survive verbatim (already Markdown)" || bad "40c numbered: $(tr '\n' '|' < "$T/c2-out.md" 2>/dev/null)"
+[[ $(cat "$T/c3-rc" 2>/dev/null) == "0" ]] && ok "40c unclosed fence exits 0" || bad "40c unclosed fence rc=$(cat "$T/c3-rc" 2>/dev/null)"
+assert_grep "40c unclosed fence: input tags fully escaped" '&lt;script&gt;' "$T/c3-out.html"
+assert_no_grep_f "40c unclosed fence: zero raw script tags" '<script>' "$T/c3-out.html"
+
+# 40d. (R4) total escaping + scheme allowlist: script injection neutralized,
+#      javascript: demoted to plain text, http/https links stay real anchors.
+printf 'Plain <script>alert(1)</script> here.\n\n[x](javascript:alert(1)) and [ok](https://example.com/x)\n' > "$T/in-d.txt"
+"$REAL_VENV_PY" - "$LIB" "$T/in-d.txt" "$T/d.html" <<'PY' > "$T/d-driver.log" 2>&1
+import sys
+sys.path.insert(0, sys.argv[1])
+import reader_pipeline as rp
+raw = open(sys.argv[2], encoding="utf-8").read()
+r = rp.sanitize(raw)
+open(sys.argv[3], "w", encoding="utf-8").write(rp.markdown_to_html(rp.plain_to_markdown(r)))
+PY
+assert_grep "40d script injection neutralized as escaped text" '&lt;script&gt;alert\(1\)&lt;/script&gt;' "$T/d.html"
+assert_no_grep_f "40d no script element in output" '<script' "$T/d.html"
+assert_no_grep_f "40d javascript: href demoted (no anchor href)" 'href="javascript:' "$T/d.html"
+assert_grep "40d https link renders as a real anchor" 'href="https://example\.com/x"' "$T/d.html"
+# 40e. (R5) engine-oracle parity F1–F9 + sidecar map. The oracle runs the
+#      PINNED agent_tts directly (estimate_boundaries over clean_agent_text)
+#      and the pipeline must agree verbatim: count, sent-idx order 0..n-1,
+#      para-idx sequence, one primary span per sentence, mapping mirrors
+#      spans. Harness safeguard first: the venv may hold agent_tts editable
+#      at dev HEAD — oracle file identity (boundaries/cleaner/redact) is
+#      verified against the bootstrap pin before any fixture executes.
+cat > "$T/e-driver.py" <<'PYEOF'
+import json, os, re, subprocess, sys
+
+sys.path.insert(0, sys.argv[1])
+OUT = sys.argv[2]
+results = []
+
+def check(label, cond, detail=""):
+    results.append(("OK" if cond else "ERR", label, str(detail)))
+
+# --- identity safeguard: pinned oracle, fail loudly -----------------------
+import agent_tts
+from agent_tts import clean_agent_text, estimate_boundaries_from_text
+
+boot = open(os.path.join(sys.argv[3], "scripts/bootstrap.sh"), encoding="utf-8").read()
+m = re.search(r"AGENT_TTS_REF=\"\$\{HERDR_AGENT_TTS_REF:-(\w{40})\}\"", boot)
+pin = m.group(1) if m else ""
+check("40e pin parsed from bootstrap.sh", bool(pin), pin or "no SHA-40 pin found")
+pkg_dir = os.path.dirname(agent_tts.__file__)
+repo = pkg_dir
+while repo != os.path.dirname(repo) and not os.path.isdir(os.path.join(repo, ".git")):
+    repo = os.path.dirname(repo)
+identity_ok, identity_detail = True, "regular install"
+if os.path.isdir(os.path.join(repo, ".git")):  # editable: compare oracle blobs
+    rel = os.path.relpath(pkg_dir, repo).replace(os.sep, "/")
+    for fname in ("boundaries.py", "cleaner.py", "redact.py"):
+        try:
+            pinned = subprocess.run(
+                ["git", "-C", repo, "rev-parse", f"{pin}:{rel}/{fname}"],
+                capture_output=True, text=True).stdout.strip()
+            local = subprocess.run(
+                ["git", "-C", repo, "hash-object", os.path.join(pkg_dir, fname)],
+                capture_output=True, text=True).stdout.strip()
+        except Exception as exc:
+            identity_ok, identity_detail = False, f"{fname}: {exc}"
+            break
+        if pinned != local:
+            identity_ok, identity_detail = False, f"{fname} drifts from pin {pin[:8]}"
+            break
+    else:
+        identity_detail = f"editable install, oracle files == pin {pin[:8]}"
+check("40e oracle file identity == pinned ref", identity_ok, identity_detail)
+
+import reader_pipeline as rp
+
+def oracle_of(raw):
+    n = clean_agent_text(rp.sanitize(raw), pre_extracted=True)
+    bm = estimate_boundaries_from_text(n, 1.0)
+    return [(s.index, s.paragraph_index, s.text) for s in bm.sentences]
+
+FIXTURES = {
+    "F1": "Alpha uno. Beta dos. Gamma tres.",
+    "F2": "Intro aquí.\n```python\nx = 1. \ny = 2\n```\nCierre final.",
+    "F3": "Ejecuta esto:\n```\nls -la\n```\nY sigue adelante. Más texto.",
+    "F4": "See https://ex.com/a. Next one.",
+    "F5": "Tablas, etc. Y luego más.",
+    "F6": "Open the PR now. Second sentence here.",
+    "F7": "Head:\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\nTail.",
+    "F8": "",
+    "F9": "Intro.\n```\nvar <script>alert(1)</script>\n",
+}
+
+rendered = {}
+for name, raw in FIXTURES.items():
+    res = rp.render(raw, pre_extracted=True)
+    rendered[name] = res
+    S = oracle_of(raw)
+    idx_seq = [a.sent_idx for a in res.anchors]
+    para_seq = [a.para_idx for a in res.anchors]
+    primaries = res.html.count('class="tts-sent"')
+    check(f"40e {name} anchor count == oracle count", len(res.anchors) == len(S),
+          f"anchors={len(res.anchors)} oracle={len(S)}")
+    check(f"40e {name} data-sent-idx sequence == 0..n-1 in order",
+          idx_seq == list(range(len(S))), idx_seq)
+    check(f"40e {name} data-para-idx sequence == oracle paragraph mapping",
+          para_seq == [p for (_, p, _) in S], para_seq)
+    check(f"40e {name} primary spans == sentence count", primaries == len(S),
+          f"primaries={primaries} sents={len(S)}")
+
+# Fixture-specific contracts (design Parity Fixtures table).
+r1 = rendered["F1"]
+check("40e F1 alignment exact", r1.alignment == "exact", r1.alignment)
+check("40e F1 mapping texts are the raw sentences",
+      [a.text for a in r1.anchors] == ["Alpha uno.", "Beta dos.", "Gamma tres."],
+      [a.text for a in r1.anchors])
+r2 = rendered["F2"]
+check("40e F2 alignment exact (fence drift absorbed)", r2.alignment == "exact", r2.alignment)
+check("40e F2 primary sentence 1 sits on the fence block",
+      'id="tts-sent-1"' in r2.html and "<pre" in r2.html, "")
+check("40e F2 continuation span present", 'class="tts-sent-cont"' in r2.html, "")
+r3 = rendered["F3"]
+check("40e F3 sentence 0 continues across blocks (cont spans)",
+      r3.html.count('class="tts-sent-cont"') >= 2, r3.html.count('class="tts-sent-cont"'))
+check("40e F3 mapping texts stay raw", [a.text for a in r3.anchors][1] == "Más texto.",
+      [a.text for a in r3.anchors])
+r4 = rendered["F4"]
+check("40e F4 URL drift absorbed into one anchor",
+      len(r4.anchors) == 1 and r4.anchors[0].text == "See https://ex.com/a. Next one.",
+      [a.text for a in r4.anchors])
+r5 = rendered["F5"]
+check("40e F5 etc. drift absorbed into one anchor",
+      len(r5.anchors) == 1 and r5.anchors[0].text == "Tablas, etc. Y luego más.",
+      [a.text for a in r5.anchors])
+r6 = rendered["F6"]
+check("40e F6 index from oracle, mapping text raw (PR not expanded)",
+      [a.text for a in r6.anchors] == ["Open the PR now.", "Second sentence here."],
+      [a.text for a in r6.anchors])
+r7 = rendered["F7"]
+check("40e F7 table collapse: coverage alignment recorded",
+      r7.alignment == "coverage", r7.alignment)
+check("40e F7 one sentence spans heading+table+tail (primary + conts)",
+      r7.html.count('class="tts-sent-cont"') >= 2, r7.html.count('class="tts-sent-cont"'))
+check("40e F7 table element carries a sentence anchor",
+      "<table" in r7.html and 'data-sent-idx="0"' in r7.html, "")
+r8 = rendered["F8"]
+check("40e F8 empty input: exactly one anchor with empty text",
+      len(r8.anchors) == 1 and r8.anchors[0].text == "", [a.text for a in r8.anchors])
+rc8 = rp.render_to_files("", os.path.join(os.path.dirname(OUT), "f8.html"))
+check("40e F8 render_to_files exits 0", rc8 == 0, rc8)
+r9 = rendered["F9"]
+check("40e F9 unclosed fence: escaped, zero raw tags",
+      "&lt;script&gt;" in r9.html and "<script" not in r9.html, "")
+rc9 = rp.render_to_files(FIXTURES["F9"], os.path.join(os.path.dirname(OUT), "f9.html"))
+check("40e F9 render_to_files exits 0", rc9 == 0, rc9)
+
+# --- sidecar map contract (R5 + design Data Contracts) --------------------
+d = os.path.dirname(OUT)
+mpath = os.path.join(d, "f1.map.json")
+rp.render_to_files(FIXTURES["F1"], os.path.join(d, "f1.html"), mpath)
+side = json.loads(open(mpath, encoding="utf-8").read())
+check("40e sidecar schema: version/contract/alignment/totals present",
+      side.get("version") == 1 and side.get("contract") == "reader-pipeline/anchors@1"
+      and side.get("alignment") in ("exact", "coverage")
+      and side.get("total_sents") == 3 and side.get("total_paras") == 1, sorted(side))
+eng = side.get("engine", {})
+check("40e sidecar staleness tuple: lang/max_chars/summarize/lexicon_fp",
+      eng.get("lang") == "es" and eng.get("max_chars") == 0
+      and eng.get("summarize") is False
+      and re.match(r"^sha256:[0-9a-f]{64}$", eng.get("lexicon_fp", "")), eng)
+check("40e sidecar sentence entries mirror spans",
+      [s["text"] for s in side["sentences"]] == ["Alpha uno.", "Beta dos.", "Gamma tres."]
+      and side["sentences"][0]["selector"] == "#tts-sent-0"
+      and side["sentences"][0]["exact"] is True, side["sentences"][0])
+side7 = json.loads(rp.mapping_json(r7))
+check("40e sidecar records coverage alignment on gate failure (F7)",
+      side7.get("alignment") == "coverage" and side7["sentences"][0]["exact"] is False,
+      side7.get("alignment"))
+check("40e sidecar mapping count == primary span count",
+      len(side7["sentences"]) == r7.html.count('class="tts-sent"') == len(r7.anchors),
+      len(side7["sentences"]))
+# --- R2 completion: redaction reaches the MAPPING too ----------------------
+sec = rp.render("Config:\n```\ntoken=ab12cd34ef56\ny = 2\n```\nDone.", pre_extracted=True)
+msec = rp.mapping_json(sec)
+check("40e redaction placeholder present in the mapping",
+      "token=[clave omitida]" in msec, "")
+check("40e secret never reaches the mapping", "ab12cd34ef56" not in msec, "")
+
+with open(OUT, "w", encoding="utf-8") as fh:
+    for verdict, label, detail in results:
+        fh.write(f"{verdict} {label}" + (f" :: {detail}" if detail else "") + "\n")
+    fh.write(f"OK 40e checks emitted ({len(results)})\n")
+print(f"{len(results)} checks")
+PYEOF
+"$REAL_VENV_PY" "$T/e-driver.py" "$LIB" "$T/e-checks.txt" "$REPO" > "$T/e-driver.log" 2>&1
+DRIVER_RC=$?
+if [[ -s "$T/e-checks.txt" && $DRIVER_RC -eq 0 ]]; then
+  ok "40e parity driver completed (rc 0)"
+else
+  bad "40e parity driver crashed: $(tail -2 "$T/e-driver.log" | tr '\n' ' ')"
+fi
+n_checks=0
+while IFS= read -r line; do
+  verdict="${line%% *}"; rest="${line#* }"
+  lbl="${rest%% :: *}"; det="${rest#* :: }"
+  if [[ "$verdict" == "OK" ]]; then ok "$lbl"; else bad "$lbl ($det)"; fi
+  n_checks=$((n_checks+1))
+done < "$T/e-checks.txt"
+[[ $n_checks -ge 40 ]] && ok "40e full check matrix ran ($n_checks checks)" \
+  || bad "40e check matrix truncated ($n_checks checks)"
+
+# 40f. (R6) --render-html CLI: transient bridge, exit-code contract
+#      (0 ok / 1 usage / 2 input+redaction fail-closed / 3 engine down),
+#      bilingual strings, Surface Contract v1 untouched.
+new_env s40f
+unset PYTHONPATH
+mkdir -p "$T/home"; export HOME="$T/home"
+export AGENT_TTS_LEXICON="$T/lexicon.json"; printf '{}\n' > "$T/lexicon.json"
+printf 'Hola mundo. Segunda frase.' > "$T/in.txt"
+timeout 10 "$SCRIPT" --render-html > "$T/f-usage.txt" 2>&1
+[[ $? -eq 1 ]] && ok "40f usage error exits 1" || bad "40f usage rc=$?"
+assert_grep "40f EN usage names --render-html" 'Usage: herdr-tts --render-html <input_file> <output_html>' "$T/f-usage.txt"
+HERDR_TTS_LANG=es timeout 10 "$SCRIPT" --render-html > "$T/f-usage-es.txt" 2>&1
+assert_grep "40f ES usage present (neutral)" 'Uso: herdr-tts --render-html' "$T/f-usage-es.txt"
+# engine down (rc 3): the fresh stub venv python (plain python3) has no agent_tts
+timeout 10 "$SCRIPT" --render-html "$T/in.txt" "$T/out.html" > "$T/f-eng.txt" 2>&1
+[[ $? -eq 3 ]] && ok "40f engine down exits 3" || bad "40f engine rc=$(head -c 120 "$T/f-eng.txt" | tr '\n' ' ')"
+assert_grep "40f EN engine message" 'engine unavailable' "$T/f-eng.txt"
+HERDR_TTS_LANG=es timeout 10 "$SCRIPT" --render-html "$T/in.txt" "$T/out.html" > "$T/f-eng-es.txt" 2>&1
+assert_grep "40f ES engine message (neutral)" 'motor agent-tts no está disponible' "$T/f-eng-es.txt"
+[[ ! -e "$T/out.html" ]] && ok "40f engine down: no partial HTML" || bad "40f engine down wrote output"
+# unreadable input (rc 2), fail closed: real venv, missing file
+cat > "$T/data/herdr-tts/venv/bin/python" <<EOF
+#!/usr/bin/env bash
+exec "$REAL_VENV_PY" "\$@"
+EOF
+chmod +x "$T/data/herdr-tts/venv/bin/python"
+timeout 10 "$SCRIPT" --render-html "$T/missing.txt" "$T/out2.html" > "$T/f-in.txt" 2>&1
+[[ $? -eq 2 ]] && ok "40f unreadable input exits 2" || bad "40f input rc=$(head -c 120 "$T/f-in.txt" | tr '\n' ' ')"
+assert_grep "40f EN input message" 'cannot read the input' "$T/f-in.txt"
+HERDR_TTS_LANG=es timeout 10 "$SCRIPT" --render-html "$T/missing.txt" "$T/out2.html" > "$T/f-in-es.txt" 2>&1
+assert_grep "40f ES input message (neutral)" 'no se puede leer el archivo de entrada' "$T/f-in-es.txt"
+[[ ! -e "$T/out2.html" ]] && ok "40f unreadable input: fail closed, no file" || bad "40f rc=2 wrote output"
+# success (rc 0): anchored HTML; sidecar only with --map (design default off)
+timeout 10 "$SCRIPT" --render-html "$T/in.txt" "$T/f-ok.html" > "$T/f-ok.txt" 2>&1
+[[ $? -eq 0 ]] && ok "40f --render-html exits 0" || bad "40f success rc: $(tail -1 "$T/f-ok.txt")"
+assert_grep "40f anchored HTML written (primary span)" 'id="tts-sent-0"' "$T/f-ok.html"
+assert_grep "40f paragraph anchor present" 'data-para-idx="0"' "$T/f-ok.html"
+assert_grep "40f escaped text in HTML" 'Hola mundo\.' "$T/f-ok.html"
+timeout 10 "$SCRIPT" --render-html "$T/in.txt" "$T/f-ok2.html" --map "$T/f.map.json" > "$T/f-ok2.txt" 2>&1
+[[ $? -eq 0 ]] && ok "40f --map sidecar run exits 0" || bad "40f map rc"
+assert_grep "40f sidecar written with --map" 'reader-pipeline/anchors@1' "$T/f.map.json"
+assert_grep "40f sidecar mirrors sentence count" '"total_sents": 2' "$T/f.map.json"
+# Surface Contract v1 + legacy flags untouched
+[[ $(timeout 10 "$SCRIPT" --contract-version 2>/dev/null) == "1" ]] \
+  && ok "40f --contract-version stays 1" || bad "40f contract version changed"
+timeout 10 "$SCRIPT" --render-text > "$T/f-rt.txt" 2>&1
+[[ $? -eq 1 ]] && ok "40f --render-text usage still rc 1" || bad "40f render-text rc"
+assert_grep "40f --render-text usage unchanged" 'Usage: herdr-tts --render-text' "$T/f-rt.txt"
+timeout 10 "$SCRIPT" --help > "$T/f-help.txt" 2>&1
+assert_grep "40f help still lists --speak" '\-\-speak' "$T/f-help.txt"
+assert_grep "40f help lists --render-html" '\-\-render-html' "$T/f-help.txt"
+HERDR_TTS_LANG=es timeout 10 "$SCRIPT" --help > "$T/f-help-es.txt" 2>&1
+assert_grep "40f ES help lists --render-html" '\-\-render-html' "$T/f-help-es.txt"
+# redaction failure (rc 2), fail closed: agent_tts.redact_secrets patched to
+# raise BEFORE the engine bridge imports reader_pipeline, so the fault rides
+# the REAL driver path (bin/herdr-tts -> venv python -> tts_engine ->
+# render_to_files) while the input file itself stays perfectly readable —
+# unlike the unreadable-input branch above, this exercises the sanitize()
+# fail-closed catch (W-1): exit 2 AND not a single output artifact.
+cat > "$T/data/herdr-tts/venv/bin/python" <<EOF
+#!/usr/bin/env bash
+# smoke 40f fault-injection wrapper: patch the pinned engine's redact_secrets
+# to raise, then run the real tts_engine.py unmodified (runpy keeps the
+# script-dir sys.path semantics of a direct "\$VENV_PY \$ENGINE_SCRIPT" call).
+exec "$REAL_VENV_PY" -c '
+import os, runpy, sys
+import agent_tts
+
+def _redact_fail(text):
+    raise RuntimeError("injected redaction failure")
+
+agent_tts.redact_secrets = _redact_fail
+sys.argv = sys.argv[1:]
+sys.path.insert(0, os.path.dirname(os.path.abspath(sys.argv[0])))
+runpy.run_path(sys.argv[0], run_name="__main__")
+' "\$@"
+EOF
+chmod +x "$T/data/herdr-tts/venv/bin/python"
+timeout 10 "$SCRIPT" --render-html "$T/in.txt" "$T/out3.html" > "$T/f-redact.txt" 2>&1
+[[ $? -eq 2 ]] && ok "40f redaction failure exits 2" || bad "40f redact rc=$(head -c 120 "$T/f-redact.txt" | tr '\n' ' ')"
+assert_grep "40f redaction failure surfaced (injected fault)" 'render failed: injected redaction failure' "$T/f-redact.txt"
+[[ ! -e "$T/out3.html" ]] && ok "40f redaction failure: no output file" || bad "40f redact-fail wrote output"
+timeout 10 "$SCRIPT" --render-html "$T/in.txt" "$T/out4.html" --map "$T/f-map2.json" > "$T/f-redact2.txt" 2>&1
+[[ $? -eq 2 ]] && ok "40f redaction failure with --map exits 2" || bad "40f redact-map rc=$(head -c 120 "$T/f-redact2.txt" | tr '\n' ' ')"
+[[ ! -e "$T/out4.html" && ! -e "$T/f-map2.json" ]] \
+  && ok "40f redaction failure: no HTML, no sidecar (fail closed)" || bad "40f redact-fail wrote output/sidecar"
+# restore the plain real-venv wrapper so 40g (and later blocks) run clean
+cat > "$T/data/herdr-tts/venv/bin/python" <<EOF
+#!/usr/bin/env bash
+exec "$REAL_VENV_PY" "\$@"
+EOF
+chmod +x "$T/data/herdr-tts/venv/bin/python"
+
+# 40g. (R7) zero new dependencies + transient process (exits, no daemon)
+assert_grep "40g bootstrap pin still SHA-pinned" 'AGENT_TTS_REF="\$\{HERDR_AGENT_TTS_REF:-[0-9a-f]{40}\}"' "$REPO/scripts/bootstrap.sh"
+"$REAL_VENV_PY" - "$LIB" <<'PY' > "$T/g-imports.txt" 2>&1
+import ast, sys
+tree = ast.parse(open(sys.argv[1] + "/reader_pipeline.py", encoding="utf-8").read())
+mods = set()
+for node in ast.walk(tree):
+    if isinstance(node, ast.Import):
+        mods.update(a.name.split(".")[0] for a in node.names)
+    elif isinstance(node, ast.ImportFrom) and node.module:
+        mods.add(node.module.split(".")[0])
+allowed = {"agent_tts"} | set(sys.stdlib_module_names)
+extra = sorted(mods - allowed)
+print("EXTRA:" + ",".join(extra) if extra else "CLEAN")
+PY
+grep -q '^CLEAN$' "$T/g-imports.txt" \
+  && ok "40g reader_pipeline imports stdlib + agent_tts only" \
+  || bad "40g unexpected deps: $(cat "$T/g-imports.txt")"
+export AGENT_TTS_SOCKET="$T/agent.sock" AGENT_TTS_LOCK_FILE="$T/agent.lock" AGENT_TTS_PID_FILE="$T/agent.pid"
+timeout 10 "$SCRIPT" --render-html "$T/in.txt" "$T/g-out.html" > "$T/g-run.txt" 2>&1
+[[ $? -eq 0 ]] && ok "40g render run is transient (exited within timeout)" || bad "40g run rc"
+[[ ! -e "$T/agent.sock" && ! -e "$T/agent.pid" && ! -e "$T/agent.lock" ]] \
+  && ok "40g no daemon artifacts (socket/pid/lock absent)" || bad "40g daemon artifacts left behind"
+
+# ═══ 41. reader vs remote-engine ERR replies (karaoke IPC hardening) ═══
+# A remote-playback engine without the read-only karaoke family answers
+# "ERR: command '...' is not supported..." on a LIVE socket. fetch() must
+# treat that as absence of playback: rc 0, the notice rendered READABLY
+# inside the popup (alternate screen, held NOTICE_SECS, then restored) and
+# mirrored on stderr — and the ERR text is never rendered as the karaoke
+# body. The lock file is isolated so a live daemon's pending read cannot
+# stretch the attach grace during the battery.
+echo "── 41. reader degrades to no-playback when the engine replies ERR"
+new_env s41
+unset TMUX
+READER_PY="$REPO/lib/herdr_reader.py"
+mkdir -p "$T/py"
+cat > "$T/py/agent_tts.py" <<'PYEOF'
+import os, socket
+
+def send_ipc_command(command, socket_path=None):
+    path = socket_path or os.environ.get("AGENT_TTS_SOCKET", "/tmp/herdr-tts-player.sock")
+    if not os.path.exists(path):
+        return None
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(1.0)
+        s.connect(path)
+    except Exception:
+        return None
+    try:
+        s.sendall(command.strip().encode() + b"\n")
+        chunks = []
+        while sum(len(c) for c in chunks) < 8192:
+            chunk = s.recv(1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            if b"\n" in chunk:
+                break
+        if not chunks:
+            return None
+        return b"".join(chunks).decode("utf-8", "ignore").strip()
+    except Exception:
+        return None
+    finally:
+        try:
+            s.close()
+        except OSError:
+            pass
+PYEOF
+export PYTHONPATH="$T/py"
+cat > "$T/err_server.py" <<'PYEOF'
+import os, socket, sys, threading
+path = sys.argv[1]
+try: os.unlink(path)
+except FileNotFoundError: pass
+srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+srv.bind(path); srv.listen(4)
+ERR = ("ERR: command '%s' is not supported for windows playback "
+       "(supported: status, pause, resume, toggle-pause, stop)")
+def serve(conn):
+    conn.settimeout(2.0)
+    buf = b""
+    try:
+        while True:
+            data = conn.recv(4096)
+            if not data: return
+            buf += data
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                cmd = line.decode().strip().split()[0] if line.strip() else "highlight"
+                conn.sendall((ERR % cmd).encode() + b"\n")
+    except Exception: pass
+    finally: conn.close()
+while True:
+    try:
+        conn, _ = srv.accept()
+    except OSError: break
+    threading.Thread(target=serve, args=(conn,), daemon=True).start()
+PYEOF
+python3 "$T/err_server.py" "$T/err.sock" & SRV41=$!
+for _ in $(seq 1 30); do [[ -S "$T/err.sock" ]] && break; sleep 0.1; done
+AGENT_TTS_SOCKET="$T/err.sock" AGENT_TTS_LOCK_FILE="$T/nonexistent.lock" timeout 10 python3 "$READER_PY" \
+  > "$T/err-out.txt" 2> "$T/err-err.txt" < /dev/null
+rc=$?
+[[ $rc -eq 0 ]] && ok "41 renderer exits rc=0 on ERR replies" || bad "41 renderer rc=$rc"
+assert_grep "41 stderr carries the English notice" '^No playback in progress\.$' "$T/err-err.txt"
+assert_grep "41 notice rendered inside the popup" 'No playback in progress\.' "$T/err-out.txt"
+assert_grep "41 alt-screen restored after the notice" $'\033[?1049l' "$T/err-out.txt" -F
+assert_no_grep_f "41 never renders the ERR text as the body" 'ERR: command' "$T/err-out.txt"
+kill "$SRV41" 2>/dev/null || true
+
+
+# 42a. Live Theme Adoption (US-HT-14-2): the dashboard is a LONG-RUNNING
 #      process whose TTS_THEME was snapshotted at startup; the settings
 #      popup persists a new theme from a SEPARATE process. The render loop
 #      must re-read the key from config.env per frame (same per-frame state
@@ -3164,14 +3904,14 @@ assert_grep "38e engine line carries light accent" $'\033[34m' "$T/e-light.txt" 
 #      controls: missing/unreadable config and an absent key keep the
 #      current value; a hand-edited solarized normalizes to dark; the
 #      per-frame read adds no writes (H-move budget unchanged).
-new_env s39a
+new_env s42a
 FX="$T/fixture.json"; make_fixture "$FX"
 write_herdr_stub "$FX"
 make_history "$HERDR_TTS_HISTORY_FILE"
 write_engine_status_stub
 printf 'TTS_THEME="dark"\n' > "$T/conf/herdr-tts/config.env"
 capture 'q\n' "$T/cap-dark.txt"
-assert_grep "39a dark capture carries the dark muted byte" $'\033[90m' "$T/cap-dark.txt" -F
+assert_grep "42a dark capture carries the dark muted byte" $'\033[90m' "$T/cap-dark.txt" -F
 
 # Differential pair from ONE hermetic process: frame 1 in dark, then an
 # external-style write — config_set touches the FILE only, the live var
@@ -3186,20 +3926,20 @@ lib_run '
   DASH_LAST_FRAME=""
   dashboard_render "" > "$T/f2.txt"
 '
-assert_grep "39a frame 1 (before the write) is dark" $'\033[90m' "$T/f1.txt" -F
-assert_grep "39a the file write leaves the dashboard live var untouched" '^live=dark$' "$T/live.txt"
-assert_grep "39a frame 2 (after the write) adopts light" $'\033[30m' "$T/f2.txt" -F
-assert_no_grep_f "39a frame 2 drops the dark muted byte" $'\033[90m' "$T/f2.txt"
+assert_grep "42a frame 1 (before the write) is dark" $'\033[90m' "$T/f1.txt" -F
+assert_grep "42a the file write leaves the dashboard live var untouched" '^live=dark$' "$T/live.txt"
+assert_grep "42a frame 2 (after the write) adopts light" $'\033[30m' "$T/f2.txt" -F
+assert_no_grep_f "42a frame 2 drops the dark muted byte" $'\033[90m' "$T/f2.txt"
 
 # The persisted light also drives a FRESH dashboard process, and the
 # frame budget is unchanged by the re-read.
 capture 'q\n' "$T/cap-light.txt"
-assert_grep "39a light capture carries the light muted byte" $'\033[30m' "$T/cap-light.txt" -F
-h39d=$(esc_count "$T/cap-dark.txt" $'\033[H')
+assert_grep "42a light capture carries the light muted byte" $'\033[30m' "$T/cap-light.txt" -F
+h42d=$(esc_count "$T/cap-dark.txt" $'\033[H')
 h39l=$(esc_count "$T/cap-light.txt" $'\033[H')
-[[ "$h39d" -ge 1 && "$h39d" -eq "$h39l" ]] \
-  && ok "39a frame budget unchanged (H-moves dark=$h39d light=$h39l)" \
-  || bad "39a frame budget changed (H-moves dark=$h39d light=$h39l)"
+[[ "$h42d" -ge 1 && "$h42d" -eq "$h39l" ]] \
+  && ok "42a frame budget unchanged (H-moves dark=$h42d light=$h39l)" \
+  || bad "42a frame budget changed (H-moves dark=$h42d light=$h39l)"
 
 # Fail-open controls, each a fresh process whose current value is light.
 lib_run '
@@ -3209,7 +3949,7 @@ lib_run '
   DASH_LAST_FRAME=""
   dashboard_render "" > "$T/c-missing.txt"
 '
-assert_grep "39a missing config keeps rendering (fail open, light kept)" $'\033[30m' "$T/c-missing.txt" -F
+assert_grep "42a missing config keeps rendering (fail open, light kept)" $'\033[30m' "$T/c-missing.txt" -F
 printf 'TTS_VOICE="elvira"\n' > "$T/conf/herdr-tts/config.env"
 lib_run '
   TTS_THEME=light
@@ -3219,14 +3959,14 @@ lib_run '
   dashboard_render "" > "$T/c-unreadable.txt"
   chmod 644 "$CONFIG_FILE"
 '
-assert_grep "39a unreadable config keeps the current theme (light)" $'\033[30m' "$T/c-unreadable.txt" -F
+assert_grep "42a unreadable config keeps the current theme (light)" $'\033[30m' "$T/c-unreadable.txt" -F
 lib_run '
   TTS_THEME=light
   dashboard_refresh_roster
   DASH_LAST_FRAME=""
   dashboard_render "" > "$T/c-absent.txt"
 '
-assert_grep "39a absent key keeps the current theme (light)" $'\033[30m' "$T/c-absent.txt" -F
+assert_grep "42a absent key keeps the current theme (light)" $'\033[30m' "$T/c-absent.txt" -F
 printf 'TTS_THEME="solarized"\n' > "$T/conf/herdr-tts/config.env"
 lib_run '
   TTS_THEME=light
@@ -3234,23 +3974,23 @@ lib_run '
   DASH_LAST_FRAME=""
   dashboard_render "" > "$T/c-solarized.txt"
 '
-assert_grep "39a hand-edited solarized normalizes to dark" $'\033[90m' "$T/c-solarized.txt" -F
-assert_no_grep_f "39a solarized never renders the light muted byte" $'\033[30m' "$T/c-solarized.txt"
+assert_grep "42a hand-edited solarized normalizes to dark" $'\033[90m' "$T/c-solarized.txt" -F
+assert_no_grep_f "42a solarized never renders the light muted byte" $'\033[30m' "$T/c-solarized.txt"
 
-# 39b. Theme-note copy: the appearance view discloses the instant
+# 42b. Theme-note copy: the appearance view discloses the instant
 #      dashboard adoption in both languages (roster disclosure kept —
 #      38c asserts that half on the rendered popup).
 lib_run 'tt settings.row.theme_note' > "$T/note-en.txt"
-assert_grep "39b EN note documents the instant dashboard adoption" 'instant on the running dashboard' "$T/note-en.txt"
+assert_grep "42b EN note documents the instant dashboard adoption" 'instant on the running dashboard' "$T/note-en.txt"
 ( export HERDR_TTS_LANG=es
   lib_run 'tt settings.row.theme_note' > "$T/note-es.txt" )
-assert_grep "39b ES note documents the instant dashboard adoption" 'el dashboard lo adopta al vuelo' "$T/note-es.txt"
+assert_grep "42b ES note documents the instant dashboard adoption" 'el dashboard lo adopta al vuelo' "$T/note-es.txt"
 
-# 39c. Popup Theme Surfaces: the popups render through theme_color like
+# 42c. Popup Theme Surfaces: the popups render through theme_color like
 #      the dashboard — titles accent+bold, hints/borders/dividers muted —
 #      in BOTH themes, with wording byte-identical after SGR stripping
 #      (the 38b differential discipline applied to the popups).
-new_env s39c
+new_env s42c
 FX="$T/fixture.json"; make_fixture "$FX"
 write_herdr_stub "$FX"
 make_history "$HERDR_TTS_HISTORY_FILE"
@@ -3259,16 +3999,16 @@ printf 'q' | timeout 10 "$SCRIPT" --voice-settings > "$T/ps-dark.txt" 2>>"$T/err
   printf 'q' | timeout 10 "$SCRIPT" --voice-settings > "$T/ps-light.txt" 2>>"$T/err.log" )
 printf 'q' | timeout 10 "$SCRIPT" --voice-menu > "$T/pm-dark.txt" 2>>"$T/err.log"
 lib_run 'palette_preview w4:p1' > "$T/pp-dark.txt"
-assert_grep "39c settings dark: accent cyan on the title" $'\033[36m' "$T/ps-dark.txt" -F
-assert_grep "39c settings dark: muted bright-black on hints" $'\033[90m' "$T/ps-dark.txt" -F
-assert_grep "39c settings light: accent blue" $'\033[34m' "$T/ps-light.txt" -F
-assert_grep "39c settings light: muted near-black" $'\033[30m' "$T/ps-light.txt" -F
-assert_no_grep_f "39c settings dark never carries the light accent" $'\033[34m' "$T/ps-dark.txt"
-assert_no_grep_f "39c settings light never carries the dark muted" $'\033[90m' "$T/ps-light.txt"
-assert_grep "39c voice menu dark: title accent" $'\033[36m' "$T/pm-dark.txt" -F
-assert_grep "39c voice menu dark: hint+border muted" $'\033[90m' "$T/pm-dark.txt" -F
-assert_grep "39c palette preview dark: header accent" $'\033[36m' "$T/pp-dark.txt" -F
-assert_grep "39c palette preview dark: turns divider muted" $'\033[90m' "$T/pp-dark.txt" -F
+assert_grep "42c settings dark: accent cyan on the title" $'\033[36m' "$T/ps-dark.txt" -F
+assert_grep "42c settings dark: muted bright-black on hints" $'\033[90m' "$T/ps-dark.txt" -F
+assert_grep "42c settings light: accent blue" $'\033[34m' "$T/ps-light.txt" -F
+assert_grep "42c settings light: muted near-black" $'\033[30m' "$T/ps-light.txt" -F
+assert_no_grep_f "42c settings dark never carries the light accent" $'\033[34m' "$T/ps-dark.txt"
+assert_no_grep_f "42c settings light never carries the dark muted" $'\033[90m' "$T/ps-light.txt"
+assert_grep "42c voice menu dark: title accent" $'\033[36m' "$T/pm-dark.txt" -F
+assert_grep "42c voice menu dark: hint+border muted" $'\033[90m' "$T/pm-dark.txt" -F
+assert_grep "42c palette preview dark: header accent" $'\033[36m' "$T/pp-dark.txt" -F
+assert_grep "42c palette preview dark: turns divider muted" $'\033[90m' "$T/pp-dark.txt" -F
 # Wording identity: the theme LABEL is the only theme-dependent visible
 # text in the index view — normalize it (norm_frame precedent), then the
 # SGR-stripped frames must be byte-identical between themes.
@@ -3276,15 +4016,15 @@ norm_popup() { # $1 file → SGR-free copy with the theme label normalized
   strip_ansi "$1" | sed -E 's/(Theme|Tema):([[:space:]]+)(Dark|Light|Oscuro|Claro)/\1:\2T/'
 }
 diff <(norm_popup "$T/ps-dark.txt") <(norm_popup "$T/ps-light.txt") > /dev/null \
-  && ok "39c popup wording identical between themes (only color bytes differ)" \
-  || bad "39c popup wording drifted between themes"
+  && ok "42c popup wording identical between themes (only color bytes differ)" \
+  || bad "42c popup wording drifted between themes"
 
-# 39d. Live Popup Re-color: the settings popup is long-running while open;
+# 42d. Live Popup Re-color: the settings popup is long-running while open;
 #      theme_sync at the top of its render path re-reads TTS_THEME from
 #      config.env per frame, so flipping the file mid-process re-colors
 #      the SAME popup on its next frame (the popup is its own adopter —
-#      the 39a dashboard discipline extended to the popup surfaces).
-new_env s39d
+#      the 42a dashboard discipline extended to the popup surfaces).
+new_env s42d
 FX="$T/fixture.json"; make_fixture "$FX"
 write_herdr_stub "$FX"
 export HERDR_TTS_CONFIG_FILE="$T/config.env"
@@ -3295,13 +4035,13 @@ lib_run '
   printf "live=%s\n" "$TTS_THEME" > "'"$T"'/live.txt"
   settings_render > "'"$T"'/pf2.txt"
 '
-assert_grep "39d frame 1 (before the write) renders the dark accent" $'\033[36m' "$T/pf1.txt" -F
-assert_grep "39d frame 1 renders the dark muted" $'\033[90m' "$T/pf1.txt" -F
-assert_grep "39d the file write leaves the popup live var untouched" '^live=dark$' "$T/live.txt"
-assert_grep "39d frame 2 (after the write) adopts the light accent" $'\033[34m' "$T/pf2.txt" -F
-assert_grep "39d frame 2 adopts the light muted" $'\033[30m' "$T/pf2.txt" -F
-assert_no_grep_f "39d frame 2 drops the dark accent" $'\033[36m' "$T/pf2.txt"
-assert_no_grep_f "39d frame 2 drops the dark muted" $'\033[90m' "$T/pf2.txt"
+assert_grep "42d frame 1 (before the write) renders the dark accent" $'\033[36m' "$T/pf1.txt" -F
+assert_grep "42d frame 1 renders the dark muted" $'\033[90m' "$T/pf1.txt" -F
+assert_grep "42d the file write leaves the popup live var untouched" '^live=dark$' "$T/live.txt"
+assert_grep "42d frame 2 (after the write) adopts the light accent" $'\033[34m' "$T/pf2.txt" -F
+assert_grep "42d frame 2 adopts the light muted" $'\033[30m' "$T/pf2.txt" -F
+assert_no_grep_f "42d frame 2 drops the dark accent" $'\033[36m' "$T/pf2.txt"
+assert_no_grep_f "42d frame 2 drops the dark muted" $'\033[90m' "$T/pf2.txt"
 unset HERDR_TTS_CONFIG_FILE
 
 echo
