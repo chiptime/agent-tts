@@ -3276,18 +3276,23 @@ assert_grep "39a help lists --reader" '--reader' "$T/help.txt"
 HERDR_TTS_LANG=es timeout 10 "$SCRIPT" --help > "$T/help-es.txt" 2>>"$T/err.log"
 assert_grep "39a ES help lists --reader" '--reader' "$T/help-es.txt"
 
-# 39b. No playback (socket path points nowhere): rc 0, one English line on
-#      stderr, stdout untouched — the alternate screen is never entered.
-timeout 10 python3 "$READER_PY" > "$T/np-out.txt" 2> "$T/np-err.txt"
+# 39b. No playback (socket path points nowhere, lock isolated): rc 0 after a
+#      READABLE in-popup notice — the renderer enters the alternate screen,
+#      shows the English line long enough to see (NOTICE_SECS), restores the
+#      screen and exits; stderr carries the same notice for CLI use.
+AGENT_TTS_SOCKET="$T/dead.sock" AGENT_TTS_LOCK_FILE="$T/nonexistent.lock" \
+  timeout 10 python3 "$READER_PY" > "$T/np-out.txt" 2> "$T/np-err.txt"
 [[ $? -eq 0 ]] && ok "39b no-playback renderer exits rc=0" || bad "39b renderer rc!=0"
 assert_grep "39b stderr carries the English notice" '^No playback in progress\.$' "$T/np-err.txt"
-[[ ! -s "$T/np-out.txt" ]] && ok "39b stdout stays empty (no alt-screen)" || bad "39b stdout not empty"
+assert_grep "39b notice rendered inside the popup" 'No playback in progress\.' "$T/np-out.txt"
+assert_grep "39b alt-screen ON entered for the notice" $'\033[?1049h' "$T/np-out.txt" -F
+assert_grep "39b alt-screen restored after the notice" $'\033[?1049l' "$T/np-out.txt" -F
 # Same path through the full CLI flag: outside tmux --reader delegates
 # INLINE to the renderer (stub venv python → python3 + PYTHONPATH shim).
-timeout 10 "$SCRIPT" --reader > "$T/np-cli.txt" 2> "$T/np-cli-err.txt"
+AGENT_TTS_SOCKET="$T/dead.sock" AGENT_TTS_LOCK_FILE="$T/nonexistent.lock" \
+  timeout 10 "$SCRIPT" --reader > "$T/np-cli.txt" 2> "$T/np-cli-err.txt"
 [[ $? -eq 0 ]] && ok "39b --reader (no tmux) runs inline rc=0" || bad "39b cli rc!=0"
 assert_grep "39b CLI inline path prints the notice" 'No playback in progress\.' "$T/np-cli-err.txt"
-[[ ! -s "$T/np-cli.txt" ]] && ok "39b CLI stdout stays empty" || bad "39b cli stdout not empty"
 
 # 39c. Live frames from a canned IPC server: alternate screen + dim header
 #      + karaoke SGR + word wrap + clean q exit.
@@ -3800,9 +3805,11 @@ timeout 10 "$SCRIPT" --render-html "$T/in.txt" "$T/g-out.html" > "$T/g-run.txt" 
 # ═══ 41. reader vs remote-engine ERR replies (karaoke IPC hardening) ═══
 # A remote-playback engine without the read-only karaoke family answers
 # "ERR: command '...' is not supported..." on a LIVE socket. fetch() must
-# treat that as absence of playback: rc 0, one English line on stderr, and
-# NOTHING on stdout — the alternate screen is never entered and the ERR
-# text is never rendered as the karaoke body.
+# treat that as absence of playback: rc 0, the notice rendered READABLY
+# inside the popup (alternate screen, held NOTICE_SECS, then restored) and
+# mirrored on stderr — and the ERR text is never rendered as the karaoke
+# body. The lock file is isolated so a live daemon's pending read cannot
+# stretch the attach grace during the battery.
 echo "── 41. reader degrades to no-playback when the engine replies ERR"
 new_env s41
 unset TMUX
@@ -3874,13 +3881,13 @@ while True:
 PYEOF
 python3 "$T/err_server.py" "$T/err.sock" & SRV41=$!
 for _ in $(seq 1 30); do [[ -S "$T/err.sock" ]] && break; sleep 0.1; done
-AGENT_TTS_SOCKET="$T/err.sock" timeout 10 python3 "$READER_PY" \
+AGENT_TTS_SOCKET="$T/err.sock" AGENT_TTS_LOCK_FILE="$T/nonexistent.lock" timeout 10 python3 "$READER_PY" \
   > "$T/err-out.txt" 2> "$T/err-err.txt" < /dev/null
 rc=$?
 [[ $rc -eq 0 ]] && ok "41 renderer exits rc=0 on ERR replies" || bad "41 renderer rc=$rc"
 assert_grep "41 stderr carries the English notice" '^No playback in progress\.$' "$T/err-err.txt"
-[[ ! -s "$T/err-out.txt" ]] && ok "41 stdout stays empty" || bad "41 stdout not empty: $(head -c 120 "$T/err-out.txt")"
-assert_no_grep_f "41 never writes the alternate-screen ON sequence" $'\033[?1049h' "$T/err-out.txt"
+assert_grep "41 notice rendered inside the popup" 'No playback in progress\.' "$T/err-out.txt"
+assert_grep "41 alt-screen restored after the notice" $'\033[?1049l' "$T/err-out.txt" -F
 assert_no_grep_f "41 never renders the ERR text as the body" 'ERR: command' "$T/err-out.txt"
 kill "$SRV41" 2>/dev/null || true
 
