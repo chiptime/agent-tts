@@ -53,7 +53,12 @@ def _render_html_main(argv):
     except Exception as exc:  # engine down → exit 3, no partial HTML
         print(f"render-html: agent_tts unavailable: {exc}", file=sys.stderr)
         return 3
-    return reader_pipeline.render_to_files(raw, out_path, map_path)
+    # The CLI consumes a FILE whose content IS the whole document: scrollback
+    # turn extraction (extract_last_turn) must never run here — the heuristic
+    # eats leading non-turn lines (e.g. a top `# heading`). The pane-reading
+    # caller keeps render()'s default (pre_extracted=False); extraction is
+    # that caller's purpose, not this one's.
+    return reader_pipeline.render_to_files(raw, out_path, map_path, pre_extracted=True)
 
 
 if len(sys.argv) > 1 and sys.argv[1] == "--render-html":
