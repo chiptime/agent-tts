@@ -307,6 +307,75 @@ def test_play_with_file_plays_through_session(channel, monkeypatch, tmp_path):
         _stop_daemon(d)
 
 
+def _write_silent_wav(tmp_path, frames: int = 2400):
+    """Writes a 0.1 s silent WAV (same shape as the file-play test above)."""
+    import struct
+    import wave
+
+    wav_path = tmp_path / "clip.wav"
+    with wave.open(str(wav_path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(24000)
+        w.writeframes(struct.pack("<h", 0) * frames)
+    return str(wav_path)
+
+
+def test_play_file_with_unavailable_remote_target_falls_back_to_local(
+    channel, monkeypatch, capsys, tmp_path
+):
+    """B6: a delegated replay keeps the documented local fallback.
+
+    --play-file routes through the daemon; when the remote target is
+    unavailable (wsl-ps without powershell.exe), the legacy in-process
+    replay path warned once and played locally (tests/test_play_file_target.py,
+    README replay section). The delegated path must honor the same
+    contract instead of a hard ERR reply.
+    """
+    import agent_tts.cli as cli_mod
+
+    wav_path = _write_silent_wav(tmp_path)
+    monkeypatch.setattr(cli_mod, "is_wsl_ps_available", lambda: False)
+    d = _start_daemon(channel, monkeypatch, target_env="wsl-ps")
+    played = []
+
+    def recording_play(self, decoded):
+        played.append(type(self).__name__)
+        self.state["status"] = "playing"
+
+    monkeypatch.setattr(AudioSession, "play", recording_play)
+    try:
+        reply = d.handle_command("play " + json.dumps({"file": wav_path}))
+        assert reply == "status=done"
+        # The local session carried the audio, not a remote one.
+        assert played == ["AudioSession"]
+        assert "falling back to local playback" in capsys.readouterr().err
+    finally:
+        monkeypatch.setattr(AudioSession, "play", _fake_play())
+        _stop_daemon(d)
+
+
+def test_speak_with_unavailable_remote_target_stays_a_clear_error(
+    channel, monkeypatch, capsys
+):
+    """B6 boundary: the replay fallback must not soften the speak path.
+
+    A forced wsl-ps target without powershell.exe keeps the documented
+    clear-error contract (README wsl-ps section) on text plays.
+    """
+    import agent_tts.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "is_wsl_ps_available", lambda: False)
+    d = _start_daemon(channel, monkeypatch, target_env="wsl-ps")
+    try:
+        reply = d.handle_command("play " + json.dumps({"text": "hola"}))
+        assert reply == "ERR: playback target unavailable (exit 1)"
+        with d._lock:
+            assert d.active_session is None
+    finally:
+        _stop_daemon(d)
+
+
 # --- CONF-1: large delegated payloads over the real IPC framing ------------------------
 
 
