@@ -188,6 +188,8 @@ agent-tts --ipc-cmd shutdown # orderly daemon exit (also SIGTERM/SIGINT)
 - Terminal view flags (`--highlight`, `--zen`, `--autoscroll`, `--bionic`) travel with the play request and render where the daemon runs — meaningful with `agent-tts --foreground` in your terminal, inert for a detached daemon.
 - `status` from the daemon adds `uptime=`, and reports `status=idle uptime=… provider=… playback=…` when nothing is playing.
 
+**Playback queue (architecture note):** inside the daemon, a priority queue manager (`agent_tts.queue_manager`) sits above the playback session and serializes everything into a single active session — playback never overlaps. It schedules by event priority (`blocked > done > working`, FIFO within a level), applies the per-event policy (`queue` / `preempt` / `coalesce`), and supervises liveness: a session that stops making progress for 30 s (configurable) is terminated and the queue moves on, so a hung playback can never wedge the daemon. The IPC surface to enqueue with priority and inspect the queue lands with the AT-08 release; the manager itself is already in place.
+
 **systemd user unit example** (explicit start, no idle timeout — the supervisor owns the lifetime):
 
 ```ini

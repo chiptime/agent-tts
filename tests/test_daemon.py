@@ -20,6 +20,7 @@ import agent_tts.ipc as ipc
 from agent_tts import audio
 from agent_tts.audio import AudioSession
 from agent_tts.daemon import Daemon, ProviderCache, _inject_daemon_fields
+from agent_tts.queue_manager import Policy, Priority, QueueManager
 
 
 @pytest.fixture
@@ -845,3 +846,29 @@ def test_inject_daemon_fields_keeps_free_text_field_last():
 
 def test_inject_daemon_fields_appends_without_free_text():
     assert _inject_daemon_fields("status=stopped", " uptime=7") == "status=stopped uptime=7"
+
+
+# --- Queue manager mount point (BLOQUE 1.3 / AT-08, hito Cola) -------------------------
+
+
+def test_daemon_constructs_the_queue_manager_at_the_mount_point():
+    """T2 seam: the manager sits above the active-session slot from startup.
+
+    The play path is intentionally unchanged in this unit (the IPC
+    enqueue command lands in T3); what must hold today is that the mount
+    point BLOQUE 1.2 reserved is occupied by a healthy, idle manager.
+    """
+    d = Daemon(socket_path="unused.sock")
+    assert isinstance(d.queue_manager, QueueManager)
+    snap = d.queue_manager.snapshot()
+    assert snap.queue_len == 0
+    assert snap.active is None
+    assert d.active_session is None  # the session slot below the manager
+
+
+def test_shutdown_closes_the_queue_manager():
+    """Daemon teardown stops the manager's supervisor with it."""
+    d = Daemon(socket_path="unused.sock")
+    d._shutdown()
+    with pytest.raises(RuntimeError):
+        d.queue_manager.enqueue(priority=Priority.DONE, policy=Policy.QUEUE)

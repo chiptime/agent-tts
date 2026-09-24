@@ -65,6 +65,7 @@ from agent_tts.ipc import (
 from agent_tts.ownership import owns_channel
 from agent_tts.playback_target import InvalidPlaybackTarget, resolve_target
 from agent_tts.providers import TTSProvider, get_provider
+from agent_tts.queue_manager import QueueManager
 
 
 def autostart_idle_timeout_sec() -> Optional[float]:
@@ -232,6 +233,13 @@ class Daemon:
         self._last_request = time.time()
         self._inflight = 0
         self._stop = threading.Event()
+        # Queue mount point (BLOQUE 1.3 / AT-08, hito Cola): the manager
+        # sits above the active-session slot reserved in 1.2, with born-in
+        # liveness supervision (RS-5: a wedged session auto-resolves). This
+        # unit constructs it and keeps the play path unchanged; the IPC
+        # enqueue/status routing and the real playback adapter land in the
+        # next unit, which swaps the placeholder runner.
+        self.queue_manager = QueueManager(runner=self._queue_runner_placeholder)
         # Set under _lock at the top of _shutdown: once teardown has
         # started, new play registrations are refused with a
         # deterministic error so no audible session can register after
@@ -343,6 +351,7 @@ class Daemon:
                 session.stop()
             except Exception:
                 pass
+        self.queue_manager.shutdown()  # stops supervision with the daemon
         # Let in-flight handlers (a play mid-playback) observe the stop and
         # send their final reply before the channel disappears.
         deadline = time.time() + self.DRAIN_TIMEOUT_SEC
@@ -557,6 +566,19 @@ class Daemon:
         with open(file_path, "rb") as f:
             data = f.read()
         session.play(miniaudio.decode(data))
+
+    def _queue_runner_placeholder(self, item, on_finished):
+        """Integration point for the IPC enqueue unit (BLOQUE 1.3 T3).
+
+        The daemon-side playback adapter — build a session over the
+        active-session slot, return its SessionHandle, call on_finished
+        when playback ends — replaces this placeholder. Nothing routes
+        through the queue until then, so reaching this method means a
+        wiring bug, not a playback condition.
+        """
+        raise RuntimeError(
+            "daemon queue playback is wired by the IPC enqueue unit (BLOQUE 1.3 T3)"
+        )
 
 
 def run_daemon(
