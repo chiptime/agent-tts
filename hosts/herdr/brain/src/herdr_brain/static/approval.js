@@ -45,6 +45,12 @@
  * next utterance still resolves first (command precedence, PRD §5).
  * All of them refuse without a live gate, and the HTTP ones also refuse
  * while a round is in flight (the caller falls back to no-op).
+ *
+ * Boot reload recovery (T7): recover(sessionId) GETs
+ * /approval/current?session_id=… and re-arms a live gate through the
+ * same open() path — card, pill and mic routing follow from the
+ * existing emissions. Every failure is silent and the promise never
+ * rejects, so the caller can fire it during init without guarding.
  */
 (function (global) {
   "use strict";
@@ -87,6 +93,19 @@
       resolving = false;
       finish();
       setState("listening");
+    }
+
+    /* Silent expiry (PRD §6): no spoken line — the server lazy-expires
+     * the gate on its next touch. The payload stays so the UI can gray
+     * the card out. */
+    function expireIfDue() {
+      if (!gate || expired) return;
+      if (expiresAt - now() <= 0) {
+        expired = true;
+        dictating = false;
+        onExpired();
+        setState("listening");
+      }
     }
 
     function post(url, body) {
@@ -319,6 +338,37 @@
       return true;
     }
 
+    /* Boot reload recovery (T7, PRD §5): GET /approval/current with the
+     * client's session id; a live gate re-enters confirming via arm()
+     * (the same path as open()). Every failure — network, non-ok, or a
+     * malformed body — is a silent no-op and the promise never rejects:
+     * no gate equals normal boot.
+     *
+     * Resolves to the armed payload when a LIVE gate was recovered (the
+     * caller re-opens the drawer with the restored card) and null
+     * otherwise — including a payload whose window already closed
+     * (expires_in_s 0, the lazy-expiry razor edge): it is expired on
+     * the spot through the normal silent path, never a zombie
+     * confirming state. */
+    function recover(sessionId) {
+      var qs = sessionId ? "?session_id=" + encodeURIComponent(sessionId) : "";
+      return request("/approval/current" + qs)
+        .then(function (resp) {
+          if (!resp.ok) return null;
+          return resp.json();
+        })
+        .then(function (data) {
+          var approval = data && data.approval;
+          if (!approval || !approval.gate_id) return null;
+          arm(approval);
+          expireIfDue();
+          return gate && !expired ? approval : null;
+        })
+        .catch(function () {
+          return null;
+        });
+    }
+
     return {
       active: function () { return !!gate && !expired; },
       gate: function () { return gate; },
@@ -332,17 +382,9 @@
         if (!approval || !approval.gate_id) return;
         arm(approval);
       },
+      recover: recover,
       tick: function () {
-        if (!gate || expired) return;
-        if (expiresAt - now() <= 0) {
-          // Silent expiry (PRD §6): no spoken line — the server
-          // lazy-expires the gate on its next touch. The payload stays
-          // so the UI can gray the card out.
-          expired = true;
-          dictating = false;
-          onExpired();
-          setState("listening");
-        }
+        expireIfDue();
       },
       routeUtterance: routeUtterance,
       patchText: patchText,

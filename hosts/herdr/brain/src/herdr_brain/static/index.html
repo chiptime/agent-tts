@@ -340,6 +340,15 @@
       #pending-banner.error      { background: #3a1414; }
       #pending-banner.permission { background: #14293a; }
     }
+    /* T7 coexistence (PRD action-approval-gate §8): while the approval
+     * card is showing, the agent pending banner stays visible but
+     * visually SECONDARY to the gate — dimmed and desaturated, never
+     * hidden (drawer PRD G3). app.js toggles body.gate-live from the
+     * card's presence; the banner's own logic is untouched. */
+    body.gate-live #pending-banner {
+      opacity: 0.72;
+      filter: saturate(0.5);
+    }
     #glance-label {
       flex: 0 0 auto;
       padding: 8px 12px 2px;
