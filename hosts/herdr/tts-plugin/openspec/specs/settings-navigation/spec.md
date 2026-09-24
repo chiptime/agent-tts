@@ -6,18 +6,18 @@ Two-level Ajustes navigation — a category index plus one view per category —
 
 ## Requirements
 
-### Requirement: Two-Level Navigation Model (Smoke: 32a, 32b)
+### Requirement: Two-Level Navigation Model (Smoke: 32a, 32b, 38c)
 
-The index MUST list exactly five categories — `v` Voz, `a` Audio, `n` Notificaciones, `r` Lectura automática, `t` Apariencia (case-insensitive) — with no raw knob rows; each key MUST open its view. The global language row `l` and restart `R` MUST remain on the index.
-(Previously: four categories; the listing incorrectly named `l` as Lectura's key — runtime truth is `r` for Lectura, `l` is the language row.)
+The index MUST list exactly four categories — `v` Voz, `a` Audio, `n` Notificaciones, `r` Lectura automática (case-insensitive) — with no raw knob rows; each key MUST open its view. The global language row `l` and restart `R` MUST remain on the index; `t` MUST warn unknown (no appearance category exists — `TTS_THEME` is a config-only managed key, see terminal-theme).
+(Previously: five categories including `t` Apariencia with a theme cycle knob; the UI surface was removed 2026-09-24 because the terminal owns the popup background, so the knob was confusing surface area. The listing correction stands: `r` is Lectura's key, `l` is the language row.)
 
 #### Scenario: Index lists categories
 
-- GIVEN the index, WHEN the frame renders, THEN five category rows plus the `R` hint appear, no raw knobs, AND `v` opens Voz
+- GIVEN the index, WHEN the frame renders, THEN four category rows plus the `l`/`R` hints appear, no raw knobs, no Apariencia row, AND `v` opens Voz
 
-#### Scenario: t opens Apariencia
+#### Scenario: t warns unknown on the index
 
-- GIVEN the index, WHEN `t`, THEN the Apariencia view renders as the current category
+- GIVEN the index, WHEN `t`, THEN the unknown-key hint fires without an appearance segment AND no category view opens
 
 ### Requirement: Entry Points (Smoke: 32a, 26e)
 
@@ -58,20 +58,16 @@ Each render MUST be ONE physical clamped write (`menu_cap_rows`); UI copy MUST b
 
 #### Scenario: Copy follows interface language
 
-- GIVEN `HERDR_TTS_LANG=es` then `en`, WHEN the Apariencia view renders, THEN copy is Spanish ("Apariencia", "Tema") then English ("Appearance", "Theme")
+- GIVEN `HERDR_TTS_LANG=es` then `en`, WHEN the index renders, THEN copy is Spanish ("Ajustes de voz y audio", "Idioma") then English ("Voice & Audio Settings", "Language")
 
-### Requirement: Knob Grouping Completeness (Smoke: 32a, 32b)
+### Requirement: Knob Grouping Completeness (Smoke: 32a, 32b, 38c)
 
-The views MUST partition exactly the 16 knobs — Voz `p g n u i` (5), Audio `d c r s` (4), Notificaciones `t f w` (3), Lectura `v a b` (3), Apariencia `t` (1) — each rendering ONLY its own.
-(Previously: 15 knobs across four categories.)
+The views MUST partition exactly the 15 knobs — Voz `p g n u i` (5), Audio `d c r s` (4), Notificaciones `t f w` (3), Lectura `v a b` (3) — each rendering ONLY its own. No theme knob exists: `TTS_THEME` is config-only.
+(Previously: 16 knobs across five categories; the Apariencia `t` knob was removed with its category.)
 
 #### Scenario: Category views are exclusive
 
 - GIVEN any category view, WHEN the frame renders, THEN only that category's knob rows appear
-
-#### Scenario: t keys are view-scoped
-
-- GIVEN Notificaciones and Apariencia, WHEN `t` is pressed in each view, THEN each dispatches its own semantics (notifications knob vs theme cycle)
 
 ### Requirement: Scoped Key Dispatch (Smoke: 32b, 32g)
 
@@ -108,22 +104,4 @@ Smoke scenario 32 SHALL remain the executable proof of every requirement above; 
 #### Scenario: Scenario 32 proves capability
 
 - GIVEN the hermetic suite runs, WHEN scenario 32 executes, THEN every requirement's cited assertions pass
-### Requirement: Appearance Category and Theme Knob (Smoke: 38c, 38e)
 
-Inside Apariencia, knob `t`/`T` MUST cycle `dark ↔ light`, update the live variable, persist via `config_set TTS_THEME`, and re-render immediately in the same popup. Success MUST surface `SETTINGS_NOTE`; write failure MUST keep the prior value and surface `SETTINGS_WARN`. An unrecognized key MUST warn scoped to the theme knob. Category, knob, value, and note copy MUST exist in both EN and ES tables, noting the roster adopts the plugin theme regardless of pane profiles.
-
-#### Scenario: Cycle persists across restart
-
-- GIVEN `TTS_THEME=dark`, WHEN the knob cycles to light, THEN `config.env` stores `TTS_THEME=light` AND the value survives a daemon restart (≥10 attempts)
-
-#### Scenario: Immediate re-render
-
-- GIVEN the Apariencia view, WHEN `t` cycles the theme, THEN the same popup re-renders showing the new value without exiting
-
-#### Scenario: Write failure keeps old value
-
-- GIVEN a failing config write, WHEN `t`, THEN the old theme stays active and an inline warning appears
-
-#### Scenario: Unknown key warns scoped
-
-- GIVEN the Apariencia view, WHEN `@`, THEN the inline warning names the key and hints only the theme knob
