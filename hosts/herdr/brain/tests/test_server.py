@@ -1493,6 +1493,24 @@ class TestRenderedConversation:
             assert turn["html"] is not None and turn["map"] == READER_MAP
         assert len(reader.calls) == 2  # one render per turn, counted via seam
 
+    def test_rendered_without_expansion_flag(self, settings, audio_dir, monkeypatch):
+        """reader-always-formatted regression guard: the endpoint serves
+        html for every (cached) turn with NO client-side expansion flag
+        and no query string — the exact shape the client now relies on
+        by default. Contract unchanged, so this passes before and after
+        the client rewiring (no behavior RED)."""
+        client = self._client(
+            settings, audio_dir, monkeypatch,
+            reader=FakeReaderRenderer(), tools_result=CONVERSATION_RESULT,
+        )
+        resp = client.get("/conversation/w1:p9/rendered")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert set(body) == {"pane_id", "session_id", "turns"}
+        for turn in body["turns"]:
+            assert turn["html"] is not None   # formatted arrives by default
+            assert turn["map"] is not None    # null-pair invariant: both set
+
     def test_turns_preserve_source_order(self, settings, audio_dir, monkeypatch):
         client = self._client(
             settings, audio_dir, monkeypatch, tools_result=CONVERSATION_RESULT,
