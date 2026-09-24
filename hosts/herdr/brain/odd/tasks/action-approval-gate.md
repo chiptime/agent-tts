@@ -41,7 +41,7 @@ prompt-only (PRD D1/D2).
 
 ## Tasks
 
-### [ ] T1 — ApprovalGateStore + config timeout
+### [x] T1 — ApprovalGateStore + config timeout
 Files: `src/herdr_brain/approval.py` (new), `src/herdr_brain/config.py`,
 `tests/test_approval.py` (new).
 Gate store mirroring `ConversationStore`: lock, `normalize(session_id)`,
@@ -133,11 +133,15 @@ Route: inline (copy + smoke are per-action).
 
 ## Progress / Evidence
 
-- (empty — not started)
+- T1 done — `.venv/bin/python -m pytest tests/test_approval.py -q` → 27 passed;
+  `.venv/bin/python -m pytest -q` → 278 passed (1 pre-existing
+  starlette/anyio DeprecationWarning, unrelated). Commit hash recorded by
+  orchestrator.
 - Commit log: (to record per task)
 
 ## Next Step
 
 Delivery resolved (USER DECISION 2026-09-24): work-unit commits straight
 to local `main` — never push, no remote, no PRs. Supersedes the earlier
-"ask chain strategy" note (no PRs exist, so no chain applies). Begin T1.
+"ask chain strategy" note (no PRs exist, so no chain applies). Begin
+T2 (voice resolve lexicon).
