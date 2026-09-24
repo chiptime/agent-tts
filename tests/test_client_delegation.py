@@ -323,6 +323,27 @@ def test_kill_uses_pid_file_and_spares_unrelated_processes(channel, monkeypatch,
     assert daemon_mod._kill_wedged_daemon() is False
 
 
+def test_kill_wedged_daemon_survives_missing_sigkill(monkeypatch, tmp_path):
+    """Native Windows has no signal.SIGKILL: the forced kill must not crash
+    with an AttributeError escaping into ensure_daemon."""
+    import signal as signal_mod
+
+    pid_file = tmp_path / "wedged.pid"
+    pid_file.write_text("424242")
+    monkeypatch.setattr(audio, "PID_FILE", str(pid_file))
+    monkeypatch.setattr(daemon_mod, "_pid_looks_like_agent_tts", lambda pid: True)
+    kills = []
+
+    def fake_pid_alive(pid):
+        return not kills  # alive until the kill is delivered
+
+    monkeypatch.setattr(daemon_mod, "_pid_alive", fake_pid_alive)
+    monkeypatch.setattr(daemon_mod.os, "kill", lambda pid, sig: kills.append((pid, sig)))
+    monkeypatch.delattr(signal_mod, "SIGKILL", raising=False)
+    assert daemon_mod._kill_wedged_daemon() is True
+    assert kills == [(424242, 9)]
+
+
 # --- Control commands ------------------------------------------------------------------
 
 
