@@ -160,7 +160,12 @@ Route: inline (copy + smoke are per-action).
   `approval{}` via `approval_payload()` and appends the verbatim closer
   "¿Se envía?" before TTS; `create_app` exposes `app.state.approval_store`
   and attaches it to the LLM; every `/ask` supersedes the session's live
-  gate first (PRD §4). Commit hash recorded by orchestrator.
+  gate first (PRD §4).
+- Full-suite baseline going forward: 354 after T3.
+  - `6dc49cd` feat(approval): intercept send_to_session behind approval gate
+  - Replay note (T4): frozen args live at `gate.action.{text, timeout_ms,
+    pane_id, agent}`; `text` is dispatch-raw — sanitization happens inside
+    `herdr.send_prompt` at replay, identical to the live path.
 
 ## Next Step
 
