@@ -135,9 +135,13 @@ Route: inline (copy + smoke are per-action).
 
 - T1 done — `.venv/bin/python -m pytest tests/test_approval.py -q` → 27 passed;
   `.venv/bin/python -m pytest -q` → 278 passed (1 pre-existing
-  starlette/anyio DeprecationWarning, unrelated). Commit hash recorded by
-  orchestrator.
-- Commit log: (to record per task)
+  starlette/anyio DeprecationWarning, unrelated).
+- Commit log:
+  - `ed4884f` docs: add action-approval-gate PRD and task plan
+  - `5ca7712` feat(approval): add ApprovalGateStore with lazy expiry and config timeout
+  - T1 RDD assessment: tier high (`high_risk`, process_boundary signal),
+    review_due=true — but RDD switch is OFF (clone-local), so no native
+    review runs; ordinary checks only.
 
 ## Next Step
 
