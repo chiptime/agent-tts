@@ -18,7 +18,11 @@ class TestIPC(unittest.TestCase):
                 return "status=playing pos=15.00 total=10.00 label=Test"
             return f"OK: {cmd}"
 
-        server = IPCServer(command_handler=mock_handler, socket_path=sock_file)
+        # Opt out of the ownership default: this suite exercises the raw
+        # transport with a private temp path, no election involved.
+        server = IPCServer(
+            command_handler=mock_handler, socket_path=sock_file, require_ownership=False
+        )
         server.start()
         time.sleep(0.1)
 
@@ -36,7 +40,12 @@ class TestCommandFraming(unittest.TestCase):
     """RF-AT-09-4: the server reads commands with the client's line framing."""
 
     def _serve_echo(self, sock_file):
-        server = IPCServer(command_handler=lambda cmd: f"len:{len(cmd)}", socket_path=sock_file)
+        # require_ownership=False: raw framing test on a private temp path.
+        server = IPCServer(
+            command_handler=lambda cmd: f"len:{len(cmd)}",
+            socket_path=sock_file,
+            require_ownership=False,
+        )
         server.start()
         time.sleep(0.1)
         return server

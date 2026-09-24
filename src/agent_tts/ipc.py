@@ -36,7 +36,10 @@ def _is_windows() -> bool:
     return sys.platform == "win32"
 
 
-def server_socket(socket_path: str = IPC_SOCKET) -> Optional[socket.socket]:
+def server_socket(
+    socket_path: str = IPC_SOCKET,
+    require_ownership: bool = False,
+) -> Optional[socket.socket]:
     """Creates the bound IPC server socket for the current platform.
 
     Never steals a live channel (RF-AT-09-2): a socket path that answers
@@ -45,9 +48,14 @@ def server_socket(socket_path: str = IPC_SOCKET) -> Optional[socket.socket]:
     On Windows the port marker is the channel: a non-owner never overwrites
     a marker it does not own (RF-AT-09-5). Returns None — no channel — when
     this process may not expose the transport.
+
+    With ``require_ownership`` the election gates every path, a free one
+    included (US-AT-09-1): a process that has not won the ownership lock
+    never binds first, so it cannot expose the channel while the elected
+    owner is still alive but unbound.
     """
     if _is_windows():
-        if os.path.exists(IPC_PORT_FILE) and not owns_channel():
+        if not owns_channel() and (require_ownership or os.path.exists(IPC_PORT_FILE)):
             return None
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -59,6 +67,12 @@ def server_socket(socket_path: str = IPC_SOCKET) -> Optional[socket.socket]:
         except OSError:
             pass
         return sock
+    if require_ownership and not owns_channel():
+        # Lost (or never entered) the election: a free path is not ours to
+        # take. The live-channel and orphan-reclaim branches below already
+        # refuse non-owners; this closes the free-path gap so the loser can
+        # never expose the channel before the elected owner binds.
+        return None
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         sock.bind(socket_path)
@@ -241,15 +255,24 @@ def _recv_command(conn: socket.socket) -> str:
 
 
 class IPCServer:
-    """Threaded IPC server (AF_UNIX on POSIX, TCP loopback on Windows) for controlling playback sessions."""
+    """Threaded IPC server (AF_UNIX on POSIX, TCP loopback on Windows) for controlling playback sessions.
+
+    The channel is owned by default (US-AT-09-1): the server binds only
+    after winning the ownership election, so a losing player never exposes
+    the control channel — free path included. Embedded and direct users
+    that manage the channel themselves opt out explicitly with
+    ``require_ownership=False``.
+    """
 
     def __init__(
         self,
         command_handler: Callable[[str], str],
         socket_path: str = IPC_SOCKET,
+        require_ownership: bool = True,
     ):
         self.command_handler = command_handler
         self.socket_path = socket_path
+        self.require_ownership = require_ownership
         self.server_sock: Optional[socket.socket] = None
         self.thread: Optional[threading.Thread] = None
         self._running = False
@@ -260,9 +283,14 @@ class IPCServer:
         A process that may not expose the channel (lost the ownership
         election, or a live server owns the transport) simply runs without
         IPC: start() leaves the server unset instead of stealing anything.
+        Ownership is required by default — the election also gates a free
+        path — while ``require_ownership=False`` keeps direct, election-less
+        usage working.
         """
         try:
-            self.server_sock = server_socket(self.socket_path)
+            self.server_sock = server_socket(
+                self.socket_path, require_ownership=self.require_ownership
+            )
             if self.server_sock is None:
                 return
             self.server_sock.listen(5)

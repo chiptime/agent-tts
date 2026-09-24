@@ -109,7 +109,12 @@ def _status_session(sentence_text: str, **kwargs) -> AudioSession:
 
 def _serve_status(session: AudioSession, socket_path: str) -> str:
     """Serves one status request from the session over a real IPC socket."""
-    server = ipc.IPCServer(command_handler=session.handle_ipc_command, socket_path=socket_path)
+    # require_ownership=False: payload contract test on a private temp path.
+    server = ipc.IPCServer(
+        command_handler=session.handle_ipc_command,
+        socket_path=socket_path,
+        require_ownership=False,
+    )
     server.start()
     time.sleep(0.05)
     try:
