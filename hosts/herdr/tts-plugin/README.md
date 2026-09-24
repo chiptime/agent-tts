@@ -79,6 +79,34 @@ bin/herdr-tts --speak <texto>               # speak on PC speakers, exit
 - The command is self-sufficient: it bootstraps its own venv on first
   use. Consumers must not invoke venv internals.
 
+### Reader pipeline: `--render-html` (HT-15)
+
+On-demand host-layer render (no audio, no daemon; `lib/reader_pipeline.py`):
+sanitizes an agent message — ANSI stripped, secrets redacted BEFORE any
+transformation, terminal chrome dropped while fences/tables/markers survive —
+then emits GFM-subset HTML whose sentence anchors carry `data-sent-idx`,
+`data-para-idx` and `id="tts-sent-<idx>"`, index-identical to the pinned
+engine's boundary enumeration (the same indices `scroll-info` reports during
+playback, so HT-16 can karaoke-highlight `#tts-sent-<sent_idx>`).
+
+```bash
+bin/herdr-tts --render-html <in> <out.html> [--map <out.map.json>]
+```
+
+- Exit codes: `0` success (including degraded/malformed input and
+  `coverage` alignment), `1` usage, `2` input unreadable or redaction
+  failure (fail closed — no file written), `3` engine (agent_tts)
+  unavailable.
+- The sidecar map is opt-in (`--map`, default off). It records the anchor
+  contract `reader-pipeline/anchors@1`: per-sentence `text`, DOM
+  `selector`, `block_ids`, `fragments`, `exact` flag, the alignment mode
+  (`exact` | `coverage`) and the staleness tuple
+  (`engine.lang/max_chars/summarize/lexicon_fp`) — anchors are valid only
+  against a speech invocation with the same tuple.
+- Everything is `html.escape`d; link schemes are restricted to
+  http/https (others render as plain text). Zero new dependencies:
+  stdlib + the pinned `agent_tts` only.
+
 ```
                       ┌──────────────────────────────────────────┐
                       │ Herdr Socket API                         │
@@ -320,6 +348,7 @@ Keys inside the menu (actions target the focused chat):
 | `Z` | Snooze GLOBAL (reuniones) |
 | `+` / `-` | Velocidad ±10% |
 | `d` / `o` | Abrir dashboard / paleta de voz |
+| `R` | Lector en vivo de la reproducción actual (popup karaoke; `q` / `Esc` cierran) |
 | `a` | Abrir Ajustes de voz y audio (dentro del menú; índice de categorías → `q`/`Esc`/`Enter` vuelve al índice y luego al menú) |
 | `q` / `Esc` | Salir |
 
@@ -339,7 +368,7 @@ Suggested family (deterministic — `herdr-tts keymap adopt --style ctrlalt` wri
 | `mute` | `ctrl+alt+m` | `rate_down` | `ctrl+alt+-` |
 | `snooze` | `ctrl+alt+z` | `dashboard` | `ctrl+alt+d` |
 | `snooze_global` | `ctrl+alt+g` | `palette` | `ctrl+alt+o` |
-| `menu` | `ctrl+alt+u` | — | — |
+| `menu` | `ctrl+alt+u` | `reader_open` | `ctrl+alt+shift+r` |
 
 (`paragraph_next` / `paragraph_prev` have no suggested chord, and `settings` ships without one too — the settings view lives inside the voice menu (key `a`); bind any of them yourself in `keymap.json` and `keymap apply` installs them too.)
 
@@ -362,6 +391,7 @@ The original one-chord-per-command map: fastest to press, but several letters **
 | `prefix+Z` | Snooze global | libre |
 | `prefix+m` | Mute pane | libre |
 | `prefix+=` / `prefix+-` | Velocidad ±10% | libre |
+| `prefix+R` | Lector en vivo (karaoke) | libre |
 
 Install the map (one `[[keys.command]]` per assigned chord) with:
 
@@ -431,8 +461,10 @@ herdr-tts --collie-url <url>   # Alias for --web-url (sets action button to 'Abr
 herdr-tts --click-redirect on  # Optional: tap notification body to open web URL directly (default: off)
 herdr-tts --render-pane <pane> # Export clean assistant speech of a pane directly to .mp3
 herdr-tts --speak "Hello"      # Synthesize custom text directly
+herdr-tts --render-html in.txt out.html # Sanitize an agent message into anchored reader HTML (no audio; opt-in sidecar: --map out.map.json)
 herdr-tts --dashboard          # Live TUI dashboard pane: snooze countdowns, per-pane gating, audio history
 herdr-tts --voice-palette      # fzf picker of chats and audio turns (focus / mute / snooze)
+herdr-tts --reader             # Live reader popup: karaoke follow-along of the current playback
 ```
 
 * **Supervised daemon startup:** the plugin's `[[startup]]` runs `_daemon-supervised` — a foreground watchdog that relaunches the daemon if it dies unplanned (5s backoff). Deliberate stops (`--restart-daemon`, the `R` key, single-instance takeover) arm a stop flag the supervisor consumes, so restarts are never fought over. Starts, deaths, relaunches and exit reasons land in `~/.local/state/herdr-tts/daemon.log`, so a silent death can't happen unnoticed.

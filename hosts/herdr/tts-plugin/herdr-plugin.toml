@@ -62,6 +62,18 @@ width = "60%"
 height = "55%"
 command = ["bin/herdr-tts", "--voice-settings"]
 
+# Live reader popup (HT-16): karaoke follow-along of the CURRENT playback.
+# Read-only IPC renderer (lib/herdr_reader.py behind the internal _reader
+# command): alternate-screen word highlighting + progress header; exits on
+# q/Esc or when playback ends. It never starts audio.
+[[panes]]
+id = "tts-reader"
+title = "TTS Live Reader"
+placement = "popup"
+width = "70%"
+height = "45%"
+command = ["bin/herdr-tts", "_reader"]
+
 [[actions]]
 id = "toggle-play"
 title = "Play / Stop Current Chat"
@@ -196,3 +208,9 @@ id = "voice-settings"
 title = "Open TTS Settings (popup)"
 contexts = ["workspace", "pane"]
 command = ["bin/herdr-tts", "--voice-settings"]
+
+[[actions]]
+id = "open-reader"
+title = "Open Live Reader (popup)"
+contexts = ["workspace", "pane"]
+command = ["herdr", "plugin", "pane", "open", "--plugin", "herdr.tts", "--entrypoint", "tts-reader"]

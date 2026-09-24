@@ -9,7 +9,7 @@ set -euo pipefail
 # Immutable agent-tts pin: tag preferred, full 40-char commit SHA while
 # agent-tts publishes no tags. Bare `main` and short SHAs are prohibited.
 # HERDR_AGENT_TTS_REF overrides for testing/dev only.
-AGENT_TTS_REF="${HERDR_AGENT_TTS_REF:-a30c003e25e9d952dad81ac6b7ff1a4e16d078e7}"
+AGENT_TTS_REF="${HERDR_AGENT_TTS_REF:-32e9bafbb113df847d7cd9b635b0e848ee182f6f}"
 AGENT_TTS_SRC="git+https://github.com/chiptime/agent-tts.git@${AGENT_TTS_REF}"
 
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/herdr-tts"
