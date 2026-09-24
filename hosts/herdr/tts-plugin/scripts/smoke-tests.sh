@@ -110,9 +110,10 @@
 #   38    tema claro (HT-14): TTS_THEME managed key (accept/reject, no
 #         filesystem side effect on reject), theme_color sole-emitter
 #         static gate + dark byte-identity via differential captures,
-#         light map + compound-width parity, Apariencia category: t
-#         opens/cycles the theme, persists across 10 cold starts, scoped
-#         warnings, bilingual copy
+#         light map + compound-width parity, theme WITHOUT a UI knob
+#         (chore/hide-appearance): the Apariencia category is hidden
+#         (index renders four categories, t warns unknown) and the
+#         value persists via config_set + fresh-process adoption
 #   39    reader popup (HT-16): lib/herdr_reader.py no-playback fail-open
 #         (stderr notice, rc 0), live frames from a canned unix-socket IPC
 #         server (alternate screen, dim header, karaoke SGR, word wrap,
@@ -2978,7 +2979,7 @@ assert_no_grep_f "37c no static voice catalog (RF-HT-13-4)" 'SETTINGS_VOICES' "$
 assert_no_grep "37c no inline audio decode in the host (RF-HT-13-2)" 'miniaudio' "$T/code-only.sh"
 assert_no_grep "37c no internal engine module imports (public API only)" 'from agent_tts\.|import agent_tts\.' "$T/code-only.sh"
 
-# ═══ 38. tema claro (HT-14): TTS_THEME, theme_color, Apariencia ═══
+# ═══ 38. tema claro (HT-14): TTS_THEME, theme_color, theme sin knob ═══
 # Engine IPC stub shared by the capture sub-scenarios: one synthesizing
 # status so the Motor line renders the accent color (the roster fixture
 # already covers ok/warn/muted); everything else delegates to python3.
@@ -3062,106 +3063,68 @@ capture 'q\n' "$T/rt-dark.txt"
 diff <(norm_frame "$T/rt-dark.txt") <(norm_frame "$T/dark.txt") > /dev/null \
   && ok "38b round-trip restores the dark baseline" || bad "38b round-trip ≠ dark baseline"
 
-# 38c. Appearance Category and Theme Knob + Two-Level Navigation:
-#      index `t` opens Apariencia (fifth row, after reading), the in-view
-#      `t` cycles dark↔light and re-renders the SAME popup (both labels in
-#      one capture), persists through config_set (note on the post-cycle
-#      frame, cleared on the next), a failing write keeps the old value
-#      (32h read-only-dir technique), an unknown key warns scoped to the
-#      theme knob, the exit hint stays on the grown index (no clamp), the
-#      copy is bilingual, and the persisted value survives 10 cold starts.
+# 38c. Theme Without a UI Knob (chore/hide-appearance): the Apariencia
+#      category is hidden from the UI — the index renders four categories,
+#      `t` on the index warns unknown (hint without an appearance
+#      segment), no view renders a theme knob row — while TTS_THEME
+#      stays a managed config-only key: config_set light persists and a
+#      FRESH popup process adopts the light map (config.env is what
+#      crosses the process boundary), config_set dark round-trips, and
+#      a failed write keeps the old value (32h read-only-dir technique,
+#      popup-free).
 new_env s38c
 FX="$T/fixture.json"; make_fixture "$FX"
 write_herdr_stub "$FX"
 export HERDR_TTS_CONFIG_FILE="$T/config.env"
 
-# unit: settings_cycle_value theme alternates and wraps to dark.
-lib_run 'settings_cycle_value theme dark' > "$T/cyc1.txt"
-grep -qx 'light' "$T/cyc1.txt" && ok "38c cycle unit: dark→light" || bad "38c dark→light answered: $(cat "$T/cyc1.txt")"
-lib_run 'settings_cycle_value theme light' > "$T/cyc2.txt"
-grep -qx 'dark' "$T/cyc2.txt" && ok "38c cycle unit: light→dark" || bad "38c light→dark answered: $(cat "$T/cyc2.txt")"
-lib_run 'settings_cycle_value theme bogus' > "$T/cyc3.txt"
-grep -qx 'dark' "$T/cyc3.txt" && ok "38c cycle unit: unknown current wraps to dark" || bad "38c wrap answered: $(cat "$T/cyc3.txt")"
+# negative index: the four categories stay, the Apariencia row is gone
+# and no theme knob text renders anywhere (RED before the removal).
+printf 'q' | timeout 10 "$SCRIPT" --voice-settings > "$T/idx.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "38c index-only run exits rc=0" || bad "38c rc!=0"
+assert_grep "38c index still lists the four categories" ' v  🎙 Voice' "$T/idx.txt" -F
+assert_no_grep "38c index hides the Apariencia/Appearance row" 'Apariencia|Appearance|theme \(dark / light\)' "$T/idx.txt"
+assert_no_grep_f "38c no theme knob row anywhere" 'Theme:' "$T/idx.txt"
 
-printf 'tq' | timeout 10 "$SCRIPT" --voice-settings > "$T/t-open.txt" 2>>"$T/err.log"
-[[ $? -eq 0 ]] && ok "38c t-open run exits rc=0" || bad "38c t-open rc!=0"
-assert_grep "38c t opens the Appearance view" 'herdr-tts · Settings · Appearance' "$T/t-open.txt" -F
-assert_grep "38c appearance row shows the theme knob" ' t  Theme:' "$T/t-open.txt" -F
-assert_grep "38c dark is the default label" 'Theme:               Dark' "$T/t-open.txt" -F
-assert_grep "38c view documents the roster adoption" 'chat roster adopts it too' "$T/t-open.txt"
-r38=$(grep -nF ' r  ⚙️  Auto-read' "$T/t-open.txt" | head -1 | cut -d: -f1)
-a38=$(grep -nF ' t  🎨 Appearance' "$T/t-open.txt" | head -1 | cut -d: -f1)
-[[ -n "$r38" && -n "$a38" && "$r38" -lt "$a38" ]] \
-  && ok "38c index lists Appearance after Auto-read" || bad "38c index row order wrong (reading=$r38 appearance=$a38)"
-assert_grep "38c exit hint still on the grown index (no clamp)" 'q/Esc quit' "$T/t-open.txt" -F
-hv=$(esc_count "$T/t-open.txt" $'\033[H')
-[[ "$hv" -eq 3 ]] && ok "38c index → appearance → index ($hv H-moves)" || bad "38c t-open H-moves=$hv (want 3)"
+# `t` on the index is now an unknown key: the hint keeps v/a/n/r/l/R/q
+# and no longer documents an appearance segment.
+printf 'tq' | timeout 10 "$SCRIPT" --voice-settings > "$T/t-unknown.txt" 2>>"$T/err.log"
+grep -F 'Unrecognized key (t)' "$T/t-unknown.txt" | tail -1 > "$T/t-hint.txt"
+assert_grep "38c t on the index warns unknown" 'Unrecognized key \(t\)' "$T/t-hint.txt"
+assert_grep "38c hint keeps the four categories + language" 'v voice, a audio, n notifications, r auto-read, l language' "$T/t-hint.txt"
+assert_no_grep "38c hint no longer documents t appearance" 't appearance|theme' "$T/t-hint.txt"
+assert_no_grep_f "38c t never opens a category view" 'Settings · Appearance' "$T/t-unknown.txt"
 
-# enriched index hint: settings.unknown_key.index now documents t.
-printf '@q' | timeout 10 "$SCRIPT" --voice-settings > "$T/idx-hint.txt" 2>>"$T/err.log"
-assert_grep "38c index unknown-key hint documents t appearance" 't appearance' "$T/idx-hint.txt"
-
-# bilingual copy: the ES dictionary renders the same views (before any
-# write, so the persisted theme is still the dark default).
+# bilingual: the ES index and hint hide the category too.
 ( export HERDR_TTS_LANG=es
+  printf 'q' | timeout 10 "$SCRIPT" --voice-settings > "$T/idx-es.txt" 2>>"$T/err.log"
   printf 'tq' | timeout 10 "$SCRIPT" --voice-settings > "$T/t-es.txt" 2>>"$T/err.log" )
-assert_grep "38c ES view title" 'Ajustes · Apariencia' "$T/t-es.txt" -F
-assert_grep "38c ES knob row" ' t  Tema:' "$T/t-es.txt" -F
-assert_grep "38c ES dark label" 'Tema:                 Oscuro' "$T/t-es.txt" -F
+assert_no_grep "38c ES index hides the Apariencia row" 'Apariencia|tema \(oscuro / claro\)' "$T/idx-es.txt"
+assert_no_grep "38c ES hint no longer documents t apariencia" 'apariencia|tema' "$T/t-es.txt"
 
-# cycle + persistence + same-popup re-render.
-printf 'ttq' | timeout 10 "$SCRIPT" --voice-settings > "$T/t-cycle.txt" 2>>"$T/err.log"
-[[ $? -eq 0 ]] && ok "38c cycle run exits rc=0" || bad "38c cycle rc!=0"
-assert_grep "38c pre-cycle label renders" 'Theme:               Dark' "$T/t-cycle.txt" -F
-assert_grep "38c same-popup re-render shows Light" 'Theme:               Light' "$T/t-cycle.txt" -F
-hv=$(esc_count "$T/t-cycle.txt" $'\033[H')
-[[ "$hv" -eq 4 ]] && ok "38c index → appearance(Dark) → appearance(Light) → index ($hv frames)" || bad "38c cycle H-moves=$hv (want 4)"
-grep -q 'TTS_THEME="light"' "$HERDR_TTS_CONFIG_FILE" \
-  && ok "38c t persisted TTS_THEME=light via config_set" || bad "38c TTS_THEME not persisted"
-assert_grep "38c note on the post-cycle frame" '✓ Theme: Light' "$T/t-cycle.txt" -F
-[[ $(grep -cF '✓ Theme:' "$T/t-cycle.txt") -eq 1 ]] \
-  && ok "38c note is transient (shown once, cleared next frame)" || bad "38c note rendered $(grep -cF '✓ Theme:' "$T/t-cycle.txt") times"
+# persistence WITHOUT the knob (38a/42a mechanics): config_set light,
+# then a FRESH popup process must render the light map, and config_set
+# dark restores the dark baseline.
+lib_run 'config_set TTS_THEME light' > /dev/null
+printf 'q' | timeout 10 "$SCRIPT" --voice-settings > "$T/fresh-light.txt" 2>>"$T/err.log"
+assert_grep "38c fresh process adopts light (muted 30)" $'\033[30m' "$T/fresh-light.txt" -F
+assert_no_grep_f "38c light adoption drops the dark muted 90" $'\033[90m' "$T/fresh-light.txt"
+lib_run 'config_set TTS_THEME dark' > /dev/null
+printf 'q' | timeout 10 "$SCRIPT" --voice-settings > "$T/fresh-dark.txt" 2>>"$T/err.log"
+assert_grep "38c round-trip: fresh process back on dark (muted 90)" $'\033[90m' "$T/fresh-dark.txt" -F
 
-# unknown key inside Apariencia warns scoped to the theme knob only.
-printf 't@q' | timeout 10 "$SCRIPT" --voice-settings > "$T/t-unknown.txt" 2>>"$T/err.log"
-grep -F 'Unrecognized key (@)' "$T/t-unknown.txt" | tail -1 > "$T/warn-line.txt"
-assert_grep "38c unknown key warns scoped to the theme knob" 'Unrecognized key \(@\) — t theme, q back to the index' "$T/warn-line.txt"
-assert_no_grep "38c scoped warning names no other category's keys" 'p provider|d playback|ntfy topic|v auto-read' "$T/warn-line.txt"
-
-# write failure keeps the old value (32h technique: read-only config dir).
+# write failure keeps the old value (32h technique: read-only config dir,
+# exercised through config_set directly — the knob no longer exists).
 mkdir "$T/roconf"
 printf 'TTS_THEME="dark"\n' > "$T/roconf/config.env"
 export HERDR_TTS_CONFIG_FILE="$T/roconf/config.env"
 chmod 555 "$T/roconf" # unwritable dir → config_set rc 1 (dir guard)
-printf 'ttq' | timeout 10 "$SCRIPT" --voice-settings > "$T/t-ro.txt" 2>>"$T/err.log"
-[[ $? -eq 0 ]] && ok "38c failed-write run exits rc=0 (fail-open)" || bad "38c failed-write rc!=0"
-assert_grep "38c failed save warns inline" '⚠️.*Could not save TTS_THEME' "$T/t-ro.txt"
-assert_grep "38c old theme still renders" 'Theme:               Dark' "$T/t-ro.txt" -F
-assert_no_grep_f "38c cycled value never renders" 'Theme:               Light' "$T/t-ro.txt"
+lib_run 'r=0; config_set TTS_THEME light 2>>"'"$T"'/ro.err" || r=$?; echo "rc=$r"' > "$T/ro-rc.txt"
+assert_grep "38c failed write returns rc=1" '^rc=1$' "$T/ro-rc.txt"
 grep -q 'TTS_THEME="dark"' "$HERDR_TTS_CONFIG_FILE" \
   && ok "38c config keeps the old value" || bad "38c old value lost"
 assert_no_grep_f "38c failed write never persisted light" 'TTS_THEME="light"' "$HERDR_TTS_CONFIG_FILE"
-assert_grep "38c config_set rejected the unwritable dir" 'config directory is not writable' "$T/err.log"
+assert_grep "38c config_set rejected the unwritable dir" 'config directory is not writable' "$T/ro.err"
 chmod 755 "$T/roconf" # restore: keep the suite's rm -rf temp cleanup working
-export HERDR_TTS_CONFIG_FILE="$T/config.env"
-
-# 10 cold starts alternate dark↔light: each process re-sources config.env
-# (restart persistence) and renders the value the previous run persisted.
-# 'ttq' = open the view, cycle the knob, back to the index, EOF exit.
-alt38=1; lights38=0; last38=""
-for i in 1 2 3 4 5 6 7 8 9 10; do
-  cur38=$(grep -o 'TTS_THEME="[a-z]*"' "$HERDR_TTS_CONFIG_FILE" | cut -d'"' -f2)
-  lbl38="Dark"; [[ "$cur38" == "light" ]] && lbl38="Light"
-  printf 'ttq' | timeout 10 "$SCRIPT" --voice-settings > "$T/cold-$i.txt" 2>>"$T/err.log"
-  grep -qF "Theme:               $lbl38" "$T/cold-$i.txt" \
-    || bad "38c cold start $i did not render the persisted $lbl38"
-  new38=$(grep -o 'TTS_THEME="[a-z]*"' "$HERDR_TTS_CONFIG_FILE" | cut -d'"' -f2)
-  [[ "$new38" == "$cur38" ]] && alt38=0
-  [[ "$new38" == "light" ]] && lights38=$((lights38+1))
-  last38="$new38"
-done
-[[ "$alt38" -eq 1 ]] && ok "38c 10 cold starts alternate dark↔light" || bad "38c cold starts stopped alternating"
-[[ "$lights38" -eq 5 ]] && ok "38c alternation lands on light exactly 5/10 (last=$last38)" || bad "38c light count=$lights38 (want 5)"
 unset HERDR_TTS_CONFIG_FILE
 
 # 38d. Sole-emitter static gate (37c comment-strip pattern, no exemption
@@ -3977,15 +3940,6 @@ lib_run '
 assert_grep "42a hand-edited solarized normalizes to dark" $'\033[90m' "$T/c-solarized.txt" -F
 assert_no_grep_f "42a solarized never renders the light muted byte" $'\033[30m' "$T/c-solarized.txt"
 
-# 42b. Theme-note copy: the appearance view discloses the instant
-#      dashboard adoption in both languages (roster disclosure kept —
-#      38c asserts that half on the rendered popup).
-lib_run 'tt settings.row.theme_note' > "$T/note-en.txt"
-assert_grep "42b EN note documents the instant dashboard adoption" 'instant on the running dashboard' "$T/note-en.txt"
-( export HERDR_TTS_LANG=es
-  lib_run 'tt settings.row.theme_note' > "$T/note-es.txt" )
-assert_grep "42b ES note documents the instant dashboard adoption" 'el dashboard lo adopta al vuelo' "$T/note-es.txt"
-
 # 42c. Popup Theme Surfaces: the popups render through theme_color like
 #      the dashboard — titles accent+bold, hints/borders/dividers muted —
 #      in BOTH themes, with wording byte-identical after SGR stripping
@@ -4009,13 +3963,10 @@ assert_grep "42c voice menu dark: title accent" $'\033[36m' "$T/pm-dark.txt" -F
 assert_grep "42c voice menu dark: hint+border muted" $'\033[90m' "$T/pm-dark.txt" -F
 assert_grep "42c palette preview dark: header accent" $'\033[36m' "$T/pp-dark.txt" -F
 assert_grep "42c palette preview dark: turns divider muted" $'\033[90m' "$T/pp-dark.txt" -F
-# Wording identity: the theme LABEL is the only theme-dependent visible
-# text in the index view — normalize it (norm_frame precedent), then the
+# Wording identity: the settings INDEX (no `t` navigation — the
+# Apariencia view is gone) has NO theme-dependent visible text, so the
 # SGR-stripped frames must be byte-identical between themes.
-norm_popup() { # $1 file → SGR-free copy with the theme label normalized
-  strip_ansi "$1" | sed -E 's/(Theme|Tema):([[:space:]]+)(Dark|Light|Oscuro|Claro)/\1:\2T/'
-}
-diff <(norm_popup "$T/ps-dark.txt") <(norm_popup "$T/ps-light.txt") > /dev/null \
+diff <(strip_ansi "$T/ps-dark.txt") <(strip_ansi "$T/ps-light.txt") > /dev/null \
   && ok "42c popup wording identical between themes (only color bytes differ)" \
   || bad "42c popup wording drifted between themes"
 
