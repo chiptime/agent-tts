@@ -325,7 +325,20 @@ Route: inline (copy + smoke are per-action).
   suite 427 pass (3 new tests). `d5e6d15`. Smoke re-run still owed
   (T8 stays unchecked): approve a long agent task → report must say
   delivered + still working, no retry offer.
-- Full-suite baseline going forward: 427 pytest after defect round 5.
+- Defect round 5 (watchdog corrupted v2 captures): after switching the
+  phone to the server engine, the mic watchdog (a v1 SR-recovery aid)
+  fired every 1 s tick during v2 listening — the v2 path never sets the
+  v1 `listening` flag and `serverMicBusy` releases right after arming —
+  re-entering startServerListening each tick: recorderChunks reset +
+  stacked MediaRecorders on one stream → empty/corrupt webm →
+  "Invalid data found" 503 at /transcribe. Fixed: watchdog restricted
+  to `voiceEngine !== "servidor"`, plus a second re-entry barrier in
+  startServerListening (`recorder.state === "recording"` → return;
+  recorder is null between utterances). Checks: node --check OK,
+  102 js pass, 427 pytest pass. `ed42299`. Smoke re-run still owed
+  (T8 stays unchecked).
+- Full-suite baseline going forward: 427 pytest / 102 js after defect
+  round 5.
 
 ## Next Step
 
