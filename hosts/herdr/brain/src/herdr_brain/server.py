@@ -123,6 +123,7 @@ _VERSIONED_REFS = (
     ('src="/vad.js"', 'src="/vad.js?v={v}"'),
     ('src="/approval.js"', 'src="/approval.js?v={v}"'),
     ('src="/reader.js"', 'src="/reader.js?v={v}"'),
+    ('src="/toast.js"', 'src="/toast.js?v={v}"'),
     ('href="/manifest.webmanifest"', 'href="/manifest.webmanifest?v={v}"'),
     ('href="/icon.svg"', 'href="/icon.svg?v={v}"'),
 )
@@ -333,6 +334,13 @@ def create_app(
     def reader_js() -> FileResponse:
         return FileResponse(
             STATIC_DIR / "reader.js", media_type="text/javascript",
+            headers=dict(_NO_CACHE_HEADERS),
+        )
+
+    @app.get("/toast.js", include_in_schema=False)
+    def toast_js() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "toast.js", media_type="text/javascript",
             headers=dict(_NO_CACHE_HEADERS),
         )
 

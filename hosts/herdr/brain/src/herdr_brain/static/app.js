@@ -613,7 +613,16 @@
         }
         return resp.json().then(function (data) {
           var toastText = text.length > 160 ? text.slice(0, 157) + "…" : text;
-          enqueueAudio(data.audio_url, { label: label || "agente", text: toastText });
+          /* toast-formatted-avisos: formatted toast ONLY when the reader
+           * holds a rendered payload for this exact FULL text (content-
+           * keyed snapshot of the viewed pane — a cache hit, no new
+           * render). Watcher avisos and any miss enqueue no html and
+           * stay plain textContent. */
+          enqueueAudio(data.audio_url, {
+            label: label || "agente",
+            text: toastText,
+            html: reader.htmlFor("assistant", text)
+          });
         });
       })
       .catch(function () {
@@ -1168,7 +1177,8 @@
     audioBusy = true;
     audioFinished = item;
     if (item.announcement) {
-      showToast("🔊 " + item.announcement.label + ": " + item.announcement.text);
+      showToast("🔊 " + item.announcement.label + ": " + item.announcement.text,
+        undefined, null, item.announcement.html);
       /* FR13: distinct anuncio bubble in the call + toast above drawer. */
       if (inCall) addAnnouncementTurn(item.announcement.label, item.announcement.text);
     }
@@ -1314,21 +1324,26 @@
     });
   });
 
-  /* ---------------- toast ---------------- */
+  /* ---------------- toast ----------------
+   * (toast-formatted-avisos) The mount discipline lives in toast.js
+   * (UMD, injected DOM). Formatted payloads mount through
+   * reader.mountTurn — the same scoped insertion the reading surface
+   * uses — inside a CSS-clipped .toast-content body; the html string
+   * is never cut by hand. No payload (watcher template avisos, lookup
+   * misses) and every failure keep the plain textContent toast. */
 
-  var toastTimer = null;
+  var toast = Toast.createToast({
+    doc: document,
+    el: toastEl,
+    mountFormatted: reader.mountTurn
+  });
 
-  function showToast(text, durationMs, kind) {
-    toastEl.textContent = text;
-    toastEl.classList.toggle("warning", kind === "warning");
-    toastEl.classList.remove("hidden");
-    if (toastTimer) clearTimeout(toastTimer);
-    if (durationMs) toastTimer = setTimeout(hideToast, durationMs);
+  function showToast(text, durationMs, kind, html) {
+    toast.show(text, { durationMs: durationMs, kind: kind, html: html });
   }
 
   function hideToast() {
-    if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
-    toastEl.classList.add("hidden");
+    toast.hide();
   }
 
   /* ---------------- announcements over SSE ---------------- */
