@@ -1,6 +1,31 @@
 """IPC transport for interactive agent-tts playback controls.
 
-POSIX keeps the original AF_UNIX socket behavior byte-identical. Windows
+Wire format — framing v2 (BLOQUE 1.3, decision D1): every command and
+every reply is ONE length-prefixed frame, identical shape in both
+directions::
+
+    +----------------+-----------------+------------------------+
+    | MAGIC "ATTS"   | VERSION = 0x02  | LENGTH (4B, big-endian)|
+    +----------------+-----------------+------------------------+
+    | PAYLOAD (LENGTH bytes, UTF-8 command/reply text)             |
+    +---------------------------------------------------------------+
+
+The header (FRAME_HEADER_SIZE bytes) is fully validated — magic,
+version, and LENGTH against MAX_PAYLOAD — BEFORE any body byte is
+read, so an oversized frame is rejected from the header alone and a
+slow sender can never be truncated mid-payload. This consciously
+breaks the BLOQUE 1.1/1.2 newline framing (an approved exception to
+RF-AT-04-2 taken before the IPC contract freeze): the only consumers
+are this repo's CLI client and daemon, which ship together.
+
+Protocol mismatch (a stale daemon still speaking v1): the v2 ping
+frame contains no newline byte, so a v1 daemon never finds a line to
+answer and stays silent — the client's health probe classifies it as
+wedged and the existing kill-and-respawn machinery (RF-AT-04-8, see
+agent_tts.daemon) replaces it. Bytes that DO arrive but are not a v2
+frame raise ProtocolMismatchError with a restart hint.
+
+POSIX keeps the original AF_UNIX socket behavior. Windows
 (sys.platform == "win32") uses TCP on 127.0.0.1 with an ephemeral port
 persisted to the ``agent-tts-ipc.port`` marker file next to the lock/pid
 files; the client picks the transport by which marker/socket file exists.
@@ -22,82 +47,129 @@ from agent_tts.constants import IPC_PORT_FILE, IPC_SOCKET
 from agent_tts.ownership import owns_channel
 
 CLIENT_TIMEOUT_SEC = 1.0
-# Upper bound for a single reply. The server answers with one line, so the
-# client keeps reading until the newline (or EOF/cap) instead of trusting a
-# single recv() — long status payloads must not be truncated mid-field.
-MAX_REPLY_BYTES = 8192
-# Hard bound for a single command line (server side of RF-AT-09-4's line
-# framing). Control commands are tiny, but a delegated ``play <json>``
-# carries the full speech text in one line: the bound is sized for payloads
-# of at least 1 MB of text plus JSON-escaping headroom (every control char
-# can grow to six bytes as ``\uXXXX``). A line longer than the bound is
-# rejected with an explicit ``ERR: command too large`` reply instead of
-# being silently truncated into a broken JSON parse.
-MAX_COMMAND_BYTES = 16 * 1024 * 1024
-# Fallback deadline for the over-cap probe when the connection carries no
-# timeout of its own (a blocking socket): the probe must always be bounded.
-OVERCAP_PROBE_TIMEOUT_SEC = 1.0
+# --- Framing v2 constants (the single home for every buffer/size literal) ---------
+# Frame header: 4-byte magic + 1-byte version + 4-byte big-endian length.
+FRAME_MAGIC = b"ATTS"
+FRAME_VERSION = 2
+FRAME_HEADER_SIZE = 4 + 1 + 4
+# Hard bound for ONE frame payload, either direction (the documented
+# 16 MiB cap is kept from the line-protocol era). Oversize frames are
+# rejected from the header before any body byte is read.
+MAX_PAYLOAD = 16 * 1024 * 1024
+# Body reads ask for READ_CHUNK bytes per recv() (RI-1: the old
+# 1024-byte chunks meant ~16k syscalls and ~3x peak memory per 16 MiB
+# payload; 64 KiB cuts that to ~256 syscalls).
+READ_CHUNK = 64 * 1024
+# Header phase: bounds a connection that connects and sends nothing.
+IPC_HEADER_TIMEOUT_SEC = 1.0
+# Body phase: per-recv idle bound while reassembling an announced
+# payload. Any sender making progress at least this often completes
+# whenever it finishes (A1'': a mid-payload pause no longer truncates);
+# a genuinely stalled sender errors cleanly after this deadline.
+FRAME_BODY_TIMEOUT_SEC = 30.0
+
+_RESTART_HINT = (
+    "the running daemon/library speaks an older control protocol; "
+    "restart it (e.g. agent-tts --ipc-cmd shutdown) or rerun your "
+    "command so a current daemon is auto-respawned"
+)
 
 
-class CommandTooLargeError(Exception):
-    """A command line exceeded MAX_COMMAND_BYTES without a newline."""
+class FrameError(Exception):
+    """Base for framing v2 violations (bad header, oversize, mid-frame loss)."""
 
 
-def _probe_past_cap(conn: socket.socket) -> bool:
-    """True when the sender pushes past MAX_COMMAND_BYTES.
+class CommandTooLargeError(FrameError):
+    """A frame announced more than MAX_PAYLOAD bytes (rejected pre-body)."""
 
-    Bounded blocking read under the connection's own timeout: a sender
-    that delivered exactly MAX_COMMAND_BYTES bytes and stopped keeps the
-    BLOQUE 1.1 behavior (the recv times out, the payload is served at the
-    cap), while a sender that pushes past the cap — even one that pauses
-    at the cap and continues later — is detected as long as its next byte
-    lands within the deadline. This replaces the old instantaneous
-    non-blocking probe, which only saw bytes ALREADY buffered at the
-    probe instant and accepted a truncated prefix from any sender that
-    paused at exactly the cap (RC-1).
 
-    The socket's timeout survives the probe (RS-3): no setblocking()
-    dance, so a stalled peer can never turn later sends into an
-    unbounded block. A blocking socket gets the fixed fallback deadline
-    and its blocking mode restored.
+class ProtocolMismatchError(FrameError):
+    """The peer's bytes are not framing v2 (bad magic or version)."""
+
+
+def encode_frame(payload) -> bytes:
+    """Builds one framing v2 message: header + payload.
+
+    Accepts str (UTF-8 encoded) or bytes. Raises CommandTooLargeError
+    when the payload exceeds MAX_PAYLOAD, BEFORE anything touches the
+    wire — callers can therefore fail fast locally instead of pushing
+    bytes a conforming server must reject (A2''=B1'').
     """
-    timeout = conn.gettimeout()
-    if timeout is None:
-        conn.settimeout(OVERCAP_PROBE_TIMEOUT_SEC)
-    try:
-        return bool(conn.recv(1))
-    except socket.timeout:
-        return False
-    except OSError:
-        # Peer vanished mid-probe: no further byte can arrive; treat as
-        # stopped-at-cap so the buffered payload is served as before.
-        return False
-    finally:
-        if timeout is None:
-            conn.settimeout(None)
+    data = payload.encode("utf-8") if isinstance(payload, str) else payload
+    if len(data) > MAX_PAYLOAD:
+        raise CommandTooLargeError(
+            f"command too large (payload of {len(data)} bytes exceeds "
+            f"the {MAX_PAYLOAD}-byte cap)"
+        )
+    header = FRAME_MAGIC + bytes([FRAME_VERSION]) + len(data).to_bytes(4, "big")
+    return header + data
 
 
-def _discard_line_remainder(conn: socket.socket) -> None:
-    """Discards the rest of an oversized line, bounded by cap and timeout.
-
-    Keeps recv()ing (and throwing away) bytes until the newline, EOF, an
-    additional MAX_COMMAND_BYTES bound, or a receive timeout — whichever
-    comes first — so an over-cap sender can finish its sendall and read
-    the explicit error reply instead of dying on a broken pipe (RS-4).
-    """
-    discarded = 0
-    while discarded < MAX_COMMAND_BYTES:
-        try:
-            chunk = conn.recv(65536)
-        except socket.timeout:
-            return
-        except OSError:
-            return
+def recv_exact(conn: socket.socket, count: int) -> bytes:
+    """Reads exactly ``count`` bytes; ConnectionResetError on early EOF."""
+    parts = []
+    remaining = count
+    while remaining > 0:
+        chunk = conn.recv(remaining)
         if not chunk:
-            return
-        discarded += len(chunk)
-        if b"\n" in chunk:
-            return
+            raise ConnectionResetError("connection closed before the frame completed")
+        parts.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(parts)
+
+
+def read_frame(conn: socket.socket, *, body_timeout_sec: Optional[float] = None) -> str:
+    """Reads one framing v2 message and returns the decoded payload text.
+
+    Validates the whole header BEFORE reading any body byte: bad
+    magic/version raises ProtocolMismatchError (actionable restart
+    hint), an oversize length raises CommandTooLargeError without
+    attempting to buffer or drain the announced body (A2''=B1''), and
+    the body is then reassembled with READ_CHUNK-sized reads up to the
+    exact announced length (A1'': truncation is impossible by
+    construction). ``body_timeout_sec`` optionally applies a per-recv
+    idle bound for the body phase only (the socket's own timeout is
+    restored afterwards).
+    """
+    header = recv_exact(conn, FRAME_HEADER_SIZE)
+    magic, version = header[:4], header[4]
+    if magic != FRAME_MAGIC:
+        raise ProtocolMismatchError(
+            f"IPC protocol mismatch: expected magic {FRAME_MAGIC!r}, got "
+            f"{magic!r}; {_RESTART_HINT}"
+        )
+    if version != FRAME_VERSION:
+        raise ProtocolMismatchError(
+            f"IPC protocol mismatch: expected version {FRAME_VERSION}, got "
+            f"{version}; {_RESTART_HINT}"
+        )
+    length = int.from_bytes(header[5:9], "big")
+    if length > MAX_PAYLOAD:
+        raise CommandTooLargeError(
+            f"command too large (frame announces {length} bytes, over "
+            f"the {MAX_PAYLOAD}-byte cap)"
+        )
+    saved_timeout = conn.gettimeout()
+    if body_timeout_sec is not None and saved_timeout != body_timeout_sec:
+        conn.settimeout(body_timeout_sec)
+    try:
+        chunks = []
+        remaining = length
+        while remaining > 0:
+            chunk = conn.recv(min(READ_CHUNK, remaining))
+            if not chunk:
+                raise ConnectionResetError("connection closed mid-frame")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks).decode("utf-8", errors="ignore").strip()
+    finally:
+        if body_timeout_sec is not None and saved_timeout != body_timeout_sec:
+            conn.settimeout(saved_timeout)
+
+
+def send_frame(conn: socket.socket, payload) -> None:
+    """Sends one framing v2 message (locally capped before any write)."""
+    conn.sendall(encode_frame(payload))
 
 
 def _is_windows() -> bool:
@@ -266,7 +338,12 @@ def ipc_reply_json(reply: str) -> str:
 
 
 def send_ipc_command(command: str, socket_path: str = IPC_SOCKET) -> Optional[str]:
-    """Sends an IPC command to the currently running audio player."""
+    """Sends one framed IPC command and returns the framed reply text.
+
+    Returns None when no server is reachable or the exchange fails
+    (parity with the line-protocol era); the payload is validated
+    against MAX_PAYLOAD locally before any wire write.
+    """
     try:
         client = connect_to_server(socket_path)
     except Exception:
@@ -274,25 +351,8 @@ def send_ipc_command(command: str, socket_path: str = IPC_SOCKET) -> Optional[st
     if client is None:
         return None
     try:
-        client.sendall(f"{command.strip()}\n".encode("utf-8"))
-        chunks = []
-        received = 0
-        try:
-            while received < MAX_REPLY_BYTES:
-                chunk = client.recv(1024)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                received += len(chunk)
-                if b"\n" in chunk:
-                    break
-        except Exception:
-            # Fall through with whatever arrived before the failure; only an
-            # empty exchange degrades to None (same as the old single recv).
-            pass
-        if not chunks:
-            return None
-        return b"".join(chunks).decode("utf-8", errors="ignore").strip()
+        send_frame(client, command.strip())
+        return read_frame(client)
     except Exception:
         return None
     finally:
@@ -300,44 +360,6 @@ def send_ipc_command(command: str, socket_path: str = IPC_SOCKET) -> Optional[st
             client.close()
         except OSError:
             pass
-
-
-def _recv_command(conn: socket.socket) -> str:
-    """Reads one newline-terminated command from the connection.
-
-    Symmetric to the client's reply loop: keeps recv()ing until the newline
-    (or EOF), so a command larger than one packet arrives complete instead
-    of truncated (RF-AT-09-4). The only bound is the MAX_COMMAND_BYTES hard
-    cap. A line that crosses the cap with no newline is rejected
-    DETERMINISTICALLY (RC-1): bytes already read past the cap reject
-    immediately, and a line sitting exactly at the cap rejects unless the
-    sender provably stopped there (the bounded probe waits out the
-    connection timeout with no further byte) — oversized input must fail
-    with a clear error, never a silent mid-JSON truncation (CONF-1).
-    """
-    chunks = []
-    received = 0
-    while received < MAX_COMMAND_BYTES:
-        chunk = conn.recv(1024)
-        if not chunk:
-            break
-        chunks.append(chunk)
-        received += len(chunk)
-        if b"\n" in chunk:
-            break
-    data = b"".join(chunks)
-    if b"\n" not in data:
-        if received > MAX_COMMAND_BYTES:
-            # A single recv already crossed the cap: over-cap by evidence
-            # in hand, no probe needed.
-            raise CommandTooLargeError(
-                f"command too large (over {MAX_COMMAND_BYTES} bytes without a newline)"
-            )
-        if received == MAX_COMMAND_BYTES and _probe_past_cap(conn):
-            raise CommandTooLargeError(
-                f"command too large (over {MAX_COMMAND_BYTES} bytes without a newline)"
-            )
-    return data.decode("utf-8", errors="ignore").strip()
 
 
 class IPCServer:
@@ -405,21 +427,33 @@ class IPCServer:
 
     def _serve_connection(self, conn: socket.socket) -> None:
         try:
-            conn.settimeout(1.0)
+            conn.settimeout(IPC_HEADER_TIMEOUT_SEC)
             try:
-                data = _recv_command(conn)
+                # Header phase under the short deadline; body phase under
+                # the generous per-recv FRAME_BODY_TIMEOUT_SEC so a slow
+                # but progressing sender always completes (A1'').
+                data = read_frame(conn, body_timeout_sec=FRAME_BODY_TIMEOUT_SEC)
             except CommandTooLargeError as e:
-                # Oversized input gets an explicit error reply, never a
-                # silent truncation (CONF-1). Drain the remainder of the
-                # line FIRST (bounded): a client still inside sendall
-                # would otherwise hit a broken pipe when this connection
-                # goes away and never see the error (RS-4).
-                _discard_line_remainder(conn)
-                conn.sendall(f"ERR: {e}\n".encode("utf-8"))
+                # A2''=B1'': the oversize length is rejected from the
+                # header alone — the announced body is never read or
+                # drained (the old bounded drain degraded to a mid-drain
+                # connection loss for >2x-cap payloads). In-repo clients
+                # validate the cap locally before writing, so a conforming
+                # sender is never mid-sendall here; it simply reads this
+                # typed error reply (CONF-1).
+                try:
+                    send_frame(conn, f"ERR: {e}")
+                except OSError:
+                    pass
+                return
+            except ProtocolMismatchError:
+                # The peer does not speak framing v2 (a pre-BLOQUE 1.3
+                # client): nothing we could send would parse, so the
+                # connection just closes.
                 return
             if data:
                 reply = self.command_handler(data)
-                conn.sendall(f"{reply}\n".encode("utf-8"))
+                send_frame(conn, reply)
         except Exception:
             pass
         finally:

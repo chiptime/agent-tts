@@ -52,7 +52,16 @@ from agent_tts.constants import (
     IPC_SOCKET,
     PING_TIMEOUT_SEC,
 )
-from agent_tts.ipc import IPCServer, connect_to_server, send_ipc_command
+from agent_tts.ipc import (
+    IPCServer,
+    CommandTooLargeError,
+    ProtocolMismatchError,
+    connect_to_server,
+    encode_frame,
+    read_frame,
+    send_frame,
+    send_ipc_command,
+)
 from agent_tts.ownership import owns_channel
 from agent_tts.playback_target import InvalidPlaybackTarget, resolve_target
 from agent_tts.providers import TTSProvider, get_provider
@@ -579,9 +588,15 @@ def probe_daemon(
     - "ok": a healthy daemon answered ``pong`` within the budget;
     - "unreachable": no transport accepts connections (no daemon);
     - "wedged": the transport accepts but no ping answer arrives in time
-      (RF-AT-04-8: kill-and-respawn candidate);
-    - "foreign": a live non-daemon owner answered something else (a
-      library-embedded speak() or an older playback process).
+      (RF-AT-04-8: kill-and-respawn candidate). A STALE daemon still
+      speaking the pre-BLOQUE 1.3 line protocol lands here too: the v2
+      ping frame carries no newline byte, so the old daemon never finds
+      a line to answer — the existing kill-and-respawn machinery then
+      replaces it with a current daemon (the chosen protocol-mismatch
+      recovery; no new respawn path);
+    - "foreign": a live owner answered bytes that are not a v2 frame or
+      are not a pong (a library-embedded speak() or an older playback
+      process).
     """
     import socket as socket_mod
 
@@ -593,21 +608,15 @@ def probe_daemon(
         return ("unreachable", None)
     try:
         client.settimeout(timeout_sec)
-        client.sendall(b"ping\n")
-        chunks = []
-        received = 0
+        send_frame(client, "ping")
         try:
-            while received < 8192:
-                chunk = client.recv(1024)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                received += len(chunk)
-                if b"\n" in chunk:
-                    break
+            reply = read_frame(client)
+        except ProtocolMismatchError:
+            # Something answered, but not in framing v2: a live foreign
+            # owner, not our daemon.
+            return ("foreign", None)
         except (socket_mod.timeout, TimeoutError, OSError):
             return ("wedged", None)
-        reply = b"".join(chunks).decode("utf-8", errors="ignore").strip()
         if reply.startswith("pong"):
             return ("ok", reply)
         if not reply:
@@ -768,11 +777,19 @@ def ensure_daemon(
 def send_play(payload: dict, socket_path: str = IPC_SOCKET) -> Optional[str]:
     """Sends one play command and blocks for the final reply.
 
-    Unlike send_ipc_command, the read has no timeout: a delegated play
-    blocks until playback ends, mirroring the classic CLI's semantics.
-    Returns None when the daemon closed the connection mid-playback.
+    The play line is validated against the framing payload cap LOCALLY,
+    before any socket write (A2''=B1''): an oversized delegation returns
+    a typed ``ERR: command too large`` reply immediately instead of
+    degrading to a broken pipe or a silent mid-playback connection loss.
+    The read has no timeout: a delegated play blocks until playback
+    ends, mirroring the classic CLI's semantics. Returns None when the
+    daemon closed the connection mid-playback.
     """
     line = "play " + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    try:
+        frame = encode_frame(line.strip())  # local cap check, no wire I/O
+    except CommandTooLargeError as e:
+        return f"ERR: {e}"
     try:
         client = connect_to_server(socket_path)
     except Exception:
@@ -781,23 +798,11 @@ def send_play(payload: dict, socket_path: str = IPC_SOCKET) -> Optional[str]:
         return None
     try:
         client.settimeout(None)  # blocking: the reply comes when playback ends
-        client.sendall(f"{line.strip()}\n".encode("utf-8"))
-        chunks = []
-        received = 0
+        client.sendall(frame)
         try:
-            while received < 8192:
-                chunk = client.recv(1024)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                received += len(chunk)
-                if b"\n" in chunk:
-                    break
+            return read_frame(client)
         except Exception:
-            pass
-        if not chunks:
             return None
-        return b"".join(chunks).decode("utf-8", errors="ignore").strip()
     except Exception:
         return None
     finally:

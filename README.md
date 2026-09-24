@@ -147,6 +147,20 @@ agent-tts --ipc-cmd status
 agent-tts --ipc-cmd stop
 ```
 
+**Wire format (framing v2).** Every command and reply is ONE length-prefixed frame, identical shape in both directions:
+
+```
+| "ATTS" magic (4B) | version 0x02 (1B) | payload length (4B, big-endian) | payload (length bytes, UTF-8) |
+```
+
+Constants live in `agent_tts/ipc.py`: `FRAME_HEADER_SIZE = 9`, `MAX_PAYLOAD = 16 MiB`, `READ_CHUNK = 64 KiB`. The header is validated (magic, version, length vs `MAX_PAYLOAD`) **before any payload byte is read**, so:
+
+- An oversize frame gets a typed `ERR: command too large` reply from the header alone — the announced payload is never buffered or drained, and in-repo clients enforce the cap locally before writing.
+- A slow or chunked sender can never be truncated mid-payload: the reader reassembles exactly the announced length, and any sender making progress within the 30 s per-read idle bound completes whenever it finishes.
+- Bad magic/version raises a typed protocol-mismatch error with a restart hint. A stale daemon still speaking the pre-1.3 line protocol never answers a v2 `ping`, so the health probe flags it as wedged and the existing kill-and-respawn replaces it — no manual restart needed.
+
+This is a conscious non-additive transport change (an approved exception to the 1.2 additivity promise, taken before the IPC contract freeze at the end of BLOQUE 1.3): the only consumers — this repo's CLI client and daemon — ship together.
+
 ### 🎧 Persistent Daemon (vía única)
 
 `agent-tts` runs as a **single-path daemon architecture**: the CLI is always a client, and there is no classic second execution path. Every speech invocation checks for a healthy daemon with a 200 ms `ping`; if none answers, the client transparently auto-starts one and delegates. `agent-tts "algo"` behaves identically whether a daemon is already running or not.
