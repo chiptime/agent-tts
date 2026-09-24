@@ -624,7 +624,7 @@ def _pid_looks_like_agent_tts(pid: int) -> bool:
 
 
 def _kill_wedged_daemon() -> bool:
-    """SIGKILLs the wedged daemon identified by PID_FILE (RF-AT-04-8).
+    """Force-kills the wedged daemon identified by PID_FILE (RF-AT-04-8).
 
     The wedge probe proved the transport accepts connections but never
     answers, so the owner cannot clean up after itself. PID_FILE is the
@@ -643,7 +643,11 @@ def _kill_wedged_daemon() -> bool:
     if not _pid_looks_like_agent_tts(pid):
         return False
     try:
-        os.kill(pid, signal.SIGKILL)
+        # SIGKILL is POSIX-only (native Windows has no such constant, and
+        # the AttributeError would escape the OSError handler): fall back
+        # to the classic value 9, which on Windows os.kill maps to an
+        # unconditional TerminateProcess — still a forced kill.
+        os.kill(pid, getattr(signal, "SIGKILL", 9))
     except OSError:
         return False
     deadline = time.monotonic() + 2.0
