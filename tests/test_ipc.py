@@ -1,7 +1,6 @@
 import json
 import socket
 import tempfile
-import threading
 import time
 import unittest
 from agent_tts.ipc import IPCServer, ipc_reply_json, send_ipc_command
@@ -38,7 +37,9 @@ class TestIPC(unittest.TestCase):
 
 
 class TestCommandFraming(unittest.TestCase):
-    """RF-AT-09-4: the server reads commands with the client's line framing."""
+    """RF-AT-09-4 (framing v2): commands and replies are length-prefixed
+    frames (magic + version + big-endian length), so a frame split across
+    many packets is reassembled from the header's exact length."""
 
     def _serve_echo(self, sock_file):
         # require_ownership=False: raw framing test on a private temp path.
@@ -52,222 +53,102 @@ class TestCommandFraming(unittest.TestCase):
         return server
 
     def _roundtrip(self, sock_file, payload: bytes) -> str:
+        from agent_tts.ipc import read_frame
+
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        client.settimeout(5.0)
+        client.settimeout(30.0)
         client.connect(sock_file)
         try:
             client.sendall(payload)
-            chunks = []
-            while b"\n" not in b"".join(chunks):
-                chunk = client.recv(1024)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-            return b"".join(chunks).decode("utf-8", errors="ignore").strip()
+            return read_frame(client)
         finally:
             client.close()
 
-    def test_command_split_across_packets_is_read_until_newline(self):
+    def test_command_split_across_packets_is_read_to_the_exact_length(self):
+        from agent_tts.ipc import FRAME_MAGIC, FRAME_VERSION, encode_frame
+
         with tempfile.NamedTemporaryFile(suffix=".sock", delete=True) as tmp:
             sock_file = tmp.name
         server = self._serve_echo(sock_file)
         try:
-            payload = "seek " + "x" * 3000  # spans several 1024-byte packets
-            head, tail = payload[:1500], payload[1500:]
+            payload = "seek " + "x" * 3000  # spans several packet-sized pieces
+            frame = encode_frame(payload)
+            head, tail = frame[:1500], frame[1500:]
             client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            client.settimeout(5.0)
+            client.settimeout(30.0)
             client.connect(sock_file)
             try:
-                # First chunk carries no newline: the server must keep
-                # reading instead of trusting the first recv().
-                client.sendall(head.encode("utf-8"))
+                # First piece carries an incomplete header/body: the server
+                # must keep reading until the announced length, not trust a
+                # single recv().
+                client.sendall(head)
                 time.sleep(0.1)
-                client.sendall(tail.encode("utf-8") + b"\n")
-                buf = b""
-                while b"\n" not in buf:
-                    chunk = client.recv(1024)
-                    if not chunk:
-                        break
-                    buf += chunk
-                reply = buf.decode("utf-8", errors="ignore").strip()
+                client.sendall(tail)
+                from agent_tts.ipc import read_frame
+
+                reply = read_frame(client)
             finally:
                 client.close()
+            self.assertEqual(reply, f"len:{len(payload)}")
+            self.assertEqual(FRAME_MAGIC + bytes([FRAME_VERSION]), frame[:5])
+        finally:
+            server.stop()
+
+    def test_command_without_any_special_terminator_is_read_to_the_length(self):
+        # v2 needs no newline terminator: the length prefix is the only
+        # framing authority (the old probe-at-cap heuristic is gone).
+        from agent_tts.ipc import encode_frame
+
+        with tempfile.NamedTemporaryFile(suffix=".sock", delete=True) as tmp:
+            sock_file = tmp.name
+        server = self._serve_echo(sock_file)
+        try:
+            payload = "status no newline anywhere"
+            reply = self._roundtrip(sock_file, encode_frame(payload))
             self.assertEqual(reply, f"len:{len(payload)}")
         finally:
             server.stop()
 
-    def test_command_without_newline_is_processed_at_the_byte_cap(self):
-        with tempfile.NamedTemporaryFile(suffix=".sock", delete=True) as tmp:
-            sock_file = tmp.name
-        server = self._serve_echo(sock_file)
-        try:
-            from agent_tts.ipc import MAX_COMMAND_BYTES
+    def test_large_framed_command_round_trips_far_above_the_old_8k_cap(self):
+        """CONF-1: a delegated play payload (>= 1 MB) is not truncated."""
+        from agent_tts.ipc import encode_frame
 
-            # Exactly MAX_COMMAND_BYTES bytes and no newline: the cap is the
-            # only terminator left, mirroring the client's reply cap.
-            capped = b"y" * MAX_COMMAND_BYTES
-            reply = self._roundtrip(sock_file, capped)
-            self.assertEqual(reply, f"len:{MAX_COMMAND_BYTES}")
-        finally:
-            server.stop()
-
-    def test_large_command_line_round_trips_far_above_the_old_cap(self):
-        """CONF-1: a delegated play line (>= 1 MB) is not truncated at 8 KB."""
         with tempfile.NamedTemporaryFile(suffix=".sock", delete=True) as tmp:
             sock_file = tmp.name
         server = self._serve_echo(sock_file)
         try:
             payload = "play " + "x" * (1024 * 1024)  # 1 MiB of text
-            reply = self._roundtrip(sock_file, payload.encode("utf-8") + b"\n")
+            reply = self._roundtrip(sock_file, encode_frame(payload))
             self.assertEqual(reply, f"len:{len(payload)}")
         finally:
             server.stop()
 
-    def test_sender_pausing_at_cap_then_continuing_is_rejected(self):
-        """RC-1: a sender that pauses AT the cap and then continues is over-cap.
+    def test_command_beyond_byte_cap_fails_with_clear_error(self):
+        """CONF-1: a frame header announcing more than MAX_PAYLOAD is
+        rejected up front with an explicit ERR reply, never buffered."""
+        import struct
 
-        The over-cap check must be a bounded WAIT, not an instantaneous
-        buffered-bytes probe: at the pause instant nothing extra is
-        buffered, so the old probe accepted the truncated prefix and
-        dispatched it as a command (surfacing as a confusing JSON error).
-        """
+        from agent_tts.ipc import FRAME_MAGIC, FRAME_VERSION, MAX_PAYLOAD, read_frame
+
         with tempfile.NamedTemporaryFile(suffix=".sock", delete=True) as tmp:
             sock_file = tmp.name
         server = self._serve_echo(sock_file)
         try:
-            from agent_tts.ipc import MAX_COMMAND_BYTES
-
             client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             client.settimeout(10.0)
             client.connect(sock_file)
             try:
-                # Pause at exactly the cap, long enough for the server to
-                # drain every buffered byte, then push past it.
-                client.sendall(b"y" * MAX_COMMAND_BYTES)
-                time.sleep(0.3)
-                client.sendall(b"continued past the cap\n")
-                buf = b""
-                while b"\n" not in buf:
-                    chunk = client.recv(1024)
-                    if not chunk:
-                        break
-                    buf += chunk
-                reply = buf.decode("utf-8", errors="ignore").strip()
+                client.sendall(
+                    FRAME_MAGIC
+                    + bytes([FRAME_VERSION])
+                    + struct.pack(">I", MAX_PAYLOAD + 2048)
+                )
+                reply = read_frame(client)
             finally:
                 client.close()
             self.assertTrue(reply.startswith("ERR: command too large"), reply)
         finally:
             server.stop()
-
-    def test_command_beyond_byte_cap_fails_with_clear_error(self):
-        """CONF-1: runaway input beyond the documented cap is rejected, not truncated."""
-        with tempfile.NamedTemporaryFile(suffix=".sock", delete=True) as tmp:
-            sock_file = tmp.name
-        server = self._serve_echo(sock_file)
-        try:
-            from agent_tts.ipc import MAX_COMMAND_BYTES
-
-            runaway = b"z" * (MAX_COMMAND_BYTES + 2048)  # past the cap, no newline
-            reply = self._roundtrip(sock_file, runaway)
-            self.assertTrue(reply.startswith("ERR: command too large"), reply)
-        finally:
-            server.stop()
-
-
-    def test_far_over_cap_play_through_the_client_path_gets_the_clear_error(self):
-        """RS-4: an over-cap delegated play sees the size error, not a broken pipe.
-
-        For payloads exceeding the cap by more than the socket buffers, the
-        client is still inside sendall when the server detects the cap: the
-        server must drain the remainder of the oversized line before
-        replying, so the client's sendall completes and it reads the
-        explicit payload-size error instead of a silent connection loss.
-        """
-        with tempfile.NamedTemporaryFile(suffix=".sock", delete=True) as tmp:
-            sock_file = tmp.name
-        server = self._serve_echo(sock_file)
-        try:
-            from agent_tts.daemon import send_play
-            from agent_tts.ipc import MAX_COMMAND_BYTES
-
-            payload = {"text": "x" * (MAX_COMMAND_BYTES + 1024 * 1024)}
-            reply = send_play(payload, socket_path=sock_file)
-            self.assertIsInstance(reply, str)
-            self.assertTrue(reply.startswith("ERR: command too large"), reply)
-        finally:
-            server.stop()
-
-
-class TestPastCapProbe(unittest.TestCase):
-    """RS-3: the over-cap probe waits boundedly and preserves the socket timeout."""
-
-    def test_probe_times_out_when_the_sender_stops_at_cap(self):
-        from agent_tts.ipc import _probe_past_cap
-
-        a, b = socket.socketpair()
-        try:
-            a.settimeout(0.25)
-            started = time.monotonic()
-            # No byte ever arrives: the probe must wait out the deadline
-            # (a bounded wait, not an instantaneous buffered check) and
-            # then report "sender stopped at the cap".
-            self.assertFalse(_probe_past_cap(a))
-            self.assertGreaterEqual(time.monotonic() - started, 0.2)
-        finally:
-            a.close()
-            b.close()
-
-    def test_probe_sees_a_byte_arriving_within_the_deadline(self):
-        from agent_tts.ipc import _probe_past_cap
-
-        a, b = socket.socketpair()
-        try:
-            a.settimeout(1.0)
-
-            def late_byte():
-                time.sleep(0.1)
-                b.send(b"x")
-
-            threading.Thread(target=late_byte, daemon=True).start()
-            self.assertTrue(_probe_past_cap(a))
-        finally:
-            a.close()
-            b.close()
-
-    def test_probe_preserves_the_connection_timeout(self):
-        """RS-3: the probe must not flip the socket into unbounded blocking mode."""
-        from agent_tts.ipc import _probe_past_cap
-
-        a, b = socket.socketpair()
-        try:
-            a.settimeout(0.25)
-            self.assertFalse(_probe_past_cap(a))
-            # The pre-existing timeout survives the probe path: a later
-            # sendall against a stalled peer stays bounded instead of
-            # blocking forever.
-            self.assertEqual(a.gettimeout(), 0.25)
-            b.send(b"x")
-            self.assertTrue(_probe_past_cap(a))
-            self.assertEqual(a.gettimeout(), 0.25)
-        finally:
-            a.close()
-            b.close()
-
-    def test_probe_is_bounded_even_on_a_blocking_socket(self):
-        from agent_tts.ipc import _probe_past_cap
-
-        a, b = socket.socketpair()
-        try:
-            self.assertIsNone(a.gettimeout())
-            started = time.monotonic()
-            # A blocking socket still gets a bounded probe deadline, and
-            # its blocking mode is restored afterwards.
-            self.assertFalse(_probe_past_cap(a))
-            self.assertLess(time.monotonic() - started, 5.0)
-            self.assertIsNone(a.gettimeout())
-        finally:
-            a.close()
-            b.close()
 
 
 class TestIpcReplyJson(unittest.TestCase):

@@ -396,14 +396,17 @@ def test_large_play_payload_round_trips_through_the_channel(channel, monkeypatch
 
 def test_oversized_play_payload_beyond_hard_cap_fails_clearly(channel, monkeypatch):
     """Beyond the documented hard cap the reply is a clear error, never a
-    silent truncation that surfaces as an invalid-JSON parse failure."""
+    silent truncation that surfaces as an invalid-JSON parse failure.
+
+    Framing v2 (A2''=B1''): the cap is enforced in the client before any
+    wire write, so the size error is immediate and typed."""
     d = _start_daemon(channel, monkeypatch)
     try:
         from agent_tts.daemon import send_play
 
-        from agent_tts.ipc import MAX_COMMAND_BYTES
+        from agent_tts.ipc import MAX_PAYLOAD
 
-        runaway = "b" * (MAX_COMMAND_BYTES + 2048)
+        runaway = "b" * (MAX_PAYLOAD + 2048)
         reply = send_play({"text": runaway, "no_play": True}, socket_path=channel["sock"])
         assert reply is not None and reply.startswith("ERR: command too large"), reply
     finally:
