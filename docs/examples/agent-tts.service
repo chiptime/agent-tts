@@ -1,0 +1,30 @@
+# Example systemd user unit for the agent-tts persistent daemon (vía única).
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp agent-tts.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now agent-tts.service
+#
+# Logs:
+#   journalctl --user -u agent-tts -f
+#
+# The explicit --foreground start carries no idle timeout by default
+# (RF-AT-04-7): the supervisor owns the daemon's lifetime, and a timeout
+# under a supervisor only produces flapping. systemd's Restart plays the
+# watchdog role: a crashed daemon is replaced and the next client
+# connection reclaims the channel automatically (flock ownership).
+
+[Unit]
+Description=agent-tts persistent playback daemon
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/agent-tts --foreground
+# Adjust the path above to `which agent-tts` on your machine.
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

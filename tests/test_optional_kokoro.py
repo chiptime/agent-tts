@@ -47,6 +47,10 @@ def _isolated_env(extra: dict) -> dict:
     env["AGENT_TTS_LOCK_FILE"] = os.path.join(shim, "test.lock")
     env["AGENT_TTS_PID_FILE"] = os.path.join(shim, "test.pid")
     env["AGENT_TTS_SOCKET"] = os.path.join(shim, "test.sock")
+    # Vía única: a CLI run may auto-start a daemon; keep its artifacts in
+    # the shim dir and make it idle-exit after 1s so no process lingers.
+    env["AGENT_TTS_DAEMON_LOG"] = os.path.join(shim, "daemon.log")
+    env["AGENT_TTS_IDLE_TIMEOUT"] = "1"
     env.update(extra)
     return env
 

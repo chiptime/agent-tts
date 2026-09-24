@@ -17,6 +17,7 @@ import pytest
 
 import agent_tts.powershell_playback as psp
 from agent_tts import playback_target as pt
+from agent_tts.constants import DEFAULT_VOICE
 from agent_tts.wav import pcm_to_wav
 
 
@@ -233,6 +234,34 @@ def test_ipc_pause_resume_toggle_and_stop(fake_popen):
     assert session.handle_ipc_command("seek +10").startswith("ERR:")
     assert session.handle_ipc_command("stop") == "status=stopped"
     assert session.state["stop"] is True
+
+
+def test_ipc_status_reports_requested_provider_and_voice(monkeypatch):
+    """RS-2 (SOS-1/B5): wsl-ps status carries the request's engine metadata."""
+    for var in ("AGENT_TTS_PROVIDER", "AGENT_TTS_VOICE", "TTS_PROVIDER"):
+        monkeypatch.delenv(var, raising=False)
+    session = psp.PowershellSession(provider="piper", voice="es-ES-AlvaroNeural")
+    session.state["status"] = "playing"
+
+    status = session.handle_ipc_command("status")
+    assert " provider=piper" in status
+    assert " voice=es-ES-AlvaroNeural" in status
+
+    # Without explicit args the same resolution as the local session
+    # applies (env fallbacks, then engine defaults).
+    default_session = psp.PowershellSession()
+    assert default_session.provider == "edge"
+    assert default_session.voice == DEFAULT_VOICE
+    default_status = default_session.handle_ipc_command("status")
+    assert " provider=edge" in default_status
+    assert f" voice={DEFAULT_VOICE}" in default_status
+
+    monkeypatch.setenv("TTS_PROVIDER", "openai")
+    monkeypatch.setenv("AGENT_TTS_PROVIDER", "kokoro")
+    monkeypatch.setenv("AGENT_TTS_VOICE", "ef_dora")
+    from_env = psp.PowershellSession()
+    assert from_env.provider == "kokoro"
+    assert from_env.voice == "ef_dora"
 
 
 # -- stop / finish lifecycle -----------------------------------------------------
