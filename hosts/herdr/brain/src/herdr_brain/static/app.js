@@ -1538,7 +1538,7 @@
     var remaining = approvalFlow.remainingSeconds();
     var total = g.expires_in_s || 60;
 
-    var title = expired ? "⏱ Expirada" : "📤 Para: " + approvalTargetLabel(g);
+    var title = expired ? "⏱ Tiempo agotado" : "📤 Para: " + approvalTargetLabel(g);
     if (approvalCard.title.textContent !== title) {
       approvalCard.title.textContent = title;
     }

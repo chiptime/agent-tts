@@ -265,6 +265,15 @@ Route: inline (copy + smoke are per-action).
     smoke pass. Smoke must also exercise: real-device reload mid-gate,
     banner+card coexistence legibility, pending-banner tap while a gate is
     live (routes to /ask → gated per PRD).
+- T8 (partial) — ES copy pass done inline: reviewed every approval UI
+  string (pill, closer "¿Se envía?", reprompt "¿Sí o no?", card title +
+  target label, the 4 PRD buttons, edit buttons ✓ Guardar/✕ Descartar,
+  dictation hint, expiry system turn) — all clean neutral ES; PRD-verbatim
+  strings untouched; no test anchored the changed string. One tweak:
+  expired card title "⏱ Expirada" → "⏱ Tiempo agotado" (unambiguous,
+  matches the system turn). Suites re-run green (74 js / 368 pytest).
+  REMAINING for T8: manual E2E smoke on real call/device (user) + update
+  PRD status + this doc's Status line.
 
 ## Next Step
 
