@@ -231,10 +231,10 @@ def test_play_runs_pipeline_and_replies_done(channel, monkeypatch):
 def test_play_error_replies_err_and_keeps_daemon_alive(channel, monkeypatch):
     d = _start_daemon(channel, monkeypatch)
     try:
-        # Broken JSON payload: explicit ERR, daemon still answers pings.
-        assert d.handle_command("play {not json").startswith("ERR: invalid play payload")
+        # Broken JSON payload: explicit typed error, daemon still answers pings.
+        assert d.handle_command("play {not json").startswith("ok=false error=invalid play payload")
         # Missing text and file.
-        assert d.handle_command("play {}").startswith("ERR: play requires")
+        assert d.handle_command("play {}").startswith("ok=false error=play requires")
         assert ipc.send_ipc_command("ping", socket_path=channel["sock"]).startswith("pong")
     finally:
         _stop_daemon(d)
@@ -248,7 +248,7 @@ def test_play_failure_replies_err(channel, monkeypatch):
 
     with mock.patch.object(d._cli, "_play_speech", side_effect=failing_speech):
         reply = d.handle_command("play " + json.dumps({"text": "boom"}))
-    assert reply == "ERR: synthesis exploded"
+    assert reply == "ok=false error=synthesis exploded"
     with d._lock:
         assert d.active_session is None
         assert d._inflight == 0
@@ -370,7 +370,7 @@ def test_speak_with_unavailable_remote_target_stays_a_clear_error(
     d = _start_daemon(channel, monkeypatch, target_env="wsl-ps")
     try:
         reply = d.handle_command("play " + json.dumps({"text": "hola"}))
-        assert reply == "ERR: playback target unavailable (exit 1)"
+        assert reply == "ok=false error=playback target unavailable (exit 1)"
         with d._lock:
             assert d.active_session is None
     finally:
@@ -414,21 +414,23 @@ def test_oversized_play_payload_beyond_hard_cap_fails_clearly(channel, monkeypat
         _stop_daemon(d)
 
 
-# --- CONF-2: concurrent play is a clear error, never a silent supersede ----------------
+# --- CONF-2 -> D4: concurrent play queues, the active one stays controllable ------------
 
 
-def test_second_concurrent_play_is_rejected_and_first_stays_controllable(channel, monkeypatch):
+def test_second_concurrent_play_queues_and_first_stays_controllable(channel, monkeypatch):
+    """D4 (approved behavior change, BLOQUE 1.3): a plain play never
+    rejects with busy — it enters the queue as working/queue and waits.
+    The FIRST playback remains the controllable one until it ends; the
+    second dispatches only after the first finalized (RF-AT-08-6)."""
     d = _start_daemon(channel, monkeypatch)
     try:
-        box, play_thread = _play_async(d, {"text": "primera"})
+        box, play_thread = _play_async(d, {"text": "primera", "label": "primera"})
         _wait_session_registered(d)
 
-        # A second play while audio is active: deterministic clear error,
-        # never a silent supersede (queueing arrives in BLOQUE 1.3).
-        box2, play_thread2 = _play_async(d, {"text": "segunda"})
-        play_thread2.join(timeout=2.0)
-        assert not play_thread2.is_alive(), "second play must reply, not block or displace"
-        assert box2 == ["ERR: playback already in progress"]
+        # A second play while audio is active: QUEUED (D4), never an
+        # error and never a supersede — its reply arrives when ITS
+        # playback ends.
+        box2, play_thread2 = _play_async(d, {"text": "segunda", "label": "segunda"})
 
         # The FIRST playback is still the controllable one.
         reply = None
@@ -443,6 +445,19 @@ def test_second_concurrent_play_is_rejected_and_first_stays_controllable(channel
         ipc.send_ipc_command("stop", socket_path=channel["sock"])
         play_thread.join(timeout=5.0)
         assert box == ["status=stopped"]
+
+        # Now the second item owns the speaker; stop it to end the test.
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            with d._lock:
+                active = d.active_session
+            if active is not None:
+                break
+            time.sleep(0.02)
+        ipc.send_ipc_command("stop", socket_path=channel["sock"])
+        play_thread2.join(timeout=5.0)
+        assert not play_thread2.is_alive(), "queued play must reply, not hang"
+        assert box2 == ["status=stopped"]
     finally:
         _stop_daemon(d)
 
@@ -546,7 +561,7 @@ def test_play_registering_during_shutdown_is_refused_not_orphaned(channel):
 
     # The late play gets a deterministic refusal instead of running
     # unsupervised through the shutdown drain.
-    assert replies == ["ERR: daemon shutting down"]
+    assert replies == ["ok=false error=daemon shutting down"]
     assert played == []
     assert len(stopped) == 1  # only the pre-snapshot session existed
 
@@ -767,8 +782,10 @@ def test_idle_commands_without_session_answer_clearly(channel, monkeypatch):
     d = _start_daemon(channel, monkeypatch)
     try:
         sock = channel["sock"]
-        assert ipc.send_ipc_command("pause", socket_path=sock) == "ERR: no active playback session"
-        assert ipc.send_ipc_command("seek +10", socket_path=sock) == "ERR: no active playback session"
+        # A3: control commands against an idle daemon are typed errors
+        # (ok=false), never payload-shaped text.
+        assert ipc.send_ipc_command("pause", socket_path=sock) == "ok=false error=no active playback session"
+        assert ipc.send_ipc_command("seek +10", socket_path=sock) == "ok=false error=no active playback session"
         # stop is idempotent silence: the user's goal already holds.
         assert ipc.send_ipc_command("stop", socket_path=sock) == "status=stopped"
     finally:
