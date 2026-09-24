@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from herdr_brain.approval import PROPOSED, SUPERSEDED, ApprovalGateStore
 from herdr_brain.config import Settings
 from herdr_brain.herdr import AgentInfo
 from herdr_brain.llm import SYSTEM_PROMPT, BrainLLM, BrainLLMError
@@ -55,6 +56,9 @@ class ScriptedLLM:
 def make_brain(settings, stub, responses):
     tools = BrainTools(settings, herdr=stub)
     llm = BrainLLM(settings, tools, client=ScriptedLLM(responses))
+    # The gate store is what production wires; tests reach it via
+    # llm._approval_store (same convention as llm._client).
+    llm.attach_approval_store(ApprovalGateStore(timeout_s=settings.approval_timeout_s))
     return llm, tools
 
 
@@ -119,9 +123,12 @@ class TestRoutingPolicy:
             ],
         )
         result = llm.ask("corre los tests por favor")
-        assert stub.prompt_calls == [
-            {"pane_id": "w1:p9", "text": "run the full test suite", "timeout_ms": None}
-        ]
+        # The send was gated, never executed: nothing reached the pane.
+        assert stub.prompt_calls == []
+        gate = llm._approval_store.current("default")
+        assert gate is not None and gate.state == PROPOSED
+        assert gate.action.text == "run the full test suite"
+        assert result["approval"].gate_id == gate.gate_id
         assert "all green" in result["answer"]
 
     def test_schema_and_system_prompt_passed_to_llm(self, settings, make_stub):
@@ -308,10 +315,10 @@ class TestSelection:
         system = llm._client.create_kwargs[0]["messages"][0]["content"]
         assert "Selected agent: opencode (idle) — focused: no" in system
         assert "Pane: w1:p2" in system
-        # The write went to the selected pane, not the focused one.
-        assert stub.prompt_calls == [
-            {"pane_id": "w1:p2", "text": "run lint", "timeout_ms": None}
-        ]
+        # The write froze against the selected pane, not the focused one.
+        assert stub.prompt_calls == []
+        gate = llm._approval_store.current("default")
+        assert gate.action.pane_id == "w1:p2"
         assert result["pane_id"] == "w1:p2"
 
     def test_stale_pane_id_falls_back_to_focused(self, settings, make_stub, active_agent):
@@ -388,6 +395,135 @@ class TestLoopRobustness:
         assert stub.prompt_calls == []
 
 
+class TestApprovalGate:
+    """send_to_session interception: freeze exact args, never execute."""
+
+    def test_send_freezes_exact_args_and_opens_gate(self, settings, make_stub):
+        stub = make_stub()
+        llm, _ = make_brain(
+            settings, stub,
+            responses=[
+                tool_call_response(
+                    "c1",
+                    "send_to_session",
+                    {"text": "arregla el bug del login", "timeout_ms": 300000},
+                ),
+                text_response("Voy a enviar a opencode: arregla el bug del login."),
+            ],
+        )
+        result = llm.ask("dile que arregle el login", session_id="s1")
+        # AC1: nothing reached the pane; the args are frozen in a live gate.
+        assert stub.prompt_calls == []
+        gate = llm._approval_store.current("s1")
+        assert gate is not None and gate.state == PROPOSED
+        assert gate.tool == "send_to_session"
+        assert gate.action.text == "arregla el bug del login"
+        assert gate.action.timeout_ms == 300000
+        assert gate.action.pane_id == "w1:p9"
+        assert gate.action.agent == "opencode"
+        assert result["approval"].gate_id == gate.gate_id
+        # The blocked turn still completes normally with the model answer.
+        assert result["answer"].startswith("Voy a enviar")
+
+    def test_read_only_tools_never_open_gates(self, settings, make_stub):
+        # AC2: reads dispatch exactly as before; no gate, no overhead.
+        stub = make_stub(screen="working on the fix")
+        llm, _ = make_brain(
+            settings, stub,
+            responses=[
+                tool_call_response("c1", "read_transcript", {"n_turns": 5}),
+                text_response("Está trabajando en el fix."),
+            ],
+        )
+        result = llm.ask("qué está haciendo?", session_id="s1")
+        assert result["approval"] is None
+        assert llm._approval_store.current("s1") is None
+        assert stub.prompt_calls == []
+        assert stub.screen_calls  # the read really ran, untouched path
+
+    def test_tool_message_tells_model_the_send_is_pending(self, settings, make_stub):
+        llm, _ = make_brain(
+            settings, make_stub(),
+            responses=[
+                tool_call_response("c1", "send_to_session", {"text": "x"}),
+                text_response("Eco de lo que voy a enviar."),
+            ],
+        )
+        llm.ask("manda x")
+        tool_messages = [
+            m for m in llm._client.create_kwargs[-1]["messages"] if m.get("role") == "tool"
+        ]
+        content = tool_messages[0]["content"]
+        assert "pending user approval" in content
+        assert "NOT" in content
+        assert "never say it was sent" in content
+
+    def test_second_ask_supersedes_previous_live_gate(self, settings, make_stub):
+        # One live gate per session: the newer send wins with its own args.
+        stub = make_stub()
+        llm, _ = make_brain(
+            settings, stub,
+            responses=[
+                tool_call_response("c1", "send_to_session", {"text": "first send"}),
+                text_response("eco uno"),
+                tool_call_response(
+                    "c2", "send_to_session", {"text": "second send", "timeout_ms": 5000}
+                ),
+                text_response("eco dos"),
+            ],
+        )
+        first = llm.ask("manda esto", session_id="s1")
+        second = llm.ask("no, manda esto otro", session_id="s1")
+        gates = llm._approval_store
+        assert gates.get(first["approval"].gate_id).state == SUPERSEDED
+        live = gates.current("s1")
+        assert live.gate_id == second["approval"].gate_id
+        assert live.action.text == "second send"
+        assert live.action.timeout_ms == 5000
+        assert stub.prompt_calls == []
+
+    def test_send_without_wired_store_blocks_fail_safe(self, settings, make_stub):
+        # AC1 even when wiring is broken: no store, no execution.
+        stub = make_stub()
+        llm = BrainLLM(
+            settings,
+            BrainTools(settings, herdr=stub),
+            client=ScriptedLLM(
+                [
+                    tool_call_response("c1", "send_to_session", {"text": "x"}),
+                    text_response("no pude enviarlo."),
+                ]
+            ),
+        )
+        result = llm.ask("manda x")
+        assert stub.prompt_calls == []
+        assert result["approval"] is None
+        tool_messages = [
+            m for m in llm._client.create_kwargs[-1]["messages"] if m.get("role") == "tool"
+        ]
+        assert tool_messages[0]["content"].startswith(
+            "error: send_to_session is blocked"
+        )
+
+    def test_send_without_active_pane_mirrors_tool_error(self, settings, make_stub):
+        stub = make_stub(agents=[])
+        llm, _ = make_brain(
+            settings, stub,
+            responses=[
+                tool_call_response("c1", "send_to_session", {"text": "x"}),
+                text_response("no hay agente activo."),
+            ],
+        )
+        result = llm.ask("manda x")
+        assert stub.prompt_calls == []
+        assert result["approval"] is None
+        assert llm._approval_store.current("default") is None
+        tool_messages = [
+            m for m in llm._client.create_kwargs[-1]["messages"] if m.get("role") == "tool"
+        ]
+        assert tool_messages[0]["content"] == "error: no active agent pane"
+
+
 class TestKeyHandling:
     def test_missing_key_raises_before_any_call(self, settings, make_stub, monkeypatch):
         monkeypatch.delenv("GLM_API_KEY", raising=False)
@@ -439,3 +575,10 @@ class TestSystemPromptPolicy:
         assert "send_to_session" in SYSTEM_PROMPT
         assert "3 short sentences" in SYSTEM_PROMPT
         assert "NEVER send anything" in SYSTEM_PROMPT
+
+    def test_approval_gate_rule_baked_in(self):
+        # PRD §7 exact amendment: state target+text, never narrate as done.
+        assert (
+            "state the target and the text (verbatim if short), and wait "
+            "— never narrate the send as done"
+        ) in SYSTEM_PROMPT

@@ -8,9 +8,10 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from herdr_brain.approval import ApprovalGate, ApprovalGateStore
 from herdr_brain.config import Settings
 from herdr_brain.herdr import AgentInfo
-from herdr_brain.server import create_app
+from herdr_brain.server import APPROVAL_CLOSER, approval_payload, create_app
 from tests.conftest import SETTINGS_KWARGS
 
 
@@ -28,6 +29,9 @@ class FakeLLM:
 
     def attach_store(self, store):
         self.attached_store = store
+
+    def attach_approval_store(self, store):
+        self.attached_approval_store = store
 
     def ask(self, text, session_id=None, pane_id=None):
         self.calls.append(text)
@@ -239,6 +243,101 @@ class TestAsk:
     def test_empty_text_rejected(self, client_factory):
         resp = client_factory().post("/ask", json={"text": ""})
         assert resp.status_code == 422
+
+
+def make_gate(
+    session_id: str = "default",
+    text: str = "corre los tests",
+    timeout_ms: int | None = 300000,
+    pane_id: str | None = "w1:p9",
+    agent: str | None = "opencode",
+) -> ApprovalGate:
+    """A frozen gate snapshot built through the real store API."""
+    store = ApprovalGateStore(timeout_s=60)
+    return store.propose(
+        session_id=session_id,
+        text=text,
+        timeout_ms=timeout_ms,
+        pane_id=pane_id,
+        agent=agent,
+    )
+
+
+class TestApprovalGate:
+    """/ask gains approval{} + the deterministic closer when a gate opens."""
+
+    def test_gated_ask_returns_approval_field_and_closer(self, client_factory):
+        gate = make_gate(text="arregla el bug del login", timeout_ms=300000)
+        llm = FakeLLM(
+            result={
+                "answer": "Voy a enviar a opencode: arregla el bug del login",
+                "pane_id": "w1:p9",
+                "agent": "opencode",
+                "session_id": "default",
+                "approval": gate,
+            }
+        )
+        tts = FakeTTS()
+        resp = client_factory(llm=llm, tts=tts).post(
+            "/ask", json={"text": "dile que arregle el login"}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        # Deterministic closer, appended server-side after the model echo.
+        assert body["answer"].startswith("Voy a enviar a opencode")
+        assert body["answer"].endswith(APPROVAL_CLOSER)
+        approval = body["approval"]
+        assert approval["gate_id"] == gate.gate_id
+        assert approval["tool"] == "send_to_session"
+        assert approval["pane_id"] == "w1:p9"
+        assert approval["agent"] == "opencode"
+        assert approval["text"] == "arregla el bug del login"  # FULL text
+        assert approval["timeout_ms"] == 300000
+        assert isinstance(approval["expires_in_s"], int)
+        assert 0 < approval["expires_in_s"] <= 60
+        # The closer is spoken too: TTS rendered the gated answer in full.
+        assert tts.calls[-1]["text"] == body["answer"]
+
+    def test_ungated_ask_has_null_approval_and_no_closer(self, client_factory):
+        resp = client_factory().post("/ask", json={"text": "en que estas?"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["approval"] is None
+        assert APPROVAL_CLOSER not in body["answer"]
+
+    def test_new_ask_supersedes_the_live_gate(self, settings, audio_dir):
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        app = create_app(
+            settings=cfg, llm_factory=lambda c, t: FakeLLM(), tts_renderer=FakeTTS()
+        )
+        gate_store = app.state.approval_store
+        old_gate = gate_store.propose(
+            "s1", text="old send", pane_id="w1:p9", agent="opencode"
+        )
+        resp = TestClient(app).post("/ask", json={"text": "otra cosa", "session_id": "s1"})
+        assert resp.status_code == 200
+        assert resp.json()["approval"] is None  # question-only turn, no new gate
+        assert gate_store.current("s1") is None
+        assert gate_store.get(old_gate.gate_id).state == "superseded"
+
+    def test_approval_payload_counts_down_lazily(self):
+        # Lazy expiry model: remaining seconds from created_at, no timers.
+        store = ApprovalGateStore(timeout_s=60, clock=lambda: 1_000.0)
+        gate = store.propose("s1", text="x", pane_id="p", agent="a")
+        assert approval_payload(gate, 60, now=1000.0)["expires_in_s"] == 60
+        assert approval_payload(gate, 60, now=1010.5)["expires_in_s"] == 50
+        assert approval_payload(gate, 60, now=1065.0)["expires_in_s"] == 0
+
+    def test_create_app_exposes_and_attaches_approval_store(self, settings, audio_dir):
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        llm = FakeLLM()
+        app = create_app(
+            settings=cfg, llm_factory=lambda c, t: llm, tts_renderer=FakeTTS()
+        )
+        assert isinstance(app.state.approval_store, ApprovalGateStore)
+        TestClient(app).post("/ask", json={"text": "hola"})  # builds the LLM
+        # Same instance the approval endpoints will resolve against.
+        assert llm.attached_approval_store is app.state.approval_store
 
 
 class TestSessions:

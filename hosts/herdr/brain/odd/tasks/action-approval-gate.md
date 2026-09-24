@@ -61,7 +61,7 @@ Checks: unit tests incl. edge cases ("no lo envíes", "no sé", long
 sentences containing "no").
 Route: delegated-direct.
 
-### [ ] T3 — Tool loop interception + /ask approval field
+### [x] T3 — Tool loop interception + /ask approval field
 Files: `src/herdr_brain/llm.py`, `src/herdr_brain/server.py`,
 `tests/test_llm.py`, `tests/test_server.py`.
 `BrainLLM.ask`: on `send_to_session` tool resolution → freeze gate, do NOT
@@ -152,6 +152,16 @@ Route: inline (copy + smoke are per-action).
     boundary — "sigue"→approve, "paraguas"→reject. Pinned in
     TestLiteralStartswithSemantics.
 
+- T3 done — `.venv/bin/python -m pytest tests/test_llm.py tests/test_server.py -q`
+  → 94 passed; `.venv/bin/python -m pytest -q` → 354 passed (1
+  pre-existing starlette/anyio DeprecationWarning, unrelated). Interception
+  lives in `BrainLLM._invoke` (send_to_session never reaches dispatch);
+  `ask()` returns the frozen `ApprovalGate` as `approval`; server shapes
+  `approval{}` via `approval_payload()` and appends the verbatim closer
+  "¿Se envía?" before TTS; `create_app` exposes `app.state.approval_store`
+  and attaches it to the LLM; every `/ask` supersedes the session's live
+  gate first (PRD §4). Commit hash recorded by orchestrator.
+
 ## Next Step
 
-T3 (tool loop interception + /ask approval field).
+T4 (approval endpoints: approve/reject/resolve/PATCH/current).
