@@ -165,6 +165,30 @@ class TestCommandFraming(unittest.TestCase):
             server.stop()
 
 
+    def test_far_over_cap_play_through_the_client_path_gets_the_clear_error(self):
+        """RS-4: an over-cap delegated play sees the size error, not a broken pipe.
+
+        For payloads exceeding the cap by more than the socket buffers, the
+        client is still inside sendall when the server detects the cap: the
+        server must drain the remainder of the oversized line before
+        replying, so the client's sendall completes and it reads the
+        explicit payload-size error instead of a silent connection loss.
+        """
+        with tempfile.NamedTemporaryFile(suffix=".sock", delete=True) as tmp:
+            sock_file = tmp.name
+        server = self._serve_echo(sock_file)
+        try:
+            from agent_tts.daemon import send_play
+            from agent_tts.ipc import MAX_COMMAND_BYTES
+
+            payload = {"text": "x" * (MAX_COMMAND_BYTES + 1024 * 1024)}
+            reply = send_play(payload, socket_path=sock_file)
+            self.assertIsInstance(reply, str)
+            self.assertTrue(reply.startswith("ERR: command too large"), reply)
+        finally:
+            server.stop()
+
+
 class TestPastCapProbe(unittest.TestCase):
     """RS-3: the over-cap probe waits boundedly and preserves the socket timeout."""
 
