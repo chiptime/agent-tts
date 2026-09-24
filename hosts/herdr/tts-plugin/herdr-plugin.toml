@@ -71,7 +71,7 @@ id = "tts-reader"
 title = "TTS Live Reader"
 placement = "popup"
 width = "70%"
-height = 12
+height = 11
 command = ["bin/herdr-tts", "_reader"]
 
 [[actions]]

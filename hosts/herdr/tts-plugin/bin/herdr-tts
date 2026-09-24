@@ -1719,7 +1719,7 @@ speak_text() {
       # space even on long reads.
       command -v herdr >/dev/null 2>&1 \
         && herdr plugin pane open --plugin herdr.tts --entrypoint tts-reader \
-             --width "60%" --height 8 >/dev/null 2>&1 \
+             --width "60%" --height 7 >/dev/null 2>&1 \
         || true
     )
   fi
