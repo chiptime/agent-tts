@@ -177,6 +177,10 @@ PCM streams to the Windows host over TCP and plays natively there (WASAPI) — n
 
 If the winhost server is unreachable, one English warning is printed on stderr and the run falls back to zero-install PowerShell playback: one persistent `powershell.exe` per run (from WSL interop) consumes length-prefixed WAV groups from stdin in a loop, so sentence groups play near-gaplessly instead of paying a process spawn per group; pause/resume/stop work at group granularity via pipe flow control. One-shot clips keep the previous behavior. Use `--playback wsl-ps` to force that mode directly; a clear error exits non-zero when `powershell.exe` is missing or the process is not running under WSL.
 
+### Windows host with local fallback (`windows`)
+
+`--playback windows` (or `AGENT_TTS_PLAYBACK=windows`) streams to the Windows host when the receiver is running; if the receiver is unreachable, one English warning is printed on stderr and the run falls back to the local device (WSLg PulseAudio under WSL) — never PowerShell. On native Windows it resolves to plain `local` playback.
+
 ### Environment-based selection (`auto`)
 
 `--playback auto` (or `AGENT_TTS_PLAYBACK=auto`) picks the concrete target from the environment: it resolves to `winhost` under WSL when `powershell.exe` is on PATH (falling back to `wsl-ps` automatically when the winhost server is absent), and to `local` everywhere else — native Windows, native Linux, or WSL without PowerShell interop. Ideal for one shared config synced across machines: playback adapts per environment without hardcoding a mode.
@@ -185,7 +189,7 @@ If the winhost server is unreachable, one English warning is printed on stderr a
 
 | Variable | Default | Purpose |
 | :--- | :--- | :--- |
-| `AGENT_TTS_PLAYBACK` | `local` | Default playback target (`local`, `winhost`, `wsl-ps`, `auto`) |
+| `AGENT_TTS_PLAYBACK` | `local` | Default playback target (`local`, `winhost`, `wsl-ps`, `windows`, `auto`) |
 | `AGENT_TTS_OLLAMA_MODEL` | `qwen2.5:0.5b` | Ollama model used by `--llm-summary` |
 | `AGENT_TTS_WINHOST_HOST` | auto-detect | Explicit Windows host address for winhost clients |
 | `AGENT_TTS_WINHOST_PORT` | `7717` | TCP port for the winhost transport |
@@ -321,7 +325,7 @@ usage: agent-tts [-h] [--voice VOICE] [--rate RATE] [--max-chars MAX_CHARS]
                  [--ipc-cmd IPC_CMD]
                  [--provider {edge,openai,elevenlabs,eleven,piper,kokoro,local}]
                  [--stream {auto,on,off}]
-                 [--playback {local,winhost,wsl-ps,auto}] [--winhost]
+                 [--playback {local,winhost,wsl-ps,windows,auto}] [--winhost]
                  [--winhost-host WINHOST_HOST] [--winhost-port WINHOST_PORT]
                  [--openai-key OPENAI_KEY] [--openai-base-url OPENAI_BASE_URL]
                  [--openai-model OPENAI_MODEL] [--eleven-key ELEVEN_KEY]
