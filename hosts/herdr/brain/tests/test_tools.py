@@ -95,6 +95,24 @@ class TestSendToSession:
         ]
         assert result["ok"] is True
         assert result["pane_id"] == active_agent.pane_id
+        assert result["delivered"] is True
+        assert "note" not in result
+
+    def test_timeout_result_carries_delivery_truth(self, settings, make_stub):
+        stub = make_stub(prompt={"ok": False, "status": "timeout", "output": "timeout"})
+        tools = BrainTools(settings, herdr=stub)
+        result = json.loads(tools.send_to_session("long task"))
+        assert result["status"] == "timeout"
+        assert result["delivered"] is True
+        assert "note" in result
+        assert "still working" in result["note"]
+
+    def test_blocked_result_marks_not_delivered(self, settings, make_stub):
+        stub = make_stub(prompt={"ok": False, "status": "blocked", "output": "agent_blocked"})
+        tools = BrainTools(settings, herdr=stub)
+        result = json.loads(tools.send_to_session("hello"))
+        assert result["delivered"] is False
+        assert "note" not in result
 
     def test_blocked_prompt_reported(self, settings, make_stub):
         stub = make_stub(prompt={"ok": False, "status": "blocked", "output": "agent_blocked"})

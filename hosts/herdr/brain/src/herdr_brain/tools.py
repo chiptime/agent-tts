@@ -317,15 +317,21 @@ class BrainTools:
         except HerdrError as exc:
             return f"error sending prompt: {exc}"
         excerpt = (result.get("output") or "")[-MAX_SEND_EXCERPT:]
-        return json.dumps(
-            {
-                "ok": result["ok"],
-                "status": result["status"],
-                "pane_id": active.pane_id,
-                "output_excerpt": excerpt,
-            },
-            ensure_ascii=False,
-        )
+        status = result["status"]
+        payload = {
+            "ok": result["ok"],
+            "status": status,
+            "pane_id": active.pane_id,
+            "delivered": status != "blocked",
+            "output_excerpt": excerpt,
+        }
+        if status == "timeout":
+            payload["note"] = (
+                "the prompt WAS delivered and the agent is still working on it; "
+                "only the completion wait expired — never resend or offer to "
+                "retry, it would duplicate the prompt"
+            )
+        return json.dumps(payload, ensure_ascii=False)
 
     # -- dispatch helpers ----------------------------------------------------
 
@@ -442,7 +448,11 @@ TOOLS_SCHEMA = [
                     },
                     "timeout_ms": {
                         "type": "integer",
-                        "description": "Optional wait timeout in milliseconds.",
+                        "description": (
+                            "How long to wait for the agent to FINISH after "
+                            "delivery (delivery itself is immediate). The agent "
+                            "may still be working when this expires."
+                        ),
                     },
                 },
                 "required": ["text"],
