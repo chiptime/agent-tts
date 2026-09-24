@@ -134,6 +134,13 @@
 #         the karaoke family) degrades to the clean no-playback path —
 #         rc 0, English stderr notice, stdout empty (never the alternate
 #         screen nor the ERR text rendered)
+#   43    reader auto-open (HT-16): TTS_READER_AUTO managed key (on/off
+#         admission, junk rejected before any filesystem side effect),
+#         speak_text fire-and-forget hook (stubbed herdr CLI logs the
+#         pane-open call when on, silent when off, read unaffected when
+#         herdr is missing), --reader-auto CLI toggle (EN + ES output,
+#         persists through config_set), settings reading category p knob
+#         cycles and persists
 set -uo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -4015,6 +4022,120 @@ assert_grep "42d frame 2 (after the write) adopts the light accent" $'\033[34m' 
 assert_grep "42d frame 2 adopts the light muted" $'\033[30m' "$T/pf2.txt" -F
 assert_no_grep_f "42d frame 2 drops the dark accent" $'\033[36m' "$T/pf2.txt"
 assert_no_grep_f "42d frame 2 drops the dark muted" $'\033[90m' "$T/pf2.txt"
+unset HERDR_TTS_CONFIG_FILE
+
+echo "── 43. reader auto-open (HT-16): TTS_READER_AUTO, speak_text hook, --reader-auto"
+new_env s43
+export HERDR_TTS_CONFIG_FILE="$T/config.env"
+
+# Logging herdr stub: every invocation lands in herdr.calls (stdout goes
+# to /dev/null in the hook itself, so the log IS the observable).
+cat > "$T/bin/herdr" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "herdr \$*" >> "$T/herdr.calls"
+exit 0
+EOF
+chmod +x "$T/bin/herdr"
+
+# 43a. config_set admission: on/off accepted with in-place upsert; junk is
+#      rejected BEFORE any filesystem side effect (file stays byte-identical).
+printf 'TTS_READER_AUTO="off"\n' > "$HERDR_TTS_CONFIG_FILE"
+lib_run '
+  r1=0; config_set TTS_READER_AUTO on || r1=$?
+  r2=0; config_set TTS_READER_AUTO banana >/dev/null 2>&1 || r2=$?
+  echo "adm=$r1,$r2"
+' > "$T/out.txt"
+assert_grep "43a on accepted, junk refused (rc 0,1)" '^adm=0,1$' "$T/out.txt"
+assert_grep "43a upsert rewrites the existing line in place" '^TTS_READER_AUTO="on"$' "$HERDR_TTS_CONFIG_FILE"
+cp "$HERDR_TTS_CONFIG_FILE" "$T/before-junk.env"
+lib_run 'config_set TTS_READER_AUTO side-ways >/dev/null 2>&1 || true' >/dev/null
+cmp -s "$HERDR_TTS_CONFIG_FILE" "$T/before-junk.env" \
+  && ok "43a rejected value leaves the file byte-identical" || bad "43a junk write touched config.env"
+
+# 43b. speak_text hook: TTS_READER_AUTO=on → the pane-open call fires exactly
+#      once with the plugin/entrypoint pair; the engine still spawns and the
+#      mutex files are written (the read is never harmed).
+ENGINE_CALLS="$T/engine.calls"; : > "$ENGINE_CALLS"; export ENGINE_CALLS
+cat > "$T/bin/pystub" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "\$ENGINE_CALLS"
+exit 0
+EOF
+chmod +x "$T/bin/pystub"
+: > "$T/herdr.calls"
+lib_run '
+  VENV_PYTHON="$T/bin/pystub"; ENGINE_SCRIPT="$T/engine.py"
+  PID_FILE="$T/pid"; LOCK_FILE="$T/lock"; IPC_SOCKET="$T/player.sock"
+  TTS_READER_AUTO=on
+  speak_text "hola mundo"
+  rc=$?; echo "rc=$rc" > "'"$T"'/rc43on"
+  wait "$(cat "$T/pid" 2>/dev/null)" 2>/dev/null || true
+'
+assert_grep "43b on: speak_text returns rc 0" '^rc=0$' "$T/rc43on"
+assert_grep "43b on: herdr invoked with the reader pane-open pair" 'plugin pane open --plugin herdr\.tts --entrypoint tts-reader' "$T/herdr.calls"
+[[ "$(grep -c 'plugin pane open' "$T/herdr.calls")" -eq 1 ]] \
+  && ok "43b on: exactly one pane-open call" || bad "43b on: pane-open calls: $(grep -c 'plugin pane open' "$T/herdr.calls")"
+[[ -s "$ENGINE_CALLS" ]] \
+  && ok "43b on: engine still spawned" || bad "43b on: engine never spawned"
+grep -qE '^[0-9]+$' "$T/pid" && grep -qE '^[0-9]+$' "$T/lock" \
+  && ok "43b on: mutex pid/lock files written" || bad "43b on: mutex files missing"
+
+# 43b-off. TTS_READER_AUTO=off → no herdr call at all, everything else equal.
+: > "$T/herdr.calls"; : > "$ENGINE_CALLS"
+lib_run '
+  VENV_PYTHON="$T/bin/pystub"; ENGINE_SCRIPT="$T/engine.py"
+  PID_FILE="$T/pid"; LOCK_FILE="$T/lock"; IPC_SOCKET="$T/player.sock"
+  TTS_READER_AUTO=off
+  speak_text "hola mundo"
+  rc=$?; echo "rc=$rc" > "'"$T"'/rc43off"
+  wait "$(cat "$T/pid" 2>/dev/null)" 2>/dev/null || true
+'
+assert_grep "43b off: speak_text returns rc 0" '^rc=0$' "$T/rc43off"
+# stop_audio legitimately notifies herdr ("Audio stopped") — what must NOT
+# happen with the knob off is the reader pane-open call.
+[[ "$(grep -c 'plugin pane open' "$T/herdr.calls" 2>/dev/null || true)" -eq 0 ]] \
+  && ok "43b off: reader pane never opened" || bad "43b off: unexpected pane-open call: $(grep 'plugin pane open' "$T/herdr.calls")"
+[[ -s "$ENGINE_CALLS" ]] && ok "43b off: engine still spawned" || bad "43b off: engine never spawned"
+
+# 43b-noherdr. Fail-open: herdr missing from PATH + on → the read survives.
+make_nobin "$T/nobin"
+: > "$ENGINE_CALLS"
+lib_run '
+  VENV_PYTHON="$T/bin/pystub"; ENGINE_SCRIPT="$T/engine.py"
+  PID_FILE="$T/pid"; LOCK_FILE="$T/lock"; IPC_SOCKET="$T/player.sock"
+  PATH="'"$T"'/nobin"
+  TTS_READER_AUTO=on
+  speak_text "hola mundo"
+  rc=$?; echo "rc=$rc" > "'"$T"'/rc43no"
+  wait "$(cat "$T/pid" 2>/dev/null)" 2>/dev/null || true
+'
+assert_grep "43b no-herdr: speak_text still returns rc 0" '^rc=0$' "$T/rc43no"
+[[ -s "$ENGINE_CALLS" ]] && ok "43b no-herdr: engine still spawned" || bad "43b no-herdr: engine never spawned"
+
+# 43c. --reader-auto CLI toggle: flips, persists and prints via tt(); a
+#      second run flips back; HERDR_TTS_LANG=es prints the ES confirmation.
+printf 'TTS_READER_AUTO="off"\n' > "$HERDR_TTS_CONFIG_FILE"
+timeout 10 "$SCRIPT" --reader-auto > "$T/out.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "43c first toggle exits rc=0" || bad "43c first toggle rc!=0"
+assert_grep "43c first toggle prints the EN on-confirmation" 'Reader auto-open on' "$T/out.txt"
+assert_grep "43c first toggle persists on" '^TTS_READER_AUTO="on"$' "$HERDR_TTS_CONFIG_FILE"
+HERDR_TTS_LANG=es timeout 10 "$SCRIPT" --reader-auto > "$T/out-es.txt" 2>>"$T/err.log"
+assert_grep "43c ES run prints the ES off-confirmation" 'Apertura automática del lector desactivada' "$T/out-es.txt"
+assert_grep "43c second toggle persists off" '^TTS_READER_AUTO="off"$' "$HERDR_TTS_CONFIG_FILE"
+
+# 43d. cycle table + settings reading category: reader_auto wraps off→on→off
+#      and the popup p knob persists through the managed writer.
+lib_run '
+  k=off; line="reader_auto:$k"
+  for i in 1 2; do k=$(settings_cycle_value reader_auto "$k"); line+=">$k"; done
+  echo "$line"
+' > "$T/out.txt"
+assert_grep "43d reader_auto cycles with wrap" '^reader_auto:off>on>off$' "$T/out.txt"
+printf 'rpq' | timeout 10 "$SCRIPT" --voice-settings > "$T/popup.txt" 2>>"$T/err.log"
+[[ $? -eq 0 ]] && ok "43d popup rpq exits rc=0" || bad "43d popup rc!=0"
+assert_grep "43d reading view renders the reader popup row" ' p  Reader popup:' "$T/popup.txt"
+assert_grep "43d p knob note renders" 'Reader auto-open: on' "$T/popup.txt"
+assert_grep "43d p knob persists on" '^TTS_READER_AUTO="on"$' "$HERDR_TTS_CONFIG_FILE"
 unset HERDR_TTS_CONFIG_FILE
 
 echo

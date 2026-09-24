@@ -146,6 +146,11 @@ TTS_PLAYBACK="${TTS_PLAYBACK:-$DEFAULT_TTS_PLAYBACK}"
 PODCAST_ENABLED="${PODCAST_ENABLED:-$DEFAULT_PODCAST_ENABLED}"
 PODCAST_PORT="${PODCAST_PORT:-$DEFAULT_PODCAST_PORT}"
 TTS_DEBOUNCE_SECONDS="${TTS_DEBOUNCE_SECONDS:-$DEFAULT_DEBOUNCE_SECONDS}"
+# HT-16: auto-open the reader popup on live reads. Only an exact "on"
+# triggers it; any hand-edited junk normalizes to off (same validation
+# style as TTS_THEME), so a typo can never half-enable the popup.
+TTS_READER_AUTO="${TTS_READER_AUTO:-off}"
+[[ "$TTS_READER_AUTO" == "on" ]] || TTS_READER_AUTO="off"
 TTS_SETTLE_SECONDS="${TTS_SETTLE_SECONDS:-$DEFAULT_SETTLE_SECONDS}"
 # Invalid hand-edited values fall back to the default instead of breaking sleep.
 [[ "$TTS_SETTLE_SECONDS" =~ ^[0-9]+([.][0-9]+)?$ ]] || TTS_SETTLE_SECONDS="$DEFAULT_SETTLE_SECONDS"
@@ -439,10 +444,11 @@ TT_EN[settings.autoread.touch_failed]="Could not create %s"
 TT_EN[settings.autoread.scope]="✓ Auto-read scope: %s"
 TT_EN[settings.autoread.debounce_off]="✓ Debounce disabled (every done notifies instantly)"
 TT_EN[settings.autoread.debounce_on]="✓ Anti-spam window (debounce): %ss per (pane, status)"
+TT_EN[settings.autoread.reader_auto]="✓ Reader auto-open: %s"
 TT_EN[settings.unknown_key.voice]="Unrecognized key (%s) — p provider, g global voice, n spoken prefix, u auto-assign, i language, q back to the index"
 TT_EN[settings.unknown_key.audio]="Unrecognized key (%s) — d playback target, c click-through, r retention, s settle, q back to the index"
 TT_EN[settings.unknown_key.notifications]="Unrecognized key (%s) — t ntfy topic, f podcast, w web URL, q back to the index"
-TT_EN[settings.unknown_key.reading]="Unrecognized key (%s) — v auto-read, a scope, b debounce, q back to the index"
+TT_EN[settings.unknown_key.reading]="Unrecognized key (%s) — v auto-read, a scope, b debounce, p reader popup, q back to the index"
 TT_EN[settings.view.voice]="🎙  herdr-tts · Settings · Voice"
 TT_EN[settings.view.audio]="🔊  herdr-tts · Settings · Audio"
 TT_EN[settings.view.notifications]="🔔  herdr-tts · Settings · Notifications"
@@ -470,11 +476,12 @@ TT_EN[settings.autoread.label_on]="🔊 on (reads to you when each agent finishe
 TT_EN[settings.autoread.label_muted]="🔇 muted (manual only: prefix+r / htr on demand)"
 TT_EN[settings.row.scope]=" a  Auto-read scope:     %s   (focused = active chat only)"
 TT_EN[settings.row.debounce]=" b  Anti-spam debounce:  %ss   (0 = disabled)"
+TT_EN[settings.row.reader_auto]=" p  Reader popup:        %s   (on = opens when a read starts)"
 TT_EN[settings.index.pick]="Pick a category with its key:"
 TT_EN[settings.index.voice]=" v  🎙 Voice           provider, global voice, spoken prefix, auto-assign, language"
 TT_EN[settings.index.audio]=" a  🔊 Audio            playback target, click-through, retention, settle"
 TT_EN[settings.index.notifications]=" n  🔔 Notifications    ntfy topic, podcast feed, web redirect"
-TT_EN[settings.index.reading]=" r  ⚙️  Auto-read       auto-read, scope, debounce"
+TT_EN[settings.index.reading]=" r  ⚙️  Auto-read       auto-read, scope, debounce, reader popup"
 TT_EN[settings.index.lang]=" l  🌐  Language        %s"
 TT_EN[settings.lang.label.en]="English"
 TT_EN[settings.lang.label.es]="Español"
@@ -487,6 +494,8 @@ TT_EN[cli.debounce.invalid]="Error: --debounce requires a number of seconds (int
 TT_EN[cli.auto.on]="🔊 Auto-read enabled"
 TT_EN[cli.auto.off]="🔇 Auto-read muted"
 TT_EN[cli.scope.set]="✓ Auto-read scope: %s"
+TT_EN[cli.reader_auto.on]="✓ Reader auto-open on (the live reader popup opens when a read starts)"
+TT_EN[cli.reader_auto.off]="✓ Reader auto-open off"
 TT_EN[cli.scope.invalid]="Error: Scope must be 'focused' or 'all'"
 TT_EN[cli.ntfy.off]="✓ ntfy mobile notifications disabled"
 TT_EN[cli.ntfy.set]="✓ ntfy topic set: %s"
@@ -565,6 +574,7 @@ TT_EN[help.toggle_auto]="  --toggle-auto (-t)       Toggle background auto-read 
 TT_EN[help.auto_on]="  --auto-on                Auto-read always on: reads to you when each agent finishes (default)"
 TT_EN[help.auto_off]="  --auto-off               Mute auto-read: manual reading only (Key: prefix+r)"
 TT_EN[help.scope]="  --scope focused|all      'focused' (active chat only) | 'all' (any pane, no overlap)"
+TT_EN[help.reader_auto]="  --reader-auto            Toggle auto-opening the live reader popup on reads (TTS_READER_AUTO)"
 TT_EN[help.visual.header]="Visual experience and synchronized reading:"
 TT_EN[help.highlight]="  --highlight (-H)         Read the response in the terminal with real-time karaoke highlighting"
 TT_EN[help.autoscroll]="  --autoscroll             Read with auto-scroll synced to the voice pace"
@@ -926,10 +936,11 @@ TT_ES[settings.autoread.touch_failed]="No se pudo crear %s"
 TT_ES[settings.autoread.scope]="✓ Alcance de auto-lectura: %s"
 TT_ES[settings.autoread.debounce_off]="✓ Debounce desactivado (cada done notifica al instante)"
 TT_ES[settings.autoread.debounce_on]="✓ Ventana anti-spam (debounce): %ss por (pane, estado)"
+TT_ES[settings.autoread.reader_auto]="✓ Apertura automática del lector: %s"
 TT_ES[settings.unknown_key.voice]="Tecla no reconocida (%s) — p proveedor, g voz global, n prefijo, u auto-asignación, i idioma, q vuelve al índice"
 TT_ES[settings.unknown_key.audio]="Tecla no reconocida (%s) — d destino, c click directo, r retención, s asentamiento, q vuelve al índice"
 TT_ES[settings.unknown_key.notifications]="Tecla no reconocida (%s) — t topic ntfy, f podcast, w URL web, q vuelve al índice"
-TT_ES[settings.unknown_key.reading]="Tecla no reconocida (%s) — v auto-lectura, a alcance, b debounce, q vuelve al índice"
+TT_ES[settings.unknown_key.reading]="Tecla no reconocida (%s) — v auto-lectura, a alcance, b debounce, p popup lector, q vuelve al índice"
 TT_ES[settings.view.voice]="🎙  herdr-tts · Ajustes · Voz"
 TT_ES[settings.view.audio]="🔊  herdr-tts · Ajustes · Audio"
 TT_ES[settings.view.notifications]="🔔  herdr-tts · Ajustes · Notificaciones"
@@ -957,11 +968,12 @@ TT_ES[settings.autoread.label_on]="🔊 activa (te lee al terminar cada agente)"
 TT_ES[settings.autoread.label_muted]="🔇 silenciada (solo manual: prefix+r / htr bajo demanda)"
 TT_ES[settings.row.scope]=" a  Alcance auto-lectura: %s   (focused = solo chat activo)"
 TT_ES[settings.row.debounce]=" b  Debounce anti-spam:   %ss   (0 = desactivado)"
+TT_ES[settings.row.reader_auto]=" p  Popup del lector:     %s   (on = se abre al iniciar una lectura)"
 TT_ES[settings.index.pick]="Elige una categoría con su tecla:"
 TT_ES[settings.index.voice]=" v  🎙 Voz                  proveedor, voz global, prefijo hablado, auto-asignación, idioma"
 TT_ES[settings.index.audio]=" a  🔊 Audio               destino reproducción, click directo, retención, asentamiento"
 TT_ES[settings.index.notifications]=" n  🔔 Notificaciones      topic ntfy, podcast feed, redirección web"
-TT_ES[settings.index.reading]=" r  ⚙️  Lectura automática  auto-lectura, alcance, debounce"
+TT_ES[settings.index.reading]=" r  ⚙️  Lectura automática  auto-lectura, alcance, debounce, popup lector"
 TT_ES[settings.index.lang]=" l  🌐  Idioma              %s"
 TT_ES[settings.lang.label.en]="English"
 TT_ES[settings.lang.label.es]="Español"
@@ -974,6 +986,8 @@ TT_ES[cli.debounce.invalid]="Error: --debounce requiere un número de segundos (
 TT_ES[cli.auto.on]="🔊 Lectura automática activada"
 TT_ES[cli.auto.off]="🔇 Lectura automática silenciada"
 TT_ES[cli.scope.set]="✓ Alcance de auto-lectura: %s"
+TT_ES[cli.reader_auto.on]="✓ Apertura automática del lector activada (el popup se abre al iniciar una lectura)"
+TT_ES[cli.reader_auto.off]="✓ Apertura automática del lector desactivada"
 TT_ES[cli.scope.invalid]="Error: Scope debe ser 'focused' o 'all'"
 TT_ES[cli.ntfy.off]="✓ Notificaciones móviles de ntfy desactivadas"
 TT_ES[cli.ntfy.set]="✓ Topic de ntfy configurado: %s"
@@ -1052,6 +1066,7 @@ TT_ES[help.toggle_auto]="  --toggle-auto (-t)       Alternar lectura automática
 TT_ES[help.auto_on]="  --auto-on                Auto-lectura siempre activa: te lee al terminar cada agente (default)"
 TT_ES[help.auto_off]="  --auto-off               Silenciar la auto-lectura: solo lectura manual (Tecla: prefix+r)"
 TT_ES[help.scope]="  --scope focused|all      'focused' (solo chat activo) | 'all' (cualquiera sin solapar)"
+TT_ES[help.reader_auto]="  --reader-auto            Alterna la apertura automática del popup del lector al leer (TTS_READER_AUTO)"
 TT_ES[help.visual.header]="Experiencia visual y lectura sincronizada:"
 TT_ES[help.highlight]="  --highlight (-H)         Leer respuesta en terminal con resaltado karaoke en tiempo real"
 TT_ES[help.autoscroll]="  --autoscroll             Leer con auto-scroll sincronizado al compás de la voz"
@@ -1182,6 +1197,7 @@ TTS_PLAYBACK="${TTS_PLAYBACK}"
 PODCAST_ENABLED="${PODCAST_ENABLED}"
 PODCAST_PORT="${PODCAST_PORT}"
 TTS_DEBOUNCE_SECONDS="${TTS_DEBOUNCE_SECONDS}"
+TTS_READER_AUTO="${TTS_READER_AUTO}"
 TTS_SETTLE_SECONDS="${TTS_SETTLE_SECONDS}"
 TTS_TITLE_GLYPHS="${TTS_TITLE_GLYPHS}"
 OPENAI_API_KEY="${OPENAI_API_KEY}"
@@ -1221,9 +1237,9 @@ CONFIG_SET_BACKED_UP=0
 config_set() { # <KEY> <VALUE> → rc 1 on rejection or write failure (warning on stderr)
   local key="$1" value="$2"
   case "$key" in
-    TTS_PROVIDER|TTS_PLAYBACK|HERDR_TTS_AUDIO_RETENTION_DAYS|TTS_SETTLE_SECONDS|WEB_URL|WEB_LABEL|CLICK_REDIRECT|COLLIE_URL|TTS_AUTO_SCOPE|TTS_AUTO_LANG|PODCAST_ENABLED|TTS_DEBOUNCE_SECONDS|NTFY_TOPIC|TTS_VOICE|HERDR_TTS_LANG|TTS_THEME) ;;
+    TTS_PROVIDER|TTS_PLAYBACK|HERDR_TTS_AUDIO_RETENTION_DAYS|TTS_SETTLE_SECONDS|WEB_URL|WEB_LABEL|CLICK_REDIRECT|COLLIE_URL|TTS_AUTO_SCOPE|TTS_AUTO_LANG|PODCAST_ENABLED|TTS_DEBOUNCE_SECONDS|TTS_READER_AUTO|NTFY_TOPIC|TTS_VOICE|HERDR_TTS_LANG|TTS_THEME) ;;
     *)
-      echo "config_set: unmanaged key '${key}' (allowed: TTS_PROVIDER, TTS_PLAYBACK, HERDR_TTS_AUDIO_RETENTION_DAYS, TTS_SETTLE_SECONDS, WEB_URL, WEB_LABEL, CLICK_REDIRECT, COLLIE_URL, TTS_AUTO_SCOPE, TTS_AUTO_LANG, PODCAST_ENABLED, TTS_DEBOUNCE_SECONDS, NTFY_TOPIC, TTS_VOICE, HERDR_TTS_LANG, TTS_THEME)" >&2
+      echo "config_set: unmanaged key '${key}' (allowed: TTS_PROVIDER, TTS_PLAYBACK, HERDR_TTS_AUDIO_RETENTION_DAYS, TTS_SETTLE_SECONDS, WEB_URL, WEB_LABEL, CLICK_REDIRECT, COLLIE_URL, TTS_AUTO_SCOPE, TTS_AUTO_LANG, PODCAST_ENABLED, TTS_DEBOUNCE_SECONDS, TTS_READER_AUTO, NTFY_TOPIC, TTS_VOICE, HERDR_TTS_LANG, TTS_THEME)" >&2
       return 1
       ;;
   esac
@@ -1239,6 +1255,12 @@ config_set() { # <KEY> <VALUE> → rc 1 on rejection or write failure (warning o
     TTS_THEME)
       if [[ "$value" != "dark" && "$value" != "light" ]]; then
         echo "config_set: refused: TTS_THEME must be 'dark' or 'light' (got '${value}')" >&2
+        return 1
+      fi
+      ;;
+    TTS_READER_AUTO)
+      if [[ "$value" != "on" && "$value" != "off" ]]; then
+        echo "config_set: refused: TTS_READER_AUTO must be 'on' or 'off' (got '${value}')" >&2
         return 1
       fi
       ;;
@@ -1684,6 +1706,19 @@ speak_text() {
   local child_pid=$!
   echo "$child_pid" > "$PID_FILE"
   echo "$child_pid" > "$LOCK_FILE"
+
+  # HT-16 (TTS_READER_AUTO): on live reads, open the reader popup so the
+  # operator can follow the karaoke. Best-effort fire-and-forget inside a
+  # subshell: a missing herdr CLI, a "popup already open" reply or any
+  # other failure must NEVER fail or delay the read. Replay reads
+  # (--play-file: no sentence boundaries) deliberately never pass here.
+  if [[ "$TTS_READER_AUTO" == "on" ]]; then
+    (
+      command -v herdr >/dev/null 2>&1 \
+        && herdr plugin pane open --plugin herdr.tts --entrypoint tts-reader >/dev/null 2>&1 \
+        || true
+    )
+  fi
 }
 
 play_audio_file() {
@@ -2203,6 +2238,27 @@ toggle_auto() {
     echo "$(tt auto.muted)"
     notify_herdr "🔇 Herdr Voice" "$(tt auto.muted.notify)"
     speak_text "$(tt auto.muted.spoken)"
+  fi
+}
+
+# HT-16: flip TTS_READER_AUTO on/off and persist it through the managed
+# writer (config_set). Reads the CURRENT value the process loaded — config
+# wins over the environment at startup, so the toggle always lands on the
+# value the operator last persisted.
+toggle_reader_auto() {
+  if [[ "$TTS_READER_AUTO" == "on" ]]; then
+    TTS_READER_AUTO="off"
+  else
+    TTS_READER_AUTO="on"
+  fi
+  if ! config_set TTS_READER_AUTO "$TTS_READER_AUTO"; then
+    echo "$(tt settings.save_failed TTS_READER_AUTO)" >&2
+    exit 1
+  fi
+  if [[ "$TTS_READER_AUTO" == "on" ]]; then
+    echo "$(tt cli.reader_auto.on)"
+  else
+    echo "$(tt cli.reader_auto.off)"
   fi
 }
 
@@ -4860,6 +4916,7 @@ SETTINGS_LANGS=(off on) # detección automática de idioma ES/EN
 SETTINGS_UI_LANGS=(en es) # interface language (HERDR_TTS_LANG): en first = English default
 SETTINGS_PODCAST=(off on) # publicación de audios en el feed RSS
 SETTINGS_DEBOUNCE=(0 10 20 30 60) # ventana anti-spam por (pane, estado); 0 = desactivada
+SETTINGS_READER_AUTO=(off on) # apertura automática del popup del lector (HT-16)
 # (Las voces ya no tienen tabla estática: RF-HT-13-4 — el catálogo del
 # motor es la única fuente; sin motor, el ciclo `g` avisa y no cambia.)
 
@@ -4891,6 +4948,7 @@ settings_cycle_value() { # <provider|target|retention|settle> <current> → next
     ui_lang)   vals=("${SETTINGS_UI_LANGS[@]}") ;;
     podcast)   vals=("${SETTINGS_PODCAST[@]}") ;;
     debounce)  vals=("${SETTINGS_DEBOUNCE[@]}") ;;
+    reader_auto) vals=("${SETTINGS_READER_AUTO[@]}") ;;
     voice)
       # RF-HT-13-4: voices come from the engine catalog for the ACTIVE
       # provider (first keypress of a process pays one cached engine
@@ -4905,7 +4963,7 @@ settings_cycle_value() { # <provider|target|retention|settle> <current> → next
       [[ -n "$_cv" ]] || return 1
       read -r -a vals <<<"$_cv"
       ;;
-    *) echo "settings_cycle_value: unknown key '${1}' (provider, target, scope, lang, ui_lang, podcast, debounce, voice, retention or settle)" >&2; return 1 ;;
+    *) echo "settings_cycle_value: unknown key '${1}' (provider, target, scope, lang, ui_lang, podcast, debounce, reader_auto, voice, retention or settle)" >&2; return 1 ;;
   esac
   n=${#vals[@]}
   for (( i = 0; i < n; i++ )); do
@@ -5233,6 +5291,15 @@ settings_handle_key() { # <key>
             SETTINGS_WARN="$(tt settings.save_failed TTS_DEBOUNCE_SECONDS)"
           fi
           ;;
+        p|P)
+          next="$(settings_cycle_value reader_auto "$TTS_READER_AUTO")"
+          if config_set TTS_READER_AUTO "$next"; then
+            TTS_READER_AUTO="$next"
+            SETTINGS_NOTE="$(tt settings.autoread.reader_auto "$next")"
+          else
+            SETTINGS_WARN="$(tt settings.save_failed TTS_READER_AUTO)"
+          fi
+          ;;
         *)
           SETTINGS_WARN="$(tt settings.unknown_key.reading "$key")"
           ;;
@@ -5319,6 +5386,7 @@ settings_render() {
       _dash_add '%s' "$(tt settings.row.autoread "$auto_label")"
       _dash_add '%s' "$(tt settings.row.scope "$TTS_AUTO_SCOPE")"
       _dash_add '%s' "$(tt settings.row.debounce "$TTS_DEBOUNCE_SECONDS")"
+      _dash_add '%s' "$(tt settings.row.reader_auto "$TTS_READER_AUTO")"
       ;;
     *)
       # Interface language row: index-level extra like R restart. The
@@ -6613,6 +6681,9 @@ case "${1:-}" in
   --toggle-auto|--toggle|-t)
     toggle_auto
     ;;
+  --reader-auto)
+    toggle_reader_auto
+    ;;
   --snooze|--snooze-pane)
     # Optional explicit pane id (used by the voice palette); without one
     # the focused pane is targeted, as before.
@@ -6999,6 +7070,7 @@ run_podcast_server(port=int(sys.argv[1]), podcast_dir=sys.argv[2])
     "$(tt help.auto_on)"
     "$(tt help.auto_off)"
     "$(tt help.scope)"
+    "$(tt help.reader_auto)"
     ""
     "$(tt help.visual.header)"
     "$(tt help.highlight)"
