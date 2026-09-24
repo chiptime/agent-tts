@@ -255,13 +255,16 @@ Route: inline (copy + smoke are per-action).
   confirming, close → pill, pill-tap reopen, expiry gray → system turn →
   dismissal, gate-live on/off) verified on a scratch vm DOM-stub smoke
   harness (3 scenarios, not committed); repo tests stay pure-module per
-  convention. Commit hash recorded by orchestrator.
+   convention. Commit hash recorded by orchestrator.
 - Full-suite baseline going forward: 368 pytest / 74 js after T7.
-   - T8 notes: recovered card's countdown ring renders full (pct is relative
-     to the payload's own `expires_in_s`, not the configured 60 s window —
-     the number is correct, the wedge is cosmetic); server payload carries
-     no total, so a fix would touch the T4 contract. Verify visually in the
-     smoke pass.
+  - `bcc320d` feat(approval): reload recovery and pending-banner coexistence
+  - T8 notes: recovered card's countdown ring renders full (pct is relative
+    to the payload's own `expires_in_s`, not the configured 60 s window —
+    the number is correct, the wedge is cosmetic); server payload carries
+    no total, so a fix would touch the T4 contract. Verify visually in the
+    smoke pass. Smoke must also exercise: real-device reload mid-gate,
+    banner+card coexistence legibility, pending-banner tap while a gate is
+    live (routes to /ask → gated per PRD).
 
 ## Next Step
 
