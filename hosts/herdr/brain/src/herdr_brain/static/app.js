@@ -1554,10 +1554,14 @@
     if (!approvalCard) return;
     var g = approvalFlow.gate() || {};
     var expired = approvalFlow.isExpired();
+    var busy = approvalFlow.isBusy();
     var remaining = approvalFlow.remainingSeconds();
     var total = g.expires_in_s || 60;
 
-    var title = expired ? "⏱ Tiempo agotado" : "📤 Para: " + approvalTargetLabel(g);
+    /* Busy round (approve replay in flight): an honest "sending" title
+     * instead of the target — expiry cannot fire mid-round, so the ring
+     * just holds at its last value until the round settles. */
+    var title = busy ? "📤 Enviando…" : (expired ? "⏱ Tiempo agotado" : "📤 Para: " + approvalTargetLabel(g));
     if (approvalCard.title.textContent !== title) {
       approvalCard.title.textContent = title;
     }
@@ -1574,10 +1578,10 @@
     approvalCard.el.classList.toggle("expired", expired);
     approvalCard.dict.classList.toggle("hidden", !approvalFlow.isDictating() || expired);
     if (expired && approvalEditOpen()) exitApprovalEdit();
-    approvalCard.sendBtn.disabled = expired;
-    approvalCard.editBtn.disabled = expired;
-    approvalCard.redictBtn.disabled = expired;
-    approvalCard.cancelBtn.disabled = expired;
+    approvalCard.sendBtn.disabled = expired || busy;
+    approvalCard.editBtn.disabled = expired || busy;
+    approvalCard.redictBtn.disabled = expired || busy;
+    approvalCard.cancelBtn.disabled = expired || busy;
   }
 
   /* Card presence: exactly one #approval-card pinned at the drawer top
@@ -1789,7 +1793,12 @@
       if (epTick) { clearInterval(epTick); epTick = null; }
       var micLive = callState === "listening" || callState === "confirming";
       if (micLive && !manualStop && !textMode) {
-        recRestartTimer = setTimeout(startListening, recRestartDelay);
+        // Self-clear on fire: a stale handle would permanently disarm
+        // the 1s mic watchdog (its guard is !recRestartTimer).
+        recRestartTimer = setTimeout(function () {
+          recRestartTimer = null;
+          startListening();
+        }, recRestartDelay);
         recRestartDelay = Math.min(recRestartDelay * 2, 3000);
       } else if (interimTextEl.textContent === "…") {
         interimTextEl.textContent = "";
@@ -1817,7 +1826,12 @@
       }, 200);
     } catch (err) {
       listening = false;
-      recRestartTimer = setTimeout(startListening, recRestartDelay);
+      // Self-clear on fire: a stale handle would permanently disarm
+      // the 1s mic watchdog (its guard is !recRestartTimer).
+      recRestartTimer = setTimeout(function () {
+        recRestartTimer = null;
+        startListening();
+      }, recRestartDelay);
       recRestartDelay = Math.min(recRestartDelay * 2, 3000);
     }
   }

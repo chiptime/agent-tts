@@ -100,6 +100,11 @@
      * the card out. */
     function expireIfDue() {
       if (!gate || expired) return;
+      /* A round in flight owns the state: the approve replay blocks
+       * server-side for minutes and its request timeout is the real
+       * deadline. When it settles, resolving clears and the next tick
+       * can expire normally. */
+      if (resolving) return;
       if (expiresAt - now() <= 0) {
         expired = true;
         dictating = false;
@@ -382,6 +387,7 @@
       active: function () { return !!gate && !expired; },
       gate: function () { return gate; },
       isDictating: function () { return dictating; },
+      isBusy: function () { return resolving; },
       isExpired: function () { return expired; },
       remainingSeconds: function () {
         if (!gate) return 0;
