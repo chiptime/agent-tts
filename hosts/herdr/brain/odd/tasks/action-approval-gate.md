@@ -351,8 +351,11 @@ Route: inline (copy + smoke are per-action).
   the closing status update. Checks: node --check OK, node --test
   tests/js/ 102 pass, pytest 427 pass; grep-clean (no approval-card
   insertion into #conversation, no gate path calling openDrawer).
-  Commit hash recorded by orchestrator. T8 still unchecked (re-smoke
-  owed: gate shows as floating popup with drawer closed).
+   Commit hash recorded by orchestrator. T8 still unchecked (re-smoke
+   owed: gate shows as floating popup with drawer closed).
+- Full-suite baseline going forward: 427 pytest / 102 js after the
+  floating-popup change. `084edf3` feat(approval): floating approval
+  popup outside the call drawer.
 
 ## Next Step
 
