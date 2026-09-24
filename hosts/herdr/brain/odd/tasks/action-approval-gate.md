@@ -303,6 +303,16 @@ Route: inline (copy + smoke are per-action).
   - `4d2112c` fix(approval): honest card state during replay and live mic watchdog
   - Note: patchText (manual edit) intentionally does not set resolving —
     the busy state covers approve/reject/resolve rounds only.
+- Defect round 3 (text-mode invisible gate): in text mode the gate was
+  triply invisible — drawer auto-open skipped (`!textMode` guard on the
+  gated /ask path and T7 recovery), state pill hidden (renderPill FR12
+  guard), card living inside the closed drawer — a typing user heard
+  "pendiente de aprobación" but never saw the popup. Fixed: drawer
+  auto-opens on gate in text mode too (FR11 still guards only the edit
+  box), renderPill shows "Confirmar ▲" for a live gate in text mode.
+  Checks: node --check OK, node --test 102 pass, pytest 424 pass (suite
+  grew with parallel reader work). `57ebdae`. Smoke re-run still owed
+  (T8 stays unchecked): typed gate + voice gate must both surface.
 
 ## Next Step
 
