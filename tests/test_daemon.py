@@ -341,6 +341,87 @@ def test_oversized_play_payload_beyond_hard_cap_fails_clearly(channel, monkeypat
         _stop_daemon(d)
 
 
+# --- CONF-2: concurrent play is a clear error, never a silent supersede ----------------
+
+
+def test_second_concurrent_play_is_rejected_and_first_stays_controllable(channel, monkeypatch):
+    d = _start_daemon(channel, monkeypatch)
+    try:
+        box, play_thread = _play_async(d, {"text": "primera"})
+        _wait_session_registered(d)
+
+        # A second play while audio is active: deterministic clear error,
+        # never a silent supersede (queueing arrives in BLOQUE 1.3).
+        box2, play_thread2 = _play_async(d, {"text": "segunda"})
+        play_thread2.join(timeout=2.0)
+        assert not play_thread2.is_alive(), "second play must reply, not block or displace"
+        assert box2 == ["ERR: playback already in progress"]
+
+        # The FIRST playback is still the controllable one.
+        reply = None
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            reply = ipc.send_ipc_command("pause", socket_path=channel["sock"])
+            if reply and "status=paused" in reply:
+                break
+            time.sleep(0.02)
+        assert reply and "status=paused" in reply
+
+        ipc.send_ipc_command("stop", socket_path=channel["sock"])
+        play_thread.join(timeout=5.0)
+        assert box == ["status=stopped"]
+    finally:
+        _stop_daemon(d)
+
+
+def test_no_play_request_does_not_displace_active_playback(channel, monkeypatch):
+    d = _start_daemon(channel, monkeypatch)
+    try:
+        box, play_thread = _play_async(d, {"text": "audio activo"})
+        _wait_session_registered(d)
+
+        # A synthesis-only request while audio plays must not orphan the
+        # active session's control: active_session is not clobbered.
+        assert d.handle_command("play " + json.dumps({"text": "solo texto", "no_play": True})) == "status=done"
+
+        # stop still controls the ORIGINAL playback; it cannot lie.
+        ipc.send_ipc_command("stop", socket_path=channel["sock"])
+        play_thread.join(timeout=2.0)
+        assert box == ["status=stopped"]
+    finally:
+        _stop_daemon(d)
+
+
+def test_shutdown_stops_all_inflight_sessions(channel):
+    """Shutdown stops every tracked in-flight session, not just active_session."""
+    d = Daemon(socket_path=channel["sock"])
+    stopped = []
+
+    class FakeSession:
+        def stop(self):
+            stopped.append(self)
+
+    a, b = FakeSession(), FakeSession()
+    with d._lock:
+        d._sessions.update([a, b])
+        d.active_session = a
+    d._shutdown()
+    assert set(stopped) == {a, b}
+
+
+def test_shutdown_command_stops_inflight_playback(channel, monkeypatch):
+    d = _start_daemon(channel, monkeypatch)
+    box, play_thread = _play_async(d, {"text": "larga"})
+    _wait_session_registered(d)
+    try:
+        ipc.send_ipc_command("shutdown", socket_path=channel["sock"])
+        d._test_thread.join(timeout=5.0)
+        play_thread.join(timeout=5.0)
+        assert box == ["status=stopped"]
+    finally:
+        _stop_daemon(d)
+
+
 # --- RF-AT-04-6: playback target at startup and per request --------------------------
 
 

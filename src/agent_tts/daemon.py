@@ -167,7 +167,10 @@ class Daemon:
 
     ``active_session`` is the queue mount point required by the BLOQUE 1.3
     plan: the queue manager will dispatch into sessions through this
-    attribute; in this block it simply holds the one in-flight playback.
+    attribute; in this block it holds the one in-flight playback — a
+    second audible play while one is active is rejected with a clear
+    error instead of superseding it, and shutdown stops every tracked
+    session (``_sessions``), not just the active one.
     """
 
     POLL_INTERVAL_SEC = 0.1
@@ -190,6 +193,11 @@ class Daemon:
         self.startup_target = _resolve_or_local(None)
         self._lock = threading.Lock()
         self.active_session = None
+        # Every in-flight playback session (a superset of active_session:
+        # today the single-flight guard keeps them identical; BLOQUE 1.3's
+        # queue will hold more). Shutdown stops them ALL, not just the
+        # active one, so no audio outlives the daemon.
+        self._sessions = set()
         self._last_request = time.time()
         self._inflight = 0
         self._stop = threading.Event()
@@ -286,8 +294,8 @@ class Daemon:
     def _shutdown(self) -> None:
         """Orderly teardown: stop playback, drain requests, free the channel."""
         with self._lock:
-            session = self.active_session
-        if session is not None:
+            sessions = list(self._sessions)
+        for session in sessions:
             try:
                 session.stop()
             except Exception:
@@ -375,6 +383,12 @@ class Daemon:
         Executed on the connection's own thread: blocking here is the
         intended blocking semantics of a delegated play, while control
         commands keep being served on their own connections.
+
+        Single-flight guard (CONF-2): while a playback session is active,
+        a second audible play is rejected with ``ERR: playback already in
+        progress`` — it must never silently supersede the running session
+        (the BLOQUE 1.3 queue replaces this guard). A synthesis-only
+        (no_play) request claims nothing and displaces nothing.
         """
         cli = self._cli
         if cli is None:
@@ -416,8 +430,15 @@ class Daemon:
                 # reply instead of killing the daemon.
                 return f"ERR: playback target unavailable (exit {e.code})"
 
+        # Claim the channel for audio under the lock: an audible play
+        # while another is active is a deterministic error, and a no_play
+        # request never touches active_session (it owns no audio).
         with self._lock:
-            self.active_session = session  # queue mount point (BLOQUE 1.3)
+            if session is not None and self.active_session is not None:
+                return "ERR: playback already in progress"
+            if session is not None:
+                self.active_session = session  # queue mount point (BLOQUE 1.3)
+                self._sessions.add(session)
             self._inflight += 1
         try:
             if file_path:
@@ -456,8 +477,10 @@ class Daemon:
         finally:
             self._touch()  # the idle clock starts when playback ends
             with self._lock:
-                if self.active_session is session:
-                    self.active_session = None
+                if session is not None:
+                    self._sessions.discard(session)
+                    if self.active_session is session:
+                        self.active_session = None
                 self._inflight -= 1
             if session is not None:
                 try:
