@@ -908,6 +908,12 @@ async def speak(
             autoscroll=autoscroll,
             bionic=bionic,
             zen=zen,
+            # A3'': the status metadata mirrors what synthesis ACTUALLY
+            # uses (the resolved provider/voice arguments), not the env
+            # defaults — a status query during in-process playback must
+            # report the real engine.
+            provider=provider,
+            voice=voice,
             document_text=text,
         )
         session.start_ipc()
@@ -1089,6 +1095,24 @@ def main():
         "daemon, configurable via AGENT_TTS_IDLE_TIMEOUT; 0 disables)",
     )
     parser.add_argument(
+        "--coalesce-window",
+        type=float,
+        default=None,
+        metavar="SEC",
+        help="With --serve/--foreground: coalescing window for queue events with "
+        "policy=coalesce (default 5 s; env AGENT_TTS_COALESCE_WINDOW)",
+    )
+    parser.add_argument(
+        "--wedged-timeout",
+        type=float,
+        default=None,
+        metavar="SEC",
+        help="With --serve/--foreground: queue liveness budget — a dispatched "
+        "playback with no progress for this long is terminated; silent "
+        "non-streaming synthesis emits no progress, so size it above your "
+        "worst-case synthesis time (default 30 s; env AGENT_TTS_WEDGED_TIMEOUT)",
+    )
+    parser.add_argument(
         "--winhost",
         action="store_true",
         help="Run the Windows host audio server: receive PCM over TCP and play it natively via WASAPI",
@@ -1158,7 +1182,13 @@ def main():
         # behavior. No idle timeout unless explicitly requested (RF-AT-04-7).
         from agent_tts.daemon import run_daemon
 
-        sys.exit(run_daemon(idle_timeout_sec=args.idle_timeout))
+        sys.exit(
+            run_daemon(
+                idle_timeout_sec=args.idle_timeout,
+                coalesce_window_sec=args.coalesce_window,
+                wedged_timeout_sec=args.wedged_timeout,
+            )
+        )
 
     ipc_cmd = args.ipc_cmd
     if args.next_sentence:
@@ -1337,7 +1367,11 @@ def _delegate_and_exit(payload: dict) -> None:
             sys.exit(1)
     finally:
         _delegated_playback.clear()
-    if reply is None or reply.startswith("ERR"):
+    # Error shapes: the daemon's typed ``ok=false error=...`` (A3) plus the
+    # transport-level ``ERR:`` prefix (framing errors raised before the
+    # daemon dispatch). Full stderr/exit-code discipline is the queue CLI
+    # unit's job; this check only keeps the classic contract.
+    if reply is None or reply.startswith("ERR") or reply.startswith("ok=false"):
         detail = reply if reply else "daemon closed the connection during playback"
         print(f"Error: {detail}", file=sys.stderr)
         sys.exit(1)

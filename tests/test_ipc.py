@@ -168,6 +168,15 @@ class TestIpcReplyJson(unittest.TestCase):
         out = json.loads(ipc_reply_json("just some prose without tokens"))
         self.assertEqual(out, {"raw": "just some prose without tokens"})
 
+    def test_error_field_is_trailing_free_text(self):
+        # A3 typed error shape: error= is the final, space-bearing field.
+        out = json.loads(ipc_reply_json("ok=false error=no active playback session"))
+        self.assertEqual(out, {"ok": "false", "error": "no active playback session"})
+
+    def test_leading_error_field(self):
+        out = json.loads(ipc_reply_json("error=playback target unavailable (exit 1)"))
+        self.assertEqual(out, {"error": "playback target unavailable (exit 1)"})
+
 
 if __name__ == "__main__":
     unittest.main()

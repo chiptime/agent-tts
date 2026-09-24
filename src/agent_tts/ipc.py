@@ -314,9 +314,11 @@ def ipc_reply_json(reply: str) -> str:
     """Converts one engine IPC reply into a single-line JSON object.
 
     The reply wire format is `key=value` tokens whose values never contain
-    spaces, optionally followed by ONE free-text field (`text=...`) that
-    keeps its spaces. Unknown shapes degrade to {"raw": reply} — this never
-    raises, so hosts can switch to it without new failure modes.
+    spaces, followed by ONE free-text field that keeps its spaces:
+    ``text=...`` (payload prose) or ``error=...`` (the typed error's
+    message, always final — A3). Unknown shapes degrade to
+    {"raw": reply} — this never raises, so hosts can switch to it
+    without new failure modes.
     """
     import json
 
@@ -328,6 +330,12 @@ def ipc_reply_json(reply: str) -> str:
     elif " text=" in reply:
         rest, text = reply.split(" text=", 1)
         obj["text"] = text
+    elif reply.startswith("error="):
+        obj["error"] = reply[len("error="):]
+        rest = ""
+    elif " error=" in reply:
+        rest, error = reply.split(" error=", 1)
+        obj["error"] = error
     for token in rest.split():
         if "=" in token:
             key, value = token.split("=", 1)

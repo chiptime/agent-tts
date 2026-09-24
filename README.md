@@ -161,6 +161,33 @@ Constants live in `agent_tts/ipc.py`: `FRAME_HEADER_SIZE = 9`, `MAX_PAYLOAD = 16
 
 This is a conscious non-additive transport change (an approved exception to the 1.2 additivity promise, taken before the IPC contract freeze at the end of BLOQUE 1.3): the only consumers — this repo's CLI client and daemon — ship together.
 
+**Reply schema (typed errors, freeze-critical).** Every daemon-level error is one shape:
+
+```
+ok=false error=<message, always the FINAL field and may contain spaces>
+```
+
+Examples: `ok=false error=no active playback session` (a control command against an idle daemon), `ok=false error=unknown priority label: 'urgent'`, `ok=false error=synthesis exploded`. Success payloads keep their classic prefixes (`pong …`, `status=… …`), and daemon acks carry `ok=true` (`ok=true shutting_down=true`, `ok=true item=7 queue_len=2`). Only the transport layer keeps the legacy `ERR:` prefix (framing violations rejected before dispatch, e.g. `ERR: command too large`). `agent_tts --ipc-json` treats `error=` exactly like the trailing free-text `text=` field, so `ok=false error=no active playback session` parses as `{"ok": "false", "error": "no active playback session"}`.
+
+**Queue status fields (freeze-critical).** Every `status` reply — idle or during playback — ends with:
+
+```
+queue_len=<pending count> queue=<compact JSON snapshot>
+```
+
+The `queue=` value is `QueueSnapshot.as_dict()` serialized compactly with **all whitespace encoded as `\uXXXX` escapes** (e.g. spaces as `\u0020`), so the whole value is one whitespace-free token for legacy key=value parsers, while any JSON consumer restores the original strings with a plain `json.loads`. Keys: `queue_len`, `pending` (list in dispatch order; each item has `id`, `priority` (`blocked`/`done`/`working`), `policy` (`queue`/`preempt`/`coalesce`), `event_type`, `identifiers`, `coalesced`, `enqueued_at`, `announcement`), `active` (`null` or `id`/`priority`/`policy`/`event_type`/`coalesced`/`started_at`), `failed` (bounded history; each with `id`, `priority`, `event_type`, `error`, `failed_at`, `wedged`), `last_error`, `completed_count`, `failed_count`, `interrupted_count`, `wedged_count`.
+
+**The `enqueue` command.** `enqueue <json>` takes a play payload plus queue-control fields and returns immediately (playback is daemon-owned):
+
+```bash
+agent-tts --ipc-cmd 'enqueue {"text":"Build failed","priority":"blocked","policy":"preempt"}'
+# ok=true item=3 queue_len=0
+agent-tts --ipc-cmd 'enqueue {"text":"job a done","priority":"done","policy":"coalesce","event_type":"jobs finished","identifiers":["a"]}'
+# ok=true item=4 queue_len=1   (a merge replies with the window owner's id plus coalesced=N)
+```
+
+`priority` is `blocked`|`done`|`working` (default `working`), `policy` is `preempt`|`queue`|`coalesce` (default `queue`); unknown labels are typed errors. A merged coalesce item speaks ONE synthesized announcement (`"N jobs finished: a, b, c and X more"` — up to three identifiers, then a count) instead of the individual payloads.
+
 ### 🎧 Persistent Daemon (vía única)
 
 `agent-tts` runs as a **single-path daemon architecture**: the CLI is always a client, and there is no classic second execution path. Every speech invocation checks for a healthy daemon with a 200 ms `ping`; if none answers, the client transparently auto-starts one and delegates. `agent-tts "algo"` behaves identically whether a daemon is already running or not.
@@ -186,9 +213,14 @@ agent-tts --ipc-cmd shutdown # orderly daemon exit (also SIGTERM/SIGINT)
 
 - A delegated playback blocks until the audio finishes (same as the classic CLI); `Ctrl-C` forwards a best-effort `stop` to the daemon so audio does not outlive the interrupted client.
 - Terminal view flags (`--highlight`, `--zen`, `--autoscroll`, `--bionic`) travel with the play request and render where the daemon runs — meaningful with `agent-tts --foreground` in your terminal, inert for a detached daemon.
-- `status` from the daemon adds `uptime=`, and reports `status=idle uptime=… provider=… playback=…` when nothing is playing.
+- `status` from the daemon adds `uptime=` plus the queue fields (`queue_len=`, `queue={…}`), and reports `status=idle uptime=… provider=… playback=… queue_len=… queue={…}` when nothing is playing.
 
-**Playback queue (architecture note):** inside the daemon, a priority queue manager (`agent_tts.queue_manager`) sits above the playback session and serializes everything into a single active session — playback never overlaps. It schedules by event priority (`blocked > done > working`, FIFO within a level), applies the per-event policy (`queue` / `preempt` / `coalesce`), and supervises liveness: a session that stops making progress for 30 s (configurable) is terminated and the queue moves on, so a hung playback can never wedge the daemon. The IPC surface to enqueue with priority and inspect the queue lands with the AT-08 release; the manager itself is already in place.
+**Playback queue (AT-08).** Inside the daemon, a priority queue manager (`agent_tts.queue_manager`) sits above the playback session and serializes everything into a single active session — playback never overlaps. It schedules by event priority (`blocked > done > working`, FIFO within a level), applies the per-event policy (`queue` / `preempt` / `coalesce`), and supervises liveness: a session that stops making progress for 30 s (configurable) is terminated and the queue moves on, so a hung playback can never wedge the daemon.
+
+- **A plain play never rejects with busy (D4):** `play` maps to `enqueue(priority=working, policy=queue)` — it waits its turn and keeps its blocking reply (`status=done`/`status=stopped` when *its* playback ends). Synthesis-only requests (`no_play`) own no audio and still run directly.
+- **`stop` stops the active announcement; pending items follow** in queue order (full queue-flush semantics are a CLI-level concern).
+- **Synthesis liveness (by sizing, not milestones):** silent non-streaming synthesis emits no progress tokens, so the wedged timeout must exceed your worst-case synthesis time. Configure it with `--wedged-timeout SEC` (or `AGENT_TTS_WEDGED_TIMEOUT`); the coalescing window is `--coalesce-window SEC` (or `AGENT_TTS_COALESCE_WINDOW`), default 5 s. Both flags exist on `agent-tts --serve/--foreground` and `agent-tts-daemon`.
+- Failed playbacks are visible in `status`: the queue JSON's `failed` history and `last_error` carry the provider/synthesis errors (A5), and an in-process `speak()` reports the provider/voice actually used (A3'').
 
 **systemd user unit example** (explicit start, no idle timeout — the supervisor owns the lifetime):
 

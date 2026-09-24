@@ -14,11 +14,36 @@ Commands (RF-AT-04-2/RF-AT-04-3): the existing playback commands
 (status/pause/resume/stop/seek/phrase navigation) are served over the
 active session with zero protocol changes; ``play <json-payload>`` runs
 one synthesis+playback (text + synthesis options in one JSON line),
-``ping`` answers version and uptime, ``shutdown`` terminates the daemon.
-``play`` replies when the playback ends (status=done / status=stopped /
-ERR: ...) so a delegating client keeps the classic CLI's blocking
-semantics — the reply is served on its own connection thread while
-concurrent control commands keep flowing.
+``enqueue <json-payload>`` is the queue-aware variant (priority/policy/
+event_type/identifiers fields alongside the play payload), ``ping``
+answers version and uptime, ``shutdown`` terminates the daemon.
+
+Reply schema (A3, freeze-critical — see README "Wire format"): every
+daemon-level ERROR is ``ok=false error=<free text>`` with ``error=`` as
+the final, space-bearing field; acks carry ``ok=true`` (``ok=true
+shutting_down=true``, ``ok=true item=<id> queue_len=<n>``); successful
+playback replies keep their classic prefixes (``status=done`` /
+``status=stopped`` / the session status line). Only the transport layer
+keeps the legacy ``ERR:`` prefix (framing errors raised before dispatch,
+see agent_tts.ipc).
+
+Since BLOQUE 1.3 (AT-08, D4) every audible playback rides the priority
+queue (``agent_tts.queue_manager``): a plain ``play`` maps to
+``enqueue(priority=working, policy=queue)`` — it NEVER rejects with busy,
+it waits its turn — and ``play`` keeps its blocking reply semantics (the
+delegating client hears ``status=done``/``status=stopped`` when ITS item
+finishes). Synthesis-only (``no_play``) requests own no audio and still
+run directly, displacing nothing.
+
+The runner adapter (``Daemon._queue_runner``) starts the real playback
+session over the active-session slot asynchronously and returns the
+liveness handle; the playback worker owns session teardown and reports
+exactly one outcome through the manager's finish callback. Synthesis
+liveness (silent non-streaming synthesis emits no progress tokens) is
+handled by SIZING, not milestones: the wedged timeout is configurable
+(``--wedged-timeout`` / AGENT_TTS_WEDGED_TIMEOUT) and must exceed the
+worst-case silent synthesis interval — see the queue manager's adapter
+note and the README queue section.
 
 Provider instances stay alive between requests (RNF-AT-04-5): today
 get_provider() builds an instance per call — kokoro reloads its ONNX
@@ -28,6 +53,7 @@ configuration and pays the cold load once per configuration.
 
 import argparse
 import asyncio
+import itertools
 import json
 import os
 import signal
@@ -48,7 +74,9 @@ from agent_tts.constants import (
     DEFAULT_AUTOSTART_IDLE_TIMEOUT_SEC,
     DEFAULT_RATE,
     DEFAULT_VOICE,
+    ENV_COALESCE_WINDOW,
     ENV_IDLE_TIMEOUT,
+    ENV_WEDGED_TIMEOUT,
     IPC_SOCKET,
     PING_TIMEOUT_SEC,
 )
@@ -65,7 +93,15 @@ from agent_tts.ipc import (
 from agent_tts.ownership import owns_channel
 from agent_tts.playback_target import InvalidPlaybackTarget, resolve_target
 from agent_tts.providers import TTSProvider, get_provider
-from agent_tts.queue_manager import QueueManager
+from agent_tts.queue_manager import (
+    DEFAULT_COALESCE_WINDOW_SEC,
+    DEFAULT_WEDGED_TIMEOUT_SEC,
+    AudioSessionHandle,
+    PlaybackOutcome,
+    Policy,
+    Priority,
+    QueueManager,
+)
 
 
 def autostart_idle_timeout_sec() -> Optional[float]:
@@ -96,6 +132,46 @@ def autostart_idle_timeout_sec() -> Optional[float]:
         )
         return DEFAULT_AUTOSTART_IDLE_TIMEOUT_SEC
     return value or None  # 0 disables the idle exit
+
+
+def _env_float(name: str, default: float) -> float:
+    """Reads a positive float override from the environment (queue config).
+
+    Invalid or negative values warn once and keep the default — the same
+    fail-open policy as the idle timeout.
+    """
+    raw = os.environ.get(name, "")
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        print(f"Ignoring invalid {name}={raw!r}; using the {default}s default", file=sys.stderr)
+        return default
+    if value < 0:
+        print(f"Ignoring negative {name}={raw!r}; using the {default}s default", file=sys.stderr)
+        return default
+    return value
+
+
+# Whitespace inside the compact queue JSON is encoded as \\uXXXX escapes so
+# the whole ``queue=...`` value stays ONE whitespace-free kv token: legacy
+# key=value parsers (and ipc.ipc_reply_json) keep splitting on spaces while
+# any JSON consumer restores the original strings (freeze-critical rule).
+_JSON_WS_ESCAPES = ((" ", "\\u0020"), ("\t", "\\u0009"), ("\n", "\\u000A"), ("\r", "\\u000D"))
+
+
+def encode_queue_fields(snapshot_dict: dict) -> str:
+    """Renders QueueSnapshot.as_dict() as the ``queue_len``/``queue`` kv fields.
+
+    The JSON is compact (no separators whitespace), ensure_ascii, and with
+    every residual whitespace byte escaped per _JSON_WS_ESCAPES — all real
+    whitespace lives inside string values, so none survives literally.
+    """
+    text = json.dumps(snapshot_dict, ensure_ascii=True, separators=(",", ":"))
+    for char, escape in _JSON_WS_ESCAPES:
+        text = text.replace(char, escape)
+    return f"queue_len={snapshot_dict['queue_len']} queue={text}"
 
 
 class ProviderCache:
@@ -194,19 +270,48 @@ def _session_env(payload: dict) -> Optional[dict]:
     return env
 
 
+class _QueueWaiter:
+    """One blocking play's wait for its queue item's outcome (D4).
+
+    The play handler registers a waiter under a token before enqueueing;
+    the runner adapter pops it when the item dispatches and the playback
+    worker releases it with the final outcome. First release wins —
+    shutdown's bulk refusal of never-dispatched items cannot overwrite an
+    outcome a dispatched item already reported.
+    """
+
+    __slots__ = ("event", "outcome", "error")
+
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.outcome: Optional[PlaybackOutcome] = None
+        self.error: Optional[str] = None
+
+    def release(self, outcome: PlaybackOutcome, error: Optional[str] = None) -> None:
+        if self.event.is_set():
+            return  # the first finalization wins
+        self.outcome = outcome
+        self.error = error
+        self.event.set()
+
+
 class Daemon:
     """Long-lived owner of the control channel and of playback state.
 
     ``active_session`` is the queue mount point required by the BLOQUE 1.3
-    plan: the queue manager will dispatch into sessions through this
-    attribute; in this block it holds the one in-flight playback — a
-    second audible play while one is active is rejected with a clear
-    error instead of superseding it, and shutdown stops every tracked
-    session (``_sessions``), not just the active one.
+    plan: the queue manager dispatches into sessions through this
+    attribute — the manager serializes every audible playback into this
+    one slot (RF-AT-08-6: no two sessions ever overlap), and shutdown
+    stops every tracked session (``_sessions``), not just the active one.
     """
 
     POLL_INTERVAL_SEC = 0.1
     DRAIN_TIMEOUT_SEC = 5.0
+
+    # Payload key carrying the internal play-waiter token from _handle_play
+    # to the runner adapter. Not part of the wire contract: clients never
+    # set it, and the runner strips it before building the session.
+    WAITER_KEY = "_waiter"
 
     def __init__(
         self,
@@ -214,6 +319,8 @@ class Daemon:
         idle_timeout_sec: Optional[float] = None,
         implicit: bool = False,
         provider_cache: Optional[ProviderCache] = None,
+        coalesce_window_sec: Optional[float] = None,
+        wedged_timeout_sec: Optional[float] = None,
     ):
         self.socket_path = socket_path
         self.idle_timeout_sec = idle_timeout_sec if idle_timeout_sec else None
@@ -226,20 +333,40 @@ class Daemon:
         self._lock = threading.Lock()
         self.active_session = None
         # Every in-flight playback session (a superset of active_session:
-        # today the single-flight guard keeps them identical; BLOQUE 1.3's
-        # queue will hold more). Shutdown stops them ALL, not just the
-        # active one, so no audio outlives the daemon.
+        # the queue keeps exactly one active, but a session mid-teardown or
+        # a queued dispatch race can briefly widen the set). Shutdown stops
+        # them ALL, not just the active one, so no audio outlives the daemon.
         self._sessions = set()
         self._last_request = time.time()
         self._inflight = 0
         self._stop = threading.Event()
-        # Queue mount point (BLOQUE 1.3 / AT-08, hito Cola): the manager
-        # sits above the active-session slot reserved in 1.2, with born-in
-        # liveness supervision (RS-5: a wedged session auto-resolves). This
-        # unit constructs it and keeps the play path unchanged; the IPC
-        # enqueue/status routing and the real playback adapter land in the
-        # next unit, which swaps the placeholder runner.
-        self.queue_manager = QueueManager(runner=self._queue_runner_placeholder)
+        # Queue mount point (BLOQUE 1.3 / AT-08): the manager sits above the
+        # active-session slot with born-in liveness supervision (RS-5: a
+        # wedged session auto-resolves). Every audible play and enqueue
+        # routes through it (D4); the runner adapter starts the real
+        # playback session asynchronously and reports the outcome exactly
+        # once. Configuration: coalesce window and wedged timeout come from
+        # the constructor flags, then the AGENT_TTS_* env overrides, then
+        # the manager defaults (5 s / 30 s).
+        self.queue_manager = QueueManager(
+            runner=self._queue_runner,
+            coalesce_window_sec=(
+                _env_float(ENV_COALESCE_WINDOW, DEFAULT_COALESCE_WINDOW_SEC)
+                if coalesce_window_sec is None
+                else coalesce_window_sec
+            ),
+            wedged_timeout_sec=(
+                _env_float(ENV_WEDGED_TIMEOUT, DEFAULT_WEDGED_TIMEOUT_SEC)
+                if wedged_timeout_sec is None
+                else wedged_timeout_sec
+            ),
+        )
+        # Blocking plays wait for their queue item's outcome on these
+        # records (token -> _QueueWaiter). The runner POPS the record when
+        # its item dispatches; whatever is still registered at shutdown
+        # belongs to a never-dispatched item and is refused deterministically.
+        self._queue_waiters: dict = {}
+        self._waiter_tokens = itertools.count(1)
         # Set under _lock at the top of _shutdown: once teardown has
         # started, new play registrations are refused with a
         # deterministic error so no audible session can register after
@@ -352,6 +479,16 @@ class Daemon:
             except Exception:
                 pass
         self.queue_manager.shutdown()  # stops supervision with the daemon
+        # Waiters still registered belong to plays that never dispatched
+        # (their items were dropped by the closing queue): refuse them
+        # deterministically instead of letting their handlers hang through
+        # the drain (RS-1 parity — a play that never ran is a refusal, not
+        # a silent loss). Dispatched items release their own waiters.
+        with self._lock:
+            stranded = list(self._queue_waiters.values())
+            self._queue_waiters.clear()
+        for waiter in stranded:
+            waiter.release(PlaybackOutcome.FAILED, "daemon shutting down")
         # Let in-flight handlers (a play mid-playback) observe the stop and
         # send their final reply before the channel disappears.
         deadline = time.time() + self.DRAIN_TIMEOUT_SEC
@@ -367,10 +504,16 @@ class Daemon:
     # --- IPC dispatch ---------------------------------------------------------
 
     def handle_command(self, cmd: str) -> str:
-        """Serves one IPC command line (daemon commands + session commands)."""
+        """Serves one IPC command line (daemon commands + session commands).
+
+        Reply schema (A3, freeze-critical): daemon-level errors are
+        ``ok=false error=<free text, final field>``; acks carry
+        ``ok=true``; success payloads keep their classic prefixes
+        (``pong``, ``status=...``, ``ok=true item=...``).
+        """
         parts = cmd.strip().split(maxsplit=1)
         if not parts:
-            return "ERR: empty command"
+            return "ok=false error=empty command"
         action = parts[0].lower()
         rest = parts[1] if len(parts) > 1 else ""
         self._touch()  # any request resets the idle clock (RF-AT-04-7)
@@ -380,10 +523,13 @@ class Daemon:
 
         if action == "shutdown":
             self.request_shutdown()
-            return "ok shutting_down=true"
+            return "ok=true shutting_down=true"
 
         if action == "play":
             return self._handle_play(rest)
+
+        if action == "enqueue":
+            return self._handle_enqueue(rest)
 
         with self._lock:
             session = self.active_session
@@ -393,21 +539,36 @@ class Daemon:
                 provider = self.providers.last_name or "none"
                 return (
                     f"status=idle uptime={self.uptime_sec():.0f} "
-                    f"provider={provider} playback={self.startup_target}"
+                    f"provider={provider} playback={self.startup_target} "
+                    f"{self._queue_status_fields()}"
                 )
             if action == "stop":
                 # Idempotent silence: nothing is playing, the user's goal
                 # ("be quiet") already holds.
                 return "status=stopped"
-            return "ERR: no active playback session"
+            # Typed error (A3): a control command against an idle daemon is
+            # an explicit ok=false reply, never payload-shaped text.
+            return "ok=false error=no active playback session"
 
         reply = session.handle_ipc_command(cmd)
         if reply.startswith("status="):
             # US-AT-04-3: daemon fields extend every status-bearing reply
-            # (status/pause/resume/seek embed the session status); queue
-            # fields arrive with RF-AT-08-5 in BLOQUE 1.3.
-            reply = _inject_daemon_fields(reply, f" uptime={self.uptime_sec():.0f}")
+            # (status/pause/resume/seek embed the session status); the
+            # queue fields ride along since RF-AT-08-5.
+            reply = _inject_daemon_fields(
+                reply,
+                f" uptime={self.uptime_sec():.0f} {self._queue_status_fields()}",
+            )
+        elif reply.startswith("ERR: "):
+            # Session-level errors adopt the typed schema at the daemon
+            # dispatch boundary (A3): the legacy in-process sessions keep
+            # their own ERR: strings, the daemon never leaks them.
+            reply = "ok=false error=" + reply[len("ERR: "):]
         return reply
+
+    def _queue_status_fields(self) -> str:
+        """Queue snapshot rendered as the queue_len/queue status fields."""
+        return encode_queue_fields(self.queue_manager.snapshot().as_dict())
 
     # --- play (RF-AT-04-3, RF-AT-04-6) -----------------------------------------
 
@@ -429,136 +590,352 @@ class Daemon:
             piper_model=payload.get("piper_model") or None,
         )
 
-    def _handle_play(self, payload_str: str) -> str:
-        """Runs one synthesis+playback; replies when it ends.
-
-        Executed on the connection's own thread: blocking here is the
-        intended blocking semantics of a delegated play, while control
-        commands keep being served on their own connections.
-
-        Single-flight guard (CONF-2): while a playback session is active,
-        a second audible play is rejected with ``ERR: playback already in
-        progress`` — it must never silently supersede the running session
-        (the BLOQUE 1.3 queue replaces this guard). A synthesis-only
-        (no_play) request claims nothing and displaces nothing.
-        """
-        cli = self._cli
-        if cli is None:
+    def _ensure_cli(self):
+        """Returns the cli module, importing it once (daemon pays it at startup)."""
+        if self._cli is None:
             from agent_tts import cli as _cli_module
 
-            self._cli = cli = _cli_module
+            self._cli = _cli_module
+        return self._cli
+
+    def _handle_play(self, payload_str: str) -> str:
+        """One delegated play: queued playback or direct synthesis.
+
+        Audible plays ride the priority queue as ``working``/``queue``
+        (D4: a plain play NEVER rejects with busy — it waits its turn)
+        and keep the classic blocking reply: the handler sleeps until ITS
+        item finalizes and answers ``status=done`` / ``status=stopped`` /
+        ``ok=false error=...``. A synthesis-only (``no_play``) request
+        owns no audio, displaces nothing, and runs directly on this
+        connection thread.
+        """
+        cli = self._ensure_cli()
         try:
             payload = json.loads(payload_str) if payload_str.strip() else {}
             if not isinstance(payload, dict):
                 raise ValueError("payload must be a JSON object")
         except ValueError as e:
-            return f"ERR: invalid play payload: {e}"
+            return f"ok=false error=invalid play payload: {e}"
 
         text = (payload.get("text") or "").strip()
         file_path = payload.get("file") or ""
         if not text and not file_path:
-            return "ERR: play requires text or file"
+            return "ok=false error=play requires text or file"
         no_play = bool(payload.get("no_play"))
-        target = self._request_target(payload.get("playback") or "")
-        label = payload.get("label") or (
-            f"{len(text)} chars" if text else os.path.basename(file_path)
-        )
+        if no_play:
+            return self._run_direct_synthesis(cli, payload)
 
-        session = None
-        if not no_play:
-            session_kwargs = dict(
-                auto_rewind_sec=float(payload.get("auto_rewind_sec", 2.0)),
-                highlight=bool(payload.get("highlight")),
-                autoscroll=bool(payload.get("autoscroll")),
-                bionic=bool(payload.get("bionic")),
-                zen=bool(payload.get("zen")),
-                # The session's status metadata mirrors the request
-                # (same defaults _play_speech applies to synthesis),
-                # and remote targets resolve the winhost endpoint
-                # against the client's per-request overlay.
-                provider=payload.get("provider") or "edge",
-                voice=payload.get("voice") or DEFAULT_VOICE,
-                env=_session_env(payload),
-            )
-            try:
-                session = cli._build_playback_session(target, label, **session_kwargs)
-            except SystemExit as e:
-                if not file_path:
-                    # Speak-path contract: _build_playback_session exits(1)
-                    # with its own message when the requested target is
-                    # unavailable; surface it as an ERR reply instead of
-                    # killing the daemon.
-                    return f"ERR: playback target unavailable (exit {e.code})"
-                # Replay contract (legacy play_mp3_file, README replay
-                # section): an unavailable remote target degrades to the
-                # local device with one warning, not a hard error.
-                print(
-                    f"Playback target '{target}' unavailable; falling back to local playback",
-                    file=sys.stderr,
-                )
-                session = cli._build_playback_session("local", label, **session_kwargs)
-
-        # Claim the channel for audio under the lock: an audible play
-        # while another is active is a deterministic error, a no_play
-        # request never touches active_session (it owns no audio), and a
-        # play arriving once teardown has started is refused instead of
-        # registering into a snapshot that already happened (RS-1).
+        waiter = _QueueWaiter()
         with self._lock:
             if self._shutting_down:
-                return "ERR: daemon shutting down"
-            if session is not None and self.active_session is not None:
-                return "ERR: playback already in progress"
-            if session is not None:
-                self.active_session = session  # queue mount point (BLOQUE 1.3)
-                self._sessions.add(session)
+                return "ok=false error=daemon shutting down"
+            token = next(self._waiter_tokens)
+            self._queue_waiters[token] = waiter
             self._inflight += 1
         try:
-            if file_path:
-                self._play_file(session, file_path)
-            else:
-                asyncio.run(
-                    cli._play_speech(
-                        session,
-                        text,
-                        voice=payload.get("voice") or DEFAULT_VOICE,
-                        rate=payload.get("rate") or DEFAULT_RATE,
-                        volume=payload.get("volume") or "+0%",
-                        pitch=payload.get("pitch") or "+0Hz",
-                        output_file=payload.get("output_file") or None,
-                        no_play=no_play,
-                        provider=payload.get("provider") or "edge",
-                        openai_key=payload.get("openai_key") or None,
-                        openai_base_url=payload.get("openai_base_url") or None,
-                        openai_model=payload.get("openai_model") or None,
-                        eleven_key=payload.get("eleven_key") or None,
-                        eleven_model=payload.get("eleven_model") or None,
-                        piper_model=payload.get("piper_model") or None,
-                        auto_lang=bool(payload.get("auto_lang")),
-                        podcast=bool(payload.get("podcast")),
-                        podcast_title=payload.get("podcast_title") or "",
-                        stream=payload.get("stream") or "auto",
-                        persist_name=payload.get("persist_name") or None,
-                        engine=self._build_engine(payload),
-                    )
+            try:
+                self.queue_manager.enqueue(
+                    priority=Priority.WORKING,
+                    policy=Policy.QUEUE,
+                    payload={**payload, self.WAITER_KEY: token},
                 )
-            stopped = session is not None and bool(session.state.get("stop"))
-            return "status=stopped" if stopped else "status=done"
-        except Exception as e:
-            print(f"Playback error: {e}", file=sys.stderr)
-            return f"ERR: {e}"
+            except RuntimeError as e:
+                # Manager closed (shutdown won the race): typed refusal.
+                return f"ok=false error={e}"
+            waiter.event.wait()  # blocking semantics: reply when OUR item ends
+            if waiter.outcome is PlaybackOutcome.FAILED:
+                return f"ok=false error={waiter.error}"
+            if waiter.outcome is PlaybackOutcome.STOPPED:
+                return "status=stopped"
+            return "status=done"
         finally:
             self._touch()  # the idle clock starts when playback ends
             with self._lock:
-                if session is not None:
+                self._queue_waiters.pop(token, None)
+                self._inflight -= 1
+
+    def _run_direct_synthesis(self, cli, payload: dict) -> str:
+        """Synthesis-only (no_play) request: runs the pipeline, no session.
+
+        Claims no audio and touches neither the queue nor active_session;
+        failures reply with the typed error shape.
+        """
+        with self._lock:
+            if self._shutting_down:
+                return "ok=false error=daemon shutting down"
+            self._inflight += 1
+        try:
+            asyncio.run(
+                cli._play_speech(
+                    None,
+                    (payload.get("text") or "").strip(),
+                    voice=payload.get("voice") or DEFAULT_VOICE,
+                    rate=payload.get("rate") or DEFAULT_RATE,
+                    volume=payload.get("volume") or "+0%",
+                    pitch=payload.get("pitch") or "+0Hz",
+                    output_file=payload.get("output_file") or None,
+                    no_play=True,
+                    provider=payload.get("provider") or "edge",
+                    openai_key=payload.get("openai_key") or None,
+                    openai_base_url=payload.get("openai_base_url") or None,
+                    openai_model=payload.get("openai_model") or None,
+                    eleven_key=payload.get("eleven_key") or None,
+                    eleven_model=payload.get("eleven_model") or None,
+                    piper_model=payload.get("piper_model") or None,
+                    auto_lang=bool(payload.get("auto_lang")),
+                    podcast=bool(payload.get("podcast")),
+                    podcast_title=payload.get("podcast_title") or "",
+                    stream=payload.get("stream") or "auto",
+                    persist_name=payload.get("persist_name") or None,
+                    engine=self._build_engine(payload),
+                )
+            )
+            return "status=done"
+        except Exception as e:
+            print(f"Playback error: {e}", file=sys.stderr)
+            return f"ok=false error={e}"
+        finally:
+            self._touch()
+            with self._lock:
+                self._inflight -= 1
+
+    def _handle_enqueue(self, payload_str: str) -> str:
+        """Queue-aware enqueue (RF-AT-08-1/2, US-AT-08-4): accepts and returns.
+
+        The payload is the play JSON plus queue-control fields —
+        ``priority`` (blocked|done|working, default working), ``policy``
+        (preempt|queue|coalesce, default queue), and the optional
+        ``event_type``/``identifiers`` carried by coalesce announcements.
+        Unknown labels are typed errors (ok=false). The reply is
+        immediate: ``ok=true item=<id> queue_len=<n>`` (plus
+        ``coalesced=<n>`` when the event merged into an open window) —
+        playback runs daemon-owned, the client does not wait for it.
+        """
+        try:
+            envelope = json.loads(payload_str) if payload_str.strip() else {}
+            if not isinstance(envelope, dict):
+                raise ValueError("payload must be a JSON object")
+        except ValueError as e:
+            return f"ok=false error=invalid enqueue payload: {e}"
+
+        payload = dict(envelope)
+        priority_label = payload.pop("priority", "working")
+        policy_label = payload.pop("policy", "queue")
+        event_type = str(payload.pop("event_type", "") or "")
+        identifiers = payload.pop("identifiers", None) or []
+        if not isinstance(identifiers, list) or not all(
+            isinstance(i, (str, int, float)) for i in identifiers
+        ):
+            return "ok=false error=identifiers must be a list of strings"
+
+        try:
+            priority = Priority.from_label(priority_label)
+        except ValueError as e:
+            return f"ok=false error={e}"
+        try:
+            policy = Policy(str(policy_label).strip().lower())
+        except ValueError:
+            return f"ok=false error=unknown policy label: {policy_label!r}"
+
+        if payload.get("no_play"):
+            return "ok=false error=enqueue does not support no_play (use play)"
+        if not (payload.get("text") or "").strip() and not payload.get("file"):
+            return "ok=false error=play requires text or file"
+
+        with self._lock:
+            if self._shutting_down:
+                return "ok=false error=daemon shutting down"
+        try:
+            item_id = self.queue_manager.enqueue(
+                priority=priority,
+                policy=policy,
+                payload=payload,
+                event_type=event_type,
+                identifiers=[str(i) for i in identifiers],
+            )
+        except RuntimeError as e:
+            return f"ok=false error={e}"
+
+        # Position visibility: pending count after insertion, and the
+        # merge count for coalesce items that joined an open window.
+        snapshot = self.queue_manager.snapshot()
+        coalesced = 1
+        for view in snapshot.pending:
+            if view.id == item_id:
+                coalesced = view.coalesced
+                break
+        else:
+            if snapshot.active is not None and snapshot.active.id == item_id:
+                coalesced = snapshot.active.coalesced
+        reply = f"ok=true item={item_id} queue_len={snapshot.queue_len}"
+        if coalesced > 1:
+            reply += f" coalesced={coalesced}"
+        return reply
+
+    # --- Queue runner adapter (BLOQUE 1.3 T3) ---------------------------------
+
+    def _queue_runner(self, item, on_finished):
+        """Real runner for QueueManager: starts playback, returns the handle.
+
+        Contract (see QueueManager): start asynchronously, return the
+        liveness SessionHandle promptly, call ``on_finished(outcome,
+        error)`` exactly once when playback truly ends — from the worker
+        thread this spawns. Liveness rides the existing session state
+        (status/current_frame/total_frames/producing) through
+        AudioSessionHandle.
+
+        Synthesis liveness (documented choice): silent non-streaming
+        synthesis emits NO progress tokens, so the wedged timeout must be
+        SIZED to exceed the worst-case silent synthesis interval — there
+        are no synthetic milestones from this adapter. The daemon exposes
+        ``--wedged-timeout`` / AGENT_TTS_WEDGED_TIMEOUT for exactly that;
+        the 30 s default comfortably covers typical synthesis, and a
+        session that flips to ``playing`` resets the silent clock through
+        the status token change.
+        """
+        payload = dict(item.payload or {})
+        waiter = None
+        token = payload.pop(self.WAITER_KEY, None)
+        if token is not None:
+            with self._lock:
+                waiter = self._queue_waiters.pop(token, None)
+        if item.coalesced > 1 and item.announcement:
+            # RF-AT-08-3: the merged item speaks ONE synthesized summary
+            # (count + up to three identifiers); the window owner's own
+            # payload is replaced, not concatenated.
+            payload = {**payload, "text": item.announcement, "file": ""}
+
+        try:
+            session = self._build_queue_session(payload)
+        except Exception as e:
+            if waiter is not None:
+                waiter.release(PlaybackOutcome.FAILED, str(e))
+            raise  # the manager records the item as FAILED (A5 visibility)
+
+        with self._lock:
+            if self._shutting_down:
+                # RS-1: never register a session into a shutdown that
+                # already snapshotted — the play is a typed refusal.
+                if waiter is not None:
+                    waiter.release(PlaybackOutcome.FAILED, "daemon shutting down")
+                raise RuntimeError("daemon shutting down")
+            self.active_session = session  # queue mount point (BLOQUE 1.3)
+            self._sessions.add(session)
+
+        cli = self._ensure_cli()
+
+        def worker() -> None:
+            outcome = PlaybackOutcome.COMPLETED
+            error: Optional[str] = None
+            try:
+                if payload.get("file"):
+                    self._play_file(session, payload["file"])
+                else:
+                    asyncio.run(
+                        cli._play_speech(
+                            session,
+                            (payload.get("text") or "").strip(),
+                            voice=payload.get("voice") or DEFAULT_VOICE,
+                            rate=payload.get("rate") or DEFAULT_RATE,
+                            volume=payload.get("volume") or "+0%",
+                            pitch=payload.get("pitch") or "+0Hz",
+                            output_file=payload.get("output_file") or None,
+                            no_play=False,
+                            provider=payload.get("provider") or "edge",
+                            openai_key=payload.get("openai_key") or None,
+                            openai_base_url=payload.get("openai_base_url") or None,
+                            openai_model=payload.get("openai_model") or None,
+                            eleven_key=payload.get("eleven_key") or None,
+                            eleven_model=payload.get("eleven_model") or None,
+                            piper_model=payload.get("piper_model") or None,
+                            auto_lang=bool(payload.get("auto_lang")),
+                            podcast=bool(payload.get("podcast")),
+                            podcast_title=payload.get("podcast_title") or "",
+                            stream=payload.get("stream") or "auto",
+                            persist_name=payload.get("persist_name") or None,
+                            engine=self._build_engine(payload),
+                        )
+                    )
+                if bool(session.state.get("stop")):
+                    outcome = PlaybackOutcome.STOPPED
+            except Exception as e:
+                print(f"Playback error: {e}", file=sys.stderr)
+                outcome = PlaybackOutcome.FAILED
+                error = str(e)
+            finally:
+                self._touch()  # the idle clock starts when playback ends
+                with self._lock:
                     self._sessions.discard(session)
                     if self.active_session is session:
                         self.active_session = None
-                self._inflight -= 1
-            if session is not None:
                 try:
                     session.stop()
                 except Exception:
                     pass
+                # Order is load-bearing (RF-AT-08-6): the session is dead
+                # and unmounted BEFORE the queue finalizes this item, so
+                # the next dispatch finds a free active-session slot and
+                # playback never overlaps.
+                try:
+                    on_finished(outcome, error)
+                except Exception:
+                    pass
+                if waiter is not None:
+                    waiter.release(outcome, error)
+
+        threading.Thread(
+            target=worker, name="agent-tts-queue-playback", daemon=True
+        ).start()
+        return AudioSessionHandle(session)
+
+    def _build_queue_session(self, payload: dict):
+        """Builds the playback session for a dispatched queue item.
+
+        Mirrors the request semantics of the pre-queue play path: session
+        metadata from the request, per-request target, winhost endpoint
+        overlay, and the replay local-fallback contract (B6) — a file
+        play whose remote target is unavailable degrades to local with
+        one warning, a text play surfaces the unavailability as a typed
+        error.
+        """
+        cli = self._ensure_cli()
+        text = (payload.get("text") or "").strip()
+        file_path = payload.get("file") or ""
+        target = self._request_target(payload.get("playback") or "")
+        label = payload.get("label") or (
+            f"{len(text)} chars" if text else os.path.basename(file_path)
+        )
+        session_kwargs = dict(
+            auto_rewind_sec=float(payload.get("auto_rewind_sec", 2.0)),
+            highlight=bool(payload.get("highlight")),
+            autoscroll=bool(payload.get("autoscroll")),
+            bionic=bool(payload.get("bionic")),
+            zen=bool(payload.get("zen")),
+            # The session's status metadata mirrors the request
+            # (same defaults _play_speech applies to synthesis),
+            # and remote targets resolve the winhost endpoint
+            # against the client's per-request overlay.
+            provider=payload.get("provider") or "edge",
+            voice=payload.get("voice") or DEFAULT_VOICE,
+            env=_session_env(payload),
+        )
+        try:
+            return cli._build_playback_session(target, label, **session_kwargs)
+        except SystemExit as e:
+            if not file_path:
+                # Speak-path contract: _build_playback_session exits(1)
+                # with its own message when the requested target is
+                # unavailable; surface it as a typed error instead of
+                # killing the daemon.
+                raise RuntimeError(f"playback target unavailable (exit {e.code})") from e
+            # Replay contract (legacy play_mp3_file, README replay
+            # section): an unavailable remote target degrades to the
+            # local device with one warning, not a hard error.
+            print(
+                f"Playback target '{target}' unavailable; falling back to local playback",
+                file=sys.stderr,
+            )
+            return cli._build_playback_session("local", label, **session_kwargs)
 
     @staticmethod
     def _play_file(session, file_path: str) -> None:
@@ -567,30 +944,21 @@ class Daemon:
             data = f.read()
         session.play(miniaudio.decode(data))
 
-    def _queue_runner_placeholder(self, item, on_finished):
-        """Integration point for the IPC enqueue unit (BLOQUE 1.3 T3).
-
-        The daemon-side playback adapter — build a session over the
-        active-session slot, return its SessionHandle, call on_finished
-        when playback ends — replaces this placeholder. Nothing routes
-        through the queue until then, so reaching this method means a
-        wiring bug, not a playback condition.
-        """
-        raise RuntimeError(
-            "daemon queue playback is wired by the IPC enqueue unit (BLOQUE 1.3 T3)"
-        )
-
 
 def run_daemon(
     socket_path: str = IPC_SOCKET,
     idle_timeout_sec: Optional[float] = None,
     implicit: bool = False,
+    coalesce_window_sec: Optional[float] = None,
+    wedged_timeout_sec: Optional[float] = None,
 ) -> int:
     """Entry point for a daemon process; returns the exit code."""
     return Daemon(
         socket_path=socket_path,
         idle_timeout_sec=idle_timeout_sec,
         implicit=implicit,
+        coalesce_window_sec=coalesce_window_sec,
+        wedged_timeout_sec=wedged_timeout_sec,
     ).run()
 
 
@@ -861,10 +1229,11 @@ def send_control_command(command: str, socket_path: str = IPC_SOCKET) -> Optiona
     """Sends a control command with the daemon health handshake (RF-AT-04-8).
 
     Control commands never auto-start a daemon: with nothing playing
-    there is nothing to control, and the legacy "no active playback"
-    error keeps its exact text. A wedged daemon is killed and respawned
-    first — the user must never lose voice control; a live non-daemon
-    owner is addressed directly (library-embedded speak stays servable).
+    there is nothing to control, and the typed idle error
+    (``ok=false error=no active playback session``) keeps its text. A
+    wedged daemon is killed and respawned first — the user must never
+    lose voice control; a live non-daemon owner is addressed directly
+    (library-embedded speak stays servable).
     """
     status, _ = probe_daemon(PING_TIMEOUT_SEC, socket_path)
     if status == "foreign":
@@ -894,6 +1263,25 @@ def main(argv=None) -> int:
         "configurable via AGENT_TTS_IDLE_TIMEOUT)",
     )
     parser.add_argument(
+        "--coalesce-window",
+        type=float,
+        default=None,
+        metavar="SEC",
+        help="Coalescing window for queue events with policy=coalesce: same "
+        "event_type merges into one announcement while the window is open "
+        "(default 5 s; env AGENT_TTS_COALESCE_WINDOW)",
+    )
+    parser.add_argument(
+        "--wedged-timeout",
+        type=float,
+        default=None,
+        metavar="SEC",
+        help="Queue liveness budget: a dispatched playback making no progress "
+        "for this long is terminated and the queue moves on. Silent "
+        "non-streaming synthesis emits no progress, so this must exceed your "
+        "worst-case synthesis time (default 30 s; env AGENT_TTS_WEDGED_TIMEOUT)",
+    )
+    parser.add_argument(
         "--implicit",
         action="store_true",
         help="Mark as auto-started by a client: an election loss exits silently",
@@ -910,6 +1298,8 @@ def main(argv=None) -> int:
         socket_path=args.socket or IPC_SOCKET,
         idle_timeout_sec=args.idle_timeout,
         implicit=args.implicit,
+        coalesce_window_sec=args.coalesce_window,
+        wedged_timeout_sec=args.wedged_timeout,
     )
 
 
