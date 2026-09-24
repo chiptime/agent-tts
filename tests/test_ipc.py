@@ -101,6 +101,32 @@ class TestCommandFraming(unittest.TestCase):
         finally:
             server.stop()
 
+    def test_large_command_line_round_trips_far_above_the_old_cap(self):
+        """CONF-1: a delegated play line (>= 1 MB) is not truncated at 8 KB."""
+        with tempfile.NamedTemporaryFile(suffix=".sock", delete=True) as tmp:
+            sock_file = tmp.name
+        server = self._serve_echo(sock_file)
+        try:
+            payload = "play " + "x" * (1024 * 1024)  # 1 MiB of text
+            reply = self._roundtrip(sock_file, payload.encode("utf-8") + b"\n")
+            self.assertEqual(reply, f"len:{len(payload)}")
+        finally:
+            server.stop()
+
+    def test_command_beyond_byte_cap_fails_with_clear_error(self):
+        """CONF-1: runaway input beyond the documented cap is rejected, not truncated."""
+        with tempfile.NamedTemporaryFile(suffix=".sock", delete=True) as tmp:
+            sock_file = tmp.name
+        server = self._serve_echo(sock_file)
+        try:
+            from agent_tts.ipc import MAX_COMMAND_BYTES
+
+            runaway = b"z" * (MAX_COMMAND_BYTES + 2048)  # past the cap, no newline
+            reply = self._roundtrip(sock_file, runaway)
+            self.assertTrue(reply.startswith("ERR: command too large"), reply)
+        finally:
+            server.stop()
+
 
 class TestIpcReplyJson(unittest.TestCase):
     def test_fields_and_trailing_free_text(self):

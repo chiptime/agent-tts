@@ -26,10 +26,38 @@ CLIENT_TIMEOUT_SEC = 1.0
 # client keeps reading until the newline (or EOF/cap) instead of trusting a
 # single recv() — long status payloads must not be truncated mid-field.
 MAX_REPLY_BYTES = 8192
-# Server-side mirror of MAX_REPLY_BYTES (RF-AT-09-4): commands are one line
-# too, so the server reads until the newline (or cap) — a future one-line
-# JSON command payload must not be truncated by a single recv() either.
-MAX_COMMAND_BYTES = 8192
+# Hard bound for a single command line (server side of RF-AT-09-4's line
+# framing). Control commands are tiny, but a delegated ``play <json>``
+# carries the full speech text in one line: the bound is sized for payloads
+# of at least 1 MB of text plus JSON-escaping headroom (every control char
+# can grow to six bytes as ``\uXXXX``). A line longer than the bound is
+# rejected with an explicit ``ERR: command too large`` reply instead of
+# being silently truncated into a broken JSON parse.
+MAX_COMMAND_BYTES = 16 * 1024 * 1024
+
+
+class CommandTooLargeError(Exception):
+    """A command line exceeded MAX_COMMAND_BYTES without a newline."""
+
+
+def _more_bytes_buffered(conn: socket.socket) -> bool:
+    """True when unread bytes are already buffered on the connection.
+
+    Non-blocking one-byte probe: a sender that delivered exactly
+    MAX_COMMAND_BYTES bytes and stopped keeps the BLOQUE 1.1 behavior
+    (the payload is served at the cap), while a sender that pushed past
+    the cap is detected and rejected.
+    """
+    try:
+        conn.setblocking(False)
+        try:
+            return bool(conn.recv(1))
+        finally:
+            conn.setblocking(True)
+    except BlockingIOError:
+        return False
+    except OSError:
+        return False
 
 
 def _is_windows() -> bool:
@@ -224,8 +252,11 @@ def _recv_command(conn: socket.socket) -> str:
     """Reads one newline-terminated command from the connection.
 
     Symmetric to the client's reply loop: keeps recv()ing until the newline
-    (or the MAX_COMMAND_BYTES cap / EOF), so a command larger than one
-    packet arrives complete instead of truncated (RF-AT-09-4).
+    (or EOF), so a command larger than one packet arrives complete instead
+    of truncated (RF-AT-09-4). The only bound is the MAX_COMMAND_BYTES hard
+    cap: a line that reaches the cap with no newline AND more bytes already
+    buffered raises CommandTooLargeError — oversized input must fail with a
+    clear error, never a silent mid-JSON truncation (CONF-1).
     """
     chunks = []
     received = 0
@@ -237,7 +268,12 @@ def _recv_command(conn: socket.socket) -> str:
         received += len(chunk)
         if b"\n" in chunk:
             break
-    return b"".join(chunks).decode("utf-8", errors="ignore").strip()
+    data = b"".join(chunks)
+    if received >= MAX_COMMAND_BYTES and b"\n" not in data and _more_bytes_buffered(conn):
+        raise CommandTooLargeError(
+            f"command too large (over {MAX_COMMAND_BYTES} bytes without a newline)"
+        )
+    return data.decode("utf-8", errors="ignore").strip()
 
 
 class IPCServer:
@@ -292,7 +328,13 @@ class IPCServer:
     def _serve_connection(self, conn: socket.socket) -> None:
         try:
             conn.settimeout(1.0)
-            data = _recv_command(conn)
+            try:
+                data = _recv_command(conn)
+            except CommandTooLargeError as e:
+                # Oversized input gets an explicit error reply, never a
+                # silent truncation (CONF-1).
+                conn.sendall(f"ERR: {e}\n".encode("utf-8"))
+                return
             if data:
                 reply = self.command_handler(data)
                 conn.sendall(f"{reply}\n".encode("utf-8"))
