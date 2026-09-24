@@ -147,6 +147,56 @@ agent-tts --ipc-cmd status
 agent-tts --ipc-cmd stop
 ```
 
+### 🎧 Persistent Daemon (vía única)
+
+`agent-tts` runs as a **single-path daemon architecture**: the CLI is always a client, and there is no classic second execution path. Every speech invocation checks for a healthy daemon with a 200 ms `ping`; if none answers, the client transparently auto-starts one and delegates. `agent-tts "algo"` behaves identically whether a daemon is already running or not.
+
+```bash
+agent-tts "Build finished"   # auto-starts the daemon on first use, delegates, blocks until audio ends
+agent-tts --ipc-cmd ping     # pong version=0.3.0 uptime=42
+agent-tts --ipc-cmd shutdown # orderly daemon exit (also SIGTERM/SIGINT)
+```
+
+**Lifecycle policies** (configurable):
+
+| Start mode | Idle timeout |
+| :--- | :--- |
+| Implicit (client auto-start) | 30 min (default; `AGENT_TTS_IDLE_TIMEOUT` in seconds, `0` disables) |
+| Explicit (`--serve` / `--foreground`) | none by default; `--idle-timeout SEC` opt-in |
+
+`--serve` is the canonical daemon start; `--foreground` is the same daemon documented as the attached deployment for systemd/journalctl — behavior is identical, only the deployment intent differs. An idle-timeout exit or `shutdown` releases the control channel cleanly (the flock-based ownership from the channel layer means a crashed daemon is reclaimed automatically on the next start).
+
+**Health check (kill-and-respawn):** a daemon that accepts connections but stops answering `ping` is killed (SIGKILL, via the PID marker) and respawned before your request is delegated — a wedged daemon never leaves you without voice. If respawn also fails, you get one clear error on stderr (auto-started daemon diagnostics land in `agent-tts-daemon.log` under your temp directory, override with `AGENT_TTS_DAEMON_LOG`).
+
+**Notes for interactive users:**
+
+- A delegated playback blocks until the audio finishes (same as the classic CLI); `Ctrl-C` forwards a best-effort `stop` to the daemon so audio does not outlive the interrupted client.
+- Terminal view flags (`--highlight`, `--zen`, `--autoscroll`, `--bionic`) travel with the play request and render where the daemon runs — meaningful with `agent-tts --foreground` in your terminal, inert for a detached daemon.
+- `status` from the daemon adds `uptime=`, and reports `status=idle uptime=… provider=… playback=…` when nothing is playing.
+
+**systemd user unit example** (explicit start, no idle timeout — the supervisor owns the lifetime):
+
+```ini
+# ~/.config/systemd/user/agent-tts.service
+[Unit]
+Description=agent-tts persistent playback daemon
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/env agent-tts --foreground
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user enable --now agent-tts.service
+journalctl --user -u agent-tts -f   # daemon output follows the journal
+```
+
 ---
 
 ## 🪟 Windows & WSL Playback
@@ -185,7 +235,9 @@ If the winhost server is unreachable, one English warning is printed on stderr a
 
 | Variable | Default | Purpose |
 | :--- | :--- | :--- |
-| `AGENT_TTS_PLAYBACK` | `local` | Default playback target (`local`, `winhost`, `wsl-ps`, `auto`) |
+| `AGENT_TTS_PLAYBACK` | `local` | Default playback target (`local`, `winhost`, `wsl-ps`, `auto`); the daemon resolves it at startup and each play can force a target |
+| `AGENT_TTS_IDLE_TIMEOUT` | `1800` | Idle timeout (seconds) for daemons auto-started by the client; `0` disables; explicit `--serve`/`--foreground` starts have no timeout unless `--idle-timeout` |
+| `AGENT_TTS_DAEMON_LOG` | `<tmp>/agent-tts-daemon.log` | stderr log of auto-started daemons |
 | `AGENT_TTS_OLLAMA_MODEL` | `qwen2.5:0.5b` | Ollama model used by `--llm-summary` |
 | `AGENT_TTS_WINHOST_HOST` | auto-detect | Explicit Windows host address for winhost clients |
 | `AGENT_TTS_WINHOST_PORT` | `7717` | TCP port for the winhost transport |
@@ -328,8 +380,13 @@ usage: agent-tts [-h] [--voice VOICE] [--rate RATE] [--max-chars MAX_CHARS]
                  [--eleven-model ELEVEN_MODEL] [--piper-model PIPER_MODEL]
                  [--pre-extracted] [--agent AGENT]
                  [--session-id SESSION_ID]
+                 [--serve] [--foreground] [--idle-timeout SEC]
                  [text ...]
 ```
+
+- **`--serve` / `--foreground`**: run the persistent playback daemon (vía única owner) instead of a one-shot client. `--serve` is the canonical start; `--foreground` is the identical attached deployment for systemd/journalctl. Speech invocations without these flags are always clients that transparently auto-start the daemon when needed.
+
+- **`--idle-timeout SEC`**: daemon idle timeout; defaults to none for explicit starts and 30 minutes for the client's auto-started daemon (see [Persistent Daemon](#-persistent-daemon-vía-única)).
 
 - **`--stream {auto,on,off}`** (default `auto`): Pipelined playback mode. `auto` streams long texts (≥ 400 chars) with the `edge`, `openai`, or `elevenlabs` providers when playing locally; `on` forces streaming for any provider or length; `off` forces classic single-shot synthesis. `--podcast` always uses single-shot synthesis; `--output` works with streaming — the merged audio is written once playback completes.
 
@@ -374,6 +431,8 @@ We have an active vision to expand `agent-tts` into the definitive neural TTS en
   - When the winhost server is unreachable, playback automatically falls back to one persistent `powershell.exe` per run fed length-prefixed WAV groups over stdin (`System.Media.SoundPlayer` loop — near-gapless streaming, pause/resume/stop at group granularity via pipe flow control); `--playback wsl-ps` forces it directly.
 - [x] 🔌 **Agent Connectors (Structured Transcript Reading):**
   - With `--agent` + `--session-id` the engine reads the real last assistant message from the agent tool's local transcript (OpenCode SQLite, Claude Code / Codex CLI / Antigravity CLI JSONL, Aider markdown history) with automatic scrollback fallback.
+- [x] 🎧 **Persistent Daemon (vía única with transparent auto-start):**
+  - The CLI is always a client: a 200 ms ping gate, transparent daemon auto-start, kill-and-respawn of wedged daemons, warm provider cache between requests, idle-timeout lifecycle (30 min auto-started / none explicit), and `play`/`ping`/`shutdown` IPC commands (`--serve`/`--foreground`).
 - [ ] 🎙️ **Per-Provider Pipelining (Piper):**
   - OpenAI and ElevenLabs now stream via chunked MP3 HTTP delivery with transparent full-response fallback (`--stream auto`, ≥ 400 chars); only the local Piper backend remains.
 - [ ] ⚡ **Incremental MP3 Frame-Accurate Byte Streaming:**
