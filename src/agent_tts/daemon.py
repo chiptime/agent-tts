@@ -162,6 +162,28 @@ def _resolve_or_local(value: str, env=None) -> str:
         return "local"
 
 
+def _session_env(payload: dict) -> Optional[dict]:
+    """Per-request env overlay carrying the client's winhost endpoint.
+
+    ``--winhost-host`` / ``--winhost-port`` (and the client's
+    AGENT_TTS_WINHOST_* environment) resolve in the CLIENT process; the
+    play payload carries them so the daemon-side session reaches the
+    endpoint the delegating client asked for instead of resolving from
+    the daemon's inherited environment. Absent values mean no overlay:
+    the daemon's environment resolves as before.
+    """
+    host = str(payload.get("winhost_host") or "").strip()
+    port = payload.get("winhost_port")
+    if not host and port in (None, ""):
+        return None
+    env = dict(os.environ)
+    if host:
+        env["AGENT_TTS_WINHOST_HOST"] = host
+    if port not in (None, ""):
+        env["AGENT_TTS_WINHOST_PORT"] = str(port)
+    return env
+
+
 class Daemon:
     """Long-lived owner of the control channel and of playback state.
 
@@ -423,6 +445,13 @@ class Daemon:
                     autoscroll=bool(payload.get("autoscroll")),
                     bionic=bool(payload.get("bionic")),
                     zen=bool(payload.get("zen")),
+                    # The session's status metadata mirrors the request
+                    # (same defaults _play_speech applies to synthesis),
+                    # and remote targets resolve the winhost endpoint
+                    # against the client's per-request overlay.
+                    provider=payload.get("provider") or "edge",
+                    voice=payload.get("voice") or DEFAULT_VOICE,
+                    env=_session_env(payload),
                 )
             except SystemExit as e:
                 # _build_playback_session exits(1) with its own message when

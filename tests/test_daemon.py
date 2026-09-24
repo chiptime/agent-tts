@@ -422,6 +422,78 @@ def test_shutdown_command_stops_inflight_playback(channel, monkeypatch):
         _stop_daemon(d)
 
 
+# --- SOS-1/B5: the request's provider/voice/winhost endpoint reach the session ---------
+
+
+def test_play_status_reports_requested_provider_and_voice(channel, monkeypatch):
+    d = _start_daemon(channel, monkeypatch)
+    try:
+        box, play_thread = _play_async(
+            d, {"text": "hola", "provider": "piper", "voice": "es-ES-AlvaroNeural"}
+        )
+        _wait_session_registered(d)
+        reply = None
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            reply = ipc.send_ipc_command("status", socket_path=channel["sock"])
+            if reply and "status=playing" in reply:
+                break
+            time.sleep(0.02)
+        # The session metadata mirrors what the request asked for, not the
+        # daemon's inherited environment/defaults.
+        assert reply and "provider=piper" in reply, reply
+        assert "voice=es-ES-AlvaroNeural" in reply, reply
+
+        ipc.send_ipc_command("stop", socket_path=channel["sock"])
+        play_thread.join(timeout=5.0)
+        assert box == ["status=stopped"]
+    finally:
+        _stop_daemon(d)
+
+
+def test_play_winhost_endpoint_crosses_ipc_boundary(channel, monkeypatch):
+    d = _start_daemon(channel, monkeypatch)
+    builds = []
+    real_build = d._cli._build_playback_session
+
+    def recording_build(playback, label, **kwargs):
+        builds.append((playback, kwargs))
+        return real_build(playback, label, **kwargs)
+
+    try:
+        with mock.patch.object(d._cli, "_build_playback_session", side_effect=recording_build):
+            d.handle_command(
+                "play "
+                + json.dumps(
+                    {
+                        "text": "remoto",
+                        "playback": "winhost",
+                        "winhost_host": "192.0.2.10",
+                        "winhost_port": 7799,
+                        "no_play": False,
+                    }
+                )
+            )
+            d.handle_command(
+                "play " + json.dumps({"text": "sin endpoint", "playback": "local"})
+            )
+        # The daemon passed the client's winhost endpoint into session
+        # construction as an env overlay the remote session resolves
+        # against (candidate_hosts honors the explicit host).
+        winhost_kwargs = builds[0][1]
+        assert "AGENT_TTS_WINHOST_HOST" in winhost_kwargs["env"]
+        assert winhost_kwargs["env"]["AGENT_TTS_WINHOST_HOST"] == "192.0.2.10"
+        assert winhost_kwargs["env"]["AGENT_TTS_WINHOST_PORT"] == "7799"
+        from agent_tts.playback_target import candidate_hosts
+
+        assert candidate_hosts(winhost_kwargs["env"]) == ["192.0.2.10"]
+        # Without endpoint values in the payload there is no overlay: the
+        # daemon's own environment resolves as before.
+        assert builds[1][1]["env"] is None
+    finally:
+        _stop_daemon(d)
+
+
 # --- RF-AT-04-6: playback target at startup and per request --------------------------
 
 

@@ -480,6 +480,32 @@ def test_cli_text_delegates_and_exits_zero(monkeypatch, capsys):
     assert capsys.readouterr().out == ""  # success stays silent (classic parity)
 
 
+def test_cli_payload_carries_winhost_endpoint(monkeypatch):
+    """SOS-1/B5: --winhost-host/--winhost-port cross the IPC boundary."""
+    with mock.patch.object(
+        daemon_mod, "delegate_play", return_value="status=done"
+    ) as delegate:
+        _run_cli(
+            monkeypatch,
+            ["cli.py", "hola", "--winhost-host", "192.0.2.10", "--winhost-port", "7799"],
+        )
+    payload = delegate.call_args.args[0]
+    assert payload["winhost_host"] == "192.0.2.10"
+    assert payload["winhost_port"] == "7799"
+
+
+def test_cli_payload_winhost_endpoint_from_env(monkeypatch):
+    monkeypatch.setenv("AGENT_TTS_WINHOST_HOST", "10.0.0.8")
+    monkeypatch.setenv("AGENT_TTS_WINHOST_PORT", "7718")
+    with mock.patch.object(
+        daemon_mod, "delegate_play", return_value="status=done"
+    ) as delegate:
+        _run_cli(monkeypatch, ["cli.py", "hola"])
+    payload = delegate.call_args.args[0]
+    assert payload["winhost_host"] == "10.0.0.8"
+    assert payload["winhost_port"] == "7718"
+
+
 def test_cli_err_reply_exits_one_with_stderr(monkeypatch, capsys):
     with mock.patch.object(
         daemon_mod, "delegate_play", return_value="ERR: playback target unavailable (exit 1)"
