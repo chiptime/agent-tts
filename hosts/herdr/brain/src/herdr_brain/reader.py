@@ -17,6 +17,25 @@ fail-soft to a ``None`` pair — never an exception past this module — and
 logged warnings name the failure class plus the first 8 hex chars of the
 cache key only: transcript text, HTML and sidecar payloads never reach
 the log.
+
+Per-request budget null-cause (Decision 7 open question, CONFIRMED at
+apply): ``READER_MAX_RENDERS_PER_REQUEST = 8`` yields ``html: null`` /
+``map: null`` for over-budget cold turns — a fail-soft superset of the
+spec's enumerated null causes. ``text`` is preserved, the request stays
+HTTP 200, and subsequent requests warm the remaining turns
+progressively (each already-rendered turn is a cache hit), so a 20-turn
+conversation converges in a few expansions without ever spawning more
+than 8 subprocesses per request. Do not change the value or the
+deferral-as-null behavior without escalating to the orchestrator.
+
+RELEASE STEP — renderer upgrade (Decision 11 open question, CONFIRMED
+at apply): upgrading the herdr-tts renderer (or changing the reader
+profile/contract) REQUIRES bumping ``READER_PROFILE_VERSION`` here.
+Binary mtime/size is a FALSE signal because ``bin/herdr-tts`` is a thin
+entry script whose mtime does not move when the engine underneath
+changes; the bump is deliberate and is the only invalidation trigger.
+Bumping orphans the old ``reader_cache/<old-version>/`` tree, which the
+oldest-first disk sweep then reclaims. See README.md (deployment).
 """
 
 from __future__ import annotations

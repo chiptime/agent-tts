@@ -129,6 +129,20 @@ HERDR_BRAIN_HOST=0.0.0.0 .venv/bin/python -m herdr_brain.server
 > the exact incident that made the unit the supported path — after
 > debugging, re-run `deploy/install.sh` to hand the port back to systemd.
 
+### Upgrading the herdr-tts renderer (reader cache release step)
+
+Upgrading `herdr-tts` (or changing the reader profile/contract) REQUIRES
+bumping `READER_PROFILE_VERSION` in `src/herdr_brain/reader.py`. The
+binary's mtime/size is a **false signal** — `bin/herdr-tts` is a thin
+entry script whose mtime does not move when the engine underneath
+changes — so the version bump is deliberate and is the only cache
+invalidation trigger. Without it, the reader serves HTML/anchor maps
+produced by the OLD renderer against the NEW speech indices (stale
+anchors). Bumping the constant orphans the old
+`reader_cache/<old-version>/` tree, which the disk sweep reclaims;
+deleting `reader_cache/` by hand is always safe too (it is disposable
+and never touches `audio_dir` or transcript stores).
+
 ### CLI ask
 
 ```bash
