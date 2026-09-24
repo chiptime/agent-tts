@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -11,7 +12,7 @@ from fastapi.testclient import TestClient
 from herdr_brain.approval import ApprovalGate, ApprovalGateStore
 from herdr_brain.config import Settings
 from herdr_brain.herdr import AgentInfo
-from herdr_brain.server import APPROVAL_CLOSER, approval_payload, create_app
+from herdr_brain.server import APPROVAL_CLOSER, REPROMPT_LINE, approval_payload, create_app
 from tests.conftest import SETTINGS_KWARGS
 
 
@@ -338,6 +339,325 @@ class TestApprovalGate:
         TestClient(app).post("/ask", json={"text": "hola"})  # builds the LLM
         # Same instance the approval endpoints will resolve against.
         assert llm.attached_approval_store is app.state.approval_store
+
+
+def make_replay_tools(
+    tool_result: str = '{"ok": true, "status": "done", "output_excerpt": "tests green"}',
+):
+    """BrainTools double recording the approve replay path (resolve_target
+    + dispatch), so tests assert the EXACT frozen args were sent."""
+    created: list = []
+
+    class _FakeReplayTools:
+        def __init__(self, cfg):
+            self.last_active = None
+            self.dispatches: list = []
+            self.resolved_panes: list = []
+            created.append(self)
+
+        def resolve_target(self, pane_id=None):
+            self.resolved_panes.append(pane_id)
+            return AgentInfo(
+                pane_id=pane_id or "w1:p9", agent="opencode", status="working",
+                session_kind="id", session_value="ses_x", cwd="/repo",
+                title="OpenCode", focused=True,
+            )
+
+        def dispatch(self, name, arguments, target=None):
+            self.dispatches.append(
+                {"name": name, "arguments": dict(arguments), "target": target}
+            )
+            return tool_result
+
+    _FakeReplayTools.created = created
+    return _FakeReplayTools
+
+
+def approval_app(
+    settings, audio_dir, monkeypatch, llm=None, tools_cls=None, tts=None,
+    approval_timeout_s=None,
+):
+    """create_app wired for approval-endpoint tests: fakes everywhere, an
+    optional BrainTools monkeypatch (replay recording) and timeout override."""
+    import herdr_brain.server as server_module
+
+    overrides = {"audio_dir": str(audio_dir)}
+    if approval_timeout_s is not None:
+        overrides["approval_timeout_s"] = approval_timeout_s
+    cfg = Settings(**{**settings.__dict__, **overrides})
+    if tools_cls is not None:
+        monkeypatch.setattr(server_module, "BrainTools", tools_cls)
+    return server_module.create_app(
+        settings=cfg,
+        llm_factory=lambda c, t: llm or FakeLLM(),
+        tts_renderer=tts or FakeTTS(),
+    )
+
+
+class TestApproveEndpoint:
+    """/approval/{id}/approve: exact-args replay + approve-once."""
+
+    def test_approve_replays_exact_frozen_args(self, settings, audio_dir, monkeypatch):
+        tools_cls = make_replay_tools()
+        llm = FakeLLM(result={
+            "answer": "Listo: el agente terminó en verde.",
+            "pane_id": "w7:p4", "agent": "opencode", "session_id": "s1",
+        })
+        tts = FakeTTS()
+        app = approval_app(
+            settings, audio_dir, monkeypatch, llm=llm, tools_cls=tools_cls, tts=tts
+        )
+        gate = app.state.approval_store.propose(
+            "s1", text="corre los tests", timeout_ms=300000,
+            pane_id="w7:p4", agent="opencode",
+        )
+        resp = TestClient(app).post(f"/approval/{gate.gate_id}/approve")
+        assert resp.status_code == 200
+        body = resp.json()
+        # Same response conventions as /ask.
+        assert set(body) == {"answer", "pane_id", "agent", "session_id", "audio_url", "approval"}
+        assert body["answer"] == "Listo: el agente terminó en verde."
+        assert body["audio_url"].startswith("/audio/")
+        assert body["approval"] is None
+        assert tts.calls[-1]["text"] == body["answer"]
+        # THE replay: exact frozen args through the normal dispatch path.
+        tools = tools_cls.created[0]
+        assert tools.resolved_panes == ["w7:p4"]  # frozen pane, re-resolved
+        assert len(tools.dispatches) == 1
+        sent = tools.dispatches[0]
+        assert sent["name"] == "send_to_session"
+        assert sent["arguments"] == {"text": "corre los tests", "timeout_ms": 300000}
+        assert sent["target"].pane_id == "w7:p4"
+        # The model reported on the replay result, in the gate's session/pane.
+        assert len(llm.calls) == 1
+        assert "tests green" in llm.calls[0]
+        assert llm.session_ids == ["s1"]
+        assert llm.pane_ids == ["w7:p4"]
+
+    def test_approve_executes_exactly_once(self, settings, audio_dir, monkeypatch):
+        tools_cls = make_replay_tools()
+        app = approval_app(settings, audio_dir, monkeypatch, tools_cls=tools_cls)
+        gate = app.state.approval_store.propose(
+            "s1", text="solo una vez", timeout_ms=None, pane_id="w1:p9", agent="opencode"
+        )
+        client = TestClient(app)
+        assert client.post(f"/approval/{gate.gate_id}/approve").status_code == 200
+        assert client.post(f"/approval/{gate.gate_id}/approve").status_code == 404
+        # AC6: the frozen call executed exactly once (None timeout replayed
+        # as-is too — "as the model passed it").
+        tools = tools_cls.created[0]
+        assert tools.dispatches[0]["arguments"] == {"text": "solo una vez", "timeout_ms": None}
+        assert len(tools.dispatches) == 1
+        assert app.state.approval_store.get(gate.gate_id).state == "approved"
+
+    def test_approve_on_expired_gate_404_lazy_expiry(self, settings, audio_dir, monkeypatch):
+        tools_cls = make_replay_tools()
+        app = approval_app(
+            settings, audio_dir, monkeypatch, tools_cls=tools_cls, approval_timeout_s=0
+        )
+        gate = app.state.approval_store.propose(
+            "s1", text="tarde", timeout_ms=1000, pane_id="w1:p9", agent="opencode"
+        )
+        time.sleep(0.01)  # the 0 s window is definitively elapsed
+        resp = TestClient(app).post(f"/approval/{gate.gate_id}/approve")
+        assert resp.status_code == 404
+        assert app.state.approval_store.get(gate.gate_id).state == "expired"
+        assert tools_cls.created[0].dispatches == []  # nothing executed
+
+    def test_unknown_gate_id_is_404_on_every_approval_endpoint(self, client_factory):
+        client = client_factory()
+        assert client.post("/approval/doesnotexist/approve").status_code == 404
+        assert client.post("/approval/doesnotexist/reject").status_code == 404
+        assert client.post("/approval/doesnotexist/resolve", json={"utterance": "sí"}).status_code == 404
+        assert client.patch("/approval/doesnotexist", json={"text": "x"}).status_code == 404
+
+    def test_superseded_gate_is_404_through_the_endpoints(self, settings, audio_dir):
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        app = create_app(settings=cfg, llm_factory=lambda c, t: FakeLLM(), tts_renderer=FakeTTS())
+        gate = app.state.approval_store.propose(
+            "s1", text="old send", pane_id="w1:p9", agent="opencode"
+        )
+        client = TestClient(app)
+        assert client.post("/ask", json={"text": "otra cosa", "session_id": "s1"}).status_code == 200
+        # The /ask supersede must hold through the endpoint surface too.
+        assert client.post(f"/approval/{gate.gate_id}/approve").status_code == 404
+        assert client.get("/approval/current", params={"session_id": "s1"}).json()["approval"] is None
+
+
+class TestRejectEndpoint:
+    """/approval/{id}/reject: silent confirmation, terminal state."""
+
+    def test_reject_is_silent_and_terminal(self, settings, audio_dir, monkeypatch):
+        tts = FakeTTS()
+        app = approval_app(settings, audio_dir, monkeypatch, tts=tts)
+        gate = app.state.approval_store.propose(
+            "s1", text="no mandar", timeout_ms=1000, pane_id="w1:p9", agent="opencode"
+        )
+        client = TestClient(app)
+        resp = client.post(f"/approval/{gate.gate_id}/reject")
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "state": "rejected"}
+        assert tts.calls == []  # no TTS generated server-side (PRD §5)
+        assert app.state.approval_store.get(gate.gate_id).state == "rejected"
+        # Terminal is final: every further op on the gate 404s.
+        assert client.post(f"/approval/{gate.gate_id}/approve").status_code == 404
+        assert client.post(f"/approval/{gate.gate_id}/reject").status_code == 404
+        assert client.post(f"/approval/{gate.gate_id}/resolve", json={"utterance": "sí"}).status_code == 404
+        assert client.patch(f"/approval/{gate.gate_id}", json={"text": "x"}).status_code == 404
+        assert client.get("/approval/current", params={"session_id": "s1"}).json()["approval"] is None
+
+
+class TestResolveEndpoint:
+    """/approval/{id}/resolve: voice lexicon + reprompt budget."""
+
+    def test_approve_utterance_replays_and_reports(self, settings, audio_dir, monkeypatch):
+        tools_cls = make_replay_tools()
+        llm = FakeLLM(result={
+            "answer": "Enviado y terminó bien.",
+            "pane_id": "w1:p9", "agent": "opencode", "session_id": "s1",
+        })
+        app = approval_app(settings, audio_dir, monkeypatch, llm=llm, tools_cls=tools_cls)
+        gate = app.state.approval_store.propose(
+            "s1", text="arregla el login", timeout_ms=120000, pane_id="w1:p9", agent="opencode"
+        )
+        resp = TestClient(app).post(
+            f"/approval/{gate.gate_id}/resolve", json={"utterance": "sí, envíalo"}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["decision"] == "approve"
+        assert body["answer"] == "Enviado y terminó bien."
+        assert body["audio_url"].startswith("/audio/")
+        assert body["approval"] is None
+        sent = tools_cls.created[0].dispatches[0]
+        assert sent["arguments"] == {"text": "arregla el login", "timeout_ms": 120000}
+        assert app.state.approval_store.get(gate.gate_id).state == "approved"
+
+    def test_reject_utterance_is_silent(self, settings, audio_dir, monkeypatch):
+        tts = FakeTTS()
+        app = approval_app(settings, audio_dir, monkeypatch, tts=tts)
+        gate = app.state.approval_store.propose(
+            "s1", text="para ya", timeout_ms=1000, pane_id="w1:p9", agent="opencode"
+        )
+        resp = TestClient(app).post(
+            f"/approval/{gate.gate_id}/resolve", json={"utterance": "no lo envíes"}
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"decision": "reject", "answer": None, "audio_url": None, "approval": None}
+        assert tts.calls == []
+        assert app.state.approval_store.get(gate.gate_id).state == "rejected"
+
+    def test_unknown_reprompts_once_then_auto_rejects(self, settings, audio_dir, monkeypatch):
+        tts = FakeTTS()
+        app = approval_app(settings, audio_dir, monkeypatch, tts=tts)
+        gate = app.state.approval_store.propose(
+            "s1", text="algo", timeout_ms=1000, pane_id="w1:p9", agent="opencode"
+        )
+        client = TestClient(app)
+        first = client.post(f"/approval/{gate.gate_id}/resolve", json={"utterance": "hola qué tal"})
+        assert first.status_code == 200
+        body = first.json()
+        assert body["decision"] == "reprompt"
+        assert body["answer"] == REPROMPT_LINE
+        assert body["audio_url"].startswith("/audio/")
+        assert tts.calls[-1]["text"] == REPROMPT_LINE
+        # Card stays: the gate is live with the ambiguity budget spent.
+        assert app.state.approval_store.get(gate.gate_id).reprompt_count == 1
+        assert app.state.approval_store.current("s1") is not None
+        # A second consecutive ambiguous utterance auto-rejects (PRD §4).
+        second = client.post(
+            f"/approval/{gate.gate_id}/resolve", json={"utterance": "quizás la semana que viene"}
+        )
+        assert second.status_code == 200
+        assert second.json()["decision"] == "reject"
+        assert app.state.approval_store.get(gate.gate_id).state == "rejected"
+        assert app.state.approval_store.current("s1") is None
+        assert len(tts.calls) == 1  # only the reprompt line was ever spoken
+
+    def test_replace_intent_waits_for_the_client_patch(self, settings, audio_dir, monkeypatch):
+        tts = FakeTTS()
+        app = approval_app(settings, audio_dir, monkeypatch, tts=tts)
+        gate = app.state.approval_store.propose(
+            "s1", text="texto original", timeout_ms=60000, pane_id="w1:p9", agent="opencode"
+        )
+        resp = TestClient(app).post(
+            f"/approval/{gate.gate_id}/resolve", json={"utterance": "cambia el texto"}
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"decision": "listen_replace", "answer": None, "audio_url": None, "approval": None}
+        # The gate stays live and untouched: the replacement text is NOT in
+        # this utterance — the client's ONE dictation round comes back
+        # through PATCH, which restarts the timer (PRD §5).
+        stored = app.state.approval_store.get(gate.gate_id)
+        assert stored.state == "proposed"
+        assert stored.action.text == "texto original"
+        assert stored.reprompt_count == 0  # clear intent: no ambiguity budget
+        assert tts.calls == []
+
+
+class TestApprovalPatchEndpoint:
+    """PATCH /approval/{id}: manual text edit + timer restart."""
+
+    def test_patch_unknown_and_terminal_gates_404(self, settings, audio_dir, monkeypatch):
+        app = approval_app(settings, audio_dir, monkeypatch)
+        gate = app.state.approval_store.propose(
+            "s1", text="x", timeout_ms=1000, pane_id="w1:p9", agent="opencode"
+        )
+        client = TestClient(app)
+        assert client.patch("/approval/unknowngate", json={"text": "y"}).status_code == 404
+        client.post(f"/approval/{gate.gate_id}/reject")
+        assert client.patch(f"/approval/{gate.gate_id}", json={"text": "y"}).status_code == 404
+
+    def test_patch_updates_text_and_restarts_timer(self, settings, audio_dir, monkeypatch):
+        app = approval_app(settings, audio_dir, monkeypatch, approval_timeout_s=3)
+        gate = app.state.approval_store.propose(
+            "s1", text="original", timeout_ms=1000, pane_id="w1:p9", agent="opencode"
+        )
+        client = TestClient(app)
+        time.sleep(1.1)  # burn past a second boundary of the 3 s window
+        before = client.get("/approval/current", params={"session_id": "s1"}).json()["approval"]
+        assert before["expires_in_s"] == 2  # 3 s window with ~1.1 s burned
+        resp = client.patch(f"/approval/{gate.gate_id}", json={"text": "texto editado"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["approval"]["gate_id"] == gate.gate_id
+        assert body["approval"]["text"] == "texto editado"
+        assert body["approval"]["expires_in_s"] == 3  # timer restarted
+        after = client.get("/approval/current", params={"session_id": "s1"}).json()["approval"]
+        assert after["text"] == "texto editado"
+        assert after["expires_in_s"] >= 2
+
+
+class TestApprovalCurrentEndpoint:
+    """GET /approval/current: reload recovery payload (T7 consumes it)."""
+
+    def test_current_returns_live_gate_or_null(self, settings, audio_dir, monkeypatch):
+        app = approval_app(settings, audio_dir, monkeypatch)
+        client = TestClient(app)
+        assert client.get("/approval/current", params={"session_id": "phone-1"}).json() == {"approval": None}
+        gate = app.state.approval_store.propose(
+            "phone-1", text="reenvía el informe", timeout_ms=90000,
+            pane_id="w2:p1", agent="claude",
+        )
+        approval = client.get("/approval/current", params={"session_id": "phone-1"}).json()["approval"]
+        assert approval["gate_id"] == gate.gate_id
+        assert approval["tool"] == "send_to_session"
+        assert approval["pane_id"] == "w2:p1"
+        assert approval["agent"] == "claude"
+        assert approval["text"] == "reenvía el informe"
+        assert approval["timeout_ms"] == 90000
+        assert 0 < approval["expires_in_s"] <= 60
+
+    def test_current_uses_the_same_session_source_as_ask(self, settings, audio_dir, monkeypatch):
+        app = approval_app(settings, audio_dir, monkeypatch)
+        gate = app.state.approval_store.propose(
+            None, text="sin sesión", timeout_ms=1000, pane_id="w1:p9", agent="opencode"
+        )
+        client = TestClient(app)
+        # Absent session id normalizes to the default session, like /ask.
+        assert client.get("/approval/current").json()["approval"]["gate_id"] == gate.gate_id
+        assert client.get("/approval/current", params={"session_id": "other"}).json()["approval"] is None
 
 
 class TestSessions:
