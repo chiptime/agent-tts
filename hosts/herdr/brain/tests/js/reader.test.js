@@ -447,7 +447,67 @@ test("generation_increments_on_identity_change", () => {
   assert.equal(h.reader.currentGeneration(), before + 3);
 });
 
-/* ---- 4.6 security regressions ---- */
+/* ---- 4.6 reader-always-formatted: load-time mounting ---- */
+
+test("mounts_formatted_turns_on_surface_load_without_expansion", async () => {
+  const d = deferredHttp();
+  const h = harness({ http: d.http });
+  const one = makeElement("div"); one.classList.add("reader-content");
+  const two = makeElement("div"); two.classList.add("reader-content");
+  const pending = h.reader.loadRendered("w1:p9", "ses_x", () => [
+    { container: one, turn: { role: "user", text: "pregunta" } },
+    { container: two, turn: { role: "assistant", text: "respuesta" } }
+  ]);
+  d.respond({ json: SNAPSHOT });
+  const turns = await pending;
+  assert.equal(turns.length, 2);
+  assert.equal(d.calls.length, 1);   // fetch ran on load: no gesture anywhere
+  assert.ok(one.querySelector(".tts-sent"));   // cached turn: formatted at once
+  assert.equal(two.textContent, "respuesta");  // cold turn: text until html arrives
+});
+
+test("expansion_does_not_gate_rendering", async () => {
+  const d = deferredHttp();
+  const h = harness({ http: d.http });
+  const truncated = makeElement("div");
+  truncated.classList.add("reader-content");
+  // Host truncation state travels WITH the pair; the reader must ignore it.
+  const truncatedTurn = { turn_id: "t1", role: "assistant", text: "respuesta",
+                          expanded: false, hasMore: true };
+  const snapshot = {
+    pane_id: "w1:p9", session_id: "ses_x",
+    turns: [{ turn_id: "t1", role: "assistant", text: "respuesta",
+              html: ANCHORED_HTML, map: COVERAGE_MAP }]
+  };
+  const pending = h.reader.loadRendered("w1:p9", "ses_x", () => [
+    { container: truncated, turn: truncatedTurn }
+  ]);
+  d.respond({ json: snapshot });
+  await pending;
+  assert.equal(d.calls.length, 1);                 // truncation suppressed nothing
+  assert.ok(truncated.querySelector(".tts-sent")); // formatted while still truncated
+});
+
+test("cold_turns_upgrade_on_subsequent_refresh", async () => {
+  // Fake render queue: first poll returns html null (over budget), the
+  // next poll returns the same turn rendered — progressive cold fill.
+  const pollSnapshot = (html) => ({
+    pane_id: "w1:p9", session_id: "ses_x",
+    turns: [{ turn_id: "t1", role: "assistant", text: "larga",
+              html, map: html ? COVERAGE_MAP : null }]
+  });
+  const h = harness({ plan: [{ json: pollSnapshot(null) }, { json: pollSnapshot(ANCHORED_HTML) }] });
+  const cold = makeElement("div"); cold.classList.add("reader-content");
+  const pairs = () => [{ container: cold, turn: { role: "assistant", text: "larga" } }];
+  await h.reader.loadRendered("w1:p9", "ses_x", pairs);
+  assert.equal(cold.textContent, "larga");    // text first
+  assert.equal(h.doc.writeLog().length, 0);   // nothing formatted yet
+  await h.reader.loadRendered("w1:p9", "ses_x", pairs);
+  assert.ok(cold.querySelector(".tts-sent")); // upgraded in place on refresh
+  assert.equal(h.doc.writeLog().length, 1);   // exactly one formatted write
+});
+
+/* ---- 4.7 security regressions ---- */
 
 test("malicious_markdown_no_script_vector", () => {
   const h = harness();
