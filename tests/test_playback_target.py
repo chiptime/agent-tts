@@ -100,6 +100,29 @@ class TestResolveTargetAuto:
             pt.resolve_target("autos", env={})
 
 
+class TestResolveTargetWindows:
+    def test_windows_on_native_windows_resolves_to_local(self, monkeypatch):
+        monkeypatch.setattr(pt.sys, "platform", "win32")
+        assert pt.resolve_target("windows", env={}) == "local"
+
+    def test_windows_on_posix_stays_as_marker(self, monkeypatch):
+        # The marker is preserved so RemoteAudioSession can pick the
+        # local-device unreachable fallback (never PowerShell).
+        monkeypatch.setattr(pt.sys, "platform", "linux")
+        assert pt.resolve_target("windows", env={}) == "windows"
+
+    def test_windows_env_value_resolves(self, monkeypatch):
+        monkeypatch.setattr(pt.sys, "platform", "linux")
+        assert pt.resolve_target(None, env={"AGENT_TTS_PLAYBACK": "windows"}) == "windows"
+
+    def test_windows_is_normalized(self):
+        assert pt.normalize_target(" Windows ") == "windows"
+
+    def test_windows_flag_wins_over_env(self, monkeypatch):
+        monkeypatch.setattr(pt.sys, "platform", "linux")
+        assert pt.resolve_target("windows", env={"AGENT_TTS_PLAYBACK": "local"}) == "windows"
+
+
 class TestCandidateHosts:
     def test_explicit_env_host_wins(self, monkeypatch):
         monkeypatch.setattr(pt, "default_route_gateway", lambda: "10.9.8.7")
