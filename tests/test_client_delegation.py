@@ -348,7 +348,7 @@ def test_ensure_daemon_real_spawn_serves_the_requested_non_default_socket(tmp_pa
         # A deterministic protocol error for an empty payload exercises
         # send_play's full send/blocking-reply path over the channel
         # without touching an audio device or a network provider.
-        assert send_play({}, socket_path=requested) == "ok=false error=play requires text or file"
+        assert send_play({}, socket_path=requested) == "ok=false error=play requires text, file, or chain"
     finally:
         for path in (requested, decoy):
             try:
