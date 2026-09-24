@@ -40,6 +40,47 @@ RESET = "\x1b[0m"
 NO_PLAYBACK_MSG = "No playback in progress."
 QUIT_KEYS = ("q", "Q", "\x1b")  # Ctrl-C arrives as SIGINT, not as stdin bytes
 
+# Attach grace: the daemon writes the playing lock the moment a read starts,
+# seconds BEFORE the engine's IPC socket exists (synthesis runs first). A
+# popup opened during that lead time must wait for the socket instead of
+# flashing "no playback" and vanishing in ~0.3 s.
+LOCK_PATH = os.environ.get("AGENT_TTS_LOCK_FILE", "/tmp/herdr-tts-playing.lock")
+GRACE_MAX_WAIT = 60.0  # hard cap even if a stale lock lingers
+GRACE_POLL = 0.5
+NOTICE_SECS = 2.5      # how long the in-popup notice stays readable
+
+
+def attach(max_wait: float = GRACE_MAX_WAIT, poll: float = GRACE_POLL):
+    """First successful highlight fetch, tolerating the synthesis lead time.
+
+    While the playing lock exists we keep polling the socket; once the lock
+    disappears (no read pending anymore) we stop waiting early instead of
+    burning the whole cap on a stale lock.
+    """
+    reply = fetch("highlight")
+    if reply is not None:
+        return reply
+    deadline = time.monotonic() + max_wait
+    while time.monotonic() < deadline:
+        time.sleep(poll)
+        reply = fetch("highlight")
+        if reply is not None:
+            return reply
+        if not os.path.exists(LOCK_PATH):
+            return None
+    return None
+
+
+def no_playback_notice():
+    """Show the notice where a human can actually read it: inside the popup
+    (alternate screen, held for NOTICE_SECS) and on stderr for CLI use."""
+    sys.stdout.write(ALT_ON + CLEAR + "\n " + NO_PLAYBACK_MSG + "\n")
+    sys.stdout.flush()
+    print(NO_PLAYBACK_MSG, file=sys.stderr)
+    time.sleep(NOTICE_SECS)
+    sys.stdout.write(ALT_OFF)
+    sys.stdout.flush()
+
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
 
 
@@ -128,11 +169,11 @@ def render(highlight, scroll):
 
 
 def main():
-    first = fetch("highlight")
+    first = attach()
     if first is None:
-        # No playback: the alternate screen was never taken — nothing to
-        # restore, one English line to stderr, exit 0.
-        print(NO_PLAYBACK_MSG, file=sys.stderr)
+        # Nothing playing and no read pending: one readable notice, then a
+        # clean exit (the popup closes itself).
+        no_playback_notice()
         return 0
 
     interrupted = {"flag": False}
