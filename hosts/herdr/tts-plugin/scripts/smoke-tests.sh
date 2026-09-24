@@ -733,7 +733,10 @@ make_gate_state # w4:p3 muted/debounce entries don't apply; w4:p1 clean
   printf '%s\tw4:p1\topencode\t60.0\n' "$(date -d '-2 minutes' +%Y-%m-%dT%H:%M:%S)"
 } > "$HERDR_TTS_HISTORY_FILE"
 lib_run 'palette_preview w4:p1' > "$T/out.txt"
-assert_grep "13 header shows chat title" '^📌 OC \| Chat Uno$' "$T/out.txt"
+# The preview header is theme-colored (39c): assert wording on the
+# SGR-stripped copy — same anchors, color bytes tolerated.
+strip_ansi "$T/out.txt" > "$T/out.clean.txt"
+assert_grep "13 header shows chat title" '^📌 OC \| Chat Uno$' "$T/out.clean.txt"
 assert_grep "13 header shows agent+status" 'agent: opencode · status: done' "$T/out.txt"
 assert_grep "13 gating shows the active debounce hold" 'gating: .*⏱ debounce active \([0-9]+s\)' "$T/out.txt"
 assert_grep "13 newest turn first with legacy '-' snippet" '· 01:00 · -$' "$T/out.txt"
@@ -3890,6 +3893,156 @@ assert_grep "41 notice rendered inside the popup" 'No playback in progress\.' "$
 assert_grep "41 alt-screen restored after the notice" $'\033[?1049l' "$T/err-out.txt" -F
 assert_no_grep_f "41 never renders the ERR text as the body" 'ERR: command' "$T/err-out.txt"
 kill "$SRV41" 2>/dev/null || true
+
+
+# 42a. Live Theme Adoption (US-HT-14-2): the dashboard is a LONG-RUNNING
+#      process whose TTS_THEME was snapshotted at startup; the settings
+#      popup persists a new theme from a SEPARATE process. The render loop
+#      must re-read the key from config.env per frame (same per-frame state
+#      discipline as load_snooze_state / is_playing / is_auto_muted), so
+#      the RUNNING dashboard adopts the write on its next frame. Fail-open
+#      controls: missing/unreadable config and an absent key keep the
+#      current value; a hand-edited solarized normalizes to dark; the
+#      per-frame read adds no writes (H-move budget unchanged).
+new_env s42a
+FX="$T/fixture.json"; make_fixture "$FX"
+write_herdr_stub "$FX"
+make_history "$HERDR_TTS_HISTORY_FILE"
+write_engine_status_stub
+printf 'TTS_THEME="dark"\n' > "$T/conf/herdr-tts/config.env"
+capture 'q\n' "$T/cap-dark.txt"
+assert_grep "42a dark capture carries the dark muted byte" $'\033[90m' "$T/cap-dark.txt" -F
+
+# Differential pair from ONE hermetic process: frame 1 in dark, then an
+# external-style write — config_set touches the FILE only, the live var
+# provably stays dark, which is exactly what the popup's write looks like
+# to the running dashboard — then frame 2 in the SAME process.
+lib_run '
+  dashboard_refresh_roster
+  DASH_LAST_FRAME=""
+  dashboard_render "" > "$T/f1.txt"
+  config_set TTS_THEME light
+  printf "live=%s\n" "$TTS_THEME" > "$T/live.txt"
+  DASH_LAST_FRAME=""
+  dashboard_render "" > "$T/f2.txt"
+'
+assert_grep "42a frame 1 (before the write) is dark" $'\033[90m' "$T/f1.txt" -F
+assert_grep "42a the file write leaves the dashboard live var untouched" '^live=dark$' "$T/live.txt"
+assert_grep "42a frame 2 (after the write) adopts light" $'\033[30m' "$T/f2.txt" -F
+assert_no_grep_f "42a frame 2 drops the dark muted byte" $'\033[90m' "$T/f2.txt"
+
+# The persisted light also drives a FRESH dashboard process, and the
+# frame budget is unchanged by the re-read.
+capture 'q\n' "$T/cap-light.txt"
+assert_grep "42a light capture carries the light muted byte" $'\033[30m' "$T/cap-light.txt" -F
+h42d=$(esc_count "$T/cap-dark.txt" $'\033[H')
+h39l=$(esc_count "$T/cap-light.txt" $'\033[H')
+[[ "$h42d" -ge 1 && "$h42d" -eq "$h39l" ]] \
+  && ok "42a frame budget unchanged (H-moves dark=$h42d light=$h39l)" \
+  || bad "42a frame budget changed (H-moves dark=$h42d light=$h39l)"
+
+# Fail-open controls, each a fresh process whose current value is light.
+lib_run '
+  TTS_THEME=light
+  rm -f "$CONFIG_FILE"
+  dashboard_refresh_roster
+  DASH_LAST_FRAME=""
+  dashboard_render "" > "$T/c-missing.txt"
+'
+assert_grep "42a missing config keeps rendering (fail open, light kept)" $'\033[30m' "$T/c-missing.txt" -F
+printf 'TTS_VOICE="elvira"\n' > "$T/conf/herdr-tts/config.env"
+lib_run '
+  TTS_THEME=light
+  chmod 000 "$CONFIG_FILE"
+  dashboard_refresh_roster
+  DASH_LAST_FRAME=""
+  dashboard_render "" > "$T/c-unreadable.txt"
+  chmod 644 "$CONFIG_FILE"
+'
+assert_grep "42a unreadable config keeps the current theme (light)" $'\033[30m' "$T/c-unreadable.txt" -F
+lib_run '
+  TTS_THEME=light
+  dashboard_refresh_roster
+  DASH_LAST_FRAME=""
+  dashboard_render "" > "$T/c-absent.txt"
+'
+assert_grep "42a absent key keeps the current theme (light)" $'\033[30m' "$T/c-absent.txt" -F
+printf 'TTS_THEME="solarized"\n' > "$T/conf/herdr-tts/config.env"
+lib_run '
+  TTS_THEME=light
+  dashboard_refresh_roster
+  DASH_LAST_FRAME=""
+  dashboard_render "" > "$T/c-solarized.txt"
+'
+assert_grep "42a hand-edited solarized normalizes to dark" $'\033[90m' "$T/c-solarized.txt" -F
+assert_no_grep_f "42a solarized never renders the light muted byte" $'\033[30m' "$T/c-solarized.txt"
+
+# 42b. Theme-note copy: the appearance view discloses the instant
+#      dashboard adoption in both languages (roster disclosure kept —
+#      38c asserts that half on the rendered popup).
+lib_run 'tt settings.row.theme_note' > "$T/note-en.txt"
+assert_grep "42b EN note documents the instant dashboard adoption" 'instant on the running dashboard' "$T/note-en.txt"
+( export HERDR_TTS_LANG=es
+  lib_run 'tt settings.row.theme_note' > "$T/note-es.txt" )
+assert_grep "42b ES note documents the instant dashboard adoption" 'el dashboard lo adopta al vuelo' "$T/note-es.txt"
+
+# 42c. Popup Theme Surfaces: the popups render through theme_color like
+#      the dashboard — titles accent+bold, hints/borders/dividers muted —
+#      in BOTH themes, with wording byte-identical after SGR stripping
+#      (the 38b differential discipline applied to the popups).
+new_env s42c
+FX="$T/fixture.json"; make_fixture "$FX"
+write_herdr_stub "$FX"
+make_history "$HERDR_TTS_HISTORY_FILE"
+printf 'q' | timeout 10 "$SCRIPT" --voice-settings > "$T/ps-dark.txt" 2>>"$T/err.log"
+( export TTS_THEME=light
+  printf 'q' | timeout 10 "$SCRIPT" --voice-settings > "$T/ps-light.txt" 2>>"$T/err.log" )
+printf 'q' | timeout 10 "$SCRIPT" --voice-menu > "$T/pm-dark.txt" 2>>"$T/err.log"
+lib_run 'palette_preview w4:p1' > "$T/pp-dark.txt"
+assert_grep "42c settings dark: accent cyan on the title" $'\033[36m' "$T/ps-dark.txt" -F
+assert_grep "42c settings dark: muted bright-black on hints" $'\033[90m' "$T/ps-dark.txt" -F
+assert_grep "42c settings light: accent blue" $'\033[34m' "$T/ps-light.txt" -F
+assert_grep "42c settings light: muted near-black" $'\033[30m' "$T/ps-light.txt" -F
+assert_no_grep_f "42c settings dark never carries the light accent" $'\033[34m' "$T/ps-dark.txt"
+assert_no_grep_f "42c settings light never carries the dark muted" $'\033[90m' "$T/ps-light.txt"
+assert_grep "42c voice menu dark: title accent" $'\033[36m' "$T/pm-dark.txt" -F
+assert_grep "42c voice menu dark: hint+border muted" $'\033[90m' "$T/pm-dark.txt" -F
+assert_grep "42c palette preview dark: header accent" $'\033[36m' "$T/pp-dark.txt" -F
+assert_grep "42c palette preview dark: turns divider muted" $'\033[90m' "$T/pp-dark.txt" -F
+# Wording identity: the theme LABEL is the only theme-dependent visible
+# text in the index view — normalize it (norm_frame precedent), then the
+# SGR-stripped frames must be byte-identical between themes.
+norm_popup() { # $1 file → SGR-free copy with the theme label normalized
+  strip_ansi "$1" | sed -E 's/(Theme|Tema):([[:space:]]+)(Dark|Light|Oscuro|Claro)/\1:\2T/'
+}
+diff <(norm_popup "$T/ps-dark.txt") <(norm_popup "$T/ps-light.txt") > /dev/null \
+  && ok "42c popup wording identical between themes (only color bytes differ)" \
+  || bad "42c popup wording drifted between themes"
+
+# 42d. Live Popup Re-color: the settings popup is long-running while open;
+#      theme_sync at the top of its render path re-reads TTS_THEME from
+#      config.env per frame, so flipping the file mid-process re-colors
+#      the SAME popup on its next frame (the popup is its own adopter —
+#      the 42a dashboard discipline extended to the popup surfaces).
+new_env s42d
+FX="$T/fixture.json"; make_fixture "$FX"
+write_herdr_stub "$FX"
+export HERDR_TTS_CONFIG_FILE="$T/config.env"
+printf 'TTS_THEME="dark"\n' > "$HERDR_TTS_CONFIG_FILE"
+lib_run '
+  settings_render > "'"$T"'/pf1.txt"
+  config_set TTS_THEME light
+  printf "live=%s\n" "$TTS_THEME" > "'"$T"'/live.txt"
+  settings_render > "'"$T"'/pf2.txt"
+'
+assert_grep "42d frame 1 (before the write) renders the dark accent" $'\033[36m' "$T/pf1.txt" -F
+assert_grep "42d frame 1 renders the dark muted" $'\033[90m' "$T/pf1.txt" -F
+assert_grep "42d the file write leaves the popup live var untouched" '^live=dark$' "$T/live.txt"
+assert_grep "42d frame 2 (after the write) adopts the light accent" $'\033[34m' "$T/pf2.txt" -F
+assert_grep "42d frame 2 adopts the light muted" $'\033[30m' "$T/pf2.txt" -F
+assert_no_grep_f "42d frame 2 drops the dark accent" $'\033[36m' "$T/pf2.txt"
+assert_no_grep_f "42d frame 2 drops the dark muted" $'\033[90m' "$T/pf2.txt"
+unset HERDR_TTS_CONFIG_FILE
 
 echo
 echo "═══ RESULT: $PASS passed, $FAIL failed ═══"
