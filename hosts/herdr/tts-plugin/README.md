@@ -464,7 +464,7 @@ herdr-tts --speak "Hello"      # Synthesize custom text directly
 herdr-tts --render-html in.txt out.html # Sanitize an agent message into anchored reader HTML (no audio; opt-in sidecar: --map out.map.json)
 herdr-tts --dashboard          # Live TUI dashboard pane: snooze countdowns, per-pane gating, audio history
 herdr-tts --voice-palette      # fzf picker of chats and audio turns (focus / mute / snooze)
-herdr-tts --reader             # Live reader popup: karaoke follow-along of the current playback
+herdr-tts --reader             # Live reader in your terminal: karaoke follow-along (popup: prefix+R)
 ```
 
 * **Supervised daemon startup:** the plugin's `[[startup]]` runs `_daemon-supervised` — a foreground watchdog that relaunches the daemon if it dies unplanned (5s backoff). Deliberate stops (`--restart-daemon`, the `R` key, single-instance takeover) arm a stop flag the supervisor consumes, so restarts are never fought over. Starts, deaths, relaunches and exit reasons land in `~/.local/state/herdr-tts/daemon.log`, so a silent death can't happen unnoticed.

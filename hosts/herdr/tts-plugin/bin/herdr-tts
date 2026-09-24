@@ -645,9 +645,9 @@ TT_EN[help.voice_settings2]="                             also inside the voice 
 TT_EN[help.voice_settings3]="                             provider, auto-read, scope, target, language,"
 TT_EN[help.voice_settings4]="                             podcast, debounce, retention and settle; free-text"
 TT_EN[help.voice_settings5]="                             ntfy topic and web URL; UI language en/es (config.env)"
-TT_EN[help.reader]="    --reader                 Live reader popup for the CURRENT playback:"
-TT_EN[help.reader2]="                            karaoke word highlighting + progress header"
-TT_EN[help.reader3]="                            (suggested: prefix+R → action reader_open)"
+TT_EN[help.reader]="    --reader                 Live karaoke reader for the CURRENT playback,"
+TT_EN[help.reader2]="                            rendered HERE in your terminal (word highlight"
+TT_EN[help.reader3]="                            + progress header; popup: prefix+R)"
 TT_EN[help.palette_preview]="     --palette-preview <pane> Chat header + audio turns of the pane (fzf preview)"
 TT_EN[help.exit]="  --help, -h               Show this help"
 TT_EN[km.usage]="Usage: herdr-tts keymap <subcommand> [options]"
@@ -1140,9 +1140,9 @@ TT_ES[help.voice_settings2]="                             también dentro del me
 TT_ES[help.voice_settings3]="                             proveedor, auto-lectura, alcance, destino, idioma,"
 TT_ES[help.voice_settings4]="                             podcast, debounce, retención y asentamiento; escribe"
 TT_ES[help.voice_settings5]="                             topic ntfy y URL web; idioma en/es (config.env)"
-TT_ES[help.reader]="    --reader                 Popup de lectura en vivo de la reproducción"
-TT_ES[help.reader2]="                            ACTUAL: resaltado tipo karaoke por palabra"
-TT_ES[help.reader3]="                            y cabecera de progreso (sugerido: prefix+R)"
+TT_ES[help.reader]="    --reader                 Lector karaoke en vivo de la reproducción,"
+TT_ES[help.reader2]="                            pintado AQUÍ en tu terminal (resaltado por"
+TT_ES[help.reader3]="                            palabra + progreso; popup: prefix+R)"
 TT_ES[help.palette_preview]="     --palette-preview <pane> Cabecera de chat + turnos de audio del pane (preview fzf)"
 TT_ES[help.exit]="  --help, -h               Mostrar esta ayuda"
 TT_ES[km.usage]="Uso: herdr-tts keymap <subcomando> [opciones]"
@@ -4815,12 +4815,10 @@ run_reader_inline() {
 }
 
 run_reader() {
-  if [[ -n "${TMUX:-}" ]] && command -v herdr >/dev/null 2>&1; then
-    if herdr plugin pane open --plugin herdr.tts --entrypoint tts-reader; then
-      return 0
-    fi
-    # Fail-open: popup unavailable → render inline instead of erroring out.
-  fi
+  # Semantics since HT-16 follow-up: an EXPLICIT `--reader` invocation always
+  # renders in the CALLING terminal. Inside tmux it used to delegate to the
+  # herdr popup, which looked like "nothing happened" to the operator — the
+  # popup remains the prefix+R / manifest-action path, not this flag.
   run_reader_inline
 }
 
