@@ -147,13 +147,19 @@ def test_cli_main_runs_retention_sweep_once(tmp_path, monkeypatch):
     mock_prune = MagicMock(return_value=0)
     # cli lazy-imports inside main(), so patch where it looks the name up.
     monkeypatch.setattr("agent_tts.audio_store.prune_expired", mock_prune)
+    # Vía única: the speak path delegates to the daemon; the sweep test
+    # only cares about startup, so the delegation boundary is faked (and
+    # must never touch the real system channel from the test suite).
+    monkeypatch.setattr("agent_tts.daemon.delegate_play", MagicMock(return_value="status=done"))
     monkeypatch.setattr(
         sys,
         "argv",
         ["cli.py", "hola", "--provider", "local", "--no-play", "--output", str(tmp_path / "o.mp3")],
     )
 
-    cli.main()
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main()
+    assert excinfo.value.code == 0
 
     mock_prune.assert_called_once()
 
