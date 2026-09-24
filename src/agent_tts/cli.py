@@ -18,6 +18,10 @@ from agent_tts.boundaries import (
     Word,
     estimate_boundaries_from_text,
 )
+# Re-exported for the streaming pipeline (merge_group) and for existing
+# importers of cli.shift_boundary_map: the composition primitive lives in
+# boundaries since the chain assembly (agent_tts.chain) shares it.
+from agent_tts.boundaries import shift_boundary_map  # noqa: F401 - re-export
 from agent_tts.cleaner import clean_agent_text
 from agent_tts.constants import DEFAULT_RATE, DEFAULT_VOICE
 from agent_tts.powershell_playback import PowershellSession, is_wsl_ps_available
@@ -254,47 +258,6 @@ def group_for_chunk(groups: List[str], chunk_idx: int) -> Optional[str]:
     if 0 <= chunk_idx < len(groups):
         return groups[chunk_idx]
     return None
-
-
-def shift_boundary_map(
-    bmap: BoundaryMap,
-    offset_sec: float,
-    sent_index_base: int,
-    word_index_base: int,
-    paragraph_index_base: int,
-) -> BoundaryMap:
-    """Returns a copy of a BoundaryMap with times offset and sentence/word/paragraph indices rebased."""
-    sentences = [
-        Sentence(
-            index=s.index + sent_index_base,
-            start_sec=s.start_sec + offset_sec,
-            duration_sec=s.duration_sec,
-            text=s.text,
-            paragraph_index=s.paragraph_index + paragraph_index_base,
-        )
-        for s in bmap.sentences
-    ]
-    words = [
-        Word(
-            index=w.index + word_index_base,
-            sentence_index=w.sentence_index + sent_index_base,
-            start_sec=w.start_sec + offset_sec,
-            duration_sec=w.duration_sec,
-            text=w.text,
-        )
-        for w in bmap.words
-    ]
-    paragraphs = [
-        Paragraph(
-            index=p.index + paragraph_index_base,
-            start_sec=p.start_sec + offset_sec,
-            duration_sec=p.duration_sec,
-            text=p.text,
-            sentence_indices=[i + sent_index_base for i in p.sentence_indices],
-        )
-        for p in bmap.paragraphs
-    ]
-    return BoundaryMap(sentences=sentences, words=words, paragraphs=paragraphs)
 
 
 async def _speak_pipelined(
