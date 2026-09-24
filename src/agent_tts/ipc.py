@@ -283,15 +283,22 @@ class IPCServer:
             except OSError:
                 break
 
-            try:
-                conn.settimeout(1.0)
-                data = _recv_command(conn)
-                if data:
-                    reply = self.command_handler(data)
-                    conn.sendall(f"{reply}\n".encode("utf-8"))
-                conn.close()
-            except Exception:
-                pass
+            # One thread per connection: a command handler that blocks for a
+            # long time (the daemon's play, which lives until playback ends)
+            # must not starve concurrent short-lived control commands
+            # (status/pause/stop) arriving on their own connections.
+            threading.Thread(target=self._serve_connection, args=(conn,), daemon=True).start()
+
+    def _serve_connection(self, conn: socket.socket) -> None:
+        try:
+            conn.settimeout(1.0)
+            data = _recv_command(conn)
+            if data:
+                reply = self.command_handler(data)
+                conn.sendall(f"{reply}\n".encode("utf-8"))
+            conn.close()
+        except Exception:
+            pass
 
     def stop(self) -> None:
         """Stops listener and removes the transport markers this process owns."""
