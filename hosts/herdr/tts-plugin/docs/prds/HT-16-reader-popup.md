@@ -42,3 +42,8 @@ Implementada el 2026-09-23: `bash -n bin/herdr-tts`, `py_compile lib/herdr_reade
 ## Reversión
 
 Revertir `lib/herdr_reader.py`, el wiring de `bin/herdr-tts` (flag, menú, keymap, i18n), la entrada `tts-reader`/`open-reader` del manifiesto, el escenario 39 y las filas de documentación. Sin migración de datos ni estado persistente nuevo.
+
+## Adenda (2026-09-24): apertura automática y posición del popup
+
+- **Auto-apertura**: la clave gestionada `TTS_READER_AUTO` (`on`/`off`, por defecto `off`) abre el popup al iniciar cualquier lectura en vivo desde `speak_text()` — fire-and-forget dentro de un subshell (un herdr ausente o un "popup ya abierto" nunca rompe la lectura). Los replays de `--play-file` quedan excluidos a propósito: no tienen frases delimitadas que seguir. Superficie: knob `p` en la categoría Lectura automática de Ajustes, flag CLI `--reader-auto` e i18n EN/ES; aplica a procesos nuevos (el daemon en marcha lo adopta con `R`).
+- **Posición del popup**: herdr 0.9.1 no permite posicionar popups. Los campos `position = "top"` y `anchor = "top"` del manifiesto se ignoran en silencio (verificado empíricamente: valores basura también responden rc 0, sin error de parseo ni efecto), y el CLI solo ofrece `--placement overlay|split|tab|zoomed` (sin "top"); `overlay` y `zoomed` abren con rc 0, pero su colocación visual requiere confirmación humana. Se solicitó colocación superior; documentado como limitación hasta que herdr lo soporte.
