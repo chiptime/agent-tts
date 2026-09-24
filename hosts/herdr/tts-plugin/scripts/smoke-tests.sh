@@ -714,7 +714,10 @@ make_gate_state # w4:p3 muted/debounce entries don't apply; w4:p1 clean
   printf '%s\tw4:p1\topencode\t60.0\n' "$(date -d '-2 minutes' +%Y-%m-%dT%H:%M:%S)"
 } > "$HERDR_TTS_HISTORY_FILE"
 lib_run 'palette_preview w4:p1' > "$T/out.txt"
-assert_grep "13 header shows chat title" '^📌 OC \| Chat Uno$' "$T/out.txt"
+# The preview header is theme-colored (39c): assert wording on the
+# SGR-stripped copy — same anchors, color bytes tolerated.
+strip_ansi "$T/out.txt" > "$T/out.clean.txt"
+assert_grep "13 header shows chat title" '^📌 OC \| Chat Uno$' "$T/out.clean.txt"
 assert_grep "13 header shows agent+status" 'agent: opencode · status: done' "$T/out.txt"
 assert_grep "13 gating shows the active debounce hold" 'gating: .*⏱ debounce active \([0-9]+s\)' "$T/out.txt"
 assert_grep "13 newest turn first with legacy '-' snippet" '· 01:00 · -$' "$T/out.txt"
@@ -3242,6 +3245,64 @@ assert_grep "39b EN note documents the instant dashboard adoption" 'instant on t
 ( export HERDR_TTS_LANG=es
   lib_run 'tt settings.row.theme_note' > "$T/note-es.txt" )
 assert_grep "39b ES note documents the instant dashboard adoption" 'el dashboard lo adopta al vuelo' "$T/note-es.txt"
+
+# 39c. Popup Theme Surfaces: the popups render through theme_color like
+#      the dashboard — titles accent+bold, hints/borders/dividers muted —
+#      in BOTH themes, with wording byte-identical after SGR stripping
+#      (the 38b differential discipline applied to the popups).
+new_env s39c
+FX="$T/fixture.json"; make_fixture "$FX"
+write_herdr_stub "$FX"
+make_history "$HERDR_TTS_HISTORY_FILE"
+printf 'q' | timeout 10 "$SCRIPT" --voice-settings > "$T/ps-dark.txt" 2>>"$T/err.log"
+( export TTS_THEME=light
+  printf 'q' | timeout 10 "$SCRIPT" --voice-settings > "$T/ps-light.txt" 2>>"$T/err.log" )
+printf 'q' | timeout 10 "$SCRIPT" --voice-menu > "$T/pm-dark.txt" 2>>"$T/err.log"
+lib_run 'palette_preview w4:p1' > "$T/pp-dark.txt"
+assert_grep "39c settings dark: accent cyan on the title" $'\033[36m' "$T/ps-dark.txt" -F
+assert_grep "39c settings dark: muted bright-black on hints" $'\033[90m' "$T/ps-dark.txt" -F
+assert_grep "39c settings light: accent blue" $'\033[34m' "$T/ps-light.txt" -F
+assert_grep "39c settings light: muted near-black" $'\033[30m' "$T/ps-light.txt" -F
+assert_no_grep_f "39c settings dark never carries the light accent" $'\033[34m' "$T/ps-dark.txt"
+assert_no_grep_f "39c settings light never carries the dark muted" $'\033[90m' "$T/ps-light.txt"
+assert_grep "39c voice menu dark: title accent" $'\033[36m' "$T/pm-dark.txt" -F
+assert_grep "39c voice menu dark: hint+border muted" $'\033[90m' "$T/pm-dark.txt" -F
+assert_grep "39c palette preview dark: header accent" $'\033[36m' "$T/pp-dark.txt" -F
+assert_grep "39c palette preview dark: turns divider muted" $'\033[90m' "$T/pp-dark.txt" -F
+# Wording identity: the theme LABEL is the only theme-dependent visible
+# text in the index view — normalize it (norm_frame precedent), then the
+# SGR-stripped frames must be byte-identical between themes.
+norm_popup() { # $1 file → SGR-free copy with the theme label normalized
+  strip_ansi "$1" | sed -E 's/(Theme|Tema):([[:space:]]+)(Dark|Light|Oscuro|Claro)/\1:\2T/'
+}
+diff <(norm_popup "$T/ps-dark.txt") <(norm_popup "$T/ps-light.txt") > /dev/null \
+  && ok "39c popup wording identical between themes (only color bytes differ)" \
+  || bad "39c popup wording drifted between themes"
+
+# 39d. Live Popup Re-color: the settings popup is long-running while open;
+#      theme_sync at the top of its render path re-reads TTS_THEME from
+#      config.env per frame, so flipping the file mid-process re-colors
+#      the SAME popup on its next frame (the popup is its own adopter —
+#      the 39a dashboard discipline extended to the popup surfaces).
+new_env s39d
+FX="$T/fixture.json"; make_fixture "$FX"
+write_herdr_stub "$FX"
+export HERDR_TTS_CONFIG_FILE="$T/config.env"
+printf 'TTS_THEME="dark"\n' > "$HERDR_TTS_CONFIG_FILE"
+lib_run '
+  settings_render > "'"$T"'/pf1.txt"
+  config_set TTS_THEME light
+  printf "live=%s\n" "$TTS_THEME" > "'"$T"'/live.txt"
+  settings_render > "'"$T"'/pf2.txt"
+'
+assert_grep "39d frame 1 (before the write) renders the dark accent" $'\033[36m' "$T/pf1.txt" -F
+assert_grep "39d frame 1 renders the dark muted" $'\033[90m' "$T/pf1.txt" -F
+assert_grep "39d the file write leaves the popup live var untouched" '^live=dark$' "$T/live.txt"
+assert_grep "39d frame 2 (after the write) adopts the light accent" $'\033[34m' "$T/pf2.txt" -F
+assert_grep "39d frame 2 adopts the light muted" $'\033[30m' "$T/pf2.txt" -F
+assert_no_grep_f "39d frame 2 drops the dark accent" $'\033[36m' "$T/pf2.txt"
+assert_no_grep_f "39d frame 2 drops the dark muted" $'\033[90m' "$T/pf2.txt"
+unset HERDR_TTS_CONFIG_FILE
 
 echo
 echo "═══ RESULT: $PASS passed, $FAIL failed ═══"

@@ -396,7 +396,7 @@ TT_EN[menu.desc.dashboard]="📊 Dashboard"
 TT_EN[menu.desc.palette]="🎛️ Voice palette"
 TT_EN[menu.desc.settings]="⚙️ Voice & audio settings"
 TT_EN[menu.desc.quit]="Quit the menu"
-TT_EN[menu.title]="\e[1m⌨️  herdr-tts · Voice Menu\e[0m"
+TT_EN[menu.title]="⌨️  herdr-tts · Voice Menu"
 TT_EN[menu.hint]="Press ONE key: the action runs and the menu closes (a = settings, stays open)."
 TT_EN[menu.open_dashboard]="📊 Closing the menu and opening the dashboard…"
 TT_EN[menu.open_palette]="🎛️ Closing the menu and opening the voice palette…"
@@ -436,12 +436,12 @@ TT_EN[settings.unknown_key.voice]="Unrecognized key (%s) — p provider, g globa
 TT_EN[settings.unknown_key.audio]="Unrecognized key (%s) — d playback target, c click-through, r retention, s settle, q back to the index"
 TT_EN[settings.unknown_key.notifications]="Unrecognized key (%s) — t ntfy topic, f podcast, w web URL, q back to the index"
 TT_EN[settings.unknown_key.reading]="Unrecognized key (%s) — v auto-read, a scope, b debounce, q back to the index"
-TT_EN[settings.view.voice]="\e[1m🎙  herdr-tts · Settings · Voice\e[0m"
-TT_EN[settings.view.audio]="\e[1m🔊  herdr-tts · Settings · Audio\e[0m"
-TT_EN[settings.view.notifications]="\e[1m🔔  herdr-tts · Settings · Notifications\e[0m"
-TT_EN[settings.view.reading]="\e[1m⚙️  herdr-tts · Settings · Auto-read\e[0m"
-TT_EN[settings.view.appearance]="\e[1m🎨  herdr-tts · Settings · Appearance\e[0m"
-TT_EN[settings.view.index]="\e[1m⚙️  herdr-tts · Voice & Audio Settings\e[0m"
+TT_EN[settings.view.voice]="🎙  herdr-tts · Settings · Voice"
+TT_EN[settings.view.audio]="🔊  herdr-tts · Settings · Audio"
+TT_EN[settings.view.notifications]="🔔  herdr-tts · Settings · Notifications"
+TT_EN[settings.view.reading]="⚙️  herdr-tts · Settings · Auto-read"
+TT_EN[settings.view.appearance]="🎨  herdr-tts · Settings · Appearance"
+TT_EN[settings.view.index]="⚙️  herdr-tts · Voice & Audio Settings"
 TT_EN[settings.view.hint]="Press the key of a setting to cycle its value."
 TT_EN[settings.row.provider]=" p  TTS provider:        %s   (edge = free, default)"
 TT_EN[settings.row.provider_install]="    ⚠️  Install the model first: agent-tts voice install %s"
@@ -881,7 +881,7 @@ TT_ES[menu.desc.dashboard]="📊 Dashboard"
 TT_ES[menu.desc.palette]="🎛️ Paleta de voz"
 TT_ES[menu.desc.settings]="⚙️ Ajustes de voz y audio"
 TT_ES[menu.desc.quit]="Salir del menú"
-TT_ES[menu.title]="\e[1m⌨️  herdr-tts · Menú de voz\e[0m"
+TT_ES[menu.title]="⌨️  herdr-tts · Menú de voz"
 TT_ES[menu.hint]="Pulsa UNA tecla: la acción se ejecuta y el menú se cierra (a = ajustes, sin cerrar)."
 TT_ES[menu.open_dashboard]="📊 Cerrando el menú y abriendo el dashboard…"
 TT_ES[menu.open_palette]="🎛️ Cerrando el menú y abriendo la paleta de voz…"
@@ -921,12 +921,12 @@ TT_ES[settings.unknown_key.voice]="Tecla no reconocida (%s) — p proveedor, g v
 TT_ES[settings.unknown_key.audio]="Tecla no reconocida (%s) — d destino, c click directo, r retención, s asentamiento, q vuelve al índice"
 TT_ES[settings.unknown_key.notifications]="Tecla no reconocida (%s) — t topic ntfy, f podcast, w URL web, q vuelve al índice"
 TT_ES[settings.unknown_key.reading]="Tecla no reconocida (%s) — v auto-lectura, a alcance, b debounce, q vuelve al índice"
-TT_ES[settings.view.voice]="\e[1m🎙  herdr-tts · Ajustes · Voz\e[0m"
-TT_ES[settings.view.audio]="\e[1m🔊  herdr-tts · Ajustes · Audio\e[0m"
-TT_ES[settings.view.notifications]="\e[1m🔔  herdr-tts · Ajustes · Notificaciones\e[0m"
-TT_ES[settings.view.reading]="\e[1m⚙️  herdr-tts · Ajustes · Lectura automática\e[0m"
-TT_ES[settings.view.appearance]="\e[1m🎨  herdr-tts · Ajustes · Apariencia\e[0m"
-TT_ES[settings.view.index]="\e[1m⚙️  herdr-tts · Ajustes de voz y audio\e[0m"
+TT_ES[settings.view.voice]="🎙  herdr-tts · Ajustes · Voz"
+TT_ES[settings.view.audio]="🔊  herdr-tts · Ajustes · Audio"
+TT_ES[settings.view.notifications]="🔔  herdr-tts · Ajustes · Notificaciones"
+TT_ES[settings.view.reading]="⚙️  herdr-tts · Ajustes · Lectura automática"
+TT_ES[settings.view.appearance]="🎨  herdr-tts · Ajustes · Apariencia"
+TT_ES[settings.view.index]="⚙️  herdr-tts · Ajustes de voz y audio"
 TT_ES[settings.view.hint]="Pulsa la tecla del ajuste para ciclar su valor."
 TT_ES[settings.row.provider]=" p  Proveedor TTS:        %s   (edge = gratuito, por defecto)"
 TT_ES[settings.row.provider_install]="    ⚠️  Requiere instalar el modelo antes: agent-tts voice install %s"
@@ -4397,6 +4397,19 @@ palette_preview() { # <pane_id>
     return 1
   fi
 
+  # Popup theming: fzf re-runs this preview per refresh (a fresh process),
+  # but theme_sync keeps the same adopt-the-file discipline as the other
+  # popups. Tokens resolve once; only what THIS renderer draws is themed —
+  # fzf's own list colors stay untouched. The header takes accent+bold,
+  # the turns divider muted (title/reset are theme tokens, so no literal
+  # escape is composed here — the 38d gate stays green).
+  theme_sync
+  local c_accent c_muted c_title c_reset
+  theme_color c_accent accent
+  theme_color c_muted  muted
+  theme_color c_title  title
+  theme_color c_reset  reset
+
   # Chat header: title/agent/status from the agent roster (fail-open: no
   # herdr CLI still renders the pane id and an explicit note).
   local raw="" pid agent st title=""
@@ -4413,7 +4426,7 @@ palette_preview() { # <pane_id>
       ' 2>/dev/null || true)
   fi
   [[ -z "$title" ]] && title="$pane_id"
-  echo "📌 ${title}"
+  echo "${c_accent}${c_title}📌 ${title}${c_reset}"
   if [[ -z "$raw" ]]; then
     echo "$(tt palette.preview.no_herdr)"
   else
@@ -4456,7 +4469,7 @@ palette_preview() { # <pane_id>
   echo "   gating: ${gate}"
   echo
 
-  echo "$(tt palette.turns_header)"
+  echo "${c_muted}$(tt palette.turns_header)${c_reset}"
   local hhmm pid dur snippet epoch path dur_lbl n=0
   # The explicit 6th read var matters: without it `epoch` would absorb
   # "epoch<TAB>path" as the trailing remainder and corrupt the display.
@@ -4575,14 +4588,25 @@ menu_render() {
   local frame="" row_l half i kl dl kr dr
   half=$(( DASH_COLS / 2 - 2 ))
   (( half < 20 )) && half=20
-  _dash_add '%s' "$(tt menu.title)"
-  _dash_add '%s' "$(tt menu.hint)"
+  # Popup theming (per-frame discipline, same as dashboard_render): adopt
+  # a theme persisted by another process first, then resolve the tokens
+  # ONCE into locals — zero forks in the row loop below. Titles compose
+  # accent+bold at render (title/reset are theme tokens, so no literal
+  # escape is written here; the 38d gate stays green by construction).
+  theme_sync
+  local c_accent c_muted c_title c_reset
+  theme_color c_accent accent
+  theme_color c_muted  muted
+  theme_color c_title  title
+  theme_color c_reset  reset
+  _dash_add '%s%s%s' "$c_accent$c_title" "$(tt menu.title)" "$c_reset"
+  _dash_add '%s%s%s' "$c_muted" "$(tt menu.hint)" "$c_reset"
   _dash_add ''
   for (( i = 0; i < ${#MENU_L_KEYS[@]} || i < ${#MENU_R_KEYS[@]}; i++ )); do
     kl="${MENU_L_KEYS[i]:-}"; dl="${MENU_L_DESC[i]:-}"
     kr="${MENU_R_KEYS[i]:-}"; dr="${MENU_R_DESC[i]:-}"
     dashboard_fit row_l " ${kl}  ${dl}" "$half"
-    _dash_add '%s│ %s  %s' "$row_l" "$kr" "$dr"
+    _dash_add '%s%s│%s %s  %s' "$row_l" "$c_muted" "$c_reset" "$kr" "$dr"
   done
   menu_cap_rows $(( DASH_LINES - 1 ))
   # ESC[K per line: the popup alternates frames of different widths, and
@@ -4641,7 +4665,7 @@ menu_dispatch() { # <key>
 # Note: an arrow key sends its ESC prefix byte first, so it quits the
 # menu — deliberate, matching the dashboard's "ignore exotic input" stance.
 run_voice_menu() {
-  local key="" view="main"
+  local key="" view="main" c_muted c_reset
   while :; do
     if [[ "$view" == "settings" ]]; then
       settings_render
@@ -4677,7 +4701,12 @@ run_voice_menu() {
           # the last row, so the confirmation must claim a fresh line.
           printf '\n✓ %s\n' "$MENU_RESULT"
         else
-          printf '%s' "$(tt menu.unknown_key "$key")"
+          # Unknown-key notice rides muted (like the other hint rows);
+          # resolved here, not per frame — this branch runs once before
+          # the popup closes. menu_render already synced TTS_THEME.
+          theme_color c_muted muted
+          theme_color c_reset reset
+          printf '%s%s%s' "$c_muted" "$(tt menu.unknown_key "$key")" "$c_reset"
         fi
         sleep "$MENU_CONFIRM_SECS"
         exit 0 # one key = one action = popup closes
@@ -5156,12 +5185,24 @@ settings_handle_key() { # <key>
 # renders right after it.
 settings_render() {
   dashboard_term_size
-  local frame="" ret
+  local frame="" ret c_accent c_muted c_warn c_ok c_title c_reset
+  # Popup theming: theme_sync FIRST (same per-frame discipline as
+  # dashboard_render) so cycling the theme inside Apariencia re-colors
+  # this SAME popup on its next frame — the popup is its own adopter.
+  # Tokens resolve once per frame; title/reset come from theme_color too,
+  # so no literal escape is composed here (38d gate stays green).
+  theme_sync
+  theme_color c_accent accent
+  theme_color c_muted  muted
+  theme_color c_warn   warn
+  theme_color c_ok     ok
+  theme_color c_title  title
+  theme_color c_reset  reset
   case "${SETTINGS_CATEGORY:-index}" in
     voice)
       voice_map_refresh # n/u rows show the live voices.json flags
-      _dash_add '%s' "$(tt settings.view.voice)"
-      _dash_add '%s' "$(tt settings.view.hint)"
+      _dash_add '%s%s%s' "$c_accent$c_title" "$(tt settings.view.voice)" "$c_reset"
+      _dash_add '%s%s%s' "$c_muted" "$(tt settings.view.hint)" "$c_reset"
       _dash_add ''
       _dash_add '%s' "$(tt settings.row.provider "$TTS_PROVIDER")"
       # Install hint only for providers that need a local model; as an
@@ -5180,8 +5221,8 @@ settings_render() {
       # the file is the only source of truth for what the user last chose.
       config_get_retention_raw ret
       ret="${ret:-0}"
-      _dash_add '%s' "$(tt settings.view.audio)"
-      _dash_add '%s' "$(tt settings.view.hint)"
+      _dash_add '%s%s%s' "$c_accent$c_title" "$(tt settings.view.audio)" "$c_reset"
+      _dash_add '%s%s%s' "$c_muted" "$(tt settings.view.hint)" "$c_reset"
       _dash_add ''
       _dash_add '%s' "$(tt settings.row.target "$TTS_PLAYBACK")"
       _dash_add '%s' "$(tt settings.row.click "$CLICK_REDIRECT")"
@@ -5191,8 +5232,8 @@ settings_render() {
       _dash_add '%s' "$(tt settings.row.retention_note)"
       ;;
     notifications)
-      _dash_add '%s' "$(tt settings.view.notifications)"
-      _dash_add '%s' "$(tt settings.view.hint)"
+      _dash_add '%s%s%s' "$c_accent$c_title" "$(tt settings.view.notifications)" "$c_reset"
+      _dash_add '%s%s%s' "$c_muted" "$(tt settings.view.hint)" "$c_reset"
       _dash_add ''
       _dash_add '%s' "$(tt settings.row.ntfy "${NTFY_TOPIC:-$(tt settings.row.off)}")"
       _dash_add '%s' "$(tt settings.row.podcast "$PODCAST_ENABLED")"
@@ -5202,8 +5243,8 @@ settings_render() {
       local auto_label
       auto_label="$(tt settings.autoread.label_on)"
       is_auto_muted && auto_label="$(tt settings.autoread.label_muted)"
-      _dash_add '%s' "$(tt settings.view.reading)"
-      _dash_add '%s' "$(tt settings.view.hint)"
+      _dash_add '%s%s%s' "$c_accent$c_title" "$(tt settings.view.reading)" "$c_reset"
+      _dash_add '%s%s%s' "$c_muted" "$(tt settings.view.hint)" "$c_reset"
       _dash_add ''
       _dash_add '%s' "$(tt settings.row.autoread "$auto_label")"
       _dash_add '%s' "$(tt settings.row.scope "$TTS_AUTO_SCOPE")"
@@ -5213,8 +5254,8 @@ settings_render() {
       # The label follows the live theme (Dark/Light) via the same
       # dynamic-key lookup as settings.lang.label.*; the note row is the
       # roster-adoption disclosure required by the spec.
-      _dash_add '%s' "$(tt settings.view.appearance)"
-      _dash_add '%s' "$(tt settings.view.hint)"
+      _dash_add '%s%s%s' "$c_accent$c_title" "$(tt settings.view.appearance)" "$c_reset"
+      _dash_add '%s%s%s' "$c_muted" "$(tt settings.view.hint)" "$c_reset"
       _dash_add ''
       _dash_add '%s' "$(tt settings.row.theme "$(tt settings.theme.label.$TTS_THEME)")"
       _dash_add '%s' "$(tt settings.row.theme_note)"
@@ -5223,8 +5264,8 @@ settings_render() {
       # Interface language row: index-level extra like R restart. The
       # label is the language's native name (English / Español) from
       # the tt tables, so the row reads correctly in BOTH languages.
-      _dash_add '%s' "$(tt settings.view.index)"
-      _dash_add '%s' "$(tt settings.index.pick)"
+      _dash_add '%s%s%s' "$c_accent$c_title" "$(tt settings.view.index)" "$c_reset"
+      _dash_add '%s%s%s' "$c_muted" "$(tt settings.index.pick)" "$c_reset"
       _dash_add ''
       _dash_add '%s' "$(tt settings.index.voice)"
       _dash_add '%s' "$(tt settings.index.audio)"
@@ -5244,16 +5285,16 @@ settings_render() {
     _dash_add ''
   fi
   if [[ -n "${SETTINGS_WARN:-}" ]]; then
-    _dash_add ' ⚠️  %s' "$SETTINGS_WARN"
+    _dash_add '%s ⚠️  %s%s' "$c_warn" "$SETTINGS_WARN" "$c_reset"
   fi
   if [[ -n "${SETTINGS_NOTE:-}" ]]; then
-    _dash_add ' %s' "$SETTINGS_NOTE"
+    _dash_add '%s %s%s' "$c_ok" "$SETTINGS_NOTE" "$c_reset"
   fi
   _dash_add ''
   if [[ "${SETTINGS_CATEGORY:-index}" == "index" ]]; then
-    _dash_add '%s' "$(tt settings.exit.quit)"
+    _dash_add '%s%s%s' "$c_muted" "$(tt settings.exit.quit)" "$c_reset"
   else
-    _dash_add '%s' "$(tt settings.exit.index)"
+    _dash_add '%s%s%s' "$c_muted" "$(tt settings.exit.index)" "$c_reset"
   fi
   menu_cap_rows $(( DASH_LINES - 1 ))
   # Same per-line erase discipline as menu_render (see comment there).
