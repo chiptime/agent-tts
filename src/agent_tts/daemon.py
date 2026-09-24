@@ -679,10 +679,14 @@ def _spawn_daemon(idle_timeout_sec: Optional[float], socket_path: str = IPC_SOCK
 
     Detached (new session) so the daemon outlives the client; stderr goes
     to the daemon log so respawn failures leave a trace (RNF-AT-04-3).
-    AGENT_TTS_PLAYBACK and the socket/lock overrides travel through the
-    inherited environment (RF-AT-04-6 startup resolution).
+    The requested channel travels on the command line (--socket): an
+    explicit socket_path parameter must reach the child even when it
+    differs from the inherited environment's AGENT_TTS_SOCKET default
+    (on Windows the value is inert — the channel there is the TCP port
+    marker). AGENT_TTS_PLAYBACK and the lock/pid overrides still travel
+    through the inherited environment (RF-AT-04-6 startup resolution).
     """
-    command = [sys.executable, "-m", "agent_tts.daemon", "--implicit"]
+    command = [sys.executable, "-m", "agent_tts.daemon", "--implicit", "--socket", socket_path]
     if idle_timeout_sec is not None:
         command += ["--idle-timeout", str(idle_timeout_sec)]
     try:
@@ -858,8 +862,16 @@ def main(argv=None) -> int:
         action="store_true",
         help="Mark as auto-started by a client: an election loss exits silently",
     )
+    parser.add_argument(
+        "--socket",
+        default=None,
+        help="Control channel path to serve (default: AGENT_TTS_SOCKET or the "
+        "platform default; inert on Windows, where the channel is the TCP "
+        "port marker)",
+    )
     args = parser.parse_args(argv)
     return run_daemon(
+        socket_path=args.socket or IPC_SOCKET,
         idle_timeout_sec=args.idle_timeout,
         implicit=args.implicit,
     )
