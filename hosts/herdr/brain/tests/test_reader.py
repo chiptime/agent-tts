@@ -268,9 +268,29 @@ class TestBounds:
         assert cache.render_calls <= reader_module.READER_MAX_RENDERS_PER_REQUEST
         assert len(out) == 20  # every turn answered, source order intact
         rendered = [t for t in out if t["html"] is not None]
-        assert len(rendered) == 8  # budget exactly, progressive warming later
+        assert len(rendered) == 16  # budget exactly, progressive warming later
         for turn in out:
             assert (turn["html"] is None) == (turn["map"] is None)  # pair nulls
+
+    def test_budget_allows_sixteen_cold_renders(self, tmp_path):
+        """Spec delta reader-always-formatted: the budget constant is 16;
+        a 20-turn cold conversation renders exactly 16 per request, the
+        over-budget 4 stay null-pair (fail-soft unchanged), and the next
+        request fills them progressively — all 20 rendered by then."""
+        assert reader_module.READER_MAX_RENDERS_PER_REQUEST == 16
+        renderer = fake_renderer()
+        cache = ReaderCache(reader_settings(tmp_path), renderer=renderer)
+        turns = [{"role": "user", "text": f"turno {i}"} for i in range(20)]
+        out = cache.render_snapshot(turns)
+        assert cache.render_calls == 16          # budget exactly, never more
+        assert len(out) == 20                    # every turn answered
+        rendered = [t for t in out if t["html"] is not None]
+        assert len(rendered) == 16
+        for turn in out:
+            assert (turn["html"] is None) == (turn["map"] is None)  # null-pair
+        second = cache.render_snapshot(turns)    # next 5s poll: fill the rest
+        assert cache.render_calls == 20          # only the 4 cold ones spawned
+        assert all(t["html"] is not None for t in second)
 
 
 class TestReaderSettings:

@@ -19,14 +19,17 @@ cache key only: transcript text, HTML and sidecar payloads never reach
 the log.
 
 Per-request budget null-cause (Decision 7 open question, CONFIRMED at
-apply): ``READER_MAX_RENDERS_PER_REQUEST = 8`` yields ``html: null`` /
+apply): ``READER_MAX_RENDERS_PER_REQUEST`` yields ``html: null`` /
 ``map: null`` for over-budget cold turns — a fail-soft superset of the
 spec's enumerated null causes. ``text`` is preserved, the request stays
 HTTP 200, and subsequent requests warm the remaining turns
 progressively (each already-rendered turn is a cache hit), so a 20-turn
-conversation converges in a few expansions without ever spawning more
-than 8 subprocesses per request. Do not change the value or the
-deferral-as-null behavior without escalating to the orchestrator.
+conversation converges in a few refreshes. The value is 16 — raised
+from 8 by spec delta ``reader-always-formatted`` (measured cold render
+p95 ≈ 0.28 s; 16 cold renders amortized across the existing 5 s poll
+cycle stay bounded, and the content cache makes the spend one-time per
+turn). Do not change the value or the deferral-as-null behavior without
+a spec delta.
 
 RELEASE STEP — renderer upgrade (Decision 11 open question, CONFIRMED
 at apply): upgrading the herdr-tts renderer (or changing the reader
@@ -66,7 +69,10 @@ CONTRACT_ID = "reader-pipeline/anchors@1"
 READER_CACHE_DIRNAME = "reader_cache"
 READER_LRU_MAX = 128
 READER_DISK_MAX = 512
-READER_MAX_RENDERS_PER_REQUEST = 8
+# Cold renders per request. 16 since spec delta reader-always-formatted
+# (was 8): the client fetches rendered content on every surface refresh,
+# and the progressive fill across the 5 s polls needs the wider budget.
+READER_MAX_RENDERS_PER_REQUEST = 16
 READER_FAILURE_MEMO_MAX = 256
 # Short wait, not a queue: under pressure an over-budget render fails soft
 # (null pair) instead of piling requests behind the semaphore.
