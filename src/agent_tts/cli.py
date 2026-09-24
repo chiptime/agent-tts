@@ -654,6 +654,175 @@ async def _speak_pipelined(
                 pass
 
 
+def _build_playback_session(
+    playback: str,
+    label: str,
+    auto_rewind_sec: float = 2.0,
+    highlight: bool = False,
+    autoscroll: bool = False,
+    bionic: bool = False,
+    zen: bool = False,
+):
+    """Builds the playback session for an already-resolved target.
+
+    "local" plays through AudioSession (miniaudio); "wsl-ps" through one
+    persistent PowershellSession; every other target through
+    RemoteAudioSession. Callers own the session's lifecycle (IPC exposure
+    and teardown): speak() for the classic in-process path, the daemon for
+    the vía única.
+    """
+    if playback == "local":
+        return AudioSession(
+            label=label,
+            auto_rewind_sec=auto_rewind_sec,
+            highlight=highlight,
+            autoscroll=autoscroll,
+            bionic=bionic,
+            zen=zen,
+        )
+    if playback == "wsl-ps" and not is_wsl_ps_available():
+        print(
+            "Error: --playback wsl-ps requires powershell.exe on PATH and a WSL environment "
+            "(WSL_DISTRO_NAME set or /proc/version mentioning Microsoft)",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    if highlight or autoscroll or zen:
+        print(
+            f"Note: --playback {playback} streams audio to the Windows host; "
+            "terminal highlight/zen/autoscroll views are not rendered remotely",
+            file=sys.stderr,
+        )
+    if playback == "wsl-ps":
+        # Zero-install WSL target: one persistent powershell.exe for
+        # the whole run, fed length-prefixed WAV groups over stdin.
+        return PowershellSession(
+            label=label,
+            auto_rewind_sec=auto_rewind_sec,
+            highlight=highlight,
+            autoscroll=autoscroll,
+            bionic=bionic,
+            zen=zen,
+        )
+    return RemoteAudioSession(
+        label=label,
+        auto_rewind_sec=auto_rewind_sec,
+        highlight=highlight,
+        autoscroll=autoscroll,
+        bionic=bionic,
+        zen=zen,
+        target=playback,
+    )
+
+
+async def _play_speech(
+    session,
+    text: str,
+    voice: str = DEFAULT_VOICE,
+    rate: str = DEFAULT_RATE,
+    volume: str = "+0%",
+    pitch: str = "+0Hz",
+    output_file: Optional[str] = None,
+    no_play: bool = False,
+    provider: str = "edge",
+    openai_key: Optional[str] = None,
+    openai_base_url: Optional[str] = None,
+    openai_model: Optional[str] = None,
+    eleven_key: Optional[str] = None,
+    eleven_model: Optional[str] = None,
+    piper_model: Optional[str] = None,
+    auto_lang: bool = False,
+    podcast: bool = False,
+    podcast_title: str = "",
+    stream: str = "auto",
+    persist_name: Optional[str] = None,
+) -> None:
+    """Runs the synthesis + playback pipeline over a prepared session.
+
+    No channel or session lifecycle here: the caller owns the ownership
+    election, the IPC exposure, and the session teardown. ``session`` is
+    None only in no-play mode (synthesis/podcast/output without audio).
+    """
+    # Pipelined streaming: playback starts after the first group while later groups synthesize.
+    use_stream = use_pipelined_stream(
+        provider=provider,
+        stream=stream,
+        no_play=no_play,
+        output_file=output_file,
+        podcast=podcast,
+        text_len=len(text),
+    )
+
+    def check_stop():
+        return session is not None and bool(session.state.get("stop", False))
+
+    if use_stream:
+        await _speak_pipelined(
+            session=session,
+            text=text,
+            check_stop=check_stop,
+            voice=voice,
+            rate=rate,
+            volume=volume,
+            pitch=pitch,
+            provider=provider,
+            openai_key=openai_key,
+            openai_base_url=openai_base_url,
+            openai_model=openai_model,
+            eleven_key=eleven_key,
+            eleven_model=eleven_model,
+            piper_model=piper_model,
+            auto_lang=auto_lang,
+            output_file=output_file,
+            podcast=podcast,
+            persist_name=persist_name,
+        )
+        return
+
+    mp3_data = await synthesize(
+        text=text,
+        voice=voice,
+        rate=rate,
+        volume=volume,
+        pitch=pitch,
+        output_file=output_file,
+        provider=provider,
+        openai_key=openai_key,
+        openai_base_url=openai_base_url,
+        openai_model=openai_model,
+        eleven_key=eleven_key,
+        eleven_model=eleven_model,
+        piper_model=piper_model,
+        stop_checker=check_stop,
+        auto_lang=auto_lang,
+    )
+
+    if not mp3_data or (session and session.state.get("stop")):
+        return
+
+    if podcast and mp3_data:
+        from agent_tts.podcast import PodcastFeed
+        feed = PodcastFeed()
+        title = podcast_title or (text[:50] + "..." if len(text) > 50 else text)
+        feed.add_episode(bytes(mp3_data), title=title, description=text)
+
+    if hasattr(mp3_data, "boundaries") and mp3_data.boundaries and session:
+        session.boundaries = mp3_data.boundaries
+
+    if no_play:
+        return
+
+    decoded = miniaudio.decode(mp3_data)
+    if session:
+        if not session.boundaries.sentences:
+            from agent_tts.boundaries import estimate_boundaries_from_text
+            total_duration = getattr(decoded, "duration", None) or (
+                len(decoded.samples) / float(decoded.sample_rate * decoded.nchannels)
+            )
+            session.boundaries = estimate_boundaries_from_text(text, total_duration)
+        session.play(decoded)
+
+
 async def speak(
     text: str,
     voice: str = DEFAULT_VOICE,
@@ -687,96 +856,27 @@ async def speak(
         # Single lock/pid protocol shared with play_mp3_data: the ownership
         # election happens here, before any IPC server binds the channel.
         _write_player_locks()
-        if playback == "local":
-            session = AudioSession(
-                label=f"{len(text)} chars",
-                auto_rewind_sec=auto_rewind_sec,
-                highlight=highlight,
-                autoscroll=autoscroll,
-                bionic=bionic,
-                zen=zen,
-            )
-        else:
-            if playback == "wsl-ps" and not is_wsl_ps_available():
-                print(
-                    "Error: --playback wsl-ps requires powershell.exe on PATH and a WSL environment "
-                    "(WSL_DISTRO_NAME set or /proc/version mentioning Microsoft)",
-                    file=sys.stderr,
-                )
-                raise SystemExit(1)
-            if highlight or autoscroll or zen:
-                print(
-                    f"Note: --playback {playback} streams audio to the Windows host; "
-                    "terminal highlight/zen/autoscroll views are not rendered remotely",
-                    file=sys.stderr,
-                )
-            if playback == "wsl-ps":
-                # Zero-install WSL target: one persistent powershell.exe for
-                # the whole run, fed length-prefixed WAV groups over stdin.
-                session = PowershellSession(
-                    label=f"{len(text)} chars",
-                    auto_rewind_sec=auto_rewind_sec,
-                    highlight=highlight,
-                    autoscroll=autoscroll,
-                    bionic=bionic,
-                    zen=zen,
-                )
-            else:
-                session = RemoteAudioSession(
-                    label=f"{len(text)} chars",
-                    auto_rewind_sec=auto_rewind_sec,
-                    highlight=highlight,
-                    autoscroll=autoscroll,
-                    bionic=bionic,
-                    zen=zen,
-                    target=playback,
-                )
+        session = _build_playback_session(
+            playback,
+            f"{len(text)} chars",
+            auto_rewind_sec=auto_rewind_sec,
+            highlight=highlight,
+            autoscroll=autoscroll,
+            bionic=bionic,
+            zen=zen,
+        )
         session.start_ipc()
 
-    # Pipelined streaming: playback starts after the first group while later groups synthesize.
-    use_stream = use_pipelined_stream(
-        provider=provider,
-        stream=stream,
-        no_play=no_play,
-        output_file=output_file,
-        podcast=podcast,
-        text_len=len(text),
-    )
-
     try:
-        def check_stop():
-            return session is not None and bool(session.state.get("stop", False))
-
-        if use_stream:
-            await _speak_pipelined(
-                session=session,
-                text=text,
-                check_stop=check_stop,
-                voice=voice,
-                rate=rate,
-                volume=volume,
-                pitch=pitch,
-                provider=provider,
-                openai_key=openai_key,
-                openai_base_url=openai_base_url,
-                openai_model=openai_model,
-                eleven_key=eleven_key,
-                eleven_model=eleven_model,
-                piper_model=piper_model,
-                auto_lang=auto_lang,
-                output_file=output_file,
-                podcast=podcast,
-                persist_name=persist_name,
-            )
-            return
-
-        mp3_data = await synthesize(
-            text=text,
+        await _play_speech(
+            session,
+            text,
             voice=voice,
             rate=rate,
             volume=volume,
             pitch=pitch,
             output_file=output_file,
+            no_play=no_play,
             provider=provider,
             openai_key=openai_key,
             openai_base_url=openai_base_url,
@@ -784,34 +884,12 @@ async def speak(
             eleven_key=eleven_key,
             eleven_model=eleven_model,
             piper_model=piper_model,
-            stop_checker=check_stop,
             auto_lang=auto_lang,
+            podcast=podcast,
+            podcast_title=podcast_title,
+            stream=stream,
+            persist_name=persist_name,
         )
-
-        if not mp3_data or (session and session.state.get("stop")):
-            return
-
-        if podcast and mp3_data:
-            from agent_tts.podcast import PodcastFeed
-            feed = PodcastFeed()
-            title = podcast_title or (text[:50] + "..." if len(text) > 50 else text)
-            feed.add_episode(bytes(mp3_data), title=title, description=text)
-
-        if hasattr(mp3_data, "boundaries") and mp3_data.boundaries and session:
-            session.boundaries = mp3_data.boundaries
-
-        if no_play:
-            return
-
-        decoded = miniaudio.decode(mp3_data)
-        if session:
-            if not session.boundaries.sentences:
-                from agent_tts.boundaries import estimate_boundaries_from_text
-                total_duration = getattr(decoded, "duration", None) or (
-                    len(decoded.samples) / float(decoded.sample_rate * decoded.nchannels)
-                )
-                session.boundaries = estimate_boundaries_from_text(text, total_duration)
-            session.play(decoded)
     except Exception as e:
         print(f"Playback error: {e}", file=sys.stderr)
         raise
