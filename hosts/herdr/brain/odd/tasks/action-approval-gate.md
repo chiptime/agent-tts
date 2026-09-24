@@ -289,6 +289,16 @@ Route: inline (copy + smoke are per-action).
    both statics OK. Smoke re-run still owed (T8 stays unchecked).
 - Full-suite baseline going forward: 368 pytest / 77 js after the smoke fixes.
   - `e128f86` fix(approval): survive audio-focus mic loss and long approve replays
+- Defect-fix round (post-smoke diagnosis): fixed mid-replay client expiry
+  (expireIfDue now returns early while a round is in flight — the request
+  timeout is the real deadline; new flow.isBusy() drives an honest
+  "📤 Enviando…" title and disables the four card buttons while busy) and
+  the inert mic watchdog (recRestartTimer self-clears when the restart
+  fires in both onend and the start() catch, so the !recRestartTimer
+  guard stays live after Chrome's first forced session end). Checks:
+  node --test tests/js/ 79 pass, pytest 368 pass, node --check both
+  statics OK. Commit hash recorded by orchestrator. Smoke re-run still
+  owed (T8 stays unchecked).
 
 ## Next Step
 

@@ -322,6 +322,43 @@ test("countdown hitting 0 expires silently back to listening", () => {
   assert.equal(h.flow.routeUtterance("hola"), false);
 });
 
+/* ---- mid-replay expiry: a round in flight owns the state ---- */
+
+test("expireIfDue is skipped while a resolve round is in flight (the replay owns the deadline)", async () => {
+  const http = deferredHttp();
+  const h = harness({ http });
+  h.flow.open({ ...GATE });
+  h.flow.routeUtterance("sí");  // round in flight, request pending
+  assert.equal(h.flow.isBusy(), true);
+  h.clock.advance(120_000);     // countdown elapses while the send runs
+  h.flow.tick();
+  assert.equal(h.flow.isExpired(), false);  // no premature gray card
+  assert.deepEqual(h.states, ["confirming", "thinking"]);  // no listening emission
+  assert.deepEqual(h.expired, []);
+  // The round settles (reprompt: gate still live) — expiry resumes.
+  http.respond({ json: { decision: "reprompt", answer: "¿Sí o no?", audio_url: null, approval: null } });
+  await flush();
+  assert.equal(h.flow.isBusy(), false);
+  assert.equal(h.flow.isExpired(), false);  // not yet: tick has not run
+  h.clock.advance(1_000);
+  h.flow.tick();
+  assert.equal(h.flow.isExpired(), true);   // now expiry proceeds normally
+  assert.deepEqual(h.expired, [true]);
+  assert.equal(h.states[h.states.length - 1], "listening");
+});
+
+test("isBusy(): true while a round is in flight, false once it settles", async () => {
+  const http = deferredHttp();
+  const h = harness({ http });
+  h.flow.open({ ...GATE });
+  assert.equal(h.flow.isBusy(), false);
+  h.flow.routeUtterance("sí");
+  assert.equal(h.flow.isBusy(), true);
+  http.respond({ json: { decision: "reject" } });
+  await flush();
+  assert.equal(h.flow.isBusy(), false);
+});
+
 test("404 from resolve (expired at touch) is a silent terminal", async () => {
   const h = harness({
     plan: [{ status: 404, json: { detail: "approval gate not found or no longer active" } }]
