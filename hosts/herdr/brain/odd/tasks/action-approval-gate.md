@@ -339,6 +339,20 @@ Route: inline (copy + smoke are per-action).
   (T8 stays unchecked).
 - Full-suite baseline going forward: 427 pytest / 102 js after defect
   round 5.
+- UX change accepted (product owner, 2026-09-24): the approval card left
+  the drawer conversation for a floating popup OUTSIDE the drawer —
+  `#approval-float`, a direct body child (fixed, top-center, z 26 above
+  drawer/banner/toast), visible with the drawer open OR closed. The
+  drawer no longer auto-opens on a gate (gated /ask + T7 recovery lose
+  their openDrawer; pill "Confirmar ▲" reopen kept). Card internals
+  (countdown ring, 4 buttons, edit box, dictation hint, expired gray
+  state, 5 s dismissal, body.gate-live) untouched; expiry system turn
+  still lands in the drawer conversation. PRD §8 amendment queued for
+  the closing status update. Checks: node --check OK, node --test
+  tests/js/ 102 pass, pytest 427 pass; grep-clean (no approval-card
+  insertion into #conversation, no gate path calling openDrawer).
+  Commit hash recorded by orchestrator. T8 still unchecked (re-smoke
+  owed: gate shows as floating popup with drawer closed).
 
 ## Next Step
 

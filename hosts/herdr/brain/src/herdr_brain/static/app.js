@@ -1398,12 +1398,13 @@
    * client flow (confirming countdown, resolve routing, dictation ->
    * PATCH -> re-confirm and the button entry points — tested in
    * tests/js). Here we wire it to the callState pill, the audio queue,
-   * the mic lifecycle and the drawer card (T6): full frozen text +
+   * the mic lifecycle and the gate card (T6): full frozen text +
    * countdown ring + ✓ Enviar / ✏️ Editar / 🎙 Re-dictar / ✕ Cancelar,
-   * pinned at the top of the conversation, gray "Expirada" state on
-   * timeout (PRD §6/§8). */
+   * mounted in the floating #approval-float popup outside the drawer
+   * (UX 2026-09-24), gray "Expirada" state on timeout (PRD §6/§8). */
 
   var APPROVAL_DISMISS_MS = 5000;  // the gray expired card lingers this long
+  var approvalFloat = $("approval-float");  // popup host: a body child, OUTSIDE the drawer
   var approvalCard = null;         // built card DOM (keyed updates); null = absent
   var approvalCardDismissed = false;
   var approvalCardDismissTimer = null;
@@ -1490,8 +1491,8 @@
   }, 1000);
 
   /* ---- approval card (T6) ----
-   * Pinned at the TOP of the drawer conversation (below the interim
-   * strip, above chat bubbles): actionable state, not history. Pure DOM
+   * Floating popup OUTSIDE the drawer (UX 2026-09-24): visible with the
+   * drawer open OR closed — actionable state, not history. Pure DOM
    * here — every action delegates to the approvalFlow entry points. */
 
   function approvalTargetLabel(g) {
@@ -1659,8 +1660,9 @@
     approvalCard.cancelBtn.disabled = expired || busy;
   }
 
-  /* Card presence: exactly one #approval-card pinned at the drawer top
-   * while the gate is live (or gray-lingering after silent expiry). */
+  /* Card presence: exactly one #approval-card inside the #approval-float
+   * popup (outside the drawer) while the gate is live (or gray-lingering
+   * after silent expiry). */
   function renderApprovalCard() {
     var live = approvalFlow.active();
     var expired = approvalFlow.isExpired();
@@ -1672,6 +1674,7 @@
      * untouched. The flag covers the gray expired card's 5 s linger
      * too (the card is still showing). */
     document.body.classList.toggle("gate-live", showing);
+    approvalFloat.classList.toggle("hidden", !showing);
     if (!showing) {
       if (approvalCard) {
         approvalCard.el.remove();
@@ -1681,7 +1684,7 @@
     }
     if (!approvalCard) {
       approvalCard = buildApprovalCard();
-      conv.insertBefore(approvalCard.el, conv.firstChild);  // pinned top
+      approvalFloat.appendChild(approvalCard.el);
     }
     updateApprovalCard();
   }
@@ -1732,11 +1735,10 @@
             // normal queue; onAudioEnded re-arms the mic under confirming.
             if (data.audio_url) enqueueAudio(data.audio_url, null);
             approvalFlow.open(data.approval);
-            // PRD §8: the drawer auto-opens with the gate — ALSO in text
-            // mode: the gate demands attention and expires in 60 s, and
-            // inside a closed drawer it would be invisible to a typing
-            // user. FR11's keyboard coexistence only guards the edit box.
-            openDrawer();
+            // UX 2026-09-24: the gate surfaces as the floating popup
+            // (visible with the drawer open OR closed — text mode
+            // included); the drawer no longer auto-opens, and the pill
+            // "Confirmar ▲" still reopens it for the transcript.
             return;
           }
           if (data.audio_url) enqueueAudio(data.audio_url, null);
@@ -2352,14 +2354,14 @@
 
   /* T7 reload recovery (PRD §5): ask the server whether the session
    * still has a live gate (mid-gate reload). A live payload re-enters
-   * confirming — card restored with the remaining countdown — and the
-   * drawer re-opens with it (PRD §8, text mode included: the gate must
-   * be visible to a typing user). Async and failure-silent: boot
-   * neither waits nor breaks, and the mic stays off until the user
-   * taps back in (FR15); the call then resumes under confirming via
-   * micBaseState() in startCall(). */
+   * confirming — the floating popup restores with the remaining
+   * countdown, drawer or no drawer (UX 2026-09-24: no auto-open; the
+   * pill "Confirmar ▲" still reopens the drawer). Async and
+   * failure-silent: boot neither waits nor breaks, and the mic stays
+   * off until the user taps back in (FR15); the call then resumes
+   * under confirming via micBaseState() in startCall(). */
   approvalFlow.recover(sessionId).then(function (payload) {
-    if (payload) openDrawer();
+    if (payload) renderApprovalCard();  // immediate popup paint (arm already re-rendered)
   });
 
   if ("serviceWorker" in navigator) {
