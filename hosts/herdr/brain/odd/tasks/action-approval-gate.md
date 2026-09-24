@@ -198,8 +198,19 @@ Route: inline (copy + smoke are per-action).
   `micBaseState()` returns listening|confirming everywhere the audio
   queue resumes the mic, 1 s always-on `approvalFlow.tick()` owns the
   countdown, dictation utterances go to /resolve first (PRD §5
-  precedence) and only a non-command (reprompt) result PATCHes the text.
-  Commit hash recorded by orchestrator.
+   precedence) and only a non-command (reprompt) result PATCHes the text.
+- Full-suite baseline going forward: 368 pytest / 56 js after T5.
+  - `8af8be9` feat(approval): client confirming state with voice resolve routing
+  - T6 notes: card reads state from the `approvalFlow` instance
+    (`active()/gate()/isDictating()/isExpired()/remainingSeconds()`); expiry
+    payload is retained for the gray card. Known pre-existing bug absorbed
+    into T6: `#drawer-close` has no click listener (drawer only closes via
+    hang-up/back/keyboard) — fix it so pill-reopen works. NOT in scope:
+    `pumpAudio` not stopping the mic during server-engine `recording`
+    (pre-existing, follow-up).
+  - Risk for T8 copy coaching: dictation rounds consume the reprompt
+    ambiguity budget (unknown dictation → later ambiguous answer
+    auto-rejects one round earlier). Safe direction.
 
 ## Next Step
 
