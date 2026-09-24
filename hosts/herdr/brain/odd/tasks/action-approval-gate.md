@@ -96,7 +96,7 @@ Checks: js tests for the resolve-routing state transitions (runner per
 `tests/js/` convention).
 Route: delegated-direct.
 
-### [ ] T6 — Approval card UI + edit flows
+### [x] T6 — Approval card UI + edit flows
 Files: `src/herdr_brain/static/app.js`, `src/herdr_brain/static/index.html`.
 Card pinned at drawer conversation top (below interim strip); buttons
 ✓ Enviar / ✏️ Editar / 🎙 Re-dictar / ✕ Cancelar; 60 s countdown ring;
@@ -200,18 +200,35 @@ Route: inline (copy + smoke are per-action).
   countdown, dictation utterances go to /resolve first (PRD §5
    precedence) and only a non-command (reprompt) result PATCHes the text.
 - Full-suite baseline going forward: 368 pytest / 56 js after T5.
-  - `8af8be9` feat(approval): client confirming state with voice resolve routing
-  - T6 notes: card reads state from the `approvalFlow` instance
-    (`active()/gate()/isDictating()/isExpired()/remainingSeconds()`); expiry
-    payload is retained for the gray card. Known pre-existing bug absorbed
-    into T6: `#drawer-close` has no click listener (drawer only closes via
-    hang-up/back/keyboard) — fix it so pill-reopen works. NOT in scope:
-    `pumpAudio` not stopping the mic during server-engine `recording`
-    (pre-existing, follow-up).
-  - Risk for T8 copy coaching: dictation rounds consume the reprompt
-    ambiguity budget (unknown dictation → later ambiguous answer
-    auto-rejects one round earlier). Safe direction.
+   - `8af8be9` feat(approval): client confirming state with voice resolve routing
+   - T6 notes: card reads state from the `approvalFlow` instance
+     (`active()/gate()/isDictating()/isExpired()/remainingSeconds()`); expiry
+     payload is retained for the gray card. Known pre-existing bug absorbed
+     into T6: `#drawer-close` has no click listener (drawer only closes via
+     hang-up/back/keyboard) — fix it so pill-reopen works. NOT in scope:
+     `pumpAudio` not stopping the mic during server-engine `recording`
+     (pre-existing, follow-up).
+   - Risk for T8 copy coaching: dictation rounds consume the reprompt
+     ambiguity budget (unknown dictation → later ambiguous answer
+     auto-rejects one round earlier). Safe direction.
+- T6 done — `node --test tests/js/` → 68 passed (12 new: flow button entry
+  points approve/reject/patchText/redictate, in `tests/js/approval.test.js`);
+  `.venv/bin/python -m pytest -q` → 368 passed (1 pre-existing
+  starlette/anyio DeprecationWarning, unrelated); baseline 368 pytest /
+  68 js. Card lives in app.js (`renderApprovalCard`, pinned sticky at the
+  top of `#conversation`, keyed updates on the 1 s tick + every flow
+  setState); approval.js gained thin button entry points reusing the
+  tested internals (`approve`/`reject` POST the dedicated endpoints,
+  `patchText` is the manual-edit PATCH + `/tts` re-echo, `redictate`
+  enters the dictation round — no DOM in the module). `#drawer-close`
+  click listener added (minimize; call/mic keep running); pill reopen
+  verified. DOM wiring (card render, buttons, edit, expiry gray +
+  "⏱ Acción cancelada por tiempo" system turn, drawer close/reopen)
+  verified against a vm DOM-stub smoke harness (scratch, not committed);
+  repo tests stay pure-module per convention. Manual visual pass pending
+  for T8. Commit hash recorded by orchestrator.
+- Full-suite baseline going forward: 368 pytest / 68 js after T6.
 
 ## Next Step
 
-T6 (approval card UI + edit flows).
+T7 (reload recovery + pending-banner coexistence).

@@ -37,6 +37,14 @@
  *
  * Dual environment: browser global (window.ApprovalFlow) and CommonJS
  * for node --test.
+ *
+ * Button entry points (the drawer card, T6): approve()/reject() POST the
+ * dedicated endpoints with the same handling as their voice twins,
+ * patchText(text) is the manual-edit path (PATCH + client-side /tts
+ * re-echo) and redictate() enters the dictation round directly — the
+ * next utterance still resolves first (command precedence, PRD §5).
+ * All of them refuse without a live gate, and the HTTP ones also refuse
+ * while a round is in flight (the caller falls back to no-op).
  */
 (function (global) {
   "use strict";
@@ -117,7 +125,7 @@
     function patchText(text) {
       if (!gate || expired) {
         gone();
-        return;
+        return false;
       }
       setState("thinking");
       request("/approval/" + encodeURIComponent(gate.gate_id), {
@@ -146,6 +154,79 @@
           if (gate && !expired) setState("confirming");
           else setState("listening");
         });
+      return true;
+    }
+
+    /* Button path ([✓ Enviar]): POST /approve replays the frozen call
+     * and answers with the exact /ask shape — identical handling to a
+     * spoken approval, just without the lexicon hop. */
+    function approve() {
+      if (!gate || expired || resolving) return false;
+      resolving = true;
+      setState("thinking");
+      post("/approval/" + encodeURIComponent(gate.gate_id) + "/approve", {})
+        .then(function (resp) {
+          if (resp.status === 404) return null;
+          if (!resp.ok) throw new Error("HTTP " + resp.status);
+          return resp.json();
+        })
+        .then(function (data) {
+          if (data === null) {
+            gone();  // expired/terminal at touch: silent
+            return;
+          }
+          resolving = false;
+          finish();
+          renderAnswer({ answer: data.answer, audio_url: data.audio_url });
+          if (!data.audio_url) setState("listening");
+        })
+        .catch(function () {
+          resolving = false;
+          banner("No pude confirmar el envío — inténtalo otra vez.");
+          if (gate && !expired) setState("confirming");
+          else setState("listening");
+        });
+      return true;
+    }
+
+    /* Button path ([✕ Cancelar]): POST /reject is silent server-side
+     * (PRD §5) — straight back to listening, nothing rendered. */
+    function reject() {
+      if (!gate || expired || resolving) return false;
+      resolving = true;
+      setState("thinking");
+      post("/approval/" + encodeURIComponent(gate.gate_id) + "/reject", {})
+        .then(function (resp) {
+          if (resp.status === 404) return null;
+          if (!resp.ok) throw new Error("HTTP " + resp.status);
+          return resp.json();
+        })
+        .then(function (data) {
+          if (data === null) {
+            gone();
+            return;
+          }
+          resolving = false;
+          finish();
+          setState("listening");
+        })
+        .catch(function () {
+          resolving = false;
+          banner("No pude cancelar el envío — inténtalo otra vez.");
+          if (gate && !expired) setState("confirming");
+          else setState("listening");
+        });
+      return true;
+    }
+
+    /* Button path ([🎙 Re-dictar]): enter the dictation round directly.
+     * The next utterance still goes to /resolve FIRST (approve/reject
+     * commands keep working; only a non-command PATCHes as new text). */
+    function redictate() {
+      if (!gate || expired || resolving) return false;
+      dictating = true;
+      setState("confirming");
+      return true;
     }
 
     function handleResolve(data, utterance) {
@@ -264,6 +345,10 @@
         }
       },
       routeUtterance: routeUtterance,
+      patchText: patchText,
+      approve: approve,
+      reject: reject,
+      redictate: redictate,
       cancel: function () {
         // Hang-up / new conversation: silent drop, no emission.
         gate = null;

@@ -293,6 +293,12 @@
     }
   });
 
+  /* ▼ minimize: close the drawer WITHOUT hanging up (mic + call keep
+   * running; the state pill reopens). Pre-existing bug — the button had
+   * no listener anywhere; fixed in T6 because the confirming pill's
+   * reopen flow depends on open→close cycling. */
+  drawerCloseBtn.addEventListener("click", closeDrawer);
+
   function openSettings() {
     if (settingsOpen) return;
     settingsOpen = true;
@@ -360,8 +366,11 @@
 
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", function () {
-      /* FR11: the drawer and the soft keyboard never coexist. */
-      if (drawerOpen && window.visualViewport.height < window.innerHeight * 0.75) closeDrawer();
+      /* FR11: the drawer and the soft keyboard never coexist — EXCEPT
+       * the approval card's edit box (T6): its textarea IS the flow, so
+       * the drawer stays open while that keyboard is up. */
+      if (drawerOpen && !approvalEditOpen() &&
+          window.visualViewport.height < window.innerHeight * 0.75) closeDrawer();
     });
   }
 
@@ -482,6 +491,19 @@
     turn.appendChild(who);
     turn.appendChild(body);
     attachReplay(turn, function () { return text; }, label || "agente");
+    conv.appendChild(turn);
+    conv.scrollTop = conv.scrollHeight;
+  }
+
+  /* System-styled drawer turn (PRD action-approval-gate §6): quiet,
+   * muted, centered — the UI notes what the voice deliberately never
+   * says (e.g. the silent gate expiry). */
+  function addSystemTurn(text) {
+    var ghost = document.getElementById("ghost-bubble");
+    if (ghost) ghost.remove();
+    var turn = document.createElement("div");
+    turn.className = "turn system";
+    turn.textContent = text;
     conv.appendChild(turn);
     conv.scrollTop = conv.scrollHeight;
   }
@@ -1293,43 +1315,269 @@
       );
   }
 
-  /* ---------------- action approval gate (T5) ----------------
+  /* ---------------- action approval gate (T5/T6) ----------------
    * The gate lives server-side (T3/T4); approval.js holds the pure
    * client flow (confirming countdown, resolve routing, dictation ->
-   * PATCH -> re-confirm — tested in tests/js). Here we wire it to the
-   * callState pill, the audio queue and the mic lifecycle. */
+   * PATCH -> re-confirm and the button entry points — tested in
+   * tests/js). Here we wire it to the callState pill, the audio queue,
+   * the mic lifecycle and the drawer card (T6): full frozen text +
+   * countdown ring + ✓ Enviar / ✏️ Editar / 🎙 Re-dictar / ✕ Cancelar,
+   * pinned at the top of the conversation, gray "Expirada" state on
+   * timeout (PRD §6/§8). */
+
+  var APPROVAL_DISMISS_MS = 5000;  // the gray expired card lingers this long
+  var approvalCard = null;         // built card DOM (keyed updates); null = absent
+  var approvalCardDismissed = false;
+  var approvalCardDismissTimer = null;
 
   var approvalFlow = window.ApprovalFlow.createApprovalFlow({
     request: function (url, options) { return fetchWithTimeout(url, options, 30000); },
     setState: approvalSetState,
     renderAnswer: function (answer) {
-      // Approve replay: SAME render path as a normal /ask answer.
+      // Approve replay: SAME render path as a normal /ask answer. The
+      // gate is already finished here — drop the card now (with audio
+      // the queue owns the next state, so no setState would fire).
       addTurn("brain", answer.answer || "(respuesta vacía)");
       if (answer.audio_url) enqueueAudio(answer.audio_url, null);
+      renderApprovalCard();
     },
-    playAudio: function (url) { enqueueAudio(url, null); },
-    onExpired: function () { /* silent (PRD §6): the drawer note lands with T6 */ },
+    playAudio: function (url) {
+      enqueueAudio(url, null);
+      // Re-echo/reprompt paths emit no setState (the audio queue owns the
+      // return) — refresh the card NOW so the revised text/ring show at
+      // once instead of on the next 1s tick.
+      renderApprovalCard();
+    },
+    onExpired: function () {
+      /* Silent expiry (PRD §6): gray card + system drawer turn, no
+       * spoken line; the card then dismisses back to normal flow. */
+      renderApprovalCard();
+      addSystemTurn("⏱ Acción cancelada por tiempo");
+      if (approvalCardDismissTimer) clearTimeout(approvalCardDismissTimer);
+      approvalCardDismissTimer = setTimeout(function () {
+        approvalCardDismissTimer = null;
+        approvalCardDismissed = true;
+        renderApprovalCard();
+      }, APPROVAL_DISMISS_MS);
+    },
     banner: showBanner
   });
 
   function approvalSetState(state) {
-    if (!inCall) return;  // no call: no pill, no mic routing
+    if (!inCall) {
+      renderApprovalCard();  // the card follows the gate even outside a call
+      return;                // no call: no pill, no mic routing
+    }
     if (state === "listening" || state === "confirming") {
-      if (audioBusy) return;  // the audio queue owns the resume (onAudioEnded)
+      if (audioBusy) {
+        // the audio queue owns the resume (onAudioEnded)
+        renderApprovalCard();
+        return;
+      }
       stopListening();        // cleanly end any capture under the old state
       setCallState(state);
       startListening();
+      renderApprovalCard();
       return;
     }
     setCallState(state);      // thinking: the mic must stay off
+    renderApprovalCard();
   }
 
   function micBaseState() {
     return approvalFlow.active() ? "confirming" : "listening";
   }
 
-  /* Always-on 1s tick: the flow itself is inert without a live gate. */
-  setInterval(function () { approvalFlow.tick(); }, 1000);
+  /* Always-on 1s tick: the flow itself is inert without a live gate;
+   * the card re-renders on the same beat (countdown ring, expiry). */
+  setInterval(function () {
+    approvalFlow.tick();
+    renderApprovalCard();
+  }, 1000);
+
+  /* ---- approval card (T6) ----
+   * Pinned at the TOP of the drawer conversation (below the interim
+   * strip, above chat bubbles): actionable state, not history. Pure DOM
+   * here — every action delegates to the approvalFlow entry points. */
+
+  function approvalTargetLabel(g) {
+    var bits = [];
+    if (g.agent) bits.push(g.agent);
+    if (g.pane_id) bits.push("panel " + g.pane_id);
+    return bits.join(" · ") || "agente";
+  }
+
+  function apButton(cls, label) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = cls;
+    b.textContent = label;
+    return b;
+  }
+
+  function buildApprovalCard() {
+    var el = document.createElement("div");
+    el.id = "approval-card";
+    el.className = "ap-card";
+
+    var head = document.createElement("div");
+    head.className = "ap-head";
+    var title = document.createElement("span");
+    title.className = "ap-title";
+    var ring = document.createElement("span");
+    ring.className = "ap-ring";
+    var ringNum = document.createElement("span");
+    ringNum.className = "ap-ring-num";
+    ring.appendChild(ringNum);
+    head.appendChild(title);
+    head.appendChild(ring);
+    el.appendChild(head);
+
+    /* Full frozen text — the visible ground truth (scrolls when huge). */
+    var text = document.createElement("div");
+    text.className = "ap-text";
+    el.appendChild(text);
+
+    /* Dictation hint: the re-dictar round is live (PRD §5 precedence). */
+    var dict = document.createElement("div");
+    dict.className = "ap-dict hidden";
+    dict.textContent = "🎙 Dicta el texto nuevo — «sí» envía, «no» cancela";
+    el.appendChild(dict);
+
+    /* Inline manual edit: textarea + save/discard (PRD §3.1). */
+    var editBox = document.createElement("div");
+    editBox.className = "ap-edit hidden";
+    var editArea = document.createElement("textarea");
+    editArea.className = "ap-edit-area";
+    editArea.rows = 4;
+    editBox.appendChild(editArea);
+    var editRow = document.createElement("div");
+    editRow.className = "ap-edit-row";
+    var saveBtn = apButton("ap-btn ap-save", "✓ Guardar");
+    var discardBtn = apButton("ap-btn ap-discard", "✕ Descartar");
+    editRow.appendChild(saveBtn);
+    editRow.appendChild(discardBtn);
+    editBox.appendChild(editRow);
+    el.appendChild(editBox);
+
+    var actions = document.createElement("div");
+    actions.className = "ap-actions";
+    var sendBtn = apButton("ap-btn ap-send", "✓ Enviar");
+    var editBtn = apButton("ap-btn ap-edit-btn", "✏️ Editar");
+    var redictBtn = apButton("ap-btn ap-redict", "🎙 Re-dictar");
+    var cancelBtn = apButton("ap-btn ap-cancel", "✕ Cancelar");
+    actions.appendChild(sendBtn);
+    actions.appendChild(editBtn);
+    actions.appendChild(redictBtn);
+    actions.appendChild(cancelBtn);
+    el.appendChild(actions);
+
+    var card = {
+      el: el, title: title, ring: ring, ringNum: ringNum, text: text,
+      dict: dict, editBox: editBox, editArea: editArea, actions: actions,
+      sendBtn: sendBtn, editBtn: editBtn, redictBtn: redictBtn,
+      cancelBtn: cancelBtn, saveBtn: saveBtn, discardBtn: discardBtn
+    };
+
+    /* Buttons -> flow entry points. callState "thinking" mirrors the
+     * flow's in-flight guard; expiry disables everything visual. */
+    sendBtn.addEventListener("click", function () {
+      if (callState === "thinking" || approvalFlow.isExpired()) return;
+      approvalFlow.approve();
+    });
+    cancelBtn.addEventListener("click", function () {
+      if (callState === "thinking" || approvalFlow.isExpired()) return;
+      approvalFlow.reject();
+    });
+    redictBtn.addEventListener("click", function () {
+      if (callState === "thinking" || approvalFlow.isExpired()) return;
+      approvalFlow.redictate();
+    });
+    editBtn.addEventListener("click", function () {
+      if (callState === "thinking" || approvalFlow.isExpired()) return;
+      enterApprovalEdit();
+    });
+    saveBtn.addEventListener("click", function () {
+      var value = card.editArea.value.trim();
+      if (!value) return;  // empty edit: keep the box open, nothing to save
+      exitApprovalEdit();
+      approvalFlow.patchText(value);
+    });
+    discardBtn.addEventListener("click", exitApprovalEdit);
+
+    return card;
+  }
+
+  function approvalEditOpen() {
+    return !!(approvalCard && !approvalCard.editBox.classList.contains("hidden"));
+  }
+
+  function enterApprovalEdit() {
+    if (!approvalCard || !approvalFlow.active()) return;
+    approvalCard.editArea.value = approvalFlow.gate().text || "";
+    approvalCard.text.classList.add("hidden");
+    approvalCard.dict.classList.add("hidden");
+    approvalCard.actions.classList.add("hidden");
+    approvalCard.editBox.classList.remove("hidden");
+    try { approvalCard.editArea.focus(); } catch (err) { /* no focus API */ }
+  }
+
+  function exitApprovalEdit() {
+    if (!approvalCard) return;
+    approvalCard.editBox.classList.add("hidden");
+    approvalCard.text.classList.remove("hidden");
+    approvalCard.actions.classList.remove("hidden");
+    try { approvalCard.editBtn.focus({ preventScroll: true }); } catch (err) { /* noop */ }
+  }
+
+  /* Keyed update — cheap enough for the 1s beat and every state change. */
+  function updateApprovalCard() {
+    if (!approvalCard) return;
+    var g = approvalFlow.gate() || {};
+    var expired = approvalFlow.isExpired();
+    var remaining = approvalFlow.remainingSeconds();
+    var total = g.expires_in_s || 60;
+
+    var title = expired ? "⏱ Expirada" : "📤 Para: " + approvalTargetLabel(g);
+    if (approvalCard.title.textContent !== title) {
+      approvalCard.title.textContent = title;
+    }
+    if (approvalCard.text.textContent !== (g.text || "")) {
+      approvalCard.text.textContent = g.text || "";
+    }
+    /* Countdown ring: warn wedge shrinks with the remaining window. */
+    var pct = Math.max(0, Math.min(100, Math.round((remaining / (total || 60)) * 100)));
+    approvalCard.ring.style.setProperty("--ap-pct", pct + "%");
+    var num = String(remaining);
+    if (approvalCard.ringNum.textContent !== num) {
+      approvalCard.ringNum.textContent = num;
+    }
+    approvalCard.el.classList.toggle("expired", expired);
+    approvalCard.dict.classList.toggle("hidden", !approvalFlow.isDictating() || expired);
+    if (expired && approvalEditOpen()) exitApprovalEdit();
+    approvalCard.sendBtn.disabled = expired;
+    approvalCard.editBtn.disabled = expired;
+    approvalCard.redictBtn.disabled = expired;
+    approvalCard.cancelBtn.disabled = expired;
+  }
+
+  function renderApprovalCard() {
+    var live = approvalFlow.active();
+    var expired = approvalFlow.isExpired();
+    if (live) approvalCardDismissed = false;  // a new gate brings the card back
+    if ((!live && !expired) || approvalCardDismissed) {
+      if (approvalCard) {
+        approvalCard.el.remove();
+        approvalCard = null;
+      }
+      return;
+    }
+    if (!approvalCard) {
+      approvalCard = buildApprovalCard();
+      conv.insertBefore(approvalCard.el, conv.firstChild);  // pinned top
+    }
+    updateApprovalCard();
+  }
 
   /* ---------------- ask pipeline ---------------- */
 
@@ -1377,6 +1625,9 @@
             // normal queue; onAudioEnded re-arms the mic under confirming.
             if (data.audio_url) enqueueAudio(data.audio_url, null);
             approvalFlow.open(data.approval);
+            // PRD §8: the drawer auto-opens with the gate (never in text
+            // mode — FR11 keeps drawer and soft keyboard apart).
+            if (!textMode) openDrawer();
             return;
           }
           if (data.audio_url) enqueueAudio(data.audio_url, null);
@@ -1830,6 +2081,7 @@
   function endCall() {
     inCall = false;
     approvalFlow.cancel();  // hang up drops any live gate silently
+    renderApprovalCard();   // ...and its card with it, immediately
     closeDrawer();  // AC4: drawer closes on hang up
     stopListening();
     teardownServerCall();  // release the getUserMedia stream + AudioContext
@@ -1928,6 +2180,7 @@
     stopAudio();
     stopListening();
     approvalFlow.cancel();  // a fresh conversation retires the live gate
+    renderApprovalCard();
     if (endpointer) endpointer.reset();  // fresh conversation, fresh utterance
     conv.textContent = "";
     resetInterimContent();

@@ -786,6 +786,130 @@
     }
     .replay-btn:active { transform: scale(0.96); }
     .replay-btn:disabled { opacity: 0.6; cursor: wait; }
+    /* System turn (PRD action-approval-gate §6): quiet, muted, centered —
+     * the UI notes what the voice never says (silent gate expiry). */
+    .turn.system {
+      align-self: center;
+      max-width: 100%;
+      background: none;
+      border: 1px dashed var(--line);
+      border-radius: 12px;
+      color: var(--muted);
+      font-style: italic;
+      text-align: center;
+    }
+
+    /* ── APPROVAL CARD (PRD action-approval-gate §8) ──────────────────
+     * Pinned at the TOP of the drawer conversation (sticky: actionable
+     * state, not history). Full frozen text + countdown ring + the four
+     * PRD buttons; gray "Expirada" state on silent timeout. */
+    .ap-card {
+      position: sticky;
+      top: 0;
+      z-index: 2;              /* stays above the chat bubbles it pins to */
+      flex: 0 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 10px 12px 12px;
+      background: var(--panel);
+      border: 2px solid var(--warn);
+      border-radius: 14px;
+    }
+    .ap-card.expired {
+      border-color: var(--line);
+      opacity: 0.62;           /* gray/disabled state (PRD §6) */
+    }
+    .ap-head { display: flex; align-items: center; gap: 10px; }
+    .ap-title {
+      flex: 1;
+      min-width: 0;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--warn);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .ap-card.expired .ap-title { color: var(--muted); }
+    /* Countdown ring: warn conic wedge driven by --ap-pct (set per tick
+     * from remainingSeconds()); the inner disc masks the center. */
+    .ap-ring {
+      position: relative;
+      flex: 0 0 auto;
+      width: 46px;
+      height: 46px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: conic-gradient(var(--warn) var(--ap-pct, 100%), var(--chip-bg) 0);
+    }
+    .ap-ring::before {
+      content: "";
+      position: absolute;
+      inset: 4px;
+      border-radius: 50%;
+      background: var(--panel);
+    }
+    .ap-card.expired .ap-ring { background: var(--chip-bg); }
+    .ap-ring-num {
+      position: relative;
+      font-size: 14px;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      color: var(--warn);
+    }
+    .ap-card.expired .ap-ring-num { color: var(--muted); }
+    /* Full frozen prompt: wraps, and scrolls when huge. */
+    .ap-text {
+      max-height: 26vh;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: var(--fs-sm);
+      line-height: 1.5;
+      background: var(--chip-bg);
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
+    .ap-dict {
+      font-size: var(--fs-xs);
+      font-weight: 700;
+      color: var(--danger);
+    }
+    .ap-edit { display: flex; flex-direction: column; gap: 8px; }
+    .ap-edit-area {
+      font: inherit;
+      font-size: var(--fs-sm);
+      min-height: 96px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: var(--bg);
+      color: var(--text);
+      resize: vertical;
+    }
+    .ap-edit-row { display: flex; gap: 8px; }
+    .ap-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .ap-btn {
+      flex: 1 1 40%;
+      min-height: 48px;        /* touch target >= 48px */
+      padding: 8px 10px;
+      font-weight: 700;
+      font-size: var(--fs-sm);
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: var(--chip-bg);
+      color: var(--text);
+    }
+    .ap-btn:active { transform: scale(0.96); }
+    .ap-btn:disabled { opacity: 0.55; cursor: default; }
+    /* Fixed (non-theme) green like #call-btn: keeps >= 3:1 contrast on
+     * the primary action in BOTH light and dark mode. */
+    .ap-send { background: #12855c; color: #fff; border: 0; }
+    .ap-cancel { color: var(--danger); }
     /* Ghost bubble: the empty first-call state (FR9). */
     #ghost-bubble {
       margin: auto;
