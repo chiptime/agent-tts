@@ -31,6 +31,7 @@ import asyncio
 import json
 import os
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -39,15 +40,19 @@ from typing import Callable, Optional
 import miniaudio
 
 from agent_tts import __version__
+from agent_tts import audio as audio_mod
 from agent_tts.audio import _write_player_locks, cleanup_locks
 from agent_tts.constants import (
+    DAEMON_LOG_FILE,
+    DAEMON_START_TIMEOUT_SEC,
     DEFAULT_AUTOSTART_IDLE_TIMEOUT_SEC,
     DEFAULT_RATE,
     DEFAULT_VOICE,
     ENV_IDLE_TIMEOUT,
     IPC_SOCKET,
+    PING_TIMEOUT_SEC,
 )
-from agent_tts.ipc import IPCServer
+from agent_tts.ipc import IPCServer, connect_to_server, send_ipc_command
 from agent_tts.ownership import owns_channel
 from agent_tts.playback_target import InvalidPlaybackTarget, resolve_target
 from agent_tts.providers import TTSProvider, get_provider
@@ -479,6 +484,288 @@ def run_daemon(
         idle_timeout_sec=idle_timeout_sec,
         implicit=implicit,
     ).run()
+
+
+# --- Client side of the vía única (RF-AT-04-5, RF-AT-04-8, RNF-AT-04-3) ---------------
+
+
+class DaemonUnavailableError(RuntimeError):
+    """Raised when no daemon can be reached, started, or respawned."""
+
+
+def probe_daemon(
+    timeout_sec: float = PING_TIMEOUT_SEC, socket_path: str = IPC_SOCKET
+):
+    """Classifies the control channel for the client handshake.
+
+    Returns (status, reply) with status one of:
+    - "ok": a healthy daemon answered ``pong`` within the budget;
+    - "unreachable": no transport accepts connections (no daemon);
+    - "wedged": the transport accepts but no ping answer arrives in time
+      (RF-AT-04-8: kill-and-respawn candidate);
+    - "foreign": a live non-daemon owner answered something else (a
+      library-embedded speak() or an older playback process).
+    """
+    import socket as socket_mod
+
+    try:
+        client = connect_to_server(socket_path)
+    except Exception:
+        return ("unreachable", None)
+    if client is None:
+        return ("unreachable", None)
+    try:
+        client.settimeout(timeout_sec)
+        client.sendall(b"ping\n")
+        chunks = []
+        received = 0
+        try:
+            while received < 8192:
+                chunk = client.recv(1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                received += len(chunk)
+                if b"\n" in chunk:
+                    break
+        except (socket_mod.timeout, TimeoutError, OSError):
+            return ("wedged", None)
+        reply = b"".join(chunks).decode("utf-8", errors="ignore").strip()
+        if reply.startswith("pong"):
+            return ("ok", reply)
+        if not reply:
+            return ("wedged", None)
+        return ("foreign", reply)
+    finally:
+        try:
+            client.close()
+        except OSError:
+            pass
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # alive, just not ours to signal (different user)
+    except OSError:
+        return True
+    return True
+
+
+def _pid_looks_like_agent_tts(pid: int) -> bool:
+    """Best-effort identity check before killing a wedged owner.
+
+    POSIX: the owner's cmdline must mention agent_tts/agent-tts. When
+    /proc is unavailable (non-POSIX), the check cannot run — but the
+    wedge probe already proved a hung owner exists and PID_FILE was
+    written by whoever owns the channel, so killing proceeds.
+    """
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            cmdline = f.read().replace(b"\x00", b" ").lower()
+    except OSError:
+        return True
+    return b"agent_tts" in cmdline or b"agent-tts" in cmdline
+
+
+def _kill_wedged_daemon() -> bool:
+    """SIGKILLs the wedged daemon identified by PID_FILE (RF-AT-04-8).
+
+    The wedge probe proved the transport accepts connections but never
+    answers, so the owner cannot clean up after itself. PID_FILE is the
+    informational marker the owner wrote at startup; on its death the
+    kernel frees the flock and the socket file becomes a harmless orphan
+    that the respawned daemon reclaims after winning the election.
+    Returns True when a kill was delivered.
+    """
+    try:
+        with open(audio_mod.PID_FILE) as f:
+            pid = int(f.read().strip())
+    except (OSError, ValueError):
+        return False
+    if pid == os.getpid() or not _pid_alive(pid):
+        return False
+    if not _pid_looks_like_agent_tts(pid):
+        return False
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        return False
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        if not _pid_alive(pid):
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def _spawn_daemon(idle_timeout_sec: Optional[float], socket_path: str = IPC_SOCKET) -> None:
+    """Starts a detached daemon inheriting this environment (RF-AT-04-5).
+
+    Detached (new session) so the daemon outlives the client; stderr goes
+    to the daemon log so respawn failures leave a trace (RNF-AT-04-3).
+    AGENT_TTS_PLAYBACK and the socket/lock overrides travel through the
+    inherited environment (RF-AT-04-6 startup resolution).
+    """
+    command = [sys.executable, "-m", "agent_tts.daemon", "--implicit"]
+    if idle_timeout_sec is not None:
+        command += ["--idle-timeout", str(idle_timeout_sec)]
+    try:
+        with open(DAEMON_LOG_FILE, "ab") as log:
+            subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=log,
+                start_new_session=True,
+                env=dict(os.environ),
+                close_fds=True,
+            )
+    except OSError as e:
+        print(f"agent-tts: could not spawn the daemon: {e}", file=sys.stderr)
+
+
+def ensure_daemon(
+    socket_path: str = IPC_SOCKET,
+    autostart_timeout_sec: float = DAEMON_START_TIMEOUT_SEC,
+) -> str:
+    """Vía única handshake: healthy daemon, or transparent auto-start.
+
+    RF-AT-04-5: ping within the 200 ms budget; on no answer, start a
+    daemon, verify again, and delegate. RF-AT-04-8: a wedged daemon is
+    killed and respawned first. RNF-AT-04-3: persistent failure raises a
+    clear, logged error — there is no classic fallback path.
+
+    Returns the pong reply of the healthy daemon.
+    """
+    status, reply = probe_daemon(PING_TIMEOUT_SEC, socket_path)
+    if status == "ok":
+        return reply
+
+    if status == "foreign":
+        # A live non-daemon owner (library-embedded speak, older process)
+        # holds the channel and exits with its playback: wait bounded, then
+        # the regular auto-start applies once the channel frees.
+        deadline = time.monotonic() + autostart_timeout_sec
+        while time.monotonic() < deadline and status == "foreign":
+            time.sleep(0.1)
+            status, reply = probe_daemon(PING_TIMEOUT_SEC, socket_path)
+            if status == "ok":
+                return reply
+        if status == "foreign":
+            raise DaemonUnavailableError(
+                "agent-tts: the control channel is held by a non-daemon playback; "
+                "retry once it finishes"
+            )
+
+    if status == "wedged":
+        # Kill-and-respawn (RF-AT-04-8): the wedged owner keeps the audio
+        # device hostage; only its death frees the channel.
+        _kill_wedged_daemon()
+
+    # Unreachable (or just killed): transparent auto-start (RF-AT-04-5).
+    _spawn_daemon(autostart_idle_timeout_sec(), socket_path)
+    deadline = time.monotonic() + autostart_timeout_sec
+    while time.monotonic() < deadline:
+        status, reply = probe_daemon(PING_TIMEOUT_SEC, socket_path)
+        if status == "ok":
+            return reply
+        time.sleep(0.05)
+    raise DaemonUnavailableError(
+        "agent-tts: daemon auto-start failed (no ping answer within "
+        f"{autostart_timeout_sec:.0f}s; daemon log: {DAEMON_LOG_FILE})"
+    )
+
+
+def send_play(payload: dict, socket_path: str = IPC_SOCKET) -> Optional[str]:
+    """Sends one play command and blocks for the final reply.
+
+    Unlike send_ipc_command, the read has no timeout: a delegated play
+    blocks until playback ends, mirroring the classic CLI's semantics.
+    Returns None when the daemon closed the connection mid-playback.
+    """
+    line = "play " + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    try:
+        client = connect_to_server(socket_path)
+    except Exception:
+        return None
+    if client is None:
+        return None
+    try:
+        client.settimeout(None)  # blocking: the reply comes when playback ends
+        client.sendall(f"{line.strip()}\n".encode("utf-8"))
+        chunks = []
+        received = 0
+        try:
+            while received < 8192:
+                chunk = client.recv(1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                received += len(chunk)
+                if b"\n" in chunk:
+                    break
+        except Exception:
+            pass
+        if not chunks:
+            return None
+        return b"".join(chunks).decode("utf-8", errors="ignore").strip()
+    except Exception:
+        return None
+    finally:
+        try:
+            client.close()
+        except OSError:
+            pass
+
+
+def _best_effort_stop(socket_path: str = IPC_SOCKET) -> None:
+    """Forwards a stop after an interrupt so audio does not outlive Ctrl-C."""
+    try:
+        send_ipc_command("stop", socket_path=socket_path)
+    except Exception:
+        pass
+
+
+def delegate_play(payload: dict, socket_path: str = IPC_SOCKET) -> Optional[str]:
+    """Ensures a daemon and runs one play; returns the daemon's reply.
+
+    Blocking by design (parity with the classic CLI). KeyboardInterrupt
+    forwards a best-effort stop to the daemon before re-raising, matching
+    the old in-process Ctrl-C semantics.
+    """
+    ensure_daemon(socket_path=socket_path)
+    try:
+        return send_play(payload, socket_path=socket_path)
+    except KeyboardInterrupt:
+        _best_effort_stop(socket_path)
+        raise
+
+
+def send_control_command(command: str, socket_path: str = IPC_SOCKET) -> Optional[str]:
+    """Sends a control command with the daemon health handshake (RF-AT-04-8).
+
+    Control commands never auto-start a daemon: with nothing playing
+    there is nothing to control, and the legacy "no active playback"
+    error keeps its exact text. A wedged daemon is killed and respawned
+    first — the user must never lose voice control; a live non-daemon
+    owner is addressed directly (library-embedded speak stays servable).
+    """
+    status, _ = probe_daemon(PING_TIMEOUT_SEC, socket_path)
+    if status == "foreign":
+        return send_ipc_command(command, socket_path)
+    if status == "unreachable":
+        return None
+    if status == "wedged":
+        try:
+            ensure_daemon(socket_path=socket_path)
+        except DaemonUnavailableError as e:
+            print(f"agent-tts: {e}", file=sys.stderr)
+            return None
+    return send_ipc_command(command, socket_path=socket_path)
 
 
 def main(argv=None) -> int:

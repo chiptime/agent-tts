@@ -9,7 +9,7 @@ import threading
 import time
 from typing import List, Optional
 
-from agent_tts.audio import AudioSession, _write_player_locks, cleanup_locks, play_mp3_file
+from agent_tts.audio import AudioSession, _write_player_locks, cleanup_locks
 from agent_tts.boundaries import (
     BoundaryMap,
     Paragraph,
@@ -19,8 +19,6 @@ from agent_tts.boundaries import (
 )
 from agent_tts.cleaner import clean_agent_text
 from agent_tts.constants import DEFAULT_RATE, DEFAULT_VOICE
-from agent_tts.ipc import send_ipc_command
-from agent_tts.playback_target import resolve_target
 from agent_tts.powershell_playback import PowershellSession, is_wsl_ps_available
 from agent_tts.providers import TTSProvider, get_provider
 from agent_tts.sources import read_last_agent_message
@@ -1030,10 +1028,32 @@ def main():
     parser.add_argument(
         "--playback",
         choices=["local", "winhost", "wsl-ps", "windows", "auto"],
-        default=os.environ.get("AGENT_TTS_PLAYBACK", "local"),
-        help="Playback target: local device (default), winhost server on the Windows host, "
+        default=None,
+        help="Playback target for this event: local device, winhost server on the Windows host, "
         "zero-install PowerShell under WSL, windows: Windows host with local-device fallback "
-        "(never PowerShell), or auto: environment-based selection",
+        "(never PowerShell), or auto: environment-based selection "
+        "(default: AGENT_TTS_PLAYBACK as seen by the daemon)",
+    )
+    parser.add_argument(
+        "--serve",
+        action="store_true",
+        help="Run the persistent playback daemon (vía única owner): serves play/ping/shutdown "
+        "plus the interactive commands; no idle timeout by default",
+    )
+    parser.add_argument(
+        "--foreground",
+        action="store_true",
+        help="Deployment/debug alias of --serve: the same daemon attached to this terminal "
+        "(systemd/journalctl); differs from --serve only in deployment, not in behavior",
+    )
+    parser.add_argument(
+        "--idle-timeout",
+        type=float,
+        default=None,
+        metavar="SEC",
+        help="Daemon idle timeout in seconds: exit orderly after this long without requests "
+        "(default: none for --serve/--foreground; 30 min for the client's auto-started "
+        "daemon, configurable via AGENT_TTS_IDLE_TIMEOUT; 0 disables)",
     )
     parser.add_argument(
         "--winhost",
@@ -1098,6 +1118,15 @@ def main():
         run_podcast_server(port=args.podcast_serve)
         sys.exit(0)
 
+    if args.serve or args.foreground:
+        # Vía única daemon owner (RF-AT-04-1): --serve and --foreground run
+        # the same daemon; the flag pair exists because deployments differ
+        # (canonical start vs attached systemd/journalctl debug), not the
+        # behavior. No idle timeout unless explicitly requested (RF-AT-04-7).
+        from agent_tts.daemon import run_daemon
+
+        sys.exit(run_daemon(idle_timeout_sec=args.idle_timeout))
+
     ipc_cmd = args.ipc_cmd
     if args.next_sentence:
         ipc_cmd = "next-sentence"
@@ -1115,7 +1144,12 @@ def main():
         ipc_cmd = "scroll-info"
 
     if ipc_cmd:
-        res = send_ipc_command(ipc_cmd)
+        # Control commands are always a client too, but never auto-start a
+        # daemon: with nothing playing there is nothing to control, and the
+        # legacy error text must survive (RF-AT-04-8 handles a wedged one).
+        from agent_tts.daemon import send_control_command
+
+        res = send_control_command(ipc_cmd)
         if res is not None:
             if args.ipc_json:
                 from agent_tts.ipc import ipc_reply_json
@@ -1142,15 +1176,16 @@ def main():
         sys.exit(0)
 
     if args.play_file:
-        play_mp3_file(
-            args.play_file,
-            label=os.path.basename(args.play_file),
-            highlight=args.highlight,
-            autoscroll=args.autoscroll,
-            bionic=args.bionic,
-            zen=args.zen,
+        _delegate_and_exit(
+            {
+                "file": os.path.abspath(args.play_file),
+                "label": os.path.basename(args.play_file),
+                "highlight": args.highlight,
+                "autoscroll": args.autoscroll,
+                "bionic": args.bionic,
+                "zen": args.zen,
+            }
         )
-        sys.exit(0)
 
     input_text = ""
     if args.text:
@@ -1204,38 +1239,60 @@ def main():
     if not speech_text:
         sys.exit(0)
 
+    _delegate_and_exit(
+        {
+            "text": speech_text,
+            "voice": args.voice,
+            "rate": args.rate,
+            "provider": args.provider,
+            "openai_key": args.openai_key,
+            "openai_base_url": args.openai_base_url,
+            "openai_model": args.openai_model,
+            "eleven_key": args.eleven_key,
+            "eleven_model": args.eleven_model,
+            "piper_model": args.piper_model,
+            "output_file": os.path.abspath(args.output) if args.output else None,
+            "no_play": args.no_play,
+            "highlight": args.highlight,
+            "autoscroll": args.autoscroll,
+            "bionic": args.bionic,
+            "zen": args.zen,
+            "auto_lang": args.auto_lang,
+            "podcast": args.podcast,
+            "podcast_title": args.podcast_title,
+            "stream": args.stream,
+            "persist_name": args.agent or args.session_id or "cli",
+            # Raw flag value: the daemon resolves it per request (RF-AT-04-6);
+            # absent means the daemon's startup AGENT_TTS_PLAYBACK applies.
+            "playback": args.playback,
+        }
+    )
+
+
+def _delegate_and_exit(payload: dict) -> None:
+    """Delegates one playback to the daemon (vía única) and exits.
+
+    The CLI is always a client (RF-AT-04-5): the daemon is auto-started
+    transparently when missing, respawned when wedged, and the reply maps
+    onto the classic CLI's observable contract — silence and exit 0 on
+    success, one stderr line and exit 1 on failure.
+    """
+    from agent_tts.daemon import DaemonUnavailableError, delegate_play
+
     try:
-        asyncio.run(
-            speak(
-                text=speech_text,
-                voice=args.voice,
-                rate=args.rate,
-                output_file=args.output,
-                no_play=args.no_play,
-                provider=args.provider,
-                openai_key=args.openai_key,
-                openai_base_url=args.openai_base_url,
-                openai_model=args.openai_model,
-                eleven_key=args.eleven_key,
-                eleven_model=args.eleven_model,
-                piper_model=args.piper_model,
-                highlight=args.highlight,
-                autoscroll=args.autoscroll,
-                bionic=args.bionic,
-                zen=args.zen,
-                auto_lang=args.auto_lang,
-                podcast=args.podcast,
-                podcast_title=args.podcast_title,
-                stream=args.stream,
-                playback=resolve_target(args.playback, os.environ),
-                persist_name=args.agent or args.session_id or "cli",
-            )
-        )
+        reply = delegate_play(payload)
     except KeyboardInterrupt:
-        cleanup_locks()
-    except Exception:
-        cleanup_locks()
+        # delegate_play already forwarded a best-effort stop, so audio does
+        # not outlive the interrupted client (classic Ctrl-C semantics).
+        sys.exit(130)
+    except DaemonUnavailableError as e:
+        print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
+    if reply is None or reply.startswith("ERR"):
+        detail = reply if reply else "daemon closed the connection during playback"
+        print(f"Error: {detail}", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
 
 
 if __name__ == "__main__":
