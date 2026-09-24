@@ -322,8 +322,10 @@ Route: inline (copy + smoke are per-action).
   delivery, and replay_and_report's report prompt states the delivery
   truth for every status and forbids retry offers on timeout/stalled.
   Checks: pytest tests/test_herdr.py tests/test_server.py 112 pass, full
-  suite 427 pass (3 new tests). Commit hash recorded by orchestrator.
-  Smoke re-run still owed (T8 stays unchecked).
+  suite 427 pass (3 new tests). `d5e6d15`. Smoke re-run still owed
+  (T8 stays unchecked): approve a long agent task → report must say
+  delivered + still working, no retry offer.
+- Full-suite baseline going forward: 427 pytest after defect round 5.
 
 ## Next Step
 
