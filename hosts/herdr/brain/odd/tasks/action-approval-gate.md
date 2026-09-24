@@ -52,7 +52,7 @@ Config: `DEFAULT_APPROVAL_TIMEOUT_S=60`, Settings field, env override.
 Checks: `pytest tests/test_approval.py` + full suite.
 Route: delegated-direct.
 
-### [ ] T2 — Voice resolve lexicon (pure)
+### [x] T2 — Voice resolve lexicon (pure)
 Files: `src/herdr_brain/approval_lexicon.py` (new),
 `tests/test_approval_lexicon.py` (new).
 `resolve_utterance(text) → approve|reject|replace_intent|unknown`.
@@ -142,10 +142,11 @@ Route: inline (copy + smoke are per-action).
   - T1 RDD assessment: tier high (`high_risk`, process_boundary signal),
     review_due=true — but RDD switch is OFF (clone-local), so no native
     review runs; ordinary checks only.
+- T2 done — `.venv/bin/python -m pytest tests/test_approval_lexicon.py -q`
+  → 64 passed; `.venv/bin/python -m pytest -q` → 342 passed (1
+  pre-existing starlette/anyio DeprecationWarning, unrelated). Commit
+  hash recorded by orchestrator.
 
 ## Next Step
 
-Delivery resolved (USER DECISION 2026-09-24): work-unit commits straight
-to local `main` — never push, no remote, no PRs. Supersedes the earlier
-"ask chain strategy" note (no PRs exist, so no chain applies). Begin
-T2 (voice resolve lexicon).
+T3 (tool loop interception + /ask approval field).
