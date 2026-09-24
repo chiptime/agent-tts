@@ -226,8 +226,16 @@ Route: inline (copy + smoke are per-action).
   "⏱ Acción cancelada por tiempo" system turn, drawer close/reopen)
   verified against a vm DOM-stub smoke harness (scratch, not committed);
   repo tests stay pure-module per convention. Manual visual pass pending
-  for T8. Commit hash recorded by orchestrator.
+   for T8. Commit hash recorded by orchestrator.
 - Full-suite baseline going forward: 368 pytest / 68 js after T6.
+  - `1d0e6cb` feat(approval): approval card UI with edit and re-dictation flows
+  - T7 notes: boot recovery just calls `approvalFlow.open(payload)` — card,
+    pill and mic routing follow from existing emissions (card re-renders on
+    tick/setState/renderAnswer/playAudio). `openDrawer()`/`closeDrawer()`
+    are idempotent. Banner `#pending-banner` sits outside the drawer; its
+    visual subordination to the gate card is T7's. T8 items queued: FR11
+    edit-box/keyboard coexistence on real device; dictation hint copy
+    ("🎙 Dicta el texto nuevo — «sí» envía, «no» cancela") is worker-authored.
 
 ## Next Step
 
