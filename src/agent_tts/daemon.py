@@ -1225,6 +1225,52 @@ def delegate_play(payload: dict, socket_path: str = IPC_SOCKET) -> Optional[str]
         raise
 
 
+def send_enqueue(payload: dict, socket_path: str = IPC_SOCKET) -> Optional[str]:
+    """Sends one enqueue command; returns the immediate ack reply.
+
+    Same local frame-cap discipline as send_play (an oversized request
+    is a typed ``ERR:`` reply before any wire write). The read keeps
+    the connection's standard client timeout: enqueue replies
+    immediately — playback is daemon-owned — unlike the blocking play.
+    """
+    line = "enqueue " + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    try:
+        frame = encode_frame(line.strip())  # local cap check, no wire I/O
+    except CommandTooLargeError as e:
+        return f"ERR: {e}"
+    try:
+        client = connect_to_server(socket_path)
+    except Exception:
+        return None
+    if client is None:
+        return None
+    try:
+        client.sendall(frame)
+        try:
+            return read_frame(client)
+        except Exception:
+            return None
+    except Exception:
+        return None
+    finally:
+        try:
+            client.close()
+        except OSError:
+            pass
+
+
+def delegate_enqueue(payload: dict, socket_path: str = IPC_SOCKET) -> Optional[str]:
+    """Ensures a daemon and enqueues one event; returns the ack reply.
+
+    Fire-and-forget by design (US-AT-08-4): the daemon owns playback,
+    the client never waits for it. KeyboardInterrupt does NOT forward a
+    stop — an enqueued event owns no audio yet, and a stop would kill
+    another event's active announcement.
+    """
+    ensure_daemon(socket_path=socket_path)
+    return send_enqueue(payload, socket_path=socket_path)
+
+
 def send_control_command(command: str, socket_path: str = IPC_SOCKET) -> Optional[str]:
     """Sends a control command with the daemon health handshake (RF-AT-04-8).
 

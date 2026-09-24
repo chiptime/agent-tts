@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import json
 import os
 import signal
 import sys
@@ -1074,6 +1075,23 @@ def main():
         "(default: AGENT_TTS_PLAYBACK as seen by the daemon)",
     )
     parser.add_argument(
+        "--priority",
+        choices=["blocked", "done", "working"],
+        default=None,
+        help="Queue priority for this playback event (default: working); passing "
+        "--priority or --policy switches the request to a fire-and-forget enqueue "
+        "instead of the classic blocking play (labels are validated here, "
+        "client-side, before the daemon is contacted)",
+    )
+    parser.add_argument(
+        "--policy",
+        choices=["preempt", "queue", "coalesce"],
+        default=None,
+        help="Dispatch policy for this playback event (default: queue): queue waits "
+        "its turn, preempt cancels the active announcement, coalesce merges "
+        "same-event announcements within the daemon's window",
+    )
+    parser.add_argument(
         "--serve",
         action="store_true",
         help="Run the persistent playback daemon (vía única owner): serves play/ping/shutdown "
@@ -1232,6 +1250,11 @@ def main():
             from agent_tts.ipc import ipc_reply_json
 
             print(ipc_reply_json(res))
+        elif ipc_cmd.split(maxsplit=1)[0] == "status":
+            # Human rendering: the pending queue becomes visible before
+            # it sounds (RF-AT-08-5); --ipc-json above keeps the raw
+            # snapshot token for machine consumers.
+            print(_render_status_reply(res))
         else:
             print(res)
         sys.exit(0)
@@ -1249,6 +1272,25 @@ def main():
         print(f"{duration:.3f}")
         sys.exit(0)
 
+    # Queue-control envelope (RF-AT-08-1): explicit --priority/--policy
+    # switches the speak/--play-file request onto the fire-and-forget
+    # enqueue command. Labels are validated client-side (argparse
+    # choices), so an unknown value never reaches the daemon; --no-play
+    # owns no audio and cannot ride the queue.
+    queue_controls = None
+    if args.priority is not None or args.policy is not None:
+        if args.no_play:
+            print(
+                "Error: --no-play cannot combine with --priority/--policy: a "
+                "synthesis-only request owns no audio (run it as a plain play)",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        queue_controls = {
+            "priority": args.priority or "working",
+            "policy": args.policy or "queue",
+        }
+
     if args.play_file:
         _delegate_and_exit(
             {
@@ -1263,7 +1305,8 @@ def main():
                 # daemon-side session reaches THIS client's Windows host.
                 "winhost_host": os.environ.get("AGENT_TTS_WINHOST_HOST"),
                 "winhost_port": os.environ.get("AGENT_TTS_WINHOST_PORT"),
-            }
+            },
+            queue_controls,
         )
 
     input_text = ""
@@ -1349,7 +1392,8 @@ def main():
             # session reaches THIS client's Windows host.
             "winhost_host": os.environ.get("AGENT_TTS_WINHOST_HOST"),
             "winhost_port": os.environ.get("AGENT_TTS_WINHOST_PORT"),
-        }
+        },
+        queue_controls,
     )
 
 
@@ -1373,7 +1417,119 @@ def _reply_error_text(reply: Optional[str]) -> Optional[str]:
     return None
 
 
-def _delegate_and_exit(payload: dict) -> None:
+_STATUS_ANNOUNCE_LIMIT = 60
+
+
+def _truncate_text(text: str, limit: int) -> str:
+    """Truncates for single-line display, marking the cut with '...'."""
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3].rstrip() + "..."
+
+
+def _queue_snapshot_from_reply(reply: str) -> Optional[dict]:
+    """Extracts the ``queue=`` JSON snapshot from a status reply.
+
+    The snapshot token is whitespace-free by construction (the daemon
+    escapes every whitespace byte as \\uXXXX), so a plain token split
+    isolates it; returns None when the reply carries no parseable
+    snapshot (a foreign classic owner).
+    """
+    token = next((t for t in reply.split() if t.startswith("queue={")), "")
+    if not token:
+        return None
+    try:
+        return json.loads(token[len("queue="):])
+    except ValueError:
+        return None
+
+
+def _render_status_reply(reply: str) -> str:
+    """Human rendering of a status reply (RF-AT-08-5 visibility).
+
+    The daemon's kv line stays first, minus the opaque ``queue=`` JSON
+    token; each pending item then gets one indented line — dispatch
+    position, priority, policy, merge count, and the (truncated)
+    coalesced announcement — so the user sees what will sound next,
+    before it sounds (RF-AT-08-3). Replies without a queue token (a
+    foreign classic owner) or with an unparseable one print raw.
+    """
+    start = reply.find(" queue={")
+    if start == -1:
+        return reply
+    end = reply.find(" ", start + 1)
+    token = reply[start + 1 :] if end == -1 else reply[start + 1 : end]
+    head = reply[:start] + (reply[end:] if end != -1 else "")
+    try:
+        snapshot = json.loads(token[len("queue="):])
+    except ValueError:
+        return reply
+    lines = [head.rstrip()]
+    for index, item in enumerate(snapshot.get("pending") or [], start=1):
+        parts = [
+            f"  queued[{index}]",
+            f"priority={item.get('priority', '?')}",
+            f"policy={item.get('policy', '?')}",
+        ]
+        try:
+            coalesced = int(item.get("coalesced") or 1)
+        except (TypeError, ValueError):
+            coalesced = 1
+        if coalesced > 1:
+            parts.append(f"coalesced={coalesced}")
+        announcement = str(item.get("announcement") or "")
+        if announcement:
+            parts.append(f"text={_truncate_text(announcement, _STATUS_ANNOUNCE_LIMIT)}")
+        lines.append(" ".join(parts))
+    return "\n".join(lines)
+
+
+def _print_enqueue_ack(reply: str) -> None:
+    """D4/US-AT-08-4: presents queuing as normal behavior (stdout, exit 0).
+
+    ``ok=true item=N queue_len=M [coalesced=K]``: an item that queued
+    behind others prints one machine-parseable line —
+    ``queued: item=<id> position=<n> queue_len=<m> [coalesced=<k>]`` —
+    with the position refined from the live status snapshot (pending is
+    dispatch order); without a snapshot, queue_len stands in as the
+    worst-case position bound. An item that dispatched immediately
+    (queue_len=0, or already out of pending) keeps the classic silent
+    success.
+    """
+    fields = {}
+    for token in reply.split():
+        if "=" in token:
+            key, value = token.split("=", 1)
+            fields[key] = value
+    try:
+        item_id = int(fields.get("item", "0"))
+        queue_len = int(fields.get("queue_len", "0"))
+    except ValueError:
+        return
+    if queue_len <= 0:
+        return  # dispatched immediately: classic silent success
+    position = queue_len  # worst-case bound: our item is among the pending
+    try:
+        from agent_tts.ipc import send_ipc_command
+
+        snapshot = _queue_snapshot_from_reply(send_ipc_command("status") or "")
+        if snapshot is not None:
+            pending = snapshot.get("pending") or []
+            for index, item in enumerate(pending, start=1):
+                if item.get("id") == item_id:
+                    position = index
+                    break
+            else:
+                return  # already left pending (active/finished): it plays now
+    except Exception:
+        pass  # no usable snapshot: position stays the queue_len bound
+    line = f"queued: item={item_id} position={position} queue_len={queue_len}"
+    if fields.get("coalesced"):
+        line += f" coalesced={fields['coalesced']}"
+    print(line)
+
+
+def _delegate_and_exit(payload: dict, queue: Optional[dict] = None) -> None:
     """Delegates one playback to the daemon (vía única) and exits.
 
     The CLI is always a client (RF-AT-04-5): the daemon is auto-started
@@ -1384,16 +1540,26 @@ def _delegate_and_exit(payload: dict) -> None:
     clean for payload consumers). An interrupt during the delegation
     forwards a best-effort stop and exits 130 (classic Ctrl-C
     semantics).
+
+    With ``queue`` (the --priority/--policy envelope, RF-AT-08-1) the
+    request rides the fire-and-forget ``enqueue`` command instead of
+    the blocking play: an item that waits behind others prints its
+    position (D4), an interrupt forwards no stop (an enqueued event
+    owns no audio yet — a stop would kill another event's announcement).
     """
-    from agent_tts.daemon import DaemonUnavailableError, delegate_play
+    from agent_tts.daemon import DaemonUnavailableError, delegate_enqueue, delegate_play
 
     _delegated_playback.set()
     try:
         try:
-            reply = delegate_play(payload)
+            if queue is None:
+                reply = delegate_play(payload)
+            else:
+                reply = delegate_enqueue({**payload, **queue})
         except KeyboardInterrupt:
-            # delegate_play already forwarded a best-effort stop, so audio does
-            # not outlive the interrupted client (classic Ctrl-C semantics).
+            # delegate_play already forwarded a best-effort stop, so audio
+            # does not outlive the interrupted client; an enqueued event
+            # owns nothing yet, so there is deliberately no stop for it.
             sys.exit(130)
         except DaemonUnavailableError as e:
             print(f"Error: {e}", file=sys.stderr)
@@ -1405,6 +1571,8 @@ def _delegate_and_exit(payload: dict) -> None:
         detail = error if error else "daemon closed the connection during playback"
         print(f"Error: {detail}", file=sys.stderr)
         sys.exit(1)
+    if queue is not None:
+        _print_enqueue_ack(reply)
     sys.exit(0)
 
 

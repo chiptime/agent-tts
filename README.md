@@ -179,6 +179,8 @@ queue_len=<pending count> queue=<compact JSON snapshot>
 
 The `queue=` value is `QueueSnapshot.as_dict()` serialized compactly with **all whitespace encoded as `\uXXXX` escapes** (e.g. spaces as `\u0020`), so the whole value is one whitespace-free token for legacy key=value parsers, while any JSON consumer restores the original strings with a plain `json.loads`. Keys: `queue_len`, `pending` (list in dispatch order; each item has `id`, `priority` (`blocked`/`done`/`working`), `policy` (`queue`/`preempt`/`coalesce`), `event_type`, `identifiers`, `coalesced`, `enqueued_at`, `announcement`), `active` (`null` or `id`/`priority`/`policy`/`event_type`/`coalesced`/`started_at`), `failed` (bounded history; each with `id`, `priority`, `event_type`, `error`, `failed_at`, `wedged`), `last_error`, `completed_count`, `failed_count`, `interrupted_count`, `wedged_count`.
 
+Human `agent-tts --ipc-cmd status` renders that snapshot instead of dumping the JSON: the familiar kv line stays first (minus the opaque `queue={…}` token), followed by one indented line per pending item in dispatch order — `queued[i] priority=… policy=… [coalesced=N] text=<truncated announcement>` — so you see what will sound next, before it sounds. `--ipc-json` keeps the raw snapshot for machine consumers, and a foreign classic owner's reply (no `queue=` token) prints unchanged.
+
 **The `enqueue` command.** `enqueue <json>` takes a play payload plus queue-control fields and returns immediately (playback is daemon-owned):
 
 ```bash
@@ -189,6 +191,8 @@ agent-tts --ipc-cmd 'enqueue {"text":"job a done","priority":"done","policy":"co
 ```
 
 `priority` is `blocked`|`done`|`working` (default `working`), `policy` is `preempt`|`queue`|`coalesce` (default `queue`); unknown labels are typed errors. A merged coalesce item speaks ONE synthesized announcement (`"N jobs finished: a, b, c and X more"` — up to three identifiers, then a count) instead of the individual payloads.
+
+**CLI flags (RF-AT-08-1).** `--priority blocked|done|working` and `--policy preempt|queue|coalesce` ride the speak and `--play-file` paths. The documented default mapping for a plain invocation is `working`/`queue` — the request queues behind any active announcement and blocks until its own playback ends (classic semantics, never a busy error); either flag overrides the mapping per invocation and switches the request onto the fire-and-forget `enqueue` command: the CLI returns immediately and prints `queued: item=<id> position=<n> queue_len=<m> [coalesced=<k>]` on stdout when the event waits behind others (silence and exit 0 when it dispatches right away). Labels are validated client-side — an unknown value fails on stderr (exit 2) before the daemon is contacted. `--no-play` (synthesis-only) cannot combine with the flags. Coalescing keys on `event_type`, which integrators set on the enqueue wire command; CLI-originated coalesce requests carry no event type, so they merge with each other within the window. Silent non-streaming synthesis emits no progress tokens, so keep `--wedged-timeout` sized above your worst-case synthesis time.
 
 ### 🎧 Persistent Daemon (vía única)
 
@@ -213,7 +217,7 @@ agent-tts --ipc-cmd shutdown # orderly daemon exit (also SIGTERM/SIGINT)
 
 **Notes for interactive users:**
 
-- A delegated playback blocks until the audio finishes (same as the classic CLI); `Ctrl-C` forwards a best-effort `stop` to the daemon so audio does not outlive the interrupted client.
+- A delegated playback blocks until the audio finishes (same as the classic CLI); `Ctrl-C` forwards a best-effort `stop` to the daemon so audio does not outlive the interrupted client. With `--priority`/`--policy` the request is fire-and-forget instead: the CLI prints a `queued: item=… position=… queue_len=…` line when it waits behind others, and `Ctrl-C` forwards no stop (an enqueued event owns no audio yet).
 - Terminal view flags (`--highlight`, `--zen`, `--autoscroll`, `--bionic`) travel with the play request and render where the daemon runs — meaningful with `agent-tts --foreground` in your terminal, inert for a detached daemon.
 - `status` from the daemon adds `uptime=` plus the queue fields (`queue_len=`, `queue={…}`), and reports `status=idle uptime=… provider=… playback=… queue_len=… queue={…}` when nothing is playing.
 
@@ -428,6 +432,7 @@ usage: agent-tts [-h] [--voice VOICE] [--rate RATE] [--max-chars MAX_CHARS]
                  [--provider {edge,openai,elevenlabs,eleven,piper,kokoro,local}]
                  [--stream {auto,on,off}]
                  [--playback {local,winhost,wsl-ps,windows,auto}] [--winhost]
+                 [--priority {blocked,done,working}] [--policy {preempt,queue,coalesce}]
                  [--winhost-host WINHOST_HOST] [--winhost-port WINHOST_PORT]
                  [--openai-key OPENAI_KEY] [--openai-base-url OPENAI_BASE_URL]
                  [--openai-model OPENAI_MODEL] [--eleven-key ELEVEN_KEY]
@@ -441,6 +446,8 @@ usage: agent-tts [-h] [--voice VOICE] [--rate RATE] [--max-chars MAX_CHARS]
 - **`--serve` / `--foreground`**: run the persistent playback daemon (vía única owner) instead of a one-shot client. `--serve` is the canonical start; `--foreground` is the identical attached deployment for systemd/journalctl. Speech invocations without these flags are always clients that transparently auto-start the daemon when needed.
 
 - **`--idle-timeout SEC`**: daemon idle timeout; defaults to none for explicit starts and 30 minutes for the client's auto-started daemon (see [Persistent Daemon](#-persistent-daemon-vía-única)).
+
+- **`--priority {blocked,done,working}` / `--policy {preempt,queue,coalesce}`**: per-event queue control for the speak/`--play-file` paths (default mapping: `working`/`queue`, overridable per invocation). Either flag switches the request onto the fire-and-forget enqueue command: the CLI returns immediately and prints `queued: item=<id> position=<n> queue_len=<m> [coalesced=<k>]` when the event waits behind others. Unknown labels fail client-side (stderr, exit 2) before the daemon is contacted; `--no-play` cannot combine with them. Silent non-streaming synthesis emits no progress tokens, so size `--wedged-timeout` above your worst-case synthesis time.
 
 - **`--stream {auto,on,off}`** (default `auto`): Pipelined playback mode. `auto` streams long texts (≥ 400 chars) with the `edge`, `openai`, or `elevenlabs` providers when playing locally; `on` forces streaming for any provider or length; `off` forces classic single-shot synthesis. `--podcast` always uses single-shot synthesis; `--output` works with streaming — the merged audio is written once playback completes.
 
