@@ -126,7 +126,8 @@
 #         deterministic heuristics + unclosed-fence safe degradation, 40d
 #         total escaping + http/https-only links, 40e pinned-oracle parity
 #         fixtures F1–F9 + sidecar map, 40f --render-html CLI + untouched
-#         contract v1, 40g zero new dependencies + transient process
+#         contract v1, 40g zero new dependencies + transient process,
+#         40h --render-html whole-document mode (no scrollback extraction)
 #   41    reader vs remote-engine ERR replies: a live socket answering
 #         "ERR: command '...' is not supported..." (remote engine without
 #         the karaoke family) degrades to the clean no-playback path —
@@ -3381,18 +3382,18 @@ for _ in $(seq 1 30); do
   sleep 0.1
 done
 assert_grep "39e menu R opens tts-reader entrypoint" 'plugin pane open --plugin herdr.tts --entrypoint tts-reader' "$T/menu-herdr.log"
-# Launcher branch: inside tmux --reader delegates to the popup launcher,
-# NOT to the inline renderer (which would print the no-playback notice).
+# Launcher branch: an explicit --reader ALWAYS renders inline, even inside
+# tmux — the popup is the prefix+R / manifest-action path only (an operator
+# running the CLI expects the karaoke in THEIR terminal, not a popup on the
+# herdr session).
 lib_run '
   herdr() { printf "%s\n" "$*" >> "$T/launch-herdr.log"; }
   export -f herdr
+  export AGENT_TTS_SOCKET="$T/dead-launch.sock" AGENT_TTS_LOCK_FILE="$T/nonexistent-launch.lock"
   TMUX=stub-session run_reader
 ' > "$T/launch-out.txt" 2>>"$T/err.log"
-for _ in $(seq 1 30); do
-  grep -q 'entrypoint tts-reader' "$T/launch-herdr.log" 2>/dev/null && break
-  sleep 0.1
-done
-assert_grep "39e --reader inside tmux opens the tts-reader popup" 'plugin pane open --plugin herdr.tts --entrypoint tts-reader' "$T/launch-herdr.log"
+[[ ! -s "$T/launch-herdr.log" ]] && ok "39e --reader inside tmux does NOT delegate to the popup" || bad "39e herdr was called: $(head -1 "$T/launch-herdr.log")"
+assert_grep "39e --reader inside tmux runs the inline renderer" 'No playback in progress\.' "$T/launch-out.txt"
 
 # 39f. Manifest wiring: popup pane + inner command + open action (16g style).
 assert_grep "39f manifest declares the tts-reader pane" 'id = "tts-reader"' "$REPO/herdr-plugin.toml" -F
@@ -3780,6 +3781,27 @@ cat > "$T/data/herdr-tts/venv/bin/python" <<EOF
 exec "$REAL_VENV_PY" "\$@"
 EOF
 chmod +x "$T/data/herdr-tts/venv/bin/python"
+
+# 40h. (HT-15 post-archive fix) --render-html whole-document mode: the CLI
+#      consumes a FILE whose content IS the document, so scrollback turn
+#      extraction (extract_last_turn) must not run on it — the heuristic ate
+#      leading non-turn lines, silently dropping a top `# heading` from the
+#      HTML. The pane-reading caller keeps render()'s default (extraction is
+#      its purpose). Rides the s40f env (plain real-venv wrapper restored
+#      above); 40g stays the block's closing dependency/transience gate.
+printf '# Titulo\n\nParrafo con **negrita**.\n\nSegundo parrafo final.\n' > "$T/in-doc.md"
+timeout 10 "$SCRIPT" --render-html "$T/in-doc.md" "$T/h-doc.html" --map "$T/h.map.json" > "$T/h-doc.txt" 2>&1
+[[ $? -eq 0 ]] && ok "40h whole-document render exits 0" || bad "40h rc=$(tail -1 "$T/h-doc.txt")"
+assert_grep "40h leading heading emitted as <h1>" '<h1>' "$T/h-doc.html"
+assert_grep "40h heading text preserved" 'Titulo' "$T/h-doc.html"
+assert_grep "40h first paragraph preserved (bold inline)" '<strong>negrita</strong>' "$T/h-doc.html"
+assert_grep "40h trailing paragraph preserved" 'Segundo parrafo final\.' "$T/h-doc.html"
+assert_grep "40h anchor contract intact (sent 0)" 'id="tts-sent-0"' "$T/h-doc.html"
+h_spans=$(grep -o 'class="tts-sent"' "$T/h-doc.html" | wc -l)
+h_sents=$(grep -o '"total_sents": [0-9]*' "$T/h.map.json" | grep -o '[0-9]*$')
+[[ -n "$h_sents" && "$h_spans" == "$h_sents" ]] \
+  && ok "40h primary spans == sidecar total_sents ($h_spans)" \
+  || bad "40h span/sidecar mismatch: $h_spans spans vs total_sents=${h_sents:-missing}"
 
 # 40g. (R7) zero new dependencies + transient process (exits, no daemon)
 assert_grep "40g bootstrap pin still SHA-pinned" 'AGENT_TTS_REF="\$\{HERDR_AGENT_TTS_REF:-[0-9a-f]{40}\}"' "$REPO/scripts/bootstrap.sh"
