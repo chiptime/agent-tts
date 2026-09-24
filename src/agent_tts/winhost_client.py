@@ -22,6 +22,25 @@ PROTOCOL_VERSION = 1
 SEND_CHUNK_FRAMES = 4096
 PUMP_IDLE_SLEEP_SEC = 0.03
 
+# Read-only karaoke queries served by remote sessions, byte-compatible with
+# the local AudioSession replies (highlight/scroll-info/sentence/paragraph
+# plus their aliases). Navigation commands stay remote-unsupported.
+_READ_ONLY_ACTIONS = frozenset(
+    {
+        "highlight",
+        "current-highlight",
+        "scroll-info",
+        "autoscroll-info",
+        "autoscroll",
+        "sentence",
+        "current-sentence",
+        "current_sentence",
+        "paragraph",
+        "current-paragraph",
+        "current_paragraph",
+    }
+)
+
 
 class WinhostUnavailable(Exception):
     """Raised when no candidate Windows host accepts a winhost connection."""
@@ -256,15 +275,28 @@ class RemoteAudioSession:
             self._control_ps_session("stop")
             return "status=stopped"
 
+        if action in _READ_ONLY_ACTIONS:
+            # Byte-compatible with the local AudioSession replies. When a
+            # fallback session carries playback, its clock is the truth, so
+            # the carrier answers; a live winhost stream answers from this
+            # session's own pump-advanced counters.
+            carrier = self._carrier_session()
+            if carrier is not None and hasattr(carrier, "handle_ipc_command"):
+                return carrier.handle_ipc_command(cmd)
+            return self._read_only_ipc(action)
+
+        # Navigation (seek/rewind/forward/next-*/prev-*) stays unsupported:
+        # PCM already streamed to the remote device cannot be un-played, so
+        # remote position jumps are future work (they need a re-stream).
         return (
             f"ERR: command '{action}' is not supported for {self.target} playback "
-            "(supported: status, pause, resume, toggle-pause, stop)"
+            "(supported: status, pause, resume, toggle-pause, stop, "
+            "highlight, scroll-info, sentence, paragraph)"
         )
 
     def _ipc_status(self) -> str:
+        pos, total = self._pos_total_sec()
         with self.lock:
-            pos = (self.current_frame / float(self.sample_rate)) if self.sample_rate else 0.0
-            total = (self.total_frames / float(self.sample_rate)) if self.sample_rate else 0.0
             sent = self.boundaries.get_sentence_at(pos)
             sent_clean = sent.text.replace("\n", " ").strip() if sent else ""
             sent_idx = sent.index if sent else -1
@@ -274,6 +306,101 @@ class RemoteAudioSession:
                 f"status={self.state['status']} pos={pos:.2f} total={total:.2f} "
                 f"sent_idx={sent_idx} para_idx={para_idx} sentence={sent_clean}"
             )
+
+    def _carrier_session(self):
+        """The fallback session actually carrying playback, if any.
+
+        A "windows" run that fell back to the local device reports through
+        the local AudioSession; a "winhost" run that fell back to wsl-ps
+        reports through the persistent PowershellSession.
+        """
+        local = getattr(self, "_local_session", None)
+        if local is not None:
+            return local
+        return self._ps_session
+
+    def _pos_total_sec(self):
+        """(pos, total) in seconds from whichever clock carries playback.
+
+        The carrier's counters win once a fallback session owns playback;
+        otherwise this session's own counters (advanced by the winhost
+        pump as chunks are handed to the socket). Carriers without a
+        playback clock (minimal test stubs) fall back to this session.
+        """
+        src = self._carrier_session() or self
+        if not hasattr(src, "current_frame"):
+            src = self
+        pos_getter = getattr(src, "pos_frames", None)
+        if pos_getter is not None:
+            pos_frames = pos_getter()
+        else:
+            with src.lock:
+                pos_frames = src.current_frame
+        with src.lock:
+            total_frames = src.total_frames
+            rate = src.sample_rate
+        pos = (pos_frames / float(rate)) if rate else 0.0
+        total = (total_frames / float(rate)) if rate else 0.0
+        return pos, total
+
+    def _pos_sec_locked(self) -> float:
+        """This session's playback position in seconds; caller holds self.lock."""
+        return (self.current_frame / float(self.sample_rate)) if self.sample_rate else 0.0
+
+    def _read_only_ipc(self, action: str) -> str:
+        """Answers the read-only karaoke family from this session's counters.
+
+        Byte-compatible with AudioSession.handle_ipc_command; used while a
+        live winhost stream carries playback (the pump loop advances
+        current_frame as chunks are handed to the socket).
+        """
+        if action in ("highlight", "current-highlight"):
+            with self.lock:
+                pos = self._pos_sec_locked()
+                return self.boundaries.format_highlighted_sentence(pos, ansi=True, bionic=self.bionic)
+
+        if action in ("scroll-info", "autoscroll-info", "autoscroll"):
+            with self.lock:
+                pos = self._pos_sec_locked()
+                tot = (self.total_frames / float(self.sample_rate)) if self.sample_rate else 0.0
+                sent = self.boundaries.get_sentence_at(pos)
+                sent_idx = sent.index if sent else -1
+                total_sents = len(self.boundaries.sentences)
+                para = self.boundaries.get_paragraph_at(pos)
+                para_idx = para.index if para else -1
+                total_paras = len(self.boundaries.paragraphs)
+                pct = (pos / tot * 100.0) if tot > 0 else 0.0
+                return (
+                    f"pos={pos:.2f} total={tot:.2f} pct={pct:.1f} "
+                    f"sent_idx={sent_idx} total_sents={total_sents} "
+                    f"para_idx={para_idx} total_paras={total_paras}"
+                )
+
+        if action in ("sentence", "current-sentence", "current_sentence"):
+            with self.lock:
+                pos = self._pos_sec_locked()
+                cur_sent = self.boundaries.get_sentence_at(pos)
+                if cur_sent:
+                    text_clean = cur_sent.text.replace("\n", " ").strip()
+                    return f"sent_idx={cur_sent.index} start={cur_sent.start_sec:.2f} end={cur_sent.end_sec:.2f} text={text_clean}"
+                return "sent_idx=-1 text="
+
+        if action in ("paragraph", "current-paragraph", "current_paragraph"):
+            with self.lock:
+                pos = self._pos_sec_locked()
+                cur_p = self.boundaries.get_paragraph_at(pos)
+                if cur_p:
+                    text_clean = cur_p.text.replace("\n", " ").strip()
+                    if len(text_clean) > 80:
+                        text_clean = text_clean[:77] + "..."
+                    return f"para_idx={cur_p.index} start={cur_p.start_sec:.2f} end={cur_p.end_sec:.2f} text={text_clean}"
+                return "para_idx=-1 text="
+
+        return (
+            f"ERR: command '{action}' is not supported for {self.target} playback "
+            "(supported: status, pause, resume, toggle-pause, stop, "
+            "highlight, scroll-info, sentence, paragraph)"
+        )
 
     def _remote_control(self, cmd: str) -> None:
         """Forwards a control command to the winhost server; a dead host is a no-op."""
