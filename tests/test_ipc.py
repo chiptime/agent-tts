@@ -1,6 +1,7 @@
 import json
 import socket
 import tempfile
+import threading
 import time
 import unittest
 from agent_tts.ipc import IPCServer, ipc_reply_json, send_ipc_command
@@ -113,6 +114,42 @@ class TestCommandFraming(unittest.TestCase):
         finally:
             server.stop()
 
+    def test_sender_pausing_at_cap_then_continuing_is_rejected(self):
+        """RC-1: a sender that pauses AT the cap and then continues is over-cap.
+
+        The over-cap check must be a bounded WAIT, not an instantaneous
+        buffered-bytes probe: at the pause instant nothing extra is
+        buffered, so the old probe accepted the truncated prefix and
+        dispatched it as a command (surfacing as a confusing JSON error).
+        """
+        with tempfile.NamedTemporaryFile(suffix=".sock", delete=True) as tmp:
+            sock_file = tmp.name
+        server = self._serve_echo(sock_file)
+        try:
+            from agent_tts.ipc import MAX_COMMAND_BYTES
+
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            client.settimeout(10.0)
+            client.connect(sock_file)
+            try:
+                # Pause at exactly the cap, long enough for the server to
+                # drain every buffered byte, then push past it.
+                client.sendall(b"y" * MAX_COMMAND_BYTES)
+                time.sleep(0.3)
+                client.sendall(b"continued past the cap\n")
+                buf = b""
+                while b"\n" not in buf:
+                    chunk = client.recv(1024)
+                    if not chunk:
+                        break
+                    buf += chunk
+                reply = buf.decode("utf-8", errors="ignore").strip()
+            finally:
+                client.close()
+            self.assertTrue(reply.startswith("ERR: command too large"), reply)
+        finally:
+            server.stop()
+
     def test_command_beyond_byte_cap_fails_with_clear_error(self):
         """CONF-1: runaway input beyond the documented cap is rejected, not truncated."""
         with tempfile.NamedTemporaryFile(suffix=".sock", delete=True) as tmp:
@@ -126,6 +163,78 @@ class TestCommandFraming(unittest.TestCase):
             self.assertTrue(reply.startswith("ERR: command too large"), reply)
         finally:
             server.stop()
+
+
+class TestPastCapProbe(unittest.TestCase):
+    """RS-3: the over-cap probe waits boundedly and preserves the socket timeout."""
+
+    def test_probe_times_out_when_the_sender_stops_at_cap(self):
+        from agent_tts.ipc import _probe_past_cap
+
+        a, b = socket.socketpair()
+        try:
+            a.settimeout(0.25)
+            started = time.monotonic()
+            # No byte ever arrives: the probe must wait out the deadline
+            # (a bounded wait, not an instantaneous buffered check) and
+            # then report "sender stopped at the cap".
+            self.assertFalse(_probe_past_cap(a))
+            self.assertGreaterEqual(time.monotonic() - started, 0.2)
+        finally:
+            a.close()
+            b.close()
+
+    def test_probe_sees_a_byte_arriving_within_the_deadline(self):
+        from agent_tts.ipc import _probe_past_cap
+
+        a, b = socket.socketpair()
+        try:
+            a.settimeout(1.0)
+
+            def late_byte():
+                time.sleep(0.1)
+                b.send(b"x")
+
+            threading.Thread(target=late_byte, daemon=True).start()
+            self.assertTrue(_probe_past_cap(a))
+        finally:
+            a.close()
+            b.close()
+
+    def test_probe_preserves_the_connection_timeout(self):
+        """RS-3: the probe must not flip the socket into unbounded blocking mode."""
+        from agent_tts.ipc import _probe_past_cap
+
+        a, b = socket.socketpair()
+        try:
+            a.settimeout(0.25)
+            self.assertFalse(_probe_past_cap(a))
+            # The pre-existing timeout survives the probe path: a later
+            # sendall against a stalled peer stays bounded instead of
+            # blocking forever.
+            self.assertEqual(a.gettimeout(), 0.25)
+            b.send(b"x")
+            self.assertTrue(_probe_past_cap(a))
+            self.assertEqual(a.gettimeout(), 0.25)
+        finally:
+            a.close()
+            b.close()
+
+    def test_probe_is_bounded_even_on_a_blocking_socket(self):
+        from agent_tts.ipc import _probe_past_cap
+
+        a, b = socket.socketpair()
+        try:
+            self.assertIsNone(a.gettimeout())
+            started = time.monotonic()
+            # A blocking socket still gets a bounded probe deadline, and
+            # its blocking mode is restored afterwards.
+            self.assertFalse(_probe_past_cap(a))
+            self.assertLess(time.monotonic() - started, 5.0)
+            self.assertIsNone(a.gettimeout())
+        finally:
+            a.close()
+            b.close()
 
 
 class TestIpcReplyJson(unittest.TestCase):

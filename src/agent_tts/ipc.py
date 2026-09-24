@@ -34,30 +34,47 @@ MAX_REPLY_BYTES = 8192
 # rejected with an explicit ``ERR: command too large`` reply instead of
 # being silently truncated into a broken JSON parse.
 MAX_COMMAND_BYTES = 16 * 1024 * 1024
+# Fallback deadline for the over-cap probe when the connection carries no
+# timeout of its own (a blocking socket): the probe must always be bounded.
+OVERCAP_PROBE_TIMEOUT_SEC = 1.0
 
 
 class CommandTooLargeError(Exception):
     """A command line exceeded MAX_COMMAND_BYTES without a newline."""
 
 
-def _more_bytes_buffered(conn: socket.socket) -> bool:
-    """True when unread bytes are already buffered on the connection.
+def _probe_past_cap(conn: socket.socket) -> bool:
+    """True when the sender pushes past MAX_COMMAND_BYTES.
 
-    Non-blocking one-byte probe: a sender that delivered exactly
-    MAX_COMMAND_BYTES bytes and stopped keeps the BLOQUE 1.1 behavior
-    (the payload is served at the cap), while a sender that pushed past
-    the cap is detected and rejected.
+    Bounded blocking read under the connection's own timeout: a sender
+    that delivered exactly MAX_COMMAND_BYTES bytes and stopped keeps the
+    BLOQUE 1.1 behavior (the recv times out, the payload is served at the
+    cap), while a sender that pushes past the cap — even one that pauses
+    at the cap and continues later — is detected as long as its next byte
+    lands within the deadline. This replaces the old instantaneous
+    non-blocking probe, which only saw bytes ALREADY buffered at the
+    probe instant and accepted a truncated prefix from any sender that
+    paused at exactly the cap (RC-1).
+
+    The socket's timeout survives the probe (RS-3): no setblocking()
+    dance, so a stalled peer can never turn later sends into an
+    unbounded block. A blocking socket gets the fixed fallback deadline
+    and its blocking mode restored.
     """
+    timeout = conn.gettimeout()
+    if timeout is None:
+        conn.settimeout(OVERCAP_PROBE_TIMEOUT_SEC)
     try:
-        conn.setblocking(False)
-        try:
-            return bool(conn.recv(1))
-        finally:
-            conn.setblocking(True)
-    except BlockingIOError:
+        return bool(conn.recv(1))
+    except socket.timeout:
         return False
     except OSError:
+        # Peer vanished mid-probe: no further byte can arrive; treat as
+        # stopped-at-cap so the buffered payload is served as before.
         return False
+    finally:
+        if timeout is None:
+            conn.settimeout(None)
 
 
 def _is_windows() -> bool:
@@ -254,9 +271,12 @@ def _recv_command(conn: socket.socket) -> str:
     Symmetric to the client's reply loop: keeps recv()ing until the newline
     (or EOF), so a command larger than one packet arrives complete instead
     of truncated (RF-AT-09-4). The only bound is the MAX_COMMAND_BYTES hard
-    cap: a line that reaches the cap with no newline AND more bytes already
-    buffered raises CommandTooLargeError — oversized input must fail with a
-    clear error, never a silent mid-JSON truncation (CONF-1).
+    cap. A line that crosses the cap with no newline is rejected
+    DETERMINISTICALLY (RC-1): bytes already read past the cap reject
+    immediately, and a line sitting exactly at the cap rejects unless the
+    sender provably stopped there (the bounded probe waits out the
+    connection timeout with no further byte) — oversized input must fail
+    with a clear error, never a silent mid-JSON truncation (CONF-1).
     """
     chunks = []
     received = 0
@@ -269,10 +289,17 @@ def _recv_command(conn: socket.socket) -> str:
         if b"\n" in chunk:
             break
     data = b"".join(chunks)
-    if received >= MAX_COMMAND_BYTES and b"\n" not in data and _more_bytes_buffered(conn):
-        raise CommandTooLargeError(
-            f"command too large (over {MAX_COMMAND_BYTES} bytes without a newline)"
-        )
+    if b"\n" not in data:
+        if received > MAX_COMMAND_BYTES:
+            # A single recv already crossed the cap: over-cap by evidence
+            # in hand, no probe needed.
+            raise CommandTooLargeError(
+                f"command too large (over {MAX_COMMAND_BYTES} bytes without a newline)"
+            )
+        if received == MAX_COMMAND_BYTES and _probe_past_cap(conn):
+            raise CommandTooLargeError(
+                f"command too large (over {MAX_COMMAND_BYTES} bytes without a newline)"
+            )
     return data.decode("utf-8", errors="ignore").strip()
 
 
