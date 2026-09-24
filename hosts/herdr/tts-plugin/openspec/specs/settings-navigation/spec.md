@@ -60,10 +60,10 @@ Each render MUST be ONE physical clamped write (`menu_cap_rows`); UI copy MUST b
 
 - GIVEN `HERDR_TTS_LANG=es` then `en`, WHEN the index renders, THEN copy is Spanish ("Ajustes de voz y audio", "Idioma") then English ("Voice & Audio Settings", "Language")
 
-### Requirement: Knob Grouping Completeness (Smoke: 32a, 32b, 38c)
+### Requirement: Knob Grouping Completeness (Smoke: 32a, 32b, 38c, 43d)
 
-The views MUST partition exactly the 15 knobs — Voz `p g n u i` (5), Audio `d c r s` (4), Notificaciones `t f w` (3), Lectura `v a b` (3) — each rendering ONLY its own. No theme knob exists: `TTS_THEME` is config-only.
-(Previously: 16 knobs across five categories; the Apariencia `t` knob was removed with its category.)
+The views MUST partition exactly the 16 knobs — Voz `p g n u i` (5), Audio `d c r s` (4), Notificaciones `t f w` (3), Lectura `v a b p` (4) — each rendering ONLY its own. No theme knob exists: `TTS_THEME` is config-only. Lectura's `p` cycles `TTS_READER_AUTO` (`off`↔`on`): with `on`, every live read auto-opens the reader popup (HT-16; replays of `--play-file` never do).
+(Previously: 15 knobs after the Apariencia `t` knob was removed with its category; 2026-09-24 added Lectura's `p`, returning the count to 16 across four categories.)
 
 #### Scenario: Category views are exclusive
 
