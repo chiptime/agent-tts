@@ -42,6 +42,10 @@ MAX_BACKLOG_LINES = 120
 DEFAULT_PROMPT_TIMEOUT_MS = 180_000
 DEFAULT_MAX_TOOL_ROUNDS = 4
 
+# Approval gate window (PRD-action-approval-gate §6): lazy server-side
+# expiry check on every gate touch — no background timer thread.
+DEFAULT_APPROVAL_TIMEOUT_S = 60
+
 # Speech-to-text (faster-whisper). HARD RULE: the model is never
 # auto-downloaded — `python -m herdr_brain.stt pull` is the only download
 # path. stt_warmup=False (tests) disables the boot warmup thread entirely:
@@ -68,6 +72,7 @@ class Settings:
     audio_dir: Path
     prompt_timeout_ms: int
     max_tool_rounds: int
+    approval_timeout_s: int
     screen_lines: int
     stt_model: str
     stt_device: str
@@ -109,6 +114,7 @@ def load_settings(env: Optional[dict] = None) -> Settings:
         audio_dir=Path(getenv("HERDR_BRAIN_AUDIO_DIR", DEFAULT_AUDIO_DIR)).expanduser(),
         prompt_timeout_ms=int(getenv("HERDR_BRAIN_PROMPT_TIMEOUT_MS", str(DEFAULT_PROMPT_TIMEOUT_MS))),
         max_tool_rounds=int(getenv("HERDR_BRAIN_MAX_TOOL_ROUNDS", str(DEFAULT_MAX_TOOL_ROUNDS))),
+        approval_timeout_s=int(getenv("HERDR_BRAIN_APPROVAL_TIMEOUT_S", str(DEFAULT_APPROVAL_TIMEOUT_S))),
         screen_lines=int(getenv("HERDR_BRAIN_SCREEN_LINES", str(DEFAULT_SCREEN_LINES))),
         stt_model=getenv("HERDR_BRAIN_STT_MODEL", DEFAULT_STT_MODEL),
         stt_device=getenv("HERDR_BRAIN_STT_DEVICE", DEFAULT_STT_DEVICE),

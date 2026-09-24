@@ -75,6 +75,7 @@ def make_settings(**overrides) -> Settings:
         audio_dir="/tmp/audio",
         prompt_timeout_ms=5_000,
         max_tool_rounds=4,
+        approval_timeout_s=60,
         screen_lines=40,
         stt_model="small",
         stt_device="auto",
