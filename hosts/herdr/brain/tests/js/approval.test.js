@@ -24,8 +24,8 @@ function makeResponse(spec) {
 /* Scripted HTTP: every call shifts the next planned response spec. */
 function scriptedHttp(plan) {
   const calls = [];
-  const request = (url, options) => {
-    calls.push({ url, options });
+  const request = (url, options, timeoutMs) => {
+    calls.push({ url, options, timeoutMs });
     const spec = plan.length ? plan.shift() : { status: 500 };
     return Promise.resolve(makeResponse(spec));
   };
@@ -36,8 +36,8 @@ function scriptedHttp(plan) {
 function deferredHttp() {
   const calls = [];
   const pending = [];
-  const request = (url, options) => {
-    calls.push({ url, options });
+  const request = (url, options, timeoutMs) => {
+    calls.push({ url, options, timeoutMs });
     return new Promise(resolve => pending.push(resolve));
   };
   return { request, calls, respond: spec => pending.shift()(makeResponse(spec)) };
@@ -561,6 +561,50 @@ test("redictate() round: a non-command utterance still PATCHes as new text", asy
   assert.deepEqual(bodyOf(h.http.calls[1]), { text: "texto redictado" });
   assert.equal(h.flow.gate().text, "texto redictado");
   assert.equal(h.flow.isDictating(), false);
+});
+
+/* ---- replay-budget timeouts ----
+ *
+ * The approve replay blocks server-side until the agent finishes the
+ * frozen send, so approve()/resolve need the gate's own timeout_ms plus
+ * margin — a mid-replay client abort would strand an approved gate with
+ * no report. The fast endpoints (reject, PATCH) keep the short default. */
+
+test("approve() budgets the replay: gate.timeout_ms + 30000 margin", async () => {
+  const h = harness({ plan: [{ json: { answer: "Enviado", audio_url: null, approval: null } }] });
+  h.flow.open({ ...GATE, timeout_ms: 5000 });
+  h.flow.approve();
+  await flush();
+  assert.equal(h.http.calls[0].url, "/approval/a1b2c3d4e5f6/approve");
+  assert.equal(h.http.calls[0].timeoutMs, 35000);  // 5000 + 30000
+});
+
+test("routeUtterance() /resolve carries the same replay budget (voice approve replays server-side)", async () => {
+  const h = harness({ plan: [{ json: { decision: "reject" } }] });
+  h.flow.open({ ...GATE, timeout_ms: 5000 });
+  h.flow.routeUtterance("sí");
+  await flush();
+  assert.equal(h.http.calls[0].url, RESOLVE_URL);
+  assert.equal(h.http.calls[0].timeoutMs, 35000);
+});
+
+test("reject() and patchText() keep the short default: no timeout arg", async () => {
+  const h = harness({
+    plan: [
+      { status: 200, json: { ok: true, approval: { ...GATE, text: "texto", expires_in_s: 60 } } },
+      { json: { audio_url: "/audio/echo.mp3" } },
+      { json: { ok: true, state: "rejected" } }
+    ]
+  });
+  h.flow.open({ ...GATE });
+  h.flow.patchText("texto");
+  await flush();
+  h.flow.reject();
+  await flush();
+  assert.equal(h.http.calls[0].url, PATCH_URL);
+  assert.equal(h.http.calls[0].timeoutMs, undefined);  // fast PATCH: short default
+  assert.equal(h.http.calls[2].url, "/approval/a1b2c3d4e5f6/reject");
+  assert.equal(h.http.calls[2].timeoutMs, undefined);  // fast reject: short default
 });
 
 /* ---- boot reload recovery (T7): GET /approval/current ----

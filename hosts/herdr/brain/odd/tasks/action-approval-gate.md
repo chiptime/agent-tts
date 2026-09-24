@@ -274,6 +274,20 @@ Route: inline (copy + smoke are per-action).
   matches the system turn). Suites re-run green (74 js / 368 pytest).
   REMAINING for T8: manual E2E smoke on real call/device (user) + update
   PRD status + this doc's Status line.
+- T8 smoke (real device, first pass) — three defects found and fixed:
+  after the closer TTS the mic died (pumpAudio play() rejection left
+  callState "speaking" with no re-arm; the player had no error handler),
+  taps/voice never reached /approve or /resolve (Android audio-focus can
+  kill SpeechRecognition with no usable onend restart), and approve/
+  resolve replays exceeded the injected 30 s fetch timeout (client
+  aborted mid-replay while the server had already approved the gate).
+  Fixes: play() catch now resumes the call, a player "error" handler
+  rides the same onAudioEnded resume path, a 1 s tick mic watchdog
+  re-arms a micless live call, and approve()/resolve carry a replay
+  timeout (gate.timeout_ms + 30 s margin; reject/PATCH stay short).
+  Checks: node --test tests/js/ 77 pass, pytest 368 pass, node --check
+  both statics OK. Smoke re-run still owed (T8 stays unchecked).
+  Commit hash recorded by orchestrator.
 
 ## Next Step
 
