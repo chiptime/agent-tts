@@ -562,3 +562,95 @@ test("redictate() round: a non-command utterance still PATCHes as new text", asy
   assert.equal(h.flow.gate().text, "texto redictado");
   assert.equal(h.flow.isDictating(), false);
 });
+
+/* ---- boot reload recovery (T7): GET /approval/current ----
+ *
+ * app.js fires recover(sessionId) during init; a live payload re-enters
+ * confirming (drawer auto-open + pill wiring live in app.js — verified
+ * on the DOM-stub harness, manual smoke in T8). These tests pin the
+ * recovery semantics on the flow itself. */
+
+const CURRENT_URL = "/approval/current?session_id=s-boot";
+
+test("recover(): a live gate re-arms confirming with the server's remaining window", async () => {
+  const h = harness({
+    plan: [{ json: { approval: { ...GATE, expires_in_s: 42 } } }]
+  });
+  const payload = await h.flow.recover("s-boot");
+  assert.equal(h.http.calls.length, 1);
+  assert.equal(h.http.calls[0].url, CURRENT_URL);
+  assert.equal(h.http.calls[0].options, undefined);  // plain GET, no body
+  assert.deepEqual(payload, { ...GATE, expires_in_s: 42 });
+  assert.equal(h.flow.active(), true);
+  assert.deepEqual(h.states, ["confirming"]);
+  assert.equal(h.flow.gate().text, GATE.text);      // card payload restored
+  assert.equal(h.flow.gate().gate_id, GATE.gate_id);
+  assert.equal(h.flow.remainingSeconds(), 42);      // countdown from expires_in_s
+});
+
+test("recover(): a null approval is a no-op — boot state untouched", async () => {
+  const h = harness({ plan: [{ json: { approval: null } }] });
+  const payload = await h.flow.recover("s-boot");
+  assert.equal(payload, null);
+  assert.equal(h.flow.active(), false);
+  assert.deepEqual(h.states, []);      // stays listening, nothing emitted
+  assert.deepEqual(h.banners, []);
+});
+
+test("recover(): a fetch failure is a silent no-op (normal boot continues)", async () => {
+  const h = harness({ http: { request: () => Promise.reject(new Error("offline")), calls: [] } });
+  const payload = await h.flow.recover("s-boot");
+  assert.equal(payload, null);
+  assert.equal(h.flow.active(), false);
+  assert.deepEqual(h.states, []);
+  assert.deepEqual(h.banners, []);     // silent: no user-facing noise
+});
+
+test("recover(): a non-ok response is a silent no-op too", async () => {
+  const h = harness({ plan: [{ status: 500, json: {} }] });
+  const payload = await h.flow.recover("s-boot");
+  assert.equal(payload, null);
+  assert.equal(h.flow.active(), false);
+  assert.deepEqual(h.states, []);
+  assert.deepEqual(h.banners, []);
+});
+
+test("recover(): an at-boot-expired payload (expires_in_s 0) never zombies in confirming", async () => {
+  const h = harness({
+    plan: [{ json: { approval: { ...GATE, expires_in_s: 0 } } }]
+  });
+  const payload = await h.flow.recover("s-boot");
+  assert.equal(payload, null);            // dead gate: caller must not open the drawer
+  assert.equal(h.flow.active(), false);   // no zombie confirming
+  assert.equal(h.flow.isExpired(), true); // payload retained for the gray card
+  assert.deepEqual(h.states, ["confirming", "listening"]);  // instant silent expiry
+  assert.deepEqual(h.expired, [true]);    // onExpired: gray card + system turn
+  assert.deepEqual(h.banners, []);
+});
+
+/* ---- pending-banner coexistence (T7) ----
+ *
+ * app.js toggles body.gate-live from the card-presence flags asserted
+ * below (renderApprovalCard); the CSS subordinates #pending-banner
+ * while the card shows (PRD §8: visible, secondary, never hiding the
+ * card). Pure-module tests pin the driving flags — the DOM/CSS layer
+ * rides the T8 manual smoke. */
+
+test("the card-presence flags that subordinate the pending banner track the gate lifecycle", () => {
+  const h = harness();
+  // Live gate: card present -> banner secondary (body.gate-live on).
+  h.flow.open({ ...GATE });
+  assert.equal(h.flow.active(), true);
+  assert.equal(h.flow.isExpired(), false);
+  // Silent expiry: the payload lingers for the gray card through the
+  // dismiss window -> the banner stays secondary while it shows.
+  h.clock.advance(60_000);
+  h.flow.tick();
+  assert.equal(h.flow.active(), false);
+  assert.equal(h.flow.isExpired(), true);
+  // Gone (cancel/hang-up/new conversation): no card at all -> the
+  // banner returns to full prominence.
+  h.flow.cancel();
+  assert.equal(h.flow.active(), false);
+  assert.equal(h.flow.isExpired(), false);
+});

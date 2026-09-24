@@ -105,7 +105,7 @@ drawer turn; drawer auto-open on gate.
 Checks: full pytest + js suite; manual visual pass.
 Route: delegated-direct.
 
-### [ ] T7 — Reload recovery + pending-banner coexistence
+### [x] T7 — Reload recovery + pending-banner coexistence
 Files: `src/herdr_brain/static/app.js`.
 Boot calls `GET /approval/current` → re-enter confirming with card
 restored; pill "Confirmar ▲" reopen while drawer closed; agent pending
@@ -228,15 +228,41 @@ Route: inline (copy + smoke are per-action).
   repo tests stay pure-module per convention. Manual visual pass pending
    for T8. Commit hash recorded by orchestrator.
 - Full-suite baseline going forward: 368 pytest / 68 js after T6.
-  - `1d0e6cb` feat(approval): approval card UI with edit and re-dictation flows
-  - T7 notes: boot recovery just calls `approvalFlow.open(payload)` — card,
-    pill and mic routing follow from existing emissions (card re-renders on
-    tick/setState/renderAnswer/playAudio). `openDrawer()`/`closeDrawer()`
-    are idempotent. Banner `#pending-banner` sits outside the drawer; its
-    visual subordination to the gate card is T7's. T8 items queued: FR11
-    edit-box/keyboard coexistence on real device; dictation hint copy
-    ("🎙 Dicta el texto nuevo — «sí» envía, «no» cancela") is worker-authored.
+   - `1d0e6cb` feat(approval): approval card UI with edit and re-dictation flows
+   - T7 notes: boot recovery just calls `approvalFlow.open(payload)` — card,
+     pill and mic routing follow from existing emissions (card re-renders on
+     tick/setState/renderAnswer/playAudio). `openDrawer()`/`closeDrawer()`
+     are idempotent. Banner `#pending-banner` sits outside the drawer; its
+     visual subordination to the gate card is T7's. T8 items queued: FR11
+     edit-box/keyboard coexistence on real device; dictation hint copy
+     ("🎙 Dicta el texto nuevo — «sí» envía, «no» cancela") is worker-authored.
+- T7 done — `node --test tests/js/` → 74 passed (6 new: recover() live/null/
+  fetch-fail/non-ok/zero-window + banner-subordination flags, in
+  `tests/js/approval.test.js`); `.venv/bin/python -m pytest -q` → 368 passed
+  (1 pre-existing starlette/anyio DeprecationWarning, unrelated); baseline
+  stays 368 pytest / 74 js. Recovery lives in `approval.js` as
+  `recover(sessionId)` (plain GET `/approval/current?session_id=…`, never
+  rejects, resolves to the payload only when a LIVE gate armed — an
+  `expires_in_s` 0 payload is expired on the spot via the shared
+  `expireIfDue()` refactor, no zombie confirming); app.js boots it fire-and-
+  forget, auto-opens the drawer on a live payload (never in text mode), and
+  `startCall()` now enters `micBaseState()` so a recalled call resumes under
+  confirming (pill "Confirmar ▲"; pill-tap reopen verified). Banner
+  coexistence: `renderApprovalCard` toggles `body.gate-live` from card
+  presence (incl. the 5 s gray linger); CSS dims/desaturates
+  `#pending-banner` under it (visible, secondary, logic untouched). Full DOM
+  wiring (boot restore, drawer auto-open, interrupted pill → call under
+  confirming, close → pill, pill-tap reopen, expiry gray → system turn →
+  dismissal, gate-live on/off) verified on a scratch vm DOM-stub smoke
+  harness (3 scenarios, not committed); repo tests stay pure-module per
+  convention. Commit hash recorded by orchestrator.
+- Full-suite baseline going forward: 368 pytest / 74 js after T7.
+   - T8 notes: recovered card's countdown ring renders full (pct is relative
+     to the payload's own `expires_in_s`, not the configured 60 s window —
+     the number is correct, the wedge is cosmetic); server payload carries
+     no total, so a fix would touch the T4 contract. Verify visually in the
+     smoke pass.
 
 ## Next Step
 
-T7 (reload recovery + pending-banner coexistence).
+T8 (ES copy pass + manual smoke + status docs).

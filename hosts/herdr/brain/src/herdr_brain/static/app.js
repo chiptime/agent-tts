@@ -1561,11 +1561,20 @@
     approvalCard.cancelBtn.disabled = expired;
   }
 
+  /* Card presence: exactly one #approval-card pinned at the drawer top
+   * while the gate is live (or gray-lingering after silent expiry). */
   function renderApprovalCard() {
     var live = approvalFlow.active();
     var expired = approvalFlow.isExpired();
     if (live) approvalCardDismissed = false;  // a new gate brings the card back
-    if ((!live && !expired) || approvalCardDismissed) {
+    var showing = (live || expired) && !approvalCardDismissed;
+    /* Pending-banner coexistence (T7, PRD §8): while the gate card
+     * shows, #pending-banner stays visible but visually SECONDARY to
+     * it — body.gate-live drives the CSS; the banner's own logic is
+     * untouched. The flag covers the gray expired card's 5 s linger
+     * too (the card is still showing). */
+    document.body.classList.toggle("gate-live", showing);
+    if (!showing) {
       if (approvalCard) {
         approvalCard.el.remove();
         approvalCard = null;
@@ -2073,7 +2082,10 @@
     startCallTimer();
     requestWakeLock();
     openEvents();  // user gesture: unlocks autoplay for announcements
-    setCallState("listening");
+    // T7: a gate recovered at boot still owns the mic — the call enters
+    // confirming (pill "Confirmar ▲", utterances -> gate resolve), not
+    // plain listening.
+    setCallState(micBaseState());
     startListening();
     openDrawer();  // AC1: the drawer auto-opens on call start
   }
@@ -2222,6 +2234,17 @@
       renderPill();
     }
   } catch (err) { /* private mode: normal idle boot */ }
+
+  /* T7 reload recovery (PRD §5): ask the server whether the session
+   * still has a live gate (mid-gate reload). A live payload re-enters
+   * confirming — card restored with the remaining countdown — and the
+   * drawer re-opens with it (PRD §8, never in text mode). Async and
+   * failure-silent: boot neither waits nor breaks, and the mic stays
+   * off until the user taps back in (FR15); the call then resumes
+   * under confirming via micBaseState() in startCall(). */
+  approvalFlow.recover(sessionId).then(function (payload) {
+    if (payload && !textMode) openDrawer();
+  });
 
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js").catch(function () { /* best effort */ });
