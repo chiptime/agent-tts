@@ -6,6 +6,10 @@ Targets:
   Windows host (native WASAPI playback there).
 - "wsl-ps": zero-install WSL mode; pipe WAV bytes to PowerShell on the
   Windows host.
+- "windows": direct to the Windows host when the winhost receiver is
+  running; on an unreachable receiver it falls back to the local device
+  (WSLg PulseAudio under WSL) — PowerShell is never used. On native
+  Windows it resolves to "local" at resolve time.
 - "auto": environment-based selection (see :func:`resolve_target`); picks
   "winhost" under WSL when powershell.exe is reachable, "local" elsewhere.
 """
@@ -15,8 +19,9 @@ import shutil
 import subprocess
 import sys
 
-VALID_TARGETS = ("local", "winhost", "wsl-ps")
+VALID_TARGETS = ("local", "winhost", "wsl-ps", "windows")
 AUTO_TARGET = "auto"
+WINDOWS_TARGET = "windows"
 
 ENV_PLAYBACK = "AGENT_TTS_PLAYBACK"
 ENV_WINHOST_HOST = "AGENT_TTS_WINHOST_HOST"
@@ -81,7 +86,11 @@ def resolve_target(flag_value, env=None) -> str:
     """Resolves the active playback target: CLI flag wins, then AGENT_TTS_PLAYBACK, then "local".
 
     The special value "auto" (flag or env) selects the concrete target
-    from the environment via :func:`resolve_auto_target`.
+    from the environment via :func:`resolve_auto_target`. The "windows"
+    target resolves to "local" on native Windows; on any other platform
+    it is kept verbatim as a marker — :class:`RemoteAudioSession` treats
+    it as a winhost-flavored target whose unreachable-fallback is the
+    local device instead of PowerShell.
     """
     env = os.environ if env is None else env
     if flag_value:
@@ -91,6 +100,8 @@ def resolve_target(flag_value, env=None) -> str:
         value = normalize_target(env_value) if env_value else "local"
     if value == AUTO_TARGET:
         return resolve_auto_target(env)
+    if value == WINDOWS_TARGET and sys.platform == "win32":
+        return "local"
     return value
 
 

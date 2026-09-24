@@ -120,6 +120,43 @@ class FakePSSession:
         self.calls.append(("finish",))
 
 
+class FakeAudioSession:
+    """Records the local AudioSession surface calls made by RemoteAudioSession."""
+
+    instances = []
+
+    def __init__(self, label="Audio", auto_rewind_sec=2.0, boundaries=None,
+                 highlight=False, autoscroll=False, bionic=False, zen=False):
+        self.calls = []
+        self.state = {"stop": False, "status": "synthesizing"}
+        self.boundaries = boundaries if boundaries is not None else wc.BoundaryMap()
+        FakeAudioSession.instances.append(self)
+
+    def prepare_pcm(self, decoded):
+        self.calls.append(("prepare", decoded))
+
+    def append_pcm(self, decoded):
+        self.calls.append(("append", decoded))
+        return True
+
+    def play(self, decoded):
+        self.calls.append(("play", decoded))
+
+    def handle_ipc_command(self, cmd):
+        self.calls.append(("ipc", cmd))
+        return "status=ok"
+
+    def stop(self):
+        self.calls.append(("stop",))
+
+
+class BoomPSSession:
+    """Constructing a PowerShell session for the windows target is a bug."""
+
+    def __init__(self, *args, **kwargs):
+        raise AssertionError("PowershellSession must never be constructed for the windows target")
+
+
 def wait_for(predicate, timeout=2.0):
     """Polls a condition on a background thread (server handlers run async)."""
     deadline = time.time() + timeout
@@ -396,3 +433,212 @@ def test_remote_ipc_status_and_stop(winserver, monkeypatch):
     assert session.handle_ipc_command("resume").startswith("status=playing")
     assert session.handle_ipc_command("seek +10").startswith("ERR:")
     assert session.handle_ipc_command("stop") == "status=stopped"
+
+
+# -- "windows" target: winhost with local-device fallback, never PowerShell ---
+
+
+def test_windows_target_streams_over_winhost_when_reachable(winserver, monkeypatch, capsys):
+    server, host, port, sink = winserver
+    patch_target(monkeypatch, host, port)
+    FakeAudioSession.instances = []
+    monkeypatch.setattr(wc, "AudioSession", FakeAudioSession)
+    session = RemoteAudioSession(target="windows")
+    g1 = make_decoded_pcm(100, 24000, 1)
+    g2 = make_decoded_pcm(60, 24000, 1)
+    session.prepare_pcm(g1)
+    assert session.append_pcm(g2) is True
+    session.play(g1)
+
+    assert rendered_audio(sink) == g1.samples.tobytes() + g2.samples.tobytes()
+    assert "falling back" not in capsys.readouterr().err
+    assert FakeAudioSession.instances == []  # local device untouched when receiver is alive
+
+
+def test_windows_target_falls_back_to_local_when_unreachable(monkeypatch, capsys):
+    patch_target(monkeypatch, "127.0.0.1", 1)  # nothing listening
+    monkeypatch.setattr(wc, "PowershellSession", BoomPSSession)  # must never fire
+    FakeAudioSession.instances = []
+    monkeypatch.setattr(wc, "AudioSession", FakeAudioSession)
+    session = RemoteAudioSession(target="windows")
+    g1 = make_decoded_pcm(100, 24000, 1)
+    session.prepare_pcm(g1)
+    session.play(g1)
+
+    err = capsys.readouterr().err
+    assert err.count("falling back to local playback") == 1
+    assert FakeAudioSession.instances, "local AudioSession must be constructed"
+    local = FakeAudioSession.instances[0]
+    assert local.calls == [("prepare", g1), ("play", g1)]
+
+    # Streaming continues through the local session; mismatch rule intact.
+    g2 = make_decoded_pcm(40, 24000, 1)
+    assert session.append_pcm(g2) is True
+    assert local.calls[-1] == ("append", g2)
+    assert session.append_pcm(make_decoded_pcm(50, 48000, 1)) is False
+    assert [c for c in local.calls if c[0] == "append"] == [("append", g2)]
+    assert "mismatched format" in capsys.readouterr().err
+
+
+def test_windows_fallback_never_spawns_powershell_across_run(monkeypatch, capsys):
+    patch_target(monkeypatch, "127.0.0.1", 1)
+    monkeypatch.setattr(wc, "is_wsl_ps_available", lambda env=None: True)
+    FakePSSession.instances = []
+    monkeypatch.setattr(wc, "PowershellSession", BoomPSSession)
+    FakeAudioSession.instances = []
+    monkeypatch.setattr(wc, "AudioSession", FakeAudioSession)
+    session = RemoteAudioSession(target="windows")
+    g1 = make_decoded_pcm(80, 24000, 1)
+    session.prepare_pcm(g1)
+    session.play(g1)
+    session.append_pcm(make_decoded_pcm(40, 24000, 1))
+    session.handle_ipc_command("toggle-pause")
+    session.stop()
+
+    assert FakePSSession.instances == []  # no PowerShell process for the whole run
+    assert "wsl-ps" not in capsys.readouterr().err
+
+
+def test_windows_target_ipc_controls_forward_to_winhost_when_reachable(winserver, monkeypatch):
+    server, host, port, _ = winserver
+    patch_target(monkeypatch, host, port)
+    sent = []
+    monkeypatch.setattr(wc, "send_control", lambda cmd, env=None: sent.append(cmd) or True)
+    FakeAudioSession.instances = []
+    monkeypatch.setattr(wc, "AudioSession", FakeAudioSession)
+    session = RemoteAudioSession(target="windows")
+    session.prepare_pcm(make_decoded_pcm(24000, 24000, 1))  # opens the transport
+    session.state["status"] = "playing"
+
+    session.handle_ipc_command("pause")
+    session.handle_ipc_command("resume")
+    session.handle_ipc_command("stop")
+    assert sent == ["pause", "resume", "stop"]
+    assert FakeAudioSession.instances == []
+
+
+def test_windows_target_ipc_controls_act_on_local_session_after_fallback(monkeypatch):
+    patch_target(monkeypatch, "127.0.0.1", 1)
+    monkeypatch.setattr(wc, "PowershellSession", BoomPSSession)
+    FakeAudioSession.instances = []
+    monkeypatch.setattr(wc, "AudioSession", FakeAudioSession)
+    session = RemoteAudioSession(target="windows")
+    session.prepare_pcm(make_decoded_pcm(100, 24000, 1))  # triggers local fallback
+    session.state["status"] = "playing"
+
+    session.handle_ipc_command("pause")
+    session.handle_ipc_command("resume")
+    session.handle_ipc_command("stop")
+    local = FakeAudioSession.instances[0]
+    assert ("ipc", "pause") in local.calls
+    assert ("ipc", "resume") in local.calls
+    assert ("ipc", "stop") in local.calls
+
+
+def test_windows_target_stop_after_fallback_stops_local_session(monkeypatch):
+    patch_target(monkeypatch, "127.0.0.1", 1)
+    monkeypatch.setattr(wc, "PowershellSession", BoomPSSession)
+    FakeAudioSession.instances = []
+    monkeypatch.setattr(wc, "AudioSession", FakeAudioSession)
+    session = RemoteAudioSession(target="windows")
+    session.prepare_pcm(make_decoded_pcm(100, 24000, 1))
+    session.play(make_decoded_pcm(100, 24000, 1))
+    session.stop()  # natural end of run: local session flagged to stop
+
+    local = FakeAudioSession.instances[0]
+    assert local.calls[-1] == ("stop",)
+
+
+# -- "windows" fallback boundary estimation (document safety net) ------------
+
+
+DOCUMENT_TEXT = "Primera frase del documento largo. Segunda frase del documento largo."
+
+
+def test_windows_fallback_estimates_document_boundaries_when_map_empty(monkeypatch, capsys):
+    """Carrier built without a map and nothing estimated upstream still serves karaoke.
+
+    Regression for the empty-BoundaryMap fallback: the local AudioSession
+    shares the carrier map, so estimating it in place at the first buffer
+    load makes status/sentence/scroll-info/highlight carry real data.
+    """
+    patch_target(monkeypatch, "127.0.0.1", 1)  # nothing listening -> local fallback
+    monkeypatch.setattr(wc, "PowershellSession", BoomPSSession)
+    session = RemoteAudioSession(target="windows", document_text=DOCUMENT_TEXT)
+    session.prepare_pcm(make_decoded_pcm(48000, 24000, 1))  # 2s -> duration known
+    session.state["status"] = "playing"
+
+    assert session._local_session is not None, "local fallback session must exist"
+    assert session._local_session.boundaries is session.boundaries, "map must be shared"
+    assert len(session.boundaries.sentences) == 2
+    assert session.boundaries.words and session.boundaries.paragraphs
+
+    status = session.handle_ipc_command("status")
+    assert "sent_idx=0" in status
+    assert "Primera frase del documento largo." in status
+
+    sentence = session.handle_ipc_command("sentence")
+    assert "sent_idx=0" in sentence
+    assert "text=Primera frase del documento largo." in sentence
+
+    scroll = session.handle_ipc_command("scroll-info")
+    assert "sent_idx=0" in scroll
+    assert "total_sents=2" in scroll
+    assert "para_idx=0" in scroll
+
+    highlight = session.handle_ipc_command("highlight")
+    assert "Primera" in highlight
+    assert "\x1b[" in highlight  # SGR codes for karaoke rendering
+
+
+def test_windows_fallback_estimates_document_boundaries_on_first_append(monkeypatch):
+    """A stream whose first segment carries no frames estimates once duration arrives.
+
+    Mirrors the streaming pipeline: the buffer starts empty (total 0.0, no
+    estimation possible) and the map fills at the first append that makes
+    the duration known.
+    """
+    patch_target(monkeypatch, "127.0.0.1", 1)
+    monkeypatch.setattr(wc, "PowershellSession", BoomPSSession)
+    FakeAudioSession.instances = []
+    monkeypatch.setattr(wc, "AudioSession", FakeAudioSession)
+    session = RemoteAudioSession(target="windows", document_text=DOCUMENT_TEXT)
+    session.prepare_pcm(make_decoded_pcm(0, 24000, 1))  # no frames yet -> total 0.0
+
+    assert session.boundaries.sentences == []
+    local = FakeAudioSession.instances[0]
+    assert local.boundaries is session.boundaries
+
+    assert session.append_pcm(make_decoded_pcm(48000, 24000, 1)) is True
+    assert len(session.boundaries.sentences) == 2
+    assert len(local.boundaries.sentences) == 2, "shared map fills in place"
+
+
+def test_windows_fallback_keeps_existing_boundaries_untouched(monkeypatch):
+    """Per-segment merged boundaries (streaming path) are never re-estimated."""
+    patch_target(monkeypatch, "127.0.0.1", 1)
+    monkeypatch.setattr(wc, "PowershellSession", BoomPSSession)
+    monkeypatch.setattr(wc, "AudioSession", FakeAudioSession)
+    session = RemoteAudioSession(target="windows", document_text=DOCUMENT_TEXT)
+
+    merged = wc.estimate_boundaries_from_text("Frase previa del primer grupo.", 1.0)
+    with session.lock:  # same in-place merge cli.py's merge_group performs
+        session.boundaries.sentences.extend(merged.sentences)
+        session.boundaries.words.extend(merged.words)
+        session.boundaries.paragraphs.extend(merged.paragraphs)
+    before = list(session.boundaries.sentences)
+
+    session.prepare_pcm(make_decoded_pcm(48000, 24000, 1))
+
+    assert session.boundaries.sentences == before, "existing sentences must be preserved"
+
+
+def test_windows_fallback_without_document_keeps_empty_map(monkeypatch):
+    """No document text (e.g. --play-file replays) -> estimation impossible, no crash."""
+    patch_target(monkeypatch, "127.0.0.1", 1)
+    monkeypatch.setattr(wc, "PowershellSession", BoomPSSession)
+    monkeypatch.setattr(wc, "AudioSession", FakeAudioSession)
+    session = RemoteAudioSession(target="windows")
+    session.prepare_pcm(make_decoded_pcm(48000, 24000, 1))
+
+    assert session.boundaries.sentences == []
