@@ -1,0 +1,95 @@
+{
+  "meta": {
+    "date_utc": "2026-09-24T21:42:10+00:00",
+    "metric_set": "BLOQUE 1.3 Hito Cadena \u2014 definici\u00f3n de done (AT-08)",
+    "fidelity": "real daemon subprocess + real IPC + real miniaudio decode of real WAV files + real queue dispatch + real chain assembly + real daemon chain-boundary watchdog; local target audio DEVICE stubbed at AudioSession.play (simulated consumption at the real sample rate; no device in the WSL measurement environment)",
+    "seam_definition": "chain-item trace = the daemon's watcher observing the playback cursor cross a chain item's chain-global start (item 0 included); slack between consecutive crossings minus the audio time between the starts (duration + gap) is the scheduling hole bounded by RNF-AT-08-1",
+    "environment": {
+      "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+      "kernel": "6.6.87.2-microsoft-standard-WSL2",
+      "cpu_count": 28,
+      "python": "3.14.7",
+      "item_audio_sec": 0.4,
+      "wav_format": "44100Hz/2ch/16bit (decode-native passthrough)"
+    },
+    "command": "PYTHONPATH=src /home/bruno/Code/personal/agent-tts-worktrees/bloque-1.3/.venv/bin/python scripts/chain_metrics.py --target local",
+    "worktree": "/home/bruno/Code/personal/agent-tts-worktrees/bloque-1.3",
+    "targets_note": "chain is a local-target milestone (T6); wsl-ps/winhost keep their documented ERR for seek/phrase controls and are not measured here"
+  },
+  "target": "local",
+  "metrics": {
+    "us_at_08_3_nothing_inserted": {
+      "gap_ms": 0,
+      "assert": "assembled stream == decoded(a) + decoded(b), byte-exact",
+      "a_samples": 26460,
+      "b_samples": 17640,
+      "pass": true
+    },
+    "rnf_at_08_1_chain_slack_ms_slack_gap0": {
+      "threshold_ms": 50.0,
+      "max_ms": 9.803,
+      "p95_ms": 9.803,
+      "mean_ms": 7.343,
+      "samples": 9,
+      "files": 10,
+      "gap_ms": 0.0,
+      "one_audio_session": true,
+      "pass": true
+    },
+    "rnf_at_08_1_chain_slack_ms_slack_gap120": {
+      "threshold_ms": 50.0,
+      "max_ms": 11.174,
+      "p95_ms": 11.174,
+      "mean_ms": 8.229,
+      "samples": 4,
+      "files": 5,
+      "gap_ms": 120.0,
+      "one_audio_session": true,
+      "pass": true
+    }
+  },
+  "scenario_results": {
+    "slack_gap0": {
+      "files": 10,
+      "gap_ms": 0.0,
+      "boundaries_measured": 9,
+      "slack_ms": [
+        4.641,
+        4.305,
+        9.285,
+        4.892,
+        9.253,
+        9.479,
+        4.671,
+        9.803,
+        9.755
+      ],
+      "audio_sessions_for_whole_chain": 1,
+      "chain_completed": true,
+      "assembled_duration_sec": 4.0,
+      "t_enqueue_to_dispatch_ms": 0.381
+    },
+    "slack_gap120": {
+      "files": 5,
+      "gap_ms": 120.0,
+      "boundaries_measured": 4,
+      "slack_ms": [
+        5.575,
+        5.642,
+        11.174,
+        10.523
+      ],
+      "audio_sessions_for_whole_chain": 1,
+      "chain_completed": true,
+      "assembled_duration_sec": 2.48,
+      "t_enqueue_to_dispatch_ms": 0.37
+    },
+    "gapless_bytes": {
+      "a_samples": 26460,
+      "b_samples": 17640,
+      "joined_bytes": 88200,
+      "assert_exact_concatenation": true
+    }
+  },
+  "all_pass": true
+}
