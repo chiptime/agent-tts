@@ -1714,12 +1714,22 @@ speak_text() {
   # (--play-file: no sentence boundaries) deliberately never pass here.
   if [[ "$TTS_READER_AUTO" == "on" ]]; then
     (
-      # Always compact: the reader renders ONLY the current sentence
-      # (progress header + 1-6 wrapped lines), so a tall popup is dead
-      # space even on long reads.
+      # The reader renders ONLY the current sentence (header + wrapped
+      # body), so the popup height is sized once per read from the LONGEST
+      # sentence in the text (worst case fits, no re-opening flashes).
+      # ~60 chars per wrapped line at 60% width, conservative.
+      local -i max_len=0 body_lines
+      local chunk
+      while IFS= read -r chunk; do
+        (( ${#chunk} > max_len )) && max_len=${#chunk}
+      done < <(printf '%s' "$text" | tr '.!?\r' '\n\n\n\n')
+      (( max_len == 0 )) && max_len=${#text}
+      body_lines=$(( (max_len + 59) / 60 ))
+      (( body_lines < 2 )) && body_lines=2
+      (( body_lines > 9 )) && body_lines=9
       command -v herdr >/dev/null 2>&1 \
         && herdr plugin pane open --plugin herdr.tts --entrypoint tts-reader \
-             --width "60%" --height 7 >/dev/null 2>&1 \
+             --width "60%" --height "$(( body_lines + 4 ))" >/dev/null 2>&1 \
         || true
     )
   fi
