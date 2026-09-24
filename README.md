@@ -169,6 +169,8 @@ ok=false error=<message, always the FINAL field and may contain spaces>
 
 Examples: `ok=false error=no active playback session` (a control command against an idle daemon), `ok=false error=unknown priority label: 'urgent'`, `ok=false error=synthesis exploded`. Success payloads keep their classic prefixes (`pong …`, `status=… …`), and daemon acks carry `ok=true` (`ok=true shutting_down=true`, `ok=true item=7 queue_len=2`). Only the transport layer keeps the legacy `ERR:` prefix (framing violations rejected before dispatch, e.g. `ERR: command too large`). `agent_tts --ipc-json` treats `error=` exactly like the trailing free-text `text=` field, so `ok=false error=no active playback session` parses as `{"ok": "false", "error": "no active playback session"}`.
 
+**Client error contract (frozen).** The CLI applies the same discipline on its own output streams: any `ok=false` or `ERR:` reply prints its error message to **stderr** and exits `1` (`--ipc-json` prints the JSON error object on stderr instead), while success payloads keep printing to **stdout** with exit `0` — a host parsing stdout never sees error text. This covers control commands (`--ipc-cmd pause` against an idle daemon prints `Error: no active playback session` on stderr, exit 1), delegated speak/play rejections, and transport errors.
+
 **Queue status fields (freeze-critical).** Every `status` reply — idle or during playback — ends with:
 
 ```

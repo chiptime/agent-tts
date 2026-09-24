@@ -1213,17 +1213,28 @@ def main():
         from agent_tts.daemon import send_control_command
 
         res = send_control_command(ipc_cmd)
-        if res is not None:
+        if res is None:
+            print("Error: No active audio playback session found", file=sys.stderr)
+            sys.exit(1)
+        # A3 client discipline (frozen contract): typed error replies go to
+        # STDERR with a non-zero exit — hosts parsing stdout never see
+        # error text. --ipc-json keeps the machine shape, on stderr.
+        error = _reply_error_text(res)
+        if error is not None:
             if args.ipc_json:
                 from agent_tts.ipc import ipc_reply_json
 
-                print(ipc_reply_json(res))
+                print(ipc_reply_json(res), file=sys.stderr)
             else:
-                print(res)
-            sys.exit(0)
-        else:
-            print("Error: No active audio playback session found", file=sys.stderr)
+                print(f"Error: {error}", file=sys.stderr)
             sys.exit(1)
+        if args.ipc_json:
+            from agent_tts.ipc import ipc_reply_json
+
+            print(ipc_reply_json(res))
+        else:
+            print(res)
+        sys.exit(0)
 
     if args.probe:
         # Host-facing utility mode: duration of one audio file as a plain
@@ -1342,15 +1353,37 @@ def main():
     )
 
 
+def _reply_error_text(reply: Optional[str]) -> Optional[str]:
+    """Extracts the message of a typed error reply (A3, frozen schema).
+
+    ``error=`` is always the FINAL space-bearing field of an
+    ``ok=false`` reply, so everything after ``ok=false error=`` is the
+    message; the transport-level ``ERR:`` prefix (framing violations)
+    maps onto the same discipline. Returns None for success/payload
+    replies and for empty input.
+    """
+    if not reply:
+        return None
+    if reply.startswith("ok=false error="):
+        return reply[len("ok=false error=") :]
+    if reply == "ok=false":
+        return reply  # typed error with no message field
+    if reply.startswith("ERR:"):
+        return reply[len("ERR:"):].strip() or reply
+    return None
+
+
 def _delegate_and_exit(payload: dict) -> None:
     """Delegates one playback to the daemon (vía única) and exits.
 
     The CLI is always a client (RF-AT-04-5): the daemon is auto-started
     transparently when missing, respawned when wedged, and the reply maps
     onto the classic CLI's observable contract — silence and exit 0 on
-    success, one stderr line and exit 1 on failure. An interrupt during
-    the delegation forwards a best-effort stop and exits 130 (classic
-    Ctrl-C semantics).
+    success, one stderr line and exit 1 on failure (A3 client
+    discipline: ok=false/ERR: messages land on stderr, stdout stays
+    clean for payload consumers). An interrupt during the delegation
+    forwards a best-effort stop and exits 130 (classic Ctrl-C
+    semantics).
     """
     from agent_tts.daemon import DaemonUnavailableError, delegate_play
 
@@ -1367,12 +1400,9 @@ def _delegate_and_exit(payload: dict) -> None:
             sys.exit(1)
     finally:
         _delegated_playback.clear()
-    # Error shapes: the daemon's typed ``ok=false error=...`` (A3) plus the
-    # transport-level ``ERR:`` prefix (framing errors raised before the
-    # daemon dispatch). Full stderr/exit-code discipline is the queue CLI
-    # unit's job; this check only keeps the classic contract.
-    if reply is None or reply.startswith("ERR") or reply.startswith("ok=false"):
-        detail = reply if reply else "daemon closed the connection during playback"
+    error = _reply_error_text(reply) if reply else None
+    if reply is None or error is not None:
+        detail = error if error else "daemon closed the connection during playback"
         print(f"Error: {detail}", file=sys.stderr)
         sys.exit(1)
     sys.exit(0)
