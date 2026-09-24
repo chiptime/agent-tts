@@ -409,6 +409,75 @@ def test_shutdown_stops_all_inflight_sessions(channel):
     assert set(stopped) == {a, b}
 
 
+def test_play_registering_during_shutdown_is_refused_not_orphaned(channel):
+    """RS-1: a play registering while _shutdown drains cannot escape the stop.
+
+    _shutdown snapshots _sessions once: a play whose session registers
+    after the snapshot but before the drain check used to run to
+    completion without ever receiving stop. Registration is now refused
+    with a deterministic error once shutdown has started.
+    """
+    import types
+
+    d = Daemon(
+        socket_path=channel["sock"],
+        provider_cache=ProviderCache(factory=lambda **kw: StubEngine()),
+    )
+    snapshot_taken = threading.Event()
+    stopped = []
+
+    class Early:
+        def stop(self):
+            # Signals that _shutdown has snapshotted and is stopping us.
+            snapshot_taken.set()
+            stopped.append(self)
+
+    class Late:
+        def __init__(self):
+            self.state = {"stop": False}
+
+        def stop(self):
+            stopped.append(self)
+
+    with d._lock:
+        d._sessions.add(Early())
+
+    late = Late()
+    played = []
+
+    def fake_build(target, label, **kw):
+        # Registers the session only AFTER _shutdown has snapshotted, so
+        # the registration races the drain exactly as in the defect.
+        snapshot_taken.wait(timeout=5.0)
+        return late
+
+    async def fake_play_speech(session, text, **kw):
+        deadline = time.monotonic() + 2.0
+        while not session.state.get("stop") and time.monotonic() < deadline:
+            time.sleep(0.02)
+        played.append(bool(session.state.get("stop")))
+
+    d._cli = types.SimpleNamespace(
+        _build_playback_session=fake_build, _play_speech=fake_play_speech
+    )
+
+    replies = []
+
+    def run_play():
+        replies.append(d.handle_command("play " + json.dumps({"text": "tarde"})))
+
+    play_thread = threading.Thread(target=run_play, daemon=True)
+    play_thread.start()
+    d._shutdown()
+    play_thread.join(timeout=5.0)
+
+    # The late play gets a deterministic refusal instead of running
+    # unsupervised through the shutdown drain.
+    assert replies == ["ERR: daemon shutting down"]
+    assert played == []
+    assert len(stopped) == 1  # only the pre-snapshot session existed
+
+
 def test_shutdown_command_stops_inflight_playback(channel, monkeypatch):
     d = _start_daemon(channel, monkeypatch)
     box, play_thread = _play_async(d, {"text": "larga"})
