@@ -40,11 +40,47 @@ import miniaudio
 
 from agent_tts import __version__
 from agent_tts.audio import _write_player_locks, cleanup_locks
-from agent_tts.constants import DEFAULT_RATE, DEFAULT_VOICE, IPC_SOCKET
+from agent_tts.constants import (
+    DEFAULT_AUTOSTART_IDLE_TIMEOUT_SEC,
+    DEFAULT_RATE,
+    DEFAULT_VOICE,
+    ENV_IDLE_TIMEOUT,
+    IPC_SOCKET,
+)
 from agent_tts.ipc import IPCServer
 from agent_tts.ownership import owns_channel
 from agent_tts.playback_target import InvalidPlaybackTarget, resolve_target
 from agent_tts.providers import TTSProvider, get_provider
+
+
+def autostart_idle_timeout_sec() -> Optional[float]:
+    """Default idle timeout for implicitly auto-started daemons (RF-AT-04-7).
+
+    AGENT_TTS_IDLE_TIMEOUT (seconds) overrides the 30-minute default; 0
+    disables the idle exit. Invalid or negative values warn once and keep
+    the default. Explicit starts (--serve/--foreground) pass no timeout at
+    all unless the user asks for one.
+    """
+    raw = os.environ.get(ENV_IDLE_TIMEOUT, "")
+    if not raw:
+        return DEFAULT_AUTOSTART_IDLE_TIMEOUT_SEC
+    try:
+        value = float(raw)
+    except ValueError:
+        print(
+            f"Ignoring invalid {ENV_IDLE_TIMEOUT}={raw!r}; using the "
+            f"{DEFAULT_AUTOSTART_IDLE_TIMEOUT_SEC:.0f}s default",
+            file=sys.stderr,
+        )
+        return DEFAULT_AUTOSTART_IDLE_TIMEOUT_SEC
+    if value < 0:
+        print(
+            f"Ignoring negative {ENV_IDLE_TIMEOUT}={raw!r}; using the "
+            f"{DEFAULT_AUTOSTART_IDLE_TIMEOUT_SEC:.0f}s default",
+            file=sys.stderr,
+        )
+        return DEFAULT_AUTOSTART_IDLE_TIMEOUT_SEC
+    return value or None  # 0 disables the idle exit
 
 
 class ProviderCache:
