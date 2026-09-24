@@ -175,8 +175,14 @@ Route: inline (copy + smoke are per-action).
   expiry at touch); resolve maps the lexicon → approve / reject /
   listen_replace (gate untouched, client dictates then PATCHes) / reprompt
   (×1 budget, spoken "¿Sí o no?" verbatim) → auto-reject; PATCH restarts
-  the timer; GET /approval/current returns `{approval: …|null}`. Commit
-  hash recorded by orchestrator.
+  the timer; GET /approval/current returns `{approval: …|null}`.
+- Full-suite baseline going forward: 368 after T4.
+  - `7bdb04a` feat(approval): add approval endpoints with exact-args replay
+  - T5 contracts: resolve response `{decision, answer, audio_url, approval}`,
+    `decision ∈ approve|reject|listen_replace|reprompt`; `listen_replace`
+    leaves the gate untouched (client dictates ONE round → PATCH →
+    re-confirm); PATCH has no re-echo audio (client re-echoes via
+    `POST /tts`); approve response = exact /ask shape; reject is silent.
 
 ## Next Step
 
