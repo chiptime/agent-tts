@@ -195,7 +195,13 @@ class AudioSession:
         self.ipc_server: Optional[IPCServer] = None
 
     def start_ipc(self) -> None:
-        """Starts the Unix socket IPC server for interactive control."""
+        """Starts the Unix socket IPC server for interactive control.
+
+        Ownership-enforcing (US-AT-09-1): every caller runs the lock/pid
+        election (_write_player_locks) before this, and IPCServer requires
+        ownership by default — closing the free-path race where a losing
+        player B binds the empty socket path before the elected owner A.
+        """
         self.ipc_server = IPCServer(command_handler=self.handle_ipc_command)
         self.ipc_server.start()
 

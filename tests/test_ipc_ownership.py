@@ -179,7 +179,11 @@ def test_non_owner_never_reclaims_an_orphan_socket(channel):
 
 def test_non_owner_server_stop_keeps_transport_marker(channel):
     """RF-AT-09-3: IPCServer.stop() removes the transport only for its owner."""
-    server = ipc.IPCServer(command_handler=lambda cmd: "ok", socket_path=channel["sock"])
+    # require_ownership=False: this test exercises stop()/cleanup marker
+    # semantics for a non-owner that legitimately holds its own channel.
+    server = ipc.IPCServer(
+        command_handler=lambda cmd: "ok", socket_path=channel["sock"], require_ownership=False
+    )
     server.start()
     assert server.server_sock is not None
     server.stop()
@@ -427,3 +431,270 @@ def test_orphan_reclaim_failure_warns_on_stderr(tmp_path, monkeypatch, capsys):
     assert orphan in err  # names what failed
     assert "Permission denied" in err  # carries the underlying error
     assert "interactive control unavailable" in err  # states the consequence
+
+
+# --- Free-path race: the loser binds before the owner (US-AT-09-1) ------------------
+
+
+def test_require_ownership_never_takes_a_free_path_posix(channel):
+    """US-AT-09-1 gap: without winning the election, a free path stays free.
+
+    The live-channel and orphan-reclaim branches already refuse non-owners,
+    but the plain free path used to be bound unconditionally: a losing B
+    could expose the channel while the elected owner A had not bound yet.
+    """
+    assert ipc.server_socket(socket_path=channel["sock"], require_ownership=True) is None
+    assert not os.path.exists(channel["sock"])
+
+    audio._write_player_locks()
+    sock = ipc.server_socket(socket_path=channel["sock"], require_ownership=True)
+    try:
+        assert sock is not None  # the elected owner takes the free path
+    finally:
+        sock.close()
+    audio.cleanup_locks()
+
+
+def test_require_ownership_never_takes_a_free_path_windows(channel, tmp_path, monkeypatch):
+    """RF-AT-09-5 parity: the same free-channel guard over the TCP transport.
+
+    On Windows the port marker IS the channel: a non-owner must not create
+    it either, even when no marker exists yet to prove a live owner.
+    """
+    marker = str(tmp_path / "ipc.port")
+    monkeypatch.setattr(ipc, "_is_windows", lambda: True)
+    monkeypatch.setattr(ipc, "IPC_PORT_FILE", marker)
+
+    assert ipc.server_socket(socket_path=channel["sock"], require_ownership=True) is None
+    assert not os.path.exists(marker)  # the channel was never created
+
+    audio._write_player_locks()
+    sock = ipc.server_socket(socket_path=channel["sock"], require_ownership=True)
+    try:
+        assert sock is not None
+        assert os.path.exists(marker)  # the owner exposes the transport
+    finally:
+        sock.close()
+    audio.cleanup_locks()
+
+
+def _wait_for_file(path: str, timeout_sec: float = 5.0) -> bool:
+    """Polls until the marker file exists (or the deadline)."""
+    deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < deadline:
+        if os.path.exists(path):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _wait_for_reply_prefix(prefix: str, socket_path: str, timeout_sec: float = 5.0) -> str:
+    """Polls the channel until a reply starting with the prefix arrives."""
+    deadline = time.monotonic() + timeout_sec
+    last = None
+    while time.monotonic() < deadline:
+        last = ipc.send_ipc_command("status", socket_path=socket_path)
+        if last and last.startswith(prefix):
+            return last
+        time.sleep(0.05)
+    return last or ""
+
+
+_ELECTED_OWNER_CHILD = (
+    "import os\n"
+    "import sys\n"
+    "import time\n"
+    "import agent_tts.audio as audio\n"
+    "elected, go, bound, stop = sys.argv[1:5]\n"
+    "audio._write_player_locks()\n"
+    "open(elected, 'w').close()\n"
+    "while not (os.path.exists(go) or os.path.exists(stop)):\n"
+    "    time.sleep(0.02)\n"
+    "if os.path.exists(go):\n"
+    "    session = audio.AudioSession(label='A')\n"
+    "    session.start_ipc()\n"
+    "    print('A_BOUND', session.ipc_server.server_sock is not None, flush=True)\n"
+    "    open(bound, 'w').close()\n"
+    "    while not os.path.exists(stop):\n"
+    "        time.sleep(0.02)\n"
+    "    session.ipc_server.stop()\n"
+    "    audio.cleanup_locks()\n"
+)
+
+_LOSER_WIRING_CHILD = (
+    "import agent_tts.audio as audio\n"
+    "audio._write_player_locks()\n"
+    "session = audio.AudioSession(label='B')\n"
+    "session.start_ipc()\n"
+    "print('B_BOUND', session.ipc_server.server_sock is not None, flush=True)\n"
+)
+
+
+def test_loser_wiring_never_binds_the_free_path_before_the_owner(channel, tmp_path):
+    """US-AT-09-1 through the production wiring: AudioSession.start_ipc.
+
+    A is elected (alive, holds the flock) but has not bound yet; B loses
+    the election and its start_ipc() runs against the still-free path. B
+    must never expose the channel, and A must bind it afterwards.
+    """
+    elected = str(tmp_path / "a-elected")
+    go = str(tmp_path / "go-a")
+    bound = str(tmp_path / "a-bound")
+    stop = str(tmp_path / "stop-a")
+
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _ELECTED_OWNER_CHILD, elected, go, bound, stop],
+        env=_child_env(channel),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        # A won the election and is alive — but the channel path is free.
+        assert _wait_for_file(elected), "owner A never won the election"
+        assert not os.path.exists(channel["sock"])
+
+        # B loses the election and must not take the free path.
+        loser = subprocess.run(
+            [sys.executable, "-c", _LOSER_WIRING_CHILD],
+            env=_child_env(channel),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert loser.returncode == 0, loser.stderr
+        assert "B_BOUND False" in loser.stdout
+        assert not os.path.exists(channel["sock"])  # B never created the channel
+
+        # The elected owner binds the still-free path and answers commands.
+        open(go, "w").close()
+        assert _wait_for_file(bound), "owner A never bound the channel"
+        assert _wait_for_reply_prefix("status=synthesizing", channel["sock"]) != ""
+    finally:
+        if not os.path.exists(stop):
+            open(stop, "w").close()
+        try:
+            out, err = proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, err = proc.communicate()
+    assert proc.returncode == 0, err
+    assert "A_BOUND True" in out
+
+
+# --- Remote playback routes: same invariant via the IPCServer default ----------------
+
+
+def test_ipc_server_requires_ownership_by_default(channel):
+    """US-AT-09-1 by construction: an IPCServer with no flags owns nothing.
+
+    PowershellSession and RemoteAudioSession build their control server as
+    a plain IPCServer(command_handler=...), so the class default must gate
+    the free path too — without winning the election there is no channel.
+    """
+    server = ipc.IPCServer(command_handler=lambda cmd: "ok", socket_path=channel["sock"])
+    server.start()
+    try:
+        assert server.server_sock is None  # no election: no channel
+        assert not os.path.exists(channel["sock"])
+    finally:
+        server.stop()
+
+    audio._write_player_locks()
+    owner = ipc.IPCServer(command_handler=lambda cmd: "ok", socket_path=channel["sock"])
+    owner.start()
+    try:
+        assert owner.server_sock is not None  # the elected owner binds
+    finally:
+        owner.stop()
+    audio.cleanup_locks()
+
+
+_REMOTE_LOSER_CHILD = (
+    "import agent_tts.audio as audio\n"
+    "from agent_tts.powershell_playback import PowershellSession\n"
+    "from agent_tts.winhost_client import RemoteAudioSession\n"
+    "audio._write_player_locks()\n"  # loses: the parent holds the flock
+    "ps = PowershellSession(label='B')\n"
+    "ps.start_ipc()\n"
+    "print('PS_BOUND', ps.ipc_server.server_sock is not None, flush=True)\n"
+    "wh = RemoteAudioSession(label='B', target='winhost')\n"
+    "wh.start_ipc()\n"
+    "print('WH_BOUND', wh.ipc_server.server_sock is not None, flush=True)\n"
+)
+
+
+def test_loser_remote_sessions_never_bind_the_free_path(channel):
+    """US-AT-09-1 on the remote playback routes (wsl-ps and winhost).
+
+    A is the elected, alive owner that has not bound yet (this process
+    holds the flock); the remote player B loses the election and must not
+    expose the channel on the still-free path.
+    """
+    audio._write_player_locks()  # this process is A: elected, alive, unbound
+    assert not os.path.exists(channel["sock"])
+
+    loser = subprocess.run(
+        [sys.executable, "-c", _REMOTE_LOSER_CHILD],
+        env=_child_env(channel),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    try:
+        assert loser.returncode == 0, loser.stderr
+        assert "PS_BOUND False" in loser.stdout
+        assert "WH_BOUND False" in loser.stdout
+        assert not os.path.exists(channel["sock"])  # nobody stole the path
+    finally:
+        audio.cleanup_locks()
+
+
+_REMOTE_OWNER_CHILD = (
+    "import os\n"
+    "import sys\n"
+    "import time\n"
+    "import agent_tts.audio as audio\n"
+    "from agent_tts.winhost_client import RemoteAudioSession\n"
+    "bound, stop = sys.argv[1], sys.argv[2]\n"
+    "audio._write_player_locks()\n"
+    "session = RemoteAudioSession(label='A', target='winhost')\n"
+    "session.start_ipc()\n"
+    "print('WH_BOUND', session.ipc_server.server_sock is not None, flush=True)\n"
+    "open(bound, 'w').close()\n"
+    "while not os.path.exists(stop):\n"
+    "    time.sleep(0.02)\n"
+    "session.ipc_server.stop()\n"
+    "audio.cleanup_locks()\n"
+)
+
+
+def test_owner_remote_session_binds_and_serves(channel, tmp_path):
+    """The ownership default must not break the legitimate remote owner.
+
+    A remote session that WON the election still exposes the channel and
+    answers control commands — enforcement only silences losers.
+    """
+    bound = str(tmp_path / "wh-bound")
+    stop = str(tmp_path / "wh-stop")
+
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _REMOTE_OWNER_CHILD, bound, stop],
+        env=_child_env(channel),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert _wait_for_file(bound), "remote owner never bound the channel"
+        assert _wait_for_reply_prefix("status=synthesizing", channel["sock"]) != ""
+    finally:
+        if not os.path.exists(stop):
+            open(stop, "w").close()
+        try:
+            out, err = proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, err = proc.communicate()
+    assert proc.returncode == 0, err
+    assert "WH_BOUND True" in out
