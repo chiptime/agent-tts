@@ -8,6 +8,7 @@ fallback, or the local device for the "windows" target fallback).
 """
 
 import json
+import os
 import socket
 import sys
 import threading
@@ -15,6 +16,7 @@ import time
 
 from agent_tts.audio import AudioSession
 from agent_tts.boundaries import BoundaryMap, estimate_boundaries_from_text
+from agent_tts.constants import DEFAULT_VOICE
 from agent_tts.ipc import IPCServer
 from agent_tts.playback_target import (
     CONNECT_TIMEOUT_SEC,
@@ -187,6 +189,8 @@ class RemoteAudioSession:
         bionic: bool = False,
         zen: bool = False,
         target: str = "winhost",
+        provider: str = "",
+        voice: str = "",
         env=None,
         document_text: str = "",
     ):
@@ -200,6 +204,17 @@ class RemoteAudioSession:
         self.zen = zen
         self.target = target
         self.env = env
+        # Engine metadata surfaced by the IPC status payload, resolved the
+        # same way as the local AudioSession (explicit arg > AGENT_TTS_*
+        # env > TTS_PROVIDER env > built-in defaults) so a delegated play
+        # reports what the request asked for on every target kind (RS-2).
+        self.provider = (
+            provider
+            or os.environ.get("AGENT_TTS_PROVIDER", "")
+            or os.environ.get("TTS_PROVIDER", "")
+            or "edge"
+        )
+        self.voice = voice or os.environ.get("AGENT_TTS_VOICE", "") or DEFAULT_VOICE
         self.state = {
             "status": "synthesizing",
             "pos": 0.0,
@@ -323,7 +338,8 @@ class RemoteAudioSession:
             para_idx = para.index if para else -1
             return (
                 f"status={self.state['status']} pos={pos:.2f} total={total:.2f} "
-                f"sent_idx={sent_idx} para_idx={para_idx} sentence={sent_clean}"
+                f"sent_idx={sent_idx} para_idx={para_idx} sentence={sent_clean} "
+                f"provider={self.provider} voice={self.voice}"
             )
 
     def _carrier_session(self):
@@ -695,6 +711,8 @@ class RemoteAudioSession:
                 autoscroll=self.autoscroll,
                 bionic=self.bionic,
                 zen=self.zen,
+                provider=self.provider,
+                voice=self.voice,
                 env=self.env,
             )
         return self._ps_session

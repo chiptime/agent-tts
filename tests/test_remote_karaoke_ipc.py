@@ -149,15 +149,20 @@ def test_scroll_info_exact_format():
 
 
 def test_status_reply_unchanged():
+    # The daemon vía única seeds provider/voice into every session kind's
+    # status metadata (engine defaults apply when the caller passes none),
+    # so the karaoke status reply now carries that suffix.
     remote = ps_session_at(make_bmap(), 2.5)
     remote.state["status"] = "playing"
     assert remote.handle_ipc_command("status") == (
         "status=playing pos=2.50 total=6.50 sent_idx=1 para_idx=0 sentence=Second sentence is longer."
+        " provider=edge voice=es-ES-ElviraNeural"
     )
     outer = remote_session_at(make_bmap(), 2.5)
     outer.state["status"] = "playing"
     assert outer.handle_ipc_command("status") == (
         "status=playing pos=2.50 total=6.50 sent_idx=1 para_idx=0 sentence=Second sentence is longer."
+        " provider=edge voice=es-ES-ElviraNeural"
     )
 
 

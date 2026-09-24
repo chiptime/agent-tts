@@ -9,7 +9,7 @@ import threading
 import time
 from typing import List, Optional
 
-from agent_tts.audio import AudioSession, _write_player_locks, cleanup_locks, play_mp3_file
+from agent_tts.audio import AudioSession, _write_player_locks, cleanup_locks
 from agent_tts.boundaries import (
     BoundaryMap,
     Paragraph,
@@ -19,17 +19,25 @@ from agent_tts.boundaries import (
 )
 from agent_tts.cleaner import clean_agent_text
 from agent_tts.constants import DEFAULT_RATE, DEFAULT_VOICE
-from agent_tts.ipc import send_ipc_command
-from agent_tts.playback_target import resolve_target
 from agent_tts.powershell_playback import PowershellSession, is_wsl_ps_available
-from agent_tts.providers import get_provider
+from agent_tts.providers import TTSProvider, get_provider
 from agent_tts.sources import read_last_agent_message
 from agent_tts.text import split_sentence_groups
 from agent_tts.winhost_client import RemoteAudioSession
 import miniaudio
 
 
+# Set while a playback is delegated to the daemon: during a delegation
+# Ctrl-C must take the KeyboardInterrupt path (delegate_play then
+# forwards a best-effort stop so the audio does not outlive the
+# interrupted client), instead of exiting silently and leaving the daemon
+# playing (SOS-2).
+_delegated_playback = threading.Event()
+
+
 def signal_handler(signum, frame):
+    if _delegated_playback.is_set():
+        raise KeyboardInterrupt
     cleanup_locks()
     sys.exit(0)
 
@@ -57,17 +65,24 @@ async def synthesize(
     piper_model: Optional[str] = None,
     stop_checker=None,
     auto_lang: bool = False,
+    engine: Optional[TTSProvider] = None,
 ) -> bytes:
-    """Synthesizes text into MP3 bytes using the requested provider and optionally writes to output_file."""
-    engine = get_provider(
-        provider_name=provider,
-        openai_key=openai_key,
-        openai_base_url=openai_base_url,
-        openai_model=openai_model,
-        eleven_key=eleven_key,
-        eleven_model=eleven_model,
-        piper_model=piper_model,
-    )
+    """Synthesizes text into MP3 bytes using the requested provider and optionally writes to output_file.
+
+    ``engine`` overrides provider construction (the daemon passes its cached
+    instance so the model stays warm between requests, RNF-AT-04-5); by
+    default a fresh provider is built per call, exactly as before.
+    """
+    if engine is None:
+        engine = get_provider(
+            provider_name=provider,
+            openai_key=openai_key,
+            openai_base_url=openai_base_url,
+            openai_model=openai_model,
+            eleven_key=eleven_key,
+            eleven_model=eleven_model,
+            piper_model=piper_model,
+        )
 
     if auto_lang:
         from agent_tts.lang_detector import segment_by_language, resolve_voice_for_language
@@ -300,13 +315,15 @@ async def _speak_pipelined(
     output_file: Optional[str] = None,
     podcast: bool = False,
     persist_name: Optional[str] = None,
+    engine: Optional[TTSProvider] = None,
 ) -> None:
     """Plays the first synthesized sentence group while remaining groups are synthesized and appended live.
 
     Every successfully produced group/chunk is kept in ``rendered_chunks``;
     at a clean end of the pipeline the bytes are merged and persisted once
     (to ``output_file`` or the rendered-audio store). A stopped, interrupted,
-    or failed run never persists: partial audio is worthless.
+    or failed run never persists: partial audio is worthless. ``engine``
+    overrides per-group provider construction (daemon's warm cache).
     """
     groups = split_sentence_groups(text)
     # Raw bytes of every successfully produced group/chunk, in playback order.
@@ -346,19 +363,19 @@ async def _speak_pipelined(
     # (one persistent piper process), so chunks map to groups by index.
     # Stream-capable engines whose chunks are raw fragments (openai,
     # elevenlabs) keep the per-group path and its aligned boundaries.
-    engine = None
-    try:
-        engine = get_provider(
-            provider_name=provider,
-            openai_key=openai_key,
-            openai_base_url=openai_base_url,
-            openai_model=openai_model,
-            eleven_key=eleven_key,
-            eleven_model=eleven_model,
-            piper_model=piper_model,
-        )
-    except Exception:
-        engine = None  # the per-group path below surfaces the construction error as today
+    if engine is None:
+        try:
+            engine = get_provider(
+                provider_name=provider,
+                openai_key=openai_key,
+                openai_base_url=openai_base_url,
+                openai_model=openai_model,
+                eleven_key=eleven_key,
+                eleven_model=eleven_model,
+                piper_model=piper_model,
+            )
+        except Exception:
+            engine = None  # the per-group path below surfaces the construction error as today
 
     # auto-lang switches voices per language segment, which a single text-level
     # stream cannot do: it keeps the per-group path.
@@ -513,6 +530,7 @@ async def _speak_pipelined(
             piper_model=piper_model,
             stop_checker=check_stop,
             auto_lang=auto_lang,
+            engine=engine,
         )
 
     async def produce_first():
@@ -654,6 +672,201 @@ async def _speak_pipelined(
                 pass
 
 
+def _build_playback_session(
+    playback: str,
+    label: str,
+    auto_rewind_sec: float = 2.0,
+    highlight: bool = False,
+    autoscroll: bool = False,
+    bionic: bool = False,
+    zen: bool = False,
+    provider: str = "",
+    voice: str = "",
+    env=None,
+    document_text: str = "",
+):
+    """Builds the playback session for an already-resolved target.
+
+    "local" plays through AudioSession (miniaudio); "wsl-ps" through one
+    persistent PowershellSession; every other target through
+    RemoteAudioSession. Callers own the session's lifecycle (IPC exposure
+    and teardown): speak() for the classic in-process path, the daemon for
+    the vía única.
+
+    ``provider``/``voice`` seed every session kind's status metadata —
+    local and remote alike (engine defaults apply when empty). ``env``
+    overrides the environment the remote targets resolve their winhost
+    endpoint against — the daemon passes a per-request overlay so the
+    delegating client's host and port win over its inherited environment.
+    ``document_text`` feeds the ``windows`` target's local-device fallback,
+    which re-estimates karaoke boundaries from the full text when the
+    winhost receiver is unreachable.
+    """
+    if playback == "local":
+        return AudioSession(
+            label=label,
+            auto_rewind_sec=auto_rewind_sec,
+            highlight=highlight,
+            autoscroll=autoscroll,
+            bionic=bionic,
+            zen=zen,
+            provider=provider,
+            voice=voice,
+        )
+    if playback == "wsl-ps" and not is_wsl_ps_available():
+        print(
+            "Error: --playback wsl-ps requires powershell.exe on PATH and a WSL environment "
+            "(WSL_DISTRO_NAME set or /proc/version mentioning Microsoft)",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    if highlight or autoscroll or zen:
+        print(
+            f"Note: --playback {playback} streams audio to the Windows host; "
+            "terminal highlight/zen/autoscroll views are not rendered remotely",
+            file=sys.stderr,
+        )
+    if playback == "wsl-ps":
+        # Zero-install WSL target: one persistent powershell.exe for
+        # the whole run, fed length-prefixed WAV groups over stdin.
+        return PowershellSession(
+            label=label,
+            auto_rewind_sec=auto_rewind_sec,
+            highlight=highlight,
+            autoscroll=autoscroll,
+            bionic=bionic,
+            zen=zen,
+            provider=provider,
+            voice=voice,
+            env=env,
+        )
+    return RemoteAudioSession(
+        label=label,
+        auto_rewind_sec=auto_rewind_sec,
+        highlight=highlight,
+        autoscroll=autoscroll,
+        bionic=bionic,
+        zen=zen,
+        target=playback,
+        provider=provider,
+        voice=voice,
+        env=env,
+        document_text=document_text,
+    )
+
+
+async def _play_speech(
+    session,
+    text: str,
+    voice: str = DEFAULT_VOICE,
+    rate: str = DEFAULT_RATE,
+    volume: str = "+0%",
+    pitch: str = "+0Hz",
+    output_file: Optional[str] = None,
+    no_play: bool = False,
+    provider: str = "edge",
+    openai_key: Optional[str] = None,
+    openai_base_url: Optional[str] = None,
+    openai_model: Optional[str] = None,
+    eleven_key: Optional[str] = None,
+    eleven_model: Optional[str] = None,
+    piper_model: Optional[str] = None,
+    auto_lang: bool = False,
+    podcast: bool = False,
+    podcast_title: str = "",
+    stream: str = "auto",
+    persist_name: Optional[str] = None,
+    engine: Optional[TTSProvider] = None,
+) -> None:
+    """Runs the synthesis + playback pipeline over a prepared session.
+
+    No channel or session lifecycle here: the caller owns the ownership
+    election, the IPC exposure, and the session teardown. ``session`` is
+    None only in no-play mode (synthesis/podcast/output without audio).
+    ``engine`` overrides provider construction (the daemon's warm cache).
+    """
+    # Pipelined streaming: playback starts after the first group while later groups synthesize.
+    use_stream = use_pipelined_stream(
+        provider=provider,
+        stream=stream,
+        no_play=no_play,
+        output_file=output_file,
+        podcast=podcast,
+        text_len=len(text),
+    )
+
+    def check_stop():
+        return session is not None and bool(session.state.get("stop", False))
+
+    if use_stream:
+        await _speak_pipelined(
+            session=session,
+            text=text,
+            check_stop=check_stop,
+            voice=voice,
+            rate=rate,
+            volume=volume,
+            pitch=pitch,
+            provider=provider,
+            openai_key=openai_key,
+            openai_base_url=openai_base_url,
+            openai_model=openai_model,
+            eleven_key=eleven_key,
+            eleven_model=eleven_model,
+            piper_model=piper_model,
+            auto_lang=auto_lang,
+            output_file=output_file,
+            podcast=podcast,
+            persist_name=persist_name,
+            engine=engine,
+        )
+        return
+
+    mp3_data = await synthesize(
+        text=text,
+        voice=voice,
+        rate=rate,
+        volume=volume,
+        pitch=pitch,
+        output_file=output_file,
+        provider=provider,
+        openai_key=openai_key,
+        openai_base_url=openai_base_url,
+        openai_model=openai_model,
+        eleven_key=eleven_key,
+        eleven_model=eleven_model,
+        piper_model=piper_model,
+        stop_checker=check_stop,
+        auto_lang=auto_lang,
+        engine=engine,
+    )
+
+    if not mp3_data or (session and session.state.get("stop")):
+        return
+
+    if podcast and mp3_data:
+        from agent_tts.podcast import PodcastFeed
+        feed = PodcastFeed()
+        title = podcast_title or (text[:50] + "..." if len(text) > 50 else text)
+        feed.add_episode(bytes(mp3_data), title=title, description=text)
+
+    if hasattr(mp3_data, "boundaries") and mp3_data.boundaries and session:
+        session.boundaries = mp3_data.boundaries
+
+    if no_play:
+        return
+
+    decoded = miniaudio.decode(mp3_data)
+    if session:
+        if not session.boundaries.sentences:
+            from agent_tts.boundaries import estimate_boundaries_from_text
+            total_duration = getattr(decoded, "duration", None) or (
+                len(decoded.samples) / float(decoded.sample_rate * decoded.nchannels)
+            )
+            session.boundaries = estimate_boundaries_from_text(text, total_duration)
+        session.play(decoded)
+
+
 async def speak(
     text: str,
     voice: str = DEFAULT_VOICE,
@@ -687,97 +900,28 @@ async def speak(
         # Single lock/pid protocol shared with play_mp3_data: the ownership
         # election happens here, before any IPC server binds the channel.
         _write_player_locks()
-        if playback == "local":
-            session = AudioSession(
-                label=f"{len(text)} chars",
-                auto_rewind_sec=auto_rewind_sec,
-                highlight=highlight,
-                autoscroll=autoscroll,
-                bionic=bionic,
-                zen=zen,
-            )
-        else:
-            if playback == "wsl-ps" and not is_wsl_ps_available():
-                print(
-                    "Error: --playback wsl-ps requires powershell.exe on PATH and a WSL environment "
-                    "(WSL_DISTRO_NAME set or /proc/version mentioning Microsoft)",
-                    file=sys.stderr,
-                )
-                raise SystemExit(1)
-            if highlight or autoscroll or zen:
-                print(
-                    f"Note: --playback {playback} streams audio to the Windows host; "
-                    "terminal highlight/zen/autoscroll views are not rendered remotely",
-                    file=sys.stderr,
-                )
-            if playback == "wsl-ps":
-                # Zero-install WSL target: one persistent powershell.exe for
-                # the whole run, fed length-prefixed WAV groups over stdin.
-                session = PowershellSession(
-                    label=f"{len(text)} chars",
-                    auto_rewind_sec=auto_rewind_sec,
-                    highlight=highlight,
-                    autoscroll=autoscroll,
-                    bionic=bionic,
-                    zen=zen,
-                )
-            else:
-                session = RemoteAudioSession(
-                    label=f"{len(text)} chars",
-                    auto_rewind_sec=auto_rewind_sec,
-                    highlight=highlight,
-                    autoscroll=autoscroll,
-                    bionic=bionic,
-                    zen=zen,
-                    target=playback,
-                    document_text=text,
-                )
+        session = _build_playback_session(
+            playback,
+            f"{len(text)} chars",
+            auto_rewind_sec=auto_rewind_sec,
+            highlight=highlight,
+            autoscroll=autoscroll,
+            bionic=bionic,
+            zen=zen,
+            document_text=text,
+        )
         session.start_ipc()
 
-    # Pipelined streaming: playback starts after the first group while later groups synthesize.
-    use_stream = use_pipelined_stream(
-        provider=provider,
-        stream=stream,
-        no_play=no_play,
-        output_file=output_file,
-        podcast=podcast,
-        text_len=len(text),
-    )
-
     try:
-        def check_stop():
-            return session is not None and bool(session.state.get("stop", False))
-
-        if use_stream:
-            await _speak_pipelined(
-                session=session,
-                text=text,
-                check_stop=check_stop,
-                voice=voice,
-                rate=rate,
-                volume=volume,
-                pitch=pitch,
-                provider=provider,
-                openai_key=openai_key,
-                openai_base_url=openai_base_url,
-                openai_model=openai_model,
-                eleven_key=eleven_key,
-                eleven_model=eleven_model,
-                piper_model=piper_model,
-                auto_lang=auto_lang,
-                output_file=output_file,
-                podcast=podcast,
-                persist_name=persist_name,
-            )
-            return
-
-        mp3_data = await synthesize(
-            text=text,
+        await _play_speech(
+            session,
+            text,
             voice=voice,
             rate=rate,
             volume=volume,
             pitch=pitch,
             output_file=output_file,
+            no_play=no_play,
             provider=provider,
             openai_key=openai_key,
             openai_base_url=openai_base_url,
@@ -785,34 +929,12 @@ async def speak(
             eleven_key=eleven_key,
             eleven_model=eleven_model,
             piper_model=piper_model,
-            stop_checker=check_stop,
             auto_lang=auto_lang,
+            podcast=podcast,
+            podcast_title=podcast_title,
+            stream=stream,
+            persist_name=persist_name,
         )
-
-        if not mp3_data or (session and session.state.get("stop")):
-            return
-
-        if podcast and mp3_data:
-            from agent_tts.podcast import PodcastFeed
-            feed = PodcastFeed()
-            title = podcast_title or (text[:50] + "..." if len(text) > 50 else text)
-            feed.add_episode(bytes(mp3_data), title=title, description=text)
-
-        if hasattr(mp3_data, "boundaries") and mp3_data.boundaries and session:
-            session.boundaries = mp3_data.boundaries
-
-        if no_play:
-            return
-
-        decoded = miniaudio.decode(mp3_data)
-        if session:
-            if not session.boundaries.sentences:
-                from agent_tts.boundaries import estimate_boundaries_from_text
-                total_duration = getattr(decoded, "duration", None) or (
-                    len(decoded.samples) / float(decoded.sample_rate * decoded.nchannels)
-                )
-                session.boundaries = estimate_boundaries_from_text(text, total_duration)
-            session.play(decoded)
     except Exception as e:
         print(f"Playback error: {e}", file=sys.stderr)
         raise
@@ -939,10 +1061,32 @@ def main():
     parser.add_argument(
         "--playback",
         choices=["local", "winhost", "wsl-ps", "windows", "auto"],
-        default=os.environ.get("AGENT_TTS_PLAYBACK", "local"),
-        help="Playback target: local device (default), winhost server on the Windows host, "
+        default=None,
+        help="Playback target for this event: local device, winhost server on the Windows host, "
         "zero-install PowerShell under WSL, windows: Windows host with local-device fallback "
-        "(never PowerShell), or auto: environment-based selection",
+        "(never PowerShell), or auto: environment-based selection "
+        "(default: AGENT_TTS_PLAYBACK as seen by the daemon)",
+    )
+    parser.add_argument(
+        "--serve",
+        action="store_true",
+        help="Run the persistent playback daemon (vía única owner): serves play/ping/shutdown "
+        "plus the interactive commands; no idle timeout by default",
+    )
+    parser.add_argument(
+        "--foreground",
+        action="store_true",
+        help="Deployment/debug alias of --serve: the same daemon attached to this terminal "
+        "(systemd/journalctl); differs from --serve only in deployment, not in behavior",
+    )
+    parser.add_argument(
+        "--idle-timeout",
+        type=float,
+        default=None,
+        metavar="SEC",
+        help="Daemon idle timeout in seconds: exit orderly after this long without requests "
+        "(default: none for --serve/--foreground; 30 min for the client's auto-started "
+        "daemon, configurable via AGENT_TTS_IDLE_TIMEOUT; 0 disables)",
     )
     parser.add_argument(
         "--winhost",
@@ -1007,6 +1151,15 @@ def main():
         run_podcast_server(port=args.podcast_serve)
         sys.exit(0)
 
+    if args.serve or args.foreground:
+        # Vía única daemon owner (RF-AT-04-1): --serve and --foreground run
+        # the same daemon; the flag pair exists because deployments differ
+        # (canonical start vs attached systemd/journalctl debug), not the
+        # behavior. No idle timeout unless explicitly requested (RF-AT-04-7).
+        from agent_tts.daemon import run_daemon
+
+        sys.exit(run_daemon(idle_timeout_sec=args.idle_timeout))
+
     ipc_cmd = args.ipc_cmd
     if args.next_sentence:
         ipc_cmd = "next-sentence"
@@ -1024,7 +1177,12 @@ def main():
         ipc_cmd = "scroll-info"
 
     if ipc_cmd:
-        res = send_ipc_command(ipc_cmd)
+        # Control commands are always a client too, but never auto-start a
+        # daemon: with nothing playing there is nothing to control, and the
+        # legacy error text must survive (RF-AT-04-8 handles a wedged one).
+        from agent_tts.daemon import send_control_command
+
+        res = send_control_command(ipc_cmd)
         if res is not None:
             if args.ipc_json:
                 from agent_tts.ipc import ipc_reply_json
@@ -1051,15 +1209,21 @@ def main():
         sys.exit(0)
 
     if args.play_file:
-        play_mp3_file(
-            args.play_file,
-            label=os.path.basename(args.play_file),
-            highlight=args.highlight,
-            autoscroll=args.autoscroll,
-            bionic=args.bionic,
-            zen=args.zen,
+        _delegate_and_exit(
+            {
+                "file": os.path.abspath(args.play_file),
+                "label": os.path.basename(args.play_file),
+                "highlight": args.highlight,
+                "autoscroll": args.autoscroll,
+                "bionic": args.bionic,
+                "zen": args.zen,
+                # The winhost endpoint resolved client-side above (flags
+                # won over env); it must cross the IPC boundary so the
+                # daemon-side session reaches THIS client's Windows host.
+                "winhost_host": os.environ.get("AGENT_TTS_WINHOST_HOST"),
+                "winhost_port": os.environ.get("AGENT_TTS_WINHOST_PORT"),
+            }
         )
-        sys.exit(0)
 
     input_text = ""
     if args.text:
@@ -1113,38 +1277,71 @@ def main():
     if not speech_text:
         sys.exit(0)
 
+    _delegate_and_exit(
+        {
+            "text": speech_text,
+            "voice": args.voice,
+            "rate": args.rate,
+            "provider": args.provider,
+            "openai_key": args.openai_key,
+            "openai_base_url": args.openai_base_url,
+            "openai_model": args.openai_model,
+            "eleven_key": args.eleven_key,
+            "eleven_model": args.eleven_model,
+            "piper_model": args.piper_model,
+            "output_file": os.path.abspath(args.output) if args.output else None,
+            "no_play": args.no_play,
+            "highlight": args.highlight,
+            "autoscroll": args.autoscroll,
+            "bionic": args.bionic,
+            "zen": args.zen,
+            "auto_lang": args.auto_lang,
+            "podcast": args.podcast,
+            "podcast_title": args.podcast_title,
+            "stream": args.stream,
+            "persist_name": args.agent or args.session_id or "cli",
+            # Raw flag value: the daemon resolves it per request (RF-AT-04-6);
+            # absent means the daemon's startup AGENT_TTS_PLAYBACK applies.
+            "playback": args.playback,
+            # The winhost endpoint resolved client-side above (flags won
+            # over env); it must cross the IPC boundary so the daemon-side
+            # session reaches THIS client's Windows host.
+            "winhost_host": os.environ.get("AGENT_TTS_WINHOST_HOST"),
+            "winhost_port": os.environ.get("AGENT_TTS_WINHOST_PORT"),
+        }
+    )
+
+
+def _delegate_and_exit(payload: dict) -> None:
+    """Delegates one playback to the daemon (vía única) and exits.
+
+    The CLI is always a client (RF-AT-04-5): the daemon is auto-started
+    transparently when missing, respawned when wedged, and the reply maps
+    onto the classic CLI's observable contract — silence and exit 0 on
+    success, one stderr line and exit 1 on failure. An interrupt during
+    the delegation forwards a best-effort stop and exits 130 (classic
+    Ctrl-C semantics).
+    """
+    from agent_tts.daemon import DaemonUnavailableError, delegate_play
+
+    _delegated_playback.set()
     try:
-        asyncio.run(
-            speak(
-                text=speech_text,
-                voice=args.voice,
-                rate=args.rate,
-                output_file=args.output,
-                no_play=args.no_play,
-                provider=args.provider,
-                openai_key=args.openai_key,
-                openai_base_url=args.openai_base_url,
-                openai_model=args.openai_model,
-                eleven_key=args.eleven_key,
-                eleven_model=args.eleven_model,
-                piper_model=args.piper_model,
-                highlight=args.highlight,
-                autoscroll=args.autoscroll,
-                bionic=args.bionic,
-                zen=args.zen,
-                auto_lang=args.auto_lang,
-                podcast=args.podcast,
-                podcast_title=args.podcast_title,
-                stream=args.stream,
-                playback=resolve_target(args.playback, os.environ),
-                persist_name=args.agent or args.session_id or "cli",
-            )
-        )
-    except KeyboardInterrupt:
-        cleanup_locks()
-    except Exception:
-        cleanup_locks()
+        try:
+            reply = delegate_play(payload)
+        except KeyboardInterrupt:
+            # delegate_play already forwarded a best-effort stop, so audio does
+            # not outlive the interrupted client (classic Ctrl-C semantics).
+            sys.exit(130)
+        except DaemonUnavailableError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+    finally:
+        _delegated_playback.clear()
+    if reply is None or reply.startswith("ERR"):
+        detail = reply if reply else "daemon closed the connection during playback"
+        print(f"Error: {detail}", file=sys.stderr)
         sys.exit(1)
+    sys.exit(0)
 
 
 if __name__ == "__main__":
