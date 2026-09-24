@@ -1714,16 +1714,12 @@ speak_text() {
   # (--play-file: no sentence boundaries) deliberately never pass here.
   if [[ "$TTS_READER_AUTO" == "on" ]]; then
     (
-      # Adaptive size: short reads (notifications, confirmations — 1-2 lines
-      # of text) get a compact popup; long reads keep the manifest-sized
-      # window so the follow-along keeps its context. Threshold on the raw
-      # text length: ~250 chars ≈ 2-3 spoken sentences.
-      local -a reader_size=()
-      if [[ ${#text} -le 250 ]]; then
-        reader_size=(--width "60%" --height 8)
-      fi
+      # Always compact: the reader renders ONLY the current sentence
+      # (progress header + 1-6 wrapped lines), so a tall popup is dead
+      # space even on long reads.
       command -v herdr >/dev/null 2>&1 \
-        && herdr plugin pane open --plugin herdr.tts --entrypoint tts-reader "${reader_size[@]}" >/dev/null 2>&1 \
+        && herdr plugin pane open --plugin herdr.tts --entrypoint tts-reader \
+             --width "60%" --height 8 >/dev/null 2>&1 \
         || true
     )
   fi
