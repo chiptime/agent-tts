@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 
+from .approval import ApprovalGate, ApprovalGateStore, SEND_TO_SESSION
 from .config import Settings
 from .herdr import AgentInfo, HerdrError
 from .memory import ConversationStore, clip_content
@@ -50,6 +51,9 @@ Routing policy:
 - Questions about state, history, summaries, or doubts about what happened: answer yourself using read_transcript (preferred — cheap and local) or read_screen. NEVER send anything to the agent session for these.
 - New work or actions: forward them with send_to_session and wait for completion, then report the result. Do not do the agent's work yourself.
 - Unsure whether it is a question or a task: read the transcript first, then decide.
+
+Approval gate:
+- send_to_session never executes on the spot: the send is frozen behind a user approval gate. When a send is gated, state the target and the text (verbatim if short), and wait — never narrate the send as done.
 
 Conversation memory:
 - You keep the recent conversation. Resolve follow-ups like "and what else?" against prior turns before calling tools again; re-read sources only when you truly need fresh data.
@@ -141,11 +145,13 @@ class BrainLLM:
         tools: BrainTools,
         client: Optional[Any] = None,
         store: Optional[ConversationStore] = None,
+        approval_store: Optional[ApprovalGateStore] = None,
     ):
         self._settings = settings
         self._tools = tools
         self._client = client
         self._store = store
+        self._approval_store = approval_store
         self._request_target: Optional[AgentInfo] = None
         if self._client is None:
             if not settings.glm_api_key:
@@ -159,16 +165,23 @@ class BrainLLM:
         """Binds a shared conversation store (used by the HTTP server)."""
         self._store = store
 
+    def attach_approval_store(self, store: ApprovalGateStore) -> None:
+        """Binds the shared approval gate store (used by the HTTP server)."""
+        self._approval_store = store
+
     def ask(
         self,
         question: str,
         session_id: Optional[str] = None,
         pane_id: Optional[str] = None,
-    ) -> Dict[str, Optional[str]]:
-        """Returns ``{answer, pane_id, agent, session_id}`` for one question.
+    ) -> Dict[str, Any]:
+        """Returns ``{answer, pane_id, agent, session_id, approval}``.
 
         ``pane_id`` selects which agent the conversation targets; when
-        omitted (or stale) the focused pane is used.
+        omitted (or stale) the focused pane is used. ``approval`` is the
+        frozen :class:`ApprovalGate` opened when a ``send_to_session``
+        call was intercepted (None on ungated turns) — the send itself
+        never executes here; only an approval replay may run it.
         """
         store = self._store or ConversationStore()
         key = ConversationStore.normalize(session_id)
@@ -186,6 +199,7 @@ class BrainLLM:
         ]
 
         answer: Optional[str] = None
+        opened_gate: Optional[ApprovalGate] = None
         for _ in range(self._settings.max_tool_rounds + 1):
             response = self._client.chat.completions.create(
                 model=self._settings.glm_model,
@@ -216,7 +230,9 @@ class BrainLLM:
                 }
             )
             for call in choice.tool_calls:
-                result = self._invoke(call)
+                result, gate = self._invoke(call, session_key=key)
+                if gate is not None:
+                    opened_gate = gate
                 messages.append(
                     {"role": "tool", "tool_call_id": call.id, "content": result}
                 )
@@ -234,6 +250,7 @@ class BrainLLM:
             "pane_id": target.pane_id if target else None,
             "agent": target.agent if target else None,
             "session_id": key,
+            "approval": opened_gate,
         }
 
     def _live_context(self, target: Optional[AgentInfo]) -> str:
@@ -244,15 +261,66 @@ class BrainLLM:
             pending = detect_pending(screen or "", target.status)
         return build_live_context(target, pending=pending)
 
-    def _invoke(self, call: Any) -> str:
-        """Dispatches one tool call, turning every failure into a string."""
+    def _invoke(self, call: Any, session_key: str) -> tuple[str, Optional[ApprovalGate]]:
+        """Dispatches one tool call, turning every failure into a string.
+
+        ``send_to_session`` is NEVER dispatched: it is frozen into an
+        approval gate instead (AC1 — no path executes the send without an
+        approved gate). Returns ``(tool_message, gate_or_None)``.
+        """
         try:
             arguments = json.loads(call.function.arguments or "{}")
             if not isinstance(arguments, dict):
                 raise ValueError("arguments must be a JSON object")
         except (json.JSONDecodeError, ValueError) as exc:
-            return f"error: invalid tool arguments: {exc}"
+            return f"error: invalid tool arguments: {exc}", None
         LOGGER.info("tool call name=%s args=%s", call.function.name, summarize_tool_args(arguments))
-        return self._tools.dispatch(
-            call.function.name, arguments, target=self._request_target
+        if call.function.name == SEND_TO_SESSION:
+            return self._gate_send(arguments, session_key)
+        return (
+            self._tools.dispatch(
+                call.function.name, arguments, target=self._request_target
+            ),
+            None,
+        )
+
+    def _gate_send(
+        self, arguments: Dict[str, Any], session_key: str
+    ) -> tuple[str, Optional[ApprovalGate]]:
+        """Freezes the EXACT dispatch args into a gate instead of sending.
+
+        The frozen ``text``/``timeout_ms`` mirror what dispatch would have
+        passed, and the pane is the already-resolved request target, so an
+        approval can replay the identical call. With no resolved target
+        the send could never run — mirror the tool's own error instead of
+        opening a gate. With no store wired the send is still blocked:
+        fail safe, never execute.
+        """
+        target = self._request_target
+        if target is None:
+            return "error: no active agent pane", None
+        if self._approval_store is None:
+            return (
+                "error: send_to_session is blocked pending user approval, but "
+                "no approval gate store is wired; nothing was sent",
+                None,
+            )
+        gate = self._approval_store.propose(
+            session_key,
+            text=str(arguments.get("text", "")),
+            timeout_ms=arguments.get("timeout_ms"),
+            pane_id=target.pane_id,
+            agent=target.agent,
+        )
+        LOGGER.info(
+            "approval gate opened gate_id=%s pane_id=%s agent=%s",
+            gate.gate_id,
+            target.pane_id,
+            target.agent,
+        )
+        return (
+            f"pending user approval (gate {gate.gate_id}): the prompt was NOT "
+            "sent. State the target and the exact text, then wait for the "
+            "user's decision; never say it was sent.",
+            gate,
         )

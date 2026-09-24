@@ -11,9 +11,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import queue as queue_module
 import re
 import subprocess
+import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Optional
@@ -24,6 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import __version__
+from .approval import ApprovalGate, ApprovalGateStore
 from .config import Settings
 from .herdr import HerdrError
 from .llm import BrainLLM, BrainLLMError
@@ -49,6 +52,31 @@ _SAFE_FILENAME = re.compile(r"^[A-Za-z0-9._-]+$")
 logger = logging.getLogger("herdr_brain.server")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 MAX_SESSION_ID_CHARS = 128
+
+# Deterministic approval closer (PRD-action-approval-gate §7): appended
+# server-side to the spoken answer whenever a gate opens — the question
+# wording never depends on the model. Product copy; keep verbatim.
+APPROVAL_CLOSER = "¿Se envía?"
+
+
+def approval_payload(gate: ApprovalGate, timeout_s: int, now: Optional[float] = None) -> dict:
+    """Shapes the ``approval{}`` object of /ask (and approval endpoints).
+
+    ``expires_in_s`` follows the lazy expiry model: remaining seconds from
+    the gate's ``created_at`` plus the configured timeout, no timers. It
+    counts down (ceil, clamped at 0) so the client can render its ring.
+    """
+    elapsed = (time.time() if now is None else now) - gate.created_at
+    remaining = timeout_s - elapsed
+    return {
+        "gate_id": gate.gate_id,
+        "tool": gate.tool,
+        "pane_id": gate.action.pane_id,
+        "agent": gate.action.agent,
+        "text": gate.action.text,
+        "timeout_ms": gate.action.timeout_ms,
+        "expires_in_s": max(0, math.ceil(remaining)),
+    }
 
 # The phone MUST be able to tell which build it runs: index.html is served
 # with no-cache and every asset reference carries ?v=<git short hash>.
@@ -140,6 +168,7 @@ def create_app(
     tools = BrainTools(cfg)
     synth = tts_renderer or render_mp3
     store = ConversationStore()
+    approval_store = ApprovalGateStore(timeout_s=cfg.approval_timeout_s)
 
     if watcher is None:
         watcher = AgentWatcher(cfg, tts_renderer=synth)
@@ -186,10 +215,14 @@ def create_app(
     def get_llm() -> BrainLLM:
         if "instance" not in llm_holder:
             llm = (llm_factory or default_llm_factory)(cfg, tools)
-            # Custom factories may not wire a store; bind the shared one so
-            # /reset and /ask always see the same conversation memory.
+            # Custom factories may not wire a store; bind the shared ones so
+            # /reset and /ask always see the same conversation memory, and
+            # every send_to_session interception opens its gate in the SAME
+            # approval store the approval endpoints resolve against.
             if hasattr(llm, "attach_store"):
                 llm.attach_store(store)
+            if hasattr(llm, "attach_approval_store"):
+                llm.attach_approval_store(approval_store)
             llm_holder["instance"] = llm
         return llm_holder["instance"]
 
@@ -197,6 +230,7 @@ def create_app(
     app.state.watcher = watcher
     app.state.daemon_watcher = daemon_watcher
     app.state.transcriber = transcriber
+    app.state.approval_store = approval_store
     app.state.sse_heartbeat_s = sse_heartbeat_s
     app.state.sse_stream_limit = sse_stream_limit
 
@@ -399,17 +433,29 @@ def create_app(
     def ask(body: TextRequest) -> dict:
         if body.reset:
             store.reset(body.session_id)
+        # A new turn always retires the session's live gate (PRD §4): the
+        # user moved on, so an unanswered gate must never linger. propose()
+        # supersedes too, but a question-only ask must not leave a zombie.
+        approval_store.supersede(body.session_id)
         try:
             result = get_llm().ask(
                 body.text, session_id=body.session_id, pane_id=body.pane_id
             )
         except BrainLLMError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+        answer: Optional[str] = result.get("answer")
+        gate: Optional[ApprovalGate] = result.get("approval")
+        approval: Optional[dict] = None
+        if gate is not None:
+            approval = approval_payload(gate, cfg.approval_timeout_s)
+            # Deterministic closer, spoken and shown — appended AFTER the
+            # model's echo so the approval question never depends on it.
+            answer = f"{answer} {APPROVAL_CLOSER}" if answer else APPROVAL_CLOSER
         audio_url: Optional[str] = None
-        if result.get("answer"):
+        if answer:
             out_path = new_audio_path(cfg)
             try:
-                synth(cfg, result["answer"], out_path)
+                synth(cfg, answer, out_path)
                 audio_url = f"/audio/{out_path.name}"
             except Exception as exc:  # noqa: BLE001 — TTS must never break the answer
                 # Degrade to a text-only answer, but never silently: the log
@@ -417,11 +463,12 @@ def create_app(
                 logger.warning("TTS render failed — answer degrades to text-only: %s", exc)
                 audio_url = None
         return {
-            "answer": result.get("answer"),
+            "answer": answer,
             "pane_id": result.get("pane_id"),
             "agent": result.get("agent"),
             "session_id": result.get("session_id"),
             "audio_url": audio_url,
+            "approval": approval,
         }
 
     @app.post("/tts")
