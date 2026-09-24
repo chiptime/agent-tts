@@ -1476,7 +1476,13 @@
     // call micless while the state expects listening. Re-arm when
     // nothing else owns the mic; startListening is single-flight, and
     // a pending scheduled restart keeps its own backoff.
-    if (inCall && !audioBusy && !dispatching && !manualStop && !textMode &&
+    // BROWSER ENGINE ONLY: the server engine (v2) keeps its own
+    // per-utterance lifecycle and never sets the v1 `listening` flag —
+    // a watchdog tick here would re-arm it mid-cycle, resetting
+    // recorderChunks and stacking a second MediaRecorder on the stream
+    // (empty/corrupt webm -> "Invalid data" at /transcribe).
+    if (voiceEngine !== "servidor" &&
+        inCall && !audioBusy && !dispatching && !manualStop && !textMode &&
         !listening && !recRestartTimer &&
         (callState === "listening" || callState === "confirming")) {
       startListening();
@@ -2060,6 +2066,11 @@
 
   function startServerListening() {
     if (textMode || dispatching || serverMicBusy) return;
+    // Second re-entry barrier: while a recorder is live, arming another
+    // one would reset recorderChunks and stack recorders on the stream
+    // (empty/corrupt webm at /transcribe). recorder is null between
+    // utterances (finishServerUtterance clears it on stop).
+    if (recorder && recorder.state === "recording") return;
     if (callState !== "listening" && callState !== "confirming") return;
     if (!serverEngineSupported()) {
       showBanner("Este navegador no soporta el motor Servidor — usa el motor Navegador.");
