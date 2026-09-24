@@ -730,6 +730,7 @@ async def speak(
                     bionic=bionic,
                     zen=zen,
                     target=playback,
+                    document_text=text,
                 )
         session.start_ipc()
 

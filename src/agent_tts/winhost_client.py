@@ -3,8 +3,8 @@
 Streams raw s16 PCM over TCP to ``agent-tts --winhost`` running on the Windows
 host, and provides :class:`RemoteAudioSession`, a drop-in stand-in for the
 local AudioSession surface used by cli.py that ships PCM to the remote target
-(winhost server, or a persistent PowerShell process under WSL as zero-install
-fallback).
+(winhost server, a persistent PowerShell process under WSL as zero-install
+fallback, or the local device for the "windows" target fallback).
 """
 
 import json
@@ -13,9 +13,15 @@ import sys
 import threading
 import time
 
-from agent_tts.boundaries import BoundaryMap
+from agent_tts.audio import AudioSession
+from agent_tts.boundaries import BoundaryMap, estimate_boundaries_from_text
 from agent_tts.ipc import IPCServer
-from agent_tts.playback_target import CONNECT_TIMEOUT_SEC, candidate_hosts, winhost_port
+from agent_tts.playback_target import (
+    CONNECT_TIMEOUT_SEC,
+    WINDOWS_TARGET,
+    candidate_hosts,
+    winhost_port,
+)
 from agent_tts.powershell_playback import PowershellSession, is_wsl_ps_available
 
 PROTOCOL_VERSION = 1
@@ -161,9 +167,14 @@ class RemoteAudioSession:
       playback.
     - "wsl-ps": always play through one persistent PowerShell session
       (zero install).
+    - "windows": stream PCM over TCP to the Windows host; if unreachable,
+      warn once on stderr and route the rest of the run through the local
+      AudioSession device (WSLg PulseAudio under WSL). PowerShell is
+      never used by this target.
 
     Terminal visuals (highlight/zen/autoscroll) are not rendered remotely
-    because frame delivery is decoupled from real-time playback.
+    because frame delivery is decoupled from real-time playback; after a
+    "windows" local fallback they render again through the local session.
     """
 
     def __init__(
@@ -177,10 +188,12 @@ class RemoteAudioSession:
         zen: bool = False,
         target: str = "winhost",
         env=None,
+        document_text: str = "",
     ):
         self.label = label
         self.auto_rewind_sec = auto_rewind_sec
         self.boundaries = boundaries or BoundaryMap()
+        self.document_text = document_text
         self.highlight = highlight
         self.autoscroll = autoscroll
         self.bionic = bionic
@@ -209,8 +222,10 @@ class RemoteAudioSession:
         self._stream = None
         self._remote_live = False
         self._ps_mode = target == "wsl-ps"
+        self._local_mode = False
         self._fallback_warned = False
         self._ps_session = None
+        self._local_session = None
 
     # -- IPC ----------------------------------------------------------------
 
@@ -238,6 +253,7 @@ class RemoteAudioSession:
             if changed:
                 self._remote_control("pause")
                 self._control_ps_session("pause")
+                self._control_local_session("pause")
             return self.handle_ipc_command("status")
 
         if action == "resume":
@@ -249,6 +265,7 @@ class RemoteAudioSession:
             if changed:
                 self._remote_control("resume")
                 self._control_ps_session("resume")
+                self._control_local_session("resume")
             return self.handle_ipc_command("status")
 
         if action in ("toggle-pause", "toggle_pause"):
@@ -265,6 +282,7 @@ class RemoteAudioSession:
             if sent:
                 self._remote_control(sent)
                 self._control_ps_session(sent)
+                self._control_local_session(sent)
             return self.handle_ipc_command("status")
 
         if action == "stop":
@@ -273,6 +291,7 @@ class RemoteAudioSession:
                 self.state["status"] = "stopped"
             self._remote_control("stop")
             self._control_ps_session("stop")
+            self._control_local_session("stop")
             return "status=stopped"
 
         if action in _READ_ONLY_ACTIONS:
@@ -424,6 +443,13 @@ class RemoteAudioSession:
             ps.state["stop"] = True
             ps.stop()
 
+    def _control_local_session(self, cmd: str) -> None:
+        """Forwards a control command to the fallback local session, if any."""
+        local = self._local_session
+        if local is None:
+            return
+        local.handle_ipc_command(cmd)
+
     # -- PCM pipeline (mirrors local AudioSession) ---------------------------
 
     def _load_buffer_locked(self, decoded) -> None:
@@ -437,20 +463,44 @@ class RemoteAudioSession:
         self.current_frame = 0
         self.state["total"] = (self.total_frames / float(self.sample_rate)) if self.sample_rate else 0.0
         self._buffer_loaded = True
+        self._ensure_document_boundaries_locked()
+
+    def _ensure_document_boundaries_locked(self) -> None:
+        """Fills an empty boundary map from the carrier document once audio duration is known.
+
+        Safety net for runs whose map was never populated upstream (carrier
+        built without boundaries and no caller estimated them): the first
+        moment both the document text and a real audio duration exist, the
+        shared map is filled IN PLACE — mirroring cli.py's streaming
+        merge_group — so every session reading it (carrier, fallback local
+        device, PowerShell) serves real sentence data. Runs that already
+        carry sentence boundaries (native or per-segment merged) are left
+        untouched.
+        """
+        if self.boundaries.sentences or not self.document_text.strip():
+            return
+        total = self.state.get("total", 0.0)
+        if total <= 0.0:
+            return
+        estimated = estimate_boundaries_from_text(self.document_text, total)
+        self.boundaries.sentences.extend(estimated.sentences)
+        self.boundaries.words.extend(estimated.words)
+        self.boundaries.paragraphs.extend(estimated.paragraphs)
 
     def prepare_pcm(self, decoded) -> None:
         """Preloads the playback buffer and opens the remote transport before streaming starts."""
         with self.lock:
             self._load_buffer_locked(decoded)
         if not self._ensure_transport(self.sample_rate, self.nchannels, self.bytes_per_sample):
-            self._ensure_ps_session().prepare_pcm(decoded)
+            self._fallback_session().prepare_pcm(decoded)
 
     def append_pcm(self, decoded) -> bool:
         """Appends a decoded PCM segment (streaming mode); mirrors the local mismatch rule.
 
         Returns True when the segment was accepted. In PowerShell mode each
         accepted segment is written to the persistent PowerShell process,
-        which plays groups back-to-back.
+        which plays groups back-to-back. After a "windows" local fallback
+        each accepted segment is appended to the local session buffer.
         """
         seg_rate = decoded.sample_rate
         seg_channels = decoded.nchannels
@@ -467,12 +517,15 @@ class RemoteAudioSession:
             self.raw_bytes += decoded.samples.tobytes()
             self.total_frames = len(self.raw_bytes) // self.frame_size
             self.state["total"] = (self.total_frames / float(self.sample_rate)) if self.sample_rate else 0.0
+            self._ensure_document_boundaries_locked()
         if self._ps_mode:
             try:
                 return self._ensure_ps_session().append_pcm(decoded)
             except RuntimeError as e:
                 print(f"Stream: PowerShell playback failed: {e}", file=sys.stderr)
                 return False
+        if self._local_session is not None:
+            return self._local_session.append_pcm(decoded)
         return True
 
     def play(self, decoded) -> None:
@@ -483,7 +536,7 @@ class RemoteAudioSession:
             self.state["status"] = "playing"
 
         if not self._ensure_transport(self.sample_rate, self.nchannels, self.bytes_per_sample):
-            self._ensure_ps_session().play(decoded)
+            self._fallback_session().play(decoded)
             return
 
         stream = self._stream
@@ -531,7 +584,8 @@ class RemoteAudioSession:
         An explicit stop (state["stop"] set before this call, e.g. by the IPC
         handler) hard-stops the PowerShell session and cuts mid-group audio;
         a natural end of run drains the tail instead so the last group is not
-        clipped.
+        clipped. The fallback local session (if any) is always flagged to
+        stop; its playback loop exits promptly on the flag.
         """
         user_stopped = bool(self.state.get("stop"))
         self.state["stop"] = True
@@ -547,6 +601,12 @@ class RemoteAudioSession:
                     ps.finish()
                 except Exception:
                     pass  # cleanup must not mask the run's result
+        local = self._local_session
+        if local is not None:
+            try:
+                local.stop()
+            except Exception:
+                pass  # cleanup must not mask the run's result
         stream = self._stream
         if stream is not None:
             stream.abort()
@@ -560,21 +620,37 @@ class RemoteAudioSession:
     def _ensure_transport(self, rate, channels, sample_width) -> bool:
         """Opens the winhost stream on first use.
 
-        Returns True when a live TCP stream carries the audio, False when the
-        run is in PowerShell mode. On an unreachable winhost server, warns
-        once and switches the whole run to per-group PowerShell playback.
+        Returns True when a live TCP stream carries the audio, False when
+        the run is in PowerShell mode or on the fallback local device. On
+        an unreachable winhost server, warns once and switches the whole
+        run to per-group PowerShell playback ("winhost") or to the local
+        device ("windows").
         """
-        if self._ps_mode:
+        if self._ps_mode or self._local_mode:
             return False
         if self._stream is not None:
             return True
         try:
             self._stream = open_stream(rate, channels, sample_width, env=self.env)
         except WinhostUnavailable as e:
-            self._enter_ps_fallback(e)
+            if self.target == WINDOWS_TARGET:
+                self._enter_local_fallback(e)
+            else:
+                self._enter_ps_fallback(e)
             return False
         self._remote_live = True
         return True
+
+    def _fallback_session(self):
+        """Returns the session that carries the run once the remote target failed.
+
+        "wsl-ps" (and "winhost" after the ps fallback) routes through the
+        persistent PowerShell session; "windows" routes through the local
+        AudioSession device.
+        """
+        if self._ps_mode:
+            return self._ensure_ps_session()
+        return self._ensure_local_session()
 
     def _enter_ps_fallback(self, error: WinhostUnavailable) -> None:
         if not is_wsl_ps_available(env=self.env):
@@ -591,7 +667,22 @@ class RemoteAudioSession:
         self._ps_mode = True
         self._ensure_ps_session()
 
-    # -- PowerShell session ---------------------------------------------------
+    def _enter_local_fallback(self, error: WinhostUnavailable) -> None:
+        """Switches the run to the local audio device ("windows" target only).
+
+        No PowerShell machinery is touched: this target never spawns
+        powershell.exe, even when the winhost server is absent.
+        """
+        if not self._fallback_warned:
+            print(
+                f"winhost unreachable at {error.location}; falling back to local playback",
+                file=sys.stderr,
+            )
+            self._fallback_warned = True
+        self._local_mode = True
+        self._ensure_local_session()
+
+    # -- fallback sessions ----------------------------------------------------
 
     def _ensure_ps_session(self) -> PowershellSession:
         """Lazily creates the persistent PowerShell session used for the whole run."""
@@ -607,3 +698,22 @@ class RemoteAudioSession:
                 env=self.env,
             )
         return self._ps_session
+
+    def _ensure_local_session(self) -> AudioSession:
+        """Lazily creates the local AudioSession used after the "windows" fallback.
+
+        Mirrors the local path cli.py builds: same label, rewind, boundary,
+        and terminal-visual settings, so highlight/zen/autoscroll render
+        again on the fallback device.
+        """
+        if self._local_session is None:
+            self._local_session = AudioSession(
+                label=self.label,
+                auto_rewind_sec=self.auto_rewind_sec,
+                boundaries=self.boundaries,
+                highlight=self.highlight,
+                autoscroll=self.autoscroll,
+                bionic=self.bionic,
+                zen=self.zen,
+            )
+        return self._local_session
