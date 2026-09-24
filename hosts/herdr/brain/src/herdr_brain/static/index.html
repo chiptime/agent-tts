@@ -879,9 +879,23 @@
     }
 
     /* ── APPROVAL CARD (PRD action-approval-gate §8) ──────────────────
-     * Pinned at the TOP of the drawer conversation (sticky: actionable
-     * state, not history). Full frozen text + countdown ring + the four
-     * PRD buttons; gray "Expirada" state on silent timeout. */
+     * Floating popup OUTSIDE the drawer (UX change 2026-09-24): the card
+     * is visible with the drawer open OR closed — actionable state, not
+     * history. Full frozen text + countdown ring + the four PRD buttons;
+     * gray "Expirada" state on silent timeout. The .ap-card inner styles
+     * below are self-contained and unchanged. */
+    #approval-float {
+      position: fixed;
+      top: calc(env(safe-area-inset-top, 0px) + 64px);
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 26;            /* above drawer (15), banner (24), toast (25); diag (30) still wins */
+      width: calc(100% - 24px);
+      max-width: 22rem;
+      border-radius: 14px;    /* matches .ap-card */
+      overflow: hidden;       /* clip the card to this radius */
+      box-shadow: 0 10px 34px #0007;
+    }
     .ap-card {
       position: sticky;
       top: 0;
@@ -1120,6 +1134,11 @@
   </section>
 
   <button id="state-pill" class="hidden" role="status"><span id="pill-main"></span><span id="pill-sub" class="hidden"></span></button>
+
+  <!-- Approval gate popup (UX 2026-09-24): the gate card mounts here,
+       a DIRECT child of body OUTSIDE the drawer — visible whether the
+       drawer is open or closed. -->
+  <div id="approval-float" class="hidden"></div>
 
   <footer>
     <div id="mic-note" class="hidden"></div>
