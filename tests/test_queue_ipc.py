@@ -636,3 +636,60 @@ def test_watchdog_wedge_stop_responsive_worker_answers_watchdog_failure(channel,
     finally:
         _stop_daemon(d)
 
+
+# --- manager finalize keeps a still-alive worker's session stoppable (R2-02) --------------
+
+
+def test_manager_finalize_keeps_alive_worker_session_in_shutdown_stop_set(channel, monkeypatch):
+    """A manager-finalized session whose playback worker is still alive
+    must stay in ``_sessions`` — ``_shutdown()`` stops exactly that set
+    (RS-1: no audio outlives the daemon).
+
+    Before R2-02 the finalize hook discarded the session with no
+    liveness check, so a wedged (or termination-expired) session lost
+    its second stop attempt at shutdown.
+    """
+    events = []
+    unwedge = threading.Event()
+    d = _start_daemon(channel, monkeypatch, events, wedged_timeout_sec=0.3)
+    try:
+        sock = channel["sock"]
+
+        def wedged_play(self, decoded):
+            events.append(("start", self.label, time.monotonic()))
+            self.state["status"] = "playing"
+            unwedge.wait(timeout=30.0)  # ignores the stop flag: a true wedge
+            events.append(("unwedge", self.label, time.monotonic()))
+
+        monkeypatch.setattr(AudioSession, "play", wedged_play)
+
+        box, play_thread = _play_async_sock(sock, {"text": "wedged announcement", "label": "WEDGE2"})
+        _wait_until(lambda: any(e[0] == "start" and e[1] == "WEDGE2" for e in events))
+        session = d.active_session
+        assert session is not None
+        assert session in d._sessions
+
+        time.sleep(0.35)
+        assert d.queue_manager.check_watchdog() is True
+
+        # The hook answered the client with the watchdog failure...
+        play_thread.join(timeout=5.0)
+        assert box and box[0].startswith("ok=false error=watchdog:"), box
+
+        # ...but the worker is STILL alive (it ignored terminate through
+        # the whole bounded wait): the session must remain in _sessions
+        # so _shutdown()'s stop-set still includes it, even though the
+        # mount is free.
+        assert session in d._sessions
+        assert d.active_session is None
+
+        # Once the worker truly ends, its own finally cleans membership.
+        unwedge.set()
+        _wait_until(lambda: any(e[0] == "unwedge" and e[1] == "WEDGE2" for e in events))
+        _wait_until(
+            lambda: session not in d._sessions,
+            message="worker ended but its session stayed in _sessions",
+        )
+    finally:
+        unwedge.set()  # let the wedged worker unwind for teardown hygiene
+        _stop_daemon(d)

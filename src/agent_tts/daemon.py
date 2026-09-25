@@ -892,8 +892,10 @@ class Daemon:
                 waiter = self._queue_waiters.pop(token, None)
         # Registered BEFORE anything can fail: every finalize path
         # (manager-side included) must be able to find this item's
-        # waiter (R1-02).
-        record = {"waiter": waiter, "session": None}
+        # waiter (R1-02). "worker" carries the playback thread so the
+        # finalize hook can probe liveness before touching the
+        # session's _sessions membership (R2-02).
+        record = {"waiter": waiter, "session": None, "worker": None}
         with self._lock:
             self._dispatched_items[item.id] = record
         if item.coalesced > 1 and item.announcement:
@@ -1005,6 +1007,11 @@ class Daemon:
         worker_thread = threading.Thread(
             target=worker, name="agent-tts-queue-playback", daemon=True
         )
+        # Registered before start(): the finalize hook's liveness probe
+        # (R2-02) must see a never-started worker as "not alive", so a
+        # start() failure still gets its session cleaned by the hook —
+        # no worker finally will ever run for it.
+        record["worker"] = worker_thread
         worker_thread.start()
         # The handle carries the worker: a queue-side termination joins
         # it in wait_stopped() so the next dispatch happens only after
@@ -1026,7 +1033,10 @@ class Daemon:
         forever and pins ``_inflight``, so ``_idle_expired()`` could
         never fire again (R1-02). Both cleanups race by design with the
         worker's own finally and are idempotent: the record is popped
-        exactly once and the waiter's first release stands.
+        exactly once and the waiter's first release stands. On the
+        watchdog path the hook now runs BEFORE terminate() (R2-01
+        manager-verdict precedence), so the worker is typically still
+        alive when the hook unmounts the session.
         """
         with self._lock:
             record = self._dispatched_items.pop(item.id, None)
@@ -1034,8 +1044,20 @@ class Daemon:
             return
         session = record["session"]
         if session is not None:
+            worker = record.get("worker")
             with self._lock:
-                self._sessions.discard(session)
+                # Session lifetime rule (R2-02): _shutdown() stops
+                # exactly list(self._sessions), so a session whose
+                # playback worker may still be alive STAYS in the set —
+                # a wedged or termination-expired worker must not lose
+                # its second stop attempt (RS-1: no audio outlives the
+                # daemon). The worker's own finally discards the
+                # session when it truly ends; the hook discards only
+                # when it can cheaply prove no worker finally will ever
+                # run (the thread never started) or already ran (the
+                # worker is no longer alive).
+                if worker is None or not worker.is_alive():
+                    self._sessions.discard(session)
                 if self.active_session is session:
                     self.active_session = None
         waiter = record["waiter"]
