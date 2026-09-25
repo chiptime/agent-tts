@@ -40,6 +40,32 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _parse_ts(ts: str):
+    """Best-effort ISO 8601 parse; None for anything else."""
+    try:
+        return datetime.fromisoformat(ts)
+    except ValueError:
+        return None
+
+
+def is_strictly_older(ts: str, before_ts: str) -> bool:
+    """True when record ``ts`` is strictly older than the ``before`` cursor.
+
+    Lexical compare is WRONG for ISO timestamps of varying precision
+    (``...T10:00:00+00:00`` vs ``...T10:00:00.5+00:00``), so both sides
+    parse to datetime first. Any parse failure — or a mixed
+    naive/aware pair, which Python refuses to compare — falls back to
+    the raw string compare.
+    """
+    left, right = _parse_ts(ts), _parse_ts(before_ts)
+    if left is not None and right is not None:
+        try:
+            return left < right
+        except TypeError:
+            pass
+    return ts < before_ts
+
+
 def _valid_record(record: object) -> Optional[dict]:
     """Returns the record as a plain dict, or None when malformed."""
     if not isinstance(record, dict):
@@ -79,6 +105,22 @@ class HistoryStore:
         with self._lock:
             records = self._read_all()
         return self._tail(records, last_n)
+
+    def load_before(self, before_ts: Optional[str], limit: int) -> list:
+        """Returns up to ``limit`` records strictly OLDER than
+        ``before_ts``, oldest first; ``before_ts=None`` returns the
+        newest page.
+
+        Pagination cursor for GET /call-history. Reads the whole file
+        and slices — fine at the ≤2000-line compaction bound. The
+        comparison is timestamp-aware (see :func:`is_strictly_older`);
+        ``limit <= 0`` yields an empty page like :meth:`load`.
+        """
+        with self._lock:
+            records = self._read_all()
+        if before_ts is not None:
+            records = [r for r in records if is_strictly_older(r["ts"], before_ts)]
+        return self._tail(records, limit)
 
     def load_and_compact(self, last_n: Optional[int] = None) -> list:
         """Boot-side load: same as :meth:`load`, plus opportunistic
