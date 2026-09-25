@@ -564,12 +564,27 @@ class QueueManager:
                 # The verdict wins; the late natural finish (if any) is
                 # ignored by the id guard.
                 self._finalize_active_locked(entry.item.id, failed=True, error=error, wedged=True)
+            # Manager-verdict precedence (R2-01): the verdict is final at
+            # this point, so the host hook runs BEFORE terminate() —
+            # never merely before the bounded wait. terminate() is what
+            # wakes a stop-responsive worker, and that worker's finally
+            # releases its waiter with STOPPED and pops the dispatched
+            # record; if the hook ran after the cut (or only after the
+            # wait), that release would win and the delayed hook would
+            # no-op, answering the blocked client status=stopped instead
+            # of the watchdog failure. Firing first makes the worker's
+            # own later release the designed idempotent no-op (first
+            # release wins). The PREEMPT path keeps its hook-after-wait
+            # order: its STOPPED mapping is the correct verdict there.
+            self._notify_finalize(entry.item, PlaybackOutcome.FAILED, error)
             try:
                 handle.terminate()
             except Exception:
                 pass
+            # R1-01 invariant unchanged: the device wait (join the
+            # worker before dispatching next) still runs under the
+            # dispatch mutex.
             self._wait_termination(entry.item.id, handle)
-            self._notify_finalize(entry.item, PlaybackOutcome.FAILED, error)
             self._dispatch_next()
         return True
 
