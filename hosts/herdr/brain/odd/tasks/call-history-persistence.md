@@ -98,6 +98,21 @@ Route: delegated-direct (writer).
 Checks: node --test green; manual reasoning for DOM (no app.js harness).
 Commit: `feat(ui)`.
 
+### [ ] T6 — Mini DB: JSONL → SQLite (same HistoryStore API)
+Files: `src/herdr_brain/history.py`, tests.
+User request 2026-09-25 ("mini bbdd"): store turns in SQLite at
+`~/.local/state/herdr-brain/call_history.db` (stdlib sqlite3; table
+turns(ts TEXT PK/indexed, role, text)). Keep the public API unchanged
+(append / load / load_before / clear + boot compaction now = DELETE
+beyond retention). One-time migration: if the old call_history.jsonl
+exists, import its records on boot, then stop using the JSONL (rename
+to .imported). All endpoint/UI shapes unchanged (server.py, app.js
+untouched). NOTE: herdr-tts was checked — it has NO call-history or
+DB; the call history belongs to herdr-brain (owner of the call).
+Route: delegated-direct (writer).
+Checks: pytest history + API tests green with sqlite backend;
+migration test (jsonl fixture → imported). Commit: `feat(history)`.
+
 ## Acceptance Criteria
 
 - Reload the PWA mid-call or later: previous turns are visible.
