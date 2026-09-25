@@ -294,3 +294,35 @@ test("announcer works without an onBlockedChange callback", () => {
   a.unlock();
   assert.equal(a.isBlocked(), false);
 });
+
+/* ---- T3: queue-drain and post-unlock rejection semantics ----
+ * pumpAudio drains queued announcements when a play() rejects: each
+ * item takes its turn, its turn fails, its rejection calls
+ * onPlayRejected. The module contract that makes the drain safe: the
+ * affordance fires ONCE (state already blocked) while every drained
+ * text still gets its persistent toast, and a rejection arriving after
+ * an unlock re-enters blocked. These are pins of existing T1 behavior
+ * the T3 wiring relies on, not new module logic. */
+
+test("consecutive rejections while blocked: each text shows, affordance fires once", () => {
+  const { deps, calls } = fakes();
+  const a = createAnnouncer(deps);
+  a.onPlayRejected(ann());
+  const second = ann();
+  second.label = "claude servidor";
+  a.onPlayRejected(second);
+  assert.deepEqual(calls.blocked, [true]);        // no duplicate affordance fire
+  assert.equal(calls.toast.length, 2);            // both texts were shown
+  assert.equal(calls.toast[1].text, "🔊 claude servidor: ha terminado");
+  assert.equal(calls.toast[1].durationMs, undefined);  // newest text persists
+});
+
+test("rejection after unlock re-enters blocked and shows the text", () => {
+  const { deps, calls } = fakes();
+  const a = createAnnouncer(deps);
+  a.onPlayRejected(ann());
+  a.unlock();
+  a.onPlayRejected(ann());
+  assert.deepEqual(calls.blocked, [true, false, true]);
+  assert.equal(calls.toast[calls.toast.length - 1].durationMs, undefined);
+});

@@ -1325,9 +1325,33 @@
     var pending = player.play();
     if (pending && pending.catch) {
       pending.catch(function () {
+        /* Stale-rejection guard (announcements-without-call T3): a
+         * play() promise can reject long after its item was superseded
+         * (stop button, media error event, or a newer queue item the
+         * advance already started). A late rejection must touch
+         * NOTHING: not the newer item's toast, not its audioBusy, not
+         * the announcer state. audioFinished === item is the identity
+         * token pumpAudio set when this item took the player (stop and
+         * ended/error clear it). */
+        if (audioFinished !== item) return;
         audioBusy = false;
-        if (item.announcement) hideToast();
+        if (item.announcement && !inCall) {
+          /* FR-04/AC3: out of call the announcement text must survive a
+           * play() rejection — the announcer enters blocked and re-shows
+           * it as a persistent toast. Remaining queued announcements
+           * take their own turn in pumpAudio below: each rejected turn
+           * shows its text, and none is ever replayed later (FR-05). */
+          announcer.onPlayRejected(item.announcement);
+        } else if (item.announcement) {
+          hideToast();  // in-call: pre-existing behavior (FR-08)
+        }
         pumpAudio();
+        // Nothing left to stop out of call: don't leave "Parar audio"
+        // floating over the persistent toast (a tap would stopAudio()
+        // and hide the text we just saved).
+        if (!audioBusy && !audioQueue.length && !inCall) {
+          stopBtn.classList.add("hidden");
+        }
         // Play() rejection (autoplay policy, media error): without this
         // the queue leaves the call stuck in "speaking" with a dead mic.
         // audioBusy guard: pumpAudio() above may have started the NEXT

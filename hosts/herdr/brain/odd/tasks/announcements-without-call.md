@@ -2,7 +2,7 @@
 
 **Repo:** herdr-brain
 **Created:** 2026-09-25
-**Status:** In progress — T1 (commit `49ba184`) and T2 complete; T3/T4/T5 pending (worktree `announcements-d1`, branch `feat/announcements-without-call-d1`)
+**Status:** In progress — T1 (`49ba184`), T2 (`00fb2be`), T3 complete; T4/T5 pending (worktree `announcements-d1`, branch `feat/announcements-without-call-d1`)
 **PRD:** `docs/PRD-announcements-without-call.md` (Phase 1, delivery 1: FR-01..FR-08, AC1..AC6)
 **Engram mirror:** `odd/announcements-without-call/tasks`
 
@@ -83,13 +83,14 @@ injected dependencies (`play`, `showToast`, `hideToast`, `isMuted`,
 - Route: delegated writer (`app.js`, `index.html`, `test_server.py`).
 - Done 2026-09-25 (strict TDD). Evidence in **Progress / Evidence**.
 
-### [ ] T3 — Keep text visible on playback rejection
+### [x] T3 — Keep text visible on playback rejection
 - In `pumpAudio`'s `play()` rejection path, stop hiding the announcement
   toast; notify the announcer (`onPlayRejected`) so it enters `blocked`.
 - Preserve the in-call resume logic and existing teleprompter behavior;
   re-read both in the implementation chat.
 - Covers: FR-04, AC3.
 - Route: delegated writer (same writer as T2 if run in one batch).
+- Done 2026-09-25 (strict TDD). Evidence in **Progress / Evidence**.
 
 ### [ ] T4 — "🔊 Activar voz" affordance and gesture unlock
 - Add the affordance next to `#toast` in `index.html` (Spanish label
@@ -243,6 +244,79 @@ each task closure.
     because `enqueueAudio` does) — by design, not by omission.
   - RDD: still not enabled in this worktree → no assess run on the T2
     commit, per instruction (do not start review disabled).
+  - Commit identity: **T2 work-unit commit = `00fb2be`** (`feat(announce):
+    subscribe to SSE at boot and route transitions through the announcer`;
+    recorded here in the T3 doc update).
+
+- 2026-09-25 **T3 done** in the same worktree, strict RED → GREEN →
+  REFACTOR. `pumpAudio`'s `play()` rejection no longer loses the
+  announcement text out of call: a CURRENT item's rejection calls
+  `announcer.onPlayRejected(item.announcement)` (enters blocked,
+  re-shows the text as a persistent toast — FR-04/AC3); in-call keeps
+  the exact existing `hideToast()` + queue advance + dead-mic resume
+  (FR-08), and non-announcement failures change nothing.
+
+  **Pre-edit revalidation**: rejection handler was `app.js:1326-1340`
+  (`if (item.announcement) hideToast();` unconditional at 1329);
+  `audioFinished` confirmed as the staleness token (pumpAudio sets it,
+  `stopAudio`/`onAudioEnded` clear it — comment at app.js:1380 already
+  documents the contract). Git clean at `00fb2be` before work.
+
+  **Baselines at T3 start**: `node --test tests/js/` → 158 pass / 0 fail;
+  pytest → 552 passed, 1 warning.
+
+  | Phase | Command | Result |
+  |---|---|---|
+  | RED | `node --test tests/js/announce-wiring.test.js` (new structural suite) | tests 5, pass 1, **fail 4** — stale guard absent; no `announcer.onPlayRejected(item.announcement)`; old unconditional `if (item.announcement) hideToast();` still present; no out-of-call stopBtn cleanup. The 1 pass pins the preserved in-call mic-resume. Real discrepancy, not a missing import |
+  | RED (pins) | `node --test tests/js/announce.test.js` (+2 drain/post-unlock tests) | 25/25 pass — pins of existing T1 module semantics the wiring relies on (affordance fires once per blocked entry, each drained text shown, newest persists; post-unlock rejection re-blocks). Recorded as pins, not RED |
+  | GREEN | `node --test tests/js/` | tests 165, pass 165, fail 0 |
+  | REFACTOR | reviewed the rewritten handler (separate queue-empty guards kept for distinct concerns: button vs mic); no structural change needed | suites below |
+  | Closure | `node --test tests/js/` | **165 pass / 0 fail** |
+  | Closure | `PYTHONPATH=<worktree>/src …pytest -q` | **552 passed, 1 warning** |
+
+  Files: `src/herdr_brain/static/app.js` (rejection handler rewritten,
+  ~+24/−2 lines), `tests/js/announce-wiring.test.js` (new, 5 structural
+  tests), `tests/js/announce.test.js` (+2 module pins). No server edits.
+
+  **Test constraints, stated plainly**: app.js is a browser-only IIFE —
+  the catch handler cannot execute under node. Structural tests pin the
+  wiring shape (stale guard first, out-of-call-only announcer call,
+  in-call-only hideToast, out-of-call stopBtn cleanup) against the
+  region between `player.play()` and `onAudioEnded`; pure module tests
+  cover the policy the wiring delegates to. Real autoplay rejection is
+  device territory (T5, AC3) — NOT claimed validated here.
+
+  Runtime harness: N/A beyond the suites above — no JS/DOM runtime
+  boundary exists in this repo for app.js; the honest executable
+  boundary is T5 on the user's Android device.
+
+  Rollback boundary: revert the T3 commit — the rewritten catch block
+  returns to the pre-existing handler, and the two test files' T3
+  additions (or the whole wiring test file) go with it; nothing else
+  references them.
+
+  **Deviations / decisions (T3):**
+  - "Drop blocked queued items (no delayed play)" implemented as the
+    queue's natural drain: each queued announcement takes its own turn,
+    its `play()` rejects on the blocked autoplay policy, its rejection
+    shows its text persistently; no item is ever held back to play after
+    an unlock (FR-05). No queue surgery — pumpAudio semantics stay.
+  - The stale-rejection guard (`audioFinished !== item → return`) is
+    global (call and no-call): a LATE rejection from a superseded item
+    could hide a newer toast or clobber the newer item's `audioBusy`
+    even in-call (latent race: stop → late rejection → hideToast of a
+    NEW toast). Guarding it is the explicit T3 requirement; the
+    non-stale in-call path is byte-identical to before (hideToast +
+    pumpAudio + mic resume). The stale corner is a race bug fix, not an
+    FR-08 behavior change.
+  - NEW out-of-call cleanup: hide "Parar audio" when a rejection drains
+    the queue empty — otherwise the floating stop button's `stopAudio()`
+    would `hideToast()` the persistent text T3 just saved. In-call keeps
+    today's stopBtn behavior untouched.
+  - Structural tests are the chosen seam (user-approved fallback):
+    focused Node harness of the handler is infeasible (DOM/audio
+    runtime); limits documented above.
+  - RDD: still disabled in this worktree → no assess, no toggling.
 
 ## Handoff to the implementation chat
 
