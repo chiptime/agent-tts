@@ -618,6 +618,29 @@
     /* System warnings (herdr-tts daemon down): distinct amber styling. */
     #toast.warning { border-color: var(--warn); color: var(--warn); font-weight: 700; }
 
+    /* Voice unlock affordance (announcements-without-call T4): a SIBLING
+     * of #toast (never inside — showToast replaces the toast contents),
+     * pinned above the input area. The toast is top-anchored (max 45vh)
+     * so the centered pill never collides with it, and the bottom
+     * placement keeps the one-tap unlock in thumb reach. Hidden unless
+     * the announcer is blocked and the user has not muted (app.js
+     * toggles .hidden; muted = toast only, AC4). */
+    #voice-unlock {
+      position: fixed;
+      left: 50%;
+      transform: translateX(-50%);
+      bottom: calc(env(safe-area-inset-bottom, 0px) + 110px);
+      z-index: 25;             /* the toast layer */
+      padding: var(--sp-2) var(--sp-4);
+      border-radius: 999px;
+      background: var(--panel);
+      color: var(--accent);
+      font-size: var(--fs-sm);
+      font-weight: 700;
+      border: 1px solid var(--accent);
+      box-shadow: 0 6px 20px #0006;
+    }
+
     /* ---- formatted agent-status toast (toast-formatted-avisos) ---- *
      * The formatted body mounts through the reader's scoped insertion
      * (own .toast-content class + reader-content guard class). The
@@ -1184,6 +1207,7 @@
     <button id="mute-btn" class="head-btn" title="Silenciar anuncios">🔊</button>
   </header>
   <div id="toast" class="hidden"></div>
+  <button id="voice-unlock" class="hidden" type="button">🔊 Activar voz</button>
   <div id="banner" class="banner hidden" role="alert"></div>
 
   <div id="herd-note" class="hidden"></div>

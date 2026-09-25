@@ -1338,10 +1338,27 @@
         if (item.announcement && !inCall) {
           /* FR-04/AC3: out of call the announcement text must survive a
            * play() rejection — the announcer enters blocked and re-shows
-           * it as a persistent toast. Remaining queued announcements
-           * take their own turn in pumpAudio below: each rejected turn
-           * shows its text, and none is ever replayed later (FR-05). */
+           * it as a persistent toast. */
           announcer.onPlayRejected(item.announcement);
+          /* Reopened T3 edge (parent review, fixed in the T4 unit): the
+           * queue may still hold announcements enqueued BEFORE the
+           * rejection — pumpAudio must not blindly attempt them under
+           * the now-blocked autoplay policy. Drop each one here with
+           * its text shown in arrival order (the newest ends up as the
+           * visible persistent toast); nothing is ever attempted later
+           * — only a NEW SSE arrival after a successful gesture can
+           * play again. Non-announcement items keep today's path. */
+          var dropped = [];
+          var kept = [];
+          while (audioQueue.length) {
+            var queued = audioQueue.shift();
+            if (queued.announcement) dropped.push(queued.announcement);
+            else kept.push(queued);
+          }
+          for (var kj = 0; kj < kept.length; kj++) audioQueue.push(kept[kj]);
+          for (var dj = 0; dj < dropped.length; dj++) {
+            announcer.onPlayRejected(dropped[dj]);
+          }
         } else if (item.announcement) {
           hideToast();  // in-call: pre-existing behavior (FR-08)
         }
@@ -1554,19 +1571,94 @@
     if (muted()) localStorage.removeItem(MUTE_KEY);
     else localStorage.setItem(MUTE_KEY, "1");
     renderMute();
+    renderVoiceUnlock();  // mute toggling re-evaluates the affordance priority
   });
   renderMute();
 
+  /* ---- voice unlock affordance (PRD announcements-without-call T4) ---- */
+
+  var voiceUnlockBtn = $("voice-unlock");
+
+  /* Visibility = blocked AND not muted: while muted the user turned
+   * voice off on purpose, so mute wins the priority and the affordance
+   * hides (AC4 keeps being "solo toast"). Re-evaluated on every blocked
+   * transition and on every mute toggle. */
+  function renderVoiceUnlock() {
+    voiceUnlockBtn.classList.toggle("hidden",
+      !(announcer.isBlocked() && !muted()));
+  }
+
+  /* Neutral, silent autoplay prime inside a genuine gesture. The player
+   * is swapped to a tiny SILENT wav — never the rejected announcement's
+   * src, so priming can never replay a blocked item — played inaudibly
+   * to consume the user activation, then left neutral. Fail-soft by
+   * contract: the prime promise is handled BOTH ways (granted or still
+   * blocked), so it can never reject unhandled, and a refusal changes
+   * nothing the user can see — the persistent text and the affordance
+   * stay exactly as they are. */
+  var SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=";
+
+  function neutralizePlayer() {
+    player.pause();
+    player.removeAttribute("src");
+    player.load();
+  }
+
+  function primeAudio() {
+    try {
+      player.src = SILENT_WAV;
+      var prime = player.play();
+      if (prime && prime.then) {
+        prime.then(neutralizePlayer, neutralizePlayer);
+      } else {
+        neutralizePlayer();
+      }
+    } catch (err) {
+      /* Synchronous throw (ancient browsers): same fail-soft path. */
+      neutralizePlayer();
+    }
+  }
+
+  /* One unlock path for the button and the document gestures: idempotent
+   * (a second call finds state ok and returns), primes ONLY out of call —
+   * a live call carries its own startCall gesture, and priming mid-call
+   * would neutralize the player mid-answer. */
+  function unlockVoice() {
+    if (!announcer.isBlocked()) return;
+    announcer.unlock();
+    if (!inCall) primeAudio();
+    renderVoiceUnlock();
+  }
+
+  function onDocumentGesture() {
+    if (announcer.isBlocked()) unlockVoice();
+  }
+
+  voiceUnlockBtn.addEventListener("click", unlockVoice);
+
   /* Out-of-call announcement policy (PRD announcements-without-call,
    * delivery 1): the pure Announce module owns the decision table and
-   * the audioBlocked state machine; app.js injects only the seams.
-   * onBlockedChange is deliberately absent until T4 wires the
-   * "🔊 Activar voz" affordance. */
+   * the audioBlocked state machine; app.js injects only the seams. */
   var announcer = Announce.createAnnouncer({
     play: function (ann) { enqueueAudio(ann.audio_url, ann); },
     showToast: showToast,
     isMuted: muted,
-    isInCall: function () { return inCall; }
+    isInCall: function () { return inCall; },
+    onBlockedChange: function (blocked) {
+      renderVoiceUnlock();
+      /* FR-05 gesture unlock: while blocked, ANY user gesture counts
+       * (pointer or key). Listeners live only across a blocked stretch:
+       * the module fires this callback on TRANSITIONS only, so attach
+       * and detach pair up exactly — no double handlers. Capture phase
+       * so the gesture is seen even when a component stops propagation. */
+      if (blocked) {
+        document.addEventListener("pointerdown", onDocumentGesture, true);
+        document.addEventListener("keydown", onDocumentGesture, true);
+      } else {
+        document.removeEventListener("pointerdown", onDocumentGesture, true);
+        document.removeEventListener("keydown", onDocumentGesture, true);
+      }
+    }
   });
 
   function openEvents() {

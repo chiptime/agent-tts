@@ -876,6 +876,19 @@ class TestStatic:
         assert resp.headers["content-type"].startswith("text/javascript")
         assert "createAnnouncer" in resp.text
 
+    def test_index_has_voice_unlock_affordance(self, settings, audio_dir):
+        """PRD announcements-without-call FR-05/AC2: the blocked state
+        surfaces a Spanish "🔊 Activar voz" button as a SIBLING of #toast
+        (never inside it — showToast replaces the toast contents),
+        hidden by default until the announcer enters blocked."""
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        client = TestClient(create_app(settings=cfg, llm_factory=lambda c, t: FakeLLM()))
+        html = client.get("/").text
+        assert '<button id="voice-unlock" class="hidden"' in html
+        assert "🔊 Activar voz</button>" in html
+        # Sibling AFTER the toast element, not a child of it.
+        assert html.index('id="toast"') < html.index('id="voice-unlock"')
+
     def test_view_payload_shape_for_nonfocused_panes(self, settings, make_stub, active_agent):
         """Regression (BUG 1): /view?pane_id for ANY pane carries every key
         the panel renders -- status/transcript/screen/pending all present."""
