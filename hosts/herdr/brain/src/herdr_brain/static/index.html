@@ -913,6 +913,19 @@
       font-style: italic;
       text-align: center;
     }
+    /* "Ver más" pager (older call turns): quiet full-width button ABOVE
+     * the transcript; same styling language as the glance ver-mas. */
+    .history-more {
+      align-self: stretch;
+      min-height: 48px;            /* touch target >= 48px */
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      color: var(--accent);
+      font-size: var(--fs-sm);
+      font-weight: 700;
+    }
+    .history-more:active { transform: scale(0.96); }
 
     /* ── APPROVAL CARD (PRD action-approval-gate §8) ──────────────────
      * Floating popup OUTSIDE the drawer (UX change 2026-09-24): the card
