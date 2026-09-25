@@ -97,7 +97,7 @@ Route: delegated-direct (writer).
 Checks: pytest gate tests + `node --test tests/js/` + full suite.
 Commit: `feat(approval)`.
 
-### [ ] T4 — opencode entry point = user's `oa` (attach to persistent server)
+### [x] T4 — opencode entry point = user's `oa` (attach to persistent server)
 Files: `src/herdr_brain/herdr.py`, `src/herdr_brain/tools.py`,
 `src/herdr_brain/config.py`, tests.
 User decision 2026-09-25: default opencode entry point is their zsh
@@ -129,19 +129,20 @@ re-open this task.
 ## Progress / Evidence
 
 - 2026-09-25 T1 commit `dd9f3c7` (create_tab/start_agent, 12 tests).
-  Pinned shapes: `herdr tab create --label` → result.tab.tab_id +
+  Pinned: `herdr tab create --label` → result.tab.tab_id +
   result.root_pane.pane_id; `herdr agent start <NAME> --kind <KIND>
-  --pane <ID> [--timeout MS]` → result.agent.pane_id. Live daemon NOT
-  touched during dev (read-only pinning only).
+  --pane <ID>` → result.agent.pane_id. Live daemon untouched in dev.
 - 2026-09-25 T2 commit `8fe884d` (tool + schema + dispatch, 14 tests;
-  2 existing schema-enumeration assertions extended — registry pins).
-  Delivery semantics mirror send_to_session: blocked → failure text
-  with ids; timeout/stalled → delivered.
-- 2026-09-25 T3 commit `8f412be` (gate set generalization, create
-  payload, replay dispatch by action.tool, card variant via new pure
-  cardModel() in approval.js + CSS, refreshState after approve,
-  13 python + 7 js tests). Send paths byte-identical (old tests green
-  unmodified).
-- Suites: pytest 498 passed; js 124/124. Status: COMPLETE (code).
-  Pending: live voice e2e by user ("crea un panel con opencode para X").
+  2 schema-enumeration assertions extended — registry pins).
+- 2026-09-25 T3 commit `8f412be` (gate generalization, create payload,
+  replay by action.tool, card variant, 13 py + 7 js tests).
+- 2026-09-25 T4 commit `241ebf1` (attach args composition; Settings.
+  opencode_attach_url; create_session cwd param; schema description).
+  Follow-up `107526d`: GateAction freezes cwd so the APPROVED path
+  keeps --cwd/--dir (initial T4 dropped it on the gated path — caught
+  in review, 5 gate tests added).
+- Suites at close: pytest 539 passed; js 129/129. Pending: live voice
+  e2e (attach-mode readiness detection by herdr is the residual risk;
+  if agent start fails to detect, revert to bare opencode and reopen
+  T4).
 

@@ -75,7 +75,7 @@ Route: delegated-direct (writer).
 Checks: manual smoke via curl + node --test suite still green.
 Commit: `feat(ui)`.
 
-### [ ] T4 — Paginated /call-history (cursor `before`)
+### [x] T4 — Paginated /call-history (cursor `before`)
 Files: `src/herdr_brain/server.py`, `src/herdr_brain/history.py`,
 tests.
 User decision 2026-09-25: don't return everything at once. `GET
@@ -87,7 +87,7 @@ Route: delegated-direct (writer).
 Checks: pytest pagination cases (page boundaries, has_more flips).
 Commit: `feat(history)`.
 
-### [ ] T5 — "Ver más" prepends older turns
+### [x] T5 — "Ver más" prepends older turns
 Files: `src/herdr_brain/static/app.js`, `src/herdr_brain/static/index.html`.
 Initial repaint loads ONLY the newest page (25); if `has_more`, render
 a "Ver más" button above the transcript. Click: fetch
@@ -114,5 +114,10 @@ Commit: `feat(ui)`.
   untouched.
 - 2026-09-25 T3 commit `2cf666f` (boot repaint guarded on empty drawer,
   `.catch(console.warn)` silent-failure idiom).
-- Suites: pytest 459 passed; js 117/117. Status: COMPLETE.
+- 2026-09-25 T4 commit `05d1323` (`before`+`limit` cursor, tz-aware
+  comparison with string fallback, `has_more` via 1-record probe).
+- 2026-09-25 T5 commit `b4d66f3` ("Ver más" `.history-more` button,
+  buildTurnEl shared prepend path with `data-ts`, scroll anchor kept,
+  browser-verified with faked backends).
+- Suites at close: pytest 539 passed; js 129/129. Status: COMPLETE.
 
