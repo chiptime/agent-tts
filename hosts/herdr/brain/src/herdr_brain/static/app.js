@@ -2361,6 +2361,29 @@
   refreshState();
   setInterval(refreshState, 5000);
 
+  /* Call history repaint (boot): the drawer starts empty on every load,
+   * so refetch the persisted turns and rebuild the transcript. Only
+   * paints when the drawer holds no real turns yet (the ghost bubble is
+   * a placeholder, not a turn; the selector matches exactly what
+   * addTurn renders) — a repaint can never duplicate turns that
+   * arrived first. Best effort by design: on failure it warns and boot
+   * continues untouched (same contract as approvalFlow.recover). */
+  fetch("/call-history")
+    .then(function (resp) {
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      return resp.json();
+    })
+    .then(function (data) {
+      var turns = (data && data.turns) || [];
+      if (!turns.length || conv.querySelector(".turn.user, .turn.brain")) return;
+      for (var i = 0; i < turns.length; i++) {
+        addTurn(turns[i].role === "user" ? "user" : "brain", turns[i].text);
+      }
+    })
+    .catch(function (err) {
+      console.warn("call history repaint failed:", err);
+    });
+
   /* FR15/AC13: after a mid-call reload the app boots IDLE with a
    * "call was cut" pill; the mic never resumes without a tap. */
   try {
