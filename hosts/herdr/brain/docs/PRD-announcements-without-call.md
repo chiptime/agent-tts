@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Product** | herdr-brain (voice-assistant PWA) |
-| **Status** | Aprobado — entrega 1 planificada, implementación pendiente |
+| **Status** | Aprobado — entrega 1 implementada en rama; validación en Chrome Android pendiente |
 | **Date** | 2026-09-25 |
 | **Scope** | Fase 1: implementar. Fase 2: solo documentada, no se aborda. |
 | **Effort** | Fase 1: medio (cliente `app.js` + `sw.js`, servidor Web Push) |
@@ -408,8 +408,10 @@ suposiciones anteriores. Sin ese prototipo no se planifica.
 
 ## Siguiente paso
 
-La entrega 1 (app abierta, FR-01 a FR-08) queda planificada en
-`odd/tasks/announcements-without-call.md`; se implementará en otro chat con
-TDD estricto, según la elección del usuario. La entrega 2 (identificación de
-la sesión, FR-09 y FR-10) y la entrega 3 (Web Push, FR-11 a FR-21) aún no se
-han planificado para implementación. La Fase 2 sigue siendo solo documental.
+La entrega 1 (app abierta, FR-01 a FR-08) está implementada con TDD estricto
+en `feat/announcements-without-call-d1`; el checklist y la evidencia real
+están en `odd/tasks/announcements-without-call.md`. Quedan pendientes las
+pruebas AC1–AC6 en Chrome Android y una decisión sobre el tamaño de revisión
+antes de abrir ninguna PR. La entrega 2 (identificación de la sesión, FR-09 y
+FR-10) y la entrega 3 (Web Push, FR-11 a FR-21) no se han implementado. La
+Fase 2 sigue siendo solo documental.
