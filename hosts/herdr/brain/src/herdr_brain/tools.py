@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
+import time
 from typing import Callable, Dict, Optional
 
 from .config import MAX_SCREEN_LINES, Settings
@@ -31,6 +33,14 @@ HERD_LAST_TURN_CHARS = 160
 CONVERSATION_WINDOW = 20
 SCREEN_FULL_LINES = 120
 MAX_AGENT_NAME_LEN = 24
+
+# opencode readiness via the user's `oa` entry point: `pane run` types the
+# command and returns immediately, so readiness is DETECTED by polling
+# `herdr agent list` until the new pane reports an agent. Budget bounds the
+# whole poll loop; one best-effort `agent wait --until idle` settles it.
+OPENCODE_READY_BUDGET_S = 40.0
+OPENCODE_POLL_INTERVAL_S = 1.5
+OPENCODE_WAIT_TIMEOUT_MS = 15_000
 
 _AGENT_NAME_FALLBACK = "agente"
 
@@ -73,9 +83,19 @@ def status_payload(active: Optional[AgentInfo]) -> dict:
 class BrainTools:
     """Tool implementations bound to a HerdrClient and settings."""
 
-    def __init__(self, settings: Settings, herdr: Optional[HerdrClient] = None):
+    def __init__(
+        self,
+        settings: Settings,
+        herdr: Optional[HerdrClient] = None,
+        clock: Optional[Callable[[], float]] = None,
+        sleeper: Optional[Callable[[float], None]] = None,
+    ):
         self._settings = settings
         self._herdr = herdr or HerdrClient(settings)
+        # Injectable readiness-loop primitives (tests drive them without
+        # real 40 s waits); production uses monotonic time and real sleep.
+        self._clock = clock or time.monotonic
+        self._sleeper = sleeper or time.sleep
         self.last_active: Optional[AgentInfo] = None
 
     # -- tools --------------------------------------------------------------
@@ -359,9 +379,10 @@ class BrainTools:
         given), starts the agent kind on the tab's root pane and — when a
         task is given — delivers it through the same
         :meth:`HerdrClient.send_prompt` delivery guarantees as
-        ``send_to_session``. opencode panels ATTACH to the user's
-        persistent opencode server (the ``oa`` entry point:
-        ``opencode attach <url> [--dir cwd]``) instead of spawning their
+        ``send_to_session``. opencode panels are launched through the
+        user's canonical ``oa`` zsh entry point (typed into the pane's
+        interactive shell via ``herdr pane run``; the function attaches
+        to their persistent opencode server) instead of spawning their
         own backend; every other kind starts unchanged. The new pane
         becomes ``last_active``. A task-delivery failure NEVER raises
         away the created ids: the caller still learns the tab/pane/agent
@@ -378,15 +399,15 @@ class BrainTools:
         except HerdrError as exc:
             return f"error creating tab: {exc}"
         tab_id, pane_id = created["tab_id"], created["pane_id"]
-        agent_args: Optional[list] = None
         if clean_kind == "opencode":
-            agent_args = ["attach", self._settings.opencode_attach_url]
-            if clean_cwd:
-                agent_args.extend(["--dir", clean_cwd])
-        try:
-            self._herdr.start_agent(name, clean_kind, pane_id, args=agent_args)
-        except HerdrError as exc:
-            return f"error starting agent: {exc} (tab {tab_id} was created)"
+            failure = self._launch_opencode_via_oa(name, clean_cwd, pane_id, tab_id)
+            if failure is not None:
+                return failure
+        else:
+            try:
+                self._herdr.start_agent(name, clean_kind, pane_id)
+            except HerdrError as exc:
+                return f"error starting agent: {exc} (tab {tab_id} was created)"
         # The new pane is now the conversation's focus: track it the same
         # way every resolve does, so subsequent reads target the new panel.
         self._track(
@@ -466,6 +487,60 @@ class BrainTools:
             return f"error: invalid arguments for {name}: {exc}"
 
     # -- internals -------------------------------------------------------------
+
+    def _launch_opencode_via_oa(
+        self, name: str, clean_cwd: str, pane_id: str, tab_id: str
+    ) -> Optional[str]:
+        """Launches the opencode panel through the user's ``oa`` entry.
+
+        The pane shell is the user's interactive zsh, where the dotfiles
+        function ``oa`` (``opencode attach <server> [--dir <dir>]``)
+        resolves verbatim: typing ``oa [dir]`` attaches the panel to
+        their persistent opencode server. ``pane run`` returns as soon
+        as the line is submitted, so readiness is DETECTED by polling
+        :meth:`HerdrClient.list_agents` until the new pane reports an
+        agent, followed by one best-effort ``agent wait --until idle``.
+
+        Returns None on success, else a failure text carrying the
+        created tab/pane ids (they exist on screen and must never be
+        raised away).
+        """
+        command = "oa" if not clean_cwd else f"oa {shlex.quote(clean_cwd)}"
+        try:
+            self._herdr.pane_run(pane_id, command)
+        except HerdrError as exc:
+            return (
+                f"error launching opencode: {exc} "
+                f"(tab {tab_id} pane {pane_id} were created)"
+            )
+        deadline = self._clock() + OPENCODE_READY_BUDGET_S
+        detected = False
+        while True:
+            try:
+                agents = self._herdr.list_agents()
+            except HerdrError:
+                agents = []  # a failed listing is a miss, not a failure
+            if any(agent.pane_id == pane_id for agent in agents):
+                detected = True
+                break
+            if self._clock() + OPENCODE_POLL_INTERVAL_S >= deadline:
+                break
+            self._sleeper(OPENCODE_POLL_INTERVAL_S)
+        if not detected:
+            return (
+                f"error launching opencode: no agent appeared on pane {pane_id} "
+                f"within {OPENCODE_READY_BUDGET_S:.0f}s "
+                f"(tab {tab_id} pane {pane_id} were created)"
+            )
+        try:
+            # Best-effort settle: the agent is already detected, so a
+            # failed wait (e.g. it never reports idle) is non-fatal.
+            self._herdr.agent_wait(
+                pane_id, until="idle", timeout_ms=OPENCODE_WAIT_TIMEOUT_MS
+            )
+        except HerdrError:
+            pass
+        return None
 
     def _track(self, active: Optional[AgentInfo]) -> Optional[AgentInfo]:
         if active is not None:
@@ -572,10 +647,10 @@ TOOLS_SCHEMA = [
                 "session. Use it when the user asks for another agent, a "
                 "separate task that deserves its own panel, or parallel "
                 "work; for anything else prefer send_to_session on the "
-                "current session. opencode panels attach to the user's "
-                "persistent opencode server (entry point `opencode attach "
-                "<url> [--dir cwd]`); cwd scopes both the tab and the "
-                "session."
+                "current session. opencode panels are launched through "
+                "the user's `oa` zsh entry (opencode attach to their "
+                "persistent opencode server); cwd scopes both the tab "
+                "and the session."
             ),
             "parameters": {
                 "type": "object",
@@ -605,8 +680,8 @@ TOOLS_SCHEMA = [
                         "type": "string",
                         "description": (
                             "Optional working directory: scopes both the "
-                            "created tab and the session (for opencode, "
-                            "the attach --dir)."
+                            "created tab and the opencode session "
+                            "(passed to the user's `oa` entry)."
                         ),
                     },
                 },

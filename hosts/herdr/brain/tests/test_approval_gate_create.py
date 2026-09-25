@@ -343,11 +343,11 @@ class TestServerCreateFlow:
         assert sent["name"] == CREATE_SESSION
         assert sent["arguments"]["cwd"] == "/repo"
 
-    def test_approve_without_cwd_attaches_without_dir(
+    def test_approve_without_cwd_types_bare_oa(
         self, settings, tmp_path, monkeypatch
     ):
         """Full replay chain with REAL BrainTools: a gate proposed without
-        cwd replays with cwd="" so the opencode attach argv omits --dir
+        cwd replays with cwd="" so the typed `oa` command carries no dir
         and the tab is created unscoped."""
         import herdr_brain.server as server_module
         from fastapi.testclient import TestClient
@@ -376,9 +376,8 @@ class TestServerCreateFlow:
         resp = TestClient(app).post(f"/approval/{gate.gate_id}/approve")
         assert resp.status_code == 200
         assert stub.tab_calls == [{"label": "Build", "cwd": None}]
-        attach_argv = stub.start_calls[0]["args"]
-        assert attach_argv == ["attach", settings.opencode_attach_url]
-        assert "--dir" not in attach_argv
+        assert stub.pane_run_calls == [{"pane_id": "w2:p3", "command": "oa"}]
+        assert stub.start_calls == []
 
     def test_patch_endpoint_returns_create_payload_with_new_task(
         self, settings, tmp_path, monkeypatch, create_app_fx
