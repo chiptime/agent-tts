@@ -68,10 +68,6 @@ DEFAULT_READER_CONCURRENCY = 2
 # announcement — audio and visual always match.
 DEFAULT_ANNOUNCE_MAX_CHARS = 300
 
-# The user's opencode entry point (`oa`): a persistent local server every
-# opencode panel ATTACHES to instead of spawning its own backend.
-DEFAULT_OPENCODE_ATTACH_URL = "http://localhost:4096"
-
 
 @dataclass(frozen=True)
 class Settings:
@@ -102,7 +98,6 @@ class Settings:
     reader_timeout_s: int = DEFAULT_READER_TIMEOUT_S
     reader_concurrency: int = DEFAULT_READER_CONCURRENCY
     announce_max_chars: int = DEFAULT_ANNOUNCE_MAX_CHARS
-    opencode_attach_url: str = DEFAULT_OPENCODE_ATTACH_URL
 
     def __post_init__(self):
         # Accept plain strings for path fields regardless of the caller.
@@ -154,7 +149,4 @@ def load_settings(env: Optional[dict] = None) -> Settings:
         announce_max_chars=int(getenv(
             "HERDR_BRAIN_ANNOUNCE_MAX_CHARS", str(DEFAULT_ANNOUNCE_MAX_CHARS)
         )),
-        opencode_attach_url=getenv(
-            "HERDR_BRAIN_OPENCODE_ATTACH_URL", DEFAULT_OPENCODE_ATTACH_URL
-        ),
     )

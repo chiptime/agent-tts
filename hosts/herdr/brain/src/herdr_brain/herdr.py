@@ -219,7 +219,6 @@ class HerdrClient:
         kind: str,
         pane_id: str,
         timeout_ms: Optional[int] = None,
-        args: Optional[List[str]] = None,
     ) -> str:
         """Starts an agent in an existing pane and returns its pane id.
 
@@ -229,12 +228,6 @@ class HerdrClient:
         variant carrying the AgentInfo under ``result.agent``; its
         ``pane_id`` is returned (falling back to the requested pane, which
         the CLI contract guarantees to be the same).
-
-        ``args`` (pinned via ``--help``) is appended after a trailing
-        ``--``: the CLI composes ``<kind's canonical executable> *args``,
-        e.g. ``args=["attach", url]`` for kind opencode runs
-        ``opencode attach <url>``. Empty/None omits the ``--`` entirely,
-        keeping the invocation byte-identical to the pre-args form.
         """
         effective_ms = timeout_ms if timeout_ms and timeout_ms > 0 else 30_000
         cli_args = [
@@ -243,8 +236,6 @@ class HerdrClient:
             "--pane", pane_id,
             "--timeout", str(effective_ms),
         ]
-        if args:
-            cli_args.extend(["--", *args])
         proc = self._run_cli(cli_args, timeout_s=effective_ms / 1000 + 30)
         result = parse_success_result(proc.stdout)
         agent = result.get("agent")
@@ -252,6 +243,38 @@ class HerdrClient:
             excerpt = proc.stdout.strip()[:200]
             raise HerdrError(f"agent start output missing agent info: {excerpt!r}")
         return str(agent.get("pane_id", "")) or pane_id
+
+    def pane_run(self, pane_id: str, command: str) -> None:
+        """Types ``command`` + Enter into a pane's interactive shell.
+
+        Verified CLI shape: ``herdr pane run <PANE_ID> <COMMAND>...`` —
+        "sends text and Enter in one call". The command is the SHELL line
+        the pane must execute, passed as one argv element so any shell
+        quoting inside it (e.g. ``oa '/my repo'``) reaches the pane
+        verbatim. Fire-and-confirm: the CLI returns once the text is
+        submitted, without waiting for the shell to finish; a non-zero
+        exit raises :class:`HerdrError`.
+        """
+        clean = (command or "").strip()
+        if not clean:
+            raise HerdrError("refusing to run an empty command")
+        self._run_cli(["pane", "run", pane_id, clean], timeout_s=15)
+
+    def agent_wait(
+        self, pane_id: str, until: str = "idle", timeout_ms: int = 15_000
+    ) -> None:
+        """Waits until an agent reaches a state (or fails after a timeout).
+
+        Verified CLI shape (``herdr agent wait --help``):
+        ``herdr agent wait <TARGET> [--until <STATUS>]... [--timeout <MS>]``
+        with statuses ``idle|working|blocked|done|unknown``; the target
+        accepts pane ids just like ``agent prompt``. Non-zero exit (state
+        not reached within the timeout) raises :class:`HerdrError`.
+        """
+        self._run_cli(
+            ["agent", "wait", pane_id, "--until", until, "--timeout", str(timeout_ms)],
+            timeout_s=timeout_ms / 1000 + 30,
+        )
 
     def send_prompt(self, pane_id: str, text: str, timeout_ms: Optional[int] = None) -> dict:
         """Submits a prompt and waits for completion.

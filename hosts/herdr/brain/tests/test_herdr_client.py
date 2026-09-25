@@ -104,6 +104,41 @@ def agent_started_envelope(pane_id: str = "w2:p1", agent: str = "refactor") -> s
     )
 
 
+def agent_list_envelope(*pane_ids: str) -> str:
+    """NDJSON shaped like `herdr agent list` output for the given panes."""
+    return json.dumps(
+        {
+            "id": "cli:agent:list",
+            "result": {
+                "agents": [
+                    {
+                        "pane_id": pane_id,
+                        "agent": "opencode",
+                        "agent_status": "idle",
+                        "focused": False,
+                    }
+                    for pane_id in pane_ids
+                ]
+            },
+        }
+    )
+
+
+class FakeClock:
+    """Readiness-loop double: time advances only when the sleeper runs."""
+
+    def __init__(self):
+        self.now = 0.0
+        self.sleeps: list = []
+
+    def clock(self) -> float:
+        return self.now
+
+    def sleeper(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
 class TestParseSuccessResult:
     def test_parses_result_object(self):
         result = parse_success_result(tab_created_envelope())
@@ -174,29 +209,6 @@ class TestStartAgent:
         assert runner.calls[0]["cmd"][-2:] == ["--timeout", "120000"]
         assert runner.calls[0]["timeout"] == 150.0  # 120s readiness + 30s margin
 
-    def test_args_appended_after_separator(self):
-        runner = FakeRunner(results=[(0, agent_started_envelope(), "")])
-        client = HerdrClient(make_settings(), runner=runner)
-        client.start_agent(
-            "refactor", "opencode", "w2:p1",
-            args=["attach", "http://localhost:4096", "--dir", "/repo"],
-        )
-        assert runner.calls[0]["cmd"][-5:] == [
-            "--", "attach", "http://localhost:4096", "--dir", "/repo",
-        ]
-
-    def test_no_args_keeps_invocation_byte_identical(self):
-        runner = FakeRunner(results=[
-            (0, agent_started_envelope(), ""),
-            (0, agent_started_envelope(), ""),
-        ])
-        client = HerdrClient(make_settings(), runner=runner)
-        client.start_agent("refactor", "claude", "w2:p1")
-        assert "--" not in runner.calls[0]["cmd"]
-        client.start_agent("refactor", "claude", "w2:p1", args=[])
-        assert "--" not in runner.calls[1]["cmd"]
-        assert runner.calls[0]["cmd"] == runner.calls[1]["cmd"]
-
     def test_nonzero_exit_raises(self):
         runner = FakeRunner(results=[(1, "", "agent boom")])
         client = HerdrClient(make_settings(), runner=runner)
@@ -211,54 +223,167 @@ class TestStartAgent:
             client.start_agent("refactor", "opencode", "w2:p1")
 
 
-class TestStartAgentOaComposition:
-    """The composed argv for the user's `oa` entry point (opencode attach).
+class TestPaneRun:
+    def test_builds_expected_command(self):
+        runner = FakeRunner(results=[(0, "", "")])
+        client = HerdrClient(make_settings(), runner=runner)
+        client.pane_run("w2:p1", "oa '/my repo'")
+        assert runner.calls[0]["cmd"] == [
+            "herdr-fake", "pane", "run", "w2:p1", "oa '/my repo'",
+        ]
+
+    def test_nonzero_exit_raises(self):
+        runner = FakeRunner(results=[(1, "", "pane boom")])
+        client = HerdrClient(make_settings(), runner=runner)
+        with pytest.raises(HerdrError, match="pane boom"):
+            client.pane_run("w2:p1", "oa")
+
+    def test_empty_command_refused_without_invoking(self):
+        runner = FakeRunner(results=[])
+        client = HerdrClient(make_settings(), runner=runner)
+        with pytest.raises(HerdrError, match="empty"):
+            client.pane_run("w2:p1", "   ")
+        assert runner.calls == []
+
+
+class TestAgentWait:
+    def test_builds_expected_command_and_subprocess_budget(self):
+        runner = FakeRunner(results=[(0, "", "")])
+        client = HerdrClient(make_settings(), runner=runner)
+        client.agent_wait("w2:p1")
+        assert runner.calls[0]["cmd"] == [
+            "herdr-fake", "agent", "wait", "w2:p1",
+            "--until", "idle", "--timeout", "15000",
+        ]
+        assert runner.calls[0]["timeout"] == 45.0  # 15s wait + 30s margin
+
+    def test_custom_until_and_timeout(self):
+        runner = FakeRunner(results=[(0, "", "")])
+        client = HerdrClient(make_settings(), runner=runner)
+        client.agent_wait("w2:p1", until="done", timeout_ms=5_000)
+        assert runner.calls[0]["cmd"][-4:] == [
+            "--until", "done", "--timeout", "5000",
+        ]
+
+    def test_nonzero_exit_raises(self):
+        runner = FakeRunner(results=[(1, "", "wait boom")])
+        client = HerdrClient(make_settings(), runner=runner)
+        with pytest.raises(HerdrError, match="wait boom"):
+            client.agent_wait("w2:p1")
+
+
+class TestOaLaunchComposition:
+    """The `oa` entry typed into the new pane (canonical opencode launch).
 
     Drives BrainTools.create_session against the FakeRunner-backed client
-    so the FINAL CLI invocation is pinned end to end at the subprocess
-    boundary (no stubbed HerdrClient in between).
+    so the FINAL CLI invocations are pinned end to end at the subprocess
+    boundary (no stubbed HerdrClient in between). The FakeClock keeps the
+    readiness loop instant: its sleeper records the poll intervals
+    instead of really sleeping.
     """
 
-    def _tools(self, runner) -> "BrainTools":
+    def _tools(self, runner, fake: FakeClock) -> "BrainTools":
         from herdr_brain.tools import BrainTools
 
         settings = make_settings()
-        return BrainTools(settings, herdr=HerdrClient(settings, runner=runner))
+        return BrainTools(
+            settings,
+            herdr=HerdrClient(settings, runner=runner),
+            clock=fake.clock,
+            sleeper=fake.sleeper,
+        )
 
-    def test_opencode_with_cwd_composes_attach_argv(self):
+    def test_opencode_pins_pane_run_and_readiness_calls(self):
+        runner = FakeRunner(results=[
+            (0, tab_created_envelope(), ""),                 # tab create
+            (0, "", ""),                                     # pane run: oa
+            (0, agent_list_envelope("w1:p9"), ""),           # poll: miss
+            (0, agent_list_envelope("w1:p9", "w2:p1"), ""),  # poll: hit
+            (0, "", ""),                                     # agent wait
+            (0, "", ""),                                     # first prompt
+        ])
+        fake = FakeClock()
+        out = self._tools(runner, fake).create_session("opencode", "Build", "corre lint")
+        assert out.endswith("Tarea entregada.")
+        assert runner.calls[1]["cmd"] == ["herdr-fake", "pane", "run", "w2:p1", "oa"]
+        assert runner.calls[4]["cmd"] == [
+            "herdr-fake", "agent", "wait", "w2:p1",
+            "--until", "idle", "--timeout", "15000",
+        ]
+        assert fake.sleeps == [1.5]  # one miss slept, the hit ended the loop
+
+    def test_opencode_with_cwd_pins_quoted_command(self):
         runner = FakeRunner(results=[
             (0, tab_created_envelope(), ""),
-            (0, agent_started_envelope(), ""),
+            (0, "", ""),
+            (0, agent_list_envelope("w2:p1"), ""),
+            (0, "", ""),
+            (0, "", ""),
         ])
-        self._tools(runner).create_session("opencode", "Build", cwd="/repo")
+        fake = FakeClock()
+        self._tools(runner, fake).create_session("opencode", "Build", cwd="/repo")
         assert runner.calls[1]["cmd"] == [
-            "herdr-fake", "agent", "start", "build",
-            "--kind", "opencode",
-            "--pane", "w2:p1",
-            "--timeout", "30000",
-            "--", "attach", "http://localhost:4096", "--dir", "/repo",
+            "herdr-fake", "pane", "run", "w2:p1", "oa /repo",
         ]
 
-    def test_opencode_without_cwd_omits_dir(self):
+    def test_opencode_cwd_with_space_is_shell_quoted(self):
+        runner = FakeRunner(results=[
+            (0, tab_created_envelope(), ""),
+            (0, "", ""),
+            (0, agent_list_envelope("w2:p1"), ""),
+            (0, "", ""),
+            (0, "", ""),
+        ])
+        fake = FakeClock()
+        self._tools(runner, fake).create_session("opencode", "Build", cwd="/my repo")
+        assert runner.calls[1]["cmd"][-1] == "oa '/my repo'"
+
+    def test_opencode_detection_never_appeared_fails_with_ids(self):
+        # Every listing misses: the loop exhausts the 40s budget (faked
+        # clock), no wait, no prompt — and the failure keeps the ids.
+        runner = FakeRunner(results=[
+            (0, tab_created_envelope(), ""),
+            (0, "", ""),
+            *[(0, agent_list_envelope("w1:p9"), "") for _ in range(40)],
+        ])
+        fake = FakeClock()
+        out = self._tools(runner, fake).create_session("opencode", "Build", "task")
+        assert out.startswith("error launching opencode: no agent appeared")
+        assert "w2:t1" in out and "w2:p1" in out
+        subcommands = [tuple(c["cmd"][1:3]) for c in runner.calls]
+        assert ("agent", "wait") not in subcommands
+        assert ("agent", "prompt") not in subcommands
+        # Poll cadence pinned: 27 checks over 26 interval-sleeps ≈ 40s.
+        assert subcommands.count(("agent", "list")) == 27
+        assert len(fake.sleeps) == 26
+
+    def test_opencode_wait_failure_is_tolerated(self):
+        runner = FakeRunner(results=[
+            (0, tab_created_envelope(), ""),
+            (0, "", ""),
+            (0, agent_list_envelope("w2:p1"), ""),
+            (1, "", "wait boom"),  # agent wait fails: non-fatal
+            (0, "", ""),           # first prompt still delivered
+        ])
+        fake = FakeClock()
+        out = self._tools(runner, fake).create_session("opencode", "Build", "task")
+        assert out.endswith("Tarea entregada.")
+
+    def test_non_opencode_kind_never_uses_pane_run(self):
         runner = FakeRunner(results=[
             (0, tab_created_envelope(), ""),
             (0, agent_started_envelope(), ""),
+            (0, "", ""),
         ])
-        self._tools(runner).create_session("opencode", "Build")
-        assert runner.calls[1]["cmd"][-3:] == [
-            "--", "attach", "http://localhost:4096",
-        ]
-
-    def test_non_opencode_kind_has_no_separator_nor_args(self):
-        runner = FakeRunner(results=[
-            (0, tab_created_envelope(), ""),
-            (0, agent_started_envelope(), ""),
-        ])
-        self._tools(runner).create_session("claude", "Docs")
+        fake = FakeClock()
+        self._tools(runner, fake).create_session("claude", "Docs", "task")
         assert runner.calls[1]["cmd"] == [
             "herdr-fake", "agent", "start", "docs",
             "--kind", "claude",
             "--pane", "w2:p1",
             "--timeout", "30000",
         ]
-        assert "--" not in runner.calls[1]["cmd"]
+        subcommands = [tuple(c["cmd"][1:3]) for c in runner.calls]
+        assert ("pane", "run") not in subcommands
+        assert ("agent", "wait") not in subcommands
+        assert fake.sleeps == []
