@@ -97,6 +97,26 @@ Route: delegated-direct (writer).
 Checks: pytest gate tests + `node --test tests/js/` + full suite.
 Commit: `feat(approval)`.
 
+### [ ] T4 — opencode entry point = user's `oa` (attach to persistent server)
+Files: `src/herdr_brain/herdr.py`, `src/herdr_brain/tools.py`,
+`src/herdr_brain/config.py`, tests.
+User decision 2026-09-25: default opencode entry point is their zsh
+`oa` = `opencode attach http://localhost:4096 --dir "$dir"`. herdr
+`agent start --kind opencode -- [AGENT_ARG…]` appends args to the
+canonical executable (pinned via --help), so compose
+`["attach", <url>] + (["--dir", cwd] if cwd)`. Settings: new
+`opencode_attach_url` (default `http://localhost:4096`, env override).
+create_session gains optional `cwd` param (passed to `tab create --cwd`
+AND `attach --dir`); LLM schema description updated (opencode panels
+attach to the persistent server; cwd scopes the session). Other kinds
+unchanged (no args).
+Route: delegated-direct (writer).
+Checks: pytest client+tools tests (attach args composition with/without
+cwd; non-opencode kinds pass no args). Commit: `feat(tools)`.
+RISK: herdr readiness detection might not recognize `opencode attach`
+mode TUI; if live e2e fails on start, revert to bare opencode and
+re-open this task.
+
 ## Acceptance Criteria (from PRD)
 
 - "crea un panel con opencode para X" → after ONE approval, the panel

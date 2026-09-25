@@ -75,6 +75,29 @@ Route: delegated-direct (writer).
 Checks: manual smoke via curl + node --test suite still green.
 Commit: `feat(ui)`.
 
+### [ ] T4 — Paginated /call-history (cursor `before`)
+Files: `src/herdr_brain/server.py`, `src/herdr_brain/history.py`,
+tests.
+User decision 2026-09-25: don't return everything at once. `GET
+/call-history?before=<iso-ts>&limit=N` — default limit 25 (cap 200);
+returns the `limit` turns strictly OLDER than `before` (omit = newest
+page), oldest-first, plus `has_more: bool`. Existing no-param callers
+keep working (same shape + has_more added).
+Route: delegated-direct (writer).
+Checks: pytest pagination cases (page boundaries, has_more flips).
+Commit: `feat(history)`.
+
+### [ ] T5 — "Ver más" prepends older turns
+Files: `src/herdr_brain/static/app.js`, `src/herdr_brain/static/index.html`.
+Initial repaint loads ONLY the newest page (25); if `has_more`, render
+a "Ver más" button above the transcript. Click: fetch
+`before=<oldest rendered ts>`, PREPEND turns keeping the scroll anchor
+(no jump), hide button when exhausted. Same T3 empty-drawer guard and
+silent-failure idiom.
+Route: delegated-direct (writer).
+Checks: node --test green; manual reasoning for DOM (no app.js harness).
+Commit: `feat(ui)`.
+
 ## Acceptance Criteria
 
 - Reload the PWA mid-call or later: previous turns are visible.
