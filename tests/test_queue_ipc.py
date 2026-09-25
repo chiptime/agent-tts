@@ -440,3 +440,61 @@ def test_enqueue_while_playing_dispatches_after_finalize_without_overlap(channel
         assert box == ["status=stopped"]
     finally:
         _stop_daemon(d)
+
+
+# --- watchdog wedge releases the blocking play (R1-02, RS-5 end to end) --------------------
+
+
+def test_watchdog_wedge_releases_blocking_play_waiter_and_restores_idle(channel, monkeypatch):
+    """A playback that ignores terminate() must not park its blocking-play
+    client forever nor pin the daemon's idle exit.
+
+    Before R1-02 the watchdog finalized the wedged item and moved the
+    queue on, but the daemon-side waiter was only ever released by the
+    wedged worker's finally — which never runs — so the client hung on
+    ``waiter.event.wait()`` (no timeout) and ``_inflight`` stayed pinned
+    (``_idle_expired()`` could never fire again).
+    """
+    events = []
+    unwedge = threading.Event()
+    d = _start_daemon(channel, monkeypatch, events, wedged_timeout_sec=0.3)
+    try:
+        sock = channel["sock"]
+
+        def wedged_play(self, decoded):
+            events.append(("start", self.label, time.monotonic()))
+            self.state["status"] = "playing"
+            unwedge.wait(timeout=30.0)  # ignores the stop flag entirely: a true wedge
+            events.append(("unwedge", self.label, time.monotonic()))
+
+        monkeypatch.setattr(AudioSession, "play", wedged_play)
+
+        box, play_thread = _play_async_sock(sock, {"text": "wedged announcement", "label": "WEDGE"})
+        _wait_until(lambda: any(e[0] == "start" and e[1] == "WEDGE" for e in events))
+
+        # The bug's snapshot: the client is parked, the daemon stays busy.
+        assert d.active_session is not None
+        assert d._inflight == 1
+
+        time.sleep(0.35)  # real clock: past the 0.3 s wedged budget
+        assert d.queue_manager.check_watchdog() is True
+
+        # The blocked play CLIENT returned with the watchdog's failure.
+        play_thread.join(timeout=5.0)
+        assert not play_thread.is_alive()
+        assert box and box[0].startswith("ok=false error=watchdog: no playback progress"), box
+
+        # The handler's finally ran: _inflight back to 0, mount cleaned —
+        # exactly the two busy terms _idle_expired() needs gone.
+        assert d._inflight == 0
+        assert d.active_session is None
+    finally:
+        unwedge.set()  # let the wedged worker unwind for teardown hygiene
+        _stop_daemon(d)
+
+    # _idle_expired() can fire again: with both busy terms cleared, only
+    # the idle clock gates it (proved after the run thread joined, so
+    # the daemon's own poll cannot race this assertion).
+    d.idle_timeout_sec = 60.0
+    d._last_request = time.time() - 120.0
+    assert d._idle_expired() is True

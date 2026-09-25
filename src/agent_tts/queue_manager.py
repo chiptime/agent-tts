@@ -108,6 +108,7 @@ __all__ = [
     "ActiveItemView",
     "AudioSessionHandle",
     "FailedItemView",
+    "FinalizeHook",
     "FinishCallback",
     "PendingItemView",
     "PlaybackOutcome",
@@ -167,6 +168,13 @@ class PlaybackOutcome(str, Enum):
 
 
 FinishCallback = Callable[[PlaybackOutcome, Optional[str]], None]
+
+# Host notification for manager-initiated finalizations (R1-02): called
+# with the finalized item, the coherent PlaybackOutcome for the host's
+# client (FAILED + error for wedges and runner crashes, STOPPED for
+# preempt/shutdown interrupts), and the error text when any. Never
+# called for outcomes the runner itself reported via its FinishCallback.
+FinalizeHook = Callable[["QueueItem", PlaybackOutcome, Optional[str]], None]
 
 
 @runtime_checkable
@@ -426,6 +434,16 @@ class QueueManager:
     once, from any thread. Late or duplicate reports are ignored
     (id-guarded), so the watchdog, preemption, and natural finish can
     race safely — the first finalization wins.
+
+    Finalize hook (R1-02): ``finalize_hook(item, outcome, error)`` is
+    invoked — never under the lock, never blocking scheduling — for
+    every MANAGER-initiated finalization: watchdog wedges (FAILED +
+    the watchdog error), preempt and shutdown interrupts (STOPPED), and
+    runner crashes (FAILED + the runner error). It exists so a host
+    can react to ends the playback worker will never report itself
+    (a wedged worker never runs its own reporting); natural outcomes
+    flow exclusively through the runner's ``on_finished`` and never
+    through the hook, so the two paths cannot double-report.
     """
 
     def __init__(
@@ -438,6 +456,7 @@ class QueueManager:
         supervisor_interval_sec: Optional[float] = DEFAULT_SUPERVISOR_INTERVAL_SEC,
         failed_history_limit: int = DEFAULT_FAILED_HISTORY_LIMIT,
         termination_wait_sec: float = DEFAULT_TERMINATION_WAIT_SEC,
+        finalize_hook: Optional[FinalizeHook] = None,
     ):
         self._runner = runner
         self._clock = clock
@@ -445,6 +464,7 @@ class QueueManager:
         self._wedged_timeout_sec = wedged_timeout_sec
         self._supervisor_interval_sec = supervisor_interval_sec
         self._termination_wait_sec = termination_wait_sec
+        self._finalize_hook = finalize_hook
         # Guards: _lock for all state below; _dispatch_mutex serializes
         # runner calls (RF-AT-08-6 even under racing finalize paths);
         # _dispatching (thread-local) flattens re-entrant dispatch.
@@ -549,6 +569,7 @@ class QueueManager:
             except Exception:
                 pass
             self._wait_termination(entry.item.id, handle)
+            self._notify_finalize(entry.item, PlaybackOutcome.FAILED, error)
             self._dispatch_next()
         return True
 
@@ -596,6 +617,7 @@ class QueueManager:
                     except Exception:
                         pass
                     self._wait_termination(item.id, handle)
+                    self._notify_finalize(item, PlaybackOutcome.STOPPED, None)
                 self._dispatch_next()
             return item_id
         with self._lock:
@@ -657,11 +679,15 @@ class QueueManager:
             entry = self._active
             if entry is not None:
                 self._interrupt_active_locked(entry)
-        if entry is not None and entry.handle is not None:
-            try:
-                entry.handle.terminate()
-            except Exception:
-                pass
+        if entry is not None:
+            if entry.handle is not None:
+                try:
+                    entry.handle.terminate()
+                except Exception:
+                    pass
+            # No termination wait here: no further dispatch follows a
+            # shutdown, and the daemon's own teardown stops the session.
+            self._notify_finalize(entry.item, PlaybackOutcome.STOPPED, None)
         self._stop_event.set()
         thread = self._supervisor_thread
         if thread is not None and thread.is_alive() and thread is not threading.current_thread():
@@ -742,6 +768,26 @@ class QueueManager:
         _, _, item = heapq.heappop(self._pending)
         return item
 
+    def _notify_finalize(
+        self, item: QueueItem, outcome: PlaybackOutcome, error: Optional[str]
+    ) -> None:
+        """Forwards a manager-initiated finalization to the host hook.
+
+        Fired for watchdog wedges (FAILED + the watchdog error), preempt
+        and shutdown interrupts (STOPPED — a cut is a normal end, not a
+        failure), and runner crashes (FAILED + the runner error). NEVER
+        fired for outcomes the runner itself reported through
+        ``on_finished``: that path already owns its host-side reporting.
+        Called outside the lock; a faulty hook must not affect
+        scheduling.
+        """
+        if self._finalize_hook is None:
+            return
+        try:
+            self._finalize_hook(item, outcome, error)
+        except Exception:
+            pass
+
     def _wait_termination(self, item_id: int, handle: Any) -> None:
         """Bounded wait for a TERMINATED session's playback to truly end.
 
@@ -807,6 +853,7 @@ class QueueManager:
                 self._finalize_active_locked(
                     item.id, failed=True, error=f"runner error: {e}", wedged=False
                 )
+            self._notify_finalize(item, PlaybackOutcome.FAILED, f"runner error: {e}")
             return
         with self._lock:
             entry = self._active
