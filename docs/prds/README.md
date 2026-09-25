@@ -8,9 +8,9 @@ Metodología: cada PRD se justifica primero por cómo mejora el flujo diario del
 
 | ID | Fichero | Feature | Prioridad final | Estado | Esfuerzo |
 |---|---|---|---|---|---|
-| AT-09 | [AT-09-canal-de-control.md](AT-09-canal-de-control.md) | Propiedad del canal de control (socket, lock y framing) | P1 | Aprobada | S-M |
-| AT-04 | [AT-04-daemon-persistente.md](AT-04-daemon-persistente.md) | Modo daemon persistente del motor (`--serve`) | P1 | Aprobada | L |
-| AT-08 | [AT-08-cola-prioridades.md](AT-08-cola-prioridades.md) | Cola con prioridades y reproducción encadenada | P1 | Aprobada | M-L |
+| AT-09 | [archivadas/AT-09-canal-de-control.md](archivadas/AT-09-canal-de-control.md) | Propiedad del canal de control (socket, lock y framing) | P1 | **Ejecutada** (BLOQUE 1.1) | S-M |
+| AT-04 | [archivadas/AT-04-daemon-persistente.md](archivadas/AT-04-daemon-persistente.md) | Modo daemon persistente del motor (`--serve`) | P1 | **Ejecutada** (BLOQUE 1.2) | L |
+| AT-08 | [archivadas/AT-08-cola-prioridades.md](archivadas/AT-08-cola-prioridades.md) | Cola con prioridades y reproducción encadenada | P1 | **Ejecutada** (BLOQUE 1.3) | M-L |
 | AT-03 | [AT-03-conectores-autodeteccion.md](AT-03-conectores-autodeteccion.md) | Conectores restantes y auto-detección del agente | P2 | Recortada | M |
 | AT-07 | [AT-07-digest-audio.md](AT-07-digest-audio.md) | Compilado de audio / digest (`--digest`) | P3 | Aprobada | S-M |
 | AT-06 | [AT-06-ducking-audio.md](AT-06-ducking-audio.md) | Ducking y prioridad de audio | P3 | Aprobada | M |
@@ -20,7 +20,7 @@ Metodología: cada PRD se justifica primero por cómo mejora el flujo diario del
 
 ## Orden de ataque
 
-1. **Paquete P1: AT-09 + AT-04 + AT-08**, en tres sub-bloques secuenciales (véase `bloques/BLOQUE-1-paquete-motor.md`): 1.1 canal de control (AT-09), 1.2 daemon por vía única (AT-04), 1.3 cola y cadena (AT-08). El daemon nace poseyendo la cola desde el día uno: una sola migración de semántica de playback, no dos.
+1. **Paquete P1: AT-09 + AT-04 + AT-08** — **COMPLETADO (2026-09-25)**, en tres sub-bloques secuenciales (archivados en [`archivadas/bloques/`](archivadas/bloques/)): 1.1 canal de control (AT-09), 1.2 daemon por vía única (AT-04), 1.3 cola y cadena (AT-08). El daemon nace poseyendo la cola desde el día uno: una sola migración de semántica de playback, no dos. Contrato IPC congelado: [`../ipc-contract-v2.md`](../ipc-contract-v2.md). Deuda, pendientes y residuales aceptados: [`../deuda-tecnica.md`](../deuda-tecnica.md).
 2. **AT-03 recortada** (solo verificación opencode web, ~10 min): validar con un id de sesión web real que el conector actual resuelve; sin código nuevo.
 3. **P3**: AT-07 primero (mejor ratio valor/coste del lote) → AT-06 → AT-01 al final (mayor esfuerzo y riesgo de regresión en karaoke/boundaries).
 4. **Postergadas**: AT-02 y AT-05.
