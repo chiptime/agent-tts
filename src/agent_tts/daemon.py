@@ -366,8 +366,9 @@ class Daemon:
     DRAIN_TIMEOUT_SEC = 5.0
 
     # Payload key carrying the internal play-waiter token from _handle_play
-    # to the runner adapter. Not part of the wire contract: clients never
-    # set it, and the runner strips it before building the session.
+    # to the runner adapter. Not part of the wire contract: clients can
+    # never set it — the play path overrides any client value with its own
+    # token, and the enqueue path strips it before insertion (R1-05).
     WAITER_KEY = "_waiter"
 
     def __init__(
@@ -789,6 +790,13 @@ class Daemon:
             return f"ok=false error=invalid enqueue payload: {e}"
 
         payload = dict(envelope)
+        # Reserved internal key (R1-05): the play-waiter token is daemon
+        # private, but the enqueue path used to forward it verbatim — a
+        # client could carry a guessed sequential token and pop ANOTHER
+        # connection's blocking-play waiter at dispatch. Strip it here so
+        # client payloads can never cross this seam (the play path forces
+        # its own token over any client value for the same reason).
+        payload.pop(self.WAITER_KEY, None)
         priority_label = payload.pop("priority", "working")
         policy_label = payload.pop("policy", "queue")
         event_type = str(payload.pop("event_type", "") or "")
