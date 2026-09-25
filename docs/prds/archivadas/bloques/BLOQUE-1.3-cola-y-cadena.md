@@ -453,63 +453,8 @@ packages installed for this measurement).
    herdr-tts team (HT-03/HT-10 owners) is the maintainer's action,
    registered here as the remaining human step.
 
-### Post-freeze pending (not blockers, owners named)
-
-- 8 h resting smoke (`RNF-AT-04-4`): command and result location
-  documented in the contract doc §10; launched after judgment day.
-- kokoro RAM/latency legs: pending a real kokoro environment.
-- T5.1 PRODUCT findings (bind→listen transient refusal; opaque
-  `None` on transport failure): registered in the contract doc §10
-  and in the T5.1 notes above; deliberately not fixed at freeze.
-
-### Post-close pending decisions and accepted residuals (2026-09-25, after JD + merge a9f11b9)
-
-Maintainer decisions open:
-
-1. **Push**: `main` is 21 commits ahead of `origin/main` (block +
-   merge `a9f11b9`); no push by maintainer decision.
-2. **edge p95 584.1 ms vs the 250 ms budget (RNF-AT-04-1)**: measured
-   and registered (`metrics/edge/*.json`); network synthesis dominates
-   (p50 376 ms) while daemon dispatch stays ≤ 0.086 ms. Decision
-   needed: re-scope the budget, move to first-chunk/streaming
-   semantics, or accept as environment-dependent.
-3. **`stop` semantics pre-freeze**: today `stop` halts only the active
-   announcement; pending items continue. Decide whether a
-   stop-with-flush (or a separate command) is wanted while the frozen
-   contract is still fresh.
-4. **T5.1 idle-clock test margins** (1.0→2.0 s, test-only): applied
-   without prior maintainer sign-off during flake stabilization;
-   ratify or revert.
-5. **Communicate the frozen contract** to herdr-tts (HT-03/HT-10
-   owners) — `docs/ipc-contract-v2.md` is the artifact to hand over.
-
-Accepted Judgment-Day residuals (full ledger in the session artifacts;
-engram mirror `agent-tts/bloque-1.3/judgment-day-ledger`; judgment
-ESCALATED ⚠️ per protocol after exhausting 2 fix rounds + 2
-re-judgments, residuals accepted by the maintainer):
-
-6. **R3-01**: narrow spontaneous-end window between the watchdog
-   verdict and the finalize hook (`queue_manager.py:566-579`) — a
-   worker ending spontaneously in that gap releases the client with
-   its own truthful natural outcome while the queue snapshot counts
-   failed+wedged; queue-counter miscount in a microsecond race, no
-   overlap/hang. Severity disputed between judges (CRITICAL vs
-   WARNING).
-7. **R2-03**: worst-case preempting-enqueue reply on remote/winhost
-   targets can exceed the 1 s client timeout (termination wait +
-   gateway subprocess + connect timeouts).
-8. **R3-02**: inverted rationale comment on the `worker is None`
-   liveness disjunct in `_on_manager_finalize` (harmless under the
-   current ordering).
-9. **Suite robustness under load**: rare load-dependent single-test
-   flakes in daemon lifecycle/queue tests; every observed instance
-   passed in isolation; product invariants unaffected per both judges.
-
-Housekeeping:
-
-10. **Smoke 8 h**: launched 2026-09-25 09:35 CEST from the worktree
-    (PID 534917, `metrics/smoke/smoke-8h-20260925T0935Z.log` in the
-    worktree); read and register the JSON result here (~17:35 CEST),
-    then the worktree and branch `feat/at-08-cola-y-cadena` can be
-    deleted (main holds everything).
+> **Nota de archivo (2026-09-25)**: PRD ejecutada y archivada. Las
+> secciones de pendientes que vivían aquí (post-freeze pending y
+> post-close decisions/residuals) migraron al registro vivo
+> `docs/deuda-tecnica.md`, que es su ubicación de mantenimiento.
 
