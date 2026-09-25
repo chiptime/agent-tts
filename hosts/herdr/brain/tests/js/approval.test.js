@@ -2,7 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert");
-const { createApprovalFlow } = require("../../src/herdr_brain/static/approval.js");
+const { createApprovalFlow, cardModel } = require("../../src/herdr_brain/static/approval.js");
 
 function fakeClock(start = 0) {
   let t = start;
@@ -734,4 +734,101 @@ test("the card-presence flags that subordinate the pending banner track the gate
   h.flow.cancel();
   assert.equal(h.flow.active(), false);
   assert.equal(h.flow.isExpired(), false);
+});
+
+/* ---- create_session gates (create_session tool) ----
+ *
+ * Create gates ride the SAME flow with a variant payload: the editable
+ * field is the task, the replay POSTs the same /approve endpoint, and
+ * PATCH keeps the {text} wire body (the server maps it onto task).
+ * cardModel() pins what the app.js card renders per variant. */
+
+const GATE_CREATE = {
+  gate_id: "b2c3d4e5f6a7",
+  tool: "create_session",
+  agent: "opencode",
+  title: "Refactor del login",
+  task: "corre los tests del modulo de auth",
+  timeout_ms: null,
+  expires_in_s: 60
+};
+
+test("a create gate arms the flow exactly like a send gate", () => {
+  const h = harness();
+  h.flow.open({ ...GATE_CREATE });
+  assert.equal(h.flow.active(), true);
+  assert.deepEqual(h.states, ["confirming"]);
+  assert.equal(h.flow.remainingSeconds(), 60);
+});
+
+test("create gate approve(): same /approve endpoint and report rendering", async () => {
+  const h = harness({
+    plan: [{ json: { answer: "Panel creado; agente en marcha.", audio_url: null } }]
+  });
+  h.flow.open({ ...GATE_CREATE });
+  assert.equal(h.flow.approve(), true);
+  assert.equal(h.flow.isBusy(), true);
+  await flush();
+  assert.equal(h.http.calls.length, 1);
+  assert.equal(h.http.calls[0].url, "/approval/b2c3d4e5f6a7/approve");
+  assert.equal(h.http.calls[0].options.method, "POST");
+  assert.deepEqual(h.answers, [
+    { answer: "Panel creado; agente en marcha.", audio_url: null }
+  ]);
+  assert.equal(h.flow.active(), false);
+});
+
+test("create gate reject(): silent cancel through the same endpoint", async () => {
+  const h = harness({ plan: [{ json: { ok: true, state: "rejected" } }] });
+  h.flow.open({ ...GATE_CREATE });
+  assert.equal(h.flow.reject(), true);
+  await flush();
+  assert.equal(h.http.calls[0].url, "/approval/b2c3d4e5f6a7/reject");
+  assert.deepEqual(h.answers, []);
+  assert.equal(h.flow.active(), false);
+});
+
+test("create gate patchText(): PATCHes {text} (server maps it onto task) and re-echoes", async () => {
+  const h = harness({
+    plan: [
+      { json: { ok: true, approval: { ...GATE_CREATE, task: "tarea editada", expires_in_s: 60 } } },
+      { json: { audio_url: "/audio/edit.mp3" } }
+    ]
+  });
+  h.flow.open({ ...GATE_CREATE });
+  assert.equal(h.flow.patchText("tarea editada"), true);
+  await flush();
+  const patch = h.http.calls[0];
+  assert.equal(patch.url, "/approval/b2c3d4e5f6a7");
+  assert.equal(patch.options.method, "PATCH");
+  assert.deepEqual(bodyOf(patch), { text: "tarea editada" });
+  assert.deepEqual(h.played, ["/audio/edit.mp3"]);  // client-side re-echo
+});
+
+/* ---- cardModel(): the variant view model app.js renders ---- */
+
+test("cardModel(): create payload renders heading + Agente/Título/Tarea rows", () => {
+  const model = cardModel(GATE_CREATE);
+  assert.equal(model.variant, "create");
+  assert.equal(model.heading, "🆕 Crear panel");
+  assert.deepEqual(model.rows, [
+    { label: "Agente", value: "opencode" },
+    { label: "Título", value: "Refactor del login" },
+    { label: "Tarea", value: "corre los tests del modulo de auth" }
+  ]);
+  assert.equal(model.editable, "corre los tests del modulo de auth");  // task is editable
+});
+
+test("cardModel(): send payload keeps the send shape (editable text, no rows)", () => {
+  const model = cardModel(GATE);
+  assert.equal(model.variant, "send");
+  assert.equal(model.heading, null);
+  assert.deepEqual(model.rows, []);
+  assert.equal(model.editable, "arregla el bug del login");
+});
+
+test("cardModel(): null-ish gate degrades to the send shape", () => {
+  assert.deepEqual(cardModel(null), {
+    variant: "send", heading: null, rows: [], editable: ""
+  });
 });

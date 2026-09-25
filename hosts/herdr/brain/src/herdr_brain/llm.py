@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 
-from .approval import ApprovalGate, ApprovalGateStore, SEND_TO_SESSION
+from .approval import ApprovalGate, ApprovalGateStore, CREATE_SESSION, SEND_TO_SESSION
 from .config import Settings
 from .herdr import AgentInfo, HerdrError
 from .memory import ConversationStore, clip_content
@@ -264,9 +264,10 @@ class BrainLLM:
     def _invoke(self, call: Any, session_key: str) -> tuple[str, Optional[ApprovalGate]]:
         """Dispatches one tool call, turning every failure into a string.
 
-        ``send_to_session`` is NEVER dispatched: it is frozen into an
-        approval gate instead (AC1 — no path executes the send without an
-        approved gate). Returns ``(tool_message, gate_or_None)``.
+        Mutating tools (``send_to_session``, ``create_session``) are NEVER
+        dispatched: each is frozen into an approval gate instead (AC1 —
+        no path executes them without an approved gate). Returns
+        ``(tool_message, gate_or_None)``.
         """
         try:
             arguments = json.loads(call.function.arguments or "{}")
@@ -277,6 +278,8 @@ class BrainLLM:
         LOGGER.info("tool call name=%s args=%s", call.function.name, summarize_tool_args(arguments))
         if call.function.name == SEND_TO_SESSION:
             return self._gate_send(arguments, session_key)
+        if call.function.name == CREATE_SESSION:
+            return self._gate_create(arguments, session_key)
         return (
             self._tools.dispatch(
                 call.function.name, arguments, target=self._request_target
@@ -322,5 +325,52 @@ class BrainLLM:
             f"pending user approval (gate {gate.gate_id}): the prompt was NOT "
             "sent. State the target and the exact text, then wait for the "
             "user's decision; never say it was sent.",
+            gate,
+        )
+
+    def _gate_create(
+        self, arguments: Dict[str, Any], session_key: str
+    ) -> tuple[str, Optional[ApprovalGate]]:
+        """Freezes the EXACT create_session args into a gate instead of
+        creating the panel.
+
+        Mirrors :meth:`_gate_send`: the frozen ``agent_kind``/``title``/
+        ``task`` are exactly what dispatch would have received, so an
+        approval replays the identical call. No target pane is needed —
+        the whole point is a NEW panel — so the only failure modes are
+        missing kind/title (mirroring the tool's own validation) and a
+        missing store, where creation is still blocked: fail safe,
+        never execute.
+        """
+        agent_kind = str(arguments.get("agent_kind", "")).strip()
+        title = str(arguments.get("title", "")).strip()
+        task = str(arguments.get("task", "") or "")
+        if not agent_kind or not title:
+            return "error: agent_kind and title are required", None
+        if self._approval_store is None:
+            return (
+                "error: create_session is blocked pending user approval, but "
+                "no approval gate store is wired; nothing was created",
+                None,
+            )
+        gate = self._approval_store.propose(
+            session_key,
+            text="",
+            agent=agent_kind,
+            tool=CREATE_SESSION,
+            agent_kind=agent_kind,
+            title=title,
+            task=task,
+        )
+        LOGGER.info(
+            "approval gate opened gate_id=%s tool=create_session kind=%s title=%s",
+            gate.gate_id,
+            agent_kind,
+            title,
+        )
+        return (
+            f"pending user approval (gate {gate.gate_id}): the panel was NOT "
+            "created. State the agent kind and the title, then wait for the "
+            "user's decision; never say it was created.",
             gate,
         )

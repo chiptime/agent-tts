@@ -417,7 +417,30 @@
     };
   }
 
-  var api = { createApprovalFlow: createApprovalFlow };
+  /* Pure view model for the gate card (payload -> what to render).
+   * Send gates keep their .ap-text body (app.js renders it directly);
+   * create gates render labelled rows instead. Kept here — pure logic,
+   * no DOM — so node --test can pin the variant surface. */
+  function approvalCardModel(gate) {
+    if (gate && gate.tool === "create_session") {
+      return {
+        variant: "create",
+        heading: "🆕 Crear panel",
+        rows: [
+          { label: "Agente", value: gate.agent || "" },
+          { label: "Título", value: gate.title || "" },
+          { label: "Tarea", value: gate.task || "" }
+        ],
+        editable: gate.task || ""
+      };
+    }
+    return { variant: "send", heading: null, rows: [], editable: (gate && gate.text) || "" };
+  }
+
+  var api = {
+    createApprovalFlow: createApprovalFlow,
+    cardModel: approvalCardModel
+  };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
