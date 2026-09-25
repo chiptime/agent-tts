@@ -153,7 +153,7 @@ agent-tts --ipc-cmd stop
 | "ATTS" magic (4B) | version 0x02 (1B) | payload length (4B, big-endian) | payload (length bytes, UTF-8) |
 ```
 
-Constants live in `agent_tts/ipc.py`: `FRAME_HEADER_SIZE = 9`, `MAX_PAYLOAD = 16 MiB`, `READ_CHUNK = 64 KiB`. The header is validated (magic, version, length vs `MAX_PAYLOAD`) **before any payload byte is read**, so:
+Constants live in `agent_tts/ipc.py`: `FRAME_HEADER_SIZE = 9`, `MAX_PAYLOAD = 16 MiB`, `READ_CHUNK = 64 KiB`. The full frozen contract — every command's request fields and exact reply shapes, the error-text catalogue, the queue snapshot keys, the client-side stderr/exit-code discipline, and the known limitations — lives in **[docs/ipc-contract-v2.md](docs/ipc-contract-v2.md)** (frozen at BLOQUE 1.3 close; the reference for integrators). The header is validated (magic, version, length vs `MAX_PAYLOAD`) **before any payload byte is read**, so:
 
 - An oversize frame gets a typed `ERR: command too large` reply from the header alone — the announced payload is never buffered or drained, and in-repo clients enforce the cap locally before writing.
 - A slow or chunked sender can never be truncated mid-payload: the reader reassembles exactly the announced length, and any sender making progress within the 30 s per-read idle bound completes whenever it finishes.
@@ -307,6 +307,8 @@ If the winhost server is unreachable, one English warning is printed on stderr a
 | :--- | :--- | :--- |
 | `AGENT_TTS_PLAYBACK` | `local` | Default playback target (`local`, `winhost`, `wsl-ps`, `windows`, `auto`); the daemon resolves it at startup and each play can force a target |
 | `AGENT_TTS_IDLE_TIMEOUT` | `1800` | Idle timeout (seconds) for daemons auto-started by the client; `0` disables; explicit `--serve`/`--foreground` starts have no timeout unless `--idle-timeout` |
+| `AGENT_TTS_COALESCE_WINDOW` | `5` | Coalescing window (seconds) for queue events with `policy=coalesce`: same `event_type` merges into one announcement while the window is open (`--coalesce-window` on the daemon) |
+| `AGENT_TTS_WEDGED_TIMEOUT` | `30` | Queue liveness budget (seconds): a dispatched playback making no progress for this long is terminated and the queue moves on; must exceed your worst-case silent synthesis time (`--wedged-timeout` on the daemon) |
 | `AGENT_TTS_DAEMON_LOG` | `<tmp>/agent-tts-daemon.log` | stderr log of auto-started daemons |
 | `AGENT_TTS_OLLAMA_MODEL` | `qwen2.5:0.5b` | Ollama model used by `--llm-summary` |
 | `AGENT_TTS_WINHOST_HOST` | auto-detect | Explicit Windows host address for winhost clients |
@@ -509,6 +511,8 @@ We have an active vision to expand `agent-tts` into the definitive neural TTS en
   - With `--agent` + `--session-id` the engine reads the real last assistant message from the agent tool's local transcript (OpenCode SQLite, Claude Code / Codex CLI / Antigravity CLI JSONL, Aider markdown history) with automatic scrollback fallback.
 - [x] 🎧 **Persistent Daemon (vía única with transparent auto-start):**
   - The CLI is always a client: a 200 ms ping gate, transparent daemon auto-start, kill-and-respawn of wedged daemons, warm provider cache between requests, idle-timeout lifecycle (30 min auto-started / none explicit), and `play`/`ping`/`shutdown` IPC commands (`--serve`/`--foreground`).
+- [x] 📋 **Priority Playback Queue & Gapless Chains (AT-08):**
+  - A priority queue inside the daemon serializes every announcement into one active session — scheduling by event priority (`blocked > done > working`, FIFO per level), per-event policy (`queue`/`preempt`/`coalesce` with a configurable merge window), one coalesced announcement for bursts, liveness watchdog, and full queue visibility in `status`; `enqueue` fire-and-forget IPC plus `--priority`/`--policy` CLI flags, and `--play-chain FILE...` for gapless back-to-back replay of multiple files in one session with chain-global seek/phrase navigation (frozen IPC contract: [docs/ipc-contract-v2.md](docs/ipc-contract-v2.md)).
 - [ ] 🎙️ **Per-Provider Pipelining (Piper):**
   - OpenAI and ElevenLabs now stream via chunked MP3 HTTP delivery with transparent full-response fallback (`--stream auto`, ≥ 400 chars); only the local Piper backend remains.
 - [ ] ⚡ **Incremental MP3 Frame-Accurate Byte Streaming:**

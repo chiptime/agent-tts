@@ -344,3 +344,121 @@ the harness.
 - Daemon stderr gained one trace kind: `agent-tts-queue: chain-item
   item= index= pos= t=` (documentation lives in `_queue_trace`).
 
+---
+
+## T8 — Contract freeze, full traceability and DoD closure (25/09/2026)
+
+> Section written in English per unit instructions. This closes the
+> block: the IPC contract freeze document (DoD #4), the consolidated
+> requirement→implementation→test→measurement traceability (DoD #3),
+> the real-edge RNF-AT-04-1 leg folded into this unit by decision D3
+> (pending from BLOQUE 1.2), and the DoD checklist state.
+
+### Contract freeze (DoD #4)
+
+The frozen contract lives in **`docs/ipc-contract-v2.md`** (referenced
+from the README): framing v2 layout and constants, every command with
+its request fields and exact reply shapes, the full error-text
+catalogue (including the T6 change `play requires text, file, or
+chain`), the queue snapshot key reference, the client-side contract
+(stderr/exit codes, ack line, exit 130), the chain fields, daemon
+tunables, the stderr trace seams, and the known limitations at freeze
+(winhost v1 preemption, wsl-ps/winhost navigation `ERR`, transient
+bind→listen refusal, opaque `None` on transport failure — the two T5.1
+PRODUCT findings —, kokoro-dependent metrics pending, 8 h smoke
+pending). Freeze statement: frozen at BLOQUE 1.3 close (2026-09-25),
+base for herdr-tts HT-03/HT-10; post-freeze changes are breaking.
+Physical communication of the freeze to the herdr-tts team is the
+maintainer's action; the document is the artifact.
+
+### Consolidated traceability (DoD #3)
+
+Every RF/RNF/US of `../AT-08-cola-prioridades.md` mapped to its
+implementation (module + commits on `feat/at-08-cola-y-cadena`),
+covering tests, and registered measurement (records under
+`metrics/queue/`, `metrics/chain/`; tables in the T5/T6 sections
+above). Style follows the paraguas table.
+
+| Requirement | Implementation | Tests | Registered measurement |
+|---|---|---|---|
+| RF-AT-08-1 | `queue_manager.Priority` (blocked > done > working, FIFO per level); CLI `--priority`/`--policy` (`cli.py`, 01cd244); `priority` wire field (`daemon.py`, 2dd9550; enum 1b5af16). Default mapping `working`/`queue` documented in README + contract doc, overridable per invocation | `test_cli_queue_flags.py`; `test_queue_ipc.py::test_status_exposes_pending_priorities_in_dispatch_order` | Contract order row below (T5 table) |
+| RF-AT-08-2 | `queue_manager.Policy` — preempt only from strictly higher priority, equal/lower degrade to queue, no busy rejection (1b5af16); `policy` wire field (2dd9550); CLI flag (01cd244) | `test_queue_manager.py`; `test_queue_milestone.py::test_blocked_preempts_playing_done_and_reaches_speaker_complete` | Preempt probe 0.177/0.204 ms (T5 table) |
+| RF-AT-08-3 | Coalescing window anchored at the first pending item per `event_type`, default 5 s, `--coalesce-window`/`AGENT_TTS_COALESCE_WINDOW` (`queue_manager.py`, `daemon.py`) | `test_coalesce_burst_of_10_done_is_one_announcement` | 10:1 on both targets (T5 table) |
+| RF-AT-08-4 | `agent_tts/chain.py` + `boundaries.shift_boundary_map` (28942d4); `chain`/`chain_gap_ms` wire fields, one-session runner, `chain-item` seam (453c1b7); `--play-chain`/`--chain-gap` (5c9eb16) | `test_chain.py` (assembly/session/daemon); `test_cli_chain_flags.py`; `test_chain_playback.py` | Chain table (T6 section): slack max 9.803 ms, byte-exact gapless |
+| RF-AT-08-5 | `status` `queue_len=` + `queue=` snapshot fields, whitespace `\uXXXX`-escaped (`daemon.encode_queue_fields`, 2dd9550) | `test_queue_ipc.py` status suite | The harness itself polls `status`; snapshots in the JSON records |
+| RF-AT-08-6 | Single active slot in `QueueManager`; session unmounted before finalize→dispatch (order is load-bearing; kept for the chain in 453c1b7) | `test_queue_milestone.py` 50-event zero-overlap simulation; `test_chain_plays_once_in_order_gapless_as_one_queue_item` | 0 overlaps, 50 intervals, both targets (T5 table) |
+| RNF-AT-08-1 | Event-driven dispatch (finalize callback dispatches inline); chain-boundary watcher (453c1b7) | Structure asserted in the suite; thresholds live in the harnesses (flake discipline) | Queue dispatch max 0.045/0.086 ms; chain item-to-item max 9.803 ms (T5/T6 tables) |
+| RNF-AT-08-2 | Preempt cuts the active item and dispatches immediately; `terminate` sets the stop flag first (T5 fix 2, 7c6f2a7) | `test_blocked_preempts_playing_done_and_reaches_speaker_complete` | 0.177 ms local / 0.204 ms wsl-ps (T5 table) |
+| RNF-AT-08-3 | Same queue semantics per target; winhost v1 excluded by design (zonas de conflicto; v2 decision deferred for the package) | wsl-ps contract leg (same `SCRIPTED_SEQUENCE`, real PowerShell playback) | Same sequence → identical resulting order, local and wsl-ps (T5 table) |
+| RNF-AT-08-4 | **Retired** in the source PRD (AT-04 vía única: no daemon-less mode exists to design or test) | — | — |
+| US-AT-08-1 | Strictly-higher preemption + blocked items always play complete (1b5af16, 7c6f2a7) | 50-event simulation asserts 10/10 blocked complete, 0 interrupted | Both targets (T5 table) |
+| US-AT-08-2 | One coalesced announcement for a 10-`done` burst (≤3 identifiers + count) | `test_coalesce_burst_of_10_done_is_one_announcement` | 10:1, `coalesced=10` in replies (T5 table) |
+| US-AT-08-3 | Default 0 ms inserts nothing; byte-exact concatenation, one session (28942d4/453c1b7) | `test_chain_plays_once_in_order_gapless_as_one_queue_item`; harness `us_at_08_3_nothing_inserted` | Byte-exact pass (T6 table) |
+| US-AT-08-4 | `enqueue` via IPC with priority + queue visibility in `status` (2dd9550) | `test_queue_ipc.py` | The measurement harness drives everything through real `enqueue` IPC |
+
+### RNF-AT-04-1 real-edge leg (DoD 1.2 pending, folded into T8 by D3)
+
+The BLOQUE 1.2 registration left the real-provider measurement
+pending ("medición con edge real ... en máquina con proveedor y
+dispositivo"). This environment has network access to the edge
+endpoint (verified: real `edge_tts` stream, 0.57 s), so the campaign
+ran here (25/09/2026) with the new harness
+`scripts/edge_p95_metrics.py`: N=25 speak events (46-char text,
+RNF-AT-04-1 scope) through a WARM daemon started by the REAL
+auto-start path on an isolated channel. Fidelity: REAL edge network
+synthesis, real MP3 decode, real framed IPC, real queue dispatch;
+only the audio DEVICE is stubbed at the `AudioSession.play` seam (no
+device in this WSL environment — audio-start is the play-seam entry,
+same seam discipline as `metrics/queue`).
+
+| Metric | Threshold | Measured |
+|---|---|---|
+| event → audio-start p50 | info | **376.4 ms** |
+| event → audio-start p95 (n=25) | < 250 ms (RNF-AT-04-1) | **584.1 ms — NOT met** |
+| max / mean | info | 606.8 / 402.6 ms |
+
+Honest reading, for the JD: with a real network provider the budget
+is dominated by the edge synthesis round trip itself (WSS connect +
+stream + full-MP3 collect — a `<200`-char text is a single group, so
+`--stream` would not change it: classic and pipelined paths coincide
+at this length). The 250 ms budget assumed daemon-warmth removes the
+per-event cost — it removes the spawn cost (the stub leg measured
+0.7 ms warm), not the network synthesis. The daemon-side budget holds
+(dispatch ≤ 0.086 ms); the provider leg does not, from this network.
+Record: `metrics/edge/edge-p95-local-20260925T072309Z.json`
+(reproduce: `PYTHONPATH=src .venv/bin/python scripts/edge_p95_metrics.py`).
+The kokoro leg stays pending (kokoro not installed; deliberate — no
+packages installed for this measurement).
+
+### DoD checklist state (closed by this section)
+
+1. **Acceptance criteria measured and registered** — DONE. Hito Cola:
+   T5 section (0 overlaps, 100% blocked, 10:1 coalescing, dispatch
+   max 0.045/0.086 ms, contract order identical) with records
+   `metrics/queue/*.json`. Hito Cadena: T6 section (item-to-item max
+   9.803 ms, byte-exact gapless, one session) with record
+   `metrics/chain/*.json`. The folded RNF-AT-04-1 real-edge leg:
+   measured above (p95 584.1 ms — threshold NOT met, honestly
+   registered for the JD), record `metrics/edge/*.json`.
+2. **Suite green** — DONE. `PYTHONPATH=src .venv/bin/python -m pytest`
+   at the freeze commit: **750 passed / 11 skipped / 0 failed**
+   (baseline unchanged; docs + measurement harness only).
+3. **Traceability** — DONE. The consolidated table above covers
+   RF-AT-08-1..6, RNF-AT-08-1..3 and US-AT-08-1..4 with module,
+   commit, tests and registered measurement; RNF-AT-08-4 is retired
+   in the source PRD (noted in the table).
+4. **Contract frozen and communicated** — DONE as artifact:
+   `docs/ipc-contract-v2.md` (freeze statement dated 2026-09-25,
+   referenced from the README). The physical communication to the
+   herdr-tts team (HT-03/HT-10 owners) is the maintainer's action,
+   registered here as the remaining human step.
+
+### Post-freeze pending (not blockers, owners named)
+
+- 8 h resting smoke (`RNF-AT-04-4`): command and result location
+  documented in the contract doc §10; launched after judgment day.
+- kokoro RAM/latency legs: pending a real kokoro environment.
+- T5.1 PRODUCT findings (bind→listen transient refusal; opaque
+  `None` on transport failure): registered in the contract doc §10
+  and in the T5.1 notes above; deliberately not fixed at freeze.
+
