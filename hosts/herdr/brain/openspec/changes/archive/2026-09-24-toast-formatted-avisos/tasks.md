@@ -18,4 +18,4 @@ Strict TDD. Gates: pytest (must stay green, no new pytest tests strictly require
 ## Phase 3: Verification
 
 - [x] 3.1 Both gates green; existing reader + toast-related tests untouched-green.
-- [ ] 3.2 (maintainer) Device pass: trigger an agent response aviso → formatted toast; trigger a watcher aviso → plain toast.
+- [x] 3.2 (maintainer) Device pass — CONFIRMED by maintainer 2026-09-25: formatted render + toast verified on device ("funciona perfecto").

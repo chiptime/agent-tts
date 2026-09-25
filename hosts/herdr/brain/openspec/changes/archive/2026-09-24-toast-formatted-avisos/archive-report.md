@@ -23,6 +23,6 @@ Closed: the phone agent-status toast renders the announced response as reader HT
 
 ## Residual notes
 
-- Device pass pending (maintainer).
+- Device pass CONFIRMED by maintainer (2026-09-25): "funciona perfecto".
 - Service restart required (new route + assets).
 - Deviations documented: htmlFor real signature is (role, text); no 4KB substring cap (spec forbids payload mutation — CSS-only excerpt); no unconditional ellipsis.
