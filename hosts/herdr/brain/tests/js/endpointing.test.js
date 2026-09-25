@@ -314,3 +314,37 @@ test("genuine repetition inside one final survives the merge", () => {
   ep.commit("hola hola cómo estás");
   assert.equal(ep.finalize(), "hola hola cómo estás");
 });
+
+/* ---- accent-drift tolerance (the diacritic folding fix) ----
+ * Chrome re-emissions also drift in accents ("qué" -> "que"); without
+ * folding the overlap match missed and the text DOUBLED inside one
+ * bubble. Folding is comparison-only: the committed rendering survives
+ * when the pair drifted only in accents. */
+
+test("accent-drift re-emission without a tail changes nothing", () => {
+  const ep = createEndpointer();
+  ep.commit("qué hora es");
+  ep.commit("que hora es");
+  assert.equal(ep.finalize(), "qué hora es");  // raw base wins in the overlap
+});
+
+test("accent-drift re-emission with a tail appends only the tail", () => {
+  const ep = createEndpointer();
+  ep.commit("dime qué");
+  ep.commit("dime que hora es");
+  assert.equal(ep.finalize(), "dime qué hora es");  // committed "qué" stays
+});
+
+test("accent folding does not merge genuinely different words", () => {
+  const ep = createEndpointer();
+  ep.commit("qué difícil");
+  ep.commit("que fácil");
+  assert.equal(ep.finalize(), "qué difícil que fácil");  // no shared prefix
+});
+
+test("ñ drift folds like any other accent", () => {
+  const ep = createEndpointer();
+  ep.commit("feliz año");
+  ep.commit("feliz ano nuevo");  // NFD decomposes ñ -> n + combining tilde
+  assert.equal(ep.finalize(), "feliz año nuevo");
+});
