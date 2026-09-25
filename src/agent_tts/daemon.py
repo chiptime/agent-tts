@@ -407,6 +407,7 @@ class Daemon:
         # the manager defaults (5 s / 30 s).
         self.queue_manager = QueueManager(
             runner=self._queue_runner,
+            finalize_hook=self._on_manager_finalize,
             coalesce_window_sec=(
                 _env_float(ENV_COALESCE_WINDOW, DEFAULT_COALESCE_WINDOW_SEC)
                 if coalesce_window_sec is None
@@ -424,6 +425,15 @@ class Daemon:
         # belongs to a never-dispatched item and is refused deterministically.
         self._queue_waiters: dict = {}
         self._waiter_tokens = itertools.count(1)
+        # Dispatched items' daemon-side records (item id -> mutable
+        # {waiter, session}): registered by the runner at dispatch so
+        # MANAGER-side finalizations (watchdog wedge, preempt, shutdown —
+        # see _on_manager_finalize) can release the blocking-play waiter
+        # and unmount the session even when the playback worker never
+        # returns (R1-02). Popped by whichever path finalizes first — the
+        # worker's finally or the manager's finalize hook — and the
+        # waiter release itself is idempotent (first finalization wins).
+        self._dispatched_items: dict = {}
         # Set under _lock at the top of _shutdown: once teardown has
         # started, new play registrations are refused with a
         # deterministic error so no audible session can register after
@@ -872,6 +882,12 @@ class Daemon:
         if token is not None:
             with self._lock:
                 waiter = self._queue_waiters.pop(token, None)
+        # Registered BEFORE anything can fail: every finalize path
+        # (manager-side included) must be able to find this item's
+        # waiter (R1-02).
+        record = {"waiter": waiter, "session": None}
+        with self._lock:
+            self._dispatched_items[item.id] = record
         if item.coalesced > 1 and item.announcement:
             # RF-AT-08-3: the merged item speaks ONE synthesized summary
             # (count + up to three identifiers); the window owner's own
@@ -881,6 +897,8 @@ class Daemon:
         try:
             session = self._build_queue_session(payload)
         except Exception as e:
+            with self._lock:
+                self._dispatched_items.pop(item.id, None)
             if waiter is not None:
                 waiter.release(PlaybackOutcome.FAILED, str(e))
             raise  # the manager records the item as FAILED (A5 visibility)
@@ -894,6 +912,7 @@ class Daemon:
                 raise RuntimeError("daemon shutting down")
             self.active_session = session  # queue mount point (BLOQUE 1.3)
             self._sessions.add(session)
+            record["session"] = session
 
         cli = self._ensure_cli()
 
@@ -945,6 +964,7 @@ class Daemon:
                     self._sessions.discard(session)
                     if self.active_session is session:
                         self.active_session = None
+                    self._dispatched_items.pop(item.id, None)
                 try:
                     session.stop()
                 except Exception:
@@ -973,6 +993,36 @@ class Daemon:
         # this worker unwound (session unmounted, device closed) — the
         # no-overlap invariant on the preempt/watchdog paths (R1-01).
         return AudioSessionHandle(session, playback_thread=worker_thread)
+
+    def _on_manager_finalize(self, item, outcome: PlaybackOutcome, error: Optional[str]) -> None:
+        """QueueManager finalize hook: a manager-side end of a dispatched item.
+
+        The manager fires this for finalizations the playback worker did
+        NOT report itself (watchdog wedge, preempt, shutdown interrupt,
+        runner crash — see ``QueueManager._notify_finalize``). The daemon
+        mirrors what the worker's finally would have done: release the
+        item's blocking-play waiter with the manager's outcome (the play
+        handler then answers its client and decrements ``_inflight``) and
+        unmount the session. Without this, a wedged announcement parks
+        its client on ``waiter.event.wait()`` — which has no timeout —
+        forever and pins ``_inflight``, so ``_idle_expired()`` could
+        never fire again (R1-02). Both cleanups race by design with the
+        worker's own finally and are idempotent: the record is popped
+        exactly once and the waiter's first release stands.
+        """
+        with self._lock:
+            record = self._dispatched_items.pop(item.id, None)
+        if record is None:
+            return
+        session = record["session"]
+        if session is not None:
+            with self._lock:
+                self._sessions.discard(session)
+                if self.active_session is session:
+                    self.active_session = None
+        waiter = record["waiter"]
+        if waiter is not None:
+            waiter.release(outcome, error)
 
     def _build_queue_session(self, payload: dict):
         """Builds the playback session for a dispatched queue item.

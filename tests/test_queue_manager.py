@@ -512,6 +512,113 @@ def test_termination_wait_is_skipped_for_handles_without_the_seam():
     assert list(handles) == [active, incoming]  # both dispatched, in order
 
 
+# --- Finalize hook (R1-02): manager-side ends reach the host ---------------------------
+
+
+def _hook_recorder() -> tuple:
+    reported = []
+    return reported, lambda item, outcome, error: reported.append((item, outcome, error))
+
+
+def test_finalize_hook_reports_watchdog_wedge():
+    """The wedge verdict must reach the host even though the worker never
+    reports anything (R1-02)."""
+    clock = FakeClock()
+    runner = ScriptedRunner(clock)
+    reported, hook = _hook_recorder()
+    manager = make_manager(runner, clock, wedged_timeout_sec=30.0, finalize_hook=hook)
+
+    wedged = manager.enqueue(priority=Priority.WORKING, policy=Policy.QUEUE)
+    runner.handles[wedged].token = 7
+    clock.advance(30.1)
+
+    assert manager.check_watchdog() is True
+    assert len(reported) == 1
+    item, outcome, error = reported[0]
+    assert item.id == wedged
+    assert outcome is PlaybackOutcome.FAILED
+    assert "no playback progress" in error
+
+
+def test_finalize_hook_reports_preempt_interrupt():
+    clock = FakeClock()
+    runner = ScriptedRunner(clock)
+    reported, hook = _hook_recorder()
+    manager = make_manager(runner, clock, finalize_hook=hook)
+
+    active = manager.enqueue(priority=Priority.DONE, policy=Policy.QUEUE)
+    manager.enqueue(priority=Priority.BLOCKED, policy=Policy.PREEMPT)
+
+    assert [(item.id, outcome, error) for item, outcome, error in reported] == [
+        (active, PlaybackOutcome.STOPPED, None)
+    ]
+
+
+def test_finalize_hook_reports_shutdown_interrupt():
+    clock = FakeClock()
+    runner = ScriptedRunner(clock)
+    reported, hook = _hook_recorder()
+    manager = make_manager(runner, clock, finalize_hook=hook)
+
+    active = manager.enqueue(priority=Priority.WORKING, policy=Policy.QUEUE)
+    manager.shutdown()
+
+    assert [(item.id, outcome, error) for item, outcome, error in reported] == [
+        (active, PlaybackOutcome.STOPPED, None)
+    ]
+
+
+def test_finalize_hook_is_silent_on_natural_finishes():
+    """Outcomes the runner itself reported flow through the runner's own
+    path (its worker releases its waiter) — the hook must stay silent so
+    the two paths cannot double-report."""
+    clock = FakeClock()
+    runner = ScriptedRunner(clock)
+    reported, hook = _hook_recorder()
+    manager = make_manager(runner, clock, finalize_hook=hook)
+
+    first = manager.enqueue(priority=Priority.WORKING, policy=Policy.QUEUE)
+    failing = manager.enqueue(priority=Priority.DONE, policy=Policy.QUEUE)
+    runner.finish(first, PlaybackOutcome.COMPLETED)
+    runner.finish(failing, PlaybackOutcome.FAILED, error="device vanished")
+
+    assert reported == []
+
+
+def test_finalize_hook_reports_runner_crash():
+    clock = FakeClock()
+    reported, hook = _hook_recorder()
+
+    def crashing_runner(item, on_finished):
+        if item.payload == "bad":
+            raise RuntimeError("cannot start playback")
+        return FakeHandle()
+
+    manager = make_manager(crashing_runner, clock, finalize_hook=hook)
+    bad = manager.enqueue(priority=Priority.DONE, policy=Policy.QUEUE, payload="bad")
+
+    assert [(item.id, outcome, error) for item, outcome, error in reported] == [
+        (bad, PlaybackOutcome.FAILED, "runner error: cannot start playback")
+    ]
+
+
+def test_faulty_finalize_hook_never_wedges_scheduling():
+    clock = FakeClock()
+    runner = ScriptedRunner(clock)
+
+    def exploding_hook(item, outcome, error):
+        raise RuntimeError("hook exploded")
+
+    manager = make_manager(runner, clock, finalize_hook=exploding_hook)
+
+    active = manager.enqueue(priority=Priority.DONE, policy=Policy.QUEUE)
+    incoming = manager.enqueue(priority=Priority.BLOCKED, policy=Policy.PREEMPT)
+
+    snap = manager.snapshot()
+    assert snap.interrupted_count == 1
+    assert ids_of(runner.dispatched) == [active, incoming]  # scheduling survived
+
+
 # --- Policy: coalesce ------------------------------------------------------------
 
 
