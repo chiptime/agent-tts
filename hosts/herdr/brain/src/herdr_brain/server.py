@@ -47,8 +47,9 @@ from .approval_lexicon import (
 )
 from .config import Settings
 from .herdr import HerdrError
+from .history import HistoryStore, default_history_path
 from .llm import BrainLLM, BrainLLMError
-from .memory import ConversationStore
+from .memory import MAX_MESSAGES, ConversationStore
 from .reader import ReaderCache, turn_id
 from .stt import STATE_READY, STATE_UNAVAILABLE, UNAVAILABLE_HINT, Transcriber
 from .tools import BrainTools
@@ -73,6 +74,9 @@ _SAFE_FILENAME = re.compile(r"^[A-Za-z0-9._-]+$")
 logger = logging.getLogger("herdr_brain.server")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 MAX_SESSION_ID_CHARS = 128
+# Serving cap for GET /call-history: the PWA boot repaint only needs the
+# recent transcript, not the whole persisted call.
+CALL_HISTORY_TURNS = 200
 
 # Deterministic approval closer (PRD-action-approval-gate §7): appended
 # server-side to the spoken answer whenever a gate opens — the question
@@ -222,6 +226,14 @@ def create_app(
     # inject a counting fake to prove cache hits spawn no subprocess.
     reader_cache = ReaderCache(cfg, renderer=reader_renderer or render_html)
     store = ConversationStore()
+    history = HistoryStore(default_history_path(cfg))
+    # Boot seed: restore the conversation ring from the persisted call
+    # history so LLM context survives service restarts. Only the default
+    # session is seeded — the call history is one global call. This is
+    # also the opportunistic compaction point (load_and_compact), so a
+    # long-lived file is trimmed at boot, never on the append path.
+    for record in history.load_and_compact(last_n=MAX_MESSAGES):
+        store.append(None, record["role"], record["text"])
     approval_store = ApprovalGateStore(timeout_s=cfg.approval_timeout_s)
 
     if watcher is None:
@@ -456,7 +468,16 @@ def create_app(
     @app.post("/reset")
     def reset(body: ResetRequest) -> dict:
         store.reset(body.session_id)
+        # A new conversation drops the persisted call transcript too —
+        # the history file is one global call, so the clear is global.
+        history.clear()
         return {"ok": True, "session_id": ConversationStore.normalize(body.session_id)}
+
+    @app.get("/call-history")
+    def call_history() -> dict:
+        """Persisted call transcript for the PWA boot repaint (oldest
+        first, capped at the serving window)."""
+        return {"turns": history.load(last_n=CALL_HISTORY_TURNS)}
 
     @app.get("/state")
     def state() -> dict:
@@ -654,6 +675,13 @@ def create_app(
             )
         except BrainLLMError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+        # Persist the turn exactly once, mirroring the ring (raw question
+        # + raw answer — the approval closer is response shaping, not
+        # content). The seam is deliberately HERE, not inside llm.ask:
+        # the approve replay also calls llm.ask with a synthetic report
+        # prompt, and that must never enter the call history.
+        history.append("user", body.text)
+        history.append("assistant", result.get("answer") or "")
         return shape_ask_response(result)
 
     @app.post("/approval/{gate_id}/approve")
