@@ -582,3 +582,57 @@ def test_watchdog_wedge_releases_blocking_play_waiter_and_restores_idle(channel,
     d.idle_timeout_sec = 60.0
     d._last_request = time.time() - 120.0
     assert d._idle_expired() is True
+
+
+# --- watchdog verdict outranks a stop-responsive worker's own release (R2-01) -------------
+
+
+def test_watchdog_wedge_stop_responsive_worker_answers_watchdog_failure(channel, monkeypatch):
+    """A worker that honors terminate() during the bounded wait must not
+    overwrite the watchdog verdict the client should receive.
+
+    Before R2-01 the manager fired the finalize hook only AFTER the
+    bounded termination wait: a stop-responsive worker released its own
+    waiter with STOPPED and popped the dispatched record inside that
+    wait, so the delayed hook no-opped and the blocked client answered
+    ``status=stopped`` instead of the watchdog failure.
+    """
+    events = []
+    d = _start_daemon(channel, monkeypatch, events, wedged_timeout_sec=0.3)
+    try:
+        sock = channel["sock"]
+
+        def silent_but_stop_responsive_play(self, decoded):
+            # Silent wedge (no progress tokens once "playing" is set)
+            # that still honors the stop flag: the exact worker shape
+            # that used to steal the reply from the watchdog verdict.
+            events.append(("start", self.label, time.monotonic()))
+            self.state["status"] = "playing"
+            while not self.state["stop"]:
+                time.sleep(0.005)
+            events.append(("end", self.label, time.monotonic()))
+            self.state["status"] = "stopped"
+
+        monkeypatch.setattr(AudioSession, "play", silent_but_stop_responsive_play)
+
+        box, play_thread = _play_async_sock(sock, {"text": "responsive wedge", "label": "RWEDGE"})
+        _wait_until(lambda: any(e[0] == "start" and e[1] == "RWEDGE" for e in events))
+        assert d._inflight == 1
+
+        time.sleep(0.35)  # real clock: past the 0.3 s wedged budget
+        assert d.queue_manager.check_watchdog() is True
+
+        # The blocked play CLIENT carries the WATCHDOG failure — not the
+        # STOPPED the worker's own release used to race in first.
+        play_thread.join(timeout=5.0)
+        assert not play_thread.is_alive()
+        assert box and box[0].startswith("ok=false error=watchdog: no playback progress"), box
+
+        # The worker really did unwind during the bounded wait, and the
+        # handler's finally ran: mount free, _inflight back to 0.
+        _wait_until(lambda: any(e[0] == "end" and e[1] == "RWEDGE" for e in events))
+        assert d.active_session is None
+        assert d._inflight == 0
+    finally:
+        _stop_daemon(d)
+
