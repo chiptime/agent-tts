@@ -117,7 +117,7 @@ RISK: herdr readiness detection might not recognize `opencode attach`
 mode TUI; if live e2e fails on start, revert to bare opencode and
 re-open this task.
 
-### [ ] T5 — opencode panels launch the user's `oa` CANONICALLY (pane run)
+### [x] T5 — opencode panels launch the user's `oa` CANONICALLY (pane run)
 Files: `src/herdr_brain/herdr.py`, `src/herdr_brain/tools.py`,
 `src/herdr_brain/config.py`, tests.
 User correction 2026-09-25: do NOT duplicate `oa`'s arguments (the
@@ -169,4 +169,10 @@ timeout → partial-failure text with created ids (existing pattern).
   e2e (attach-mode readiness detection by herdr is the residual risk;
   if agent start fails to detect, revert to bare opencode and reopen
   T4).
+- 2026-09-25 T5 commit `f9c3af8` (user correction applied): opencode
+  panels now type the user's zsh `oa` VERBATIM via `herdr pane run`
+  (dotfiles stay canonical — zero duplicated flags;
+  opencode_attach_url removed, start_agent args passthrough removed).
+  Readiness = 40 s bounded agent-detection poll + best-effort
+  `agent wait --until idle`. Supersedes T4's attach-args composition.
 

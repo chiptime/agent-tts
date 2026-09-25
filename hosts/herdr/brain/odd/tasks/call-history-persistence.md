@@ -98,7 +98,7 @@ Route: delegated-direct (writer).
 Checks: node --test green; manual reasoning for DOM (no app.js harness).
 Commit: `feat(ui)`.
 
-### [ ] T6 — Mini DB: JSONL → SQLite (same HistoryStore API)
+### [x] T6 — Mini DB: JSONL → SQLite (same HistoryStore API)
 Files: `src/herdr_brain/history.py`, tests.
 User request 2026-09-25 ("mini bbdd"): store turns in SQLite at
 `~/.local/state/herdr-brain/call_history.db` (stdlib sqlite3; table
@@ -134,5 +134,9 @@ migration test (jsonl fixture → imported). Commit: `feat(history)`.
 - 2026-09-25 T5 commit `b4d66f3` ("Ver más" `.history-more` button,
   buildTurnEl shared prepend path with `data-ts`, scroll anchor kept,
   browser-verified with faked backends).
-- Suites at close: pytest 539 passed; js 129/129. Status: COMPLETE.
+- 2026-09-25 T6 commit `6380a9e` (user request "mini bbdd"): SQLite
+  call_history.db (connection-per-call, index on ts, compaction =
+  DELETE beyond 1000, one-time jsonl import → .imported). Verified:
+  herdr-tts has NO history/DB — brain owns the call. Suites at close:
+  pytest 550, js 135/135.
 
