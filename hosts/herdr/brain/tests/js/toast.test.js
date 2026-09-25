@@ -245,29 +245,34 @@ test("falls_back_to_textcontent_without_html", () => {
   assert.equal(failing.toastEl.querySelector(".toast-content"), null);
 });
 
-/* ---- 1.3 CSS excerpt only, payload never mutated ---- */
+/* ---- 1.3 CSS scroll cap only, payload never mutated ---- */
 
-test("css_excerpt_only", async () => {
+test("css_scroll_cap_only", async () => {
   const h = harness();
   await loadSnapshot(h);
   const html = h.reader.htmlFor("assistant", AGENT_TEXT);
-  h.toast.show("🔊 agente: " + AGENT_TEXT.slice(0, 20) + "…", { html: html });
+  h.toast.show("🔊 agente: " + AGENT_TEXT, { html: html });
   const body = h.toastEl.querySelector(".toast-content");
   assert.ok(body.classList.contains("toast-content"),
-    "clip class applied for the CSS excerpt");
+    "body class applied for the CSS scroll cap");
   // The payload reached innerHTML byte-identical: no slice/regex ever ran.
   const writes = h.doc.writeLog();
   assert.equal(writes.length, 1);
   assert.equal(writes[0].node, body, "innerHTML assigned on the toast body only");
   assert.strictEqual(writes[0].html, html, "payload mounted verbatim");
-  // The stylesheet really clips: max-height + overflow hidden on #toast.
+  // The stylesheet really caps + scrolls: #toast is the single scroll
+  // surface for BOTH the plain and the formatted body (full-text replay,
+  // 2026-09-25) — the old 8em overflow:hidden clip on .toast-content is
+  // gone by decision.
   const css = fs.readFileSync(
     path.join(__dirname, "../../src/herdr_brain/static/index.html"), "utf-8"
   );
-  const rule = css.match(/#toast \.toast-content\s*\{[^}]*\}/);
-  assert.ok(rule, "#toast .toast-content clip rule missing");
-  assert.ok(/max-height/.test(rule[0]), "clip rule needs max-height");
-  assert.ok(/overflow:\s*hidden/.test(rule[0]), "clip rule needs overflow hidden");
+  const rule = css.match(/#toast\s*\{[^}]*\}/);
+  assert.ok(rule, "#toast scroll-cap rule missing");
+  assert.ok(/max-height/.test(rule[0]), "cap rule needs max-height");
+  assert.ok(/overflow-y:\s*auto/.test(rule[0]), "cap rule needs overflow-y auto");
+  assert.ok(/-webkit-overflow-scrolling:\s*touch/.test(rule[0]),
+    "cap rule needs touch scrolling");
 });
 
 /* ---- 1.4 links hardened inside the toast ---- */

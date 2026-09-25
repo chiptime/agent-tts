@@ -606,6 +606,14 @@
       line-height: 1.5;
       box-shadow: 0 6px 20px #0006;
       border: 1px solid var(--line);
+      /* Full-text replay (2026-09-25): the toast body caps and scrolls,
+       * so a long turn never covers the screen. max-height only caps —
+       * short toasts keep the exact same look. overflow-x hidden keeps
+       * the never-x-scroll discipline for unbroken tokens. */
+      max-height: 45vh;
+      overflow-y: auto;
+      overflow-x: hidden;
+      -webkit-overflow-scrolling: touch;
     }
     /* System warnings (herdr-tts daemon down): distinct amber styling. */
     #toast.warning { border-color: var(--warn); color: var(--warn); font-weight: 700; }
@@ -613,15 +621,10 @@
     /* ---- formatted agent-status toast (toast-formatted-avisos) ---- *
      * The formatted body mounts through the reader's scoped insertion
      * (own .toast-content class + reader-content guard class). The
-     * excerpt is CSS-ONLY: max-height + overflow hidden clip the
-     * payload, which is mounted verbatim and never string-cut. A
-     * conditional ellipsis block needs JS measurement (CSS alone can't
-     * detect clipping), and an unconditional one would mark short
-     * toasts too — so the clip stays clean by decision. */
-    #toast .toast-content {
-      max-height: 8em;
-      overflow: hidden;
-    }
+     * payload is mounted VERBATIM and never string-cut; #toast above is
+     * the ONE scroll surface (max-height + overflow-y auto), so the
+     * playback sync scrolls a single element for both the plain and
+     * the formatted path. */
     #toast .toast-content p { margin: 2px 0; }
     #toast .toast-content strong { font-weight: 800; }
     #toast .toast-content em { font-style: italic; }

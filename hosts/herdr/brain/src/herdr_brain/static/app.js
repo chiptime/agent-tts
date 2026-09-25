@@ -612,15 +612,16 @@
           return;
         }
         return resp.json().then(function (data) {
-          var toastText = text.length > 160 ? text.slice(0, 157) + "…" : text;
-          /* toast-formatted-avisos: formatted toast ONLY when the reader
-           * holds a rendered payload for this exact FULL text (content-
-           * keyed snapshot of the viewed pane — a cache hit, no new
-           * render). Watcher avisos and any miss enqueue no html and
-           * stay plain textContent. */
+          /* Full text in the announcement (2026-09-25 product decision):
+           * no char cap — the toast body caps + scrolls in CSS and the
+           * player timeupdate sync follows the reading. toast-formatted-
+           * avisos: formatted toast ONLY when the reader holds a rendered
+           * payload for this exact FULL text (content-keyed snapshot of
+           * the viewed pane — a cache hit, no new render). Watcher avisos
+           * and any miss enqueue no html and stay plain textContent. */
           enqueueAudio(data.audio_url, {
             label: label || "agente",
-            text: toastText,
+            text: text,
             html: reader.htmlFor("assistant", text)
           });
         });
@@ -1238,6 +1239,26 @@
 
   player.addEventListener("ended", onAudioEnded);
   player.addEventListener("error", onAudioEnded);  // stalled/errored media: same resume path
+  /* Playback sync (2026-09-25 decision): while the toast of the item the
+   * player is reading stays visible, the scrollable toast body follows
+   * the audio proportionally. audioFinished IS the item being played
+   * (pumpAudio sets it; ended/error/stop clear it), so the sync dies
+   * with the toast, the queue advance, or any stop. Fully guarded and
+   * try/catch-silent: a sync hiccup must never break playback. */
+  player.addEventListener("timeupdate", function () {
+    try {
+      if (!audioFinished || !audioFinished.announcement) return;
+      if (toastEl.classList.contains("hidden")) return;
+      var duration = player.duration;
+      if (!isFinite(duration) || duration <= 0) return;
+      var progress = player.currentTime / duration;
+      if (!(progress >= 0)) return;   // NaN/negative tick: skip silently
+      if (progress > 1) progress = 1;
+      toastEl.scrollTop = progress * (toastEl.scrollHeight - toastEl.clientHeight);
+    } catch (err) {
+      /* cosmetic sync only: swallow, playback is untouchable */
+    }
+  });
   stopBtn.addEventListener("click", stopAudio);
 
   /* ---------------- state pill (rows 8–13, 17) ----------------
