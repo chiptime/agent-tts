@@ -2,7 +2,7 @@
 
 **Repo:** herdr-brain
 **Created:** 2026-09-25
-**Status:** In progress — T1 (`49ba184`), T2 (`00fb2be`), T3 complete; T4/T5 pending (worktree `announcements-d1`, branch `feat/announcements-without-call-d1`)
+**Status:** In progress — T1 (`49ba184`), T2 (`00fb2be`), T3 (`b93c27c`), T4 complete; T5 (device) pending (worktree `announcements-d1`, branch `feat/announcements-without-call-d1`)
 **PRD:** `docs/PRD-announcements-without-call.md` (Phase 1, delivery 1: FR-01..FR-08, AC1..AC6)
 **Engram mirror:** `odd/announcements-without-call/tasks`
 
@@ -92,7 +92,7 @@ injected dependencies (`play`, `showToast`, `hideToast`, `isMuted`,
 - Route: delegated writer (same writer as T2 if run in one batch).
 - Done 2026-09-25 (strict TDD). Evidence in **Progress / Evidence**.
 
-### [ ] T4 — "🔊 Activar voz" affordance and gesture unlock
+### [x] T4 — "🔊 Activar voz" affordance and gesture unlock
 - Add the affordance next to `#toast` in `index.html` (Spanish label
   "🔊 Activar voz"), hidden unless `blocked`.
 - One document-level `pointerdown`/`keydown` listener (active only while
@@ -101,6 +101,8 @@ injected dependencies (`play`, `showToast`, `hideToast`, `isMuted`,
 - Extend `TestStatic` id and Spanish-label assertions.
 - Covers: FR-05, AC2.
 - Route: delegated writer.
+- Done 2026-09-25 (strict TDD), together with the reopened T3 edge
+  (queued-announcements drain). Evidence in **Progress / Evidence**.
 
 ### [ ] T5 — Device verification
 - Chrome on Android: PWA from home screen (AC1), regular tab (AC2), forced
@@ -317,6 +319,82 @@ each task closure.
     focused Node harness of the handler is infeasible (DOM/audio
     runtime); limits documented above.
   - RDD: still disabled in this worktree → no assess, no toggling.
+  - Commit identity: **T3 work-unit commit = `b93c27c`** (`fix(announce):
+    keep announcement text visible on play rejection`; recorded here in
+    the T4 doc update).
+
+- 2026-09-25 **T4 done + reopened T3 edge fixed** in the same worktree,
+  strict RED → GREEN → REFACTOR. New `#voice-unlock` button (Spanish
+  "🔊 Activar voz", sibling AFTER `#toast` — never inside, showToast
+  replaces the toast contents), hidden unless `blocked && !muted()`;
+  document-level `pointerdown`+`keydown` (capture) attached/detached
+  ONLY across blocked transitions (the module's transition-only
+  callback pairs them — no double handlers); button click and gestures
+  route through one idempotent `unlockVoice()` that unlocks once and
+  primes audio inside the genuine gesture; the prime swaps the player
+  to a SILENT wav (never the rejected src — no replay), handles the
+  promise both ways (fail-soft, never unhandled) and neutralizes the
+  player; priming is skipped during a live call (startCall's own
+  gesture already unlocked; priming would kill mid-call playback).
+  **Reopened T3 edge (parent review):** after the first out-of-call
+  rejection, already-queued announcements are now DROPPED with text
+  preserved in arrival order (newest ends visible persistent) instead
+  of being blindly attempted by pumpAudio; non-announcement items keep
+  today's path; in-call queue/teleprompter/mic-resume untouched.
+
+  **Baselines at T4 start**: `node --test tests/js/` → 165 pass / 0
+  fail; pytest → 552 passed, 1 warning. Git clean at `b93c27c`.
+
+  | Phase | Command | Result |
+  |---|---|---|
+  | RED | `node --test tests/js/announce-wiring.test.js` (+5 tests: drain edge + affordance wiring) | tests 10, pass 5, **fail 5** — queued-announcement drop absent (the reopened bug), affordance visibility/gesture wiring/prime/in-call-guard all absent. Real discrepancies, not import errors |
+  | RED | `pytest -q …::TestStatic::test_index_has_voice_unlock_affordance` | **FAILED** — `AssertionError: assert '<button id="voice-unlock" class="hidden"' in html` (button absent) |
+  | GREEN | `node --test tests/js/` | tests 170, pass 170, fail 0 |
+  | GREEN | `pytest -q tests/test_server.py::TestStatic -k "announce or voice"` | 3 passed |
+  | REFACTOR | reviewed both regions (drain loop order-preserving, affordance functions hoisted before use, no structural change needed) | suites below |
+  | Closure | `node --test tests/js/` | **170 pass / 0 fail** |
+  | Closure | `PYTHONPATH=<worktree>/src …pytest -q` | **553 passed, 1 warning** |
+
+  Files: `src/herdr_brain/static/index.html` (+button sibling of #toast,
+  +CSS pill in the toast layer), `src/herdr_brain/static/app.js`
+  (rejection-handler drain + affordance/gesture/prime wiring),
+  `tests/test_server.py` (TestStatic +1), `tests/js/announce-wiring.test.js`
+  (+5). No server.py / watcher.py edits.
+
+  **Test constraints, stated plainly**: same bounds as T3 — app.js is a
+  browser-only IIFE, so the affordance/gesture/prime wiring is pinned
+  structurally (source-sliced regions), not executed; the module
+  semantics each piece relies on (unlock idempotence, transition-only
+  onBlockedChange, persistent re-show per onPlayRejected) are
+  executable-tested in announce.test.js. The served-DOM contract (button
+  id, Spanish label, sibling-of-toast, default-hidden) is asserted via
+  TestStatic against the real FastAPI app. Whether the silent-wav prime
+  actually unlocks autoplay on Chrome Android / the home-screen PWA is
+  precisely what T5 must verify (ASSUMPTION-1/AC2) — NOT claimed here.
+
+  Runtime harness: TestStatic HTTP checks above; no JS/DOM runtime
+  boundary exists in-repo for app.js. Rollback boundary: revert the T4
+  commit — button + CSS, affordance wiring, drain loop and their tests
+  go together; T3's handler otherwise returns to its committed shape.
+
+  **Deviations / decisions (T4):**
+  - Affordance visibility is `blocked && !muted()`: mute is a deliberate
+    voice-off, so it wins the priority (AC4 "solo toast" keeps holding);
+    re-evaluated on every blocked transition and mute toggle.
+  - Gesture listeners stay attached across a blocked stretch even if the
+    user then mutes (button hides, state stays blocked): unlocking while
+    muted is harmless and FR-05 says any gesture unlocks.
+  - The T3 natural-drain decision was SUPERSEDED by this unit per parent
+    review: queued announcements are dropped at the first rejection
+    instead of each burning a play() attempt. T3's evidence keeps the
+    original decision recorded as history.
+  - Prime uses a data-URI silent wav rather than playing the rejected
+    src: guarantees no audible gesture audio and no replay; neutralizes
+    the player afterwards so the next arrival starts clean.
+  - Prime skipped while `inCall` (guard `if (!inCall) primeAudio()`): a
+    live call owns the player and already carries its own unlock
+    gesture; priming would neutralize mid-call playback.
+  - RDD: still disabled (clone_local, untouched) → no assess, no toggle.
 
 ## Handoff to the implementation chat
 
