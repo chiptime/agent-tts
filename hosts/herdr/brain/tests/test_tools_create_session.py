@@ -10,6 +10,7 @@ import json
 
 import pytest
 
+from herdr_brain.config import Settings, load_settings
 from herdr_brain.herdr import HerdrError, sanitize_prompt_text
 from herdr_brain.tools import TOOLS_SCHEMA, BrainTools, sanitize_agent_name
 from tests.conftest import StubHerdr
@@ -32,9 +33,15 @@ class CreateStub(StubHerdr):
             raise HerdrError("tab boom")
         return {"tab_id": "w2:t7", "pane_id": "w2:p3"}
 
-    def start_agent(self, name, kind, pane_id, timeout_ms=None):
+    def start_agent(self, name, kind, pane_id, timeout_ms=None, args=None):
         self.start_calls.append(
-            {"name": name, "kind": kind, "pane_id": pane_id, "timeout_ms": timeout_ms}
+            {
+                "name": name,
+                "kind": kind,
+                "pane_id": pane_id,
+                "timeout_ms": timeout_ms,
+                "args": args,
+            }
         )
         if self._fail_start:
             raise HerdrError("start boom")
@@ -73,7 +80,13 @@ class TestCreateSession:
         )
         assert stub.tab_calls == [{"label": "Refactor del login", "cwd": None}]
         assert stub.start_calls == [
-            {"name": "refactor-del-login", "kind": "opencode", "pane_id": "w2:p3", "timeout_ms": None}
+            {
+                "name": "refactor-del-login",
+                "kind": "opencode",
+                "pane_id": "w2:p3",
+                "timeout_ms": None,
+                "args": ["attach", "http://localhost:4096"],
+            }
         ]
         # Same delivery-guarantee seam as send_to_session: sanitized text
         # against the NEW pane.
@@ -90,6 +103,43 @@ class TestCreateSession:
         assert out == "Panel creado: tab=w2:t7 pane=w2:p3 agente=docs (claude)."
         assert stub.prompt_calls == []
         assert tools.last_active.pane_id == "w2:p3"
+
+    def test_non_opencode_kind_starts_without_args(self, settings, stub):
+        tools = BrainTools(settings, herdr=stub)
+        tools.create_session("claude", "Docs")
+        assert stub.start_calls[0]["args"] is None
+        assert stub.tab_calls == [{"label": "Docs", "cwd": None}]
+
+    def test_opencode_cwd_scopes_tab_and_attach_args(self, settings, stub):
+        tools = BrainTools(settings, herdr=stub)
+        tools.create_session("opencode", "Build", cwd="/repo")
+        assert stub.tab_calls == [{"label": "Build", "cwd": "/repo"}]
+        assert stub.start_calls[0]["args"] == [
+            "attach", "http://localhost:4096", "--dir", "/repo",
+        ]
+
+    def test_opencode_without_cwd_attaches_without_dir(self, settings, stub):
+        tools = BrainTools(settings, herdr=stub)
+        tools.create_session("opencode", "Build")
+        assert stub.tab_calls == [{"label": "Build", "cwd": None}]
+        assert stub.start_calls[0]["args"] == ["attach", "http://localhost:4096"]
+
+    def test_attach_url_comes_from_settings(self, stub, tmp_path):
+        from tests.conftest import SETTINGS_KWARGS
+
+        settings = Settings(**{
+            **SETTINGS_KWARGS,
+            "opencode_attach_url": "http://10.0.0.5:4096",
+        })
+        tools = BrainTools(settings, herdr=stub)
+        tools.create_session("opencode", "Build")
+        assert stub.start_calls[0]["args"] == ["attach", "http://10.0.0.5:4096"]
+
+    def test_cwd_is_stripped_before_use(self, settings, stub):
+        tools = BrainTools(settings, herdr=stub)
+        tools.create_session("opencode", "Build", cwd="  /repo  ")
+        assert stub.tab_calls == [{"label": "Build", "cwd": "/repo"}]
+        assert stub.start_calls[0]["args"][-1] == "/repo"
 
     def test_task_send_failure_still_returns_ids(self, settings, stub):
         stub._fail_prompt = True
@@ -142,6 +192,17 @@ class TestDispatch:
         )
         assert "Panel creado" in out and "Tarea entregada." in out
 
+    def test_dispatch_forwards_cwd(self, settings, stub):
+        tools = BrainTools(settings, herdr=stub)
+        tools.dispatch(
+            "create_session",
+            {"agent_kind": "opencode", "title": "Build", "cwd": "/repo"},
+        )
+        assert stub.tab_calls == [{"label": "Build", "cwd": "/repo"}]
+        assert stub.start_calls[0]["args"] == [
+            "attach", "http://localhost:4096", "--dir", "/repo",
+        ]
+
     def test_dispatch_rejects_unknown_tool_unchanged(self, settings, stub):
         tools = BrainTools(settings, herdr=stub)
         assert tools.dispatch("nope", {}) == "error: unknown tool nope"
@@ -152,8 +213,16 @@ class TestSchema:
         entry = next(t for t in TOOLS_SCHEMA if t["function"]["name"] == "create_session")
         params = entry["function"]["parameters"]
         assert params["required"] == ["agent_kind", "title"]
-        assert set(params["properties"]) == {"agent_kind", "title", "task"}
+        assert set(params["properties"]) == {"agent_kind", "title", "task", "cwd"}
         assert params["properties"]["task"]["type"] == "string"
+        assert params["properties"]["cwd"]["type"] == "string"
+
+    def test_schema_description_documents_attach_entry_point(self):
+        entry = next(t for t in TOOLS_SCHEMA if t["function"]["name"] == "create_session")
+        description = entry["function"]["description"]
+        assert "opencode attach" in description
+        assert "[--dir cwd]" in description
+        assert "cwd scopes both the tab and the session" in description
 
 
 class TestPromptSanity:
@@ -161,3 +230,18 @@ class TestPromptSanity:
         tools = BrainTools(settings, herdr=stub)
         tools.create_session("opencode", "Build", "línea uno\nlínea dos")
         assert stub.prompt_calls[0]["text"] == sanitize_prompt_text("línea uno\nlínea dos")
+
+
+class TestAttachUrlConfig:
+    def test_default_attach_url(self):
+        from tests.conftest import SETTINGS_KWARGS
+
+        # SETTINGS_KWARGS omits the field: the dataclass default applies.
+        assert Settings(**SETTINGS_KWARGS).opencode_attach_url == "http://localhost:4096"
+
+    def test_env_override_sets_attach_url(self):
+        cfg = load_settings({"HERDR_BRAIN_OPENCODE_ATTACH_URL": "http://box:1234"})
+        assert cfg.opencode_attach_url == "http://box:1234"
+
+    def test_env_absent_keeps_default(self):
+        assert load_settings({}).opencode_attach_url == "http://localhost:4096"

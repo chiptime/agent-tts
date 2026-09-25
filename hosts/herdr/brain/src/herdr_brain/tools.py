@@ -351,29 +351,40 @@ class BrainTools:
             )
         return json.dumps(payload, ensure_ascii=False)
 
-    def create_session(self, agent_kind: str, title: str, task: str = "") -> str:
+    def create_session(self, agent_kind: str, title: str, task: str = "", cwd: str = "") -> str:
         """Opens a NEW dedicated panel: tab + fresh agent (+ first task).
 
         The second write path: instead of reusing the selected session it
-        creates a tab labeled with the title, starts the agent kind on the
-        tab's root pane and — when a task is given — delivers it through
-        the same :meth:`HerdrClient.send_prompt` delivery guarantees as
-        ``send_to_session``. The new pane becomes ``last_active``. A
-        task-delivery failure NEVER raises away the created ids: the
-        caller still learns the tab/pane/agent so it can re-send.
+        creates a tab labeled with the title (scoped to ``cwd`` when
+        given), starts the agent kind on the tab's root pane and — when a
+        task is given — delivers it through the same
+        :meth:`HerdrClient.send_prompt` delivery guarantees as
+        ``send_to_session``. opencode panels ATTACH to the user's
+        persistent opencode server (the ``oa`` entry point:
+        ``opencode attach <url> [--dir cwd]``) instead of spawning their
+        own backend; every other kind starts unchanged. The new pane
+        becomes ``last_active``. A task-delivery failure NEVER raises
+        away the created ids: the caller still learns the tab/pane/agent
+        so it can re-send.
         """
         clean_kind = (agent_kind or "").strip()
         clean_title = (title or "").strip()
+        clean_cwd = (cwd or "").strip()
         if not clean_kind or not clean_title:
             return "error: agent_kind and title are required"
         name = sanitize_agent_name(clean_title)
         try:
-            created = self._herdr.create_tab(clean_title)
+            created = self._herdr.create_tab(clean_title, cwd=clean_cwd or None)
         except HerdrError as exc:
             return f"error creating tab: {exc}"
         tab_id, pane_id = created["tab_id"], created["pane_id"]
+        agent_args: Optional[list] = None
+        if clean_kind == "opencode":
+            agent_args = ["attach", self._settings.opencode_attach_url]
+            if clean_cwd:
+                agent_args.extend(["--dir", clean_cwd])
         try:
-            self._herdr.start_agent(name, clean_kind, pane_id)
+            self._herdr.start_agent(name, clean_kind, pane_id, args=agent_args)
         except HerdrError as exc:
             return f"error starting agent: {exc} (tab {tab_id} was created)"
         # The new pane is now the conversation's focus: track it the same
@@ -385,7 +396,7 @@ class BrainTools:
                 status="idle",
                 session_kind="",
                 session_value="",
-                cwd="",
+                cwd=clean_cwd,
                 title=clean_title,
                 focused=True,
             )
@@ -444,6 +455,7 @@ class BrainTools:
                     str(arguments.get("agent_kind", "")),
                     str(arguments.get("title", "")),
                     str(arguments.get("task", "")),
+                    str(arguments.get("cwd", "")),
                 )
             if name == "read_transcript":
                 return handler(int(arguments.get("n_turns", 10)), target)
@@ -560,7 +572,10 @@ TOOLS_SCHEMA = [
                 "session. Use it when the user asks for another agent, a "
                 "separate task that deserves its own panel, or parallel "
                 "work; for anything else prefer send_to_session on the "
-                "current session."
+                "current session. opencode panels attach to the user's "
+                "persistent opencode server (entry point `opencode attach "
+                "<url> [--dir cwd]`); cwd scopes both the tab and the "
+                "session."
             ),
             "parameters": {
                 "type": "object",
@@ -584,6 +599,14 @@ TOOLS_SCHEMA = [
                         "description": (
                             "Optional first prompt delivered to the new "
                             "agent once it is ready (default: none)."
+                        ),
+                    },
+                    "cwd": {
+                        "type": "string",
+                        "description": (
+                            "Optional working directory: scopes both the "
+                            "created tab and the session (for opencode, "
+                            "the attach --dir)."
                         ),
                     },
                 },
