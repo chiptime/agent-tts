@@ -348,3 +348,51 @@ test("ñ drift folds like any other accent", () => {
   ep.commit("feliz ano nuevo");  // NFD decomposes ñ -> n + combining tilde
   assert.equal(ep.finalize(), "feliz año nuevo");
 });
+
+/* ---- post-dispatch re-emission dedupe (the duplicate bubble fix) ----
+ * After finalize() dispatches, the endpointer is empty — but Chrome
+ * Android's fresh session re-emits the whole utterance as a final, and
+ * committing it again fired a second identical dispatch. commit()
+ * swallows a final whose folded words match the dispatched signature
+ * inside duplicateWindowMs (default 5s). */
+
+test("re-emitted final inside the window is swallowed whole", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now });
+  ep.commit("abre spotify");
+  assert.equal(ep.finalize(), "abre spotify");  // dispatched; buffer empty
+  clock.advance(1000);
+  assert.equal(ep.commit("abre spotify"), false);  // echo: no mutation
+  assert.equal(ep.text(), "");
+  assert.equal(ep.hasSpeech(), false);
+});
+
+test("same final past the window is kept as new speech", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now });
+  ep.commit("abre spotify");
+  ep.finalize();
+  clock.advance(6000);  // beyond the 5s window: stale memory is harmless
+  assert.equal(ep.commit("abre spotify"), true);
+  assert.equal(ep.text(), "abre spotify");
+});
+
+test("longer final inside the window is new speech, not an echo", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now });
+  ep.commit("abre spotify");
+  ep.finalize();
+  clock.advance(1000);
+  assert.equal(ep.commit("abre spotify otra vez"), true);  // signature differs
+  assert.equal(ep.text(), "abre spotify otra vez");
+});
+
+test("re-emission dedupe folds accents like the overlap match", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now });
+  ep.push("qué tal");
+  assert.equal(ep.finalize(), "qué tal");
+  clock.advance(1000);
+  assert.equal(ep.commit("que tal"), false);  // folded signature still matches
+  assert.equal(ep.text(), "");
+});
