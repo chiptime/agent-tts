@@ -6,7 +6,10 @@
  * ok ⇄ blocked audio state machine:
  *
  *   ok      --(play() rejected)-->                  blocked
- *   blocked --(any user gesture / "🔊 Activar voz")--> ok
+ *   blocked --(successful silent prime in a gesture: unlock(),
+ *              exposed as requestUnlock(prime))----> ok
+ *
+ * A refused or throwing prime leaves the blocked state untouched.
  *
  * Decision order in handle(announcement):
  *   1. falsy announcement        → no-op.
@@ -89,6 +92,36 @@
       if (onBlockedChange) onBlockedChange(false);
     }
 
+    /* Unlock-on-proof (FR-05 correction): the host asks for an unlock
+     * with a `prime` that must SUCCEED inside a real user gesture (an
+     * isolated silent Audio play). The state flips to ok ONLY when the
+     * prime's promise fulfills; a rejection or a synchronous throw
+     * leaves everything untouched — still blocked, persistent text and
+     * affordance exactly as they were (FR-04/FR-05). One prime may be
+     * in flight at a time; whatever the prime returns is handled HERE,
+     * never unhandled. A prime returning no promise (legacy browsers)
+     * unlocks optimistically — there is nothing to verify. */
+    var priming = false;
+
+    function requestUnlock(prime) {
+      if (!blocked || priming) return;
+      var pending;
+      try {
+        pending = prime();
+      } catch (err) {
+        return;                       // sync throw: stay blocked
+      }
+      if (pending && typeof pending.then === "function") {
+        priming = true;
+        pending.then(
+          function () { priming = false; unlock(); },
+          function () { priming = false; }   // refused: stay blocked, retry later
+        );
+      } else {
+        unlock();
+      }
+    }
+
     /* FR-04 host path: the audio pipeline (pumpAudio) reports the
      * browser's play() rejection for an announcement it was asked to
      * play. Without an announcement payload it only flips the state —
@@ -136,6 +169,7 @@
       handle: handle,
       onPlayRejected: onPlayRejected,
       unlock: unlock,
+      requestUnlock: requestUnlock,
       isBlocked: isBlocked
     };
   }

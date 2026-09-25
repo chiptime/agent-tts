@@ -326,3 +326,90 @@ test("rejection after unlock re-enters blocked and shows the text", () => {
   assert.deepEqual(calls.blocked, [true, false, true]);
   assert.equal(calls.toast[calls.toast.length - 1].durationMs, undefined);
 });
+
+/* ---- T4 correction: unlock-on-proof (requestUnlock) ----
+ * The unlock must follow a SUCCESSFUL silent prime inside the gesture:
+ * state flips to ok only when the prime's promise fulfills. A refused
+ * or throwing prime leaves blocked state, the persistent text and the
+ * affordance exactly as they were (FR-04/FR-05). One prime in flight
+ * at a time; the promise is always handled here, never unhandled. */
+
+test("requestUnlock while unblocked is a no-op: the prime never runs", () => {
+  const { deps, calls } = fakes();
+  let primed = 0;
+  const a = createAnnouncer(deps);
+  a.requestUnlock(() => { primed += 1; return Promise.resolve(); });
+  assert.equal(primed, 0);
+  assert.equal(a.isBlocked(), false);
+  assert.deepEqual(calls.blocked, []);
+});
+
+test("successful prime unlocks (state ok, affordance notified)", async () => {
+  const { deps, calls } = fakes();
+  const a = createAnnouncer(deps);
+  a.onPlayRejected(ann());
+  a.requestUnlock(() => new Promise(r => { setTimeout(r, 0); }));
+  assert.equal(a.isBlocked(), true);           // unlock WAITS for the prime
+  await new Promise(r => setTimeout(r, 5));
+  assert.equal(a.isBlocked(), false);
+  assert.deepEqual(calls.blocked, [true, false]);
+});
+
+test("refused prime stays blocked: no unblock callback, text untouched", async () => {
+  const { deps, calls } = fakes();
+  const a = createAnnouncer(deps);
+  a.onPlayRejected(ann());
+  calls.toast.length = 0;
+  a.requestUnlock(() => Promise.reject(new Error("NotAllowedError")));
+  await new Promise(r => setImmediate(r));
+  assert.equal(a.isBlocked(), true);           // the browser still blocks
+  assert.deepEqual(calls.blocked, [true]);     // affordance never hidden
+  assert.deepEqual(calls.toast, []);           // persistent text untouched
+});
+
+test("synchronously throwing prime stays blocked and throws nothing out", () => {
+  const { deps, calls } = fakes();
+  const a = createAnnouncer(deps);
+  a.onPlayRejected(ann());
+  a.requestUnlock(() => { throw new Error("no Audio support"); });
+  assert.equal(a.isBlocked(), true);
+  assert.deepEqual(calls.blocked, [true]);
+});
+
+test("one prime in flight: a second gesture during the flight is ignored", async () => {
+  const { deps } = fakes();
+  let primed = 0;
+  let settle;
+  const a = createAnnouncer(deps);
+  a.onPlayRejected(ann());
+  const slow = () => new Promise(r => { primed += 1; settle = r; });
+  a.requestUnlock(slow);
+  a.requestUnlock(slow);                       // rapid second gesture
+  assert.equal(primed, 1);
+  settle();
+  await new Promise(r => setImmediate(r));
+  assert.equal(a.isBlocked(), false);
+});
+
+test("a failed prime can be retried by a later gesture", async () => {
+  const { deps } = fakes();
+  let primed = 0;
+  const a = createAnnouncer(deps);
+  a.onPlayRejected(ann());
+  a.requestUnlock(() => { primed += 1; return Promise.reject(new Error("nope")); });
+  await new Promise(r => setImmediate(r));
+  assert.equal(a.isBlocked(), true);
+  a.requestUnlock(() => { primed += 1; return Promise.resolve(); });
+  await new Promise(r => setImmediate(r));
+  assert.equal(primed, 2);
+  assert.equal(a.isBlocked(), false);
+});
+
+test("legacy prime without a promise unlocks optimistically", () => {
+  const { deps, calls } = fakes();
+  const a = createAnnouncer(deps);
+  a.onPlayRejected(ann());
+  a.requestUnlock(() => { /* no promise returned */ });
+  assert.equal(a.isBlocked(), false);
+  assert.deepEqual(calls.blocked, [true, false]);
+});

@@ -1325,59 +1325,65 @@
     var pending = player.play();
     if (pending && pending.catch) {
       pending.catch(function () {
-        /* Stale-rejection guard (announcements-without-call T3): a
-         * play() promise can reject long after its item was superseded
-         * (stop button, media error event, or a newer queue item the
-         * advance already started). A late rejection must touch
-         * NOTHING: not the newer item's toast, not its audioBusy, not
-         * the announcer state. audioFinished === item is the identity
-         * token pumpAudio set when this item took the player (stop and
-         * ended/error clear it). */
-        if (audioFinished !== item) return;
-        audioBusy = false;
-        if (item.announcement && !inCall) {
-          /* FR-04/AC3: out of call the announcement text must survive a
-           * play() rejection — the announcer enters blocked and re-shows
-           * it as a persistent toast. */
-          announcer.onPlayRejected(item.announcement);
-          /* Reopened T3 edge (parent review, fixed in the T4 unit): the
-           * queue may still hold announcements enqueued BEFORE the
-           * rejection — pumpAudio must not blindly attempt them under
-           * the now-blocked autoplay policy. Drop each one here with
-           * its text shown in arrival order (the newest ends up as the
-           * visible persistent toast); nothing is ever attempted later
-           * — only a NEW SSE arrival after a successful gesture can
-           * play again. Non-announcement items keep today's path. */
-          var dropped = [];
-          var kept = [];
-          while (audioQueue.length) {
-            var queued = audioQueue.shift();
-            if (queued.announcement) dropped.push(queued.announcement);
-            else kept.push(queued);
-          }
-          for (var kj = 0; kj < kept.length; kj++) audioQueue.push(kept[kj]);
-          for (var dj = 0; dj < dropped.length; dj++) {
-            announcer.onPlayRejected(dropped[dj]);
-          }
-        } else if (item.announcement) {
-          hideToast();  // in-call: pre-existing behavior (FR-08)
-        }
-        pumpAudio();
-        // Nothing left to stop out of call: don't leave "Parar audio"
-        // floating over the persistent toast (a tap would stopAudio()
-        // and hide the text we just saved).
-        if (!audioBusy && !audioQueue.length && !inCall) {
-          stopBtn.classList.add("hidden");
-        }
-        // Play() rejection (autoplay policy, media error): without this
-        // the queue leaves the call stuck in "speaking" with a dead mic.
-        // audioBusy guard: pumpAudio() above may have started the NEXT
-        // item — only resume when nothing else owns the audio.
-        if (!audioBusy && !audioQueue.length && inCall && callState === "speaking") {
-          setCallState(micBaseState());
-          startListening();
-        }
+        handlePlayFailure(item);
       });
+    }
+  }
+
+  /* Shared play-failure handler (FR-04/AC3 + FR-05): serves BOTH the
+   * play() promise rejection AND the media 'error' event — on a media
+   * error the event fires FIRST and used to run onAudioEnded, which hid
+   * the announcement text before the rejection's stale guard could
+   * preserve it. Whichever arrival comes first CLAIMS the failure
+   * (audioFinished = null after the guard) and the late twin no-ops. */
+  function handlePlayFailure(item) {
+    /* Stale guard: superseded items (stop button, a newer queue item)
+     * and already-handled failures (error event then rejection) must
+     * touch NOTHING — not the newer toast, not audioBusy, not the
+     * announcer state. */
+    if (audioFinished !== item) return;
+    audioFinished = null;   // claim: the late twin becomes stale
+    audioBusy = false;
+    if (item.announcement && !inCall) {
+      /* FR-04/AC3: out of call the announcement text must survive a
+       * play() failure — the announcer enters blocked and re-shows
+       * it as a persistent toast. */
+      announcer.onPlayRejected(item.announcement);
+      /* The queue may still hold announcements enqueued BEFORE the
+       * failure — pumpAudio must not blindly attempt them under the
+       * now-blocked autoplay policy. Drop each one here with its text
+       * shown in arrival order (the newest ends up as the visible
+       * persistent toast); nothing is ever attempted later — only a
+       * NEW SSE arrival after a successful gesture can play again.
+       * Non-announcement items keep today's path. */
+      var dropped = [];
+      var kept = [];
+      while (audioQueue.length) {
+        var queued = audioQueue.shift();
+        if (queued.announcement) dropped.push(queued.announcement);
+        else kept.push(queued);
+      }
+      for (var kj = 0; kj < kept.length; kj++) audioQueue.push(kept[kj]);
+      for (var dj = 0; dj < dropped.length; dj++) {
+        announcer.onPlayRejected(dropped[dj]);
+      }
+    } else if (item.announcement) {
+      hideToast();  // in-call: pre-existing behavior (FR-08)
+    }
+    pumpAudio();
+    // Nothing left to stop out of call: don't leave "Parar audio"
+    // floating over the persistent toast (a tap would stopAudio()
+    // and hide the text we just saved).
+    if (!audioBusy && !audioQueue.length && !inCall) {
+      stopBtn.classList.add("hidden");
+    }
+    // Play() failure (autoplay policy, media error): without this
+    // the queue leaves the call stuck in "speaking" with a dead mic.
+    // audioBusy guard: pumpAudio() above may have started the NEXT
+    // item — only resume when nothing else owns the audio.
+    if (!audioBusy && !audioQueue.length && inCall && callState === "speaking") {
+      setCallState(micBaseState());
+      startListening();
     }
   }
 
@@ -1410,8 +1416,25 @@
     }
   }
 
+  /* Media 'error' event routing (T4/T3 correction): for an out-of-call
+   * ANNOUNCEMENT the error used to run onAudioEnded first — hiding the
+   * text and clearing audioFinished so the play() rejection's stale
+   * guard swallowed it (FR-04/AC3 lost on media errors). Those items
+   * now take the shared failure handler: text preserved, blocked
+   * entered, queued announcements dropped with text, stop button
+   * hidden. Everything else (in-call, non-announcement, spurious
+   * errors with no current item) keeps today's onAudioEnded path. */
+  function onAudioError() {
+    var item = audioFinished;
+    if (item && item.announcement && !inCall) {
+      handlePlayFailure(item);
+      return;
+    }
+    onAudioEnded();
+  }
+
   player.addEventListener("ended", onAudioEnded);
-  player.addEventListener("error", onAudioEnded);  // stalled/errored media: same resume path
+  player.addEventListener("error", onAudioError);  // stalled/errored media: routed failure path
   /* Playback sync (2026-09-25 decision): while the toast of the item the
    * player is reading stays visible, the ~2-line teleprompter window
    * ADVANCES with the audio — floor(progress * chunks.length), clamped
@@ -1588,46 +1611,67 @@
       !(announcer.isBlocked() && !muted()));
   }
 
-  /* Neutral, silent autoplay prime inside a genuine gesture. The player
-   * is swapped to a tiny SILENT wav — never the rejected announcement's
-   * src, so priming can never replay a blocked item — played inaudibly
-   * to consume the user activation, then left neutral. Fail-soft by
-   * contract: the prime promise is handled BOTH ways (granted or still
-   * blocked), so it can never reject unhandled, and a refusal changes
-   * nothing the user can see — the persistent text and the affordance
-   * stay exactly as they are. */
-  var SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=";
-
-  function neutralizePlayer() {
-    player.pause();
-    player.removeAttribute("src");
-    player.load();
-  }
+  /* Isolated-element silent prime (T4 correction): the SHARED player is
+   * never touched — an /ask answer still queued keeps its element and
+   * its turn. A fresh Audio() plays a short REAL silent wav (800 actual
+   * zero frames of 8 kHz PCM — not a zero-frame file, which some
+   * browsers refuse to decode) inside the genuine gesture; the returned
+   * promise settles with the browser's verdict and the element is
+   * released either way. The ANNOUNCER owns the policy (requestUnlock):
+   * unlock happens only when this prime succeeds — a refusal leaves the
+   * blocked state, the persistent text and the affordance untouched. */
+  var SILENT_WAV = "data:audio/wav;base64,UklGRmQGAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YUAGAAAAAAAAAAAAAAAAAAAAAAAA" +
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
   function primeAudio() {
-    try {
-      player.src = SILENT_WAV;
-      var prime = player.play();
-      if (prime && prime.then) {
-        prime.then(neutralizePlayer, neutralizePlayer);
-      } else {
-        neutralizePlayer();
-      }
-    } catch (err) {
-      /* Synchronous throw (ancient browsers): same fail-soft path. */
-      neutralizePlayer();
+    var el = new Audio(SILENT_WAV);
+    function release() {
+      el.pause();
+      el.removeAttribute("src");
+      el.load();
     }
+    var started = el.play();
+    if (started && started.then) {
+      return started.then(release, function (err) {
+        release();
+        throw err;   // the announcer decides: stay blocked
+      });
+    }
+    release();   // legacy browsers: no promise to verify — optimistic
   }
 
-  /* One unlock path for the button and the document gestures: idempotent
-   * (a second call finds state ok and returns), primes ONLY out of call —
-   * a live call carries its own startCall gesture, and priming mid-call
-   * would neutralize the player mid-answer. */
+  /* One unlock path for the button and the document gestures: the state
+   * flips ONLY when the isolated silent prime actually succeeds inside
+   * the gesture (requestUnlock). Not-blocked no-ops; rapid repeat
+   * gestures are collapsed by the module's one-in-flight guard. */
   function unlockVoice() {
-    if (!announcer.isBlocked()) return;
-    announcer.unlock();
-    if (!inCall) primeAudio();
-    renderVoiceUnlock();
+    announcer.requestUnlock(primeAudio);
   }
 
   function onDocumentGesture() {
