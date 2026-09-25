@@ -47,8 +47,9 @@ class GateAction:
 
     The send fields (``text``/``timeout_ms``/``pane_id``/``agent``) are
     ``send_to_session``'s exact dispatch args; the create fields
-    (``agent_kind``/``title``/``task``) are ``create_session``'s, and
-    stay ``None``/empty on send gates so the send payload is unchanged.
+    (``agent_kind``/``title``/``task``/``cwd``) are ``create_session``'s,
+    and stay ``None``/empty on send gates so the send payload is
+    unchanged.
     """
 
     text: str
@@ -58,6 +59,7 @@ class GateAction:
     agent_kind: str | None = None
     title: str | None = None
     task: str | None = None
+    cwd: str = ""
 
 
 @dataclass(frozen=True)
@@ -105,14 +107,15 @@ class ApprovalGateStore:
         agent_kind: str | None = None,
         title: str | None = None,
         task: str | None = None,
+        cwd: str = "",
     ) -> ApprovalGate:
         """Freezes a new proposed gate, superseding any live one first.
 
         A still-live previous gate becomes ``superseded``; one whose window
         already elapsed becomes ``expired`` (lazy check wins — supersede
         only applies to gates that were still answerable). Create gates
-        pass their args through ``agent_kind``/``title``/``task`` with
-        ``tool=CREATE_SESSION``.
+        pass their args through ``agent_kind``/``title``/``task``/``cwd``
+        with ``tool=CREATE_SESSION``.
         """
         key = self.normalize(session_id)
         with self._lock:
@@ -140,6 +143,7 @@ class ApprovalGateStore:
                     agent_kind=agent_kind,
                     title=title,
                     task=task,
+                    cwd=cwd,
                 ),
                 reprompt_count=0,
             )

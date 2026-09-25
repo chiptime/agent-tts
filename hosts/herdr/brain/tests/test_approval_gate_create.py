@@ -1,9 +1,10 @@
 """Approval-gate generalization: create_session gates end to end.
 
-Covers the frozen create args (store), the payload shape, the llm
-interception, the approve replay (dispatch of the patched task) and the
-PATCH mapping — plus send-path byte-compatibility spot checks. Fakes
-everywhere: no real tab, agent or prompt ever runs.
+Covers the frozen create args (store, cwd included), the payload shape,
+the llm interception, the approve replay (dispatch of the patched task,
+with the frozen cwd reaching the attach argv) and the PATCH mapping —
+plus send-path byte-compatibility spot checks. Fakes everywhere: no real
+tab, agent or prompt ever runs.
 """
 
 from __future__ import annotations
@@ -45,13 +46,22 @@ class TestStoreCreateGates:
             agent_kind="opencode",
             title="Refactor del login",
             task="corre los tests",
+            cwd="/repo",
         )
         assert gate.state == PROPOSED
         assert gate.tool == CREATE_SESSION
         assert gate.action.agent_kind == "opencode"
         assert gate.action.title == "Refactor del login"
         assert gate.action.task == "corre los tests"
+        assert gate.action.cwd == "/repo"
         assert gate.action.text == ""  # no send text on create gates
+
+    def test_send_gates_default_cwd_to_empty(self):
+        store = ApprovalGateStore()
+        gate = store.propose(
+            "s1", text="corre lint", pane_id="w1:p9", agent="opencode",
+        )
+        assert gate.action.cwd == ""  # send actions stay byte-compatible
 
     def test_patch_edits_task_on_create_and_text_on_send(self):
         store = ApprovalGateStore()
@@ -89,6 +99,7 @@ class TestApprovalPayloadCreate:
         gate = store.propose(
             "s1", text="", tool=CREATE_SESSION,
             agent_kind="opencode", title="Refactor", task="corre lint",
+            cwd="/repo",
         )
         payload = approval_payload(gate, 60, now=gate.created_at)
         assert payload == {
@@ -97,11 +108,21 @@ class TestApprovalPayloadCreate:
             "agent": "opencode",
             "title": "Refactor",
             "task": "corre lint",
+            "cwd": "/repo",
             "timeout_ms": None,
             "expires_in_s": 60,
         }
         # No pane/text keys on create gates.
         assert "pane_id" not in payload and "text" not in payload
+
+    def test_create_payload_defaults_cwd_to_empty(self):
+        store = ApprovalGateStore()
+        gate = store.propose(
+            "s1", text="", tool=CREATE_SESSION,
+            agent_kind="opencode", title="Refactor", task="",
+        )
+        payload = approval_payload(gate, 60, now=gate.created_at)
+        assert payload["cwd"] == ""
 
     def test_send_payload_unchanged(self):
         store = ApprovalGateStore()
@@ -145,6 +166,37 @@ class TestLLMGateCreate:
         assert gate.action.task == "corre lint"
         assert result["approval"].gate_id == gate.gate_id
         assert result["answer"].startswith("Voy a abrir")
+
+    def test_create_call_freezes_cwd_and_defaults_empty(self, settings, make_stub):
+        # With cwd in the tool call: frozen exactly as given.
+        llm, _ = make_brain(
+            settings, make_create_stub(make_stub),
+            responses=[
+                tool_call_response(
+                    "c1", "create_session",
+                    {"agent_kind": "opencode", "title": "Build", "cwd": "/repo"},
+                ),
+                text_response("Voy a abrir el panel."),
+            ],
+        )
+        llm.ask("abre un panel en /repo")
+        gate = llm._approval_store.current(None)
+        assert gate is not None and gate.action.cwd == "/repo"
+        # Without cwd: the frozen spec defaults to "" (attach falls back
+        # to no --dir on replay).
+        llm2, _ = make_brain(
+            settings, make_create_stub(make_stub),
+            responses=[
+                tool_call_response(
+                    "c2", "create_session",
+                    {"agent_kind": "opencode", "title": "Build"},
+                ),
+                text_response("Voy a abrir el panel."),
+            ],
+        )
+        llm2.ask("abre un panel")
+        gate2 = llm2._approval_store.current(None)
+        assert gate2 is not None and gate2.action.cwd == ""
 
     def test_tool_message_tells_model_the_panel_is_pending(self, settings, make_stub):
         llm, _ = make_brain(
@@ -255,10 +307,12 @@ class TestServerCreateFlow:
         assert len(tools.dispatches) == 1
         sent = tools.dispatches[0]
         assert sent["name"] == CREATE_SESSION
+        # Proposed without cwd: the frozen spec carries the "" default.
         assert sent["arguments"] == {
             "agent_kind": "opencode",
             "title": "Refactor",
             "task": "tarea editada",
+            "cwd": "",
         }
         assert sent["target"] is None  # no pane re-resolution on create gates
         assert tools.resolved_panes == []
@@ -267,6 +321,64 @@ class TestServerCreateFlow:
         assert "opencode" in llm.calls[0] and "Refactor" in llm.calls[0]
         assert llm.session_ids == ["s1"]
         assert app.state.approval_store.get(gate.gate_id).state == APPROVED
+
+    def test_approve_replays_frozen_cwd(
+        self, settings, tmp_path, monkeypatch, create_app_fx
+    ):
+        from fastapi.testclient import TestClient
+        from tests.test_server import FakeLLM
+
+        llm = FakeLLM(result={
+            "answer": "Panel listo.", "pane_id": None, "agent": None,
+            "session_id": "s1",
+        })
+        app, tools_cls = create_app_fx(tool_result="Panel creado.", llm_result=llm)
+        gate = app.state.approval_store.propose(
+            "s1", text="", tool=CREATE_SESSION,
+            agent_kind="opencode", title="Build", task="", cwd="/repo",
+        )
+        resp = TestClient(app).post(f"/approval/{gate.gate_id}/approve")
+        assert resp.status_code == 200
+        sent = tools_cls.created[0].dispatches[0]
+        assert sent["name"] == CREATE_SESSION
+        assert sent["arguments"]["cwd"] == "/repo"
+
+    def test_approve_without_cwd_attaches_without_dir(
+        self, settings, tmp_path, monkeypatch
+    ):
+        """Full replay chain with REAL BrainTools: a gate proposed without
+        cwd replays with cwd="" so the opencode attach argv omits --dir
+        and the tab is created unscoped."""
+        import herdr_brain.server as server_module
+        from fastapi.testclient import TestClient
+        from tests.test_server import FakeLLM, FakeTTS
+        from tests.test_tools_create_session import CreateStub
+
+        stub = CreateStub(agents=[])
+        monkeypatch.setattr(
+            server_module, "BrainTools", lambda cfg: BrainTools(cfg, herdr=stub)
+        )
+        cfg = settings.__class__(
+            **{**settings.__dict__, "audio_dir": str(tmp_path / "audio")}
+        )
+        app = server_module.create_app(
+            settings=cfg,
+            llm_factory=lambda c, t: FakeLLM(result={
+                "answer": "Panel listo.", "pane_id": None, "agent": None,
+                "session_id": "s1",
+            }),
+            tts_renderer=FakeTTS(),
+        )
+        gate = app.state.approval_store.propose(
+            "s1", text="", tool=CREATE_SESSION,
+            agent_kind="opencode", title="Build", task="",
+        )
+        resp = TestClient(app).post(f"/approval/{gate.gate_id}/approve")
+        assert resp.status_code == 200
+        assert stub.tab_calls == [{"label": "Build", "cwd": None}]
+        attach_argv = stub.start_calls[0]["args"]
+        assert attach_argv == ["attach", settings.opencode_attach_url]
+        assert "--dir" not in attach_argv
 
     def test_patch_endpoint_returns_create_payload_with_new_task(
         self, settings, tmp_path, monkeypatch, create_app_fx

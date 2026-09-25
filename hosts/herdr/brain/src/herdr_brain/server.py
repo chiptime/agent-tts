@@ -96,8 +96,8 @@ def approval_payload(gate: ApprovalGate, timeout_s: int, now: Optional[float] = 
     the gate's ``created_at`` plus the configured timeout, no timers. It
     counts down (ceil, clamped at 0) so the client can render its ring.
     Send gates carry the frozen prompt (``text``/``pane_id``); create
-    gates carry the frozen panel spec (``title``/``task``) with the agent
-    kind in ``agent`` — no pane exists yet.
+    gates carry the frozen panel spec (``title``/``task``/``cwd``) with
+    the agent kind in ``agent`` — no pane exists yet.
     """
     elapsed = (time.time() if now is None else now) - gate.created_at
     remaining = timeout_s - elapsed
@@ -108,6 +108,7 @@ def approval_payload(gate: ApprovalGate, timeout_s: int, now: Optional[float] = 
             "agent": gate.action.agent_kind,
             "title": gate.action.title,
             "task": gate.action.task,
+            "cwd": gate.action.cwd,
             "timeout_ms": gate.action.timeout_ms,
             "expires_in_s": max(0, math.ceil(remaining)),
         }
@@ -685,6 +686,7 @@ def create_app(
                 "agent_kind": gate.action.agent_kind or "",
                 "title": gate.action.title or "",
                 "task": gate.action.task or "",
+                "cwd": gate.action.cwd or "",
             },
         )
         report_prompt = (

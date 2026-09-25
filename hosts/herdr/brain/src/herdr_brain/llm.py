@@ -335,16 +335,17 @@ class BrainLLM:
         creating the panel.
 
         Mirrors :meth:`_gate_send`: the frozen ``agent_kind``/``title``/
-        ``task`` are exactly what dispatch would have received, so an
-        approval replays the identical call. No target pane is needed —
-        the whole point is a NEW panel — so the only failure modes are
-        missing kind/title (mirroring the tool's own validation) and a
-        missing store, where creation is still blocked: fail safe,
-        never execute.
+        ``task``/``cwd`` are exactly what dispatch would have received,
+        so an approval replays the identical call. No target pane is
+        needed — the whole point is a NEW panel — so the only failure
+        modes are missing kind/title (mirroring the tool's own
+        validation) and a missing store, where creation is still
+        blocked: fail safe, never execute.
         """
         agent_kind = str(arguments.get("agent_kind", "")).strip()
         title = str(arguments.get("title", "")).strip()
         task = str(arguments.get("task", "") or "")
+        cwd = str(arguments.get("cwd", "") or "")
         if not agent_kind or not title:
             return "error: agent_kind and title are required", None
         if self._approval_store is None:
@@ -361,6 +362,7 @@ class BrainLLM:
             agent_kind=agent_kind,
             title=title,
             task=task,
+            cwd=cwd,
         )
         LOGGER.info(
             "approval gate opened gate_id=%s tool=create_session kind=%s title=%s",
