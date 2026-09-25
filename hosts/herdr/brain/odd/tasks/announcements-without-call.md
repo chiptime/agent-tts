@@ -2,7 +2,7 @@
 
 **Repo:** herdr-brain
 **Created:** 2026-09-25
-**Status:** In progress — T1 complete (worktree `announcements-d1`, branch `feat/announcements-without-call-d1`)
+**Status:** In progress — T1 (commit `49ba184`) and T2 complete; T3/T4/T5 pending (worktree `announcements-d1`, branch `feat/announcements-without-call-d1`)
 **PRD:** `docs/PRD-announcements-without-call.md` (Phase 1, delivery 1: FR-01..FR-08, AC1..AC6)
 **Engram mirror:** `odd/announcements-without-call/tasks`
 
@@ -73,7 +73,7 @@ injected dependencies (`play`, `showToast`, `hideToast`, `isMuted`,
 - Route: delegated writer (2 non-trivial new files).
 - Done 2026-09-25 (strict TDD). Evidence in **Progress / Evidence**.
 
-### [ ] T2 — Subscribe at boot through the announcer
+### [x] T2 — Subscribe at boot through the announcer
 - Call `openEvents()` from the boot section; keep the `startCall` call (guard
   keeps it idempotent).
 - Route SSE `transition` handling in `openEvents` through `Announce`.
@@ -81,6 +81,7 @@ injected dependencies (`play`, `showToast`, `hideToast`, `isMuted`,
   `TestStatic` script/`?v=` assertions in `tests/test_server.py`.
 - Covers: FR-01, FR-02, FR-07, AC6.
 - Route: delegated writer (`app.js`, `index.html`, `test_server.py`).
+- Done 2026-09-25 (strict TDD). Evidence in **Progress / Evidence**.
 
 ### [ ] T3 — Keep text visible on playback rejection
 - In `pumpAudio`'s `play()` rejection path, stop hiding the announcement
@@ -170,8 +171,78 @@ each task closure.
   - RDD: review not enabled in this worktree (no `openspec/config.yaml`,
     no `.rdd`) → `gentle-ai review assess` NOT run on the T1 commit, per the
     instruction not to start review while disabled.
-  - Commit identity: the T1 work-unit commit hash will be recorded here in
-    the T2 doc update (no amend, per instruction).
+  - Commit identity: **T1 work-unit commit = `49ba184`** (`feat(announce):
+    add announcement playback policy module with tests`; recorded here in
+    the T2 doc update — no amend, as planned).
+
+- 2026-09-25 **T2 done** in the same worktree, strict RED → GREEN →
+  REFACTOR. FR-01 (boot `openEvents()` in the boot section after
+  `setInterval(refreshState)`), FR-02 (`startCall`'s `openEvents()` kept;
+  `eventsOpened` guard makes the boot call idempotent), FR-07 (every
+  `transition` flows through `announcer.handle(ann)` — no session filter).
+  The `system` branch, in-call playback (`pumpAudio` queue), mute policy
+  and teleprompter are untouched; the muted/text-only toast calls are
+  byte-identical to before (see module fix below).
+
+  **Pre-edit revalidation**: catch-all static route confirmed at
+  `server.py:844` (`app.mount("/", StaticFiles(..., html=True))`, "mounted
+  last so every API route above wins") → `/announce.js` serves WITHOUT any
+  server edit; CSP is `script-src 'self'` (same-origin script allowed);
+  index script block at `index.html:1276-1282`; `startCall` at
+  `app.js:2443` with its `openEvents()` at 2451; boot section ends
+  `app.js:2581-2650`.
+
+  **Baselines at T2 start**: `node --test tests/js/` → 157 pass / 0 fail;
+  pytest (worktree `PYTHONPATH`) → 550 passed, 1 warning.
+
+  | Phase | Command | Result |
+  |---|---|---|
+  | RED | `pytest -q tests/test_server.py::TestStatic -k "announce"` | `test_index_loads_announce_module_before_app` **FAILED** — `AssertionError: assert 'src="/announce.js"' in '<!doctype html>…'`; `test_announce_js_served_by_static_mount` passed (pinning: the catch-all already serves the T1 file — recorded as pin, not RED) |
+  | RED | `node --test tests/js/announce.test.js` (html-parity tests rewritten to the exact-preservation contract) | tests 23, pass 22, **fail 1** — `muted and text-only toasts stay plain` (`'🔇 …' == '🔊 …'` family; module then passed html/kind on timed toasts). Companion persistent-html test passed (pinning) |
+  | GREEN | `pytest -q tests/test_server.py::TestStatic -k "announce"` | 2 passed |
+  | GREEN | `node --test tests/js/` | tests 158, pass 158, fail 0 (after fixing a harness bug in the new test: the module captures `deps.isMuted` at construction, so the override must be a mutable closure flag, not a property reassignment) |
+  | REFACTOR | renamed wiring param to `ann` (house style); reviewed hunks; no structural change needed | suites below |
+  | Closure | `node --test tests/js/` | tests 158, pass 158, fail 0 |
+  | Closure | `PYTHONPATH=<worktree>/src …herdr-brain/.venv/bin/python -m pytest -q` | **552 passed, 1 warning** |
+
+  Files: `src/herdr_brain/static/app.js` (announcer wiring + transition
+  routing + boot call), `src/herdr_brain/static/index.html` (+1 script
+  tag before app.js), `src/herdr_brain/static/announce.js` (timed toasts
+  now exact 2-arg calls), `tests/test_server.py` (TestStatic +2),
+  `tests/js/announce.test.js` (parity tests rewritten). **No server.py /
+  watcher.py edits.**
+
+  Runtime harness: TestClient HTTP checks (ordered script tag in served
+  index; `/announce.js` → 200 `text/javascript` with `createAnnouncer`)
+  are the runtime boundary evidence. Browser/SSE behavior at boot is
+  device territory (T5); **AC6 is NOT claimed validated** — only the
+  idempotence guard and single-connection wiring are in place.
+
+  Rollback boundary: revert the T2 commit — `index.html` script tag,
+  `app.js` announcer block + `announcer.handle(ann)` + boot `openEvents()`,
+  TestStatic tests, announce.test.js parity tests, and the announce.js
+  timed-toast shape (T1 behavior returns; nothing else depends on them).
+
+  **Deviations / decisions (T2):**
+  - Plan said "extend TestStatic script/`?v=` assertions": NO `?v=` is
+    added for `/announce.js`. Versioning lives in `server.py`
+    `_VERSIONED_REFS`; editing it is a server change delivery 1 excludes.
+    The catch-all StaticFiles mount serves the asset as-is; the tests
+    assert the actual unversioned `src="/announce.js"` honestly.
+  - T1's "html rides every module toast" decision REVERSED for timed
+    toasts: today's `openEvents` muted/text-only calls are plain
+    `(text, 6000)` — routing them through a module that mounted html
+    would change toast html behavior. `announce.js` now emits exact 2-arg
+    timed calls; html + `kind: null` ride ONLY the persistent blocked
+    toast (pumpAudio's shape). T1's evidence table above intentionally
+    keeps the original decision recorded as history.
+  - `onBlockedChange` is not wired yet (T4 owns the affordance); the
+    module treats the missing callback as absent.
+  - In T2 the blocked state is unreachable in the wired app
+    (`onPlayRejected` arrives with T3; `deps.play` returns undefined
+    because `enqueueAudio` does) — by design, not by omission.
+  - RDD: still not enabled in this worktree → no assess run on the T2
+    commit, per instruction (do not start review disabled).
 
 ## Handoff to the implementation chat
 

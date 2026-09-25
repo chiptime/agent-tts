@@ -53,14 +53,23 @@
       return blocked;
     }
 
-    /* Every toast this module shows is the announcement line: prefix +
-     * label + ": " + text, riding announcement.html through the safe
-     * toast mount (formatted-avisos parity). durationMs undefined =
-     * persistent (FR-04); a number = timed, like today's toasts. */
-    function showAnnouncement(announcement, prefix, durationMs) {
+    /* Timed toasts replicate today's openEvents calls EXACTLY — plain
+     * (text, durationMs), no kind, no html mount — so routing the
+     * transition branch through this module changes nothing observable
+     * on the muted and text-only paths. */
+    function showTimed(announcement, prefix, durationMs) {
+      showToast(prefix + announcement.label + ": " + announcement.text,
+        durationMs);
+    }
+
+    /* The persistent blocked toast matches pumpAudio's announcement
+     * toast shape (kind null + html through the safe toast mount):
+     * FR-04 keeps the text visible with the same formatted rendering
+     * the playback toast would have used. */
+    function showPersistent(announcement) {
       showToast(
-        prefix + announcement.label + ": " + announcement.text,
-        durationMs, null, announcement.html
+        "🔊 " + announcement.label + ": " + announcement.text,
+        undefined, null, announcement.html
       );
     }
 
@@ -71,7 +80,7 @@
       var changed = !blocked;
       blocked = true;
       if (changed && onBlockedChange) onBlockedChange(true);
-      if (announcement) showAnnouncement(announcement, "🔊 ", undefined);
+      if (announcement) showPersistent(announcement);
     }
 
     function unlock() {
@@ -107,20 +116,20 @@
     function handle(announcement) {
       if (!announcement) return;
       if (isMuted()) {
-        showAnnouncement(announcement, "🔇 ", MUTED_TOAST_MS);
+        showTimed(announcement, "🔇 ", MUTED_TOAST_MS);
         return;
       }
       if (!isInCall() && blocked && announcement.audio_url) {
         /* Persistent toast: the text survives (FR-04) but the audio is
          * dropped for good (FR-05) — unlock applies to the NEXT one. */
-        showAnnouncement(announcement, "🔊 ", undefined);
+        showPersistent(announcement);
         return;
       }
       if (announcement.audio_url) {
         attemptPlay(announcement);
         return;
       }
-      showAnnouncement(announcement, "🔊 ", TEXT_TOAST_MS);
+      showTimed(announcement, "🔊 ", TEXT_TOAST_MS);
     }
 
     return {

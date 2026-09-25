@@ -245,15 +245,44 @@ test("in call without audio_url: timed text toast as today", () => {
   assert.equal(calls.toast[0].durationMs, 6000);
 });
 
-/* ---- formatted payload parity ---- */
+/* ---- toast html parity with today's app.js (T2 preservation) ----
+ * openEvents today shows the muted and text-only toasts as PLAIN
+ * (text, ms) calls — no kind, no html mount. Only the playback toast
+ * (pumpAudio) and the new persistent blocked toast carry announcement
+ * html. The module must match those shapes exactly so wiring the
+ * transition branch through it changes nothing observable. */
 
-test("announcement html rides every toast the module shows", () => {
-  const { deps, calls } = fakes({ isMuted: () => true });
+test("muted and text-only toasts stay plain: no kind, no html mount", () => {
+  let mutedNow = true;                          // module captures the fn: flip via closure
+  const { deps, calls } = fakes({ isMuted: () => mutedNow });
+  const a = createAnnouncer(deps);
+  const mutedAnn = ann();
+  mutedAnn.html = "<p>ha terminado</p>";
+  a.handle(mutedAnn);
+  assert.equal(calls.toast[0].text, "🔇 opencode dotfiles: ha terminado");
+  assert.equal(calls.toast[0].durationMs, 6000);
+  assert.equal(calls.toast[0].kind, undefined);   // exactly today's 2-arg call
+  assert.equal(calls.toast[0].html, undefined);
+  mutedNow = false;                               // text-only path: unmuted
+  const textOnly = { label: "opencode dotfiles", text: "necesita tu atención",
+                     html: "<p>atención</p>" };
+  a.handle(textOnly);
+  assert.equal(calls.toast[1].text, "🔊 opencode dotfiles: necesita tu atención");
+  assert.equal(calls.toast[1].durationMs, 6000);
+  assert.equal(calls.toast[1].kind, undefined);
+  assert.equal(calls.toast[1].html, undefined);
+});
+
+test("the persistent blocked toast carries announcement html like pumpAudio", () => {
+  const { deps, calls } = fakes();
   const a = createAnnouncer(deps);
   const withHtml = ann();
   withHtml.html = "<p>ha terminado</p>";
-  a.handle(withHtml);
-  assert.equal(calls.toast[0].html, "<p>ha terminado</p>");  // formatted avisos parity
+  a.onPlayRejected(withHtml);
+  assert.equal(calls.toast[0].text, "🔊 opencode dotfiles: ha terminado");
+  assert.equal(calls.toast[0].durationMs, undefined);
+  assert.equal(calls.toast[0].kind, null);              // pumpAudio toast shape
+  assert.equal(calls.toast[0].html, "<p>ha terminado</p>");
 });
 
 test("announcer works without an onBlockedChange callback", () => {

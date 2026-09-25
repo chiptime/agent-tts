@@ -1533,6 +1533,18 @@
   });
   renderMute();
 
+  /* Out-of-call announcement policy (PRD announcements-without-call,
+   * delivery 1): the pure Announce module owns the decision table and
+   * the audioBlocked state machine; app.js injects only the seams.
+   * onBlockedChange is deliberately absent until T4 wires the
+   * "🔊 Activar voz" affordance. */
+  var announcer = Announce.createAnnouncer({
+    play: function (ann) { enqueueAudio(ann.audio_url, ann); },
+    showToast: showToast,
+    isMuted: muted,
+    isInCall: function () { return inCall; }
+  });
+
   function openEvents() {
     if (eventsOpened || !window.EventSource) return;
     eventsOpened = true;
@@ -1550,12 +1562,10 @@
         return;
       }
       if (!ann || ann.type !== "transition") return;
-      if (muted()) {
-        showToast("🔇 " + ann.label + ": " + ann.text, 6000);
-        return;
-      }
-      if (ann.audio_url) enqueueAudio(ann.audio_url, ann);
-      else showToast("🔊 " + ann.label + ": " + ann.text, 6000);
+      // FR-07: every agent's transition flows through the announcer
+      // (muted toast / play on arrival / blocked drop), with the in-call
+      // playback path delegated to the existing queue below it.
+      announcer.handle(ann);
     };
   }
 
@@ -2592,6 +2602,10 @@
   updateGhost();
   refreshState();
   setInterval(refreshState, 5000);
+  // FR-01 (PRD announcements-without-call): announcements must arrive with
+  // the page open, call or no call. The eventsOpened guard keeps it
+  // idempotent — startCall's later openEvents() reuses this connection.
+  openEvents();
 
   /* Call history repaint (boot): the drawer starts empty on every load,
    * so refetch the persisted turns and rebuild the transcript. Only
