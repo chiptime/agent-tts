@@ -687,37 +687,68 @@
   function speakText(text, label) {
     // Returns the request chain so callers can react to completion
     // (the replay button restores itself once audio is enqueued).
-    return fetch("/tts", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text: text })
-    })
-      .then(function (resp) {
-        if (!resp.ok) {
-          showBanner("No pude sintetizar el audio (HTTP " + resp.status + ").");
-          return;
-        }
-        return resp.json().then(function (data) {
-          /* Replay teleprompter (2026-09-25 product decision): the
-           * toast shows ONLY a ~2-line window of the text and follows
-           * the playback — the full text stays in the turn (drawer).
-           * Plain-text windows, the wanted "formato antiguo": the
-           * reader-html branch is GONE from this replay path (watcher
-           * announcements elsewhere never had it). Guarded module
-           * lookup: a missing Toast falls back to one full window. */
-          var chunks = window.Toast && typeof window.Toast.chunkifyText === "function"
-            ? window.Toast.chunkifyText(text)
-            : [text];
-          enqueueAudio(data.audio_url, {
-            label: label || "agente",
-            text: text,
-            chunks: chunks.length ? chunks : [text]
+    /* Multi-piece TTS (2026-09-25): POST /tts validates max_length=8000
+     * per request, so a longer turn died as HTTP 422 with no audio.
+     * Product decision: no client-side reading limit — the text we have
+     * is the text we read. The turn is split at sentence boundaries into
+     * <=8000 pieces, synthesized sequentially (one queue item each); a
+     * failed piece only banners and the remaining pieces still play.
+     * The teleprompter keeps GLOBAL window numbering across pieces:
+     * each item carries chunkOffset = windows emitted by earlier pieces. */
+    var pieces = window.Toast && typeof window.Toast.splitForTts === "function"
+      ? window.Toast.splitForTts(text, 8000)
+      : [text];
+    if (!pieces.length) pieces = [text];   // empty text: today's exact single request
+    var plans = [];
+    var offset = 0;
+    pieces.forEach(function (piece) {
+      var chunks = window.Toast && typeof window.Toast.chunkifyText === "function"
+        ? window.Toast.chunkifyText(piece)
+        : [piece];
+      if (!chunks.length) chunks = [piece];
+      plans.push({ piece: piece, chunks: chunks, offset: offset });
+      offset += chunks.length;
+    });
+    var single = plans.length === 1;   // short turns: banner wording and behavior EXACTLY as before
+    var chain = Promise.resolve();
+    plans.forEach(function (plan) {
+      chain = chain.then(function () {
+        return fetch("/tts", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text: plan.piece })
+        })
+          .then(function (resp) {
+            if (!resp.ok) {
+              showBanner(single
+                ? "No pude sintetizar el audio (HTTP " + resp.status + ")."
+                : "No pude sintetizar una parte del audio (HTTP " + resp.status + ").");
+              return;
+            }
+            return resp.json().then(function (data) {
+              /* Replay teleprompter (2026-09-25 product decision): the
+               * toast shows ONLY a ~2-line window of the text and follows
+               * the playback — the full text stays in the turn (drawer).
+               * Plain-text windows, the wanted "formato antiguo": the
+               * reader-html branch is GONE from this replay path (watcher
+               * announcements elsewhere never had it). Guarded module
+               * lookup: a missing Toast falls back to one full window. */
+              enqueueAudio(data.audio_url, {
+                label: label || "agente",
+                text: plan.piece,
+                chunks: plan.chunks,
+                chunkOffset: plan.offset
+              });
+            });
+          })
+          .catch(function () {
+            showBanner(single
+              ? "No pude sintetizar el audio — revisa la conexión."
+              : "No pude sintetizar una parte del audio — revisa la conexión.");
           });
-        });
-      })
-      .catch(function () {
-        showBanner("No pude sintetizar el audio — revisa la conexión.");
       });
+    });
+    return chain;
   }
 
   function showBanner(message) {
@@ -1271,9 +1302,11 @@
         /* Teleprompter replay: paint the FIRST ~2-line window; the
          * timeupdate listener advances it. State rides the queue item
          * (audioFinished === item while playing), so it dies with the
-         * toast, the queue advance, or any stop. */
+         * toast, the queue advance, or any stop. Multi-piece turns
+         * (speakText) number windows GLOBALLY: the index starts at the
+         * piece's chunkOffset so the advance never repaints backwards. */
         item.teleprompter = item.announcement.chunks;
-        item.teleprompterIdx = 0;
+        item.teleprompterIdx = item.announcement.chunkOffset || 0;
         showToast("🔊 " + item.announcement.label + ": " + item.teleprompter[0]);
       } else {
         showToast("🔊 " + item.announcement.label + ": " + item.announcement.text,
@@ -1342,12 +1375,14 @@
    * player is reading stays visible, the ~2-line teleprompter window
    * ADVANCES with the audio — floor(progress * chunks.length), clamped
    * to the last window; a repaint happens ONLY when the index changes
-   * (no per-tick churn). audioFinished IS the item being played
-   * (pumpAudio sets it; ended/error/stop clear it), so the sync dies
-   * with the toast, the queue advance, or any stop. Non-chunked
-   * announcements (watcher avisos, single-window texts) never match.
-   * Fully guarded and try/catch-silent: a sync hiccup must never
-   * break playback. */
+   * (no per-tick churn). The tracked index is GLOBAL (item.chunkOffset +
+   * local window) so consecutive pieces of one long turn keep counting
+   * monotonically across piece boundaries. audioFinished IS the item
+   * being played (pumpAudio sets it; ended/error/stop clear it), so the
+   * sync dies with the toast, the queue advance, or any stop.
+   * Non-chunked announcements (watcher avisos, single-window texts)
+   * never match. Fully guarded and try/catch-silent: a sync hiccup must
+   * never break playback. */
   player.addEventListener("timeupdate", function () {
     try {
       if (!audioFinished || !audioFinished.teleprompter) return;
@@ -1358,12 +1393,13 @@
       var progress = player.currentTime / duration;
       if (!(progress >= 0)) return;   // NaN/negative tick: skip silently
       if (progress > 1) progress = 1;
-      var idx = Math.floor(progress * chunks.length);
-      if (idx > chunks.length - 1) idx = chunks.length - 1;
-      if (idx < 0) idx = 0;
+      var localIdx = Math.floor(progress * chunks.length);
+      if (localIdx > chunks.length - 1) localIdx = chunks.length - 1;
+      if (localIdx < 0) localIdx = 0;
+      var idx = (audioFinished.chunkOffset || 0) + localIdx;   // global window number
       if (idx === audioFinished.teleprompterIdx) return;  // same window: keep it
       audioFinished.teleprompterIdx = idx;
-      showToast("🔊 " + audioFinished.announcement.label + ": " + chunks[idx]);
+      showToast("🔊 " + audioFinished.announcement.label + ": " + chunks[localIdx]);
     } catch (err) {
       /* cosmetic sync only: swallow, playback is untouchable */
     }

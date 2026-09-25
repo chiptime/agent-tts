@@ -22,11 +22,28 @@
  *
  * chunkifyText (replay teleprompter, 2026-09-25): pure string helper
  * that splits a turn into sequential ~approxChars windows (default 80
- * ≈ 2 lines at the toast width), cutting preferentially at sentence
- * ends (" ", ".", "\n") and never mid-word unless a single word alone
- * exceeds the limit. The replay toast paints one window at a time and
- * the player timeupdate advances the window — the full text stays in
- * the turn (drawer), the toast is a reading aid.
+ * ≈ 2 lines at the toast width). Cut preference inside a window:
+ * sentence end (. ! ? …) > clause (, ; newline) > word space — and ":"
+ * is NEVER a boundary: the space right after a colon is skipped, so a
+ * window can not end hanging on the colon it opened. Every window is
+ * normalized (edges trimmed, inner whitespace runs collapsed to single
+ * spaces) so the teleprompter never shows a stray line jump. A window
+ * with no boundary at all is an unbroken token longer than the limit:
+ * it is cut at the first boundary AFTER the limit (the one allowed
+ * mid-word case) or kept whole when no boundary ever follows. The
+ * replay toast paints one window at a time and the player timeupdate
+ * advances the window — the full text stays in the turn (drawer), the
+ * toast is a reading aid.
+ *
+ * splitForTts (multi-piece replay, 2026-09-25): POST /tts validates
+ * max_length=8000 per request, so a longer turn used to die as HTTP
+ * 422 with no audio (product decision: no client-side reading limit —
+ * the text we have is the text we read). The turn is split with the
+ * same boundary preference into pieces within maxChars (default
+ * 8000). A short text returns VERBATIM as a single piece (yesterday's
+ * exact request body); an unbroken token longer than the limit is
+ * HARD-CUT at the limit — for the request guard "within limit" is
+ * absolute, unlike the display windows. Piece interiors stay verbatim.
  */
 
 (function (global) {
@@ -70,44 +87,102 @@
     return { show: show, hide: hide };
   }
 
+  /* ---- replay helpers: boundary tiers shared by both splitters ---- */
+
+  var SENTENCE_ENDS = [".", "!", "?", "…"];
+  var CLAUSE_ENDS = [",", ";", "\n"];
+
+  function normalizeSpace(s) {
+    return s.replace(/\s+/g, " ").trim();
+  }
+
+  /* Latest cut (exclusive end index) that keeps the punctuation char
+   * inside the chunk, at or before the ceiling. */
+  function latestPunctCut(rest, chars, ceiling) {
+    var end = -1;
+    for (var i = 0; i < chars.length; i++) {
+      var at = rest.lastIndexOf(chars[i], ceiling);
+      if (at !== -1 && at + 1 > end) end = at + 1;
+    }
+    return end;
+  }
+
+  /* Latest word-space cut (chunk ends BEFORE the space). A space whose
+   * preceding non-space char is ":" is not a boundary. */
+  function latestSpaceCut(rest, ceiling) {
+    for (var idx = ceiling; idx > 0; idx--) {
+      if (rest.charAt(idx) !== " ") continue;
+      var before = idx - 1;
+      while (before >= 0 && rest.charAt(before) === " ") before--;
+      if (before >= 0 && rest.charAt(before) === ":") continue;
+      return idx;
+    }
+    return -1;
+  }
+
+  /* Best in-window cut, tier by tier: sentence > clause > word space.
+   * Within the winning tier the LATEST cut wins (~even windows). */
+  function bestWindowCut(rest, limit) {
+    var end = latestPunctCut(rest, SENTENCE_ENDS, limit - 1);
+    if (end > 0) return end;
+    end = latestPunctCut(rest, CLAUSE_ENDS, limit - 1);
+    if (end > 0) return end;
+    return latestSpaceCut(rest, limit);
+  }
+
+  /* Hard-cut fallback: earliest boundary at/after the limit (the token
+   * overruns the window, so its END is the cut), -1 when none exist. */
+  function firstCutAfter(rest, limit) {
+    var all = SENTENCE_ENDS.concat(CLAUSE_ENDS, [" "]);
+    var next = -1;
+    for (var i = 0; i < all.length; i++) {
+      var ahead = rest.indexOf(all[i], limit);
+      if (ahead !== -1 && (next === -1 || ahead < next)) next = ahead;
+    }
+    return next === -1 ? -1 : next + 1;
+  }
+
   function chunkifyText(text, approxChars) {
     if (typeof text !== "string") return [];
     var rest = text.trim();
     if (!rest) return [];
     var limit = typeof approxChars === "number" && approxChars > 0 ? approxChars : 80;
-    var bounds = [" ", ".", "\n"];
     var chunks = [];
     /* Each pass emits one <=limit window (when a boundary exists) and
-     * consumes it, so the loop always advances. A window with NO
-     * boundary is an unbroken token longer than the limit: it is cut
-     * at the first boundary AFTER the limit (the one allowed mid-word
-     * case) or kept whole when no boundary ever follows. */
+     * consumes it, so the loop always advances. Windows are normalized:
+     * clean edges, inner whitespace runs collapsed to single spaces. */
     while (rest.length > limit) {
-      var window = rest.slice(0, limit);
-      var best = -1;
-      var i;
-      for (i = 0; i < bounds.length; i++) {
-        var at = window.lastIndexOf(bounds[i]);
-        if (at > best) best = at;   /* latest boundary wins: ~even windows */
+      var end = bestWindowCut(rest, limit);
+      if (end <= 0) {
+        end = firstCutAfter(rest, limit);
+        if (end === -1) break;   /* over-long word runs to the end */
       }
-      if (best <= 0) {
-        var next = -1;
-        for (i = 0; i < bounds.length; i++) {
-          var ahead = rest.indexOf(bounds[i], limit);
-          if (ahead !== -1 && (next === -1 || ahead < next)) next = ahead;
-        }
-        if (next === -1) break;     /* over-long word runs to the end */
-        best = next;
-      }
-      var chunk = rest.slice(0, best + 1).trim();
+      var chunk = normalizeSpace(rest.slice(0, end));
       if (chunk) chunks.push(chunk);
-      rest = rest.slice(best + 1).trim();
+      rest = rest.slice(end).trim();
     }
-    if (rest) chunks.push(rest);
+    if (rest) chunks.push(normalizeSpace(rest));
     return chunks;
   }
 
-  var api = { createToast: createToast, chunkifyText: chunkifyText };
+  function splitForTts(text, maxChars) {
+    if (typeof text !== "string" || !text) return [];
+    var limit = typeof maxChars === "number" && maxChars > 0 ? maxChars : 8000;
+    if (text.length <= limit) return [text];   /* verbatim: one request, as always */
+    var rest = text.trim();
+    var pieces = [];
+    while (rest.length > limit) {
+      var end = bestWindowCut(rest, limit);
+      if (end <= 0) end = limit;   /* unbroken token: hard cut — never exceed the request guard */
+      var piece = rest.slice(0, end).trim();
+      if (piece) pieces.push(piece);
+      rest = rest.slice(end).trim();
+    }
+    if (rest) pieces.push(rest);
+    return pieces;
+  }
+
+  var api = { createToast: createToast, chunkifyText: chunkifyText, splitForTts: splitForTts };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
