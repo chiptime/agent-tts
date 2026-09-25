@@ -31,6 +31,7 @@ from pydantic import BaseModel, Field
 
 from . import __version__
 from .approval import (
+    CREATE_SESSION,
     DECISION_APPROVE,
     DECISION_REJECT,
     DECISION_REPROMPT,
@@ -94,9 +95,22 @@ def approval_payload(gate: ApprovalGate, timeout_s: int, now: Optional[float] = 
     ``expires_in_s`` follows the lazy expiry model: remaining seconds from
     the gate's ``created_at`` plus the configured timeout, no timers. It
     counts down (ceil, clamped at 0) so the client can render its ring.
+    Send gates carry the frozen prompt (``text``/``pane_id``); create
+    gates carry the frozen panel spec (``title``/``task``) with the agent
+    kind in ``agent`` — no pane exists yet.
     """
     elapsed = (time.time() if now is None else now) - gate.created_at
     remaining = timeout_s - elapsed
+    if gate.tool == CREATE_SESSION:
+        return {
+            "gate_id": gate.gate_id,
+            "tool": gate.tool,
+            "agent": gate.action.agent_kind,
+            "title": gate.action.title,
+            "task": gate.action.task,
+            "timeout_ms": gate.action.timeout_ms,
+            "expires_in_s": max(0, math.ceil(remaining)),
+        }
     return {
         "gate_id": gate.gate_id,
         "tool": gate.tool,
@@ -616,15 +630,17 @@ def create_app(
         return gate
 
     def replay_and_report(gate: ApprovalGate) -> dict:
-        """Executes the frozen send and reports the outcome.
+        """Executes the frozen action and reports the outcome.
 
         This is THE approve execution (AC6 — exactly once, guaranteed by
         the store's approve-once resolve): the replay rides the exact path
-        a live tool call would take — ``dispatch("send_to_session", ...)``
-        on the re-resolved target — so sanitization and error handling
-        match the ungated flow; then the model reports the completion
-        through the normal loop entry and the answer is shaped like /ask.
+        a live tool call would take — ``dispatch(gate.tool, ...)`` with the
+        frozen args, so sanitization and error handling match the ungated
+        flow; then the model reports the completion through the normal
+        loop entry and the answer is shaped like /ask.
         """
+        if gate.tool == CREATE_SESSION:
+            return _replay_create_and_report(gate)
         target = tools.resolve_target(gate.action.pane_id)
         tool_result = tools.dispatch(
             SEND_TO_SESSION,
@@ -645,6 +661,34 @@ def create_app(
                 report_prompt,
                 session_id=gate.session_id,
                 pane_id=gate.action.pane_id,
+            )
+        except BrainLLMError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return shape_ask_response(result)
+
+    def _replay_create_and_report(gate: ApprovalGate) -> dict:
+        """Approve execution for create gates: dispatch the frozen panel
+        spec (no target — the tool creates its own pane), then report."""
+        tool_result = tools.dispatch(
+            CREATE_SESSION,
+            {
+                "agent_kind": gate.action.agent_kind or "",
+                "title": gate.action.title or "",
+                "task": gate.action.task or "",
+            },
+        )
+        report_prompt = (
+            f"The approved panel creation ran: agent kind "
+            f"{gate.action.agent_kind or 'unknown'}, title "
+            f"{gate.action.title or 'unknown'}. Tool result:\n\n{tool_result}\n\n"
+            "Report the outcome to the user in one or two short spoken sentences. "
+            "The tool result names the created tab/pane ids and whether the task "
+            "was delivered."
+        )
+        try:
+            result = get_llm().ask(
+                report_prompt,
+                session_id=gate.session_id,
             )
         except BrainLLMError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -756,8 +800,10 @@ def create_app(
 
     @app.patch("/approval/{gate_id}")
     def approval_patch(gate_id: str, body: ApprovalPatchRequest) -> dict:
-        """Manual edit or voice re-dictation result: swaps the frozen text
-        and restarts the timer (the store resets created_at)."""
+        """Manual edit or voice re-dictation result: swaps the frozen
+        editable field (text for send gates, task for create gates; the
+        wire body is ``text`` either way) and restarts the timer (the
+        store resets created_at)."""
         live_gate_or_404(gate_id)
         updated = approval_store.patch(gate_id, body.text)
         if updated is None:

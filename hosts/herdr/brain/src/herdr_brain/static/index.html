@@ -1005,6 +1005,23 @@
       font-weight: 700;
       color: var(--danger);
     }
+    /* Create variant (payload.tool === "create_session"): labelled rows
+     * replace the .ap-text prompt body. */
+    .ap-create { display: flex; flex-direction: column; gap: 6px; }
+    .ap-row { display: flex; gap: 8px; align-items: baseline; }
+    .ap-row-label {
+      flex: 0 0 64px;
+      font-size: var(--fs-xs);
+      font-weight: 800;
+      color: var(--muted);
+    }
+    .ap-row-value {
+      flex: 1;
+      font-size: var(--fs-sm);
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
     .ap-edit { display: flex; flex-direction: column; gap: 8px; }
     .ap-edit-area {
       font: inherit;

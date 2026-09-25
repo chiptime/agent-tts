@@ -1,11 +1,12 @@
 """In-process approval gates for the mutating tool boundary.
 
-When the tool loop wants to execute ``send_to_session``, it freezes the
-exact dispatch arguments into an ApprovalGate instead of running them;
-execution happens only after the user approves (PRD-action-approval-gate).
-Thread-safe like ConversationStore: a single user is the norm, but racing
-requests must never corrupt state. State is in-process only — a server
-restart drops every gate (no persistence, same as conversation memory).
+When the tool loop wants to execute a mutating tool (``send_to_session``
+or ``create_session``), it freezes the exact dispatch arguments into an
+ApprovalGate instead of running them; execution happens only after the
+user approves (PRD-action-approval-gate). Thread-safe like
+ConversationStore: a single user is the norm, but racing requests must
+never corrupt state. State is in-process only — a server restart drops
+every gate (no persistence, same as conversation memory).
 """
 
 from __future__ import annotations
@@ -19,6 +20,8 @@ from .config import DEFAULT_APPROVAL_TIMEOUT_S
 
 DEFAULT_SESSION = "default"
 SEND_TO_SESSION = "send_to_session"
+CREATE_SESSION = "create_session"
+GATED_TOOLS = frozenset({SEND_TO_SESSION, CREATE_SESSION})
 
 # Gate states: proposed -> approved | rejected | expired | superseded.
 PROPOSED = "proposed"
@@ -41,12 +44,20 @@ class GateAction:
 
     An approval replays the identical call, so nothing here may ever be
     edited in place — ``patch`` swaps the whole action (new text only).
+
+    The send fields (``text``/``timeout_ms``/``pane_id``/``agent``) are
+    ``send_to_session``'s exact dispatch args; the create fields
+    (``agent_kind``/``title``/``task``) are ``create_session``'s, and
+    stay ``None``/empty on send gates so the send payload is unchanged.
     """
 
     text: str
     timeout_ms: int | None
     pane_id: str | None
     agent: str | None
+    agent_kind: str | None = None
+    title: str | None = None
+    task: str | None = None
 
 
 @dataclass(frozen=True)
@@ -91,12 +102,17 @@ class ApprovalGateStore:
         pane_id: str | None = None,
         agent: str | None = None,
         tool: str = SEND_TO_SESSION,
+        agent_kind: str | None = None,
+        title: str | None = None,
+        task: str | None = None,
     ) -> ApprovalGate:
         """Freezes a new proposed gate, superseding any live one first.
 
         A still-live previous gate becomes ``superseded``; one whose window
         already elapsed becomes ``expired`` (lazy check wins — supersede
-        only applies to gates that were still answerable).
+        only applies to gates that were still answerable). Create gates
+        pass their args through ``agent_kind``/``title``/``task`` with
+        ``tool=CREATE_SESSION``.
         """
         key = self.normalize(session_id)
         with self._lock:
@@ -121,6 +137,9 @@ class ApprovalGateStore:
                     timeout_ms=timeout_ms,
                     pane_id=pane_id,
                     agent=agent,
+                    agent_kind=agent_kind,
+                    title=title,
+                    task=task,
                 ),
                 reprompt_count=0,
             )
@@ -168,11 +187,15 @@ class ApprovalGateStore:
             return self._retire(gate, state), True
 
     def patch(self, gate_id: str, text: str) -> ApprovalGate | None:
-        """Edits the frozen text of a still-live gate and restarts its timer.
+        """Edits the frozen editable field of a still-live gate and
+        restarts its timer.
 
-        Returns the updated gate, or None when the id is unknown or the
-        gate is no longer proposed (terminal or lazily expired) — a dead
-        gate must never come back to life through an edit.
+        The editable field follows the tool: ``text`` for send gates,
+        ``task`` for create gates — the PATCH wire body stays ``text``
+        either way. Returns the updated gate, or None when the id is
+        unknown or the gate is no longer proposed (terminal or lazily
+        expired) — a dead gate must never come back to life through an
+        edit.
         """
         with self._lock:
             gate = self._gates.get(gate_id)
@@ -181,10 +204,11 @@ class ApprovalGateStore:
             gate = self._expire_if_due(gate)
             if gate.state != PROPOSED:
                 return None
+            field = "task" if gate.tool == CREATE_SESSION else "text"
             updated = replace(
                 gate,
                 created_at=self._clock(),
-                action=replace(gate.action, text=text or ""),
+                action=replace(gate.action, **{field: text or ""}),
             )
             self._gates[gate_id] = updated
             return updated

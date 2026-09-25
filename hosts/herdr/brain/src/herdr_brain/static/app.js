@@ -1426,6 +1426,7 @@
   var approvalCard = null;         // built card DOM (keyed updates); null = absent
   var approvalCardDismissed = false;
   var approvalCardDismissTimer = null;
+  var approvalWasCreate = false;   // live gate's variant, read at approve-report time
 
   var approvalFlow = window.ApprovalFlow.createApprovalFlow({
     request: function (url, options, timeoutMs) { return fetchWithTimeout(url, options, timeoutMs || 30000); },
@@ -1437,6 +1438,13 @@
       addTurn("brain", answer.answer || "(respuesta vacía)");
       if (answer.audio_url) enqueueAudio(answer.audio_url, null);
       renderApprovalCard();
+      // An approved create_session built a NEW panel: refresh the herd
+      // (panes, view, conversation) so it shows up immediately instead
+      // of on the next poll beat.
+      if (approvalWasCreate) {
+        approvalWasCreate = false;
+        refreshState();
+      }
     },
     playAudio: function (url) {
       enqueueAudio(url, null);
@@ -1528,6 +1536,20 @@
     return b;
   }
 
+  /* Labelled row for the create variant (Agente / Título / Tarea). */
+  function apRow(label) {
+    var row = document.createElement("div");
+    row.className = "ap-row";
+    var name = document.createElement("span");
+    name.className = "ap-row-label";
+    name.textContent = label;
+    var value = document.createElement("span");
+    value.className = "ap-row-value";
+    row.appendChild(name);
+    row.appendChild(value);
+    return { row: row, value: value };
+  }
+
   function buildApprovalCard() {
     var el = document.createElement("div");
     el.id = "approval-card";
@@ -1546,10 +1568,23 @@
     head.appendChild(ring);
     el.appendChild(head);
 
-    /* Full frozen text — the visible ground truth (scrolls when huge). */
+    /* Full frozen text — the visible ground truth (scrolls when huge).
+     * SEND gates only: create gates render .ap-create rows instead. */
     var text = document.createElement("div");
     text.className = "ap-text";
     el.appendChild(text);
+
+    /* Create variant (payload.tool === "create_session"): labelled rows
+     * for the frozen panel spec; hidden on send gates. */
+    var createRows = document.createElement("div");
+    createRows.className = "ap-create hidden";
+    var agentRow = apRow("Agente");
+    var titleRow = apRow("Título");
+    var taskRow = apRow("Tarea");
+    createRows.appendChild(agentRow.row);
+    createRows.appendChild(titleRow.row);
+    createRows.appendChild(taskRow.row);
+    el.appendChild(createRows);
 
     /* Dictation hint: the re-dictar round is live (PRD §5 precedence). */
     var dict = document.createElement("div");
@@ -1587,6 +1622,8 @@
 
     var card = {
       el: el, title: title, ring: ring, ringNum: ringNum, text: text,
+      createRows: createRows, agentRowV: agentRow.value, titleRowV: titleRow.value,
+      taskRowV: taskRow.value,
       dict: dict, editBox: editBox, editArea: editArea, actions: actions,
       sendBtn: sendBtn, editBtn: editBtn, redictBtn: redictBtn,
       cancelBtn: cancelBtn, saveBtn: saveBtn, discardBtn: discardBtn
@@ -1627,8 +1664,11 @@
 
   function enterApprovalEdit() {
     if (!approvalCard || !approvalFlow.active()) return;
-    approvalCard.editArea.value = approvalFlow.gate().text || "";
+    // Editable field follows the variant: send text, create task.
+    approvalCard.editArea.value =
+      window.ApprovalFlow.cardModel(approvalFlow.gate()).editable;
     approvalCard.text.classList.add("hidden");
+    approvalCard.createRows.classList.add("hidden");
     approvalCard.dict.classList.add("hidden");
     approvalCard.actions.classList.add("hidden");
     approvalCard.editBox.classList.remove("hidden");
@@ -1638,7 +1678,9 @@
   function exitApprovalEdit() {
     if (!approvalCard) return;
     approvalCard.editBox.classList.add("hidden");
-    approvalCard.text.classList.remove("hidden");
+    var isCreate = (approvalFlow.gate() || {}).tool === "create_session";
+    approvalCard.text.classList.toggle("hidden", isCreate);
+    approvalCard.createRows.classList.toggle("hidden", !isCreate);
     approvalCard.actions.classList.remove("hidden");
     try { approvalCard.editBtn.focus({ preventScroll: true }); } catch (err) { /* noop */ }
   }
@@ -1651,17 +1693,35 @@
     var busy = approvalFlow.isBusy();
     var remaining = approvalFlow.remainingSeconds();
     var total = g.expires_in_s || 60;
+    var isCreate = g.tool === "create_session";
+    approvalWasCreate = isCreate;  // the approve-report path reads this once
 
     /* Busy round (approve replay in flight): an honest "sending" title
      * instead of the target — expiry cannot fire mid-round, so the ring
      * just holds at its last value until the round settles. */
-    var title = busy ? "📤 Enviando…" : (expired ? "⏱ Tiempo agotado" : "📤 Para: " + approvalTargetLabel(g));
+    var title = busy ? "📤 Enviando…" :
+      (expired ? "⏱ Tiempo agotado" :
+        (isCreate ? "🆕 Crear panel" : "📤 Para: " + approvalTargetLabel(g)));
     if (approvalCard.title.textContent !== title) {
       approvalCard.title.textContent = title;
     }
-    if (approvalCard.text.textContent !== (g.text || "")) {
+    if (isCreate) {
+      /* Variant rows: Agente (kind) / Título / Tarea (editable). */
+      var model = window.ApprovalFlow.cardModel(g);
+      if (approvalCard.agentRowV.textContent !== model.rows[0].value) {
+        approvalCard.agentRowV.textContent = model.rows[0].value;
+      }
+      if (approvalCard.titleRowV.textContent !== model.rows[1].value) {
+        approvalCard.titleRowV.textContent = model.rows[1].value;
+      }
+      if (approvalCard.taskRowV.textContent !== model.rows[2].value) {
+        approvalCard.taskRowV.textContent = model.rows[2].value;
+      }
+    } else if (approvalCard.text.textContent !== (g.text || "")) {
       approvalCard.text.textContent = g.text || "";
     }
+    approvalCard.text.classList.toggle("hidden", isCreate);
+    approvalCard.createRows.classList.toggle("hidden", !isCreate);
     /* Countdown ring: warn wedge shrinks with the remaining window. */
     var pct = Math.max(0, Math.min(100, Math.round((remaining / (total || 60)) * 100)));
     approvalCard.ring.style.setProperty("--ap-pct", pct + "%");
@@ -1671,6 +1731,12 @@
     }
     approvalCard.el.classList.toggle("expired", expired);
     approvalCard.dict.classList.toggle("hidden", !approvalFlow.isDictating() || expired);
+    var dictText = isCreate
+      ? "🎙 Dicta la tarea nueva — «sí» crea el panel, «no» cancela"
+      : "🎙 Dicta el texto nuevo — «sí» envía, «no» cancela";
+    if (approvalCard.dict.textContent !== dictText) {
+      approvalCard.dict.textContent = dictText;
+    }
     if (expired && approvalEditOpen()) exitApprovalEdit();
     approvalCard.sendBtn.disabled = expired || busy;
     approvalCard.editBtn.disabled = expired || busy;
