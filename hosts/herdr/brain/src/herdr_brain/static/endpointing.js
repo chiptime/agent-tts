@@ -12,9 +12,9 @@
  *   utterance as a growing final ("a" -> "a b" -> "a b c"), so a blind
  *   append turned one utterance into O(n²) word soup. The merge strips
  *   the overlap (suffix of committed == prefix of the final, compared
- *   case/punctuation-insensitively) and keeps only the new tail. A
- *   genuine repetition inside ONE final ("hola hola") survives; only the
- *   cross-final restating is collapsed. It also clears the current
+ *   case/punctuation/accent-insensitively) and keeps only the new tail.
+ *   A genuine repetition inside ONE final ("hola hola") survives; only
+ *   the cross-final restating is collapsed. It also clears the current
  *   interim — the final transcript already contains that hypothesis.
  * - push(interimText): sets the CURRENT session's interim only; it can
  *   never shorten committed. An EMPTY interim is ignored outright: a
@@ -54,10 +54,18 @@
   }
 
   /* Word-level normalization for overlap matching: Chrome finals drift in
-   * case and trailing punctuation between sessions, and that drift must
-   * not defeat the match. Per-word so raw and normalized stay aligned. */
-  function normWord(word) {
+   * case, punctuation, and accents between sessions ("qué" -> "que"), and
+   * none of that drift may defeat the match. Matching folds diacritics:
+   * NFD-normalize, then strip combining marks (U+0300-U+036F), so "que"
+   * and "qué" compare equal ("ñ" folds to "n" — accepted). Folding is a
+   * comparison-only view; raw committed/display text is never rewritten.
+   * Per-word so raw and normalized stay aligned. */
+  function plainWord(word) {
     return word.toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+  }
+
+  function normWord(word) {
+    return plainWord(word).normalize("NFD").replace(/[\u0300-\u036f]/g, "");
   }
 
   function splitWords(text) {
@@ -66,7 +74,12 @@
 
   /* Merges `next` into `base` stripping the longest overlap where a
    * suffix of base equals a prefix of next (the Chrome growing-final
-   * shape). Returns base when next is empty and next when base is. */
+   * shape). Returns base when next is empty and next when base is.
+   * Overlap rendering: a pair that differs only by accent drift (equal
+   * after folding, different before it) keeps the committed word —
+   * accents are meaning-bearing in Spanish and a re-emission is not a
+   * correction of them. Case/punctuation-only drift keeps the final's
+   * rendering, as it always has. */
   function mergeOverlap(base, next) {
     var baseWords = splitWords(base);
     var nextWords = splitWords(next);
@@ -85,7 +98,18 @@
       }
       if (matches) { k = candidate; break; }
     }
-    return baseWords.slice(0, baseWords.length - k).concat(nextWords).join(" ");
+    var merged = baseWords.slice(0, baseWords.length - k);
+    for (var j = 0; j < k; j++) {
+      merged.push(overlapWord(baseWords[baseWords.length - k + j], nextWords[j]));
+    }
+    return merged.concat(nextWords.slice(k)).join(" ");
+  }
+
+  /* Picks the surviving rendering for one overlapped word pair: the
+   * final's word unless the pair drifted ONLY in accents, in which case
+   * the committed word stays. */
+  function overlapWord(baseWord, nextWord) {
+    return plainWord(baseWord) === plainWord(nextWord) ? nextWord : baseWord;
   }
 
     function push(interimText) {
