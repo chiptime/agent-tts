@@ -348,7 +348,7 @@ def test_ensure_daemon_real_spawn_serves_the_requested_non_default_socket(tmp_pa
         # A deterministic protocol error for an empty payload exercises
         # send_play's full send/blocking-reply path over the channel
         # without touching an audio device or a network provider.
-        assert send_play({}, socket_path=requested) == "ERR: play requires text or file"
+        assert send_play({}, socket_path=requested) == "ok=false error=play requires text, file, or chain"
     finally:
         for path in (requested, decoy):
             try:
@@ -653,8 +653,23 @@ def test_cli_err_reply_exits_one_with_stderr(monkeypatch, capsys):
         daemon_mod, "delegate_play", return_value="ERR: playback target unavailable (exit 1)"
     ):
         code = _run_cli(monkeypatch, ["cli.py", "hola"])
+    captured = capsys.readouterr()
     assert code == 1
-    assert "ERR: playback target unavailable" in capsys.readouterr().err
+    assert captured.out == ""  # A3: error text never reaches stdout
+    assert captured.err == "Error: playback target unavailable (exit 1)\n"
+
+
+def test_cli_typed_error_reply_exits_one_with_stderr(monkeypatch, capsys):
+    """A3 client contract: ok=false replies print the error MESSAGE to
+    stderr (envelope stripped) and exit 1; stdout stays clean."""
+    with mock.patch.object(
+        daemon_mod, "delegate_play", return_value="ok=false error=synthesis exploded"
+    ):
+        code = _run_cli(monkeypatch, ["cli.py", "hola"])
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.out == ""
+    assert captured.err == "Error: synthesis exploded\n"
 
 
 def test_cli_daemon_unavailable_exits_one_with_clear_error(monkeypatch, capsys):

@@ -126,22 +126,40 @@ def test_idle_daemon_exits_orderly_and_frees_channel(channel, monkeypatch):
 
 
 def test_requests_reset_the_idle_clock(channel, monkeypatch):
-    d = _make_daemon(channel, monkeypatch, idle_timeout_sec=1.0)
+    # Load-tolerant margins (T5.1 verification, 2026-09-25): under
+    # full-suite load this test flaked twice in 10 runs — the gap the
+    # daemon observes between two pings stretched past the 1.0 s idle
+    # window (GIL starvation delays the 0.4 s cadence), the daemon
+    # exited and cleaned its socket, and the next single-shot ping
+    # returned None. The idle window doubles to 2.0 s (its value is a
+    # test parameter, not a product semantic: requests reset the clock
+    # either way) and one bounded retry absorbs transient transport
+    # failures (connects refused during the daemon's bind->listen
+    # startup window were observed about twice per full run) while a
+    # daemon that truly idled out still fails loudly.
+    d = _make_daemon(channel, monkeypatch, idle_timeout_sec=2.0)
     thread = _run_in_thread(d)
     assert _wait_ping(channel) is not None
 
-    # Pings keep the daemon alive well past the nominal idle window.
+    # Pings keep the daemon alive well past the nominal idle window
+    # (6 x 0.4 s = 2.4 s spans more than one full 2.0 s window).
     for _ in range(6):
         time.sleep(0.4)
-        assert ipc.send_ipc_command("ping", socket_path=channel["sock"]).startswith("pong")
+        reply = None
+        for _attempt in range(3):
+            reply = ipc.send_ipc_command("ping", socket_path=channel["sock"])
+            if reply:
+                break
+            time.sleep(0.05)
+        assert reply and reply.startswith("pong"), f"daemon did not survive the ping loop: {reply!r}"
         assert thread.is_alive()
 
     # Stop pinging: the exit happens after the timeout counted from the
     # LAST request, not from daemon start.
     last_ping_at = time.monotonic()
-    thread.join(timeout=5.0)
+    thread.join(timeout=6.0)
     assert not thread.is_alive()
-    assert time.monotonic() - last_ping_at >= 1.0
+    assert time.monotonic() - last_ping_at >= 2.0
     assert not os.path.exists(channel["sock"])
 
 

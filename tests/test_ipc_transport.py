@@ -14,7 +14,9 @@ from agent_tts.constants import DEFAULT_VOICE
 def _echo_server(sock, max_connections=4):
     """Accepts connections until idle or the cap, echoing commands back with an OK prefix.
 
-    Per-connection errors are swallowed (mirrors IPCServer's listener loop).
+    Speaks framing v2 (shared read_frame/send_frame helpers) so the
+    transport-selection tests exercise the real wire format. Per-connection
+    errors are swallowed (mirrors IPCServer's listener loop).
     """
     sock.listen(5)
     sock.settimeout(0.2)
@@ -26,9 +28,9 @@ def _echo_server(sock, max_connections=4):
         except OSError:
             break
         try:
-            conn.settimeout(0.5)
-            data = conn.recv(1024).decode("utf-8", errors="ignore")
-            conn.sendall(f"OK:{data.strip()}\n".encode("utf-8"))
+            conn.settimeout(1.0)
+            data = ipc.read_frame(conn)
+            ipc.send_frame(conn, f"OK:{data.strip()}")
         except OSError:
             pass
         finally:

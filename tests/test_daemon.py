@@ -20,6 +20,7 @@ import agent_tts.ipc as ipc
 from agent_tts import audio
 from agent_tts.audio import AudioSession
 from agent_tts.daemon import Daemon, ProviderCache, _inject_daemon_fields
+from agent_tts.queue_manager import Policy, Priority, QueueManager
 
 
 @pytest.fixture
@@ -230,10 +231,10 @@ def test_play_runs_pipeline_and_replies_done(channel, monkeypatch):
 def test_play_error_replies_err_and_keeps_daemon_alive(channel, monkeypatch):
     d = _start_daemon(channel, monkeypatch)
     try:
-        # Broken JSON payload: explicit ERR, daemon still answers pings.
-        assert d.handle_command("play {not json").startswith("ERR: invalid play payload")
+        # Broken JSON payload: explicit typed error, daemon still answers pings.
+        assert d.handle_command("play {not json").startswith("ok=false error=invalid play payload")
         # Missing text and file.
-        assert d.handle_command("play {}").startswith("ERR: play requires")
+        assert d.handle_command("play {}").startswith("ok=false error=play requires")
         assert ipc.send_ipc_command("ping", socket_path=channel["sock"]).startswith("pong")
     finally:
         _stop_daemon(d)
@@ -247,7 +248,7 @@ def test_play_failure_replies_err(channel, monkeypatch):
 
     with mock.patch.object(d._cli, "_play_speech", side_effect=failing_speech):
         reply = d.handle_command("play " + json.dumps({"text": "boom"}))
-    assert reply == "ERR: synthesis exploded"
+    assert reply == "ok=false error=synthesis exploded"
     with d._lock:
         assert d.active_session is None
         assert d._inflight == 0
@@ -369,7 +370,7 @@ def test_speak_with_unavailable_remote_target_stays_a_clear_error(
     d = _start_daemon(channel, monkeypatch, target_env="wsl-ps")
     try:
         reply = d.handle_command("play " + json.dumps({"text": "hola"}))
-        assert reply == "ERR: playback target unavailable (exit 1)"
+        assert reply == "ok=false error=playback target unavailable (exit 1)"
         with d._lock:
             assert d.active_session is None
     finally:
@@ -396,35 +397,40 @@ def test_large_play_payload_round_trips_through_the_channel(channel, monkeypatch
 
 def test_oversized_play_payload_beyond_hard_cap_fails_clearly(channel, monkeypatch):
     """Beyond the documented hard cap the reply is a clear error, never a
-    silent truncation that surfaces as an invalid-JSON parse failure."""
+    silent truncation that surfaces as an invalid-JSON parse failure.
+
+    Framing v2 (A2''=B1''): the cap is enforced in the client before any
+    wire write, so the size error is immediate and typed."""
     d = _start_daemon(channel, monkeypatch)
     try:
         from agent_tts.daemon import send_play
 
-        from agent_tts.ipc import MAX_COMMAND_BYTES
+        from agent_tts.ipc import MAX_PAYLOAD
 
-        runaway = "b" * (MAX_COMMAND_BYTES + 2048)
+        runaway = "b" * (MAX_PAYLOAD + 2048)
         reply = send_play({"text": runaway, "no_play": True}, socket_path=channel["sock"])
         assert reply is not None and reply.startswith("ERR: command too large"), reply
     finally:
         _stop_daemon(d)
 
 
-# --- CONF-2: concurrent play is a clear error, never a silent supersede ----------------
+# --- CONF-2 -> D4: concurrent play queues, the active one stays controllable ------------
 
 
-def test_second_concurrent_play_is_rejected_and_first_stays_controllable(channel, monkeypatch):
+def test_second_concurrent_play_queues_and_first_stays_controllable(channel, monkeypatch):
+    """D4 (approved behavior change, BLOQUE 1.3): a plain play never
+    rejects with busy — it enters the queue as working/queue and waits.
+    The FIRST playback remains the controllable one until it ends; the
+    second dispatches only after the first finalized (RF-AT-08-6)."""
     d = _start_daemon(channel, monkeypatch)
     try:
-        box, play_thread = _play_async(d, {"text": "primera"})
+        box, play_thread = _play_async(d, {"text": "primera", "label": "primera"})
         _wait_session_registered(d)
 
-        # A second play while audio is active: deterministic clear error,
-        # never a silent supersede (queueing arrives in BLOQUE 1.3).
-        box2, play_thread2 = _play_async(d, {"text": "segunda"})
-        play_thread2.join(timeout=2.0)
-        assert not play_thread2.is_alive(), "second play must reply, not block or displace"
-        assert box2 == ["ERR: playback already in progress"]
+        # A second play while audio is active: QUEUED (D4), never an
+        # error and never a supersede — its reply arrives when ITS
+        # playback ends.
+        box2, play_thread2 = _play_async(d, {"text": "segunda", "label": "segunda"})
 
         # The FIRST playback is still the controllable one.
         reply = None
@@ -439,6 +445,19 @@ def test_second_concurrent_play_is_rejected_and_first_stays_controllable(channel
         ipc.send_ipc_command("stop", socket_path=channel["sock"])
         play_thread.join(timeout=5.0)
         assert box == ["status=stopped"]
+
+        # Now the second item owns the speaker; stop it to end the test.
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            with d._lock:
+                active = d.active_session
+            if active is not None:
+                break
+            time.sleep(0.02)
+        ipc.send_ipc_command("stop", socket_path=channel["sock"])
+        play_thread2.join(timeout=5.0)
+        assert not play_thread2.is_alive(), "queued play must reply, not hang"
+        assert box2 == ["status=stopped"]
     finally:
         _stop_daemon(d)
 
@@ -542,7 +561,7 @@ def test_play_registering_during_shutdown_is_refused_not_orphaned(channel):
 
     # The late play gets a deterministic refusal instead of running
     # unsupervised through the shutdown drain.
-    assert replies == ["ERR: daemon shutting down"]
+    assert replies == ["ok=false error=daemon shutting down"]
     assert played == []
     assert len(stopped) == 1  # only the pre-snapshot session existed
 
@@ -763,8 +782,10 @@ def test_idle_commands_without_session_answer_clearly(channel, monkeypatch):
     d = _start_daemon(channel, monkeypatch)
     try:
         sock = channel["sock"]
-        assert ipc.send_ipc_command("pause", socket_path=sock) == "ERR: no active playback session"
-        assert ipc.send_ipc_command("seek +10", socket_path=sock) == "ERR: no active playback session"
+        # A3: control commands against an idle daemon are typed errors
+        # (ok=false), never payload-shaped text.
+        assert ipc.send_ipc_command("pause", socket_path=sock) == "ok=false error=no active playback session"
+        assert ipc.send_ipc_command("seek +10", socket_path=sock) == "ok=false error=no active playback session"
         # stop is idempotent silence: the user's goal already holds.
         assert ipc.send_ipc_command("stop", socket_path=sock) == "status=stopped"
     finally:
@@ -842,3 +863,29 @@ def test_inject_daemon_fields_keeps_free_text_field_last():
 
 def test_inject_daemon_fields_appends_without_free_text():
     assert _inject_daemon_fields("status=stopped", " uptime=7") == "status=stopped uptime=7"
+
+
+# --- Queue manager mount point (BLOQUE 1.3 / AT-08, hito Cola) -------------------------
+
+
+def test_daemon_constructs_the_queue_manager_at_the_mount_point():
+    """T2 seam: the manager sits above the active-session slot from startup.
+
+    The play path is intentionally unchanged in this unit (the IPC
+    enqueue command lands in T3); what must hold today is that the mount
+    point BLOQUE 1.2 reserved is occupied by a healthy, idle manager.
+    """
+    d = Daemon(socket_path="unused.sock")
+    assert isinstance(d.queue_manager, QueueManager)
+    snap = d.queue_manager.snapshot()
+    assert snap.queue_len == 0
+    assert snap.active is None
+    assert d.active_session is None  # the session slot below the manager
+
+
+def test_shutdown_closes_the_queue_manager():
+    """Daemon teardown stops the manager's supervisor with it."""
+    d = Daemon(socket_path="unused.sock")
+    d._shutdown()
+    with pytest.raises(RuntimeError):
+        d.queue_manager.enqueue(priority=Priority.DONE, policy=Policy.QUEUE)

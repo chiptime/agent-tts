@@ -1,0 +1,53 @@
+{
+  "label": "RNF-AT-04-1 real edge: warm-daemon event->audio-start p95 (auto-started daemon, real network synthesis, device stubbed at the AudioSession.play seam)",
+  "metric": "event->audio-start",
+  "threshold_ms": 250.0,
+  "text_chars": 46,
+  "events": 25,
+  "warmup_events": 2,
+  "provider": "edge (real network synthesis)",
+  "fidelity": "real edge WebSocket synthesis + real miniaudio decode + real framed IPC + real queue dispatch; the audio DEVICE is stubbed at the play seam (no device in the measurement WSL environment) \u2014 audio-start is the play-seam entry instant, same seam as metrics/queue",
+  "failures": [],
+  "missing_labels": [],
+  "environment": {
+    "kernel": "6.6.87.2-microsoft-standard-WSL2",
+    "python": "3.14.7",
+    "date": "2026-09-25"
+  },
+  "run_dir": "/tmp/agent-tts-edge-p95-9ibhy2bi",
+  "pong": "pong version=0.3.0 uptime=0",
+  "summary": {
+    "p50_ms": 376.4,
+    "p95_ms": 584.1,
+    "max_ms": 606.8,
+    "mean_ms": 402.6
+  },
+  "threshold_ok": false,
+  "samples_ms": [
+    519.9,
+    374.3,
+    584.1,
+    376.4,
+    505.6,
+    363.9,
+    495.5,
+    451.6,
+    337.7,
+    355.0,
+    423.4,
+    299.7,
+    393.0,
+    319.9,
+    247.9,
+    528.8,
+    353.4,
+    441.4,
+    279.5,
+    288.3,
+    469.2,
+    272.0,
+    513.0,
+    265.5,
+    606.8
+  ]
+}

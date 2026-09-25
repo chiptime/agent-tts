@@ -98,7 +98,7 @@ Implementación en `feat/at-04-daemon-via-unica`. Habilitadores previos al daemo
 
 ### Mediciones registradas
 
-- **RNF-AT-04-1 (stub, etiquetada)**: warm-daemon evento-a-audio p95 = **0,7 ms** frente a spawn CLI p95 = **162,3 ms** → **reducción del 99,6%** (métrica de éxito ≥ 40%: en verde). Entorno: worktree, Python 3.14, 30 eventos, texto de 46 chars, síntesis y dispositivo stubbed — el delta mide el coste real de spawn de intérprete+imports que el daemon elimina más la ronda IPC real. **Pendiente**: medición con edge real (y kokoro) en máquina con proveedor y dispositivo de audio.
+- **RNF-AT-04-1 (stub, etiquetada)**: warm-daemon evento-a-audio p95 = **0,7 ms** frente a spawn CLI p95 = **162,3 ms** → **reducción del 99,6%** (métrica de éxito ≥ 40%: en verde). Entorno: worktree, Python 3.14, 30 eventos, texto de 46 chars, síntesis y dispositivo stubbed — el delta mide el coste real de spawn de intérprete+imports que el daemon elimina más la ronda IPC real. **Leg con edge real**: medida en BLOQUE 1.3 T8 (decisión D3) — p95 = **584,1 ms** (n=25, proveedor real por red, dispositivo stubbed en el seam de play; umbral 250 ms NO cumplido — la síntesis de red domina el presupuesto; registro y lectura honesta en la sección T8 de `BLOQUE-1.3-cola-y-cadena.md`). **Pendiente**: medición con kokoro en máquina con proveedor y dispositivo de audio.
 - **RNF-AT-04-2 (real, sin modelo local)**: RSS en reposo del daemon de arranque explícito = **43,8 MB** < 80 MB (en verde). **Pendiente**: cota < 700 MB con kokoro caliente.
 - **RNF-AT-04-4 (modo corto, real)**: 4 s/1 s de muestreo: 0,0% de crecimiento de RSS, ping estable, `status=idle` coherente en cada muestra. **Pendiente**: corrida completa de 8 h (manual o CI nocturna) con registro del delta.
 
