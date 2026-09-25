@@ -2,7 +2,7 @@
 
 **Repo:** herdr-brain
 **Created:** 2026-09-25
-**Status:** In progress — T1 (`49ba184`), T2 (`00fb2be`), T3 (`b93c27c`), T4 (`2def047`) + T4/T3 correction unit complete; T5 (device) pending (worktree `announcements-d1`, branch `feat/announcements-without-call-d1`)
+**Status:** T1–T4 implemented (`49ba184`, `00fb2be`, `b93c27c`, `2def047`, correction `91845eb`); T5 (Chrome Android) pending. Worktree `announcements-d1`, branch `feat/announcements-without-call-d1`.
 **PRD:** `docs/PRD-announcements-without-call.md` (Phase 1, delivery 1: FR-01..FR-08, AC1..AC6)
 **Engram mirror:** `odd/announcements-without-call/tasks`
 
@@ -36,28 +36,34 @@ stays visible and the user can re-enable voice with one tap.
 - Runners: `node --test tests/js/` for client behavior and
   `.venv/bin/python -m pytest -q` for the full Python suite. Record observed
   RED before production changes, then GREEN and refactor evidence per task.
-- Delivery: work-unit commits on a feature branch (branch before the first
-  implementation commit if still on the default branch); never push without
-  explicit authorization. This planning-only chat makes no commits.
+- Delivery: work-unit commits on the feature branch above; no push or PR
+  without explicit authorization. The original checkout and its untracked
+  planning documents were left untouched.
 - Concurrency: other sessions committed in the toast/playback area while this
   plan was prepared. At handoff, inspect current HEAD, worktree and affected
   symbols before editing; do not assume the other work has stopped.
-- RDD: after each work-unit commit, run `gentle-ai review assess` on it and
-  record the tier/outcome below.
+- RDD: clone-local mode is OFF; no assessment or review was started and the
+  preference was not changed. If later enabled by the user, follow its native
+  candidate process rather than inferring an approval from this checklist.
 
 ## Delivery Forecast
 
-~300 authored changed lines (new pure module + tests ≈ 220, `app.js` wiring ≈ 50,
-`index.html` + `test_server.py` ≈ 20, CSS ≈ 10). Under the ~400-line budget:
-single slice, no chaining.
+The original ~300-line forecast was inaccurate. At `91845eb`, the branch diff
+against `2b8f976` was 1,940 additions / 18 deletions across eight files,
+including the previously untracked approved PRD (415 lines) and this task
+document (489 lines). Before any PR, decide a reviewable delivery boundary or
+explicit size exception with the maintainer; no PR was opened.
 
 ## Design Seam
 
 `app.js` is a single IIFE never loaded in node. New decision logic goes into a
 **new UMD pure module** `src/herdr_brain/static/announce.js` (same pattern as
 `endpointing.js`/`toast.js`: `module.exports` + `global.Announce`), with
-injected dependencies (`play`, `showToast`, `hideToast`, `isMuted`,
-`isInCall`, `onBlockedChange`). `app.js` keeps only DOM/SSE wiring.
+injected dependencies (`play`, `showToast`, `isMuted`, `isInCall`,
+`onBlockedChange`). `requestUnlock(prime)` waits for an isolated silent audio
+prime to succeed; `app.js` keeps DOM/SSE and media-event wiring. Historical
+decisions below describe their state at each commit; the correction at
+`91845eb` supersedes the shared-player prime and media-error handling.
 
 ## Tasks
 
@@ -96,8 +102,8 @@ injected dependencies (`play`, `showToast`, `hideToast`, `isMuted`,
 - Add the affordance next to `#toast` in `index.html` (Spanish label
   "🔊 Activar voz"), hidden unless `blocked`.
 - One document-level `pointerdown`/`keydown` listener (active only while
-  blocked) plus the button call `unlock()`; the unlock primes `player`
-  inside the gesture.
+  blocked) plus the button call `requestUnlock(prime)`; the gesture primes an
+  isolated silent Audio element, not the shared player.
 - Extend `TestStatic` id and Spanish-label assertions.
 - Covers: FR-05, AC2.
 - Route: delegated writer.
@@ -110,6 +116,22 @@ injected dependencies (`play`, `showToast`, `hideToast`, `isMuted`,
 - Record results, including whether ASSUMPTION-1 (home-screen autoplay
   exception) held.
 - Route: manual (user device) + parent records evidence.
+- **Not executed here:** no Chrome Android device/session was available.
+  Neither a desktop suite nor static wiring checks establish AC1–AC6.
+
+| Criterion | Pending check on Chrome Android | Result |
+|---|---|---|
+| AC1 | Install/open the PWA from the home screen; without a call or touch, finish an agent task. Verify immediate voice and toast. Record whether ASSUMPTION-1 (home-screen autoplay) holds. | Pending — device required |
+| AC2 | Open a regular browser tab without a prior gesture; trigger an announcement. Verify persistent toast and “🔊 Activar voz”; tap it, then trigger a NEW announcement and verify immediate voice (never replay the old one). | Pending — device required |
+| AC3 | Force `play()` rejection or a media error and verify the announcement text remains visible and the activation control remains available. | Pending — device required |
+| AC4 | Enable mute and trigger an announcement; verify toast only, without voice or activation control. | Pending — device required |
+| AC5 | During a call, trigger an announcement and verify existing playback, toast/teleprompter, mute, and microphone-resume behavior. | Pending — device required |
+| AC6 | Reload the page and start a call; verify only one `/events` SSE connection per page load. | Pending — device required |
+
+Prerequisites: Chrome Android with the installed PWA and a regular tab, a
+reachable HTTPS herdr-brain instance, a way to trigger agent `done`/`blocked`
+transitions and to inspect browser audio/network behavior. No mobile outcomes
+are inferred from the automated suites.
 
 ## Acceptance Criteria
 
@@ -397,8 +419,9 @@ each task closure.
   - RDD: still disabled (clone_local, untouched) → no assess, no toggle.
 
 - 2026-09-25 **T4/T3 REOPENED by parent review after `2def047` — both
-  defects fixed in one scoped correction unit** (separate work-unit
-  commit; hash recorded in the next doc update, no amend).
+  defects fixed in correction work-unit commit `91845eb`.** The earlier T4
+  description is historical: its shared-player prime and optimistic unlock
+  were replaced by the isolated-element, unlock-on-proof design below.
 
   **Defect 1 (unlock-before-proof + shared-player hijack):**
   `unlockVoice` called `announcer.unlock()` BEFORE the prime resolved —
@@ -478,12 +501,16 @@ each task closure.
     remains the call's primary unlock.
   - RDD: still disabled → no assess, no toggle.
 
-## Handoff to the implementation chat
+## Next step / handoff
 
-Read this plan and `docs/PRD-announcements-without-call.md`; work only on
-delivery 1 (FR-01..FR-08, AC1..AC6). Before starting T1, confirm the working
-tree and concurrent toast/audio changes, revalidate source references, and run
-the configured JS and Python test commands for a baseline. Then work through
-T1..T4 with observed RED → GREEN → REFACTOR; T5 requires evidence from the
-user's Android device. Do not begin delivery 2, delivery 3, or Phase 2 as part
-of this handoff.
+T1–T4 and the scoped correction are committed on
+`feat/announcements-without-call-d1` in the isolated worktree. Last observed
+closure: `node --test tests/js/` → **179 passed**;
+`PYTHONPATH=<worktree>/src <original-repo>/.venv/bin/python -m pytest -q` →
+**553 passed, 1 warning**. One earlier timing-sensitive Python test failed on
+an intermediate run but passed isolated and on the full rerun (see T1).
+The pure announcer policy is executable-tested; browser-only `app.js` wiring
+is partly structural-tested, not a substitute for T5. Record actual AC1–AC6
+device results in the table above before checking T5. Resolve the >400-line
+review burden with the maintainer before any PR. Do not begin delivery 2,
+delivery 3 or Phase 2; do not push or open a PR without authorization.
