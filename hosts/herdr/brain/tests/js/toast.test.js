@@ -16,7 +16,7 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
 const { createReader } = require("../../src/herdr_brain/static/reader.js");
-const { createToast, chunkifyText } = require("../../src/herdr_brain/static/toast.js");
+const { createToast, chunkifyText, splitForTts } = require("../../src/herdr_brain/static/toast.js");
 
 /* ---- fake DOM (test infrastructure, reader.test.js subset) ---- */
 
@@ -345,4 +345,82 @@ test("chunkify_never_mid_word_except_overlong", () => {
 test("chunkify_empty_and_whitespace", () => {
   assert.deepEqual(chunkifyText(""), []);
   assert.deepEqual(chunkifyText("   \n\t  "), []);
+});
+
+/* ---- 1.6 boundary quality: tier preference, no ":" cut, clean edges ---- */
+
+test("chunkify_tier_preference_sentence_over_clause_over_space", () => {
+  // Three consecutive cuts, one per tier: the sentence end beats the
+  // comma inside its window, the comma beats the latest space.
+  assert.deepEqual(chunkifyText("Vamos. Luego, seguimos con mas texto largo.", 20),
+    ["Vamos.", "Luego,", "seguimos con mas", "texto largo."]);
+});
+
+test("chunkify_never_cuts_at_a_colon", () => {
+  // Reported defect: the window's latest boundary was the space right
+  // after "aqui:", so the visible chunk ended hanging on the colon.
+  // Now the clause comma inside the window wins and the colon stays
+  // mid-chunk where it was spoken.
+  assert.deepEqual(chunkifyText("aqui: seguimos, luego mas texto del turno hablado", 16),
+    ["aqui: seguimos,", "luego mas texto", "del turno", "hablado"]);
+  // The space right after ":" is never a boundary, even when it is the
+  // only one inside the window: the cut falls through to the
+  // over-limit token tolerance instead of producing "nota:".
+  assert.deepEqual(chunkifyText("nota: aaaaaaaaaaaaaaaaaaaa", 10),
+    ["nota: aaaaaaaaaaaaaaaaaaaa"]);
+  // Same rule for the TTS splitter (next section) — and no window of
+  // any split may END at a colon:
+  const longText = "La idea es simple: " + "palabra ".repeat(30).trim();
+  for (const c of chunkifyText(longText, 24)) {
+    assert.ok(!c.endsWith(":"), `window must not end at a colon: "${c}"`);
+  }
+});
+
+test("chunkify_clean_edges_and_collapsed_runs", () => {
+  // Reported defect: chunk edges carried whitespace/newlines and the
+  // toast showed a visible line jump. Windows now start/end on text
+  // and inner whitespace runs (incl. newlines/tabs) collapse to one
+  // single space.
+  const text = "primera linea\n\nsegunda   linea con\ttabs y   runs\n   tercera parte mas larga del turno";
+  const chunks = chunkifyText(text, 30);
+  assert.ok(chunks.length >= 2, "precondition: the text windows");
+  for (const c of chunks) {
+    assert.ok(/^\S/.test(c) && /\S$/.test(c), `edges carry no whitespace: "${c}"`);
+    assert.ok(!/\s\s/.test(c), `inner runs collapsed: "${c}"`);
+    assert.ok(!/[\n\t]/.test(c), `no raw newline/tab survives: "${c}"`);
+  }
+});
+
+/* ---- 1.7 splitForTts: multi-piece requests past the /tts limit ---- */
+
+test("split_short_text_returns_single_verbatim_piece", () => {
+  assert.deepEqual(splitForTts("hola"), ["hola"]);
+  assert.deepEqual(splitForTts(""), []);
+  // Verbatim, edges included: a short turn produces EXACTLY the same
+  // request body the single-POST path always sent.
+  const withEdges = "  hola mundo  ";
+  assert.deepEqual(splitForTts(withEdges, 8000), [withEdges]);
+});
+
+test("split_long_text_at_sentence_boundaries_within_limit", () => {
+  const sentences = [];
+  for (let i = 0; i < 12; i++) sentences.push("Frase numero " + i + " del turno largo.");
+  const text = sentences.join(" ");
+  const pieces = splitForTts(text, 60);
+  assert.ok(pieces.length > 1, "precondition: the turn actually splits");
+  for (const p of pieces) {
+    assert.ok(p.length > 0 && p.length <= 60, `piece within maxChars: ${p.length}`);
+    assert.ok(/[.!?…]$/.test(p), `piece ends at a sentence boundary: "…${p.slice(-20)}"`);
+  }
+  assert.equal(pieces.join(" "), text);   // sequential coverage, nothing lost
+});
+
+test("split_hard_cuts_unbroken_tokens_at_the_limit", () => {
+  // A token with no boundary at all must still respect the request
+  // guard (the server 422 is exactly what this helper exists to avoid).
+  assert.deepEqual(splitForTts("x".repeat(150), 50),
+    ["x".repeat(50), "x".repeat(50), "x".repeat(50)]);
+  const mixed = splitForTts("x".repeat(150) + " sigue el texto normal aqui.", 50);
+  assert.deepEqual(mixed.slice(0, 3), ["x".repeat(50), "x".repeat(50), "x".repeat(50)]);
+  assert.equal(mixed[3], "sigue el texto normal aqui.");
 });
