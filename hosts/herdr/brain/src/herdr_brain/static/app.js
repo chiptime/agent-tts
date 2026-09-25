@@ -515,11 +515,14 @@
     }
   }
 
-  function addTurn(role, text) {
-    var ghost = document.getElementById("ghost-bubble");
-    if (ghost) ghost.remove();
+  /* Turn element builder shared by addTurn (live appends) and the
+   * call-history prepend path, so every turn renders identical DOM.
+   * ts is the persisted /call-history timestamp (pagination cursor);
+   * live turns carry none. */
+  function buildTurnEl(role, text, ts) {
     var turn = document.createElement("div");
     turn.className = "turn " + role;
+    if (ts) turn.setAttribute("data-ts", ts);
     var who = document.createElement("span");
     who.className = "who";
     who.textContent = role === "user" ? "tú" : "brain";
@@ -528,8 +531,91 @@
     turn.appendChild(who);
     turn.appendChild(body);
     if (role === "brain") attachReplay(turn, function () { return text; }, "brain");
-    conv.appendChild(turn);
+    return turn;
+  }
+
+  function addTurn(role, text, ts) {
+    var ghost = document.getElementById("ghost-bubble");
+    if (ghost) ghost.remove();
+    conv.appendChild(buildTurnEl(role, text, ts));
     conv.scrollTop = conv.scrollHeight;
+  }
+
+  /* ---------------- ver-más (older call turns) ---------------- */
+
+  function firstTurnEl() {
+    return conv.querySelector(".turn");
+  }
+
+  /* Pagination cursor: the ts of the oldest rendered history turn.
+   * History turns are prepended above live ones, so the FIRST
+   * .turn[data-ts] in document order is always the oldest. */
+  function historyCursor() {
+    var oldest = conv.querySelector(".turn[data-ts]");
+    return oldest ? oldest.getAttribute("data-ts") : null;
+  }
+
+  /* (Re)creates the pager button ABOVE the first turn; removed first so
+   * every repaint rebuilds it from the current cursor. */
+  function mountHistoryMoreBtn(hasMore) {
+    var prev = conv.querySelector(".history-more");
+    if (prev) prev.remove();
+    if (!hasMore) return;
+    var cursor = historyCursor();
+    if (!cursor) return;
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "history-more";
+    btn.textContent = "Ver más";
+    btn.setAttribute("aria-label", "Cargar turnos anteriores de la llamada");
+    btn.setAttribute("data-before", cursor);
+    btn.addEventListener("click", onHistoryMore);
+    var first = firstTurnEl();
+    if (first) conv.insertBefore(btn, first);
+    else conv.appendChild(btn);
+  }
+
+  function onHistoryMore(event) {
+    event.stopPropagation();
+    var btn = event.currentTarget;
+    var cursor = btn.getAttribute("data-before");
+    if (!cursor) { btn.remove(); return; }
+    /* The raw ts contains "+" (UTC offset): encode it or the server
+     * would read it as a space and mis-parse the cursor. */
+    fetch("/call-history?before=" + encodeURIComponent(cursor) + "&limit=25")
+      .then(function (resp) {
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        return resp.json();
+      })
+      .then(function (data) {
+        var turns = (data && data.turns) || [];
+        if (!turns.length) { btn.remove(); return; }
+        /* Anchor the viewport: record the scroll geometry, prepend the
+         * older page above, then shift scrollTop by exactly the height
+         * the mutation added — the visible turns stay in place. */
+        var prevHeight = conv.scrollHeight;
+        var prevTop = conv.scrollTop;
+        var frag = document.createDocumentFragment();
+        for (var i = 0; i < turns.length; i++) {
+          frag.appendChild(buildTurnEl(
+            turns[i].role === "user" ? "user" : "brain",
+            turns[i].text,
+            turns[i].ts
+          ));
+        }
+        var first = firstTurnEl();
+        if (first) conv.insertBefore(frag, first);
+        else conv.appendChild(frag);
+        conv.scrollTop = prevTop + (conv.scrollHeight - prevHeight);
+        if (data && data.has_more) {
+          btn.setAttribute("data-before", turns[0].ts);
+        } else {
+          btn.remove();
+        }
+      })
+      .catch(function (err) {
+        console.warn("call history ver-más failed:", err);
+      });
   }
 
   /* FR13: SSE announcements append a VISUALLY DISTINCT bubble to the call. */
@@ -612,17 +698,20 @@
           return;
         }
         return resp.json().then(function (data) {
-          /* Full text in the announcement (2026-09-25 product decision):
-           * no char cap — the toast body caps + scrolls in CSS and the
-           * player timeupdate sync follows the reading. toast-formatted-
-           * avisos: formatted toast ONLY when the reader holds a rendered
-           * payload for this exact FULL text (content-keyed snapshot of
-           * the viewed pane — a cache hit, no new render). Watcher avisos
-           * and any miss enqueue no html and stay plain textContent. */
+          /* Replay teleprompter (2026-09-25 product decision): the
+           * toast shows ONLY a ~2-line window of the text and follows
+           * the playback — the full text stays in the turn (drawer).
+           * Plain-text windows, the wanted "formato antiguo": the
+           * reader-html branch is GONE from this replay path (watcher
+           * announcements elsewhere never had it). Guarded module
+           * lookup: a missing Toast falls back to one full window. */
+          var chunks = window.Toast && typeof window.Toast.chunkifyText === "function"
+            ? window.Toast.chunkifyText(text)
+            : [text];
           enqueueAudio(data.audio_url, {
             label: label || "agente",
             text: text,
-            html: reader.htmlFor("assistant", text)
+            chunks: chunks.length ? chunks : [text]
           });
         });
       })
@@ -2453,8 +2542,10 @@
    * paints when the drawer holds no real turns yet (the ghost bubble is
    * a placeholder, not a turn; the selector matches exactly what
    * addTurn renders) — a repaint can never duplicate turns that
-   * arrived first. Best effort by design: on failure it warns and boot
-   * continues untouched (same contract as approvalFlow.recover). */
+   * arrived first. The endpoint serves ONE newest page; has_more mounts
+   * the "Ver más" pager above the first turn. Best effort by design:
+   * on failure it warns and boot continues untouched (same contract as
+   * approvalFlow.recover). */
   fetch("/call-history")
     .then(function (resp) {
       if (!resp.ok) throw new Error("HTTP " + resp.status);
@@ -2464,8 +2555,13 @@
       var turns = (data && data.turns) || [];
       if (!turns.length || conv.querySelector(".turn.user, .turn.brain")) return;
       for (var i = 0; i < turns.length; i++) {
-        addTurn(turns[i].role === "user" ? "user" : "brain", turns[i].text);
+        addTurn(
+          turns[i].role === "user" ? "user" : "brain",
+          turns[i].text,
+          turns[i].ts
+        );
       }
+      mountHistoryMoreBtn(!!(data && data.has_more));
     })
     .catch(function (err) {
       console.warn("call history repaint failed:", err);
