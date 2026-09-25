@@ -117,6 +117,30 @@ RISK: herdr readiness detection might not recognize `opencode attach`
 mode TUI; if live e2e fails on start, revert to bare opencode and
 re-open this task.
 
+### [ ] T5 — opencode panels launch the user's `oa` CANONICALLY (pane run)
+Files: `src/herdr_brain/herdr.py`, `src/herdr_brain/tools.py`,
+`src/herdr_brain/config.py`, tests.
+User correction 2026-09-25: do NOT duplicate `oa`'s arguments (the
+T4 attach-args composition copies a non-canonical snapshot; the user
+may edit `oa` any time). herdr pins (read-only): `herdr pane run
+<PANE_ID> <COMMAND>` types the command + Enter into the pane's
+INTERACTIVE shell, so the dotfiles zsh function `oa` resolves
+verbatim. New opencode flow: create_tab → `pane run <pane> "oa [dir]"`
+(dir shlex-quoted when given) → readiness = bounded poll of
+`agent list` until an agent reports our pane_id, then one bounded
+`herdr agent wait <pane> --until idle` (writer pins exact wait flags)
+→ existing send_prompt for the task. Evidence this works: the user's
+current fleet IS oa-attached panes and send_to_session already
+delivers to them. Other kinds keep `agent start --kind`.
+REMOVES `Settings.opencode_attach_url` (the duplication the user is
+rejecting); T4's args composition for opencode is superseded.
+Route: delegated-direct (writer).
+Checks: pytest (pane-run argv, readiness loop with fake client,
+non-opencode kinds unchanged, config field removed). Commit:
+`feat(tools)`.
+RISK: herdr agent-detection latency for attach-mode TUIs; bounded
+timeout → partial-failure text with created ids (existing pattern).
+
 ## Acceptance Criteria (from PRD)
 
 - "crea un panel con opencode para X" → after ONE approval, the panel
