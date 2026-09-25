@@ -16,7 +16,7 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
 const { createReader } = require("../../src/herdr_brain/static/reader.js");
-const { createToast } = require("../../src/herdr_brain/static/toast.js");
+const { createToast, chunkifyText } = require("../../src/herdr_brain/static/toast.js");
 
 /* ---- fake DOM (test infrastructure, reader.test.js subset) ---- */
 
@@ -289,4 +289,60 @@ test("links_hardened_in_toast", async () => {
   assert.equal(anchors[0].getAttribute("rel"), "noopener noreferrer");
   assert.ok(h.toastEl.textContent.includes("esto no"),
     "degraded link content survives as plain text");
+});
+
+/* ---- 1.5 replay teleprompter: chunkifyText (pure helper) ---- */
+
+test("chunkify_short_text_single_window", () => {
+  assert.deepEqual(chunkifyText("Hola mundo"), ["Hola mundo"]);
+  assert.deepEqual(chunkifyText("Hola mundo", 80), ["Hola mundo"]);
+  // Even below an explicit tiny limit, one window survives intact.
+  assert.deepEqual(chunkifyText("Hola", 2), ["Hola"]);
+});
+
+test("chunkify_long_text_even_windows", () => {
+  const text =
+    "Primera frase del turno hablado. Segunda frase con mas palabras. " +
+    "Tercera frase que sigue la lectura. Cuarta frase para llenar. " +
+    "Quinta frase final del turno.";
+  const chunks = chunkifyText(text, 40);
+  assert.ok(chunks.length > 1, "long text splits into multiple windows");
+  for (const c of chunks) assert.ok(c.length <= 40,
+    `window exceeds approxChars: "${c}" (${c.length})`);
+  // Sequential coverage: the windows reassemble the single-spaced text.
+  assert.equal(chunks.join(" "), text);
+  // Default limit (~80): the same text still windows, just coarser.
+  const byDefault = chunkifyText(text);
+  assert.ok(byDefault.length > 1);
+  assert.equal(byDefault.join(" "), text);
+  for (const c of byDefault) assert.ok(c.length <= 80);
+});
+
+test("chunkify_prefers_sentence_boundaries", () => {
+  // The period is the latest boundary inside the window: the cut keeps
+  // it with its sentence instead of landing mid-phrase.
+  assert.deepEqual(chunkifyText("Una frase. Otra frase.", 12),
+    ["Una frase.", "Otra frase."]);
+  // Newline is a boundary too: lines never merge mid-window.
+  assert.deepEqual(chunkifyText("línea uno\nlínea dos", 10),
+    ["línea uno", "línea dos"]);
+});
+
+test("chunkify_never_mid_word_except_overlong", () => {
+  // Word boundary wins: both words leave the splitter whole.
+  assert.deepEqual(chunkifyText("palabra larguísima", 8),
+    ["palabra", "larguísima"]);
+  // A single word longer than the limit is kept whole (the one
+  // tolerated over-limit window) instead of being sliced.
+  assert.deepEqual(chunkifyText("supercalifragilistic", 10),
+    ["supercalifragilistic"]);
+  // The over-long word is followed by normal words: those still cut
+  // cleanly at boundaries.
+  assert.deepEqual(chunkifyText("corta supercalifragilistic tail", 8),
+    ["corta", "supercalifragilistic", "tail"]);
+});
+
+test("chunkify_empty_and_whitespace", () => {
+  assert.deepEqual(chunkifyText(""), []);
+  assert.deepEqual(chunkifyText("   \n\t  "), []);
 });

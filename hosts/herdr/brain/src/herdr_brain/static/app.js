@@ -1267,8 +1267,18 @@
     audioBusy = true;
     audioFinished = item;
     if (item.announcement) {
-      showToast("🔊 " + item.announcement.label + ": " + item.announcement.text,
-        undefined, null, item.announcement.html);
+      if (item.announcement.chunks && item.announcement.chunks.length > 1) {
+        /* Teleprompter replay: paint the FIRST ~2-line window; the
+         * timeupdate listener advances it. State rides the queue item
+         * (audioFinished === item while playing), so it dies with the
+         * toast, the queue advance, or any stop. */
+        item.teleprompter = item.announcement.chunks;
+        item.teleprompterIdx = 0;
+        showToast("🔊 " + item.announcement.label + ": " + item.teleprompter[0]);
+      } else {
+        showToast("🔊 " + item.announcement.label + ": " + item.announcement.text,
+          undefined, null, item.announcement.html);
+      }
       /* FR13: distinct anuncio bubble in the call + toast above drawer. */
       if (inCall) addAnnouncementTurn(item.announcement.label, item.announcement.text);
     }
@@ -1329,21 +1339,31 @@
   player.addEventListener("ended", onAudioEnded);
   player.addEventListener("error", onAudioEnded);  // stalled/errored media: same resume path
   /* Playback sync (2026-09-25 decision): while the toast of the item the
-   * player is reading stays visible, the scrollable toast body follows
-   * the audio proportionally. audioFinished IS the item being played
+   * player is reading stays visible, the ~2-line teleprompter window
+   * ADVANCES with the audio — floor(progress * chunks.length), clamped
+   * to the last window; a repaint happens ONLY when the index changes
+   * (no per-tick churn). audioFinished IS the item being played
    * (pumpAudio sets it; ended/error/stop clear it), so the sync dies
-   * with the toast, the queue advance, or any stop. Fully guarded and
-   * try/catch-silent: a sync hiccup must never break playback. */
+   * with the toast, the queue advance, or any stop. Non-chunked
+   * announcements (watcher avisos, single-window texts) never match.
+   * Fully guarded and try/catch-silent: a sync hiccup must never
+   * break playback. */
   player.addEventListener("timeupdate", function () {
     try {
-      if (!audioFinished || !audioFinished.announcement) return;
+      if (!audioFinished || !audioFinished.teleprompter) return;
       if (toastEl.classList.contains("hidden")) return;
+      var chunks = audioFinished.teleprompter;
       var duration = player.duration;
       if (!isFinite(duration) || duration <= 0) return;
       var progress = player.currentTime / duration;
       if (!(progress >= 0)) return;   // NaN/negative tick: skip silently
       if (progress > 1) progress = 1;
-      toastEl.scrollTop = progress * (toastEl.scrollHeight - toastEl.clientHeight);
+      var idx = Math.floor(progress * chunks.length);
+      if (idx > chunks.length - 1) idx = chunks.length - 1;
+      if (idx < 0) idx = 0;
+      if (idx === audioFinished.teleprompterIdx) return;  // same window: keep it
+      audioFinished.teleprompterIdx = idx;
+      showToast("🔊 " + audioFinished.announcement.label + ": " + chunks[idx]);
     } catch (err) {
       /* cosmetic sync only: swallow, playback is untouchable */
     }

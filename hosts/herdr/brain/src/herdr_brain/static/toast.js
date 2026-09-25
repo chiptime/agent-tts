@@ -19,6 +19,14 @@
  *    refusal, insertion throw) degrades to the exact textContent
  *    toast this app always had — watcher template avisos and system
  *    warnings are indistinguishable from before this module.
+ *
+ * chunkifyText (replay teleprompter, 2026-09-25): pure string helper
+ * that splits a turn into sequential ~approxChars windows (default 80
+ * ≈ 2 lines at the toast width), cutting preferentially at sentence
+ * ends (" ", ".", "\n") and never mid-word unless a single word alone
+ * exceeds the limit. The replay toast paints one window at a time and
+ * the player timeupdate advances the window — the full text stays in
+ * the turn (drawer), the toast is a reading aid.
  */
 
 (function (global) {
@@ -62,7 +70,44 @@
     return { show: show, hide: hide };
   }
 
-  var api = { createToast: createToast };
+  function chunkifyText(text, approxChars) {
+    if (typeof text !== "string") return [];
+    var rest = text.trim();
+    if (!rest) return [];
+    var limit = typeof approxChars === "number" && approxChars > 0 ? approxChars : 80;
+    var bounds = [" ", ".", "\n"];
+    var chunks = [];
+    /* Each pass emits one <=limit window (when a boundary exists) and
+     * consumes it, so the loop always advances. A window with NO
+     * boundary is an unbroken token longer than the limit: it is cut
+     * at the first boundary AFTER the limit (the one allowed mid-word
+     * case) or kept whole when no boundary ever follows. */
+    while (rest.length > limit) {
+      var window = rest.slice(0, limit);
+      var best = -1;
+      var i;
+      for (i = 0; i < bounds.length; i++) {
+        var at = window.lastIndexOf(bounds[i]);
+        if (at > best) best = at;   /* latest boundary wins: ~even windows */
+      }
+      if (best <= 0) {
+        var next = -1;
+        for (i = 0; i < bounds.length; i++) {
+          var ahead = rest.indexOf(bounds[i], limit);
+          if (ahead !== -1 && (next === -1 || ahead < next)) next = ahead;
+        }
+        if (next === -1) break;     /* over-long word runs to the end */
+        best = next;
+      }
+      var chunk = rest.slice(0, best + 1).trim();
+      if (chunk) chunks.push(chunk);
+      rest = rest.slice(best + 1).trim();
+    }
+    if (rest) chunks.push(rest);
+    return chunks;
+  }
+
+  var api = { createToast: createToast, chunkifyText: chunkifyText };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
