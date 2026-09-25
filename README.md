@@ -147,6 +147,64 @@ agent-tts --ipc-cmd status
 agent-tts --ipc-cmd stop
 ```
 
+**Wire format (framing v2).** Every command and reply is ONE length-prefixed frame, identical shape in both directions:
+
+```
+| "ATTS" magic (4B) | version 0x02 (1B) | payload length (4B, big-endian) | payload (length bytes, UTF-8) |
+```
+
+Constants live in `agent_tts/ipc.py`: `FRAME_HEADER_SIZE = 9`, `MAX_PAYLOAD = 16 MiB`, `READ_CHUNK = 64 KiB`. The full frozen contract — every command's request fields and exact reply shapes, the error-text catalogue, the queue snapshot keys, the client-side stderr/exit-code discipline, and the known limitations — lives in **[docs/ipc-contract-v2.md](docs/ipc-contract-v2.md)** (frozen at BLOQUE 1.3 close; the reference for integrators). The header is validated (magic, version, length vs `MAX_PAYLOAD`) **before any payload byte is read**, so:
+
+- An oversize frame gets a typed `ERR: command too large` reply from the header alone — the announced payload is never buffered or drained, and in-repo clients enforce the cap locally before writing.
+- A slow or chunked sender can never be truncated mid-payload: the reader reassembles exactly the announced length, and any sender making progress within the 30 s per-read idle bound completes whenever it finishes.
+- Bad magic/version raises a typed protocol-mismatch error with a restart hint. A stale daemon still speaking the pre-1.3 line protocol never answers a v2 `ping`, so the health probe flags it as wedged and the existing kill-and-respawn replaces it — no manual restart needed.
+
+This is a conscious non-additive transport change (an approved exception to the 1.2 additivity promise, taken before the IPC contract freeze at the end of BLOQUE 1.3): the only consumers — this repo's CLI client and daemon — ship together.
+
+**Reply schema (typed errors, freeze-critical).** Every daemon-level error is one shape:
+
+```
+ok=false error=<message, always the FINAL field and may contain spaces>
+```
+
+Examples: `ok=false error=no active playback session` (a control command against an idle daemon), `ok=false error=unknown priority label: 'urgent'`, `ok=false error=synthesis exploded`. Success payloads keep their classic prefixes (`pong …`, `status=… …`), and daemon acks carry `ok=true` (`ok=true shutting_down=true`, `ok=true item=7 queue_len=2`). Only the transport layer keeps the legacy `ERR:` prefix (framing violations rejected before dispatch, e.g. `ERR: command too large`). `agent_tts --ipc-json` treats `error=` exactly like the trailing free-text `text=` field, so `ok=false error=no active playback session` parses as `{"ok": "false", "error": "no active playback session"}`.
+
+**Client error contract (frozen).** The CLI applies the same discipline on its own output streams: any `ok=false` or `ERR:` reply prints its error message to **stderr** and exits `1` (`--ipc-json` prints the JSON error object on stderr instead), while success payloads keep printing to **stdout** with exit `0` — a host parsing stdout never sees error text. This covers control commands (`--ipc-cmd pause` against an idle daemon prints `Error: no active playback session` on stderr, exit 1), delegated speak/play rejections, and transport errors.
+
+**Queue status fields (freeze-critical).** Every `status` reply — idle or during playback — ends with:
+
+```
+queue_len=<pending count> queue=<compact JSON snapshot>
+```
+
+The `queue=` value is `QueueSnapshot.as_dict()` serialized compactly with **all whitespace encoded as `\uXXXX` escapes** (e.g. spaces as `\u0020`), so the whole value is one whitespace-free token for legacy key=value parsers, while any JSON consumer restores the original strings with a plain `json.loads`. Keys: `queue_len`, `pending` (list in dispatch order; each item has `id`, `priority` (`blocked`/`done`/`working`), `policy` (`queue`/`preempt`/`coalesce`), `event_type`, `identifiers`, `coalesced`, `enqueued_at`, `announcement`), `active` (`null` or `id`/`priority`/`policy`/`event_type`/`coalesced`/`started_at`), `failed` (bounded history; each with `id`, `priority`, `event_type`, `error`, `failed_at`, `wedged`), `last_error`, `completed_count`, `failed_count`, `interrupted_count`, `wedged_count`.
+
+Human `agent-tts --ipc-cmd status` renders that snapshot instead of dumping the JSON: the familiar kv line stays first (minus the opaque `queue={…}` token), followed by one indented line per pending item in dispatch order — `queued[i] priority=… policy=… [coalesced=N] text=<truncated announcement>` — so you see what will sound next, before it sounds. `--ipc-json` keeps the raw snapshot for machine consumers, and a foreign classic owner's reply (no `queue=` token) prints unchanged.
+
+**The `enqueue` command.** `enqueue <json>` takes a play payload plus queue-control fields and returns immediately (playback is daemon-owned):
+
+```bash
+agent-tts --ipc-cmd 'enqueue {"text":"Build failed","priority":"blocked","policy":"preempt"}'
+# ok=true item=3 queue_len=0
+agent-tts --ipc-cmd 'enqueue {"text":"job a done","priority":"done","policy":"coalesce","event_type":"jobs finished","identifiers":["a"]}'
+# ok=true item=4 queue_len=1   (a merge replies with the window owner's id plus coalesced=N)
+```
+
+`priority` is `blocked`|`done`|`working` (default `working`), `policy` is `preempt`|`queue`|`coalesce` (default `queue`); unknown labels are typed errors. A merged coalesce item speaks ONE synthesized announcement (`"N jobs finished: a, b, c and X more"` — up to three identifiers, then a count) instead of the individual payloads.
+
+**CLI flags (RF-AT-08-1).** `--priority blocked|done|working` and `--policy preempt|queue|coalesce` ride the speak and `--play-file` paths. The documented default mapping for a plain invocation is `working`/`queue` — the request queues behind any active announcement and blocks until its own playback ends (classic semantics, never a busy error); either flag overrides the mapping per invocation and switches the request onto the fire-and-forget `enqueue` command: the CLI returns immediately and prints `queued: item=<id> position=<n> queue_len=<m> [coalesced=<k>]` on stdout when the event waits behind others (silence and exit 0 when it dispatches right away). Labels are validated client-side — an unknown value fails on stderr (exit 2) before the daemon is contacted. `--no-play` (synthesis-only) cannot combine with the flags. Coalescing keys on `event_type`, which integrators set on the enqueue wire command; CLI-originated coalesce requests carry no event type, so they merge with each other within the window. Silent non-streaming synthesis emits no progress tokens, so keep `--wedged-timeout` sized above your worst-case synthesis time.
+
+**The chain wire fields (RF-AT-08-4, freeze-critical).** `play` and `enqueue` payloads accept a `chain` field: a non-empty JSON list of audio file paths, played back-to-back **in one single audio session** in the given order, plus `chain_gap_ms` — a non-negative number of milliseconds of silence inserted *between* items (default `0`: gapless, nothing is inserted). `chain` is mutually exclusive with `text` and `file`, and cannot combine with `no_play`; violations are typed `ok=false` errors. The chain enters the daemon queue as ONE item with the same priority/policy machinery as everything else (`--priority`/`--policy` apply), keeps the blocking `status=done` reply of `play`, and honors queue terminations: a preempted or stopped chain cuts mid-audio instead of draining the remaining files. Because the files are replayed as one continuous buffer, every control mounted on the session addresses **chain-global** positions through the combined `BoundaryMap`: `seek`, pause/resume, `sentence`/`paragraph` and their navigation span the whole chain (a `next-sentence` hop crosses file boundaries; each file without boundary metadata is one navigation unit named by its basename). Remote targets (`wsl-ps`/`winhost`) play the chain as one stream but keep their documented pre-existing limitation: position-jump and phrase-navigation controls answer their existing `ERR` there.
+
+```bash
+agent-tts --play-chain turn-01.mp3 turn-02.mp3 turn-03.mp3   # gapless, one session, blocking
+agent-tts --play-chain a.wav b.wav --chain-gap 250           # 250 ms of silence between items
+agent-tts --ipc-cmd 'enqueue {"chain":["/abs/a.wav","/abs/b.wav"],"chain_gap_ms":100,"priority":"done"}'
+# ok=true item=8 queue_len=1
+```
+
+The CLI validates the files client-side: a missing path fails on stderr with exit 1 **before** the daemon is contacted; an unreadable or undecodable file surfaces at dispatch through the queue's failure visibility (`status`'s `failed` history and `last_error`). All files must share one sample format (rate/channels/width — mismatched files are a typed failure; resampling is out of scope).
+
 ### 🎧 Persistent Daemon (vía única)
 
 `agent-tts` runs as a **single-path daemon architecture**: the CLI is always a client, and there is no classic second execution path. Every speech invocation checks for a healthy daemon with a 200 ms `ping`; if none answers, the client transparently auto-starts one and delegates. `agent-tts "algo"` behaves identically whether a daemon is already running or not.
@@ -170,9 +228,17 @@ agent-tts --ipc-cmd shutdown # orderly daemon exit (also SIGTERM/SIGINT)
 
 **Notes for interactive users:**
 
-- A delegated playback blocks until the audio finishes (same as the classic CLI); `Ctrl-C` forwards a best-effort `stop` to the daemon so audio does not outlive the interrupted client.
+- A delegated playback blocks until the audio finishes (same as the classic CLI); `Ctrl-C` forwards a best-effort `stop` to the daemon so audio does not outlive the interrupted client. With `--priority`/`--policy` the request is fire-and-forget instead: the CLI prints a `queued: item=… position=… queue_len=…` line when it waits behind others, and `Ctrl-C` forwards no stop (an enqueued event owns no audio yet).
 - Terminal view flags (`--highlight`, `--zen`, `--autoscroll`, `--bionic`) travel with the play request and render where the daemon runs — meaningful with `agent-tts --foreground` in your terminal, inert for a detached daemon.
-- `status` from the daemon adds `uptime=`, and reports `status=idle uptime=… provider=… playback=…` when nothing is playing.
+- `status` from the daemon adds `uptime=` plus the queue fields (`queue_len=`, `queue={…}`), and reports `status=idle uptime=… provider=… playback=… queue_len=… queue={…}` when nothing is playing.
+
+**Playback queue (AT-08).** Inside the daemon, a priority queue manager (`agent_tts.queue_manager`) sits above the playback session and serializes everything into a single active session — playback never overlaps. It schedules by event priority (`blocked > done > working`, FIFO within a level), applies the per-event policy (`queue` / `preempt` / `coalesce`), and supervises liveness: a session that stops making progress for 30 s (configurable) is terminated and the queue moves on, so a hung playback can never wedge the daemon.
+
+- **A plain play never rejects with busy (D4):** `play` maps to `enqueue(priority=working, policy=queue)` — it waits its turn and keeps its blocking reply (`status=done`/`status=stopped` when *its* playback ends). Synthesis-only requests (`no_play`) own no audio and still run directly.
+- **`stop` stops the active announcement; pending items follow** in queue order (full queue-flush semantics are a CLI-level concern).
+- **A chain is one queue item (RF-AT-08-4):** `--play-chain FILE...` assembles the files into one continuous session (see the chain wire fields above) and rides the same priority/policy machinery — it queues behind active announcements, may preempt from a strictly higher priority, and a termination cuts it mid-audio rather than draining the remaining files. The daemon traces each item's chain-global start on stderr (`agent-tts-queue: chain-item item=<id> index=<i> ...`) — the seam the registered RNF-AT-08-1 chain measurement (`scripts/chain_metrics.py`) observes.
+- **Synthesis liveness (by sizing, not milestones):** silent non-streaming synthesis emits no progress tokens, so the wedged timeout must exceed your worst-case synthesis time. Configure it with `--wedged-timeout SEC` (or `AGENT_TTS_WEDGED_TIMEOUT`); the coalescing window is `--coalesce-window SEC` (or `AGENT_TTS_COALESCE_WINDOW`), default 5 s. Both flags exist on `agent-tts --serve/--foreground` and `agent-tts-daemon`.
+- Failed playbacks are visible in `status`: the queue JSON's `failed` history and `last_error` carry the provider/synthesis errors (A5), and an in-process `speak()` reports the provider/voice actually used (A3'').
 
 **systemd user unit example** (explicit start, no idle timeout — the supervisor owns the lifetime):
 
@@ -241,6 +307,8 @@ If the winhost server is unreachable, one English warning is printed on stderr a
 | :--- | :--- | :--- |
 | `AGENT_TTS_PLAYBACK` | `local` | Default playback target (`local`, `winhost`, `wsl-ps`, `windows`, `auto`); the daemon resolves it at startup and each play can force a target |
 | `AGENT_TTS_IDLE_TIMEOUT` | `1800` | Idle timeout (seconds) for daemons auto-started by the client; `0` disables; explicit `--serve`/`--foreground` starts have no timeout unless `--idle-timeout` |
+| `AGENT_TTS_COALESCE_WINDOW` | `5` | Coalescing window (seconds) for queue events with `policy=coalesce`: same `event_type` merges into one announcement while the window is open (`--coalesce-window` on the daemon) |
+| `AGENT_TTS_WEDGED_TIMEOUT` | `30` | Queue liveness budget (seconds): a dispatched playback making no progress for this long is terminated and the queue moves on; must exceed your worst-case silent synthesis time (`--wedged-timeout` on the daemon) |
 | `AGENT_TTS_DAEMON_LOG` | `<tmp>/agent-tts-daemon.log` | stderr log of auto-started daemons |
 | `AGENT_TTS_OLLAMA_MODEL` | `qwen2.5:0.5b` | Ollama model used by `--llm-summary` |
 | `AGENT_TTS_WINHOST_HOST` | auto-detect | Explicit Windows host address for winhost clients |
@@ -371,6 +439,7 @@ Rendered turn audio persists under `~/.local/share/agent-tts/audio/YYYY-MM-DD/<e
 ```
 usage: agent-tts [-h] [--voice VOICE] [--rate RATE] [--max-chars MAX_CHARS]
                  [--raw] [--output OUTPUT] [--no-play] [--play-file PLAY_FILE]
+                 [--play-chain FILE [FILE ...]] [--chain-gap MS]
                  [--highlight] [--next-sentence] [--prev-sentence]
                  [--current-sentence] [--tldr] [--llm-summary] [--auto-lang] [--podcast]
                  [--podcast-title PODCAST_TITLE] [--podcast-serve [PORT]]
@@ -378,6 +447,7 @@ usage: agent-tts [-h] [--voice VOICE] [--rate RATE] [--max-chars MAX_CHARS]
                  [--provider {edge,openai,elevenlabs,eleven,piper,kokoro,local}]
                  [--stream {auto,on,off}]
                  [--playback {local,winhost,wsl-ps,windows,auto}] [--winhost]
+                 [--priority {blocked,done,working}] [--policy {preempt,queue,coalesce}]
                  [--winhost-host WINHOST_HOST] [--winhost-port WINHOST_PORT]
                  [--openai-key OPENAI_KEY] [--openai-base-url OPENAI_BASE_URL]
                  [--openai-model OPENAI_MODEL] [--eleven-key ELEVEN_KEY]
@@ -391,6 +461,10 @@ usage: agent-tts [-h] [--voice VOICE] [--rate RATE] [--max-chars MAX_CHARS]
 - **`--serve` / `--foreground`**: run the persistent playback daemon (vía única owner) instead of a one-shot client. `--serve` is the canonical start; `--foreground` is the identical attached deployment for systemd/journalctl. Speech invocations without these flags are always clients that transparently auto-start the daemon when needed.
 
 - **`--idle-timeout SEC`**: daemon idle timeout; defaults to none for explicit starts and 30 minutes for the client's auto-started daemon (see [Persistent Daemon](#-persistent-daemon-vía-única)).
+
+- **`--priority {blocked,done,working}` / `--policy {preempt,queue,coalesce}`**: per-event queue control for the speak/`--play-file`/`--play-chain` paths (default mapping: `working`/`queue`, overridable per invocation). Either flag switches the request onto the fire-and-forget enqueue command: the CLI returns immediately and prints `queued: item=<id> position=<n> queue_len=<m> [coalesced=<k>]` when the event waits behind others. Unknown labels fail client-side (stderr, exit 2) before the daemon is contacted; `--no-play` cannot combine with them. Silent non-streaming synthesis emits no progress tokens, so size `--wedged-timeout` above your worst-case synthesis time.
+
+- **`--play-chain FILE [FILE ...]` / `--chain-gap MS`**: play the given audio files back-to-back in one gapless session, in order (RF-AT-08-4). Seeks, pause and phrase navigation address the whole chain through the combined boundary map; each file without boundary metadata is one navigation unit named by its basename. `--chain-gap` inserts silence between items (default 0: nothing inserted); it only applies to `--play-chain`. The flags compose with `--priority`/`--policy` (the chain is one queue item). Missing files fail client-side on stderr (exit 1) before the daemon is contacted; files must share one sample format.
 
 - **`--stream {auto,on,off}`** (default `auto`): Pipelined playback mode. `auto` streams long texts (≥ 400 chars) with the `edge`, `openai`, or `elevenlabs` providers when playing locally; `on` forces streaming for any provider or length; `off` forces classic single-shot synthesis. `--podcast` always uses single-shot synthesis; `--output` works with streaming — the merged audio is written once playback completes.
 
@@ -437,6 +511,8 @@ We have an active vision to expand `agent-tts` into the definitive neural TTS en
   - With `--agent` + `--session-id` the engine reads the real last assistant message from the agent tool's local transcript (OpenCode SQLite, Claude Code / Codex CLI / Antigravity CLI JSONL, Aider markdown history) with automatic scrollback fallback.
 - [x] 🎧 **Persistent Daemon (vía única with transparent auto-start):**
   - The CLI is always a client: a 200 ms ping gate, transparent daemon auto-start, kill-and-respawn of wedged daemons, warm provider cache between requests, idle-timeout lifecycle (30 min auto-started / none explicit), and `play`/`ping`/`shutdown` IPC commands (`--serve`/`--foreground`).
+- [x] 📋 **Priority Playback Queue & Gapless Chains (AT-08):**
+  - A priority queue inside the daemon serializes every announcement into one active session — scheduling by event priority (`blocked > done > working`, FIFO per level), per-event policy (`queue`/`preempt`/`coalesce` with a configurable merge window), one coalesced announcement for bursts, liveness watchdog, and full queue visibility in `status`; `enqueue` fire-and-forget IPC plus `--priority`/`--policy` CLI flags, and `--play-chain FILE...` for gapless back-to-back replay of multiple files in one session with chain-global seek/phrase navigation (frozen IPC contract: [docs/ipc-contract-v2.md](docs/ipc-contract-v2.md)).
 - [ ] 🎙️ **Per-Provider Pipelining (Piper):**
   - OpenAI and ElevenLabs now stream via chunked MP3 HTTP delivery with transparent full-response fallback (`--stream auto`, ≥ 400 chars); only the local Piper backend remains.
 - [ ] ⚡ **Incremental MP3 Frame-Accurate Byte Streaming:**

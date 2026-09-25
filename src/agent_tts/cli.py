@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import json
 import os
 import signal
 import sys
@@ -17,6 +18,10 @@ from agent_tts.boundaries import (
     Word,
     estimate_boundaries_from_text,
 )
+# Re-exported for the streaming pipeline (merge_group) and for existing
+# importers of cli.shift_boundary_map: the composition primitive lives in
+# boundaries since the chain assembly (agent_tts.chain) shares it.
+from agent_tts.boundaries import shift_boundary_map  # noqa: F401 - re-export
 from agent_tts.cleaner import clean_agent_text
 from agent_tts.constants import DEFAULT_RATE, DEFAULT_VOICE
 from agent_tts.powershell_playback import PowershellSession, is_wsl_ps_available
@@ -253,47 +258,6 @@ def group_for_chunk(groups: List[str], chunk_idx: int) -> Optional[str]:
     if 0 <= chunk_idx < len(groups):
         return groups[chunk_idx]
     return None
-
-
-def shift_boundary_map(
-    bmap: BoundaryMap,
-    offset_sec: float,
-    sent_index_base: int,
-    word_index_base: int,
-    paragraph_index_base: int,
-) -> BoundaryMap:
-    """Returns a copy of a BoundaryMap with times offset and sentence/word/paragraph indices rebased."""
-    sentences = [
-        Sentence(
-            index=s.index + sent_index_base,
-            start_sec=s.start_sec + offset_sec,
-            duration_sec=s.duration_sec,
-            text=s.text,
-            paragraph_index=s.paragraph_index + paragraph_index_base,
-        )
-        for s in bmap.sentences
-    ]
-    words = [
-        Word(
-            index=w.index + word_index_base,
-            sentence_index=w.sentence_index + sent_index_base,
-            start_sec=w.start_sec + offset_sec,
-            duration_sec=w.duration_sec,
-            text=w.text,
-        )
-        for w in bmap.words
-    ]
-    paragraphs = [
-        Paragraph(
-            index=p.index + paragraph_index_base,
-            start_sec=p.start_sec + offset_sec,
-            duration_sec=p.duration_sec,
-            text=p.text,
-            sentence_indices=[i + sent_index_base for i in p.sentence_indices],
-        )
-        for p in bmap.paragraphs
-    ]
-    return BoundaryMap(sentences=sentences, words=words, paragraphs=paragraphs)
 
 
 async def _speak_pipelined(
@@ -908,6 +872,12 @@ async def speak(
             autoscroll=autoscroll,
             bionic=bionic,
             zen=zen,
+            # A3'': the status metadata mirrors what synthesis ACTUALLY
+            # uses (the resolved provider/voice arguments), not the env
+            # defaults — a status query during in-process playback must
+            # report the real engine.
+            provider=provider,
+            voice=voice,
             document_text=text,
         )
         session.start_ipc()
@@ -972,6 +942,22 @@ def main():
     parser.add_argument("--output", "-o", help="Save synthesized MP3 audio to file")
     parser.add_argument("--no-play", action="store_true", help="Do not play audio locally")
     parser.add_argument("--play-file", help="Play an existing MP3 file directly without re-synthesizing")
+    parser.add_argument(
+        "--play-chain",
+        nargs="+",
+        metavar="FILE",
+        help="Play audio files back-to-back gapless in ONE session, in the order given "
+        "(seeks, pause and phrase navigation address the whole chain; combined with "
+        "--chain-gap to insert silence between items)",
+    )
+    parser.add_argument(
+        "--chain-gap",
+        type=float,
+        default=None,
+        metavar="MS",
+        help="Silence inserted between --play-chain items in milliseconds (default 0: "
+        "gapless, nothing inserted)",
+    )
     parser.add_argument("--probe", help="Print the duration in seconds of an audio file and exit")
     parser.add_argument(
         "--highlight",
@@ -1068,6 +1054,23 @@ def main():
         "(default: AGENT_TTS_PLAYBACK as seen by the daemon)",
     )
     parser.add_argument(
+        "--priority",
+        choices=["blocked", "done", "working"],
+        default=None,
+        help="Queue priority for this playback event (default: working); passing "
+        "--priority or --policy switches the request to a fire-and-forget enqueue "
+        "instead of the classic blocking play (labels are validated here, "
+        "client-side, before the daemon is contacted)",
+    )
+    parser.add_argument(
+        "--policy",
+        choices=["preempt", "queue", "coalesce"],
+        default=None,
+        help="Dispatch policy for this playback event (default: queue): queue waits "
+        "its turn, preempt cancels the active announcement, coalesce merges "
+        "same-event announcements within the daemon's window",
+    )
+    parser.add_argument(
         "--serve",
         action="store_true",
         help="Run the persistent playback daemon (vía única owner): serves play/ping/shutdown "
@@ -1087,6 +1090,24 @@ def main():
         help="Daemon idle timeout in seconds: exit orderly after this long without requests "
         "(default: none for --serve/--foreground; 30 min for the client's auto-started "
         "daemon, configurable via AGENT_TTS_IDLE_TIMEOUT; 0 disables)",
+    )
+    parser.add_argument(
+        "--coalesce-window",
+        type=float,
+        default=None,
+        metavar="SEC",
+        help="With --serve/--foreground: coalescing window for queue events with "
+        "policy=coalesce (default 5 s; env AGENT_TTS_COALESCE_WINDOW)",
+    )
+    parser.add_argument(
+        "--wedged-timeout",
+        type=float,
+        default=None,
+        metavar="SEC",
+        help="With --serve/--foreground: queue liveness budget — a dispatched "
+        "playback with no progress for this long is terminated; silent "
+        "non-streaming synthesis emits no progress, so size it above your "
+        "worst-case synthesis time (default 30 s; env AGENT_TTS_WEDGED_TIMEOUT)",
     )
     parser.add_argument(
         "--winhost",
@@ -1132,6 +1153,29 @@ def main():
 
     args = parser.parse_args()
 
+    # Chain flag coherence (client-side, before any daemon contact).
+    if args.play_chain and args.play_file:
+        print(
+            "Error: --play-chain cannot combine with --play-file: chain the file "
+            "with --play-chain instead",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if args.chain_gap is not None:
+        if not args.play_chain:
+            print(
+                "Error: --chain-gap only applies to --play-chain",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if args.chain_gap < 0:
+            print(
+                f"Error: --chain-gap must be a non-negative number of milliseconds "
+                f"(got {args.chain_gap})",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
     # Flag overrides win over environment for the winhost transport settings.
     if args.winhost_host:
         os.environ["AGENT_TTS_WINHOST_HOST"] = args.winhost_host
@@ -1158,7 +1202,13 @@ def main():
         # behavior. No idle timeout unless explicitly requested (RF-AT-04-7).
         from agent_tts.daemon import run_daemon
 
-        sys.exit(run_daemon(idle_timeout_sec=args.idle_timeout))
+        sys.exit(
+            run_daemon(
+                idle_timeout_sec=args.idle_timeout,
+                coalesce_window_sec=args.coalesce_window,
+                wedged_timeout_sec=args.wedged_timeout,
+            )
+        )
 
     ipc_cmd = args.ipc_cmd
     if args.next_sentence:
@@ -1183,17 +1233,33 @@ def main():
         from agent_tts.daemon import send_control_command
 
         res = send_control_command(ipc_cmd)
-        if res is not None:
+        if res is None:
+            print("Error: No active audio playback session found", file=sys.stderr)
+            sys.exit(1)
+        # A3 client discipline (frozen contract): typed error replies go to
+        # STDERR with a non-zero exit — hosts parsing stdout never see
+        # error text. --ipc-json keeps the machine shape, on stderr.
+        error = _reply_error_text(res)
+        if error is not None:
             if args.ipc_json:
                 from agent_tts.ipc import ipc_reply_json
 
-                print(ipc_reply_json(res))
+                print(ipc_reply_json(res), file=sys.stderr)
             else:
-                print(res)
-            sys.exit(0)
-        else:
-            print("Error: No active audio playback session found", file=sys.stderr)
+                print(f"Error: {error}", file=sys.stderr)
             sys.exit(1)
+        if args.ipc_json:
+            from agent_tts.ipc import ipc_reply_json
+
+            print(ipc_reply_json(res))
+        elif ipc_cmd.split(maxsplit=1)[0] == "status":
+            # Human rendering: the pending queue becomes visible before
+            # it sounds (RF-AT-08-5); --ipc-json above keeps the raw
+            # snapshot token for machine consumers.
+            print(_render_status_reply(res))
+        else:
+            print(res)
+        sys.exit(0)
 
     if args.probe:
         # Host-facing utility mode: duration of one audio file as a plain
@@ -1207,6 +1273,25 @@ def main():
             sys.exit(1)
         print(f"{duration:.3f}")
         sys.exit(0)
+
+    # Queue-control envelope (RF-AT-08-1): explicit --priority/--policy
+    # switches the speak/--play-file request onto the fire-and-forget
+    # enqueue command. Labels are validated client-side (argparse
+    # choices), so an unknown value never reaches the daemon; --no-play
+    # owns no audio and cannot ride the queue.
+    queue_controls = None
+    if args.priority is not None or args.policy is not None:
+        if args.no_play:
+            print(
+                "Error: --no-play cannot combine with --priority/--policy: a "
+                "synthesis-only request owns no audio (run it as a plain play)",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        queue_controls = {
+            "priority": args.priority or "working",
+            "policy": args.policy or "queue",
+        }
 
     if args.play_file:
         _delegate_and_exit(
@@ -1222,7 +1307,35 @@ def main():
                 # daemon-side session reaches THIS client's Windows host.
                 "winhost_host": os.environ.get("AGENT_TTS_WINHOST_HOST"),
                 "winhost_port": os.environ.get("AGENT_TTS_WINHOST_PORT"),
-            }
+            },
+            queue_controls,
+        )
+
+    if args.play_chain:
+        # Error discipline first (A3): a missing file is a client-side
+        # failure — stderr + exit 1 — BEFORE the daemon is contacted.
+        from agent_tts.chain import missing_chain_files
+
+        missing = missing_chain_files(args.play_chain)
+        if missing:
+            print(f"Error: chain file(s) not found: {', '.join(missing)}", file=sys.stderr)
+            sys.exit(1)
+        chain_label = f"chain: {os.path.basename(args.play_chain[0])}"
+        if len(args.play_chain) > 1:
+            chain_label += f" +{len(args.play_chain) - 1} more"
+        _delegate_and_exit(
+            {
+                "chain": [os.path.abspath(path) for path in args.play_chain],
+                "chain_gap_ms": args.chain_gap or 0,
+                "label": chain_label,
+                "highlight": args.highlight,
+                "autoscroll": args.autoscroll,
+                "bionic": args.bionic,
+                "zen": args.zen,
+                "winhost_host": os.environ.get("AGENT_TTS_WINHOST_HOST"),
+                "winhost_port": os.environ.get("AGENT_TTS_WINHOST_PORT"),
+            },
+            queue_controls,
         )
 
     input_text = ""
@@ -1308,39 +1421,187 @@ def main():
             # session reaches THIS client's Windows host.
             "winhost_host": os.environ.get("AGENT_TTS_WINHOST_HOST"),
             "winhost_port": os.environ.get("AGENT_TTS_WINHOST_PORT"),
-        }
+        },
+        queue_controls,
     )
 
 
-def _delegate_and_exit(payload: dict) -> None:
+def _reply_error_text(reply: Optional[str]) -> Optional[str]:
+    """Extracts the message of a typed error reply (A3, frozen schema).
+
+    ``error=`` is always the FINAL space-bearing field of an
+    ``ok=false`` reply, so everything after ``ok=false error=`` is the
+    message; the transport-level ``ERR:`` prefix (framing violations)
+    maps onto the same discipline. Returns None for success/payload
+    replies and for empty input.
+    """
+    if not reply:
+        return None
+    if reply.startswith("ok=false error="):
+        return reply[len("ok=false error=") :]
+    if reply == "ok=false":
+        return reply  # typed error with no message field
+    if reply.startswith("ERR:"):
+        return reply[len("ERR:"):].strip() or reply
+    return None
+
+
+_STATUS_ANNOUNCE_LIMIT = 60
+
+
+def _truncate_text(text: str, limit: int) -> str:
+    """Truncates for single-line display, marking the cut with '...'."""
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3].rstrip() + "..."
+
+
+def _queue_snapshot_from_reply(reply: str) -> Optional[dict]:
+    """Extracts the ``queue=`` JSON snapshot from a status reply.
+
+    The snapshot token is whitespace-free by construction (the daemon
+    escapes every whitespace byte as \\uXXXX), so a plain token split
+    isolates it; returns None when the reply carries no parseable
+    snapshot (a foreign classic owner).
+    """
+    token = next((t for t in reply.split() if t.startswith("queue={")), "")
+    if not token:
+        return None
+    try:
+        return json.loads(token[len("queue="):])
+    except ValueError:
+        return None
+
+
+def _render_status_reply(reply: str) -> str:
+    """Human rendering of a status reply (RF-AT-08-5 visibility).
+
+    The daemon's kv line stays first, minus the opaque ``queue=`` JSON
+    token; each pending item then gets one indented line — dispatch
+    position, priority, policy, merge count, and the (truncated)
+    coalesced announcement — so the user sees what will sound next,
+    before it sounds (RF-AT-08-3). Replies without a queue token (a
+    foreign classic owner) or with an unparseable one print raw.
+    """
+    start = reply.find(" queue={")
+    if start == -1:
+        return reply
+    end = reply.find(" ", start + 1)
+    token = reply[start + 1 :] if end == -1 else reply[start + 1 : end]
+    head = reply[:start] + (reply[end:] if end != -1 else "")
+    try:
+        snapshot = json.loads(token[len("queue="):])
+    except ValueError:
+        return reply
+    lines = [head.rstrip()]
+    for index, item in enumerate(snapshot.get("pending") or [], start=1):
+        parts = [
+            f"  queued[{index}]",
+            f"priority={item.get('priority', '?')}",
+            f"policy={item.get('policy', '?')}",
+        ]
+        try:
+            coalesced = int(item.get("coalesced") or 1)
+        except (TypeError, ValueError):
+            coalesced = 1
+        if coalesced > 1:
+            parts.append(f"coalesced={coalesced}")
+        announcement = str(item.get("announcement") or "")
+        if announcement:
+            parts.append(f"text={_truncate_text(announcement, _STATUS_ANNOUNCE_LIMIT)}")
+        lines.append(" ".join(parts))
+    return "\n".join(lines)
+
+
+def _print_enqueue_ack(reply: str) -> None:
+    """D4/US-AT-08-4: presents queuing as normal behavior (stdout, exit 0).
+
+    ``ok=true item=N queue_len=M [coalesced=K]``: an item that queued
+    behind others prints one machine-parseable line —
+    ``queued: item=<id> position=<n> queue_len=<m> [coalesced=<k>]`` —
+    with the position refined from the live status snapshot (pending is
+    dispatch order); without a snapshot, queue_len stands in as the
+    worst-case position bound. An item that dispatched immediately
+    (queue_len=0, or already out of pending) keeps the classic silent
+    success.
+    """
+    fields = {}
+    for token in reply.split():
+        if "=" in token:
+            key, value = token.split("=", 1)
+            fields[key] = value
+    try:
+        item_id = int(fields.get("item", "0"))
+        queue_len = int(fields.get("queue_len", "0"))
+    except ValueError:
+        return
+    if queue_len <= 0:
+        return  # dispatched immediately: classic silent success
+    position = queue_len  # worst-case bound: our item is among the pending
+    try:
+        from agent_tts.ipc import send_ipc_command
+
+        snapshot = _queue_snapshot_from_reply(send_ipc_command("status") or "")
+        if snapshot is not None:
+            pending = snapshot.get("pending") or []
+            for index, item in enumerate(pending, start=1):
+                if item.get("id") == item_id:
+                    position = index
+                    break
+            else:
+                return  # already left pending (active/finished): it plays now
+    except Exception:
+        pass  # no usable snapshot: position stays the queue_len bound
+    line = f"queued: item={item_id} position={position} queue_len={queue_len}"
+    if fields.get("coalesced"):
+        line += f" coalesced={fields['coalesced']}"
+    print(line)
+
+
+def _delegate_and_exit(payload: dict, queue: Optional[dict] = None) -> None:
     """Delegates one playback to the daemon (vía única) and exits.
 
     The CLI is always a client (RF-AT-04-5): the daemon is auto-started
     transparently when missing, respawned when wedged, and the reply maps
     onto the classic CLI's observable contract — silence and exit 0 on
-    success, one stderr line and exit 1 on failure. An interrupt during
-    the delegation forwards a best-effort stop and exits 130 (classic
-    Ctrl-C semantics).
+    success, one stderr line and exit 1 on failure (A3 client
+    discipline: ok=false/ERR: messages land on stderr, stdout stays
+    clean for payload consumers). An interrupt during the delegation
+    forwards a best-effort stop and exits 130 (classic Ctrl-C
+    semantics).
+
+    With ``queue`` (the --priority/--policy envelope, RF-AT-08-1) the
+    request rides the fire-and-forget ``enqueue`` command instead of
+    the blocking play: an item that waits behind others prints its
+    position (D4), an interrupt forwards no stop (an enqueued event
+    owns no audio yet — a stop would kill another event's announcement).
     """
-    from agent_tts.daemon import DaemonUnavailableError, delegate_play
+    from agent_tts.daemon import DaemonUnavailableError, delegate_enqueue, delegate_play
 
     _delegated_playback.set()
     try:
         try:
-            reply = delegate_play(payload)
+            if queue is None:
+                reply = delegate_play(payload)
+            else:
+                reply = delegate_enqueue({**payload, **queue})
         except KeyboardInterrupt:
-            # delegate_play already forwarded a best-effort stop, so audio does
-            # not outlive the interrupted client (classic Ctrl-C semantics).
+            # delegate_play already forwarded a best-effort stop, so audio
+            # does not outlive the interrupted client; an enqueued event
+            # owns nothing yet, so there is deliberately no stop for it.
             sys.exit(130)
         except DaemonUnavailableError as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
     finally:
         _delegated_playback.clear()
-    if reply is None or reply.startswith("ERR"):
-        detail = reply if reply else "daemon closed the connection during playback"
+    error = _reply_error_text(reply) if reply else None
+    if reply is None or error is not None:
+        detail = error if error else "daemon closed the connection during playback"
         print(f"Error: {detail}", file=sys.stderr)
         sys.exit(1)
+    if queue is not None:
+        _print_enqueue_ack(reply)
     sys.exit(0)
 
 

@@ -40,6 +40,12 @@ DEFAULT_AUTOSTART_IDLE_TIMEOUT_SEC = 1800.0
 # How long the client waits for a spawned daemon to answer ping before
 # declaring the auto-start failed (RNF-AT-04-3: clear, logged error).
 DAEMON_START_TIMEOUT_SEC = 10.0
+# Playback queue (BLOQUE 1.3 / AT-08): the coalescing window (seconds; the
+# manager's own default is 5.0) and the wedged-session timeout (seconds;
+# manager default 30.0). Both override the daemon's QueueManager via env
+# or the daemon/serve flags; the defaults live in agent_tts.queue_manager.
+ENV_COALESCE_WINDOW = "AGENT_TTS_COALESCE_WINDOW"
+ENV_WEDGED_TIMEOUT = "AGENT_TTS_WEDGED_TIMEOUT"
 # stderr log of auto-started daemons: the place where a respawned daemon's
 # diagnostics land when no terminal is attached (RNF-AT-04-3).
 DAEMON_LOG_FILE = os.environ.get(

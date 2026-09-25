@@ -283,6 +283,53 @@ class SynthesisResult(bytes):
         return obj
 
 
+def shift_boundary_map(
+    bmap: BoundaryMap,
+    offset_sec: float,
+    sent_index_base: int,
+    word_index_base: int,
+    paragraph_index_base: int,
+) -> BoundaryMap:
+    """Returns a copy of a BoundaryMap with times offset and sentence/word/paragraph indices rebased.
+
+    The composition primitive of every multi-segment boundary map: the
+    streaming pipeline merges per-group maps with it inside one text,
+    and the chain assembly (agent_tts.chain) composes per-file maps onto
+    chain-global positions with it.
+    """
+    sentences = [
+        Sentence(
+            index=s.index + sent_index_base,
+            start_sec=s.start_sec + offset_sec,
+            duration_sec=s.duration_sec,
+            text=s.text,
+            paragraph_index=s.paragraph_index + paragraph_index_base,
+        )
+        for s in bmap.sentences
+    ]
+    words = [
+        Word(
+            index=w.index + word_index_base,
+            sentence_index=w.sentence_index + sent_index_base,
+            start_sec=w.start_sec + offset_sec,
+            duration_sec=w.duration_sec,
+            text=w.text,
+        )
+        for w in bmap.words
+    ]
+    paragraphs = [
+        Paragraph(
+            index=p.index + paragraph_index_base,
+            start_sec=p.start_sec + offset_sec,
+            duration_sec=p.duration_sec,
+            text=p.text,
+            sentence_indices=[i + sent_index_base for i in p.sentence_indices],
+        )
+        for p in bmap.paragraphs
+    ]
+    return BoundaryMap(sentences=sentences, words=words, paragraphs=paragraphs)
+
+
 def estimate_boundaries_from_text(text: str, total_duration_sec: float) -> BoundaryMap:
     """Estimates paragraph, sentence and word boundaries proportionally when provider doesn't yield native boundaries."""
     raw_paragraphs = [p.strip() for p in re.split(r"\n\s*\n+", text) if p.strip()]
