@@ -137,6 +137,7 @@ class TestRoutingPolicy:
         first = llm._client.create_kwargs[0]
         assert {t["function"]["name"] for t in first["tools"]} == {
             "get_status", "read_transcript", "read_screen", "send_to_session",
+            "create_session",
         }
         system = first["messages"][0]["content"]
         assert system.startswith(SYSTEM_PROMPT)

@@ -1,13 +1,16 @@
 """Brain tool layer: the functions the LLM may call, as OpenAI tool schemas.
 
-Fase 1 scope is the ACTIVE pane only. ``send_to_session`` is the only write
-path and forwards to the agent through ``herdr agent prompt --wait``; every
-other tool is read-only.
+The ACTIVE pane is the default target. ``send_to_session`` forwards a
+prompt to an existing agent through ``herdr agent prompt --wait``;
+``create_session`` opens a NEW dedicated panel (tab + fresh agent) and
+optionally delivers its first task the same way. Every other tool is
+read-only.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from typing import Callable, Dict, Optional
 
 from .config import MAX_SCREEN_LINES, Settings
@@ -27,6 +30,21 @@ MAX_SEND_EXCERPT = 500
 HERD_LAST_TURN_CHARS = 160
 CONVERSATION_WINDOW = 20
 SCREEN_FULL_LINES = 120
+MAX_AGENT_NAME_LEN = 24
+
+_AGENT_NAME_FALLBACK = "agente"
+
+
+def sanitize_agent_name(title: str) -> str:
+    """Derives a pane agent name from a panel title.
+
+    Lowercase ``[a-z0-9-]`` slug, collapsed separators, stripped edges,
+    capped at :data:`MAX_AGENT_NAME_LEN` (24) chars. Falls back to a
+    generic name when nothing slug-worthy survives.
+    """
+    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+    slug = slug[:MAX_AGENT_NAME_LEN].rstrip("-")
+    return slug or _AGENT_NAME_FALLBACK
 
 
 def status_payload(active: Optional[AgentInfo]) -> dict:
@@ -333,6 +351,72 @@ class BrainTools:
             )
         return json.dumps(payload, ensure_ascii=False)
 
+    def create_session(self, agent_kind: str, title: str, task: str = "") -> str:
+        """Opens a NEW dedicated panel: tab + fresh agent (+ first task).
+
+        The second write path: instead of reusing the selected session it
+        creates a tab labeled with the title, starts the agent kind on the
+        tab's root pane and — when a task is given — delivers it through
+        the same :meth:`HerdrClient.send_prompt` delivery guarantees as
+        ``send_to_session``. The new pane becomes ``last_active``. A
+        task-delivery failure NEVER raises away the created ids: the
+        caller still learns the tab/pane/agent so it can re-send.
+        """
+        clean_kind = (agent_kind or "").strip()
+        clean_title = (title or "").strip()
+        if not clean_kind or not clean_title:
+            return "error: agent_kind and title are required"
+        name = sanitize_agent_name(clean_title)
+        try:
+            created = self._herdr.create_tab(clean_title)
+        except HerdrError as exc:
+            return f"error creating tab: {exc}"
+        tab_id, pane_id = created["tab_id"], created["pane_id"]
+        try:
+            self._herdr.start_agent(name, clean_kind, pane_id)
+        except HerdrError as exc:
+            return f"error starting agent: {exc} (tab {tab_id} was created)"
+        # The new pane is now the conversation's focus: track it the same
+        # way every resolve does, so subsequent reads target the new panel.
+        self._track(
+            AgentInfo(
+                pane_id=pane_id,
+                agent=name,
+                status="idle",
+                session_kind="",
+                session_value="",
+                cwd="",
+                title=clean_title,
+                focused=True,
+            )
+        )
+        clean_task = (task or "").strip()
+        if not clean_task:
+            return (
+                f"Panel creado: tab={tab_id} pane={pane_id} "
+                f"agente={name} ({clean_kind})."
+            )
+        try:
+            result = self._herdr.send_prompt(pane_id, clean_task)
+        except HerdrError as exc:
+            return (
+                f"Panel creado: tab={tab_id} pane={pane_id} agente={name}. "
+                f"Fallo al enviar la tarea: {exc}. "
+                "Puedes reenviarla con send_to_session a ese pane."
+            )
+        if result.get("status") == "blocked":
+            # Delivery guarantee, mirrored from send_to_session: only
+            # "blocked" means the text did NOT reach the pane.
+            return (
+                f"Panel creado: tab={tab_id} pane={pane_id} agente={name}. "
+                "Fallo al enviar la tarea: the agent rejected the prompt "
+                "(agent_blocked). Puedes reenviarla con send_to_session a ese pane."
+            )
+        return (
+            f"Panel creado: tab={tab_id} pane={pane_id} "
+            f"agente={name} ({clean_kind}). Tarea entregada."
+        )
+
     # -- dispatch helpers ----------------------------------------------------
 
     def dispatch(
@@ -344,6 +428,7 @@ class BrainTools:
             "read_transcript": self.read_transcript,
             "read_screen": self.read_screen,
             "send_to_session": self.send_to_session,
+            "create_session": self.create_session,
         }.get(name)
         if handler is None:
             return f"error: unknown tool {name}"
@@ -353,6 +438,12 @@ class BrainTools:
                     str(arguments.get("text", "")),
                     arguments.get("timeout_ms"),
                     target,
+                )
+            if name == "create_session":
+                return handler(
+                    str(arguments.get("agent_kind", "")),
+                    str(arguments.get("title", "")),
+                    str(arguments.get("task", "")),
                 )
             if name == "read_transcript":
                 return handler(int(arguments.get("n_turns", 10)), target)
@@ -456,6 +547,47 @@ TOOLS_SCHEMA = [
                     },
                 },
                 "required": ["text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_session",
+            "description": (
+                "Opens a NEW dedicated panel — a fresh tab with a fresh "
+                "agent — instead of sending to the already-selected "
+                "session. Use it when the user asks for another agent, a "
+                "separate task that deserves its own panel, or parallel "
+                "work; for anything else prefer send_to_session on the "
+                "current session."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "agent_kind": {
+                        "type": "string",
+                        "description": (
+                            "Agent kind for the new pane (e.g. opencode, "
+                            "claude, codex, gemini)."
+                        ),
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": (
+                            "Short panel title shown as the tab label; it "
+                            "also derives the agent name."
+                        ),
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": (
+                            "Optional first prompt delivered to the new "
+                            "agent once it is ready (default: none)."
+                        ),
+                    },
+                },
+                "required": ["agent_kind", "title"],
             },
         },
     },
