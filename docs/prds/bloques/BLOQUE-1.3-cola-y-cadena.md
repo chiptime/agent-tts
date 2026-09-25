@@ -219,6 +219,16 @@ winhost-related was added or measured.
   local milestone tests + 1 platform-dependent wsl-ps skip), and
   **724 passed / 9 skipped** with the PowerShell PATH prefix (both
   wsl-ps legs live). All green.
+- Flake note (T5.1, 25/09/2026): the 50-event milestone test flaked
+  once under full-suite load (24/09/2026; never solo) on a transient
+  IPC failure — `send_ipc_command` returned None (refused connect or
+  the 1 s client timeout under thread starvation) and the test helpers
+  crashed dereferencing it. NOT an invariant violation: dispatch
+  serialization (single active slot) makes a false speaker overlap
+  impossible by construction. Hardening in
+  `tests/test_queue_milestone.py`: idempotent status reads retry
+  transient failures, polling predicates are None-tolerant, enqueue
+  stays no-retry (ambiguous None → loud diagnostic failure).
 
 ### Pending for the Hito Cadena (T6)
 

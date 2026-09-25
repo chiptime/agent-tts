@@ -25,6 +25,20 @@ scripts/queue_metrics.py against a real daemon subprocess and registered
 in the BLOQUE 1.3 evidence doc. This module exports the canonical
 SCRIPTED_SEQUENCE / CONTRACT_EXPECTED_LABELS the metrics script reuses,
 so CI contract and registered evidence can never drift apart.
+
+Flake hardening (T5.1, 2026-09-25): the 50-event simulation flaked once
+under full-suite load (2026-09-24) on a transient IPC failure —
+``send_ipc_command`` returns None on a refused connect or when its 1 s
+client timeout expires while the in-process daemon's connection thread
+is starved — and these helpers used to dereference that reply
+unconditionally. Idempotent status reads now retry transient failures
+(``_status``), polling predicates are None-tolerant (``_queue_len``
+returns -1), and enqueue keeps loud no-retry semantics: a None enqueue
+reply is ambiguous (the item may have landed) and re-sending could
+double-enqueue. The zero-overlap invariant itself is sound — the play
+seam stamps CLOCK_MONOTONIC and the queue's single active slot gives
+end->start happens-before ordering, so a false overlap is impossible by
+construction.
 """
 
 import array
@@ -215,18 +229,54 @@ def _wait_until(predicate, timeout_sec: float = 10.0, message: str = "condition 
 
 
 def _enqueue(sock, payload: dict) -> str:
+    # Deliberately NO retry (T5.1): a None reply is ambiguous — the
+    # item may already be inserted and only its reply lost — and
+    # re-sending could double-enqueue, breaking "each event played
+    # exactly once". Failure stays loud and diagnostic (_item_id).
     return ipc.send_ipc_command("enqueue " + json.dumps(payload), socket_path=sock)
 
 
 def _item_id(reply: str) -> int:
-    assert reply.startswith("ok=true "), reply
+    assert isinstance(reply, str) and reply.startswith("ok=true "), (
+        f"enqueue reply unusable (transient IPC failure?): {reply!r}"
+    )
     return int(reply.split("item=")[1].split()[0])
 
 
+def _status(sock, timeout_sec: float = 10.0) -> str:
+    """Status reply, retrying transient IPC failures under load (T5.1).
+
+    ``send_ipc_command`` returns None on ANY transport hiccup — a
+    refused connect, or the 1 s client timeout expiring while the
+    in-process daemon's connection thread is starved by full-suite
+    load. Status is a pure read, so a transient failure only means
+    "not observed yet": retry until the deadline, then fail loudly.
+    These test daemons never idle out, so a channel that stays dead is
+    a real defect, never a race worth waiting out.
+    """
+    deadline = time.monotonic() + timeout_sec
+    reply = None
+    while time.monotonic() < deadline:
+        reply = ipc.send_ipc_command("status", socket_path=sock)
+        if reply and "queue_len=" in reply:
+            return reply
+        time.sleep(0.02)
+    raise AssertionError(f"daemon never answered status: last reply {reply!r}")
+
+
 def _queue_len(sock) -> int:
+    """Pending count; -1 on a transiently unusable status reply (T5.1).
+
+    Called from ``_wait_until`` predicates at ~50 Hz during the drain:
+    a transient None must read as "condition not observed yet" instead
+    of crashing the predicate — the enclosing wait's own deadline still
+    bounds the total time.
+    """
     status = ipc.send_ipc_command("status", socket_path=sock)
-    token = next(t for t in status.split() if t.startswith("queue_len="))
-    return int(token.split("=")[1])
+    if not status:
+        return -1
+    token = next((t for t in status.split() if t.startswith("queue_len=")), None)
+    return int(token.split("=")[1]) if token is not None else -1
 
 
 def _queue_payload(status: str) -> dict:
@@ -349,7 +399,7 @@ def test_50_event_simulation_no_overlaps_all_blocked_complete(channel, monkeypat
             assert [ids_by_label[label] for label in played_in_class] == sorted(ids_by_label[label] for label in played_in_class)
 
         # Final snapshot: everything completed, nothing failed/interrupted/wedged.
-        snapshot = _queue_payload(ipc.send_ipc_command("status", socket_path=sock))
+        snapshot = _queue_payload(_status(sock))
         assert snapshot["completed_count"] == SIMULATION_EVENTS + 1
         assert snapshot["failed_count"] == 0
         assert snapshot["interrupted_count"] == 0
@@ -392,7 +442,7 @@ def test_coalesce_burst_of_10_done_is_one_announcement(channel, monkeypatch):
         assert merge_counts == list(range(1, 11)), replies  # US-AT-08-2: coalesced=10 recorded
         assert len({_item_id(r) for r in replies}) == 1  # every burst event merged into ONE item
 
-        pending = _queue_payload(ipc.send_ipc_command("status", socket_path=sock))["pending"]
+        pending = _queue_payload(_status(sock))["pending"]
         assert len(pending) == 1
         assert pending[0]["coalesced"] == 10
         assert pending[0]["identifiers"] == [f"c{i}" for i in range(1, 11)]
@@ -410,7 +460,7 @@ def test_coalesce_burst_of_10_done_is_one_announcement(channel, monkeypatch):
         assert burst_starts == ["C01"]
         assert d._test_engine.calls[-1]["text"] == "10 tests finished: c1, c2, c3 and 7 more"
 
-        snapshot = _queue_payload(ipc.send_ipc_command("status", socket_path=sock))
+        snapshot = _queue_payload(_status(sock))
         assert snapshot["completed_count"] == 2
         assert snapshot["failed_count"] == 0
     finally:
@@ -451,7 +501,7 @@ def test_blocked_preempts_playing_done_and_reaches_speaker_complete(channel, mon
         intervals = _intervals(events)
         _assert_no_overlaps({label: bounds for label, bounds in intervals.items() if label != "PLAYING-DONE"})
 
-        snapshot = _queue_payload(ipc.send_ipc_command("status", socket_path=sock))
+        snapshot = _queue_payload(_status(sock))
         assert snapshot["completed_count"] == 3
         assert snapshot["interrupted_count"] == 1
         assert snapshot["failed_count"] == 0
@@ -504,7 +554,7 @@ def test_contract_sequence_order_on_local(channel, monkeypatch):
         assert d._test_engine.calls[-1]["text"] != ""
         _assert_no_overlaps({label: bounds for label, bounds in _intervals(events).items() if label != "S-HOLD"})
 
-        snapshot = _queue_payload(ipc.send_ipc_command("status", socket_path=channel["sock"]))
+        snapshot = _queue_payload(_status(channel["sock"]))
         assert snapshot["completed_count"] == len(CONTRACT_EXPECTED_LABELS)
         assert snapshot["interrupted_count"] == 1
         assert snapshot["failed_count"] == 0
@@ -553,7 +603,7 @@ def test_contract_sequence_order_on_wsl_ps(channel, monkeypatch):
         completed_order = [label for label in _starts(events) if label != "S-HOLD"]
         assert completed_order == CONTRACT_EXPECTED_LABELS
 
-        snapshot = _queue_payload(ipc.send_ipc_command("status", socket_path=channel["sock"]))
+        snapshot = _queue_payload(_status(channel["sock"]))
         assert snapshot["completed_count"] == len(CONTRACT_EXPECTED_LABELS)
         assert snapshot["interrupted_count"] == 1  # S-HOLD preempted by S-B3P here too
         assert snapshot["failed_count"] == 0
