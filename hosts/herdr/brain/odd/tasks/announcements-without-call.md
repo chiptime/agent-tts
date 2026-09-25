@@ -2,7 +2,7 @@
 
 **Repo:** herdr-brain
 **Created:** 2026-09-25
-**Status:** In progress — T1 (`49ba184`), T2 (`00fb2be`), T3 (`b93c27c`), T4 complete; T5 (device) pending (worktree `announcements-d1`, branch `feat/announcements-without-call-d1`)
+**Status:** In progress — T1 (`49ba184`), T2 (`00fb2be`), T3 (`b93c27c`), T4 (`2def047`) + T4/T3 correction unit complete; T5 (device) pending (worktree `announcements-d1`, branch `feat/announcements-without-call-d1`)
 **PRD:** `docs/PRD-announcements-without-call.md` (Phase 1, delivery 1: FR-01..FR-08, AC1..AC6)
 **Engram mirror:** `odd/announcements-without-call/tasks`
 
@@ -395,6 +395,88 @@ each task closure.
     live call owns the player and already carries its own unlock
     gesture; priming would neutralize mid-call playback.
   - RDD: still disabled (clone_local, untouched) → no assess, no toggle.
+
+- 2026-09-25 **T4/T3 REOPENED by parent review after `2def047` — both
+  defects fixed in one scoped correction unit** (separate work-unit
+  commit; hash recorded in the next doc update, no amend).
+
+  **Defect 1 (unlock-before-proof + shared-player hijack):**
+  `unlockVoice` called `announcer.unlock()` BEFORE the prime resolved —
+  a refused prime (browser still blocking) had already hidden the
+  affordance and detached the gesture listeners, violating FR-04/FR-05.
+  The prime also overwrote the SHARED player with SILENT_WAV, able to
+  interrupt non-announcement audio still queued on it. Fix: new module
+  API `requestUnlock(prime)` — unlock-on-proof, EXECUTABLE-tested in
+  announce.test.js (7 tests): state flips to ok only when the prime's
+  promise fulfills; rejection or sync throw stays blocked with text and
+  affordance untouched; one in-flight prime guard collapses rapid
+  gestures; failed primes are retryable; legacy no-promise primes unlock
+  optimistically; the promise is always handled in the module. Host
+  `primeAudio()` now plays a REAL silent wav (800 zero frames of 8 kHz
+  16-bit PCM — not the zero-frame file some browsers refuse to decode;
+  generated programmatically and byte-verified: RIFF/WAVE, 1644 bytes)
+  on an ISOLATED `new Audio()` element — the shared player, the queue
+  and any in-call audio are untouched, so the old `!inCall` prime guard
+  became unnecessary and was removed.
+
+  **Defect 2 (media 'error' event bypassed FR-04):**
+  `player.addEventListener('error', onAudioEnded)` cleared
+  `audioFinished` and hid the announcement toast BEFORE the play()
+  rejection's `.catch` ran, so the T3 stale guard returned and the text
+  was silently lost on media errors. Fix: the failure body moved into a
+  shared `handlePlayFailure(item)` used by BOTH the promise catch and a
+  new `onAudioError` listener. Whichever arrival comes first CLAIMS the
+  failure (`audioFinished = null` right after the stale guard) and the
+  late twin no-ops. Out-of-call announcement errors now preserve text,
+  enter blocked, drop previously queued announcements with text shown
+  (newest visible persistent) and hide the stop button; the normal
+  'ended' path, all in-call paths (including mic resume) and
+  non-announcement/spurious errors keep `onAudioEnded` exactly as
+  before — no bogus unblock anywhere.
+
+  **Baselines at correction start**: `node --test tests/js/` → 170
+  pass / 0 fail; pytest → 553 passed, 1 warning. Git clean at
+  `2def047`.
+
+  | Phase | Command | Result |
+  |---|---|---|
+  | RED | `node --test tests/js/announce.test.js` (+7 requestUnlock tests) | tests 32, pass 25, **fail 7** — `requestUnlock is not a function` (new API; the behavioral contracts are the assertions: unlock-on-proof, stay-blocked on refusal/throw, one-in-flight, retry, legacy optimism) |
+  | RED | `node --test tests/js/announce-wiring.test.js` (prime/unlock tests rewritten to the isolated-element + requestUnlock contract; +2 error-path tests; obsolete `!inCall` prime-guard test removed) | tests 12, pass 8, **fail 4** — unconditional `announcer.unlock()` still present; prime still on the shared player; error event still wired to `onAudioEnded`; no `handlePlayFailure`. Real discrepancies |
+  | GREEN | `node --test tests/js/` | tests 179, pass 179, fail 0 (after fixing one fresh test's slice marker: `onAudioError` sits after `stopAudio`, next to the listeners) |
+  | REFACTOR | verified no stale `neutralizePlayer`/`announcer.unlock()` references; shared handler removed the duplication by construction; SILENT_WAV byte-verified via node decode (1644 B, RIFF/WAVE, 800 silent frames) | suites below |
+  | Closure | `node --test tests/js/` | **179 pass / 0 fail** |
+  | Closure | `PYTHONPATH=<worktree>/src …pytest -q` | **553 passed, 1 warning** |
+
+  Files: `src/herdr_brain/static/announce.js` (+requestUnlock, header
+  state-machine note), `src/herdr_brain/static/app.js` (isolated prime
+  + real silent wav, unlockVoice via requestUnlock, handlePlayFailure,
+  onAudioError + listener swap), `tests/js/announce.test.js` (+7),
+  `tests/js/announce-wiring.test.js` (rewritten T4 block + 2 error-path
+  tests). No server.py / watcher.py edits; no delivery 2/3/Phase 2.
+
+  **Test bounds, honestly**: the requestUnlock POLICY is executable in
+  the pure module (the parent's preference). The app.js wiring
+  (isolated element, error routing) remains source-shape pinned — no
+  DOM/Audio runtime exists under node for the browser IIFE; whether a
+  real gesture prime unlocks Chrome Android autoplay is T5
+  (ASSUMPTION-1/AC2), NOT claimed.
+
+  Rollback boundary: revert the correction commit — module loses
+  requestUnlock, app returns to the `2def047` wiring, and the test
+  changes travel with it.
+
+  **Decisions (correction):**
+  - Unlock-on-proof lives IN THE MODULE (requestUnlock) so the
+    stay-blocked-on-refusal contract is executable, not structural.
+  - The prime's isolated element is released both on success and
+    refusal (pause + removeAttribute + load); a refusal rethrows to
+    the module, which swallows it — never unhandled.
+  - `unlock()` remains exported for direct/idempotent use, but app
+    wiring no longer calls it directly.
+  - In-call gestures now also route through requestUnlock with the
+    isolated prime (safe by construction); startCall's own gesture
+    remains the call's primary unlock.
+  - RDD: still disabled → no assess, no toggle.
 
 ## Handoff to the implementation chat
 

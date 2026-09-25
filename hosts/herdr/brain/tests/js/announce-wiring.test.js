@@ -112,20 +112,73 @@ test("button click unlocks once; document gestures attach only while blocked", (
     "attachment is gated on the blocked transition");
 });
 
-test("prime is silent, fail-soft, and never replays a blocked announcement", () => {
+test("unlock routes through requestUnlock: state flips only on prime success", () => {
+  assert.ok(section.includes("announcer.requestUnlock(primeAudio)"),
+    "the button and gestures ask for an unlock-on-proof");
+  assert.ok(!section.includes("announcer.unlock()"),
+    "no unconditional unlock — a refused prime must keep blocked state, " +
+    "the persistent text and the affordance (FR-04/FR-05)");
+});
+
+test("prime is an isolated silent Audio element; the shared player is untouched", () => {
   const pStart = section.indexOf("function primeAudio");
   const pEnd = section.indexOf("function unlockVoice");
   assert.ok(pStart !== -1 && pEnd !== -1 && pStart < pEnd, "primeAudio found");
   const prime = section.slice(pStart, pEnd);
+  assert.ok(prime.includes("new Audio(SILENT_WAV)"),
+    "a fresh isolated element primes — never the shared player");
   assert.ok(prime.includes("SILENT_WAV"),
-    "the prime swaps the player to a silent wav — never the rejected src");
-  assert.ok(prime.includes(".then(neutralizePlayer, neutralizePlayer)"),
-    "the prime promise is handled BOTH ways (never unhandled, fail-soft)");
+    "the prime source is the silent wav, never a queued announcement src");
+  assert.ok(!prime.includes("player"),
+    "queued non-announcement audio on the shared player must not be interrupted");
   assert.ok(!prime.includes("pumpAudio") && !prime.includes("audioQueue"),
     "priming must not replay or advance anything");
 });
 
-test("unlockVoice never primes during a live call", () => {
-  assert.ok(section.includes("if (!inCall) primeAudio()"),
-    "a live call carries its own startCall gesture; priming mid-call would kill playback");
+/* ---- reopened T4/T3 defects (parent review #2) ----
+ * Defect A: unlock-before-prime-resolution removed the affordance on a
+ * refused prime, and priming hijacked the shared player. Fixed by
+ * unlock-on-proof (requestUnlock, executable-tested in announce.test.js)
+ * plus an ISOLATED Audio element for the prime.
+ * Defect B: the media 'error' event ran onAudioEnded BEFORE the play()
+ * rejection, hiding the announcement text and letting the stale guard
+ * swallow the rejection — FR-04/AC3 lost the text on media errors. The
+ * error event now routes out-of-call announcements through the SAME
+ * failure handler as the rejection; whichever arrival comes first
+ * claims the failure (audioFinished = null) and the late twin no-ops. */
+
+test("media error routes out-of-call announcements through the shared failure handler", () => {
+  assert.ok(appSrc.includes('player.addEventListener("error", onAudioError)'),
+    "the error event must not run onAudioEnded for announcements (it hid the text first)");
+  assert.ok(!appSrc.includes('player.addEventListener("error", onAudioEnded'),
+    "the old error wiring must be gone");
+  const eStart = appSrc.indexOf("function onAudioError");
+  const eEnd = appSrc.indexOf('player.addEventListener("ended"');
+  assert.ok(eStart !== -1 && eEnd !== -1 && eStart < eEnd, "onAudioError found");
+  const errFn = appSrc.slice(eStart, eEnd);
+  assert.ok(errFn.includes("handlePlayFailure(item)"),
+    "out-of-call announcement errors share the rejection handler's policy");
+  assert.ok(errFn.includes("onAudioEnded()"),
+    "in-call and non-announcement errors keep today's path (FR-08)");
+});
+
+test("handlePlayFailure serves both failure arrivals; the second is a no-op", () => {
+  const fStart = appSrc.indexOf("function handlePlayFailure(item)");
+  const fEnd = appSrc.indexOf("function onAudioEnded");
+  assert.ok(fStart !== -1 && fEnd !== -1 && fStart < fEnd, "handlePlayFailure found");
+  const fn = appSrc.slice(fStart, fEnd);
+  assert.ok(fn.includes("if (audioFinished !== item) return;"),
+    "stale guard first: superseded items are ignored");
+  assert.ok(fn.includes("audioFinished = null;"),
+    "claims the failure so the LATE promise rejection after the error event no-ops");
+  assert.ok(fn.includes("announcer.onPlayRejected(item.announcement)"),
+    "text preserved: enters blocked and re-shows persistently");
+  assert.ok(fn.includes("dropped.push(queued.announcement)"),
+    "previously queued announcements drop with text preserved");
+  assert.ok(fn.includes('stopBtn.classList.add("hidden")'),
+    "the stop button hides when the queue drains");
+  assert.ok(fn.includes('inCall && callState === "speaking"'),
+    "in-call mic resume preserved inside the shared handler");
+  assert.ok(/pending\.catch\(function \(\) \{[\s\S]{0,80}handlePlayFailure\(item\);/.test(appSrc),
+    "the promise catch delegates to the same handler");
 });
