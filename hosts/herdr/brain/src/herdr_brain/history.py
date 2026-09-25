@@ -1,39 +1,63 @@
-"""Append-only JSONL call history.
+"""SQLite-backed call history.
 
 Persists every /ask turn (user + assistant) so the call transcript
 survives service restarts: the server seeds the conversation ring from
 the tail at boot, and the PWA repaints the drawer from GET
-/call-history. One global file — the call history is the call, not a
-per-session log.
+/call-history. One global database — the call history is the call, not
+a per-session log.
 
-Concurrency mirrors ConversationStore: a single lock guards the file.
-A crash mid-append can leave a truncated trailing line; loads skip any
-line that is not a well-formed record instead of failing the boot.
+Storage: stdlib sqlite3, table ``turns(id, ts, role, text)`` with an
+index on ``ts``. Concurrency mirrors ConversationStore: a single lock
+guards every access, and each call opens, uses and closes its own
+connection — a connection is never shared across threads, so sqlite's
+default ``check_same_thread`` stays on. The public API is the one the
+JSONL backend exposed (append / load / load_before / clear / boot
+compaction), so server and PWA are unchanged.
+
+Migration: when the legacy ``call_history.jsonl`` sits beside the
+database at construction, its records are imported (corrupt lines are
+skipped like before; skipped entirely if the DB already holds rows) and
+the file is atomically renamed to ``call_history.jsonl.imported`` so no
+boot ever double-imports.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-HISTORY_FILENAME = "call_history.jsonl"
+HISTORY_DB_FILENAME = "call_history.db"
+LEGACY_HISTORY_FILENAME = "call_history.jsonl"
+IMPORTED_SUFFIX = ".imported"
 
 ROLES = ("user", "assistant")
 
-# Boot compaction thresholds: past the soft limit the file is rewritten
+# Boot compaction thresholds: past the soft limit the table is trimmed
 # keeping only the recent tail. Runs opportunistically at load-time
 # (boot), never on append — appends stay O(1).
 COMPACT_ABOVE = 2_000
 COMPACT_KEEP = 1_000
 
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS turns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    role TEXT NOT NULL,
+    text TEXT NOT NULL
+)
+"""
+
+_INDEX = "CREATE INDEX IF NOT EXISTS idx_turns_ts ON turns (ts)"
+
 
 def default_history_path(settings) -> Path:
-    """History file location: beside the audio dir (same state root)."""
-    return Path(settings.audio_dir).parent / HISTORY_FILENAME
+    """History database location: beside the audio dir (same state root)."""
+    return Path(settings.audio_dir).parent / HISTORY_DB_FILENAME
 
 
 def _utc_now_iso() -> str:
@@ -79,31 +103,46 @@ def _valid_record(record: object) -> Optional[dict]:
 
 
 class HistoryStore:
-    """Thread-safe JSONL call history (one append-only file)."""
+    """Thread-safe sqlite call history (one database, one table).
+
+    Connection-per-call for simplicity: every method opens its own
+    connection under the lock and closes it before returning, so there
+    is no long-lived connection to guard and no WAL side files linger
+    after :meth:`clear`.
+    """
 
     def __init__(self, path):
         self._path = Path(path)
         self._lock = threading.Lock()
+        self._ensure_schema()
+        self._migrate_legacy_jsonl()
 
     @property
     def path(self) -> Path:
         return self._path
 
     def append(self, role: str, text: str) -> None:
-        """Writes one record as a single JSON line (ts is stamped now)."""
+        """Writes one record (ts is stamped now)."""
         record = {"ts": _utc_now_iso(), "role": role, "text": text or ""}
-        line = json.dumps(record, ensure_ascii=False)
         with self._lock:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            with self._path.open("a", encoding="utf-8") as fh:
-                fh.write(line + "\n")
+            if not self._path.exists():  # clear() removed the file
+                self._ensure_schema()
+            conn = self._connect()
+            try:
+                with conn:
+                    conn.execute(
+                        "INSERT INTO turns (ts, role, text) VALUES (?, ?, ?)",
+                        (record["ts"], record["role"], record["text"]),
+                    )
+            finally:
+                conn.close()
 
     def load(self, last_n: Optional[int] = None) -> list:
         """Returns the stored records, oldest first (optionally only
-        ``last_n``). Malformed lines — e.g. a truncated trailing line
-        from a crash mid-write — are skipped, never raised."""
+        ``last_n``). Rows outside the known roles — only reachable
+        through direct DB writes — are skipped, never raised."""
         with self._lock:
-            records = self._read_all()
+            records = self._select_all()
         return self._tail(records, last_n)
 
     def load_before(self, before_ts: Optional[str], limit: int) -> list:
@@ -111,31 +150,41 @@ class HistoryStore:
         ``before_ts``, oldest first; ``before_ts=None`` returns the
         newest page.
 
-        Pagination cursor for GET /call-history. Reads the whole file
-        and slices — fine at the ≤2000-line compaction bound. The
-        comparison is timestamp-aware (see :func:`is_strictly_older`);
-        ``limit <= 0`` yields an empty page like :meth:`load`.
+        Pagination cursor for GET /call-history. Reads the whole table
+        and filters in Python using the timestamp-aware comparison (see
+        :func:`is_strictly_older`) — fine at the ≤2000-row compaction
+        bound; ``limit <= 0`` yields an empty page like :meth:`load`.
         """
         with self._lock:
-            records = self._read_all()
+            records = self._select_all()
         if before_ts is not None:
             records = [r for r in records if is_strictly_older(r["ts"], before_ts)]
         return self._tail(records, limit)
 
     def load_and_compact(self, last_n: Optional[int] = None) -> list:
         """Boot-side load: same as :meth:`load`, plus opportunistic
-        compaction — when the file holds more than ``COMPACT_ABOVE``
-        records it is rewritten (atomically) keeping only the last
+        compaction — when the table holds more than ``COMPACT_ABOVE``
+        records it is trimmed (one DELETE) keeping only the last
         ``COMPACT_KEEP``."""
         with self._lock:
-            records = self._read_all()
+            records = self._select_all()
             if len(records) > COMPACT_ABOVE:
                 records = records[-COMPACT_KEEP:]
-                self._rewrite(records)
+                conn = self._connect()
+                try:
+                    with conn:
+                        conn.execute(
+                            "DELETE FROM turns WHERE id NOT IN ("
+                            "SELECT id FROM turns WHERE role IN (?, ?) "
+                            "ORDER BY id DESC LIMIT ?)",
+                            (*ROLES, COMPACT_KEEP),
+                        )
+                finally:
+                    conn.close()
         return self._tail(records, last_n)
 
     def clear(self) -> None:
-        """Drops the whole history (the file is removed)."""
+        """Drops the whole history (the database file is removed)."""
         with self._lock:
             try:
                 self._path.unlink()
@@ -144,15 +193,70 @@ class HistoryStore:
 
     # -- internals (callers already hold the lock) --------------------
 
-    @staticmethod
-    def _tail(records: list, last_n: Optional[int]) -> list:
-        if last_n is None:
-            return records
-        return records[-last_n:] if last_n > 0 else []
+    def _connect(self) -> sqlite3.Connection:
+        return sqlite3.connect(self._path)
 
-    def _read_all(self) -> list:
+    def _ensure_schema(self) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        conn = self._connect()
         try:
-            raw = self._path.read_text(encoding="utf-8")
+            with conn:
+                conn.execute(_SCHEMA)
+                conn.execute(_INDEX)
+        finally:
+            conn.close()
+
+    def _select_all(self) -> list:
+        """Every valid record, oldest first (insertion order = id order).
+
+        A missing database file (after :meth:`clear`) reads as empty;
+        connecting anyway would create a bare file with no table.
+        """
+        if not self._path.exists():
+            return []
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT ts, role, text FROM turns WHERE role IN (?, ?) ORDER BY id",
+                ROLES,
+            ).fetchall()
+        finally:
+            conn.close()
+        return [{"ts": ts, "role": role, "text": text} for ts, role, text in rows]
+
+    def _count_rows(self, conn: sqlite3.Connection) -> int:
+        return int(conn.execute("SELECT COUNT(*) FROM turns").fetchone()[0])
+
+    def _migrate_legacy_jsonl(self) -> None:
+        """One-time import of the JSONL predecessor, then retire it.
+
+        Corrupt or invalid lines are skipped exactly like the JSONL
+        reader always did. When the DB already holds rows the import is
+        skipped — but the legacy file is still renamed so no later boot
+        re-triggers the migration.
+        """
+        legacy = self._path.parent / LEGACY_HISTORY_FILENAME
+        if not legacy.exists():
+            return
+        with self._lock:
+            records = self._read_legacy(legacy)
+            conn = self._connect()
+            try:
+                if records and self._count_rows(conn) == 0:
+                    with conn:
+                        conn.executemany(
+                            "INSERT INTO turns (ts, role, text) VALUES (?, ?, ?)",
+                            [(r["ts"], r["role"], r["text"]) for r in records],
+                        )
+            finally:
+                conn.close()
+            os.replace(legacy, legacy.with_name(legacy.name + IMPORTED_SUFFIX))
+
+    @staticmethod
+    def _read_legacy(path: Path) -> list:
+        """Parses the old JSONL file, skipping malformed lines."""
+        try:
+            raw = path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return []
         records = []
@@ -167,10 +271,8 @@ class HistoryStore:
                 records.append(record)
         return records
 
-    def _rewrite(self, records: list) -> None:
-        """Crash-safe rewrite: temp file + atomic replace."""
-        tmp = self._path.with_name(self._path.name + ".tmp")
-        with tmp.open("w", encoding="utf-8") as fh:
-            for record in records:
-                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-        os.replace(tmp, self._path)
+    @staticmethod
+    def _tail(records: list, last_n: Optional[int]) -> list:
+        if last_n is None:
+            return records
+        return records[-last_n:] if last_n > 0 else []
