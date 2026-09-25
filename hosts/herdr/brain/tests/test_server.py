@@ -853,6 +853,29 @@ class TestStatic:
         assert "/approval.js" in html
         assert "/manifest.webmanifest" in html
 
+    def test_index_loads_announce_module_before_app(self, settings, audio_dir):
+        """PRD announcements-without-call (FR-01 wiring): the pure policy
+        module must load BEFORE app.js consumes window.Announce. Honest
+        asset contract: /announce.js is served by the catch-all
+        StaticFiles mount WITHOUT a ?v= query — adding one would need a
+        _VERSIONED_REFS (server.py) change that delivery 1 excludes."""
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        client = TestClient(create_app(settings=cfg, llm_factory=lambda c, t: FakeLLM()))
+        html = client.get("/").text
+        assert 'src="/announce.js"' in html
+        assert html.index('src="/announce.js"') < html.index('src="/app.js')
+
+    def test_announce_js_served_by_static_mount(self, settings, audio_dir):
+        """/announce.js resolves through the catch-all static mount
+        (server.py mounts StaticFiles at "/" last) with JS content type
+        and the announcer factory — no explicit route, no server edit."""
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        client = TestClient(create_app(settings=cfg, llm_factory=lambda c, t: FakeLLM()))
+        resp = client.get("/announce.js")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/javascript")
+        assert "createAnnouncer" in resp.text
+
     def test_view_payload_shape_for_nonfocused_panes(self, settings, make_stub, active_agent):
         """Regression (BUG 1): /view?pane_id for ANY pane carries every key
         the panel renders -- status/transcript/screen/pending all present."""
