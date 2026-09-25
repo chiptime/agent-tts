@@ -48,27 +48,48 @@ handle whose ``progress_token`` raises counts as silent progress
 phase produces no tokens, so ``wedged_timeout_sec`` must exceed the
 worst-case silent interval your playback path can incur.
 
+Termination wait (RF-AT-08-6, R1-01)
+-------------------------------------
+``terminate()`` only ASKS a session to stop: flags are set, but the
+audio device closes asynchronously on the playback thread. After a
+preempt or a watchdog kill, the manager therefore waits (BOUNDED, via
+the handle's ``wait_stopped(timeout)``) for the terminated session to
+actually end before dispatching the next item — the no-overlap
+invariant now covers the preempted interval too. The whole
+cut-wait-dispatch section runs under the dispatch mutex so a racing
+dispatcher cannot start the next item between the clear and the
+session's real end. The wait is bounded by ``termination_wait_sec``:
+on expiry the manager traces one residual line and proceeds anyway —
+an unstoppable session must never wedge the queue (RS-5 wins over
+RF-AT-08-6 there). Handles without ``wait_stopped`` (legacy seams)
+skip the wait entirely.
+
 All time comes from an injectable monotonic clock; the manager itself
 never sleeps. Timeouts are constructor arguments, never module state.
 
 Locking model
--------------
+--------------
 One non-reentrant ``threading.Lock`` guards all mutable state (pending
 heap, active entry, counters, failure history, closing flag). The lock
 is NEVER held while calling into user code (``runner``, ``terminate``,
-``progress_token``, ``is_paused``). The runner call is additionally
-serialized by a dispatch RLock, and a thread-local guard flattens
-re-entrant dispatch chains (a runner whose playback completes inside
-its own dispatch call cannot grow the stack). Finalization is
-id-guarded by item id: when the watchdog, a preempt, and the playback
-thread's natural finish race, exactly the first one wins and the late
-reports are ignored.
+``progress_token``, ``is_paused``, ``wait_stopped``). The runner call is
+additionally serialized by a dispatch RLock — the preempt and watchdog
+cut sections take the same RLock around terminate/wait/dispatch, so no
+dispatcher can slip between the active item's clear and its actual end
+(and while a handle is active the mutex is free: runner launches only
+happen with the slot empty, and they must return promptly by contract).
+A thread-local guard flattens re-entrant dispatch chains (a runner whose
+playback completes inside its own dispatch call cannot grow the stack).
+Finalization is id-guarded by item id: when the watchdog, a preempt, and
+the playback thread's natural finish race, exactly the first one wins
+and the late reports are ignored.
 """
 
 from __future__ import annotations
 
 import heapq
 import itertools
+import sys
 import threading
 import time
 from collections import deque
@@ -81,6 +102,7 @@ __all__ = [
     "DEFAULT_COALESCE_WINDOW_SEC",
     "DEFAULT_WEDGED_TIMEOUT_SEC",
     "DEFAULT_SUPERVISOR_INTERVAL_SEC",
+    "DEFAULT_TERMINATION_WAIT_SEC",
     "DEFAULT_FAILED_HISTORY_LIMIT",
     "ANNOUNCE_MAX_IDENTIFIERS",
     "ActiveItemView",
@@ -101,6 +123,12 @@ __all__ = [
 DEFAULT_COALESCE_WINDOW_SEC = 5.0
 DEFAULT_WEDGED_TIMEOUT_SEC = 30.0
 DEFAULT_SUPERVISOR_INTERVAL_SEC = 1.0
+# Bounded wait for a terminated session's playback thread to actually
+# end before the next dispatch (R1-01). The common healthy unwind is a
+# few frame polls (tens of ms); 0.5 s covers slow device teardown while
+# keeping a preempting enqueue's reply well under the 1 s IPC client
+# timeout even in the worst (expiry) case.
+DEFAULT_TERMINATION_WAIT_SEC = 0.5
 DEFAULT_FAILED_HISTORY_LIMIT = 20
 ANNOUNCE_MAX_IDENTIFIERS = 3
 
@@ -148,7 +176,13 @@ class SessionHandle(Protocol):
     ``progress_token`` returns any value that changes when playback
     advances (position, total frames, status...). ``terminate`` asks the
     session to stop now; it must be safe to call from any thread and
-    must not raise for a session that already ended.
+    must not raise for a session that already ended. ``wait_stopped``
+    blocks (never longer than ``timeout`` seconds) until the session's
+    playback has ACTUALLY ended — device closed, worker exited — and
+    returns whether it did; the manager calls it only after
+    ``terminate()`` to keep the terminated session from overlapping the
+    next dispatch (R1-01). Handles without the method (legacy seams)
+    simply skip the wait.
     """
 
     def progress_token(self) -> Any: ...
@@ -156,6 +190,8 @@ class SessionHandle(Protocol):
     def is_paused(self) -> bool: ...
 
     def terminate(self) -> None: ...
+
+    def wait_stopped(self, timeout: float) -> bool: ...
 
 
 Runner = Callable[["QueueItem", FinishCallback], Optional[SessionHandle]]
@@ -169,10 +205,17 @@ class AudioSessionHandle:
     appends grow it before the cursor moves), and the producing flag.
     No new session-side API is introduced — the seam rides on what 1.2
     already maintains.
+
+    ``playback_thread`` is the daemon's queue-playback worker running
+    ``session.play(...)``: the worker's ``finally`` is the point where
+    the session is unmounted and the device closed, so joining it IS
+    waiting for the playback to have truly ended (any target type —
+    local, remote, powershell — plays inside that one worker).
     """
 
-    def __init__(self, session):
+    def __init__(self, session, playback_thread=None):
         self._session = session
+        self._playback_thread = playback_thread
 
     def progress_token(self):
         session = self._session
@@ -195,6 +238,13 @@ class AudioSessionHandle:
         # wsl-ps announcement waits out the whole playing group.
         self._session.state["stop"] = True
         self._session.stop()
+
+    def wait_stopped(self, timeout: float) -> bool:
+        thread = self._playback_thread
+        if thread is None:
+            return True  # no worker to wait out: nothing pending to unwind
+        thread.join(timeout)
+        return not thread.is_alive()
 
 
 def build_announcement(count: int, event_type: str, identifiers: Sequence[str]) -> str:
@@ -387,12 +437,14 @@ class QueueManager:
         wedged_timeout_sec: float = DEFAULT_WEDGED_TIMEOUT_SEC,
         supervisor_interval_sec: Optional[float] = DEFAULT_SUPERVISOR_INTERVAL_SEC,
         failed_history_limit: int = DEFAULT_FAILED_HISTORY_LIMIT,
+        termination_wait_sec: float = DEFAULT_TERMINATION_WAIT_SEC,
     ):
         self._runner = runner
         self._clock = clock
         self._coalesce_window_sec = coalesce_window_sec
         self._wedged_timeout_sec = wedged_timeout_sec
         self._supervisor_interval_sec = supervisor_interval_sec
+        self._termination_wait_sec = termination_wait_sec
         # Guards: _lock for all state below; _dispatch_mutex serializes
         # runner calls (RF-AT-08-6 even under racing finalize paths);
         # _dispatching (thread-local) flattens re-entrant dispatch.
@@ -474,18 +526,30 @@ class QueueManager:
             silent_for = now - entry.last_progress_at
             if silent_for <= self._wedged_timeout_sec:
                 return False
-            # Wedged (RS-5): the verdict wins, the late natural finish
-            # (if any) will be ignored by the id guard.
-            error = (
-                f"watchdog: no playback progress for {silent_for:.1f}s "
-                f"(wedged timeout {self._wedged_timeout_sec:.1f}s)"
-            )
-            self._finalize_active_locked(entry.item.id, failed=True, error=error, wedged=True)
-        try:
-            handle.terminate()
-        except Exception:
-            pass
-        self._dispatch_next()
+        # Wedged verdict (RS-5). The cut, the bounded wait for the
+        # terminated session to actually end, and the next dispatch run
+        # as ONE serialized section: a racing dispatcher must not start
+        # the next item while the wedged session may still hold the
+        # device (RF-AT-08-6 covers the terminated interval too).
+        with self._dispatch_mutex:
+            with self._lock:
+                if self._active is not entry:
+                    # A natural finish or preempt won the race while we
+                    # reached for the mutex: the verdict is moot.
+                    return False
+                error = (
+                    f"watchdog: no playback progress for {silent_for:.1f}s "
+                    f"(wedged timeout {self._wedged_timeout_sec:.1f}s)"
+                )
+                # The verdict wins; the late natural finish (if any) is
+                # ignored by the id guard.
+                self._finalize_active_locked(entry.item.id, failed=True, error=error, wedged=True)
+            try:
+                handle.terminate()
+            except Exception:
+                pass
+            self._wait_termination(entry.item.id, handle)
+            self._dispatch_next()
         return True
 
     # --- Public API ----------------------------------------------------------
@@ -512,18 +576,32 @@ class QueueManager:
         if not isinstance(policy, Policy):
             policy = Policy(policy)
         now = self._clock()
-        cancelled_handle = None
+        if policy is Policy.PREEMPT:
+            # A preempting enqueue may have to cut the active item: the
+            # decision, the cut, the bounded wait for the terminated
+            # session to actually end, and the next dispatch run as ONE
+            # serialized section — a racing dispatcher must not start
+            # the next item between the clear and the session's real
+            # end (RF-AT-08-6 covers the preempted interval too).
+            with self._dispatch_mutex:
+                with self._lock:
+                    if self._closing:
+                        raise RuntimeError("queue manager is shut down")
+                    item_id = self._insert_locked(priority, policy, payload, event_type, identifiers, now)
+                    cancelled = self._maybe_preempt_locked(priority)
+                if cancelled is not None:
+                    handle, item = cancelled
+                    try:
+                        handle.terminate()
+                    except Exception:
+                        pass
+                    self._wait_termination(item.id, handle)
+                self._dispatch_next()
+            return item_id
         with self._lock:
             if self._closing:
                 raise RuntimeError("queue manager is shut down")
             item_id = self._insert_locked(priority, policy, payload, event_type, identifiers, now)
-            if policy is Policy.PREEMPT:
-                cancelled_handle = self._maybe_preempt_locked(priority)
-        if cancelled_handle is not None:
-            try:
-                cancelled_handle.terminate()
-            except Exception:
-                pass
         self._dispatch_next()
         return item_id
 
@@ -634,13 +712,14 @@ class QueueManager:
                 return item
         return None
 
-    def _maybe_preempt_locked(self, incoming: Priority) -> Optional[Any]:
+    def _maybe_preempt_locked(self, incoming: Priority) -> Optional[Tuple[Any, QueueItem]]:
         """Cancels the active item if the preempt is strictly higher.
 
-        Returns the cancelled session handle (to be terminated OUTSIDE
-        the lock), or None when the preempt degrades to queue: equal or
-        lower priority, no active item, or an active dispatch that has
-        not yet produced its handle (nothing terminable — RF-AT-08-6).
+        Returns the cancelled ``(session handle, item)`` (to be
+        terminated OUTSIDE the lock), or None when the preempt degrades
+        to queue: equal or lower priority, no active item, or an active
+        dispatch that has not yet produced its handle (nothing
+        terminable — RF-AT-08-6).
         """
         entry = self._active
         if entry is None or entry.handle is None:
@@ -648,7 +727,7 @@ class QueueManager:
         if incoming <= entry.item.priority:
             return None  # equal or lower: policy degrades to queue (RF-AT-08-2)
         self._interrupt_active_locked(entry)
-        return entry.handle
+        return entry.handle, entry.item
 
     def _interrupt_active_locked(self, entry: _ActiveEntry) -> None:
         entry.item.status = "interrupted"
@@ -662,6 +741,33 @@ class QueueManager:
             return None
         _, _, item = heapq.heappop(self._pending)
         return item
+
+    def _wait_termination(self, item_id: int, handle: Any) -> None:
+        """Bounded wait for a TERMINATED session's playback to truly end.
+
+        ``terminate()`` only asks; the device closes asynchronously on
+        the playback thread. Called only on the preempt and watchdog
+        cut paths, always under the dispatch mutex, always AFTER
+        ``terminate()`` and BEFORE the next dispatch (R1-01: the
+        no-overlap invariant covers the preempted interval). Expiry
+        never wedges the daemon (RS-5): one residual is traced to
+        stderr and the caller proceeds. Handles without a
+        ``wait_stopped`` seam (legacy adapters) skip the wait.
+        """
+        wait = getattr(handle, "wait_stopped", None)
+        if not callable(wait):
+            return
+        try:
+            stopped = bool(wait(self._termination_wait_sec))
+        except Exception:
+            return  # a handle that cannot be waited on cannot be waited on
+        if not stopped:
+            print(
+                f"agent-tts-queue: terminated session item={item_id} did not stop "
+                f"within {self._termination_wait_sec:.2f}s; dispatching anyway "
+                f"(documented residual, RS-5)",
+                file=sys.stderr,
+            )
 
     def _dispatch_next(self) -> None:
         """Event-driven dispatch: the caller's thread starts playback NOW.

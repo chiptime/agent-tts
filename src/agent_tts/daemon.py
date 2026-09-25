@@ -964,10 +964,15 @@ class Daemon:
                 if waiter is not None:
                     waiter.release(outcome, error)
 
-        threading.Thread(
+        worker_thread = threading.Thread(
             target=worker, name="agent-tts-queue-playback", daemon=True
-        ).start()
-        return AudioSessionHandle(session)
+        )
+        worker_thread.start()
+        # The handle carries the worker: a queue-side termination joins
+        # it in wait_stopped() so the next dispatch happens only after
+        # this worker unwound (session unmounted, device closed) — the
+        # no-overlap invariant on the preempt/watchdog paths (R1-01).
+        return AudioSessionHandle(session, playback_thread=worker_thread)
 
     def _build_queue_session(self, payload: dict):
         """Builds the playback session for a dispatched queue item.

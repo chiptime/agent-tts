@@ -498,8 +498,11 @@ def test_blocked_preempts_playing_done_and_reaches_speaker_complete(channel, mon
         assert ends["PLAYING-DONE"] == "interrupted"  # preempted: announcement lost, not re-queued
         assert ends["B-CRIT"] == "completed"  # the blocked event itself plays COMPLETE
 
-        intervals = _intervals(events)
-        _assert_no_overlaps({label: bounds for label, bounds in intervals.items() if label != "PLAYING-DONE"})
+        # RF-AT-08-6 over EVERY interval, the preempted one included: the
+        # manager waits out the terminated session before dispatching the
+        # preemptor (R1-01), so B-CRIT starts only after PLAYING-DONE's
+        # speaker interval ended.
+        _assert_no_overlaps(_intervals(events))
 
         snapshot = _queue_payload(_status(sock))
         assert snapshot["completed_count"] == 3
@@ -552,7 +555,9 @@ def test_contract_sequence_order_on_local(channel, monkeypatch):
         assert ends["S-HOLD"] == "interrupted"  # preempted by S-B3P (semantics, not a failure)
         assert all(ends[label] == "completed" for label in CONTRACT_EXPECTED_LABELS)
         assert d._test_engine.calls[-1]["text"] != ""
-        _assert_no_overlaps({label: bounds for label, bounds in _intervals(events).items() if label != "S-HOLD"})
+        # RF-AT-08-6 including the preempted holder (R1-01): the manager
+        # waits out the terminated session before dispatching S-B3P.
+        _assert_no_overlaps(_intervals(events))
 
         snapshot = _queue_payload(_status(channel["sock"]))
         assert snapshot["completed_count"] == len(CONTRACT_EXPECTED_LABELS)
@@ -608,7 +613,8 @@ def test_contract_sequence_order_on_wsl_ps(channel, monkeypatch):
         assert snapshot["interrupted_count"] == 1  # S-HOLD preempted by S-B3P here too
         assert snapshot["failed_count"] == 0
 
-        # Zero overlaps among the completed announcements on the real target.
-        _assert_no_overlaps({label: bounds for label, bounds in _intervals(events).items() if label != "S-HOLD"})
+        # Zero overlaps among the completed announcements on the real target
+        # — the preempted holder included (R1-01: same wait discipline).
+        _assert_no_overlaps(_intervals(events))
     finally:
         _stop_daemon(d)

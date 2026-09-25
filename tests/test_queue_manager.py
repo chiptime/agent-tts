@@ -51,12 +51,22 @@ class FakeClock:
 
 
 class FakeHandle:
-    """SessionHandle double: a token stream the test controls."""
+    """SessionHandle double: a token stream the test controls.
+
+    ``wait_stopped`` mirrors the real seam's contract: by default it
+    reports the session stopped immediately; with ``block_on_wait`` the
+    call parks on ``wait_release`` (the test plays the still-unwinding
+    playback thread) and reports expiry when the release never comes.
+    """
 
     def __init__(self, paused: bool = False):
         self.token = 0
         self.paused = paused
         self.terminate_calls = 0
+        self.wait_calls = 0
+        self.block_on_wait = False
+        self.wait_started = threading.Event()
+        self.wait_release = threading.Event()
 
     def progress_token(self):
         return self.token
@@ -66,6 +76,14 @@ class FakeHandle:
 
     def terminate(self) -> None:
         self.terminate_calls += 1
+
+    def wait_stopped(self, timeout: float) -> bool:
+        self.wait_calls += 1
+        if not self.block_on_wait:
+            return True
+        self.wait_started.set()
+        self.wait_release.wait(timeout)
+        return self.wait_release.is_set()
 
 
 class ScriptedRunner:
@@ -382,6 +400,116 @@ def test_preempt_during_dispatch_setup_degrades_to_queue():
     assert snap.active is not None and snap.active.id == first  # not cancelled
     assert snap.queue_len == 1 and snap.pending[0].id == preemptor
     assert snap.interrupted_count == 0
+
+
+# --- Termination wait (R1-01, RF-AT-08-6): dispatch waits out the cancelled session ---
+
+
+def test_preempt_waits_for_the_terminated_session_before_dispatching_next():
+    """terminate() only ASKS the session to stop; the device closes on the
+    playback thread. The next item must not dispatch until that thread
+    has actually ended (no-overlap includes the preempted interval)."""
+    clock = FakeClock()
+    runner = ScriptedRunner(clock)
+    manager = make_manager(runner, clock)
+
+    active = manager.enqueue(priority=Priority.DONE, policy=Policy.QUEUE)
+    handle = runner.handles[active]
+    handle.block_on_wait = True  # the cancelled playback is still unwinding
+
+    preempted = {}
+    done = threading.Event()
+
+    def preempt():
+        preempted["id"] = manager.enqueue(priority=Priority.BLOCKED, policy=Policy.PREEMPT)
+
+    thread = threading.Thread(target=preempt)
+    thread.start()
+    assert handle.wait_started.wait(timeout=2.0), "manager never reached wait_stopped"
+    # While the terminated session is still unwinding, nothing dispatches.
+    assert ids_of(runner.dispatched) == [active]
+    handle.wait_release.set()  # the playback thread finally exited
+    thread.join(timeout=2.0)
+    assert not thread.is_alive()
+    assert ids_of(runner.dispatched) == [active, preempted["id"]]
+    assert handle.terminate_calls == 1  # the cut itself is unchanged
+
+
+def test_watchdog_waits_for_the_terminated_session_before_dispatching_next():
+    """The watchdog path keeps the same discipline: the replacement item
+    dispatches only after the wedged session's bounded wait resolved."""
+    clock = FakeClock()
+    runner = ScriptedRunner(clock)
+    manager = make_manager(runner, clock, wedged_timeout_sec=30.0)
+
+    wedged = manager.enqueue(priority=Priority.WORKING, policy=Policy.QUEUE)
+    handle = runner.handles[wedged]
+    handle.block_on_wait = True
+    next_item = manager.enqueue(priority=Priority.DONE, policy=Policy.QUEUE)
+    clock.advance(30.1)
+
+    verdict = {}
+
+    def tick():
+        verdict["wedged"] = manager.check_watchdog()
+
+    thread = threading.Thread(target=tick)
+    thread.start()
+    assert handle.wait_started.wait(timeout=2.0), "watchdog never reached wait_stopped"
+    assert ids_of(runner.dispatched) == [wedged]  # replacement held back
+    handle.wait_release.set()
+    thread.join(timeout=2.0)
+    assert not thread.is_alive()
+    assert verdict["wedged"] is True
+    assert ids_of(runner.dispatched) == [wedged, next_item]
+
+
+def test_termination_wait_expiry_still_dispatches(capsys):
+    """RS-5: a terminated session that never stops must not wedge the
+    queue — the bounded wait expires, a residual is traced, dispatch proceeds."""
+    clock = FakeClock()
+    runner = ScriptedRunner(clock)
+    manager = make_manager(runner, clock, termination_wait_sec=0.05)
+
+    active = manager.enqueue(priority=Priority.DONE, policy=Policy.QUEUE)
+    handle = runner.handles[active]
+    handle.block_on_wait = True  # never stops: the wait must expire
+    incoming = manager.enqueue(priority=Priority.BLOCKED, policy=Policy.PREEMPT)
+
+    assert ids_of(runner.dispatched) == [active, incoming]
+    assert handle.wait_calls == 1
+    assert "did not stop" in capsys.readouterr().err
+
+
+def test_termination_wait_is_skipped_for_handles_without_the_seam():
+    """Legacy handles (no wait_stopped) keep working: nothing to wait out."""
+
+    class LegacyHandle:
+        def __init__(self):
+            self.terminate_calls = 0
+
+        def progress_token(self):
+            return 0
+
+        def is_paused(self):
+            return False
+
+        def terminate(self):
+            self.terminate_calls += 1
+
+    clock = FakeClock()
+    handles = {}
+
+    def legacy_runner(item, on_finished):
+        handles[item.id] = LegacyHandle()
+        return handles[item.id]
+
+    manager = make_manager(legacy_runner, clock)
+    active = manager.enqueue(priority=Priority.DONE, policy=Policy.QUEUE)
+    incoming = manager.enqueue(priority=Priority.BLOCKED, policy=Policy.PREEMPT)
+
+    assert handles[active].terminate_calls == 1
+    assert list(handles) == [active, incoming]  # both dispatched, in order
 
 
 # --- Policy: coalesce ------------------------------------------------------------
@@ -886,3 +1014,26 @@ def test_audio_session_handle_is_a_session_handle_double_drop_in():
     assert callable(handle.progress_token)
     assert callable(handle.is_paused)
     assert callable(handle.terminate)
+    assert callable(handle.wait_stopped)
+
+
+def test_audio_session_handle_wait_stopped_reports_worker_liveness():
+    """wait_stopped joins the playback worker: True once it exited, False
+    while it is still unwinding within the bound (R1-01)."""
+    session = AudioSession(label="wait")
+    release = threading.Event()
+    worker = threading.Thread(target=release.wait, daemon=True)
+    worker.start()
+    handle = AudioSessionHandle(session, playback_thread=worker)
+
+    assert handle.wait_stopped(0.05) is False  # still unwinding: expiry
+
+    release.set()
+    worker.join(timeout=2.0)
+    assert handle.wait_stopped(2.0) is True
+
+
+def test_audio_session_handle_wait_stopped_without_a_worker_returns_true():
+    """No playback thread to wait out (bare adapter use): nothing to do."""
+    handle = AudioSessionHandle(AudioSession(label="bare"))
+    assert handle.wait_stopped(1.0) is True
