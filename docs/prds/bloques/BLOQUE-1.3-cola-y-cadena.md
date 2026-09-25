@@ -229,6 +229,17 @@ winhost-related was added or measured.
   `tests/test_queue_milestone.py`: idempotent status reads retry
   transient failures, polling predicates are None-tolerant, enqueue
   stays no-retry (ambiguous None → loud diagnostic failure).
+- Flake note 2 (T5.1 verification, 25/09/2026): the same load class
+  flaked `tests/test_daemon_lifecycle.py::test_requests_reset_the_idle_clock`
+  twice in 10 full-suite runs (never solo) — under GIL starvation the
+  daemon-observed gap between the test's 0.4 s pings exceeded the 1.0 s
+  idle window, the daemon exited and removed its socket, and the next
+  single-shot ping returned None. NOT a daemon defect: the idle clock
+  semantics are correct; the test's margin (2.5x) was too thin for
+  full-suite load. Fix: idle window 1.0 → 2.0 s plus one bounded ping
+  retry (transient refuses in the bind->listen startup window were
+  observed ~2x per full run); a daemon that truly idled out still
+  fails loudly.
 
 ### Pending for the Hito Cadena (T6)
 
