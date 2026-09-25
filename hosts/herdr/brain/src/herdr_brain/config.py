@@ -62,6 +62,12 @@ DEFAULT_STT_COMPUTE = "auto"
 DEFAULT_READER_TIMEOUT_S = 30
 DEFAULT_READER_CONCURRENCY = 2
 
+# Announcement digest length (product decision 2026-09-25): the digest
+# detail carries up to this many chars (preferring a sentence boundary),
+# and the SAME clipped string is both the SSE text payload and the spoken
+# announcement — audio and visual always match.
+DEFAULT_ANNOUNCE_MAX_CHARS = 300
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -91,6 +97,7 @@ class Settings:
     # dataclass ordering forbids non-default after default anyway).
     reader_timeout_s: int = DEFAULT_READER_TIMEOUT_S
     reader_concurrency: int = DEFAULT_READER_CONCURRENCY
+    announce_max_chars: int = DEFAULT_ANNOUNCE_MAX_CHARS
 
     def __post_init__(self):
         # Accept plain strings for path fields regardless of the caller.
@@ -138,5 +145,8 @@ def load_settings(env: Optional[dict] = None) -> Settings:
         )),
         reader_concurrency=int(getenv(
             "HERDR_BRAIN_READER_CONCURRENCY", str(DEFAULT_READER_CONCURRENCY)
+        )),
+        announce_max_chars=int(getenv(
+            "HERDR_BRAIN_ANNOUNCE_MAX_CHARS", str(DEFAULT_ANNOUNCE_MAX_CHARS)
         )),
     )

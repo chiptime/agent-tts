@@ -18,7 +18,7 @@ from herdr_brain.watcher import (
     AgentWatcher,
     AnnouncementHub,
     agent_label,
-    first_sentence,
+    clip_detail,
 )
 
 
@@ -75,9 +75,24 @@ class TestHub:
 
 
 class TestDigestText:
-    def test_first_sentence(self):
-        assert first_sentence("Dos cosas. Y una más.") == "Dos cosas"
-        assert first_sentence("larga " * 60).endswith("...")
+    def test_returns_full_text_when_within_cap(self):
+        assert clip_detail("Dos cosas. Y una más.", 300) == "Dos cosas. Y una más."
+
+    def test_truncates_at_last_sentence_end_within_cap(self):
+        text = "Frase uno. Frase dos. Frase tres."
+        assert clip_detail(text, 20) == "Frase uno."
+
+    def test_hard_cuts_single_sentence_exceeding_cap(self):
+        clipped = clip_detail("larga " * 60, 300)
+        assert len(clipped) == 300
+        assert clipped.endswith("...")
+
+    def test_collapses_whitespace_and_newlines(self):
+        assert clip_detail("linea uno\nlinea dos", 300) == "linea uno linea dos"
+
+    def test_none_for_empty(self):
+        assert clip_detail(None, 300) is None
+        assert clip_detail("  \n ", 300) is None
 
     def test_label_uses_cwd_basename(self):
         agent = make_agent(cwd="/home/bruno/Code/personal/compare-prices")
@@ -123,10 +138,10 @@ class TestDigestText:
         assert ann["type"] == "transition"
         assert ann["status"] == "done"
         assert ann["label"] == "opencode repo"
-        assert ann["text"] == "opencode repo terminó: Migración aplicada"
+        assert ann["text"] == "opencode repo terminó: Migración aplicada. Quedan pruebas."
         assert ann["audio_url"] and ann["audio_url"].startswith("/audio/ann-")
-        # Live audio is the SHORT aviso; the digest stays text-only.
-        assert spoken == ["opencode repo ha terminado"]
+        # Audio/visual parity: the spoken announcement IS the SSE text payload.
+        assert spoken == [ann["text"]]
 
     def test_blocked_announcement_uses_pending_excerpt(self, settings, make_stub):
         stub = make_stub(agents=[make_agent(status="working")], screen="Do you want to allow this? (y/n)")
@@ -143,7 +158,44 @@ class TestDigestText:
         assert produced[0]["text"] == (
             "opencode repo necesita tu atención: Do you want to allow this? (y/n)"
         )
-        assert spoken == ["opencode repo necesita tu atención"]
+        # Audio/visual parity: the spoken announcement IS the SSE text payload.
+        assert spoken == [produced[0]["text"]]
+
+    def test_done_detail_truncates_at_sentence_boundary(self, settings, make_stub):
+        full = " ".join(f"Frase {i} con contenido." for i in range(20))
+        stub = make_stub(agents=[make_agent(status="working")], screen=full)
+        watcher = AgentWatcher(settings, herdr=stub, tts_renderer=fake_tts(), clock=FakeClock())
+        watcher.poll_once()
+        stub._agents = [make_agent(status="done")]
+        produced = watcher.poll_once()
+        detail = produced[0]["text"].split(": ", 1)[1]
+        assert len(detail) <= 300
+        assert len(detail) > 200  # carries far more than the old 120-char clip
+        assert detail.endswith(".")  # cut at a sentence end, not mid-word
+        assert full.startswith(detail)
+
+    def test_done_detail_hard_cuts_single_long_sentence(self, settings, make_stub):
+        stub = make_stub(agents=[make_agent(status="working")], screen="palabra " * 60)
+        watcher = AgentWatcher(settings, herdr=stub, tts_renderer=fake_tts(), clock=FakeClock())
+        watcher.poll_once()
+        stub._agents = [make_agent(status="done")]
+        produced = watcher.poll_once()
+        detail = produced[0]["text"].split(": ", 1)[1]
+        assert len(detail) == 300
+        assert detail.endswith("...")
+
+    def test_detail_cap_is_configurable(self, settings, make_stub):
+        settings = Settings(**{**settings.__dict__, "announce_max_chars": 50})
+        stub = make_stub(
+            agents=[make_agent(status="working")],
+            screen="Frase corta. " + "palabra " * 20,
+        )
+        watcher = AgentWatcher(settings, herdr=stub, tts_renderer=fake_tts(), clock=FakeClock())
+        watcher.poll_once()
+        stub._agents = [make_agent(status="done")]
+        produced = watcher.poll_once()
+        detail = produced[0]["text"].split(": ", 1)[1]
+        assert detail == "Frase corta."
 
     def test_fallback_detail_when_all_reads_fail(self, settings, make_stub):
         stub = make_stub(agents=[make_agent(status="working")], fail_screen=True)
