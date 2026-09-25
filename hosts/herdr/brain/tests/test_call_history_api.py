@@ -76,17 +76,88 @@ class TestCallHistoryEndpoint:
     def test_empty_history_on_clean_boot(self, audio_dir):
         resp = make_client(audio_dir).get("/call-history")
         assert resp.status_code == 200
-        assert resp.json() == {"turns": []}
+        assert resp.json() == {"turns": [], "has_more": False}
 
-    def test_serving_cap_returns_last_200_oldest_first(self, audio_dir):
+    def test_default_limit_is_the_newest_page_of_25(self, audio_dir):
+        store = HistoryStore(default_history_path(make_settings(audio_dir)))
+        for i in range(30):
+            store.append("user", f"t{i}")
+        resp = make_client(audio_dir).get("/call-history")
+        body = resp.json()
+        assert len(body["turns"]) == 25
+        assert body["turns"][0]["text"] == "t5"
+        assert body["turns"][-1]["text"] == "t29"
+        assert body["has_more"] is True
+
+    def test_page_boundaries_has_more_false_at_last_page(self, audio_dir):
+        store = HistoryStore(default_history_path(make_settings(audio_dir)))
+        for i in range(25):
+            store.append("user", f"t{i}")
+        resp = make_client(audio_dir).get("/call-history")
+        body = resp.json()
+        assert len(body["turns"]) == 25
+        assert body["has_more"] is False
+
+    def test_has_more_true_when_older_records_exist(self, audio_dir):
+        store = HistoryStore(default_history_path(make_settings(audio_dir)))
+        for i in range(26):
+            store.append("user", f"t{i}")
+        resp = make_client(audio_dir).get("/call-history?limit=25")
+        assert resp.json()["has_more"] is True
+
+    def test_explicit_limit_caps_at_serving_window(self, audio_dir):
         store = HistoryStore(default_history_path(make_settings(audio_dir)))
         for i in range(CALL_HISTORY_TURNS + 5):
             store.append("user", f"t{i}")
-        resp = make_client(audio_dir).get("/call-history")
-        turns = resp.json()["turns"]
-        assert len(turns) == CALL_HISTORY_TURNS
-        assert turns[0]["text"] == "t5"
-        assert turns[-1]["text"] == f"t{CALL_HISTORY_TURNS + 4}"
+        resp = make_client(audio_dir).get(f"/call-history?limit={CALL_HISTORY_TURNS + 50}")
+        body = resp.json()
+        assert len(body["turns"]) == CALL_HISTORY_TURNS
+        assert body["turns"][0]["text"] == "t5"
+        assert body["turns"][-1]["text"] == f"t{CALL_HISTORY_TURNS + 4}"
+
+    def test_limit_clamped_to_minimum_one(self, audio_dir):
+        client = make_client(audio_dir)
+        client.post("/ask", json={"text": "uno"})
+        client.post("/ask", json={"text": "dos"})
+        resp = client.get("/call-history?limit=0")
+        body = resp.json()
+        assert len(body["turns"]) == 1
+        assert body["turns"][-1]["text"] == "Estás en la fase 2 del brain; todo verde."
+
+    def test_before_cursor_returns_only_strictly_older(self, audio_dir):
+        store = HistoryStore(default_history_path(make_settings(audio_dir)))
+        for i in range(10):
+            store.append("user", f"t{i}")
+        newest = store.load()[-1]["ts"]
+        first_page = make_client(audio_dir).get("/call-history?limit=3").json()
+        cursor = first_page["turns"][0]["ts"]  # oldest rendered turn
+        older = make_client(audio_dir).get(
+            "/call-history", params={"before": cursor, "limit": 100}
+        ).json()
+        assert [t["text"] for t in older["turns"]] == [f"t{i}" for i in range(7)]
+        assert older["has_more"] is False
+        assert newest not in [t["ts"] for t in older["turns"]]
+
+    def test_before_cursor_pagination_walks_the_whole_history(self, audio_dir):
+        store = HistoryStore(default_history_path(make_settings(audio_dir)))
+        for i in range(60):
+            store.append("user", f"t{i}")
+        client = make_client(audio_dir)
+        seen: list = []
+        cursor = None
+        while True:
+            query = {"limit": 25}
+            if cursor:
+                query["before"] = cursor
+            body = client.get("/call-history", params=query).json()
+            seen.extend(t["text"] for t in body["turns"])
+            if not body["has_more"]:
+                break
+            cursor = body["turns"][0]["ts"]
+        assert seen[:25] == [f"t{i}" for i in range(35, 60)]  # newest page first
+        assert seen[25:50] == [f"t{i}" for i in range(10, 35)]
+        assert seen[50:] == [f"t{i}" for i in range(10)]
+        assert sorted(seen, key=lambda t: int(t[1:])) == [f"t{i}" for i in range(60)]
 
 
 class TestAskPersistence:

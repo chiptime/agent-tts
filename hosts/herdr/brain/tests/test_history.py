@@ -71,6 +71,79 @@ class TestAppendLoad:
         assert store.load(last_n=0) == []
 
 
+class TestLoadBefore:
+    """Cursor pagination: strictly-older records, oldest first."""
+
+    def _store_with(self, tmp_path, ts_texts):
+        store = HistoryStore(tmp_path / "call_history.jsonl")
+        with store.path.open("w", encoding="utf-8") as fh:
+            for ts, text in ts_texts:
+                fh.write(json.dumps({"ts": ts, "role": "user", "text": text}) + "\n")
+        return store
+
+    def test_none_cursor_returns_newest_page(self, tmp_path):
+        store = HistoryStore(tmp_path / "call_history.jsonl")
+        for i in range(5):
+            store.append("user", f"t{i}")
+        turns = store.load_before(None, 3)
+        assert [t["text"] for t in turns] == ["t2", "t3", "t4"]
+
+    def test_returns_only_strictly_older_records(self, tmp_path):
+        store = self._store_with(tmp_path, [
+            ("2026-09-25T10:00:00+00:00", "a"),
+            ("2026-09-25T10:00:01+00:00", "b"),   # equal to the cursor: excluded
+            ("2026-09-25T10:00:02+00:00", "c"),
+        ])
+        turns = store.load_before("2026-09-25T10:00:01+00:00", 10)
+        assert [t["text"] for t in turns] == ["a"]
+
+    def test_limit_takes_the_newest_slice_of_the_older_set(self, tmp_path):
+        store = HistoryStore(tmp_path / "call_history.jsonl")
+        for i in range(6):
+            store.append("user", f"t{i}")
+        # Cursor just above t4: older set is t0..t3, newest 2 of it → t2,t3.
+        cursor = store.load()[4]["ts"]
+        turns = store.load_before(cursor, 2)
+        assert [t["text"] for t in turns] == ["t2", "t3"]
+
+    def test_comparison_is_instant_based_across_offsets(self, tmp_path):
+        # 09:00-02:00 is 11:00 UTC — NEWER than the 10:30 UTC cursor,
+        # though lexically "09..." < "10...". String compare would lie.
+        store = self._store_with(tmp_path, [
+            ("2026-09-25T09:00:00-02:00", "later-in-utc"),
+            ("2026-09-25T09:00:00+00:00", "truly-older"),
+        ])
+        turns = store.load_before("2026-09-25T10:30:00+00:00", 10)
+        assert [t["text"] for t in turns] == ["truly-older"]
+
+    def test_microsecond_precision_compares_as_instant(self, tmp_path):
+        store = self._store_with(tmp_path, [
+            ("2026-09-25T10:00:00+00:00", "older"),
+            ("2026-09-25T10:00:00.5+00:00", "newer"),  # fractional precision
+        ])
+        turns = store.load_before("2026-09-25T10:00:00.25+00:00", 10)
+        assert [t["text"] for t in turns] == ["older"]
+
+    def test_unparseable_cursor_falls_back_to_string_compare(self, tmp_path):
+        store = self._store_with(tmp_path, [
+            ("2026-09-25T10:00:00+00:00", "a"),
+            ("2026-09-25T11:00:00+00:00", "b"),
+        ])
+        # "not-a-ts" parses as neither; every ISO record sorts before it.
+        turns = store.load_before("not-a-ts", 1)
+        assert [t["text"] for t in turns] == ["b"]
+
+    def test_empty_store_returns_empty_page(self, tmp_path):
+        store = HistoryStore(tmp_path / "call_history.jsonl")
+        assert store.load_before(None, 25) == []
+        assert store.load_before("2026-09-25T10:00:00+00:00", 25) == []
+
+    def test_zero_limit_returns_empty(self, tmp_path):
+        store = HistoryStore(tmp_path / "call_history.jsonl")
+        store.append("user", "only")
+        assert store.load_before(None, 0) == []
+
+
 class TestClear:
     def test_clear_removes_every_record(self, tmp_path):
         store = HistoryStore(tmp_path / "call_history.jsonl")

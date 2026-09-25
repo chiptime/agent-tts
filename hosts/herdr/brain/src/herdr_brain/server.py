@@ -488,10 +488,20 @@ def create_app(
         return {"ok": True, "session_id": ConversationStore.normalize(body.session_id)}
 
     @app.get("/call-history")
-    def call_history() -> dict:
-        """Persisted call transcript for the PWA boot repaint (oldest
-        first, capped at the serving window)."""
-        return {"turns": history.load(last_n=CALL_HISTORY_TURNS)}
+    def call_history(before: Optional[str] = None, limit: int = 25) -> dict:
+        """Persisted call transcript for the PWA, one page at a time.
+
+        Oldest-first turns plus ``has_more`` (at least one record exists
+        strictly older than the oldest returned turn). ``before`` is the
+        pagination cursor (the oldest ts already rendered); ``limit``
+        defaults to 25 and is clamped to [1, CALL_HISTORY_TURNS]. No
+        params → the newest page, so the boot repaint paints only the
+        recent transcript and offers "Ver más" for the rest.
+        """
+        capped = max(1, min(limit, CALL_HISTORY_TURNS))
+        turns = history.load_before(before, capped)
+        has_more = bool(turns) and bool(history.load_before(turns[0]["ts"], 1))
+        return {"turns": turns, "has_more": has_more}
 
     @app.get("/state")
     def state() -> dict:
