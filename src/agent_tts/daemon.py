@@ -891,7 +891,17 @@ class Daemon:
         if item.coalesced > 1 and item.announcement:
             # RF-AT-08-3: the merged item speaks ONE synthesized summary
             # (count + up to three identifiers); the window owner's own
-            # payload is replaced, not concatenated.
+            # payload is replaced, not concatenated — including a chain
+            # payload: the replay audio is dropped and the announcement
+            # takes the speaker. The chain keys must be neutralized, not
+            # just overridden with text: the worker tests ``chain``
+            # FIRST, so a surviving chain would replay the owner's files
+            # and silently discard the merged announcement (R1-04).
+            payload = {
+                key: value
+                for key, value in payload.items()
+                if key not in ("chain", "chain_gap_ms")
+            }
             payload = {**payload, "text": item.announcement, "file": ""}
 
         try:
