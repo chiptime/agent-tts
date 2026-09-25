@@ -214,7 +214,12 @@ class HerdrClient:
         return {"tab_id": tab_id, "pane_id": pane_id}
 
     def start_agent(
-        self, name: str, kind: str, pane_id: str, timeout_ms: Optional[int] = None
+        self,
+        name: str,
+        kind: str,
+        pane_id: str,
+        timeout_ms: Optional[int] = None,
+        args: Optional[List[str]] = None,
     ) -> str:
         """Starts an agent in an existing pane and returns its pane id.
 
@@ -224,17 +229,23 @@ class HerdrClient:
         variant carrying the AgentInfo under ``result.agent``; its
         ``pane_id`` is returned (falling back to the requested pane, which
         the CLI contract guarantees to be the same).
+
+        ``args`` (pinned via ``--help``) is appended after a trailing
+        ``--``: the CLI composes ``<kind's canonical executable> *args``,
+        e.g. ``args=["attach", url]`` for kind opencode runs
+        ``opencode attach <url>``. Empty/None omits the ``--`` entirely,
+        keeping the invocation byte-identical to the pre-args form.
         """
         effective_ms = timeout_ms if timeout_ms and timeout_ms > 0 else 30_000
-        proc = self._run_cli(
-            [
-                "agent", "start", name,
-                "--kind", kind,
-                "--pane", pane_id,
-                "--timeout", str(effective_ms),
-            ],
-            timeout_s=effective_ms / 1000 + 30,
-        )
+        cli_args = [
+            "agent", "start", name,
+            "--kind", kind,
+            "--pane", pane_id,
+            "--timeout", str(effective_ms),
+        ]
+        if args:
+            cli_args.extend(["--", *args])
+        proc = self._run_cli(cli_args, timeout_s=effective_ms / 1000 + 30)
         result = parse_success_result(proc.stdout)
         agent = result.get("agent")
         if not isinstance(agent, dict):

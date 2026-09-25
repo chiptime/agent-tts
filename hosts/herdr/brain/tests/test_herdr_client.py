@@ -174,6 +174,29 @@ class TestStartAgent:
         assert runner.calls[0]["cmd"][-2:] == ["--timeout", "120000"]
         assert runner.calls[0]["timeout"] == 150.0  # 120s readiness + 30s margin
 
+    def test_args_appended_after_separator(self):
+        runner = FakeRunner(results=[(0, agent_started_envelope(), "")])
+        client = HerdrClient(make_settings(), runner=runner)
+        client.start_agent(
+            "refactor", "opencode", "w2:p1",
+            args=["attach", "http://localhost:4096", "--dir", "/repo"],
+        )
+        assert runner.calls[0]["cmd"][-5:] == [
+            "--", "attach", "http://localhost:4096", "--dir", "/repo",
+        ]
+
+    def test_no_args_keeps_invocation_byte_identical(self):
+        runner = FakeRunner(results=[
+            (0, agent_started_envelope(), ""),
+            (0, agent_started_envelope(), ""),
+        ])
+        client = HerdrClient(make_settings(), runner=runner)
+        client.start_agent("refactor", "claude", "w2:p1")
+        assert "--" not in runner.calls[0]["cmd"]
+        client.start_agent("refactor", "claude", "w2:p1", args=[])
+        assert "--" not in runner.calls[1]["cmd"]
+        assert runner.calls[0]["cmd"] == runner.calls[1]["cmd"]
+
     def test_nonzero_exit_raises(self):
         runner = FakeRunner(results=[(1, "", "agent boom")])
         client = HerdrClient(make_settings(), runner=runner)
@@ -186,3 +209,56 @@ class TestStartAgent:
         client = HerdrClient(make_settings(), runner=runner)
         with pytest.raises(HerdrError, match="missing agent info"):
             client.start_agent("refactor", "opencode", "w2:p1")
+
+
+class TestStartAgentOaComposition:
+    """The composed argv for the user's `oa` entry point (opencode attach).
+
+    Drives BrainTools.create_session against the FakeRunner-backed client
+    so the FINAL CLI invocation is pinned end to end at the subprocess
+    boundary (no stubbed HerdrClient in between).
+    """
+
+    def _tools(self, runner) -> "BrainTools":
+        from herdr_brain.tools import BrainTools
+
+        settings = make_settings()
+        return BrainTools(settings, herdr=HerdrClient(settings, runner=runner))
+
+    def test_opencode_with_cwd_composes_attach_argv(self):
+        runner = FakeRunner(results=[
+            (0, tab_created_envelope(), ""),
+            (0, agent_started_envelope(), ""),
+        ])
+        self._tools(runner).create_session("opencode", "Build", cwd="/repo")
+        assert runner.calls[1]["cmd"] == [
+            "herdr-fake", "agent", "start", "build",
+            "--kind", "opencode",
+            "--pane", "w2:p1",
+            "--timeout", "30000",
+            "--", "attach", "http://localhost:4096", "--dir", "/repo",
+        ]
+
+    def test_opencode_without_cwd_omits_dir(self):
+        runner = FakeRunner(results=[
+            (0, tab_created_envelope(), ""),
+            (0, agent_started_envelope(), ""),
+        ])
+        self._tools(runner).create_session("opencode", "Build")
+        assert runner.calls[1]["cmd"][-3:] == [
+            "--", "attach", "http://localhost:4096",
+        ]
+
+    def test_non_opencode_kind_has_no_separator_nor_args(self):
+        runner = FakeRunner(results=[
+            (0, tab_created_envelope(), ""),
+            (0, agent_started_envelope(), ""),
+        ])
+        self._tools(runner).create_session("claude", "Docs")
+        assert runner.calls[1]["cmd"] == [
+            "herdr-fake", "agent", "start", "docs",
+            "--kind", "claude",
+            "--pane", "w2:p1",
+            "--timeout", "30000",
+        ]
+        assert "--" not in runner.calls[1]["cmd"]
