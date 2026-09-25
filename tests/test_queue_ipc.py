@@ -442,6 +442,90 @@ def test_enqueue_while_playing_dispatches_after_finalize_without_overlap(channel
         _stop_daemon(d)
 
 
+# --- reserved internal keys cannot cross the enqueue wire (R1-05) -------------------------
+
+
+def test_enqueue_waiter_key_cannot_hijack_a_blocking_play(channel, monkeypatch):
+    """A client-supplied ``_waiter`` token must never release someone
+    else's blocking play.
+
+    The play handler registers waiters under sequential integer tokens
+    (itertools.count), so the next token is guessable. Before R1-05 the
+    enqueue path forwarded the key verbatim: an enqueued item carrying
+    the predicted token popped the VICTIM's waiter at dispatch and
+    released it with the attacker's outcome. The discriminator is the
+    reply string itself: the attacker COMPLETES naturally (its outcome
+    is status=done) while the victim is STOPPED mid-playback (its own
+    outcome is status=stopped) — a hijacked victim would answer
+    status=done before its audio ever started.
+    """
+    events = []
+    d = _start_daemon(channel, monkeypatch, events)
+    try:
+        sock = channel["sock"]
+
+        def decoded_for(data):
+            try:
+                text = bytes(data).decode("utf-8", "ignore")
+            except Exception:
+                text = ""
+            duration = 10.0 if text.startswith("HOLD") else 0.15
+            return types.SimpleNamespace(
+                sample_rate=24000,
+                nchannels=1,
+                sample_width=2,
+                duration=duration,
+                samples=array.array("h", [0] * int(24000 * min(duration, 0.05))),
+            )
+
+        def timed_play(self, decoded):
+            events.append(("start", self.label, time.monotonic()))
+            self.state["status"] = "playing"
+            deadline = time.monotonic() + max(float(getattr(decoded, "duration", 0.0) or 0.0), 0.01)
+            while time.monotonic() < deadline and not self.state["stop"]:
+                time.sleep(0.005)
+            interrupted = bool(self.state["stop"])
+            events.append(("end", self.label, time.monotonic(), "interrupted" if interrupted else "completed"))
+            self.state["status"] = "stopped"
+
+        monkeypatch.setattr(cli_mod, "miniaudio", types.SimpleNamespace(decode=decoded_for))
+        monkeypatch.setattr(AudioSession, "play", timed_play)
+
+        # Holder: a blocking play that owns the speaker (waiter token 1).
+        box_holder, holder_thread = _play_async_sock(sock, {"text": "HOLD holder", "label": "HOLD"})
+        _wait_until(lambda: any(e[0] == "start" and e[1] == "HOLD" for e in events))
+
+        # Attacker: an enqueue carrying the NEXT waiter token (2 —
+        # guessable sequential ids). It queues behind the holder and
+        # COMPLETES naturally when it plays.
+        atk = _enqueue(sock, {"text": "attack", "label": "ATK", "_waiter": 2})
+        assert atk.startswith("ok=true"), atk
+        # Victim: the next blocking play — its waiter registers as token 2.
+        box_victim, victim_thread = _play_async_sock(sock, {"text": "HOLD victim", "label": "VICTIM"})
+        _wait_until(lambda: "queue_len=2" in (ipc.send_ipc_command("status", socket_path=sock) or ""))
+
+        # Release the holder: ATK dispatches next (working FIFO), plays
+        # out its 0.15 s, and COMPLETES on its own.
+        ipc.send_ipc_command("stop", socket_path=sock)
+        _wait_until(lambda: any(e[0] == "end" and e[1] == "HOLD" for e in events))
+        _wait_until(lambda: any(e[0] == "start" and e[1] == "ATK" for e in events))
+        _wait_until(lambda: any(e[0] == "end" and e[1] == "ATK" for e in events))
+
+        # The victim plays next; a stop cuts IT mid-playback, so its own
+        # outcome — the only one allowed to answer its client — is
+        # status=stopped. A hijacked waiter would have answered
+        # status=done (ATK's outcome) before VICTIM ever started.
+        _wait_until(lambda: any(e[0] == "start" and e[1] == "VICTIM" for e in events))
+        ipc.send_ipc_command("stop", socket_path=sock)
+        _wait_until(lambda: any(e[0] == "end" and e[1] == "VICTIM" for e in events))
+        victim_thread.join(timeout=5.0)
+        assert box_victim == ["status=stopped"], box_victim
+        holder_thread.join(timeout=5.0)
+        assert box_holder == ["status=stopped"]
+    finally:
+        _stop_daemon(d)
+
+
 # --- watchdog wedge releases the blocking play (R1-02, RS-5 end to end) --------------------
 
 
