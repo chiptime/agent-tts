@@ -66,7 +66,7 @@ byte-verified yet.
 
 ## Tasks
 
-### [ ] T1 — HerdrClient: create_tab + start_agent
+### [x] T1 — HerdrClient: create_tab + start_agent
 Files: `src/herdr_brain/herdr.py`, `tests/test_herdr_client.py` (new or
 extend existing conventions).
 `create_tab(label, cwd=None) -> {tab_id, pane_id}` and
@@ -76,7 +76,7 @@ unit tests (pattern from existing suites).
 Route: delegated-direct (writer).
 Checks: pytest client tests + full suite. Commit: `feat(herdr)`.
 
-### [ ] T2 — create_session tool + schema + dispatch
+### [x] T2 — create_session tool + schema + dispatch
 Files: `src/herdr_brain/tools.py`.
 Handler per Scope flow; TOOLS_SCHEMA entry (agent_kind, title required;
 task optional); dispatch branch; last_active update; error text names
@@ -85,7 +85,7 @@ Route: delegated-direct (writer).
 Checks: pytest tools tests (new cases in existing test files) + full
 suite. Commit: `feat(tools)`.
 
-### [ ] T3 — Approval gate generalization + PWA card variant
+### [x] T3 — Approval gate generalization + PWA card variant
 Files: `src/herdr_brain/llm.py`, `src/herdr_brain/approval.py`,
 `src/herdr_brain/server.py`, `src/herdr_brain/static/app.js`,
 `tests/js/approval.test.js` (extend).
@@ -108,4 +108,20 @@ Commit: `feat(approval)`.
 
 ## Progress / Evidence
 
-- (pending)
+- 2026-09-25 T1 commit `dd9f3c7` (create_tab/start_agent, 12 tests).
+  Pinned shapes: `herdr tab create --label` → result.tab.tab_id +
+  result.root_pane.pane_id; `herdr agent start <NAME> --kind <KIND>
+  --pane <ID> [--timeout MS]` → result.agent.pane_id. Live daemon NOT
+  touched during dev (read-only pinning only).
+- 2026-09-25 T2 commit `8fe884d` (tool + schema + dispatch, 14 tests;
+  2 existing schema-enumeration assertions extended — registry pins).
+  Delivery semantics mirror send_to_session: blocked → failure text
+  with ids; timeout/stalled → delivered.
+- 2026-09-25 T3 commit `8f412be` (gate set generalization, create
+  payload, replay dispatch by action.tool, card variant via new pure
+  cardModel() in approval.js + CSS, refreshState after approve,
+  13 python + 7 js tests). Send paths byte-identical (old tests green
+  unmodified).
+- Suites: pytest 498 passed; js 124/124. Status: COMPLETE (code).
+  Pending: live voice e2e by user ("crea un panel con opencode para X").
+
