@@ -1,12 +1,12 @@
 """Background watcher announcing agent state transitions over SSE.
 
-Design (deliberate, fase 2b): transition-triggered AVISOS, not streaming
-everything agents say. When an agent's status transitions INTO "done" or
-"blocked", a template-based event aviso is spoken (no LLM call: instant
-and free) while the digest detail travels as TEXT in the same event —
-spoken only on demand through the announcement turn's replay button.
-Transitions into "idle" are intentionally skipped in v1 to keep
-the channel quiet.
+Design (deliberate, fase 2b): transition-triggered announcements built from
+templates plus the agent's digest (no LLM call: instant and free). When an
+agent's status transitions INTO "done" or "blocked", the event is spoken AND
+shipped as text in the same SSE payload — the announcement audio is rendered
+from the exact same digest string, so audio and visual always carry identical
+content (product decision 2026-09-25). Transitions into "idle" are
+intentionally skipped in v1 to keep the channel quiet.
 
 Behavioral guarantees:
 - Baseline snapshot on first poll: pre-existing states are never announced
@@ -41,7 +41,6 @@ ANNOUNCEMENT_PREFIX = "ann-"
 ANNOUNCEMENT_MAX_AGE_S = 3600
 FALLBACK_DETAIL = "sin detalle disponible"
 LABEL_MAX_CHARS = 48
-DETAIL_MAX_CHARS = 120
 
 Queue = queue.Queue
 
@@ -82,16 +81,26 @@ class AnnouncementHub:
                     pass
 
 
-def first_sentence(text: Optional[str], cap: int = DETAIL_MAX_CHARS) -> Optional[str]:
-    """First sentence-ish segment of a text, capped for speakability."""
+def clip_detail(text: Optional[str], cap: int) -> Optional[str]:
+    """Longest speakable prefix of ``text`` within ``cap`` chars.
+
+    Prefers cutting at the last sentence end that fits inside the cap;
+    hard-cuts (with an ellipsis) only when a single sentence exceeds it.
+    """
     if not text:
         return None
-    segment = text.replace("\n", " ").split(". ")[0].strip()
-    if not segment:
+    flat = " ".join(text.split())
+    if not flat:
         return None
-    if len(segment) > cap:
-        segment = segment[: cap - 3].rstrip() + "..."
-    return segment or None
+    if len(flat) <= cap:
+        return flat
+    head = flat[:cap]
+    cut = head.rfind(". ")
+    if cut == -1 and head.endswith("."):
+        cut = len(head) - 1
+    if cut != -1:
+        return head[: cut + 1]
+    return head[: cap - 3].rstrip() + "..."
 
 
 def agent_label(agent: AgentInfo) -> str:
@@ -184,22 +193,19 @@ class AgentWatcher:
 
     def _build_announcement(self, agent: AgentInfo) -> dict:
         label = agent_label(agent)
-        # Live audio is the SHORT event aviso (herdr-tts vocabulary: "%s
-        # terminó" / "%s necesita atención"); the digest detail stays in
-        # `text` for silent reading and is only spoken on demand — the
-        # announcement turn's 🔊 Escuchar button routes it through /tts.
-        # Speaking full digests on every transition was too chatty.
+        # Audio/visual parity (product decision 2026-09-25): the SAME digest
+        # string is the SSE text payload and the spoken announcement, so
+        # what you hear is exactly what you read. The replay button (🔊
+        # Escuchar) re-synthesizes this same string through POST /tts.
         if agent.status == "blocked":
             text = f"{label} necesita tu atención: {self._blocked_detail(agent)}"
-            aviso = f"{label} necesita tu atención"
         else:
             text = f"{label} terminó: {self._done_detail(agent)}"
-            aviso = f"{label} ha terminado"
 
         audio_url: Optional[str] = None
         try:
             out_path = new_audio_path(self._settings, prefix=ANNOUNCEMENT_PREFIX)
-            self._tts(self._settings, aviso, out_path)
+            self._tts(self._settings, text, out_path)
             audio_url = f"/audio/{out_path.name}"
         except Exception:  # noqa: BLE001 — text must never block on TTS
             audio_url = None
@@ -215,30 +221,32 @@ class AgentWatcher:
         }
 
     def _done_detail(self, agent: AgentInfo) -> str:
+        cap = self._settings.announce_max_chars
         if agent.session_value:
             try:
                 turns = read_turns(agent.agent, agent.session_value, 1)
             except Exception:  # noqa: BLE001
                 turns = None
             if turns:
-                sentence = first_sentence(turns[-1].text)
+                sentence = clip_detail(turns[-1].text, cap)
                 if sentence:
                     return sentence
         screen = self._screen(agent)
         first_line = screen.splitlines()[0].strip() if screen else None
-        return first_sentence(first_line) or FALLBACK_DETAIL
+        return clip_detail(first_line, cap) or FALLBACK_DETAIL
 
     def _blocked_detail(self, agent: AgentInfo) -> str:
+        cap = self._settings.announce_max_chars
         screen = self._screen(agent)
         if screen:
             pending = detect_pending(screen, agent.status)
             if pending.detected and pending.excerpt:
-                return pending.excerpt
+                return clip_detail(pending.excerpt, cap)
             first_line = next(
                 (ln.strip() for ln in screen.splitlines() if ln.strip()), None
             )
             if first_line:
-                return first_line
+                return clip_detail(first_line, cap)
         return FALLBACK_DETAIL
 
     def _screen(self, agent: AgentInfo) -> Optional[str]:
