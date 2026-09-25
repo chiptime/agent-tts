@@ -63,7 +63,13 @@ def channel(tmp_path, monkeypatch):
 
 
 class _StubEngine:
+    """Provider stand-in: records synthesis calls, returns the text as audio."""
+
+    def __init__(self):
+        self.calls = []
+
     async def synthesize(self, text, voice=None, rate=None, volume=None, pitch=None, stop_checker=None):
+        self.calls.append({"text": text, "voice": voice})
         return text.encode("utf-8")
 
 
@@ -123,7 +129,8 @@ def _start_daemon(channel, monkeypatch, events, *, gate=None) -> Daemon:
             samples=array.array("h", [0] * int(RATE * 0.05)),
         )),
     )
-    d = Daemon(socket_path=channel["sock"], provider_cache=ProviderCache(factory=lambda **kw: _StubEngine()))
+    engine = _StubEngine()
+    d = Daemon(socket_path=channel["sock"], provider_cache=ProviderCache(factory=lambda **kw: engine))
     thread = threading.Thread(target=d.run, daemon=True)
     thread.start()
     _wait_until(
@@ -131,6 +138,7 @@ def _start_daemon(channel, monkeypatch, events, *, gate=None) -> Daemon:
         message="daemon never answered ping",
     )
     d._test_thread = thread
+    d._test_engine = engine
     return d
 
 
@@ -223,6 +231,62 @@ def test_chain_queued_behind_active_item_dispatches_by_policy(channel, monkeypat
         holder_end = next(e[2] for e in events if e[0] == "end" and e[1] == "HOLDER")
         chain_start_t = [e for e in events if e[0] == "start"][1][2]
         assert chain_start_t >= holder_end
+    finally:
+        _stop_daemon(d)
+
+
+def test_coalesced_chain_items_speak_the_merged_announcement(channel, monkeypatch, tmp_path):
+    """R1-04: a merged coalesce item must SPEAK the synthesized summary.
+
+    chain+coalesce is a supported wire shape (the payload validation does
+    not forbid it). The coalesce override used to replace text/file but
+    leave ``chain`` in the payload, and the worker tests ``chain`` first —
+    so the owner's replayed audio played and the merged announcement was
+    silently discarded.
+    """
+    a = _write_wav(tmp_path / "chain-a.wav", 111, 0.2)
+    b = _write_wav(tmp_path / "chain-b.wav", 222, 0.2)
+    events = []
+    gate = threading.Event()
+    d = _start_daemon(channel, monkeypatch, events, gate=gate)
+    try:
+        sock = channel["sock"]
+        ipc.send_ipc_command("enqueue " + json.dumps({"label": "HOLDER", "text": "hold", "stream": "off"}), socket_path=sock)
+        _wait_until(lambda: any(e[0] == "start" and e[1] == "HOLDER" for e in events))
+
+        base = {
+            "policy": "coalesce",
+            "priority": "done",
+            "event_type": "tests finished",
+        }
+        first = ipc.send_ipc_command(
+            "enqueue " + json.dumps({**base, "chain": [str(a), str(b)], "chain_gap_ms": 10, "identifiers": ["ca"], "label": "CHAINCO"}),
+            socket_path=sock,
+        )
+        second = ipc.send_ipc_command(
+            "enqueue " + json.dumps({**base, "chain": [str(a)], "identifiers": ["cb"], "label": "CH2"}),
+            socket_path=sock,
+        )
+        assert first.startswith("ok=true"), first
+        # Both events merged into the window owner's item.
+        assert second.split("item=")[1].split()[0] == first.split("item=")[1].split()[0]
+        assert "coalesced=2" in second, second
+
+        gate.set()  # holder drains; the merged item dispatches
+        _wait_until(lambda: any(e[0] == "start" and e[1] == "CHAINCO" for e in events), message="merged item never reached the speaker")
+        _wait_until(lambda: len([e for e in events if e[0] == "end"]) == 2, message="holder and merged item never drained")
+
+        # The announcement is what actually sounded: synthesis saw the
+        # merged summary (a chain plays replayed audio and never
+        # synthesizes), and the device stream is the stub-decoded
+        # announcement, not the chain files' PCM.
+        assert d._test_engine.calls[-1]["text"] == "2 tests finished: ca, cb"
+        merged_end = next(e for e in events if e[0] == "end" and e[1] == "CHAINCO")
+        assert merged_end[4] != _file_pcm(111, 0.2) + _file_pcm(222, 0.2)
+
+        snapshot = _queue_payload(sock)
+        assert snapshot["completed_count"] == 2
+        assert snapshot["failed_count"] == 0
     finally:
         _stop_daemon(d)
 
