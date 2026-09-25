@@ -86,6 +86,29 @@ def parse_agent_list(raw: str) -> List[AgentInfo]:
     return agents
 
 
+def parse_success_result(raw: str) -> dict:
+    """Parses the ``result`` object of a CLI success envelope.
+
+    ``herdr`` prints the API success envelope as JSON lines (``{"id": ...,
+    "result": {...}}``); like :func:`parse_agent_list` this tolerates
+    leading noise lines that are not JSON. Raises :class:`HerdrError`
+    when no parseable ``result`` object is found.
+    """
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        result = payload.get("result") if isinstance(payload, dict) else None
+        if isinstance(result, dict):
+            return result
+    excerpt = raw.strip()[:200]
+    raise HerdrError(f"herdr returned unparseable output: {excerpt!r}")
+
+
 def pick_active(agents: List[AgentInfo]) -> Optional[AgentInfo]:
     """Selects the active pane: focused first, then working, then the first."""
     if not agents:
@@ -163,7 +186,61 @@ class HerdrClient:
         )
         return proc.stdout
 
-    # -- write path (the only one) ------------------------------------------
+    # -- write path ----------------------------------------------------------
+
+    def create_tab(self, label: str, cwd: Optional[str] = None) -> dict:
+        """Creates a new tab and returns ``{"tab_id", "pane_id"}``.
+
+        Verified CLI shape: ``herdr tab create --label <TEXT> [--cwd <PATH>]``
+        prints the API success envelope whose ``result`` is the
+        ``tab_created`` variant (pinned via ``herdr api schema --json``):
+        ``result.tab.tab_id`` (TabInfo) and ``result.root_pane.pane_id``
+        (PaneInfo), both required keys of that variant. Should the CLI ever
+        print a different envelope, :func:`parse_success_result` raises
+        HerdrError instead of returning half-parsed ids.
+        """
+        args = ["tab", "create", "--label", label]
+        if cwd:
+            args.extend(["--cwd", cwd])
+        proc = self._run_cli(args, timeout_s=15)
+        result = parse_success_result(proc.stdout)
+        tab = result.get("tab") if isinstance(result.get("tab"), dict) else {}
+        pane = result.get("root_pane") if isinstance(result.get("root_pane"), dict) else {}
+        tab_id = str(tab.get("tab_id", ""))
+        pane_id = str(pane.get("pane_id", ""))
+        if not tab_id or not pane_id:
+            excerpt = proc.stdout.strip()[:200]
+            raise HerdrError(f"tab create output missing tab_id/root_pane: {excerpt!r}")
+        return {"tab_id": tab_id, "pane_id": pane_id}
+
+    def start_agent(
+        self, name: str, kind: str, pane_id: str, timeout_ms: Optional[int] = None
+    ) -> str:
+        """Starts an agent in an existing pane and returns its pane id.
+
+        Verified CLI shape: ``herdr agent start <NAME> --kind <KIND> --pane
+        <ID> --timeout <MS>`` (readiness wait; default 30000 ms, max
+        300000 ms). The success ``result`` is the ``agent_started``
+        variant carrying the AgentInfo under ``result.agent``; its
+        ``pane_id`` is returned (falling back to the requested pane, which
+        the CLI contract guarantees to be the same).
+        """
+        effective_ms = timeout_ms if timeout_ms and timeout_ms > 0 else 30_000
+        proc = self._run_cli(
+            [
+                "agent", "start", name,
+                "--kind", kind,
+                "--pane", pane_id,
+                "--timeout", str(effective_ms),
+            ],
+            timeout_s=effective_ms / 1000 + 30,
+        )
+        result = parse_success_result(proc.stdout)
+        agent = result.get("agent")
+        if not isinstance(agent, dict):
+            excerpt = proc.stdout.strip()[:200]
+            raise HerdrError(f"agent start output missing agent info: {excerpt!r}")
+        return str(agent.get("pane_id", "")) or pane_id
 
     def send_prompt(self, pane_id: str, text: str, timeout_ms: Optional[int] = None) -> dict:
         """Submits a prompt and waits for completion.
