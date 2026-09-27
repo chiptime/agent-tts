@@ -12,7 +12,7 @@ Metodología: cada PRD se justifica primero por cómo mejora el flujo diario del
 | AT-04 | [archivadas/AT-04-daemon-persistente.md](archivadas/AT-04-daemon-persistente.md) | Modo daemon persistente del motor (`--serve`) | P1 | **Ejecutada** (BLOQUE 1.2) | L |
 | AT-08 | [archivadas/AT-08-cola-prioridades.md](archivadas/AT-08-cola-prioridades.md) | Cola con prioridades y reproducción encadenada | P1 | **Ejecutada** (BLOQUE 1.3) | M-L |
 | AT-10 | [AT-10-monorepo-ecosistema.md](AT-10-monorepo-ecosistema.md) | Monorepo del ecosistema: engine + contracts + hosts | P2 | Aprobada | L |
-| AT-03 | [AT-03-conectores-autodeteccion.md](AT-03-conectores-autodeteccion.md) | Conectores restantes y auto-detección del agente | P2 | Recortada | M |
+| AT-03 | [archivadas/AT-03-conectores-autodeteccion.md](archivadas/AT-03-conectores-autodeteccion.md) | Conectores restantes y auto-detección del agente | P2 | **Ejecutada** (recortada) | M |
 | AT-07 | [AT-07-digest-audio.md](AT-07-digest-audio.md) | Compilado de audio / digest (`--digest`) | P3 | Aprobada | S-M |
 | AT-06 | [AT-06-ducking-audio.md](AT-06-ducking-audio.md) | Ducking y prioridad de audio | P3 | Aprobada | M |
 | AT-01 | [AT-01-streaming-frames-mp3.md](AT-01-streaming-frames-mp3.md) | Streaming incremental por frames de MP3 | P3 | Postergada | L |
@@ -22,7 +22,7 @@ Metodología: cada PRD se justifica primero por cómo mejora el flujo diario del
 ## Orden de ataque
 
 1. **Paquete P1: AT-09 + AT-04 + AT-08** — **COMPLETADO (2026-09-25)**, en tres sub-bloques secuenciales (archivados en [`archivadas/bloques/`](archivadas/bloques/)): 1.1 canal de control (AT-09), 1.2 daemon por vía única (AT-04), 1.3 cola y cadena (AT-08). El daemon nace poseyendo la cola desde el día uno: una sola migración de semántica de playback, no dos. Contrato IPC congelado: [`../../contracts/ipc-v2.md`](../../contracts/ipc-v2.md). Deuda, pendientes y residuales aceptados: [`../deuda-tecnica.md`](../deuda-tecnica.md).
-2. **AT-03 recortada** (solo verificación opencode web, ~10 min): validar con un id de sesión web real que el conector actual resuelve; sin código nuevo.
+2. **AT-03 recortada** — **COMPLETADO (2026-09-28)**: validado con ID de sesión web real en la base de datos de producción OpenCode (0.62 ms, extracción limpia y autodetección CLI). PRD archivada.
 3. **P3**: AT-07 primero (mejor ratio valor/coste del lote) → AT-06 → AT-01 al final (mayor esfuerzo y riesgo de regresión en karaoke/boundaries).
 4. **Postergadas**: AT-02 y AT-05.
 
