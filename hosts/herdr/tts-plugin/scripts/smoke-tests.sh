@@ -2524,8 +2524,8 @@ bt_run() { # KEY=VAL env pairs, then --, then bootstrap argv
     /bin/bash "$BT_SCRIPT" "$@" > "$BT/out.log" 2> "$BT/err.log"
 }
 BT_SCRIPT="$REPO/scripts/bootstrap.sh"
-PIN_RE='git\+https://github\.com/chiptime/agent-tts\.git@[0-9a-f]{40}$'
-PIN_PY_RE='git\+https://github\.com/chiptime/agent-tts\.git@[0-9a-f]{40}( |$)'
+PIN_RE='git\+https://github\.com/chiptime/agent-tts\.git@[0-9a-f]{40}(#subdirectory=engine)?$'
+PIN_PY_RE='git\+https://github\.com/chiptime/agent-tts\.git@[0-9a-f]{40}(#subdirectory=engine)?( |$)'
 
 echo "── 33. bootstrap: pip-free installs, immutable pin, dev gate, upgrade"
 new_env s33
