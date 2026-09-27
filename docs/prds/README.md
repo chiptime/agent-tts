@@ -11,6 +11,7 @@ Metodología: cada PRD se justifica primero por cómo mejora el flujo diario del
 | AT-09 | [archivadas/AT-09-canal-de-control.md](archivadas/AT-09-canal-de-control.md) | Propiedad del canal de control (socket, lock y framing) | P1 | **Ejecutada** (BLOQUE 1.1) | S-M |
 | AT-04 | [archivadas/AT-04-daemon-persistente.md](archivadas/AT-04-daemon-persistente.md) | Modo daemon persistente del motor (`--serve`) | P1 | **Ejecutada** (BLOQUE 1.2) | L |
 | AT-08 | [archivadas/AT-08-cola-prioridades.md](archivadas/AT-08-cola-prioridades.md) | Cola con prioridades y reproducción encadenada | P1 | **Ejecutada** (BLOQUE 1.3) | M-L |
+| AT-10 | [AT-10-monorepo-ecosistema.md](AT-10-monorepo-ecosistema.md) | Monorepo del ecosistema: engine + contracts + hosts | P2 | Aprobada | L |
 | AT-03 | [AT-03-conectores-autodeteccion.md](AT-03-conectores-autodeteccion.md) | Conectores restantes y auto-detección del agente | P2 | Recortada | M |
 | AT-07 | [AT-07-digest-audio.md](AT-07-digest-audio.md) | Compilado de audio / digest (`--digest`) | P3 | Aprobada | S-M |
 | AT-06 | [AT-06-ducking-audio.md](AT-06-ducking-audio.md) | Ducking y prioridad de audio | P3 | Aprobada | M |
