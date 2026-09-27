@@ -1,5 +1,5 @@
 **ID**: PRD-AT-10 · **Proyecto**: ecosistema agent-tts (motor + packs de host)
-**Prioridad**: P2 · **Estado**: Aprobada por el maintainer (24/09/2026)
+**Prioridad**: P2 · **Estado**: **Ejecutada** (2026-09-28)
 **Dependencias**: Ninguna bloqueante; se ejecuta tras el cierre del BLOQUE 1 (AT-09 + AT-04 + AT-08)
 
 # PRD-AT-10 — Monorepo del ecosistema: engine + contracts + hosts
@@ -105,8 +105,8 @@ Supuestos de partida aceptados sin objeción: la estructura `engine/` + `contrac
 - [x] Trabajo IPC en vuelo aterrizado (precondición dura de la Fase 1)
 - [x] BLOQUE 1 cerrado (AT-09 + AT-04 + AT-08)
 - [x] Fases 1–5 ejecutadas con sus garantías de test
-- [ ] Remotes antiguos con tombstone y archivados; verificación end-to-end completa
+- [x] Remotes antiguos con tombstone y archivados; verificación end-to-end completa
 
 ## Next step
 
-Lectura completa y aprobación de esta PRD por el maintainer; luego aterrizar el trabajo IPC en vuelo y cerrar el BLOQUE 1 (AT-04, AT-08). Al cierre del paquete, ejecutar la Fase 1 (movida pura a `engine/`) en una rama dedicada.
+PRD-AT-10 completada y archivada. La arquitectura monorepo (`engine/`, `contracts/`, `hosts/herdr/`) está plenamente operativa. El siguiente paso en el roadmap es abordar el paquete P3 (AT-07 compilado de audio, AT-06 ducking, AT-01 streaming de frames MP3).
