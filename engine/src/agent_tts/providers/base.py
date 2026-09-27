@@ -52,10 +52,12 @@ class TTSProvider:
         volume: str = "+0%",
         pitch: str = "+0Hz",
         stop_checker: Optional[Callable[[], bool]] = None,
+        on_event: Optional[Callable[[dict], None]] = None,
     ) -> Iterator[bytes]:
         """Yields raw MP3 chunks incrementally while the HTTP response is still streaming.
 
         Only providers with supports_stream=True implement this; each yielded chunk
         is a fragment of the same MP3 stream the blocking synthesize() would return.
+        Providers supporting boundary events may invoke on_event(event) as they arrive.
         """
         raise NotImplementedError(f"{self.name} does not support chunked streaming")

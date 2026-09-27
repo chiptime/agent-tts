@@ -417,5 +417,37 @@ class TestOpenAIStreaming(unittest.TestCase):
         self.assertIn("requires an API key", stderr.getvalue())
 
 
+class TestEdgeStreamingProvider(unittest.TestCase):
+    def test_edge_provider_capabilities(self):
+        from agent_tts.providers.edge import EdgeTTSProvider
+
+        p = EdgeTTSProvider()
+        self.assertTrue(p.supports_stream)
+        self.assertFalse(p.stream_yields_group_chunks)
+
+    def test_edge_synthesize_stream_yields_audio_and_fires_events(self):
+        from agent_tts.providers.edge import EdgeTTSProvider
+
+        p = EdgeTTSProvider()
+
+        class FakeCommunicate:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def stream(self):
+                yield {"type": "audio", "data": b"CHUNK1"}
+                yield {"type": "WordBoundary", "offset": 1000, "duration": 500, "text": "Hola"}
+                yield {"type": "audio", "data": b"CHUNK2"}
+
+        events = []
+        with mock.patch("edge_tts.Communicate", FakeCommunicate):
+            chunks = list(p.synthesize_stream("Hola", "alvaro", on_event=events.append))
+
+        self.assertEqual(chunks, [b"CHUNK1", b"CHUNK2"])
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["text"], "Hola")
+
+
 if __name__ == "__main__":
     unittest.main()
+
