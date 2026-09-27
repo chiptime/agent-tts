@@ -31,6 +31,19 @@ Furthermore, raw agent terminal outputs (from Claude Code, OpenCode, Herdr, Aide
 
 ---
 
+## 🏗 Monorepo Architecture
+
+`agent-tts` operates as a consolidated, modular monorepo uniting engine, contracts, and host plugins:
+
+- **[`engine/`](engine/)**: The standalone neural TTS engine, CLI, and daemon (`src/`, `tests/`, `pyproject.toml`).
+- **[`contracts/`](contracts/)**: Versioned normative contracts ([`ipc-v2.md`](contracts/ipc-v2.md) and [`tts-brain-v1.md`](contracts/tts-brain-v1.md)) governing component boundaries.
+- **[`hosts/herdr/`](hosts/herdr/)**: Herdr host ecosystem:
+  - **[`tts-plugin/`](hosts/herdr/tts-plugin/)**: The `herdr-tts` ADE plugin.
+  - **[`brain/`](hosts/herdr/brain/)**: The `herdr-brain` conversational interface and server.
+- **[`docs/`](docs/)**: Architecture design records, roadmap, and living technical debt register.
+
+---
+
 ## 🔌 Agent Connectors
 
 `agent-tts` is the universal voice layer for terminal coding agents, and the missing ecosystem piece is the connector that answers **"what did the agent just say?"** per tool. Text-to-audio is a solved problem; transcript/source knowledge lives here, in the engine (Vision B contract):
