@@ -6,8 +6,8 @@ on:
   pull_request:
 
 jobs:
-  test:
-    name: ${{ matrix.os }} (py${{ matrix.python-version }})
+  engine-tests:
+    name: Engine / ${{ matrix.os }} (py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -21,15 +21,44 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install package with dev extras
+      - name: Install engine package with dev extras
+        working-directory: engine
         run: |
           python -m pip install --upgrade pip
           pip install -e .[dev]
 
-      - name: Run test suite
-        # Windows is experimental signal for now: the suite was written on
-        # Linux and audio-device/WSL-specific tests are expected to skew
-        # results there. continue-on-error keeps the gate green while the
-        # Windows parity work (README roadmap item) collects evidence.
+      - name: Run boundary tests (RF-AT-10-5)
+        run: python -m pytest engine/tests/test_monorepo_boundaries.py -q
+
+      - name: Run engine test suite
+        working-directory: engine
         continue-on-error: ${{ matrix.os == 'windows-latest' }}
+        run: python -m pytest tests/ -q
+
+  brain-tests:
+    name: Herdr Brain / Ubuntu (py3.12, node20)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install brain dependencies
+        working-directory: hosts/herdr/brain
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      - name: Run brain JS tests
+        working-directory: hosts/herdr/brain
+        run: node --test tests/js/
+
+      - name: Run brain Python tests
+        working-directory: hosts/herdr/brain
         run: python -m pytest tests/ -q
