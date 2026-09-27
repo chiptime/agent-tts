@@ -1,7 +1,9 @@
-"""Microsoft Edge Neural TTS provider (zero-config, high quality, 100% free)."""
-
+import asyncio
+import queue
 import re
-from typing import Callable, List, Optional
+import sys
+import threading
+from typing import Callable, Iterator, List, Optional
 import edge_tts
 
 from agent_tts.boundaries import BoundaryMap, Sentence, SynthesisResult, Word
@@ -13,10 +15,63 @@ class EdgeTTSProvider(TTSProvider):
     """Microsoft Edge Neural TTS."""
 
     name = "edge"
+    supports_stream = True
+    stream_yields_group_chunks = False
 
     def resolve_voice(self, voice: str) -> str:
         v = (voice or "").lower().strip()
         return VOICE_MAP.get(v, voice if voice else DEFAULT_VOICE)
+
+    def synthesize_stream(
+        self,
+        text: str,
+        voice: str,
+        rate: str = "+0%",
+        volume: str = "+0%",
+        pitch: str = "+0Hz",
+        stop_checker: Optional[Callable[[], bool]] = None,
+        on_event: Optional[Callable[[dict], None]] = None,
+    ) -> Iterator[bytes]:
+        """Yields raw MP3 chunks incrementally while the Edge TTS WebSocket is streaming."""
+        resolved = self.resolve_voice(voice)
+        q: queue.Queue = queue.Queue(maxsize=100)
+
+        async def _stream_runner():
+            try:
+                communicate = edge_tts.Communicate(
+                    text=text,
+                    voice=resolved,
+                    rate=rate,
+                    volume=volume,
+                    pitch=pitch,
+                    boundary="WordBoundary",
+                )
+                async for chunk in communicate.stream():
+                    if stop_checker and stop_checker():
+                        break
+                    if chunk["type"] == "audio":
+                        q.put(chunk["data"])
+                    elif chunk["type"] == "WordBoundary" and on_event:
+                        try:
+                            on_event(chunk)
+                        except Exception:
+                            pass
+            except Exception as e:
+                print(f"Edge TTS stream error: {e}", file=sys.stderr)
+            finally:
+                q.put(None)
+
+        def _thread_target():
+            asyncio.run(_stream_runner())
+
+        thread = threading.Thread(target=_thread_target, daemon=True)
+        thread.start()
+
+        while True:
+            item = q.get()
+            if item is None:
+                break
+            yield item
 
     async def synthesize(
         self,
