@@ -1,0 +1,216 @@
+id = "herdr.tts"
+name = "Herdr Neural TTS"
+version = "0.16.0"
+min_herdr_version = "0.7.0"
+platforms = ["linux", "macos"]
+description = "Vocalizes agent responses and attention requests using modular TTS backends (Edge Neural TTS, OpenAI TTS, ElevenLabs) with native audio playback, interactive controls, and mobile push. Concurrency-safe."
+
+[[build]]
+command = ["bash", "scripts/bootstrap.sh"]
+platforms = ["linux", "macos"]
+
+# Startup runs the supervised daemon: a foreground watchdog that relaunches
+# `bin/herdr-tts _daemon` if it dies unplanned (deliberate stops go through
+# a stop flag, so restarts are never fought). Deaths and relaunches land in
+# ~/.local/state/herdr-tts/daemon.log.
+[[startup]]
+command = ["bin/herdr-tts", "_daemon-supervised"]
+
+# Interactive dashboard pane: live voice-gating status rendered by the
+# plugin itself (pure ANSI clear+redraw, no external TUI dependencies).
+# Popup placement: transient session-modal, restores focus when it exits (q).
+[[panes]]
+id = "tts-dashboard"
+title = "TTS Dashboard"
+placement = "popup"
+width = "90%"
+height = "90%"
+command = ["bin/herdr-tts", "--dashboard"]
+
+# Interactive voice palette: fzf picker of chats and audio turns inside a
+# popup pane. Accept focuses the chat; ctrl-m mutes and ctrl-z snoozes the
+# selected pane, both exiting the palette without stealing focus.
+[[panes]]
+id = "tts-palette"
+title = "TTS Voice Palette"
+placement = "popup"
+width = "80%"
+height = "70%"
+command = ["bin/herdr-tts", "--voice-palette"]
+
+# One-key voice menu: Herdr core has no key sequences, so this popup
+# simulates the "prefix + namespace + command" chord — one free core
+# letter (prefix+u via the open-menu action) opens the cheat sheet, the
+# next single key runs the command and the popup closes on its own.
+[[panes]]
+id = "tts-menu"
+title = "TTS Voice Menu"
+placement = "popup"
+width = "60%"
+height = "55%"
+command = ["bin/herdr-tts", "--voice-menu"]
+
+# Voice/audio settings popup (prefix+u): cycles provider, global voice,
+# auto-read, scope, language, podcast, debounce, playback, retention and
+# settle; writes the managed keys to config.env atomically (web URL and
+# ntfy topic are free-text inputs).
+[[panes]]
+id = "tts-settings"
+title = "TTS Settings"
+placement = "popup"
+width = "60%"
+height = "55%"
+command = ["bin/herdr-tts", "--voice-settings"]
+
+# Live reader popup (HT-16): karaoke follow-along of the CURRENT playback.
+# Read-only IPC renderer (lib/herdr_reader.py behind the internal _reader
+# command): alternate-screen word highlighting + progress header; exits on
+# q/Esc or when playback ends. It never starts audio.
+[[panes]]
+id = "tts-reader"
+title = "TTS Live Reader"
+placement = "popup"
+width = "70%"
+height = 11
+command = ["bin/herdr-tts", "_reader"]
+
+[[actions]]
+id = "toggle-play"
+title = "Play / Stop Current Chat"
+contexts = ["workspace", "pane"]
+command = ["bin/herdr-tts", "--toggle-play"]
+
+[[actions]]
+id = "tldr-play"
+title = "TL;DR Read Current Chat"
+contexts = ["workspace", "pane"]
+command = ["bin/herdr-tts", "--tldr"]
+
+[[actions]]
+id = "podcast-publish"
+title = "Publish Current Chat to Podcast"
+contexts = ["workspace", "pane"]
+command = ["bin/herdr-tts", "--podcast-publish"]
+
+[[actions]]
+id = "stop"
+title = "Stop Audio Playback"
+contexts = ["workspace", "pane"]
+command = ["bin/herdr-tts", "--stop"]
+
+[[actions]]
+id = "toggle-pause"
+title = "Pause / Resume Audio"
+contexts = ["workspace", "pane"]
+command = ["bin/herdr-tts", "--toggle-pause"]
+
+[[actions]]
+id = "forward"
+title = "Seek Forward 10s"
+contexts = ["workspace", "pane"]
+command = ["bin/herdr-tts", "--forward"]
+
+[[actions]]
+id = "rewind"
+title = "Seek Backward 10s"
+contexts = ["workspace", "pane"]
+command = ["bin/herdr-tts", "--rewind"]
+
+[[actions]]
+id = "next-sentence"
+title = "Next Spoken Sentence"
+contexts = ["workspace", "pane"]
+command = ["bin/herdr-tts", "--next-sentence"]
+
+[[actions]]
+id = "prev-sentence"
+title = "Previous Spoken Sentence"
+contexts = ["workspace", "pane"]
+command = ["bin/herdr-tts", "--prev-sentence"]
+
+[[actions]]
+id = "next-paragraph"
+title = "Next Spoken Paragraph"
+contexts = ["workspace", "pane"]
+command = ["bin/herdr-tts", "--next-paragraph"]
+
+[[actions]]
+id = "prev-paragraph"
+title = "Previous Spoken Paragraph"
+contexts = ["workspace", "pane"]
+command = ["bin/herdr-tts", "--prev-paragraph"]
+
+[[actions]]
+id = "rate-up"
+title = "Increase Voice Speed (+10%)"
+contexts = ["workspace", "pane"]
+command = ["bin/herdr-tts", "--rate-up"]
+
+[[actions]]
+id = "rate-down"
+title = "Decrease Voice Speed (-10%)"
+contexts = ["workspace", "pane"]
+command = ["bin/herdr-tts", "--rate-down"]
+
+[[actions]]
+id = "toggle-auto"
+title = "Toggle Automatic Voice Feedback"
+contexts = ["workspace", "pane"]
+command = ["bin/herdr-tts", "--toggle-auto"]
+
+[[actions]]
+id = "snooze-pane"
+title = "Cycle Pane Snooze (5m / 30m / 2h / off)"
+contexts = ["workspace", "pane"]
+command = ["bin/herdr-tts", "--snooze-pane"]
+
+[[actions]]
+id = "snooze-global"
+title = "Cycle Global Snooze (all agents)"
+contexts = ["workspace"]
+command = ["bin/herdr-tts", "--snooze-global"]
+
+[[actions]]
+id = "mute-pane"
+title = "Mute / Unmute Current Pane (auto-clears on close)"
+contexts = ["workspace", "pane"]
+command = ["bin/herdr-tts", "--mute-pane"]
+
+[[actions]]
+id = "status"
+title = "Voice Feedback Status"
+contexts = ["workspace"]
+command = ["bin/herdr-tts", "--status"]
+
+[[actions]]
+id = "open-dashboard"
+title = "Open TTS Dashboard (popup)"
+contexts = ["workspace"]
+command = ["herdr", "plugin", "pane", "open", "--plugin", "herdr.tts", "--entrypoint", "tts-dashboard"]
+
+[[actions]]
+id = "open-palette"
+title = "Open TTS Voice Palette (popup)"
+contexts = ["workspace"]
+command = ["herdr", "plugin", "pane", "open", "--plugin", "herdr.tts", "--entrypoint", "tts-palette"]
+
+[[actions]]
+id = "open-menu"
+title = "Open TTS Voice Menu (popup)"
+contexts = ["workspace"]
+command = ["herdr", "plugin", "pane", "open", "--plugin", "herdr.tts", "--entrypoint", "tts-menu"]
+
+# Voice/audio settings popup: cycles TTS provider, playback target and
+# audio-retention days. Each change goes through the managed config_set
+# writer (byte-preserving rewrite of config.env + .bak backup).
+[[actions]]
+id = "voice-settings"
+title = "Open TTS Settings (popup)"
+contexts = ["workspace", "pane"]
+command = ["bin/herdr-tts", "--voice-settings"]
+
+[[actions]]
+id = "open-reader"
+title = "Open Live Reader (popup)"
+contexts = ["workspace", "pane"]
+command = ["herdr", "plugin", "pane", "open", "--plugin", "herdr.tts", "--entrypoint", "tts-reader"]

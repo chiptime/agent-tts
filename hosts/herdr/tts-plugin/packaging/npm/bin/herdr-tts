@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# ╔═══════════════════════════════════════════════════════════╗
+# ║  herdr-tts npm wrapper — thin installer alias              ║
+# ╚═══════════════════════════════════════════════════════════╝
+# This package does NOT contain the plugin. It only delegates to the
+# tag-pinned one-line installer (scripts/install.sh) served from the
+# released tag on GitHub, so npm and curl|sh users get byte-identical
+# behavior and exactly one code path to trust.
+#
+# env:  HERDR_TTS_REF (default v0.16.0 — the installer's escape hatch)
+# argv: passed through verbatim (the installer accepts --no-keymap)
+# exit: mirrors the installer's exit code
+set -euo pipefail
+
+HERDR_TTS_REF="${HERDR_TTS_REF:-v0.16.0}"
+INSTALLER_URL="https://raw.githubusercontent.com/chiptime/herdr-tts/${HERDR_TTS_REF}/scripts/install.sh"
+
+command -v curl >/dev/null 2>&1 || {
+  echo "Error: curl is required by the herdr-tts npm wrapper" >&2
+  exit 1
+}
+
+echo "==> herdr-tts npm wrapper: delegating to the tag-pinned installer (${HERDR_TTS_REF})"
+# pipefail inside the child so a failed download is never masked by the
+# reader; "install.sh" becomes $0 so the user's argv lands in $1.. intact.
+exec bash -c 'set -o pipefail; curl -fsSL "$1" | bash -s -- install.sh "${@:2}"' \
+  herdr-tts-wrapper "$INSTALLER_URL" "$@"

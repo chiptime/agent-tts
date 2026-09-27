@@ -1,0 +1,63 @@
+# openspec/config.yaml — SDD project config for herdr-tts
+schema: spec-driven
+
+context: |
+  Tech stack: Pure bash monolith (bin/herdr-tts, ~5k lines: daemon, watcher, CLI
+  dispatcher, dashboard TUI, fzf palette, keymap system, settings popups) plus a
+  Python bridge lib/tts_engine.py delegating synthesis/playback/IPC to the
+  agent-tts pip package (separate repo, external dependency, out of scope).
+  Architecture: Herdr host-layer plugin declared in herdr-plugin.toml
+  (build/startup/panes/actions); hermetic runtimes for tests.
+  Testing: scripts/smoke-tests.sh — hermetic scenario-based bash suite
+  (30 scenarios, 487 assertions); stubs herdr CLI, venv python, XDG dirs;
+  exits non-zero on failure. No unit runner.
+  Style: Code/comments in English, CLI strings often Spanish, docs/ in Spanish,
+  README in English. SDD artifacts in English.
+
+strict_tdd: true
+
+projects:
+  - path: .
+    stack: bash + python-bridge (agent-tts pip package)
+    test_command: bash scripts/smoke-tests.sh
+    framework: custom hermetic bash scenario suite (lib_run/assert_grep/ok/bad)
+    test_layers: integration (scenario-based)
+    coverage_command: ""
+    lint_command: ""
+    typecheck_command: ""
+    format_command: ""
+
+testing:
+  command: bash scripts/smoke-tests.sh
+  strict_tdd: true
+  last_verified: 2026-09-22 (487 passed / 0 failed, exit 0)
+  note: >-
+    Qualifies as strict TDD: single workspace-level hermetic command that
+    returns pass/fail from the repo root. Granularity is integration-scenario
+    level: RED-GREEN-REFACTOR means writing failing scenarios/assertions in
+    scripts/smoke-tests.sh first, then implementing in bin/herdr-tts.
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes (daemon lifecycle, watcher, config writer)
+  specs:
+    - Use Given/When/Then for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+  design:
+    - Include sequence diagrams for complex flows (daemon lifecycle, IPC socket, playback)
+    - Document architecture decisions with rationale
+  tasks:
+    - Group by phase, use hierarchical numbering
+    - Keep tasks completable in one session
+    - Every implementation task must name the smoke-test scenario/assertions that prove it
+  apply:
+    guidelines:
+      - Follow existing code patterns in bin/herdr-tts (sectioned single-script layout)
+    tdd: true
+    test_command: bash scripts/smoke-tests.sh
+  verify:
+    test_command: bash scripts/smoke-tests.sh
+    build_command: bash scripts/bootstrap.sh
+    coverage_threshold: 0
+  archive:
+    - Warn before merging destructive deltas
