@@ -104,7 +104,7 @@ Supuestos de partida aceptados sin objeción: la estructura `engine/` + `contrac
 - [x] Fila añadida al índice de `docs/prds/README.md`
 - [x] Trabajo IPC en vuelo aterrizado (precondición dura de la Fase 1)
 - [x] BLOQUE 1 cerrado (AT-09 + AT-04 + AT-08)
-- [ ] Fases 1–5 ejecutadas con sus garantías de test
+- [x] Fases 1–5 ejecutadas con sus garantías de test
 - [ ] Remotes antiguos con tombstone y archivados; verificación end-to-end completa
 
 ## Next step
