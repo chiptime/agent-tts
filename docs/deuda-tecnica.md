@@ -8,7 +8,7 @@
 
 - **R3-01 — ventana espontánea veredicto→hook** (`src/agent_tts/queue_manager.py:566-579`, `src/agent_tts/daemon.py:983-1005,1041-1044`): un worker que termina espontáneamente entre el veredicto del watchdog y el hook libera al cliente con su outcome natural (veraz) mientras la snapshot cuenta `failed+wedged`. Miscount de contador en carrera de microsegundos; sin solape ni colgado. Gravedad disputada entre jueces JD (CRITICAL vs WARNING); **aceptado por el maintainer 2026-09-25**. Mejora futura: cierre de la ventana + test de fin espontáneo dentro de ella.
 - **R2-03 — reply del enqueue preemptante en targets remotos**: worst case (espera de terminación ≤0,5 s + gateway subprocess ~2 s + connect timeouts) puede superar el timeout de cliente de 1 s; el daemon-side preempta y despacha igualmente. Aceptado en el JD.
-- **Limitaciones congeladas del contrato** (detalle en `docs/ipc-contract-v2.md` §10): refusal transitorio en la ventana bind→listen; `send_ipc_command` devuelve `None` opaco en fallo de transporte; winhost v1 con preemption documentada; controles seek/frases en ERR para wsl-ps/winhost.
+- **Limitaciones congeladas del contrato** (detalle en `contracts/ipc-v2.md` §10): refusal transitorio en la ventana bind→listen; `send_ipc_command` devuelve `None` opaco en fallo de transporte; winhost v1 con preemption documentada; controles seek/frases en ERR para wsl-ps/winhost.
 - **`stop` — semántica congelada (decisión del maintainer 2026-09-25)**: corta solo el anuncio activo; los ítems pendientes siguen. Adecuada para una cola de notificaciones; se congela así, sin `stop`-con-flush ni comando adicional.
 - **A7 — vistas invisibles en el terminal invocante** (heredado de 1.2): `--highlight/--zen/--autoscroll/--bionic` renderizan dentro del daemon (stdout DEVNULL al auto-arrancar). Limitación documentada; rediseño UX (render en cliente vía status) pendiente, sin dependencia de contrato.
 - **FUP-1 — Windows kill(0)** (heredado de 1.2): `os.kill(pid, 0)` en Windows = TerminateProcess; un PID reutilizado en PID_FILE puede hacer que `_kill_wedged_daemon` mate un proceso ajeno (sin `/proc` no hay veto de identidad). Follow-up Windows abierto.
@@ -42,5 +42,5 @@ Estado de [`docs/technical-debt-prd.md`](technical-debt-prd.md) verificado el 20
 ## 6. Housekeeping
 
 - **Push de `main`**: 22 commits por delante de `origin/main` (bloque 1.3 + merge `a9f11b9` + docs). Decisión del maintainer.
-- **Comunicar el contrato congelado a herdr-tts** (HT-03/HT-10): el artefacto es `docs/ipc-contract-v2.md`.
+- **Comunicar el contrato congelado a herdr-tts** (HT-03/HT-10): el artefacto es `contracts/ipc-v2.md`.
 - **Tras registrar el smoke**: borrar el worktree `~/Code/personal/agent-tts-worktrees/bloque-1.3` y la rama `feat/at-08-cola-y-cadena` (main lo contiene todo).

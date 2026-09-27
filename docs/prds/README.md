@@ -21,7 +21,7 @@ Metodología: cada PRD se justifica primero por cómo mejora el flujo diario del
 
 ## Orden de ataque
 
-1. **Paquete P1: AT-09 + AT-04 + AT-08** — **COMPLETADO (2026-09-25)**, en tres sub-bloques secuenciales (archivados en [`archivadas/bloques/`](archivadas/bloques/)): 1.1 canal de control (AT-09), 1.2 daemon por vía única (AT-04), 1.3 cola y cadena (AT-08). El daemon nace poseyendo la cola desde el día uno: una sola migración de semántica de playback, no dos. Contrato IPC congelado: [`../ipc-contract-v2.md`](../ipc-contract-v2.md). Deuda, pendientes y residuales aceptados: [`../deuda-tecnica.md`](../deuda-tecnica.md).
+1. **Paquete P1: AT-09 + AT-04 + AT-08** — **COMPLETADO (2026-09-25)**, en tres sub-bloques secuenciales (archivados en [`archivadas/bloques/`](archivadas/bloques/)): 1.1 canal de control (AT-09), 1.2 daemon por vía única (AT-04), 1.3 cola y cadena (AT-08). El daemon nace poseyendo la cola desde el día uno: una sola migración de semántica de playback, no dos. Contrato IPC congelado: [`../../contracts/ipc-v2.md`](../../contracts/ipc-v2.md). Deuda, pendientes y residuales aceptados: [`../deuda-tecnica.md`](../deuda-tecnica.md).
 2. **AT-03 recortada** (solo verificación opencode web, ~10 min): validar con un id de sesión web real que el conector actual resuelve; sin código nuevo.
 3. **P3**: AT-07 primero (mejor ratio valor/coste del lote) → AT-06 → AT-01 al final (mayor esfuerzo y riesgo de regresión en karaoke/boundaries).
 4. **Postergadas**: AT-02 y AT-05.
