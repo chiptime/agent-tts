@@ -1,0 +1,834 @@
+/* node --test suite for the pure approval-gate client flow. */
+
+const test = require("node:test");
+const assert = require("node:assert");
+const { createApprovalFlow, cardModel } = require("../../src/herdr_brain/static/approval.js");
+
+function fakeClock(start = 0) {
+  let t = start;
+  return {
+    now: () => t,
+    advance: ms => { t += ms; }
+  };
+}
+
+function makeResponse(spec) {
+  const status = spec.status || 200;
+  return {
+    status,
+    ok: status >= 200 && status < 300,
+    json: () => Promise.resolve(spec.json || {})
+  };
+}
+
+/* Scripted HTTP: every call shifts the next planned response spec. */
+function scriptedHttp(plan) {
+  const calls = [];
+  const request = (url, options, timeoutMs) => {
+    calls.push({ url, options, timeoutMs });
+    const spec = plan.length ? plan.shift() : { status: 500 };
+    return Promise.resolve(makeResponse(spec));
+  };
+  return { request, calls };
+}
+
+/* Deferred HTTP: the test resolves each call by hand (in-flight checks). */
+function deferredHttp() {
+  const calls = [];
+  const pending = [];
+  const request = (url, options, timeoutMs) => {
+    calls.push({ url, options, timeoutMs });
+    return new Promise(resolve => pending.push(resolve));
+  };
+  return { request, calls, respond: spec => pending.shift()(makeResponse(spec)) };
+}
+
+function bodyOf(call) {
+  return JSON.parse(call.options.body);
+}
+
+const flush = () => new Promise(resolve => setImmediate(resolve));
+
+/* Full harness: the flow plus recorded callbacks, a fake clock and a
+ * fetch mock — per the tests/js convention of injected time and IO. */
+function harness(overrides = {}) {
+  const clock = fakeClock();
+  const states = [];
+  const answers = [];
+  const played = [];
+  const banners = [];
+  const expired = [];
+  const http = overrides.http || scriptedHttp(overrides.plan || []);
+  const flow = createApprovalFlow({
+    now: clock.now,
+    request: http.request,
+    setState: s => states.push(s),
+    renderAnswer: a => answers.push(a),
+    playAudio: url => played.push(url),
+    onExpired: () => expired.push(true),
+    banner: m => banners.push(m)
+  });
+  return { flow, states, answers, played, banners, expired, clock, http };
+}
+
+const GATE = {
+  gate_id: "a1b2c3d4e5f6",
+  tool: "send_to_session",
+  pane_id: "3",
+  agent: "opencode",
+  text: "arregla el bug del login",
+  timeout_ms: 300000,
+  expires_in_s: 60
+};
+
+const RESOLVE_URL = "/approval/a1b2c3d4e5f6/resolve";
+const PATCH_URL = "/approval/a1b2c3d4e5f6";
+
+/* ---- /ask with approval{} -> confirming ---- */
+
+test("open() enters confirming and runs the countdown from expires_in_s", () => {
+  const h = harness();
+  h.flow.open({ ...GATE });
+  assert.equal(h.flow.active(), true);
+  assert.deepEqual(h.states, ["confirming"]);
+  assert.equal(h.flow.remainingSeconds(), 60);
+  h.clock.advance(30_000);
+  assert.equal(h.flow.remainingSeconds(), 30);
+});
+
+test("tick before the window closes is a no-op", () => {
+  const h = harness();
+  h.flow.open({ ...GATE });
+  h.clock.advance(59_999);
+  h.flow.tick();
+  assert.equal(h.flow.active(), true);
+  assert.deepEqual(h.states, ["confirming"]);
+});
+
+/* ---- STT routing: resolve, never /ask ---- */
+
+test("a confirming utterance resolves against the gate, never /ask", async () => {
+  const h = harness({ plan: [{ json: { decision: "reject" } }] });
+  h.flow.open({ ...GATE });
+  assert.equal(h.flow.routeUtterance("no"), true);
+  await flush();
+  assert.equal(h.http.calls.length, 1);
+  assert.equal(h.http.calls[0].url, RESOLVE_URL);
+  assert.equal(h.http.calls[0].options.method, "POST");
+  assert.deepEqual(bodyOf(h.http.calls[0]), { utterance: "no" });
+});
+
+test("without a live gate routing declines and the caller falls back to /ask", () => {
+  const h = harness();
+  assert.equal(h.flow.routeUtterance("hola"), false);
+  assert.equal(h.http.calls.length, 0);
+});
+
+test("a second utterance during an in-flight round is swallowed", async () => {
+  const http = deferredHttp();
+  const h = harness({ http });
+  h.flow.open({ ...GATE });
+  assert.equal(h.flow.routeUtterance("sí"), true);
+  assert.equal(h.flow.routeUtterance("no"), true);  // swallowed: no new request
+  assert.equal(h.http.calls.length, 1);
+  assert.deepEqual(h.states, ["confirming", "thinking"]);
+  http.respond({ json: { decision: "reject" } });
+  await flush();
+  assert.equal(h.flow.active(), false);
+  assert.equal(h.flow.routeUtterance("hola"), false);
+});
+
+/* ---- decision handling ---- */
+
+test("approve: thinking during the replay, answer rendered, then listening", async () => {
+  const h = harness({
+    plan: [{ json: { decision: "approve", answer: "Enviado y listo", audio_url: null, approval: null } }]
+  });
+  h.flow.open({ ...GATE });
+  h.flow.routeUtterance("sí");
+  await flush();
+  assert.deepEqual(h.states, ["confirming", "thinking", "listening"]);
+  assert.deepEqual(h.answers, [{ answer: "Enviado y listo", audio_url: null }]);
+  assert.deepEqual(h.played, []);
+  assert.equal(h.flow.active(), false);
+});
+
+test("approve with audio hands the return to listening to the audio queue", async () => {
+  const h = harness({
+    plan: [{ json: { decision: "approve", answer: "Enviado", audio_url: "/audio/x.mp3", approval: null } }]
+  });
+  h.flow.open({ ...GATE });
+  h.flow.routeUtterance("dale");
+  await flush();
+  assert.deepEqual(h.states, ["confirming", "thinking"]);  // queue resumes at listening
+  assert.deepEqual(h.answers, [{ answer: "Enviado", audio_url: "/audio/x.mp3" }]);
+  assert.equal(h.flow.active(), false);
+});
+
+test("reject is silent: straight back to listening", async () => {
+  const h = harness({ plan: [{ json: { decision: "reject" } }] });
+  h.flow.open({ ...GATE });
+  h.flow.routeUtterance("no lo envíes");
+  await flush();
+  assert.deepEqual(h.states, ["confirming", "thinking", "listening"]);
+  assert.deepEqual(h.answers, []);
+  assert.deepEqual(h.played, []);
+  assert.deepEqual(h.banners, []);
+  assert.equal(h.flow.active(), false);
+});
+
+test("reprompt re-echoes ¿Sí o no? and stays confirming for the next round", async () => {
+  const h = harness({
+    plan: [
+      { json: { decision: "reprompt", answer: "¿Sí o no?", audio_url: "/audio/r.mp3", approval: null } },
+      { json: { decision: "reject" } }
+    ]
+  });
+  h.flow.open({ ...GATE });
+  h.flow.routeUtterance("hola");
+  await flush();
+  assert.deepEqual(h.played, ["/audio/r.mp3"]);
+  assert.equal(h.flow.active(), true);
+  assert.deepEqual(h.states, ["confirming", "thinking"]);  // audio owns the confirming return
+  // The next STT round resolves again against the SAME gate.
+  h.flow.routeUtterance("no");
+  await flush();
+  assert.equal(h.http.calls.length, 2);
+  assert.equal(h.http.calls[1].url, RESOLVE_URL);
+  assert.deepEqual(h.states, ["confirming", "thinking", "thinking", "listening"]);
+});
+
+test("reprompt without audio re-arms confirming directly", async () => {
+  const h = harness({
+    plan: [{ json: { decision: "reprompt", answer: "¿Sí o no?", audio_url: null, approval: null } }]
+  });
+  h.flow.open({ ...GATE });
+  h.flow.routeUtterance("hola");
+  await flush();
+  assert.equal(h.flow.active(), true);
+  assert.equal(h.states[h.states.length - 1], "confirming");
+});
+
+/* ---- listen_replace: one dictation round -> PATCH -> re-confirm ---- */
+
+test("listen_replace: dictation -> PATCH -> re-confirm with restarted timer", async () => {
+  const h = harness({
+    plan: [
+      { json: { decision: "listen_replace", answer: null, audio_url: null, approval: null } },
+      { json: { decision: "reprompt", answer: "¿Sí o no?", audio_url: null, approval: null } },
+      { status: 200, json: { ok: true, approval: { ...GATE, text: "nuevo texto dictado", expires_in_s: 60 } } },
+      { json: { audio_url: "/audio/echo.mp3" } }
+    ]
+  });
+  h.flow.open({ ...GATE });
+  h.clock.advance(45_000);  // 15 s left on the old window
+  h.flow.routeUtterance("cambia el texto");
+  await flush();
+  assert.equal(h.flow.isDictating(), true);
+  assert.equal(h.states[h.states.length - 1], "confirming");
+  // The dictation itself still routes to /resolve first (command precedence).
+  h.flow.routeUtterance("nuevo texto dictado");
+  await flush();
+  assert.equal(h.http.calls.length, 4);
+  assert.equal(h.http.calls[1].url, RESOLVE_URL);
+  assert.equal(h.http.calls[2].url, PATCH_URL);
+  assert.equal(h.http.calls[2].options.method, "PATCH");
+  assert.deepEqual(bodyOf(h.http.calls[2]), { text: "nuevo texto dictado" });
+  assert.equal(h.http.calls[3].url, "/tts");
+  assert.deepEqual(bodyOf(h.http.calls[3]), { text: "nuevo texto dictado" });
+  assert.deepEqual(h.played, ["/audio/echo.mp3"]);
+  assert.equal(h.flow.active(), true);
+  assert.equal(h.flow.gate().text, "nuevo texto dictado");
+  assert.equal(h.flow.remainingSeconds(), 60);  // restarted, not the old 15
+  assert.equal(h.flow.isDictating(), false);
+});
+
+test("an approval command during the dictation round resolves as usual (no PATCH)", async () => {
+  const h = harness({
+    plan: [
+      { json: { decision: "listen_replace" } },
+      { json: { decision: "approve", answer: "Enviado", audio_url: "/audio/x.mp3", approval: null } }
+    ]
+  });
+  h.flow.open({ ...GATE });
+  h.flow.routeUtterance("cambia el texto");
+  await flush();
+  h.flow.routeUtterance("sí");
+  await flush();
+  assert.equal(h.http.calls.length, 2);
+  for (const call of h.http.calls) {
+    assert.equal(call.url, RESOLVE_URL);  // never a PATCH, never /ask
+  }
+  assert.deepEqual(h.answers, [{ answer: "Enviado", audio_url: "/audio/x.mp3" }]);
+  assert.equal(h.flow.active(), false);
+  assert.equal(h.flow.isDictating(), false);
+});
+
+test("a repeated replace-intent during dictation keeps waiting for the text", async () => {
+  const h = harness({
+    plan: [
+      { json: { decision: "listen_replace" } },
+      { json: { decision: "listen_replace" } }
+    ]
+  });
+  h.flow.open({ ...GATE });
+  h.flow.routeUtterance("cambia el texto");
+  await flush();
+  h.flow.routeUtterance("redicta");
+  await flush();
+  assert.equal(h.http.calls.length, 2);
+  assert.equal(h.http.calls[1].url, RESOLVE_URL);
+  assert.equal(h.flow.isDictating(), true);
+  assert.equal(h.states[h.states.length - 1], "confirming");
+});
+
+test("a failed /tts re-echo re-confirms text-only", async () => {
+  const h = harness({
+    plan: [
+      { json: { decision: "listen_replace" } },
+      { json: { decision: "reprompt", answer: "¿Sí o no?", audio_url: null, approval: null } },
+      { status: 200, json: { ok: true, approval: { ...GATE, text: "texto revisado", expires_in_s: 60 } } },
+      { status: 502, json: {} }
+    ]
+  });
+  h.flow.open({ ...GATE });
+  h.flow.routeUtterance("cambia el texto");
+  await flush();
+  h.flow.routeUtterance("texto revisado");
+  await flush();
+  assert.equal(h.flow.active(), true);
+  assert.equal(h.flow.gate().text, "texto revisado");
+  assert.equal(h.flow.remainingSeconds(), 60);
+  assert.equal(h.states[h.states.length - 1], "confirming");
+  assert.equal(h.banners.length, 1);
+});
+
+/* ---- expiry (countdown + 404) ---- */
+
+test("countdown hitting 0 expires silently back to listening", () => {
+  const h = harness();
+  h.flow.open({ ...GATE });
+  h.clock.advance(60_000);
+  h.flow.tick();
+  assert.deepEqual(h.expired, [true]);
+  assert.equal(h.states[h.states.length - 1], "listening");
+  assert.equal(h.flow.active(), false);
+  assert.deepEqual(h.banners, []);
+  assert.deepEqual(h.played, []);
+  // The server owns the truth; the expired payload stays for the gray card.
+  assert.equal(h.flow.isExpired(), true);
+  assert.equal(h.flow.gate().gate_id, GATE.gate_id);
+  // Post-expiry utterances are plain questions again.
+  assert.equal(h.flow.routeUtterance("hola"), false);
+});
+
+/* ---- mid-replay expiry: a round in flight owns the state ---- */
+
+test("expireIfDue is skipped while a resolve round is in flight (the replay owns the deadline)", async () => {
+  const http = deferredHttp();
+  const h = harness({ http });
+  h.flow.open({ ...GATE });
+  h.flow.routeUtterance("sí");  // round in flight, request pending
+  assert.equal(h.flow.isBusy(), true);
+  h.clock.advance(120_000);     // countdown elapses while the send runs
+  h.flow.tick();
+  assert.equal(h.flow.isExpired(), false);  // no premature gray card
+  assert.deepEqual(h.states, ["confirming", "thinking"]);  // no listening emission
+  assert.deepEqual(h.expired, []);
+  // The round settles (reprompt: gate still live) — expiry resumes.
+  http.respond({ json: { decision: "reprompt", answer: "¿Sí o no?", audio_url: null, approval: null } });
+  await flush();
+  assert.equal(h.flow.isBusy(), false);
+  assert.equal(h.flow.isExpired(), false);  // not yet: tick has not run
+  h.clock.advance(1_000);
+  h.flow.tick();
+  assert.equal(h.flow.isExpired(), true);   // now expiry proceeds normally
+  assert.deepEqual(h.expired, [true]);
+  assert.equal(h.states[h.states.length - 1], "listening");
+});
+
+test("isBusy(): true while a round is in flight, false once it settles", async () => {
+  const http = deferredHttp();
+  const h = harness({ http });
+  h.flow.open({ ...GATE });
+  assert.equal(h.flow.isBusy(), false);
+  h.flow.routeUtterance("sí");
+  assert.equal(h.flow.isBusy(), true);
+  http.respond({ json: { decision: "reject" } });
+  await flush();
+  assert.equal(h.flow.isBusy(), false);
+});
+
+test("404 from resolve (expired at touch) is a silent terminal", async () => {
+  const h = harness({
+    plan: [{ status: 404, json: { detail: "approval gate not found or no longer active" } }]
+  });
+  h.flow.open({ ...GATE });
+  h.flow.routeUtterance("sí");
+  await flush();
+  assert.deepEqual(h.states, ["confirming", "thinking", "listening"]);
+  assert.equal(h.flow.active(), false);
+  assert.deepEqual(h.banners, []);
+  assert.deepEqual(h.answers, []);
+});
+
+test("404 from PATCH is terminal too", async () => {
+  const h = harness({
+    plan: [
+      { json: { decision: "listen_replace" } },
+      { json: { decision: "reprompt", answer: "¿Sí o no?", audio_url: null, approval: null } },
+      { status: 404, json: { detail: "approval gate not found or no longer active" } }
+    ]
+  });
+  h.flow.open({ ...GATE });
+  h.flow.routeUtterance("cambia el texto");
+  await flush();
+  h.flow.routeUtterance("texto que ya no importa");
+  await flush();
+  assert.equal(h.states[h.states.length - 1], "listening");
+  assert.equal(h.flow.active(), false);
+  assert.deepEqual(h.played, []);
+  assert.deepEqual(h.banners, []);
+});
+
+/* ---- lifecycle ---- */
+
+test("cancel drops the gate silently", () => {
+  const h = harness();
+  h.flow.open({ ...GATE });
+  h.flow.cancel();
+  assert.equal(h.flow.active(), false);
+  assert.deepEqual(h.states, ["confirming"]);  // no extra emission
+  assert.equal(h.flow.routeUtterance("hola"), false);
+});
+
+test("a failed resolve keeps the gate live and surfaces a banner", async () => {
+  const calls = [];
+  const h = harness({ http: { request: () => Promise.reject(new Error("boom")), calls } });
+  h.flow.open({ ...GATE });
+  h.flow.routeUtterance("sí");
+  await flush();
+  assert.equal(h.flow.active(), true);
+  assert.equal(h.states[h.states.length - 1], "confirming");
+  assert.equal(h.banners.length, 1);
+});
+
+test("a failed PATCH keeps or drops the gate with a banner, never silently stuck", async () => {
+  const h = harness({
+    plan: [
+      { json: { decision: "listen_replace" } },
+      { json: { decision: "reprompt", answer: "¿Sí o no?", audio_url: null, approval: null } },
+      { status: 500, json: {} }
+    ]
+  });
+  h.flow.open({ ...GATE });
+  h.flow.routeUtterance("cambia el texto");
+  await flush();
+  h.flow.routeUtterance("nuevo texto");
+  await flush();
+  assert.equal(h.flow.active(), true);      // gate untouched server-side: still live
+  assert.equal(h.states[h.states.length - 1], "confirming");
+  assert.equal(h.banners.length, 1);
+});
+
+/* ---- button entry points (T6 card): approve / reject / patch / redictate ----
+ *
+ * The card's DOM lives in app.js (no DOM harness in this runner); these
+ * tests pin the button SEMANTICS on the flow: which endpoint each button
+ * hits, the state emissions, and the guards. Visual layout + drawer
+ * wiring are covered by the T8 manual smoke pass. */
+
+test("approve(): POST /approve renders the report and returns to listening", async () => {
+  const h = harness({
+    plan: [{ json: { answer: "Enviado y listo", audio_url: null, approval: null } }]
+  });
+  h.flow.open({ ...GATE });
+  assert.equal(h.flow.approve(), true);
+  await flush();
+  assert.equal(h.http.calls.length, 1);
+  assert.equal(h.http.calls[0].url, "/approval/a1b2c3d4e5f6/approve");
+  assert.equal(h.http.calls[0].options.method, "POST");
+  assert.deepEqual(h.answers, [{ answer: "Enviado y listo", audio_url: null }]);
+  assert.equal(h.flow.active(), false);
+  assert.deepEqual(h.states, ["confirming", "thinking", "listening"]);
+});
+
+test("approve() with audio hands the return to listening to the audio queue", async () => {
+  const h = harness({
+    plan: [{ json: { answer: "Enviado", audio_url: "/audio/x.mp3", approval: null } }]
+  });
+  h.flow.open({ ...GATE });
+  h.flow.approve();
+  await flush();
+  assert.deepEqual(h.states, ["confirming", "thinking"]);  // queue resumes at listening
+  assert.equal(h.flow.active(), false);
+});
+
+test("approve() on 404 (expired at touch) is a silent terminal", async () => {
+  const h = harness({
+    plan: [{ status: 404, json: { detail: "approval gate not found or no longer active" } }]
+  });
+  h.flow.open({ ...GATE });
+  h.flow.approve();
+  await flush();
+  assert.deepEqual(h.states, ["confirming", "thinking", "listening"]);
+  assert.equal(h.flow.active(), false);
+  assert.deepEqual(h.answers, []);
+  assert.deepEqual(h.banners, []);
+});
+
+test("approve() is refused without a live gate or mid-round", async () => {
+  const http = deferredHttp();
+  const h = harness({ http });
+  assert.equal(h.flow.approve(), false);  // no gate at all
+  h.flow.open({ ...GATE });
+  h.flow.routeUtterance("sí");            // a round is in flight
+  assert.equal(h.flow.approve(), false);  // resolving: swallowed
+  assert.equal(h.http.calls.length, 1);   // only the resolve call happened
+  http.respond({ json: { decision: "reject" } });
+  await flush();
+  assert.equal(h.flow.active(), false);
+});
+
+test("approve() network failure keeps the gate live with a banner", async () => {
+  const h = harness({ http: { request: () => Promise.reject(new Error("boom")), calls: [] } });
+  h.flow.open({ ...GATE });
+  h.flow.approve();
+  await flush();
+  assert.equal(h.flow.active(), true);
+  assert.equal(h.states[h.states.length - 1], "confirming");
+  assert.equal(h.banners.length, 1);
+});
+
+test("reject(): POST /reject is silent, nothing rendered, back to listening", async () => {
+  const h = harness({ plan: [{ json: { ok: true, state: "rejected" } }] });
+  h.flow.open({ ...GATE });
+  assert.equal(h.flow.reject(), true);
+  await flush();
+  assert.equal(h.http.calls.length, 1);
+  assert.equal(h.http.calls[0].url, "/approval/a1b2c3d4e5f6/reject");
+  assert.equal(h.http.calls[0].options.method, "POST");
+  assert.deepEqual(h.answers, []);
+  assert.deepEqual(h.played, []);
+  assert.deepEqual(h.banners, []);
+  assert.equal(h.flow.active(), false);
+  assert.deepEqual(h.states, ["confirming", "thinking", "listening"]);
+});
+
+test("reject() on 404 is a silent terminal too", async () => {
+  const h = harness({
+    plan: [{ status: 404, json: { detail: "approval gate not found or no longer active" } }]
+  });
+  h.flow.open({ ...GATE });
+  h.flow.reject();
+  await flush();
+  assert.equal(h.states[h.states.length - 1], "listening");
+  assert.equal(h.flow.active(), false);
+  assert.deepEqual(h.banners, []);
+});
+
+test("patchText() (manual edit): PATCH new text, timer restarts, /tts re-echo", async () => {
+  const h = harness({
+    plan: [
+      { status: 200, json: { ok: true, approval: { ...GATE, text: "texto editado a mano", expires_in_s: 60 } } },
+      { json: { audio_url: "/audio/echo.mp3" } }
+    ]
+  });
+  h.flow.open({ ...GATE });
+  h.clock.advance(50_000);  // 10 s left on the old window
+  assert.equal(h.flow.patchText("texto editado a mano"), true);
+  await flush();
+  assert.equal(h.http.calls.length, 2);
+  assert.equal(h.http.calls[0].url, PATCH_URL);
+  assert.equal(h.http.calls[0].options.method, "PATCH");
+  assert.deepEqual(bodyOf(h.http.calls[0]), { text: "texto editado a mano" });
+  assert.equal(h.http.calls[1].url, "/tts");  // client-side re-echo (locked T4 contract)
+  assert.deepEqual(bodyOf(h.http.calls[1]), { text: "texto editado a mano" });
+  assert.deepEqual(h.played, ["/audio/echo.mp3"]);
+  assert.equal(h.flow.active(), true);
+  assert.equal(h.flow.gate().text, "texto editado a mano");
+  assert.equal(h.flow.remainingSeconds(), 60);  // restarted, not the old 10
+});
+
+test("patchText() on 404 is a silent terminal (expired while editing)", async () => {
+  const h = harness({
+    plan: [{ status: 404, json: { detail: "approval gate not found or no longer active" } }]
+  });
+  h.flow.open({ ...GATE });
+  assert.equal(h.flow.patchText("ya da igual"), true);
+  await flush();
+  assert.equal(h.states[h.states.length - 1], "listening");
+  assert.equal(h.flow.active(), false);
+  assert.deepEqual(h.banners, []);
+});
+
+test("redictate(): enters the dictation round with no network round", () => {
+  const h = harness();
+  h.flow.open({ ...GATE });
+  assert.equal(h.flow.redictate(), true);
+  assert.equal(h.flow.isDictating(), true);
+  assert.equal(h.http.calls.length, 0);
+  assert.equal(h.states[h.states.length - 1], "confirming");
+});
+
+test("redictate() is refused without a live gate and when expired", () => {
+  const h = harness();
+  assert.equal(h.flow.redictate(), false);
+  h.flow.open({ ...GATE });
+  h.clock.advance(60_000);
+  h.flow.tick();  // silent expiry
+  assert.equal(h.flow.redictate(), false);
+  assert.equal(h.flow.isDictating(), false);
+});
+
+test("redictate() round: a non-command utterance still PATCHes as new text", async () => {
+  const h = harness({
+    plan: [
+      { json: { decision: "reprompt", answer: "¿Sí o no?", audio_url: null, approval: null } },
+      { status: 200, json: { ok: true, approval: { ...GATE, text: "texto redictado", expires_in_s: 60 } } },
+      { json: { audio_url: "/audio/echo.mp3" } }
+    ]
+  });
+  h.flow.open({ ...GATE });
+  h.flow.redictate();                       // the [🎙 Re-dictar] button
+  h.flow.routeUtterance("texto redictado");  // resolves FIRST (PRD §5 precedence)
+  await flush();
+  assert.equal(h.http.calls[0].url, RESOLVE_URL);
+  assert.equal(h.http.calls[1].url, PATCH_URL);
+  assert.deepEqual(bodyOf(h.http.calls[1]), { text: "texto redictado" });
+  assert.equal(h.flow.gate().text, "texto redictado");
+  assert.equal(h.flow.isDictating(), false);
+});
+
+/* ---- replay-budget timeouts ----
+ *
+ * The approve replay blocks server-side until the agent finishes the
+ * frozen send, so approve()/resolve need the gate's own timeout_ms plus
+ * margin — a mid-replay client abort would strand an approved gate with
+ * no report. The fast endpoints (reject, PATCH) keep the short default. */
+
+test("approve() budgets the replay: gate.timeout_ms + 30000 margin", async () => {
+  const h = harness({ plan: [{ json: { answer: "Enviado", audio_url: null, approval: null } }] });
+  h.flow.open({ ...GATE, timeout_ms: 5000 });
+  h.flow.approve();
+  await flush();
+  assert.equal(h.http.calls[0].url, "/approval/a1b2c3d4e5f6/approve");
+  assert.equal(h.http.calls[0].timeoutMs, 35000);  // 5000 + 30000
+});
+
+test("routeUtterance() /resolve carries the same replay budget (voice approve replays server-side)", async () => {
+  const h = harness({ plan: [{ json: { decision: "reject" } }] });
+  h.flow.open({ ...GATE, timeout_ms: 5000 });
+  h.flow.routeUtterance("sí");
+  await flush();
+  assert.equal(h.http.calls[0].url, RESOLVE_URL);
+  assert.equal(h.http.calls[0].timeoutMs, 35000);
+});
+
+test("reject() and patchText() keep the short default: no timeout arg", async () => {
+  const h = harness({
+    plan: [
+      { status: 200, json: { ok: true, approval: { ...GATE, text: "texto", expires_in_s: 60 } } },
+      { json: { audio_url: "/audio/echo.mp3" } },
+      { json: { ok: true, state: "rejected" } }
+    ]
+  });
+  h.flow.open({ ...GATE });
+  h.flow.patchText("texto");
+  await flush();
+  h.flow.reject();
+  await flush();
+  assert.equal(h.http.calls[0].url, PATCH_URL);
+  assert.equal(h.http.calls[0].timeoutMs, undefined);  // fast PATCH: short default
+  assert.equal(h.http.calls[2].url, "/approval/a1b2c3d4e5f6/reject");
+  assert.equal(h.http.calls[2].timeoutMs, undefined);  // fast reject: short default
+});
+
+/* ---- boot reload recovery (T7): GET /approval/current ----
+ *
+ * app.js fires recover(sessionId) during init; a live payload re-enters
+ * confirming (drawer auto-open + pill wiring live in app.js — verified
+ * on the DOM-stub harness, manual smoke in T8). These tests pin the
+ * recovery semantics on the flow itself. */
+
+const CURRENT_URL = "/approval/current?session_id=s-boot";
+
+test("recover(): a live gate re-arms confirming with the server's remaining window", async () => {
+  const h = harness({
+    plan: [{ json: { approval: { ...GATE, expires_in_s: 42 } } }]
+  });
+  const payload = await h.flow.recover("s-boot");
+  assert.equal(h.http.calls.length, 1);
+  assert.equal(h.http.calls[0].url, CURRENT_URL);
+  assert.equal(h.http.calls[0].options, undefined);  // plain GET, no body
+  assert.deepEqual(payload, { ...GATE, expires_in_s: 42 });
+  assert.equal(h.flow.active(), true);
+  assert.deepEqual(h.states, ["confirming"]);
+  assert.equal(h.flow.gate().text, GATE.text);      // card payload restored
+  assert.equal(h.flow.gate().gate_id, GATE.gate_id);
+  assert.equal(h.flow.remainingSeconds(), 42);      // countdown from expires_in_s
+});
+
+test("recover(): a null approval is a no-op — boot state untouched", async () => {
+  const h = harness({ plan: [{ json: { approval: null } }] });
+  const payload = await h.flow.recover("s-boot");
+  assert.equal(payload, null);
+  assert.equal(h.flow.active(), false);
+  assert.deepEqual(h.states, []);      // stays listening, nothing emitted
+  assert.deepEqual(h.banners, []);
+});
+
+test("recover(): a fetch failure is a silent no-op (normal boot continues)", async () => {
+  const h = harness({ http: { request: () => Promise.reject(new Error("offline")), calls: [] } });
+  const payload = await h.flow.recover("s-boot");
+  assert.equal(payload, null);
+  assert.equal(h.flow.active(), false);
+  assert.deepEqual(h.states, []);
+  assert.deepEqual(h.banners, []);     // silent: no user-facing noise
+});
+
+test("recover(): a non-ok response is a silent no-op too", async () => {
+  const h = harness({ plan: [{ status: 500, json: {} }] });
+  const payload = await h.flow.recover("s-boot");
+  assert.equal(payload, null);
+  assert.equal(h.flow.active(), false);
+  assert.deepEqual(h.states, []);
+  assert.deepEqual(h.banners, []);
+});
+
+test("recover(): an at-boot-expired payload (expires_in_s 0) never zombies in confirming", async () => {
+  const h = harness({
+    plan: [{ json: { approval: { ...GATE, expires_in_s: 0 } } }]
+  });
+  const payload = await h.flow.recover("s-boot");
+  assert.equal(payload, null);            // dead gate: caller must not open the drawer
+  assert.equal(h.flow.active(), false);   // no zombie confirming
+  assert.equal(h.flow.isExpired(), true); // payload retained for the gray card
+  assert.deepEqual(h.states, ["confirming", "listening"]);  // instant silent expiry
+  assert.deepEqual(h.expired, [true]);    // onExpired: gray card + system turn
+  assert.deepEqual(h.banners, []);
+});
+
+/* ---- pending-banner coexistence (T7) ----
+ *
+ * app.js toggles body.gate-live from the card-presence flags asserted
+ * below (renderApprovalCard); the CSS subordinates #pending-banner
+ * while the card shows (PRD §8: visible, secondary, never hiding the
+ * card). Pure-module tests pin the driving flags — the DOM/CSS layer
+ * rides the T8 manual smoke. */
+
+test("the card-presence flags that subordinate the pending banner track the gate lifecycle", () => {
+  const h = harness();
+  // Live gate: card present -> banner secondary (body.gate-live on).
+  h.flow.open({ ...GATE });
+  assert.equal(h.flow.active(), true);
+  assert.equal(h.flow.isExpired(), false);
+  // Silent expiry: the payload lingers for the gray card through the
+  // dismiss window -> the banner stays secondary while it shows.
+  h.clock.advance(60_000);
+  h.flow.tick();
+  assert.equal(h.flow.active(), false);
+  assert.equal(h.flow.isExpired(), true);
+  // Gone (cancel/hang-up/new conversation): no card at all -> the
+  // banner returns to full prominence.
+  h.flow.cancel();
+  assert.equal(h.flow.active(), false);
+  assert.equal(h.flow.isExpired(), false);
+});
+
+/* ---- create_session gates (create_session tool) ----
+ *
+ * Create gates ride the SAME flow with a variant payload: the editable
+ * field is the task, the replay POSTs the same /approve endpoint, and
+ * PATCH keeps the {text} wire body (the server maps it onto task).
+ * cardModel() pins what the app.js card renders per variant. */
+
+const GATE_CREATE = {
+  gate_id: "b2c3d4e5f6a7",
+  tool: "create_session",
+  agent: "opencode",
+  title: "Refactor del login",
+  task: "corre los tests del modulo de auth",
+  timeout_ms: null,
+  expires_in_s: 60
+};
+
+test("a create gate arms the flow exactly like a send gate", () => {
+  const h = harness();
+  h.flow.open({ ...GATE_CREATE });
+  assert.equal(h.flow.active(), true);
+  assert.deepEqual(h.states, ["confirming"]);
+  assert.equal(h.flow.remainingSeconds(), 60);
+});
+
+test("create gate approve(): same /approve endpoint and report rendering", async () => {
+  const h = harness({
+    plan: [{ json: { answer: "Panel creado; agente en marcha.", audio_url: null } }]
+  });
+  h.flow.open({ ...GATE_CREATE });
+  assert.equal(h.flow.approve(), true);
+  assert.equal(h.flow.isBusy(), true);
+  await flush();
+  assert.equal(h.http.calls.length, 1);
+  assert.equal(h.http.calls[0].url, "/approval/b2c3d4e5f6a7/approve");
+  assert.equal(h.http.calls[0].options.method, "POST");
+  assert.deepEqual(h.answers, [
+    { answer: "Panel creado; agente en marcha.", audio_url: null }
+  ]);
+  assert.equal(h.flow.active(), false);
+});
+
+test("create gate reject(): silent cancel through the same endpoint", async () => {
+  const h = harness({ plan: [{ json: { ok: true, state: "rejected" } }] });
+  h.flow.open({ ...GATE_CREATE });
+  assert.equal(h.flow.reject(), true);
+  await flush();
+  assert.equal(h.http.calls[0].url, "/approval/b2c3d4e5f6a7/reject");
+  assert.deepEqual(h.answers, []);
+  assert.equal(h.flow.active(), false);
+});
+
+test("create gate patchText(): PATCHes {text} (server maps it onto task) and re-echoes", async () => {
+  const h = harness({
+    plan: [
+      { json: { ok: true, approval: { ...GATE_CREATE, task: "tarea editada", expires_in_s: 60 } } },
+      { json: { audio_url: "/audio/edit.mp3" } }
+    ]
+  });
+  h.flow.open({ ...GATE_CREATE });
+  assert.equal(h.flow.patchText("tarea editada"), true);
+  await flush();
+  const patch = h.http.calls[0];
+  assert.equal(patch.url, "/approval/b2c3d4e5f6a7");
+  assert.equal(patch.options.method, "PATCH");
+  assert.deepEqual(bodyOf(patch), { text: "tarea editada" });
+  assert.deepEqual(h.played, ["/audio/edit.mp3"]);  // client-side re-echo
+});
+
+/* ---- cardModel(): the variant view model app.js renders ---- */
+
+test("cardModel(): create payload renders heading + Agente/Título/Tarea rows", () => {
+  const model = cardModel(GATE_CREATE);
+  assert.equal(model.variant, "create");
+  assert.equal(model.heading, "🆕 Crear panel");
+  assert.deepEqual(model.rows, [
+    { label: "Agente", value: "opencode" },
+    { label: "Título", value: "Refactor del login" },
+    { label: "Tarea", value: "corre los tests del modulo de auth" }
+  ]);
+  assert.equal(model.editable, "corre los tests del modulo de auth");  // task is editable
+});
+
+test("cardModel(): send payload keeps the send shape (editable text, no rows)", () => {
+  const model = cardModel(GATE);
+  assert.equal(model.variant, "send");
+  assert.equal(model.heading, null);
+  assert.deepEqual(model.rows, []);
+  assert.equal(model.editable, "arregla el bug del login");
+});
+
+test("cardModel(): null-ish gate degrades to the send shape", () => {
+  assert.deepEqual(cardModel(null), {
+    variant: "send", heading: null, rows: [], editable: ""
+  });
+});

@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>herdr-brain — mockup v2 · cockpit principal + drawer de llamada</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #1a1d24;
+    --panel-2: #22262f;
+    --line: #2c313c;
+    --text: #e8eaf0;
+    --muted: #9aa3b2;
+    --accent: #4f8cff;
+    --user: #2b5fd9;
+    --warn: #ffb020;
+    --ok: #37c26e;
+    --danger: #ff4d5e;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #07080a;
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column; align-items: center; gap: 14px;
+    padding: 18px 10px 40px;
+    min-height: 100vh;
+  }
+  .badge { font-size: 11px; letter-spacing: 2px; color: var(--muted); text-transform: uppercase; }
+  .switch { display: flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .switch button {
+    background: transparent; color: var(--muted); border: 0; padding: 9px 18px;
+    font-size: 14px; cursor: pointer; font-weight: 600;
+  }
+  .switch button.active { background: var(--panel-2); color: var(--text); }
+
+  .phone {
+    position: relative; width: 390px; height: 800px; max-height: 90vh;
+    background: var(--bg); border: 1px solid var(--line); border-radius: 28px;
+    overflow: hidden; display: flex; flex-direction: column;
+    box-shadow: 0 20px 60px rgba(0,0,0,.6);
+  }
+
+  /* ── Header ─────────────────────────────────────── */
+  .hdr {
+    display: flex; align-items: center; gap: 8px; padding: 12px 14px;
+    background: var(--panel); border-bottom: 1px solid var(--line); flex: 0 0 auto;
+  }
+  .chip {
+    font-size: 12px; padding: 4px 9px; border-radius: 999px;
+    background: var(--panel-2); border: 1px solid var(--line); white-space: nowrap;
+  }
+  .chip .dot { color: var(--ok); }
+  .hdr .title { flex: 1; font-size: 14px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .icon-btn {
+    width: 34px; height: 34px; border-radius: 9px; border: 1px solid var(--line);
+    background: var(--panel-2); color: var(--text); font-size: 15px; cursor: pointer;
+    display: grid; place-items: center; flex: 0 0 auto;
+  }
+
+  /* ── Pending banner (siempre visible) ───────────── */
+  .pending {
+    display: flex; gap: 8px; align-items: center; padding: 9px 14px;
+    background: rgba(255,176,32,.12); color: var(--warn);
+    border-bottom: 1px solid rgba(255,176,32,.25); font-size: 13px; font-weight: 600;
+    flex: 0 0 auto;
+  }
+
+  /* ── Rebaño (cockpit principal) ─────────────────── */
+  .herd {
+    display: flex; gap: 8px; padding: 10px 12px; overflow-x: auto;
+    border-bottom: 1px solid var(--line); flex: 0 0 auto;
+  }
+  .herd .hchip {
+    flex: 0 0 auto; font-size: 12.5px; padding: 8px 12px; border-radius: 999px;
+    background: var(--panel); border: 1px solid var(--line); white-space: nowrap; cursor: pointer;
+  }
+  .herd .hchip.sel { border-color: var(--accent); color: var(--accent); }
+
+  /* ── Panel del agente: AHORA con scroll y expandir ── */
+  .glance { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 10px 14px 8px; gap: 7px; overflow: hidden; }
+  .glance .glabel { font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); flex: 0 0 auto; }
+  .gturns {
+    flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;
+    padding-right: 4px;
+  }
+  .gturn { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 9px 12px; font-size: 13.5px; line-height: 1.5; }
+  .gturn .who { font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); display: block; margin-bottom: 2px; }
+  .gturn .more {
+    display: inline-block; margin-top: 5px; font-size: 12px; font-weight: 700;
+    color: var(--accent); cursor: pointer; user-select: none;
+  }
+  .gscreen-wrap { flex: 0 0 auto; display: flex; flex-direction: column; gap: 4px; }
+  .gscreen {
+    font-family: ui-monospace, "Cascadia Code", Menlo, monospace; font-size: 11.5px; color: #b6e2a1;
+    background: #0c0f0a; border: 1px solid var(--line); border-radius: 8px;
+    height: 110px; overflow-y: auto; padding: 8px 10px;
+  }
+
+  /* ── Píldora de estado / barra de llamada ───────── */
+  .pill {
+    position: absolute; left: 50%; transform: translateX(-50%); bottom: 104px;
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 999px;
+    padding: 9px 18px; font-size: 13px; font-weight: 700; z-index: 8;
+    box-shadow: 0 4px 14px rgba(0,0,0,.4); white-space: nowrap; cursor: pointer;
+  }
+  .pill .rec { color: var(--danger); animation: pulse 1.2s ease-in-out infinite; }
+  .pill .up { color: var(--accent); }
+  @keyframes pulse { 50% { opacity: .35; } }
+  .phone.calling .pill { border-color: var(--danger); }
+
+  /* ── Footer ─────────────────────────────────────── */
+  .ftr {
+    flex: 0 0 auto; display: flex; align-items: center; justify-content: center; gap: 14px;
+    padding: 12px 16px calc(14px + env(safe-area-inset-bottom, 0px));
+    background: var(--panel); border-top: 1px solid var(--line); z-index: 9;
+  }
+  .side-btn {
+    width: 48px; height: 48px; border-radius: 50%; border: 1px solid var(--line);
+    background: var(--panel-2); color: var(--text); font-size: 18px; cursor: pointer;
+    display: grid; place-items: center;
+  }
+  .call-btn {
+    width: 62px; height: 62px; border-radius: 50%; border: 0; cursor: pointer;
+    background: var(--ok); color: #fff; font-size: 24px;
+    display: grid; place-items: center; box-shadow: 0 6px 18px rgba(55,194,110,.3);
+    transition: background .2s;
+  }
+  .call-btn.end { background: var(--danger); box-shadow: 0 6px 18px rgba(255,77,94,.35); }
+
+  /* ── Drawer de LLAMADA ──────────────────────────── */
+  .drawer {
+    position: absolute; left: 0; right: 0; bottom: 96px; height: 58%;
+    background: var(--panel); border-top: 1px solid var(--line); border-radius: 18px 18px 0 0;
+    transform: translateY(105%); transition: transform .3s cubic-bezier(.2,.8,.2,1);
+    z-index: 7; display: flex; flex-direction: column;
+    box-shadow: 0 -12px 40px rgba(0,0,0,.5);
+  }
+  .phone.drawer-open .drawer { transform: translateY(0); }
+  .d-grab { position: absolute; top: 6px; left: 50%; transform: translateX(-50%); width: 42px; height: 4px; border-radius: 4px; background: var(--line); }
+  .d-head {
+    display: flex; align-items: center; padding: 14px 14px 8px; gap: 8px; flex: 0 0 auto;
+    border-bottom: 1px solid var(--line);
+  }
+  .d-title { flex: 1; font-size: 13.5px; font-weight: 700; }
+  .d-title .live { color: var(--danger); animation: pulse 1.2s ease-in-out infinite; }
+  .d-timer { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .d-close {
+    border: 1px solid var(--line); background: var(--panel-2); color: var(--text);
+    width: 36px; height: 36px; border-radius: 10px; cursor: pointer; font-size: 15px;
+  }
+  .d-interim {
+    flex: 0 0 auto; padding: 9px 14px 4px; font-size: 16px; font-weight: 700;
+    color: var(--accent); min-height: 30px; font-style: italic;
+    border-bottom: 1px dashed var(--line);
+  }
+  .d-interim::after { content: "▌"; animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .d-body { flex: 1; overflow-y: auto; padding: 12px 14px 18px; display: flex; flex-direction: column; gap: 10px; }
+  .turn { max-width: 80%; padding: 10px 13px; border-radius: 16px; font-size: 14.5px; line-height: 1.45; }
+  .turn.user { align-self: flex-end; background: var(--user); border-bottom-right-radius: 5px; }
+  .turn.brain { align-self: flex-start; background: var(--panel-2); border: 1px solid var(--line); border-bottom-left-radius: 5px; }
+  .turn .who { display: block; font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); margin-bottom: 3px; }
+
+  /* ══ MODO ANTES (layout actual, para contraste) ══ */
+  .phone.before .before-only { display: block; }
+  .phone:not(.before) .before-only { display: none !important; }
+  .phone.before .glance { display: block; flex: 0 0 auto; overflow: visible; cursor: pointer; }
+  .phone.before .gturns { display: block; overflow: visible; }
+  .phone.before .gturn { border: 0; background: transparent; padding: 2px 0; }
+  .phone.before .gscreen-wrap .glabel { font-size: 11px; color: var(--muted); letter-spacing: 1px; text-transform: uppercase; }
+  .phone.before .gscreen { height: auto; max-height: 132px; overflow: hidden; }
+  .phone.before .d-head .d-close::after { content: ""; }
+  .phone.before .pill { cursor: default; }
+</style>
+</head>
+<body>
+
+<div class="badge">herdr-brain · mockup UX v2 — cockpit principal, llamada en drawer</div>
+<div class="switch">
+  <button id="btn-before" onclick="setMode('before')">Actual</button>
+  <button id="btn-after" class="active" onclick="setMode('after')">Propuesta v2</button>
+</div>
+
+<div class="phone after drawer-open calling" id="phone">
+
+  <!-- header -->
+  <div class="hdr">
+    <span class="chip"><span class="dot">●</span> conectado</span>
+    <span class="title">🐑 Gertru · cocina</span>
+    <button class="icon-btn" title="Silenciar">🔊</button>
+    <button class="icon-btn" title="Nueva">↺</button>
+  </div>
+
+  <!-- pending banner: SIEMPRE visible -->
+  <div class="pending">⚠️ Gertru necesita tu OK para ejecutar <b>rm -rf build/</b></div>
+
+  <!-- ══ PRINCIPAL: rebaño ══ -->
+  <div class="herd">
+    <span class="hchip sel">🟢 gertru</span>
+    <span class="hchip">🟡 collie</span>
+    <span class="hchip">⚪ border</span>
+    <span class="hchip">🟢 pastora</span>
+  </div>
+
+  <!-- ══ PRINCIPAL: panel del agente (arreglado: scroll + expandir) ══ -->
+  <div class="glance">
+    <span class="glabel">Vista del agente · gertru</span>
+    <div class="gturns">
+      <div class="gturn"><span class="who">brain</span>He revisado los tests del módulo de endpointing y hay tres que dependen del reloj del sistema, propongo inyectar un clock fake para que sean deterministas y no flaqueen en CI.</div>
+      <div class="gturn"><span class="who">tú (por el canal del agente)</span>vale, hazlo tú</div>
+      <div class="gturn"><span class="who">brain</span>Perfecto, lo aplico en la rama fix/endpointing-clock. Además hay que regenerar el golden del snapshot porque cambió el formato de salida del parser y los tests fallarán siempre hasta que se actualicen con --update-goldens; también actualizo la doc del pipeline para que refleje el nuevo flag y dejo una nota en el CHANGELOG del repo por si el equipo regenera en local sin leer la doc…<span class="more" onclick="event.stopPropagation(); this.parentNode.querySelector('.rest').classList.toggle('hidden'); this.textContent = this.textContent.trim() === 'ver más' ? 'ver menos' : 'ver más';"><span class="rest hidden" style="display:none"> [TEXTO COMPLETO: aquí irían los ~4000 caracteres que el servidor trunca hoy a 300 — el drawer trae el texto íntegro vía /conversation y el tap lo expande inline]</span> ▸ ver más</span></div>
+      <div class="gturn"><span class="who">brain</span>PR #42 abierto. Tests 7/7 en verde.</div>
+      <div class="gturn" style="color:var(--muted);font-size:12px;border-style:dashed">↑ esto antes era 1 turno de 300 caracteres sin scroll — ahora: scroll real + tap para expandir</div>
+    </div>
+    <div class="gscreen-wrap">
+      <span class="glabel">pantalla · scroll real (antes: recorte duro)</span>
+      <div class="gscreen">$ pytest tests/js -q
+..........
+7 passed in 1.2s
+$ git checkout -b fix/endpointing-clock
+Switched to a new branch
+$ git commit -m "fix: fake clock"
+ 3 files changed, 41 insertions
+$ gh pr create --fill
+✓ done — PR #42
+$ watch -n5 gh pr checks 42
+all checks passing…</div>
+    </div>
+  </div>
+
+  <!-- píldora: estado; en llamada = tappable para abrir el drawer -->
+  <div class="pill" id="pill" onclick="onPillTap()"><span class="rec">●</span> <span id="pill-text">Grabando — habla</span> <span class="up" id="pill-hint">▲</span></div>
+
+  <!-- footer: SIEMPRE visible y accesible -->
+  <div class="ftr">
+    <button class="side-btn" title="Pausa">⏸</button>
+    <button class="call-btn end" id="call-btn" onclick="toggleCall()" title="Colgar">📞</button>
+    <button class="side-btn" title="Parar audio">⏹</button>
+  </div>
+
+  <!-- ══ DRAWER: LA LLAMADA (tú ↔ brain) ══ -->
+  <div class="drawer" id="drawer">
+    <div class="d-grab"></div>
+    <div class="d-head">
+      <span class="d-title"><span class="live" id="live-dot">●</span> Llamada con brain</span>
+      <span class="d-timer" id="timer">00:12</span>
+      <button class="d-close" onclick="closeDrawer()">▼</button>
+    </div>
+    <div class="d-interim" id="interim">…y luego dime cuánto falta para</div>
+    <div class="d-body" id="dbody">
+      <div class="turn user"><span class="who">tú</span>Oye Gertru, ¿a qué temperatura pongo el horno para las berenjenas?</div>
+      <div class="turn brain"><span class="who">brain</span>200 °C con calor arriba y abajo. Si las vas a hacer rebozadas, 190 °C para que no se queme el pan.</div>
+      <div class="turn user"><span class="who">tú</span>¿Y cuánto tiempo?</div>
+      <div class="turn brain"><span class="who">brain</span>Unos 25-30 minutos, dándoles la vuelta a la mitad.</div>
+      <div class="turn user"><span class="who">tú</span>Apunta que compre más aceite de oliva</div>
+      <div class="turn brain"><span class="who">brain</span>Hecho: "aceite de oliva" añadido a la lista de la compra.</div>
+      <div class="turn user"><span class="who">tú</span>Vale gracias. Sube el volumen un pelín</div>
+      <div class="turn brain"><span class="who">brain</span>Subido al 80 %. ¿Algo más mientras friegas?</div>
+      <div class="turn user"><span class="who">tú</span>No, eso es todo por ahora</div>
+      <div class="turn brain"><span class="who">brain</span>Perfecto. Te avisaré si Collie necesita algo del PR #42.</div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const phone = document.getElementById('phone');
+  let calling = true;
+
+  function setMode(m) {
+    phone.classList.toggle('before', m === 'before');
+    phone.classList.toggle('after', m === 'after');
+    document.getElementById('btn-before').classList.toggle('active', m === 'before');
+    document.getElementById('btn-after').classList.toggle('active', m === 'after');
+  }
+
+  function openDrawer()  { phone.classList.add('drawer-open');  updatePill(); }
+  function closeDrawer() { phone.classList.remove('drawer-open'); updatePill(); }
+
+  function toggleCall() {
+    calling = !calling;
+    phone.classList.toggle('calling', calling);
+    const btn = document.getElementById('call-btn');
+    if (calling) {
+      btn.classList.add('end'); btn.textContent = '📞'; btn.title = 'Colgar';
+      openDrawer(); document.getElementById('dbody').scrollTop = 1e6;
+    } else {
+      btn.classList.remove('end'); btn.textContent = '📞'; btn.title = 'Llamar';
+      closeDrawer();
+    }
+  }
+
+  function onPillTap() {
+    if (calling && !phone.classList.contains('drawer-open')) openDrawer();
+  }
+
+  function updatePill() {
+    const open = phone.classList.contains('drawer-open');
+    document.getElementById('pill-hint').textContent = calling && !open ? '▲' : '';
+  }
+
+  // pill state cycle (solo demo)
+  const pillStates = [
+    '<span class="rec">●</span> Grabando — habla',
+    '⏳ Entendiendo…',
+    '⏳ Pensando…',
+    '🔊 Hablando'
+  ];
+  let pi = 0;
+  setInterval(() => {
+    if (!calling) { document.getElementById('pill-text').parentElement.innerHTML = '○ En reposo'; updatePill(); return; }
+    document.getElementById('pill-text').parentElement.innerHTML = pillStates[pi = (pi + 1) % pillStates.length];
+    updatePill();
+  }, 2600);
+
+  // timer
+  let secs = 12;
+  setInterval(() => {
+    if (!calling) return;
+    secs++;
+    document.getElementById('timer').textContent =
+      String(Math.floor(secs/60)).padStart(2,'0') + ':' + String(secs%60).padStart(2,'0');
+  }, 1000);
+
+  // interim typing demo
+  const phrases = [
+    '…y luego dime cuánto falta para',
+    '…y luego dime cuánto falta para la cena',
+    '…recuérdame llamar al fontanero',
+    '…qué recetas tengo con calabacín'
+  ];
+  let phi = 0, chi = 0;
+  setInterval(() => {
+    const p = phrases[phi];
+    chi = (chi + 1) % (p.length + 14);
+    document.getElementById('interim').textContent = p.slice(0, Math.min(chi, p.length));
+    if (chi === 0) phi = (phi + 1) % phrases.length;
+  }, 120);
+
+  updatePill();
+</script>
+</body>
+</html>

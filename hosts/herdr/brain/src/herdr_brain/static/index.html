@@ -1,0 +1,1308 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>herdr-brain</title>
+  <meta name="theme-color" content="#0f1115">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <style>
+    :root {
+      --sp-1: 4px; --sp-2: 8px; --sp-3: 16px; --sp-4: 24px;
+      --fs-lg: 22px; --fs-md: 16px; --fs-sm: 14px; --fs-xs: 12px;
+      --bg: #f4f6f9;
+      --panel: #ffffff;
+      --text: #17202b;
+      --muted: #5b6572;
+      --line: #d9dee6;
+      --accent: #12855c;
+      --danger: #c62f2f;
+      --warn: #8a6100;
+      --blue: #1d5fbf;
+      --chip-bg: #e9edf3;
+      --user-wash: rgba(18, 133, 92, 0.15);   /* accent-adjacent tint for the user's own turns */
+      --user-line: rgba(18, 133, 92, 0.45);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f1115;
+        --panel: #171a21;
+        --text: #e6e9ef;
+        --muted: #8b93a3;
+        --line: #232833;
+        --accent: #4ade80;
+        --danger: #f87171;
+        --warn: #fbbf24;
+        --blue: #60a5fa;
+        --chip-bg: #2a2f3a;
+        --user-wash: rgba(74, 222, 128, 0.16);
+        --user-line: rgba(74, 222, 128, 0.40);
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: var(--fs-md)/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+      display: flex;
+      flex-direction: column;
+      /* Cockpit content must never flow under the fixed footer. */
+      padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 104px);
+    }
+    button { font: inherit; border: 0; border-radius: 12px; cursor: pointer; }
+    .hidden { display: none !important; }
+
+    header {
+      padding: calc(env(safe-area-inset-top, 0px) + var(--sp-2)) var(--sp-3) var(--sp-2);
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .chip {
+      display: inline-block;
+      min-width: 76px;
+      text-align: center;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 700;
+      background: var(--chip-bg);
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+    .chip.working { color: var(--warn); }
+    .chip.idle    { color: var(--accent); }
+    .chip.blocked { color: var(--danger); }
+    .chip.done    { color: var(--blue); }
+    #pane-picker {
+      /* Conversation picker trigger: keeps the old title's slot (flex:1,
+       * shrinkable, ellipsized) but reads as a tappable bordered pill in
+       * the header's button language. Opens the #conv-sheet. */
+      flex: 1;
+      min-width: 0;
+      min-height: 48px;
+      padding: 8px 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: transparent;
+      color: var(--text);
+      font-weight: 600;
+      font-size: 14px;
+    }
+    #pane-picker .pp-caret { flex: 0 0 auto; color: var(--muted); font-size: 12px; }
+    #pane-picker-label {
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      text-align: left;
+    }
+    #pane-picker-sub {
+      /* Gray workspace tail after the session name: "name · workspace". */
+      flex: 1;
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      text-align: left;
+      font-weight: 400;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    #pane-picker-sub::before { content: "· "; }
+    #header-version {
+      /* The version chip is a deployment check: it must stay visible even
+       * on a 360px viewport, so it never shrinks. */
+      flex-shrink: 0;
+    }
+    .head-btn {
+      min-width: 48px;
+      min-height: 48px;
+      padding: 8px 10px;
+      font-size: 15px;
+      background: var(--chip-bg);
+      color: var(--text);
+      border-radius: 9px;
+    }
+    #mute-btn.muted { opacity: 0.55; }
+
+    /* Narrow phones (~360px): header items drop their wide labels. Chips
+     * size to their content (no 76px floor), the picker tightens its
+     * padding and the row gap narrows — that frees enough width for a
+     * readable ellipsized picker label AND the version chip. */
+    @media (max-width: 480px) {
+      header { gap: 7px; }
+      header .chip { min-width: 0; padding: 4px 8px; }
+      #pane-picker { padding: 8px 10px; gap: 5px; }
+    }
+
+    /* ── CONVERSATION SHEET (Collie-style session switcher) ──────────
+     * The header picker opens a bottom sheet anchored above the footer
+     * like the drawer: "＋ Nueva conversación" FIRST, then one keyed
+     * row per herd agent (the old #herd-strip chips live here now).
+     * Backdrop tap / ✕ / Escape / Android back all close it. */
+    #conv-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 19;            /* dims drawer (15) and settings (17); sheet is 20 */
+      background: rgba(9, 12, 18, 0.5);
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.28s ease, visibility 0s 0.28s;
+    }
+    #conv-backdrop.open {
+      opacity: 1;
+      visibility: visible;
+      transition: opacity 0.28s ease;
+    }
+    #conv-sheet {
+      position: fixed;
+      left: 0; right: 0;
+      bottom: calc(env(safe-area-inset-bottom, 0px) + 96px);
+      /* Wide viewports: same centered 760px column as the cockpit. */
+      max-width: 760px;
+      margin-inline: auto;
+      max-height: 60dvh;
+      display: flex;
+      flex-direction: column;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-bottom: 0;
+      border-radius: 18px 18px 0 0;
+      box-shadow: 0 -12px 40px #0006;
+      z-index: 20;            /* above drawer/settings; below toast (25), diag (30) */
+      overflow: hidden;
+      transform: translateY(calc(100% + 32px));
+      visibility: hidden;
+      transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1), visibility 0s 0.28s;
+    }
+    #conv-sheet.open {
+      transform: translateY(0);
+      visibility: visible;
+      transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+    .cs-head {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 14px 14px 8px;
+      border-bottom: 1px solid var(--line);
+    }
+    .cs-title { flex: 1; min-width: 0; font-size: 15px; font-weight: 700; }
+    #conv-close {
+      flex: 0 0 auto;
+      width: 48px;
+      height: 48px;
+      font-size: 16px;
+      font-weight: 700;
+      background: var(--chip-bg);
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+    }
+    /* Action row FIRST, clearly separated from the agent rows. */
+    .cs-actions {
+      flex: 0 0 auto;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+    }
+    #conv-new {
+      width: 100%;
+      min-height: 48px;       /* touch target >= 48px */
+      padding: 10px 14px;
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--accent);
+      background: var(--chip-bg);
+      border: 1px dashed var(--line);
+      border-radius: 12px;
+    }
+    #conv-list {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      padding: 4px 0 8px;
+    }
+    #conv-list:empty::after {
+      content: "Sin agentes conectados";
+      display: block;
+      padding: var(--sp-3);
+      font-size: var(--fs-sm);
+      color: var(--muted);
+      font-style: italic;
+      text-align: center;
+    }
+    .conv-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      min-height: 52px;       /* touch target >= 48px */
+      padding: 10px 14px;
+      background: none;
+      border-radius: 0;
+      text-align: left;
+      font-size: 15px;
+      color: var(--text);
+    }
+    .conv-row .st { flex: 0 0 auto; font-size: 13px; }
+    .conv-row .st.working { color: var(--warn); }
+    .conv-row .st.idle    { color: var(--muted); }
+    .conv-row .st.blocked { color: var(--danger); }
+    .conv-row .st.done    { color: var(--accent); }
+    .cr-main {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .cr-name {
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .cr-sub {
+      font-size: 12px;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .cr-status {
+      flex: 0 0 auto;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      background: var(--chip-bg);
+      color: var(--muted);
+    }
+    .cr-status.working { color: var(--warn); }
+    .cr-status.blocked { color: var(--danger); }
+    .cr-status.done    { color: var(--accent); }
+    .cr-check { flex: 0 0 auto; color: var(--accent); font-weight: 800; }
+    .conv-row.current {
+      /* 2px inset accent rail marks the current conversation. */
+      box-shadow: inset 2px 0 0 0 var(--accent);
+    }
+    #herd-note {
+      margin: var(--sp-1) var(--sp-3) 0;
+      font-size: var(--fs-xs);
+      color: var(--muted);
+      font-style: italic;
+    }
+
+    /* ── AGENT COCKPIT (primary surface) ─────────────────────────────
+     * Bounded flex column: the turn list scrolls for real, the terminal
+     * scrolls for real, nothing grows unbounded. */
+    #agent-view {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      margin: var(--sp-2) var(--sp-3) 0;
+      /* Wide viewports: a centered column so the cockpit never
+       * stretches absurdly. */
+      max-width: 760px;
+      margin-inline: auto;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel);
+      overflow: hidden;
+    }
+    #pending-banner {
+      padding: var(--sp-3);
+      font-size: var(--fs-md);
+      font-weight: 700;
+      line-height: 1.35;
+    }
+    #pending-banner.question   { background: #f4e8c3; color: var(--warn); }
+    #pending-banner.error      { background: #f6d7d7; color: var(--danger); }
+    #pending-banner.permission { background: #d8e6f8; color: var(--blue); }
+    #pending-banner.actionable { cursor: pointer; }
+    @media (prefers-color-scheme: dark) {
+      #pending-banner.question   { background: #3b2f11; }
+      #pending-banner.error      { background: #3a1414; }
+      #pending-banner.permission { background: #14293a; }
+    }
+    /* T7 coexistence (PRD action-approval-gate §8): while the approval
+     * card is showing, the agent pending banner stays visible but
+     * visually SECONDARY to the gate — dimmed and desaturated, never
+     * hidden (drawer PRD G3). app.js toggles body.gate-live from the
+     * card's presence; the banner's own logic is untouched. */
+    body.gate-live #pending-banner {
+      opacity: 0.72;
+      filter: saturate(0.5);
+    }
+    #glance-label {
+      flex: 0 0 auto;
+      padding: 8px 12px 2px;
+      font-size: 11px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    #glance-turns {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 6px 10px;
+    }
+    .gturn {
+      flex: 0 0 auto;
+      background: var(--chip-bg);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 8px 12px;
+      font-size: var(--fs-sm);
+      line-height: 1.5;
+    }
+    .gt-role {
+      display: block;
+      font-size: 11px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      font-weight: 700;
+      color: var(--accent);
+      margin-bottom: 2px;
+    }
+    /* The user's own turns: soft but noticeable tint, role label aligned
+     * to the right so "tú" reads as coming from your side of the pane. */
+    .gturn.user {
+      width: 88%;              /* a bit narrower than agent turns */
+      margin-left: auto;       /* right-shifted: left margin does the offset */
+      background: var(--user-wash);
+      border-color: var(--user-line);
+    }
+    .gturn.user .gt-role {
+      color: var(--warn);
+      text-align: right;
+      padding-left: 12px;
+    }
+    .gt-text {
+      white-space: pre-wrap;
+      word-break: break-word;
+      /* Clamp long turns to ~4 lines; "ver más" expands inline. */
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 4;
+      overflow: hidden;
+    }
+    .gturn.expanded .gt-text {
+      display: block;
+      -webkit-line-clamp: none;
+      overflow: visible;
+    }
+    .ver-mas {
+      display: none;               /* only shown on .has-more turns */
+      width: 100%;
+      min-height: 48px;            /* touch target >= 48px */
+      margin-top: 6px;
+      align-items: center;
+      justify-content: center;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      color: var(--accent);
+      font-size: var(--fs-sm);
+      font-weight: 700;
+    }
+    .gturn.has-more .ver-mas { display: flex; }
+    /* ---- formatted reader surface (reader-html-integration) ---- *
+     * Every rule is scoped under #glance-turns .reader-content so the
+     * reader styling can never leak into the chat drawer or the call
+     * UI. When a formatted mount exists, the plain .gt-text view hides
+     * (the reader payload replaces it); without one, .gt-text remains
+     * the surface exactly as before. */
+    #glance-turns .gturn.has-rendered .gt-text { display: none; }
+    #glance-turns .reader-content {
+      white-space: normal;
+      word-break: break-word;
+      overflow-x: auto;
+    }
+    #glance-turns .reader-content h1,
+    #glance-turns .reader-content h2,
+    #glance-turns .reader-content h3,
+    #glance-turns .reader-content h4 {
+      margin: 8px 0 4px;
+      line-height: 1.3;
+    }
+    #glance-turns .reader-content h1 { font-size: 1.25em; }
+    #glance-turns .reader-content h2 { font-size: 1.15em; }
+    #glance-turns .reader-content h3,
+    #glance-turns .reader-content h4 { font-size: 1.05em; }
+    #glance-turns .reader-content p { margin: 4px 0; }
+    #glance-turns .reader-content strong { font-weight: 800; }
+    #glance-turns .reader-content em { font-style: italic; }
+    #glance-turns .reader-content code {
+      font-family: ui-monospace, monospace;
+      font-size: 0.92em;
+      background: var(--chip-bg);
+      border-radius: 4px;
+      padding: 1px 4px;
+    }
+    #glance-turns .reader-content pre {
+      background: var(--chip-bg);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+      overflow-x: auto;
+      margin: 6px 0;
+    }
+    #glance-turns .reader-content pre code { background: none; padding: 0; }
+    #glance-turns .reader-content ul,
+    #glance-turns .reader-content ol {
+      margin: 4px 0;
+      padding-left: 20px;
+    }
+    #glance-turns .reader-content table {
+      border-collapse: collapse;
+      margin: 6px 0;
+      max-width: 100%;
+      display: block;           /* horizontally scrollable tables */
+      overflow-x: auto;
+    }
+    #glance-turns .reader-content th,
+    #glance-turns .reader-content td {
+      border: 1px solid var(--line);
+      padding: 4px 8px;
+      text-align: left;
+    }
+    #glance-turns .reader-content .tts-sent,
+    #glance-turns .reader-content .tts-sent-cont {
+      border-radius: 4px;
+      cursor: pointer;          /* manual sentence selection */
+    }
+    #glance-turns .reader-content .tts-selected {
+      background: var(--accent);
+      color: var(--panel);
+    }
+    #glance-turns .reader-content a { color: var(--accent); font-weight: 700; }
+    #glance-empty {
+      padding: var(--sp-3);
+      font-size: var(--fs-sm);
+      color: var(--muted);
+      font-style: italic;
+      text-align: center;
+    }
+    .gscreen-wrap {
+      flex: 0 0 auto;
+      position: relative;
+      padding: 0 12px 10px;
+    }
+    .glabel {
+      display: block;
+      font-size: 11px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin: 2px 2px 4px;
+    }
+    /* Terminal preview: real scroll + fade mask on the top edge. */
+    .gscreen-wrap::after {
+      content: "";
+      position: absolute;
+      left: 12px; right: 12px; top: 20px;
+      height: 14px;
+      background: linear-gradient(var(--panel), rgba(0, 0, 0, 0));
+      pointer-events: none;
+    }
+    .view-screen {
+      margin: 0;
+      padding: 8px 10px;
+      background: var(--chip-bg);
+      border-radius: 8px;
+      color: var(--muted);
+      font: var(--fs-xs)/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+      height: 110px;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
+
+    /* Narrow phones: buy the cockpit text horizontal room. */
+    @media (max-width: 480px) {
+      #agent-view { margin: var(--sp-2) 10px 0; }
+      #glance-turns { padding: 6px 8px; }
+      .gturn { padding: 7px 10px; }
+      .gscreen-wrap { padding: 0 10px 10px; }
+    }
+
+    /* State pill: exists ONLY while calling with the drawer closed
+     * (or after an interrupted reload). Tap = reopen the drawer. */
+    #state-pill {
+      position: fixed;
+      left: 50%;
+      transform: translateX(-50%);
+      bottom: calc(env(safe-area-inset-bottom, 0px) + 96px);
+      z-index: 8;
+      min-height: 48px;
+      padding: var(--sp-1) var(--sp-3);
+      border-radius: 999px;
+      font-size: var(--fs-md);
+      font-weight: 700;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      color: var(--text);
+      box-shadow: 0 4px 14px #0003;
+    }
+    #state-pill.listening { color: var(--accent); }
+    #state-pill.thinking  { color: var(--warn); }
+    #state-pill.speaking  { color: var(--blue); }
+    #state-pill.paused    { color: var(--muted); }
+    /* Action approval gate: the brain waits for a decision (amber,
+     * like every attention-pending state). */
+    #state-pill.confirming { color: var(--warn); }
+    /* Voice engine v2: capturing an utterance (red pulsing dot) and
+     * waiting for the server transcription. */
+    #state-pill.recording     { color: var(--danger); }
+    #state-pill.transcribing  { color: var(--warn); }
+    #state-pill.interrupted   { color: var(--warn); }
+    @keyframes rec-pulse {
+      0%   { box-shadow: 0 0 0 0 rgba(220, 60, 60, 0.55), 0 4px 14px #0003; }
+      70%  { box-shadow: 0 0 0 12px rgba(220, 60, 60, 0), 0 4px 14px #0003; }
+      100% { box-shadow: 0 0 0 0 rgba(220, 60, 60, 0), 0 4px 14px #0003; }
+    }
+    #state-pill.recording { animation: rec-pulse 1.3s ease-out infinite; }
+    #pill-sub { font-size: var(--fs-xs); font-weight: 600; color: var(--danger); }
+    #pill-sub.hidden { display: none; }
+
+    /* Toast: ALWAYS above the drawer (announcements must be visible
+     * mid-call); diagnostics stays on top of everything (z 30). */
+    #toast {
+      position: fixed;
+      top: calc(env(safe-area-inset-top, 0px) + 64px);
+      left: 14px;
+      right: 14px;
+      z-index: 25;
+      padding: var(--sp-3);
+      border-radius: 12px;
+      background: var(--panel);
+      color: var(--text);
+      font-size: var(--fs-sm);
+      line-height: 1.5;
+      box-shadow: 0 6px 20px #0006;
+      border: 1px solid var(--line);
+      /* Full-text replay (2026-09-25): the toast body caps and scrolls,
+       * so a long turn never covers the screen. max-height only caps —
+       * short toasts keep the exact same look. overflow-x hidden keeps
+       * the never-x-scroll discipline for unbroken tokens. */
+      max-height: 45vh;
+      overflow-y: auto;
+      overflow-x: hidden;
+      -webkit-overflow-scrolling: touch;
+    }
+    /* System warnings (herdr-tts daemon down): distinct amber styling. */
+    #toast.warning { border-color: var(--warn); color: var(--warn); font-weight: 700; }
+
+    /* Voice unlock affordance (announcements-without-call T4): a SIBLING
+     * of #toast (never inside — showToast replaces the toast contents),
+     * pinned above the input area. The toast is top-anchored (max 45vh)
+     * so the centered pill never collides with it, and the bottom
+     * placement keeps the one-tap unlock in thumb reach. Hidden unless
+     * the announcer is blocked and the user has not muted (app.js
+     * toggles .hidden; muted = toast only, AC4). */
+    #voice-unlock {
+      position: fixed;
+      left: 50%;
+      transform: translateX(-50%);
+      bottom: calc(env(safe-area-inset-bottom, 0px) + 110px);
+      z-index: 25;             /* the toast layer */
+      padding: var(--sp-2) var(--sp-4);
+      border-radius: 999px;
+      background: var(--panel);
+      color: var(--accent);
+      font-size: var(--fs-sm);
+      font-weight: 700;
+      border: 1px solid var(--accent);
+      box-shadow: 0 6px 20px #0006;
+    }
+
+    /* ---- formatted agent-status toast (toast-formatted-avisos) ---- *
+     * The formatted body mounts through the reader's scoped insertion
+     * (own .toast-content class + reader-content guard class). The
+     * payload is mounted VERBATIM and never string-cut; #toast above is
+     * the ONE scroll surface (max-height + overflow-y auto), so the
+     * playback sync scrolls a single element for both the plain and
+     * the formatted path. */
+    #toast .toast-content p { margin: 2px 0; }
+    #toast .toast-content strong { font-weight: 800; }
+    #toast .toast-content em { font-style: italic; }
+    #toast .toast-content code {
+      font-family: ui-monospace, monospace;
+      font-size: 0.92em;
+      background: var(--chip-bg);
+      border-radius: 4px;
+      padding: 1px 4px;
+    }
+    #toast .toast-content pre {
+      background: var(--chip-bg);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+      overflow: hidden;          /* excerpt discipline, never x-scroll */
+      white-space: pre-wrap;
+      margin: 4px 0;
+    }
+    #toast .toast-content a { color: var(--accent); font-weight: 700; }
+
+    /* Error banner: fixed ABOVE the drawer so errors are never covered. */
+    #banner {
+      position: fixed;
+      top: calc(env(safe-area-inset-top, 0px) + 64px);
+      left: 14px;
+      right: 14px;
+      z-index: 24;
+      margin: 0;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: #f6d7d7;
+      color: #7c1d1d;
+      font-size: 14px;
+    }
+    @media (prefers-color-scheme: dark) { #banner { background: #3a1414; color: #fecaca; } }
+
+    /* Bottom call bar: always visible and tappable. */
+    footer {
+      position: fixed;
+      left: 0; right: 0; bottom: 0;
+      z-index: 9;
+      padding: var(--sp-2) var(--sp-3) calc(env(safe-area-inset-bottom, 0px) + var(--sp-3));
+      background: var(--panel);
+      border-top: 1px solid var(--line);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .controls { display: flex; gap: 10px; align-items: stretch; }
+    .side-btn {
+      min-height: 48px;
+      padding: var(--sp-2) var(--sp-3);
+      font-weight: 600;
+      font-size: var(--fs-sm);
+      background: var(--chip-bg);
+      color: var(--text);
+      white-space: nowrap;
+    }
+    #call-btn {
+      flex: 1;
+      min-height: 56px;
+      padding: var(--sp-2);
+      font-size: var(--fs-lg);
+      font-weight: 800;
+      color: #fff;
+      /* Fixed (non-theme) greens/reds so the glyph keeps >= 3:1 contrast
+       * in BOTH light and dark mode (dark --accent #4ade80 fails). */
+      background: #12855c;
+      letter-spacing: 0.3px;
+    }
+    #call-btn.oncall { background: #c62f2f; }
+    #call-btn:disabled { opacity: 0.55; cursor: default; }
+    #stop-audio { background: var(--chip-bg); }
+    #text-fallback { display: flex; gap: 8px; }
+    #text-fallback input {
+      flex: 1;
+      font: inherit;
+      min-height: 48px;
+      padding: var(--sp-2) var(--sp-3);
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: var(--bg);
+      color: var(--text);
+    }
+    #text-fallback button { padding: 12px 18px; font-weight: 600; background: var(--chip-bg); color: var(--text); }
+    #mic-note { font-size: var(--fs-xs); color: var(--muted); text-align: center; }
+
+    /* ── CALL DRAWER ──────────────────────────────────────────────────
+     * The voice call lives in a drawer anchored ABOVE the footer: it
+     * slides over the cockpit, closes without hanging up, and never
+     * covers the footer or the toast. */
+    #call-drawer {
+      position: fixed;
+      left: 0; right: 0;
+      /* Wide viewports: same centered 760px column as the cockpit. */
+      max-width: 760px;
+      margin-inline: auto;
+      bottom: calc(env(safe-area-inset-bottom, 0px) + 96px);
+      height: min(58vh, calc(100vh - 260px));
+      height: min(58%, calc(100dvh - 260px));
+      min-height: 140px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-bottom: 0;
+      border-radius: 18px 18px 0 0;
+      box-shadow: 0 -12px 40px #0006;
+      z-index: 15;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      transform: translateY(calc(100% + 32px));
+      visibility: hidden;
+      transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), visibility 0s 0.3s;
+    }
+    #call-drawer.open {
+      transform: translateY(0);
+      visibility: visible;
+      transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+    .d-grab {
+      position: absolute;
+      top: 6px; left: 50%;
+      transform: translateX(-50%);
+      width: 42px; height: 4px;
+      border-radius: 4px;
+      background: var(--line);
+    }
+    .d-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 14px 14px 8px;
+      border-bottom: 1px solid var(--line);
+    }
+    .d-title {
+      flex: 1;
+      min-width: 0;
+      font-size: 13.5px;
+      font-weight: 700;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .live-dot { color: var(--danger); animation: live-pulse 1.2s ease-in-out infinite; }
+    @keyframes live-pulse { 50% { opacity: 0.35; } }
+    #call-timer {
+      font-size: 12px;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      flex: 0 0 auto;
+    }
+    #voice-engine-btn {
+      flex: 0 0 auto;
+      min-height: 44px;
+      padding: 4px 12px;
+      font-size: 12.5px;
+      font-weight: 600;
+      background: var(--chip-bg);
+      color: var(--muted);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      white-space: nowrap;
+    }
+    #voice-engine-btn:active { transform: scale(0.96); }
+    #drawer-close {
+      flex: 0 0 auto;
+      width: 48px;
+      height: 48px;
+      font-size: 16px;
+      font-weight: 700;
+      background: var(--chip-bg);
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+    }
+    /* Compact pending strip: on short/landscape screens the base banner
+     * would be covered by the drawer, so pending info repeats in the
+     * drawer header area (AC12). */
+    #d-pending {
+      display: none;
+      padding: 6px 14px;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--warn);
+      background: var(--chip-bg);
+      border-bottom: 1px solid var(--line);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    @media (max-height: 599px) {
+      #call-drawer.open #d-pending { display: block; }
+    }
+    /* Interim strip — engine-dependent (FR8):
+     *  navegador -> live interim text + caret
+     *  servidor  -> recording dot + elapsed utterance time + level meter */
+    #interim {
+      flex: 0 0 auto;
+      min-height: 42px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 14px;
+      border-bottom: 1px dashed var(--line);
+      font-size: var(--fs-md);
+    }
+    #interim-text {
+      flex: 1;
+      min-height: 1.4em;
+      max-height: 2.9em;
+      overflow: hidden;
+      font-weight: 700;
+      font-style: italic;
+      color: var(--text);
+    }
+    #interim-text::after { content: "▌"; animation: caret-blink 1s steps(1) infinite; }
+    @keyframes caret-blink { 50% { opacity: 0; } }
+    #rec-meter { display: flex; align-items: center; gap: 8px; flex: 1; }
+    .rec-dot { color: var(--danger); animation: live-pulse 1.2s ease-in-out infinite; }
+    #rec-elapsed { font-weight: 700; font-variant-numeric: tabular-nums; flex: 0 0 auto; }
+    .meter {
+      display: flex;
+      gap: 2px;
+      flex: 1;
+      height: 14px;
+    }
+    .meter i { flex: 1; border-radius: 2px; background: var(--chip-bg); }
+    .meter i.lit { background: var(--accent); }
+    #strip-status { color: var(--muted); font-weight: 600; font-size: var(--fs-sm); }
+
+    /* Call conversation (drawer body) */
+    #conversation {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      padding: 12px 14px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .turn { max-width: 86%; padding: 9px 13px; border-radius: 14px; white-space: pre-wrap; }
+    .turn.user   { align-self: flex-end; background: #d9efe2; border-bottom-right-radius: 4px; }
+    .turn.brain  { align-self: flex-start; background: var(--chip-bg); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+    @media (prefers-color-scheme: dark) {
+      .turn.user { background: #234c31; }
+    }
+    .turn .who { display: block; font-size: 11px; color: var(--muted); margin-bottom: 3px; }
+    /* Announcement bubble: visually distinct from the conversation flow. */
+    .turn.announce {
+      align-self: stretch;
+      max-width: 100%;
+      background: var(--panel);
+      border: 1px dashed var(--warn);
+      border-radius: 12px;
+    }
+    .turn.announce .who { color: var(--warn); }
+    .replay-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      margin-top: 8px;
+      padding: 9px 16px;
+      min-height: 48px;
+      background: none;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      cursor: pointer;
+      font: inherit;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--muted);
+    }
+    .replay-btn:active { transform: scale(0.96); }
+    .replay-btn:disabled { opacity: 0.6; cursor: wait; }
+    /* System turn (PRD action-approval-gate §6): quiet, muted, centered —
+     * the UI notes what the voice never says (silent gate expiry). */
+    .turn.system {
+      align-self: center;
+      max-width: 100%;
+      background: none;
+      border: 1px dashed var(--line);
+      border-radius: 12px;
+      color: var(--muted);
+      font-style: italic;
+      text-align: center;
+    }
+    /* "Ver más" pager (older call turns): quiet full-width button ABOVE
+     * the transcript; same styling language as the glance ver-mas. */
+    .history-more {
+      align-self: stretch;
+      min-height: 48px;            /* touch target >= 48px */
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      color: var(--accent);
+      font-size: var(--fs-sm);
+      font-weight: 700;
+    }
+    .history-more:active { transform: scale(0.96); }
+
+    /* ── APPROVAL CARD (PRD action-approval-gate §8) ──────────────────
+     * Floating popup OUTSIDE the drawer (UX change 2026-09-24): the card
+     * is visible with the drawer open OR closed — actionable state, not
+     * history. Full frozen text + countdown ring + the four PRD buttons;
+     * gray "Expirada" state on silent timeout. The .ap-card inner styles
+     * below are self-contained and unchanged. */
+    #approval-float {
+      position: fixed;
+      top: calc(env(safe-area-inset-top, 0px) + 64px);
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 26;            /* above drawer (15), banner (24), toast (25); diag (30) still wins */
+      width: calc(100% - 24px);
+      max-width: 22rem;
+      border-radius: 14px;    /* matches .ap-card */
+      overflow: hidden;       /* clip the card to this radius */
+      box-shadow: 0 10px 34px #0007;
+    }
+    .ap-card {
+      position: sticky;
+      top: 0;
+      z-index: 2;              /* stays above the chat bubbles it pins to */
+      flex: 0 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 10px 12px 12px;
+      background: var(--panel);
+      border: 2px solid var(--warn);
+      border-radius: 14px;
+    }
+    .ap-card.expired {
+      border-color: var(--line);
+      opacity: 0.62;           /* gray/disabled state (PRD §6) */
+    }
+    .ap-head { display: flex; align-items: center; gap: 10px; }
+    .ap-title {
+      flex: 1;
+      min-width: 0;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--warn);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .ap-card.expired .ap-title { color: var(--muted); }
+    /* Countdown ring: warn conic wedge driven by --ap-pct (set per tick
+     * from remainingSeconds()); the inner disc masks the center. */
+    .ap-ring {
+      position: relative;
+      flex: 0 0 auto;
+      width: 46px;
+      height: 46px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: conic-gradient(var(--warn) var(--ap-pct, 100%), var(--chip-bg) 0);
+    }
+    .ap-ring::before {
+      content: "";
+      position: absolute;
+      inset: 4px;
+      border-radius: 50%;
+      background: var(--panel);
+    }
+    .ap-card.expired .ap-ring { background: var(--chip-bg); }
+    .ap-ring-num {
+      position: relative;
+      font-size: 14px;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      color: var(--warn);
+    }
+    .ap-card.expired .ap-ring-num { color: var(--muted); }
+    /* Full frozen prompt: wraps, and scrolls when huge. */
+    .ap-text {
+      max-height: 26vh;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: var(--fs-sm);
+      line-height: 1.5;
+      background: var(--chip-bg);
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
+    .ap-dict {
+      font-size: var(--fs-xs);
+      font-weight: 700;
+      color: var(--danger);
+    }
+    /* Create variant (payload.tool === "create_session"): labelled rows
+     * replace the .ap-text prompt body. */
+    .ap-create { display: flex; flex-direction: column; gap: 6px; }
+    .ap-row { display: flex; gap: 8px; align-items: baseline; }
+    .ap-row-label {
+      flex: 0 0 64px;
+      font-size: var(--fs-xs);
+      font-weight: 800;
+      color: var(--muted);
+    }
+    .ap-row-value {
+      flex: 1;
+      font-size: var(--fs-sm);
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .ap-edit { display: flex; flex-direction: column; gap: 8px; }
+    .ap-edit-area {
+      font: inherit;
+      font-size: var(--fs-sm);
+      min-height: 96px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: var(--bg);
+      color: var(--text);
+      resize: vertical;
+    }
+    .ap-edit-row { display: flex; gap: 8px; }
+    .ap-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .ap-btn {
+      flex: 1 1 40%;
+      min-height: 48px;        /* touch target >= 48px */
+      padding: 8px 10px;
+      font-weight: 700;
+      font-size: var(--fs-sm);
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: var(--chip-bg);
+      color: var(--text);
+    }
+    .ap-btn:active { transform: scale(0.96); }
+    .ap-btn:disabled { opacity: 0.55; cursor: default; }
+    /* Fixed (non-theme) green like #call-btn: keeps >= 3:1 contrast on
+     * the primary action in BOTH light and dark mode. */
+    .ap-send { background: #12855c; color: #fff; border: 0; }
+    .ap-cancel { color: var(--danger); }
+    /* Ghost bubble: the empty first-call state (FR9). */
+    #ghost-bubble {
+      margin: auto;
+      padding: 18px 22px;
+      border: 2px dashed var(--line);
+      border-radius: 16px;
+      color: var(--muted);
+      font-weight: 700;
+      text-align: center;
+    }
+
+    /* Diagnostics overlay (idle-only long-press on the call button).
+     * .sheet-head/.sheet-body survive from the deleted full-screen sheet
+     * because the diagnostics panel reuses them. */
+    .sheet-head {
+      padding: calc(env(safe-area-inset-top, 0px) + var(--sp-2)) var(--sp-3) var(--sp-2);
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .sheet-body { flex: 1; overflow-y: auto; padding: var(--sp-3) var(--sp-3) calc(env(safe-area-inset-bottom, 0px) + var(--sp-4)); background: var(--bg); }
+    #diag-panel {
+      position: fixed;
+      inset: 0;
+      z-index: 30;
+      background: var(--bg);
+      display: flex;
+      flex-direction: column;
+    }
+    #diag-text {
+      flex: 1;
+      overflow-y: auto;
+      margin: var(--sp-3);
+      padding: var(--sp-3);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      font: var(--fs-sm)/1.7 ui-monospace, SFMono-Regular, Menlo, monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--text);
+    }
+    #diag-status {
+      padding: var(--sp-1) var(--sp-3) var(--sp-2);
+      font-size: var(--fs-xs);
+      color: var(--muted);
+      border-top: 1px solid var(--line);
+    }
+    #version-footer {
+      position: fixed;
+      right: var(--sp-2);
+      bottom: calc(env(safe-area-inset-bottom, 0px) + 2px);
+      z-index: 7;
+      font-size: 10px;
+      color: var(--muted);
+      opacity: 0.8;
+      pointer-events: none;
+    }
+
+    /* Reduced motion: gate every decorative animation and the drawer
+     * slide (the drawer appears/disappears instantly instead). */
+    @media (prefers-reduced-motion: reduce) {
+      #state-pill.recording { animation: none; }
+      .live-dot, .rec-dot { animation: none; }
+      #interim-text::after { animation: none; }
+      #call-drawer, #call-drawer.open { transition: none; }
+      #settings-sheet, #settings-sheet.open { transition: none; }
+      #conv-sheet, #conv-sheet.open { transition: none; }
+      #conv-backdrop, #conv-backdrop.open { transition: none; }
+    }
+
+    /* ── Settings sheet (⚙ in the header): engine toggle and future
+     * preferences. Sits above the drawer so it opens over a live call. */
+    #settings-sheet {
+      position: fixed;
+      left: 0; right: 0; bottom: 0;
+      background: var(--panel);
+      border-top: 1px solid var(--line);
+      border-radius: 18px 18px 0 0;
+      box-shadow: 0 -12px 40px #0006;
+      transform: translateY(105%);
+      transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+      z-index: 17;
+      padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    }
+    #settings-sheet.open { transform: translateY(0); }
+    .s-head {
+      display: flex; align-items: center; gap: 8px;
+      padding: 14px 16px 10px;
+      border-bottom: 1px solid var(--line);
+    }
+    .s-title { flex: 1; font-size: 14px; font-weight: 700; }
+    #settings-close {
+      min-width: 44px; min-height: 44px;
+      border: 1px solid var(--line); border-radius: 10px;
+      background: var(--panel-2); color: var(--text);
+      font-size: 15px; cursor: pointer;
+    }
+    .s-body { padding: 14px 16px 2px; display: flex; flex-direction: column; gap: 10px; }
+    .s-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .s-label { font-size: 14px; }
+    .s-hint { font-size: 12px; color: var(--muted); line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <header>
+    <span id="status-chip" class="chip">…</span>
+    <button id="pane-picker" type="button" aria-haspopup="dialog" aria-expanded="false" title="Cambiar de conversación"><span class="pp-caret" aria-hidden="true">▾</span><span id="pane-picker-label">conectando…</span><span id="pane-picker-sub" class="hidden"></span></button>
+    <span id="header-version" class="chip">v<span id="app-version-header">?</span></span>
+    <button id="settings-btn" class="head-btn" title="Ajustes">⚙</button>
+    <button id="mute-btn" class="head-btn" title="Silenciar anuncios">🔊</button>
+  </header>
+  <div id="toast" class="hidden"></div>
+  <button id="voice-unlock" class="hidden" type="button">🔊 Activar voz</button>
+  <div id="banner" class="banner hidden" role="alert"></div>
+
+  <div id="herd-note" class="hidden"></div>
+
+  <section id="agent-view" class="hidden">
+    <div id="pending-banner" class="pending hidden"></div>
+    <span id="glance-label">Vista del agente</span>
+    <div id="glance-turns"></div>
+    <div id="glance-empty" class="hidden">Sin conversación del agente todavía</div>
+    <div class="gscreen-wrap hidden">
+      <span class="glabel">pantalla</span>
+      <pre id="view-screen" class="view-screen"></pre>
+    </div>
+  </section>
+
+  <button id="state-pill" class="hidden" role="status"><span id="pill-main"></span><span id="pill-sub" class="hidden"></span></button>
+
+  <!-- Approval gate popup (UX 2026-09-24): the gate card mounts here,
+       a DIRECT child of body OUTSIDE the drawer — visible whether the
+       drawer is open or closed. -->
+  <div id="approval-float" class="hidden"></div>
+
+  <footer>
+    <div id="mic-note" class="hidden"></div>
+    <div class="controls">
+      <button id="pause-btn" class="side-btn hidden">⏸ Pausa</button>
+      <button id="call-btn">📞 Llamar</button>
+      <button id="stop-audio" class="side-btn hidden">■ Parar audio</button>
+    </div>
+    <form id="text-fallback" class="hidden">
+      <input id="text-input" type="text" placeholder="Escribe en su lugar…" autocomplete="off">
+      <button type="submit">Enviar</button>
+    </form>
+  </footer>
+
+  <section id="call-drawer" role="dialog" aria-modal="false" aria-label="Llamada con brain" inert>
+    <div class="d-grab" aria-hidden="true"></div>
+    <div class="d-head">
+      <span class="d-title"><span class="live-dot" aria-hidden="true">●</span> Llamada con brain</span>
+      <span id="call-timer" aria-hidden="true">00:00</span>
+      <button id="drawer-close" type="button" title="Minimizar la llamada (sigue en marcha)">▼</button>
+    </div>
+    <div id="d-pending"></div>
+    <div id="interim" aria-live="off">
+      <span id="interim-text" class="hidden"></span>
+      <span id="rec-meter" class="hidden"><span class="rec-dot" aria-hidden="true">●</span><span id="rec-elapsed">0:00</span><span class="meter" id="meter-cells" aria-hidden="true"></span></span>
+      <span id="strip-status" class="hidden"></span>
+    </div>
+    <main id="conversation" aria-live="polite"></main>
+  </section>
+
+  <section id="settings-sheet" role="dialog" aria-modal="false" aria-label="Ajustes" inert>
+    <div class="s-head">
+      <span class="s-title">Ajustes</span>
+      <button id="settings-close" type="button" title="Cerrar ajustes">✕</button>
+    </div>
+    <div class="s-body">
+      <div class="s-row">
+        <span class="s-label">Motor de voz</span>
+        <button id="voice-engine-btn" type="button">Voz: Servidor</button>
+      </div>
+      <span class="s-hint">Servidor: transcribe en el back con whisper (robusto). Navegador: Web Speech de Chrome (más rápido, menos fiable en Android).</span>
+    </div>
+  </section>
+
+  <div id="conv-backdrop" aria-hidden="true"></div>
+  <section id="conv-sheet" role="dialog" aria-modal="true" aria-label="Conversaciones" inert>
+    <div class="cs-head">
+      <span class="cs-title">Conversaciones</span>
+      <button id="conv-close" type="button" title="Cerrar">✕</button>
+    </div>
+    <div class="cs-actions">
+      <button id="conv-new" type="button">＋ Nueva conversación</button>
+    </div>
+    <div id="conv-list"></div>
+  </section>
+
+  <div id="version-footer">v<span id="app-version">dev</span></div>
+
+  <section id="diag-panel" class="hidden">
+    <div class="sheet-head">
+      <span id="diag-title" style="flex:1;font-weight:700;">Diagnóstico de voz</span>
+      <button id="diag-close" style="min-height:48px;padding:0 16px;font-weight:800;background:var(--chip-bg);color:var(--text);">✕ Cerrar</button>
+    </div>
+    <div class="sheet-body"><pre id="diag-text">Cargando…</pre></div>
+    <div id="diag-status">Última consulta: — · Último error: ninguno</div>
+  </section>
+
+  <audio id="player"></audio>
+  <script src="/endpointing.js"></script>
+  <script src="/vad.js"></script>
+  <script src="/approval.js"></script>
+    <script src="/reader.js"></script>
+    <script src="/toast.js"></script>
+    <script src="/announce.js"></script>
+    <script src="/app.js"></script>
+</body>
+</html>
