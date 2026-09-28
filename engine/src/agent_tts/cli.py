@@ -16,6 +16,7 @@ from agent_tts.boundaries import (
     Paragraph,
     Sentence,
     Word,
+    build_boundaries_from_word_events,
     estimate_boundaries_from_text,
 )
 # Re-exported for the streaming pipeline (merge_group) and for existing
@@ -27,6 +28,7 @@ from agent_tts.constants import DEFAULT_RATE, DEFAULT_VOICE
 from agent_tts.powershell_playback import PowershellSession, is_wsl_ps_available
 from agent_tts.providers import TTSProvider, get_provider
 from agent_tts.sources import read_last_agent_message
+from agent_tts.stream.decoder import Mp3StreamDecoder, StreamDecodeFallbackError
 from agent_tts.text import split_sentence_groups
 from agent_tts.winhost_client import RemoteAudioSession
 import miniaudio
@@ -234,18 +236,45 @@ def use_pipelined_stream(
     podcast: bool,
     text_len: int,
 ) -> bool:
-    """Decides whether playback should use pipelined sentence-group streaming.
+    """Decides whether playback should use pipelined streaming (groups or frames).
 
     An ``output_file`` no longer refuses streaming: the pipeline plays
     normally and the merged audio is written to the file once playback
     completes — the file appears at the end of the run, not progressively.
     Podcast mode and ``no_play`` keep refusing (unchanged semantics).
     """
-    if no_play or stream not in ("auto", "on") or podcast:
+    if no_play or stream not in ("auto", "on", "frames", "groups") or podcast:
         return False
-    if stream == "on":
+    if stream in ("on", "frames", "groups"):
         return True
     return provider in STREAM_AUTO_PROVIDERS and text_len >= STREAM_AUTO_MIN_CHARS
+
+
+def resolve_stream_mode(
+    provider: str,
+    stream: str,
+    supports_stream: bool,
+    stream_yields_group_chunks: bool,
+    auto_lang: bool,
+) -> str:
+    """Resolves the streaming mode: 'frames' or 'groups'.
+
+    'frames' enables continuous MP3 frame-accurate streaming.
+    'groups' keeps sentence-group synthesis and chunk-level decoding.
+    """
+    if auto_lang:
+        return "groups"
+    if stream == "groups":
+        return "groups"
+    if stream == "frames":
+        return "frames"
+    if stream_yields_group_chunks:
+        # e.g. Piper yields complete group WAVs
+        return "groups"
+    if supports_stream and provider in STREAM_AUTO_PROVIDERS:
+        return "frames"
+    return "groups"
+
 
 
 def group_for_chunk(groups: List[str], chunk_idx: int) -> Optional[str]:
@@ -280,8 +309,13 @@ async def _speak_pipelined(
     podcast: bool = False,
     persist_name: Optional[str] = None,
     engine: Optional[TTSProvider] = None,
+    stream: str = "groups",
 ) -> None:
-    """Plays the first synthesized sentence group while remaining groups are synthesized and appended live.
+    """Plays the first synthesized segment while remaining audio is synthesized and appended live.
+
+    Supports continuous MP3 frame streaming (stream_mode == "frames") with bit reservoir
+    preservation and dynamic boundary updates, as well as sentence-group streaming
+    (stream_mode == "groups").
 
     Every successfully produced group/chunk is kept in ``rendered_chunks``;
     at a clean end of the pipeline the bytes are merged and persisted once
@@ -322,11 +356,6 @@ async def _speak_pipelined(
         progress["word"] += len(shifted.words)
         progress["para"] += len(shifted.paragraphs)
 
-    # Capability-driven streaming: the producer consumes synthesize_stream()
-    # ONCE only when the engine's stream yields one chunk per sentence group
-    # (one persistent piper process), so chunks map to groups by index.
-    # Stream-capable engines whose chunks are raw fragments (openai,
-    # elevenlabs) keep the per-group path and its aligned boundaries.
     if engine is None:
         try:
             engine = get_provider(
@@ -341,14 +370,81 @@ async def _speak_pipelined(
         except Exception:
             engine = None  # the per-group path below surfaces the construction error as today
 
-    # auto-lang switches voices per language segment, which a single text-level
-    # stream cannot do: it keeps the per-group path.
+    supports_stream = getattr(engine, "supports_stream", False) if engine is not None else False
+    stream_yields_group_chunks = (
+        getattr(engine, "stream_yields_group_chunks", False) if engine is not None else False
+    )
+    stream_mode = resolve_stream_mode(
+        provider=provider,
+        stream=stream,
+        supports_stream=supports_stream,
+        stream_yields_group_chunks=stream_yields_group_chunks,
+        auto_lang=auto_lang,
+    )
+
+    boundary_events: List[dict] = []
+
+    def on_event(ev: dict) -> None:
+        if isinstance(ev, dict) and ev.get("type") == "WordBoundary":
+            boundary_events.append(ev)
+
+    def update_frame_boundaries() -> None:
+        if boundary_events:
+            bmap = build_boundaries_from_word_events(text, list(boundary_events))
+            with session.lock:
+                session.boundaries = bmap
+        elif not session.boundaries.sentences:
+            est_duration = max(0.5, len(text) / 15.0)
+            bmap = estimate_boundaries_from_text(text, est_duration)
+            with session.lock:
+                session.boundaries = bmap
+
+    decoder = None
+    decode_gen = None
+    feed_thread = None
     stream_gen = None
-    if (
-        not auto_lang
+
+    if stream_mode == "frames" and engine is not None:
+        decoder = Mp3StreamDecoder(preroll_sec=0.1, frames_per_yield=5)
+        try:
+            stream_gen = engine.synthesize_stream(
+                text,
+                voice,
+                rate,
+                volume,
+                pitch,
+                stop_checker=check_stop,
+                on_event=on_event,
+            )
+
+            def feed_worker() -> None:
+                try:
+                    for chunk in stream_gen:
+                        if check_stop():
+                            break
+                        rendered_chunks.append(chunk)
+                        decoder.feed_bytes(chunk)
+                except Exception as e:
+                    print(f"Stream: network feeder error: {e}", file=sys.stderr)
+                finally:
+                    decoder.finish_stream()
+
+            feed_thread = threading.Thread(target=feed_worker, daemon=True)
+            feed_thread.start()
+            decode_gen = decoder.decode_generator()
+        except Exception as e:
+            print(
+                f"Stream: frame streaming failed to initialize ({e}); falling back to sentence groups",
+                file=sys.stderr,
+            )
+            stream_mode = "groups"
+            stream_gen = None
+    elif (
+        stream_mode == "groups"
+        and not auto_lang
         and engine is not None
-        and getattr(engine, "supports_stream", False)
-        and getattr(engine, "stream_yields_group_chunks", False)
+        and supports_stream
+        and stream_yields_group_chunks
     ):
         stream_gen = engine.synthesize_stream(text, voice, rate, volume, pitch, stop_checker=check_stop)
 
@@ -410,6 +506,40 @@ async def _speak_pipelined(
             stream_state["failed"] = True
             print(f"Stream: group {idx} failed: {e}", file=sys.stderr)
             return None
+
+    async def stream_first_frames():
+        """Consumes the initial pre-roll cushion from the frame decoder."""
+        try:
+            first = await asyncio.to_thread(next, decode_gen, None)
+        except StreamDecodeFallbackError as e:
+            print(f"Stream: frame decoder fallback ({e}); falling back to sentence groups", file=sys.stderr)
+            return None
+        except Exception as e:
+            print(f"Stream: frame decoder error ({e}); falling back to sentence groups", file=sys.stderr)
+            return None
+
+        if first is None:
+            return None
+        progress["produced"] += 1
+        update_frame_boundaries()
+        return first
+
+    async def stream_remaining_frames() -> None:
+        """Appends remaining decoded frame chunks live, updating boundary maps."""
+        try:
+            while not check_stop():
+                chunk = await asyncio.to_thread(next, decode_gen, None)
+                if chunk is None:
+                    break
+                if not session.append_pcm(chunk):
+                    continue
+                update_frame_boundaries()
+                progress["produced"] += 1
+        except Exception as e:
+            print(f"Stream: frame decoding error mid-stream: {e}", file=sys.stderr)
+            raise
+        finally:
+            update_frame_boundaries()
 
     async def stream_first():
         """Consumes stream chunks until one decodes; returns the first decoded segment."""
@@ -498,8 +628,18 @@ async def _speak_pipelined(
         )
 
     async def produce_first():
-        """Synthesizes groups in order until one decodable segment is ready; returns it decoded."""
-        if stream_gen is not None:
+        """Synthesizes frames or groups in order until one decodable segment is ready; returns it decoded."""
+        nonlocal stream_mode, stream_gen
+        if stream_mode == "frames":
+            first = await stream_first_frames()
+            if first is not None:
+                return first
+            # Fallback triggered: discard partial rendered chunks and fall back to groups
+            rendered_chunks.clear()
+            stream_mode = "groups"
+            stream_gen = None
+
+        if stream_gen is not None and stream_mode != "frames":
             return await stream_first()
         for idx, group_text in enumerate(groups):
             if check_stop():
@@ -528,7 +668,9 @@ async def _speak_pipelined(
         return None
 
     async def produce_remaining(start_idx: int) -> None:
-        """Synthesizes the remaining groups and appends each decoded segment to the live buffer."""
+        """Synthesizes remaining frames or groups and appends each decoded segment to the live buffer."""
+        if stream_mode == "frames":
+            return await stream_remaining_frames()
         if stream_gen is not None:
             return await stream_remaining(start_idx)
         for idx in range(start_idx, len(groups)):
@@ -626,7 +768,10 @@ async def _speak_pipelined(
                 session.state["producing"] = False
             producer.join(timeout=5.0)
     finally:
-        if stream_gen is not None:
+        if stream_mode == "frames":
+            if feed_thread is not None:
+                feed_thread.join(timeout=2.0)
+        elif stream_gen is not None:
             # Safety net: the generator is normally exhausted (or closed by
             # stream_remaining); this also covers first-phase stops and errors
             # so the persistent piper process never outlives the pipeline.
@@ -783,6 +928,7 @@ async def _play_speech(
             podcast=podcast,
             persist_name=persist_name,
             engine=engine,
+            stream=stream,
         )
         return
 
@@ -915,24 +1061,8 @@ async def speak(
             cleanup_locks()
 
 
-def main():
-    # Retention sweep; fail-open (audio_store is imported lazily so `import
-    # cli` never pays for it).
-    try:
-        from agent_tts.audio_store import prune_expired
-
-        prune_expired()
-    except Exception:
-        pass
-
-    # Voice manager subcommands (agent-tts voice list|install|remove) have
-    # their own argument grammar (e.g. `voice list --json`), so they dispatch
-    # BEFORE the synthesis parser; the store tooling lives in agent_tts.voices.
-    if len(sys.argv) > 1 and sys.argv[1] == "voice":
-        from agent_tts.voices import handle_voice_command
-
-        sys.exit(handle_voice_command(sys.argv[2:] or ["list"]))
-
+def build_parser() -> argparse.ArgumentParser:
+    """Builds and returns the CLI argument parser."""
     parser = argparse.ArgumentParser(description="Agent Neural TTS Engine")
     parser.add_argument("text", nargs="*", help="Text to speak (reads stdin if omitted)")
     parser.add_argument("--voice", "-v", default=DEFAULT_VOICE, help="Voice (e.g. elvira, alvaro, nova, rachel)")
@@ -1040,9 +1170,10 @@ def main():
     )
     parser.add_argument(
         "--stream",
-        choices=["auto", "on", "off"],
+        choices=["auto", "on", "off", "frames", "groups"],
         default="auto",
-        help="Pipelined playback: synthesize sentence groups while playing (auto: edge/openai/elevenlabs, no podcast, >=400 chars); with --output the merged file is written after playback",
+        help="Pipelined playback: auto, on (pipelined), frames (continuous MP3 frame decoding), "
+        "groups (sentence-group synthesis), off; with --output the merged file is written after playback",
     )
     parser.add_argument(
         "--playback",
@@ -1151,6 +1282,28 @@ def main():
         help="Agent session id; resolves the last assistant message from the tool's structured transcript before falling back to the provided text",
     )
 
+    return parser
+
+
+def main():
+    # Retention sweep; fail-open (audio_store is imported lazily so `import
+    # cli` never pays for it).
+    try:
+        from agent_tts.audio_store import prune_expired
+
+        prune_expired()
+    except Exception:
+        pass
+
+    # Voice manager subcommands (agent-tts voice list|install|remove) have
+    # their own argument grammar (e.g. `voice list --json`), so they dispatch
+    # BEFORE the synthesis parser; the store tooling lives in agent_tts.voices.
+    if len(sys.argv) > 1 and sys.argv[1] == "voice":
+        from agent_tts.voices import handle_voice_command
+
+        sys.exit(handle_voice_command(sys.argv[2:] or ["list"]))
+
+    parser = build_parser()
     args = parser.parse_args()
 
     # Chain flag coherence (client-side, before any daemon contact).

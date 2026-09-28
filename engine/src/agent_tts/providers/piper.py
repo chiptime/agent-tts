@@ -196,6 +196,7 @@ class PiperTTSProvider(TTSProvider):
         volume: str = "+0%",
         pitch: str = "+0Hz",
         stop_checker: Optional[Callable[[], bool]] = None,
+        on_event: Optional[Callable[[dict], None]] = None,
     ) -> Iterator[bytes]:
         """Yields one complete WAV per sentence group from a single persistent piper process.
 
