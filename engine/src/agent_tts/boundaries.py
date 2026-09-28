@@ -400,3 +400,68 @@ def estimate_boundaries_from_text(text: str, total_duration_sec: float) -> Bound
         current_time += p_dur
 
     return BoundaryMap(sentences=sentences, words=words, paragraphs=paragraphs)
+
+
+def build_boundaries_from_word_events(text: str, raw_words: List[dict]) -> BoundaryMap:
+    """Builds a BoundaryMap from native WordBoundary events (e.g. from Edge TTS)."""
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n+", text) if p.strip()]
+    if not paragraphs:
+        paragraphs = [text.strip()] if text.strip() else [""]
+
+    sentences: List[Sentence] = []
+    words: List[Word] = []
+    sent_global_idx = 0
+    word_global_idx = 0
+    ew_idx = 0
+    total_ew = len(raw_words)
+
+    for p_idx, p_text in enumerate(paragraphs):
+        raw_sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", p_text) if s.strip()]
+        if not raw_sents:
+            raw_sents = [p_text]
+
+        for s_text in raw_sents:
+            s_words = s_text.split()
+            s_start = None
+            s_end = 0.0
+
+            for sw in s_words:
+                if ew_idx < total_ew:
+                    ew = raw_words[ew_idx]
+                    ew_idx += 1
+                    w_start = ew["offset"] / 10_000_000.0
+                    w_dur = ew["duration"] / 10_000_000.0
+                else:
+                    w_start = s_end + 0.05
+                    w_dur = 0.25
+
+                w_obj = Word(
+                    index=word_global_idx,
+                    sentence_index=sent_global_idx,
+                    start_sec=w_start,
+                    duration_sec=w_dur,
+                    text=sw,
+                )
+                words.append(w_obj)
+                word_global_idx += 1
+
+                if s_start is None:
+                    s_start = w_start
+                s_end = max(s_end, w_start + w_dur)
+
+            if s_start is None:
+                s_start = 0.0
+                s_end = 0.5
+
+            sent = Sentence(
+                index=sent_global_idx,
+                paragraph_index=p_idx,
+                start_sec=s_start,
+                duration_sec=max(0.1, s_end - s_start),
+                text=s_text,
+            )
+            sentences.append(sent)
+            sent_global_idx += 1
+
+    return BoundaryMap(sentences=sentences, words=words)
+

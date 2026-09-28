@@ -96,6 +96,7 @@ class ElevenLabsTTSProvider(TTSProvider):
         volume: str = "+0%",
         pitch: str = "+0Hz",
         stop_checker: Optional[Callable[[], bool]] = None,
+        on_event: Optional[Callable[[dict], None]] = None,
     ) -> Iterator[bytes]:
         """Yields MP3 chunks incrementally from the ElevenLabs streaming endpoint."""
         if not self.api_key:
