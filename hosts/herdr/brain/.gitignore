@@ -5,5 +5,7 @@ __pycache__/
 dist/
 build/
 *.mp3
+# E2E fixtures are test assets, not generated audio (voice-stack D6/T12.4).
+!tests/e2e/fixtures/*.mp3
 .coverage
 .codegraph/
