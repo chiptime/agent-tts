@@ -89,8 +89,9 @@ Ordered by dependency. Route column is the planned topology.
   `feat/herdr-brain-ctx-04-engram-adapter`. Verified access: SQLite at
   `~/.engram/engram.db` opened `file:...?mode=ro` (no subprocess, no writes;
   write refusal empirically confirmed).
-- [ ] **T5** `freshness`: manifest comparison, reuse-after-check, full rebuild,
+- [x] **T5** `freshness`: manifest comparison, reuse-after-check, full rebuild,
   bounded full scan, moving windows. FR-28..32, 41. Depends: T2, T3, T4.
+  Done; commit on `feat/herdr-brain-ctx-05-freshness`.
 - [ ] **T6** `report` consolidation: per-project advances/pending/blockers,
   conflict surfacing, references, grounded completion, empty vs failed.
   FR-13..16, 22, 25. Depends: T3..T5.
@@ -234,9 +235,23 @@ its FRs covered by tests and the full suite green.
   uncapped (open); no env override (open); no truncated bool in stats (open).
 - Slice 04 `feat/herdr-brain-ctx-04-engram-adapter`: T4 (~1.20k lines) —
   `size:exception` recommendation recorded.
+- 2026-09-30 T5 done (strict TDD, auto). RED-1: `ModuleNotFoundError: No
+  module named 'herdr_brain.freshness'` (21 tests). RED-2: `ImportError:
+  cannot import name 'FreshnessChecker'`. GREEN 46 passed. Full suite re-run
+  by the parent: 896 passed (850 + 46). Files: `src/herdr_brain/freshness.py`
+  (483), `tests/test_freshness.py` (515).
+- T5 rule decisions: sealed outcome family Reuse/Rebuild/Unable; token equality
+  the ONLY change signal; full_scan=True permanent (providers give full
+  inventories, deltas never exist — FR-32); pipeline authority -> health ->
+  stored report -> manifest; UNABLE on any COVERAGE_FAILED (never serve stale);
+  window movement beats manifest identity; interval comparison never trusts the
+  store key coupling; malformed manifest rows fail loud; empty/duplicate
+  configured_kinds rejected; RebuildPlan carries the deadline.
+- Open: per-source kind vs provider kind check, SOURCE_ABSENT-with-sources
+  rejection, FSM ownership of mark_refresh_failed.
+- Slice 05 `feat/herdr-brain-ctx-05-freshness`: T5 (~1.0k lines) —
+  `size:exception` recommendation recorded.
 
 ## Next step
 
-T5 `freshness` on `feat/herdr-brain-ctx-05-freshness` from 04: manifest
-comparison, reuse-after-check, full rebuild, bounded full scan, moving windows
-(FR-28..32, 41).
+T6 `report` consolidation on `feat/herdr-brain-ctx-06-report` from 05.
