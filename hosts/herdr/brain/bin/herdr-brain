@@ -1,0 +1,279 @@
+#!/usr/bin/env bash
+# herdr-brain — launcher and CLI entrypoint for Herdr plugin & standalone usage.
+set -euo pipefail
+
+REAL_SCRIPT="$(readlink -f "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd "$(dirname "${REAL_SCRIPT}")" && pwd)"
+REPO_DIR="${HERDR_PLUGIN_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
+
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/herdr-brain"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/herdr-brain"
+PID_FILE="$STATE_DIR/daemon.pid"
+SUPERVISOR_STOP_FLAG="$STATE_DIR/supervisor.stop"
+LOG_FILE="$STATE_DIR/server.log"
+
+mkdir -p "$STATE_DIR" "$CONFIG_DIR"
+
+# ---------------------------------------------------------------- env discovery
+load_env() {
+  export HERDR_BRAIN_HOST="${HERDR_BRAIN_HOST:-0.0.0.0}"
+  export HERDR_BRAIN_PORT="${HERDR_BRAIN_PORT:-8741}"
+  export HERDR_TTS_HOME="${HERDR_TTS_HOME:-$HOME/Code/personal/herdr-tts}"
+
+  # Discover HERDR_BIN if not pinned
+  if [[ -z "${HERDR_BIN:-}" ]]; then
+    if command -v herdr >/dev/null 2>&1; then
+      HERDR_BIN="$(command -v herdr)"
+    elif [[ -x "/home/linuxbrew/.linuxbrew/bin/herdr" ]]; then
+      HERDR_BIN="/home/linuxbrew/.linuxbrew/bin/herdr"
+    elif [[ -x "$HOME/.local/bin/herdr" ]]; then
+      HERDR_BIN="$HOME/.local/bin/herdr"
+    else
+      HERDR_BIN="herdr"
+    fi
+    export HERDR_BIN
+  fi
+
+  # Discover GLM_API_KEY if not in environment
+  if [[ -z "${GLM_API_KEY:-}" ]]; then
+    if [[ -f "$CONFIG_DIR/env" ]]; then
+      # shellcheck disable=SC1090
+      set -a; . "$CONFIG_DIR/env"; set +a
+    fi
+    local plugin_cfg="${XDG_CONFIG_HOME:-$HOME/.config}/herdr/plugins/config/herdr.brain/config.env"
+    if [[ -z "${GLM_API_KEY:-}" && -f "$plugin_cfg" ]]; then
+      # shellcheck disable=SC1090
+      set -a; . "$plugin_cfg"; set +a
+    fi
+    local private_env="$HOME/.dotfiles/shell/private-env.sh"
+    if [[ -z "${GLM_API_KEY:-}" && -f "$private_env" ]]; then
+      local raw_line
+      raw_line="$(grep -E '^[[:space:]]*export[[:space:]]+GLM_API_KEY=' "$private_env" 2>/dev/null | tail -n 1 || true)"
+      if [[ -n "$raw_line" ]]; then
+        local raw_val="${raw_line#*GLM_API_KEY=}"
+        raw_val="${raw_val%\"}"; raw_val="${raw_val#\"}"
+        raw_val="${raw_val%\'}"; raw_val="${raw_val#\'}"
+        raw_val="${raw_val%%#*}"
+        GLM_API_KEY="$(printf '%s' "$raw_val" | tr -d '\r\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        export GLM_API_KEY
+      fi
+    fi
+  fi
+}
+
+ensure_venv() {
+  local venv_py="$REPO_DIR/.venv/bin/python"
+  if [[ ! -x "$venv_py" ]]; then
+    if [[ -x "$REPO_DIR/scripts/bootstrap.sh" ]]; then
+      bash "$REPO_DIR/scripts/bootstrap.sh"
+    else
+      echo "ERROR: Missing .venv in $REPO_DIR and bootstrap.sh not found." >&2
+      exit 1
+    fi
+  fi
+}
+
+port_listener_pid() {
+  ss -tlnp "sport = :${HERDR_BRAIN_PORT:-8741}" 2>/dev/null | grep -oE 'pid=[0-9]+' | head -n1 | cut -d= -f2 || true
+}
+
+daemon_pid() {
+  local pid
+  pid=$(cat "$PID_FILE" 2>/dev/null || true)
+  if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+    printf '%s\n' "$pid"
+    return 0
+  fi
+  local lpid
+  lpid="$(port_listener_pid)"
+  if [[ -n "$lpid" && "$lpid" =~ ^[0-9]+$ ]] && kill -0 "$lpid" 2>/dev/null; then
+    printf '%s\n' "$lpid"
+    return 0
+  fi
+  return 1
+}
+
+# ---------------------------------------------------------------- commands
+cmd_daemon() {
+  load_env
+  ensure_venv
+
+  # If port is occupied by another process, handle it
+  local existing_pid
+  existing_pid="$(port_listener_pid)"
+  if [[ -n "$existing_pid" && "$existing_pid" != "$$" ]]; then
+    if systemctl --user is-active --quiet herdr-brain 2>/dev/null; then
+      echo "[herdr-brain] Stopping systemd unit herdr-brain to allow plugin daemon..."
+      systemctl --user stop herdr-brain 2>/dev/null || true
+      sleep 0.5
+    else
+      echo "[herdr-brain] Warning: Port $HERDR_BRAIN_PORT already in use by PID $existing_pid. Stopping it..."
+      kill -TERM "$existing_pid" 2>/dev/null || true
+      sleep 0.5
+    fi
+  fi
+
+  printf '%s\n' "$$" > "$PID_FILE"
+  trap 'rm -f "$PID_FILE" 2>/dev/null || true' EXIT
+
+  echo "[herdr-brain] Starting server on $HERDR_BRAIN_HOST:$HERDR_BRAIN_PORT (PID $$)..."
+  exec "$REPO_DIR/.venv/bin/python" -m herdr_brain.server
+}
+
+cmd_daemon_supervised() {
+  local child_pid="" rc=0 forward_sig=""
+  rm -f "$SUPERVISOR_STOP_FLAG" 2>/dev/null || true
+
+  _sup_forward() {
+    forward_sig="${1:-TERM}"
+    if [[ -n "${child_pid:-}" ]] && kill -0 "$child_pid" 2>/dev/null; then
+      kill -"$forward_sig" "$child_pid" 2>/dev/null || true
+    else
+      exit 0
+    fi
+  }
+
+  _sup_reap() {
+    if [[ -n "${child_pid:-}" ]] && kill -0 "$child_pid" 2>/dev/null; then
+      kill "$child_pid" 2>/dev/null || true
+      wait "$child_pid" 2>/dev/null || true
+    fi
+    rm -f "$PID_FILE" 2>/dev/null || true
+  }
+
+  trap '_sup_forward INT' INT
+  trap '_sup_forward TERM' TERM
+  trap '_sup_reap' EXIT
+
+  while true; do
+    forward_sig=""
+    "$REAL_SCRIPT" _daemon &
+    child_pid=$!
+    rc=0
+    wait "$child_pid" || rc=$?
+    child_pid=""
+
+    if [[ -n "$forward_sig" ]]; then
+      exit 0
+    fi
+
+    if [[ -f "$SUPERVISOR_STOP_FLAG" ]]; then
+      rm -f "$SUPERVISOR_STOP_FLAG" 2>/dev/null || true
+      echo "[herdr-brain] Supervisor: stop requested, exiting."
+      exit 0
+    fi
+
+    echo "[herdr-brain] Supervisor: server exited with code $rc, restarting in 2s..."
+    sleep 2
+  done
+}
+
+cmd_status() {
+  load_env
+  local url="http://127.0.0.1:${HERDR_BRAIN_PORT:-8741}/health"
+  local pid=""
+  pid="$(daemon_pid || true)"
+
+  echo "─── Herdr Brain Status ───"
+  if [[ -n "$pid" ]]; then
+    echo "Process PID : $pid (running)"
+  else
+    echo "Process PID : not found (stopped)"
+  fi
+
+  local health
+  if health=$(curl -fsS -m 2 "$url" 2>/dev/null); then
+    echo "Health Check: OK (200)"
+    echo "Details     : $health"
+  else
+    echo "Health Check: DOWN (cannot reach $url)"
+  fi
+
+  echo ""
+  cmd_url
+}
+
+cmd_url() {
+  load_env
+  local port="${HERDR_BRAIN_PORT:-8741}"
+  echo "Local URL: http://localhost:$port/"
+
+  # Tailscale URL detection
+  local ts_bin=""
+  if command -v tailscale >/dev/null 2>&1; then
+    ts_bin="tailscale"
+  elif [[ -x "$HOME/bin/tailscale" ]]; then
+    ts_bin="$HOME/bin/tailscale"
+  fi
+
+  if [[ -n "$ts_bin" ]]; then
+    local ts_fqdn
+    ts_fqdn=$($ts_bin status </dev/null 2>/dev/null | grep -E 'desktop-|windows|linux' | head -n1 | awk '{print $2}' || true)
+    if [[ -n "$ts_fqdn" ]]; then
+      echo "Tailscale: https://$ts_fqdn.tail2640fd.ts.net:8443/ (port 8443)"
+    else
+      echo "Tailscale: https://<your-node>.ts.net:8443/"
+    fi
+  fi
+}
+
+cmd_stop() {
+  touch "$SUPERVISOR_STOP_FLAG" 2>/dev/null || true
+  local pid
+  pid="$(daemon_pid || true)"
+  if [[ -n "$pid" ]]; then
+    echo "Stopping Herdr Brain (PID $pid)..."
+    kill -TERM "$pid" 2>/dev/null || true
+    for _ in $(seq 1 10); do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.2
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+    echo "Stopped."
+  else
+    echo "Herdr Brain is not running."
+  fi
+  rm -f "$PID_FILE" 2>/dev/null || true
+}
+
+cmd_restart() {
+  echo "Restarting Herdr Brain..."
+  cmd_stop
+  sleep 1
+  # Relaunch in background
+  nohup "$REAL_SCRIPT" _daemon-supervised >> "$LOG_FILE" 2>&1 &
+  sleep 1
+  cmd_status
+}
+
+# ---------------------------------------------------------------- entrypoint
+case "${1:-status}" in
+  _daemon)
+    cmd_daemon
+    ;;
+  _daemon-supervised)
+    cmd_daemon_supervised
+    ;;
+  status|--status)
+    cmd_status
+    ;;
+  url|--url)
+    cmd_url
+    ;;
+  stop|--stop)
+    cmd_stop
+    ;;
+  restart|--restart)
+    cmd_restart
+    ;;
+  help|--help|-h)
+    echo "Usage: bin/herdr-brain [status|url|restart|stop|_daemon|_daemon-supervised]"
+    ;;
+  *)
+    load_env
+    ensure_venv
+    exec "$REPO_DIR/.venv/bin/python" -m herdr_brain "$@"
+    ;;
+esac

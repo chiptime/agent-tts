@@ -1,0 +1,43 @@
+id = "herdr.brain"
+name = "Herdr Brain"
+version = "0.1.0"
+min_herdr_version = "0.7.0"
+description = "Voice PWA backend and conversational bridge for Herdr agents"
+platforms = ["linux", "macos"]
+
+# Bootstrap python environment and dependencies on install
+[[build]]
+command = ["bash", "scripts/bootstrap.sh"]
+platforms = ["linux", "macos"]
+
+# Automatically started and supervised by Herdr server
+[[startup]]
+command = ["bin/herdr-brain", "_daemon-supervised"]
+
+[[actions]]
+id = "status"
+title = "Herdr Brain: Status"
+description = "Check health and connectivity of Herdr Brain"
+contexts = ["workspace", "global"]
+command = ["bin/herdr-brain", "status"]
+
+[[actions]]
+id = "url"
+title = "Herdr Brain: URL"
+description = "Show local and Tailscale URLs for Herdr Brain"
+contexts = ["workspace", "global"]
+command = ["bin/herdr-brain", "url"]
+
+[[actions]]
+id = "restart"
+title = "Herdr Brain: Restart"
+description = "Restart the Herdr Brain server process"
+contexts = ["workspace", "global"]
+command = ["bin/herdr-brain", "restart"]
+
+[[actions]]
+id = "stop"
+title = "Herdr Brain: Stop"
+description = "Stop the Herdr Brain server process"
+contexts = ["workspace", "global"]
+command = ["bin/herdr-brain", "stop"]
