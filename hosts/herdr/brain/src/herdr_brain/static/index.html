@@ -540,6 +540,57 @@
       overscroll-behavior: contain;
     }
 
+    /* ── CONSULT PANEL (T10: Consulting state + on-screen references;
+     * FR-14/FR-18/FR-33) ────────────────────────────────────────────
+     * consult.js mounts two children here: the "Consultando…"
+     * indicator while the engine works, and the report panel (the
+     * engine's SCREEN text, references included — display only, never
+     * spoken). Same centered 760px column language as the cockpit. */
+    #consult-panel {
+      margin: var(--sp-2) var(--sp-3) 0;
+      max-width: 760px;
+      margin-inline: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .consult-indicator {
+      padding: 10px 14px;
+      background: var(--panel);
+      border: 1px dashed var(--warn);
+      border-radius: 12px;
+      color: var(--warn);
+      font-weight: 700;
+      animation: live-pulse 1.2s ease-in-out infinite;
+    }
+    .consult-report {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px 14px;
+    }
+    /* While a NEW consult re-checks evidence, the old panel dims —
+     * never looking current against fresh work (FR-33 spirit). */
+    .consult-report.stale { opacity: 0.55; filter: saturate(0.6); }
+    .consult-meta {
+      font-size: 11px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+    /* Untrusted screen text: mounted via textContent only; multi-line
+     * layout preserved by CSS, never by injected markup. */
+    .consult-body {
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: var(--fs-sm);
+      line-height: 1.5;
+      max-height: 40vh;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
+
     /* Narrow phones: buy the cockpit text horizontal room. */
     @media (max-width: 480px) {
       #agent-view { margin: var(--sp-2) 10px 0; }
@@ -1212,6 +1263,11 @@
 
   <div id="herd-note" class="hidden"></div>
 
+  <!-- Consult panel mount (T10): consult.js builds the Consulting
+       indicator and the report panel (screen text + references, FR-14)
+       inside this section. -->
+  <section id="consult-panel" class="hidden" aria-live="polite"></section>
+
   <section id="agent-view" class="hidden">
     <div id="pending-banner" class="pending hidden"></div>
     <span id="glance-label">Vista del agente</span>
@@ -1303,6 +1359,7 @@
     <script src="/reader.js"></script>
     <script src="/toast.js"></script>
     <script src="/announce.js"></script>
+    <script src="/consult.js"></script>
     <script src="/app.js"></script>
 </body>
 </html>

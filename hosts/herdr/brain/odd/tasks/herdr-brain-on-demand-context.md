@@ -105,8 +105,10 @@ Ordered by dependency. Route column is the planned topology.
 - [x] **T9** Tool/LLM wiring: read-only retrieval tools, injection isolation,
   approval-gate regression. FR-36, 38..41. Depends: T7. Done; commit on
   `feat/herdr-brain-ctx-09-wiring`.
-- [ ] **T10** UI: Consulting state + on-screen references (never spoken).
-  FR-14, 18. Depends: T7.
+- [x] **T10** UI: Consulting state + on-screen references (never spoken).
+  FR-14, 18. Depends: T7. Done; commit on `feat/herdr-brain-ctx-10-ui`.
+  Also closed the T9 integration finding: ReportStore.get_by_report_id +
+  store-backed followup fallback (restart-resilient summaries).
 - [ ] **T11** Acceptance: Requirement-to-Test Matrix coverage, Verification
   Checklist, docs. FR-45-style gate for this work. Depends: all.
 
@@ -335,9 +337,29 @@ its FRs covered by tests and the full suite green.
   resilient followup summaries.
 - Slice 09 `feat/herdr-brain-ctx-09-wiring`: T9 (~2.0k new + 378 modified
   lines) — `size:exception` recommendation recorded.
+- 2026-09-30 T10 done (strict TDD both stacks; one existing test adapted with
+  intent preserved — filtered to consulting events after the new report event,
+  parent reviewed the diff). GREEN: pytest 11 new (1158 total), node --test
+  192/192. Files: NEW static/consult.js (170), tests/js/consult.test.js (285),
+  tests/test_consult_ui.py (393); MODIFIED consult.py (+79: report event +
+  store fallback), reportstore.py (+34: get_by_report_id — mirrors get_latest
+  inclusion except superseded-by-id IS returned, documented), app.js (+21),
+  index.html (+57), test_consult.py (adapted assertion). server.py untouched.
+- T10 rule decisions: outcome notices via existing toast (notify injected);
+  textContent/createElement ONLY, innerHTML never (tested with malicious
+  payload); event order start -> end -> consult_report; panel latest-wins with
+  .stale dim on re-consult (FR-33 spirit); consult.js has no audio seam
+  (tested); get_by_report_id: published+refresh_failed, never building/expired;
+  registry miss -> store fallback re-decodes per call (never cached);
+  queryfsm._decode_body imported with justification comment.
+- Open: cache-busting for consult.js (announce.js precedent), notice duration
+  per terminal state, panel dismissal UX, fallback memoization.
+- Slice 10 `feat/herdr-brain-ctx-10-ui`: T10 (~0.85k lines incl. tests) —
+  within budget for production code (~347), tests over; `size:exception`
+  recommendation recorded only for the test volume.
 
 ## Next step
 
-T10 UI on `feat/herdr-brain-ctx-10-ui` from 09: render the Consulting state
-(FR-18) and on-screen references (FR-14) in the PWA; optionally add
-ReportStore.get_by_report_id for restart-resilient followup summaries.
+T11 acceptance on `feat/herdr-brain-ctx-11-acceptance` from 10: map the
+Requirement-to-Test Matrix to the actual suites, run the Verification
+Checklist, write the feature README/docs, and record remaining gaps honestly.
