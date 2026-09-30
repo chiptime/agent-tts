@@ -712,10 +712,12 @@ class TestConsultService:
             event_sink=events.append,
         )
         service.consult(intent_global("", "", MADRID_TZ), "call-1")
-        assert [e["state"] for e in events] == ["start", "end"]
-        assert events[0]["type"] == "consulting"
-        assert events[0]["context_id"] == "call-1"
-        assert events[1]["outcome"] == "rendered"
+        # T10 added a trailing consult_report payload event (no "state"
+        # key) — scope this assertion to the consulting state events.
+        consulting_events = [e for e in events if e["type"] == "consulting"]
+        assert [e["state"] for e in consulting_events] == ["start", "end"]
+        assert consulting_events[0]["context_id"] == "call-1"
+        assert consulting_events[1]["outcome"] == "rendered"
 
     def test_broken_event_sink_never_breaks_consult(self, settings, tmp_path):
         def broken_sink(payload):

@@ -35,8 +35,12 @@ engine's ``ask_tz`` state. There is no timezone setting in
 
 CONSULTING EVENTS (FR-18 seam): ``event_sink`` receives
 ``{"type": "consulting", "state": "start"|"end", ...}`` payloads at
-engine start/end; the server attaches the SSE announcement hub so the
-PWA can render the state (T10). A broken sink never breaks a consult.
+engine start/end, plus — on a rendered outcome only, AFTER the end
+event — one ``{"type": "consult_report", "screen", "interval_label",
+"timezone_label", ...}`` payload carrying the SCREEN artifact so the
+live call screen paints the report (T10/FR-14). The server attaches
+the SSE announcement hub to the same sink; the PWA renders the state.
+A broken sink never breaks a consult.
 """
 
 from __future__ import annotations
@@ -62,6 +66,13 @@ from .queryfsm import (
     NaturalPeriod,
     QueryEngine,
     QueryIntent,
+    # Private-by-convention body codec, imported deliberately (T10):
+    # the stored report body is {version, brief, screen} and queryfsm
+    # owns its exact schema; re-implementing the decode here would fork
+    # the format. Precedent: tests import evidence._cwd_matches the
+    # same way. A queryfsm-internal change to the body format shows up
+    # here as a loud ValueError, never a silent mismatch.
+    _decode_body,
     brief_from_json,
     interval_label,
     timezone_label,
@@ -70,6 +81,7 @@ from .report import (
     BriefDocument,
     ReportScaffold,
     build_incompleteness_note,
+    render_spoken,
     validate_brief,
 )
 
@@ -560,6 +572,7 @@ class ConsultService:
         from .reportstore import ReportStore
 
         store = ReportStore(store_path, clock=self._clock)
+        self._store = store  # read fallback for followup summaries (T10)
         from .freshness import FreshnessChecker
 
         checker = FreshnessChecker(
@@ -693,14 +706,45 @@ class ConsultService:
         """A previously rendered result by report id, for followup
         summaries.
 
-        KNOWN LIMITATION (documented honestly): ``ReportStore`` exposes
-        no fetch-by-report_id read, so followup summaries resolve
-        against this bounded in-memory registry; after a service
-        restart the anchored report is re-consulted instead of served
-        (the followup store itself persists; only this summary cache is
-        volatile). See the T9 report: fetch-by-id is the follow-up
-        integration gap."""
-        return self._rendered.get(report_id)
+        Registry first, then the PERSISTENT store (T10, closing the T9
+        restart gap): when the in-memory registry misses — a fresh
+        service instance after a restart — the anchored report is
+        rebuilt read-only from ``ReportStore.get_by_report_id`` (which
+        mirrors ``get_latest`` inclusion: published/refresh_failed,
+        never building, never expired). A store miss or an undecodable
+        body returns None and the caller degrades to the re-consult
+        note; nothing is ever improvised. The rebuilt result is NOT
+        cached into the registry — this is a read, and a later
+        ``consult`` remains the only writer.
+        """
+        hit = self._rendered.get(report_id)
+        if hit is not None:
+            return hit
+        record = self._store.get_by_report_id(report_id)
+        if record is None:
+            return None
+        try:
+            doc, screen = _decode_body(record.body)
+        except ValueError:
+            LOGGER.warning(
+                "stored report %s body is undecodable; followup degrades"
+                " to a re-consult note",
+                report_id,
+            )
+            return None
+        return EngineResult(
+            state="rendered",
+            spoken=render_spoken(doc),
+            screen=screen,
+            report_id=record.report_id,
+            interval_label=doc.interval_label,
+            timezone_label=doc.timezone_label,
+            detail=(
+                "restored from the persistent report store (restart"
+                " fallback for the followup summary)"
+            ),
+            references=tuple(record.references),
+        )
 
     def attach_event_sink(self, sink: Callable[[dict], None]) -> None:
         """Attaches (or replaces) the consulting-event sink (FR-18)."""
@@ -741,6 +785,21 @@ class ConsultService:
                 "context_id": normalized,
             }
         )
+        if result.state == "rendered":
+            # The SCREEN payload rides its own event AFTER the
+            # consulting end (T10/FR-14): the PWA clears the indicator
+            # first, then paints the report panel — references are
+            # display-only and never reach a spoken path.
+            self._emit(
+                {
+                    "type": "consult_report",
+                    "screen": result.screen,
+                    "interval_label": result.interval_label,
+                    "timezone_label": result.timezone_label,
+                    "report_id": result.report_id,
+                    "context_id": normalized,
+                }
+            )
         return result
 
     # -- followup glue (D07/FR-23; store semantics in followup.py) --------

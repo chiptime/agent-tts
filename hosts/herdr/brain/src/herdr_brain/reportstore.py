@@ -577,6 +577,40 @@ class ReportStore:
         """
         return self._latest(key, statuses=("published", "refresh_failed"))
 
+    def get_by_report_id(self, report_id: object) -> Optional[ReportRecord]:
+        """One retrievable revision by its exact id, or None (T10).
+
+        A keyed-diagnostics read — the id alone addresses the row, so it
+        finds reports under ANY isolation key (needed by the followup
+        summary fallback, which only holds the anchored report id).
+
+        Inclusion rules MIRROR ``get_latest``: ``published`` and
+        ``refresh_failed`` are retrievable, ``building`` never is, and
+        an expired row (derived at read, as everywhere) returns None.
+        One deliberate DIFFERENCE from ``get_latest``/``get_current``:
+        a revision that was later superseded IS returned when its exact
+        id is asked for — this is a by-id fetch of a specific revision
+        (the followup anchor names that revision), not a "which report
+        is current for this key" question; currentness stays
+        ``get_current``/``get_latest``'s job.
+        """
+        if not isinstance(report_id, str) or not report_id.strip():
+            return None
+        now_iso = _iso(self._now())
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    f"SELECT {_SELECT_COLUMNS} FROM reports"
+                    " WHERE report_id = ?"
+                    " AND status IN ('published', 'refresh_failed')"
+                    " AND retention_expires_at > ?",
+                    (report_id, now_iso),
+                ).fetchone()
+            finally:
+                conn.close()
+        return _row_to_record(row) if row is not None else None
+
     def purge_expired(self, *, limit: int = 100) -> int:
         """Bounded cleanup (FR-34): deletes at most ``limit`` rows whose
         retention horizon has passed and returns the deleted count.

@@ -54,6 +54,7 @@
   var convList = $("conv-list");
   var herdNote = $("herd-note");
   var toastEl = $("toast");
+  var consultPanel = $("consult-panel");
   var drawer = $("call-drawer");
   var drawerCloseBtn = $("drawer-close");
   var settingsSheet = $("settings-sheet");
@@ -1578,6 +1579,20 @@
     toast.hide();
   }
 
+  /* ---------------- consult state + report panel (T10) ----------------
+   * consult.js owns the pure DOM surface (Consulting indicator while
+   * the engine works — FR-18/D06 — and the report panel with the
+   * engine's SCREEN text, references included, display-only — FR-14).
+   * Outcome notices (unable/narrow/ask_tz/clarify) reuse the TOAST:
+   * it is already the app's transient-notice surface. */
+  var consultUI = window.Consult && window.Consult.createConsultUI
+    ? window.Consult.createConsultUI({
+      doc: document,
+      mount: consultPanel,
+      notify: function (text) { showToast(text, 6000); }
+    })
+    : null;
+
   /* ---------------- announcements over SSE ---------------- */
 
   var eventsOpened = false;
@@ -1721,6 +1736,12 @@
         showToast((isWarning ? "⚠️ " : "✅ ") + ann.text, isWarning ? 8000 : 5000,
           isWarning ? "warning" : null);
         if (!muted() && ann.audio_url) enqueueAudio(ann.audio_url, ann);
+        return;
+      }
+      if (ann && (ann.type === "consulting" || ann.type === "consult_report")) {
+        // T10: consult state + report panel ride the same SSE stream.
+        // Display-only by contract — never enqueueAudio'd (FR-14).
+        if (consultUI) safeRender("consult", consultUI.handleEvent, ann);
         return;
       }
       if (!ann || ann.type !== "transition") return;
