@@ -204,7 +204,16 @@ MACHINE_COUPLING_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 SCAN_SCOPES: dict[str, str] = {
     # Task 1.2 seed: the acceptance harness itself must stay machine-clean.
     "acceptance-harness": "scripts/acceptance",
+    # Task 1.3 seed: the engine source tree is already machine-clean; guard it.
+    "engine-src": "engine/src",
 }
+
+
+# A line carrying `hygiene-exempt: <reason>` is skipped by the scan — an
+# explicit, greppable escape hatch for files that must contain a pattern as
+# data (e.g. the scenario that defines the pattern table itself). Every use
+# is reviewable in the diff; anything else fails.
+EXEMPT_MARKER_RE = re.compile(r"hygiene-exempt:\s*\S+")
 
 
 def scope_violations(rel_dir: str) -> list[str]:
@@ -219,6 +228,8 @@ def scope_violations(rel_dir: str) -> list[str]:
         except (UnicodeDecodeError, OSError):
             continue
         for lineno, line in enumerate(text.splitlines(), 1):
+            if EXEMPT_MARKER_RE.search(line):
+                continue
             for pattern, desc in MACHINE_COUPLING_PATTERNS:
                 if pattern.search(line):
                     found.append(
