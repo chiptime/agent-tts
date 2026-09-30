@@ -81,8 +81,9 @@ Ordered by dependency. Route column is the planned topology.
   - [x] **T3b** `OpencodeEvidenceProvider`: historical enumeration via SQLite,
     epoch-ms timestamps, `time_updated` revision tokens. Done; commit on
     `feat/herdr-brain-ctx-03b-evidence-opencode`.
-  - [ ] **T3c** `ClaudeEvidenceProvider` + `AntigravityEvidenceProvider`:
-    JSONL discovery, ISO timestamps, stat-based tokens.
+  - [x] **T3c** `ClaudeEvidenceProvider` + `AntigravityEvidenceProvider`:
+    JSONL discovery, ISO timestamps, stat-based tokens. Done; commit on
+    `feat/herdr-brain-ctx-03c-evidence-transcripts`.
 - [ ] **T4** Read-only Engram adapter (access mechanism to be verified, A-2).
   FR-05, 31, 38, 39. Depends: T3.
 - [ ] **T5** `freshness`: manifest comparison, reuse-after-check, full rebuild,
@@ -173,9 +174,50 @@ its FRs covered by tests and the full suite green.
   normalization, mid-acquisition re-validate token (T5 concern), Antigravity
   summaries-db authority.
 - Slice 03a `feat/herdr-brain-ctx-03a-evidence-core`: T3a (~923 lines) —
-  `size:exception` recommendation recorded.
+  `size:exception` recommendation recorded. Post-commit native assessment of
+  the T3a commit: high risk (`high_risk`), review_due true; RDD remains OFF
+  (clone-local user decision) so no review started, ordinary policy applies.
+- 2026-09-30 T3b done (strict TDD, auto). RED: `ModuleNotFoundError: No module
+  named 'herdr_brain.evidence_opencode'`. First GREEN run 3 failed / 24 passed
+  — test expectations wrongly assumed NULL-time sorts last (SQLite sorts NULL
+  first); expectations fixed, not code. GREEN 27 passed. Full suite re-run by
+  the parent: 764 passed (737 + 27). Files: `src/herdr_brain/evidence_opencode.py`
+  (472), `tests/test_evidence_opencode.py` (552).
+- T3b rule decisions: no-period collect = newest max_turns=200 tail with
+  CollectStats.truncated flag (OpencodeCoverageResult subclass); period-bounded
+  reads uncapped (interval + deadline bound them); UNKNOWN timestamps excluded
+  from period reads but counted in stats; zero-byte db = SOURCE_ABSENT;
+  token = sha256-16 of [session_id, time_updated, last_message_id, count];
+  one re-read on mid-read token change, then COVERAGE_FAILED; NULL-time sorts
+  oldest (engine-deterministic, documented).
+- Open: cap on period-bounded reads, kind-check on collect, non-user/assistant
+  roles filtered (mirrors transcript reader), float epoch ms support.
+- Slice 03b `feat/herdr-brain-ctx-03b-evidence-opencode`: T3b (~1.02k lines) —
+  `size:exception` recommendation recorded. (T3b progress notes landed in the
+  03c commit: the doc edit raced the parallel commit command — noted as a
+  process lesson: never edit and commit in the same parallel batch.)
+- 2026-09-30 T3c done (strict TDD, auto). RED: `ModuleNotFoundError: No module
+  named 'herdr_brain.evidence_transcripts'`. First GREEN run 1 failed / 54
+  passed — test fixture bug (wrong transcript filename preference), fixed in
+  the fixture, not the code. GREEN 55 passed. Full suite re-run by the parent:
+  819 passed (764 + 55). Files: `src/herdr_brain/evidence_transcripts.py`
+  (894), `tests/test_evidence_transcripts.py` (1208).
+- T3c rule decisions: Claude munged-dir inverse heuristic (`-`-prefixed ->
+  `/` + `-`->`/`, else verbatim; lossy, documented); Antigravity project = ""
+  (summaries db NOT read — deferred authority question; empty project matches
+  only an absent filter); any non-vanishing OSError fails the WHOLE inventory
+  (no partial manifests, FR-41), vanished files skip; no-period read = newest
+  max_turns tail via chunked reverse scan capped at scan_cap 8MB (truncated
+  conservative flag); period reads = full forward scan, uncapped; malformed
+  lines skipped + counted; token = sha256-16 of (mtime_ns, size) — mtime never
+  a message time; one re-read on race, then COVERAGE_FAILED.
+- Open: Antigravity summaries-db authority (would give real project identity),
+  Claude munge cross-check against live cwds, kind-check on collect, byte
+  ceiling on period reads.
+- Slice 03c `feat/herdr-brain-ctx-03c-evidence-transcripts`: T3c (~2.10k
+  lines) — `size:exception` recommendation recorded.
 
 ## Next step
 
-T3b `OpencodeEvidenceProvider` on `feat/herdr-brain-ctx-03b-evidence-opencode`
-from 03a.
+T4 read-only Engram adapter on `feat/herdr-brain-ctx-04-engram-adapter` from
+03c. Access mechanism must be verified first (PRD assumption A-2).
