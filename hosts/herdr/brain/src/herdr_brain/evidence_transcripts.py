@@ -53,15 +53,39 @@ project name stays a later, explicit concern). ``project_filter`` then
 uses the SAME ``_cwd_matches`` rule as the other providers (exact match
 or under-path component; ``/repo`` never matches ``/repo2``).
 
-Antigravity project undeterminability (explicit limitation): the
-transcript logs ``AntigravityTranscript`` reads carry no cwd, and the
-store that does (``~/.gemini/antigravity-cli/
-conversation_summaries.db``) is deliberately NOT read here — whether it
-may join the configured authority is a deferred question. Every
-Antigravity ``Source.project`` is therefore the stable placeholder
-``""``, which matches ONLY an absent ``project_filter`` (or a degenerate
-literal empty-string filter): any real path filter excludes all
-Antigravity sources as a valid scoped-empty result.
+Antigravity project identity (product decision 2026-09-30): the
+transcript logs themselves carry no cwd, but the Antigravity CLI's
+``~/.gemini/antigravity-cli/conversation_summaries.db`` does — each row
+maps ``conversation_id`` to ``workspace_uris``, a JSON array of
+``file://`` URIs. The Antigravity provider reads that db READ-ONLY (a
+``file:`` URI with ``mode=ro``, the same discipline as
+``evidence_engram``) during inventory and maps each conversation to a
+project path with these documented rules:
+
+- Only ``file://`` entries are considered; the scheme is stripped
+  (percent-decoding included) to a filesystem path.
+- A conversation with MULTIPLE workspaces is ambiguous; the list is
+  sorted lexicographically (code-point order) and the FIRST path wins
+  — deterministic, never insertion order, never "newest".
+- Non-file, unparsable, or non-list ``workspace_uris`` values skip
+  project mapping for that row (the conversation keeps the legacy
+  ``""``); a row's ``title`` maps independently of workspace
+  parsability.
+- No row for a conversation, or no db FILE at all (older installs),
+  keeps the legacy behavior: ``project=""``, ``title=None``. Absence
+  is valid, never a failure (FR-11).
+- An UNREADABLE or corrupt db (``sqlite3.Error``) fails the WHOLE
+  inventory with ``COVERAGE_FAILED`` naming the db: identity claims
+  would otherwise be silently wrong (FR-11 spirit — absence vs failed
+  coverage stay distinct).
+- The budget deadline is checked BEFORE the db is opened (the shared
+  inventory's entry check); expiry never opens it.
+
+With real paths mapped, ``project_filter`` semantics upgrade from the
+legacy "never matches" to the SAME ``_cwd_matches`` rule as every other
+provider (exact match or under-path component); ``summaries_db_path=None``
+disables the mapping entirely and keeps the legacy byte-compatible
+behavior.
 
 Timestamps (FR-10): message times come ONLY from the event fields —
 ``event["timestamp"]`` (Claude) / ``event["created_at"]`` (Antigravity)
@@ -117,12 +141,14 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import stat as stat_module
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple, Optional
+from urllib.parse import unquote, urlparse
 
 from .evidence import (
     CoverageResult,
@@ -142,6 +168,14 @@ from .transcripts import DEFAULT_ANTIGRAVITY_ROOT, DEFAULT_CLAUDE_ROOT
 
 #: Turn cap for period-less collect reads; overflow is flagged, never silent.
 DEFAULT_MAX_TURNS = 200
+
+#: Verified location of the Antigravity CLI's conversation summaries
+#: db (the store that knows each conversation's workspaces and title).
+#: The provider opens it READ-ONLY during inventory; see the module
+#: docstring for the mapping rules.
+DEFAULT_ANTIGRAVITY_SUMMARIES_DB = (
+    "~/.gemini/antigravity-cli/conversation_summaries.db"
+)
 
 #: Reverse tail-scan window for period-less reads. The transcript
 #: readers keep the same 8 MB bound as a PRIVATE constant; the VALUE is
@@ -271,6 +305,41 @@ def _claude_project_from_munged(name: str) -> str:
     if name.startswith("-"):
         return "/" + name[1:].replace("-", "/")
     return name
+
+
+def _project_from_workspace_uris(workspace_uris: object) -> Optional[str]:
+    """Maps a summaries-db ``workspace_uris`` cell to ONE project path.
+
+    Documented rule (product decision 2026-09-30): the cell must be a
+    JSON array; only ``file://`` entries are kept, the scheme is
+    stripped (percent-decoding included); the surviving paths are
+    sorted lexicographically (code-point order) and the FIRST wins —
+    multiple workspaces are ambiguous, sorted-first is deterministic,
+    never insertion order. Non-file, unparsable, or non-list cells (or
+    cells with no surviving path) return ``None``: the conversation
+    keeps the legacy ``""`` project.
+    """
+    if not isinstance(workspace_uris, str) or not workspace_uris.strip():
+        return None
+    try:
+        entries = json.loads(workspace_uris)
+    except ValueError:
+        return None
+    if not isinstance(entries, list):
+        return None
+    paths = []
+    for entry in entries:
+        if not isinstance(entry, str):
+            continue
+        parsed = urlparse(entry)
+        if parsed.scheme != "file":
+            continue  # non-file schemes never carry a workspace path
+        path = unquote(parsed.path)
+        if path:
+            paths.append(path)
+    if not paths:
+        return None
+    return sorted(paths)[0]
 
 
 def _claude_event_text(event: dict) -> Optional[str]:
@@ -428,9 +497,9 @@ class _ReverseTailScan:
 class _JsonlEvidenceProvider:
     """Shared machinery for the JSONL-backed transcript providers.
 
-    Subclasses supply ``kind``, ``_coverage_class``, ``_timestamp_key``,
-    ``_message_id_keys``, ``_iter_conversations()`` and
-    ``_extract_turn(event)``. Everything else — inventory semantics
+    Subclasses supply ``kind``, ``_coverage_class``,
+    ``_timestamp_key``, ``_message_id_keys``, ``_iter_conversations()``
+    and ``_extract_turn(event)``. Everything else — inventory semantics
     (whole-store failure rule, budget checks, ``_cwd_matches`` filtering),
     the stat-token race protocol, the two scan modes, and the
     stats/manifest plumbing — is identical for both providers by
@@ -462,7 +531,9 @@ class _JsonlEvidenceProvider:
     # -- subclass hooks ------------------------------------------------
 
     def _iter_conversations(self):
-        """Yields (session_id, project, rel_locator, abs_path) tuples.
+        """Yields (session_id, project, rel_locator, abs_path, title)
+        tuples: ``title`` is a display snapshot when the store carries
+        one (the Antigravity summaries db), else ``None``.
 
         Deterministic order (sorted by rel_locator) is applied by the
         inventory; ``OSError`` other than vanishing paths propagates per
@@ -630,7 +701,7 @@ class _JsonlEvidenceProvider:
             conversations = sorted(
                 self._iter_conversations(), key=lambda item: item[2]
             )
-            for session_id, project, rel_locator, abs_path in conversations:
+            for session_id, project, rel_locator, abs_path, title in conversations:
                 if deadline is not None and deadline.expired():
                     return InventoryResult(
                         CoverageStatus.COVERAGE_FAILED,
@@ -653,8 +724,8 @@ class _JsonlEvidenceProvider:
                         locator=rel_locator,
                         revision_token=token,
                         observed_at=observed_at,
-                        title=None,  # stored chats carry no title snapshot
-                        state=None,  # ...and no open/closed status snapshot
+                        title=title,
+                        state=None,  # stored chats carry no open/closed snapshot
                     )
                 )
         except OSError as exc:
@@ -795,6 +866,7 @@ class ClaudeEvidenceProvider(_JsonlEvidenceProvider):
                             _claude_project_from_munged(project_entry.name),
                             os.path.join(project_entry.name, file_entry.name),
                             file_entry.path,
+                            None,  # Claude stores carry no title snapshot
                         )
 
     def _extract_turn(self, event: dict):
@@ -814,14 +886,23 @@ class AntigravityEvidenceProvider(_JsonlEvidenceProvider):
     holds ``.system_generated/logs/transcript_full.jsonl`` (falling back
     to ``transcript.jsonl``, mirroring ``AntigravityTranscript``'s file
     preference; a session directory without either is not a conversation)
-    as a ``Source``: ``source_id`` is ``antigravity:<session-id>``,
-    ``project`` is the stable placeholder ``""`` — the logs expose no cwd
-    and ``conversation_summaries.db`` is deliberately NOT read (deferred
-    authority question; see the module docstring for the filtering
-    consequence: only an absent ``project_filter`` matches) — and
-    ``locator``/``revision_token``/``title``/``state`` follow the Claude
-    provider's rules. Enumeration is structural; the session-id SHAPE
-    sniffing belongs to the transcript router, not this provider.
+    as a ``Source``: ``source_id`` is ``antigravity:<session-id>`` and
+    ``locator``/``revision_token``/``state`` follow the Claude provider's
+    rules. Enumeration is structural; the session-id SHAPE sniffing
+    belongs to the transcript router, not this provider.
+
+    PROJECT IDENTITY and TITLE (product decision 2026-09-30): when
+    ``summaries_db_path`` resolves (default: the Antigravity CLI's
+    ``~/.gemini/antigravity-cli/conversation_summaries.db``), inventory
+    opens it READ-ONLY (``file:`` URI, ``mode=ro``) and maps each
+    conversation to the SORTED-FIRST ``file://`` workspace path and to
+    the row ``title`` when present — see the module docstring for the
+    full documented rule set (skips, absence, corrupt-db failure,
+    deadline-before-open). ``summaries_db_path=None`` disables the
+    mapping entirely: every project is the legacy placeholder ``""``
+    (matching ONLY an absent ``project_filter``) and titles stay
+    ``None``. With real paths mapped, ``project_filter`` rides the same
+    ``_cwd_matches`` rule as every other provider.
 
     ``collect`` reads the file recorded in the locator (the snapshot the
     revision token covers), unlike the interactive reader which
@@ -840,7 +921,16 @@ class AntigravityEvidenceProvider(_JsonlEvidenceProvider):
         clock=None,
         max_turns: int = DEFAULT_MAX_TURNS,
         scan_cap: int = DEFAULT_SCAN_CAP_BYTES,
+        summaries_db_path: Optional[str] = DEFAULT_ANTIGRAVITY_SUMMARIES_DB,
     ) -> None:
+        if summaries_db_path is not None and (
+            not isinstance(summaries_db_path, str)
+            or not summaries_db_path.strip()
+        ):
+            raise ValueError(
+                "summaries_db_path must be None (disabled) or a non-empty"
+                " path string"
+            )
         resolved = root or os.environ.get("ANTIGRAVITY_ROOT") or DEFAULT_ANTIGRAVITY_ROOT
         expanded = Path(resolved).expanduser()
         # Same brain-subdir rule as transcripts.AntigravityTranscript.
@@ -852,8 +942,78 @@ class AntigravityEvidenceProvider(_JsonlEvidenceProvider):
             max_turns=max_turns,
             scan_cap=scan_cap,
         )
+        self.summaries_db_path = (
+            None
+            if summaries_db_path is None
+            else str(Path(summaries_db_path).expanduser())
+        )
+
+    # -- summaries identity (module docstring documents the rules) ----
+
+    def _load_identity_map(self) -> tuple[dict, dict]:
+        """Reads the summaries db into ``(projects, titles)``, both
+        keyed by conversation id.
+
+        Disabled (``summaries_db_path=None``) or missing db FILE ->
+        empty maps: valid absence, never a failure (FR-11; older
+        installs). A corrupt/unreadable db raises ``sqlite3.Error``
+        to the ``inventory`` override, which fails the WHOLE inventory
+        — identity claims would otherwise be silently wrong.
+        """
+        if self.summaries_db_path is None:
+            return {}, {}
+        if not os.path.isfile(self.summaries_db_path):
+            return {}, {}
+        uri = f"{Path(self.summaries_db_path).resolve().as_uri()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)  # read-only by construction
+        try:
+            rows = conn.execute(
+                "SELECT conversation_id, title, workspace_uris"
+                " FROM conversation_summaries"
+            ).fetchall()
+        finally:
+            conn.close()
+        projects: dict = {}
+        titles: dict = {}
+        for conversation_id, title, workspace_uris in rows:
+            if not isinstance(conversation_id, str) or not conversation_id:
+                continue
+            if isinstance(title, str) and title.strip():
+                titles[conversation_id] = title.strip()
+            project = _project_from_workspace_uris(workspace_uris)
+            if project is not None:
+                projects[conversation_id] = project
+        return projects, titles
+
+    def inventory(
+        self,
+        project_filter: Optional[str] = None,
+        deadline: Optional[Deadline] = None,
+    ) -> InventoryResult:
+        """Lists ALL stored conversations as Sources (see class docs).
+
+        The shared implementation scans the transcript root; this
+        override additionally converts a ``sqlite3.Error`` from the
+        summaries db (opened inside the scan, AFTER the shared entry
+        deadline check) into a whole-inventory COVERAGE_FAILED naming
+        the db — the whole-store honesty rule applied to the identity
+        source.
+        """
+        try:
+            return super().inventory(
+                project_filter=project_filter, deadline=deadline
+            )
+        except sqlite3.Error as exc:
+            return InventoryResult(
+                CoverageStatus.COVERAGE_FAILED,
+                error_detail=(
+                    f"antigravity summaries db unreadable"
+                    f" ({self.summaries_db_path}): {exc}"
+                ),
+            )
 
     def _iter_conversations(self):
+        projects, titles = self._load_identity_map()
         with os.scandir(self.root) as sessions:
             for session_entry in sessions:
                 if not _entry_is_dir(session_entry):
@@ -865,9 +1025,10 @@ class AntigravityEvidenceProvider(_JsonlEvidenceProvider):
                     if _is_regular_file(path):
                         yield (
                             session_id,
-                            "",  # project undeterminable: see class docstring
+                            projects.get(session_id, ""),
                             os.path.join(session_id, ".system_generated", "logs", name),
                             path,
+                            titles.get(session_id),
                         )
                         break
 

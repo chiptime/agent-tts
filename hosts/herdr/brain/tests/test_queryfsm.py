@@ -244,7 +244,7 @@ class RecordingSummarizer:
 
 def build_harness(tmp_path, providers, *, summarizer=None, mono=None, budget=60.0,
                   narrow_items=4000, narrow_chars=500_000, zone_resolver=None,
-                  store=None, clock=None):
+                  store=None, clock=None, max_span=None):
     """Assembles real store + real checker + fake providers into an engine."""
     from herdr_brain.freshness import FreshnessChecker
     from herdr_brain.queryfsm import QueryEngine
@@ -265,6 +265,7 @@ def build_harness(tmp_path, providers, *, summarizer=None, mono=None, budget=60.
         narrow_item_threshold=narrow_items,
         narrow_char_threshold=narrow_chars,
         **({"zone_resolver": zone_resolver} if zone_resolver else {}),
+        **({"max_span": max_span} if max_span is not None else {}),
     )
     return QueryEngine(deps), deps, store, mono
 
@@ -1104,6 +1105,96 @@ class TestTerminalStates:
         result = engine.handle(intent, "call-1")
         assert result.state == "clarify"
         assert "future" in result.detail
+
+
+class TestExplicitMaxSpan:
+    """Product decision 2026-09-30: EXPLICIT periods may span at most
+    ``EngineDeps.max_span`` (default 60 days). A wider span raises
+    ``PeriodError`` inside resolution and surfaces the EXISTING
+    user-facing ``clarify`` state with the reason (FR-08/FR-37; D04
+    "explicit periods stay bounded"). Natural periods are inherently
+    bounded by their own resolution (today / this week / last 7 days)
+    and must never hit the cap."""
+
+    def wide_intent(self, days: int) -> QueryIntent:
+        return QueryIntent(
+            kind="historical",
+            raw_text=f"the last {days} days please",
+            projects=(),
+            period_spec=ExplicitPeriod(start=NOW - timedelta(days=days), end=NOW),
+            timezone_candidates=("Europe/Madrid",),
+        )
+
+    def test_sixty_one_day_explicit_span_clarifies_with_reason(self, tmp_path):
+        provider = FakeProvider("opencode")
+        engine, deps, store, mono = build_harness(tmp_path, {"opencode": provider})
+        result = engine.handle(self.wide_intent(61), "call-1")
+        assert result.state == "clarify"  # user-facing outcome, not the raise
+        assert "max_span" in result.detail  # the reason rides the detail
+        assert "period" in result.spoken.lower()
+        assert provider.inventory_calls == []  # rejected before any acquisition
+
+    def test_exactly_sixty_day_explicit_span_proceeds(self, tmp_path):
+        provider = FakeProvider(
+            "opencode",
+            sources=(make_source("opencode:s1"),),
+            items_by_source={
+                "opencode:s1": [
+                    # Mid-period timestamp: the exact end instant is OUT
+                    # of the half-open interval.
+                    make_item("opencode:s1", timestamp=NOW - timedelta(days=30))
+                ]
+            },
+        )
+        engine, deps, store, mono = build_harness(tmp_path, {"opencode": provider})
+        result = engine.handle(self.wide_intent(60), "call-1")
+        assert result.state == "rendered"
+        assert result.report_id
+
+    def test_smaller_max_span_clarifies_wider_explicit_period(self, tmp_path):
+        provider = FakeProvider("opencode")
+        engine, deps, store, mono = build_harness(
+            tmp_path, {"opencode": provider}, max_span=timedelta(days=7)
+        )
+        result = engine.handle(self.wide_intent(30), "call-1")
+        assert result.state == "clarify"
+        assert "max_span" in result.detail
+
+    def test_natural_periods_bypass_a_tiny_max_span(self, tmp_path):
+        # last_7_days spans 7 days; a 1-second cap must not affect it
+        # because natural kinds never ride validate_bounds.
+        provider = FakeProvider(
+            "opencode",
+            sources=(make_source("opencode:s1"),),
+            items_by_source={
+                "opencode:s1": [
+                    make_item("opencode:s1", timestamp=NOW - timedelta(hours=2))
+                ]
+            },
+        )
+        engine, deps, store, mono = build_harness(
+            tmp_path, {"opencode": provider}, max_span=timedelta(seconds=1)
+        )
+        intent = QueryIntent(
+            kind="historical",
+            raw_text="what did I do this week?",
+            projects=(),
+            period_spec=NaturalPeriod(kind="this_week"),
+            timezone_candidates=("Europe/Madrid",),
+        )
+        result = engine.handle(intent, "call-1")
+        assert result.state == "rendered"
+
+    def test_deps_default_max_span_is_sixty_days(self, tmp_path):
+        _, deps, _, _ = build_harness(tmp_path, {"opencode": FakeProvider("opencode")})
+        assert deps.max_span == timedelta(days=60)
+
+    def test_deps_reject_nonpositive_or_non_timedelta_max_span(self, tmp_path):
+        for bad in (timedelta(0), timedelta(days=-1), 60, "60d"):
+            with pytest.raises(ValueError, match="max_span"):
+                build_harness(
+                    tmp_path, {"opencode": FakeProvider("opencode")}, max_span=bad
+                )
 
 
 class TestVolume:

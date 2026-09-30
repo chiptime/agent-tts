@@ -14,14 +14,14 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from herdr_brain.approval import GATED_TOOLS, PROPOSED, ApprovalGateStore
-from herdr_brain.config import Settings
+from herdr_brain.config import Settings, load_settings
 from herdr_brain.consult import (
     DATA_BEGIN_MARKER,
     DATA_END_MARKER,
@@ -35,8 +35,14 @@ from herdr_brain.evidence import CoverageStatus, Deadline, InventoryResult
 from herdr_brain.followup import FollowupStore
 from herdr_brain.llm import BrainLLM
 from herdr_brain.periods import period_today
-from herdr_brain.queryfsm import SPOKEN_ASK_TZ, SPOKEN_UNABLE
+from herdr_brain.queryfsm import (
+    SPOKEN_ASK_TZ,
+    SPOKEN_UNABLE,
+    UNQUALIFIED_INTERVAL_KEY,
+    UNQUALIFIED_TIMEZONE,
+)
 from herdr_brain.report import ProjectBundle, ReportScaffold
+from herdr_brain.reportstore import ReportKey, ReportStore
 from herdr_brain.tools import BrainTools, TOOLS_SCHEMA
 
 UTC = timezone.utc
@@ -1160,4 +1166,133 @@ class TestApprovalRegression:
             "send_to_session",
             "create_session",
         } | CONSULT_TOOL_NAMES
+
+
+# ---------------------------------------------------------------------------
+# max_span settings knob (product decision 2026-09-30)
+# ---------------------------------------------------------------------------
+
+
+class TestMaxSpanSettingsKnob:
+    """``HERDR_BRAIN_CONSULT_MAX_SPAN_DAYS`` (int, default 60, POSITIVE
+    int only — no "unlimited" spelling) feeds ``EngineDeps.max_span``,
+    the cap the engine enforces on EXPLICIT period spans."""
+
+    def _service(self, settings, tmp_path):
+        return ConsultService(
+            settings=settings,
+            providers={"opencode": FakeProvider("opencode")},
+            report_db=str(tmp_path / "reports.db"),
+            followup_db=str(tmp_path / "followup.db"),
+            summarizer=FaithfulModel(),
+            clock=lambda: NOW,
+            monotonic=FakeMono(),
+        )
+
+    def test_default_max_span_is_sixty_days(self, settings, tmp_path):
+        service = self._service(settings, tmp_path)
+        assert service.engine.deps.max_span == timedelta(days=60)
+
+    def test_knob_override_reaches_the_engine(self, settings, tmp_path):
+        tuned = Settings(
+            **{**settings.__dict__, "consult_max_span_days": 7}
+        )
+        service = self._service(tuned, tmp_path)
+        assert service.engine.deps.max_span == timedelta(days=7)
+
+    def test_env_knob_loaded_and_nonpositive_rejected(self):
+        assert load_settings({}).consult_max_span_days == 60
+        assert (
+            load_settings(
+                {"HERDR_BRAIN_CONSULT_MAX_SPAN_DAYS": "7"}
+            ).consult_max_span_days
+            == 7
+        )
+        for bad in ("0", "-3"):
+            with pytest.raises(ValueError):
+                load_settings({"HERDR_BRAIN_CONSULT_MAX_SPAN_DAYS": bad})
+
+
+# ---------------------------------------------------------------------------
+# purge cadence at service start (product decision 2026-09-30)
+# ---------------------------------------------------------------------------
+
+
+class TestPurgeAtServiceStart:
+    """D08/FR-34: bounded retention cleanup rides service start. The
+    trigger is the ConsultService CONSTRUCTOR (verified read-only in
+    server.py: ``create_app`` builds the service eagerly at boot via
+    ``main() -> uvicorn.run(create_app(...))``), so the purge runs when
+    agent-tts launches — no separate daemon for 24h-retention sqlite."""
+
+    def test_constructor_runs_the_purge_exactly_once(
+        self, settings, tmp_path, monkeypatch
+    ):
+        calls = {"reports": 0, "followups": 0}
+        original_report = ReportStore.purge_expired
+        original_followup = FollowupStore.purge_expired
+
+        def counting_report(self, *, limit=100):
+            calls["reports"] += 1
+            return original_report(self, limit=limit)
+
+        def counting_followup(self, *, limit=100):
+            calls["followups"] += 1
+            return original_followup(self, limit=limit)
+
+        monkeypatch.setattr(ReportStore, "purge_expired", counting_report)
+        monkeypatch.setattr(FollowupStore, "purge_expired", counting_followup)
+        build_service(
+            tmp_path, {"opencode": FakeProvider("opencode")}, settings=settings
+        )
+        assert calls == {"reports": 1, "followups": 1}
+
+    def test_purge_stores_returns_counts_and_second_call_is_safe(
+        self, settings, tmp_path
+    ):
+        service, _ = one_provider_service(tmp_path, settings)
+        # Seed one expired row per store: created under a clock 25h
+        # before the service clock, so both sit past the 24h horizon.
+        FollowupStore(
+            tmp_path / "followup.db", clock=lambda: NOW - timedelta(hours=25)
+        ).anchor("ctx-gone", "rep-gone", "fp-gone")
+        old_reports = ReportStore(
+            str(tmp_path / "reports.db"), clock=lambda: NOW - timedelta(hours=25)
+        )
+        handle = old_reports.begin_build(
+            ReportKey(
+                main_call_context_id="gone",
+                scope="all",
+                interval_key=UNQUALIFIED_INTERVAL_KEY,
+                timezone=UNQUALIFIED_TIMEZONE,
+            )
+        )
+        old_reports.publish(
+            handle, body="{}", references=(), source_manifest=()
+        )
+        assert service.purge_stores() == {"reports": 1, "followups": 1}
+        # Idempotent: the purged rows are gone; a second pass is a no-op.
+        assert service.purge_stores() == {"reports": 0, "followups": 0}
+
+    def test_constructor_purges_preseeded_expired_rows(self, settings, tmp_path):
+        # The trigger is construction itself, so a service built late
+        # (the lazy case) still purges on ITS first construction. The
+        # assertion reads the raw table: derived expiry alone would
+        # hide a skipped purge (get() returns None for expired rows
+        # either way), so only a real DELETE proves the cadence.
+        import sqlite3
+
+        followup_path = str(tmp_path / "followup.db")
+        FollowupStore(
+            followup_path, clock=lambda: NOW - timedelta(hours=25)
+        ).anchor("ctx-old", "rep-old", "fp-old")
+        one_provider_service(tmp_path, settings)
+        conn = sqlite3.connect(followup_path)
+        try:
+            remaining = conn.execute(
+                "SELECT COUNT(*) FROM followups"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        assert remaining == 0
 

@@ -53,7 +53,7 @@ import time
 from collections.abc import Callable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
-from datetime import datetime, timezone as dt_timezone
+from datetime import datetime, timedelta, timezone as dt_timezone
 from typing import Optional
 
 from .config import Settings, load_settings
@@ -604,6 +604,9 @@ class ConsultService:
                 if narrow_char_threshold is None
                 else narrow_char_threshold
             ),
+            # Product decision 2026-09-30: explicit periods span at
+            # most consult_max_span_days days (default 60).
+            max_span=timedelta(days=settings.consult_max_span_days),
         )
         self._engine = QueryEngine(deps)
         self._followup = followup_store or FollowupStore(
@@ -623,6 +626,10 @@ class ConsultService:
         self._last_result: Optional[EngineResult] = None
         self._last_topic: Optional[str] = None
         self._rendered: dict[str, EngineResult] = {}
+        # D08/FR-34 (product decision 2026-09-30): bounded retention
+        # cleanup rides service start — see ``purge_stores`` for the
+        # verified trigger and the no-daemon rationale.
+        self.purge_stores()
 
     # -- construction helpers --------------------------------------------
 
@@ -837,6 +844,32 @@ class ConsultService:
     def expire_followup(self, context_id: str) -> None:
         """Explicit return-to-normal expiry (FR-23)."""
         self._followup.expire((context_id or "").strip() or "default")
+
+    # -- retention cleanup (D08/FR-34) -------------------------------------
+
+    def purge_stores(self) -> dict[str, int]:
+        """Bounded retention cleanup: purges expired rows from the
+        report and followup stores with their DEFAULT bounded limits
+        and returns the per-store deleted counts
+        (``{"reports": n, "followups": n}``).
+
+        Trigger (verified read-only in ``server.py`` on 2026-09-30):
+        the CONSTRUCTOR calls this exactly once, and ``create_app``
+        builds this service eagerly at boot (``main()`` ->
+        ``uvicorn.run(create_app(...))``), so the purge rides service
+        start — when agent-tts launches. User rationale (decision
+        2026-09-30): retention is a 24h sqlite horizon, so riding
+        service start needs no separate daemon. A service that were
+        constructed lazily would still purge on its first construction.
+        Safe to call again: purged rows are gone, so a second pass
+        deletes nothing (idempotent).
+        """
+        counts = {
+            "reports": self._store.purge_expired(),
+            "followups": self._followup.purge_expired(),
+        }
+        LOGGER.info("consult store purge: %s", counts)
+        return counts
 
     # -- internals ---------------------------------------------------------
 

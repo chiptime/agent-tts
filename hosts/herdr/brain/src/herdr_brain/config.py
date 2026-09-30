@@ -78,6 +78,14 @@ DEFAULT_CONSULT_BUDGET_S = 60.0
 DEFAULT_CONSULT_NARROW_ITEMS = 4000
 DEFAULT_CONSULT_NARROW_CHARS = 500_000
 
+# Max span (in days) for EXPLICIT consult periods (product decision
+# 2026-09-30). Kept deliberately simple: a POSITIVE int only — there is
+# no "0/negative = unlimited" spelling; non-positive values fail loudly
+# at load time instead of silently disabling the cap. Natural periods
+# are unaffected (inherently bounded). Must stay in sync with
+# queryfsm.DEFAULT_MAX_SPAN (same import-cycle rule as above).
+DEFAULT_CONSULT_MAX_SPAN_DAYS = 60
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -114,6 +122,7 @@ class Settings:
     consult_budget_s: float = DEFAULT_CONSULT_BUDGET_S
     consult_narrow_items: int = DEFAULT_CONSULT_NARROW_ITEMS
     consult_narrow_chars: int = DEFAULT_CONSULT_NARROW_CHARS
+    consult_max_span_days: int = DEFAULT_CONSULT_MAX_SPAN_DAYS
     report_db: Optional[str] = None
     followup_db: Optional[str] = None
     opencode_db: Optional[str] = None
@@ -135,6 +144,14 @@ def load_settings(env: Optional[dict] = None) -> Settings:
 
     def getenv(name: str, default: str = "") -> str:
         return environ.get(name, default)
+
+    def positive_int(name: str) -> int:
+        """Positive int only (documented rule for the max-span knob):
+        no "unlimited" spelling — 0/negative fail loudly at load."""
+        value = int(getenv(name, str(DEFAULT_CONSULT_MAX_SPAN_DAYS)))
+        if value < 1:
+            raise ValueError(f"{name} must be a positive integer, got {value}")
+        return value
 
 
     # Speech backend contract v1: HERDR_TTS_HOME names the herdr-tts repo
@@ -180,6 +197,7 @@ def load_settings(env: Optional[dict] = None) -> Settings:
         consult_narrow_chars=int(getenv(
             "HERDR_BRAIN_CONSULT_NARROW_CHARS", str(DEFAULT_CONSULT_NARROW_CHARS)
         )),
+        consult_max_span_days=positive_int("HERDR_BRAIN_CONSULT_MAX_SPAN_DAYS"),
         report_db=getenv("HERDR_BRAIN_REPORT_DB") or None,
         followup_db=getenv("HERDR_BRAIN_FOLLOWUP_DB") or None,
         opencode_db=getenv("HERDR_BRAIN_OPENCODE_DB") or None,
