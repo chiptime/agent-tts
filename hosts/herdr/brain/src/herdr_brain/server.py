@@ -47,6 +47,7 @@ from .approval_lexicon import (
     resolve_utterance,
 )
 from .config import Settings
+from .consult import ConsultService
 from .herdr import HerdrError
 from .history import HistoryStore, default_history_path
 from .llm import BrainLLM, BrainLLMError
@@ -234,7 +235,18 @@ def create_app(
         settings = load_settings()
     cfg = settings
 
+    # Consult (on-demand context, T9): the composition root is built
+    # HERE — the one place BrainTools is constructed for production —
+    # so the model's tool surface gains the read-only consult tools
+    # (FR-02 on-demand surface). Attached after construction with the
+    # same hasattr convention as attach_store below, so injected test
+    # doubles keep working. The service's model client is lazy, so boot
+    # still works without GLM_API_KEY. Zero changes to the conversation
+    # ring, system prompt focus semantics, or approval flow.
+    consult = ConsultService(settings=cfg)
     tools = BrainTools(cfg)
+    if hasattr(tools, "attach_consult"):
+        tools.attach_consult(consult)
     synth = tts_renderer or render_mp3
     # One reader cache per app instance (mirrors the tts_renderer seam):
     # production rides the real herdr-tts --render-html surface, tests
@@ -254,6 +266,14 @@ def create_app(
     if watcher is None:
         watcher = AgentWatcher(cfg, tts_renderer=synth)
         watcher.start()
+
+    # Consulting-state events (FR-18 seam): consult start/end rides the
+    # SAME SSE announcement hub as agent transitions; the PWA renders
+    # the "consulting" state in T10. Attached after the watcher exists
+    # either way (injected test watchers carry their own hub; hub fakes
+    # without publish simply leave the seam unset).
+    if hasattr(watcher.hub, "publish"):
+        consult.attach_event_sink(watcher.hub.publish)
 
     if transcriber is None:
         transcriber = Transcriber(cfg)
