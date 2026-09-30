@@ -386,6 +386,36 @@ class TestPurge:
         ]
         assert store.get_current(key).report_id == second.report_id
 
+    def test_sustained_use_stays_bounded_and_never_drops_fresh_rows(
+        self, tmp_path
+    ):
+        """PRD Verification Checklist: retention/cleanup verified bounded
+        under sustained use. Interleaved publish/purge cycles over a long
+        horizon: every purge call is bounded by its limit, no unexpired
+        row is ever removed, and a bounded drain eventually empties the
+        table once every revision has aged out (characterization of
+        existing behavior; RED-first does not apply)."""
+        clock = fake_clock()
+        store = ReportStore(tmp_path / REPORTS_DB_FILENAME, clock=clock)
+        for cycle in range(24):
+            publish(store, make_key(context=f"call-{cycle}"))
+            clock.advance(hours=1)
+            assert store.purge_expired(limit=5) <= 5
+            for row in fetch_rows(store.path):
+                expires = datetime.fromisoformat(row["retention_expires_at"])
+                assert expires > clock()
+        # Steady state: every report still inside its horizon is retained.
+        assert len(fetch_rows(store.path)) == 23
+        clock.advance(hours=25)
+        drained = 0
+        while True:
+            removed = store.purge_expired(limit=3)
+            drained += removed
+            if removed == 0:
+                break
+        assert drained == 23
+        assert fetch_rows(store.path) == []
+
 
 class TestMalformedInput:
     def test_non_string_body_rejected(self, tmp_path):

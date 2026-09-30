@@ -5,7 +5,9 @@
 **Branch**: `feat/herdr-brain-on-demand-context` (from `main` @ `4ed549a`)
 **PRD**: `docs/prds/herdr-brain-on-demand-context.md` (FR-01..45, D01..D10)
 **Created**: 2026-09-30
-**Status**: in progress (T0, T1 done; next T2 `reportstore`)
+**Status**: completed 2026-09-30 (T0-T11 done; 1160 pytest + 192 node tests
+green; FR-42..45 loop intentionally not built — spec only per D10; delivery
+awaits the user's PR decision)
 
 ## Objective
 
@@ -109,7 +111,7 @@ Ordered by dependency. Route column is the planned topology.
   FR-14, 18. Depends: T7. Done; commit on `feat/herdr-brain-ctx-10-ui`.
   Also closed the T9 integration finding: ReportStore.get_by_report_id +
   store-backed followup fallback (restart-resilient summaries).
-- [ ] **T11** Acceptance: Requirement-to-Test Matrix coverage, Verification
+- [x] **T11** Acceptance: Requirement-to-Test Matrix coverage, Verification
   Checklist, docs. FR-45-style gate for this work. Depends: all.
 
 ## Acceptance criteria
@@ -357,9 +359,43 @@ its FRs covered by tests and the full suite green.
 - Slice 10 `feat/herdr-brain-ctx-10-ui`: T10 (~0.85k lines incl. tests) —
   within budget for production code (~347), tests over; `size:exception`
   recommendation recorded only for the test volume.
+- 2026-09-30 T11 done (bounded verifier/doc writer; no production code
+  touched, no commits). Suites: pytest **1160 passed** (1158 baseline + 2
+  new), node --test **192/192**. Files: NEW `docs/ON-DEMAND-CONTEXT.md`
+  (maintainer doc), `docs/on-demand-context-coverage.md` (full cluster ->
+  tests map + Verification Checklist status); MODIFIED `test_consult.py`
+  (+35), `test_reportstore.py` (+30), this doc (append-only).
+- T11 acceptance verdict per PRD matrix cluster (details in
+  `docs/on-demand-context-coverage.md`): false routing COVERED; tool
+  off-path COVERED (by construction, reuse re-inventories); freshness
+  no-change COVERED; freshness deletions COVERED (full-scan, no delta
+  path); time rollover COVERED (DST battery); conflicts PARTIAL (semantic
+  detection is model work, real-model eval NOT RUN); timeout/incomplete
+  COVERED; volume COVERED; empty vs failed COVERED; ref isolation
+  COVERED; followup isolation COVERED; status truthfulness COVERED;
+  restart COVERED (runtime half); worktree isolation/future loop GAP by
+  design (FR-42..45 spec only); approval gates COVERED (regression
+  battery); historical provider coverage COVERED (+ new FR-06 pin);
+  timezone fallback COVERED; consolidated output COVERED; persistent
+  context and retention COVERED (+ new sustained-use soak); revision
+  race and cancellation COVERED; trust and authority COVERED.
+- T11 gap-closing tests (characterization of existing behavior;
+  RED-first does not apply, disclosed):
+  `test_consult.py::TestComposition::test_external_corpus_excludes_voice_call_history`
+  (corpus pinned to the 5 non-voice-call kinds, FR-06) and
+  `test_reportstore.py::TestPurge::test_sustained_use_stays_bounded_and_never_drops_fresh_rows`
+  (interleaved publish/purge soak, PRD checklist "bounded under
+  sustained use").
+- T11 gaps left open (each needs a product decision or separate work):
+  FR-42..45 loop (needs D10 authorization + implementation); real-model
+  eval set (decision whether/when to run; semantic conflict detection
+  unmeasured); Antigravity summaries-db authority (project identity);
+  semantic followup continuity; multi-project fan-out; threshold/timing
+  tuning (narrow thresholds, max_span, future_tolerance, purge cadence).
 
 ## Next step
 
-T11 acceptance on `feat/herdr-brain-ctx-11-acceptance` from 10: map the
-Requirement-to-Test Matrix to the actual suites, run the Verification
-Checklist, write the feature README/docs, and record remaining gaps honestly.
+Feature accepted at T11 (deterministic scope; open gaps recorded above and
+in `docs/on-demand-context-coverage.md`). Remaining route decisions —
+merge/PR flow for the branch chain — stay with the user; no push/PR was
+performed.
