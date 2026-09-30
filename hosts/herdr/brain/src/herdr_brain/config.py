@@ -20,7 +20,7 @@ DEFAULT_GLM_MODEL = "glm-5"
 # through its versioned CLI surface (contract v1). The home points at the
 # herdr-tts repo root; the CLI derives everything else (including its own
 # venv) internally.
-DEFAULT_TTS_HOME = "~/Code/personal/herdr-tts"
+DEFAULT_TTS_HOME = "~/Code/personal/agent-tts/hosts/herdr/tts-plugin"
 TTS_SURFACE_BIN = "bin/herdr-tts"
 
 DEFAULT_AUDIO_DIR = "~/.local/state/herdr-brain/audio"

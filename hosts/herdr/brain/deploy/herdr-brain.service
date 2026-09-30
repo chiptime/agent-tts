@@ -14,8 +14,8 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/Code/personal/herdr-brain
-ExecStart=%h/Code/personal/herdr-brain/.venv/bin/python -m herdr_brain.server
+WorkingDirectory=%h/Code/personal/agent-tts/hosts/herdr/brain
+ExecStart=%h/Code/personal/agent-tts/hosts/herdr/brain/.venv/bin/python -m herdr_brain.server
 Environment=HERDR_BRAIN_HOST=0.0.0.0
 # The systemd user manager PATH is minimal and excludes linuxbrew, where the
 # herdr CLI lives. Without an absolute HERDR_BIN every `herdr agent list`
