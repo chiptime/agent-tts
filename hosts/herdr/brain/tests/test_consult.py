@@ -491,6 +491,41 @@ class TestComposition:
         )
         assert service.timezone_candidates == ()
 
+    def test_external_corpus_excludes_voice_call_history(
+        self, settings, tmp_path
+    ):
+        """FR-06/D03: voice-call history is the MAIN thread only and is
+        never wired as an additional historical corpus. Regression pin:
+        the default consultation evidence kinds are exactly the five
+        non-voice-call sources (characterization of existing wiring;
+        RED-first does not apply)."""
+        service = ConsultService(
+            settings=settings,
+            herdr_client=object(),  # any client double; never called here
+            opencode_db=str(tmp_path / "oc.db"),
+            claude_root=str(tmp_path / "claude"),
+            antigravity_root=str(tmp_path / "ag"),
+            engram_db=str(tmp_path / "eng.db"),
+            report_db=str(tmp_path / "reports.db"),
+            followup_db=str(tmp_path / "followup.db"),
+            model_call_factory=lambda s: (
+                lambda messages, *, timeout=None: "{}"
+            ),
+            monotonic=FakeMono(),
+            clock=lambda: NOW,
+            timezone_candidates=MADRID_TZ,
+        )
+        kinds = set(service.engine.deps.providers)
+        assert kinds == {
+            "herdr_session",
+            "opencode",
+            "claude",
+            "antigravity",
+            "engram",
+        }
+        assert all("history" not in kind for kind in kinds)
+        assert set(service.engine.deps.checker.configured_kinds) == kinds
+
 
 # ---------------------------------------------------------------------------
 # LLMSummarizer
