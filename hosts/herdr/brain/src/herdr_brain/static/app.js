@@ -808,8 +808,10 @@
    * shown when the name IS herdr's session title — otherwise it would
    * just repeat the fallback name. */
   function agentWorkspaceSub(agent) {
-    if (!(agent.title || "").trim()) return "";
-    return (agent.cwd || "").split("/").filter(Boolean).pop() || "";
+    var name = agentDisplayName(agent);
+    var ws = (agent.cwd || "").split("/").filter(Boolean).pop() || "";
+    if (!ws || ws === name) return "";
+    return ws;
   }
 
   /* Small Spanish label for a sheet row's status pill (idle hides it). */

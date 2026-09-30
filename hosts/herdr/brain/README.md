@@ -1,5 +1,11 @@
 # herdr-brain
 
+> [!IMPORTANT]
+> **Repository Moved to Monorepo**  
+> `herdr-brain` has moved to the unified ecosystem monorepo at [`chiptime/agent-tts`](https://github.com/chiptime/agent-tts).  
+> All active development, issues, and PRs continue in [`hosts/herdr/brain/`](https://github.com/chiptime/agent-tts/tree/main/hosts/herdr/brain).  
+> This standalone repository is now archived and read-only.
+
 Conversational brain service that lets a user talk to AI coding agents
 managed by [Herdr](https://herdr.dev). The brain is fully usable over HTTP
 and CLI, and ships a thin installable PWA (one-tap call: browser-side speech
@@ -91,9 +97,30 @@ naming the required surface version.
 
 ## Deployment (the way to run it)
 
-The service runs as a **systemd user unit** — auto-started, restarted on
-failure, and with a stable environment that does not depend on any
-interactive shell having sourced the dotfiles:
+### Option 1: Native Herdr Plugin (Recommended, cross-platform)
+
+Herdr can manage `herdr-brain` natively as a workflow plugin with supervised lifecycle (Linux & macOS):
+
+```bash
+# Link the plugin in Herdr
+herdr plugin link .
+
+# When Herdr starts, herdr-brain starts automatically via [[startup]].
+# Control and inspect it via plugin actions:
+herdr plugin action invoke status --plugin herdr.brain
+herdr plugin action invoke restart --plugin herdr.brain
+herdr plugin action invoke url --plugin herdr.brain
+
+# Or directly via the CLI launcher:
+bin/herdr-brain status
+bin/herdr-brain url
+bin/herdr-brain restart
+bin/herdr-brain stop
+```
+
+### Option 2: systemd user unit (Linux daemon mode)
+
+The service can alternatively run as a persistent **systemd user unit** — independent of Herdr lifecycle:
 
 ```bash
 deploy/install.sh    # idempotent: env file + unit + linger + health gate
@@ -125,9 +152,8 @@ HERDR_BRAIN_HOST=0.0.0.0 .venv/bin/python -m herdr_brain.server
 
 > **Warning:** manual `nohup` restarts from tool shells lose
 > `GLM_API_KEY` (it lives in `private-env.sh`, sourced only by interactive
-> shells) and `/ask` fails with 503 while `/health` stays green. This is
-> the exact incident that made the unit the supported path — after
-> debugging, re-run `deploy/install.sh` to hand the port back to systemd.
+> shells) and `/ask` fails with 503 while `/health` stays green. Use
+> `bin/herdr-brain` or `deploy/install.sh` to run the server with proper environment discovery.
 
 ### Upgrading the herdr-tts renderer (reader cache release step)
 
