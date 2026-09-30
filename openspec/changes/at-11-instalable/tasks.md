@@ -78,7 +78,7 @@ In-task decision (explicit, not a maintainer gate): **validator note A** — the
   - OQ: none (OQ-5 affects later scenario runs, not this authoring unit).
   - Est: ~220 lines.
 
-- [ ] 1.3 **Scenario 3 `zero-machine-paths` + V1 scan scope seeded** (slice 3) — author harness scenario 3 (V1+V2 level; registry activation at M1 per design); seed the hygiene scan's scope manifest with tree areas already clean. Scenario 3's full-green completion lands with task 2.2 (design slice 10 also carries "Activates V2: 3"); milestone-1 closure reports its truthful state under the active-scenarios gate — never a green skip.
+- [x] 1.3 **Scenario 3 `zero-machine-paths` + V1 scan scope seeded** (slice 3) — author harness scenario 3 (V1+V2 level; registry activation at M1 per design); seed the hygiene scan's scope manifest with tree areas already clean. Scenario 3's full-green completion lands with task 2.2 (design slice 10 also carries "Activates V2: 3"); milestone-1 closure reports its truthful state under the active-scenarios gate — never a green skip.
   - Files: `scripts/acceptance/scenarios/03-zero-machine-paths.sh` (create), `engine/tests/test_versioned_tree_hygiene.py` (extend).
   - Verify: `bash scripts/acceptance/clean-install.sh --milestone 1` reports scenario 3 activated; engine pytest green.
   - OQ: none. Closure note: V2 scenario 3 green completes at task 2.2.
