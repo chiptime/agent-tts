@@ -37,6 +37,7 @@ kokoro = [
 ]
 dev = [
     "pytest>=7.0.0",
+    "coverage>=7.6,<8",
 ]
 
 [project.scripts]

@@ -84,4 +84,10 @@ else
   py_install --quiet "$AGENT_TTS_SRC"
 fi
 
+# Test instrumentation (voice-stack VS0.3): keep the host venv able to run
+# the local test suite. Idempotent — satisfied installs are no-ops. Runs on
+# every full build; the healthy-venv fast path above still short-circuits
+# routine product restarts.
+py_install "pytest>=8,<10" "coverage>=7.6,<8"
+
 echo "✓ TTS environment ready."
