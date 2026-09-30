@@ -38,7 +38,7 @@ single tool: `send_to_session`.
 ## Setup
 
 ```bash
-cd ~/Code/personal/herdr-brain
+cd ~/Code/personal/agent-tts/hosts/herdr/brain
 scripts/bootstrap.sh          # creates .venv, installs deps, runs tests
 ```
 
@@ -58,7 +58,7 @@ export GLM_API_KEY="…"
 | `GLM_BASE_URL` | `https://api.z.ai/api/paas/v4/` | LLM base URL |
 | `GLM_MODEL` | `glm-5` | LLM model |
 | `HERDR_BIN` | `herdr` | herdr CLI path |
-| `HERDR_TTS_HOME` | `~/Code/personal/herdr-tts` | herdr-tts repo root (speech backend; the surface CLI `<home>/bin/herdr-tts` derives from it) |
+| `HERDR_TTS_HOME` | `~/Code/personal/agent-tts/hosts/herdr/tts-plugin` | herdr-tts repo root (speech backend; the surface CLI `<home>/bin/herdr-tts` derives from it) |
 | `HERDR_BRAIN_VOICE` / `HERDR_BRAIN_RATE` / `HERDR_BRAIN_MAX_CHARS` | `elvira` / `+0%` / `300` | synthesis knobs |
 | `HERDR_BRAIN_TTS_ARGS` | *(empty)* | extra engine flags (e.g. `--piper`, `--tldr`) |
 | `HERDR_BRAIN_AUDIO_DIR` | `~/.local/state/herdr-brain/audio` | rendered mp3 directory |
@@ -81,7 +81,8 @@ venv, provider flags) is herdr-tts's private detail:
 <HERDR_TTS_HOME>/bin/herdr-tts --render-text OUT.mp3 TEXT [--voice V] [--rate R]
 ```
 
-`HERDR_TTS_HOME` (default `~/Code/personal/herdr-tts`) names the repo
+`HERDR_TTS_HOME` (default
+`~/Code/personal/agent-tts/hosts/herdr/tts-plugin`) names the repo
 root; the CLI is self-sufficient and bootstraps its own environment. The
 contract is verified once at boot and surfaced in `/health` as
 `"tts": "ok" | "degraded" | "missing"` (`degraded` = contract present but

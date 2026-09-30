@@ -290,7 +290,7 @@ class TestTtsHomeConfig:
 
     def test_default_home_derives_bin(self):
         cfg = load_settings(env={})
-        assert cfg.tts_home.as_posix().endswith("herdr-tts")
+        assert cfg.tts_home.as_posix().endswith("tts-plugin")
         assert cfg.tts_bin == cfg.tts_home / "bin/herdr-tts"
 
     def test_home_override_moves_derived_bin(self):
