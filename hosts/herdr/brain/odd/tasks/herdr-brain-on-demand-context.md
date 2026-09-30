@@ -85,7 +85,10 @@ Ordered by dependency. Route column is the planned topology.
     JSONL discovery, ISO timestamps, stat-based tokens. Done; commit on
     `feat/herdr-brain-ctx-03c-evidence-transcripts`.
 - [ ] **T4** Read-only Engram adapter (access mechanism to be verified, A-2).
-  FR-05, 31, 38, 39. Depends: T3.
+  FR-05, 31, 38, 39. Depends: T3. Done; commit on
+  `feat/herdr-brain-ctx-04-engram-adapter`. Verified access: SQLite at
+  `~/.engram/engram.db` opened `file:...?mode=ro` (no subprocess, no writes;
+  write refusal empirically confirmed).
 - [ ] **T5** `freshness`: manifest comparison, reuse-after-check, full rebuild,
   bounded full scan, moving windows. FR-28..32, 41. Depends: T2, T3, T4.
 - [ ] **T6** `report` consolidation: per-project advances/pending/blockers,
@@ -216,8 +219,24 @@ its FRs covered by tests and the full suite green.
   ceiling on period reads.
 - Slice 03c `feat/herdr-brain-ctx-03c-evidence-transcripts`: T3c (~2.10k
   lines) — `size:exception` recommendation recorded.
+- 2026-09-30 T4 done (strict TDD, auto). RED: `ModuleNotFoundError: No module
+  named 'herdr_brain.evidence_engram'`. GREEN 31 passed. Full suite re-run by
+  the parent: 850 passed (819 + 31). Files: `src/herdr_brain/evidence_engram.py`
+  (543), `tests/test_evidence_engram.py` (658).
+- T4 rule decisions: token = sha256-16 over full row skeleton [(id, updated_at,
+  deleted_at)] ordered by id (max-aggregates cannot see edits below the max —
+  id inclusion prevents purge/reinsert collisions); projects with only
+  soft-deleted rows stay listed (deletions detectable, FR-31); zero-row project
+  = SOURCE_ABSENT; collect on only-deleted = OK-empty; content excerpt to
+  max_chars=4000 with visible `... [truncated]` marker; naive TEXT timestamps
+  read as UTC by documented convention; project_filter exact-match only;
+  missing observations table = COVERAGE_FAILED (open); period-bounded reads
+  uncapped (open); no env override (open); no truncated bool in stats (open).
+- Slice 04 `feat/herdr-brain-ctx-04-engram-adapter`: T4 (~1.20k lines) —
+  `size:exception` recommendation recorded.
 
 ## Next step
 
-T4 read-only Engram adapter on `feat/herdr-brain-ctx-04-engram-adapter` from
-03c. Access mechanism must be verified first (PRD assumption A-2).
+T5 `freshness` on `feat/herdr-brain-ctx-05-freshness` from 04: manifest
+comparison, reuse-after-check, full rebuild, bounded full scan, moving windows
+(FR-28..32, 41).
