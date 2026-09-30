@@ -416,9 +416,12 @@ Exit: 0 = pass · 1 = FAIL numérico · 2 = blocked (input/mapeo no fiable)
 
 ### T12.2 Bash — líneas + matriz de alternativas (D9)
 
-- **Líneas:** kcov (doc oficial: PS4 tracing, SIN ramas en Bash) sobre el harness Bash
-  nuevo; denominador = líneas ejecutables MODIFICADAS según baseline↔candidato (FUTURE
-  `scripts/voice-stack/bash_changed_lines.py --baseline-snapshot … --candidate-snapshot …`).
+- **Líneas:** colector PS4/xtrace NATIVO de bash (DECISIÓN PROPIETARIO 2026-09-30:
+  kcov 42 prebuilt y kcov 43 brew no trazan bash 5.2 en Ubuntu 24.04 — su capa
+  execve-redirector deja de reescribir execs hijos; `SHELLOPTS=xtrace` +
+  `PS4='+${LINENO}@${BASH_SOURCE}@'` demostrado con propagación a hijos y eventos
+  exactos por línea) sobre el harness Bash; denominador = líneas ejecutables
+  MODIFICADAS según baseline↔candidato (FUTURE `scripts/voice-stack/bash_changed_lines.py --baseline-snapshot … --candidate-snapshot … --ps4-harness …`).
   ≥90% (D9). Smoke NO cuenta como cobertura.
 - **Matriz de alternativas:** FUTURE `scripts/voice-stack/bash_matrix.py
   --baseline-snapshot … --candidate-snapshot … --table
@@ -462,7 +465,9 @@ comando; los casos pytest requeridos por la matriz FR son FUTURE hasta que su ta
 escribe (no se afirma "el comando existe" para tests no creados).
 
 **Instalaciones (versiones FIJAS, no "elige la última"):** `coverage>=7.6,<8` (Python),
-`pytest-playwright>=0.5,<0.8` + Chromium bundle correspondiente, `kcov>=42,<43` — la
+`pytest-playwright>=0.5,<0.8` + Chromium bundle correspondiente — kcov DESCARTADO
+2026-09-30 (decisión propietario: colector PS4 stdlib; evidencia de incompatibilidad
+registrada en el run-dir) — la
 versión EXACTA resuelta queda registrada en evidencia y lockfiles (la tarea de
 instalación actualiza lockfiles dentro de su allowlist); `coverage_gate.py --check-env`
 valida compatibilidad (Node ≥20 con reporter LCOV, Python del venv) y bloquea (exit 2) si
