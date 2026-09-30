@@ -78,8 +78,9 @@ Ordered by dependency. Route column is the planned topology.
     (truthful status, no "unfinished" inference, revision tokens,
     ACTIVE_STATUSES rule for FR-12). Done; commit on
     `feat/herdr-brain-ctx-03a-evidence-core`.
-  - [ ] **T3b** `OpencodeEvidenceProvider`: historical enumeration via SQLite,
-    epoch-ms timestamps, `time_updated` revision tokens.
+  - [x] **T3b** `OpencodeEvidenceProvider`: historical enumeration via SQLite,
+    epoch-ms timestamps, `time_updated` revision tokens. Done; commit on
+    `feat/herdr-brain-ctx-03b-evidence-opencode`.
   - [ ] **T3c** `ClaudeEvidenceProvider` + `AntigravityEvidenceProvider`:
     JSONL discovery, ISO timestamps, stat-based tokens.
 - [ ] **T4** Read-only Engram adapter (access mechanism to be verified, A-2).
