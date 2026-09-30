@@ -8,6 +8,7 @@ Metodología: cada PRD se justifica primero por cómo mejora el flujo diario del
 
 | ID | Fichero | Feature | Prioridad final | Estado | Esfuerzo |
 |---|---|---|---|---|---|
+| AT-11 | [AT-11-instalable-first-run.md](AT-11-instalable-first-run.md) | Producto instalable independiente con first-run onboarding (auditoría: [AT-11-auditoria-instalacion.md](AT-11-auditoria-instalacion.md)) | P1 | **Aprobada** | L |
 | AT-09 | [archivadas/AT-09-canal-de-control.md](archivadas/AT-09-canal-de-control.md) | Propiedad del canal de control (socket, lock y framing) | P1 | **Ejecutada** (BLOQUE 1.1) | S-M |
 | AT-04 | [archivadas/AT-04-daemon-persistente.md](archivadas/AT-04-daemon-persistente.md) | Modo daemon persistente del motor (`--serve`) | P1 | **Ejecutada** (BLOQUE 1.2) | L |
 | AT-08 | [archivadas/AT-08-cola-prioridades.md](archivadas/AT-08-cola-prioridades.md) | Cola con prioridades y reproducción encadenada | P1 | **Ejecutada** (BLOQUE 1.3) | M-L |
@@ -21,6 +22,7 @@ Metodología: cada PRD se justifica primero por cómo mejora el flujo diario del
 
 ## Orden de ataque
 
+0. **AT-11 (P1, aprobada 2026-09-30)** — producto instalable independiente con first-run onboarding. Motivada por la auditoría post-migración (20 hallazgos: bugs funcionales, refs legacy, acoplamiento a máquina del maintainer, gaps de onboarding). Decisiones de diseño resueltas (vía primaria plugin `[[startup]]` + systemd permitido, asistente compartido, tailscale en docs, naming status quo). Hand-off a SDD pendiente de orden expresa; el desarrollo no arranca todavía.
 1. **Paquete P1: AT-09 + AT-04 + AT-08** — **COMPLETADO (2026-09-25)**, en tres sub-bloques secuenciales (archivados en [`archivadas/bloques/`](archivadas/bloques/)): 1.1 canal de control (AT-09), 1.2 daemon por vía única (AT-04), 1.3 cola y cadena (AT-08). El daemon nace poseyendo la cola desde el día uno: una sola migración de semántica de playback, no dos. Contrato IPC congelado: [`../../contracts/ipc-v2.md`](../../contracts/ipc-v2.md). Deuda, pendientes y residuales aceptados: [`../deuda-tecnica.md`](../deuda-tecnica.md).
 2. **AT-03 recortada** — **COMPLETADO (2026-09-28)**: validado con ID de sesión web real en la base de datos de producción OpenCode (0.62 ms, extracción limpia y autodetección CLI). PRD archivada.
 3. **P3**: AT-07 primero (mejor ratio valor/coste del lote) → AT-06 → AT-01 **COMPLETADO (2026-09-29)**: streaming incremental por frames de MP3 con decoder continuo via miniaudio, fallback graceful a groups, karaoke via WordBoundary events. PRD archivada.
