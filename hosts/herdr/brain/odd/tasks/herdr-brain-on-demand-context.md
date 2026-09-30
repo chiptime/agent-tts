@@ -69,10 +69,19 @@ Ordered by dependency. Route column is the planned topology.
   interval/timezone keys, atomic publish, bounded cleanup. FR-27, 33, 34.
   Depends: T1 (interval normalization). Route: delegated writer. Done; commit on
   `feat/herdr-brain-ctx-02-reportstore`.
-- [ ] **T3** `evidence` inventory: open Herdr sessions + transcript readers with
+- [x] **T3** `evidence` inventory: open Herdr sessions + transcript readers with
   a historical cursor (OpenCode/Claude/Antigravity) + per-source revision
   tokens; absence vs failed coverage. FR-03..05, 11, 12, 40.
-  Route: delegated mapper then writer.
+  Route: delegated mapper then writer. Split (from the mapping) into:
+  - [x] **T3a** core types (Source/EvidenceItem/CoverageStatus with
+    OK/SOURCE_ABSENT/COVERAGE_FAILED, Deadline budget) + `HerdrSessionProvider`
+    (truthful status, no "unfinished" inference, revision tokens,
+    ACTIVE_STATUSES rule for FR-12). Done; commit on
+    `feat/herdr-brain-ctx-03a-evidence-core`.
+  - [ ] **T3b** `OpencodeEvidenceProvider`: historical enumeration via SQLite,
+    epoch-ms timestamps, `time_updated` revision tokens.
+  - [ ] **T3c** `ClaudeEvidenceProvider` + `AntigravityEvidenceProvider`:
+    JSONL discovery, ISO timestamps, stat-based tokens.
 - [ ] **T4** Read-only Engram adapter (access mechanism to be verified, A-2).
   FR-05, 31, 38, 39. Depends: T3.
 - [ ] **T5** `freshness`: manifest comparison, reuse-after-check, full rebuild,
@@ -137,8 +146,35 @@ its FRs covered by tests and the full suite green.
   diagnostics read API for superseded chains, default DB location wiring.
 - Slice 02 `feat/herdr-brain-ctx-02-reportstore`: T2 (~1.46k lines) —
   `size:exception` recommendation recorded.
+- 2026-09-30 T3 mapping (explore agent, read-only): anchors at
+  `herdr.py:158` (list_agents, `AgentInfo` fields, HerdrError 15s timeout),
+  `tools.py:154/302`, `watcher.py:161`; transcripts expose windowed tails only
+  with no timestamps/ids/cursor (historical reads need new queries);
+  trustworthy message timestamps: OpenCode `message.time_created` (epoch ms),
+  Claude `event["timestamp"]` (ISO), Antigravity `event["created_at"]` (ISO);
+  project identity: Herdr cwd, OpenCode `session.directory`, Claude munged dir
+  + event cwd, Antigravity cwd or `conversation_summaries.db workspace_uris`
+  (open question whether that db is in configured authority — deferred, cwd
+  fallback first). Fixtures: StubHerdr/make_stub/opencode_db/claude_root/
+  antigravity_root. Mapper report archived in the session transcript.
+- 2026-09-30 T3a done (strict TDD, auto). RED-1: `ModuleNotFoundError: No
+  module named 'herdr_brain.evidence'` (19 tests cycle 1). RED-2: `ImportError:
+  cannot import name 'ACTIVE_STATUSES'` (cycle 2). GREEN 46 passed. Full suite
+  re-run by the parent: 737 passed (691 + 46). Files: `src/herdr_brain/evidence.py`
+  (440), `tests/test_evidence.py` (483): 923 lines, over the ~400 heuristic
+  (advisory only).
+- T3a rule decisions: revision token = sha256(json of [status, session_value,
+  focused, title])[:16], observed_at excluded (re-observation is not a
+  revision); empty herdr inventory is OK (not SOURCE_ABSENT); deadline checked
+  BEFORE touching the client; project_filter = exact cwd or under-path; no mtime
+  field anywhere (None timestamps classify UNKNOWN); untrusted-data docstring.
+- Open: ACTIVE_STATUSES ownership (orchestration may revisit), cwd->project
+  normalization, mid-acquisition re-validate token (T5 concern), Antigravity
+  summaries-db authority.
+- Slice 03a `feat/herdr-brain-ctx-03a-evidence-core`: T3a (~923 lines) —
+  `size:exception` recommendation recorded.
 
 ## Next step
 
-T3 `evidence` on `feat/herdr-brain-ctx-03-evidence` from child 02: start with one
-read-only mapper of the existing transcript readers/herd listing.
+T3b `OpencodeEvidenceProvider` on `feat/herdr-brain-ctx-03b-evidence-opencode`
+from 03a.
