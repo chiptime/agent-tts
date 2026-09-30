@@ -2609,16 +2609,21 @@ echo "── 34. install.sh: preflight, fresh e2e, upgrade guard, keymap policy"
 new_env s34
 
 # ═════════════════════════════════════════════════════════════════════════
-# 34. install.sh contract (PM-01): preflight before mutation (jq missing,
-#     linked checkout refusal), fresh end-to-end install, upgrade vs
-#     remote-mismatch, keymap adoption policy (default/never-overwrite/
-#     --no-keymap), uninstall print, English output, tag-pinned default
-#     (v0.16.0) with HERDR_TTS_REF escape hatch, absolute clone target
-#     via `git -C` from an unrelated cwd.
+# 34. install.sh contract (PM-01 + AT-11 slice 4): preflight before mutation
+#     (jq missing, linked checkout refusal), fresh end-to-end install from
+#     the agent-tts MONOREPO (plugin at hosts/herdr/tts-plugin inside the
+#     checkout), upgrade vs remote-mismatch, keymap adoption policy
+#     (default/never-overwrite/--no-keymap), uninstall print, English
+#     output, tag-pinned monorepo default (v0.16.0) with HERDR_TTS_REF
+#     escape hatch, absolute clone target via `git -C` from an unrelated
+#     cwd (34i: even from inside a FOREIGN git repo — repo stays clean),
+#     and relative-TARGET refusal (34j: relative XDG_DATA_HOME rejected
+#     before any mutation).
 # ═════════════════════════════════════════════════════════════════════════
 INS_TEMPLATE="$T/repo-template"
-mkdir -p "$INS_TEMPLATE"
-cp -r "$REPO/bin" "$REPO/scripts" "$REPO/lib" "$REPO/herdr-plugin.toml" "$INS_TEMPLATE/" 2>/dev/null
+INS_PLUG="$INS_TEMPLATE/hosts/herdr/tts-plugin" # the stub clone materializes the whole monorepo
+mkdir -p "$INS_PLUG"
+cp -r "$REPO/bin" "$REPO/scripts" "$REPO/lib" "$REPO/herdr-plugin.toml" "$INS_PLUG/" 2>/dev/null
 export HERDR_CONFIG_DIR="$T/conf" # keymap apply target stays hermetic
 ins_init() { # $1 case → $INS with stub bin/, isolated data/logs
   INS="$T/ins-$1"; rm -rf "$INS"; mkdir -p "$INS/bin" "$INS/logs" "$INS/data" "$INS/home"
@@ -2670,7 +2675,7 @@ ins_run() { # KEY=VAL env pairs, then --, then installer argv
 
 # 34a. jq missing: abort naming jq before any mutation (in-1, in-6).
 ins_init nojq; ins_plugins github
-printf 'https://github.com/chiptime/herdr-tts.git\n' > "$INS/remote.txt"
+printf 'https://github.com/chiptime/agent-tts.git\n' > "$INS/remote.txt"
 INS_PATH="$INS/bin" # restricted: no system jq anywhere
 ins_run --
 [[ $? -ne 0 ]] && ok "34a jq-missing exits non-zero" || bad "34a rc==0 without jq"
@@ -2682,7 +2687,7 @@ assert_no_grep "34a failure output is English" 'Instalando|Configurando|Usando|E
 
 # 34b. linked dev checkout: refuse before mutating, guide migration (in-1).
 ins_init linked; ins_plugins local
-printf 'https://github.com/chiptime/herdr-tts.git\n' > "$INS/remote.txt"
+printf 'https://github.com/chiptime/agent-tts.git\n' > "$INS/remote.txt"
 ins_run --
 [[ $? -ne 0 ]] && ok "34b linked checkout exits non-zero" || bad "34b rc==0 over a linked checkout"
 grep -q 'plugin unlink' "$INS/err.log" && grep -q 'plugin uninstall' "$INS/err.log" \
@@ -2693,16 +2698,18 @@ grep -q 'plugin unlink' "$INS/err.log" && grep -q 'plugin uninstall' "$INS/err.l
 #      bootstrap, keymap adopt+apply+reload, daemon verify, status pointer,
 #      uninstall print, tag-pinned default (in-2, in-5, in-7).
 ins_init fresh; ins_plugins github
-printf 'https://github.com/chiptime/herdr-tts.git\n' > "$INS/remote.txt"
+printf 'https://github.com/chiptime/agent-tts.git\n' > "$INS/remote.txt"
 sleep 60 & DAEMON_PID=$!
 mkdir -p "$T/state/herdr-tts"; printf '%s\n' "$DAEMON_PID" > "$T/state/herdr-tts/daemon.pid"
 mkdir -p "$T/unrelated-cwd"
 ( cd "$T/unrelated-cwd" && ins_run -- )
 [[ $? -eq 0 ]] && ok "34c fresh install exits rc=0" || bad "34c rc!=0 (err: $(tail -1 "$INS/err.log" 2>/dev/null))"
-grep -qF -- "--branch v0.16.0 https://github.com/chiptime/herdr-tts.git $INS/data/herdr-tts/plugin" "$INS/logs/git.log" \
-  && ok "34c clones the pinned tag to the absolute TARGET from an unrelated cwd" \
+grep -qF -- "--branch v0.16.0 https://github.com/chiptime/agent-tts.git $INS/data/herdr-tts/plugin" "$INS/logs/git.log" \
+  && ok "34c clones the pinned monorepo tag to the absolute TARGET from an unrelated cwd" \
   || bad "34c clone argv wrong: $(grep clone "$INS/logs/git.log" 2>/dev/null)"
-[[ -x "$INS/data/herdr-tts/plugin/bin/herdr-tts" ]] && ok "34c checkout materialized at TARGET" || bad "34c no checkout at TARGET"
+[[ -x "$INS/data/herdr-tts/plugin/hosts/herdr/tts-plugin/bin/herdr-tts" ]] \
+  && ok "34c monorepo checkout at TARGET; plugin materialized at hosts/herdr/tts-plugin" \
+  || bad "34c no plugin under TARGET/hosts/herdr/tts-plugin"
 grep -qE 'uv pip install .*agent-tts\.git@[0-9a-f]{40}' "$INS/logs/uv.log" \
   && ok "34c bootstrap ran inside the install (pinned agent-tts)" || bad "34c no pinned install recorded"
 [[ -f "$T/conf/herdr-tts/keymap.json" ]] && ok "34c menu-style keymap adopted" || bad "34c keymap.json missing"
@@ -2721,7 +2728,7 @@ kill "$DAEMON_PID" 2>/dev/null; wait "$DAEMON_PID" 2>/dev/null
 # 34d. matching remote: re-run upgrades — fetch+checkout of the tag and an
 #      agent-tts refresh past the never-upgrade gate (in-3).
 ins_init upg; ins_plugins github
-printf 'https://github.com/chiptime/herdr-tts.git\n' > "$INS/remote.txt"
+printf 'https://github.com/chiptime/agent-tts.git\n' > "$INS/remote.txt"
 ins_run --
 ins_run --
 [[ $? -eq 0 ]] && ok "34d matching-remote re-run exits rc=0" || bad "34d rc!=0"
@@ -2734,7 +2741,7 @@ grep -qE -- '--upgrade.*agent-tts\.git@[0-9a-f]{40}' "$INS/logs/uv.log" \
 
 # 34e. mismatched remote: abort naming the mismatch, write nothing (in-3).
 ins_init mism; ins_plugins github
-printf 'https://github.com/chiptime/herdr-tts.git\n' > "$INS/remote.txt"
+printf 'https://github.com/chiptime/agent-tts.git\n' > "$INS/remote.txt"
 ins_run --
 before_tree=$(find "$INS/data/herdr-tts/plugin" -type f | sort | xargs md5sum | md5sum)
 before_writes=$(grep -cE 'clone|fetch|checkout' "$INS/logs/git.log"); before_uv=$(wc -l < "$INS/logs/uv.log")
@@ -2749,7 +2756,7 @@ grep -q 'remote' "$INS/err.log" && ok "34e error names the remote mismatch" || b
 
 # 34f. existing keymap.json: byte-identical, no adopt/apply/reload (in-4).
 ins_init keep; ins_plugins github
-printf 'https://github.com/chiptime/herdr-tts.git\n' > "$INS/remote.txt"
+printf 'https://github.com/chiptime/agent-tts.git\n' > "$INS/remote.txt"
 mkdir -p "$T/conf/herdr-tts"
 printf '{\n  "style": "direct",\n  "bindings": { "play": "prefix+F9" }\n}\n' > "$T/conf/herdr-tts/keymap.json"
 cp "$T/conf/herdr-tts/keymap.json" "$INS/expected-keymap.json"
@@ -2763,7 +2770,7 @@ rm -f "$T/conf/herdr-tts/keymap.json" "$T/conf/herdr/config.toml"
 
 # 34g. --no-keymap: zero keymap artifacts of any kind (in-4).
 ins_init nokey; ins_plugins github
-printf 'https://github.com/chiptime/herdr-tts.git\n' > "$INS/remote.txt"
+printf 'https://github.com/chiptime/agent-tts.git\n' > "$INS/remote.txt"
 ins_run -- --no-keymap
 [[ $? -eq 0 ]] && ok "34g --no-keymap exits rc=0" || bad "34g rc!=0"
 [[ ! -e "$T/conf/herdr-tts/keymap.json" && ! -e "$T/conf/herdr/config.toml" ]] \
@@ -2773,14 +2780,49 @@ grep -q 'server reload-config' "$INS/logs/herdr.log" \
 
 # 34h. HERDR_TTS_REF escape hatch: mutable ref only when explicit (in-7).
 ins_init hatch; ins_plugins github
-printf 'https://github.com/chiptime/herdr-tts.git\n' > "$INS/remote.txt"
+printf 'https://github.com/chiptime/agent-tts.git\n' > "$INS/remote.txt"
 ins_run HERDR_TTS_REF=main --
 [[ $? -eq 0 ]] && ok "34h HERDR_TTS_REF=main exits rc=0" || bad "34h rc!=0"
 grep -qF -- '--branch main' "$INS/logs/git.log" \
   && ok "34h explicit hatch clones main" || bad "34h main not used"
 grep -qE 'uv pip install .*agent-tts\.git@[0-9a-f]{40}' "$INS/logs/uv.log" \
   && ok "34h agent-tts stays SHA-pinned regardless" || bad "34h agent-tts pin loosened"
-unset INS INS_PATH INS_TEMPLATE
+
+# 34i. git-selection threat (a): the installer run with cwd inside a FOREIGN
+#      git repo — every git call must target the absolute install dir; the
+#      foreign repo stays byte-clean (verified with the REAL git, while the
+#      installer's git goes through the logging stub).
+REALGIT=$(command -v git)
+ins_init foreign; ins_plugins github
+printf 'https://github.com/chiptime/agent-tts.git\n' > "$INS/remote.txt"
+"$REALGIT" init -q "$T/foreign-repo"
+( cd "$T/foreign-repo" && printf 'sentinel\n' > sentinel.txt && "$REALGIT" add . \
+  && "$REALGIT" -c user.email=t@e.st -c user.name=t commit -qm init ) >/dev/null 2>&1
+( cd "$T/foreign-repo" && ins_run -- )
+[[ $? -eq 0 ]] && ok "34i installer succeeds from inside a foreign git repo" \
+  || bad "34i rc!=0 (err: $(tail -1 "$INS/err.log" 2>/dev/null))"
+[[ -z $("$REALGIT" -C "$T/foreign-repo" status --porcelain 2>/dev/null) ]] \
+  && ok "34i foreign repo left clean (git status empty)" \
+  || bad "34i foreign repo dirty: $("$REALGIT" -C "$T/foreign-repo" status --porcelain)"
+[[ -f "$T/foreign-repo/sentinel.txt" ]] && ok "34i foreign repo content intact" || bad "34i foreign repo content mutated"
+[[ $(grep -E 'clone| -C ' "$INS/logs/git.log" | grep -vc -- "$INS/data/herdr-tts/plugin") -eq 0 ]] \
+  && ok "34i every logged git write targeted the absolute install dir" \
+  || bad "34i git operated outside the absolute TARGET"
+
+# 34j. git-selection threat (b): a relative TARGET (relative XDG_DATA_HOME)
+#      is rejected before any mutation — nothing created, error names it.
+ins_init reltgt; ins_plugins github
+printf 'https://github.com/chiptime/agent-tts.git\n' > "$INS/remote.txt"
+( cd "$T" && env -u HERDR_TTS_REF -u HERDR_TTS_DEV -u HERDR_TTS_UPGRADE -u HERDR_TTS_KEYMAP_FILE \
+    PATH="$INS_PATH" HOME="$INS/home" XDG_DATA_HOME=reldata \
+    INSLOG="$INS/logs" UVLOG="$INS/logs/uv.log" \
+    SRC_TEMPLATE="$INS_TEMPLATE" REMOTE_FIXTURE="$INS/remote.txt" PLUGIN_FIXTURE="$INS/plugins.json" \
+    /bin/bash "$REPO/scripts/install.sh" > "$INS/out.log" 2> "$INS/err.log" )
+[[ $? -ne 0 ]] && ok "34j relative TARGET exits non-zero" || bad "34j rc==0 with a relative TARGET"
+grep -qi 'relative' "$INS/err.log" && ok "34j error names the relative-target refusal" || bad "34j refusal not explained"
+[[ ! -e "$T/reldata" ]] && ok "34j nothing created before the refusal" || bad "34j artifacts created under a relative path"
+
+unset INS INS_PATH INS_TEMPLATE INS_PLUG REALGIT
 unset HERDR_CONFIG_DIR
 
 # ═════════════════════════════════════════════════════════════════════════
