@@ -17,9 +17,11 @@
 #                     (default: newest clean-install-*.json in record-dir).
 #   --keep            Keep the sandbox after the run (path printed).
 #   --src PATH        Repository under test (default: this checkout).
-#   --drill MODE      Self-drill exit semantics: fail | blocked | regress.
-#                     Drill runs are tagged "drill": true in the journal and
-#                     never count as milestone closure.
+#   --drill MODE      Self-drill exit semantics: fail | blocked | regress |
+#                     origin (positive drill: the origin-shim must refuse a
+#                     non-allowlisted host with BLOCKED-ORIGIN). Drill runs
+#                     are tagged "drill": true in the journal and never count
+#                     as milestone closure.
 #   --list            Print the scenario registry and exit.
 #   -h, --help        Print help.
 #
@@ -50,13 +52,16 @@
 # allowlist above), HERDR_SANDBOX=1, and this file pre-sourced for its
 # assertion vocabulary (ok/bad/ok_stubbed/block/step/assert_grep).
 #
-# Honesty notes: no network-isolation claim is made — the documented-origin
-# policy shim arrives with slice 2 (task 1.2). Evidence lives in
-# $SANDBOX/evidence and is deleted with the sandbox unless --keep; --record
-# persists journal.json + summary.md outside it. Commands are logged
-# argv-redacted (cmd.log); assertions riding stubs rather than real installed
-# components are tagged "stubbed": true in the journal. An empty run (zero
-# activated scenarios) exits 0 but is never recorded as closing a milestone.
+# Honesty notes: network access is governed by the documented-origin policy
+# shim (slice 2): `curl` and `git` on the sandbox PATH are origin-shim copies
+# that refuse non-allowlisted hosts with BLOCKED-ORIGIN. This is a POLICY
+# boundary at the tool call, not a kernel namespace — no network-isolation
+# claim is made. Evidence lives in $SANDBOX/evidence and is deleted with the
+# sandbox unless --keep; --record persists journal.json + summary.md outside
+# it. Commands are logged argv-redacted (cmd.log); assertions riding stubs
+# rather than real installed components are tagged "stubbed": true in the
+# journal. An empty run (zero activated scenarios) exits 0 but is never
+# recorded as closing a milestone.
 set -uo pipefail
 
 # ---------------------------------------------------------------------------
@@ -123,6 +128,66 @@ assert_grep() {
 assert_no_grep() {
   local data; data=$(<"$3")
   [[ $data =~ $2 ]] && bad "$1 (unexpected: $2)" || ok "$1"
+}
+
+# --- id= doc-block extraction (slice 2) -------------------------------------
+# The harness executes installation commands from the documentation BY ID,
+# from this pinned file allowlist only. It never scans a document and runs
+# whatever it finds (threat matrix: documentation-like paths). A V1 test
+# (engine/tests/test_versioned_tree_hygiene.py) asserts every id referenced
+# by the harness or its scenarios exists exactly once in its expected file.
+DOC_BLOCK_ALLOWLIST=(
+  "README.md"
+  "hosts/herdr/brain/README.md"
+  "hosts/herdr/tts-plugin/README.md"
+)
+
+# doc_block <repo-relative-file> <id> — print the body of the fenced block
+# tagged `id=<id>` in that file. Fails (non-zero, nothing executed) when the
+# file is not on the pinned allowlist, is missing, the id is unknown, or the
+# id is duplicated in the file.
+doc_block() {
+  local f=$1 id=$2 rel ok=0 count=0 in_block=0 line body=""
+  for rel in "${DOC_BLOCK_ALLOWLIST[@]}"; do
+    [[ $rel == "$f" ]] && { ok=1; break; }
+  done
+  if (( ! ok )); then
+    echo "doc-block: refusing '${f}': not on the pinned file allowlist" >&2
+    return 1
+  fi
+  if [[ ! -f "$CHECKOUT/$f" ]]; then
+    echo "doc-block: '${f}' not found in the checkout under test" >&2
+    return 1
+  fi
+  local -r open_re='^[[:space:]]*`{3,}[[:space:]]*[a-z]*[[:space:]]*id=("|'"'"')?([A-Za-z0-9_.-]+)("|'"'"')?[[:space:]]*$'
+  local -r close_re='^[[:space:]]*`{3,}[[:space:]]*$'
+  while IFS= read -r line || [[ -n $line ]]; do
+    if (( in_block )); then
+      if [[ $line =~ $close_re ]]; then in_block=0; continue; fi
+      body+="$line"$'\n'
+    elif [[ $line =~ $open_re ]] && [[ ${BASH_REMATCH[2]} == "$id" ]]; then
+      (( count++ )); in_block=1
+    fi
+  done < "$CHECKOUT/$f"
+  if (( count == 0 )); then
+    echo "doc-block: id '${id}' not found in '${f}'" >&2
+    return 1
+  fi
+  if (( count > 1 )); then
+    echo "doc-block: id '${id}' appears ${count} times in '${f}' (must be exactly once)" >&2
+    return 1
+  fi
+  printf '%s' "$body"
+}
+
+# run_doc_block <repo-relative-file> <id> — execute that block's body with
+# the sandbox bash, logged into cmd.log/stdout.log like any other step.
+run_doc_block() {
+  local f=$1 id=$2 body
+  body=$(doc_block "$f" "$id") || return 1
+  redact_argv bash -c "<doc block ${f}#${id}>" >> "$SCEN_DIR/cmd.log"
+  printf '%s\n' "$body" >> "$SCEN_DIR/cmd.log"
+  bash -c "$body" >> "$SCEN_DIR/stdout.log" 2>&1
 }
 
 # ---------------------------------------------------------------------------
@@ -209,6 +274,13 @@ build_sandbox() {
   if ! git -C "$SRC" archive HEAD | tar -x -C "$CHECKOUT"; then
     die "self-check: cannot copy the repo under test from '$SRC' into the sandbox" 4
   fi
+  # Documented-origin policy shim: sandbox `curl` and `git` are origin-shim
+  # COPIES (first on PATH). Tool-call policy boundary, not a namespace.
+  cp "$HARNESS_DIR/origin-shim" "$SANDBOX/bin/curl"
+  cp "$HARNESS_DIR/origin-shim" "$SANDBOX/bin/git"
+  chmod 0755 "$SANDBOX/bin/curl" "$SANDBOX/bin/git"
+  cp "$HARNESS_DIR/allowed-origins.txt" "$SANDBOX/allowed-origins.txt" \
+    || die "self-check: allowed-origins.txt missing next to the harness" 4
   # Rebuild PATH from the allowlist; the stubs dir always wins.
   local t p d
   declare -A _seen=()
@@ -230,6 +302,7 @@ build_sandbox() {
     XDG_STATE_HOME="$SANDBOX/xdg/state" XDG_CACHE_HOME="$SANDBOX/xdg/cache"
     TERM=dumb LANG=C.UTF-8 LC_ALL=C.UTF-8 HERDR_SANDBOX=1
     CHECKOUT="$CHECKOUT"
+    HERDR_ALLOWED_ORIGINS="$SANDBOX/allowed-origins.txt"
     HERDR_ACCEPTANCE_API=1 HERDR_ACCEPTANCE_LIB="$HARNESS_FILE"
   )
   self_check
@@ -251,6 +324,8 @@ self_check() {
   [[ -z $leaked ]] || die "self-check: host environment leaked into sandbox base: $leaked" 4
   env -i PATH="$SANDBOX_PATH" bash -c 'command -v bash >/dev/null && command -v git >/dev/null' \
     || die "self-check: bash/git not reachable on the sandbox PATH" 4
+  [[ -x "$SANDBOX/bin/curl" && -x "$SANDBOX/bin/git" && -f "$SANDBOX/allowed-origins.txt" ]] \
+    || die "self-check: origin policy shim or allowlist not installed on the sandbox PATH" 4
 }
 
 # ---------------------------------------------------------------------------
@@ -371,7 +446,7 @@ usage() {
   cat <<'EOF'
 Usage: scripts/acceptance/clean-install.sh [OPTIONS]
   --milestone N   --record  --record-dir DIR  --baseline FILE  --keep
-  --src PATH  --drill {fail|blocked|regress}  --list  -h | --help
+  --src PATH  --drill {fail|blocked|regress|origin}  --list  -h | --help
 Exit codes: 0 all-activated PASS · 1 FAIL · 2 BLOCKED · 3 regression ·
 4 harness self-check failed · 64 usage error. See the file header for details.
 EOF
@@ -415,7 +490,7 @@ main() {
   if (( milestone_given )); then
     [[ $milestone =~ ^[0-9]+$ ]] && (( milestone >= 1 )) || die "--milestone must be a positive integer" 64
   fi
-  [[ $drill =~ ^(fail|blocked|regress)?$ ]] || die "--drill must be fail|blocked|regress" 64
+  [[ $drill =~ ^(fail|blocked|regress|origin)?$ ]] || die "--drill must be fail|blocked|regress|origin" 64
 
   HARNESS_FILE=$(readlink -f "${BASH_SOURCE[0]}")
   HARNESS_DIR=$(dirname "$HARNESS_FILE")
@@ -456,6 +531,7 @@ main() {
   fi
   echo "AT-11 clean-install harness — commit $SHA, milestone $MILESTONE"
   echo "sandbox: $SANDBOX (env -i base, allowlisted PATH)"
+  echo "network policy: documented-origin shim active on curl/git — a tool-call policy boundary, NOT a network namespace"
 
   # Self-drills: synthetic scenarios proving the exit-code contract.
   if [[ -n $drill ]]; then
@@ -464,6 +540,19 @@ main() {
       fail)    printf 'bad "forced failure drill (exit 1 semantics proof)"\n' > "$df" ;;
       blocked) printf 'block "drill: forced missing prerequisite (exit 2 semantics proof)"\n' > "$df" ;;
       regress) printf 'bad "regression drill: PASS in baseline, FAIL now (exit 3 semantics proof)"\n' > "$df" ;;
+      origin)
+        # Positive drill: proves the documented-origin policy shim refuses a
+        # non-allowlisted host with BLOCKED-ORIGIN (no network is contacted —
+        # the shim rejects before any transfer). Slice 2 task 1.2 verify.
+        {
+          echo 'out=$(curl -fsSL --max-time 10 https://origin-policy-drill.invalid/install.sh 2>&1); rc=$?'
+          echo 'if (( rc != 0 )) && [[ $out == *"BLOCKED-ORIGIN:"*"origin-policy-drill.invalid"* ]]; then'
+          echo '  ok "origin drill: non-allowlisted host refused with BLOCKED-ORIGIN (no transfer)"'
+          echo 'else'
+          echo '  bad "origin drill: shim failed to block origin-policy-drill.invalid (rc=$rc out=$out)"'
+          echo 'fi'
+        } > "$df"
+        ;;
     esac
     IDS+=("_drill-$drill"); MS+=(1); FILES+=("$df")
     LEVELS+=("V2"); DESCS+=("self-drill: $drill exit-code semantics")

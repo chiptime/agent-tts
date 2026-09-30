@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+# origin-shim — documented-origin network policy shim (AT-11 slice 2, design
+# Decision 3). scripts/acceptance/clean-install.sh installs copies of this
+# file as `curl` and `git`, FIRST on the sandbox PATH.
+#
+# This is a POLICY BOUNDARY enforced at the tool call — NOT a kernel
+# namespace. It resolves the target origin of network-touching invocations
+# and refuses any host outside the allowlist with `BLOCKED-ORIGIN: <host>`
+# (exit 30). Allowlisted invocations are handed to the real binary found
+# later on the same PATH. curl redirects are followed manually, one hop at
+# a time, so no hop ever contacts an unverified host; a redirect chain that
+# cannot be resolved fails closed (no transfer runs).
+#
+# Dispatch: basename($0) must be `curl` or `git` (the harness deploys two
+# copies). Direct invocation is also supported for drills and tests:
+# `origin-shim curl <args...>`.
+#
+# Pure bash by necessity: the sandbox PATH allowlist contains no
+# grep/sed/tr, and this shim must also run on a probe PATH that holds
+# nothing but the shim itself — so it uses no external readlink/dirname/
+# basename either, only parameter expansion and the real curl/git it wraps.
+set -uo pipefail
+
+SELF_TOOL=${0##*/}
+if [[ $SELF_TOOL != curl && $SELF_TOOL != git ]]; then
+  if [[ ${1:-} == curl || ${1:-} == git ]]; then
+    SELF_TOOL=$1
+    shift
+  else
+    echo "origin-shim: cannot determine tool mode (invoke as curl/git or pass curl|git first)" >&2
+    exit 31
+  fi
+fi
+
+resolve_allowlist() {
+  local d c
+  if [[ -n ${HERDR_ALLOWED_ORIGINS:-} && -f $HERDR_ALLOWED_ORIGINS ]]; then
+    printf '%s' "$HERDR_ALLOWED_ORIGINS"
+    return 0
+  fi
+  d=${BASH_SOURCE[0]%/*}
+  for c in "$d/allowed-origins.txt" "$d/../allowed-origins.txt"; do
+    if [[ -f $c ]]; then printf '%s' "$c"; return 0; fi
+  done
+  return 1
+}
+
+ALLOWLIST_FILE=$(resolve_allowlist) || {
+  echo "BLOCKED-ORIGIN: policy-misconfigured (allowed-origins.txt not found; set HERDR_ALLOWED_ORIGINS)" >&2
+  exit 30
+}
+
+# origin_allowed <host> — exact or wildcard match against the allowlist.
+origin_allowed() {
+  local host=$1 line pat
+  while IFS= read -r line || [[ -n $line ]]; do
+    line=${line%%#*}                    # strip trailing comments
+    line=${line//[[:space:]]/}          # strip all whitespace
+    [[ -z $line ]] && continue
+    pat=$line
+    [[ $host == $pat ]] && return 0     # unquoted RHS: shell glob match
+  done < "$ALLOWLIST_FILE"
+  return 1
+}
+
+# host_of <url> — print the lowercase host of a URL-ish string, rc 1 if none.
+# Handles scheme://user@host:port/path, scheme-relative //host/path, and
+# scp-style git@host:path.
+host_of() {
+  local u=$1 h
+  u=${u%%\?*}; u=${u%%#*}
+  case $u in
+    *://*) h=${u#*://}; h=${h%%/*} ;;
+    //*)   h=${u#//};   h=${h%%/*} ;;
+    git@*) h=${u#git@}; h=${h%%:*}; printf '%s' "${h,,}"; return 0 ;;
+    *)     return 1 ;;
+  esac
+  h=${h%%:*}                           # strip port
+  h=${h##*@}                           # strip userinfo
+  [[ -n $h ]] || return 1
+  printf '%s' "${h,,}"
+}
+
+refuse() { # refuse <host-or-reason> <detail>
+  echo "BLOCKED-ORIGIN: $1" >&2
+  echo "  origin-shim: documented-origin policy (allowlist: $ALLOWLIST_FILE) — this is a tool-call policy boundary, not a network namespace" >&2
+  [[ -n ${2:-} ]] && echo "  $2" >&2
+  return 30
+}
+
+# find_real <tool> — first executable <tool> on PATH located AFTER this shim
+# (skips the directory this script was invoked from, so symlinked and copied
+# deployments both skip themselves; no external readlink/dirname needed).
+find_real() {
+  local tool=$1 d p
+  local -r lit=${BASH_SOURCE[0]%/*}
+  local IFS=:
+  for d in $PATH; do
+    [[ -z $d || $d == "$lit" ]] && continue
+    p=$d/$tool
+    if [[ -x $p && $p != *"origin-shim"* ]]; then
+      printf '%s' "$p"
+      return 0
+    fi
+  done
+  return 1
+}
+
+url_from_argv() { # first argument that parses as a URL (or scheme-relative)
+  local a
+  for a in "$@"; do
+    [[ $a == *://* || $a == //* ]] && { printf '%s' "$a"; return 0; }
+  done
+  return 1
+}
+
+shim_curl() {
+  local url host real redirect hops=0
+  url=$(url_from_argv "$@") || url=""
+  if [[ -z $url ]]; then
+    refuse "unresolvable" "no URL argument found in the curl invocation; the policy shim cannot verify it"
+    return
+  fi
+  host=$(host_of "$url") || { refuse "unresolvable" "cannot parse a host from: $url"; return; }
+  origin_allowed "$host" || { refuse "$host"; return; }
+  real=$(find_real curl) || {
+    echo "origin-shim: real curl not found on PATH after the shim (policy gate passed for $host)" >&2
+    return 31
+  }
+  # Manual redirect chase: each hop is allowlist-checked BEFORE contact.
+  redirect=$url
+  while (( hops++ < 5 )); do
+    redirect=$("$real" -sS --head --max-time 15 -o /dev/null -w '%{redirect_url}' "$redirect" 2>/dev/null) || {
+      refuse "unverified-redirect-chain" "cannot resolve the final host for $url (network unavailable or HEAD refused); the transfer does not run"
+      return
+    }
+    [[ -z $redirect ]] && break
+    host=$(host_of "$redirect") || { refuse "unresolvable" "cannot parse a host from redirect: $redirect"; return; }
+    origin_allowed "$host" || { refuse "$host"; return; }
+  done
+  exec "$real" "$@"
+}
+
+# git_url_of <subcommand> <gcdir> <args...> — resolve the network URL a
+# network-touching git subcommand would contact (rc 1 = local-only).
+git_url_of() {
+  local sub=$1 gcdir=$2; shift 2
+  local -a args=("$@")
+  local i=0 p="" url="" skip_next=0 a
+  local -r value_opts='^(--branch|-b|--depth|--jobs|-j|--origin|-o|--separate-git-dir|--template|--reference|--shallow-since|--shallow-exclude|--config|-c|--filter|-u|--upload-pack|--exec-path)$'
+  while (( i < ${#args[@]} )); do
+    a=${args[i]}
+    if (( skip_next )); then skip_next=0; (( i += 1 )); continue; fi
+    case $a in
+      --*=*) (( i += 1 )); continue ;;
+      -[a-zA-Z]) if [[ $a =~ $value_opts ]]; then skip_next=1; fi; (( i += 1 )); continue ;;
+      --*) if [[ $a =~ $value_opts ]]; then skip_next=1; fi; (( i += 1 )); continue ;;
+      *) p=$a; break ;;
+    esac
+  done
+  case $sub in
+    clone) url=$p ;;
+    fetch|pull|ls-remote|push) url=$p ;;
+    *) return 1 ;;
+  esac
+  if [[ -z $url ]]; then
+    url=origin                           # default remote
+  fi
+  case $url in
+    *://*|//*|git@*) printf '%s' "$url" ;;  # already a URL
+    *)                                        # remote NAME: resolve it
+      local real
+      real=$(find_real git) || return 1
+      url=$("$real" -C "$gcdir" remote get-url "$url" 2>/dev/null) || {
+        echo "origin-shim: cannot resolve git remote '$url' in '$gcdir'; refusing to guess" >&2
+        return 2
+      }
+      printf '%s' "$url"
+      ;;
+  esac
+}
+
+shim_git() {
+  local -a argv=("$@")
+  local i=0 sub="" gcdir="." url host real rc
+  while (( i < ${#argv[@]} )); do
+    case ${argv[i]} in
+      -C) gcdir=${argv[i+1]}; i+=2 ;;
+      -c) i+=2 ;;
+      --*) i+=1 ;;
+      *)  sub=${argv[i]}; (( i += 1 )); break ;;
+    esac
+  done
+  case $sub in
+    clone|fetch|pull|ls-remote|push)
+      url=$(git_url_of "$sub" "$gcdir" "${argv[@]:i}"); rc=$?
+      (( rc == 2 )) && return 30
+      if (( rc == 0 )); then
+        if host=$(host_of "$url"); then
+          origin_allowed "$host" || { refuse "$host"; return; }
+        fi
+        # rc 1 from host_of: local path (file clone / local remote) — no network origin.
+      elif (( rc == 1 )); then
+        # git_url_of could not resolve any URL (pure local operation).
+        :
+      fi
+      ;;
+    submodule)
+      # Refuse unless every configured submodule URL is allowlisted.
+      real=$(find_real git) || { echo "origin-shim: real git not found on PATH" >&2; return 31; }
+      while IFS=' ' read -r _nm url; do
+        [[ -n $url ]] || continue
+        if host=$(host_of "$url"); then
+          origin_allowed "$host" || { refuse "$host"; return; }
+        fi
+      done < <("$real" -C "$gcdir" config -f "$gcdir/.gitmodules" --get-regexp '^submodule\..*\.url$' 2>/dev/null || true)
+      ;;
+    *)  # local-only subcommand: pass through unchecked.
+      ;;
+  esac
+  real=$(find_real git) || { echo "origin-shim: real git not found on PATH after the shim" >&2; return 31; }
+  exec "$real" "$@"
+}
+
+if [[ $SELF_TOOL == curl ]]; then
+  shim_curl "$@"
+else
+  shim_git "$@"
+fi
