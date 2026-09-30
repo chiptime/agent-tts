@@ -5,9 +5,13 @@
 **Branch**: `feat/herdr-brain-on-demand-context` (from `main` @ `4ed549a`)
 **PRD**: `docs/prds/herdr-brain-on-demand-context.md` (FR-01..45, D01..D10)
 **Created**: 2026-09-30
-**Status**: completed 2026-09-30 (T0-T11 done; 1160 pytest + 192 node tests
-green; FR-42..45 loop intentionally not built — spec only per D10; delivery
-awaits the user's PR decision)
+**Status**: completed and DELIVERED 2026-09-30 (T0-T11 done; merged
+fast-forward to `main` at `e68a05d` by explicit user decision — direct-to-main
+instead of the planned PR chain, partial cluster judged non-blocking by the
+user: optional real-model eval per PRD; FR-42..45 loop intentionally not
+built — spec only per D10. Final gates on merged main: 1161 pytest (incl. one
+pre-existing untracked e2e test) + 192 node tests, all green. Push to origin
+NOT done — awaits explicit user authorization.)
 
 ## Objective
 
