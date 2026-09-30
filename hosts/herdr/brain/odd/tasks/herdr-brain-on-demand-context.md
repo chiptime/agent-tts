@@ -65,9 +65,10 @@ Ordered by dependency. Route column is the planned topology.
   natural/explicit period resolution, DST-safe math. FR-08..10, FR-37.
   Route: delegated writer (module + tests; writer trigger: 2 non-trivial files).
   Done. Commit on `feat/herdr-brain-ctx-01-periods` (identity recorded below).
-- [ ] **T2** `reportstore`: persistent DB, 24h retention, context/scope/
+- [x] **T2** `reportstore`: persistent DB, 24h retention, context/scope/
   interval/timezone keys, atomic publish, bounded cleanup. FR-27, 33, 34.
-  Depends: T1 (interval normalization). Route: delegated writer.
+  Depends: T1 (interval normalization). Route: delegated writer. Done; commit on
+  `feat/herdr-brain-ctx-02-reportstore`.
 - [ ] **T3** `evidence` inventory: open Herdr sessions + transcript readers with
   a historical cursor (OpenCode/Claude/Antigravity) + per-source revision
   tokens; absence vs failed coverage. FR-03..05, 11, 12, 40.
@@ -98,12 +99,7 @@ its FRs covered by tests and the full suite green.
 ## Progress / Evidence
 
 - 2026-09-30 T0: `git worktree add -b feat/herdr-brain-on-demand-context
-  ../agent-tts-worktrees/herdr-brain-ctx main`; baseline 571 passed.
-
-- 2026-09-30 T1 started: route = delegated writer (2 non-trivial files:
-  `periods.py` + `test_periods.py`; writer trigger). Uncommitted until the
-  chain strategy is chosen.
-
+  ../agent-tts-worktrees/herdr-brain-ctx main`;   baseline 571 passed.
 - 2026-09-30 T1 done (strict TDD). RED: `ModuleNotFoundError: No module named
   'herdr_brain.periods'` (1 error). GREEN: 73 passed. Full suite re-run by the
   parent: 644 passed (571 + 73), 0 failures. Files: `src/herdr_brain/periods.py`
@@ -118,7 +114,31 @@ its FRs covered by tests and the full suite green.
 - Product decisions still open (deliberately not made): `max_span` default
   (None), nonzero default `future_tolerance`, POSIX TZ support.
 
+- T1 commit: `eb5d2b0` on `feat/herdr-brain-ctx-01-periods`. Native review
+  assessment: medium risk (`executable_change`), `review_due` true
+  (`slice_budget_reached`), but RDD is OFF for this clone (`clone_local`, user
+  decision) so no review was started; ordinary repository policy applies.
+- 2026-09-30 T2 done (strict TDD, auto mode). First writer launch returned an
+  empty message and wrote nothing (verified on disk); resumed once, then
+  completed. RED-1: `ModuleNotFoundError: No module named
+  'herdr_brain.reportstore'`. GREEN-1 36 passed. RED-2: 9 failed / 38 passed
+  (missing `cancel`/`mark_refresh_failed`, `DID NOT RAISE StaleBuildError`; two
+  cycle-2 tests were invariant guards that passed in RED-2, reported honestly).
+  GREEN-2 47 passed. Full suite re-run by the parent: 691 passed
+  (644 + 47). Files: `src/herdr_brain/reportstore.py` (736),
+  `tests/test_reportstore.py` (722): 1458 lines, over the ~400 heuristic (heavy
+  required coverage + docs, advisory only).
+- T2 rule decisions: sequence = AUTOINCREMENT id; `superseded` is a column,
+  `expired` is derived (clock >= retention_expires_at), never stored; stale
+  publish discards its building row; purge is bounded and opportunistic
+  (`retention_expires_at <= now`); `timezone` kept as an independent key part.
+- Open, deliberately not decided: purge cadence/owner, followup-anchor behavior
+  on StaleBuildError (T8), body/reference size caps (T7 concern), history/
+  diagnostics read API for superseded chains, default DB location wiring.
+- Slice 02 `feat/herdr-brain-ctx-02-reportstore`: T2 (~1.46k lines) —
+  `size:exception` recommendation recorded.
+
 ## Next step
 
-Start T2 `reportstore` on a new child branch `feat/herdr-brain-ctx-02-reportstore`
-from child 01.
+T3 `evidence` on `feat/herdr-brain-ctx-03-evidence` from child 02: start with one
+read-only mapper of the existing transcript readers/herd listing.
