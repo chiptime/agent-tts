@@ -96,8 +96,9 @@ Ordered by dependency. Route column is the planned topology.
   conflict surfacing, references, grounded completion, empty vs failed.
   FR-13..16, 22, 25. Depends: T3..T5. Done; commit on
   `feat/herdr-brain-ctx-06-report`.
-- [ ] **T7** Query FSM + server-enforced 60s budget + routing + narrow/
+- [x] **T7** Query FSM + server-enforced 60s budget + routing + narrow/
   clarify/unable states. FR-01..03, 17, 19..21, 26, 37. Depends: T1, T5, T6.
+  Done; commit on `feat/herdr-brain-ctx-07-fsm`.
 - [ ] **T8** `followup` persistent context, selection isolation, expiry.
   FR-07, 23..25. Depends: T2, T7.
 - [ ] **T9** Tool/LLM wiring: read-only retrieval tools, injection isolation,
@@ -268,8 +269,30 @@ its FRs covered by tests and the full suite green.
   wording, undated in rendered output, size caps (T7).
 - Slice 06 `feat/herdr-brain-ctx-06-report`: T6 (~1.54k lines) —
   `size:exception` recommendation recorded.
+- 2026-09-30 T7 done (strict TDD, auto; 5 cycles, cycle-5 supplementary tests
+  honestly reported as characterization not RED). GREEN 69 passed. Full suite
+  re-run by the parent: 1041 passed (972 + 69). Files:
+  `src/herdr_brain/queryfsm.py` (1055), `tests/test_queryfsm.py` (1430).
+  report.py untouched (body codec lives in queryfsm).
+- T7 rule decisions: stored body = {version, brief JSON, captured screen} —
+  reuse re-renders spoken deterministically, serves captured screen verbatim
+  (scaffold not reconstructible); unqualified-global sentinels (interval key
+  "unqualified|epoch|epoch|unqualified", tz "unqualified") so snapshots reuse
+  on tokens alone without blocking on timezone; active_only passed ONLY to
+  herdr_session provider and ONLY for date-scoped global (FR-12); budget
+  checked at accept/freshness/per-collect+post-acquire/consolidate/publish;
+  FR-14 leak double-check runs BEFORE begin_build; all-or-nothing acquisition
+  makes incomplete scaffolds unreachable through handle(); multi-project
+  intents rejected structurally (T9 fan-out concern); thresholds provisional
+  (4000 items / 500k chars); StaleBuildError -> unable, no retry; focus
+  intents rejected without touching providers/store (false-routing guard).
+- Open: multi-project fan-out, threshold tuning, max_span/future_tolerance
+  values, natural-period reuse granularity (Period.key embeds now — server may
+  normalize), narrow_ask not demoting prior report, BriefDocument.context_id
+  ownership.
+- Slice 07 `feat/herdr-brain-ctx-07-fsm`: T7 (~2.49k lines) —
+  `size:exception` recommendation recorded.
 
 ## Next step
 
-T7 query FSM + 60s server-enforced budget + routing on
-`feat/herdr-brain-ctx-07-fsm` from 06.
+T8 `followup` persistent context on `feat/herdr-brain-ctx-08-followup` from 07.
