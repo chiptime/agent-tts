@@ -99,8 +99,9 @@ Ordered by dependency. Route column is the planned topology.
 - [x] **T7** Query FSM + server-enforced 60s budget + routing + narrow/
   clarify/unable states. FR-01..03, 17, 19..21, 26, 37. Depends: T1, T5, T6.
   Done; commit on `feat/herdr-brain-ctx-07-fsm`.
-- [ ] **T8** `followup` persistent context, selection isolation, expiry.
-  FR-07, 23..25. Depends: T2, T7.
+- [x] **T8** `followup` persistent context, selection isolation, expiry.
+  FR-07, 23..25. Depends: T2, T7. Done; commit on
+  `feat/herdr-brain-ctx-08-followup`.
 - [ ] **T9** Tool/LLM wiring: read-only retrieval tools, injection isolation,
   approval-gate regression. FR-36, 38..41. Depends: T7.
 - [ ] **T10** UI: Consulting state + on-screen references (never spoken).
@@ -292,7 +293,25 @@ its FRs covered by tests and the full suite green.
   ownership.
 - Slice 07 `feat/herdr-brain-ctx-07-fsm`: T7 (~2.49k lines) —
   `size:exception` recommendation recorded.
+- 2026-09-30 T8 done (strict TDD, auto). RED: `ModuleNotFoundError: No module
+  named 'herdr_brain.followup'`. First GREEN run 1 failed / 47 passed — test
+  harness defect (missing Row factory), fixed in harness. GREEN 48 passed.
+  Full suite re-run by the parent: 1089 passed (1041 + 48). Files:
+  `src/herdr_brain/followup.py` (407), `tests/test_followup.py` (540).
+- T8 rule decisions: expiry derived at read (no restart reconciliation; filter
+  on read, purge physical); retention from created_at — touch never extends
+  life (anchor cannot outlive its report horizon); expire = DELETE; single-
+  statement upsert (newer anchor wins); forced-6-digit-micros ISO keeps SQL
+  lexical order chronological; matches_topic exact equality (semantics stay in
+  T9); fingerprint_from_text = deterministic normalization convenience only;
+  no pane fields by construction (tested via dataclass inspection).
+- Open: anchor id verification against reportstore (T9), fingerprint choice
+  (T9), purge scheduling, absent-vs-expired diagnostics.
+- Slice 08 `feat/herdr-brain-ctx-08-followup`: T8 (~0.95k lines) —
+  `size:exception` recommendation recorded.
 
 ## Next step
 
-T8 `followup` persistent context on `feat/herdr-brain-ctx-08-followup` from 07.
+T9 tool/LLM wiring on `feat/herdr-brain-ctx-09-wiring` from 08: read-only
+retrieval tools, real LLM summarizer, injection isolation, approval-gate
+regression (FR-36, 38..41 + D01/D03/D07 routing).
