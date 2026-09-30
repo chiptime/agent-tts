@@ -403,3 +403,28 @@ Feature accepted at T11 (deterministic scope; open gaps recorded above and
 in `docs/on-demand-context-coverage.md`). Remaining route decisions —
 merge/PR flow for the branch chain — stay with the user; no push/PR was
 performed.
+
+## Followup slice (2026-09-30 late, user decisions)
+
+- Real-model eval PARKED in the personal Notion backlog (agent-tts, Media,
+  Inbox) — user wants it later, not today.
+- `max_span` = 60 days default for EXPLICIT periods only (natural kinds
+  inherently bounded); knob `HERDR_BRAIN_CONSULT_MAX_SPAN_DAYS` (positive
+  int, default 60; 0/negative rejected at settings load).
+- Antigravity project identity via `~/.gemini/antigravity-cli/
+  conversation_summaries.db` (read-only): workspace_uris JSON array, file://
+  entries only, percent-decoded, sorted lexicographically FIRST wins; title
+  enrichment independent of workspace parsability; missing db = valid
+  absence; corrupt db = COVERAGE_FAILED (identity claims must not be
+  silently wrong); `summaries_db_path=None` = legacy disabled.
+- Purge cadence: `ConsultService.purge_stores()` in the constructor —
+  verified eager at `create_app` (server.py:301 read-only check), i.e. at
+  service start; no separate daemon for a 24h-retention sqlite.
+- Multi-project fan-out: agreed-direction, not scheduled.
+- Evidence: RED 16 failed (right reasons; two vacuous-pass tests strengthened
+  and re-verified with teeth), GREEN 203 in touched suites, full suite 1205
+  passed (user's concurrent speech/tts WIP included, untouched).
+- Remaining open after this slice: real-model eval (parked), semantic
+  followup continuity (explained, undecided), multi-project fan-out
+  (someday), future_tolerance (0), narrow thresholds (provisional), schema
+  drift of summaries db treated as corrupt (confirm ok).

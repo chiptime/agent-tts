@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -414,8 +415,14 @@ def antigravity_root(tmp_path):
 
 @pytest.fixture
 def antigravity_provider(antigravity_root):
+    # summaries_db_path=None keeps the LEGACY identity mode here: these
+    # tests pin the pre-mapping contract (project "" / title None) and
+    # must stay hermetic — never touch the real ~/.gemini summaries db.
+    # TestAntigravitySummariesIdentity covers the enabled mode.
     return AntigravityEvidenceProvider(
-        root=antigravity_root, clock=FixedUtc(OBSERVED_AT)
+        root=antigravity_root,
+        clock=FixedUtc(OBSERVED_AT),
+        summaries_db_path=None,
     )
 
 
@@ -882,7 +889,9 @@ class TestAntigravityContract:
             [json.dumps(AGY_METADATA_ONLY_EVENT)],
         )
         provider = AntigravityEvidenceProvider(
-            root=str(tmp_path), clock=FixedUtc(OBSERVED_AT)
+            root=str(tmp_path),
+            clock=FixedUtc(OBSERVED_AT),
+            summaries_db_path=None,
         )
         assert provider.root == str(tmp_path / "brain")
         result = provider.inventory()
@@ -903,8 +912,9 @@ class TestAntigravityInventory:
         ]
         first = result.sources[0]
         assert first.kind == "antigravity"
-        # Project is undeterminable from the logs alone (the cwd lives in
-        # the conversation_summaries.db this slice must not read).
+        # Legacy identity mode (this fixture disables the summaries
+        # db): project stays "" and titles stay None. The enabled mode
+        # is covered by TestAntigravitySummariesIdentity.
         assert all(src.project == "" for src in result.sources)
         assert first.locator == os.path.join(
             AGY_A, ".system_generated", "logs", "transcript_full.jsonl"
@@ -919,7 +929,9 @@ class TestAntigravityInventory:
 
     def test_revision_token_stable_then_changes_on_append(self, antigravity_root):
         clock = FixedUtc(OBSERVED_AT)
-        provider = AntigravityEvidenceProvider(root=antigravity_root, clock=clock)
+        provider = AntigravityEvidenceProvider(
+            root=antigravity_root, clock=clock, summaries_db_path=None
+        )
         first = provider.inventory()
         clock.moment = LATER
         second = provider.inventory()
@@ -935,14 +947,16 @@ class TestAntigravityInventory:
 
     def test_missing_and_empty_roots_are_source_absent(self, tmp_path):
         provider = AntigravityEvidenceProvider(
-            root=str(tmp_path / "no-such-root"), clock=FixedUtc(OBSERVED_AT)
+            root=str(tmp_path / "no-such-root"),
+            clock=FixedUtc(OBSERVED_AT),
+            summaries_db_path=None,
         )
         assert provider.inventory().status is CoverageStatus.SOURCE_ABSENT
 
         empty = tmp_path / "empty-brain"
         empty.mkdir()
         result = AntigravityEvidenceProvider(
-            root=str(empty), clock=FixedUtc(OBSERVED_AT)
+            root=str(empty), clock=FixedUtc(OBSERVED_AT), summaries_db_path=None
         ).inventory()
         assert result.status is CoverageStatus.SOURCE_ABSENT
         assert result.sources == ()
@@ -958,7 +972,9 @@ class TestAntigravityInventory:
         os.chmod(session_dir, 0)
         try:
             result = AntigravityEvidenceProvider(
-                root=antigravity_root, clock=FixedUtc(OBSERVED_AT)
+                root=antigravity_root,
+                clock=FixedUtc(OBSERVED_AT),
+                summaries_db_path=None,
             ).inventory()
         finally:
             os.chmod(session_dir, 0o755)
@@ -983,7 +999,9 @@ class TestAntigravityInventory:
         auto = AutoAdvance(step=25.0)
         deadline = Deadline(auto, at=60.0)
         provider = AntigravityEvidenceProvider(
-            root=antigravity_root, clock=FixedUtc(OBSERVED_AT)
+            root=antigravity_root,
+            clock=FixedUtc(OBSERVED_AT),
+            summaries_db_path=None,
         )
         result = provider.inventory(deadline=deadline)
         assert result.status is CoverageStatus.COVERAGE_FAILED
@@ -1206,3 +1224,211 @@ class TestAntigravityRevisionRace:
         assert "budget" in result.error_detail.lower()
         assert result.items == ()
         assert len(calls) == 1  # the re-read never happened
+
+
+# ----------------------------------------------------------------------
+# Antigravity project identity via conversation_summaries.db
+# (product decision 2026-09-30; VERIFIED schema)
+
+
+#: The verified summaries-db schema (subset this slice consumes):
+#: conversation_id, title, preview, step_count, last_modified_time,
+#: workspace_uris (a JSON array of workspace URIs).
+SUMMARIES_SCHEMA = (
+    "CREATE TABLE conversation_summaries ("
+    " conversation_id TEXT, title TEXT, preview TEXT, step_count INT,"
+    " last_modified_time TEXT, workspace_uris TEXT)"
+)
+
+#: Multi-workspace row for AGY_A: sorted-first wins over insertion
+#: order ("/home/bruno/Code/Work/OperationalCenters" < "/home/bruno/
+#: Code/Work/zz-main" lexicographically), proving the rule.
+AGY_A_URIS = json.dumps(
+    [
+        "file:///home/bruno/Code/Work/zz-main",
+        "file:///home/bruno/Code/Work/OperationalCenters",
+    ]
+)
+#: Single-workspace row for AGY_E with a percent-encoded component
+#: (decoded to a real path) and a NULL title (title stays None).
+AGY_E_URIS = json.dumps(["file:///home/bruno/Code/Work/empty%20agy"])
+
+
+def write_summaries_db(path: Path, rows: list) -> str:
+    """Writes a hermetic conversation_summaries.db with the verified
+    schema and returns its string path."""
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute(SUMMARIES_SCHEMA)
+        conn.executemany(
+            "INSERT INTO conversation_summaries"
+            " (conversation_id, title, preview, step_count,"
+            " last_modified_time, workspace_uris)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return str(path)
+
+
+@pytest.fixture
+def summaries_db(tmp_path):
+    """Two-row summaries db: AGY_A (multi-workspace, titled) and AGY_E
+    (single percent-encoded workspace, untitled). AGY_B has NO row."""
+    return write_summaries_db(
+        tmp_path / "conversation_summaries.db",
+        [
+            (AGY_A, "OperationalCenters refactor", "", 12,
+             "2026-09-30T10:00:00Z", AGY_A_URIS),
+            (AGY_E, None, "", 1, "2026-09-30T10:00:00Z", AGY_E_URIS),
+        ],
+    )
+
+
+@pytest.fixture
+def identity_provider(antigravity_root, summaries_db):
+    """Antigravity provider with the summaries identity source enabled."""
+    return AntigravityEvidenceProvider(
+        root=antigravity_root,
+        clock=FixedUtc(OBSERVED_AT),
+        summaries_db_path=summaries_db,
+    )
+
+
+class TestAntigravitySummariesIdentity:
+    """Project identity (and title enrichment) from
+    ``~/.gemini/antigravity-cli/conversation_summaries.db``.
+
+    Rules under test: file:// URIs only, scheme stripped (percent
+    decoding included), SORTED-FIRST workspace wins deterministically;
+    non-file / unparsable / non-list entries are skipped; a missing row
+    or a missing db FILE keeps the legacy ``""`` project; a corrupt db
+    is COVERAGE_FAILED naming the db (identity claims would otherwise
+    be silently wrong — FR-11 spirit); the deadline is checked before
+    the db is opened."""
+
+    def test_projects_and_titles_mapped_sorted_first(self, identity_provider):
+        result = identity_provider.inventory()
+        assert result.status is CoverageStatus.OK
+        a = source_for(result, AGY_A)
+        assert a.project == "/home/bruno/Code/Work/OperationalCenters"
+        assert a.title == "OperationalCenters refactor"
+        e = source_for(result, AGY_E)
+        assert e.project == "/home/bruno/Code/Work/empty agy"  # %20 decoded
+        assert e.title is None  # NULL row title stays None
+        b = source_for(result, AGY_B)
+        assert b.project == ""  # no row -> legacy empty
+        assert b.title is None
+
+    def test_project_filter_exact_and_under_now_match(self, identity_provider):
+        # With real paths, _cwd_matches' under-path rule becomes
+        # meaningful for antigravity sources.
+        under = identity_provider.inventory(project_filter="/home/bruno/Code")
+        assert [s.source_id for s in under.sources] == [
+            f"antigravity:{AGY_A}",
+            f"antigravity:{AGY_E}",
+        ]
+        exact = identity_provider.inventory(
+            project_filter="/home/bruno/Code/Work/OperationalCenters"
+        )
+        assert [s.source_id for s in exact.sources] == [f"antigravity:{AGY_A}"]
+        miss = identity_provider.inventory(
+            project_filter="/home/bruno/Code/Other"
+        )
+        assert miss.status is CoverageStatus.OK  # valid scoped-empty
+        assert miss.sources == ()
+
+    def test_missing_summaries_db_proceeds_with_legacy_identity(
+        self, antigravity_root, tmp_path
+    ):
+        provider = AntigravityEvidenceProvider(
+            root=antigravity_root,
+            clock=FixedUtc(OBSERVED_AT),
+            summaries_db_path=str(tmp_path / "older-install.db"),
+        )
+        result = provider.inventory()
+        assert result.status is CoverageStatus.OK  # valid absence
+        assert all(s.project == "" and s.title is None for s in result.sources)
+
+    def test_corrupt_summaries_db_fails_coverage_naming_the_db(
+        self, antigravity_root, tmp_path
+    ):
+        corrupt = tmp_path / "corrupt.db"
+        corrupt.write_bytes(b"this is not a sqlite database at all")
+        provider = AntigravityEvidenceProvider(
+            root=antigravity_root,
+            clock=FixedUtc(OBSERVED_AT),
+            summaries_db_path=str(corrupt),
+        )
+        result = provider.inventory()
+        assert result.status is CoverageStatus.COVERAGE_FAILED
+        assert str(corrupt) in result.error_detail  # names the db
+        assert result.sources == ()  # no partial source list
+
+    def test_expired_deadline_skips_the_summaries_read(
+        self, antigravity_root, tmp_path
+    ):
+        # A CORRUPT db proves the ordering: had the provider opened it,
+        # the failure would name the db; the deadline fires first.
+        corrupt = tmp_path / "corrupt.db"
+        corrupt.write_bytes(b"not sqlite")
+        provider = AntigravityEvidenceProvider(
+            root=antigravity_root,
+            clock=FixedUtc(OBSERVED_AT),
+            summaries_db_path=str(corrupt),
+        )
+        mono = FakeMono()
+        deadline = Deadline.from_remaining(mono, 5.0)
+        mono.now = 10.0
+        result = provider.inventory(deadline=deadline)
+        assert result.status is CoverageStatus.COVERAGE_FAILED
+        assert "budget" in result.error_detail.lower()
+        assert str(corrupt) not in result.error_detail
+
+    def test_disabled_summaries_db_is_byte_compatible_legacy(
+        self, antigravity_root
+    ):
+        provider = AntigravityEvidenceProvider(
+            root=antigravity_root,
+            clock=FixedUtc(OBSERVED_AT),
+            summaries_db_path=None,  # explicit None = disabled
+        )
+        result = provider.inventory()
+        assert result.status is CoverageStatus.OK
+        assert all(s.project == "" and s.title is None for s in result.sources)
+
+    def test_non_file_unparsable_and_non_list_entries_skipped(
+        self, antigravity_root, tmp_path
+    ):
+        db = write_summaries_db(
+            tmp_path / "skip.db",
+            [
+                # Only non-file schemes: nothing survives -> "".
+                (AGY_B, "B session title", "", 3, "2026-09-30T10:00:00Z",
+                 json.dumps(["vscode://srv/x", "http://host/z", "relative"])),
+                # Unparsable JSON and a non-list payload: skipped.
+                (AGY_E, None, "", 1, "2026-09-30T10:00:00Z", "not json ["),
+                (AGY_A, None, "", 1, "2026-09-30T10:00:00Z", "42"),
+            ],
+        )
+        provider = AntigravityEvidenceProvider(
+            root=antigravity_root,
+            clock=FixedUtc(OBSERVED_AT),
+            summaries_db_path=db,
+        )
+        result = provider.inventory()
+        assert result.status is CoverageStatus.OK
+        by_id = {s.source_id: s for s in result.sources}
+        assert by_id[f"antigravity:{AGY_A}"].project == ""
+        assert by_id[f"antigravity:{AGY_B}"].project == ""
+        # Title mapping is independent of workspace parsability.
+        assert by_id[f"antigravity:{AGY_B}"].title == "B session title"
+        assert by_id[f"antigravity:{AGY_E}"].project == ""
+
+    def test_blank_summaries_db_path_rejected(self, antigravity_root):
+        with pytest.raises(ValueError, match="summaries_db_path"):
+            AntigravityEvidenceProvider(
+                root=antigravity_root, summaries_db_path="  "
+            )

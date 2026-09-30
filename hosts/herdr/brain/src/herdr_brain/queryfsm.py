@@ -20,7 +20,9 @@ the product invariants end to end:
   them (false-routing guard).
 - Periods resolve through ``periods`` in the USER's timezone
   (FR-08/FR-37): natural kinds via ``period_*``; explicit bounds via
-  ``explicit_period`` + ``validate_bounds``; a ``TimezoneUnavailable``
+  ``explicit_period`` + ``validate_bounds`` (span capped at
+  ``EngineDeps.max_span``, default 60 days — natural kinds are
+  inherently bounded and unaffected); a ``TimezoneUnavailable``
   becomes the terminal ``ask_tz`` state (never a guess, FR-09) and a
   ``PeriodError`` becomes ``clarify`` (bounded explicit periods).
 - Freshness FIRST (FR-26/FR-28): every query runs each configured
@@ -82,7 +84,7 @@ import json
 import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Literal, Optional, Union
 from zoneinfo import ZoneInfo
 
@@ -120,6 +122,7 @@ from .reportstore import ReportKey, StaleBuildError
 
 __all__ = [
     "DEFAULT_BUDGET_SECONDS",
+    "DEFAULT_MAX_SPAN",
     "DEFAULT_NARROW_CHAR_THRESHOLD",
     "DEFAULT_NARROW_ITEM_THRESHOLD",
     "EngineDeps",
@@ -152,6 +155,14 @@ DEFAULT_BUDGET_SECONDS = 60.0
 #: engine logic, and they are never inlined as magic constants.
 DEFAULT_NARROW_ITEM_THRESHOLD = 4000
 DEFAULT_NARROW_CHAR_THRESHOLD = 500_000
+
+#: Maximum span for EXPLICIT periods (product decision 2026-09-30):
+#: explicit bounds may cover at most 60 days; a wider span raises
+#: ``PeriodError`` and surfaces the existing ``clarify`` state (FR-08/
+#: FR-37; D04 "explicit periods stay bounded"). Natural periods are
+#: inherently bounded by their own resolution (today / this week /
+#: last 7 days) and never hit this cap.
+DEFAULT_MAX_SPAN = timedelta(days=60)
 
 #: Stable interval key for unqualified current progress (period None).
 #: The report store requires a parseable ``Period.key``-shaped string
@@ -237,7 +248,10 @@ class ExplicitPeriod:
     (interpreted in the resolved user zone). Validation happens at
     resolution time via ``periods.explicit_period`` +
     ``validate_bounds``; a ``PeriodError`` becomes a ``clarify``
-    outcome with the reason.
+    outcome with the reason. The span is capped at
+    ``EngineDeps.max_span`` (default 60 days) — natural period specs
+    never carry this concern because their kinds are inherently
+    bounded.
     """
 
     start: Union[datetime, date]
@@ -364,6 +378,11 @@ class EngineDeps:
         budget_seconds: the single wall-clock envelope (FR-17).
         narrow_item_threshold / narrow_char_threshold: PROVISIONAL
             volume guidance (FR-21) — values owned by T9/product.
+        max_span: the span cap for EXPLICIT periods (default 60 days,
+            product decision 2026-09-30). Passed to
+            ``periods.validate_bounds`` on the explicit resolution
+            path only; natural periods are inherently bounded (at most
+            a week back) and are never compared against it.
     """
 
     providers: Mapping[str, object]
@@ -376,6 +395,7 @@ class EngineDeps:
     narrow_item_threshold: int = DEFAULT_NARROW_ITEM_THRESHOLD
     narrow_char_threshold: int = DEFAULT_NARROW_CHAR_THRESHOLD
     zone_resolver: Callable[[tuple[str, ...]], ZoneInfo] = _default_zone_resolver
+    max_span: timedelta = DEFAULT_MAX_SPAN
 
     def __post_init__(self) -> None:
         if not isinstance(self.providers, Mapping) or not self.providers:
@@ -395,6 +415,8 @@ class EngineDeps:
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
                 raise ValueError(f"{name} must be an int >= 1")
+        if not isinstance(self.max_span, timedelta) or self.max_span <= timedelta(0):
+            raise ValueError("max_span must be a positive timedelta")
         configured = getattr(self.checker, "configured_kinds", None)
         if configured is not None and set(configured) != set(self.providers):
             raise ValueError(
@@ -886,8 +908,13 @@ class QueryEngine:
         assert isinstance(spec, ExplicitPeriod)
         period = explicit_period(spec.start, spec.end, zone)
         # Server-side bound validation (FR-37): explicit periods stay
-        # bounded — no future ends, optional span limits upstream.
-        validate_bounds(period.start, period.end, now=deps.clock())
+        # bounded — no future ends, span capped at deps.max_span
+        # (default 60 days, product decision 2026-09-30). Natural
+        # periods never reach this check: their kinds are inherently
+        # bounded by their own resolution.
+        validate_bounds(
+            period.start, period.end, now=deps.clock(), max_span=deps.max_span
+        )
         return period
 
     def _report_key(
