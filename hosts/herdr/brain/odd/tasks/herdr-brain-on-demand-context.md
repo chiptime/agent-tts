@@ -102,8 +102,9 @@ Ordered by dependency. Route column is the planned topology.
 - [x] **T8** `followup` persistent context, selection isolation, expiry.
   FR-07, 23..25. Depends: T2, T7. Done; commit on
   `feat/herdr-brain-ctx-08-followup`.
-- [ ] **T9** Tool/LLM wiring: read-only retrieval tools, injection isolation,
-  approval-gate regression. FR-36, 38..41. Depends: T7.
+- [x] **T9** Tool/LLM wiring: read-only retrieval tools, injection isolation,
+  approval-gate regression. FR-36, 38..41. Depends: T7. Done; commit on
+  `feat/herdr-brain-ctx-09-wiring`.
 - [ ] **T10** UI: Consulting state + on-screen references (never spoken).
   FR-14, 18. Depends: T7.
 - [ ] **T11** Acceptance: Requirement-to-Test Matrix coverage, Verification
@@ -309,9 +310,34 @@ its FRs covered by tests and the full suite green.
   (T9), purge scheduling, absent-vs-expired diagnostics.
 - Slice 08 `feat/herdr-brain-ctx-08-followup`: T8 (~0.95k lines) —
   `size:exception` recommendation recorded.
+- 2026-09-30 T9 done (strict TDD, auto; registration-only test updates
+  disclosed as not-RED, T7 precedent). GREEN 58 new tests. Full suite re-run
+  by the parent: 1147 passed (1089 + 58), approval/llm/server/tools
+  regressions green. Files: NEW `consult.py` (796) + `test_consult.py` (1126);
+  MODIFIED config.py (+37), llm.py (+16/-9: build_openai_client extraction +
+  context_id pass-through — verified surgical by the parent), server.py (+20),
+  tools.py (+299), test_llm/test_tools (+3 each).
+- T9 rule decisions: registration in server.py via attach_consult (existing
+  duck-type compat convention); ContextVar carries Deadline+context_id from
+  ConsultService.consult to LLMSummarizer (timeout = remaining budget); event
+  seam publishes consulting start/end on the watcher hub SSE channel (T10
+  renders); tz candidates = explicit -> TZ env -> empty (ask_tz), never
+  guessed; followup fingerprint = fingerprint_from_text("kind|projects|period")
+  surfaced to the model for exact-match re-supply; rendered tool results carry
+  spoken only, get_followup_context returns screen text with screen-only
+  instruction; model client lazy (boots without GLM_API_KEY); new tools
+  approval-free (read-only), old gates untouched (regression test added).
+- Integration finding (reported, NOT fixed): ReportStore lacks get_by_report_id
+  — followup summaries use a bounded in-memory registry (cap 16); after
+  restart the anchor survives but the summary degrades to "re-consult".
+  T10/T11 candidate.
+- Open: semantic followup continuity, threshold tuning via env, restart-
+  resilient followup summaries.
+- Slice 09 `feat/herdr-brain-ctx-09-wiring`: T9 (~2.0k new + 378 modified
+  lines) — `size:exception` recommendation recorded.
 
 ## Next step
 
-T9 tool/LLM wiring on `feat/herdr-brain-ctx-09-wiring` from 08: read-only
-retrieval tools, real LLM summarizer, injection isolation, approval-gate
-regression (FR-36, 38..41 + D01/D03/D07 routing).
+T10 UI on `feat/herdr-brain-ctx-10-ui` from 09: render the Consulting state
+(FR-18) and on-screen references (FR-14) in the PWA; optionally add
+ReportStore.get_by_report_id for restart-resilient followup summaries.

@@ -68,6 +68,16 @@ DEFAULT_READER_CONCURRENCY = 2
 # announcement — audio and visual always match.
 DEFAULT_ANNOUNCE_MAX_CHARS = 300
 
+# On-demand context (consult) wiring (T9; PRD herdr-brain-on-demand-
+# context): every knob is OPTIONAL — None/0 means "the module default"
+# (stores beside the audio dir, provider env/default paths, engine
+# constants). The budget/threshold numbers MUST stay in sync with
+# queryfsm.DEFAULT_BUDGET_SECONDS / DEFAULT_NARROW_* (config cannot
+# import queryfsm without an import cycle through evidence->herdr).
+DEFAULT_CONSULT_BUDGET_S = 60.0
+DEFAULT_CONSULT_NARROW_ITEMS = 4000
+DEFAULT_CONSULT_NARROW_CHARS = 500_000
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -98,6 +108,18 @@ class Settings:
     reader_timeout_s: int = DEFAULT_READER_TIMEOUT_S
     reader_concurrency: int = DEFAULT_READER_CONCURRENCY
     announce_max_chars: int = DEFAULT_ANNOUNCE_MAX_CHARS
+    # Consult (on-demand context) overrides — appended WITH defaults,
+    # same ordering rule as the reader knobs above. None = module
+    # default (derived paths / provider env+default resolution).
+    consult_budget_s: float = DEFAULT_CONSULT_BUDGET_S
+    consult_narrow_items: int = DEFAULT_CONSULT_NARROW_ITEMS
+    consult_narrow_chars: int = DEFAULT_CONSULT_NARROW_CHARS
+    report_db: Optional[str] = None
+    followup_db: Optional[str] = None
+    opencode_db: Optional[str] = None
+    claude_root: Optional[str] = None
+    antigravity_root: Optional[str] = None
+    engram_db: Optional[str] = None
 
     def __post_init__(self):
         # Accept plain strings for path fields regardless of the caller.
@@ -149,4 +171,19 @@ def load_settings(env: Optional[dict] = None) -> Settings:
         announce_max_chars=int(getenv(
             "HERDR_BRAIN_ANNOUNCE_MAX_CHARS", str(DEFAULT_ANNOUNCE_MAX_CHARS)
         )),
+        consult_budget_s=float(getenv(
+            "HERDR_BRAIN_CONSULT_BUDGET_S", str(DEFAULT_CONSULT_BUDGET_S)
+        )),
+        consult_narrow_items=int(getenv(
+            "HERDR_BRAIN_CONSULT_NARROW_ITEMS", str(DEFAULT_CONSULT_NARROW_ITEMS)
+        )),
+        consult_narrow_chars=int(getenv(
+            "HERDR_BRAIN_CONSULT_NARROW_CHARS", str(DEFAULT_CONSULT_NARROW_CHARS)
+        )),
+        report_db=getenv("HERDR_BRAIN_REPORT_DB") or None,
+        followup_db=getenv("HERDR_BRAIN_FOLLOWUP_DB") or None,
+        opencode_db=getenv("HERDR_BRAIN_OPENCODE_DB") or None,
+        claude_root=getenv("HERDR_BRAIN_CLAUDE_ROOT") or None,
+        antigravity_root=getenv("HERDR_BRAIN_ANTIGRAVITY_ROOT") or None,
+        engram_db=getenv("HERDR_BRAIN_ENGRAM_DB") or None,
     )

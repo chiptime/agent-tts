@@ -138,6 +138,9 @@ class TestRoutingPolicy:
         assert {t["function"]["name"] for t in first["tools"]} == {
             "get_status", "read_transcript", "read_screen", "send_to_session",
             "create_session",
+            # On-demand consult surface (T9): read-only, no approval gate.
+            "consult_work_status", "consult_history",
+            "get_followup_context", "end_followup",
         }
         system = first["messages"][0]["content"]
         assert system.startswith(SYSTEM_PROMPT)

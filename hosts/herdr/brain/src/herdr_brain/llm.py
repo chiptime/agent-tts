@@ -124,6 +124,19 @@ class BrainLLMError(RuntimeError):
     """Raised when the LLM cannot produce a final answer."""
 
 
+def build_openai_client(settings: Settings) -> OpenAI:
+    """The ONE OpenAI-compatible client construction (GLM_API_KEY /
+    GLM_BASE_URL env; no key ever enters the repository). Shared by
+    the tool loop and the consult LLM summarizer so there is a single
+    provider stack (FR-36/39)."""
+    if not settings.glm_api_key:
+        raise BrainLLMError(
+            "GLM_API_KEY is not set. Add it to ~/.dotfiles/shell/private-env.sh "
+            "(outside this repo) and source your shell again."
+        )
+    return OpenAI(api_key=settings.glm_api_key, base_url=settings.glm_base_url)
+
+
 def summarize_tool_args(args: Dict[str, Any]) -> str:
     """Renders tool arguments for the audit log without full payloads."""
     parts = []
@@ -154,12 +167,7 @@ class BrainLLM:
         self._approval_store = approval_store
         self._request_target: Optional[AgentInfo] = None
         if self._client is None:
-            if not settings.glm_api_key:
-                raise BrainLLMError(
-                    "GLM_API_KEY is not set. Add it to ~/.dotfiles/shell/private-env.sh "
-                    "(outside this repo) and source your shell again."
-                )
-            self._client = OpenAI(api_key=settings.glm_api_key, base_url=settings.glm_base_url)
+            self._client = build_openai_client(settings)
 
     def attach_store(self, store: ConversationStore) -> None:
         """Binds a shared conversation store (used by the HTTP server)."""
@@ -282,7 +290,10 @@ class BrainLLM:
             return self._gate_create(arguments, session_key)
         return (
             self._tools.dispatch(
-                call.function.name, arguments, target=self._request_target
+                call.function.name,
+                arguments,
+                target=self._request_target,
+                context_id=session_key,  # consult tools key on D08 isolation
             ),
             None,
         )
