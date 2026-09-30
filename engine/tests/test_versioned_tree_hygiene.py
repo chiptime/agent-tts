@@ -208,6 +208,22 @@ SCAN_SCOPES: dict[str, str] = {
     "engine-src": "engine/src",
 }
 
+# Archived standalone repositories: no active installer/doc/test reference
+# may point at them (spec: independent-installation, "No active legacy
+# references"). Task 1.4 scopes the files it repaired; 1.6 extends to the
+# packaging wrappers and 4.3 to the remaining docs.
+LEGACY_REPO_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"chiptime/herdr-tts"),
+    re.compile(r"chiptime/herdr-brain"),
+]
+
+LEGACY_FREE_FILES: list[str] = [
+    # Task 1.4: installer re-anchored to the agent-tts monorepo.
+    "hosts/herdr/tts-plugin/scripts/install.sh",
+    "hosts/herdr/tts-plugin/README.md",
+    "hosts/herdr/tts-plugin/scripts/smoke-tests.sh",
+]
+
 
 # A line carrying `hygiene-exempt: <reason>` is skipped by the scan — an
 # explicit, greppable escape hatch for files that must contain a pattern as
@@ -243,6 +259,20 @@ def test_scan_scopes_are_machine_clean() -> None:
     for scope, rel_dir in SCAN_SCOPES.items():
         violations.extend(f"[{scope}] {v}" for v in scope_violations(rel_dir))
     assert not violations, "machine-coupling patterns found in seeded scopes:\n" + "\n".join(violations)
+
+
+def test_legacy_free_files_have_no_archived_repo_references() -> None:
+    violations: list[str] = []
+    for rel in LEGACY_FREE_FILES:
+        path = REPO_ROOT / rel
+        assert path.is_file(), f"legacy-free scope lists a missing file: {rel}"
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if EXEMPT_MARKER_RE.search(line):
+                continue
+            for pattern in LEGACY_REPO_PATTERNS:
+                if pattern.search(line):
+                    violations.append(f"{rel}:{lineno}: archived-repo reference: {line.strip()[:100]}")
+    assert not violations, "active legacy-repository references found:\n" + "\n".join(violations)
 
 
 # ---------------------------------------------------------------------------
