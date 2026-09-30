@@ -12,13 +12,14 @@ from __future__ import annotations
 import json
 import re
 import shlex
+import dataclasses
 import time
 from typing import Callable, Dict, Optional
 
 from .config import MAX_SCREEN_LINES, Settings
 from .herdr import AgentInfo, HerdrClient, HerdrError, pick_active
 from .memory import clip_content
-from .transcripts import read_transcript, read_turns
+from .transcripts import read_transcript, read_turns, read_title
 from .tts import render_mp3  # noqa: F401  (re-exported for server wiring)
 from .view import (
     SCREEN_TAIL_LINES,
@@ -161,7 +162,8 @@ class BrainTools:
         except HerdrError:
             return []
         entries = []
-        for agent in agents:
+        for raw_agent in agents:
+            agent = self._enrich(raw_agent)
             entries.append(
                 {
                     "pane_id": agent.pane_id,
@@ -215,6 +217,7 @@ class BrainTools:
         if target is None:
             return {
                 "pane_id": pane_id, "agent": None, "session_id": None,
+                "title": None,
                 "turns": [], "window": CONVERSATION_WINDOW,
             }
         turns = []
@@ -238,6 +241,7 @@ class BrainTools:
             "pane_id": target.pane_id,
             "agent": target.agent,
             "session_id": target.session_value or None,
+            "title": target.title,
             "turns": turns,
             "window": CONVERSATION_WINDOW,
         }
@@ -399,7 +403,7 @@ class BrainTools:
         except HerdrError as exc:
             return f"error creating tab: {exc}"
         tab_id, pane_id = created["tab_id"], created["pane_id"]
-        if clean_kind == "opencode":
+        if clean_kind in ("opencode", "oa"):
             failure = self._launch_opencode_via_oa(name, clean_cwd, pane_id, tab_id)
             if failure is not None:
                 return failure
@@ -542,7 +546,20 @@ class BrainTools:
             pass
         return None
 
+    def _enrich(self, agent: Optional[AgentInfo]) -> Optional[AgentInfo]:
+        """Enriches an AgentInfo with its resolved session title if available."""
+        if agent is None or not agent.session_value:
+            return agent
+        try:
+            resolved = read_title(agent.agent, agent.session_value)
+            if resolved:
+                return dataclasses.replace(agent, title=resolved)
+        except Exception:  # noqa: BLE001
+            pass
+        return agent
+
     def _track(self, active: Optional[AgentInfo]) -> Optional[AgentInfo]:
+        active = self._enrich(active)
         if active is not None:
             self.last_active = active
         return active
