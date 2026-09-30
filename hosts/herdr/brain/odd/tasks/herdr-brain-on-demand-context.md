@@ -92,9 +92,10 @@ Ordered by dependency. Route column is the planned topology.
 - [x] **T5** `freshness`: manifest comparison, reuse-after-check, full rebuild,
   bounded full scan, moving windows. FR-28..32, 41. Depends: T2, T3, T4.
   Done; commit on `feat/herdr-brain-ctx-05-freshness`.
-- [ ] **T6** `report` consolidation: per-project advances/pending/blockers,
+- [x] **T6** `report` consolidation: per-project advances/pending/blockers,
   conflict surfacing, references, grounded completion, empty vs failed.
-  FR-13..16, 22, 25. Depends: T3..T5.
+  FR-13..16, 22, 25. Depends: T3..T5. Done; commit on
+  `feat/herdr-brain-ctx-06-report`.
 - [ ] **T7** Query FSM + server-enforced 60s budget + routing + narrow/
   clarify/unable states. FR-01..03, 17, 19..21, 26, 37. Depends: T1, T5, T6.
 - [ ] **T8** `followup` persistent context, selection isolation, expiry.
@@ -251,7 +252,24 @@ its FRs covered by tests and the full suite green.
   rejection, FSM ownership of mark_refresh_failed.
 - Slice 05 `feat/herdr-brain-ctx-05-freshness`: T5 (~1.0k lines) —
   `size:exception` recommendation recorded.
+- 2026-09-30 T6 done (strict TDD, auto; 4 RED cycles: module, filter, brief
+  model, renderers — RED-2 included a genuine empty-reason logic bug in mixed
+  absent/OK bundles, fixed in code). GREEN 76 passed. Full suite re-run by the
+  parent: 972 passed (896 + 76). Files: `src/herdr_brain/report.py` (671),
+  `tests/test_report.py` (873).
+- T6 rule decisions (deterministic layer only — semantics stay with the model):
+  failed sources never bundle (their items are not evidence); empty_reason
+  precedence items > all-absent > no_evidence; undated items visible not
+  excluded; incompleteness = "incomplete" marker in generated_note with
+  spoken-safe canonical note (no ids spoken, FR-14/20); conflict notes
+  screen-only, must cite real source_ids; render_spoken emits no references by
+  construction; citations validated scaffold-wide; provenance mismatch raises.
+- Open: require no_work on empty bundles, per-section citations, TTS prosody
+  wording, undated in rendered output, size caps (T7).
+- Slice 06 `feat/herdr-brain-ctx-06-report`: T6 (~1.54k lines) —
+  `size:exception` recommendation recorded.
 
 ## Next step
 
-T6 `report` consolidation on `feat/herdr-brain-ctx-06-report` from 05.
+T7 query FSM + 60s server-enforced budget + routing on
+`feat/herdr-brain-ctx-07-fsm` from 06.
