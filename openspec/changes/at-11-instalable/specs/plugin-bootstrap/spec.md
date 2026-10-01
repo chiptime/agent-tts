@@ -14,23 +14,41 @@ delta replaces the hardcoded development checkout with location-derived
 package subdirectory. The uv/Python fallbacks, immutable-pinning safeguard,
 upgrade path, and checkout independence are retained.
 
+**Authorized M1 extension (Engram #9711/#9713/#9715):** the maintainer
+selected the exact immutable monorepo engine revision
+`d66616bce3ad8193f11ae615bd58bb4508eb65be`, replacing the stale pre-monorepo
+ref `32e9bafb`; the immutable-pin requirement below carries that selection.
+
 ## MODIFIED Requirements
 
 ### Requirement: agent-tts immutable pin
 
-The bootstrap MUST install agent-tts from an immutable ref anchored at the
-monorepo Python package subdirectory `engine/`: a tag when agent-tts
-publishes tags, otherwise a full commit SHA, with the install source pointing
-at the `engine/` package subdirectory (not the repository root). Unpinned
-mutable sources (bare `git+https://…agent-tts.git`) are prohibited.
-(Previously: pinned the standalone agent-tts repository root, which no
-longer contains the Python package.)
+The bootstrap MUST install agent-tts from the selected immutable monorepo
+revision, pinned at the exact full SHA
+`d66616bce3ad8193f11ae615bd58bb4508eb65be` (`AGENT_TTS_REF`; replacing the
+stale pre-monorepo ref `32e9bafb`), with the install source pointing at the
+`engine/` package subdirectory (not the repository root). The pinned revision
+MUST contain `engine/`. Unpinned mutable sources (bare
+`git+https://…agent-tts.git`) are prohibited, and neither an abbreviated SHA
+nor a moving ref is an acceptable pin. V2 additionally proves public
+retrieval of this exact revision from the documented origin (see the
+`independent-installation` capability).
+(Previously: allowed a tag when agent-tts publishes tags, otherwise a full
+commit SHA, without requiring the selected revision to contain `engine/` —
+which left the stale pre-monorepo ref `32e9bafb` pinned, whose legacy-layout
+tree no longer matches the monorepo package.)
 
 #### Scenario: Pinned install source
 
 - GIVEN a fresh hermetic env with a recorder pip stub
 - WHEN bootstrap installs agent-tts
-- THEN the recorded install source references the pinned tag or full SHA anchored at the monorepo `engine/` package subdirectory, never bare `main` and never the repository root
+- THEN the recorded install source references the exact full SHA `d66616bce3ad8193f11ae615bd58bb4508eb65be` anchored at the monorepo `engine/` package subdirectory, never bare `main`, a moving branch, an abbreviated SHA, or the repository root
+
+#### Scenario: Pinned revision contains engine/
+
+- GIVEN the pinned revision `d66616bce3ad8193f11ae615bd58bb4508eb65be`
+- WHEN its tree is inspected
+- THEN `engine/` exists in that revision, so the `engine/`-anchored subdirectory install is resolvable
 
 #### Scenario: Installed package imports from the monorepo layout
 
