@@ -225,6 +225,17 @@ LEGACY_FREE_FILES: list[str] = [
     "hosts/herdr/tts-plugin/scripts/install.sh",
     "hosts/herdr/tts-plugin/README.md",
     "hosts/herdr/tts-plugin/scripts/smoke-tests.sh",
+    # Task 1.6: packaging wrappers re-anchored to the monorepo. Deliberately
+    # an exact file list, NOT a blanket packaging/ directory scan: the
+    # out-of-scope packaging/npm/PUBLISH.md documents the scoped npm alias
+    # `@chiptime/herdr-tts` as future publication guidance, which the
+    # chiptime/herdr-tts pattern substring-matches — a directory scan would
+    # falsely flag it. The alias is preserved, not a legacy repository URL.
+    "hosts/herdr/tts-plugin/packaging/npm/package.json",
+    "hosts/herdr/tts-plugin/packaging/npm/bin/herdr-tts",
+    "hosts/herdr/tts-plugin/packaging/npm/README.md",
+    "hosts/herdr/tts-plugin/packaging/homebrew/herdr-tts.rb",
+    "hosts/herdr/tts-plugin/packaging/homebrew/README.md",
 ]
 
 

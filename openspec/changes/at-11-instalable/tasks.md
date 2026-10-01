@@ -104,7 +104,7 @@ In-task decision (explicit, not a maintainer gate): **validator note A** — the
   - Est: ~150 lines.
 
 - [x] 1.6 **Packaging wrappers: legacy corrections + honest support wording** (slice 6) — npm `package.json` + `bin/herdr-tts` shim and Homebrew `herdr-tts.rb`: monorepo `url`/`homepage`, zero legacy repo references, no unsupported claims (no registry publication, no native Windows, no validated cross-platform coverage); the keg route documents honestly that the first-run wizard is not available there.
-  - Files: `hosts/herdr/tts-plugin/packaging/npm/package.json`, `hosts/herdr/tts-plugin/packaging/npm/bin/herdr-tts`, `hosts/herdr/tts-plugin/packaging/npm/README.md`, `hosts/herdr/tts-plugin/packaging/homebrew/herdr-tts.rb`, `hosts/herdr/tts-plugin/packaging/homebrew/README.md`.
+  - Files: `hosts/herdr/tts-plugin/packaging/npm/package.json`, `hosts/herdr/tts-plugin/packaging/npm/bin/herdr-tts`, `hosts/herdr/tts-plugin/packaging/npm/README.md`, `hosts/herdr/tts-plugin/packaging/homebrew/herdr-tts.rb`, `hosts/herdr/tts-plugin/packaging/homebrew/README.md`, `engine/tests/test_versioned_tree_hygiene.py` (extend: `LEGACY_FREE_FILES` gains the five packaging wrappers as an exact file list — never a blanket packaging scan, which would falsely flag the out-of-scope `PUBLISH.md` scoped npm alias).
   - Verify: engine hygiene scan green over packaging scope; grep proves zero legacy refs; wrapper claims reviewed against the `independent-installation` honest-wrapper-support scenarios.
   - OQ: none.
   - Est: ~140 lines.

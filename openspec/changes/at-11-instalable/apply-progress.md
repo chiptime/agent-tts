@@ -1,4 +1,4 @@
-# AT-11 apply progress — cumulative through task 1.6 (M1)
+# AT-11 apply progress — cumulative through task 1.6 (M1, persistent V1 evidence closed)
 
 Branch `feat/at-11-instalable` in worktree `/home/bruno/Code/personal/agent-tts-worktrees/at-11-instalable`.
 This file is the OpenSpec-side apply-progress artifact (native locator discovered by `gentle-ai sdd-status`);
@@ -38,18 +38,28 @@ root) and keeps `tools/herdr_onboarding` (wizard) out of the keg, consistent wit
 | Evidence | Result |
 |---|---|
 | Focused test | `cd engine && UV_PROJECT_ENVIRONMENT=/tmp/opencode/at11-engine-venv uv run --locked --offline --extra dev python -m pytest tests/test_versioned_tree_hygiene.py -q` → **13 passed** (0.07s) |
-| Packaging-scope scan | Real hygiene pattern engine (imported from `engine/tests/test_versioned_tree_hygiene.py`, scratch runner `/tmp/opencode/at11-task16-scan.py`) over `hosts/herdr/tts-plugin/packaging`: **zero legacy-repo refs, zero machine-coupling patterns**; claim-keyword review confirms all publication/platform lines are honest negatives |
+| Packaging-scope scan | **Persistent** since the corrective follow-up: `LEGACY_FREE_FILES` in `engine/tests/test_versioned_tree_hygiene.py` lists the five packaging wrappers as an exact file list; `test_legacy_free_files_have_no_archived_repo_references` scans them on every run (13 passed). No blanket `packaging/` scan by design — it would substring-match the scoped npm alias `@chiptime/herdr-tts` in the out-of-scope `PUBLISH.md` (preserved, not modified) |
 | Runtime harness | **N/A** per tasks.md work-unit table — wrapper metadata/docs only; npm/Homebrew routes not executable in the sandbox and no network package installs are run |
 | Syntax checks | `bash -n` on npm bin wrapper OK; `package.json` parses as JSON; formula reviewed line-by-line (ruby interpreter unavailable on host) |
 | Rollback boundary | Revert this work-unit commit alone — only the five packaging files (+ this artifact and the tasks.md checkbox); no other work unit touches them |
 | Changed lines | 72 additions + 34 deletions = **106 authored lines** (within the 400-line budget; tasks.md estimated ~140) |
 
-**Known gap (reported, not silently skipped)**: `engine/tests/test_versioned_tree_hygiene.py` documents that
-task 1.6 extends `LEGACY_FREE_FILES` to the packaging wrappers, and design/tasks say the scan-scope manifest
-travels with each repair. This batch was explicitly bounded by the orchestrator to the five packaging files,
-so the committed manifest was NOT extended; the packaging scope was verified clean through the scratch runner
-instead. The one-line manifest extension (LEGACY_FREE_FILES += the five packaging files) remains available as
-a follow-up micro-change if the orchestrator authorizes it.
+**Corrective follow-up (validator retry — persistent V1 evidence closed)**: the fresh phase-contract
+validator rejected the scratch-runner proof: `engine/tests/test_versioned_tree_hygiene.py` did not include
+the five task-1.6 packaging files in its versioned `LEGACY_FREE_FILES` manifest, and a scratch runner is not
+persistent V1 evidence. Follow-up work unit (separate commit, `a2f56dc` NOT amended) extended
+`LEGACY_FREE_FILES` with exactly the five packaging paths — `packaging/npm/package.json`,
+`packaging/npm/bin/herdr-tts`, `packaging/npm/README.md`, `packaging/homebrew/herdr-tts.rb`,
+`packaging/homebrew/README.md` — as an exact file list with an inline comment explaining why it is not a
+blanket `packaging/` scan: `PUBLISH.md` (outside task 1.6's five-file scope, publication expansion
+out-of-scope) legitimately documents the scoped npm alias `@chiptime/herdr-tts`, which the
+`chiptime/herdr-tts` pattern substring-matches; the alias is preserved untouched. Task 1.6's `Files:` line
+in tasks.md now includes the hygiene test. Manifest verified: 8 entries, all 5 packaging paths present,
+none for `PUBLISH.md`, no blanket directory entry. Existing scan semantics unchanged (same patterns, same
+exempt marker, same per-file loop). Follow-up evidence: focused suite 13 passed (0.11s) with the packaging
+files inside the persistent manifest; runtime N/A (static hygiene boundary — wrapper metadata only, same
+reason as the original unit); rollback boundary: revert the follow-up commit alone (hygiene test manifest +
+tasks.md Files line + this artifact) — no other work unit's behavior depends on it.
 
 ## Earlier tasks (1.1–1.5, evidence carried forward from Engram #9678)
 
