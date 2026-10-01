@@ -9,6 +9,14 @@ clean-install acceptance harness, and V3 the separate timed human UAT
 checklist. This capability also owns the honest evidence rules: what counts
 as green, what counts as blocked, and what may never be claimed.
 
+**Supplementary M1 verification obligations (authorized extension, Engram
+#9711/#9713/#9715):** this capability also carries the V1 regression-suite
+hermeticity and host non-interference proofs (smoke 16n), the checked
+dual-layout oracle-identity evidence (smoke 40e), and the no-baseline-
+exception M1 closure gate. These are supplementary V1/V2 verification
+obligations; the nine approved PRD Gherkin scenarios remain unchanged,
+unrenumbered, and primary.
+
 Traceability: RF-AT-11-10; RNF-AT-11-3, RNF-AT-11-4; cross-cutting
 verification contract; PRD acceptance scenarios "Doctor diagnostica rotura
 simulada", "Salud final post-asistente" (V3 obligation), "UAT cronometrado
@@ -100,6 +108,124 @@ implied or claimed.
 (PRD anchor: RNF-AT-11-4; proposal Verification Contract; testing
 capabilities registry — strict_tdd false at workspace root, per-project
 commands authoritative.)
+
+### Requirement: V1 smoke-suite hermeticity and host non-interference
+
+The plugin V1 smoke suite MUST be hermetic with respect to the host: a suite
+run MUST NOT contact, signal, or change the state of any live host daemon or
+the user's real playback state. To enable this, the plugin launcher's
+playback lock, PID file, and IPC socket paths MUST be environment-overridable
+while retaining byte-identical defaults when the overrides are unset, and the
+smoke suite's `new_env()` MUST set all three — plus the engine IPC socket —
+to sandbox-local paths inside the test environment. Isolated fixtures or
+recorders stand in for daemon state; a live host daemon MUST NOT be used as a
+test fixture. The section-16 read confirmation assertion MUST be preserved:
+`r` MUST demonstrably follow the transcribe/read branch and its confirmation
+assertion remains intact and passing.
+
+(Supplementary V1/V2 verification obligation from the authorized M1
+extension [Engram #9711/#9713]. It adds regression-suite safety proofs; it
+does not replace or renumber any of the nine approved PRD Gherkin
+scenarios.)
+
+#### Scenario: Playback paths resolve inside the sandbox
+
+- GIVEN the smoke suite creates a fresh test environment via `new_env()`
+- WHEN any smoke test exercising playback runs
+- THEN the playback lock, PID file, IPC socket, and engine socket all resolve to sandbox-local paths inside that environment
+
+#### Scenario: Unset overrides keep the exact production defaults
+
+- GIVEN the launcher runs without the new environment overrides
+- WHEN playback starts
+- THEN the lock, PID, and socket paths are exactly `/tmp/herdr-tts-playing.lock`, `/tmp/herdr-tts-current.pid`, and `/tmp/herdr-tts-player.sock`, and production toggle behavior is unchanged
+
+#### Scenario: Suite run cannot disturb a live host daemon
+
+- GIVEN a host with a live herdr-tts daemon — or an isolated recorder standing in for one — whose state is recorded before and after
+- WHEN the full smoke suite runs
+- THEN no suite process contacts, signals, or alters the live daemon or host playback state, and the recorded state is unchanged
+
+#### Scenario: Read confirmation assertion preserved
+
+- GIVEN smoke section 16's flow where `r` follows the transcribe/read branch
+- WHEN the test executes in the sandbox
+- THEN the existing read confirmation assertion runs unchanged and passes
+
+### Requirement: Smoke 40e checked oracle identity
+
+The smoke suite's engine-oracle identity check (section 40e) MUST resolve the
+pinned immutable revision's files by a return-code-checked tree lookup that
+supports both layouts — monorepo `engine/src/agent_tts/<file>` and legacy
+`src/agent_tts/<file>` — at the same immutable revision. A missing lookup,
+revision, or oracle file MUST fail explicitly with an actionable error; it
+MUST NEVER pass by comparing empty output. Strict byte identity MUST be
+retained for `boundaries.py`, `cleaner.py`, and `redact.py`, together with
+the full existing assertion matrix; no assertion is weakened, deleted, or
+made to pass by changing engine bytes to fit a stale oracle. Layout
+compatibility MUST NOT be used as a revision fallback.
+
+(Supplementary V1/V2 verification obligation from the authorized M1 extension
+[Engram #9713/#9715]; the authoritative pin value is specified by the
+`plugin-bootstrap` delta. The nine approved PRD Gherkin scenarios remain
+unchanged.)
+
+#### Scenario: Dual-layout lookup at one revision
+
+- GIVEN the pinned immutable revision whose tree uses either the monorepo `engine/src/...` layout or the legacy `src/...` layout
+- WHEN the oracle lookup resolves `boundaries.py`, `cleaner.py`, and `redact.py`
+- THEN each file is found via a return-code-checked lookup under the matching layout at that same single revision
+
+#### Scenario: Missing oracle fails explicitly
+
+- GIVEN a checked lookup or a required oracle file that is missing or unreadable at the pinned revision
+- WHEN section 40e runs
+- THEN it fails explicitly naming the unresolved file or revision
+- AND it never passes by comparing empty output
+
+#### Scenario: Byte identity retained for all three files
+
+- GIVEN successfully resolved oracle files at the pinned revision
+- WHEN the comparison executes
+- THEN the engine's `boundaries.py`, `cleaner.py`, and `redact.py` are byte-identical to the pinned revision's files
+- AND every existing assertion still runs with none weakened or deleted
+
+### Requirement: M1 closes with both baseline V1 failures fixed
+
+Milestone 1 closure MUST require that both confirmed baseline V1 failures —
+smoke 16n (read confirmation corrupted by a live-daemon environment leak) and
+smoke 40e (oracle identity against the stale pre-monorepo pin) — are
+genuinely fixed, and that all three V1 project suites run green, alongside
+the binding milestone-scoped V2 activation gate. Neither failure MAY be
+waived, skipped, disabled, relabeled as green, or accepted as a pre-existing
+baseline exception. Failing or blocked evidence MUST be preserved until
+corrected.
+
+(Supplementary V1/V2 verification obligation from the authorized M1 extension
+[Engram #9711]; it does not replace or renumber the nine approved PRD Gherkin
+scenarios. V2 scenarios for functionality not yet delivered by M1 remain
+`NOT-YET-ACTIVATED` per the milestone-scoped activation gate — never green
+skips.)
+
+#### Scenario: M1 closure evidence
+
+- GIVEN milestone 1 closure is evaluated
+- WHEN the evidence is reviewed
+- THEN smoke 16n passes with host-safe sandbox isolation and its preserved read confirmation assertion
+- AND smoke 40e passes with checked dual-layout lookup and strict three-file identity at the selected pin
+- AND all three V1 project suites are green together with the active-scenario V2 gate
+
+#### Scenario: No baseline exception
+
+- GIVEN that both failures already existed unchanged at the base revision
+- WHEN closure is attempted while either still fails
+- THEN closure is refused, the failure is neither waived nor relabeled green, and the failing evidence remains recorded
+
+#### Scenario: Later V2 scenarios are not green skips
+
+- GIVEN V2 scenarios for functionality not delivered by M1
+- WHEN M1 closure evidence is recorded
+- THEN those scenarios are reported as `NOT-YET-ACTIVATED`, never as green or skipped-green
 
 ### Requirement: V2 clean-install harness is the authoritative gate
 
