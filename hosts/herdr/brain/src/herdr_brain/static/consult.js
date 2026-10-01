@@ -160,7 +160,43 @@
     return { handleEvent: handleEvent };
   }
 
-  var api = { createConsultUI: createConsultUI, OUTCOME_NOTICES: OUTCOME_NOTICES };
+  /* ---------------- /ask request timeout policy ----------------
+   *
+   * ASK_REQUEST_TIMEOUT_MS sizes the browser's fetch budget for the
+   * /ask turn as a WHOLE. The consult engine alone has a 60 s server
+   * budget, and a real journal shows the full turn (initial model
+   * call -> consult_work_status -> consult summarizer -> final model
+   * call) completing at ~53 s — the old 30 s fetch cap aborted the
+   * request mid-flight and discarded an answer the server had already
+   * produced. 90 s = 60 s consult budget + 30 s margin for the initial
+   * model tool selection, the final response and TTS response shaping.
+   *
+   * requestAsk also OWNS the /ask wire shape (POST, JSON content
+   * type, text/session_id/pane_id body) so the policy and the request
+   * travel together. It is a pure seam: app.js injects its own
+   * fetchWithTimeout and gets its promise back unchanged, so the Node
+   * suite pins the policy without booting the app.js DOM. All OTHER
+   * fetchWithTimeout call sites keep their own defaults. */
+  var ASK_REQUEST_TIMEOUT_MS = 90000;
+
+  function requestAsk(fetchWithTimeout, payload) {
+    return fetchWithTimeout("/ask", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        text: payload.text,
+        session_id: payload.sessionId,
+        pane_id: payload.paneId || null
+      })
+    }, ASK_REQUEST_TIMEOUT_MS);
+  }
+
+  var api = {
+    createConsultUI: createConsultUI,
+    OUTCOME_NOTICES: OUTCOME_NOTICES,
+    requestAsk: requestAsk,
+    ASK_REQUEST_TIMEOUT_MS: ASK_REQUEST_TIMEOUT_MS
+  };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

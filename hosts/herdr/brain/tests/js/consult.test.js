@@ -14,7 +14,11 @@
 
 const test = require("node:test");
 const assert = require("node:assert");
-const { createConsultUI } = require("../../src/herdr_brain/static/consult.js");
+const {
+  createConsultUI,
+  requestAsk,
+  ASK_REQUEST_TIMEOUT_MS
+} = require("../../src/herdr_brain/static/consult.js");
 
 /* ---- fake DOM (toast.test.js subset) ---- */
 
@@ -282,4 +286,69 @@ test("no event path ever constructs audio", () => {
     timezone_label: "Europe/Madrid"
   });
   assert.strictEqual(audioConstructed, 0, "display only — nothing auto-plays");
+});
+
+/* ---- /ask request helper (timeout policy seam) ----
+ *
+ * The browser must NOT abort /ask before the server finishes: the
+ * consult engine alone has a 60 s budget, and the journal shows the
+ * full turn (initial model call + consult_work_status + consult
+ * summarizer + final model call) completing at ~53 s — inside the
+ * server, past the old 30 s fetch cap, which discarded answers the
+ * server had already produced. The helper OWNS the /ask request
+ * (method, JSON content type, snake_case body) and pins ONE named
+ * timeout so app.js never sizes or shapes /ask ad hoc. */
+
+test("ASK_REQUEST_TIMEOUT_MS is exactly 90000 (60s consult budget + 30s margin)", () => {
+  assert.strictEqual(ASK_REQUEST_TIMEOUT_MS, 90000);
+});
+
+test("requestAsk builds the POST /ask request: method, JSON content type, body", () => {
+  const calls = [];
+  const fake = (url, opts, timeoutMs) => {
+    calls.push({ url, opts, timeoutMs });
+    return Promise.resolve("response");
+  };
+  requestAsk(fake, { text: "qué hice hoy", sessionId: "s-1", paneId: "work" });
+  assert.strictEqual(calls.length, 1, "exactly one dispatch");
+  assert.strictEqual(calls[0].url, "/ask", "url is /ask");
+  assert.strictEqual(calls[0].opts.method, "POST", "method is POST");
+  assert.strictEqual(
+    calls[0].opts.headers["content-type"],
+    "application/json",
+    "JSON content type header"
+  );
+  assert.deepStrictEqual(
+    JSON.parse(calls[0].opts.body),
+    { text: "qué hice hoy", session_id: "s-1", pane_id: "work" },
+    "body carries text/session_id/pane_id in the wire format"
+  );
+});
+
+test("requestAsk normalizes a missing paneId to pane_id: null", () => {
+  const calls = [];
+  const fake = (url, opts) => {
+    calls.push({ opts });
+    return Promise.resolve("response");
+  };
+  requestAsk(fake, { text: "qué hice hoy", sessionId: "s-1" });
+  assert.strictEqual(JSON.parse(calls[0].opts.body).pane_id, null, "pane_id null when no pane selected");
+});
+
+test("requestAsk passes the fixed 90000ms timeout, not the caller's", () => {
+  const calls = [];
+  const fake = (url, opts, timeoutMs) => {
+    calls.push({ timeoutMs });
+    return Promise.resolve("response");
+  };
+  requestAsk(fake, { text: "qué hice hoy", sessionId: "s-1", paneId: "work" });
+  assert.strictEqual(calls[0].timeoutMs, 90000, "timeout is exactly 90000");
+  assert.strictEqual(calls[0].timeoutMs, ASK_REQUEST_TIMEOUT_MS, "the named policy constant is used");
+});
+
+test("requestAsk returns the injected fetch's promise UNCHANGED", () => {
+  const marker = Promise.resolve("the-fetch-promise");
+  const fake = () => marker;
+  const out = requestAsk(fake, { text: "qué hice hoy", sessionId: "s-1", paneId: "work" });
+  assert.strictEqual(out, marker, "promise identity preserved (no wrapping)");
 });
