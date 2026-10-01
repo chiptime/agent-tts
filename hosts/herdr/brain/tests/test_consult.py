@@ -307,15 +307,35 @@ def one_provider_service(
     narrow_items=None,
     event_sink=None,
 ):
+    """Global-intent consultation harness: a Herdr session provider
+    (the ONLY source global queries read, D02/FR-04 — the engine
+    fails closed without it) plus the historical opencode provider.
+
+    ``inventory_status`` scripts the HERDR provider: the global
+    queries these suites drive read it, so a failed herdr inventory is
+    what surfaces ``unable_to_complete``."""
+    herdr_src = make_source(
+        "herdr:w1:p1", kind="herdr_session", state="working"
+    )
+    herdr = FakeProvider(
+        "herdr_session",
+        (herdr_src,),
+        {
+            herdr_src.source_id: [
+                make_item(herdr_src.source_id, kind="herdr_session", text=t)
+                for t in texts
+            ]
+        },
+        inventory_status=inventory_status,
+    )
     provider = FakeProvider(
         "opencode",
         sources=(make_source("opencode:s1"),),
         items_by_source={"opencode:s1": [make_item("opencode:s1", text=t) for t in texts]},
-        inventory_status=inventory_status,
     )
     service = build_service(
         tmp_path,
-        {"opencode": provider},
+        {"herdr_session": herdr, "opencode": provider},
         settings=settings,
         summarizer=summarizer,
         mono=mono,

@@ -38,6 +38,7 @@ from herdr_brain.queryfsm import (
     DEFAULT_BUDGET_SECONDS,
     DEFAULT_NARROW_CHAR_THRESHOLD,
     DEFAULT_NARROW_ITEM_THRESHOLD,
+    SPOKEN_UNABLE,
     UNQUALIFIED_INTERVAL_KEY,
     UNQUALIFIED_TIMEZONE,
     EngineDeps,
@@ -48,6 +49,7 @@ from herdr_brain.queryfsm import (
     brief_from_json,
     brief_to_json,
     interval_label,
+    namespaced_scope,
     timezone_label,
 )
 
@@ -271,10 +273,12 @@ def build_harness(tmp_path, providers, *, summarizer=None, mono=None, budget=60.
 
 
 def global_key(context: str, scope: str = "all") -> ReportKey:
-    """The unqualified-global store key (sentinel interval + zone)."""
+    """The unqualified-global store key (sentinel interval + zone),
+    namespaced by intent kind so global and historical reports never
+    share a key (D08)."""
     return ReportKey(
         main_call_context_id=context,
-        scope=scope,
+        scope=namespaced_scope("global", scope),
         interval_key=UNQUALIFIED_INTERVAL_KEY,
         timezone=UNQUALIFIED_TIMEZONE,
     )
@@ -628,12 +632,12 @@ def unqualified_intent(raw="What am I working on?"):
     )
 
 
-def today_key(context: str, scope: str = "all") -> ReportKey:
+def today_key(context: str, scope: str = "all", kind: str = "historical") -> ReportKey:
     from herdr_brain.periods import period_today
 
     return ReportKey(
         main_call_context_id=context,
-        scope=scope,
+        scope=namespaced_scope(kind, scope),
         interval_key=period_today(NOW, MADRID).key,
         timezone="Europe/Madrid",
     )
@@ -786,7 +790,7 @@ class TestInventoryScoping:
         collected = {c["source"].source_id for c in provider.collect_calls}
         assert collected == {"herdr:w1:p1"}  # idle session not acquired
         # The manifest reflects the active-only view.
-        stored = store.get_current(today_key("call-1"))
+        stored = store.get_current(today_key("call-1", kind="global"))
         assert [e.source_id for e in stored.source_manifest] == ["herdr:w1:p1"]
 
     def test_historical_never_restricts_by_activity(self, tmp_path):
@@ -796,6 +800,336 @@ class TestInventoryScoping:
         )
         engine.handle(today_intent(kind="historical"), "call-1")
         assert provider.inventory_calls[0]["active_only"] is False
+
+
+# ---------------------------------------------------------------------------
+# Cycle 3b: intent-based SOURCE scoping (D02/D04, FR-04/FR-12) — a
+# global current-progress query reads ONLY the Herdr session provider;
+# historical queries keep every configured provider.
+# ---------------------------------------------------------------------------
+
+
+def herdr_provider_with_open_statuses():
+    """Herdr provider fake with one session per OPEN status (working /
+    idle / blocked — FR-04) and a faithful ``active_only`` inventory
+    filter mirroring the real provider's contract."""
+    sessions = (
+        make_source(
+            "herdr:w1:p1", kind="herdr_session", state="working",
+            revision_token="t-working",
+        ),
+        make_source(
+            "herdr:w1:p2", kind="herdr_session", state="idle",
+            revision_token="t-idle",
+        ),
+        make_source(
+            "herdr:w1:p3", kind="herdr_session", state="blocked",
+            revision_token="t-blocked",
+        ),
+    )
+    items = {
+        s.source_id: (
+            make_item(s.source_id, kind="herdr_session", text=f"{s.state} on X"),
+        )
+        for s in sessions
+    }
+    provider = FakeProvider("herdr_session", sessions, items)
+    original_inventory = provider.inventory
+
+    def inventory(project_filter=None, deadline=None, **kwargs):
+        result = original_inventory(project_filter, deadline, **kwargs)
+        if kwargs.get("active_only"):
+            from herdr_brain.evidence import ACTIVE_STATUSES
+
+            result = InventoryResult(
+                result.status,
+                tuple(s for s in result.sources if s.state in ACTIVE_STATUSES),
+            )
+        return result
+
+    provider.inventory = inventory
+    return provider
+
+
+def heavy_historical_providers():
+    """Historical providers whose corpus alone would trip the volume
+    thresholds (60 opencode items + 5 engram items)."""
+    oc_sources = tuple(make_source(f"opencode:/repo/{i}") for i in range(10))
+    opencode = FakeProvider(
+        "opencode",
+        oc_sources,
+        {
+            s.source_id: tuple(
+                make_item(s.source_id, text="x" * 100) for _ in range(6)
+            )
+            for s in oc_sources
+        },
+    )
+    en_src = make_source("engram:/repo")
+    engram = FakeProvider(
+        "engram",
+        (en_src,),
+        {en_src.source_id: tuple(make_item(en_src.source_id, text="y" * 50) for _ in range(5))},
+    )
+    return {"opencode": opencode, "engram": engram}
+
+
+def valid_stored_body(context_id="call-1"):
+    """A decodable stored body (engine v1 format) for seeded snapshots."""
+    from herdr_brain.report import BriefDocument, BriefSection
+
+    doc = BriefDocument(
+        context_id=context_id,
+        interval_label="today",
+        timezone_label="Europe/Madrid",
+        sections=(
+            BriefSection(
+                project="/repo",
+                advances=(),
+                pending=(),
+                blockers=(),
+                no_work=True,
+                conflict_notes=(),
+                citations=(),
+            ),
+        ),
+        generated_note="",
+    )
+    return json.dumps(
+        {"version": 1, "brief": json.loads(brief_to_json(doc)), "screen": "old"},
+        sort_keys=True,
+    )
+
+
+class TestIntentSourceScoping:
+    """D02/FR-04: current-progress (global) queries derive from Herdr
+    sessions ONLY — zero calls to historical providers, and the volume
+    accounting never counts the historical corpus. D04/FR-12: the
+    date-scoped variant keeps ``active_only=True``. Historical queries
+    keep the full configured provider set (FR-03/FR-05). D08: report
+    keys namespace the intent kind so the two can never reuse each
+    other's report."""
+
+    def _multi_provider_engine(self, tmp_path, **kwargs):
+        herdr = herdr_provider_with_open_statuses()
+        historical = heavy_historical_providers()
+        providers = {"herdr_session": herdr, **historical}
+        engine, deps, store, mono = build_harness(tmp_path, providers, **kwargs)
+        return engine, store, herdr, historical
+
+    def test_unqualified_global_reads_only_herdr_all_open_statuses(self, tmp_path):
+        # narrow_items=3: herdr contributes exactly 3 items; the 65
+        # historical items would trip the threshold if they were read
+        # or counted (the production bug this class regresses).
+        engine, store, herdr, historical = self._multi_provider_engine(
+            tmp_path, narrow_items=3
+        )
+        result = engine.handle(unqualified_intent(), "call-1")
+
+        assert result.state == "rendered"
+        assert herdr.inventory_calls[0]["active_only"] is False
+        assert herdr.inventory_calls[0]["project_filter"] is None
+        collected = {c["source"].source_id for c in herdr.collect_calls}
+        assert collected == {"herdr:w1:p1", "herdr:w1:p2", "herdr:w1:p3"}
+        # ZERO calls to historical providers, inventory or collect.
+        for kind, provider in historical.items():
+            assert provider.inventory_calls == [], f"{kind} was inventoried"
+            assert provider.collect_calls == [], f"{kind} was collected"
+        # Manifest and references carry ONLY Herdr session ids.
+        stored = store.get_current(global_key("call-1"))
+        assert [e.source_id for e in stored.source_manifest] == [
+            "herdr:w1:p1", "herdr:w1:p2", "herdr:w1:p3",
+        ]
+        assert sorted(r.source_id for r in result.references) == [
+            "herdr:w1:p1", "herdr:w1:p2", "herdr:w1:p3",
+        ]
+
+    def test_date_scoped_global_reads_only_herdr_active_only(self, tmp_path):
+        engine, store, herdr, historical = self._multi_provider_engine(tmp_path)
+        result = engine.handle(
+            today_intent(kind="global", raw="what is running today"), "call-1"
+        )
+
+        assert result.state == "rendered"
+        assert herdr.inventory_calls[0]["active_only"] is True
+        collected = {c["source"].source_id for c in herdr.collect_calls}
+        # active_only keeps working/blocked/waiting, drops idle (FR-12;
+        # ACTIVE_STATUSES = {working, blocked, waiting}).
+        assert collected == {"herdr:w1:p1", "herdr:w1:p3"}
+        for kind, provider in historical.items():
+            assert provider.inventory_calls == []
+            assert provider.collect_calls == []
+        stored = store.get_current(today_key("call-1", kind="global"))
+        assert [e.source_id for e in stored.source_manifest] == [
+            "herdr:w1:p1", "herdr:w1:p3"
+        ]
+
+    def test_historical_keeps_every_configured_provider(self, tmp_path):
+        engine, store, herdr, historical = self._multi_provider_engine(tmp_path)
+        result = engine.handle(today_intent(kind="historical"), "call-1")
+
+        assert result.state == "rendered"
+        assert len(herdr.inventory_calls) == 1
+        for kind, provider in historical.items():
+            assert len(provider.inventory_calls) == 1
+            assert provider.collect_calls, f"{kind} sources were not read"
+        stored = store.get_current(today_key("call-1"))
+        manifest_ids = {e.source_id for e in stored.source_manifest}
+        assert "herdr:w1:p1" in manifest_ids
+        assert "opencode:/repo/0" in manifest_ids
+        assert "engram:/repo" in manifest_ids
+
+    def test_report_keys_distinguish_global_from_historical(self, tmp_path):
+        engine, store, herdr, historical = self._multi_provider_engine(tmp_path)
+        historical_result = engine.handle(today_intent(kind="historical"), "call-1")
+        global_result = engine.handle(
+            today_intent(kind="global", raw="current state today"), "call-1"
+        )
+
+        assert historical_result.state == global_result.state == "rendered"
+        stored_historical = store.get_current(today_key("call-1", kind="historical"))
+        stored_global = store.get_current(today_key("call-1", kind="global"))
+        assert stored_historical is not None and stored_global is not None
+        assert stored_historical.report_id != stored_global.report_id
+        # The global report is Herdr-only (active view: working+blocked)
+        # even after the historical one published a mixed manifest
+        # under the sibling key.
+        assert [e.source_id for e in stored_global.source_manifest] == [
+            "herdr:w1:p1", "herdr:w1:p3"
+        ]
+
+    def test_first_global_after_mixed_snapshot_rebuilds_herdr_only(self, tmp_path):
+        # Seed a MIXED (pre-fix shape) snapshot under the global key:
+        # herdr + historical sources in the stored manifest.
+        herdr = herdr_provider_with_open_statuses()
+        historical = heavy_historical_providers()
+        providers = {"herdr_session": herdr, **historical}
+        engine, deps, store, mono = build_harness(tmp_path, providers)
+        key = today_key("call-1", kind="global")
+        mixed_manifest = [
+            {"source_id": "herdr:w1:p1", "revision_token": "t-working", "state": "working"},
+            {"source_id": "opencode:/repo/0", "revision_token": "tok-1", "state": ""},
+            {"source_id": "engram:/repo", "revision_token": "tok-1", "state": ""},
+        ]
+        seeded = store.publish(
+            store.begin_build(key),
+            body=valid_stored_body(),
+            references=[],
+            source_manifest=mixed_manifest,
+        )
+
+        result = engine.handle(
+            today_intent(kind="global", raw="current state today"), "call-1"
+        )
+
+        assert result.state == "rendered"
+        assert result.report_id != seeded.report_id
+        assert "removed" in result.detail  # removal detected, not reused
+        stored = store.get_current(key)
+        assert [e.source_id for e in stored.source_manifest] == [
+            "herdr:w1:p1", "herdr:w1:p3"
+        ]
+        assert store.get_latest(key).report_id == result.report_id
+
+    def test_legacy_unnamespaced_key_is_never_reused_by_global(self, tmp_path):
+        # Old engine revisions wrote scope="all" (no intent namespace).
+        # Those rows must simply never be reused by the new keys: the
+        # global query builds fresh under its namespaced key.
+        herdr = herdr_provider_with_open_statuses()
+        historical = heavy_historical_providers()
+        providers = {"herdr_session": herdr, **historical}
+        engine, deps, store, mono = build_harness(tmp_path, providers)
+        from herdr_brain.periods import period_today
+
+        legacy_key = ReportKey(
+            main_call_context_id="call-1",
+            scope="all",
+            interval_key=period_today(NOW, MADRID).key,
+            timezone="Europe/Madrid",
+        )
+        legacy = store.publish(
+            store.begin_build(legacy_key),
+            body=valid_stored_body(),
+            references=[],
+            source_manifest=[
+                {"source_id": "herdr:w1:p1", "revision_token": "t-working", "state": ""},
+                {"source_id": "opencode:/repo/0", "revision_token": "tok-1", "state": ""},
+            ],
+        )
+
+        result = engine.handle(
+            today_intent(kind="global", raw="current state today"), "call-1"
+        )
+
+        assert result.state == "rendered"
+        assert result.report_id != legacy.report_id
+        # The legacy row is untouched under its own key.
+        assert store.get_current(legacy_key).report_id == legacy.report_id
+        # The new namespaced key holds a Herdr-only current report
+        # (active view: working + blocked).
+        stored = store.get_current(today_key("call-1", kind="global"))
+        assert [e.source_id for e in stored.source_manifest] == [
+            "herdr:w1:p1", "herdr:w1:p3"
+        ]
+
+    def test_global_without_herdr_fails_closed_never_reads_historical(self, tmp_path):
+        """D02/FR-04/FR-41 FAIL CLOSED: a global current-progress query
+        with no ``herdr_session`` provider configured is
+        unable_to_complete BEFORE any provider inventory, collect, or
+        checker call — the historical corpus is NEVER scanned as a
+        fallback, for both the unqualified and the date-scoped form."""
+        oc = make_source("opencode:/repo/a")
+        en = make_source("engram:/repo")
+        opencode = FakeProvider(
+            "opencode", (oc,), {oc.source_id: (make_item(oc.source_id),)}
+        )
+        engram = FakeProvider(
+            "engram", (en,), {en.source_id: (make_item(en.source_id),)}
+        )
+        engine, deps, store, mono = build_harness(
+            tmp_path, {"opencode": opencode, "engram": engram}
+        )
+        for intent in (
+            unqualified_intent(),
+            today_intent(kind="global", raw="current state today"),
+        ):
+            result = engine.handle(intent, "call-1")
+            assert result.state == "unable_to_complete"
+            assert result.spoken == SPOKEN_UNABLE
+            assert "herdr_session" in result.detail
+        # Zero calls on the historical providers, inventory or collect.
+        for provider in (opencode, engram):
+            assert provider.inventory_calls == []
+            assert provider.collect_calls == []
+        # Nothing was published under any global key.
+        assert store.get_latest(global_key("call-1")) is None
+        assert store.get_latest(today_key("call-1", kind="global")) is None
+
+    def test_fail_closed_demotes_prior_global_report(self, tmp_path):
+        """FR-33 consistency: the config gate is a failed refresh — a
+        previously published global report under the same key is
+        demoted via mark_refresh_failed, never left serving as current
+        while its sources cannot be checked."""
+        oc = make_source("opencode:/repo/a")
+        opencode = FakeProvider(
+            "opencode", (oc,), {oc.source_id: (make_item(oc.source_id),)}
+        )
+        engine, deps, store, mono = build_harness(tmp_path, {"opencode": opencode})
+        key = global_key("call-1")
+        prior = store.publish(
+            store.begin_build(key),
+            body=valid_stored_body(),
+            references=[],
+            source_manifest=[],
+        )
+
+        result = engine.handle(unqualified_intent(), "call-1")
+
+        assert result.state == "unable_to_complete"
+        assert store.get_current(key) is None  # never served as current
+        latest = store.get_latest(key)
+        assert latest is not None and latest.status == "refresh_failed"
+        assert latest.report_id == prior.report_id
 
 
 class TestEmptyScope:
@@ -1374,11 +1708,19 @@ class TestRoutingMatrix:
     """The deterministic false-routing core (FR-01..03)."""
 
     def test_matrix_focus_global_historical(self, tmp_path):
-        src = make_source("opencode:/repo/a")
-        provider = FakeProvider(
-            "opencode", (src,), {src.source_id: (make_item(src.source_id),)}
+        oc = make_source("opencode:/repo/a")
+        hd = make_source("herdr:w1:p1", kind="herdr_session", state="working")
+        opencode = FakeProvider(
+            "opencode", (oc,), {oc.source_id: (make_item(oc.source_id),)}
         )
-        engine, deps, store, mono = build_harness(tmp_path, {"opencode": provider})
+        herdr = FakeProvider(
+            "herdr_session",
+            (hd,),
+            {hd.source_id: (make_item(hd.source_id, kind="herdr_session"),)},
+        )
+        engine, deps, store, mono = build_harness(
+            tmp_path, {"opencode": opencode, "herdr_session": herdr}
+        )
 
         focus = engine.handle(
             QueryIntent(
@@ -1403,8 +1745,10 @@ class TestRoutingMatrix:
         historical = engine.handle(today_intent(kind="historical"), "call-h")
         assert historical.state == "rendered"
 
-        # Only the three non-focus queries touched the provider.
-        assert len(provider.inventory_calls) == 3
+        # Global queries touched ONLY the herdr provider; the
+        # historical query touched both (D02/FR-04 vs FR-03/FR-05).
+        assert len(herdr.inventory_calls) == 3
+        assert len(opencode.inventory_calls) == 1
 
     def test_historical_without_period_never_reaches_the_engine(self):
         # Structural guard: classification must give historical queries
