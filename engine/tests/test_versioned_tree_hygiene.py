@@ -206,6 +206,9 @@ SCAN_SCOPES: dict[str, str] = {
     "acceptance-harness": "scripts/acceptance",
     # Task 1.3 seed: the engine source tree is already machine-clean; guard it.
     "engine-src": "engine/src",
+    # Task 1.5: bootstrap derives its dev engine/ from the script's own
+    # location (audit B5) — the plugin scripts stay machine-clean.
+    "tts-plugin-scripts": "hosts/herdr/tts-plugin/scripts",
 }
 
 # Archived standalone repositories: no active installer/doc/test reference
