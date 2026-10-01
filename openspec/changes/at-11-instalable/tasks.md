@@ -103,7 +103,7 @@ In-task decision (explicit, not a maintainer gate): **validator note A** — the
   - OQ: none. Ordering note: task 1.11 depends on this task (both edit `bootstrap.sh`; sequenced, never merged, separate rollbacks).
   - Est: ~150 lines.
 
-- [ ] 1.6 **Packaging wrappers: legacy corrections + honest support wording** (slice 6) — npm `package.json` + `bin/herdr-tts` shim and Homebrew `herdr-tts.rb`: monorepo `url`/`homepage`, zero legacy repo references, no unsupported claims (no registry publication, no native Windows, no validated cross-platform coverage); the keg route documents honestly that the first-run wizard is not available there.
+- [x] 1.6 **Packaging wrappers: legacy corrections + honest support wording** (slice 6) — npm `package.json` + `bin/herdr-tts` shim and Homebrew `herdr-tts.rb`: monorepo `url`/`homepage`, zero legacy repo references, no unsupported claims (no registry publication, no native Windows, no validated cross-platform coverage); the keg route documents honestly that the first-run wizard is not available there.
   - Files: `hosts/herdr/tts-plugin/packaging/npm/package.json`, `hosts/herdr/tts-plugin/packaging/npm/bin/herdr-tts`, `hosts/herdr/tts-plugin/packaging/npm/README.md`, `hosts/herdr/tts-plugin/packaging/homebrew/herdr-tts.rb`, `hosts/herdr/tts-plugin/packaging/homebrew/README.md`.
   - Verify: engine hygiene scan green over packaging scope; grep proves zero legacy refs; wrapper claims reviewed against the `independent-installation` honest-wrapper-support scenarios.
   - OQ: none.
