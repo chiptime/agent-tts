@@ -1,4 +1,4 @@
-# AT-11 apply progress — cumulative through task 1.7 (M1, persistent V1 evidence closed)
+# AT-11 apply progress — cumulative through task 1.9 (M1, scenario 3 activation corrected to M2)
 
 Branch `feat/at-11-instalable` in worktree `/home/bruno/Code/personal/agent-tts-worktrees/at-11-instalable`.
 This file is the OpenSpec-side apply-progress artifact (native locator discovered by `gentle-ai sdd-status`);
@@ -7,7 +7,36 @@ cumulative content plus exact commit hashes (this file ships inside its own work
 contain that hash).
 
 Hash-only branch rewrite verified earlier: refreshed mapping supersedes pre-rewrite IDs
-(a022c44→d89abc7, 3712ced→aae51ea, b30cd0a→0682845, b037b6f→401a4b8). Cumulative state: **7/26 tasks complete**.
+(a022c44→d89abc7, 3712ced→aae51ea, b30cd0a→0682845, b037b6f→401a4b8). Cumulative state: **8/26 tasks complete**.
+
+## Task 1.9 — Scenario 3 activation correction: `activates_at_milestone` 1 → 2 (slice 3a, PR 8)
+
+**What**: One field in one row of `scripts/acceptance/scenarios/registry.conf`: the `zero-machine-paths`
+row's `activates_at_milestone` changed from `1` to `2` (tab-separated, one-line diff — exactly design
+Decision 10's correction). No harness logic changed, no scenario script touched: the registry's existing
+four-state semantics alone produce the intended state (authored file present from task 1.3 **and**
+`current(1) < 2` ⇒ `NOT-YET-ACTIVATED` with reason "activates at milestone 2"). Scenario 3 stays authored
+with its V1 static scan available; it activates when M2 task 2.2 delivers the machine-path behavior.
+
+**Why**: Design Decision 10 resolved the M1 inconsistency — with the field at `1`, scenario 3 was ACTIVE
+at M1 while the behavior it asserts is delivered at M2 (task 2.2), so a truthful active FAIL would block
+M1 closure under the binding V2 gate (Engram #9636). Activation follows delivered functionality; M2 is
+the correct activation milestone. Removing no M1 coverage: the V1 half (engine hygiene static scan) is an
+engine pytest that stays green from task 1.3 onward.
+
+### Work Unit Evidence (task 1.9)
+
+| Evidence | Result |
+|---|---|
+| Focused test | `bash scripts/acceptance/clean-install.sh --milestone 1` → **exit 0**; scenario 3 `zero-machine-paths` = `NOT-YET-ACTIVATED (activates at milestone 2)` — not an active FAIL, not a green skip; scenarios 1/2 `NOT-YET-ACTIVATED (not authored)` until task 1.8; result line `0 PASS · 0 FAIL · 0 BLOCKED · 9 NOT-YET-ACTIVATED (activated: 0)` |
+| Registry listing | `bash scripts/acceptance/clean-install.sh --list` → exit 0; row `3  zero-machine-paths  M2  V1+V2  No machine-specific paths leak from a clean install` — activation milestone 2 visible |
+| Runtime harness | The clean-install V2 registry behavior itself — journal.json: `"zero-machine-paths" … "activates_at_milestone": 2, "state": "NOT-YET-ACTIVATED", "reason": "activates at milestone 2"`; run header `"milestone": 1, "closed": false, "activated": 0, "exit_code": 0` (empty run, never recorded as milestone closure) |
+| Diff integrity | `git diff` shows exactly the one-line, one-field change; `cat -A` confirms tab separators preserved (`zero-machine-paths^I2^I03-…`) |
+| Rollback boundary | The single registry field — but **never reverted alone**: reverting re-exposes an active M1 FAIL for scenario 3 and violates the resolved V2 gate (Engram #9636). Revert only together with an explicit gate re-decision |
+| Changed lines | 1 addition + 1 deletion = **2 authored lines** (registry field; within the 400-line budget; tasks.md estimated ~15) |
+
+Plugin smoke suite deliberately NOT run or claimed green — the `1001 passed, 1 failed (40e)` baseline is
+untouched by this unit; 16n/40e fixes belong to tasks 1.10/1.11.
 
 ## Task 1.7 — Bounded OpenSpec config corrections (slice 7, PR 7)
 
@@ -118,6 +147,6 @@ not a 1.7 gate; M1 closure remains strict after tasks 1.10/1.11.
 
 ## Next
 
-Task 1.9 (scenario 3 activation correction 1→2, slice 3a, PR 8 — depends only on 1.3, may precede 1.5 per
-task order), then 1.10/1.11 as dependencies allow, then 1.8; M1 closure needs the full plugin suite green
-after 1.10+1.11 (no baseline exception).
+Task 1.10 (smoke 16n host-safety isolation, slice 8a, PR 9 — no M1 dependencies), then 1.11 (40e pin +
+dual-layout oracle, depends on 1.5), then 1.8 (scenarios 1+2, depends on 1.11); M1 closure needs the full
+plugin suite green after 1.10+1.11 (no baseline exception).
