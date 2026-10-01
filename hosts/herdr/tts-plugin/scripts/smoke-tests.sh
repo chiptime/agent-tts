@@ -133,7 +133,9 @@
 #         40b redaction before transformation (incl. in-fence), 40c
 #         deterministic heuristics + unclosed-fence safe degradation, 40d
 #         total escaping + http/https-only links, 40e pinned-oracle parity
-#         fixtures F1–F9 + sidecar map, 40f --render-html CLI + untouched
+#         fixtures F1–F9 + sidecar map with checked dual-layout oracle
+#         identity at the exact selected pin (Decision 9), 40f --render-html
+#         CLI + untouched
 #         contract v1, 40g zero new dependencies + transient process,
 #         40h --render-html whole-document mode (no scrollback extraction)
 #   41    reader vs remote-engine ERR replies: a live socket answering
@@ -3659,8 +3661,15 @@ assert_grep "40d https link renders as a real anchor" 'href="https://example\.co
 #      spans. Harness safeguard first: the venv may hold agent_tts editable
 #      at dev HEAD — oracle file identity (boundaries/cleaner/redact) is
 #      verified against the bootstrap pin before any fixture executes.
+#      Decision 9: the lookup is return-code-checked and dual-layout
+#      (engine/src/agent_tts then legacy src/agent_tts) at the one pinned
+#      revision — a missing revision or file fails loudly, never by
+#      comparing a git rev-parse echoed-argument decoy against a blob id.
+assert_grep "40e pin is the exact selected full SHA d66616bc" \
+  'AGENT_TTS_REF="\$\{HERDR_AGENT_TTS_REF:-d66616bce3ad8193f11ae615bd58bb4508eb65be\}"' \
+  "$REPO/scripts/bootstrap.sh"
 cat > "$T/e-driver.py" <<'PYEOF'
-import json, os, re, subprocess, sys
+import json, os, re, shutil, subprocess, sys
 
 sys.path.insert(0, sys.argv[1])
 OUT = sys.argv[2]
@@ -3677,30 +3686,111 @@ boot = open(os.path.join(sys.argv[3], "scripts/bootstrap.sh"), encoding="utf-8")
 m = re.search(r"AGENT_TTS_REF=\"\$\{HERDR_AGENT_TTS_REF:-(\w{40})\}\"", boot)
 pin = m.group(1) if m else ""
 check("40e pin parsed from bootstrap.sh", bool(pin), pin or "no SHA-40 pin found")
+check("40e pin is the exact selected SHA (Decision 9)",
+      pin == "d66616bce3ad8193f11ae615bd58bb4508eb65be", pin)
 pkg_dir = os.path.dirname(agent_tts.__file__)
 repo = pkg_dir
 while repo != os.path.dirname(repo) and not os.path.isdir(os.path.join(repo, ".git")):
     repo = os.path.dirname(repo)
+
+# Checked dual-layout oracle resolution (design Decision 9): one revision,
+# two candidate tree layouts, every git lookup guarded by return code AND
+# blob shape. git rev-parse echoes its failed argument to stdout with
+# rc 128, so an emptiness guard never fires — the echoed decoy must never
+# be mistaken for a blob id. The layout is selected as a unit (all three
+# files or the next layout); layout compatibility is a tree-shape
+# accommodation, NEVER a revision fallback.
+ORACLE_FILES = ("boundaries.py", "cleaner.py", "redact.py")
+ORACLE_LAYOUTS = ("engine/src/agent_tts", "src/agent_tts")  # monorepo, legacy
+BLOB_ID = re.compile(r"^[0-9a-f]{40}$")
+
+def git_out(git_repo, *args):
+    proc = subprocess.run(["git", "-C", git_repo, *args], capture_output=True, text=True)
+    return proc.returncode, proc.stdout.strip()
+
+def resolve_oracle(git_repo, rev, layouts=ORACLE_LAYOUTS, files=ORACLE_FILES):
+    """Resolve the three oracle blobs at one immutable revision.
+
+    Returns (status, layout, blobs, detail); status is 'revision-absent',
+    'layout-miss' or 'ok'. An unknown revision fails before any layout is
+    probed; a layout wins only when ALL files resolve in it."""
+    rc, _ = git_out(git_repo, "cat-file", "-e", f"{rev}^{{commit}}")
+    if rc != 0:
+        return "revision-absent", None, {}, f"pinned revision {rev} not present"
+    for layout in layouts:
+        blobs, missing = {}, []
+        for fname in files:
+            rc, out = git_out(git_repo, "rev-parse", f"{rev}:{layout}/{fname}")
+            if rc != 0 or not BLOB_ID.match(out):
+                missing.append(fname)
+            else:
+                blobs[fname] = out
+        if not missing:
+            return "ok", layout, blobs, f"{layout} @ {rev[:8]}"
+    probed = "; ".join(f"{f}: " + ", ".join(f"{lay}/{f}" for lay in layouts)
+                       for f in files)
+    return "layout-miss", None, {}, f"oracle unresolved at {rev[:8]} — probed {probed}"
+
 identity_ok, identity_detail = True, "regular install"
 if os.path.isdir(os.path.join(repo, ".git")):  # editable: compare oracle blobs
-    rel = os.path.relpath(pkg_dir, repo).replace(os.sep, "/")
-    for fname in ("boundaries.py", "cleaner.py", "redact.py"):
-        try:
-            pinned = subprocess.run(
-                ["git", "-C", repo, "rev-parse", f"{pin}:{rel}/{fname}"],
-                capture_output=True, text=True).stdout.strip()
-            local = subprocess.run(
-                ["git", "-C", repo, "hash-object", os.path.join(pkg_dir, fname)],
-                capture_output=True, text=True).stdout.strip()
-        except Exception as exc:
-            identity_ok, identity_detail = False, f"{fname}: {exc}"
-            break
-        if pinned != local:
-            identity_ok, identity_detail = False, f"{fname} drifts from pin {pin[:8]}"
-            break
+    status, layout, blobs, detail = resolve_oracle(repo, pin)
+    if status != "ok":
+        identity_ok, identity_detail = False, detail
     else:
-        identity_detail = f"editable install, oracle files == pin {pin[:8]}"
+        for fname in ORACLE_FILES:
+            rc, local = git_out(repo, "hash-object", os.path.join(pkg_dir, fname))
+            if rc != 0 or not BLOB_ID.match(local):
+                identity_ok, identity_detail = False, f"{fname}: hash-object rc={rc}"
+                break
+            if local != blobs[fname]:
+                identity_ok, identity_detail = False, \
+                    f"{fname} drifts from pin {pin[:8]} ({layout})"
+                break
+        else:
+            identity_detail = f"editable install, oracle files == {layout} @ pin {pin[:8]}"
 check("40e oracle file identity == pinned ref", identity_ok, identity_detail)
+
+# Decision-9 resolution safeguards on a throwaway sandbox repo (hermetic:
+# independent of how the venv installed agent_tts). Commit M carries only
+# the monorepo layout, commit L only the legacy one, and a bogus revision
+# must fail as revision-absent before any layout is probed.
+sb = os.path.join(os.path.dirname(OUT), "e-oracle-repo")
+for lay in ORACLE_LAYOUTS:
+    os.makedirs(os.path.join(sb, lay), exist_ok=True)
+for fname in ORACLE_FILES:
+    open(os.path.join(sb, ORACLE_LAYOUTS[0], fname), "w",
+         encoding="utf-8").write(f"# oracle {fname} (monorepo fixture)\n")
+GIT_ID = ("-c", "user.email=smoke@herdr-tts.test", "-c", "user.name=herdr-tts smoke",
+          "-c", "commit.gpgsign=false")
+git_out(sb, "init", "-q")
+git_out(sb, *GIT_ID, "add", "-A")
+git_out(sb, *GIT_ID, "commit", "-q", "-m", "monorepo layout fixture")
+rc_m, rev_m = git_out(sb, "rev-parse", "HEAD")
+shutil.rmtree(os.path.join(sb, "engine"))
+for fname in ORACLE_FILES:
+    open(os.path.join(sb, ORACLE_LAYOUTS[1], fname), "w",
+         encoding="utf-8").write(f"# oracle {fname} (legacy fixture)\n")
+git_out(sb, *GIT_ID, "add", "-A")
+git_out(sb, *GIT_ID, "commit", "-q", "-m", "legacy layout fixture")
+rc_l, rev_l = git_out(sb, "rev-parse", "HEAD")
+st_m, lay_m, blobs_m, det_m = resolve_oracle(sb, rev_m)
+check("40e dual-layout: monorepo tree resolves as a unit (engine/src)",
+      rc_m == 0 and st_m == "ok" and lay_m == "engine/src/agent_tts"
+      and set(blobs_m) == set(ORACLE_FILES), det_m)
+st_l, lay_l, blobs_l, det_l = resolve_oracle(sb, rev_l)
+check("40e dual-layout: legacy tree resolves as a unit (src)",
+      rc_l == 0 and st_l == "ok" and lay_l == "src/agent_tts"
+      and set(blobs_l) == set(ORACLE_FILES), det_l)
+st_e, lay_e, _, det_e = resolve_oracle(sb, "e" * 40)
+check("40e unknown revision fails as revision-absent (no layout retry)",
+      st_e == "revision-absent" and lay_e is None
+      and "engine/src/agent_tts" not in det_e and "src/agent_tts" not in det_e, det_e)
+rc_x, out_x = git_out(sb, "rev-parse", f"{rev_m}:engine/src/agent_tts/absent.py")
+check("40e rev-parse failure echoes its argument, never a blob id",
+      rc_x != 0 and not BLOB_ID.match(out_x), f"rc={rc_x}")
+st_x, _, _, det_x = resolve_oracle(sb, rev_m, layouts=("engine/src/nope",))
+check("40e absent oracle path fails hard naming the probed path",
+      st_x == "layout-miss" and "engine/src/nope/boundaries.py" in det_x, det_x)
 
 import reader_pipeline as rp
 
