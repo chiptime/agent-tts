@@ -27,7 +27,14 @@
 #         HERDR_TTS_CONFIG_FILE), settings `v` (Lectura) toggles the
 #         auto_muted marker both ways with inline notes, a/i/f/b cycles
 #         persist scope/lang/podcast/debounce, t free-text topic (empty
-#         clears), transient status row separated by a blank row
+#         clears), transient status row separated by a blank row;
+#         16p-16s Decision-8 host-safety isolation: the launcher's three
+#         playback-state paths are env-overridable with byte-identical
+#         defaults (static safeguard, 16p), new_env() sandboxes them plus
+#         AGENT_TTS_SOCKET for every scenario (16q), the stop branch
+#         signals/removes only sandbox fixtures (16r), and a read-only
+#         host-state fingerprint taken before the first scenario is
+#         compared after the whole run (16s)
 #   17    keymap: init (template, no-overwrite, --force), check (core
 #         shadow warnings, --json), emit (direct/ctrlalt/menu TOML),
 #         invalid ids/chords/duplicates rejected, missing file actionable
@@ -191,6 +198,29 @@ norm_frame() { # $1 = file -> normalized copy on stdout
          -e 's/[0-9]+[smh] ago/Nm ago/g' "$1"
 }
 
+# Decision-8 (16s) host-state fingerprint: read-only snapshot of the four
+# production playback-state paths (the three launcher defaults plus the
+# engine's own default control socket). Records presence, inode, mtime and
+# content hash — or ABSENT. It only ever reads; it never creates host
+# state, so "still absent" stays provable.
+host_state_snap() { # $1 = output file
+  local p inode mtime content
+  : > "$1"
+  for p in /tmp/herdr-tts-playing.lock /tmp/herdr-tts-current.pid \
+           /tmp/herdr-tts-player.sock /tmp/agent-tts-player.sock; do
+    if [[ -e "$p" ]]; then
+      inode=$(stat -c %i "$p" 2>/dev/null || printf 'no-inode')
+      mtime=$(stat -c %Y "$p" 2>/dev/null || printf 'no-mtime')
+      content=$(sha256sum "$p" 2>/dev/null | cut -d' ' -f1)
+      printf '%s\t%s\t%s\t%s\n' "$p" "$inode" "$mtime" "${content:-unreadable}" >> "$1"
+    else
+      printf '%s\tABSENT\n' "$p" >> "$1"
+    fi
+  done
+}
+HOST_STATE_BEFORE="$ROOT/.host-state-before"
+host_state_snap "$HOST_STATE_BEFORE"
+
 new_env() { # $1 = scenario dir name
   T="$ROOT/$1"
   rm -rf "$T"; mkdir -p "$T/bin" "$T/data/herdr-tts/venv/bin" "$T/conf" "$T/state"
@@ -201,6 +231,14 @@ new_env() { # $1 = scenario dir name
   export XDG_CONFIG_HOME="$T/conf" XDG_DATA_HOME="$T/data" XDG_STATE_HOME="$T/state"
   export HERDR_TTS_SNOOZE_FILE="$T/snooze.json"
   export HERDR_TTS_HISTORY_FILE="$T/history.log"
+  # Decision-8 host safety: the launcher's three playback-state paths and
+  # the engine's control socket resolve sandbox-local for EVERY scenario,
+  # never the /tmp host defaults a live daemon owns.
+  mkdir -p "$T/run"
+  export HERDR_TTS_LOCK_FILE="$T/run/playing.lock"
+  export HERDR_TTS_PID_FILE="$T/run/current.pid"
+  export HERDR_TTS_IPC_SOCKET="$T/run/player.sock"
+  export AGENT_TTS_SOCKET="$T/run/agent-tts-player.sock"
   export LINES=40 COLUMNS=110
   export PATH="$T/bin:$PATH" # stubbed herdr CLI wins over the real one
   : > "$T/err.log"
@@ -1153,6 +1191,75 @@ first=$(sed -n '1p' "$T/out.txt")
 [[ "$first" == *"Transcribing and reading the response in w4:p1"* ]] \
   && ok "16o happy path keeps kickoff as line 1" || bad "16o happy first line was: $first"
 assert_grep "16o text reaches the engine" 'SPOKEN:pane body' "$T/out.txt"
+
+# 16p. (Decision-8 test a) Host-safety isolation, static half: the three
+#      playback-state paths in bin/herdr-tts MUST be environment-overridable
+#      with byte-identical defaults (assert_grep over the source, the same
+#      convention as 40g's SHA-pinning safeguard) so the suite can sandbox
+#      them without changing any production default.
+assert_grep "16p LOCK_FILE env-overridable, default byte-identical" \
+  'LOCK_FILE="\$\{HERDR_TTS_LOCK_FILE:-/tmp/herdr-tts-playing\.lock\}"' "$REPO/bin/herdr-tts"
+assert_grep "16p PID_FILE env-overridable, default byte-identical" \
+  'PID_FILE="\$\{HERDR_TTS_PID_FILE:-/tmp/herdr-tts-current\.pid\}"' "$REPO/bin/herdr-tts"
+assert_grep "16p IPC_SOCKET env-overridable, default byte-identical" \
+  'IPC_SOCKET="\$\{HERDR_TTS_IPC_SOCKET:-/tmp/herdr-tts-player\.sock\}"' "$REPO/bin/herdr-tts"
+
+# 16q. (Decision-8) new_env() isolates playback state for EVERY scenario,
+#      not only section 16: the three launcher overrides plus the engine's
+#      AGENT_TTS_SOCKET must resolve under $T/run before any playback code
+#      runs. No launcher execution here — pure environment proof.
+new_env s16q
+[[ -d "$T/run" ]] && ok "16q new_env creates the sandbox run dir" || bad "16q missing $T/run"
+[[ "${HERDR_TTS_LOCK_FILE:-}" == "$T/run/playing.lock" ]] \
+  && ok "16q HERDR_TTS_LOCK_FILE resolves sandbox-local" \
+  || bad "16q HERDR_TTS_LOCK_FILE=${HERDR_TTS_LOCK_FILE:-unset}"
+[[ "${HERDR_TTS_PID_FILE:-}" == "$T/run/current.pid" ]] \
+  && ok "16q HERDR_TTS_PID_FILE resolves sandbox-local" \
+  || bad "16q HERDR_TTS_PID_FILE=${HERDR_TTS_PID_FILE:-unset}"
+[[ "${HERDR_TTS_IPC_SOCKET:-}" == "$T/run/player.sock" ]] \
+  && ok "16q HERDR_TTS_IPC_SOCKET resolves sandbox-local" \
+  || bad "16q HERDR_TTS_IPC_SOCKET=${HERDR_TTS_IPC_SOCKET:-unset}"
+[[ "${AGENT_TTS_SOCKET:-}" == "$T/run/agent-tts-player.sock" ]] \
+  && ok "16q AGENT_TTS_SOCKET resolves sandbox-local" \
+  || bad "16q AGENT_TTS_SOCKET=${AGENT_TTS_SOCKET:-unset}"
+
+# 16r. (Decision-8 test c) Stop-branch isolation with an isolated fixture:
+#      a planted sandbox lock/PID holding a live `sleep` PID makes `r` take
+#      the stop branch — the confirmation prints player.stopped, exactly
+#      that PID is TERM'd, and only the three sandbox files are removed. A
+#      live host daemon is never a fixture: the scenario fails closed if
+#      the sandbox overrides are missing instead of touching host defaults.
+new_env s16r
+if [[ -z "${HERDR_TTS_LOCK_FILE:-}" || -z "${HERDR_TTS_PID_FILE:-}" || -z "${HERDR_TTS_IPC_SOCKET:-}" ]]; then
+  bad "16r playback isolation missing from new_env(); refusing to run the stop branch"
+else
+  cat > "$T/bin/herdr" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "pane" && "${2:-}" == "current" ]]; then
+  echo '{"result":{"pane":{"pane_id":"w4:p4"}}}'
+  exit 0
+fi
+exit 0
+EOF
+  chmod +x "$T/bin/herdr"
+  sleep 30 & PLAYER_PID=$!
+  echo "$PLAYER_PID" > "$HERDR_TTS_LOCK_FILE"
+  echo "$PLAYER_PID" > "$HERDR_TTS_PID_FILE"
+  export HERDR_TTS_MENU_CONFIRM_SECS=0.2
+  printf 'r' | timeout 10 "$SCRIPT" --voice-menu > "$T/out.txt" 2>>"$T/err.log"
+  [[ $? -eq 0 ]] && ok "16r r exits rc=0 on the stop branch" || bad "16r rc!=0"
+  assert_grep "16r stop branch prints player.stopped" 'Audio stopped' "$T/out.txt"
+  wait "$PLAYER_PID" 2>/dev/null; prc=$?
+  if [[ $prc -eq 143 ]]; then
+    ok "16r sandbox player PID received TERM (wait rc=143)"
+  else
+    bad "16r sandbox player PID not TERM'd (wait rc=$prc)"
+    kill "$PLAYER_PID" 2>/dev/null || true
+  fi
+  [[ ! -e "$HERDR_TTS_LOCK_FILE" && ! -e "$HERDR_TTS_PID_FILE" && ! -e "$HERDR_TTS_IPC_SOCKET" ]] \
+    && ok "16r only the three sandbox playback files were removed" \
+    || bad "16r sandbox leftovers: $(ls "$T/run" 2>/dev/null | tr '\n' ' ')"
+fi
 
 echo "── 17. keymap: init / check / emit (declarative, conflict-checked)"
 new_env s17
@@ -4210,6 +4317,18 @@ assert_grep "43d reading view renders the reader popup row" ' p  Reader popup:' 
 assert_grep "43d p knob note renders" 'Reader auto-open: on' "$T/popup.txt"
 assert_grep "43d p knob persists on" '^TTS_READER_AUTO="on"$' "$HERDR_TTS_CONFIG_FILE"
 unset HERDR_TTS_CONFIG_FILE
+
+# 16s. (Decision-8 test d) Host-state invariance across the WHOLE suite
+#      run: the four production playback-state paths must be unchanged —
+#      same presence, inode, mtime and content (or still ABSENT) — between
+#      the read-only fingerprint taken before the first scenario and now.
+host_state_snap "$ROOT/.host-state-after"
+if diff -u "$HOST_STATE_BEFORE" "$ROOT/.host-state-after" > "$ROOT/.host-state.diff" 2>&1; then
+  ok "16s host playback state invariant across the full suite run"
+else
+  bad "16s host playback state CHANGED across the suite run"
+  sed 's/^/      /' "$ROOT/.host-state.diff"
+fi
 
 echo
 echo "═══ RESULT: $PASS passed, $FAIL failed ═══"
