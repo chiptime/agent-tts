@@ -138,6 +138,10 @@ READER_CSP = (
 )
 _INDEX_HEADERS = {**_NO_CACHE_HEADERS, "Content-Security-Policy": READER_CSP}
 _VERSIONED_REFS = (
+    # consult.js loads BEFORE app.js (index.html script order): a stale
+    # cached Consult module makes the new app.js call methods that do
+    # not exist, so /ask aborts locally before any POST.
+    ('src="/consult.js"', 'src="/consult.js?v={v}"'),
     ('src="/app.js"', 'src="/app.js?v={v}"'),
     ('src="/endpointing.js"', 'src="/endpointing.js?v={v}"'),
     ('src="/vad.js"', 'src="/vad.js?v={v}"'),

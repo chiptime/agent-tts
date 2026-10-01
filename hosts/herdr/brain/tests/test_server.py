@@ -1226,6 +1226,7 @@ class TestVersioning:
         resp = client.get("/")
         assert resp.status_code == 200
         assert resp.headers["cache-control"] == "no-cache"
+        assert 'src="/consult.js?v=abc1234"' in resp.text
         assert 'src="/app.js?v=abc1234"' in resp.text
         assert 'src="/endpointing.js?v=abc1234"' in resp.text
         assert 'src="/vad.js?v=abc1234"' in resp.text
@@ -1233,6 +1234,7 @@ class TestVersioning:
         assert 'href="/manifest.webmanifest?v=abc1234"' in resp.text
         assert 'id="app-version">vabc1234<' in resp.text
         assert 'src="/app.js"></script>' not in resp.text  # no unversioned refs left
+        assert 'src="/consult.js"></script>' not in resp.text  # stale PWA module kills /ask
 
     def test_static_assets_served_no_cache(self, settings, audio_dir):
         cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
