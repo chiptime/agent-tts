@@ -97,7 +97,7 @@ In-task decision (explicit, not a maintainer gate): **validator note A** — the
   - OQ: none. Provides the `id=` blocks consumed by task 1.8.
   - Est: ~260 lines.
 
-- [ ] 1.5 **Bootstrap dev-mode `engine/` derivation (audit B5)** (slice 5) — replace the hardcoded `~/Code/personal/agent-tts` dev checkout with own-location-derived `<checkout>/engine/`; actionable non-zero failure when `HERDR_TTS_DEV=1` but no discoverable `engine/`; public install ignores any decoy checkout; retained: uv/Python fallback, immutable pin, upgrade behavior, checkout independence. Plugin-strict-TDD: RED scenarios first.
+- [x] 1.5 **Bootstrap dev-mode `engine/` derivation (audit B5)** (slice 5) — replace the hardcoded `~/Code/personal/agent-tts` dev checkout with own-location-derived `<checkout>/engine/`; actionable non-zero failure when `HERDR_TTS_DEV=1` but no discoverable `engine/`; public install ignores any decoy checkout; retained: uv/Python fallback, immutable pin, upgrade behavior, checkout independence. Plugin-strict-TDD: RED scenarios first.
   - Files: `hosts/herdr/tts-plugin/scripts/bootstrap.sh`, `hosts/herdr/tts-plugin/scripts/smoke-tests.sh` (extend).
   - Verify: plugin smoke suite green for the focused `plugin-bootstrap` delta scenarios (public install ignores decoy; dev opt-in derives `engine/` from own location; missing-engine fails actionably). The FULL plugin smoke suite is claimed green only at M1 closure, after tasks 1.10 and 1.11 fix the known 16n/40e baseline failures — never prematurely before those fixes.
   - OQ: none. Ordering note: task 1.11 depends on this task (both edit `bootstrap.sh`; sequenced, never merged, separate rollbacks).
