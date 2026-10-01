@@ -1,4 +1,4 @@
-# AT-11 apply progress — cumulative through task 1.6 (M1, persistent V1 evidence closed)
+# AT-11 apply progress — cumulative through task 1.7 (M1, persistent V1 evidence closed)
 
 Branch `feat/at-11-instalable` in worktree `/home/bruno/Code/personal/agent-tts-worktrees/at-11-instalable`.
 This file is the OpenSpec-side apply-progress artifact (native locator discovered by `gentle-ai sdd-status`);
@@ -7,7 +7,37 @@ cumulative content plus exact commit hashes (this file ships inside its own work
 contain that hash).
 
 Hash-only branch rewrite verified earlier: refreshed mapping supersedes pre-rewrite IDs
-(a022c44→d89abc7, 3712ced→aae51ea, b30cd0a→0682845, b037b6f→401a4b8). Cumulative state: **6/26 tasks complete**.
+(a022c44→d89abc7, 3712ced→aae51ea, b30cd0a→0682845, b037b6f→401a4b8). Cumulative state: **7/26 tasks complete**.
+
+## Task 1.7 — Bounded OpenSpec config corrections (slice 7, PR 7)
+
+**What**: Two bounded metadata corrections, nothing else. Root `openspec/config.yaml` context: the
+"subproject-scoped, out of scope here" phrase replaced by wording that preserves the plugin subproject
+registry ("no merger, no ownership transfer"), permits the root change at-11-instalable to route named
+delta specs to it with explicit archive targets and make bounded metadata corrections there, and states
+the plugin's local `strict_tdd` policy stays local and is not rewritten.
+`hosts/herdr/tts-plugin/openspec/config.yaml` context: the stale "agent-tts pip package (separate repo,
+external dependency, out of scope)" statement corrected to "agent-tts engine (engine/ subproject of this
+same agent-tts monorepo; installed from the pinned monorepo source, not a separate external repo)".
+
+**Why**: AT-11 M1 hygiene — the post-monorepo-migration reality contradicted both stale statements, and
+the proposal §Registry Ownership and Spec Routing explicitly authorizes exactly this bounded correction
+plus explicit delta routing; it is not a registry merger or ownership transfer. Only the `context: |`
+blocks changed; no `strict_tdd`, `projects`, `testing`, or `rules` section was touched in either file,
+and no other source/spec file was modified.
+
+**Where**: `openspec/config.yaml`, `hosts/herdr/tts-plugin/openspec/config.yaml` only.
+
+### Work Unit Evidence (task 1.7)
+
+| Evidence | Result |
+|---|---|
+| Focused test | `cd engine && UV_PROJECT_ENVIRONMENT=/tmp/opencode/at11-engine-venv uv run --locked --offline --extra dev python -m pytest tests/test_versioned_tree_hygiene.py -q` → **13 passed** (0.11s) |
+| Diff review vs proposal §Registry Ownership and Spec Routing | Stale external-repo claim gone from the plugin config; root wording matches "clarify … registry-scope wording to permit this bounded metadata correction and explicit delta routing … not a registry merger or ownership transfer"; both `strict_tdd` settings unchanged |
+| YAML sanity | Both config files parse via `yaml.safe_load` (structure untouched — only `context: \|` block content) |
+| Runtime harness | **N/A** per tasks.md work-unit table — metadata-only, no executable behavior boundary |
+| Rollback boundary | Revert this work-unit commit alone — only the two `config.yaml` context blocks (+ tasks.md checkbox + this artifact); no registry history removed, no other work unit depends on the wording |
+| Changed lines | 6 additions + 2 deletions = **8 authored lines** (config corrections; within the 400-line budget; tasks.md estimated ~40) |
 
 ## Task 1.6 — Packaging wrappers: legacy corrections + honest support wording (slice 6, PR 6)
 
@@ -75,18 +105,19 @@ tasks.md Files line + this artifact) — no other work unit's behavior depends o
 
 ## Mode and delivery
 
-- Mode: **Standard** (workspace `strict_tdd: false`; task 1.6 is not a plugin-strict-TDD task — no `bin/`-side
-  change, no smoke scenario).
-- Delivery: auto-chain, **feature-branch-chain**; this unit is slice 6 / PR 6, targeting the immediately
+- Mode: **Standard** (workspace `strict_tdd: false`; tasks 1.6 and 1.7 are not plugin-strict-TDD tasks — no
+  `bin/`-side change, no smoke scenario).
+- Delivery: auto-chain, **feature-branch-chain**; task 1.7 is slice 7 / PR 7, targeting the immediately
   preceding slice's branch context; apply creates work-unit commits only — no push, no PR, no remote git.
 
 ## Full plugin suite status (unchanged by this task)
 
 `bash scripts/smoke-tests.sh` currently reports `1001 passed, 1 failed (40e)` — the known baseline failure
-fixed by task 1.11 (16n determinism by 1.10). The full plugin suite is NOT claimed green by task 1.6 and is
-not a 1.6 gate; M1 closure remains strict after tasks 1.10/1.11.
+fixed by task 1.11 (16n determinism by 1.10). The full plugin suite is NOT claimed green by task 1.7 and is
+not a 1.7 gate; M1 closure remains strict after tasks 1.10/1.11.
 
 ## Next
 
-Task 1.7 (bounded OpenSpec config corrections, slice 7, PR 7) per M1 order 1.5→1.6→1.7; then 1.9/1.10/1.11;
-then 1.8; M1 closure needs the full plugin suite green after 1.10+1.11 (no baseline exception).
+Task 1.9 (scenario 3 activation correction 1→2, slice 3a, PR 8 — depends only on 1.3, may precede 1.5 per
+task order), then 1.10/1.11 as dependencies allow, then 1.8; M1 closure needs the full plugin suite green
+after 1.10+1.11 (no baseline exception).
