@@ -2560,20 +2560,34 @@ assert_no_grep "33c failure output is English" 'Instalando|Configurando|Usando|E
 [[ ! -e "$BT/data/herdr-tts" ]] \
   && ok "33c aborts before mkdir (no partial state)" || bad "33c created state before aborting"
 
-# 33d. decoy dev checkout in HOME is ignored unless HERDR_TTS_DEV=1.
-bt_init decoy; bt_uv; mkdir -p "$BT/home/Code/personal/agent-tts"
+# 33d. decoy dev checkout in HOME is ignored unless HERDR_TTS_DEV=1. The
+#      decoy is a monorepo-shaped checkout (engine/ inside) at an arbitrary
+#      HOME path: discovery derives engine/ from the script's own location,
+#      so HOME never feeds the decision and the decoy stays inert. The
+#      script's real surrounding checkout IS discovered but still ignored
+#      without the opt-in (public installs are environment-independent).
+bt_init decoy; bt_uv; mkdir -p "$BT/home/decoy/agent-tts/engine"
 bt_run --
 [[ $? -eq 0 ]] && ok "33d public install with decoy HOME exits rc=0" || bad "33d rc!=0"
 assert_grep "33d decoy HOME still installs the pinned remote source" "$PIN_RE" "$BT/logs/uv.log"
-assert_no_grep_f "33d recorded install never references the decoy path" "$BT/home/Code/personal/agent-tts" "$BT/logs/uv.log"
+assert_no_grep_f "33d recorded install never references the decoy path" "$BT/home/decoy/agent-tts" "$BT/logs/uv.log"
+assert_grep "33d surrounding checkout ignored with a hint" 'ignoring dev checkout .*engine' "$BT/out.log"
 assert_no_grep "33d progress output is English" 'Instalando|Configurando|Usando|Entorno' "$BT/out.log"
 
-# 33e. explicit dev opt-in: editable install from the local checkout.
-bt_init devopt; bt_uv; mkdir -p "$BT/home/Code/personal/agent-tts"
+# 33e. explicit dev opt-in: editable install derived from the bootstrap's
+#      own location. The fake monorepo checkout sits at an arbitrary,
+#      non-canonical path (hosts/herdr/tts-plugin/scripts/ plus engine/);
+#      HOME holds no checkout, so only own-location derivation can find it.
+bt_init devopt; bt_uv
+mkdir -p "$BT/mono/hosts/herdr/tts-plugin/scripts" "$BT/mono/engine"
+cp "$REPO/scripts/bootstrap.sh" "$BT/mono/hosts/herdr/tts-plugin/scripts/bootstrap.sh"
+BT_SCRIPT="$BT/mono/hosts/herdr/tts-plugin/scripts/bootstrap.sh"
 bt_run HERDR_TTS_DEV=1 --
 [[ $? -eq 0 ]] && ok "33e HERDR_TTS_DEV=1 exits rc=0" || bad "33e rc!=0"
-grep -qF -- "-e $BT/home/Code/personal/agent-tts" "$BT/logs/uv.log" \
-  && ok "33e dev opt-in installs editable from the checkout" || bad "33e no editable install recorded"
+grep -qF -- "-e $BT/mono/engine" "$BT/logs/uv.log" \
+  && ok "33e dev opt-in installs editable from the derived engine/" || bad "33e no editable engine/ install recorded"
+assert_no_grep "33e recorded install has no personal hardcoded path" 'Code/personal' "$BT/logs/uv.log"
+BT_SCRIPT="$REPO/scripts/bootstrap.sh"
 
 # 33f. upgrade path: healthy venv short-circuits by default; the upgrade
 #      mode (env var AND --upgrade argv) refreshes the pinned ref.
@@ -2595,13 +2609,30 @@ bt_run -- --upgrade
 
 # 33g. checkout-location agnostic: running from a non-canonical copy of
 #      scripts/ behaves identically (no repo-relative or $HOME-relative
-#      expectations beyond the dev-gated shortcut).
+#      expectations; the copy has no surrounding monorepo, so public mode
+#      installs the pinned source).
 bt_init spot; bt_uv
 mkdir -p "$BT/elsewhere"; cp -r "$REPO/scripts" "$BT/elsewhere/scripts"
 BT_SCRIPT="$BT/elsewhere/scripts/bootstrap.sh"
 bt_run --
 [[ $? -eq 0 ]] && ok "33g arbitrary checkout location exits rc=0" || bad "33g rc!=0"
 assert_grep "33g arbitrary location installs the pinned source" "$PIN_RE" "$BT/logs/uv.log"
+BT_SCRIPT="$REPO/scripts/bootstrap.sh"
+
+# 33h. dev opt-in without a discoverable engine/: the scripts copy sits
+#      alone (no monorepo root four directories up). HERDR_TTS_DEV=1 must
+#      fail actionably in English, name the missing engine/ checkout, and
+#      record no package install.
+bt_init noengine; bt_uv
+mkdir -p "$BT/loose/scripts"
+cp "$REPO/scripts/bootstrap.sh" "$BT/loose/scripts/bootstrap.sh"
+BT_SCRIPT="$BT/loose/scripts/bootstrap.sh"
+bt_run HERDR_TTS_DEV=1 --
+[[ $? -ne 0 ]] && ok "33h dev opt-in without engine/ exits non-zero" || bad "33h rc==0"
+grep -q 'engine/' "$BT/err.log" && ok "33h error names the missing engine/ checkout" || bad "33h engine/ not named"
+grep -q 'HERDR_TTS_DEV' "$BT/err.log" && ok "33h error states the HERDR_TTS_DEV remediation" || bad "33h remediation missing"
+assert_no_grep "33h failure output is English" 'Instalando|Configurando|Usando|Entorno|Se requiere' "$BT/err.log"
+assert_no_grep "33h no install recorded on the dev error" '^uv pip install' "$BT/logs/uv.log"
 BT_SCRIPT="$REPO/scripts/bootstrap.sh"
 unset BT UVLOG PYLOG BT_SCRIPT PIN_RE PIN_PY_RE
 
