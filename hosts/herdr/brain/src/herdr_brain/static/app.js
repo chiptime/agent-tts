@@ -2151,15 +2151,16 @@
     addTurn("user", text);
     setCallState("thinking");
     stopListening();  // the mic must not hear the answer
-    return fetchWithTimeout("/ask", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        text: text,
-        session_id: sessionId,
-        pane_id: selectedPane || null
-      })
-    }, 30000)
+    /* /ask spans the FULL consult turn (up to 60 s engine budget plus
+     * model + TTS shaping) — the fixed 90 s policy AND the request
+     * shape live in consult.js (Consult.requestAsk, tested in
+     * tests/js/consult.test.js). The old inline 30 s aborted the fetch
+     * while the server was still working, losing completed answers. */
+    return window.Consult.requestAsk(fetchWithTimeout, {
+      text: text,
+      sessionId: sessionId,
+      paneId: selectedPane
+    })
       .then(function (resp) {
         if (resp.status === 503) {
           showBanner("El brain no está configurado: falta GLM_API_KEY en el servidor. " +
