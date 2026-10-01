@@ -168,6 +168,7 @@ git_url_of() {
   fi
   case $url in
     *://*|//*|git@*) printf '%s' "$url" ;;  # already a URL
+    /*|./*|../*)     return 1 ;;            # LOCAL PATH (e.g. uv's cache->checkout clone): no network origin by construction — pass through unchecked
     *)                                        # remote NAME: resolve it
       local real
       real=$(find_real git) || return 1
