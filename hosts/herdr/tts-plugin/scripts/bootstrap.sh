@@ -8,8 +8,11 @@ set -euo pipefail
 
 # Immutable agent-tts pin: tag preferred, full 40-char commit SHA while
 # agent-tts publishes no tags. Bare `main` and short SHAs are prohibited.
-# HERDR_AGENT_TTS_REF overrides for testing/dev only.
-AGENT_TTS_REF="${HERDR_AGENT_TTS_REF:-32e9bafbb113df847d7cd9b635b0e848ee182f6f}"
+# HERDR_AGENT_TTS_REF overrides for testing/dev only. The default is the
+# maintainer-selected monorepo engine revision (AT-11 Decision 9): a
+# pre-monorepo ref has no engine/ and would strand the subdirectory
+# install on a stale tree.
+AGENT_TTS_REF="${HERDR_AGENT_TTS_REF:-d66616bce3ad8193f11ae615bd58bb4508eb65be}"
 AGENT_TTS_SRC="git+https://github.com/chiptime/agent-tts.git@${AGENT_TTS_REF}#subdirectory=engine"
 
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/herdr-tts"
