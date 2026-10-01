@@ -1,4 +1,4 @@
-# AT-11 apply progress — cumulative through task 1.11 (M1, smoke 40e exact pin + checked dual-layout oracle)
+# AT-11 apply progress — cumulative through task 1.8 run (M1, scenarios 1+2 authored; BLOCKED on publication — 1.8 not complete)
 
 Branch `feat/at-11-instalable` in worktree `/home/bruno/Code/personal/agent-tts-worktrees/at-11-instalable`.
 This file is the OpenSpec-side apply-progress artifact (native locator discovered by `gentle-ai sdd-status`);
@@ -7,7 +7,82 @@ cumulative content plus exact commit hashes (this file ships inside its own work
 contain that hash).
 
 Hash-only branch rewrite verified earlier: refreshed mapping supersedes pre-rewrite IDs
-(a022c44→d89abc7, 3712ced→aae51ea, b30cd0a→0682845, b037b6f→401a4b8). Cumulative state: **10/26 tasks complete**.
+(a022c44→d89abc7, 3712ced→aae51ea, b30cd0a→0682845, b037b6f→401a4b8). Cumulative state: **10/26 tasks complete**
+(task 1.8 authored and run with truthful BLOCKED evidence — NOT marked complete per the M1 gate).
+
+## Task 1.8 — Scenarios 1+2 `plugin-fresh-clone`, `plugin-subdir-install` (slice 8, PR 11) — AUTHORED, RUN TRUTHFULLY BLOCKED; NOT COMPLETE
+
+**What**: `scripts/acceptance/scenarios/01-plugin-fresh-clone.sh` and `02-plugin-subdir-install.sh` authored
+(177 + 199 lines). Both execute the literal task-1.4 `id=` blocks from `hosts/herdr/tts-plugin/README.md`
+via `run_doc_block` (unquoted file args so the hygiene id↔docs tracker sees them). Scenario 1 legs:
+(A) literal `install-plugin-curl` block — outcome classified from recorded output because `curl|bash`
+exits 0 on a failed fetch; (B) OQ-6 exact-pin retrieval — fresh-sandbox clone of the documented HTTPS
+origin, `git fetch origin <full-sha>` (explicit remote name so the shim resolves and checks the URL),
+`rev-parse <pin>^{commit}` equality, tree materialization of BOTH `hosts/herdr/tts-plugin/` and `engine/`
+at the pin; (C) `#subdirectory=engine` install — repo-under-test bootstrap with NO overrides (the DEFAULT
+pin is what must be installable), venv import, and `direct_url.json` asserting `commit_id == pin`,
+`subdirectory == engine`, url == documented origin. Scenario 2 legs: (1a) literal `install-plugin-github`
+block verbatim — herdr 0.9.1 refuses non-interactively (rc=2, "requires --yes"), asserted as observed
+behavior; (1b) same documented command + herdr's documented `--yes`, clean env; (2) differential leg with
+bootstrap's own documented `HERDR_AGENT_TTS_REF` test override — completes the [[build]] so the
+registration materializes and the OQ-1 predicate is asserted on the registry's own fields
+(`plugin_root == managed_path/<subdir>`), plus full-monorepo materialization (`engine/` present), git
+checkout root, and post-hoc origin verification (herdr clones via its own transport the PATH shim cannot
+see, so the managed checkout's `origin` remote is asserted equal to the documented HTTPS origin). Both
+scenarios are self-contained: each clears `$XDG_DATA_HOME/herdr-tts` before build legs so bootstrap's
+healthy-venv fast path can never mask the public default revision's real build state (an intra-sandbox
+leakage found and eliminated during verification — the first run's scenario-2 PASS was an artifact of
+scenario 1's venv). Real herdr is discovered by probing only directories the harness itself allowlisted
+onto the sandbox PATH (derived, never hardcoded; no brew literal — the hygiene scan covers
+`scripts/acceptance`). BLOCKED vs FAIL discipline: unavailable documented prerequisites (policy refusal,
+HTTP 404, pin not fetchable) → `block()` with the precise reason, only when every executed assertion is
+green; any real failure stays FAIL; consequences of an already-blocked prerequisite are skipped, never
+bad-lined.
+
+**Defect found and fixed (separate commit `d5df787`)**: `scripts/acceptance/origin-shim` treated every
+non-URL first positional as a remote NAME, so uv's local cache→checkout clones (`git clone --no-hardlinks
+<db> <checkout>`, absolute paths — no network origin by construction) died with exit 30 "cannot resolve
+git remote". One-line fix: `/*|./*|../*` → local-only passthrough, matching the shim's own documented
+semantics. Without it every engine install through uv failed inside the sandbox. Hygiene suite (including
+all shim policy tests) green after the fix: 13 passed.
+
+**Public-origin findings (read-only diagnostics + scenario evidence)**: the origin
+`https://github.com/chiptime/agent-tts.git` currently serves NO tags — the documented curl route's
+`v0.16.0` raw URL answers HTTP 404; public main (`e592ef31`) still pins `32e9bafbb113…` (no `engine/`
+subdirectory — fetch succeeds, subdirectory missing); the exact pin `d66616bc…` IS served by full-SHA
+fetch (GitHub retains it although it is on no public ref) — proven inside the sandbox by scenario 1 leg B.
+
+### Work Unit Evidence (task 1.8)
+
+| Evidence | Result |
+|---|---|
+| Harness (`--milestone 1`, real documented origins, shim active) | exit **2** — `0 PASS · 0 FAIL · 2 BLOCKED · 7 NOT-YET-ACTIVATED (activated: 2)`; scenario 3 `NOT-YET-ACTIVATED (activates at milestone 2)` per Decision 10; scenarios 4–9 `not authored` |
+| Scenario 1 state + OQ-6 evidence | **BLOCKED** — "documented installer artifact unavailable at the origin: the tag-pinned URL answers HTTP 404 (tag v0.16.0 is not published)". All 10 assert.log lines green: origin cloned into clean sandbox; exact SHA fetched by full id; rev-parse == exact pin; pinned tree materializes `hosts/herdr/tts-plugin/` + `engine/`; bootstrap installed engine from the pinned public ref with NO overrides (local dev checkout ignored); venv imports `agent_tts`; `direct_url.json` records `commit_id == d66616bc…`, `subdirectory == engine`, documented url. **OQ-6: the exact pin IS publicly retrievable** |
+| Scenario 2 state + OQ-1 evidence | **BLOCKED** — "documented subdirectory route cannot complete at the public default revision: its [[build]] bootstrap still pins 32e9bafbb113… with no engine/ subdirectory, while the corrected pin … is authored in this change and unpublished (proven by the differential leg)". All 10 assert.log lines green: real herdr 0.9.1 resolved on the sandbox PATH; verbatim command refused non-interactively (observed, not worked around); differential override leg completed; `plugin_root == managed_path/<subdir>` (`…/plugins/github/herdr.tts-683bf97d4464/hosts/herdr/tts-plugin`); full monorepo materialized incl. `engine/`; managed_path is a git checkout root; clone origin == documented HTTPS origin (post-hoc policy verification); [[build]] venv imports `agent_tts`. **OQ-1: CONFIRMED, not falsified — the vendoring fallback is NOT needed** |
+| Engine V1 suite (M1 closure leg) | `cd engine && UV_PROJECT_ENVIRONMENT=/tmp/opencode/at11-engine-venv uv run --locked --offline --extra dev python -m pytest tests/ -q` → **807 passed, 11 skipped** (124.95s) |
+| Brain V1 suite (M1 closure leg) | `hosts/herdr/brain` with worktree-local `UV_PROJECT_ENVIRONMENT=/tmp/opencode/at11-brain-venv` (main-checkout venv is editable-bound to main's src — not usable for worktree truth): `python -m pytest tests/ -q` → **571 passed**; `node --test tests/js/` → **179 pass, 0 fail** |
+| Plugin V1 suite (M1 closure leg) | `cd hosts/herdr/tts-plugin && bash scripts/smoke-tests.sh` → **`1022 passed, 0 failed`**, exit 0, `16s host playback state invariant across the full suite run` green (no live-daemon interference; no signal ever sent to the host daemon) |
+| Rollback boundary | Scenario files + this evidence revert as one work-unit commit (`test(acceptance): add real clean-install scenarios`); the shim local-path fix reverts separately (`d5df787`) but doing so re-breaks every uv install inside the sandbox; tasks.md checkbox intentionally untouched (task not complete) |
+| Changed lines | 01-plugin-fresh-clone.sh 177; 02-plugin-subdir-install.sh 199; origin-shim +1 (separate commit) — **~377 authored lines** (within the 400-line budget; tasks.md estimated ~240) |
+
+### M1 closure decision: NOT CLOSED — truthful BLOCKED, blocker returned to the maintainer
+
+All three V1 suites are green and scenario 3 reports `NOT-YET-ACTIVATED` correctly, but V2 scenarios 1+2
+are BLOCKED: the documented public origins do not currently serve what the documented routes require.
+**Both blockers are publication gaps, not code defects** — the at-11-corrected state is local-only (no
+push authorized):
+
+1. Tag `v0.16.0` is not published on `github.com/chiptime/agent-tts` (the origin serves no tags at all) —
+   the documented curl|sh route 404s for a public user.
+2. No public default-branch revision carries the corrected bootstrap pin — public main's [[build]] still
+   pins `32e9bafb…` (no `engine/`), so a genuinely fresh `herdr plugin install` fails its build hook.
+
+Maintainer action to close M1: publish tag `v0.16.0` (or update the README block to a published tag) and
+push a default-branch revision whose `bootstrap.sh` pins `d66616bce3ad8193f11ae615bd58bb4508eb65be` (or
+any published ref that installs). The scenarios are written to turn green without edits once publication
+catches up — no substitute SHA, no moving branch, no cache-only pass was used anywhere. Re-run
+`bash scripts/acceptance/clean-install.sh --milestone 1 --record-dir /tmp/opencode/at11-m1` after
+publication; M1 closes when it exits 0.
 
 ## Task 1.11 — Smoke 40e oracle identity: exact pin + checked dual-layout lookup (slice 8b, PR 10)
 
@@ -247,7 +322,7 @@ tasks.md Files line + this artifact) — no other work unit's behavior depends o
 - Delivery: auto-chain, **feature-branch-chain**; task 1.11 is slice 8b / PR 10, targeting the immediately
   preceding slice's branch context; apply creates work-unit commits only — no push, no PR, no remote git.
 
-## Full plugin suite status (updated by task 1.11)
+## Full plugin suite status (re-verified by the task-1.8 M1 closure attempt)
 
 `bash scripts/smoke-tests.sh` reports **`1022 passed, 0 failed` (exit 0)** on two consecutive runs —
 both M1 baseline failures are now genuinely fixed (16n by task 1.10, 40e by task 1.11: exact pin
@@ -259,7 +334,9 @@ was used anywhere.
 
 ## Next
 
-Task 1.8 (scenarios 1+2 `plugin-fresh-clone` / `plugin-subdir-install` — OQ-6 exact-SHA public retrieval
-from `https://github.com/chiptime/agent-tts.git` + OQ-1 subdirectory probe; runs AFTER 1.11 by design,
-slice 8, PR 11); then M1 closure (all three project suites green — plugin already green — plus harness
-`--milestone 1` truthful report).
+Task 1.8 stays open pending maintainer publication (see the M1 closure decision above): publish tag
+`v0.16.0` and a default-branch revision pinning `d66616bc…`, then re-run
+`bash scripts/acceptance/clean-install.sh --milestone 1 --record-dir /tmp/opencode/at11-m1` — scenarios 1+2
+are expected to flip to PASS without edits, closing M1 (all three V1 suites already green). No baseline
+exception was used anywhere; OQ-6 (exact-pin public retrieval) and OQ-1 (subdirectory materialization)
+are both answered with green evidence. After M1 closes, task 2.1 (slice 9, PR 12) starts M2.
