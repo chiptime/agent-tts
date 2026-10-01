@@ -3,8 +3,15 @@
  *
  * Pure UMD module following the announce.js/toast.js house pattern:
  * every DOM touch goes through the injected surface ({ doc, mount,
- * notify }) — this file references no browser global, so the Node
- * suite drives it against a plain fake DOM.
+ * indicatorMount?, notify }) — this file references no browser
+ * global, so the Node suite drives it against a plain fake DOM.
+ *
+ * Mounts: `mount` always hosts the report panel. The transient
+ * indicator goes to `mount` too UNLESS a separate `indicatorMount`
+ * is provided (the floating "Consultando…" pill inside the call
+ * drawer): with separate mounts each mount's visibility invariant is
+ * independent — indicator mount shown only while consulting, report
+ * mount shown only when a report exists.
  *
  * Events (SSE dicts from the consult event sink, server-wired through
  * the announcement hub):
@@ -60,6 +67,7 @@
     deps = deps || {};
     var doc = deps.doc;
     var mount = deps.mount;
+    var indicatorMount = deps.indicatorMount || null;
     var notify = deps.notify || function () {};
 
     if (!doc || typeof doc.createElement !== "function") {
@@ -68,6 +76,11 @@
     if (!mount || typeof mount.appendChild !== "function") {
       throw new Error("createConsultUI: deps.mount is required");
     }
+    if (indicatorMount && typeof indicatorMount.appendChild !== "function") {
+      throw new Error("createConsultUI: deps.indicatorMount requires appendChild");
+    }
+
+    var indicatorHost = indicatorMount || mount;
 
     var indicator = null;   // lazy: .consult-indicator
     var report = null;      // lazy: .consult-report (one, replaced in place)
@@ -84,7 +97,7 @@
       indicator.classList.add("consult-indicator", "hidden");
       indicator.setAttribute("role", "status");
       indicator.textContent = INDICATOR_TEXT;   // fixed string: textContent is safe
-      mount.appendChild(indicator);
+      indicatorHost.appendChild(indicator);
       return indicator;
     }
 
@@ -102,12 +115,21 @@
       return report;
     }
 
-    /* The mount section is visible iff any child surface is. */
+    /* Split mounts: each mount owns an independent invariant — the
+     * indicator mount is visible iff the indicator is, the report
+     * mount iff a report is. Single mount (legacy): visible iff ANY
+     * child surface is. */
     function syncVisibility() {
-      var anyVisible =
-        (indicator !== null && !indicator.classList.contains("hidden")) ||
-        (report !== null && !report.classList.contains("hidden"));
-      mount.classList.toggle("hidden", !anyVisible);
+      var indicatorVisible =
+        indicator !== null && !indicator.classList.contains("hidden");
+      var reportVisible =
+        report !== null && !report.classList.contains("hidden");
+      if (indicatorMount) {
+        indicatorMount.classList.toggle("hidden", !indicatorVisible);
+        mount.classList.toggle("hidden", !reportVisible);
+        return;
+      }
+      mount.classList.toggle("hidden", !(indicatorVisible || reportVisible));
     }
 
     function showIndicator() {
