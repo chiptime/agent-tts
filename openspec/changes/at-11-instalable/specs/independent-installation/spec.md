@@ -12,6 +12,12 @@ and the documented supported routes. Frozen contracts `contracts/ipc-v2` and
 `contracts/tts-brain-v1` are consumed as-is and are not modified by this
 capability.
 
+**Supplementary M1 verification obligation (authorized extension, Engram
+#9715):** the documented GitHub route additionally carries public-retrieval
+evidence for the selected immutable engine revision. This is a supplementary
+V2 verification obligation; the nine approved PRD Gherkin scenarios remain
+unchanged, unrenumbered, and primary.
+
 Traceability: RF-AT-11-1, RF-AT-11-2, RF-AT-11-6, RF-AT-11-7, RF-AT-11-8,
 RF-AT-11-9, RF-AT-11-11; PRD acceptance scenarios "Instalación del plugin
 desde clon fresco", "Cero rutas de máquina", "Reinstalación idempotente
@@ -62,6 +68,53 @@ its `[[startup]]` entry intact.
 - GIVEN the active installation documentation and installer sources
 - WHEN they are searched for archived-repository install commands and URLs
 - THEN no active reference to the legacy standalone repositories remains (historical/archived documents excepted)
+
+### Requirement: Documented-origin retrieval of the selected engine revision
+
+The documented GitHub-subdirectory installation MUST retrieve exactly the
+selected immutable engine revision — full SHA
+`d66616bce3ad8193f11ae615bd58bb4508eb65be` — from the documented origin
+`https://github.com/chiptime/agent-tts.git`, and MUST materialize both
+`hosts/herdr/tts-plugin/` and `engine/` from that revision. Local object
+availability, a cached copy, or stubbed V1 success is not
+public-retrievability evidence. When that exact revision cannot be retrieved
+from the documented origin (missing revision, access failure, or missing
+authorization), the installation scenario MUST report `BLOCKED` with the
+recorded reason — never a substitute SHA, a moving branch, a cache-only pass,
+or a silent fallback. Network permission for this proof stays limited to the
+documented origins (PyPI/uv, GitHub, M3 model origins, Engram #9681); any
+unlisted origin remains `BLOCKED`.
+
+(Supplementary V2 verification obligation from the authorized M1 extension
+[Engram #9715]; it adds public-retrieval evidence for the pin specified by
+the `plugin-bootstrap` delta. The nine approved PRD Gherkin scenarios remain
+unchanged.)
+
+#### Scenario: Exact-SHA retrieval from the documented origin
+
+- GIVEN a clean-room V2 environment with authorized access to the documented origin
+- WHEN the documented GitHub-subdirectory installation runs
+- THEN the recorded retrieval fetches exactly full SHA `d66616bce3ad8193f11ae615bd58bb4508eb65be` from `https://github.com/chiptime/agent-tts.git`
+- AND both `hosts/herdr/tts-plugin/` and `engine/` are materialized from that revision
+
+#### Scenario: Local availability alone is not evidence
+
+- GIVEN the selected revision exists only in a local git object store, or only a stubbed V1 install succeeds
+- WHEN installation evidence is evaluated
+- THEN public retrieval from the documented origin is not considered proven
+
+#### Scenario: Unavailable retrieval reports BLOCKED, never a substitute
+
+- GIVEN the documented origin cannot serve the exact selected revision, or access to it is unauthorized
+- WHEN the installation scenario reaches retrieval
+- THEN it reports `BLOCKED` with the recorded reason
+- AND no substitute revision, moving branch, or cached copy is installed
+
+#### Scenario: Network permission is not generalized
+
+- GIVEN the V2 retrieval proof
+- WHEN its network accesses are inspected
+- THEN only documented origins are contacted and any unlisted origin remains blocked
 
 ### Requirement: Automatic CLI exposure without manual symlinks
 
