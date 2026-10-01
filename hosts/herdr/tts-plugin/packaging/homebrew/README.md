@@ -6,14 +6,22 @@ step, documented below.
 
 ## What the formula actually does (and does not)
 
-1. Homebrew **clones the repo at the pinned tag** (`url ... .git` with
-   `tag:` + `revision:` — both must be bumped on every release).
+1. Homebrew **clones the agent-tts monorepo at the pinned tag**
+   (`url ... .git` with `tag:` + `revision:` — both must be bumped on every
+   release) and stages **only the plugin subdirectory**
+   (`hosts/herdr/tts-plugin`) into the keg.
 2. It runs the plugin's **own `scripts/bootstrap.sh`** with
    `XDG_DATA_HOME=#{prefix}`, so the Python venv (and the immutable-pinned
    `agent-tts` engine) are built **inside the keg**. No vendored engine, no
    second pin to maintain.
 3. It shims `bin/herdr-tts` with `HERDR_PLUGIN_ROOT=#{prefix}` (and
    `XDG_DATA_HOME=#{prefix}`) so the launcher finds the venv it was built with.
+
+**First-run onboarding is not available on this route.** The shared onboarding
+wizard is a monorepo-root module, and the keg stages only the plugin
+subdirectory, so it can never reach monorepo-root tooling. Keg users configure
+the plugin through the CLI instead (see the
+[project README](https://github.com/chiptime/agent-tts/tree/main/hosts/herdr/tts-plugin)).
 
 **Why the shim also pins `XDG_DATA_HOME`:** the launcher resolves its venv
 from that variable, and there is no separate override for the venv location.
@@ -70,6 +78,6 @@ ever re-pointed.
 
 The formula installs the CLI (`--speak`, `--render-text`, `--status`,
 `keymap ...`, `skill ...`). The plugin experience (daemon, watchers, dashboard,
-keybindings) requires the Herdr host — `herdr plugin install chiptime/herdr-tts`
-remains the recommended install path; the formula is for machines that manage
-the CLI through Homebrew.
+keybindings) requires the Herdr host — `herdr plugin install
+chiptime/agent-tts/hosts/herdr/tts-plugin` remains the recommended install
+path; the formula is for machines that manage the CLI through Homebrew.
