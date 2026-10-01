@@ -1,4 +1,4 @@
-# AT-11 apply progress — cumulative through task 1.9 (M1, scenario 3 activation corrected to M2)
+# AT-11 apply progress — cumulative through task 1.10 (M1, smoke 16n host-safety isolation)
 
 Branch `feat/at-11-instalable` in worktree `/home/bruno/Code/personal/agent-tts-worktrees/at-11-instalable`.
 This file is the OpenSpec-side apply-progress artifact (native locator discovered by `gentle-ai sdd-status`);
@@ -7,7 +7,57 @@ cumulative content plus exact commit hashes (this file ships inside its own work
 contain that hash).
 
 Hash-only branch rewrite verified earlier: refreshed mapping supersedes pre-rewrite IDs
-(a022c44→d89abc7, 3712ced→aae51ea, b30cd0a→0682845, b037b6f→401a4b8). Cumulative state: **8/26 tasks complete**.
+(a022c44→d89abc7, 3712ced→aae51ea, b30cd0a→0682845, b037b6f→401a4b8). Cumulative state: **9/26 tasks complete**.
+
+## Task 1.10 — Smoke 16n host-safety isolation: playback lock/PID/IPC + engine socket (slice 8a, PR 9)
+
+**What**: `hosts/herdr/tts-plugin/bin/herdr-tts` lines 26–28 became environment-overridable with
+byte-identical defaults — `LOCK_FILE="${HERDR_TTS_LOCK_FILE:-/tmp/herdr-tts-playing.lock}"`,
+`PID_FILE="${HERDR_TTS_PID_FILE:-/tmp/herdr-tts-current.pid}"`,
+`IPC_SOCKET="${HERDR_TTS_IPC_SOCKET:-/tmp/herdr-tts-player.sock}"` — plus one explanatory comment
+line matching the file's neighbouring-path convention; no other launcher line changed (production toggle
+behavior identical, defaults identical when overrides unset). `new_env()` in `smoke-tests.sh` now creates
+`$T/run` and exports the three overrides plus `AGENT_TTS_SOCKET` to sandbox-local paths
+(`$T/run/playing.lock`, `$T/run/current.pid`, `$T/run/player.sock`, `$T/run/agent-tts-player.sock`),
+isolating every scenario, not only section 16. Four Decision-8 tests shipped: 16p (static
+defaults-preserved safeguard, `assert_grep` over the source à la 40g, x3), 16q (sandbox wiring proven
+behaviorally after `new_env`, x5), 16r (stop-branch isolation: planted sandbox lock/PID holding a live
+`sleep` → `r` prints the player.stopped confirmation, exactly that PID receives TERM — `wait` rc=143 —
+and only the three sandbox files are removed; fails closed with a refusal if the overrides are missing,
+x4), and 16s (suite-level read-only host-state fingerprint — presence/inode/mtime/content of the three
+host defaults plus `/tmp/agent-tts-player.sock`, or ABSENT — compared across the whole suite run, x1).
+16n itself is untouched; its assertions (including `16n read.start is the confirmation line`) ran
+verbatim and green in both full-suite runs.
+
+**Why**: design Decision 8 — the three playback-state paths were the only state paths in the launcher
+header with no env override, so a suite run on a host with a live player took the stop branch: the 16n
+confirmation was corrupted AND the suite TERM'd the operator's real player and deleted its state. A live
+host daemon was running during this whole work unit (`herdr-tts _daemon-supervised` with live
+`/tmp/herdr-tts-{playing.lock,current.pid,player.sock}`), so the unisolated suite was never executed:
+RED was captured only via safe static source greps, per the safety-critical ordering.
+
+**Where**: `hosts/herdr/tts-plugin/bin/herdr-tts` (3 lines + comment), `hosts/herdr/tts-plugin/scripts/smoke-tests.sh`
+(header bullet, `host_state_snap` + pre-suite snapshot, `new_env()` exports, 16p/16q/16r scenarios, 16s end-of-suite compare).
+
+### Work Unit Evidence (task 1.10)
+
+| Evidence | Result |
+|---|---|
+| Safe RED (static, source-reading only — suite NOT run pre-fix) | 7 standalone `grep -qE` checks mirroring 16p/16q exactly, run against the unfixed tree: **all 7 FAIL** (three launcher-override patterns absent from `bin/herdr-tts`; four `new_env` export patterns absent from `smoke-tests.sh`). Runtime RED for 16r/16s was NOT executed pre-fix — running it would have exercised the unisolated stop path against the live host daemon (the hazard itself); the failing static prerequisites stand as their RED evidence. After the fix the same 7 checks PASS |
+| Focused test (Decision-8 RED tests + section 16) | Full suite run 1: all 18 new+16n assertions green — 16n x5 (incl. `read.start is the confirmation line`), 16p x3, 16q x5, 16r x4 (TERM proven via `wait` rc=143), 16s x1. Run 2 identical: 18/18 again — 16n deterministic (previously timing/host-flaky) |
+| Runtime harness | `bash scripts/smoke-tests.sh` twice: run 1 **`1014 passed, 1 failed`**, run 2 **`1014 passed, 1 failed`** — the only failure both times is the known 40e baseline: `40e oracle file identity == pinned ref (boundaries.py drifts from pin 32e9bafb)`, owned by task 1.11. The suite is NOT claimed green. External read-only host-state snapshots (same fingerprint logic, outside the suite): run1-before == run1-after == run2-after — live daemon lock/PID/socket inodes+mtimes+contents unchanged, engine socket still ABSENT. The in-suite 16s assertion additionally passed in both runs |
+| Rollback boundary | Launcher override lines + `new_env()` exports + 16p/16q/16r/16s assertions + `host_state_snap` revert together as one work-unit commit; a partial revert leaving the suite on host defaults restores the hazard and is forbidden |
+| Changed lines | bin/herdr-tts 3+3 (+2 comment); smoke-tests.sh ~100 — **~108 authored lines** (within the 400-line budget; tasks.md estimated ~130) |
+
+### TDD Cycle Evidence (plugin-local strict TDD — `hosts/herdr/tts-plugin/openspec/config.yaml: strict_tdd: true`)
+
+| Task slice | RED | GREEN | REFACTOR |
+|---|---|---|---|
+| 16p defaults preserved (a) | Static greps over `bin/herdr-tts` FAIL (override form absent) — captured standalone, suite not run | Same greps inside suite PASS both runs | None needed |
+| 16q sandbox wiring | Static greps over `smoke-tests.sh` new_env FAIL (exports absent) — captured standalone | Behavioral env assertions PASS both runs | None needed |
+| 16r stop-branch isolation (c) | Not executable pre-fix (would signal the live host daemon); RED carried by the failing 16p/16q static prerequisites — documented, not simulated | 4/4 PASS both runs (TERM rc=143, sandbox-only removal) | None needed |
+| 16s host-state invariance (d) | Same as 16r — suite-level RED unsafe pre-fix | PASS both runs + external snapshots invariant | None needed |
+| (b) read branch via 16n | 16n unchanged (assertions verbatim); pre-fix run forbidden — host-dependent failure documented at task 1.5 as timing/host-flaky | 16n x5 green in BOTH full-suite runs — deterministic | 16n untouched |
 
 ## Task 1.9 — Scenario 3 activation correction: `activates_at_milestone` 1 → 2 (slice 3a, PR 8)
 
@@ -134,19 +184,21 @@ tasks.md Files line + this artifact) — no other work unit's behavior depends o
 
 ## Mode and delivery
 
-- Mode: **Standard** (workspace `strict_tdd: false`; tasks 1.6 and 1.7 are not plugin-strict-TDD tasks — no
-  `bin/`-side change, no smoke scenario).
-- Delivery: auto-chain, **feature-branch-chain**; task 1.7 is slice 7 / PR 7, targeting the immediately
+- Mode: **Standard** at workspace level; task 1.10 is a **plugin-strict-TDD** task (local `strict_tdd: true`
+  governs `smoke-tests.sh` — RED smoke assertions authored before the `bin/herdr-tts` change; see the TDD
+  Cycle Evidence table above). Tasks 1.6/1.7/1.9 were not plugin-strict-TDD tasks.
+- Delivery: auto-chain, **feature-branch-chain**; task 1.10 is slice 8a / PR 9, targeting the immediately
   preceding slice's branch context; apply creates work-unit commits only — no push, no PR, no remote git.
 
-## Full plugin suite status (unchanged by this task)
+## Full plugin suite status (updated by task 1.10)
 
-`bash scripts/smoke-tests.sh` currently reports `1001 passed, 1 failed (40e)` — the known baseline failure
-fixed by task 1.11 (16n determinism by 1.10). The full plugin suite is NOT claimed green by task 1.7 and is
-not a 1.7 gate; M1 closure remains strict after tasks 1.10/1.11.
+`bash scripts/smoke-tests.sh` now reports **`1014 passed, 1 failed (40e)`** on two consecutive runs —
+16n is fixed and deterministic (task 1.10); 40e remains the known baseline failure owned by task 1.11
+(`boundaries.py drifts from pin 32e9bafb`). The full plugin suite is NOT claimed green by task 1.10;
+M1 closure still requires task 1.11 (then 1.8) — no baseline exception.
 
 ## Next
 
-Task 1.10 (smoke 16n host-safety isolation, slice 8a, PR 9 — no M1 dependencies), then 1.11 (40e pin +
-dual-layout oracle, depends on 1.5), then 1.8 (scenarios 1+2, depends on 1.11); M1 closure needs the full
-plugin suite green after 1.10+1.11 (no baseline exception).
+Task 1.11 (40e exact pin `d66616bce3ad8193f11ae615bd58bb4508eb65be` + checked dual-layout oracle driver,
+slice 8b, PR 10 — depends on 1.5, both edit `bootstrap.sh`, sequenced), then 1.8 (scenarios 1+2, depends
+on 1.11); M1 closure needs the full plugin suite green after 1.10+1.11 (no baseline exception).

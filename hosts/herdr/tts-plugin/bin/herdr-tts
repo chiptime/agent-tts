@@ -23,9 +23,11 @@ mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$STATE_DIR"
 # Managed settings store (config.env). Env override keeps tests hermetic.
 CONFIG_FILE="${HERDR_TTS_CONFIG_FILE:-${CONFIG_DIR}/config.env}"
 AUTO_MUTE_FILE="${CONFIG_DIR}/auto_muted"
-LOCK_FILE="/tmp/herdr-tts-playing.lock"
-PID_FILE="/tmp/herdr-tts-current.pid"
-IPC_SOCKET="/tmp/herdr-tts-player.sock"
+# Transient playback state (mutex lock, player PID, engine IPC socket);
+# env overrides keep tests hermetic without changing the defaults.
+LOCK_FILE="${HERDR_TTS_LOCK_FILE:-/tmp/herdr-tts-playing.lock}"
+PID_FILE="${HERDR_TTS_PID_FILE:-/tmp/herdr-tts-current.pid}"
+IPC_SOCKET="${HERDR_TTS_IPC_SOCKET:-/tmp/herdr-tts-player.sock}"
 # Lightweight gating state (snooze / mute / debounce timestamps). The default
 # lives in /tmp; the env override exists so tests can run hermetically.
 SNOOZE_STATE_FILE="${HERDR_TTS_SNOOZE_FILE:-/tmp/herdr-tts-snooze.json}"
