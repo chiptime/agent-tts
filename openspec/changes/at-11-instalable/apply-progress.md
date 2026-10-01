@@ -1,4 +1,4 @@
-# AT-11 apply progress — cumulative through task 1.10 (M1, smoke 16n host-safety isolation)
+# AT-11 apply progress — cumulative through task 1.11 (M1, smoke 40e exact pin + checked dual-layout oracle)
 
 Branch `feat/at-11-instalable` in worktree `/home/bruno/Code/personal/agent-tts-worktrees/at-11-instalable`.
 This file is the OpenSpec-side apply-progress artifact (native locator discovered by `gentle-ai sdd-status`);
@@ -7,7 +7,64 @@ cumulative content plus exact commit hashes (this file ships inside its own work
 contain that hash).
 
 Hash-only branch rewrite verified earlier: refreshed mapping supersedes pre-rewrite IDs
-(a022c44→d89abc7, 3712ced→aae51ea, b30cd0a→0682845, b037b6f→401a4b8). Cumulative state: **9/26 tasks complete**.
+(a022c44→d89abc7, 3712ced→aae51ea, b30cd0a→0682845, b037b6f→401a4b8). Cumulative state: **10/26 tasks complete**.
+
+## Task 1.11 — Smoke 40e oracle identity: exact pin + checked dual-layout lookup (slice 8b, PR 10)
+
+**What**: `hosts/herdr/tts-plugin/scripts/bootstrap.sh` `AGENT_TTS_REF` default re-pinned from the stale
+pre-monorepo `32e9bafbb113df847d7cd9b635b0e848ee182f6f` to the exact maintainer-selected full SHA
+`d66616bce3ad8193f11ae615bd58bb4508eb65be` (`HERDR_AGENT_TTS_REF` override retained; comment records the
+Decision-9 rationale; no other bootstrap behavior touched). The 40e identity driver in `smoke-tests.sh`
+was rewritten per design Decision 9: (1) revision precheck `git cat-file -e <pin>^{commit}` — an unknown
+pin fails as `revision-absent` (`pinned revision <rev> not present`) before any layout is probed, distinct
+from a layout miss, no layout retry; (2) dual-layout probe `engine/src/agent_tts/` (monorepo) then legacy
+`src/agent_tts/` at that single revision, the layout selected **as a unit** (all three files or the next
+layout — layout compatibility is never a revision fallback); (3) every `git rev-parse`/`hash-object`
+lookup asserts returncode == 0 **and** `^[0-9a-f]{40}$` blob shape — `git rev-parse` echoes its failed
+argument to stdout with rc 128, so emptiness-based guards never fire; (4) strict byte identity retained
+for `boundaries.py`, `cleaner.py`, `redact.py` with the full existing F1–F9 + sidecar + redaction
+assertion matrix verbatim — no assertion weakened, deleted, or satisfied by changing engine bytes. New
+assertions: bash-level `40e pin is the exact selected full SHA d66616bc` static check (40g style),
+in-driver `40e pin is the exact selected SHA (Decision 9)`, and five hermetic Decision-9 safeguards on a
+throwaway sandbox git repo (monorepo-only fixture commit resolves via `engine/src`, legacy-only fixture
+commit resolves via `src`, bogus revision → `revision-absent` with no layout paths in the detail,
+absent-path rev-parse decoy never matches blob shape, absent layout → hard `layout-miss` naming every
+probed path).
+
+**Why**: design Decision 9 — three defects made 40e the deterministic baseline failure: the stale pin
+(32e9bafb has no `engine/`), a monorepo-only probe (could never resolve a legacy-layout pin), and unchecked
+return codes (rev-parse's echoed-argument stdout is a decoy that emptiness guards cannot catch). The
+post-fix state is genuinely green, verified read-only: the pin commit exists in the shared object store
+(the worktree is a linked worktree of `/home/bruno/Code/personal/agent-tts`), and the three oracle blobs at
+`d66616bc:engine/src/agent_tts/` equal the working-tree blobs in BOTH checkouts
+(`boundaries.py` `7879e17c…`, `cleaner.py` `a856e8b3…`, `redact.py` `0b46b42d…`). Local resolution is NOT
+public-retrievability evidence — that proof belongs to task 1.8 (OQ-6, documented GitHub origin, `BLOCKED`
+on unavailability, never a substitute SHA).
+
+**Where**: `hosts/herdr/tts-plugin/scripts/bootstrap.sh` (pin + comment), `hosts/herdr/tts-plugin/scripts/smoke-tests.sh`
+(header comment, 40e comment + static pin assert, driver identity-safeguard rewrite + sandbox safeguards).
+
+### Work Unit Evidence (task 1.11)
+
+| Evidence | Result |
+|---|---|
+| Safe RED (structural, pre-edit greps over the pristine tree) | `cat-file` occurrences in smoke-tests.sh: **0**; `returncode` checks in the 40e driver: **0**; legacy-layout probe `"src/agent_tts"`: **0**; exact-pin string anywhere: **0** — Decision-9 tests b/c/d structurally absent; the decoy re-confirmed live: `git rev-parse 32e9bafb:engine/src/agent_tts/boundaries.py` → stdout = the echoed argument, **rc=128** |
+| Focused RED (new driver + assertions authored, pin still stale, suite-faithful env: `AGENT_TTS_LEXICON` fixture + isolated HOME) | Extracted 40e driver run against the real venv: **67 OK, exactly 2 ERR** — `40e pin is the exact selected SHA (Decision 9) :: 32e9bafbb113…` (test a) and `40e oracle file identity == pinned ref :: boundaries.py drifts from pin 32e9bafb (src/agent_tts)` (test e — the dual-layout resolver selected the LEGACY layout at the stale pin and failed on content, proving resolution works and the stale pin genuinely drifts); bash static pin assert: **NO MATCH** (test a) |
+| Focused GREEN | Same extracted driver after the re-pin: **69 OK, 0 ERR** — `40e oracle file identity == pinned ref :: editable install, oracle files == engine/src/agent_tts @ pin d66616bc`; static exact-pin assert MATCH; `40g bootstrap pin still SHA-pinned` regex MATCH (generic SHA safeguard intact — new pin is full 40-hex) |
+| Full plugin suite (runtime harness — the suite IS the hermetic runtime) | `cd hosts/herdr/tts-plugin && bash scripts/smoke-tests.sh` — run 1: **exit 0, `1022 passed, 0 failed`** (2m21s); run 2: **exit 0, `1022 passed, 0 failed`** (deterministic). **First genuine full-suite green** (baseline `1014 passed, 1 failed (40e)` → +7 new checks, 0 failures): all 40e F1–F9/sidecar/redaction assertions verbatim-green, 40e matrix count 69, 40g all four green, 16n x5 green, 16s host-state invariance green |
+| Engine hygiene (offline, no-regression confirmation) | `cd engine && UV_PROJECT_ENVIRONMENT=/tmp/opencode/at11-engine-venv uv run --locked --offline --extra dev python -m pytest tests/test_versioned_tree_hygiene.py -q` → **13 passed** (0.43s) |
+| Rollback boundary | Pin + 40e driver rewrite + all new assertions + this evidence revert together as one work-unit commit; restoring `32e9bafb` restores the known baseline failure (`boundaries.py drifts` via the legacy layout), not a passing release; no engine byte was touched |
+| Changed lines | bootstrap.sh 5+2; smoke-tests.sh 108+18 — **133 authored implementation lines** (within the 400-line budget; tasks.md estimated ~140) |
+
+### TDD Cycle Evidence (plugin-local strict TDD — `hosts/herdr/tts-plugin/openspec/config.yaml: strict_tdd: true`)
+
+| Task slice | RED | GREEN | REFACTOR |
+|---|---|---|---|
+| (a) pin value exact | Static assert + in-driver check FAIL against stale pin (focused run: 2 ERR) | Both PASS post-re-pin; 40g generic SHA assertion passes unchanged | None needed |
+| (b) dual-layout resolution | Structural: no legacy-layout probe existed (grep 0); monorepo-only probe = the baseline failure mechanism | Hermetic sandbox fixtures: monorepo-only commit → `engine/src` selected, legacy-only commit → `src` selected, each as a unit; real pin resolves via `engine/src/agent_tts @ d66616bc` | None needed |
+| (c) checked return codes, no decoy | Structural: zero `returncode` checks in the old driver; decoy proven live (rc 128, echoed argument on stdout) | Every lookup guarded rc==0 AND `^[0-9a-f]{40}$`; decoy check asserts rc!=0 + shape mismatch; absent path → hard named `layout-miss` | None needed |
+| (d) unknown revision distinct | Structural: no `cat-file` revision precheck existed | Bogus 40-hex rev → `revision-absent` with no layout paths in the detail (no layout retry) | None needed |
+| (e) strict identity at the pin | Baseline failure reproduced in focused RED: `boundaries.py drifts from pin 32e9bafb (src/agent_tts)` | `editable install, oracle files == engine/src/agent_tts @ pin d66616bc`; full F1–F9 matrix green twice in-suite | Existing assertions untouched |
 
 ## Task 1.10 — Smoke 16n host-safety isolation: playback lock/PID/IPC + engine socket (slice 8a, PR 9)
 
@@ -184,21 +241,25 @@ tasks.md Files line + this artifact) — no other work unit's behavior depends o
 
 ## Mode and delivery
 
-- Mode: **Standard** at workspace level; task 1.10 is a **plugin-strict-TDD** task (local `strict_tdd: true`
-  governs `smoke-tests.sh` — RED smoke assertions authored before the `bin/herdr-tts` change; see the TDD
-  Cycle Evidence table above). Tasks 1.6/1.7/1.9 were not plugin-strict-TDD tasks.
-- Delivery: auto-chain, **feature-branch-chain**; task 1.10 is slice 8a / PR 9, targeting the immediately
+- Mode: **Standard** at workspace level; tasks 1.10 and 1.11 are **plugin-strict-TDD** tasks (local
+  `strict_tdd: true` governs `smoke-tests.sh` — RED smoke assertions authored before the production
+  change; see the TDD Cycle Evidence tables above). Tasks 1.6/1.7/1.9 were not plugin-strict-TDD tasks.
+- Delivery: auto-chain, **feature-branch-chain**; task 1.11 is slice 8b / PR 10, targeting the immediately
   preceding slice's branch context; apply creates work-unit commits only — no push, no PR, no remote git.
 
-## Full plugin suite status (updated by task 1.10)
+## Full plugin suite status (updated by task 1.11)
 
-`bash scripts/smoke-tests.sh` now reports **`1014 passed, 1 failed (40e)`** on two consecutive runs —
-16n is fixed and deterministic (task 1.10); 40e remains the known baseline failure owned by task 1.11
-(`boundaries.py drifts from pin 32e9bafb`). The full plugin suite is NOT claimed green by task 1.10;
-M1 closure still requires task 1.11 (then 1.8) — no baseline exception.
+`bash scripts/smoke-tests.sh` reports **`1022 passed, 0 failed` (exit 0)** on two consecutive runs —
+both M1 baseline failures are now genuinely fixed (16n by task 1.10, 40e by task 1.11: exact pin
+`d66616bce3ad8193f11ae615bd58bb4508eb65be`, checked dual-layout resolution, strict three-file byte
+identity at the monorepo layout). **The full plugin V1 suite is green and claimable from this task on.**
+M1 closure still requires task 1.8 (V2 scenarios 1+2: documented-origin exact-pin retrieval — OQ-6 —
+or truthful `BLOCKED`) plus the other two project suites at integrated closure; no baseline exception
+was used anywhere.
 
 ## Next
 
-Task 1.11 (40e exact pin `d66616bce3ad8193f11ae615bd58bb4508eb65be` + checked dual-layout oracle driver,
-slice 8b, PR 10 — depends on 1.5, both edit `bootstrap.sh`, sequenced), then 1.8 (scenarios 1+2, depends
-on 1.11); M1 closure needs the full plugin suite green after 1.10+1.11 (no baseline exception).
+Task 1.8 (scenarios 1+2 `plugin-fresh-clone` / `plugin-subdir-install` — OQ-6 exact-SHA public retrieval
+from `https://github.com/chiptime/agent-tts.git` + OQ-1 subdirectory probe; runs AFTER 1.11 by design,
+slice 8, PR 11); then M1 closure (all three project suites green — plugin already green — plus harness
+`--milestone 1` truthful report).
