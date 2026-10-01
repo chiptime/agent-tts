@@ -109,7 +109,7 @@ In-task decision (explicit, not a maintainer gate): **validator note A** — the
   - OQ: none.
   - Est: ~140 lines.
 
-- [ ] 1.7 **Bounded OpenSpec config corrections** (slice 7) — root `openspec/config.yaml`: registry-scope wording clarified to permit this change's bounded metadata correction and explicit delta routing; `hosts/herdr/tts-plugin/openspec/config.yaml`: correct the stale "engine is a separate external repository" statement. No registry merger, no ownership transfer, no `strict_tdd` rewrite.
+- [x] 1.7 **Bounded OpenSpec config corrections** (slice 7) — root `openspec/config.yaml`: registry-scope wording clarified to permit this change's bounded metadata correction and explicit delta routing; `hosts/herdr/tts-plugin/openspec/config.yaml`: correct the stale "engine is a separate external repository" statement. No registry merger, no ownership transfer, no `strict_tdd` rewrite.
   - Files: `openspec/config.yaml`, `hosts/herdr/tts-plugin/openspec/config.yaml`.
   - Verify: N/A runtime boundary (metadata-only, no executable behavior); engine hygiene suite still green; diff reviewed against proposal §Registry Ownership and Spec Routing.
   - OQ: none.

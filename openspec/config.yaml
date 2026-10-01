@@ -6,7 +6,10 @@ context: |
   contracts/ (frozen ipc-v2 + tts-brain-v1 contracts), hosts/herdr/brain/
   (herdr-brain: Python FastAPI + JS service), hosts/herdr/tts-plugin/ (bash Herdr
   plugin with its OWN subproject openspec/ at hosts/herdr/tts-plugin/openspec/
-  and .atl/skill-registry.md — subproject-scoped, out of scope here),
+  and .atl/skill-registry.md — subproject registry preserved: no merger, no
+  ownership transfer; root change at-11-instalable may route named delta specs
+  to it with explicit archive targets and make bounded metadata corrections
+  there; its local strict_tdd policy stays local and is not rewritten),
   installable packaging under hosts/herdr/tts-plugin/packaging/{npm,homebrew}.
   Active change: at-11-instalable (installable packaging).
   Style: code/comments and SDD artifacts in English; docs/ and plugin CLI

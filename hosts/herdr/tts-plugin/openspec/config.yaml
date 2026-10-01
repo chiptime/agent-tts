@@ -5,7 +5,8 @@ context: |
   Tech stack: Pure bash monolith (bin/herdr-tts, ~5k lines: daemon, watcher, CLI
   dispatcher, dashboard TUI, fzf palette, keymap system, settings popups) plus a
   Python bridge lib/tts_engine.py delegating synthesis/playback/IPC to the
-  agent-tts pip package (separate repo, external dependency, out of scope).
+  agent-tts engine (engine/ subproject of this same agent-tts monorepo;
+  installed from the pinned monorepo source, not a separate external repo).
   Architecture: Herdr host-layer plugin declared in herdr-plugin.toml
   (build/startup/panes/actions); hermetic runtimes for tests.
   Testing: scripts/smoke-tests.sh — hermetic scenario-based bash suite
