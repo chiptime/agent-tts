@@ -25,9 +25,11 @@ the product invariants end to end:
   inherently bounded and unaffected); a ``TimezoneUnavailable``
   becomes the terminal ``ask_tz`` state (never a guess, FR-09) and a
   ``PeriodError`` becomes ``clarify`` (bounded explicit periods).
-- Freshness FIRST (FR-26/FR-28): every query runs each configured
-  provider's inventory under the SAME ``Deadline``, assembles the
-  provider results, and delegates to ``FreshnessChecker.evaluate``.
+- Freshness FIRST (FR-26/FR-28): every query runs each IN-SCOPE
+  provider's inventory (all configured kinds for ``historical``; the
+  herdr session kind alone for ``global``, per D02/FR-04) under the
+  SAME ``Deadline``, assembles the provider results, and delegates to
+  ``FreshnessChecker.evaluate`` with the explicit in-scope kind set.
   ``Reuse`` serves the stored report only after that successful check;
   ``Unable`` demotes a prior published report via
   ``mark_refresh_failed`` (FR-33: a stale report is never current
@@ -47,6 +49,14 @@ the product invariants end to end:
   provider has this flag); an unqualified ``global`` intent (period
   None) keeps the default inventory over ALL open sessions including
   idle ones. ``historical`` intents never restrict by activity.
+- INTENT SOURCE SCOPING (D02/FR-04): a ``global`` current-progress
+  query reads ONLY the ``herdr_session`` provider — historical
+  transcripts/Engram are never inventoried, collected, counted by the
+  volume gate, or cited for it. ``historical`` intents inventory and
+  collect EVERY configured provider (FR-03/FR-05). The in-scope kind
+  set is passed to ``FreshnessChecker.evaluate`` as
+  ``expected_kinds`` so freshness models the scope explicitly instead
+  of fabricating SOURCE_ABSENT for unqueried providers (FR-41).
 - Consolidation via an INJECTED summarizer callable (tests inject a
   fake; the real LLM summarizer lands in T9): the engine builds the
   ``ReportScaffold``, calls ``summarizer(scaffold, period)``,
@@ -137,6 +147,7 @@ __all__ = [
     "brief_from_json",
     "brief_to_json",
     "interval_label",
+    "namespaced_scope",
     "timezone_label",
 ]
 
@@ -453,6 +464,22 @@ def timezone_label(period: Optional[Period]) -> str:
     return period.zone_name
 
 
+def namespaced_scope(kind: QueryKind, scope: str) -> str:
+    """D08 report-key scope component with the intent-kind namespace:
+    ``intent:<kind>:<scope>``.
+
+    A ``global`` (current-progress, Herdr-only) report and a
+    ``historical`` report over the SAME project/context/interval are
+    different answers over different source sets; the namespace keeps
+    their store keys disjoint so neither can ever reuse the other's
+    stored revision. Non-migrating by design: legacy rows written
+    under the bare scope simply age out through retention purge.
+    User-visible project filtering/grouping is unchanged — it comes
+    from the scaffold, never from this key component.
+    """
+    return f"intent:{kind}:{scope}"
+
+
 # ---------------------------------------------------------------------------
 # BriefDocument serialization (stored-body format)
 # ---------------------------------------------------------------------------
@@ -611,7 +638,14 @@ class QueryEngine:
        ``explicit_period`` + ``validate_bounds`` (PeriodError ->
        ``clarify`` with the reason, FR-08/FR-37); unqualified global
        keeps period None with the sentinel key components.
-    c. FRESHNESS — every configured provider's inventory under ONE
+    c. FRESHNESS — CONFIG GATE: a ``global`` intent whose providers
+       mapping lacks the herdr provider FAILS CLOSED —
+       ``unable_to_complete`` before any provider or checker call
+       (D02/FR-04/FR-41: current status never silently scans
+       historical sources); any prior published report under the key
+       is demoted (FR-33). Otherwise every IN-SCOPE provider's
+       inventory runs (see ``_in_scope_kinds``: herdr only for
+       ``global``, all configured kinds for ``historical``) under ONE
        ``Deadline``; ``checker.evaluate`` decides Reuse (serve the
        stored report, re-rendered from the stored body) / Rebuild /
        Unable (demote a prior published report via
@@ -702,14 +736,37 @@ class QueryEngine:
             return expired
         key = self._report_key(intent, period, main_call_context_id)
 
-        # (c) FRESHNESS
+        # (c) FRESHNESS — CONFIG GATE FIRST: a global current-progress
+        # query without the herdr provider FAILS CLOSED (D02/FR-04,
+        # FR-41): unable_to_complete BEFORE any provider inventory,
+        # collect, or checker call. Historical providers are NEVER
+        # scanned as a substitute for a missing Herdr configuration,
+        # and a prior published report under this key is demoted
+        # (FR-33) because its refresh just failed.
+        if intent.kind == "global" and HERDR_SESSION_KIND not in deps.providers:
+            self._mark_refresh_failed(key)
+            return _terminal(
+                "unable_to_complete",
+                SPOKEN_UNABLE,
+                SPOKEN_UNABLE,
+                "global current-progress query failed closed: no"
+                f" {HERDR_SESSION_KIND!r} provider is configured"
+                " (D02/FR-04); historical providers are never scanned"
+                " as a substitute and the freshness check never ran",
+                labels,
+            )
+        # In-scope kinds by intent (D02/FR-04: global reads only the
+        # herdr provider; historical reads everything configured),
+        # then the checker over exactly that scope.
+        in_scope = self._in_scope_kinds(intent)
         provider_results, source_owner = self._run_inventories(
-            intent, period, deadline
+            intent, period, deadline, in_scope
         )
         outcome = deps.checker.evaluate(
             key,
             period.key if period is not None else UNQUALIFIED_INTERVAL_KEY,
             provider_results,
+            expected_kinds=in_scope,
         )
         expired = self._budget_expired(deadline, "acquire", labels)
         if expired is not None:
@@ -920,26 +977,66 @@ class QueryEngine:
     def _report_key(
         self, intent: QueryIntent, period: Optional[Period], context_id: str
     ) -> ReportKey:
-        """The D08 isolation key: context + scope + interval + timezone."""
+        """The D08 isolation key: context + scope + interval + timezone.
+
+        The scope component carries the intent-kind namespace
+        (``namespaced_scope``): a Herdr-only global report and a
+        full-corpus historical report over the same project and
+        interval are DIFFERENT answers and must never reuse each
+        other's stored revision. Non-migrating: legacy bare-scope rows
+        age out through retention purge."""
         scope = intent.projects[0] if intent.projects else "all"
         if period is None:
             return ReportKey(
                 main_call_context_id=context_id,
-                scope=scope,
+                scope=namespaced_scope(intent.kind, scope),
                 interval_key=UNQUALIFIED_INTERVAL_KEY,
                 timezone=UNQUALIFIED_TIMEZONE,
             )
         return ReportKey(
             main_call_context_id=context_id,
-            scope=scope,
+            scope=namespaced_scope(intent.kind, scope),
             interval_key=period.key,
             timezone=period.zone_name,
         )
 
+    def _in_scope_kinds(self, intent: QueryIntent) -> tuple[str, ...]:
+        """The provider kinds THIS query reads (deterministic order).
+
+        D02/FR-04: a ``global`` current-progress query derives from
+        Herdr sessions ONLY — no historical transcripts, no Engram, no
+        date cut for the unqualified form (D04/FR-12 handles the
+        date-scoped ``active_only`` narrowing inside the herdr
+        provider itself). ``historical`` intents keep every configured
+        kind (FR-03/FR-05).
+
+        FAIL CLOSED (FR-41): ``handle`` rejects a ``global`` intent
+        whose providers mapping lacks ``herdr_session`` BEFORE this
+        method runs. The check below is a loud internal invariant, not
+        a fallback: a missing Herdr configuration must never widen the
+        scope back to historical sources. The decision reads only
+        this engine's injected providers — no process-global
+        configuration is assumed.
+        """
+        configured = tuple(sorted(self._deps.providers))
+        if intent.kind != "global":
+            return configured
+        if HERDR_SESSION_KIND not in self._deps.providers:
+            raise ValueError(
+                "global intents require the"
+                f" {HERDR_SESSION_KIND!r} provider (D02/FR-04); handle's"
+                " fail-closed gate should have rejected the query first"
+            )
+        return (HERDR_SESSION_KIND,)
+
     def _run_inventories(
-        self, intent: QueryIntent, period: Optional[Period], deadline: Deadline
+        self,
+        intent: QueryIntent,
+        period: Optional[Period],
+        deadline: Deadline,
+        kinds: tuple[str, ...],
     ) -> tuple[dict[str, InventoryResult], dict[str, tuple[object, Source]]]:
-        """Phase (c) inventory half: every configured provider, the SAME
+        """Phase (c) inventory half: every IN-SCOPE provider, the SAME
         Deadline object, deterministic kind order.
 
         FR-12: a date-scoped ``global`` query (period is not None and
@@ -953,7 +1050,7 @@ class QueryEngine:
         project_filter = intent.projects[0] if intent.projects else None
         results: dict[str, InventoryResult] = {}
         owner: dict[str, tuple[object, Source]] = {}
-        for kind in sorted(deps.providers):
+        for kind in kinds:
             provider = deps.providers[kind]
             if kind == HERDR_SESSION_KIND:
                 result = provider.inventory(

@@ -326,18 +326,33 @@ def _change_reason(diff: ManifestDiff) -> str:
 class FreshnessChecker:
     """Pre-answer freshness gate (D08; FR-26, FR-28..FR-33, FR-41).
 
-    ``configured_kinds`` is the authority set: every evaluation MUST
-    cover exactly these kinds — an unknown kind in the results, a
-    configured kind missing from them, or a source of an unconfigured
-    kind is a config bug that raises ``FreshnessConfigError`` instead
-    of silently narrowing scope (FR-41).
+    ``configured_kinds`` is the MAXIMUM authority set. By default every
+    evaluation MUST cover exactly these kinds — an unknown kind in the
+    results, a configured kind missing from them, or a source of an
+    unconfigured kind is a config bug that raises
+    ``FreshnessConfigError`` instead of silently narrowing scope
+    (FR-41).
+
+    IN-SCOPE SUBSETS: ``evaluate`` accepts an optional per-call
+    ``expected_kinds`` — the explicit set of provider kinds THIS
+    evaluation is about (e.g. a global current-progress query checks
+    only the herdr provider, D02/FR-04). The subset must be non-empty
+    and within ``configured_kinds``; results must then cover it
+    EXACTLY (missing in-scope kinds and extra out-of-scope kinds both
+    raise), and every source's kind must belong to it. Providers
+    outside the subset are NOT consulted and NOT reported absent:
+    honesty comes from modeling the in-scope set explicitly, never
+    from fabricating SOURCE_ABSENT for sources that were simply not
+    queried.
 
     ``evaluate`` never mutates the store: it only reads
     ``get_current``/``get_latest``; publication, ``mark_refresh_failed``
     and cleanup remain the caller's. Pipeline order (documented, each
     step independently testable):
 
-    a. AUTHORITY — input validation + the FR-41 gate above; raises.
+    a. AUTHORITY — input validation + the FR-41 gate above (against
+       the per-call expected set, defaulting to the configured set);
+       raises.
     b. INVENTORY HEALTH — any COVERAGE_FAILED inventory -> ``Unable``
        (SOURCE_ABSENT and OK are healthy; absence contributes zero
        sources by contract).
@@ -354,8 +369,9 @@ class FreshnessChecker:
        with ``evidence.manifest_entries``) is diffed against
        ``stored.source_manifest``; any addition, removal, or token
        change -> ``Rebuild`` with the diff and a reason enumerating
-       counts; an empty diff -> ``Reuse``. Stored sources of a kind
-       whose provider now reports absence simply land in ``removed``.
+       counts; an empty diff -> ``Reuse``. Stored sources outside the
+       current in-scope set (e.g. a legacy mixed-scope snapshot)
+       simply land in ``removed``.
     """
 
     def __init__(self, store: ReportStore, *, configured_kinds: tuple[str, ...]) -> None:
@@ -382,7 +398,7 @@ class FreshnessChecker:
 
     @property
     def configured_kinds(self) -> tuple[str, ...]:
-        """The authority set this checker enforces (FR-41)."""
+        """The maximum authority set this checker enforces (FR-41)."""
         return self._configured_kinds
 
     def evaluate(
@@ -390,11 +406,20 @@ class FreshnessChecker:
         key: ReportKey,
         interval_key: str,
         provider_results: Mapping[str, InventoryResult],
+        *,
+        expected_kinds: Optional[Iterable[str]] = None,
     ) -> FreshnessOutcome:
         """Runs the pipeline described in the class docstring and
-        returns the sealed outcome for this key and query interval."""
+        returns the sealed outcome for this key and query interval.
+
+        ``expected_kinds`` narrows THIS evaluation to an explicit
+        in-scope subset of the configured authority (default: the
+        whole configured set). It models scope honestly: unqueried
+        providers outside the subset are neither required nor
+        reported absent."""
         _require_str(interval_key, "interval_key")
-        results = self._validate_authority(provider_results)
+        expected = self._resolve_expected_kinds(expected_kinds)
+        results = self._validate_authority(provider_results, expected)
         failed = tuple(
             sorted(
                 (kind, result.error_detail or "")
@@ -442,26 +467,68 @@ class FreshnessChecker:
             return Rebuild(diff=diff, reason=_change_reason(diff))
         return Reuse(report=stored)
 
+    def _resolve_expected_kinds(
+        self, expected_kinds: Optional[Iterable[str]]
+    ) -> frozenset[str]:
+        """Normalizes the per-call in-scope subset: non-empty, strings,
+        duplicate-free, and a SUBSET of the configured maximum
+        authority. Anything else is a config bug that raises
+        (FR-41) — an empty scope would vacuously pass and a kind
+        outside the configured authority would let reuse reach
+        sources nobody configured."""
+        if expected_kinds is None:
+            return self._configured
+        try:
+            kinds = tuple(expected_kinds)
+        except TypeError:
+            raise FreshnessConfigError(
+                "expected_kinds must be an iterable of strings or None,"
+                f" got {type(expected_kinds).__name__}"
+            ) from None
+        if not kinds:
+            raise FreshnessConfigError(
+                "expected_kinds must not be empty: a freshness check over"
+                " zero in-scope providers would vacuously pass (FR-41);"
+                " pass None to check every configured kind"
+            )
+        for kind in kinds:
+            _require_str(kind, "expected kind")
+        duplicates = sorted({k for k in kinds if kinds.count(k) > 1})
+        if duplicates:
+            raise FreshnessConfigError(f"duplicate expected kinds: {duplicates}")
+        outside = sorted(set(kinds) - self._configured)
+        if outside:
+            raise FreshnessConfigError(
+                f"expected_kinds contain kind(s) {outside} outside the"
+                " configured authority"
+                f" {list(self._configured_kinds)}: scope may narrow the"
+                " configured set, never exceed it (FR-41)"
+            )
+        return frozenset(kinds)
+
     def _validate_authority(
-        self, provider_results: object
+        self, provider_results: object, expected: frozenset[str]
     ) -> Mapping[str, InventoryResult]:
-        """Step (a): the FR-41 authority gate — raises instead of ever
-        narrowing the checked scope."""
+        """Step (a): the FR-41 authority gate against the effective
+        in-scope set — raises instead of ever narrowing the checked
+        scope silently."""
         if not isinstance(provider_results, Mapping):
             raise FreshnessConfigError(
                 "provider_results must be a mapping of kind -> InventoryResult,"
                 f" got {type(provider_results).__name__}"
             )
-        unknown = sorted(set(provider_results) - self._configured)
+        unknown = sorted(set(provider_results) - expected)
         if unknown:
             raise FreshnessConfigError(
-                f"provider_results contain unconfigured kinds {unknown};"
-                f" configured kinds are {list(self._configured_kinds)}"
+                f"provider_results contain kind(s) {unknown} outside the"
+                f" expected kinds for this evaluation {sorted(expected)}"
+                f" (configured authority is {list(self._configured_kinds)});"
+                " out-of-scope providers must not be consulted at all"
             )
-        missing = sorted(self._configured - set(provider_results))
+        missing = sorted(expected - set(provider_results))
         if missing:
             raise FreshnessConfigError(
-                f"configured kinds missing from provider_results: {missing};"
+                f"expected kinds missing from provider_results: {missing};"
                 " a missing kind would be a silently skipped source (FR-41)"
             )
         for kind in sorted(provider_results):
@@ -473,11 +540,12 @@ class FreshnessChecker:
                 )
         for kind in sorted(provider_results):
             for source in provider_results[kind].sources:
-                if source.kind not in self._configured:
+                if source.kind not in expected:
                     raise FreshnessConfigError(
                         f"source {source.source_id!r} has kind {source.kind!r}"
-                        " outside the configured kinds"
-                        f" {list(self._configured_kinds)}: reuse must never"
-                        " reach outside configured authority (FR-41)"
+                        " outside the expected kinds for this evaluation"
+                        f" {sorted(expected)} (configured authority is"
+                        f" {list(self._configured_kinds)}): reuse must never"
+                        " reach outside the evaluated scope (FR-41)"
                     )
         return provider_results

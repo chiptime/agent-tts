@@ -513,3 +513,120 @@ class TestManifestStep:
             "opencode:ses_2",
         )
         assert plan.full_scan is True
+
+
+class TestExpectedKinds:
+    """The per-evaluation IN-SCOPE kind subset (D02: a global
+    current-progress query checks only the herdr provider). Honest
+    scoping, never a weakened authority gate: the subset must be
+    non-empty and within the configured maximum authority, results
+    must cover it EXACTLY, and out-of-scope kinds — configured or not
+    — are rejected rather than reported as absent (FR-41 stays
+    intact)."""
+
+    def test_explicit_subset_reuses_matching_stored_report(self, checker, store):
+        key, record = publish_stored(
+            store,
+            manifest=[
+                {"source_id": "opencode:ses_1", "revision_token": "rev-1", "state": ""}
+            ],
+        )
+        results = {"opencode": ok(src("opencode:ses_1", "rev-1"))}
+        outcome = checker.evaluate(
+            key, PERIOD.key, results, expected_kinds=("opencode",)
+        )
+        assert isinstance(outcome, Reuse)
+        assert outcome.report.report_id == record.report_id
+
+    def test_subset_rebuild_detects_removal_of_out_of_scope_sources(
+        self, checker, store
+    ):
+        """A stored snapshot that still contains out-of-scope sources
+        (a pre-scope mixed report) is honestly rebuilt: those sources
+        land in ``removed`` and can never be silently reused."""
+        key, _ = publish_stored(store)  # opencode:ses_1 + engram:proj
+        results = {"opencode": ok(src("opencode:ses_1", "rev-1"))}
+        outcome = checker.evaluate(
+            key, PERIOD.key, results, expected_kinds=("opencode",)
+        )
+        assert isinstance(outcome, Rebuild)
+        assert [e.source_id for e in outcome.diff.removed] == ["engram:proj"]
+        assert "removed" in outcome.reason
+
+    def test_missing_in_scope_kind_raises(self, checker):
+        with pytest.raises(FreshnessConfigError):
+            checker.evaluate(
+                make_key(),
+                PERIOD.key,
+                {"opencode": ok()},
+                expected_kinds=("opencode", "engram"),
+            )
+
+    def test_out_of_scope_but_configured_kind_in_results_raises(self, checker):
+        results = matching_results()  # opencode + engram
+        with pytest.raises(FreshnessConfigError):
+            checker.evaluate(
+                make_key(), PERIOD.key, results, expected_kinds=("opencode",)
+            )
+
+    def test_subset_outside_configured_authority_raises(self, checker):
+        with pytest.raises(FreshnessConfigError):
+            checker.evaluate(
+                make_key(),
+                PERIOD.key,
+                {"opencode": ok()},
+                expected_kinds=("opencode", "claude"),
+            )
+
+    def test_empty_subset_raises(self, checker):
+        with pytest.raises(FreshnessConfigError):
+            checker.evaluate(
+                make_key(), PERIOD.key, matching_results(), expected_kinds=()
+            )
+
+    def test_duplicate_subset_kinds_raise(self, checker):
+        with pytest.raises(FreshnessConfigError):
+            checker.evaluate(
+                make_key(),
+                PERIOD.key,
+                matching_results(),
+                expected_kinds=("opencode", "opencode"),
+            )
+
+    def test_non_string_subset_entry_raises(self, checker):
+        with pytest.raises(FreshnessConfigError):
+            checker.evaluate(
+                make_key(), PERIOD.key, matching_results(), expected_kinds=(7,)
+            )
+
+    def test_non_iterable_subset_raises(self, checker):
+        with pytest.raises(FreshnessConfigError):
+            checker.evaluate(
+                make_key(), PERIOD.key, matching_results(), expected_kinds=42
+            )
+
+    def test_source_kind_outside_the_subset_raises(self, checker):
+        # The engram kind is CONFIGURED but out of scope for this
+        # evaluation: a source of that kind under an in-scope result
+        # must fail loudly (scope is explicit, never inferred from
+        # source ids).
+        results = {"opencode": ok(src("engram:proj", "rev-9"))}
+        with pytest.raises(FreshnessConfigError):
+            checker.evaluate(
+                make_key(), PERIOD.key, results, expected_kinds=("opencode",)
+            )
+
+    def test_subset_failed_provider_is_unable(self, checker, store):
+        key, _ = publish_stored(store)
+        results = {"opencode": failed("db locked")}
+        outcome = checker.evaluate(
+            key, PERIOD.key, results, expected_kinds=("opencode",)
+        )
+        assert isinstance(outcome, Unable)
+        assert outcome.failed_providers == (("opencode", "db locked"),)
+
+    def test_default_stays_the_exact_configured_set(self, checker):
+        # No expected_kinds: the historical default — every configured
+        # kind must be present (FR-41 unchanged).
+        with pytest.raises(FreshnessConfigError):
+            checker.evaluate(make_key(), PERIOD.key, {"opencode": ok()})

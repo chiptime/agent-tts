@@ -159,7 +159,16 @@ class FaithfulModel:
 
 def provider_service(tmp_path, settings, *, report_db=None, followup_db=None,
                      clock=None, event_sink=None):
-    """A one-provider ConsultService over explicit store paths."""
+    """A successful global-consultation harness: a Herdr session
+    provider (the ONLY source global queries read, D02/FR-04 — the
+    engine fails closed without it) plus the historical opencode
+    provider."""
+    herdr_src = make_source("herdr:w1:p1", kind="herdr_session")
+    herdr = FakeProvider(
+        "herdr_session",
+        sources=(herdr_src,),
+        items_by_source={herdr_src.source_id: [make_item(herdr_src.source_id)]},
+    )
     provider = FakeProvider(
         "opencode",
         sources=(make_source("opencode:s1"),),
@@ -167,7 +176,7 @@ def provider_service(tmp_path, settings, *, report_db=None, followup_db=None,
     )
     return ConsultService(
         settings=settings,
-        providers={"opencode": provider},
+        providers={"herdr_session": herdr, "opencode": provider},
         report_db=report_db or str(tmp_path / "reports.db"),
         followup_store=FollowupStore(
             followup_db or tmp_path / "followup.db", clock=clock or (lambda: NOW)
@@ -300,10 +309,17 @@ class TestConsultReportEvent:
 
     def test_no_report_event_on_unable(self, settings, tmp_path):
         events: list[dict] = []
-        provider = FakeProvider("opencode", inventory_status=True)
+        # Global queries read ONLY the herdr provider (D02/FR-04), so
+        # a failing HERDR inventory is what surfaces unable here.
+        herdr = FakeProvider(
+            "herdr_session",
+            sources=(make_source("herdr:w1:p1", kind="herdr_session"),),
+            inventory_status=True,
+        )
+        opencode = FakeProvider("opencode")
         service = ConsultService(
             settings=settings,
-            providers={"opencode": provider},
+            providers={"herdr_session": herdr, "opencode": opencode},
             report_db=str(tmp_path / "reports.db"),
             followup_store=FollowupStore(
                 tmp_path / "followup.db", clock=lambda: NOW
