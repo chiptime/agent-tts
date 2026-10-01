@@ -55,6 +55,7 @@
   var herdNote = $("herd-note");
   var toastEl = $("toast");
   var consultPanel = $("consult-panel");
+  var callConsultIndicator = $("call-consult-indicator");
   var drawer = $("call-drawer");
   var drawerCloseBtn = $("drawer-close");
   var settingsSheet = $("settings-sheet");
@@ -1583,12 +1584,17 @@
    * consult.js owns the pure DOM surface (Consulting indicator while
    * the engine works — FR-18/D06 — and the report panel with the
    * engine's SCREEN text, references included, display-only — FR-14).
+   * The indicator mounts in its OWN in-drawer host (#call-consult-
+   * indicator): the transient status floats as a pill over the call
+   * conversation — never a chat row, never chat height — while the
+   * report panel stays at #consult-panel outside the drawer.
    * Outcome notices (unable/narrow/ask_tz/clarify) reuse the TOAST:
    * it is already the app's transient-notice surface. */
   var consultUI = window.Consult && window.Consult.createConsultUI
     ? window.Consult.createConsultUI({
       doc: document,
       mount: consultPanel,
+      indicatorMount: callConsultIndicator,
       notify: function (text) { showToast(text, 6000); }
     })
     : null;

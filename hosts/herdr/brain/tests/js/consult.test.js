@@ -273,6 +273,125 @@ test("unknown event types are no-ops", () => {
   assert.strictEqual(notices.length, 0);
 });
 
+/* ---- split mounts: floating in-call indicator pill (FR-18/D06) ----
+ *
+ * The transient "Consultando…" status moves OUT of the report panel
+ * into its own indicatorMount (the floating pill inside the call
+ * drawer): with separate mounts the two visibility invariants are
+ * INDEPENDENT — the pill mount shows only while consulting, the
+ * report mount shows only when a report exists. The single-mount
+ * behavior pinned above remains the contract when indicatorMount is
+ * omitted (legacy callers and the same-mount tests). */
+
+function makeSplitUI() {
+  const reportMount = makeElement("section");
+  const indicatorMount = makeElement("div");
+  const notices = [];
+  const ui = createConsultUI({
+    doc: makeDoc(),
+    mount: reportMount,
+    indicatorMount,
+    notify: text => notices.push(text)
+  });
+  return { ui, reportMount, indicatorMount, notices };
+}
+
+test("split mounts: creation hides BOTH mounts (independent invariants)", () => {
+  const { reportMount, indicatorMount } = makeSplitUI();
+  assert.strictEqual(reportMount.classList.contains("hidden"), true,
+    "report mount hidden with nothing to show");
+  assert.strictEqual(indicatorMount.classList.contains("hidden"), true,
+    "indicator mount hidden with nothing to show");
+});
+
+test("split mounts: consulting start shows the pill WITHOUT revealing the report mount", () => {
+  const { ui, reportMount, indicatorMount } = makeSplitUI();
+  ui.handleEvent(consulting("start"));
+  const ind = indicatorOf(indicatorMount);
+  assert.ok(ind, "indicator element lives in the indicator mount");
+  assert.strictEqual(ind.textContent, "⏳ Consultando…");
+  assert.strictEqual(ind.classList.contains("hidden"), false, "pill visible");
+  assert.strictEqual(indicatorMount.classList.contains("hidden"), false,
+    "pill mount visible");
+  assert.strictEqual(reportMount.classList.contains("hidden"), true,
+    "report panel NOT revealed by a consulting state");
+  assert.strictEqual(reportOf(reportMount), undefined,
+    "no report element built just by consulting");
+});
+
+test("split mounts: report renders in the report mount; pill mount stays hidden", () => {
+  const { ui, reportMount, indicatorMount } = makeSplitUI();
+  ui.handleEvent({
+    type: "consult_report",
+    screen: REPORT_A,
+    interval_label: "hoy",
+    timezone_label: "Europe/Madrid"
+  });
+  const rep = reportOf(reportMount);
+  assert.ok(rep, "report panel lives in the report mount");
+  assert.strictEqual(rep.classList.contains("hidden"), false);
+  assert.strictEqual(reportMount.classList.contains("hidden"), false);
+  assert.strictEqual(indicatorMount.classList.contains("hidden"), true,
+    "a report never shows the pill");
+  assert.strictEqual(indicatorOf(indicatorMount), undefined,
+    "no indicator element built just by a report");
+});
+
+test("split mounts: consulting end hides the pill while the rendered report remains", () => {
+  const { ui, reportMount, indicatorMount } = makeSplitUI();
+  ui.handleEvent({
+    type: "consult_report",
+    screen: REPORT_A,
+    interval_label: "hoy",
+    timezone_label: "Europe/Madrid"
+  });
+  ui.handleEvent(consulting("start"));
+  ui.handleEvent(consulting("end", "rendered"));
+  const ind = indicatorOf(indicatorMount);
+  assert.ok(ind, "pill stays mounted, just hidden");
+  assert.strictEqual(ind.classList.contains("hidden"), true, "pill hidden");
+  assert.strictEqual(indicatorMount.classList.contains("hidden"), true,
+    "pill mount hidden");
+  const rep = reportOf(reportMount);
+  assert.strictEqual(rep.classList.contains("hidden"), false,
+    "rendered report stays visible after the pill clears");
+  assert.strictEqual(reportMount.classList.contains("hidden"), false,
+    "report mount stays visible");
+});
+
+test("split mounts: stale report dimming still crosses the mounts", () => {
+  const { ui, reportMount } = makeSplitUI();
+  ui.handleEvent({
+    type: "consult_report",
+    screen: REPORT_A,
+    interval_label: "hoy",
+    timezone_label: "Europe/Madrid"
+  });
+  ui.handleEvent(consulting("start"));
+  assert.ok(reportOf(reportMount).classList.contains("stale"),
+    "old report dims while consulting, even from the pill mount");
+  ui.handleEvent(consulting("end", "rendered"));
+  ui.handleEvent({
+    type: "consult_report",
+    screen: "Segundo informe\nReferences:\n- opencode:s2",
+    interval_label: "esta semana",
+    timezone_label: "Europe/Madrid"
+  });
+  assert.strictEqual(reportOf(reportMount).classList.contains("stale"), false,
+    "fresh render un-dims");
+});
+
+test("split mounts: an indicatorMount without appendChild is rejected", () => {
+  assert.throws(
+    () => createConsultUI({
+      doc: makeDoc(),
+      mount: makeElement("section"),
+      indicatorMount: {}
+    }),
+    /indicatorMount/
+  );
+});
+
 /* ---- spoken-path regression guard (trivial but explicit) ---- */
 
 test("no event path ever constructs audio", () => {
