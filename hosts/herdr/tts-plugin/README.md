@@ -197,18 +197,20 @@ There is no `plugin update` in Herdr v1 — reinstall from the registry to refre
 ### 2. curl | sh Fallback (Non-Registry)
 
 ```bash id=install-plugin-curl
-curl -fsSL https://raw.githubusercontent.com/chiptime/agent-tts/v0.16.0/hosts/herdr/tts-plugin/scripts/install.sh | bash
+curl -fsSL "https://raw.githubusercontent.com/chiptime/agent-tts/${HERDR_TTS_REF:-v0.16.0}/hosts/herdr/tts-plugin/scripts/install.sh" | bash
 ```
 
-The installer is **tag-pinned** (`v0.16.0` of the agent-tts monorepo) and, in order: verifies prerequisites (`git`, `jq`, `herdr`, plus `uv` or `python3`) before touching anything; refuses a relative install target outright; refuses to install over a linked dev checkout and tells you the exact `plugin unlink` / `plugin uninstall` command to migrate; clones the monorepo to `~/.local/share/herdr-tts/plugin` and drives the plugin at `hosts/herdr/tts-plugin` inside that checkout; bootstraps the venv; adopts the collision-free `menu` keymap unless a `keymap.json` already exists (never overwrites; `--no-keymap` skips the step entirely); verifies the daemon and prints the manual uninstall steps.
+The installer is **ref-pinned** (`v0.16.0` of the agent-tts monorepo by default; the same `${HERDR_TTS_REF:-v0.16.0}` expansion above selects the ref for **both** the fetched installer script and the clone it performs) and, in order: verifies prerequisites (`git`, `jq`, `herdr`, plus `uv` or `python3`) before touching anything; refuses a relative install target outright; refuses to install over a linked dev checkout and tells you the exact `plugin unlink` / `plugin uninstall` command to migrate; clones the monorepo to `~/.local/share/herdr-tts/plugin` and drives the plugin at `hosts/herdr/tts-plugin` inside that checkout; bootstraps the venv; adopts the collision-free `menu` keymap unless a `keymap.json` already exists (never overwrites; `--no-keymap` skips the step entirely); verifies the daemon and prints the manual uninstall steps.
 
-Re-running it upgrades in place: the checkout's `origin` remote is compared against the canonical monorepo URL, the tag is re-fetched, and `agent-tts` is refreshed past the plugin's never-upgrade gate. A mismatched remote aborts before writing anything — even when the installer itself runs from inside an unrelated git repository, which is never touched.
+Re-running it upgrades in place: the checkout's `origin` remote is compared against the canonical monorepo URL, the selected ref is re-fetched, and `agent-tts` is refreshed past the plugin's never-upgrade gate. A mismatched remote aborts before writing anything — even when the installer itself runs from inside an unrelated git repository, which is never touched.
 
 **Escape hatch (mutable ref — use deliberately):**
 
 ```bash
-# track main instead of the pinned tag
-HERDR_TTS_REF=main curl -fsSL https://raw.githubusercontent.com/chiptime/agent-tts/main/hosts/herdr/tts-plugin/scripts/install.sh | bash
+# track main instead of the pinned default — export so the ref reaches BOTH
+# the fetched installer script and the clone the installer performs
+export HERDR_TTS_REF=main
+curl -fsSL "https://raw.githubusercontent.com/chiptime/agent-tts/${HERDR_TTS_REF}/hosts/herdr/tts-plugin/scripts/install.sh" | bash
 ```
 
 ### Uninstall
