@@ -5,7 +5,9 @@ first-run wizard lives and how both installed entry points reach it, how secrets
 captured without ever touching argv, how the V2 clean-install harness is built (milestone 1,
 task 1), how paths/ports/binaries stop being machine-specific, how the two authorized
 milestone-1 baseline V1 repairs (smoke 16n host safety, smoke 40e oracle identity) are
-built, and how the four milestones decompose into review slices under the 400-line budget.
+built, how the one authorized pre-V3 validation-only candidate branch makes the documented
+install routes testable without touching `main` or any tag, and how the four milestones
+decompose into review slices under the 400-line budget.
 
 ### Decision status
 
@@ -21,10 +23,13 @@ answer. Two items remain *evidence*-pending — they need a test run, not a deci
 | Decision 8 (smoke 16n host safety) | Resolved here — new, authorized M1 extension |
 | Decision 9 (smoke 40e oracle identity) | Resolved here — new, authorized M1 extension |
 | Decision 10 (scenario 3 activation milestone) | Resolved here — registry correction |
+| Decision 11 (pre-V3 validation-only candidate branch) | Resolved here — authorized bounded remote write (Engram #9783) |
 | V2 network authorization (ex-OQ-5) | **Granted**, bounded to documented origins (Engram #9681) |
+| Validation-branch push/update authorization | **Granted**, bounded to one source ref, one destination ref, one named session (Engram #9783) |
 | V2 active-scenario gate | **Resolved** (Engram #9636) |
-| OQ-1 subdirectory-install materialization | **Evidence-pending** — resolved by V2 scenario 2, with a pre-designed fallback |
-| OQ-6 public retrieval of the selected pin | **Evidence-pending** — resolved by V2 scenario 1; `BLOCKED` with no substitute if unavailable |
+| Absent remote `v0.16.0` tag / unrepaired public `main` | **No longer an M1 blocker** — the candidate ref supplies the M1 V2 install source (Decision 11). Stable publication stays maintainer-owned, post-V3 |
+| OQ-1 subdirectory-install materialization | **Evidence-pending** — resolved by V2 scenario 2 against the candidate ref, with a pre-designed fallback |
+| OQ-6 public retrieval of the selected pin | **Evidence-pending** — resolved by V2 scenario 1; independent of the candidate branch (the pin is not in its history); `BLOCKED` with no substitute if unavailable |
 
 An earlier revision of this header referred to a "Decision 9" awaiting a maintainer answer.
 No such pending decision ever existed: the STT vocabulary question lived in Decision 6 and is
@@ -814,6 +819,156 @@ is milestone-gated:
 
 ---
 
+## Decision 11: One pre-V3 validation-only candidate branch unblocks the documented install routes
+
+**Choice**: publish local `feat/at-11-instalable` to exactly one remote ref,
+`refs/heads/validation/at-11-instalable` at `https://github.com/chiptime/agent-tts`, through the
+active `gh` session named `chiptime`, and select that ref in V2 scenarios 1 and 2 through the
+**product's own supported ref mechanisms**. The branch is a *test candidate*, never a release.
+Stable documentation keeps defaulting to `v0.16.0`.
+
+### Why the documented routes are untestable without it
+
+Both M1 V2 install routes currently fail on a *publication* prerequisite, not on a defect:
+
+| Route | Public state today | Observed consequence |
+|---|---|---|
+| curl (`id=install-plugin-curl`) | the block fetches `raw.githubusercontent.com/chiptime/agent-tts/v0.16.0/…/install.sh`; the remote `v0.16.0` tag is **absent** | HTTP 404 → scenario 1 `BLOCKED` (recorded in `01-plugin-fresh-clone.sh`) |
+| registry (`id=install-plugin-github`) | herdr installs the default public revision, whose `scripts/bootstrap.sh` still pins `32e9bafb` (pre-monorepo, no `engine/`) | `[[build]]` fails → scenario 2 `BLOCKED`, OQ-1 evidence only reachable through the `HERDR_AGENT_TTS_REF` differential leg |
+
+Locally observed, read-only, to keep this grounded rather than assumed:
+
+| Fact | Command |
+|---|---|
+| local tag `v0.16.0` → commit `516db8f`, whose `install.sh` still carries `CANONICAL_URL=https://github.com/chiptime/herdr-tts.git` and whose `bootstrap.sh` pins `19ad6b46…` | `git show v0.16.0:…/install.sh`, `git show v0.16.0:…/bootstrap.sh` |
+| the corrected pin `d66616bc…` is in **no** local branch (`git branch -a --contains` is empty) and is not an ancestor of `main` or `feat/at-11-instalable` | `git branch -a --contains d66616bc…`, `git merge-base --is-ancestor` |
+
+A candidate branch moves the fixed installer, the corrected `CANONICAL_URL`, and the corrected
+engine pin onto a *public, fetchable* ref. That turns two `BLOCKED` prerequisites into real
+evidence without publishing anything a user would find by following the stable docs.
+
+### Exact authorized scope (fail-closed)
+
+| Dimension | Authorized value | Behavior outside it |
+|---|---|---|
+| Source ref | local `feat/at-11-instalable` only | refuse; no other local branch, detached HEAD, or worktree may be pushed |
+| Destination ref | `refs/heads/validation/at-11-instalable` only | refuse; never `main`, never any other branch |
+| Remote | `https://github.com/chiptime/agent-tts` | refuse any other remote or URL |
+| Credential | the already-active `gh` session named `chiptime` | refuse; **no** discovery, enumeration, or reuse of any other session, token, SSH agent, or ControlMaster socket |
+| Update mode | fast-forward only | a divergent existing remote ref is **`BLOCKED`**, reported with both tips; never `--force`, `--force-with-lease`, or any history rewrite |
+| Everything else | — | tag create/move (including `v0.16.0`), PR, merge, release, branch deletion, and any other remote write are **unauthorized**; stop and report |
+
+Fail-closed in all three failure shapes: write denied, auth denied, or remote ref divergent →
+the operation stops, nothing is overwritten, the dependent scenario reports `BLOCKED` with the
+recorded reason, and M1 stays open. A denied push is never routed around by widening the scope.
+
+> This decision authorizes **one branch publication**, not a feature. No push, PR, release, or
+> branch-management automation is added to the product, the installer, or the harness. The
+> operation is a one-off `git push` performed by the developer under the named session.
+
+### How the candidate ref is selected — supported mechanisms only
+
+The harness executes the documented blocks *literally* (Decision 3). Selecting a ref must
+therefore work **through** the documented command, not around it. Two existing knobs do that:
+
+1. **Curl route.** `scripts/install.sh:22` already reads `HERDR_TTS_REF="${HERDR_TTS_REF:-v0.16.0}"`
+   and uses it for the clone/fetch/checkout. The only half that is *not* parameterized is the raw
+   URL inside the README block. Making that one expansion ref-aware parameterizes both halves
+   from a single variable:
+
+   ```bash id=install-plugin-curl
+   curl -fsSL "https://raw.githubusercontent.com/chiptime/agent-tts/${HERDR_TTS_REF:-v0.16.0}/hosts/herdr/tts-plugin/scripts/install.sh" | bash
+   ```
+
+   Unset → `v0.16.0` for **both** the fetched script and the installed plugin, byte-equivalent to
+   today's documented default. Exported → the same ref for both. Scenario 1 exports
+   `HERDR_TTS_REF=validation/at-11-instalable`; the block it runs is still the literal documented
+   block. The escape-hatch example already in the README (`HERDR_TTS_REF=main curl …/main/…`)
+   becomes a special case of one rule instead of a second, hand-maintained URL.
+2. **Registry route.** `herdr 0.9.1` documents `herdr plugin install OWNER/REPO/SUBDIR --ref REF --yes`
+   (confirmed from local `--help`). Scenario 2's candidate leg is therefore
+   `herdr plugin install chiptime/agent-tts/hosts/herdr/tts-plugin --ref validation/at-11-instalable --yes`
+   — herdr's own supported flags, no override of the product's internals.
+
+**What this replaces.** Scenario 2's current `HERDR_AGENT_TTS_REF="$PIN"` differential leg exists
+only because no published revision had a working `[[build]]`. The candidate ref *carries* the
+corrected `bootstrap.sh`, so the `[[build]]` completes with **no** override. The differential leg
+is demoted from "the only way to get OQ-1 evidence" to a diagnostic fallback, and the candidate
+leg becomes the evidence leg.
+
+### What the candidate branch does *not* prove
+
+Three separations are load-bearing, because collapsing any of them turns a test ref into a false
+release claim:
+
+- **Candidate ≠ stable.** A green run on `validation/at-11-instalable` says nothing about
+  `v0.16.0` or `main`. The remote tag is still absent; public `main` still carries legacy
+  `chiptime/herdr-tts` URLs and pin `32e9bafb`. Task 1.8's blocked evidence for the *stable*
+  route stays recorded as blocked. Branch success is not release evidence.
+- **Candidate ≠ engine-pin retrievability.** `d66616bc…` is reachable from no branch in this
+  repository, so publishing the candidate branch adds **no** reachability for it. OQ-6's by-SHA
+  fetch leg (scenario 1, leg B) stays an independent probe with independent `BLOCKED` semantics.
+  The candidate ref selects installer/plugin code; it never substitutes for, aliases, or falls
+  back to the engine SHA.
+- **Candidate ≠ merge readiness.** V3 remains the human gate. The branch is not a PR, not a
+  release train, and carries no merge authority.
+
+Evidence attribution follows from this: every run records the candidate ref **and the resolved
+branch commit**, so a later branch update cannot retroactively validate an earlier run.
+
+### Alternatives considered
+
+| Option | Why rejected |
+|---|---|
+| Publish tag `v0.16.0` (create or move it) | A tag is the *stable* contract users reach by following the docs. Publishing or moving it would make an untested candidate the stable route, and tag movement is explicitly unauthorized. |
+| Push to `main` | Same objection, maximally: it would present unreviewed, pre-V3 work as the public default, and it is explicitly unauthorized. |
+| Keep both scenarios `BLOCKED` until a stable release exists | Makes M1 closure depend on a release that cannot responsibly happen *before* M1 proves the installer works. Circular: the release needs the evidence, the evidence needs the release. |
+| Keep widening `HERDR_AGENT_TTS_REF`-style overrides instead of publishing a ref | Overrides prove the code works when you bypass the published source. The thing under test *is* retrieval from a public origin, so an override cannot be the evidence. |
+| Point the stable README default at `validation/at-11-instalable` | Turns an ephemeral test branch into the documented user route — the exact conflation this decision forbids. The default stays `v0.16.0`. |
+| Open a PR to carry the branch | Unauthorized, and unnecessary: the harness needs a fetchable ref, not a review artifact. |
+| Force-push to keep the candidate tidy | Destroys the commit identity that recorded evidence points at, so prior `PASS` records become unverifiable. Fast-forward-only preserves attributability. |
+
+### Lifecycle
+
+```
+    commit local scenario/doc work units on feat/at-11-instalable
+                 │  (work-unit commits, tests+docs with their code)
+                 ▼
+    push feat/at-11-instalable ──► validation/at-11-instalable   (fast-forward only)
+                 │
+                 ▼
+    V2 at M1: scenarios 1 + 2 run against the candidate ref
+              record ref + resolved commit in journal.json
+                 │
+                 ▼
+    M2–M4: later work-unit commits land locally, then the SAME branch is
+           fast-forwarded; each V2 re-run re-records the new resolved commit
+                 │
+                 ▼
+    V3 human gate ──► maintainer-owned merge / tag / release
+                      (candidate branch is NOT auto-deleted; deletion needs
+                       its own authorization)
+```
+
+Ordering is deliberate: **commit first, publish second**. Publishing a ref whose content is not
+a committed work unit would create evidence that points at no reviewable boundary.
+
+### Planned RED tests
+
+Scope note: these are harness/V1 assertions about *how the candidate ref is selected and
+recorded*. They do not test `git push`, which is a one-off developer operation, not product code.
+
+| # | Test | RED before the change |
+|---|---|---|
+| a | **Curl block is ref-parameterized.** Static assertion: the `id=install-plugin-curl` block contains exactly one ref expansion defaulting to `v0.16.0`, and no second hardcoded ref in its URL | Fails — the block hardcodes `/v0.16.0/` |
+| b | **Unset default is byte-stable.** With `HERDR_TTS_REF` unset, the executed block resolves the same URL as today and `install.sh` clones `v0.16.0` | Fails once the literal is removed without a default |
+| c | **Override selects both halves.** With `HERDR_TTS_REF=<ref>` exported, the fetched script path *and* the installed plugin ref are `<ref>` (asserted from `cmd.log` and the checkout's `git rev-parse HEAD`) | Fails — the script path ignores the variable today |
+| d | **Candidate attribution recorded.** Scenarios 1 and 2 write the candidate ref and the resolved branch commit into the evidence journal; a run with no resolvable commit is `BLOCKED`, not `PASS` | Fails — no ref/commit fields are recorded |
+| e | **No stable-route claim.** Static assertion: no evidence artifact or active doc states that `v0.16.0` or `main` is published, repaired, or validated | Fails if a candidate run is labelled as stable-route evidence |
+| f | **Engine pin never substituted.** With any installer/plugin ref selected, `direct_url.json` still records `commit_id == d66616bc…` and `subdirectory == engine`; a branch/tag value there is a failure | Fails if the candidate ref leaks into the engine resolution |
+
+---
+
 ## Data flow
 
 First run, plugin entry point:
@@ -853,6 +1008,43 @@ route and the optional systemd route cannot diverge:
     ~/.config/herdr-brain/env   ◄────────┬──────── bin/herdr-brain (plugin [[startup]])
     ~/.config/herdr-tts/config.env       └──────── generated systemd unit (EnvironmentFile=)
 
+### V2 install-source selection (Decision 11)
+
+Two independent remote resolutions happen inside one scenario run, and the design keeps them
+separate on purpose: the **installer/plugin ref** is selectable, the **engine SHA** is not.
+
+    ┌─ installer / plugin code ──────────────────────────────────────────────┐
+    │                                                                        │
+    │  scenario 1  export HERDR_TTS_REF=validation/at-11-instalable          │
+    │      │                                                                 │
+    │      ▼  literal id=install-plugin-curl block                           │
+    │  raw.githubusercontent.com/chiptime/agent-tts/$REF/…/install.sh         │
+    │      │                                                                 │
+    │      ▼  install.sh clones CANONICAL_URL at the same $REF               │
+    │  $XDG_DATA_HOME/herdr-tts/plugin  (full monorepo checkout)             │
+    │                                                                        │
+    │  scenario 2  herdr plugin install chiptime/agent-tts/hosts/herdr/      │
+    │              tts-plugin --ref validation/at-11-instalable --yes        │
+    │      │                                                                 │
+    │      ▼  managed_path = full monorepo clone                             │
+    │  plugin_root = managed_path/hosts/herdr/tts-plugin   (OQ-1 predicate)  │
+    └────────────────────────┬───────────────────────────────────────────────┘
+                             │ [[build]] scripts/bootstrap.sh  (from the candidate ref)
+                             ▼
+    ┌─ engine ───────────────────────────────────────────────────────────────┐
+    │  git+https://github.com/chiptime/agent-tts.git                         │
+    │      @d66616bce3ad8193f11ae615bd58bb4508eb65be#subdirectory=engine     │
+    │  NOT selectable by HERDR_TTS_REF / --ref · no branch, tag, or fallback │
+    │  direct_url.json must record commit_id == that exact SHA  (OQ-6 leg C) │
+    └────────────────────────────────────────────────────────────────────────┘
+
+                             ▼ recorded with every run
+    journal.json: { candidate_ref, resolved_commit, engine_commit_id, state }
+
+Unset `HERDR_TTS_REF` collapses the left box to the stable documented default (`v0.16.0`), which
+is still unpublished — so the *stable* route remains `BLOCKED`, and that `BLOCKED` is preserved
+evidence, not a regression introduced by this decision.
+
 ---
 
 ## File changes
@@ -862,6 +1054,8 @@ route and the optional systemd route cannot diverge:
 | `scripts/acceptance/clean-install.sh` | Create | V2 harness: sandbox, scenario registry, activation model, journal, exit codes. **Milestone 1, task 1** |
 | `scripts/acceptance/allowed-origins.txt` | Create | Documented-origin allowlist, cross-checked against docs by a V1 test |
 | `scripts/acceptance/scenarios/*.sh` | Create | One file per scenario, sourced by the harness |
+| `scripts/acceptance/scenarios/01-plugin-fresh-clone.sh` | Modify | **Decision 11**: export `HERDR_TTS_REF=validation/at-11-instalable` for the literal curl block; record candidate ref + resolved commit; OQ-6 by-SHA leg B and `direct_url.json` leg C unchanged and still independent |
+| `scripts/acceptance/scenarios/02-plugin-subdir-install.sh` | Modify | **Decision 11**: candidate leg uses herdr's supported `--ref validation/at-11-instalable --yes`; the `HERDR_AGENT_TTS_REF` differential leg is demoted to a diagnostic fallback; record candidate ref + resolved commit |
 | `scripts/acceptance/scenarios/registry.conf` | Modify | **Decision 10**: `zero-machine-paths` `activates_at_milestone` `1` → `2`. One field, tab-separated |
 | `tools/herdr_onboarding/` | Create | Shared wizard + doctor detection (stdlib only) |
 | `hosts/herdr/tts-plugin/scripts/install.sh` | Modify | Monorepo `CANONICAL_URL`/source, `~/.local/bin` exposure, PATH warning, wizard hand-off, extended uninstall print |
@@ -875,7 +1069,7 @@ route and the optional systemd route cannot diverge:
 | `hosts/herdr/brain/src/herdr_brain/config.py` | Modify | Port knob plumbing; optional remote-exposure domain from config/env |
 | `hosts/herdr/tts-plugin/packaging/npm/{package.json,bin/herdr-tts}` | Modify | Legacy `chiptime/herdr-tts` URLs → monorepo; honest support wording |
 | `hosts/herdr/tts-plugin/packaging/homebrew/herdr-tts.rb` | Modify | Monorepo url/homepage; document the wizard limitation on the keg route |
-| `hosts/herdr/tts-plugin/README.md` | Modify | Remove B1–B4 legacy commands; tagged `id=` install blocks |
+| `hosts/herdr/tts-plugin/README.md` | Modify | Remove B1–B4 legacy commands; tagged `id=` install blocks. **Decision 11**: the `id=install-plugin-curl` block becomes ref-parameterized — one `${HERDR_TTS_REF:-v0.16.0}` expansion covering both the raw installer-script path and (via `install.sh`'s existing knob) the install clone. Stable default stays `v0.16.0`; no publication claim is added |
 | `hosts/herdr/brain/README.md`, `README.md` | Modify | Canonical flow, optional systemd, advanced remote exposure, tagged blocks |
 | `docs/installation/V3-checklist.md` | Create | Timed human UAT checklist with both timing readings |
 | `hosts/herdr/brain/tests/test_first_run.py`, `test_doctor.py`, `test_resolve.py` | Create | V1 for wizard, doctor, resolution |
@@ -883,6 +1077,7 @@ route and the optional systemd route cannot diverge:
 | `engine/tests/test_versioned_tree_hygiene.py` | Create | Static zero-machine-path scan over the versioned tree (V1 half of scenario 3) |
 | `.gitignore` | Modify | Ignore generated `deploy/*.service` |
 | `openspec/config.yaml`, `hosts/herdr/tts-plugin/openspec/config.yaml` | Modify | Bounded corrections: registry-scope wording; stale "engine is a separate external repo" statement |
+| *(not a repository file)* `https://github.com/chiptime/agent-tts` → `refs/heads/validation/at-11-instalable` | Publish / fast-forward | **Decision 11**: one authorized remote write — local `feat/at-11-instalable` only, via the active `gh` session `chiptime`, fast-forward only. No `main`, no tag, no PR/merge/release/deletion/force-push |
 
 ---
 
@@ -957,6 +1152,25 @@ stops rather than reads. Only *which files* are consulted becomes configurable.
 | Oracle layouts probed, in order | `engine/src/agent_tts/` then `src/agent_tts/`, both at that one revision |
 | Oracle files, strict byte identity | `boundaries.py`, `cleaner.py`, `redact.py` |
 
+### Candidate validation ref (Decision 11)
+
+Two separate contracts. The first is selectable; the second is not, and nothing in the first may
+reach it.
+
+| Field | Value |
+|---|---|
+| Candidate ref | `validation/at-11-instalable` at `https://github.com/chiptime/agent-tts` |
+| Authorized source ref | local `feat/at-11-instalable` only |
+| Authorized destination | `refs/heads/validation/at-11-instalable` only |
+| Authorized credential | the active `gh` session named `chiptime` only |
+| Update mode | fast-forward only; divergent remote ref ⇒ `BLOCKED`, never force |
+| Curl-route selector | `HERDR_TTS_REF` — one variable, both the raw installer-script path and the install clone |
+| Registry-route selector | `herdr plugin install chiptime/agent-tts/hosts/herdr/tts-plugin --ref <ref> --yes` |
+| Stable documented default | `v0.16.0` (unchanged; currently unpublished, and no run claims otherwise) |
+| Engine SHA | `d66616bce3ad8193f11ae615bd58bb4508eb65be` — **not** selectable by either selector above; no branch, tag, alias, or fallback |
+| Recorded per run | candidate ref, resolved branch commit, engine `commit_id`, scenario state |
+| Not authorized | `main` writes, tag create/move (incl. `v0.16.0`), PR, merge, release, branch deletion, force-push, any other remote write, any credential outside the named session |
+
 ---
 
 ## Testing strategy
@@ -968,7 +1182,9 @@ stops rather than reads. Only *which files* are consulted becomes configurable.
 | Integration (V1) | Installer/bootstrap/launcher behavior with stubbed `herdr`/`git`/`uv`; CLI exposure; keymap preservation; wizard reachability from three simulated installed layouts | `hosts/herdr/tts-plugin/scripts/smoke-tests.sh` new scenarios (hermetic stubs, existing convention) |
 | **Suite hermeticity (V1, Decision 8)** | Playback lock/PID/socket + engine socket resolve inside `new_env()`; defaults byte-identical when unset; `r` reaches transcribe/read with its confirmation assertion intact; the stop branch signals only a sandbox PID; host playback state and the engine default socket are unchanged across a full suite run | `smoke-tests.sh` — section 16 (unchanged assertions) plus the four RED tests in Decision 8; isolated fixtures/recorders only, never a live host daemon |
 | **Oracle identity (V1, Decision 9)** | Revision pre-check; dual-layout resolution at one revision; checked return codes with a shape assertion on every resolved blob id; explicit named failure for a missing revision or file; strict byte identity for all three oracle files with the full F1–F9 matrix intact | `smoke-tests.sh` section 40e driver + the existing `40g` SHA-pinning assertion |
-| **Public pin retrieval (V2, OQ-6)** | The documented GitHub route fetches exactly `d66616bce3ad8193f11ae615bd58bb4508eb65be` and installs `engine/`; unavailability is `BLOCKED` with a recorded reason and no substitute | `clean-install.sh` scenario 1; local object resolution is explicitly **not** accepted as this evidence |
+| **Public pin retrieval (V2, OQ-6)** | The documented GitHub route fetches exactly `d66616bce3ad8193f11ae615bd58bb4508eb65be` and installs `engine/`; unavailability is `BLOCKED` with a recorded reason and no substitute | `clean-install.sh` scenario 1 legs B and C; local object resolution is explicitly **not** accepted as this evidence, and the candidate branch does **not** supply it (the pin is in no branch's history) |
+| **Candidate-ref install routes (V2, Decision 11)** | Scenario 1 runs the literal curl block with `HERDR_TTS_REF=validation/at-11-instalable` and asserts the fetched script *and* the installed plugin both come from that ref; scenario 2 runs `--ref validation/at-11-instalable --yes` and asserts `plugin_root = managed_path/hosts/herdr/tts-plugin` plus a materialized `engine/`; both record the candidate ref and the resolved branch commit; an unresolvable ref/commit is `BLOCKED`, never `PASS` | `clean-install.sh` scenarios 1 and 2; selection happens only through the two supported mechanisms, never by rewriting the documented block |
+| **Stable-vs-candidate honesty (V1, Decision 11)** | The `id=install-plugin-curl` block has exactly one ref expansion defaulting to `v0.16.0`; with the variable unset the resolved URL and clone ref are byte-equivalent to today; no evidence artifact or active doc claims `v0.16.0` or `main` is published, repaired, or validated; the engine `commit_id` is the exact SHA under every selected installer ref | `engine/tests/test_versioned_tree_hygiene.py` static assertions + journal field checks (Decision 11 RED tests a, b, e, f) |
 | Compatibility (V1, RNF-4) | Observable parity before/after each audit fix — notably `bin/herdr-brain` resolving the plugin with `HERDR_TTS_HOME` unset | Paired assertions: legacy-shaped layout and corrected layout both reach a found TTS surface |
 | Acceptance (V2) | The nine scenarios, clean-room, literal documented steps | `scripts/acceptance/clean-install.sh --milestone N` |
 | Human (V3) | Timed clean-machine UAT, friction log, sign-off | `docs/installation/V3-checklist.md`; outside the automated loop |
@@ -998,8 +1214,9 @@ process integration. The matrix is **applicable**.
 | Documentation-like paths | Fenced blocks in `README.md` treated as executable; an attacker-or-accident-added block; `id=` collision | **Applicable** | Harness executes blocks **by id from a pinned file allowlist** only; never scans-and-runs; duplicate or missing id is a hard failure | (a) unknown id → non-zero, nothing executed; (b) duplicate id in one file → non-zero; (c) block added to a non-allowlisted file → never executed |
 | Git repository selection | `git -C` vs cwd; installer run from inside an unrelated repo; relative vs absolute target | **Applicable** | Every git call passes an absolute `-C`; target derived from `XDG_DATA_HOME`, never cwd; remote-mismatch abort retained | (a) run installer with cwd inside a foreign git repo → foreign repo untouched, `git status` clean; (b) relative `TARGET` rejected; (c) mismatched origin aborts writing nothing |
 | Commit state | staged / `commit -a` / empty index | **N/A** — this change creates no commits programmatically. Commits are authored by the developer through the normal flow | — | — |
-| Push state | tracking branch, first push, explicit refspec | **N/A** — no push or remote-write automation exists or is added; explicitly forbidden by the change constraints | — | — |
-| PR commands | `--head`, env prefix, composed commands | **N/A** — no PR automation in this change | — | — |
+| **Push state** *(reclassified by Decision 11)* | Implicit current-branch push instead of an explicit refspec; wrong source ref (another branch, detached HEAD, a sibling worktree); wrong destination (`main`, a tag ref, another branch); wrong remote/URL; an ambient credential (another `gh` login, SSH agent, ControlMaster socket) used because it happened to be reachable; a divergent remote ref resolved by `--force` / `--force-with-lease`; scope widened after a denial | **Applicable** — exactly one authorized remote write exists: local `feat/at-11-instalable` → `refs/heads/validation/at-11-instalable` at `https://github.com/chiptime/agent-tts`, through the active `gh` session named `chiptime`, **fast-forward only**. It is a one-off developer operation, **not** a product/harness feature | Explicit refspec naming both ends; verify the current branch is the authorized source before pushing; verify the remote URL; use only the named session and **never** discover, enumerate, or reuse any other credential channel; fast-forward only. Fail closed on all three shapes — write denied, auth denied, or remote ref divergent → stop, overwrite nothing, report both tips, mark the dependent scenario `BLOCKED`, leave M1 open. Never widen scope to get past a denial | (a) any destination other than `refs/heads/validation/at-11-instalable` → refused before contacting the remote; (b) source ref other than `feat/at-11-instalable` → refused; (c) divergent remote ref → `BLOCKED` with both tips recorded, **no** force and remote bytes unchanged; (d) static assertion: no push/tag/PR/merge/release/branch-delete invocation exists anywhere in `scripts/`, `hosts/`, `tools/`, or the harness |
+| PR commands | `--head`, env prefix, composed commands | **N/A** — no PR automation in this change. PR, merge, release, tag create/move, and branch deletion remain unauthorized; V3 is the human gate | — | — |
+| **Install-ref selection** *(change-specific, Decision 11)* | A ref value that escapes its URL segment (`../`, absolute path, scheme injection, embedded `?`/`#`); a ref that resolves to a different repository; the candidate ref leaking into the engine resolution and silently replacing the immutable SHA; the candidate ref written into the documented stable default; an unresolvable ref recorded as `PASS` | **Applicable** | One ref variable with a `v0.16.0` default feeds both the raw-script path and the clone; the ref is passed through the product's own supported mechanisms (`HERDR_TTS_REF`, herdr `--ref`), never by rewriting the documented block; engine resolution reads only the pinned SHA and is unreachable from either selector; a ref that does not resolve to a commit on the documented origin is `BLOCKED` | (a) traversal/absolute/scheme-bearing ref value → refused, nothing fetched; (b) `direct_url.json` still records `commit_id == d66616bc…` and `subdirectory == engine` under every selected installer ref; (c) with the variable unset, the resolved URL and clone ref are byte-equivalent to today's `v0.16.0` default; (d) unresolvable candidate ref/commit → `BLOCKED` with a recorded reason, never `PASS`; (e) static assertion: the documented stable default is never the candidate ref |
 | **Process / port ownership** *(change-specific)* | Foreign process on the configured port; systemd `MainPID` vs stray `nohup`; PID reuse between probe and signal | **Applicable** | Signal only proven-owned processes (our pidfile, or the unit's `MainPID`); otherwise exit non-zero naming PID, port, and two remediations. Re-verify ownership immediately before signalling | (a) foreign listener on the port → non-zero, **process still alive**; (b) own stale pidfile → cleaned without signalling a reused PID; (c) unit-owned listener → managed via `systemctl`, not `kill` |
 | **Executable-file exposure** *(change-specific)* | `~/.local/bin/herdr-tts` already exists as a user file; exists as a symlink to something else; `~/.local/bin` is a file not a directory | **Applicable** | Create the directory only when absent; refuse to clobber a non-managed file; managed artifacts carry a recognisable marker and are refreshed, not blindly overwritten | (a) pre-existing unmanaged `herdr-tts` → refuse, exit non-zero, name it; (b) `~/.local/bin` exists as a regular file → actionable failure; (c) managed artifact from a previous install → refreshed in place |
 | **Network origin boundary** *(change-specific)* | Redirect to a non-allowlisted host; scheme-relative URL; origin present in docs but absent from the allowlist | **Applicable** | Wrapper shim resolves the final host and refuses non-allowlisted origins (`BLOCKED-ORIGIN:`); a V1 test enforces allowlist ↔ documentation equivalence | (a) request to a non-allowlisted host → blocked, scenario `BLOCKED` not `PASS`; (b) doc URL missing from allowlist → V1 fails; (c) allowlist entry absent from docs → V1 fails |
@@ -1010,8 +1227,17 @@ process integration. The matrix is **applicable**.
 Applicable rows carry into `tasks.md` unchanged; each becomes a RED test before its production
 change. `N/A` rows generate no tasks.
 
-The two new rows do not change the `N/A` verdicts above them: Decision 8 and Decision 9 still
-create no commits, no pushes, and no PR automation.
+Scope of the Decision 11 reclassification, stated precisely so it cannot be read as a licence:
+
+- **Push state** moved `N/A` → **Applicable** because exactly one remote write is now authorized.
+  Its design response is a *boundary* around a single manual operation. No push, PR, release, or
+  branch-management capability is added to the installer, the launchers, the wizard, or the
+  harness, and RED test (d) asserts that statically.
+- **Commit state** stays `N/A`: commits remain developer-authored through the normal flow.
+- **PR commands** stays `N/A`: no PR, merge, release, tag, or branch-deletion operation is
+  authorized or automated anywhere in this change.
+- Decisions 8 and 9 are unaffected — they still create no commits, no pushes, and no PR
+  automation.
 
 ---
 
@@ -1027,6 +1253,15 @@ create no commits, no pushes, and no PR automation.
   sequence goes into the installation docs; running it is the maintainer's explicit action.
 - **Unit replacement.** On upgrade, the generated unit replaces the previously copied static
   unit. The installer stops only the AT-11-owned unit, regenerates, reloads, and restarts.
+- **Candidate validation branch (Decision 11).** Commit the local work unit first, then
+  fast-forward `validation/at-11-instalable` from `feat/at-11-instalable`; re-run V2 and record
+  the new resolved commit. The branch is **not** auto-deleted at any milestone — deletion is an
+  unauthorized remote write and needs its own authorization. Rollback for a failed candidate is
+  *local*: stop publishing further updates, preserve the tested commit and its failure evidence,
+  revert the affected local work unit with its tests and docs, then publish again. Invalidate the
+  evidence of any superseded candidate commit and re-run V2. Never rewrite remote history, never
+  touch `main` or a tag as a rollback mechanism, and never change the engine pin or the stable
+  documented default to make a failure disappear.
 - **Rollout order** is the milestone order; each slice is independently revertible with its
   tests and docs.
 
@@ -1048,7 +1283,7 @@ with their code. Harness-first is mandatory.
 | 5 | Bootstrap dev-mode `engine/` derivation (B5) + scenarios | M1 | ~150 | — |
 | 6 | Packaging wrappers (npm, homebrew) legacy refs + honest support docs | M1 | ~140 | — |
 | 7 | Bounded OpenSpec config corrections | M1 | ~40 | — |
-| 8 | Scenarios 1 + 2 `plugin-fresh-clone`, `plugin-subdir-install` (**OQ-1 probe**, **OQ-6 pin retrieval**) | M1 | ~240 | 1, 2 |
+| 8 | Scenarios 1 + 2 `plugin-fresh-clone`, `plugin-subdir-install` (**OQ-1 probe**, **OQ-6 pin retrieval**) + **Decision 11 candidate-ref adaptation**: ref-parameterized `id=install-plugin-curl` block, `HERDR_TTS_REF` / `--ref` selection, ref+commit attribution in the journal, then publish the candidate ref and run V2 | M1 | ~300 | 1, 2 |
 | 8a | **Smoke 16n host-safety isolation** (Decision 8): three launcher overrides + `new_env()` wiring + four RED tests | M1 | ~130 | — |
 | 8b | **Smoke 40e oracle identity** (Decision 9): selected pin + revision pre-check, dual-layout probe, checked return codes | M1 | ~140 | — |
 | 9 | `resolve.py` + bash resolvers: root, `HERDR_BIN`, port, `HERDR_TTS_HOME` (ex-OQ-2 **resolved**) | M2 | ~300 | — |
@@ -1083,6 +1318,18 @@ The three new M1 slices are cohesive and independently revertible. Their orderin
     slice 8b  40e: pin + oracle driver  ───┐
                                             ├──►  plugin suite green  ──►  M1 closure
     slice 8a  16n: playback isolation  ────┘
+
+    slice 4 (README id= install blocks)
+         │
+         ▼
+    slice 8  ref-parameterize id=install-plugin-curl · scenarios 1+2 select the
+         │   candidate ref · journal records ref + resolved commit
+         │
+         ▼   commit the work unit FIRST
+    publish  feat/at-11-instalable ──► validation/at-11-instalable  (fast-forward)
+         │
+         ▼
+    run V2 --milestone 1  ──► scenarios 1+2 PASS or BLOCKED with a recorded reason
 ```
 
 | Slice | Depends on | Why | Rollback boundary |
@@ -1090,6 +1337,7 @@ The three new M1 slices are cohesive and independently revertible. Their orderin
 | 3a | slice 3 | The row it edits is only meaningful once the scenario file exists | Single registry field; reverting re-exposes the inconsistency, so it must not be reverted alone |
 | 8a | none | Touches `bin/herdr-tts:26-28` and `new_env()`; no M1 slice shares those lines | Launcher overrides **and** `new_env()` exports revert together — a partial revert leaving the suite on host defaults restores the hazard and is forbidden |
 | 8b | slice 5 | Both edit `scripts/bootstrap.sh`. Sequenced, never merged: the pin is a supply-chain decision, the dev-mode derivation is a path fix, and they need separate rollback | Pin **and** 40e driver revert together with their evidence. Restoring `32e9bafb` restores the known baseline failure, not a release |
+| 8 | slices 4, 5, 8b | Scenario 1 executes the block authored in slice 4 and needs the corrected installer source; the candidate ref is only worth publishing once it carries the corrected engine pin (8b), otherwise its `[[build]]` reproduces the public gap | The ref-parameterized block, both scenarios, and the journal attribution fields revert **together** — a partial revert that leaves scenarios selecting a ref the block cannot honour produces silently wrong evidence. Publication itself is not reverted by deleting the remote ref (unauthorized); supersede it with a later fast-forward instead |
 
 **M1 closure gate.** The plugin V1 suite counts as green only after **both** 8a and 8b land. Until
 then the suite has a known red (40e) and a known hazard (16n), and M1 cannot close. Additionally:
@@ -1098,6 +1346,24 @@ then the suite has a known red (40e) and a known hazard (16n), and M1 cannot clo
 - Scenario 3 is reported `NOT-YET-ACTIVATED` at M1 — never green, never passed, never skipped.
 - Scenarios 1 and 2 require V2 network access, which is authorized for documented origins. OQ-6
   (public retrieval of the selected pin) is proven there or recorded `BLOCKED` with no substitute.
+- Scenarios 1 and 2 install from the **candidate ref** (Decision 11), recording that ref and its
+  resolved commit. The absent remote `v0.16.0` tag and the unrepaired public `main` no longer
+  block M1: the candidate ref is the M1 V2 install source. The *stable* route's `BLOCKED`
+  evidence is preserved as-is and is not closed by any candidate run.
+- Candidate-branch retrieval is still a **test-evidence gate**: if the candidate ref cannot be
+  published, cannot be fetched, or its resolved commit cannot be recorded, scenarios 1 and 2 are
+  `BLOCKED` and M1 stays open. Likewise if the exact engine SHA is not retrievable — the
+  candidate branch does not carry it and cannot stand in for it.
+
+### Candidate-branch updates at M2–M4
+
+Later milestones add **no new slices** for this. Branch maintenance rides the existing work-unit
+rhythm: a slice that changes installer, bootstrap, launcher, wizard, doctor, or documentation
+behavior that V2 exercises closes with its work-unit commit, then fast-forwards the same
+`validation/at-11-instalable` ref and re-runs the V2 scenarios active at that milestone, which
+re-record the new resolved commit. Slice count, milestone count, and the nine Gherkin scenarios
+are unchanged. The branch is never deleted, never force-pushed, and never promoted to a stable
+ref; `v0.16.0` and `main` remain maintainer-owned after V3.
 
 **Guard lines** (forecast; `sdd-tasks` owns the binding values):
 `Decision needed before apply: No` — `Chained PRs recommended: Yes` — `400-line budget risk: High`
@@ -1122,16 +1388,21 @@ not by a decision, and each has a pre-designed response to either outcome.
       point `plugin_root` at the subdirectory? Binary-symbol and installed-plugin evidence say
       yes; a subdirectory install has not been observed, and observing one would mutate the live
       plugin registry, which this change forbids. *Resolved by:* slice 8, V2 scenario
-      `plugin-subdir-install`. *If falsified:* adopt the pre-designed vendoring fallback in
-      Decision 1 — no redesign, one extra slice.
+      `plugin-subdir-install`, now installing from the candidate ref with herdr's supported
+      `--ref … --yes` (Decision 11) — so the probe runs against a working `[[build]]` without the
+      `HERDR_AGENT_TTS_REF` differential leg. *If falsified:* adopt the pre-designed vendoring
+      fallback in Decision 1 — no redesign, one extra slice.
 - [ ] **OQ-6 — Public retrieval of the selected engine pin** *(evidence; was implicit in
       Decision 9)*. Is `d66616bce3ad8193f11ae615bd58bb4508eb65be` retrievable from
       `https://github.com/chiptime/agent-tts.git` with `#subdirectory=engine`? The revision and
       its three oracle blobs are present **locally**, which proves tree shape and byte identity
-      and nothing about public reachability. *Resolved by:* slice 8, V2 scenario
-      `plugin-fresh-clone`. *If unavailable:* report `BLOCKED` with a recorded reason and return
-      the blocker to the maintainer. No substitute SHA, no moving branch, no cache-only pass, no
-      silent fallback.
+      and nothing about public reachability. **Decision 11 does not answer this**: the pin is
+      reachable from no branch in this repository (`git branch -a --contains d66616bc…` is
+      empty), so publishing the candidate ref adds no reachability for it. The by-SHA fetch leg
+      and the `direct_url.json` leg stay independent probes. *Resolved by:* slice 8, V2 scenario
+      `plugin-fresh-clone` legs B and C. *If unavailable:* report `BLOCKED` with a recorded
+      reason and return the blocker to the maintainer. No substitute SHA, no moving branch, no
+      cache-only pass, no silent fallback.
 
 ### Resolution record (closed — do not reopen)
 
@@ -1140,7 +1411,9 @@ not by a decision, and each has a pre-designed response to either outcome.
 | OQ-2 — `HERDR_TTS_HOME` precedence | Explicit export **wins**; own-location is the discovery default only. Literal RF-8 reading rejected | Engram #9681 → Decision 4 |
 | OQ-3 — STT health vocabulary | `/health` `stt` is `loading \| ready \| unavailable`; `unavailable` after refusal; `degraded` reserved for `tts`; RF-12 is errata | Engram #9681 → Decision 6 |
 | OQ-4 — Base correction | Authorized **and completed**; the worktree is fast-forwarded. Audit A3 re-scored *resolved on `main`*; the launcher/manifest are repaired, not recreated | Decision 0 |
-| OQ-5 — V2 network authorization | **Granted**, bounded to documented PyPI/uv, GitHub, and the M3 STT model origin. Anything outside the allowlist is `BLOCKED`. No push/PR/remote git | Engram #9681 |
+| OQ-5 — V2 network authorization | **Granted**, bounded to documented PyPI/uv, GitHub, and the M3 STT model origin. Anything outside the allowlist is `BLOCKED`. Read-only for the harness: the single authorized remote *write* is Decision 11's candidate-branch push/update, which does not widen this origin allowlist and adds no PR/remote-git capability | Engram #9681, narrowed by #9783 |
 | V2 milestone gate | Active-scenario interpretation: activation follows delivered functionality; all active scenarios green; no regression of previously green scenarios; full suite green at M4 | Engram #9636 → Decisions 3 and 10 |
 | Baseline V1 failures | No baseline exception. 16n and 40e are fixed in M1 | Decisions 8 and 9 |
+| Pre-V3 install-route testability | **Authorized**: publish local `feat/at-11-instalable` to `validation/at-11-instalable` only, via the active `gh` session `chiptime`, fast-forward only; select it through `HERDR_TTS_REF` / herdr `--ref`. Candidate ≠ stable, candidate ≠ engine-pin retrievability, candidate ≠ merge readiness. No `main`/tag/PR/merge/release/deletion/force-push | Engram #9783 → Decision 11 |
+| Absent remote `v0.16.0` / unrepaired public `main` as an M1 blocker | **No longer blocking.** The candidate ref is the M1 V2 install source; the stable route's `BLOCKED` evidence is preserved, not closed. Stable publication stays maintainer-owned, post-V3 | Decision 11 |
 | "Decision 9 awaits a maintainer answer" | Never existed. The STT question lived in Decision 6; Decision 9 below is new and resolved | this document |
