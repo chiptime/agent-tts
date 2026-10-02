@@ -18,6 +18,17 @@ evidence for the selected immutable engine revision. This is a supplementary
 V2 verification obligation; the nine approved PRD Gherkin scenarios remain
 unchanged, unrenumbered, and primary.
 
+**Supplementary validation-ref policy (authorized, Engram #9783):** the
+stable documented route and the pre-V3 candidate validation route are
+distinct and MUST NOT be conflated. The default documentation keeps naming
+stable `v0.16.0` — currently absent/unpublished — and no validation run is
+evidence that the stable tag or public `main` is published or repaired.
+Pre-V3 V2 install scenarios use the user-authorized candidate ref
+`validation/at-11-instalable` at `https://github.com/chiptime/agent-tts`
+through supported ref-selection mechanisms only. This is a supplementary
+V1/V2 evidence obligation; the nine approved PRD Gherkin scenarios remain
+unchanged, unrenumbered, and primary.
+
 Traceability: RF-AT-11-1, RF-AT-11-2, RF-AT-11-6, RF-AT-11-7, RF-AT-11-8,
 RF-AT-11-9, RF-AT-11-11; PRD acceptance scenarios "Instalación del plugin
 desde clon fresco", "Cero rutas de máquina", "Reinstalación idempotente
@@ -115,6 +126,90 @@ unchanged.)
 - GIVEN the V2 retrieval proof
 - WHEN its network accesses are inspected
 - THEN only documented origins are contacted and any unlisted origin remains blocked
+
+### Requirement: Stable-route default distinct from the candidate validation ref
+
+The default documented installation flow MUST keep naming the stable release
+ref `v0.16.0` as its install ref, and the active documentation MUST NOT claim
+that this stable tag — or the stable default route — is published, validated,
+or repaired. Preserved task-1.8 evidence stays recorded until genuinely
+corrected: the remote `v0.16.0` tag is absent and public `main` still carries
+legacy install URLs and the stale engine pin. No M1 validation run MAY be
+recorded as validating or publishing `v0.16.0` or `main`.
+
+The documented curl route (README block `id=install-plugin-curl`) SHALL
+support a `HERDR_TTS_REF` override that selects the ref for BOTH the fetched
+installer script and the installed plugin; with the override unset, both
+default to stable `v0.16.0`. This is specified behavior: the README revision
+itself happens downstream in implementation, not in this spec phase.
+
+For pre-V3 V2 validation, installation scenarios MAY target the
+user-authorized candidate ref `validation/at-11-instalable` published at
+`https://github.com/chiptime/agent-tts`, injected ONLY through supported
+mechanisms: `HERDR_TTS_REF=validation/at-11-instalable` for the
+fresh-clone/curl route, and Herdr's supported `--ref` flag
+(`herdr plugin install chiptime/agent-tts/hosts/herdr/tts-plugin --ref
+validation/at-11-instalable --yes`) for the registry-subdirectory route. The
+candidate ref selects installer/plugin code only; it MUST NOT replace, alias,
+or fall back for the immutable engine SHA
+`d66616bce3ad8193f11ae615bd58bb4508eb65be` (see the documented-origin
+retrieval requirement above). Both routes MUST preserve the full monorepo
+checkout and plugin subdirectory layout
+(`plugin_root = managed_path/hosts/herdr/tts-plugin`) with no root plugin
+manifest requirement.
+
+The validation route's sole authorized remote write is push/update of local
+`feat/at-11-instalable` to `refs/heads/validation/at-11-instalable` at
+`https://github.com/chiptime/agent-tts` through the active `gh` session
+named `chiptime`. No write to `main`, tag creation or movement, PR, merge, or
+release is authorized; V3 remains the manual human gate before merge.
+
+(Supplementary V1/V2 evidence obligation [Engram #9783]; it distinguishes the
+candidate validation branch from the stable route without turning the branch
+into a product release or adding a milestone. The nine approved PRD Gherkin
+scenarios remain unchanged.)
+
+#### Scenario: Stable default without a publication claim
+
+- GIVEN the active default installation documentation
+- WHEN it is inspected
+- THEN it names stable `v0.16.0` as the default install ref and contains no claim that the stable tag or default route is published or validated
+- AND no M1 validation evidence is recorded as validating or publishing `v0.16.0` or `main`
+
+#### Scenario: Curl-route override selects both script and plugin refs
+
+- GIVEN the documented curl route run with `HERDR_TTS_REF` set to a ref
+- WHEN the installer script is fetched and the plugin installed
+- THEN both the fetched script and the installed plugin come from the overridden ref
+- AND with `HERDR_TTS_REF` unset both default to stable `v0.16.0`
+
+#### Scenario: Fresh-clone validation route preserves the monorepo layout
+
+- GIVEN V2 scenario 1 runs with `HERDR_TTS_REF=validation/at-11-instalable`
+- WHEN the installation completes
+- THEN the full monorepo checkout is preserved with `plugin_root = managed_path/hosts/herdr/tts-plugin`
+- AND no root plugin manifest is required and the recorded evidence names the ref used
+
+#### Scenario: Registry-subdirectory validation route via supported --ref
+
+- GIVEN V2 scenario 2 installs the plugin from the registry
+- WHEN `herdr plugin install chiptime/agent-tts/hosts/herdr/tts-plugin --ref validation/at-11-instalable --yes` runs
+- THEN the plugin materializes at `plugin_root = managed_path/hosts/herdr/tts-plugin` from the candidate ref
+- AND the recorded evidence names the ref and the resolved branch commit
+
+#### Scenario: Candidate ref never replaces the engine pin
+
+- GIVEN a validation-route installation using any installer/plugin ref
+- WHEN bootstrap retrieves the engine
+- THEN it retrieves exactly `d66616bce3ad8193f11ae615bd58bb4508eb65be` via `git+https://github.com/chiptime/agent-tts.git@<SHA>#subdirectory=engine`
+- AND no branch or tag substitutes for the engine SHA and no fallback occurs
+
+#### Scenario: Authorization boundary for the validation ref
+
+- GIVEN all remote operations performed for the validation route
+- WHEN they are inspected
+- THEN the only remote write is push/update of `validation/at-11-instalable` from local `feat/at-11-instalable` through the active `gh` session `chiptime`
+- AND no write to `main`, tag creation or movement, PR, merge, or release exists, and merge readiness still awaits human V3
 
 ### Requirement: Automatic CLI exposure without manual symlinks
 
