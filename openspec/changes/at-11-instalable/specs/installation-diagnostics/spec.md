@@ -17,6 +17,16 @@ exception M1 closure gate. These are supplementary V1/V2 verification
 obligations; the nine approved PRD Gherkin scenarios remain unchanged,
 unrenumbered, and primary.
 
+**Supplementary validation-ref evidence policy (authorized, Engram #9783):**
+V2 runs that install from a remote execute against the authorized candidate
+ref `validation/at-11-instalable`, record the ref and resolved commit with
+each run, and attribute evidence to the tested commit — never to a later
+branch tip or to the stable route. Candidate success is not evidence that
+public `main` or stable `v0.16.0` is repaired, published, or validated; the
+preserved task-1.8 blocked evidence stays recorded. This is supplementary
+V1/V2 evidence policy; the nine approved PRD Gherkin scenarios remain
+unchanged, unrenumbered, and primary.
+
 Traceability: RF-AT-11-10; RNF-AT-11-3, RNF-AT-11-4; cross-cutting
 verification contract; PRD acceptance scenarios "Doctor diagnostica rotura
 simulada", "Salud final post-asistente" (V3 obligation), "UAT cronometrado
@@ -267,6 +277,62 @@ successful skips and never reported green.
 
 (PRD anchor: V2 level definition, "Principio de verificación" and
 "Verificación" sections; proposal Verification Contract.)
+
+### Requirement: Validation-run candidate attribution and honest stable-route claims
+
+V2 installation scenarios that install from a remote (M1 scenarios 1 and 2;
+the same policy governs later work-unit runs at M2–M4) MUST execute against
+the authorized candidate ref `validation/at-11-instalable` at
+`https://github.com/chiptime/agent-tts` and MUST record, with every run, the
+exact candidate ref and the resolved branch commit, so evidence is
+attributable to the tested commit and never to a later branch tip. Candidate
+evidence MUST NOT be recorded as proof that public `main` or stable
+`v0.16.0` is repaired, published, or validated; the preserved task-1.8
+blocked evidence (legacy install URLs and stale pin `32e9bafb` on public
+`main`; absent remote `v0.16.0` tag) MUST stay recorded as blocked, and task
+1.8 stays open, until genuine evidence supports closure. When the candidate
+ref, the exact engine SHA, or a documented dependency is inaccessible, the
+affected scenario MUST report `BLOCKED` with the recorded reason — no
+substitute branch, tag, or SHA, no cache-only pass, no silent fallback. The
+only authorized remote write for validation remains push/update of local
+`feat/at-11-instalable` to `validation/at-11-instalable` through the active
+`gh` session `chiptime`; a validation run MUST NOT write `main`, create or
+move tags, or open PRs, merges, or releases. V3 remains the manual human gate
+before merge.
+
+(Supplementary V1/V2 evidence policy from the authorized validation branch
+[Engram #9783]; the exact engine-pin BLOCKED semantics remain specified by
+the `independent-installation` documented-origin retrieval requirement. The
+nine approved PRD Gherkin scenarios remain unchanged.)
+
+#### Scenario: Evidence attributes to the tested candidate commit
+
+- GIVEN a V2 validation run of installation scenarios 1 and 2
+- WHEN the evidence is recorded
+- THEN it names ref `validation/at-11-instalable` and the exact resolved branch commit
+- AND a later change of the branch tip does not retroactively validate earlier evidence
+
+#### Scenario: Candidate success is not stable publication
+
+- GIVEN a green candidate validation run
+- WHEN the recorded evidence is reviewed
+- THEN it makes no claim that `main` or stable `v0.16.0` is repaired, published, or validated
+- AND the task-1.8 blocked evidence remains recorded with task 1.8 still open
+
+#### Scenario: Inaccessible candidate ref or dependency blocks with a reason
+
+- GIVEN the candidate ref, the exact engine SHA, or a documented dependency is unavailable during a validation run
+- WHEN the affected scenario reaches the inaccessible point
+- THEN it reports `BLOCKED` with the recorded reason
+- AND no substitute branch, tag, or SHA is installed, no cache-only pass is recorded, and no silent fallback occurs
+
+#### Scenario: Remote writes stay inside the validation branch
+
+- GIVEN all remote operations performed for a validation run
+- WHEN they are inspected
+- THEN only push/update of `validation/at-11-instalable` from local `feat/at-11-instalable` through the active `gh` session `chiptime` occurred
+- AND no `main` write, tag creation or movement, PR, merge, or release exists
+- AND merge readiness still requires the human V3 gate
 
 ### Requirement: Milestone-scoped V2 activation gate
 
