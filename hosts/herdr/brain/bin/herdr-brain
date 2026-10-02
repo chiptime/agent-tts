@@ -2,9 +2,109 @@
 # herdr-brain — launcher and CLI entrypoint for Herdr plugin & standalone usage.
 set -euo pipefail
 
+# >>> herdr portable resolvers (AT-11 design Decision 4) >>>
+# Minimal bash mirror of tools/herdr_onboarding/resolve.py for use before
+# any Python is available. This block is byte-identical in bin/herdr-tts
+# and bin/herdr-brain; $1 parameterizes the launcher, and each entry point
+# calls only the resolvers it needs.
+herdr_resolve_root() { # $1 = launcher basename -> installation root
+  # HERDR_PLUGIN_ROOT wins; else ascend from this script's own resolved
+  # directory (symlinks resolved), up to 6 levels, taking the first
+  # directory whose bin/$1 exists.
+  local d i
+  if [[ -n "${HERDR_PLUGIN_ROOT:-}" ]]; then
+    printf '%s\n' "$HERDR_PLUGIN_ROOT"
+    return 0
+  fi
+  d="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+  for i in 1 2 3 4 5 6; do
+    d="$(dirname "$d")"
+    if [[ -f "$d/bin/$1" ]]; then
+      printf '%s\n' "$d"
+      return 0
+    fi
+  done
+  echo "ERROR: cannot resolve the installation root; set HERDR_PLUGIN_ROOT to the root containing bin/$1 (design Decision 4)." >&2
+  return 1
+}
+
+herdr_resolve_tts_home() { # $1 = brain installation root -> tts-plugin home
+  # OQ-2 resolution (Engram #9681): an explicitly set AND valid
+  # HERDR_TTS_HOME wins; unset or unusable derives <root>/../tts-plugin;
+  # a hardcoded default is never exported. Neither candidate usable ->
+  # error naming both.
+  local sibling
+  if [[ -n "${HERDR_TTS_HOME:-}" && -d "${HERDR_TTS_HOME}" ]]; then
+    printf '%s\n' "$HERDR_TTS_HOME"
+    return 0
+  fi
+  sibling="$(cd "$1/.." 2>/dev/null && pwd)/tts-plugin"
+  if [[ -d "$sibling" ]]; then
+    printf '%s\n' "$sibling"
+    return 0
+  fi
+  echo "ERROR: cannot resolve the tts-plugin home: HERDR_TTS_HOME=${HERDR_TTS_HOME:-<unset>} is not a usable directory and $sibling does not exist; set HERDR_TTS_HOME to the tts-plugin root." >&2
+  return 1
+}
+
+herdr_resolve_bin() { # -> herdr binary via six-step discovery
+  # 1) HERDR_BIN 2) PATH 3) $HOMEBREW_PREFIX/bin/herdr 4) brew --prefix
+  # 5) $HOME/.local/bin/herdr 6) bare "herdr". No literal prefixes.
+  local prefix
+  if [[ -n "${HERDR_BIN:-}" ]]; then
+    printf '%s\n' "$HERDR_BIN"
+    return 0
+  fi
+  if command -v herdr >/dev/null 2>&1; then
+    command -v herdr
+    return 0
+  fi
+  if [[ -n "${HOMEBREW_PREFIX:-}" && -x "$HOMEBREW_PREFIX/bin/herdr" ]]; then
+    printf '%s\n' "$HOMEBREW_PREFIX/bin/herdr"
+    return 0
+  fi
+  if command -v brew >/dev/null 2>&1; then
+    if prefix="$(brew --prefix 2>/dev/null)" && [[ -n "$prefix" && -x "$prefix/bin/herdr" ]]; then
+      printf '%s\n' "$prefix/bin/herdr"
+      return 0
+    fi
+  fi
+  if [[ -n "${HOME:-}" && -x "$HOME/.local/bin/herdr" ]]; then
+    printf '%s\n' "$HOME/.local/bin/herdr"
+    return 0
+  fi
+  printf '%s\n' "herdr"
+}
+
+herdr_resolve_port() { # $1 = brain config dir -> HERDR_BRAIN_PORT value
+  # HERDR_BRAIN_PORT -> persisted config ($1/config.env, sourcable
+  # KEY=VALUE lines) -> default 8741.
+  local cfg line raw
+  if [[ -n "${HERDR_BRAIN_PORT:-}" ]]; then
+    printf '%s\n' "$HERDR_BRAIN_PORT"
+    return 0
+  fi
+  cfg="$1/config.env"
+  if [[ -f "$cfg" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      raw="${line%%#*}"
+      raw="${raw#"${raw%%[![:space:]]*}"}"
+      raw="${raw%"${raw##*[![:space:]]}"}"
+      if [[ "$raw" == "HERDR_BRAIN_PORT="* ]]; then
+        raw="${raw#HERDR_BRAIN_PORT=}"
+        raw="${raw%\"}"; raw="${raw#\"}"
+        raw="${raw%\'}"; raw="${raw#\'}"
+        printf '%s\n' "$raw"
+        return 0
+      fi
+    done < "$cfg"
+  fi
+  printf '%s\n' "8741"
+}
+# <<< herdr portable resolvers <<<
+
 REAL_SCRIPT="$(readlink -f "${BASH_SOURCE[0]}")"
-SCRIPT_DIR="$(cd "$(dirname "${REAL_SCRIPT}")" && pwd)"
-REPO_DIR="${HERDR_PLUGIN_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
+REPO_DIR="$(herdr_resolve_root herdr-brain)"
 
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/herdr-brain"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/herdr-brain"
@@ -17,20 +117,23 @@ mkdir -p "$STATE_DIR" "$CONFIG_DIR"
 # ---------------------------------------------------------------- env discovery
 load_env() {
   export HERDR_BRAIN_HOST="${HERDR_BRAIN_HOST:-0.0.0.0}"
-  export HERDR_BRAIN_PORT="${HERDR_BRAIN_PORT:-8741}"
-  export HERDR_TTS_HOME="${HERDR_TTS_HOME:-$HOME/Code/personal/herdr-tts}"
+  # Port (design Decision 4): HERDR_BRAIN_PORT -> persisted config
+  # ($CONFIG_DIR/config.env) -> default 8741; the resolved value is
+  # exported so the server and the status paths see one knob.
+  export HERDR_BRAIN_PORT="$(herdr_resolve_port "$CONFIG_DIR")"
 
-  # Discover HERDR_BIN if not pinned
+  # OQ-2 precedence (Engram #9681 / design Decision 4): an explicitly
+  # set-and-valid HERDR_TTS_HOME wins; unset derives the sibling
+  # tts-plugin from this launcher's own location. No hardcoded default
+  # is ever exported (the dead $HOME/Code/personal/herdr-tts default is
+  # removed by delivering this precedence).
+  local tts_home
+  tts_home="$(herdr_resolve_tts_home "$REPO_DIR")" || exit 1
+  export HERDR_TTS_HOME="$tts_home"
+
+  # Discover HERDR_BIN if not pinned (six-step discovery, design Decision 4)
   if [[ -z "${HERDR_BIN:-}" ]]; then
-    if command -v herdr >/dev/null 2>&1; then
-      HERDR_BIN="$(command -v herdr)"
-    elif [[ -x "/home/linuxbrew/.linuxbrew/bin/herdr" ]]; then
-      HERDR_BIN="/home/linuxbrew/.linuxbrew/bin/herdr"
-    elif [[ -x "$HOME/.local/bin/herdr" ]]; then
-      HERDR_BIN="$HOME/.local/bin/herdr"
-    else
-      HERDR_BIN="herdr"
-    fi
+    HERDR_BIN="$(herdr_resolve_bin)"
     export HERDR_BIN
   fi
 
