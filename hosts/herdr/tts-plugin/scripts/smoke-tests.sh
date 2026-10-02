@@ -150,6 +150,14 @@
 #         herdr is missing), --reader-auto CLI toggle (EN + ES output,
 #         persists through config_set), settings reading category p knob
 #         cycles and persists
+#   44    portable resolvers (AT-11 design Decision 4): the identical
+#         herdr_resolve_* block (root / HERDR_TTS_HOME / HERDR_BIN / port)
+#         exists in both launchers, resolves per the confirmed OQ-2
+#         precedence (set-and-valid HERDR_TTS_HOME wins; unset derives the
+#         sibling tts-plugin; no hardcoded default is ever exported), the
+#         six-step HERDR_BIN discovery (no literal brew prefix), and the
+#         HERDR_BRAIN_PORT -> config.env -> 8741 port order — every check
+#         runs the SHIPPED block extracted from the real launcher
 set -uo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -4407,6 +4415,158 @@ assert_grep "43d reading view renders the reader popup row" ' p  Reader popup:' 
 assert_grep "43d p knob note renders" 'Reader auto-open: on' "$T/popup.txt"
 assert_grep "43d p knob persists on" '^TTS_READER_AUTO="on"$' "$HERDR_TTS_CONFIG_FILE"
 unset HERDR_TTS_CONFIG_FILE
+
+# 44. (AT-11 design Decision 4) Portable resolvers. Every behavioral check
+#     runs the SHIPPED resolver block extracted from the real launcher —
+#     the tested code is the code that ships, never a reimplementation.
+new_env s44
+extract_block() { # $1 launcher file -> stdout; empty when the block is absent
+  sed -n '/^# >>> herdr portable resolvers/,/^# <<< herdr portable resolvers/p' "$1"
+}
+extract_block "$SCRIPT" > "$T/plugin-block.txt"
+extract_block "$REPO/../brain/bin/herdr-brain" > "$T/brain-block.txt"
+
+# 44a. The shipped plugin launcher carries the four resolvers.
+[[ -s "$T/plugin-block.txt" ]] \
+  && ok "44a resolver block present in bin/herdr-tts" || bad "44a resolver block missing from bin/herdr-tts"
+for fn in herdr_resolve_root herdr_resolve_tts_home herdr_resolve_bin herdr_resolve_port; do
+  grep -q "^${fn}()" "$T/plugin-block.txt" \
+    && ok "44a block defines ${fn}" || bad "44a block does not define ${fn}"
+done
+
+# Sandbox launcher built from the SHIPPED block: herdr_resolve_root anchors
+# at its own BASH_SOURCE, so placing the stub inside a fake layout proves
+# the ascension against the exact shipped text.
+build_resolver_stub() { # $1 stub path, $2 driver code appended after the block
+  { printf '#!/usr/bin/env bash\nset -euo pipefail\n'
+    cat "$T/plugin-block.txt"
+    printf '%s\n' "$2"; } > "$1"
+  chmod +x "$1"
+}
+LAYOUT="$T/layout"; mkdir -p "$LAYOUT/bin"
+build_resolver_stub "$LAYOUT/bin/herdr-tts" 'herdr_resolve_root herdr-tts'
+
+# 44b. Root: unset HERDR_PLUGIN_ROOT derives the layout root by ascension;
+#      the env knob wins; deep ascension works up to 6 levels and fails
+#      actionably beyond.
+got="$(env -i PATH="/usr/bin:/bin" "$LAYOUT/bin/herdr-tts")"
+[[ "$got" == "$LAYOUT" ]] \
+  && ok "44b root: unset HERDR_PLUGIN_ROOT derives the layout root" \
+  || bad "44b root: got '$got' want '$LAYOUT'"
+got="$(env -i PATH="/usr/bin:/bin" HERDR_PLUGIN_ROOT=/opt/custom-herdr "$LAYOUT/bin/herdr-tts")"
+[[ "$got" == "/opt/custom-herdr" ]] \
+  && ok "44b root: HERDR_PLUGIN_ROOT override wins" \
+  || bad "44b root override: got '$got'"
+DEEP="$T/deep3"; mkdir -p "$DEEP/bin" "$DEEP/1/2"
+touch "$DEEP/bin/herdr-tts"
+build_resolver_stub "$DEEP/1/2/wrapper" 'herdr_resolve_root herdr-tts'
+got="$(env -i PATH="/usr/bin:/bin" "$DEEP/1/2/wrapper")"
+[[ "$got" == "$DEEP" ]] \
+  && ok "44b root: ascension reaches 3 levels up" \
+  || bad "44b deep ascension: got '$got' want '$DEEP'"
+TOODEEP="$T/deep9"; mkdir -p "$TOODEEP/bin" "$TOODEEP/1/2/3/4/5/6/7"
+touch "$TOODEEP/bin/herdr-tts"
+build_resolver_stub "$TOODEEP/1/2/3/4/5/6/7/wrapper" 'herdr_resolve_root herdr-tts'
+if env -i PATH="/usr/bin:/bin" "$TOODEEP/1/2/3/4/5/6/7/wrapper" > "$T/toodeep.out" 2> "$T/toodeep.err"; then
+  bad "44b root: ascension beyond 6 levels unexpectedly succeeded"
+else
+  grep -q "HERDR_PLUGIN_ROOT" "$T/toodeep.err" \
+    && ok "44b root: beyond 6 levels fails naming HERDR_PLUGIN_ROOT" \
+    || bad "44b root: failure does not name HERDR_PLUGIN_ROOT"
+fi
+
+# 44c. HERDR_TTS_HOME precedence (OQ-2, Engram #9681): set-and-valid wins
+#      even when a sibling tts-plugin exists; unset derives the sibling;
+#      neither candidate usable -> actionable error naming both.
+HOSTS="$T/hosts"; BRAINROOT="$HOSTS/herdr/brain"; mkdir -p "$BRAINROOT/bin" "$HOSTS/herdr/tts-plugin"
+build_resolver_stub "$BRAINROOT/bin/herdr-brain" "herdr_resolve_tts_home \"$BRAINROOT\""
+mkdir -p "$T/explicit-tts"
+got="$(env -i PATH="/usr/bin:/bin" HERDR_TTS_HOME="$T/explicit-tts" "$BRAINROOT/bin/herdr-brain")"
+[[ "$got" == "$T/explicit-tts" ]] \
+  && ok "44c tts home: set-and-valid HERDR_TTS_HOME wins over the sibling" \
+  || bad "44c override: got '$got' want '$T/explicit-tts'"
+got="$(env -i PATH="/usr/bin:/bin" "$BRAINROOT/bin/herdr-brain")"
+[[ "$got" == "$HOSTS/herdr/tts-plugin" ]] \
+  && ok "44c tts home: unset derives the sibling tts-plugin" \
+  || bad "44c sibling derivation: got '$got'"
+SOLO="$T/solo/brain"; mkdir -p "$SOLO/bin"
+build_resolver_stub "$SOLO/bin/herdr-brain" "herdr_resolve_tts_home \"$SOLO\""
+if env -i PATH="/usr/bin:/bin" HERDR_TTS_HOME="$T/no-such-tts" "$SOLO/bin/herdr-brain" > "$T/tts.out" 2> "$T/tts.err"; then
+  bad "44c tts home: unusable override + no sibling unexpectedly succeeded"
+else
+  grep -q "HERDR_TTS_HOME" "$T/tts.err" && grep -q "tts-plugin" "$T/tts.err" \
+    && ok "44c tts home: failure names both candidates" \
+    || bad "44c tts home: failure does not name both candidates"
+fi
+
+# 44d. HERDR_BIN six-step discovery (hermetic PATH/HOME; brew only as a
+#      stub on the sandbox PATH — no host tooling is consulted).
+BINSTUB="$T/bin/herdr-brain.d"; build_resolver_stub "$BINSTUB" 'herdr_resolve_bin'
+mkdir -p "$T/pbin" "$T/brew/bin" "$T/home/.local/bin" "$T/nohome" "$T/brewbin" "$T/brew2/bin"
+printf '#!/bin/sh\n' > "$T/pbin/herdr";    chmod +x "$T/pbin/herdr"
+printf '#!/bin/sh\n' > "$T/brew/bin/herdr"; chmod +x "$T/brew/bin/herdr"
+printf '#!/bin/sh\n' > "$T/brew2/bin/herdr"; chmod +x "$T/brew2/bin/herdr"
+printf '#!/bin/sh\n' > "$T/home/.local/bin/herdr"; chmod +x "$T/home/.local/bin/herdr"
+printf '#!/bin/sh\necho %s\n' "$T/brew2" > "$T/brewbin/brew"; chmod +x "$T/brewbin/brew"
+got="$(env -i PATH="/usr/bin:/bin" HOME="$T/home" HERDR_BIN=/x/herdr "$BINSTUB")"
+[[ "$got" == "/x/herdr" ]] \
+  && ok "44d bin step 1: HERDR_BIN wins" || bad "44d step 1: got '$got'"
+got="$(env -i PATH="$T/pbin:/usr/bin:/bin" HOME="$T/home" HOMEBREW_PREFIX="$T/brew" "$BINSTUB")"
+[[ "$got" == "$T/pbin/herdr" ]] \
+  && ok "44d bin step 2: PATH entry beats HOMEBREW_PREFIX" || bad "44d step 2: got '$got'"
+got="$(env -i PATH="/usr/bin:/bin" HOME="$T/home" HOMEBREW_PREFIX="$T/brew" "$BINSTUB")"
+[[ "$got" == "$T/brew/bin/herdr" ]] \
+  && ok "44d bin step 3: HOMEBREW_PREFIX discovery" || bad "44d step 3: got '$got'"
+got="$(env -i PATH="$T/brewbin:/usr/bin:/bin" HOME="$T/nohome" "$BINSTUB")"
+[[ "$got" == "$T/brew2/bin/herdr" ]] \
+  && ok "44d bin step 4: brew --prefix discovery" || bad "44d step 4: got '$got'"
+got="$(env -i PATH="/usr/bin:/bin" HOME="$T/home" "$BINSTUB")"
+[[ "$got" == "$T/home/.local/bin/herdr" ]] \
+  && ok "44d bin step 5: ~/.local/bin fallback" || bad "44d step 5: got '$got'"
+got="$(env -i PATH="/usr/bin:/bin" HOME="$T/nohome" "$BINSTUB")"
+[[ "$got" == "herdr" ]] \
+  && ok "44d bin step 6: bare herdr last resort" || bad "44d step 6: got '$got'"
+
+# 44e. Port: HERDR_BRAIN_PORT -> persisted config.env (sourcable KEY=VALUE,
+#      quotes stripped, unrelated keys tolerated) -> default 8741.
+PORTSTUB="$T/bin/herdr-port.d"; mkdir -p "$T/portcfg" "$T/portempty"
+build_resolver_stub "$PORTSTUB" "herdr_resolve_port \"$T/portcfg\""
+printf '# comment\nOTHER_KEY="x"\nHERDR_BRAIN_PORT="9005"\n' > "$T/portcfg/config.env"
+got="$(env -i PATH="/usr/bin:/bin" HERDR_BRAIN_PORT=9100 "$PORTSTUB")"
+[[ "$got" == "9100" ]] \
+  && ok "44e port: HERDR_BRAIN_PORT beats persisted config" || bad "44e env port: got '$got'"
+got="$(env -i PATH="/usr/bin:/bin" "$PORTSTUB")"
+[[ "$got" == "9005" ]] \
+  && ok "44e port: persisted config.env value honoured" || bad "44e config port: got '$got'"
+printf 'OTHER_KEY="1"\n' > "$T/portcfg/config.env"
+got="$(env -i PATH="/usr/bin:/bin" "$PORTSTUB")"
+[[ "$got" == "8741" ]] \
+  && ok "44e port: config without the key falls back to 8741" || bad "44e no-key port: got '$got'"
+build_resolver_stub "$PORTSTUB" "herdr_resolve_port \"$T/portempty\""
+got="$(env -i PATH="/usr/bin:/bin" "$PORTSTUB")"
+[[ "$got" == "8741" ]] \
+  && ok "44e port: no config file defaults to 8741" || bad "44e default port: got '$got'"
+
+# 44f. Parity: the brain launcher carries the identical block, both
+#      launchers wire it, and the task-2.1 mandates hold (no hardcoded
+#      HERDR_TTS_HOME default, no literal brew prefix in bin/herdr-brain).
+[[ -s "$T/brain-block.txt" ]] \
+  && ok "44f resolver block present in bin/herdr-brain" || bad "44f resolver block missing from bin/herdr-brain"
+for fn in herdr_resolve_root herdr_resolve_tts_home herdr_resolve_bin herdr_resolve_port; do
+  grep -q "^${fn}()" "$T/brain-block.txt" \
+    && ok "44f brain block defines ${fn}" || bad "44f brain block does not define ${fn}"
+done
+if diff -u "$T/plugin-block.txt" "$T/brain-block.txt" > "$T/parity.diff" 2>&1; then
+  ok "44f resolver block byte-identical in both launchers"
+else
+  bad "44f resolver block differs between the launchers"; sed 's/^/      /' "$T/parity.diff"
+fi
+grep -q 'PLUGIN_ROOT="$(herdr_resolve_root herdr-tts)"' "$SCRIPT" \
+  && ok "44f plugin launcher wires herdr_resolve_root" || bad "44f plugin launcher does not wire the root resolver"
+grep -q 'REPO_DIR="$(herdr_resolve_root herdr-brain)"' "$REPO/../brain/bin/herdr-brain" \
+  && ok "44f brain launcher wires herdr_resolve_root" || bad "44f brain launcher does not wire the root resolver"
+assert_no_grep_f "44f no hardcoded tts home default in bin/herdr-brain" 'HERDR_TTS_HOME:-$HOME' "$REPO/../brain/bin/herdr-brain"
+assert_no_grep "44f no literal brew prefix in bin/herdr-brain" '/home/linuxbrew' "$REPO/../brain/bin/herdr-brain"
 
 # 16s. (Decision-8 test d) Host-state invariance across the WHOLE suite
 #      run: the four production playback-state paths must be unchanged —
