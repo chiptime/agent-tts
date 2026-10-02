@@ -16,6 +16,13 @@ from typing import Optional
 DEFAULT_GLM_BASE_URL = "https://api.z.ai/api/paas/v4/"
 DEFAULT_GLM_MODEL = "glm-5"
 
+# AT-11 design Decision 4 port knob: HERDR_BRAIN_PORT -> persisted config
+# (<config>/herdr-brain/config.env, key HERDR_BRAIN_PORT) -> this default.
+# Mirrors tools/herdr_onboarding/resolve.py: the installed brain package
+# cannot import the monorepo-root tools module without adding a runtime
+# dependency, which design Decision 1 forbids.
+DEFAULT_BRAIN_PORT = 8741
+
 # Verified live layout: herdr-tts is the speech backend, consumed ONLY
 # through its versioned CLI surface (contract v1). The home points at the
 # herdr-tts repo root; the CLI derives everything else (including its own
@@ -98,6 +105,10 @@ class Settings:
     reader_timeout_s: int = DEFAULT_READER_TIMEOUT_S
     reader_concurrency: int = DEFAULT_READER_CONCURRENCY
     announce_max_chars: int = DEFAULT_ANNOUNCE_MAX_CHARS
+    # Appended with a default like the reader knobs: tests construct
+    # Settings(**SETTINGS_KWARGS), so a required field would break every
+    # existing construction.
+    brain_port: int = DEFAULT_BRAIN_PORT
 
     def __post_init__(self):
         # Accept plain strings for path fields regardless of the caller.
@@ -107,12 +118,56 @@ class Settings:
                 object.__setattr__(self, field, Path(value).expanduser())
 
 
+def _parse_brain_port(raw: str, source: str) -> int:
+    try:
+        port = int(raw.strip())
+    except ValueError:
+        raise ValueError(f"invalid {source} value {raw!r}: expected an integer port") from None
+    if not 1 <= port <= 65535:
+        raise ValueError(f"invalid {source} value {raw!r}: port must be 1-65535")
+    return port
+
+
+def _persisted_brain_port(environ: dict) -> Optional[int]:
+    """Persisted port from ``<config>/herdr-brain/config.env`` (design
+    Decision 4). Sourcable KEY=VALUE lines: comments, quotes and unrelated
+    keys are tolerated; a missing file or key means "not persisted"."""
+    config_home = environ.get("XDG_CONFIG_HOME", "").strip()
+    if config_home:
+        base = Path(config_home).expanduser()
+    else:
+        home = environ.get("HOME", "").strip()
+        if not home:
+            return None
+        base = Path(home).expanduser() / ".config"
+    path = base / "herdr-brain" / "config.env"
+    if not path.is_file():
+        return None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.split("#", 1)[0].strip()
+        if stripped.startswith("HERDR_BRAIN_PORT="):
+            raw = stripped[len("HERDR_BRAIN_PORT="):].strip()
+            if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
+                raw = raw[1:-1]
+            return _parse_brain_port(raw, str(path))
+    return None
+
+
 def load_settings(env: Optional[dict] = None) -> Settings:
     """Builds Settings from ``env`` (defaults to ``os.environ``)."""
     environ = os.environ if env is None else env
 
     def getenv(name: str, default: str = "") -> str:
         return environ.get(name, default)
+
+    # AT-11 design Decision 4: HERDR_BRAIN_PORT -> persisted config.env ->
+    # default 8741 (same order as the launcher resolver block and
+    # tools/herdr_onboarding/resolve.py).
+    raw_port = getenv("HERDR_BRAIN_PORT").strip()
+    if raw_port:
+        brain_port = _parse_brain_port(raw_port, "HERDR_BRAIN_PORT")
+    else:
+        brain_port = _persisted_brain_port(environ) or DEFAULT_BRAIN_PORT
 
 
     # Speech backend contract v1: HERDR_TTS_HOME names the herdr-tts repo
@@ -149,4 +204,5 @@ def load_settings(env: Optional[dict] = None) -> Settings:
         announce_max_chars=int(getenv(
             "HERDR_BRAIN_ANNOUNCE_MAX_CHARS", str(DEFAULT_ANNOUNCE_MAX_CHARS)
         )),
+        brain_port=brain_port,
     )
