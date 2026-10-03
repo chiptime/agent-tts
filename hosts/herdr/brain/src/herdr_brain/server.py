@@ -3,11 +3,12 @@
 POST /ask runs the LLM tool loop, renders the answer to MP3 through the
 herdr-tts CLI surface (contract v1) and returns an audio_url; playback
 happens on the CLIENT, never on PC speakers. POST /tts is plain TTS for
-the PWA's local echo. The /approval/* endpoints resolve the action gates
-/ask opens: approve replays the frozen send, reject cancels, resolve maps
-a voice utterance through the lexicon, PATCH edits the text, and
-/approval/current recovers a live gate after reload
-(PRD-action-approval-gate §5).
+the PWA's local echo. POST /speech/{id}/cancel aborts an in-flight
+speech job (VS1.3) — verdict-shaped, idempotent, token-redacted. The
+/approval/* endpoints resolve the action gates /ask opens: approve
+replays the frozen send, reject cancels, resolve maps a voice utterance
+through the lexicon, PATCH edits the text, and /approval/current
+recovers a live gate after reload (PRD-action-approval-gate §5).
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ import math
 import queue as queue_module
 import re
 import subprocess
+import threading
 import time
 from functools import lru_cache
 from pathlib import Path
@@ -53,6 +55,25 @@ from .history import HistoryStore, default_history_path
 from .llm import BrainLLM, BrainLLMError
 from .memory import MAX_MESSAGES, ConversationStore
 from .reader import ReaderCache, turn_id
+from .speech import (
+    PHASE_CANCELLED,
+    PHASE_COMPLETE,
+    PHASE_FAILED,
+    PHASE_RENDERING,
+    DuplicateActiveJob,
+    RegistryFull,
+    SegmentedSpeechProducer,
+    SpeechJob,
+    SpeechRegistry,
+    build_registry,
+    choose_speech_path,
+    is_terminal_phase,
+    sweep_unconsumed,
+    validate_speech_request_id,
+)
+# Module handle onto speech: the VS2.5 transport constants below are
+# read at USE time so monkeypatching them in speech affects this server.
+from . import speech as _speech
 from .stt import STATE_READY, STATE_UNAVAILABLE, UNAVAILABLE_HINT, Transcriber
 from .tools import BrainTools
 from .tools import status_payload as _status_payload
@@ -62,6 +83,7 @@ from .tts import (
     new_audio_path,
     render_html,
     render_mp3,
+    render_mp3_cancellable,
     tts_backend_status,
 )
 from .tts_daemon import DAEMON_UP, DaemonWatcher, daemon_status
@@ -122,6 +144,19 @@ def approval_payload(gate: ApprovalGate, timeout_s: int, now: Optional[float] = 
         "timeout_ms": gate.action.timeout_ms,
         "expires_in_s": max(0, math.ceil(remaining)),
     }
+
+
+def announcement_event_payload(announcement: dict) -> dict:
+    """SSE ``data:`` payload of one announcement event (VS1.4, additive).
+
+    The watcher's announcements now carry a brain-minted
+    ``speech_request_id`` (``ann-<uuid4>``); this construction seam
+    passes the dict through VERBATIM, so the field rides the wire when
+    present and an announcement lacking it (a legacy or third-party hub
+    publisher) serializes EXACTLY like the v1 payload — no key is ever
+    injected, dropped, or renamed here.
+    """
+    return dict(announcement)
 
 # The phone MUST be able to tell which build it runs: index.html is served
 # with no-cache and every asset reference carries ?v=<git short hash>.
@@ -188,10 +223,26 @@ class TextRequest(BaseModel):
     session_id: Optional[str] = Field(default=None, max_length=MAX_SESSION_ID_CHARS)
     pane_id: Optional[str] = Field(default=None, max_length=MAX_SESSION_ID_CHARS)
     reset: bool = False
+    # Voice-stack VS1.1: optional speech job admission. Absent fields =
+    # legacy turn, byte-comparable with the pre-speech surface (extra
+    # fields are ignored, so old and new clients interoperate).
+    speech_request_id: Optional[str] = Field(default=None, max_length=64)
+    speech_cancel_token: Optional[str] = None
 
 
 class ResetRequest(BaseModel):
     session_id: Optional[str] = Field(default=None, max_length=MAX_SESSION_ID_CHARS)
+
+
+class SpeechCancelRequest(BaseModel):
+    """VS1.3 cancel body. Both fields are required and non-empty (422).
+
+    The token travels here ONLY to reach the registry's constant-time
+    digest check — it is never logged, echoed, or stored plain.
+    """
+
+    session_id: str = Field(min_length=1, max_length=MAX_SESSION_ID_CHARS)
+    speech_cancel_token: str = Field(min_length=1)
 
 
 class ResolveRequest(BaseModel):
@@ -208,6 +259,57 @@ def default_llm_factory(settings: Settings, tools: BrainTools) -> BrainLLM:
     return BrainLLM(settings, tools)
 
 
+def _admit_speech_job(
+    body: TextRequest, registry: SpeechRegistry
+) -> tuple[Optional[SpeechJob], Optional[str]]:
+    """Validates and registers the /ask speech job, BEFORE the LLM runs.
+
+    Returns ``(job, degraded_reason)``: ``(None, None)`` on legacy turns
+    (no id — zero registry interaction), ``(job, None)`` when admitted,
+    ``(None, "registry-full")`` when the ACTIVE bound is hit — that turn
+    must run text-only degraded, never an uncancellable legacy render.
+    HTTP failures raise here so ask() side effects never start for a
+    malformed or duplicate request.
+    """
+    if body.speech_request_id is None:
+        return None, None
+    if not validate_speech_request_id(body.speech_request_id):
+        raise HTTPException(
+            status_code=422,
+            detail="speech_request_id must match [A-Za-z0-9._-]{8,64}",
+        )
+    if not body.speech_cancel_token:
+        raise HTTPException(
+            status_code=422,
+            detail="speech_cancel_token is required when speech_request_id is set",
+        )
+    try:
+        job = registry.register(
+            body.speech_request_id, body.speech_cancel_token, body.session_id
+        )
+    except DuplicateActiveJob as exc:
+        raise HTTPException(
+            status_code=409, detail="an active speech job already holds this id"
+        ) from exc
+    except RegistryFull:
+        return None, "registry-full"
+    return job, None
+
+
+# Broken-terminal set for GET /speech/{id}/next (VS2.5): a job that
+# ended cancelled/degraded/failed/expired NEVER serves another segment,
+# no matter what its buffer still holds. Complete is terminal but NOT
+# broken — the consumer keeps draining what was already staged.
+def _next_terminal_broken(phase: str) -> bool:
+    return is_terminal_phase(phase) and phase != PHASE_COMPLETE
+
+
+# Validates+applies one /next ack against the job's watermark without
+# an interleaved concurrent poll regressing it (validate and advance in
+# one critical section; never held during a long-poll hold).
+_SPEECH_NEXT_ACK_LOCK = threading.Lock()
+
+
 def create_app(
     settings: Optional[Settings] = None,
     llm_factory: Optional[_LLMFactory] = None,
@@ -219,6 +321,7 @@ def create_app(
     version: Optional[str] = None,
     transcriber: Optional[Transcriber] = None,
     daemon_probe: Optional[Callable[[], str]] = None,
+    speech_registry: Optional[SpeechRegistry] = None,
 ) -> FastAPI:
     """Builds the FastAPI app with injectable backends for tests.
 
@@ -232,6 +335,10 @@ def create_app(
     created and warmed in the background ONLY when the model files are
     already local and ``settings.stt_warmup`` is on (default in production,
     off in tests) — the server never downloads the model by itself.
+    ``tts_renderer`` keeps its classic 3-arg contract; a double that
+    declares ``takes_cancel_event = True`` additionally receives the
+    speech job's cancel event (4th arg) on identified /ask turns, so
+    tests can model mid-render cancellation (VS1.3) without subprocesses.
     """
     if settings is None:
         from .config import load_settings
@@ -266,6 +373,11 @@ def create_app(
     for record in history.load_and_compact(last_n=MAX_MESSAGES):
         store.append(None, record["role"], record["text"])
     approval_store = ApprovalGateStore(timeout_s=cfg.approval_timeout_s)
+
+    # Speech job registry (voice-stack VS1.1): bounded, in-process, and
+    # injectable like every other seam — tests drive small bounds and
+    # fake clocks through the same object the handlers use.
+    speech_jobs = speech_registry if speech_registry is not None else build_registry()
 
     if watcher is None:
         watcher = AgentWatcher(cfg, tts_renderer=synth)
@@ -336,6 +448,7 @@ def create_app(
     app.state.daemon_watcher = daemon_watcher
     app.state.transcriber = transcriber
     app.state.approval_store = approval_store
+    app.state.speech_jobs = speech_jobs
     app.state.sse_heartbeat_s = sse_heartbeat_s
     app.state.sse_stream_limit = sse_stream_limit
 
@@ -421,8 +534,11 @@ def create_app(
     async def events(request: Request) -> StreamingResponse:
         """SSE stream of agent transition announcements.
 
-        Event payload: {type, pane_id, agent, status, label, text, audio_url}.
-        Comment heartbeats keep intermediaries from closing the stream.
+        Event payload: {type, pane_id, agent, status, label, text,
+        audio_url} plus speech_request_id ("ann-<uuid4>", VS1.4) when the
+        announcement carries it — an announcement without the field
+        serializes with the v1 key set only. Comment heartbeats keep
+        intermediaries from closing the stream.
         """
         hub = app.state.watcher.hub
         heartbeat = app.state.sse_heartbeat_s
@@ -445,7 +561,10 @@ def create_app(
                     if announcement is None:
                         yield ": heartbeat\n\n"
                     else:
-                        yield "data: " + json.dumps(announcement, ensure_ascii=False) + "\n\n"
+                        yield "data: " + json.dumps(
+                            announcement_event_payload(announcement),
+                            ensure_ascii=False,
+                        ) + "\n\n"
                     emitted += 1
             finally:
                 hub.unsubscribe(sub_id)
@@ -612,13 +731,39 @@ def create_app(
 
     # -- answer shaping + approval resolution (shared by /ask and approve) --
 
-    def speak_answer(answer: Optional[str]) -> Optional[str]:
-        """Renders an answer to MP3, fail-soft: TTS never breaks answers."""
+    def speak_answer(
+        answer: Optional[str], cancel_event: Optional["threading.Event"] = None
+    ) -> Optional[str]:
+        """Renders an answer to MP3, fail-soft: TTS never breaks answers.
+
+        ``cancel_event`` (identified speech jobs, VS1.3) switches the
+        render to the ABORTABLE path. Renderer seam contract:
+
+        - no ``tts_renderer`` injected (production): the identified-job
+          render rides ``render_mp3_cancellable`` so a concurrent
+          cancel aborts the speech job mid-render;
+        - an injected renderer stays AUTHORITATIVE at its classic
+          3-arg signature — EXCEPT when the double declares
+          ``takes_cancel_event = True``, in which case it receives the
+          job's event as a 4th argument and models the cancel/abort
+          itself (the marker keeps every existing 3-arg fake green).
+
+        A cancel-driven TTSError("cancelled") lands in the same
+        fail-soft except as any render failure: the caller decides the
+        job's terminal phase from ``cancel_requested``.
+        """
         if not answer:
             return None
         out_path = new_audio_path(cfg)
         try:
-            synth(cfg, answer, out_path)
+            if cancel_event is None:
+                synth(cfg, answer, out_path)
+            elif tts_renderer is None:
+                render_mp3_cancellable(cfg, answer, out_path, cancel_event)
+            elif getattr(tts_renderer, "takes_cancel_event", False):
+                tts_renderer(cfg, answer, out_path, cancel_event)
+            else:
+                tts_renderer(cfg, answer, out_path)
             return f"/audio/{out_path.name}"
         except Exception as exc:  # noqa: BLE001 — TTS must never break the answer
             # Degrade to a text-only answer, but never silently: the log
@@ -626,24 +771,38 @@ def create_app(
             logger.warning("TTS render failed — answer degrades to text-only: %s", exc)
             return None
 
-    def shape_ask_response(result: dict) -> dict:
+    def speakable_answer(result: dict) -> Optional[str]:
+        """The answer text exactly as speech would render it: the
+        deterministic approval closer appended AFTER the model's echo
+        when a gate opened. Shared by the audio render path and the
+        segmented producer (VS2.4) so both speak the SAME shaped text."""
+        answer = result.get("answer")
+        if result.get("approval") is not None:
+            return f"{answer} {APPROVAL_CLOSER}" if answer else APPROVAL_CLOSER
+        return answer
+
+    def shape_ask_response(
+        result: dict, speak: bool = True, cancel_event: Optional["threading.Event"] = None
+    ) -> dict:
         """Shapes an LLM turn the /ask way: approval{}, deterministic
         closer, TTS audio_url. The approve replay reuses this so its
-        response follows the exact /ask conventions."""
-        answer: Optional[str] = result.get("answer")
-        gate: Optional[ApprovalGate] = result.get("approval")
+        response follows the exact /ask conventions. ``speak=False``
+        suppresses only the audio render (cancelled or degraded speech
+        jobs) — text and approval shaping are untouched. ``cancel_event``
+        forwards to speak_answer's abortable render path (VS1.3)."""
+        answer = speakable_answer(result)
         approval: Optional[dict] = None
-        if gate is not None:
-            approval = approval_payload(gate, cfg.approval_timeout_s)
-            # Deterministic closer, spoken and shown — appended AFTER the
-            # model's echo so the approval question never depends on it.
-            answer = f"{answer} {APPROVAL_CLOSER}" if answer else APPROVAL_CLOSER
+        if result.get("approval") is not None:
+            approval = approval_payload(result["approval"], cfg.approval_timeout_s)
+            # (The closer was already folded into ``answer`` above,
+            # appended after the model's echo so the approval question
+            # never depends on it.)
         return {
             "answer": answer,
             "pane_id": result.get("pane_id"),
             "agent": result.get("agent"),
             "session_id": result.get("session_id"),
-            "audio_url": speak_answer(answer),
+            "audio_url": speak_answer(answer, cancel_event) if speak else None,
             "approval": approval,
         }
 
@@ -743,6 +902,11 @@ def create_app(
 
     @app.post("/ask")
     def ask(body: TextRequest) -> dict:
+        # Speech admission (VS1.1) precedes EVERY side effect: malformed
+        # ids and duplicate actives fail fast, and the job sits in
+        # waiting_llm before the LLM loop starts so a cancel can land
+        # while the model is still thinking.
+        job, degraded = _admit_speech_job(body, speech_jobs)
         if body.reset:
             store.reset(body.session_id)
         # A new turn always retires the session's live gate (PRD §4): the
@@ -754,6 +918,10 @@ def create_app(
                 body.text, session_id=body.session_id, pane_id=body.pane_id
             )
         except BrainLLMError as exc:
+            if job is not None:
+                # The turn died before shaping: failed is terminal, so the
+                # id frees for the client's retry instead of sticking.
+                speech_jobs.mark(job.id, PHASE_FAILED)
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         # Persist the turn exactly once, mirroring the ring (raw question
         # + raw answer — the approval closer is response shaping, not
@@ -762,7 +930,177 @@ def create_app(
         # prompt, and that must never enter the call history.
         history.append("user", body.text)
         history.append("assistant", result.get("answer") or "")
-        return shape_ask_response(result)
+        if job is None and degraded is None:
+            # Legacy turn: no registry interaction, no speech key —
+            # byte-comparable with the pre-speech surface.
+            return shape_ask_response(result)
+        if degraded is not None:
+            # Registry full: text-only degraded. Answer and history behave
+            # exactly as always; audio is skipped because an unregistered
+            # render could never be cancelled.
+            response = shape_ask_response(result, speak=False)
+            response["speech"] = {"status": "degraded", "reason": degraded}
+            return response
+        if job.cancel_requested:
+            # Cancel landed mid-flight: it touches ONLY speech — the
+            # textual answer and history are returned exactly as always.
+            speech_jobs.mark(job.id, PHASE_CANCELLED)
+            response = shape_ask_response(result, speak=False)
+            response["speech"] = {"id": job.id, "status": job.phase}
+            return response
+        # Identified, non-degraded, non-cancelled turn (VS2.4): pick the
+        # speech path per contract tts-brain-v2.md — the probe is cached
+        # per tts_bin, so this adds one host check per binary, not per
+        # turn.
+        path, reason = choose_speech_path(cfg)
+        if path == "segmented":
+            # ASYNC segmented dispatch: the response returns right after
+            # the LLM while a per-job producer thread drives the host
+            # subprocess (render → segment moves → bounded staging).
+            producer = SegmentedSpeechProducer(
+                cfg, speech_jobs, job, speakable_answer(result)
+            )
+            job.segments = producer.buffer
+            job.producer = producer
+            producer.start()
+            response = shape_ask_response(result, speak=False)
+            # "delivering" is the LITERAL contract dispatch status (T5),
+            # NOT an echo of the job's phase — internally the job rides
+            # rendering→delivering inside the registry while segments
+            # stream; /next (VS2.5) serves them from the registry.
+            # audio_url stays None: segments arrive via /next, never as
+            # one full file on this path.
+            response["speech"] = {"id": job.id, "status": "delivering"}
+            return response
+        speech_jobs.mark(job.id, PHASE_RENDERING)
+        response = shape_ask_response(result, cancel_event=job.cancel_event)
+        # speak_answer is fail-soft: a missing audio_url on a turn that
+        # had an answer means the render threw. WHICH throw decides the
+        # terminal phase honestly (VS1.3): audio won → complete; no
+        # audio + a cancel mark → cancelled (the abort landed mid-render
+        # — or raced the render, which the audio branch resolved first);
+        # any other render failure → failed.
+        if response.get("audio_url"):
+            speech_jobs.mark(job.id, PHASE_COMPLETE)
+        elif job.cancel_requested:
+            speech_jobs.mark(job.id, PHASE_CANCELLED)
+        else:
+            speech_jobs.mark(job.id, PHASE_FAILED)
+        # v1-only host (or failed probe) on an identified turn: the
+        # legacy full-file flow above stays EXACTLY as-is, plus the
+        # contract's VISIBLE degradation marker — the textual answer is
+        # never blocked (tts-brain-v2.md, Negotiation).
+        response["speech"] = {"id": job.id, "status": job.phase, "degraded": reason}
+        return response
+
+    @app.post("/speech/{speech_request_id}/cancel")
+    def speech_cancel(speech_request_id: str, body: SpeechCancelRequest) -> dict:
+        """Honest, idempotent speech cancel (VS1.3).
+
+        The registry returns a verdict; this maps it to the wire:
+        forbidden → 403, unknown → 200 ``unknown-or-expired`` (a purged,
+        retention-expired job answers EXACTLY like a never-seen id —
+        same shape, same code path, no enumeration), already-terminal →
+        200 ``already-complete``, cancelled → 200 ``cancelled``.
+        Repeated cancels converge: while the job is still active the
+        verdict stays ``cancelled`` (Event.set is idempotent); once
+        terminal it is ``already-complete``. Only verdicts are logged
+        or returned — the capability token never appears anywhere.
+        """
+        verdict = speech_jobs.request_cancel(
+            speech_request_id, body.speech_cancel_token, body.session_id
+        )
+        if verdict == "forbidden":
+            raise HTTPException(status_code=403, detail="forbidden")
+        status = {
+            "unknown": "unknown-or-expired",
+            "already-terminal": "already-complete",
+            "cancelled": "cancelled",
+        }[verdict]
+        return {"status": status}
+
+    @app.get("/speech/{speech_request_id}/next")
+    def speech_next(
+        speech_request_id: str,
+        after: int = -1,
+        ack: int = -1,
+        session_id: Optional[str] = None,
+    ) -> dict:
+        """Dual-watermark long-poll segment transport (VS2.5, design T5).
+
+        ``after`` is the consumption cursor — the endpoint serves seq
+        ``after+1`` and nothing else, so a served (and surely acked)
+        seq can never be re-served and dedup is inherent. ``ack`` is
+        the playback watermark: capacity is released ONLY by a valid
+        monotone ack (an equal re-poll is idempotent and releases
+        nothing); any violation — ``ack > after``, ``ack < -1``, or
+        ``ack < job.ack_watermark`` — is a TYPED 422, never silent.
+
+        Active jobs with nothing ready long-poll up to
+        SPEECH_NEXT_HOLD_S (module constant, read at use time); a job
+        that went terminal answers its status IMMEDIATELY (T5: next()
+        returns the state, never a silent skip). A connection-level
+        abort cancels NOTHING — only POST /speech/{id}/cancel may end a
+        job; a vanished consumer is reclaimed later, visibly, by the
+        lazy sweep at entry.
+        """
+        sweep_unconsumed(speech_jobs)
+        job = speech_jobs.get(speech_request_id)
+        if job is None:
+            # Unknown id: honest 404, no enumeration of live vs purged.
+            raise HTTPException(status_code=404, detail="speech job not found")
+        if (
+            session_id is not None
+            and job.session_id is not None
+            and session_id != job.session_id
+        ):
+            # Session ROUTING (PRD 02 §2C), not a new auth scheme: a
+            # mismatched session gets the unknown-id 404 — same shape.
+            raise HTTPException(status_code=404, detail="speech job not found")
+        with _SPEECH_NEXT_ACK_LOCK:
+            if not (-1 <= ack <= after) or ack < job.ack_watermark:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": "invalid-ack",
+                        "ack": ack,
+                        "after": after,
+                        "job_ack": job.ack_watermark,
+                    },
+                )
+            if ack > job.ack_watermark:
+                # Monotone progress: advance the watermark and release
+                # ONLY here (equal/idempotent re-polls release nothing).
+                job.ack_watermark = ack
+                if job.segments is not None:
+                    job.segments.ack_upto(ack)
+        buffer = job.segments  # None on every non-segmented path
+        want = after + 1
+        deadline = time.monotonic() + _speech.SPEECH_NEXT_HOLD_S
+        while True:
+            staged = buffer.snapshot() if buffer is not None else []
+            segment = next((seg for seg in staged if seg["seq"] == want), None)
+            if segment is not None and not _next_terminal_broken(job.phase):
+                return {
+                    "seq": want,
+                    "audio_url": f"/audio/{segment['file']}",
+                    # Final ONLY when this is the last staged seq AND the
+                    # job finished complete (an active job always has a
+                    # "maybe more coming" answer).
+                    "is_final": (
+                        job.phase == PHASE_COMPLETE
+                        and want == max(seg["seq"] for seg in staged)
+                    ),
+                    "mime": "audio/mpeg",
+                }
+            if is_terminal_phase(job.phase):
+                # Terminal answers immediately, no hold: broken jobs
+                # never serve new segments; a complete job with every
+                # segment consumed reports its terminal status.
+                return {"wait": True, "status": job.phase}
+            if time.monotonic() >= deadline:
+                return {"wait": True}
+            time.sleep(_speech.SPEECH_NEXT_POLL_S)
 
     @app.post("/approval/{gate_id}/approve")
     def approval_approve(gate_id: str) -> dict:
