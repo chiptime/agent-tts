@@ -25,6 +25,7 @@ from __future__ import annotations
 import queue
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -218,6 +219,12 @@ class AgentWatcher:
             "label": label,
             "text": text,
             "audio_url": audio_url,
+            # VS1.4 (additive): brain-minted speech_request_id — the public
+            # handle for this announcement's speech. Deliberately NOT wired
+            # to the speech registry here: announcements stay best-effort
+            # and fire-and-forget in v1; the cancel-vs-announce interplay
+            # lands in VS1.8.
+            "speech_request_id": f"ann-{uuid.uuid4()}",
         }
 
     def _done_detail(self, agent: AgentInfo) -> str:

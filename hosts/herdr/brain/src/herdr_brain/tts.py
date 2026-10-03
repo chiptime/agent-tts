@@ -14,12 +14,20 @@ bootstraps its own environment on first use.
 The contract is verified fail-soft at boot (see tts_backend_status) and
 render failures raise an explicit error naming the required surface
 version. Tests inject a runner so no real subprocess runs.
+
+render_mp3_cancellable runs the SAME surface call as a session-leader
+job that can be aborted mid-render: cancellation signals the job's OWN
+process group only — never any other process on this machine.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import signal
 import subprocess
+import tempfile
+import time
 import uuid
 from pathlib import Path
 from typing import Callable, Optional, Tuple
@@ -27,6 +35,9 @@ from typing import Callable, Optional, Tuple
 from .config import Settings
 
 Runner = Callable[..., subprocess.CompletedProcess]
+# Job factory for the cancellable render: returns a Popen-like handle
+# (.pid, .poll(), .wait(timeout), .terminate(), .kill()).
+JobRunner = Callable[..., subprocess.Popen]
 
 MP3_SUFFIX = ".mp3"
 
@@ -37,6 +48,17 @@ TTS_BACKEND_OK = "ok"
 TTS_BACKEND_MISSING = "missing"
 
 CONTRACT_PROBE_TIMEOUT_S = 5.0
+
+# Cancellable render (announcement path): poll cadence for the cancel
+# event / child completion, and the TERM→KILL grace given to the job's
+# OWN process group on cancel.
+CANCEL_POLL_S = 0.2
+SPEECH_CANCEL_TERM_S = 5.0
+
+# POSIX process-group isolation for render jobs (no Windows logic: the
+# brain deploys on Linux; without setsid the child itself — never a
+# foreign group id — is signalled).
+_HAS_SETSID = hasattr(os, "setsid")
 
 
 class TTSError(RuntimeError):
@@ -107,9 +129,74 @@ def tts_backend_status(
     )
 
 
+BRAIN_MAX_PROTOCOL = 2  # contracts/tts-brain-v2.md: the brain speaks v1 and v2
+
+_capabilities_cache: dict = {}
+
+
+def host_supported_protocols(settings, runner=None) -> tuple:
+    """Protocols the configured host CLI claims, via --contract-capabilities.
+
+    Fail-soft by contract: a host WITHOUT the flag, an unparsable reply, a
+    non-zero exit, a timeout — every failure is a v1-only host. Results are
+    cached per tts_bin (the surface cannot change under a running brain).
+    """
+    key = str(getattr(settings, "tts_bin", ""))
+    if key in _capabilities_cache:
+        return _capabilities_cache[key]
+    run = runner if runner is not None else subprocess.run
+    try:
+        proc = run(
+            [str(settings.tts_bin), "--contract-capabilities"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except Exception:
+        _capabilities_cache[key] = ()
+        return ()
+    if proc.returncode != 0:
+        _capabilities_cache[key] = ()
+        return ()
+    try:
+        payload = json.loads(proc.stdout)
+    except ValueError:
+        _capabilities_cache[key] = ()
+        return ()
+    claimed = payload.get("supported_protocols") if isinstance(payload, dict) else None
+    if not isinstance(claimed, list) or not all(isinstance(p, int) and not isinstance(p, bool) for p in claimed):
+        _capabilities_cache[key] = ()
+        return ()
+    # The brain activates ONLY protocols it supports: anything above its
+    # own maximum is ignored (fail-soft, never an unsupported mode).
+    usable = tuple(p for p in claimed if 1 <= p <= BRAIN_MAX_PROTOCOL)
+    _capabilities_cache[key] = usable
+    return usable
+
+
+def reset_capabilities_cache() -> None:
+    """Test seam: the cache never survives between test configurations."""
+    _capabilities_cache.clear()
+
+
 def sanitize_for_speech(text: str) -> str:
     """Collapses whitespace/newlines into a speakable line."""
     return " ".join(text.split())
+
+
+def _render_command(settings: Settings, text: str, out_path: Path) -> list:
+    """The v1 --render-text argv shared by BOTH render paths.
+
+    ``text`` must already be sanitized (sanitize_for_speech). Keeping the
+    construction here means the legacy render_mp3 command stays
+    byte-identical while the cancellable path reuses the same surface.
+    """
+    return [
+        str(settings.tts_bin),
+        "--render-text",
+        str(out_path),
+        text,
+        "--voice", settings.tts_voice,
+        "--rate", settings.tts_rate,
+    ]
 
 
 def render_mp3(
@@ -128,14 +215,7 @@ def render_mp3(
     if not clean:
         raise TTSError("refusing to synthesize empty text")
 
-    cmd = [
-        str(settings.tts_bin),
-        "--render-text",
-        str(out_path),
-        clean,
-        "--voice", settings.tts_voice,
-        "--rate", settings.tts_rate,
-    ]
+    cmd = _render_command(settings, clean, out_path)
     run: Runner = runner if runner is not None else subprocess.run
     try:
         proc = run(cmd, capture_output=True, text=True, timeout=settings.tts_timeout_s)
@@ -150,6 +230,168 @@ def render_mp3(
     if not out_path.is_file() or out_path.stat().st_size == 0:
         raise TTSError(f"tts render produced no audio at {out_path}")
     return out_path
+
+
+class _PopenRunner:
+    """Default job factory: Popen in its OWN session (pgid = child pid).
+
+    stdio never uses undrained pipes — a chatty child would fill one and
+    wedge the poll loop — so stderr goes to an auto-removed temp file,
+    read once after exit for failure detail (render_mp3 parity). close()
+    is called on every outcome and releases whatever this runner created.
+    """
+
+    def __init__(self) -> None:
+        self._err_files: dict = {}
+
+    def __call__(self, cmd: list, cwd: Optional[str] = None) -> subprocess.Popen:
+        err = tempfile.TemporaryFile(mode="w+b")
+        try:
+            child = subprocess.Popen(
+                cmd,
+                cwd=cwd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=err,
+                start_new_session=_HAS_SETSID,
+            )
+        except BaseException:
+            err.close()
+            raise
+        self._err_files[child.pid] = err
+        return child
+
+    def failure_detail(self, child: subprocess.Popen) -> str:
+        err = self._err_files.get(child.pid)
+        if err is None:
+            return ""
+        try:
+            err.seek(0)
+            return err.read().decode("utf-8", "replace").strip()
+        except OSError:
+            return ""
+
+    def close(self) -> None:
+        while self._err_files:
+            _pid, err = self._err_files.popitem()
+            try:
+                err.close()
+            except OSError:
+                pass
+
+
+def render_mp3_cancellable(
+    settings: Settings,
+    text: str,
+    out_path: Path,
+    cancel_event,
+    runner: Optional[JobRunner] = None,
+) -> None:
+    """Renders ``text`` to ``out_path`` MP3, abortable by ``cancel_event``.
+
+    Same v1 surface call as render_mp3 (shared _render_command), but the
+    job runs as its own session leader (start_new_session): it OWNS a
+    private process group (pgid = child pid). The poll loop checks the
+    cancel event FIRST every CANCEL_POLL_S, then child completion, under
+    the same settings.tts_timeout_s budget.
+
+    Cancel path: SIGTERM to the job's OWN pgid, SPEECH_CANCEL_TERM_S
+    grace, SIGKILL to the same pgid, reap with wait(), delete the
+    partial out_path (and this call's temp files), raise
+    TTSError("cancelled"). NOTHING outside the job's group is ever
+    signalled — no kill-by-name exists in this module. Budget expiry
+    runs the same teardown and raises the render_mp3-style timeout.
+
+    ``cancel_event`` is any threading.Event-compatible object exposing
+    ``is_set()``; ``runner`` is the injectable job factory (tests inject
+    fakes; the default wraps subprocess.Popen).
+    """
+    clean = sanitize_for_speech(text)
+    if not clean:
+        raise TTSError("refusing to synthesize empty text")
+
+    launch: JobRunner = runner if runner is not None else _PopenRunner()
+    cmd = _render_command(settings, clean, out_path)
+    try:
+        try:
+            child = launch(cmd)
+        except OSError as exc:
+            raise TTSError(
+                _contract_detail(f"cannot execute {settings.tts_bin}: {exc}")
+            ) from exc
+
+        deadline = time.monotonic() + settings.tts_timeout_s
+        while True:
+            if cancel_event.is_set():
+                _terminate_job(child)
+                _discard_partial(out_path)
+                raise TTSError("cancelled")
+            if child.poll() is not None:
+                break  # job finished on its own
+            if time.monotonic() >= deadline:
+                _terminate_job(child)
+                _discard_partial(out_path)
+                raise TTSError(
+                    f"tts render timed out after {settings.tts_timeout_s}s"
+                )
+            time.sleep(CANCEL_POLL_S)
+
+        detail_fetch = getattr(launch, "failure_detail", None)
+        detail = detail_fetch(child) if detail_fetch is not None else ""
+        if child.returncode != 0:
+            raise TTSError(
+                f"tts render exited with {child.returncode}: {detail[:400]}"
+            )
+        if not out_path.is_file() or out_path.stat().st_size == 0:
+            raise TTSError(f"tts render produced no audio at {out_path}")
+        return None
+    finally:
+        closer = getattr(launch, "close", None)
+        if closer is not None:
+            closer()
+
+
+def _signal_job(child: subprocess.Popen, sig: int) -> None:
+    """Sends ``sig`` to THE JOB'S OWN process group only.
+
+    start_new_session made the child a group leader (pgid == child.pid),
+    so the signal can never reach the LLM worker, an approval action, or
+    any other process on this machine. Without setsid the child itself —
+    never a foreign group id — is signalled.
+    """
+    if _HAS_SETSID:
+        try:
+            os.killpg(child.pid, sig)
+        except (ProcessLookupError, PermissionError):
+            pass  # the job's group is already gone — nothing to signal
+    elif sig == signal.SIGKILL:
+        child.kill()
+    else:
+        child.terminate()
+
+
+def _terminate_job(child: subprocess.Popen) -> None:
+    """Cancel teardown: SIGTERM → grace → SIGKILL, then reap.
+
+    Both signals go to the job's own pgid; SPEECH_CANCEL_TERM_S is the
+    grace a well-behaved herdr-tts gets to flush and exit before KILL.
+    """
+    _signal_job(child, signal.SIGTERM)
+    if child.poll() is None:
+        grace_until = time.monotonic() + SPEECH_CANCEL_TERM_S
+        while child.poll() is None and time.monotonic() < grace_until:
+            time.sleep(CANCEL_POLL_S)
+    if child.poll() is None:
+        _signal_job(child, signal.SIGKILL)
+    child.wait()
+
+
+def _discard_partial(out_path: Path) -> None:
+    """Best-effort removal of the half-written artifact (cancelled/timeout)."""
+    try:
+        out_path.unlink()
+    except OSError:
+        pass
 
 
 def new_audio_path(settings: Settings, prefix: str = "") -> Path:
