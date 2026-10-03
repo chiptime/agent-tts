@@ -25,6 +25,7 @@ from agent_tts.boundaries import (
 from agent_tts.boundaries import shift_boundary_map  # noqa: F401 - re-export
 from agent_tts.cleaner import clean_agent_text
 from agent_tts.constants import DEFAULT_RATE, DEFAULT_VOICE
+from agent_tts import fallback
 from agent_tts.powershell_playback import PowershellSession, is_wsl_ps_available
 from agent_tts.providers import TTSProvider, get_provider
 from agent_tts.sources import read_last_agent_message
@@ -73,12 +74,143 @@ async def synthesize(
     stop_checker=None,
     auto_lang: bool = False,
     engine: Optional[TTSProvider] = None,
+    audibility: Optional["fallback.AudibilityProbe"] = None,
 ) -> bytes:
     """Synthesizes text into MP3 bytes using the requested provider and optionally writes to output_file.
 
     ``engine`` overrides provider construction (the daemon passes its cached
     instance so the model stays warm between requests, RNF-AT-04-5); by
     default a fresh provider is built per call, exactly as before.
+
+    Fallback chain (VS4.2): with no config file or ``fallback_enabled:
+    false`` this takes the exact historical path (_synthesize_single,
+    zero behavior delta). With an enabled chain, the fallback walker
+    retries the requested provider in-link and then advances through
+    the configured links — one shared attempt budget, stop-checker
+    consulted before every attempt, keyless links skipped before any
+    submit (see agent_tts.fallback).
+
+    Audibility (VS4.3): the pipelined streaming path passes the job's
+    audibility probe so the walker can enforce the audible-partial
+    rules. Jobs that own no audio (file/no-play/batch) pass no probe:
+    nothing can be audible, so a failed attempt retries and advances
+    with a FULL restart on the next link. Once bytes of the job became
+    audible, a synthesis failure stops the walk in the
+    ``partial/uncertain`` state: no automatic retry, no cross-fallback
+    in any mode. The way out is a DELIBERATE replay — a NEW synthesis
+    intent started by the caller for the pending text; the replay
+    re-reads from the start of the failed group, so audio already
+    heard may be DUPLICATED. That is the honest behavior: an "exact
+    resume" is not possible once bytes reached the speaker, and none
+    is faked.
+    """
+    fb_config = fallback.resolve_active_fallback_config()
+    if not fb_config.enabled:
+        return await _synthesize_single(
+            text=text,
+            voice=voice,
+            rate=rate,
+            volume=volume,
+            pitch=pitch,
+            output_file=output_file,
+            provider=provider,
+            openai_key=openai_key,
+            openai_base_url=openai_base_url,
+            openai_model=openai_model,
+            eleven_key=eleven_key,
+            eleven_model=eleven_model,
+            piper_model=piper_model,
+            stop_checker=stop_checker,
+            auto_lang=auto_lang,
+            engine=engine,
+        )
+
+    intent = fallback.SynthesisIntent(
+        text=text,
+        voice=voice,
+        rate=rate,
+        volume=volume,
+        pitch=pitch,
+        output_file=output_file,
+        provider=provider,
+        openai_key=openai_key,
+        openai_base_url=openai_base_url,
+        openai_model=openai_model,
+        eleven_key=eleven_key,
+        eleven_model=eleven_model,
+        piper_model=piper_model,
+        auto_lang=auto_lang,
+    )
+
+    async def _attempt(_intent, _link, _engine):
+        # One attempt through the exact historical single-attempt path,
+        # with the link's provider+voice replacing the job's request.
+        return await _synthesize_single(
+            text=_intent.text,
+            voice=_link.voice,
+            rate=_intent.rate,
+            volume=_intent.volume,
+            pitch=_intent.pitch,
+            output_file=_intent.output_file,
+            provider=_link.provider,
+            openai_key=_intent.openai_key,
+            openai_base_url=_intent.openai_base_url,
+            openai_model=_intent.openai_model,
+            eleven_key=_intent.eleven_key,
+            eleven_model=_intent.eleven_model,
+            piper_model=_intent.piper_model,
+            stop_checker=stop_checker,
+            auto_lang=_intent.auto_lang,
+            engine=_engine,
+        )
+
+    walk = await fallback.run_fallback_synthesis(
+        single_attempt=_attempt,
+        intent=intent,
+        config=fb_config,
+        primary_engine=engine,
+        stop_checker=stop_checker,
+        audibility=audibility,
+    )
+    if audibility is not None:
+        # Per-intent evidence stays retrievable from the job's probe (VS4.4).
+        audibility.record_walk(walk)
+    if walk.partial_uncertain and audibility is not None:
+        audibility.note_partial_uncertain()
+    if not walk.ok and not walk.cancelled and not walk.partial_uncertain:
+        providers_tried = ", ".join(r.provider for r in walk.attempts) or "none"
+        print(
+            f"Fallback: synthesis failed on every link "
+            f"({walk.failure_reason}; providers: {providers_tried})",
+            file=sys.stderr,
+        )
+    return walk.audio
+
+
+async def _synthesize_single(
+    text: str,
+    voice: str = DEFAULT_VOICE,
+    rate: str = DEFAULT_RATE,
+    volume: str = "+0%",
+    pitch: str = "+0Hz",
+    output_file: Optional[str] = None,
+    provider: str = "edge",
+    openai_key: Optional[str] = None,
+    openai_base_url: Optional[str] = None,
+    openai_model: Optional[str] = None,
+    eleven_key: Optional[str] = None,
+    eleven_model: Optional[str] = None,
+    piper_model: Optional[str] = None,
+    stop_checker=None,
+    auto_lang: bool = False,
+    engine: Optional[TTSProvider] = None,
+) -> bytes:
+    """One synthesis attempt through the exact historical pipeline.
+
+    This is the verbatim pre-fallback ``synthesize`` body (VS4.2): the
+    public ``synthesize`` keeps the signature and decides walk-vs-direct;
+    the fallback walker submits this once per attempt with the link's
+    provider+voice.
     """
     if engine is None:
         engine = get_provider(
@@ -310,6 +442,7 @@ async def _speak_pipelined(
     persist_name: Optional[str] = None,
     engine: Optional[TTSProvider] = None,
     stream: str = "groups",
+    audibility: Optional["fallback.AudibilityProbe"] = None,
 ) -> None:
     """Plays the first synthesized segment while remaining audio is synthesized and appended live.
 
@@ -322,8 +455,35 @@ async def _speak_pipelined(
     (to ``output_file`` or the rendered-audio store). A stopped, interrupted,
     or failed run never persists: partial audio is worthless. ``engine``
     overrides per-group provider construction (daemon's warm cache).
+
+    Audibility (VS4.3): ``audibility`` (created here when not supplied) is
+    the job's single played-group accounting — marked at the exact points
+    where bytes are committed to the playback session (the first segment
+    preload and every successful live append) and handed to every per-group
+    ``synthesize`` call so the fallback walker can enforce the
+    audible-partial rules: a synthesis failure after audio became audible
+    stops the job in the visible ``partial/uncertain`` state (no automatic
+    retry, no cross-fallback in any mode, nothing persisted). The way out
+    is a deliberate replay intent that re-reads from the start of the
+    failed group — duplicates of already-heard audio are possible and are
+    acknowledged in the state, never hidden behind a fake "exact resume".
     """
     groups = split_sentence_groups(text)
+    if audibility is None:
+        audibility = fallback.AudibilityProbe()
+
+    def note_partial_stop(where: str) -> None:
+        """Records and prints the job's honest partial/uncertain stop (VS4.3)."""
+        audibility.note_partial_uncertain()
+        with session.lock:
+            session.state["partial_uncertain"] = True
+        print(
+            f"Stream: {where}: partial audio was already audible; job stopped "
+            "in partial/uncertain state — deliberate replay from the failed "
+            "group start is the way out (duplicates possible)",
+            file=sys.stderr,
+        )
+
     # Raw bytes of every successfully produced group/chunk, in playback order.
     rendered_chunks: List[bytes] = []
     progress = {
@@ -426,6 +586,10 @@ async def _speak_pipelined(
                         decoder.feed_bytes(chunk)
                 except Exception as e:
                     print(f"Stream: network feeder error: {e}", file=sys.stderr)
+                    if audibility.audible():
+                        # VS4.3 (frames): audible partial + failure ⇒ honest
+                        # abstention — no automatic cross-fallback ever runs.
+                        note_partial_stop("frame stream failed mid-stream")
                 finally:
                     decoder.finish_stream()
 
@@ -465,9 +629,13 @@ async def _speak_pipelined(
         Fail-open by contract (playback already succeeded): merge or store
         errors print one English stderr line and are otherwise swallowed.
         Called only after the drain loop completed without a stop, interrupt,
-        or fatal error — partial audio is never persisted.
+        or fatal error — partial audio is never persisted, and a job that
+        stopped in the partial/uncertain state (VS4.3) is NOT a clean end:
+        its partial render must never be stored as if it were complete.
         """
         if not rendered_chunks or check_stop():
+            return
+        if audibility.partial_uncertain:
             return
         try:
             from agent_tts.audio_store import merge_chunks_to_audio, retention_days, store_path
@@ -533,10 +701,17 @@ async def _speak_pipelined(
                     break
                 if not session.append_pcm(chunk):
                     continue
+                # VS4.3: committed to the speaker — audible from now on.
+                audibility.mark_audible()
                 update_frame_boundaries()
                 progress["produced"] += 1
         except Exception as e:
             print(f"Stream: frame decoding error mid-stream: {e}", file=sys.stderr)
+            # VS4.3 (frames): this code only runs on the producer thread,
+            # which starts AFTER the cushion was committed to the session,
+            # so audio is always already audible here — honest abstention;
+            # the raise still surfaces the error itself.
+            note_partial_stop("frame decoding error mid-stream")
             raise
         finally:
             update_frame_boundaries()
@@ -587,6 +762,8 @@ async def _speak_pipelined(
                 if not session.append_pcm(decoded):
                     idx += 1
                     continue
+                # VS4.3: committed to the speaker — audible from now on.
+                audibility.mark_audible()
                 if group_text is not None:
                     seg_duration = len(decoded.samples) / float(decoded.sample_rate * decoded.nchannels)
                     merge_group(group_text, chunk, seg_duration)
@@ -600,6 +777,10 @@ async def _speak_pipelined(
                         "boundaries degraded",
                         file=sys.stderr,
                     )
+            if stream_state["failed"] and audibility.audible():
+                # VS4.3: the group stream died after audible bytes — honest
+                # partial/uncertain stop, never an automatic cross-fallback.
+                note_partial_stop("group stream failed mid-stream")
         finally:
             # Close the sync generator so the persistent piper process (its
             # finally) shuts down even when the pipeline stops early.
@@ -625,6 +806,7 @@ async def _speak_pipelined(
             stop_checker=check_stop,
             auto_lang=auto_lang,
             engine=engine,
+            audibility=audibility,
         )
 
     async def produce_first():
@@ -685,6 +867,12 @@ async def _speak_pipelined(
             if not result:
                 if check_stop():
                     break
+                if audibility.partial_uncertain:
+                    # VS4.3: the walker stopped this intent because job
+                    # audio was already audible — stop the whole job's
+                    # synthesis; only a deliberate replay continues.
+                    note_partial_stop(f"group {idx} synthesis failed")
+                    break
                 print(f"Stream: group {idx} failed: empty audio", file=sys.stderr)
                 continue
             try:
@@ -695,6 +883,8 @@ async def _speak_pipelined(
             rendered_chunks.append(bytes(result))
             if not session.append_pcm(decoded):
                 continue
+            # VS4.3: committed to the speaker — audible from now on.
+            audibility.mark_audible()
             seg_duration = len(decoded.samples) / float(decoded.sample_rate * decoded.nchannels)
             merge_group(group_text, result, seg_duration)
             progress["produced"] += 1
@@ -734,6 +924,10 @@ async def _speak_pipelined(
         # Load the first segment into the playback buffer before the producer race can start;
         # play() detects the preloaded buffer and skips re-initialization.
         session.prepare_pcm(first_decoded)
+        # VS4.3: the first segment is committed to the playback session —
+        # the job is audible from this moment on (conservative: committed
+        # bytes will be heard, they can never be un-heard).
+        audibility.mark_audible()
 
         producer = threading.Thread(target=run_producer, args=(progress["next_idx"],), daemon=True)
         producer.start()
