@@ -330,8 +330,11 @@ TT_EN[gate.debounced]="%s (%s): %s repeated within %ss (debounced, omitted)"
 TT_EN[prune.failed]="[retention] ⚠️ Audio store prune failed (retrying within the next hour)"
 TT_EN[watcher.settle_dropped]="intermediate done discarded (returned to working within the %ss settle window)"
 TT_EN[watcher.background_done]="finished in the background (not focused, skipping local voice)"
-TT_EN[watcher.busy_local]="another chat is already speaking locally (omitted to avoid overlap)"
+TT_EN[watcher.busy_local]="another chat is already speaking locally (admitted to the pending queue, not dropped)"
 TT_EN[watcher.local_speak]="speaking on local speakers"
+TT_EN[pending.admit_refused]="pending-queue admission refused (overflow envelope keeps the reason; announcement NOT silently lost)"
+TT_EN[pending.tick_failed]="pending-queue tick failed (dispatch wiring arrives with VS3.3)"
+TT_EN[pending.completion_failed]="pending-queue completion report failed"
 TT_EN[daemon.keymap_applied]="🔊 Keymap applied from %s"
 TT_EN[daemon.keymap_failed]="⚠️ keymap apply failed at startup; keybindings unchanged."
 TT_EN[daemon.keymap_failed.hint]="   Review it with: herdr-tts keymap check"
@@ -822,8 +825,11 @@ TT_ES[gate.debounced]="%s (%s): %s repetido en menos de %ss (debounce, omitido)"
 TT_ES[prune.failed]="[retención] ⚠️ Purga del almacén de audio falló (reintento en la próxima hora)"
 TT_ES[watcher.settle_dropped]="done intermedio descartado (volvió a working dentro de la ventana de asentamiento de %ss)"
 TT_ES[watcher.background_done]="terminó en segundo plano (no enfocado, omitiendo voz local)"
-TT_ES[watcher.busy_local]="ya hay otro chat hablando en local (omitido para evitar solapamiento)"
+TT_ES[watcher.busy_local]="ya hay otro chat hablando en local (admitido en la pending queue, no descartado)"
 TT_ES[watcher.local_speak]="vocalizando en altavoces locales"
+TT_ES[pending.admit_refused]="admisión en pending rechazada (el sobre de desborde guarda el motivo; el anuncio NO se pierde en silencio)"
+TT_ES[pending.tick_failed]="tick de la pending-queue falló (el despacho llega con VS3.3)"
+TT_ES[pending.completion_failed]="reporte de completion a la pending-queue falló"
 TT_ES[daemon.keymap_applied]="🔊 Keymap aplicado desde %s"
 TT_ES[daemon.keymap_failed]="⚠️ keymap apply falló en el arranque; atajos sin cambios."
 TT_ES[daemon.keymap_failed.hint]="   Revísalo con: herdr-tts keymap check"
@@ -1735,8 +1741,91 @@ speak_text() {
   fi
 }
 
+# Identified playback (voice-stack VS1.6): the audio rides the engine daemon
+# queue carrying its identifier, so --cancel-speech can target exactly this
+# item. The helper prints the typed ack (ok=true item=<id> queue_len=<n>).
+enqueue_identified_audio() {
+  local file="$1"
+  local identifier="$2"
+  "$VENV_PYTHON" "${PLUGIN_ROOT}/lib/pending_queue.py" enqueue-file "$file" --id "$identifier"
+}
+
+# Targeted cancel by identifier (never a global stop): removes queued items
+# and stops the active one ONLY when they carry a given identifier.
+# Segmented rendering (voice-stack VS2.2, contracts/tts-brain-v2.md): the
+# engine bridge module owns ALL logic (groups, atomic segments, manifest);
+# this shell surface is pure delegation. Text travels by FILE, never argv.
+render_text_segmented() {
+  exec "$VENV_PYTHON" "${PLUGIN_ROOT}/lib/segmented_render.py" "$@"
+}
+
+cancel_speech() {
+  if [[ $# -eq 0 ]]; then
+    echo "usage: herdr-tts --cancel-speech <id> [<id>...]" >&2
+    return 2
+  fi
+  local args=()
+  local identifier
+  for identifier in "$@"; do
+    args+=(--id "$identifier")
+  done
+  "$VENV_PYTHON" "${PLUGIN_ROOT}/lib/pending_queue.py" cancel "${args[@]}"
+}
+
+# Pending-announcement wiring (voice-stack VS3.2, TECHNICAL-PLAN T7): the
+# watcher's three thin points delegate to lib/pending_queue.py — ALL queue
+# logic lives in the lib. Each wrapper logs one visible line (vigente
+# format) when the subcommand fails and relays its exit code; call sites
+# guard with `|| true` so queue backpressure NEVER breaks the watcher loop.
+
+# Admit one transition event (pane, agent, status done|blocked, label, text
+# [, rendered audio path]) — called where a busy PC used to silently DROP
+# the announcement.
+pending_admit() {
+  local pane_id="$1" agent="$2" status="$3" label="$4" text="$5"
+  local audio_path="${6:-}"
+  local -a args=(--pane-id "$pane_id" --agent "$agent" --status "$status" --label "$label" --text "$text")
+  [[ -n "$audio_path" ]] && args+=(--audio-path "$audio_path")
+  local rc=0
+  "$VENV_PYTHON" "${PLUGIN_ROOT}/lib/pending_queue.py" admit "${args[@]}" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    echo "[$(date +%H:%M:%S)] $(tt pending.admit_refused)"
+    return "$rc"
+  fi
+}
+
+# One cheap queue tick per watcher-loop wake-up. Placeholder: the dispatch
+# itself arrives with VS3.3; today the tick only proves the wiring is alive.
+pending_tick() {
+  local rc=0
+  "$VENV_PYTHON" "${PLUGIN_ROOT}/lib/pending_queue.py" tick || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    echo "[$(date +%H:%M:%S)] $(tt pending.tick_failed)"
+    return "$rc"
+  fi
+}
+
+# Report the outcome of an announced playback (announce id + played|failed).
+# The outcome->FSM mapping arrives with VS3.3; this report is thin.
+pending_completion() {
+  local announce_id="$1" outcome="$2"
+  local rc=0
+  "$VENV_PYTHON" "${PLUGIN_ROOT}/lib/pending_queue.py" completion --id "$announce_id" --outcome "$outcome" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    echo "[$(date +%H:%M:%S)] $(tt pending.completion_failed)"
+    return "$rc"
+  fi
+}
+
 play_audio_file() {
   local file="$1"
+  local identifier="${2:-}"
+  # An identifier switches to the queue path; without one the legacy
+  # stop-then-play path below is untouched.
+  if [[ -n "$identifier" ]]; then
+    enqueue_identified_audio "$file" "$identifier" || return $?
+    return 0
+  fi
   # Cheap guard: palette ctrl-r on a "-" placeholder or a deleted stored
   # path must fail gracefully instead of spawning a doomed engine run.
   if [[ ! -s "$file" ]]; then
@@ -3070,6 +3159,10 @@ watch_agent_pane() {
   local prev_state="working"
 
   while true; do
+    # VS3.2 (T7): one cheap pending-queue tick per wake-up. Dispatch
+    # semantics arrive with VS3.3; a tick failure is logged by the wrapper
+    # and never breaks the loop.
+    pending_tick || true
     herdr agent wait "$pane_id" --until done --until blocked --until idle 2>/dev/null || {
       sleep 3
       continue
@@ -3198,11 +3291,25 @@ watch_agent_pane() {
           if is_playing; then
             echo "[$(date +%H:%M:%S)] ${agent_name} (${pane_id}): $(tt watcher.busy_local)"
             should_speak_local=false
+            # VS3.2 (T7): a busy PC no longer DROPS the announcement — the
+            # event is admitted to the pending queue (deferred playback is
+            # the queue's business, VS3.3); this run stays silent as before.
+            # The rendered mp3 exists here: its path is stored as the
+            # recovery audio, regeneration-from-text is the fallback.
+            pending_admit "$pane_id" "$agent_name" "$new_state" "${title_desc:-${workspace:-$agent_name}}" "$pane_text" "$render_target" || true
           fi
 
           if [[ "$should_speak_local" == true && -s "$render_target" ]]; then
             echo "[$(date +%H:%M:%S)] ${agent_name} (${pane_id}): $(tt watcher.local_speak)"
-            play_audio_file "$render_target"
+            # VS3.2 (T7): opaque ann- identity for the outcome report —
+            # pattern-conformant and unique per playback (nanoseconds +
+            # pane). The outcome->FSM mapping arrives with VS3.3.
+            local announce_id="ann-$(date +%s%N)-${pane_id//[^A-Za-z0-9_-]/_}"
+            if play_audio_file "$render_target"; then
+              pending_completion "$announce_id" played || true
+            else
+              pending_completion "$announce_id" failed || true
+            fi
           fi
 
           # Clean up temporary audio file after local player decodes it.
@@ -6796,6 +6903,10 @@ case "${1:-}" in
   --play-file)
     play_audio_file "${2:-}"
     ;;
+  --cancel-speech)
+    shift
+    cancel_speech "$@"
+    ;;
   --render-pane)
     render_pane_audio "${2:-}" "${3:-}"
     ;;
@@ -6805,9 +6916,20 @@ case "${1:-}" in
     echo "$SURFACE_CONTRACT_VERSION"
     exit 0
     ;;
+  --contract-capabilities)
+    # Surface contract v2: strict JSON for explicit protocol negotiation
+    # (contracts/tts-brain-v2.md); --contract-version above STILL prints 1.
+    # Early exit like the v1 probe: no venv, no engine, one line, exit 0.
+    echo '{"supported_protocols":[1,2]}'
+    exit 0
+    ;;
   --render-text)
     shift
     render_text_audio "$@"
+    ;;
+  --render-text-segmented)
+    shift
+    render_text_segmented "$@"
     ;;
   --render-html)
     shift
