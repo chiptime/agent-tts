@@ -1,0 +1,7 @@
+[
+  {
+    "component": "pwa",
+    "path": "hosts/herdr/brain/src/herdr_brain/static/app.js",
+    "reason": "Browser-only IIFE (DOM, EventSource, live <audio>) that node --test cannot load, so it has no coverage record. New logic lives in pure modules (speech.js, announce.js, ...) measured under D4; app.js wiring is pinned by structural tests (tests/js/*wiring*, speech.test.js) and exercised by the real-browser E2E harness (tests/e2e)."
+  }
+]
