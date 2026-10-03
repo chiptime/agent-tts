@@ -60,3 +60,142 @@ def audio_server() -> Iterator[str]:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+# -- voice-stack M1: the REAL brain app over HTTP with deterministic doubles --
+
+
+import dataclasses
+import shutil
+import socket as socket_mod
+import time as time_mod
+
+import uvicorn
+
+from fastapi.testclient import TestClient  # noqa: F401  (import parity check)
+
+from herdr_brain.config import Settings
+from herdr_brain.server import create_app
+from herdr_brain.tts import TTSError
+from herdr_brain.watcher import AgentWatcher
+from tests.conftest import SETTINGS_KWARGS, StubHerdr
+
+
+class ScriptedTTS:
+    """Renderer double: instant for normal turns, blocked-until-released for
+    texts the test marks slow. Models cancel exactly like the production
+    cancellable renderer (TTSError("cancelled"), no file written)."""
+
+    takes_cancel_event = True
+
+    def __init__(self, fixtures: Path, audio_dir: Path):
+        self._fixtures = fixtures
+        self._audio_dir = audio_dir
+        self.slow_texts = set()
+        self.slow_started = threading.Event()
+        self.release_slow = threading.Event()
+        self.calls = []
+        self.aborted = []
+
+    def __call__(self, settings, text, out_path: Path, cancel_event) -> Path:
+        self.calls.append(text)
+        if any(marker in text for marker in self.slow_texts):
+            self.slow_started.set()
+            while not (cancel_event.is_set() or self.release_slow.is_set()):
+                cancel_event.wait(0.05)
+            if cancel_event.is_set():
+                self.aborted.append(text)
+                raise TTSError("cancelled")
+            shutil.copyfile(self._fixtures / "long.mp3", out_path)
+            return out_path
+        shutil.copyfile(self._fixtures / "long.mp3", out_path)
+        return out_path
+
+
+class FakeLLM:
+    def __init__(self):
+        self.calls = []
+
+    def attach_store(self, store):
+        pass
+
+    def attach_approval_store(self, store):
+        pass
+
+    def ask(self, text, session_id=None, pane_id=None):
+        self.calls.append(text)
+        return {
+            "answer": "Respuesta a: " + text,
+            "pane_id": "w1:p9",
+            "agent": "opencode",
+            "session_id": session_id or "default",
+            "approval": None,
+        }
+
+
+@pytest.fixture
+def brain(tmp_path):
+    """The real app served over HTTP: deterministic LLM/TTS, live SSE hub.
+
+    Returns a namespace with the base URL, the scripted TTS, the watcher hub
+    (publish announcements straight into the PWA's EventSource) and the LLM.
+    """
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    cfg = Settings(**{**SETTINGS_KWARGS, "audio_dir": str(audio_dir)})
+    tts = ScriptedTTS(FIXTURES_DIR, audio_dir)
+    llm = FakeLLM()
+    watcher = AgentWatcher(cfg, herdr=StubHerdr(), tts_renderer=None)  # not started
+    app = create_app(
+        settings=cfg,
+        llm_factory=lambda _cfg, _tools: llm,
+        tts_renderer=tts,
+        watcher=watcher,
+        daemon_probe=lambda: "up",
+    )
+    config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="error")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time_mod.monotonic() + 15
+    while time_mod.monotonic() < deadline:
+        if server.started:
+            break
+        time_mod.sleep(0.02)
+    assert server.started, "brain server never came up"
+
+    class Brain:
+        pass
+
+    handle = Brain()
+    handle.url = f"http://127.0.0.1:{server.servers[0].sockets[0].getsockname()[1]}"
+    handle.tts = tts
+    handle.llm = llm
+    handle.hub = watcher.hub
+    handle.audio_dir = audio_dir
+    try:
+        yield handle
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+
+
+def ask_via_keyboard(page, text):
+    """Drives the REAL text-fallback form (hidden or not): ask() runs."""
+    page.evaluate(
+        """([text]) => {
+            const input = document.getElementById('text-input');
+            input.value = text;
+            document.getElementById('text-fallback').requestSubmit();
+        }""",
+        [text],
+    )
+
+
+def wait_for_sse_subscriber(brain, timeout=10.0):
+    deadline = time_mod.monotonic() + timeout
+    while time_mod.monotonic() < deadline:
+        if brain.hub._subscribers:
+            return
+        time_mod.sleep(0.02)
+    raise AssertionError("the PWA never subscribed to /events")
