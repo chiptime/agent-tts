@@ -27,7 +27,10 @@ NOT_A_PERCENTAGE = (
 # a MODIFIED file is a typed blocked result (fail-closed), never a silent skip.
 UNSUPPORTED_KEYWORDS = ("select ", "until ")
 
-_HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
+# A heredoc opener: `<<WORD` / `<<-WORD` / `<<'WORD'`. Not `<<<` (here-string,
+# also what a quoted marker like '# <<< x <<<' looks like) and not an
+# arithmetic shift inside (( )); the word must be an identifier.
+_HEREDOC_RE = re.compile(r"(?<![<\d])<<-?\s*(['\"]?)([A-Za-z_]\w*)\1")
 _IF_RE = re.compile(r"(?:^|&&|\|\||;)\s*(el)?if\s+")
 _CASE_RE = re.compile(r"(?:^|&&|\|\||;)\s*case\s+\S.*\bin\s*$")
 _CASE_ARM_RE = re.compile(r"^\s*([^(|)]+(?:\|[^)|]*)*)\)\s*")
@@ -67,6 +70,20 @@ def read_blob(snapshot_path: str, entry: dict) -> bytes:
         return fh.read()
 
 
+def is_bash_file(path: str, blob: bytes) -> bool:
+    """Bash sources only: *.sh, or an extensionless file with a bash/sh shebang.
+
+    The gate scopes also hold docs, JSON tables and Python modules; parsing
+    those as shell would block on prose or count non-shell lines.
+    """
+    if "/tests/" in f"/{path}":
+        return False  # measuring instruments are never the subject (D9 = product Bash)
+    if path.endswith(".sh"):
+        return True
+    first = blob.split(b"\n", 1)[0].decode("utf-8", "replace")
+    return first.startswith("#!") and ("bash" in first or first.rstrip().endswith("sh"))
+
+
 def diff_modified(baseline_path: str, candidate_path: str, gate: str):
     """Yield (path, entry) for candidate files that are new or changed vs baseline."""
     base = load_scope(baseline_path, gate)
@@ -80,10 +97,13 @@ def diff_modified(baseline_path: str, candidate_path: str, gate: str):
 # -- bash decision extraction (subset, fail-closed) ---------------------------
 
 
-def _join_continuations(lines: list[str]) -> list[tuple[int, str]]:
-    """Join backslash-continued lines into logical lines tagged with first
-    physical line number."""
-    out: list[tuple[int, str]] = []
+def _join_continuations(lines: list[str]) -> list[tuple[int, int, str]]:
+    """Join backslash-continued lines into logical lines.
+
+    Each entry is ``(first physical line, last physical line, text)`` so a
+    modified continuation line still maps to its logical line.
+    """
+    out: list[tuple[int, int, str]] = []
     buf, start = "", None
     for idx, raw in enumerate(lines, start=1):
         if start is None:
@@ -91,18 +111,51 @@ def _join_continuations(lines: list[str]) -> list[tuple[int, str]]:
         if raw.endswith("\\"):
             buf += raw[:-1] + " "
             continue
-        out.append((start, buf + raw))
+        out.append((start, idx, buf + raw))
         buf, start = "", None
     if buf:
-        out.append((start or 1, buf))
+        out.append((start or 1, len(lines), buf))
     return out
 
 
-def extract_decisions(path: str, blob: bytes) -> list[dict]:
+_STRING_RE = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"")
+_ONE_LINE_FI_RE = re.compile(r"(^|;|\s)fi\s*(;|$)")
+
+
+def _code_only(line: str) -> str:
+    """The line with quoted strings blanked and a trailing comment removed.
+
+    Keyword/operator detection runs on this view so prose inside messages
+    ("wait until ready", "a && b") is never mistaken for shell syntax.
+    """
+    code = _STRING_RE.sub('""', line)
+    return re.sub(r"(^|\s)#.*$", "", code)
+
+
+def changed_line_set(old: bytes | None, new: bytes) -> set[int] | None:
+    """1-based candidate lines added/changed vs the baseline; None = all lines
+    (new file)."""
+    if old is None:
+        return None
+    old_lines = old.decode("utf-8", "replace").splitlines()
+    new_lines = new.decode("utf-8", "replace").splitlines()
+    matcher = difflib.SequenceMatcher(a=old_lines, b=new_lines, autojunk=False)
+    changed: set[int] = set()
+    for tag, _i1, _i2, j1, j2 in matcher.get_opcodes():
+        if tag in ("insert", "replace"):
+            changed.update(range(j1 + 1, j2 + 1))
+    return changed
+
+
+def extract_decisions(path: str, blob: bytes, only_lines: set[int] | None = None) -> list[dict]:
     """Enumerate decision alternatives for one Bash file.
 
     Supported: if/elif/else/fi, case arms, && and || lists. Heredoc bodies are
-    skipped. Anything unparseable raises Blocked (caller exits 2).
+    skipped. With ``only_lines`` (the lines a change added or modified) the
+    whole file is still walked so nesting context stays right, but decisions
+    are emitted — and unsupported constructs block — ONLY on those lines: an
+    unchanged 7000-line script is never re-audited for a two-line change.
+    Anything unparseable on a checked line raises Blocked (caller exits 2).
     """
     text = blob.decode("utf-8", "replace")
     lines = text.splitlines()
@@ -114,59 +167,79 @@ def extract_decisions(path: str, blob: bytes) -> list[dict]:
         pass
 
     stack: list[str] = []  # entries: "if" | "case"
-    for lineno, line in logical:
+    for lineno, end_lineno, line in logical:
         if any(lo <= lineno <= hi for lo, hi in heredoc_skip):
             continue
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
+        code = _code_only(line)
+        stripped = code.strip()
+        if not stripped:
             continue
-        for kw in UNSUPPORTED_KEYWORDS:
-            if re.search(r"(^|;|\s)" + kw.strip() + r"(\s|$)", line):
-                raise Blocked(f"{path}:{lineno}: unsupported construct '{kw.strip()}'")
-        if _CASE_RE.search(line):
-            stack.append("case")
+        checked = only_lines is None or any(
+            n in only_lines for n in range(lineno, end_lineno + 1)
+        )
+        if checked:
+            for kw in UNSUPPORTED_KEYWORDS:
+                if re.search(r"(^|;|\s)" + kw.strip() + r"(\s|$)", code):
+                    raise Blocked(f"{path}:{lineno}: unsupported construct '{kw.strip()}'")
+        if _CASE_RE.search(code):
+            stack.append({"kind": "case", "has_star": False, "emitted": []})
             continue
-        if stack and stack[-1] == "case":
+        if stack and isinstance(stack[-1], dict):
+            block = stack[-1]
             if _ESAC_RE.match(stripped):
                 stack.pop()
+                # "no-match" exists only when the WHOLE case has no '*' arm;
+                # it rides on the last arm THIS change emitted for the block.
+                if not block["has_star"] and block["emitted"]:
+                    block["emitted"][-1]["alternatives"].append(
+                        {"label": "no-match", "cases": []}
+                    )
                 continue
-            arm = _CASE_ARM_RE.match(line)
+            arm = _CASE_ARM_RE.match(code)
             if arm:
-                label = arm.group(1).strip()
-                decisions.append(
-                    {
+                label = (_CASE_ARM_RE.match(line) or arm).group(1).strip()
+                if label == "*":
+                    block["has_star"] = True
+                if checked:
+                    decision = {
                         "id": f"{path}:{lineno}:case-arm",
                         "file": path,
                         "line": lineno,
                         "construct": "case-arm",
                         "alternatives": [{"label": label, "cases": []}],
                     }
-                )
+                    decisions.append(decision)
+                    block["emitted"].append(decision)
                 continue
             # inside a case arm body: fall through to if/&& handling
-        if _IF_RE.search(line):
-            decisions.append(
-                {
-                    "id": f"{path}:{lineno}:{'elif' if 'elif' in line else 'if'}",
-                    "file": path,
-                    "line": lineno,
-                    "construct": "elif" if "elif" in line else "if",
-                    "alternatives": [
-                        {"label": "cond-true", "cases": []},
-                        {"label": "cond-false", "cases": []},
-                    ],
-                    "_needs_nomatch": False,
-                }
-            )
-            stack.append("if")
+        if_match = _IF_RE.search(code)
+        if if_match:
+            is_elif = if_match.group(1) == "el"
+            if checked:
+                decisions.append(
+                    {
+                        "id": f"{path}:{lineno}:{'elif' if is_elif else 'if'}",
+                        "file": path,
+                        "line": lineno,
+                        "construct": "elif" if is_elif else "if",
+                        "alternatives": [
+                            {"label": "cond-true", "cases": []},
+                            {"label": "cond-false", "cases": []},
+                        ],
+                    }
+                )
+            # elif continues the open chain; a one-line `if ...; fi` closes
+            # itself: neither may leave an entry on the nesting stack.
+            if not is_elif and not _ONE_LINE_FI_RE.search(code):
+                stack.append("if")
             continue
         if stack and stack[-1] == "if" and _FI_RE.match(stripped):
             stack.pop()
             continue
         if stack and stack[-1] == "if" and _ELSE_RE.match(stripped):
             continue
-        andor = _ANDOR_RE.search(line)
-        if andor and not _IF_RE.search(line) and not _CASE_RE.search(line):
+        andor = _ANDOR_RE.search(code)
+        if checked and andor and not _CASE_RE.search(code):
             op = andor.group(1)
             decisions.append(
                 {
@@ -178,30 +251,12 @@ def extract_decisions(path: str, blob: bytes) -> list[dict]:
                         {"label": "left-success", "cases": []},
                         {"label": "left-failure", "cases": []},
                     ],
-                    "_needs_nomatch": False,
                 }
             )
-    if stack:
+    if stack and only_lines is None:
         raise Blocked(f"{path}: unbalanced {stack} (cannot enumerate reliably)")
 
-    # Post-process contiguous case-arm runs: a "no-match" alternative exists
-    # on the last arm of a run ONLY when the run has no '*' arm.
-    result: list[dict] = []
-    i = 0
-    while i < len(decisions):
-        if decisions[i]["construct"] == "case-arm":
-            j = i
-            while j < len(decisions) and decisions[j]["construct"] == "case-arm":
-                j += 1
-            run = decisions[i:j]
-            if not any(a["label"] == "*" for d in run for a in d["alternatives"]):
-                run[-1]["alternatives"].append({"label": "no-match", "cases": []})
-            result.extend(run)
-            i = j
-        else:
-            result.append(decisions[i])
-            i += 1
-    return result
+    return decisions
 
 
 def _heredoc_spans(lines: list[str]) -> list[tuple[int, int]]:
@@ -210,7 +265,8 @@ def _heredoc_spans(lines: list[str]) -> list[tuple[int, int]]:
     start = 0
     for idx, line in enumerate(lines, start=1):
         if open_word is None:
-            match = _HEREDOC_RE.search(line)
+            code = _code_only(line)
+            match = None if "((" in code else _HEREDOC_RE.search(code)
             if match:
                 open_word, start = match.group(2), idx + 1
         elif line.strip() == open_word:
@@ -348,10 +404,17 @@ def coverage_linkage(extracted: list[dict], coverage_dir: str) -> list[str]:
 
 def cmd_check(args) -> int:
     extracted: list[dict] = []
+    base_scope = load_scope(args.baseline_snapshot, "G-BASH-MATRIX")
+    bash_modified = 0
     for path, entry in diff_modified(args.baseline_snapshot, args.candidate_snapshot, "G-BASH-MATRIX"):
         blob = read_blob(args.candidate_snapshot, entry)
+        if not is_bash_file(path, blob):
+            continue
+        bash_modified += 1
+        old = base_scope.get(path)
+        old_blob = read_blob(args.baseline_snapshot, old) if old else None
         try:
-            extracted.extend(extract_decisions(path, blob))
+            extracted.extend(extract_decisions(path, blob, changed_line_set(old_blob, blob)))
         except Exception as exc:  # Blocked or decode issues: fail closed
             return die_blocked(str(exc))
     try:
@@ -379,7 +442,7 @@ def cmd_check(args) -> int:
                 return die_blocked(p[9:])
         problems.extend(cov_problems)
 
-    print(f"modified_files={sum(1 for _ in diff_modified(args.baseline_snapshot, args.candidate_snapshot, 'G-BASH-MATRIX'))}")
+    print(f"modified_files={bash_modified}")
     print(f"decisions={len(extracted)} "
           f"alternatives={sum(len(d['alternatives']) for d in extracted)}")
     print(f"cases_executed={len(executed)} cases_ok={sum(1 for v in executed.values() if v == 'OK')} "
@@ -446,6 +509,19 @@ select opt in a b; do
   echo "$opt"
   break
 done
+"""
+
+SCOPED_OLD = """#!/usr/bin/env bash
+echo "wait until ready && keep going"
+if [[ -n "${X:-}" ]]; then
+  echo legacy-unbalanced-on-purpose
+"""
+
+SCOPED_ADDED = """if [[ "${1:-}" == "go" ]]; then
+  echo new-go
+else
+  echo new-other
+fi
 """
 
 HARNESS_SH = """#!/usr/bin/env bash
@@ -559,6 +635,63 @@ def cmd_selftest(args) -> int:
     rc = run_checker(table_a, None)
     print(f"selftest d (unsupported select) rc={rc} (expect 2)")
     ok &= rc == 2
+
+    # (e) scope = CHANGED lines only: a modified file whose UNCHANGED region has
+    # prose containing 'until' and an unbalanced `if` must not block, and only
+    # the decision on the added lines needs a case.
+    scoped_path = os.path.join(tree, "scoped.sh")
+    with open(scoped_path, "w") as fh:
+        fh.write(SCOPED_OLD)
+    scoped_old_entry = _mini_entry(run_dir, "scoped.sh")
+    with open(scoped_path, "w") as fh:
+        fh.write(SCOPED_OLD + SCOPED_ADDED)
+    scoped_new_entry = _mini_entry(run_dir, "scoped.sh")
+    scoped_decisions = extract_decisions(
+        "scoped.sh", (SCOPED_OLD + SCOPED_ADDED).encode(),
+        changed_line_set(SCOPED_OLD.encode(), (SCOPED_OLD + SCOPED_ADDED).encode()))
+    scoped_table = [{"id": d["id"], "file": d["file"], "line": d["line"],
+                     "construct": d["construct"],
+                     "alternatives": [{"label": a["label"], "cases": ["mode_go"]}
+                                      for a in d["alternatives"]]}
+                    for d in scoped_decisions]
+    ok &= len(scoped_decisions) == 1
+    _mini_snapshot(base_snap, "G-BASH-MATRIX", [scoped_old_entry])
+    _mini_snapshot(cand_snap, "G-BASH-MATRIX", [scoped_new_entry])
+    rc = run_checker(scoped_table, None)
+    print(f"selftest e (only changed lines audited; {len(scoped_decisions)} decision) "
+          f"rc={rc} (expect 0)")
+    ok &= rc == 0
+
+    # (f) a modified NON-bash file (docs/table/python) is never parsed as shell.
+    notes_path = os.path.join(tree, "notes.md")
+    with open(notes_path, "w") as fh:
+        fh.write("wait until ready\n")
+    notes_old = _mini_entry(run_dir, "notes.md")
+    with open(notes_path, "w") as fh:
+        fh.write("if unbalanced && prose until select\n")
+    notes_new = _mini_entry(run_dir, "notes.md")
+    _mini_snapshot(base_snap, "G-BASH-MATRIX", [scoped_old_entry, notes_old])
+    _mini_snapshot(cand_snap, "G-BASH-MATRIX", [scoped_new_entry, notes_new])
+    rc = run_checker(scoped_table, None)
+    print(f"selftest f (modified non-bash file ignored) rc={rc} (expect 0)")
+    ok &= rc == 0
+
+    # (g) Bash under tests/ (the harness itself) is an instrument, not a subject.
+    os.makedirs(os.path.join(tree, "tests"), exist_ok=True)
+    inner_path = os.path.join(tree, "tests", "inner.sh")
+    with open(inner_path, "w") as fh:
+        fh.write("#!/usr/bin/env bash\necho old\n")
+    inner_old = _mini_entry(run_dir, "tests/inner.sh")
+    with open(inner_path, "w") as fh:
+        fh.write(SELECT_SH)
+    inner_new = _mini_entry(run_dir, "tests/inner.sh")
+    _mini_snapshot(base_snap, "G-BASH-MATRIX", [scoped_old_entry, inner_old])
+    _mini_snapshot(cand_snap, "G-BASH-MATRIX", [scoped_new_entry, inner_new])
+    rc = run_checker(scoped_table, None)
+    print(f"selftest g (modified Bash under tests/ ignored) rc={rc} (expect 0)")
+    ok &= rc == 0
+
+    _mini_snapshot(base_snap, "G-BASH-MATRIX", [])
     _mini_snapshot(cand_snap, "G-BASH-MATRIX", [entry])
     print(f"extracted ids={ids}")
     print(f"alternatives={alts}")
