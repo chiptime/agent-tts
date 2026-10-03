@@ -1291,8 +1291,59 @@
   var audioBusy = false;
   var audioFinished = null;
 
-  function enqueueAudio(url, announcement) {
-    audioQueue.push({ url: url, announcement: announcement || null });
+  /* Speech request identity + server-side cancel (speech.js). stopAudio and
+   * hang-up share ONE cancel path; the UI only hears about it when the
+   * server could not confirm (local audio has already stopped by then). */
+  var speechCtl = Speech.createSpeechController({
+    fetch: function (url, options) { return fetchWithTimeout(url, options, 8000); },
+    setTimeout: function (cb, ms) { return setTimeout(cb, ms); },
+    crypto: window.crypto,
+    onStatus: function (status) {
+      if (status.state === "cancel-unconfirmed") {
+        showBanner("No pude confirmar con el servidor que se canceló la voz; el audio local ya se detuvo.");
+      } else if (status.state === "cancel-forbidden" || status.state === "cancel-rejected") {
+        showBanner("El servidor rechazó la cancelación de la voz (" + status.state + ").");
+      }
+    }
+  });
+
+  /* Segmented delivery client (speech.js, VS2.6/T6): long-polls
+   * /speech/{id}/next and feeds the SAME sequential audio queue as
+   * full-file turns — a segment is just a queue item carrying seq.
+   * onAudioEnded advances the ack watermark; the final ack is the
+   * playback evidence that completes the job server-side (T5). */
+  var segmentPlayer = Speech.createSegmentPlayer({
+    fetch: function (url, options) { return fetch(url, options); },
+    setTimeout: function (cb, ms) { return setTimeout(cb, ms); },
+    crypto: window.crypto,
+    enqueue: function (item) { enqueueAudio(item.url, null, item.speechRequestId, item.seq); },
+    onStatus: function (status) {
+      /* Terminal player statuses release the controller identity (VS2
+       * remediation, T2/T6): complete / server-cancelled / server-degraded
+       * / server-failed / server-expired-unconsumed / local degraded. The
+       * job is over — there is nothing left to cancel, and the identity
+       * holder must not outlive it. Segment items never release on their
+       * own 'ended' (see onAudioEnded): THIS is the segment path's only
+       * release. */
+      if (status.state === "complete" || status.state === "degraded" ||
+          (status.state && status.state.indexOf("server-") === 0)) {
+        speechCtl.release(status.id);
+      }
+      if (status.state === "degraded") {
+        showBanner("No pude seguir bajando la voz por segmentos; la reproducción quedó degradada.");
+      } else if (status.state && status.state.indexOf("server-") === 0) {
+        showBanner("La voz del servidor terminó (" + status.state.slice(7) + ").");
+      }
+    }
+  });
+
+  function enqueueAudio(url, announcement, speechRequestId, seq) {
+    audioQueue.push({
+      url: url,
+      announcement: announcement || null,
+      speechRequestId: speechRequestId || null,
+      seq: typeof seq === "number" ? seq : null
+    });
     pumpAudio();
   }
 
@@ -1347,6 +1398,13 @@
      * announcer state. */
     if (audioFinished !== item) return;
     audioFinished = null;   // claim: the late twin becomes stale
+    /* Same identity split as onAudioEnded: a legacy (no-seq) item
+     * releases here; a segment item keeps the identity so a later stop
+     * can still cancel the live server job — the player's terminal
+     * statuses own that release. */
+    if (item.seq === null) {
+      speechCtl.release(item.speechRequestId);
+    }
     audioBusy = false;
     if (item.announcement && !inCall) {
       /* FR-04/AC3: out of call the announcement text must survive a
@@ -1395,6 +1453,21 @@
     audioBusy = false;
     var finished = audioFinished;
     audioFinished = null;
+    /* Identity lifetime (VS2 remediation, PRD01 FR-02/T2/T6): only a
+     * LEGACY full-file item (no seq) releases the controller identity
+     * here — M1 behavior byte-identical. A segment item does NOT: while
+     * the job is ACTIVE the stop button must still POST the cancel, so
+     * the identity lives until the SEGMENT PLAYER reaches a terminal
+     * status (complete / server-* / local degraded), released in its
+     * onStatus wiring below. Releasing here after segment 0's ended is
+     * the old defect: stop then fell into the legacy clear-all, wiping
+     * foreign announcements and never cancelling server-side. */
+    if (finished && finished.seq === null) {
+      speechCtl.release(finished.speechRequestId);
+    }
+    /* A segment item reports consumption: the ack watermark advances and,
+     * on the final segment, the player delivers the last ack (T5). */
+    if (finished && typeof finished.seq === "number") segmentPlayer.onEnded(finished.seq);
     if (finished && finished.announcement) hideToast();
     if (!audioQueue.length) stopBtn.classList.add("hidden");
     if (!audioQueue.length && inCall && callState === "speaking") {
@@ -1406,14 +1479,29 @@
   }
 
   function stopAudio() {
-    audioQueue.length = 0;
+    /* A streamed job stops polling too; the purge below owns the queue. */
+    segmentPlayer.stop();
+    var jobId = speechCtl.activeId();
+    if (jobId) {
+      /* Identified request: cancel ITS voice on the server and drop only
+       * ITS queued audio — other requests and ambient announcements keep
+       * their turn. */
+      speechCtl.cancel();
+      Speech.purgeQueueById(audioQueue, jobId);
+    } else {
+      audioQueue.length = 0;  // nothing identifiable: the legacy clear-all
+    }
     audioBusy = false;
     audioFinished = null;
-    player.pause();
+    player.pause();  // local audio stops immediately, always
     player.removeAttribute("src");
     player.load();
-    stopBtn.classList.add("hidden");
     hideToast();
+    if (audioQueue.length) {
+      pumpAudio();
+      return;
+    }
+    stopBtn.classList.add("hidden");
     if (inCall && callState === "speaking") {
       setCallState(micBaseState());
       startListening();
@@ -1728,6 +1816,226 @@
     }
   });
 
+  /* ---- pending announcements ledger (speech.js, VS3.6, PRD03/T8) ----
+   * The PHONE's records of the ambient announcements received over
+   * SSE: pure bookkeeping + recovery. The announcement itself keeps
+   * playing through the announcer above (this is NOT a second queue),
+   * and stopAudio NEVER touches these records (FR-08: stop purges
+   * speech, keeps records — separate domains). listen() regenerates
+   * the speech from the stored TEXT through the NORMAL pipeline
+   * (speakText -> /tts -> enqueueAudio: legacy full-file path, no
+   * speech_request_id), so a purged/GC'd mp3 is not a dead record.
+   *
+   * The section is built BEFORE the store: an oversized persisted
+   * payload surfaces its overflow condition during the store's own
+   * load(), and that callback must find the DOM ready. */
+  var pendingRows = {};  // record id -> row refs
+  /* Clearance under the fixed call footer, mirroring the body's own
+   * reservation in index.html (env(safe-area-inset-bottom, 0px) + 104px)
+   * so panel and page agree on the room the footer needs. The body's
+   * padding-bottom does NOT provide it: body is height:100%, so that
+   * padding sits inside a viewport-height box and the overflowing rows
+   * poke below it — it never becomes scrollable document space, and
+   * without space of its own the LAST row clamps under the footer at
+   * maximum scroll. The pending list is the last in-flow element, so
+   * its own bottom padding IS real scrollable height. */
+  var PENDING_FOOTER_CLEARANCE =
+    "calc(env(safe-area-inset-bottom, 0px) + 104px)";
+  var pendingSection = document.createElement("section");
+  pendingSection.id = "pending-panel";
+  pendingSection.className = "hidden";
+  pendingSection.setAttribute("aria-label", "Pendientes");
+  pendingSection.setAttribute("aria-live", "polite");
+  pendingSection.style.margin = "var(--sp-2) var(--sp-3) 0";
+  pendingSection.style.maxWidth = "760px";
+  pendingSection.style.marginInline = "auto";
+  pendingSection.style.display = "flex";
+  pendingSection.style.flexDirection = "column";
+  pendingSection.style.gap = "8px";
+
+  var pendingHead = document.createElement("div");
+  pendingHead.style.fontSize = "var(--fs-xs)";
+  pendingHead.style.color = "var(--muted)";
+  var pendingTitle = document.createElement("span");
+  pendingTitle.textContent = "📋 Pendientes (";
+  var pendingCountEl = document.createElement("span");
+  pendingCountEl.textContent = "0";
+  var pendingTitleClose = document.createElement("span");
+  pendingTitleClose.textContent = ")";
+  var pendingOverflowEl = document.createElement("span");
+  pendingOverflowEl.className = "hidden";
+  pendingOverflowEl.style.marginLeft = "8px";
+  pendingOverflowEl.style.fontWeight = "700";
+  pendingOverflowEl.style.color = "var(--warn)";
+  pendingTitle.appendChild(pendingCountEl);
+  pendingTitle.appendChild(pendingTitleClose);
+  pendingHead.appendChild(pendingTitle);
+  pendingHead.appendChild(pendingOverflowEl);
+
+  var pendingBannerEl = document.createElement("div");
+  pendingBannerEl.className = "hidden";
+  pendingBannerEl.setAttribute("role", "alert");
+  pendingBannerEl.style.fontSize = "var(--fs-xs)";
+  pendingBannerEl.style.padding = "6px 8px";
+  pendingBannerEl.style.background = "#f4e8c3";
+  pendingBannerEl.style.color = "var(--warn)";
+
+  var pendingListEl = document.createElement("ul");
+  pendingListEl.style.listStyle = "none";
+  pendingListEl.style.margin = "0";
+  pendingListEl.style.padding = "0";
+  /* The actual document flow space below the last row (see the
+   * PENDING_FOOTER_CLEARANCE comment above): with this, scrolling to
+   * the document end leaves the last row fully above the footer and
+   * its action buttons reachable — visually just empty page
+   * background, the panel itself is unchanged. */
+  pendingListEl.style.paddingBottom = PENDING_FOOTER_CLEARANCE;
+  pendingListEl.style.display = "flex";
+  pendingListEl.style.flexDirection = "column";
+  pendingListEl.style.gap = "6px";
+
+  pendingSection.appendChild(pendingHead);
+  pendingSection.appendChild(pendingBannerEl);
+  pendingSection.appendChild(pendingListEl);
+  consultPanel.parentNode.insertBefore(pendingSection, consultPanel.nextSibling);
+
+  var PENDING_STATE_LABELS = {
+    pending: "pendiente",
+    announced: "anunciado",
+    uncertain: "incierto (sin guardar)",
+    discarded: "descartado"
+  };
+
+  function buildPendingRow(id) {
+    var root = document.createElement("li");
+    root.style.padding = "6px 8px";
+    root.style.border = "1px solid var(--line, #ccc)";
+    root.style.borderRadius = "8px";
+    root.style.display = "flex";
+    root.style.flexDirection = "column";
+    root.style.gap = "4px";
+    /* scrollIntoView on a row snaps its buttons clear of the fixed
+     * footer (the margin extends the row's scroll snap area), not
+     * merely inside the viewport — this is what lets the LAST row
+     * center properly instead of clamping against document end. */
+    root.style.scrollMarginBottom = PENDING_FOOTER_CLEARANCE;
+
+    var line1 = document.createElement("div");
+    line1.style.display = "flex";
+    line1.style.alignItems = "baseline";
+    line1.style.gap = "8px";
+    var labelEl = document.createElement("span");
+    labelEl.style.fontWeight = "700";
+    var stateEl = document.createElement("span");
+    stateEl.style.fontSize = "var(--fs-xs)";
+    stateEl.style.color = "var(--muted)";
+    var repeatEl = document.createElement("span");
+    repeatEl.className = "hidden";
+    repeatEl.style.fontSize = "var(--fs-xs)";
+    repeatEl.style.color = "var(--muted)";
+    line1.appendChild(labelEl);
+    line1.appendChild(stateEl);
+    line1.appendChild(repeatEl);
+
+    var textEl = document.createElement("div");
+    textEl.style.fontSize = "var(--fs-xs)";
+    textEl.style.color = "var(--muted)";
+    textEl.style.overflow = "hidden";
+    textEl.style.textOverflow = "ellipsis";
+    textEl.style.whiteSpace = "nowrap";
+
+    var actions = document.createElement("div");
+    actions.style.display = "flex";
+    actions.style.gap = "8px";
+    function rowBtn(label, title, onClick) {
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = label;
+      btn.title = title;
+      btn.setAttribute("aria-label", title);
+      btn.style.fontSize = "var(--fs-xs)";
+      btn.style.minHeight = "36px";
+      btn.style.padding = "0 10px";
+      btn.addEventListener("click", function (event) {
+        event.stopPropagation();
+        onClick();
+      });
+      return btn;
+    }
+    var listenBtn = rowBtn("🔊 Escuchar", "Volver a escuchar este aviso", function () {
+      pendingStore.listen(id);
+    });
+    var okBtn = rowBtn("✓ Anunciado", "Marcar como anunciado", function () {
+      pendingStore.mark_announced(id);
+    });
+    var noBtn = rowBtn("✕ Descartar", "Descartar este pendiente", function () {
+      pendingStore.discard(id);
+    });
+    actions.appendChild(listenBtn);
+    actions.appendChild(okBtn);
+    actions.appendChild(noBtn);
+
+    root.appendChild(line1);
+    root.appendChild(textEl);
+    root.appendChild(actions);
+    pendingRows[id] = { root: root, labelEl: labelEl, stateEl: stateEl,
+      repeatEl: repeatEl, textEl: textEl, okBtn: okBtn };
+    return pendingRows[id];
+  }
+
+  function renderPendingSection(snap) {
+    pendingSection.classList.toggle("hidden", snap.records.length === 0);
+    pendingCountEl.textContent = String(snap.count);
+    pendingOverflowEl.textContent = "+" + snap.overflow_count + " recortados";
+    pendingOverflowEl.classList.toggle("hidden", !snap.overflow_count);
+    pendingBannerEl.classList.toggle("hidden", !snap.persist_uncertain);
+    if (snap.persist_uncertain) {
+      pendingBannerEl.textContent =
+        "No pude guardar los pendientes en este dispositivo " +
+        "(¿modo privado o sin espacio?). La lista NO es persistente hasta recargar.";
+    }
+    var seen = {};
+    for (var i = 0; i < snap.records.length; i++) {
+      var rec = snap.records[i];
+      seen[rec.id] = true;
+      var row = pendingRows[rec.id] || buildPendingRow(rec.id);
+      row.labelEl.textContent = rec.label || rec.agent || rec.pane_id || "agente";
+      row.stateEl.textContent = PENDING_STATE_LABELS[rec.state] || rec.state;
+      row.repeatEl.textContent = "×" + rec.repeat_count;
+      row.repeatEl.classList.toggle("hidden", rec.repeat_count <= 1);
+      row.textEl.textContent = rec.text;
+      row.okBtn.disabled = rec.state === "announced";
+      pendingListEl.appendChild(row.root);  // document order; a no-op for existing rows
+    }
+    for (var id in pendingRows) {
+      if (Object.prototype.hasOwnProperty.call(pendingRows, id) && !seen[id]) {
+        pendingRows[id].root.remove();
+        delete pendingRows[id];
+      }
+    }
+  }
+
+  /* Built above; created LAST so its construction-time conditions (an
+   * oversized persisted payload overflows during load()) land on a
+   * section that already exists. */
+  var pendingStore = Speech.createPendingStore({
+    storage: window.localStorage,
+    onStatus: function () {
+      /* Conditions (persist-uncertain / overflow / restored) re-render
+       * from the snapshot — the banner text lives in ONE place. The
+       * guard covers construction time: an oversized persisted payload
+       * overflows during load(), BEFORE this assignment finishes; the
+       * explicit render right below picks that boot case up. */
+      if (pendingStore) renderPendingSection(pendingStore.snapshot());
+    },
+    onChange: function (snap) { renderPendingSection(snap); },
+    onListen: function (text, record) {
+      speakText(text, (record && record.label) || "pendiente");
+    }
+  });
+
+  renderPendingSection(pendingStore.snapshot());
+
   function openEvents() {
     if (eventsOpened || !window.EventSource) return;
     eventsOpened = true;
@@ -1751,6 +2059,10 @@
         return;
       }
       if (!ann || ann.type !== "transition") return;
+      // VS3.6: the pending ledger records the transition (bookkeeping +
+      // recovery only); the announcement itself keeps flowing through
+      // the announcer below — this is not a second queue.
+      pendingStore.observe(ann);
       // FR-07: every agent's transition flows through the announcer
       // (muted toast / play on arrival / blocked drop), with the in-call
       // playback path delegated to the existing queue below it.
@@ -2157,33 +2469,53 @@
     addTurn("user", text);
     setCallState("thinking");
     stopListening();  // the mic must not hear the answer
+    /* Identity BEFORE /ask: the request is synchronous, so an id minted by
+     * the server would arrive too late to cancel mid-render. null (no
+     * crypto) keeps the legacy path untouched. */
+    var speech = speechCtl.begin(sessionId) || {};
     /* /ask spans the FULL consult turn (up to 60 s engine budget plus
      * model + TTS shaping) — the fixed 90 s policy AND the request
      * shape live in consult.js (Consult.requestAsk, tested in
      * tests/js/consult.test.js). The old inline 30 s aborted the fetch
-     * while the server was still working, losing completed answers. */
+     * while the server was still working, losing completed answers.
+     * The speech identity rides along as an optional, additive field. */
     return window.Consult.requestAsk(fetchWithTimeout, {
       text: text,
       sessionId: sessionId,
-      paneId: selectedPane
+      paneId: selectedPane,
+      speech: speech
     })
       .then(function (resp) {
         if (resp.status === 503) {
+          speechCtl.release(speech.speech_request_id);
           showBanner("El brain no está configurado: falta GLM_API_KEY en el servidor. " +
             "Añádelo a ~/.dotfiles/shell/private-env.sh y reinicia el servicio.");
           return;
         }
         if (!resp.ok) {
+          speechCtl.release(speech.speech_request_id);
           showBanner("La pregunta falló (HTTP " + resp.status + "). Prueba otra vez.");
           return;
         }
         return resp.json().then(function (data) {
           addTurn("brain", data.answer || "(respuesta vacía)");
+          if (data.speech && data.speech.status === "delivering" && !data.audio_url) {
+            /* Protocol-2 streaming turn: the answer arrives as segments
+             * through /speech/{id}/next and enters the SAME sequential
+             * queue (seq rides each item; onAudioEnded advances the ack).
+             * The enqueue below still covers legacy turns AND v1-degraded
+             * identified turns (full file with audio_url). */
+            segmentPlayer.start({ id: speech.speech_request_id, sessionId: sessionId });
+          } else if (data.audio_url) {
+            enqueueAudio(data.audio_url, null, speech.speech_request_id);
+          } else {
+            speechCtl.release(speech.speech_request_id);
+            if (!data.approval) afterAnswer();
+          }
           if (data.approval) {
             // A gate opened (PRD §4): enter confirming with the countdown
             // while the spoken echo ("… ¿Se envía?") plays through the
             // normal queue; onAudioEnded re-arms the mic under confirming.
-            if (data.audio_url) enqueueAudio(data.audio_url, null);
             approvalFlow.open(data.approval);
             // UX 2026-09-24: the gate surfaces as the floating popup
             // (visible with the drawer open OR closed — text mode
@@ -2191,11 +2523,10 @@
             // "Confirmar ▲" still reopens it for the transcript.
             return;
           }
-          if (data.audio_url) enqueueAudio(data.audio_url, null);
-          else afterAnswer();
         });
       })
       .catch(function (err) {
+        speechCtl.release(speech.speech_request_id);
         if (err && /timeout/.test(String(err.message || err))) {
           showBanner("El brain tardó demasiado — vuelve a intentarlo.");
         } else {

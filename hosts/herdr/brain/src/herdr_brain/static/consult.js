@@ -205,11 +205,14 @@
     return fetchWithTimeout("/ask", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({
+      // payload.speech (optional) carries the speech request identity
+      // (speech_request_id + speech_cancel_token); absent => the body is
+      // byte-identical to the pre-speech shape.
+      body: JSON.stringify(Object.assign({
         text: payload.text,
         session_id: payload.sessionId,
         pane_id: payload.paneId || null
-      })
+      }, payload.speech || {}))
     }, ASK_REQUEST_TIMEOUT_MS);
   }
 

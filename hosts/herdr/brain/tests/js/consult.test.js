@@ -444,6 +444,21 @@ test("requestAsk builds the POST /ask request: method, JSON content type, body",
   );
 });
 
+test("requestAsk merges the optional speech identity into the body; absent leaves it unchanged", () => {
+  const bodies = [];
+  const fake = (url, opts) => { bodies.push(JSON.parse(opts.body)); return Promise.resolve("r"); };
+  requestAsk(fake, {
+    text: "hola", sessionId: "s-1", paneId: "work",
+    speech: { speech_request_id: "id-12345678", speech_cancel_token: "tok" },
+  });
+  requestAsk(fake, { text: "hola", sessionId: "s-1", paneId: "work", speech: {} });
+  assert.deepStrictEqual(bodies[0], {
+    text: "hola", session_id: "s-1", pane_id: "work",
+    speech_request_id: "id-12345678", speech_cancel_token: "tok",
+  });
+  assert.deepStrictEqual(bodies[1], { text: "hola", session_id: "s-1", pane_id: "work" });
+});
+
 test("requestAsk normalizes a missing paneId to pane_id: null", () => {
   const calls = [];
   const fake = (url, opts) => {
