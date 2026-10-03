@@ -9,7 +9,7 @@ Collector (owner decision 2026-09-30): native bash xtrace. kcov 42 (pinned
 prebuilt) and kcov 43 (brew) both fail to trace bash 5.2 on Ubuntu 24.04
 (their execve-redirector injection layer silently stops rewriting child
 execs), while bash itself traces perfectly. The gate therefore runs the
-harness under ``SHELLOPTS=xtrace PS4='+${LINENO}@${BASH_SOURCE}@'`` —
+harness under ``SHELLOPTS=xtrace PS4='+${LINENO}@${BASH_SOURCE:-}@'`` —
 xtrace propagates to child bash scripts — and parses the stderr event
 stream ``+<lineno>@<abspath>@``. Coverage evidence is the set of executed
 lines observed during the harness run; absence of a modified line from the
@@ -34,7 +34,7 @@ import sys
 
 SHEBANG_RE = re.compile(r"^#!")
 PS4_EVENT_RE = re.compile(r"^\++(\d+)@([^@]+)@")
-PS4 = "+${LINENO}@${BASH_SOURCE}@"
+PS4 = "+${LINENO}@${BASH_SOURCE:-}@"
 
 # Structural-only lines never fire xtrace (they contain no simple command);
 # counting them would poison the denominator forever.
@@ -70,6 +70,10 @@ def read_blob(snapshot_path: str, entry: dict) -> bytes:
         return fh.read()
 
 
+_FUNC_DEF_RE = re.compile(r"^(?:function\s+[\w.:-]+(?:\s*\(\))?|[\w.:-]+\s*\(\))\s*\{$")
+_CASE_PATTERN_RE = re.compile(r"^[^\s()]+(?:\|[^\s()]+)*\)$")
+
+
 def is_executable_line(text: str, is_first_line: bool) -> bool:
     stripped = text.strip()
     if not stripped:
@@ -80,7 +84,22 @@ def is_executable_line(text: str, is_first_line: bool) -> bool:
         return False
     if stripped in STRUCTURAL_ONLY:
         return False
+    # `name() {` defines, it does not run; a bare `pattern)` case label is
+    # matched, not executed: xtrace emits neither.
+    if _FUNC_DEF_RE.match(stripped) or _CASE_PATTERN_RE.match(stripped):
+        return False
     return True
+
+
+def is_bash_file(path: str, blob: bytes) -> bool:
+    """Bash sources only (*.sh, or a bash/sh shebang). The scope also holds
+    Python modules and docs whose lines must never enter the denominator."""
+    if "/tests/" in f"/{path}":
+        return False  # measuring instruments are never the subject (D9 = product Bash)
+    if path.endswith(".sh"):
+        return True
+    first = blob.split(b"\n", 1)[0].decode("utf-8", "replace")
+    return first.startswith("#!") and ("bash" in first or first.rstrip().endswith("sh"))
 
 
 def modified_executable_lines(baseline_path: str, candidate_path: str, gate: str):
@@ -91,7 +110,10 @@ def modified_executable_lines(baseline_path: str, candidate_path: str, gate: str
         old = base.get(path)
         if old is not None and old.get("sha256") == entry.get("sha256"):
             continue
-        new_lines = read_blob(candidate_path, entry).decode("utf-8", "replace").splitlines()
+        new_bytes = read_blob(candidate_path, entry)
+        if not is_bash_file(path, new_bytes):
+            continue
+        new_lines = new_bytes.decode("utf-8", "replace").splitlines()
         old_lines = (read_blob(baseline_path, old).decode("utf-8", "replace").splitlines()
                      if old else [])
         matcher = difflib.SequenceMatcher(a=old_lines, b=new_lines, autojunk=False)
@@ -266,7 +288,19 @@ def cmd_selftest(args) -> int:
                 '  echo flagged-b',
                 'else',
                 '  echo unflagged',
-                'fi']
+                'fi',
+                'helper() {',
+                '  echo in-helper',
+                '}',
+                'helper',
+                'case "${1:-}" in',
+                '  --flag)',
+                '    echo arm-flag',
+                '    ;;',
+                '  *)',
+                '    echo arm-other',
+                '    ;;',
+                'esac']
         with open(script, "w") as fh:
             fh.write("\n".join(body) + "\n")
         os.chmod(script, 0o755)
@@ -303,7 +337,7 @@ def cmd_selftest(args) -> int:
     # Phase 1: harness runs the subject WITHOUT the flag: the else-branch
     # modified line stays uncovered -> the checker MUST reject (exit 1).
     with open(os.path.join(run_dir, "harness1.sh"), "w") as fh:
-        fh.write('#!/usr/bin/env bash\n"%s"\n' % script)
+        fh.write('#!/usr/bin/env bash\nset -euo pipefail\nbash -c \'"$0" "$@"\' "%s"\n' % script)
     os.chmod(os.path.join(run_dir, "harness1.sh"), 0o755)
     rc_bad = check_with_harness("harness1.sh")
     print(f"selftest phase1 (uncovered modified line must FAIL) rc={rc_bad} (expect 1)")
@@ -314,7 +348,7 @@ def cmd_selftest(args) -> int:
     # Phase 2: harness exercises BOTH branches -> every modified executable
     # line is covered -> the checker MUST pass (exit 0).
     with open(os.path.join(run_dir, "harness2.sh"), "w") as fh:
-        fh.write('#!/usr/bin/env bash\n"%s" --flag\n"%s"\n' % (script, script))
+        fh.write('#!/usr/bin/env bash\nset -euo pipefail\nbash -c \'"$0" "$@"\' "%s" --flag\nbash -c \'"$0" "$@"\' "%s"\n' % (script, script))
     os.chmod(os.path.join(run_dir, "harness2.sh"), 0o755)
     rc_good = check_with_harness("harness2.sh")
     print(f"selftest phase2 (all modified lines covered must PASS) rc={rc_good} (expect 0)")
