@@ -53,13 +53,39 @@ def load_scope_paths(snapshot_path: str, gate: str) -> dict[str, str]:
             for e in snap.get("scopes", {}).get(gate, {}).get("files", [])}
 
 
+DEFAULT_EXCLUSIONS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  "coverage-exclusions.json")
+
+
+def load_exclusions(path: str | None, component: str) -> dict[str, str]:
+    """{repo path: reason} for ONE component. Explicit per-file inventory only
+    (T12.1): a missing reason is a blocked result, never a silent skip."""
+    if not path or not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            entries = json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(die_blocked(f"unreadable exclusions {path}: {exc}"))
+    out: dict[str, str] = {}
+    for entry in entries:
+        if entry.get("component") != component:
+            continue
+        reason = str(entry.get("reason") or "").strip()
+        if not entry.get("path") or not reason:
+            raise SystemExit(die_blocked(
+                f"exclusion without path/reason in {path}: {entry!r}"))
+        out[entry["path"]] = reason
+    return out
+
+
 def touched_production_files(baseline_path: str, candidate_path: str, gate: str,
                              lang: str) -> list[str]:
     base = load_scope_paths(baseline_path, gate)
     cand = load_scope_paths(candidate_path, gate)
     if lang == "python":
-        is_prod = lambda p: ("/src/" in p or p.startswith("lib/")) and p.endswith(".py") \
-            and "/tests/" not in p
+        is_prod = lambda p: p.endswith(".py") and "/tests/" not in f"/{p}" and (
+            "/src/" in f"/{p}" or "/lib/" in f"/{p}")
     else:
         is_prod = lambda p: "/static/" in p and p.endswith(".js")
     return sorted(p for p in cand
@@ -173,6 +199,17 @@ def cmd_check(args) -> int:
         print("not_applicable")
         print(f"no touched production files for {args.component} ({args.lang}) — "
               "diff confirms zero changes; this is NOT a pass and NOT 100%")
+        return 0
+
+    exclusions = load_exclusions(args.exclusions, args.component)
+    excluded = [p for p in touched if p in exclusions]
+    touched = [p for p in touched if p not in exclusions]
+    for repo_path in excluded:
+        print(f"EXCLUDED {repo_path}: {exclusions[repo_path]}")
+    if not touched:
+        print("excluded_only")
+        print("every touched production file is an explicit, justified glue "
+              "exclusion — NOT a coverage pass; it needs its other evidence")
         return 0
 
     candidate = (load_coverage_py(args.coverage_json) if args.lang == "python"
@@ -336,6 +373,62 @@ def cmd_selftest(_args) -> int:
         print(f"selftest total-regression rc={rc} (expect 1)")
         ok &= rc == 1
 
+        # host component: a touched module under hosts/.../lib/ is PRODUCTION
+        # (regression: it was once reported not_applicable, a false pass).
+        host_snap = os.path.join(tmp, "host-snapshot.json")
+        with open(host_snap, "w", encoding="utf-8") as fh:
+            json.dump({"schema": "1", "scopes": {"G-HOST-PY": {"files": [
+                {"path": "hosts/herdr/tts-plugin/lib/mod.py", "sha256": "aaa", "mode": "0o644"}]}}}, fh)
+        empty_host = os.path.join(tmp, "host-empty.json")
+        with open(empty_host, "w", encoding="utf-8") as fh:
+            json.dump({"schema": "1", "scopes": {"G-HOST-PY": {"files": []}}}, fh)
+        host_cov = os.path.join(tmp, "host-cov.json")
+        with open(host_cov, "w", encoding="utf-8") as fh:
+            json.dump({"files": {"lib/mod.py": {"summary": {
+                "covered_lines": 8999, "num_statements": 10000,
+                "covered_branches": 10, "num_branches": 10}}}}, fh)
+        rc = subprocess.run(
+            [sys.executable, os.path.abspath(__file__), "--lang", "python",
+             "--component", "host", "--baseline-snapshot", empty_host,
+             "--candidate-snapshot", host_snap, "--coverage-json", host_cov,
+             "--baseline-coverage", host_cov],
+            capture_output=True, text=True).returncode
+        print(f"selftest host lib module touched, 89.99% rc={rc} (expect 1, never not_applicable)")
+        ok &= rc == 1
+
+        # explicit glue exclusion: skipped + printed; the rest is still judged.
+        pwa_base = os.path.join(tmp, "pwa-base.json")
+        with open(pwa_base, "w", encoding="utf-8") as fh:
+            json.dump({"schema": "1", "scopes": {"G-JS": {"files": []}}}, fh)
+        pwa_snap = os.path.join(tmp, "pwa-snap.json")
+        with open(pwa_snap, "w", encoding="utf-8") as fh:
+            json.dump({"schema": "1", "scopes": {"G-JS": {"files": [
+                {"path": "x/static/app.js", "sha256": "a", "mode": "0o644"}]}}}, fh)
+        lcov = os.path.join(tmp, "pwa.lcov")
+        with open(lcov, "w", encoding="utf-8") as fh:
+            fh.write("SF:x/static/other.js\nDA:1,1\nend_of_record\n")
+        good_inv = os.path.join(tmp, "inv-good.json")
+        with open(good_inv, "w", encoding="utf-8") as fh:
+            json.dump([{"component": "pwa", "path": "x/static/app.js", "reason": "browser IIFE"}], fh)
+        bad_inv = os.path.join(tmp, "inv-bad.json")
+        with open(bad_inv, "w", encoding="utf-8") as fh:
+            json.dump([{"component": "pwa", "path": "x/static/app.js", "reason": " "}], fh)
+        pwa_cmd = [sys.executable, os.path.abspath(__file__), "--lang", "js",
+                   "--component", "pwa", "--baseline-snapshot", pwa_base,
+                   "--candidate-snapshot", pwa_snap, "--coverage-json", lcov,
+                   "--baseline-coverage", lcov]
+        res = subprocess.run(pwa_cmd + ["--exclusions", good_inv], capture_output=True, text=True)
+        print(f"selftest explicit exclusion rc={res.returncode} printed="
+              f"{'EXCLUDED x/static/app.js' in res.stdout} (expect 0/True)")
+        ok &= res.returncode == 0 and "EXCLUDED x/static/app.js: browser IIFE" in res.stdout
+        res = subprocess.run(pwa_cmd + ["--exclusions", bad_inv], capture_output=True, text=True)
+        print(f"selftest exclusion without reason rc={res.returncode} (expect 2)")
+        ok &= res.returncode == 2
+        res = subprocess.run(pwa_cmd + ["--exclusions", os.path.join(tmp, "absent.json")],
+                             capture_output=True, text=True)
+        print(f"selftest no inventory: untestable touched file rc={res.returncode} (expect 2)")
+        ok &= res.returncode == 2
+
         # env check runs (informational pass/fail depending on machine).
         rc = subprocess.run(
             [sys.executable, os.path.abspath(__file__), "--check-env"],
@@ -357,6 +450,8 @@ def main(argv=None) -> int:
     parser.add_argument("--candidate-snapshot")
     parser.add_argument("--coverage-json")
     parser.add_argument("--baseline-coverage")
+    parser.add_argument("--exclusions", default=DEFAULT_EXCLUSIONS,
+                        help="explicit per-file glue exclusion inventory (JSON)")
     parser.add_argument("--check-env", action="store_true")
     parser.add_argument("--selftest", action="store_true")
     args = parser.parse_args(argv)
