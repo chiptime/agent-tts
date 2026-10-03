@@ -626,13 +626,7 @@ class QueueManager:
                     item_id = self._insert_locked(priority, policy, payload, event_type, identifiers, now)
                     cancelled = self._maybe_preempt_locked(priority)
                 if cancelled is not None:
-                    handle, item = cancelled
-                    try:
-                        handle.terminate()
-                    except Exception:
-                        pass
-                    self._wait_termination(item.id, handle)
-                    self._notify_finalize(item, PlaybackOutcome.STOPPED, None)
+                    self._cut_active(*cancelled)
                 self._dispatch_next()
             return item_id
         with self._lock:
@@ -641,6 +635,79 @@ class QueueManager:
             item_id = self._insert_locked(priority, policy, payload, event_type, identifiers, now)
         self._dispatch_next()
         return item_id
+
+    def cancel_by_identifiers(self, identifiers: Sequence[str]) -> Tuple[int, int, bool]:
+        """Targeted cancel: drops/stops ONLY what intersects ``identifiers``.
+
+        Returns ``(removed, trimmed, active_stopped)``:
+
+        * a pending item whose identifiers intersect the request is
+          removed (``removed``) — unless it is a merged coalesce item
+          (``coalesced > 1``), which represents several events: only the
+          matching identifiers are dropped from it (``trimmed``) and the
+          other events keep their announcement;
+        * the active item is stopped through the SAME cut the preempt
+          path uses (terminate -> bounded wait -> STOPPED) when its
+          identifiers intersect and it already owns a terminable handle;
+        * an empty request, or identifiers nothing carries, changes
+          nothing (idempotent). Items without identifiers never match.
+
+        Never touches the global queue policy and never signals anything
+        that does not intersect.
+        """
+        wanted = {str(i) for i in identifiers}
+        if not wanted:
+            return 0, 0, False
+        with self._dispatch_mutex:
+            cut: Optional[Tuple[Any, QueueItem]] = None
+            removed = 0
+            trimmed = 0
+            with self._lock:
+                if self._closing:
+                    return 0, 0, False
+                kept: List[Tuple[int, int, QueueItem]] = []
+                for entry in self._pending:
+                    item = entry[2]
+                    hits = [i for i in item.identifiers if i in wanted]
+                    if not hits:
+                        kept.append(entry)
+                    elif item.coalesced > 1 and len(hits) < len(item.identifiers):
+                        item.identifiers = tuple(i for i in item.identifiers if i not in wanted)
+                        item.coalesced = max(1, item.coalesced - len(hits))
+                        trimmed += 1
+                        kept.append(entry)
+                    else:
+                        removed += 1
+                if removed:
+                    heapq.heapify(kept)
+                    self._pending[:] = kept
+                active = self._active
+                if (
+                    active is not None
+                    and active.handle is not None
+                    and wanted.intersection(active.item.identifiers)
+                ):
+                    self._interrupt_active_locked(active)
+                    cut = (active.handle, active.item)
+            if cut is not None:
+                self._cut_active(*cut)
+            if removed or cut is not None:
+                self._dispatch_next()
+        return removed, trimmed, cut is not None
+
+    def _cut_active(self, handle: Any, item: QueueItem) -> None:
+        """Terminates an interrupted active session (preempt and cancel).
+
+        Runs OUTSIDE ``_lock`` and under the dispatch mutex: terminate,
+        bounded wait for the device to truly release, then the host hook
+        (a cut is a normal STOPPED end, not a failure).
+        """
+        try:
+            handle.terminate()
+        except Exception:
+            pass
+        self._wait_termination(item.id, handle)
+        self._notify_finalize(item, PlaybackOutcome.STOPPED, None)
 
     def snapshot(self) -> QueueSnapshot:
         """Immutable point-in-time view (thread-safe, never blocks playback)."""
