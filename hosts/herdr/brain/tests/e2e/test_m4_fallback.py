@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import threading
 import time
 import urllib.parse
@@ -88,7 +89,10 @@ from tests.e2e.conftest import (
 REPO_ROOT = Path(__file__).resolve().parents[5]
 ENGINE_SRC = REPO_ROOT / "engine" / "src"
 HOST_LIB_DIR = REPO_ROOT / "hosts" / "herdr" / "tts-plugin" / "lib"
-ENGINE_PY = REPO_ROOT / "engine" / ".venv" / "bin" / "python"
+_ENGINE_VENV_PY = REPO_ROOT / "engine" / ".venv" / "bin" / "python"
+# Local checkouts have the engine venv; CI installs the engine into the
+# active interpreter instead (see .github/workflows/ci.yml), so fall back to it.
+ENGINE_PY = _ENGINE_VENV_PY if _ENGINE_VENV_PY.exists() else Path(sys.executable)
 
 # Locked fallback budget (engine fallback.py: FALLBACK_TOTAL_ATTEMPTS /
 # FALLBACK_LINK_ATTEMPTS). The brain venv cannot import agent_tts, so the
