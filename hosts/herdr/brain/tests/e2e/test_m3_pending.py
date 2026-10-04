@@ -44,6 +44,7 @@ from __future__ import annotations
 import itertools
 import json
 import os
+import sys
 import shutil
 import socket
 import sqlite3
@@ -72,7 +73,10 @@ from tests.e2e.conftest import (
 REPO_ROOT = Path(__file__).resolve().parents[5]
 HOST_LIB_DIR = REPO_ROOT / "hosts" / "herdr" / "tts-plugin" / "lib"
 PENDING_CLI = HOST_LIB_DIR / "pending_queue.py"
-ENGINE_PY = REPO_ROOT / "engine" / ".venv" / "bin" / "python"
+_ENGINE_VENV_PY = REPO_ROOT / "engine" / ".venv" / "bin" / "python"
+# Local checkouts have the engine venv; CI installs the engine into the
+# active interpreter instead, so fall back to it.
+ENGINE_PY = _ENGINE_VENV_PY if _ENGINE_VENV_PY.exists() else Path(sys.executable)
 
 PENDING_STORAGE_KEY = "herdr.speech.pending.v1"
 
