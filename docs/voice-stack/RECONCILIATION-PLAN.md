@@ -36,17 +36,19 @@ La migración a monorepo absorbió tres repos (agent-tts, herdr-tts, herdr-brain
 
 **Esfuerzo:** 1–2 h · **Riesgo:** cero · **DoD:** ningún documento dice de una feature ejecutada que está pendiente, ni viceversa. (Cumplido).
 
-### R2 — Decisión de arquitectura HT: brain frente a PRDs originales (decisión del maintainer)
+### R2 — Decisión de arquitectura HT: brain frente a PRDs originales (COMPLETADA — 2026-10-06)
 
-Las tres PRDs afectadas necesitan una nota de destino, no un borrado:
+Las tres PRDs afectadas cuentan con nota de destino formalizada (no borrado):
 
-| PRD | Vía original | Vía real hoy | Recomendación |
+| PRD | Vía original | Vía real hoy | Resolución (D-R2 confirmada 2026-10-06) |
 |---|---|---|---|
 | HT-01 push-to-talk | whisper.cpp + `send-keys` en el host | brain: faster-whisper + VAD/endpointing + dispatch a sesión | **SUPERSEDIDA** por brain conversation-mode |
-| HT-04 control móvil | ntfy Actions + listener HTTP | brain: PWA `/approval/*` + `/ask` | **SUPERSEDIDA** por brain (pendiente validación Chrome Android) |
-| AT-02 STT whisper.cpp | capa STT en el motor | brain: faster-whisper ya cubre la capacidad | **CUBIERTA POR BRAIN**; la PRD queda como referencia si algún día se quiere STT en el motor |
+| HT-04 control móvil | ntfy Actions + listener HTTP | brain: PWA `/approval/*` + `/ask` | **SUPERSEDIDA** por brain PWA (`/approval/*` + `/ask`) |
+| AT-02 STT whisper.cpp | capa STT en el motor | brain: faster-whisper ya cubre la capacidad | **CUBIERTA POR BRAIN**; se conserva como referencia técnica |
 
-**Decisión requerida:** confirmar supersede (recomendado: una sola vía, el brain) o mantener ambas vías. El output es el mismo: notas `SUPERSEDIDA/CUBIERTA` en las 3 PRDs + índice actualizado.
+- [x] R2.1 Notas de destino añadidas en `HT-01`, `HT-04` y `AT-02`.
+- [x] R2.2 Índices `docs/prds/README.md` y `hosts/herdr/tts-plugin/docs/prds/README.md` actualizados reflejando el supersede/cubierta.
+- [x] R2.3 Decisión D-R2 confirmada y registrada (2026-10-06).
 
 ### R3 — HT-11 audición de voces (el P1 huérfano; cierra el Bloque 2)
 
@@ -67,10 +69,10 @@ Los ~520 tests bash del plugin viejo existen en la historia (último commit pre-
 
 **Decisión requerida:** A o B. **Esfuerzo:** B ≈ 1 día; A ≈ 3–5 días.
 
-### R5 — Limpieza estructural (trivial, cualquiera la hace)
+### R5 — Limpieza estructural (COMPLETADA — 2026-10-06)
 
-- `git rm` de `src/` y `dist/` de la raíz tras verificar que nada las referencia (build post-AT-10 vive en `engine/`); `.gitignore` si procede.
-- **Riesgo:** cero. **Esfuerzo:** 15 min.
+- [x] Verificada la ausencia de residuos de `src/` y `dist/` en la raíz (absorbidos en `engine/` y cubiertos en `.gitignore`).
+- **Riesgo:** cero. **Esfuerzo:** 15 min. (Cumplido).
 
 ### R6 — Desbloqueo voice-stack (decisión del maintainer)
 
@@ -99,13 +101,13 @@ R1 (doc, 1-2h) ──► R2 (decisión) ──► R4-lite (red de tests) ──�
 
 ## Tabla de decisiones requeridas del maintainer
 
-| # | Decisión | Recomendación |
-|---|---|---|
-| D-R2 | ¿Supersede HT-01/HT-04 hacia brain y AT-02 marcada cubierta? | Sí |
-| D-R4 | ¿Port de tests 1:1 o port-crítico + G-BASH-MATRIX? | Port-crítico |
-| D-R6a | ¿Autorizar EXECUTION.md §1 (VS1-VS4)? | Revisar y autorizar |
-| D-R6b | ¿VS3 absorbe HT-05 o quedan separados? | Decidir al planificar VS3 |
-| D-R3 | ¿HT-11 sigue siendo P1 tras la migración? | Sí (era la compañera UX de HT-02, ya implementada) |
+| # | Decisión | Recomendación | Estado |
+|---|---|---|---|
+| D-R2 | ¿Supersede HT-01/HT-04 hacia brain y AT-02 marcada cubierta? | Sí | **Sí, confirmada 2026-10-06** |
+| D-R4 | ¿Port de tests 1:1 o port-crítico + G-BASH-MATRIX? | Port-crítico | Pendiente |
+| D-R6a | ¿Autorizar EXECUTION.md §1 (VS1-VS4)? | Revisar y autorizar | Pendiente |
+| D-R6b | ¿VS3 absorbe HT-05 o quedan separados? | Decidir al planificar VS3 | Pendiente |
+| D-R3 | ¿HT-11 sigue siendo P1 tras la migración? | Sí (era la compañera UX de HT-02, ya implementada) | Pendiente |
 
 ## Fuera de alcance de este plan
 

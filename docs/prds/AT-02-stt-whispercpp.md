@@ -1,7 +1,9 @@
 **ID**: PRD-AT-02 · **Proyecto**: agent-tts
-**Prioridad final (revisión 2026-09-22)**: P4 · **Estado**: Postergada
+**Prioridad final (revisión 2026-09-22)**: P4 · **Estado**: CUBIERTA POR BRAIN (2026-10-06)
 **Dependencias**: Ninguna (store de voces opcional)
 
+> **Nota de destino (2026-10-06 — Decisión D-R2)**: CUBIERTA POR BRAIN (`hosts/herdr/brain` con faster-whisper). Se conserva como referencia técnica si se requiere STT en el motor.
+>
 > **Nota de revisión (22/09/2026)**: Postergada por decisión del maintainer: primero el núcleo de salida potente y componentizable; la bidireccionalidad (STT) llega en fases posteriores. Es la llave de HT-01 (herdr-tts) cuando llegue el momento.
 
 # PRD-AT-02 — Capa STT local (`--transcribe`) con whisper.cpp
