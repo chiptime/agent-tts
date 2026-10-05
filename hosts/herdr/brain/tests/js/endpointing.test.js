@@ -396,3 +396,293 @@ test("re-emission dedupe folds accents like the overlap match", () => {
   assert.equal(ep.commit("que tal"), false);  // folded signature still matches
   assert.equal(ep.text(), "");
 });
+
+/* ---- T3: overlapping interim merged into committed (one-turn dedupe) ----
+ * Chrome restarts sessions mid-utterance and the fresh session's interim
+ * re-states the committed text before growing past it; a blind append of
+ * committed + interim put a duplicated prefix inside ONE bubble. The
+ * combined view now goes through the same overlap merge the finals path
+ * uses. */
+
+test("committed prefix plus overlapping interim yields a single phrase", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now, silenceMs: 1200 });
+  ep.commit("cuántas sesiones");
+  ep.push("cuántas sesiones tengo");
+  assert.equal(ep.text(), "cuántas sesiones tengo");  // no duplicated prefix
+  const snap = ep.snapshot();
+  assert.equal(snap.buffer, "cuántas sesiones tengo");
+  assert.equal(snap.hasSpeech, true);
+  assert.equal(snap.interimChars, "cuántas sesiones tengo".length);  // live raw interim
+  clock.advance(1200);
+  assert.equal(ep.shouldFinalize(), true);
+  assert.equal(ep.finalize(), "cuántas sesiones tengo");
+});
+
+test("partial overlap with committed appends only the new interim tail", () => {
+  const ep = createEndpointer();
+  ep.commit("el rebaño está");
+  ep.push("está funcionando mal");
+  assert.equal(ep.text(), "el rebaño está funcionando mal");
+  assert.equal(ep.finalize(), "el rebaño está funcionando mal");
+});
+
+test("interim re-stating the whole committed text does not duplicate it", () => {
+  const ep = createEndpointer();
+  ep.commit("qué tal");
+  ep.push("qué tal");
+  assert.equal(ep.text(), "qué tal");
+  assert.equal(ep.hasSpeech(), true);
+  assert.equal(ep.finalize(), "qué tal");
+});
+
+test("interim overlap match ignores accent drift and keeps the committed word", () => {
+  const ep = createEndpointer();
+  ep.commit("dime qué");
+  ep.push("que hora es");          // accent-drifted re-statement plus tail
+  assert.equal(ep.text(), "dime qué hora es");
+});
+
+test("interim overlap match ignores case and punctuation drift", () => {
+  const ep = createEndpointer();
+  ep.commit("La escucha");
+  ep.push("la escucha está mal!");  // interim rendering wins case/punct drift
+  assert.equal(ep.text(), "la escucha está mal!");
+});
+
+test("genuine repetition inside one transcript survives the interim merge", () => {
+  const ep = createEndpointer();
+  ep.commit("hola hola");
+  ep.push("hola hola cómo estás");
+  assert.equal(ep.text(), "hola hola cómo estás");
+});
+
+test("disjoint interim still appends without merging", () => {
+  const ep = createEndpointer();
+  ep.commit("primera parte");
+  ep.push("segunda parte");
+  assert.equal(ep.text(), "primera parte segunda parte");
+  assert.equal(ep.finalize(), "primera parte segunda parte");
+});
+
+/* ---- T3: post-dispatch interim echo does not revive the turn ----
+ * After finalize() dispatches, Chrome's fresh recognition session can
+ * re-emit the utterance, growing ("hola" -> "hola mundo"). Only the
+ * FULL folded signature is rejected (same guard as commit); shorter
+ * speech that shares a prefix is legitimate and must stay accepted.
+ * When a full echo identifies the utterance, a buffered earlier
+ * growing prefix of it is dropped so silence cannot dispatch the
+ * partial ghost. */
+
+test("matching interim echo inside the window is rejected without reviving speech", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now, silenceMs: 1200 });
+  ep.push("hola mundo");
+  assert.equal(ep.finalize(), "hola mundo");  // dispatched; buffer empty
+  clock.advance(1000);
+  assert.equal(ep.push("hola mundo"), false);  // full echo: no new activity
+  assert.equal(ep.text(), "");
+  assert.equal(ep.hasSpeech(), false);
+  assert.equal(ep.shouldFinalize(), false);    // no second turn can fire
+  assert.equal(ep.finalize(), "");
+});
+
+test("shorter command sharing a prefix of the dispatched utterance is accepted", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now, silenceMs: 1200 });
+  ep.push("hola mundo");
+  ep.finalize();
+  clock.advance(1000);
+  assert.equal(ep.push("hola"), true);      // genuine shorter speech, NOT echo
+  assert.equal(ep.text(), "hola");
+  assert.equal(ep.hasSpeech(), true);
+  clock.advance(1200);
+  assert.equal(ep.shouldFinalize(), true);
+  assert.equal(ep.finalize(), "hola");
+});
+
+test("shorter command sharing a longer dispatched prefix is accepted", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now });
+  ep.push("abre spotify y pon rock");
+  ep.finalize();
+  clock.advance(1000);
+  assert.equal(ep.push("abre spotify"), true);  // real command, shared prefix
+  assert.equal(ep.text(), "abre spotify");
+  assert.equal(ep.finalize(), "abre spotify");
+});
+
+test("growing echo prefixes are accepted until the full echo identifies them", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now, silenceMs: 1200 });
+  ep.commit("cuántas sesiones tengo");
+  assert.equal(ep.finalize(), "cuántas sesiones tengo");
+  clock.advance(1000);
+  assert.equal(ep.push("cuántas"), true);               // shorter speech: accepted
+  assert.equal(ep.push("cuántas sesiones"), true);      // still shorter: accepted
+  assert.equal(ep.text(), "cuántas sesiones");          // buffered while growing
+  assert.equal(ep.push("cuántas sesiones tengo"), false);  // FULL echo: rejected
+  assert.equal(ep.text(), "");                          // stale prefix cleaned
+  assert.equal(ep.hasSpeech(), false);
+  clock.advance(1200);
+  assert.equal(ep.shouldFinalize(), false);             // no ghost dispatch
+  const snap = ep.snapshot();
+  assert.equal(snap.buffer, "");
+  assert.equal(snap.silenceRemainingMs, null);  // utterance effectively empty
+  assert.equal(ep.finalize(), "");
+});
+
+test("growing echo prefixes are cleaned when the full echo arrives as a final", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now });
+  ep.push("abre spotify y pon rock");
+  assert.equal(ep.finalize(), "abre spotify y pon rock");
+  clock.advance(1000);
+  assert.equal(ep.push("abre"), true);                      // growing echo prefix
+  assert.equal(ep.commit("abre spotify y pon rock"), false);  // FULL echo final
+  assert.equal(ep.text(), "");                              // no ghost interim left
+  assert.equal(ep.hasSpeech(), false);
+});
+
+test("echo cleanup with no committed speech clears ghost utterance timing", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now, silenceMs: 1200, hardCapMs: 5000 });
+  ep.push("hola mundo");
+  ep.finalize();                                  // dispatched at t=0
+  clock.advance(4000);
+  assert.equal(ep.push("hola"), true);            // growing echo prefix t=4000
+  clock.advance(500);
+  assert.equal(ep.push("hola mundo"), false);     // full echo t=4500: cleanup
+  const snap = ep.snapshot();
+  assert.equal(snap.hasSpeech, false);
+  assert.equal(snap.speechStartedAt, null);       // ghost timing reset, not 4000
+  assert.equal(snap.lastChangeAt, null);
+  assert.equal(snap.silenceRemainingMs, null);    // no-speech shape, fully idle
+  assert.equal(snap.capRemainingMs, null);
+  assert.equal(ep.push("hola mundo"), false);     // dispatch memory still alive
+});
+
+test("new speech after echo cleanup gets its own hard cap, not the ghost's", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now, silenceMs: 1200, hardCapMs: 5000 });
+  ep.push("hola mundo");
+  ep.finalize();                                  // t=0
+  clock.advance(4000);
+  ep.push("hola");                                // echo prefix t=4000
+  clock.advance(500);
+  ep.push("hola mundo");                          // full echo t=4500: cleanup
+  clock.advance(100);
+  assert.equal(ep.push("una"), true);             // genuine new speech t=4600
+  const active = ep.snapshot();
+  assert.equal(active.speechStartedAt, 4600);     // its OWN clock, not 4000
+  assert.equal(active.capRemainingMs, 5000);
+  // Keep the phrase alive (<1200ms gaps) so only the hard cap can fire.
+  clock.advance(1000); ep.push("una dos");
+  clock.advance(1000); ep.push("una dos tres");
+  clock.advance(1000); ep.push("una dos tres cuatro");
+  clock.advance(1000); ep.push("una dos tres cuatro cinco");  // t=8600
+  clock.advance(399);
+  assert.equal(ep.shouldFinalize(), false);       // t=8999: speech 4399ms old
+  clock.advance(1);
+  assert.equal(ep.shouldFinalize(), false);       // t=9000: ghost cap must NOT fire
+  clock.advance(600);
+  assert.equal(ep.shouldFinalize(), true);        // t=9600: its own 5000ms cap
+  assert.equal(ep.finalize(), "una dos tres cuatro cinco");
+});
+
+test("echo cleanup with committed speech preserves its utterance timing", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now, silenceMs: 1200 });
+  ep.push("hola mundo");
+  ep.finalize();                                  // t=0
+  clock.advance(1000);
+  assert.equal(ep.commit("dime el estado"), true);  // committed speech t=1000
+  clock.advance(600);
+  assert.equal(ep.push("hola"), true);            // echo growth interim t=1600
+  clock.advance(100);
+  assert.equal(ep.push("hola mundo"), false);     // full echo t=1700: interim
+  assert.equal(ep.text(), "dime el estado");      // cleared, committed kept
+  const snap = ep.snapshot();
+  assert.equal(snap.hasSpeech, true);
+  assert.equal(snap.speechStartedAt, 1000);       // committed's own start kept
+  assert.equal(snap.lastChangeAt, 1600);          // timing not reset by the echo
+  clock.advance(1100);                            // 1200ms since t=1600
+  assert.equal(ep.shouldFinalize(), true);
+  assert.equal(ep.finalize(), "dime el estado");
+});
+
+test("interim echo guard folds accents like the final guard", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now });
+  ep.push("qué tal");
+  assert.equal(ep.finalize(), "qué tal");
+  clock.advance(1000);
+  assert.equal(ep.push("que tal"), false);  // folded signature still matches
+  assert.equal(ep.hasSpeech(), false);
+});
+
+test("unrelated interim inside the window is accepted as new speech", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now, silenceMs: 1200 });
+  ep.push("hola mundo");
+  ep.finalize();
+  clock.advance(1000);
+  assert.equal(ep.push("otra cosa"), true);  // different words: not an echo
+  assert.equal(ep.text(), "otra cosa");
+  assert.equal(ep.hasSpeech(), true);
+  clock.advance(1200);
+  assert.equal(ep.shouldFinalize(), true);
+  assert.equal(ep.finalize(), "otra cosa");
+});
+
+test("full interim echo exactly at window expiry is accepted as new speech", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now, duplicateWindowMs: 5000 });
+  ep.push("hola mundo");
+  ep.finalize();                              // dispatched at t=0
+  clock.advance(4999);
+  assert.equal(ep.push("hola mundo"), false);  // still inside: full echo
+  clock.advance(1);                            // exactly 5000ms: window expired
+  assert.equal(ep.push("hola mundo"), true);
+  assert.equal(ep.text(), "hola mundo");
+  assert.equal(ep.hasSpeech(), true);
+});
+
+test("longer interim inside the window is new speech, not an echo", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now });
+  ep.push("abre spotify");
+  ep.finalize();
+  clock.advance(1000);
+  assert.equal(ep.push("abre spotify otra vez"), true);  // extends the signature
+  assert.equal(ep.text(), "abre spotify otra vez");
+});
+
+test("full echo preserves unrelated buffered speech and its timing", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now, silenceMs: 1200 });
+  ep.push("hola mundo");
+  ep.finalize();
+  clock.advance(1000);
+  assert.equal(ep.commit("dime el estado"), true);  // new speech at t=1000
+  clock.advance(600);
+  assert.equal(ep.push("otra cosa"), true);         // unrelated interim t=1600
+  clock.advance(100);
+  assert.equal(ep.push("hola mundo"), false);       // full echo at t=1700
+  assert.equal(ep.text(), "dime el estado otra cosa");  // nothing erased
+  clock.advance(1100);                              // 1200ms since t=1600
+  assert.equal(ep.shouldFinalize(), true);          // timing was not reset
+  assert.equal(ep.finalize(), "dime el estado otra cosa");
+});
+
+test("speech that starts like the echo but diverges replaces the prefix", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now });
+  ep.push("hola mundo");
+  ep.finalize();
+  clock.advance(1000);
+  assert.equal(ep.push("hola"), true);          // shorter speech: accepted
+  assert.equal(ep.push("hola planeta"), true);  // diverges: buffered whole
+  assert.equal(ep.text(), "hola planeta");
+  assert.equal(ep.finalize(), "hola planeta");
+});
