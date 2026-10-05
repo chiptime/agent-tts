@@ -124,3 +124,40 @@ post-commit `git status --short` were empty. Snapshot tests/runtime: N/A,
 preservation is not validation and no retrospective RED is claimed. Rollback
 boundary is each snapshot's named pending work, retained in ancestry rather
 than destructively reverted. No secrets/runtime/cache paths were staged.
+
+### M1 reconciliation (hunk-reviewed, historical bytes retained)
+
+- Main was fast-forwarded locally to `f89a8d4`; root fix merged as `16f64d8`.
+- Four tracked M1 files equal main byte-for-byte: engine `daemon.py`,
+  `queue_manager.py`, brain `watcher.py`, `test_tts.py`. Identical new tests
+  and the binary fixture were identified by Git blob identity.
+- Brain `server.py`, `speech.py`, `static/app.js`, `static/speech.js`,
+  `static/index.html`, `tts.py` and corresponding speech tests retain main's
+  segmented protocol, watermark transport, pending panel, degraded markers,
+  consult timeout/versioning and crypto fallback. M1's older hunks remove
+  these advances; their original bytes remain in `6a4cfb3` ancestry.
+- `tests/e2e/conftest.py` adds M1's unique opt-in instrumentation to the
+  otherwise identical main fixture. Unique `test_m1_glue_paths.py`, combined
+  Bash/sterile bootstrap harnesses, evidence runner/validator, JS coverage
+  tools and M1 tracker are retained.
+- Plugin launcher/CLI harness keep main's segmented dispatch, pending
+  admission, localization and operator cases, plus M1's unique playback
+  isolation overrides and two tests. Smoke keeps worktree-aware oracle
+  checks and isolated playback paths. Bootstrap pin temporarily preserves
+  M1's `e592ef3` pending AT-11 reconciliation.
+- Bash line gate keeps main's broader structural regexes and strict-shell
+  selftests, plus M1's non-Bash/instrument controls. Matrix keeps main's
+  continuation ranges, changed-line scope, case-star/no-match logic and
+  expanded decision table; M1's four records are already represented there.
+- M1 heredoc/jq/elif controls were added first: selftest observed RED for
+  quoted heredoc, argument-position `until`, dangling `elif`; narrow fixes
+  retain main's parser and produce GREEN (all old and new controls).
+- Coverage gate combines main's explicit legacy exclusion API/tests and
+  host-path predicate with M1's hash-bound changed-scope mode and negative
+  controls. Changed-scope mode rejects mapped-file exclusions.
+- Observed `python3 scripts/voice-stack/bash_matrix.py --selftest --run-dir
+  /tmp/opencode`: exit 0 after RED exit 1. `python3
+  scripts/voice-stack/coverage_gate.py --selftest-changed`: exit 0.
+- Rollback boundary: unique M1 tooling/isolation integration, not main's
+  existing voice-stack features. Preservation does not close M1's accepted
+  historical G-BASH-MATRIX exception or validate old snapshots anew.
