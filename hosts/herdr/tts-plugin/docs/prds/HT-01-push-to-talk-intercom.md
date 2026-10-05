@@ -1,6 +1,8 @@
 **ID**: PRD-HT-01 · **Proyecto**: herdr-tts
-**Prioridad final (revisión 2026-09-22)**: P4 · **Estado**: Postergada
-**Dependencias**: PRD-AT-02 (capa STT del motor)
+**Prioridad histórica (revisión 2026-09-22)**: P4 · **Estado**: VIVA (sin implementar; F4 del ROADMAP)
+**Dependencias vigentes**: PRD-AT-02 reenfocada (cliente del STT del brain); red de tests F3.
+
+> **Nota de destino (2026-10-05) — VIVA.** Se mantiene el push-to-talk del plugin, consumiendo AT-02 reenfocada sobre el brain. Debe poder activarse y desactivarse con un interruptor propio on/off. Antes de implementar se adapta este cuerpo histórico. Pregunta de diseño para la planificación: RF-HT-01-5 pide `herdr pane send-keys` o equivalente, mientras el brain usa `herdr pane run` (`hosts/herdr/brain/src/herdr_brain/herdr.py`); no se decide el verbo en F1.
 
 # PRD-HT-01 — Push-to-Talk intercom (hablar al agente)
 

@@ -1,6 +1,8 @@
 # BLOQUE 2 — Identidad vocal completa (HT-02 + HT-11)
 **Alcance**: PRD-HT-02 + PRD-HT-11 · **Prioridad**: P1 · **Esfuerzo agregado**: S-M (HT-02 ya implementada en paralelo)
-**Repositorio**: herdr-tts · **Estado**: Aprobado (revisión 22/09/2026)
+**Repositorio**: herdr-tts · **Estado**: PARCIAL (1 de 2 hitos: HT-02 hecha, HT-11 no)
+
+> **Estado reconciliado (2026-10-05)**: HT-02 integrada en `d94edf7`: `resolve_voice`, `voice_map_set` y `--voice-for` en `bin/herdr-tts`. El picker solo permite seleccionar/aplicar/cancelar; no implementa preview bilingüe, auto-stop ni caché LRU de HT-11. HT-11 pasa a prioridad baja (ROADMAP, D4), después de AT-02/HT-01 y HT-04. Los hitos funcionales son HT-02 y HT-11; el hito de integración sigue pendiente con HT-11. El estado de WIP del cuerpo es historia del 22/09, no del árbol actual.
 
 ### Objetivo del bloque
 
