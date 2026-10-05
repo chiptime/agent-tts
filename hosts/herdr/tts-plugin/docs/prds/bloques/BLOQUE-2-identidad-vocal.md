@@ -1,6 +1,6 @@
 # BLOQUE 2 — Identidad vocal completa (HT-02 + HT-11)
 **Alcance**: PRD-HT-02 + PRD-HT-11 · **Prioridad**: P1 · **Esfuerzo agregado**: S-M (HT-02 ya implementada en paralelo)
-**Repositorio**: herdr-tts · **Estado**: PARCIAL (1 de 2 hitos) (HT-02 implementada, HT-11 pendiente)
+**Repositorio**: herdr-tts · **Estado**: COMPLETADO (ambos hitos terminados)
 
 ### Objetivo del bloque
 
@@ -10,7 +10,7 @@ Esta PRD es la capa de orquestación del paquete: los RF, RNF, métricas y fuera
 
 ### Por qué un solo bloque (rationale del merge)
 
-- HT-11 es la UX que completa a HT-02: la nota de revisión del 22/09/2026 en `../HT-11-audicion-voces.md` ya las declara compañeras de la misma fase. Ambas viven en las mismas superficies: la paleta fzf, el roster del dashboard, `voices.json` y la escritura gestionada de config.
+- HT-11 es la UX que completa a HT-02: la nota de revisión del 22/09/2026 en `../archivadas/HT-11-audicion-voces.md` ya las declara compañeras de la misma fase. Ambas viven en las mismas superficies: la paleta fzf, el roster del dashboard, `voices.json` y la escritura gestionada de config.
 - Aterrizar HT-02 sin HT-11 reproduce exactamente la fricción que motivó el bloque: asignar voces a ciegas editando config. Elegir una voz leyendo nombres (`--voice alvaro`), editar, reiniciar el daemon y esperar un evento real para saber cómo suena desincentiva explorar y ancla al usuario a la voz default.
 - Juntas convierten la identidad vocal en experiencia completa desde el día uno: asignación de oído, comparación de voces en segundos, y cambio de voz sin reinicio, todo sin salir de la paleta.
 - El coste del merge es marginal porque las piezas ya existen: el motor ya acepta `--voice` por llamada, la paleta ya dispara reproducciones por el camino del mutex (`ctrl-r`), y Ajustes ya persiste config con escritura gestionada atómica (tmp + mv).
@@ -33,7 +33,7 @@ Revisar el WIP sin commitear de la sesión paralela, commitearlo en work units l
 - Criterios de aceptación: worktree limpio de ficheros con cambios HT-02 (nada de voces pendiente en `bin/herdr-tts`, `README.md`, `herdr-plugin.toml`, `scripts/smoke-tests.sh`); batería de smoke tests existente en verde.
 
 **Hito 1 — HT-11: audición de voces en la paleta**
-Implementar HT-11 según sus RF en `../HT-11-audicion-voces.md`. Contenido del hito:
+Implementar HT-11 según sus RF en `../archivadas/HT-11-audicion-voces.md`. Contenido del hito:
 - Vista de voces en la paleta (tecla `v`): listado de las voces del proveedor activo obtenido del voice manager del motor (el host no mantiene su propia lista).
 - Preview de frase fija bilingüe (español e inglés) sintetizada con la voz bajo el cursor, por el mismo camino de reproducción y mutex que el daemon.
 - Auto-stop en < 0.3 s al navegar el cursor o salir de la vista.
@@ -50,7 +50,7 @@ Implementar HT-11 según sus RF en `../HT-11-audicion-voces.md`. Contenido del h
 
 - Cambios en el motor agent-tts: el bloque no toca el repo hermano; `--voice` por llamada ya existe y no necesita extensiones.
 - Voces por proyecto/workspace, clonación de voz y mezcla de proveedores por agente (fuera de alcance declarado en `../archivadas/HT-02-voces-por-agente.md`).
-- Parametrizar la frase de preview desde la UI, fine-tuning o mezcla de voces, y preview de rate/velocidad (fuera de alcance declarado en `../HT-11-audicion-voces.md`).
+- Parametrizar la frase de preview desde la UI, fine-tuning o mezcla de voces, y preview de rate/velocidad (fuera de alcance declarado en `../archivadas/HT-11-audicion-voces.md`).
 - Terminar los popups/Ajustes al 55%: pertenecen a la sesión paralela, no a este bloque.
 
 ### Dependencias y prerrequisitos
@@ -79,12 +79,12 @@ Implementar HT-11 según sus RF en `../HT-11-audicion-voces.md`. Contenido del h
 ### Definición de done del bloque
 
 - HT-02 conmutable a "Aprobada-completa" en el índice `../README.md`: implementada, commiteada y con batería en verde.
-- HT-11 implementada según sus RF en `../HT-11-audicion-voces.md`.
+- HT-11 implementada según sus RF en `../archivadas/HT-11-audicion-voces.md`.
 - Flujo completo "escuchar → asignar → escuchar hablado con esa voz" verificable end-to-end desde la paleta, sin editar ficheros ni reiniciar el daemon.
 - Batería de smoke tests ampliada en verde y worktree limpio de WIP de este bloque.
 
 ### Referencias
 
 - `../archivadas/HT-02-voces-por-agente.md` — PRD fuente HT-02 (RF, RNF, métricas, fuera de alcance).
-- `../HT-11-audicion-voces.md` — PRD fuente HT-11 (RF, RNF, métricas, fuera de alcance).
+- `../archivadas/HT-11-audicion-voces.md` — PRD fuente HT-11 (RF, RNF, métricas, fuera de alcance).
 - `../README.md` — índice del roadmap 2026 y orden de ataque (Fase 1: HT-02 + HT-11 como identidad vocal completa).

@@ -10,7 +10,6 @@
 |---|---|---|---|---|---|
 | HT-04 | [HT-04-control-movil-bidireccional.md](HT-04-control-movil-bidireccional.md) | Control bidireccional desde el móvil | P1 | **Activa (cubierta en brain PWA y planificada en plugin-tts)** | L |
 | HT-05 | [HT-05-recordatorios-escalados.md](HT-05-recordatorios-escalados.md) | Recordatorios escalados de atención | P1 | Aprobada | M |
-| HT-11 | [HT-11-audicion-voces.md](HT-11-audicion-voces.md) | Audición de voces en la paleta | P1 | Aprobada (pendiente Bloque 2 Hito 1) | S |
 | HT-03 | [HT-03-radio-mode.md](HT-03-radio-mode.md) | Radio mode (triaje por voz) | P2 | Aprobada (Hito 0 hecho, radio pendiente) | M |
 | HT-01 | [HT-01-push-to-talk-intercom.md](HT-01-push-to-talk-intercom.md) | Push-to-Talk intercom (hablar al agente) | P4 | **Activa (cubierta en brain y planificada en plugin-tts)** | M-L |
 | HT-06 | [HT-06-auto-snooze-reunion.md](HT-06-auto-snooze-reunion.md) | Auto-snooze contextual (modo reunión) | P4 | Postergada | M |
@@ -23,6 +22,7 @@
 | ID | Fichero | Feature | Prioridad final | Estado | Esfuerzo |
 |---|---|---|---|---|---|
 | HT-02 | [archivadas/HT-02-voces-por-agente.md](archivadas/HT-02-voces-por-agente.md) | Voces por agente (identidad vocal) | P1 | **Implementada** (Bloque 2 Hito 0) | S-M |
+| HT-11 | [archivadas/HT-11-audicion-voces.md](archivadas/HT-11-audicion-voces.md) | Audición de voces en la paleta | P1 | **Implementada** (Bloque 2 Hito 1) | S |
 | HT-13 | [archivadas/HT-13-consumo-api-publica-motor.md](archivadas/HT-13-consumo-api-publica-motor.md) | Consumo de la API pública del motor (de-duplicación del host) | P1 | **Implementada** | M |
 | HT-14 | [archivadas/HT-14-tema-claro.md](archivadas/HT-14-tema-claro.md) | Tema claro configurable (Ajustes → Apariencia) | P2 | **Implementada** | S |
 | HT-15 | [archivadas/HT-15-markdown-html-pipeline.md](archivadas/HT-15-markdown-html-pipeline.md) | Transformación Markdown/HTML para lectura sincronizada | P2 | **Implementada** | M |
