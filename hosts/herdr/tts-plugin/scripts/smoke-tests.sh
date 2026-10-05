@@ -4574,7 +4574,7 @@ grep -q 'PLUGIN_ROOT="$(herdr_resolve_root herdr-tts)"' "$SCRIPT" \
 grep -q 'REPO_DIR="$(herdr_resolve_root herdr-brain)"' "$REPO/../brain/bin/herdr-brain" \
   && ok "44f brain launcher wires herdr_resolve_root" || bad "44f brain launcher does not wire the root resolver"
 assert_no_grep_f "44f no hardcoded tts home default in bin/herdr-brain" 'HERDR_TTS_HOME:-$HOME' "$REPO/../brain/bin/herdr-brain"
-assert_no_grep "44f no literal brew prefix in bin/herdr-brain" '/home/linuxbrew' "$REPO/../brain/bin/herdr-brain"
+assert_no_grep "44f no literal brew prefix in bin/herdr-brain" '/home/linuxbrew' "$REPO/../brain/bin/herdr-brain" # hygiene-exempt: negative assertion forbids this prefix in the launcher
 
 # 16s. (Decision-8 test d) Host-state invariance across the WHOLE suite
 #      run: the four production playback-state paths must be unchanged —

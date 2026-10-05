@@ -767,7 +767,9 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     if args.selftest:
         if not args.run_dir:
-            return die_blocked("--selftest requires --run-dir")
+            with tempfile.TemporaryDirectory(prefix="bash-matrix-selftest-") as run_dir:
+                args.run_dir = run_dir
+                return cmd_selftest(args)
         return cmd_selftest(args)
     if not (args.baseline_snapshot and args.candidate_snapshot and args.table):
         return die_blocked("check mode requires --baseline-snapshot, "
