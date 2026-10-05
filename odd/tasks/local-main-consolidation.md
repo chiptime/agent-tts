@@ -253,3 +253,21 @@ smoke's install/daemon scenarios are sandboxed fake-tool/process tests.
 - Incomplete work retained: AT-11 M2–M4 remaining tasks/re-slice plan; M1's
   historical accepted matrix exception; open-session inventory and autoloop
   plans. Neither the clean Git state nor branch ancestry means feature closure.
+
+### Final Git handoff
+
+- Verification correction/evidence commit: `d0bbb3a` at metadata 19:09 +02:00.
+  This final documentation commit uses metadata 19:10 +02:00. Both author and
+  committer timestamps were checked equal and strictly increasing across the
+  nine earlier commits (19:01–19:09); the final commit is checked after creation.
+- All four worktrees have empty `git status --short`: root main, AT-11
+  `133deaa`, M1 `6a4cfb3`, voice-stack `f89a8d4` (untouched).
+- All eight branch tips are ancestors of main; no branch/worktree/file deletion,
+  stash, history rewrite, fetch, push, dependency install or live deployment.
+- `git diff --check` and `git ls-files -u` are clean; no Git operation remains
+  in progress. Diagnostics/cache remain physically present and narrowly ignored.
+- Parent next step: independent read-only risk assessment/verification (T3),
+  including the intermittent existing engine shutdown test and unavailable Ruby
+  syntax check. Git containment is proven; feature acceptance is not implied.
+- Engram full-document mirror is attempted with the exact project/topic and
+  file locator after final Git checks; failure does not block the local handoff.
