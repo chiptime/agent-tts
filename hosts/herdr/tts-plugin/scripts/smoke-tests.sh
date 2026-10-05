@@ -199,6 +199,12 @@ new_env() { # $1 = scenario dir name
   printf '#!/usr/bin/env bash\nexec python3 "$@"\n' > "$T/data/herdr-tts/venv/bin/python"
   chmod +x "$T/data/herdr-tts/venv/bin/python"
   export XDG_CONFIG_HOME="$T/conf" XDG_DATA_HOME="$T/data" XDG_STATE_HOME="$T/state"
+  # Machine-global playback state, scenario-local: bin/herdr-tts and the
+  # lib Python side both honor these knobs, so is_playing/stop_audio can
+  # never collide with (or mutate) real /tmp playback state.
+  export AGENT_TTS_LOCK_FILE="$T/tts-playing.lock"
+  export AGENT_TTS_PID_FILE="$T/tts-current.pid"
+  export AGENT_TTS_SOCKET="$T/tts-player.sock"
   export HERDR_TTS_SNOOZE_FILE="$T/snooze.json"
   export HERDR_TTS_HISTORY_FILE="$T/history.log"
   export LINES=40 COLUMNS=110
@@ -3499,10 +3505,12 @@ pin = m.group(1) if m else ""
 check("40e pin parsed from bootstrap.sh", bool(pin), pin or "no SHA-40 pin found")
 pkg_dir = os.path.dirname(agent_tts.__file__)
 repo = pkg_dir
-while repo != os.path.dirname(repo) and not os.path.isdir(os.path.join(repo, ".git")):
+while repo != os.path.dirname(repo) and not (os.path.isfile(os.path.join(repo, ".git")) or os.path.isdir(os.path.join(repo, ".git"))):
     repo = os.path.dirname(repo)
 identity_ok, identity_detail = True, "regular install"
-if os.path.isdir(os.path.join(repo, ".git")):  # editable: compare oracle blobs
+# Linked worktrees carry a .git FILE (gitdir pointer), not a directory;
+# both mean "editable checkout" here and git -C resolves either.
+if os.path.isfile(os.path.join(repo, ".git")) or os.path.isdir(os.path.join(repo, ".git")):  # editable: compare oracle blobs
     rel = os.path.relpath(pkg_dir, repo).replace(os.sep, "/")
     for fname in ("boundaries.py", "cleaner.py", "redact.py"):
         try:
