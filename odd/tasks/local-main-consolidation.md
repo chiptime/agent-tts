@@ -28,7 +28,7 @@ is after 19:00 Monday–Thursday, from 16:00 Friday, unrestricted weekends.
 
 ## Work units
 
-- [ ] **T1 — Preserve pending work.** Commit meaningful root, M1, and AT-11
+- [x] **T1 — Preserve pending work.** Commit meaningful root, M1, and AT-11
   changes on their existing branches, explicitly staging reviewed paths. Route:
   delegated direct; preparation and multi-file changes exceed inline scope.
   Record original tips, preservation commits, and artifact exclusions below.
@@ -110,3 +110,17 @@ Next step: one bounded writer preserves pending work and performs integration.
 - Root snapshot includes the prepared open-session inventory document only;
   its implementation is not executed. Historical AT-11 re-slice plans are
   preserved as documentation, not executed by this consolidation.
+
+### T1 preservation evidence
+
+| Original branch | Original tip | Preservation commit | Scope |
+| --- | --- | --- | --- |
+| `fix/brain-interim-transcript-duplication` | `e592ef3` | `3fe9b38` | Interim fix/tests, three pending plans, latest registry, narrow ignores |
+| `fix/voice-stack-m1-quality` | `e49571e` | `6a4cfb3` | All 18 modified tracked files and 28 listed untracked files, including the real MP3 fixture |
+| `feat/at-11-instalable` | `c577041` | `133deaa` | Pending design and task documentation |
+
+All three snapshots passed `git diff --cached --check`; M1 and AT-11
+post-commit `git status --short` were empty. Snapshot tests/runtime: N/A,
+preservation is not validation and no retrospective RED is claimed. Rollback
+boundary is each snapshot's named pending work, retained in ancestry rather
+than destructively reverted. No secrets/runtime/cache paths were staged.
