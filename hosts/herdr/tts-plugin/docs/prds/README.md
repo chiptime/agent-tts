@@ -8,20 +8,25 @@
 
 | ID | Fichero | Feature | Prioridad final | Estado | Esfuerzo |
 |---|---|---|---|---|---|
-| HT-02 | [HT-02-voces-por-agente.md](HT-02-voces-por-agente.md) | Voces por agente (identidad vocal) | P1 | Aprobada | S-M |
 | HT-04 | [HT-04-control-movil-bidireccional.md](HT-04-control-movil-bidireccional.md) | Control bidireccional desde el móvil | P1 | Aprobada | L |
 | HT-05 | [HT-05-recordatorios-escalados.md](HT-05-recordatorios-escalados.md) | Recordatorios escalados de atención | P1 | Aprobada | M |
-| HT-11 | [HT-11-audicion-voces.md](HT-11-audicion-voces.md) | Audición de voces en la paleta | P1 | Aprobada | S |
-| HT-13 | [HT-13-consumo-api-publica-motor.md](HT-13-consumo-api-publica-motor.md) | Consumo de la API pública del motor (de-duplicación del host) | P1 | Implementada | M |
-| HT-03 | [HT-03-radio-mode.md](HT-03-radio-mode.md) | Radio mode (triaje por voz) | P2 | Aprobada | M |
-| HT-14 | [HT-14-tema-claro.md](HT-14-tema-claro.md) | Tema claro configurable (Ajustes → Apariencia) | P2 | Borrador | S |
-| HT-15 | [HT-15-markdown-html-pipeline.md](HT-15-markdown-html-pipeline.md) | Transformación Markdown/HTML para lectura sincronizada | Pendiente | Implementada | M |
-| HT-16 | [HT-16-reader-popup.md](HT-16-reader-popup.md) | Popup de lectura en vivo (karaoke sobre la reproducción) | P2 | Implementada | S |
+| HT-11 | [HT-11-audicion-voces.md](HT-11-audicion-voces.md) | Audición de voces en la paleta | P1 | Aprobada (pendiente Bloque 2 Hito 1) | S |
+| HT-03 | [HT-03-radio-mode.md](HT-03-radio-mode.md) | Radio mode (triaje por voz) | P2 | Aprobada (Hito 0 hecho, radio pendiente) | M |
 | HT-01 | [HT-01-push-to-talk-intercom.md](HT-01-push-to-talk-intercom.md) | Push-to-Talk intercom (hablar al agente) | P4 | Postergada | M-L |
 | HT-06 | [HT-06-auto-snooze-reunion.md](HT-06-auto-snooze-reunion.md) | Auto-snooze contextual (modo reunión) | P4 | Postergada | M |
 | HT-07 | [HT-07-filtro-semantico.md](HT-07-filtro-semantico.md) | Filtro semántico de importancia | P4 | Postergada | M |
 | HT-08 | [HT-08-briefing-matinal.md](HT-08-briefing-matinal.md) | Briefing matinal automático | P4 | Postergada | M |
 | HT-10 | [HT-10-chain-replay.md](HT-10-chain-replay.md) | Chain replay contextual | P5 | Aprobada (baja) | S-M |
+
+## PRDs archivadas / implementadas
+
+| ID | Fichero | Feature | Prioridad final | Estado | Esfuerzo |
+|---|---|---|---|---|---|
+| HT-02 | [archivadas/HT-02-voces-por-agente.md](archivadas/HT-02-voces-por-agente.md) | Voces por agente (identidad vocal) | P1 | **Implementada** (Bloque 2 Hito 0) | S-M |
+| HT-13 | [archivadas/HT-13-consumo-api-publica-motor.md](archivadas/HT-13-consumo-api-publica-motor.md) | Consumo de la API pública del motor (de-duplicación del host) | P1 | **Implementada** | M |
+| HT-14 | [archivadas/HT-14-tema-claro.md](archivadas/HT-14-tema-claro.md) | Tema claro configurable (Ajustes → Apariencia) | P2 | **Implementada** | S |
+| HT-15 | [archivadas/HT-15-markdown-html-pipeline.md](archivadas/HT-15-markdown-html-pipeline.md) | Transformación Markdown/HTML para lectura sincronizada | P2 | **Implementada** | M |
+| HT-16 | [archivadas/HT-16-reader-popup.md](archivadas/HT-16-reader-popup.md) | Popup de lectura en vivo (karaoke sobre la reproducción) | P2 | **Implementada** | S |
 
 ## Descartadas
 

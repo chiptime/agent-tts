@@ -1,5 +1,5 @@
 **ID**: PRD-AT-04 · **Proyecto**: agent-tts
-**Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: Aprobada
+**Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: EJECUTADA (BLOQUE 1.2) (Fecha de cierre: 2026-09-24/2026-09-25, commit: `64681be` / `c8d5665`)
 **Dependencias**: AT-09 (dura, prerrequisito); sinergia con AT-08
 
 > **Nota de revisión (22/09/2026)**: Se aborda JUNTO a AT-08 como paquete P1: el daemon posee la cola desde el día uno (cierra la open question del propio doc) para evitar una segunda migración de semántica de playback.
