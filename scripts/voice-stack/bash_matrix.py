@@ -26,6 +26,7 @@ NOT_A_PERCENTAGE = (
 # Keywords that start constructs this parser does NOT enumerate. Finding one in
 # a MODIFIED file is a typed blocked result (fail-closed), never a silent skip.
 UNSUPPORTED_KEYWORDS = ("select ", "until ")
+_UNSUPPORTED_RE = re.compile(r"(?:^|&&|\|\||\||;|\(|\{)\s*(select|until)(\s|$)")
 
 # A heredoc opener: `<<WORD` / `<<-WORD` / `<<'WORD'`. Not `<<<` (here-string,
 # also what a quoted marker like '# <<< x <<<' looks like) and not an
@@ -178,9 +179,9 @@ def extract_decisions(path: str, blob: bytes, only_lines: set[int] | None = None
             n in only_lines for n in range(lineno, end_lineno + 1)
         )
         if checked:
-            for kw in UNSUPPORTED_KEYWORDS:
-                if re.search(r"(^|;|\s)" + kw.strip() + r"(\s|$)", code):
-                    raise Blocked(f"{path}:{lineno}: unsupported construct '{kw.strip()}'")
+            unsupported = _UNSUPPORTED_RE.search(code)
+            if unsupported:
+                raise Blocked(f"{path}:{lineno}: unsupported construct '{unsupported.group(1)}'")
         if _CASE_RE.search(code):
             stack.append({"kind": "case", "has_star": False, "emitted": []})
             continue
@@ -215,6 +216,8 @@ def extract_decisions(path: str, blob: bytes, only_lines: set[int] | None = None
         if_match = _IF_RE.search(code)
         if if_match:
             is_elif = if_match.group(1) == "el"
+            if checked and is_elif and not (stack and stack[-1] == "if"):
+                raise Blocked(f"{path}:{lineno}: 'elif' without an open if")
             if checked:
                 decisions.append(
                     {
@@ -265,8 +268,13 @@ def _heredoc_spans(lines: list[str]) -> list[tuple[int, int]]:
     start = 0
     for idx, line in enumerate(lines, start=1):
         if open_word is None:
-            code = _code_only(line)
-            match = None if "((" in code else _HEREDOC_RE.search(code)
+            # Keep offsets to distinguish operators in code from quoted
+            # markers, but read quoted delimiter words from the raw source.
+            masked = _STRING_RE.sub(lambda m: " " * len(m.group()), line)
+            masked = re.sub(r"(^|\s)#.*$", "", masked)
+            match = None if "((" in masked else next(
+                (m for m in _HEREDOC_RE.finditer(line)
+                 if m.start() < len(masked) and masked[m.start()] == "<"), None)
             if match:
                 open_word, start = match.group(2), idx + 1
         elif line.strip() == open_word:
@@ -693,6 +701,51 @@ def cmd_selftest(args) -> int:
 
     _mini_snapshot(base_snap, "G-BASH-MATRIX", [])
     _mini_snapshot(cand_snap, "G-BASH-MATRIX", [entry])
+    # Retain M1's parser controls alongside main's changed-line checks.
+    heredoc_sh = (
+        "#!/usr/bin/env bash\n"
+        "SENTINEL='# <<< fake settings <<<'\n"
+        "# comment mentioning <<NOTAHEREDOC\n"
+        "cat <<'EOF'\n"
+        "select body in x; do :; done\n"
+        "EOF\n"
+        "cat <<PLAIN\n"
+        "select body in x; do :; done\n"
+        "PLAIN\n"
+        "if true; then\n  echo kept\nfi\n"
+    )
+    jq_sh = (
+        "#!/usr/bin/env bash\n"
+        'state=$(jq -c --argjson stage "$new_stage" --argjson until "$new_until" \\\n'
+        "  '.x = {until: $until}' <<<\"$state\")\n"
+    )
+    elif_sh = (
+        "#!/usr/bin/env bash\n"
+        "if true; then\n  :\nelif false; then\n  :\nelse\n  :\nfi\n"
+        "case x in\n  a) : ;;\n  *) : ;;\nesac\n"
+    )
+    for label, source, expected in (
+        ("h heredoc spans", heredoc_sh, ["if"]),
+        ("i jq argument until", jq_sh, []),
+        ("j if/elif balance", elif_sh, ["if", "elif", "case-arm", "case-arm"]),
+    ):
+        try:
+            constructs = [d["construct"] for d in extract_decisions(label, source.encode())]
+            good = constructs == expected
+            print(f"selftest {label}: constructs={constructs} expected={expected}")
+        except Exception as exc:
+            good = False
+            print(f"selftest {label}: unexpectedly blocked: {exc}")
+        ok &= good
+    for source in ("until false; do :; done\n", "x=1; until false; do :; done\n",
+                   "elif true; then :; fi\n"):
+        try:
+            extract_decisions("invalid.sh", source.encode())
+            print(f"selftest unsupported/dangling construct NOT blocked: {source.strip()}")
+            ok = False
+        except Exception:
+            print(f"selftest unsupported/dangling construct blocked: {source.strip()}")
+
     print(f"extracted ids={ids}")
     print(f"alternatives={alts}")
     if ok:

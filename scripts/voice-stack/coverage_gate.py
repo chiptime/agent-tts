@@ -9,7 +9,14 @@ the immutable baseline on TOPPED production modules:
   - plus TOTAL no-regression of the component against its baseline;
   - component with no touched production files => explicit not_applicable
     (never a fake 100%);
-  - --check-env validates tool compatibility (blocked, never silent degrade).
+  - --check-env validates tool compatibility (blocked, never silent degrade);
+  - --changed-scope-map (MQ-03, D4 changed-production metric): for modules
+    whose changed-line+branch scope is machine-mapped (see
+    scripts/voice-stack/js-coverage/map-changed-scope.py), the >=90/90 floor
+    applies to the changed statements and the in-scope branch arcs, with
+    hard bindings: the gate re-hashes the candidate file on disk, re-checks
+    the detail maps against the map digests, refuses empty denominators,
+    and REJECTS exclusions for mapped (touched) files — no exceptions.
 
 Exit codes: 0 pass · 1 FAIL · 2 blocked.
 """
@@ -17,6 +24,7 @@ Exit codes: 0 pass · 1 FAIL · 2 blocked.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -286,6 +294,166 @@ def cmd_check_env() -> int:
     return 0
 
 
+# -- changed-scope mode (MQ-03, D4 changed-production metric) -------------------
+
+
+def _digest_normalized(obj) -> str:
+    """Canonical digest matching map-changed-scope.py's normalization
+    (null-valued keys dropped recursively, keys sorted)."""
+    def norm(o):
+        if isinstance(o, dict):
+            return {k: norm(v) for k, v in sorted(o.items()) if v is not None}
+        if isinstance(o, list):
+            return [norm(v) for v in o]
+        return o
+    return hashlib.sha256(
+        json.dumps(norm(obj), sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _load_changed_maps(paths: list[str]) -> list[dict]:
+    maps = []
+    for p in paths:
+        try:
+            with open(p, "r", encoding="utf-8") as fh:
+                maps.append(json.load(fh))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise SystemExit(die_blocked(f"unreadable changed-scope map {p}: {exc}"))
+    if not maps:
+        raise SystemExit(die_blocked("no changed-scope maps supplied"))
+    return maps
+
+
+def _load_detail(path: str) -> dict:
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(die_blocked(f"unreadable coverage detail {path}: {exc}"))
+    return data.get("files", data)
+
+
+def _load_exclusions(path: str | None) -> list[dict]:
+    if not path:
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(die_blocked(f"unreadable exclusions {path}: {exc}"))
+    return data if isinstance(data, list) else []
+
+
+def cmd_check_changed(args) -> int:
+    maps = _load_changed_maps(args.changed_scope_map)
+    detail = _load_detail(args.coverage_detail)
+    repo_root = os.path.abspath(args.repo_root or ".")
+    exclusions = _load_exclusions(args.exclusions)
+
+    problems: list[str] = []
+    for m in maps:
+        fname = m.get("file") or os.path.basename(m.get("current_path", ""))
+        # binding: the candidate file on disk must be the mapped source
+        disk = os.path.join(repo_root, m["current_path"])
+        try:
+            with open(disk, "rb") as fh:
+                actual = hashlib.sha256(fh.read()).hexdigest()
+        except OSError:
+            problems.append(f"BLOCKED: mapped candidate missing on disk: {m['current_path']}")
+            continue
+        if actual != m["current_sha256"]:
+            problems.append(
+                f"BLOCKED: source hash drift for {fname}: on-disk {actual[:12]} != "
+                f"mapped {m['current_sha256'][:12]} (metric no longer binds)")
+            continue
+        # exclusions are REJECTED for touched/mapped files (user: NO EXCEPTIONS)
+        for ex in exclusions:
+            if ex.get("path", "").endswith("/" + fname) or ex.get("path", "").endswith(fname):
+                print(f"  exclusion REJECTED for {fname}: {ex.get('reason', '')[:60]} "
+                      "(touched production is never excludable)")
+        # detail record must exist with the exact instrumented maps
+        if fname not in detail:
+            problems.append(f"BLOCKED: no coverage record for {fname} in detail")
+            continue
+        fc = detail[fname]
+        if _digest_normalized(fc.get("statementMap", {})) != m["maps_digest"]["statement_map_sha256"] \
+                or _digest_normalized(fc.get("branchMap", {})) != m["maps_digest"]["branch_map_sha256"]:
+            problems.append(
+                f"BLOCKED: detail maps != mapped instrumentation for {fname} "
+                "(original-vs-instrumented mismatch)")
+            continue
+        stmts = m["executable_changed_statements"]
+        if not stmts:
+            problems.append(
+                f"BLOCKED: zero executable changed statements for {fname} "
+                "(changed scope unmappable — full module floor applies, not 100%)")
+            continue
+        s = fc.get("s", {})
+        hit = sum(1 for sid in stmts if s.get(sid, 0) > 0)
+        lines_pct = 100.0 * hit / len(stmts)
+        in_scope = list(m["in_scope_branches"].keys())
+        if not in_scope:
+            problems.append(f"BLOCKED: zero in-scope branches for {fname}")
+            continue
+        b = fc.get("b", {})
+        arcs_hit = arcs_total = 0
+        for bid in in_scope:
+            for v in b.get(bid, []):
+                arcs_total += 1
+                arcs_hit += 1 if v > 0 else 0
+        branches_pct = 100.0 * arcs_hit / arcs_total
+        nonexec = len(m.get("non_executable_changed_lines", []))
+        print(
+            f"  {fname} [changed scope]: lines {lines_pct:.2f}% "
+            f"({hit}/{len(stmts)} changed stmts; {nonexec} changed lines "
+            f"non-executable) branches {branches_pct:.2f}% "
+            f"({arcs_hit}/{arcs_total} in-scope arcs of "
+            f"{m['total_branches']} branches)"
+        )
+        if lines_pct < THRESHOLD:
+            problems.append(f"FAIL lines {lines_pct:.2f}% < {THRESHOLD} for {fname} (changed scope)")
+        if branches_pct < THRESHOLD:
+            problems.append(f"FAIL branches {branches_pct:.2f}% < {THRESHOLD} for {fname} (changed scope)")
+
+    # component-total non-regression on the COMPARABLE (common) file set:
+    # new files widen the denominator without being comparable to baseline.
+    if args.baseline_coverage:
+        cand = load_coverage_lcov(args.coverage_json)
+        base = load_coverage_lcov(args.baseline_coverage)
+        common = [k for k in cand if any(
+            bk.endswith(k) or k.endswith(bk) for bk in base)]
+        cl = cs = bl = bs = 0
+        for k in common:
+            c, t = cand[k]["lines"]; cl += c; cs += t
+            for bk in base:
+                if bk.endswith(k) or k.endswith(bk):
+                    c, t = base[bk]["lines"]; bl += c; bs += t
+                    break
+        cand_total = 100.0 * cl / cs if cs else 0.0
+        base_total = 100.0 * bl / bs if bs else 0.0
+        full_cl = sum(v["lines"][0] for v in cand.values())
+        full_cs = sum(v["lines"][1] for v in cand.values())
+        print(f"common-set total ({len(common)} files): candidate "
+              f"{cand_total:.2f}% vs baseline {base_total:.2f}% "
+              f"(full candidate set {len(cand)} files: "
+              f"{100.0 * full_cl / full_cs if full_cs else 0:.2f}%)")
+        if cand_total < base_total - 1e-9:
+            problems.append(
+                f"FAIL total regression (common set): candidate "
+                f"{cand_total:.2f}% < baseline {base_total:.2f}%")
+
+    hard = [p for p in problems if p.startswith("BLOCKED:")]
+    if hard:
+        return die_blocked("; ".join(p[8:] for p in hard))
+    if problems:
+        for p in problems:
+            print(p)
+        print("COVERAGE_GATE_FAIL")
+        return 1
+    print("COVERAGE_GATE_PASS")
+    return 0
+
+
 # -- selftest (numeric honesty) ---------------------------------------------------
 
 
@@ -442,6 +610,128 @@ def cmd_selftest(_args) -> int:
     return 1
 
 
+def _cs_fixture(tmp: str, name: str, uncovered_stmts: list[str],
+                uncovered_arcs: dict[str, list[int]], maps_override=None,
+                sha_override: str | None = None) -> tuple[str, str]:
+    """Synthetic changed-scope fixture: a 10-statement/2-branch module where
+    statements '0'..'9' and branch arcs are explicitly controlled.
+    Returns (map_path, detail_path)."""
+    import hashlib as _h
+
+    src = os.path.join(tmp, f"repo-{name}", "static", "mod.js")
+    os.makedirs(os.path.dirname(src), exist_ok=True)
+    content = "var a=1;\n" * 10
+    with open(src, "w", encoding="utf-8") as fh:
+        fh.write(content)
+    sha = sha_override or _h.sha256(content.encode()).hexdigest()
+    stmt_map = {str(i): {"start": {"line": i + 1, "column": 0},
+                         "end": {"line": i + 1, "column": 6}} for i in range(10)}
+    branch_map = {
+        "0": {"loc": {"start": {"line": 1, "column": 0}, "end": {"line": 1, "column": 6}},
+              "type": "if", "locations": [
+                  {"start": {"line": 1, "column": 0}, "end": {"line": 1, "column": 6}},
+                  {"start": {"line": 2, "column": 0}, "end": {"line": 2, "column": 6}}]},
+        "1": {"loc": {"start": {"line": 3, "column": 0}, "end": {"line": 3, "column": 6}},
+              "type": "if", "locations": [
+                  {"start": {"line": 3, "column": 0}, "end": {"line": 3, "column": 6}},
+                  {"start": {"line": 4, "column": 0}, "end": {"line": 4, "column": 6}}]},
+    }
+    if maps_override == "tamper-detail":
+        stmt_map_detail = dict(stmt_map)
+        stmt_map_detail["0"] = {"start": {"line": 99, "column": 0},
+                                "end": {"line": 99, "column": 6}}
+    else:
+        stmt_map_detail = stmt_map
+    detail = {"files": {"mod.js": {
+        "path": "mod.js", "s": {str(i): 0 if str(i) in uncovered_stmts else 1
+                                for i in range(10)},
+        "b": {bid: [0 if k in uncovered_arcs.get(bid, []) else 1 for k in range(2)]
+              for bid in ("0", "1")},
+        "statementMap": stmt_map_detail, "branchMap": branch_map,
+    }}}
+    detail_path = os.path.join(tmp, f"detail-{name}.json")
+    with open(detail_path, "w", encoding="utf-8") as fh:
+        json.dump(detail, fh)
+    changed = {"schema": 1, "file": "mod.js",
+               "current_path": os.path.relpath(src, tmp),
+               "new_file": False, "current_sha256": sha,
+               "baseline_sha256": "f" * 64, "instrumenter": "selftest",
+               "maps_digest": {
+                   "statement_map_sha256": _digest_normalized(stmt_map),
+                   "branch_map_sha256": _digest_normalized(branch_map)},
+               "changed_added_lines": list(range(1, 11)),
+               "changed_added_line_count": 10,
+               "executable_changed_statements": [str(i) for i in range(10)],
+               "non_executable_changed_lines": [],
+               "in_scope_branches": {"0": {"line": 1, "reason": "selftest"},
+                                     "1": {"line": 3, "reason": "selftest"}},
+               "total_statements": 10, "total_branches": 2, "total_branch_arcs": 4}
+    map_path = os.path.join(tmp, f"map-{name}.json")
+    with open(map_path, "w", encoding="utf-8") as fh:
+        json.dump(changed, fh)
+    return map_path, detail_path
+
+
+def cmd_selftest_changed(_args) -> int:
+    """Negative controls for the changed-scope mode (MQ-03)."""
+    ok = True
+
+    def run(*extra):
+        return subprocess.run(
+            [sys.executable, os.path.abspath(__file__), "--changed-scope-map",
+             *extra],
+            capture_output=True, text=True)
+
+    def gate(map_path, detail_path, repo, exclusions=None):
+        argv = ["--coverage-detail", detail_path, "--repo-root", repo]
+        if exclusions:
+            argv += ["--exclusions", exclusions]
+        return run(map_path, *argv)
+
+    with tempfile.TemporaryDirectory(prefix="mq03-gate-selftest-") as tmp:
+        # healthy fixture: 10/10 stmts, 4/4 arcs => PASS, even though an
+        # exclusions file asks to skip the module (former-exclusion control)
+        m, d = _cs_fixture(tmp, "ok", [], {})
+        excl = os.path.join(tmp, "exclusions.json")
+        with open(excl, "w", encoding="utf-8") as fh:
+            json.dump([{"component": "pwa", "path": "static/mod.js",
+                        "reason": "former blanket exclusion must not skip"}], fh)
+        r = gate(m, d, tmp, excl)
+        print(f"selftest changed-scope ok+exclusion-rejected rc={r.returncode} "
+              f"rejection_shown={'exclusion REJECTED' in r.stdout} (expect 0/True)")
+        ok &= r.returncode == 0 and "exclusion REJECTED" in r.stdout
+
+        # intentional uncovered changed lines (8/10 = 80% < 90) => FAIL
+        m, d = _cs_fixture(tmp, "uncovered", ["5", "6"], {})
+        r = gate(m, d, tmp)
+        print(f"selftest changed-scope uncovered-lines rc={r.returncode} (expect 1)")
+        ok &= r.returncode == 1
+
+        # intentional uncovered arc (1 of 4 = 75% < 90) => FAIL
+        m, d = _cs_fixture(tmp, "uncovered-arc", [], {"0": [1]})
+        r = gate(m, d, tmp)
+        print(f"selftest changed-scope uncovered-arc rc={r.returncode} (expect 1)")
+        ok &= r.returncode == 1
+
+        # stale source hash (candidate drifted) => BLOCKED (exit 2)
+        m, d = _cs_fixture(tmp, "stale-sha", [], {}, sha_override="0" * 64)
+        r = gate(m, d, tmp)
+        print(f"selftest changed-scope stale-source-hash rc={r.returncode} (expect 2)")
+        ok &= r.returncode == 2
+
+        # tampered detail maps (instrumented-vs-original mismatch) => BLOCKED
+        m, d = _cs_fixture(tmp, "tamper", [], {}, maps_override="tamper-detail")
+        r = gate(m, d, tmp)
+        print(f"selftest changed-scope tampered-maps rc={r.returncode} (expect 2)")
+        ok &= r.returncode == 2
+
+    if ok:
+        print("SELFTEST_OK")
+        return 0
+    print("SELFTEST_FAIL")
+    return 1
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--lang", choices=["python", "js"])
@@ -451,14 +741,29 @@ def main(argv=None) -> int:
     parser.add_argument("--coverage-json")
     parser.add_argument("--baseline-coverage")
     parser.add_argument("--exclusions", default=DEFAULT_EXCLUSIONS,
-                        help="explicit per-file glue exclusion inventory (JSON)")
+                        help="explicit exclusions for legacy checks; rejected in changed-scope mode")
+    parser.add_argument("--changed-scope-map", action="append",
+                        help="MQ-03 changed-scope map JSON (repeatable); "
+                        "switches the gate to the D4 changed-production metric")
+    parser.add_argument("--coverage-detail",
+                        help="merged istanbul detail JSON for changed-scope mode")
+    parser.add_argument("--repo-root")
+    parser.add_argument("--selftest-changed", action="store_true",
+                        help="run the changed-scope negative controls")
     parser.add_argument("--check-env", action="store_true")
     parser.add_argument("--selftest", action="store_true")
     args = parser.parse_args(argv)
     if args.selftest:
         return cmd_selftest(args)
+    if args.selftest_changed:
+        return cmd_selftest_changed(args)
     if args.check_env:
         return cmd_check_env()
+    if args.changed_scope_map:
+        if not (args.coverage_detail and args.repo_root):
+            return die_blocked("changed-scope mode requires --coverage-detail "
+                               "and --repo-root")
+        return cmd_check_changed(args)
     if not (args.lang and args.component and args.baseline_snapshot
             and args.candidate_snapshot and args.coverage_json
             and args.baseline_coverage):
