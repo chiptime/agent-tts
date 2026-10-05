@@ -1,6 +1,8 @@
 # PRD: herdr-brain — On-Demand Context, Consolidated Reports, and Bounded Autonomous Implementation Loop
 
-**Status: DRAFT** — This PRD documents intent and confirmed product decisions. It does **not** authorize implementation, worktrees, branches, commits, pushes, or any remote operation. Any future implementation requires explicit later authorization (D10).
+**Status: PARCIAL** — This PRD documents intent and confirmed product decisions. It does **not** authorize implementation, worktrees, branches, commits, pushes, or any remote operation. Any future implementation requires explicit later authorization (D10).
+
+> **Nota de estado (2026-10-05)**: Contexto on-demand e informes implementados (`d7de194`, 2026-09-30; seguimiento en `2cb3a50`, 2026-10-01), contrastados con código y Git. Evidencia: [registro de entrega](../../hosts/herdr/brain/odd/tasks/herdr-brain-on-demand-context.md) y [mapa de cobertura](../../hosts/herdr/brain/docs/on-demand-context-coverage.md). El bucle autónomo (FR-42..45, D10) sigue futuro, no habilitado; el cuerpo conserva el diseño y diagnóstico previos.
 
 **Lead decision:** the voice brain keeps its single-model, discovery-then-read tool loop and gains (a) honest on-demand global/historical context with freshness-validated, persistently cached consolidated reports, and (b) a separately specified future autonomous sequential implementation loop running in isolated Git worktrees. Zero open product questions; all decisions D01–D10 are confirmed.
 

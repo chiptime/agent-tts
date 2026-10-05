@@ -1,6 +1,8 @@
 **ID**: PRD-HT-02 · **Proyecto**: herdr-tts
-**Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: Aprobada
+**Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: **EJECUTADA** (2026-09-22; `d94edf7`)
 **Dependencias**: Ninguna (`--voice` ya existe por llamada)
+
+> **Nota de estado (2026-10-05)**: Asignación persistente por agente/pane y selector de aplicación/cancelación implementados. La compañera [HT-11](HT-11-audicion-voces.md) (audición previa) sigue pendiente, con prioridad baja según D4; AT-02/HT-01 van antes.
 
 # PRD-HT-02 — Voces por agente (identidad vocal)
 

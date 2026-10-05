@@ -1,6 +1,8 @@
 **ID**: PRD-HT-05 · **Proyecto**: herdr-tts
-**Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: Aprobada
-**Dependencias**: Ninguna
+**Prioridad histórica (revisión 2026-09-22)**: P1 · **Estado**: BACKLOG (sin implementar)
+**Dependencias vigentes**: HT-01/HT-04 para el reset al responder; reutilización de `lib/pending_queue.py`.
+
+> **Nota de destino (2026-10-05) — BACKLOG.** VS3 ya entrega anuncios pendientes; HT-05 sigue siendo otra función: recordatorios escalados de atención. Cuando se aborde, se reescribirá sobre `hosts/herdr/tts-plugin/lib/pending_queue.py`, sin un segundo ledger. El reset por respuesta depende de HT-01/HT-04. El cuerpo queda como historia, incluida la antigua ausencia de dependencias y la propuesta de extender el gating ledger (ROADMAP D3).
 
 # PRD-HT-05 — Recordatorios escalados de atención
 

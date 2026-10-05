@@ -1,6 +1,9 @@
 **ID**: PRD-AT-03 · **Proyecto**: agent-tts
-**Prioridad final (revisión 2026-09-22)**: P2 · **Estado**: **Ejecutada** (recortada a verificación OpenCode, 2026-09-28)
+**Prioridad final (revisión 2026-09-22)**: P2 · **Estado**: EJECUTADA (alcance recortado: verificación OpenCode)
+**Cierre**: 2026-09-28 · **Referencia Git**: `3bb5e1b` (verificación y archivo; sin código nuevo).
 **Dependencias**: Ninguna
+
+> **Reconciliación (2026-10-05)**: `engine/src/agent_tts/sources/opencode.py` consulta por sesión en modo solo lectura; `sources/base.py` conserva la autodetección por ID. La prueba web es la evidencia histórica de cierre, no una prueba repetida en F1. Gemini, Goose y detección por `/proc` no están implementados ni se declaran ejecutados.
 
 > **Nota de revisión (22/09/2026)**: Alcance reducido en revisión: lo único activo es VERIFICAR que una sesión web real de OpenCode resuelve con el conector actual (verificación de schema realizada 22/09/2026: tabla única `session`, lookup por id sin filtro de workspace — probablemente ya cubierto; tarea de validación con un id web real, sin código nuevo). Quedan FUERA de alcance actual: conector gemini-cli, conector goose, auto-detección por /proc (RF-AT-03-1, RF-AT-03-2 y RF-AT-03-4 quedan fuera de alcance actual, marcados sin borrar).
 

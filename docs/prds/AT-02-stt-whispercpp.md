@@ -1,6 +1,8 @@
 **ID**: PRD-AT-02 · **Proyecto**: agent-tts
-**Prioridad final (revisión 2026-09-22)**: P4 · **Estado**: Postergada
-**Dependencias**: Ninguna (store de voces opcional)
+**Prioridad histórica (revisión 2026-09-22)**: P4 · **Estado**: REENFOCADA (pendiente de reescritura e implementación en el plugin)
+**Dependencias vigentes**: STT existente del brain (`POST /transcribe`); planificación F4 del ROADMAP.
+
+> **Nota de destino (2026-10-05) — REENFOCADA.** El plugin `tts-plugin` consumirá el STT ya existente del brain (`hosts/herdr/brain/src/herdr_brain/stt.py`, faster-whisper, `POST /transcribe`); no se construirá whisper.cpp en el motor. Debe disponer de un interruptor on/off para activarse y desactivarse sin alterar el flujo actual. El cuerpo queda como historia: requiere reescritura antes de implementar (ROADMAP §3 D1a y F4).
 
 > **Nota de revisión (22/09/2026)**: Postergada por decisión del maintainer: primero el núcleo de salida potente y componentizable; la bidireccionalidad (STT) llega en fases posteriores. Es la llave de HT-01 (herdr-tts) cuando llegue el momento.
 

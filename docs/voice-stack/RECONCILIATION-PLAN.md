@@ -1,5 +1,7 @@
 # PLAN DE RECONCILIACIÓN — voice-stack (post-migración)
 
+> **Parcialmente superado (2026-10-05):** el orden de trabajo vigente está en [ROADMAP.md](ROADMAP.md); H7/R5 ejecutado; H8/R6 obsoleto (VS1–VS4 implementados). D1–D5 del ROADMAP sustituyen las recomendaciones y decisiones pendientes de este plan, incluida la antigua propuesta de superseder AT-02/HT-01/HT-04. El cuerpo se conserva como inventario histórico, no como estado actual ni autorización.
+
 **Fecha:** 2 de octubre de 2026
 **Origen:** auditoría de reconciliación entre el roadmap de 20 features (revisión 22/09/2026) y el estado real del monorepo tras la migración (AT-10).
 **Alcance:** únicamente los huecos detectados. No ejecuta features nuevas salvo HT-11 (P1 huérfana del Bloque 2).

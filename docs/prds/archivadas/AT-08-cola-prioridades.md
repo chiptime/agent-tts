@@ -1,6 +1,9 @@
 **ID**: PRD-AT-08 · **Proyecto**: agent-tts
-**Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: Aprobada
+**Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: EJECUTADA
+**Cierre**: 2026-09-25 · **Referencias Git**: `3a9c59e` (cola), `ec1b541` (cadena), `7231f9e` (contrato), `0d3f340` (integración).
 **Dependencias**: AT-04 recomendada
+
+> **Reconciliación (2026-10-05)**: Aprobada el 22/09 y ejecutada en `engine/src/agent_tts/{queue_manager,chain,daemon,cli}.py`. Cierre de Cola y Cadena en el alcance del BLOQUE 1.3; winhost v2, aging y demás residuales no se dan por resueltos.
 
 > **Nota de revisión (22/09/2026)**: Se aborda JUNTO a AT-04 como paquete P1: el daemon posee la cola desde el día uno, decisión que cierra la open question de AT-04 y evita una segunda migración de semántica de playback.
 

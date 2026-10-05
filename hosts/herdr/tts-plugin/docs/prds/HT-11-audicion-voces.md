@@ -1,6 +1,8 @@
 **ID**: PRD-HT-11 · **Proyecto**: herdr-tts
-**Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: Aprobada
+**Prioridad final (revisión 2026-10-05)**: Baja (D4; F6) · **Estado**: Aprobada
 **Dependencias**: HT-02 para asignación por chat
+
+> **Nota de prioridad (2026-10-05)**: D4 sustituye la prioridad P1 y la planificación conjunta del 22/09: AT-02/HT-01 van antes. HT-11 sigue sin ejecutar, en F6; la nota anterior se conserva como historia.
 
 # PRD-HT-11 — Audición de voces en la paleta
 

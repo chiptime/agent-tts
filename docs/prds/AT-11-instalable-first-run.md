@@ -1,8 +1,8 @@
 **ID**: PRD-AT-11 · **Proyecto**: agent-tts
-**Prioridad final (revisión 2026-09-30)**: P1 · **Estado**: **Aprobada** (2026-09-30)
+**Prioridad final (revisión 2026-09-30)**: P1 · **Estado**: **PARCIAL** (2026-10-05)
 **Dependencias**: AT-10 (monorepo, ejecutada) · **Evidencia base**: [AT-11-auditoria-instalacion.md](AT-11-auditoria-instalacion.md)
 
-> **Nota de revisión (2026-09-30, 3ª)**: Aprobada por el maintainer con las decisiones de diseño resueltas (ver sección correspondiente). El desarrollo NO arranca todavía: el hand-off a SDD queda a la espera de orden expresa.
+> **Nota de estado (2026-10-05)**: Aprobada el 2026-09-30; desarrollo iniciado. M1 completado (`af8680d`, 2026-10-02) y tarea 2.1 completada (`c577041`, 2026-10-02); quedan 14 tareas de M2–M4 en el [plan de tareas](../../openspec/changes/at-11-instalable/tasks.md). El «Siguiente paso» original conserva el estado previo al inicio, no el actual; no se declara completo el onboarding ni validada la publicación estable.
 
 # PRD-AT-11 — Producto instalable independiente con first-run onboarding
 

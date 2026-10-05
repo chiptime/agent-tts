@@ -1,6 +1,9 @@
 **ID**: PRD-AT-04 · **Proyecto**: agent-tts
-**Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: Aprobada
+**Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: EJECUTADA
+**Cierre**: 2026-09-24 · **Referencias Git**: `43bf5d8` (daemon), `8e9ce26` (cliente), `ce49cdf` (integración).
 **Dependencias**: AT-09 (dura, prerrequisito); sinergia con AT-08
+
+> **Reconciliación (2026-10-05)**: Aprobada el 22/09 y ejecutada por vía única en `engine/src/agent_tts/daemon.py` y `cli.py`. Cierre del alcance acordado, no certificación de todas las métricas: se conservan los pendientes y mediciones del BLOQUE 1.2 y el registro vivo `docs/deuda-tecnica.md`.
 
 > **Nota de revisión (22/09/2026)**: Se aborda JUNTO a AT-08 como paquete P1: el daemon posee la cola desde el día uno (cierra la open question del propio doc) para evitar una segunda migración de semántica de playback.
 
