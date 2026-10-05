@@ -1,6 +1,9 @@
 **ID**: PRD-AT-09 · **Proyecto**: agent-tts
-**Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: Aprobada
+**Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: EJECUTADA
+**Cierre**: 2026-09-23 · **Referencias Git**: `05624a1` (propiedad), `16f11aa` (framing); refuerzo posterior `1dde8f2` (2026-09-24).
 **Dependencias**: Ninguna (prerrequisito duro de AT-04)
+
+> **Reconciliación (2026-10-05)**: Aprobada el 22/09; propiedad implementada en `engine/src/agent_tts/ownership.py` e `ipc.py`. El framing inicial evolucionó a v2 con AT-08. La comprobación de la primitiva de bloqueo en Windows real sigue aplazada según BLOQUE 1.1.
 
 > **Nota de revisión (22/09/2026)**: Nace desgajada de AT-04: el bug de propiedad del canal existe HOY sin ningún daemon involucrado, así que su corrección se aísla en una PRD propia que no depende del paquete P1 y le sirve de suelo. Cero cambio de comportamiento visible para el usuario.
 

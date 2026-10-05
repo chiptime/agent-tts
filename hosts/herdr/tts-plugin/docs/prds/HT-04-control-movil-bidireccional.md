@@ -1,6 +1,8 @@
 **ID**: PRD-HT-04 · **Proyecto**: herdr-tts
-**Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: Aprobada
-**Dependencias**: Comparte inyección de texto con HT-01
+**Prioridad histórica (revisión 2026-09-22)**: P1 · **Estado**: VIVA, REENFOCADA (atajo ntfy sin implementar)
+**Dependencias vigentes**: endpoints del brain; validación física F2 y red de tests F3 antes de F5.
+
+> **Nota de destino (2026-10-05) — VIVA, REENFOCADA.** Los botones de acción ntfy serán un atajo ligero que llama a `/approval/*` y `/ask` del brain, sin listener independiente en el plugin. La PWA de aprobación del brain es la vía principal; su validación en Chrome Android sigue pendiente (ROADMAP F2). Las rutas están implementadas, no los botones ntfy. El cuerpo conserva la propuesta histórica y debe reescribirse antes de F5 (D1c).
 
 # PRD-HT-04 — Control bidireccional desde el móvil
 
