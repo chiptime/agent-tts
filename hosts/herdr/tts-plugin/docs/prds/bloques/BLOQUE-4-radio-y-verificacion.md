@@ -1,7 +1,7 @@
 # BLOQUE 4 — Radio mode + verificación opencode web (HT-03 + AT-03 recortada)
 
 **Alcance**: PRD-HT-03 (P2) + tarea de verificación de PRD-AT-03 · **Prioridad**: P2 · **Esfuerzo agregado**: M + 10 min
-**Repositorios**: herdr-tts (radio) + agent-tts (verificación) · **Estado**: Aprobado (revisión 22/09/2026)
+**Repositorios**: herdr-tts (radio) + agent-tts (verificación) · **Estado**: PARCIAL (hito 0 hecho, radio pendiente)
 
 ### Objetivo del bloque
 

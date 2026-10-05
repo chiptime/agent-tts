@@ -1,6 +1,6 @@
 # BLOQUE 2 — Identidad vocal completa (HT-02 + HT-11)
 **Alcance**: PRD-HT-02 + PRD-HT-11 · **Prioridad**: P1 · **Esfuerzo agregado**: S-M (HT-02 ya implementada en paralelo)
-**Repositorio**: herdr-tts · **Estado**: Aprobado (revisión 22/09/2026)
+**Repositorio**: herdr-tts · **Estado**: PARCIAL (1 de 2 hitos) (HT-02 implementada, HT-11 pendiente)
 
 ### Objetivo del bloque
 
@@ -49,13 +49,13 @@ Implementar HT-11 según sus RF en `../HT-11-audicion-voces.md`. Contenido del h
 ### Qué NO se incluye
 
 - Cambios en el motor agent-tts: el bloque no toca el repo hermano; `--voice` por llamada ya existe y no necesita extensiones.
-- Voces por proyecto/workspace, clonación de voz y mezcla de proveedores por agente (fuera de alcance declarado en `../HT-02-voces-por-agente.md`).
+- Voces por proyecto/workspace, clonación de voz y mezcla de proveedores por agente (fuera de alcance declarado en `../archivadas/HT-02-voces-por-agente.md`).
 - Parametrizar la frase de preview desde la UI, fine-tuning o mezcla de voces, y preview de rate/velocidad (fuera de alcance declarado en `../HT-11-audicion-voces.md`).
 - Terminar los popups/Ajustes al 55%: pertenecen a la sesión paralela, no a este bloque.
 
 ### Dependencias y prerrequisitos
 
-- Ninguna de motor: `--voice` por llamada existe hoy (declarado en `../HT-02-voces-por-agente.md`).
+- Ninguna de motor: `--voice` por llamada existe hoy (declarado en `../archivadas/HT-02-voces-por-agente.md`).
 - HT-11 depende de HT-02 para la asignación por chat (RF-HT-11-5); la asignación global funciona de forma autónoma. Por esto el Hito 1 va después del Hito 0, nunca en paralelo.
 - Superficies ya existentes que el bloque reutiliza sin modificar: paleta fzf con reproducción por el camino del mutex (`ctrl-r`), escritura gestionada atómica (tmp + mv) usada por Ajustes, roster del dashboard que ya fusiona por `pane_id`.
 - Prerrequisito operativo: disciplina de un solo writer sobre `bin/herdr-tts` mientras conviva WIP de otras sesiones en el árbol.
@@ -85,6 +85,6 @@ Implementar HT-11 según sus RF en `../HT-11-audicion-voces.md`. Contenido del h
 
 ### Referencias
 
-- `../HT-02-voces-por-agente.md` — PRD fuente HT-02 (RF, RNF, métricas, fuera de alcance).
+- `../archivadas/HT-02-voces-por-agente.md` — PRD fuente HT-02 (RF, RNF, métricas, fuera de alcance).
 - `../HT-11-audicion-voces.md` — PRD fuente HT-11 (RF, RNF, métricas, fuera de alcance).
 - `../README.md` — índice del roadmap 2026 y orden de ataque (Fase 1: HT-02 + HT-11 como identidad vocal completa).

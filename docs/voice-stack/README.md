@@ -35,6 +35,21 @@ La sesión de implementación trabaja SIEMPRE en el monorepo con rutas relativas
 
 Orden aprobado (D1): 1→2→3→4. Ejecución tarea a tarea: ver `TASKS.md` (DAG VS0→VS1→…→VSX).
 
+## Relación con el roadmap del ecosistema y capacidades consolidadas
+
+El stack de voz transversal se asienta sobre las capacidades ya entregadas en el monorepo (provenientes del roadmap de 20 features y las 10 capacidades añadidas fuera de él, consolidadas en [`docs/prds/README.md`](../prds/README.md)):
+
+| Capacidad base consolidada | Componente | Relación con Voice Stack |
+|---|---|---|
+| **Canal de control atómico (AT-09)** y **Daemon persistente (AT-04)** | `engine` | Base de IPC Unix socket, semántica de propiedad por flock y ciclo de vida de procesos que sustentan la cancelación de habla por solicitud (**Hito 1 / VS1**). |
+| **Streaming por frames de MP3 (AT-01)** | `engine` | Decodificación continua de frames de audio; base directa para extender el audio incremental al navegador del teléfono (**Hito 2 / VS2**). |
+| **Cola con prioridades y encadenamiento (AT-08)** | `engine` | Preemption y encolado en el motor; coordina directamente con los anuncios pendientes (**Hito 3 / VS3**) evitando solapamientos con recordatorios (HT-05) o radio mode (HT-03). |
+| **Conectores y autodetección (AT-03)** | `engine` | Extracción determinista del último turno de agente desde SQLite (OpenCode) y JSONL de transcripción. |
+| **Identidad vocal y utilidades UI (HT-02, HT-13..HT-16)** | `hosts/herdr/tts-plugin` | Mapeo persistente de voces (`voices.json`), consumo de API pública del motor y UI de terminal (tema claro y popup de lectura). |
+| **Action approval-gate y on-demand-context** | `hosts/herdr/brain` | Puertas de confirmación interactivas con tests (`/approval/*`) y reportes bajo demanda; superan las vías preliminares basadas en ntfy (HT-04). |
+| **STT local con faster-whisper** | `hosts/herdr/brain` | Transcripción local server-side en el endpoint `/transcribe`; cubre la necesidad histórica de whisper.cpp en el motor (AT-02). |
+| **Fundaciones mínimas (VS0)** | Monorepo transversal | Harness E2E, instrumentación D4/D9 y gates previos obligatorios antes del inicio de implementación de producción de VS1–VS4. |
+
 ## Ledger de decisiones aprobadas (fuente única de producto)
 
 | ID | Decisión (resumen fiel) |

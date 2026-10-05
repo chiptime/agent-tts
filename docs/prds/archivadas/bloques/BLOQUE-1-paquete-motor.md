@@ -1,7 +1,7 @@
 # BLOQUE 1 — Paquete motor: canal de control, daemon vía única y cola con prioridades (AT-09 + AT-04 + AT-08)
 
 **Alcance**: PRD-AT-09 + PRD-AT-04 + PRD-AT-08 · **Prioridad**: P1 · **Esfuerzo agregado**: S-M + L + M-L
-**Repositorio**: agent-tts · **Estado**: Aprobado (reestructuración vía única 22/09/2026)
+**Repositorio**: agent-tts · **Estado**: COMPLETADO (cerrado 2026-09-25)
 
 > Este documento es la capa de orquestación del paquete P1 definido en `../README.md`. No reescribe los requisitos de las PRDs fuente: el detalle funcional y no funcional vive en `../AT-09-canal-de-control.md`, `../AT-04-daemon-persistente.md` y `../AT-08-cola-prioridades.md`, referenciadas aquí por su identificador (RF/RNF/US). Su valor es la secuencia, la trazabilidad global y la definición de done del paquete; los criterios de aceptación de cada tramo viven en el documento de su sub-bloque y aquí solo se apuntan.
 

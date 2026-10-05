@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Product** | herdr-brain (voice-assistant PWA) |
-| **Status** | Approved design + resolved contracts — task planning pending |
+| **Status** | Implementada con tests (Implementada en `server.py` `/approval/*`, `approval.py`, con tests en `tests/test_approval.py`, `tests/test_approval_gate_create.py`, `tests/js/approval.test.js`) |
 | **Date** | 2026-09-24 |
 | **Effort** | TBD (server + UI, planning phase pending) |
 

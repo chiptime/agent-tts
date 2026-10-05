@@ -27,14 +27,14 @@ La migración a monorepo absorbió tres repos (agent-tts, herdr-tts, herdr-brain
 
 ## Paquetes de reconciliación
 
-### R1 — Reconciliación documental (barato, primero: elimina desinformación)
+### R1 — Reconciliación documental (COMPLETADA — 2026-10-05)
 
-- R1.1 Corregir cabeceras de las 6 PRDs archivadas (AT-01, AT-03, AT-04, AT-08, AT-09, AT-10): `Estado: EJECUTADA` + fecha de cierre + commit de referencia. El estado vivo sigue viviendo en los README índice; las cabeceras dejan de mentir.
-- R1.2 Marcar las fichas de bloques: BLOQUE-1 `COMPLETADO`, BLOQUE-2 `PARCIAL (1 de 2 hitos)`, BLOQUE-3 `SIN EJECUTAR`, BLOQUE-4 `PARCIAL (hito 0 hecho, radio pendiente)`.
-- R1.3 Actualizar `docs/prds/README.md` y el índice de voice-stack con el estado real de las 20 + las 10 features nuevas fuera de roadmap (AT-09, AT-10, HT-13..HT-16, podcast RSS, brain on-demand-context, brain approval-gate, VS0).
-- R1.4 Corregir el status de la PRD brain approval-gate (implementada con tests, no "planning pending").
+- [x] R1.1 Corregir cabeceras de las 6 PRDs archivadas (AT-01, AT-03, AT-04, AT-08, AT-09, AT-10): `Estado: EJECUTADA` + fecha de cierre + commit de referencia. El estado vivo sigue viviendo en los README índice; las cabeceras dejan de mentir.
+- [x] R1.2 Marcar las fichas de bloques: BLOQUE-1 `COMPLETADO`, BLOQUE-2 `PARCIAL (1 de 2 hitos)`, BLOQUE-3 `SIN EJECUTAR`, BLOQUE-4 `PARCIAL (hito 0 hecho, radio pendiente)`.
+- [x] R1.3 Actualizar `docs/prds/README.md` y el índice de voice-stack con el estado real de las 20 + las 10 features nuevas fuera de roadmap (AT-09, AT-10, HT-13..HT-16, podcast RSS, brain on-demand-context, brain approval-gate, VS0).
+- [x] R1.4 Corregir el status de la PRD brain approval-gate (implementada con tests, no "planning pending").
 
-**Esfuerzo:** 1–2 h · **Riesgo:** cero · **DoD:** ningún documento dice de una feature ejecutada que está pendiente, ni viceversa.
+**Esfuerzo:** 1–2 h · **Riesgo:** cero · **DoD:** ningún documento dice de una feature ejecutada que está pendiente, ni viceversa. (Cumplido).
 
 ### R2 — Decisión de arquitectura HT: brain frente a PRDs originales (decisión del maintainer)
 

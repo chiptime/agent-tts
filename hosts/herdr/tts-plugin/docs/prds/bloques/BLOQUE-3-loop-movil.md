@@ -1,7 +1,7 @@
 # BLOQUE 3 — Loop móvil bidireccional (HT-04 → HT-05)
 
 **Alcance**: PRD-HT-04 + PRD-HT-05 · **Prioridad**: P1 · **Esfuerzo agregado**: L + M
-**Repositorio**: herdr-tts · **Estado**: Aprobado (revisión 22/09/2026)
+**Repositorio**: herdr-tts · **Estado**: SIN EJECUTAR
 
 ### Objetivo del bloque
 

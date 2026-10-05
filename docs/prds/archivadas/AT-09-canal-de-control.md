@@ -1,5 +1,5 @@
 **ID**: PRD-AT-09 · **Proyecto**: agent-tts
-**Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: Aprobada
+**Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: EJECUTADA (BLOQUE 1.1) (Fecha de cierre: 2026-09-24, commit: `1dde8f2` / `c8d5665`)
 **Dependencias**: Ninguna (prerrequisito duro de AT-04)
 
 > **Nota de revisión (22/09/2026)**: Nace desgajada de AT-04: el bug de propiedad del canal existe HOY sin ningún daemon involucrado, así que su corrección se aísla en una PRD propia que no depende del paquete P1 y le sirve de suelo. Cero cambio de comportamiento visible para el usuario.
