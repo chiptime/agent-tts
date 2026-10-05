@@ -1,5 +1,5 @@
 **ID**: PRD-HT-11 · **Proyecto**: herdr-tts
-**Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: Aprobada
+**Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: EJECUTADA (2026-10-06)
 **Dependencias**: HT-02 para asignación por chat
 
 # PRD-HT-11 — Audición de voces en la paleta
