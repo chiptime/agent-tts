@@ -82,11 +82,11 @@ Ejecutada Opción B (portar-crítico + matrix G-BASH-MATRIX):
 - [x] Verificada la ausencia de residuos de `src/` y `dist/` en la raíz (absorbidos en `engine/` y cubiertos en `.gitignore`).
 - **Riesgo:** cero. **Esfuerzo:** 15 min. (Cumplido).
 
-### R6 — Desbloqueo voice-stack (decisión del maintainer)
+### R6 — Desbloqueo voice-stack (decisión del maintainer) (COMPLETADA — 2026-10-06)
 
-- Revisar y autorizar `EXECUTION.md` §1 para que VS1-VS4 tengan plan ejecutable.
-- Añadir cross-referencia VS3 (anuncios pendientes) ↔ HT-05/HT-04: decidir si VS3 absorbe los recordatorios (HT-05) o quedan separados, para no construir dos sistemas de "avisos pendientes".
-- **Decisión requerida:** autorizar §1 + resolver el solape VS3/HT-05.
+- [x] Revisar y verificar `EXECUTION.md` §1: la solicitud copiable está verificada y lista para cuando el maintainer decida iniciar la ejecución de VS1-VS4 (Decisión D-R6a).
+- [x] Añadir cross-referencia y deslinde formal entre VS3 (anuncios pendientes) y HT-05 (recordatorios escalados): documentada la separación arquitectónica explícita en `docs/voice-stack/prds/03-anuncios-pendientes-atribuidos.md` y `hosts/herdr/tts-plugin/docs/prds/HT-05-recordatorios-escalados.md` (Decisión D-R6b: separados).
+- [x] Decisiones D-R6a y D-R6b registradas y cerradas.
 
 ---
 
@@ -113,10 +113,17 @@ R1 (doc, 1-2h) ──► R2 (decisión) ──► R4-lite (red de tests) ──�
 |---|---|---|---|
 | D-R2 | ¿Supersede HT-01/HT-04 hacia brain y AT-02 marcada cubierta? | Sí | **Sí, confirmada 2026-10-06** |
 | D-R4 | ¿Port de tests 1:1 o port-crítico + G-BASH-MATRIX? | Port-crítico | **Port-crítico (Ejecutado R4b, 2026-10-06)** |
-| D-R6a | ¿Autorizar EXECUTION.md §1 (VS1-VS4)? | Revisar y autorizar | Pendiente |
-| D-R6b | ¿VS3 absorbe HT-05 o quedan separados? | Decidir al planificar VS3 | Pendiente |
+| D-R6a | ¿Autorizar EXECUTION.md §1 (VS1-VS4)? | Revisar y autorizar | **Verificado y listo como solicitud copiable (§1 preparado para cuando el maintainer inicie VS1-VS4)** |
+| D-R6b | ¿VS3 absorbe HT-05 o quedan separados? | Decidir al planificar VS3 | **Separados: VS3 gestiona eventos de voz en vuelo y HT-05 recordatorios escalados (confirmado 2026-10-06)** |
 | D-R3 | ¿HT-11 sigue siendo P1 tras la migración? | Sí (era la compañera UX de HT-02, ya implementada) | **Sí, ejecutada y cerrada (2026-10-06)** |
 
 ## Fuera de alcance de este plan
 
 Ejecutar VS1-VS4, HT-03 (radio), HT-05 (recordatorios), AT-05/06/07 y el resto del roadmap postergado — esos viven en sus PRDs y en los bloques; este plan solo deja el terreno veraz y seguro para ellos.
+
+---
+
+## Cierre del Plan de Reconciliación
+
+> **Estado final (2026-10-06)**: Los 6 paquetes de reconciliación (**R1 a R6**) están **100% completados**.
+> Toda la documentación histórica y técnica, las decisiones arquitectónicas duales y deslindes, la feature pendiente HT-11, la cobertura de tests bash crítica y el desbloqueo del contrato de ejecución quedan alineados y en estado veraz.

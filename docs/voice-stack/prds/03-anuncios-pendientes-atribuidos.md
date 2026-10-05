@@ -36,6 +36,8 @@ atribuida aunque su reproducción se difiera. Confundirlos causó la inconsisten
 respuesta y NO re-encola automáticamente ese speech cancelado; los REGISTROS ambientales siguen
 recuperables sin reproducción hasta una acción deliberada permitida.
 
+> **Deslinde con HT-05 (2026-10-06 — Decisión D-R6b)**: VS3 maneja eventos de anuncio en vuelo (conservación, consolidación y reproducción diferida de avisos generados por el sistema). Queda explícitamente separado de HT-05 (recordatorios escalados por inactividad prolongada con backoff), manteniendo roles claros sin solapamiento.
+
 ## 2A. Objetivos y no-objetivos
 
 **Objetivos (D2)**
