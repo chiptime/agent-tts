@@ -195,3 +195,7 @@ fixing it would require the unapproved prefix suppression).
   which lacks product authorization.
 - Pending: real mobile validation (no handset session run), commit
   (awaits explicit authorization), deployment (not authorized).
+- 2026-10-05 local consolidation authorization supersedes the commit wait:
+  pending T3 bytes preserved in `3fe9b38`, integrated into main by `16f64d8`.
+  Fresh consolidated JavaScript suite: 266 passed, 0 failed; brain Python suite:
+  1363 passed. Real handset validation and deployment remain pending.
