@@ -22,12 +22,38 @@
  *   utterance, and committing that echo fired a second identical
  *   bubble. Tradeoff: a genuine whole-utterance repeat inside the
  *   window is collapsed too (accepted, mirroring the mergeOverlap
- *   over-merge note above).
+ *   over-merge note above). Rejecting an echo also drops an interim
+ *   buffered earlier as a GROWING prefix of that same utterance (see
+ *   dropEchoInterim).
+ * - combined(): committed and interim joined through the SAME overlap
+ *   merge the finals path uses — a fresh session's interim often
+ *   re-states the committed text before growing, and a blind append
+ *   put a duplicated prefix inside ONE bubble. Rendering follows the
+ *   merge rules: accent drift keeps the committed word, case and
+ *   punctuation drift keep the interim's, genuine repetition inside
+ *   one transcript survives. While an echo is still growing the merged
+ *   view can transiently show its short tail; it converges as soon as
+ *   the echo reaches the committed text.
  * - push(interimText): sets the CURRENT session's interim only; it can
  *   never shorten committed. An EMPTY interim is ignored outright: a
- *   fresh session must never wipe what earlier sessions captured. Any
- *   change of the COMBINED text (committed + interim) marks speech
- *   activity and resets the silence timer.
+ *   fresh session must never wipe what earlier sessions captured. An
+ *   interim whose folded words EQUAL the just-dispatched utterance
+ *   inside duplicateWindowMs is swallowed exactly like commit()
+ *   swallows a re-emitted final — same guard, same pre-existing
+ *   tradeoff that a genuine whole-utterance repeat inside the window
+ *   is collapsed. Shorter speech that merely SHARES a prefix is never
+ *   suppressed: after "hola mundo" a genuine "hola" still buffers,
+ *   because a short real utterance is indistinguishable from Chrome's
+ *   growing echo and suppressing prefixes would eat legitimate
+ *   commands. The cost is an honest limitation: a partial echo that
+ *   never reaches the full signature is accepted as speech. When a
+ *   full echo IS identified, a buffered earlier prefix of that same
+ *   echo is dropped with it (dropEchoInterim) so silence cannot
+ *   dispatch the partial ghost; unrelated buffered text and timing
+ *   are untouched, and if the echo was the only buffered speech its
+ *   ghost utterance timing is cleared so later speech gets its own
+ *   silence/hard-cap clocks. Any change of the interim text marks
+ *   speech activity and resets the silence timer.
  * - shouldFinalize(): true when there is speech AND either
  *   (a) silence_ms elapsed since the last combined-text change, or
  *   (b) hard_cap_ms elapsed since speech began.
@@ -62,9 +88,11 @@
     var lastFinalAt = null;   // when finalize() dispatched it
 
   function combined() {
-    if (!committed) return interim;
-    if (!interim) return committed;
-    return committed + " " + interim;
+    /* Merged, not concatenated: the fresh session's interim usually
+     * re-states the committed text before growing past it. mergeOverlap
+     * returns `interim` when committed is empty and vice versa, so the
+     * no-speech and single-source cases keep their exact old shape. */
+    return mergeOverlap(committed, interim);
   }
 
   /* Word-level normalization for overlap matching: Chrome finals drift in
@@ -129,6 +157,10 @@
     function push(interimText) {
       var text = (interimText || "").trim();
       if (!text) return false;             // empty interim never wipes anything
+      if (isReemittedFinal(text)) {        // FULL echo: same guard as commit()
+        dropEchoInterim(text);             // drop a buffered growing prefix
+        return false;                      // an echo is not new activity
+      }
       if (text === interim) return false;  // no change: silence timer keeps running
       var t = now();
       if (speechStartedAt === null) speechStartedAt = t;
@@ -151,10 +183,50 @@
       return foldedSignature(text) === lastFinalSignature;
     }
 
+    /* True when `candidate`'s folded words are a prefix of `whole`'s
+     * (equality included). Comparison-only view, like every fold here.
+     * Used ONLY to clean a buffered echo after a FULL match identified
+     * it — never to decide whether new speech is accepted. */
+    function isFoldedPrefix(candidate, whole) {
+      var words = splitWords(candidate).map(normWord);
+      var wholeWords = splitWords(whole).map(normWord);
+      if (words.length > wholeWords.length) return false;
+      for (var i = 0; i < words.length; i++) {
+        if (words[i] !== wholeWords[i]) return false;
+      }
+      return true;
+    }
+
+    /* A FULL echo match identifies the utterance Chrome is re-emitting.
+     * Its earlier GROWING prefixes may already sit in the interim
+     * buffer — they were accepted as ordinary speech because a shorter
+     * real utterance is indistinguishable from echo growth and must
+     * NOT be suppressed. Once the full echo identifies the utterance,
+     * such a stale prefix is dropped so silence cannot dispatch the
+     * partial ghost. Only a folded prefix of the identified echo is
+     * cleared; unrelated interim text and committed text are
+     * untouched. When the echo was the ONLY buffered speech its
+     * utterance timing is ghost state and is cleared too — otherwise a
+     * later genuine phrase would inherit the echo's hard-cap age and
+     * finalize early. Committed speech keeps its own timing, and the
+     * dispatch memory (lastFinalSignature/lastFinalAt) always
+     * survives: the window, not cleanup, expires it. */
+    function dropEchoInterim(echoText) {
+      if (!interim || !isFoldedPrefix(interim, echoText)) return;
+      interim = "";
+      if (!committed) {
+        lastChangeAt = null;
+        speechStartedAt = null;
+      }
+    }
+
     function commit(finalText) {
       var text = (finalText || "").trim();
       if (!text) return false;
-      if (isReemittedFinal(text)) return false;  // echo: mutate NOTHING
+      if (isReemittedFinal(text)) {  // echo: no new content, but a buffered
+        dropEchoInterim(text);       // growing prefix of it is stale
+        return false;
+      }
       var t = now();
       if (speechStartedAt === null) speechStartedAt = t;
       committed = mergeOverlap(committed, text);
