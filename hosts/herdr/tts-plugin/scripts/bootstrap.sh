@@ -8,8 +8,11 @@ set -euo pipefail
 
 # Immutable agent-tts pin: tag preferred, full 40-char commit SHA while
 # agent-tts publishes no tags. Bare `main` and short SHAs are prohibited.
-# HERDR_AGENT_TTS_REF overrides for testing/dev only.
-AGENT_TTS_REF="${HERDR_AGENT_TTS_REF:-e592ef31c828c5c637b3737604f173b1e0a07b80}"
+# HERDR_AGENT_TTS_REF overrides for testing/dev only. The default is the
+# maintainer-selected monorepo engine revision (AT-11 Decision 9): a
+# pre-monorepo ref has no engine/ and would strand the subdirectory
+# install on a stale tree.
+AGENT_TTS_REF="${HERDR_AGENT_TTS_REF:-d66616bce3ad8193f11ae615bd58bb4508eb65be}"
 AGENT_TTS_SRC="git+https://github.com/chiptime/agent-tts.git@${AGENT_TTS_REF}#subdirectory=engine"
 
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/herdr-tts"
@@ -66,14 +69,30 @@ if [[ ! -x "$VENV_PY" ]]; then
   fi
 fi
 
-# Dev shortcut: editable install only on explicit opt-in. A checkout that
-# exists without the flag is ignored with a warning — public installs must
-# be environment-independent.
-LOCAL_AGENT_TTS="${HOME}/Code/personal/agent-tts"
+# Dev shortcut: editable install only on explicit opt-in. The engine/
+# package directory is derived from this script's own location (the
+# containing monorepo checkout: hosts/herdr/tts-plugin/scripts/ sits four
+# directories below the checkout root) — never from a hardcoded personal
+# path. A checkout that exists without the flag is ignored with a warning:
+# public installs must be environment-independent. Bash builtins only:
+# dirname is not guaranteed on the restricted PATH hermetic builds use.
+SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+if [[ "${BASH_SOURCE[0]}" != /* ]]; then
+  SCRIPT_DIR="${PWD}/${SCRIPT_DIR}"
+fi
+LOCAL_AGENT_TTS="$(cd "${SCRIPT_DIR}/../../../.." && pwd)/engine"
 if [[ -n "${HERDR_TTS_UPGRADE:-}" ]]; then
   echo "==> upgrade: refreshing agent-tts to ${AGENT_TTS_REF}"
   py_install --quiet --upgrade "$AGENT_TTS_SRC"
-elif [[ -n "${HERDR_TTS_DEV:-}" && -d "$LOCAL_AGENT_TTS" ]]; then
+elif [[ -n "${HERDR_TTS_DEV:-}" ]]; then
+  if [[ ! -d "$LOCAL_AGENT_TTS" ]]; then
+    echo "Error: HERDR_TTS_DEV=1 but no agent-tts engine/ checkout is discoverable." >&2
+    echo "  Derived the monorepo root from this script's own location and expected:" >&2
+    echo "    ${LOCAL_AGENT_TTS}" >&2
+    echo "  Run from inside the agent-tts monorepo checkout, or unset HERDR_TTS_DEV" >&2
+    echo "  to install the pinned ref ${AGENT_TTS_REF} instead." >&2
+    exit 1
+  fi
   echo "==> HERDR_TTS_DEV=1: installing agent-tts editable from ${LOCAL_AGENT_TTS}"
   py_install --quiet -e "$LOCAL_AGENT_TTS"
 else

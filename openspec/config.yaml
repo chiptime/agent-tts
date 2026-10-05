@@ -1,0 +1,100 @@
+# openspec/config.yaml — SDD workspace config for agent-tts (monorepo, worktree at-11-instalable)
+schema: spec-driven
+
+context: |
+  Monorepo: engine/ (agent-tts Python TTS engine/CLI/daemon, src layout, v0.3.0),
+  contracts/ (frozen ipc-v2 + tts-brain-v1 contracts), hosts/herdr/brain/
+  (herdr-brain: Python FastAPI + JS service), hosts/herdr/tts-plugin/ (bash Herdr
+  plugin with its OWN subproject openspec/ at hosts/herdr/tts-plugin/openspec/
+  and .atl/skill-registry.md — subproject registry preserved: no merger, no
+  ownership transfer; root change at-11-instalable may route named delta specs
+  to it with explicit archive targets and make bounded metadata corrections
+  there; its local strict_tdd policy stays local and is not rewritten),
+  installable packaging under hosts/herdr/tts-plugin/packaging/{npm,homebrew}.
+  Active change: at-11-instalable (installable packaging).
+  Style: code/comments and SDD artifacts in English; docs/ and plugin CLI
+  strings partially Spanish.
+
+strict_tdd: false
+# Fail-closed: no single workspace-level test command covers every in-scope
+# project. engine, hosts/herdr/brain and hosts/herdr/tts-plugin each have an
+# independent command; CI (.github/workflows/ci.yml) only composes them across
+# different working directories and is not one runnable workspace command.
+# Downstream apply must run each touched project's own command (projects:).
+
+projects:
+  - path: engine
+    stack: python >=3.9 (CI 3.12) + setuptools, edge-tts, miniaudio
+    test_command: cd engine && python -m pytest tests/ -q
+    framework: pytest (dev extra)
+    test_layers: unit + integration (daemon/IPC/stream)
+    coverage_command: ""
+    lint_command: ""
+    typecheck_command: ""
+    format_command: ""
+    extra: >-
+      Workspace boundary guard runnable from repo root:
+      python -m pytest engine/tests/test_monorepo_boundaries.py -q (RF-AT-10-5).
+      Smoke script: engine/scripts/daemon_smoke.py (not in CI).
+  - path: hosts/herdr/brain
+    stack: python >=3.11 (FastAPI, faster-whisper, httpx) + JS (node 20)
+    test_command: cd hosts/herdr/brain && python -m pytest tests/ -q && node --test tests/js/
+    framework: pytest + node:test
+    test_layers: unit + integration
+    coverage_command: ""
+    lint_command: ""
+    typecheck_command: ""
+    format_command: ""
+  - path: hosts/herdr/tts-plugin
+    stack: bash monolith (bin/herdr-tts) + python bridge (lib/)
+    test_command: cd hosts/herdr/tts-plugin && bash scripts/smoke-tests.sh
+    framework: custom hermetic bash scenario suite (stubs herdr CLI, venv python, XDG dirs)
+    test_layers: integration (scenario-based smoke)
+    coverage_command: ""
+    lint_command: ""
+    typecheck_command: ""
+    format_command: ""
+  - path: hosts/herdr/tts-plugin/packaging/npm
+    stack: npm wrapper package (installer shim, no deps, no test script)
+    test_command: ""
+    framework: ""
+    test_layers: none
+    coverage_command: ""
+    lint_command: ""
+    typecheck_command: ""
+    format_command: ""
+
+testing:
+  strict_tdd: false
+  workspace_command: null
+  last_verified: 2026-09-30 (init detection; commands taken from CI + manifests)
+  note: >-
+    strict_tdd is false because three independent project commands exist and no
+    explicit workspace-level runner covers all of them. Preserve every
+    project-local command above; a future root Makefile or task runner running
+    the full set could requalify the workspace for strict_tdd: true.
+
+rules:
+  proposal:
+    - Work only inside this worktree; no push or remote operations
+    - Review budget: max 400 changed lines per PR (auto-chain splits beyond it)
+    - Respect frozen contracts in contracts/ (ipc-v2, tts-brain-v1)
+  specs:
+    - Use Given/When/Then scenarios and RFC 2119 keywords (MUST/SHALL/SHOULD/MAY)
+  design:
+    - Document architecture decisions with rationale
+    - Sequence diagrams for daemon/IPC/playback flows
+  tasks:
+    - Group by phase, hierarchical numbering, one-session-sized tasks
+    - Every implementation task names the proving command per project (projects:)
+  apply:
+    guidelines:
+      - Run each touched project's own test command (see projects:)
+      - strict_tdd false → tests ship alongside implementation, not strictly before
+    tdd: false
+    test_command: per-project (see projects[].test_command)
+  verify:
+    test_command: run every non-empty projects[].test_command
+    coverage_threshold: 0
+  archive:
+    - Sync delta specs into specs/; preserve change artifacts

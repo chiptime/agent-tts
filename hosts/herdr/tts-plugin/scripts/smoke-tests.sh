@@ -27,7 +27,14 @@
 #         HERDR_TTS_CONFIG_FILE), settings `v` (Lectura) toggles the
 #         auto_muted marker both ways with inline notes, a/i/f/b cycles
 #         persist scope/lang/podcast/debounce, t free-text topic (empty
-#         clears), transient status row separated by a blank row
+#         clears), transient status row separated by a blank row;
+#         16p-16s Decision-8 host-safety isolation: the launcher's three
+#         playback-state paths are env-overridable with byte-identical
+#         defaults (static safeguard, 16p), new_env() sandboxes them plus
+#         AGENT_TTS_SOCKET for every scenario (16q), the stop branch
+#         signals/removes only sandbox fixtures (16r), and a read-only
+#         host-state fingerprint taken before the first scenario is
+#         compared after the whole run (16s)
 #   17    keymap: init (template, no-overwrite, --force), check (core
 #         shadow warnings, --json), emit (direct/ctrlalt/menu TOML),
 #         invalid ids/chords/duplicates rejected, missing file actionable
@@ -126,7 +133,9 @@
 #         40b redaction before transformation (incl. in-fence), 40c
 #         deterministic heuristics + unclosed-fence safe degradation, 40d
 #         total escaping + http/https-only links, 40e pinned-oracle parity
-#         fixtures F1–F9 + sidecar map, 40f --render-html CLI + untouched
+#         fixtures F1–F9 + sidecar map with checked dual-layout oracle
+#         identity at the exact selected pin (Decision 9), 40f --render-html
+#         CLI + untouched
 #         contract v1, 40g zero new dependencies + transient process,
 #         40h --render-html whole-document mode (no scrollback extraction)
 #   41    reader vs remote-engine ERR replies: a live socket answering
@@ -141,6 +150,14 @@
 #         herdr is missing), --reader-auto CLI toggle (EN + ES output,
 #         persists through config_set), settings reading category p knob
 #         cycles and persists
+#   44    portable resolvers (AT-11 design Decision 4): the identical
+#         herdr_resolve_* block (root / HERDR_TTS_HOME / HERDR_BIN / port)
+#         exists in both launchers, resolves per the confirmed OQ-2
+#         precedence (set-and-valid HERDR_TTS_HOME wins; unset derives the
+#         sibling tts-plugin; no hardcoded default is ever exported), the
+#         six-step HERDR_BIN discovery (no literal brew prefix), and the
+#         HERDR_BRAIN_PORT -> config.env -> 8741 port order — every check
+#         runs the SHIPPED block extracted from the real launcher
 set -uo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -191,6 +208,29 @@ norm_frame() { # $1 = file -> normalized copy on stdout
          -e 's/[0-9]+[smh] ago/Nm ago/g' "$1"
 }
 
+# Decision-8 (16s) host-state fingerprint: read-only snapshot of the four
+# production playback-state paths (the three launcher defaults plus the
+# engine's own default control socket). Records presence, inode, mtime and
+# content hash — or ABSENT. It only ever reads; it never creates host
+# state, so "still absent" stays provable.
+host_state_snap() { # $1 = output file
+  local p inode mtime content
+  : > "$1"
+  for p in /tmp/herdr-tts-playing.lock /tmp/herdr-tts-current.pid \
+           /tmp/herdr-tts-player.sock /tmp/agent-tts-player.sock; do
+    if [[ -e "$p" ]]; then
+      inode=$(stat -c %i "$p" 2>/dev/null || printf 'no-inode')
+      mtime=$(stat -c %Y "$p" 2>/dev/null || printf 'no-mtime')
+      content=$(sha256sum "$p" 2>/dev/null | cut -d' ' -f1)
+      printf '%s\t%s\t%s\t%s\n' "$p" "$inode" "$mtime" "${content:-unreadable}" >> "$1"
+    else
+      printf '%s\tABSENT\n' "$p" >> "$1"
+    fi
+  done
+}
+HOST_STATE_BEFORE="$ROOT/.host-state-before"
+host_state_snap "$HOST_STATE_BEFORE"
+
 new_env() { # $1 = scenario dir name
   T="$ROOT/$1"
   rm -rf "$T"; mkdir -p "$T/bin" "$T/data/herdr-tts/venv/bin" "$T/conf" "$T/state"
@@ -207,6 +247,14 @@ new_env() { # $1 = scenario dir name
   export AGENT_TTS_SOCKET="$T/tts-player.sock"
   export HERDR_TTS_SNOOZE_FILE="$T/snooze.json"
   export HERDR_TTS_HISTORY_FILE="$T/history.log"
+  # Decision-8 host safety: the launcher's three playback-state paths and
+  # the engine's control socket resolve sandbox-local for EVERY scenario,
+  # never the /tmp host defaults a live daemon owns.
+  mkdir -p "$T/run"
+  export HERDR_TTS_LOCK_FILE="$T/run/playing.lock"
+  export HERDR_TTS_PID_FILE="$T/run/current.pid"
+  export HERDR_TTS_IPC_SOCKET="$T/run/player.sock"
+  export AGENT_TTS_SOCKET="$T/run/agent-tts-player.sock"
   export LINES=40 COLUMNS=110
   export PATH="$T/bin:$PATH" # stubbed herdr CLI wins over the real one
   : > "$T/err.log"
@@ -1159,6 +1207,75 @@ first=$(sed -n '1p' "$T/out.txt")
 [[ "$first" == *"Transcribing and reading the response in w4:p1"* ]] \
   && ok "16o happy path keeps kickoff as line 1" || bad "16o happy first line was: $first"
 assert_grep "16o text reaches the engine" 'SPOKEN:pane body' "$T/out.txt"
+
+# 16p. (Decision-8 test a) Host-safety isolation, static half: the three
+#      playback-state paths in bin/herdr-tts MUST be environment-overridable
+#      with byte-identical defaults (assert_grep over the source, the same
+#      convention as 40g's SHA-pinning safeguard) so the suite can sandbox
+#      them without changing any production default.
+assert_grep "16p LOCK_FILE env-overridable, default byte-identical" \
+  'LOCK_FILE="\$\{HERDR_TTS_LOCK_FILE:-\$\{AGENT_TTS_LOCK_FILE:-/tmp/herdr-tts-playing\.lock\}\}"' "$REPO/bin/herdr-tts"
+assert_grep "16p PID_FILE env-overridable, default byte-identical" \
+  'PID_FILE="\$\{HERDR_TTS_PID_FILE:-\$\{AGENT_TTS_PID_FILE:-/tmp/herdr-tts-current\.pid\}\}"' "$REPO/bin/herdr-tts"
+assert_grep "16p IPC_SOCKET env-overridable, default byte-identical" \
+  'IPC_SOCKET="\$\{HERDR_TTS_IPC_SOCKET:-\$\{AGENT_TTS_SOCKET:-/tmp/herdr-tts-player\.sock\}\}"' "$REPO/bin/herdr-tts"
+
+# 16q. (Decision-8) new_env() isolates playback state for EVERY scenario,
+#      not only section 16: the three launcher overrides plus the engine's
+#      AGENT_TTS_SOCKET must resolve under $T/run before any playback code
+#      runs. No launcher execution here — pure environment proof.
+new_env s16q
+[[ -d "$T/run" ]] && ok "16q new_env creates the sandbox run dir" || bad "16q missing $T/run"
+[[ "${HERDR_TTS_LOCK_FILE:-}" == "$T/run/playing.lock" ]] \
+  && ok "16q HERDR_TTS_LOCK_FILE resolves sandbox-local" \
+  || bad "16q HERDR_TTS_LOCK_FILE=${HERDR_TTS_LOCK_FILE:-unset}"
+[[ "${HERDR_TTS_PID_FILE:-}" == "$T/run/current.pid" ]] \
+  && ok "16q HERDR_TTS_PID_FILE resolves sandbox-local" \
+  || bad "16q HERDR_TTS_PID_FILE=${HERDR_TTS_PID_FILE:-unset}"
+[[ "${HERDR_TTS_IPC_SOCKET:-}" == "$T/run/player.sock" ]] \
+  && ok "16q HERDR_TTS_IPC_SOCKET resolves sandbox-local" \
+  || bad "16q HERDR_TTS_IPC_SOCKET=${HERDR_TTS_IPC_SOCKET:-unset}"
+[[ "${AGENT_TTS_SOCKET:-}" == "$T/run/agent-tts-player.sock" ]] \
+  && ok "16q AGENT_TTS_SOCKET resolves sandbox-local" \
+  || bad "16q AGENT_TTS_SOCKET=${AGENT_TTS_SOCKET:-unset}"
+
+# 16r. (Decision-8 test c) Stop-branch isolation with an isolated fixture:
+#      a planted sandbox lock/PID holding a live `sleep` PID makes `r` take
+#      the stop branch — the confirmation prints player.stopped, exactly
+#      that PID is TERM'd, and only the three sandbox files are removed. A
+#      live host daemon is never a fixture: the scenario fails closed if
+#      the sandbox overrides are missing instead of touching host defaults.
+new_env s16r
+if [[ -z "${HERDR_TTS_LOCK_FILE:-}" || -z "${HERDR_TTS_PID_FILE:-}" || -z "${HERDR_TTS_IPC_SOCKET:-}" ]]; then
+  bad "16r playback isolation missing from new_env(); refusing to run the stop branch"
+else
+  cat > "$T/bin/herdr" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "pane" && "${2:-}" == "current" ]]; then
+  echo '{"result":{"pane":{"pane_id":"w4:p4"}}}'
+  exit 0
+fi
+exit 0
+EOF
+  chmod +x "$T/bin/herdr"
+  sleep 30 & PLAYER_PID=$!
+  echo "$PLAYER_PID" > "$HERDR_TTS_LOCK_FILE"
+  echo "$PLAYER_PID" > "$HERDR_TTS_PID_FILE"
+  export HERDR_TTS_MENU_CONFIRM_SECS=0.2
+  printf 'r' | timeout 10 "$SCRIPT" --voice-menu > "$T/out.txt" 2>>"$T/err.log"
+  [[ $? -eq 0 ]] && ok "16r r exits rc=0 on the stop branch" || bad "16r rc!=0"
+  assert_grep "16r stop branch prints player.stopped" 'Audio stopped' "$T/out.txt"
+  wait "$PLAYER_PID" 2>/dev/null; prc=$?
+  if [[ $prc -eq 143 ]]; then
+    ok "16r sandbox player PID received TERM (wait rc=143)"
+  else
+    bad "16r sandbox player PID not TERM'd (wait rc=$prc)"
+    kill "$PLAYER_PID" 2>/dev/null || true
+  fi
+  [[ ! -e "$HERDR_TTS_LOCK_FILE" && ! -e "$HERDR_TTS_PID_FILE" && ! -e "$HERDR_TTS_IPC_SOCKET" ]] \
+    && ok "16r only the three sandbox playback files were removed" \
+    || bad "16r sandbox leftovers: $(ls "$T/run" 2>/dev/null | tr '\n' ' ')"
+fi
 
 echo "── 17. keymap: init / check / emit (declarative, conflict-checked)"
 new_env s17
@@ -2566,20 +2683,34 @@ assert_no_grep "33c failure output is English" 'Instalando|Configurando|Usando|E
 [[ ! -e "$BT/data/herdr-tts" ]] \
   && ok "33c aborts before mkdir (no partial state)" || bad "33c created state before aborting"
 
-# 33d. decoy dev checkout in HOME is ignored unless HERDR_TTS_DEV=1.
-bt_init decoy; bt_uv; mkdir -p "$BT/home/Code/personal/agent-tts"
+# 33d. decoy dev checkout in HOME is ignored unless HERDR_TTS_DEV=1. The
+#      decoy is a monorepo-shaped checkout (engine/ inside) at an arbitrary
+#      HOME path: discovery derives engine/ from the script's own location,
+#      so HOME never feeds the decision and the decoy stays inert. The
+#      script's real surrounding checkout IS discovered but still ignored
+#      without the opt-in (public installs are environment-independent).
+bt_init decoy; bt_uv; mkdir -p "$BT/home/decoy/agent-tts/engine"
 bt_run --
 [[ $? -eq 0 ]] && ok "33d public install with decoy HOME exits rc=0" || bad "33d rc!=0"
 assert_grep "33d decoy HOME still installs the pinned remote source" "$PIN_RE" "$BT/logs/uv.log"
-assert_no_grep_f "33d recorded install never references the decoy path" "$BT/home/Code/personal/agent-tts" "$BT/logs/uv.log"
+assert_no_grep_f "33d recorded install never references the decoy path" "$BT/home/decoy/agent-tts" "$BT/logs/uv.log"
+assert_grep "33d surrounding checkout ignored with a hint" 'ignoring dev checkout .*engine' "$BT/out.log"
 assert_no_grep "33d progress output is English" 'Instalando|Configurando|Usando|Entorno' "$BT/out.log"
 
-# 33e. explicit dev opt-in: editable install from the local checkout.
-bt_init devopt; bt_uv; mkdir -p "$BT/home/Code/personal/agent-tts"
+# 33e. explicit dev opt-in: editable install derived from the bootstrap's
+#      own location. The fake monorepo checkout sits at an arbitrary,
+#      non-canonical path (hosts/herdr/tts-plugin/scripts/ plus engine/);
+#      HOME holds no checkout, so only own-location derivation can find it.
+bt_init devopt; bt_uv
+mkdir -p "$BT/mono/hosts/herdr/tts-plugin/scripts" "$BT/mono/engine"
+cp "$REPO/scripts/bootstrap.sh" "$BT/mono/hosts/herdr/tts-plugin/scripts/bootstrap.sh"
+BT_SCRIPT="$BT/mono/hosts/herdr/tts-plugin/scripts/bootstrap.sh"
 bt_run HERDR_TTS_DEV=1 --
 [[ $? -eq 0 ]] && ok "33e HERDR_TTS_DEV=1 exits rc=0" || bad "33e rc!=0"
-grep -qF -- "-e $BT/home/Code/personal/agent-tts" "$BT/logs/uv.log" \
-  && ok "33e dev opt-in installs editable from the checkout" || bad "33e no editable install recorded"
+grep -qF -- "-e $BT/mono/engine" "$BT/logs/uv.log" \
+  && ok "33e dev opt-in installs editable from the derived engine/" || bad "33e no editable engine/ install recorded"
+assert_no_grep "33e recorded install has no personal hardcoded path" 'Code/personal' "$BT/logs/uv.log"
+BT_SCRIPT="$REPO/scripts/bootstrap.sh"
 
 # 33f. upgrade path: healthy venv short-circuits by default; the upgrade
 #      mode (env var AND --upgrade argv) refreshes the pinned ref.
@@ -2601,7 +2732,8 @@ bt_run -- --upgrade
 
 # 33g. checkout-location agnostic: running from a non-canonical copy of
 #      scripts/ behaves identically (no repo-relative or $HOME-relative
-#      expectations beyond the dev-gated shortcut).
+#      expectations; the copy has no surrounding monorepo, so public mode
+#      installs the pinned source).
 bt_init spot; bt_uv
 mkdir -p "$BT/elsewhere"; cp -r "$REPO/scripts" "$BT/elsewhere/scripts"
 BT_SCRIPT="$BT/elsewhere/scripts/bootstrap.sh"
@@ -2609,22 +2741,43 @@ bt_run --
 [[ $? -eq 0 ]] && ok "33g arbitrary checkout location exits rc=0" || bad "33g rc!=0"
 assert_grep "33g arbitrary location installs the pinned source" "$PIN_RE" "$BT/logs/uv.log"
 BT_SCRIPT="$REPO/scripts/bootstrap.sh"
+
+# 33h. dev opt-in without a discoverable engine/: the scripts copy sits
+#      alone (no monorepo root four directories up). HERDR_TTS_DEV=1 must
+#      fail actionably in English, name the missing engine/ checkout, and
+#      record no package install.
+bt_init noengine; bt_uv
+mkdir -p "$BT/loose/scripts"
+cp "$REPO/scripts/bootstrap.sh" "$BT/loose/scripts/bootstrap.sh"
+BT_SCRIPT="$BT/loose/scripts/bootstrap.sh"
+bt_run HERDR_TTS_DEV=1 --
+[[ $? -ne 0 ]] && ok "33h dev opt-in without engine/ exits non-zero" || bad "33h rc==0"
+grep -q 'engine/' "$BT/err.log" && ok "33h error names the missing engine/ checkout" || bad "33h engine/ not named"
+grep -q 'HERDR_TTS_DEV' "$BT/err.log" && ok "33h error states the HERDR_TTS_DEV remediation" || bad "33h remediation missing"
+assert_no_grep "33h failure output is English" 'Instalando|Configurando|Usando|Entorno|Se requiere' "$BT/err.log"
+assert_no_grep "33h no install recorded on the dev error" '^uv pip install' "$BT/logs/uv.log"
+BT_SCRIPT="$REPO/scripts/bootstrap.sh"
 unset BT UVLOG PYLOG BT_SCRIPT PIN_RE PIN_PY_RE
 
 echo "── 34. install.sh: preflight, fresh e2e, upgrade guard, keymap policy"
 new_env s34
 
 # ═════════════════════════════════════════════════════════════════════════
-# 34. install.sh contract (PM-01): preflight before mutation (jq missing,
-#     linked checkout refusal), fresh end-to-end install, upgrade vs
-#     remote-mismatch, keymap adoption policy (default/never-overwrite/
-#     --no-keymap), uninstall print, English output, tag-pinned default
-#     (v0.16.0) with HERDR_TTS_REF escape hatch, absolute clone target
-#     via `git -C` from an unrelated cwd.
+# 34. install.sh contract (PM-01 + AT-11 slice 4): preflight before mutation
+#     (jq missing, linked checkout refusal), fresh end-to-end install from
+#     the agent-tts MONOREPO (plugin at hosts/herdr/tts-plugin inside the
+#     checkout), upgrade vs remote-mismatch, keymap adoption policy
+#     (default/never-overwrite/--no-keymap), uninstall print, English
+#     output, tag-pinned monorepo default (v0.16.0) with HERDR_TTS_REF
+#     escape hatch, absolute clone target via `git -C` from an unrelated
+#     cwd (34i: even from inside a FOREIGN git repo — repo stays clean),
+#     and relative-TARGET refusal (34j: relative XDG_DATA_HOME rejected
+#     before any mutation).
 # ═════════════════════════════════════════════════════════════════════════
 INS_TEMPLATE="$T/repo-template"
-mkdir -p "$INS_TEMPLATE"
-cp -r "$REPO/bin" "$REPO/scripts" "$REPO/lib" "$REPO/herdr-plugin.toml" "$INS_TEMPLATE/" 2>/dev/null
+INS_PLUG="$INS_TEMPLATE/hosts/herdr/tts-plugin" # the stub clone materializes the whole monorepo
+mkdir -p "$INS_PLUG"
+cp -r "$REPO/bin" "$REPO/scripts" "$REPO/lib" "$REPO/herdr-plugin.toml" "$INS_PLUG/" 2>/dev/null
 export HERDR_CONFIG_DIR="$T/conf" # keymap apply target stays hermetic
 ins_init() { # $1 case → $INS with stub bin/, isolated data/logs
   INS="$T/ins-$1"; rm -rf "$INS"; mkdir -p "$INS/bin" "$INS/logs" "$INS/data" "$INS/home"
@@ -2676,7 +2829,7 @@ ins_run() { # KEY=VAL env pairs, then --, then installer argv
 
 # 34a. jq missing: abort naming jq before any mutation (in-1, in-6).
 ins_init nojq; ins_plugins github
-printf 'https://github.com/chiptime/herdr-tts.git\n' > "$INS/remote.txt"
+printf 'https://github.com/chiptime/agent-tts.git\n' > "$INS/remote.txt"
 INS_PATH="$INS/bin" # restricted: no system jq anywhere
 ins_run --
 [[ $? -ne 0 ]] && ok "34a jq-missing exits non-zero" || bad "34a rc==0 without jq"
@@ -2688,7 +2841,7 @@ assert_no_grep "34a failure output is English" 'Instalando|Configurando|Usando|E
 
 # 34b. linked dev checkout: refuse before mutating, guide migration (in-1).
 ins_init linked; ins_plugins local
-printf 'https://github.com/chiptime/herdr-tts.git\n' > "$INS/remote.txt"
+printf 'https://github.com/chiptime/agent-tts.git\n' > "$INS/remote.txt"
 ins_run --
 [[ $? -ne 0 ]] && ok "34b linked checkout exits non-zero" || bad "34b rc==0 over a linked checkout"
 grep -q 'plugin unlink' "$INS/err.log" && grep -q 'plugin uninstall' "$INS/err.log" \
@@ -2699,16 +2852,18 @@ grep -q 'plugin unlink' "$INS/err.log" && grep -q 'plugin uninstall' "$INS/err.l
 #      bootstrap, keymap adopt+apply+reload, daemon verify, status pointer,
 #      uninstall print, tag-pinned default (in-2, in-5, in-7).
 ins_init fresh; ins_plugins github
-printf 'https://github.com/chiptime/herdr-tts.git\n' > "$INS/remote.txt"
+printf 'https://github.com/chiptime/agent-tts.git\n' > "$INS/remote.txt"
 sleep 60 & DAEMON_PID=$!
 mkdir -p "$T/state/herdr-tts"; printf '%s\n' "$DAEMON_PID" > "$T/state/herdr-tts/daemon.pid"
 mkdir -p "$T/unrelated-cwd"
 ( cd "$T/unrelated-cwd" && ins_run -- )
 [[ $? -eq 0 ]] && ok "34c fresh install exits rc=0" || bad "34c rc!=0 (err: $(tail -1 "$INS/err.log" 2>/dev/null))"
-grep -qF -- "--branch v0.16.0 https://github.com/chiptime/herdr-tts.git $INS/data/herdr-tts/plugin" "$INS/logs/git.log" \
-  && ok "34c clones the pinned tag to the absolute TARGET from an unrelated cwd" \
+grep -qF -- "--branch v0.16.0 https://github.com/chiptime/agent-tts.git $INS/data/herdr-tts/plugin" "$INS/logs/git.log" \
+  && ok "34c clones the pinned monorepo tag to the absolute TARGET from an unrelated cwd" \
   || bad "34c clone argv wrong: $(grep clone "$INS/logs/git.log" 2>/dev/null)"
-[[ -x "$INS/data/herdr-tts/plugin/bin/herdr-tts" ]] && ok "34c checkout materialized at TARGET" || bad "34c no checkout at TARGET"
+[[ -x "$INS/data/herdr-tts/plugin/hosts/herdr/tts-plugin/bin/herdr-tts" ]] \
+  && ok "34c monorepo checkout at TARGET; plugin materialized at hosts/herdr/tts-plugin" \
+  || bad "34c no plugin under TARGET/hosts/herdr/tts-plugin"
 grep -qE 'uv pip install .*agent-tts\.git@[0-9a-f]{40}' "$INS/logs/uv.log" \
   && ok "34c bootstrap ran inside the install (pinned agent-tts)" || bad "34c no pinned install recorded"
 [[ -f "$T/conf/herdr-tts/keymap.json" ]] && ok "34c menu-style keymap adopted" || bad "34c keymap.json missing"
@@ -2727,7 +2882,7 @@ kill "$DAEMON_PID" 2>/dev/null; wait "$DAEMON_PID" 2>/dev/null
 # 34d. matching remote: re-run upgrades — fetch+checkout of the tag and an
 #      agent-tts refresh past the never-upgrade gate (in-3).
 ins_init upg; ins_plugins github
-printf 'https://github.com/chiptime/herdr-tts.git\n' > "$INS/remote.txt"
+printf 'https://github.com/chiptime/agent-tts.git\n' > "$INS/remote.txt"
 ins_run --
 ins_run --
 [[ $? -eq 0 ]] && ok "34d matching-remote re-run exits rc=0" || bad "34d rc!=0"
@@ -2740,7 +2895,7 @@ grep -qE -- '--upgrade.*agent-tts\.git@[0-9a-f]{40}' "$INS/logs/uv.log" \
 
 # 34e. mismatched remote: abort naming the mismatch, write nothing (in-3).
 ins_init mism; ins_plugins github
-printf 'https://github.com/chiptime/herdr-tts.git\n' > "$INS/remote.txt"
+printf 'https://github.com/chiptime/agent-tts.git\n' > "$INS/remote.txt"
 ins_run --
 before_tree=$(find "$INS/data/herdr-tts/plugin" -type f | sort | xargs md5sum | md5sum)
 before_writes=$(grep -cE 'clone|fetch|checkout' "$INS/logs/git.log"); before_uv=$(wc -l < "$INS/logs/uv.log")
@@ -2755,7 +2910,7 @@ grep -q 'remote' "$INS/err.log" && ok "34e error names the remote mismatch" || b
 
 # 34f. existing keymap.json: byte-identical, no adopt/apply/reload (in-4).
 ins_init keep; ins_plugins github
-printf 'https://github.com/chiptime/herdr-tts.git\n' > "$INS/remote.txt"
+printf 'https://github.com/chiptime/agent-tts.git\n' > "$INS/remote.txt"
 mkdir -p "$T/conf/herdr-tts"
 printf '{\n  "style": "direct",\n  "bindings": { "play": "prefix+F9" }\n}\n' > "$T/conf/herdr-tts/keymap.json"
 cp "$T/conf/herdr-tts/keymap.json" "$INS/expected-keymap.json"
@@ -2769,7 +2924,7 @@ rm -f "$T/conf/herdr-tts/keymap.json" "$T/conf/herdr/config.toml"
 
 # 34g. --no-keymap: zero keymap artifacts of any kind (in-4).
 ins_init nokey; ins_plugins github
-printf 'https://github.com/chiptime/herdr-tts.git\n' > "$INS/remote.txt"
+printf 'https://github.com/chiptime/agent-tts.git\n' > "$INS/remote.txt"
 ins_run -- --no-keymap
 [[ $? -eq 0 ]] && ok "34g --no-keymap exits rc=0" || bad "34g rc!=0"
 [[ ! -e "$T/conf/herdr-tts/keymap.json" && ! -e "$T/conf/herdr/config.toml" ]] \
@@ -2779,14 +2934,49 @@ grep -q 'server reload-config' "$INS/logs/herdr.log" \
 
 # 34h. HERDR_TTS_REF escape hatch: mutable ref only when explicit (in-7).
 ins_init hatch; ins_plugins github
-printf 'https://github.com/chiptime/herdr-tts.git\n' > "$INS/remote.txt"
+printf 'https://github.com/chiptime/agent-tts.git\n' > "$INS/remote.txt"
 ins_run HERDR_TTS_REF=main --
 [[ $? -eq 0 ]] && ok "34h HERDR_TTS_REF=main exits rc=0" || bad "34h rc!=0"
 grep -qF -- '--branch main' "$INS/logs/git.log" \
   && ok "34h explicit hatch clones main" || bad "34h main not used"
 grep -qE 'uv pip install .*agent-tts\.git@[0-9a-f]{40}' "$INS/logs/uv.log" \
   && ok "34h agent-tts stays SHA-pinned regardless" || bad "34h agent-tts pin loosened"
-unset INS INS_PATH INS_TEMPLATE
+
+# 34i. git-selection threat (a): the installer run with cwd inside a FOREIGN
+#      git repo — every git call must target the absolute install dir; the
+#      foreign repo stays byte-clean (verified with the REAL git, while the
+#      installer's git goes through the logging stub).
+REALGIT=$(command -v git)
+ins_init foreign; ins_plugins github
+printf 'https://github.com/chiptime/agent-tts.git\n' > "$INS/remote.txt"
+"$REALGIT" init -q "$T/foreign-repo"
+( cd "$T/foreign-repo" && printf 'sentinel\n' > sentinel.txt && "$REALGIT" add . \
+  && "$REALGIT" -c user.email=t@e.st -c user.name=t commit -qm init ) >/dev/null 2>&1
+( cd "$T/foreign-repo" && ins_run -- )
+[[ $? -eq 0 ]] && ok "34i installer succeeds from inside a foreign git repo" \
+  || bad "34i rc!=0 (err: $(tail -1 "$INS/err.log" 2>/dev/null))"
+[[ -z $("$REALGIT" -C "$T/foreign-repo" status --porcelain 2>/dev/null) ]] \
+  && ok "34i foreign repo left clean (git status empty)" \
+  || bad "34i foreign repo dirty: $("$REALGIT" -C "$T/foreign-repo" status --porcelain)"
+[[ -f "$T/foreign-repo/sentinel.txt" ]] && ok "34i foreign repo content intact" || bad "34i foreign repo content mutated"
+[[ $(grep -E 'clone| -C ' "$INS/logs/git.log" | grep -vc -- "$INS/data/herdr-tts/plugin") -eq 0 ]] \
+  && ok "34i every logged git write targeted the absolute install dir" \
+  || bad "34i git operated outside the absolute TARGET"
+
+# 34j. git-selection threat (b): a relative TARGET (relative XDG_DATA_HOME)
+#      is rejected before any mutation — nothing created, error names it.
+ins_init reltgt; ins_plugins github
+printf 'https://github.com/chiptime/agent-tts.git\n' > "$INS/remote.txt"
+( cd "$T" && env -u HERDR_TTS_REF -u HERDR_TTS_DEV -u HERDR_TTS_UPGRADE -u HERDR_TTS_KEYMAP_FILE \
+    PATH="$INS_PATH" HOME="$INS/home" XDG_DATA_HOME=reldata \
+    INSLOG="$INS/logs" UVLOG="$INS/logs/uv.log" \
+    SRC_TEMPLATE="$INS_TEMPLATE" REMOTE_FIXTURE="$INS/remote.txt" PLUGIN_FIXTURE="$INS/plugins.json" \
+    /bin/bash "$REPO/scripts/install.sh" > "$INS/out.log" 2> "$INS/err.log" )
+[[ $? -ne 0 ]] && ok "34j relative TARGET exits non-zero" || bad "34j rc==0 with a relative TARGET"
+grep -qi 'relative' "$INS/err.log" && ok "34j error names the relative-target refusal" || bad "34j refusal not explained"
+[[ ! -e "$T/reldata" ]] && ok "34j nothing created before the refusal" || bad "34j artifacts created under a relative path"
+
+unset INS INS_PATH INS_TEMPLATE INS_PLUG REALGIT
 unset HERDR_CONFIG_DIR
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -3485,8 +3675,15 @@ assert_grep "40d https link renders as a real anchor" 'href="https://example\.co
 #      spans. Harness safeguard first: the venv may hold agent_tts editable
 #      at dev HEAD — oracle file identity (boundaries/cleaner/redact) is
 #      verified against the bootstrap pin before any fixture executes.
+#      Decision 9: the lookup is return-code-checked and dual-layout
+#      (engine/src/agent_tts then legacy src/agent_tts) at the one pinned
+#      revision — a missing revision or file fails loudly, never by
+#      comparing a git rev-parse echoed-argument decoy against a blob id.
+assert_grep "40e pin is the exact selected full SHA d66616bc" \
+  'AGENT_TTS_REF="\$\{HERDR_AGENT_TTS_REF:-d66616bce3ad8193f11ae615bd58bb4508eb65be\}"' \
+  "$REPO/scripts/bootstrap.sh"
 cat > "$T/e-driver.py" <<'PYEOF'
-import json, os, re, subprocess, sys
+import json, os, re, shutil, subprocess, sys
 
 sys.path.insert(0, sys.argv[1])
 OUT = sys.argv[2]
@@ -3503,32 +3700,113 @@ boot = open(os.path.join(sys.argv[3], "scripts/bootstrap.sh"), encoding="utf-8")
 m = re.search(r"AGENT_TTS_REF=\"\$\{HERDR_AGENT_TTS_REF:-(\w{40})\}\"", boot)
 pin = m.group(1) if m else ""
 check("40e pin parsed from bootstrap.sh", bool(pin), pin or "no SHA-40 pin found")
+check("40e pin is the exact selected SHA (Decision 9)",
+      pin == "d66616bce3ad8193f11ae615bd58bb4508eb65be", pin)
 pkg_dir = os.path.dirname(agent_tts.__file__)
 repo = pkg_dir
 while repo != os.path.dirname(repo) and not (os.path.isfile(os.path.join(repo, ".git")) or os.path.isdir(os.path.join(repo, ".git"))):
     repo = os.path.dirname(repo)
+
+# Checked dual-layout oracle resolution (design Decision 9): one revision,
+# two candidate tree layouts, every git lookup guarded by return code AND
+# blob shape. git rev-parse echoes its failed argument to stdout with
+# rc 128, so an emptiness guard never fires — the echoed decoy must never
+# be mistaken for a blob id. The layout is selected as a unit (all three
+# files or the next layout); layout compatibility is a tree-shape
+# accommodation, NEVER a revision fallback.
+ORACLE_FILES = ("boundaries.py", "cleaner.py", "redact.py")
+ORACLE_LAYOUTS = ("engine/src/agent_tts", "src/agent_tts")  # monorepo, legacy
+BLOB_ID = re.compile(r"^[0-9a-f]{40}$")
+
+def git_out(git_repo, *args):
+    proc = subprocess.run(["git", "-C", git_repo, *args], capture_output=True, text=True)
+    return proc.returncode, proc.stdout.strip()
+
+def resolve_oracle(git_repo, rev, layouts=ORACLE_LAYOUTS, files=ORACLE_FILES):
+    """Resolve the three oracle blobs at one immutable revision.
+
+    Returns (status, layout, blobs, detail); status is 'revision-absent',
+    'layout-miss' or 'ok'. An unknown revision fails before any layout is
+    probed; a layout wins only when ALL files resolve in it."""
+    rc, _ = git_out(git_repo, "cat-file", "-e", f"{rev}^{{commit}}")
+    if rc != 0:
+        return "revision-absent", None, {}, f"pinned revision {rev} not present"
+    for layout in layouts:
+        blobs, missing = {}, []
+        for fname in files:
+            rc, out = git_out(git_repo, "rev-parse", f"{rev}:{layout}/{fname}")
+            if rc != 0 or not BLOB_ID.match(out):
+                missing.append(fname)
+            else:
+                blobs[fname] = out
+        if not missing:
+            return "ok", layout, blobs, f"{layout} @ {rev[:8]}"
+    probed = "; ".join(f"{f}: " + ", ".join(f"{lay}/{f}" for lay in layouts)
+                       for f in files)
+    return "layout-miss", None, {}, f"oracle unresolved at {rev[:8]} — probed {probed}"
+
 identity_ok, identity_detail = True, "regular install"
 # Linked worktrees carry a .git FILE (gitdir pointer), not a directory;
 # both mean "editable checkout" here and git -C resolves either.
 if os.path.isfile(os.path.join(repo, ".git")) or os.path.isdir(os.path.join(repo, ".git")):  # editable: compare oracle blobs
-    rel = os.path.relpath(pkg_dir, repo).replace(os.sep, "/")
-    for fname in ("boundaries.py", "cleaner.py", "redact.py"):
-        try:
-            pinned = subprocess.run(
-                ["git", "-C", repo, "rev-parse", f"{pin}:{rel}/{fname}"],
-                capture_output=True, text=True).stdout.strip()
-            local = subprocess.run(
-                ["git", "-C", repo, "hash-object", os.path.join(pkg_dir, fname)],
-                capture_output=True, text=True).stdout.strip()
-        except Exception as exc:
-            identity_ok, identity_detail = False, f"{fname}: {exc}"
-            break
-        if pinned != local:
-            identity_ok, identity_detail = False, f"{fname} drifts from pin {pin[:8]}"
-            break
+    status, layout, blobs, detail = resolve_oracle(repo, pin)
+    if status != "ok":
+        identity_ok, identity_detail = False, detail
     else:
-        identity_detail = f"editable install, oracle files == pin {pin[:8]}"
+        for fname in ORACLE_FILES:
+            rc, local = git_out(repo, "hash-object", os.path.join(pkg_dir, fname))
+            if rc != 0 or not BLOB_ID.match(local):
+                identity_ok, identity_detail = False, f"{fname}: hash-object rc={rc}"
+                break
+            if local != blobs[fname]:
+                identity_ok, identity_detail = False, \
+                    f"{fname} drifts from pin {pin[:8]} ({layout})"
+                break
+        else:
+            identity_detail = f"editable install, oracle files == {layout} @ pin {pin[:8]}"
 check("40e oracle file identity == pinned ref", identity_ok, identity_detail)
+
+# Decision-9 resolution safeguards on a throwaway sandbox repo (hermetic:
+# independent of how the venv installed agent_tts). Commit M carries only
+# the monorepo layout, commit L only the legacy one, and a bogus revision
+# must fail as revision-absent before any layout is probed.
+sb = os.path.join(os.path.dirname(OUT), "e-oracle-repo")
+for lay in ORACLE_LAYOUTS:
+    os.makedirs(os.path.join(sb, lay), exist_ok=True)
+for fname in ORACLE_FILES:
+    open(os.path.join(sb, ORACLE_LAYOUTS[0], fname), "w",
+         encoding="utf-8").write(f"# oracle {fname} (monorepo fixture)\n")
+GIT_ID = ("-c", "user.email=smoke@herdr-tts.test", "-c", "user.name=herdr-tts smoke",
+          "-c", "commit.gpgsign=false")
+git_out(sb, "init", "-q")
+git_out(sb, *GIT_ID, "add", "-A")
+git_out(sb, *GIT_ID, "commit", "-q", "-m", "monorepo layout fixture")
+rc_m, rev_m = git_out(sb, "rev-parse", "HEAD")
+shutil.rmtree(os.path.join(sb, "engine"))
+for fname in ORACLE_FILES:
+    open(os.path.join(sb, ORACLE_LAYOUTS[1], fname), "w",
+         encoding="utf-8").write(f"# oracle {fname} (legacy fixture)\n")
+git_out(sb, *GIT_ID, "add", "-A")
+git_out(sb, *GIT_ID, "commit", "-q", "-m", "legacy layout fixture")
+rc_l, rev_l = git_out(sb, "rev-parse", "HEAD")
+st_m, lay_m, blobs_m, det_m = resolve_oracle(sb, rev_m)
+check("40e dual-layout: monorepo tree resolves as a unit (engine/src)",
+      rc_m == 0 and st_m == "ok" and lay_m == "engine/src/agent_tts"
+      and set(blobs_m) == set(ORACLE_FILES), det_m)
+st_l, lay_l, blobs_l, det_l = resolve_oracle(sb, rev_l)
+check("40e dual-layout: legacy tree resolves as a unit (src)",
+      rc_l == 0 and st_l == "ok" and lay_l == "src/agent_tts"
+      and set(blobs_l) == set(ORACLE_FILES), det_l)
+st_e, lay_e, _, det_e = resolve_oracle(sb, "e" * 40)
+check("40e unknown revision fails as revision-absent (no layout retry)",
+      st_e == "revision-absent" and lay_e is None
+      and "engine/src/agent_tts" not in det_e and "src/agent_tts" not in det_e, det_e)
+rc_x, out_x = git_out(sb, "rev-parse", f"{rev_m}:engine/src/agent_tts/absent.py")
+check("40e rev-parse failure echoes its argument, never a blob id",
+      rc_x != 0 and not BLOB_ID.match(out_x), f"rc={rc_x}")
+st_x, _, _, det_x = resolve_oracle(sb, rev_m, layouts=("engine/src/nope",))
+check("40e absent oracle path fails hard naming the probed path",
+      st_x == "layout-miss" and "engine/src/nope/boundaries.py" in det_x, det_x)
 
 import reader_pipeline as rp
 
@@ -4145,6 +4423,170 @@ assert_grep "43d reading view renders the reader popup row" ' p  Reader popup:' 
 assert_grep "43d p knob note renders" 'Reader auto-open: on' "$T/popup.txt"
 assert_grep "43d p knob persists on" '^TTS_READER_AUTO="on"$' "$HERDR_TTS_CONFIG_FILE"
 unset HERDR_TTS_CONFIG_FILE
+
+# 44. (AT-11 design Decision 4) Portable resolvers. Every behavioral check
+#     runs the SHIPPED resolver block extracted from the real launcher —
+#     the tested code is the code that ships, never a reimplementation.
+new_env s44
+extract_block() { # $1 launcher file -> stdout; empty when the block is absent
+  sed -n '/^# >>> herdr portable resolvers/,/^# <<< herdr portable resolvers/p' "$1"
+}
+extract_block "$SCRIPT" > "$T/plugin-block.txt"
+extract_block "$REPO/../brain/bin/herdr-brain" > "$T/brain-block.txt"
+
+# 44a. The shipped plugin launcher carries the four resolvers.
+[[ -s "$T/plugin-block.txt" ]] \
+  && ok "44a resolver block present in bin/herdr-tts" || bad "44a resolver block missing from bin/herdr-tts"
+for fn in herdr_resolve_root herdr_resolve_tts_home herdr_resolve_bin herdr_resolve_port; do
+  grep -q "^${fn}()" "$T/plugin-block.txt" \
+    && ok "44a block defines ${fn}" || bad "44a block does not define ${fn}"
+done
+
+# Sandbox launcher built from the SHIPPED block: herdr_resolve_root anchors
+# at its own BASH_SOURCE, so placing the stub inside a fake layout proves
+# the ascension against the exact shipped text.
+build_resolver_stub() { # $1 stub path, $2 driver code appended after the block
+  { printf '#!/usr/bin/env bash\nset -euo pipefail\n'
+    cat "$T/plugin-block.txt"
+    printf '%s\n' "$2"; } > "$1"
+  chmod +x "$1"
+}
+LAYOUT="$T/layout"; mkdir -p "$LAYOUT/bin"
+build_resolver_stub "$LAYOUT/bin/herdr-tts" 'herdr_resolve_root herdr-tts'
+
+# 44b. Root: unset HERDR_PLUGIN_ROOT derives the layout root by ascension;
+#      the env knob wins; deep ascension works up to 6 levels and fails
+#      actionably beyond.
+got="$(env -i PATH="/usr/bin:/bin" "$LAYOUT/bin/herdr-tts")"
+[[ "$got" == "$LAYOUT" ]] \
+  && ok "44b root: unset HERDR_PLUGIN_ROOT derives the layout root" \
+  || bad "44b root: got '$got' want '$LAYOUT'"
+got="$(env -i PATH="/usr/bin:/bin" HERDR_PLUGIN_ROOT=/opt/custom-herdr "$LAYOUT/bin/herdr-tts")"
+[[ "$got" == "/opt/custom-herdr" ]] \
+  && ok "44b root: HERDR_PLUGIN_ROOT override wins" \
+  || bad "44b root override: got '$got'"
+DEEP="$T/deep3"; mkdir -p "$DEEP/bin" "$DEEP/1/2"
+touch "$DEEP/bin/herdr-tts"
+build_resolver_stub "$DEEP/1/2/wrapper" 'herdr_resolve_root herdr-tts'
+got="$(env -i PATH="/usr/bin:/bin" "$DEEP/1/2/wrapper")"
+[[ "$got" == "$DEEP" ]] \
+  && ok "44b root: ascension reaches 3 levels up" \
+  || bad "44b deep ascension: got '$got' want '$DEEP'"
+TOODEEP="$T/deep9"; mkdir -p "$TOODEEP/bin" "$TOODEEP/1/2/3/4/5/6/7"
+touch "$TOODEEP/bin/herdr-tts"
+build_resolver_stub "$TOODEEP/1/2/3/4/5/6/7/wrapper" 'herdr_resolve_root herdr-tts'
+if env -i PATH="/usr/bin:/bin" "$TOODEEP/1/2/3/4/5/6/7/wrapper" > "$T/toodeep.out" 2> "$T/toodeep.err"; then
+  bad "44b root: ascension beyond 6 levels unexpectedly succeeded"
+else
+  grep -q "HERDR_PLUGIN_ROOT" "$T/toodeep.err" \
+    && ok "44b root: beyond 6 levels fails naming HERDR_PLUGIN_ROOT" \
+    || bad "44b root: failure does not name HERDR_PLUGIN_ROOT"
+fi
+
+# 44c. HERDR_TTS_HOME precedence (OQ-2, Engram #9681): set-and-valid wins
+#      even when a sibling tts-plugin exists; unset derives the sibling;
+#      neither candidate usable -> actionable error naming both.
+HOSTS="$T/hosts"; BRAINROOT="$HOSTS/herdr/brain"; mkdir -p "$BRAINROOT/bin" "$HOSTS/herdr/tts-plugin"
+build_resolver_stub "$BRAINROOT/bin/herdr-brain" "herdr_resolve_tts_home \"$BRAINROOT\""
+mkdir -p "$T/explicit-tts"
+got="$(env -i PATH="/usr/bin:/bin" HERDR_TTS_HOME="$T/explicit-tts" "$BRAINROOT/bin/herdr-brain")"
+[[ "$got" == "$T/explicit-tts" ]] \
+  && ok "44c tts home: set-and-valid HERDR_TTS_HOME wins over the sibling" \
+  || bad "44c override: got '$got' want '$T/explicit-tts'"
+got="$(env -i PATH="/usr/bin:/bin" "$BRAINROOT/bin/herdr-brain")"
+[[ "$got" == "$HOSTS/herdr/tts-plugin" ]] \
+  && ok "44c tts home: unset derives the sibling tts-plugin" \
+  || bad "44c sibling derivation: got '$got'"
+SOLO="$T/solo/brain"; mkdir -p "$SOLO/bin"
+build_resolver_stub "$SOLO/bin/herdr-brain" "herdr_resolve_tts_home \"$SOLO\""
+if env -i PATH="/usr/bin:/bin" HERDR_TTS_HOME="$T/no-such-tts" "$SOLO/bin/herdr-brain" > "$T/tts.out" 2> "$T/tts.err"; then
+  bad "44c tts home: unusable override + no sibling unexpectedly succeeded"
+else
+  grep -q "HERDR_TTS_HOME" "$T/tts.err" && grep -q "tts-plugin" "$T/tts.err" \
+    && ok "44c tts home: failure names both candidates" \
+    || bad "44c tts home: failure does not name both candidates"
+fi
+
+# 44d. HERDR_BIN six-step discovery (hermetic PATH/HOME; brew only as a
+#      stub on the sandbox PATH — no host tooling is consulted).
+BINSTUB="$T/bin/herdr-brain.d"; build_resolver_stub "$BINSTUB" 'herdr_resolve_bin'
+mkdir -p "$T/pbin" "$T/brew/bin" "$T/home/.local/bin" "$T/nohome" "$T/brewbin" "$T/brew2/bin"
+printf '#!/bin/sh\n' > "$T/pbin/herdr";    chmod +x "$T/pbin/herdr"
+printf '#!/bin/sh\n' > "$T/brew/bin/herdr"; chmod +x "$T/brew/bin/herdr"
+printf '#!/bin/sh\n' > "$T/brew2/bin/herdr"; chmod +x "$T/brew2/bin/herdr"
+printf '#!/bin/sh\n' > "$T/home/.local/bin/herdr"; chmod +x "$T/home/.local/bin/herdr"
+printf '#!/bin/sh\necho %s\n' "$T/brew2" > "$T/brewbin/brew"; chmod +x "$T/brewbin/brew"
+got="$(env -i PATH="/usr/bin:/bin" HOME="$T/home" HERDR_BIN=/x/herdr "$BINSTUB")"
+[[ "$got" == "/x/herdr" ]] \
+  && ok "44d bin step 1: HERDR_BIN wins" || bad "44d step 1: got '$got'"
+got="$(env -i PATH="$T/pbin:/usr/bin:/bin" HOME="$T/home" HOMEBREW_PREFIX="$T/brew" "$BINSTUB")"
+[[ "$got" == "$T/pbin/herdr" ]] \
+  && ok "44d bin step 2: PATH entry beats HOMEBREW_PREFIX" || bad "44d step 2: got '$got'"
+got="$(env -i PATH="/usr/bin:/bin" HOME="$T/home" HOMEBREW_PREFIX="$T/brew" "$BINSTUB")"
+[[ "$got" == "$T/brew/bin/herdr" ]] \
+  && ok "44d bin step 3: HOMEBREW_PREFIX discovery" || bad "44d step 3: got '$got'"
+got="$(env -i PATH="$T/brewbin:/usr/bin:/bin" HOME="$T/nohome" "$BINSTUB")"
+[[ "$got" == "$T/brew2/bin/herdr" ]] \
+  && ok "44d bin step 4: brew --prefix discovery" || bad "44d step 4: got '$got'"
+got="$(env -i PATH="/usr/bin:/bin" HOME="$T/home" "$BINSTUB")"
+[[ "$got" == "$T/home/.local/bin/herdr" ]] \
+  && ok "44d bin step 5: ~/.local/bin fallback" || bad "44d step 5: got '$got'"
+got="$(env -i PATH="/usr/bin:/bin" HOME="$T/nohome" "$BINSTUB")"
+[[ "$got" == "herdr" ]] \
+  && ok "44d bin step 6: bare herdr last resort" || bad "44d step 6: got '$got'"
+
+# 44e. Port: HERDR_BRAIN_PORT -> persisted config.env (sourcable KEY=VALUE,
+#      quotes stripped, unrelated keys tolerated) -> default 8741.
+PORTSTUB="$T/bin/herdr-port.d"; mkdir -p "$T/portcfg" "$T/portempty"
+build_resolver_stub "$PORTSTUB" "herdr_resolve_port \"$T/portcfg\""
+printf '# comment\nOTHER_KEY="x"\nHERDR_BRAIN_PORT="9005"\n' > "$T/portcfg/config.env"
+got="$(env -i PATH="/usr/bin:/bin" HERDR_BRAIN_PORT=9100 "$PORTSTUB")"
+[[ "$got" == "9100" ]] \
+  && ok "44e port: HERDR_BRAIN_PORT beats persisted config" || bad "44e env port: got '$got'"
+got="$(env -i PATH="/usr/bin:/bin" "$PORTSTUB")"
+[[ "$got" == "9005" ]] \
+  && ok "44e port: persisted config.env value honoured" || bad "44e config port: got '$got'"
+printf 'OTHER_KEY="1"\n' > "$T/portcfg/config.env"
+got="$(env -i PATH="/usr/bin:/bin" "$PORTSTUB")"
+[[ "$got" == "8741" ]] \
+  && ok "44e port: config without the key falls back to 8741" || bad "44e no-key port: got '$got'"
+build_resolver_stub "$PORTSTUB" "herdr_resolve_port \"$T/portempty\""
+got="$(env -i PATH="/usr/bin:/bin" "$PORTSTUB")"
+[[ "$got" == "8741" ]] \
+  && ok "44e port: no config file defaults to 8741" || bad "44e default port: got '$got'"
+
+# 44f. Parity: the brain launcher carries the identical block, both
+#      launchers wire it, and the task-2.1 mandates hold (no hardcoded
+#      HERDR_TTS_HOME default, no literal brew prefix in bin/herdr-brain).
+[[ -s "$T/brain-block.txt" ]] \
+  && ok "44f resolver block present in bin/herdr-brain" || bad "44f resolver block missing from bin/herdr-brain"
+for fn in herdr_resolve_root herdr_resolve_tts_home herdr_resolve_bin herdr_resolve_port; do
+  grep -q "^${fn}()" "$T/brain-block.txt" \
+    && ok "44f brain block defines ${fn}" || bad "44f brain block does not define ${fn}"
+done
+if diff -u "$T/plugin-block.txt" "$T/brain-block.txt" > "$T/parity.diff" 2>&1; then
+  ok "44f resolver block byte-identical in both launchers"
+else
+  bad "44f resolver block differs between the launchers"; sed 's/^/      /' "$T/parity.diff"
+fi
+grep -q 'PLUGIN_ROOT="$(herdr_resolve_root herdr-tts)"' "$SCRIPT" \
+  && ok "44f plugin launcher wires herdr_resolve_root" || bad "44f plugin launcher does not wire the root resolver"
+grep -q 'REPO_DIR="$(herdr_resolve_root herdr-brain)"' "$REPO/../brain/bin/herdr-brain" \
+  && ok "44f brain launcher wires herdr_resolve_root" || bad "44f brain launcher does not wire the root resolver"
+assert_no_grep_f "44f no hardcoded tts home default in bin/herdr-brain" 'HERDR_TTS_HOME:-$HOME' "$REPO/../brain/bin/herdr-brain"
+assert_no_grep "44f no literal brew prefix in bin/herdr-brain" '/home/linuxbrew' "$REPO/../brain/bin/herdr-brain"
+
+# 16s. (Decision-8 test d) Host-state invariance across the WHOLE suite
+#      run: the four production playback-state paths must be unchanged —
+#      same presence, inode, mtime and content (or still ABSENT) — between
+#      the read-only fingerprint taken before the first scenario and now.
+host_state_snap "$ROOT/.host-state-after"
+if diff -u "$HOST_STATE_BEFORE" "$ROOT/.host-state-after" > "$ROOT/.host-state.diff" 2>&1; then
+  ok "16s host playback state invariant across the full suite run"
+else
+  bad "16s host playback state CHANGED across the suite run"
+  sed 's/^/      /' "$ROOT/.host-state.diff"
+fi
 
 echo
 echo "═══ RESULT: $PASS passed, $FAIL failed ═══"
