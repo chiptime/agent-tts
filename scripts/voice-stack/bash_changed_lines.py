@@ -40,10 +40,6 @@ PS4 = "+${LINENO}@${BASH_SOURCE:-}@"
 # counting them would poison the denominator forever.
 STRUCTURAL_ONLY = {"else", "fi", "esac", "done", ";;", "then", "do", "{", "}",
                    "}", "!", "in)", "&", ")"}
-# `name() {` DEFINES, it does not run; a bare `pattern)` case label is
-# matched, not executed: xtrace emits neither.
-_FUNC_DEF_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\s*\(\)\s*\{?$")
-_CASE_PATTERN_RE = re.compile(r"^[^()|]+\)\s*$")
 
 
 def die_blocked(reason: str) -> int:

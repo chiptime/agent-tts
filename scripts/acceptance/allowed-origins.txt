@@ -1,0 +1,23 @@
+# allowed-origins.txt — documented-origin network policy allowlist (AT-11 slice 2)
+#
+# Scope: the ONLY network origins the V2 acceptance harness permits. Enforced
+# by scripts/acceptance/origin-shim (installed as `curl` and `git`, first on
+# the sandbox PATH) and cross-checked against the installation documentation
+# by engine/tests/test_versioned_tree_hygiene.py.
+#
+# Format: one origin per line. '#' starts a comment; blank lines are ignored.
+# Shell-style wildcards are allowed (e.g. cdn-lfs*.huggingface.co).
+#
+# A '# pending-docs: <owner>' annotation marks an origin that is
+# policy-authorized but not yet cited by the scoped installation docs. The
+# allowlist<->docs equivalence test accepts an origin only when it is
+# documented in scope OR explicitly pending with a named owner, so the list
+# cannot silently drift wider than the documentation. Task 4.3 resolves the
+# remaining pending entries during the final documentation pass.
+github.com
+raw.githubusercontent.com
+codeload.github.com              # pending-docs: M4 final documentation pass (task 4.3)
+huggingface.co                   # pending-docs: M3 STT consent step (task 3.4)
+cdn-lfs*.huggingface.co         # pending-docs: M3 STT model download (task 3.4)
+pypi.org
+files.pythonhosted.org

@@ -444,6 +444,20 @@ case__playback_state_paths_env_override_wins() {
      "L=$SANDBOX/custom.lock|P=$SANDBOX/custom.pid|S=$SANDBOX/custom.sock" ]]
 }
 
+case__playback_host_aliases_reach_engine_children() {
+  sandbox_setup trio_aliases
+  HERDR_TTS_LOCK_FILE="$SANDBOX/host.lock" \
+  HERDR_TTS_PID_FILE="$SANDBOX/host.pid" \
+  HERDR_TTS_IPC_SOCKET="$SANDBOX/host.sock" \
+  AGENT_TTS_LOCK_FILE="$SANDBOX/engine.lock" \
+  AGENT_TTS_PID_FILE="$SANDBOX/engine.pid" \
+  AGENT_TTS_SOCKET="$SANDBOX/engine.sock" \
+    in_host 'bash -c '\''printf "L=%s|P=%s|S=%s\n" "$AGENT_TTS_LOCK_FILE" "$AGENT_TTS_PID_FILE" "$AGENT_TTS_SOCKET"'\''' \
+    > "$SANDBOX/out" || return 1
+  [[ "$(cat "$SANDBOX/out")" == \
+     "L=$SANDBOX/host.lock|P=$SANDBOX/host.pid|S=$SANDBOX/host.sock" ]]
+}
+
 main() {
   local all=""
   local fn

@@ -29,7 +29,7 @@ make_fake_env() {
 #!/usr/bin/env bash
 set -uo pipefail
 if [[ "${1:-}" == "venv" ]]; then
-  dir="${3:-}"
+  dir="${2:-}"
   mkdir -p "$dir/bin"
   printf '#!/usr/bin/env bash\nexit 0\n' > "$dir/bin/python"
   chmod +x "$dir/bin/python"
@@ -66,9 +66,9 @@ case__bootstrap_default_pin_installs_published_engine() {
   run_bootstrap "$box" > "$box/out" 2> "$box/err" || rc=$?
   [[ $rc -eq 0 ]] || { cat "$box/err" >&2; return 1; }
   [[ -s "$box/uv-argv.log" ]] || return 1
-  # the install argv carries the pinned engine ref — the published commit,
+   # the install argv carries the selected monorepo engine revision,
   # never a branch or short SHA
-  grep -q "git+https://github.com/chiptime/agent-tts.git@e592ef31c828c5c637b3737604f173b1e0a07b80#subdirectory=engine" \
+   grep -q "git+https://github.com/chiptime/agent-tts.git@d66616bce3ad8193f11ae615bd58bb4508eb65be#subdirectory=engine" \
     "$box/uv-argv.log" || return 1
   # test instrumentation rides along on the full path
   grep -q "pytest" "$box/uv-argv.log" || return 1

@@ -161,3 +161,33 @@ than destructively reverted. No secrets/runtime/cache paths were staged.
 - Rollback boundary: unique M1 tooling/isolation integration, not main's
   existing voice-stack features. Preservation does not close M1's accepted
   historical G-BASH-MATRIX exception or validate old snapshots anew.
+
+### AT-11 reconciliation
+
+- `.atl/skill-registry.md`: retained root's October 4 registry; older AT-11
+  registry is preserved in ancestry. Both launcher resolver blocks are retained.
+- `config.py`: combined all consult defaults/fields/environment inputs and
+  positive-span validation with AT-11's defaulted `brain_port`, parser and
+  persisted-port resolution. Incomplete milestones retain their markers.
+- Plugin launcher: main pending admission/localization/cancel/segmented behavior
+  plus AT-11 portable root/home/bin/port resolution. Playback aliases resolve
+  HERDR_TTS overrides first, AGENT_TTS overrides next, existing defaults last;
+  the chosen paths are exported to engine children to avoid split state.
+- Bootstrap retains main's pytest/coverage dependencies and AT-11's portable
+  local `engine/` discovery and selected immutable `d66616bc…` pin. Offline Git
+  comparison found identical `engine/pyproject.toml` and oracle
+  `boundaries.py`/`cleaner.py`/`redact.py` at `d66616bc…` and M1's `e592ef3`.
+  No remote availability or published-cancel capability is claimed.
+- Smoke combines AT-11's checked dual-layout oracle with M1 `.git`-file-aware
+  worktree detection and isolation. Static shape pins are updated for nested
+  aliases (test maintenance, not RED). Sterile fake-uv argv parsing now matches
+  `uv venv <directory>`; its pin assertion matches the selected AT-11 revision.
+- Integration RED: `tests/test_resolve.py` had 34 pass / 1 fail because the
+  server's entrypoint ignored persisted port 9005 and used 8741. GREEN after
+  wiring `settings.brain_port`: 35 passed. Uvicorn and app creation are mocked;
+  no service starts. Host-child alias test observed FAIL then OK after export.
+- `bash hosts/herdr/tts-plugin/tests/bootstrap_sterile_harness.sh`: 3 cases OK,
+  exit 0; all installation commands are fake, HOME/XDG temporary, no network.
+- Rollback boundary: port consumption and cross-alias integration; preserve both
+  pre-existing consult and portable resolver behavior. No AT-11 feature work
+  beyond integration seams, re-slicing, release, install or deployment is run.

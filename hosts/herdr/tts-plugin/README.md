@@ -180,31 +180,37 @@ herdr-tts is a **thin host**: it only forwards the agent identity + session id (
 
 ## 📦 Installation
 
+The plugin lives in the **agent-tts monorepo**, at `hosts/herdr/tts-plugin` inside [`chiptime/agent-tts`](https://github.com/chiptime/agent-tts). Every route below installs from that monorepo.
+
 ### 1. From the Herdr Plugin Registry (Recommended)
 
-```bash
-herdr plugin install chiptime/herdr-tts
+The `id=`-tagged blocks below are the exact commands the acceptance harness executes; edit them and the hygiene suite fails instead of silently diverging.
+
+```bash id=install-plugin-github
+herdr plugin install chiptime/agent-tts/hosts/herdr/tts-plugin
 ```
 
-Herdr runs the `[[build]]` hook (`scripts/bootstrap.sh`), which creates an isolated Python venv and installs the `agent-tts` engine from an **immutable pinned ref** (full commit SHA while agent-tts publishes no tags). The build works on `uv`-only and `python3`-only machines alike: installs route through `uv pip` or `python -m pip`, never through a venv `bin/pip` that may not exist.
+Herdr clones the monorepo, registers the plugin from its subdirectory, and runs the `[[build]]` hook (`scripts/bootstrap.sh`), which creates an isolated Python venv and installs the `agent-tts` engine from an **immutable pinned ref** (full commit SHA while the monorepo publishes no engine tags). The build works on `uv`-only and `python3`-only machines alike: installs route through `uv pip` or `python -m pip`, never through a venv `bin/pip` that may not exist.
 
 There is no `plugin update` in Herdr v1 — reinstall from the registry to refresh, or re-run the installer below (its re-run performs a guarded in-place upgrade).
 
 ### 2. curl | sh Fallback (Non-Registry)
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/chiptime/herdr-tts/v0.16.0/scripts/install.sh | bash
+```bash id=install-plugin-curl
+curl -fsSL "https://raw.githubusercontent.com/chiptime/agent-tts/${HERDR_TTS_REF:-v0.16.0}/hosts/herdr/tts-plugin/scripts/install.sh" | bash
 ```
 
-The installer is **tag-pinned** (`v0.16.0` by default) and, in order: verifies prerequisites (`git`, `jq`, `herdr`, plus `uv` or `python3`) before touching anything; refuses to install over a linked dev checkout and tells you the exact `plugin unlink` / `plugin uninstall` command to migrate; clones to `~/.local/share/herdr-tts/plugin`; bootstraps the venv; adopts the collision-free `menu` keymap unless a `keymap.json` already exists (never overwrites; `--no-keymap` skips the step entirely); verifies the daemon and prints the manual uninstall steps.
+The installer is **ref-pinned** (`v0.16.0` of the agent-tts monorepo by default; the same `${HERDR_TTS_REF:-v0.16.0}` expansion above selects the ref for **both** the fetched installer script and the clone it performs) and, in order: verifies prerequisites (`git`, `jq`, `herdr`, plus `uv` or `python3`) before touching anything; refuses a relative install target outright; refuses to install over a linked dev checkout and tells you the exact `plugin unlink` / `plugin uninstall` command to migrate; clones the monorepo to `~/.local/share/herdr-tts/plugin` and drives the plugin at `hosts/herdr/tts-plugin` inside that checkout; bootstraps the venv; adopts the collision-free `menu` keymap unless a `keymap.json` already exists (never overwrites; `--no-keymap` skips the step entirely); verifies the daemon and prints the manual uninstall steps.
 
-Re-running it upgrades in place: the checkout's `origin` remote is compared against the canonical URL, the tag is re-fetched, and `agent-tts` is refreshed past the plugin's never-upgrade gate. A mismatched remote aborts before writing anything.
+Re-running it upgrades in place: the checkout's `origin` remote is compared against the canonical monorepo URL, the selected ref is re-fetched, and `agent-tts` is refreshed past the plugin's never-upgrade gate. A mismatched remote aborts before writing anything — even when the installer itself runs from inside an unrelated git repository, which is never touched.
 
 **Escape hatch (mutable ref — use deliberately):**
 
 ```bash
-# track main instead of the pinned tag
-HERDR_TTS_REF=main curl -fsSL https://raw.githubusercontent.com/chiptime/herdr-tts/main/scripts/install.sh | bash
+# track main instead of the pinned default — export so the ref reaches BOTH
+# the fetched installer script and the clone the installer performs
+export HERDR_TTS_REF=main
+curl -fsSL "https://raw.githubusercontent.com/chiptime/agent-tts/${HERDR_TTS_REF}/hosts/herdr/tts-plugin/scripts/install.sh" | bash
 ```
 
 ### Uninstall
@@ -213,22 +219,19 @@ The installer prints these steps at the end of every run:
 
 1. `herdr plugin uninstall herdr.tts` (or `herdr plugin unlink` for a linked checkout)
 2. Stop the daemon: `herdr-tts --stop` (or the pid recorded in `~/.local/state/herdr-tts/daemon.pid`)
-3. `rm -rf ~/.local/share/herdr-tts` — removes the checkout and the venv
+3. `rm -rf ~/.local/share/herdr-tts` — removes the monorepo checkout and the venv
 4. Remove the managed keymap block (the lines between the herdr-tts markers) from your herdr config
 
-### 3. Local Development / From Source
+### 3. Local Repository (docs-only route)
+
+When the monorepo is already on your machine, link the plugin straight from the checkout — no network involved:
 
 ```bash
-git clone https://github.com/chiptime/herdr-tts.git ~/Code/personal/herdr-tts
-herdr plugin link ~/Code/personal/herdr-tts
+git clone https://github.com/chiptime/agent-tts.git ~/agent-tts
+herdr plugin link ~/agent-tts/hosts/herdr/tts-plugin
 ```
 
-Editable installs of the engine are **opt-in**: `bootstrap.sh` only uses a local `~/Code/personal/agent-tts` checkout when `HERDR_TTS_DEV=1` is set — public installs always resolve the pinned remote ref, regardless of what exists on the machine.
-
-```bash
-export HERDR_TTS_DEV=1   # agent-tts editable from ~/Code/personal/agent-tts
-bash scripts/bootstrap.sh
-```
+This route is intentionally **not** `id=`-tagged: it is covered by the documentation and the smoke suite's linked-checkout scenarios, not by the acceptance harness (recorded as docs-covered-only in the scenario registry). Editable engine installs remain **opt-in** via `HERDR_TTS_DEV=1` — public installs always resolve the pinned remote ref, regardless of what exists on the machine (see `scripts/bootstrap.sh`).
 
 ### 4. Hand It to a Coding Agent (Paste-Ready)
 
@@ -240,7 +243,7 @@ Install the herdr-tts voice-notification plugin for my Herdr setup.
 1. Check the prerequisites first: git, jq, the `herdr` CLI, and either `uv`
    or `python3` must be on PATH. Abort and report if any is missing.
 2. Run the tag-pinned installer:
-   curl -fsSL https://raw.githubusercontent.com/chiptime/herdr-tts/v0.16.0/scripts/install.sh | bash
+   curl -fsSL https://raw.githubusercontent.com/chiptime/agent-tts/v0.16.0/hosts/herdr/tts-plugin/scripts/install.sh | bash
 3. Verify: `herdr-tts --contract-version` must print 1, and
    `herdr-tts --status` must print the current state. Report both outputs.
 4. Publish your operator skill so you can drive the plugin later:
