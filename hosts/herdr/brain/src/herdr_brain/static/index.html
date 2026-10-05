@@ -997,6 +997,29 @@
     }
     .replay-btn:active { transform: scale(0.96); }
     .replay-btn:disabled { opacity: 0.6; cursor: wait; }
+    #conversation .turn.brain .karaoke-chunk {
+      cursor: pointer;
+      overflow-wrap: anywhere;
+      border-radius: 3px;
+      -webkit-box-decoration-break: clone;
+      box-decoration-break: clone;
+    }
+    #conversation .turn.brain .karaoke-chunk::before {
+      content: attr(data-ordinal);
+      font-size: 0.7em;
+      font-weight: 700;
+      color: var(--muted);
+      margin-right: 0.35em;
+      user-select: none;
+    }
+    #conversation .turn.brain .karaoke-active {
+      background: var(--panel);
+      box-shadow: 0 2px 0 var(--accent);
+    }
+    #conversation .turn.brain .karaoke-chunk:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 3px;
+    }
     /* System turn (PRD action-approval-gate §6): quiet, muted, centered —
      * the UI notes what the voice never says (silent gate expiry). */
     .turn.system {
@@ -1386,6 +1409,7 @@
   <script src="/approval.js"></script>
     <script src="/reader.js"></script>
     <script src="/toast.js"></script>
+    <script src="/karaoke.js"></script>
     <script src="/announce.js"></script>
     <script src="/speech.js"></script>
     <script src="/consult.js"></script>

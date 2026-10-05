@@ -532,8 +532,72 @@
     body.textContent = text;
     turn.appendChild(who);
     turn.appendChild(body);
-    if (role === "brain") attachReplay(turn, function () { return text; }, "brain");
+    if (role === "brain") mountMainKaraoke(turn, body, text);
     return turn;
+  }
+
+  var karaokeTurnSequence = 0;
+
+  function mountMainKaraoke(turn, body, text) {
+    var plan = Karaoke.createPlan("brain-" + (++karaokeTurnSequence), text);
+    turn.karaokePlan = plan;
+    turn.setAttribute("data-karaoke-turn", plan.turnId);
+    if (!plan.chunks.length) return; // raw whitespace stays visible, without empty audio.
+    body.textContent = "";
+    plan.chunks.forEach(function (chunk) {
+      var control = document.createElement("span");
+      control.className = "karaoke-chunk";
+      control.textContent = text.slice(chunk.raw[0], chunk.raw[1]);
+      control.tabIndex = 0;
+      control.setAttribute("role", "button");
+      control.setAttribute("data-ordinal", chunk.ordinal);
+      control.setAttribute("aria-label", "Escuchar fragmento " + chunk.ordinal + " de " + plan.chunks.length);
+      control.setAttribute("aria-pressed", "false");
+      var press = null;
+      var suppressed = false;
+      control.addEventListener("pointerdown", function (event) {
+        suppressed = event.button !== 0;
+        press = { x: event.clientX, y: event.clientY, time: performance.now() };
+      });
+      control.addEventListener("pointermove", function (event) {
+        if (press && Math.hypot(event.clientX - press.x, event.clientY - press.y) > 8) suppressed = true;
+      });
+      control.addEventListener("pointerup", function () {
+        if (press && performance.now() - press.time >= 500) suppressed = true;
+        press = null;
+      });
+      ["pointercancel", "dragstart", "contextmenu"].forEach(function (name) {
+        control.addEventListener(name, function () { suppressed = true; press = null; });
+      });
+      function nativeOperation(event) {
+        var selection = window.getSelection();
+        return event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
+          (selection && !selection.isCollapsed) ||
+          event.target.closest("a, code, pre, button, input, textarea, select, summary, audio, video, [contenteditable='true'], [role='link'], [role='textbox']");
+      }
+      control.addEventListener("click", function (event) {
+        if (event.button !== 0 || event.detail > 1 || suppressed || nativeOperation(event)) return;
+        selectMainKaraoke(plan, chunk.globalIndex);
+      });
+      control.addEventListener("keydown", function (event) {
+        if (event.target !== control || event.repeat || (event.key !== "Enter" && event.key !== " ") || nativeOperation(event)) return;
+        event.preventDefault(); // Space selects once, without scrolling the conversation.
+        suppressed = false;
+        selectMainKaraoke(plan, chunk.globalIndex);
+      });
+      body.appendChild(control);
+    });
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "replay-btn";
+    button.textContent = "🔊 Escuchar";
+    button.setAttribute("aria-label", "Leer esta respuesta en voz alta");
+    button.title = "Leer en voz alta";
+    button.addEventListener("click", function (event) {
+      event.stopPropagation();
+      selectMainKaraoke(plan, 0);
+    });
+    turn.appendChild(button);
   }
 
   function addTurn(role, text, ts) {
@@ -1290,6 +1354,12 @@
   var audioQueue = [];
   var audioBusy = false;
   var audioFinished = null;
+  var karaokeOwnerEl = null;
+  var karaokeActiveEl = null;
+  var karaokePopup = null;
+  var karaokeMedia = null;
+  var karaokeFailureNotice = null;
+  var audioSourceSequence = 0;
 
   /* Speech request identity + server-side cancel (speech.js). stopAudio and
    * hang-up share ONE cancel path; the UI only hears about it when the
@@ -1337,21 +1407,231 @@
     }
   });
 
+  function mainKaraokeTurn(plan) {
+    var turn = plan && conv.querySelector('[data-karaoke-turn="' + plan.turnId + '"]');
+    return turn && turn.karaokePlan === plan ? turn : null;
+  }
+
+  function matchesAudioSource(item) {
+    return !!item && (player.currentSrc || player.src) === item.source;
+  }
+
+  function replaceAudioSource(item) {
+    var source = new URL(item.url, document.baseURI);
+    // The first source already has no predecessor. Stamp every replacement
+    // with a browser-only fragment, never sent to the audio endpoint. Even
+    // identical URLs then have distinct native-event identities. This is not
+    // an alignment offset; ownership/indexes still come solely from the plan.
+    if (++audioSourceSequence > 1) source.hash = "brain-audio-" + audioSourceSequence;
+    item.source = source.href;
+    player.src = item.source;
+  }
+
+  function currentKaraokeItem(item) {
+    var state = karaokeCtl.state();
+    return !item.disposed && audioFinished === item && matchesAudioSource(item) &&
+      state.ownerTurnId === item.karaoke.ownerTurnId && state.generation === item.karaoke.generation &&
+      state.plan === item.karaoke.plan && !!mainKaraokeTurn(state.plan);
+  }
+
+  function restoreMainReplay(turn) {
+    if (!turn) return;
+    turn.removeAttribute("aria-busy");
+    var button = turn.querySelector(".replay-btn");
+    if (button) {
+      button.disabled = false;
+      button.removeAttribute("aria-busy");
+      button.textContent = "🔊 Escuchar";
+    }
+  }
+
+  function finishKaraokeIdle(generation) {
+    var state = karaokeCtl.state();
+    if (state.phase !== "idle" || state.generation !== generation) return;
+    if (!audioFinished && karaokeMedia) {
+      player.removeAttribute("src");
+      player.load();
+      karaokeMedia = null;
+    }
+    pumpAudio();
+    if (!audioBusy && !audioQueue.length) {
+      stopBtn.classList.add("hidden");
+      if (inCall && !speechCtl.activeId() && (callState === "speaking" || callState === "thinking" || callState === "paused")) {
+        setCallState(micBaseState());
+        startListening();
+        if (karaokeFailureNotice) showBanner(karaokeFailureNotice);
+      }
+    }
+  }
+
+  var karaokeCtl = Karaoke.createController({
+    fetch: function (url, options) { return fetch(url, options); },
+    createAbortController: function () { return new AbortController(); },
+    player: { load: function (owned, events) {
+      var item = { url: owned.url, karaoke: owned, events: events, announcement: null,
+        speechRequestId: null, seq: null, disposed: false, metadataReady: false,
+        source: new URL(owned.url, document.baseURI).href, listeners: [] };
+      audioQueue.unshift(item);
+      pumpAudio();
+      return {
+        get duration() { return currentKaraokeItem(item) && item.metadataReady ? player.duration : NaN; },
+        get currentTime() { return currentKaraokeItem(item) ? player.currentTime : NaN; },
+        set currentTime(value) { if (currentKaraokeItem(item)) player.currentTime = value; },
+        play: function () {
+          if (!currentKaraokeItem(item)) throw new Error("Retired replay source");
+          return player.play();
+        },
+        pause: function () { if (currentKaraokeItem(item)) player.pause(); },
+        dispose: function () {
+          item.disposed = true;
+          item.listeners.forEach(function (listener) { player.removeEventListener(listener.name, listener.callback); });
+          var index = audioQueue.indexOf(item);
+          if (index !== -1) audioQueue.splice(index, 1);
+          if (audioFinished === item) {
+            audioFinished = null;
+            audioBusy = false;
+            player.pause();
+          }
+        }
+      };
+    } },
+    onState: function (state) {
+      restoreMainReplay(karaokeOwnerEl);
+      karaokeOwnerEl = mainKaraokeTurn(state.plan);
+      if (state.phase === "idle") {
+        // Controller clears progress after state. Pump only after both surfaces
+        // retire; a new selection invalidates this generation-bound microtask.
+        Promise.resolve().then(function () { finishKaraokeIdle(state.generation); });
+        return;
+      }
+      stopBtn.classList.remove("hidden");
+      if (karaokeOwnerEl && (state.phase === "preparing" || state.phase === "awaiting_metadata")) {
+        karaokeOwnerEl.setAttribute("aria-busy", "true");
+        var button = karaokeOwnerEl.querySelector(".replay-btn");
+        if (state.phase === "preparing" && button) {
+          button.disabled = true;
+          button.setAttribute("aria-busy", "true");
+          button.textContent = "⏳ Sintetizando…";
+        }
+      }
+      if (inCall && state.phase !== "paused") {
+        if (callState === "listening" || callState === "confirming") stopListening();
+        setCallState(state.phase === "playing" ? "speaking" : "thinking");
+      }
+    },
+    onProgress: function (snapshot) {
+      if (karaokeActiveEl) {
+        karaokeActiveEl.classList.remove("karaoke-active");
+        karaokeActiveEl.setAttribute("aria-pressed", "false");
+        karaokeActiveEl = null;
+      }
+      if (!snapshot.chunk) {
+        if (karaokePopup) hideToast();
+        karaokePopup = null;
+        return;
+      }
+      var turn = mainKaraokeTurn(snapshot.plan);
+      if (!turn) { karaokeCtl.detach(snapshot.ownerTurnId); return; }
+      karaokeActiveEl = turn.querySelectorAll(".karaoke-chunk")[snapshot.activeGlobalIndex];
+      karaokeActiveEl.classList.add("karaoke-active");
+      karaokeActiveEl.setAttribute("aria-pressed", "true");
+      if (!karaokePopup || karaokePopup.generation !== snapshot.generation || karaokePopup.index !== snapshot.activeGlobalIndex) {
+        var keepHidden = karaokePopup && karaokePopup.generation === snapshot.generation && toastEl.classList.contains("hidden");
+        showToast("🔊 brain: " + snapshot.chunk.popupText);
+        if (keepHidden) toastEl.classList.add("hidden");
+        karaokePopup = { generation: snapshot.generation, index: snapshot.activeGlobalIndex };
+      }
+    },
+    onFailure: function (failure) {
+      karaokeFailureNotice = "No pude reproducir la parte " + (failure.pieceIndex + 1) + " del audio — prueba otra vez.";
+      showBanner(karaokeFailureNotice);
+    }
+  });
+
+  new MutationObserver(function () {
+    var state = karaokeCtl.state();
+    if (!state.plan) return;
+    var turn = mainKaraokeTurn(state.plan);
+    var body = turn && turn.querySelector("span:not(.who)");
+    if (!body || body.textContent !== state.plan.rawText) karaokeCtl.detach(state.ownerTurnId);
+  }).observe(conv, { childList: true, subtree: true, characterData: true });
+
   function enqueueAudio(url, announcement, speechRequestId, seq) {
     audioQueue.push({
       url: url,
       announcement: announcement || null,
+      chunkOffset: announcement && announcement.chunkOffset || 0,
       speechRequestId: speechRequestId || null,
       seq: typeof seq === "number" ? seq : null
     });
     pumpAudio();
   }
 
+  function selectMainKaraoke(plan, index) {
+    if (!mainKaraokeTurn(plan)) return;
+    karaokeFailureNotice = null;
+    // Automatic speech is deliberately unaligned. Retire its existing job,
+    // not the whole queue; unrelated announcements retain their identities.
+    var jobId = speechCtl.activeId();
+    if (jobId) {
+      segmentPlayer.stop();
+      speechCtl.cancel();
+      Speech.purgeQueueById(audioQueue, jobId);
+    }
+    var item = audioFinished;
+    if (item && !item.karaoke) {
+      audioFinished = null;
+      audioBusy = false;
+      player.pause();
+      if (item.announcement || (item.speechRequestId && item.speechRequestId !== jobId)) audioQueue.unshift(item);
+      else speechCtl.release(item.speechRequestId);
+      hideToast();
+    }
+    karaokeCtl.select(plan, index);
+  }
+
   function pumpAudio() {
     if (audioBusy || !audioQueue.length) return;
-    var item = audioQueue.shift();
+    var state = karaokeCtl.state();
+    var index = 0;
+    if (state.plan) {
+      index = audioQueue.findIndex(function (queued) {
+        return queued.karaoke && queued.karaoke.plan === state.plan && queued.karaoke.generation === state.generation;
+      });
+      if (index === -1) return; // reserve the player while owned synthesis waits.
+    }
+    var item = audioQueue.splice(index, 1)[0];
     audioBusy = true;
     audioFinished = item;
+    item.source = new URL(item.url, document.baseURI).href;
+    if (item.karaoke) {
+      var reusable = karaokeMedia && karaokeMedia.plan === item.karaoke.plan &&
+        karaokeMedia.pieceIndex === item.karaoke.pieceIndex && karaokeMedia.url === item.url &&
+        (player.currentSrc || player.src) === karaokeMedia.source && karaokeMedia.metadataReady;
+      if (!reusable) {
+        replaceAudioSource(item);
+        karaokeMedia = { plan: item.karaoke.plan, pieceIndex: item.karaoke.pieceIndex,
+          url: item.url, source: item.source, metadataReady: false };
+      } else {
+        item.source = karaokeMedia.source;
+        item.metadataReady = true;
+      }
+      Object.keys(item.events).forEach(function (name) {
+        var callback = function (event) {
+          if (!currentKaraokeItem(item)) return;
+          if (name === "loadedmetadata" || name === "durationchange") {
+            item.metadataReady = true;
+            karaokeMedia.metadataReady = Number.isFinite(player.duration) && player.duration > 0;
+          } else if (name === "error") karaokeMedia.metadataReady = false;
+          item.events[name](event);
+        };
+        item.listeners.push({ name: name, callback: callback });
+        player.addEventListener(name, callback);
+      });
+      stopBtn.classList.remove("hidden");
+      return; // controller alone seeks and requests play after matching metadata.
+    }
+    karaokeMedia = null;
     if (item.announcement) {
       if (item.announcement.chunks && item.announcement.chunks.length > 1) {
         /* Teleprompter replay: paint the FIRST ~2-line window; the
@@ -1368,19 +1648,21 @@
           undefined, null, item.announcement.html);
       }
       /* FR13: distinct anuncio bubble in the call + toast above drawer. */
-      if (inCall) addAnnouncementTurn(item.announcement.label, item.announcement.text);
+      if (inCall && !item.announcementShown) addAnnouncementTurn(item.announcement.label, item.announcement.text);
+      item.announcementShown = true;
     }
     if (inCall) {
       // The confirming mic is live too: never hear our own audio.
       if (callState === "listening" || callState === "confirming") stopListening();
       setCallState("speaking");
     }
-    player.src = item.url;
+    replaceAudioSource(item);
     stopBtn.classList.remove("hidden");
+    var source = item.source;
     var pending = player.play();
     if (pending && pending.catch) {
       pending.catch(function () {
-        handlePlayFailure(item);
+        if (item.source === source) handlePlayFailure(item);
       });
     }
   }
@@ -1397,6 +1679,7 @@
      * touch NOTHING — not the newer toast, not audioBusy, not the
      * announcer state. */
     if (audioFinished !== item) return;
+    if (!matchesAudioSource(item)) return;
     audioFinished = null;   // claim: the late twin becomes stale
     /* Same identity split as onAudioEnded: a legacy (no-seq) item
      * releases here; a segment item keeps the identity so a later stop
@@ -1450,6 +1733,7 @@
   }
 
   function onAudioEnded() {
+    if (!audioFinished || audioFinished.karaoke || !matchesAudioSource(audioFinished)) return;
     audioBusy = false;
     var finished = audioFinished;
     audioFinished = null;
@@ -1479,6 +1763,10 @@
   }
 
   function stopAudio() {
+    if (karaokeCtl.state().plan) {
+      karaokeCtl.stop(); // adapter disposes ONLY its item; foreign queue survives.
+      return;
+    }
     /* A streamed job stops polling too; the purge below owns the queue. */
     segmentPlayer.stop();
     var jobId = speechCtl.activeId();
@@ -1518,6 +1806,7 @@
    * errors with no current item) keeps today's onAudioEnded path. */
   function onAudioError() {
     var item = audioFinished;
+    if (!item || item.karaoke || !matchesAudioSource(item)) return;
     if (item && item.announcement && !inCall) {
       handlePlayFailure(item);
       return;
@@ -1541,7 +1830,7 @@
    * never break playback. */
   player.addEventListener("timeupdate", function () {
     try {
-      if (!audioFinished || !audioFinished.teleprompter) return;
+       if (!audioFinished || !audioFinished.teleprompter || !matchesAudioSource(audioFinished)) return;
       if (toastEl.classList.contains("hidden")) return;
       var chunks = audioFinished.teleprompter;
       var duration = player.duration;
@@ -2453,7 +2742,7 @@
   /* ---------------- ask pipeline ---------------- */
 
   function afterAnswer() {
-    if (audioBusy) return;  // still speaking: onAudioEnded returns us to the mic
+    if (audioBusy || karaokeCtl.state().plan) return; // owned synthesis also reserves the mic.
     if (inCall && callState !== "paused") {
       setCallState(micBaseState());
       startListening();
@@ -2464,6 +2753,7 @@
 
   function ask(text) {
     if (callState === "thinking") return Promise.resolve();
+    if (karaokeCtl.state().plan) karaokeCtl.stop();
     askCount += 1;
     lastDispatch = text;
     addTurn("user", text);
@@ -2499,18 +2789,22 @@
         }
         return resp.json().then(function (data) {
           addTurn("brain", data.answer || "(respuesta vacía)");
-          if (data.speech && data.speech.status === "delivering" && !data.audio_url) {
-            /* Protocol-2 streaming turn: the answer arrives as segments
-             * through /speech/{id}/next and enters the SAME sequential
-             * queue (seq rides each item; onAudioEnded advances the ack).
-             * The enqueue below still covers legacy turns AND v1-degraded
-             * identified turns (full file with audio_url). */
-            segmentPlayer.start({ id: speech.speech_request_id, sessionId: sessionId });
-          } else if (data.audio_url) {
-            enqueueAudio(data.audio_url, null, speech.speech_request_id);
-          } else {
-            speechCtl.release(speech.speech_request_id);
-            if (!data.approval) afterAnswer();
+          // A chunk tap may have cancelled this identity while /ask was in
+          // flight. Keep its answer, but never revive the retired audio job.
+          if (!speech.speech_request_id || speechCtl.activeId() === speech.speech_request_id) {
+            if (data.speech && data.speech.status === "delivering" && !data.audio_url) {
+              /* Protocol-2 streaming turn: the answer arrives as segments
+               * through /speech/{id}/next and enters the SAME sequential
+               * queue (seq rides each item; onAudioEnded advances the ack).
+               * The enqueue below still covers legacy turns AND v1-degraded
+               * identified turns (full file with audio_url). */
+              segmentPlayer.start({ id: speech.speech_request_id, sessionId: sessionId });
+            } else if (data.audio_url) {
+              enqueueAudio(data.audio_url, null, speech.speech_request_id);
+            } else {
+              speechCtl.release(speech.speech_request_id);
+              if (!data.approval) afterAnswer();
+            }
           }
           if (data.approval) {
             // A gate opened (PRD §4): enter confirming with the countdown
