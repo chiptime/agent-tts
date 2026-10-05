@@ -7,7 +7,8 @@ task 1), how paths/ports/binaries stop being machine-specific, how the two autho
 milestone-1 baseline V1 repairs (smoke 16n host safety, smoke 40e oracle identity) are
 built, how the one authorized pre-V3 validation-only candidate branch makes the documented
 install routes testable without touching `main` or any tag, and how the four milestones
-decompose into review slices under the 400-line budget.
+decompose into review slices under the 400-line budget — including the maintainer-approved local
+re-slice of the already-implemented task 2.1 into three reviewable units (Decision 12).
 
 ### Decision status
 
@@ -24,6 +25,7 @@ answer. Two items remain *evidence*-pending — they need a test run, not a deci
 | Decision 9 (smoke 40e oracle identity) | Resolved here — new, authorized M1 extension |
 | Decision 10 (scenario 3 activation milestone) | Resolved here — registry correction |
 | Decision 11 (pre-V3 validation-only candidate branch) | Resolved here — authorized bounded remote write (Engram #9783) |
+| Decision 12 (task 2.1 local re-slice into 9a/9b/9c) | Resolved here — maintainer-approved three-slice rework with one accepted `size:exception` on 9c (Engram #9828) |
 | V2 network authorization (ex-OQ-5) | **Granted**, bounded to documented origins (Engram #9681) |
 | Validation-branch push/update authorization | **Granted**, bounded to one source ref, one destination ref, one named session (Engram #9783) |
 | V2 active-scenario gate | **Resolved** (Engram #9636) |
@@ -969,6 +971,249 @@ recorded*. They do not test `git push`, which is a one-off developer operation, 
 
 ---
 
+## Decision 12: Task 2.1 is re-sliced locally into 9a / 9b / 9c
+
+**Choice**: keep task 2.1 as **one logical, already-completed task**, and rebuild its *local,
+unpushed* commit history into **three** cohesive review slices — `9a` (Python resolution core),
+`9b` (brain port plumbing), `9c` (paired bash launchers). Slice `9c` carries an explicitly accepted
+**`size:exception` of 47 lines**. Nothing is re-implemented; only the review boundary changes.
+
+**Status: design plan only.** The re-slice has **not** been performed. `sdd-tasks` updates
+`tasks.md` next, and a later apply run rebuilds the commits. This document plans the work; it does
+not record it as done.
+
+### Why the re-slice is needed
+
+Task 2.1 was implemented as a single work-unit commit, `c577041`, which measures far above the
+fixed 400-line review budget. Measured read-only in this worktree:
+
+```
+$ git show --numstat --format= c577041
+117  14  hosts/herdr/brain/bin/herdr-brain                 → 131
+ 56   0  hosts/herdr/brain/src/herdr_brain/config.py       →  56
+286   0  hosts/herdr/brain/tests/test_resolve.py           → 286
+105   3  hosts/herdr/tts-plugin/bin/herdr-tts              → 108
+160   0  hosts/herdr/tts-plugin/scripts/smoke-tests.sh     → 160
+  8   0  tools/herdr_onboarding/__init__.py                →   8
+214   0  tools/herdr_onboarding/resolve.py                 → 214
+                                                   authored  963
+ 68   8  openspec/changes/at-11-instalable/apply-progress.md →  76   (SDD artifact)
+  1   1  openspec/changes/at-11-instalable/tasks.md          →   2   (SDD artifact)
+                                                      total 1,041
+```
+
+**963 authored lines against a 400-line budget — 563 over.** The session delivery strategy is
+`auto-chain`, which requires slicing rather than asking, so the work unit is split instead of
+carried as one oversized PR. The original slice-9 forecast of ~300 lines was wrong by +663; that
+variance is recorded here rather than absorbed silently.
+
+### Why local history restructuring is permitted
+
+`c577041` exists on **no** remote-tracking ref:
+
+| Fact | Command | Result |
+|---|---|---|
+| The commit is local only | `git branch -r --contains c577041` | empty |
+| Local branch tip | `git for-each-ref refs/heads/feat/at-11-instalable` | `c577041` |
+| Remote candidate ref tip (maintainer-stated) | — | `af8680d` (M1 closure) |
+
+Rewriting unpushed local history rewrites nothing anyone else has fetched, so it is safe and
+authorized. The remote validation branch `validation/at-11-instalable` **is not touched**: it stays
+at the M1 commit until a later V2 run fast-forwards it under Decision 11's unchanged authorization.
+
+> **Honesty note on the remote tip.** This worktree carries no
+> `refs/remotes/origin/validation/at-11-instalable` tracking ref, so `af8680d` is recorded as a
+> **maintainer-stated input**, not a locally observed fact. Confirming it would require a network
+> fetch, which this design phase does not perform. Nothing in this decision depends on the exact
+> remote tip — only on the fact that `c577041` is not among its ancestors.
+
+### The three slices
+
+Path groupings are exact. Estimates are the maintainer-approved figures from Engram #9828.
+
+| Slice | Concern | Files | Est. | Budget |
+|---|---|---|---|---|
+| **9a** | Python resolution core: monorepo root, `HERDR_TTS_HOME` precedence, six-step `HERDR_BIN` | `tools/herdr_onboarding/__init__.py` (create) · `tools/herdr_onboarding/resolve.py` (create, minus the port section) · `hosts/herdr/brain/tests/test_resolve.py` (create: module scaffolding, `_exec_marker`, `_brew_runner`, `_refusing_runner`, `TestResolveRoot`, `TestResolveTtsHome`, `TestResolveHerdrBin`) | ~337 | ≤400 ✅ |
+| **9b** | Brain port resolution + config plumbing | `tools/herdr_onboarding/resolve.py` (extend: `_parse_port`, `_config_dir`, `_read_env_key`, `resolve_port`, port docstring rows) · `hosts/herdr/brain/src/herdr_brain/config.py` (extend: `DEFAULT_BRAIN_PORT`, `Settings.brain_port`, `_parse_brain_port`, `_persisted_brain_port`, `load_settings` wiring) · `test_resolve.py` (extend: the `herdr_brain.config` import, `TestResolvePort`, `TestBrainPortKnob`) | ~175 | ≤400 ✅ |
+| **9c** | Paired bash launcher resolvers + byte-identity parity proof | `hosts/herdr/brain/bin/herdr-brain` (extend: `herdr_resolve_*` block + wiring) · `hosts/herdr/tts-plugin/bin/herdr-tts` (extend: the identical block + wiring) · `hosts/herdr/tts-plugin/scripts/smoke-tests.sh` (extend: section 44, cases 44a–44f) · `test_resolve.py` (extend: launcher path constants, `BLOCK_START`/`BLOCK_END`, `_launcher_block`, `TestBashMirrorParity`) | ~447 | **47 over — accepted `size:exception`** |
+
+Sum of estimates: **959**. The measured commit total is **963**; the ~4-line delta is the shared
+test-module scaffolding (module docstring and common imports) that materializes exactly once, in
+`9a`, and is therefore not re-counted in `9b` or `9c`. Both figures are reported rather than
+reconciled by adjusting one of them.
+
+### Dependencies — a strict linear chain
+
+```
+    9a  resolve.py core + test_resolve.py created
+         │  resolve_port lives in the module 9a creates;
+         │  test_resolve.py is the file 9b appends to
+         ▼
+    9b  port order in Python + config.py + port tests
+         │  the bash herdr_resolve_port mirrors THIS order;
+         │  the mirror block ships all four functions atomically
+         ▼
+    9c  both launchers + smoke section 44 + parity proof
+         │
+         ▼
+    task 2.2 (slice 10) consumes the resolver layer
+```
+
+| Slice | Depends on | Why | Rollback boundary |
+|---|---|---|---|
+| 9a | none (within task 2.1) | Creates the module and the test file every later slice extends | Delete `tools/herdr_onboarding/{__init__.py,resolve.py}` and `hosts/herdr/brain/tests/test_resolve.py`. Nothing else references them at this point — the launchers are untouched until 9c |
+| 9b | 9a | `resolve_port` is a function in the module 9a creates, and its tests append to the file 9a creates | Revert the `config.py` port knob, the `resolve.py` port section, and the two port test classes. `Settings.brain_port` is a **defaulted** field, so reverting cannot break any existing `Settings(**kwargs)` construction, and no consumer is wired yet — `bin/herdr-brain` only reads the port from 9c |
+| 9c | 9b | The bash `herdr_resolve_port` mirrors 9b's order, and the shipped block carries all four resolvers as a unit | **All four parts revert together**: both launcher blocks, smoke section 44, and `TestBashMirrorParity`. A partial revert that leaves one launcher with the block and the other without silently breaks the byte-identity contract while the test that would catch it is gone |
+
+### Why 9c cannot be split further
+
+This is the whole justification for the exception, so it is stated mechanically rather than
+asserted. Three candidate splits were considered; each produces a slice that is red or untested on
+its own.
+
+| Candidate split | Why it fails |
+|---|---|
+| Brain launcher / plugin launcher as two slices | The contract under test **is** byte-identity between the two blocks. `TestBashMirrorParity::test_blocks_are_identical_in_both_launchers` reads both files and compares them; with only one launcher changed it **cannot pass**. The first slice would ship red, violating "the repo still makes sense after applying only this commit". |
+| `smoke-tests.sh` section 44 as its own slice | Section 44 extracts the **shipped** resolver block out of the real launcher and executes it (`44a`–`44f`). Without the launcher change there is no block to extract, so the section is red; with the launcher change but no section, the plugin's local `strict_tdd: true` is violated (RED smoke scenario must precede the `bin/` change) and the launcher ships untested. |
+| Parity tests as a follow-up slice | Deferring the proof is exactly how two mirrored blocks drift. It would also leave an intermediate commit in which the byte-identity requirement exists in the design and in neither test nor guard. |
+
+One honest slicing pass was made and stopped there, per the bounded-slicing rule. The 47-line
+overage is **not** closed by code-golf: no comment, blank line, docstring, test, or smoke case is
+deleted or compressed to reach 400. The maintainer accepted the exception on that basis
+(Engram #9828).
+
+### Scope limits of this decision
+
+- **`size:exception` applies to `9c` only.** `9a` and `9b` are within budget and claim no
+  exception. No other slice in this change inherits one.
+- **Task identity is unchanged.** Task 2.1 remains **one logical task**, already implemented and
+  verified. Task-level progress stays **12 / 26 tasks complete**. Only its *PR-ready commit
+  history* is reconstituted.
+- **Task count stays 26; PR slice count becomes 28.** These two numbers were coincidentally equal
+  before this decision, which is a real reading hazard — they are now different and must not be
+  conflated.
+- **No behavior changes.** Not one line of product code is re-authored, re-designed, or deleted.
+  The union of the three slices reproduces `c577041`'s **seven task-2.1 implementation/test paths**
+  byte-identically (see *Union identity — scoped to task-2.1 code*). SDD bookkeeping files are
+  expected to differ and are excluded from that comparison.
+- **M2 V2 validation stays at M1.** `validation/at-11-instalable` is **not** advanced by this
+  decision. It remains at the M1 commit until a later V2 run needs it, at which point Decision 11's
+  authorization applies unchanged — fast-forward only, gh session `chiptime`, divergent ⇒ `BLOCKED`.
+- **`auto-chain`, `feature-branch-chain`, and the 400-line budget are preserved** for every other
+  slice. The exception is a single accepted overage, not a relaxed budget.
+
+### Rebuild procedure (local only)
+
+Ordering is deliberate: **back up first, restructure second.**
+
+```
+1. Create a local backup ref pointing at the current tip:
+      git branch backup/at-11-task-2.1-c577041 c577041
+   (A distinct namespace is required: refs/original/refs/heads/feat/at-11-instalable
+    already exists at b037b6f from a prior authorized rewrite — do NOT reuse it.)
+
+2. Reset the branch to the last published boundary, keeping the tree:
+      git reset --soft af8680d          # tree preserved, index holds every change
+
+3. Stage and commit 9a, then 9b, then 9c, in dependency order, each with its
+   own focused verification recorded before the next is staged.
+
+4. Verify the union over the seven task-2.1 implementation/test paths.
+   See "Union identity — scoped to task-2.1 code" below for the exact path
+   set, both required commands, and why a full-tree diff is the wrong check.
+```
+
+Step 4 is the correctness proof of the whole operation.
+
+### Union identity — scoped to task-2.1 code
+
+**The union check is path-scoped, never full-tree.** `c577041` carries nine files: the seven
+task-2.1 implementation/test paths **plus** two SDD bookkeeping artifacts
+(`openspec/changes/at-11-instalable/apply-progress.md`, `openspec/changes/at-11-instalable/tasks.md`).
+Re-slicing is *expected* to rewrite that bookkeeping — each slice carries the `apply-progress.md`
+entry describing itself, and `tasks.md` records the 9a/9b/9c structure — so a whole-repository
+`git diff backup/at-11-task-2.1-c577041 HEAD` can never be empty. Asserting that it must be would
+make the correctness proof unsatisfiable by construction, which is why the claim is stated over
+code only:
+
+> **The union of 9a + 9b + 9c MUST reproduce these seven task-2.1 implementation/test paths
+> byte-identically to `c577041`.** SDD bookkeeping (`tasks.md`, `apply-progress.md`, `design.md`,
+> and any other planning artifact) is expected to differ and is validated independently by the SDD
+> status and Engram-mirror read-back checks, never by this diff.
+
+The seven paths, exhaustively:
+
+```
+tools/herdr_onboarding/__init__.py
+tools/herdr_onboarding/resolve.py
+hosts/herdr/brain/src/herdr_brain/config.py
+hosts/herdr/brain/tests/test_resolve.py
+hosts/herdr/brain/bin/herdr-brain
+hosts/herdr/tts-plugin/bin/herdr-tts
+hosts/herdr/tts-plugin/scripts/smoke-tests.sh
+```
+
+Two checks, **both required** — the first proves the seven paths are identical, the second proves
+no *eighth* code path slipped in or out:
+
+| # | Check | Command | Pass condition |
+|---|---|---|---|
+| 1 | **Byte identity over the seven paths** | `git diff --quiet backup/at-11-task-2.1-c577041 HEAD -- <the seven paths above>` | exit `0` (empty diff) |
+| 2 | **No path escape** | `git diff --name-only backup/at-11-task-2.1-c577041 HEAD`, then remove the SDD-bookkeeping allowlist `openspec/changes/at-11-instalable/{tasks.md,apply-progress.md,design.md}` | the remaining set is **empty** |
+
+Check 2 exists because check 1 alone is strictly weaker than the original claim: scoping a diff to
+seven paths cannot, by itself, detect a new implementation file added *outside* them. Together the
+two checks carry the full strength of the original full-tree assertion, restricted to the tree
+region that assertion can honestly cover.
+
+Per-path blob identity is the stronger diagnostic when check 1 fails, because it names the file
+that drifted instead of only reporting that something did:
+
+```
+for p in <the seven paths>; do
+  test "$(git rev-parse backup/at-11-task-2.1-c577041:$p)" \
+     = "$(git rev-parse HEAD:$p)" || echo "DRIFT $p"
+done
+```
+
+**On failure.** A failing check 1 or check 2 means the restructuring lost or altered work: it is a
+hard failure. Restore with `git reset --hard backup/at-11-task-2.1-c577041` and redo. The backup
+ref is **not** deleted when the rebuild succeeds; it is the evidence that nothing was lost.
+
+**SDD artifacts in the rebuilt history.** `c577041` also carried `apply-progress.md` (76 lines) and
+a `tasks.md` line. Those are SDD artifacts, not authored product code; they are excluded from the
+963-line authored count **and** from the union identity check above. On rebuild, each slice carries
+the `apply-progress.md` entry that describes *that slice*, so the evidence journal and the commit
+boundaries stay aligned. Their correctness is established by SDD status and mirror read-back —
+the mechanism that actually validates bookkeeping — not by a tree diff.
+
+**Alternatives considered**:
+
+| Option | Why rejected |
+|---|---|
+| Keep `c577041` as one 963-line PR with a `size:exception` | A 963-line PR is 2.4× the budget and mixes three unrelated concerns (Python resolution, port config, bash parity). An exception exists for diffs that *cannot* split; this one splits cleanly into three cohesive units, so the exception would be covering avoidable reviewer load. |
+| Split into two slices (Python / bash) | The Python half would still be ~516 lines — over budget — and would fuse the port-config concern into the resolution core, the one boundary that revert-tests cleanly on its own. |
+| Split into four or more slices | Requires breaking either the byte-identity parity unit or the strict-TDD smoke/launcher pairing. Both produce a red intermediate commit. |
+| Shrink `9c` under 400 by trimming comments, docstrings, or smoke cases | Forbidden. The budget constrains how work is **sliced**, never the code itself. This is the explicit code-golf prohibition. |
+| Revert `c577041` and re-implement in three commits | Discards verified, passing work to reach a history shape that `reset --soft` produces with no risk to the tree. |
+| Rewrite history after pushing | Not applicable here (`c577041` is unpushed) and would be forbidden if it were: force-pushing the candidate ref destroys the commit identity that recorded V2 evidence points at (Decision 11). |
+
+### Planned RED tests
+
+Scope note: these are **assertions about the re-slice itself**, not new product tests. The product
+tests already exist and pass; `9a`/`9b`/`9c` redistribute them without changing one assertion.
+
+| # | Check | How it fails before the rebuild |
+|---|---|---|
+| a | **Union identity (scoped).** After the three commits, `git diff --quiet backup/at-11-task-2.1-c577041 HEAD -- <the seven task-2.1 paths>` exits 0, **and** the changed-path set minus `tasks.md` / `apply-progress.md` / `design.md` is empty | Fails if any line was lost, reordered into a different file, silently edited, or if an eighth code path appeared. A full-tree diff is deliberately **not** the check: SDD bookkeeping is expected to differ |
+| b | **Per-slice budget.** `git show --numstat` per commit: `9a` ≤400, `9b` ≤400, `9c` = the accepted overage and no more | Fails if a slice drifts over budget, or if `9c` grew past the accepted 47-line exception |
+| c | **9a stands alone.** At `9a`, `cd hosts/herdr/brain && python -m pytest tests/test_resolve.py -q` is green and the file imports nothing from `herdr_brain.config` | Fails if the port import or port classes leak into `9a` |
+| d | **9b stands alone.** At `9b`, the same command is green and `Settings(**SETTINGS_KWARGS)` still constructs without `brain_port` | Fails if `brain_port` were made a required field |
+| e | **9c is atomic.** At `9c`, `test_blocks_are_identical_in_both_launchers` passes and smoke section 44 is green; at `9b` neither exists | Fails if either launcher, the smoke section, or the parity class is split across commits |
+| f | **Remote untouched.** No remote write occurs during the rebuild; `validation/at-11-instalable` is not pushed, force-pushed, or deleted | Fails if the rebuild is routed through any remote operation |
+
+---
+
 ## Data flow
 
 First run, plugin entry point:
@@ -1058,6 +1303,8 @@ evidence, not a regression introduced by this decision.
 | `scripts/acceptance/scenarios/02-plugin-subdir-install.sh` | Modify | **Decision 11**: candidate leg uses herdr's supported `--ref validation/at-11-instalable --yes`; the `HERDR_AGENT_TTS_REF` differential leg is demoted to a diagnostic fallback; record candidate ref + resolved commit |
 | `scripts/acceptance/scenarios/registry.conf` | Modify | **Decision 10**: `zero-machine-paths` `activates_at_milestone` `1` → `2`. One field, tab-separated |
 | `tools/herdr_onboarding/` | Create | Shared wizard + doctor detection (stdlib only) |
+| `tools/herdr_onboarding/{__init__.py,resolve.py}` | Create | **Decision 12**: the four portable resolution orders. The root / `HERDR_TTS_HOME` / `HERDR_BIN` core lands in slice **9a**; the port section (`_parse_port`, `_config_dir`, `_read_env_key`, `resolve_port`) lands in slice **9b** |
+| `hosts/herdr/brain/bin/herdr-brain`, `hosts/herdr/tts-plugin/bin/herdr-tts` | Modify | **Decision 12**: both gain the **byte-identical** `herdr_resolve_*` bash mirror block plus its wiring in slice **9c**, as one atomic unit — the parity contract is what the slice exists to prove |
 | `hosts/herdr/tts-plugin/scripts/install.sh` | Modify | Monorepo `CANONICAL_URL`/source, `~/.local/bin` exposure, PATH warning, wizard hand-off, extended uninstall print |
 | `hosts/herdr/tts-plugin/scripts/bootstrap.sh` | Modify | Dev checkout derived from own location → `engine/`; drop `~/Code/personal/agent-tts`. **Decision 9**: `AGENT_TTS_REF` → full SHA `d66616bce3ad8193f11ae615bd58bb4508eb65be`, SHA pinning preserved |
 | `hosts/herdr/tts-plugin/bin/herdr-tts` | Modify | `--no-first-run`, first-run marker check, `doctor` dispatch, onboarding resolver. **Decision 8**: lines 26–28 gain `HERDR_TTS_LOCK_FILE` / `HERDR_TTS_PID_FILE` / `HERDR_TTS_IPC_SOCKET` overrides with byte-identical defaults; no other line changes |
@@ -1066,14 +1313,14 @@ evidence, not a regression introduced by this decision.
 | `hosts/herdr/brain/deploy/install.sh` | Modify | Drop the dotfiles dependency, generate the unit from the template, ownership-aware port policy, English output |
 | `hosts/herdr/brain/deploy/herdr-brain.service` | Delete | Replaced by the template |
 | `hosts/herdr/brain/deploy/herdr-brain.service.tmpl` | Create | Placeholders `@HERDR_BIN@ @INSTALL_DIR@ @PYTHON@ @PORT@ @ENV_FILE@` |
-| `hosts/herdr/brain/src/herdr_brain/config.py` | Modify | Port knob plumbing; optional remote-exposure domain from config/env |
+| `hosts/herdr/brain/src/herdr_brain/config.py` | Modify | Port knob plumbing (**Decision 12**: slice **9b** — `DEFAULT_BRAIN_PORT`, defaulted `Settings.brain_port`, `_parse_brain_port`, `_persisted_brain_port`, `load_settings` wiring; the brain mirrors the order locally because it may not import the root `tools/` module); optional remote-exposure domain from config/env |
 | `hosts/herdr/tts-plugin/packaging/npm/{package.json,bin/herdr-tts}` | Modify | Legacy `chiptime/herdr-tts` URLs → monorepo; honest support wording |
 | `hosts/herdr/tts-plugin/packaging/homebrew/herdr-tts.rb` | Modify | Monorepo url/homepage; document the wizard limitation on the keg route |
 | `hosts/herdr/tts-plugin/README.md` | Modify | Remove B1–B4 legacy commands; tagged `id=` install blocks. **Decision 11**: the `id=install-plugin-curl` block becomes ref-parameterized — one `${HERDR_TTS_REF:-v0.16.0}` expansion covering both the raw installer-script path and (via `install.sh`'s existing knob) the install clone. Stable default stays `v0.16.0`; no publication claim is added |
 | `hosts/herdr/brain/README.md`, `README.md` | Modify | Canonical flow, optional systemd, advanced remote exposure, tagged blocks |
 | `docs/installation/V3-checklist.md` | Create | Timed human UAT checklist with both timing readings |
-| `hosts/herdr/brain/tests/test_first_run.py`, `test_doctor.py`, `test_resolve.py` | Create | V1 for wizard, doctor, resolution |
-| `hosts/herdr/tts-plugin/scripts/smoke-tests.sh` | Modify | New scenarios: CLI exposure, marker/skip, resolver reachability, doctor dispatch. **Decision 8**: `new_env()` exports the three playback overrides + `AGENT_TTS_SOCKET`; default-preservation, sandbox-stop, and host-state-invariance assertions. **Decision 9**: 40e driver gains revision pre-check, dual-layout probe, checked return codes |
+| `hosts/herdr/brain/tests/test_first_run.py`, `test_doctor.py`, `test_resolve.py` | Create | V1 for wizard, doctor, resolution. **Decision 12**: `test_resolve.py` is authored across three slices — scaffolding + root/`HERDR_TTS_HOME`/`HERDR_BIN` classes in **9a**, the `herdr_brain.config` import + `TestResolvePort` + `TestBrainPortKnob` in **9b**, launcher constants + `_launcher_block` + `TestBashMirrorParity` in **9c** |
+| `hosts/herdr/tts-plugin/scripts/smoke-tests.sh` | Modify | New scenarios: CLI exposure, marker/skip, resolver reachability, doctor dispatch. **Decision 8**: `new_env()` exports the three playback overrides + `AGENT_TTS_SOCKET`; default-preservation, sandbox-stop, and host-state-invariance assertions. **Decision 9**: 40e driver gains revision pre-check, dual-layout probe, checked return codes. **Decision 12**: section 44 (`44a`–`44f`) executes the **shipped** resolver block extracted from the real launcher, so it lands with the launchers in slice **9c** and cannot be sliced away from them |
 | `engine/tests/test_versioned_tree_hygiene.py` | Create | Static zero-machine-path scan over the versioned tree (V1 half of scenario 3) |
 | `.gitignore` | Modify | Ignore generated `deploy/*.service` |
 | `openspec/config.yaml`, `hosts/herdr/tts-plugin/openspec/config.yaml` | Modify | Bounded corrections: registry-scope wording; stale "engine is a separate external repo" statement |
@@ -1185,6 +1432,8 @@ reach it.
 | **Public pin retrieval (V2, OQ-6)** | The documented GitHub route fetches exactly `d66616bce3ad8193f11ae615bd58bb4508eb65be` and installs `engine/`; unavailability is `BLOCKED` with a recorded reason and no substitute | `clean-install.sh` scenario 1 legs B and C; local object resolution is explicitly **not** accepted as this evidence, and the candidate branch does **not** supply it (the pin is in no branch's history) |
 | **Candidate-ref install routes (V2, Decision 11)** | Scenario 1 runs the literal curl block with `HERDR_TTS_REF=validation/at-11-instalable` and asserts the fetched script *and* the installed plugin both come from that ref; scenario 2 runs `--ref validation/at-11-instalable --yes` and asserts `plugin_root = managed_path/hosts/herdr/tts-plugin` plus a materialized `engine/`; both record the candidate ref and the resolved branch commit; an unresolvable ref/commit is `BLOCKED`, never `PASS` | `clean-install.sh` scenarios 1 and 2; selection happens only through the two supported mechanisms, never by rewriting the documented block |
 | **Stable-vs-candidate honesty (V1, Decision 11)** | The `id=install-plugin-curl` block has exactly one ref expansion defaulting to `v0.16.0`; with the variable unset the resolved URL and clone ref are byte-equivalent to today; no evidence artifact or active doc claims `v0.16.0` or `main` is published, repaired, or validated; the engine `commit_id` is the exact SHA under every selected installer ref | `engine/tests/test_versioned_tree_hygiene.py` static assertions + journal field checks (Decision 11 RED tests a, b, e, f) |
+| **Launcher mirror parity (V1, Decision 12)** | Both launchers ship a **byte-identical** `herdr_resolve_*` block carrying all four resolvers; both wire the root resolver; `bin/herdr-brain` exports no hardcoded `HERDR_TTS_HOME` default and contains no literal brew prefix; the behavioral bash checks run the **shipped** block extracted from the real launcher, never a reimplementation | `hosts/herdr/brain/tests/test_resolve.py::TestBashMirrorParity` (static, cross-file) + `smoke-tests.sh` section 44 (`44a`–`44f`). Both land in slice **9c** with the launchers — this pairing is why 9c is atomic and carries the accepted `size:exception` |
+| **Re-slice integrity (Decision 12)** | The union of slices 9a + 9b + 9c reproduces `c577041`'s **seven task-2.1 implementation/test paths** byte-identically, with no eighth code path added or removed; each slice is independently green (`9a` without the `herdr_brain.config` import, `9b` with `Settings` still constructible without `brain_port`); per-slice authored lines match the approved 337 / 175 / 447. SDD bookkeeping (`tasks.md`, `apply-progress.md`, `design.md`) is **expected to differ** and is excluded | `git diff --quiet backup/at-11-task-2.1-c577041 HEAD -- <the seven paths>` exits 0 · `git diff --name-only backup/at-11-task-2.1-c577041 HEAD` minus the SDD-bookkeeping allowlist is empty · `git show --numstat` per commit · `cd hosts/herdr/brain && python -m pytest tests/test_resolve.py -q` at each slice boundary. Bookkeeping is validated separately by SDD status and Engram-mirror read-back, never by this diff. These verify the **re-slice**, not product behavior — no product assertion is added, changed, or removed |
 | Compatibility (V1, RNF-4) | Observable parity before/after each audit fix — notably `bin/herdr-brain` resolving the plugin with `HERDR_TTS_HOME` unset | Paired assertions: legacy-shaped layout and corrected layout both reach a found TTS surface |
 | Acceptance (V2) | The nine scenarios, clean-room, literal documented steps | `scripts/acceptance/clean-install.sh --milestone N` |
 | Human (V3) | Timed clean-machine UAT, friction log, sign-off | `docs/installation/V3-checklist.md`; outside the automated loop |
@@ -1214,6 +1463,7 @@ process integration. The matrix is **applicable**.
 | Documentation-like paths | Fenced blocks in `README.md` treated as executable; an attacker-or-accident-added block; `id=` collision | **Applicable** | Harness executes blocks **by id from a pinned file allowlist** only; never scans-and-runs; duplicate or missing id is a hard failure | (a) unknown id → non-zero, nothing executed; (b) duplicate id in one file → non-zero; (c) block added to a non-allowlisted file → never executed |
 | Git repository selection | `git -C` vs cwd; installer run from inside an unrelated repo; relative vs absolute target | **Applicable** | Every git call passes an absolute `-C`; target derived from `XDG_DATA_HOME`, never cwd; remote-mismatch abort retained | (a) run installer with cwd inside a foreign git repo → foreign repo untouched, `git status` clean; (b) relative `TARGET` rejected; (c) mismatched origin aborts writing nothing |
 | Commit state | staged / `commit -a` / empty index | **N/A** — this change creates no commits programmatically. Commits are authored by the developer through the normal flow | — | — |
+| **Local history restructuring** *(added by Decision 12)* | Rewriting a commit that is actually **published** (so a fetched history is rewritten under a collaborator); losing work because no backup ref was taken before `reset`; the rebuilt union silently differing from the original tree; rewriting the wrong branch or a sibling worktree; reusing the existing `refs/original/refs/heads/feat/at-11-instalable` namespace and clobbering a prior rewrite's backup; routing the rebuild through `push --force` / `--force-with-lease` instead of local refs; advancing or rewriting `validation/at-11-instalable` as a side effect | **Applicable** — exactly one local rewrite is authorized: `feat/at-11-instalable` from `c577041` back to `af8680d` and forward into 9a/9b/9c, **because `c577041` is on no remote-tracking ref** (`git branch -r --contains c577041` is empty). Entirely local; no remote operation is part of it | Verify the commit is unpublished **before** rewriting, and treat a non-empty `git branch -r --contains` as a hard stop. Create the backup ref `backup/at-11-task-2.1-c577041` **first**, in a namespace distinct from the existing `refs/original/…` backup at `b037b6f`. Use `git reset --soft` so the tree is never discarded. Prove the **scoped** union identity before the rebuild is considered done — byte identity over the seven task-2.1 implementation/test paths, **plus** an empty changed-path set once the SDD-bookkeeping allowlist is excluded (Decision 12, *Union identity — scoped to task-2.1 code*). A whole-tree diff is explicitly **not** the check: `tasks.md` and `apply-progress.md` are expected to change during re-slicing, so a full-tree emptiness assertion could never pass and would hide the real drift question. Keep the backup ref afterwards as evidence. No remote ref is read, written, advanced, or deleted; Decision 11's authorization is **not** widened by this decision | (a) a commit reachable from any remote-tracking ref → rewrite refused before touching the branch; (b) missing backup ref → rewrite refused; (c) scoped union check failing after the rebuild — a drifted path among the seven, **or** an eighth code path once SDD bookkeeping is excluded → hard failure, restore from the backup ref and redo; (d) backup ref name colliding with `refs/original/…` → refused; (e) static assertion: no `push`, `--force`, `--force-with-lease`, tag, PR, or branch-delete invocation appears in the rebuild procedure; (f) `validation/at-11-instalable` tip is unchanged across the whole operation |
 | **Push state** *(reclassified by Decision 11)* | Implicit current-branch push instead of an explicit refspec; wrong source ref (another branch, detached HEAD, a sibling worktree); wrong destination (`main`, a tag ref, another branch); wrong remote/URL; an ambient credential (another `gh` login, SSH agent, ControlMaster socket) used because it happened to be reachable; a divergent remote ref resolved by `--force` / `--force-with-lease`; scope widened after a denial | **Applicable** — exactly one authorized remote write exists: local `feat/at-11-instalable` → `refs/heads/validation/at-11-instalable` at `https://github.com/chiptime/agent-tts`, through the active `gh` session named `chiptime`, **fast-forward only**. It is a one-off developer operation, **not** a product/harness feature | Explicit refspec naming both ends; verify the current branch is the authorized source before pushing; verify the remote URL; use only the named session and **never** discover, enumerate, or reuse any other credential channel; fast-forward only. Fail closed on all three shapes — write denied, auth denied, or remote ref divergent → stop, overwrite nothing, report both tips, mark the dependent scenario `BLOCKED`, leave M1 open. Never widen scope to get past a denial | (a) any destination other than `refs/heads/validation/at-11-instalable` → refused before contacting the remote; (b) source ref other than `feat/at-11-instalable` → refused; (c) divergent remote ref → `BLOCKED` with both tips recorded, **no** force and remote bytes unchanged; (d) static assertion: no push/tag/PR/merge/release/branch-delete invocation exists anywhere in `scripts/`, `hosts/`, `tools/`, or the harness |
 | PR commands | `--head`, env prefix, composed commands | **N/A** — no PR automation in this change. PR, merge, release, tag create/move, and branch deletion remain unauthorized; V3 is the human gate | — | — |
 | **Install-ref selection** *(change-specific, Decision 11)* | A ref value that escapes its URL segment (`../`, absolute path, scheme injection, embedded `?`/`#`); a ref that resolves to a different repository; the candidate ref leaking into the engine resolution and silently replacing the immutable SHA; the candidate ref written into the documented stable default; an unresolvable ref recorded as `PASS` | **Applicable** | One ref variable with a `v0.16.0` default feeds both the raw-script path and the clone; the ref is passed through the product's own supported mechanisms (`HERDR_TTS_REF`, herdr `--ref`), never by rewriting the documented block; engine resolution reads only the pinned SHA and is unreachable from either selector; a ref that does not resolve to a commit on the documented origin is `BLOCKED` | (a) traversal/absolute/scheme-bearing ref value → refused, nothing fetched; (b) `direct_url.json` still records `commit_id == d66616bc…` and `subdirectory == engine` under every selected installer ref; (c) with the variable unset, the resolved URL and clone ref are byte-equivalent to today's `v0.16.0` default; (d) unresolvable candidate ref/commit → `BLOCKED` with a recorded reason, never `PASS`; (e) static assertion: the documented stable default is never the candidate ref |
@@ -1233,7 +1483,12 @@ Scope of the Decision 11 reclassification, stated precisely so it cannot be read
   Its design response is a *boundary* around a single manual operation. No push, PR, release, or
   branch-management capability is added to the installer, the launchers, the wizard, or the
   harness, and RED test (d) asserts that statically.
-- **Commit state** stays `N/A`: commits remain developer-authored through the normal flow.
+- **Commit state** stays `N/A`: commits remain developer-authored through the normal flow. Decision
+  12 does not change this — the rebuilt 9a/9b/9c commits are authored by the developer in the normal
+  flow; nothing creates commits programmatically.
+- **Local history restructuring** moved `N/A` → **Applicable** because exactly one local rewrite of
+  an **unpushed** commit is now authorized. It adds no remote capability whatsoever: it reads no
+  remote ref and writes none, and RED test (e) asserts that statically.
 - **PR commands** stays `N/A`: no PR, merge, release, tag, or branch-deletion operation is
   authorized or automated anywhere in this change.
 - Decisions 8 and 9 are unaffected — they still create no commits, no pushes, and no PR
@@ -1262,6 +1517,17 @@ Scope of the Decision 11 reclassification, stated precisely so it cannot be read
   evidence of any superseded candidate commit and re-run V2. Never rewrite remote history, never
   touch `main` or a tag as a rollback mechanism, and never change the engine pin or the stable
   documented default to make a failure disappear.
+- **Task 2.1 local re-slice (Decision 12).** A *local-history* operation, not a product rollout:
+  back up `c577041` to `backup/at-11-task-2.1-c577041`, `git reset --soft af8680d`, then commit 9a →
+  9b → 9c in dependency order, and prove the **scoped** union identity — byte identity over the
+  seven task-2.1 implementation/test paths, plus an empty changed-path set once `tasks.md`,
+  `apply-progress.md`, and `design.md` are excluded. SDD bookkeeping is expected to change during
+  re-slicing and is validated by SDD status and mirror read-back, not by this diff.
+  Rollback is simply `git reset --hard backup/at-11-task-2.1-c577041`, which is why the backup ref is
+  created first and kept afterwards. No remote ref is touched:
+  `validation/at-11-instalable` stays at its M1 commit, and nothing is force-pushed, deleted, or
+  advanced as part of this operation. The re-slice is a **design plan** until an apply run performs
+  it — this document does not record it as complete.
 - **Rollout order** is the milestone order; each slice is independently revertible with its
   tests and docs.
 
@@ -1271,6 +1537,21 @@ Scope of the Decision 11 reclassification, stated precisely so it cannot be read
 
 Auto-chain, ≤400 authored additions + deletions per slice, tests and user-facing docs travel
 with their code. Harness-first is mandatory.
+
+**This section is the slice mapping of record**, extended by Decisions 10 (slice 3a), 8 and 9
+(slices 8a, 8b), and 12 (slices 9a, 9b, 9c). `tasks.md` currently calls it the "Decision 7 slice
+mapping"; that label is a pre-existing misreference — Decision 7 is the doctor decision — and
+`sdd-tasks` should point it at this section instead.
+
+| Count | Value | Note |
+|---|---|---|
+| Tasks | **26** (unchanged) | 11 M1 · 6 M2 · 5 M3 · 4 M4. Progress: **12 / 26 complete** |
+| PR slices | **28** (was 26) | 11 M1 · **8** M2 · 5 M3 · 4 M4. Task 2.1 became slices 9a + 9b + 9c (Decision 12) |
+| Forecast authored lines | ~5,920 | Planning figure, unchanged. Task 2.1's **measured 963** lines are distributed 337 / 175 / 447 across 9a / 9b / 9c — a recorded **+663 variance** against slice 9's original ~300 forecast, not a new budget |
+| Accepted `size:exception` | slice **9c** only, 47 lines | Decision 12 / Engram #9828. No other slice carries one |
+
+The task count and the slice count were coincidentally both 26 before Decision 12. They are now
+different numbers and must not be read as interchangeable.
 
 | # | Slice | Milestone | Est. lines | Activates V2 |
 |---|---|---|---|---|
@@ -1286,7 +1567,9 @@ with their code. Harness-first is mandatory.
 | 8 | Scenarios 1 + 2 `plugin-fresh-clone`, `plugin-subdir-install` (**OQ-1 probe**, **OQ-6 pin retrieval**) + **Decision 11 candidate-ref adaptation**: ref-parameterized `id=install-plugin-curl` block, `HERDR_TTS_REF` / `--ref` selection, ref+commit attribution in the journal, then publish the candidate ref and run V2 | M1 | ~300 | 1, 2 |
 | 8a | **Smoke 16n host-safety isolation** (Decision 8): three launcher overrides + `new_env()` wiring + four RED tests | M1 | ~130 | — |
 | 8b | **Smoke 40e oracle identity** (Decision 9): selected pin + revision pre-check, dual-layout probe, checked return codes | M1 | ~140 | — |
-| 9 | `resolve.py` + bash resolvers: root, `HERDR_BIN`, port, `HERDR_TTS_HOME` (ex-OQ-2 **resolved**) | M2 | ~300 | — |
+| 9a | **Python resolution core** (Decision 12): `tools/herdr_onboarding/{__init__,resolve}.py` root + `HERDR_TTS_HOME` (ex-OQ-2 **resolved**) + six-step `HERDR_BIN`, with `TestResolveRoot` / `TestResolveTtsHome` / `TestResolveHerdrBin` | M2 | ~337 | — |
+| 9b | **Brain port plumbing** (Decision 12): `resolve_port` + config-file reader in `resolve.py`; `DEFAULT_BRAIN_PORT` / `Settings.brain_port` / `load_settings` in `config.py`; `TestResolvePort` + `TestBrainPortKnob` | M2 | ~175 | — |
+| 9c | **Paired bash launchers** (Decision 12): byte-identical `herdr_resolve_*` block in both launchers + wiring + smoke section 44 (44a–44f) + `TestBashMirrorParity`. **Accepted `size:exception`: 47 over** | M2 | ~447 | — |
 | 10 | Brain launcher repair: A1/C1/C2/C4 removal + parity tests (RNF-4) | M2 | ~280 | **3 (activates here)** |
 | 11 | Ownership-aware port policy (C5) in launcher and installer | M2 | ~200 | — |
 | 12 | Systemd template + generation + `deploy/install.sh` rewrite | M2 | ~340 | — |
@@ -1355,6 +1638,34 @@ then the suite has a known red (40e) and a known hazard (16n), and M1 cannot clo
   `BLOCKED` and M1 stays open. Likewise if the exact engine SHA is not retrievable — the
   candidate branch does not carry it and cannot stand in for it.
 
+### Milestone-2 slice dependencies (Decision 12)
+
+Task 2.1's three slices form a strict linear chain, and slice 10 consumes the whole of it:
+
+```
+    9a  Python resolution core  (337)
+         ▼
+    9b  brain port plumbing     (175)
+         ▼
+    9c  paired bash launchers   (447 · accepted size:exception)
+         ▼
+    10  brain launcher repair (task 2.2) ──► activates V2 scenario 3
+         ▼
+    11 → 12 → 13 → 14
+```
+
+| Slice | Depends on | Why | Rollback boundary |
+|---|---|---|---|
+| 9a | none within task 2.1 | Creates `resolve.py` and `test_resolve.py`, the files 9b and 9c extend | Delete the two `tools/herdr_onboarding/` files and `test_resolve.py`; no launcher is touched yet |
+| 9b | 9a | `resolve_port` is a function in 9a's module; its tests append to 9a's test file | Revert the port section, `config.py`, and the two port test classes. `Settings.brain_port` is defaulted, so no existing construction breaks, and no consumer is wired until 9c |
+| 9c | 9b | The bash `herdr_resolve_port` mirrors 9b's order; the shipped block carries all four resolvers as a unit | Both launcher blocks + smoke section 44 + `TestBashMirrorParity` revert **together**; a partial revert breaks byte-identity while removing the test that detects it |
+| 10 | 9c | Task 2.2 repairs the brain launcher that 9c wires, and its parity assertions build on 9c's mirror block | Launcher repair + parity module revert together (launcher returns to its 9c state, not to pre-`main`) |
+
+The task 2.1 commit `c577041` is **local and unpushed**, so the remote validation branch
+`validation/at-11-instalable` is unaffected by this re-slice and stays at its M1 commit. The first
+M2 V2 run that needs the newer commits fast-forwards that same ref under Decision 11's unchanged
+authorization — fast-forward only, gh session `chiptime`, divergent ⇒ `BLOCKED`, never force.
+
 ### Candidate-branch updates at M2–M4
 
 Later milestones add **no new slices** for this. Branch maintenance rides the existing work-unit
@@ -1370,8 +1681,8 @@ ref; `v0.16.0` and `main` remain maintainer-owned after V3.
 
 No decision gate remains before apply: every product decision is resolved (see *Decision status*).
 OQ-1 and OQ-6 are evidence questions answered **by** running V2 scenarios, not gates that block
-starting them. The budget risk stays High because the change spans ~26 slices across four
-milestones.
+starting them. The budget risk stays High because the change spans **28** PR slices across four
+milestones, one of which (slice 9c) carries an explicitly accepted `size:exception`.
 
 Milestone 4 closes only with `clean-install.sh --milestone 4` green across all nine scenarios,
 plus the three project suites and the V1 set.
@@ -1417,3 +1728,4 @@ not by a decision, and each has a pre-designed response to either outcome.
 | Pre-V3 install-route testability | **Authorized**: publish local `feat/at-11-instalable` to `validation/at-11-instalable` only, via the active `gh` session `chiptime`, fast-forward only; select it through `HERDR_TTS_REF` / herdr `--ref`. Candidate ≠ stable, candidate ≠ engine-pin retrievability, candidate ≠ merge readiness. No `main`/tag/PR/merge/release/deletion/force-push | Engram #9783 → Decision 11 |
 | Absent remote `v0.16.0` / unrepaired public `main` as an M1 blocker | **No longer blocking.** The candidate ref is the M1 V2 install source; the stable route's `BLOCKED` evidence is preserved, not closed. Stable publication stays maintainer-owned, post-V3 | Decision 11 |
 | "Decision 9 awaits a maintainer answer" | Never existed. The STT question lived in Decision 6; Decision 9 below is new and resolved | this document |
+| Task 2.1 oversized review unit (963 authored lines vs a 400 budget) | **Resolved**: re-sliced locally into 9a (~337) / 9b (~175) / 9c (~447). One honest slicing pass; `size:exception` of 47 lines accepted for **9c only**, because the byte-identical cross-launcher parity contract and its tests cannot split without a red intermediate commit. No code-golf, no further slicing loop. Task 2.1 stays one logical completed task (progress **12 / 26 tasks**); PR slice count 26 → **28**. Local rewrite authorized because `c577041` is unpushed; remote `validation/at-11-instalable` untouched | Engram #9828 → Decision 12 |
