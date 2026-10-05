@@ -112,7 +112,7 @@ R1 (doc, 1-2h) ──► R2 (decisión) ──► R4-lite (red de tests) ──�
 | # | Decisión | Recomendación | Estado |
 |---|---|---|---|
 | D-R2 | ¿Supersede HT-01/HT-04 hacia brain y AT-02 marcada cubierta? | Sí | **Sí, confirmada 2026-10-06** |
-| D-R4 | ¿Port de tests 1:1 o port-crítico + G-BASH-MATRIX? | Port-crítico | Pendiente |
+| D-R4 | ¿Port de tests 1:1 o port-crítico + G-BASH-MATRIX? | Port-crítico | **Port-crítico (Ejecutado R4b, 2026-10-06)** |
 | D-R6a | ¿Autorizar EXECUTION.md §1 (VS1-VS4)? | Revisar y autorizar | Pendiente |
 | D-R6b | ¿VS3 absorbe HT-05 o quedan separados? | Decidir al planificar VS3 | Pendiente |
 | D-R3 | ¿HT-11 sigue siendo P1 tras la migración? | Sí (era la compañera UX de HT-02, ya implementada) | **Sí, ejecutada y cerrada (2026-10-06)** |
