@@ -3,14 +3,14 @@
 #
 # The changed-lines gate executes ONE harness under PS4 xtrace. The M1
 # candidate's modified executable Bash lines live in bin/herdr-tts (exercised
-# through host_cli_cases.sh's sandboxed sourcing), in host_cli_cases.sh
-# itself, and in the sterile bootstrap harness — so this wrapper runs BOTH
-# case-protocol harnesses in one xtraced process tree. Same CASE protocol;
-# a failure in either harness fails the wrapper.
+# through sandboxed sourcing), in the host and critical case harnesses,
+# and in the sterile bootstrap harness. This wrapper runs all three in one
+# xtraced process tree. Same CASE protocol; any harness failure fails the run.
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 rc=0
 bash "$SCRIPT_DIR/host_cli_cases.sh" || rc=1
+bash "$SCRIPT_DIR/critical_cases.sh" || rc=1
 bash "$SCRIPT_DIR/bootstrap_sterile_harness.sh" || rc=1
 bash "$SCRIPT_DIR/voice_cases.sh" || rc=1
 bash "$SCRIPT_DIR/config_cases.sh" || rc=1

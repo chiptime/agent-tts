@@ -6,6 +6,24 @@ on:
   pull_request:
 
 jobs:
+  plugin-bash-tests:
+    name: TTS Plugin / Ubuntu (Bash)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure jq is available
+        run: |
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y jq
+          fi
+
+      - name: Run sandboxed Bash harnesses
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: bash hosts/herdr/tts-plugin/tests/all_bash_harnesses.sh
+
   engine-tests:
     name: Engine / ${{ matrix.os }} (py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
