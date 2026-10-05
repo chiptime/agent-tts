@@ -11,9 +11,9 @@
 La migración a monorepo absorbió tres repositorios independientes, implementando 5 de las 20 features del roadmap original y ~10 nuevas capacidades fuera de él:
 
 - **20 features del roadmap original (revisión 22/09/2026):**
-  - **5 Ejecutadas / Implementadas:** AT-01 (streaming frames MP3), AT-03 (conectores recortada a OpenCode), AT-04 (daemon persistente), AT-08 (cola con prioridades), HT-02 (voces por agente).
+  - **6 Ejecutadas / Implementadas:** AT-01 (streaming frames MP3), AT-03 (conectores recortada a OpenCode), AT-04 (daemon persistente), AT-08 (cola con prioridades), HT-02 (voces por agente), HT-11 (audición de voces en paleta).
   - **3 Con cobertura dual / mantenidas en plugin-tts (decisión D-R2 / directiva usuario 2026-10-06):** AT-02 (cubierta por brain y en roadmap motor para HT-01), HT-01 (cubierta por brain y activa/planificada en plugin-tts para terminal), HT-04 (cubierta por brain PWA y activa/planificada en plugin-tts para ntfy Actions + HTTP).
-  - **6 Aprobadas pendientes:** AT-06 (ducking), AT-07 (digest audio), HT-03 (radio mode, hito 0 completado), HT-05 (recordatorios escalados), HT-10 (chain replay), HT-11 (audición de voces en paleta).
+  - **5 Aprobadas pendientes:** AT-06 (ducking), AT-07 (digest audio), HT-03 (radio mode, hito 0 completado), HT-05 (recordatorios escalados), HT-10 (chain replay).
   - **4 Postergadas:** AT-05 (prosodia), HT-06 (auto-snooze), HT-07 (filtro semántico), HT-08 (briefing matinal).
   - **2 Descartadas:** HT-09 (espacialización estéreo), HT-12 (watchers de texto).
 - **10 features nuevas fuera de roadmap (post-revisión / monorepo):**
@@ -62,7 +62,7 @@ La migración a monorepo absorbió tres repositorios independientes, implementan
 | HT-08 | [../../hosts/herdr/tts-plugin/docs/prds/HT-08-briefing-matinal.md](../../hosts/herdr/tts-plugin/docs/prds/HT-08-briefing-matinal.md) | Briefing matinal automático | P4 | **Postergada** | M |
 | HT-09 | [../../hosts/herdr/tts-plugin/docs/prds/descartadas/HT-09-espacializacion-estereo.md](../../hosts/herdr/tts-plugin/docs/prds/descartadas/HT-09-espacializacion-estereo.md) | Espacialización estéreo por pane | — | **Descartada** | — |
 | HT-10 | [../../hosts/herdr/tts-plugin/docs/prds/HT-10-chain-replay.md](../../hosts/herdr/tts-plugin/docs/prds/HT-10-chain-replay.md) | Chain replay contextual | P5 | **Aprobada (baja)** (pendiente) | S-M |
-| HT-11 | [../../hosts/herdr/tts-plugin/docs/prds/HT-11-audicion-voces.md](../../hosts/herdr/tts-plugin/docs/prds/HT-11-audicion-voces.md) | Audición de voces en la paleta | P1 | **Aprobada** (pendiente Bloque 2 Hito 1) | S |
+| HT-11 | [../../hosts/herdr/tts-plugin/docs/prds/archivadas/HT-11-audicion-voces.md](../../hosts/herdr/tts-plugin/docs/prds/archivadas/HT-11-audicion-voces.md) | Audición de voces en la paleta | P1 | **EJECUTADA / IMPLEMENTADA** (2026-10-06, Bloque 2 cerrado) | S |
 | HT-12 | [../../hosts/herdr/tts-plugin/docs/prds/descartadas/HT-12-watchers-texto.md](../../hosts/herdr/tts-plugin/docs/prds/descartadas/HT-12-watchers-texto.md) | Watchers personalizados de texto | — | **Descartada** | — |
 
 ---
@@ -95,9 +95,9 @@ La migración a monorepo absorbió tres repositorios independientes, implementan
      - 1.3 Cola y cadena (AT-08): prioridades y `--play-chain` sobre el daemon.
    - Contrato IPC congelado: [`../../contracts/ipc-v2.md`](../../contracts/ipc-v2.md).
 2. **BLOQUE 2 — Identidad vocal (HT-02 + HT-11):**
-   - **Estado:** **PARCIAL (1 de 2 hitos)** en [`../../hosts/herdr/tts-plugin/docs/prds/bloques/BLOQUE-2-identidad-vocal.md`](../../hosts/herdr/tts-plugin/docs/prds/bloques/BLOQUE-2-identidad-vocal.md).
+   - **Estado:** **COMPLETADO (2026-10-06)** en [`../../hosts/herdr/tts-plugin/docs/prds/bloques/BLOQUE-2-identidad-vocal.md`](../../hosts/herdr/tts-plugin/docs/prds/bloques/BLOQUE-2-identidad-vocal.md).
    - Hito 0 (HT-02): implementado (`voices.json`, selector y prefijo de agente).
-   - Hito 1 (HT-11): audición de voces en paleta fzf pendiente (P1 huérfana, paquete R3 de reconciliación).
+   - Hito 1 (HT-11): audición de voces en paleta fzf implementada con tests de preview, caché LRU 20 MB y asignación global (paquete R3 completado).
 3. **BLOQUE 3 — Loop móvil (HT-04 → HT-05):**
    - **Estado:** **SIN EJECUTAR** en [`../../hosts/herdr/tts-plugin/docs/prds/bloques/BLOQUE-3-loop-movil.md`](../../hosts/herdr/tts-plugin/docs/prds/bloques/BLOQUE-3-loop-movil.md).
    - Nota: HT-04 supersedida por brain PWA (`/approval/*` y `/ask`, decisión D-R2 confirmada 2026-10-06). HT-05 pendiente.

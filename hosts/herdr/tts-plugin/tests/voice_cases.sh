@@ -11,11 +11,19 @@ trap 'rm -rf "$SANDBOX_ROOT"' EXIT
 
 sandbox_setup() {
   SANDBOX="$SANDBOX_ROOT/$1"
-  mkdir -p "$SANDBOX/data/herdr-tts/venv/bin" "$SANDBOX/config/herdr-tts" "$SANDBOX/state/herdr-tts"
+  mkdir -p "$SANDBOX/data/herdr-tts/venv/bin" "$SANDBOX/config/herdr-tts" "$SANDBOX/state/herdr-tts" "$SANDBOX/cache/herdr-tts"
   STUB_LOG="$SANDBOX/stub.log"
   cat > "$SANDBOX/data/herdr-tts/venv/bin/python" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$STUB_LOG"
+prev=""
+for arg in "$@"; do
+  if [[ "$prev" == "--output" ]]; then
+    mkdir -p "$(dirname "$arg")"
+    echo "fake-audio" > "$arg"
+  fi
+  prev="$arg"
+done
 if [[ -n "${STUB_OUT:-}" ]]; then echo "$STUB_OUT"; fi
 exit "${STUB_EXIT:-0}"
 STUB
@@ -26,7 +34,7 @@ in_host() {
   local snippet="$1"
   shift
   XDG_DATA_HOME="$SANDBOX/data" XDG_CONFIG_HOME="$SANDBOX/config" \
-  XDG_STATE_HOME="$SANDBOX/state" STUB_LOG="$STUB_LOG" \
+  XDG_STATE_HOME="$SANDBOX/state" XDG_CACHE_HOME="$SANDBOX/cache" STUB_LOG="$STUB_LOG" \
   STUB_OUT="${STUB_OUT:-}" STUB_EXIT="${STUB_EXIT:-0}" \
   HERDR_TTS_CONFIG_FILE="$SANDBOX/config/herdr-tts/config.env" \
   HERDR_TTS_VOICES_FILE="$SANDBOX/config/herdr-tts/voices.json" \
@@ -145,6 +153,104 @@ case__voice_auto_assign_deterministic() {
     [[ "$r1" == "$a1" ]] || exit 1
     [[ "$r2" == "$a1" ]] || exit 1
   ' || return 1
+}
+
+case__voice_preview_creates_cached_sample() {
+  sandbox_setup preview_cache
+  local expected_sample="$SANDBOX/cache/herdr-tts/voice-previews/edge/ximena.mp3"
+
+  # 1. Synthesize preview for voice "ximena"
+  in_host 'TTS_PROVIDER=edge voice_preview ximena' || return 1
+
+  # Assert cached MP3 file was created and is non-empty
+  [[ -s "$expected_sample" ]] || return 1
+
+  # Assert stub python was invoked with required synthesis flags
+  grep -q -- "--voice ximena" "$STUB_LOG" || return 1
+  grep -q -- "--output $expected_sample" "$STUB_LOG" || return 1
+  grep -q -- "--no-play" "$STUB_LOG" || return 1
+
+  # 2. Re-invoking preview on already cached voice should play immediately without re-synthesizing
+  local log_len_before log_len_after
+  log_len_before=$(wc -l < "$STUB_LOG")
+  in_host 'TTS_PROVIDER=edge voice_preview ximena' || return 1
+  log_len_after=$(wc -l < "$STUB_LOG")
+
+  # Playback invokes play-file, but no new --output synthesis line should appear
+  local diff_log
+  diff_log=$(tail -n $(( log_len_after - log_len_before )) "$STUB_LOG")
+  ! grep -q -- "--no-play" <<< "$diff_log" || return 1
+
+  # 3. Preview "(global)" resolves to $TTS_VOICE
+  in_host 'TTS_PROVIDER=edge TTS_VOICE=elvira voice_preview "(global)"' || return 1
+  [[ -s "$SANDBOX/cache/herdr-tts/voice-previews/edge/elvira.mp3" ]] || return 1
+
+  # 4. Preview via CLI flag --preview-voice
+  XDG_DATA_HOME="$SANDBOX/data" XDG_CONFIG_HOME="$SANDBOX/config" \
+  XDG_STATE_HOME="$SANDBOX/state" XDG_CACHE_HOME="$SANDBOX/cache" \
+  HERDR_TTS_CONFIG_FILE="$SANDBOX/config/herdr-tts/config.env" \
+  HERDR_TTS_VOICES_FILE="$SANDBOX/config/herdr-tts/voices.json" \
+    bash "$REPO_HOST_DIR/bin/herdr-tts" --preview-voice dalia >/dev/null 2>&1 || return 1
+  [[ -s "$SANDBOX/cache/herdr-tts/voice-previews/edge/dalia.mp3" ]] || return 1
+}
+
+case__voice_cache_lru_purges_over_limit() {
+  sandbox_setup lru_purge
+  local preview_dir="$SANDBOX/cache/herdr-tts/voice-previews/edge"
+  mkdir -p "$preview_dir"
+
+  # Create 3 dummy preview files of 8 MB each (total 24 MB > 20 MB threshold = 20971520 bytes)
+  truncate -s 8M "$preview_dir/v1.mp3"
+  touch -d "15 minutes ago" "$preview_dir/v1.mp3"
+
+  truncate -s 8M "$preview_dir/v2.mp3"
+  touch -d "10 minutes ago" "$preview_dir/v2.mp3"
+
+  truncate -s 8M "$preview_dir/v3.mp3"
+  touch -d "5 minutes ago" "$preview_dir/v3.mp3"
+
+  # Verify initial files exist
+  [[ -f "$preview_dir/v1.mp3" ]] || return 1
+  [[ -f "$preview_dir/v2.mp3" ]] || return 1
+  [[ -f "$preview_dir/v3.mp3" ]] || return 1
+
+  # Run LRU purge in host
+  in_host 'voice_cache_purge_lru' || return 1
+
+  # Oldest file (v1.mp3) must be purged to bring cache under 20 MB (16 MB remains)
+  [[ ! -f "$preview_dir/v1.mp3" ]] || return 1
+  [[ -f "$preview_dir/v2.mp3" ]] || return 1
+  [[ -f "$preview_dir/v3.mp3" ]] || return 1
+
+  # Total size must now be <= 20971520 bytes
+  local total_bytes
+  total_bytes=$(find "$SANDBOX/cache/herdr-tts/voice-previews" -type f -exec stat -c %s {} + | awk '{s+=$1} END {print s}')
+  (( total_bytes <= 20971520 )) || return 1
+}
+
+case__voice_audition_assigns_global() {
+  sandbox_setup audition_assign
+  local cfg="$SANDBOX/config/herdr-tts/config.env"
+  cat > "$cfg" <<'EOF'
+TTS_PROVIDER="edge"
+TTS_VOICE="elvira"
+EOF
+
+  # 1. Direct call to set_global_voice
+  in_host 'set_global_voice ximena' || return 1
+  grep -q '^TTS_VOICE="ximena"$' "$cfg" || return 1
+
+  # 2. Call via CLI flag --set-global-voice
+  XDG_DATA_HOME="$SANDBOX/data" XDG_CONFIG_HOME="$SANDBOX/config" \
+  XDG_STATE_HOME="$SANDBOX/state" XDG_CACHE_HOME="$SANDBOX/cache" \
+  HERDR_TTS_CONFIG_FILE="$cfg" \
+  HERDR_TTS_VOICES_FILE="$SANDBOX/config/herdr-tts/voices.json" \
+    bash "$REPO_HOST_DIR/bin/herdr-tts" --set-global-voice jorge >/dev/null 2>&1 || return 1
+  grep -q '^TTS_VOICE="jorge"$' "$cfg" || return 1
+
+  # 3. Assigning "(global)" or empty keeps existing voice safely
+  in_host 'set_global_voice "(global)"' || return 1
+  grep -q '^TTS_VOICE="jorge"$' "$cfg" || return 1
 }
 
 main() {

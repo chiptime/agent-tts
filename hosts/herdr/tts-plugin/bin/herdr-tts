@@ -120,7 +120,9 @@ SCRIPT="${HERDR_TTS_SCRIPT:-${REAL_SCRIPT}}"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/herdr-tts"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/herdr-tts"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/herdr-tts"
-mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$STATE_DIR"
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/herdr-tts"
+VOICE_PREVIEWS_DIR="${HERDR_TTS_PREVIEWS_DIR:-${CACHE_DIR}/voice-previews}"
+mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$STATE_DIR" "$VOICE_PREVIEWS_DIR"
 
 # Managed settings store (config.env). Env override keeps tests hermetic.
 CONFIG_FILE="${HERDR_TTS_CONFIG_FILE:-${CONFIG_DIR}/config.env}"
@@ -379,11 +381,15 @@ TT_EN[voice.picker.need_fzf]="❌ fzf is not installed: the per-chat voice picke
 TT_EN[voice.palette.need_fzf]="❌ fzf is not installed: the voice palette needs it to run"
 TT_EN[voice.need_fzf.hint]="   Install it (e.g. 'sudo apt install fzf' or 'brew install fzf') and reopen."
 TT_EN[voice.picker.global]="(global) → back to the default voice (%s)"
-TT_EN[voice.picker.header]="Voice for %s %s · enter applies · esc cancels"
+TT_EN[voice.picker.header]="Voice for %s %s · space/ctrl-p: preview · ctrl-s: stop · ctrl-g: set global · enter: apply · esc: cancel"
+TT_EN[voice.picker.header_audition]="Voice audition (%s) · space/ctrl-p: preview · ctrl-s: stop · ctrl-g/enter: set global · esc: cancel"
 TT_EN[voice.picker.reset]="✓ %s %s: back to the global voice (%s)"
 TT_EN[voice.picker.reset.spoken]="Global voice restored."
 TT_EN[voice.picker.set]="✓ %s %s: voice %s"
 TT_EN[voice.picker.set.spoken]="Voice for this chat changed."
+TT_EN[voice.picker.set_global]="✓ Global voice set to %s"
+TT_EN[voice.picker.set_global.title]="Global Voice"
+TT_EN[voice.picker.global_kept]="✓ Global voice kept as %s"
 TT_EN[voice.prefix.spoken]="agent: "
 TT_EN[status.title]="━━━ Herdr TTS Status ━━━"
 TT_EN[status.synth]="  Playback: ⏳ Synthesizing voice response (lock held)"
@@ -483,7 +489,7 @@ TT_EN[dash.state_paused]="⏸ paused"
 TT_EN[dash.state_stopped]="⏹ stopped"
 TT_EN[dash.state_synthesizing]="⌛ synthesizing"
 TT_EN[palette.no_entries]="ℹ️ No chats or audios to show in the palette"
-TT_EN[palette.header]="enter/ctrl-o: focus chat · ctrl-m: mute pane · ctrl-z: snooze pane · ctrl-r: play audio · ctrl-v: chat voice · esc: quit"
+TT_EN[palette.header]="enter/ctrl-o: focus chat · v: audition voices · ctrl-v: chat voice · ctrl-m: mute pane · ctrl-z: snooze pane · ctrl-r: play audio · esc: quit"
 TT_EN[palette.focused]="🎯 Chat %s focused (the palette closes in 2s)"
 TT_EN[palette.no_audios]="(no audios) · %s"
 TT_EN[palette.preview.usage]="Usage: herdr-tts --palette-preview <pane_id>"
@@ -874,11 +880,15 @@ TT_ES[voice.picker.need_fzf]="❌ fzf no está instalado: el selector de voz por
 TT_ES[voice.palette.need_fzf]="❌ fzf no está instalado: la paleta de voz lo necesita para funcionar"
 TT_ES[voice.need_fzf.hint]="   Instálalo (p. ej. 'sudo apt install fzf' o 'brew install fzf') y vuelve a abrirlo."
 TT_ES[voice.picker.global]="(global) → volver a la voz por defecto (%s)"
-TT_ES[voice.picker.header]="Voz para %s %s · enter aplica · esc cancela"
+TT_ES[voice.picker.header]="Voz para %s %s · espacio/ctrl-p: preview · ctrl-s: parar · ctrl-g: voz global · enter: aplicar · esc: cancelar"
+TT_ES[voice.picker.header_audition]="Audición de voces (%s) · espacio/ctrl-p: preview · ctrl-s: parar · ctrl-g/enter: voz global · esc: cancelar"
 TT_ES[voice.picker.reset]="✓ %s %s: vuelve a la voz global (%s)"
 TT_ES[voice.picker.reset.spoken]="Voz global restaurada."
 TT_ES[voice.picker.set]="✓ %s %s: voz %s"
 TT_ES[voice.picker.set.spoken]="Voz de este chat cambiada."
+TT_ES[voice.picker.set_global]="✓ Voz global establecida a %s"
+TT_ES[voice.picker.set_global.title]="Voz global"
+TT_ES[voice.picker.global_kept]="✓ Voz global mantenida como %s"
 TT_ES[voice.prefix.spoken]="agente: "
 TT_ES[status.title]="━━━ Herdr TTS Status ━━━"
 TT_ES[status.synth]="  Reproducción: ⏳ Sintetizando respuesta de voz (Lock activo)"
@@ -978,7 +988,7 @@ TT_ES[dash.state_paused]="⏸ pausado"
 TT_ES[dash.state_stopped]="⏹ detenido"
 TT_ES[dash.state_synthesizing]="⌛ sintetizando"
 TT_ES[palette.no_entries]="ℹ️ Sin chats ni audios que mostrar en la paleta"
-TT_ES[palette.header]="enter/ctrl-o: enfocar chat · ctrl-m: silenciar pane · ctrl-z: snooze pane · ctrl-r: reproducir audio · ctrl-v: voz del chat · esc: salir"
+TT_ES[palette.header]="enter/ctrl-o: enfocar chat · v: audición de voces · ctrl-v: voz del chat · ctrl-m: silenciar pane · ctrl-z: snooze pane · ctrl-r: reproducir audio · esc: salir"
 TT_ES[palette.focused]="🎯 Chat %s enfocado (la paleta se cierra en 2s)"
 TT_ES[palette.no_audios]="(sin audios) · %s"
 TT_ES[palette.preview.usage]="Uso: herdr-tts --palette-preview <pane_id>"
@@ -4536,13 +4546,98 @@ run_dashboard() {
   trap - EXIT INT TERM
 }
 
+# ─── Voice preview cache & helpers (HT-11) ───────────────────
+voice_cache_purge_lru() { # [max_bytes] — RF-HT-11-4 (threshold: 20 MB)
+  local max_bytes="${1:-20971520}" # 20 MB (20 * 1024 * 1024)
+  local dir="${VOICE_PREVIEWS_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/herdr-tts/voice-previews}"
+  [[ -d "$dir" ]] || return 0
+
+  local total_size=0
+  local -a file_entries=()
+  local f atime mtime size t
+  while IFS= read -r f; do
+    [[ -f "$f" ]] || continue
+    read -r atime mtime size < <(stat -c '%X %Y %s' "$f" 2>/dev/null || echo "0 0 0")
+    t=$(( atime > mtime ? atime : mtime ))
+    total_size=$(( total_size + size ))
+    file_entries+=("${t} ${size} ${f}")
+  done < <(find "$dir" -type f 2>/dev/null)
+
+  if (( total_size <= max_bytes )); then
+    return 0
+  fi
+
+  local line f_size f_path
+  while IFS= read -r line; do
+    if (( total_size <= max_bytes )); then
+      break
+    fi
+    [[ -z "$line" ]] && continue
+    f_size=$(awk '{print $2}' <<< "$line")
+    f_path=$(cut -d' ' -f3- <<< "$line")
+    if rm -f "$f_path" 2>/dev/null; then
+      total_size=$(( total_size - f_size ))
+    fi
+  done < <(printf '%s\n' "${file_entries[@]}" | sort -n)
+}
+
+voice_preview() { # <voice> — RF-HT-11-2, RF-HT-11-3, RF-HT-11-4
+  local voice="${1:-}"
+  if [[ -z "$voice" || "$voice" == \(*\)* || "$voice" == "global" ]]; then
+    voice="$TTS_VOICE"
+  fi
+  voice="${voice#"${voice%%[![:space:]]*}"}"
+  voice="${voice%"${voice##*[![:space:]]}"}"
+
+  local text="Hola, esta es una prueba de voz. Hello, this is a voice sample."
+  local prov="${TTS_PROVIDER:-edge}"
+  local cache_dir="${VOICE_PREVIEWS_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/herdr-tts/voice-previews}/${prov}"
+  mkdir -p "$cache_dir"
+  local sample_file="${cache_dir}/${voice}.mp3"
+
+  stop_audio
+  if [[ -s "$sample_file" ]]; then
+    touch -a "$sample_file" 2>/dev/null || true
+    play_audio_file "$sample_file"
+    return 0
+  fi
+
+  build_provider_flags
+  if "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$voice" --rate "$TTS_RATE" --output "$sample_file" --no-play "${PROVIDER_FLAGS[@]}"; then
+    voice_cache_purge_lru
+    play_audio_file "$sample_file"
+  else
+    return 1
+  fi
+}
+
+set_global_voice() { # <voice> — RF-HT-11-5
+  local voice="${1:-}"
+  if [[ -z "$voice" || "$voice" == \(*\)* || "$voice" == "global" ]]; then
+    voice="$TTS_VOICE"
+  fi
+  voice="${voice#"${voice%%[![:space:]]*}"}"
+  voice="${voice%"${voice##*[![:space:]]}"}"
+
+  if config_set "TTS_VOICE" "$voice"; then
+    TTS_VOICE="$voice"
+    echo "$(tt voice.picker.set_global "$voice")"
+    notify_herdr "$(tt voice.picker.set_global.title)" "$voice"
+    return 0
+  else
+    return 1
+  fi
+}
+
 # ─── Voice palette (v0.11, fzf popup) ────────────────────────
-run_voice_for_picker() { # <agent|pane> <id> — fzf voice picker (RF-HT-02-6, HT-11)
+run_voice_for_picker() { # [<agent|pane> <id>] — fzf voice picker (RF-HT-02-6, HT-11)
   if ! command -v fzf >/dev/null 2>&1; then
     echo "$(tt voice.picker.need_fzf)" >&2
     echo "$(tt voice.need_fzf.hint)" >&2
     return 1
   fi
+  local target_kind="${1:-}"
+  local target_id="${2:-}"
   local sel
   # RF-HT-13-4: the picker lists the engine catalog for the ACTIVE
   # provider. Engine down → only the global-reset option remains (honest
@@ -4559,18 +4654,47 @@ run_voice_for_picker() { # <agent|pane> <id> — fzf voice picker (RF-HT-02-6, H
   if [[ -n "$_cv" ]]; then
     picker_lines+="$(printf '%s\n' $_cv)"
   fi
+  local header_str
+  if [[ -n "$target_kind" && -n "$target_id" ]]; then
+    header_str="$(tt voice.picker.header "$target_kind" "$target_id")"
+  else
+    header_str="$(tt voice.picker.header_audition "$TTS_VOICE")"
+  fi
+
   sel=$(printf '%s' "$picker_lines" | fzf \
     --reverse \
     --height 100% \
-    --header "$(tt voice.picker.header "$1" "$2")") || return 0
-  if [[ "$sel" == \(*\)* ]]; then
-    voice_map_set "$1" "$2" off || return 1
-    echo "$(tt voice.picker.reset "$1" "$2" "$TTS_VOICE")"
-    speak_text "$(tt voice.picker.reset.spoken)" "$sel"
+    --header "$header_str" \
+    --bind "ctrl-p:execute-silent('$SCRIPT' --preview-voice {})" \
+    --bind "space:execute-silent('$SCRIPT' --preview-voice {})" \
+    --bind "focus:execute-silent('$SCRIPT' --stop)" \
+    --bind "ctrl-s:execute-silent('$SCRIPT' --stop)" \
+    --bind "ctrl-g:execute-silent('$SCRIPT' --set-global-voice {})+abort") || {
+      stop_audio
+      return 0
+    }
+  stop_audio
+
+  if [[ -z "$sel" ]]; then
+    return 0
+  fi
+
+  if [[ -n "$target_kind" && -n "$target_id" ]]; then
+    if [[ "$sel" == \(*\)* ]]; then
+      voice_map_set "$target_kind" "$target_id" off || return 1
+      echo "$(tt voice.picker.reset "$target_kind" "$target_id" "$TTS_VOICE")"
+      speak_text "$(tt voice.picker.reset.spoken)" "$sel"
+    else
+      voice_map_set "$target_kind" "$target_id" "$sel" || return 1
+      echo "$(tt voice.picker.set "$target_kind" "$target_id" "$sel")"
+      speak_text "$(tt voice.picker.set.spoken)" "$sel"
+    fi
   else
-    voice_map_set "$1" "$2" "$sel" || return 1
-    echo "$(tt voice.picker.set "$1" "$2" "$sel")"
-    speak_text "$(tt voice.picker.set.spoken)" "$sel"
+    if [[ "$sel" == \(*\)* ]]; then
+      echo "$(tt voice.picker.global_kept "$TTS_VOICE")"
+    else
+      set_global_voice "$sel"
+    fi
   fi
 }
 
@@ -4711,6 +4835,7 @@ run_voice_palette() {
     --preview "'$SCRIPT' --palette-preview {2}" \
     --preview-window 'right:50%:wrap' \
     --bind 'ctrl-o:accept' \
+    --bind "v:execute('$SCRIPT' --voice-audition)+abort" \
     --bind "ctrl-m:execute-silent('$SCRIPT' --mute-pane {2})+abort" \
     --bind "ctrl-z:execute-silent('$SCRIPT' --snooze-pane {2})+abort" \
     --bind "ctrl-r:execute-silent('$SCRIPT' --play-file {4})+abort" \
@@ -7091,6 +7216,15 @@ case "${1:-}" in
     save_config
     echo "$(tt cli.voice.set "$TTS_VOICE")"
     speak_text "$(tt cli.voice.spoken "$TTS_VOICE")"
+    ;;
+  --set-global-voice)
+    set_global_voice "${2:-}"
+    ;;
+  --preview-voice)
+    voice_preview "${2:-}"
+    ;;
+  --voice-audition)
+    run_voice_for_picker
     ;;
   --voice-for)
     # PRD HT-02 (RF-HT-02-6): --voice-for agent|pane <id> [voz|off]; with

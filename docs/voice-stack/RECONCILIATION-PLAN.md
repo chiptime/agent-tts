@@ -50,13 +50,19 @@ Las tres PRDs afectadas cuentan con nota de destino formalizada y directiva de c
 - [x] R2.2 Índices `docs/prds/README.md` y `hosts/herdr/tts-plugin/docs/prds/README.md` actualizados reflejando cobertura dual y mantenimiento en plugin-tts.
 - [x] R2.3 Decisión D-R2 confirmada y registrada (2026-10-06) con directiva de cobertura dual del usuario.
 
-### R3 — HT-11 audición de voces (el P1 huérfano; cierra el Bloque 2)
+### R3 — HT-11 audición de voces (el P1 huérfano; cierra el Bloque 2) (COMPLETADA — 2026-10-06)
 
-- Ejecutar el hito 1 del BLOQUE-2 tal cual está definido (vista de voces en paleta, preview bilingüe, auto-stop <0.3 s, caché LRU 20 MB, asignación global/chat), adaptando las rutas al monorepo (`hosts/herdr/tts-plugin/bin/herdr-tts`).
-- El picker `voice.picker.*` ya existe: esto es añadir binds de preview/asignación, no UI nueva.
-- **Prerrequisito:** R4-lite (abajo) — no tocar el bash de 7.189 líneas sin red de tests.
+- [x] Ejecutado el hito 1 del BLOQUE-2 (vista de voces en paleta, preview bilingüe con frase fija, auto-stop <0.3 s en focus/ctrl-s, caché LRU 20 MB con `voice_cache_purge_lru`, asignación global con `set_global_voice` y `--set-global-voice`).
+- [x] Picker fzf actualizado con binds interactivos (`space`/`ctrl-p` preview, `focus` auto-stop, `ctrl-s` stop, `ctrl-g` set global, `enter` set chat/global).
+- [x] Paleta `--voice-palette` con bind de tecla `v` para audición de voces global (`--voice-audition`).
+- [x] Flags CLI `--preview-voice <voice>`, `--voice-audition`, `--set-global-voice <voice>`.
+- [x] Cobertura de tests en `hosts/herdr/tts-plugin/tests/voice_cases.sh` con 3 casos automatizados:
+  - `case__voice_preview_creates_cached_sample`
+  - `case__voice_cache_lru_purges_over_limit`
+  - `case__voice_audition_assigns_global`
+- [x] BLOQUE-2 marcado como COMPLETADO y PRD HT-11 archivada e índices sincronizados.
 
-**DoD:** flujo "escuchar → asignar → oírla hablada" end-to-end + batería ampliada.
+**DoD:** flujo "escuchar → asignar → oírla hablada" end-to-end + batería ampliada. (Cumplido).
 
 ### R4 — Recuperación de cobertura de tests (COMPLETADA — 2026-10-06)
 
@@ -109,7 +115,7 @@ R1 (doc, 1-2h) ──► R2 (decisión) ──► R4-lite (red de tests) ──�
 | D-R4 | ¿Port de tests 1:1 o port-crítico + G-BASH-MATRIX? | Port-crítico | Pendiente |
 | D-R6a | ¿Autorizar EXECUTION.md §1 (VS1-VS4)? | Revisar y autorizar | Pendiente |
 | D-R6b | ¿VS3 absorbe HT-05 o quedan separados? | Decidir al planificar VS3 | Pendiente |
-| D-R3 | ¿HT-11 sigue siendo P1 tras la migración? | Sí (era la compañera UX de HT-02, ya implementada) | Pendiente |
+| D-R3 | ¿HT-11 sigue siendo P1 tras la migración? | Sí (era la compañera UX de HT-02, ya implementada) | **Sí, ejecutada y cerrada (2026-10-06)** |
 
 ## Fuera de alcance de este plan
 
