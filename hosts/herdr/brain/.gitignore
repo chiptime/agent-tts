@@ -9,3 +9,6 @@ build/
 !tests/e2e/fixtures/*.mp3
 .coverage
 .codegraph/
+
+# Browser-harness runtime sandbox (pytest/Chromium temp output)
+tests/browser/.runtime/
