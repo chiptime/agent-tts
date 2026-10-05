@@ -1,5 +1,5 @@
 **ID**: PRD-HT-14 · **Proyecto**: herdr-tts
-**Prioridad final (revisión 2026-09-23)**: P2 (propuesta, pendiente de revisión del maintainer) · **Estado**: Borrador
+**Prioridad final (revisión 2026-09-23)**: P2 · **Estado**: Implementada (`TTS_THEME` en `bin/herdr-tts`)
 **Dependencias**: `settings-category-submenus` (navegación de Ajustes por categorías, ya en el árbol de trabajo)
 
 # PRD-HT-14 — Tema claro configurable

@@ -1,5 +1,5 @@
 **ID**: PRD-AT-01 · **Proyecto**: agent-tts
-**Prioridad final (revisión 2026-09-22)**: P3 · **Estado**: Postergada
+**Prioridad final (revisión 2026-09-22)**: P3 · **Estado**: EJECUTADA (Fecha de cierre: 2026-09-29, commit: `510ceaa` / `a3ee900`)
 **Dependencias**: Ninguna
 
 # PRD-AT-01 — Streaming incremental por frames de MP3 (byte-level)
