@@ -34,12 +34,16 @@ import sys
 
 SHEBANG_RE = re.compile(r"^#!")
 PS4_EVENT_RE = re.compile(r"^\++(\d+)@([^@]+)@")
-PS4 = "+${LINENO}@${BASH_SOURCE}@"
+PS4 = "+${LINENO}@${BASH_SOURCE:-}@"
 
 # Structural-only lines never fire xtrace (they contain no simple command);
 # counting them would poison the denominator forever.
 STRUCTURAL_ONLY = {"else", "fi", "esac", "done", ";;", "then", "do", "{", "}",
                    "}", "!", "in)", "&", ")"}
+# `name() {` DEFINES, it does not run; a bare `pattern)` case label is
+# matched, not executed: xtrace emits neither.
+_FUNC_DEF_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\s*\(\)\s*\{?$")
+_CASE_PATTERN_RE = re.compile(r"^[^()|]+\)\s*$")
 
 
 def die_blocked(reason: str) -> int:
@@ -80,7 +84,22 @@ def is_executable_line(text: str, is_first_line: bool) -> bool:
         return False
     if stripped in STRUCTURAL_ONLY:
         return False
+    if _FUNC_DEF_RE.match(stripped) or _CASE_PATTERN_RE.match(stripped):
+        return False
     return True
+
+
+def is_bash_file(path: str, blob: bytes) -> bool:
+    """Bash PRODUCT sources only (*.sh or bash shebang). Two exclusions:
+    python/docs sharing the scope table never enter the denominator, and
+    /tests/ paths are MEASURING INSTRUMENTS (this gate's own harnesses),
+    never the measured subject — D9 measures product Bash."""
+    if "/tests/" in f"/{path}":
+        return False
+    if path.endswith(".sh"):
+        return True
+    first = blob.split(b"\n", 1)[0].decode("utf-8", "replace").strip()
+    return first.startswith("#!") and ("bash" in first or first.rstrip().endswith("sh"))
 
 
 def modified_executable_lines(baseline_path: str, candidate_path: str, gate: str):
@@ -91,7 +110,10 @@ def modified_executable_lines(baseline_path: str, candidate_path: str, gate: str
         old = base.get(path)
         if old is not None and old.get("sha256") == entry.get("sha256"):
             continue
-        new_lines = read_blob(candidate_path, entry).decode("utf-8", "replace").splitlines()
+        new_bytes = read_blob(candidate_path, entry)
+        if not is_bash_file(path, new_bytes):
+            continue
+        new_lines = new_bytes.decode("utf-8", "replace").splitlines()
         old_lines = (read_blob(baseline_path, old).decode("utf-8", "replace").splitlines()
                      if old else [])
         matcher = difflib.SequenceMatcher(a=old_lines, b=new_lines, autojunk=False)
@@ -320,6 +342,51 @@ def cmd_selftest(args) -> int:
     print(f"selftest phase2 (all modified lines covered must PASS) rc={rc_good} (expect 0)")
     if rc_good != 0:
         print("SELFTEST_FAIL: fully covered subject did not pass")
+        return 1
+
+    # Phase 3 (MQ-05 bounded tool fix): a PYTHON file in the shared scope
+    # (lib/*.py) must never enter the Bash denominator — its lines can never
+    # fire xtrace and would poison the gate forever. The checker must ignore
+    # it and still pass on the bash subject alone.
+    with open(os.path.join(run_dir, "tree", "pending.py"), "w") as fh:
+        fh.write("def helper():\n    return 1\n")
+    py_entry = entry_for("pending.py")
+    mini_snapshot(cand_snap, [entry_for("subject.sh"), py_entry])
+    rc_py = check_with_harness("harness2.sh")
+    print(f"selftest phase3 (python file excluded from Bash denominator) "
+          f"rc={rc_py} (expect 0)")
+    if rc_py != 0:
+        print("SELFTEST_FAIL: python scope file leaked into the Bash denominator")
+        return 1
+
+    # Phase 4 (D9 subject boundary): /tests/ paths are measuring instruments
+    # — never the measured subject; function-definition lines never fire
+    # xtrace and stay out of the denominator (case labels are unit-checked).
+    with open(os.path.join(run_dir, "tree", "subject.sh"), "w") as fh:
+        fh.write("#!/usr/bin/env bash\n"
+                 "helper() {\n"          # func-def: never traced
+                 "  echo always-1\n"
+                 "}\n"
+                 "helper\n")
+    os.chmod(os.path.join(run_dir, "tree", "subject.sh"), 0o755)
+    with open(os.path.join(run_dir, "tree", "instrument.sh"), "w") as fh:
+        fh.write("#!/usr/bin/env bash\nnever_runs\n")
+    inst_entry = entry_for("instrument.sh")
+    inst_entry = {"path": "tests/instrument.sh", "sha256": inst_entry["sha256"],
+                  "mode": "0o755", "blob_ref": inst_entry["blob_ref"]}
+    mini_snapshot(cand_snap, [entry_for("subject.sh"), inst_entry])
+    with open(os.path.join(run_dir, "harness3.sh"), "w") as fh:
+        fh.write('#!/usr/bin/env bash\n"%s"\n' % script)
+    os.chmod(os.path.join(run_dir, "harness3.sh"), 0o755)
+    rc_inst = check_with_harness("harness3.sh")
+    label_ok = (not is_executable_line("helper2() {", False)
+                and not is_executable_line("go)", False)
+                and not is_executable_line("else", False)
+                and is_executable_line("  echo body", False))
+    print(f"selftest phase4 (tests/ instrument + defs excluded) rc={rc_inst} "
+          f"label_unit_ok={label_ok} (expect 0/True)")
+    if rc_inst != 0 or not label_ok:
+        print("SELFTEST_FAIL: instrument/def/label lines leaked into the denominator")
         return 1
     print("SELFTEST_OK")
     return 0

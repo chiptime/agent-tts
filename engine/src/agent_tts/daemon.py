@@ -15,7 +15,9 @@ Commands (RF-AT-04-2/RF-AT-04-3): the existing playback commands
 active session with zero protocol changes; ``play <json-payload>`` runs
 one synthesis+playback (text + synthesis options in one JSON line),
 ``enqueue <json-payload>`` is the queue-aware variant (priority/policy/
-event_type/identifiers fields alongside the play payload), ``ping``
+event_type/identifiers fields alongside the play payload),
+``cancel <json>`` drops/stops only the items carrying the given
+``identifiers`` (targeted; ``stop`` stays the global one), ``ping``
 answers version and uptime, ``shutdown`` terminates the daemon. Play
 payloads may carry a ``chain`` of files instead of text/file
 (RF-AT-08-4, see ``_chain_payload_error``): the chain plays as ONE
@@ -599,6 +601,9 @@ class Daemon:
         if action == "enqueue":
             return self._handle_enqueue(rest)
 
+        if action == "cancel":
+            return self._handle_cancel(rest)
+
         with self._lock:
             session = self.active_session
 
@@ -855,6 +860,39 @@ class Daemon:
         reply = f"ok=true item={item_id} queue_len={snapshot.queue_len}"
         if coalesced > 1:
             reply += f" coalesced={coalesced}"
+        return reply
+
+    def _handle_cancel(self, payload_str: str) -> str:
+        """Targeted cancel by identifiers (voice-stack VS1.5); never a global stop.
+
+        Payload: ``{"identifiers": ["...", ...]}``. Pending items that
+        carry a requested identifier are removed, the ACTIVE item is cut
+        (through the preempt path) only when it carries one, and nothing
+        else is touched. Reply: ``ok=true removed=<n> active_stopped=<0|1>``
+        (plus ``trimmed=<n>`` when merged coalesce items lost only some
+        identifiers). No match is an idempotent ``removed=0
+        active_stopped=0`` — honest silence, like ``stop`` on an idle daemon.
+        """
+        try:
+            envelope = json.loads(payload_str) if payload_str.strip() else None
+        except ValueError as e:
+            return f"ok=false error=invalid cancel payload: {e}"
+        if not isinstance(envelope, dict) or "identifiers" not in envelope:
+            return "ok=false error=cancel requires a JSON object with identifiers"
+        identifiers = envelope["identifiers"]
+        if not isinstance(identifiers, list) or not all(
+            isinstance(i, (str, int, float)) and not isinstance(i, bool) for i in identifiers
+        ):
+            return "ok=false error=identifiers must be a list of strings"
+        with self._lock:
+            if self._shutting_down:
+                return "ok=false error=daemon shutting down"
+        removed, trimmed, active_stopped = self.queue_manager.cancel_by_identifiers(
+            [str(i) for i in identifiers]
+        )
+        reply = f"ok=true removed={removed} active_stopped={1 if active_stopped else 0}"
+        if trimmed:
+            reply += f" trimmed={trimmed}"
         return reply
 
     # --- Queue runner adapter (BLOQUE 1.3 T3) ---------------------------------

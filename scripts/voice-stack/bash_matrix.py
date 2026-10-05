@@ -27,6 +27,17 @@ NOT_A_PERCENTAGE = (
 # a MODIFIED file is a typed blocked result (fail-closed), never a silent skip.
 UNSUPPORTED_KEYWORDS = ("select ", "until ")
 
+# A reserved word only starts a construct at a COMMAND START: head of the
+# logical line or right after a list/pipe/subshell/group separator. A word in
+# argument position is data, not a loop: the jq option argument in
+# ``--argjson until "$new_until"`` must not block. Boundaries mirror _IF_RE's,
+# plus pipe/subshell/group openers.
+_UNSUPPORTED_RE = re.compile(
+    r"(?:^|&&|\|\||\||;|\(|\{)\s*("
+    + "|".join(kw.strip() for kw in UNSUPPORTED_KEYWORDS)
+    + r")(\s|$)"
+)
+
 _HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
 _IF_RE = re.compile(r"(?:^|&&|\|\||;)\s*(el)?if\s+")
 _CASE_RE = re.compile(r"(?:^|&&|\|\||;)\s*case\s+\S.*\bin\s*$")
@@ -98,11 +109,52 @@ def _join_continuations(lines: list[str]) -> list[tuple[int, str]]:
     return out
 
 
-def extract_decisions(path: str, blob: bytes) -> list[dict]:
+def _blank_strings_and_comment(line: str) -> str:
+    """The line with quoted strings blanked and a trailing comment removed.
+
+    Decision scanning must not read string LITERALS: a message like
+    ``"active until %s"`` is not an ``until`` loop, and a comment is not
+    code. Keeping the quotes themselves preserves nothing important for the
+    construct regexes used here.
+    """
+    out = []
+    quote = None
+    for ch in line:
+        if quote:
+            if ch == quote:
+                quote = None
+            out.append(" " if ch != "\\" else " ")
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            out.append(ch)
+            continue
+        out.append(ch)
+    text = "".join(out)
+    # trailing comment (unquoted # at top level is already unquoted here)
+    if "#" in text:
+        depth_quote = None
+        for i, ch in enumerate(text):
+            if depth_quote:
+                if ch == depth_quote:
+                    depth_quote = None
+            elif ch in ("'", '"'):
+                depth_quote = ch
+            elif ch == "#":
+                return text[:i]
+    return text
+
+
+def extract_decisions(path: str, blob: bytes, only_lines: set[int] | None = None) -> list[dict]:
     """Enumerate decision alternatives for one Bash file.
 
-    Supported: if/elif/else/fi, case arms, && and || lists. Heredoc bodies are
-    skipped. Anything unparseable raises Blocked (caller exits 2).
+    Supported: if/elif/else/fi, case arms, && and || lists. Heredoc bodies
+    are skipped. Anything unparseable raises Blocked (caller exits 2).
+    With ``only_lines`` (the lines a change added or modified, per the
+    snapshot blob diff) the enumeration is scoped to CHANGED code: the
+    table only owes entries for decisions the change actually touched —
+    unchanged legacy constructs are not this change's alternatives to
+    prove. ``None`` keeps whole-file semantics (compat).
     """
     text = blob.decode("utf-8", "replace")
     lines = text.splitlines()
@@ -120,10 +172,13 @@ def extract_decisions(path: str, blob: bytes) -> list[dict]:
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
-        for kw in UNSUPPORTED_KEYWORDS:
-            if re.search(r"(^|;|\s)" + kw.strip() + r"(\s|$)", line):
-                raise Blocked(f"{path}:{lineno}: unsupported construct '{kw.strip()}'")
-        if _CASE_RE.search(line):
+        scanned = _blank_strings_and_comment(line)
+        unsupported = _UNSUPPORTED_RE.search(scanned)
+        if unsupported:
+            raise Blocked(
+                f"{path}:{lineno}: unsupported construct '{unsupported.group(1)}'"
+            )
+        if _CASE_RE.search(scanned):
             stack.append("case")
             continue
         if stack and stack[-1] == "case":
@@ -133,54 +188,67 @@ def extract_decisions(path: str, blob: bytes) -> list[dict]:
             arm = _CASE_ARM_RE.match(line)
             if arm:
                 label = arm.group(1).strip()
-                decisions.append(
-                    {
-                        "id": f"{path}:{lineno}:case-arm",
-                        "file": path,
-                        "line": lineno,
-                        "construct": "case-arm",
-                        "alternatives": [{"label": label, "cases": []}],
-                    }
-                )
+                if only_lines is None or lineno in only_lines:
+                    decisions.append(
+                        {
+                            "id": f"{path}:{lineno}:case-arm",
+                            "file": path,
+                            "line": lineno,
+                            "construct": "case-arm",
+                            "alternatives": [{"label": label, "cases": []}],
+                        }
+                    )
                 continue
             # inside a case arm body: fall through to if/&& handling
-        if _IF_RE.search(line):
-            decisions.append(
-                {
-                    "id": f"{path}:{lineno}:{'elif' if 'elif' in line else 'if'}",
-                    "file": path,
-                    "line": lineno,
-                    "construct": "elif" if "elif" in line else "if",
-                    "alternatives": [
-                        {"label": "cond-true", "cases": []},
-                        {"label": "cond-false", "cases": []},
-                    ],
-                    "_needs_nomatch": False,
-                }
-            )
-            stack.append("if")
+        if_match = _IF_RE.search(scanned)
+        if if_match:
+            construct = "elif" if if_match.group(1) else "if"
+            if construct == "elif":
+                # `elif` is one more branch of the ENCLOSING if frame: the
+                # frame's single `fi` closes the original `if`, so an elif
+                # never pushes a frame of its own. An elif with no open if
+                # frame is unparseable here: fail closed.
+                if not (stack and stack[-1] == "if"):
+                    raise Blocked(f"{path}:{lineno}: 'elif' without an open if")
+            if only_lines is None or lineno in only_lines:
+                decisions.append(
+                    {
+                        "id": f"{path}:{lineno}:{construct}",
+                        "file": path,
+                        "line": lineno,
+                        "construct": construct,
+                        "alternatives": [
+                            {"label": "cond-true", "cases": []},
+                            {"label": "cond-false", "cases": []},
+                        ],
+                        "_needs_nomatch": False,
+                    }
+                )
+            if construct == "if":
+                stack.append("if")
             continue
         if stack and stack[-1] == "if" and _FI_RE.match(stripped):
             stack.pop()
             continue
         if stack and stack[-1] == "if" and _ELSE_RE.match(stripped):
             continue
-        andor = _ANDOR_RE.search(line)
-        if andor and not _IF_RE.search(line) and not _CASE_RE.search(line):
-            op = andor.group(1)
-            decisions.append(
-                {
-                    "id": f"{path}:{lineno}:{op}",
-                    "file": path,
-                    "line": lineno,
-                    "construct": op,
-                    "alternatives": [
-                        {"label": "left-success", "cases": []},
-                        {"label": "left-failure", "cases": []},
-                    ],
-                    "_needs_nomatch": False,
-                }
-            )
+        andor = _ANDOR_RE.search(scanned)
+        if andor and not _IF_RE.search(scanned) and not _CASE_RE.search(scanned):
+            if only_lines is None or lineno in only_lines:
+                op = andor.group(1)
+                decisions.append(
+                    {
+                        "id": f"{path}:{lineno}:{op}",
+                        "file": path,
+                        "line": lineno,
+                        "construct": op,
+                        "alternatives": [
+                            {"label": "left-success", "cases": []},
+                            {"label": "left-failure", "cases": []},
+                        ],
+                        "_needs_nomatch": False,
+                    }
+                )
     if stack:
         raise Blocked(f"{path}: unbalanced {stack} (cannot enumerate reliably)")
 
@@ -204,15 +272,35 @@ def extract_decisions(path: str, blob: bytes) -> list[dict]:
     return result
 
 
+def _heredoc_open_word(line: str) -> str | None:
+    """Delimiter word of a real heredoc opener in ``line``, else None.
+
+    Applies the exact string/comment-blanking rule of
+    ``_blank_strings_and_comment`` to decide where CODE is: a ``<<`` inside a
+    string literal or a comment (e.g. the ``'# <<< herdr-tts settings <<<'``
+    sentinels) is not a heredoc. The blanked copy is length-aligned with
+    ``line`` up to the comment cut and keeps code bytes verbatim, so a regex
+    hit whose first ``<`` is blanked — or falls inside the cut comment tail —
+    is rejected. The delimiter word itself is read from the raw line, because
+    a quoted ``<<'EOF'`` delimiter is operator syntax, not a string literal,
+    and blanking would erase it.
+    """
+    masked = _blank_strings_and_comment(line)
+    for match in _HEREDOC_RE.finditer(line):
+        if match.start() < len(masked) and masked[match.start()] == "<":
+            return match.group(2)
+    return None
+
+
 def _heredoc_spans(lines: list[str]) -> list[tuple[int, int]]:
     spans: list[tuple[int, int]] = []
     open_word: str | None = None
     start = 0
     for idx, line in enumerate(lines, start=1):
         if open_word is None:
-            match = _HEREDOC_RE.search(line)
-            if match:
-                open_word, start = match.group(2), idx + 1
+            word = _heredoc_open_word(line)
+            if word:
+                open_word, start = word, idx + 1
         elif line.strip() == open_word:
             spans.append((start, idx - 1))
             open_word = None
@@ -346,12 +434,51 @@ def coverage_linkage(extracted: list[dict], coverage_dir: str) -> list[str]:
 # -- main paths ----------------------------------------------------------------
 
 
+def changed_lines_between(baseline_path: str, candidate_path: str, gate: str,
+                          path: str, blob: bytes) -> set[int]:
+    """Lines (1-based) added or modified in one file vs the baseline snapshot
+    (insert/replace opcodes of the blob diff). Empty set = unchanged."""
+    base = load_scope(baseline_path, gate)
+    old = base.get(path)
+    new_lines = blob.decode("utf-8", "replace").splitlines()
+    old_lines = (read_blob(baseline_path, old).decode("utf-8", "replace").splitlines()
+                 if old else [])
+    matcher = difflib.SequenceMatcher(a=old_lines, b=new_lines, autojunk=False)
+    changed: set[int] = set()
+    for tag, _i1, _i2, j1, j2 in matcher.get_opcodes():
+        if tag in ("insert", "replace"):
+            changed.update(range(j1 + 1, j2 + 1))
+    return changed
+
+
 def cmd_check(args) -> int:
     extracted: list[dict] = []
+    bash_modified = 0
+    harness_excluded = 0
+    base_scope = load_scope(args.baseline_snapshot, "G-BASH-MATRIX")
     for path, entry in diff_modified(args.baseline_snapshot, args.candidate_snapshot, "G-BASH-MATRIX"):
         blob = read_blob(args.candidate_snapshot, entry)
+        if not (
+            path.endswith(".sh")
+            or blob.split(b"\n", 1)[0].decode("utf-8", "replace").strip()
+            .startswith("#!")
+        ):
+            continue  # same Bash-file rule as the changed-lines gate (json/py)
+        bash_modified += 1
+        # INSTRUMENT, not product: the case-runner harness whose own protocol
+        # ("CASE <name> OK|FAIL") this gate consumes cannot simultaneously be
+        # the measured surface — its assertion guards (`x || return 1`) fail
+        # exactly when a case fails, so their failure arms are unmeasurable
+        # by construction. The harness's modified lines are measured by the
+        # G-BASH-LINES gate (they execute with the run); decision
+        # alternatives are owed for PRODUCT Bash only.
+        if path.endswith("tests/host_cli_cases.sh"):
+            harness_excluded += 1
+            continue
+        only = changed_lines_between(args.baseline_snapshot, args.candidate_snapshot,
+                                     "G-BASH-MATRIX", path, blob)
         try:
-            extracted.extend(extract_decisions(path, blob))
+            extracted.extend(extract_decisions(path, blob, only_lines=only))
         except Exception as exc:  # Blocked or decode issues: fail closed
             return die_blocked(str(exc))
     try:
@@ -379,7 +506,7 @@ def cmd_check(args) -> int:
                 return die_blocked(p[9:])
         problems.extend(cov_problems)
 
-    print(f"modified_files={sum(1 for _ in diff_modified(args.baseline_snapshot, args.candidate_snapshot, 'G-BASH-MATRIX'))}")
+    print(f"modified_files={bash_modified} (harness-excluded-as-instrument={harness_excluded})")
     print(f"decisions={len(extracted)} "
           f"alternatives={sum(len(d['alternatives']) for d in extracted)}")
     print(f"cases_executed={len(executed)} cases_ok={sum(1 for v in executed.values() if v == 'OK')} "
@@ -560,6 +687,156 @@ def cmd_selftest(args) -> int:
     print(f"selftest d (unsupported select) rc={rc} (expect 2)")
     ok &= rc == 2
     _mini_snapshot(cand_snap, "G-BASH-MATRIX", [entry])
+
+    # (e) MQ-05 scope check: a modified file whose UNCHANGED region holds
+    # decisions owes NO table entries for them — only changed-line decisions
+    # count. subject_v2 changes only the else-arm body line of decisions.sh:
+    # the if/case decisions themselves stay out of the extracted set.
+    with open(os.path.join(tree, "subject_v2_base.sh"), "w") as fh:
+        fh.write(DECISIONS_SH)
+    with open(os.path.join(tree, "subject_v2.sh"), "w") as fh:
+        fh.write(DECISIONS_SH.replace("  echo stop\n", "  echo stop-two\n"))
+    import hashlib as _h
+    _bdir = os.path.join(run_dir, "blobs")
+    _orig = open(os.path.join(tree, "subject_v2_base.sh"), "rb").read()
+    _osha = _h.sha256(_orig).hexdigest()
+    with open(os.path.join(_bdir, _osha), "wb") as fh:
+        fh.write(_orig)
+    v2_entry = _mini_entry(run_dir, "subject_v2.sh")
+    base2 = os.path.join(run_dir, "baseline2.json")
+    _mini_snapshot(base2, "G-BASH-MATRIX",
+                   [{"path": "subject_v2.sh", "sha256": _osha, "mode": "0o755",
+                     "blob_ref": _osha}])
+    _mini_snapshot(cand_snap, "G-BASH-MATRIX", [v2_entry])
+    blob2 = open(os.path.join(tree, "subject_v2.sh"), "rb").read()
+    only2 = changed_lines_between(base2, cand_snap, "G-BASH-MATRIX", "subject_v2.sh", blob2)
+    extracted2 = extract_decisions("subject_v2.sh", blob2, only_lines=only2)
+    print(f"selftest e (diff scope) changed_lines={sorted(only2)} "
+          f"extracted={len(extracted2)} (expect 0 decisions)")
+    ok &= len(extracted2) == 0
+
+    # (f) string literals are not constructs: 'until' inside a message must
+    # NOT block; a real `until` loop still must.
+    with open(os.path.join(tree, "until_string.sh"), "w") as fh:
+        fh.write('#!/usr/bin/env bash\nMSG="snooze active until %s"\necho "$MSG"\n')
+    dec = extract_decisions("until_string.sh",
+                            open(os.path.join(tree, "until_string.sh"), "rb").read())
+    print(f"selftest f1 (string 'until' not a construct) extracted={len(dec)} (expect 0)")
+    ok &= len(dec) == 0
+    try:
+        with open(os.path.join(tree, "until_real.sh"), "w") as fh:
+            fh.write('#!/usr/bin/env bash\nuntil false; do echo x; done\n')
+        extract_decisions("until_real.sh",
+                          open(os.path.join(tree, "until_real.sh"), "rb").read())
+        print("selftest f2 (real until still blocks) FAILED")
+        ok &= False
+    except Exception:
+        print("selftest f2 (real until still blocks) ok")
+
+    # (g) the case-runner harness is the INSTRUMENT: its own assertion guards
+    # are never the measured decision surface, even when modified.
+    harness_name = "tests/host_cli_cases.sh"
+    with open(os.path.join(tree, "host_cli_cases.sh"), "w") as fh:
+        fh.write('#!/usr/bin/env bash\ntrue || return 1\n')
+    h_entry = _mini_entry(run_dir, "host_cli_cases.sh")
+    # rename the blob entry to the harness path shape
+    h_entry = {"path": harness_name, "sha256": h_entry["sha256"],
+               "mode": "0o755", "blob_ref": h_entry["blob_ref"]}
+    _mini_snapshot(cand_snap, "G-BASH-MATRIX", [entry, h_entry])
+    proc_rc = run_checker(table_a, None)
+    print(f"selftest g (harness excluded as instrument) rc={proc_rc} (expect 0)")
+    ok &= proc_rc == 0
+    _mini_snapshot(cand_snap, "G-BASH-MATRIX", [entry])
+
+    # (h) heredoc openers live in CODE only: a `<<` inside a string literal
+    # or a comment (the '# <<< herdr-tts settings <<<' sentinels) must not
+    # open a skip span that swallows real decisions; real heredoc bodies
+    # (quoted and bare delimiters) are skipped, and decisions after the
+    # terminator still count. A bogus span here would hide the trailing if
+    # (or worse, un-hide the body's `select`).
+    heredoc_sh = (
+        "#!/usr/bin/env bash\n"
+        "SENTINEL='# <<< fake settings <<<'\n"
+        "# comment mentioning <<NOTAHEREDOC\n"
+        "cat <<'EOF'\n"
+        "if body-then; then :; fi\n"
+        "EOF\n"
+        "cat <<PLAIN\n"
+        "select x in a; do :; done\n"
+        "PLAIN\n"
+        "if [[ -n \"$SENTINEL\" ]]; then\n"
+        "  echo kept\n"
+        "fi\n"
+    )
+    try:
+        dec = extract_decisions("heredoc.sh", heredoc_sh.encode())
+        print(f"selftest h (heredoc spans) extracted={len(dec)} (expect 1)")
+        ok &= len(dec) == 1 and dec[0]["construct"] == "if"
+    except Exception as exc:
+        print(f"selftest h (heredoc spans) BLOCKED unexpectedly: {exc}")
+        ok &= False
+
+    # (i) argument-position `until` (the jq --argjson option, as in
+    # herdr-tts) is data, not a loop; the same word at a command start
+    # (here after ';') still blocks.
+    jq_sh = (
+        "#!/usr/bin/env bash\n"
+        "state=$(jq -c --argjson stage \"$new_stage\" --argjson until \"$new_until\" \\\n"
+        "  '.x = ((.x // {}) + {until: $until})' <<<\"$state\")\n"
+    )
+    try:
+        dec = extract_decisions("jq_arg.sh", jq_sh.encode())
+        print(f"selftest i1 (jq --argjson until) extracted={len(dec)} (expect 0)")
+        ok &= len(dec) == 0
+    except Exception as exc:
+        print(f"selftest i1 (jq --argjson until) BLOCKED unexpectedly: {exc}")
+        ok &= False
+    try:
+        with open(os.path.join(tree, "until_cmd.sh"), "w") as fh:
+            fh.write("#!/usr/bin/env bash\nx=1; until false; do echo x; done\n")
+        extract_decisions("until_cmd.sh",
+                          open(os.path.join(tree, "until_cmd.sh"), "rb").read())
+        print("selftest i2 (real until after ';') FAILED")
+        ok &= False
+    except Exception:
+        print("selftest i2 (real until after ';') ok")
+
+    # (j) `elif` is a branch of its ENCLOSING if frame: no extra frame is
+    # pushed, the file stays balanced, the elif is its own decision, and a
+    # dangling elif still fails closed.
+    elif_sh = (
+        "#!/usr/bin/env bash\n"
+        "f() {\n"
+        "  if [[ \"$1\" == a ]]; then\n"
+        "    echo a\n"
+        "  elif [[ \"$1\" == b ]]; then\n"
+        "    echo b\n"
+        "  else\n"
+        "    echo c\n"
+        "  fi\n"
+        "  case \"$1\" in\n"
+        "    a) echo arm-a ;;\n"
+        "    *) echo arm-any ;;\n"
+        "  esac\n"
+        "}\n"
+    )
+    try:
+        dec = extract_decisions("elif.sh", elif_sh.encode())
+        constructs = [d["construct"] for d in dec]
+        want = ["if", "elif", "case-arm", "case-arm"]
+        print(f"selftest j1 (if/elif balance) constructs={constructs} (expect {want})")
+        ok &= constructs == want
+    except Exception as exc:
+        print(f"selftest j1 (if/elif balance) BLOCKED unexpectedly: {exc}")
+        ok &= False
+    try:
+        extract_decisions("bad_elif.sh",
+                          b"#!/usr/bin/env bash\nelif true; then :; fi\n")
+        print("selftest j2 (dangling elif must block) FAILED")
+        ok &= False
+    except Exception:
+        print("selftest j2 (dangling elif must block) ok")
+
     print(f"extracted ids={ids}")
     print(f"alternatives={alts}")
     if ok:

@@ -23,9 +23,13 @@ mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$STATE_DIR"
 # Managed settings store (config.env). Env override keeps tests hermetic.
 CONFIG_FILE="${HERDR_TTS_CONFIG_FILE:-${CONFIG_DIR}/config.env}"
 AUTO_MUTE_FILE="${CONFIG_DIR}/auto_muted"
-LOCK_FILE="/tmp/herdr-tts-playing.lock"
-PID_FILE="/tmp/herdr-tts-current.pid"
-IPC_SOCKET="/tmp/herdr-tts-player.sock"
+# Machine-global playback state. The AGENT_TTS_* env overrides are the same
+# knobs lib/tts_engine.py and lib/herdr_reader.py already honor (setdefault),
+# so the host and its engine children always agree on one set of paths; tests
+# export them to stay hermetic without touching real /tmp state.
+LOCK_FILE="${AGENT_TTS_LOCK_FILE:-/tmp/herdr-tts-playing.lock}"
+PID_FILE="${AGENT_TTS_PID_FILE:-/tmp/herdr-tts-current.pid}"
+IPC_SOCKET="${AGENT_TTS_SOCKET:-/tmp/herdr-tts-player.sock}"
 # Lightweight gating state (snooze / mute / debounce timestamps). The default
 # lives in /tmp; the env override exists so tests can run hermetically.
 SNOOZE_STATE_FILE="${HERDR_TTS_SNOOZE_FILE:-/tmp/herdr-tts-snooze.json}"
@@ -1735,8 +1739,39 @@ speak_text() {
   fi
 }
 
+# Identified playback (voice-stack VS1.6): the audio rides the engine daemon
+# queue carrying its identifier, so --cancel-speech can target exactly this
+# item. The helper prints the typed ack (ok=true item=<id> queue_len=<n>).
+enqueue_identified_audio() {
+  local file="$1"
+  local identifier="$2"
+  "$VENV_PYTHON" "${PLUGIN_ROOT}/lib/pending_queue.py" enqueue-file "$file" --id "$identifier"
+}
+
+# Targeted cancel by identifier (never a global stop): removes queued items
+# and stops the active one ONLY when they carry a given identifier.
+cancel_speech() {
+  if [[ $# -eq 0 ]]; then
+    echo "usage: herdr-tts --cancel-speech <id> [<id>...]" >&2
+    return 2
+  fi
+  local args=()
+  local identifier
+  for identifier in "$@"; do
+    args+=(--id "$identifier")
+  done
+  "$VENV_PYTHON" "${PLUGIN_ROOT}/lib/pending_queue.py" cancel "${args[@]}"
+}
+
 play_audio_file() {
   local file="$1"
+  local identifier="${2:-}"
+  # An identifier switches to the queue path; without one the legacy
+  # stop-then-play path below is untouched.
+  if [[ -n "$identifier" ]]; then
+    enqueue_identified_audio "$file" "$identifier" || return $?
+    return 0
+  fi
   # Cheap guard: palette ctrl-r on a "-" placeholder or a deleted stored
   # path must fail gracefully instead of spawning a doomed engine run.
   if [[ ! -s "$file" ]]; then
@@ -6795,6 +6830,10 @@ case "${1:-}" in
     ;;
   --play-file)
     play_audio_file "${2:-}"
+    ;;
+  --cancel-speech)
+    shift
+    cancel_speech "$@"
     ;;
   --render-pane)
     render_pane_audio "${2:-}" "${3:-}"

@@ -1,1 +1,76 @@
-[]
+[
+  {
+    "id": "hosts/herdr/tts-plugin/bin/herdr-tts:1754:if",
+    "file": "hosts/herdr/tts-plugin/bin/herdr-tts",
+    "line": 1754,
+    "construct": "if",
+    "alternatives": [
+      {
+        "label": "cond-true",
+        "cases": [
+          "cancel_speech_without_ids_prints_usage"
+        ]
+      },
+      {
+        "label": "cond-false",
+        "cases": [
+          "cancel_speech_passes_each_id"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "hosts/herdr/tts-plugin/bin/herdr-tts:1771:if",
+    "file": "hosts/herdr/tts-plugin/bin/herdr-tts",
+    "line": 1771,
+    "construct": "if",
+    "alternatives": [
+      {
+        "label": "cond-true",
+        "cases": [
+          "identified_playback_enqueues_with_id"
+        ]
+      },
+      {
+        "label": "cond-false",
+        "cases": [
+          "legacy_playback_without_id_refuses_missing_file"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "hosts/herdr/tts-plugin/bin/herdr-tts:1772:||",
+    "file": "hosts/herdr/tts-plugin/bin/herdr-tts",
+    "line": 1772,
+    "construct": "||",
+    "alternatives": [
+      {
+        "label": "left-success",
+        "cases": [
+          "identified_playback_enqueues_with_id"
+        ]
+      },
+      {
+        "label": "left-failure",
+        "cases": [
+          "identified_playback_failure_propagates"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "hosts/herdr/tts-plugin/bin/herdr-tts:6834:case-arm",
+    "file": "hosts/herdr/tts-plugin/bin/herdr-tts",
+    "line": 6834,
+    "construct": "case-arm",
+    "alternatives": [
+      {
+        "label": "--cancel-speech",
+        "cases": [
+          "cancel_speech_flag_dispatches_through_cli"
+        ]
+      }
+    ]
+  }
+]
