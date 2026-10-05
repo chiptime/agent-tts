@@ -1,5 +1,5 @@
 **ID**: PRD-HT-02 · **Proyecto**: herdr-tts
-**Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: Aprobada
+**Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: Implementada
 **Dependencias**: Ninguna (`--voice` ya existe por llamada)
 
 # PRD-HT-02 — Voces por agente (identidad vocal)
