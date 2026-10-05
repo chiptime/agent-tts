@@ -1418,6 +1418,7 @@
 
   function replaceAudioSource(item) {
     var source = new URL(item.url, document.baseURI);
+    if (!item.karaoke) player.muted = false;
     // The first source already has no predecessor. Stamp every replacement
     // with a browser-only fragment, never sent to the audio endpoint. Even
     // identical URLs then have distinct native-event identities. This is not
@@ -1451,6 +1452,7 @@
     if (!audioFinished && karaokeMedia) {
       player.removeAttribute("src");
       player.load();
+      player.muted = false;
       karaokeMedia = null;
     }
     pumpAudio();
@@ -1479,6 +1481,7 @@
         set currentTime(value) { if (currentKaraokeItem(item)) player.currentTime = value; },
         play: function () {
           if (!currentKaraokeItem(item)) throw new Error("Retired replay source");
+          player.muted = false; // controller has already sought with valid duration.
           return player.play();
         },
         pause: function () { if (currentKaraokeItem(item)) player.pause(); },
@@ -1491,6 +1494,7 @@
             audioFinished = null;
             audioBusy = false;
             player.pause();
+            player.muted = false;
           }
         }
       };
@@ -1609,12 +1613,14 @@
         karaokeMedia.pieceIndex === item.karaoke.pieceIndex && karaokeMedia.url === item.url &&
         (player.currentSrc || player.src) === karaokeMedia.source && karaokeMedia.metadataReady;
       if (!reusable) {
+        player.muted = true;
         replaceAudioSource(item);
         karaokeMedia = { plan: item.karaoke.plan, pieceIndex: item.karaoke.pieceIndex,
           url: item.url, source: item.source, metadataReady: false };
       } else {
         item.source = karaokeMedia.source;
         item.metadataReady = true;
+        player.muted = false;
       }
       Object.keys(item.events).forEach(function (name) {
         var callback = function (event) {
@@ -1628,8 +1634,23 @@
         item.listeners.push({ name: name, callback: callback });
         player.addEventListener(name, callback);
       });
+      if (!reusable) {
+        // Source assignment queues native loadstart even with preload="none".
+        // Prime there so the adapter is installed before callbacks can fail it.
+        // Playback stays silent until the controller's valid-duration seek.
+        var loadingFailed = function (error) {
+          if (currentKaraokeItem(item)) item.events.error(error);
+        };
+        var prime = function () {
+          if (!currentKaraokeItem(item) || item.metadataReady) return;
+          try { Promise.resolve(player.play()).catch(loadingFailed); }
+          catch (error) { loadingFailed(error); }
+        };
+        item.listeners.push({ name: "loadstart", callback: prime });
+        player.addEventListener("loadstart", prime, { once: true });
+      }
       stopBtn.classList.remove("hidden");
-      return; // controller alone seeks and requests play after matching metadata.
+      return; // controller alone seeks and requests audible play after metadata.
     }
     karaokeMedia = null;
     if (item.announcement) {
@@ -1782,6 +1803,7 @@
     audioBusy = false;
     audioFinished = null;
     player.pause();  // local audio stops immediately, always
+    player.muted = false;
     player.removeAttribute("src");
     player.load();
     hideToast();
