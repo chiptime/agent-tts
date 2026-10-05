@@ -28,7 +28,21 @@ trap 'rm -rf "$SANDBOX_ROOT"' EXIT
 # socket, and no audio engine ever runs.
 sandbox_setup() {
   SANDBOX="$SANDBOX_ROOT/$1"
-  mkdir -p "$SANDBOX/data/herdr-tts/venv/bin" "$SANDBOX/config" "$SANDBOX/state"
+  mkdir -p "$SANDBOX/data/herdr-tts/venv/bin" "$SANDBOX/config" "$SANDBOX/state" \
+    "$SANDBOX/home" "$SANDBOX/cache" "$SANDBOX/run" "$SANDBOX/tmp"
+  # Pin every writable launcher location even when a case only delegates argv.
+  # Playback defaults remain unmodified: the trio-defaults case examines their
+  # strings only, and no case uses those paths for playback or cancellation.
+  export HOME="$SANDBOX/home" TMPDIR="$SANDBOX/tmp" PYTHONDONTWRITEBYTECODE=1
+  export XDG_CACHE_HOME="$SANDBOX/cache" XDG_RUNTIME_DIR="$SANDBOX/run"
+  export HERDR_PLUGIN_ROOT="$REPO_HOST_DIR" HERDR_CONFIG_DIR="$SANDBOX/config"
+  export HERDR_TTS_CONFIG_FILE="$SANDBOX/config/herdr-tts/config.env"
+  export HERDR_TTS_SNOOZE_FILE="$SANDBOX/snooze.json"
+  export HERDR_TTS_DAEMON_PID_FILE="$SANDBOX/daemon.pid"
+  export HERDR_TTS_DAEMON_LOG="$SANDBOX/daemon.log"
+  export HERDR_TTS_SUPERVISOR_STOP_FILE="$SANDBOX/supervisor.stop"
+  export HERDR_TTS_VOICES_FILE="$SANDBOX/voices.json"
+  export HERDR_TTS_KEYMAP_FILE="$SANDBOX/keymap.json"
   STUB_LOG="$SANDBOX/stub.log"
   cat > "$SANDBOX/data/herdr-tts/venv/bin/python" <<'STUB'
 #!/usr/bin/env bash
