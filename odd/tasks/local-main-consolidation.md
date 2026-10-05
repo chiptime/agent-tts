@@ -37,10 +37,12 @@ is after 19:00 Monday–Thursday, from 16:00 Friday, unrestricted weekends.
   combine AT-11 resolver/port work with consult and announcement features. Route:
   delegated direct; nontrivial multi-file merge resolution. Record merge commits
   and evidence for each superseded change.
-- [ ] **T3 — Verify and report.** Run applicable deterministic tests, independent
+- [x] **T3 — Verify and report.** Run applicable deterministic tests, independent
   verification when risk is high/unassessable, ancestry and cleanliness checks.
   Route: delegated verification plus one parent spot check. Report pending checks
   and deletion readiness; delete nothing.
+  Closed for limited integration verification/report readiness after independent
+  verification and the ignored-source archive; limitations remain explicit below.
 
 ## Verification
 
@@ -90,12 +92,14 @@ Initial branch inventory: `main`, `feat/at-01-streaming-frames`,
 `feat/port-antigravity-transcript-reader`, `feat/voice-stack`,
 `fix/brain-interim-transcript-duplication`, `fix/voice-stack-m1-quality`.
 
-Engram mirror topic: `odd/local-main-consolidation/tasks`. Mirror pending until
-the memory provider confirms a write; earlier writes were refused because
-multiple active sessions match this project. Do not invent a session identity.
+Engram mirror topic: `odd/local-main-consolidation/tasks`. Full mirror #9857
+was saved untruncated and read back successfully at the first writer handoff;
+it is refreshed after final archival verification. Earlier refused writes are
+historical, not the current mirror status. No session identity is invented.
 
-Current status: local consolidation complete; writer checks recorded below.
-T3 remains pending independent parent verification and engine-suite stability.
+Current status: local consolidation and limited integration verification are
+complete. Independent results, HIGH risk and asset-retention limits are below;
+feature acceptance and asset-safe worktree deletion are not implied.
 
 ### Writer start — 2026-10-05
 
@@ -200,8 +204,8 @@ than destructively reverted. No secrets/runtime/cache paths were staged.
 - After the merges, `git merge-base --is-ancestor <tip> main` succeeded for
   all eight local branch tips, including `238fca5`, `0d038c3`, `f89a8d4`,
   `fcab220`, `6a4cfb3`, `133deaa`, `fc7ca68` and current main.
-- T3 remains open for the parent independent verifier. Writer deterministic
-  checks and final Git state will be recorded below; no low-risk claim.
+- T3 was open at the first writer handoff; independent verification and the
+  subsequent bounded archival completion are recorded below. No low-risk claim.
 
 ### Writer verification — first full run
 
@@ -237,7 +241,8 @@ smoke's install/daemon scenarios are sandboxed fake-tool/process tests.
 - One bounded diagnostic rerun: `.venv/bin/python -m pytest
   tests/test_daemon.py::test_play_registering_during_shutdown_is_refused_not_orphaned
   tests/test_versioned_tree_hygiene.py -q` / engine: **14 passed**, exit 0.
-  No claim of a green full engine suite; no out-of-scope rewrite of this test.
+  This writer run was not a green full engine suite; the later independent GREEN
+  is recorded separately and does not erase this intermittent failure.
 - Static checks: `bash -n` on 14 changed shell/launcher paths, `node --check`
   on 7 changed JS paths, `ast.parse` on 14 changed Python paths and npm package
   JSON/bin validation all passed. `ruby -c
@@ -246,18 +251,18 @@ smoke's install/daemon scenarios are sandboxed fake-tool/process tests.
 - Git whitespace checks pass; no unmerged entries. Final status/ancestry/date
   checks are performed after the evidence commits. Root is on main; the other
   three worktrees retain their preservation tips (voice-stack unchanged).
-- Delivery is **partial verification**, not a blocked integration: all branch
-  histories and pending work are preserved locally. T3 stays unchecked for the
-  independent parent verifier, engine instability, missing Ruby syntax proof,
-  and final read-only risk assessment. No native review lifecycle was started.
+- The first writer handoff was **partial verification**. Independent verification
+  and the ignored-source archive subsequently close T3 for limited integration
+  report readiness. Engine instability and missing Ruby syntax proof remain
+  disclosed limitations. No native review lifecycle was started.
 - Incomplete work retained: AT-11 M2–M4 remaining tasks/re-slice plan; M1's
   historical accepted matrix exception; open-session inventory and autoloop
   plans. Neither the clean Git state nor branch ancestry means feature closure.
 
-### Final Git handoff
+### First Git handoff — 19:10 metadata
 
 - Verification correction/evidence commit: `d0bbb3a` at metadata 19:09 +02:00.
-  This final documentation commit uses metadata 19:10 +02:00. Both author and
+  Documentation commit `d31997d` uses metadata 19:10 +02:00. Both author and
   committer timestamps were checked equal and strictly increasing across the
   nine earlier commits (19:01–19:09); the final commit is checked after creation.
 - All four worktrees have empty `git status --short`: root main, AT-11
@@ -266,8 +271,77 @@ smoke's install/daemon scenarios are sandboxed fake-tool/process tests.
   stash, history rewrite, fetch, push, dependency install or live deployment.
 - `git diff --check` and `git ls-files -u` are clean; no Git operation remains
   in progress. Diagnostics/cache remain physically present and narrowly ignored.
-- Parent next step: independent read-only risk assessment/verification (T3),
-  including the intermittent existing engine shutdown test and unavailable Ruby
-  syntax check. Git containment is proven; feature acceptance is not implied.
-- Engram full-document mirror is attempted with the exact project/topic and
-  file locator after final Git checks; failure does not block the local handoff.
+- Parent independent read-only risk assessment/verification was the next step;
+  its completed results are below. Git containment does not imply feature acceptance.
+- Engram full-document mirror #9857 was confirmed by save and full readback.
+
+### Independent verification and bounded final preservation
+
+The parent reports one independent full engine run and focused brain resolution
+checks after the initial writer handoff. These results are distinct from the
+writer's earlier failures; no long suites are rerun for this passive archive.
+
+| Evidence | Observed result reported by independent verifier/parent |
+| --- | --- |
+| Engine `.venv/bin/python -m pytest tests/ -q` | 967 passed, 11 skipped, 5 warnings, 143.61s; full-run GREEN |
+| Brain `.venv/bin/python -m pytest tests/test_resolve.py -q` | 35 passed, 0.59s |
+| Parent `python3 scripts/voice-stack/bash_matrix.py --selftest` | `SELFTEST_OK` |
+| Parent native read-only assessment of committed `f89a8d4..main` at `d31997d` | **HIGH**: executable-mode/bootstrap shell changes; 65 paths, 12,393 lines |
+| Parent Git/date spot check | All eight tips merged, four worktrees clean, both fields on ten new commits validated 19:01–19:10 +02:00 |
+
+RDD remains **OFF**. No native START, review transaction or reassessment is
+performed by this archival writer; the prior HIGH rating is not lowered.
+The five warnings are `PytestUnhandledThreadExceptionWarning` from fake IPC
+server teardown (`accept()` on a closed socket, `OSError: [Errno 9] Bad file
+descriptor`). All 11 skips remain disclosed. Independent GREEN does not erase
+the writer's intermittent shutdown-test failure. Ruby remains unavailable;
+actual acceptance/installation/deployment/live-provider checks remain unrun.
+
+#### Ignored authored source preserved
+
+- Parent found ignored M1 `hosts/herdr/tts-plugin/lib/pending_queue.py`: 247
+  authored lines of older VS1.6 identifier passthrough, absent from Git history.
+  Its read-only original remains physically present, unchanged and ignored.
+- Byte-identical archive: `docs/voice-stack/archives/m1-quality/pending_queue-vs1.6.py`.
+  Original/archive/committed blob: `586361a7d9210036597d71d75b254e8e38817327`.
+  Mode is `100644` (non-executable). Archive is not imported or executed and has
+  no runtime consumers. Functional RED/runtime harness: N/A, passive historical
+  preservation; verification is byte equality, hashes, mode and Git ancestry.
+- Archive commit on original M1 branch: `8885ce6`, both metadata fields
+  2026-10-05 19:11 +02:00. Main merges its actual advanced tip as `fb1f7a6`,
+  both fields 19:12 +02:00. Final tracker commit uses both fields 19:13 +02:00.
+- Active main production `hosts/herdr/tts-plugin/lib/pending_queue.py` is untouched:
+  on-disk and committed blob `478d5001e46966da4291d0a94f983ba6d4e53c08` before
+  and after the merge. No force-add of the ignored production path.
+- `git diff --no-index` original versus archive and cached `git diff --check`
+  both passed. Rollback boundary is the archival path only; no runtime behavior.
+  Final checks cover committed `d31997d..main`, all eight advanced branch tips,
+  four worktree statuses, absence of Git operations and both new date fields.
+
+#### Follow-ups retained, not repaired
+
+- `scripts/voice-stack/gate_evidence.py:459–473`: an artifact disappearing
+  after evidence recording is not explicitly rejected by the validator.
+- `scripts/voice-stack/run_mq05_gates.py:22–24,135–138`: hardcoded external
+  baseline and voice-stack worktree paths require a later portability decision.
+  `scripts/voice-stack/coverage-exclusions.json` already exists on main with blob
+  `01223801722a10ca8a571f8ea9cba17dbc17eb83`, identical to voice-stack; the
+  runner's pathname would still break after that worktree is deleted.
+
+#### Deletion readiness and ignored generated assets
+
+Branch deletion is Git-safe because all tips are contained, but nothing is
+deleted. Worktree deletion requires separate user authorization and an explicit
+retention/backup decision; clean status is not asset-safe deletion proof.
+
+The parent identified ten generated assets outside Git: root `dist/` agent_tts
+0.1 wheel/tarball (two files); `engine/uv.lock` and brain `uv.lock` in each
+nonroot worktree (six files, four unique blobs); voice-stack engine `.coverage`
+and plugin `.coverage` (two files). Historical environment/evidence backup must
+be decided before deletion. None are written, committed or deleted here.
+Root ignored `src/`/`tests/` contain only generated egg-info/cache; five nonroot
+venvs and CodeGraph caches were not deeply inspected. These limits remain.
+
+AT-11/OpenSpec, open-session inventory and autoloop task markers remain incomplete;
+M1's historical matrix exception remains recorded. T3 closure concerns local
+integration/report readiness only, not completion of those features.
