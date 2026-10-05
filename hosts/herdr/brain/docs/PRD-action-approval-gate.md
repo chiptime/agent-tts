@@ -3,9 +3,11 @@
 | | |
 |---|---|
 | **Product** | herdr-brain (voice-assistant PWA) |
-| **Status** | Approved design + resolved contracts — task planning pending |
+| **Status** | IMPLEMENTADA con tests; validación Chrome Android pendiente (ROADMAP F2) |
 | **Date** | 2026-09-24 |
-| **Effort** | TBD (server + UI, planning phase pending) |
+| **Effort** | Implementación servidor + UI entregada; cierre manual pendiente |
+
+> **Estado reconciliado (2026-10-05)**: `/approval/current`, approve/reject/resolve y PATCH están implementados en `src/herdr_brain/server.py`, con `tests/test_approval.py`, tests de rutas y JS. Referencias del monorepo: `2abb17e` (endpoints), `22e2fc2` (popup flotante, fuera del drawer). El cuerpo conserva el diseño original, incluida la ubicación inicial de la tarjeta. No se declara validación física: T8 sigue abierto para la repetición de pruebas en Chrome Android (ROADMAP F2).
 
 ---
 
@@ -250,7 +252,7 @@ computes its own countdown from `expires_in_s`.
 - New SSE events: the gate lives in the request/response cycle of
   `/ask` + approval endpoints; watcher announcements continue independently.
 
-## 10. Left for Task Planning
+## 10. Planificación original (histórico; piezas implementadas)
 
 - Settings field wiring (`HERDR_BRAIN_APPROVAL_TIMEOUT_S`) and its
   `config.py` default.

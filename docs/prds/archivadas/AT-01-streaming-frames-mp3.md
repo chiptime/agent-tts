@@ -1,6 +1,9 @@
 **ID**: PRD-AT-01 · **Proyecto**: agent-tts
-**Prioridad final (revisión 2026-09-22)**: P3 · **Estado**: Postergada
+**Prioridad final (revisión 2026-09-22)**: P3 · **Estado**: EJECUTADA
+**Cierre**: 2026-09-29 · **Referencias Git**: `c2b8175` (pipeline), `a3ee900` (cierre).
 **Dependencias**: Ninguna
+
+> **Nota de reconciliación (2026-10-05)**: Postergada en la revisión del 22/09; ejecutada después con parser MP3, decoder continuo y pipeline en `engine/src/agent_tts/stream/` y `cli.py`. El cuerpo conserva el diseño original, no un estado pendiente.
 
 # PRD-AT-01 — Streaming incremental por frames de MP3 (byte-level)
 

@@ -1,7 +1,9 @@
 # BLOQUE 4 — Radio mode + verificación opencode web (HT-03 + AT-03 recortada)
 
 **Alcance**: PRD-HT-03 (P2) + tarea de verificación de PRD-AT-03 · **Prioridad**: P2 · **Esfuerzo agregado**: M + 10 min
-**Repositorios**: herdr-tts (radio) + agent-tts (verificación) · **Estado**: Aprobado (revisión 22/09/2026)
+**Repositorios**: herdr-tts (radio) + agent-tts (verificación) · **Estado**: PARCIAL (hito 0 hecho, radio pendiente)
+
+> **Estado reconciliado (2026-10-05)**: AT-03 recortada cerrada en `3bb5e1b` (2026-09-28); conector OpenCode por ID presente en `engine/src/agent_tts/sources/`. `bin/herdr-tts` no tiene comando `radio` ni configuración `TTS_RADIO_*`: HT-03 y su integración siguen sin ejecutar. El cuerpo conserva el plan original.
 
 ### Objetivo del bloque
 
