@@ -33,3 +33,5 @@ htmlcov/
 *.pid
 /tmp/agent-tts*
 .codegraph/
+.agy-diagnostics/
+.atl/.skill-registry.cache.json
