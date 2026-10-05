@@ -32,7 +32,7 @@ is after 19:00 Monday–Thursday, from 16:00 Friday, unrestricted weekends.
   changes on their existing branches, explicitly staging reviewed paths. Route:
   delegated direct; preparation and multi-file changes exceed inline scope.
   Record original tips, preservation commits, and artifact exclusions below.
-- [ ] **T2 — Integrate branches.** Advance main to locally available origin/main,
+- [x] **T2 — Integrate branches.** Advance main to locally available origin/main,
   merge every local branch, reconcile M1 overlap without reverting main advances,
   combine AT-11 resolver/port work with consult and announcement features. Route:
   delegated direct; nontrivial multi-file merge resolution. Record merge commits
@@ -94,7 +94,8 @@ Engram mirror topic: `odd/local-main-consolidation/tasks`. Mirror pending until
 the memory provider confirms a write; earlier writes were refused because
 multiple active sessions match this project. Do not invent a session identity.
 
-Next step: one bounded writer preserves pending work and performs integration.
+Current status: local consolidation complete; writer checks recorded below.
+T3 remains pending independent parent verification and engine-suite stability.
 
 ### Writer start — 2026-10-05
 
@@ -191,3 +192,64 @@ than destructively reverted. No secrets/runtime/cache paths were staged.
 - Rollback boundary: port consumption and cross-alias integration; preserve both
   pre-existing consult and portable resolver behavior. No AT-11 feature work
   beyond integration seams, re-slicing, release, install or deployment is run.
+
+### T2 completion evidence
+
+- Merge commits: root `16f64d8`, M1 `4714b34`, AT-11 `c4dbb10`,
+  autoloop `bd9ca5b` (original `fc7ca68` retained without implementing its plan).
+- After the merges, `git merge-base --is-ancestor <tip> main` succeeded for
+  all eight local branch tips, including `238fca5`, `0d038c3`, `f89a8d4`,
+  `fcab220`, `6a4cfb3`, `133deaa`, `fc7ca68` and current main.
+- T3 remains open for the parent independent verifier. Writer deterministic
+  checks and final Git state will be recorded below; no low-risk claim.
+
+### Writer verification — first full run
+
+| Command / cwd | Observed result |
+| --- | --- |
+| `node --test tests/js/` / brain | 266 passed, 0 failed, exit 0 |
+| `.venv/bin/python -m pytest tests/ -q` / brain | 1363 passed, exit 0, 338.92s; includes existing isolated browser E2E; no exclusions or installs |
+| `.venv/bin/python -m pytest tests/ -q` / engine | 966 passed, 11 skipped, 1 failed, exit 1; hygiene scanner treated a new negative assertion's forbidden-prefix literal as machine coupling |
+| `HERDR_TTS_REAL_VENV=/home/bruno/Code/personal/agent-tts/engine/.venv/bin/python bash hosts/herdr/tts-plugin/scripts/smoke-tests.sh` / root | 1054 passed, 0 failed, exit 0; 44f mirror parity and 16s host-state invariance pass |
+| `python3 scripts/voice-stack/bash_matrix.py --selftest` / root | exit 2: required `--run-dir`; prior explicit-run-dir selftest passed |
+
+Bounded verification correction: mark the negative-prefix assertion with the
+existing narrow `hygiene-exempt` convention (the assertion still runs); allow
+matrix `--selftest` to use an automatically cleaned temporary directory when
+none is supplied. The observed failing commands are rerun below. Engine's five
+thread-teardown warnings and smoke's nonfatal scenario-42 missing-config stderr
+are disclosed, not hidden. Live providers, installed services, acceptance
+clean-install, actual bootstrap/install and downloads remain unexecuted;
+smoke's install/daemon scenarios are sandboxed fake-tool/process tests.
+
+### Final writer check results and limitations
+
+- Exact matrix command now exits 0, `SELFTEST_OK`. Bash changed-line selftest,
+  coverage legacy and changed-scope selftests, gate-evidence 16 controls and JS
+  mapper selftest all exit 0. These are tooling selftests, not fresh M1 coverage.
+- Engine second full run: **966 passed, 11 skipped, 1 failed, 5 warnings**,
+  145.11s. Hygiene now passes; the failure moved to existing
+  `tests/test_daemon.py::test_play_registering_during_shutdown_is_refused_not_orphaned`
+  (expected shutdown refusal, observed `status=stopped`). The same test passed
+  on the first full run. Source and test are byte-identical to `f89a8d4`:
+  `git diff --exit-code f89a8d4 -- engine/src/agent_tts/daemon.py
+  engine/src/agent_tts/queue_manager.py engine/tests/test_daemon.py` exits 0.
+- One bounded diagnostic rerun: `.venv/bin/python -m pytest
+  tests/test_daemon.py::test_play_registering_during_shutdown_is_refused_not_orphaned
+  tests/test_versioned_tree_hygiene.py -q` / engine: **14 passed**, exit 0.
+  No claim of a green full engine suite; no out-of-scope rewrite of this test.
+- Static checks: `bash -n` on 14 changed shell/launcher paths, `node --check`
+  on 7 changed JS paths, `ast.parse` on 14 changed Python paths and npm package
+  JSON/bin validation all passed. `ruby -c
+  hosts/herdr/tts-plugin/packaging/homebrew/herdr-tts.rb` could not run:
+  Ruby is unavailable; no dependency installed.
+- Git whitespace checks pass; no unmerged entries. Final status/ancestry/date
+  checks are performed after the evidence commits. Root is on main; the other
+  three worktrees retain their preservation tips (voice-stack unchanged).
+- Delivery is **partial verification**, not a blocked integration: all branch
+  histories and pending work are preserved locally. T3 stays unchecked for the
+  independent parent verifier, engine instability, missing Ruby syntax proof,
+  and final read-only risk assessment. No native review lifecycle was started.
+- Incomplete work retained: AT-11 M2–M4 remaining tasks/re-slice plan; M1's
+  historical accepted matrix exception; open-session inventory and autoloop
+  plans. Neither the clean Git state nor branch ancestry means feature closure.
