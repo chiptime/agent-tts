@@ -38,17 +38,17 @@ La migración a monorepo absorbió tres repos (agent-tts, herdr-tts, herdr-brain
 
 ### R2 — Decisión de arquitectura HT: brain frente a PRDs originales (COMPLETADA — 2026-10-06)
 
-Las tres PRDs afectadas cuentan con nota de destino formalizada (no borrado):
+Las tres PRDs afectadas cuentan con nota de destino formalizada y directiva de cobertura dual:
 
 | PRD | Vía original | Vía real hoy | Resolución (D-R2 confirmada 2026-10-06) |
 |---|---|---|---|
-| HT-01 push-to-talk | whisper.cpp + `send-keys` en el host | brain: faster-whisper + VAD/endpointing + dispatch a sesión | **SUPERSEDIDA** por brain conversation-mode |
-| HT-04 control móvil | ntfy Actions + listener HTTP | brain: PWA `/approval/*` + `/ask` | **SUPERSEDIDA** por brain PWA (`/approval/*` + `/ask`) |
-| AT-02 STT whisper.cpp | capa STT en el motor | brain: faster-whisper ya cubre la capacidad | **CUBIERTA POR BRAIN**; se conserva como referencia técnica |
+| HT-01 push-to-talk | whisper.cpp + `send-keys` en el host | brain: faster-whisper + VAD/endpointing + dispatch a sesión | **COBERTURA DUAL** (cubierta en brain y planificada en plugin-tts) |
+| HT-04 control móvil | ntfy Actions + listener HTTP | brain: PWA `/approval/*` + `/ask` | **COBERTURA DUAL** (cubierta en brain PWA y planificada en plugin-tts) |
+| AT-02 STT whisper.cpp | capa STT en el motor | brain: faster-whisper ya cubre la capacidad | **EN ROADMAP MOTOR** (para dar servicio a HT-01 en plugin-tts) |
 
-- [x] R2.1 Notas de destino añadidas en `HT-01`, `HT-04` y `AT-02`.
-- [x] R2.2 Índices `docs/prds/README.md` y `hosts/herdr/tts-plugin/docs/prds/README.md` actualizados reflejando el supersede/cubierta.
-- [x] R2.3 Decisión D-R2 confirmada y registrada (2026-10-06).
+- [x] R2.1 Notas de destino añadidas en `HT-01`, `HT-04` y `AT-02` (directiva de cobertura dual en plugin-tts).
+- [x] R2.2 Índices `docs/prds/README.md` y `hosts/herdr/tts-plugin/docs/prds/README.md` actualizados reflejando cobertura dual y mantenimiento en plugin-tts.
+- [x] R2.3 Decisión D-R2 confirmada y registrada (2026-10-06) con directiva de cobertura dual del usuario.
 
 ### R3 — HT-11 audición de voces (el P1 huérfano; cierra el Bloque 2)
 
@@ -58,16 +58,18 @@ Las tres PRDs afectadas cuentan con nota de destino formalizada (no borrado):
 
 **DoD:** flujo "escuchar → asignar → oírla hablada" end-to-end + batería ampliada.
 
-### R4 — Recuperación de cobertura de tests (decisión con tradeoff)
+### R4 — Recuperación de cobertura de tests (COMPLETADA — 2026-10-06)
 
-Los ~520 tests bash del plugin viejo existen en la historia (último commit pre-migración y remoto `chiptime/herdr-tts`). Dos opciones:
+Ejecutada Opción B (portar-crítico + matrix G-BASH-MATRIX):
+- [x] R4a Auditoría de escenarios críticos de la batería antigua.
+- [x] R4b Port de los críticos a `hosts/herdr/tts-plugin/tests/`:
+  - `voice_cases.sh`: resolución jerárquica (`pane > agent > global`), fail-open ante `voices.json` malformado, `voice_map_set` (asignar/limpiar), auto-asignación determinista.
+  - `config_cases.sh`: reemplazo in-place, deduplicación en upsert, preservación de comentarios/claves ajenas, rechazo de comillas/inyección, creación de `.bak`.
+  - `lifecycle_cases.sh`: protección ante PIDs no relacionados en takeover, parada limpia, supervisión respetando stop flag, estrangulamiento horario del prune de audio.
+  - `keymap_cases.sh`: detección de shadowing sobre Herdr core, inyección y backup de bloque gestionado en `config.toml`, rollback ante fallo de validación de config.
+- [x] R4c Integración en `all_bash_harnesses.sh` con protocolo unificado `CASE <name> OK`.
 
-- **Opción A — portar 1:1:** máxima cobertura, máximo coste, y mucho test frágil de bash heredado.
-- **Opción B — portar-crítico + matrix (recomendada):** auditar la batería antigua, portar solo los escenarios de seguridad del comportamiento (gating/snooze/mute/debounce, voces, keymap apply/rollback, daemon lifecycle) y dejar el resto al G-BASH-MATRIX de voice-stack.
-
-**Secuencia:** R4a auditoría de la batería vieja (qué cubría, qué sigue siendo crítico) → R4b port de los críticos a `hosts/herdr/tts-plugin/tests/` en el formato que defina G-BASH-MATRIX.
-
-**Decisión requerida:** A o B. **Esfuerzo:** B ≈ 1 día; A ≈ 3–5 días.
+**Estado:** R4 completado con éxito con salida 0 en suite combinada.
 
 ### R5 — Limpieza estructural (COMPLETADA — 2026-10-06)
 
