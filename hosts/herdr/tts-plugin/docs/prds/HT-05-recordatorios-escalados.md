@@ -5,6 +5,8 @@
 # PRD-HT-05 — Recordatorios escalados de atención
 
 > **Nota de revisión (2026-09-22)**: Continuación directa de HT-04 en la misma lane P1: HT-04 cierra el loop, HT-05 hace que el loop persiga al operador.
+>
+> **Cross-referencia y Deslinde de Arquitectura (2026-10-06 — Decisión D-R6b)**: Se mantiene separado de VS3 (Voice Stack 03 — Anuncios pendientes atribuidos). VS3 gestiona la retención y entrega sin pérdida de *anuncios ambientales en vuelo* producidos por eventos de agentes. HT-05 gestiona la *re-memoria y escalado temporal* (backoff exponencial de recordatorios de atención desatendida). Ambos sistemas conviven sin solaparse.
 
 **Prioridad**: Media-Alta · **Esfuerzo**: M
 
