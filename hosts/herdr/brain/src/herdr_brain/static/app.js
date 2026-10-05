@@ -1290,8 +1290,28 @@
   var audioBusy = false;
   var audioFinished = null;
 
-  function enqueueAudio(url, announcement) {
-    audioQueue.push({ url: url, announcement: announcement || null });
+  /* Speech request identity + server-side cancel (speech.js). stopAudio and
+   * hang-up share ONE cancel path; the UI only hears about it when the
+   * server could not confirm (local audio has already stopped by then). */
+  var speechCtl = Speech.createSpeechController({
+    fetch: function (url, options) { return fetchWithTimeout(url, options, 8000); },
+    setTimeout: function (cb, ms) { return setTimeout(cb, ms); },
+    crypto: window.crypto,
+    onStatus: function (status) {
+      if (status.state === "cancel-unconfirmed") {
+        showBanner("No pude confirmar con el servidor que se canceló la voz; el audio local ya se detuvo.");
+      } else if (status.state === "cancel-forbidden" || status.state === "cancel-rejected") {
+        showBanner("El servidor rechazó la cancelación de la voz (" + status.state + ").");
+      }
+    }
+  });
+
+  function enqueueAudio(url, announcement, speechRequestId) {
+    audioQueue.push({
+      url: url,
+      announcement: announcement || null,
+      speechRequestId: speechRequestId || null
+    });
     pumpAudio();
   }
 
@@ -1346,6 +1366,7 @@
      * announcer state. */
     if (audioFinished !== item) return;
     audioFinished = null;   // claim: the late twin becomes stale
+    speechCtl.release(item.speechRequestId);
     audioBusy = false;
     if (item.announcement && !inCall) {
       /* FR-04/AC3: out of call the announcement text must survive a
@@ -1394,6 +1415,7 @@
     audioBusy = false;
     var finished = audioFinished;
     audioFinished = null;
+    if (finished) speechCtl.release(finished.speechRequestId);
     if (finished && finished.announcement) hideToast();
     if (!audioQueue.length) stopBtn.classList.add("hidden");
     if (!audioQueue.length && inCall && callState === "speaking") {
@@ -1405,14 +1427,27 @@
   }
 
   function stopAudio() {
-    audioQueue.length = 0;
+    var jobId = speechCtl.activeId();
+    if (jobId) {
+      /* Identified request: cancel ITS voice on the server and drop only
+       * ITS queued audio — other requests and ambient announcements keep
+       * their turn. */
+      speechCtl.cancel();
+      Speech.purgeQueueById(audioQueue, jobId);
+    } else {
+      audioQueue.length = 0;  // nothing identifiable: the legacy clear-all
+    }
     audioBusy = false;
     audioFinished = null;
-    player.pause();
+    player.pause();  // local audio stops immediately, always
     player.removeAttribute("src");
     player.load();
-    stopBtn.classList.add("hidden");
     hideToast();
+    if (audioQueue.length) {
+      pumpAudio();
+      return;
+    }
+    stopBtn.classList.add("hidden");
     if (inCall && callState === "speaking") {
       setCallState(micBaseState());
       startListening();
@@ -2151,22 +2186,28 @@
     addTurn("user", text);
     setCallState("thinking");
     stopListening();  // the mic must not hear the answer
+    /* Identity BEFORE /ask: the request is synchronous, so an id minted by
+     * the server would arrive too late to cancel mid-render. null (no
+     * crypto) keeps the legacy path untouched. */
+    var speech = speechCtl.begin(sessionId) || {};
     return fetchWithTimeout("/ask", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({
+      body: JSON.stringify(Object.assign({
         text: text,
         session_id: sessionId,
         pane_id: selectedPane || null
-      })
+      }, speech))
     }, 30000)
       .then(function (resp) {
         if (resp.status === 503) {
+          speechCtl.release(speech.speech_request_id);
           showBanner("El brain no está configurado: falta GLM_API_KEY en el servidor. " +
             "Añádelo a ~/.dotfiles/shell/private-env.sh y reinicia el servicio.");
           return;
         }
         if (!resp.ok) {
+          speechCtl.release(speech.speech_request_id);
           showBanner("La pregunta falló (HTTP " + resp.status + "). Prueba otra vez.");
           return;
         }
@@ -2176,7 +2217,8 @@
             // A gate opened (PRD §4): enter confirming with the countdown
             // while the spoken echo ("… ¿Se envía?") plays through the
             // normal queue; onAudioEnded re-arms the mic under confirming.
-            if (data.audio_url) enqueueAudio(data.audio_url, null);
+            if (data.audio_url) enqueueAudio(data.audio_url, null, speech.speech_request_id);
+            else speechCtl.release(speech.speech_request_id);
             approvalFlow.open(data.approval);
             // UX 2026-09-24: the gate surfaces as the floating popup
             // (visible with the drawer open OR closed — text mode
@@ -2184,11 +2226,15 @@
             // "Confirmar ▲" still reopens it for the transcript.
             return;
           }
-          if (data.audio_url) enqueueAudio(data.audio_url, null);
-          else afterAnswer();
+          if (data.audio_url) enqueueAudio(data.audio_url, null, speech.speech_request_id);
+          else {
+            speechCtl.release(speech.speech_request_id);
+            afterAnswer();
+          }
         });
       })
       .catch(function (err) {
+        speechCtl.release(speech.speech_request_id);
         if (err && /timeout/.test(String(err.message || err))) {
           showBanner("El brain tardó demasiado — vuelve a intentarlo.");
         } else {
