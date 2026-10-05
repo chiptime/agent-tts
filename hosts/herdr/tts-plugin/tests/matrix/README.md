@@ -10,8 +10,25 @@ Rules:
 - Referenced cases must have been EXECUTED with outcome OK in the harness run.
 - Missing, failed, or not-executed cases fail the gate; unsupported syntax in
   modified code is a typed blocked result (fail-closed).
+- Historical M1 evidence (not the current consolidated table):
+  the table is regenerated per milestone pairing. For the M1 closure pairing
+  (genesis B0 → final M1 candidate) the modified PRODUCT Bash delta in
+  `bin/herdr-tts` carries no decision constructs (the identified-playback and
+  targeted-cancel wiring plus the `AGENT_TTS_*` fallback assignments are
+  plain assignments/calls), so the product table is EMPTY — a measured fact
+  printed by the gate as `decisions=0`, not a not_applicable shortcut.
+- The case-runner harness (`host_cli_cases.sh`) is the INSTRUMENT, never the
+  measured surface: its own assertion guards (`x || return 1`) fail exactly
+  when a case fails, so their failure arms are unmeasurable by construction.
+  Its modified lines are measured by the G-BASH-LINES gate instead.
 - The matrix is evidence of alternatives covered. It is **not** a numeric
   branch-coverage percentage and is never presented as one.
+
+The historical zero-decision claim above was invalidated by the M1 corrective
+addendum in `odd/tasks/m1-quality-repair.md`: a heredoc parser defect masked
+real decisions. Consolidation retains main's expanded decision table and parser,
+plus regression controls for quoted heredocs, jq arguments and `elif` frames.
+Passing the parser selftest is not fresh full decision-coverage evidence.
 
 Schema:
 

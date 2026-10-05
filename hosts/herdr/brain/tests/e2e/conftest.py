@@ -62,8 +62,89 @@ def audio_server() -> Iterator[str]:
         thread.join(timeout=5)
 
 
-# -- voice-stack M1: the REAL brain app over HTTP with deterministic doubles --
+# -- voice-stack MQ-03: real-browser line/branch coverage of app.js glue --
+#
+# Opt-in via E2E_JS_COVERAGE_DIR: the context serves istanbul-instrumented
+# copies of app.js/speech.js at their REAL URLs (route fulfill), everything
+# else — server, SSE, media, the page itself — stays the real thing. After
+# each test the collected window.__coverage__ (original-source coordinates)
+# is written into the coverage dir. Without the env var the fixture is a
+# transparent pass-through: identical suite, zero behavior change.
 
+import json as json_mod
+import os as os_mod
+import re as re_mod
+import subprocess as subprocess_mod
+
+JS_COVERAGE_DIR = os_mod.environ.get("E2E_JS_COVERAGE_DIR")
+_COVERAGE_TARGETS = ("app.js", "speech.js")
+
+
+def _instrumented_bytes(static_dir: Path, name: str, out_dir: Path) -> bytes:
+    src = static_dir / name
+    out_file = out_dir / f"instrumented-{name}"
+    maps_file = out_dir / f"instrumented-{name}.maps.json"
+    if not out_file.exists():
+        subprocess_mod.run(
+            ["node", str(Path(__file__).resolve().parents[5] / "scripts/voice-stack/js-coverage/instrument-file.js"),
+             str(src), str(out_file), str(maps_file)],
+            check=True, capture_output=True, timeout=120,
+        )
+    return out_file.read_bytes()
+
+
+@pytest.fixture
+def context(context):
+    if not JS_COVERAGE_DIR:
+        yield context
+        return
+    import playwright.sync_api as _pw
+
+    static_dir = Path(__file__).resolve().parents[2] / "src/herdr_brain/static"
+    out_dir = Path(JS_COVERAGE_DIR)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    body_by_name = {
+        name: _instrumented_bytes(static_dir, name, out_dir)
+        for name in _COVERAGE_TARGETS
+    }
+
+    def _handler(name):
+        def handle(route: "_pw.Route") -> None:
+            route.fulfill(
+                status=200,
+                content_type="application/javascript",
+                body=body_by_name[name],
+            )
+        return handle
+
+    # The served index versions some assets as /app.js?v=<hash> (server.py
+    # asset fingerprinting); the trailing * keeps both shapes intercepted.
+    for target in _COVERAGE_TARGETS:
+        context.route(f"**/{target}*", _handler(target))
+
+    yield context
+
+    # Collect before the plugin closes the context: async completions have
+    # settled by test end, so the counters are final for this test.
+    merged: dict = {}
+    for page in context.pages:
+        try:
+            cov = page.evaluate("() => window.__coverage__")
+        except Exception:
+            continue
+        if not cov:
+            continue
+        for fname, fc in cov.items():
+            merged.setdefault(fname, []).append(fc)
+    if merged:
+        test_name = re_mod.sub(r"[^A-Za-z0-9_.-]", "_",
+                                os_mod.environ.get("PYTEST_CURRENT_TEST", "unknown").split(" ")[0])
+        (out_dir / f"browser-{test_name}-{os_mod.getpid()}.json").write_text(
+            json_mod.dumps(merged), encoding="utf-8"
+        )
+
+
+# -- voice-stack M1: the REAL brain app over HTTP with deterministic doubles --
 
 import dataclasses
 import shutil

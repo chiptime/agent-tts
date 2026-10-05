@@ -425,6 +425,25 @@ case__pending_cli_regenerate_refusals_real() {
   grep -q "uncertain=0 " "$SANDBOX/status.out"
 }
 
+case__playback_state_paths_default_to_machine_global() {
+  sandbox_setup trio_defaults
+  in_host 'printf "L=%s|P=%s|S=%s\n" "$LOCK_FILE" "$PID_FILE" "$IPC_SOCKET"' \
+    > "$SANDBOX/out" || return 1
+  [[ "$(cat "$SANDBOX/out")" == \
+     "L=/tmp/herdr-tts-playing.lock|P=/tmp/herdr-tts-current.pid|S=/tmp/herdr-tts-player.sock" ]]
+}
+
+case__playback_state_paths_env_override_wins() {
+  sandbox_setup trio_override
+  AGENT_TTS_LOCK_FILE="$SANDBOX/custom.lock" \
+  AGENT_TTS_PID_FILE="$SANDBOX/custom.pid" \
+  AGENT_TTS_SOCKET="$SANDBOX/custom.sock" \
+    in_host 'printf "L=%s|P=%s|S=%s\n" "$LOCK_FILE" "$PID_FILE" "$IPC_SOCKET"' \
+    > "$SANDBOX/out" || return 1
+  [[ "$(cat "$SANDBOX/out")" == \
+     "L=$SANDBOX/custom.lock|P=$SANDBOX/custom.pid|S=$SANDBOX/custom.sock" ]]
+}
+
 main() {
   local all=""
   local fn
