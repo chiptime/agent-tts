@@ -1,10 +1,10 @@
 **ID**: PRD-HT-04 · **Proyecto**: herdr-tts
-**Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: SUPERSEDIDA por brain PWA (2026-10-06)
+**Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: Activa (P1, cubierta en brain PWA y planificada también en plugin-tts)
 **Dependencias**: Comparte inyección de texto con HT-01
 
 # PRD-HT-04 — Control bidireccional desde el móvil
 
-> **Nota de destino (2026-10-06 — Decisión D-R2)**: SUPERSEDIDA por herdr-brain PWA (`/approval/*` + `/ask`).
+> **Nota de destino (2026-10-06 — Decisión D-R2 / Directiva de cobertura dual)**: Activa (cobertura dual). No está muerta ni descartada: la PWA de Herdr Brain cubre `/approval/*` y `/ask` hoy, pero `herdr-tts` mantiene en roadmap el control remoto ligero por ntfy Actions + HTTP listener en el host.
 >
 > **Nota de revisión (2026-09-22)**: Prerrequisito externo: validar con Herdr core el verbo de inyección de texto (`pane send-keys` o equivalente). El subconjunto de botones simple (Detener, que solo reutiliza `--stop`) puede aterrizar antes de la inyección.
 

@@ -1,8 +1,8 @@
 **ID**: PRD-AT-02 · **Proyecto**: agent-tts
-**Prioridad final (revisión 2026-09-22)**: P4 · **Estado**: CUBIERTA POR BRAIN (2026-10-06)
+**Prioridad final (revisión 2026-09-22)**: P4 · **Estado**: Conservada en roadmap activo (P4, cubierta en brain y planificada para HT-01 en plugin-tts)
 **Dependencias**: Ninguna (store de voces opcional)
 
-> **Nota de destino (2026-10-06 — Decisión D-R2)**: CUBIERTA POR BRAIN (`hosts/herdr/brain` con faster-whisper). Se conserva como referencia técnica si se requiere STT en el motor.
+> **Nota de destino (2026-10-06 — Decisión D-R2 / Directiva de cobertura dual)**: Conservada en roadmap activo del motor para dar servicio a la futura capa PTT en terminal (HT-01 de `herdr-tts`). Aunque `hosts/herdr/brain` cubre la vía conversacional con faster-whisper hoy, la capacidad STT local en `agent-tts` se mantiene en roadmap para el intercom directo en terminal.
 >
 > **Nota de revisión (22/09/2026)**: Postergada por decisión del maintainer: primero el núcleo de salida potente y componentizable; la bidireccionalidad (STT) llega en fases posteriores. Es la llave de HT-01 (herdr-tts) cuando llegue el momento.
 

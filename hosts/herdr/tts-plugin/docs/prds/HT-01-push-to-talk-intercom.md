@@ -1,10 +1,10 @@
 **ID**: PRD-HT-01 · **Proyecto**: herdr-tts
-**Prioridad final (revisión 2026-09-22)**: P4 · **Estado**: SUPERSEDIDA por brain conversation-mode (2026-10-06)
+**Prioridad final (revisión 2026-09-22)**: P4 · **Estado**: Activa (P4, cubierta en brain y planificada también en plugin-tts)
 **Dependencias**: PRD-AT-02 (capa STT del motor)
 
 # PRD-HT-01 — Push-to-Talk intercom (hablar al agente)
 
-> **Nota de destino (2026-10-06 — Decisión D-R2)**: SUPERSEDIDA por herdr-brain conversation-mode (faster-whisper + VAD/endpointing + dispatch directo a la sesión de Herdr).
+> **Nota de destino (2026-10-06 — Decisión D-R2 / Directiva de cobertura dual)**: Activa (cobertura dual). No está muerta ni descartada: el modo conversacional de Herdr Brain cubre la vía web/asistente hoy, pero `herdr-tts` mantiene en roadmap el soporte nativo de PTT directo en terminal (intercom del host vía STT local AT-02 + inyección al pane).
 >
 > **Nota de revisión (2026-09-22)**: El maintainer la quiere, pero va al final: dos candados — AT-02 (STT del motor) está postergada a P4, y `herdr pane send-keys` no existe aún en la API de Herdr (prerrequisito externo a negociar con Herdr core). Norte estratégico del ciclo bidireccional.
 
