@@ -122,6 +122,39 @@
       return hits.length;   /* 0 is legal: empty virtual span */
     }
 
+    function readableSuffix(container, sentIdx) {
+      if (!container || !/^(0|[1-9]\d*)$/.test(String(sentIdx)) ||
+          !Number.isSafeInteger(Number(sentIdx))) return "";
+      var hits = container.querySelectorAll('[data-sent-idx="' + String(sentIdx) + '"]');
+      var boundary = null;
+      for (var i = 0; i < hits.length; i++) {
+        if (hits[i].classList.contains("tts-sent")) { boundary = hits[i]; break; }
+      }
+      if (!boundary) return ""; // An orphan continuation is not a whole-answer fallback.
+      var started = false;
+      var parts = [];
+      function visit(node) {
+        if (node.nodeType === 3) {
+          if (started) parts.push(node.nodeValue);
+          return;
+        }
+        if (node.nodeType !== 1) return;
+        var tag = node.tagName.toLowerCase();
+        if (/^(script|style|noscript|button|input|select|textarea|svg|audio|video)$/.test(tag) ||
+            node.getAttribute("hidden") !== null || node.getAttribute("aria-hidden") === "true") return;
+        if (node === boundary) started = true;
+        var block = /^(p|div|section|article|h[1-6]|ul|ol|li|blockquote|pre|table|tr|hr)$/.test(tag);
+        var separator = block || tag === "br" ? "\n" : /^(td|th)$/.test(tag) ? " " : "";
+        if (started && separator) parts.push(separator);
+        // Visit text leaves once: nested anchors must not duplicate textContent.
+        for (var j = 0; j < node.childNodes.length; j++) visit(node.childNodes[j]);
+        if (started && separator) parts.push(separator);
+      }
+      visit(container);
+      return parts.join("").replace(/[^\S\n]+/g, " ").split("\n")
+        .map(function (line) { return line.trim(); }).filter(Boolean).join("\n");
+    }
+
     function requestSnapshot(pane, session) {
       syncIdentity(pane, session);
       var token = generation;   /* captured at REQUEST time */
@@ -188,6 +221,7 @@
       mountTurn: mountTurn,
       htmlFor: htmlFor,
       selectSentence: selectSentence,
+      readableSuffix: readableSuffix,
       currentGeneration: function () { return generation; }
     };
   }

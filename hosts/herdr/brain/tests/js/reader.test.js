@@ -62,7 +62,7 @@ function descendants(node, out = []) {
 }
 
 function makeText(text) {
-  return { nodeType: 3, _text: String(text), parentNode: null };
+  return { nodeType: 3, _text: String(text), nodeValue: String(text), parentNode: null };
 }
 
 function makeElement(tag) {
@@ -75,6 +75,7 @@ function makeElement(tag) {
     listeners: []
   };
   node.classList = makeClassList(node);
+  Object.defineProperty(node, "childNodes", { get: () => node.children });
   node.appendChild = child => {
     child.parentNode = node;
     node.children.push(child);
@@ -362,6 +363,75 @@ test("selection_emits_no_playback_call", () => {
     JSON.stringify(content.querySelectorAll("*").map(e => e.listeners.length)),
     listenersBefore
   );
+});
+
+/* Suffix extraction follows the current DOM boundary, not equal text or IDs. */
+function suffixSurface(html) {
+  const h = harness();
+  const { content } = readerSurface(h.doc);
+  h.reader.mountTurn(content, { text: "fallback", html });
+  return { ...h, content };
+}
+
+test("suffix starts at the later repeated sentence and includes unanchored tail", () => {
+  const { reader, content } = suffixSurface(
+    '<p><span class="tts-sent" data-sent-idx="0">Echo.</span> ' +
+    '<span class="tts-sent" data-sent-idx="1">Echo.</span></p><p>Final tail.</p>');
+  assert.equal(reader.readableSuffix(content, 1), "Echo.\nFinal tail.");
+});
+
+test("suffix includes the primary and every inline continuation exactly once", () => {
+  const { reader, content, doc } = suffixSurface(
+    '<p><span class="tts-sent" data-sent-idx="0">Earlier.</span> ' +
+    '<span class="tts-sent" data-sent-idx="1">Read <strong>this</strong></span>' +
+    '<em class="tts-sent-cont" data-sent-idx="1"> emphasized</em>' +
+    '<span class="tts-sent-cont" data-sent-idx="1"> ending.</span></p>' +
+    '<p><span class="tts-sent" data-sent-idx="2">Next.</span></p>');
+  const html = content.innerHTML;
+  const text = content.textContent;
+  const writes = doc.writeLog().length;
+  assert.equal(reader.readableSuffix(content, "1"), "Read this emphasized ending.\nNext.");
+  assert.equal(content.innerHTML, html);
+  assert.equal(content.textContent, text);
+  assert.equal(doc.writeLog().length, writes);
+  assert.equal(content.querySelectorAll(".tts-selected").length, 0);
+});
+
+test("container anchors traverse nested lists, cells and code without duplication", () => {
+  const { reader, content } = suffixSurface(
+    '<p><span class="tts-sent" data-sent-idx="0">Earlier.</span></p>' +
+    '<ul class="tts-sent" data-sent-idx="1"><li>One</li><li>Two <em>items</em></li></ul>' +
+    '<table class="tts-sent" data-sent-idx="2"><tr><td>A</td><td>B</td></tr></table>' +
+    '<pre class="tts-sent" data-sent-idx="3"><code>print("safe")</code></pre>');
+  assert.equal(reader.readableSuffix(content, 1), 'One\nTwo items\nA B\nprint("safe")');
+  assert.equal(reader.readableSuffix(content, 2), 'A B\nprint("safe")');
+  assert.equal(reader.readableSuffix(content, 3), 'print("safe")');
+});
+
+test("nested primary and continuation anchors do not duplicate their descendant text", () => {
+  const { reader, content } = suffixSurface(
+    '<p><span class="tts-sent" data-sent-idx="0">Earlier.</span></p>' +
+    '<p class="tts-sent" data-sent-idx="1">Read <strong class="tts-sent-cont" data-sent-idx="1">' +
+    '<span class="tts-sent" data-sent-idx="1">this</span></strong> once.</p><p>Tail.</p>');
+  assert.equal(reader.readableSuffix(content, 1), "Read this once.\nTail.");
+});
+
+test("suffix is scoped to the current owning container with duplicate sentence IDs", () => {
+  const one = suffixSurface('<p class="tts-sent" data-sent-idx="1" id="tts-sent-1">First.</p>');
+  const two = suffixSurface('<p class="tts-sent" data-sent-idx="1" id="tts-sent-1">Second.</p>');
+  assert.equal(one.reader.readableSuffix(two.content, 1), "Second.");
+  two.reader.mountTurn(two.content, { html: '<p class="tts-sent" data-sent-idx="1">Current.</p>' });
+  assert.equal(two.reader.readableSuffix(two.content, 1), "Current.");
+});
+
+test("invalid or continuation-only boundaries cannot silently read the whole turn", () => {
+  const { reader, content } = suffixSurface(ANCHORED_HTML);
+  for (const index of [-1, 99, 0.5, NaN, null, undefined, '0"]', "", " 0"]) {
+    assert.equal(reader.readableSuffix(content, index), "", String(index));
+  }
+  assert.equal(reader.readableSuffix(null, 0), "");
+  const orphan = suffixSurface('<span class="tts-sent-cont" data-sent-idx="0">Orphan.</span>');
+  assert.equal(orphan.reader.readableSuffix(orphan.content, 0), "");
 });
 
 /* ---- 4.4 link hardening ---- */
