@@ -62,11 +62,20 @@ host_env() {
 }
 
 # Stash snippet arguments before sourcing, exactly as in host_cli_cases.sh.
-# A deadline bounds regressions in supervisor code; EXIT traps reap owned jobs.
+# Safety envelope: a hard kill-after bounds a stuck shell. Cleanup signals ONLY
+# explicitly registered identities — direct children (register_owned) or
+# fixture descendants that announced themselves while provably alive
+# (register_handshake_owned) — and every signal re-validates pid + /proc
+# starttime AT the boundary. No /proc tree discovery, no host sweeps. Platform
+# limit, acknowledged: between the /proc read and kill(2) there remains an
+# inherent TOCTOU window that pid-based signalling (without pidfd) cannot
+# close; f3-* fixture names and short self-limiting lifetimes bound exposure.
+# finish_owned never signals: a lifecycle oracle fails loudly if the product
+# operation left a survivor — rescue cleanup can never mask it.
 in_host() {
   local snippet="$1" rc=0 err
   shift
-  host_env timeout 15 bash -c '
+  host_env timeout --kill-after=5 15 bash -c '
     HOST="$1"; shift; ARGS=("$@"); set --
     source "$HOST"
     set -- "${ARGS[@]}"
@@ -78,30 +87,117 @@ in_host() {
       [[ "$resolved" == "$SB/"* ]] || { echo "Uncontained launcher path: $resolved" >&2; exit 97; }
     done
     OWNED_PIDS=()
-    cleanup_owned() {
-      local pid
-      for pid in "${OWNED_PIDS[@]}"; do
-        kill -TERM "$pid" 2>/dev/null || true
+    declare -A OWNED_BIRTH=()
+    declare -A OWNED_RC=()
+    proc_snapshot() { # /proc/<pid>/stat → PROC_STATE / PROC_PARENT / PROC_BIRTH
+      local stat_line
+      local -a fields=()
+      PROC_STATE=""; PROC_PARENT=""; PROC_BIRTH=""
+      [[ "$1" =~ ^[1-9][0-9]*$ ]] || return 1
+      { IFS= read -r stat_line < "/proc/$1/stat"; } 2>/dev/null || return 1
+      read -r -a fields <<< "${stat_line##*) }"
+      [[ ${#fields[@]} -ge 20 ]] || return 1
+      PROC_STATE=${fields[0]}; PROC_PARENT=${fields[1]}; PROC_BIRTH=${fields[19]}
+    }
+    register_owned() { # only direct children of this shell are registrable
+      local pid="$1"
+      if ! proc_snapshot "$pid"; then
         wait "$pid" 2>/dev/null || true
+        return 1
+      fi
+      [[ "$PROC_PARENT" == "$BASHPID" ]] || return 1
+      OWNED_PIDS+=("$pid"); OWNED_BIRTH[$pid]=$PROC_BIRTH
+    }
+    register_handshake_owned() { # <file>: "pid birth", written by our fixture
+      local pid birth
+      { read -r pid birth; } < "$1" 2>/dev/null || return 1
+      [[ "$pid" =~ ^[1-9][0-9]*$ && "$birth" =~ ^[0-9]+$ ]] || return 1
+      proc_snapshot "$pid" || return 0   # already exited: nothing to own or reap
+      if [[ "$PROC_BIRTH" != "$birth" ]]; then
+        echo "handshake identity stale (pid $pid reused); refusing to register" >&2
+        return 1
+      fi
+      OWNED_PIDS+=("$pid"); OWNED_BIRTH[$pid]=$birth
+    }
+    owned_live() { # same pid AND same start time AND not a dead zombie
+      proc_snapshot "$1" && [[ "$PROC_BIRTH" == "$2" && "$PROC_STATE" != Z && "$PROC_STATE" != X ]]
+    }
+    wait_owned_gone() { # bounded ~0.5s; no signaling here
+      local i
+      for i in {1..50}; do
+        owned_live "$1" "$2" || return 0
+        command sleep 0.01
       done
+      return 1
+    }
+    signal_owned() { # <pid> <birth> <sig>: identity revalidated AT the boundary
+      if ! proc_snapshot "$1"; then
+        printf "signal refused: pid %s gone before %s\n" "$1" "$3" >> "$SB/signal.log"
+        return 0
+      fi
+      if [[ "$PROC_BIRTH" != "$2" || "$PROC_STATE" == Z || "$PROC_STATE" == X ]]; then
+        printf "signal refused: pid %s state=%s birth=%s expected=%s before %s\n" \
+          "$1" "$PROC_STATE" "$PROC_BIRTH" "$2" "$3" >> "$SB/signal.log"
+        return 0
+      fi
+      builtin kill -"$3" "$1" 2>/dev/null || true
+    }
+    stop_owned() { # <pid> <birth>: TERM, bounded wait, KILL escalation
+      signal_owned "$1" "$2" TERM
+      wait_owned_gone "$1" "$2" || true
+      owned_live "$1" "$2" || return 0
+      signal_owned "$1" "$2" KILL
+      wait_owned_gone "$1" "$2" || return 1
+      return 0
+    }
+    cleanup_owned() { # TERM ALL registered identities, then a bounded KILL
+      # phase, then reap. KILL walks the registry in REVERSE: fixtures register
+      # dependents after their spawning parent, so a parent blocked in
+      # wait(child) is freed by the child death first and can exit on its
+      # own TERM handling instead of being KILL-escalated out from under the
+      # exit-code oracle of the case.
+      local pid fail=0 idx
+      for pid in "${OWNED_PIDS[@]}"; do
+        signal_owned "$pid" "${OWNED_BIRTH[$pid]}" TERM
+      done
+      for (( idx = ${#OWNED_PIDS[@]} - 1; idx >= 0; idx-- )); do
+        pid=${OWNED_PIDS[idx]}
+        wait_owned_gone "$pid" "${OWNED_BIRTH[$pid]}" || true
+        owned_live "$pid" "${OWNED_BIRTH[$pid]}" || continue
+        signal_owned "$pid" "${OWNED_BIRTH[$pid]}" KILL
+        wait_owned_gone "$pid" "${OWNED_BIRTH[$pid]}" || fail=1
+      done
+      for pid in "${OWNED_PIDS[@]}"; do
+        finish_owned "$pid" || fail=1
+      done
+      return "$fail"
     }
     trap cleanup_owned EXIT
-    finish_owned() {
-      local i
-      wait "$1" 2>/dev/null || true
+    finish_owned() { # reaps a process someone ELSE should have ended; signals nothing
+      local pid="$1" i rc=0
+      local -a keep=()
+      [[ -n "${OWNED_BIRTH[$pid]:-}" ]] || return 1
+      wait_owned_gone "$pid" "${OWNED_BIRTH[$pid]}" || return 1
+      wait "$pid" 2>/dev/null || rc=$?
+      OWNED_RC[$pid]=$rc
+      # Rebuild compactly: unsetting by index would leave sparse gaps that the
+      # reverse-index cleanup loop cannot walk under set -u.
       for i in "${!OWNED_PIDS[@]}"; do
-        [[ "${OWNED_PIDS[i]}" != "$1" ]] || unset "OWNED_PIDS[i]"
+        [[ "${OWNED_PIDS[i]}" != "$pid" ]] && keep+=("${OWNED_PIDS[i]}")
       done
+      OWNED_PIDS=()
+      (( ${#keep[@]} )) && OWNED_PIDS=("${keep[@]}")
+      unset "OWNED_BIRTH[$pid]"
     }
     start_dummy() {
       bash -c '\''exec -a "$1" sleep 60'\'' _ "$1" &
-      DUMMY_PID=$!; OWNED_PIDS+=("$DUMMY_PID")
+      DUMMY_PID=$!; register_owned "$DUMMY_PID" || return 1
       local i comm
       for i in {1..200}; do
         if IFS= read -r comm < "/proc/$DUMMY_PID/comm" && [[ "$comm" == sleep ]]; then
           return 0
         fi
-        sleep 0.01
+        command sleep 0.01
       done
       return 1
     }
@@ -115,7 +211,7 @@ in_host() {
   return "$rc"
 }
 
-in_cli() { host_env timeout 15 bash "$LAUNCHER" "$@"; }
+in_cli() { host_env timeout --kill-after=5 15 bash "$LAUNCHER" "$@"; }
 
 gate_check() { # expected rc (0=gated, 1=allowed), pane, status
   local expected="$1" rc=0
@@ -548,7 +644,7 @@ case__critical_daemon_takeover_owned_child() {
     }
     printf "%s\n" "$matched" > "$DAEMON_PID_FILE"
     daemon_takeover || exit 1
-    finish_owned "$matched"
+    finish_owned "$matched" || exit 1   # takeover must have ended it; no rescue kill
     [[ $(cat "$SB/order.out") == armed-before-kill ]] || exit 1
     [[ $(cat "$DAEMON_PID_FILE") == "$$" && -f "$SUPERVISOR_STOP_FLAG" ]] || exit 1
     ! kill -0 "$matched" 2>/dev/null || exit 1
@@ -573,7 +669,7 @@ case__critical_daemon_stop_pidfile_fail_open() {
     }
     printf "%s\n" "$matched" > "$DAEMON_PID_FILE"
     daemon_stop_running how || exit 1
-    finish_owned "$matched"
+    finish_owned "$matched" || exit 1   # the stop must have ended it; no rescue kill
     [[ $(cat "$SB/order.out") == armed-before-kill ]] || exit 1
     [[ "$how" == pidfile && -f "$SUPERVISOR_STOP_FLAG" ]] || exit 1
     [[ ! -e "$SB/sweep.out" ]] || exit 1
@@ -626,17 +722,131 @@ printf "%s\n" "$*" >> "$STUB_LOG"
 while :; do sleep 0.05; done
 CHILD
     chmod +x "$SCRIPT"
-    (run_daemon_supervised) & supervisor=$!; OWNED_PIDS+=("$supervisor")
-    for i in {1..200}; do [[ ! -f "$STUB_LOG.child" ]] || break; sleep 0.01; done
+    (run_daemon_supervised) & supervisor=$!; register_owned "$supervisor" || exit 1
+    for i in {1..200}; do [[ ! -f "$STUB_LOG.child" ]] || break; command sleep 0.01; done
     [[ -s "$STUB_LOG.child" ]] || exit 1
     read -r child < "$STUB_LOG.child"
-    kill -TERM "$supervisor" || exit 1
-    rc=0; wait "$supervisor" || rc=$?
-    finish_owned "$supervisor"
+    builtin kill -TERM "$supervisor" || exit 1
+    finish_owned "$supervisor" || exit 1   # TERM handshake must end it; no rescue kill
+    rc=${OWNED_RC[$supervisor]}
     [[ $rc -eq 0 && $(cat "$STUB_LOG.term") == TERM ]] || exit 1
     ! kill -0 "$child" 2>/dev/null || exit 1
     [[ $(cat "$STUB_LOG") == _daemon ]] || exit 1
     grep -q "TERM received" "$DAEMON_LOG"
+  '
+}
+
+# --- Harness safety: refuse to spawn stubborn jobs without bounded cleanup. ---
+bounded_host_available() {
+  [[ "$(declare -f in_host)" == *'--kill-after='* ]] || {
+    echo 'Missing hard timeout escalation; stubborn-process probe not started' >&2
+    return 1
+  }
+}
+
+case__critical_harness_reaps_term_ignoring_child() {
+  bounded_host_available || return 1
+  in_host '
+    bash -c '\''trap "" TERM; : > "$1"; exec -a f3-term-ignoring-owned sleep 60'\'' _ "$SB/ready" &
+    pid=$!; register_owned "$pid" || exit 1
+    for i in {1..200}; do [[ ! -f "$SB/ready" ]] || break; sleep 0.01; done
+    [[ -f "$SB/ready" ]] || exit 1
+    birth=${OWNED_BIRTH[$pid]}
+    builtin kill -TERM "$pid" || exit 1
+    owned_live "$pid" "$birth" || exit 1     # TERM is ignored: still alive
+    cleanup_owned || exit 1                  # must escalate, not hang
+    [[ ${#OWNED_PIDS[@]} -eq 0 && "${OWNED_RC[$pid]}" == 137 ]] || exit 1
+    ! owned_live "$pid" "$birth"
+  '
+}
+
+case__critical_harness_reaps_stubborn_supervisor_child() {
+  bounded_host_available || return 1
+  in_host '
+    SCRIPT="$SB/stubborn.sh"
+    cat > "$SCRIPT" <<'"'"'CHILD'"'"'
+#!/usr/bin/env bash
+trap "" TERM
+# Fork-free self-identity: $(cat /proc/self/stat) would read the FORKED cat
+# process (whose starttime differs whenever the fork lands in a later clock
+# tick), so builtin read + redirection keeps the true pid+starttime pair.
+IFS= read -r stat_line < /proc/self/stat
+stat_rest=${stat_line##*) }
+read -r -a hf <<< "$stat_rest"
+printf "%s %s\n" "$$" "${hf[19]}" > "$STUB_LOG.child"
+exec -a f3-supervisor-child-owned sleep 60
+CHILD
+    chmod +x "$SCRIPT"
+    (run_daemon_supervised) & supervisor=$!; register_owned "$supervisor" || exit 1
+    local_i=0
+    while [[ ! -s "$STUB_LOG.child" && $local_i -lt 200 ]]; do command sleep 0.01; local_i=$((local_i+1)); done
+    [[ -s "$STUB_LOG.child" ]] || exit 1
+    # Fail fast if the announced identity is not the live child (e.g. an
+    # instant respawn raced the handshake read): registration is strict.
+    read -r child child_birth < "$STUB_LOG.child"
+    owned_live "$child" "$child_birth" || exit 1
+    # Explicit identity: the child registered itself while provably alive, so
+    # cleanup owns it directly — no /proc discovery, even if the supervisor
+    # has already exited by cleanup time.
+    register_handshake_owned "$STUB_LOG.child" || exit 1
+    cleanup_owned || exit 1
+    [[ ${#OWNED_PIDS[@]} -eq 0 ]] || exit 1
+    [[ "${OWNED_RC[$supervisor]}" == 0 ]] || exit 1
+    ! owned_live "$child" "$child_birth" || exit 1
+    grep -q "TERM received" "$DAEMON_LOG"
+  '
+}
+
+case__critical_harness_stale_identity_refuses_signal() {
+  bounded_host_available || return 1
+  in_host '
+    # (a) registry entry whose process already exited: stop no-ops, never signals
+    bash -c '\''exec -a f3-short-owned sleep 0.4'\'' & short=$!
+    register_owned "$short" || exit 1
+    short_birth=${OWNED_BIRTH[$short]}
+    command sleep 0.7                        # natural exit; the entry goes stale
+    stop_owned "$short" "$short_birth" || exit 1
+    finish_owned "$short" || exit 1
+    [[ "${OWNED_RC[$short]}" != 137 ]] || exit 1   # reaped naturally, not KILLed
+    # (b) live owned process + WRONG birth: boundary check refuses the signal
+    bash -c '\''exec -a f3-live-owned sleep 60'\'' & live=$!
+    register_owned "$live" || exit 1
+    live_birth=${OWNED_BIRTH[$live]}
+    stop_owned "$live" 1 || exit 1
+    owned_live "$live" "$live_birth" || exit 1      # mismatched identity NOT signaled
+    # (c) the correct identity still stops cleanly afterwards
+    stop_owned "$live" "$live_birth" || exit 1
+    finish_owned "$live" || exit 1
+    ! owned_live "$live" "$live_birth"
+  '
+}
+
+case__critical_harness_cleanup_reaps_orphan_after_parent_exit() {
+  bounded_host_available || return 1
+  in_host '
+    SCRIPT="$SB/orphan.sh"
+    cat > "$SCRIPT" <<'"'"'PARENT'"'"'
+#!/usr/bin/env bash
+# Fixture parent: spawns a child that announces its own identity (pid +
+# /proc starttime) and outlives the parent; parent exits at once. The child
+# self-limits (sleep 5) so a failed cleanup can never linger. Fork-free
+# self-read: a substituted `cat` would report the fork process starttime.
+bash -c '\''IFS= read -r stat_line < /proc/self/stat; stat_rest=${stat_line##*) }; read -r -a hf <<< "$stat_rest"; printf "%s %s\n" "$$" "${hf[19]}" > "$1"; exec -a f3-orphan-owned sleep 5'\'' _ "$STUB_LOG.child" &
+exit 0
+PARENT
+    chmod +x "$SCRIPT"
+    bash "$SCRIPT" || exit 1
+    local_i=0
+    while [[ ! -s "$STUB_LOG.child" && $local_i -lt 200 ]]; do command sleep 0.01; local_i=$((local_i+1)); done
+    read -r child child_birth < "$STUB_LOG.child"
+    [[ "$child" =~ ^[1-9][0-9]*$ ]] || exit 1
+    owned_live "$child" "$child_birth" || exit 1
+    # Explicit ownership: the child announced its identity while alive, so it
+    # is registered directly — cleanup reaps it even though its parent (which
+    # was never ours to track) has already exited.
+    register_handshake_owned "$STUB_LOG.child" || exit 1
+    cleanup_owned || exit 1
+    ! owned_live "$child" "$child_birth"
   '
 }
 
