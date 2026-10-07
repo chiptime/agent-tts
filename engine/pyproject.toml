@@ -35,6 +35,11 @@ dependencies = [
 kokoro = [
     "onnxruntime>=1.16",
 ]
+# STT extra (F4): faster-whisper model runtime. The STT code paths are
+# fully lazy — the base TTS install never imports any of it.
+stt = [
+    "faster-whisper>=1.0",
+]
 dev = [
     "pytest>=7.0.0",
     "coverage>=7.6,<8",
@@ -42,6 +47,9 @@ dev = [
 
 [project.scripts]
 agent-tts = "agent_tts.cli:main"
+# Separate STT console entry point: never intercepts the existing
+# positional-speech `agent-tts` CLI (contract stt-engine-v1.md).
+agent-tts-stt = "agent_tts.stt.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
