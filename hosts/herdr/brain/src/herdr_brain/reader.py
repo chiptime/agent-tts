@@ -37,8 +37,10 @@ profile/contract) REQUIRES bumping ``READER_PROFILE_VERSION`` here.
 Binary mtime/size is a FALSE signal because ``bin/herdr-tts`` is a thin
 entry script whose mtime does not move when the engine underneath
 changes; the bump is deliberate and is the only invalidation trigger.
-Bumping orphans the old ``reader_cache/<old-version>/`` tree, which the
-oldest-first disk sweep then reclaims. See README.md (deployment).
+Bumping orphans the old ``reader_cache/<old-version>/`` tree — ``_sweep``
+bounds only the CURRENT profile directory, so the orphaned tree persists
+until removed by hand (always safe; it never touches audio or transcripts).
+See README.md (deployment).
 """
 
 from __future__ import annotations
@@ -60,7 +62,14 @@ from .tts import ReaderError, render_html
 logger = logging.getLogger("herdr_brain.reader")
 
 READER_NAMESPACE = "herdr-brain/reader"
-READER_PROFILE_VERSION = "1"  # bump to invalidate the whole cache namespace
+# Profile 2 (bumped from 1): the sentence-anchor renderer fix
+# (reader_pipeline coverage largest-overlap, glance-sentence-replay
+# GSR-06/07) is a renderer upgrade, so v1-prefixed envelopes holding the
+# defective sentence map must be orphaned rather than served. Cache
+# schema and sidecar contract stay reader-pipeline/anchors@1; only the
+# namespace changes. See the RELEASE STEP note above and
+# odd/tasks/glance-sentence-replay.md (GSR-08).
+READER_PROFILE_VERSION = "2"  # bump to invalidate the whole cache namespace
 READER_LANG = "es"
 READER_MAX_CHARS = "0"
 READER_SUMMARIZE = "false"
