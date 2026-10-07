@@ -1181,6 +1181,7 @@ class TestApprovalRegression:
         names = {tool["function"]["name"] for tool in TOOLS_SCHEMA}
         assert names == {
             "get_status",
+            "list_open_sessions",
             "read_transcript",
             "read_screen",
             "send_to_session",
