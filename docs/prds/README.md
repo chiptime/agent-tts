@@ -14,7 +14,7 @@ La migración a monorepo absorbió tres repositorios independientes, implementan
 
 - **20 features del roadmap original (revisión 22/09/2026):**
   - **6 Ejecutadas / Implementadas:** AT-01 (streaming frames MP3), AT-03 (conectores recortada a OpenCode), AT-04 (daemon persistente), AT-08 (cola con prioridades), HT-02 (voces por agente), HT-11 (audición de voces en paleta).
-  - **3 Con cobertura dual / mantenidas en plugin-tts (decisión D-R2 / directiva usuario 2026-10-06):** AT-02 (cubierta por brain y en roadmap motor para HT-01), HT-01 (cubierta por brain y activa/planificada en plugin-tts para terminal), HT-04 (cubierta por brain PWA y activa/planificada en plugin-tts para ntfy Actions + HTTP).
+  - **3 Reenfocadas (decisión del maintainer, 2026-10-07; antes "cobertura dual" D-R2 del 2026-10-06, superada):** AT-02 (cliente STT del plugin sobre `POST /transcribe` del brain, sin whisper.cpp), HT-01 (PTT en terminal: toggle, captura PowerShell, `send-text`; diseño decidido, pendiente), HT-04 (ntfy Actions que llaman a los endpoints del brain, sin listener propio; depende de F2).
   - **5 Aprobadas pendientes:** AT-06 (ducking), AT-07 (digest audio), HT-03 (radio mode, hito 0 completado), HT-05 (recordatorios escalados), HT-10 (chain replay).
   - **4 Postergadas:** AT-05 (prosodia), HT-06 (auto-snooze), HT-07 (filtro semántico), HT-08 (briefing matinal).
   - **2 Descartadas:** HT-09 (espacialización estéreo), HT-12 (watchers de texto).
@@ -42,7 +42,7 @@ La migración a monorepo absorbió tres repositorios independientes, implementan
 | ID | Fichero | Feature | Prioridad final | Estado real | Esfuerzo |
 |---|---|---|---|---|---|
 | AT-01 | [archivadas/AT-01-streaming-frames-mp3.md](archivadas/AT-01-streaming-frames-mp3.md) | Streaming incremental por frames de MP3 | P3 | **EJECUTADA** (2026-09-29, commits `510ceaa` / `a3ee900`) | L |
-| AT-02 | [AT-02-stt-whispercpp.md](AT-02-stt-whispercpp.md) | Capa STT local (`--transcribe`) con whisper.cpp | P4 | **En roadmap motor para HT-01** (cubierta en brain) | M |
+| AT-02 | [AT-02-stt-whispercpp.md](AT-02-stt-whispercpp.md) | STT: cliente del plugin sobre el STT del brain (antes: capa local whisper.cpp) | P4 | **REENFOCADA (2026-10-07)**, pendiente de implementar | M |
 | AT-03 | [archivadas/AT-03-conectores-autodeteccion.md](archivadas/AT-03-conectores-autodeteccion.md) | Conectores restantes y auto-detección del agente | P2 | **EJECUTADA (recortada a OpenCode)** (2026-09-28, commit `3bb5e1b`) | M |
 | AT-04 | [archivadas/AT-04-daemon-persistente.md](archivadas/AT-04-daemon-persistente.md) | Modo daemon persistente del motor (`--serve`) | P1 | **EJECUTADA (BLOQUE 1.2)** (2026-09-24/25, commits `64681be` / `c8d5665`) | L |
 | AT-05 | [AT-05-prosodia-estado.md](AT-05-prosodia-estado.md) | Prosodia consciente de estado | P4 | **Postergada** | M |
@@ -54,10 +54,10 @@ La migración a monorepo absorbió tres repositorios independientes, implementan
 
 | ID | Fichero | Feature | Prioridad final | Estado real | Esfuerzo |
 |---|---|---|---|---|---|
-| HT-01 | [../../hosts/herdr/tts-plugin/docs/prds/HT-01-push-to-talk-intercom.md](../../hosts/herdr/tts-plugin/docs/prds/HT-01-push-to-talk-intercom.md) | Push-to-Talk intercom (hablar al agente) | P4 | **Activa (cubierta en brain y planificada en plugin-tts)** | M-L |
+| HT-01 | [../../hosts/herdr/tts-plugin/docs/prds/HT-01-push-to-talk-intercom.md](../../hosts/herdr/tts-plugin/docs/prds/HT-01-push-to-talk-intercom.md) | Push-to-Talk intercom (hablar al agente) | P4 | **Activa, diseño decidido (2026-10-07)**, pendiente de implementar | M-L |
 | HT-02 | [../../hosts/herdr/tts-plugin/docs/prds/archivadas/HT-02-voces-por-agente.md](../../hosts/herdr/tts-plugin/docs/prds/archivadas/HT-02-voces-por-agente.md) | Voces por agente (identidad vocal) | P1 | **EJECUTADA / IMPLEMENTADA** (Bloque 2 Hito 0) | S-M |
 | HT-03 | [../../hosts/herdr/tts-plugin/docs/prds/HT-03-radio-mode.md](../../hosts/herdr/tts-plugin/docs/prds/HT-03-radio-mode.md) | Radio mode (triaje por voz) | P2 | **Aprobada** (PARCIAL: verificación Hito 0 hecha, radio pendiente) | M |
-| HT-04 | [../../hosts/herdr/tts-plugin/docs/prds/HT-04-control-movil-bidireccional.md](../../hosts/herdr/tts-plugin/docs/prds/HT-04-control-movil-bidireccional.md) | Control bidireccional desde el móvil | P1 | **Activa (cubierta en brain PWA y planificada en plugin-tts)** | L |
+| HT-04 | [../../hosts/herdr/tts-plugin/docs/prds/HT-04-control-movil-bidireccional.md](../../hosts/herdr/tts-plugin/docs/prds/HT-04-control-movil-bidireccional.md) | Control bidireccional desde el móvil | P1 | **Activa, reenfocada (2026-10-07):** ntfy Actions → endpoints del brain, sin listener propio; depende de F2 | L |
 | HT-05 | [../../hosts/herdr/tts-plugin/docs/prds/HT-05-recordatorios-escalados.md](../../hosts/herdr/tts-plugin/docs/prds/HT-05-recordatorios-escalados.md) | Recordatorios escalados de atención | P1 | **Aprobada** (pendiente Bloque 3) | M |
 | HT-06 | [../../hosts/herdr/tts-plugin/docs/prds/HT-06-auto-snooze-reunion.md](../../hosts/herdr/tts-plugin/docs/prds/HT-06-auto-snooze-reunion.md) | Auto-snooze contextual (modo reunión) | P4 | **Postergada** | M |
 | HT-07 | [../../hosts/herdr/tts-plugin/docs/prds/HT-07-filtro-semantico.md](../../hosts/herdr/tts-plugin/docs/prds/HT-07-filtro-semantico.md) | Filtro semántico de importancia | P4 | **Postergada** | M |
@@ -102,7 +102,7 @@ La migración a monorepo absorbió tres repositorios independientes, implementan
    - Hito 1 (HT-11): audición de voces en paleta fzf implementada con tests de preview, caché LRU 20 MB y asignación global (paquete R3 completado).
 3. **BLOQUE 3 — Loop móvil (HT-04 → HT-05):**
    - **Estado:** **SIN EJECUTAR** en [`../../hosts/herdr/tts-plugin/docs/prds/bloques/BLOQUE-3-loop-movil.md`](../../hosts/herdr/tts-plugin/docs/prds/bloques/BLOQUE-3-loop-movil.md).
-   - Nota: HT-04 supersedida por brain PWA (`/approval/*` y `/ask`, decisión D-R2 confirmada 2026-10-06). HT-05 pendiente.
+   - Nota: HT-04 reenfocada (2026-10-07): ntfy Actions como atajo que llama a los endpoints del brain (`/approval/*`, `/ask`), sin listener propio; la PWA sigue siendo la vía completa. HT-05 pendiente.
 4. **BLOQUE 4 — Radio mode y verificación OpenCode (HT-03 + AT-03 recortada):**
    - **Estado:** **PARCIAL (hito 0 hecho, radio pendiente)** en [`../../hosts/herdr/tts-plugin/docs/prds/bloques/BLOQUE-4-radio-y-verificacion.md`](../../hosts/herdr/tts-plugin/docs/prds/bloques/BLOQUE-4-radio-y-verificacion.md).
    - Hito 0: Verificación de AT-03 contra SQLite de OpenCode completada y validada (2026-09-28).
@@ -114,5 +114,5 @@ La migración a monorepo absorbió tres repositorios independientes, implementan
 
 - **AT-08 habilita HT-03/HT-10:** La cola con `enqueue` + `play-chain` sostiene el radio mode (HT-03) y las capacidades de orquestación de audio de herdr (HT-10).
 - **AT-07 habilita HT-08:** El digest de audio es la base del briefing matinal de herdr.
-- **AT-02 / Brain STT y HT-01:** La capacidad STT está provista hoy en `herdr-brain` mediante `faster-whisper` (`/transcribe`), superando la necesidad de whisper.cpp directo en el motor para el flujo de interacción continua.
+- **AT-02 / Brain STT y HT-01:** la capacidad STT vive en `herdr-brain` (`faster-whisper`, `POST /transcribe`). Decisión 2026-10-07: AT-02 es el cliente de ese endpoint desde el plugin, y HT-01 consume ese cliente (captura PowerShell + inyección `send-text`); sin capa STT en el motor.
 - **Canal de control y PWA:** `herdr-brain` interactúa con el host vía contratos versionados (`contracts/tts-brain-v1.md`), disponiendo de puertas de aprobación interactivas (`/approval/*`) para operaciones del asistente.
