@@ -55,6 +55,8 @@ F1 base veraz ─┬─► F3 red de tests (R4-B) ─► F4 AT-02 + HT-01 ─►
 
 ### F1 — Base veraz (solo documentación, 1 PR, ~2-3 h, riesgo cero)
 
+> **Estado (2026-10-07): HECHA** e integrada en `main` local.
+
 - R1.1 Cabeceras de AT-01, AT-03, AT-04, AT-08, AT-09, AT-10: `Estado: EJECUTADA` + fecha + commit.
 - R1.2 Fichas de bloques en sus rutas reales (§1): BLOQUE-1 `COMPLETADO`, BLOQUE-2 `PARCIAL`, BLOQUE-3 `SIN EJECUTAR`, BLOQUE-4 `PARCIAL`.
 - R1.3 `docs/prds/README.md` y el índice de voice-stack con el estado real, incluidas las features fuera de roadmap.
@@ -66,12 +68,16 @@ F1 base veraz ─┬─► F3 red de tests (R4-B) ─► F4 AT-02 + HT-01 ─►
 
 ### F2 — Validación física (1 sesión, teléfono real)
 
+> **Estado (2026-10-07): PREPARADA, NO EJECUTADA.** Manual y checklist listos en `MANUAL-TESTS.md` y `odd/tasks/f2-physical-validation.md`; todas las casillas del dispositivo siguen sin marcar. El fallback con proveedores reales depende de que el owner configure `fallback.json`.
+
 - Capa "manual física" de `EXECUTION.md` §8 / `MANUAL-TESTS.md`.
 - En la misma sesión: PWA `/approval/*` en Chrome Android y `announcements-without-call` T5.
 - **Depende de:** nada de código; puede ir en paralelo a F3/F4. Debe cerrarse antes de F5, que se apoya en `/approval`.
 - La evidencia vive en `~/.local/state/voice-stack-runs/` (local a la máquina): copiar el resumen al repo bajo `docs/voice-stack/archives/`.
 
 ### F3 — Red de tests del plugin (R4, opción B)
+
+> **Estado (2026-10-07): HECHA** e integrada en `main` local (`6838f29`, `a707f44`; seguimiento en `odd/tasks/f3-plugin-critical-tests.md`). Verificación independiente: batería completa del plugin sin fallos (97 casos OK tras integrar nuevos harnesses). Limitaciones documentadas: CI remoto no ejecutado; la limpieza de procesos de prueba cubre fixtures registrados y la señalización por pid conserva una ventana TOCTOU inherente.
 
 - **R4a** Auditar `smoke-tests.sh` de `4c572a4` (4.143 líneas, 462 aserciones): qué cubría y qué sigue siendo crítico (gating, snooze, mute, debounce, voces, keymap apply/rollback, ciclo de vida del daemon).
 - **R4b** Portar solo lo crítico al formato existente (`tests/matrix/bash-decisions.json`, `host_cli_cases.sh`, `all_bash_harnesses.sh`). Esfuerzo estimado ≈ 1 día.

@@ -90,7 +90,7 @@ Ordered by dependency. Route column is the planned topology.
   - [x] **T3c** `ClaudeEvidenceProvider` + `AntigravityEvidenceProvider`:
     JSONL discovery, ISO timestamps, stat-based tokens. Done; commit on
     `feat/herdr-brain-ctx-03c-evidence-transcripts`.
-- [ ] **T4** Read-only Engram adapter (access mechanism to be verified, A-2).
+- [x] **T4** Read-only Engram adapter (access mechanism to be verified, A-2).
   FR-05, 31, 38, 39. Depends: T3. Done; commit on
   `feat/herdr-brain-ctx-04-engram-adapter`. Verified access: SQLite at
   `~/.engram/engram.db` opened `file:...?mode=ro` (no subprocess, no writes;
