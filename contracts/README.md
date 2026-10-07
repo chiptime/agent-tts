@@ -17,3 +17,4 @@ This directory is the **normative source of truth** for versioned contracts acro
 
 - **[`ipc-v2.md`](ipc-v2.md)**: Control channel framing v2 (length-prefixed framing, socket lifecycle, daemon dispatch and priority queue management).
 - **[`tts-brain-v1.md`](tts-brain-v1.md)**: Speech rendering (`--render-text`), HTML reader pipeline (`--render-html`), and daemon liveness probe interface between `herdr-tts` and `herdr-brain`.
+- **[`stt-engine-v1.md`](stt-engine-v1.md)**: Engine-owned STT (`agent-tts-stt` CLI, resident worker, private Unix-socket framing STT-v1, offline model policy).
