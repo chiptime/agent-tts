@@ -1,4 +1,4 @@
-# Monorepo agent-tts — Mapa de Estado y Temas Pendientes
+# Monorepo agent-tts — Roadmap de Temas Pendientes
 
 **Fecha de consolidación:** 6 de octubre de 2026  
 **Punto de anclaje:** Post-Reconciliación completa (R1 a R6 ejecutados, commit `9514e6c` en `origin/main`).  
@@ -6,33 +6,7 @@
 
 ---
 
-## 1. Fotografía de Estado Consolidado (Lo que está cerrado y verificado)
-
-Tras la reconciliación y cierre de deuda documental/estructural, el monorepo cuenta con un suelo técnico firme:
-
-- **Motor (`engine/`):**
-  - Núcleo de salida unificado por vía única con daemon persistente (`AT-04`).
-  - Canal de control robusto con elección atómica por flock y framing v2 (`AT-09`).
-  - Cola con prioridades (`blocked > done > working`), políticas por evento y reproducción encadenada gapless (`AT-08`).
-  - Streaming incremental frame-accurate de MP3 con miniaudio (`AT-01`).
-  - Extracción y auto-detección de sesiones probada contra OpenCode (`AT-03`).
-  - Cobertura: **969 tests pytest pasando**.
-- **Plugin Host (`hosts/herdr/tts-plugin/`):**
-  - **BLOQUE-1** (motor) y **BLOQUE-2** (identidad vocal completa) cerrados y archivados.
-  - Voces por agente persistentes en `voices.json` (`HT-02`).
-  - Audición de voces en paleta fzf con preview bilingüe, auto-stop <0.3s y caché LRU de 20 MB (`HT-11`).
-  - Consumo directo de API pública del motor (`HT-13`), tema claro configurable (`HT-14`), pipeline Markdown/HTML (`HT-15`) y popup de lectura sincronizada (`HT-16`).
-  - Red de tests de seguridad del bash (51 casos automáticos en `all_bash_harnesses.sh` + 133 tests pytest).
-- **Herdr Brain (`hosts/herdr/brain/`):**
-  - Action Approval Gates implementado en `/approval/*` con suites completas (Python y JS).
-  - STT integrado con `faster-whisper`.
-  - PWA para interacción por voz y supervisión remota.
-- **Ramas y Remoto:**
-  - `main` sincronizado al 100% con `origin/main`.
-
----
-
-## 2. Mapa de Frentes Pendientes
+## 1. Mapa de Frentes Pendientes
 
 El trabajo restante se estructura en cuatro frentes bien delimitados:
 
@@ -147,7 +121,7 @@ PRDs aprobadas y postergadas del roadmap del motor:
 
 ---
 
-## 3. Matriz de Dependencias Cruzadas
+## 2. Matriz de Dependencias Cruzadas
 
 | Feature | Depende de | Habilita |
 |---|---|---|
@@ -160,7 +134,7 @@ PRDs aprobadas y postergadas del roadmap del motor:
 
 ---
 
-## 4. Opciones para el Siguiente Paso (Rutas de Ataque Sugeridas)
+## 3. Opciones para el Siguiente Paso (Rutas de Ataque Sugeridas)
 
 Dependiendo del objetivo principal del maintainer, las rutas recomendadas son:
 
