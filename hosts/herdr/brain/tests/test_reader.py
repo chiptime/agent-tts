@@ -88,7 +88,8 @@ class TestCacheKey:
 
     def test_profile_version_changes_key(self, monkeypatch):
         before = cache_key("hola")
-        monkeypatch.setattr(reader_module, "READER_PROFILE_VERSION", "2")
+        # Probe with "3": the real profile is "2" since the GSR-08 bump.
+        monkeypatch.setattr(reader_module, "READER_PROFILE_VERSION", "3")
         assert cache_key("hola") != before
 
 
@@ -217,11 +218,69 @@ class TestCacheMechanics:
         cfg = reader_settings(tmp_path)
         cache_one = ReaderCache(cfg, renderer=fake_renderer())
         assert cache_one.render_turn("hola") is not None
-        monkeypatch.setattr(reader_module, "READER_PROFILE_VERSION", "2")
+        monkeypatch.setattr(reader_module, "READER_PROFILE_VERSION", "3")
         second = fake_renderer()
         cache_two = ReaderCache(cfg, renderer=second)
         assert cache_two.render_turn("hola") is not None
         assert len(second.calls) == 1  # old artifact invisible after bump
+
+
+class TestRendererUpgradeInvalidation:
+    """GSR-08 (glance-sentence-replay): a renderer upgrade must bump the
+    profile namespace (Decision 11). Legacy v1 artifacts — the disk
+    envelope under reader_cache/1/ and the in-memory LRU identity — must
+    be invisible to the bumped profile: every read is a miss plus a fresh
+    render, the old v1 entry is preserved with no automatic cleanup (the
+    disk sweep bounds only the current profile's directory), and the
+    sidecar contract stays reader-pipeline/anchors@1."""
+
+    def test_profile_version_bumped_off_v1(self):
+        # The sentence-anchor renderer fix (GSR-06/07) is a renderer
+        # upgrade: serving it through a v1-prefixed cache would keep
+        # answering with the defective pre-fix envelopes.
+        assert reader_module.READER_PROFILE_VERSION != "1"
+
+    def test_stale_v1_disk_entry_misses_and_rerenders(self, tmp_path, monkeypatch):
+        cfg = reader_settings(tmp_path)
+        text = "Las terminales quedan protegidas, junto con el servidor."
+        # Seed exactly what the v1 profile published: a fresh cache whose
+        # memory is empty, leaving only the legacy disk envelope behind.
+        # The seed patch is context-scoped so exiting it restores ONLY the
+        # profile constant — shared fixture patches stay applied.
+        with monkeypatch.context() as legacy:
+            legacy.setattr(reader_module, "READER_PROFILE_VERSION", "1")
+            seeder = ReaderCache(cfg, renderer=fake_renderer(html="<p>viejo</p>"))
+            assert seeder.render_turn(text) is not None
+            legacy_path = cache_dir(cfg) / f"{cache_key(text)}.json"
+        assert legacy_path.is_file()  # the legacy artifact exists
+
+        fresh = fake_renderer(html="<p>corregido</p>")
+        cache = ReaderCache(cfg, renderer=fresh)
+        assert cache.render_turn(text) == ("<p>corregido</p>", sidecar())
+        assert cache.render_calls == 1  # fresh render, not a stale reuse
+        assert cache.render_turn(text) == ("<p>corregido</p>", sidecar())
+        assert cache.render_calls == 1  # warm v2 read: no extra render
+        assert legacy_path.is_file()  # v1 entry preserved, never deleted
+
+        current_path = cache_dir(cfg) / f"{cache_key(text)}.json"
+        envelope = json.loads(current_path.read_text(encoding="utf-8"))
+        assert envelope["v"] == 1  # envelope layout unchanged by the bump
+        assert envelope["map"]["version"] == 1  # sidecar contract still @1
+        assert current_path != legacy_path  # separate namespace on disk
+
+    def test_stale_v1_memory_entry_misses_and_rerenders(self, tmp_path, monkeypatch):
+        cfg = reader_settings(tmp_path)
+        renderer = fake_renderer()
+        cache = ReaderCache(cfg, renderer=renderer)
+        # Context-scoped v1 seed: only the profile constant is patched,
+        # and only for the seeding call — fixture patches stay applied.
+        with monkeypatch.context() as legacy:
+            legacy.setattr(reader_module, "READER_PROFILE_VERSION", "1")
+            assert cache.render_turn("frase inicial") is not None  # v1 key hot
+        # The bumped profile applies again (as in a new process): the v1
+        # memory identity must be invisible.
+        assert cache.render_turn("frase inicial") is not None
+        assert cache.render_calls == 2  # identity changed: miss + re-render
 
 
 class TestBounds:

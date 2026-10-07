@@ -166,10 +166,13 @@
       if (!current(token) || token.failed || !token.handle || token.playRequested || phase === "paused") return;
       try {
         var duration = token.handle.duration;
-        if (!validDuration(duration)) return;
+        // Only an explicitly zero-start compatibility handle may play before
+        // metadata. A nonzero proportional seek still requires valid duration.
+        var startAtZero = token.handle.startAtZero === true && token.localIndex === 0;
+        if (!startAtZero && !validDuration(duration)) return;
         token.playRequested = true;
         var version = ++token.playVersion;
-        token.handle.currentTime = token.localIndex / token.piece.chunks.length * duration;
+        token.handle.currentTime = startAtZero ? 0 : token.localIndex / token.piece.chunks.length * duration;
         var playing = token.handle.play();
         Promise.resolve(playing).then(function () {
           if (!current(token) || token.failed || token.playVersion !== version) return;
@@ -211,7 +214,12 @@
         loadedmetadata: function () { metadata(token); },
         durationchange: function () { metadata(token); },
         timeupdate: function () { progress(token); },
-        pause: function () { paused(token); },
+        pause: function () {
+          // A disposed source's queued native pause can reach replacement
+          // listeners. Native state, not the event alone, admits the pause.
+          if (token.handle && token.handle.paused === false) return;
+          paused(token);
+        },
         ended: function () { if (!token.failed) advance(token); },
         error: function (error) { fail(token, error, "media"); }
       };

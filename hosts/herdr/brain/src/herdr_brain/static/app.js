@@ -461,12 +461,187 @@
   var readerPane = null;
   var readerSession = null;
   var lastConversationData = null;
+  var glanceReplay = null;
+  var glanceTap = null;
+  var glanceIntentGeneration = 0;
+  var readerNativeControl = "a, code, pre, button, input, textarea, select, summary, audio, video, " +
+    "[contenteditable]:not([contenteditable='false']), [role='link'], [role='textbox']";
+
+  function cancelGlanceTap() {
+    // Explicit retirement invalidates intent; natural media completion does not.
+    glanceIntentGeneration++;
+    if (glanceTap !== null) clearTimeout(glanceTap);
+    glanceTap = null;
+  }
+
+  function clearGlanceSelection(turn) {
+    reader.clearPaintedRanges(turn);   // owned range marks unwrap and heal first
+    turn.querySelectorAll(".tts-selected").forEach(function (control) {
+      control.classList.remove("tts-selected");
+      if (control.getAttribute("role") === "button") control.setAttribute("aria-pressed", "false");
+    });
+  }
+
+  function prepareReaderControls(content) {
+    content.querySelectorAll(".tts-sent, .tts-sent-cont").forEach(function (control) {
+      var index = control.getAttribute("data-sent-idx");
+      if (!/^(0|[1-9]\d*)$/.test(index) || control.closest(readerNativeControl)) return;
+      control.tabIndex = 0;
+      control.setAttribute("role", "button");
+      control.setAttribute("aria-label", "Escuchar desde la frase " + (Number(index) + 1));
+      control.setAttribute("aria-pressed", control.classList.contains("tts-selected") ? "true" : "false");
+    });
+  }
+
+  function glanceReplayTurn(plan) {
+    var owner = glanceReplay;
+    if (!owner || owner.plan !== plan || !glanceTurns.contains(owner.turn) ||
+        owner.readerGeneration !== reader.currentGeneration()) return null;
+    var body = owner.turn.querySelector(".gt-text");
+    if (!body || body.textContent !== owner.rawText) return null;
+    var content = owner.turn.querySelector(".reader-content");
+    if (owner.readerText !== null && (!content || content.textContent !== owner.readerText ||
+        owner.turn.readerHtml !== owner.readerHtml)) return null;
+    if (owner.reading) {
+      // Validate the immutable synthesis boundary, never the active highlight.
+      var current = reader.readableReplay(content, owner.sentIdx === null ? undefined : owner.sentIdx);
+      if (current.rawText !== plan.rawText || current.sentences.length !== owner.reading.sentences.length) return null;
+      for (var i = 0; i < current.sentences.length; i++) {
+        var before = owner.reading.sentences[i];
+        var after = current.sentences[i];
+        if (before.sentIdx !== after.sentIdx || before.raw[0] !== after.raw[0] || before.raw[1] !== after.raw[1]) return null;
+      }
+      // Marks are transparent to the extraction; rebinding adopts the fresh
+      // leaf nodes so a remount repaints the CURRENT range, not the initial one.
+      owner.reading = current;
+    }
+    return owner.turn;
+  }
+
+  function pressReaderAnchors(content, sentIdx) {
+    // The owning anchor keeps its button affordance while only the popup
+    // window's own text carries the green range marks.
+    if (sentIdx === null || sentIdx === undefined) return;
+    content.querySelectorAll('[data-sent-idx="' + String(sentIdx) + '"]').forEach(function (anchor) {
+      if (anchor.getAttribute("role") === "button") anchor.setAttribute("aria-pressed", "true");
+    });
+  }
+
+  function syncGlanceReplay() {
+    if (!glanceReplay) return;
+    var state = karaokeCtl.state();
+    if (state.plan !== glanceReplay.plan) {
+      clearGlanceSelection(glanceReplay.turn);
+      glanceReplay = null;
+      return;
+    }
+    var turn = glanceReplayTurn(state.plan);
+    if (!turn) { cancelGlanceTap(); karaokeCtl.detach(state.ownerTurnId); return; }
+    var content = turn.querySelector(".reader-content");
+    if (content && glanceReplay.activeRaw && glanceReplay.reading) {
+      // Green paints the shared popup chunk's raw interval — the exact
+      // visible portion(s) inside the owning anchor/content — never the
+      // whole sentence anchor (one anchor can hold several windows).
+      reader.paintRawRange(content, glanceReplay.reading,
+        glanceReplay.activeRaw[0], glanceReplay.activeRaw[1]);
+      prepareReaderControls(content);
+      pressReaderAnchors(content, glanceReplay.activeSentIdx);
+    } else clearGlanceSelection(turn);
+  }
+
+  function selectGlanceReplay(turn, sentIdx, wholeAnswer) {
+    cancelGlanceTap();
+    if (!glanceTurns.contains(turn) || !turn.classList.contains("assistant")) return;
+    var content = turn.querySelector(".reader-content");
+    var body = turn.querySelector(".gt-text");
+    if (!body) return;
+    var rawText = body.textContent;
+    if (wholeAnswer !== true && (sentIdx === null || sentIdx === undefined)) return;
+    var reading = content ? reader.readableReplay(content, wholeAnswer === true ? undefined : sentIdx) : null;
+    var text = reading ? reading.rawText : wholeAnswer === true ? rawText : "";
+    if (!text.trim()) return; // Invalid boundaries never fall back to the full turn.
+    // Every activation gets a fresh plan, even equal sentences in the same turn.
+    var plan = Karaoke.createPlan("glance-" + (++karaokeTurnSequence), text);
+    if (glanceReplay) clearGlanceSelection(glanceReplay.turn);
+    glanceReplay = { turn: turn, plan: plan, reading: reading, activeSentIdx: null, activeRaw: null,
+      rawText: rawText,
+      readerGeneration: reader.currentGeneration(), readerHtml: turn.readerHtml,
+      readerText: content ? content.textContent : null };
+    Object.defineProperty(glanceReplay, "sentIdx", { value: wholeAnswer === true ? null : sentIdx });
+    selectOwnedKaraoke(plan, 0); // Suffix audio always starts at zero, never a full-answer seek.
+  }
+
+  function readerControl(event) {
+    var control = event.target.closest(".tts-sent, .tts-sent-cont");
+    var content = control && control.closest(".reader-content");
+    var turn = content && content.closest(".gturn.assistant");
+    return turn && glanceTurns.contains(turn) && !event.target.closest(readerNativeControl) ? control : null;
+  }
+
+  function readerNativeOperation(event) {
+    var selection = window.getSelection();
+    return event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
+      (selection && !selection.isCollapsed);
+  }
+
+  // Delegate once on the stable root: polling/remounts never multiply handlers.
+  var glancePress = null;
+  var glanceSuppressed = false;
+  glanceTurns.addEventListener("pointerdown", function (event) {
+    cancelGlanceTap();
+    glanceSuppressed = event.button !== 0;
+    glancePress = { x: event.clientX, y: event.clientY, time: performance.now() };
+  });
+  glanceTurns.addEventListener("pointermove", function (event) {
+    if (glancePress && Math.hypot(event.clientX - glancePress.x, event.clientY - glancePress.y) > 8) glanceSuppressed = true;
+  });
+  glanceTurns.addEventListener("pointerup", function () {
+    if (glancePress && performance.now() - glancePress.time >= 500) glanceSuppressed = true;
+    glancePress = null;
+  });
+  ["pointercancel", "dragstart", "contextmenu", "dblclick"].forEach(function (name) {
+    glanceTurns.addEventListener(name, function () {
+      cancelGlanceTap();
+      glanceSuppressed = true;
+      glancePress = null;
+    });
+  });
+  glanceTurns.addEventListener("click", function (event) {
+    var control = readerControl(event);
+    if (!control || event.button !== 0 || event.detail > 1 || glanceSuppressed || readerNativeOperation(event)) return;
+    var turn = control.closest(".gturn.assistant");
+    var content = control.closest(".reader-content");
+    var text = content.textContent;
+    var readerGeneration = reader.currentGeneration();
+    cancelGlanceTap();
+    var generation = glanceIntentGeneration;
+    // The first click of a native double click is indistinguishable until its
+    // second click. Defer only pointer activation; focused keyboard is immediate.
+    glanceTap = setTimeout(function () {
+      glanceTap = null;
+      if (!control.isConnected || generation !== glanceIntentGeneration ||
+          readerGeneration !== reader.currentGeneration() || content.textContent !== text ||
+          readerNativeOperation(event)) return;
+      selectGlanceReplay(turn, control.getAttribute("data-sent-idx"));
+    }, 500);
+  });
+  glanceTurns.addEventListener("keydown", function (event) {
+    var control = readerControl(event);
+    if (!control || event.target !== control || event.repeat ||
+        (event.key !== "Enter" && event.key !== " ") || readerNativeOperation(event)) return;
+    event.preventDefault();
+    glanceSuppressed = false;
+    selectGlanceReplay(control.closest(".gturn.assistant"), control.getAttribute("data-sent-idx"));
+  });
 
   function readerSync(pane, session) {
     /* Identity change: reader.js discards the held snapshot as a unit
      * (generation bump), so held-HTML lookups go null until the new
      * pane's rendered payload arrives — text always shows first. */
-    reader.syncIdentity(pane, session);
+    if (reader.syncIdentity(pane, session)) {
+      cancelGlanceTap();
+      if (glanceReplay) karaokeCtl.detach(glanceReplay.plan.turnId);
+    }
   }
 
   function requestReaderSnapshot() {
@@ -486,7 +661,9 @@
     var content = el.querySelector(".reader-content");
     if (!html) {
       if (content) content.remove();   /* no formatted payload: plain text */
+      el.readerHtml = null;
       el.classList.remove("has-rendered");
+      syncGlanceReplay();
       return;
     }
     if (!content) {
@@ -496,9 +673,14 @@
     }
     el.classList.add("has-rendered");
     var target = content;
-    safeRender("reader", function (pair) {
-      reader.mountTurn(target, pair);  /* insertion throw degrades like any render */
-    }, { text: turn.text, html: html });
+    if (el.readerHtml !== html || !content.childNodes.length) {
+      safeRender("reader", function (pair) {
+        reader.mountTurn(target, pair);  /* insertion throw degrades like any render */
+      }, { text: turn.text, html: html });
+    }
+    el.readerHtml = html;
+    if (turn.role === "assistant") prepareReaderControls(content);
+    syncGlanceReplay();
   }
 
   /* ---------------- conversation (drawer body) ---------------- */
@@ -732,6 +914,10 @@
     btn.addEventListener("click", function (event) {
       event.stopPropagation();  // never bubble into container-level taps
       if (btn.disabled) return;
+      if (turn.matches("#glance-turns .gturn.assistant")) {
+        selectGlanceReplay(turn, null, true);
+        return;
+      }
       // Loading state: /tts synthesis takes seconds on mobile; without
       // this the tap looks dead. The button recovers as soon as the
       // audio is enqueued (or the request fails — banner already shown).
@@ -1233,10 +1419,8 @@
       if (el.getAttribute("data-key") !== key) el.setAttribute("data-key", key);
       wanted.push(el);
     }
-    var kept = {};
-    for (i = 0; i < wanted.length; i++) kept[wanted[i]] = true;
     for (i = 0; i < existing.length; i++) {
-      if (!kept[existing[i]]) existing[i].remove();
+      if (wanted.indexOf(existing[i]) === -1) existing[i].remove();
     }
     var sameOrder = wanted.length === scroll.children.length;
     for (i = 0; sameOrder && i < wanted.length; i++) {
@@ -1412,6 +1596,10 @@
     return turn && turn.karaokePlan === plan ? turn : null;
   }
 
+  function ownedReplayTurn(plan) {
+    return mainKaraokeTurn(plan) || glanceReplayTurn(plan);
+  }
+
   function matchesAudioSource(item) {
     return !!item && (player.currentSrc || player.src) === item.source;
   }
@@ -1428,11 +1616,15 @@
     player.src = item.source;
   }
 
-  function currentKaraokeItem(item) {
+  function currentKaraokeItem(item, allowAssignedSource) {
     var state = karaokeCtl.state();
-    return !item.disposed && audioFinished === item && matchesAudioSource(item) &&
+    // Native currentSrc may still describe the predecessor immediately after
+    // assigning src. Only the explicit zero-start command may use assigned src;
+    // event callbacks must still prove the fully selected native source.
+    return !item.disposed && audioFinished === item &&
+      (matchesAudioSource(item) || (allowAssignedSource && player.src === item.source)) &&
       state.ownerTurnId === item.karaoke.ownerTurnId && state.generation === item.karaoke.generation &&
-      state.plan === item.karaoke.plan && !!mainKaraokeTurn(state.plan);
+      state.plan === item.karaoke.plan && !!ownedReplayTurn(state.plan);
   }
 
   function restoreMainReplay(turn) {
@@ -1470,17 +1662,21 @@
     fetch: function (url, options) { return fetch(url, options); },
     createAbortController: function () { return new AbortController(); },
     player: { load: function (owned, events) {
+      var startAtZero = !!glanceReplay && glanceReplay.plan === owned.plan &&
+        glanceReplay.sentIdx === null && glanceReplay.readerText === null;
       var item = { url: owned.url, karaoke: owned, events: events, announcement: null,
         speechRequestId: null, seq: null, disposed: false, metadataReady: false,
-        source: new URL(owned.url, document.baseURI).href, listeners: [] };
+        startAtZero: startAtZero, source: new URL(owned.url, document.baseURI).href, listeners: [] };
       audioQueue.unshift(item);
       pumpAudio();
       return {
+        startAtZero: startAtZero, // Unrendered Escuchar retains its immediate zero-start fallback.
         get duration() { return currentKaraokeItem(item) && item.metadataReady ? player.duration : NaN; },
         get currentTime() { return currentKaraokeItem(item) ? player.currentTime : NaN; },
-        set currentTime(value) { if (currentKaraokeItem(item)) player.currentTime = value; },
+        get paused() { return !currentKaraokeItem(item) || player.paused; },
+        set currentTime(value) { if (currentKaraokeItem(item, startAtZero)) player.currentTime = value; },
         play: function () {
-          if (!currentKaraokeItem(item)) throw new Error("Retired replay source");
+          if (!currentKaraokeItem(item, startAtZero)) throw new Error("Retired replay source");
           player.muted = false; // controller has already sought with valid duration.
           return player.play();
         },
@@ -1501,7 +1697,9 @@
     } },
     onState: function (state) {
       restoreMainReplay(karaokeOwnerEl);
-      karaokeOwnerEl = mainKaraokeTurn(state.plan);
+      syncGlanceReplay();
+      if (state.generation !== karaokeCtl.state().generation) return;
+      karaokeOwnerEl = ownedReplayTurn(state.plan);
       if (state.phase === "idle") {
         // Controller clears progress after state. Pump only after both surfaces
         // retire; a new selection invalidates this generation-bound microtask.
@@ -1530,35 +1728,57 @@
         karaokeActiveEl = null;
       }
       if (!snapshot.chunk) {
+        if (glanceReplay && glanceReplay.plan === snapshot.plan) {
+          glanceReplay.activeSentIdx = null;
+          glanceReplay.activeRaw = null;
+          syncGlanceReplay();
+        }
         if (karaokePopup) hideToast();
         karaokePopup = null;
         return;
       }
-      var turn = mainKaraokeTurn(snapshot.plan);
+      var turn = ownedReplayTurn(snapshot.plan);
       if (!turn) { karaokeCtl.detach(snapshot.ownerTurnId); return; }
-      karaokeActiveEl = turn.querySelectorAll(".karaoke-chunk")[snapshot.activeGlobalIndex];
-      karaokeActiveEl.classList.add("karaoke-active");
-      karaokeActiveEl.setAttribute("aria-pressed", "true");
+      var external = glanceReplay && glanceReplay.plan === snapshot.plan;
+      if (external) {
+        // Bookkeeping only: the owning sentence index still drives the
+        // button affordance. The green itself paints the chunk's raw range.
+        glanceReplay.activeSentIdx = reader.sentenceForChunk(glanceReplay.reading, snapshot.chunk);
+        glanceReplay.activeRaw = [snapshot.chunk.raw[0], snapshot.chunk.raw[1]];
+        syncGlanceReplay(); // Runs before popup visibility handling; remounts reuse this range.
+      } else {
+        karaokeActiveEl = turn.querySelectorAll(".karaoke-chunk")[snapshot.activeGlobalIndex];
+        karaokeActiveEl.classList.add("karaoke-active");
+        karaokeActiveEl.setAttribute("aria-pressed", "true");
+      }
       if (!karaokePopup || karaokePopup.generation !== snapshot.generation || karaokePopup.index !== snapshot.activeGlobalIndex) {
         var keepHidden = karaokePopup && karaokePopup.generation === snapshot.generation && toastEl.classList.contains("hidden");
-        showToast("🔊 brain: " + snapshot.chunk.popupText);
+        showToast("🔊 " + (external ? "agente" : "brain") + ": " + snapshot.chunk.popupText);
         if (keepHidden) toastEl.classList.add("hidden");
         karaokePopup = { generation: snapshot.generation, index: snapshot.activeGlobalIndex };
       }
     },
     onFailure: function (failure) {
+      cancelGlanceTap();
       karaokeFailureNotice = "No pude reproducir la parte " + (failure.pieceIndex + 1) + " del audio — prueba otra vez.";
       showBanner(karaokeFailureNotice);
+      if (glanceReplay && glanceReplay.plan === failure.plan) karaokeCtl.stop();
     }
   });
 
   new MutationObserver(function () {
     var state = karaokeCtl.state();
-    if (!state.plan) return;
+    if (!state.plan || (glanceReplay && glanceReplay.plan === state.plan)) return;
     var turn = mainKaraokeTurn(state.plan);
     var body = turn && turn.querySelector("span:not(.who)");
     if (!body || body.textContent !== state.plan.rawText) karaokeCtl.detach(state.ownerTurnId);
   }).observe(conv, { childList: true, subtree: true, characterData: true });
+
+  new MutationObserver(function () {
+    glanceTurns.querySelectorAll(".gturn.assistant .reader-content").forEach(prepareReaderControls);
+    syncGlanceReplay();
+  }).observe(glanceTurns, { childList: true, subtree: true, characterData: true,
+    attributes: true, attributeFilter: ["data-sent-idx", "hidden", "aria-hidden"] });
 
   function enqueueAudio(url, announcement, speechRequestId, seq) {
     audioQueue.push({
@@ -1573,6 +1793,11 @@
 
   function selectMainKaraoke(plan, index) {
     if (!mainKaraokeTurn(plan)) return;
+    cancelGlanceTap();
+    selectOwnedKaraoke(plan, index);
+  }
+
+  function selectOwnedKaraoke(plan, index) {
     karaokeFailureNotice = null;
     // Automatic speech is deliberately unaligned. Retire its existing job,
     // not the whole queue; unrelated announcements retain their identities.
@@ -1613,7 +1838,7 @@
         karaokeMedia.pieceIndex === item.karaoke.pieceIndex && karaokeMedia.url === item.url &&
         (player.currentSrc || player.src) === karaokeMedia.source && karaokeMedia.metadataReady;
       if (!reusable) {
-        player.muted = true;
+        player.muted = !item.startAtZero;
         replaceAudioSource(item);
         karaokeMedia = { plan: item.karaoke.plan, pieceIndex: item.karaoke.pieceIndex,
           url: item.url, source: item.source, metadataReady: false };
@@ -1634,7 +1859,7 @@
         item.listeners.push({ name: name, callback: callback });
         player.addEventListener(name, callback);
       });
-      if (!reusable) {
+      if (!reusable && !item.startAtZero) {
         // Source assignment queues native loadstart even with preload="none".
         // Prime there so the adapter is installed before callbacks can fail it.
         // Playback stays silent until the controller's valid-duration seek.
@@ -1650,7 +1875,7 @@
         player.addEventListener("loadstart", prime, { once: true });
       }
       stopBtn.classList.remove("hidden");
-      return; // controller alone seeks and requests audible play after metadata.
+      return; // controller alone seeks and requests audible play.
     }
     karaokeMedia = null;
     if (item.announcement) {
@@ -1784,6 +2009,7 @@
   }
 
   function stopAudio() {
+    cancelGlanceTap();
     if (karaokeCtl.state().plan) {
       karaokeCtl.stop(); // adapter disposes ONLY its item; foreign queue survives.
       return;
@@ -2775,6 +3001,7 @@
 
   function ask(text) {
     if (callState === "thinking") return Promise.resolve();
+    cancelGlanceTap();
     if (karaokeCtl.state().plan) karaokeCtl.stop();
     askCount += 1;
     lastDispatch = text;

@@ -11,10 +11,10 @@ import pytest
 
 # Original KARAOKE-B0 static inputs, not instrumented or reconstructed scripts.
 EXPECTED_DIGESTS = {
-    "/": "19d2a1b11d9a66b8848590f2a7ad1bf66a6e97e724acf4ce340d6a0cdfa5798c",
-    "/app.js": "3c0737615a20bf7877c8d596fa0d2e90b9aa548f94c0521b9a3d48154616aef0",
+    "/": "b9947bc4c36103b03aa3ed11957acf40cebd66936892dbd3a2f875398818724c",
+    "/app.js": "b21779dfa3722c0e523480935a3205956a447fa2b7a99f476ebc3cf52606148e",
     "/toast.js": "6c306cbe005036b7d697af7c3a6faa1fa5b90a6b444ee23176516b197c8df7e3",
-    "/reader.js": "8aa7aad9dd380acb7d8ed59a686d754d4a10b10449d1a7e84ff90794c56312b6",
+    "/reader.js": "28daec6199b0e756e1285b40f20fc860c1d9b4d2169cb2433c1ccfb12db31a76",
     "/speech.js": "785b966f634ffaaa70d92a8bafbf9b8a13c658617de2707d99b80736142823e6",
     "/announce.js": "b56e0152c4369bbab32177311340882123d75a2373ab2f786d2f5b60b5a500fb",
     "/approval.js": "b982f0ca6172380dcdb98f4d2841ac40c11fd691749429ca9424bb268c6b335a",
