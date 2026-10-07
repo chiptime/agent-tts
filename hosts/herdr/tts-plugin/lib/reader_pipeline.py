@@ -658,11 +658,31 @@ def _build(redacted: str, lang: str, max_chars: int):
             local = _sentence_spans(md[blk.c0:blk.c1])
             for (l0, l1), j in zip(local, overlaps):
                 events.append((bi, j, (blk.c0 + l0, blk.c0 + l1)))
-        else:  # counts disagree: whole block to the sentence covering its start
-            j = overlaps[0]
-            for cand in overlaps:
-                if sent_ranges[cand][0] <= b0:
-                    j = cand
+        else:  # counts disagree: whole block to ONE sentence
+            if alignment == "exact":
+                # Exact windows come from local split geometry, not drifted
+                # word counts: keep the historical deterministic fallback —
+                # earliest overlap, preferring the window covering the
+                # block's start. Largest-overlap must NOT apply here (it
+                # flips exact anchors when raw and cleaned splits disagree,
+                # e.g. "." shielded by a code-span backtick).
+                j = overlaps[0]
+                for cand in overlaps:
+                    if sent_ranges[cand][0] <= b0:
+                        j = cand
+            else:
+                # Coverage windows drift by accumulated word-count error,
+                # so a block can overlap a previous sentence's spilled tail
+                # sliver. The owner is the overlapping window with the
+                # LARGEST P-range intersection (ties -> earliest sentence),
+                # not the window that merely covers the block start — that
+                # choice left genuinely covered sentences with empty
+                # virtual anchors.
+                def _overlap_len(j: int) -> int:
+                    rng = sent_ranges[j]
+                    return min(rng[1], b1) - max(rng[0], b0)
+
+                j = max(overlaps, key=lambda c: (_overlap_len(c), -c))
             events.append((bi, j, (blk.c0, blk.c1)))
 
     # sentence -> fragments, in document order
