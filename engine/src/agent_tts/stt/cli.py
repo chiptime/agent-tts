@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import time
 from typing import Optional
 
 from agent_tts.stt import worker as stt_worker
@@ -87,6 +89,25 @@ def _run(args) -> int:
         _emit(reply)
         return 0
 
+    if args.command == "shutdown":
+        # The worker replies {"ok": true, "shutting_down": true}: the final
+        # clean/hung truth belongs to the serve process (stderr + exit code).
+        # The client polls until the socket disappears (bounded by --timeout).
+        stt_worker.stt_request(
+            {"op": "shutdown"},
+            socket_path=_socket_arg(args),
+            timeout=args.timeout,
+        )
+        socket_path = _socket_arg(args)
+        deadline = time.monotonic() + max(0.0, float(args.timeout))
+        while os.path.exists(socket_path):
+            if time.monotonic() >= deadline:
+                _emit({"ok": False, "stopped": False})
+                return 1
+            time.sleep(0.1)
+        _emit({"ok": True, "stopped": True})
+        return 0
+
     if args.command == "transcribe":
         audio_path = __import__("pathlib").Path(args.file)
         if not audio_path.is_file():
@@ -145,6 +166,14 @@ def main(argv: Optional[list] = None) -> int:
     status = sub.add_parser("status", help="ask the running worker for readiness")
     status.add_argument("--socket", help="socket path (default: env or runtime dir)")
     status.add_argument("--timeout", type=float, default=STATUS_TIMEOUT_SEC)
+
+    shutdown = sub.add_parser(
+        "shutdown",
+        help="ask the running worker to stop "
+        "(exit 1 when it does not stop within --timeout)",
+    )
+    shutdown.add_argument("--socket", help="socket path (default: env or runtime dir)")
+    shutdown.add_argument("--timeout", type=float, default=STATUS_TIMEOUT_SEC)
 
     transcribe = sub.add_parser(
         "transcribe", help="transcribe one audio file through the running worker"

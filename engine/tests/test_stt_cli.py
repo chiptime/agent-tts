@@ -444,3 +444,134 @@ class TestPackagingMetadata:
         )
         assert proc.returncode == 0, proc.stderr
         assert proc.stdout.strip() == "False"
+
+
+class TestBaseInstallIsolation:
+    """The STT CLI must be usable on an interpreter without TTS deps.
+
+    Real-world case (2026-10-07 smoke test): the brain venv ships
+    faster-whisper but not miniaudio; `python -m agent_tts.stt.cli` died in
+    the package __init__'s eager TTS imports before reaching main().
+    """
+
+    def test_package_import_succeeds_without_tts_extras(self) -> None:
+        code = (
+            "import sys\n"
+            "sys.modules['miniaudio'] = None\n"
+            "sys.modules['edge_tts'] = None\n"
+            "import agent_tts\n"
+            "import agent_tts.stt.cli as stt_cli\n"
+            "assert callable(stt_cli.main)\n"
+            "print('ok')\n"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout.strip().endswith("ok")
+
+    def test_tts_attribute_access_still_lazy_fails_cleanly_without_deps(self) -> None:
+        code = (
+            "import sys\n"
+            "sys.modules['miniaudio'] = None\n"
+            "import agent_tts\n"
+            "try:\n"
+            "    agent_tts.audio_duration\n"
+            "except ImportError:\n"
+            "    print('typed-importerror')\n"
+            "else:\n"
+            "    print('unexpected-success')\n"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "typed-importerror" in proc.stdout
+
+
+class TestShutdownSubcommand:
+    """Operators need an explicit client-side shutdown verb (2026-10-07 real
+    smoke test: worker protocol supports it, the CLI did not expose it).
+
+    Protocol: the worker replies {"ok": true, "shutting_down": true} — the
+    final clean/hung report belongs to the serve process (its stderr/exit
+    code) — and the CLI polls until the socket disappears (bounded).
+    """
+
+    def test_shutdown_polls_until_socket_gone_then_zero(self, capsys, tmp_path) -> None:
+        sent = []
+        sock = tmp_path / "s.sock"
+        sock.write_bytes(b"x")  # socket file exists at first
+
+        def fake_request(payload, socket_path=None, timeout=None):
+            sent.append(dict(payload))
+            return {"ok": True, "shutting_down": True}
+
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(sttw, "stt_request", fake_request)
+        orig_exists = os.path.exists  # Path.exists() would recurse through the patch
+
+        def fake_exists(p):
+            return str(p) == str(sock) and orig_exists(str(sock))
+
+        monkeypatch.setattr(stt_cli.os.path, "exists", fake_exists)
+        calls = {"n": 0}
+        real_sleep = stt_cli.time.sleep
+
+        def fast_sleep(_):
+            calls["n"] += 1
+            if calls["n"] >= 2:
+                sock.unlink()  # worker finishes right after the 2nd poll
+
+        monkeypatch.setattr(stt_cli.time, "sleep", fast_sleep)
+        try:
+            rc = stt_cli.main(["shutdown", "--socket", str(sock)])
+        finally:
+            monkeypatch.undo()
+        assert rc == 0
+        assert sent == [{"op": "shutdown"}]
+        out = json.loads(capsys.readouterr().out.strip())
+        assert out == {"ok": True, "stopped": True}
+
+    def test_shutdown_worker_never_stops_reports_nonzero(self, capsys, tmp_path) -> None:
+        sock = tmp_path / "s.sock"
+        sock.write_bytes(b"x")
+
+        def fake_request(payload, socket_path=None, timeout=None):
+            return {"ok": True, "shutting_down": True}
+
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(sttw, "stt_request", fake_request)
+        monkeypatch.setattr(stt_cli.time, "sleep", lambda _: None)
+        monkeypatch.setattr(stt_cli.os.path, "exists", lambda p: True)
+        try:
+            rc = stt_cli.main(
+                ["shutdown", "--socket", str(sock), "--timeout", "0.05"]
+            )
+        finally:
+            monkeypatch.undo()
+        assert rc == 1
+        out = json.loads(capsys.readouterr().out.strip())
+        assert out == {"ok": False, "stopped": False}
+
+    def test_shutdown_still_reports_worker_unavailable(self, capsys, tmp_path) -> None:
+        def unavailable(payload, socket_path=None, timeout=None):
+            raise sttw.WorkerUnavailableError(
+                "no STT socket at x; start the worker with `agent-tts-stt serve`"
+            )
+
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(sttw, "stt_request", unavailable)
+        try:
+            rc = stt_cli.main(["shutdown", "--socket", str(tmp_path / "nope.sock")])
+        finally:
+            monkeypatch.undo()
+        assert rc == 5

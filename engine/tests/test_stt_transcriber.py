@@ -29,6 +29,7 @@ from agent_tts.stt.transcriber import (
     model_is_cached,
     pull_model,
     resolve_local_model,
+    snapshot_for_runtime,
 )
 
 
@@ -208,6 +209,7 @@ class TestResolveOfflineAssets:
         fake_hub.snapshot_download = lambda **kw: str(incomplete)
         monkeypatch.setitem(sys.modules, "faster_whisper", fake_fw)
         monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "empty-hub"))
         t = Transcriber(SttSettings(model="small"), snapshot_dir=str(tmp_path / "s"))
         t.warmup()
         assert t.state == STATE_UNAVAILABLE
@@ -373,6 +375,9 @@ class TestRealLoaderOfflineContract:
         fake_hub.snapshot_download = snapshot_download
         monkeypatch.setitem(sys.modules, "faster_whisper", fake_fw)
         monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
+        # Isolate the direct disk scan from the real machine cache: with an
+        # empty HF_HUB_CACHE the resolver must fall through to the hub fake.
+        monkeypatch.setenv("HF_HUB_CACHE", tempfile.mkdtemp())
         return recorded, str(snapshot_path), str(snap_root)
 
     def test_real_loader_passes_resolved_local_path_not_alias(self, monkeypatch):
@@ -414,15 +419,18 @@ class TestRealLoaderOfflineContract:
         monkeypatch.setitem(sys.modules, "huggingface_hub", None)
         assert resolve_local_model(str(d)) == str(d.resolve())
 
-    def test_resolve_absent_model_raises_typed_with_pull_hint(self, monkeypatch):
+    def test_resolve_absent_model_raises_typed_with_pull_hint(
+        self, monkeypatch, tmp_path
+    ):
         def refuse(**kwargs):
             raise RuntimeError("not cached")
 
         fake_hub = types.ModuleType("huggingface_hub")
         fake_hub.snapshot_download = refuse
         monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
+        env = {"HF_HUB_CACHE": str(tmp_path / "empty-hub")}
         with pytest.raises(ModelUnavailableError) as exc:
-            resolve_local_model("small")
+            resolve_local_model("small", env=env)
         assert PULL_COMMAND in str(exc.value)
 
 
@@ -550,3 +558,86 @@ class TestPull:
     def test_extra_hint_mentions_stt_extra(self):
         assert "agent-tts[stt]" in EXTRA_HINT
         assert PULL_COMMAND == "agent-tts-stt pull"
+
+
+class TestDiskCacheSnapshotResolution:
+    """Regression (2026-10-07 real smoke test): a complete-enough HF cache
+    snapshot (config/model/tokenizer/vocab present) must resolve from disk
+    even when huggingface_hub's snapshot_download(local_files_only=True)
+    falsely declares the snapshot incomplete for missing non-model files
+    (.gitattributes, README.md)."""
+
+    def _make_cache(self, root: Path) -> Path:
+        rev = "536b0662742c02347bc0e980a01041f333bce120"
+        snap = root / "hub" / "models--Systran--faster-whisper-small" / "snapshots" / rev
+        snap.mkdir(parents=True)
+        for name in ("config.json", "model.bin", "tokenizer.json", "vocabulary.txt"):
+            (snap / name).write_bytes(b"x")
+        refs = root / "hub" / "models--Systran--faster-whisper-small" / "refs"
+        refs.mkdir(parents=True)
+        (refs / "main").write_text(rev)
+        return root
+
+    def test_resolves_from_disk_despite_hub_incomplete_verdict(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        cache_root = self._make_cache(tmp_path)
+        env = {"HF_HUB_CACHE": str(cache_root / "hub")}
+        hub_calls = []
+
+        def refuse(**kwargs):
+            hub_calls.append(kwargs)
+            raise RuntimeError(
+                "incomplete snapshot: 2 file(s) are missing "
+                "(.gitattributes, README.md)"
+            )
+
+        fake_hub = types.ModuleType("huggingface_hub")
+        fake_hub.snapshot_download = refuse
+        fake_hub.try_to_load_from_cache = lambda *a, **k: None
+        monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
+        resolved = resolve_local_model("small", env=env)
+        assert Path(resolved, "model.bin").is_file()
+        assert str(cache_root) in resolved
+        assert hub_calls == []  # disk scan resolved; the hub was never consulted
+
+    def test_no_disk_candidate_still_typed_unavailable(self, tmp_path, monkeypatch) -> None:
+        env = {"HF_HUB_CACHE": str(tmp_path / "empty-hub")}
+
+        def refuse(**kwargs):
+            raise RuntimeError("no files at all")
+
+        fake_hub = types.ModuleType("huggingface_hub")
+        fake_hub.snapshot_download = refuse
+        fake_hub.try_to_load_from_cache = lambda *a, **k: None
+        monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
+        with pytest.raises(ModelUnavailableError):
+            resolve_local_model("small", env=env)
+
+
+class TestRuntimeSnapshotSymlinks:
+    """Regression (2026-10-07 real smoke test): HF cache snapshots store
+    entries as RELATIVE symlinks into blobs/. os.link(symlink) linked the
+    link itself, so the private runtime snapshot held broken relative
+    links (target resolved from the WRONG directory) and the model dir
+    verified as 'incomplete'. The snapshot must link/copy the blob inode."""
+
+    def test_relative_symlink_entries_snapshot_the_blob(self, tmp_path) -> None:
+        cache = tmp_path / "cache"
+        blobs = cache / "blobs"
+        blobs.mkdir(parents=True)
+        (blobs / "abc123").write_bytes(b"model-bytes")
+        snap = cache / "snapshots" / "rev"
+        snap.mkdir(parents=True)
+        for name in ("config.json", "model.bin", "tokenizer.json", "vocabulary.txt"):
+            (snap / name).symlink_to(os.path.join("..", "..", "blobs", "abc123"))
+        target_root = tmp_path / "runtime"
+        target_root.mkdir(mode=0o700)  # snapshot roots must be owner-only
+
+        out = snapshot_for_runtime(str(snap), root=str(target_root))
+        for name in ("config.json", "model.bin", "tokenizer.json", "vocabulary.txt"):
+            p = Path(out, name)
+            assert p.is_file(), f"{name} missing or broken link in snapshot"
+            assert p.read_bytes() == b"model-bytes"
+        # the snapshot entries are real files (blob inodes), not links out
+        assert not any(Path(out, n).is_symlink() for n in ("config.json", "model.bin"))
