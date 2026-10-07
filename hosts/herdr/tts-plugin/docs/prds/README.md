@@ -19,7 +19,7 @@ El orden vigente es [ROADMAP.md](../../../../../docs/voice-stack/ROADMAP.md). El
 | HT-08 | [HT-08-briefing-matinal.md](HT-08-briefing-matinal.md) | Briefing matinal automático | P4 | Postergada | M |
 | HT-10 | [HT-10-chain-replay.md](HT-10-chain-replay.md) | Chain replay contextual del host (no la cadena AT-08 del motor) | P5 | Aprobada (baja), sin ejecutar | S-M |
 
-**Entregas adicionales:** podcast RSS implementado (`ab4ef32`); brain on-demand-context implementado (`d7de194`, `2cb3a50`); approval-gate implementada con tests (`2abb17e`), Chrome Android pendiente. VS0–VS4/VSX cerrados `automated_complete` el 2026-10-01 (validación física pendiente). AT-01/03/04/08/09/10 ejecutadas; AT-02 conservada en roadmap del motor (decisión D-R2, 2026-10-06); AT-05/06/07 sin ejecutar; AT-11 aprobada, sin arrancar.
+**Entregas adicionales:** podcast RSS implementado (`ab4ef32`); brain on-demand-context implementado (`d7de194`, `2cb3a50`); approval-gate implementada con tests (`2abb17e`), Chrome Android pendiente. VS0–VS4/VSX cerrados `automated_complete` el 2026-10-01 (validación física pendiente). AT-01/03/04/08/09/10 ejecutadas; AT-02 conservada en roadmap del motor (decisión D-R2, 2026-10-06); AT-05/06/07 sin ejecutar; AT-11 parcial (M1 y tarea 2.1 hechas, `c577041`; M2–M4 pendientes).
 
 ## PRDs archivadas / implementadas
 

@@ -30,7 +30,7 @@ La migración a monorepo absorbió tres repositorios independientes, implementan
   - **Brain action approval-gate:** Puerta interactiva de confirmación de acciones mutantes (`hosts/herdr/brain/docs/PRD-action-approval-gate.md`) — **EJECUTADA / IMPLEMENTADA** con tests (`server.py` `/approval/*`, `approval.py`).
   - **VS0 (Voice Stack fundaciones):** Harness E2E, instrumentación de cobertura D4/D9 y gates transversales (`docs/voice-stack/TASKS.md`) — **Planificada / En preparación**.
 - **Otras PRDs activas post-migración:**
-  - **AT-11:** Producto instalable independiente con first-run onboarding (`AT-11-instalable-first-run.md`) — **Aprobada** (P1, 2026-09-30).
+   - **AT-11:** Producto instalable independiente con first-run onboarding (`AT-11-instalable-first-run.md`) — **Parcial** (P1, aprobada 2026-09-30; M1 y tarea 2.1 hechas, commit `c577041`; 14 tareas de M2–M4 pendientes en `openspec/changes/at-11-instalable/tasks.md`).
   - **Brain karaoke fragments:** Fragmentos seleccionables inline de karaoke (`herdr-brain-karaoke-fragments.md`) — **Aprobada (documentación)**.
 
 ---
@@ -75,7 +75,7 @@ La migración a monorepo absorbió tres repositorios independientes, implementan
 |---|---|---|---|---|
 | AT-09 | [archivadas/AT-09-canal-de-control.md](archivadas/AT-09-canal-de-control.md) | Propiedad del canal de control (socket, lock y framing) | P1 (motor) | **EJECUTADA (BLOQUE 1.1)** (2026-09-24, commits `1dde8f2` / `c8d5665`) |
 | AT-10 | [archivadas/AT-10-monorepo-ecosistema.md](archivadas/AT-10-monorepo-ecosistema.md) | Monorepo del ecosistema: engine + contracts + hosts | P2 (arquitectura) | **EJECUTADA** (2026-09-28, commits `b972e4b` / `29429e3`) |
-| AT-11 | [AT-11-instalable-first-run.md](AT-11-instalable-first-run.md) | Producto instalable independiente con first-run onboarding | P1 (producto) | **Aprobada** (2026-09-30, no arrancada) |
+| AT-11 | [AT-11-instalable-first-run.md](AT-11-instalable-first-run.md) | Producto instalable independiente con first-run onboarding | P1 (producto) | **Parcial** (M1 y tarea 2.1 hechas; 14 tareas de M2–M4 pendientes; commit `c577041`) |
 | HT-13 | [../../hosts/herdr/tts-plugin/docs/prds/archivadas/HT-13-consumo-api-publica-motor.md](../../hosts/herdr/tts-plugin/docs/prds/archivadas/HT-13-consumo-api-publica-motor.md) | Consumo de la API pública del motor (de-duplicación) | P1 (host) | **EJECUTADA / IMPLEMENTADA** (2026-09-28) |
 | HT-14 | [../../hosts/herdr/tts-plugin/docs/prds/archivadas/HT-14-tema-claro.md](../../hosts/herdr/tts-plugin/docs/prds/archivadas/HT-14-tema-claro.md) | Tema claro configurable (`TTS_THEME` en `bin/herdr-tts`) | P2 (host) | **EJECUTADA / IMPLEMENTADA** |
 | HT-15 | [../../hosts/herdr/tts-plugin/docs/prds/archivadas/HT-15-markdown-html-pipeline.md](../../hosts/herdr/tts-plugin/docs/prds/archivadas/HT-15-markdown-html-pipeline.md) | Transformación Markdown/HTML para lectura sincronizada | P2 (host) | **EJECUTADA / IMPLEMENTADA** |
