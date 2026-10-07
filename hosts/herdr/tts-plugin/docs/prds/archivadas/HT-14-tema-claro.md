@@ -2,6 +2,8 @@
 **Prioridad final (revisión 2026-09-23)**: P2 · **Estado**: Implementada (`TTS_THEME` en `bin/herdr-tts`)
 **Dependencias**: `settings-category-submenus` (navegación de Ajustes por categorías, ya en el árbol de trabajo)
 
+> **Nota de estado (2026-10-05)**: Tema entregado mediante `TTS_THEME=dark|light` en configuración, sin categoría Apariencia ni selector en Ajustes (retirados en `e75d55e`, 2026-09-24). El cuerpo y el [archivo del 23/09](../../../openspec/changes/archive/2026-09-23-ht-14-light-theme/archive-report.md) conservan el diseño previo, no la interfaz actual; las métricas de uso no se recertifican aquí.
+
 # PRD-HT-14 — Tema claro configurable
 
 **Prioridad**: Media · **Esfuerzo**: S

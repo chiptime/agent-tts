@@ -1,8 +1,10 @@
 # herdr-tts — PRDs 2026 (roadmap consolidado)
 
-**Fecha:** 22 de septiembre de 2026
-**Alcance:** Plugin host `herdr-tts` (capa de orquestación Herdr). Las capacidades del motor se referencian como PRDs del repo hermano `agent-tts` con prefijo AT (PRD-AT-02, PRD-AT-07, PRD-AT-08).
+**Fecha:** 22 de septiembre de 2026; estado reconciliado el 2026-10-05.
+**Alcance:** Plugin host `herdr-tts` (capa de orquestación Herdr). Motor y brain viven en el mismo monorepo; las PRDs del motor usan prefijo AT.
 **Metodología:** flow-first, núcleo-primero — cada feature debe mejorar el flujo diario real del operador de flota, y el núcleo de voz se consolida antes que el perímetro; la diferenciación de mercado es un bonus, nunca el motivo. Toda feature nace opt-in y ninguna rompe el comportamiento existente.
+
+El orden vigente es [ROADMAP.md](../../../../../docs/voice-stack/ROADMAP.md). El [índice consolidado](../../../../../docs/prds/README.md) cubre las 20 features originales (AT-01–AT-08 + HT-01–HT-12) y extras: AT-09/10, HT-13–16, podcast RSS, contexto on-demand, approval-gate y VS0–VS4/VSX. Las notas de revisión del 22/09 se conservan como historia, no sustituyen D1–D5.
 
 ## PRDs activas
 
@@ -15,7 +17,9 @@
 | HT-06 | [HT-06-auto-snooze-reunion.md](HT-06-auto-snooze-reunion.md) | Auto-snooze contextual (modo reunión) | P4 | Postergada | M |
 | HT-07 | [HT-07-filtro-semantico.md](HT-07-filtro-semantico.md) | Filtro semántico de importancia | P4 | Postergada | M |
 | HT-08 | [HT-08-briefing-matinal.md](HT-08-briefing-matinal.md) | Briefing matinal automático | P4 | Postergada | M |
-| HT-10 | [HT-10-chain-replay.md](HT-10-chain-replay.md) | Chain replay contextual | P5 | Aprobada (baja) | S-M |
+| HT-10 | [HT-10-chain-replay.md](HT-10-chain-replay.md) | Chain replay contextual del host (no la cadena AT-08 del motor) | P5 | Aprobada (baja), sin ejecutar | S-M |
+
+**Entregas adicionales:** podcast RSS implementado (`ab4ef32`); brain on-demand-context implementado (`d7de194`, `2cb3a50`); approval-gate implementada con tests (`2abb17e`), Chrome Android pendiente. VS0–VS4/VSX cerrados `automated_complete` el 2026-10-01 (validación física pendiente). AT-01/03/04/08/09/10 ejecutadas; AT-02 conservada en roadmap del motor (decisión D-R2, 2026-10-06); AT-05/06/07 sin ejecutar; AT-11 aprobada, sin arrancar.
 
 ## PRDs archivadas / implementadas
 
@@ -37,19 +41,21 @@
 
 ## Orden de ataque
 
-**Fase 0 — motor hermano (repo `agent-tts`, en paralelo a todo lo demás):** AT-04 + AT-08 como paquete P1 del motor.
+**Estado de bloques:** BLOQUE-1 completado; BLOQUE-2 completado (2026-10-06, HT-02 e HT-11 hechas); BLOQUE-3 sin ejecutar; BLOQUE-4 parcial (AT-03 hecha, radio pendiente).
 
 **Fase 1 — host P1:** HT-02 + HT-11 primero (identidad vocal completa); HT-05 (recordatorios) y HT-04 (control móvil ntfy Actions + HTTP en host, complementando a brain PWA).
 
-**Fase 2:** HT-03 (P2; funciona ya con el fallback secuencial y mejora sola al aterrizar AT-08).
+**HT-03:** radio no implementada; AT-08 y HT-02 habilitan su futura integración, no la ejecutan.
 
-**Fase 3 — motor (P3):** AT-07, AT-06, AT-01.
+**Motor:** paquete P1 y AT-01/03/10 cerrados; AT-05/06/07 siguen pendientes.
 
 **Postergadas (P4/P5):** HT-01 (cubierta en brain conversation-mode, planificada para terminal nativo en plugin-tts), HT-06, HT-07 y HT-08 quedan en P4; HT-10 (aprobada baja) en P5.
 
 **Regla transversal:** toda feature nace apagada por defecto (opt-in) salvo que sustituya explícitamente un comportamiento existente; ninguna deja el flujo actual roto si se desactiva. Las métricas de cada PRD se miden sobre el uso real del maintainer, no sobre escenarios sintéticos.
 
 ## Nota de revisión (2026-09-22)
+
+Registro histórico; los estados actuales están en la tabla y el ROADMAP (D1–D5).
 
 Veredictos del maintainer aplicados el 22 de septiembre de 2026 sobre el borrador original (`docs/features-prds.md`, dividido en este directorio):
 

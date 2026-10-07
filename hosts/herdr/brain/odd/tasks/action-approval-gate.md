@@ -1,9 +1,11 @@
 # Feature: Action Approval Gate (herdr-brain)
 
-**Repo**: `~/Code/personal/herdr-brain`
+**Repo**: `hosts/herdr/brain` (monorepo `agent-tts`)
 **Design**: `docs/PRD-action-approval-gate.md` (approved + contracts resolved)
 **Created**: 2026-09-24
-**Status**: planned — plan approved, implementation NOT started (user paused)
+**Status**: IMPLEMENTADA con tests — T1–T7 hechas; T8 parcial, validación Chrome Android pendiente
+
+> **Estado reconciliado (2026-10-05)**: Rutas `/approval/*` en `src/herdr_brain/server.py` y store en `approval.py`; tests presentes en `tests/test_approval.py`, `tests/test_server.py` y `tests/js/approval.test.js`. Referencias del monorepo: `2abb17e`, `22e2fc2`. El plan y los hashes standalone del cuerpo son históricos. No se han repetido suites ni pruebas físicas en F1; T8 no se marca completa (ROADMAP F2).
 
 ## Objective
 
@@ -135,6 +137,8 @@ Route: inline (copy + smoke are per-action).
    commit (Conventional Commits, tests alongside).
 
 ## Progress / Evidence
+
+- 2026-10-05: estado contrastado con código e historia del monorepo; documentación de estado actualizada. Permanece la repetición del smoke en Chrome Android, incluido el popup flotante con drawer cerrado.
 
 - T1 done — `.venv/bin/python -m pytest tests/test_approval.py -q` → 27 passed;
   `.venv/bin/python -m pytest -q` → 278 passed (1 pre-existing
@@ -359,4 +363,4 @@ Route: inline (copy + smoke are per-action).
 
 ## Next Step
 
-T8 (ES copy pass + manual smoke + status docs).
+T8: repetición del smoke de voz y texto en Chrome Android (ROADMAP F2). Copy y documentos de estado actualizados; no cerrar T8 sin evidencia del dispositivo.
