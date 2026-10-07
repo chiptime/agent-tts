@@ -948,3 +948,14 @@ restart) and RDD clone-local OFF were unchanged. The browser needs a manual
 reload to load the new static JS. Physical audible/mobile UAT remains pending.
 The Engram full-file mirror is pending because the tracker exceeds the 50,000-byte
 observation cap; this local tracker is authoritative.
+
+### Final closure: merged, published, verified on device (2026-10-07)
+
+The complete feature merged to local main (50c7e75) as one merge over 4618da2
+plus three work-unit commits (698725e renderer anchors, 7f48075 cache profile 2,
+4739b56 popup-range highlight), then pushed: origin/main is at 50c7e75. Device
+acceptance confirmed by Bruno: audio and highlight work on the phone over
+Tailscale HTTPS (serve 8443 -> localhost:8741, persistent --bg; the earlier
+aborted serve command had dropped the listener). Everything above that described
+an uncommitted, unpublished candidate is historical and now superseded. The six
+unrelated WIP files remain uncommitted and untouched. Session closed.
