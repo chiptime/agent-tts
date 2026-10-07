@@ -174,17 +174,67 @@ def _verified_model_dir(path) -> str:
     return resolved
 
 
-def resolve_local_model(model_name: str) -> str:
+def _hub_cache_dirs(env: dict) -> list:
+    """HF hub cache roots, mirroring the hub's own precedence: when any HF
+    cache env var is set, ONLY those roots are used (tests rely on this for
+    machine isolation); otherwise the default user cache is scanned."""
+    dirs = []
+    for key in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"):
+        if env.get(key):
+            dirs.append(Path(env[key]))
+    if env.get("HF_HOME"):
+        dirs.append(Path(env["HF_HOME"]) / "hub")
+    if dirs:
+        return dirs
+    return [Path.home() / ".cache" / "huggingface" / "hub"]
+
+
+def _disk_cached_snapshot(repo_id: str, env: dict) -> Optional[str]:
+    """Finds a usable snapshot for ``repo_id`` directly in the local HF cache.
+
+    The hub library's ``snapshot_download(local_files_only=True)`` enforces a
+    repo-wide completeness verdict that rejects snapshots missing NON-model
+    files (``.gitattributes``, ``README.md``) — a real cache produced by the
+    brain's own pull fails it (2026-10-07 smoke test) even though everything
+    faster-whisper needs is on disk. So: scan the cache layout here first
+    (refs/main revision, else newest snapshot) and only fall back to the hub
+    call when no disk candidate exists.
+    """
+    repo_dirname = "models--" + repo_id.replace("/", "--")
+    for cache_dir in _hub_cache_dirs(env):
+        repo_dir = cache_dir / repo_dirname
+        snapshots = repo_dir / "snapshots"
+        if not snapshots.is_dir():
+            continue
+        candidates = []
+        ref = repo_dir / "refs" / "main"
+        if ref.is_file():
+            candidates.append(snapshots / ref.read_text().strip())
+        try:
+            candidates.extend(
+                sorted(snapshots.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+            )
+        except OSError:
+            pass
+        for snap in candidates:
+            if all((snap / name).is_file() for name in _REQUIRED_ASSETS):
+                return str(snap)
+    return None
+
+
+def resolve_local_model(model_name: str, env: Optional[dict] = None) -> str:
     """Resolves a model name to a LOCAL, verified directory. No network.
 
     An existing DIRECTORY is resolved to its absolute path and its assets
     are verified (a regular file is a typed config error — faster-whisper
-    would treat it as a hub id). Aliases and repo ids go through a
-    ``local_files_only=True`` snapshot lookup; anything absent, offline,
-    or incomplete raises ``ModelUnavailableError`` naming the pull
-    command. There is no code path from here to a network fetch: a
+    would treat it as a hub id). Aliases and repo ids resolve first from a
+    direct disk scan of the local HF cache (see :func:`_disk_cached_snapshot`),
+    then through a ``local_files_only=True`` snapshot lookup; anything
+    absent, offline, or incomplete raises ``ModelUnavailableError`` naming
+    the pull command. There is no code path from here to a network fetch: a
     cache/probe race can only end in this typed error.
     """
+    env = os.environ if env is None else env
     candidate = Path(model_name)
     if candidate.exists():
         if not candidate.is_dir():
@@ -194,6 +244,9 @@ def resolve_local_model(model_name: str) -> str:
             )
         return _verified_model_dir(candidate)
     repo_id = SIZE_ALIASES.get(model_name, model_name)
+    disk_snapshot = _disk_cached_snapshot(repo_id, env)
+    if disk_snapshot is not None:
+        return _verified_model_dir(disk_snapshot)
     try:
         from huggingface_hub import snapshot_download
     except ImportError as exc:
@@ -274,10 +327,34 @@ def snapshot_for_runtime(source_dir: str, root: Optional[str] = None) -> str:
     entries = sorted(p.name for p in source.iterdir() if p.is_file() or p.is_symlink())
     for name in entries:
         dst = target / name
-        if dst.exists() and not dst.is_symlink():
+        if dst.is_symlink():
+            # a previous run on the buggy path (or an adversarial entry)
+            # left a link: replace it — snapshot entries must be real files
+            dst.unlink()
+        elif dst.exists():
             continue  # already snapshotted by a previous run
+        # HF cache snapshot entries are RELATIVE symlinks into blobs/.
+        # os.link(entry) would link the symlink itself, producing a broken
+        # relative link in OUR directory (target resolved from the wrong
+        # base) — the exact 2026-10-07 smoke-test failure. Resolve the
+        # entry to its real file first so the link (or fallback copy)
+        # always captures the blob inode/bytes.
         try:
-            os.link(source / name, dst)  # default follow_symlinks: link the blob inode
+            src_real = (source / name).resolve(strict=True)
+        except OSError as res_exc:
+            raise ModelUnavailableError(
+                f"model is not available locally (snapshot of "
+                f"{source_dir} failed: {name} does not resolve: {res_exc}); "
+                f"download it explicitly with `{PULL_COMMAND}`"
+            ) from res_exc
+        if not src_real.is_file():
+            raise ModelUnavailableError(
+                f"model is not available locally (snapshot of "
+                f"{source_dir} failed: {name} is not a regular file); "
+                f"download it explicitly with `{PULL_COMMAND}`"
+            )
+        try:
+            os.link(src_real, dst)  # hardlink the real blob inode
         except FileExistsError:
             continue  # concurrent cooperating worker already placed it
         except OSError as exc:
@@ -291,7 +368,7 @@ def snapshot_for_runtime(source_dir: str, root: Optional[str] = None) -> str:
             # files always; weights only in this rare layout — the price
             # of never re-reading the mutable cache directory.
             try:
-                shutil.copyfile(source / name, dst, follow_symlinks=True)
+                shutil.copyfile(src_real, dst)
             except OSError as copy_exc:
                 raise ModelUnavailableError(
                     f"model is not available locally (snapshot of "
