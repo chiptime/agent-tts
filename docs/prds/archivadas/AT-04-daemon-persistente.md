@@ -2,6 +2,8 @@
 **Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: EJECUTADA (BLOQUE 1.2) (Fecha de cierre: 2026-09-24/2026-09-25, commit: `64681be` / `c8d5665`)
 **Dependencias**: AT-09 (dura, prerrequisito); sinergia con AT-08
 
+> **Reconciliación (2026-10-05)**: Aprobada el 22/09 y ejecutada por vía única en `engine/src/agent_tts/daemon.py` y `cli.py`. Cierre del alcance acordado, no certificación de todas las métricas: se conservan los pendientes y mediciones del BLOQUE 1.2 y el registro vivo `docs/deuda-tecnica.md`.
+
 > **Nota de revisión (22/09/2026)**: Se aborda JUNTO a AT-08 como paquete P1: el daemon posee la cola desde el día uno (cierra la open question del propio doc) para evitar una segunda migración de semántica de playback.
 
 > **Nota de revisión (22/09/2026, vía única)**: La revisión contra el código real declara inviable el camino dual daemon/modo clásico: el CLI es SIEMPRE un cliente; si no hay daemon alcanzable, lo arranca y delega (vía única con auto-arranque transparente; precedente: tmux, emacsclient, gpg-agent, ssh ControlMaster). `--no-daemon` desaparece como semántica alternativa y `--foreground` queda solo como opción de despliegue/debug, no como segundo comportamiento bajo test. RF-AT-04-4 se retira (absorbida por RF-AT-09-1/RF-AT-09-2 de AT-09: elección por `flock` con liberación por kernel a la muerte del proceso); RF-AT-04-5 y RNF-AT-04-3 se reescriben para la vía única; se añaden RF-AT-04-7, RF-AT-04-8 y RNF-AT-04-5; la dependencia de AT-09 pasa a ser dura. El esfuerzo se mantiene en L: crece el trabajo de ciclo de vida (caché de proveedores nueva, health check, idle timeout) pero se retira la superficie del camino clásico.
