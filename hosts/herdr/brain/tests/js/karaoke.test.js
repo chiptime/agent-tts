@@ -166,6 +166,7 @@ function harness(options = {}) {
         let time = 0;
         const audio = {
           item, events, seeks: [], plays: [], pauses: 0, disposals: 0,
+          startAtZero: options.startAtZero === true,
           duration: Object.hasOwn(options, "duration") ? options.duration : 100,
           get currentTime() { return time; },
           set currentTime(value) {
@@ -879,4 +880,53 @@ test("identical audio URLs never transfer old callback ownership to another turn
   await drain();
   assert.equal(h.ctl.state().phase, "playing");
   assert.deepEqual(fresh.seeks, [1 / replacement.pieces[0].chunks.length * 60]);
+});
+
+test("queued pause from disposed same-source replay cannot freeze current progress", async () => {
+  const h = harness();
+  const plan = windowsPlan();
+  await h.ready(plan, 1);
+  h.select(plan, 2);
+  await drain();
+  const audio = h.loads[1];
+  audio.paused = false; // native pause was queued before replacement play().
+  audio.events.pause();
+  assert.equal(h.ctl.state().phase, "playing");
+  audio.tick(90);
+  assert.equal(h.ctl.state().activeGlobalIndex, Math.floor(plan.chunks.length * 0.9));
+  assert.equal(h.requests.length, 1);
+});
+
+test("native pause is still honored and suppresses late play completion", async () => {
+  const h = harness({ pendingPlay: true });
+  const audio = await h.ready(windowsPlan(), 2);
+  audio.paused = true;
+  audio.events.pause();
+  audio.plays[0].resolve();
+  await drain();
+  assert.equal(h.ctl.state().phase, "paused");
+  const count = h.progress.length;
+  audio.tick(90);
+  assert.equal(h.progress.length, count);
+});
+
+test("explicit zero-start fallback plays once without waiting for metadata", async () => {
+  const h = harness({ startAtZero: true, duration: NaN });
+  const audio = await h.ready(windowsPlan());
+  assert.deepEqual(audio.seeks, [0]);
+  assert.equal(audio.plays.length, 1);
+  assert.equal(h.ctl.state().phase, "playing");
+  audio.duration = 100;
+  audio.events.loadedmetadata();
+  audio.events.durationchange();
+  assert.equal(audio.plays.length, 1);
+  assert.deepEqual(audio.seeks, [0]);
+});
+
+test("zero-start fallback permission cannot bypass a nonzero proportional seek", async () => {
+  const h = harness({ startAtZero: true, duration: NaN });
+  const audio = await h.ready(windowsPlan(), 2);
+  assert.deepEqual(audio.seeks, []);
+  assert.equal(audio.plays.length, 0);
+  assert.equal(h.ctl.state().phase, "awaiting_metadata");
 });
