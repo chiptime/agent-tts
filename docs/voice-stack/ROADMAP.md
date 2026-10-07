@@ -86,9 +86,9 @@ F1 base veraz ─┬─► F3 red de tests (R4-B) ─► F4 AT-02 + HT-01 ─►
 ### F4 — AT-02 reenfocada + HT-01 (hablar al agente desde el plugin)
 
 - **AT-02:** el plugin llama al STT del brain; interruptor de activar/desactivar (patrón de config del plugin, p. ej. `TTS_*="off|on"`).
-- **HT-01:** acorde que abre el micrófono, texto reconocido con confirmación visual breve e inyección en el panel enfocado; interruptor de activar/desactivar propio.
-- **Pregunta de diseño abierta (resolver al planificar):** la PRD de HT-01 exige `herdr pane send-keys`, que no existía en la API de Herdr; el brain inyecta hoy con `herdr pane run`. Confirmar cuál verbo usar.
-- Requiere PRD reescrita antes de implementar (AT-02 pasa de "motor + whisper.cpp" a "cliente del STT del brain").
+- **HT-01:** acorde que abre el micrófono en modo **toggle** (misma pulsación o timeout de silencio cortan; `hold` descartado por la suposición press-only del keymap, a verificar), captura por PowerShell en el host Windows (patrón `wsl-ps`), texto reconocido con confirmación visual breve e inyección en el panel enfocado; interruptor propio. Brain caído: aviso visible, nada se inyecta, el plugin nunca arranca ni gestiona el brain.
+- **Verbo de inyección decidido (2026-10-07):** `herdr pane send-text <PANE_ID> <TEXT>` (texto literal, sin Enter) + Enter final según `TTS_PTT_ENTER` (`ask|always|never`). No se usan `herdr pane run` ni `send-keys` para el dictado.
+- PRDs reescritas el 2026-10-07 (AT-02 como cliente STT del plugin; HT-01 con desglose de implementación F4.1-F4.9).
 - **Depende de:** F3 (se toca el bash de 7.419 líneas). **DoD:** hablar → ver texto reconocido → llega al agente; con ambos interruptores en off, comportamiento idéntico al actual.
 
 ### F5 — HT-04 reenfocada (botones ntfy sobre el brain)
