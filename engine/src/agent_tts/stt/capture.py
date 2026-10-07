@@ -39,6 +39,7 @@ HONEST LIMITS (v1) — read before trusting ended_by:
 from __future__ import annotations
 
 import base64
+import os
 import binascii
 import io
 import shutil
@@ -71,6 +72,14 @@ class CaptureUnavailableError(SttError):
 
     kind = "capture_unavailable"
     exit_code = 8
+
+
+# WSL interop frequently ships powershell.exe OFF the Linux PATH (PATH append
+# disabled); these are the standard install locations (2026-10-08 U4).
+_WELL_KNOWN_POWERSHELL_PATHS = (
+    "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+    "/mnt/c/Windows/Sysnative/WindowsPowerShell/v1.0/powershell.exe",
+)
 
 
 class CaptureOversizeError(CaptureUnavailableError):
@@ -427,14 +436,24 @@ class PowerShellCapture:
         return wav
 
     @staticmethod
+    def _locate_powershell() -> str:
+        """Finds powershell.exe: PATH first, then well-known WSL interop
+        paths — interop often exists with PATH append off (2026-10-08 U4)."""
+        found = shutil.which("powershell.exe")
+        if found:
+            return found
+        for candidate in _WELL_KNOWN_POWERSHELL_PATHS:
+            if os.path.isfile(candidate):
+                return candidate
+        raise CaptureUnavailableError(
+            "powershell.exe was not found on PATH or at the standard WSL "
+            "interop locations (/mnt/c/Windows/...); microphone capture "
+            "runs on the Windows host through PowerShell"
+        )
+
+    @staticmethod
     def _default_runner(argv: List[str], timeout: float) -> str:
-        """Real runner: locate powershell.exe like playback, run bounded."""
-        if shutil.which(argv[0]) is None:
-            raise CaptureUnavailableError(
-                "powershell.exe was not found on PATH; microphone capture "
-                "runs on the Windows host through PowerShell (WSL interop "
-                "or native Windows)"
-            )
+        """Real runner: spawn the resolved powershell.exe, bounded."""
         try:
             proc = subprocess.run(
                 argv, capture_output=True, text=True, timeout=timeout
@@ -462,8 +481,12 @@ class PowerShellCapture:
     ) -> CaptureResult:
         """Records, trims, and reports. ``runner`` is the injectable seam
         (tests pass fakes; the default runs the real powershell.exe)."""
-        runner = runner or self._default_runner
         argv, timeout = self.argv_and_timeout(config)
+        # Resolve powershell.exe BEFORE dispatching to any runner (PATH or
+        # WSL well-known paths — 2026-10-08 U4), so a missing interpreter is
+        # a typed error even with a custom runner injected.
+        argv[0] = self._locate_powershell()
+        runner = runner or self._default_runner
         try:
             stdout = runner(argv, timeout)
         except SttError:
