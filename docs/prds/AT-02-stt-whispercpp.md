@@ -1,77 +1,78 @@
 **ID**: PRD-AT-02 · **Proyecto**: agent-tts
-**Prioridad final (revisión 2026-09-22)**: P4 · **Estado**: Conservada en roadmap activo (P4, cubierta en brain y planificada para HT-01 en plugin-tts)
-**Dependencias**: Ninguna (store de voces opcional)
+**Prioridad final (revisión 2026-09-22)**: P4 · **Estado**: REENFOCADA (2026-10-07) — cliente STT del plugin sobre el STT del brain; whisper.cpp descartado
+**Dependencias**: endpoint `POST /transcribe` del brain (`hosts/herdr/brain/src/herdr_brain/server.py`)
 
-> **Nota de destino (2026-10-06 — Decisión D-R2 / Directiva de cobertura dual)**: Conservada en roadmap activo del motor para dar servicio a la futura capa PTT en terminal (HT-01 de `herdr-tts`). Aunque `hosts/herdr/brain` cubre la vía conversacional con faster-whisper hoy, la capacidad STT local en `agent-tts` se mantiene en roadmap para el intercom directo en terminal.
+> **Nota de destino (2026-10-07 — decisiones F4 del maintainer):** AT-02 deja de ser una capa STT local en el motor y pasa a ser el **cliente STT del plugin** (`herdr-tts`) que consume el STT ya existente en el brain (`faster-whisper`, `POST /transcribe`). Sin whisper.cpp, sin jerarquía `stt/` en el motor. Debe poder activarse y desactivarse.
 >
-> **Nota de revisión (22/09/2026)**: Postergada por decisión del maintainer: primero el núcleo de salida potente y componentizable; la bidireccionalidad (STT) llega en fases posteriores. Es la llave de HT-01 (herdr-tts) cuando llegue el momento.
+> **Historia de esta nota:** el 2026-10-06 existió una nota de "cobertura dual" (Decisión D-R2) que mantenía la capa STT local en el roadmap del motor para dar servicio a HT-01; esa directiva quedó **superada** por la decisión del 2026-10-07 registrada aquí. El diseño original con whisper.cpp (2026-09-22) se conserva resumido en el apéndice histórico.
 
-# PRD-AT-02 — Capa STT local (`--transcribe`) con whisper.cpp
+# PRD-AT-02 — Cliente STT del plugin sobre el STT del brain
 
-**Prioridad**: Alta · **Esfuerzo**: M
+**Prioridad**: Alta (F4 del ROADMAP) · **Esfuerzo**: M
 
-### Resumen ejecutivo
+## Resumen ejecutivo (la decisión)
 
-El motor hoy solo habla: no existe ninguna vía de entrada de audio. Esta PRD añade una capa STT (speech-to-text) local expuesta como servicio neutro del motor mediante `agent-tts --transcribe`, con una arquitectura de proveedores espejo de la de TTS y whisper.cpp como primer backend, invocado como binario local. Zero-cloud por defecto: ninguna transcripción sale de la máquina.
+El plugin (`herdr-tts`) dicta audio, lo envía al endpoint `POST /transcribe` del brain y recibe texto. El reconocimiento vive íntegramente en el brain (`faster-whisper`); el plugin no añade ningún motor de STT, no gestiona modelos y jamás arranca ni supervisa el brain. Si el brain no está disponible, el dictado falla de forma visible y no se inyecta nada. Todo lo de esta PRD es diseño pendiente de implementar: **nada está implementado ni verificado más allá de lo citado con fichero y línea.**
 
-### Problema y flujo actual
+## Flujo decidido
 
-Bruno dirige flotas de agentes en tmux/Herdr y cualquier intervención manual obliga a volver al teclado. Los flujos push-to-talk existentes en el ecosistema resuelven esto con scripts acoplados (whisper.cpp + `tmux send-keys` en `voice-to-code`, VoxCode) o con herramientas que casan STT y TTS en un solo binario para un solo agente (opencode-voice). El motor ya es la capa de voz neutra a la salida; le falta el espejo a la entrada para que herdr-tts pueda construir el intercom (HT-01) sin acoplar otro motor de STT.
+1. El usuario dispara la captura (ver HT-01: command id `ptt`, modo `toggle`).
+2. El plugin captura audio del micrófono (en WSL2, vía PowerShell en el host Windows, por analogía con el destino de reproducción `wsl-ps`).
+3. El plugin hace `POST /transcribe` al brain con el audio como campo multipart `audio`.
+4. El brain responde `{"text": "..."}`; el plugin muestra la confirmación y HT-01 decide la inyección.
 
-### Propuesta
+## Contrato real del endpoint (verificado en código)
 
-Subcomando `agent-tts --transcribe` con dos modos: transcripción de fichero (`--transcribe FILE`) y captura en vivo (`--mic`). Nueva jerarquía `stt/` espejo de `providers/`: clase base `STTProvider` con contrato `transcribe(wav_path) -> str` y atributo `name`; primer proveedor `WhisperCppSTT` que resuelve el binario (`whisper-cli`, `whisper-cpp` o `main` de una build local) y el modelo GGML. Los modelos viven en el store existente (`agent-tts voice install whisper-base` reutiliza el gestor atómico de descargas). Captura: `arecord` en Linux ALSA, `ffmpeg -f avfoundation/-dshow` como fallback multiplataforma; finalización con Ctrl-C o `--duration`. Salida a stdout, o a fichero con `--output`. Extra opcional `agent-tts[stt]` solo si se necesita binding Python; el camino por defecto es binario externo, sin dependencias nuevas.
+| Aspecto | Comportamiento | Evidencia |
+|---|---|---|
+| Ruta y campo | `POST /transcribe`, multipart campo `audio`; devuelve `{"text": ...}` | `hosts/herdr/brain/src/herdr_brain/server.py:598-624` |
+| Modelo no disponible | `503` con pista que nombra `python -m herdr_brain.stt pull` | `server.py:603-607`, `stt.py:38-41` |
+| Modelo cargando | `503` "se está cargando — prueba de nuevo" | `server.py:608-613` |
+| Audio vacío | `400` "Audio vacío" | `server.py:614-616` |
+| Fallo de decodificación | `503` con el detalle del error | `server.py:620-623` |
+| Formatos de entrada | Cualquier contenedor/codec que `faster-whisper` decodifique vía PyAV (hoy webm/opus del navegador) | `stt.py:154-172` |
+| Descarga del modelo | Nunca automática; acción explícita del operador (`python -m herdr_brain.stt pull`) | `stt.py:1-19`, `stt.py:37` |
+| Salud | `GET /health` expone `"stt": "loading|ready|unavailable"` | `server.py:594`, `stt.py:33-35` |
+| Host y puerto | Host: `HERDR_BRAIN_HOST` o `127.0.0.1`. Puerto: `HERDR_BRAIN_PORT` → `<config>/herdr-brain/config.env` → `8741` | `server.py:1229`, `config.py:24` y `config.py:205-209` |
 
-### Historias de usuario (US-AT-02-1, ...)
+## Configuración propuesta
 
-- US-AT-02-1: Como maintainer de herdr, quiero `agent-tts --transcribe turn.wav` devolviendo texto en stdout para enchufar el intercom HT-01 sin otra dependencia.
-- US-AT-02-2: Como usuario de terminal, quiero `agent-tts --transcribe --mic` con Ctrl-C de corte para dictar un comando sin instalar nada más que whisper.cpp.
-- US-AT-02-3: Como usuario privado, quiero garantía de que ninguna muestra de audio sale de la máquina (sin claves configuradas, no hay red).
+Ninguno de estos nombres existe hoy en el código; todos son **propuestas** hasta que se implementen.
 
-### Requisitos funcionales (RF-AT-02-...)
+| Nombre (propuesta) | Valores | Default | Función |
+|---|---|---|---|
+| `TTS_STT` | `off\|on` | `off` | Interruptor del cliente STT. Patrón del plugin: `TTS_*="off\|on"` con degradación estricta al valor inválido (como `TTS_READER_AUTO`, `bin/herdr-tts:263`). |
+| `TTS_STT_URL` | URL | `http://127.0.0.1:8741` | Base URL del brain. El default debería resolverse con la misma precedencia que el brain aplica a su puerto (env `HERDR_BRAIN_PORT` → `config.env` → 8741); el plugin ya tiene el resolvedor `herdr_resolve_port` (`bin/herdr-tts:82-106`), hoy solo ejercitado por tests. |
+| `TTS_STT_TIMEOUT` | segundos | por definir | Límite de la llamada HTTP a `/transcribe`. |
 
-- RF-AT-02-1: `--transcribe FILE` acepta WAV/MP3/OGG; decodifica a WAV 16 kHz mono s16le (vía `ffmpeg` si el contenedor no es WAV nativo) antes de invocar el proveedor.
-- RF-AT-02-2: `--transcribe --mic` graba con `arecord` (o `ffmpeg` si arecord no existe) y transcribe al corte; imprime exactamente el texto en stdout, un nivel de log por línea en stderr.
-- RF-AT-02-3: Selección de proveedor con `--stt-provider` (default `whisper.cpp`) y de modelo con `--stt-model`; sin modelo instalado, error accionable que nombra el comando de instalación.
-- RF-AT-02-4: `agent-tts voice install whisper-[tiny|base|small]` descarga el GGML al store con la misma validación atómica (Content-Length/sha256) que las voces TTS.
-- RF-AT-02-5: `--lang es|en|auto` se pasa al backend; `auto` usa la detección del propio whisper.
-- RF-AT-02-6: Códigos de salida documentados: 0 transcripción vacía o correcta, 2 binario ausente, 3 modelo ausente, 4 error de audio de entrada.
+**Descubrimiento de la URL del brain — estado actual:** el plugin **no** hace hoy ninguna llamada HTTP al brain (sus únicos `curl` son ntfy y el servidor de podcast). El resolvedor `herdr_resolve_port` existe y replica la precedencia de puerto del brain, pero no está cableado a ningún cliente HTTP. Cualquier integración nueva es propuesta, no integración existente.
 
-### Requisitos no funcionales (RNF-AT-02-...)
+## Comportamiento ante fallos (brain caído)
 
-- RNF-AT-02-1: Zero-cloud verificable: sin claves API configuradas, el flujo completo no abre conexiones de red (verificable con pruebas sin salida de red).
-- RNF-AT-02-2: Importación perezosa del módulo STT: `pip install agent-tts` sin extra no cambia el arranque del CLI TTS.
-- RNF-AT-02-3: Un clip de 10 s con `whisper-base` en CPU transcribe en menos de 4 s en el hardware de referencia.
-- RNF-AT-02-4: El proveedor se prueba con un binario stub en la suite de tests; ninguna prueba necesita whisper.cpp real.
+- Error de conexión o `503`: aviso **visible** en el overlay de HT-01, nada se inyecta, el flujo del daemon no se rompe (fail-open, como el resto del plugin).
+- El plugin **nunca** arranca, reinicia ni gestiona el brain; tampoco descarga modelos (el pull es acción del operador sobre el brain).
+- `400` (audio vacío): tratado como guard de HT-01 (dictado vacío), no como error de red.
 
-### Encaje en la arquitectura actual
+## Encaje en la arquitectura actual
 
-Paquete nuevo `src/agent_tts/stt/` con `base.py` (contrato) y `whisper_cpp.py`, registrado en `stt/__init__.py` igual que `providers/__init__.py` hace con `get_provider`. El subcomando vive en `cli.py` como rama temprana que no toca `speak()` ni `AudioSession`. El store de voces (`voices.py`) se extiende con una familia de modelos `whisper-*` manteniendo la validación de nombres actual.
+El cliente vive en el plugin (`bin/herdr-tts`), junto al keymap y el overlay de HT-01. La captura de micrófono sigue el patrón del destino de reproducción `wsl-ps`: un `powershell.exe` persistente alcanzable por interop WSL recibe/envía datos por stdin (hoy WAV prefijado por longitud para reproducción, `engine/src/agent_tts/powershell_playback.py:88`). El análogo de captura (PowerShell graba micrófono y entrega audio al plugin) es **propuesta sin implementar**; el formato y la latencia quedan como pregunta abierta. El plugin ya modela los destinos de reproducción en `SETTINGS_TARGETS=(local winhost wsl-ps windows auto)` (`bin/herdr-tts:5265`) y los pasa al motor con `--playback` (`bin/herdr-tts:1787-1788`).
 
-### Prior art y diferenciación
+## Fuera de alcance
 
-opencode-voice acopla STT (whisper-cpp) y TTS (piper) en una herramienta para OpenCode con lectura condicional por longitud. Aquí STT es un servicio neutro del motor, independiente de agente y de consumidor: herdr-tts (intercom HT-01), scripts de push-to-talk propios, o cualquier harness. Los scripts whisper.cpp + `tmux send-keys` demuestran el patrón pero viven fuera del motor y duplican gestión de modelos; esta PRD los convierte en cliente de una sola pieza instalable.
+- whisper.cpp y cualquier capa STT en el motor (diseño superado; ver apéndice).
+- Gestión de modelos desde el plugin (el pull es del brain).
+- Streaming con parciales, diarización, wake-word, STT en cloud.
+- Modo `hold` de captura (ver HT-01).
 
-### Dependencias
+## Preguntas abiertas
 
-Ninguna interna. Externas: binario whisper.cpp (o extra `agent-tts[stt]`), `ffmpeg`/`arecord` para captura y decodificación.
+1. **Comportamiento exacto de `send-text` con saltos de línea:** ¿qué hace `herdr pane send-text` si el texto dictado contiene un `\n`? ¿Se inyecta literal o se parte? Verificar con Herdr core antes de implementar la inyección.
+2. **Valor del timeout de silencio** que corta la captura en modo `toggle` (nombre y default de la variable, p. ej. `TTS_PTT_SILENCE_SECONDS`).
+3. **Suposición press-only del keymap:** el diseño asume que el keymap de Herdr solo dispara en pulsación (no en liberación), lo que descarta el modo `hold`. No verificado en el código de Herdr core; verificar durante la implementación.
+4. **Formato y latencia de la captura de micrófono por PowerShell:** qué contenedor/codec produce el script de PowerShell, tamaño del fragmento y sobrecoste frente a `parecord` (única vía de captura nativa en WSL2).
+5. **Descubrimiento de la URL del brain:** ¿variable nueva (`TTS_STT_URL`), reutilización de la precedencia `HERDR_BRAIN_PORT` → `config.env` → 8741 vía `herdr_resolve_port`, o ambas?
+6. **UX del overlay de confirmación en terminal:** popup de Herdr, mensaje efímero en el pane u otra superficie; afecta a la presentación del aviso de brain caído.
 
-### Riesgos y mitigaciones
+## Apéndice histórico — diseño original whisper.cpp (2026-09-22, superado)
 
-- Riesgo: fragmentación de nombres de binario whisper.cpp (`main`, `whisper-cli` según versión). Mitigación: lista de candidatos ordenada y flag `--stt-bin` de escape.
-- Riesgo: deriva de formatos GGML entre versiones de whisper.cpp. Mitigación: validar el modelo en la instalación y en el primer uso, con error accionable.
-- Riesgo: captura de micrófono en WSL2 (sin arecord). Mitigación: `ffmpeg` con `pipewire`/`pulse` como fuente y documentación del requisito WSLg.
-
-### Métricas de éxito
-
-- WER menor o igual a 12% en un set de referencia de 20 clips es/en con whisper-base.
-- Tiempo de transcripción menor que 0.4x la duración del clip (factor de tiempo real).
-- Cero sockets de red abiertos durante el flujo completo (prueba automatizada).
-
-### Fuera de alcance
-
-Proveedores STT en la nube, transcripción en streaming con parciales, diarización de hablantes, wake-word detection (eso vive en herdr-tts, HT-01).
-
-### Open questions
-
-¿Modelo por defecto `base` o `small` (calidad vs RAM)? ¿Incluir VAD (silero) para auto-corte en `--mic`, o queda en Ctrl-C por ahora?
+El diseño original (conservado como historia, no como plan) proponía una capa STT local del motor: subcomando `agent-tts --transcribe` con transcripción de fichero (`--transcribe FILE`) y captura en vivo (`--mic`); jerarquía `stt/` espejo de `providers/` con clase base `STTProvider` y primer proveedor `WhisperCppSTT` que resolvía el binario (`whisper-cli`/`whisper-cpp`/`main`) y el modelo GGML desde el store de voces; captura con `arecord` (Linux ALSA) y fallback `ffmpeg`; zero-cloud verificable; extras `agent-tts[stt]` opcionales; códigos de salida documentados. Quedó postergada en P4 el 2026-09-22, sobrevivió como "cobertura dual" el 2026-10-06 y quedó superada por la decisión del 2026-10-07: el STT se reutiliza del brain y esta PRD pasa a describir el cliente del plugin.

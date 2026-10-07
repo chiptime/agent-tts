@@ -38,15 +38,17 @@ La migración a monorepo absorbió tres repos (agent-tts, herdr-tts, herdr-brain
 
 **Esfuerzo:** 1–2 h · **Riesgo:** cero · **DoD:** ningún documento dice de una feature ejecutada que está pendiente, ni viceversa. (Cumplido).
 
-### R2 — Decisión de arquitectura HT: brain frente a PRDs originales (COMPLETADA — 2026-10-06)
+### R2 — Decisión de arquitectura HT: brain frente a PRDs originales (COMPLETADA — 2026-10-06; resolución actualizada 2026-10-07)
+
+> **Actualización (2026-10-07 — decisiones F4/F5 del maintainer):** la "directiva de cobertura dual" registrada el 2026-10-06 quedó **superada**. Resolución vigente: **AT-02** es el cliente STT del plugin que consume `POST /transcribe` del brain (sin whisper.cpp, sin capa STT en el motor); **HT-01** tiene diseño decidido (toggle, captura PowerShell, `send-text`) y está pendiente de implementar (F4); **HT-04** sigue viva y reenfocada: ntfy Actions que llaman a los endpoints del brain (`/approval/*`, `/ask`), sin listener propio; depende de F2 (F5). Las PRD y los índices ya reflejan esta decisión. La tabla y casillas de abajo se conservan como registro histórico de lo ejecutado el 2026-10-06.
 
 Las tres PRDs afectadas cuentan con nota de destino formalizada y directiva de cobertura dual:
 
-| PRD | Vía original | Vía real hoy | Resolución (D-R2 confirmada 2026-10-06) |
+| PRD | Vía original | Vía real hoy | Resolución (D-R2 confirmada 2026-10-06; superada por la decisión 2026-10-07) |
 |---|---|---|---|
-| HT-01 push-to-talk | whisper.cpp + `send-keys` en el host | brain: faster-whisper + VAD/endpointing + dispatch a sesión | **COBERTURA DUAL** (cubierta en brain y planificada en plugin-tts) |
-| HT-04 control móvil | ntfy Actions + listener HTTP | brain: PWA `/approval/*` + `/ask` | **COBERTURA DUAL** (cubierta en brain PWA y planificada en plugin-tts) |
-| AT-02 STT whisper.cpp | capa STT en el motor | brain: faster-whisper ya cubre la capacidad | **EN ROADMAP MOTOR** (para dar servicio a HT-01 en plugin-tts) |
+| HT-01 push-to-talk | whisper.cpp + `send-keys` en el host | brain: faster-whisper + VAD/endpointing + dispatch a sesión | **COBERTURA DUAL** (cubierta en brain y planificada en plugin-tts) → 2026-10-07: diseño decidido, F4 |
+| HT-04 control móvil | ntfy Actions + listener HTTP | brain: PWA `/approval/*` + `/ask` | **COBERTURA DUAL** (cubierta en brain PWA y planificada en plugin-tts) → 2026-10-07: ntfy Actions → endpoints del brain, sin listener propio |
+| AT-02 STT whisper.cpp | capa STT en el motor | brain: faster-whisper ya cubre la capacidad | **EN ROADMAP MOTOR** (para dar servicio a HT-01 en plugin-tts) → 2026-10-07: cliente STT del plugin sobre el brain, sin whisper.cpp |
 
 - [x] R2.1 Notas de destino añadidas en `HT-01`, `HT-04` y `AT-02` (directiva de cobertura dual en plugin-tts).
 - [x] R2.2 Índices `docs/prds/README.md` y `hosts/herdr/tts-plugin/docs/prds/README.md` actualizados reflejando cobertura dual y mantenimiento en plugin-tts.

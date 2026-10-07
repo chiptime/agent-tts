@@ -10,16 +10,16 @@ El orden vigente es [ROADMAP.md](../../../../../docs/voice-stack/ROADMAP.md). El
 
 | ID | Fichero | Feature | Prioridad final | Estado | Esfuerzo |
 |---|---|---|---|---|---|
-| HT-04 | [HT-04-control-movil-bidireccional.md](HT-04-control-movil-bidireccional.md) | Control bidireccional desde el móvil | P1 | **Activa (cubierta en brain PWA y planificada en plugin-tts)** | L |
+| HT-04 | [HT-04-control-movil-bidireccional.md](HT-04-control-movil-bidireccional.md) | Control bidireccional desde el móvil | P1 | **Activa, reenfocada (2026-10-07):** ntfy Actions → endpoints del brain, sin listener propio; depende de F2 | L |
 | HT-05 | [HT-05-recordatorios-escalados.md](HT-05-recordatorios-escalados.md) | Recordatorios escalados de atención | P1 | Aprobada | M |
 | HT-03 | [HT-03-radio-mode.md](HT-03-radio-mode.md) | Radio mode (triaje por voz) | P2 | Aprobada (Hito 0 hecho, radio pendiente) | M |
-| HT-01 | [HT-01-push-to-talk-intercom.md](HT-01-push-to-talk-intercom.md) | Push-to-Talk intercom (hablar al agente) | P4 | **Activa (cubierta en brain y planificada en plugin-tts)** | M-L |
+| HT-01 | [HT-01-push-to-talk-intercom.md](HT-01-push-to-talk-intercom.md) | Push-to-Talk intercom (hablar al agente) | P4 | **Activa, diseño decidido (2026-10-07)**, pendiente de implementar | M-L |
 | HT-06 | [HT-06-auto-snooze-reunion.md](HT-06-auto-snooze-reunion.md) | Auto-snooze contextual (modo reunión) | P4 | Postergada | M |
 | HT-07 | [HT-07-filtro-semantico.md](HT-07-filtro-semantico.md) | Filtro semántico de importancia | P4 | Postergada | M |
 | HT-08 | [HT-08-briefing-matinal.md](HT-08-briefing-matinal.md) | Briefing matinal automático | P4 | Postergada | M |
 | HT-10 | [HT-10-chain-replay.md](HT-10-chain-replay.md) | Chain replay contextual del host (no la cadena AT-08 del motor) | P5 | Aprobada (baja), sin ejecutar | S-M |
 
-**Entregas adicionales:** podcast RSS implementado (`ab4ef32`); brain on-demand-context implementado (`d7de194`, `2cb3a50`); approval-gate implementada con tests (`2abb17e`), Chrome Android pendiente. VS0–VS4/VSX cerrados `automated_complete` el 2026-10-01 (validación física pendiente). AT-01/03/04/08/09/10 ejecutadas; AT-02 conservada en roadmap del motor (decisión D-R2, 2026-10-06); AT-05/06/07 sin ejecutar; AT-11 parcial (M1 y tarea 2.1 hechas, `c577041`; M2–M4 pendientes).
+**Entregas adicionales:** podcast RSS implementado (`ab4ef32`); brain on-demand-context implementado (`d7de194`, `2cb3a50`); approval-gate implementada con tests (`2abb17e`), Chrome Android pendiente. VS0–VS4/VSX cerrados `automated_complete` el 2026-10-01 (validación física pendiente). AT-01/03/04/08/09/10 ejecutadas; AT-02 reenfocada como cliente STT del plugin sobre el brain (decisión 2026-10-07, sin whisper.cpp); AT-05/06/07 sin ejecutar; AT-11 parcial (M1 y tarea 2.1 hechas, `c577041`; M2–M4 pendientes).
 
 ## PRDs archivadas / implementadas
 
@@ -43,13 +43,13 @@ El orden vigente es [ROADMAP.md](../../../../../docs/voice-stack/ROADMAP.md). El
 
 **Estado de bloques:** BLOQUE-1 completado; BLOQUE-2 completado (2026-10-06, HT-02 e HT-11 hechas); BLOQUE-3 sin ejecutar; BLOQUE-4 parcial (AT-03 hecha, radio pendiente).
 
-**Fase 1 — host P1:** HT-02 + HT-11 primero (identidad vocal completa); HT-05 (recordatorios) y HT-04 (control móvil ntfy Actions + HTTP en host, complementando a brain PWA).
+**Fase 1 — host P1:** HT-02 + HT-11 primero (identidad vocal completa); HT-05 (recordatorios) y HT-04 (control móvil: ntfy Actions que llaman a los endpoints del brain, sin listener propio; depende de F2).
 
 **HT-03:** radio no implementada; AT-08 y HT-02 habilitan su futura integración, no la ejecutan.
 
 **Motor:** paquete P1 y AT-01/03/10 cerrados; AT-05/06/07 siguen pendientes.
 
-**Postergadas (P4/P5):** HT-01 (cubierta en brain conversation-mode, planificada para terminal nativo en plugin-tts), HT-06, HT-07 y HT-08 quedan en P4; HT-10 (aprobada baja) en P5.
+**Postergadas (P4/P5):** HT-01 (diseño decidido 2026-10-07: modo toggle, captura por PowerShell, STT del brain vía AT-02, inyección `send-text`; pendiente de implementar como F4), HT-06, HT-07 y HT-08 quedan en P4; HT-10 (aprobada baja) en P5.
 
 **Regla transversal:** toda feature nace apagada por defecto (opt-in) salvo que sustituya explícitamente un comportamiento existente; ninguna deja el flujo actual roto si se desactiva. Las métricas de cada PRD se miden sobre el uso real del maintainer, no sobre escenarios sintéticos.
 
@@ -65,10 +65,12 @@ Veredictos del maintainer aplicados el 22 de septiembre de 2026 sobre el borrado
 - **Postergadas P4:** HT-01 (doble candado: AT-02 postergada + `pane send-keys` inexistente), HT-06, HT-07, HT-08.
 - **Descartadas:** HT-09 y HT-12.
 
-## Nota de reconciliación (2026-10-06 — Decisión D-R2 / Directiva de cobertura dual)
+## Nota de reconciliación (2026-10-07 — decisión F4/F5 del maintainer)
 
-Alineación y cobertura dual con `herdr-brain`:
-- **HT-01 (Push-to-Talk intercom):** Activa (P4). Cubierta por `herdr-brain` conversation-mode (faster-whisper + VAD/endpointing + dispatch directo a la sesión de Herdr), y mantenida en roadmap de `herdr-tts` para el intercom directo en terminal vía AT-02.
-- **HT-04 (Control bidireccional móvil):** Activa (P1). Cubierta por `herdr-brain` PWA (`/approval/*` + `/ask`), y mantenida en roadmap de `herdr-tts` para control remoto ligero por ntfy Actions + listener HTTP en el host.
+> Existió una nota de "cobertura dual" (2026-10-06, Decisión D-R2) que mantenía listener HTTP propio y capa STT local en roadmap; quedó **superada** por esta decisión del 2026-10-07.
+
+Alineación con `herdr-brain` decidida:
+- **HT-01 (Push-to-Talk intercom):** Activa (P4), diseño cerrado 2026-10-07: command id `ptt`, modo `toggle` únicamente, captura de micrófono por PowerShell (patrón `wsl-ps`), transcripción vía el cliente STT de AT-02 sobre `POST /transcribe` del brain, overlay de confirmación e inyección con `herdr pane send-text` + Enter opcional. Interruptor propio; brain caído = aviso visible sin inyección. Pendiente de implementar (ver plan F4.1-F4.9 en su PRD).
+- **HT-04 (Control bidireccional móvil):** Activa (P1), reenfocada: ntfy Actions que llaman a los endpoints del brain (`/approval/*`, `/ask`); sin listener propio. Depende de F2 (validación de `/approval` en Chrome Android).
 
 La prioridad del borrador original queda sustituida por la columna "Prioridad final" de la tabla y de la cabecera de cada fichero.
