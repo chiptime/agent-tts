@@ -262,10 +262,17 @@ def _parse_wav(wav_bytes: bytes):
             pcm = w.readframes(w.getnframes())
     except wave.Error as exc:
         raise SttError(f"invalid WAV input: {exc}") from exc
-    if width != 2:
+    if width not in (1, 2):
         raise SttError(
-            f"only 16-bit PCM WAV is supported for endpointing "
+            f"only 8-bit and 16-bit PCM WAV are supported for endpointing "
             f"(got {width * 8}-bit)"
+        )
+    if width == 1:
+        # unsigned 8-bit -> signed 16-bit little-endian (driver-default
+        # fallback recordings can be 8-bit — 2026-10-08 U4)
+        pcm = b"".join(
+            ((int(b) - 128) * 257).to_bytes(2, "little", signed=True)
+            for b in pcm
         )
     if channels < 1 or rate < 1:
         raise SttError("invalid WAV parameters (channels/rate)")
@@ -354,17 +361,32 @@ class PowerShellCapture:
             "using System.Runtime.InteropServices;"
             "public class AtTtsMci{[DllImport('+$q+'winmm.dll'+$q+"
             "',CharSet=CharSet.Unicode)]public static extern int "
-            "mciSendString(string c,StringBuilder b,int l,IntPtr h);}'",
+            "mciSendString(string c,StringBuilder b,int l,IntPtr h);"
+            "[DllImport('+$q+'winmm.dll'+$q+',CharSet=CharSet.Unicode)]"
+            "public static extern bool mciGetErrorString(int e,StringBuilder b,"
+            "int l);}'",
             "Add-Type -TypeDefinition $src",
             "function Mc([string]$c){$r=[AtTtsMci]::mciSendString("
             "$c,$sb,512,[IntPtr]::Zero);"
-            "if($r -ne 0){throw ('at-tts capture failed rc='+$r+' cmd='+$c)}}",
+            "if($r -ne 0){$t='';"
+            "if(-not [AtTtsMci]::mciGetErrorString($r,$sb,512)){$t=''}"
+            "else{$t=$sb.ToString()};"
+            "throw ('at-tts capture failed rc='+$r+' cmd='+$c+' err='+$t)}}",
             "try{",
             "Mc 'open new type waveaudio alias atrec'",
             "Mc 'set atrec time format ms'",
-            f"Mc 'set atrec bitspersample {config.bits} "
-            f"channels {config.channels} samplespersec {config.sample_rate}'",
-            "Mc 'record atrec'",
+            # Format set is BEST-EFFORT: several real drivers accept the set
+            # but then refuse to record in that exact format (rc=322,
+            # 2026-10-08 U4). If it fails we just record in the driver's
+            # default format; faster-whisper decodes any WAV.
+            "try{Mc 'set atrec bitspersample {bits} channels {ch} "
+            "samplespersec {rate}}'}catch{{}}",
+            # If the exact-format record fails, reopen and record with the
+            # driver default (mapper picks a workable format).
+            "try{Mc 'record atrec'}catch{"
+            "Mc 'close atrec';"
+            "Mc 'open new type waveaudio alias atrec';"
+            "Mc 'record atrec'}",
             f"Start-Sleep -Milliseconds {max_ms}",
             "Mc 'stop atrec'",
             "$t=[System.IO.Path]::GetTempFileName()",
@@ -379,7 +401,11 @@ class PowerShellCapture:
             "[Console]::Error.Write($_.Exception.Message)",
             "exit 3}",
         ]
-        script = ";".join(parts)
+        script = ";".join(parts).replace(
+            "{bits}", str(config.bits)
+        ).replace("{ch}", str(config.channels)).replace(
+            "{rate}", str(config.sample_rate)
+        ).replace("{{}}", "{}")
         # Same hard invariant as powershell_playback: double quotes and
         # newlines both break the argv -> Windows command-line handoff.
         assert '"' not in script and "\n" not in script
