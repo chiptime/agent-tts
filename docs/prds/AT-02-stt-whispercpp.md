@@ -1,78 +1,75 @@
 **ID**: PRD-AT-02 · **Proyecto**: agent-tts
-**Prioridad final (revisión 2026-09-22)**: P4 · **Estado**: REENFOCADA (2026-10-07) — cliente STT del plugin sobre el STT del brain; whisper.cpp descartado
-**Dependencias**: endpoint `POST /transcribe` del brain (`hosts/herdr/brain/src/herdr_brain/server.py`)
+**Prioridad final (revisión 2026-09-22)**: P4 · **Estado**: REENFOCADA (2026-10-07, 2.ª revisión del día) — STT y captura de micrófono como capacidad genérica del motor; whisper.cpp y el cliente HTTP del brain descartados
+**Dependencias**: ninguna del brain. El motor es dueño de la capacidad; los hosts la consumen por su interfaz pública.
 
-> **Nota de destino (2026-10-07 — decisiones F4 del maintainer):** AT-02 deja de ser una capa STT local en el motor y pasa a ser el **cliente STT del plugin** (`herdr-tts`) que consume el STT ya existente en el brain (`faster-whisper`, `POST /transcribe`). Sin whisper.cpp, sin jerarquía `stt/` en el motor. Debe poder activarse y desactivarse.
+> **Nota de destino (2026-10-07, decisión final del maintainer):** la capacidad STT compartida **y** la captura de micrófono pertenecen al motor `agent-tts`, reutilizando la implementación `faster-whisper` ya existente en el brain (extracción, no segunda pila whisper.cpp). El plugin consume la interfaz pública del motor; el dictado **no** requiere que el brain esté arrancado. La migración del brain a esta capacidad del motor es una rebanada posterior, separada y opcional.
 >
-> **Historia de esta nota:** el 2026-10-06 existió una nota de "cobertura dual" (Decisión D-R2) que mantenía la capa STT local en el roadmap del motor para dar servicio a HT-01; esa directiva quedó **superada** por la decisión del 2026-10-07 registrada aquí. El diseño original con whisper.cpp (2026-09-22) se conserva resumido en el apéndice histórico.
+> **Cronología de la decisión:** (1) 2026-09-22 diseño original whisper.cpp local; (2) 2026-10-06 directiva de "cobertura dual" (D-R2); (3) 2026-10-07 primera revisión: cliente HTTP del plugin sobre `POST /transcribe` del brain (commit `ed2fbfe`); (4) 2026-10-07 decisión vigente: el motor es dueño del STT y de la captura. Los diseños (1) y (3) quedan como historia en los apéndices.
 
-# PRD-AT-02 — Cliente STT del plugin sobre el STT del brain
+# PRD-AT-02 — STT y captura de micrófono como capacidad del motor
 
 **Prioridad**: Alta (F4 del ROADMAP) · **Esfuerzo**: M
 
 ## Resumen ejecutivo (la decisión)
 
-El plugin (`herdr-tts`) dicta audio, lo envía al endpoint `POST /transcribe` del brain y recibe texto. El reconocimiento vive íntegramente en el brain (`faster-whisper`); el plugin no añade ningún motor de STT, no gestiona modelos y jamás arranca ni supervisa el brain. Si el brain no está disponible, el dictado falla de forma visible y no se inyecta nada. Todo lo de esta PRD es diseño pendiente de implementar: **nada está implementado ni verificado más allá de lo citado con fichero y línea.**
+El motor expone una capacidad genérica de STT (`faster-whisper` reutilizado por extracción del brain) y una vía genérica de captura de micrófono (PowerShell en el host Windows, por analogía con el destino de reproducción `wsl-ps`). La dependencia STT es **opcional** (extra, siguiendo el precedente `kokoro`), la descarga del modelo es **siempre explícita** y la configuración del motor **no** queda atada a los ajustes de ningún host. Si la dependencia o el modelo faltan: error visible con pista accionable, nada se transcribe, sin descarga implícita ni arranque de servicios. Todo lo de esta PRD es diseño pendiente de implementar: **nada está implementado ni verificado más allá de lo citado con fichero y línea.**
 
-## Flujo decidido
+## Qué gana el motor (propuestas hasta acordar nombres)
 
-1. El usuario dispara la captura (ver HT-01: command id `ptt`, modo `toggle`).
-2. El plugin captura audio del micrófono (en WSL2, vía PowerShell en el host Windows, por analogía con el destino de reproducción `wsl-ps`).
-3. El plugin hace `POST /transcribe` al brain con el audio como campo multipart `audio`.
-4. El brain responde `{"text": "..."}`; el plugin muestra la confirmación y HT-01 decide la inyección.
-
-## Contrato real del endpoint (verificado en código)
-
-| Aspecto | Comportamiento | Evidencia |
+| Pieza | Diseño | Evidencia / precedente verificado |
 |---|---|---|
-| Ruta y campo | `POST /transcribe`, multipart campo `audio`; devuelve `{"text": ...}` | `hosts/herdr/brain/src/herdr_brain/server.py:598-624` |
-| Modelo no disponible | `503` con pista que nombra `python -m herdr_brain.stt pull` | `server.py:603-607`, `stt.py:38-41` |
-| Modelo cargando | `503` "se está cargando — prueba de nuevo" | `server.py:608-613` |
-| Audio vacío | `400` "Audio vacío" | `server.py:614-616` |
-| Fallo de decodificación | `503` con el detalle del error | `server.py:620-623` |
-| Formatos de entrada | Cualquier contenedor/codec que `faster-whisper` decodifique vía PyAV (hoy webm/opus del navegador) | `stt.py:154-172` |
-| Descarga del modelo | Nunca automática; acción explícita del operador (`python -m herdr_brain.stt pull`) | `stt.py:1-19`, `stt.py:37` |
-| Salud | `GET /health` expone `"stt": "loading|ready|unavailable"` | `server.py:594`, `stt.py:33-35` |
-| Host y puerto | Host: `HERDR_BRAIN_HOST` o `127.0.0.1`. Puerto: `HERDR_BRAIN_PORT` → `<config>/herdr-brain/config.env` → `8741` | `server.py:1229`, `config.py:24` y `config.py:205-209` |
+| Módulo STT (nombre propuesto: `engine/src/agent_tts/stt.py`) | Extracción de la clase `Transcriber` del brain: estados `loading/ready/unavailable`, carga perezosa del modelo, `transcribe_bytes` sobre fichero temporal | `hosts/herdr/brain/src/herdr_brain/stt.py:33-35` (estados), `:108-109` (`from faster_whisper import WhisperModel` perezoso), `:154` y `:165` (`transcribe_bytes`, `model.transcribe(tmp_path, language=None)`) |
+| Política de modelo (regla dura, portada literal) | Nunca descarga automática en boot/import; descarga como acción explícita del operador con timeout de red; si falta, estado `unavailable` con pista del comando de descarga; si existe, hilo de calentamiento que solo lee ficheros locales | `stt.py:1-19` (política), `:37` (`PULL_COMMAND`), `:56` (`model_is_cached` nunca toca red) |
+| Aliases de modelo | `tiny/base/small/medium/large-v2/large-v3` → repos HF, sin importar ctranslate2 para responder "¿está en caché?" | `stt.py:46-53` |
+| Extra opcional (nombre propuesto: `agent-tts[stt]`) | Import perezoso con error visible que nombra el comando de instalación; la instalación base del motor no gana dependencias | Precedente kokoro: `engine/pyproject.toml:31-41` (solo `kokoro` y `dev` hoy), `engine/src/agent_tts/providers/__init__.py:14-33` (PEP 562 + pista `pip install 'agent-tts[kokoro]'`) |
+| Captura de micrófono (propuesta) | Análogo de **entrada** del patrón `wsl-ps`: un `powershell.exe` persistente alcanzable por interop WSL entrega audio; formato/latencia abiertos | Salida verificada hoy: `engine/src/agent_tts/powershell_playback.py:78-80` (disponibilidad), `:88` (sesión persistente, grupos WAV prefijados por longitud), `:490-500` (spawn perezoso) |
 
-## Configuración propuesta
+## Configuración (propuestas)
 
-Ninguno de estos nombres existe hoy en el código; todos son **propuestas** hasta que se implementen.
+Ningún nombre existe hoy en el código del motor; todos son **propuestas** hasta que se implementen. La configuración de STT del motor es **genérica e independiente de los ajustes del host** (p. ej. de `Settings` del plugin): el motor no lee la configuración de herdr ni del brain.
 
 | Nombre (propuesta) | Valores | Default | Función |
 |---|---|---|---|
-| `TTS_STT` | `off\|on` | `off` | Interruptor del cliente STT. Patrón del plugin: `TTS_*="off\|on"` con degradación estricta al valor inválido (como `TTS_READER_AUTO`, `bin/herdr-tts:263`). |
-| `TTS_STT_URL` | URL | `http://127.0.0.1:8741` | Base URL del brain. El default debería resolverse con la misma precedencia que el brain aplica a su puerto (env `HERDR_BRAIN_PORT` → `config.env` → 8741); el plugin ya tiene el resolvedor `herdr_resolve_port` (`bin/herdr-tts:82-106`), hoy solo ejercitado por tests. |
-| `TTS_STT_TIMEOUT` | segundos | por definir | Límite de la llamada HTTP a `/transcribe`. |
+| `AGENT_TTS_STT` | `off\|on` | `off` | Interruptor de la capacidad STT del motor (AT-02). |
+| `AGENT_TTS_STT_MODEL` | alias o repo HF | por decidir | Modelo a usar (aliases de `stt.py:46-53`). |
 
-**Descubrimiento de la URL del brain — estado actual:** el plugin **no** hace hoy ninguna llamada HTTP al brain (sus únicos `curl` son ntfy y el servidor de podcast). El resolvedor `herdr_resolve_port` existe y replica la precedencia de puerto del brain, pero no está cableado a ningún cliente HTTP. Cualquier integración nueva es propuesta, no integración existente.
+El descubrimiento del brain (`HERDR_BRAIN_PORT` → `config.env` → 8741, `config.py:24` y `:205-209`) **ya no aplica**: no hay URL del brain en este diseño.
 
-## Comportamiento ante fallos (brain caído)
+## Independencia del brain y semántica de errores
 
-- Error de conexión o `503`: aviso **visible** en el overlay de HT-01, nada se inyecta, el flujo del daemon no se rompe (fail-open, como el resto del plugin).
-- El plugin **nunca** arranca, reinicia ni gestiona el brain; tampoco descarga modelos (el pull es acción del operador sobre el brain).
-- `400` (audio vacío): tratado como guard de HT-01 (dictado vacío), no como error de red.
+- El dictado funciona con el brain **apagado** (consecuencia intencional de la decisión).
+- Dependencia STT no instalada: error visible con la pista de instalación (patrón kokoro); nada se transcribe; sin instalación implícita.
+- Modelo ausente: estado `unavailable` + pista del comando explícito de descarga (patrón `stt.py:1-19`); sin descarga implícita, sin arranque de servicios.
+- Captura no disponible (sin PowerShell/interop): aviso accionable con diagnóstico; fail-open.
+- Interruptores independientes: AT-02 (capacidad del motor) y HT-01 (PTT del plugin) se activan por separado; cualquiera en `off` desactiva el flujo completo; **ambos en `off` = comportamiento idéntico al actual**.
 
-## Encaje en la arquitectura actual
+## Límites arquitectónicos (verificados, no supuestos)
 
-El cliente vive en el plugin (`bin/herdr-tts`), junto al keymap y el overlay de HT-01. La captura de micrófono sigue el patrón del destino de reproducción `wsl-ps`: un `powershell.exe` persistente alcanzable por interop WSL recibe/envía datos por stdin (hoy WAV prefijado por longitud para reproducción, `engine/src/agent_tts/powershell_playback.py:88`). El análogo de captura (PowerShell graba micrófono y entrega audio al plugin) es **propuesta sin implementar**; el formato y la latencia quedan como pregunta abierta. El plugin ya modela los destinos de reproducción en `SETTINGS_TARGETS=(local winhost wsl-ps windows auto)` (`bin/herdr-tts:5265`) y los pasa al motor con `--playback` (`bin/herdr-tts:1787-1788`).
+- Ningún contrato del monorepo prohíbe llamadas HTTP plugin→brain: `contracts/tts-brain-v1.md:11` restringe la dirección **brain→plugin** (superficie CLI) y `contracts/README.md:8` rige hosts→motor vía `ipc-v2.md` **y artefactos públicos**. La decisión de mover el STT al motor es una **preferencia arquitectónica** (dueño único de la capacidad, reutilización), no una obligación contractual.
+- El test de bordes es unidireccional: el motor no puede importar `hosts/*`; los hosts **pueden** depender del motor vía contratos e interfaces públicas (`engine/tests/test_monorepo_boundaries.py:3-5`).
+- La API pública Python del motor ya es consumida por el plugin hoy vía el puente `lib/` (`hosts/herdr/tts-plugin/lib/tts_engine.py:68`, `from agent_tts import ...`), patrón citado como normativo en `contracts/tts-brain-v2.md:36-37`. Por tanto "CLI/IPC obligatorios para todo host" **no** es cierto; el transporte exacto de STT queda como decisión abierta (ver abajo).
+
+## Decisiones NO tomadas (no silenciar en implementación)
+
+1. **Transporte y residencia del modelo:** CLI one-shot (proceso por dictado) vs residencia en el daemon existente (`--serve`, AT-04) vs API pública Python (patrón puente `lib/`). Sin elección registrada.
+2. **Superficie de contrato:** `contracts/ipc-v2.md` está **congelado** ("Post-freeze changes are breaking", `ipc-v2.md:3-4`); extender el canal de control es un cambio breaking: ¿nuevo fichero de contrato, nueva versión de protocolo, o superficie CLI/Python sin contrato de wire? Sin elección registrada.
+3. **Ciclo de vida y latencia:** coste de arranque del modelo por dictado vs memoria residente; umbral aceptable p50 press-to-text.
+4. **Formato y latencia de la captura PowerShell:** contenedor/codec, tamaño de fragmento, sobrecoste frente a `parecord` (única vía nativa en WSL2).
+5. **Umbrales de silencio** que cortan la captura (nombre, default y unidad de la variable).
+6. **Manejo exacto de saltos de línea** en el texto dictado (afecta a la inyección de HT-01).
+7. **Suposición press-only del keymap** (descarta el modo `hold`): no verificada en Herdr core.
 
 ## Fuera de alcance
 
-- whisper.cpp y cualquier capa STT en el motor (diseño superado; ver apéndice).
-- Gestión de modelos desde el plugin (el pull es del brain).
-- Streaming con parciales, diarización, wake-word, STT en cloud.
-- Modo `hold` de captura (ver HT-01).
+- whisper.cpp (apéndice A) y el cliente HTTP sobre el brain (apéndice B): diseños superados.
+- Gestión del ciclo de vida del brain por parte de motor o plugin.
+- Streaming con parciales, diarización, wake-word, STT en cloud, VAD refactorizada.
+- Migración del brain a esta capacidad (rebanada posterior separada; ver HT-01/F4.10).
 
-## Preguntas abiertas
+## Apéndice A — diseño original whisper.cpp (2026-09-22, superado)
 
-1. **Comportamiento exacto de `send-text` con saltos de línea:** ¿qué hace `herdr pane send-text` si el texto dictado contiene un `\n`? ¿Se inyecta literal o se parte? Verificar con Herdr core antes de implementar la inyección.
-2. **Valor del timeout de silencio** que corta la captura en modo `toggle` (nombre y default de la variable, p. ej. `TTS_PTT_SILENCE_SECONDS`).
-3. **Suposición press-only del keymap:** el diseño asume que el keymap de Herdr solo dispara en pulsación (no en liberación), lo que descarta el modo `hold`. No verificado en el código de Herdr core; verificar durante la implementación.
-4. **Formato y latencia de la captura de micrófono por PowerShell:** qué contenedor/codec produce el script de PowerShell, tamaño del fragmento y sobrecoste frente a `parecord` (única vía de captura nativa en WSL2).
-5. **Descubrimiento de la URL del brain:** ¿variable nueva (`TTS_STT_URL`), reutilización de la precedencia `HERDR_BRAIN_PORT` → `config.env` → 8741 vía `herdr_resolve_port`, o ambas?
-6. **UX del overlay de confirmación en terminal:** popup de Herdr, mensaje efímero en el pane u otra superficie; afecta a la presentación del aviso de brain caído.
+Capa STT local del motor: subcomando `agent-tts --transcribe` con transcripción de fichero (`--transcribe FILE`) y captura en vivo (`--mic`); jerarquía `stt/` espejo de `providers/` con `STTProvider` y `WhisperCppSTT` resolviendo binario (`whisper-cli`/`whisper-cpp`/`main`) y modelo GGML; captura con `arecord`/`ffmpeg`; extras `agent-tts[stt]`. Postergada P4 el 2026-09-22; superada.
 
-## Apéndice histórico — diseño original whisper.cpp (2026-09-22, superado)
+## Apéndice B — cliente HTTP del plugin sobre el brain (2026-10-07, commit `ed2fbfe`, superado el mismo día)
 
-El diseño original (conservado como historia, no como plan) proponía una capa STT local del motor: subcomando `agent-tts --transcribe` con transcripción de fichero (`--transcribe FILE`) y captura en vivo (`--mic`); jerarquía `stt/` espejo de `providers/` con clase base `STTProvider` y primer proveedor `WhisperCppSTT` que resolvía el binario (`whisper-cli`/`whisper-cpp`/`main`) y el modelo GGML desde el store de voces; captura con `arecord` (Linux ALSA) y fallback `ffmpeg`; zero-cloud verificable; extras `agent-tts[stt]` opcionales; códigos de salida documentados. Quedó postergada en P4 el 2026-09-22, sobrevivió como "cobertura dual" el 2026-10-06 y quedó superada por la decisión del 2026-10-07: el STT se reutiliza del brain y esta PRD pasa a describir el cliente del plugin.
+El plugin dictaba audio y lo enviaba a `POST /transcribe` del brain (multipart `audio`, `{"text"}`), con `TTS_STT_URL`/`TTS_STT_TIMEOUT` propuestas y aviso visible con el brain caído. Contrato del endpoint verificado entonces en `server.py:598-624` (503 unavailable/loading, 400 vacío). Superado horas después por la decisión de que el motor es dueño del STT y la captura; el brain conserva hoy ese endpoint (la migración es la F4.10 opcional).
