@@ -17,6 +17,7 @@ EARLIER = "Earlier phrase must not replay."
 SELECTED = "Read this emphasized ending."
 SUFFIX = SELECTED + "\nNext phrase.\nOne\nTwo items\nA B\nprint(\"safe\")\nFinal tail."
 RAW = EARLIER + " " + SELECTED + " Next phrase. One Two items A B print(\"safe\") Final tail."
+FULL = EARLIER + " " + SUFFIX
 HTML = (
     '<p><span class="tts-sent" id="tts-sent-0" data-sent-idx="0">' + EARLIER + '</span> '
     '<span class="tts-sent" id="tts-sent-1" data-sent-idx="1">Read <strong>this</strong></span>'
@@ -71,12 +72,44 @@ def anchor(harness, index=1, owner=0, continuation=False):
     return harness.page.locator(SURFACE).nth(owner).locator(cls + f'[data-sent-idx="{index}"]').first
 
 
-def selected(harness, index=1, owner=0, count=3):
-    expect(harness.page.locator("#glance-turns .tts-selected")).to_have_count(count)
-    assert harness.page.locator(SURFACE).nth(owner).locator(".tts-selected").evaluate_all(
-        "(nodes, index) => nodes.every(node => node.dataset.sentIdx === String(index))", index
-    )
-    expect(harness.page.locator(".karaoke-active")).to_have_count(0)
+def selected(harness, index=1, owner=0):
+    """Green paints the ACTIVE popup window's exact visible text as owned
+    range marks, never the whole sentence anchor and never an envelope: the
+    CONCATENATION of the marks' own text in DOM order must reconstruct the
+    chunk the toast is showing (whitespace placement approximate,
+    non-whitespace characters exact — unpainted interior content fails).
+    Occurrence evidence for the expected `index`: no mark may sit inside an
+    earlier sentence's anchor, and the expected index's anchor (or a fully
+    unanchored window) must own the paint — identical text painted in a
+    different occurrence is rejected. Marks live only in the owning turn
+    and main karaoke stays idle."""
+    page = harness.page
+    page.wait_for_function(
+        """owner => document.querySelectorAll('#glance-turns .gturn.assistant')[owner]
+             .querySelectorAll('.tts-selected').length > 0""", arg=owner)
+    turn = page.locator(SURFACE).nth(owner)
+    marks = turn.locator(".tts-selected")
+    for mark in marks.all():
+        assert mark.text_content().strip(), "empty range mark"
+    owners = marks.evaluate_all(
+        """nodes => nodes.map(node => {
+            const anchor = node.closest('[data-sent-idx]');
+            return anchor ? anchor.dataset.sentIdx : null;
+        })""")
+    assert all(o is None or int(o) >= index for o in owners), \
+        "painted an anchor of an earlier sentence than %d: %r" % (index, owners)
+    assert any(o == str(index) for o in owners) or all(o is None for o in owners), \
+        "expected owning occurrence %d not painted: %r" % (index, owners)
+    green = marks.evaluate_all("nodes => nodes.map(node => node.textContent).join('')")
+    popup = page.locator("#toast").text_content()
+    assert popup is not None and ": " in popup, popup
+    for prefix in ("🔊 agente: ", "🔊 brain: "):
+        if popup.startswith(prefix):
+            popup = popup[len(prefix):]
+            break
+    assert "".join(green.split()) == "".join(popup.split()), (green, popup)
+    expect(page.locator("#glance-turns .tts-selected")).to_have_count(marks.count())
+    expect(page.locator(".karaoke-active")).to_have_count(0)
 
 
 def idle(harness):
@@ -107,7 +140,7 @@ def test_external_escuchar_then_later_sentence_requests_fresh_readable_suffix(ka
     source(harness, "/full.mp3")
     harness.media("metadata", duration=100)
     harness.media("advance", time=65)
-    assert full.request.post_data_json == {"text": RAW}
+    assert full.request.post_data_json == {"text": FULL}
     reply = ready(harness)
     assert reply.request.post_data_json == {"text": SUFFIX}
     assert reply.request.post_data_json["text"].startswith(SELECTED)
@@ -120,7 +153,7 @@ def test_external_escuchar_then_later_sentence_requests_fresh_readable_suffix(ka
     assert harness.page.locator(CONTENT + " a").get_attribute("rel") == "noopener noreferrer"
     assert harness.page.locator(CONTENT + " code").text_content() == 'print("safe")'
     harness.media("advance", time=90)
-    selected(harness)  # No invented sentence advancement from approximate popup windows.
+    selected(harness, index=3)  # First sentence in the popup's second raw window.
     harness.media("end")
     idle(harness)
     assert harness.page.locator(CONTENT).inner_html().replace(' aria-pressed="false"', '') == before.replace(' aria-pressed="false"', '')
@@ -142,7 +175,7 @@ def test_container_borne_sentence_anchors(karaoke_app, index, expected):
     harness = app(karaoke_app)
     reply = ready(harness, index=index)
     assert reply.request.post_data_json == {"text": expected}
-    selected(harness, index, count=1)
+    selected(harness, index)
 
 
 @pytest.mark.parametrize("key", ["Enter", "Space"])
@@ -230,14 +263,16 @@ def test_duplicate_ids_equal_text_out_of_order_and_polling_keep_dom_owner(karaok
     selected(harness, owner=1)
     first.release()
     assert second.request.post_data_json == {"text": SUFFIX}
+    harness.media("advance", time=60)
+    selected(harness, index=3, owner=1)
     poll(harness)
-    selected(harness, owner=1)
+    selected(harness, index=3, owner=1)
     assert sum(request.url.endswith("/tts") for request in harness.requests) == 2
     # A same-content remount has new anchors, but the same owning turn/plan.
     harness.page.locator(CONTENT).nth(1).evaluate("(el, html) => { el.innerHTML = html; }", HTML)
-    selected(harness, owner=1)
+    selected(harness, index=3, owner=1)
     harness.media("advance", time=60)
-    selected(harness, owner=1)
+    selected(harness, index=3, owner=1)
     assert harness.media("snapshot")["playCalls"] == 1
 
 
@@ -354,7 +389,7 @@ def test_repeated_text_and_nested_anchors_use_the_later_dom_boundary(karaoke_app
     harness = app(karaoke_app, texts=("Echo. Echo. Tail.",), html=html)
     reply = ready(harness, continuation=nested)
     assert reply.request.post_data_json == {"text": "Echo.\nTail."}
-    selected(harness, count=2 if nested else 1)
+    selected(harness)
 
 
 @pytest.mark.parametrize("action", ["stop", "sentence"])
@@ -403,7 +438,7 @@ def test_missing_sentence_index_never_aliases_whole_escuchar(karaoke_app, activa
     # The same fixture reply is consumed only by legitimate whole-answer replay.
     harness.page.locator(SURFACE + " .replay-btn").click()
     source(harness, "/invalid-sentence.mp3")
-    assert reply.request.post_data_json == {"text": RAW}
+    assert reply.request.post_data_json == {"text": FULL}
 
 
 def full_near_end(harness):
@@ -412,7 +447,7 @@ def full_near_end(harness):
     source(harness, "/full.mp3")
     harness.media("metadata", duration=100)
     harness.media("advance", time=99.9)
-    assert reply.request.post_data_json == {"text": RAW}
+    assert reply.request.post_data_json == {"text": FULL}
 
 
 def test_pending_sentence_click_survives_natural_previous_audio_end(karaoke_app):
@@ -436,7 +471,7 @@ def test_explicit_retirement_still_cancels_delayed_sentence_intent(karaoke_app, 
     full_near_end(harness)
     reply = harness.queue_tts(audio_url="/audio/replacement.mp3")
     anchor(harness).click()
-    expected = [{"text": RAW}]
+    expected = [{"text": FULL}]
     if action == "stop":
         harness.page.locator("#stop-audio").click()
     elif action == "reset":
@@ -444,7 +479,7 @@ def test_explicit_retirement_still_cancels_delayed_sentence_intent(karaoke_app, 
     elif action == "full-replay":
         harness.page.locator(SURFACE + " .replay-btn").click()
         source(harness, "/replacement.mp3")
-        expected.append({"text": RAW})
+        expected.append({"text": FULL})
     elif action == "sentence":
         anchor(harness, index=2).press("Enter")
         source(harness, "/replacement.mp3")
@@ -474,6 +509,272 @@ def test_explicit_retirement_still_cancels_delayed_sentence_intent(karaoke_app, 
         assert reply.request is None
 
 
+def progress_content(count=5, *, repeated=False, nested=False):
+    texts = [f"Sentence {i:03d} has enough distinct readable words to fill one popup window."
+             for i in range(count)]
+    if repeated:
+        texts = [texts[0]] * count
+    paragraphs = []
+    for i, text in enumerate(texts):
+        body = (f'<strong class="tts-sent-cont" data-sent-idx="{i}">' +
+                f'<span class="tts-sent" data-sent-idx="{i}">{text}</span></strong>'
+                if nested else text)
+        paragraphs.append(f'<p class="tts-sent" id="tts-sent-{i}" data-sent-idx="{i}">{body}</p>')
+    return texts, "".join(paragraphs)
+
+
+def progress_plan(harness, text):
+    return harness.page.evaluate("text => Karaoke.createPlan('fixture-proof', text)", text)
+
+
+@pytest.mark.parametrize("hidden", [False, True], ids=["visible-popup", "hidden-popup"])
+def test_intermediate_click_tracks_same_popup_global_index(karaoke_app, hidden):
+    texts, html = progress_content()
+    harness = app(karaoke_app, texts=("\n".join(texts),), html=html)
+    suffix = "\n".join(texts[1:])
+    plan = progress_plan(harness, suffix)
+    assert len(plan["chunks"]) == len(texts) - 1
+    reply = ready(harness)
+    assert reply.request.post_data_json == {"text": suffix}
+    selected(harness, index=1)
+    if hidden:
+        harness.page.locator("#toast").evaluate("el => el.classList.add('hidden')")
+    for global_index in [1, 2, 3]:
+        harness.media("advance", time=(global_index + 0.2) / len(plan["chunks"]) * 100)
+        expect(harness.page.locator("#toast")).to_contain_text(plan["chunks"][global_index]["popupText"])
+        owners = harness.page.locator(CONTENT + " .tts-selected").evaluate_all(
+            """nodes => nodes.map(node => {
+                const anchor = node.closest('[data-sent-idx]');
+                return anchor ? anchor.dataset.sentIdx : null;
+            })""")
+        assert set(owners) <= {str(global_index + 1), None}, \
+            "Popup advanced but the painted window stayed behind: %r" % owners
+        selected(harness, index=global_index + 1)
+        expect(anchor(harness, index=global_index + 1)).to_have_attribute("aria-pressed", "true")
+        expect(anchor(harness, index=1)).to_have_attribute("aria-pressed", "false")
+        if hidden:
+            expect(harness.page.locator("#toast")).to_have_class("hidden")
+    # The active index must never replace the original suffix boundary.
+    reply = ready(harness, index=2, url="/audio/fresh-after-progress.mp3")
+    assert reply.request.post_data_json == {"text": "\n".join(texts[2:])}
+    assert harness.media("snapshot")["currentTime"] == 0
+    selected(harness, index=2)
+    harness.media("end")
+    idle(harness)
+
+
+@pytest.mark.parametrize("hidden", [False, True], ids=["visible-popup", "hidden-popup"])
+def test_shared_anchor_popup_windows_paint_only_their_own_visible_text(karaoke_app, hidden):
+    esta = "Esta sesión queda protegida, junto con Whisper y el servidor de síntesis."
+    las = "Las terminales antiguas de las pruebas consumen muy poco; cerrarlas apenas ayudaría."
+    question = "¿Cuáles de estas sesiones puedes cerrar sin interrumpir trabajo que quieras conservar?"
+    request = "Indícame sus PID o terminales; si todas siguen trabajando, no cerraremos ninguna."
+    html = (f'<p class="tts-sent" data-sent-idx="9">{esta}</p>'
+            f'<p class="tts-sent" data-sent-idx="10">{las}</p>'
+            f'<p class="tts-sent" data-sent-idx="11">{question} {request}</p>')
+    raw = " ".join([esta, las, question, request])
+    harness = app(karaoke_app, texts=(raw,), html=html)
+    suffix = esta + "\n" + las + "\n" + question + " " + request
+    plan = progress_plan(harness, suffix)
+    chunks = plan["chunks"]
+    assert len(chunks) >= 6, "the exact tail spans several popup windows"
+    question_window = next(chunk for chunk in chunks
+                           if "quieras" in chunk["popupText"] and "Indícame" not in chunk["popupText"])
+    request_window = next(chunk for chunk in chunks if "no cerraremos ninguna" in chunk["popupText"])
+    assert question_window["globalIndex"] < request_window["globalIndex"]
+    before = harness.page.locator(CONTENT).inner_html()
+    reply = ready(harness, index=9)
+    assert reply.request.post_data_json == {"text": suffix}
+    if hidden:
+        harness.page.locator("#toast").evaluate("el => el.classList.add('hidden')")
+
+    def green():
+        return harness.page.locator(CONTENT).evaluate(
+            "el => Array.from(el.querySelectorAll('.tts-selected'))"
+            ".map(node => node.textContent).join(' ')")
+
+    norm = lambda text: "".join(text.split())
+    for window, forbidden in ((question_window, ["Indícame", "no cerraremos"]),
+                              (request_window, ["¿Cuáles", "quieras", "conservar"])):
+        harness.media("advance", time=(window["globalIndex"] + 0.2) / len(chunks) * 100)
+        expect(harness.page.locator("#toast")).to_contain_text(window["popupText"])
+        assert norm(green()) == norm(window["popupText"]), (
+            "popup window %r must paint only its own visible text" % window["popupText"])
+        for token in forbidden:
+            assert token not in green(), f"{token} painted outside the active popup window"
+        if hidden:
+            expect(harness.page.locator("#toast")).to_have_class("hidden")
+    harness.media("end")
+    idle(harness)
+    assert harness.page.locator(CONTENT).inner_html().replace(' aria-pressed="false"', "") == \
+        before.replace(' aria-pressed="false"', "")
+    assert harness.page.locator(CONTENT + " p").count() == 3
+
+
+def inject_marks(harness, wraps, popup):
+    """Helper-detection probe fixture: manually paint ONLY the given leaf
+    substrings as owned range marks and show `popup` in the toast, without
+    any active replay (glanceReplay stays null, so no observer repaint can
+    mask the sabotaged state). `wraps` is a list of
+    [data-sent-idx, leaf ordinal, start, end, raw] descriptors."""
+    harness.page.evaluate(
+        """([wraps, popup, selector]) => {
+            const toast = document.getElementById('toast');
+            toast.classList.remove('hidden');
+            toast.textContent = '🔊 agente: ' + popup;
+            const content = document.querySelectorAll(selector)[0];
+            for (const [idx, leaf, start, end, raw] of wraps) {
+                const anchor = content.querySelectorAll('[data-sent-idx="' + idx + '"]')[leaf];
+                const node = anchor.firstChild;
+                if (end < node.data.length) node.splitText(end);
+                const mid = start > 0 ? node.splitText(start) : node;
+                const mark = document.createElement('span');
+                mark.className = 'tts-selected tts-range';
+                mark.setAttribute('data-tts-range', raw);
+                node.parentNode.replaceChild(mark, mid);
+                mark.appendChild(mid);
+            }
+        }""",
+        [wraps, popup, CONTENT])
+
+
+def test_selected_rejects_edge_only_paint_with_unpainted_interior(karaoke_app):
+    # Deliberate hole: only the window's edge words are marked, the interior
+    # stays unpainted, endpoints and toast window are otherwise exact. An
+    # envelope comparison (first-to-last-mark Range) still sees the full
+    # window text and wrongly accepts; the helper must reject it.
+    harness = app(karaoke_app)
+    inject_marks(harness, [
+        ["1", 0, 0, 4, "0:4"],        # 'Read' (primary anchor's first leaf)
+        ["1", 2, 1, 8, "24:31"],      # 'ending.' (third continuation leaf)
+    ], "Read this emphasized ending.")
+    with pytest.raises(AssertionError):
+        selected(harness)
+
+
+def test_selected_rejects_identical_text_in_the_wrong_occurrence(karaoke_app):
+    # Repeated identical sentences: the window text matches exactly, but the
+    # paint sits on the FIRST occurrence while the expected owner is the
+    # second. Ignoring the expected index accepts the wrong occurrence.
+    html = ('<p><span class="tts-sent" data-sent-idx="0">Echo.</span> '
+            '<span class="tts-sent" data-sent-idx="1">Echo.</span></p><p>Tail.</p>')
+    harness = app(karaoke_app, texts=("Echo. Echo. Tail.",), html=html)
+    inject_marks(harness, [["0", 0, 0, 5, "0:5"]], "Echo.")
+    with pytest.raises(AssertionError):
+        selected(harness, index=1)
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_repeated_sentence_progress_selects_following_primary_and_continuations(karaoke_app, nested):
+    texts, html = progress_content(repeated=True, nested=nested)
+    harness = app(karaoke_app, texts=("\n".join(texts),), html=html)
+    reply = ready(harness, continuation=nested)
+    assert reply.request.post_data_json == {"text": "\n".join(texts[1:])}
+    for global_index in range(4):
+        harness.media("advance", time=(global_index + 0.2) / 4 * 100)
+        selected(harness, index=global_index + 1)
+    assert harness.media("snapshot")["playCalls"] == 1
+
+
+def test_rendered_escuchar_tracks_from_the_first_readable_sentence(karaoke_app):
+    texts, html = progress_content()
+    harness = app(karaoke_app, texts=("Original source formatting differs from the rendered text.",), html=html)
+    reply = harness.queue_tts(audio_url="/audio/readable-full.mp3")
+    harness.page.locator(SURFACE + " .replay-btn").click()
+    source(harness, "/readable-full.mp3")
+    assert reply.request.post_data_json == {"text": "\n".join(texts)}
+    harness.media("metadata", duration=100)
+    harness.page.wait_for_function("() => !__karaokeHarness.media.snapshot().paused")
+    selected(harness, index=0)
+    harness.media("advance", time=44)
+    expect(harness.page.locator("#toast")).to_contain_text(texts[2])
+    selected(harness, index=2)
+
+
+def test_unanchored_blocks_keep_the_previous_sentence_until_the_popup_reaches_the_next_anchor(karaoke_app):
+    texts, _ = progress_content(3)
+    gap = "Unanchored words fill a whole popup window between two readable DOM anchors."
+    html = (f'<p class="tts-sent" data-sent-idx="0">{texts[0]}</p>' +
+            f'<p class="tts-sent" data-sent-idx="1">{texts[1]}</p><p>{gap}</p>' +
+            f'<p class="tts-sent" data-sent-idx="2">{texts[2]}</p>')
+    harness = app(karaoke_app, texts=("source",), html=html)
+    reply = ready(harness)
+    suffix = texts[1] + "\n" + gap + "\n" + texts[2]
+    assert reply.request.post_data_json == {"text": suffix}
+    plan = progress_plan(harness, suffix)
+    assert len(plan["chunks"]) == 3
+    harness.media("advance", time=40)
+    expect(harness.page.locator("#toast")).to_contain_text(gap)
+    selected(harness, index=1)
+    harness.media("advance", time=75)
+    expect(harness.page.locator("#toast")).to_contain_text(texts[2])
+    selected(harness, index=2)
+
+
+def test_long_anchored_suffix_tracks_popup_global_offsets_across_tts_pieces(karaoke_app):
+    texts, html = progress_content(230)
+    harness = app(karaoke_app, texts=("\n".join(texts),), html=html)
+    plan = progress_plan(harness, "\n".join(texts[1:]))
+    assert len(plan["pieces"]) > 2
+    assert len(plan["chunks"]) == len(texts) - 1
+    replies = [harness.queue_tts(audio_url=f"/audio/tracking-piece-{i}.mp3")
+               for i in range(len(plan["pieces"]))]
+    anchor(harness).click()
+    for piece_index, piece in enumerate(plan["pieces"]):
+        source(harness, f"/tracking-piece-{piece_index}.mp3")
+        assert replies[piece_index].request.post_data_json == {"text": piece["text"]}
+        assert len(piece["text"]) <= 8000
+        harness.media("metadata", duration=100)
+        harness.page.wait_for_function("() => !__karaokeHarness.media.snapshot().paused")
+        for local_index in [0, len(piece["chunks"]) // 2, len(piece["chunks"]) - 1]:
+            global_index = piece["chunkOffset"] + local_index
+            harness.media("advance", time=(local_index + 0.2) / len(piece["chunks"]) * 100)
+            expect(harness.page.locator("#toast")).to_contain_text(plan["chunks"][global_index]["popupText"])
+            selected(harness, index=global_index + 1)
+        harness.media("end")
+    idle(harness)
+
+
+@pytest.mark.parametrize("action", ["stop", "end", "error", "remove", "content", "raw-content",
+                                    "index", "session", "pane"])
+def test_advanced_highlight_retires_and_late_progress_cannot_restore_it(karaoke_app, action):
+    texts, html = progress_content()
+    raw = "\n".join(texts)
+    harness = app(karaoke_app, texts=(raw,), html=html)
+    ready(harness)
+    harness.media("advance", time=35)
+    selected(harness, index=2)
+    old = harness.media("capture")
+    if action == "stop":
+        harness.page.locator("#stop-audio").click()
+    elif action == "end":
+        harness.media("end")
+    elif action == "error":
+        harness.media("error")
+    elif action == "remove":
+        harness.page.locator(SURFACE).evaluate("el => el.remove()")
+    elif action == "content":
+        anchor(harness, index=2).evaluate("el => { el.textContent = 'Changed reader content.'; }")
+    elif action == "raw-content":
+        harness.page.locator(SURFACE + " .gt-text").evaluate("el => { el.textContent = 'Changed response.'; }")
+    elif action == "index":
+        anchor(harness, index=2).evaluate("el => el.setAttribute('data-sent-idx', '7')")
+    else:
+        data = payload(texts=(raw,), html=html,
+                       session="new-session" if action == "session" else SESSION,
+                       pane="new-pane" if action == "pane" else PANE)
+        responses(harness, data)
+        poll(harness)
+    idle(harness)
+    for event in ["timeupdate", "loadedmetadata", "pause", "ended", "error"]:
+        harness.media("emit", type=event, source=old, time=95)
+    idle(harness)
+    if action in ("stop", "end", "error"):
+        reply = ready(harness, url="/audio/usable-again.mp3")
+        assert reply.request.post_data_json == {"text": "\n".join(texts[1:])}
+        selected(harness, index=1)
+
+
 @pytest.fixture
 def native_glance(real_media_browser):
     context = real_media_browser.new_context(service_workers="block", accept_downloads=False, permissions=[])
@@ -497,7 +798,7 @@ def test_native_mp3_fresh_suffix_starts_at_zero_and_progress_survives_reselectio
     harness.page.wait_for_function("() => !player.paused && !player.muted && player.currentTime > 0.1")
     anchor(harness).click()
     harness.page.wait_for_function("() => __realMedia.events.filter(e => e.type === 'play-call' && !e.muted).length >= 2")
-    assert harness.tts == [{"text": RAW}, {"text": SUFFIX}]
+    assert harness.tts == [{"text": FULL}, {"text": SUFFIX}]
     calls = [event for event in harness.snapshot()["events"] if event["type"] == "play-call" and not event["muted"]]
     assert calls[-1]["time"] == pytest.approx(0, abs=0.03)
     selected(harness)
@@ -514,6 +815,29 @@ def test_native_mp3_fresh_suffix_starts_at_zero_and_progress_survives_reselectio
     time = harness.snapshot()["time"]
     harness.page.wait_for_timeout(120)
     assert harness.snapshot()["time"] == pytest.approx(time, abs=0.03)
+
+
+def test_native_mp3_external_highlight_follows_popup_progress_when_hidden_and_remounted(native_glance):
+    harness = native_glance
+    anchor(harness).click()
+    harness.page.wait_for_function("() => !player.paused && !player.muted && player.currentTime > 0.08")
+    assert harness.tts == [{"text": SUFFIX}]
+    selected(harness)
+    harness.page.locator("#toast").evaluate("el => el.classList.add('hidden')")
+    harness.page.locator("#player").evaluate("p => { p.currentTime = p.duration * 0.65; }")
+    expect(harness.page.locator("#toast")).to_contain_text('One Two items A B print("safe") Final tail.')
+    selected(harness, index=3)
+    expect(harness.page.locator("#toast")).to_have_class("hidden")
+    assert any(event["type"] == "timeupdate" and event["time"] > event["duration"] * 0.5
+               for event in harness.snapshot()["events"] if isinstance(event["duration"], (int, float)))
+    harness.page.locator("#player").evaluate("p => p.pause()")
+    poll(harness)
+    harness.page.locator(CONTENT).evaluate("(el, html) => { el.innerHTML = html; }", HTML)
+    selected(harness, index=3)
+    # Natural completion clears the advanced highlight with native MP3 events.
+    harness.page.locator("#player").evaluate("p => { p.currentTime = p.duration - 0.12; return p.play(); }")
+    harness.page.wait_for_function("() => __realMedia.events.some(event => event.type === 'ended')")
+    idle(harness)
 
 
 def test_native_unrendered_fallback_after_stop_handles_current_src_lag(native_glance):

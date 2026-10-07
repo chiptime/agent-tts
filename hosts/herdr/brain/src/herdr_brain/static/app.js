@@ -475,6 +475,7 @@
   }
 
   function clearGlanceSelection(turn) {
+    reader.clearPaintedRanges(turn);   // owned range marks unwrap and heal first
     turn.querySelectorAll(".tts-selected").forEach(function (control) {
       control.classList.remove("tts-selected");
       if (control.getAttribute("role") === "button") control.setAttribute("aria-pressed", "false");
@@ -501,8 +502,29 @@
     var content = owner.turn.querySelector(".reader-content");
     if (owner.readerText !== null && (!content || content.textContent !== owner.readerText ||
         owner.turn.readerHtml !== owner.readerHtml)) return null;
-    if (owner.sentIdx !== null && reader.readableSuffix(content, owner.sentIdx) !== plan.rawText) return null;
+    if (owner.reading) {
+      // Validate the immutable synthesis boundary, never the active highlight.
+      var current = reader.readableReplay(content, owner.sentIdx === null ? undefined : owner.sentIdx);
+      if (current.rawText !== plan.rawText || current.sentences.length !== owner.reading.sentences.length) return null;
+      for (var i = 0; i < current.sentences.length; i++) {
+        var before = owner.reading.sentences[i];
+        var after = current.sentences[i];
+        if (before.sentIdx !== after.sentIdx || before.raw[0] !== after.raw[0] || before.raw[1] !== after.raw[1]) return null;
+      }
+      // Marks are transparent to the extraction; rebinding adopts the fresh
+      // leaf nodes so a remount repaints the CURRENT range, not the initial one.
+      owner.reading = current;
+    }
     return owner.turn;
+  }
+
+  function pressReaderAnchors(content, sentIdx) {
+    // The owning anchor keeps its button affordance while only the popup
+    // window's own text carries the green range marks.
+    if (sentIdx === null || sentIdx === undefined) return;
+    content.querySelectorAll('[data-sent-idx="' + String(sentIdx) + '"]').forEach(function (anchor) {
+      if (anchor.getAttribute("role") === "button") anchor.setAttribute("aria-pressed", "true");
+    });
   }
 
   function syncGlanceReplay() {
@@ -516,10 +538,15 @@
     var turn = glanceReplayTurn(state.plan);
     if (!turn) { cancelGlanceTap(); karaokeCtl.detach(state.ownerTurnId); return; }
     var content = turn.querySelector(".reader-content");
-    if (content && glanceReplay.sentIdx !== null) {
-      reader.selectSentence(content, glanceReplay.sentIdx);
+    if (content && glanceReplay.activeRaw && glanceReplay.reading) {
+      // Green paints the shared popup chunk's raw interval — the exact
+      // visible portion(s) inside the owning anchor/content — never the
+      // whole sentence anchor (one anchor can hold several windows).
+      reader.paintRawRange(content, glanceReplay.reading,
+        glanceReplay.activeRaw[0], glanceReplay.activeRaw[1]);
       prepareReaderControls(content);
-    }
+      pressReaderAnchors(content, glanceReplay.activeSentIdx);
+    } else clearGlanceSelection(turn);
   }
 
   function selectGlanceReplay(turn, sentIdx, wholeAnswer) {
@@ -529,14 +556,18 @@
     var body = turn.querySelector(".gt-text");
     if (!body) return;
     var rawText = body.textContent;
-    var text = wholeAnswer === true ? rawText : reader.readableSuffix(content, sentIdx);
+    if (wholeAnswer !== true && (sentIdx === null || sentIdx === undefined)) return;
+    var reading = content ? reader.readableReplay(content, wholeAnswer === true ? undefined : sentIdx) : null;
+    var text = reading ? reading.rawText : wholeAnswer === true ? rawText : "";
     if (!text.trim()) return; // Invalid boundaries never fall back to the full turn.
     // Every activation gets a fresh plan, even equal sentences in the same turn.
     var plan = Karaoke.createPlan("glance-" + (++karaokeTurnSequence), text);
     if (glanceReplay) clearGlanceSelection(glanceReplay.turn);
-    glanceReplay = { turn: turn, plan: plan, sentIdx: wholeAnswer === true ? null : sentIdx, rawText: rawText,
+    glanceReplay = { turn: turn, plan: plan, reading: reading, activeSentIdx: null, activeRaw: null,
+      rawText: rawText,
       readerGeneration: reader.currentGeneration(), readerHtml: turn.readerHtml,
       readerText: content ? content.textContent : null };
+    Object.defineProperty(glanceReplay, "sentIdx", { value: wholeAnswer === true ? null : sentIdx });
     selectOwnedKaraoke(plan, 0); // Suffix audio always starts at zero, never a full-answer seek.
   }
 
@@ -1697,6 +1728,11 @@
         karaokeActiveEl = null;
       }
       if (!snapshot.chunk) {
+        if (glanceReplay && glanceReplay.plan === snapshot.plan) {
+          glanceReplay.activeSentIdx = null;
+          glanceReplay.activeRaw = null;
+          syncGlanceReplay();
+        }
         if (karaokePopup) hideToast();
         karaokePopup = null;
         return;
@@ -1704,7 +1740,13 @@
       var turn = ownedReplayTurn(snapshot.plan);
       if (!turn) { karaokeCtl.detach(snapshot.ownerTurnId); return; }
       var external = glanceReplay && glanceReplay.plan === snapshot.plan;
-      if (!external) {
+      if (external) {
+        // Bookkeeping only: the owning sentence index still drives the
+        // button affordance. The green itself paints the chunk's raw range.
+        glanceReplay.activeSentIdx = reader.sentenceForChunk(glanceReplay.reading, snapshot.chunk);
+        glanceReplay.activeRaw = [snapshot.chunk.raw[0], snapshot.chunk.raw[1]];
+        syncGlanceReplay(); // Runs before popup visibility handling; remounts reuse this range.
+      } else {
         karaokeActiveEl = turn.querySelectorAll(".karaoke-chunk")[snapshot.activeGlobalIndex];
         karaokeActiveEl.classList.add("karaoke-active");
         karaokeActiveEl.setAttribute("aria-pressed", "true");
@@ -1736,7 +1778,7 @@
     glanceTurns.querySelectorAll(".gturn.assistant .reader-content").forEach(prepareReaderControls);
     syncGlanceReplay();
   }).observe(glanceTurns, { childList: true, subtree: true, characterData: true,
-    attributes: true, attributeFilter: ["data-sent-idx"] });
+    attributes: true, attributeFilter: ["data-sent-idx", "hidden", "aria-hidden"] });
 
   function enqueueAudio(url, announcement, speechRequestId, seq) {
     audioQueue.push({
