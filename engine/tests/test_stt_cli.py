@@ -20,6 +20,7 @@ import pytest
 
 import agent_tts.stt.cli as stt_cli
 import agent_tts.stt.worker as sttw
+from agent_tts.stt.capture import CaptureConfig, CaptureResult, EmptyCaptureError
 from agent_tts.stt.transcriber import MissingExtraError
 from agent_tts.stt.worker import SttWorker
 
@@ -47,7 +48,7 @@ class TestHelpSmoke:
             env=env,
         )
         assert proc.returncode == 0
-        for op in ("pull", "serve", "status", "transcribe"):
+        for op in ("pull", "serve", "status", "transcribe", "capture"):
             assert op in proc.stdout
 
     def test_missing_subcommand_exits_nonzero(self):
@@ -412,6 +413,116 @@ sys.exit(cli.main(["serve", "--socket", socket_path]))
                 except subprocess.TimeoutExpired:  # pragma: no cover
                     proc.kill()
                     proc.wait(timeout=10)
+
+
+class TestCapture:
+    """Local capture verb: no worker/socket, one JSON summary line.
+
+    The real PowerShell recorder is never invoked here — the capture class
+    itself is the seam under test at this layer (its fake-first behavior
+    lives in test_stt_capture.py).
+    """
+
+    @staticmethod
+    def _fake_capture(result=None, error=None):
+        calls = []
+
+        class FakeCapture:
+            def run(self, config, runner=None):
+                calls.append(config)
+                if error is not None:
+                    raise error
+                return result
+
+        return FakeCapture, calls
+
+    def test_capture_writes_wav_and_exact_json_summary(self, tmp_path, capsys, monkeypatch):
+        wav = b"RIFF-fake-bytes" * 4
+        fake, calls = self._fake_capture(
+            result=CaptureResult(
+                wav_bytes=wav, duration=2.05, ended_by="max_duration",
+                stats={"trimmed": True},
+            )
+        )
+        monkeypatch.setattr(stt_cli, "PowerShellCapture", fake)
+        out = tmp_path / "cap.wav"
+        assert run_cli(["capture", "--out", str(out)]) == 0
+        assert out.read_bytes() == wav
+        payload = last_json(capsys.readouterr().out)
+        assert payload == {
+            "ok": True,
+            "path": str(out),
+            "duration_sec": 2.05,
+            "ended_by": "max_duration",
+            "trimmed": True,
+            "bytes": len(wav),
+        }
+        assert calls[0].max_seconds == 30.0  # defaults flow through
+
+    def test_capture_flags_reach_the_config(self, tmp_path, capsys, monkeypatch):
+        fake, calls = self._fake_capture(
+            result=CaptureResult(b"RIFF", 0.5, "max_duration", {"trimmed": False})
+        )
+        monkeypatch.setattr(stt_cli, "PowerShellCapture", fake)
+        out = tmp_path / "c.wav"
+        assert run_cli(
+            [
+                "capture", "--out", str(out),
+                "--max-seconds", "5", "--silence-seconds", "0.5",
+                "--device", "default",
+            ]
+        ) == 0
+        cfg = calls[0]
+        assert isinstance(cfg, CaptureConfig)
+        assert cfg.max_seconds == 5.0
+        assert cfg.silence_seconds == 0.5
+        assert cfg.device == "default"
+
+    def test_capture_empty_is_typed_exit_9(self, tmp_path, capsys, monkeypatch):
+        fake, _ = self._fake_capture(
+            error=EmptyCaptureError("capture contains only silence")
+        )
+        monkeypatch.setattr(stt_cli, "PowerShellCapture", fake)
+        code = run_cli(["capture", "--out", str(tmp_path / "c.wav")])
+        assert code == 9
+        payload = last_json(capsys.readouterr().out)
+        assert payload["ok"] is False
+        assert payload["error"]["kind"] == "empty_capture"
+        assert not (tmp_path / "c.wav").exists()
+
+    def test_capture_unavailable_is_typed_exit_8(self, tmp_path, capsys, monkeypatch):
+        from agent_tts.stt.capture import CaptureUnavailableError
+
+        fake, _ = self._fake_capture(
+            error=CaptureUnavailableError("powershell.exe not found on PATH")
+        )
+        monkeypatch.setattr(stt_cli, "PowerShellCapture", fake)
+        code = run_cli(["capture", "--out", str(tmp_path / "c.wav")])
+        assert code == 8
+        payload = last_json(capsys.readouterr().out)
+        assert payload["error"]["kind"] == "capture_unavailable"
+
+    def test_capture_unsupported_device_is_invalid_config(self, tmp_path, capsys, monkeypatch):
+        fake, calls = self._fake_capture(
+            result=CaptureResult(b"RIFF", 1.0, "max_duration", {})
+        )
+        monkeypatch.setattr(stt_cli, "PowerShellCapture", fake)
+        code = run_cli(["capture", "--out", str(tmp_path / "c.wav"), "--device", "usb"])
+        assert code == 1
+        payload = last_json(capsys.readouterr().out)
+        assert payload["error"]["kind"] == "invalid_config"
+        assert calls == []  # config refused before any recorder contact
+
+    def test_capture_unwritable_out_is_typed_error(self, tmp_path, capsys, monkeypatch):
+        fake, _ = self._fake_capture(
+            result=CaptureResult(b"RIFF", 1.0, "max_duration", {"trimmed": False})
+        )
+        monkeypatch.setattr(stt_cli, "PowerShellCapture", fake)
+        out = tmp_path / "no-such-dir" / "c.wav"
+        code = run_cli(["capture", "--out", str(out)])
+        assert code == 1
+        payload = last_json(capsys.readouterr().out)
+        assert payload["ok"] is False
 
 
 class TestPackagingMetadata:
