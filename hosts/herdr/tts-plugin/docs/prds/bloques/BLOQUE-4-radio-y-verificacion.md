@@ -3,6 +3,8 @@
 **Alcance**: PRD-HT-03 (P2) + tarea de verificación de PRD-AT-03 · **Prioridad**: P2 · **Esfuerzo agregado**: M + 10 min
 **Repositorios**: herdr-tts (radio) + agent-tts (verificación) · **Estado**: PARCIAL (hito 0 hecho, radio pendiente)
 
+> **Estado reconciliado (2026-10-05)**: AT-03 recortada cerrada en `3bb5e1b` (2026-09-28); conector OpenCode por ID presente en `engine/src/agent_tts/sources/`. `bin/herdr-tts` no tiene comando `radio` ni configuración `TTS_RADIO_*`: HT-03 y su integración siguen sin ejecutar. El cuerpo conserva el plan original.
+
 ### Objetivo del bloque
 
 Entregar radio mode como flujo diario de triaje por voz en herdr-tts — un boletín hablado y priorizado de todos los chats que piden atención — y cerrar la única tarea activa que queda de PRD-AT-03 en el repo hermano: verificar con una sesión web real de OpenCode que el conector actual resuelve el último mensaje. Radio entra aquí en su versión core (reproducción secuencial bajo el mutex actual del motor) más tres mejoras progresivas que aterrizan solas cuando sus dependencias (Bloque 1 y Bloque 2 de este desglose) existan.

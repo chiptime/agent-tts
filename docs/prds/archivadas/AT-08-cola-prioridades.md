@@ -2,6 +2,8 @@
 **Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: EJECUTADA (BLOQUE 1.3) (Fecha de cierre: 2026-09-25, commit: `7231f9e` / `c8d5665`)
 **Dependencias**: AT-04 recomendada
 
+> **Reconciliación (2026-10-05)**: Aprobada el 22/09 y ejecutada en `engine/src/agent_tts/{queue_manager,chain,daemon,cli}.py`. Cierre de Cola y Cadena en el alcance del BLOQUE 1.3; winhost v2, aging y demás residuales no se dan por resueltos.
+
 > **Nota de revisión (22/09/2026)**: Se aborda JUNTO a AT-04 como paquete P1: el daemon posee la cola desde el día uno, decisión que cierra la open question de AT-04 y evita una segunda migración de semántica de playback.
 
 > **Nota de revisión (22/09/2026, vía única)**: La decisión de vía única con auto-arranque transparente en AT-04 elimina el modo "sin daemon": el CLI es siempre cliente. RNF-AT-08-4 se retira con puntero (no hay degradación sin daemon que diseñar ni testear) y las menciones a `--play-chain` y flags de prioridad "en proceso único sin daemon" se reformulan en consecuencia.

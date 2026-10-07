@@ -1,21 +1,25 @@
 # MANUAL-TESTS — Features del paquete voice-stack y cómo probarlas
 
 > **Propósito:** manual de verificación para el operador. Cubre las features de los
-> cuatro hitos en tres capas: **automatizada** (comandos exactos, ya ejecutados con
-> evidencia en `~/.local/state/voice-stack-runs/20261001T084919Z-vs2c/`), **manual
-> funcional** (curl/navegador/CLI, reproducible en tu máquina) y **manual física**
-> (EXECUTION §8 — la única que ningún test puede sustituir).
+> cuatro hitos en tres capas: **automatizada** (comandos exactos; evidencia
+> histórica de la sesión de cierre en
+> `~/.local/state/voice-stack-runs/20261001T084919Z-vs2c/`, ejecutada en el
+> worktree `voice-stack` hoy eliminado — se conserva como historia, no se
+> recertifica), **manual funcional** (curl/navegador/CLI, reproducible en tu
+> máquina) y **manual física** (EXECUTION §8 — la única que ningún test puede
+> sustituir).
 >
-> **Estado del paquete al escribir esto:** `automated_complete` (VS0→VSX, 2026-10-01).
-> Este documento se añade DESPUÉS del cierre: cambia el inventario de `docs/voice-stack/`
-> (identidad por hashes), no invalida evidencia ya registrada.
+> **Estado del paquete al escribir esto:** `automated_complete` (VS0→VSX, 2026-10-01),
+> ya integrado en `main` (`feat/voice-stack` es ancestro de `main`, verificado
+> 2026-10-07). La sesión física consolidada (voice-stack + `/approval` + anuncios
+> sin llamada) está preparada en [odd/tasks/f2-physical-validation.md](../../odd/tasks/f2-physical-validation.md).
 
 ---
 
 ## Ruta rápida (15 minutos, happy path)
 
-1. Arranca el stack del worktree (ver §Arranque) con `HERDR_TTS_HOME` apuntando al
-   **worktree** → host protocolo-2.
+1. Arranca el brain (ver §Arranque). El host TTS por defecto ya habla
+   protocolo-2 → audio incremental.
 2. Abre la PWA desde el teléfono (`http://<ip-del-pc>:8741`) y haz una pregunta larga
    → **el primer segmento suena en segundos**, no cuando termina todo (Hito 2).
 3. Pulsa **Detener** a mitad de respuesta → el audio del teléfono para YA y el render
@@ -27,48 +31,57 @@
 
 ---
 
-## Arranque del stack (desde el worktree)
+## Arranque del stack
 
-El checkout canónico `~/Code/personal/agent-tts` **no se toca**; todo corre desde el
-worktree. Dos terminales:
+El worktree histórico `agent-tts-worktrees/voice-stack` ya no existe (los
+worktrees históricos se eliminaron el 2026-10-05 y las ramas se mergearon a
+`main`). El stack completo vive en cualquier checkout descendiente de `main`,
+incluido el canónico. Dos opciones (no hace falta arrancar nada más para el
+teléfono: el render telefónico es un subprocess por solicitud; el **daemon
+del PC** es tu instalación habitual `~/.local/share/herdr-tts`):
 
 **Terminal 1 — brain** (realiza el render vía el host que le digas):
 
 ```bash
-cd /home/bruno/Code/personal/agent-tts-worktrees/voice-stack/hosts/herdr/brain
+# Opción A — checkout canónico (el más simple; ya contiene el voice-stack):
+cd ~/Code/personal/agent-tts/hosts/herdr/brain
 export GLM_API_KEY="<tu clave>"                       # LLM real; sin clave, /ask responde 503
-export HERDR_TTS_HOME=/home/bruno/Code/personal/agent-tts-worktrees/voice-stack/hosts/herdr/tts-plugin
 export HERDR_BRAIN_HOST=0.0.0.0                        # para abrirlo desde el teléfono
-export HERDR_BRAIN_PORT=8741
+export HERDR_BRAIN_PORT=8741                           # ya es el default
 .venv/bin/python -m herdr_brain.server
+
+# Opción B — este worktree (solo si la sesión debe ejercer estos bytes):
+#   el brain del worktree NO tiene .venv; usa el venv canónico + PYTHONPATH:
+export WT=/home/bruno/Code/personal/agent-tts-worktrees/roadmap
+export HERDR_TTS_HOME=$WT/hosts/herdr/tts-plugin
+cd $WT/hosts/herdr/brain && \
+  PYTHONPATH=$WT/hosts/herdr/brain/src ~/Code/personal/agent-tts/hosts/herdr/brain/.venv/bin/python -m herdr_brain.server
 ```
 
-**Terminal 2 — nada que arrancar para el teléfono** (el render telefónico es un
-subprocess por solicitud). El **daemon del PC** es tu instalación habitual
-(`~/.local/share/herdr-tts`). Ojo con este detalle:
-
-> ⚠️ El venv del host (`~/.local/share/herdr-tts/venv`) tiene `agent_tts` instalado
-> **editable apuntando al CANÓNICO**. Para que el host use el MOTOR del worktree
-> (imprescindible para probar el fallback del Hito 4), arranca cualquier comando del
-> host así:
+> ⚠️ Nota sobre el motor: el venv del host (`~/.local/share/herdr-tts/venv`)
+> puede tener `agent_tts` editable apuntando al canónico — que ya contiene el
+> motor completo, así que para F2 no se necesita override de `PYTHONPATH`.
+> Solo si la sesión debe forzar el motor de un checkout concreto:
 >
 > ```bash
-> export WT=/home/bruno/Code/personal/agent-tts-worktrees/voice-stack
+> export WT=<checkout>   # p. ej. /home/bruno/Code/personal/agent-tts-worktrees/roadmap
 > PYTHONPATH="$WT/engine/src:$WT/hosts/herdr/tts-plugin/lib" \
 >   ~/.local/share/herdr-tts/venv/bin/python "$WT/hosts/herdr/tts-plugin/lib/pending_queue.py" <subcomando>
 > ```
->
-> (Los gates del bucle usaron exactamente ese override.)
 
-**Conmutador v1/v2 (negociación):** `HERDR_TTS_HOME` decide el protocolo:
-- Worktree → host **protocolo-2** (`--render-text-segmented`, audio incremental).
-- Canónico (`~/Code/personal/agent-tts/hosts/herdr/tts-plugin`) → host **v1-only**:
-  las preguntas identificadas caen a fichero-completo con el marcador visible
-  `speech.degraded: "segmented-unavailable"` y el audio llega completo al final.
+**Negociación v1/v2:** el brain sondea los protocolos del host que le indique
+`HERDR_TTS_HOME` (default: el plugin del canónico, `config.py`). Tanto el
+canónico como este worktree contienen `--render-text-segmented`
+(`bin/herdr-tts`) → **ambos hablan protocolo-2**. La vía degradada
+v1 (`speech.degraded: "segmented-unavailable"`, audio completo al final) solo
+aparece si `HERDR_TTS_HOME` apunta a un host anterior a VS2; con los
+checkouts actuales no se reproduce (la prueba 2.3 queda como contrato
+verificado por tests, no reproducible en sesión física sin un host viejo).
 
-**PWA en el teléfono:** mismo Wi-Fi/LAN → `http://<ip-del-pc>:8741`. Chromium con el
-flag estándar de autoplay ya lo maneja la página; el primer tap habilita audio si el
-navegador lo pide.
+**PWA en el teléfono:** la conexión que ya usas (tu HTTPS de Tailscale o la
+IP de tu LAN, puerto 8741) → misma URL de siempre. Chromium con el flag
+estándar de autoplay ya lo maneja la página; el primer tap habilita audio si
+el navegador lo pide.
 
 ---
 
@@ -94,7 +107,7 @@ navegador lo pide.
 |---|---------|------------------------|----------|--------------|
 | 2.1 | Primer segmento ANTES del total | Pregunta que dé respuesta larga (pide "explica X en detalle") | Primer audio en segundos; el teleprompter muestra texto mientras se sigue sintetizando | E2E `test_first_segment_plays_before_total` (medido: +0.12 s vs +4.45 s) |
 | 2.2 | Orden y sin duplicados | Escucha una respuesta larga completa | Segmentos estrictamente en orden; ninguno dos veces | E2E `test_reconnect_no_duplicates_no_cancel_replay`, unit `tests/test_speech_transport.py` |
-| 2.3 | Negociación v1 fail-soft | Cambia `HERDR_TTS_HOME` al canónico y reinicia el brain; pregunta CON id | Respuesta incluye `"degraded":"segmented-unavailable"`; audio llega completo (fichero); la respuesta textual JAMÁS se bloquea | `tests/test_speech_dispatch.py::test_v1_host_identified_turn_marks_degraded`, contrato `contracts/tts-brain-v2.md` |
+| 2.3 | Negociación v1 fail-soft | Histórico: requería un host v1 (pre-VS2). Con los checkouts actuales (canónico y worktrees de `main`) el host ya habla protocolo-2 y NO se degrada; el fail-soft queda verificado solo por tests | Respuesta con `"degraded":"segmented-unavailable"` y audio completo solo con un host viejo; la respuesta textual JAMÁS se bloquea | `tests/test_speech_dispatch.py::test_v1_host_identified_turn_marks_degraded`, contrato `contracts/tts-brain-v2.md` |
 | 2.4 | Cancelación a mitad de stream | Stop durante el streaming | Silencio inmediato; ningún fetch de segmentos después; job `cancelled` server-side | E2E `test_cancel_midstream_stops_segments` |
 | 2.5 | Pressión del búfer (>8) | Respuesta larguísima escuchada completa | Nunca se degrada por búfer si vas escuchando (los acks liberan); con el teléfono en pausa prolongada el job acaba `degraded`/`expired-unconsumed` visible (300 s) | `test_gt8_segments_pressure_released_by_acks`, `test_disconnected_consumer_finite_unconsumed_timeout` |
 | 2.6 | Reconexión de red | Activa/desactiva el wifi del teléfono a mitad de respuesta | Al volver, continúa donde iba SIN repetir ni saltar segmentos; sin cancelación fantasma | E2E `test_reconnect_no_duplicates_no_cancel_replay` |
@@ -155,10 +168,16 @@ Ejemplo de config mínima para 4.3/4.4 (fuera del repo, es tuya):
 - **Sin secretos en evidencia:** el capability token nunca aparece en URLs, logs ni respuestas
   (`test_token_never_in_logs`, `test_cancel_response_never_echoes_token`).
 
-## Comandos automatizados completos (referencia)
+## Comandos automatizados completos (referencia histórica)
+
+Los recuentos de la derecha son los observados en la sesión de cierre del
+worktree `voice-stack` (historia; no recertificados). Para re-ejecutar hoy,
+sustituye `WT` por un checkout descendiente de `main` (canónico o este
+worktree) y usa el venv correspondiente (el brain del worktree no tiene
+`.venv`; el canónico sí):
 
 ```bash
-WT=/home/bruno/Code/personal/agent-tts-worktrees/voice-stack
+WT=/home/bruno/Code/personal/agent-tts          # o .../agent-tts-worktrees/roadmap
 
 # Unit suites (como los gates, sin maquinaria de evidencia)
 (cd $WT/hosts/herdr/brain && .venv/bin/python -m pytest tests/ -q --ignore=tests/e2e)   # 1256
@@ -184,6 +203,11 @@ ejecución íntegra está evidenciada en el manifiesto de VSX del run-dir citado
 
 ## Checklist manual-física (EXECUTION §8 — solo tú puedes confirmarla)
 
+Sesión única consolidada (voice-stack + `/approval` en Chrome Android +
+anuncios sin llamada T5): pasos detallados, prerrequisitos verificados y
+plantilla de registro en [odd/tasks/f2-physical-validation.md](../../odd/tasks/f2-physical-validation.md).
+Nada de esta capa está verificado todavía (sin teléfono). Resumen:
+
 - [ ] Auricular/Bluetooth: la cancelación corta ESA voz sin cortar otros audios del teléfono.
 - [ ] Acústica real PC+teléfono: pendientes audibles en orden, sin solapados ni duplicados.
 - [ ] Proveedores reales (solo si configuras fallback): degradación audible sin doble reproducción.
@@ -195,4 +219,4 @@ ejecución íntegra está evidenciada en el manifiesto de VSX del run-dir citado
 1. `G-SMOKE` 40e: `boundaries.py` difiere del pin `32e9bafb` del bootstrap — preexistente, adjudicado.
 2. Cobertura <90 ramas de 6 módulos de tu trabajo paralelo (consult/evidence/queryfsm/reportstore/tools ×2) vs el baseline pre-paralelo — fuera del alcance voice-stack.
 3. `speechCtl` maneja UN job activo (diseño VS1.7): un ask nuevo mientras suena el anterior deja al previo sin cancel por stop.
-4. Commits/push/PR: pendientes de tu pedido expreso (el árbol quedó SIN commitear en `feat/voice-stack`).
+4. ~~Commits/push/PR pendientes~~ **Resuelto:** `feat/voice-stack` se mergeó a `main` (verificado 2026-10-07); el árbol ya no queda pendiente de commit.

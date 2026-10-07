@@ -1,7 +1,10 @@
 # BLOQUE 1.1 — Canal de control: propiedad del socket, lock y framing (AT-09)
 
 **Alcance**: PRD-AT-09 · **Prioridad**: P1 · **Esfuerzo**: S-M
-**Repositorio**: agent-tts · **Estado**: Aprobado (reestructuración vía única 22/09/2026)
+**Repositorio**: agent-tts · **Estado**: COMPLETADO (2026-09-23; cobertura Windows real aplazada)
+**Referencias Git**: `05624a1`, `16f11aa`; refuerzo posterior `1dde8f2` (2026-09-24).
+
+> **Estado reconciliado (2026-10-05)**: `engine/src/agent_tts/{ownership,ipc}.py` implementan propiedad y transporte. Aprobado el 22/09; el cuerpo conserva el diseño y la excepción explícita del DoD §5 sobre la primitiva Windows.
 
 > Capa de orquestación del primer sub-bloque del paquete P1 (`BLOQUE-1-paquete-motor.md`). El detalle funcional y no funcional vive en `../AT-09-canal-de-control.md`, referenciado aquí por su identificador (RF/RNF/US).
 

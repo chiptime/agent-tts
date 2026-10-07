@@ -2,6 +2,8 @@
 **Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: Implementada
 **Dependencias**: Ninguna (`--voice` ya existe por llamada)
 
+> **Nota de estado (2026-10-05)**: Asignación persistente por agente/pane y selector de aplicación/cancelación implementados. La compañera [HT-11](HT-11-audicion-voces.md) (audición previa), aún pendiente a esa fecha con prioridad baja según D4, fue ejecutada el 2026-10-06 con el cierre del Bloque 2.
+
 # PRD-HT-02 — Voces por agente (identidad vocal)
 
 **Prioridad**: Alta · **Esfuerzo**: S-M

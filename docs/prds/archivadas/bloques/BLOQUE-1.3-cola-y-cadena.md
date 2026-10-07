@@ -1,7 +1,10 @@
 # BLOQUE 1.3 — Cola con prioridades y reproducción encadenada (AT-08)
 
 **Alcance**: PRD-AT-08 · **Prioridad**: P1 · **Esfuerzo**: M-L
-**Repositorio**: agent-tts · **Estado**: Aprobado (reestructuración vía única 22/09/2026)
+**Repositorio**: agent-tts · **Estado**: COMPLETADO (Cola y Cadena, 2026-09-25)
+**Referencias Git**: `3a9c59e`, `ec1b541`, `7231f9e`, `0d3f340`.
+
+> **Estado reconciliado (2026-10-05)**: Cola, cadena y contrato presentes en `engine/src/agent_tts/` y `contracts/ipc-v2.md`. Aprobado el 22/09; las secciones de pendientes anteriores a T6/T8 son históricas. Se conservan métricas incumplidas y residuales; el cierre no los convierte en pruebas satisfactorias.
 
 > Capa de orquestación del tercer sub-bloque del paquete P1 (`BLOQUE-1-paquete-motor.md`). El detalle funcional y no funcional vive en `../AT-08-cola-prioridades.md`, referenciado aquí por su identificador (RF/RNF/US).
 
@@ -457,4 +460,3 @@ packages installed for this measurement).
 > secciones de pendientes que vivían aquí (post-freeze pending y
 > post-close decisions/residuals) migraron al registro vivo
 > `docs/deuda-tecnica.md`, que es su ubicación de mantenimiento.
-

@@ -2,6 +2,8 @@
 **Prioridad final (revisión 2026-09-22)**: P2 · **Estado**: EJECUTADA (recortada a verificación OpenCode) (Fecha de cierre: 2026-09-28, commit: `3bb5e1b`)
 **Dependencias**: Ninguna
 
+> **Reconciliación (2026-10-05)**: `engine/src/agent_tts/sources/opencode.py` consulta por sesión en modo solo lectura; `sources/base.py` conserva la autodetección por ID. La prueba web es la evidencia histórica de cierre, no una prueba repetida en F1. Gemini, Goose y detección por `/proc` no están implementados ni se declaran ejecutados.
+
 > **Nota de revisión (22/09/2026)**: Alcance reducido en revisión: lo único activo es VERIFICAR que una sesión web real de OpenCode resuelve con el conector actual (verificación de schema realizada 22/09/2026: tabla única `session`, lookup por id sin filtro de workspace — probablemente ya cubierto; tarea de validación con un id web real, sin código nuevo). Quedan FUERA de alcance actual: conector gemini-cli, conector goose, auto-detección por /proc (RF-AT-03-1, RF-AT-03-2 y RF-AT-03-4 quedan fuera de alcance actual, marcados sin borrar).
 
 > **Cierre y verificación (28/09/2026)**: Verificación completada con éxito contra la base de datos real de OpenCode (`~/.local/share/opencode/opencode.db`, 3.1 GB). La resolución directa de sesión (`ses_f27eb5a8cffeAdhmNf5Ai8ZEQX`) tardó 0.62 ms, extrayendo el último turno de asistente correctamente. La invocación CLI con autodetección por forma de ID (`agent-tts --session-id ses_... --no-play`) funciona directamente sin requerir `--agent opencode`. Quedan archivados los requisitos secundarios no implementados por decisión del maintainer.

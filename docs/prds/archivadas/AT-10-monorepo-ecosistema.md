@@ -2,6 +2,8 @@
 **Prioridad**: P2 · **Estado**: EJECUTADA (Fecha de cierre: 2026-09-28, commit: `b972e4b` / `29429e3`)
 **Dependencias**: Ninguna bloqueante; se ejecuta tras el cierre del BLOQUE 1 (AT-09 + AT-04 + AT-08)
 
+> **Reconciliación (2026-10-05)**: Layout `engine/`, `contracts/`, `hosts/herdr/{tts-plugin,brain}/` y test de frontera presentes. Las fases y comandos del cuerpo son historia de la migración, no instrucciones pendientes; F1 no repite instalaciones ni comprueba remotos.
+
 # PRD-AT-10 — Monorepo del ecosistema: engine + contracts + hosts
 
 **Prioridad**: Media · **Esfuerzo**: L

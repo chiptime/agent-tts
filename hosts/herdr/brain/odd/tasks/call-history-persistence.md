@@ -1,8 +1,10 @@
 # Feature: Call History Persistence (herdr-brain)
 
-**Repo**: `~/Code/personal/herdr-brain`
+**Repo**: `hosts/herdr/brain` (monorepo `agent-tts`)
 **Created**: 2026-09-25
-**Status**: planned
+**Status**: IMPLEMENTADA (T1–T6, 2026-09-25)
+
+> **Estado reconciliado (2026-10-05)**: `history.py` persiste en SQLite (`call_history.db`); `server.py` expone `GET /call-history` con `before`, `limit` (25 por defecto, máximo 200) y `has_more`, además de reset y carga inicial del contexto. Tests presentes: `tests/test_history.py` y `tests/test_call_history_api.py`. Referencias del monorepo: `856d857` (paginación), `89ba080` (SQLite). El diseño JSONL y los hashes standalone del cuerpo son historia, no trabajo pendiente. F1 verifica fuentes, sin consultar historial personal ni repetir suites.
 
 ## Objective
 
@@ -139,4 +141,3 @@ migration test (jsonl fixture → imported). Commit: `feat(history)`.
   DELETE beyond 1000, one-time jsonl import → .imported). Verified:
   herdr-tts has NO history/DB — brain owns the call. Suites at close:
   pytest 550, js 135/135.
-

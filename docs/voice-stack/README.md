@@ -1,10 +1,11 @@
 # Voice Stack — Roadmap transversal de voz (monorepo agent-tts: engine · hosts/herdr/brain · hosts/herdr/tts-plugin)
 
-> **Estado: DRAFT.** Paquete de documentación: decisiones de producto aprobadas (D1–D9),
-> decisiones técnicas LOCKED (TECHNICAL-PLAN.md) y tareas accionables (TASKS.md).
-> Nada de esto autoriza implementación por sí mismo: la autorización la da el usuario al
-> pegar la solicitud de `EXECUTION.md` §1. **Nada está construido todavía** — ni comandos
-> de gate nuevos, ni harness E2E, ni instrumentación: este paquete es texto.
+> **Estado: `automated_complete` (VS0→VSX, 2026-10-01).** Implementación y tests presentes;
+> queda la validación manual física, no reconstruir VS1–VS4. Fuente del cierre:
+> [MANUAL-TESTS.md](MANUAL-TESTS.md), cabecera. Reconciliación documental: 2026-10-05,
+> sin repetir gates ni acceder a los artefactos locales de ejecución.
+> El orden vigente es [ROADMAP.md](ROADMAP.md); D1–D5 de ese roadmap definen el trabajo
+> post-consolidación, distintos del ledger D1–D9 de este paquete.
 
 Roadmap de cuatro hitos sobre la pila de voz personal: cancelación de habla por solicitud,
 audio incremental en el teléfono, anuncios pendientes sin pérdida silenciosa y fallback
@@ -19,6 +20,29 @@ entre proveedores — con los canales PC y teléfono independientes y siempre ac
 | `TECHNICAL-PLAN.md` | Decisiones técnicas LOCKED (protocolos, APIs, FSMs, constantes, tooling) | Diseño sin menús |
 | `TASKS.md` | IDs estables VS0–VSX, DAG, allowlists, gates, matriz de trazabilidad 38 FR | Qué hacer, en qué orden |
 | `prds/01..04*.md` | Requisitos de producto (FR) por hito; el diseño preciso delega en TECHNICAL-PLAN | Producto |
+| `MANUAL-TESTS.md` | Cierre automatizado y verificaciones funcionales/físicas | Evidencia histórica y siguiente validación |
+| `ROADMAP.md` | Fases F1–F7 y decisiones post-consolidación | Orden vigente |
+
+## Estado del roadmap ampliado (2026-10-05)
+
+Inventario de las 20 features originales (AT-01–AT-08 + HT-01–HT-12) y extras, con detalle en el [índice consolidado](../prds/README.md) y el [índice del plugin](../../hosts/herdr/tts-plugin/docs/prds/README.md):
+
+| Features | Estado actual |
+|---|---|
+| AT-01/03/04/08; HT-02 | EJECUTADAS; AT-03 solo en su alcance OpenCode recortado |
+| AT-02; HT-01; HT-04 | REENFOCADA; VIVA; VIVA, REENFOCADA, respectivamente: integración del plugin pendiente, no sustituidas por el brain |
+| AT-05/06/07; HT-03/05/06/07/08/10/11 | Sin ejecutar; HT-05 en BACKLOG sobre `pending_queue.py`, HT-11 prioridad baja |
+| HT-09/12 | Descartadas |
+| AT-09/10; HT-13–HT-16; podcast RSS | Implementadas; HT-14 config-only, sin knob de Apariencia |
+| AT-11 | PARCIAL: M1 y tarea 2.1 hechas (`c577041`); resto M2–M4 pendiente |
+| Brain on-demand-context; approval-gate | Implementadas; bucle autónomo no habilitado; approval Chrome Android pendiente |
+| VS0; VS1–VS4; VSX | Fundación y cuatro hitos implementados; cierre `automated_complete`, validación física pendiente |
+
+Evidencia de voice-stack: `8d9a1a1` (fundación), `182ed76` (cancelación motor),
+`def986a` (host), `962e542` (brain), `36a8997` (fallback), `507e761` (E2E).
+La fundación se registró el 30/09; los commits de producción y E2E son del 03/10,
+posteriores al cierre de ejecución registrado el 01/10. No se confunden las fechas.
+VS3 entrega anuncios pendientes, no los recordatorios escalados HT-05.
 
 El monorepo canónico (D8): `/home/bruno/Code/personal/agent-tts` — `engine/src/agent_tts`
 (motor), `hosts/herdr/brain` (cerebro + PWA), `hosts/herdr/tts-plugin` (host CLI/daemon PC).
@@ -26,12 +50,12 @@ La sesión de implementación trabaja SIEMPRE en el monorepo con rutas relativas
 
 ## Mapa de hitos
 
-| # | Hito | PRD | Depende de | DoD resumido |
-|---|------|-----|-----------|--------------|
-| 1 | Cancelación de habla por solicitud | prds/01 | VS0 completo + prerrequisito externo D8 confirmado | `stop` cancela la voz de ESA solicitud en teléfono y PC sin tocar otros audíos ni la ejecución del agente |
-| 2 | Audio incremental en el teléfono | prds/02 | Hito 1 | Primer segmento sonando ANTES de terminar la síntesis total; orden; sin duplicados |
-| 3 | Anuncios pendientes atribuidos | prds/03 | Hito 1 | Cero descartes silenciosos: pending→consolidado/anunciado/expirado-visible, con atribución y recuperación ante caída |
-| 4 | Fallback entre proveedores | prds/04 | Hitos 1–3 | Con fallback explícitamente configurado (OFF por defecto), fallo no-cancelación degrada al siguiente sin repetir voz ya oída |
+| # | Hito | PRD | Depende de | Estado | DoD resumido |
+|---|------|-----|-----------|--------|--------------|
+| 1 | Cancelación de habla por solicitud | prds/01 | VS0 completo + prerrequisito externo D8 confirmado | Implementado | `stop` cancela la voz de ESA solicitud en teléfono y PC sin tocar otros audios ni la ejecución del agente |
+| 2 | Audio incremental en el teléfono | prds/02 | Hito 1 | Implementado | Primer segmento sonando ANTES de terminar la síntesis total; orden; sin duplicados |
+| 3 | Anuncios pendientes atribuidos | prds/03 | Hito 1 | Implementado | Cero descartes silenciosos: pending→consolidado/anunciado/expirado-visible, con atribución y recuperación ante caída |
+| 4 | Fallback entre proveedores | prds/04 | Hitos 1–3 | Implementado | Con fallback explícitamente configurado (OFF por defecto), fallo no-cancelación degrada al siguiente sin repetir voz ya oída |
 
 Orden aprobado (D1): 1→2→3→4. Ejecución tarea a tarea: ver `TASKS.md` (DAG VS0→VS1→…→VSX).
 
@@ -67,7 +91,9 @@ El stack de voz transversal se asienta sobre las capacidades ya entregadas en el
 Los PRD trazan cada FR a D1–D9. Ninguna decisión de producto nueva se toma en implementación:
 las que surgan vuelven al usuario (parada, no invención).
 
-## Hechos verificados (inspección read-only 2026-09-30, 2ª revisión del paquete)
+## Hechos verificados (snapshot histórico del 2026-09-30, anterior a VS0–VS4)
+
+Esta sección conserva el inventario preimplementación y sus citas, no describe el estado actual. El código actual, los commits anteriores y MANUAL-TESTS prevalecen; las ausencias de cancelación, E2E e instrumentación que siguen eran hechos de aquel snapshot.
 
 Separados de toda propuesta. Referencias `archivo:línea` verificadas sobre HEAD `384dd4f`
 (árbol con SOLO ficheros untracked: este paquete, `hosts/herdr/brain/bin/herdr-brain` +
@@ -142,11 +168,11 @@ Node local: v26.8.2 (expone `--test-coverage-branches`); CI fija node 20. Toda
 instrumentación es trabajo FUTURO de VS0 (TASKS.md) con versiones registradas en evidencia;
 este paquete NO afirma que ningún gate haya pasado ni que exista harness E2E hoy.
 
-## Propuestas vs lock
+## Propuestas vs lock (registro previo a la implementación)
 
-Todo endpoint/comando/FSM/esquema nuevo es **[PROPUESTA]** a nivel de repositorio (no existe
-en código). Su diseño exacto está LOCKED en `TECHNICAL-PLAN.md` (no hay menús abiertos para
-la sesión de implementación); la distinción API-actual vs API-nueva está marcada por sección.
+Las etiquetas **[PROPUESTA]** de los documentos de diseño distinguen API previa y nueva
+en el snapshot original. Ya no significan «sin implementar»: VS0–VS4 están construidos.
+`TECHNICAL-PLAN.md` conserva las decisiones LOCKED originales como contrato histórico.
 
 ## Reglas duras del paquete
 
@@ -156,10 +182,12 @@ la sesión de implementación); la distinción API-actual vs API-nueva está mar
 4. Commit/push/PR/merge: solo con autorización expresa y separada. **El paquete NO requiere
    commit para tener identidad**: la identidad es el inventario ordenado + hashes de
    contenido (EXECUTION.md §4.1); nunca se hace commit prerrequisito.
-5. Este paquete es un contrato ejecutado por prompt: no hay runtime instalado ni servicio
-   en background; los scripts que propone la TASKS.md son FUTURE hasta que una tarea los implemente.
+5. Este paquete es un contrato ejecutado por prompt, no un servicio del bucle en background.
+   Los scripts VS0 y tests VS1–VS4 referenciados en TASKS existen; su presencia no acredita
+   una nueva pasada de gates ni la instalación del tooling en otro entorno.
 
 ## Siguiente paso
 
-Abrir `EXECUTION.md` §1 y, solo si el usuario lo decide, pegar la solicitud copiable en una
-sesión nueva arrancando en `/home/bruno/Code/personal/agent-tts`.
+Completar F2 del ROADMAP: validación física de EXECUTION §8 / MANUAL-TESTS y approval-gate
+en Chrome Android en la misma sesión de teléfono. La solicitud original de EXECUTION §1
+se conserva como historia, no como trabajo pendiente de autorizar ni orden de reejecución.
