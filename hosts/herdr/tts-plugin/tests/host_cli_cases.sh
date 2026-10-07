@@ -162,11 +162,43 @@ case__cancel_speech_flag_dispatches_through_cli() {
 # stop_audio or any real /tmp path (retention is redirected into the sandbox).
 
 # $1 sandbox name · $2 is_playing rc (0=busy→admit) · $3 play_audio_file rc
-# · $4 stub exit (0=ok, 1=refusal/failure for every python call).
+# · $4 stub exit (0=ok, 1=refusal/failure for every python call)
+# · $5 renderer rc (default 0; non-zero forces the render-failure branch).
 run_watcher_announce() {
   sandbox_setup "$1"
   STUB_EXIT="$4" in_host '
-    SB="$1"; ISP="$2"; PLAYR="$3"
+    SB="$1"; ISP="$2"; PLAYR="$3"; RENDER_RC="$4"
+    # Narrow containment substitutes (TEST ONLY, this sandbox alone): the
+    # watcher allocates its synthesis-error scratch from an absolute /tmp
+    # template (launcher:3355) and its failure reporter appends to the global
+    # /tmp/herdr-tts.log (launcher:209) — TMPDIR cannot redirect either. Both
+    # seams are redefined after sourcing to keep every byte inside $SB; any
+    # other template or a non-sandbox error file fails loudly (rc 97).
+    mktemp() {
+      local template="${1:-}"
+      printf "%s\n" "$template" >> "$SB/allocator.requests"
+      [[ "$template" == "/tmp/herdr-tts-synth-err.XXXXXX" ]] || {
+        echo "watcher mktemp override got unexpected template: $template" >&2
+        return 97
+      }
+      local file
+      file=$(command mktemp "$SB/tmp/herdr-tts-synth-err.XXXXXX") || return 1
+      printf "%s\n" "$file" >> "$SB/allocator.paths"
+      printf "%s\n" "$file"
+    }
+    report_tts_error() {
+      local context="$1" err_file="$2" ret="${3:-1}"
+      [[ "$err_file" == "$SB/tmp/herdr-tts-synth-err."* && -f "$err_file" ]] || {
+        echo "report_tts_error override got non-sandbox file: $err_file" >&2
+        return 97
+      }
+      printf "%s|%s|%s\n" "$context" "$err_file" "$ret" >> "$SB/report.calls"
+      cat "$err_file" >> "$SB/tts-errors.log"
+    }
+    if [[ "$RENDER_RC" != 0 && "$(declare -f report_tts_error)" == *"/tmp/herdr-tts.log"* ]]; then
+      echo "refusing to run the unsandboxed product error reporter" >&2
+      exit 97
+    fi
     herdr_n=0
     herdr() {
       herdr_n=$((herdr_n+1))
@@ -183,7 +215,14 @@ run_watcher_announce() {
     read_pane_text() { echo "texto del turno"; }
     resolve_voice() { echo elvira; }
     spoken_prefix() { echo ""; }
-    render_text_audio() { printf x > "$1"; }
+    render_text_audio() {
+      printf "%s\n" "$1" >> "$SB/render.targets"
+      if [[ "$RENDER_RC" != 0 ]]; then
+        echo "error: forced renderer failure" >&2
+        return "$RENDER_RC"
+      fi
+      printf x > "$1"
+    }
     audio_retention_days() { echo 7; }
     audio_duration_secs() { echo 0; }
     play_audio_file() { return "$PLAYR"; }
@@ -193,7 +232,40 @@ run_watcher_announce() {
     ( watch_agent_pane 3 claude ) > "$SB/out" 2> "$SB/werr" || rc=$?
     echo "rc=$rc" > "$SB/rc"
     cat "$SB/werr" >&2   # replay: the xtrace stream must reach the harness
-  ' "$SANDBOX" "$2" "$3"
+  ' "$SANDBOX" "$2" "$3" "${5:-0}"
+}
+
+# Containment contract of the watcher sandbox (launcher:3355/3358 use an
+# absolute mktemp template and a global error log that TMPDIR cannot move):
+# every scratch allocation and every error-log byte stays inside $SB.
+case__watcher_synth_scratch_is_sandboxed() {
+  run_watcher_announce synth_isolation 1 0 0 0 || return 1
+  [[ "$(cat "$SANDBOX/rc")" == "rc=42" ]] || return 1
+  [[ ! -e "$SANDBOX/allocator.unsafe" ]] || {
+    cat "$SANDBOX/allocator.unsafe" >&2
+    return 1
+  }
+  [[ "$(wc -l < "$SANDBOX/allocator.paths")" -eq 1 ]] || return 1
+  local scratch; scratch="$(cat "$SANDBOX/allocator.paths")"
+  [[ "$scratch" == "$SANDBOX/tmp/herdr-tts-synth-err."* && ! -e "$scratch" ]] || return 1
+  [[ "$(cat "$SANDBOX/allocator.requests")" == "/tmp/herdr-tts-synth-err.XXXXXX" ]] || return 1
+  [[ ! -e "$SANDBOX/tts-errors.log" ]] || return 1
+  grep -q -- '--outcome played' "$STUB_LOG"
+}
+
+case__watcher_render_failure_log_is_sandboxed() {
+  run_watcher_announce render_error_isolation 1 0 0 1 || return 1
+  [[ "$(cat "$SANDBOX/rc")" == "rc=42" ]] || return 1
+  [[ ! -e "$SANDBOX/allocator.unsafe" ]] || {
+    cat "$SANDBOX/allocator.unsafe" >&2
+    return 1
+  }
+  local scratch; scratch="$(cat "$SANDBOX/allocator.paths")"
+  [[ "$scratch" == "$SANDBOX/tmp/herdr-tts-synth-err."* && ! -e "$scratch" ]] || return 1
+  [[ "$(cat "$SANDBOX/report.calls")" == "3|$scratch|1" ]] || return 1
+  grep -qF 'error: forced renderer failure' "$SANDBOX/tts-errors.log" || return 1
+  [[ "$(cat "$STUB_LOG")" == "$REPO_HOST_DIR/lib/pending_queue.py tick" ]] || return 1
+  ! grep -q -- 'completion\|admit' "$STUB_LOG"
 }
 
 case__pending_admit_passes_event_argv() {

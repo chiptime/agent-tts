@@ -25,7 +25,7 @@ Creado 2026-10-05.
 
 Implementados **40 casos** independientes en `critical_cases.sh`: gate 9, mute/snooze 5, voces 6, keymap 10, daemon 6 y writer 4. Mismo protocolo `CASE`, filtro `CASES=`, sandbox e `in_host`, sin copiar helpers legacy. `host_cli_cases.sh` solo añade pins de rutas; conserva todas sus aserciones. Wrapper y job CI Ubuntu añadidos; no se han hecho commits ni push. Se supera la heurística de 400 líneas: el aislamiento independiente, los guards explícitos, el reap de hijos y seis controles de mutación justifican el tamaño, sin comprimir tests para cuadrar un presupuesto.
 
-**T4 completado y verificado:** Batería completa ejecutada en verde (**29 host + 40 critical + 3 bootstrap = 72 OK, 0 FAIL**, rc 0). Enganchado a CI en `.github/workflows/ci.yml` (job `plugin-bash-tests` en Ubuntu latest). Contención completa de sandbox en `/tmp` con traps de cleanup validados.
+**T4 completado y verificado:** Batería completa ejecutada en verde (**31 host + 42 critical + 3 bootstrap = 76 OK, 0 FAIL**, rc 0). Enganchado a CI en `.github/workflows/ci.yml` (job `plugin-bash-tests` en Ubuntu latest). Contención del watcher y del cleanup del harness corregida el 2026-10-07 (ver «Corrección de contención» abajo): la afirmación anterior de «contención completa validada» era incompleta — el watcher usaba una plantilla `mktemp` absoluta y un log global de errores que `TMPDIR` no redirige, y el cleanup crítico podía esperar sin límite ante un hijo que ignora TERM.
 
 ## Auditoría T1
 
@@ -111,5 +111,67 @@ Contención verificable en código: cada source crítico valida rutas resueltas 
 
 Verificación final repetida tras los guards de contención y de orden flag-before-kill: batería 72/0; tres críticos consecutivos 40/0; seis RED + seis GREEN; `bash -n` crítico y ShellCheck crítico/wrapper rc 0. Todos los roots privados del harness se limpiaron mediante sus traps; el readback de `/tmp/opencode/f3-runtime/` muestra únicamente `red/`, pendiente de cleanup por el padre.
 
+## Corrección de contención (2026-10-07, seguimiento del hallazgo independiente)
+
+**Hallazgos confirmados contra el producto (sin modificarlo):** `watch_agent_pane` real usa `bin/herdr-tts:3355` `mktemp "/tmp/herdr-tts-synth-err.XXXXXX"` (plantilla absoluta que `TMPDIR` no redirige) y, ante fallo del renderer, `report_tts_error` añade a `/tmp/herdr-tts.log` hardcoded (`:209`). Además, `critical_cases.sh` usaba `timeout 15` sin kill-after y su cleanup esperaba sin límite a hijos que ignoran TERM.
+
+**Corrección TEST-ONLY (producto intacto):**
+- `run_watcher_announce` redefine tras el source, solo en ese sandbox, `mktemp` (acepta únicamente la plantilla del watcher y la redirige a `$SB/tmp/...`; cualquier otra plantilla falla rc 97) y `report_tts_error` (valida prefijo sandbox, registra la llamada y vuelca a `$SB/tts-errors.log`). Un tripwire rehusa ejecutar el reporter de producto mientras declare -f aún contenga `/tmp/herdr-tts.log`. Parámetro nuevo `$5` = rc del renderer para forzar la rama de error.
+- `critical_cases.sh`: `timeout --kill-after=5 15` en `in_host`/`in_cli`; registro de procesos propios con identidad (pid + starttime de `/proc/<pid>/stat`); `finish_owned` ya no señaliza — falla si la operación del producto dejó un superviviente (oráculo de ciclo de vida sin rescate que enmascare fallos). *(Superseded: la ronda 2 abajo sustituye el descubrimiento recursivo por registro explítico y corrige la afirmación de inmunidad.)*
+
+**TDD observado (sin escritura real en `/tmp`):** RED inicial con capa de observación segura (shim PATH que redirigía antes de allocar + preflight que bloqueaba el reporter global): `watcher_synth_scratch_is_sandboxed` FAIL (plantilla `/tmp/herdr-tts-synth-err.XXXXXX` registrada como insegura), `watcher_render_failure_log_is_sandboxed` FAIL (reporter global rehusado), `critical_harness_reaps_term_ignoring_child` y `critical_harness_reaps_stubborn_supervisor_child` FAIL de preflight. Tras la corrección: los 4 casos OK; el de error ejecuta la rama real `report_tts_error` con renderer forzado a fallar.
+
+| Comando (cwd `hosts/herdr/tts-plugin`, `TMPDIR=/tmp/opencode/f3-runtime`, `PYTHONDONTWRITEBYTECODE=1`) | Resultado |
+|---|---|
+| `CASES='watcher_synth_scratch_is_sandboxed watcher_render_failure_log_is_sandboxed' bash tests/host_cli_cases.sh` | RED 0/2 → GREEN 2/2 |
+| `CASES='critical_harness_reaps_term_ignoring_child critical_harness_reaps_stubborn_supervisor_child' bash tests/critical_cases.sh` | RED 0/2 → GREEN 2/2 |
+| Familia daemon completa + 2 nuevos (8 casos) | 8 OK / 0 FAIL |
+| `bash tests/all_bash_harnesses.sh` | **76 OK / 0 FAIL** (31 host + 42 critical + 3 bootstrap) |
+| `bash tests/critical_cases.sh` ×3 consecutivos | 42/0, 42/0, 42/0 |
+| `RED_PROOFS=1 bash tests/critical_cases.sh` | 6 RED + 6 GREEN (12 líneas RED/GREEN), rc 0 |
+| `bash -n` en los dos scripts editados | rc 0 |
+| `shellcheck critical_cases.sh all_bash_harnesses.sh` | rc 0 |
+| `shellcheck` host editado vs `HEAD` | mismos códigos preexistentes; +2 SC2329 (info) por los 2 casos nuevos del mismo protocolo dinámico |
+
+Casos: 31 host (29+2), 42 critical (40+2). El drift global previo del snooze sigue sin atribución; no se afirma estado global inmutable a partir de metadatos. El directorio runtime `/tmp/opencode/f3-runtime/` queda para cleanup del padre.
+
+
+## Corrección de contención — ronda 2 (2026-10-07, hallazgos de revisión independiente)
+
+**Hallazgos confirmados en la ronda anterior:** (1) el starttime se comprobaba ANTES del descubrimiento de descendientes y el TERM no revalidaba la raíz → ventana de pid reemplazado; (2) `stop_owned_tree` saltaba el traversal si el padre ya había salido → hueco de huérfanos; (3) los hijos se validaban solo por pid padre numérico; (4) el documento afirmaba «inmune a reciclaje de PID» — demasiado fuerte.
+
+**Modelo final (TEST-ONLY, producto intacto):** sin descubrimiento recursivo de `/proc`. Solo identidades registradas explícitamente: hijos directos (`register_owned`, exige padre == shell) y descendientes de fixture que se anuncian vivos (`register_handshake_owned`: el fixture escribe «pid starttime» leído con `read -r < /proc/self/stat` SIN fork, y el registro exige coincidencia exacta contra `/proc` en ese momento). Cada señal revalida pid+starttime EN la frontera (`signal_owned`, rechazos registrados en `signal.log`). `cleanup_owned` fase única: TERM a todo el registro → espera/KILL acotados recorriendo el registro EN ORDEN INVERSO (los dependientes se registran después de su padre; un padre bloqueado en `wait(child)` queda liberado por la muerte del hijo y sale por su propio manejo de TERM, no por KILL de rescate que enmascararía el rc del oráculo) → reap. `finish_owned` nunca señaliza y falla si el superviviente sigue vivo; las aserciones de ciclo de vida del producto fallan ANTES del cleanup de rescate.
+
+**Límite de plataforma, reconocido sin rodeos:** entre la lectura de `/proc/<pid>/stat` y `kill(2)` queda una ventana TOCTOU inherente a la señalización por pid sin pidfd; la comprobación pid+starttime no la cierra ni garantiza su duración. No se afirma inmunidad absoluta al reciclaje de PID. Los nombres `f3-*` son etiquetas diagnósticas, no pruebas de propiedad. La limpieza cubre fixtures registrados, no descendientes arbitrarios.
+
+**Bug de fixture encontrado y corregido (raíz del flake intermitente):** `stat_rest=$(cat /proc/self/stat)` lee el stat del proceso `cat` FORKEADO, no del propio script: su starttime difiere del real siempre que el fork cae en un tick de reloj distinto (por eso fallaba ~10% bajo carga y 0% en reposo, y explica el «stale» transitorio de la ronda 1). Corregido con `IFS= read -r ... < /proc/self/stat` (builtin, sin fork) en ambos fixtures (stubborn y orphan). Durante la ronda también se encontraron y corrigieron: array disperso por `unset` indexado (unbound bajo `set -u` en el loop inverso), un apóstrofe en comentario que cortaba el string de `bash -c`, y el orden de KILL que escalaba al supervisor bloqueado antes de parar su hijo.
+
+**Casos nuevos:** `critical_harness_cleanup_reaps_orphan_after_parent_exit` (RED observado con el modelo de la ronda 1: hijo huérfano sobrevivía y fugaba, auto-limitado a 5s; GREEN tras registro explícito) y `critical_harness_stale_identity_refuses_signal` (entrada muerta → no-op sin señal; identidad viva con birth erróneo → señal rehusada y el proceso sobrevive; identidad correcta → stop limpio; verde desde su introducción, sin RED fabricado).
+
+| Comando (cwd `hosts/herdr/tts-plugin`, `TMPDIR=/tmp/opencode/f3-runtime`, `PYTHONDONTWRITEBYTECODE=1`) | Resultado |
+|---|---|
+| `CASES='critical_harness_cleanup_reaps_orphan_after_parent_exit' bash tests/critical_cases.sh` (modelo ronda 1) | **RED**: FAIL con hijo vivo tras cleanup (leak auto-limitado, pid observado) |
+| Mismo caso, modelo final (registro explícito) | GREEN |
+| Lote de 3 casos de harness-safety ×15 iteraciones | 45/45 OK, sin procesos residuales `f3-*` |
+| Batería completa `bash tests/all_bash_harnesses.sh` | **78 OK / 0 FAIL** (31 host + 44 critical + 3 bootstrap) |
+| `bash tests/critical_cases.sh` ×3 consecutivos | 44/0, 44/0, 44/0 |
+| `RED_PROOFS=1 bash tests/critical_cases.sh` | 6 RED + 6 GREEN (12 líneas), rc 0 |
+| `bash -n` en los scripts editados | rc 0 |
+| `shellcheck tests/critical_cases.sh tests/all_bash_harnesses.sh` | rc 0 |
+| `shellcheck` host editado vs `HEAD` | códigos preexistentes iguales; +2 SC2329 (info, protocolo dinámico de casos) |
+| `pgrep -af '^f3-'` tras todas las corridas | sin procesos residuales |
+
+Casos: 31 host, 44 critical (42+2), 3 bootstrap = 78. El drift global previo del snooze sigue sin atribución; no se afirma estado global inmutable a partir de metadatos. El directorio runtime `/tmp/opencode/f3-runtime/` (incluye repros de diagnóstico) queda para cleanup del padre.
+
 ## Siguiente paso
-F3 completado (T1–T4 cerrados, 72/72 tests OK, enganchado a CI). La red de tests críticos de `tts-plugin` queda blindada antes de iniciar F4 (`AT-02` reenfocada + `HT-01`). Sin push ni commits fuera de la política de entrega.
+
+Verificación independiente final: batería completa **78 OK / 0 FAIL** y regresiones de identidad obsoleta y padre terminado **2 OK / 0 FAIL**. Veredicto técnico PASS con las limitaciones documentadas; CI remoto no ejecutado. El oráculo de huérfano prueba ausencia de proceso vivo, no `waitpid` sobre un no-hijo adoptado. RDD desactivado por preferencia clone-local, sin revisión nativa.
+
+F3 verificada localmente (T1–T4 cerrados, batería conectada a CI). Las correcciones posteriores a `6838f29` permanecen sin commit. No se ha realizado push. F4 (`AT-02` reenfocada + `HT-01`) es el siguiente desarrollo de producto; F2 sigue pendiente de prueba física.
+
+## Delivery strategy
+
+- Human selected option 1: `ask-on-risk` with `stacked-to-main`. Each review slice targets `main`; dependent slices wait for their predecessors. No PR creation, push, or merge is authorized by this selection.
+- Existing work-unit boundary: `6838f29` (critical test net and CI, 914 authored changed lines). The existing commit is retained; no history rewrite or size exception is inferred. A bounded cohesive slicing pass is still required before preparing PRs.
+- Pending work unit: sandbox containment and owned-fixture cleanup corrections, with the observed independent 78/0 verification and this task record. Current tracked diff before this strategy entry: 389 authored changed lines.
+- One-time commit exception: the maintainer explicitly authorized this local F3 correction commit outside the usual time window on 2026-10-07 at approximately 01:47 CEST. Use the real clock; no date fabrication, push, or PR is authorized. The normal time policy remains unchanged for later commits.
