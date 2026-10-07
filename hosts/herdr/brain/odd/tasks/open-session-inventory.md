@@ -6,8 +6,12 @@
 extension; it does not restate that roadmap.
 **Branch at preparation**: `fix/brain-interim-transcript-duplication` @ `e592ef3` (unrelated
 transcription work; no branch exists for this feature)
+**Source-stage branch**: `fix/brain-open-session-inventory` @ `5e833fe` (clean at writer start;
+no branch or commit operations performed)
 **Created**: 2026-10-05
-**Status**: IN PROGRESS. Parent readback complete; D-1 resolved before source edits.
+**Status**: MERGED TO LOCAL MAIN (unpushed). T1 closed: source implemented, verified, committed
+and merged by parent disposition on 2026-10-07; origin push deliberately withheld by the user.
+Live-model routing and deployment remain unproven. Engram mirror remains pending.
 
 ## Objective
 
@@ -69,7 +73,7 @@ selected session, open-session inventory, consolidated global status, and histor
 ## Execution settings
 
 - Runner, from `hosts/herdr/brain` (no installs; `uv run` is avoided because it may sync the
-  environment): focused `.venv/bin/python -m pytest tests/test_tools.py tests/test_llm.py -q`;
+  environment): focused `.venv/bin/python -m pytest tests/test_tools.py tests/test_llm.py tests/test_consult.py -q`;
   full `.venv/bin/python -m pytest tests/ -q` and `node --test tests/js/`.
 - Last mapper baselines, NOT re-run by this preparation: 1201 Python tests and 224 JS tests
   (prior transcription work). The writer records its own fresh baseline before RED.
@@ -79,21 +83,22 @@ selected session, open-session inventory, consolidated global status, and histor
 - Delivery: `ask-on-risk`. Forecast ~100-200 authored lines (the 400-line heuristic is advisory).
   No commit, push or deploy is authorized and scope is unchanged. If a work-unit commit is later
   authorized: Conventional Commit, explicit paths only (never the unrelated dirty files listed
-  under Progress). Branch placement is the parent's call because HEAD is already contained in
-  `main`.
+  under Progress). The parent created `fix/brain-open-session-inventory` from `main` @ `5e833fe`
+  before delegating the source stage; subsequent git actions remain parent-owned.
 - RDD: OFF (clone-local); no native review transaction.
 - Engram: project `dotfiles`, topic `odd/open-session-inventory/tasks`, full mirror of this file
   (the predecessor tracker names project `herdr-brain`).
 
 ## Tasks
 
-- [ ] **T1** `open-session-inventory`: ONE work unit = read-only inventory tool wired through
+- [x] **T1** `open-session-inventory`: ONE work unit = read-only inventory tool wired through
   `TOOLS_SCHEMA` and `dispatch`, four-scope routing text (tool descriptions and `SYSTEM_PROMPT`),
   and the tests. Route: delegated-direct (2+ non-trivial source/test files plus reading prep).
-  - Proposed shape (parent confirms): tool `list_open_sessions`, no arguments, JSON like
+  - Approved shape (D-1): tool `list_open_sessions`, no arguments, JSON like
     `get_status`: `{available, count, selected_pane_id, sessions: [{pane_id, agent, status,
     title, cwd, session_id, focused}]}`. On `HerdrError`: `available: false`, a one-line detail,
-    and an explicit "do not claim there are no sessions". Metadata only, no `last_turn` (cheap,
+    and an explicit "do not claim there are no sessions"; `count: null` means unknown, not zero.
+    Metadata only, no `last_turn` (cheap,
     and it keeps untrusted transcript text out of the model context); titles via `_enrich`.
   - Closure tests (suggested names; the writer records the final ones). `test_tools.py`: lists
     idle, working and blocked agents; empty is an explicit zero; `HerdrError` is an explicit
@@ -108,9 +113,10 @@ the existing `tests/test_consult.py` registration assertion in the allowed
 surface. This is test maintenance required by the authorized tool addition,
 not a new product choice. No existing consult/history behavior is changed.
 
-A tenth tool breaks THREE exact-set assertions: `tests/test_tools.py:491` and
+A tenth tool requires updating THREE exact-set assertions: `tests/test_tools.py:491` and
 `tests/test_llm.py:138` (inside the surface) and `tests/test_consult.py:1180`
-(`names == base five | CONSULT_TOOL_NAMES`, OUTSIDE the surface).
+(`names == base five | CONSULT_TOOL_NAMES`, originally outside the four-file surface;
+now authorized for that registration assertion only).
 
 - A (recommended): new tool `list_open_sessions`, and add exactly
   `hosts/herdr/brain/tests/test_consult.py` as a fifth allowed path, limited to that one
@@ -175,12 +181,78 @@ Closure is named passing tests, never promises.
   or stage): modified `hosts/herdr/brain/odd/tasks/transcription-duplication.md`,
   `hosts/herdr/brain/src/herdr_brain/static/endpointing.js`,
   `hosts/herdr/brain/tests/js/endpointing.test.js`; untracked
-  `docs/voice-stack/RECONCILIATION-PLAN.md` and `.atl/`.
+   `docs/voice-stack/RECONCILIATION-PLAN.md` and `.atl/`.
+
+### Source-stage evidence (2026-10-05)
+
+- Start inspection: clean tree, branch `fix/brain-open-session-inventory`, HEAD `5e833fe`.
+  The cancelled attempt left no changes. Both parent-supplied skill paths were read.
+- Fresh baseline, before test additions or source edits:
+  - `.venv/bin/python -m pytest tests/test_tools.py tests/test_llm.py tests/test_consult.py -q`:
+    **141 passed in 2.55s**.
+  - `.venv/bin/python -m pytest tests/ -q`: **timed out at 120s**, after 12 progress dots;
+    no named test failure or completed full-baseline count was reported.
+  - `node --test tests/js/`: **266 passed**, 0 failed (98.893467ms).
+  - `git diff --check`: passed, no output.
+- RED: the exact focused command above returned **20 failed, 139 passed in 2.77s**, before
+  source edits. Missing method, unknown dispatch tool, absent schema entry, and missing scope
+  guidance were observed. Two failures were exact-name registration maintenance, not behavioral
+  RED. Eighteen new behavior/contract cases failed as intended.
+- GREEN: after source implementation and D-1 registration maintenance, the same focused command
+  returned **159 passed in 2.70s**. No `herd()`, consult implementation, or gate code changed.
+- TRIANGULATE / REFACTOR: mixed agent kinds and opaque status/cwd values supplement idle,
+  working, blocked, empty and unavailable cases. Payload layout and the selection variable were
+  clarified, and the dispatch test name was corrected. The same focused command remained green:
+  **159 passed in 2.81s**.
+- Closure-test names (current names; all passed):
+  - `TestListOpenSessions.test_lists_idle_working_and_blocked_without_reads_or_selection_change`:
+    exact metadata fields, one inventory listing, idle included, non-focused selection preserved;
+    transcript/turn/screen reads, active-agent lookup and `_track` are forbidden by the test.
+  - `TestListOpenSessions.test_empty_is_explicit_zero_without_changing_selection` and
+    `test_list_failure_is_unavailable_not_empty`: explicit zero versus unavailable/unknown count,
+    short one-line failure detail and the do-not-claim-no-sessions instruction.
+  - `TestListOpenSessions.test_enriches_title_and_preserves_metadata_as_data` and
+    `test_dispatch_ignores_target_without_reads_or_writes`: title metadata, opaque status/cwd,
+    null session id for non-id kinds, and selection-neutral argument-free dispatch.
+  - `TestDispatch.test_inventory_schema_is_argument_free_and_metadata_only` and
+    `test_descriptions_distinguish_scopes` (five cases): schema and scope/cost guidance.
+  - `TestRoutingPolicy.test_open_session_question_reaches_inventory_and_surfaces_result`
+    (both `sesiones tengo abiertas` and `qué sesiones tengo abiertas?`): a scripted tool request
+    reaches the real dispatcher and returns inventory metadata; the scripted answer is generated
+    from that result. No gate opens or prompt is sent, selection is preserved, and no inventory
+    metadata is injected into the per-turn system block. This proves wiring, NOT live routing.
+  - `TestSystemPromptPolicy.test_prompt_routes_four_scopes` (four cases) and
+    `test_inventory_metadata_is_data_not_instructions`: scope routes and metadata policy.
+- Registration-only maintenance, **not behavioral RED**: expected tool-name sets in
+  `TestDispatch.test_schema_names`, `TestRoutingPolicy.test_schema_and_system_prompt_passed_to_llm`,
+  and `TestApprovalRegression.test_schema_now_exposes_on_demand_surface`. The entire
+  `tests/test_consult.py` diff is the single added `list_open_sessions` name.
+- Required final verification, each run in the foreground from `hosts/herdr/brain`:
+  - `.venv/bin/python -m pytest tests/ -q`: **1381 passed in 335.46s**, with a 600s timeout;
+    the completed rerun supersedes the incomplete full-baseline attempt, not its recorded evidence.
+  - `node --test tests/js/`: **266 passed**, 0 failed (109.943479ms).
+  - `git diff --check`: passed, no output.
+- Concurrent unrelated changes observed during implementation: modified `docs/prds/README.md`
+  and untracked `docs/prds/herdr-brain-karaoke-fragments.md` and
+  `hosts/herdr/brain/odd/tasks/karaoke-fragments.md`; none was read for content or altered.
+- Source/test diff, excluding this tracker: **260 insertions, 11 deletions (net +249 lines)**.
+  This exceeds the initial ~100-200-line forecast without trimming tests; the six-file source-stage
+  diff remains below the advisory 400-line heuristic. No additional edit surfaces were needed.
+- Source acceptance is verified locally; T1 closure remains unchecked for parent disposition.
+  No commit, stage, push, restart, deployment, live model/agent or remote access was performed.
+  The garbled-CLI-output limitation and existing silent-empty sites under Known limits are unchanged.
+  The Engram mirror remains PENDING under the unavailable-mirror exception; no memory search,
+  invented session id, retry, CLI workaround or passive capture was used.
 
 ## Next step
 
-1. Parent readback and D-1 are complete; the mirror remains pending as noted.
-2. Source stage: delegated-direct writer on the surfaces chosen in D-1, strict TDD. Record the
-   fresh baseline, RED, GREEN, REFACTOR, the registration-only updates (as not-RED), the final
-   test names and the full-suite results here (only if this tracker is in the allowed surfaces).
-3. The parent decides branch and commit afterwards; nothing is pushed or deployed.
+1. T1 disposition (2026-10-07): parent committed the six feature paths with explicit paths
+   (tracker included) on a feature branch cut from `main` @ `3656fb9` and merged it into local
+   `main` with a merge commit, following repository convention. NO push to origin was performed,
+   per explicit user instruction. `.atl/skill-registry.md` remains uncommitted as unrelated
+   tooling noise. The stale branch `fix/brain-open-session-inventory` @ `5e833fe` was left
+   untouched and remains 21+ commits behind.
+2. Repair the pending Engram mirror only with an authoritative runtime session identity; no
+   blind retry or invented identity is permitted.
+3. Live-model replay of both reported utterances and deployment remain separate, unauthorized
+   work. Do not close the original runtime report from scripted wiring tests alone.
