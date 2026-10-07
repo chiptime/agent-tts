@@ -34,8 +34,8 @@ El problema ya no es "construir voice-stack", sino **cerrar con honestidad lo co
 
 | # | Decisión | Resultado |
 |---|---|---|
-| D1a | AT-02 (STT) | **Reenfocada, no archivada.** El plugin consume el STT ya existente en el brain (`stt.py`, faster-whisper, `POST /transcribe`) en vez de montar whisper.cpp. Debe poder **activarse y desactivarse**. |
-| D1b | HT-01 (push-to-talk) | **Sigue viva.** Acorde y micrófono en el plugin; reconocimiento en el brain vía AT-02. Debe poder **activarse y desactivarse**. |
+| D1a | AT-02 (STT) | **Reenfocada, no archivada** (decisión original arriba, 2026-10-05: el plugin consume el STT del brain en vez de montar whisper.cpp). **Actualización de propiedad (2026-10-07, posterior y vigente):** el STT y la captura de micrófono pertenecen al **motor** — `faster-whisper` reutilizado por extracción del brain (`stt.py`), extra opcional, descarga de modelo siempre explícita; pasó antes por el diseño intermedio de cliente HTTP del plugin (mismo día, commit `ed2fbfe`, superado). Debe poder **activarse y desactivarse**. |
+| D1b | HT-01 (push-to-talk) | **Sigue viva** (original 2026-10-05: reconocimiento en el brain vía AT-02). **Actualización (2026-10-07, posterior y vigente):** acorde, pane y overlay en el plugin; **captura y STT desde la capacidad del motor** (AT-02) por su interfaz pública; el dictado funciona con el brain apagado. Debe poder **activarse y desactivarse**. |
 | D1c | HT-04 (control móvil) | **Sigue viva, reenfocada.** Botones ntfy como atajo ligero que llama a los endpoints del brain (`/approval/*`, `/ask`); no es una vía independiente. |
 | D2 | Recuperación de tests (R4) | **Opción B:** auditar el legado y portar solo lo crítico sobre la matriz existente. |
 | D3 | HT-05 frente a VS3 | **Separadas.** HT-05 va al backlog y, cuando se haga, se reescribe sobre `pending_queue.py` (sin segundo ledger). |
@@ -85,11 +85,15 @@ F1 base veraz ─┬─► F3 red de tests (R4-B) ─► F4 AT-02 + HT-01 ─►
 
 ### F4 — AT-02 reenfocada + HT-01 (hablar al agente desde el plugin)
 
-- **AT-02:** el plugin llama al STT del brain; interruptor de activar/desactivar (patrón de config del plugin, p. ej. `TTS_*="off|on"`).
-- **HT-01:** acorde que abre el micrófono en modo **toggle** (misma pulsación o timeout de silencio cortan; `hold` descartado por la suposición press-only del keymap, a verificar), captura por PowerShell en el host Windows (patrón `wsl-ps`), texto reconocido con confirmación visual breve e inyección en el panel enfocado; interruptor propio. Brain caído: aviso visible, nada se inyecta, el plugin nunca arranca ni gestiona el brain.
+> **Rediseño de propiedad (2026-10-07, decisión vigente):** el STT y la captura de micrófono pertenecen al motor. El diseño intermedio de este mismo día (plugin → `POST /transcribe` del brain, commit `ed2fbfe`) quedó superado; ver cronología en D1a/D1b.
+
+- **AT-02 (motor):** capacidad STT genérica — extracción de `Transcriber`/política de modelo del brain (`stt.py`), extra opcional (`agent-tts[stt]`, precedente kokoro), descarga de modelo siempre explícita, captura de micrófono PowerShell (análogo de entrada de `powershell_playback.py`). Configuración genérica del motor, no atada a ajustes de host. Interruptor propio.
+- **HT-01 (plugin):** acorde que abre el micrófono en modo **toggle** (misma pulsación o timeout de silencio cortan; `hold` descartado por la suposición press-only del keymap, a verificar), STT y captura desde la interfaz pública del motor, texto reconocido con confirmación visual breve e inyección en el panel enfocado; interruptor propio. Motor sin dependencia/modelo o captura caída: aviso visible, nada se inyecta, sin descarga implícita ni arranque de servicios. El dictado **no requiere el brain** (puede estar apagado).
 - **Verbo de inyección decidido (2026-10-07):** `herdr pane send-text <PANE_ID> <TEXT>` (texto literal, sin Enter) + Enter final según `TTS_PTT_ENTER` (`ask|always|never`). No se usan `herdr pane run` ni `send-keys` para el dictado.
-- PRDs reescritas el 2026-10-07 (AT-02 como cliente STT del plugin; HT-01 con desglose de implementación F4.1-F4.9).
-- **Depende de:** F3 (se toca el bash de 7.419 líneas). **DoD:** hablar → ver texto reconocido → llega al agente; con ambos interruptores en off, comportamiento idéntico al actual.
+- **Orden de implementación (ids estables F4.1-F4.10 y mapeos en la PRD HT-01):** extracción al motor + política de modelo + red de tests del motor primero (F4.1-F4.3); **gate de decisión sin código** de transporte/residencia (CLI one-shot vs daemon vs API pública por puente `lib/`) y superficie de contrato (`ipc-v2.md` congelado: extender es breaking) (F4.4); captura y silencio después (F4.5); cableado del plugin — inyección, keymap, overlay, interruptores, texto literal de confirmación — a continuación (F4.6-F4.9); migración del brain como unidad posterior **separada y opcional con autorización propia** (F4.10), preservando el comportamiento del navegador y del servidor.
+- **Decisiones abiertas que F4 no silencia:** transporte/residencia y contrato (F4.4), umbrales de silencio, formato/latencia de captura PowerShell, manejo de saltos de línea en `send-text`, suposición press-only.
+- PRDs reescritas el 2026-10-07 (AT-02 como capacidad del motor; HT-01 con desglose F4.1-F4.10).
+- **Depende de:** F3 (se toca el bash de 7.419 líneas). **DoD:** hablar → ver texto reconocido → llega al agente **con el brain apagado**; con ambos interruptores en off, comportamiento idéntico al actual.
 
 ### F5 — HT-04 reenfocada (botones ntfy sobre el brain)
 

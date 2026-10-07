@@ -6,6 +6,8 @@
 
 > **Nota de destino (2026-10-07 — decisiones del maintainer):** HT-04 sigue **viva y reenfocada**: las acciones de la notificación ntfy (continuar/detener) pasan a ser **atajos que llaman a los endpoints del brain** (`/approval/*`, `/ask`); **sin listener HTTP propio** en el daemon ni vía independiente paralela a la PWA. Depende de F2 (validación física de `/approval` en Chrome Android) antes de implementarse. **Nada de este reenfoque está implementado.**
 >
+> **Deslinde con F4/STT (2026-10-07, posterior):** la decisión de mover el STT y la captura al motor `agent-tts` (AT-02/HT-01) **no afecta** a HT-04: los endpoints del brain siguen siendo la vía decidida para el control móvil. Son decisiones separadas; una no supersede a la otra.
+>
 > **Historia de esta nota:** el 2026-10-06 existió una nota de "cobertura dual" (Decisión D-R2) que mantenía en roadmap un control remoto con listener HTTP propio en el host; esa directiva quedó **superada** por la decisión del 2026-10-07 registrada aquí. El cuerpo de abajo conserva el diseño original (listener `POST /herdr-tts/reply`, suscripción al topic, inyección de texto libre) **como referencia histórica**: sus piezas de listener e inyección quedan sustituidas por la llamada a los endpoints del brain; lo que sigue vigente es el subconjunto de notificaciones con ntfy Actions y su auditoría.
 
 **Prioridad**: Alta · **Esfuerzo**: L
