@@ -207,3 +207,21 @@ for U4 device validation.
 
 Independent verifier review of U1 corrections, then commit decision
 (parent-owned). U2 (PowerShell capture) starts only after U1 disposition.
+
+
+## Real-device smoke test and delivery (2026-10-07 evening)
+
+Full end-to-end verification against the REAL machine (brain venv, real HF cache):
+
+| Step | Result |
+|---|---|
+| Real bug 1: eager package `__init__` | CLI died with ModuleNotFoundError miniaudio on the brain venv -> lazy PEP 562 `__init__` + isolation tests (RED 2 -> GREEN) |
+| Real bug 2: hub incomplete verdict | real cache snapshot rejected over missing `.gitattributes`/`README.md` -> direct disk scan (refs/main + required assets), hub only as fallback; HF env isolation for tests |
+| Real bug 3: broken runtime snapshot | `os.link` linked HF relative symlinks (not blobs) -> resolve-then-link blob inode, replace stale link dsts (RED -> GREEN) |
+| Real gap 4: no `shutdown` verb | CLI subcommand + polling protocol; honest rc 0/1 |
+| Smoke run | serve (brain venv, no miniaudio) -> READY ~3 s on model `small` from the real cache -> transcribe `short.mp3` -> `{"ok": true, "text": "Thanks for watching!"}` (0.9 s) -> shutdown rc 0, socket removed, process exited cleanly |
+| Full engine suite | 1094 passed / 11 skipped / 0 failed |
+| Delivery | `2d1cb7d` (U1) + `0a488a9` (fixes) merged fast-forward to local `main`; pushed to `origin/main` and `origin/feat/f4-stt-core` (authorized by maintainer) |
+
+Independent verification of U1 remains PENDING (verifier runtime usage limit); the
+real-machine smoke test above is the maintainer-visible functional evidence.
