@@ -1,12 +1,12 @@
 **ID**: PRD-HT-04 · **Proyecto**: herdr-tts
-**Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: Activa (P1, cubierta en brain PWA y planificada también en plugin-tts)
-**Dependencias**: Comparte inyección de texto con HT-01
+**Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: ACTIVA, REENFOCADA (2026-10-07), pendiente de implementar
+**Dependencias**: endpoints del brain (`/approval/*`, `/ask`); F2 (validación de `/approval` en Chrome Android)
 
 # PRD-HT-04 — Control bidireccional desde el móvil
 
-> **Nota de destino (2026-10-06 — Decisión D-R2 / Directiva de cobertura dual)**: Activa (cobertura dual). No está muerta ni descartada: la PWA de Herdr Brain cubre `/approval/*` y `/ask` hoy, pero `herdr-tts` mantiene en roadmap el control remoto ligero por ntfy Actions + HTTP listener en el host.
+> **Nota de destino (2026-10-07 — decisiones del maintainer):** HT-04 sigue **viva y reenfocada**: las acciones de la notificación ntfy (continuar/detener) pasan a ser **atajos que llaman a los endpoints del brain** (`/approval/*`, `/ask`); **sin listener HTTP propio** en el daemon ni vía independiente paralela a la PWA. Depende de F2 (validación física de `/approval` en Chrome Android) antes de implementarse. **Nada de este reenfoque está implementado.**
 >
-> **Nota de revisión (2026-09-22)**: Prerrequisito externo: validar con Herdr core el verbo de inyección de texto (`pane send-keys` o equivalente). El subconjunto de botones simple (Detener, que solo reutiliza `--stop`) puede aterrizar antes de la inyección.
+> **Historia de esta nota:** el 2026-10-06 existió una nota de "cobertura dual" (Decisión D-R2) que mantenía en roadmap un control remoto con listener HTTP propio en el host; esa directiva quedó **superada** por la decisión del 2026-10-07 registrada aquí. El cuerpo de abajo conserva el diseño original (listener `POST /herdr-tts/reply`, suscripción al topic, inyección de texto libre) **como referencia histórica**: sus piezas de listener e inyección quedan sustituidas por la llamada a los endpoints del brain; lo que sigue vigente es el subconjunto de notificaciones con ntfy Actions y su auditoría.
 
 **Prioridad**: Alta · **Esfuerzo**: L
 
