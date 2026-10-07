@@ -48,6 +48,14 @@ def __getattr__(name: str):
         from agent_tts.providers import KokoroTTSProvider
 
         return KokoroTTSProvider
+    # The STT subpackage is likewise optional and lazy: attribute access
+    # imports a stdlib-only package, never faster-whisper. import_module
+    # (not `from agent_tts import stt`) — the fromlist form would re-enter
+    # this __getattr__ and recurse before the submodule lands in sys.modules.
+    if name == "stt":
+        from importlib import import_module
+
+        return import_module("agent_tts.stt")
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
@@ -90,4 +98,5 @@ __all__ = [
     "provider_names",
     "provider_voices",
     "redact_secrets",
+    "stt",
 ]
