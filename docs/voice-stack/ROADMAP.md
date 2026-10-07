@@ -85,6 +85,8 @@ F1 base veraz ─┬─► F3 red de tests (R4-B) ─► F4 AT-02 + HT-01 ─►
 
 ### F4 — AT-02 reenfocada + HT-01 (hablar al agente desde el plugin)
 
+> **Estado (2026-10-07): U1-U3 IMPLEMENTADOS** en `main` local (commits `2d1cb7d`, `0a488a9`, U2/U3 y docs). STT + captura en el motor, worker residente, plugin cableado (`ptt` con interruptores `TTS_STT`/`TTS_PTT`, por defecto OFF). Probado real: transcripción end-to-end `"Thanks for watching!"`. Pendiente: U4 validación en dispositivo real, verificación independiente de U1 (límite de runtime del verificador), F4.10 migración del brain (opcional, autorización aparte).
+
 > **Rediseño de propiedad (2026-10-07, decisión vigente):** el STT y la captura de micrófono pertenecen al motor. El diseño intermedio de este mismo día (plugin → `POST /transcribe` del brain, commit `ed2fbfe`) quedó superado; ver cronología en D1a/D1b.
 
 - **AT-02 (motor):** capacidad STT genérica — extracción de `Transcriber`/política de modelo del brain (`stt.py`), extra opcional (`agent-tts[stt]`, precedente kokoro), descarga de modelo siempre explícita, captura de micrófono PowerShell (análogo de entrada de `powershell_playback.py`). Configuración genérica del motor, no atada a ajustes de host. Interruptor propio.
