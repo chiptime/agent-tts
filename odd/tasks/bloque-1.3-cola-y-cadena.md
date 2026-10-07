@@ -1,7 +1,9 @@
 # BLOQUE 1.3 — Cola con prioridades y reproducción encadenada (AT-08)
 
-**Estado**: En curso · **Rama**: `feat/at-08-cola-y-cadena` (worktree `~/Code/personal/agent-tts-worktrees/bloque-1.3`, base `main` = `885442f`)
-**Nota**: este doc vive untracked en el worktree; el espejo durable está en engram, topic `odd/bloque-1.3-cola-y-cadena/tasks`.
+**Estado**: COMPLETADO e integrado (2026-09-25) · **Rama histórica**: `feat/at-08-cola-y-cadena` (base original `885442f`)
+**Referencias vigentes**: `3a9c59e` (cola), `ec1b541` (cadena), `7231f9e` (contrato), `0d3f340` (merge). Documento versionado; el registro original también tiene espejo Engram `odd/bloque-1.3-cola-y-cadena/tasks`.
+
+> **Reconciliación (2026-10-05)**: Código presente en `engine/src/agent_tts/{queue_manager,chain,daemon,cli}.py`, contrato en `contracts/ipc-v2.md`. Se conserva el cierre de sesión anterior a la integración como historia, no como estado actual de entrega. Las métricas incumplidas y residuales aceptados no se declaran resueltos; su mantenimiento vive en `docs/deuda-tecnica.md`. F1 no repite mediciones ni revisión.
 
 ## Objetivo
 
@@ -50,12 +52,11 @@ Hoy la segunda reproducción recibe `ERR: playback already in progress` (y RS-5:
 - [x] **T6** (delegado) Hito Cadena: `--play-chain` + entrada como ítem de cola; sesión única; `merge_chunks_to_audio` + `BoundaryMap` combinada; silencio intermedio configurable (default 0 ms); seek/pausa/frases sobre la cadena completa. ✅ `28942d4`+`453c1b7`+`5c9eb16` — `agent_tts/chain.py` (BoundaryMap combinada; `shift_boundary_map` → `boundaries.py`), cadena = 1 ítem de cola con campos wire `chain`/`chain_gap_ms` (freeze-critical, documentados), watcher 5 ms emite `chain-item` (seam de traza definido), controles de cadena sobre mapa global (local), despacho entre ítems max 9.8 ms (<50), concatenación byte-exacta con gap 0; suite 750/11/0.
 - [x] **T7** (delegado) Hito Cadena: tests — **absorbido por T6** (12 unit + 8 e2e daemon + 8 CLI + harness `scripts/chain_metrics.py` + evidencia `metrics/chain/*.json`); lo único que quedaba fuera (controles de cadena en wsl-ps) es limitación documentada, fuera de PRD.
 - [x] **T5.1** (delegado) Fix flake 50-eventos. ✅ `13431e1` + `b68b0c7` — Diagnóstico: candidato C (manejo IPC del harness sensible a carga: `send_ipc_command`→None ante connect-refused en la ventana bind→listen y lecturas post-teardown; el test desreferenciaba sin guard). NUNCA fue violación del invariante: 0-solapes sólido por construcción (slot único + CLOCK_MONOTONIC end→start con happens-before; candidatos A/B descartados). Fix test-only con reintentos acotados a deadline; enqueue SIN reintento (ambigüedad de duplicado). **Desviación a ratificar por el usuario**: el flake heredado `test_requests_reset_the_idle_clock` disparó 2/10 en el bucle de reproducción e impedía la prueba de estabilidad → se ampliaron márgenes del test (ventana 1.0→2.0 s, retry acotado, join 6 s; solo test, sin semántica de producto). Prueba: 4/4 pasadas completas verdes + solitario. Hallazgos de producto registrados (post-fix, para JD/informe): ventana bind→listen (connect refused transitorio afecta clientes reales), `send_ipc_command` opaco (None).
-- [ ] **T8** (delegado, EN CURSO)
 - [x] **T8** Métricas DoD + docs: README y anuncio de contrato IPC congelado (nota para herdr HT-03/HT-10), trazabilidad RF-AT-08-1..6 / RNF-AT-08-1..3 / US-AT-08-1..4; RAM kokoro caliente, edge p95 real (requiere kokoro), lanzar harness smoke 8h; registrar evidencia. ✅ `faf71d8` + `7086555` — `docs/ipc-contract-v2.md` (contrato congelado 2026-09-25: framing v2, comandos/respuestas, catálogo de errores, claves de snapshot, disciplina de cliente, limitaciones conocidas), tabla de trazabilidad completa en el PRD del bloque, README cerrado. **edge p95 real MEDIDO: 584.1 ms p95 vs presupuesto 250 ms — NO CUMPLE, registrado honestamente** (`metrics/edge/edge-p95-local-20260925T072309Z.json`; la síntesis de red edge domina: p50 376 ms; el despacho daemon se mantiene ≤0.086 ms; decisión de producto pendiente: re-escalar presupuesto / semántica de primer chunk / aceptar). RAM kokoro: pendiente documentada (kokoro no instalado; prohibido instalar en .venv compartido). Smoke 8h: se lanza tras el JD, antes del STOP.
 - [x] **T9** (completado) Judgment Day dual — **JUDGMENT: ESCALATED ⚠️** (protocolo: hallazgo corroborado persistente tras ronda 2 con gravedad disputada entre jueces; sin autoridad de entrega). Detalle: ledger `odd/reviews/bloque-1.3-jd-ledger.md` + engram. Ronda 1: R1-01/R1-02 (severos confirmados) + R1-04/R1-05 (corroborados por el usuario) → fixes `96664ad`/`c0b5179`/`7f08ae2`/`d3ef981`; re-juicio 1: R2-01 [B CRITICAL] + R2-02 [A SUG] → fixes `aec4b73`/`eb21ad6`; re-juicio final: R3-01 ventana espontánea (B CRITICAL / A WARNING, disputa), R3-02 sugerencia. Suite final 767/11/0.
 - [x] **T10** (completado) STOP: informe final entregado; decisiones pendientes en manos del usuario (merge/push, edge p95, stop-flush, ratificar fix idle-clock, comunicar freeze a herdr). R3-01 aceptado como residual documentado; smoke 8h lanzado (PID 534917 → `metrics/smoke/smoke-8h-20260925T0935Z.log`, ETA ~17:35 CEST).
 
-## Progreso (cierre)
+## Progreso (cierre de sesión original, anterior a la integración)
 
 - 2026-09-25: JD dual cerrado — **ESCALATED ⚠️ por protocolo** (R3-01 con gravedad disputada entre jueces tras agotar 2 fixes + 2 re-juicios), **residual aceptado por el usuario**. 6 fixes aplicados en total (`96664ad`, `c0b5179`, `7f08ae2`, `d3ef981`, `aec4b73`, `eb21ad6`). Suite final **767 passed / 11 skipped / 0 failed**. Ledger completo: `odd/reviews/bloque-1.3-jd-ledger.md` + engram `agent-tts/bloque-1.3/judgment-day-ledger`.
 - **Estado de entrega**: 16 commits (`2acbc42..eb21ad6`) en `feat/at-08-cola-y-cadena`, worktree `~/Code/personal/agent-tts-worktrees/bloque-1.3`. SIN push, SIN merge. Un PR (size:exception aprobado). El JD no otorga autoridad de entrega: merge = decisión del usuario.
@@ -77,4 +78,4 @@ Estimación authored lines (T1–T8, tests incluidos): ~1200–1900 → supera l
 
 ## Próximo paso
 
-T4 (CLI) — delegada.
+Bloque integrado; consultar el registro vivo `docs/deuda-tecnica.md` para residuales. No reabrir T4/T8 como implementación pendiente por las notas históricas.

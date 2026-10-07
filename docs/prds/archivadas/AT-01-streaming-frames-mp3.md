@@ -2,6 +2,8 @@
 **Prioridad final (revisión 2026-09-22)**: P3 · **Estado**: EJECUTADA (Fecha de cierre: 2026-09-29, commit: `510ceaa` / `a3ee900`)
 **Dependencias**: Ninguna
 
+> **Nota de reconciliación (2026-10-05)**: Postergada en la revisión del 22/09; ejecutada después con parser MP3, decoder continuo y pipeline en `engine/src/agent_tts/stream/` y `cli.py`. El cuerpo conserva el diseño original, no un estado pendiente.
+
 # PRD-AT-01 — Streaming incremental por frames de MP3 (byte-level)
 
 **Prioridad**: Media · **Esfuerzo**: L

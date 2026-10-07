@@ -1,5 +1,13 @@
 # EXECUTION — Contrato de ejecución del bucle voice-stack
 
+> **Estado actual: `automated_complete` (VS0→VSX, 2026-10-01).** Fuente del cierre:
+> [MANUAL-TESTS.md](MANUAL-TESTS.md), cabecera; código y E2E presentes en el monorepo
+> (`182ed76`, `def986a`, `962e542`, `36a8997`, `507e761`). Queda la verificación física
+> de §8 y ROADMAP F2. Reconciliado el 2026-10-05 sin repetir los gates ni leer evidencia local.
+> El bloque DRAFT y la solicitud §1 que siguen se conservan intactos como contrato original,
+> no como estado vigente ni orden de ejecutar otra vez. Los scripts nombrados abajo existen;
+> «FUTURE» genérico y el runner opcional sin ruta concreta quedan como referencias históricas.
+
 > **Estado: DRAFT.** Define CÓMO ejecutar TASKS.md. No autoriza nada por sí mismo: la
 > autorización la da el usuario pegando §1. **No hay runtime instalado**: este contrato lo
 > ejecuta la sesión futura leyéndolo y obedeciéndolo; los scripts FUTURE de TASKS.md no
@@ -39,8 +47,8 @@ Antes de editar código, ejecuta la Fase 0 (§2) tal cual.
 
 ### 2.0 Bootstrap VS0.B (PRIMERO, antes de CUALQUIER escritura de repo — resuelve la circularidad)
 
-`snapshot.py`/`runlock.py` son FUTURE (los crean VS0.1/VS0.2): la Fase 0 NO puede
-exigirlos. El bootstrap usa un snippet inline **sólo-stdlib de Python** (texto pasivo de
+En el bootstrap original, `snapshot.py`/`runlock.py` aún no existían (VS0.1/VS0.2): la Fase 0 NO podía
+exigirlos. Hoy ambos están presentes. El bootstrap usa un snippet inline **sólo-stdlib de Python** (texto pasivo de
 este documento; no es un fichero de script ahora) que crea el run-dir machine-local, el
 inventario inicial y el lock de ejecución:
 
@@ -157,7 +165,7 @@ en salida normal, fallo o bloqueo: guardar_checkpoint_y_liberar_solo_lock_propio
 
 ## 4. Identidad, manifiesto y checkpoint (AUTORIDAD ÚNICA de esquemas)
 
-### 4.1 Identidad/snapshot [FUTURE `scripts/voice-stack/snapshot.py`, tarea VS0.1]
+### 4.1 Identidad/snapshot [`scripts/voice-stack/snapshot.py`, implementado en VS0.1]
 
 `snapshot.json`: `{schema:"1", ts, repo:{head_sha, status_porcelain_sha256},
 package:{files:[{path, sha256, mode}] (ordenado, TODO docs/voice-stack/)},
@@ -217,7 +225,7 @@ checkpoint lo escribe la sesión (runner script FUTURE opcional, jamás "ya inst
 
 ## 5. Concurrencia y cambio de fuente durante la ejecución
 
-- **Lock de run (creado por el bootstrap §2.0; `runlock.py` FUTURE de VS0.2 MIGRA
+- **Lock de run (creado por el bootstrap §2.0; `runlock.py`, implementado en VS0.2, MIGRA
   validando el token existente, sin re-adquisición):**
   `~/.local/state/voice-stack-runs/run.lock`, creado con `O_CREAT|O_EXCL` (atómico),
   contenido `{"pid", "started_ts", "token" (aleatorio único por owner), "session":"voice-stack"}`.

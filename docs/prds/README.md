@@ -1,8 +1,10 @@
 # agent-tts — PRDs 2026 (roadmap consolidado y ecosistema monorepo)
 
-**Fecha:** 22 de septiembre de 2026 (actualizado al 2 de octubre de 2026 tras migración a monorepo AT-10 y auditoría de reconciliación).
+**Fecha:** 22 de septiembre de 2026 (actualizado al 2 de octubre de 2026 tras migración a monorepo AT-10 y auditoría de reconciliación; estado reconciliado: 5 de octubre de 2026).
 
 **Metodología:** Cada PRD se justifica primero por cómo mejora el flujo diario del maintainer (dirigir flotas de agentes de código por voz en Herdr bajo WSL2, audio al host Windows via `winhost`) y solo después por su valor competitivo, anclada en el código real del motor y contrastada con el prior art del ecosistema. Tras la migración AT-10, el monorepo unifica el motor (`engine/`), el plugin orquestador de Herdr (`hosts/herdr/tts-plugin/`) y el asistente conversacional móvil (`hosts/herdr/brain/`).
+
+El orden vigente y las decisiones D1–D5 están en [ROADMAP.md](../voice-stack/ROADMAP.md). Las prioridades del 22/09 son históricas cuando ese roadmap las modifica; los cuerpos de PRD se conservan como diseño, no como evidencia de ejecución. El detalle del host vive en el [índice del plugin](../../hosts/herdr/tts-plugin/docs/prds/README.md).
 
 ---
 
@@ -60,7 +62,7 @@ La migración a monorepo absorbió tres repositorios independientes, implementan
 | HT-06 | [../../hosts/herdr/tts-plugin/docs/prds/HT-06-auto-snooze-reunion.md](../../hosts/herdr/tts-plugin/docs/prds/HT-06-auto-snooze-reunion.md) | Auto-snooze contextual (modo reunión) | P4 | **Postergada** | M |
 | HT-07 | [../../hosts/herdr/tts-plugin/docs/prds/HT-07-filtro-semantico.md](../../hosts/herdr/tts-plugin/docs/prds/HT-07-filtro-semantico.md) | Filtro semántico de importancia | P4 | **Postergada** | M |
 | HT-08 | [../../hosts/herdr/tts-plugin/docs/prds/HT-08-briefing-matinal.md](../../hosts/herdr/tts-plugin/docs/prds/HT-08-briefing-matinal.md) | Briefing matinal automático | P4 | **Postergada** | M |
-| HT-09 | [../../hosts/herdr/tts-plugin/docs/prds/descartadas/HT-09-espacializacion-estereo.md](../../hosts/herdr/tts-plugin/docs/prds/descartadas/HT-09-espacializacion-estereo.md) | Espacialización estéreo por pane | — | **Descartada** | — |
+| HT-09 | [../../hosts/herdr/tts-plugin/docs/prds/descartadas/HT-09-espacializacion-estreo.md](../../hosts/herdr/tts-plugin/docs/prds/descartadas/HT-09-espacializacion-estreo.md) | Espacialización estéreo por pane | — | **Descartada** | — |
 | HT-10 | [../../hosts/herdr/tts-plugin/docs/prds/HT-10-chain-replay.md](../../hosts/herdr/tts-plugin/docs/prds/HT-10-chain-replay.md) | Chain replay contextual | P5 | **Aprobada (baja)** (pendiente) | S-M |
 | HT-11 | [../../hosts/herdr/tts-plugin/docs/prds/archivadas/HT-11-audicion-voces.md](../../hosts/herdr/tts-plugin/docs/prds/archivadas/HT-11-audicion-voces.md) | Audición de voces en la paleta | P1 | **EJECUTADA / IMPLEMENTADA** (2026-10-06, Bloque 2 cerrado) | S |
 | HT-12 | [../../hosts/herdr/tts-plugin/docs/prds/descartadas/HT-12-watchers-texto.md](../../hosts/herdr/tts-plugin/docs/prds/descartadas/HT-12-watchers-texto.md) | Watchers personalizados de texto | — | **Descartada** | — |

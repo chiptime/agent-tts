@@ -2,6 +2,8 @@
 **Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: EJECUTADA (2026-10-06)
 **Dependencias**: HT-02 para asignación por chat
 
+> **Nota de prioridad (2026-10-05)**: D4 sustituyó la prioridad P1 y la planificación conjunta del 22/09, dejando esta PRD sin ejecutar y en cola para F6 por detrás de AT-02/HT-01. Ejecutada finalmente el 2026-10-06 con el cierre del Bloque 2; la nota anterior se conserva como historia.
+
 # PRD-HT-11 — Audición de voces en la paleta
 
 > **Nota de revisión (2026-09-22)**: Compañera UX de HT-02, misma fase: juntas convierten la identidad vocal en experiencia completa desde el día uno (asignación de voces de oído, sin editar config).
