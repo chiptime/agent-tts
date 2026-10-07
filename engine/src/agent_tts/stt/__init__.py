@@ -18,6 +18,11 @@ _LAZY_EXPORTS = {
     "model_is_cached": "transcriber",
     "SttWorker": "worker",
     "stt_request": "worker",
+    "CaptureConfig": "capture",
+    "PowerShellCapture": "capture",
+    "CaptureUnavailableError": "capture",
+    "CaptureOversizeError": "capture",
+    "EmptyCaptureError": "capture",
 }
 
 __all__ = list(_LAZY_EXPORTS)
