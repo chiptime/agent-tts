@@ -75,6 +75,7 @@ from .speech import (
 # read at USE time so monkeypatching them in speech affects this server.
 from . import speech as _speech
 from .stt import STATE_READY, STATE_UNAVAILABLE, UNAVAILABLE_HINT, Transcriber
+from .stt_engine import EngineTranscriber
 from .tools import BrainTools
 from .tools import status_payload as _status_payload
 from .tts import (
@@ -392,10 +393,18 @@ def create_app(
         consult.attach_event_sink(watcher.hub.publish)
 
     if transcriber is None:
-        transcriber = Transcriber(cfg)
+        # Backend wiring (F4.10): the default "engine" backend delegates
+        # to the agent-tts resident worker; "builtin" keeps the legacy
+        # in-process Transcriber. Both expose the same duck-typed surface,
+        # so /health and /transcribe stay contract-identical.
+        if cfg.stt_backend == "builtin":
+            transcriber = Transcriber(cfg)
+        else:
+            transcriber = EngineTranscriber(cfg)
         if cfg.stt_warmup:
             # Warm from local files only; flips to unavailable (with the
             # pull hint) when the model was never pulled. NEVER downloads.
+            # In engine mode this fires only the CLI status probe.
             transcriber.maybe_start_warmup()
 
     # Speech backend contract (fail-soft): a missing herdr-tts must never

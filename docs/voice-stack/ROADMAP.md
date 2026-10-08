@@ -92,7 +92,7 @@ F1 base veraz ─┬─► F3 red de tests (R4-B) ─► F4 AT-02 + HT-01 ─►
 > 2. Activa los interruptores en el plugin: `TTS_STT=on` y `TTS_PTT=on` (settings o `config_set`).
 > 3. Vincula un acorde al id `ptt` (`herdr-tts keymap`), pulsa, habla, para con el mismo acorde; confirma con Enter y el texto entra en el panel enfocado.
 >
-> Pendiente: U4 validación en dispositivo real (micrófono del host Windows con el script MCI — solo probado con runners falsos), verificación independiente de U1 (límite de runtime del verificador), F4.10 migración del brain (opcional, autorización aparte).
+> Pendiente: U4 validación en dispositivo real (micrófono del host Windows con el script MCI — solo probado con runners falsos), verificación independiente de U1 (límite de runtime del verificador). F4.10 migración del brain: IMPLEMENTADA en rama `feat/f4-stt-core` (backend STT por defecto `engine` vía CLI del worker residente; escape `HERDR_BRAIN_STT_BACKEND=builtin`; contrato HTTP del navegador/servidor preservado) — pendiente de revisión/fusión, no marca F4 completo.
 
 > **Rediseño de propiedad (2026-10-07, decisión vigente):** el STT y la captura de micrófono pertenecen al motor. El diseño intermedio de este mismo día (plugin → `POST /transcribe` del brain, commit `ed2fbfe`) quedó superado; ver cronología en D1a/D1b.
 
