@@ -2,10 +2,9 @@
 #
 # Static half: scan the versioned tree under test (CHECKOUT) for
 # machine-coupling patterns across the installation surface. Authored at
-# task 1.3; its full-green state completes with task 2.2 (launcher repair,
-# with 1.4-1.7 and 2.4 landed) — until then every finding below is a
-# truthful FAIL, never a skip. The runtime half (installed-artifact
-# inspection inside this sandbox) finalizes with task 2.2.
+# task 1.3; task 2.2 repaired the brain launcher and manifest and task 2.4
+# replaced the static systemd unit with a template, which is what turns
+# this scenario green. Any finding below is a truthful FAIL, never a skip.
 #
 # Pure bash on purpose: the sandbox PATH allowlist has no grep/sed/find.
 # Test-fixture files are deliberately NOT scanned — the smoke suite's decoy
@@ -26,6 +25,7 @@ SCAN_FILES=(
   "$CHECKOUT/hosts/herdr/tts-plugin/scripts/bootstrap.sh"
   "$CHECKOUT/hosts/herdr/tts-plugin/bin/herdr-tts"
   "$CHECKOUT/hosts/herdr/brain/bin/herdr-brain"
+  "$CHECKOUT/hosts/herdr/brain/herdr-plugin.toml"
   "$CHECKOUT/hosts/herdr/tts-plugin/README.md"
 )
 for g in \

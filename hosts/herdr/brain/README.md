@@ -44,21 +44,28 @@ scripts/bootstrap.sh          # creates .venv, installs deps, runs tests
 
 ### Environment variables
 
-Add your key to `~/.dotfiles/shell/private-env.sh` (symlinked **outside** the
-repo — never commit it) and re-source your shell:
+Put your key in `~/.config/herdr-brain/env` (outside the repo, mode 600 —
+never commit it). `bin/herdr-brain` reads it from there when `GLM_API_KEY`
+is not already exported:
 
 ```bash
-# in ~/.dotfiles/shell/private-env.sh
-export GLM_API_KEY="…"
+mkdir -p ~/.config/herdr-brain && chmod 700 ~/.config/herdr-brain
+printf 'GLM_API_KEY=%s\n' "<your key>" > ~/.config/herdr-brain/env
+chmod 600 ~/.config/herdr-brain/env
 ```
+
+Interactive shell dotfiles are never scraped: systemd and plugin-launched
+daemons do not source them, so the env file is the single stable contract.
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `GLM_API_KEY` | *(required)* | LLM key (OpenAI-compatible endpoint) |
 | `GLM_BASE_URL` | `https://api.z.ai/api/paas/v4/` | LLM base URL |
 | `GLM_MODEL` | `glm-5` | LLM model |
-| `HERDR_BIN` | `herdr` | herdr CLI path |
-| `HERDR_TTS_HOME` | `~/Code/personal/agent-tts/hosts/herdr/tts-plugin` | herdr-tts repo root (speech backend; the surface CLI `<home>/bin/herdr-tts` derives from it) |
+| `HERDR_BIN` | *(discovered)* | herdr CLI path; discovery order: `HERDR_BIN` → `herdr` on `PATH` → `$HOMEBREW_PREFIX/bin/herdr` → `brew --prefix`/bin/herdr → `~/.local/bin/herdr` → bare `herdr` |
+| `HERDR_TTS_HOME` | sibling `../tts-plugin` of the brain root | herdr-tts root (speech backend; the surface CLI `<home>/bin/herdr-tts` derives from it). An exported, existing directory wins over the sibling default |
+| `HERDR_BRAIN_PORT` | `8741` | listen port; order: env → `~/.config/herdr-brain/config.env` → default |
+| `HERDR_BRAIN_REMOTE_URL` | *(unset)* | optional remote URL printed by `bin/herdr-brain url`; env or `config.env` only, never inferred |
 | `HERDR_BRAIN_VOICE` / `HERDR_BRAIN_RATE` / `HERDR_BRAIN_MAX_CHARS` | `elvira` / `+0%` / `300` | synthesis knobs |
 | `HERDR_BRAIN_TTS_ARGS` | *(empty)* | extra engine flags (e.g. `--piper`, `--tldr`) |
 | `HERDR_BRAIN_AUDIO_DIR` | `~/.local/state/herdr-brain/audio` | rendered mp3 directory |
@@ -119,23 +126,38 @@ bin/herdr-brain restart
 bin/herdr-brain stop
 ```
 
-### Option 2: systemd user unit (Linux daemon mode)
+### Option 2: systemd user unit (optional, Linux daemon mode)
 
-The service can alternatively run as a persistent **systemd user unit** — independent of Herdr lifecycle:
+The service can alternatively run as a persistent **systemd user unit** — independent of Herdr lifecycle. This route is optional; the plugin startup route above needs no systemd.
 
 ```bash
-deploy/install.sh    # idempotent: env file + unit + linger + health gate
+export GLM_API_KEY="…"        # optional here; or add it to ~/.config/herdr-brain/env
+deploy/install.sh              # idempotent: env file + generated unit + linger + health gate
+deploy/install.sh --generate-only   # only render the unit; no systemctl, no env file
 ```
+
+The unit is **generated**, never committed: the installer discovers the
+install location, the venv python, the `herdr` binary
+(`HERDR_BIN` → `PATH` → `$HOMEBREW_PREFIX/bin/herdr` → `brew --prefix` →
+`~/.local/bin/herdr`; an unresolved binary is a hard failure), the
+tts-plugin home, the port and the env file, substitutes them into
+`deploy/herdr-brain.service.tmpl`, and writes
+`~/.config/systemd/user/herdr-brain.service`. Any placeholder left
+unsubstituted aborts the install before anything is changed. `deploy/*.service`
+is git-ignored.
 
 What the installer does (safe to re-run):
 
-- extracts `GLM_API_KEY` from `~/.dotfiles/shell/private-env.sh` into
-  `~/.config/herdr-brain/env` (outside the repo, mode 600; the value is
-  never printed and the file is only rewritten when the key changes),
-- stops any stray manual instance listening on :8741,
-- installs `deploy/herdr-brain.service` as a user unit, enables linger and
-  starts it (`Restart=on-failure`, `RestartSec=3`),
-- polls `/health` for up to 10s and prints the journal on failure.
+- reads `GLM_API_KEY` from the installer's own environment (never from
+  dotfiles) and merges it into `~/.config/herdr-brain/env` (outside the
+  repo, mode 600; the value is never printed; other lines are preserved),
+- stops a stray manual herdr-brain instance on the port only when it is
+  provably ours (pidfile or the unit's `MainPID`); a foreign listener aborts
+  the install untouched (see *Port conflicts* below),
+- on upgrade replaces only the unit it generated (stop → regenerate →
+  reload → restart); a unit file it did not generate is never overwritten,
+- enables linger, starts the unit (`Restart=on-failure`, `RestartSec=3`),
+  polls `/health` for up to 10s and prints the journal on failure.
 
 ```bash
 systemctl --user status herdr-brain     # state + recent log lines
@@ -143,17 +165,27 @@ journalctl --user -u herdr-brain -f     # follow
 systemctl --user restart herdr-brain    # bounces in ~3s, config included
 ```
 
+### Port conflicts
+
+The launcher and the installer never signal a process they do not own. If
+the port (default `8741`) is held by anything else, they exit with code `98`
+and print the PID, the process name, the port and two remedies: pick another
+port (`export HERDR_BRAIN_PORT=<free port>`, or persist it in
+`~/.config/herdr-brain/config.env`) or stop that process yourself. Our own
+previous instance (pidfile) is stopped normally, and a unit-owned listener
+is managed through `systemctl --user`, never `kill`.
+
 ### Manual run (debugging ONLY)
 
 ```bash
 # Requires the key in THIS shell, or /ask will 503:
-source ~/.dotfiles/shell/private-env.sh
+set -a; . ~/.config/herdr-brain/env; set +a
 HERDR_BRAIN_HOST=0.0.0.0 .venv/bin/python -m herdr_brain.server
 ```
 
 > **Warning:** manual `nohup` restarts from tool shells lose
-> `GLM_API_KEY` (it lives in `private-env.sh`, sourced only by interactive
-> shells) and `/ask` fails with 503 while `/health` stays green. Use
+> `GLM_API_KEY` (a key exported only in an interactive shell never reaches
+> them) and `/ask` fails with 503 while `/health` stays green. Use
 > `bin/herdr-brain` or `deploy/install.sh` to run the server with proper environment discovery.
 
 ### Upgrading the herdr-tts renderer (reader cache release step)

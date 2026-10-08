@@ -24,7 +24,7 @@ command = ["bin/herdr-brain", "status"]
 [[actions]]
 id = "url"
 title = "Herdr Brain: URL"
-description = "Show local and Tailscale URLs for Herdr Brain"
+description = "Show the local URL, plus the optional remote URL when configured"
 contexts = ["workspace", "global"]
 command = ["bin/herdr-brain", "url"]
 
