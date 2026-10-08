@@ -212,6 +212,9 @@ SCAN_SCOPES: dict[str, str] = {
     # Task 2.2: the brain launcher drops the dotfiles scrape, the literal
     # brew prefix and the personal tailnet domain (audit A1/C1/C2/C4).
     "brain-launcher": "hosts/herdr/brain/bin",
+    # Task 2.4: the systemd unit is generated from a template; the template
+    # and installer carry no machine-specific absolute path.
+    "brain-deploy": "hosts/herdr/brain/deploy",
 }
 
 # Archived standalone repositories: no active installer/doc/test reference

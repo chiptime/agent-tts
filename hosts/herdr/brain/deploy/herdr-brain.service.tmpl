@@ -1,0 +1,34 @@
+# herdr-brain — systemd USER unit TEMPLATE (AT-11 design Decision 5).
+#
+# Rendered by deploy/install.sh: every at-sign delimited token below is
+# replaced with a value discovered at install time, and the result is written to
+# ~/.config/systemd/user/herdr-brain.service. The generated unit is never
+# committed; this template carries no machine-specific absolute path.
+#
+# The GLM_API_KEY never lives in this repo or in the unit. It is read from the
+# environment file below (outside the repo, mode 600). systemd does not
+# source interactive-shell dotfiles, so that file is the single stable
+# contract between the user's environment and the service.
+#
+# The systemd user manager PATH is minimal, so HERDR_BIN and HERDR_TTS_HOME
+# are baked in as absolute values discovered in the installer's full
+# environment; without them `herdr agent list` could not be executed.
+
+[Unit]
+Description=Herdr Brain (voice PWA backend)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=@INSTALL_DIR@
+ExecStart=@PYTHON@ -m herdr_brain.server
+Environment=HERDR_BRAIN_HOST=0.0.0.0
+Environment=HERDR_BRAIN_PORT=@PORT@
+Environment=HERDR_BIN=@HERDR_BIN@
+Environment=HERDR_TTS_HOME=@TTS_HOME@
+EnvironmentFile=@ENV_FILE@
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

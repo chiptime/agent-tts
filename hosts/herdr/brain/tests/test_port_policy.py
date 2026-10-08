@@ -304,8 +304,8 @@ class TestInstallerClaim:
     def test_free_port_is_a_noop(self, rig):
         assert rig.run("_claim-port", "installer").returncode == 0
 
-    def test_port_subcommand_prints_the_resolved_port(self, rig):
-        assert rig.run("_port").stdout.strip() == str(rig.port)
+    def test_resolve_port_subcommand_prints_the_resolved_port(self, rig):
+        assert rig.run("_resolve", "port").stdout.strip() == str(rig.port)
 
 
 class TestInstallerDelegatesToThePolicy:
