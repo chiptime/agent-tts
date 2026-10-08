@@ -36,6 +36,7 @@ import subprocess
 from pathlib import Path
 from typing import Callable, Dict, Optional, Union
 
+DEFAULT_BRAIN_PORT = 8741
 ROOT_ASCEND_MAX = 6
 _MONOREPO_MARKER = Path("hosts/herdr/tts-plugin")
 
@@ -44,6 +45,17 @@ Env = Optional[Dict[str, str]]
 
 class ResolutionError(RuntimeError):
     """Raised when a portable resolution cannot produce a usable value."""
+
+
+def _parse_port(raw: str, source: str) -> int:
+    value = raw.strip()
+    try:
+        port = int(value)
+    except ValueError:
+        raise ResolutionError(f"invalid {source} value {value!r}: expected an integer port") from None
+    if not 1 <= port <= 65535:
+        raise ResolutionError(f"invalid {source} value {value!r}: port must be 1-65535")
+    return port
 
 
 def _which_on_path(name: str, path_value: str) -> Optional[str]:
@@ -58,6 +70,33 @@ def _which_on_path(name: str, path_value: str) -> Optional[str]:
 
 def _is_executable(path: Path) -> bool:
     return path.is_file() and os.access(path, os.X_OK)
+
+
+def _config_dir(environ: Dict[str, str]) -> Optional[Path]:
+    xdg = environ.get("XDG_CONFIG_HOME", "").strip()
+    if xdg:
+        return Path(xdg).expanduser()
+    home = environ.get("HOME", "").strip()
+    if home:
+        return Path(home).expanduser() / ".config"
+    return None
+
+
+def _read_env_key(path: Path, key: str) -> Optional[str]:
+    """Reads ``key`` from a sourcable ``KEY=VALUE`` file (comments, blank
+    lines, quotes and unrelated keys tolerated); ``None`` when absent."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        stripped = line.split("#", 1)[0].strip()
+        if stripped.startswith(f"{key}="):
+            value = stripped[len(key) + 1:].strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                value = value[1:-1]
+            return value
+    return None
 
 
 def resolve_root(env: Env = None, start: Optional[Union[str, Path]] = None) -> Path:
@@ -154,3 +193,22 @@ def resolve_herdr_bin(
             return str(candidate)
     return "herdr"
 
+
+def resolve_port(env: Env = None, config_file: Optional[Union[str, Path]] = None) -> int:
+    """Brain port (design Decision 4): ``HERDR_BRAIN_PORT`` -> persisted
+    config (``<XDG_CONFIG_HOME or ~/.config>/herdr-brain/config.env``, key
+    ``HERDR_BRAIN_PORT``) -> default :data:`DEFAULT_BRAIN_PORT`."""
+    environ = os.environ if env is None else env
+    raw = environ.get("HERDR_BRAIN_PORT", "").strip()
+    if raw:
+        return _parse_port(raw, "HERDR_BRAIN_PORT")
+    if config_file is not None:
+        path = Path(config_file).expanduser()
+    else:
+        directory = _config_dir(environ)
+        path = directory / "herdr-brain" / "config.env" if directory is not None else None
+    if path is not None and path.is_file():
+        persisted = _read_env_key(path, "HERDR_BRAIN_PORT")
+        if persisted is not None:
+            return _parse_port(persisted, str(path))
+    return DEFAULT_BRAIN_PORT
