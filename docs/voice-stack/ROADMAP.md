@@ -85,7 +85,14 @@ F1 base veraz ─┬─► F3 red de tests (R4-B) ─► F4 AT-02 + HT-01 ─►
 
 ### F4 — AT-02 reenfocada + HT-01 (hablar al agente desde el plugin)
 
-> **Estado (2026-10-07): U1-U3 IMPLEMENTADOS** en `main` local (commits `2d1cb7d`, `0a488a9`, U2/U3 y docs). STT + captura en el motor, worker residente, plugin cableado (`ptt` con interruptores `TTS_STT`/`TTS_PTT`, por defecto OFF). Probado real: transcripción end-to-end `"Thanks for watching!"`. Pendiente: U4 validación en dispositivo real, verificación independiente de U1 (límite de runtime del verificador), F4.10 migración del brain (opcional, autorización aparte).
+> **Estado (2026-10-08): U1-U3 IMPLEMENTADOS y publicados** (`origin/main` @ `58fbdf0`; commits `2d1cb7d`, `0a488a9`, `bc8d19b`, `e094b07`). STT + captura en el motor, worker residente, plugin cableado (`ptt` con interruptores `TTS_STT`/`TTS_PTT`, por defecto OFF). Probado real en este equipo: transcripción end-to-end `"Thanks for watching!"` (0,9 s) con shutdown limpio.
+>
+> **Cómo probarlo ya (dictado real):**
+> 1. Arranca el worker STT con un intérprete que tenga faster-whisper (el venv del brain lo tiene; el modelo `small` ya está en caché): `<venv-python> -m agent_tts.stt.cli serve`.
+> 2. Activa los interruptores en el plugin: `TTS_STT=on` y `TTS_PTT=on` (settings o `config_set`).
+> 3. Vincula un acorde al id `ptt` (`herdr-tts keymap`), pulsa, habla, para con el mismo acorde; confirma con Enter y el texto entra en el panel enfocado.
+>
+> Pendiente: U4 validación en dispositivo real (micrófono del host Windows con el script MCI — solo probado con runners falsos), verificación independiente de U1 (límite de runtime del verificador), F4.10 migración del brain (opcional, autorización aparte).
 
 > **Rediseño de propiedad (2026-10-07, decisión vigente):** el STT y la captura de micrófono pertenecen al motor. El diseño intermedio de este mismo día (plugin → `POST /transcribe` del brain, commit `ed2fbfe`) quedó superado; ver cronología en D1a/D1b.
 
