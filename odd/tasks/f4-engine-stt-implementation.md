@@ -231,3 +231,21 @@ real-machine smoke test above is the maintainer-visible functional evidence.
 
 - Parallel delegated writers, disjoint surfaces (engine vs plugin); parent spot checks: engine focused+boundaries 75 passed; plugin full battery 119 OK / 0 FAIL (rc 0); git diff --check clean.
 - Remaining open: U4 (real device validation), independent verification of U1 (verifier usage limit), F4.4 transport gate is satisfied by the shipped UDS design but the PRD gate item stays for maintainer sign-off, F4.10 brain migration optional later.
+
+
+## F4.10 — brain migrates to the engine STT (2026-10-08)
+
+- New `hosts/herdr/brain/src/herdr_brain/stt_engine.py` (314 ln): EngineTranscriber
+  (same duck-type surface: state/error/model_present/maybe_start_warmup/
+  transcribe_bytes), 5 s cached status probes, bounded temp-file transcribe via
+  `<engine-python> -m agent_tts.stt.cli`, exit-code mapping (5 worker down ->
+  hint `agent-tts-stt serve`), injectable runner seams, stdlib only.
+- `HERDR_BRAIN_STT_BACKEND=engine` DEFAULT (builtin = documented escape hatch);
+  engine python: HERDR_BRAIN_STT_PYTHON verbatim -> plugin venv fallback ->
+  typed unavailable; HERDR_BRAIN_STT_TIMEOUT_S (120).
+- Pull delegates to the engine CLI in engine mode; browser/server HTTP contract
+  preserved (same 503-with-hint semantics).
+- Tests: 35 new (test_stt_engine.py); focused 52/52; brain suite 1381 passed
+  (excl e2e/browser; 1 browser + 3 e2e chromium failures and m3/m4 hangs are
+  PRE-EXISTING on baseline eadbd14, reproduced without the changes).
+- Pre-existing environmental failures flagged for the known-failures list.

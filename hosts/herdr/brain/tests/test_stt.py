@@ -190,11 +190,18 @@ class TestTranscribeEndpoint:
 
 
 class TestBootPolicy:
-    """The server NEVER auto-downloads: no thread without local files, no
-    thread at all when test settings disable warmup."""
+    """The LEGACY backend's boot policy (stt_backend="builtin"): the
+    server NEVER auto-downloads — no thread without local files, no
+    thread at all when test settings disable warmup. The engine backend's
+    boot policy lives in test_stt_engine.py."""
 
     def _cfg(self, settings, audio_dir, **overrides):
-        base = {**settings.__dict__, "audio_dir": str(audio_dir), **overrides}
+        base = {
+            **settings.__dict__,
+            "audio_dir": str(audio_dir),
+            "stt_backend": "builtin",  # these tests patch the legacy Transcriber
+            **overrides,
+        }
         return Settings(**base)
 
     def test_boot_without_model_reports_unavailable_with_hint(

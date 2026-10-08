@@ -1,16 +1,25 @@
 """Server-side speech-to-text with faster-whisper (voice engine v2).
 
-Model policy (HARD RULE): the model is NEVER auto-downloaded at boot or at
-import. Downloading is an explicit operator action::
+Two backends (F4.10): the DEFAULT ``engine`` backend delegates to the
+agent-tts resident worker through its CLI (see stt_engine.py — the brain
+never runs faster-whisper in-process nor imports agent_tts);
+``HERDR_BRAIN_STT_BACKEND=builtin`` is the escape hatch back to this
+module's legacy in-process Transcriber. Both share the same HTTP
+contract (/health stt field, /transcribe 503 semantics with hint).
+
+Model policy (HARD RULE): the model is NEVER auto-downloaded at boot or
+at import. Downloading is an explicit operator action::
 
     python -m herdr_brain.stt pull
 
-which shows download progress and runs with HF_HUB_DOWNLOAD_TIMEOUT=30 so a
-stalled mirror fails instead of hanging. If the model is not present at
-boot, /health reports stt="unavailable" and /transcribe answers 503 with a
-hint naming the pull command. If the model IS already present, a daemon
-thread warms it so the first real utterance is not cold; the warm path
-loads local files only and cannot download.
+which shows download progress and runs with HF_HUB_DOWNLOAD_TIMEOUT=30 so
+a stalled mirror fails instead of hanging. In engine mode the pull
+delegates to the engine pull CLI (streaming passthrough — still the only
+download path). If the model is not present at boot, /health reports
+stt="unavailable" and /transcribe answers 503 with a hint naming the
+pull command. If the model IS already present, a daemon thread warms it
+so the first real utterance is not cold; the warm path loads local files
+only and cannot download.
 
 Language is auto-detected by whisper (language=None); the PWA user speaks
 Spanish or English and the model handles both. faster-whisper decodes the
@@ -188,6 +197,12 @@ def main(argv: Optional[list] = None) -> int:
         # Fail fast on a stalled mirror instead of hanging forever.
         os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "30")
         settings = load_settings()
+        if settings.stt_backend == "engine":
+            # Engine backend: the engine CLI owns the download and the
+            # progress output streams straight to the operator.
+            from .stt_engine import run_engine_pull
+
+            return run_engine_pull()
         transcriber = Transcriber(settings)
         name = settings.stt_model
         if transcriber.model_present():
