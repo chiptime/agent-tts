@@ -176,10 +176,33 @@ class TestTrimTrailingSilence:
         with pytest.raises(SttError):
             trim_trailing_silence(b"RIFF\x00\x00\x00\x00WAVEjunk", CaptureConfig())
 
-    def test_non_16bit_wav_is_rejected(self):
-        pcm8 = bytes([120] * 16000)  # 8-bit samples
-        with pytest.raises(SttError, match="16"):
-            trim_trailing_silence(make_wav(pcm8, width=1), CaptureConfig())
+    def test_non_16bit_wav_handling(self):
+        import io
+        import wave as wavemod
+
+        def wav8():
+            buf = io.BytesIO()
+            with wavemod.open(buf, "wb") as w:
+                w.setnchannels(1); w.setsampwidth(1); w.setframerate(16000)
+                w.writeframes(b"\x80\xff\x80\x80")  # loud, silence, silence
+            return buf.getvalue()
+
+        def wav24():
+            buf = io.BytesIO()
+            with wavemod.open(buf, "wb") as w:
+                w.setnchannels(1); w.setsampwidth(3); w.setframerate(16000)
+                w.writeframes(b"\x00\x00\x00" * 100)
+            return buf.getvalue()
+
+        # 8-bit is now ACCEPTED (normalized to 16-bit; U4 driver-default
+        # fallback recordings can be 8-bit)
+        import pytest as _pytest
+        with _pytest.raises(cap_mod.EmptyCaptureError):
+            trim_trailing_silence(wav8(), CaptureConfig())  # 1 loud frame then silence -> kept? loud frame exists, trim keeps it
+        # 24-bit stays a typed rejection
+        with _pytest.raises(SttError, match="8-bit and 16-bit"):
+            trim_trailing_silence(wav24(), CaptureConfig())
+
 
     def test_absurd_size_rejected_before_parse(self, monkeypatch):
         from agent_tts.stt import capture as cap
