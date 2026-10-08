@@ -1,9 +1,11 @@
 # BLOQUE 4 — Radio mode + verificación opencode web (HT-03 + AT-03 recortada)
 
 **Alcance**: PRD-HT-03 (P2) + tarea de verificación de PRD-AT-03 · **Prioridad**: P2 · **Esfuerzo agregado**: M + 10 min
-**Repositorios**: herdr-tts (radio) + agent-tts (verificación) · **Estado**: PARCIAL (hito 0 hecho, radio pendiente)
+**Repositorios**: herdr-tts (radio) + agent-tts (verificación) · **Estado**: PARCIAL (hito 0 y hito 1 hechos; hito 2 — mejoras progresivas — pendiente)
 
-> **Estado reconciliado (2026-10-05)**: AT-03 recortada cerrada en `3bb5e1b` (2026-09-28); conector OpenCode por ID presente en `engine/src/agent_tts/sources/`. `bin/herdr-tts` no tiene comando `radio` ni configuración `TTS_RADIO_*`: HT-03 y su integración siguen sin ejecutar. El cuerpo conserva el plan original.
+> **Estado reconciliado (2026-10-05)**: AT-03 recortada cerrada en `3bb5e1b` (2026-09-28); conector OpenCode por ID presente en `engine/src/agent_tts/sources/`. `bin/herdr-tts` no tenía comando `radio` ni configuración `TTS_RADIO_*`. El cuerpo conserva el plan original.
+>
+> **Actualización (2026-10-08)**: el **Hito 1 (Radio core) está COMPLETADO**: `herdr-tts --radio` y el command id `radio` están implementados con tests (`tests/radio_cases.sh`); detalle y decisiones en [HT-03](archivadas/HT-03-radio-mode.md) (ahora archivada, estado EXECUTED). Queda pendiente la medición de las métricas de aceptación sobre uso real y el Hito 2: 2a (cabecera con identidad hablada, ya se aplica cuando `voices.json` está en uso — verificada en `radio_header_title_truncation_and_ht02_identity`), 2b (encolado priorizado: implementado con fallback secuencial; falta validarlo contra el daemon real) y 2c (`TTS_RADIO_LLM_SUMMARY`, sin empezar).
 
 ### Objetivo del bloque
 
@@ -13,7 +15,7 @@ Entregar radio mode como flujo diario de triaje por voz en herdr-tts — un bole
 
 Radio mode es el consumidor puro del Bloque 1 (cola prioritaria AT-08 del motor) y del Bloque 2 (identidad vocal HT-02). Al llegar aquí, aterriza COMPLETO — cabeceras con nombre de agente hablado y encolado priorizado con los blocked en prioridad alta — en vez de en modo degradado. Ese es el motivo de su posición en la secuencia: no necesita esperar, pero espera bien.
 
-Por eso es P2 y no está bloqueado: existe un fallback secuencial válido bajo el mutex actual, así que puede shippear antes si hace falta, mejorando solo cuando las dependencias aterricen. Ninguna de las dos mejoras cambia el contrato de la feature; ambas lo enriquecen (RF-HT-03-5 y RF-HT-03-8 en [../HT-03-radio-mode.md](../HT-03-radio-mode.md)).
+Por eso es P2 y no está bloqueado: existe un fallback secuencial válido bajo el mutex actual, así que puede shippear antes si hace falta, mejorando solo cuando las dependencias aterricen. Ninguna de las dos mejoras cambia el contrato de la feature; ambas lo enriquecen (RF-HT-03-5 y RF-HT-03-8 en [../HT-03-radio-mode.md](../archivadas/HT-03-radio-mode.md)).
 
 La verificación de AT-03 (~10 min) es el calentamiento perfecto de la primera sesión del bloque: el schema de OpenCode ya fue verificado el 22/09/2026 (tabla única `session`, lookup por id sin filtro de workspace — probablemente ya cubierto). Ejecutarla primero valida el entorno del repo hermano con costo mínimo y descuenta el único resto vivo de una PRD recortada.
 
@@ -25,9 +27,9 @@ Ejecutar una sesión web real de OpenCode, confirmar que el conector actual resu
 
 - Aceptación: resultado documentado con fecha y evidencia dentro de la PRD AT-03; el índice de PRDs de agent-tts refleja el registro.
 
-**Hito 1 — Radio core (herdr-tts)**
+**Hito 1 — Radio core (herdr-tts)** — ✅ **COMPLETADO (2026-10-08)**
 
-Implementación completa de la feature según su fuente de verdad ([../HT-03-radio-mode.md](../HT-03-radio-mode.md)), sin duplicar aquí sus RF/RNF:
+Implementación completa de la feature según su fuente de verdad ([../HT-03-radio-mode.md](../archivadas/HT-03-radio-mode.md)), sin duplicar aquí sus RF/RNF:
 
 - Command id `radio` en el keymap declarativo, sin acorde por defecto (sugerido y validado con `keymap check`).
 - Reuso del roster fusionado del dashboard v3: misma clave `pane_id`, mismo orden needs-attention-first (blocked primero, done por recencia).
@@ -87,6 +89,6 @@ Cada una aterriza cuando su dependencia exista; ninguna bloquea al Hito 1.
 
 ### Referencias
 
-- [PRD-HT-03 — Radio mode](../HT-03-radio-mode.md) — fuente de verdad de RF/RNF, métricas y fuera de alcance.
+- [PRD-HT-03 — Radio mode](../archivadas/HT-03-radio-mode.md) — fuente de verdad de RF/RNF, métricas y fuera de alcance.
 - [README de PRDs de herdr-tts](../README.md) — roadmap consolidado, orden de ataque y regla transversal opt-in.
 - PRD-AT-03 — Conectores y auto-detección (repo hermano agent-tts): `../../../../agent-tts/docs/prds/AT-03-conectores-autodeteccion.md` — nota de revisión que define la tarea de verificación y su alcance recortado.
