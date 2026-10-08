@@ -44,21 +44,28 @@ scripts/bootstrap.sh          # creates .venv, installs deps, runs tests
 
 ### Environment variables
 
-Add your key to `~/.dotfiles/shell/private-env.sh` (symlinked **outside** the
-repo — never commit it) and re-source your shell:
+Put your key in `~/.config/herdr-brain/env` (outside the repo, mode 600 —
+never commit it). `bin/herdr-brain` reads it from there when `GLM_API_KEY`
+is not already exported:
 
 ```bash
-# in ~/.dotfiles/shell/private-env.sh
-export GLM_API_KEY="…"
+mkdir -p ~/.config/herdr-brain && chmod 700 ~/.config/herdr-brain
+printf 'GLM_API_KEY=%s\n' "<your key>" > ~/.config/herdr-brain/env
+chmod 600 ~/.config/herdr-brain/env
 ```
+
+Interactive shell dotfiles are never scraped: systemd and plugin-launched
+daemons do not source them, so the env file is the single stable contract.
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `GLM_API_KEY` | *(required)* | LLM key (OpenAI-compatible endpoint) |
 | `GLM_BASE_URL` | `https://api.z.ai/api/paas/v4/` | LLM base URL |
 | `GLM_MODEL` | `glm-5` | LLM model |
-| `HERDR_BIN` | `herdr` | herdr CLI path |
-| `HERDR_TTS_HOME` | `~/Code/personal/agent-tts/hosts/herdr/tts-plugin` | herdr-tts repo root (speech backend; the surface CLI `<home>/bin/herdr-tts` derives from it) |
+| `HERDR_BIN` | *(discovered)* | herdr CLI path; discovery order: `HERDR_BIN` → `herdr` on `PATH` → `$HOMEBREW_PREFIX/bin/herdr` → `brew --prefix`/bin/herdr → `~/.local/bin/herdr` → bare `herdr` |
+| `HERDR_TTS_HOME` | sibling `../tts-plugin` of the brain root | herdr-tts root (speech backend; the surface CLI `<home>/bin/herdr-tts` derives from it). An exported, existing directory wins over the sibling default |
+| `HERDR_BRAIN_PORT` | `8741` | listen port; order: env → `~/.config/herdr-brain/config.env` → default |
+| `HERDR_BRAIN_REMOTE_URL` | *(unset)* | optional remote URL printed by `bin/herdr-brain url`; env or `config.env` only, never inferred |
 | `HERDR_BRAIN_VOICE` / `HERDR_BRAIN_RATE` / `HERDR_BRAIN_MAX_CHARS` | `elvira` / `+0%` / `300` | synthesis knobs |
 | `HERDR_BRAIN_TTS_ARGS` | *(empty)* | extra engine flags (e.g. `--piper`, `--tldr`) |
 | `HERDR_BRAIN_AUDIO_DIR` | `~/.local/state/herdr-brain/audio` | rendered mp3 directory |
@@ -147,13 +154,13 @@ systemctl --user restart herdr-brain    # bounces in ~3s, config included
 
 ```bash
 # Requires the key in THIS shell, or /ask will 503:
-source ~/.dotfiles/shell/private-env.sh
+set -a; . ~/.config/herdr-brain/env; set +a
 HERDR_BRAIN_HOST=0.0.0.0 .venv/bin/python -m herdr_brain.server
 ```
 
 > **Warning:** manual `nohup` restarts from tool shells lose
-> `GLM_API_KEY` (it lives in `private-env.sh`, sourced only by interactive
-> shells) and `/ask` fails with 503 while `/health` stays green. Use
+> `GLM_API_KEY` (a key exported only in an interactive shell never reaches
+> them) and `/ask` fails with 503 while `/health` stays green. Use
 > `bin/herdr-brain` or `deploy/install.sh` to run the server with proper environment discovery.
 
 ### Upgrading the herdr-tts renderer (reader cache release step)

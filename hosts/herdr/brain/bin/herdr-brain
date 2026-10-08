@@ -125,8 +125,8 @@ load_env() {
   # OQ-2 precedence (Engram #9681 / design Decision 4): an explicitly
   # set-and-valid HERDR_TTS_HOME wins; unset derives the sibling
   # tts-plugin from this launcher's own location. No hardcoded default
-  # is ever exported (the dead $HOME/Code/personal/herdr-tts default is
-  # removed by delivering this precedence).
+  # is ever exported (the legacy per-machine default was removed by
+  # delivering this precedence).
   local tts_home
   tts_home="$(herdr_resolve_tts_home "$REPO_DIR")" || exit 1
   export HERDR_TTS_HOME="$tts_home"
@@ -137,7 +137,9 @@ load_env() {
     export HERDR_BIN
   fi
 
-  # Discover GLM_API_KEY if not in environment
+  # Discover GLM_API_KEY if not in environment (design Decision 4):
+  # process env -> $CONFIG_DIR/env -> plugin config dir. No interactive
+  # dotfile is ever scraped.
   if [[ -z "${GLM_API_KEY:-}" ]]; then
     if [[ -f "$CONFIG_DIR/env" ]]; then
       # shellcheck disable=SC1090
@@ -148,20 +150,30 @@ load_env() {
       # shellcheck disable=SC1090
       set -a; . "$plugin_cfg"; set +a
     fi
-    local private_env="$HOME/.dotfiles/shell/private-env.sh"
-    if [[ -z "${GLM_API_KEY:-}" && -f "$private_env" ]]; then
-      local raw_line
-      raw_line="$(grep -E '^[[:space:]]*export[[:space:]]+GLM_API_KEY=' "$private_env" 2>/dev/null | tail -n 1 || true)"
-      if [[ -n "$raw_line" ]]; then
-        local raw_val="${raw_line#*GLM_API_KEY=}"
-        raw_val="${raw_val%\"}"; raw_val="${raw_val#\"}"
-        raw_val="${raw_val%\'}"; raw_val="${raw_val#\'}"
-        raw_val="${raw_val%%#*}"
-        GLM_API_KEY="$(printf '%s' "$raw_val" | tr -d '\r\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-        export GLM_API_KEY
-      fi
-    fi
   fi
+}
+
+# Optional remote-exposure URL (RF-AT-11-9): from the environment or the
+# persisted $CONFIG_DIR/config.env only; never inferred or hardcoded.
+remote_url() {
+  local cfg="$CONFIG_DIR/config.env" line raw
+  if [[ -n "${HERDR_BRAIN_REMOTE_URL:-}" ]]; then
+    printf '%s\n' "$HERDR_BRAIN_REMOTE_URL"
+    return 0
+  fi
+  [[ -f "$cfg" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    raw="${line%%#*}"
+    raw="${raw#"${raw%%[![:space:]]*}"}"
+    raw="${raw%"${raw##*[![:space:]]}"}"
+    if [[ "$raw" == "HERDR_BRAIN_REMOTE_URL="* ]]; then
+      raw="${raw#HERDR_BRAIN_REMOTE_URL=}"
+      raw="${raw%\"}"; raw="${raw#\"}"
+      raw="${raw%\'}"; raw="${raw#\'}"
+      printf '%s\n' "$raw"
+      return 0
+    fi
+  done < "$cfg"
 }
 
 ensure_venv() {
@@ -301,22 +313,11 @@ cmd_url() {
   local port="${HERDR_BRAIN_PORT:-8741}"
   echo "Local URL: http://localhost:$port/"
 
-  # Tailscale URL detection
-  local ts_bin=""
-  if command -v tailscale >/dev/null 2>&1; then
-    ts_bin="tailscale"
-  elif [[ -x "$HOME/bin/tailscale" ]]; then
-    ts_bin="$HOME/bin/tailscale"
-  fi
-
-  if [[ -n "$ts_bin" ]]; then
-    local ts_fqdn
-    ts_fqdn=$($ts_bin status </dev/null 2>/dev/null | grep -E 'desktop-|windows|linux' | head -n1 | awk '{print $2}' || true)
-    if [[ -n "$ts_fqdn" ]]; then
-      echo "Tailscale: https://$ts_fqdn.tail2640fd.ts.net:8443/ (port 8443)"
-    else
-      echo "Tailscale: https://<your-node>.ts.net:8443/"
-    fi
+  # Remote exposure is user-configured, never guessed (RF-AT-11-9).
+  local remote
+  remote="$(remote_url)"
+  if [[ -n "$remote" ]]; then
+    echo "Remote URL: $remote"
   fi
 }
 

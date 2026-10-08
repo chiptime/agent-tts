@@ -209,6 +209,9 @@ SCAN_SCOPES: dict[str, str] = {
     # Task 1.5: bootstrap derives its dev engine/ from the script's own
     # location (audit B5) — the plugin scripts stay machine-clean.
     "tts-plugin-scripts": "hosts/herdr/tts-plugin/scripts",
+    # Task 2.2: the brain launcher drops the dotfiles scrape, the literal
+    # brew prefix and the personal tailnet domain (audit A1/C1/C2/C4).
+    "brain-launcher": "hosts/herdr/brain/bin",
 }
 
 # Archived standalone repositories: no active installer/doc/test reference
