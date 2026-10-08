@@ -2976,6 +2976,100 @@ printf 'https://github.com/chiptime/agent-tts.git\n' > "$INS/remote.txt"
 grep -qi 'relative' "$INS/err.log" && ok "34j error names the relative-target refusal" || bad "34j refusal not explained"
 [[ ! -e "$T/reldata" ]] && ok "34j nothing created before the refusal" || bad "34j artifacts created under a relative path"
 
+# 34k–34r. AT-11 slice 13 (task 2.5): managed CLI exposure. The installer
+#      exposes bin/herdr-tts as ~/.local/bin/herdr-tts (directory created
+#      when missing), warns when PATH lacks it, refuses to touch anything it
+#      does not manage (preflight, zero mutation), refreshes its own artifact
+#      in place on re-run, and prints the complete uninstall steps.
+exp_init() { # $1 case → fresh sandbox + canonical remote; sets EXP_BIN / EXP_LINK
+  ins_init "$1"; ins_plugins github
+  printf 'https://github.com/chiptime/agent-tts.git\n' > "$INS/remote.txt"
+  EXP_BIN="$INS/home/.local/bin"; EXP_LINK="$EXP_BIN/herdr-tts"
+}
+EXP_TARGET_REL="data/herdr-tts/plugin/hosts/herdr/tts-plugin/bin/herdr-tts"
+
+# 34k. missing ~/.local/bin is created; the exposed command exists, is
+#      executable and actually runs (resolves its root through the link).
+exp_init expose
+ins_run --
+[[ $? -eq 0 ]] && ok "34k fresh install with no ~/.local/bin exits rc=0" \
+  || bad "34k rc!=0 (err: $(tail -1 "$INS/err.log" 2>/dev/null))"
+[[ -d "$EXP_BIN" ]] && ok "34k ~/.local/bin created when missing" || bad "34k ~/.local/bin not created"
+[[ -L "$EXP_LINK" && "$(readlink "$EXP_LINK")" == "$INS/$EXP_TARGET_REL" ]] \
+  && ok "34k herdr-tts exposed as a link to the checkout's bin/herdr-tts" \
+  || bad "34k exposure wrong: $(readlink "$EXP_LINK" 2>/dev/null || echo none)"
+[[ -x "$EXP_LINK" ]] && ok "34k exposed command is executable" || bad "34k exposed command not executable"
+timeout 10 env -i PATH="$INS_PATH" HOME="$INS/home" XDG_DATA_HOME="$INS/data" XDG_CONFIG_HOME="$T/conf" \
+  XDG_STATE_HOME="$T/state" "$EXP_LINK" --help > "$INS/run.log" 2>&1
+[[ $? -eq 0 && -s "$INS/run.log" ]] && ok "34k exposed command runs from the link" || bad "34k exposed command failed: $(head -1 "$INS/run.log")"
+
+# 34l. PATH without ~/.local/bin → warn, naming the remediation.
+grep -q 'not on your PATH' "$INS/out.log" && ok "34l PATH gap is warned about" || bad "34l no PATH warning"
+grep -qF 'export PATH="$HOME/.local/bin:$PATH"' "$INS/out.log" \
+  && ok "34l warning names the remediation" || bad "34l remediation missing"
+
+# 34m. PATH that already covers ~/.local/bin → no warning.
+exp_init covered
+INS_PATH="$INS/bin:$INS/home/.local/bin:/usr/bin:/bin"
+ins_run --
+[[ $? -eq 0 ]] && ok "34m covered-PATH install exits rc=0" || bad "34m rc!=0"
+grep -q 'not on your PATH' "$INS/out.log" \
+  && bad "34m warned although PATH covers ~/.local/bin" || ok "34m no warning when PATH covers ~/.local/bin"
+
+# 34n. threat (a): a pre-existing UNMANAGED herdr-tts is refused in
+#      preflight — non-zero, named, untouched, nothing else mutated.
+exp_init unmanaged
+mkdir -p "$EXP_BIN"; printf 'mine\n' > "$EXP_LINK"; cp "$EXP_LINK" "$INS/expected-user-file"
+ins_run --
+[[ $? -ne 0 ]] && ok "34n unmanaged herdr-tts exits non-zero" || bad "34n rc==0 over an unmanaged herdr-tts"
+grep -qF "$EXP_LINK" "$INS/err.log" && ok "34n error names the unmanaged artifact" || bad "34n artifact not named"
+cmp -s "$EXP_LINK" "$INS/expected-user-file" && ok "34n unmanaged file byte-identical" || bad "34n unmanaged file modified"
+[[ ! -e "$INS/data/herdr-tts" ]] && ok "34n no clone/venv before the refusal" || bad "34n mutated before refusing"
+exp_init foreignlink
+mkdir -p "$EXP_BIN"; ln -s /usr/bin/true "$EXP_LINK"
+ins_run --
+[[ $? -ne 0 && "$(readlink "$EXP_LINK")" == /usr/bin/true && ! -e "$INS/data/herdr-tts" ]] \
+  && ok "34n a link pointing outside the managed checkout is refused untouched" \
+  || bad "34n foreign link not protected"
+
+# 34o. threat (b): ~/.local/bin exists as a regular file → actionable
+#      failure naming it, before any mutation.
+exp_init binfile
+mkdir -p "$INS/home/.local"; printf 'x\n' > "$EXP_BIN"
+ins_run --
+[[ $? -ne 0 ]] && ok "34o regular file at ~/.local/bin exits non-zero" || bad "34o rc==0"
+grep -qF "$EXP_BIN" "$INS/err.log" && grep -qi 'not a directory' "$INS/err.log" \
+  && ok "34o error names the path and the problem" || bad "34o error not actionable"
+[[ ! -e "$INS/data/herdr-tts" && -f "$EXP_BIN" ]] && ok "34o nothing mutated" || bad "34o mutated despite refusal"
+
+# 34p. threat (c): a managed artifact from a previous install (even the
+#      pre-monorepo layout) is refreshed in place; re-runs stay idempotent.
+exp_init refresh
+ins_run --
+ln -sfn "$INS/data/herdr-tts/plugin/bin/herdr-tts" "$EXP_LINK" # previous-layout managed link
+ins_run --
+[[ $? -eq 0 ]] && ok "34p re-run over a managed artifact exits rc=0" || bad "34p rc!=0"
+[[ "$(readlink "$EXP_LINK")" == "$INS/$EXP_TARGET_REL" ]] \
+  && ok "34p managed artifact refreshed to the upgraded checkout" || bad "34p not refreshed: $(readlink "$EXP_LINK")"
+ins_run --
+[[ $? -eq 0 && "$(readlink "$EXP_LINK")" == "$INS/$EXP_TARGET_REL" ]] \
+  && ok "34p a further re-run is idempotent" || bad "34p re-run changed the artifact"
+
+# 34q. complete uninstall print: daemon stop, venv/checkout removal, keymap
+#      block, managed CLI artifact, first-run marker location.
+exp_init uninstall
+ins_run --
+grep -q 'stop the daemon' "$INS/out.log" && ok "34q uninstall print: daemon stop" || bad "34q no daemon step"
+grep -q 'venv' "$INS/out.log" && grep -qF -- "rm -rf $INS/data/herdr-tts" "$INS/out.log" \
+  && ok "34q uninstall print: venv/checkout removal" || bad "34q no venv removal step"
+grep -q 'keymap block' "$INS/out.log" && ok "34q uninstall print: managed keymap block" || bad "34q no keymap-block step"
+grep -qF -- "rm $EXP_LINK" "$INS/out.log" && ok "34q uninstall print: managed CLI artifact" || bad "34q no CLI-artifact step"
+grep -qF -- "$T/conf/herdr-tts/first-run.done" "$INS/out.log" \
+  && ok "34q uninstall print: first-run marker location" || bad "34q no first-run marker location"
+assert_no_grep "34q output is English" 'Instalando|Configurando|Usando|Entorno|Se requiere' "$INS/out.log"
+
+unset -f exp_init; unset EXP_BIN EXP_LINK EXP_TARGET_REL
+
 unset INS INS_PATH INS_TEMPLATE INS_PLUG REALGIT
 unset HERDR_CONFIG_DIR
 
