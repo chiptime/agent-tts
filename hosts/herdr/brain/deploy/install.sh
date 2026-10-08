@@ -18,7 +18,7 @@ UNIT_DST="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$UNIT_NAME"
 ENV_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/herdr-brain"
 ENV_FILE="$ENV_DIR/env"
 PRIVATE_ENV="$HOME/.dotfiles/shell/private-env.sh"
-PORT=8741
+PORT="$("$REPO_DIR/bin/herdr-brain" _port)"
 HEALTH_URL="http://127.0.0.1:$PORT/health"
 
 log() { printf '[install] %s\n' "$*"; }
@@ -74,30 +74,17 @@ else
   log "Escrito $ENV_FILE (modo 600)."
 fi
 
-# ------------------------------------------------- stop stray manual runs
-# A manual `nohup` server on :8741 would block the unit's bind. Only stop
-# listeners that are NOT the systemd unit's MainPID.
+# ------------------------------------------------------- port ownership
+# Audit C5: a listener on the port is only ever stopped when it is provably
+# ours (our pidfile, or the systemd unit's MainPID, which is left for the
+# unit restart below). A foreign process aborts the install untouched; the
+# policy lives once in bin/herdr-brain and is shared with the daemon.
 port_listener_pid() {
   ss -tlnp "sport = :$PORT" 2>/dev/null | grep -oE 'pid=[0-9]+' | head -n1 | cut -d= -f2 || true
 }
 
-unit_main_pid="$(systemctl --user show -P MainPID --value "$UNIT_NAME" 2>/dev/null || true)"
-[[ -n "$unit_main_pid" ]] || unit_main_pid=0
-listener_pid="$(port_listener_pid)"
-
-if [[ -n "${listener_pid:-}" && "$listener_pid" != "0" && "$listener_pid" != "$unit_main_pid" ]]; then
-  log "Deteniendo instancia manual suelta (PID $listener_pid) en el puerto $PORT…"
-  kill -TERM "$listener_pid" 2>/dev/null || true
-  for _ in $(seq 1 20); do
-    kill -0 "$listener_pid" 2>/dev/null || break
-    sleep 0.25
-  done
-  if kill -0 "$listener_pid" 2>/dev/null; then
-    log "No respondió a TERM — enviando KILL."
-    kill -KILL "$listener_pid" 2>/dev/null || true
-    sleep 1
-  fi
-fi
+HERDR_BRAIN_PORT="$PORT" "$REPO_DIR/bin/herdr-brain" _claim-port installer \
+  || die "el puerto $PORT está ocupado por un proceso ajeno (ver arriba); el instalador no lo toca."
 
 # ------------------------------------------------------------ unit install
 mkdir -p "$(dirname "$UNIT_DST")"

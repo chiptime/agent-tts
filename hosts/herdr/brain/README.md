@@ -139,7 +139,9 @@ What the installer does (safe to re-run):
 - extracts `GLM_API_KEY` from `~/.dotfiles/shell/private-env.sh` into
   `~/.config/herdr-brain/env` (outside the repo, mode 600; the value is
   never printed and the file is only rewritten when the key changes),
-- stops any stray manual instance listening on :8741,
+- stops a stray manual herdr-brain instance on the port only when it is
+  provably ours (pidfile or the unit's `MainPID`); a foreign listener aborts
+  the install untouched (see *Port conflicts* below),
 - installs `deploy/herdr-brain.service` as a user unit, enables linger and
   starts it (`Restart=on-failure`, `RestartSec=3`),
 - polls `/health` for up to 10s and prints the journal on failure.
@@ -149,6 +151,16 @@ systemctl --user status herdr-brain     # state + recent log lines
 journalctl --user -u herdr-brain -f     # follow
 systemctl --user restart herdr-brain    # bounces in ~3s, config included
 ```
+
+### Port conflicts
+
+The launcher and the installer never signal a process they do not own. If
+the port (default `8741`) is held by anything else, they exit with code `98`
+and print the PID, the process name, the port and two remedies: pick another
+port (`export HERDR_BRAIN_PORT=<free port>`, or persist it in
+`~/.config/herdr-brain/config.env`) or stop that process yourself. Our own
+previous instance (pidfile) is stopped normally, and a unit-owned listener
+is managed through `systemctl --user`, never `kill`.
 
 ### Manual run (debugging ONLY)
 
