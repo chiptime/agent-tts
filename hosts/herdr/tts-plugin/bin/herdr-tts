@@ -647,6 +647,22 @@ TT_EN[ptt.injected]="🎙 Injected %s characters into pane %s"
 TT_EN[ptt.inject_failed]="🎙 Injection into pane %s failed — nothing was sent"
 TT_EN[ptt.log]="ptt: duration_s=%s chars=%s pane=%s"
 TT_EN[help.ptt]="  ptt                      Push-to-talk dictation: capture → transcribe → confirm → inject (needs TTS_STT=on + TTS_PTT=on)"
+# HT-03 radio mode. radio.header.* / radio.closing* / radio.untitled are SPOKEN
+# (the bulletin text); the rest are terminal / notification lines.
+TT_EN[radio.title]="📻 Radio"
+TT_EN[radio.header.blocked]="Blocked: %s."
+TT_EN[radio.header.done]="Done: %s."
+TT_EN[radio.untitled]="untitled chat"
+TT_EN[radio.closing]="%s quieter chats omitted"
+TT_EN[radio.closing.one]="1 quieter chat omitted"
+TT_EN[radio.empty]="📻 Radio: no chats need attention right now"
+TT_EN[radio.snoozed_global]="📻 Radio: global snooze is active until %s — nothing played"
+TT_EN[radio.debounced]="📻 Radio: ignored, pressed again within %s s"
+TT_EN[radio.started]="📻 Radio: %s chats in the bulletin, %s omitted"
+TT_EN[radio.fallback]="radio: priority queue unavailable — playing the bulletin sequentially"
+TT_EN[radio.log]="radio: run=%s chats=%s omitted=%s"
+TT_EN[radio.dash]=" · 📻 radio on air"
+TT_EN[help.radio]="  --radio                  Spoken triage bulletin of the chats that need attention: blocked first, then done (Key: keymap id radio; TTS_RADIO_MAX_CHATS)"
 TT_EN[settings.row.stt]=" s  STT engine:          %s   (on = engine speech-to-text enabled)"
 TT_EN[settings.row.ptt]=" d  Dictation (PTT):     %s   (on = \`ptt\` keymap command active)"
 TT_EN[settings.voice.stt]="✓ STT engine: %s"
@@ -1171,6 +1187,21 @@ TT_ES[ptt.injected]="🎙 %s caracteres inyectados en el pane %s"
 TT_ES[ptt.inject_failed]="🎙 Falló la inyección en el pane %s — no se envió nada"
 TT_ES[ptt.log]="ptt: duration_s=%s chars=%s pane=%s"
 TT_ES[help.ptt]="  ptt                      Dictado pulsar-para-hablar: capturar → transcribir → confirmar → inyectar (requiere TTS_STT=on + TTS_PTT=on)"
+# HT-03 radio mode (espejo de las claves EN; el cierre usa la fórmula del PRD).
+TT_ES[radio.title]="📻 Radio"
+TT_ES[radio.header.blocked]="Bloqueado: %s."
+TT_ES[radio.header.done]="Terminado: %s."
+TT_ES[radio.untitled]="chat sin título"
+TT_ES[radio.closing]="%s chats más silenciosos omitidos"
+TT_ES[radio.closing.one]="1 chat más silencioso omitido"
+TT_ES[radio.empty]="📻 Radio: ningún chat pide atención ahora mismo"
+TT_ES[radio.snoozed_global]="📻 Radio: el snooze global está activo hasta las %s — no se reprodujo nada"
+TT_ES[radio.debounced]="📻 Radio: ignorado, pulsado de nuevo en menos de %s s"
+TT_ES[radio.started]="📻 Radio: %s chats en el boletín, %s omitidos"
+TT_ES[radio.fallback]="radio: cola prioritaria no disponible — se reproduce el boletín en secuencia"
+TT_ES[radio.log]="radio: run=%s chats=%s omitted=%s"
+TT_ES[radio.dash]=" · 📻 radio en el aire"
+TT_ES[help.radio]="  --radio                  Boletín hablado de triaje de los chats que piden atención: blocked primero, luego done (Tecla: id de keymap radio; TTS_RADIO_MAX_CHATS)"
 TT_ES[settings.row.stt]=" s  Motor STT:           %s   (on = voz-a-texto del motor activo)"
 TT_ES[settings.row.ptt]=" d  Dictado (PTT):       %s   (on = comando de keymap \`ptt\` activo)"
 TT_ES[settings.voice.stt]="✓ Motor STT: %s"
@@ -1624,6 +1655,10 @@ is_playing() {
 
 stop_audio() {
   local stopped=false
+
+  # HT-03: a stop also cuts the radio bulletin (worker + queued items by id).
+  # Runs BEFORE the engine stop so the queue cannot dispatch the next item.
+  radio_cancel && stopped=true
 
   if [[ -S "$IPC_SOCKET" ]]; then
     "$VENV_PYTHON" "$ENGINE_SCRIPT" --ipc-cmd stop >/dev/null 2>&1 || true
@@ -4414,7 +4449,7 @@ dashboard_render() {
     fi
     _dash_add '%s' "$(tt dash.engine_noanswer "$engine_label" "$auto_label")"
   fi
-  _dash_add '%s' "$(tt dash.config "$TTS_PROVIDER" "$TTS_VOICE" "$TTS_RATE" "${TTS_PLAYBACK:-local}" "$TTS_DEBOUNCE_SECONDS")"
+  _dash_add '%s%s' "$(tt dash.config "$TTS_PROVIDER" "$TTS_VOICE" "$TTS_RATE" "${TTS_PLAYBACK:-local}" "$TTS_DEBOUNCE_SECONDS")" "$(radio_dash_label)"
 
   # v3.1 height budget: the frame may never exceed LINES-1 rows (the
   # last line's newline lands on the bottom row without scrolling).
@@ -6171,6 +6206,318 @@ ptt_engine_msg_from_out_or_err() { # <captured-stdout> <stderr-file> → engine 
   ptt_engine_error_msg /dev/null "$2"
 }
 
+# ─── Radio mode (HT-03, spoken triage bulletin) ──────────────
+# `herdr-tts --radio` (keymap id `radio`, NO default chord): one key plays a
+# prioritized bulletin of every chat that asks for attention — `blocked`
+# first, then `done` by most recent audio — each as a header (HT-02 agent
+# name when the identity layer is in use + chat title capped like the
+# dashboard roster) plus the engine's offline `--tldr` summary (1-2
+# sentences), closed by how many chats were left out.
+#
+# Selection merges `herdr agent list` with the snooze/mute ledger (same
+# pane_id key as the dashboard) and the audio-history recency. The key press
+# returns at once: a detached worker renders each item through the engine
+# CLI and hands it to the engine's priority queue in play order
+# (pending_queue.py enqueue-file --priority blocked|done|working, ids
+# `radio-<runid>-<n>`). With the queue unavailable the worker falls back to
+# sequential `--play-file` playback holding the usual playback lock/pid
+# files. `--stop` (stop_audio) and a second press cancel by those ids and
+# kill the worker; presses closer than TTS_RADIO_DEBOUNCE_SECONDS (10) apart
+# are ignored. State (run id, worker pid, temp dir) lives in RADIO_STATE_FILE
+# as plain KEY=VALUE lines so the dashboard marker needs no jq.
+RADIO_STATE_FILE="${HERDR_TTS_RADIO_STATE_FILE:-${STATE_DIR}/radio.state}"
+RADIO_STATE_TTL=1800            # seconds a bulletin stays cancellable / "on air"
+RADIO_DEFAULT_MAX_CHATS=6
+RADIO_DEFAULT_DEBOUNCE=10
+RADIO_ST_RUNID="" RADIO_ST_PID="" RADIO_ST_STARTED=0 RADIO_ST_DIR="" RADIO_ST_ITEMS=0
+RADIO_SEL_PANE=() RADIO_SEL_STATUS=() RADIO_SEL_KIND=() RADIO_SEL_SESSION=() RADIO_SEL_TITLE=()
+RADIO_TOTAL=0 RADIO_OMITTED=0 RADIO_SNOOZE_UNTIL=0
+RADIO_RUNID="" RADIO_DIR="" RADIO_MODE=queue RADIO_SHIPPED=0
+
+radio_state_load() { # fills RADIO_ST_*; rc 0 only while the state is fresh (TTL)
+  RADIO_ST_RUNID=""; RADIO_ST_PID=""; RADIO_ST_STARTED=0; RADIO_ST_DIR=""; RADIO_ST_ITEMS=0
+  [[ -f "$RADIO_STATE_FILE" ]] || return 1
+  local k v now
+  while IFS='=' read -r k v; do
+    case "$k" in
+      RUNID)   [[ "$v" =~ ^[0-9a-f]+$ ]] && RADIO_ST_RUNID="$v" ;;
+      PID)     [[ "$v" =~ ^[0-9]+$ ]] && RADIO_ST_PID="$v" ;;
+      STARTED) [[ "$v" =~ ^[0-9]+$ ]] && RADIO_ST_STARTED="$v" ;;
+      ITEMS)   [[ "$v" =~ ^[0-9]+$ ]] && RADIO_ST_ITEMS="$v" ;;
+      DIR)     RADIO_ST_DIR="$v" ;;
+    esac
+  done < "$RADIO_STATE_FILE"
+  [[ -n "$RADIO_ST_RUNID" ]] || return 1
+  printf -v now '%(%s)T' -1
+  (( now - RADIO_ST_STARTED < RADIO_STATE_TTL ))
+}
+
+radio_state_write() { # <runid> <worker-pid> <dir> <items>
+  local tmp="${RADIO_STATE_FILE}.tmp.$$" now
+  printf -v now '%(%s)T' -1
+  mkdir -p "${RADIO_STATE_FILE%/*}" 2>/dev/null || true
+  { printf 'RUNID=%s\nPID=%s\nSTARTED=%s\nDIR=%s\nITEMS=%s\n' "$1" "$2" "$now" "$3" "$4" > "$tmp" \
+      && mv -f "$tmp" "$RADIO_STATE_FILE"; } 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+}
+
+radio_drop_dir() { # <dir> — remove a bulletin temp dir (only ours)
+  if [[ "${1##*/}" == herdr-tts-radio.* && -d "$1" ]]; then
+    rm -rf -- "$1"
+  fi
+  return 0
+}
+
+# Cut the bulletin in flight: kill the worker (and its render/play child),
+# drop its queued items by id and clear the state. rc 0 = a live bulletin
+# was cancelled, rc 1 = nothing in flight (also the fast path of every
+# stop_audio call). Idempotent: the cancel is by id, so ids the daemon no
+# longer holds are a no-op.
+radio_cancel() {
+  [[ -f "$RADIO_STATE_FILE" ]] || return 1
+  local fresh=1
+  radio_state_load && fresh=0
+  local pid="$RADIO_ST_PID" runid="$RADIO_ST_RUNID" items="$RADIO_ST_ITEMS" dir="$RADIO_ST_DIR"
+  rm -f "$RADIO_STATE_FILE"
+  if (( fresh == 0 )); then
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      pkill -TERM -P "$pid" 2>/dev/null || true
+      kill -TERM "$pid" 2>/dev/null || true
+    fi
+    local -a ids=()
+    local n
+    for (( n = 1; n <= items; n++ )); do
+      ids+=(--id "radio-${runid}-${n}")
+    done
+    if (( ${#ids[@]} > 0 )); then
+      "$VENV_PYTHON" "${PLUGIN_ROOT}/lib/pending_queue.py" cancel "${ids[@]}" >/dev/null 2>&1 || true
+    fi
+  fi
+  radio_drop_dir "$dir"
+  return "$fresh"
+}
+
+# Dashboard marker (RNF-HT-03-3): non-empty while a bulletin is on air —
+# the worker is still producing it, or the engine reports playback inside
+# the cancellable window. Always rc 0 (safe inside $( ) under set -e).
+radio_dash_label() {
+  if radio_state_load; then
+    if { [[ -n "$RADIO_ST_PID" ]] && kill -0 "$RADIO_ST_PID" 2>/dev/null; } \
+       || [[ "${DASH_ENGINE_STATUS:-}" == *"status=playing"* ]]; then
+      tt radio.dash
+    fi
+  fi
+  return 0
+}
+
+radio_trunc() { # <out-var> <title> — dashboard rule: cap with an ellipsis
+  local s="$2" w="$DASHBOARD_ROSTER_TITLE_CHARS"
+  if (( ${#s} > w )); then
+    s="${s:0:w-1}…"
+  fi
+  printf -v "$1" '%s' "$s"
+}
+
+radio_ht02_active() { # HT-02 identity layer in use: a voices.json flag or any rule
+  voice_map_refresh
+  [[ "$VM_PREFIX" == "true" || "$VM_AUTO_ASSIGN" == "true" \
+     || ${#VM_PANE_KEYS[@]} -gt 0 || ${#VM_AGENT_KEYS[@]} -gt 0 ]]
+}
+
+radio_header_text() { # <status> <agent-kind> <title> → spoken header
+  local who="$3"
+  if [[ -n "$2" ]] && radio_ht02_active; then
+    who="$2, $3"
+  fi
+  tt "radio.header.$1" "$who"
+}
+
+# Triage the fleet into RADIO_SEL_* (at most <cap> chats): blocked first,
+# then done, each group ordered by most recent audio (dashboard history
+# rank, list order as tiebreak). Muted and snoozed panes are skipped; a
+# GLOBAL snooze silences everything (RADIO_SNOOZE_UNTIL > now, rc 1).
+# RADIO_OMITTED = every roster chat that is not in the bulletin (working,
+# idle, silenced, or beyond the cap).
+radio_select() { # <cap>
+  RADIO_SEL_PANE=(); RADIO_SEL_STATUS=(); RADIO_SEL_KIND=(); RADIO_SEL_SESSION=(); RADIO_SEL_TITLE=()
+  RADIO_TOTAL=0; RADIO_OMITTED=0; RADIO_SNOOZE_UNTIL=0
+  local cap="$1" now state raw
+  printf -v now '%(%s)T' -1
+  state="$(load_snooze_state)"
+  RADIO_SNOOZE_UNTIL="$(jq -r '(.global_snooze_until // 0)' <<<"$state" 2>/dev/null || true)"
+  [[ "$RADIO_SNOOZE_UNTIL" =~ ^[0-9]+$ ]] || RADIO_SNOOZE_UNTIL=0
+  if (( RADIO_SNOOZE_UNTIL > now )); then
+    return 1
+  fi
+
+  local -A silenced=()
+  local line
+  while IFS= read -r line; do
+    if [[ -n "$line" ]]; then silenced["$line"]=1; fi
+  done < <(jq -r --argjson now "$now" '
+      (.panes // {}) | to_entries[]
+      | select((.value.muted // false) == true or ((.value.snooze_until // 0) > $now))
+      | .key' <<<"$state" 2>/dev/null || true)
+
+  raw="$(herdr agent list 2>/dev/null || true)"
+  local -a l_pane=() l_status=() l_kind=() l_sess=() l_title=()
+  local pid st kind sess title
+  while IFS=$'\t' read -r pid st kind sess title; do
+    [[ -z "$pid" || "$pid" == "-" ]] && continue
+    [[ "$kind" == "-" ]] && kind=""
+    [[ "$sess" == "-" ]] && sess=""
+    [[ "$title" == "-" ]] && title=""
+    l_pane+=("$pid"); l_status+=("$st"); l_kind+=("$kind"); l_sess+=("$sess"); l_title+=("$title")
+  done < <(jq -r '
+      def f: if . == null or . == "" then "-" else . end;
+      .result.agents[]?
+      | [ (.pane_id | f), (.agent_status | f), ((.agent_session.agent // .agent) | f),
+          (.agent_session.value | f),
+          ((.terminal_title_stripped // .terminal_title) | f | gsub("[\\t\\r\\n]"; " ")) ]
+      | @tsv' <<<"$raw" 2>/dev/null || true)
+  RADIO_TOTAL=${#l_pane[@]}
+
+  dashboard_scan_history || true
+  local -a keys=()
+  local i group
+  for (( i = 0; i < RADIO_TOTAL; i++ )); do
+    [[ -n "${silenced[${l_pane[i]}]:-}" ]] && continue
+    case "${l_status[i]}" in
+      blocked) group=0 ;;
+      done)    group=1 ;;
+      *)       continue ;;
+    esac
+    keys+=("$group ${HIST_RANK[${l_pane[i]}]:-999999} $i")
+  done
+  if (( ${#keys[@]} > 0 )); then
+    local g r idx
+    while read -r g r idx; do
+      (( ${#RADIO_SEL_PANE[@]} < cap )) || break
+      RADIO_SEL_PANE+=("${l_pane[idx]}"); RADIO_SEL_STATUS+=("${l_status[idx]}")
+      RADIO_SEL_KIND+=("${l_kind[idx]}"); RADIO_SEL_SESSION+=("${l_sess[idx]}")
+      RADIO_SEL_TITLE+=("${l_title[idx]}")
+    done < <(printf '%s\n' "${keys[@]}" | sort -n -k1,1 -k2,2 -k3,3)
+  fi
+  RADIO_OMITTED=$(( RADIO_TOTAL - ${#RADIO_SEL_PANE[@]} ))
+  return 0
+}
+
+radio_ship() { # <n> <priority> <file> — queue it, or play it sequentially
+  local n="$1" prio="$2" file="$3"
+  if [[ "$RADIO_MODE" == queue ]]; then
+    if "$VENV_PYTHON" "${PLUGIN_ROOT}/lib/pending_queue.py" enqueue-file "$file" \
+         --id "radio-${RADIO_RUNID}-${n}" --priority "$prio" --label radio >/dev/null 2>&1; then
+      RADIO_SHIPPED=$(( RADIO_SHIPPED + 1 ))
+      return 0
+    fi
+    # Queue unavailable. Switching is only safe while the daemon holds none
+    # of OUR items (otherwise two playback paths would overlap).
+    (( RADIO_SHIPPED == 0 )) || return 1
+    RADIO_MODE=sequential
+    daemon_log "$(tt radio.fallback)"
+    printf '%s' "$BASHPID" > "$PID_FILE" 2>/dev/null || true
+    printf '%s' "$BASHPID" > "$LOCK_FILE" 2>/dev/null || true
+  fi
+  "$VENV_PYTHON" "$ENGINE_SCRIPT" --play-file "$file" >/dev/null 2>&1
+}
+
+radio_item() { # <n> <priority> <voice> <text> [engine flags...] — render, then ship
+  local n="$1" prio="$2" voice="$3" text="$4"
+  shift 4
+  local file="${RADIO_DIR}/item-${n}.mp3"
+  "$VENV_PYTHON" "$ENGINE_SCRIPT" "$text" --voice "$voice" --rate "$TTS_RATE" "$@" \
+    --output "$file" --no-play "${PROVIDER_FLAGS[@]}" >/dev/null 2>&1 || return 1
+  [[ -s "$file" ]] || return 1
+  radio_ship "$n" "$prio" "$file"
+}
+
+radio_worker_release() { # EXIT trap: free the playback lock if the fallback took it
+  if [[ "$RADIO_MODE" == sequential && "$(cat "$PID_FILE" 2>/dev/null || true)" == "$BASHPID" ]]; then
+    rm -f "$LOCK_FILE" "$PID_FILE"
+  fi
+}
+
+# Detached producer: runs in a subshell of run_radio with the selection in
+# RADIO_SEL_* already computed. Items are produced strictly in play order
+# (blocked before done), so queue priority and FIFO agree.
+radio_worker() {
+  set +e
+  trap radio_worker_release EXIT
+  build_provider_flags
+  local i pane kind sess status title header pv text
+  local -a src
+  for (( i = 0; i < ${#RADIO_SEL_PANE[@]}; i++ )); do
+    pane="${RADIO_SEL_PANE[i]}"; kind="${RADIO_SEL_KIND[i]}"; sess="${RADIO_SEL_SESSION[i]}"
+    status="${RADIO_SEL_STATUS[i]}"
+    radio_trunc title "${RADIO_SEL_TITLE[i]}"
+    [[ -n "$title" ]] || title="$(tt radio.untitled)"
+    header="$(radio_header_text "$status" "$kind" "$title")"
+    pv="$(resolve_voice "$pane" "$kind")"
+    radio_item $(( 2 * i + 1 )) "$status" "$pv" "$header" --raw
+    text="$(read_pane_text "$pane")"
+    if [[ -n "$text" && ! "$text" =~ ^[[:space:]]*$ ]]; then
+      src=()
+      [[ -n "$kind" ]] && src+=(--agent "$kind")
+      [[ -n "$sess" ]] && src+=(--session-id "$sess")
+      radio_item $(( 2 * i + 2 )) "$status" "$pv" "$text" --tldr --max-chars "$TTS_MAX_CHARS" "${src[@]}"
+    fi
+  done
+  if (( RADIO_OMITTED > 0 )); then
+    if (( RADIO_OMITTED == 1 )); then
+      text="$(tt radio.closing.one)"
+    else
+      text="$(tt radio.closing "$RADIO_OMITTED")"
+    fi
+    radio_item $(( 2 * ${#RADIO_SEL_PANE[@]} + 1 )) working "$TTS_VOICE" "$text" --raw
+  fi
+  return 0
+}
+
+run_radio() {
+  local debounce="${TTS_RADIO_DEBOUNCE_SECONDS:-$RADIO_DEFAULT_DEBOUNCE}"
+  [[ "$debounce" =~ ^[0-9]+$ ]] || debounce="$RADIO_DEFAULT_DEBOUNCE"
+  local cap="${TTS_RADIO_MAX_CHATS:-$RADIO_DEFAULT_MAX_CHATS}"
+  if [[ "$cap" =~ ^[0-9]+$ ]] && (( 10#$cap >= 1 )); then
+    cap=$(( 10#$cap ))
+  else
+    cap="$RADIO_DEFAULT_MAX_CHATS"
+  fi
+  local now
+  printf -v now '%(%s)T' -1
+
+  # Debounce first: a press inside the window never touches the bulletin.
+  if radio_state_load && (( now - RADIO_ST_STARTED < 10#$debounce )); then
+    echo "$(tt radio.debounced "$debounce")"
+    return 0
+  fi
+  # A later press replaces the bulletin in flight with a fresh triage.
+  radio_cancel || true
+
+  radio_select "$cap" || true
+  if (( RADIO_SNOOZE_UNTIL > now )); then
+    echo "$(tt radio.snoozed_global "$(fmt_epoch_clock "$RADIO_SNOOZE_UNTIL")")"
+    notify_herdr "$(tt radio.title)" "$(tt radio.snoozed_global "$(fmt_epoch_clock "$RADIO_SNOOZE_UNTIL")")"
+    return 0
+  fi
+  local selected=${#RADIO_SEL_PANE[@]}
+  if (( selected == 0 )); then
+    echo "$(tt radio.empty)"
+    notify_herdr "$(tt radio.title)" "$(tt radio.empty)"
+    return 0
+  fi
+
+  RADIO_DIR="$(mktemp -d "${TMPDIR:-/tmp}/herdr-tts-radio.XXXXXXXX")" || return 1
+  RADIO_RUNID="$(printf '%x%04x' "$now" "$RANDOM")"
+  RADIO_MODE=queue
+  RADIO_SHIPPED=0
+  ( radio_worker ) >/dev/null 2>&1 &
+  radio_state_write "$RADIO_RUNID" "$!" "$RADIO_DIR" $(( 2 * selected + 1 ))
+
+  echo "$(tt radio.started "$selected" "$RADIO_OMITTED")"
+  notify_herdr "$(tt radio.title)" "$(tt radio.started "$selected" "$RADIO_OMITTED")"
+  daemon_log "$(tt radio.log "$RADIO_RUNID" "$selected" "$RADIO_OMITTED")"
+  return 0
+}
+
 # ─── CLI Entrypoint ──────────────────────────────────────────
 
 # Library mode: when sourced (tests/tooling), only define functions and
@@ -6196,10 +6543,12 @@ ptt_engine_msg_from_out_or_err() { # <captured-stdout> <stderr-file> → engine 
 # Stable command ids (this exact set, template order). One per voice command.
 # `ptt` (F4/HT-01) carries NO default chord on purpose: dictation is
 # opt-in per user — the id is bindable in keymap.json like every sibling.
+# `radio` (HT-03) ships unbound for the same reason: the spoken triage
+# bulletin is opt-in, bound by the user in keymap.json.
 KEYMAP_COMMAND_IDS=(
   play pause stop tldr auto seek_back seek_fwd sentence_next sentence_prev
   paragraph_next paragraph_prev mute snooze snooze_global rate_up rate_down
-  dashboard palette menu settings reader_open ptt
+  dashboard palette menu settings reader_open ptt radio
 )
 
 # Herdr v0.9.1 core prefix defaults (docs/keyboard.mdx). Canonical chords
@@ -6271,7 +6620,8 @@ keymap_default_json() { # default template: README direct map + nulls for the re
     "menu": null,
     "settings": null,
     "reader_open": "prefix+R",
-    "ptt": null
+    "ptt": null,
+    "radio": null
   }
 }
 EOF
@@ -6301,6 +6651,7 @@ keymap_cmd_for() { # $1 = command id → shell invocation Herdr must run
     settings)        printf '%s\n' "herdr-tts --voice-settings" ;;
     reader_open)     printf '%s\n' "herdr plugin pane open --plugin herdr.tts --entrypoint tts-reader" ;;
     ptt)             printf '%s\n' "herdr-tts ptt" ;;
+    radio)           printf '%s\n' "herdr-tts --radio" ;;
   esac
 }
 
@@ -6328,6 +6679,7 @@ keymap_label_for() { # $1 = command id → human label (emit comments)
     settings)        printf '%s\n' "Open the voice/audio settings popup (TTS provider, playback target, audio retention)" ;;
     reader_open)     printf '%s\n' "Open live reader popup for current playback" ;;
     ptt)             printf '%s\n' "Push-to-talk dictation: capture, transcribe, confirm, inject into the focused pane (HT-01)" ;;
+    radio)           printf '%s\n' "Radio mode: spoken triage bulletin of the chats that need attention, blocked first (HT-03)" ;;
   esac
 }
 
@@ -6354,7 +6706,8 @@ keymap_ctrlalt_for() { # $1 = command id → suggested ctrl+alt chord (rc 1 = no
     # settings: no suggested chord — the settings view lives inside the
     # voice menu (key `a`); users can still bind the id manually.
     # ptt: no suggested chord either — HT-01 ships dictation with NO
-    # default binding; the user opts in via keymap.json.
+    # default binding; the user opts in via keymap.json. Same for radio
+    # (HT-03).
     *)               return 1 ;;
   esac
 }
@@ -6640,7 +6993,7 @@ keymap_emit() { # $1 = "" | direct | ctrlalt | menu
       chord="$(keymap_ctrlalt_for "$cid")" || continue
       keymap_emit_block "$chord" "$(keymap_cmd_for "$cid")" "$(keymap_label_for "$cid")"
     done
-    echo "# note: paragraph_next / paragraph_prev / settings / ptt have no suggested ctrl+alt chord — assign them in keymap.json (settings also lives inside the voice menu, key \`a\`; ptt ships unbound by design)"
+    echo "# note: paragraph_next / paragraph_prev / settings / ptt / radio have no suggested ctrl+alt chord — assign them in keymap.json (settings also lives inside the voice menu, key \`a\`; ptt and radio ship unbound by design)"
     return 0
   fi
 
@@ -7775,6 +8128,9 @@ run_podcast_server(port=int(sys.argv[1]), podcast_dir=sys.argv[2])
   ptt)
     run_ptt
     ;;
+  --radio|radio)
+    run_radio
+    ;;
   skill)
     shift
     skill_main "$@"
@@ -7821,6 +8177,7 @@ run_podcast_server(port=int(sys.argv[1]), podcast_dir=sys.argv[2])
     "$(tt help.scope)"
     "$(tt help.reader_auto)"
     "$(tt help.ptt)"
+    "$(tt help.radio)"
     ""
     "$(tt help.visual.header)"
     "$(tt help.highlight)"

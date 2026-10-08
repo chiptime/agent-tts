@@ -373,7 +373,7 @@ Suggested family (deterministic — `herdr-tts keymap adopt --style ctrlalt` wri
 | `snooze_global` | `ctrl+alt+g` | `palette` | `ctrl+alt+o` |
 | `menu` | `ctrl+alt+u` | `reader_open` | `ctrl+alt+shift+r` |
 
-(`paragraph_next` / `paragraph_prev` have no suggested chord, and `settings` ships without one too — the settings view lives inside the voice menu (key `a`); bind any of them yourself in `keymap.json` and `keymap apply` installs them too.)
+(`paragraph_next` / `paragraph_prev` have no suggested chord, `radio` (spoken triage bulletin, see [Radio mode](#-radio-mode-ht-03)) ships unbound like `ptt`, and `settings` ships without one too — the settings view lives inside the voice menu (key `a`); bind any of them yourself in `keymap.json` and `keymap apply` installs them too.)
 
 ### Option 3 — Direct map (power users)
 
@@ -469,6 +469,7 @@ herdr-tts --render-html in.txt out.html # Sanitize an agent message into anchore
 herdr-tts --dashboard          # Live TUI dashboard pane: snooze countdowns, per-pane gating, audio history
 herdr-tts --voice-palette      # fzf picker of chats and audio turns (focus / mute / snooze)
 herdr-tts --reader             # Live reader in your terminal: karaoke follow-along (popup: prefix+R)
+herdr-tts --radio              # Spoken triage bulletin: blocked chats first, then done (keymap id `radio`, see Radio mode)
 ```
 
 * **Supervised daemon startup:** the plugin's `[[startup]]` runs `_daemon-supervised` — a foreground watchdog that relaunches the daemon if it dies unplanned (5s backoff). Deliberate stops (`--restart-daemon`, the `R` key, single-instance takeover) arm a stop flag the supervisor consumes, so restarts are never fought over. Starts, deaths, relaunches and exit reasons land in `~/.local/state/herdr-tts/daemon.log`, so a silent death can't happen unnoticed.
@@ -853,6 +854,30 @@ herdr-tts --voice-prefix on                      # Prefijo hablado ("claude-code
 * Las reglas aplican a la lectura automática, al `play`/`TL;DR` bajo demanda y a los audios renderizados del pane.
 
 ---
+
+## 📻 Radio mode (HT-03)
+
+Back at the PC after twenty minutes with five chats waiting? Bind the `radio` command id (or run `herdr-tts --radio`) and listen instead of reading:
+
+```json
+{ "bindings": { "radio": "prefix+o" } }
+```
+
+The bulletin is **triage by ear**, nothing is opened:
+
+* **Who is read:** chats in `blocked` first, then `done` ordered by most recent audio. Muted and snoozed chats are skipped (a global snooze silences the whole bulletin). `working` and `idle` chats are never read.
+* **What is said, per chat:** a header — `Blocked:` / `Done:` plus the chat title cut to 40 characters (the dashboard rule), prefixed with the agent name when the per-agent voice layer (HT-02, `voices.json`) is in use and spoken in that chat's assigned voice — followed by the engine's offline `--tldr` summary (1–2 sentences, no LLM involved).
+* **Closing phrase:** how many chats were left out, e.g. `2 chats más silenciosos omitidos` (`2 quieter chats omitted` with `HERDR_TTS_LANG=en`). It counts every roster chat that was not in the bulletin: working/idle ones, silenced ones and attention chats beyond the cap.
+* **Playback:** items go to the engine priority queue (`blocked` chats at `blocked` priority, `done` at `done`, the closing phrase last). If the queue is unavailable the bulletin plays sequentially under the usual playback lock.
+* **Interrupting:** `herdr-tts --stop` (or any stop surface) cuts the bulletin and cancels everything still queued; pressing `radio` again after the debounce window drops the bulletin on air and re-triages with fresh data. Presses closer than 10 s apart are ignored.
+* **On air marker:** while a bulletin is being produced (or the engine is playing within its 30-minute window) the dashboard config line shows `📻 radio on air`.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `TTS_RADIO_MAX_CHATS` | `6` | Maximum chats per bulletin (invalid values fall back to 6) |
+| `TTS_RADIO_DEBOUNCE_SECONDS` | `10` | Minimum seconds between two accepted presses |
+
+Experimental LLM-written summaries (`TTS_RADIO_LLM_SUMMARY`, RF-HT-03-9) are not part of this release.
 
 ## 🗺️ Roadmap & Future Capabilities
 
