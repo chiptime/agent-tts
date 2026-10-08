@@ -20,6 +20,11 @@ from herdr_onboarding import resolve as res  # noqa: E402
 
 from herdr_brain.config import DEFAULT_BRAIN_PORT, load_settings  # noqa: E402
 
+PLUGIN_LAUNCHER = REPO_ROOT / "hosts" / "herdr" / "tts-plugin" / "bin" / "herdr-tts"
+BRAIN_LAUNCHER = REPO_ROOT / "hosts" / "herdr" / "brain" / "bin" / "herdr-brain"
+BLOCK_START = "# >>> herdr portable resolvers"
+BLOCK_END = "# <<< herdr portable resolvers <<<"
+
 
 def _exec_marker(directory: Path, name: str) -> Path:
     path = directory / name
@@ -38,6 +43,12 @@ def _brew_runner(prefix: Path, calls: list) -> "subprocess.CompletedProcess[str]
 def _refusing_runner(argv, **kwargs):
     raise AssertionError(f"brew probe must not run without brew on PATH, got {argv}")
 
+
+def _launcher_block(path: Path) -> str:
+    text = path.read_text(encoding="utf-8")
+    start = text.index(BLOCK_START)
+    end = text.index(BLOCK_END, start) + len(BLOCK_END)
+    return text[start:end]
 
 
 class TestResolveRoot:
@@ -222,6 +233,39 @@ class TestResolvePort:
         cfg.write_text("HERDR_BRAIN_PORT=garbage\n")
         with pytest.raises(res.ResolutionError):
             res.resolve_port(env={}, config_file=cfg)
+
+
+class TestBashMirrorParity:
+    """Static V1: both launchers ship the identical resolver block and the
+    task-2.1 mandates hold in ``bin/herdr-brain``."""
+
+    FUNCTIONS = (
+        "herdr_resolve_root",
+        "herdr_resolve_tts_home",
+        "herdr_resolve_bin",
+        "herdr_resolve_port",
+    )
+
+    def test_blocks_are_identical_in_both_launchers(self):
+        plugin_block = _launcher_block(PLUGIN_LAUNCHER)
+        brain_block = _launcher_block(BRAIN_LAUNCHER)
+        assert plugin_block == brain_block
+        for name in self.FUNCTIONS:
+            assert f"{name}()" in plugin_block
+
+    def test_launchers_wire_the_root_resolver(self):
+        assert 'PLUGIN_ROOT="$(herdr_resolve_root herdr-tts)"' in PLUGIN_LAUNCHER.read_text(
+            encoding="utf-8"
+        )
+        assert 'REPO_DIR="$(herdr_resolve_root herdr-brain)"' in BRAIN_LAUNCHER.read_text(
+            encoding="utf-8"
+        )
+
+    def test_brain_launcher_exports_no_hardcoded_tts_default(self):
+        assert "HERDR_TTS_HOME:-$HOME" not in BRAIN_LAUNCHER.read_text(encoding="utf-8")
+
+    def test_brain_launcher_has_no_literal_brew_prefix(self):
+        assert "/home/linuxbrew" not in BRAIN_LAUNCHER.read_text(encoding="utf-8")
 
 
 class TestBrainPortKnob:

@@ -1,4 +1,4 @@
-# AT-11 apply progress — cumulative through task 1.8 COMPLETE (M1 CLOSED: V2 scenarios 1+2 PASS from the authorized candidate branch; 11/26 tasks)
+# AT-11 apply progress — cumulative through task 2.1 COMPLETE (M1 CLOSED + M2 slice 9; 12/26 tasks)
 
 Branch `feat/at-11-instalable` in worktree `/home/bruno/Code/personal/agent-tts-worktrees/at-11-instalable`.
 This file is the OpenSpec-side apply-progress artifact (native locator discovered by `gentle-ai sdd-status`);
@@ -7,8 +7,65 @@ cumulative content plus exact commit hashes (this file ships inside its own work
 contain that hash).
 
 Hash-only branch rewrite verified earlier: refreshed mapping supersedes pre-rewrite IDs
-(a022c44→d89abc7, 3712ced→aae51ea, b30cd0a→0682845, b037b6f→401a4b8). Cumulative state: **11/26 tasks complete**
-(task 1.8 complete via the Decision-11 candidate branch; M1 closed with no baseline exception).
+(a022c44→d89abc7, 3712ced→aae51ea, b30cd0a→0682845, b037b6f→401a4b8). Cumulative state: **12/26 tasks
+complete** (M1 closed with no baseline exception; M2 opened by task 2.1 — the shared resolver layer).
+
+## Task 2.1 — `resolve.py` + bash resolvers: monorepo root, `HERDR_BIN`, port, `HERDR_TTS_HOME` (slice 9, PR 12) — COMPLETE
+
+**What**: `tools/herdr_onboarding/` created (stdlib-only, design Decision 1 — no venv gains a dependency):
+`resolve.py` implements the four Decision-4 orders. Root: `HERDR_PLUGIN_ROOT` → ascend ≤6 levels from the
+resolved real path of the executing script (monorepo marker `hosts/herdr/tts-plugin`). `HERDR_TTS_HOME`
+(OQ-2, Engram #9681 — binding): set-and-valid wins **even when a sibling `tts-plugin` exists**; unset or
+unusable derives `<brain-root>/../tts-plugin`; a hardcoded default is never returned or exported; neither
+candidate usable → `ResolutionError` naming both. `HERDR_BIN`: six steps — env → PATH →
+`$HOMEBREW_PREFIX/bin/herdr` → `brew --prefix` probe (gated on `brew` being on the environment's PATH, so
+hermetic sandboxes never invoke it) → `$HOME/.local/bin/herdr` → bare `herdr`. Port: `HERDR_BRAIN_PORT` →
+persisted config (`<XDG_CONFIG_HOME or ~/.config>/herdr-brain/config.env`, key `HERDR_BRAIN_PORT`,
+sourcable `KEY=VALUE` so bash and Python read one knob natively) → `8741`; invalid set values fail closed.
+Both launchers carry the **byte-identical** `herdr_resolve_*` bash mirror block (marker-delimited
+`# >>> herdr portable resolvers … <<<`), self-anchored at `dirname "$(readlink -f "${BASH_SOURCE[0]}")"`;
+the plugin wires root → `PLUGIN_ROOT`; the brain wires root → `REPO_DIR` and `load_env`'s port / tts-home /
+`HERDR_BIN` through the resolvers. `hosts/herdr/brain/src/herdr_brain/config.py` plumbs `Settings.brain_port`
+mirroring the port order locally (the installed package cannot import the tools module without adding a
+runtime dependency — design Decision 1).
+
+**Scope boundary honored**: task 2.2's remaining repairs are untouched (dotfiles scrape, personal tailnet
+reference, parity test module, hygiene-scan scope extension, scenario-3 assertions). Delivering the 2.1
+mandates necessarily removed two defect lines from `bin/herdr-brain` — the dead `HERDR_TTS_HOME` default
+export (A1: "never export a hardcoded default") and the literal `/home/linuxbrew/.linuxbrew/bin/herdr`
+fallback (replaced by six-step discovery) — both asserted by the new 44f checks; 2.2 completes the launcher
+repair (A1's parity proof, C1/C2/C4).
+
+**Why**: design Decision 4 / slice 9 — machine-path decoupling starts with one shared resolution layer;
+OQ-2 precedence binding (Engram #9681).
+
+**Where**: `tools/herdr_onboarding/{__init__.py,resolve.py}` (create), `hosts/herdr/tts-plugin/bin/herdr-tts`
+and `hosts/herdr/brain/bin/herdr-brain` (resolver block + wiring), `hosts/herdr/brain/src/herdr_brain/config.py`
+(port knob), `hosts/herdr/brain/tests/test_resolve.py` (create), `hosts/herdr/tts-plugin/scripts/smoke-tests.sh`
+(section 44).
+
+### Work Unit Evidence (task 2.1)
+
+| Evidence | Result |
+|---|---|
+| Focused brain test | `cd hosts/herdr/brain && UV_PROJECT_ENVIRONMENT=/tmp/opencode/at11-brain-venv uv run --locked --offline --extra dev python -m pytest tests/test_resolve.py -q` → **34 passed** (0.20s; re-run green after the final launcher tweak) |
+| Full brain V1 (config.py changed) | same environment, `python -m pytest tests/ -q` → **605 passed** (571 baseline + 34 new, 12.75s); `node --test tests/js/` → **179 pass / 0 fail** (no JS surface touched) |
+| Plugin RED (strict TDD — section 44 authored first, launchers untouched) | `cd hosts/herdr/tts-plugin && bash scripts/smoke-tests.sh` → **`1023 passed, 31 failed`**, exit 1 — all 32 new section-44 checks RED (31 FAIL + the diff-of-two-absent-blocks parity check vacuously identical, gated by the presence checks that failed); baseline 1022 untouched; 16s host-state invariant green |
+| Plugin GREEN | `bash scripts/smoke-tests.sh` → **`1054 passed, 0 failed`**, exit 0 (1022 + 32 new) — run twice: after implementation and after the final cd-noise hardening; 16s host playback state invariant green both times (no signal ever sent to the host daemon; no host-state change observed) |
+| Runtime harness — launcher resolver drill in source layout | Shipped block extracted from each real launcher into a temporary `.drill-resolvers.sh` beside it (deleted immediately; worktree clean afterwards): brain root → `<worktree>/hosts/herdr/brain`; tts sibling → `<worktree>/hosts/herdr/tts-plugin`; set-and-valid `HERDR_TTS_HOME` override wins; port default 8741 / `config.env` 8799 / env 8801; unusable override + no sibling → single actionable ERROR naming both candidates (a `cd` noise line exposed by the drill was hardened and both suites re-run green); plugin root → `<worktree>/hosts/herdr/tts-plugin`; `HERDR_PLUGIN_ROOT=/opt/keg` honored; `bash -n` both launchers OK; `bin/herdr-brain help` rc 0 |
+| Rollback boundary | Revert the task-2.1 work-unit commit: `tools/herdr_onboarding/` disappears, both launchers return to their pre-resolver headers (plugin: inline `PLUGIN_ROOT` one-liner; brain: dead `HERDR_TTS_HOME` default + 4-step `HERDR_BIN` with the linuxbrew literal — exactly the pre-repair state task 2.2 will finish repairing), `config.py` loses `brain_port`, brain test module and smoke section 44 removed. No other work unit consumes the resolver yet (2.2+ are the next consumers). |
+| Changed lines | code 946 additions + 17 deletions = **963 authored** (launchers 223+17, `resolve.py` 214, `__init__.py` 8, brain tests 286, `config.py` 56, smoke section 160) + tasks.md checkbox 1+1 — **over the 400-line budget** (tasks.md estimated ~300): the slice mandates a new module, its dual-launcher byte-identical mirror, brain pytest AND plugin strict-TDD smoke surfaces, and config plumbing. Implemented honestly without cutting tests, assertions or comments; `size:exception` recommended for PR 12 (feature-branch-chain child of the tracker branch, per the confirmed chain strategy) |
+
+### TDD Cycle Evidence (plugin-local strict TDD — `hosts/herdr/tts-plugin/openspec/config.yaml: strict_tdd: true`; workspace Standard mode governs the brain side)
+
+| Slice | RED | GREEN | REFACTOR |
+|---|---|---|---|
+| 44a block presence + four functions | FAIL (block absent from both launchers) | ok ×5 | None needed |
+| 44b root: derive / override / 3-level ascent / beyond-6 actionable failure | FAIL (`herdr_resolve_root: command not found`; no error text) | ok ×4 | None needed |
+| 44c OQ-2 tts-home precedence (override-wins-over-sibling THE assertion) | FAIL | ok ×3 | `cd` noise on the missing-root edge hardened after the drill; both suites re-run green |
+| 44d six-step `HERDR_BIN` (PATH beats prefix; brew via stubbed `--prefix`) | FAIL ×6 | ok ×6 | None needed |
+| 44e port order env → config.env (quoted/noisy) → 8741 | FAIL ×4 | ok ×4 | None needed |
+| 44f parity: byte-identical blocks, wiring, no dead default, no literal brew prefix | FAIL ×10 | ok ×10 | None needed |
 
 ## Task 1.8 — Scenarios 1+2 `plugin-fresh-clone`, `plugin-subdir-install` (slice 8, PR 11) — COMPLETE via the authorized candidate branch (design Decision 11)
 
@@ -409,8 +466,11 @@ task 1.11). **The full plugin V1 suite is green and claimable.**
 
 ## Next
 
-M1 is CLOSED (see the Decision-11 closure record above): 11/26 tasks complete. **Task 2.1** (slice 9,
-PR 12 — `resolve.py` + bash resolvers) starts M2. If an M2+ V2 run needs the newer local commits,
-first fast-forward the authorized candidate branch per the same narrow authorization (divergent ⇒
-`BLOCKED`, never force). Stable publication (tag `v0.16.0`, repaired `main`) remains maintainer-owned
-after V3; the stable route stays unvalidated and its BLOCKED evidence stands.
+M1 is CLOSED (see the Decision-11 closure record above); M2 is open with slice 9 delivered: **12/26 tasks
+complete**. **Task 2.2** (slice 10, PR 13 — brain launcher repair A1-parity/C1/C2/C4 + hygiene-scope
+extension + scenario-3 assertion finalization) continues M2 and consumes the resolver layer delivered here.
+The 2.1 commit was NOT pushed: no M2 V2 scenario runs until tasks 2.2/2.6; if an M2+ V2 run needs the newer
+local commits, first fast-forward the authorized candidate branch `validation/at-11-instalable` per the
+same narrow authorization (divergent ⇒ `BLOCKED`, never force; never `main`/tag/PR). Stable publication
+(tag `v0.16.0`, repaired `main`) remains maintainer-owned after V3; the stable route stays unvalidated and
+its BLOCKED evidence stands.
