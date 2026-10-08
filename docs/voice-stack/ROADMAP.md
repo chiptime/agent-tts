@@ -107,7 +107,8 @@ F1 base veraz ─┬─► F3 red de tests (R4-B) ─► F4 AT-02 + HT-01 ─►
 ### F5 — HT-04 reenfocada (botones ntfy sobre el brain)
 
 - Acciones en la notificación ntfy (continuar/detener) que llaman a los endpoints del brain; sin listener propio duplicado.
-- **Depende de:** F2 (`/approval` validado en Chrome Android) y F3. Reescribir la PRD antes de implementar.
+- **Estado (2026-10-08, rama `feat/f5-ntfy-actions`): IMPLEMENTADA con tests, pendiente de validación física y de revisión/fusión.** Brain: `POST /approval/{gate}/action` (decisión como palabra/JSON/form/`?decision=`, token opcional `HERDR_BRAIN_APPROVAL_TOKEN` con comparación en tiempo constante, approve en background sin TTS; `tests/test_approval_ntfy.py`). Plugin: `send_ntfy_push` emite `✅ Approve`/`❌ Stop`/`📱 Open` solo en pushes `blocked` con gate vivo y `NTFY_APPROVAL_URL`; búsqueda best-effort del gate por `GET /approval/current` (sesión por defecto); sin URL/gate o en `done`/`idle`, comportamiento idéntico al previo (casos `ntfy_*` en `tests/host_cli_cases.sh`). Pendiente: F2 (validar en teléfono real), y la dependencia declarada F2-antes-de-F5 se ejecutó al revés — la validación física sigue siendo el gate de cierre.
+- **Depende de:** F2 (`/approval` validado en Chrome Android) y F3. Reescribir la PRD antes de implementar. *(La PRD HT-04 ya refleja el estado implementado; F2 sigue abierto.)*
 
 ### F6 — HT-11 audición de voces (prioridad baja, tras F4/F5)
 
