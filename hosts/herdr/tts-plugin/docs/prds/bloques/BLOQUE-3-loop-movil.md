@@ -5,6 +5,8 @@
 
 > **Estado reconciliado (2026-10-05)**: `send_ntfy_push()` solo ofrece acciones view/copy, no llamadas al brain; no hay recordatorios escalados HT-05. La PWA y `/approval/*` ya existen en el brain, pero no ejecutan este bloque del plugin. Según ROADMAP D1/D3, HT-04 será un atajo ntfy sobre el brain y HT-05 queda en backlog sobre `pending_queue.py`. El cuerpo es el plan histórico; debe replantearse antes de implementar, sin listener ni ledger duplicados.
 
+> **Avance F5 (2026-10-08)**: el atajo ntfy del Hito 1 en su forma reenfocada está implementado (sin listener propio): botones `✅ Approve` / `❌ Stop` / `📱 Open` en el push `blocked` que llaman a `POST /approval/{gate}/action` del brain con token opcional; ver el estado de implementación en `../HT-04-control-movil-bidireccional.md`. La variante histórica de este fichero (endpoint `POST /herdr-tts/reply` en el daemon) quedó descartada por la decisión del 2026-10-07. Pendientes del bloque: validación física en teléfono (F2), HT-05 y el Hito 3 de texto libre.
+
 ### Objetivo del bloque
 
 Cerrar el loop móvil del operador: convertir el push ntfy (hoy de solo lectura) en un canal bidireccional de acciones acotadas (HT-04) y hacer que el sistema insista de forma escalonada cuando el aviso inicial se pierde (HT-05). Juntas, las dos PRD completan el ciclo atención → respuesta → re-memoria sin que el móvil se convierta nunca en un shell remoto.

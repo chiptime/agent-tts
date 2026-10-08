@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Product** | herdr-brain (voice-assistant PWA) |
-| **Status** | Implementada con tests (Implementada en `server.py` `/approval/*`, `approval.py`, con tests en `tests/test_approval.py`, `tests/test_approval_gate_create.py`, `tests/js/approval.test.js`); validación Chrome Android pendiente (ROADMAP F2) |
+| **Status** | Implementada con tests (Implementada en `server.py` `/approval/*`, `approval.py`, con tests en `tests/test_approval.py`, `tests/test_approval_gate_create.py`, `tests/js/approval.test.js`); ruta ntfy `POST /approval/{id}/action` + token opcional `HERDR_BRAIN_APPROVAL_TOKEN` añadidos en F5/HT-04 (`tests/test_approval_ntfy.py`); validación Chrome Android pendiente (ROADMAP F2) |
 | **Date** | 2026-09-24 |
 | **Effort** | Implementación servidor + UI entregada; cierre manual pendiente |
 
@@ -146,8 +146,9 @@ persistence, same as conversation memory).
 | `POST /approval/{gate_id}/approve` | — | same shape as `/ask` result | Replays frozen `send_to_session`, re-enters tool loop, returns report answer + `audio_url`. Can be slow (agent completion) — same 30s client budget. |
 | `POST /approval/{gate_id}/reject` | — | `{ok, state}` | No TTS generated server-side. |
 | `POST /approval/{gate_id}/resolve` | `{utterance}` | `{decision, answer?, audio_url?}` | Voice path. `decision ∈ approve / reject / listen_replace / reprompt`. STT transcript is matched server-side (§ voice lexicon). |
+| `POST /approval/{gate_id}/action` | `approve` \| `reject` (raw word, JSON `{"decision": ...}`, form, or `?decision=`) | `{ok, decision, state}` | ntfy `http` action buttons (HT-04/F5). Auth via `Authorization: Bearer` or `?token=` against `HERDR_BRAIN_APPROVAL_TOKEN` (constant-time; 401 before any gate lookup when configured, empty = open like the PWA routes). Approve replays the frozen send in the background (the phone's HTTP window is short) and renders no TTS. Dead/unknown gates 404 like the PWA routes. |
 | `PATCH /approval/{gate_id}` | `{text}` | updated gate | Manual edit OR voice re-dictation result. Resets `created_at` (timer restarts). |
-| `GET /approval/current` | query `session_id` | gate or `null` | Reload recovery: PWA boot checks and re-enters `confirming` if a live gate exists (drawer PRD's reload-interrupted state). |
+| `GET /approval/current` | query `session_id` | gate or `null` | Reload recovery: PWA boot checks and re-enters `confirming` if a live gate exists (drawer PRD's reload-interrupted state). Also the best-effort lookup the ntfy push uses to find the default session's live gate. |
 
 ### `/ask` response extension
 
