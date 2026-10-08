@@ -1,10 +1,16 @@
 **ID**: PRD-HT-04 · **Proyecto**: herdr-tts
-**Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: ACTIVA, REENFOCADA (2026-10-07), pendiente de implementar
+**Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: ACTIVA, REENFOCADA (2026-10-07), atajo ntfy IMPLEMENTADO sin validación física (2026-10-08, F5)
 **Dependencias**: endpoints del brain (`/approval/*`, `/ask`); F2 (validación de `/approval` en Chrome Android)
 
 # PRD-HT-04 — Control bidireccional desde el móvil
 
-> **Nota de destino (2026-10-07 — decisiones del maintainer):** HT-04 sigue **viva y reenfocada**: las acciones de la notificación ntfy (continuar/detener) pasan a ser **atajos que llaman a los endpoints del brain** (`/approval/*`, `/ask`); **sin listener HTTP propio** en el daemon ni vía independiente paralela a la PWA. Depende de F2 (validación física de `/approval` en Chrome Android) antes de implementarse. **Nada de este reenfoque está implementado.**
+> **Nota de destino (2026-10-07 — decisiones del maintainer):** HT-04 sigue **viva y reenfocada**: las acciones de la notificación ntfy (continuar/detener) pasan a ser **atajos que llaman a los endpoints del brain** (`/approval/*`, `/ask`); **sin listener HTTP propio** en el daemon ni vía independiente paralela a la PWA. Depende de F2 (validación física de `/approval` en Chrome Android) antes de implementarse.
+>
+> **Estado de implementación (2026-10-08, F5 — rama `feat/f5-ntfy-actions`):** el atajo ntfy está implementado y testeado, pero **sin validar en un teléfono físico** (F2 sigue pendiente).
+> - Brain: nueva ruta `POST /approval/{gate_id}/action` que acepta `approve`/`reject` en cualquier forma que un botón ntfy `http` puede enviar (palabra suelta, JSON, form o `?decision=`), con token opcional `HERDR_BRAIN_APPROVAL_TOKEN` (Bearer o `?token=`, comparación en tiempo constante, 401 antes de revelar si el gate existe; vacío = abierto como las rutas PWA). El approve reproyecta el send congelado en background y sin TTS. Tests: `hosts/herdr/brain/tests/test_approval_ntfy.py`.
+> - Plugin: `send_ntfy_push()` añade, SOLO en pushes `blocked` con gate vivo y `NTFY_APPROVAL_URL` configurada, exactamente tres acciones (límite ntfy): `http ✅ Approve` (POST action, body `approve`), `http ❌ Stop` (body `reject`) y `view 📱 Open approval` (raíz de la PWA del brain, cuya recuperación al recargar muestra el gate). El gate se descubre best-effort con `GET {NTFY_APPROVAL_URL}/approval/current` (sesión por defecto) o como 7º argumento. Token en `NTFY_APPROVAL_TOKEN` (alias `HERDR_BRAIN_APPROVAL_TOKEN`) viaja como `headers.Authorization=Bearer …`; un token con `"` no representable desactiva los botones (degradación a view/copy). Sin `NTFY_APPROVAL_URL`, sin gate, o en eventos `done`/`idle`: comportamiento byte a byte el de antes. Tests: `tests/host_cli_cases.sh` (casos `ntfy_*`).
+> - El pareo push-blocked ↔ gate es temporal y best-effort: el gate pertenece al flujo de voz del brain (sesión por defecto); si la sesión de la PWA difiere, la búsqueda no lo ve y el push degrada sin botones.
+> - **Sigue sin implementar:** texto libre (Hito 3, bloqueado por el verbo de inyección), recordatorios HT-05, y la validación física en dispositivo (F2).
 >
 > **Deslinde con F4/STT (2026-10-07, posterior):** la decisión de mover el STT y la captura al motor `agent-tts` (AT-02/HT-01) **no afecta** a HT-04: los endpoints del brain siguen siendo la vía decidida para el control móvil. Son decisiones separadas; una no supersede a la otra.
 >
