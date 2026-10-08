@@ -14,6 +14,7 @@ recovers a live gate after reload (PRD-action-approval-gate §5).
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import math
@@ -25,8 +26,9 @@ import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Optional
+from urllib.parse import parse_qs
 
-from fastapi import FastAPI, File, HTTPException, Path as PathParam, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Path as PathParam, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -111,6 +113,55 @@ APPROVAL_CLOSER = "¿Se envía?"
 # Spoken re-prompt after one ambiguous confirming utterance
 # (PRD-action-approval-gate §4). Product copy; keep verbatim.
 REPROMPT_LINE = "¿Sí o no?"
+
+
+# ntfy action buttons (F5 / HT-04) can only fire a plain HTTP request with a
+# free-form body, so the action route accepts the decision in any of the
+# shapes a phone can send. Only these two words are ever accepted.
+_ACTION_DECISIONS = {"approve": DECISION_APPROVE, "reject": DECISION_REJECT}
+
+
+def _decision_word(value: object) -> Optional[str]:
+    if isinstance(value, str) and value.strip().lower() in _ACTION_DECISIONS:
+        return value.strip().lower()
+    return None
+
+
+def parse_action_decision(raw: bytes, query_decision: Optional[str] = None) -> Optional[str]:
+    """Extracts approve/reject from an ntfy action request, or ``None``.
+
+    Accepted: ``?decision=``, a bare word body (``approve``), a JSON object
+    (``{"decision": "approve"}``) or a JSON string, and a form body
+    (``decision=approve``) regardless of the Content-Type the phone sent.
+    """
+    if query_decision is not None:
+        return _decision_word(query_decision)
+    text = raw.decode("utf-8", errors="replace").strip()
+    if not text:
+        return None
+    word = _decision_word(text)
+    if word is not None:
+        return word
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        return _decision_word(payload.get("decision"))
+    if isinstance(payload, str):
+        return _decision_word(payload)
+    values = parse_qs(text).get("decision")
+    return _decision_word(values[0]) if values else None
+
+
+def bearer_or_query_token(request: Request) -> str:
+    """The credential a request presents: ``Authorization: Bearer`` first,
+    ``?token=`` as the fallback ntfy ``view``-less clients can use. Returns
+    "" when none is presented."""
+    scheme, _, value = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() == "bearer":
+        return value.strip()
+    return request.query_params.get("token", "")
 
 
 def approval_payload(gate: ApprovalGate, timeout_s: int, now: Optional[float] = None) -> dict:
@@ -832,7 +883,7 @@ def create_app(
             raise gate_gone()
         return gate
 
-    def replay_and_report(gate: ApprovalGate) -> dict:
+    def replay_and_report(gate: ApprovalGate, speak: bool = True) -> dict:
         """Executes the frozen action and reports the outcome.
 
         This is THE approve execution (AC6 — exactly once, guaranteed by
@@ -843,7 +894,7 @@ def create_app(
         loop entry and the answer is shaped like /ask.
         """
         if gate.tool == CREATE_SESSION:
-            return _replay_create_and_report(gate)
+            return _replay_create_and_report(gate, speak)
         target = tools.resolve_target(gate.action.pane_id)
         tool_result = tools.dispatch(
             SEND_TO_SESSION,
@@ -867,9 +918,9 @@ def create_app(
             )
         except BrainLLMError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-        return shape_ask_response(result)
+        return shape_ask_response(result, speak=speak)
 
-    def _replay_create_and_report(gate: ApprovalGate) -> dict:
+    def _replay_create_and_report(gate: ApprovalGate, speak: bool = True) -> dict:
         """Approve execution for create gates: dispatch the frozen panel
         spec (no target — the tool creates its own pane), then report."""
         tool_result = tools.dispatch(
@@ -896,7 +947,7 @@ def create_app(
             )
         except BrainLLMError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-        return shape_ask_response(result)
+        return shape_ask_response(result, speak=speak)
 
     @app.get("/approval/current")
     def approval_current(session_id: Optional[str] = None) -> dict:
@@ -1133,6 +1184,51 @@ def create_app(
         if not applied:
             raise gate_gone()
         return {"ok": True, "state": resolved.state}
+
+    @app.post("/approval/{gate_id}/action")
+    async def approval_action(
+        gate_id: str, request: Request, background: BackgroundTasks
+    ) -> dict:
+        """ntfy ``http`` action button endpoint (F5 / HT-04).
+
+        The phone POSTs ``approve`` or ``reject`` (bare word, JSON or form
+        body). When ``HERDR_BRAIN_APPROVAL_TOKEN`` is set the request must
+        carry it (Bearer header or ``?token=``): a bad or missing token is a
+        401 BEFORE any gate lookup, so the gate stays untouched and its
+        existence is not revealed. The gate resolves immediately; on approve
+        the frozen send replays in the background (it can take minutes, far
+        past a phone's HTTP timeout) and no TTS is rendered (nobody is
+        listening on the phone). Dead gates 404 like the PWA routes.
+        """
+        if cfg.approval_token:
+            presented = bearer_or_query_token(request).encode("utf-8")
+            if not hmac.compare_digest(presented, cfg.approval_token.encode("utf-8")):
+                raise HTTPException(
+                    status_code=401,
+                    detail="invalid or missing approval token",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+        word = parse_action_decision(
+            await request.body(), request.query_params.get("decision")
+        )
+        if word is None:
+            raise HTTPException(
+                status_code=422, detail='decision must be "approve" or "reject"'
+            )
+        live_gate_or_404(gate_id)
+        resolved, applied = approval_store.resolve(gate_id, _ACTION_DECISIONS[word])
+        if not applied:
+            raise gate_gone()
+        if word == "approve":
+            background.add_task(run_action_replay, resolved)
+        return {"ok": True, "decision": word, "state": resolved.state}
+
+    def run_action_replay(gate: ApprovalGate) -> None:
+        """Background half of an ntfy approve: the response already left."""
+        try:
+            replay_and_report(gate, speak=False)
+        except Exception:  # noqa: BLE001 — no client left to receive an error
+            logger.exception("ntfy approve replay failed for gate %s", gate.gate_id)
 
     @app.post("/approval/{gate_id}/resolve")
     def approval_resolve(gate_id: str, body: ResolveRequest) -> dict:

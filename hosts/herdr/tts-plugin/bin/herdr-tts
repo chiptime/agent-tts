@@ -170,6 +170,12 @@ DEFAULT_ELEVENLABS_API_KEY=""
 DEFAULT_ELEVENLABS_MODEL="eleven_multilingual_v2"
 DEFAULT_NTFY_TOPIC=""
 DEFAULT_NTFY_SERVER="https://ntfy.sh"
+# F5/HT-04: phone-reachable Herdr Brain base URL (LAN/Tailscale). When set,
+# blocked pushes with a live approval gate carry Approve/Stop/Open buttons.
+DEFAULT_NTFY_APPROVAL_URL=""
+# Shared secret for those buttons; must match the brain's
+# HERDR_BRAIN_APPROVAL_TOKEN (the alias lets co-located daemons share it).
+DEFAULT_NTFY_APPROVAL_TOKEN=""
 DEFAULT_WEB_URL=""
 DEFAULT_WEB_LABEL=""
 DEFAULT_CLICK_REDIRECT="off"
@@ -308,6 +314,8 @@ ELEVENLABS_MODEL="${ELEVENLABS_MODEL:-$DEFAULT_ELEVENLABS_MODEL}"
 PIPER_MODEL="${PIPER_MODEL:-$DEFAULT_PIPER_MODEL}"
 NTFY_TOPIC="${NTFY_TOPIC:-${HERDR_NTFY_TOPIC:-$DEFAULT_NTFY_TOPIC}}"
 NTFY_SERVER="${NTFY_SERVER:-${HERDR_NTFY_SERVER:-$DEFAULT_NTFY_SERVER}}"
+NTFY_APPROVAL_URL="${NTFY_APPROVAL_URL:-${HERDR_NTFY_APPROVAL_URL:-$DEFAULT_NTFY_APPROVAL_URL}}"
+NTFY_APPROVAL_TOKEN="${NTFY_APPROVAL_TOKEN:-${HERDR_BRAIN_APPROVAL_TOKEN:-$DEFAULT_NTFY_APPROVAL_TOKEN}}"
 WEB_URL="${WEB_URL:-${COLLIE_URL:-${HERDR_WEB_URL:-${HERDR_COLLIE_URL:-$DEFAULT_WEB_URL}}}}"
 WEB_LABEL="${WEB_LABEL:-${HERDR_WEB_LABEL:-$DEFAULT_WEB_LABEL}}"
 CLICK_REDIRECT="${CLICK_REDIRECT:-$DEFAULT_CLICK_REDIRECT}"
@@ -363,6 +371,9 @@ TT_EN[play.ctx.local]="local playback"
 TT_EN[ntfy.open_web]="Open Web"
 TT_EN[ntfy.open_label]="Open %s"
 TT_EN[ntfy.open_collie]="Open Collie"
+TT_EN[ntfy.open_approval]="Open approval"
+TT_EN[ntfy.approve]="✅ Approve"
+TT_EN[ntfy.stop]="❌ Stop"
 TT_EN[ntfy.copy_cmd]="📋 Copy command"
 TT_EN[ntfy.done.title]="✅ %s finished"
 TT_EN[ntfy.done.body]="Agent %s%s finished its task.\n\n→ To view: %s"
@@ -904,6 +915,9 @@ TT_ES[play.ctx.local]="reproducción local"
 TT_ES[ntfy.open_web]="Abrir Web"
 TT_ES[ntfy.open_label]="Abrir %s"
 TT_ES[ntfy.open_collie]="Abrir Collie"
+TT_ES[ntfy.open_approval]="Abrir aprobación"
+TT_ES[ntfy.approve]="✅ Aprobar"
+TT_ES[ntfy.stop]="❌ Detener"
 TT_ES[ntfy.copy_cmd]="📋 Copiar comando"
 TT_ES[ntfy.done.title]="✅ %s terminó"
 TT_ES[ntfy.done.body]="Agente %s%s finalizó su tarea.\n\n→ Para ver: %s"
@@ -1445,6 +1459,7 @@ ELEVENLABS_MODEL="${ELEVENLABS_MODEL}"
 PIPER_MODEL="${PIPER_MODEL}"
 NTFY_TOPIC="${NTFY_TOPIC}"
 NTFY_SERVER="${NTFY_SERVER}"
+NTFY_APPROVAL_URL="${NTFY_APPROVAL_URL}"
 WEB_URL="${WEB_URL}"
 WEB_LABEL="${WEB_LABEL}"
 CLICK_REDIRECT="${CLICK_REDIRECT}"
@@ -2115,6 +2130,54 @@ play_audio_file() {
   echo "$child_pid" > "$LOCK_FILE"
 }
 
+# ─── F5/HT-04: ntfy approval action buttons ────────────────────
+# ntfy `http` actions can only fire a plain HTTP request, so the buttons
+# call Herdr Brain's REST API directly (no second listener on the host).
+# Grammar (docs.ntfy.sh §action-buttons): actions separated by `;`, fields
+# by `,`; values containing `,`/`;` must be double-quoted; at most THREE
+# actions per message — hence the classic view/copy pair is replaced by
+# exactly Approve/Stop/Open on a gate push.
+
+ntfy_action_value() { # <value> → grammar-safe value on stdout; rc 1 when unrepresentable
+  local value="$1"
+  # A double quote cannot be encoded at all (quoting is the only escape).
+  [[ "$value" != *'"'* ]] || return 1
+  if [[ "$value" == *","* || "$value" == *";"* ]]; then
+    printf '"%s"' "$value"
+  else
+    printf '%s' "$value"
+  fi
+}
+
+lookup_live_approval_gate() { # → live gate_id of the default session, or nothing (best effort)
+  [[ -n "$NTFY_APPROVAL_URL" ]] || return 0
+  local -a auth_args=()
+  if [[ -n "$NTFY_APPROVAL_TOKEN" ]]; then
+    auth_args+=(-H "Authorization: Bearer ${NTFY_APPROVAL_TOKEN}")
+  fi
+  local payload
+  payload="$(curl -s --connect-timeout 2 --max-time 3 "${auth_args[@]}" \
+    "${NTFY_APPROVAL_URL%/}/approval/current" 2>/dev/null)" || return 0
+  [[ -n "$payload" ]] || return 0
+  printf '%s' "$payload" | jq -r '.approval.gate_id // empty' 2>/dev/null || true
+}
+
+build_approval_actions() { # <gate_id> → Actions header value; rc 1 when the token cannot be embedded
+  local gate_id="$1"
+  local base="${NTFY_APPROVAL_URL%/}"
+  local action_url="${base}/approval/${gate_id}/action"
+  local auth=""
+  if [[ -n "$NTFY_APPROVAL_TOKEN" ]]; then
+    local header_value
+    header_value="$(ntfy_action_value "Bearer ${NTFY_APPROVAL_TOKEN}")" || return 1
+    auth=", headers.Authorization=${header_value}"
+  fi
+  printf 'http, %s, %s, method=POST%s, body=approve, clear=true; http, %s, %s, method=POST%s, body=reject, clear=true; view, 📱 %s, %s/' \
+    "$(tt ntfy.approve)" "$action_url" "$auth" \
+    "$(tt ntfy.stop)" "$action_url" "$auth" \
+    "$(tt ntfy.open_approval)" "$base"
+}
+
 send_ntfy_push() {
   local pane_id="$1"
   local agent="$2"
@@ -2122,6 +2185,7 @@ send_ntfy_push() {
   local workspace="${4:-}"
   local title_desc="${5:-}"
   local audio_path="${6:-}"
+  local gate_id="${7:-}" # F5/HT-04: known live gate id (skips the lookup)
 
   [[ -z "$NTFY_TOPIC" ]] && return 0
 
@@ -2132,10 +2196,28 @@ send_ntfy_push() {
     display_name="${agent} [${title_desc}] (${pane_id})"
   fi
 
+  # Gate buttons only for a blocked push the phone can act on: brain
+  # reachable (NTFY_APPROVAL_URL) plus a live gate (explicit arg or the
+  # best-effort default-session lookup). Anything else degrades to the
+  # classic buttons below — a missing brain is never an error here.
+  local approval_gate=""
+  if [[ "$state" == "blocked" && -n "$NTFY_APPROVAL_URL" ]]; then
+    if [[ -n "$gate_id" ]]; then
+      approval_gate="$gate_id"
+    else
+      approval_gate="$(lookup_live_approval_gate)"
+    fi
+    # Gate ids are hex; anything else cannot be embedded in the header.
+    [[ "$approval_gate" =~ ^[0-9a-f]{1,32}$ ]] || approval_gate=""
+  fi
+
   local action_buttons=""
   local target_url=""
 
-  if [[ -n "$WEB_URL" ]]; then
+  if [[ -n "$approval_gate" ]]; then
+    action_buttons="$(build_approval_actions "$approval_gate")" || action_buttons=""
+  fi
+  if [[ -z "$action_buttons" && -n "$WEB_URL" ]]; then
     if [[ "$WEB_URL" == *"{pane_id}"* ]]; then
       target_url="${WEB_URL//\{pane_id\}/${pane_id}}"
     elif [[ -n "$pane_id" ]]; then
@@ -2153,8 +2235,13 @@ send_ntfy_push() {
     fi
 
     action_buttons="view, 📱 ${btn_label}, ${target_url}; copy, $(tt ntfy.copy_cmd), ${focus_cmd}, clear=true"
-  else
+  elif [[ -z "$action_buttons" ]]; then
     action_buttons="copy, $(tt ntfy.copy_cmd), ${focus_cmd}, clear=true"
+  fi
+  if [[ -n "$approval_gate" ]]; then
+    # Clicking the notification opens the brain PWA: boot recovery re-enters
+    # confirming when a gate is still live (PRD-action-approval-gate §8).
+    target_url="${NTFY_APPROVAL_URL%/}/"
   fi
 
   local title=""
