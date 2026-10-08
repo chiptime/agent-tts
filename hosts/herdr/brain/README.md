@@ -126,25 +126,38 @@ bin/herdr-brain restart
 bin/herdr-brain stop
 ```
 
-### Option 2: systemd user unit (Linux daemon mode)
+### Option 2: systemd user unit (optional, Linux daemon mode)
 
-The service can alternatively run as a persistent **systemd user unit** — independent of Herdr lifecycle:
+The service can alternatively run as a persistent **systemd user unit** — independent of Herdr lifecycle. This route is optional; the plugin startup route above needs no systemd.
 
 ```bash
-deploy/install.sh    # idempotent: env file + unit + linger + health gate
+export GLM_API_KEY="…"        # optional here; or add it to ~/.config/herdr-brain/env
+deploy/install.sh              # idempotent: env file + generated unit + linger + health gate
+deploy/install.sh --generate-only   # only render the unit; no systemctl, no env file
 ```
+
+The unit is **generated**, never committed: the installer discovers the
+install location, the venv python, the `herdr` binary
+(`HERDR_BIN` → `PATH` → `$HOMEBREW_PREFIX/bin/herdr` → `brew --prefix` →
+`~/.local/bin/herdr`; an unresolved binary is a hard failure), the
+tts-plugin home, the port and the env file, substitutes them into
+`deploy/herdr-brain.service.tmpl`, and writes
+`~/.config/systemd/user/herdr-brain.service`. Any placeholder left
+unsubstituted aborts the install before anything is changed. `deploy/*.service`
+is git-ignored.
 
 What the installer does (safe to re-run):
 
-- extracts `GLM_API_KEY` from `~/.dotfiles/shell/private-env.sh` into
-  `~/.config/herdr-brain/env` (outside the repo, mode 600; the value is
-  never printed and the file is only rewritten when the key changes),
+- reads `GLM_API_KEY` from the installer's own environment (never from
+  dotfiles) and merges it into `~/.config/herdr-brain/env` (outside the
+  repo, mode 600; the value is never printed; other lines are preserved),
 - stops a stray manual herdr-brain instance on the port only when it is
   provably ours (pidfile or the unit's `MainPID`); a foreign listener aborts
   the install untouched (see *Port conflicts* below),
-- installs `deploy/herdr-brain.service` as a user unit, enables linger and
-  starts it (`Restart=on-failure`, `RestartSec=3`),
-- polls `/health` for up to 10s and prints the journal on failure.
+- on upgrade replaces only the unit it generated (stop → regenerate →
+  reload → restart); a unit file it did not generate is never overwritten,
+- enables linger, starts the unit (`Restart=on-failure`, `RestartSec=3`),
+  polls `/health` for up to 10s and prints the journal on failure.
 
 ```bash
 systemctl --user status herdr-brain     # state + recent log lines

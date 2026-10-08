@@ -484,8 +484,18 @@ case "${1:-status}" in
   restart|--restart)
     cmd_restart
     ;;
-  _port)
-    herdr_resolve_port "$CONFIG_DIR"
+  _resolve)
+    # Internal: one resolver surface for deploy/install.sh (design Decision 5).
+    case "${2:-}" in
+      bin) herdr_resolve_bin ;;
+      tts-home) herdr_resolve_tts_home "$REPO_DIR" ;;
+      port) herdr_resolve_port "$CONFIG_DIR" ;;
+      root) printf '%s\n' "$REPO_DIR" ;;
+      *)
+        echo "Usage: bin/herdr-brain _resolve {bin|tts-home|port|root}" >&2
+        exit 2
+        ;;
+    esac
     ;;
   _claim-port)
     # Single ownership policy shared with deploy/install.sh (audit C5).
