@@ -1,6 +1,6 @@
 # F5 — HT-04 refocused: ntfy action buttons over the Herdr Brain approval API
 
-**Status**: IN PROGRESS · **Branch**: `feat/f5-ntfy-actions` (worktree `~/Code/personal/agent-tts-worktrees/f5-ntfy`, base `main` = `a12e727`)
+**Status**: DONE (code + tests + docs; physical phone validation pending = F2) · **Branch**: `feat/f5-ntfy-actions` (worktree `~/Code/personal/agent-tts-worktrees/f5-ntfy`, base `main` = `a12e727`)
 **Engram topic**: `odd/f5-ntfy-actions/tasks` (project `agent-tts`)
 
 ## Intent
@@ -29,8 +29,8 @@ a phone (ROADMAP F2 remains pending).
 - [x] T2 GREEN: `config.py` token setting + `server.py` `/approval/{id}/action` (constant-time compare, never logged)
 - [x] T3 RED/GREEN: bash cases for the `Actions` header (blocked + gate, no URL, no gate, non-blocked, unsafe token) — RED: 3 new-behavior cases FAIL at base (4 degradation guards already hold); GREEN: 7/7 OK after the builder
 - [x] T4 GREEN: `send_ntfy_push` Actions builder + gate lookup helper
-- [ ] T5 Docs: HT-04 PRD, brain PRD, BLOQUE-3, ROADMAP F5 status
-- [ ] T6 Verification run + handoff
+- [x] T5 Docs: HT-04 PRD, brain PRD, BLOQUE-3, ROADMAP F5 status
+- [x] T6 Verification run + handoff
 
 ## Evidence
 
@@ -42,8 +42,35 @@ a phone (ROADMAP F2 remains pending).
 - T3/T4 (plugin): `CASES="ntfy_*" bash tests/host_cli_cases.sh` → RED 3 FAIL + 4 OK at base,
   GREEN 7/7 exit 0 after `send_ntfy_push` gate branch; full `tests/all_bash_harnesses.sh`
   → exit 0, 126 cases OK, no FAIL (regression-free in the shared TT/env/template regions).
+- T6 verification (2026-10-08, all in the worktree):
+  - `cd hosts/herdr/brain && uv run python -m pytest tests/ -q --ignore=tests/browser` →
+    7 failed, 1437 passed. All 7 pre-existing environmental, each reproduced identically on
+    a clean `git archive HEAD` base export: 6× `tests/e2e` `[chromium]` playwright failures
+    (test_m2_stream ×3, test_m4_fallback ×3 — same class as the ignored `tests/browser`),
+    1× `test_m3_pending.py::test_kill9_host_pending_recovers_uncertain_no_replay`
+    (`the tick exited before the claim could be observed: rc=1`, needs engine venv).
+  - `bash hosts/herdr/tts-plugin/tests/all_bash_harnesses.sh` → exit 0, 126 CASE OK, no FAIL.
+  - `PYTHONPATH=engine/src uv run --with pytest pytest hosts/herdr/tts-plugin/tests -q` →
+    7 failed (the named `test_segmented_render.py` miniaudio failures), 132 passed, 1 skipped.
+  - Curl demonstration (real uvicorn socket, real curl, ntfy-shaped POST): bad Bearer → 401
+    with gate untouched; `curl -X POST -H "Authorization: Bearer …" -d approve
+    http://127.0.0.1:18399/approval/{id}/action` → 200 approved; background replay dispatched
+    the exact frozen args (`send_to_session`, `corre los tests`, 300000 ms) exactly once;
+    second press → 404 with no second dispatch; `/approval/current` → `{"approval": null}`
+    after resolution. Script: `/tmp/opencode/f5-ntfy-demo.py` (ephemeral, not a repo artifact).
 
 ## Commits
 
-Recorded by the writer at close (this brief authorizes work-unit commits on
-`feat/f5-ntfy-actions`): see list below.
+- `2ef657b` feat(brain): accept ntfy action resolve requests
+- `13ff28c` feat(tts-plugin): add approve/stop ntfy action buttons
+- `<this commit>` docs(roadmap): mark F5 ntfy buttons implemented pending physical validation
+
+## Notes / risks
+
+- Merge surface in `bin/herdr-tts` is small and localized: DEFAULT_* block (+4 lines), env
+  resolution (+2), config template (+1), TT_EN/TT_ES ntfy keys (+6), and `send_ntfy_push`
+  plus its three new helpers above it. The ht03-radio branch touches other regions; the
+  only plausible friction is nearby-line context in the DEFAULT/env blocks.
+- Gate pairing is best-effort and DEFAULT-session only: a PWA session other than the default
+  is invisible to the lookup (push degrades to classic buttons). The 7th-arg seam exists
+  for future callers that know the gate id.
