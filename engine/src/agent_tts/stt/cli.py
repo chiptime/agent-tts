@@ -2,14 +2,17 @@
 
 Operations: ``pull`` (the only model download), ``serve`` (resident
 worker), ``status`` and ``transcribe`` (worker clients — no autostart,
-the existing ``agent-tts`` positional-speech CLI is never intercepted).
+the existing ``agent-tts`` positional-speech CLI is never intercepted),
+and ``capture`` (local Windows-host microphone recording — no worker).
 
-Request operations (``status``/``transcribe``) print ONE machine-readable
-JSON line on stdout; failures also print a JSON error object on stdout
-plus a human hint on stderr, and exit with the typed status code:
+Request operations (``status``/``transcribe``/``capture``) print ONE
+machine-readable JSON line on stdout; failures also print a JSON error
+object on stdout plus a human hint on stderr, and exit with the typed
+status code:
 
     0 ok · 1 error · 2 usage · 3 busy · 4 model_unavailable ·
-    5 worker_unavailable · 6 missing_extra · 7 transport_unsupported
+    5 worker_unavailable · 6 missing_extra · 7 transport_unsupported ·
+    8 capture_unavailable · 9 empty_capture
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ import time
 from typing import Optional
 
 from agent_tts.stt import worker as stt_worker
+from agent_tts.stt.capture import CaptureConfig, PowerShellCapture
 from agent_tts.stt.transcriber import (
     SttError,
     SttSettings,
@@ -136,6 +140,34 @@ def _run(args) -> int:
         _emit({"ok": True, "text": reply.get("text", "")})
         return 0
 
+    if args.command == "capture":
+        # Local operation: no worker/socket — the recorder runs directly.
+        overrides = {}
+        if args.max_seconds is not None:
+            overrides["max_seconds"] = args.max_seconds
+        if args.silence_seconds is not None:
+            overrides["silence_seconds"] = args.silence_seconds
+        if args.device is not None:
+            overrides["device"] = args.device
+        config = CaptureConfig(**overrides)
+        result = PowerShellCapture().run(config)
+        out_path = __import__("pathlib").Path(args.out)
+        try:
+            out_path.write_bytes(result.wav_bytes)
+        except OSError as exc:
+            raise SttError(f"cannot write capture output to {out_path}: {exc}") from exc
+        _emit(
+            {
+                "ok": True,
+                "path": str(out_path),
+                "duration_sec": round(result.duration, 3),
+                "ended_by": result.ended_by,
+                "trimmed": bool(result.stats.get("trimmed")),
+                "bytes": len(result.wav_bytes),
+            }
+        )
+        return 0
+
     raise SttError(f"unknown command: {args.command}")  # pragma: no cover
 
 
@@ -183,6 +215,24 @@ def main(argv: Optional[list] = None) -> int:
     transcribe.add_argument("--suffix", help="container suffix (default: file extension)")
     transcribe.add_argument(
         "--timeout", type=float, default=stt_worker.DEFAULT_READ_TIMEOUT_SEC
+    )
+
+    capture = sub.add_parser(
+        "capture",
+        help="record the Windows-host microphone locally (no worker) "
+        "into a trailing-silence-trimmed WAV",
+    )
+    capture.add_argument("--out", required=True, help="output WAV path")
+    capture.add_argument(
+        "--max-seconds", type=float, help="recording window in seconds (default 30)"
+    )
+    capture.add_argument(
+        "--silence-seconds",
+        type=float,
+        help="trailing silence that ends an utterance (default 1.2)",
+    )
+    capture.add_argument(
+        "--device", help="capture device (v1: only 'default' is supported)"
     )
 
     args = parser.parse_args(argv)
