@@ -9,7 +9,7 @@ from the environment and must never be committed.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path
 from typing import Optional
 
@@ -148,6 +148,10 @@ class Settings:
     # existing construction.
     brain_port: int = DEFAULT_BRAIN_PORT
     stt_backend: str = DEFAULT_STT_BACKEND
+    # Shared secret for POST /approval/{id}/action (ntfy action buttons,
+    # F5 / HT-04). Empty = no auth (the pre-F5 behaviour). repr=False keeps
+    # it out of every log line that prints Settings.
+    approval_token: str = dataclass_field(default="", repr=False)
 
     def __post_init__(self):
         # Accept plain strings for path fields regardless of the caller.
@@ -278,4 +282,5 @@ def load_settings(env: Optional[dict] = None) -> Settings:
         engram_db=getenv("HERDR_BRAIN_ENGRAM_DB") or None,
         brain_port=brain_port,
         stt_backend=raw_backend,
+        approval_token=getenv("HERDR_BRAIN_APPROVAL_TOKEN").strip(),
     )
