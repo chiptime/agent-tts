@@ -41,8 +41,8 @@ terminal dictation in the plugin without requiring the brain service.
 - [x] **U1.5** Run engine regression and independent technical verification.
   (Self-verification complete 2026-10-07; the separate independent verifier
   review is still pending — this checkbox awaits that check before close.)
-- [ ] **U2** PowerShell capture and silence endpointing (not started).
-- [ ] **U3** Plugin switches, literal injection, keymap and confirmation UI.
+- [x] **U2** PowerShell capture and silence endpointing — capture.py (490 ln): CaptureConfig validated, pure analyze_pcm/trim_trailing_silence (30 ms RMS frames), PowerShellCapture via MCI/winmm P/Invoke script (single line, no double quotes, stdout base64), typed capture_unavailable(8)/capture_oversize/empty_capture(9), oversize bound pre-decode. HONEST LIMIT: no live level meter -> records full --max-seconds window then trims trailing silence (ended_by=max_duration + trimmed stats); device=default only; real Windows hardware NOT smoke-tested (fake runners only). CLI `agent-tts-stt capture` local op, JSON stdout. Tests 47 new; focused 73/0; engine suite 1142/0.
+- [x] **U3** Plugin wiring — bin/herdr-tts +388/−4: TTS_STT/TTS_PTT toggles (default off, settings rows, strict degradation), TTS_PTT_ENTER/SILENCE/MAX keys, `ptt` keymap id (no default chord), `ptt` verb: engine CLI via pinned $VENV_PYTHON -m agent_tts.stt.cli (capture+transcribe, bounded timeouts, tmp wav always cleaned), engine failure -> visible notice + nothing injected, <2-char guard, read-based confirm (Enter/Esc/r, max 3 attempts), injection herdr pane send-text literal + final Enter via send-keys per TTS_PTT_ENTER, daemon.log line (duration/chars/pane, never transcript). 22 new harness cases; battery 97->119/119 OK; RED 20/20 observed. Limits: no real device/worker/herdr binary; confirm is read-based prompt (launcher has no popup surface for verbs).
 - [ ] **U4** Real-device validation and explicit later brain migration.
 
 ## Routing and verification
@@ -225,3 +225,9 @@ Full end-to-end verification against the REAL machine (brain venv, real HF cache
 
 Independent verification of U1 remains PENDING (verifier runtime usage limit); the
 real-machine smoke test above is the maintainer-visible functional evidence.
+
+
+## U2+U3 delivery (2026-10-07 night)
+
+- Parallel delegated writers, disjoint surfaces (engine vs plugin); parent spot checks: engine focused+boundaries 75 passed; plugin full battery 119 OK / 0 FAIL (rc 0); git diff --check clean.
+- Remaining open: U4 (real device validation), independent verification of U1 (verifier usage limit), F4.4 transport gate is satisfied by the shipped UDS design but the PRD gate item stays for maintainer sign-off, F4.10 brain migration optional later.
