@@ -534,4 +534,4 @@ Work-unit commit for this evidence: the `docs(odd)` commit following `425deef` (
 
 - `hosts/herdr/brain/src/herdr_brain/config.py` still hard-codes `DEFAULT_TTS_HOME = "~/Code/personal/agent-tts/…"` and `llm.py` still tells users to use `~/.dotfiles/shell/private-env.sh` — both outside this unit's edit surface; the unit works around the first via `@TTS_HOME@`.
 - Brain README still contains maintainer paths in unrelated prose (`cd ~/Code/personal/agent-tts/…`) — task 4.3 (docs final pass).
-- Task 2.1 local re-slice (Decision 12) is still pending and will rewrite the history these commits sit on.
+- Task 2.1 local re-slice (Decision 12) APPLIED on branch `feat/at-11-slices-9abc` (9a `f88b06e`, 9b `7c6a6fe`, 9c `7d21cc8`; union diff vs `backup/at-11-task-2.1-c577041` EMPTY; per-slice verification green: 17 → 30 → parity 4 + smoke 1054). `main` keeps `c577041` un-rewritten: ~106 evidence-bearing commits sit on top of it (F4, HT-03, M2, F5), so a rewrite would invalidate their recorded hashes — no rebasing of the M2 commits is needed.
