@@ -511,6 +511,98 @@ case__pending_cli_regenerate_refusals_real() {
   grep -q "uncertain=0 " "$SANDBOX/status.out"
 }
 
+# --- F5/HT-04: ntfy approval action buttons (Approve/Stop/Open) ---------------
+#
+# send_ntfy_push must offer gate-resolution buttons ONLY when the event is
+# blocked AND a live brain gate is known AND the phone can reach the brain
+# (NTFY_APPROVAL_URL). ntfy allows at most three actions per message, so a
+# gate push drops the classic view/copy pair for exactly:
+#   http Approve → POST {brain}/approval/{gate}/action   body=approve
+#   http Stop    → POST {brain}/approval/{gate}/action   body=reject
+#   view  Open   → the brain PWA root (reload recovery shows the gate)
+# curl is stubbed AFTER the source: every call is recorded to curl.calls and
+# a /approval/current lookup answers LOOKUP_JSON (the best-effort live-gate
+# discovery). Nothing here reaches the network.
+
+# $1=sandbox · $2=state · $3=gate arg ("" = discover) · $4=approval URL
+# · $5=token · LOOKUP_JSON env = /approval/current response
+run_ntfy_push() {
+  sandbox_setup "$1"
+  LOOKUP_JSON="${LOOKUP_JSON:-}" in_host '
+    SB="$1"; STATE="$2"; GATE="$3"; AURL="$4"; ATOK="$5"
+    curl() {
+      local joined="$*"
+      printf "%s\n" "$joined" >> "$SB/curl.calls"
+      if [[ "$joined" == *"/approval/current"* ]]; then
+        [[ -n "${LOOKUP_JSON:-}" ]] && printf "%s\n" "$LOOKUP_JSON"
+        return 0
+      fi
+      return 0
+    }
+    NTFY_TOPIC="t"; NTFY_SERVER="http://ntfy.example"; WEB_URL="https://collie.example"
+    NTFY_APPROVAL_URL="$AURL"; NTFY_APPROVAL_TOKEN="$ATOK"
+    send_ntfy_push 3 opencode "$STATE" ws title-1 "" "$GATE"
+  ' "$SANDBOX" "$2" "$3" "${4:-}" "${5:-}"
+}
+
+case__ntfy_blocked_with_gate_builds_action_buttons() {
+  run_ntfy_push gate_direct blocked abc123def456 "http://192.168.1.9:8300" "s3cret"
+  grep -qF 'Actions: http, ✅ Approve, http://192.168.1.9:8300/approval/abc123def456/action, method=POST, headers.Authorization=Bearer s3cret, body=approve, clear=true; http, ❌ Stop, http://192.168.1.9:8300/approval/abc123def456/action, method=POST, headers.Authorization=Bearer s3cret, body=reject, clear=true; view, 📱 Open approval, http://192.168.1.9:8300/' \
+    "$SANDBOX/curl.calls" || return 1
+  # Gate passed directly: no lookup round-trip, exactly one push (the body
+  # spans several lines, so count pushes, not lines).
+  ! grep -q "/approval/current" "$SANDBOX/curl.calls" || return 1
+  [[ "$(grep -c "http://ntfy.example/t" "$SANDBOX/curl.calls")" -eq 1 ]]
+}
+
+case__ntfy_blocked_lookup_finds_live_gate() {
+  LOOKUP_JSON='{"approval":{"gate_id":"feedface0123"}}' \
+    run_ntfy_push gate_lookup blocked "" "http://brain.lan:8300" ""
+  grep -q "/approval/current" "$SANDBOX/curl.calls" || return 1
+  grep -qF 'Actions: http, ✅ Approve, http://brain.lan:8300/approval/feedface0123/action, method=POST, body=approve, clear=true; http, ❌ Stop, http://brain.lan:8300/approval/feedface0123/action, method=POST, body=reject, clear=true; view, 📱 Open approval, http://brain.lan:8300/' \
+    "$SANDBOX/curl.calls"
+}
+
+case__ntfy_blocked_lookup_without_live_gate_keeps_view_copy() {
+  LOOKUP_JSON='{"approval":null}' \
+    run_ntfy_push gate_absent blocked "" "http://brain.lan:8300" ""
+  grep -qF 'Actions: view, 📱 Open Collie, https://collie.example/pane/3; copy, 📋 Copy command, herdr agent focus 3, clear=true' \
+    "$SANDBOX/curl.calls" || return 1
+  ! grep -q "/action" "$SANDBOX/curl.calls"
+}
+
+case__ntfy_done_event_never_gets_gate_buttons() {
+  LOOKUP_JSON='{"approval":{"gate_id":"abc123def456"}}' \
+    run_ntfy_push gate_done done abc123def456 "http://brain.lan:8300" ""
+  ! grep -q "Approve" "$SANDBOX/curl.calls" || return 1
+  ! grep -q "/approval/current" "$SANDBOX/curl.calls" || return 1   # done never looks a gate up
+  grep -qF 'Actions: view, 📱 Open Collie, https://collie.example/pane/3; copy, 📋 Copy command, herdr agent focus 3, clear=true' \
+    "$SANDBOX/curl.calls"
+}
+
+case__ntfy_gate_buttons_require_approval_url() {
+  run_ntfy_push gate_no_url blocked abc123def456 "" ""
+  ! grep -q "/action" "$SANDBOX/curl.calls" || return 1
+  grep -qF 'Actions: view, 📱 Open Collie, https://collie.example/pane/3; copy, 📋 Copy command, herdr agent focus 3, clear=true' \
+    "$SANDBOX/curl.calls"
+}
+
+case__ntfy_gate_token_with_comma_is_quoted() {
+  run_ntfy_push gate_comma_token blocked abc123def456 "http://brain.lan:8300" "a,b"
+  # The ntfy grammar needs double quotes around values containing a comma.
+  grep -qF 'headers.Authorization="Bearer a,b"' "$SANDBOX/curl.calls" || return 1
+  grep -qF 'body=approve, clear=true' "$SANDBOX/curl.calls"
+}
+
+case__ntfy_gate_token_with_dquote_disables_buttons() {
+  # A double quote cannot be represented in the Actions grammar at all:
+  # degrade to the classic buttons instead of sending a broken header.
+  run_ntfy_push gate_dquote_token blocked abc123def456 "http://brain.lan:8300" 'x"y'
+  ! grep -q "/action" "$SANDBOX/curl.calls" || return 1
+  grep -qF 'Actions: view, 📱 Open Collie, https://collie.example/pane/3; copy, 📋 Copy command, herdr agent focus 3, clear=true' \
+    "$SANDBOX/curl.calls"
+}
+
 case__playback_state_paths_default_to_machine_global() {
   sandbox_setup trio_defaults
   in_host 'printf "L=%s|P=%s|S=%s\n" "$LOCK_FILE" "$PID_FILE" "$IPC_SOCKET"' \

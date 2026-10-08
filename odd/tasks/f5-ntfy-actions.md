@@ -27,8 +27,8 @@ a phone (ROADMAP F2 remains pending).
 - [x] T0 Read ROADMAP D1c/F5, PRD-HT-04, PRD action-approval-gate, `approval.py`, `server.py`, `send_ntfy_push`
 - [x] T1 RED: brain tests `test_approval_ntfy.py` (approve/reject, token matrix, unknown/resolved gate, unblock) — 30 failed / 1 passed on a clean base export (`git archive HEAD`), 31 passed in the worktree
 - [x] T2 GREEN: `config.py` token setting + `server.py` `/approval/{id}/action` (constant-time compare, never logged)
-- [ ] T3 RED/GREEN: bash cases for the `Actions` header (blocked + gate, no URL, no gate, non-blocked, unsafe token)
-- [ ] T4 GREEN: `send_ntfy_push` Actions builder + gate lookup helper
+- [x] T3 RED/GREEN: bash cases for the `Actions` header (blocked + gate, no URL, no gate, non-blocked, unsafe token) — RED: 3 new-behavior cases FAIL at base (4 degradation guards already hold); GREEN: 7/7 OK after the builder
+- [x] T4 GREEN: `send_ntfy_push` Actions builder + gate lookup helper
 - [ ] T5 Docs: HT-04 PRD, brain PRD, BLOQUE-3, ROADMAP F5 status
 - [ ] T6 Verification run + handoff
 
@@ -39,6 +39,9 @@ a phone (ROADMAP F2 remains pending).
   ntfy `http` action grammar verified against docs.ntfy.sh (publish §action-buttons):
   `http, <label>, <url>[, method=POST][, headers.X=Y][, body=...][, clear=true]`, `;` between
   actions, max 3 actions per message, values with `,`/`;` quoted with `"`.
+- T3/T4 (plugin): `CASES="ntfy_*" bash tests/host_cli_cases.sh` → RED 3 FAIL + 4 OK at base,
+  GREEN 7/7 exit 0 after `send_ntfy_push` gate branch; full `tests/all_bash_harnesses.sh`
+  → exit 0, 126 cases OK, no FAIL (regression-free in the shared TT/env/template regions).
 
 ## Commits
 
