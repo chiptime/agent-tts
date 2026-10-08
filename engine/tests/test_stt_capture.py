@@ -14,6 +14,8 @@ import wave
 
 import pytest
 
+import agent_tts.stt.capture as cap_mod
+
 from agent_tts.stt.capture import (
     FRAME_MS,
     MAX_WAV_BYTES,
@@ -280,6 +282,9 @@ class TestPowerShellCaptureRun:
         from agent_tts.stt import capture as cap
 
         monkeypatch.setattr(cap.shutil, "which", lambda name: None)
+        # also simulate a machine WITHOUT WSL interop files (this dev box has
+        # the real /mnt/c powershell — the locator would legitimately find it)
+        monkeypatch.setattr(cap.os.path, "isfile", lambda p: False)
 
         def must_not_spawn(argv, timeout):
             raise AssertionError("default runner must not spawn without powershell.exe")
@@ -310,7 +315,7 @@ class TestPowerShellCaptureRun:
         monkeypatch.setattr(cap.shutil, "which", lambda name: "/mnt/c/powershell.exe")
         monkeypatch.setattr(cap.subprocess, "run", fake_run)
         result = PowerShellCapture().run(CaptureConfig(max_seconds=2.0))
-        assert seen["argv"][0] == "powershell.exe"
+        assert seen["argv"][0] == "/mnt/c/powershell.exe"  # resolved before dispatch
         assert seen["timeout"] == pytest.approx(22.0)
         assert result.duration == pytest.approx(1.0, abs=0.1)
         assert result.stats["trimmed"] is False  # 1s loud < 2s window, no tail
@@ -334,3 +339,29 @@ class TestPowerShellCaptureRun:
         monkeypatch.setattr(cap.subprocess, "run", fake_run)
         with pytest.raises(CaptureUnavailableError, match="mci-error 2 record"):
             PowerShellCapture().run(CaptureConfig())
+
+
+class TestPowerShellLocator:
+    """Regression (2026-10-08 U4 real test): WSL interop may have powershell.exe
+    at the well-known /mnt/c path WITHOUT it being on PATH; the locator must
+    fall back to those standard locations before giving up."""
+
+    def test_falls_back_to_well_known_wsl_path(self, monkeypatch) -> None:
+        monkeypatch.setattr(cap_mod.shutil, "which", lambda name: None)
+        monkeypatch.setattr(
+            cap_mod.os.path, "isfile",
+            lambda p: p == "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        )
+        assert cap_mod.PowerShellCapture._locate_powershell() == (
+            "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+        )
+
+    def test_missing_everywhere_raises_capture_unavailable(self, monkeypatch) -> None:
+        monkeypatch.setattr(cap_mod.shutil, "which", lambda name: None)
+        monkeypatch.setattr(cap_mod.os.path, "isfile", lambda p: False)
+        with pytest.raises(cap_mod.CaptureUnavailableError):
+            cap_mod.PowerShellCapture._locate_powershell()
+
+    def test_path_hit_wins(self, monkeypatch) -> None:
+        monkeypatch.setattr(cap_mod.shutil, "which", lambda name: "/usr/bin/powershell.exe")
+        assert cap_mod.PowerShellCapture._locate_powershell() == "/usr/bin/powershell.exe"
