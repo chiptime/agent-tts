@@ -125,8 +125,8 @@ load_env() {
   # OQ-2 precedence (Engram #9681 / design Decision 4): an explicitly
   # set-and-valid HERDR_TTS_HOME wins; unset derives the sibling
   # tts-plugin from this launcher's own location. No hardcoded default
-  # is ever exported (the dead $HOME/Code/personal/herdr-tts default is
-  # removed by delivering this precedence).
+  # is ever exported (the legacy per-machine default was removed by
+  # delivering this precedence).
   local tts_home
   tts_home="$(herdr_resolve_tts_home "$REPO_DIR")" || exit 1
   export HERDR_TTS_HOME="$tts_home"
@@ -137,7 +137,9 @@ load_env() {
     export HERDR_BIN
   fi
 
-  # Discover GLM_API_KEY if not in environment
+  # Discover GLM_API_KEY if not in environment (design Decision 4):
+  # process env -> $CONFIG_DIR/env -> plugin config dir. No interactive
+  # dotfile is ever scraped.
   if [[ -z "${GLM_API_KEY:-}" ]]; then
     if [[ -f "$CONFIG_DIR/env" ]]; then
       # shellcheck disable=SC1090
@@ -148,20 +150,30 @@ load_env() {
       # shellcheck disable=SC1090
       set -a; . "$plugin_cfg"; set +a
     fi
-    local private_env="$HOME/.dotfiles/shell/private-env.sh"
-    if [[ -z "${GLM_API_KEY:-}" && -f "$private_env" ]]; then
-      local raw_line
-      raw_line="$(grep -E '^[[:space:]]*export[[:space:]]+GLM_API_KEY=' "$private_env" 2>/dev/null | tail -n 1 || true)"
-      if [[ -n "$raw_line" ]]; then
-        local raw_val="${raw_line#*GLM_API_KEY=}"
-        raw_val="${raw_val%\"}"; raw_val="${raw_val#\"}"
-        raw_val="${raw_val%\'}"; raw_val="${raw_val#\'}"
-        raw_val="${raw_val%%#*}"
-        GLM_API_KEY="$(printf '%s' "$raw_val" | tr -d '\r\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-        export GLM_API_KEY
-      fi
-    fi
   fi
+}
+
+# Optional remote-exposure URL (RF-AT-11-9): from the environment or the
+# persisted $CONFIG_DIR/config.env only; never inferred or hardcoded.
+remote_url() {
+  local cfg="$CONFIG_DIR/config.env" line raw
+  if [[ -n "${HERDR_BRAIN_REMOTE_URL:-}" ]]; then
+    printf '%s\n' "$HERDR_BRAIN_REMOTE_URL"
+    return 0
+  fi
+  [[ -f "$cfg" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    raw="${line%%#*}"
+    raw="${raw#"${raw%%[![:space:]]*}"}"
+    raw="${raw%"${raw##*[![:space:]]}"}"
+    if [[ "$raw" == "HERDR_BRAIN_REMOTE_URL="* ]]; then
+      raw="${raw#HERDR_BRAIN_REMOTE_URL=}"
+      raw="${raw%\"}"; raw="${raw#\"}"
+      raw="${raw%\'}"; raw="${raw#\'}"
+      printf '%s\n' "$raw"
+      return 0
+    fi
+  done < "$cfg"
 }
 
 ensure_venv() {
@@ -176,21 +188,137 @@ ensure_venv() {
   fi
 }
 
+# ------------------------------------------------------- port ownership policy
+# Audit C5 / design Decision 4: only a process this installation provably
+# owns may be signalled. Ownership is (a) our pidfile naming a live
+# herdr_brain process, or (b) the systemd unit's MainPID. Anything else on
+# the port is foreign: exit non-zero and leave it alone.
+EXIT_PORT_IN_USE=98
+
 port_listener_pid() {
-  ss -tlnp "sport = :${HERDR_BRAIN_PORT:-8741}" 2>/dev/null | grep -oE 'pid=[0-9]+' | head -n1 | cut -d= -f2 || true
+  local port="${HERDR_BRAIN_PORT:-8741}" pid=""
+  pid="$(ss -tlnp "sport = :${port}" 2>/dev/null | grep -oE 'pid=[0-9]+' | head -n1 | cut -d= -f2 || true)"
+  if [[ -z "$pid" ]] && command -v lsof >/dev/null 2>&1; then
+    pid="$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | head -n1 || true)"
+  fi
+  printf '%s\n' "$pid"
 }
 
-daemon_pid() {
-  local pid
-  pid=$(cat "$PID_FILE" 2>/dev/null || true)
-  if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-    printf '%s\n' "$pid"
+port_is_listening() { # true even when the listener's PID is not visible to us
+  [[ -n "$(port_listener_pid)" ]] && return 0
+  [[ -n "$(ss -tln "sport = :${HERDR_BRAIN_PORT:-8741}" 2>/dev/null | tail -n +2)" ]]
+}
+
+proc_command() { ps -o command= -p "$1" 2>/dev/null || true; }
+proc_name() { ps -o comm= -p "$1" 2>/dev/null | head -n1 || true; }
+
+is_brain_process() { # live process whose command line is our server/CLI
+  [[ "$1" =~ ^[0-9]+$ ]] && kill -0 "$1" 2>/dev/null && [[ "$(proc_command "$1")" == *herdr_brain* ]]
+}
+
+pidfile_pid() {
+  local p
+  p="$(cat "$PID_FILE" 2>/dev/null || true)"
+  if [[ "$p" =~ ^[0-9]+$ ]]; then printf '%s\n' "$p"; fi
+  return 0
+}
+
+unit_main_pid() {
+  local p
+  p="$(systemctl --user show -P MainPID --value herdr-brain.service 2>/dev/null || true)"
+  if [[ "$p" =~ ^[0-9]+$ && "$p" != "0" ]]; then printf '%s\n' "$p"; fi
+  return 0
+}
+
+owner_of() { # $1 = pid -> "unit" | "pidfile" | "" (not ours)
+  local unit_pid
+  unit_pid="$(unit_main_pid)"
+  if [[ -n "$unit_pid" && "$unit_pid" == "$1" ]]; then
+    echo unit
+  elif [[ "$(pidfile_pid)" == "$1" ]] && is_brain_process "$1"; then
+    echo pidfile
+  fi
+  return 0
+}
+
+signal_owned() { # $1 = signal, $2 = pid; ownership re-verified right now
+  if [[ "$(owner_of "$2")" == "pidfile" ]]; then
+    kill -"$1" "$2" 2>/dev/null || true
     return 0
   fi
-  local lpid
-  lpid="$(port_listener_pid)"
-  if [[ -n "$lpid" && "$lpid" =~ ^[0-9]+$ ]] && kill -0 "$lpid" 2>/dev/null; then
-    printf '%s\n' "$lpid"
+  return 1
+}
+
+clean_stale_pidfile() { # a pidfile that no longer names our process is dropped, never signalled
+  local p
+  p="$(pidfile_pid)"
+  if [[ -n "$p" ]] && ! is_brain_process "$p"; then
+    rm -f "$PID_FILE" 2>/dev/null || true
+  fi
+}
+
+refuse_port() { # $1 = port, $2 = pid (may be empty)
+  local name=""
+  if [[ -n "${2:-}" ]]; then name="$(proc_name "$2")"; fi
+  {
+    if [[ -n "${2:-}" ]]; then
+      echo "[herdr-brain] ERROR: port $1 is in use by PID $2 (${name:-unknown process}), which this installation does not own; refusing to signal it."
+    else
+      echo "[herdr-brain] ERROR: port $1 is in use by a process whose PID is not visible to this user; refusing to touch it."
+    fi
+    echo "  Fix: choose another port (export HERDR_BRAIN_PORT=<free port>, or persist it in $CONFIG_DIR/config.env),"
+    echo "       or stop that process yourself and retry."
+  } >&2
+  exit "$EXIT_PORT_IN_USE"
+}
+
+claim_port() { # $1 = daemon | installer ; frees the port only from our own instance
+  local mode="${1:-daemon}" port="${HERDR_BRAIN_PORT:-8741}" pid owner i
+  clean_stale_pidfile
+  pid="$(port_listener_pid)"
+  if [[ -z "$pid" ]]; then
+    if port_is_listening; then refuse_port "$port" ""; fi
+    return 0
+  fi
+  if [[ "$pid" == "$$" ]]; then return 0; fi
+  owner="$(owner_of "$pid")"
+  case "$owner" in
+    unit)
+      if [[ "$mode" == "installer" ]]; then return 0; fi
+      echo "[herdr-brain] Stopping systemd unit herdr-brain to allow the plugin daemon..."
+      systemctl --user stop herdr-brain.service 2>/dev/null || true
+      ;;
+    pidfile)
+      echo "[herdr-brain] Stopping the previous herdr-brain instance (PID $pid) on port $port..."
+      signal_owned TERM "$pid" || true
+      ;;
+    *)
+      refuse_port "$port" "$pid"
+      ;;
+  esac
+  for i in $(seq 1 25); do
+    if [[ -z "$(port_listener_pid)" ]]; then return 0; fi
+    sleep 0.2
+  done
+  if [[ "$owner" == "pidfile" ]]; then
+    signal_owned KILL "$pid" || true
+    sleep 0.5
+  fi
+  pid="$(port_listener_pid)"
+  if [[ -n "$pid" ]]; then refuse_port "$port" "$pid"; fi
+  return 0
+}
+
+daemon_pid() { # pid of an instance we own (never an arbitrary port listener)
+  local p lp
+  p="$(pidfile_pid)"
+  if [[ -n "$p" ]] && is_brain_process "$p"; then
+    printf '%s\n' "$p"
+    return 0
+  fi
+  lp="$(port_listener_pid)"
+  if [[ -n "$lp" && -n "$(owner_of "$lp")" ]]; then
+    printf '%s\n' "$lp"
     return 0
   fi
   return 1
@@ -200,21 +328,7 @@ daemon_pid() {
 cmd_daemon() {
   load_env
   ensure_venv
-
-  # If port is occupied by another process, handle it
-  local existing_pid
-  existing_pid="$(port_listener_pid)"
-  if [[ -n "$existing_pid" && "$existing_pid" != "$$" ]]; then
-    if systemctl --user is-active --quiet herdr-brain 2>/dev/null; then
-      echo "[herdr-brain] Stopping systemd unit herdr-brain to allow plugin daemon..."
-      systemctl --user stop herdr-brain 2>/dev/null || true
-      sleep 0.5
-    else
-      echo "[herdr-brain] Warning: Port $HERDR_BRAIN_PORT already in use by PID $existing_pid. Stopping it..."
-      kill -TERM "$existing_pid" 2>/dev/null || true
-      sleep 0.5
-    fi
-  fi
+  claim_port daemon
 
   printf '%s\n' "$$" > "$PID_FILE"
   trap 'rm -f "$PID_FILE" 2>/dev/null || true' EXIT
@@ -260,6 +374,11 @@ cmd_daemon_supervised() {
       exit 0
     fi
 
+    if [[ "$rc" == "$EXIT_PORT_IN_USE" ]]; then
+      echo "[herdr-brain] Supervisor: the port is held by a process we do not own; not restarting." >&2
+      exit "$EXIT_PORT_IN_USE"
+    fi
+
     if [[ -f "$SUPERVISOR_STOP_FLAG" ]]; then
       rm -f "$SUPERVISOR_STOP_FLAG" 2>/dev/null || true
       echo "[herdr-brain] Supervisor: stop requested, exiting."
@@ -301,38 +420,32 @@ cmd_url() {
   local port="${HERDR_BRAIN_PORT:-8741}"
   echo "Local URL: http://localhost:$port/"
 
-  # Tailscale URL detection
-  local ts_bin=""
-  if command -v tailscale >/dev/null 2>&1; then
-    ts_bin="tailscale"
-  elif [[ -x "$HOME/bin/tailscale" ]]; then
-    ts_bin="$HOME/bin/tailscale"
-  fi
-
-  if [[ -n "$ts_bin" ]]; then
-    local ts_fqdn
-    ts_fqdn=$($ts_bin status </dev/null 2>/dev/null | grep -E 'desktop-|windows|linux' | head -n1 | awk '{print $2}' || true)
-    if [[ -n "$ts_fqdn" ]]; then
-      echo "Tailscale: https://$ts_fqdn.tail2640fd.ts.net:8443/ (port 8443)"
-    else
-      echo "Tailscale: https://<your-node>.ts.net:8443/"
-    fi
+  # Remote exposure is user-configured, never guessed (RF-AT-11-9).
+  local remote
+  remote="$(remote_url)"
+  if [[ -n "$remote" ]]; then
+    echo "Remote URL: $remote"
   fi
 }
 
 cmd_stop() {
   touch "$SUPERVISOR_STOP_FLAG" 2>/dev/null || true
-  local pid
+  local pid owner
   pid="$(daemon_pid || true)"
   if [[ -n "$pid" ]]; then
+    owner="$(owner_of "$pid")"
     echo "Stopping Herdr Brain (PID $pid)..."
-    kill -TERM "$pid" 2>/dev/null || true
-    for _ in $(seq 1 10); do
-      kill -0 "$pid" 2>/dev/null || break
-      sleep 0.2
-    done
-    if kill -0 "$pid" 2>/dev/null; then
-      kill -KILL "$pid" 2>/dev/null || true
+    if [[ "$owner" == "unit" ]]; then
+      systemctl --user stop herdr-brain.service 2>/dev/null || true
+    else
+      signal_owned TERM "$pid" || true
+      for _ in $(seq 1 10); do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.2
+      done
+      if kill -0 "$pid" 2>/dev/null; then
+        signal_owned KILL "$pid" || true
+      fi
     fi
     echo "Stopped."
   else
@@ -370,6 +483,25 @@ case "${1:-status}" in
     ;;
   restart|--restart)
     cmd_restart
+    ;;
+  _resolve)
+    # Internal: one resolver surface for deploy/install.sh (design Decision 5).
+    case "${2:-}" in
+      bin) herdr_resolve_bin ;;
+      tts-home) herdr_resolve_tts_home "$REPO_DIR" ;;
+      port) herdr_resolve_port "$CONFIG_DIR" ;;
+      root) printf '%s\n' "$REPO_DIR" ;;
+      *)
+        echo "Usage: bin/herdr-brain _resolve {bin|tts-home|port|root}" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  _claim-port)
+    # Single ownership policy shared with deploy/install.sh (audit C5).
+    HERDR_BRAIN_PORT="$(herdr_resolve_port "$CONFIG_DIR")"
+    export HERDR_BRAIN_PORT
+    claim_port "${2:-daemon}"
     ;;
   help|--help|-h)
     echo "Usage: bin/herdr-brain [status|url|restart|stop|_daemon|_daemon-supervised]"

@@ -1,4 +1,4 @@
-# AT-11 apply progress — cumulative through task 2.1 COMPLETE (M1 CLOSED + M2 slice 9; 12/26 tasks)
+# AT-11 apply progress — cumulative through task 2.5 COMPLETE (M1 CLOSED + M2 slices 9–13; 16/26 tasks)
 
 Branch `feat/at-11-instalable` in worktree `/home/bruno/Code/personal/agent-tts-worktrees/at-11-instalable`.
 This file is the OpenSpec-side apply-progress artifact (native locator discovered by `gentle-ai sdd-status`);
@@ -474,3 +474,64 @@ local commits, first fast-forward the authorized candidate branch `validation/at
 same narrow authorization (divergent ⇒ `BLOCKED`, never force; never `main`/tag/PR). Stable publication
 (tag `v0.16.0`, repaired `main`) remains maintainer-owned after V3; the stable route stays unvalidated and
 its BLOCKED evidence stands.
+
+## Tasks 2.2–2.5 (M2 slices 10–13, PRs 15–18) — COMPLETE
+
+Branch `feat/at-11-onboarding-m2` (worktree `agent-tts-worktrees/at11-onboarding`, based on `a12e727`);
+local commits only, nothing pushed. **Task 2.1 state at start**: present and green on this branch
+(`c577041` is an ancestor of `HEAD`; `tools/herdr_onboarding/resolve.py` and the byte-identical bash
+`herdr_resolve_*` blocks exist; `tests/test_resolve.py` 35 passed). The Decision-12 local re-slice
+(9a/9b/9c, backup ref `backup/at-11-task-2.1-c577041`) has **not** been performed here (the backup ref does
+not exist) and was out of scope; the resolver block was not modified by any of these tasks.
+
+| Task | Commit | Focused verification (observed) |
+|------|--------|---------------------------------|
+| 2.2 launcher repair | `4ba2efb` | RED: `test_launcher_repair.py` 6 failed/11 passed + hygiene `brain-launcher` scope failing (3 findings) → GREEN: 17 passed + hygiene 13 passed |
+| 2.3 port policy | `66ce2ad` | RED: `test_port_policy.py` 12 failed/7 passed → GREEN: 19 passed (foreign listener survives, exit 98) |
+| 2.4 systemd template | `8f58172` | RED: `test_systemd_template.py` 20 failed/3 passed → GREEN: 23 passed; `clean-install.sh --milestone 2` scenario 3 FAIL(5) → `PASS` |
+| 2.5 CLI exposure | `425deef` | RED: smoke 34k–34q 17 failures (`1061 passed, 19 failed`) → GREEN `1078 passed, 2 failed` (17a/17c = base failures) |
+
+**Task 2.2** — removed from `bin/herdr-brain`: the dotfiles key scrape (C2), the personal tailnet domain and
+the Tailscale probing (C4; the optional remote URL now comes only from `HERDR_BRAIN_REMOTE_URL`, env or
+`config.env`), the machine-path comment. The literal brew prefix and dead `HERDR_TTS_HOME` default were
+already gone from 2.1. Parity proof: copies of the real launcher run in sandboxes — corrected monorepo layout
+resolves the sibling `tts-plugin`; legacy-shaped layout honours an exported `HERDR_TTS_HOME`; both observably
+expose the TTS surface. Hygiene scan gained scope `brain-launcher`; scenario 3 scans `herdr-plugin.toml`;
+brain README documents the env-file key flow; `herdr-plugin.toml` `url` action description reworded
+(no action added/removed).
+
+**Task 2.3** — ownership proof = pidfile naming a live `herdr_brain` process, or the unit's `MainPID`,
+re-verified inside `signal_owned` immediately before every signal. Foreign listener → exit `98` with PID,
+process name, port and two remedies; stale pidfile dropped without signalling; unit-owned → `systemctl --user
+stop`; the supervisor does not restart-loop on 98; `cmd_stop`/`daemon_pid` no longer kill arbitrary listeners;
+`deploy/install.sh` delegates to `bin/herdr-brain _claim-port installer`.
+
+**Task 2.4** — `deploy/herdr-brain.service` removed (`git rm`), `deploy/herdr-brain.service.tmpl` created,
+root `.gitignore` ignores `hosts/herdr/brain/deploy/*.service`, `deploy/install.sh` rewritten in English
+(`--generate-only` drill; leftover `@…@` ⇒ hard failure before any write; only a marker-bearing or legacy
+signature unit is replaced; upgrade = stop → regenerate → reload → restart; `GLM_API_KEY` from the installer's
+environment merged into the mode-600 env file, never printed). Six placeholders, not five (`@TTS_HOME@` added —
+see tasks.md 2.4).
+
+**Task 2.5** — `hosts/herdr/tts-plugin/scripts/install.sh`: preflight refuses an unmanaged `~/.local/bin/herdr-tts`
+or a non-directory `~/.local/bin` before any mutation; new stage links the launcher, warns with the exact
+`export PATH=…` fix, refreshes its own link; uninstall print gained steps 5 (managed CLI link) and 6
+(first-run marker `~/.config/herdr-tts/first-run.done`). README updated.
+
+### Verification of record (final tree `425deef`)
+
+- `cd hosts/herdr/brain && uv run pytest tests/test_resolve.py -q` → `35 passed`.
+- `cd hosts/herdr/brain && uv run python -m pytest tests/test_resolve.py tests/test_launcher_repair.py tests/test_port_policy.py tests/test_systemd_template.py -q` → `94 passed`.
+- `cd hosts/herdr/brain && uv run python -m pytest tests/ -q --ignore=tests/browser` → `5 failed, 1467 passed`; the 5 failures (`tests/e2e/test_m2_stream.py` ×3, `tests/e2e/test_m4_fallback.py` ×2, chromium) are identical on the base tree (`5 failed, 1408 passed` before this work). `tests/browser` (Chromium harness) fails/errors on the base too (79 failed + 5 errors on base) — environmental; `node --test tests/js/` not run (`config.py`/static untouched). Plain `pytest tests/` (no `python -m`) fails collection with `No module named 'tests'` on base too.
+- `cd engine && uv run --with pytest pytest tests/test_versioned_tree_hygiene.py -q` → `13 passed`.
+- `bash scripts/acceptance/clean-install.sh --milestone 2` → scenarios 1, 2, 3 `PASS`, exit 0 (scenarios 1/2 install from the remote candidate ref, so they do not exercise these local commits until `validation/at-11-instalable` is fast-forwarded).
+- `bash hosts/herdr/tts-plugin/scripts/smoke-tests.sh` → `1078 passed, 2 failed` (17a, 17c — also `1052 passed, 2 failed` on a `git archive a12e727` export; environmental).
+- `rg -n "linuxbrew|\.dotfiles|tail2640fd" hosts/herdr/brain/bin/herdr-brain hosts/herdr/brain/deploy` → no matches.
+
+Work-unit commit for this evidence: the `docs(odd)` commit following `425deef` (cannot name its own hash).
+
+### Risks left for the maintainer
+
+- `hosts/herdr/brain/src/herdr_brain/config.py` still hard-codes `DEFAULT_TTS_HOME = "~/Code/personal/agent-tts/…"` and `llm.py` still tells users to use `~/.dotfiles/shell/private-env.sh` — both outside this unit's edit surface; the unit works around the first via `@TTS_HOME@`.
+- Brain README still contains maintainer paths in unrelated prose (`cd ~/Code/personal/agent-tts/…`) — task 4.3 (docs final pass).
+- Task 2.1 local re-slice (Decision 12) is still pending and will rewrite the history these commits sit on.

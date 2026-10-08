@@ -200,7 +200,9 @@ There is no `plugin update` in Herdr v1 — reinstall from the registry to refre
 curl -fsSL "https://raw.githubusercontent.com/chiptime/agent-tts/${HERDR_TTS_REF:-v0.16.0}/hosts/herdr/tts-plugin/scripts/install.sh" | bash
 ```
 
-The installer is **ref-pinned** (`v0.16.0` of the agent-tts monorepo by default; the same `${HERDR_TTS_REF:-v0.16.0}` expansion above selects the ref for **both** the fetched installer script and the clone it performs) and, in order: verifies prerequisites (`git`, `jq`, `herdr`, plus `uv` or `python3`) before touching anything; refuses a relative install target outright; refuses to install over a linked dev checkout and tells you the exact `plugin unlink` / `plugin uninstall` command to migrate; clones the monorepo to `~/.local/share/herdr-tts/plugin` and drives the plugin at `hosts/herdr/tts-plugin` inside that checkout; bootstraps the venv; adopts the collision-free `menu` keymap unless a `keymap.json` already exists (never overwrites; `--no-keymap` skips the step entirely); verifies the daemon and prints the manual uninstall steps.
+The installer is **ref-pinned** (`v0.16.0` of the agent-tts monorepo by default; the same `${HERDR_TTS_REF:-v0.16.0}` expansion above selects the ref for **both** the fetched installer script and the clone it performs) and, in order: verifies prerequisites (`git`, `jq`, `herdr`, plus `uv` or `python3`) before touching anything; refuses a relative install target outright; refuses to install over a linked dev checkout and tells you the exact `plugin unlink` / `plugin uninstall` command to migrate; clones the monorepo to `~/.local/share/herdr-tts/plugin` and drives the plugin at `hosts/herdr/tts-plugin` inside that checkout; bootstraps the venv; exposes `herdr-tts` as `~/.local/bin/herdr-tts` (a link into the checkout — the directory is created when missing and no manual symlink is ever needed); adopts the collision-free `menu` keymap unless a `keymap.json` already exists (never overwrites; `--no-keymap` skips the step entirely); verifies the daemon and prints the manual uninstall steps.
+
+If `~/.local/bin` is not on your `PATH`, the installer says so and names the fix (`export PATH="$HOME/.local/bin:$PATH"` in your shell profile). It only ever creates or replaces a `herdr-tts` link that points into its own checkout: a pre-existing `herdr-tts` it does not manage — or a `~/.local/bin` that is a regular file — makes it stop before changing anything and name the offending path.
 
 Re-running it upgrades in place: the checkout's `origin` remote is compared against the canonical monorepo URL, the selected ref is re-fetched, and `agent-tts` is refreshed past the plugin's never-upgrade gate. A mismatched remote aborts before writing anything — even when the installer itself runs from inside an unrelated git repository, which is never touched.
 
@@ -221,6 +223,8 @@ The installer prints these steps at the end of every run:
 2. Stop the daemon: `herdr-tts --stop` (or the pid recorded in `~/.local/state/herdr-tts/daemon.pid`)
 3. `rm -rf ~/.local/share/herdr-tts` — removes the monorepo checkout and the venv
 4. Remove the managed keymap block (the lines between the herdr-tts markers) from your herdr config
+5. `rm ~/.local/bin/herdr-tts` — the managed CLI link
+6. The first-run completion marker lives at `~/.config/herdr-tts/first-run.done`; delete it to run onboarding again after a reinstall, keep it to skip
 
 ### 3. Local Repository (docs-only route)
 
