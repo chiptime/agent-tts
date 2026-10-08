@@ -53,6 +53,13 @@ DEFAULT_MAX_TOOL_ROUNDS = 4
 # expiry check on every gate touch — no background timer thread.
 DEFAULT_APPROVAL_TIMEOUT_S = 60
 
+# Speech-to-text backend (F4.10 migration): "engine" delegates to the
+# agent-tts resident worker through its CLI (the default since the
+# migration); "builtin" is the documented escape hatch back to the
+# legacy in-process faster-whisper Transcriber.
+DEFAULT_STT_BACKEND = "engine"
+STT_BACKENDS = ("engine", "builtin")
+
 # Speech-to-text (faster-whisper). HARD RULE: the model is never
 # auto-downloaded — `python -m herdr_brain.stt pull` is the only download
 # path. stt_warmup=False (tests) disables the boot warmup thread entirely:
@@ -140,6 +147,7 @@ class Settings:
     # Settings(**SETTINGS_KWARGS), so a required field would break every
     # existing construction.
     brain_port: int = DEFAULT_BRAIN_PORT
+    stt_backend: str = DEFAULT_STT_BACKEND
 
     def __post_init__(self):
         # Accept plain strings for path fields regardless of the caller.
@@ -215,6 +223,15 @@ def load_settings(env: Optional[dict] = None) -> Settings:
     # no longer knows about the venv or engine — surface only).
     tts_home = Path(getenv("HERDR_TTS_HOME", DEFAULT_TTS_HOME)).expanduser()
 
+    # STT backend: fail loudly on unknown values — a typo must never
+    # silently fall back to a different transcription engine.
+    raw_backend = getenv("HERDR_BRAIN_STT_BACKEND", DEFAULT_STT_BACKEND).strip().lower()
+    if raw_backend not in STT_BACKENDS:
+        raise ValueError(
+            f"invalid HERDR_BRAIN_STT_BACKEND value {raw_backend!r}: "
+            f"expected one of {', '.join(STT_BACKENDS)}"
+        )
+
     return Settings(
         herdr_bin=getenv("HERDR_BIN", "herdr"),
         glm_api_key=getenv("GLM_API_KEY") or None,
@@ -260,4 +277,5 @@ def load_settings(env: Optional[dict] = None) -> Settings:
         antigravity_root=getenv("HERDR_BRAIN_ANTIGRAVITY_ROOT") or None,
         engram_db=getenv("HERDR_BRAIN_ENGRAM_DB") or None,
         brain_port=brain_port,
+        stt_backend=raw_backend,
     )
