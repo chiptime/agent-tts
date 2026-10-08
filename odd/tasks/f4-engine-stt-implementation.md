@@ -249,3 +249,23 @@ real-machine smoke test above is the maintainer-visible functional evidence.
   (excl e2e/browser; 1 browser + 3 e2e chromium failures and m3/m4 hangs are
   PRE-EXISTING on baseline eadbd14, reproduced without the changes).
 - Pre-existing environmental failures flagged for the known-failures list.
+
+
+## Independent verification CLOSED (2026-10-08)
+
+- gentle-ai-verify verdict at main `56fb0be`: **U1 / U2 / U3 / F4.10 all PASS**.
+  Corroborated by parent spot checks (engine focused 75-76/0, plugin battery
+  119/119, brain focused 52/52) and real-machine evidence (capture 11025 Hz
+  with mic signal RMS 150; transcribe "Thanks for watching!" 0.9 s; clean
+  shutdowns).
+- Known environmental failures (pre-existing, reproduced on baseline —
+  candidates for the known-failures list):
+  - engine: `test_ipc_ownership` fails 3/3 under non-default TMPDIR;
+    `test_chain_playback.py::test_chain_honors_stop_flag_mid_file_remaining_files_not_played`
+    flake (~3/8 on base); `test_daemon.py::test_play_registering_during_shutdown_is_refused_not_orphaned`
+    flake (~2/3 on base).
+  - brain: `tests/browser/test_karaoke_harness.py[chromium]` (1);
+    `tests/e2e/test_m2_stream.py` 3 chromium tests; e2e m3/m4 chromium hangs.
+- F4 status: U1-U4 code complete, independently verified; remaining human
+  items: spoken dictation test (maintainer, closes U4 evidence), F2 phone
+  session, and CI wiring check on next push-based run.
