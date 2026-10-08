@@ -18,6 +18,7 @@ sys.path.insert(0, str(REPO_ROOT / "tools"))
 
 from herdr_onboarding import resolve as res  # noqa: E402
 
+from herdr_brain.config import DEFAULT_BRAIN_PORT, load_settings  # noqa: E402
 
 
 def _exec_marker(directory: Path, name: str) -> Path:
@@ -175,3 +176,67 @@ class TestResolveHerdrBin:
             runner=_refusing_runner,
         )
         assert got == "herdr"
+
+
+class TestResolvePort:
+    def test_env_wins_over_persisted_config(self, tmp_path):
+        cfg = tmp_path / "config.env"
+        cfg.write_text('HERDR_BRAIN_PORT="9005"\n')
+        assert res.resolve_port(env={"HERDR_BRAIN_PORT": "9100"}, config_file=cfg) == 9100
+
+    def test_invalid_env_fails_closed(self):
+        with pytest.raises(res.ResolutionError):
+            res.resolve_port(env={"HERDR_BRAIN_PORT": "not-a-port"})
+
+    def test_out_of_range_env_fails_closed(self):
+        with pytest.raises(res.ResolutionError):
+            res.resolve_port(env={"HERDR_BRAIN_PORT": "70000"})
+
+    def test_persisted_config_value_with_quotes_and_noise(self, tmp_path):
+        cfg = tmp_path / "config.env"
+        cfg.write_text('# managed\nOTHER_KEY="1"\nHERDR_BRAIN_PORT="9005"\n')
+        assert res.resolve_port(env={}, config_file=cfg) == 9005
+
+    def test_config_without_the_key_defaults(self, tmp_path):
+        cfg = tmp_path / "config.env"
+        cfg.write_text('OTHER_KEY="1"\n')
+        assert res.resolve_port(env={}, config_file=cfg) == DEFAULT_BRAIN_PORT
+
+    def test_no_config_file_defaults(self, tmp_path):
+        assert res.resolve_port(env={}, config_file=tmp_path / "absent.env") == DEFAULT_BRAIN_PORT
+
+    def test_xdg_derived_config_path(self, tmp_path):
+        cfg_dir = tmp_path / "xdg" / "herdr-brain"
+        cfg_dir.mkdir(parents=True)
+        (cfg_dir / "config.env").write_text("HERDR_BRAIN_PORT=9006\n")
+        assert res.resolve_port(env={"XDG_CONFIG_HOME": str(tmp_path / "xdg")}) == 9006
+
+    def test_home_derived_config_path(self, tmp_path):
+        cfg_dir = tmp_path / "home" / ".config" / "herdr-brain"
+        cfg_dir.mkdir(parents=True)
+        (cfg_dir / "config.env").write_text("HERDR_BRAIN_PORT=9007\n")
+        assert res.resolve_port(env={"HOME": str(tmp_path / "home")}) == 9007
+
+    def test_invalid_persisted_value_fails_closed(self, tmp_path):
+        cfg = tmp_path / "config.env"
+        cfg.write_text("HERDR_BRAIN_PORT=garbage\n")
+        with pytest.raises(res.ResolutionError):
+            res.resolve_port(env={}, config_file=cfg)
+
+
+class TestBrainPortKnob:
+    def test_env_port_reaches_settings(self):
+        assert load_settings({"HERDR_BRAIN_PORT": "9100"}).brain_port == 9100
+
+    def test_default_port(self, tmp_path):
+        assert load_settings({"HOME": str(tmp_path)}).brain_port == DEFAULT_BRAIN_PORT
+
+    def test_persisted_config_reaches_settings(self, tmp_path):
+        cfg_dir = tmp_path / ".config" / "herdr-brain"
+        cfg_dir.mkdir(parents=True)
+        (cfg_dir / "config.env").write_text('HERDR_BRAIN_PORT="9005"\n')
+        assert load_settings({"HOME": str(tmp_path)}).brain_port == 9005
+
+    def test_invalid_env_port_fails_closed(self):
+        with pytest.raises(ValueError):
+            load_settings({"HERDR_BRAIN_PORT": "nope"})
