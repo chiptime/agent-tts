@@ -176,6 +176,14 @@ title = "Mute / Unmute Current Pane (auto-clears on close)"
 contexts = ["workspace", "pane"]
 command = ["bin/herdr-tts", "--mute-pane"]
 
+# Radio mode (HT-03): spoken triage bulletin of the chats that need
+# attention (blocked first, then done). Detached worker: returns at once.
+[[actions]]
+id = "radio"
+title = "Radio: Spoken Triage Bulletin"
+contexts = ["workspace"]
+command = ["bin/herdr-tts", "--radio"]
+
 [[actions]]
 id = "status"
 title = "Voice Feedback Status"

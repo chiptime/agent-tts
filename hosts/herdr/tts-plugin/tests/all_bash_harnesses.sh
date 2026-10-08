@@ -17,4 +17,5 @@ bash "$SCRIPT_DIR/config_cases.sh" || rc=1
 bash "$SCRIPT_DIR/lifecycle_cases.sh" || rc=1
 bash "$SCRIPT_DIR/keymap_cases.sh" || rc=1
 bash "$SCRIPT_DIR/ptt_cases.sh" || rc=1
+bash "$SCRIPT_DIR/radio_cases.sh" || rc=1
 exit $rc

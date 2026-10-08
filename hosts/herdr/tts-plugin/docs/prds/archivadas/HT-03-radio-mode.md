@@ -1,6 +1,16 @@
 **ID**: PRD-HT-03 · **Proyecto**: herdr-tts
-**Prioridad final (revisión 2026-09-22)**: P2 · **Estado**: Aprobada
+**Prioridad final (revisión 2026-09-22)**: P2 · **Estado**: Ejecutada (EXECUTED, 2026-10-08)
 **Dependencias**: PRD-AT-08 (cola prioritaria; fallback secuencial)
+
+> **Nota de estado (2026-10-08)**: Hito 1 de [BLOQUE-4](../bloques/BLOQUE-4-radio-y-verificacion.md) ejecutado: `herdr-tts --radio` (alias `radio`) y command id `radio` del keymap (sin acorde por defecto), cubriendo RF-HT-03-1 a RF-HT-03-8 y RNF-HT-03-3. Tests: `tests/radio_cases.sh` (registrado en `all_bash_harnesses.sh`). Decisiones de implementación que concretan la PRD:
+>
+> - **Omitidos** = todo chat del roster que no entra en el boletín (working/idle, silenciados y chats de atención más allá de `TTS_RADIO_MAX_CHATS`), no solo working/idle; con 0 omitidos no hay frase de cierre; con 1 se usa el singular ("1 chat más silencioso omitido"). La fórmula plural es literalmente la de la PRD.
+> - **Cabecera**: prefijo de estado ("Bloqueado:" / "Terminado:") + título truncado a 40 caracteres con la regla del dashboard (39 + "…"); el nombre del agente se antepone solo si HT-02 está en uso (`voices.json` con `prefix`, `auto_assign` o alguna regla), y la voz asignada por HT-02 se aplica siempre (pane > agente > global).
+> - **Snooze global** silencia el boletín entero (aviso visible, sin audio); snooze por pane vencido no excluye.
+> - **Prioridades del motor**: `blocked` para los bloqueados, `done` para los terminados y `working` (la más baja) para la frase de cierre; el motor no tiene una etiqueta `normal`.
+> - **Debounce**: 10 s por defecto, ajustable con `TTS_RADIO_DEBOUNCE_SECONDS`; una pulsación tras `--stop` no se debouncea. Una pulsación fuera de ventana con boletín en curso lo cancela por identificadores (`radio-<runid>-<n>`) y re-triaja.
+> - **Estado "radio en curso"** (RNF-HT-03-3): marcador `📻` en la línea de config del dashboard mientras el worker produce el boletín o el motor reproduce dentro de la ventana de 30 min.
+> - **Fuera de este hito**: RF-HT-03-9 (`TTS_RADIO_LLM_SUMMARY`, Hito 2c), que sigue siendo opt-in experimental pendiente. Las métricas de uso real (decisión < 60 s, primer audio < 1,5 s, abandono < 30 %) están por medir sobre uso real.
 
 # PRD-HT-03 — Radio mode (triaje por voz)
 
