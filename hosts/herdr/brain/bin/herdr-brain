@@ -179,6 +179,25 @@ herdr_first_run_auto() { # $1 = role, $2 = venv python, $3 = launcher name, $4 =
 REAL_SCRIPT="$(readlink -f "${BASH_SOURCE[0]}")"
 REPO_DIR="$(herdr_resolve_root herdr-brain)"
 
+# Doctor dispatch precedes mkdir, env sourcing and service/bootstrap paths.
+case "${1:-}" in
+  doctor|--doctor)
+    mode="$1"
+    shift
+    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$REPO_DIR/src${PYTHONPATH:+:$PYTHONPATH}" herdr_first_run brain "$REPO_DIR/.venv/bin/python" "$mode" "$@"
+    exit $?
+    ;;
+  first-run|--first-run)
+    for arg in "$@"; do
+      if [[ "$arg" == --doctor ]]; then
+        shift
+        PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$REPO_DIR/src${PYTHONPATH:+:$PYTHONPATH}" herdr_first_run brain "$REPO_DIR/.venv/bin/python" "$@"
+        exit $?
+      fi
+    done
+    ;;
+esac
+
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/herdr-brain"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/herdr-brain"
 PID_FILE="$STATE_DIR/daemon.pid"
@@ -590,7 +609,7 @@ case "${1:-status}" in
     claim_port "${2:-daemon}"
     ;;
   help|--help|-h)
-    echo "Usage: bin/herdr-brain [--no-first-run] [status|url|restart|stop|first-run|_daemon|_daemon-supervised]"
+    echo "Usage: bin/herdr-brain [--no-first-run] [status|url|restart|stop|first-run|doctor|_daemon|_daemon-supervised]"
     ;;
   *)
     load_env
