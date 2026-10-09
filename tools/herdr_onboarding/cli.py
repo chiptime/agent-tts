@@ -1,7 +1,7 @@
 """CLI surface for ``python -m herdr_onboarding`` (AT-11 task 3.1).
 
 Argument parsing is hand-rolled on purpose: argparse usage errors echo
-the offending token (``unrecognized arguments: --glm-key <value>``), and
+the offending token (``unrecognized arguments: <flag> <value>``), and
 this CLI must never reflect a secret-carrying argv token in any output
 byte.  Unknown arguments are refused with a fixed, echo-free message.
 No flag in this surface ever carries a secret value.
