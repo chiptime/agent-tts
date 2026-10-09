@@ -686,3 +686,48 @@ outside the delegation's edit surfaces; the engine hygiene suite was NOT extende
 CLI still exits `10` / no marker (the brain `--non-interactive` subprocess tests assert it). 3.5 must pass the real gate
 (`/health` `tts: ok` + `herdr plugin list` without manifest warnings), wire both launchers' dispatch, and may then
 tighten the exit-10 subprocess assertions. Any gate exception text already passes the redaction boundary.
+
+## Task 3.3 — Voice + keymap steps (slice 17, PR 22) — COMPLETE (plugin-suite column not exercised)
+
+Branch `feat/at-11-completion`, on top of 3.2 `4512eb8`. Files: `tools/herdr_onboarding/steps/{voice.py,keymap.py,__init__.py}`,
+`tools/herdr_onboarding/{wizard.py,cli.py,prompts.py}`, tests `hosts/herdr/brain/tests/{test_onboarding_voice.py,
+test_onboarding_keymap.py,test_first_run.py}`. No plugin, brain-runtime, engine or contract file was touched.
+
+**What shipped**
+- Answers: flag → `HERDR_ONBOARDING_*` env → one interactive question (`ctx.prompt_optional`: blank = documented default,
+  EOF = leave things as they are, never aborts; under `--json` the question goes to stderr). New echo-free CLI flags
+  `--voice-provider {edge,openai,elevenlabs,piper}`, `--voice NAME`, `--keymap-style {menu,direct,ctrlalt,none}`,
+  `--replace-keymap`, `--stt` (3.4); an invalid value is refused with a fixed message that never echoes it.
+- Voice: provider (and optional default voice) persisted to `<config>/herdr-tts/config.env` (`HERDR_TTS_CONFIG_FILE`
+  honoured like the launcher). The launcher's `config_set` is not on its CLI, so `voice.upsert_config_value` mirrors its
+  managed-block upsert (first occurrence replaced in place, duplicates dropped, unknown lines byte-identical, atomic
+  `mkstemp`+`os.replace`, one `.bak`, quoted values, new file mode 600, existing mode kept, idempotent no-op rewrite).
+  Existing provider + no explicit answer → preserved, never re-asked.
+- Keymap: reuses the installer's mechanism through the launcher — `bash <tts-plugin>/bin/herdr-tts keymap adopt --style S`
+  → `keymap apply` → `herdr server reload-config` (automatic reload). Existing keymap is never touched without consent
+  (flag/env/interactive yes → the launcher's own `--force`); `none` runs nothing; no explicit style + existing keymap →
+  preserved and the user is told. Failures are installer-parity warnings naming `herdr-tts keymap init`, recorded as
+  `keymap: "failed"` (exit stays 0, nothing half-written: the launcher writes atomically and rolls back).
+- Registry order: credentials → voice → keymap. Marker preferences: `voice`, `voice_name`, `keymap`, `keymap_reloaded`.
+- Non-interactive + no explicit answer changes NOTHING (voice file absent, no keymap command run) — also what keeps the
+  existing 3.1/3.2 default-registry runs byte-for-byte unchanged.
+
+### Verification of record
+
+- Process disclosure: `voice.py` and `keymap.py` were drafted before their tests, so RED was reproduced by moving the
+  module aside (to `/tmp/opencode`, restored immediately): `uv run python -m pytest tests/test_onboarding_voice.py -q`
+  → collection error `ImportError: cannot import name 'voice' from 'herdr_onboarding.steps'`; same for keymap →
+  `ModuleNotFoundError: No module named 'herdr_onboarding.steps.keymap'`. This is reproduced RED, not first-draft RED.
+- GREEN: voice `21 passed`; keymap `27 passed` (fake-runner command-sequence tests + 2 REAL-launcher sandbox drills + registry); `test_first_run.py` gains `TestPreferenceFlags` (flag parsing, echo-free refusal).
+- Triangulation encoded: flag > env, duplicate collapse, managed-block insert, idempotent re-run (marker deleted between
+  runs — the documented "run again" action; a first draft of these tests silently hit the `already-completed` early exit
+  and was corrected), crash mid-write intact, quote/newline refusal, adopt-failure / reload-failure / missing executable
+  degradation, consent via flag/env/interactive, interactive no/blank/EOF keep the file, `none` with consent keeps the file.
+- `env -u XDG_CONFIG_HOME uv run python -m pytest tests/test_onboarding_voice.py tests/test_onboarding_keymap.py
+  tests/test_first_run.py tests/test_credentials.py -q` (hosts/herdr/brain) → `141 passed, 1 warning`.
+- `uv run --with pytest pytest engine/tests/test_versioned_tree_hygiene.py -q` (root) → `13 passed`.
+- Sandbox drill honesty: the launcher ran for real; `herdr` is a stub that appends its argv to a log (it saw the
+  launcher's `config check` then the wizard's `server reload-config`); the venv interpreter is an empty executable that only
+  satisfies the launcher's bootstrap guard. No real herdr server, audio device, network or user config was touched.
+- NOT run by this unit: `smoke-tests.sh` ("plugin suite green" column) — no plugin file changed and the launcher dispatch
+  that reaches the wizard is 3.5's.
