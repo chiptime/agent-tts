@@ -38,7 +38,7 @@ export VOICE_STACK_JS_TOOLS="$NODE_TOOLS"
 
 echo "== 1/6 node suite (instrumented require-hook) =="
 cd "$BRAIN"
-env JS_COVERAGE_DIR="$COV_NODE" PATH="/home/linuxbrew/.linuxbrew/bin:/usr/bin:/bin" \
+env JS_COVERAGE_DIR="$COV_NODE" PATH="${HOMEBREW_PREFIX:+$HOMEBREW_PREFIX/bin:}$PATH" \
   node --require "$TOOLS/hook.js" --test tests/js/ > "$RUN_DIR/node-tests.stdout.log" 2> "$RUN_DIR/node-tests.stderr.log"
 NODE_RC=$?
 sha256sum "$RUN_DIR/node-tests.stdout.log" "$RUN_DIR/node-tests.stderr.log" > "$RUN_DIR/node-tests.log.sha256"
@@ -49,7 +49,7 @@ grep -E "^.?.? ?(tests|pass|fail) [0-9]+" "$RUN_DIR/node-tests.stdout.log" | tai
 echo "== 1b/6 node suite (raw V8 lane: baseline-comparable totals) =="
 COV_V8="$RUN_DIR/cov-v8"
 mkdir -p "$COV_V8"
-env NODE_V8_COVERAGE="$COV_V8" PATH="/home/linuxbrew/.linuxbrew/bin:/usr/bin:/bin" \
+env NODE_V8_COVERAGE="$COV_V8" PATH="${HOMEBREW_PREFIX:+$HOMEBREW_PREFIX/bin:}$PATH" \
   node --test tests/js/ > "$RUN_DIR/node-tests-v8.stdout.log" 2> "$RUN_DIR/node-tests-v8.stderr.log"
 NODE_V8_RC=$?
 sha256sum "$RUN_DIR/node-tests-v8.stdout.log" > "$RUN_DIR/node-tests-v8.log.sha256"

@@ -24,12 +24,15 @@ if (!OUT_DIR) {
   process.exitCode = 2;
   console.error("hook: JS_COVERAGE_DIR must be set");
 } else {
-  const TOOLCHAIN = path.join(
-    process.env.VOICE_STACK_JS_TOOLS ||
-      "/home/bruno/.local/state/voice-stack-maintenance-runs/20261001T162700Z-m1q/tools/nodejs",
-    "node_modules"
-  );
-  const { createInstrumenter } = require(path.join(TOOLCHAIN, "istanbul-lib-instrument"));
+  // Istanbul toolchain location: VOICE_STACK_JS_TOOLS (a directory
+  // holding node_modules, exported by run-pwa-gate.sh) wins; without it,
+  // standard Node module resolution applies (NODE_PATH / node_modules
+  // lookup from this script). No machine path is embedded.
+  const instrumenterPath = process.env.VOICE_STACK_JS_TOOLS
+    ? path.join(process.env.VOICE_STACK_JS_TOOLS, "node_modules",
+                "istanbul-lib-instrument")
+    : "istanbul-lib-instrument";
+  const { createInstrumenter } = require(instrumenterPath);
   const instrumenter = createInstrumenter({
     coverageVariable: "__coverage__",
     // Same coordinate system as the browser instrumentation; globalThis is
