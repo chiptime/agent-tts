@@ -8,9 +8,8 @@ gap), ``StepAbort`` (user declined) or fail outright — the wizard maps
 those onto the exit contract and never writes the marker on a non-zero
 path.
 
-Task 3.1 ships the registry empty: the wizard skeleton runs, the exit
-contract and the marker lifecycle are unit-tested, and no answers are
-needed yet.
+Task 3.1 shipped the registry empty; task 3.2 registers the credentials
+step (brain role only).
 """
 
 from __future__ import annotations
@@ -31,9 +30,13 @@ class Step(Protocol):
 def steps_for_role(role: str) -> List[Step]:
     """Registered steps applicable to ``role``, in execution order.
 
-    Task 3.1 ships no steps: the wizard skeleton runs, the exit contract
-    and the marker lifecycle are unit-tested, and no answers are needed
-    yet.  Task 3.2 registers the credentials step here (brain role only
-    — a plugin-only run completes keyless by construction).
+    Task 3.2 registers the credentials step for the brain role only — a
+    plugin-only run has no credentials step and therefore completes
+    keyless by construction.  Later tasks (3.3, 3.4) append their steps.
     """
-    return []
+    # Imported lazily: step modules import the wizard's exception types,
+    # and the wizard imports this registry.
+    from herdr_onboarding.steps.credentials import CredentialsStep
+
+    registry: List[Step] = [CredentialsStep()]
+    return [step for step in registry if role in step.roles]
