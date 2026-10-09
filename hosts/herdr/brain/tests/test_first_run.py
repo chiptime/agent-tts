@@ -621,3 +621,32 @@ class TestReachabilityInvocation:
         )
         assert completed.returncode == 0, completed.stderr
         assert not _marker(home).exists()
+
+
+@pytest.mark.parametrize("scenario,local,real,expected", [("08-doctor-diagnoses-break", "1", "0", "PASS"),
+                                                         ("09-post-wizard-health", "1", "0", "PASS"),
+                                                         ("09-post-wizard-health", "0", "0", "BLOCKED"),
+                                                         ("09-post-wizard-health", "0", "1", "BLOCKED")])
+def test_acceptance_scenarios_use_existing_sandbox_api(tmp_path, scenario, local, real, expected):
+    # AT-11 task 4.2: tracked HEAD via the harness, scoped candidate overlay.
+    paths = ["tools/herdr_onboarding/doctor.py", "tools/herdr_onboarding/cli.py",
+             "hosts/herdr/brain/bin/herdr-brain", "hosts/herdr/tts-plugin/bin/herdr-tts",
+             f"scripts/acceptance/scenarios/{scenario}.sh"]
+    overlay = "import pathlib,shutil,sys; src,dst=map(pathlib.Path,sys.argv[1:]); paths=" + repr(paths) + "; [shutil.copy2(src/p,dst/p) for p in paths]"
+    script = '''export HERDR_ACCEPTANCE_API=1; source scripts/acceptance/clean-install.sh;
+SRC="$PWD"; HARNESS_FILE="$SRC/scripts/acceptance/clean-install.sh"; HARNESS_DIR="$SRC/scripts/acceptance";
+ALLOWED_TOOLS=(bash git jq curl python3 uv); TOOLS_AVAILABLE=(); TOOLS_MISSING=(); KEEP=1;
+build_sandbox; "$1" -c "$2" "$SRC" "$CHECKOUT" || exit 1;
+SANDBOX_ENV_BASE+=(HERDR_ACCEPTANCE_PYTHON="$1" HERDR_ACCEPTANCE_LOCAL_HEALTH="$4" HERDR_ACCEPTANCE_REAL_HEALTH="$6");
+run_scenario "$3" "$CHECKOUT/scripts/acceptance/scenarios/$3.sh";
+printf 'RESULT=%s FAILURES=%s STUBBED=%s REASON=%s\\n' "$RC_STATE" "$RC_FAIL" "$RC_STUB" "$RC_REASON";
+[[ "$RC_STATE" == "$5" && "$RC_FAIL" == 0 ]]'''
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "PYTHONDONTWRITEBYTECODE": "1"}
+    result = subprocess.run(["bash", "-c", script, "_", sys.executable, overlay, scenario, local, expected, real],
+                            cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=90)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"RESULT={expected}" in result.stdout
+    if expected == "PASS":
+        assert "STUBBED=1" in result.stdout
+    elif real == "1":
+        assert "installed sandbox brain interpreter is missing" in result.stdout
