@@ -592,3 +592,42 @@ made). V1 state: engine hygiene green as verified above; the brain and plugin su
 this task (no plugin/brain code changed) and ride on the task-2.5 verification of record, which carries the
 two known environmental smoke failures (`17a`, `17c`) that fail identically on base. **M2's automated
 closure conditions are observed and recorded; formal milestone bookkeeping remains maintainer-owned.**
+
+## Task 3.1 — Wizard skeleton (slice 15, PR 20) — COMPLETE
+
+Branch `feat/at-11-completion`. Files: `tools/herdr_onboarding/{__init__.py,__main__.py,cli.py,wizard.py,steps/__init__.py}`
+(`cli.py`/`wizard.py`/`steps/` per the bounded-writer delegation's edit surfaces; `resolve.py` NOT extended —
+its primitives are imported and reused, nothing duplicated) + `hosts/herdr/brain/tests/test_first_run.py` (create).
+`smoke-tests.sh` extension moved to 3.5 with the launchers that dispatch to the wizard (recorded rescope).
+
+**What shipped**: `python -m herdr_onboarding` CLI (`--role {plugin,brain}` required, `--no-first-run` → exit 0
+with no marker, `--non-interactive`, `--json`); exit contract 0/10/20/30/40 with `10` = "completed with no marker";
+completion marker `<XDG_CONFIG_HOME or ~/.config>/herdr-tts/first-run.done` (JSON: version/completed_at/role +
+step preferences, mode 644) written ONLY after the health gate; TTY detection with the actionable noninteractive
+hint; echo-free argv parser (unknown tokens — e.g. a fat-fingered `--glm-key <value>` — are refused with a fixed
+message that never reflects the token; no secret-carrying flag exists). Reachability: `resolve_onboarding_lib()`
+honours `HERDR_ONBOARDING_HOME`, then ascends ≤6 levels to the first `D` with `D/tools/herdr_onboarding/__main__.py`,
+returning `D/tools` — verified against hermetic fixtures of all three supported layouts (source checkout,
+curl-route full clone, subdirectory managed install), each also *invoked* via `PYTHONPATH=<lib> python -m
+herdr_onboarding` with the venv interpreter, plus the honest Homebrew-keg failure naming the override.
+
+**Health-gate seam left for 3.5**: `Wizard(..., health_gate=Callable[[RunContext], bool])` / `cli.main(...,
+health_gate=...)`. Default `None` → steps complete, NO marker, exit 10 with the diagnostic "health gate not wired
+yet (task 3.5)". 3.5 passes the real gate (`/health` `tts: ok` + `herdr plugin list` clean); a gate returning
+`False` or raising maps to exit 30 with no marker. Every diagnostic (human and `--json`) already routes through the
+single `_scrub` seam in `wizard.py`, which task 3.2 re-bodies as `herdr_onboarding.secrets.redact`.
+
+**Recorded discrepancy**: `design.md` "Wizard CLI" exit table assigns `10` to "completed with no marker
+(skip/no-first-run)" while `tasks.md` 3.1 and the delegation's verification contract require `--no-first-run` →
+exit `0`. Implemented per tasks.md (exit 0); `10` is used only for the no-gate-wired completion state (and is the
+natural code for 3.5's noninteractive-hint "start daemon anyway" path). Flagged for the maintainer.
+
+### Verification of record (work-unit commit "feat(onboarding): wizard skeleton with exit contract and marker lifecycle")
+
+- RED (observed before implementation): `uv run python -m pytest tests/test_first_run.py -q` →
+  `ImportError: cannot import name 'wizard' from 'herdr_onboarding'` (collection error).
+- GREEN: same command → `40 passed` (exit contract ×7, marker lifecycle ×4, TTY ×6, interactive prompt ×2,
+  CLI surface ×4, JSON shape, reachability resolution ×6 + invocation ×7 across the three layouts).
+- No regression: `uv run python -m pytest tests/test_first_run.py tests/test_resolve.py -q` → `75 passed`.
+- Hermetic CLI smoke: `HOME=$(mktemp -d) PYTHONPATH=<root>/tools python3 -m herdr_onboarding --role plugin
+  --no-first-run` → `herdr-onboarding: skipped (exit 0)`, rc=0, no `~/.config/herdr-tts/first-run.done`.
