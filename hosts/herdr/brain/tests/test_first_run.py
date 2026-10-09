@@ -363,6 +363,43 @@ class TestCLISurface:
         assert not _marker(tmp_path).exists()
 
 
+class TestPreferenceFlags:
+    """Tasks 3.3/3.4 flags: non-secret preference answers on the CLI."""
+
+    def test_value_flags_are_parsed_in_both_spellings(self):
+        from herdr_onboarding.cli import _parse
+
+        options, error = _parse(
+            ["--role", "brain", "--voice-provider=Piper", "--keymap-style", "none",
+             "--stt", "BASE", "--voice", "elvira", "--replace-keymap"]
+        )
+        assert error is None
+        assert (options.voice_provider, options.keymap_style, options.stt) == (
+            "piper", "none", "base",
+        )
+        assert options.voice == "elvira" and options.replace_keymap is True
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["--role", "plugin", "--voice-provider", "espeak"],
+            ["--role", "plugin", "--keymap-style", "vim"],
+            ["--role", "brain", "--stt", "large"],
+            ["--role", "plugin", "--stt"],
+        ],
+    )
+    def test_invalid_value_is_refused_without_echoing_it(self, tmp_path, argv):
+        code, out, err = _run(argv, home=tmp_path)
+        assert code == 2
+        for bad in ("espeak", "vim", "large"):
+            assert bad not in out + err
+        assert not _marker(tmp_path).exists()
+
+    def test_free_form_voice_rejects_quotes(self, tmp_path):
+        code, _, err = _run(["--role", "plugin", "--voice", 'a"b'], home=tmp_path)
+        assert code == 2 and "double quotes" in err
+
+
 class TestWizardJsonOutput:
     def test_json_completion_shape(self, tmp_path):
         code, out, _ = _run(["--role", "brain", "--json"], home=tmp_path, steps=[])

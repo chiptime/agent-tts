@@ -16,7 +16,10 @@ from herdr_onboarding.wizard import Wizard, WizardOptions
 
 USAGE = (
     "usage: python -m herdr_onboarding --role {plugin,brain} "
-    "[--no-first-run] [--non-interactive] [--json]"
+    "[--no-first-run] [--non-interactive] [--json]\n"
+    "       [--voice-provider {edge,openai,elevenlabs,piper}] [--voice NAME]\n"
+    "       [--keymap-style {menu,direct,ctrlalt,none}] [--replace-keymap]\n"
+    "       [--stt {tiny,base,small,none}]"
 )
 
 ROLES = ("plugin", "brain")
@@ -24,6 +27,15 @@ _FLAGS = {
     "--no-first-run": "no_first_run",
     "--non-interactive": "non_interactive",
     "--json": "json_output",
+    "--replace-keymap": "replace_keymap",
+}
+# Non-secret preference flags: ``flag -> (option field, allowed values)``;
+# ``None`` allowed values = free-form (a voice name is provider-specific).
+_VALUE_FLAGS = {
+    "--voice-provider": ("voice_provider", ("edge", "openai", "elevenlabs", "piper")),
+    "--voice": ("voice", None),
+    "--keymap-style": ("keymap_style", ("menu", "direct", "ctrlalt", "none")),
+    "--stt": ("stt", ("tiny", "base", "small", "none")),
 }
 
 
@@ -54,6 +66,25 @@ def _parse(argv: List[str]) -> Tuple[Optional[WizardOptions], Optional[str]]:
         if token in _FLAGS:
             settings[_FLAGS[token]] = True
             i += 1
+            continue
+        flag, sep, inline = token.partition("=")
+        if flag in _VALUE_FLAGS:
+            field, allowed = _VALUE_FLAGS[flag]
+            if sep:
+                value, step = inline, 1
+            elif i + 1 < len(argv):
+                value, step = argv[i + 1], 2
+            else:
+                return None, f"{flag} requires a value"
+            value = value.strip()
+            if allowed is not None:
+                value = value.lower()
+                if value not in allowed:
+                    return None, f"{flag} must be one of: {', '.join(allowed)}"
+            elif not value or '"' in value or "\n" in value or "\r" in value:
+                return None, f"{flag} requires a single-line value without double quotes"
+            settings[field] = value
+            i += step
             continue
         return None, (
             "unrecognized argument present; this CLI never accepts secret "
