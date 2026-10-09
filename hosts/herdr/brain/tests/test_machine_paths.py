@@ -12,7 +12,8 @@ home layout. Covered here:
 - an explicit ``HERDR_TTS_HOME`` always wins over the derived default;
 - an undeducible installation (standalone brain without the marker) fails
   loudly with an actionable message naming ``HERDR_TTS_HOME``;
-- the config module source carries no literal machine path.
+- the config module source carries no literal machine path;
+- the missing-GLM_API_KEY guidance is machine-agnostic.
 """
 
 from __future__ import annotations
@@ -23,7 +24,9 @@ from pathlib import Path
 import pytest
 
 from herdr_brain import config
-from herdr_brain.config import load_settings
+from herdr_brain.config import Settings, load_settings
+from herdr_brain.llm import BrainLLMError, build_openai_client
+from tests.conftest import SETTINGS_KWARGS
 
 # tests/ -> brain/ -> herdr/ -> hosts/ -> monorepo root
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -69,3 +72,14 @@ class TestNoLiteralMachinePathInConfig:
         source = inspect.getsource(config)
         for literal in ("~/Code", "/home/", ".dotfiles", "linuxbrew", "tail2640fd"):
             assert literal not in source
+
+
+class TestMissingApiKeyGuidance:
+    def test_error_message_is_machine_agnostic(self) -> None:
+        settings = Settings(**{**SETTINGS_KWARGS, "glm_api_key": None})
+        with pytest.raises(BrainLLMError) as excinfo:
+            build_openai_client(settings)
+        message = str(excinfo.value)
+        assert "GLM_API_KEY" in message
+        assert "dotfiles" not in message.lower()
+        assert "~" not in message
