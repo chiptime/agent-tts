@@ -631,3 +631,58 @@ natural code for 3.5's noninteractive-hint "start daemon anyway" path). Flagged 
 - No regression: `uv run python -m pytest tests/test_first_run.py tests/test_resolve.py -q` → `75 passed`.
 - Hermetic CLI smoke: `HOME=$(mktemp -d) PYTHONPATH=<root>/tools python3 -m herdr_onboarding --role plugin
   --no-first-run` → `herdr-onboarding: skipped (exit 0)`, rc=0, no `~/.config/herdr-tts/first-run.done`.
+
+## Task 3.2 — Credential capture (slice 16, PR 21) — COMPLETE
+
+Branch `feat/at-11-completion`, on top of 3.1 skeleton `dc072c9` (re-verified: `tests/test_first_run.py` 40 passed
+inside the 87-test focused run below; its seam, exit contract and marker lifecycle untouched). Resumed after a
+provider usage limit interrupted the previous writer, which had left four untracked files
+(`tools/herdr_onboarding/{prompts.py,secrets.py,steps/credentials.py}` + `hosts/herdr/brain/tests/test_credentials.py`);
+they were inspected and finished, not rewritten.
+
+**What shipped**: `prompts.read_secret` — three ranked channels (`HERDR_ONBOARDING_SECRET_FD` read once and closed;
+`HERDR_ONBOARDING_SECRET_FILE` mode-600 regular file read once with optional `HERDR_ONBOARDING_SECRET_UNLINK`;
+`getpass.getpass()` interactive only), no argv flag, an ambient `GLM_API_KEY` deliberately NOT a channel, value-free
+actionable `SecretIntakeError` messages. `secrets.merge_env_file` — `mkstemp` in the target directory → fsync →
+`chmod 600` → `os.replace`, dir forced 700, unknown lines/comments byte-identical, tmp removed on any failure.
+`secrets.redact` is the single diagnostic boundary: `wizard._scrub` now delegates to it, so every human line, `--json`
+summary and exception text (step failure, crashing gate) passes it; the captured value is registered on the context
+before any later failure can occur. `CredentialsStep` registered for the `brain` role only — `steps_for_role("plugin")`
+has no credentials step, so a plugin-only run completes keyless. **Closing fixes in this resume**: (1) the step now
+consults FD/FILE first so a supplied value rotates the key while an existing key with no new value is kept untouched
+and never re-asked (the two inherited tests encoded exactly this and contradicted the earlier ordering);
+(2) `cli.py`'s docstring contained the literal `--glm-key` token that the static hygiene test (correctly) flags — reworded
+to a neutral `<flag> <value>`; (3) `steps_for_role` registers the step.
+
+**Rescope, recorded**: the `set -x` static assertion lives in `test_credentials.py` (active shell lines of the
+brain/plugin/acceptance entry points + package sources) because `engine/tests/test_versioned_tree_hygiene.py` was
+outside the delegation's edit surfaces; the engine hygiene suite was NOT extended or re-run here.
+
+### Verification of record
+
+- RED (observed by this resume, before any production edit; the earlier writer's RED was never captured and is not
+  claimed): `uv run python -m pytest tests/test_credentials.py -q` (hosts/herdr/brain) → `11 failed, 30 passed`
+  (credentials step unregistered, `_scrub` identity, `--glm-key` literal in `cli.py`).
+- GREEN after registry + `_scrub` delegation: 1 residual failure (rotation vs existing key) — fixed by the
+  channel-first ordering. Triangulation tests added (real `getpass` seam persisted/never echoed, empty answer aborts
+  with no partial state, interactive re-run with an existing key never prompts, secret inside a gate exception is
+  redacted to `***`, plugin role never consumes the FD, no shell script enables xtrace).
+- `uv run python -m pytest tests/test_first_run.py tests/test_credentials.py -q` → `87 passed, 1 warning`
+  (the warning is stdlib `GetPassWarning` from the pre-existing fallback-tty test).
+- Threat matrix: (a) live-process `argv` + `/proc/<pid>/environ` + `ps -eo args` snapshot during a blocked FD read
+  carries no secret; (b) failed subprocess run (destination blocked) exit 40 with secret-free stdout/stderr, plus
+  in-process gate-failure `--json` runs; (c) `os.replace` crash seam leaves the target byte-identical and no `*.tmp`.
+- Hermetic CLI (HOME=tmp, `env -u XDG_CONFIG_HOME`): `--role brain --no-first-run` → exit 0, no files;
+  `--role brain --non-interactive` with no channel → exit 20 naming FD/FILE/`--no-first-run`, no files.
+  **Disclosure**: a first CLI probe ran with the ambient `XDG_CONFIG_HOME=/home/bruno/.config` still set and so
+  consulted the real brain env path for key *existence* only (exit 10, nothing printed or written — the existing-key
+  branch returns before any write; file contents were never read into output). Re-run hermetically as above.
+- Full: `uv run python -m pytest tests/ -q --ignore=tests/browser` → `5 failed, 1593 passed`; the 5 are exactly the known
+  chromium e2e base failures (`test_m2_stream` ×3, `test_m4_fallback` ×2).
+
+### Seam for task 3.5 (health gate) — still PENDING
+
+`Wizard(..., health_gate=Callable[[RunContext], bool])` / `cli.main(..., health_gate=...)` is unchanged. With no gate the
+CLI still exits `10` / no marker (the brain `--non-interactive` subprocess tests assert it). 3.5 must pass the real gate
+(`/health` `tts: ok` + `herdr plugin list` without manifest warnings), wire both launchers' dispatch, and may then
+tighten the exit-10 subprocess assertions. Any gate exception text already passes the redaction boundary.
