@@ -29,9 +29,11 @@ no marker and exits ``10`` ("completed with no marker").  Tests and the
 Diagnostic boundary
 -------------------
 Every byte the wizard prints — human lines and ``--json`` summaries —
-goes through :func:`_scrub`, the single redaction seam.  Task 3.2
-replaces its body with ``herdr_onboarding.secrets.redact`` so every
-diagnostic path passes the one ``redact()`` boundary.
+goes through :func:`_scrub`, the single redaction seam, which delegates
+to ``herdr_onboarding.secrets.redact`` — so every diagnostic path,
+including exception messages from failing steps and the health gate,
+passes the one ``redact()`` boundary.  A step registers each captured
+secret with ``RunContext.register_secret`` before anything else can fail.
 """
 
 from __future__ import annotations
@@ -45,6 +47,7 @@ from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Mapping, Optional, TextIO, Union
 
 from herdr_onboarding import resolve as _resolve
+from herdr_onboarding import secrets as _secrets
 
 EXIT_COMPLETED = 0
 EXIT_COMPLETED_NO_MARKER = 10
@@ -83,11 +86,12 @@ class StepAbort(Exception):
 def _scrub(text: str, secret_values: Iterable[str]) -> str:
     """The single diagnostic redaction boundary.
 
-    Placeholder body until task 3.2 delivers
-    :func:`herdr_onboarding.secrets.redact`; the wizard routes every
-    diagnostic through this one seam so the swap is a single line.
+    A thin delegate to :func:`herdr_onboarding.secrets.redact`; the
+    wizard routes every byte it prints (human lines and ``--json``
+    summaries, via :meth:`RunContext.diagnostic` / :meth:`RunContext.emit`)
+    through this one seam.
     """
-    return text
+    return _secrets.redact(text, list(secret_values))
 
 
 def resolve_onboarding_lib(
