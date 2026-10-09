@@ -136,8 +136,9 @@ def build_openai_client(settings: Settings) -> OpenAI:
     provider stack (FR-36/39)."""
     if not settings.glm_api_key:
         raise BrainLLMError(
-            "GLM_API_KEY is not set. Add it to ~/.dotfiles/shell/private-env.sh "
-            "(outside this repo) and source your shell again."
+            "GLM_API_KEY is not set. Export it in your environment "
+            "(e.g. a shell profile or a sourced env file outside this "
+            "repository) and restart the brain."
         )
     return OpenAI(api_key=settings.glm_api_key, base_url=settings.glm_base_url)
 

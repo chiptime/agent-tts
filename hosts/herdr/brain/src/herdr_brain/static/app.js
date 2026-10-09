@@ -3028,7 +3028,8 @@
         if (resp.status === 503) {
           speechCtl.release(speech.speech_request_id);
           showBanner("El brain no está configurado: falta GLM_API_KEY en el servidor. " +
-            "Añádelo a ~/.dotfiles/shell/private-env.sh y reinicia el servicio.");
+            "Defínela en el entorno del servicio (por ejemplo, un perfil de shell o un " +
+            "archivo de entorno fuera de este repositorio) y reinicia el servicio.");
           return;
         }
         if (!resp.ok) {

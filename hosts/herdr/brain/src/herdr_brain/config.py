@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 DEFAULT_GLM_BASE_URL = "https://api.z.ai/api/paas/v4/"
 DEFAULT_GLM_MODEL = "glm-5"
@@ -26,9 +26,45 @@ DEFAULT_BRAIN_PORT = 8741
 # Verified live layout: herdr-tts is the speech backend, consumed ONLY
 # through its versioned CLI surface (contract v1). The home points at the
 # herdr-tts repo root; the CLI derives everything else (including its own
-# venv) internally.
-DEFAULT_TTS_HOME = "~/Code/personal/agent-tts/hosts/herdr/tts-plugin"
+# venv) internally. The default DERIVES from the installation location
+# (sibling rule below) — a hardcoded machine path is never used.
 TTS_SURFACE_BIN = "bin/herdr-tts"
+
+# Sibling rule, mirroring tools/herdr_onboarding/resolve.py: ascend from
+# this module's resolved real location and take the first directory
+# carrying the monorepo marker. Mirrored locally (not imported) because
+# design Decision 1 forbids runtime dependencies from the installed
+# brain package — see the resolve.py module docstring.
+_MONOREPO_MARKER = Path("hosts/herdr/tts-plugin")
+_ROOT_ASCEND_MAX = 6
+
+
+def _default_tts_home(start: Optional[Union[str, Path]] = None) -> Path:
+    """Default tts-plugin home from the installation location.
+
+    Ascends from ``start`` (by default this module's resolved real
+    directory) up to :data:`_ROOT_ASCEND_MAX` levels and returns the
+    first ``<candidate>/hosts/herdr/tts-plugin`` directory. Fails loudly
+    when the marker cannot be found (a standalone brain install must set
+    ``HERDR_TTS_HOME``) — consistent with the fail-loud rule for the STT
+    backend below.
+    """
+    if start is not None:
+        candidate = Path(start).resolve()
+    else:
+        candidate = Path(__file__).resolve().parent
+    for _ in range(_ROOT_ASCEND_MAX):
+        home = candidate / _MONOREPO_MARKER
+        if home.is_dir():
+            return home
+        if candidate.parent == candidate:
+            break
+        candidate = candidate.parent
+    raise ValueError(
+        "cannot derive the default tts-plugin home: no monorepo marker "
+        f"({_MONOREPO_MARKER}) within {_ROOT_ASCEND_MAX} levels of this "
+        "installation; set HERDR_TTS_HOME to the tts-plugin root"
+    )
 
 DEFAULT_AUDIO_DIR = "~/.local/state/herdr-brain/audio"
 
@@ -222,10 +258,17 @@ def load_settings(env: Optional[dict] = None) -> Settings:
 
 
     # Speech backend contract v1: HERDR_TTS_HOME names the herdr-tts repo
-    # root; the surface CLI derives from it. The legacy HERDR_TTS_VENV /
-    # HERDR_TTS_PYTHON / HERDR_TTS_ENGINE overrides are RETIRED (the brain
-    # no longer knows about the venv or engine — surface only).
-    tts_home = Path(getenv("HERDR_TTS_HOME", DEFAULT_TTS_HOME)).expanduser()
+    # root; the surface CLI derives from it. An explicit HERDR_TTS_HOME
+    # always wins; otherwise the default derives from the installation
+    # location (sibling rule above) and an undeducible standalone install
+    # fails loudly. The legacy HERDR_TTS_VENV / HERDR_TTS_PYTHON /
+    # HERDR_TTS_ENGINE overrides are RETIRED (the brain no longer knows
+    # about the venv or engine — surface only).
+    explicit_tts_home = getenv("HERDR_TTS_HOME").strip()
+    if explicit_tts_home:
+        tts_home = Path(explicit_tts_home).expanduser()
+    else:
+        tts_home = _default_tts_home()
 
     # STT backend: fail loudly on unknown values — a typo must never
     # silently fall back to a different transcription engine.
