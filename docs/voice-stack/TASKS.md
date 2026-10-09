@@ -15,7 +15,7 @@
 > lista (no se afirma "el comando existe" para tests no creados). Los comandos sin
 > marcador existen hoy (verificados read-only; NUNCA ejecutados todavía — ninguna pasada
 > se afirma). `$RUN` se define UNA vez en el bootstrap (EXECUTION §2.0).
-> Rutas canónicas relativas a `/home/bruno/Code/personal/agent-tts`. Diseño: TECHNICAL-PLAN
+> Rutas canónicas relativas a la raíz del monorepo (`<repo>`). Diseño: TECHNICAL-PLAN
 > (T§). Evidencia por tarea: `$RUN/tasks/<TASK-ID>/`.
 
 ## Convenciones
