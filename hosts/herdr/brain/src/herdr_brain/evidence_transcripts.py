@@ -44,7 +44,7 @@ Honesty rules (same contract as the evidence core and T3b):
 Claude project mapping (chosen rule, documented): Claude Code stores
 each conversation under a directory name MUNGED from its cwd (path
 separators and other non-path characters become ``-``, so
-``/home/bruno/alpha`` is ``-home-bruno-alpha``). The munge is lossy —
+``/home/alice/alpha`` is ``-home-alice-alpha``). The munge is lossy —
 an original ``-`` is indistinguishable from a ``/`` — so the inverse is
 a documented heuristic, not a restoration: a name starting with ``-``
 maps to ``/`` + the remainder with every ``-`` replaced by ``/``; any
@@ -294,7 +294,7 @@ def _claude_project_from_munged(name: str) -> str:
 
     Claude Code munges the conversation cwd into the directory name by
     replacing path separators (and other non-path characters) with
-    ``-``: ``/home/bruno/alpha`` becomes ``-home-bruno-alpha``. The
+    ``-``: ``/home/alice/alpha`` becomes ``-home-alice-alpha``. The
     munge is LOSSY (an original ``-`` is indistinguishable from a
     ``/``), so this inverse is a documented heuristic: a name starting
     with ``-`` maps to ``/`` + the remainder with every remaining
