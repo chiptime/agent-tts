@@ -38,7 +38,7 @@ single tool: `send_to_session`.
 ## Setup
 
 ```bash
-cd ~/Code/personal/agent-tts/hosts/herdr/brain
+cd <repo>/hosts/herdr/brain    # <repo> = your agent-tts checkout
 scripts/bootstrap.sh          # creates .venv, installs deps, runs tests
 ```
 
@@ -88,10 +88,16 @@ venv, provider flags) is herdr-tts's private detail:
 <HERDR_TTS_HOME>/bin/herdr-tts --render-text OUT.mp3 TEXT [--voice V] [--rate R]
 ```
 
-`HERDR_TTS_HOME` (default
-`~/Code/personal/agent-tts/hosts/herdr/tts-plugin`) names the repo
+`HERDR_TTS_HOME` names the herdr-tts repo
 root; the CLI is self-sufficient and bootstraps its own environment. The
-contract is verified once at boot and surfaced in `/health` as
+default is DERIVED from the installation location (`config.py`
+`_default_tts_home`): the brain ascends from its own package directory
+— up to 6 levels — and takes the first `hosts/herdr/tts-plugin`
+sibling directory it finds, so no machine path is embedded. An exported,
+existing `HERDR_TTS_HOME` always wins; when the sibling cannot be
+derived (a standalone brain install), startup fails loudly with an
+actionable error naming `HERDR_TTS_HOME`. The contract is verified once
+at boot and surfaced in `/health` as
 `"tts": "ok" | "degraded" | "missing"` (`degraded` = contract present but
 the herdr-tts daemon is down — PC-speaker channel dead, phone channel
 alive). When the surface is unmet the server does NOT crash: text answers
