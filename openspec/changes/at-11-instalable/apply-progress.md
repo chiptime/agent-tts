@@ -989,3 +989,141 @@ No full brain/e2e or acceptance-selection rerun was requested for this correctiv
 pass; their earlier observations remain historical, not freshly claimed. Task 3.4
 and 3.5 acceptance checkboxes remain open. Genuine model download/service health and
 the global milestone command remain unproven; no new completion tick is added.
+
+## Tasks 4.1 → 4.2 — Doctor and acceptance scenarios (2026-10-09) — LOCAL DIFF / PARTIAL
+
+Branch `feat/at-11-completion`, base HEAD `2dfeee12533bbb4f34a25db9b82ba30f6596382b`.
+No branch switch, stage, commit, remote write, installer execution, dependency change,
+model download, live host service or real credential/auth/session access was performed.
+The unrelated dirty `docs/ESTADO-Y-PENDIENTES.md` was preserved. The writer loaded the
+exact injected `/home/bruno/.agents/skills/work-unit-commits/SKILL.md` before repository work.
+
+### Task 4.1: one implementation, two read-only dispatchers
+
+- `doctor.py` uses the existing `health.CheckResult` and `check_brain_health`, not a
+  duplicate listener. Its table covers PATH/local-bin, platform audio, credentials,
+  pidfile + kill-0 then brain health, speech contract >=1, and the runtime's offline
+  `stt.model_is_cached` API. Cache probes run in the role's interpreter with offline
+  flags; no pull/download is ever executed by checks. STT repair names the installed
+  interpreter, and the brain repair sets both model knobs and the XDG engine interpreter.
+- Credentials require a regular mode-600 env file and a nonempty GLM key for brain only.
+  Plugin-only diagnostics neither read that key nor require a brain HTTP endpoint.
+  `doctor --fix-credentials` is deliberate capture through the existing FD/file/getpass
+  and atomic merge primitives; it changes no preferences or marker, even with an existing
+  marker. `--doctor` is checks-only and refuses repair, including mixed command/flag forms.
+- Both launchers dispatch before mkdir, config sourcing and bootstrap. Contract-version
+  reporting is also moved before those mutations, using the same version constant.
+  Doctor stdout never includes credential values, raw child errors or HTTP payload values.
+- Tests walk the six-check table and repairs, exercise each break, bad modes/symlinks,
+  malformed versions, dead/invalid pidfiles, unhealthy HTTP, unavailable subprocesses,
+  offline/persisted-model selection, role ownership, marker bypass and filesystem invariance
+  through copied real launchers. Three named Bash cases cover dispatcher argv/exit behavior.
+
+### Task 4.2: simulation is not real installation evidence
+
+- Scenario 8 calls the real doctor/CLI/check table, with real isolated PATH/mode/pidfile
+  fixtures and explicitly injected audio/STT/HTTP boundaries. Six failures name the
+  repair; repairs are syntax-checked, never executed. Evidence is tagged stubbed.
+- Scenario 9 local mode reuses scenario 4's sandbox helper: real launcher, FD capture,
+  keymap adoption/apply/reload, failed-gate retry, mode-600 env, marker preservation and
+  repeated health/list checks. HTTP and herdr are declared doubles. Doctor still diagnoses
+  dead pidfiles/uncached STT after a legitimately completed refusal journey.
+- Scenario 9's separate real leg is authored but UNRUN: explicit real-service authorization,
+  installed sandbox brain/plugin interpreters and herdr, sandbox-state TTS pidfile override,
+  no initial marker, first-run with no model download, then actual pid/health/plugin-list/marker
+  assertions. Default missing authorization and opted-in missing interpreter both report
+  BLOCKED in deterministic guard tests. No real-install PASS, physical audio or human timing
+  is claimed. Dedicated scenario logs avoid the harness stdout descriptor overlap.
+
+### Observed RED/GREEN and verification commands (foreground only)
+
+Brain cwd, with `UV_OFFLINE=1 UV_NO_SYNC=1 PYTHONDONTWRITEBYTECODE=1`:
+
+```bash
+uv run python -m pytest tests/test_doctor.py tests/test_first_run.py tests/test_credentials.py tests/test_onboarding_voice.py tests/test_onboarding_keymap.py tests/test_onboarding_stt.py tests/test_onboarding_health.py -q
+```
+
+- 4.1 RED before production edits: collection error, missing `herdr_onboarding.doctor`.
+  Initial GREEN: 260 passed. Triangulation GREEN before scenario authoring: 276 passed.
+- 4.2 RED before scenario files: 3 failed / 276 passed (candidate overlays name missing
+  scenario files). Intermediate scenario-9 failures exposed retry keymap ownership and
+  missing PATH exposure of the herdr double; fixtures were corrected without weakening
+  keymap adoption/check/reload assertions.
+- Mixed `--doctor doctor --fix-credentials` RED: 1 failed / 279 passed (returned 20,
+  proving capture was reached). Fixed to reject before capture; same runner GREEN.
+- Final command with the exports above: **281 passed, exit 0**, one existing GetPassWarning.
+  Scenario regression tests live in `test_first_run.py` so task 4.1 can stand independently
+  with `test_doctor.py`; both scripts and their scenario tests belong to task 4.2.
+
+Plugin cwd:
+
+```bash
+bash tests/all_bash_harnesses.sh
+env -i PATH="/usr/bin:/bin" LANG=C.UTF-8 LC_ALL=C.UTF-8 HERDR_TTS_REAL_VENV="/home/bruno/Code/personal/agent-tts/engine/.venv/bin/python" PYTHONDONTWRITEBYTECODE=1 bash scripts/smoke-tests.sh
+```
+
+Harness: **145 named cases OK, exit 0**. Smoke: first invocation was interrupted by the
+120-second tool timeout (no pass claimed); retry with a 600-second foreground limit and
+the final rerun both finished **1082 passed / 0 failed, exit 0**, host-state invariant
+intact. Existing non-fatal section-20 `lib_run: command not found` and s42a missing-config
+diagnostics remain visible and unmodified.
+
+Full brain run once (before the final mixed-flag guard/refactor, which the focused final
+run covers), actual installed browser cache explicitly supplied, no installer:
+
+```bash
+UV_BIN="$(command -v uv)"; env -i PATH="/usr/bin:/bin" HOME="/tmp/opencode/at11-brain-verification-home" XDG_CONFIG_HOME="/tmp/opencode/at11-brain-verification-home/config" XDG_CACHE_HOME="/tmp/opencode/at11-brain-verification-home/cache" HERDR_TTS_DAEMON_PID_FILE="/tmp/opencode/at11-brain-verification-home/absent-daemon.pid" PLAYWRIGHT_BROWSERS_PATH="/home/bruno/.cache/ms-playwright" LANG=C.UTF-8 LC_ALL=C.UTF-8 UV_OFFLINE=1 UV_NO_SYNC=1 PYTHONDONTWRITEBYTECODE=1 "$UV_BIN" run python -m pytest tests/ -q
+```
+
+**Non-green: 79 failed / 1855 passed / 5 errors**, 428.66 seconds. All five known
+`test_m2_stream` ×3 / `test_m4_fallback` ×2 Chromium failures are present. Additionally,
+`tests/e2e/test_m1_glue_paths.py::test_stop_without_identity_legacy_clear_all[chromium]`
+fails, alongside 73 browser failures and 5 browser setup errors. The latter include
+FileNotFoundError for the browser harness's `.runtime/run-efdzfcgo` directory. These
+additional failures are NOT silently accepted as the five named exceptions. Full output:
+`/home/bruno/.local/share/opencode/tool-output/tool_121b58647001be7P6qE4Q3DqjB`.
+No out-of-scope runtime/browser fixes or green full-suite claim were made.
+
+Local acceptance command, root cwd (existing API, no global/network scenarios 1/2):
+
+```bash
+bash -c 'export HERDR_ACCEPTANCE_API=1; source scripts/acceptance/clean-install.sh; SRC="$PWD"; HARNESS_FILE="$SRC/scripts/acceptance/clean-install.sh"; HARNESS_DIR="$SRC/scripts/acceptance"; ALLOWED_TOOLS=(bash git jq curl python3 uv); TOOLS_AVAILABLE=(); TOOLS_MISSING=(); KEEP=1; build_sandbox; python3 -c '\''import pathlib, shutil, sys; src, dst = map(pathlib.Path, sys.argv[1:]); paths = ["tools/herdr_onboarding/doctor.py", "tools/herdr_onboarding/cli.py", "hosts/herdr/brain/bin/herdr-brain", "hosts/herdr/tts-plugin/bin/herdr-tts", "scripts/acceptance/scenarios/08-doctor-diagnoses-break.sh", "scripts/acceptance/scenarios/09-post-wizard-health.sh"]; [shutil.copy2(src / p, dst / p) for p in paths]'\'' "$SRC" "$CHECKOUT" || exit 1; SANDBOX_ENV_BASE+=(HERDR_ACCEPTANCE_PYTHON="$SRC/hosts/herdr/brain/.venv/bin/python" HERDR_ACCEPTANCE_LOCAL_HEALTH=1); result=0; for item in 08-doctor-diagnoses-break 09-post-wizard-health; do run_scenario "$item" "$CHECKOUT/scripts/acceptance/scenarios/$item.sh"; printf "%s: %s (%s real, %s stubbed, %s failed) %s\n" "$item" "$RC_STATE" "$RC_PASS" "$RC_STUB" "$RC_FAIL" "$RC_REASON"; if [[ "$RC_STATE" != PASS ]]; then result=1; fi; done; exit "$result"'
+```
+
+Final exit 0: 8 and local 9 each **PASS, 0 real / 1 stubbed aggregate / 0 failed**.
+Evidence: `/tmp/at11-clean-install.YbRRhf/evidence/`, dedicated `doctor-breakage.log` and
+`post-wizard.log`. This is working-tree overlay evidence, not committed-HEAD evidence.
+`bash scripts/acceptance/clean-install.sh --milestone 4` is UNRUN because network scenarios
+1/2 are unauthorized. The real scenario-9 leg is UNRUN/BLOCKED, never replaced by local PASS.
+`git diff e9aab2a -- contracts` is EMPTY. A repo-wide `git diff --check` reports pre-existing
+trailing whitespace in the unrelated document; scoped tracked implementation checks pass.
+
+### Work-unit and rollback handoff
+
+No writer commit: parent owns commits/disposition. Suggested sequential conventional units:
+
+1. `feat(onboarding): diagnose installations through a shared read-only doctor` —
+   `tools/herdr_onboarding/{doctor.py,cli.py}`, both launchers,
+   `hosts/herdr/brain/tests/test_doctor.py`, plugin `tests/host_cli_cases.sh`, task-4.1 evidence.
+   Revert this set atomically: early dispatcher/contract paths, shared checks/capture and tests.
+2. `test(acceptance): exercise doctor breakages and post-wizard health` — scenarios 8/9,
+   `hosts/herdr/brain/tests/test_first_run.py` scenario tests, task-4.2 evidence. Revert these
+   together without changing the doctor or any earlier scenario. This unit depends on 4.1.
+
+Task 4.1 exceeds the advisory 400-line size including its behavior-level tests; no test/comment
+was cut. Both task checkboxes remain open for parent disposition/commit and unmet required
+proof. Tasks 3.4/3.5 remain open; M3/M4 and V3 are NOT closed. Tasks 4.3/4.4 were not implemented.
+
+Candidate Git blob identities (not commit identities):
+
+| Path | Blob |
+|---|---|
+| `tools/herdr_onboarding/doctor.py` | `7d786cbff3fef8a3951e23ef62b2c9dd40bbad48` |
+| `tools/herdr_onboarding/cli.py` | `dcde20703948e8a73fc2718351cb42c23ca9c020` |
+| `hosts/herdr/brain/bin/herdr-brain` | `47a379a5fe3e973bf4b7306bcd0406b1b9c599a6` |
+| `hosts/herdr/tts-plugin/bin/herdr-tts` | `3e60bf728b146e71e42193c00215227cba070016` |
+| `hosts/herdr/brain/tests/test_doctor.py` | `90cf90417e790208eb9c824607fdae5a8f7cda23` |
+| `hosts/herdr/brain/tests/test_first_run.py` | `f27291c9b3c4cce967ed5c1da8e9b80f01a3778c` |
+| `hosts/herdr/tts-plugin/tests/host_cli_cases.sh` | `36f1fb8b3210edb89cad9828bf9c1f69275feb5d` |
+| `scripts/acceptance/scenarios/08-doctor-diagnoses-break.sh` | `8dbeae5fab4fec33162f34c59f962cc6ec8eab38` |
+| `scripts/acceptance/scenarios/09-post-wizard-health.sh` | `832f265ff397854ea7dd766581bf4da5d4a5dd98` |
