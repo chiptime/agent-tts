@@ -731,3 +731,71 @@ test_onboarding_keymap.py,test_first_run.py}`. No plugin, brain-runtime, engine 
   satisfies the launcher's bootstrap guard. No real herdr server, audio device, network or user config was touched.
 - NOT run by this unit: `smoke-tests.sh` ("plugin suite green" column) — no plugin file changed and the launcher dispatch
   that reaches the wizard is 3.5's.
+
+## Task 3.4 — STT consent step (slice 18, PR 23) — V1 COMPLETE, V2 scenarios 5/6 NOT AUTHORED
+
+Branch `feat/at-11-completion`, on top of 3.3 `d718948`. Files: `tools/herdr_onboarding/steps/{stt.py,__init__.py}` +
+`hosts/herdr/brain/tests/test_onboarding_stt.py`. The CLI flag, option field and env name (`--stt`, `WizardOptions.stt`,
+`HERDR_ONBOARDING_STT`) were introduced with 3.3's shared plumbing. No brain runtime, engine, contract or plugin file changed.
+
+**What shipped**
+- Consent: a size from `--stt` / `HERDR_ONBOARDING_STT` / the interactive answer is the only thing that downloads. No answer,
+  `none`, blank, EOF and `n`/`no` are refusals; non-interactive + no answer = "not consented" (exit 0, hint to opt in).
+- Download: `<sys.executable> -m herdr_brain.stt pull` (the brain's only download path; engine backend delegates to the engine
+  pull CLI) with `HERDR_BRAIN_STT_MODEL` and `AGENT_TTS_STT_MODEL` = size; stdout discarded (`--json` stays one record),
+  progress on stderr. Download failure or contract failure → `RuntimeError` → exit 40, no marker, nothing persisted, message
+  names `python -m herdr_brain.stt pull`.
+- Verify: `bash <launcher> --contract-version` must print >= 1 (contracts/tts-brain-v1 §2.1) AFTER the download; only then
+  are `HERDR_BRAIN_STT_MODEL`/`AGENT_TTS_STT_MODEL` merged into `~/.config/herdr-brain/env` (mode 600, GLM key and unknown
+  lines preserved) and `stt`/`stt_downloaded` recorded in the marker.
+- Offline checks: `stt.model_cached` = pure read of the HF cache layout (`HF_HUB_CACHE` → `HF_HOME/hub` →
+  `XDG_CACHE_HOME/huggingface/hub` → `~/.cache/huggingface/hub`; config.json + model.bin + tokenizer.json + vocabulary.*).
+  A cached model skips the pull but is still contract-verified and recorded; a failed run therefore resumes from the cache.
+- Refusal: records `stt: "none"`, exit 0, tells the user `/health` will report `stt: unavailable`. A persisted choice is
+  preserved on re-run (never re-asked, never re-downloaded).
+- Frozen vocabulary (Decision 6): asserted literally — `{loading, ready, unavailable}`, `unavailable` after refusal,
+  `degraded` never an `stt` value. `/ask` keeps `audio_url` (`/audio/...` normally, the documented `null` when the TTS render
+  fails) independent of STT; `/transcribe` is 503 when unavailable. NB the frozen v1 contract text does not define the
+  `/health` `stt` vocabulary at all (brain runtime behaviour, per design Decision 6), so these tests pin the runtime, not a
+  contract sentence.
+
+### Verification of record
+
+- RED (observed before any `stt.py` existed): `uv run python -m pytest tests/test_onboarding_stt.py -q` →
+  `ImportError: cannot import name 'stt' from 'herdr_onboarding.steps'` (collection error).
+- GREEN: same command → `31 passed` (consent gate, accepted consent, offline probe incl. a socket/subprocess tripwire,
+  retryable failures, refusal + runtime vocabulary via `create_app` with an injected `Transcriber`, pinned sha256 of
+  `contracts/tts-brain-v1.md` and `contracts/ipc-v2.md`, registry order credentials → voice → keymap → stt).
+- Focused: `env -u XDG_CONFIG_HOME uv run python -m pytest tests/test_onboarding_voice.py tests/test_onboarding_keymap.py
+  tests/test_onboarding_stt.py tests/test_first_run.py tests/test_credentials.py -q` (hosts/herdr/brain) → `172 passed, 1 warning`.
+- Full: `env -u XDG_CONFIG_HOME uv run python -m pytest tests/ -q --ignore=tests/browser` → `5 failed, 1678 passed`; the 5 are
+  exactly the known chromium e2e base failures (`test_m2_stream` ×3, `test_m4_fallback` ×2).
+- `uv run --with pytest pytest engine/tests/test_versioned_tree_hygiene.py -q` (root) → `13 passed`.
+- `bash scripts/acceptance/clean-install.sh --milestone 3` → scenarios 1, 2, 3, 7 `PASS` (no regression), scenarios 4, 5, 6, 8, 9
+  `NOT-YET-ACTIVATED (not authored)`, exit 0. **Disclosure**: running the harness executes scenarios 1 and 2 against the
+  authorized remote candidate ref (network to the documented GitHub/PyPI origins, as designed); nothing in this unit
+  downloaded a model, and the STT step was not exercised by the harness.
+
+### Gate limitations (honest)
+
+- Scenario 6 `PASS` and scenario 5 `PASS`/`BLOCKED` (task 3.4's V2 column) are NOT observed: neither scenario file exists
+  and `scripts/acceptance/scenarios/` was outside this unit's edit surfaces. Candidate paths for the follow-up:
+  `scripts/acceptance/scenarios/05-stt-consent-download.sh`, `scripts/acceptance/scenarios/06-stt-refusal-degrades.sh`
+  (registry rows already exist; `registry.conf` needs no edit).
+- Every STT test uses a fake runner for the downloader and launcher and a temporary HF cache; no real download, whisper load,
+  service or device was exercised. The real `python -m herdr_brain.stt pull` → engine pull chain is covered only by the
+  existing brain tests (`test_stt.py`, `test_stt_engine.py`), not by this step's tests.
+- Persisting `AGENT_TTS_STT_MODEL` into the brain env file makes the engine's size default follow the choice only for
+  processes started with that env file; a separately launched `agent-tts-stt serve` needs the variable itself.
+
+### Seams for task 3.5
+
+- `cli.main(..., health_gate=...)` / `Wizard(health_gate=...)` is unchanged; default `None` → exit 10, no marker. 3.5 supplies
+  the real gate (`/health` `tts: ok`, `herdr plugin list` clean) and the launcher dispatch.
+- Preference answers a launcher/scenario can pass non-interactively: `--voice-provider`, `--voice`, `--keymap-style`,
+  `--replace-keymap`, `--stt` or `HERDR_ONBOARDING_{VOICE_PROVIDER,VOICE,KEYMAP_STYLE,REPLACE_KEYMAP,STT}`. A non-interactive
+  run with no preference answers changes nothing and still needs the GLM key (brain role) → exit 20 without it.
+- Steps reach the plugin launcher via `HERDR_TTS_HOME` else the resolved monorepo root (`keymap.plugin_launcher`), so 3.5's
+  dispatch should export `HERDR_PLUGIN_ROOT`/`HERDR_TTS_HOME` consistently with the resolver it already uses.
+- Marker keys now include `voice`, `voice_name`, `keymap`, `keymap_reloaded`, `stt`, `stt_downloaded` (the health gate must
+  not treat `keymap: "failed"` as a gate failure — it is an installer-parity warning).
