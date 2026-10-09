@@ -12,12 +12,13 @@
 # policy-authorized but not yet cited by the scoped installation docs. The
 # allowlist<->docs equivalence test accepts an origin only when it is
 # documented in scope OR explicitly pending with a named owner, so the list
-# cannot silently drift wider than the documentation. Task 4.3 resolves the
-# remaining pending entries during the final documentation pass.
+# cannot silently drift wider than the documentation. Task 4.3 resolved the
+# remaining pending entries during the final documentation pass: the unused
+# codeload.github.com origin was removed (nothing cited it), and the STT model
+# origins are now cited by the plugin installation docs.
 github.com
 raw.githubusercontent.com
-codeload.github.com              # pending-docs: M4 final documentation pass (task 4.3)
-huggingface.co                   # pending-docs: M3 STT consent step (task 3.4)
-cdn-lfs*.huggingface.co         # pending-docs: M3 STT model download (task 3.4)
+huggingface.co
+cdn-lfs*.huggingface.co
 pypi.org
 files.pythonhosted.org
