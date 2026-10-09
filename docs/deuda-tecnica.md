@@ -43,4 +43,4 @@ Estado de [`docs/technical-debt-prd.md`](technical-debt-prd.md) verificado el 20
 
 - **Push de `main`**: 22 commits por delante de `origin/main` (bloque 1.3 + merge `a9f11b9` + docs). Decisión del maintainer.
 - **Comunicar el contrato congelado a herdr-tts** (HT-03/HT-10): el artefacto es `contracts/ipc-v2.md`.
-- **Tras registrar el smoke**: borrar el worktree `~/Code/personal/agent-tts-worktrees/bloque-1.3` y la rama `feat/at-08-cola-y-cadena` (main lo contiene todo).
+- **Tras registrar el smoke**: borrar el worktree `<repo>-worktrees/bloque-1.3` y la rama `feat/at-08-cola-y-cadena` (main lo contiene todo).

@@ -1,6 +1,6 @@
 # PRD — Deuda Técnica `agent-tts` (v2, post-auditoría)
 
-> **Repositorio:** [`chiptime/agent-tts`](https://github.com/chiptime/agent-tts) · local: `~/Code/personal/agent-tts`  
+> **Repositorio:** [`chiptime/agent-tts`](https://github.com/chiptime/agent-tts)  
 > **Revisión:** Septiembre 2026 · **Estado al inicio:** v0.1.0  
 > **Procedencia:** Reemplaza al PRD generado por agente externo (Antigravity). Corregido tras auditoría línea a línea contra el código real. Decisiones de dueño registradas: **TD-01 opt-in**, **TD-02 aprobado tal cual**, **TD-03 redefinido como conector Orca y dejado en backlog**.
 
