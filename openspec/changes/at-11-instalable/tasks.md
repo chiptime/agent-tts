@@ -187,11 +187,12 @@ In-task decision (explicit, not a maintainer gate): **validator note A** — the
   - Est: ~190 lines.
   - **DELIVERED** — commit `425deef` ("feat(plugin): expose herdr-tts in ~/.local/bin with a PATH warning"). Exposure is a symlink into the managed checkout; "managed" = a link whose target is under `$XDG_DATA_HOME/herdr-tts/` (so the pre-monorepo layout is also refreshed). Smoke cases `34k`–`34q` added; full suite `1078 passed, 2 failed` where the 2 (`17a`, `17c`) fail identically on base `a12e727` (environmental).
 
-- [ ] 2.6 **Scenario 7 `reinstall-idempotent`** (slice 14) — full install → capture credentials/preferences → full re-run: env-file content, preferences, keymap, and completion state preserved; services in the same functional state; plus the broken-install repair case (re-run repairs without destroying user state).
+- [x] 2.6 **Scenario 7 `reinstall-idempotent`** (slice 14) — full install → capture credentials/preferences → full re-run: env-file content, preferences, keymap, and completion state preserved; services in the same functional state; plus the broken-install repair case (re-run repairs without destroying user state).
   - Files: `scripts/acceptance/scenarios/07-reinstall-idempotent.sh` (create).
   - Verify: `bash scripts/acceptance/clean-install.sh --milestone 2` → scenario 7 `PASS`, no regression on scenario 3.
   - OQ: none (scenario stays within the sandbox; no network).
   - Est: ~160 lines.
+  - **DELIVERED** — commit `4abad10` ("test(acceptance): scenario 7 reinstall-idempotent"); evidence in apply-progress. Scope restricted to TODAY's installer surface (the wizard is M3): `deploy/install.sh` generate-only re-run stability, broken-unit repair (corrupted + deleted shapes), foreign-unit refusal, and full-route user-state preservation (mode-600 env-file merge, persisted port preference) up to the sandbox's absent systemd user bus — recorded as an environmental boundary, never claimed as service state. Keymap, completion marker and live-service state await M3/M4.
 
 **Milestone-2 closure**: V1 green + `--milestone 2` (scenarios 3, 7 `PASS`; scenario 3 newly activated — no regression on previously green scenarios 1, 2) + work-unit commit(s). If a V2 run needs the new local commits, first update the authorized candidate branch `validation/at-11-instalable` with them — same narrow authorization as task 1.8 (gh session `chiptime`, fast-forward-only; divergent ⇒ `BLOCKED`, never force; never `main`/tag/PR).
 
