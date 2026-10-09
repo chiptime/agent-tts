@@ -106,6 +106,79 @@ herdr_resolve_port() { # $1 = brain config dir -> HERDR_BRAIN_PORT value
 }
 # <<< herdr portable resolvers <<<
 
+# >>> herdr first-run hand-off (AT-11 task 3.5) >>>
+# Reaches the shared first-run wizard (tools/herdr_onboarding) through this
+# entry point's own venv interpreter: PYTHONPATH=<tools> <venv python> -m
+# herdr_onboarding --role <role>. This block is byte-identical in
+# bin/herdr-tts and bin/herdr-brain. An unusable interpreter or an
+# unreachable module is reported honestly (exit 127) and never aborts the
+# launcher's real work; the wizard's own exit contract (0/10/20/30/40) is
+# passed through untouched.
+herdr_onboarding_lib() { # -> directory that directly contains herdr_onboarding/
+  # 1) HERDR_ONBOARDING_HOME  2) ascend from this script's resolved real
+  # directory, up to 6 levels, first D with D/tools/herdr_onboarding/
+  # __main__.py -> D/tools  3) fail naming (1). The Homebrew keg stages
+  # only the plugin subdirectory, so it honestly has no wizard.
+  local d i
+  if [[ -n "${HERDR_ONBOARDING_HOME:-}" ]]; then
+    if [[ -f "${HERDR_ONBOARDING_HOME}/herdr_onboarding/__main__.py" ]]; then
+      printf '%s\n' "$HERDR_ONBOARDING_HOME"
+      return 0
+    fi
+    echo "ERROR: HERDR_ONBOARDING_HOME=${HERDR_ONBOARDING_HOME} does not contain herdr_onboarding/__main__.py." >&2
+    return 1
+  fi
+  d="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+  for i in 1 2 3 4 5 6 7; do
+    if [[ -f "$d/tools/herdr_onboarding/__main__.py" ]]; then
+      printf '%s\n' "$d/tools"
+      return 0
+    fi
+    d="$(dirname "$d")"
+  done
+  echo "ERROR: the first-run wizard is not available in this layout (no tools/herdr_onboarding within 6 levels; the Homebrew keg route does not include it); set HERDR_ONBOARDING_HOME to the directory containing herdr_onboarding/." >&2
+  return 1
+}
+
+herdr_first_run_marker() { # -> completion marker path
+  printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/herdr-tts/first-run.done"
+}
+
+herdr_first_run() { # $1 = role, $2 = venv python; rest = wizard args -> wizard exit code
+  local role="$1" py="$2" lib
+  shift 2
+  if [[ ! -x "$py" ]]; then
+    echo "ERROR: the first-run wizard is unavailable: interpreter $py is missing (run the installer or bootstrap first)." >&2
+    return 127
+  fi
+  lib="$(herdr_onboarding_lib)" || return 127
+  PYTHONPATH="$lib${PYTHONPATH:+:$PYTHONPATH}" "$py" -m herdr_onboarding --role "$role" "$@"
+}
+
+herdr_first_run_auto() { # $1 = role, $2 = venv python, $3 = launcher name, $4 = hint-only|auto
+  # Startup-class commands only. Marker present or HERDR_ONBOARDING_NO_FIRST_RUN
+  # set -> nothing. No TTY (or hint-only) -> print how to configure
+  # unattended and carry on: startup NEVER blocks and never fails here.
+  local role="$1" py="$2" name="$3" mode="${4:-auto}" rc=0
+  [[ -n "${HERDR_ONBOARDING_NO_FIRST_RUN:-}" ]] && return 0
+  [[ -f "$(herdr_first_run_marker)" ]] && return 0
+  if [[ "$mode" == "auto" && -t 0 && -t 1 ]]; then
+    herdr_first_run "$role" "$py" || rc=$?
+    if (( rc != 0 )); then
+      echo "$name: onboarding ended with exit $rc and wrote no completion marker (20 = answer missing, 30 = health gate failed, 40 = aborted, 127 = wizard unavailable); startup continues. Retry with: $name first-run" >&2
+    fi
+    return 0
+  fi
+  {
+    echo "$name: first-run onboarding is not complete (no completion marker)."
+    echo "  Interactive:   $name first-run"
+    echo "  Unattended:    $name first-run --non-interactive   (answers via flags or HERDR_ONBOARDING_* variables; the GLM key via HERDR_ONBOARDING_SECRET_FD or HERDR_ONBOARDING_SECRET_FILE, never argv)"
+    echo "  Skip for now:  $name --no-first-run <command>   (or export HERDR_ONBOARDING_NO_FIRST_RUN=1)"
+  } >&2
+  return 0
+}
+# <<< herdr first-run hand-off <<<
+
 # Resolve plugin root portably (resolving symlinks if invoked via ~/bin):
 # herdr_resolve_root honours HERDR_PLUGIN_ROOT and otherwise ascends from
 # this script's own resolved location (design Decision 4).
@@ -7812,8 +7885,26 @@ skill_main() {
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+if [[ "${1:-}" == "--no-first-run" ]]; then
+  export HERDR_ONBOARDING_NO_FIRST_RUN=1
+  shift
+fi
+case "${1:-}" in
+  ""|_daemon|_daemon-supervised|--restart-daemon|--voice-menu|--voice-settings|--dashboard)
+    herdr_first_run_auto plugin "$VENV_PYTHON" herdr-tts
+    # Re-read persisted preferences using the existing startup path. Child
+    # launches are suppressed only for this invocation, not future retries.
+    if [[ -t 0 && -t 1 && -z "${HERDR_ONBOARDING_NO_FIRST_RUN:-}" ]]; then
+      HERDR_ONBOARDING_NO_FIRST_RUN=1 exec "$REAL_SCRIPT" "$@"
+    fi
+    ;;
+esac
 export_core_retention # RF-HT-13-3: the core prunes with the host's resolved knob
 case "${1:-}" in
+  first-run|--first-run)
+    shift
+    herdr_first_run plugin "$VENV_PYTHON" "$@"
+    ;;
   --play|-p|--read-current)
     read_current_pane "${2:-}"
     ;;
@@ -8234,6 +8325,8 @@ run_podcast_server(port=int(sys.argv[1]), podcast_dir=sys.argv[2])
   --help|-h)
     # Top-level case: no `local` (fatal outside a function under set -e).
     _help_lines=(
+    'First-run: first-run [--non-interactive] [--json] (non-secret flags/env; secrets via FD/file)'
+    'Skip onboarding for this launch: --no-first-run <command>'
     "$(tt help.usage)"
     ""
     "$(tt help.main.header)"

@@ -1,8 +1,9 @@
 """V1 for the first-run wizard skeleton (AT-11 task 3.1, design slice 15).
 
 Covers the CLI surface, the exit contract (0/10/20/30/40), the completion
-marker lifecycle behind the injectable health-gate seam (the real gate is
-wired by task 3.5), TTY detection with the noninteractive hint, and the
+marker lifecycle behind the injectable health-gate seam (the CLI wires the
+real gate since task 3.5; see test_onboarding_health.py), TTY detection with
+the noninteractive hint, and the
 reachability matrix for the three supported installed layouts plus the
 honest Homebrew-unavailable case.
 """
@@ -11,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import pty
 import shutil
 import subprocess
 import sys
@@ -91,6 +93,7 @@ def _invoke_module(lib: Path, argv, home: Path) -> subprocess.CompletedProcess:
         "HOME": str(home),
         "PATH": os.environ.get("PATH", ""),
         "PYTHONPATH": str(lib),
+        "PYTHONDONTWRITEBYTECODE": "1",
     }
     return subprocess.run(
         [sys.executable, "-m", "herdr_onboarding", *argv],
@@ -149,17 +152,25 @@ class TestExitContract:
         assert marker.stat().st_mode & 0o777 == 0o644
 
     def test_completed_no_marker_without_gate(self, tmp_path):
-        # THE GATE SEAM: until 3.5 wires the real health gate, a run with
-        # no injected gate completes its steps but writes no marker and
-        # exits 10 ("completed with no marker").
+        # LIBRARY SEAM: a Wizard constructed with no gate completes its
+        # steps but writes no marker and exits 10 ("completed with no
+        # marker").  The CLI never takes this path since task 3.5: it
+        # always wires the real gate (see test_onboarding_health.py).
         step = RecordingStep()
-        code, _, err = _run(
-            ["--role", "plugin"], home=tmp_path, steps=[step], gate=None
+        err = StringIO()
+        wizard = wiz.Wizard(
+            wiz.WizardOptions(role="plugin"),
+            env={"HOME": str(tmp_path)},
+            stdin=StringIO(),
+            stdout=StringIO(),
+            stderr=err,
+            isatty=lambda: True,
+            steps=[step],
         )
-        assert code == 10
+        assert wizard.run() == 10
         assert step.ran
         assert not _marker(tmp_path).exists()
-        assert "health gate" in err
+        assert "health gate" in err.getvalue()
 
     def test_failing_gate_exit_30_no_marker(self, tmp_path):
         step = RecordingStep()
@@ -209,6 +220,31 @@ class TestExitContract:
 
 
 class TestMarkerLifecycle:
+    def test_marker_replace_failure_is_exit_40_and_leaves_no_partial_marker(self, tmp_path, monkeypatch):
+        def fail_replace(*args):
+            raise OSError("simulated marker publication failure")
+
+        monkeypatch.setattr(os, "replace", fail_replace)
+        code, _, err = _run(["--role", "plugin"], home=tmp_path, steps=[])
+        assert code == 40, err
+        assert not _marker(tmp_path).exists()
+        assert list(_marker(tmp_path).parent.iterdir()) == []
+
+    def test_marker_is_published_only_as_complete_json(self, tmp_path, monkeypatch):
+        replace = os.replace
+        publications = []
+
+        def observe(source, destination):
+            assert not Path(destination).exists()
+            assert json.loads(Path(source).read_text())["version"] == 1
+            assert Path(source).stat().st_mode & 0o777 == 0o644
+            publications.append(destination)
+            replace(source, destination)
+
+        monkeypatch.setattr(os, "replace", observe)
+        assert _run(["--role", "plugin"], home=tmp_path, steps=[])[0] == 0
+        assert publications == [_marker(tmp_path)]
+
     def test_existing_marker_suppresses_wizard(self, tmp_path):
         marker = _marker(tmp_path)
         marker.parent.mkdir(parents=True)
@@ -260,6 +296,51 @@ class TestMarkerLifecycle:
 
 
 class TestTTYDetection:
+    @pytest.mark.parametrize("host,role", [("brain", "brain"), ("tts-plugin", "plugin")])
+    @pytest.mark.parametrize("exit_code", [0, 30, 40])
+    def test_auto_handoff_on_real_tty_never_aborts_startup(self, tmp_path, host, role, exit_code):
+        # The module is an explicit dispatcher double, executed by real Python.
+        # No daemon, health endpoint or credential is touched by this drill.
+        entry = "herdr-brain" if host == "brain" else "herdr-tts"
+        text = (REPO_ROOT / "hosts/herdr" / host / "bin" / entry).read_text()
+        start = text.index("# >>> herdr first-run hand-off")
+        end = text.index("# <<< herdr first-run hand-off <<<")
+        lib = tmp_path / "lib"
+        module = lib / "herdr_onboarding"
+        module.mkdir(parents=True)
+        (module / "__main__.py").write_text(
+            f"import sys\nprint('dispatcher-double', sys.argv[1:])\nraise SystemExit({exit_code})\n"
+        )
+        driver = tmp_path / entry
+        driver.write_text(text[start:end] +
+                          f'\nherdr_first_run_auto {role} "{sys.executable}" {entry}\necho startup-continued\n')
+        env = {"HOME": str(tmp_path), "XDG_CONFIG_HOME": str(tmp_path / "config"),
+               "HERDR_ONBOARDING_HOME": str(lib), "PATH": "/usr/bin:/bin",
+               "PYTHONDONTWRITEBYTECODE": "1"}
+        master, slave = pty.openpty()
+        try:
+            child = subprocess.Popen(["bash", str(driver)], env=env, stdin=slave, stdout=slave,
+                                     stderr=subprocess.PIPE, text=True)
+            _, err = child.communicate(timeout=10)
+            output = os.read(master, 8192).decode()
+        finally:
+            os.close(slave)
+            os.close(master)
+        assert child.returncode == 0, err
+        assert "dispatcher-double" in output and role in output
+        assert "startup-continued" in output
+        assert not (tmp_path / "config/herdr-tts/first-run.done").exists()
+        if exit_code:
+            assert f"onboarding ended with exit {exit_code}" in err
+
+    def test_launcher_handoff_blocks_are_byte_identical(self):
+        blocks = []
+        for host, entry in (("brain", "herdr-brain"), ("tts-plugin", "herdr-tts")):
+            text = (REPO_ROOT / "hosts/herdr" / host / "bin" / entry).read_text()
+            blocks.append(text[text.index("# >>> herdr first-run hand-off"):
+                               text.index("# <<< herdr first-run hand-off <<<")])
+        assert blocks[0] == blocks[1]
+
     def test_no_tty_prints_noninteractive_hint(self, tmp_path):
         code, _, err = _run(
             ["--role", "plugin"], home=tmp_path, steps=[], isatty=False
@@ -489,6 +570,23 @@ class TestReachabilityResolution:
 
 
 class TestReachabilityInvocation:
+    def test_brain_launcher_dispatches_first_run_through_its_real_venv(self, tmp_path):
+        root = tmp_path / "checkout"
+        brain = root / "hosts/herdr/brain"
+        (brain / "bin").mkdir(parents=True)
+        (root / "hosts/herdr/tts-plugin").mkdir()
+        (brain / ".venv/bin").mkdir(parents=True)
+        (brain / ".venv/bin/python").symlink_to(sys.executable)
+        shutil.copy2(REPO_ROOT / "hosts/herdr/brain/bin/herdr-brain", brain / "bin/herdr-brain")
+        _copy_onboarding(root)
+        env = {"HOME": str(tmp_path / "home"), "XDG_CONFIG_HOME": str(tmp_path / "config"),
+               "PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"}
+        result = subprocess.run(["bash", str(brain / "bin/herdr-brain"), "first-run",
+                                 "--no-first-run", "--json"], env=env, capture_output=True,
+                                text=True, timeout=10)
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["status"] == "skipped"
+
     @pytest.mark.parametrize(
         "builder",
         [_source_checkout, _curl_route_clone, _managed_subdir_install],
