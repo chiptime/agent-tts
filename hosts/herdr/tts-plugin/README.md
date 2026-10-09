@@ -215,6 +215,14 @@ export HERDR_TTS_REF=main
 curl -fsSL "https://raw.githubusercontent.com/chiptime/agent-tts/${HERDR_TTS_REF}/hosts/herdr/tts-plugin/scripts/install.sh" | bash
 ```
 
+### First-run onboarding (wizard)
+
+The first interactive launch of `herdr-tts` (or `herdr-brain`) with no completion marker runs the onboarding wizard from `tools/herdr_onboarding`. It walks through: credentials (the GLM key is captured through `getpass`, a file descriptor, or a mode-600 file — never an argument; it is optional for a plugin-only role), the voice provider and default voice, keymap adoption with explicit consent (an existing user keymap is never overwritten silently), and the speech-to-text model.
+
+The STT step is consent-gated (`tiny`, `base`, `small`, or `none`). Choosing a size downloads the model from **Hugging Face** (`huggingface.co`, including `cdn-lfs*.huggingface.co` for the large-file blobs) into the standard model cache; choosing `none` downloads nothing and marks STT `unavailable` in `/health` without failing the installation. The wizard writes its completion marker (`~/.config/herdr-tts/first-run.done`) only after the health gate passes, so a failed run leaves no marker and the next launch retries. In an unattended context, pass every answer as flags/environment with `--non-interactive`.
+
+Run `herdr-tts doctor` (or `herdr-brain doctor`) at any time for a read-only diagnosis of the CLI, audio backend, credentials, daemon, surface contract, and STT cache; add `--fix-credentials` to re-run only the credential capture.
+
 ### Uninstall
 
 The installer prints these steps at the end of every run:
