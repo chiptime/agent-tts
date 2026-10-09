@@ -37,6 +37,8 @@ def steps_for_role(role: str) -> List[Step]:
     # Imported lazily: step modules import the wizard's exception types,
     # and the wizard imports this registry.
     from herdr_onboarding.steps.credentials import CredentialsStep
+    from herdr_onboarding.steps.keymap import KeymapStep
+    from herdr_onboarding.steps.voice import VoiceStep
 
-    registry: List[Step] = [CredentialsStep()]
+    registry: List[Step] = [CredentialsStep(), VoiceStep(), KeymapStep()]
     return [step for step in registry if role in step.roles]

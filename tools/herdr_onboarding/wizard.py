@@ -188,6 +188,14 @@ class WizardOptions:
     no_first_run: bool = False
     non_interactive: bool = False
     json_output: bool = False
+    # Non-secret preference answers (tasks 3.3/3.4).  ``None`` = "not
+    # supplied on the command line"; the steps then consult their
+    # ``HERDR_ONBOARDING_*`` environment variable, and only then ask.
+    voice_provider: Optional[str] = None
+    voice: Optional[str] = None
+    keymap_style: Optional[str] = None
+    replace_keymap: bool = False
+    stt: Optional[str] = None
 
 
 @dataclass
@@ -218,6 +226,27 @@ class RunContext:
         if line == "":
             raise StepAbort("standard input closed before the answer arrived")
         return line.rstrip("\r\n")
+
+    def prompt_optional(self, message: str) -> Optional[str]:
+        """Interactive answer to an OPTIONAL preference question.
+
+        ``None`` means "no answer": the run is not interactive, or
+        standard input closed (EOF) — the step leaves the preference
+        untouched.  ``""`` is a blank line, i.e. the documented default.
+        Unlike :meth:`prompt` this never aborts the run: every preference
+        asked this way has a safe "leave things as they are" outcome.
+        Under ``--json`` the question goes to stderr so stdout stays one
+        machine-readable record.
+        """
+        if not self.interactive:
+            return None
+        stream = self.stderr if self.options.json_output else self.stdout
+        stream.write(f"{message}: ")
+        stream.flush()
+        line = self.stdin.readline()
+        if line == "":
+            return None
+        return line.rstrip("\r\n").strip()
 
     def diagnostic(self, text: str) -> None:
         self.stderr.write(_scrub(text, self.secret_values) + "\n")
