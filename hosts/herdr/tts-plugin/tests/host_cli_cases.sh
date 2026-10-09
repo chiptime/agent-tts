@@ -695,6 +695,28 @@ case__first_run_marker_suppresses_startup_hint() {
   [[ ! -s "$SANDBOX/err" && ! -e "$STUB_LOG" ]]
 }
 
+case__doctor_dispatch_preserves_exit() {
+  sandbox_setup doctor_dispatch
+  local rc=0
+  STUB_EXIT=1 onboarding_cli doctor --json > "$SANDBOX/out" || rc=$?
+  [[ $rc == 1 ]] || return 1
+  [[ "$(<"$STUB_LOG")" == '-m herdr_onboarding --role plugin doctor --json' ]]
+}
+
+case__doctor_flag_remains_checks_only() {
+  sandbox_setup doctor_checks
+  onboarding_cli --doctor --json > "$SANDBOX/out" || return 1
+  [[ "$(<"$STUB_LOG")" == '-m herdr_onboarding --role plugin --doctor --json' ]]
+}
+
+case__doctor_first_run_flag_bypasses_marker() {
+  sandbox_setup doctor_first_run
+  mkdir -p "$SANDBOX/config/herdr-tts"
+  printf '{"version":1}\n' > "$SANDBOX/config/herdr-tts/first-run.done"
+  onboarding_cli first-run --doctor --json > "$SANDBOX/out" || return 1
+  [[ "$(<"$STUB_LOG")" == '-m herdr_onboarding --role plugin --doctor --json' ]]
+}
+
 main() {
   local all=""
   local fn

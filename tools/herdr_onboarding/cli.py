@@ -9,6 +9,7 @@ No flag in this surface ever carries a secret value.
 
 from __future__ import annotations
 
+import os
 import sys
 from typing import Callable, Iterable, List, Mapping, Optional, TextIO, Tuple
 
@@ -17,7 +18,8 @@ from herdr_onboarding.wizard import Wizard, WizardOptions
 
 USAGE = (
     "usage: python -m herdr_onboarding --role {plugin,brain} "
-    "[--no-first-run] [--non-interactive] [--json]\n"
+    "[--no-first-run] [--non-interactive] [--json] [--doctor]\n"
+    "       doctor [--fix-credentials] [--non-interactive] [--json]\n"
     "       [--voice-provider {edge,openai,elevenlabs,piper}] [--voice NAME]\n"
     "       [--keymap-style {menu,direct,ctrlalt,none}] [--replace-keymap]\n"
     "       [--stt {tiny,base,small,none}]"
@@ -121,6 +123,31 @@ def main(
     tokens = list(sys.argv[1:] if argv is None else argv)
     out = stdout if stdout is not None else sys.stdout
     err = stderr if stderr is not None else sys.stderr
+    if "doctor" in tokens or "--doctor" in tokens:
+        from herdr_onboarding import doctor
+        from herdr_onboarding.wizard import MissingAnswer
+        subcommand = "doctor" in tokens
+        fix = "--fix-credentials" in tokens
+        filtered = [t for t in tokens if t not in ("doctor", "--doctor", "--fix-credentials")]
+        options, error = _parse(filtered)
+        allowed = {"--role", "plugin", "brain", "--role=plugin", "--role=brain", "--non-interactive", "--json"}
+        if error or any(t not in allowed for t in filtered) or (fix and (
+            not subcommand or "--doctor" in tokens or options.role != "brain"
+        )):
+            err.write("herdr-onboarding: doctor accepts checks only; credential capture requires brain doctor --fix-credentials\n")
+            return 2
+        context = Wizard(options, env=env, stdin=stdin, stdout=out, stderr=err, isatty=isatty, steps=[]).ctx
+        if fix:
+            try:
+                doctor.capture_credentials(context)
+            except MissingAnswer:
+                context.diagnostic("credential capture needs HERDR_ONBOARDING_SECRET_FD or HERDR_ONBOARDING_SECRET_FILE")
+                return 20
+            except (Exception, KeyboardInterrupt):
+                context.diagnostic("credential capture aborted; no automatic repair performed")
+                return 40
+        return doctor.report(doctor.Doctor(options.role, dict(os.environ if env is None else env)).checks(),
+                             out, json_output=options.json_output)
     options, error = _parse(tokens)
     if error is not None:
         if error == "HELP":

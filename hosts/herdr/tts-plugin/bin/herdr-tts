@@ -195,6 +195,30 @@ DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/herdr-tts"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/herdr-tts"
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/herdr-tts"
 VOICE_PREVIEWS_DIR="${HERDR_TTS_PREVIEWS_DIR:-${CACHE_DIR}/voice-previews}"
+# Surface contract version (see README "Surface contract v1"): external
+# consumers (herdr-brain) gate on `--contract-version` printing >= this.
+SURFACE_CONTRACT_VERSION="1"
+# Read-only probes must precede mkdir, config sourcing and auto-bootstrap.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  case "${1:-}" in
+    --contract-version) printf '%s\n' "$SURFACE_CONTRACT_VERSION"; exit 0 ;;
+    doctor|--doctor)
+      mode="$1"
+      shift
+      PYTHONDONTWRITEBYTECODE=1 herdr_first_run plugin "$DATA_DIR/venv/bin/python" "$mode" "$@"
+      exit $?
+      ;;
+    first-run|--first-run)
+      for arg in "$@"; do
+        if [[ "$arg" == --doctor ]]; then
+          shift
+          PYTHONDONTWRITEBYTECODE=1 herdr_first_run plugin "$DATA_DIR/venv/bin/python" "$@"
+          exit $?
+        fi
+      done
+      ;;
+  esac
+fi
 mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$STATE_DIR" "$VOICE_PREVIEWS_DIR"
 
 # Managed settings store (config.env). Env override keeps tests hermetic.
@@ -231,9 +255,6 @@ ENGINE_SCRIPT="${PLUGIN_ROOT}/lib/tts_engine.py"
 DEFAULT_PROVIDER="edge"
 DEFAULT_VOICE="elvira"
 DEFAULT_RATE="+20%"
-# Surface contract version (see README "Surface contract v1"): external
-# consumers (herdr-brain) gate on `--contract-version` printing >= this.
-SURFACE_CONTRACT_VERSION="1"
 DEFAULT_MAX_CHARS="0" # 0 = unlimited
 DEFAULT_AUTO_SCOPE="focused" # "focused" = only speak active pane; "all" = speak any pane with mutex
 DEFAULT_OPENAI_API_KEY=""
@@ -8326,6 +8347,7 @@ run_podcast_server(port=int(sys.argv[1]), podcast_dir=sys.argv[2])
     # Top-level case: no `local` (fatal outside a function under set -e).
     _help_lines=(
     'First-run: first-run [--non-interactive] [--json] (non-secret flags/env; secrets via FD/file)'
+    'Diagnostics: doctor [--json] (checks only); brain doctor --fix-credentials captures credentials'
     'Skip onboarding for this launch: --no-first-run <command>'
     "$(tt help.usage)"
     ""
