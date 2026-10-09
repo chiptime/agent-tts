@@ -137,3 +137,45 @@ def read_secret(
             getpass_fn = getpass.getpass
         return _strip_trailing_newlines(getpass_fn(f"{label} (hidden, no echo): "))
     return None
+
+
+# ── Non-secret preference answers (AT-11 tasks 3.3/3.4) ─────────────────
+#
+# Flag first, then the environment variable, then (interactively) a
+# question.  These values are preferences, not secrets, so flags and the
+# process environment are the right channels for them.
+
+VOICE_PROVIDER_ENV = "HERDR_ONBOARDING_VOICE_PROVIDER"
+VOICE_ENV = "HERDR_ONBOARDING_VOICE"
+KEYMAP_STYLE_ENV = "HERDR_ONBOARDING_KEYMAP_STYLE"
+REPLACE_KEYMAP_ENV = "HERDR_ONBOARDING_REPLACE_KEYMAP"
+STT_ENV = "HERDR_ONBOARDING_STT"
+
+_TRUE = {"1", "true", "yes", "y", "on"}
+
+
+def option_or_env(
+    value: Optional[str], env: Mapping[str, str], name: str
+) -> Optional[str]:
+    """The explicit answer: the flag value, else ``$name``, else ``None``."""
+    if value:
+        return value
+    from_env = env.get(name, "").strip()
+    return from_env or None
+
+
+def is_truthy(value: Optional[str]) -> bool:
+    return bool(value) and value.strip().lower() in _TRUE
+
+
+def validate_choice(
+    value: str, choices: "tuple", source: str
+) -> str:
+    """``value`` normalised to lower case, or a ``ValueError`` that names
+    ``source`` and the allowed set (never a free-form echo of the value)."""
+    normal = value.strip().lower()
+    if normal not in choices:
+        raise ValueError(
+            f"{source} must be one of: {', '.join(choices)}"
+        )
+    return normal
