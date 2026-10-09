@@ -171,6 +171,16 @@ class SttStep:
         child_env = dict(ctx.env)
         child_env[BRAIN_MODEL_KEY] = size
         child_env[ENGINE_MODEL_KEY] = size
+        # The supported brain pull CLI delegates to the engine by default.
+        # Pin its existing interpreter override to the plugin's XDG store;
+        # stt_engine's legacy fallback otherwise only consults ~/.local/share.
+        data = child_env.get("XDG_DATA_HOME")
+        if not data and child_env.get("HOME"):
+            data = str(Path(child_env["HOME"]) / ".local/share")
+        if data:
+            child_env.setdefault(
+                "HERDR_BRAIN_STT_PYTHON", str(Path(data) / "herdr-tts/venv/bin/python")
+            )
         ctx.diagnostic(f"downloading the '{size}' STT model (this can take minutes)…")
         try:
             completed = self._runner(

@@ -166,6 +166,26 @@ class TestConsentGate:
 
 
 class TestAcceptedConsent:
+    def test_engine_pull_uses_the_plugin_xdg_interpreter(self, tmp_path):
+        runner = FakeRunner()
+        data = tmp_path / "data"
+        code, _, err = _run(
+            ["--role", "brain", "--non-interactive", "--stt", "base"],
+            home=tmp_path, runner=runner,
+            env=_env(tmp_path, XDG_DATA_HOME=str(data)),
+        )
+        assert code == 0, err
+        assert runner.kwargs[0]["env"]["HERDR_BRAIN_STT_PYTHON"] == str(data / "herdr-tts/venv/bin/python")
+
+    def test_explicit_engine_interpreter_is_preserved(self, tmp_path):
+        runner = FakeRunner()
+        assert _run(
+            ["--role", "brain", "--non-interactive", "--stt", "tiny"],
+            home=tmp_path, runner=runner,
+            env=_env(tmp_path, HERDR_BRAIN_STT_PYTHON="/fixture/python"),
+        )[0] == 0
+        assert runner.kwargs[0]["env"]["HERDR_BRAIN_STT_PYTHON"] == "/fixture/python"
+
     def test_downloads_through_the_brain_pull_cli_then_verifies_the_contract(self, tmp_path):
         runner = FakeRunner()
         code, _, err = _run(
@@ -320,6 +340,7 @@ class TestRefusalPreservesTheJourney:
             create_app(
                 settings=cfg, version="t", transcriber=transcriber,
                 llm_factory=lambda _c, _t: FakeLLM(), tts_renderer=tts or FakeTTS(),
+                daemon_probe=lambda: "up",  # external daemon double, no live services
             )
         )
 

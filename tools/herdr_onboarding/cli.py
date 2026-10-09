@@ -12,6 +12,7 @@ from __future__ import annotations
 import sys
 from typing import Callable, Iterable, List, Mapping, Optional, TextIO, Tuple
 
+from herdr_onboarding.health import make_health_gate
 from herdr_onboarding.wizard import Wizard, WizardOptions
 
 USAGE = (
@@ -111,9 +112,11 @@ def main(
 ) -> int:
     """Runs the wizard and returns the exit contract code (0/10/20/30/40).
 
-    A usage error returns ``2``.  ``health_gate`` is the task-3.5 seam:
-    ``None`` (default) completes without the marker and exits ``10``;
-    inject a ``Callable[[RunContext], bool]`` to gate the marker write.
+    A usage error returns ``2``.  ``health_gate`` is the marker gate:
+    ``None`` (the default, and what ``python -m herdr_onboarding`` uses)
+    selects the real gate — ``/health`` reports ``tts: ok`` AND ``herdr
+    plugin list`` emits no warning (task 3.5, ``herdr_onboarding.health``).
+    Tests inject a ``Callable[[RunContext], bool]`` instead.
     """
     tokens = list(sys.argv[1:] if argv is None else argv)
     out = stdout if stdout is not None else sys.stdout
@@ -133,7 +136,7 @@ def main(
         stderr=stderr,
         isatty=isatty,
         steps=steps,
-        health_gate=health_gate,
+        health_gate=health_gate if health_gate is not None else make_health_gate(),
         clock=clock,
     )
     return wizard.run()

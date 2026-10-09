@@ -4,13 +4,9 @@
 # re-run — user state (env-file content, preferences) is preserved, and a
 # broken install is repaired by the re-run without destroying user state.
 #
-# SCOPE TODAY (honest limitation, also recorded in apply-progress): the
-# first-run wizard does not exist yet (M3 tasks 3.1–3.5), so there is no
-# credential-capture step, no keymap step and no completion marker to
-# preserve, and the sandbox has no systemd user bus, so live services
-# cannot run. What exists NOW and is verified here — entirely offline,
-# against the repo under test ($CHECKOUT), with no stubs (ok_stubbed is
-# never used) and no network:
+# Local installation/state proof only. The wizard and keymap now run with
+# a real interpreter. HTTP/herdr and the forbidden systemd boundary use
+# explicit external doubles; this is NOT real-service state evidence.
 #
 #   - deploy/install.sh --generate-only re-run idempotence (unit stable)
 #   - broken-install repair: a marker-bearing corrupted unit, and a deleted
@@ -22,17 +18,31 @@
 #     merge and across a no-op re-run; the persisted port preference
 #     (config.env) is honored in the unit and never rewritten
 #
-# The full route is EXPECTED to stop at `systemctl --user daemon-reload`
-# (env -i has no user bus). Every assertion targets the stages that
+# The full route MUST stop at the doubled `systemctl --user daemon-reload`
+# (exit 78, no real bus contacted). Every assertion targets the stages that
 # complete before that boundary; the boundary itself is recorded as an
 # observed fact, never hidden and never claimed as a service state.
-# Keymap, completion marker and live-service state await M3/M4 and are
-# NOT claimed here.
+# Keymap and marker preservation are checked below; live services are NOT claimed.
 #
 # Pure bash on purpose: the sandbox PATH allowlist has no grep/sed/stat.
 # python3 (allowlisted) checks the env-file mode — bash cannot see the
 # group/other permission bits.
 
+HERDR_SCENARIO4_API=1 source "$CHECKOUT/scripts/acceptance/scenarios/04-first-run-keys.sh"
+onboarding_sandbox
+# No host listener probe or systemd call is authorized in this assignment.
+"$ONBOARDING_PYTHON" - "$SCEN_DIR" <<'PY'
+import pathlib, sys
+root = pathlib.Path(sys.argv[1])
+bin = root / 'bin'; bin.mkdir()
+(bin / 'herdr').symlink_to(root / 'herdr-double')
+for name, body in {
+    'lsof': 'exit 1',
+    'systemctl': "echo 'TEST-DOUBLE: systemd boundary (no real bus)' >&2; exit 78",
+}.items():
+    path = bin / name; path.write_text('#!/bin/sh\n' + body + '\n'); path.chmod(0o755)
+PY
+export PATH="$SCEN_DIR/bin:$PATH"
 BRAIN="$CHECKOUT/hosts/herdr/brain"
 INSTALLER="$BRAIN/deploy/install.sh"
 UNIT_DST="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/herdr-brain.service"
@@ -189,18 +199,16 @@ fi
 rm -f "$UNIT_DST"
 
 # --- Phase 5: full-route state preservation up to the systemd boundary -----
-# Bootstrapped-checkout stand-in: the full-route preflight requires
-# $REPO_DIR/.venv/bin/python. Nothing executes it (the unit is never started
-# in the sandbox); it only lets the real preflight pass so the env-file and
-# unit stages run. Scaffolding, not a stubbed assertion — no assertion rides
-# on it.
-mkdir -p "$BRAIN/.venv/bin"
-printf '#!/bin/sh\nstand-in for a bootstrapped checkout (scenario 7 scaffolding)\n' > "$BRAIN/.venv/bin/python"
-chmod 0755 "$BRAIN/.venv/bin/python"
+# A REAL interpreter for both preflight and subsequent wizard execution.
+"$ONBOARDING_PYTHON" - "$BRAIN" <<'PY'
+import pathlib, sys
+bin = pathlib.Path(sys.argv[1]) / '.venv/bin'; bin.mkdir(parents=True, exist_ok=True)
+python = bin / 'python'
+if not python.exists(): python.symlink_to(sys.executable)
+PY
 
 # Seed the user state the re-run must preserve: comments, an unknown key,
-# and an older credential value. The first-run wizard (M3) does not exist
-# yet, so the scenario seeds the documented state itself.
+# and an older credential value. Wizard preservation is exercised afterwards.
 ( umask 077
   printf '# user comment line\n# another note\nOTHER_TOOL_FLAG=keep-me\nGLM_API_KEY=%s\n' "$KEY_OLD" > "$ENV_FILE" )
 chmod 600 "$ENV_FILE"
@@ -213,10 +221,10 @@ assert_grep "full route: key merge stage reached before the systemd boundary" \
   "Wrote the key to" "$SCEN_DIR/full1.log" -F
 assert_grep "full route: unit regenerated before the systemd boundary" \
   "Generated the unit at" "$SCEN_DIR/full1.log" -F
-if [[ $rc1 -ne 0 ]]; then
-  ok "boundary: full route stops at the absent systemd user bus (rc=$rc1) after the stages under test — environmental, recorded"
+if [[ $rc1 -eq 78 && $(<"$SCEN_DIR/full1.log") == *"TEST-DOUBLE: systemd boundary"* ]]; then
+  ok_stubbed "full route stops at the deliberate systemd boundary (exit 78); no service-state claim"
 else
-  ok "boundary: full route completed rc=0 in this environment (state assertions below still apply)"
+  fail "full route did not stop at the declared systemd boundary (rc=$rc1)"
 fi
 if [[ $(env_key_line_count) -eq 1 && $(env_key_value) == "$KEY_NEW" ]]; then
   ok "credentials: env file holds exactly one GLM_API_KEY line, rotated to the new value"
@@ -243,10 +251,50 @@ if [[ $(<"$PREF_FILE") == "$pref_seed" ]]; then
 else
   fail "preferences: config.env was rewritten by the installer"
 fi
+
+# --- Phase 6: wizard/keymap/marker preservation through install and repair ---
+step "$ONBOARDING_PYTHON" - "$CHECKOUT" <<'PY'
+import hashlib, json, os, pathlib, subprocess, sys
+root = pathlib.Path(sys.argv[1]); config = pathlib.Path(os.environ['XDG_CONFIG_HOME'])
+launcher = root / 'hosts/herdr/brain/bin/herdr-brain'
+argv = ['bash', str(launcher), 'first-run', '--non-interactive', '--stt', 'none',
+        '--voice-provider', 'piper', '--keymap-style', 'menu', '--json']
+result = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+assert result.returncode == 0, result.stderr
+marker = config / 'herdr-tts/first-run.done'
+payload = json.loads(marker.read_text())
+assert payload['keymap'] == 'menu' and payload['keymap_reloaded'] is True
+assert 'server reload-config' in (pathlib.Path(os.environ['HOME']) / 'herdr.calls').read_text()
+paths = [config / 'herdr-brain/env', config / 'herdr-brain/config.env',
+         config / 'herdr-tts/config.env', config / 'herdr-tts/keymap.json',
+         config / 'herdr/config.toml', marker]
+before = {path: (path.read_bytes(), path.stat().st_mode & 0o777) for path in paths}
+installer = root / 'hosts/herdr/brain/deploy/install.sh'
+for repair in (False, True):
+    if repair:
+        (config / 'systemd/user/herdr-brain.service').write_text('# herdr-brain-managed: interrupted\n')
+    result = subprocess.run(['bash', str(installer), '--generate-only'], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    result = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0 and json.loads(result.stdout)['status'] == 'already-completed'
+    assert {path: (path.read_bytes(), path.stat().st_mode & 0o777) for path in paths} == before
+snapshot = {str(path): [hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_mode & 0o777]
+            for path in paths}
+(pathlib.Path(os.environ['SCEN_DIR']) / 'wizard-state.json').write_text(json.dumps(snapshot))
+print('wizard credentials/preferences/keymap/config/marker preserved through reinstallation and repair')
+PY
+rc=$?
+if (( rc == 0 )); then
+  ok_stubbed "wizard/keymap adoption and reload, installer rerun/repair preserve all artifacts; services doubled"
+else
+  fail "wizard/reinstall preservation failed (exit $rc; see stdout.log)"
+fi
 env_after_full1=$(<"$ENV_FILE")
 
-# --- Phase 6: full re-run is a no-op for unchanged user state --------------
+# --- Phase 7: full re-run is a no-op for unchanged user state --------------
 rc2=0; run_install full2 env GLM_API_KEY="$KEY_NEW" bash "$INSTALLER" || rc2=$?
+[[ $rc2 == 78 && $(<"$SCEN_DIR/full2.log") == *"TEST-DOUBLE: systemd boundary"* ]] \
+  || fail "full rerun did not stop at the declared systemd boundary (rc=$rc2)"
 assert_grep "re-run: key merge is a no-op for an unchanged key" \
   "already holds this key" "$SCEN_DIR/full2.log" -F
 assert_grep "re-run: unit left alone when already current" \
@@ -255,6 +303,18 @@ if [[ $(<"$ENV_FILE") == "$env_after_full1" ]]; then
   ok "idempotence: env file byte-identical across the full re-run"
 else
   fail "idempotence: env file changed across the full re-run"
+fi
+if step "$ONBOARDING_PYTHON" - "$SCEN_DIR/wizard-state.json" <<'PY'
+import hashlib, json, pathlib, sys
+before = json.loads(pathlib.Path(sys.argv[1]).read_text())
+after = {name: [hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest(),
+                pathlib.Path(name).stat().st_mode & 0o777] for name in before}
+assert after == before
+PY
+then
+  ok "full installer rerun preserves wizard keymap, marker, credentials and preferences byte-identically"
+else
+  fail "full installer rerun changed wizard artifacts"
 fi
 if [[ -f $UNIT_DST && $(<"$UNIT_DST") == "$golden" ]]; then
   ok "idempotence: unit byte-identical across the full re-run"

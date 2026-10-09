@@ -221,7 +221,7 @@ In-task decision (explicit, not a maintainer gate): **validator note A** — the
   - Est: ~240 lines.
   - **DELIVERED** (bounded-writer rescope, recorded for the maintainer) — work-unit commit "feat(onboarding): persist voice provider and adopt keymap with consent" on `feat/at-11-completion`. Rescope vs the file list above: `smoke-tests.sh` was outside the delegation's edit surfaces and no plugin file changed, so the "plugin suite green" column was NOT exercised by this unit (the plugin launcher dispatch and its smoke scenarios are 3.5's); the "keymap adopt+reload drill in sandbox" is `TestSandboxDrill` in `test_onboarding_keymap.py` (REAL `bin/herdr-tts keymap adopt|apply` against a temp `HOME` with a stub venv interpreter and a stub `herdr` recording argv — not a real herdr server). Decisions: voice/keymap are registered for BOTH roles; non-secret answers travel as `--voice-provider/--voice/--keymap-style/--replace-keymap` flags or `HERDR_ONBOARDING_*` variables; a non-interactive run with no explicit answer changes nothing (preference steps only mutate on an explicit answer or an interactive one); existing keymap needs `--replace-keymap`/`HERDR_ONBOARDING_REPLACE_KEYMAP`/interactive yes (mapped to the launcher's own `--force`); adopt/apply/reload failures are installer-parity warnings, not exit 40. Voice persistence mirrors the launcher's `config_set` managed-block upsert in Python because `config_set` has no CLI entry point. Evidence in apply-progress.
 
-- [x] 3.4 **STT consent step: size selection, download, contract verify, refusal path** (slice 18) — explicit `tiny|base|small` consent (`none` = explicit refusal); nothing downloads without consent; on consent the model downloads to the standard store and the speech-surface contract check is verified afterwards; refusal completes onboarding successfully with `/ask`/`audio_url` behavior per the frozen contract (including the documented null case) and no later step failing on the missing model; `contracts/tts-brain-v1` and `contracts/ipc-v2` (read-only) stay byte-identical.
+- [ ] 3.4 **STT consent step: size selection, download, contract verify, refusal path** (slice 18) — explicit `tiny|base|small` consent (`none` = explicit refusal); nothing downloads without consent; on consent the model downloads to the standard store and the speech-surface contract check is verified afterwards; refusal completes onboarding successfully with `/ask`/`audio_url` behavior per the frozen contract (including the documented null case) and no later step failing on the missing model; `contracts/tts-brain-v1` and `contracts/ipc-v2` (read-only) stay byte-identical.
   - **OQ-3 RESOLVED (Engram #9681 → design Decision 6) — assertions unblocked.** Assert the literal resolved vocabulary: `/health` `stt` is `loading | ready | unavailable`, `unavailable` after refusal; `degraded` stays a `tts`-field-only value; RF-12 is vocabulary errata; frozen contracts stay byte-identical.
   - Files: `tools/herdr_onboarding/steps/stt.py` (create), `hosts/herdr/brain/tests/` (step tests — create).
   - Verify: brain pytest STT-step green asserting the resolved `unavailable` vocabulary; `--milestone 3`: scenario 6 `PASS` (offline refusal), scenario 5 runs on the authorized documented model origin (Engram #9681) and reports `PASS`, or truthful `BLOCKED` (exit 2) if the host/network prerequisite is genuinely unavailable.
@@ -236,6 +236,29 @@ In-task decision (explicit, not a maintainer gate): **validator note A** — the
   - Est: ~280 lines.
 
 **Milestone-3 closure**: V1 green + `--milestone 3` (scenarios 4, 5, 6 `PASS` — scenario 5 on the authorized documented model origin; truthful `BLOCKED` only if a real prerequisite is unavailable) + work-unit commit(s). If a V2 run needs the new local commits, first update the authorized candidate branch `validation/at-11-instalable` with them — same narrow authorization as task 1.8 (gh session `chiptime`, fast-forward-only; divergent ⇒ `BLOCKED`, never force; never `main`/tag/PR).
+
+### Completion-branch reconciliation (2026-10-09, current evidence)
+
+- **3.3 remains complete**: its previously missing plugin-suite column is now exercised:
+  `bash tests/all_bash_harnesses.sh` (plugin cwd) exits 0, 142 named cases pass;
+  normalized `scripts/smoke-tests.sh` exits 0, 1082 passed / 0 failed. The old unit's
+  disclosure above remains historical evidence, not a current missing check.
+- **3.4 reopened for acceptance proof, implementation preserved**: scenarios 5/6 are
+  now authored. Scenario 6 passes locally with real app handlers and explicitly
+  doubled LLM/TTS/herdr/daemon boundaries. Scenario 5 is BLOCKED by this assignment's
+  prohibition on model downloads/network; its opt-in real-download leg is UNRUN.
+  No fake downloader or preloaded model is counted as download evidence.
+- **3.5 implementation and local checks delivered; closure remains open**: both
+  launchers dispatch through their venv Python and the shared module; the real gate
+  precedes an atomic marker. Scenario 4 passes with real launcher/wizard/FD capture,
+  but HTTP/herdr are declared doubles. Scenario 7 now verifies wizard/keymap/marker
+  preservation and installer repair, with systemd deliberately stopped by a double.
+  These results do not prove real daemon/engine health or close M3.
+- Full brain execution and the isolated e2e diagnostic remain non-green (five known
+  Chromium assertions after restoring runtime discovery). The global milestone
+  command is UNRUN because it would execute network scenarios 1/2. Exact commands,
+  observed failures and local evidence locators are in `apply-progress.md` below.
+- No commit created by the package writer; the orchestrator owns staging/commits.
 
 ---
 

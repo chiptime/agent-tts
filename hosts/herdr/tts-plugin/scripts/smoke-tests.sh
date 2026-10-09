@@ -239,6 +239,8 @@ new_env() { # $1 = scenario dir name
   printf '#!/usr/bin/env bash\nexec python3 "$@"\n' > "$T/data/herdr-tts/venv/bin/python"
   chmod +x "$T/data/herdr-tts/venv/bin/python"
   export XDG_CONFIG_HOME="$T/conf" XDG_DATA_HOME="$T/data" XDG_STATE_HOME="$T/state"
+  mkdir -p "$T/home" "$T/cache"
+  export HOME="$T/home" XDG_CACHE_HOME="$T/cache"
   # Machine-global playback state, scenario-local: bin/herdr-tts and the
   # lib Python side both honor these knobs, so is_playing/stop_audio can
   # never collide with (or mutate) real /tmp playback state.
@@ -1287,8 +1289,9 @@ run_km() { timeout 10 "$SCRIPT" keymap "$@" > "$T/out.txt" 2>&1; }
 run_km init
 [[ $? -eq 0 ]] && ok "17a init exits rc=0" || bad "17a init rc!=0"
 [[ -f "$km" ]] && ok "17a keymap.json created" || bad "17a no keymap file"
-jq -e '.style == "direct" and (.bindings | length == 21)' "$km" >/dev/null \
-  && ok "17a template: style=direct, 21 stable command ids" || bad "17a template shape"
+jq -e '.style == "direct" and (.bindings | length == 23) and
+  (.bindings | has("ptt") and has("radio")) and .bindings.ptt == null and .bindings.radio == null' "$km" >/dev/null \
+  && ok "17a template: style=direct, 23 stable ids including unassigned ptt/radio" || bad "17a template shape"
 jq -e '.bindings.play == "prefix+r" and .bindings.snooze_global == "prefix+Z" and .bindings.menu == null' "$km" >/dev/null \
   && ok "17a template prefilled with README direct map (menu=null)" || bad "17a template prefill"
 cp "$km" "$T/km.bak"
@@ -1317,8 +1320,9 @@ run_km check --json
 [[ $? -eq 0 ]] && ok "17c check --json exits rc=0" || bad "17c check --json rc!=0"
 jq -e '.ok == true and .error_count == 0 and .warning_count >= 5' "$T/out.txt" >/dev/null \
   && ok "17c json: ok=true, 0 errors, ≥5 warnings" || bad "17c json summary fields"
-jq -e '(.bindings | length) == 21 and (.bindings[0].command == "play")' "$T/out.txt" >/dev/null \
-  && ok "17c json: 21 bindings, file order preserved" || bad "17c json bindings array"
+jq -e '(.bindings | length) == 23 and (.bindings[0].command == "play") and
+  (.bindings[-2].command == "ptt") and (.bindings[-1].command == "radio")' "$T/out.txt" >/dev/null \
+  && ok "17c json: 23 bindings, play/ptt/radio file order preserved" || bad "17c json bindings array"
 jq -e '.bindings[] | select(.command == "play" and .chord == "prefix+r" and .status == "warn" and .core == "resize pane")' "$T/out.txt" >/dev/null \
   && ok "17c json: play binding carries core=resize pane" || bad "17c json warn detail"
 jq -e '.bindings[] | select(.command == "menu" and .chord == null and .status == "ok")' "$T/out.txt" >/dev/null \
@@ -4669,6 +4673,52 @@ grep -q 'REPO_DIR="$(herdr_resolve_root herdr-brain)"' "$REPO/../brain/bin/herdr
   && ok "44f brain launcher wires herdr_resolve_root" || bad "44f brain launcher does not wire the root resolver"
 assert_no_grep_f "44f no hardcoded tts home default in bin/herdr-brain" 'HERDR_TTS_HOME:-$HOME' "$REPO/../brain/bin/herdr-brain"
 assert_no_grep "44f no literal brew prefix in bin/herdr-brain" '/home/linuxbrew' "$REPO/../brain/bin/herdr-brain" # hygiene-exempt: negative assertion forbids this prefix in the launcher
+
+# 45. AT-11: real interpreter reaches the shared module in all three
+# installed layouts. Skip means no gate, no service and no credential read.
+new_env 45-first-run
+python3 - "$REPO/../../.." "$T" > "$T/reachability.out" 2> "$T/reachability.err" <<'PY'
+import json, os, pathlib, shutil, subprocess, sys
+repo = pathlib.Path(sys.argv[1]).resolve(); tmp = pathlib.Path(sys.argv[2])
+for layout in ('source', 'curl/share/herdr-tts/plugin', 'managed/github/agent-tts'):
+    root = tmp / layout
+    shutil.copytree(repo / 'tools/herdr_onboarding', root / 'tools/herdr_onboarding',
+                    ignore=shutil.ignore_patterns('__pycache__'))
+    for host in ('tts-plugin', 'brain'):
+        path = root / 'hosts/herdr' / host / 'bin'
+        path.mkdir(parents=True)
+        entry = 'herdr-tts' if host == 'tts-plugin' else 'herdr-brain'
+        shutil.copy2(repo / 'hosts/herdr' / host / 'bin' / entry, path / entry)
+        env = {name: os.environ[name] for name in ('HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME')}
+        env.update(PATH='/usr/bin:/bin', PYTHONDONTWRITEBYTECODE='1')
+        if host == 'tts-plugin':
+            py = pathlib.Path(env['XDG_DATA_HOME']) / 'herdr-tts/venv/bin/python'
+            # new_env's wrapper delegates to this real interpreter already.
+        else:
+            py = root / 'hosts/herdr/brain/.venv/bin/python'
+            py.parent.mkdir(parents=True)
+            py.symlink_to(sys.executable)
+        result = subprocess.run(['bash', str(path / entry), 'first-run', '--no-first-run', '--json'],
+                                env=env, capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)['status'] == 'skipped'
+        assert not (pathlib.Path(env['XDG_CONFIG_HOME']) / 'herdr-tts/first-run.done').exists()
+        print('PASS', layout, host)
+PY
+rc=$?
+if [[ $rc == 0 ]]; then
+  ok "45 real Python reaches both first-run launchers in source/curl/managed layouts (skip, no services)"
+else
+  bad "45 installed-layout first-run reachability (rc=$rc)"
+  cat "$T/reachability.err"
+fi
+
+# Named dispatch/skip/hint cases use labelled argv/daemon doubles.
+CASES="first_run_dispatch_preserves_exit first_run_skip_preserves_command first_run_unattended_startup_hint first_run_unattended_cli_still_starts first_run_marker_suppresses_startup_hint" \
+  bash "$REPO/tests/host_cli_cases.sh" > "$T/cases.out" 2> "$T/cases.err"
+rc=$?
+[[ $rc == 0 ]] && ok "45 first-run dispatch/exit/skip/nonblocking/marker cases" \
+  || bad "45 first-run named cases (rc=$rc; see $T/cases.out)"
 
 # 16s. (Decision-8 test d) Host-state invariance across the WHOLE suite
 #      run: the four production playback-state paths must be unchanged —

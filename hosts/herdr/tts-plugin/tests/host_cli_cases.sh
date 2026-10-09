@@ -636,6 +636,65 @@ case__playback_host_aliases_reach_engine_children() {
      "L=$SANDBOX/host.lock|P=$SANDBOX/host.pid|S=$SANDBOX/host.sock" ]]
 }
 
+# AT-11: argv recorder proves dispatch only, never real service health.
+onboarding_cli() {
+  # Before dispatch exists, unknown first-run would enter the daemon loop.
+  # Replace that body in this isolated launcher copy to make RED safe.
+  python3 - "$REPO_HOST_DIR/bin/herdr-tts" "$SANDBOX/launcher" <<'PY'
+import pathlib, sys
+text = pathlib.Path(sys.argv[1]).read_text()
+anchor = 'export_core_retention # RF-HT-13-3:'
+assert text.count(anchor) == 1
+pathlib.Path(sys.argv[2]).write_text(text.replace(anchor, 'run_daemon() { exit 97; }\n' + anchor))
+PY
+  XDG_DATA_HOME="$SANDBOX/data" XDG_CONFIG_HOME="$SANDBOX/config" \
+  XDG_STATE_HOME="$SANDBOX/state" STUB_LOG="$STUB_LOG" \
+  HERDR_ONBOARDING_HOME="$REPO_HOST_DIR/../../../tools" \
+  STUB_EXIT="${STUB_EXIT:-0}" bash "$SANDBOX/launcher" "$@"
+}
+
+case__first_run_dispatch_preserves_exit() {
+  sandbox_setup first_run_dispatch
+  local rc=0
+  STUB_EXIT=30 onboarding_cli first-run --non-interactive --stt none > "$SANDBOX/out" || rc=$?
+  [[ $rc == 30 ]] || return 1
+  [[ "$(<"$STUB_LOG")" == '-m herdr_onboarding --role plugin --non-interactive --stt none' ]]
+}
+
+case__first_run_skip_preserves_command() {
+  sandbox_setup first_run_skip
+  onboarding_cli --no-first-run --contract-version > "$SANDBOX/out" || return 1
+  [[ "$(<"$SANDBOX/out")" == 1 ]] || return 1
+  [[ ! -e "$STUB_LOG" && ! -e "$SANDBOX/config/herdr-tts/first-run.done" ]]
+}
+
+case__first_run_unattended_cli_still_starts() {
+  sandbox_setup first_run_cli_hint
+  local rc=0
+  onboarding_cli </dev/null > "$SANDBOX/out" 2> "$SANDBOX/err" || rc=$?
+  [[ $rc == 97 ]] || return 1  # the deliberately contained daemon was reached
+  [[ "$(<"$SANDBOX/err")" == *'first-run --non-interactive'* ]] || return 1
+  [[ ! -e "$STUB_LOG" ]]
+}
+
+case__first_run_unattended_startup_hint() {
+  sandbox_setup first_run_hint
+  # Source the real functions; replace only the long-running daemon body.
+  in_host 'run_daemon() { echo startup-continued; }; herdr_first_run_auto plugin "$VENV_PYTHON" herdr-tts; run_daemon' \
+    > "$SANDBOX/out" 2> "$SANDBOX/err" || return 1
+  [[ "$(<"$SANDBOX/out")" == startup-continued ]] || return 1
+  [[ "$(<"$SANDBOX/err")" == *'first-run --non-interactive'* ]] || return 1
+  [[ ! -e "$STUB_LOG" ]]
+}
+
+case__first_run_marker_suppresses_startup_hint() {
+  sandbox_setup first_run_marker
+  mkdir -p "$SANDBOX/config/herdr-tts"
+  printf '{"version":1}\n' > "$SANDBOX/config/herdr-tts/first-run.done"
+  in_host 'herdr_first_run_auto plugin "$VENV_PYTHON" herdr-tts' 2> "$SANDBOX/err" || return 1
+  [[ ! -s "$SANDBOX/err" && ! -e "$STUB_LOG" ]]
+}
+
 main() {
   local all=""
   local fn
