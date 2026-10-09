@@ -43,19 +43,24 @@ del PC** es tu instalación habitual `~/.local/share/herdr-tts`):
 **Terminal 1 — brain** (realiza el render vía el host que le digas):
 
 ```bash
+# WT se define UNA vez y vale para todo el documento: cualquier checkout
+# descendiente de main (canónico o worktree).
+export WT=<tu-checkout-del-repo>
+
 # Opción A — checkout canónico (el más simple; ya contiene el voice-stack):
-cd ~/Code/personal/agent-tts/hosts/herdr/brain
+cd $WT/hosts/herdr/brain
 export GLM_API_KEY="<tu clave>"                       # LLM real; sin clave, /ask responde 503
 export HERDR_BRAIN_HOST=0.0.0.0                        # para abrirlo desde el teléfono
 export HERDR_BRAIN_PORT=8741                           # ya es el default
 .venv/bin/python -m herdr_brain.server
 
 # Opción B — este worktree (solo si la sesión debe ejercer estos bytes):
-#   el brain del worktree NO tiene .venv; usa el venv canónico + PYTHONPATH:
-export WT=/home/bruno/Code/personal/agent-tts-worktrees/roadmap
+#   el brain del worktree NO tiene .venv; usa el venv del canónico + PYTHONPATH:
+export WT=<tu-worktree>                               # p. ej. <tu-checkout-del-repo>-worktrees/roadmap
+export CANON=<tu-checkout-canónico>                   # un checkout con .venv (p. ej. el principal)
 export HERDR_TTS_HOME=$WT/hosts/herdr/tts-plugin
 cd $WT/hosts/herdr/brain && \
-  PYTHONPATH=$WT/hosts/herdr/brain/src ~/Code/personal/agent-tts/hosts/herdr/brain/.venv/bin/python -m herdr_brain.server
+  PYTHONPATH=$WT/hosts/herdr/brain/src $CANON/hosts/herdr/brain/.venv/bin/python -m herdr_brain.server
 ```
 
 > ⚠️ Nota sobre el motor: el venv del host (`~/.local/share/herdr-tts/venv`)
@@ -64,7 +69,7 @@ cd $WT/hosts/herdr/brain && \
 > Solo si la sesión debe forzar el motor de un checkout concreto:
 >
 > ```bash
-> export WT=<checkout>   # p. ej. /home/bruno/Code/personal/agent-tts-worktrees/roadmap
+> export WT=<tu-checkout>   # p. ej. <tu-checkout-del-repo>-worktrees/roadmap
 > PYTHONPATH="$WT/engine/src:$WT/hosts/herdr/tts-plugin/lib" \
 >   ~/.local/share/herdr-tts/venv/bin/python "$WT/hosts/herdr/tts-plugin/lib/pending_queue.py" <subcomando>
 > ```
@@ -177,7 +182,7 @@ worktree) y usa el venv correspondiente (el brain del worktree no tiene
 `.venv`; el canónico sí):
 
 ```bash
-WT=/home/bruno/Code/personal/agent-tts          # o .../agent-tts-worktrees/roadmap
+WT=<tu-checkout-del-repo>          # el canónico o <repo>-worktrees/roadmap
 
 # Unit suites (como los gates, sin maquinaria de evidencia)
 (cd $WT/hosts/herdr/brain && .venv/bin/python -m pytest tests/ -q --ignore=tests/e2e)   # 1256

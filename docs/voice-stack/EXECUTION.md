@@ -17,7 +17,7 @@
 ## 1. Solicitud copiable (el usuario la pega SOLO si decide autorizar)
 
 ```text
-Arranca en /home/bruno/Code/personal/agent-tts (monorepo canónico). Lee completos, antes de
+Arranca en `<repo>` (raíz del monorepo canónico). Lee completos, antes de
 tocar nada, en este orden:
   docs/voice-stack/README.md
   docs/voice-stack/EXECUTION.md

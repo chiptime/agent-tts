@@ -19,9 +19,27 @@ import gate_evidence as ge
 
 REPO = Path(os.environ["REPO_C"]).resolve()
 RUN = Path(os.environ["RUN_DIR"]).resolve()
-B0_SNAP = Path("/home/bruno/.local/state/voice-stack-runs/20260930T214105Z-vs1/baseline-snapshot.json")
+
+# Voice-stack run state (immutable baseline run, its blobs and coverage
+# lanes) lives under VOICE_STACK_STATE_DIR (default: the user's X-style
+# state dir). Every knob is env-overridable — no machine path is embedded:
+#   VOICE_STACK_STATE_DIR  state root (default ~/.local/state/voice-stack-runs)
+#   VOICE_STACK_B0_RUN     baseline run id under the state root
+#   B0_SNAPSHOT            full override for the baseline snapshot file
+#   B0_COV_DIR             full override for the baseline coverage dir
+#   B0_APP_BLOB            full override for the baseline app.js blob
+#   FORMER_EXCLUSIONS      full override for the rejected exclusions file
+STATE_DIR = Path(os.environ.get(
+    "VOICE_STACK_STATE_DIR", Path.home() / ".local/state/voice-stack-runs"))
+B0_RUN = STATE_DIR / os.environ.get("VOICE_STACK_B0_RUN", "20260930T214105Z-vs1")
+B0_SNAP = Path(os.environ.get("B0_SNAPSHOT", B0_RUN / "baseline-snapshot.json"))
 CAND_SNAP = RUN / "snapshot.json"
-B0_COV_DIR = Path("/home/bruno/.local/state/voice-stack-runs/20260930T214105Z-vs1/baseline")
+B0_COV_DIR = Path(os.environ.get("B0_COV_DIR", B0_RUN / "baseline"))
+B0_APP_BLOB = Path(os.environ.get(
+    "B0_APP_BLOB",
+    B0_RUN / "blobs" / "41d04b1798b440c2d28d67a1f2c0bccb56d0c11df9db94499f105b0c64e0345f"))
+FORMER_EXCLUSIONS = Path(os.environ.get(
+    "FORMER_EXCLUSIONS", REPO / "scripts/voice-stack/coverage-exclusions.json"))
 VENV_HOST = Path(os.environ["VENV_HOST"])
 PY = sys.executable
 
@@ -52,12 +70,17 @@ def main():
            bind("engine/tests/test_monorepo_boundaries.py"))
 
     # ---- G-SMOKE (full hermetic smoke with own venv + namespace)
+    # Smoke PATH: the ambient PATH plus the Homebrew prefix when set —
+    # nothing machine-specific is appended.
+    smoke_path = os.environ["PATH"]
+    brew_prefix = os.environ.get("HOMEBREW_PREFIX")
+    if brew_prefix:
+        smoke_path = f"{brew_prefix}/bin:{smoke_path}"
     smoke_env = {
         "HERDR_TTS_REAL_VENV": str(VENV_HOST / "bin/python"),
         "SMOKE_ROOT": str(RUN.parent.parent / "sr"),  # short path: unix sockets die past 108 chars (case 39c)
         "HOME": str(RUN.parent / "home"),  # sterilized; XDG isolated per case
-        "PATH": "/usr/bin:/bin:/home/linuxbrew/.linuxbrew/bin:"
-                "/home/bruno/.local/bin",
+        "PATH": smoke_path,
     }
     saved = {k: os.environ.get(k) for k in smoke_env}
     os.environ.update(smoke_env)
@@ -132,10 +155,8 @@ def main():
         "RUN_DIR": str(js_child),
         "B0_SNAPSHOT": str(B0_SNAP),
         "B0_LCOV": str(B0_COV_DIR / "pwa.lcov"),
-        "B0_APP_BLOB": "/home/bruno/.local/state/voice-stack-runs/20260930T214105Z-vs1"
-                       "/blobs/41d04b1798b440c2d28d67a1f2c0bccb56d0c11df9db94499f105b0c64e0345f",
-        "FORMER_EXCLUSIONS": "/home/bruno/Code/personal/agent-tts-worktrees/voice-stack"
-                             "/scripts/voice-stack/coverage-exclusions.json",
+        "B0_APP_BLOB": str(B0_APP_BLOB),
+        "FORMER_EXCLUSIONS": str(FORMER_EXCLUSIONS),
         "NODE_TOOLS": str(RUN.parent.parent / "tools/nodejs"),
         "PY": PY,
     })

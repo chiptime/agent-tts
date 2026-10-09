@@ -44,7 +44,8 @@ La fundación se registró el 30/09; los commits de producción y E2E son del 03
 posteriores al cierre de ejecución registrado el 01/10. No se confunden las fechas.
 VS3 entrega anuncios pendientes, no los recordatorios escalados HT-05.
 
-El monorepo canónico (D8): `/home/bruno/Code/personal/agent-tts` — `engine/src/agent_tts`
+El monorepo canónico (D8) — este repo, `chiptime/agent-tts` — se organiza en
+`engine/src/agent_tts`
 (motor), `hosts/herdr/brain` (cerebro + PWA), `hosts/herdr/tts-plugin` (host CLI/daemon PC).
 La sesión de implementación trabaja SIEMPRE en el monorepo con rutas relativas al repo.
 
@@ -104,7 +105,8 @@ manifiesto; nunca se edita código para que una cita vuelva a ser cierta.
 
 ### Estado de la reconciliación externa D8 (hechos, no conclusiones)
 
-- Los standalone `~/Code/personal/herdr-brain` y `~/Code/personal/herdr-tts` **ya no existen
+- Los antiguos checkouts standalone de `herdr-brain` y `herdr-tts` (los repos
+  originales fuera del monorepo) **ya no existen
   en disco** (2ª revisión). NO es un error ni orden de recrearlos: el gate de Fase 0 trata
   "standalone ausente" como estado legítimo del trabajo externo.
 - `hosts/herdr/brain/deploy/herdr-brain.service:17-18` YA apunta al canónico
