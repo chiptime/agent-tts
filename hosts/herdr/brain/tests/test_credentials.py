@@ -477,15 +477,26 @@ class TestRedaction:
 
 
 class TestThreatMatrixPs:
+    @pytest.mark.parametrize("warning", [False, True], ids=["healthy-gate", "manifest-warning"])
     def test_ps_snapshot_during_noninteractive_run_has_no_secret(
-        self, tmp_path
+        self, tmp_path, warning
     ):
         canary = "sk-ps-canary-Z1x9Q7vN"
+        herdr = tmp_path / "herdr-double"
+        herdr.write_text(
+            '#!/bin/sh\nprintf "%s\\n" "$*" > "$HOME/plugin-list.calls"\n'
+            'test "$*" = "plugin list" || exit 99\n'
+            + ("echo 'warning: manifest unavailable: fixture'\n" if warning else "echo 'herdr.tts enabled'\n")
+        )
+        herdr.chmod(0o755)
         read_fd, write_fd = os.pipe()
         try:
             env = {
                 "HOME": str(tmp_path),
-                "PATH": os.environ.get("PATH", ""),
+                "PATH": "/usr/bin:/bin",
+                "XDG_CONFIG_HOME": str(tmp_path / ".config"),
+                "HERDR_BIN": str(herdr),
+                "PYTHONDONTWRITEBYTECODE": "1",
                 "PYTHONPATH": str(REPO_ROOT / "tools"),
                 "HERDR_ONBOARDING_SECRET_FD": str(read_fd),
             }
@@ -496,8 +507,16 @@ class TestThreatMatrixPs:
             proc = subprocess.Popen(
                 [
                     sys.executable,
-                    "-m",
-                    "herdr_onboarding",
+                    "-c",
+                    # Existing test seam: real HealthGate composition and
+                    # real herdr subprocess, but external HTTP is a double.
+                    "import runpy, sys, socket; "
+                    "from herdr_onboarding import cli, health; "
+                    "socket.create_connection = lambda *a, **k: sys.exit(99); "
+                    "cli.make_health_gate = lambda: health.HealthGate("
+                    "fetch=lambda url, timeout: (200, '{\"tts\":\"ok\",\"stt\":\"unavailable\"}')); "
+                    "sys.argv = ['herdr_onboarding'] + sys.argv[1:]; "
+                    "runpy.run_module('herdr_onboarding', run_name='__main__')",
                     "--role",
                     "brain",
                     "--non-interactive",
@@ -549,16 +568,17 @@ class TestThreatMatrixPs:
                 os.close(write_fd)
             except OSError:
                 pass
-        # No gate is wired at the CLI level yet (task 3.5): the run
-        # completes keyless-of-marker with exit 10.
-        assert proc.returncode == 10, stderr
+        assert proc.returncode == (30 if warning else 0), stderr
         record = json.loads(stdout)
-        assert record["status"] == "completed-no-marker"
+        assert record["status"] == ("health-gate-failed" if warning else "completed")
+        assert record["marker_written"] is (not warning)
         assert canary not in stdout
         assert canary not in stderr
-        assert not _marker(tmp_path).exists()
+        assert _marker(tmp_path).exists() is (not warning)
+        assert (tmp_path / "plugin-list.calls").read_text().strip() == "plugin list"
         env_file = _env_file(tmp_path)
         assert res._read_env_key(env_file, "GLM_API_KEY") == canary
+        assert env_file.stat().st_mode & 0o777 == 0o600
 
 
 class TestThreatMatrixFailedRun:
@@ -586,6 +606,7 @@ class TestThreatMatrixFailedRun:
                     "HOME": str(tmp_path),
                     "PATH": os.environ.get("PATH", ""),
                     "PYTHONPATH": str(REPO_ROOT / "tools"),
+                    "PYTHONDONTWRITEBYTECODE": "1",
                     "HERDR_ONBOARDING_SECRET_FD": str(read_fd),
                 },
                 capture_output=True,

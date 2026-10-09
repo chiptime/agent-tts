@@ -10,21 +10,22 @@ Exit contract (design "Wizard CLI"):
 Code   Meaning
 =====  =====================================================
 0      completed; the completion marker was written
-10     completed with no marker (health gate not wired yet)
+10     completed with no marker (library use without a health gate)
 20     an answer is missing in non-interactive mode
 30     health gate failed (retryable; no marker)
 40     user aborted or a step failed (no partial state)
 =====  =====================================================
 
-Health-gate seam for task 3.5
------------------------------
+Health-gate seam
+----------------
 ``Wizard(..., health_gate=callable)`` decides whether the completion
-marker may be written.  Until 3.5 wires the real gate (``/health``
-reports ``tts: ok`` and ``herdr plugin list`` emits no manifest
-warnings), the default is ``None``: the run completes its steps, writes
-no marker and exits ``10`` ("completed with no marker").  Tests and the
-3.5 wiring inject a ``Callable[[RunContext], bool]``; ``True`` → marker
-+ exit 0, ``False`` or a raised exception → exit 30 and no marker.
+marker may be written.  ``python -m herdr_onboarding`` (``cli.main``)
+always supplies the real gate from ``herdr_onboarding.health`` (task
+3.5): ``/health`` reports ``tts: ok`` and ``herdr plugin list`` emits no
+manifest warnings.  A library caller that passes ``None`` gets no gate:
+the run completes its steps, writes no marker and exits ``10``
+("completed with no marker").  For a gate ``True`` → marker + exit 0,
+``False`` or a raised exception → exit 30 and no marker.
 
 Diagnostic boundary
 -------------------
@@ -41,6 +42,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -175,8 +177,17 @@ def write_marker(
     """
     path = marker_path(env)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(dict(payload)) + "\n", encoding="utf-8")
-    path.chmod(MARKER_MODE)
+    fd, temporary = tempfile.mkstemp(prefix=".first-run-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            os.fchmod(stream.fileno(), MARKER_MODE)
+            stream.write(json.dumps(dict(payload)) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
     return path
 
 
@@ -337,13 +348,20 @@ class Wizard:
     def _finish_gate(self) -> int:
         if self._health_gate is None:
             self.ctx.diagnostic(
-                "health gate not wired yet (task 3.5): completing without "
-                "the completion marker"
+                "no health gate configured (library use): completing "
+                "without the completion marker"
             )
             self._finish(EXIT_COMPLETED_NO_MARKER, "completed-no-marker")
             return EXIT_COMPLETED_NO_MARKER
         try:
             passed = bool(self._health_gate(self.ctx))
+        except KeyboardInterrupt:
+            self.ctx.diagnostic(
+                "onboarding aborted during health verification: no completion "
+                "marker was written"
+            )
+            self._finish(EXIT_ABORTED, "aborted")
+            return EXIT_ABORTED
         except Exception as exc:  # noqa: BLE001 — a crashing gate is a failed gate
             self.ctx.diagnostic(
                 f"health gate raised {type(exc).__name__}: {exc}; no "
@@ -367,7 +385,15 @@ class Wizard:
             "role": self.options.role,
         }
         payload.update(self.ctx.preferences)
-        write_marker(self.ctx.env, payload)
+        try:
+            write_marker(self.ctx.env, payload)
+        except (OSError, KeyboardInterrupt) as exc:
+            self.ctx.diagnostic(
+                f"completion marker could not be published ({type(exc).__name__}); "
+                "onboarding remains retryable"
+            )
+            self._finish(EXIT_ABORTED, "aborted")
+            return EXIT_ABORTED
         self._finish(EXIT_COMPLETED, "completed", marker_written=True)
         return EXIT_COMPLETED
 

@@ -1,4 +1,4 @@
-# AT-11 apply progress — cumulative through task 2.6 COMPLETE (M1 CLOSED + M2 slices 9–14, closure conditions observed — see Task 2.6; 17/26 tasks)
+# AT-11 apply progress — completion branch: 20/26 tasks complete; 3.4/3.5 acceptance closure open
 
 Branch `feat/at-11-instalable` in worktree `/home/bruno/Code/personal/agent-tts-worktrees/at-11-instalable`.
 This file is the OpenSpec-side apply-progress artifact (native locator discovered by `gentle-ai sdd-status`);
@@ -799,3 +799,193 @@ Branch `feat/at-11-completion`, on top of 3.3 `d718948`. Files: `tools/herdr_onb
   dispatch should export `HERDR_PLUGIN_ROOT`/`HERDR_TTS_HOME` consistently with the resolver it already uses.
 - Marker keys now include `voice`, `voice_name`, `keymap`, `keymap_reloaded`, `stt`, `stt_downloaded` (the health gate must
   not treat `keymap: "failed"` as a gate failure — it is an installer-parity warning).
+
+## Completion-branch resume — task 3.5 implementation, 3.3/3.4 proof reconciliation
+
+Branch `feat/at-11-completion`, HEAD `52e3790` plus the uncommitted candidate tree.
+Inherited edits from the cancelled writer were inspected and preserved, not discarded.
+The previously missing exact edit surface `hosts/herdr/brain/tests/test_credentials.py`
+was approved separately; no other scope expansion occurred. Unrelated dirty
+`docs/ESTADO-Y-PENDIENTES.md` is untouched and must never be staged with this work.
+
+### Delivered behavior and boundaries
+
+- Both launchers now connect their inherited shared hand-off block to `first-run`,
+  leading `--no-first-run`, and startup-class commands. Absent marker + input/output
+  TTY invokes the wizard; unattended startup only prints the configuration hint.
+  Internal contract/render/keymap probes do not recursively run onboarding.
+- The CLI always supplies the real stdlib gate: local `/health` must answer 200 with
+  `tts: ok`; resolved `herdr plugin list` must exit 0 without manifest warnings.
+  ANSI-colored warnings are stripped before classification. STT is not a gate
+  prerequisite: refusal/unavailable is valid. The library-only no-gate exit 10 seam
+  remains available; CLI usage no longer promises that ungated outcome.
+- Completion marker publication is same-directory temporary write, mode 644,
+  flush/fsync, then `os.replace`. Failed publication exits 40 without a partial new
+  marker or leftover temporary file. Failed health exits 30; credentials/preferences
+  remain complete and retryable, with no completion marker.
+- The supported `python -m herdr_brain.stt pull` path is unchanged. Its existing
+  `HERDR_BRAIN_STT_PYTHON` knob now defaults to the plugin's XDG venv for the child
+  process; explicit overrides win. Both existing size variables are still supplied.
+- Credential process tests exercise both passing and warning-failed production
+  gate composition, with HTTP explicitly injected and herdr a sandbox executable.
+  FD capture, live argv/proc/ps threat assertions, mode 600 and secret-free failed
+  output remain asserted. No ambient GLM key is used by these tests.
+- Smoke 45 uses real Python for both launchers in source/curl/managed layouts, with
+  explicit skip (no health/service claim). PTY tests exercise automatic hand-off,
+  failure continuation and byte-identical blocks using an explicit module double.
+
+### Newly observed test-first evidence
+
+- Before the marker/dispatch changes, `uv run python -m pytest tests/test_first_run.py -q`
+  returned **exit 1, 3 failed / 46 passed**: no atomic replacement, no publication
+  error boundary, and brain `first-run` dispatched to the wrong module. The initial
+  brain fixture lacked the plugin sibling; the repeat after fixing the fixture still
+  showed the intended three failures. These are observed RED, not earlier-actor RED.
+- Plugin dispatch RED initially reached the unknown-command daemon loop and timed
+  out at 120 seconds. The test launcher copy was then explicitly contained before
+  dispatch; the same named selection returned **exit 1, 2 FAIL / 2 OK**, without
+  starting a real daemon. Full GREEN below includes all five current first-run cases.
+- `uv run python -m pytest tests/test_onboarding_stt.py tests/test_onboarding_health.py -q`
+  returned **exit 1, 2 failed / 65 passed** before the XDG interpreter and colored
+  warning fixes. Failures were the missing child interpreter key and a colored
+  manifest warning incorrectly passing. GREEN below includes override triangulation.
+- The inherited gate/CLI implementation and original 3.3/3.4 tests existed before
+  this resume; no first-draft RED is invented for them. Scenario authoring is ordinary
+  integration verification against the inherited/current behavior, not claimed RED.
+
+### Verification of record (foreground, no failure-masking pipelines)
+
+Brain cwd: `hosts/herdr/brain`. Before focused runs, the shell set exactly
+`export UV_OFFLINE=1 UV_NO_SYNC=1 PYTHONDONTWRITEBYTECODE=1` (no dependency sync/install).
+
+**Safety disclosure**: the first inherited credential-process test had only HOME
+isolation plus ambient PATH and the old exit-10 expectation. With the newly wired
+default gate it reached the operator's loopback `/health` and a real herdr executable;
+both checks passed and it exited 0, causing the asserted exit-10 failure. That result
+is not hermetic acceptance evidence. Work stopped for approval of the exact test
+file, then HTTP/herdr were isolated before any repeat. No real key was supplied or
+printed; subsequent credential-process runs use only the declared external doubles.
+
+| Exact command | Observed result |
+|---|---|
+| `uv run python -m pytest tests/test_first_run.py tests/test_credentials.py tests/test_onboarding_voice.py tests/test_onboarding_keymap.py tests/test_onboarding_stt.py tests/test_onboarding_health.py -q` | Initial inherited-test run: exit 1, 208 passed / 1 failed (obsolete credential exit-10 test). After isolation/fixes: exit 0, 213 passed. Final normalized candidate: **exit 0, 220 passed**, one existing stdlib GetPassWarning. |
+| `CASES="first_run_dispatch_preserves_exit first_run_skip_preserves_command first_run_unattended_startup_hint first_run_marker_suppresses_startup_hint" bash tests/host_cli_cases.sh` (plugin cwd) | Contained RED: exit 1, 2 FAIL / 2 OK; initial uncontained attempt timed out at 120s. |
+| `bash tests/all_bash_harnesses.sh` (plugin cwd) | Initial GREEN exit 0; final GREEN **exit 0, 142 named cases OK / 0 FAIL**. All nine child harnesses run. |
+| `env -i PATH="/usr/bin:/bin" HERDR_TTS_REAL_VENV="/home/bruno/Code/personal/agent-tts/engine/.venv/bin/python" PYTHONDONTWRITEBYTECODE=1 bash scripts/smoke-tests.sh` (plugin cwd) | **exit 1, 1074 passed / 8 failed**. Missing UTF-8 locale caused six decoding/count failures; 17a/17c expected 21 bindings although the current template contains 23 (PTT/radio already shipped). |
+| `env -i PATH="/usr/bin:/bin" LANG=C.UTF-8 LC_ALL=C.UTF-8 HERDR_TTS_REAL_VENV="/home/bruno/Code/personal/agent-tts/engine/.venv/bin/python" PYTHONDONTWRITEBYTECODE=1 bash scripts/smoke-tests.sh` (plugin cwd) | **exit 0, 1082 passed / 0 failed**. 17a/17c now require exact count 23 plus PTT/radio identity/null/order, not a weakened lower bound. Existing non-fatal s42a initial config-directory diagnostic is visible; its assertions pass. 16s host-state invariant passes. |
+| `git diff e9aab2a -- contracts/tts-brain-v1.md contracts/ipc-v2.md` (root) | **exit 0, empty**; focused digest assertions also pass. |
+
+Full brain was run **once**, with a clean env, isolated HOME/XDG and no live daemon
+pidfile. Exact command (brain cwd):
+
+```bash
+UV_BIN="$(command -v uv)"; env -i PATH="/usr/bin:/bin" HOME="/tmp/opencode/at11-brain-verification-home" XDG_CONFIG_HOME="/tmp/opencode/at11-brain-verification-home/config" XDG_CACHE_HOME="/tmp/opencode/at11-brain-verification-home/cache" HERDR_TTS_DAEMON_PID_FILE="/tmp/opencode/at11-brain-verification-home/absent-daemon.pid" LANG=C.UTF-8 LC_ALL=C.UTF-8 UV_OFFLINE=1 UV_NO_SYNC=1 PYTHONDONTWRITEBYTECODE=1 "$UV_BIN" run python -m pytest tests/ -q --ignore=tests/browser
+```
+
+Result: **exit 1, 1700 passed, 31 setup errors**, one GetPassWarning. All 31 setup
+errors were missing Chromium runtime discovery under the isolated XDG cache; no
+behavior assertion failed in that run. The installed binary already exists under
+the explicit tool cache; no installer/download was run. Focused diagnosis (not a
+second full-suite run), exact command:
+
+```bash
+UV_BIN="$(command -v uv)"; env -i PATH="/usr/bin:/bin" HOME="/tmp/opencode/at11-brain-verification-home" XDG_CONFIG_HOME="/tmp/opencode/at11-brain-verification-home/config" XDG_CACHE_HOME="/tmp/opencode/at11-brain-verification-home/cache" HERDR_TTS_DAEMON_PID_FILE="/tmp/opencode/at11-brain-verification-home/absent-daemon.pid" PLAYWRIGHT_BROWSERS_PATH="/home/bruno/.cache/ms-playwright" LANG=C.UTF-8 LC_ALL=C.UTF-8 UV_OFFLINE=1 UV_NO_SYNC=1 PYTHONDONTWRITEBYTECODE=1 "$UV_BIN" run python -m pytest tests/e2e/ -q
+```
+
+Result: **exit 1, 27 passed / 5 failed** — exactly the forwarded known failures:
+
+1. `tests/e2e/test_m2_stream.py::test_reconnect_no_duplicates_no_cancel_replay[chromium]`
+2. `tests/e2e/test_m2_stream.py::test_gt8_segments_first_before_final_e2e[chromium]`
+3. `tests/e2e/test_m2_stream.py::test_foreign_announcement_interleaves_without_dup_or_loss[chromium]`
+4. `tests/e2e/test_m4_fallback.py::test_fake_providers_e2e[chromium]`
+5. `tests/e2e/test_m4_fallback.py::test_no_duplicate_submissions[chromium]`
+
+Observed cause in their assertions: `seq_of()` yields `None` for segment URLs carrying
+`#brain-audio-N`, although real playback events are present. Those test/runtime files
+are outside this assignment and unchanged. This diagnostic does not make the full
+brain command green; the delivery remains partial.
+
+### Local acceptance selection (no network scenarios 1/2)
+
+The harness has no scenario-selector CLI. Its existing API/build_sandbox/run_scenario
+functions were used directly. `git archive HEAD` supplies the clean sandbox; only the
+listed uncommitted candidate files are overlaid into the **test checkout**, so this is
+working-tree evidence, not committed-HEAD evidence. Exact final command (root cwd):
+
+```bash
+bash -c 'export HERDR_ACCEPTANCE_API=1; source scripts/acceptance/clean-install.sh; SRC="$PWD"; HARNESS_FILE="$SRC/scripts/acceptance/clean-install.sh"; HARNESS_DIR="$SRC/scripts/acceptance"; ALLOWED_TOOLS=(bash git jq curl python3 uv); TOOLS_AVAILABLE=(); TOOLS_MISSING=(); KEEP=1; build_sandbox; python3 -c '\''import pathlib, shutil, sys; src, dst = map(pathlib.Path, sys.argv[1:]); paths = ["tools/herdr_onboarding/cli.py", "tools/herdr_onboarding/wizard.py", "tools/herdr_onboarding/health.py", "tools/herdr_onboarding/steps/stt.py", "hosts/herdr/brain/bin/herdr-brain", "hosts/herdr/tts-plugin/bin/herdr-tts", "scripts/acceptance/scenarios/04-first-run-keys.sh", "scripts/acceptance/scenarios/05-stt-consent-download.sh", "scripts/acceptance/scenarios/06-stt-refusal-degrades.sh", "scripts/acceptance/scenarios/07-reinstall-idempotent.sh"]; [shutil.copy2(src / p, dst / p) for p in paths]'\'' "$SRC" "$CHECKOUT"; SANDBOX_ENV_BASE+=(HERDR_ACCEPTANCE_PYTHON="$SRC/hosts/herdr/brain/.venv/bin/python"); result=0; for item in 03-zero-machine-paths 04-first-run-keys 05-stt-consent-download 06-stt-refusal-degrades 07-reinstall-idempotent; do run_scenario "$item" "$CHECKOUT/scripts/acceptance/scenarios/$item.sh"; printf "%s: %s (%s real, %s stubbed, %s failed) %s\n" "$item" "$RC_STATE" "$RC_PASS" "$RC_STUB" "$RC_FAIL" "$RC_REASON"; if [[ "$RC_STATE" == FAIL ]]; then result=1; elif [[ "$RC_STATE" == BLOCKED && "$result" == 0 ]]; then result=2; fi; done; exit "$result"'
+```
+
+Final result: **exit 2**, evidence kept at `/tmp/at11-clean-install.KH3O87/evidence/`.
+Earlier selection of 4/5/6/7 returned exit 1: scenario 6 failed because its fixture
+supplied an ambient key instead of the credential step's supported persisted/FD/file
+channel. Fixed by a synthetic mode-600 persisted fixture. Its dedicated `refusal.log`
+also avoids overlap with the harness's own stdout.log descriptor.
+
+| Scenario | Current observation | Limit |
+|---|---|---|
+| 3 zero-machine-paths | PASS, 1 real / 0 stubbed / 0 failed | No regression in the static/runtime-path check. |
+| 4 first-run-keys | PASS, 0 real / 1 stubbed aggregate assertion / 0 failed | Real launchers/interpreter/wizard, FD key, mode 600, failed-gate retry, marker suppression; HTTP/herdr doubled. Not real final-service health. |
+| 5 stt-consent-download | BLOCKED | Authorization missing: no model/network/live services allowed. The optional real builtin-backend pull/cache/ready leg is authored but UNRUN; no download success claimed. |
+| 6 stt-refusal-degrades | PASS, 0 real / 1 stubbed aggregate assertion / 0 failed | Real app handlers/wizard: unavailable, transcribe 503, ask audio_url/served audio and documented null. LLM/TTS/herdr/daemon doubled; no model load/download. |
+| 7 reinstall-idempotent | PASS, 27 real / 2 stubbed / 0 failed | Real unit generation/repair + credentials/preferences/keymap/marker byte-and-mode preservation. Herdr/HTTP/systemd boundary doubled; full installer stops exactly at exit 78. No live service-state claim. |
+
+`bash scripts/acceptance/clean-install.sh --milestone 3` is **UNRUN**: it would execute
+network installs 1/2. No remote ref, auth session or real credential was consulted.
+No global journal/milestone PASS is manufactured from this local selection.
+
+### Task state and handoff
+
+- 3.3's missing plugin-suite proof is now satisfied; valid completed implementation
+  and its historical evidence remain preserved.
+- 3.4 stays V1 delivered, acceptance reopened: refusal is locally proven with declared
+  doubles; real accepted-download proof remains BLOCKED. 3.5 implementation/local
+  proofs are ready; its closure checkbox remains open for the genuine V2/global gate.
+- M3 is NOT closed. Five known Chromium assertions and the real download/service
+  gates remain pending. No coverage/lint/type-check claims are made.
+- Doctor can reuse `CheckResult`, `health_url`, `check_brain_health`,
+  `check_plugin_list`, `manifest_warnings` and their existing injectable boundaries.
+- The worker cannot stage or commit. The orchestrator owns the work-unit commit(s),
+  independent review and recorded commit identities. Rollback boundaries: paired
+  launchers + gate/marker/tests together; STT child-interpreter fix + its tests;
+  scenario 4/5/6/7 integration fixtures + bookkeeping. The candidate exceeds the
+  advisory 400-line slice size (including inherited health module/tests); no test or
+  explanatory comment was cut to meet the budget.
+
+## Bounded corrective pass — redirects, interrupted gate, hermetic transport
+
+Applied only the independent verifier's requested correction within the existing
+surfaces; all inherited/unrelated dirt is preserved. No stage/commit, delegation,
+network, model/provider call, real credential or auth/session probe was performed.
+
+- `health.default_fetch` now installs `_RejectRedirects` alongside the proxy-disabled
+  opener. It returns the original 3xx as an HTTP error, never follows another URL.
+  The real urllib redirect machinery is tested through an in-memory HTTP handler;
+  the remote fixture would return `tts: ok` if requested. Cases 300–308 assert rejection,
+  one original request only, and a socket tripwire. No real HTTP request is made.
+- `Wizard._finish_gate` now catches `KeyboardInterrupt` separately and emits `aborted`
+  without formatting the exception/secret, traceback or completion marker. **Exit 40
+  is authoritative**: `design.md` Wizard CLI, line 1348, explicitly says `40 user aborted`.
+  Exit 10 is the separate library no-gate seam and is not used for this interruption.
+  Both human and JSON paths assert the exact abort contract and secret-free output.
+- The real-process gate test no longer reserves/releases a loopback port. A test-only
+  `sitecustomize` injects deterministic `URLError` at the opener boundary and rejects
+  any socket creation. Plugin and brain runs still execute the real CLI/default gate,
+  assert exactly five probe attempts plus the herdr subprocess, exit 30/no marker,
+  synthetic FD-secret protection, and mode-600 persisted brain credentials.
+- Remaining explicit subprocess envs in `test_first_run.py` and `test_credentials.py`,
+  plus the corrected health-process env, now set `PYTHONDONTWRITEBYTECODE=1`.
+
+Verification, all foreground:
+
+| Exact command | Observed result |
+|---|---|
+| `uv run python -m pytest tests/test_onboarding_health.py -q -k 'redirect or interrupted_gate'` (brain cwd; first set `export UV_OFFLINE=1 UV_NO_SYNC=1 PYTHONDONTWRITEBYTECODE=1`) | **RED: exit 1, 7 failed / 4 passed / 35 deselected** before production edits: five followed redirects accepted the remote fixture; both interruptions escaped. |
+| `uv run python -m pytest tests/test_first_run.py tests/test_credentials.py tests/test_onboarding_voice.py tests/test_onboarding_keymap.py tests/test_onboarding_stt.py tests/test_onboarding_health.py -q` (same cwd/exports) | **GREEN: exit 0, 232 passed**, one existing stdlib GetPassWarning. The prior 220-test suite plus 12 cases is fully exercised. |
+| `bash tests/all_bash_harnesses.sh` (plugin cwd) | **exit 0, 142 named cases OK / 0 FAIL**. |
+| `env -i PATH="/usr/bin:/bin" LANG=C.UTF-8 LC_ALL=C.UTF-8 HERDR_TTS_REAL_VENV="/home/bruno/Code/personal/agent-tts/engine/.venv/bin/python" PYTHONDONTWRITEBYTECODE=1 bash scripts/smoke-tests.sh` (plugin cwd) | **exit 0, 1082 passed / 0 failed**; host-state invariant passes. The previously recorded non-fatal s42a diagnostic remains visible, not edited by this bounded pass. |
+
+No full brain/e2e or acceptance-selection rerun was requested for this corrective
+pass; their earlier observations remain historical, not freshly claimed. Task 3.4
+and 3.5 acceptance checkboxes remain open. Genuine model download/service health and
+the global milestone command remain unproven; no new completion tick is added.
