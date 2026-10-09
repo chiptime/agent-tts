@@ -16,14 +16,20 @@
 const fs = require("fs");
 const path = require("path");
 
-const TOOLCHAIN = path.join(
-  process.env.VOICE_STACK_JS_TOOLS ||
-    "/home/bruno/.local/state/voice-stack-maintenance-runs/20261001T162700Z-m1q/tools/nodejs",
-  "node_modules"
-);
-const libCoverage = require(path.join(TOOLCHAIN, "istanbul-lib-coverage"));
-const libReport = require(path.join(TOOLCHAIN, "istanbul-lib-report"));
-const libReports = require(path.join(TOOLCHAIN, "istanbul-reports"));
+// Istanbul toolchain location: VOICE_STACK_JS_TOOLS (a directory holding
+// node_modules, exported by run-pwa-gate.sh) wins; without it, standard
+// Node module resolution applies (NODE_PATH / node_modules lookup from
+// this script). No machine path is embedded.
+function toolRequire(name) {
+  return require(
+    process.env.VOICE_STACK_JS_TOOLS
+      ? path.join(process.env.VOICE_STACK_JS_TOOLS, "node_modules", name)
+      : name
+  );
+}
+const libCoverage = toolRequire("istanbul-lib-coverage");
+const libReport = toolRequire("istanbul-lib-report");
+const libReports = toolRequire("istanbul-reports");
 
 function main() {
   const argv = process.argv.slice(2);
