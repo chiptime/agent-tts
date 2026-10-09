@@ -9,7 +9,8 @@ those onto the exit contract and never writes the marker on a non-zero
 path.
 
 Task 3.1 shipped the registry empty; task 3.2 registers the credentials
-step (brain role only).
+step (brain role only); task 3.3 adds voice and keymap (both roles); task
+3.4 adds the STT consent step (brain role only).
 """
 
 from __future__ import annotations
@@ -32,13 +33,16 @@ def steps_for_role(role: str) -> List[Step]:
 
     Task 3.2 registers the credentials step for the brain role only — a
     plugin-only run has no credentials step and therefore completes
-    keyless by construction.  Later tasks (3.3, 3.4) append their steps.
+    keyless by construction.  Voice and keymap (3.3) apply to both roles;
+    the STT consent step (3.4) is brain-only.  Order: credentials, voice,
+    keymap, stt.
     """
     # Imported lazily: step modules import the wizard's exception types,
     # and the wizard imports this registry.
     from herdr_onboarding.steps.credentials import CredentialsStep
     from herdr_onboarding.steps.keymap import KeymapStep
+    from herdr_onboarding.steps.stt import SttStep
     from herdr_onboarding.steps.voice import VoiceStep
 
-    registry: List[Step] = [CredentialsStep(), VoiceStep(), KeymapStep()]
+    registry: List[Step] = [CredentialsStep(), VoiceStep(), KeymapStep(), SttStep()]
     return [step for step in registry if role in step.roles]
