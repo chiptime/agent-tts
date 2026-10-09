@@ -215,6 +215,13 @@ SCAN_SCOPES: dict[str, str] = {
     # Task 2.4: the systemd unit is generated from a template; the template
     # and installer carry no machine-specific absolute path.
     "brain-deploy": "hosts/herdr/brain/deploy",
+    # Brain package source: the default tts home derives from the
+    # installation location and the missing-key guidance is machine-
+    # agnostic, so the versioned package tree carries no maintainer
+    # machine path. Scoped to the package directory: the src/ root
+    # additionally holds only the gitignored *.egg-info build artifact,
+    # which is not versioned tree.
+    "brain-src": "hosts/herdr/brain/src/herdr_brain",
 }
 
 # Archived standalone repositories: no active installer/doc/test reference
