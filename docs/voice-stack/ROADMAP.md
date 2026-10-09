@@ -107,24 +107,24 @@ F1 base veraz ─┬─► F3 red de tests (R4-B) ─► F4 AT-02 + HT-01 ─►
 ### F5 — HT-04 reenfocada (botones ntfy sobre el brain)
 
 - Acciones en la notificación ntfy (continuar/detener) que llaman a los endpoints del brain; sin listener propio duplicado.
-- **Estado (2026-10-08, rama `feat/f5-ntfy-actions`): IMPLEMENTADA con tests, pendiente de validación física y de revisión/fusión.** Brain: `POST /approval/{gate}/action` (decisión como palabra/JSON/form/`?decision=`, token opcional `HERDR_BRAIN_APPROVAL_TOKEN` con comparación en tiempo constante, approve en background sin TTS; `tests/test_approval_ntfy.py`). Plugin: `send_ntfy_push` emite `✅ Approve`/`❌ Stop`/`📱 Open` solo en pushes `blocked` con gate vivo y `NTFY_APPROVAL_URL`; búsqueda best-effort del gate por `GET /approval/current` (sesión por defecto); sin URL/gate o en `done`/`idle`, comportamiento idéntico al previo (casos `ntfy_*` en `tests/host_cli_cases.sh`). Pendiente: F2 (validar en teléfono real), y la dependencia declarada F2-antes-de-F5 se ejecutó al revés — la validación física sigue siendo el gate de cierre.
-- **Depende de:** F2 (`/approval` validado en Chrome Android) y F3. Reescribir la PRD antes de implementar. *(La PRD HT-04 ya refleja el estado implementado; F2 sigue abierto.)*
+- **Estado (2026-10-09): FUSIONADA en `main` (commits `2ef657b`, `13ff28c`, merge `0b615d2`).** Brain: `POST /approval/{gate}/action` (decisión como palabra/JSON/form/`?decision=`, token opcional `HERDR_BRAIN_APPROVAL_TOKEN` con comparación en tiempo constante, approve en background sin TTS; `tests/test_approval_ntfy.py`). Plugin: `send_ntfy_push` emite `✅ Approve`/`❌ Stop`/`📱 Open` solo en pushes `blocked` con gate vivo y `NTFY_APPROVAL_URL`; búsqueda best-effort del gate por `GET /approval/current` (sesión por defecto); sin URL/gate o en `done`/`idle`, comportamiento idéntico al previo (casos `ntfy_*` en `tests/host_cli_cases.sh`). Pendiente: validación física F2 en dispositivo real.
+- **Depende de:** F2 (`/approval` validado en Chrome Android) como gate de cierre de experiencia física.
 
 ### F6 — HT-11 audición de voces (prioridad baja, tras F4/F5)
 
-- Binds de preview/asignación sobre el picker `voice.picker.*`: preview bilingüe, auto-stop <0,3 s, caché LRU 20 MB, asignación global/chat.
-- Un solo escritor sobre `bin/herdr-tts`; no solapar con F4/F5.
+- **Estado (2026-10-08): COMPLETADA y archivada en `main`.** Binds de preview/asignación sobre el picker `voice.picker.*`: preview bilingüe, auto-stop <0,3 s, caché LRU 20 MB, asignación global/chat. BLOQUE-2 cerrado.
 
 ### F7 — Producto en paralelo (ramas independientes, sin dependencias de F1-F6)
 
 | Línea | Estado | Siguiente paso |
 |---|---|---|
-| AT-11 instalable | M1 hecho; M2 parcial (tarea 2.1 hecha); 14 tareas pendientes de M2–M4 en `openspec/changes/at-11-instalable/tasks.md` | Retomar en M2 |
-| brain: `open-session-inventory` | Activo (WIP sin commit en el checkout principal) | Terminar y mergear |
+| AT-11 instalable | M1 hecho; M2 tareas 2.1-2.5 entregadas y fusionadas en `main` (`55affe0`); re-slice 9a/9b/9c registrado (`a4b23d7`) | Tarea 2.6 (`reinstall-idempotent`) y M3 wizard |
+| brain: `open-session-inventory` | Integrado en `main` | Cerrado |
+| HT-03 (Radio mode) | Hito 1 core implementado y fusionado en `main` (`dd496c3`, `aa835d8`); archivada | Verificación con métricas de uso real (Hito 2) |
 | brain: `karaoke-fragments`, `create-session-tool` | Planificados | Priorizar tras lo anterior |
 | brain: `transcription-duplication` | Residual abierto | Cerrar o descartar |
 | `autoloop` | Solo bootstrap | Decidir si sigue vivo |
-| Backlog diferido: HT-03, HT-05 (sobre `pending_queue.py`), AT-05/06/07, BLOQUE-3 y BLOQUE-4 | Postergado | Reevaluar tras F2 y F4 |
+| Backlog diferido: HT-05 (sobre `pending_queue.py`), AT-05/06/07, BLOQUE-3 | Postergado | Reevaluar tras F2 |
 
 ## 5. Fuera de alcance
 
