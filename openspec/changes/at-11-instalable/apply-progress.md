@@ -1139,3 +1139,7 @@ Evidence: `HERDR_ACCEPTANCE_ALLOW_MODEL_DOWNLOAD=1 HERDR_ACCEPTANCE_PYTHON=<brai
 - **3.5 and 4.2 stay open** — both depend on scenario 9 with live services, still BLOCKED by design.
 
 M3 and M4 are therefore NOT closed: scenario 9 (live services) and the V3 human UAT remain.
+
+### Decision: scenario 9 closes through the V3 human UAT (2026-10-10)
+
+Maintainer decision: scenario 9 (`post-wizard-health`) is NOT automated with live services inside the sandbox. Its real leg would require extending the harness to forward `HERDR_ACCEPTANCE_REAL_HEALTH`, a credential channel and a sandbox daemon pidfile, plus a real GLM key and live TTS/brain/herdr. The post-wizard health proof (`/health` `tts: ok`, clean `herdr plugin list`, marker present) is instead covered by `docs/installation/V3-checklist.md` on a real clean machine. Tasks 3.5 and 4.2 therefore remain open and close together with the signed V3 UAT; scenario 9 stays BLOCKED by design in `--milestone 4`.
