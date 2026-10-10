@@ -118,10 +118,11 @@ F1 base veraz ─┬─► F3 red de tests (R4-B) ─► F4 AT-02 + HT-01 ─►
 
 | Línea | Estado | Siguiente paso |
 |---|---|---|
-| AT-11 instalable | M1 hecho; M2 tareas 2.1-2.5 entregadas y fusionadas en `main` (`55affe0`); re-slice 9a/9b/9c registrado (`a4b23d7`) | Tarea 2.6 (`reinstall-idempotent`) y M3 wizard |
+| AT-11 instalable | M1–M4 implementados y fusionados en `main` (`db660b0`, `e85200d`, `c210e04`) | Checklist V3 humano en máquina limpia (`docs/installation/V3-checklist.md`) |
 | brain: `open-session-inventory` | Integrado en `main` | Cerrado |
 | HT-03 (Radio mode) | Hito 1 core implementado y fusionado en `main` (`dd496c3`, `aa835d8`); archivada | Verificación con métricas de uso real (Hito 2) |
-| brain: `karaoke-fragments`, `create-session-tool` | Planificados | Priorizar tras lo anterior |
+| brain: `karaoke-fragments` | Implementado y fusionado en `main` (`964f6b5`) | Cerrado |
+| brain: `create-session-tool` | Planificado | Priorizar tras lo anterior |
 | brain: `transcription-duplication` | Residual abierto | Cerrar o descartar |
 | `autoloop` | Solo bootstrap | Decidir si sigue vivo |
 | Backlog diferido: HT-05 (sobre `pending_queue.py`), AT-05/06/07, BLOQUE-3 | Postergado | Reevaluar tras F2 |

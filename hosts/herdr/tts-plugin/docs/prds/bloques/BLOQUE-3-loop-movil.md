@@ -1,7 +1,7 @@
 # BLOQUE 3 — Loop móvil bidireccional (HT-04 → HT-05)
 
 **Alcance**: PRD-HT-04 + PRD-HT-05 · **Prioridad**: P1 · **Esfuerzo agregado**: L + M
-**Repositorio**: herdr-tts · **Estado**: SIN EJECUTAR
+**Repositorio**: herdr-tts · **Estado**: PARCIAL (Hito 1 ntfy fusionado en main; Hito 2 HT-05 pendiente)
 
 > **Estado reconciliado (2026-10-05)**: `send_ntfy_push()` solo ofrece acciones view/copy, no llamadas al brain; no hay recordatorios escalados HT-05. La PWA y `/approval/*` ya existen en el brain, pero no ejecutan este bloque del plugin. Según ROADMAP D1/D3, HT-04 será un atajo ntfy sobre el brain y HT-05 queda en backlog sobre `pending_queue.py`. El cuerpo es el plan histórico; debe replantearse antes de implementar, sin listener ni ledger duplicados.
 

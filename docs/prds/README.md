@@ -13,9 +13,8 @@ El orden vigente y las decisiones D1–D5 están en [ROADMAP.md](../voice-stack/
 La migración a monorepo absorbió tres repositorios independientes, implementando 5 de las 20 features del roadmap original y ~10 nuevas capacidades fuera de él:
 
 - **20 features del roadmap original (revisión 22/09/2026):**
-  - **6 Ejecutadas / Implementadas:** AT-01 (streaming frames MP3), AT-03 (conectores recortada a OpenCode), AT-04 (daemon persistente), AT-08 (cola con prioridades), HT-02 (voces por agente), HT-11 (audición de voces en paleta).
-  - **3 Reenfocadas (decisión del maintainer, 2026-10-07; antes "cobertura dual" D-R2 del 2026-10-06, superada):** AT-02 (STT y captura de micrófono como capacidad genérica del motor, reutilizando `faster-whisper` por extracción del brain; antes whisper.cpp, antes cliente HTTP del brain), HT-01 (PTT en terminal: toggle, interfaz pública del motor, `send-text`; diseño decidido, pendiente; independiente del brain), HT-04 (ntfy Actions que llaman a los endpoints del brain, sin listener propio; depende de F2; **no afectada** por la ida del STT al motor).
-  - **5 Aprobadas pendientes:** AT-06 (ducking), AT-07 (digest audio), HT-03 (radio mode, hito 0 completado), HT-05 (recordatorios escalados), HT-10 (chain replay).
+  - **10 Ejecutadas / Implementadas en main:** AT-01 (streaming frames MP3), AT-02 (STT core del motor), AT-03 (conectores OpenCode), AT-04 (daemon persistente), AT-08 (cola con prioridades), HT-01 (push-to-talk intercom), HT-02 (voces por agente), HT-03 (radio mode core), HT-04 (control móvil vía ntfy buttons), HT-11 (audición de voces en paleta).
+  - **4 Aprobadas pendientes / Backlog diferido:** AT-06 (ducking), AT-07 (digest audio), HT-05 (recordatorios escalados sobre `pending_queue.py`), HT-10 (chain replay).
   - **4 Postergadas:** AT-05 (prosodia), HT-06 (auto-snooze), HT-07 (filtro semántico), HT-08 (briefing matinal).
   - **2 Descartadas:** HT-09 (espacialización estéreo), HT-12 (watchers de texto).
 - **10 features nuevas fuera de roadmap (post-revisión / monorepo):**
@@ -28,10 +27,10 @@ La migración a monorepo absorbió tres repositorios independientes, implementan
   - **Podcast RSS local:** Generador y feed RSS de podcast en el motor (`engine/src/agent_tts/podcast.py`, flag `--podcast`) — **EJECUTADA / IMPLEMENTADA**.
   - **Brain on-demand-context:** Consultas, reportes y seguimiento multi-sesión (`hosts/herdr/brain/docs/ON-DEMAND-CONTEXT.md`) — **EJECUTADA / IMPLEMENTADA**.
   - **Brain action approval-gate:** Puerta interactiva de confirmación de acciones mutantes (`hosts/herdr/brain/docs/PRD-action-approval-gate.md`) — **EJECUTADA / IMPLEMENTADA** con tests (`server.py` `/approval/*`, `approval.py`).
-  - **VS0 (Voice Stack fundaciones):** Harness E2E, instrumentación de cobertura D4/D9 y gates transversales (`docs/voice-stack/TASKS.md`) — **Planificada / En preparación**.
+  - **VS0–VS4 (Voice Stack Core):** Streaming incremental, cancelación rápida, cola de pendientes y fallback (`contracts/tts-brain-v2.md`) — **EJECUTADA / IMPLEMENTADA** (validación física en dispositivo real F2 pendiente).
 - **Otras PRDs activas post-migración:**
-   - **AT-11:** Producto instalable independiente con first-run onboarding (`AT-11-instalable-first-run.md`) — **Parcial** (P1, aprobada 2026-09-30; M1 y tarea 2.1 hechas, commit `c577041`; 14 tareas de M2–M4 pendientes en `openspec/changes/at-11-instalable/tasks.md`).
-  - **Brain karaoke fragments:** Fragmentos seleccionables inline de karaoke (`herdr-brain-karaoke-fragments.md`) — **Aprobada (documentación)**.
+  - **AT-11:** Producto instalable independiente con first-run onboarding (`AT-11-instalable-first-run.md`) — **IMPLEMENTADA** (M1–M4 fusionados en `main`; aceptación `--milestone 4` 8 PASS/0 FAIL/1 BLOCKED; 3.5 y 4.2 abiertas hasta la firma del UAT V3 humano, que cubre el escenario 9).
+  - **Brain karaoke fragments:** Fragmentos seleccionables inline de karaoke (`herdr-brain-karaoke-fragments.md`) — **EJECUTADA / IMPLEMENTADA** en `main` (`964f6b5`).
 
 ---
 
@@ -101,12 +100,14 @@ La migración a monorepo absorbió tres repositorios independientes, implementan
    - Hito 0 (HT-02): implementado (`voices.json`, selector y prefijo de agente).
    - Hito 1 (HT-11): audición de voces en paleta fzf implementada con tests de preview, caché LRU 20 MB y asignación global (paquete R3 completado).
 3. **BLOQUE 3 — Loop móvil (HT-04 → HT-05):**
-   - **Estado:** **SIN EJECUTAR** en [`../../hosts/herdr/tts-plugin/docs/prds/bloques/BLOQUE-3-loop-movil.md`](../../hosts/herdr/tts-plugin/docs/prds/bloques/BLOQUE-3-loop-movil.md).
-   - Nota: HT-04 reenfocada (2026-10-07): ntfy Actions como atajo que llama a los endpoints del brain (`/approval/*`, `/ask`), sin listener propio; la PWA sigue siendo la vía completa. HT-05 pendiente.
+   - **Estado:** **PARCIAL** en [`../../hosts/herdr/tts-plugin/docs/prds/bloques/BLOQUE-3-loop-movil.md`](../../hosts/herdr/tts-plugin/docs/prds/bloques/BLOQUE-3-loop-movil.md).
+   - Hito 1 (HT-04 / F5): Implementado y fusionado en `main` (`0b615d2`) — botones `✅ Approve` / `❌ Stop` / `📱 Open` en push `blocked` sobre `/approval/{gate}/action` del brain. Validación física F2 pendiente.
+   - Hito 2 (HT-05): Recordatorios escalados con backoff sobre `pending_queue.py` (P2 backlog).
 4. **BLOQUE 4 — Radio mode y verificación OpenCode (HT-03 + AT-03 recortada):**
-   - **Estado:** **PARCIAL (hito 0 hecho, radio pendiente)** en [`../../hosts/herdr/tts-plugin/docs/prds/bloques/BLOQUE-4-radio-y-verificacion.md`](../../hosts/herdr/tts-plugin/docs/prds/bloques/BLOQUE-4-radio-y-verificacion.md).
+   - **Estado:** **PARCIAL** en [`../../hosts/herdr/tts-plugin/docs/prds/bloques/BLOQUE-4-radio-y-verificacion.md`](../../hosts/herdr/tts-plugin/docs/prds/bloques/BLOQUE-4-radio-y-verificacion.md).
    - Hito 0: Verificación de AT-03 contra SQLite de OpenCode completada y validada (2026-09-28).
-   - Hito 1: Radio mode (HT-03) pendiente.
+   - Hito 1: Radio mode core (`herdr-tts --radio`, command id `radio`): **COMPLETADO y fusionado en `main`** (`dd496c3`).
+   - Hito 2: Mejoras progresivas (identidad hablada y cola prioritaria hechas; resumen LLM `TTS_RADIO_LLM_SUMMARY` opcional en backlog; medición de métricas de uso real pendiente).
 
 ---
 
