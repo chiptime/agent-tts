@@ -1127,3 +1127,15 @@ Candidate Git blob identities (not commit identities):
 | `hosts/herdr/tts-plugin/tests/host_cli_cases.sh` | `36f1fb8b3210edb89cad9828bf9c1f69275feb5d` |
 | `scripts/acceptance/scenarios/08-doctor-diagnoses-break.sh` | `8dbeae5fab4fec33162f34c59f962cc6ec8eab38` |
 | `scripts/acceptance/scenarios/09-post-wizard-health.sh` | `832f265ff397854ea7dd766581bf4da5d4a5dd98` |
+
+## Checkbox reconciliation after milestone-4 acceptance (2026-10-10)
+
+Evidence: `HERDR_ACCEPTANCE_ALLOW_MODEL_DOWNLOAD=1 HERDR_ACCEPTANCE_PYTHON=<brain venv python> bash scripts/acceptance/clean-install.sh --milestone 4 --keep` at `8e96f04` + harness fix `d63f29d` → **8 PASS · 0 FAIL · 1 BLOCKED** (scenario 9 `post-wizard-health`: live brain/TTS/herdr required).
+
+- **3.4 ticked** — scenario 5 executed a real Hugging Face `base` model pull, the speech-surface contract check, and a real STT `ready` handler (`download.log`: "STT model 'base' ready"); daemon doubled.
+- **4.1 ticked** — doctor six checks with remediation (`c991c36`), scenario 8 PASS.
+- **4.3 ticked** — canonical docs pass (`f1207e0`, `8e96f04`); allowlist pending entries resolved; hygiene 13 passed.
+- **4.4 ticked** — `docs/installation/V3-checklist.md` authored with both timing readings, friction log, traceability matrix and frozen-contract check. The human UAT run and sign-off themselves remain open (human-owned).
+- **3.5 and 4.2 stay open** — both depend on scenario 9 with live services, still BLOCKED by design.
+
+M3 and M4 are therefore NOT closed: scenario 9 (live services) and the V3 human UAT remain.
