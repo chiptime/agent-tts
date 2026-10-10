@@ -304,6 +304,13 @@ build_sandbox() {
     CHECKOUT="$CHECKOUT"
     HERDR_ALLOWED_ORIGINS="$SANDBOX/allowed-origins.txt"
     HERDR_ACCEPTANCE_API=1 HERDR_ACCEPTANCE_LIB="$HARNESS_FILE"
+    # Operator-authorized real legs only (task 3.4 scenario 5, scenario 6).
+    # Empty by default so the isolated sandbox base is unchanged unless an
+    # operator explicitly exports one: without the model-download gate the
+    # scenario BLOCKS, and without the interpreter it falls back to system
+    # python3. Never a host session variable; both are opt-in and named.
+    HERDR_ACCEPTANCE_ALLOW_MODEL_DOWNLOAD="${HERDR_ACCEPTANCE_ALLOW_MODEL_DOWNLOAD:-}"
+    HERDR_ACCEPTANCE_PYTHON="${HERDR_ACCEPTANCE_PYTHON:-}"
   )
   self_check
 }
