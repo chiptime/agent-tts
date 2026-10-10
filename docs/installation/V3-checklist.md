@@ -12,7 +12,7 @@ run, and first-run-onboard the Herdr voice stack on a clean machine, within the
 target time, with no maintainer-only knowledge. It also times the flow against
 RNF-AT-11-3.
 
-Automated tiers (must be green *before* starting):
+Automated evidence before starting (full closure is still pending):
 
 | Tier | Command | Expected |
 |---|---|---|
@@ -20,7 +20,15 @@ Automated tiers (must be green *before* starting):
 | V1 | `cd hosts/herdr/brain && uv run python -m pytest tests/ -q --ignore=tests/browser` | pass except the known Chromium e2e set |
 | V1 | `bash hosts/herdr/tts-plugin/tests/all_bash_harnesses.sh` | exit 0 |
 | V1 | `bash hosts/herdr/tts-plugin/scripts/smoke-tests.sh` (with a UTF-8 locale and the real engine venv) | exit 0 |
-| V2 | `bash scripts/acceptance/clean-install.sh --milestone 4` | see §5 — **UNRUN as of this draft** (network installs in scenarios 1/2 are operator-authorized) |
+| V2 | `bash scripts/acceptance/clean-install.sh --milestone 4` with explicitly authorized model download and the brain interpreter | Observed: **8 PASS / 0 FAIL / 1 BLOCKED**, exit 2. Scenario 9 remains pending; this is not a green milestone closure. |
+
+The authorized V2 run exercised scenarios 1–8, including a real Hugging Face
+`base` model pull and real STT `ready` handler in scenario 5 (daemon doubled).
+Some scenarios use explicitly recorded external test doubles. Per the maintainer
+decision recorded in `openspec/changes/at-11-instalable/apply-progress.md`, scenario
+9's real post-wizard health proof will be obtained through this human UAT, not
+through additional sandbox automation. Tasks 3.5 and 4.2 remain open until that
+proof is recorded; a signed UAT does not retroactively change the harness result.
 
 ## 2. Prerequisites (clean machine)
 
@@ -64,18 +72,18 @@ Evidence sources: **V1** = unit/hygiene tests; **V2** = acceptance harness scena
 
 | RF | Title (short) | V1 | V2 | V3 | Evidence / gap |
 |---|---|---|---|---|---|
-| RF-AT-11-1 | Documented fresh-clone install routes | ✔ | scen 1, 2 | pending | Docs + id=-blocks exist; scenarios 1/2 network installs **UNRUN** this session |
-| RF-AT-11-2 | CLI on `~/.local/bin`, no manual symlink | ✔ | scen 1, 2 | pending | Installer exposure tested (2.5); V2 pending |
+| RF-AT-11-1 | Documented fresh-clone install routes | ✔ | scen 1, 2 PASS | pending | Documented-origin network installs observed; see apply-progress for the candidate-ref scope and limits |
+| RF-AT-11-2 | CLI on `~/.local/bin`, no manual symlink | ✔ | scen 1, 2 PASS | pending | Installer exposure tested (2.5); automated route evidence observed |
 | RF-AT-11-3 | First-run wizard on both entry points | ✔ | scen 4 (stubbed), 6 | pending | Wizard + launcher dispatch tested; real services unproven |
 | RF-AT-11-4 | Credential capture into standard 600 paths | ✔ | scen 4 (stubbed) | pending | Threat-matrix tests (argv/ps/failed-run/crash) pass |
-| RF-AT-11-5 | STT download with explicit consent + size | ✔ | scen 5 **authored, UNRUN** | pending | Refusal path tested; **real download not executed** |
+| RF-AT-11-5 | STT download with explicit consent + size | ✔ | scen 5 PASS | pending | Real `base` model pull, speech-surface contract check and STT `ready` handler observed; daemon doubled |
 | RF-AT-11-6 | No machine paths; discovery + configurable port | ✔ | scen 3 (PASS) | pending | Hygiene scope green; scenario 3 PASS |
 | RF-AT-11-7 | systemd unit from versioned template | ✔ | scen 3, 7 | pending | Template tests green; scenario 7 PASS |
 | RF-AT-11-8 | Portable `bin/herdr-brain` resolution | ✔ | scen 3 | pending | Launcher parity tests green |
 | RF-AT-11-9 | Optional remote exposure, no personal domain | ✔ | scen 3 | pending | Allowlist↔docs equivalence green; no personal domains in docs |
 | RF-AT-11-10 | `doctor` diagnoses with remediation | ✔ | scen 8 (stubbed) | pending | Check-table + remediation tests green; simulated breakage only |
 | RF-AT-11-11 | Idempotent reinstall preserving state | ✔ | scen 7 (PASS) | pending | env/preferences/keymap/marker preservation asserted |
-| RF-AT-11-12 | Post-wizard `/health` + clean plugin list | ✔ | scen 9 (stubbed) | pending | Marker after health gate tested; **real services unproven** |
+| RF-AT-11-12 | Post-wizard `/health` + clean plugin list | ✔ | scen 9 BLOCKED; local simulated leg tested | pending | Real services remain unproven; obtain this evidence during the signed clean-machine UAT |
 
 | RNF | Title (short) | Coverage |
 |---|---|---|
