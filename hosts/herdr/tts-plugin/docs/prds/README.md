@@ -10,15 +10,15 @@ El orden vigente es [ROADMAP.md](../../../../../docs/voice-stack/ROADMAP.md). El
 
 | ID | Fichero | Feature | Prioridad final | Estado | Esfuerzo |
 |---|---|---|---|---|---|
-| HT-04 | [HT-04-control-movil-bidireccional.md](HT-04-control-movil-bidireccional.md) | Control bidireccional desde el móvil | P1 | **Activa, reenfocada (2026-10-07):** ntfy Actions → endpoints del brain, sin listener propio; depende de F2 | L |
-| HT-05 | [HT-05-recordatorios-escalados.md](HT-05-recordatorios-escalados.md) | Recordatorios escalados de atención | P1 | Aprobada | M |
-| HT-01 | [HT-01-push-to-talk-intercom.md](HT-01-push-to-talk-intercom.md) | Push-to-talk intercom (hablar al agente) | P4 | **Activa, diseño decidido (2026-10-07, 2.ª revisión)**, pendiente de implementar; consume la capacidad del motor (AT-02), sin depender del brain | M-L |
+| HT-04 | [HT-04-control-movil-bidireccional.md](HT-04-control-movil-bidireccional.md) | Control bidireccional desde el móvil | P1 | **Implementada (F5 fusionada en main)**: botones ntfy Approve/Stop/Open hacia /approval/action; validación física F2 pendiente | L |
+| HT-05 | [HT-05-recordatorios-escalados.md](HT-05-recordatorios-escalados.md) | Recordatorios escalados de atención | P1 | Aprobada (Bloque 3 Hito 2 pendiente) | M |
+| HT-01 | [HT-01-push-to-talk-intercom.md](HT-01-push-to-talk-intercom.md) | Push-to-talk intercom (hablar al agente) | P4 | **Implementada (F4 fusionada en main)**: modo toggle con engine STT/PTT; validación en hardware F2 pendiente | M-L |
 | HT-06 | [HT-06-auto-snooze-reunion.md](HT-06-auto-snooze-reunion.md) | Auto-snooze contextual (modo reunión) | P4 | Postergada | M |
 | HT-07 | [HT-07-filtro-semantico.md](HT-07-filtro-semantico.md) | Filtro semántico de importancia | P4 | Postergada | M |
 | HT-08 | [HT-08-briefing-matinal.md](HT-08-briefing-matinal.md) | Briefing matinal automático | P4 | Postergada | M |
 | HT-10 | [HT-10-chain-replay.md](HT-10-chain-replay.md) | Chain replay contextual del host (no la cadena AT-08 del motor) | P5 | Aprobada (baja), sin ejecutar | S-M |
 
-**Entregas adicionales:** podcast RSS implementado (`ab4ef32`); brain on-demand-context implementado (`d7de194`, `2cb3a50`); approval-gate implementada con tests (`2abb17e`), Chrome Android pendiente. VS0–VS4/VSX cerrados `automated_complete` el 2026-10-01 (validación física pendiente). AT-01/03/04/08/09/10 ejecutadas; AT-02 reenfocada como capacidad STT + captura del motor (decisión 2026-10-07, 2.ª revisión: `faster-whisper` reutilizado por extracción del brain, extra opcional; antes whisper.cpp y antes cliente HTTP del brain); AT-05/06/07 sin ejecutar; AT-11 parcial (M1 y tarea 2.1 hechas, `c577041`; M2–M4 pendientes).
+**Entregas adicionales:** podcast RSS implementado (`ab4ef32`); brain on-demand-context implementado (`d7de194`, `2cb3a50`); approval-gate implementada con tests (`2abb17e`), Chrome Android pendiente. VS0–VS4/VSX cerrados `automated_complete` (validación física pendiente). AT-01/03/04/08/09/10 ejecutadas; AT-02 e HT-01 implementadas (STT + captura en motor y plugin); HT-03 radio core implementado (`dd496c3`); HT-04 botones ntfy implementados (`0b615d2`); AT-11 M1–M4 completados y fusionados en main (`db660b0`); AT-05/06/07 en backlog.
 
 ## PRDs archivadas / implementadas
 
@@ -41,13 +41,13 @@ El orden vigente es [ROADMAP.md](../../../../../docs/voice-stack/ROADMAP.md). El
 
 ## Orden de ataque
 
-**Estado de bloques:** BLOQUE-1 completado; BLOQUE-2 completado (2026-10-06, HT-02 e HT-11 hechas); BLOQUE-3 sin ejecutar; BLOQUE-4 parcial (AT-03 hecha, radio core hecho — Hito 1 —; Hito 2 pendiente).
+**Estado de bloques:** BLOQUE-1 completado; BLOQUE-2 completado (2026-10-06, HT-02 e HT-11 hechas); BLOQUE-3 parcial (Hito 1 ntfy fusionado en main; Hito 2 HT-05 pendiente); BLOQUE-4 parcial (AT-03 hecha, radio core hecho — Hito 1 —; Hito 2 mejoras progresivas / métricas pendiente).
 
-**Fase 1 — host P1:** HT-02 + HT-11 primero (identidad vocal completa); HT-05 (recordatorios) y HT-04 (control móvil: ntfy Actions que llaman a los endpoints del brain, sin listener propio; depende de F2).
+**Fase 1 — host P1:** HT-02 + HT-11 completadas (identidad vocal completa); HT-04 completada (botones ntfy sobre el brain, validación física pendiente); HT-05 (recordatorios escalados sobre pending_queue.py) pendiente en Bloque 3.
 
-**HT-03:** radio core implementada (2026-10-08, Bloque 4 Hito 1) sobre la cola prioritaria AT-08 con fallback secuencial y la identidad vocal de HT-02; queda el modo experimental RF-HT-03-9 (Hito 2c).
+**HT-03:** radio core implementada (2026-10-08, Bloque 4 Hito 1) sobre la cola prioritaria AT-08 con fallback secuencial y la identidad vocal de HT-02; queda el modo experimental RF-HT-03-9 (Hito 2c) y métricas de uso real.
 
-**Motor:** paquete P1 y AT-01/03/10 cerrados; AT-05/06/07 siguen pendientes.
+**Motor:** paquete P1, AT-01/03/10 cerrados; AT-02 STT Core implementada; AT-05/06/07 siguen en backlog.
 
 **Postergadas (P4/P5):** HT-01 (diseño decidido 2026-10-07, 2.ª revisión: modo toggle, STT y captura como capacidad del motor vía AT-02, inyección `send-text`, independiente del brain; pendiente de implementar como F4), HT-06, HT-07 y HT-08 quedan en P4; HT-10 (aprobada baja) en P5.
 
