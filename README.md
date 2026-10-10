@@ -81,6 +81,31 @@ cd agent-tts
 pip install -e .
 ```
 
+### Herdr voice stack (brain + tts-plugin)
+
+The `agent-tts` engine above is the speech core. The **Herdr voice stack** adds two entry points from this same monorepo:
+
+- `hosts/herdr/tts-plugin` — the `herdr-tts` CLI (text-to-speech, radio mode, mobile push).
+- `hosts/herdr/brain` — `herdr-brain`, the conversational voice+LLM brain over your Herdr agents.
+
+Supported for the stack: **Linux and WSL2**, and **macOS**. Native Windows is **not** a claimed installation target for the Herdr stack (the engine's own Windows playback is separate — see “Windows & WSL Playback” below).
+
+Install the plugin from the Herdr registry (recommended):
+
+```bash id=install-herdr-plugin-registry
+herdr plugin install chiptime/agent-tts/hosts/herdr/tts-plugin
+```
+
+or the curl route (ref-pinned):
+
+```bash id=install-herdr-plugin-curl
+curl -fsSL "https://raw.githubusercontent.com/chiptime/agent-tts/${HERDR_TTS_REF:-v0.16.0}/hosts/herdr/tts-plugin/scripts/install.sh" | bash
+```
+
+The first interactive launch runs the onboarding wizard (credentials, voice, keymap, optional STT model). Diagnose anytime with `herdr-tts doctor` / `herdr-brain doctor`. The brain can run as a Herdr plugin or, optionally, as a **systemd user unit** (`hosts/herdr/brain/deploy/install.sh`). Full details, uninstall/repair (including `herdr plugin unlink`) and remote-exposure guidance live in [`hosts/herdr/tts-plugin/README.md`](hosts/herdr/tts-plugin/README.md) and [`hosts/herdr/brain/README.md`](hosts/herdr/brain/README.md).
+
+**Remote exposure is user-configured and never automated** — no personal domains ship in the repo; bring your own tunnel/domain (the brain README's Tailscale section is a documented example using `‹machine-name›.‹tailnet-name›` placeholders).
+
 ---
 
 ## 🚀 CLI Usage

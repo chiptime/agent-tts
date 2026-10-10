@@ -136,11 +136,13 @@ bin/herdr-brain stop
 
 The service can alternatively run as a persistent **systemd user unit** — independent of Herdr lifecycle. This route is optional; the plugin startup route above needs no systemd.
 
-```bash
+```bash id=install-brain-systemd
 export GLM_API_KEY="…"        # optional here; or add it to ~/.config/herdr-brain/env
 deploy/install.sh              # idempotent: env file + generated unit + linger + health gate
 deploy/install.sh --generate-only   # only render the unit; no systemctl, no env file
 ```
+
+Run `bin/herdr-brain doctor` for a read-only diagnosis (CLI, audio backend, credentials, daemon, surface contract, STT cache); `bin/herdr-brain doctor --fix-credentials` re-runs only the credential capture.
 
 The unit is **generated**, never committed: the installer discovers the
 install location, the venv python, the `herdr` binary
