@@ -5,6 +5,10 @@
 > **not** executed by CI; the automated V1 (pytest) and V2 (acceptance harness)
 > tiers are prerequisites and their results are cited below.
 
+**Status (2026-10-10): deferred at the maintainer's request.** No clean-machine
+human UAT has been performed or signed. Resume using §7; tasks 3.5 and 4.2 remain
+open. The existing automated evidence does not establish a V3 pass.
+
 ## 1. Scope and what V3 proves
 
 V3 proves that a person who has **only the published documentation** can install,
@@ -114,3 +118,41 @@ Result observed during this draft: **empty (no diff)**. Record any future drift 
 | Notes | |
 
 > Sign-off is **human-owned**. An agent must never fill this section or claim V3 passed. Until a human signs, RF/V3 columns stay `pending`.
+
+## 7. Resume the deferred installation UAT
+
+### Prepare the run
+
+- [ ] Choose a clean Linux, WSL2 or macOS machine/VM without an existing voice-stack installation or inherited configuration. Do not clear the maintainer's working installation to simulate a clean machine.
+- [ ] Record the OS, prerequisites already present, selected install route and exact revision/ref under test. An older published default ref must not be presented as proof of the current implementation.
+- [ ] Read the root installation section and the plugin/brain README instructions for that revision. Record unclear or missing instructions as friction; do not silently replace them with maintainer knowledge.
+- [ ] Confirm authorization for the documented installation/model-download origins and for running the local services on that machine. Remote execution requires separate authorization for its destination and access method.
+- [ ] Prepare any required brain/provider credential privately. Use the supported interactive, FD or protected-file channel; never paste credentials into chat, command arguments, logs or the evidence report.
+- [ ] Record the current automated test results and their unresolved failures. The last recorded V2 result is 8 PASS / 0 FAIL / 1 BLOCKED, not a fully passing milestone.
+
+### Execute and collect evidence
+
+- [ ] Measure both timing readings in §3. For the host-preinstalled target, use the `base` STT model; choosing `none` does not demonstrate the model-inclusive timing requirement. Never estimate one reading from the other.
+- [ ] Install and onboard by following only the published instructions. Record each deviation or failure in the friction log.
+- [ ] Confirm the expected voice/keymap choices and that credentials remain in the documented mode-600 location. Record paths and permissions, not secret contents.
+- [ ] Confirm that the completion marker is present after the successful health gate. Record only non-sensitive marker information.
+- [ ] With the real local brain, TTS daemon and Herdr running, record `/health` with `tts: ok` and the STT state consistent with the selected option. A simulated daemon or handler is insufficient for this evidence.
+- [ ] Record the real `herdr plugin list` result and verify that it contains no manifest warnings.
+- [ ] Run the applicable `doctor` dispatcher; record its check outcomes and any remediation followed. Explain role-specific or intentionally unavailable components rather than claiming every check passed.
+- [ ] Re-launch to confirm completed onboarding is not repeated. Keep credential values out of screenshots and logs.
+
+### Record the outcome and close only what was proved
+
+Append a dated run report to this checklist with the tested revision, machine,
+commands followed, both measured timings, sanitized health/plugin/doctor results,
+friction points and the operator's verdict. Leave unperformed checks pending.
+
+After the operator explicitly supplies a sign-off, reconcile tasks 3.5 and 4.2
+against the observed real post-wizard evidence and update `apply-progress.md`.
+Do not retroactively relabel scenario 9's automated BLOCKED result as PASS. An
+incomplete or failed UAT does not close AT-11.
+
+**Separate validation:** this installation UAT does not establish F2 phone/audio
+acceptance (Android playback, audible cancellation latency, incremental audio,
+mobile approvals or physical microphone/PTT). Those checks remain under
+`docs/voice-stack/MANUAL-TESTS.md`.
