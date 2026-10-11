@@ -33,7 +33,8 @@ El trabajo restante real se divide únicamente en dos frentes inmediatos y un ba
 ┌───────────────────────────────────▼────────────────────────────────────┐
 │                   BACKLOG DIFERIDO (HOST PLUGIN & MOTOR P3/P4)         │
 │   • HT-10: Chain replay contextual (prioridad P5)                      │
-│   • AT-07 (Digest de audio), AT-06 (Ducking), AT-05 (Prosodia)         │
+│   • AT-06 (Ducking), AT-05 (Prosodia)                                  │
+│   • AT-07 (Digest de audio) — IMPLEMENTADO (F2 u móvil pendiente)      │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -93,7 +94,7 @@ Todo el código de Voice Stack (VS0 a VS4), STT Core (F4) y botones ntfy (F5) es
 
 ### Frente D — Backlog Diferido (Motor Periférico P3/P4)
 
-1. **AT-07 — Digest de audio (`--digest`):** P3. Compilado hablado de los eventos y avances del día para briefings rápidos (`HT-08`).
+1. **AT-07 — Digest de audio (`--digest`):** P3. ✅ **IMPLEMENTADO EN SOFTWARE** (`feat/at-07-digest-audio`): ventana `--since/--date`, merge consciente de contenedor (MP3→join+CHAP; WAV→normaliza, sin capítulos), capítulos ID3v2 CHAP, integración podcast con aviso en la rama WAV. Validación móvil real (2 apps) pendiente. Es la base de `HT-08`. Pack: [`odd/tasks/at-07-digest-audio.md`](../odd/tasks/at-07-digest-audio.md).
 2. **AT-06 — Ducking de audio:** P3. Atenuación automática del volumen de medios o agentes secundarios cuando habla un anuncio crítico (`blocked`).
 3. **AT-05 — Prosodia consciente de estado:** P4. Modulación de velocidad/tono según la urgencia del evento.
 4. **HT-10 — Chain replay contextual:** P5. Replay de cadena de eventos en el host.
