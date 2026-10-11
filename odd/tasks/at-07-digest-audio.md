@@ -43,6 +43,7 @@
 - Test creator: this task adds cases to `engine/tests/test_audio_store.py` (FUTURE until done)
 - Evidence: tests for window boundaries, mixed providers, pruned/absent partitions, ordering, dedupe
 - Gate: G-01
+- Status: ✅ DONE — 21 new selector cases pass. The suite's single failure `tests/test_daemon.py::test_play_registering_during_shutdown_is_refused_not_orphaned` is a PRE-EXISTING flaky test: passes 3/3 in isolation and failed in the pre-implementation run — unrelated to T-01 (it does not touch `daemon.py`).
 
 ### T-02 — Digest compiler + ID3v2 CHAP writer
 - Intent: compile the selected turns into one digest file with chapters/gap. Traces to RF-AT-07-2/3/4, RNF-AT-07-1/2/4.
@@ -129,9 +130,9 @@ Resolved — D1 and A1 confirmed by the maintainer (2026-10-11). The pack is `re
 ```markdown
 ## Resume bookmark (maintained by the future executor)
 - Pack identity: odd/tasks/at-07-digest-audio.md — sha256 pending finalization (pack is ready_for_bootstrap)
-- Completed: (none — pack is ready_for_bootstrap)
+- Completed: T-01 (store window selector; 21 cases; pre-existing daemon flake noted)
 - Active task: (none) — budget remaining: 2 remediation rounds per milestone
-- Next action: T-01 (audio-store window selector)
+- Next action: T-02 (digest compiler + ID3v2 CHAP writer; create `engine/src/agent_tts/digest.py` and `engine/tests/test_digest.py`)
 ```
 
 ## Unresolved choices
