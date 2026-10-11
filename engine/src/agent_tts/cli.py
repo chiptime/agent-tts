@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+from datetime import date
 import json
 import os
 import signal
@@ -1255,6 +1256,26 @@ async def speak(
             cleanup_locks()
 
 
+def _digest_since_days(value: str) -> int:
+    days = value[:-1]
+    if not value.endswith("d") or not days.isascii() or not days.isdigit():
+        raise argparse.ArgumentTypeError("expected a positive number of days, e.g. 1d or 3d")
+    result = int(days)
+    if result <= 0:
+        raise argparse.ArgumentTypeError("number of days must be positive, e.g. 1d or 3d")
+    return result
+
+
+def _digest_date(value: str) -> str:
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("expected a valid date in YYYY-MM-DD format") from None
+    if parsed.isoformat() != value:
+        raise argparse.ArgumentTypeError("expected a valid date in YYYY-MM-DD format")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Builds and returns the CLI argument parser."""
     parser = argparse.ArgumentParser(description="Agent Neural TTS Engine")
@@ -1335,6 +1356,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Publish this audio session as an episode to the local private podcast RSS feed",
     )
+    parser.add_argument("--digest", action="store_true", help="Compile stored audio turns into one digest and exit")
+    parser.add_argument(
+        "--since", type=_digest_since_days, metavar="Nd",
+        help="With --digest: select N calendar days including today (e.g. 1d or 3d)",
+    )
+    parser.add_argument(
+        "--date", type=_digest_date, metavar="YYYY-MM-DD",
+        help="With --digest: select one date (default today); takes precedence over --since",
+    )
+    parser.add_argument("--gap-ms", type=int, default=400, help="Digest gap between turns in milliseconds (default 400; WAV only)")
+    parser.add_argument("--chapters", choices=["turn", "pane", "none"], default="turn", help="Digest chapter mode (default turn)")
     parser.add_argument(
         "--podcast-title",
         default="",
@@ -1500,6 +1532,11 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
 
+    if not args.digest and (args.since is not None or args.date is not None):
+        parser.error("--since/--date only apply to --digest")
+    if args.digest and args.gap_ms < 0:
+        parser.error("--gap-ms must be a non-negative number of milliseconds")
+
     # Chain flag coherence (client-side, before any daemon contact).
     if args.play_chain and args.play_file:
         print(
@@ -1619,6 +1656,44 @@ def main():
             print(f"Error: cannot probe {args.probe}: {e}", file=sys.stderr)
             sys.exit(1)
         print(f"{duration:.3f}")
+        sys.exit(0)
+
+    if args.digest:
+        from agent_tts.audio_store import audio_duration, select_window
+        from agent_tts.digest import compile_digest
+
+        try:
+            files = select_window(since_days=args.since, date=args.date)
+            if not files:
+                print("Error: no audio turns found in the selected digest window.", file=sys.stderr)
+                sys.exit(1)
+            output = compile_digest(
+                files, gap_ms=args.gap_ms, chapters=args.chapters, output=args.output,
+            )
+            if args.podcast:
+                from agent_tts.podcast import PodcastFeed
+
+                digest_date = args.date or date.today().isoformat()
+                duration_sec = audio_duration(output)
+                with open(output, "rb") as source:
+                    digest_bytes = source.read()
+                if digest_bytes[:4] == b"RIFF" and digest_bytes[8:12] == b"WAVE":
+                    print(
+                        "Warning: podcast episode payload is WAV while the feed declares audio/mpeg "
+                        "and uses a .mp3 filename; no MP3 transcoding is available.",
+                        file=sys.stderr,
+                    )
+                PodcastFeed().add_episode(
+                    digest_bytes,
+                    title=f"Digest {digest_date}",
+                    description=f"Audio digest of {len(files)} turns from "
+                    f"{min(turn['date'] for turn in files)} to {max(turn['date'] for turn in files)}.",
+                    duration_sec=duration_sec,
+                )
+        except Exception as e:
+            print(f"Error: cannot create digest: {e}", file=sys.stderr)
+            sys.exit(1)
+        print(output)
         sys.exit(0)
 
     # Queue-control envelope (RF-AT-08-1): explicit --priority/--policy
