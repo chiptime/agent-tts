@@ -42,6 +42,7 @@
 - Test creator: this task adds unit cases to `tests/test_pending_queue.py`
 - Evidence: pytest cases for the backoff sequence (2m→5m→15m), max M, reset, persistence across reopen, and O(chats) behavior
 - Gate: G-02
+- Status: ✅ DONE — commit `56b32bb`. G-02 rc=0 (184 passed); G-01 rc=0 (all suites OK). Independent verification caught a reproducible PEM leak; the fix makes `admit` redact before truncation and `reminder_due` fail closed (snippet omitted on any secret-opener residue).
 
 ### T-02 — Config surface
 - Intent: `TTS_REMINDERS`, `TTS_REMINDER_START_MIN`, `TTS_REMINDER_BACKOFF`, `TTS_REMINDER_MAX` (defaults off/5/"2,5,15"/3). Traces to RF-HT-05-1. (D5)
@@ -140,9 +141,9 @@ Resolved — D1–D3 confirmed by the maintainer (2026-10-11). G-02 runner resol
 ```markdown
 ## Resume bookmark (maintained by the future executor)
 - Pack identity: odd/tasks/ht-05-recordatorios-escalados.md — sha256 pending finalization (pack is draft)
-- Completed: (none — pack is ready_for_bootstrap)
+- Completed: T-01 (commit `56b32bb`; G-02 184 passed, G-01 all OK)
 - Active task: (none) — budget remaining: 2 remediation rounds per milestone
-- Next action: confirm D1–D3, then T-01 (resolve the G-02 runner first)
+- Next action: T-02 (config surface: `TTS_REMINDER*` in `config_set` whitelist + validation + defaults)
 ```
 
 ## Unresolved choices
