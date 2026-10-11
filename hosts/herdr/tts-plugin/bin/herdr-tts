@@ -4733,6 +4733,25 @@ dashboard_render() {
       | [ $p, $m, $u, ($e.key|tostring), ($e.value|tostring) ] | @tsv)
   ' <<<"$state" 2>/dev/null || true)
 
+  # HT-05: one read-only schedule snapshot per enabled frame, then only
+  # associative lookups/printf in the roster loop. Off performs zero reads.
+  local -A pane_reminder_remaining=()
+  if [[ "${TTS_REMINDERS:-off}" == "on" ]]; then
+    local reminder_state
+    if reminder_state=$("$VENV_PYTHON" "${PLUGIN_ROOT}/lib/pending_queue.py" reminder-status 2>/dev/null); then
+      while IFS=$'\t' read -r f1 f2; do
+        [[ -n "$f1" && "$f2" =~ ^[0-9]+$ ]] && pane_reminder_remaining["$f1"]="$f2"
+      done < <(jq -rs --argjson now "$now" --arg max "$TTS_REMINDER_MAX" '
+        .[] | select(type == "object")
+        | select((.pane_id | type) == "string" and (.pane_id | length) > 0)
+        | select((.pane_id | test("[\\t\\r\\n]")) | not)
+        | select((.reminder_count | type) == "number" and (.next_reminder_ts | type) == "number")
+        | select(.reminder_count >= 0 and .reminder_count < ($max | tonumber))
+        | [.pane_id, ([0, ((.next_reminder_ts - $now) | ceil)] | max)] | @tsv
+      ' <<<"$reminder_state" 2>/dev/null || true)
+    fi
+  fi
+
   if (( g_until > now )); then
     _dash_add '%s' "$(tt dash.global_on "$(fmt_mmss $(( g_until - now )))" "$(fmt_epoch_clock "$g_until")")"
   else
@@ -4832,8 +4851,8 @@ dashboard_render() {
       *)            color="$c_muted"; icon="$st" ;; # unknown: literal value
     esac
     # Voice overlays appended after the agent kind: mute, active snooze
-    # countdown, then the anti-spam (debounce) hold with its remaining
-    # window. All three can stack on the same chat line.
+    # countdown, reminder countdown, then anti-spam (debounce). These
+    # overlays stack on the same chat line and retain the width clamp.
     overlay=""
     if [[ "${pane_muted[$pid]:-false}" == "true" ]]; then
       overlay+=" 🔇"
@@ -4842,6 +4861,11 @@ dashboard_render() {
       printf -v overlay_lbl '%02d:%02d' \
         $(( (${pane_until[$pid]} - now) / 60 )) $(( (${pane_until[$pid]} - now) % 60 ))
       overlay+=" 😴 ${overlay_lbl}"
+    fi
+    if [[ -n "${pane_reminder_remaining[$pid]:-}" ]]; then
+      printf -v overlay_lbl '%02d:%02d' \
+        $(( ${pane_reminder_remaining[$pid]} / 60 )) $(( ${pane_reminder_remaining[$pid]} % 60 ))
+      overlay+=" ⏰ ${overlay_lbl}"
     fi
     if (( TTS_DEBOUNCE_SECONDS > 0 )) \
        && [[ -n "${pane_last_status[$pid]:-}" ]] \

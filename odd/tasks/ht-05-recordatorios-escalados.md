@@ -80,6 +80,7 @@
 - Test creator: this task adds a smoke scenario to `scripts/smoke-tests.sh`
 - Evidence: `dashboard_render` overlay (`bin/herdr-tts:4690-4709`) shows the countdown; smoke scenario asserts it; PRD index/status updated
 - Gate: G-03, G-01
+- Status: ✅ DONE — G-02 197 passed; G-01 all OK; `bash -n` OK. G-03: scenario 46 (11 checks) green; 38 smoke failures are BASE-ONLY (scenario 40 needs `HERDR_TTS_REAL_VENV`; base run confirmed 975/38). Independent verification items 2–4 + docs PASS; item 1 (WAL byte-invariance) structurally+test covered, byte-diff not run (negligible with `mode=ro`).
 
 ---
 
@@ -145,9 +146,9 @@ Resolved — D1–D3 confirmed by the maintainer (2026-10-11). G-02 runner resol
 ```markdown
 ## Resume bookmark (maintained by the future executor)
 - Pack identity: odd/tasks/ht-05-recordatorios-escalados.md — sha256 pending finalization (pack is draft)
-- Completed: T-01 (`56b32bb`); T-01b `suppressed` (`7c3c482`); T-02 (`7837181`); T-03 (`8e22aec`); T-04 (reset hooks, verified)
-- Active task: (none) — budget remaining: 2 remediation rounds per milestone
-- Next action: T-05 (dashboard reminder countdown overlay + register harness + update PRD index / ESTADO-Y-PENDIENTES)
+- Completed: T-01 (`56b32bb`); T-01b `suppressed` (`7c3c482`); T-02 (`7837181`); T-03 (`8e22aec`); T-04 (`c7d049f`); T-05 (countdown + docs)
+- Active task: (none) — all five tasks implemented; budget remaining: 2 remediation rounds per milestone
+- Next action: close-out. Remaining real work is human/hardware only: physical F2 validation (ntfy priority on device) and real-use metrics (blockade→response baseline before enabling). Follow-up: `tests/voice_cases.sh` leaks machine-global `/tmp/herdr-tts-*.lock/.pid` (pre-existing).
 ```
 
 ## Unresolved choices

@@ -1,6 +1,6 @@
 # herdr-tts — PRDs 2026 (roadmap consolidado)
 
-**Fecha:** 22 de septiembre de 2026; estado reconciliado el 2026-10-05.
+**Fecha:** 22 de septiembre de 2026; estado HT-05 actualizado el 2026-10-11.
 **Alcance:** Plugin host `herdr-tts` (capa de orquestación Herdr). Motor y brain viven en el mismo monorepo; las PRDs del motor usan prefijo AT.
 **Metodología:** flow-first, núcleo-primero — cada feature debe mejorar el flujo diario real del operador de flota, y el núcleo de voz se consolida antes que el perímetro; la diferenciación de mercado es un bonus, nunca el motivo. Toda feature nace opt-in y ninguna rompe el comportamiento existente.
 
@@ -11,7 +11,7 @@ El orden vigente es [ROADMAP.md](../../../../../docs/voice-stack/ROADMAP.md). El
 | ID | Fichero | Feature | Prioridad final | Estado | Esfuerzo |
 |---|---|---|---|---|---|
 | HT-04 | [HT-04-control-movil-bidireccional.md](HT-04-control-movil-bidireccional.md) | Control bidireccional desde el móvil | P1 | **Implementada (F5 fusionada en main)**: botones ntfy Approve/Stop/Open hacia /approval/action; validación física F2 pendiente | L |
-| HT-05 | [HT-05-recordatorios-escalados.md](HT-05-recordatorios-escalados.md) | Recordatorios escalados de atención | P1 | Aprobada (Bloque 3 Hito 2 pendiente) | M |
+| HT-05 | [HT-05-recordatorios-escalados.md](HT-05-recordatorios-escalados.md) | Recordatorios escalados de atención | P1 | **Implementada (Bloque 3 Hito 2)**: backoff, voz/push prioritario final, resets y cuenta atrás; entrega en `feat/ht-05-recordatorios-escalados`, integración en main y validación física F2 pendientes | M |
 | HT-01 | [HT-01-push-to-talk-intercom.md](HT-01-push-to-talk-intercom.md) | Push-to-talk intercom (hablar al agente) | P4 | **Implementada (F4 fusionada en main)**: modo toggle con engine STT/PTT; validación en hardware F2 pendiente | M-L |
 | HT-06 | [HT-06-auto-snooze-reunion.md](HT-06-auto-snooze-reunion.md) | Auto-snooze contextual (modo reunión) | P4 | Postergada | M |
 | HT-07 | [HT-07-filtro-semantico.md](HT-07-filtro-semantico.md) | Filtro semántico de importancia | P4 | Postergada | M |
@@ -41,9 +41,11 @@ El orden vigente es [ROADMAP.md](../../../../../docs/voice-stack/ROADMAP.md). El
 
 ## Orden de ataque
 
-**Estado de bloques:** BLOQUE-1 completado; BLOQUE-2 completado (2026-10-06, HT-02 e HT-11 hechas); BLOQUE-3 parcial (Hito 1 ntfy fusionado en main; Hito 2 HT-05 pendiente); BLOQUE-4 parcial (AT-03 hecha, radio core hecho — Hito 1 —; Hito 2 mejoras progresivas / métricas pendiente).
+**Estado de bloques:** BLOQUE-1 completado; BLOQUE-2 completado (2026-10-06, HT-02 e HT-11 hechas); BLOQUE-3 implementado en software (Hito 1 ntfy fusionado en main; Hito 2 HT-05 entregado en su rama, integración y validación física F2 pendientes); BLOQUE-4 parcial (AT-03 hecha, radio core hecho — Hito 1 —; Hito 2 mejoras progresivas / métricas pendiente).
 
-**Fase 1 — host P1:** HT-02 + HT-11 completadas (identidad vocal completa); HT-04 completada (botones ntfy sobre el brain, validación física pendiente); HT-05 (recordatorios escalados sobre pending_queue.py) pendiente en Bloque 3.
+**Fase 1 — host P1:** HT-02 + HT-11 completadas (identidad vocal completa); HT-04 completada (botones ntfy sobre el brain, validación física pendiente); HT-05 implementada sobre `pending_queue.py` (BLOQUE-3 Hito 2), apagada por defecto.
+
+**Entrega HT-05:** estado de atención en SQLite, separado de los anuncios VS3; primer recordatorio a los 5 minutos y siguientes a los 7 y 12 minutos por defecto (gaps `2,5,15`, máximo 3). El debounce conserva la progresión; foco observado durante >2 s, respuesta PTT, working, mute y snooze reinician el estado. El dashboard muestra `⏰ mm:ss` junto al snooze mediante `reminder-status`, una lectura sin mutación. Las decisiones vigentes están en el [pack HT-05](../../../../../odd/tasks/ht-05-recordatorios-escalados.md); el cuerpo del PRD conserva la propuesta histórica del ledger JSON. La entrega de código no cierra la validación física F2 ni las métricas de uso real.
 
 **HT-03:** radio core implementada (2026-10-08, Bloque 4 Hito 1) sobre la cola prioritaria AT-08 con fallback secuencial y la identidad vocal de HT-02; queda el modo experimental RF-HT-03-9 (Hito 2c) y métricas de uso real.
 
