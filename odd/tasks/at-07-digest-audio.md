@@ -24,6 +24,7 @@
 - **D5 — Output.** `--output` explicit, or a generated name inside the store; never writes outside the store or `--output` (RNF-AT-07-4).
 - **D6 — Podcast.** `--digest --podcast` → `PodcastFeed().add_episode(digest_bytes, title=f"Digest {date}", description=..., duration_sec=...)` (`podcast.py:83-128`); no schema change (RF-AT-07-5). `--podcast-serve` unchanged.
 - **D7 — CLI.** Flat parser; add `--digest/--since/--date/--gap-ms/--chapters` beside `--podcast` (`cli.py:1334-1350`); dispatch as an early utility in `main()` (~`cli.py:1623`, before `--play-file`).
+- **D8 — Podcast publication is an explicit target (reconciles RNF-AT-07-4).** RNF-AT-07-4 ("zero writes outside the store and `--output`") governs the **digest compilation** only; publication via `--podcast` legitimately persists into the podcast dir (existing `PodcastFeed`, D6). When a digest published via `--podcast` is **not MP3** (the WAV branch), print a visible warning: the feed declares `audio/mpeg` and hard-codes `.mp3` (`podcast.py:94,150`) while the payload is WAV — there is no stdlib transcoder.
 
 ## Assumptions (visible)
 
@@ -63,6 +64,7 @@
 - Test creator: existing — `engine/tests/test_digest.py` (created by T-02)
 - Evidence: CLI tests for the flag group, empty-window exit, podcast registration, output path rules
 - Gate: G-01
+- Status: ✅ DONE — 57 focused cases pass; full suite **1223 passed, 0 failed**. Independent verification items 1–5 PASS. Findings resolved: (6) RNF-AT-07-4 reconciled with D6 via D8; (7) a WAV digest published via `--podcast` now emits a visible warning (feed is MP3-only; no stdlib transcoder).
 
 ### T-04 — Index/docs
 - Intent: reflect AT-07 delivered. 
@@ -131,9 +133,9 @@ Resolved — D1 and A1 confirmed by the maintainer (2026-10-11). The pack is `re
 ```markdown
 ## Resume bookmark (maintained by the future executor)
 - Pack identity: odd/tasks/at-07-digest-audio.md — sha256 pending finalization (pack is ready_for_bootstrap)
-- Completed: T-01 (selector); T-02 (digest compiler + ID3v2 CHAP; 30 cases)
+- Completed: T-01 (selector); T-02 (compiler + CHAP); T-03 (CLI wiring + WAV-podcast warning)
 - Active task: (none) — budget remaining: 2 remediation rounds per milestone
-- Next action: T-03 (CLI wiring: `--digest/--since/--date/--gap-ms/--chapters` + `--digest --podcast`)
+- Next action: T-04 (docs/index: AT-07 status + HT-08 dependency)
 ```
 
 ## Unresolved choices
