@@ -36,6 +36,7 @@ CLI (used by ``bin/herdr-tts``)::
     pending_queue.py reminders --now EPOCH [--pane ID:STATUS ...] [--suppressed ID ...]
                               --start-min N --backoff CSV --max N
     pending_queue.py reminder-reset --pane ID
+    pending_queue.py reminder-status
 
 ``tick`` (VS3.3, T7 LOCKED) is the dispatcher: when the engine is not busy
 it claims the OLDEST dispatchable ``pending`` record FIFO by
@@ -89,8 +90,9 @@ not touched here.
 
 Exit status: 0 = ``ok=true``, 1 = ``ok=false`` (engine/daemon refusal,
 including ``admission-blocked``), 2 = usage or invalid identifier. The
-reply line is ``key=value`` tokens, except ``reminders`` success output:
-one JSON object per due reminder, or no output when none are due.
+reply line is ``key=value`` tokens, except ``reminders`` / ``reminder-status``
+success output: one JSON object per due reminder / stored reminder state,
+or no output when there are no rows.
 """
 
 from __future__ import annotations
@@ -1826,6 +1828,31 @@ def _reminders_cli(args, *, queue_factory=None) -> int:
     return 0
 
 
+def _reminder_status_cli() -> int:
+    """Read the existing schedule without schema setup or crash recovery.
+
+    Do NOT construct PendingQueue or use its _connect: both are write paths.
+    SQLite mode=ro preserves live WAL visibility without creating a ledger
+    or migrating an old schema; an unavailable read is a typed refusal.
+    """
+    try:
+        db = Path(os.path.expanduser(DEFAULT_DB_PATH)).resolve()
+        conn = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=0.2)
+        try:
+            conn.row_factory = sqlite3.Row
+            rows = [dict(row) for row in conn.execute(
+                "SELECT pane_id, reminder_count, next_reminder_ts, last_reminder_ts"
+                " FROM reminder_state ORDER BY pane_id"
+            )]
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError) as exc:
+        return _emit({"ok": False, "error": f"reminder-status-failed: {exc}"})
+    for row in rows:
+        print(json.dumps(row, ensure_ascii=False, separators=(",", ":")))
+    return 0
+
+
 def _reminder_reset_cli(args, *, queue_factory=None) -> int:
     if not args.pane.strip():
         print("ok=false error=--pane must be non-empty", file=sys.stderr)
@@ -1917,6 +1944,7 @@ def main(
     p_rem.add_argument("--max", dest="max_reminders", type=int, required=True)
     p_rst = sub.add_parser("reminder-reset", help="reset one pane's attention state")
     p_rst.add_argument("--pane", required=True)
+    sub.add_parser("reminder-status", help="read existing reminder state as JSON Lines without mutation")
     args = parser.parse_args(argv)
 
     if args.command == "new-id":
@@ -1939,6 +1967,8 @@ def main(
         return _reminders_cli(args, queue_factory=queue_factory)
     if args.command == "reminder-reset":
         return _reminder_reset_cli(args, queue_factory=queue_factory)
+    if args.command == "reminder-status":
+        return _reminder_status_cli()
     try:
         if args.command == "enqueue-file":
             result = enqueue_file(

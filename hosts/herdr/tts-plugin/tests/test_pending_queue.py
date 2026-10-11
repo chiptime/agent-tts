@@ -2077,3 +2077,90 @@ def test_cli_reminder_storage_errors_exit_1(capsys):
         assert pq.main(argv, queue_factory=BrokenQueue) == 1
         output = capsys.readouterr()
         assert output.out == "" and "forced write failure" in output.err
+
+
+# HT-05 T-05: dashboard inspection must not run queue startup/recovery.
+def test_cli_reminder_status_json_lines_shape(tmp_path, monkeypatch, capsys):
+    q = make_queue(tmp_path / "pending # ?.db")
+    q.reminder_due(1000, [("P1", "done"), ("P2", "blocked")], **REMINDER_OPTIONS)
+    q.reminder_due(1300, [("P1", "done")], suppressed=["P2"], **REMINDER_OPTIONS)
+    monkeypatch.setattr(pq, "DEFAULT_DB_PATH", str(q.db_path))
+
+    assert pq.main(["reminder-status"]) == 0
+    output = capsys.readouterr()
+    assert output.err == ""
+    assert [json.loads(line) for line in output.out.splitlines()] == [
+        {"pane_id": "P1", "reminder_count": 1, "next_reminder_ts": 1420.0,
+         "last_reminder_ts": 1300.0},
+        {"pane_id": "P2", "reminder_count": 0, "next_reminder_ts": 1300.0,
+         "last_reminder_ts": None},
+    ]
+
+
+def test_cli_reminder_status_is_read_only_without_recovery(tmp_path, monkeypatch, capsys):
+    db = tmp_path / "pending.db"
+    q = make_queue(db)
+    record = q.admit(make_event())
+    assert q.mark(record["id"], "announcing")["ok"]
+    q.reminder_due(1000, [("P1", "done")], **REMINDER_OPTIONS)
+    with sqlite3.connect(db) as conn:
+        before = list(conn.iterdump())
+    before_bytes = db.read_bytes()
+    monkeypatch.setattr(pq, "DEFAULT_DB_PATH", str(db))
+
+    def forbidden_constructor():
+        pytest.fail("reminder-status must not initialize schema or recover announcements")
+
+    monkeypatch.setattr(pq, "PendingQueue", forbidden_constructor)
+    for _ in range(2):
+        assert pq.main(["reminder-status"], queue_factory=forbidden_constructor) == 0
+        assert json.loads(capsys.readouterr().out)["reminder_count"] == 0
+    with sqlite3.connect(db) as conn:
+        assert list(conn.iterdump()) == before
+        assert conn.execute("SELECT state FROM pending_records").fetchone()[0] == "announcing"
+    assert db.read_bytes() == before_bytes
+
+
+def test_cli_reminder_status_empty_existing_ledger(tmp_path, monkeypatch, capsys):
+    q = make_queue(tmp_path / "pending.db")
+    monkeypatch.setattr(pq, "DEFAULT_DB_PATH", str(q.db_path))
+    assert pq.main(["reminder-status"]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_cli_reminder_status_reads_committed_live_wal(tmp_path, monkeypatch, capsys):
+    q = make_queue(tmp_path / "pending.db")
+    q.reminder_due(1000, [("P1", "done")], **REMINDER_OPTIONS)
+    monkeypatch.setattr(pq, "DEFAULT_DB_PATH", str(q.db_path))
+    writer = q._connect()
+    try:
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute("UPDATE reminder_state SET reminder_count = 2")
+        assert pq.main(["reminder-status"]) == 0
+        assert json.loads(capsys.readouterr().out)["reminder_count"] == 0
+        writer.execute("COMMIT")
+        assert pq.main(["reminder-status"]) == 0
+        assert json.loads(capsys.readouterr().out)["reminder_count"] == 2
+    finally:
+        writer.close()
+
+
+@pytest.mark.parametrize("kind", ["missing", "corrupt", "old_schema"])
+def test_cli_reminder_status_unavailable_does_not_create_or_migrate(tmp_path, monkeypatch, capsys, kind):
+    db = tmp_path / "absent-parent" / "pending.db"
+    if kind != "missing":
+        db.parent.mkdir()
+        if kind == "corrupt":
+            db.write_bytes(b"not a SQLite ledger")
+        else:
+            with sqlite3.connect(db) as conn:
+                conn.execute("CREATE TABLE pending_records (state TEXT)")
+    before = db.read_bytes() if db.exists() else None
+    monkeypatch.setattr(pq, "DEFAULT_DB_PATH", str(db))
+    assert pq.main(["reminder-status"]) == 1
+    output = capsys.readouterr()
+    assert output.out == "" and "reminder-status-failed" in output.err
+    if before is None:
+        assert not db.parent.exists()
+    else:
+        assert db.read_bytes() == before

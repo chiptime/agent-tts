@@ -158,6 +158,8 @@
 #         six-step HERDR_BIN discovery (no literal brew prefix), and the
 #         HERDR_BRAIN_PORT -> config.env -> 8741 port order — every check
 #         runs the SHIPPED block extracted from the real launcher
+#   46    HT-05 reminder countdown: enabled snapshot, snooze stacking,
+#         exhausted/overdue state, off zero-read and read-failure fallback
 set -uo pipefail
 
 REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
@@ -4719,6 +4721,53 @@ CASES="first_run_dispatch_preserves_exit first_run_skip_preserves_command first_
 rc=$?
 [[ $rc == 0 ]] && ok "45 first-run dispatch/exit/skip/nonblocking/marker cases" \
   || bad "45 first-run named cases (rc=$rc; see $T/cases.out)"
+
+# 46. HT-05: use a real reminder ledger, a fixed clock and the shipped
+# render path. Status is read once per frame, never once per chat.
+echo "── 46. HT-05 dashboard reminder countdown"
+new_env s46
+FX="$T/fixture.json"; make_fixture "$FX"
+write_herdr_stub "$FX"
+python3 "$REPO/lib/pending_queue.py" reminders --now 1000 --start-min 5 \
+  --backoff 2,5,15 --max 3 --pane w4:p1:done --pane w4:p2:blocked \
+  --pane w4:p3:done > "$T/seed.out" 2>>"$T/err.log"
+[[ $? == 0 ]] && ok "46 seed real reminder ledger" || bad "46 reminder seed failed"
+python3 - "$HOME/.local/state/herdr-tts/pending.db" <<'PY'
+import sqlite3, sys
+with sqlite3.connect(sys.argv[1]) as conn:
+    conn.execute("UPDATE reminder_state SET reminder_count = 3 WHERE pane_id = 'w4:p3'")
+PY
+jq -n '{panes:{"w4:p2":{snooze_until:1400}}}' > "$HERDR_TTS_SNOOZE_FILE"
+cat > "$T/data/herdr-tts/venv/bin/python" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == *'pending_queue.py reminder-status'* ]]; then
+  echo status >> "$T/reminder.reads"
+  [[ "${REMINDER_READ_FAIL:-0}" == 1 ]] && exit 1
+fi
+exec python3 "$@"
+EOF
+chmod +x "$T/data/herdr-tts/venv/bin/python"
+lib_run '
+  date() { if [[ "$*" == "+%s" ]]; then echo 1000; else command date "$@"; fi; }
+  dashboard_refresh_roster
+  TTS_REMINDERS=on; DASH_LAST_FRAME=""; dashboard_render w4:p1 > "$T/on.txt"
+  TTS_REMINDERS=off; DASH_LAST_FRAME=""; dashboard_render w4:p1 > "$T/off.txt"
+  TTS_REMINDERS=on; export REMINDER_READ_FAIL=1; DASH_LAST_FRAME=""; dashboard_render w4:p1 > "$T/failed.txt"
+  export REMINDER_READ_FAIL=0
+  date() { if [[ "$*" == "+%s" ]]; then echo 1301; else command date "$@"; fi; }
+  DASH_LAST_FRAME=""; dashboard_render w4:p1 > "$T/overdue.txt"
+' || bad "46 render failed"
+assert_grep "46 enabled pane countdown" 'Priorización.*⏰ 05:00' "$T/on.txt"
+assert_grep "46 snooze and reminder countdown stack" 'Refactor del watcher.*😴 06:40.*⏰ 05:00' "$T/on.txt"
+assert_no_grep "46 no next reminder after MAX" 'Repositorio limpio.*⏰' "$T/on.txt"
+assert_no_grep "46 no state means no reminder overlay" 'Revisar PR.*⏰' "$T/on.txt"
+assert_no_grep "46 off omits reminder countdown" '⏰' "$T/off.txt"
+assert_grep "46 off still renders roster" 'Priorización' "$T/off.txt"
+assert_no_grep "46 read failure omits countdown" '⏰' "$T/failed.txt"
+assert_grep "46 read failure still renders roster" 'Priorización' "$T/failed.txt"
+assert_grep "46 overdue countdown clamps to zero" 'Priorización.*⏰ 00:00' "$T/overdue.txt"
+[[ -f "$T/reminder.reads" && "$(wc -l < "$T/reminder.reads")" == 3 ]] \
+  && ok "46 one read per enabled frame and zero reads when off" || bad "46 wrong status read count"
 
 # 16s. (Decision-8 test d) Host-state invariance across the WHOLE suite
 #      run: the four production playback-state paths must be unchanged —
