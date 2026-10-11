@@ -2310,6 +2310,8 @@ send_ntfy_push() {
   local title_desc="${5:-}"
   local audio_path="${6:-}"
   local gate_id="${7:-}" # F5/HT-04: known live gate id (skips the lookup)
+  local priority_override="${8:-}" # HT-05: final reminder escalates even done
+  local body_override="${9:-}"     # HT-05: already-redacted short reminder
 
   [[ -z "$NTFY_TOPIC" ]] && return 0
 
@@ -2398,6 +2400,9 @@ send_ntfy_push() {
       return 0
       ;;
   esac
+
+  [[ -n "$priority_override" ]] && priority="$priority_override"
+  [[ -n "$body_override" ]] && body="$body_override"
 
   local -a headers=(
     -H "Title: ${title}"
@@ -3408,6 +3413,10 @@ gate_agent_event() {
   local pane_id="$1"
   local status="$2"
   local agent_name="${3:-$pane_id}"
+  # A reminder snapshot probes without recording a sighting. Its special
+  # rc=2 distinguishes a temporary debounce hold from mute/snooze (rc=0).
+  # Legacy callers still get exactly 0=gate / 1=allow, with a ledger write.
+  local mode="${4:-record}"
   local now state muted until_ts last_seen
 
   now=$(date +%s)
@@ -3438,14 +3447,94 @@ gate_agent_event() {
   last_seen=$(jq -r --arg p "$pane_id" --arg s "$status" '(.debounce[$p][$s] // 0)' <<<"$state")
   if (( now - last_seen < TTS_DEBOUNCE_SECONDS )); then
     echo "[$(date +%H:%M:%S)] $(tt gate.debounced "$agent_name" "$pane_id" "$status" "$TTS_DEBOUNCE_SECONDS")"
+    [[ "$mode" == "check" ]] && return 2
     return 0
   fi
+
+  [[ "$mode" == "check" ]] && return 1
 
   # Allowed: record this (pane, status) sighting atomically
   state=$(jq -c --arg p "$pane_id" --arg s "$status" --argjson t "$now" \
     '.debounce = ((.debounce // {}) + {($p): ((.debounce[$p] // {}) + {($s): $t})})' <<<"$state")
   save_snooze_state "$state" || true
   return 1
+}
+
+# HT-05: one reminder-core call per enabled sweep, using the same pinned
+# interpreter/environment as VS3. Temporary debounce holds preserve Python
+# progression; mute/snooze and non-attention panes disappear from both lists.
+# No snapshot probe may consume debounce, and no reminder enters VS3 admission.
+daemon_reminders() { # <raw_agents_json>
+  [[ "${TTS_REMINDERS:-off}" == "on" ]] || return 0
+  local raw_agents="$1" rows now row pane_id status agent gate_rc due reminder index text
+  now=$(date +%s)
+  rows=$(jq -c '.result.agents[]?
+    | select(.agent_status == "done" or .agent_status == "blocked")
+    | select(.pane_id != null and .pane_id != "")' <<<"$raw_agents" 2>/dev/null) || return 0
+  local -a args=(--now "$now" --start-min "$TTS_REMINDER_START_MIN"
+    --backoff "$TTS_REMINDER_BACKOFF" --max "$TTS_REMINDER_MAX")
+  local -A attention=()
+  while IFS= read -r row; do
+    [[ -n "$row" ]] || continue
+    pane_id=$(jq -r '.pane_id' <<<"$row")
+    status=$(jq -r '.agent_status' <<<"$row")
+    agent=$(jq -r '.agent // .pane_id' <<<"$row")
+    gate_rc=0
+    gate_agent_event "$pane_id" "$status" "$agent" check >/dev/null || gate_rc=$?
+    case "$gate_rc" in
+      1) args+=(--pane "${pane_id}:${status}"); attention["$pane_id"]="$row" ;;
+      2) args+=(--suppressed "$pane_id") ;;
+    esac
+  done <<<"$rows"
+
+  # Capture status as well as stdout: a failed command (including partial
+  # output) never produces reminder audio or prevents the normal sweep.
+  if ! due=$("$VENV_PYTHON" "${PLUGIN_ROOT}/lib/pending_queue.py" reminders "${args[@]}" 2>/dev/null); then
+    daemon_log "reminders: core call failed; sweep continues"
+    return 0
+  fi
+  local workspace title priority should_speak_local
+  while IFS= read -r reminder; do
+    [[ -n "$reminder" ]] || continue
+    reminder=$(jq -ce 'select(type == "object")
+      | select((.pane_id | type) == "string" and (.text | type) == "string")
+      | select((.index | type) == "number")
+      | select(.index >= 1 and .index == (.index | floor))' <<<"$reminder" 2>/dev/null) || continue
+    pane_id=$(jq -r '.pane_id' <<<"$reminder")
+    [[ -n "$pane_id" && -n "${attention[$pane_id]:-}" ]] || continue
+    index=$(jq -r '.index' <<<"$reminder")
+    [[ "$index" =~ ^[0-9]+$ ]] || continue
+    (( index <= 10#$TTS_REMINDER_MAX )) || continue
+    text=$(jq -r '.text' <<<"$reminder")
+    [[ -n "$text" ]] || continue
+    row="${attention[$pane_id]}"
+    status=$(jq -r '.agent_status' <<<"$row")
+    agent=$(jq -r '.agent // .pane_id' <<<"$row")
+    # Recheck immediately before delivery: watchers or user controls may
+    # have updated the shared gate while the core was computing deadlines.
+    if gate_agent_event "$pane_id" "$status" "$agent"; then continue; fi
+
+    should_speak_local=true
+    if is_auto_muted || is_playing; then
+      should_speak_local=false
+    elif [[ "$TTS_AUTO_SCOPE" == "focused" && "$(get_focused_pane)" != "$pane_id" ]]; then
+      should_speak_local=false
+    fi
+    priority=""
+    (( index == 10#$TTS_REMINDER_MAX )) && priority=high
+    if [[ -n "$priority" || "$should_speak_local" == false ]]; then
+      workspace=$(jq -r '.workspace_id // ""' <<<"$row")
+      title=$(jq -r '.terminal_title_stripped // .terminal_title // ""' <<<"$row")
+      # Network latency must not delay watcher discovery or normal audio.
+      ( send_ntfy_push "$pane_id" "$agent" "$status" "$workspace" "$title" "" "" "$priority" "$text" || true ) &
+    fi
+    if [[ "$should_speak_local" == true ]]; then
+      # No connector/session flags: speak this short text, never re-read
+      # the original turn. Existing provider/voice/playback settings apply.
+      speak_text "$text" "$(resolve_voice "$pane_id" "$agent")" "$TTS_RATE" "" "$pane_id" || true
+    fi
+  done <<<"$due"
+  return 0
 }
 
 # ─── Audio history ledger ────────────────────────────────────
@@ -4044,6 +4133,10 @@ run_daemon() {
     # Ambient title glyphs (done/muted/snoozed) piggyback on this sweep —
     # no extra `herdr agent list`, only rename spawns for drifted panes.
     daemon_title_sync "$raw_agents"
+
+    if [[ "${TTS_REMINDERS:-off}" == "on" ]]; then
+      daemon_reminders "$raw_agents" || true
+    fi
 
     while IFS=$'\t' read -r pane_id agent_name; do
       [[ -z "$pane_id" || "$pane_id" == "null" ]] && continue
