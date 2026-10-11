@@ -62,6 +62,7 @@
 - Test creator: this task creates `tests/reminder_cases.sh` (FUTURE until done), with stubbed `herdr` and engine
 - Evidence: `reminder_cases.sh` (CASE protocol `CASE <name> OK`) covering due→voice, last→high push, and debounce/no-overlap
 - Gate: G-04
+- Status: ✅ DONE — G-01/G-04 rc=0 (11 reminder CASEs OK); `bash -n` OK. Independent verification items 1–6 PASS; item 7 (probe must not refresh the debounce ledger) structurally supported (`check` mode returns before the timestamp write, `bin/herdr-tts:3448-3459`) but a seeded-ledger byte-diff was not run — residual note, not a defect.
 
 ### T-04 — Reset hooks
 - Intent: reset state on attention/response/state-change. Traces to RF-HT-05-3/6. (D4)
@@ -143,9 +144,9 @@ Resolved — D1–D3 confirmed by the maintainer (2026-10-11). G-02 runner resol
 ```markdown
 ## Resume bookmark (maintained by the future executor)
 - Pack identity: odd/tasks/ht-05-recordatorios-escalados.md — sha256 pending finalization (pack is draft)
-- Completed: T-01 (commit `56b32bb`); T-01b (D8 `suppressed`); T-02 (config keys, verified PASS)
+- Completed: T-01 (`56b32bb`); T-01b `suppressed` (`7c3c482`); T-02 (`7837181`); T-03 (sweep + delivery, verified)
 - Active task: (none) — budget remaining: 2 remediation rounds per milestone
-- Next action: T-03 (sweep integration + delivery: voice + high-priority ntfy; create `tests/reminder_cases.sh`; register it in `all_bash_harnesses.sh`)
+- Next action: T-04 (reset hooks: focus, PTT injection, state→working; extend `tests/reminder_cases.sh`)
 ```
 
 ## Unresolved choices
