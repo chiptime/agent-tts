@@ -89,6 +89,172 @@ class TestStorePath:
         assert path.endswith(".wav")
 
 
+class TestSelectWindow:
+    def _turn(self, store, day, filename):
+        partition = store / day
+        partition.mkdir(parents=True, exist_ok=True)
+        path = partition / filename
+        path.write_bytes(b"audio")
+        return path
+
+    def test_exact_date_selects_only_that_partition(self, store):
+        path = self._turn(store, _d(-1), "1-pane-main.mp3")
+        self._turn(store, _d(0), "2-other.mp3")
+
+        assert audio_store.select_window(date=_d(-1), now=NOW) == [
+            {"epoch": 1, "pane": "pane-main", "path": str(path), "date": _d(-1)}
+        ]
+
+    def test_since_days_includes_boundary_and_today_not_future(self, store):
+        self._turn(store, _d(-3), "1-too-old.mp3")
+        boundary = self._turn(store, _d(-2), "2-boundary.mp3")
+        middle = self._turn(store, _d(-1), "3-middle.mp3")
+        today = self._turn(store, _d(0), "4-today.mp3")
+        self._turn(store, _d(1), "5-future.mp3")
+
+        selected = audio_store.select_window(since_days=3, now=NOW)
+
+        assert [item["path"] for item in selected] == [
+            str(boundary), str(middle), str(today)
+        ]
+
+    def test_default_window_and_one_day_select_today(self, store, monkeypatch):
+        self._turn(store, _d(-1), "1-yesterday.mp3")
+        today = self._turn(store, _d(0), "2-today.mp3")
+        monkeypatch.setattr(audio_store.time, "time", lambda: NOW)
+
+        assert [item["path"] for item in audio_store.select_window()] == [str(today)]
+        assert audio_store.select_window(since_days=1, now=NOW) == audio_store.select_window()
+
+    def test_date_takes_precedence_over_since_days(self, store):
+        selected_day = self._turn(store, _d(-10), "1-selected.mp3")
+        self._turn(store, _d(0), "2-today.mp3")
+
+        assert [
+            item["path"]
+            for item in audio_store.select_window(date=_d(-10), since_days=0, now=NOW)
+        ] == [str(selected_day)]
+
+    def test_orders_numerically_by_epoch_across_partitions(self, store):
+        last = self._turn(store, _d(-1), "100-pane.mp3")
+        middle = self._turn(store, _d(0), "10-pane.mp3")
+        first = self._turn(store, _d(0), "2-pane.mp3")
+
+        assert [
+            item["path"] for item in audio_store.select_window(since_days=2, now=NOW)
+        ] == [str(first), str(middle), str(last)]
+
+    def test_deduplicates_repeated_paths_not_epochs(self, store, monkeypatch):
+        first = self._turn(store, _d(0), "1-pane.mp3")
+        second = self._turn(store, _d(0), "1-other.wav")
+        scandir = audio_store.os.scandir
+
+        def repeated_entries(path):
+            with scandir(path) as entries:
+                items = list(entries)
+            context = MagicMock()
+            context.__enter__.return_value = iter(items + items)
+            return context
+
+        monkeypatch.setattr(audio_store.os, "scandir", repeated_entries)
+
+        selected = audio_store.select_window(now=NOW)
+
+        assert len(selected) == 2
+        assert {item["path"] for item in selected} == {str(first), str(second)}
+
+    def test_selects_mp3_and_wav_without_reading_audio(self, store):
+        mp3 = self._turn(store, _d(0), "1-pane_mp3.mp3")
+        wav = self._turn(store, _d(0), "2-pane_wav.wav")
+
+        assert [item["path"] for item in audio_store.select_window(now=NOW)] == [
+            str(mp3), str(wav)
+        ]
+
+    def test_already_pruned_partition_is_empty(self, store, monkeypatch):
+        self._turn(store, _d(-30), "1-old.mp3")
+        monkeypatch.setenv("AGENT_TTS_AUDIO_RETENTION_DAYS", "7")
+        assert audio_store.prune_expired(now=NOW) == 1
+
+        assert audio_store.select_window(date=_d(-30), now=NOW) == []
+
+    def test_absent_and_empty_partitions_are_empty(self, store):
+        assert audio_store.select_window(date=_d(-1), now=NOW) == []
+        (store / _d(0)).mkdir()
+        assert audio_store.select_window(now=NOW) == []
+
+    def test_absent_window_does_not_create_directories(self, store, monkeypatch):
+        missing_root = store / "missing"
+        monkeypatch.setenv("AGENT_TTS_AUDIO_DIR", str(missing_root))
+
+        assert audio_store.select_window(date=_d(0), now=NOW) == []
+        assert audio_store.select_window(since_days=7, now=NOW) == []
+        assert not missing_root.exists()
+        monkeypatch.setenv("AGENT_TTS_AUDIO_DIR", str(store))
+        assert audio_store.select_window(date=_d(0), now=NOW) == []
+        assert list(store.iterdir()) == []
+
+    def test_selection_never_writes_or_prunes_existing_store(self, store, monkeypatch):
+        old = self._turn(store, _d(-30), "1-old.mp3")
+        before = old.stat()
+        monkeypatch.setenv("AGENT_TTS_AUDIO_RETENTION_DAYS", "1")
+
+        def forbidden(*args, **kwargs):
+            pytest.fail("selection must not create directories, store paths, or prune")
+
+        monkeypatch.setattr(audio_store.os, "makedirs", forbidden)
+        monkeypatch.setattr(audio_store, "store_path", forbidden)
+        monkeypatch.setattr(audio_store, "prune_expired", forbidden)
+
+        assert [
+            item["path"] for item in audio_store.select_window(date=_d(-30), now=NOW)
+        ] == [str(old)]
+        assert old.read_bytes() == b"audio"
+        assert old.stat().st_mtime_ns == before.st_mtime_ns
+        assert list(store.iterdir()) == [old.parent]
+        assert list(old.parent.iterdir()) == [old]
+
+    def test_skips_foreign_partitions_and_malformed_turns(self, store):
+        self._turn(store, "not-a-date", "1-pane.mp3")
+        self._turn(store, "2026-99-99", "1-pane.mp3")
+        valid = self._turn(store, _d(0), "3--.wav")
+        self._turn(store, _d(0), "no-epoch.mp3")
+        self._turn(store, _d(0), "2-.mp3")
+        self._turn(store, _d(0), "4-pane")
+        (valid.parent / "5-directory.mp3").mkdir()
+        (store / _d(-1)).write_bytes(b"not a partition")
+
+        assert audio_store.select_window(since_days=3, now=NOW) == [
+            {"epoch": 3, "pane": "-", "path": str(valid), "date": _d(0)}
+        ]
+
+    def test_partition_pruned_during_scan_is_skipped(self, store, monkeypatch):
+        missing = self._turn(store, _d(-1), "1-old.mp3").parent
+        kept = self._turn(store, _d(0), "2-kept.mp3")
+        scandir = audio_store.os.scandir
+
+        def racing_scandir(path):
+            if os.fspath(path) == str(missing):
+                raise FileNotFoundError("partition was pruned")
+            return scandir(path)
+
+        monkeypatch.setattr(audio_store.os, "scandir", racing_scandir)
+
+        assert [
+            item["path"] for item in audio_store.select_window(since_days=2, now=NOW)
+        ] == [str(kept)]
+
+    @pytest.mark.parametrize("days", [0, -1, 1.5, "2", True])
+    def test_rejects_non_positive_or_non_integer_since_days(self, store, days):
+        with pytest.raises(ValueError):
+            audio_store.select_window(since_days=days, now=NOW)
+
+    @pytest.mark.parametrize("day", ["2026-1-01", "2026-99-99", "../2026-01-01"])
+    def test_rejects_invalid_date(self, store, day):
+        with pytest.raises(ValueError):
+            audio_store.select_window(date=day, now=NOW)
+
+
 class TestPruneExpired:
     def test_removes_only_strictly_expired_partitions(self, store, monkeypatch):
         monkeypatch.setenv("AGENT_TTS_AUDIO_RETENTION_DAYS", "7")
