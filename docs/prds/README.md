@@ -41,7 +41,7 @@ La migración a monorepo absorbió tres repositorios independientes, implementan
 | ID | Fichero | Feature | Prioridad final | Estado real | Esfuerzo |
 |---|---|---|---|---|---|
 | AT-01 | [archivadas/AT-01-streaming-frames-mp3.md](archivadas/AT-01-streaming-frames-mp3.md) | Streaming incremental por frames de MP3 | P3 | **EJECUTADA** (2026-09-29, commits `510ceaa` / `a3ee900`) | L |
-| AT-02 | [AT-02-stt-whispercpp.md](AT-02-stt-whispercpp.md) | STT y captura de micrófono como capacidad del motor (antes: whisper.cpp; antes: cliente del brain) | P4 | **REENFOCADA (2026-10-07, 2.ª revisión)**, pendiente de implementar | M |
+| AT-02 | [AT-02-stt-whispercpp.md](AT-02-stt-whispercpp.md) | STT y captura de micrófono como capacidad del motor (antes: whisper.cpp; antes: cliente del brain) | P4 | **IMPLEMENTADA (F4)** — STT y captura como capacidad del motor (`engine/src/agent_tts/stt`); validación física F2 pendiente | M |
 | AT-03 | [archivadas/AT-03-conectores-autodeteccion.md](archivadas/AT-03-conectores-autodeteccion.md) | Conectores restantes y auto-detección del agente | P2 | **EJECUTADA (recortada a OpenCode)** (2026-09-28, commit `3bb5e1b`) | M |
 | AT-04 | [archivadas/AT-04-daemon-persistente.md](archivadas/AT-04-daemon-persistente.md) | Modo daemon persistente del motor (`--serve`) | P1 | **EJECUTADA (BLOQUE 1.2)** (2026-09-24/25, commits `64681be` / `c8d5665`) | L |
 | AT-05 | [AT-05-prosodia-estado.md](AT-05-prosodia-estado.md) | Prosodia consciente de estado | P4 | **Postergada** | M |
@@ -53,7 +53,7 @@ La migración a monorepo absorbió tres repositorios independientes, implementan
 
 | ID | Fichero | Feature | Prioridad final | Estado real | Esfuerzo |
 |---|---|---|---|---|---|
-| HT-01 | [../../hosts/herdr/tts-plugin/docs/prds/HT-01-push-to-talk-intercom.md](../../hosts/herdr/tts-plugin/docs/prds/HT-01-push-to-talk-intercom.md) | Push-to-Talk intercom (hablar al agente) | P4 | **Activa, diseño decidido (2026-10-07, 2.ª revisión)**, pendiente de implementar; consume la capacidad del motor (AT-02), sin depender del brain | M-L |
+| HT-01 | [../../hosts/herdr/tts-plugin/docs/prds/HT-01-push-to-talk-intercom.md](../../hosts/herdr/tts-plugin/docs/prds/HT-01-push-to-talk-intercom.md) | Push-to-Talk intercom (hablar al agente) | P4 | **IMPLEMENTADA (F4)** — modo toggle, STT del motor + inyección `send-text`; validación física F2 pendiente | M-L |
 | HT-02 | [../../hosts/herdr/tts-plugin/docs/prds/archivadas/HT-02-voces-por-agente.md](../../hosts/herdr/tts-plugin/docs/prds/archivadas/HT-02-voces-por-agente.md) | Voces por agente (identidad vocal) | P1 | **EJECUTADA / IMPLEMENTADA** (Bloque 2 Hito 0) | S-M |
 | HT-03 | [../../hosts/herdr/tts-plugin/docs/prds/HT-03-radio-mode.md](../../hosts/herdr/tts-plugin/docs/prds/HT-03-radio-mode.md) | Radio mode (triaje por voz) | P2 | **Aprobada** (PARCIAL: verificación Hito 0 hecha, radio pendiente) | M |
 | HT-04 | [../../hosts/herdr/tts-plugin/docs/prds/HT-04-control-movil-bidireccional.md](../../hosts/herdr/tts-plugin/docs/prds/HT-04-control-movil-bidireccional.md) | Control bidireccional desde el móvil | P1 | **Activa, reenfocada (2026-10-07):** ntfy Actions → endpoints del brain, sin listener propio; depende de F2 | L |
