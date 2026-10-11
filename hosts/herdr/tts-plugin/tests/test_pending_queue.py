@@ -1600,6 +1600,60 @@ def test_reminder_removal_and_explicit_reset_rearm(tmp_path):
                and row["next_reminder_ts"] == 1700 for row in reminder_rows(q).values())
 
 
+def test_reminder_suppressed_preserves_progression_until_max(tmp_path):
+    q = make_queue(tmp_path / "p.db")
+    candidates = [("P1", "done")]
+    q.reminder_due(1000, candidates, **REMINDER_OPTIONS)
+    assert [r["index"] for r in q.reminder_due(1300, candidates, **REMINDER_OPTIONS)] == [1]
+    preserved = reminder_rows(q)
+    assert preserved["P1"]["reminder_count"] == 1
+    assert preserved["P1"]["next_reminder_ts"] == 1420
+    for now in (1310, 1420, 1700):
+        assert q.reminder_due(now, [], suppressed=iter(["P1"]), **REMINDER_OPTIONS) == []
+        assert reminder_rows(q) == preserved
+    assert [r["index"] for r in q.reminder_due(1700, candidates, **REMINDER_OPTIONS)] == [2]
+    assert reminder_rows(q)["P1"]["next_reminder_ts"] == 1720
+    preserved = reminder_rows(q)
+    assert q.reminder_due(1800, [], suppressed=["P1"], **REMINDER_OPTIONS) == []
+    assert reminder_rows(q) == preserved
+    assert [r["index"] for r in q.reminder_due(1800, candidates, **REMINDER_OPTIONS)] == [3]
+    assert q.reminder_due(100000, candidates, **REMINDER_OPTIONS) == []
+
+
+def test_reminder_suppressed_resets_only_absent_panes_and_does_not_arm(tmp_path):
+    q = make_queue(tmp_path / "p.db")
+    candidates = [("P1", "done"), ("P2", "blocked"), ("P3", "done")]
+    q.reminder_due(1000, candidates, **REMINDER_OPTIONS)
+    preserved = reminder_rows(q)["P1"]
+    due = q.reminder_due(1300, [("P2", "blocked")],
+                         suppressed=["P1", "unknown", "P1"], **REMINDER_OPTIONS)
+    assert [(r["pane_id"], r["index"]) for r in due] == [("P2", 1)]
+    assert set(reminder_rows(q)) == {"P1", "P2"}
+    assert reminder_rows(q)["P1"] == preserved
+
+
+def test_reminder_candidate_wins_over_suppressed(tmp_path):
+    q = make_queue(tmp_path / "p.db")
+    candidates = [("P1", "done")]
+    q.reminder_due(1000, candidates, suppressed=["P1"], **REMINDER_OPTIONS)
+    assert [r["index"] for r in q.reminder_due(
+        1300, candidates, suppressed=["P1"], **REMINDER_OPTIONS)] == [1]
+
+
+@pytest.mark.parametrize("suppression", [{}, {"suppressed": ()}])
+def test_reminder_empty_suppressed_preserves_legacy_reset(tmp_path, suppression):
+    q = make_queue(tmp_path / "p.db")
+    candidates = [("P1", "done")]
+    q.reminder_due(1000, candidates, **suppression, **REMINDER_OPTIONS)
+    assert [r["index"] for r in q.reminder_due(
+        1300, candidates, **suppression, **REMINDER_OPTIONS)] == [1]
+    assert q.reminder_due(1420, [], **suppression, **REMINDER_OPTIONS) == []
+    assert reminder_rows(q) == {}
+    assert q.reminder_due(1500, candidates, **suppression, **REMINDER_OPTIONS) == []
+    assert reminder_rows(q)["P1"]["reminder_count"] == 0
+    assert reminder_rows(q)["P1"]["next_reminder_ts"] == 1800
+
+
 def test_reminder_state_persists_across_reopen(tmp_path):
     db = tmp_path / "p.db"
     q = make_queue(db)
@@ -1950,6 +2004,38 @@ def test_cli_reminders_json_lines_and_reset(tmp_path, capsys):
     assert set(reminder_rows(q)) == {"P2"}
     assert pq.main(REMINDERS_ARGV + ["--now", "2000"], queue_factory=lambda: q) == 0
     assert capsys.readouterr().out == ""
+    assert reminder_rows(q) == {}
+
+
+def test_cli_reminders_suppressed_parity_and_resume(tmp_path, capsys):
+    q = make_queue(tmp_path / "p.db")
+    api = make_queue(tmp_path / "api.db")
+    candidates = [("P1", "done"), ("P2", "blocked"), ("P3", "done")]
+
+    def sweep(now, panes, suppressed):
+        argv = REMINDERS_ARGV + ["--now", str(now)]
+        for pane_id, status in panes:
+            argv += ["--pane", f"{pane_id}:{status}"]
+        for pane_id in suppressed:
+            argv += ["--suppressed", pane_id]
+        assert pq.main(argv, queue_factory=lambda: q) == 0
+        output = capsys.readouterr()
+        assert output.err == ""
+        due = [json.loads(line) for line in output.out.splitlines()]
+        assert due == api.reminder_due(now, panes, suppressed=suppressed, **REMINDER_OPTIONS)
+        assert reminder_rows(q) == reminder_rows(api)
+        return due
+
+    assert sweep(1000, candidates, []) == []
+    assert [r["index"] for r in sweep(1300, candidates, [])] == [1, 1, 1]
+    preserved = reminder_rows(q)["P1"]
+    for now in (1420, 1700):
+        assert sweep(now, [], ["P1", "P2", "unknown"]) == []
+        assert reminder_rows(q)["P1"] == preserved
+        assert set(reminder_rows(q)) == {"P1", "P2"}
+    assert [r["index"] for r in sweep(1700, candidates[:2], ["P1"])] == [2, 2]
+    assert [r["index"] for r in sweep(1720, candidates[:2], [])] == [3, 3]
+    assert sweep(1800, [], []) == []
     assert reminder_rows(q) == {}
 
 
