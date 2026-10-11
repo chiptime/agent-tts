@@ -12,9 +12,18 @@ sandbox_setup() {
   mkdir -p "$SANDBOX/bin" "$SANDBOX/data/herdr-tts/venv/bin" \
     "$SANDBOX/config" "$SANDBOX/state" "$SANDBOX/home" "$SANDBOX/tmp"
   printf '1000\n' > "$SANDBOX/now"
+  printf 'other\n' > "$SANDBOX/focus"
   printf '%s\n' '{"result":{"agents":[{"pane_id":"pane:7","agent":"claude","agent_status":"done"}]}}' > "$SANDBOX/agents.json"
   cat > "$SANDBOX/data/herdr-tts/venv/bin/python" <<'STUB'
 #!/usr/bin/env bash
+if [[ "$1 ${2:-}" == '-m agent_tts.stt.cli' ]]; then
+  printf '%s\n' "$*" >> "$SB/stt.calls"
+  case "$3" in
+    capture) exit 0 ;;
+    transcribe) printf '%s\n' '{"ok":true,"text":"answer supplied"}'; exit 0 ;;
+  esac
+  exit 97
+fi
 if [[ "$1" == */pending_queue.py ]]; then
   printf '%s\n' "$*" >> "$SB/queue.calls"
   if [[ "${CORE_FAIL:-0}" == 1 ]]; then
@@ -43,7 +52,9 @@ STUB
 printf '%s\n' "$*" >> "$SB/herdr.calls"
 case "$1 $2" in
   'agent list') cat "$SB/agents.json" ;;
-  'api snapshot') printf '%s\n' '{"result":{"snapshot":{"focused_pane_id":"pane:7"}}}' ;;
+  'api snapshot') jq -n --arg pane "$(cat "$SB/focus")" '{result:{snapshot:{focused_pane_id:$pane}}}' ;;
+  'pane send-text') exit "${INJECT_FAIL:-0}" ;;
+  'pane send-keys'|'notification show') exit 0 ;;
   *) exit 97 ;;
 esac
 STUB
@@ -91,6 +102,16 @@ in_host() {
     NTFY_APPROVAL_URL=""; NTFY_APPROVAL_TOKEN=""; WEB_URL=""
     sweep() { daemon_reminders "$(cat "$SB/agents.json")"; wait; }
     now() { printf "%s\n" "$1" > "$SB/now"; }
+    focus() { printf "%s\n" "$1" > "$SB/focus"; }
+    expect_state() {
+      python3 -I -S - "$HOME/.local/state/herdr-tts/pending.db" "$1" "$2" <<PY
+import sqlite3, sys
+with sqlite3.connect(sys.argv[1]) as conn:
+    row = conn.execute("SELECT reminder_count FROM reminder_state WHERE pane_id = ?", (sys.argv[2],)).fetchone()
+actual = row[0] if row else -1
+assert actual == int(sys.argv[3]), (sys.argv[2], actual, sys.argv[3])
+PY
+    }
     '"$snippet" _ "$REPO_HOST_DIR"
 }
 
@@ -226,7 +247,7 @@ case__reminder_sweep_wiring_and_failure_survives() {
   ' || return 1
   [[ "$(<"$SANDBOX/order")" == $'prune\ntitle\nretention' ]] || return 1
   grep -q -- 'pending_queue.py reminders ' "$SANDBOX/queue.calls" || return 1
-  [[ "$(<"$SANDBOX/herdr.calls")" == 'agent list' ]]
+  [[ "$(<"$SANDBOX/herdr.calls")" == $'agent list\napi snapshot' ]]
 }
 
 case__reminder_disabled_sweep_never_calls_core() {
@@ -250,6 +271,119 @@ case__reminder_disabled_sweep_never_calls_core() {
   ' || return 1
   [[ ! -e "$SANDBOX/reminder.calls" && ! -e "$SANDBOX/queue.calls" \
      && ! -e "$SANDBOX/voice.calls" && ! -e "$SANDBOX/push.calls" ]]
+}
+
+case__reminder_focus_over_two_seconds_resets_before_due() {
+  sandbox_setup focus_reset
+  in_host 'sweep; expect_state pane:7 0
+    now 1057; focus pane:7; sweep; expect_state pane:7 0
+    now 1059; sweep; expect_state pane:7 0
+    now 1060; sweep; expect_state pane:7 -1
+    now 1200; sweep; expect_state pane:7 -1' || return 1
+  [[ ! -e "$SANDBOX/voice.calls" && ! -e "$SANDBOX/push.calls" ]] || return 1
+  ! grep -q -- 'reminder-reset' "$SANDBOX/queue.calls"
+}
+
+case__reminder_brief_focus_does_not_reset() {
+  sandbox_setup brief_focus
+  in_host 'sweep; now 1058; focus pane:7; sweep; expect_state pane:7 0
+    now 1059; sweep; expect_state pane:7 0
+    now 1060; focus other; sweep; expect_state pane:7 1' || return 1
+  [[ "$(wc -l < "$SANDBOX/voice.calls")" == 1 && ! -e "$SANDBOX/push.calls" ]]
+}
+
+case__reminder_focus_switch_restarts_timer() {
+  sandbox_setup focus_switch
+  in_host 'sweep; now 1057; focus pane:7; sweep
+    now 1058; focus other; sweep; now 1059; focus pane:7; sweep
+    now 1060; sweep; expect_state pane:7 1' || return 1
+  [[ "$(wc -l < "$SANDBOX/voice.calls")" == 1 ]]
+}
+
+case__reminder_focus_resets_debounce_suppressed_pane() {
+  sandbox_setup focus_suppressed
+  in_host 'sweep; now 1060; sweep; expect_state pane:7 1
+    now 1061; focus pane:7; sweep; expect_state pane:7 1
+    now 1064; sweep; expect_state pane:7 -1' || return 1
+  [[ "$(wc -l < "$SANDBOX/voice.calls")" == 1 && ! -e "$SANDBOX/push.calls" ]] || return 1
+  grep -q -- 'reminders --now 1061.*--suppressed pane:7' "$SANDBOX/queue.calls" || return 1
+  grep -q -- 'reminders --now 1064 --start-min 1 --backoff 1,1 --max 3$' "$SANDBOX/queue.calls"
+}
+
+case__reminder_ptt_injection_resets() {
+  sandbox_setup ptt_reset
+  in_host 'sweep; now 1060; sweep; expect_state pane:7 1
+    focus pane:7; TTS_PTT=on; TTS_STT=on; TTS_PTT_ENTER=always
+    printf "\n" | run_ptt; expect_state pane:7 -1
+    now 1064; sweep; expect_state pane:7 -1' || return 1
+  grep -q -- 'pane send-text pane:7 answer supplied' "$SANDBOX/herdr.calls" || return 1
+  grep -q -- 'pane send-keys pane:7 Enter' "$SANDBOX/herdr.calls" || return 1
+  [[ "$(grep -c -- 'reminder-reset --pane pane:7' "$SANDBOX/queue.calls")" == 1 ]] || return 1
+  [[ "$(wc -l < "$SANDBOX/voice.calls")" == 1 && ! -e "$SANDBOX/push.calls" ]]
+}
+
+case__reminder_ptt_reset_is_pane_specific() {
+  sandbox_setup ptt_target
+  in_host '"$VENV_PYTHON" "$PLUGIN_ROOT/lib/pending_queue.py" reminders \
+      --now 1000 --start-min 1 --backoff 1,1 --max 3 --pane pane:7:done --pane pane:8:blocked
+    focus pane:7; TTS_PTT=on; TTS_STT=on; TTS_PTT_ENTER=never
+    printf "\n" | run_ptt
+    expect_state pane:7 -1; expect_state pane:8 0' || return 1
+  [[ ! -e "$SANDBOX/voice.calls" && ! -e "$SANDBOX/push.calls" ]] || return 1
+  grep -q -- 'reminder-reset --pane pane:7' "$SANDBOX/queue.calls"
+}
+
+case__reminder_ptt_reset_failure_is_fail_open() {
+  sandbox_setup ptt_reset_fail
+  in_host 'sweep; focus pane:7; TTS_PTT=on; TTS_STT=on; TTS_PTT_ENTER=always
+    export CORE_FAIL=1
+    printf "\n" | run_ptt; expect_state pane:7 0' || return 1
+  grep -q -- 'pane send-keys pane:7 Enter' "$SANDBOX/herdr.calls" || return 1
+  grep -q -- 'reminders: reset failed for pane pane:7' "$SANDBOX/daemon.log"
+}
+
+case__reminder_ptt_failure_does_not_reset() {
+  sandbox_setup ptt_fail
+  in_host 'sweep; focus pane:7; TTS_PTT=on; TTS_STT=on; TTS_PTT_ENTER=always
+    export INJECT_FAIL=1
+    rc=0; printf "\n" | run_ptt || rc=$?
+    [[ "$rc" == 1 ]] || exit 1
+    expect_state pane:7 0' || return 1
+  ! grep -q -- 'reminder-reset' "$SANDBOX/queue.calls" || return 1
+  ! grep -q -- 'pane send-keys' "$SANDBOX/herdr.calls"
+}
+
+case__reminder_ptt_off_is_inert() {
+  sandbox_setup ptt_off
+  in_host 'sweep; focus pane:7; TTS_PTT=on; TTS_STT=on; TTS_PTT_ENTER=never
+    TTS_REMINDERS=off; printf "\n" | run_ptt; expect_state pane:7 0' || return 1
+  ! grep -q -- 'reminder-reset' "$SANDBOX/queue.calls"
+}
+
+case__reminder_mute_and_snooze_suppress_and_reset() {
+  local mode
+  for mode in mute pane_snooze global_snooze; do
+    sandbox_setup "reset_$mode"
+    in_host 'sweep; expect_state pane:7 0; now 1060
+      case "'"$mode"'" in
+        mute) toggle_pane_mute pane:7 ;;
+        pane_snooze) cycle_snooze pane pane:7 ;;
+        global_snooze) cycle_snooze global ;;
+      esac
+      sweep; expect_state pane:7 -1; now 1120; sweep; expect_state pane:7 -1' || return 1
+    [[ ! -e "$SANDBOX/voice.calls" && ! -e "$SANDBOX/push.calls" ]] || return 1
+    ! grep -q -- 'reminder-reset' "$SANDBOX/queue.calls" || return 1
+  done
+}
+
+case__reminder_working_state_resets() {
+  sandbox_setup working_reset
+  in_host 'sweep; now 1060
+    printf "%s\n" "{\"result\":{\"agents\":[{\"pane_id\":\"pane:7\",\"agent_status\":\"working\"}]}}" > "$SB/agents.json"
+    sweep; expect_state pane:7 -1
+    now 1120; sweep; expect_state pane:7 -1' || return 1
+  [[ ! -e "$SANDBOX/voice.calls" && ! -e "$SANDBOX/push.calls" ]] || return 1
+  ! grep -q -- 'reminder-reset' "$SANDBOX/queue.calls"
 }
 
 main() {
