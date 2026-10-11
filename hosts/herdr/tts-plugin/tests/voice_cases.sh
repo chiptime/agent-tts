@@ -13,6 +13,12 @@ sandbox_setup() {
   SANDBOX="$SANDBOX_ROOT/$1"
   mkdir -p "$SANDBOX/data/herdr-tts/venv/bin" "$SANDBOX/config/herdr-tts" "$SANDBOX/state/herdr-tts" "$SANDBOX/cache/herdr-tts"
   STUB_LOG="$SANDBOX/stub.log"
+  # Keep transient playback state inside the sandbox, never the machine-global
+  # /tmp defaults: every host invocation (sourced or direct CLI) inherits these,
+  # so the combined harness leaves no residue behind.
+  export HERDR_TTS_LOCK_FILE="$SANDBOX/state/herdr-tts/playing.lock"
+  export HERDR_TTS_PID_FILE="$SANDBOX/state/herdr-tts/current.pid"
+  export HERDR_TTS_IPC_SOCKET="$SANDBOX/state/herdr-tts/player.sock"
   cat > "$SANDBOX/data/herdr-tts/venv/bin/python" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$STUB_LOG"
