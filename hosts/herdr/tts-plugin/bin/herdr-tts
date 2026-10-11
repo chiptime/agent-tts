@@ -3460,6 +3460,16 @@ gate_agent_event() {
   return 1
 }
 
+# A successful injected response is attention, independent of whether an
+# Enter follows. Reset only reminder state; failures never break dictation.
+reset_reminder_attention() { # <pane_id>
+  [[ "${TTS_REMINDERS:-off}" == "on" ]] || return 0
+  if ! "$VENV_PYTHON" "${PLUGIN_ROOT}/lib/pending_queue.py" reminder-reset --pane "$1" >/dev/null 2>&1; then
+    daemon_log "reminders: reset failed for pane $1; normal operations continue"
+  fi
+  return 0
+}
+
 # HT-05: one reminder-core call per enabled sweep, using the same pinned
 # interpreter/environment as VS3. Temporary debounce holds preserve Python
 # progression; mute/snooze and non-attention panes disappear from both lists.
@@ -3468,6 +3478,17 @@ daemon_reminders() { # <raw_agents_json>
   [[ "${TTS_REMINDERS:-off}" == "on" ]] || return 0
   local raw_agents="$1" rows now row pane_id status agent gate_rc due reminder index text
   now=$(date +%s)
+  local focused_pane attended_pane=""
+  focused_pane=$(get_focused_pane) || focused_pane=""
+  # Daemon-local sampled focus duration: navigation (or a backwards clock)
+  # restarts the timer. Strictly >2s, not >=2s; no Python reset spawn here.
+  if [[ "$focused_pane" != "${REMINDER_FOCUS_PANE:-}" ]] || (( now < ${REMINDER_FOCUS_SINCE:-0} )); then
+    REMINDER_FOCUS_PANE="$focused_pane"
+    REMINDER_FOCUS_SINCE="$now"
+  fi
+  if [[ -n "$focused_pane" ]] && (( now - ${REMINDER_FOCUS_SINCE:-now} > 2 )); then
+    attended_pane="$focused_pane"
+  fi
   rows=$(jq -c '.result.agents[]?
     | select(.agent_status == "done" or .agent_status == "blocked")
     | select(.pane_id != null and .pane_id != "")' <<<"$raw_agents" 2>/dev/null) || return 0
@@ -3477,6 +3498,9 @@ daemon_reminders() { # <raw_agents_json>
   while IFS= read -r row; do
     [[ -n "$row" ]] || continue
     pane_id=$(jq -r '.pane_id' <<<"$row")
+    # Sustained focus wins over debounce: omit from BOTH candidates and
+    # suppressed so this very core call resets it before computing due work.
+    [[ "$pane_id" == "$attended_pane" ]] && continue
     status=$(jq -r '.agent_status' <<<"$row")
     agent=$(jq -r '.agent // .pane_id' <<<"$row")
     gate_rc=0
@@ -6467,6 +6491,7 @@ run_ptt() {
     notify_herdr "$(tt ptt.title)" "$(tt ptt.inject_failed "$pane")"
     return 1
   fi
+  reset_reminder_attention "$pane" || true
   local send_enter=0 ans=""
   case "$TTS_PTT_ENTER" in
     always) send_enter=1 ;;
