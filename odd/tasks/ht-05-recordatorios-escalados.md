@@ -22,6 +22,7 @@
 - **D5 — Config surface.** Keys land in the `config_set` whitelist (`bin/herdr-tts:1586`), the per-key validation `case` (`bin/herdr-tts:1600+`), and the defaults block (`bin/herdr-tts:255-306`).
 - **D6 — Snippet redaction (corrected 2026-10-11).** The ~120-char actionable snippet (RF-HT-05-8) MUST pass through the engine's secret redactor `agent_tts.redact_secrets` (fail-closed) — NOT `_sanitize_text` (which only clips/collapses whitespace and does not redact). Import lazily inside `reminder_due`; if the engine is unavailable, OMIT the snippet (fail-closed degradation) while the reminder still fires. Precedent: `lib/reader_pipeline.py:39-43,135` imports `redact_secrets` and runs it before any structural decision.
 - **D7 — Reminder schedule (locked reading of an ambiguous PRD).** A pane observed in `done`/`blocked` and eligible arms at `first_attention_ts` = first observation. Reminder `k` (1-indexed) fires at `first_attention_ts + (START_MIN + Σ BACKOFF[0..k-2]) · 60` seconds — i.e. #1 at `START_MIN`, then each next gap taken in order from `BACKOFF`. Defaults: **#1 at 5m, #2 at 7m, #3 at 12m**, stop after `MAX`=3. Rationale: `START_MIN` = delay to the first reminder; `BACKOFF="2,5,15"` = the subsequent gaps. *Flag:* the PRD's "2m→5m→15m" phrasing is ambiguous; override if the maintainer wants the gap sequence to start at 2m.
+- **D8 — Debounce must not reset progression (added 2026-10-11).** `reminder_due` gains an optional `suppressed` iterable: panes still needing attention but temporarily unable to emit (debounce-held). Such panes keep their state untouched (no advance, no emit). Reset (delete) applies only to panes in neither `candidates` nor `suppressed`. Rationale: otherwise a debounce-held pane is absent from `candidates`, its state is deleted, it re-arms at index 1, and the final high-priority reminder never fires.
 
 ## Assumptions (visible — from PRD open questions; not blockers)
 
@@ -42,7 +43,7 @@
 - Test creator: this task adds unit cases to `tests/test_pending_queue.py`
 - Evidence: pytest cases for the backoff sequence (2m→5m→15m), max M, reset, persistence across reopen, and O(chats) behavior
 - Gate: G-02
-- Status: ✅ DONE — commit `56b32bb`. G-02 rc=0 (184 passed); G-01 rc=0 (all suites OK). Independent verification caught a reproducible PEM leak; the fix makes `admit` redact before truncation and `reminder_due` fail closed (snippet omitted on any secret-opener residue).
+- Status: ✅ DONE — commit `56b32bb`. G-02 rc=0 (184 passed); G-01 rc=0 (all suites OK). Independent verification caught a reproducible PEM leak; the fix makes `admit` redact before truncation and `reminder_due` fail closed (snippet omitted on any secret-opener residue). + T-01b (D8 `suppressed`): 190 passed; independently verified PASS (progression preserved to index MAX).
 
 ### T-02 — Config surface
 - Intent: `TTS_REMINDERS`, `TTS_REMINDER_START_MIN`, `TTS_REMINDER_BACKOFF`, `TTS_REMINDER_MAX` (defaults off/5/"2,5,15"/3). Traces to RF-HT-05-1. (D5)
@@ -57,7 +58,7 @@
 - Intent: invoke reminders from the sweep and emit voice/push. Traces to RF-HT-05-4/5/8, RNF-HT-05-2. (D2, D3, D6)
 - Depends: T-01, T-02
 - Edit allowlist: `hosts/herdr/tts-plugin/bin/herdr-tts`, `hosts/herdr/tts-plugin/tests/reminder_cases.sh`, `hosts/herdr/tts-plugin/tests/all_bash_harnesses.sh`
-- Contract: call the new reminder subcommand after `daemon_title_sync` (`bin/herdr-tts:4016`) with the agent list; emit the short phrase; last reminder adds `Priority: high` (`bin/herdr-tts:2374`); register the new harness in `all_bash_harnesses.sh`.
+- Contract: after `daemon_title_sync` (`bin/herdr-tts:4016`), pass `candidates` = panes needing attention (done/blocked, not muted/snoozed) that are NOT debounce-held, and `suppressed` = those that ARE debounce-held (D8); emit the short phrase per due reminder; the last adds `Priority: high` (`bin/herdr-tts:2374`); register the new harness in `all_bash_harnesses.sh`.
 - Test creator: this task creates `tests/reminder_cases.sh` (FUTURE until done), with stubbed `herdr` and engine
 - Evidence: `reminder_cases.sh` (CASE protocol `CASE <name> OK`) covering due→voice, last→high push, and debounce/no-overlap
 - Gate: G-04
@@ -142,7 +143,7 @@ Resolved — D1–D3 confirmed by the maintainer (2026-10-11). G-02 runner resol
 ```markdown
 ## Resume bookmark (maintained by the future executor)
 - Pack identity: odd/tasks/ht-05-recordatorios-escalados.md — sha256 pending finalization (pack is draft)
-- Completed: T-01 (commit `56b32bb`; G-02 184 passed, G-01 all OK); T-02 (config keys, verified PASS)
+- Completed: T-01 (commit `56b32bb`); T-01b (D8 `suppressed`); T-02 (config keys, verified PASS)
 - Active task: (none) — budget remaining: 2 remediation rounds per milestone
 - Next action: T-03 (sweep integration + delivery: voice + high-priority ntfy; create `tests/reminder_cases.sh`; register it in `all_bash_harnesses.sh`)
 ```
