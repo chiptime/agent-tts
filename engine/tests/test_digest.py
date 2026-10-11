@@ -2,10 +2,11 @@
 
 import array
 import builtins
-from datetime import datetime
+from datetime import datetime, timedelta
 import io
 from pathlib import Path
 import struct
+import sys
 import weakref
 import wave
 
@@ -315,3 +316,185 @@ def test_invalid_riff_is_not_joined_as_mp3(tmp_path):
     with pytest.raises(ValueError, match="not WAVE"):
         compile_digest([turn], output=output)
     assert not output.exists()
+
+
+@pytest.fixture
+def digest_cli(tmp_path, monkeypatch):
+    from agent_tts import cli
+
+    store = tmp_path / "store"
+    store.mkdir()
+    monkeypatch.setenv("AGENT_TTS_AUDIO_DIR", str(store))
+    monkeypatch.setenv("AGENT_TTS_AUDIO_RETENTION_DAYS", "0")
+    monkeypatch.setenv("TTS_AUDIO_RETENTION_DAYS", "0")
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("digest utility must not delegate playback or read stdin")
+
+    monkeypatch.setattr(cli, "_delegate_and_exit", forbidden)
+    monkeypatch.setattr(sys, "stdin", None)
+
+    def run(*args):
+        monkeypatch.setattr(sys, "argv", ["agent-tts", *args])
+        with pytest.raises(SystemExit) as result:
+            cli.main()
+        return result.value.code
+
+    return store, run
+
+
+def _stored_cli_turn(store, day, index=1, data=None):
+    partition = store / day.isoformat()
+    partition.mkdir(exist_ok=True)
+    epoch = int(datetime.combine(day, datetime.min.time()).timestamp()) + index * 60
+    path = partition / f"{epoch}-pane-a.mp3"
+    path.write_bytes(_mp3() if data is None else data)
+    return path
+
+
+def test_cli_digest_default_today_prints_generated_path(digest_cli, capsys):
+    store, run = digest_cli
+    today = datetime.now().date()
+    source = _stored_cli_turn(store, today)
+    _stored_cli_turn(store, today - timedelta(days=1))
+    assert run("--digest", "--play-file", "must-not-play.mp3") == 0
+    result = Path(capsys.readouterr().out.strip())
+    assert result.parent == store
+    assert result.name.startswith(f"{today}-digest-")
+    chapters, audio = _chapters(result.read_bytes())
+    assert len(chapters) == 1
+    assert audio == source.read_bytes()
+
+
+def test_cli_digest_since_passes_output_gap_and_chapters(digest_cli, tmp_path, capsys):
+    store, run = digest_cli
+    today = datetime.now().date()
+    pcm = bytes(4410 * 4)
+    wav = _pcm_to_wav(pcm, 44100, 2)
+    for offset in (0, 1, 2, 3):
+        _stored_cli_turn(store, today - timedelta(days=offset), data=wav)
+    output = tmp_path / "chosen.wav"
+    assert run("--digest", "--since", "3d", "--gap-ms", "100", "--chapters", "none",
+               "--output", str(output)) == 0
+    assert capsys.readouterr().out.strip() == str(output)
+    assert output.read_bytes() == _pcm_to_wav(bytes(4410 * 4).join([pcm] * 3), 44100, 2)
+
+
+def test_cli_digest_date_takes_precedence_over_since(digest_cli, tmp_path, capsys):
+    store, run = digest_cli
+    today = datetime.now().date()
+    selected = today - timedelta(days=2)
+    source = _stored_cli_turn(store, selected)
+    _stored_cli_turn(store, today)
+    output = tmp_path / "chosen.mp3"
+    assert run("--digest", "--since", "1d", "--date", str(selected), "--chapters", "pane",
+               "--output", str(output)) == 0
+    assert capsys.readouterr().out.strip() == str(output)
+    chapters, audio = _chapters(output.read_bytes())
+    assert len(chapters) == 1 and audio == source.read_bytes()
+
+
+def test_cli_digest_empty_window_is_clear_nonzero(digest_cli, capsys):
+    store, run = digest_cli
+    assert run("--digest") == 1
+    captured = capsys.readouterr()
+    assert not captured.out
+    assert "no audio" in captured.err.lower() and "digest" in captured.err.lower()
+    assert not list(store.iterdir())
+
+
+@pytest.mark.parametrize("dated", [False, True])
+@pytest.mark.parametrize("container", ["mp3", "wav"])
+def test_cli_digest_podcast_registers_bytes_title_and_duration(
+    digest_cli, tmp_path, monkeypatch, capsys, dated, container
+):
+    from agent_tts import podcast
+    from agent_tts.audio_store import audio_duration
+
+    store, run = digest_cli
+    day = datetime.now().date() - timedelta(days=1 if dated else 0)
+    data = _mp3() if container == "mp3" else _pcm_to_wav(bytes(4410 * 4), 44100, 2)
+    _stored_cli_turn(store, day, data=data)
+    feed_type = podcast.PodcastFeed
+    feed_dir = tmp_path / "podcast"
+    monkeypatch.setattr(podcast, "PodcastFeed", lambda: feed_type(base_dir=str(feed_dir)))
+    options = ["--date", str(day)] if dated else ["--since", "1d"]
+    assert run("--digest", "--podcast", *options) == 0
+    output = Path(capsys.readouterr().out.strip())
+    feed = feed_type(base_dir=str(feed_dir))
+    assert len(feed.episodes) == 1
+    episode = feed.episodes[0]
+    assert episode.title == f"Digest {day}"
+    assert episode.description
+    assert episode.duration_sec == pytest.approx(audio_duration(str(output)))
+    assert episode.duration_sec > 0
+    assert (Path(feed.audio_dir) / episode.filename).read_bytes() == output.read_bytes()
+    assert episode.file_size_bytes == output.stat().st_size
+    assert episode.title in Path(feed.xml_file).read_text()
+
+
+@pytest.mark.parametrize("container", ["mp3", "wav"])
+@pytest.mark.parametrize("publish", [False, True])
+def test_cli_digest_podcast_warns_only_for_wav_payload(
+    digest_cli, tmp_path, monkeypatch, capsys, container, publish
+):
+    from agent_tts import podcast
+
+    store, run = digest_cli
+    data = _mp3() if container == "mp3" else _pcm_to_wav(bytes(4410 * 4), 44100, 2)
+    _stored_cli_turn(store, datetime.now().date(), data=data)
+    feed_type = podcast.PodcastFeed
+    monkeypatch.setattr(podcast, "PodcastFeed", lambda: feed_type(base_dir=str(tmp_path / "podcast")))
+    # Explicit names can disagree with the container; inspect payload bytes.
+    output = tmp_path / ("digest.wav" if container == "mp3" else "digest.mp3")
+    options = ["--podcast"] if publish else []
+    assert run("--digest", "--output", str(output), *options) == 0
+    captured = capsys.readouterr()
+    assert captured.out.strip() == str(output)
+    if container == "wav" and publish:
+        assert "warning" in captured.err.lower()
+        assert "payload is WAV" in captured.err
+        assert "feed declares audio/mpeg" in captured.err
+    else:
+        assert "audio/mpeg" not in captured.err
+        assert "warning" not in captured.err.lower()
+
+
+@pytest.mark.parametrize("options, flag", [
+    (["--since", "1"], "--since"),
+    (["--since", "0d"], "--since"),
+    (["--since", "-1d"], "--since"),
+    (["--since", "1.5d"], "--since"),
+    (["--since", "days"], "--since"),
+    (["--date", "2026-02-30"], "--date"),
+    (["--date", "20261011"], "--date"),
+    (["--date", "2026-1-01"], "--date"),
+    (["--chapters", "invalid"], "--chapters"),
+    (["--gap-ms", "bad"], "--gap-ms"),
+    (["--gap-ms", "-1"], "--gap-ms"),
+    (["--date", "2026-10-11", "--since", "bad"], "--since"),
+])
+def test_cli_digest_invalid_flags_fail_before_output(digest_cli, capsys, options, flag):
+    store, run = digest_cli
+    assert run("--digest", *options) == 2
+    captured = capsys.readouterr()
+    assert not captured.out
+    assert flag in captured.err
+    assert not list(store.iterdir())
+
+
+@pytest.mark.parametrize("options", [["--since", "1d"], ["--date", "2026-10-11"]])
+def test_cli_digest_selectors_require_digest(digest_cli, capsys, options):
+    _, run = digest_cli
+    assert run(*options) == 2
+    assert "--digest" in capsys.readouterr().err
+
+
+def test_cli_digest_compile_error_is_clear_nonzero(digest_cli, tmp_path, capsys):
+    store, run = digest_cli
+    source = _stored_cli_turn(store, datetime.now().date())
+    assert run("--digest", "--output", str(source)) == 1
+    captured = capsys.readouterr()
+    assert not captured.out
+    assert "overwrite" in captured.err.lower()
+    assert source.read_bytes() == _mp3()
