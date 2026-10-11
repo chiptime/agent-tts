@@ -53,6 +53,7 @@
 - Test creator: this task creates `engine/tests/test_digest.py` (FUTURE until done)
 - Evidence: tests for MP3-only (CHAP count == turns), WAV/mixed (valid WAV, chapters degraded + notice), gap insertion, no external writes, memory-bounded streaming
 - Gate: G-01
+- Status: ✅ DONE — 30 focused cases pass (`tests/test_digest.py`). The full suite shows ONE intermittent failure that is a DIFFERENT test each run (`test_daemon.py::test_play_registering_during_shutdown...`, then `test_chain_playback.py::test_chain_honors_stop_flag_mid_file...`); both pass 3/3 in isolation → pre-existing load flakes, unrelated to T-02 (new files only). Follow-up: stabilise the engine suite's playback/daemon timing tests.
 
 ### T-03 — CLI wiring
 - Intent: expose `--digest` and friends. Traces to RF-AT-07-1/5, RNF-AT-07-4. (D7)
@@ -130,9 +131,9 @@ Resolved — D1 and A1 confirmed by the maintainer (2026-10-11). The pack is `re
 ```markdown
 ## Resume bookmark (maintained by the future executor)
 - Pack identity: odd/tasks/at-07-digest-audio.md — sha256 pending finalization (pack is ready_for_bootstrap)
-- Completed: T-01 (store window selector; 21 cases; pre-existing daemon flake noted)
+- Completed: T-01 (selector); T-02 (digest compiler + ID3v2 CHAP; 30 cases)
 - Active task: (none) — budget remaining: 2 remediation rounds per milestone
-- Next action: T-02 (digest compiler + ID3v2 CHAP writer; create `engine/src/agent_tts/digest.py` and `engine/tests/test_digest.py`)
+- Next action: T-03 (CLI wiring: `--digest/--since/--date/--gap-ms/--chapters` + `--digest --podcast`)
 ```
 
 ## Unresolved choices
