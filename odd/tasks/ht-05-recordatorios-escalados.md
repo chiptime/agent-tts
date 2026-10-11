@@ -51,6 +51,7 @@
 - Test creator: this task adds accept/reject cases to `tests/config_cases.sh`
 - Evidence: `config_cases.sh` shows valid values stored and invalid values refused with no side effect
 - Gate: G-01
+- Status: ✅ DONE — G-01 rc=0; `config_cases.sh` 16 CASEs OK; `bash -n` OK. Independent verification PASS (208 adversarial rejections, 154 legacy key/value pairs identical to HEAD).
 
 ### T-03 — Sweep integration + delivery
 - Intent: invoke reminders from the sweep and emit voice/push. Traces to RF-HT-05-4/5/8, RNF-HT-05-2. (D2, D3, D6)
@@ -141,9 +142,9 @@ Resolved — D1–D3 confirmed by the maintainer (2026-10-11). G-02 runner resol
 ```markdown
 ## Resume bookmark (maintained by the future executor)
 - Pack identity: odd/tasks/ht-05-recordatorios-escalados.md — sha256 pending finalization (pack is draft)
-- Completed: T-01 (commit `56b32bb`; G-02 184 passed, G-01 all OK)
+- Completed: T-01 (commit `56b32bb`; G-02 184 passed, G-01 all OK); T-02 (config keys, verified PASS)
 - Active task: (none) — budget remaining: 2 remediation rounds per milestone
-- Next action: T-02 (config surface: `TTS_REMINDER*` in `config_set` whitelist + validation + defaults)
+- Next action: T-03 (sweep integration + delivery: voice + high-priority ntfy; create `tests/reminder_cases.sh`; register it in `all_bash_harnesses.sh`)
 ```
 
 ## Unresolved choices
