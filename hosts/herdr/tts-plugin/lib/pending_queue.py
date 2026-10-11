@@ -33,6 +33,9 @@ CLI (used by ``bin/herdr-tts``)::
     pending_queue.py retry ID [--actor A]
     pending_queue.py resolve ID {announced|expired} [--actor A]
     pending_queue.py regenerate ID [--actor A]
+    pending_queue.py reminders --now EPOCH [--pane ID:STATUS ...]
+                              --start-min N --backoff CSV --max N
+    pending_queue.py reminder-reset --pane ID
 
 ``tick`` (VS3.3, T7 LOCKED) is the dispatcher: when the engine is not busy
 it claims the OLDEST dispatchable ``pending`` record FIFO by
@@ -86,13 +89,15 @@ not touched here.
 
 Exit status: 0 = ``ok=true``, 1 = ``ok=false`` (engine/daemon refusal,
 including ``admission-blocked``), 2 = usage or invalid identifier. The
-reply line is ``key=value`` tokens.
+reply line is ``key=value`` tokens, except ``reminders`` success output:
+one JSON object per due reminder, or no output when none are due.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import sqlite3
@@ -101,7 +106,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 # Same opaque-id rule as the brain's speech_request_id (TECHNICAL-PLAN T1).
 ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{8,64}$")
@@ -334,6 +339,13 @@ def engine_is_playing(lock_path: Optional[str] = None,
 # Event statuses the brain emits for ambient transitions (PRD 03).
 VALID_STATUSES = ("done", "blocked")
 
+# Complete credentials should disappear through the engine redactor. Any
+# surviving opener may be a legacy/no-engine fragment whose closing marker or
+# minimum token length was lost to clipping; omit uncertain content entirely.
+_REMINDER_SECRET_OPENER = re.compile(
+    r"-----BEGIN\b|\bBearer(?:\s|$)|\bsk-", re.IGNORECASE,
+)
+
 # Playback outcomes reportable through ``completion`` (VS3.3): the Bash site
 # reports played|failed; the engine's PlaybackOutcome vocabulary adds
 # completed|stopped, and ``unknown`` covers outcomes that could not be
@@ -446,6 +458,16 @@ _SCHEMA_INDEXES = (
     " (state, first_seen_ts)",
 )
 
+_REMINDER_SCHEMA = """
+CREATE TABLE IF NOT EXISTS reminder_state (
+    pane_id            TEXT PRIMARY KEY,
+    first_attention_ts REAL NOT NULL,
+    reminder_count     INTEGER NOT NULL DEFAULT 0,
+    next_reminder_ts   REAL NOT NULL,
+    last_reminder_ts   REAL
+)
+"""
+
 
 def _env_number(name: str, default, cast) -> float:
     """Env-tunable bound with an honest fallback: garbage warns on stderr and
@@ -552,6 +574,21 @@ def _placeholders(values: Sequence[str]) -> str:
     return ", ".join("?" for _ in values)
 
 
+def _reminder_options(now, start_min, backoff, max_reminders):
+    """Validate a finite schedule without inventing missing backoff gaps."""
+    now, start_min = float(now), float(start_min)
+    gaps = tuple(float(gap) for gap in backoff)
+    if not math.isfinite(now) or not math.isfinite(start_min) or start_min < 0:
+        raise ValueError("now must be finite and start_min must be finite and >= 0")
+    if not isinstance(max_reminders, int) or max_reminders < 0:
+        raise ValueError("max_reminders must be an integer >= 0")
+    if any(not math.isfinite(gap) or gap <= 0 for gap in gaps):
+        raise ValueError("backoff gaps must be finite and > 0")
+    if len(gaps) < max_reminders - 1:
+        raise ValueError("backoff must supply at least max_reminders - 1 gaps")
+    return now, start_min, gaps
+
+
 class PendingQueue:
     """Host pending-announcement arbiter: bounded ACTIVE queue + durable ledger.
 
@@ -655,6 +692,104 @@ class PendingQueue:
 
     # -- public API ----------------------------------------------------------------
 
+    def reminder_due(self, now, candidates: Iterable[Tuple[str, str]], *,
+                     start_min, backoff, max_reminders) -> list[dict]:
+        """Arm eligible panes and return at most one due reminder per pane.
+
+        The caller supplies the complete eligible done/blocked snapshot after
+        mute/snooze/debounce filtering. Missing panes reset attention state.
+        Deadlines advance from the scheduled deadline, NOT the sweep time:
+        defaults fire at 5/7/12 minutes from first sight, even after late sweeps.
+        Reminder writes never admit, resolve or dispatch VS3 records.
+        """
+        now, start_min, gaps = _reminder_options(now, start_min, backoff, max_reminders)
+        panes = {}
+        for pane_id, status in candidates:
+            if not isinstance(pane_id, str) or not pane_id.strip():
+                raise ValueError("reminder pane_id must be a non-empty string")
+            if status not in VALID_STATUSES:
+                raise ValueError(f"reminder status must be one of {VALID_STATUSES}")
+            panes[pane_id] = status  # one attention state, even with duplicates
+        due = []
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                states = {row["pane_id"]: row for row in conn.execute(
+                    "SELECT * FROM reminder_state"
+                )}
+                # Linear snapshot reconciliation avoids an unbounded SQL IN
+                # clause (SQLite's bind-parameter limit must not cap chats).
+                conn.executemany("DELETE FROM reminder_state WHERE pane_id = ?",
+                                 ((pane_id,) for pane_id in states if pane_id not in panes))
+                for pane_id in panes:
+                    row = states.get(pane_id)
+                    if row is None:
+                        conn.execute(
+                            "INSERT INTO reminder_state (pane_id, first_attention_ts,"
+                            " reminder_count, next_reminder_ts) VALUES (?, ?, 0, ?)",
+                            (pane_id, now, now + start_min * 60),
+                        )
+                        next_ts, count = now + start_min * 60, 0
+                    else:
+                        next_ts, count = row["next_reminder_ts"], row["reminder_count"]
+                    if now < next_ts or count >= max_reminders:
+                        continue
+                    index = count + 1
+                    # The final row is count-capped. If no further gap was
+                    # supplied, retain its deadline rather than extrapolating.
+                    if index <= len(gaps):
+                        next_ts += gaps[index - 1] * 60
+                    conn.execute(
+                        "UPDATE reminder_state SET reminder_count = ?,"
+                        " last_reminder_ts = ?, next_reminder_ts = ? WHERE pane_id = ?",
+                        (index, now, next_ts, pane_id),
+                    )
+                    latest = conn.execute(
+                        "SELECT label, text FROM pending_records WHERE pane_id = ?"
+                        " ORDER BY first_seen_ts DESC, rowid DESC LIMIT 1",
+                        (pane_id,),
+                    ).fetchone()
+                    label = _sanitize_label(latest["label"]) if latest else pane_id
+                    text = f"Recordatorio: {label} sigue esperando"
+                    try:
+                        # Plain-python host callers may not have the engine.
+                        # Redact BEFORE clipping so partial credentials never
+                        # escape detection at the snippet boundary.
+                        from agent_tts import redact_secrets
+
+                        raw = " ".join(latest["text"].split()) if latest else ""
+                        redacted = redact_secrets(raw)
+                        snippet = ("" if _REMINDER_SECRET_OPENER.search(redacted)
+                                   else _sanitize_text(redacted, 120))
+                        if _REMINDER_SECRET_OPENER.search(snippet):
+                            snippet = ""  # clipping must not manufacture an opener
+                        if snippet:
+                            text += f": {snippet}"
+                        text = redact_secrets(text)  # labels need protection too
+                        if _REMINDER_SECRET_OPENER.search(text):
+                            text = "Recordatorio: el chat sigue esperando"
+                    except Exception:
+                        # Fail closed on import or either redaction failure:
+                        # no snippet or unverified stored label is safe to emit.
+                        text = "Recordatorio: el chat sigue esperando"
+                    due.append({"pane_id": pane_id, "index": index, "text": text})
+                conn.execute("COMMIT")
+            finally:
+                conn.close()  # an uncommitted transaction rolls back on error
+        return due
+
+    def reminder_reset(self, pane_id) -> None:
+        """Forget one pane's attention episode; an absent pane is a no-op."""
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("DELETE FROM reminder_state WHERE pane_id = ?", (pane_id,))
+                conn.execute("COMMIT")
+            finally:
+                conn.close()
+
     def admit(self, event: Dict[str, object]) -> Optional[Dict[str, object]]:
         """Admit one ambient transition event into the pending queue.
 
@@ -673,6 +808,19 @@ class PendingQueue:
         now = self._clock()
         epoch, unverified = self._derive_epoch(pane_pid, epoch_hint)
         label = _sanitize_label(label)
+        # Redact complete input before clipping can destroy a PEM closer or
+        # token length needed by the engine's structural secret patterns.
+        try:
+            from agent_tts import redact_secrets
+        except ImportError:
+            pass  # preserve legacy admission for plain-python host callers
+        except Exception:
+            text = "[texto omitido por seguridad]"
+        else:
+            try:
+                text = redact_secrets(text)
+            except Exception:
+                text = "[texto omitido por seguridad]"
         text = _sanitize_text(text, self._text_max_chars)
         with self._lock:
             try:
@@ -1197,7 +1345,8 @@ class PendingQueue:
             parent.mkdir(parents=True, exist_ok=True)
         conn = self._connect()
         try:
-            for statement in (_SCHEMA, *_SCHEMA_INDEXES):
+            # HT-05 adds its own table in place; existing VS3 rows stay intact.
+            for statement in (_SCHEMA, *_SCHEMA_INDEXES, _REMINDER_SCHEMA):
                 conn.execute(statement)
             # Ledger upgrade (VS3.5): pre-VS3.5 databases gain the operator
             # attribution columns in place — CREATE IF NOT EXISTS cannot
@@ -1645,6 +1794,47 @@ def _regenerate_cli(args, *, queue_factory=None) -> int:
     return _emit(queue.regenerate(args.id, actor=args.actor))
 
 
+def _reminders_cli(args, *, queue_factory=None) -> int:
+    """Due reminders are JSON Lines; errors retain the typed CLI convention."""
+    try:
+        gaps = [float(gap) for gap in args.backoff.split(",")]
+        _reminder_options(args.now, args.start_min, gaps, args.max_reminders)
+        candidates = []
+        for value in args.panes:
+            pane_id, sep, status = value.rpartition(":")
+            if not sep or not pane_id.strip() or status not in VALID_STATUSES:
+                raise ValueError("--pane must be a non-empty id followed by :done or :blocked")
+            candidates.append((pane_id, status))
+    except ValueError as exc:
+        print(f"ok=false error={exc}", file=sys.stderr)
+        return 2
+    queue = _open_queue(queue_factory)
+    if queue is None:
+        return 1
+    try:
+        due = queue.reminder_due(args.now, candidates, start_min=args.start_min,
+                                 backoff=gaps, max_reminders=args.max_reminders)
+    except (sqlite3.Error, OSError) as exc:
+        return _emit({"ok": False, "error": f"reminders-failed: {exc}"})
+    for reminder in due:
+        print(json.dumps(reminder, ensure_ascii=False, separators=(",", ":")))
+    return 0
+
+
+def _reminder_reset_cli(args, *, queue_factory=None) -> int:
+    if not args.pane.strip():
+        print("ok=false error=--pane must be non-empty", file=sys.stderr)
+        return 2
+    queue = _open_queue(queue_factory)
+    if queue is None:
+        return 1
+    try:
+        queue.reminder_reset(args.pane)
+    except (sqlite3.Error, OSError) as exc:
+        return _emit({"ok": False, "error": f"reminder-reset-failed: {exc}"})
+    return _emit({"ok": True})
+
+
 def main(
     argv: Optional[Sequence[str]] = None,
     *,
@@ -1712,6 +1902,14 @@ def main(
     p_rgn.add_argument("--actor", default=None,
                        help="attribution recorded as resolved_by"
                             " (default: $USER or operator-cli)")
+    p_rem = sub.add_parser("reminders", help="arm eligible panes and emit due reminders as JSON Lines")
+    p_rem.add_argument("--now", type=float, required=True)
+    p_rem.add_argument("--pane", dest="panes", action="append", default=[])
+    p_rem.add_argument("--start-min", type=float, required=True)
+    p_rem.add_argument("--backoff", required=True, help="comma-separated gaps in minutes")
+    p_rem.add_argument("--max", dest="max_reminders", type=int, required=True)
+    p_rst = sub.add_parser("reminder-reset", help="reset one pane's attention state")
+    p_rst.add_argument("--pane", required=True)
     args = parser.parse_args(argv)
 
     if args.command == "new-id":
@@ -1730,6 +1928,10 @@ def main(
         return _resolve_cli(args, queue_factory=queue_factory)
     if args.command == "regenerate":
         return _regenerate_cli(args, queue_factory=queue_factory)
+    if args.command == "reminders":
+        return _reminders_cli(args, queue_factory=queue_factory)
+    if args.command == "reminder-reset":
+        return _reminder_reset_cli(args, queue_factory=queue_factory)
     try:
         if args.command == "enqueue-file":
             result = enqueue_file(
