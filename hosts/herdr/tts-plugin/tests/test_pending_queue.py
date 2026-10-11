@@ -1513,3 +1513,481 @@ def test_ledger_upgrade_adds_resolution_columns_in_place(tmp_path):
     assert rec["state"] == "uncertain"                     # recovered on upgrade
     assert rec["resolved_by"] == "crash-recovery"          # new column, stamped
     assert rec["resolved_ts"] is not None
+
+
+# -- attention reminders (HT-05, separate from VS3 admission/dispatch) --------------
+
+
+REMINDER_OPTIONS = {"start_min": 5, "backoff": [2, 5, 15], "max_reminders": 3}
+
+
+def reminder_rows(queue):
+    with sqlite3.connect(str(queue.db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return {row["pane_id"]: dict(row)
+                for row in conn.execute("SELECT * FROM reminder_state")}
+
+
+def test_reminder_first_sight_arms_without_admission(tmp_path):
+    q = make_queue(tmp_path / "p.db")
+    candidates = [("P1", "done"), ("P2", "blocked")]
+    assert q.reminder_due(1000, iter(candidates), **REMINDER_OPTIONS) == []
+    rows = reminder_rows(q)
+    assert set(rows) == {"P1", "P2"}
+    assert rows["P1"] == {"pane_id": "P1", "first_attention_ts": 1000,
+                          "reminder_count": 0, "next_reminder_ts": 1300,
+                          "last_reminder_ts": None}
+    assert q.reminder_due(1100, candidates, **REMINDER_OPTIONS) == []
+    assert reminder_rows(q) == rows
+    assert q.list_all() == []
+
+
+def test_reminder_default_schedule_and_max_cap(tmp_path):
+    q = make_queue(tmp_path / "p.db")
+    candidates = [("P1", "done")]
+    assert q.reminder_due(1000, candidates, **REMINDER_OPTIONS) == []
+    for index, offset in enumerate((300, 420, 720), 1):
+        assert q.reminder_due(1000 + offset - 0.01, candidates, **REMINDER_OPTIONS) == []
+        assert q.reminder_due(1000 + offset, candidates, **REMINDER_OPTIONS) == [
+            {"pane_id": "P1", "index": index,
+             "text": "Recordatorio: P1 sigue esperando"}]
+        row = reminder_rows(q)["P1"]
+        assert row["reminder_count"] == index
+        assert row["last_reminder_ts"] == 1000 + offset
+        assert q.reminder_due(1000 + offset, candidates, **REMINDER_OPTIONS) == []
+    exhausted = reminder_rows(q)
+    assert q.reminder_due(100000, candidates, **REMINDER_OPTIONS) == []
+    assert reminder_rows(q) == exhausted
+
+
+def test_reminder_late_sweep_preserves_anchor_and_emits_once_per_pane(tmp_path):
+    q = make_queue(tmp_path / "p.db")
+    candidates = [("P1", "blocked"), ("P1", "blocked")]
+    q.reminder_due(1000, candidates, **REMINDER_OPTIONS)
+    due = q.reminder_due(1350, candidates, **REMINDER_OPTIONS)
+    assert [r["index"] for r in due] == [1]
+    assert reminder_rows(q)["P1"]["next_reminder_ts"] == 1420
+    assert q.reminder_due(1419, candidates, **REMINDER_OPTIONS) == []
+    assert [r["index"] for r in q.reminder_due(1420, candidates, **REMINDER_OPTIONS)] == [2]
+
+
+@pytest.mark.parametrize("max_reminders", [0, 1, 4])
+def test_reminder_custom_max_and_full_backoff(tmp_path, max_reminders):
+    q = make_queue(tmp_path / "p.db")
+    options = dict(REMINDER_OPTIONS, max_reminders=max_reminders)
+    candidates = [("P1", "done")]
+    q.reminder_due(1000, candidates, **options)
+    emitted = []
+    for now in (1300, 1420, 1720, 2620):
+        emitted.extend(q.reminder_due(now, candidates, **options))
+    assert [r["index"] for r in emitted] == list(range(1, max_reminders + 1))
+    assert q.reminder_due(100000, candidates, **options) == []
+
+
+def test_reminder_removal_and_explicit_reset_rearm(tmp_path):
+    q = make_queue(tmp_path / "p.db")
+    both = [("P1", "done"), ("P2", "blocked")]
+    q.reminder_due(1000, both, **REMINDER_OPTIONS)
+    q.reminder_due(1300, both, **REMINDER_OPTIONS)
+    assert q.reminder_due(1310, [("P2", "blocked")], **REMINDER_OPTIONS) == []
+    assert set(reminder_rows(q)) == {"P2"}
+    assert q.reminder_reset("P2") is None
+    q.reminder_reset("P2")  # idempotent, including unknown panes
+    q.reminder_reset("unknown")
+    assert reminder_rows(q) == {}
+    assert q.reminder_due(1400, both, **REMINDER_OPTIONS) == []
+    assert all(row["first_attention_ts"] == 1400 and row["reminder_count"] == 0
+               and row["next_reminder_ts"] == 1700 for row in reminder_rows(q).values())
+
+
+def test_reminder_state_persists_across_reopen(tmp_path):
+    db = tmp_path / "p.db"
+    q = make_queue(db)
+    candidates = [("P1", "done")]
+    q.reminder_due(1000, candidates, **REMINDER_OPTIONS)
+    reopened = make_queue(db)
+    assert reopened.reminder_due(1299, candidates, **REMINDER_OPTIONS) == []
+    assert [r["index"] for r in reopened.reminder_due(1300, candidates, **REMINDER_OPTIONS)] == [1]
+    rows = reminder_rows(reopened)
+    again = make_queue(db)
+    assert reminder_rows(again) == rows
+    assert again.reminder_due(1419, candidates, **REMINDER_OPTIONS) == []
+    assert [r["index"] for r in again.reminder_due(1420, candidates, **REMINDER_OPTIONS)] == [2]
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("line one\n  line\ttwo.   " + "x" * 250, "line one line two."),
+    ("z" * 250, "z" * 117 + "..."),
+])
+def test_reminder_latest_turn_snippet_sanitized_and_capped(tmp_path, text, expected):
+    clock = FakeClock()
+    q = make_queue(tmp_path / "p.db", clock=clock)
+    q.admit(make_event(label="Old label", text="Old turn."))
+    clock.advance(120)
+    q.admit(make_event(status="blocked", label="New\n label", text=text))
+    before = q.list_all()
+    candidates = [("P1", "blocked")]
+    q.reminder_due(1000, candidates, **REMINDER_OPTIONS)
+    due = q.reminder_due(1300, candidates, **REMINDER_OPTIONS)
+    prefix = "Recordatorio: New label sigue esperando"
+    assert due == [{"pane_id": "P1", "index": 1, "text": prefix + ": " + expected}]
+    assert len(due[0]["text"][len(prefix) + 2:]) <= 120
+    assert "\n" not in due[0]["text"] and "\t" not in due[0]["text"]
+    assert q.list_all() == before  # reminders never mutate the VS3 ledger
+
+
+def test_reminder_empty_candidates_reset_only_attention_state(tmp_path):
+    q = make_queue(tmp_path / "p.db")
+    q.admit(make_event())
+    before = q.list_all()
+    assert q.reminder_due(1000, [], **REMINDER_OPTIONS) == []
+    assert reminder_rows(q) == {}
+    q.reminder_due(1000, [("P1", "done")], **REMINDER_OPTIONS)
+    assert q.reminder_due(2000, iter(()), **REMINDER_OPTIONS) == []
+    assert reminder_rows(q) == {}
+    assert q.list_all() == before
+
+
+@pytest.mark.parametrize("prefix", ["", "x" * 105 + " "])
+def test_reminder_snippet_redacts_secrets_before_clipping(tmp_path, prefix):
+    from agent_tts import redact_secrets
+
+    q = make_queue(tmp_path / "p.db")
+    secret_text = prefix + "Authorization: Bearer abc123def456"
+    q.admit(make_event(text=secret_text))
+    before = q.list_all()
+    candidates = [("P1", "done")]
+    q.reminder_due(1000, candidates, **REMINDER_OPTIONS)
+    due = q.reminder_due(1300, candidates, **REMINDER_OPTIONS)
+    snippet = pq._sanitize_text(redact_secrets(" ".join(secret_text.split())), 120)
+    assert due[0]["text"] == "Recordatorio: codex done sigue esperando: " + snippet
+    assert "abc123def456" not in due[0]["text"]
+    assert "Authorization: Bearer" not in due[0]["text"]
+    assert len(snippet) <= 120
+    assert q.list_all() == before
+
+
+def test_reminder_assembled_text_also_redacts_label(tmp_path):
+    q = make_queue(tmp_path / "p.db")
+    q.admit(make_event(label="Authorization: Bearer abc123def456", text="Task finished."))
+    candidates = [("P1", "done")]
+    q.reminder_due(1000, candidates, **REMINDER_OPTIONS)
+    due = q.reminder_due(1300, candidates, **REMINDER_OPTIONS)
+    assert "abc123def456" not in due[0]["text"]
+    assert "[token redactado]" in due[0]["text"]
+    assert due[0]["text"].endswith(": Task finished.")
+
+
+def test_reminder_engine_unavailable_omits_snippet(tmp_path, monkeypatch):
+    import builtins
+
+    q = make_queue(tmp_path / "p.db")
+    q.admit(make_event(text="Authorization: Bearer abc123def456"))
+    candidates = [("P1", "done")]
+    q.reminder_due(1000, candidates, **REMINDER_OPTIONS)
+    real_import = builtins.__import__
+    attempts = []
+
+    def unavailable(name, *args, **kwargs):
+        if name == "agent_tts":
+            attempts.append(name)
+            raise ImportError("engine unavailable for test")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", unavailable)
+    due = q.reminder_due(1300, candidates, **REMINDER_OPTIONS)
+    assert attempts == ["agent_tts"]
+    assert due == [{"pane_id": "P1", "index": 1,
+                    "text": "Recordatorio: el chat sigue esperando"}]
+    assert reminder_rows(q)["P1"]["reminder_count"] == 1
+
+
+@pytest.mark.parametrize("fail_on_call", [1, 2])
+def test_reminder_redaction_failure_omits_snippet(tmp_path, monkeypatch, fail_on_call):
+    import agent_tts
+
+    q = make_queue(tmp_path / "p.db")
+    q.admit(make_event(label="Authorization: Bearer abc123def456",
+                      text="Authorization: Bearer abc123def456"))
+    candidates = [("P1", "done")]
+    q.reminder_due(1000, candidates, **REMINDER_OPTIONS)
+    redactor = agent_tts.redact_secrets
+    calls = []
+
+    def failing(text):
+        calls.append(text)
+        if len(calls) == fail_on_call:
+            raise RuntimeError("redactor failure for test")
+        return redactor(text)
+
+    monkeypatch.setattr(agent_tts, "redact_secrets", failing)
+    due = q.reminder_due(1300, candidates, **REMINDER_OPTIONS)
+    assert len(calls) == fail_on_call
+    assert due == [{"pane_id": "P1", "index": 1,
+                    "text": "Recordatorio: el chat sigue esperando"}]
+    assert reminder_rows(q)["P1"]["reminder_count"] == 1
+
+
+def long_pem_fixture():
+    body = "YWJjMTIzZGVmNDU2"
+    raw = "-----BEGIN PRIVATE KEY-----\n" + body * 30 + "\n-----END PRIVATE KEY-----"
+    return raw, body
+
+
+def test_admit_redacts_long_pem_before_storage_clip(tmp_path):
+    from agent_tts import redact_secrets
+
+    q = make_queue(tmp_path / "p.db")
+    raw, body = long_pem_fixture()
+    assert len(raw) > pq.DEFAULT_TEXT_MAX_CHARS
+    record = q.admit(make_event(text=raw))
+    assert record["text"] == redact_secrets(raw) == "[clave privada omitida]"
+    assert body not in q.get(record["id"])["text"]
+    assert "-----BEGIN" not in record["text"]
+    assert record["state"] == "pending"
+
+
+def test_cli_reminders_long_pem_admission_does_not_leak(tmp_path, capsys):
+    q = make_queue(tmp_path / "p.db")
+    raw, body = long_pem_fixture()
+    assert q.admit(make_event(text=raw)) is not None
+    args = REMINDERS_ARGV + ["--pane", "P1:done"]
+    assert pq.main(args + ["--now", "1000"], queue_factory=lambda: q) == 0
+    assert capsys.readouterr().out == ""
+    assert pq.main(args + ["--now", "1300"], queue_factory=lambda: q) == 0
+    output = capsys.readouterr()
+    assert output.err == ""
+    reminder = json.loads(output.out)
+    assert reminder["pane_id"] == "P1" and reminder["index"] == 1
+    assert "-----BEGIN" not in reminder["text"]
+    assert body not in reminder["text"]
+    assert "[clave privada omitida]" in reminder["text"]
+
+
+def test_admit_without_engine_keeps_clip_reminder_omits_truncated_pem(tmp_path, monkeypatch):
+    import builtins
+
+    q = make_queue(tmp_path / "p.db")
+    raw, body = long_pem_fixture()
+    real_import = builtins.__import__
+
+    def unavailable(name, *args, **kwargs):
+        if name == "agent_tts":
+            raise ImportError("engine unavailable for test")
+        return real_import(name, *args, **kwargs)
+
+    with monkeypatch.context() as no_engine:
+        no_engine.setattr(builtins, "__import__", unavailable)
+        record = q.admit(make_event(text=raw))
+    assert record["text"] == pq._sanitize_text(raw, 300)
+    assert len(record["text"]) == 300 and body in record["text"]
+    assert "-----END" not in record["text"]
+    candidates = [("P1", "done")]
+    q.reminder_due(1000, candidates, **REMINDER_OPTIONS)
+    due = q.reminder_due(1300, candidates, **REMINDER_OPTIONS)
+    assert due == [{"pane_id": "P1", "index": 1,
+                    "text": "Recordatorio: codex done sigue esperando"}]
+
+
+@pytest.mark.parametrize("fragment", [
+    "-----BEGIN PRIVATE KEY----- YWJjMTIzZGVmNDU2...",
+    "-----BEGIN RSA PRIVATE KEY----- YWJjMTIzZGVmNDU2...",
+    "Bearer abc12...", "Bearer", "sk-proj-a1b2...", "sk-...",
+])
+def test_reminder_legacy_secret_fragments_are_omitted(tmp_path, fragment):
+    q = make_queue(tmp_path / "p.db")
+    record = q.admit(make_event())
+    # Legacy/no-engine rows may already have lost the secret's delimiter or
+    # sufficient token characters for the engine's complete-pattern matcher.
+    with sqlite3.connect(str(q.db_path)) as conn:
+        conn.execute("UPDATE pending_records SET text = ? WHERE id = ?",
+                     (fragment, record["id"]))
+    candidates = [("P1", "done")]
+    q.reminder_due(1000, candidates, **REMINDER_OPTIONS)
+    due = q.reminder_due(1300, candidates, **REMINDER_OPTIONS)
+    assert due == [{"pane_id": "P1", "index": 1,
+                    "text": "Recordatorio: codex done sigue esperando"}]
+    assert q.get(record["id"])["text"] == fragment  # no legacy ledger rewrite
+
+
+def test_reminder_legacy_secret_fragment_in_label_uses_generic_phrase(tmp_path):
+    q = make_queue(tmp_path / "p.db")
+    q.admit(make_event(label="-----BEGIN PRIVATE KEY----- YWJjMTIzZGVmNDU2..."))
+    candidates = [("P1", "done")]
+    q.reminder_due(1000, candidates, **REMINDER_OPTIONS)
+    due = q.reminder_due(1300, candidates, **REMINDER_OPTIONS)
+    assert due == [{"pane_id": "P1", "index": 1,
+                    "text": "Recordatorio: el chat sigue esperando"}]
+
+
+def test_admit_redactor_failure_preserves_acceptance_without_raw_text(tmp_path, monkeypatch):
+    import agent_tts
+
+    q = make_queue(tmp_path / "p.db")
+    raw, body = long_pem_fixture()
+
+    def failing(text):
+        raise RuntimeError("redactor failure for test")
+
+    monkeypatch.setattr(agent_tts, "redact_secrets", failing)
+    record = q.admit(make_event(text=raw))
+    assert record is not None and record["state"] == "pending"
+    assert body not in record["text"] and "-----BEGIN" not in record["text"]
+    assert q.get(record["id"]) == record
+
+
+def test_reminder_schema_upgrades_existing_ledger_in_place(tmp_path):
+    db = tmp_path / "p.db"
+    # Create a pre-HT-05 ledger without relying on the new constructor.
+    with sqlite3.connect(str(db)) as conn:
+        conn.execute(pq._SCHEMA)
+    q = make_queue(db)
+    stored = q.admit(make_event())
+    assert q.reminder_due(1000, [("P1", "done")], **REMINDER_OPTIONS) == []
+    assert reminder_rows(q)["P1"]["next_reminder_ts"] == 1300
+    assert make_queue(db).get(stored["id"]) == stored
+    with sqlite3.connect(str(db)) as conn:
+        columns = {row[1]: (row[2], row[3], row[4], row[5])
+                   for row in conn.execute("PRAGMA table_info(reminder_state)")}
+    assert columns == {"pane_id": ("TEXT", 0, None, 1),
+                       "first_attention_ts": ("REAL", 1, None, 0),
+                       "reminder_count": ("INTEGER", 1, "0", 0),
+                       "next_reminder_ts": ("REAL", 1, None, 0),
+                       "last_reminder_ts": ("REAL", 0, None, 0)}
+
+
+def test_reminder_panes_have_independent_attention_epochs(tmp_path):
+    q = make_queue(tmp_path / "p.db")
+    q.reminder_due(1000, [("P1", "done")], **REMINDER_OPTIONS)
+    both = [("P1", "done"), ("P2", "blocked")]
+    q.reminder_due(1100, both, **REMINDER_OPTIONS)
+    assert [r["pane_id"] for r in q.reminder_due(1300, both, **REMINDER_OPTIONS)] == ["P1"]
+    assert [r["pane_id"] for r in q.reminder_due(1400, both, **REMINDER_OPTIONS)] == ["P2"]
+    assert reminder_rows(q)["P2"]["first_attention_ts"] == 1100
+
+
+def test_reminder_terminal_turn_uses_shared_snippet_sanitizer(tmp_path, monkeypatch):
+    q = make_queue(tmp_path / "p.db")
+    rec = q.admit(make_event())
+    q.mark(rec["id"], "announcing")
+    q.mark(rec["id"], "announced")  # the first announcement is already delivered
+    before = q.list_all()
+    calls = []
+    sanitize = pq._sanitize_text
+
+    def tracked(text, cap):
+        calls.append((text, cap))
+        return sanitize(text, cap)
+
+    monkeypatch.setattr(pq, "_sanitize_text", tracked)
+    q.reminder_due(1000, [("P1", "done")], **REMINDER_OPTIONS)
+    assert q.reminder_due(1300, [("P1", "done")], **REMINDER_OPTIONS) == [
+        {"pane_id": "P1", "index": 1,
+         "text": "Recordatorio: codex done sigue esperando: Task finished."}]
+    assert calls == [("Task finished.", 120)]
+    assert q.list_all() == before
+
+
+def test_reminder_concurrent_instances_emit_one_due_index(tmp_path):
+    import concurrent.futures
+
+    db = tmp_path / "p.db"
+    first = make_queue(db)
+    second = make_queue(db)
+    candidates = [("P1", "done")]
+    first.reminder_due(1000, candidates, **REMINDER_OPTIONS)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(q.reminder_due, 1300, candidates, **REMINDER_OPTIONS)
+                   for q in (first, second)]
+        due = [reminder for future in futures for reminder in future.result()]
+    assert [r["index"] for r in due] == [1]
+    assert reminder_rows(first)["P1"]["reminder_count"] == 1
+
+
+def test_reminder_failed_sweep_rolls_back_resets_and_counts(tmp_path):
+    q = make_queue(tmp_path / "p.db")
+    q.reminder_due(1000, [("P1", "done"), ("P2", "blocked")], **REMINDER_OPTIONS)
+    before = reminder_rows(q)
+    with sqlite3.connect(str(q.db_path)) as conn:
+        conn.execute("CREATE TRIGGER fail_reminder BEFORE UPDATE ON reminder_state"
+                     " BEGIN SELECT RAISE(ABORT, 'forced reminder failure'); END")
+    with pytest.raises(sqlite3.IntegrityError, match="forced reminder failure"):
+        q.reminder_due(1300, [("P1", "done")], **REMINDER_OPTIONS)
+    assert reminder_rows(q) == before  # P2 removal and P1 count both rolled back
+
+
+@pytest.mark.parametrize("overrides", [
+    {"now": float("nan")}, {"start_min": -1}, {"backoff": [2]},
+    {"backoff": [2, float("inf")]}, {"max_reminders": -1},
+])
+def test_reminder_invalid_schedule_leaves_state_unchanged(tmp_path, overrides):
+    q = make_queue(tmp_path / "p.db")
+    q.reminder_due(1000, [("P1", "done")], **REMINDER_OPTIONS)
+    before = reminder_rows(q)
+    options = dict(REMINDER_OPTIONS, now=1300)
+    options.update(overrides)
+    with pytest.raises(ValueError):
+        q.reminder_due(candidates=[], **options)
+    assert reminder_rows(q) == before
+
+
+REMINDERS_ARGV = ["reminders", "--start-min", "5", "--backoff", "2,5,15", "--max", "3"]
+
+
+def test_cli_reminders_json_lines_and_reset(tmp_path, capsys):
+    q = make_queue(tmp_path / "p.db")
+    panes = ["--pane", "P1:done", "--pane", "P2:blocked"]
+    assert pq.main(REMINDERS_ARGV + ["--now", "1000"] + panes, queue_factory=lambda: q) == 0
+    assert capsys.readouterr().out == ""
+    assert pq.main(REMINDERS_ARGV + ["--now", "1300"] + panes, queue_factory=lambda: q) == 0
+    output = capsys.readouterr()
+    assert output.err == ""
+    assert [json.loads(line) for line in output.out.splitlines()] == [
+        {"pane_id": "P1", "index": 1, "text": "Recordatorio: P1 sigue esperando"},
+        {"pane_id": "P2", "index": 1, "text": "Recordatorio: P2 sigue esperando"}]
+    assert pq.main(["reminder-reset", "--pane", "P1"], queue_factory=lambda: q) == 0
+    assert capsys.readouterr().out == "ok=true\n"
+    assert set(reminder_rows(q)) == {"P2"}
+    assert pq.main(REMINDERS_ARGV + ["--now", "2000"], queue_factory=lambda: q) == 0
+    assert capsys.readouterr().out == ""
+    assert reminder_rows(q) == {}
+
+
+@pytest.mark.parametrize("panes, backoff", [
+    (["--pane", "P1"], "2,5,15"),
+    (["--pane", "P1:working"], "2,5,15"),
+    (["--pane", ":done"], "2,5,15"),
+    ([], "garbage"),
+])
+def test_cli_reminders_invalid_input_exits_2_without_opening_db(capsys, panes, backoff):
+    def unopened():
+        pytest.fail("invalid reminder arguments must not open the ledger")
+
+    argv = ["reminders", "--now", "1000", "--start-min", "5",
+            "--backoff", backoff, "--max", "3"] + panes
+    assert pq.main(argv, queue_factory=unopened) == 2
+    output = capsys.readouterr()
+    assert output.out == "" and "ok=false error=" in output.err
+
+
+def test_cli_reminder_storage_errors_exit_1(capsys):
+    def broken_factory():
+        raise OSError("disk gone")
+
+    for argv in (REMINDERS_ARGV + ["--now", "1000"],
+                 ["reminder-reset", "--pane", "P1"]):
+        assert pq.main(argv, queue_factory=broken_factory) == 1
+        assert "ledger-unopenable" in capsys.readouterr().err
+
+    class BrokenQueue:
+        def reminder_due(self, *args, **kwargs):
+            raise sqlite3.OperationalError("forced write failure")
+
+        def reminder_reset(self, pane_id):
+            raise sqlite3.OperationalError("forced write failure")
+
+    for argv in (REMINDERS_ARGV + ["--now", "1000"],
+                 ["reminder-reset", "--pane", "P1"]):
+        assert pq.main(argv, queue_factory=BrokenQueue) == 1
+        output = capsys.readouterr()
+        assert output.out == "" and "forced write failure" in output.err
