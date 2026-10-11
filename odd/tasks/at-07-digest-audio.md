@@ -73,6 +73,7 @@
 - Test creator: none (docs)
 - Evidence: AT-07 status updated; HT-08 dependency note
 - Gate: manual (docs readback)
+- Status: ✅ DONE — `docs/prds/README.md` (counts + AT-07 row) and `docs/ESTADO-Y-PENDIENTES.md` (panel + Frente D) updated to reflect AT-07 implemented; HT-08 dependency noted.
 
 ---
 
@@ -133,9 +134,9 @@ Resolved — D1 and A1 confirmed by the maintainer (2026-10-11). The pack is `re
 ```markdown
 ## Resume bookmark (maintained by the future executor)
 - Pack identity: odd/tasks/at-07-digest-audio.md — sha256 pending finalization (pack is ready_for_bootstrap)
-- Completed: T-01 (selector); T-02 (compiler + CHAP); T-03 (CLI wiring + WAV-podcast warning)
-- Active task: (none) — budget remaining: 2 remediation rounds per milestone
-- Next action: T-04 (docs/index: AT-07 status + HT-08 dependency)
+- Completed: T-01 (selector); T-02 (compiler + CHAP); T-03 (CLI wiring + WAV-podcast warning); T-04 (docs/index)
+- Active task: (none) — all four tasks implemented; budget remaining: 2 remediation rounds per milestone
+- Next action: close-out. Remaining work is manual: mobile playback validation (RNF-AT-07-3, two apps). HT-08 can now build on `--digest`.
 ```
 
 ## Unresolved choices
