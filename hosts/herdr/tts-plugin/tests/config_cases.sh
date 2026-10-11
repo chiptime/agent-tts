@@ -148,6 +148,92 @@ EOF
   grep -q '^TTS_VOICE="updated_voice"$' "$cfg" || return 1
 }
 
+reminder_values_stored() {
+  local key="$1" value
+  shift
+  sandbox_setup "$key-valid"
+  local cfg="$SANDBOX/config/herdr-tts/config.env"
+  for value in "$@"; do
+    in_host 'config_set "$1" "$2"' "$key" "$value" || return 1
+    grep -Fxq "${key}=\"${value}\"" "$cfg" || return 1
+    in_host '[[ "${!1}" == "$2" ]]' "$key" "$value" || return 1
+  done
+}
+
+reminder_values_refused() {
+  local key="$1" value rc
+  shift
+  sandbox_setup "$key-invalid"
+  local cfg="$SANDBOX/config/herdr-tts/config.env"
+  local err="$SANDBOX/stderr"
+  printf '# Preserve config bytes\nTTS_VOICE="safe"\n\n' > "$cfg"
+  cp "$cfg" "$SANDBOX/before"
+  printf 'Preserve backup bytes\n\n' > "${cfg}.bak"
+  cp "${cfg}.bak" "$SANDBOX/backup-before"
+  for value in "$@"; do
+    rc=0
+    in_host 'config_set "$1" "$2"' "$key" "$value" 2>"$err" || rc=$?
+    [[ $rc -eq 1 && -s "$err" ]] || return 1
+    cmp -s "$cfg" "$SANDBOX/before" || return 1
+    cmp -s "${cfg}.bak" "$SANDBOX/backup-before" || return 1
+    ! compgen -G "${cfg}.tmp.*" >/dev/null || return 1
+
+    # Rejection must not even create a missing config directory.
+    rc=0
+    in_host 'CONFIG_FILE="$3"; config_set "$1" "$2"' \
+      "$key" "$value" "$SANDBOX/not-created/config.env" 2>"$err" || rc=$?
+    [[ $rc -eq 1 && -s "$err" && ! -e "$SANDBOX/not-created" ]] || return 1
+  done
+}
+
+case__config_set_reminders_valid() {
+  reminder_values_stored TTS_REMINDERS on off
+}
+
+case__config_set_reminders_invalid() {
+  reminder_values_refused TTS_REMINDERS '' ON true 1 'on ' '"on"' $'on\noff'
+}
+
+case__config_set_reminder_start_min_valid() {
+  reminder_values_stored TTS_REMINDER_START_MIN 1 5 08 999999999999999999999999999999
+}
+
+case__config_set_reminder_start_min_invalid() {
+  reminder_values_refused TTS_REMINDER_START_MIN '' 0 000 -1 +1 1.5 1e3 abc ' 1' '1 ' '"1"' $'1\n2'
+}
+
+case__config_set_reminder_backoff_valid() {
+  reminder_values_stored TTS_REMINDER_BACKOFF 1 2,5,15 01,08,15 999999999999999999999999999999,1
+}
+
+case__config_set_reminder_backoff_invalid() {
+  reminder_values_refused TTS_REMINDER_BACKOFF '' 0 000 2,0,15 -1,2 +1,2 1.5,2 \
+    1e3,2 abc ,2 2, 2,,5 '2, 5' ' 2,5' '2,5 ' '"2,5"' '2;5' $'2,5\n15'
+}
+
+case__config_set_reminder_max_valid() {
+  reminder_values_stored TTS_REMINDER_MAX 1 3 08 999999999999999999999999999999
+}
+
+case__config_set_reminder_max_invalid() {
+  reminder_values_refused TTS_REMINDER_MAX '' 0 000 -1 +1 1.5 1e3 abc ' 1' '1 ' '"1"' $'1\n2'
+}
+
+case__config_reminder_defaults() {
+  sandbox_setup reminder-defaults
+  in_host '[[ "$TTS_REMINDERS" == off && "$TTS_REMINDER_START_MIN" == 5 && "$TTS_REMINDER_BACKOFF" == 2,5,15 && "$TTS_REMINDER_MAX" == 3 ]]'
+}
+
+case__config_set_reminder_keys_in_help() {
+  sandbox_setup reminder-help
+  local rc=0 key err="$SANDBOX/stderr"
+  in_host 'config_set UNKNOWN_REMINDER_KEY 1' 2>"$err" || rc=$?
+  [[ $rc -eq 1 ]] || return 1
+  for key in TTS_REMINDERS TTS_REMINDER_START_MIN TTS_REMINDER_BACKOFF TTS_REMINDER_MAX; do
+    grep -q "$key" "$err" || return 1
+  done
+}
+
 main() {
   local all=""
   local fn
