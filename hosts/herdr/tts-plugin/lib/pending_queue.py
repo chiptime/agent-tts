@@ -33,7 +33,7 @@ CLI (used by ``bin/herdr-tts``)::
     pending_queue.py retry ID [--actor A]
     pending_queue.py resolve ID {announced|expired} [--actor A]
     pending_queue.py regenerate ID [--actor A]
-    pending_queue.py reminders --now EPOCH [--pane ID:STATUS ...]
+    pending_queue.py reminders --now EPOCH [--pane ID:STATUS ...] [--suppressed ID ...]
                               --start-min N --backoff CSV --max N
     pending_queue.py reminder-reset --pane ID
 
@@ -693,11 +693,13 @@ class PendingQueue:
     # -- public API ----------------------------------------------------------------
 
     def reminder_due(self, now, candidates: Iterable[Tuple[str, str]], *,
-                     start_min, backoff, max_reminders) -> list[dict]:
+                     suppressed: Iterable[str] = (), start_min, backoff, max_reminders) -> list[dict]:
         """Arm eligible panes and return at most one due reminder per pane.
 
-        The caller supplies the complete eligible done/blocked snapshot after
-        mute/snooze/debounce filtering. Missing panes reset attention state.
+        Candidates are eligible done/blocked panes after mute/snooze/debounce
+        filtering. Suppressed pane IDs preserve existing state without arming,
+        advancing or emitting. Candidates win if an ID appears in both inputs.
+        Only panes absent from both inputs reset attention state.
         Deadlines advance from the scheduled deadline, NOT the sweep time:
         defaults fire at 5/7/12 minutes from first sight, even after late sweeps.
         Reminder writes never admit, resolve or dispatch VS3 records.
@@ -710,6 +712,7 @@ class PendingQueue:
             if status not in VALID_STATUSES:
                 raise ValueError(f"reminder status must be one of {VALID_STATUSES}")
             panes[pane_id] = status  # one attention state, even with duplicates
+        suppressed_panes = set(suppressed)
         due = []
         with self._lock:
             conn = self._connect()
@@ -721,7 +724,8 @@ class PendingQueue:
                 # Linear snapshot reconciliation avoids an unbounded SQL IN
                 # clause (SQLite's bind-parameter limit must not cap chats).
                 conn.executemany("DELETE FROM reminder_state WHERE pane_id = ?",
-                                 ((pane_id,) for pane_id in states if pane_id not in panes))
+                                 ((pane_id,) for pane_id in states
+                                  if pane_id not in panes and pane_id not in suppressed_panes))
                 for pane_id in panes:
                     row = states.get(pane_id)
                     if row is None:
@@ -1812,7 +1816,8 @@ def _reminders_cli(args, *, queue_factory=None) -> int:
     if queue is None:
         return 1
     try:
-        due = queue.reminder_due(args.now, candidates, start_min=args.start_min,
+        due = queue.reminder_due(args.now, candidates, suppressed=args.suppressed,
+                                 start_min=args.start_min,
                                  backoff=gaps, max_reminders=args.max_reminders)
     except (sqlite3.Error, OSError) as exc:
         return _emit({"ok": False, "error": f"reminders-failed: {exc}"})
@@ -1905,6 +1910,8 @@ def main(
     p_rem = sub.add_parser("reminders", help="arm eligible panes and emit due reminders as JSON Lines")
     p_rem.add_argument("--now", type=float, required=True)
     p_rem.add_argument("--pane", dest="panes", action="append", default=[])
+    p_rem.add_argument("--suppressed", action="append", default=[],
+                       help="preserve a debounce-held pane's existing reminder state")
     p_rem.add_argument("--start-min", type=float, required=True)
     p_rem.add_argument("--backoff", required=True, help="comma-separated gaps in minutes")
     p_rem.add_argument("--max", dest="max_reminders", type=int, required=True)
