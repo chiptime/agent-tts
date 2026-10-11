@@ -21,6 +21,7 @@ honored), default 0 (persistence is opt-in); a positive value enables
 persistence and defines the pruning window in days.
 """
 
+import datetime
 import os
 import re
 import shutil
@@ -45,6 +46,10 @@ _DATE_NAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # Panes come from external tools (tmux, host orchestrators); keep only
 # filesystem-safe chars.
 _PANE_SAFE_RE = re.compile(r"[^A-Za-z0-9_-]")
+
+# Only rendered-turn filenames belong to the selector; suffixes do not
+# determine the audio container and are deliberately provider-independent.
+_TURN_NAME_RE = re.compile(r"^(\d+)-([A-Za-z0-9_-]+)\.[^.]+$")
 
 
 def audio_dir() -> str:
@@ -88,6 +93,72 @@ def store_path(pane: str, suffix: str = ".mp3", now: Optional[float] = None) -> 
     os.makedirs(date_dir, exist_ok=True)
     safe = _PANE_SAFE_RE.sub("_", pane) or "-"
     return os.path.join(date_dir, f"{epoch}-{safe}{suffix}")
+
+
+def select_window(*, since_days=None, date=None, now=None) -> list[dict]:
+    """Selects stored turns without creating, writing, decoding, or pruning.
+
+    ``date`` is a strict YYYY-MM-DD string and takes precedence over
+    ``since_days``. Otherwise select N calendar days including today:
+    ``today - (N - 1) <= partition date <= today``; N defaults to 1 and
+    must be a positive integer. ``now`` is an epoch timestamp (default:
+    current time), interpreted in local time just like :func:`store_path`.
+
+    Membership follows the partition date, not the filename epoch. Results
+    contain ``epoch``, ``pane``, ``path``, and ``date``, deduplicated by path
+    and ordered numerically by epoch (path breaks ties). Missing, pruned,
+    or unreadable partitions are empty; foreign entries and symlinks are
+    skipped. Retention configuration does not affect selection.
+    """
+    if date is not None:
+        if not isinstance(date, str) or not _DATE_NAME_RE.fullmatch(date):
+            raise ValueError("date must be YYYY-MM-DD")
+        start = end = datetime.date.fromisoformat(date)
+    else:
+        days = 1 if since_days is None else since_days
+        if isinstance(days, bool) or not isinstance(days, int) or days <= 0:
+            raise ValueError("since_days must be a positive integer")
+        end = datetime.date.fromtimestamp(time.time() if now is None else now)
+        start = end - timedelta(days=days - 1)
+
+    selected = {}
+    try:
+        with os.scandir(audio_dir()) as partitions:
+            for partition in partitions:
+                if not _DATE_NAME_RE.fullmatch(partition.name):
+                    continue
+                try:
+                    partition_date = datetime.date.fromisoformat(partition.name)
+                except ValueError:
+                    continue
+                if not start <= partition_date <= end:
+                    continue
+                try:
+                    if not partition.is_dir(follow_symlinks=False):
+                        continue
+                    with os.scandir(partition.path) as turns:
+                        for turn in turns:
+                            match = _TURN_NAME_RE.fullmatch(turn.name)
+                            if not match or turn.path in selected:
+                                continue
+                            try:
+                                if not turn.is_file(follow_symlinks=False):
+                                    continue
+                            except OSError:
+                                continue
+                            selected[turn.path] = {
+                                "epoch": int(match.group(1)),
+                                "pane": match.group(2),
+                                "path": turn.path,
+                                "date": partition.name,
+                            }
+                except OSError:
+                    # Retention can remove a partition while it is being scanned.
+                    continue
+    except OSError:
+        # Match the store's fail-open convention without mutating anything.
+        pass
+    return sorted(selected.values(), key=lambda item: (item["epoch"], item["path"]))
 
 
 def _pcm_to_wav(pcm: bytes, sample_rate: int, nchannels: int) -> bytes:
