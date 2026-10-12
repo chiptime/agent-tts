@@ -19,6 +19,7 @@ Wire format (v1):
 from array import array
 import json
 import math
+import os
 import socket
 import sys
 import threading
@@ -34,14 +35,76 @@ CLIENT_RECV_BUFFER = 65536
 PROTOCOL_VERSION = 1
 
 
-def _probe_wasapi_endpoints() -> None:
-    """Windows-only, read-only IMMDeviceEnumerator probe (M-01: MANUAL).
+def _classify_sessions_checked(render_sessions, capture_sessions, own_process_id):
+    """Validate the entire snapshot before accepting any positive activity."""
+    def validate(sessions, default_role):
+        if not isinstance(sessions, (list, tuple)):
+            raise ValueError("sessions must be a list or tuple")
+        validated = []
+        for session in sessions:
+            if not isinstance(session, dict):
+                raise ValueError("session must be a dict")
+            state = session.get("state")
+            system_sounds = session.get("system_sounds")
+            role = session.get("endpoint_role", default_role)
+            if type(state) is not int or state not in (0, 1, 2):
+                raise ValueError("invalid AudioSessionState")
+            if type(system_sounds) is not bool:
+                raise ValueError("system_sounds must be a boolean")
+            if role not in ("communications", "console", "multimedia"):
+                raise ValueError("invalid endpoint role")
+            pid = session.get("process_id")
+            if "process_id" in session and (type(pid) is not int or not 0 <= pid <= 0xFFFFFFFF):
+                raise ValueError("invalid session process ID")
+            validated.append((state, system_sounds, role, pid))
+        return validated
 
-    Enumerating active endpoints is NOT evidence of active capture or a call.
-    Session classification is deliberately not implemented blind here.
+    if own_process_id is not None and (type(own_process_id) is not int or own_process_id < 0):
+        raise ValueError("invalid own process ID")
+    render = validate(render_sessions, "communications")
+    capture = validate(capture_sessions, "console")
+    return {
+        "communication_active": any(
+            state == 1 and not system_sounds and role == "communications"
+            and (own_process_id is None or pid != own_process_id)
+            for state, system_sounds, role, pid in render
+        ),
+        "capture_active": any(state == 1 for state, _, _, _ in capture),
+    }
+
+
+def classify_sessions(render_sessions, capture_sessions, own_process_id=None) -> dict:
+    """Pure classification of plain WASAPI snapshots, with malformed fail-open.
+
+    Records contain ``state`` (0=Inactive, 1=Active, 2=Expired) and a boolean
+    ``system_sounds``. Optional ``endpoint_role`` defaults to communications
+    for render and console for capture; optional ``process_id`` permits own
+    render-stream exclusion without reading process state inside this function.
+
+    Render input comes from the default eCommunications endpoint. Its active,
+    non-system sessions are the communication heuristic, not an application
+    media-role classifier. Explicit console/multimedia records do not count.
+    Any active capture session counts, including system-owned capture.
     """
+    try:
+        return _classify_sessions_checked(render_sessions, capture_sessions, own_process_id)
+    except (TypeError, ValueError):
+        return {"communication_active": False, "capture_active": False}
+
+
+def _enumerate_wasapi_sessions() -> tuple:
+    """Read default render/capture sessions via COM; M-01 is UNVALIDATED here.
+
+    Only getters, activation, QueryInterface and reference/apartment lifecycle
+    are used. No volume, routing, session properties or device settings change.
+    Native GUIDs, vtable calls and endpoint routing need real Windows validation.
+    """
+    if sys.platform != "win32":
+        raise OSError("WASAPI enumeration is Windows-only")
+
     import ctypes
     import uuid
+    from contextlib import ExitStack
 
     class GUID(ctypes.Structure):
         _fields_ = [("data1", ctypes.c_uint32), ("data2", ctypes.c_uint16),
@@ -50,57 +113,98 @@ def _probe_wasapi_endpoints() -> None:
     def guid(value):
         return GUID.from_buffer_copy(uuid.UUID(value).bytes_le)
 
-    def call(obj, index, args, *values):
+    def call(obj, index, args, *values, restype=ctypes.c_int32):
+        if not obj:
+            raise OSError("null WASAPI interface")
         table = ctypes.cast(obj, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
-        method = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, *args)(table[index])
+        method = ctypes.WINFUNCTYPE(restype, ctypes.c_void_p, *args)(table[index])
         return method(obj, *values)
 
     def checked(hr):
         if hr < 0:
-            raise OSError("WASAPI enumeration failed")
+            raise OSError(f"WASAPI enumeration failed (HRESULT 0x{hr & 0xFFFFFFFF:08x})")
+
+    def interface(stack):
+        pointer = ctypes.c_void_p()
+
+        def release():
+            if pointer:
+                call(pointer, 2, [], restype=ctypes.c_uint32)  # IUnknown::Release
+
+        # Register before the getter so partial acquisition is also released.
+        stack.callback(release)
+        return pointer
 
     ole = ctypes.WinDLL("ole32")
     ole.CoInitializeEx.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
-    ole.CoInitializeEx.restype = ctypes.c_long
+    ole.CoInitializeEx.restype = ctypes.c_int32
     ole.CoCreateInstance.argtypes = [ctypes.POINTER(GUID), ctypes.c_void_p, ctypes.c_uint32,
                                     ctypes.POINTER(GUID), ctypes.POINTER(ctypes.c_void_p)]
-    ole.CoCreateInstance.restype = ctypes.c_long
+    ole.CoCreateInstance.restype = ctypes.c_int32
     ole.CoUninitialize.argtypes = []
     ole.CoUninitialize.restype = None
-    initialized = ole.CoInitializeEx(None, 0)
-    checked(initialized)
-    enumerator = ctypes.c_void_p()
-    collection = ctypes.c_void_p()
+    checked(ole.CoInitializeEx(None, 0))  # COINIT_MULTITHREADED; balance S_OK/S_FALSE.
     try:
-        clsid = guid("bcde0395-e52f-467c-8e3d-c4579291692e")
-        iid = guid("a95664d2-9614-4f35-a746-de8db63617e6")
-        checked(ole.CoCreateInstance(ctypes.byref(clsid), None, 1, ctypes.byref(iid), ctypes.byref(enumerator)))
-        # IMMDeviceEnumerator::EnumAudioEndpoints(eAll, DEVICE_STATE_ACTIVE).
-        checked(call(enumerator, 3, [ctypes.c_int, ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)],
-                     2, 1, ctypes.byref(collection)))
-        count = ctypes.c_uint32()
-        checked(call(collection, 3, [ctypes.POINTER(ctypes.c_uint32)], ctypes.byref(count)))
+        with ExitStack() as root:
+            clsid = guid("bcde0395-e52f-467c-8e3d-c4579291692e")
+            enumerator_iid = guid("a95664d2-9614-4f35-a746-de8db63617e6")
+            manager_iid = guid("77aa99a0-1bd6-484f-8bc7-2c654c9a9b6f")
+            control_iid = guid("bfb7ff88-7239-4fc9-8fa2-07c950be9c6d")
+            enumerator = interface(root)
+            checked(ole.CoCreateInstance(ctypes.byref(clsid), None, 1,
+                                         ctypes.byref(enumerator_iid), ctypes.byref(enumerator)))
+            snapshots = []
+            # eRender/eCommunications; eCapture/eConsole (default microphone).
+            for flow, role, role_name in ((0, 2, "communications"), (1, 0, "console")):
+                sessions = []
+                with ExitStack() as endpoint_scope:
+                    endpoint = interface(endpoint_scope)
+                    manager = interface(endpoint_scope)
+                    session_enum = interface(endpoint_scope)
+                    out_pointer = ctypes.POINTER(ctypes.c_void_p)
+                    # IMMDeviceEnumerator::GetDefaultAudioEndpoint (slot 4).
+                    checked(call(enumerator, 4, [ctypes.c_int, ctypes.c_int, out_pointer],
+                                 flow, role, ctypes.byref(endpoint)))
+                    # IMMDevice::Activate(IAudioSessionManager2, CLSCTX_INPROC_SERVER).
+                    checked(call(endpoint, 3, [ctypes.POINTER(GUID), ctypes.c_uint32, ctypes.c_void_p, out_pointer],
+                                 ctypes.byref(manager_iid), 1, None, ctypes.byref(manager)))
+                    # IAudioSessionManager2::GetSessionEnumerator (slot 5).
+                    checked(call(manager, 5, [out_pointer], ctypes.byref(session_enum)))
+                    count = ctypes.c_int()
+                    checked(call(session_enum, 3, [ctypes.POINTER(ctypes.c_int)], ctypes.byref(count)))
+                    if count.value < 0:
+                        raise ValueError("invalid WASAPI session count")
+                    for index in range(count.value):
+                        with ExitStack() as session_scope:
+                            control = interface(session_scope)
+                            control2 = interface(session_scope)
+                            checked(call(session_enum, 4, [ctypes.c_int, out_pointer], index, ctypes.byref(control)))
+                            checked(call(control, 0, [ctypes.POINTER(GUID), out_pointer],
+                                         ctypes.byref(control_iid), ctypes.byref(control2)))
+                            state = ctypes.c_int()
+                            checked(call(control2, 3, [ctypes.POINTER(ctypes.c_int)], ctypes.byref(state)))
+                            # IsSystemSoundsSession returns S_OK=true, S_FALSE=false.
+                            system_sounds = call(control2, 15, [])
+                            checked(system_sounds)
+                            if system_sounds not in (0, 1):
+                                raise ValueError("invalid system-sounds result")
+                            pid = ctypes.c_uint32()
+                            checked(call(control2, 14, [ctypes.POINTER(ctypes.c_uint32)], ctypes.byref(pid)))
+                            sessions.append({"state": state.value, "system_sounds": system_sounds == 0,
+                                             "endpoint_role": role_name, "process_id": pid.value})
+                snapshots.append(sessions)
+            return tuple(snapshots)
     finally:
-        try:
-            for obj in (collection, enumerator):
-                if obj:
-                    call(obj, 2, [])  # IUnknown::Release; never mutate device settings.
-        finally:
-            ole.CoUninitialize()
+        ole.CoUninitialize()
 
 
 def detect_host_activity() -> dict:
-    """Fail-open host activity; real WASAPI classification needs M-01 validation.
-
-    Non-Windows never loads ctypes/COM. Even a successful endpoint probe cannot
-    classify communication/capture streams, so this minimal backend returns
-    inactive rather than inventing positives from device availability.
-    """
+    """Classify Windows WASAPI sessions; native enumeration is M-01 UNVALIDATED."""
     try:
         if sys.platform != "win32":
             raise NotImplementedError("WASAPI is Windows-only")
-        _probe_wasapi_endpoints()
-        raise NotImplementedError("WASAPI session classification requires manual host validation")
+        render, capture = _enumerate_wasapi_sessions()
+        return _classify_sessions_checked(render, capture, os.getpid())
     except Exception:
         ducking._warn_once("winhost_detection", "winhost activity unavailable; ducking ignored (M-01 host validation required)")
         return {"communication_active": False, "capture_active": False}
