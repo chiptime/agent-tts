@@ -1,5 +1,7 @@
 """Audio playback engine with miniaudio C backend and frame-accurate seek/pause."""
 
+from array import array
+import math
 import os
 import shutil
 import sys
@@ -8,6 +10,7 @@ import time
 from typing import Optional
 import miniaudio
 
+from agent_tts import ducking
 from agent_tts.boundaries import BoundaryMap, apply_bionic_reading
 from agent_tts.cleaner import strip_ansi
 from agent_tts.constants import DEFAULT_VOICE, IPC_SOCKET, LOCK_FILE, PID_FILE
@@ -21,6 +24,7 @@ from agent_tts.playback_target import InvalidPlaybackTarget, resolve_target
 
 # Length cap for the sanitized text snippet carried by the IPC status payload.
 STATUS_SNIPPET_MAX_CHARS = 60
+DUCK_SWEEP_SEC = 2.0
 
 _current_session: Optional["AudioSession"] = None
 
@@ -180,6 +184,7 @@ class AudioSession:
             "stop": False,
             "producing": False,
             "label": label,
+            "comm_active": False,
         }
         self.paused_at: float = 0.0
         self.decoded_data = None
@@ -187,12 +192,105 @@ class AudioSession:
         self.sample_rate = 24000
         self.nchannels = 1
         self.bytes_per_sample = 2
+        self.sample_format = miniaudio.SampleFormat.SIGNED16
         self.frame_size = 2
         self.total_frames = 0
         self.current_frame = 0
         self._buffer_loaded = False
         self.lock = threading.Lock()
+        self._gain = 1.0
+        self._duck_policy = "ignore"
+        self._duck_gain = 1.0
+        self._duck_state = {"comm_active": False, "capture_active": False}
+        self._duck_next_check = 0.0
+        self._duck_paused = False
+        self._playback_live = False
         self.ipc_server: Optional[IPCServer] = None
+
+    @property
+    def gain(self) -> float:
+        with self.lock:
+            return self._gain
+
+    def set_gain(self, gain: float) -> None:
+        """Set software attenuation live; unity bypasses PCM conversion exactly."""
+        if not math.isfinite(gain) or not 0 <= gain <= 1:
+            raise ValueError("gain must be finite and between zero and unity")
+        with self.lock:
+            self._gain = float(gain)
+
+    def _attenuate_pcm(self, chunk: bytes, gain: float) -> bytes:
+        """Scale a copy of native-endian PCM, preserving the original buffer."""
+        fmt = self.sample_format
+        if fmt == miniaudio.SampleFormat.SIGNED24:
+            return b"".join(
+                int(int.from_bytes(chunk[i:i + 3], sys.byteorder, signed=True) * gain)
+                .to_bytes(3, sys.byteorder, signed=True)
+                for i in range(0, len(chunk), 3)
+            )
+        code = {
+            miniaudio.SampleFormat.UNSIGNED8: "B",
+            miniaudio.SampleFormat.SIGNED16: "h",
+            miniaudio.SampleFormat.SIGNED32: "i",
+            miniaudio.SampleFormat.FLOAT32: "f",
+        }[fmt]
+        samples = array(code, chunk)
+        for i, sample in enumerate(samples):
+            if code == "B":
+                samples[i] = int((sample - 128) * gain) + 128
+            elif code == "f":
+                samples[i] = sample * gain
+            else:
+                samples[i] = int(sample * gain)
+        return samples.tobytes()
+
+    def configure_ducking(self, policy: str, state: dict, gain: float = 1.0) -> None:
+        """Seed an opt-in local session with the builder's pre-play snapshot."""
+        self.set_gain(gain)
+        with self.lock:
+            self._duck_policy = policy
+            self._duck_gain = gain
+            self._duck_next_check = time.monotonic() + DUCK_SWEEP_SEC
+        self._apply_ducking(state, preplay=True)
+
+    def _apply_ducking(self, state: dict, *, preplay: bool = False) -> None:
+        with self.lock:
+            if self.state["stop"] or (not preplay and not self._playback_live):
+                return
+            self._duck_state = dict(state)
+            self.state["comm_active"] = bool(state.get("comm_active"))
+            action = ducking.decide(state, self._duck_policy)
+            self._gain = self._duck_gain if action == "duck" else 1.0
+            live = self._playback_live
+            auto_paused = self._duck_paused
+        if live and action == "pause":
+            self.handle_ipc_command("pause", _automatic=True)
+        elif live and auto_paused:
+            self.handle_ipc_command("resume", _automatic=True)
+
+    def _check_ducking(self) -> None:
+        """Control-loop sweep only; never query pactl from the PCM callback."""
+        with self.lock:
+            eligible = self.state["status"] == "playing" or (
+                self.state["status"] == "paused" and self._duck_paused
+            )
+            if (
+                self._duck_policy == "ignore" or not self._playback_live
+                or self.state["stop"] or not eligible
+                or time.monotonic() < self._duck_next_check
+            ):
+                return
+        state = ducking.detect_local()
+        with self.lock:
+            self._duck_next_check = time.monotonic() + DUCK_SWEEP_SEC
+        self._apply_ducking(state)
+
+    def _finish_ducking(self) -> None:
+        with self.lock:
+            self._playback_live = False
+            self._duck_paused = False
+            self._gain = 1.0
+            self.state["comm_active"] = False
 
     def start_ipc(self) -> None:
         """Starts the Unix socket IPC server for interactive control.
@@ -205,7 +303,7 @@ class AudioSession:
         self.ipc_server = IPCServer(command_handler=self.handle_ipc_command)
         self.ipc_server.start()
 
-    def handle_ipc_command(self, cmd: str) -> str:
+    def handle_ipc_command(self, cmd: str, *, _automatic: bool = False) -> str:
         """Processes commands arriving over the IPC socket."""
         parts = cmd.strip().split()
         if not parts:
@@ -228,19 +326,23 @@ class AudioSession:
                     f"status={self.state['status']} pos={pos:.2f} total={total:.2f} "
                     f"sent_idx={sent_idx} para_idx={para_idx} sentence={sent_clean} "
                     f"provider={self.provider} voice={self.voice} "
+                    f"comm_active={str(self.state['comm_active']).lower()} "
                     f"text={_sanitize_snippet(sent_clean)}"
                 )
 
         elif action == "pause":
             with self.lock:
+                if not _automatic:
+                    self._duck_paused = False
                 if self.state["status"] == "playing":
                     self.state["status"] = "paused"
                     self.paused_at = time.time()
+                    self._duck_paused = _automatic
             return self.handle_ipc_command("status")
 
         elif action == "resume":
             with self.lock:
-                if self.state["status"] == "paused":
+                if self.state["status"] == "paused" and (not _automatic or self._duck_paused):
                     # Smart auto-rewind if paused for more than 2 seconds
                     if self.auto_rewind_sec > 0 and self.paused_at > 0:
                         elapsed_paused = time.time() - self.paused_at
@@ -249,10 +351,12 @@ class AudioSession:
                             self.current_frame = max(0, self.current_frame - rewind_frames)
                     self.state["status"] = "playing"
                     self.paused_at = 0.0
+                    self._duck_paused = False
             return self.handle_ipc_command("status")
 
         elif action in ("toggle-pause", "toggle_pause"):
             with self.lock:
+                self._duck_paused = False
                 if self.state["status"] == "playing":
                     self.state["status"] = "paused"
                     self.paused_at = time.time()
@@ -270,6 +374,7 @@ class AudioSession:
             self.state["stop"] = True
             with self.lock:
                 self.state["status"] = "stopped"
+            self._finish_ducking()
             return "status=stopped"
 
         elif action == "seek":
@@ -452,6 +557,7 @@ class AudioSession:
         self.sample_rate = decoded.sample_rate
         self.nchannels = decoded.nchannels
         self.bytes_per_sample = getattr(decoded, "sample_width", 2)
+        self.sample_format = getattr(decoded, "sample_format", miniaudio.SampleFormat.SIGNED16)
         self.frame_size = self.nchannels * self.bytes_per_sample
         self.total_frames = len(self.raw_bytes) // self.frame_size
         self.current_frame = 0
@@ -496,6 +602,7 @@ class AudioSession:
                 producing = self.state.get("producing", False)
                 curr = self.current_frame
                 tot = self.total_frames
+                gain = self._gain
 
             if status == "paused":
                 silence_frames = min(num_frames, 512)
@@ -519,6 +626,8 @@ class AudioSession:
             start_byte = curr * self.frame_size
             end_byte = start_byte + (frames_to_read * self.frame_size)
             chunk = self.raw_bytes[start_byte:end_byte]
+            if gain != 1.0:
+                chunk = self._attenuate_pcm(chunk, gain)
 
             with self.lock:
                 self.current_frame += frames_to_read
@@ -533,13 +642,22 @@ class AudioSession:
             if not self._buffer_loaded:
                 self._load_decoded_locked(decoded)
             self.state["status"] = "playing"
+            self._playback_live = True
 
+        if self._duck_policy != "ignore":
+            self._apply_ducking(self._duck_state)
+            self._check_ducking()
         sample_fmt = getattr(decoded, "sample_format", miniaudio.SampleFormat.SIGNED16)
-        device = miniaudio.PlaybackDevice(
-            output_format=sample_fmt,
-            nchannels=self.nchannels,
-            sample_rate=self.sample_rate,
-        )
+        try:
+            device = miniaudio.PlaybackDevice(
+                output_format=sample_fmt,
+                nchannels=self.nchannels,
+                sample_rate=self.sample_rate,
+            )
+        except Exception:
+            self.state["status"] = "stopped"
+            self._finish_ducking()
+            raise
 
         stream = self._stream_generator()
         next(stream)  # Prime generator for miniaudio callback
@@ -556,6 +674,7 @@ class AudioSession:
             prev_lines = 1
 
             while not self.state["stop"] and (self.state.get("producing") or self.current_frame < self.total_frames):
+                self._check_ducking()
                 with self.lock:
                     pos = (self.current_frame / float(self.sample_rate)) if self.sample_rate else 0.0
                     tot = (self.total_frames / float(self.sample_rate)) if self.sample_rate else 0.0
@@ -611,11 +730,13 @@ class AudioSession:
             except Exception:
                 pass
             self.state["status"] = "stopped"
+            self._finish_ducking()
 
     def stop(self) -> None:
         """Terminates session and cleans up server."""
         self.state["stop"] = True
         self.state["status"] = "stopped"
+        self._finish_ducking()
         if self.ipc_server:
             self.ipc_server.stop()
             self.ipc_server = None
