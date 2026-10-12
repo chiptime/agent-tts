@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 
+from agent_tts import ducking
 from agent_tts.audio import AudioSession
 from agent_tts.boundaries import BoundaryMap, estimate_boundaries_from_text
 from agent_tts.constants import DEFAULT_VOICE
@@ -29,6 +30,48 @@ from agent_tts.powershell_playback import PowershellSession, is_wsl_ps_available
 PROTOCOL_VERSION = 1
 SEND_CHUNK_FRAMES = 4096
 PUMP_IDLE_SLEEP_SEC = 0.03
+DUCK_SWEEP_SEC = 2.0
+MAX_ACTIVITY_BYTES = 8192
+
+
+def query_activity(env=None) -> dict:
+    """Read one bounded v1 activity reply; every failure degrades to inactive."""
+    inactive = {"communication_active": False, "capture_active": False}
+    payload = (json.dumps({"v": PROTOCOL_VERSION, "cmd": "activity"}) + "\n").encode("utf-8")
+    try:
+        port = winhost_port(env)
+        for host in candidate_hosts(env):
+            sock = None
+            try:
+                sock = socket.create_connection((host, port), timeout=CONNECT_TIMEOUT_SEC)
+                deadline = time.monotonic() + CONNECT_TIMEOUT_SEC
+                sock.sendall(payload)
+                sock.shutdown(socket.SHUT_WR)
+                buf = b""
+                while b"\n" not in buf:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("activity reply timed out")
+                    sock.settimeout(remaining)
+                    chunk = sock.recv(min(4096, MAX_ACTIVITY_BYTES + 1 - len(buf)))
+                    if not chunk or len(buf) + len(chunk) > MAX_ACTIVITY_BYTES:
+                        raise ValueError("invalid activity reply framing")
+                    buf += chunk
+                state = json.loads(buf.partition(b"\n")[0].decode("utf-8"))
+                if not isinstance(state, dict) or state.get("ok") is not True:
+                    raise ValueError("activity reply must acknowledge success")
+                if any(type(state.get(key)) is not bool for key in inactive):
+                    raise ValueError("activity flags must be booleans")
+                return {key: state[key] for key in inactive}
+            except Exception:
+                continue
+            finally:
+                if sock is not None:
+                    sock.close()
+    except Exception:
+        pass
+    ducking._warn_once("winhost_query", "winhost activity query unavailable; continuing without ducking")
+    return inactive
 
 # Read-only karaoke queries served by remote sessions, byte-compatible with
 # the local AudioSession replies (highlight/scroll-info/sentence/paragraph
@@ -61,7 +104,7 @@ class WinhostUnavailable(Exception):
 class WinhostStream:
     """An open PLAY connection to a winhost server (protocol v1 framing)."""
 
-    def __init__(self, sock, host, port, rate, channels, sample_width):
+    def __init__(self, sock, host, port, rate, channels, sample_width, gain_db=0.0, paused=False):
         self.sock = sock
         self.host = host
         self.port = port
@@ -75,17 +118,35 @@ class WinhostStream:
             "channels": channels,
             "format": "s16",
         }
+        if gain_db != 0.0:
+            header["gain_db"] = gain_db
+        if paused:
+            header["paused"] = True
         sock.sendall((json.dumps(header) + "\n").encode("utf-8"))
 
     def send_pcm(self, chunk: bytes) -> None:
         self.sock.sendall(chunk)
 
-    def finish(self) -> None:
-        """Half-closes the write side and waits for the server to close, so the remote playback completes before returning."""
+    def finish(self, on_wait=None) -> None:
+        """Half-close and drain; an optional wait hook supervises live policy.
+
+        Small receive timeouts allow activity sweeps while the host drains its
+        queued PCM, including while auto-paused. Legacy callers stay blocking.
+        """
         try:
             self.sock.shutdown(socket.SHUT_WR)
+            if on_wait is not None:
+                self.sock.settimeout(0.2)
             while True:
-                if not self.sock.recv(65536):
+                if on_wait is not None:
+                    on_wait()
+                try:
+                    chunk = self.sock.recv(65536)
+                except socket.timeout:
+                    if on_wait is not None:
+                        continue
+                    raise
+                if not chunk:
                     break
         except OSError:
             pass
@@ -102,7 +163,8 @@ class WinhostStream:
             pass
 
 
-def open_stream(rate, channels, sample_width, env=None, connect_timeout=CONNECT_TIMEOUT_SEC) -> WinhostStream:
+def open_stream(rate, channels, sample_width, env=None, connect_timeout=CONNECT_TIMEOUT_SEC,
+                *, gain_db=0.0, paused=False) -> WinhostStream:
     """Connects to the first reachable Windows host candidate and opens a PLAY stream.
 
     Raises WinhostUnavailable when every candidate refuses or times out.
@@ -117,7 +179,7 @@ def open_stream(rate, channels, sample_width, env=None, connect_timeout=CONNECT_
             continue
         try:
             sock.settimeout(None)
-            return WinhostStream(sock, host, port, rate, channels, sample_width)
+            return WinhostStream(sock, host, port, rate, channels, sample_width, gain_db=gain_db, paused=paused)
         except OSError:
             try:
                 sock.close()
@@ -126,13 +188,16 @@ def open_stream(rate, channels, sample_width, env=None, connect_timeout=CONNECT_
     raise WinhostUnavailable(f"{','.join(tried) or 'no-candidates'}:{port}")
 
 
-def send_control(cmd, env=None) -> bool:
+def send_control(cmd, env=None, *, gain_db=None) -> bool:
     """Best-effort one-shot control message (pause/resume/stop) to the Windows host.
 
     A dead host is a no-op: connection errors are swallowed and logged once
     to stderr.
     """
-    payload = (json.dumps({"v": PROTOCOL_VERSION, "cmd": cmd}) + "\n").encode("utf-8")
+    header = {"v": PROTOCOL_VERSION, "cmd": cmd}
+    if cmd == "gain":
+        header["gain_db"] = 0.0 if gain_db is None else gain_db
+    payload = (json.dumps(header) + "\n").encode("utf-8")
     port = winhost_port(env)
     last_error = None
     for host in candidate_hosts(env):
@@ -241,6 +306,55 @@ class RemoteAudioSession:
         self._fallback_warned = False
         self._ps_session = None
         self._local_session = None
+        self._duck_policy = ducking.resolve_policy(target, env) if target in ("winhost", "windows") else "ignore"
+        self._duck_db = ducking.duck_db(env) if self._duck_policy == "duck" else 0.0
+        self._duck_gain_db = 0.0
+        self._duck_state = {"communication_active": False, "capture_active": False}
+        self._duck_next_check = 0.0
+        self._duck_paused = False
+        self._duck_running = False
+
+    def _apply_remote_activity(self, state: dict) -> None:
+        with self.lock:
+            if self.state["stop"]:
+                return
+            self._duck_state = dict(state)
+            self.state["comm_active"] = bool(state.get("communication_active"))
+            action = ducking.decide(
+                {"comm_active": state.get("communication_active"), "capture_active": state.get("capture_active")},
+                self._duck_policy,
+            )
+            gain_db = -self._duck_db if action == "duck" else 0.0
+            changed = gain_db != self._duck_gain_db
+            self._duck_gain_db = gain_db
+            live = self._remote_live and self._duck_running
+            auto_paused = self._duck_paused
+        if live and changed:
+            send_control("gain", env=self._activity_env(), gain_db=gain_db)
+        if live and action == "pause":
+            self.handle_ipc_command("pause", _automatic=True)
+        elif live and auto_paused:
+            self.handle_ipc_command("resume", _automatic=True)
+
+    def _activity_env(self):
+        """Pin live queries/duck controls to the endpoint carrying this stream."""
+        stream = self._stream
+        if stream is None:
+            return self.env
+        return {"AGENT_TTS_WINHOST_HOST": stream.host, "AGENT_TTS_WINHOST_PORT": str(stream.port)}
+
+    def _check_remote_ducking(self) -> None:
+        with self.lock:
+            eligible = self.state["status"] == "playing" or (
+                self.state["status"] == "paused" and self._duck_paused
+            )
+            if (self._duck_policy == "ignore" or not self._duck_running or not self._remote_live
+                    or self.state["stop"] or not eligible or time.monotonic() < self._duck_next_check):
+                return
+        state = query_activity(self._activity_env())
+        with self.lock:
+            self._duck_next_check = time.monotonic() + DUCK_SWEEP_SEC
+        self._apply_remote_activity(state)
 
     # -- IPC ----------------------------------------------------------------
 
@@ -249,7 +363,7 @@ class RemoteAudioSession:
         self.ipc_server = IPCServer(command_handler=self.handle_ipc_command)
         self.ipc_server.start()
 
-    def handle_ipc_command(self, cmd: str) -> str:
+    def handle_ipc_command(self, cmd: str, *, _automatic: bool = False) -> str:
         """Processes IPC commands; pause/resume/stop forward to the remote target."""
         parts = cmd.strip().split()
         if not parts:
@@ -261,10 +375,13 @@ class RemoteAudioSession:
 
         if action == "pause":
             with self.lock:
+                if not _automatic:
+                    self._duck_paused = False
                 changed = self.state["status"] == "playing"
                 if changed:
                     self.state["status"] = "paused"
                     self.paused_at = time.time()
+                    self._duck_paused = _automatic
             if changed:
                 self._remote_control("pause")
                 self._control_ps_session("pause")
@@ -273,10 +390,11 @@ class RemoteAudioSession:
 
         if action == "resume":
             with self.lock:
-                changed = self.state["status"] == "paused"
+                changed = self.state["status"] == "paused" and (not _automatic or self._duck_paused)
                 if changed:
                     self.state["status"] = "playing"
                     self.paused_at = 0.0
+                    self._duck_paused = False
             if changed:
                 self._remote_control("resume")
                 self._control_ps_session("resume")
@@ -286,6 +404,7 @@ class RemoteAudioSession:
         if action in ("toggle-pause", "toggle_pause"):
             sent = None
             with self.lock:
+                self._duck_paused = False
                 if self.state["status"] == "playing":
                     self.state["status"] = "paused"
                     self.paused_at = time.time()
@@ -304,6 +423,7 @@ class RemoteAudioSession:
             self.state["stop"] = True
             with self.lock:
                 self.state["status"] = "stopped"
+                self._duck_running = False
             self._remote_control("stop")
             self._control_ps_session("stop")
             self._control_local_session("stop")
@@ -442,7 +562,8 @@ class RemoteAudioSession:
         if not self._remote_live:
             return
         try:
-            send_control(cmd, env=self.env)
+            env = self.env if self._duck_policy == "ignore" else self._activity_env()
+            send_control(cmd, env=env)
         except Exception as e:
             print(f"winhost control '{cmd}' failed: {e}", file=sys.stderr)
 
@@ -556,9 +677,14 @@ class RemoteAudioSession:
             return
 
         stream = self._stream
+        self._duck_running = True
+        if self._duck_policy != "ignore":
+            self._apply_remote_activity(self._duck_state)
+            self._check_remote_ducking()
         failed = False
         try:
             while not self.state["stop"]:
+                self._check_remote_ducking()
                 with self.lock:
                     available = self.total_frames - self.current_frame
                     producing = self.state.get("producing", False)
@@ -586,13 +712,21 @@ class RemoteAudioSession:
                 # Half-close and wait for the server to close so playback
                 # completes remotely before this call returns.
                 try:
-                    stream.finish()
+                    if self._duck_policy == "ignore":
+                        stream.finish()
+                    else:
+                        stream.finish(on_wait=self._check_remote_ducking)
                 except Exception:
                     pass
             if self._stream is stream:
                 self._stream = None
             with self.lock:
                 self.state["status"] = "stopped"
+                self._duck_running = False
+                self._duck_paused = False
+                self._remote_live = False
+                if "comm_active" in self.state:
+                    self.state["comm_active"] = False
 
     def stop(self) -> None:
         """Stops the session, signals the remote target, and cleans up the IPC server.
@@ -606,6 +740,7 @@ class RemoteAudioSession:
         user_stopped = bool(self.state.get("stop"))
         self.state["stop"] = True
         self.state["status"] = "stopped"
+        self._duck_running = False
         self._remote_control("stop")
         ps = self._ps_session
         if ps is not None:
@@ -646,8 +781,17 @@ class RemoteAudioSession:
             return False
         if self._stream is not None:
             return True
+        options = {}
+        if self._duck_policy != "ignore":
+            activity = query_activity(self.env)
+            self._apply_remote_activity(activity)
+            self._duck_next_check = time.monotonic() + DUCK_SWEEP_SEC
+            options["gain_db"] = self._duck_gain_db
+            options["paused"] = self._duck_policy == "pause" and (
+                activity["communication_active"] or activity["capture_active"]
+            )
         try:
-            self._stream = open_stream(rate, channels, sample_width, env=self.env)
+            self._stream = open_stream(rate, channels, sample_width, env=self.env, **options)
         except WinhostUnavailable as e:
             if self.target == WINDOWS_TARGET:
                 self._enter_local_fallback(e)

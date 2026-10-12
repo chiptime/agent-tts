@@ -69,6 +69,7 @@
 - Test creator: existing — `engine/tests/test_ducking.py` / `test_winhost.py`
 - Evidence: protocol/round-trip against a **mock** server; **real WASAPI detection is MANUAL on the Windows host** (cannot be exercised here)
 - Gate: G-01 (mock) + MANUAL (real host)
+- Status: ⚠️ DONE (transport only) — 181 focused cases pass; full suite 1 failed = the approved daemon flake. The **native WASAPI classifier is intentionally unimplemented and fail-open** (a successful probe still returns both flags false), so **M-01 stays OPEN**: real classification requires Windows-side implementation + validation.
 
 ### T-04 — Docs/index
 - Intent: reflect AT-06 delivered.
@@ -138,9 +139,9 @@ Resolved — D4 and D2 confirmed by the maintainer (2026-10-11). The pack is `re
 ```markdown
 ## Resume bookmark (maintained by the future executor)
 - Pack identity: odd/tasks/at-06-ducking-audio.md — sha256 pending finalization (pack is ready_for_bootstrap)
-- Completed: T-01 (ducking core; 82 cases); T-02 (local integration; 108 cases) — **M1 complete**
+- Completed: T-01 (core); T-02 (local integration) — **M1 merged to `main`**; T-03 (winhost protocol/transport; native WASAPI classification pending)
 - Active task: (none) — budget remaining: 2 remediation rounds per milestone
-- Next action: **M2 is a separate milestone** (winhost/WASAPI, Windows-only): T-03, then T-04 docs.
+- Next action: T-04 (docs), then delivery decision. **M-01 (real WASAPI classification on the Windows host) remains OPEN.**
 ```
 
 ## Unresolved choices
