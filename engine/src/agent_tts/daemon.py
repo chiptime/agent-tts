@@ -258,13 +258,18 @@ def _queue_trace(message: str) -> None:
 CHAIN_TRACE_POLL_SEC = 0.005
 
 
-def _inject_daemon_fields(reply: str, fields: str) -> str:
+def _inject_daemon_fields(reply: str, fields: str, comm_active=None) -> str:
     """Inserts daemon-level kv fields into a session status reply.
 
     The free-text ``text=`` field must stay last (its value keeps spaces),
     so daemon fields are inserted before it when present, appended
     otherwise. Existing clients parsing the legacy prefix are unaffected.
+    Local communication activity is supplied from the cached session state;
+    status queries never cause detection and existing fields are not duplicated.
     """
+    head = reply.split(" text=", 1)[0]
+    if comm_active is not None and " comm_active=" not in head:
+        fields += f" comm_active={str(bool(comm_active)).lower()}"
     if " text=" in reply:
         head, tail = reply.split(" text=", 1)
         return f"{head}{fields} text={tail}"
@@ -613,6 +618,7 @@ class Daemon:
                 return (
                     f"status=idle uptime={self.uptime_sec():.0f} "
                     f"provider={provider} playback={self.startup_target} "
+                    "comm_active=false "
                     f"{self._queue_status_fields()}"
                 )
             if action == "stop":
@@ -631,6 +637,7 @@ class Daemon:
             reply = _inject_daemon_fields(
                 reply,
                 f" uptime={self.uptime_sec():.0f} {self._queue_status_fields()}",
+                comm_active=session.state.get("comm_active"),
             )
         elif reply.startswith("ERR: "):
             # Session-level errors adopt the typed schema at the daemon
