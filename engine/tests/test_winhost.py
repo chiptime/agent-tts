@@ -6,12 +6,15 @@ generator and records the rendered chunks.
 """
 
 import socket
+import json
 import threading
 import time
 
 import pytest
 
 import agent_tts.winhost_client as wc
+import agent_tts.winhost as wh
+from agent_tts import ducking
 from agent_tts.constants import DEFAULT_VOICE
 from agent_tts.winhost import WinhostServer
 from agent_tts.winhost_client import (
@@ -20,6 +23,336 @@ from agent_tts.winhost_client import (
     open_stream,
     send_control,
 )
+
+ORIGINAL_QUERY_ACTIVITY = wc.query_activity
+
+
+@pytest.mark.parametrize("communication,capture", [(False, False), (True, False), (False, True), (True, True)])
+def test_activity_query_v1_roundtrip(winserver, monkeypatch, communication, capture):
+    _, host, port, _ = winserver
+    patch_target(monkeypatch, host, port)
+    state = {"communication_active": communication, "capture_active": capture}
+    monkeypatch.setattr(wh, "detect_host_activity", lambda: state)
+    assert wc.query_activity() == state
+
+
+@pytest.fixture
+def duck_warnings(monkeypatch):
+    monkeypatch.setattr(ducking, "_warned", set())
+
+
+def test_activity_reply_is_one_json_line_then_close(winserver, monkeypatch):
+    _, host, port, _ = winserver
+    monkeypatch.setattr(wh, "detect_host_activity", lambda: {"communication_active": True, "capture_active": False})
+    with socket.create_connection((host, port), timeout=2) as sock:
+        sock.sendall(b'{"v":1,"cmd":"activity"}\n')
+        reply = b""
+        while b"\n" not in reply:
+            reply += sock.recv(4096)
+        assert json.loads(reply) == {"ok": True, "communication_active": True, "capture_active": False}
+        assert reply.endswith(b"\n")
+        assert sock.recv(1) == b""
+
+
+@pytest.mark.parametrize("reply", [
+    b"garbage\n", b"[]\n", b"{}\n", b'\xff\n', b"",
+    b'{"ok":true,"communication_active":true}\n',
+    b'{"ok":false,"communication_active":true,"capture_active":true}\n',
+    b'{"ok":true,"communication_active":"false","capture_active":true}\n',
+    b'{"ok":true,"communication_active":1,"capture_active":false}\n',
+    b"x" * 8193, b'{"ok":true}',
+])
+def test_query_activity_bad_replies_fail_open(monkeypatch, duck_warnings, capsys, reply):
+    sockets = []
+
+    class Sock:
+        def __init__(self):
+            self.reply = reply
+            self.closed = False
+            sockets.append(self)
+
+        def sendall(self, payload):
+            assert json.loads(payload) == {"v": 1, "cmd": "activity"}
+
+        def shutdown(self, how):
+            assert how == socket.SHUT_WR
+
+        def settimeout(self, seconds):
+            assert 0 < seconds <= wc.CONNECT_TIMEOUT_SEC
+
+        def recv(self, size):
+            data, self.reply = self.reply[:size], self.reply[size:]
+            return data
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(wc.socket, "create_connection", lambda *args, **kwargs: Sock())
+    monkeypatch.setattr(wc, "candidate_hosts", lambda env=None: ["mock"])
+    for _ in range(2):
+        assert wc.query_activity(env={}) == {"communication_active": False, "capture_active": False}
+    assert all(sock.closed for sock in sockets)
+    assert len(capsys.readouterr().err.splitlines()) == 1
+
+
+@pytest.mark.parametrize("error", [ConnectionRefusedError(), TimeoutError()])
+def test_query_activity_unreachable_fails_open(monkeypatch, duck_warnings, capsys, error):
+    def connect(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(wc.socket, "create_connection", connect)
+    env = {"AGENT_TTS_WINHOST_HOST": "127.0.0.1", "AGENT_TTS_WINHOST_PORT": "7717"}
+    assert wc.query_activity(env) == {"communication_active": False, "capture_active": False}
+    assert wc.query_activity(env) == {"communication_active": False, "capture_active": False}
+    assert len(capsys.readouterr().err.splitlines()) == 1
+
+
+def test_host_detector_nonwindows_never_invokes_ctypes_probe(monkeypatch, duck_warnings, capsys):
+    monkeypatch.setattr(wh.sys, "platform", "linux")
+    monkeypatch.setattr(wh, "_probe_wasapi_endpoints", lambda: pytest.fail("native probe on Linux"))
+    assert wh.detect_host_activity() == {"communication_active": False, "capture_active": False}
+    assert wh.detect_host_activity() == {"communication_active": False, "capture_active": False}
+    assert len(capsys.readouterr().err.splitlines()) == 1
+
+
+@pytest.mark.parametrize("error", [None, OSError("COM unavailable"), NotImplementedError("classification unavailable")])
+def test_host_detector_windows_probe_is_fail_open(monkeypatch, duck_warnings, capsys, error):
+    calls = []
+
+    def probe():
+        calls.append(True)
+        if error:
+            raise error
+
+    monkeypatch.setattr(wh.sys, "platform", "win32")
+    monkeypatch.setattr(wh, "_probe_wasapi_endpoints", probe)
+    assert wh.detect_host_activity() == {"communication_active": False, "capture_active": False}
+    assert calls == [True]
+    assert "M-01" in capsys.readouterr().err
+
+
+def test_gain_db_v1_header_and_server_attenuation(winserver, monkeypatch):
+    import struct
+
+    server, host, port, sink = winserver
+    patch_target(monkeypatch, host, port)
+    raw = struct.pack("<4h", 12000, -12000, 32767, -32768)
+    stream = open_stream(24000, 1, 2, gain_db=-12)
+    stream.send_pcm(raw)
+    stream.finish()
+    assert server.last_header["v"] == 1
+    assert server.last_header["gain_db"] == -12
+    gain = ducking.gain_linear(-12)
+    assert rendered_audio(sink) == struct.pack("<4h", *(int(sample * gain) for sample in (12000, -12000, 32767, -32768)))
+
+
+def test_playstream_live_gain_release_and_pause_controls():
+    import struct
+
+    raw = struct.pack("<2h", 12000, -12000)
+    header = {"rate": 24000, "channels": 1, "gain_db": -12}
+    stream = wh.PlayStream(None, header, None, initial_data=raw * 3)
+    generator = stream._pcm_generator()
+    next(generator)
+    assert generator.send(2) != raw
+    stream.pause()
+    assert generator.send(2) == bytes(4)
+    stream.set_gain_db(0)
+    stream.resume()
+    assert generator.send(2) == raw
+    stream.stop()
+    assert generator.send(2) == b""
+
+
+@pytest.mark.parametrize("invalid", ["bad", True, 12, float("nan"), float("inf"), -(10 ** 1000), None],
+                         ids=["string", "bool", "amplification", "nan", "infinity", "oversized-number", "null"])
+def test_invalid_gain_db_fails_open_to_unity(duck_warnings, capsys, invalid):
+    raw = b"\x01\x02\x03\x04"
+    stream = wh.PlayStream(None, {"rate": 24000, "channels": 1, "gain_db": invalid}, None, initial_data=raw)
+    generator = stream._pcm_generator()
+    next(generator)
+    assert generator.send(2) == raw
+    assert "gain_db" in capsys.readouterr().err
+
+
+@pytest.fixture
+def remote_ducking(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(wc.time, "monotonic", lambda: clock[0])
+    activity = [{"communication_active": True, "capture_active": False}]
+    queries, headers, controls, pcm = [], [], [], []
+
+    def query(env=None):
+        queries.append(clock[0])
+        return activity[-1].copy()
+
+    class Stream:
+        host = "mock-host"
+        port = 7717
+
+        def send_pcm(self, chunk):
+            pcm.append(chunk)
+
+        def finish(self, on_wait=None):
+            if on_wait:
+                clock[0] = 2.0
+                activity.append({"communication_active": False, "capture_active": False})
+                on_wait()
+
+        def abort(self):
+            pass
+
+    def open_mock(*args, **kwargs):
+        headers.append(kwargs)
+        return Stream()
+
+    monkeypatch.setattr(wc, "query_activity", query)
+    monkeypatch.setattr(wc, "open_stream", open_mock)
+    monkeypatch.setattr(wc, "send_control", lambda cmd, **kwargs: controls.append((cmd, kwargs)) or True)
+    return clock, activity, queries, headers, controls, pcm
+
+
+@pytest.mark.parametrize("target", ["winhost", "windows"])
+@pytest.mark.parametrize("policy", ["duck", "pause", "ignore"])
+def test_remote_policy_header_and_release(remote_ducking, target, policy):
+    clock, activity, queries, headers, controls, pcm = remote_ducking
+    session = RemoteAudioSession(target=target, env={f"AGENT_TTS_DUCK_POLICY_{target.upper()}": policy})
+    decoded = make_decoded_pcm(10)
+    session.prepare_pcm(decoded)
+    session.play(decoded)
+    assert pcm == [decoded.samples.tobytes()]  # attenuation is server-owned
+    if policy == "duck":
+        assert headers[0]["gain_db"] == -12.0
+        assert ("gain", {"env": {"AGENT_TTS_WINHOST_HOST": "mock-host", "AGENT_TTS_WINHOST_PORT": "7717"},
+                         "gain_db": 0.0}) in controls
+        assert queries == [0, 2]
+    elif policy == "pause":
+        assert headers[0]["paused"] is True
+        assert [cmd for cmd, _ in controls] == ["pause", "resume"]
+        assert queries == [0, 2]
+    else:
+        assert "gain_db" not in headers[0] and "paused" not in headers[0]
+        assert queries == [] and controls == []
+    assert session.state["status"] == "stopped"
+    clock[0] = 100
+    session._check_remote_ducking()
+    assert len(queries) == (0 if policy == "ignore" else 2)
+
+
+def test_remote_activity_checks_only_during_live_playback(remote_ducking):
+    clock, _, queries, _, _, _ = remote_ducking
+    session = RemoteAudioSession(env={"AGENT_TTS_DUCK_POLICY": "duck"})
+    session.prepare_pcm(make_decoded_pcm(10))
+    clock[0] = 10
+    session._check_remote_ducking()
+    assert queries == [0]
+    session.stop()
+    session._check_remote_ducking()
+    assert queries == [0]
+
+
+def test_gain_control_roundtrip_does_not_replace_active_stream(winserver, monkeypatch):
+    server, host, port, _ = winserver
+    patch_target(monkeypatch, host, port)
+    active = wh.PlayStream(None, {"rate": 24000, "channels": 1}, None, initial_data=b"\x01\x02" * 4)
+    with server._active_lock:
+        server._active = active
+    assert send_control("gain", gain_db=-12)
+    assert wait_for(lambda: active.gain == ducking.gain_linear(-12))
+    assert send_control("gain", gain_db=0)
+    assert wait_for(lambda: active.gain == 1.0)
+    assert server._active is active
+
+
+def test_remote_manual_pause_is_not_resumed_by_activity_release(remote_ducking):
+    clock, activity, queries, _, controls, _ = remote_ducking
+    session = RemoteAudioSession(env={"AGENT_TTS_DUCK_POLICY": "pause"})
+    session.prepare_pcm(make_decoded_pcm(10))
+    session.state["status"] = "playing"
+    session._duck_running = True
+    session._apply_remote_activity(activity[-1])
+    assert session.state["status"] == "paused"
+    session.handle_ipc_command("pause")
+    activity.append({"communication_active": False, "capture_active": False})
+    clock[0] = 2
+    session._check_remote_ducking()
+    assert session.state["status"] == "paused"
+    assert [cmd for cmd, _ in controls] == ["pause"]
+    assert queries == [0]
+
+
+def test_remote_query_failure_releases_ducking(remote_ducking, monkeypatch, duck_warnings, capsys):
+    clock, _, _, _, controls, _ = remote_ducking
+    session = RemoteAudioSession(env={"AGENT_TTS_DUCK_POLICY": "duck"})
+    session.prepare_pcm(make_decoded_pcm(10))
+    session.state["status"] = "playing"
+    session._duck_running = True
+    monkeypatch.setattr(wc, "query_activity", ORIGINAL_QUERY_ACTIVITY)
+    monkeypatch.setattr(wc, "candidate_hosts", lambda env=None: ["mock-host"])
+
+    def unavailable(*args, **kwargs):
+        raise ConnectionRefusedError()
+
+    monkeypatch.setattr(wc.socket, "create_connection", unavailable)
+    for now in [2, 4]:
+        clock[0] = now
+        session._check_remote_ducking()
+    assert session._duck_gain_db == 0.0
+    assert [cmd for cmd, _ in controls] == ["gain"]
+    assert len(capsys.readouterr().err.splitlines()) == 1
+
+
+def test_remote_capture_only_activity_uses_custom_attenuation(remote_ducking):
+    _, activity, _, headers, _, _ = remote_ducking
+    activity.append({"communication_active": False, "capture_active": True})
+    session = RemoteAudioSession(env={"AGENT_TTS_DUCK_POLICY": "duck", "AGENT_TTS_DUCK_DB": "6"})
+    session.prepare_pcm(make_decoded_pcm(10))
+    assert headers[0]["gain_db"] == -6.0
+
+
+def test_finish_wait_hook_survives_read_timeout():
+    events = []
+
+    class Sock:
+        def sendall(self, payload):
+            pass
+
+        def shutdown(self, how):
+            events.append("half-close")
+
+        def settimeout(self, seconds):
+            assert seconds == 0.2
+
+        def recv(self, size):
+            if events.count("check") == 1:
+                raise socket.timeout()
+            return b""
+
+        def close(self):
+            events.append("close")
+
+    stream = wc.WinhostStream(Sock(), "mock", 7717, 24000, 1, 2)
+    stream.finish(on_wait=lambda: events.append("check"))
+    assert events == ["half-close", "check", "check", "close"]
+
+
+def test_remote_activity_uses_connected_endpoint(remote_ducking, monkeypatch):
+    clock, _, _, _, _, _ = remote_ducking
+    environments = []
+
+    def query(env=None):
+        environments.append(env)
+        return {"communication_active": False, "capture_active": False}
+
+    monkeypatch.setattr(wc, "query_activity", query)
+    env = {"AGENT_TTS_DUCK_POLICY": "duck", "AGENT_TTS_WINHOST_HOST": "requested-host"}
+    session = RemoteAudioSession(env=env)
+    session.prepare_pcm(make_decoded_pcm(10))
+    session.state["status"] = "playing"
+    session._duck_running = True
+    clock[0] = 2
+    session._check_remote_ducking()
+    assert environments == [env, {"AGENT_TTS_WINHOST_HOST": "mock-host", "AGENT_TTS_WINHOST_PORT": "7717"}]
 
 
 # -- helpers ---------------------------------------------------------------
