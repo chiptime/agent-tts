@@ -27,6 +27,70 @@ from agent_tts.winhost_client import (
 ORIGINAL_QUERY_ACTIVITY = wc.query_activity
 
 
+def test_classify_active_communications_session():
+    render = [{"state": 1, "system_sounds": False, "endpoint_role": "communications"}]
+    assert wh.classify_sessions(render, []) == {"communication_active": True, "capture_active": False}
+
+
+@pytest.mark.parametrize("render,capture,expected", [
+    ([], [], (False, False)),
+    ([{"state": 0, "system_sounds": False}], [], (False, False)),
+    ([{"state": 2, "system_sounds": False}], [], (False, False)),
+    ([{"state": 1, "system_sounds": True}], [], (False, False)),
+    ([{"state": 1, "system_sounds": False, "endpoint_role": "multimedia"}], [], (False, False)),
+    ([{"state": 1, "system_sounds": False, "endpoint_role": "console"}], [], (False, False)),
+    ([], [{"state": 1, "system_sounds": False}], (False, True)),
+    ([], [{"state": 0, "system_sounds": False}], (False, False)),
+    ([], [{"state": 2, "system_sounds": False}], (False, False)),
+    ([], [{"state": 1, "system_sounds": True}], (False, True)),
+    ([{"state": 1, "system_sounds": False}], [{"state": 1, "system_sounds": False}], (True, True)),
+    ([{"state": 0, "system_sounds": False}, {"state": 1, "system_sounds": False}], [], (True, False)),
+], ids=["empty", "inactive", "expired", "system-sounds", "multimedia", "console-media",
+        "capture-only", "capture-inactive", "capture-expired", "system-owned-capture", "both", "mixed"])
+def test_classify_sessions_matrix(render, capture, expected):
+    assert wh.classify_sessions(render, capture) == {
+        "communication_active": expected[0], "capture_active": expected[1],
+    }
+
+
+@pytest.mark.parametrize("malformed", [
+    None, "sessions", {}, [None], [{}], [{"state": 1}],
+    [{"state": True, "system_sounds": False}],
+    [{"state": "active", "system_sounds": False}],
+    [{"state": 3, "system_sounds": False}],
+    [{"state": 1, "system_sounds": "false"}],
+    [{"state": 1, "system_sounds": False, "endpoint_role": "unknown"}],
+    [{"state": 1, "system_sounds": False, "process_id": True}],
+    [{"state": 1, "system_sounds": False, "process_id": -1}],
+    [{"state": 1, "system_sounds": False, "process_id": None}],
+])
+@pytest.mark.parametrize("side", ["render", "capture"])
+def test_classify_malformed_snapshot_fails_open(malformed, side):
+    active = [{"state": 1, "system_sounds": False}]
+    args = (malformed, active) if side == "render" else (active, malformed)
+    assert wh.classify_sessions(*args) == {"communication_active": False, "capture_active": False}
+
+
+def test_classify_checks_late_malformed_records_before_positive():
+    render = [{"state": 1, "system_sounds": False}, {"state": 0}]
+    assert wh.classify_sessions(render, []) == {"communication_active": False, "capture_active": False}
+
+
+def test_classify_excludes_own_render_stream_without_mutating_inputs():
+    render = [{"state": 1, "system_sounds": False, "process_id": 321}]
+    before = [record.copy() for record in render]
+    assert wh.classify_sessions(render, [], own_process_id=321)["communication_active"] is False
+    assert wh.classify_sessions(render, [], own_process_id=123)["communication_active"] is True
+    assert render == before
+
+
+def test_classify_media_on_shared_communications_endpoint_is_heuristic():
+    # The endpoint, not an unsupported per-application media-role API, is the
+    # selected contract. Media routed to that same endpoint can also count.
+    render = [{"state": 1, "system_sounds": False, "endpoint_role": "communications", "media_role": "music"}]
+    assert wh.classify_sessions(render, [])["communication_active"] is True
+
+
 @pytest.mark.parametrize("communication,capture", [(False, False), (True, False), (False, True), (True, True)])
 def test_activity_query_v1_roundtrip(winserver, monkeypatch, communication, capture):
     _, host, port, _ = winserver
@@ -107,28 +171,71 @@ def test_query_activity_unreachable_fails_open(monkeypatch, duck_warnings, capsy
     assert len(capsys.readouterr().err.splitlines()) == 1
 
 
-def test_host_detector_nonwindows_never_invokes_ctypes_probe(monkeypatch, duck_warnings, capsys):
+def test_host_detector_nonwindows_never_invokes_com(monkeypatch, duck_warnings, capsys):
     monkeypatch.setattr(wh.sys, "platform", "linux")
-    monkeypatch.setattr(wh, "_probe_wasapi_endpoints", lambda: pytest.fail("native probe on Linux"))
+    monkeypatch.setattr(wh, "_enumerate_wasapi_sessions", lambda: pytest.fail("COM on Linux"))
     assert wh.detect_host_activity() == {"communication_active": False, "capture_active": False}
     assert wh.detect_host_activity() == {"communication_active": False, "capture_active": False}
     assert len(capsys.readouterr().err.splitlines()) == 1
 
 
-@pytest.mark.parametrize("error", [None, OSError("COM unavailable"), NotImplementedError("classification unavailable")])
-def test_host_detector_windows_probe_is_fail_open(monkeypatch, duck_warnings, capsys, error):
+def test_native_adapter_guards_before_ctypes_import(monkeypatch):
+    import builtins
+
+    original_import = builtins.__import__
+
+    def guarded_import(name, *args, **kwargs):
+        if name in ("ctypes", "uuid"):
+            pytest.fail("native dependencies imported on non-Windows")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(wh.sys, "platform", "linux")
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    with pytest.raises(OSError, match="Windows-only"):
+        wh._enumerate_wasapi_sessions()
+
+
+@pytest.mark.parametrize("error", [OSError("COM unavailable"), ValueError("bad session"), RuntimeError("COM getter failed")])
+def test_host_detector_windows_enumeration_errors_fail_open(monkeypatch, duck_warnings, capsys, error):
     calls = []
 
-    def probe():
+    def enumerate_sessions():
         calls.append(True)
-        if error:
-            raise error
+        raise error
 
     monkeypatch.setattr(wh.sys, "platform", "win32")
-    monkeypatch.setattr(wh, "_probe_wasapi_endpoints", probe)
+    monkeypatch.setattr(wh, "_enumerate_wasapi_sessions", enumerate_sessions)
     assert wh.detect_host_activity() == {"communication_active": False, "capture_active": False}
-    assert calls == [True]
-    assert "M-01" in capsys.readouterr().err
+    assert wh.detect_host_activity() == {"communication_active": False, "capture_active": False}
+    assert calls == [True, True]
+    assert len(capsys.readouterr().err.splitlines()) == 1
+
+
+@pytest.mark.parametrize("communication,capture", [(False, False), (True, False), (False, True), (True, True)])
+def test_host_detector_adapter_classifies_synthetic_sessions(monkeypatch, duck_warnings, capsys, communication, capture):
+    # Only the adapter boundary is mocked: NO native COM method executes here.
+    snapshot = ([{"state": int(communication), "system_sounds": False}],
+                [{"state": int(capture), "system_sounds": False}])
+    monkeypatch.setattr(wh.sys, "platform", "win32")
+    monkeypatch.setattr(wh, "_enumerate_wasapi_sessions", lambda: snapshot)
+    assert wh.detect_host_activity() == {"communication_active": communication, "capture_active": capture}
+    assert capsys.readouterr().err == ""
+
+
+def test_host_detector_malformed_enumeration_fails_open(monkeypatch, duck_warnings, capsys):
+    monkeypatch.setattr(wh.sys, "platform", "win32")
+    monkeypatch.setattr(wh, "_enumerate_wasapi_sessions", lambda: ([{"state": 1, "system_sounds": False}], [{}]))
+    assert wh.detect_host_activity() == {"communication_active": False, "capture_active": False}
+    assert len(capsys.readouterr().err.splitlines()) == 1
+
+
+def test_host_detector_excludes_winhost_process(monkeypatch):
+    monkeypatch.setattr(wh.sys, "platform", "win32")
+    monkeypatch.setattr(wh.os, "getpid", lambda: 321)
+    monkeypatch.setattr(wh, "_enumerate_wasapi_sessions", lambda: (
+        [{"state": 1, "system_sounds": False, "process_id": 321}], []
+    ))
+    assert wh.detect_host_activity() == {"communication_active": False, "capture_active": False}
 
 
 def test_gain_db_v1_header_and_server_attenuation(winserver, monkeypatch):

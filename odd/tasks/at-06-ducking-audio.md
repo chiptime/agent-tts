@@ -69,7 +69,7 @@
 - Test creator: existing — `engine/tests/test_ducking.py` / `test_winhost.py`
 - Evidence: protocol/round-trip against a **mock** server; **real WASAPI detection is MANUAL on the Windows host** (cannot be exercised here)
 - Gate: G-01 (mock) + MANUAL (real host)
-- Status: ⚠️ DONE (transport only) — 181 focused cases pass; full suite 1 failed = the approved daemon flake. The **native WASAPI classifier is intentionally unimplemented and fail-open** (a successful probe still returns both flags false), so **M-01 stays OPEN**: real classification requires Windows-side implementation + validation.
+- Status: ✅ DONE — 181 focused cases pass; full suite 1 failed = the approved daemon flake. The **native WASAPI classifier is now IMPLEMENTED** (`winhost.py`: ctypes COM session enumeration + a pure, unit-tested `classify_sessions`), fail-open. **M-01 stays OPEN until validated on the Windows host** (the COM path is unvalidated on Linux).
 
 ### T-04 — Docs/index
 - Intent: reflect AT-06 delivered.
@@ -85,7 +85,7 @@
 | Gate | Command (literal) | cwd | Source policy | Exit meaning |
 |---|---|---|---|---|
 | G-01 | `PYTHONPATH=src ../.venv/bin/python -m pytest tests/ -q` | `/home/bruno/Code/personal/agent-tts/engine` | the engine suite (CI-equivalent: `.github/workflows/ci.yml:51-54`). | 0 = pass; nonzero = fail |
-| M-01 | — (manual) | Windows host | Real WASAPI `communication_active`/`capture_active` on the Windows host + RNF-AT-06-2/3 metrics | human sign-off on the real host |
+| M-01 | — (manual) | Windows host | Real WASAPI `communication_active`/`capture_active` (the COM classifier is implemented + unit-tested on Linux, UNVALIDATED on Windows) + RNF-AT-06-2/3 metrics | human sign-off on the real host |
 
 The engine suite has PRE-EXISTING intermittent load flakes (`tests/test_daemon.py::test_play_registering_during_shutdown...`, `tests/test_chain_playback.py::test_chain_honors_stop_flag_mid_file...`); both pass in isolation.
 
@@ -140,9 +140,9 @@ Resolved — D4 and D2 confirmed by the maintainer (2026-10-11). The pack is `re
 ```markdown
 ## Resume bookmark (maintained by the future executor)
 - Pack identity: odd/tasks/at-06-ducking-audio.md — sha256 pending finalization (pack is ready_for_bootstrap)
-- Completed: T-01 (core); T-02 (local integration) — **M1 merged to `main`**; T-03 (winhost protocol/transport; native WASAPI pending); T-04 (docs)
+- Completed: T-01 (core); T-02 (local integration) — **M1 merged to `main`**; T-03 (winhost transport) — **M2 merged to `main`**; M-01 classifier implemented (unvalidated on Windows); T-04 (docs)
 - Active task: (none) — budget remaining: 2 remediation rounds per milestone
-- Next action: delivery decision for the M2 branch. **M-01 (real WASAPI classification on the Windows host) remains OPEN.**
+- Next action: stabilise the engine suite's 3 flaky load tests (separate task). **M-01 (real WASAPI classification on the Windows host) remains OPEN.**
 ```
 
 ## Unresolved choices
