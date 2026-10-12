@@ -1085,6 +1085,15 @@ class Daemon:
         """
         with self._lock:
             record = self._dispatched_items.pop(item.id, None)
+            if (
+                record is not None and record["session"] is None
+                and self._shutting_down and outcome is PlaybackOutcome.STOPPED
+            ):
+                # Dispatch can be building a session when shutdown finalizes it.
+                # No session registered, so refuse rather than report a stop:
+                # this release may win before the runner's registration guard.
+                outcome = PlaybackOutcome.FAILED
+                error = "daemon shutting down"
         if record is None:
             return
         session = record["session"]

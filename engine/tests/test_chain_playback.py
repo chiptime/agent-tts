@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 import agent_tts.cli as cli_module
+import agent_tts.daemon as daemon_module
 import agent_tts.ipc as ipc
 from agent_tts import audio
 from agent_tts.audio import AudioSession
@@ -297,16 +298,62 @@ def test_chain_honors_stop_flag_mid_file_remaining_files_not_played(channel, mon
     b = _write_wav(tmp_path / "b.wav", 2, 1.2)
     events = []
     d = _start_daemon(channel, monkeypatch, events)
+    mid_file = threading.Event()
+    first_item_traced = threading.Event()
+    release_playback = threading.Event()
+    finalized = threading.Event()
+    cursors = []
+    real_trace = daemon_module._queue_trace
+    real_on_finished = d.queue_manager._on_finished
+
+    def observed_trace(message):
+        real_trace(message)
+        if message.startswith("chain-item ") and " index=0 " in message:
+            first_item_traced.set()
+
+    def observed_on_finished(item_id):
+        finish = real_on_finished(item_id)
+
+        def acknowledge(outcome, error):
+            finish(outcome, error)
+            finalized.set()  # queue counters are committed, not merely play-ended
+
+        return acknowledge
+
+    def controlled_play(self, decoded):
+        with self.lock:
+            self._load_decoded_locked(decoded)
+            self.state["status"] = "playing"
+        generator = self._stream_generator()
+        next(generator)
+        frames = int(self.sample_rate * 0.3)
+        played = generator.send(frames)
+        mid_file.set()  # freeze at a real frame position within file 1
+        assert release_playback.wait(timeout=10.0), "stop acknowledgement never released playback"
+        tail = generator.send(frames)
+        cursors.append(self.current_frame)
+        events.append(("end", self.label, time.monotonic(),
+                       "interrupted" if self.state["stop"] else "completed", played, tail))
+        self.state["status"] = "stopped"
+
+    monkeypatch.setattr(daemon_module, "_queue_trace", observed_trace)
+    monkeypatch.setattr(d.queue_manager, "_on_finished", observed_on_finished)
+    monkeypatch.setattr(AudioSession, "play", controlled_play)
     try:
         sock = channel["sock"]
-        ipc.send_ipc_command("enqueue " + json.dumps({"chain": [str(a), str(b)]}), socket_path=sock)
-        _wait_until(lambda: any(e[0] == "start" for e in events))
-        time.sleep(0.3)  # well inside file 1 (its audio spans 0.0–1.2 s)
-        ipc.send_ipc_command("stop", socket_path=sock)
-        _wait_until(lambda: any(e[0] == "end" for e in events), message="stopped chain never ended")
+        reply = ipc.send_ipc_command("enqueue " + json.dumps({"chain": [str(a), str(b)]}), socket_path=sock)
+        assert reply.startswith("ok=true"), reply
+        assert mid_file.wait(timeout=10.0), "chain never reached file 1"
+        assert first_item_traced.wait(timeout=10.0), "file 1 was never traced"
+        assert ipc.send_ipc_command("stop", socket_path=sock).startswith("status=stopped")
+        release_playback.set()
+        assert finalized.wait(timeout=10.0), "stopped chain never finalized"
 
         end = next(e for e in events if e[0] == "end")
         assert end[3] == "interrupted"
+        assert end[4] == _file_pcm(1, 0.3)
+        assert end[5] == b""  # real PCM generator emitted nothing after stop
+        assert cursors == [int(WAV_RATE * 0.3)]
         # The cursor never crossed into file 2's chain-global start (1.2 s).
         traces = _chain_traces(capsys)
         indexes = [t[1] for t in traces]
@@ -317,6 +364,7 @@ def test_chain_honors_stop_flag_mid_file_remaining_files_not_played(channel, mon
         assert snapshot["completed_count"] == 1
         assert snapshot["failed_count"] == 0
     finally:
+        release_playback.set()
         _stop_daemon(d)
 
 

@@ -710,20 +710,79 @@ def test_control_before_play_then_roundtrip_still_works(winserver, monkeypatch):
 def test_new_play_preempts_active_session(winserver, monkeypatch):
     server, host, port, sink = winserver
     patch_target(monkeypatch, host, port)
-    first = open_stream(24000, 1, 2)
-    first.send_pcm(deterministic_pcm(4096))
-    assert wait_for(lambda: server._active is not None)
-    send_control("pause")  # keeps the first generator alive in silence
-    time.sleep(0.2)
+    first_active = threading.Event()
+    first_ready = threading.Event()
+    first_paused = threading.Event()
+    first_stopped = threading.Event()
+    second_active = threading.Event()
+    streams = []
+    real_activate = server._activate
+    real_control = server._apply_control
 
-    pcm2 = deterministic_pcm(600)
-    second = open_stream(16000, 2, 2)
-    second.send_pcm(pcm2)
-    second.finish()
+    def observed_activate(stream):
+        if stream.rate == 24000:
+            streams.append(stream)
+            stop = stream.stop
 
-    assert server.last_header["rate"] == 16000
-    assert rendered_audio(sink).endswith(pcm2)
-    first.abort()
+            def observed_stop():
+                stop()  # acknowledge the REAL preemption stop, not a test flag
+                first_stopped.set()
+
+            monkeypatch.setattr(stream, "stop", observed_stop)
+        real_activate(stream)
+        (first_active if stream.rate == 24000 else second_active).set()
+
+    def observed_control(cmd, header=None):
+        real_control(cmd, header)
+        if cmd == "pause" and streams and streams[0].paused:
+            first_paused.set()
+
+    class HeldFirstDevice(FakeDevice):
+        def start(self, generator):
+            self.started.set()
+            first_ready.set()
+            # Do not busy-spin allocating silent buffers while the test waits.
+            # Real PlayStream.stop wakes this gate; its guarded generator then
+            # acknowledges completion so _activate can finish preempting it.
+            assert first_stopped.wait(timeout=10.0), "first stream was never preempted"
+            super().start(generator)
+
+    monkeypatch.setattr(server, "_activate", observed_activate)
+    monkeypatch.setattr(server, "_apply_control", observed_control)
+    monkeypatch.setattr(server, "device_factory", lambda rate, channels: (
+        HeldFirstDevice(rate, channels, sink) if rate == 24000 else FakeDevice(rate, channels, sink)
+    ))
+    first = second = None
+    try:
+        first = open_stream(24000, 1, 2)
+        first.send_pcm(deterministic_pcm(4096))
+        assert first_active.wait(timeout=10.0), "first stream was never activated"
+        assert first_ready.wait(timeout=10.0), "first device never started"
+        with server._active_lock:
+            assert server._active is streams[0]
+        assert send_control("pause")
+        assert first_paused.wait(timeout=10.0), "first stream was never paused"
+        assert not streams[0].stopped
+
+        pcm2 = deterministic_pcm(600)
+        second = open_stream(16000, 2, 2)
+        second.sock.settimeout(10.0)
+        second.send_pcm(pcm2)
+        assert second_active.wait(timeout=10.0), "second stream was never activated"
+        assert first_stopped.is_set()
+        assert streams[0].stopped
+        assert streams[0].finished.wait(timeout=10.0), "preempted stream never finished"
+        second.finish()
+
+        assert server.last_header["rate"] == 16000
+        assert rendered_audio(sink).endswith(pcm2)
+    finally:
+        if streams:
+            streams[0].stop()
+        if first is not None:
+            first.abort()
+        if second is not None:
+            second.abort()
 
 
 # -- RemoteAudioSession --------------------------------------------------------
