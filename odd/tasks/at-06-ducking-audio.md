@@ -76,6 +76,7 @@
 - Depends: T-02 (T-03 for the winhost note)
 - Edit allowlist: `docs/prds/README.md`, `docs/ESTADO-Y-PENDIENTES.md`
 - Gate: manual (docs readback)
+- Status: ✅ DONE — indexes reflect AT-06 PARCIAL (M1 merged; M2 transport done; native WASAPI classification pending).
 
 ---
 
@@ -139,9 +140,9 @@ Resolved — D4 and D2 confirmed by the maintainer (2026-10-11). The pack is `re
 ```markdown
 ## Resume bookmark (maintained by the future executor)
 - Pack identity: odd/tasks/at-06-ducking-audio.md — sha256 pending finalization (pack is ready_for_bootstrap)
-- Completed: T-01 (core); T-02 (local integration) — **M1 merged to `main`**; T-03 (winhost protocol/transport; native WASAPI classification pending)
+- Completed: T-01 (core); T-02 (local integration) — **M1 merged to `main`**; T-03 (winhost protocol/transport; native WASAPI pending); T-04 (docs)
 - Active task: (none) — budget remaining: 2 remediation rounds per milestone
-- Next action: T-04 (docs), then delivery decision. **M-01 (real WASAPI classification on the Windows host) remains OPEN.**
+- Next action: delivery decision for the M2 branch. **M-01 (real WASAPI classification on the Windows host) remains OPEN.**
 ```
 
 ## Unresolved choices
