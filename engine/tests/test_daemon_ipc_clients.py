@@ -57,7 +57,10 @@ class FrameServer:
             while True:
                 try:
                     conn, _ = self.server.accept()
-                except socket.timeout:
+                except (socket.timeout, OSError):
+                    # socket.timeout: the idle accept window elapsed.
+                    # OSError (e.g. EBADF): close() closed the server socket
+                    # under us while we waited — a clean teardown, not an error.
                     return
                 with conn:
                     conn.settimeout(5)
