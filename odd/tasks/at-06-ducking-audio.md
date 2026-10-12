@@ -45,10 +45,11 @@
 - Intent: local detection + policy resolution + gain math, fail-open. Traces to RF-AT-06-1/3/6, RNF-AT-06-4.
 - Depends: none
 - Edit allowlist: `engine/src/agent_tts/ducking.py` (new), `engine/tests/test_ducking.py` (new)
-- Contract: `detect_local() -> dict` (pactl sink-input/capture parse → `{comm_active, capture_active}`, fail-open), `resolve_policy(target, env) -> str`, `gain_linear(db) -> float`, `should_duck(state, policy) -> action`. stdlib only; no config of the system.
+- Contract: `detect_local() -> dict` (pactl sink-input/capture parse → `{comm_active, capture_active}`, fail-open), `resolve_policy(target, env) -> str`, `gain_linear(db) -> float`, `decide(state, policy) -> str`. stdlib only; no config of the system.
 - Test creator: this task creates `engine/tests/test_ducking.py` (FUTURE until done)
 - Evidence: policy matrix; `pactl` fixtures (comm/media/mixed/absent/malformed → fail-open); exact dB↔linear; loop exclusion
 - Gate: G-01
+- Status: ✅ DONE — 82 focused cases pass; full suite 1305 passed. Independent static review found NO defect; the verifier deferred the pytest run on a cache-write policy, so the parent re-ran the focused suite (82 passed). API named `decide` (pack said `should_duck`).
 
 ### T-02 — Local integration (gain, hook, status)
 - Intent: wire detection + `duck`/`pause`/`ignore` into playback and status. Traces to RF-AT-06-3/4/5, RNF-AT-06-1/3.
@@ -136,9 +137,9 @@ Resolved — D4 and D2 confirmed by the maintainer (2026-10-11). The pack is `re
 ```markdown
 ## Resume bookmark (maintained by the future executor)
 - Pack identity: odd/tasks/at-06-ducking-audio.md — sha256 pending finalization (pack is ready_for_bootstrap)
-- Completed: (none — pack is ready_for_bootstrap)
+- Completed: T-01 (ducking core; 82 cases)
 - Active task: (none) — budget remaining: 2 remediation rounds per milestone
-- Next action: T-01 (ducking core: `pactl` parse + policy + gain math)
+- Next action: T-02 (local integration: gain in `AudioSession._stream_generator`, pre-play detect, periodic check while playing, status `comm_active`)
 ```
 
 ## Unresolved choices
