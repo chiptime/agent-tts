@@ -497,7 +497,8 @@ def test_shutdown_stops_all_inflight_sessions(channel):
     assert set(stopped) == {a, b}
 
 
-def test_play_registering_during_shutdown_is_refused_not_orphaned(channel):
+@pytest.mark.parametrize("manager_first", [True, False], ids=["manager-first", "registration-first"])
+def test_play_registering_during_shutdown_is_refused_not_orphaned(channel, monkeypatch, manager_first):
     """RS-1: a play registering while _shutdown drains cannot escape the stop.
 
     _shutdown snapshots _sessions once: a play whose session registers
@@ -511,14 +512,30 @@ def test_play_registering_during_shutdown_is_refused_not_orphaned(channel):
         socket_path=channel["sock"],
         provider_cache=ProviderCache(factory=lambda **kw: StubEngine()),
     )
-    snapshot_taken = threading.Event()
+    builder_entered = threading.Event()
+    release_builder = threading.Event()
+    manager_finalized = threading.Event()
+    handoffs = []
     stopped = []
+    real_finalize = d.queue_manager._finalize_hook
+
+    def observed_finalize(item, outcome, error):
+        real_finalize(item, outcome, error)
+        manager_finalized.set()
+        if manager_first:
+            # Force the manager's waiter release BEFORE registration refusal.
+            release_builder.set()
+
+    monkeypatch.setattr(d.queue_manager, "_finalize_hook", observed_finalize)
 
     class Early:
         def stop(self):
-            # Signals that _shutdown has snapshotted and is stopping us.
-            snapshot_taken.set()
             stopped.append(self)
+            if not manager_first:
+                # _shutdown has set its flag and snapshotted the early session.
+                # Hold it here until the builder returns and registration fails.
+                release_builder.set()
+                handoffs.append(manager_finalized.wait(timeout=10.0))
 
     class Late:
         def __init__(self):
@@ -534,15 +551,11 @@ def test_play_registering_during_shutdown_is_refused_not_orphaned(channel):
     played = []
 
     def fake_build(target, label, **kw):
-        # Registers the session only AFTER _shutdown has snapshotted, so
-        # the registration races the drain exactly as in the defect.
-        snapshot_taken.wait(timeout=5.0)
+        builder_entered.set()
+        assert release_builder.wait(timeout=10.0), "builder was never released"
         return late
 
     async def fake_play_speech(session, text, **kw):
-        deadline = time.monotonic() + 2.0
-        while not session.state.get("stop") and time.monotonic() < deadline:
-            time.sleep(0.02)
         played.append(bool(session.state.get("stop")))
 
     d._cli = types.SimpleNamespace(
@@ -556,14 +569,53 @@ def test_play_registering_during_shutdown_is_refused_not_orphaned(channel):
 
     play_thread = threading.Thread(target=run_play, daemon=True)
     play_thread.start()
-    d._shutdown()
-    play_thread.join(timeout=5.0)
+    try:
+        assert builder_entered.wait(timeout=10.0), "play never reached session construction"
+        d._shutdown()
+        play_thread.join(timeout=10.0)
+        assert not play_thread.is_alive(), "shutdown refusal never replied"
+        assert manager_finalized.is_set()
+        assert all(handoffs), "registration refusal was not acknowledged"
+        # Both real finalization orderings must preserve the same refusal.
+        assert replies == ["ok=false error=daemon shutting down"]
+        assert played == []
+        assert len(stopped) == 1  # only the pre-snapshot session existed
+    finally:
+        release_builder.set()
+        play_thread.join(timeout=10.0)
+        d.queue_manager.shutdown()
 
-    # The late play gets a deterministic refusal instead of running
-    # unsupervised through the shutdown drain.
-    assert replies == ["ok=false error=daemon shutting down"]
-    assert played == []
-    assert len(stopped) == 1  # only the pre-snapshot session existed
+
+@pytest.mark.parametrize("registered,shutting_down,outcome,error,expected", [
+    (False, True, "stopped", None, ("failed", "daemon shutting down")),
+    (True, True, "stopped", None, ("stopped", None)),
+    (False, False, "stopped", None, ("stopped", None)),
+    (False, True, "failed", "actual failure", ("failed", "actual failure")),
+    (True, True, "failed", "actual failure", ("failed", "actual failure")),
+])
+def test_shutdown_finalize_changes_only_unregistered_stops(channel, registered, shutting_down, outcome, error, expected):
+    import types
+    from agent_tts.queue_manager import PlaybackOutcome
+
+    d = Daemon(socket_path=channel["sock"])
+    waiter = daemon_mod._QueueWaiter()
+    session = object() if registered else None
+    d._shutting_down = shutting_down
+    d._dispatched_items[1] = {"session": session, "worker": None, "waiter": waiter}
+    if registered:
+        d._sessions.add(session)
+        d.active_session = session
+    try:
+        d._on_manager_finalize(types.SimpleNamespace(id=1), PlaybackOutcome(outcome), error)
+        assert waiter.event.is_set()
+        assert (waiter.outcome.value, waiter.error) == expected
+        assert d.active_session is None
+        assert d._sessions == set()
+        # A duplicate manager report cannot overwrite the first outcome.
+        d._on_manager_finalize(types.SimpleNamespace(id=1), PlaybackOutcome.STOPPED, None)
+        assert (waiter.outcome.value, waiter.error) == expected
+    finally:
+        d.queue_manager.shutdown()
 
 
 def test_shutdown_command_stops_inflight_playback(channel, monkeypatch):
