@@ -26,7 +26,7 @@ from agent_tts.boundaries import (
 from agent_tts.boundaries import shift_boundary_map  # noqa: F401 - re-export
 from agent_tts.cleaner import clean_agent_text
 from agent_tts.constants import DEFAULT_RATE, DEFAULT_VOICE
-from agent_tts import fallback
+from agent_tts import ducking, fallback
 from agent_tts.powershell_playback import PowershellSession, is_wsl_ps_available
 from agent_tts.providers import TTSProvider, get_provider
 from agent_tts.sources import read_last_agent_message
@@ -1007,7 +1007,9 @@ def _build_playback_session(
     winhost receiver is unreachable.
     """
     if playback == "local":
-        return AudioSession(
+        policy = ducking.resolve_policy("local", env)
+        activity = ducking.detect_local() if policy != "ignore" else None
+        session = AudioSession(
             label=label,
             auto_rewind_sec=auto_rewind_sec,
             highlight=highlight,
@@ -1017,6 +1019,10 @@ def _build_playback_session(
             provider=provider,
             voice=voice,
         )
+        if activity is not None:
+            gain = ducking.gain_linear(-ducking.duck_db(env)) if policy == "duck" else 1.0
+            session.configure_ducking(policy, activity, gain)
+        return session
     if playback == "wsl-ps" and not is_wsl_ps_available():
         print(
             "Error: --playback wsl-ps requires powershell.exe on PATH and a WSL environment "

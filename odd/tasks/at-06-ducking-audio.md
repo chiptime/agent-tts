@@ -59,6 +59,7 @@
 - Test creator: existing — `engine/tests/test_ducking.py` (T-01)
 - Evidence: gain applied/restored exactly; pause+resume via existing path; status field present; no-op when policy=ignore; zero rest activity
 - Gate: G-01
+- Status: ✅ DONE (M1) — 108 focused cases pass. The suite's single failure `tests/test_winhost.py::test_new_play_preempts_active_session` is a pre-existing load flake (passes 3/3 in isolation); T-02 does not touch winhost files.
 
 ### T-03 — Winhost detection + gain (M2, Windows-only)
 - Intent: `activity` query + `gain_db` transport. Traces to RF-AT-06-2.
@@ -137,9 +138,9 @@ Resolved — D4 and D2 confirmed by the maintainer (2026-10-11). The pack is `re
 ```markdown
 ## Resume bookmark (maintained by the future executor)
 - Pack identity: odd/tasks/at-06-ducking-audio.md — sha256 pending finalization (pack is ready_for_bootstrap)
-- Completed: T-01 (ducking core; 82 cases)
+- Completed: T-01 (ducking core; 82 cases); T-02 (local integration; 108 cases) — **M1 complete**
 - Active task: (none) — budget remaining: 2 remediation rounds per milestone
-- Next action: T-02 (local integration: gain in `AudioSession._stream_generator`, pre-play detect, periodic check while playing, status `comm_active`)
+- Next action: **M2 is a separate milestone** (winhost/WASAPI, Windows-only): T-03, then T-04 docs.
 ```
 
 ## Unresolved choices
