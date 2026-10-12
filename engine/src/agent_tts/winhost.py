@@ -9,20 +9,101 @@ Wire format (v1):
 - PLAY:    ``{"v":1,"cmd":"play","rate":24000,"channels":1,"format":"s16"}`` + LF,
            followed by raw PCM bytes until client EOF (half-close).
 - CONTROL: ``{"v":1,"cmd":"pause"|"resume"|"stop"}`` + LF, then close.
+- ACTIVITY: ``{"v":1,"cmd":"activity"}`` + LF; one JSON reply then close.
+- Optional PLAY fields: ``gain_db`` (signed attenuation, default 0 dB) and
+  ``paused`` (initial gate, avoiding a pre-play control registration race).
+- GAIN: ``{"v":1,"cmd":"gain","gain_db":0}`` + LF changes the active
+  stream's software gain; 0 dB restores unity. No OS volume is changed.
 """
 
+from array import array
 import json
+import math
 import socket
 import sys
 import threading
 
 import miniaudio
 
+from agent_tts import ducking
 from agent_tts.playback_target import winhost_bind_host, winhost_port
 
 MAX_HEADER_BYTES = 8192
 HEADER_READ_TIMEOUT_SEC = 2.0
 CLIENT_RECV_BUFFER = 65536
+PROTOCOL_VERSION = 1
+
+
+def _probe_wasapi_endpoints() -> None:
+    """Windows-only, read-only IMMDeviceEnumerator probe (M-01: MANUAL).
+
+    Enumerating active endpoints is NOT evidence of active capture or a call.
+    Session classification is deliberately not implemented blind here.
+    """
+    import ctypes
+    import uuid
+
+    class GUID(ctypes.Structure):
+        _fields_ = [("data1", ctypes.c_uint32), ("data2", ctypes.c_uint16),
+                    ("data3", ctypes.c_uint16), ("data4", ctypes.c_ubyte * 8)]
+
+    def guid(value):
+        return GUID.from_buffer_copy(uuid.UUID(value).bytes_le)
+
+    def call(obj, index, args, *values):
+        table = ctypes.cast(obj, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+        method = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, *args)(table[index])
+        return method(obj, *values)
+
+    def checked(hr):
+        if hr < 0:
+            raise OSError("WASAPI enumeration failed")
+
+    ole = ctypes.WinDLL("ole32")
+    ole.CoInitializeEx.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    ole.CoInitializeEx.restype = ctypes.c_long
+    ole.CoCreateInstance.argtypes = [ctypes.POINTER(GUID), ctypes.c_void_p, ctypes.c_uint32,
+                                    ctypes.POINTER(GUID), ctypes.POINTER(ctypes.c_void_p)]
+    ole.CoCreateInstance.restype = ctypes.c_long
+    ole.CoUninitialize.argtypes = []
+    ole.CoUninitialize.restype = None
+    initialized = ole.CoInitializeEx(None, 0)
+    checked(initialized)
+    enumerator = ctypes.c_void_p()
+    collection = ctypes.c_void_p()
+    try:
+        clsid = guid("bcde0395-e52f-467c-8e3d-c4579291692e")
+        iid = guid("a95664d2-9614-4f35-a746-de8db63617e6")
+        checked(ole.CoCreateInstance(ctypes.byref(clsid), None, 1, ctypes.byref(iid), ctypes.byref(enumerator)))
+        # IMMDeviceEnumerator::EnumAudioEndpoints(eAll, DEVICE_STATE_ACTIVE).
+        checked(call(enumerator, 3, [ctypes.c_int, ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)],
+                     2, 1, ctypes.byref(collection)))
+        count = ctypes.c_uint32()
+        checked(call(collection, 3, [ctypes.POINTER(ctypes.c_uint32)], ctypes.byref(count)))
+    finally:
+        try:
+            for obj in (collection, enumerator):
+                if obj:
+                    call(obj, 2, [])  # IUnknown::Release; never mutate device settings.
+        finally:
+            ole.CoUninitialize()
+
+
+def detect_host_activity() -> dict:
+    """Fail-open host activity; real WASAPI classification needs M-01 validation.
+
+    Non-Windows never loads ctypes/COM. Even a successful endpoint probe cannot
+    classify communication/capture streams, so this minimal backend returns
+    inactive rather than inventing positives from device availability.
+    """
+    try:
+        if sys.platform != "win32":
+            raise NotImplementedError("WASAPI is Windows-only")
+        _probe_wasapi_endpoints()
+        raise NotImplementedError("WASAPI session classification requires manual host validation")
+    except Exception:
+        ducking._warn_once("winhost_detection", "winhost activity unavailable; ducking ignored (M-01 host validation required)")
+        return {"communication_active": False, "capture_active": False}
 
 
 def default_device_factory(rate, channels):
@@ -50,8 +131,10 @@ class PlayStream:
         self.device_factory = device_factory
         self.buffer = bytearray(initial_data)
         self.buffer_lock = threading.Lock()
+        self.gain = 1.0
+        self.set_gain_db(header.get("gain_db", 0.0))
         self.eof = False
-        self.paused = False
+        self.paused = header.get("paused") is True
         self.stopped = False
         self.finished = threading.Event()
         self.device = None
@@ -95,6 +178,20 @@ class PlayStream:
     def pause(self):
         self.paused = True
 
+    def set_gain_db(self, db):
+        """Signed dB attenuation; malformed/amplifying gains fail open to unity."""
+        try:
+            if isinstance(db, bool) or not isinstance(db, (int, float)):
+                raise ValueError("gain must be numeric")
+            db = float(db)
+            if not math.isfinite(db) or db > 0:
+                raise ValueError("gain must be finite attenuation")
+        except (TypeError, ValueError, OverflowError):
+            ducking._warn_once("winhost_gain", "invalid winhost gain_db; using unity gain")
+            db = 0.0
+        with self.buffer_lock:
+            self.gain = ducking.gain_linear(db)
+
     def resume(self):
         self.paused = False
 
@@ -127,7 +224,17 @@ class PlayStream:
                 chunk = bytes(self.buffer[:nbytes])
                 del self.buffer[:nbytes]
                 eof = self.eof
+                gain = self.gain
             if frames:
+                if gain != 1.0:
+                    samples = array("h", chunk)
+                    if sys.byteorder != "little":
+                        samples.byteswap()
+                    for i, sample in enumerate(samples):
+                        samples[i] = int(sample * gain)
+                    if sys.byteorder != "little":
+                        samples.byteswap()
+                    chunk = samples.tobytes()
                 num_frames = yield chunk
                 continue
             if eof:
@@ -213,9 +320,15 @@ class WinhostServer:
         cmd = header.get("cmd")
         if cmd == "play":
             self._handle_play(conn, header, leftover)
-        elif cmd in ("pause", "resume", "stop"):
-            self._apply_control(cmd)
+        elif cmd in ("pause", "resume", "stop", "gain"):
+            self._apply_control(cmd, header)
             _close_quietly(conn)
+        elif cmd == "activity":
+            try:
+                state = detect_host_activity()
+                conn.sendall((json.dumps({"ok": True, **state}) + "\n").encode("utf-8"))
+            finally:
+                _close_quietly(conn)
         else:
             print(f"winhost: unknown command {cmd!r} from {peer}", file=sys.stderr)
             _close_quietly(conn)
@@ -244,7 +357,7 @@ class WinhostServer:
         header = json.loads(line.decode("utf-8"))
         if not isinstance(header, dict):
             raise ValueError("header must be a JSON object")
-        if header.get("v") != 1:
+        if header.get("v") != PROTOCOL_VERSION:
             raise ValueError(f"unsupported protocol version {header.get('v')!r}")
         if header.get("cmd") == "play":
             rate = header.get("rate")
@@ -281,7 +394,7 @@ class WinhostServer:
             if self._active is stream:
                 self._active = None
 
-    def _apply_control(self, cmd):
+    def _apply_control(self, cmd, header=None):
         with self._active_lock:
             stream = self._active
         if stream is None:
@@ -292,6 +405,8 @@ class WinhostServer:
             stream.resume()
         elif cmd == "stop":
             stream.stop()
+        elif cmd == "gain":
+            stream.set_gain_db((header or {}).get("gain_db", 0.0))
 
 
 def _close_quietly(conn):
