@@ -82,6 +82,10 @@ def __getattr__(name: str) -> Any:
         return import_module("agent_tts.stt")
     target = _LAZY_EXPORTS.get(name)
     if target is not None:
+        if target in ("agent_tts.providers", "agent_tts.cli"):
+            from agent_tts import edge_compat
+
+            edge_compat.apply()
         return getattr(import_module(target), name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
