@@ -26,7 +26,7 @@ from agent_tts.boundaries import (
 from agent_tts.boundaries import shift_boundary_map  # noqa: F401 - re-export
 from agent_tts.cleaner import clean_agent_text
 from agent_tts.constants import DEFAULT_RATE, DEFAULT_VOICE
-from agent_tts import ducking, fallback
+from agent_tts import ducking, edge_compat, fallback
 from agent_tts.powershell_playback import PowershellSession, is_wsl_ps_available
 from agent_tts.providers import TTSProvider, get_provider
 from agent_tts.sources import read_last_agent_message
@@ -34,6 +34,9 @@ from agent_tts.stream.decoder import Mp3StreamDecoder, StreamDecodeFallbackError
 from agent_tts.text import split_sentence_groups
 from agent_tts.winhost_client import RemoteAudioSession
 import miniaudio
+
+# edge-tts 7.2.8 hits 403 on the legacy host since Oct 2026 (see edge_compat).
+edge_compat.apply()
 
 
 # Set while a playback is delegated to the daemon: during a delegation
