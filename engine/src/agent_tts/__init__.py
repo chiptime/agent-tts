@@ -8,7 +8,7 @@ inert until accessed. This keeps the STT CLI usable on interpreters that
 ship faster-whisper without the TTS stack (and vice versa).
 """
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 from importlib import import_module
 from typing import Any
