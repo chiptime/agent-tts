@@ -2,7 +2,7 @@
 schema: spec-driven
 
 context: |
-  Monorepo: engine/ (agent-tts Python TTS engine/CLI/daemon, src layout, v0.3.0),
+  Monorepo: engine/ (agent-tts Python TTS engine/CLI/daemon, src layout, v0.3.1),
   contracts/ (frozen ipc-v2 + tts-brain-v1 contracts), hosts/herdr/brain/
   (herdr-brain: Python FastAPI + JS service), hosts/herdr/tts-plugin/ (bash Herdr
   plugin with its OWN subproject openspec/ at hosts/herdr/tts-plugin/openspec/
