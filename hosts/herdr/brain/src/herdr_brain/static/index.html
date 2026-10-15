@@ -150,7 +150,11 @@
      * like the drawer: "＋ Nueva conversación" FIRST, then one keyed
      * row per herd agent (the old #herd-strip chips live here now).
      * Backdrop tap / ✕ / Escape / Android back all close it. */
-    #conv-backdrop {
+    /* #pending-backdrop rides the same dim layer as the conversation
+     * sheet: the two sheets are mutually exclusive, so they share the
+     * backdrop rules and the z-index band. */
+    #conv-backdrop,
+    #pending-backdrop {
       position: fixed;
       inset: 0;
       z-index: 19;            /* dims drawer (15) and settings (17); sheet is 20 */
@@ -159,12 +163,14 @@
       visibility: hidden;
       transition: opacity 0.28s ease, visibility 0s 0.28s;
     }
-    #conv-backdrop.open {
+    #conv-backdrop.open,
+    #pending-backdrop.open {
       opacity: 1;
       visibility: visible;
       transition: opacity 0.28s ease;
     }
-    #conv-sheet {
+    #conv-sheet,
+    #pending-sheet {
       position: fixed;
       left: 0; right: 0;
       bottom: calc(env(safe-area-inset-bottom, 0px) + 96px);
@@ -185,7 +191,8 @@
       visibility: hidden;
       transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1), visibility 0s 0.28s;
     }
-    #conv-sheet.open {
+    #conv-sheet.open,
+    #pending-sheet.open {
       transform: translateY(0);
       visibility: visible;
       transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
@@ -238,6 +245,24 @@
       content: "Sin agentes conectados";
       display: block;
       padding: var(--sp-3);
+      font-size: var(--fs-sm);
+      color: var(--muted);
+      font-style: italic;
+      text-align: center;
+    }
+    /* Pending sheet (Ajustes ⚙ → Pendientes): same shape as the
+     * conversation sheet. Its body is the ONE scroll surface, so the
+     * JS-built #pending-panel lives OFF the document flow and stops
+     * pushing the cockpit when it grows or shrinks. */
+    #pending-sheet-body {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      padding: 4px 0 8px;
+    }
+    #pending-empty {
+      padding: var(--sp-4) var(--sp-3);
       font-size: var(--fs-sm);
       color: var(--muted);
       font-style: italic;
@@ -935,6 +960,22 @@
       white-space: nowrap;
     }
     #voice-engine-btn:active { transform: scale(0.96); }
+    /* Ajustes → Pendientes launcher (pending-notices-in-settings-sheet):
+     * same pill button language as the engine toggle; the pending count
+     * rides inside the label. */
+    #pending-open {
+      flex: 0 0 auto;
+      min-height: 44px;
+      padding: 4px 12px;
+      font-size: 12.5px;
+      font-weight: 700;
+      background: var(--chip-bg);
+      color: var(--accent);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      white-space: nowrap;
+    }
+    #pending-open:active { transform: scale(0.96); }
     #drawer-close {
       flex: 0 0 auto;
       width: 48px;
@@ -1315,7 +1356,9 @@
       #call-drawer, #call-drawer.open { transition: none; }
       #settings-sheet, #settings-sheet.open { transition: none; }
       #conv-sheet, #conv-sheet.open { transition: none; }
+      #pending-sheet, #pending-sheet.open { transition: none; }
       #conv-backdrop, #conv-backdrop.open { transition: none; }
+      #pending-backdrop, #pending-backdrop.open { transition: none; }
     }
 
     /* ── Settings sheet (⚙ in the header): engine toggle and future
@@ -1438,6 +1481,11 @@
         <button id="voice-engine-btn" type="button">Voz: Servidor</button>
       </div>
       <span class="s-hint">Servidor: transcribe en el back con whisper (robusto). Navegador: Web Speech de Chrome (más rápido, menos fiable en Android).</span>
+      <div class="s-row">
+        <span class="s-label">Pendientes</span>
+        <button id="pending-open" type="button" title="Ver los avisos pendientes">🔔 Pendientes (<span id="pending-menu-count">0</span>)</button>
+      </div>
+      <span class="s-hint">Avisos de los agentes que esperan tu atención: escuchar, marcar como anunciado o descartar, en un panel que ya no mueve la pantalla.</span>
     </div>
   </section>
 
@@ -1451,6 +1499,21 @@
       <button id="conv-new" type="button">＋ Nueva conversación</button>
     </div>
     <div id="conv-list"></div>
+  </section>
+
+  <!-- Pending announcements sheet (pending-notices-in-settings-sheet):
+       the JS-built #pending-panel mounts inside this body — OFF the
+       document flow, so the list never pushes the cockpit. Opened from
+       the Ajustes sheet (⚙). -->
+  <div id="pending-backdrop" aria-hidden="true"></div>
+  <section id="pending-sheet" role="dialog" aria-modal="true" aria-label="Pendientes" inert>
+    <div class="cs-head">
+      <span class="cs-title">Pendientes</span>
+      <button id="pending-close" type="button" title="Cerrar">✕</button>
+    </div>
+    <div id="pending-sheet-body">
+      <div id="pending-empty">Sin pendientes</div>
+    </div>
   </section>
 
   <div id="version-footer">v<span id="app-version">dev</span></div>
