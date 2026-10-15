@@ -100,6 +100,10 @@ metadata{}, always[], tool{messageID, callID}}`.
       another agent kind, or one already answered (S9).
 - [ ] T4 (S2,S3,S8) — Live verification against a real pending request, on a
       session the user nominates. Evidence recorded here before merge.
+      **Partially done** (see the live evidence in the Log): the whole path is
+      verified against the REAL opencode server and REAL herdr panes — read,
+      not-found, and the invented-answer rejection. What remains is the one
+      step that needs a dialog actually waiting: answering a live request.
 
 ## Log
 
@@ -128,6 +132,27 @@ metadata{}, always[], tool{messageID, callID}}`.
   from an incomplete mock, not a gating bug. Visual check at a 390px
   viewport: the three buttons render under the pending banner; "Permitir
   una vez" takes its own row because three do not fit the phone width.
+- **T4 live evidence, part 1** (2026-10-15, opencode 1.18.32, real server):
+  - `POST /permission/per_nonexistent/reply {"reply":"once"}` → **404**
+    `PermissionNotFoundError` — the route is live AND the body shape is
+    accepted, so a 404-not-found (not a 400-invalid-payload) confirms the
+    contract.
+  - Same call with `{"reply":"yes"}` → **400** `Expected "once" | "always" |
+    "reject", got "yes"`. opencode enforces the exact enum, independently
+    confirming the three-button design.
+  - Brain started from this worktree on a spare port, with its own audio dir
+    and STT warmup off, against the real herdr and the real opencode server:
+    - `GET /pane/permission?pane_id=wM:pA` (a real opencode pane) →
+      `{"pending": null}` **200** — pane resolved by herdr, opencode session
+      matched, real opencode queried.
+    - Unknown pane → **404** `pane no encontrado`, never the focused pane.
+    - `POST /pane/permission/reply {"request_id":"per_nonexistent","reply":"once"}`
+      → **404** with opencode's own message propagated — the write path runs
+      end to end.
+    - `{"reply":"yes"}` → **422** from the edge validator: an invented answer
+      never reaches opencode.
+  - Still unverified: answering a request that is actually PENDING. That is
+    the only remaining step and it needs a dialog waiting on purpose.
 - **e2e attribution** (2026-10-15): the full e2e run reported 4 failed /
   28 passed. NOT caused by this work: the same tests fail identically on a
   detached worktree of the branch base (`7bd7c47`, no permission commits).
