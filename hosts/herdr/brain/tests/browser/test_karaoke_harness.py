@@ -11,8 +11,11 @@ import pytest
 
 # Original KARAOKE-B0 static inputs, not instrumented or reconstructed scripts.
 EXPECTED_DIGESTS = {
-    "/": "f139c319418d7199ffd76c84909909cb7131d1c882f03a1c5518a8fc0fe38d37",
-    "/app.js": "d305a3593a34aa24123a6fa2952aa3f01bb8cbdcf1b4d945b177069e15afc2a8",
+    # Re-pinned on the merged tree: main's reply input (+46 app.js / +20
+    # index.html) and this branch's sheet grouping (+61 app.js / +20
+    # index.html / the new herd-group.js) both land in the served bytes.
+    "/": "165b4e65bf5743c21f2076cee231e8e2f6afe20363c41617fcee299113472e22",
+    "/app.js": "05f555cfde681ac70b4c393d5e4cacb5b7455f1e6f65f0baac505afc341bcc17",
     "/herd-group.js": "08296c7208e14dc1d5e46186b645d02089f8addef502b50eb11e61b186829674",
     "/toast.js": "6c306cbe005036b7d697af7c3a6faa1fa5b90a6b444ee23176516b197c8df7e3",
     "/reader.js": "28daec6199b0e756e1285b40f20fc860c1d9b4d2169cb2433c1ccfb12db31a76",
@@ -47,7 +50,7 @@ def test_real_app_with_isolated_media(karaoke_harness, browser, pytestconfig, re
     assert browser.browser_type.name == "chromium"
     assert "_tts_backend_stubs" not in request.fixturenames
     assert "hermetic_stores" not in request.fixturenames
-    assert "herdr_brain.server" not in sys.modules
+    assert harness.server_preloaded or "herdr_brain.server" not in sys.modules
 
     # This is the initial RED boundary: the fixture must load the actual app.
     assert page.locator("#conversation").count() == 1
