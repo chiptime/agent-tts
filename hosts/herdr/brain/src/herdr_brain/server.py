@@ -31,7 +31,7 @@ from urllib.parse import parse_qs
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Path as PathParam, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from . import __version__
 from .approval import (
@@ -305,6 +305,20 @@ class ResolveRequest(BaseModel):
 
 class ApprovalPatchRequest(BaseModel):
     text: str = Field(min_length=1, max_length=8_000)
+
+
+class PaneReplyRequest(BaseModel):
+    """User-typed reply to one exact pane (POST /pane/reply)."""
+
+    pane_id: str = Field(min_length=1, max_length=MAX_SESSION_ID_CHARS)
+    text: str = Field(min_length=1, max_length=8_000)
+
+    @field_validator("text")
+    @classmethod
+    def _text_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("text must not be blank")
+        return value
 
 
 def default_llm_factory(settings: Settings, tools: BrainTools) -> BrainLLM:
@@ -1161,6 +1175,25 @@ def create_app(
             if time.monotonic() >= deadline:
                 return {"wait": True}
             time.sleep(_speech.SPEECH_NEXT_POLL_S)
+
+    @app.post("/pane/reply")
+    def pane_reply(body: PaneReplyRequest) -> dict:
+        """Delivers a user-typed reply straight to one exact pane.
+
+        No LLM and no approval gate: the text is the user's own keyboard
+        input. The pane must exist (an unknown one is a 404, never
+        redirected); a pane that rejects the prompt is a 409; any herdr
+        failure is a 502.
+        """
+        result = tools.reply_to_pane(body.pane_id, body.text)
+        outcome = result["outcome"]
+        if outcome == "delivered":
+            return {"ok": True, "pane_id": body.pane_id}
+        status = {"unknown_pane": 404, "blocked": 409}.get(outcome, 502)
+        raise HTTPException(
+            status_code=status,
+            detail=result.get("detail") or "no se pudo entregar la respuesta",
+        )
 
     @app.post("/approval/{gate_id}/approve")
     def approval_approve(gate_id: str) -> dict:
