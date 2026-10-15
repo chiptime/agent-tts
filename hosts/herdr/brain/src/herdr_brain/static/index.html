@@ -370,6 +370,22 @@
       opacity: 0.72;
       filter: saturate(0.5);
     }
+    /* Direct reply to the agent that is waiting (POST /pane/reply). */
+    #pane-reply { display: flex; gap: 8px; padding: var(--sp-2) var(--sp-3); }
+    #pane-reply.hidden { display: none; }
+    #pane-reply input {
+      flex: 1;
+      min-width: 0;
+      font: inherit;
+      min-height: 44px;
+      padding: var(--sp-2) var(--sp-3);
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: var(--bg);
+      color: var(--text);
+    }
+    #pane-reply button { padding: 10px 16px; font-weight: 600; background: var(--chip-bg); color: var(--text); }
+    #pane-reply button:disabled { opacity: 0.55; }
     #glance-label {
       flex: 0 0 auto;
       padding: 8px 12px 2px;
@@ -1345,6 +1361,10 @@
 
   <section id="agent-view" class="hidden">
     <div id="pending-banner" class="pending hidden"></div>
+    <form id="pane-reply" class="hidden">
+      <input id="pane-reply-input" type="text" placeholder="Escribe tu respuesta al agente…" autocomplete="off" aria-label="Respuesta al agente">
+      <button id="pane-reply-send" type="submit">Enviar</button>
+    </form>
     <span id="glance-label">Vista del agente</span>
     <div id="glance-turns"></div>
     <div id="glance-empty" class="hidden">Sin conversación del agente todavía</div>

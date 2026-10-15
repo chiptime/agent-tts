@@ -50,6 +50,9 @@
   var pillSub = $("pill-sub");
   var agentView = $("agent-view");
   var pendingBanner = $("pending-banner");
+  var replyForm = $("pane-reply");
+  var replyInput = $("pane-reply-input");
+  var replySend = $("pane-reply-send");
   var viewScreen = $("view-screen");
   var convList = $("conv-list");
   var herdNote = $("herd-note");
@@ -1341,7 +1344,50 @@
       dPendingEl.textContent = "";
     }
     pendingBannerTapPane = tapPane;
+
+    /* Direct reply: offered only while the pane being viewed is the one
+     * waiting (a detected prompt, or reported blocked by the herd). The
+     * target is fixed on the form so a late poll cannot retarget a
+     * half-typed reply. */
+    var viewed = lastEffectivePane || selectedPane;
+    var replyTarget = viewed && (detected || selBlocked) ? viewed : null;
+    if (replyTarget && replyForm.getAttribute("data-pane") !== replyTarget) {
+      replyInput.value = "";
+    }
+    if (replyTarget) replyForm.setAttribute("data-pane", replyTarget);
+    else replyForm.removeAttribute("data-pane");
+    replyForm.classList.toggle("hidden", !replyTarget);
   }
+
+  replyForm.addEventListener("submit", function (event) {
+    event.preventDefault();
+    var paneId = replyForm.getAttribute("data-pane");
+    var text = replyInput.value.trim();
+    if (!paneId || !text || replySend.disabled) return;
+    replySend.disabled = true;
+    fetch("/pane/reply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pane_id: paneId, text: text })
+    })
+      .then(function (resp) {
+        if (resp.ok) {
+          replyInput.value = "";
+          showToast("Respuesta enviada al agente", 3000);
+          return null;
+        }
+        return resp.json().then(
+          function (body) { return body && body.detail; },
+          function () { return null; }
+        ).then(function (detail) {
+          showToast("No se pudo enviar: " + (typeof detail === "string" ? detail : "error " + resp.status), 6000);
+        });
+      })
+      .catch(function () {
+        showToast("No se pudo enviar: sin conexión con el brain", 6000);
+      })
+      .then(function () { replySend.disabled = false; });
+  });
 
   pendingBanner.addEventListener("click", function () {
     if (pendingBannerTapPane && pendingBannerTapPane !== selectedPane) {
