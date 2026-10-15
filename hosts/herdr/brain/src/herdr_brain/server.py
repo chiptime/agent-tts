@@ -1187,17 +1187,27 @@ def create_app(
 
         No LLM and no approval gate: the text is the user's own keyboard
         input. The pane must exist (an unknown one is a 404, never
-        redirected); a pane that rejects the prompt is a 409; any herdr
-        failure is a 502.
+        redirected); a pane already waiting at a dialog is a 409 — herdr
+        refuses that prompt before writing any input, so the detail points
+        at the dialog instead of pretending the text was refused by the
+        agent — and any herdr failure is a 502.
         """
         result = tools.reply_to_pane(body.pane_id, body.text)
         outcome = result["outcome"]
         if outcome == "delivered":
             return {"ok": True, "pane_id": body.pane_id}
-        status = {"unknown_pane": 404, "blocked": 409}.get(outcome, 502)
+        if outcome == "blocked":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "El agente está esperando en un diálogo: respóndele con "
+                    "teclas desde la terminal, no acepta texto escrito."
+                ),
+            )
+        status = 404 if outcome == "unknown_pane" else 502
         raise HTTPException(
             status_code=status,
-            detail=result.get("detail") or "no se pudo entregar la respuesta",
+            detail=result.get("detail") or "No se pudo entregar la respuesta.",
         )
 
     @app.post("/approval/{gate_id}/approve")
