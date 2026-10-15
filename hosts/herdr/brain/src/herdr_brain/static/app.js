@@ -78,6 +78,13 @@
   var diagText = $("diag-text");
   var diagStatus = $("diag-status");
   var voiceEngineBtn = $("voice-engine-btn");
+  var pendingSheet = $("pending-sheet");
+  var pendingBackdrop = $("pending-backdrop");
+  var pendingOpenBtn = $("pending-open");
+  var pendingCloseBtn = $("pending-close");
+  var pendingSheetBody = $("pending-sheet-body");
+  var pendingMenuCount = $("pending-menu-count");
+  var pendingEmpty = $("pending-empty");
 
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   var recognition = null;
@@ -145,6 +152,7 @@
   var drawerOpen = false;
   var settingsOpen = false;
   var convSheetOpen = false;
+  var pendingSheetOpen = false;
   var callStartedAt = null;
   var timerTick = null;
   var utteranceStartedAt = null;  // servidor: current utterance (for the strip timer)
@@ -294,6 +302,11 @@
       setConvSheet(false);
       try { panePicker.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
     }
+    if (pendingSheetOpen && !st.herdrPendingSheet) {
+      pendingSheetOpen = false;
+      setPendingSheet(false);
+      try { settingsBtn.focus({ preventScroll: true }); } catch (err) { /* noop */ }
+    }
     if (drawerOpen && !st.herdrDrawer && !st.herdrConvSheet && !st.herdrSettings) {
       drawerOpen = false;
       drawer.classList.remove("open");
@@ -370,9 +383,59 @@
   convCloseBtn.addEventListener("click", closeConvSheet);
   convBackdrop.addEventListener("click", closeConvSheet);
   document.addEventListener("keydown", function (event) {
-    /* Escape closes the sheet — never from under the settings sheet. */
-    if (event.key === "Escape" && convSheetOpen && !settingsOpen) closeConvSheet();
+    /* Escape closes the topmost sheet — never from under the settings
+     * sheet. */
+    if (event.key !== "Escape") return;
+    if (pendingSheetOpen) { closePendingSheet(); return; }
+    if (convSheetOpen && !settingsOpen) closeConvSheet();
   });
+
+  /* ---------------- pending sheet ----------------
+   * The pending announcements panel (#pending-panel, built further down)
+   * used to be inserted into the document flow, so its appear/disappear
+   * pushed the whole cockpit — the layout jump this sheet removes. It now
+   * mounts inside #pending-sheet-body and is opened from the Ajustes
+   * sheet (⚙ → Pendientes). Opening it hides Ajustes and REPLACES its
+   * history entry (no orphan back press); ✕ / backdrop / Escape / Android
+   * back all close it, returning focus to the ⚙ trigger. */
+
+  function setPendingSheet(open) {
+    pendingBackdrop.classList.toggle("open", open);
+    pendingSheet.classList.toggle("open", open);
+    if (open) pendingSheet.removeAttribute("inert");
+    else pendingSheet.setAttribute("inert", "");
+  }
+
+  function openPendingSheet() {
+    if (pendingSheetOpen) return;
+    var fromSettings = settingsOpen;
+    if (settingsOpen) {
+      /* Hide Ajustes WITHOUT its own history.back(): the entry is reused
+       * below, so the back stack gains no orphan. */
+      settingsOpen = false;
+      settingsSheet.classList.remove("open");
+      settingsSheet.setAttribute("inert", "");
+    }
+    pendingSheetOpen = true;
+    setPendingSheet(true);
+    try {
+      if (fromSettings) history.replaceState({ herdrPendingSheet: true }, "");
+      else history.pushState({ herdrPendingSheet: true }, "");
+    } catch (err) { /* non-http origins */ }
+    try { pendingCloseBtn.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
+  }
+
+  function closePendingSheet() {
+    if (!pendingSheetOpen) return;
+    pendingSheetOpen = false;
+    setPendingSheet(false);
+    if (history.state && history.state.herdrPendingSheet) history.back();  // pop our entry; popstate no-ops
+    try { settingsBtn.focus({ preventScroll: true }); } catch (err) { /* noop */ }
+  }
+
+  pendingOpenBtn.addEventListener("click", openPendingSheet);
+  pendingCloseBtn.addEventListener("click", closePendingSheet);
+  pendingBackdrop.addEventListener("click", closePendingSheet);
 
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", function () {
@@ -2550,7 +2613,10 @@
   pendingSection.appendChild(pendingHead);
   pendingSection.appendChild(pendingBannerEl);
   pendingSection.appendChild(pendingListEl);
-  consultPanel.parentNode.insertBefore(pendingSection, consultPanel.nextSibling);
+  /* Mounted INSIDE the pending sheet body (opened from Ajustes), never
+   * in the document flow: the panel's appear/disappear must not push the
+   * cockpit. #pending-empty sits first as the zero-record state. */
+  pendingSheetBody.appendChild(pendingSection);
 
   var PENDING_STATE_LABELS = {
     pending: "pendiente",
@@ -2638,6 +2704,10 @@
 
   function renderPendingSection(snap) {
     pendingSection.classList.toggle("hidden", snap.records.length === 0);
+    /* The Ajustes launcher mirrors the count; #pending-empty is the
+     * zero-record state INSIDE the sheet body. */
+    pendingMenuCount.textContent = String(snap.count);
+    pendingEmpty.classList.toggle("hidden", snap.records.length !== 0);
     pendingCountEl.textContent = String(snap.count);
     pendingOverflowEl.textContent = "+" + snap.overflow_count + " recortados";
     pendingOverflowEl.classList.toggle("hidden", !snap.overflow_count);
