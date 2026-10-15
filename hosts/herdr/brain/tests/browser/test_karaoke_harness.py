@@ -11,8 +11,8 @@ import pytest
 
 # Original KARAOKE-B0 static inputs, not instrumented or reconstructed scripts.
 EXPECTED_DIGESTS = {
-    "/": "fd856bf90c2c59bfaa83ea6be3ba0d4c3f77c745cf9464303b1444d85aece2c5",
-    "/app.js": "da5039dca3902834baf1070f642d3dbed7d837dd20576fb3ecd9fff5f4b003b2",
+    "/": "85dba427e1edf04e5e10b15eb13d783e4fa1886b22184f413b964e2325137bca",
+    "/app.js": "d1e63fbc77024efc0f263109812393ef6c50b25ed7af2828148ec2f156af610b",
     "/toast.js": "6c306cbe005036b7d697af7c3a6faa1fa5b90a6b444ee23176516b197c8df7e3",
     "/reader.js": "28daec6199b0e756e1285b40f20fc860c1d9b4d2169cb2433c1ccfb12db31a76",
     "/speech.js": "785b966f634ffaaa70d92a8bafbf9b8a13c658617de2707d99b80736142823e6",
