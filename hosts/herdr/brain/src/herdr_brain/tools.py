@@ -38,10 +38,19 @@ from .view import (
 )
 
 MAX_SEND_EXCERPT = 500
+# Direct user replies (reply_to_pane) do not wait for the agent to finish:
+# the text was typed by the user, so a short wait is enough to learn whether
+# the pane accepted it. An expired wait still means "delivered".
+REPLY_WAIT_MS = 3_000
 HERD_LAST_TURN_CHARS = 160
 CONVERSATION_WINDOW = 20
 SCREEN_FULL_LINES = 120
 MAX_AGENT_NAME_LEN = 24
+
+
+def _reply_result(outcome: str, pane_id: str, status: str = "", detail: str = "") -> dict:
+    """Uniform outcome envelope for :meth:`BrainTools.reply_to_pane`."""
+    return {"outcome": outcome, "pane_id": pane_id, "status": status, "detail": detail}
 
 # opencode readiness via the user's `oa` entry point: `pane run` types the
 # command and returns immediately, so readiness is DETECTED by polling
@@ -445,6 +454,34 @@ class BrainTools:
                 "retry, it would duplicate the prompt"
             )
         return json.dumps(payload, ensure_ascii=False)
+
+    def reply_to_pane(self, pane_id: str, text: str) -> dict:
+        """Delivers a user-TYPED reply to one exact pane (no LLM, no gate).
+
+        Third write path, deliberately narrow: the text comes verbatim from
+        the user's keyboard (no STT or model in between, which is why the
+        approval gate is not needed) and the target must exist. An unknown
+        pane is NEVER redirected to the focused one — a reply landing in
+        the wrong agent would be silent and hard to undo. Never raises:
+        the outcome is one of ``delivered`` | ``unknown_pane`` |
+        ``blocked`` | ``error``.
+        """
+        try:
+            known = {agent.pane_id for agent in self._herdr.list_agents()}
+        except HerdrError as exc:
+            return _reply_result("error", pane_id, detail=f"cannot list panes: {exc}")
+        if pane_id not in known:
+            return _reply_result("unknown_pane", pane_id, detail="pane not found")
+        try:
+            result = self._herdr.send_prompt(pane_id, text, REPLY_WAIT_MS)
+        except HerdrError as exc:
+            return _reply_result("error", pane_id, detail=f"cannot send reply: {exc}")
+        status = result["status"]
+        if status == "blocked":
+            return _reply_result(
+                "blocked", pane_id, status=status, detail="the agent rejected the reply"
+            )
+        return _reply_result("delivered", pane_id, status=status)
 
     def create_session(self, agent_kind: str, title: str, task: str = "", cwd: str = "") -> str:
         """Opens a NEW dedicated panel: tab + fresh agent (+ first task).
