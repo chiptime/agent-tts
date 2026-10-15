@@ -120,3 +120,15 @@ metadata{}, always[], tool{messageID, callID}}`.
   from an incomplete mock, not a gating bug. Visual check at a 390px
   viewport: the three buttons render under the pending banner; "Permitir
   una vez" takes its own row because three do not fit the phone width.
+- **e2e attribution** (2026-10-15): the full e2e run reported 4 failed /
+  28 passed. NOT caused by this work: the same tests fail identically on a
+  detached worktree of the branch base (`7bd7c47`, no permission commits).
+  Reproduced in isolation on both trees —
+  `test_m4_fallback::test_cancel_during_fallback_zero_further_attempts`
+  ("submit evidence never satisfied … : []"),
+  `test_m4_fallback::test_no_duplicate_submissions` (45s page timeout) and
+  `test_m3_pending::test_kill9_host_pending_recovers_uncertain_no_replay`
+  ("the tick exited before the claim could be observed", rc=1). The host-side
+  kill9 test is a subprocess/daemon-socket race and the other two wait on
+  /ask submits, so this is baseline flakiness on this machine, not a
+  regression — but it is unverified against a quiet machine.
