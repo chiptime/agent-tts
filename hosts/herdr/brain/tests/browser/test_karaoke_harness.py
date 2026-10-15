@@ -11,11 +11,12 @@ import pytest
 
 # Original KARAOKE-B0 static inputs, not instrumented or reconstructed scripts.
 EXPECTED_DIGESTS = {
-    # Re-pinned on the merged tree: main's reply input (+46 app.js / +20
-    # index.html) and this branch's sheet grouping (+61 app.js / +20
-    # index.html / the new herd-group.js) both land in the served bytes.
-    "/": "165b4e65bf5743c21f2076cee231e8e2f6afe20363c41617fcee299113472e22",
-    "/app.js": "05f555cfde681ac70b4c393d5e4cacb5b7455f1e6f65f0baac505afc341bcc17",
+    # Re-pinned on the MERGED bytes. Both this branch and main change the
+    # served static files (the sheet grouping and the typed-reply input),
+    # so these three hashes have to be recomputed from disk after every
+    # merge that touches index.html, app.js or herd-group.js.
+    "/": "b9282e35b39d33ba851d4a50df492cd940092fa5d36bd2a74457e6e3e7d393eb",
+    "/app.js": "cdbd4c3273f5e091f94ab893eeddc0875d3f1c8d635784634d1a73a4f2c7ca1c",
     "/herd-group.js": "08296c7208e14dc1d5e46186b645d02089f8addef502b50eb11e61b186829674",
     "/toast.js": "6c306cbe005036b7d697af7c3a6faa1fa5b90a6b444ee23176516b197c8df7e3",
     "/reader.js": "28daec6199b0e756e1285b40f20fc860c1d9b4d2169cb2433c1ccfb12db31a76",

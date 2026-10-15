@@ -48,7 +48,36 @@ def test_failure_outcomes_map_to_http_errors(client, outcome, status):
     resp = client.post("/pane/reply", json={"pane_id": "w1:p2", "text": "yes"})
 
     assert resp.status_code == status
-    assert "boom" in resp.json()["detail"] or resp.json()["detail"]
+    assert resp.json()["detail"]
+
+
+def test_unknown_pane_reuses_the_store_detail(client):
+    FakeTools.outcome = {
+        "outcome": "unknown_pane", "pane_id": "w1:p2", "status": "", "detail": "pane not found",
+    }
+
+    resp = client.post("/pane/reply", json={"pane_id": "w1:p2", "text": "yes"})
+
+    assert resp.json()["detail"] == "pane not found"
+
+
+def test_blocked_pane_points_at_the_dialog_not_at_the_agent(client):
+    """herdr refused before writing input, so the message must not imply
+    the agent rejected the text — the dialog is answered with keys."""
+    FakeTools.outcome = {
+        "outcome": "blocked",
+        "pane_id": "w1:p2",
+        "status": "blocked",
+        "detail": "the agent rejected the reply",
+    }
+
+    resp = client.post("/pane/reply", json={"pane_id": "w1:p2", "text": "yes"})
+
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert "diálogo" in detail
+    assert "teclas" in detail
+    assert "rejected" not in detail
 
 
 @pytest.mark.parametrize(
