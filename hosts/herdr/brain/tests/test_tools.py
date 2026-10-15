@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from unittest.mock import Mock
 
 import pytest
@@ -284,6 +285,44 @@ class TestHerd:
         herd = tools.herd()
         assert herd[0]["session_id"] is None
         assert herd[0]["last_turn"] is None
+
+    def test_herd_reports_how_long_ago_the_last_turn_was(
+        self, settings, make_stub, monkeypatch, tmp_path
+    ):
+        """The conversation sheet buckets panes by age, so herd carries the
+        elapsed seconds as a SIBLING and ``last_turn`` stays byte-identical
+        (a new key inside the turn would break every existing consumer)."""
+        import sqlite3
+
+        first = self._agent("w1:p1", "ses_herdage00aaa", status="working")
+        second = self._agent("w1:p2", "ses_herdage00bbb")
+        created = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+        created_ms = int(created.timestamp() * 1000)
+        db = tmp_path / "age.db"
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INT, data TEXT)")
+        conn.execute("CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INT, data TEXT)")
+        conn.execute(
+            "INSERT INTO message VALUES ('m1', ?, ?, ?)",
+            ("ses_herdage00aaa", created_ms, json.dumps({"role": "assistant"})),
+        )
+        conn.execute(
+            "INSERT INTO part VALUES ('m1-p1', 'm1', ?, ?, ?)",
+            ("ses_herdage00aaa", created_ms, json.dumps({"type": "text", "text": "listo"})),
+        )
+        conn.commit()
+        conn.close()
+        monkeypatch.setenv("OPENCODE_DB", str(db))
+
+        tools = BrainTools(settings, herdr=make_stub(agents=[first, second]))
+        herd = tools.herd(now=datetime(2026, 1, 1, 12, 30, tzinfo=timezone.utc))
+
+        assert herd[0]["last_turn_age_s"] == 1800.0
+        assert set(herd[0]["last_turn"]) == {"role", "text"}
+        # No readable transcript: an unknown time is never guessed into the
+        # sheet's "recent" bucket.
+        assert herd[1]["last_turn"] is None
+        assert herd[1]["last_turn_age_s"] is None
 
     def test_herd_empty_on_list_failure(self, settings, make_stub):
         stub = make_stub(agents=[])
