@@ -300,6 +300,27 @@
       /* 2px inset accent rail marks the current conversation. */
       box-shadow: inset 2px 0 0 0 var(--accent);
     }
+    /* Group headers (2026-10-15): the sheet groups by state and, inside a
+     * state, by recency. The section header names the state; the subgroup
+     * header only ever exists for "Últimos 30 min" (the rest is a
+     * continuation of its state and stays headerless on purpose). */
+    .conv-group {
+      padding: 12px 14px 6px;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.6px;
+      text-transform: uppercase;
+      color: var(--muted);
+      border-top: 1px solid var(--line);
+    }
+    .conv-group:first-child { border-top: 0; }
+    .conv-subgroup {
+      padding: 5px 14px;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--accent);
+      background: var(--chip-bg);
+    }
     #herd-note {
       margin: var(--sp-1) var(--sp-3) 0;
       font-size: var(--fs-xs);
@@ -1418,6 +1439,7 @@
     <script src="/toast.js"></script>
     <script src="/karaoke.js"></script>
     <script src="/announce.js"></script>
+    <script src="/herd-group.js"></script>
     <script src="/speech.js"></script>
     <script src="/consult.js"></script>
     <script src="/app.js"></script>
