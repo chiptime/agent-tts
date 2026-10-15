@@ -21,6 +21,7 @@ import os
 import re
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -46,6 +47,58 @@ class Turn:
 
     role: str
     text: str
+    created_at: Optional[datetime] = None
+
+
+def _iso_to_utc(value: object) -> Optional[datetime]:
+    """Parses an ISO 8601 event timestamp into an aware UTC datetime.
+
+    Claude Code emits ``timestamp`` and Antigravity ``created_at`` in this
+    shape (``2026-10-10T15:24:00.817Z``). A naive value is assumed UTC; an
+    unparseable or missing one yields ``None`` — an unknown time is never
+    guessed (a file mtime is not an event time).
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _epoch_ms_to_utc(value: object) -> Optional[datetime]:
+    """Parses OpenCode's ``time_created`` column (epoch milliseconds, UTC).
+
+    ``bool`` is rejected explicitly: it is an ``int`` subclass, and ``True``
+    would silently become 1970-01-01T00:00:00.001Z.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        return datetime.fromtimestamp(value / 1000.0, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def turn_age_seconds(created_at: Optional[datetime], now: datetime) -> Optional[float]:
+    """Seconds between a turn's timestamp and ``now``; ``None`` when unknown.
+
+    A naive ``created_at`` is read as UTC. Clock skew between the transcript
+    store and the brain clamps to ``0.0`` so the UI never says "hace -3 min".
+    """
+    if created_at is None:
+        return None
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return max(0.0, (now - created_at).total_seconds())
 
 
 class TranscriptError(RuntimeError):
@@ -67,7 +120,7 @@ class OpencodeTranscript:
 
         # Newest messages first, parts of each message in chronological order.
         sql = """
-        SELECT m.id, json_extract(m.data, '$.role'), p.data
+        SELECT m.id, json_extract(m.data, '$.role'), p.data, m.time_created
         FROM message AS m
         JOIN part AS p ON p.message_id = m.id
         WHERE m.session_id = ?
@@ -88,7 +141,8 @@ class OpencodeTranscript:
         order: List[str] = []
         roles: dict = {}
         parts: dict = {}
-        for message_id, role, data in rows:
+        stamps: dict = {}
+        for message_id, role, data, time_created in rows:
             if role not in ("user", "assistant"):
                 continue
             text = _opencode_part_text(data)
@@ -97,13 +151,20 @@ class OpencodeTranscript:
             if message_id not in parts:
                 parts[message_id] = []
                 roles[message_id] = role
+                stamps[message_id] = _epoch_ms_to_utc(time_created)
                 order.append(message_id)
             parts[message_id].append(text)
         turns: List[Turn] = []
         for message_id in order:
             if len(turns) >= n_turns:
                 break
-            turns.append(Turn(role=roles[message_id], text="\n".join(parts[message_id])))
+            turns.append(
+                Turn(
+                    role=roles[message_id],
+                    text="\n".join(parts[message_id]),
+                    created_at=stamps[message_id],
+                )
+            )
         turns.reverse()
         return turns
 
@@ -158,7 +219,13 @@ class ClaudeTranscript:
                 continue
             text = _claude_event_text(event)
             if text:
-                turns.append(Turn(role=str(kind), text=text))
+                turns.append(
+                    Turn(
+                        role=str(kind),
+                        text=text,
+                        created_at=_iso_to_utc(event.get("timestamp")),
+                    )
+                )
         turns.reverse()
         return turns
 
@@ -234,14 +301,17 @@ class AntigravityTranscript:
                 continue
 
             event_type = event.get("type")
+            stamp = _iso_to_utc(event.get("created_at"))
             if event_type == "USER_INPUT":
                 text = _antigravity_user_text(event.get("content"))
                 if text:
-                    turns.append(Turn(role="user", text=text))
+                    turns.append(Turn(role="user", text=text, created_at=stamp))
             elif event_type == "PLANNER_RESPONSE":
                 content = event.get("content")
                 if isinstance(content, str) and content.strip():
-                    turns.append(Turn(role="assistant", text=content.strip()))
+                    turns.append(
+                        Turn(role="assistant", text=content.strip(), created_at=stamp)
+                    )
 
         turns.reverse()
         return turns

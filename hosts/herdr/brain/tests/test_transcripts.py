@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime, timezone
 
 import pytest
 
@@ -18,6 +19,7 @@ from herdr_brain.transcripts import (
     format_turns,
     read_title,
     read_transcript,
+    turn_age_seconds,
 )
 
 
@@ -189,6 +191,19 @@ class TestOpencodeTranscript:
         source = OpencodeTranscript(db_path=str(tmp_path / "missing.db"))
         assert source.read("ses_aaaabbbbcccc", n_turns=5) == []
 
+    def test_turn_carries_the_message_timestamp(self, opencode_db):
+        """``time_created`` is epoch MILLISECONDS in UTC (checked against a
+        live store): 400 ms after the epoch, not 400 s. The turn exposes it
+        as an aware datetime so the sheet can bucket panes by age."""
+        source = OpencodeTranscript(db_path=opencode_db)
+        turns = source.read("ses_aaaabbbbcccc", n_turns=10)
+        assert [t.created_at for t in turns] == [
+            datetime(1970, 1, 1, 0, 0, 0, 100_000, tzinfo=timezone.utc),
+            datetime(1970, 1, 1, 0, 0, 0, 200_000, tzinfo=timezone.utc),
+            datetime(1970, 1, 1, 0, 0, 0, 300_000, tzinfo=timezone.utc),
+            datetime(1970, 1, 1, 0, 0, 0, 400_000, tzinfo=timezone.utc),
+        ]
+
     def test_reads_session_title(self, opencode_db):
         source = OpencodeTranscript(db_path=opencode_db)
         assert source.read_title("ses_aaaabbbbcccc") == "Despliegue y pruebas"
@@ -215,6 +230,46 @@ class TestClaudeTranscript:
         root, _ = claude_root
         assert ClaudeTranscript(root=root).read("ffffffff-1111-2222-3333-444455556666", 5) == []
 
+    def test_turn_carries_the_event_timestamp(self, tmp_path):
+        """The JSONL ``timestamp`` (Claude's real shape, with a ``Z``) becomes
+        an aware UTC datetime; the fixture's own events carry none, which is
+        why the other Claude tests still compare bare turns."""
+        project = tmp_path / "-home-bruno-project"
+        project.mkdir()
+        session = "0f1e2d3c-9999-8888-7777-666655554444"
+        events = [
+            {
+                "type": "user",
+                "message": {"role": "user", "content": "hola"},
+                "timestamp": "2026-10-10T15:24:00.817Z",
+            },
+        ]
+        (project / f"{session}.jsonl").write_text(
+            "\n".join(json.dumps(e) for e in events), encoding="utf-8"
+        )
+        turns = ClaudeTranscript(root=str(tmp_path)).read(session, n_turns=5)
+        assert turns[0].created_at == datetime(
+            2026, 10, 10, 15, 24, 0, 817_000, tzinfo=timezone.utc
+        )
+
+    def test_missing_timestamp_stays_none(self, tmp_path):
+        project = tmp_path / "-home-bruno-project"
+        project.mkdir()
+        session = "0f1e2d3c-9999-8888-7777-666655553333"
+        events = [
+            {"type": "user", "message": {"role": "user", "content": "sin hora"}},
+            {
+                "type": "assistant",
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "tampoco"}]},
+                "timestamp": "not-a-date",
+            },
+        ]
+        (project / f"{session}.jsonl").write_text(
+            "\n".join(json.dumps(e) for e in events), encoding="utf-8"
+        )
+        turns = ClaudeTranscript(root=str(tmp_path)).read(session, n_turns=5)
+        assert [t.created_at for t in turns] == [None, None]
+
     def test_read_title_returns_none(self, claude_root):
         root, session = claude_root
         assert ClaudeTranscript(root=root).read_title(session) is None
@@ -232,6 +287,25 @@ class TestAntigravityTranscript:
         source = AntigravityTranscript(root=root)
         turns = source.read(session, n_turns=1)
         assert turns == [Turn(role="assistant", text="The build is green and passing all tests.")]
+
+    def test_turn_carries_the_event_timestamp(self, tmp_path):
+        """Antigravity's real ``created_at`` shape is a whole-second ISO
+        instant ending in ``Z``; it becomes an aware UTC datetime."""
+        session = "55556666-7777-8888-9999-aaaabbbbcccc"
+        logs_dir = tmp_path / session / ".system_generated" / "logs"
+        logs_dir.mkdir(parents=True)
+        events = [
+            {
+                "type": "USER_INPUT",
+                "content": "<USER_REQUEST>\nhola\n</USER_REQUEST>",
+                "created_at": "2026-08-25T10:00:13Z",
+            },
+        ]
+        (logs_dir / "transcript_full.jsonl").write_text(
+            "\n".join(json.dumps(e) for e in events), encoding="utf-8"
+        )
+        turns = AntigravityTranscript(root=str(tmp_path)).read(session, n_turns=5)
+        assert turns[0].created_at == datetime(2026, 8, 25, 10, 0, 13, tzinfo=timezone.utc)
 
     def test_prefers_transcript_full_over_transcript(self, tmp_path):
         session = "22223333-4444-5555-6666-777788889999"
@@ -419,3 +493,28 @@ class TestFormatTurns:
     def test_joins_blocks_with_blank_lines(self):
         out = format_turns([Turn("user", "hi"), Turn("assistant", "hello")])
         assert out == "user: hi\n\nassistant: hello"
+
+
+class TestTurnAge:
+    """The conversation sheet buckets panes by "how long ago was the last
+    turn". These are the three answers the UI must never have to guess."""
+
+    def test_an_unknown_timestamp_has_no_age(self):
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        assert turn_age_seconds(None, now) is None
+
+    def test_reports_the_elapsed_seconds(self):
+        now = datetime(2026, 1, 1, 0, 30, tzinfo=timezone.utc)
+        created = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+        assert turn_age_seconds(created, now) == 1800.0
+
+    def test_a_naive_timestamp_is_read_as_utc(self):
+        now = datetime(2026, 1, 1, 0, 10, tzinfo=timezone.utc)
+        assert turn_age_seconds(datetime(2026, 1, 1, 0, 0), now) == 600.0
+
+    def test_a_future_timestamp_clamps_to_zero(self):
+        """Clock skew between the transcript store and the brain must never
+        reach the UI as "hace -5 min"."""
+        now = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+        created = datetime(2026, 1, 1, 0, 5, tzinfo=timezone.utc)
+        assert turn_age_seconds(created, now) == 0.0
