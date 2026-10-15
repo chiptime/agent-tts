@@ -416,7 +416,7 @@ def playback_position(pwa, needle):
 
 
 def seq_of(src, sid):
-    m = re.search(r"/audio/sr-%s-(\d{4})\.mp3$" % re.escape(sid), src)
+    m = re.search(r"/audio/sr-%s-(\d{4})\.mp3(?:#.*)?$" % re.escape(sid), src)
     return int(m.group(1)) if m else None
 
 

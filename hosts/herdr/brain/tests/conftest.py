@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -68,16 +69,23 @@ exit 2
 """
 
 
-@pytest.fixture(autouse=True, scope="session")
-def _tts_backend_stubs():
-    """Materializes the stub herdr-tts surface CLI once per session."""
+def _materialize_tts_backend_stubs() -> None:
+    """Materializes the stub herdr-tts surface CLI once per session.
+
+    Runs at conftest import time instead of as an autouse fixture: the
+    isolated browser harness asserts that NO speech-backend fixture is in
+    its fixture closure (tests/browser/test_karaoke_harness.py), and an
+    autouse fixture would leak into every test, browser ones included.
+    Left in /tmp on purpose: harmless and reused across sessions.
+    """
     bin_dir = TTS_STUB_ROOT / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
     stub = bin_dir / "herdr-tts"
     stub.write_text(_STUB_BIN)
     stub.chmod(0o755)
-    yield
-    # Left in /tmp on purpose: harmless and reused across sessions.
+
+
+_materialize_tts_backend_stubs()
 
 ACTIVE_AGENT = AgentInfo(
     pane_id="w1:p9",
@@ -147,8 +155,19 @@ def make_stub():
     return _make
 
 
-@pytest.fixture(autouse=True)
-def hermetic_stores(tmp_path, monkeypatch):
-    """Never let tests touch the real transcript stores on this machine."""
-    monkeypatch.setenv("OPENCODE_DB", str(tmp_path / "nonexistent-opencode.db"))
-    monkeypatch.setenv("CLAUDE_PROJECTS_ROOT", str(tmp_path / "nonexistent-claude"))
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_protocol(item, nextitem):
+    """Never let tests touch the real transcript stores on this machine.
+
+    A protocol hook instead of an autouse fixture: the isolated browser
+    harness asserts that no hermetic-store fixture is in its closure
+    (tests/browser/test_karaoke_harness.py), and those tests never read
+    transcript stores, so they are skipped here.
+    """
+    if "browser" in item.path.parts:
+        return (yield)
+    with tempfile.TemporaryDirectory(prefix="herdr-brain-hermetic-") as root:
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setenv("OPENCODE_DB", str(Path(root) / "nonexistent-opencode.db"))
+            patch.setenv("CLAUDE_PROJECTS_ROOT", str(Path(root) / "nonexistent-claude"))
+            return (yield)
