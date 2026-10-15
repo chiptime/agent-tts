@@ -1267,9 +1267,7 @@ def create_app(
         if not session_id:
             return {"pending": None}
         try:
-            pending = permissions_client.list_pending(
-                session_id=session_id, directory=info.get("cwd")
-            )
+            pending = permissions_client.list_pending(session_id=session_id)
         except OpenCodeError as exc:
             raise _opencode_http_error(exc) from exc
         if not pending:

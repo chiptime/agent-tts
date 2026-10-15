@@ -70,6 +70,14 @@ metadata{}, always[], tool{messageID, callID}}`.
   calling this done.
 - A real `reply` was NOT exercised at investigation time (no dialog was
   pending; triggering one would touch the user's live sessions).
+- **Resolved 2026-10-15**: the route's `directory` scope is NO LONGER sent.
+  It was unverified against a live request and can only remove results, so it
+  risked hiding a real dialog; `session_id` is the exact filter and is applied
+  in-process. Verified live: `GET /api/permission/saved` answers
+  `{"data":[]}` with schema `{id, projectID, action, resource}`, so saved
+  rules are real persisted entities — but whether `always` populates that
+  list is still UNVERIFIED (the list was empty). A live `always` (T4) settles
+  it, and that is what decides whether an undo UI would undo a phone mis-tap.
 
 ## Tasks
 

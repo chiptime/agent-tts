@@ -81,15 +81,17 @@ class OpenCodePermissions:
 
     # -- reads --------------------------------------------------------------
 
-    def list_pending(
-        self, session_id: Optional[str] = None, directory: Optional[str] = None
-    ) -> list[PermissionRequest]:
-        """Pending dialogs, optionally narrowed to one session or directory.
+    def list_pending(self, session_id: Optional[str] = None) -> list[PermissionRequest]:
+        """Pending dialogs, narrowed to one session when a caller asks.
 
-        The v1 route lists globally, so a ``session_id`` is filtered here.
+        The v1 route lists globally, so the ``session_id`` filter is applied
+        here — it is an exact match, which is what a pane needs.
+
+        The route's optional ``directory`` scope is deliberately NOT sent:
+        it is unverified against a live request, and a filter that can only
+        remove results would make the buttons disappear in silence.
         """
-        params = {"directory": directory} if directory else {}
-        response = self._request("GET", "/permission", params=params)
+        response = self._request("GET", "/permission")
         payload = response.json()
         if not isinstance(payload, list):
             raise OpenCodeError(

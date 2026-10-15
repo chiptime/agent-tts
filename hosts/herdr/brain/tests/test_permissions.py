@@ -70,25 +70,19 @@ def test_list_pending_filters_by_session():
     assert [p.request_id for p in pending] == ["per_abc123"]
 
 
-def test_list_pending_passes_the_directory_scope():
+def test_list_pending_sends_no_scope_filter():
+    """Only the exact session filter is applied, and it is applied here.
+
+    A `directory` scope on the route is unverified against a live request,
+    and a filter that can only remove results would hide a real dialog.
+    """
     seen = {}
 
     def handler(request):
         seen["params"] = dict(request.url.params)
         return httpx.Response(200, json=[])
 
-    assert client_for(handler).list_pending(directory="/repo") == []
-    assert seen["params"] == {"directory": "/repo"}
-
-
-def test_list_pending_omits_directory_when_unknown():
-    seen = {}
-
-    def handler(request):
-        seen["params"] = dict(request.url.params)
-        return httpx.Response(200, json=[])
-
-    client_for(handler).list_pending()
+    client_for(handler).list_pending(session_id="ses_test0000session")
     assert seen["params"] == {}
 
 

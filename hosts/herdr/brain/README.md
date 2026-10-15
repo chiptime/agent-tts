@@ -73,6 +73,8 @@ daemons do not source them, so the env file is the single stable contract.
 | `HERDR_BRAIN_MAX_TOOL_ROUNDS` | `4` | LLM tool-loop guard |
 | `HERDR_BRAIN_SCREEN_LINES` | `40` | default visible lines for `read_screen` |
 | `OPENCODE_DB` / `CLAUDE_PROJECTS_ROOT` | store defaults | transcript store overrides (tests) |
+| `HERDR_BRAIN_OPENCODE_URL` | `http://127.0.0.1:4096` | local opencode server; the PWA answers an agent's approval dialog through its permission API |
+| `HERDR_BRAIN_APPROVAL_TOKEN` | *(empty = no auth)* | shared secret for `POST /approval/{id}/action` (ntfy action buttons), as `Authorization: Bearer` or `?token=`. Empty leaves that route as open as the PWA routes |
 
 ## Speech backend contract (surface v1)
 
@@ -331,9 +333,45 @@ required, must not be blank, and is capped at 8000 chars.
 The input is **not** offered for a pane with `blocked` status, and a `409`
 says why: `herdr agent prompt` refuses an agent already waiting at an
 approval or question dialog (`agent_blocked`) *before writing any input*, so
-text sent there would never arrive. That dialog is answered with key
-presses (`herdr agent send-keys`), which the PWA does not synthesize — it
-shows a notice telling you to answer it from the terminal instead.
+text sent there would never arrive. An opencode dialog is answered with the
+buttons below instead.
+
+### Answering an agent's approval dialog
+
+A blocked pane whose agent is opencode gets **three buttons** instead of the
+text input: `Permitir una vez`, `Permitir siempre` and `Rechazar`. They map
+one-to-one onto opencode's own permission contract — `once`, `always`,
+`reject` — and travel through its local API:
+
+```text
+GET  /pane/permission?pane_id=…   -> {pending: {request_id, permission, patterns} | null}
+POST /pane/permission/reply       -> {"request_id", "reply", "message"?} -> {ok}
+```
+
+The pane is matched to its request by the opencode session id herdr already
+reports for that pane; an unknown pane is a `404` and is never redirected to
+the focused one. A request already gone (answered elsewhere, or expired) is a
+`404`, and an unreachable opencode server is a `502` — never a silent
+"nothing pending", which would read as "there is nothing to answer". `reply`
+is validated at the edge, so an invented answer is a `422` and never reaches
+opencode as a guess.
+
+These two routes are **PWA-only and deliberately absent from the LLM tool
+schema**: the same capability in the model's hands would let an agent approve
+its own request, which is exactly what the dialog exists to prevent.
+
+`Permitir siempre` writes a persisted rule — `GET /api/permission/saved` on
+the opencode server lists them as `{id, projectID, action, resource}` — so it
+is the least prominent of the three. The PWA cannot yet list or remove those
+rules.
+
+A blocked pane whose dialog is **not** opencode's — claude, codex, agy — gets
+a notice instead: those dialogs are answered with key presses
+(`herdr agent send-keys`), which the PWA does not synthesize.
+
+Both routes carry no token and rely on the tailnet being the boundary, like
+every other PWA route. `HERDR_BRAIN_APPROVAL_TOKEN` protects only the ntfy
+action route, because ntfy is a third party that cannot send headers.
 
 The brain also serves its mobile PWA same-origin at `/` (static assets in
 `src/herdr_brain/static/`, mounted after the API routes): no CORS anywhere.
