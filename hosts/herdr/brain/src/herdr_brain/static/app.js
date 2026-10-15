@@ -1447,7 +1447,7 @@
     fetch("/pane/permission/reply", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ request_id: requestId, reply: reply })
+      body: JSON.stringify({ pane_id: pane, request_id: requestId, reply: reply })
     })
       .then(function (resp) {
         if (resp.ok) {

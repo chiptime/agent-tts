@@ -98,12 +98,14 @@ metadata{}, always[], tool{messageID, callID}}`.
       them clicks and asserts the exact posted body). The keys notice now
       shows only when a blocked pane has NO opencode request pending —
       another agent kind, or one already answered (S9).
-- [ ] T4 (S2,S3,S8) — Live verification against a real pending request, on a
+- [x] T4 (S2,S3,S8) — Live verification against a real pending request, on a
       session the user nominates. Evidence recorded here before merge.
-      **Partially done** (see the live evidence in the Log): the whole path is
-      verified against the REAL opencode server and REAL herdr panes — read,
-      not-found, and the invented-answer rejection. What remains is the one
-      step that needs a dialog actually waiting: answering a live request.
+      **Done, and it caught two shipping bugs** (see the Log): the client read
+      the legacy `/permission` list, which does NOT expose live requests, and
+      it expected a JSON boolean from a reply route that answers `204 No
+      Content`. Both are fixed; the lab now round-trips a real request.
+      Still worth one confirmation on a dialog a REAL agent raised, rather
+      than one created through the API.
 
 ## Log
 
@@ -132,7 +134,33 @@ metadata{}, always[], tool{messageID, callID}}`.
   from an incomplete mock, not a gating bug. Visual check at a 390px
   viewport: the three buttons render under the pending banner; "Permitir
   una vez" takes its own row because three do not fit the phone width.
-- **T4 live evidence, part 1** (2026-10-15, opencode 1.18.32, real server):
+- **T4 forcing experiment** (2026-10-15) — created a throwaway opencode
+  session with a ruleset forcing `ask` for edits, then created a real request
+  with `POST /api/session/{sid}/permission` (`{"action":"edit","resources":
+  [...]}` → `{"id":"per_…","effect":"ask"}`).
+  - **BUG 1 (would have shipped)**: `GET /permission` (the legacy list this
+    client used) returned `[]` while the request was live; the v2 routes
+    (`/api/session/{sid}/permission`, `/api/permission/request`) listed it.
+    The buttons would never have appeared for a real dialog.
+  - **BUG 2 (would have shipped)**: `POST …/reply` answers **204 No Content**.
+    The client parsed a JSON body and returned `bool(None)`, so a perfectly
+    good answer would have reported `{"ok": false}`.
+  - **Fix**: the client is v2-only, session-scoped (mapping opencode's
+    `action`/`resources` onto the phone's permission/patterns), success is the
+    2xx status, and `POST /pane/permission/reply` now takes `pane_id` because
+    opencode's reply URL is session-scoped.
+  - **After the fix, live PASS**: pending seen (`per_1400b4a44001…`),
+    `reply(reject)` → True, and the session's pending list empty afterwards.
+  - Lab sessions were deleted with `DELETE /session/{id}`.
+  - Still unconfirmed by a live agent: that a dialog an AGENT raises (rather
+    than one created through the API) lands in the same registry. The API used
+    here is the one its own permission check calls, so it should — but that is
+    inference, not observation.
+
+- **T4 live evidence, part 1** (2026-10-15, opencode 1.18.32, real server).
+  Recorded before the forcing experiment below rewrote the client to v2; the
+  legacy route findings here are what BUG 1 above disproves as a read path.
+  The reply body gained `pane_id` afterwards.
   - `POST /permission/per_nonexistent/reply {"reply":"once"}` → **404**
     `PermissionNotFoundError` — the route is live AND the body shape is
     accepted, so a 404-not-found (not a 400-invalid-payload) confirms the

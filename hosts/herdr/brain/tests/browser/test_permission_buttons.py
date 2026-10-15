@@ -82,7 +82,11 @@ def test_clicking_once_posts_the_exact_contract(karaoke_app):
         if request.method == "POST" and request.url.endswith("/pane/permission/reply")
     ]
     assert posts, "no reply was posted"
-    assert json.loads(posts[0]) == {"request_id": "per_1", "reply": "once"}
+    assert json.loads(posts[0]) == {
+        "pane_id": "w1:p2",
+        "request_id": "per_1",
+        "reply": "once",
+    }
 
 
 def test_blocked_pane_without_a_pending_request_keeps_the_keys_notice(karaoke_app):

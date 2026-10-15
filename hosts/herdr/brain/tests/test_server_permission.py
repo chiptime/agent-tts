@@ -21,7 +21,6 @@ PENDING = [
         session_id="ses_abc",
         permission="edit",
         patterns=("src/x.py",),
-        always=("src/*",),
     )
 ]
 
@@ -41,15 +40,15 @@ class FakePermissions:
     error = None
     replies = []
 
-    def list_pending(self, session_id=None, directory=None):
+    def list_pending(self, session_id):
         if type(self).error is not None:
             raise type(self).error
-        return [p for p in type(self).pending if session_id is None or p.session_id == session_id]
+        return [p for p in type(self).pending if p.session_id == session_id]
 
-    def reply(self, request_id, reply, message=None):
+    def reply(self, request_id, reply, session_id):
         if type(self).error is not None:
             raise type(self).error
-        type(self).replies.append((request_id, reply))
+        type(self).replies.append((request_id, reply, session_id))
         return True
 
 
@@ -132,22 +131,46 @@ def test_unreachable_opencode_is_502_not_a_silent_no(client):
 
 
 @pytest.mark.parametrize("reply", ["once", "always", "reject"])
-def test_forwards_the_exact_contract_value(client, reply):
+def test_forwards_the_exact_contract_value_with_the_panes_session(client, reply):
     resp = client.post(
-        "/pane/permission/reply", json={"request_id": "per_1", "reply": reply}
+        "/pane/permission/reply",
+        json={"pane_id": "w1:p2", "request_id": "per_1", "reply": reply},
     )
 
     assert resp.status_code == 200
     assert resp.json() == {"ok": True}
-    assert FakePermissions.replies == [("per_1", reply)]
+    assert FakePermissions.replies == [("per_1", reply, "ses_abc")]
 
 
 def test_an_invented_answer_never_reaches_opencode(client):
     resp = client.post(
-        "/pane/permission/reply", json={"request_id": "per_1", "reply": "yes"}
+        "/pane/permission/reply",
+        json={"pane_id": "w1:p2", "request_id": "per_1", "reply": "yes"},
     )
 
     assert resp.status_code == 422
+    assert FakePermissions.replies == []
+
+
+def test_reply_to_an_unknown_pane_is_404_and_never_the_focused_one(client):
+    resp = client.post(
+        "/pane/permission/reply",
+        json={"pane_id": "w9:p9", "request_id": "per_1", "reply": "once"},
+    )
+
+    assert resp.status_code == 404
+    assert FakePermissions.replies == []
+
+
+def test_reply_to_a_pane_without_a_session_is_409(client):
+    FakeTools.pane = {**PANE, "session_id": None}
+
+    resp = client.post(
+        "/pane/permission/reply",
+        json={"pane_id": "w1:p2", "request_id": "per_1", "reply": "once"},
+    )
+
+    assert resp.status_code == 409
     assert FakePermissions.replies == []
 
 
@@ -155,7 +178,8 @@ def test_a_vanished_request_is_404(client):
     FakePermissions.error = OpenCodeNotFound("permission not found")
 
     resp = client.post(
-        "/pane/permission/reply", json={"request_id": "per_1", "reply": "once"}
+        "/pane/permission/reply",
+        json={"pane_id": "w1:p2", "request_id": "per_1", "reply": "once"},
     )
 
     assert resp.status_code == 404
@@ -165,7 +189,8 @@ def test_unreachable_opencode_on_reply_is_502(client):
     FakePermissions.error = OpenCodeError("connection refused")
 
     resp = client.post(
-        "/pane/permission/reply", json={"request_id": "per_1", "reply": "once"}
+        "/pane/permission/reply",
+        json={"pane_id": "w1:p2", "request_id": "per_1", "reply": "once"},
     )
 
     assert resp.status_code == 502

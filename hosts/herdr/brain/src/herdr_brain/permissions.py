@@ -3,10 +3,22 @@
 An agent waiting at an approval dialog cannot be reached with
 ``herdr agent prompt`` (herdr refuses it with ``agent_blocked`` before
 writing any input), so the answer travels through opencode's own permission
-API instead:
+API instead.
 
-    GET  /permission                   -> [PermissionRequest]
-    POST /permission/{requestID}/reply -> {"reply": once|always|reject}
+Which surface is LIVE was settled by experiment, not by reading the spec
+(opencode 1.18.32): a real pending request created with
+``effect: "ask"`` did NOT appear in the legacy ``GET /permission`` list at
+all, while the session-scoped v2 routes listed it and answered it. So this
+client uses v2 only:
+
+    GET  /api/session/{sessionID}/permission            -> {"data": [...]}
+    POST /api/session/{sessionID}/permission/{id}/reply -> 204, NO body
+
+The wire names differ from the user-facing ones and are mapped here:
+opencode says ``action``/``resources``, the phone says permission/patterns.
+Note the reply answers with **204 No Content**, so success is the status
+code and never a JSON body — reading a body there would report failure on a
+perfectly good answer.
 
 This module holds transport only. It is deliberately NOT reachable from the
 LLM: the same capability as a model tool would let an agent approve its own
@@ -49,13 +61,16 @@ class OpenCodeNotFound(OpenCodeError):
 
 @dataclass(frozen=True)
 class PermissionRequest:
-    """One dialog waiting for an answer, as opencode reports it."""
+    """One dialog waiting for an answer.
+
+    ``permission``/``patterns`` are the phone's words for opencode's
+    ``action``/``resources``.
+    """
 
     request_id: str
     session_id: str
     permission: str
     patterns: tuple
-    always: tuple = ()
 
 
 class OpenCodePermissions:
@@ -81,48 +96,42 @@ class OpenCodePermissions:
 
     # -- reads --------------------------------------------------------------
 
-    def list_pending(self, session_id: Optional[str] = None) -> list[PermissionRequest]:
-        """Pending dialogs, narrowed to one session when a caller asks.
+    def list_pending(self, session_id: str) -> list[PermissionRequest]:
+        """The session's pending dialogs.
 
-        The v1 route lists globally, so the ``session_id`` filter is applied
-        here — it is an exact match, which is what a pane needs.
-
-        The route's optional ``directory`` scope is deliberately NOT sent:
-        it is unverified against a live request, and a filter that can only
-        remove results would make the buttons disappear in silence.
+        Session-scoped on purpose: the legacy global list is not the live
+        registry (see the module docstring), and a pane always knows its
+        session.
         """
-        response = self._request("GET", "/permission")
+        response = self._request("GET", f"/api/session/{session_id}/permission")
         payload = response.json()
-        if not isinstance(payload, list):
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
             raise OpenCodeError(
-                f"opencode /permission returned {type(payload).__name__},"
-                " expected a list"
+                "opencode permission list is not shaped like {data: [...]}"
             )
-        pending = [_to_request(item) for item in payload]
-        if session_id is not None:
-            pending = [item for item in pending if item.session_id == session_id]
-        return pending
+        return [_to_request(item) for item in payload["data"]]
 
     # -- writes -------------------------------------------------------------
 
-    def reply(self, request_id: str, reply: str, message: Optional[str] = None) -> bool:
+    def reply(self, request_id: str, reply: str, session_id: str) -> bool:
         """Answers one dialog. ``reply`` is the exact contract value.
 
         Validated locally before any request: an unknown word must never
-        reach opencode as a guess.
+        reach opencode as a guess. The route answers **204 No Content**, so
+        a 2xx with no body IS the success signal.
         """
         if reply not in REPLIES:
             raise OpenCodeError(
                 f"reply must be one of {', '.join(REPLIES)}, got {reply!r}"
             )
-        if not request_id:
-            raise OpenCodeError("request_id is required to answer a permission")
-        body = {"reply": reply}
-        if message:
-            body["message"] = message
-        response = self._request("POST", f"/permission/{request_id}/reply", json=body)
-        payload = response.json() if response.content else None
-        return bool(payload)
+        if not request_id or not session_id:
+            raise OpenCodeError("request_id and session_id are both required")
+        self._request(
+            "POST",
+            f"/api/session/{session_id}/permission/{request_id}/reply",
+            json={"reply": reply},
+        )
+        return True
 
     # -- plumbing -----------------------------------------------------------
 
@@ -156,12 +165,15 @@ def _error_detail(response: httpx.Response) -> str:
             value = payload.get(key)
             if isinstance(value, str) and value:
                 return value[:ERROR_EXCERPT_CHARS]
+        data = payload.get("data")
+        if isinstance(data, dict) and isinstance(data.get("message"), str):
+            return data["message"][:ERROR_EXCERPT_CHARS]
     return response.text[:ERROR_EXCERPT_CHARS]
 
 
 def _to_request(item: object) -> PermissionRequest:
     """Rebuilds one request, failing loud on a payload that is not shaped
-    like the documented PermissionRequest."""
+    like opencode's permission entry."""
     if not isinstance(item, dict):
         raise OpenCodeError(
             f"opencode permission entry is {type(item).__name__}, expected an object"
@@ -170,9 +182,8 @@ def _to_request(item: object) -> PermissionRequest:
         return PermissionRequest(
             request_id=item["id"],
             session_id=item["sessionID"],
-            permission=item.get("permission", ""),
-            patterns=tuple(item.get("patterns") or ()),
-            always=tuple(item.get("always") or ()),
+            permission=item.get("action", ""),
+            patterns=tuple(item.get("resources") or ()),
         )
     except (KeyError, TypeError) as exc:
         raise OpenCodeError(f"opencode permission entry is malformed: {exc}") from exc

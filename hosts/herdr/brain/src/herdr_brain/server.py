@@ -333,15 +333,17 @@ class PaneReplyRequest(BaseModel):
 
 
 class PermissionReplyRequest(BaseModel):
-    """Answer to one opencode approval dialog.
+    """Answer to one opencode approval dialog, for one exact pane.
 
     ``reply`` is the exact contract value; an invented word is a 422 at the
-    edge and never reaches opencode as a guess.
+    edge and never reaches opencode as a guess. ``pane_id`` is required
+    because opencode's reply route is session-scoped: the answer must name
+    the session it belongs to, and the pane is how the brain knows it.
     """
 
+    pane_id: str = Field(min_length=1, max_length=MAX_SESSION_ID_CHARS)
     request_id: str = Field(min_length=1, max_length=MAX_SESSION_ID_CHARS)
     reply: Literal["once", "always", "reject"]
-    message: Optional[str] = Field(default=None, max_length=8_000)
 
 
 def _opencode_http_error(exc: OpenCodeError) -> HTTPException:
@@ -1283,18 +1285,30 @@ def create_app(
 
     @app.post("/pane/permission/reply")
     def pane_permission_reply(body: PermissionReplyRequest) -> dict:
-        """Answers one opencode approval dialog.
+        """Answers one opencode approval dialog, for one exact pane.
 
         PWA-only by construction — the same capability as an LLM tool would
-        let an agent approve its own permission request. ``reply`` is
-        validated at the edge (422), a request that is already gone is a 404
-        and an unreachable opencode server is a 502.
+        let an agent approve its own permission request. The pane is resolved
+        exactly (never the focused fallback) and its session becomes part of
+        the opencode URL, so opencode itself refuses a request that does not
+        belong to that session. ``reply`` is validated at the edge (422), a
+        request that is already gone is a 404 and an unreachable opencode
+        server is a 502.
         """
+        info = tools.pane_info(body.pane_id)
+        if info is None:
+            raise HTTPException(status_code=404, detail="pane no encontrado")
+        session_id = info.get("session_id")
+        if not session_id:
+            raise HTTPException(
+                status_code=409,
+                detail="Ese pane no tiene una sesión de opencode que pueda responder.",
+            )
         try:
-            ok = permissions_client.reply(body.request_id, body.reply, body.message)
+            permissions_client.reply(body.request_id, body.reply, session_id)
         except OpenCodeError as exc:
             raise _opencode_http_error(exc) from exc
-        return {"ok": bool(ok)}
+        return {"ok": True}
 
     @app.post("/approval/{gate_id}/approve")
     def approval_approve(gate_id: str) -> dict:
