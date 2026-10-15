@@ -21,13 +21,14 @@ import re
 import shlex
 import dataclasses
 import time
+from datetime import datetime, timezone
 from typing import Callable, Dict, Optional
 
 from .config import MAX_SCREEN_LINES, Settings
 from .consult import ConsultService, intent_global, intent_history
 from .herdr import AgentInfo, HerdrClient, HerdrError, pick_active
 from .memory import clip_content
-from .transcripts import read_transcript, read_turns, read_title
+from .transcripts import Turn, read_transcript, read_turns, read_title, turn_age_seconds
 from .tts import render_mp3  # noqa: F401  (re-exported for server wiring)
 from .view import (
     SCREEN_TAIL_LINES,
@@ -165,8 +166,8 @@ class BrainTools:
             active = None
         return status_payload(active)
 
-    def last_turn(self, agent: AgentInfo) -> Optional[dict]:
-        """Latest transcript turn for one agent, or None on any failure."""
+    def _latest_turn(self, agent: AgentInfo) -> Optional[Turn]:
+        """Newest transcript turn for one agent, or None on any failure."""
         if not agent.session_value:
             return None
         try:
@@ -175,22 +176,42 @@ class BrainTools:
             return None
         if not turns:
             return None
-        turn = turns[-1]
+        return turns[-1]
+
+    def last_turn(self, agent: AgentInfo) -> Optional[dict]:
+        """Latest transcript turn for one agent, or None on any failure."""
+        turn = self._latest_turn(agent)
+        if turn is None:
+            return None
         return {"role": turn.role, "text": truncate_text(turn.text, HERD_LAST_TURN_CHARS)}
 
-    def herd(self) -> list:
-        """Every agent pane with status and its latest transcript turn.
+    def herd(self, now: Optional[datetime] = None) -> list:
+        """Every agent pane with status, latest turn and how long ago it was.
 
         Never raises: a failed agent listing yields an empty herd, and a
-        per-agent transcript failure yields ``last_turn: null``.
+        per-agent transcript failure yields ``last_turn: null`` plus
+        ``last_turn_age_s: null`` — an unknown time is never guessed, so the
+        UI can keep those panes out of its "recent" bucket. ``last_turn``
+        keeps its exact shape (the sibling carries the time). ``now`` is
+        injectable for deterministic tests; production uses UTC.
         """
         try:
             agents = self._herdr.list_agents()
         except HerdrError:
             return []
+        moment = now or datetime.now(timezone.utc)
         entries = []
         for raw_agent in agents:
             agent = self._enrich(raw_agent)
+            turn = self._latest_turn(agent)
+            last_turn = (
+                None
+                if turn is None
+                else {
+                    "role": turn.role,
+                    "text": truncate_text(turn.text, HERD_LAST_TURN_CHARS),
+                }
+            )
             entries.append(
                 {
                     "pane_id": agent.pane_id,
@@ -200,7 +221,12 @@ class BrainTools:
                     "cwd": agent.cwd,
                     "session_id": agent.session_value if agent.session_kind == "id" else None,
                     "focused": agent.focused,
-                    "last_turn": self.last_turn(agent),
+                    "last_turn": last_turn,
+                    "last_turn_age_s": (
+                        None
+                        if turn is None
+                        else turn_age_seconds(turn.created_at, moment)
+                    ),
                 }
             )
         return entries
