@@ -365,6 +365,18 @@
     }
     #pane-reply button { padding: 10px 16px; font-weight: 600; background: var(--chip-bg); color: var(--text); }
     #pane-reply button:disabled { opacity: 0.55; }
+    /* Shown instead of the input when the agent waits at a dialog: herdr
+     * refuses a prompt to a blocked agent, and that dialog is answered
+     * with key presses. */
+    #pane-reply-keys {
+      margin: 0 var(--sp-3) var(--sp-2);
+      padding: var(--sp-2) var(--sp-3);
+      border-radius: 10px;
+      background: var(--chip-bg);
+      color: var(--muted);
+      font-size: var(--fs-xs);
+      line-height: 1.35;
+    }
     #glance-label {
       flex: 0 0 auto;
       padding: 8px 12px 2px;
@@ -1344,6 +1356,7 @@
       <input id="pane-reply-input" type="text" placeholder="Escribe tu respuesta al agente…" autocomplete="off" aria-label="Respuesta al agente">
       <button id="pane-reply-send" type="submit">Enviar</button>
     </form>
+    <div id="pane-reply-keys" class="hidden">El agente espera en un diálogo — respóndele con teclas desde la terminal.</div>
     <span id="glance-label">Vista del agente</span>
     <div id="glance-turns"></div>
     <div id="glance-empty" class="hidden">Sin conversación del agente todavía</div>
