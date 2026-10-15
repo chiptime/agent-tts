@@ -481,6 +481,29 @@ class BrainTools:
             )
         return json.dumps(payload, ensure_ascii=False)
 
+    def pane_info(self, pane_id: str) -> Optional[dict]:
+        """Exact-pane identity for a permission answer: never a fallback.
+
+        Mirrors ``reply_to_pane``'s rule: an unknown pane returns ``None``
+        instead of the focused one, because answering the WRONG agent's
+        approval dialog is exactly the mistake this path must not make.
+        """
+        if not pane_id:
+            return None
+        try:
+            agents = self._herdr.list_agents()
+        except HerdrError:
+            return None
+        for agent in agents:
+            if agent.pane_id == pane_id:
+                return {
+                    "pane_id": agent.pane_id,
+                    "agent": agent.agent,
+                    "session_id": agent.session_value or None,
+                    "cwd": agent.cwd or None,
+                }
+        return None
+
     def reply_to_pane(self, pane_id: str, text: str) -> dict:
         """Delivers a user-TYPED reply to one exact pane (no LLM, no gate).
 

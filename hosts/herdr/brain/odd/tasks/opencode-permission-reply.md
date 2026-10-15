@@ -1,0 +1,111 @@
+# Feature: OpenCode permission reply from the PWA (herdr-brain)
+
+**Repo**: `agent-tts/hosts/herdr/brain`
+**Branch**: `feat/opencode-permission-reply` (worktree `agent-tts-worktrees/opencode-permission-reply`)
+**Created**: 2026-10-15
+**Delivery**: single PR, PWA-only endpoints, no LLM exposure
+
+## Objective
+
+When an agent waits at an opencode approval dialog, the phone can ANSWER it:
+three buttons (permitir una vez / permitir siempre / rechazar) that reply
+through opencode's own permission API, so "the app asks for action" always
+comes with a way to act.
+
+## Problem / Why
+
+Today the brain cannot answer a dialog at all: `herdr agent prompt` refuses a
+blocked agent (`agent_blocked`) BEFORE writing any input, so the typed-reply
+input built earlier is hidden for a blocked pane and nothing gets delivered.
+Verified: `herdr --skill` — "It rejects an agent already waiting at an
+approval or question dialog with `agent_blocked` before sending any input."
+
+User's words: "si me piden accion y no puedo ejecutarla es un problema" and
+"puedo escribir si o no?".
+
+Answer: not "sí/no". opencode's permission system replies with exactly three
+values, verified in the live OpenAPI spec (`GET /doc`, opencode 1.18.32):
+
+```
+GET  /permission                   -> 200, [PermissionRequest]
+POST /permission/{requestID}/reply -> {"reply":"once"|"always"|"reject"} -> boolean
+```
+
+`PermissionRequest`: `{id (^per), sessionID (^ses), permission, patterns[],
+metadata{}, always[], tool{messageID, callID}}`.
+
+## Specs
+
+- **S1** — Brain reaches the local opencode server over HTTP. Server observed:
+  `opencode web --hostname 0.0.0.0 --port 4096`, version `1.18.32`. Base URL
+  is a setting, default `http://127.0.0.1:4096`.
+- **S2** — Pending permissions are listed with `GET /permission` (optional
+  `directory` query) and answered with
+  `POST /permission/{requestID}/reply` body `{"reply": "once" | "always" | "reject"}`
+  exactly as the spec defines. No key-press simulation, no `send-keys`.
+- **S3** — The pane is matched to its request by `sessionID`: herdr already
+  gives the brain each pane's `ses_...` id, and `PermissionRequest.sessionID`
+  uses the same shape.
+- **S4** — The three replies map to the user words: `once` = "Permitir una
+  vez", `always` = "Permitir siempre", `reject` = "Rechazar".
+- **S5** — **The LLM must never reach this.** These capabilities are HTTP
+  endpoints for the PWA only; they are NOT added to `TOOLS_SCHEMA` /
+  `BrainTools`. A model able to approve its own permission request would
+  defeat the gate entirely.
+- **S6** — `always` persists a rule, so its button is labelled explicitly
+  ("Permitir siempre") and is not the primary/default action.
+- **S7** — Fail-soft: an unreachable opencode server, a vanished request or a
+  non-2xx reply never raises into the PWA; the user is told what happened.
+- **S8** — A request that is gone (already answered elsewhere, or expired)
+  is `404`-shaped, never a silent success.
+- **S9** — No behaviour change for agents whose dialogs are not opencode's
+  (claude/codex/agy): the affordance is opencode-only, and their blocked panes
+  keep the existing notice.
+
+## Assumptions (marked as such)
+
+- The v1 routes (`/permission`, `/permission/{id}/reply`) are the ones a
+  running 1.18.32 answers; the v2 mirrors under `/api/...` exist too and
+  returned 200 at probe time. Verify against a LIVE pending request before
+  calling this done.
+- A real `reply` was NOT exercised at investigation time (no dialog was
+  pending; triggering one would touch the user's live sessions).
+
+## Tasks
+
+- [x] T1 (S1,S2,S3) — `opencode_url` setting + `OpenCodePermissions` client
+      (list/reply) with an injectable transport. Tests: `tests/test_permissions.py`.
+      **Done**: 15 tests green (RED seen first: ModuleNotFoundError).
+- [x] T2 (S4,S5,S7,S8,S9) — PWA-only endpoints `GET /pane/permission` and
+      `POST /pane/permission/reply`; assert absent from `TOOLS_SCHEMA`.
+      Tests: `tests/test_server_permission.py`.
+      **Done**: 12 tests green. Two defects found by running them: the route
+      used `Path` for a query param (422 on every call) and the S5 test
+      first asserted on prose, where an unrelated "once" in `create_session`'s
+      description made it a false positive — it now asserts on tool names,
+      parameter names and the exact reply enum.
+- [ ] T3 (S4,S6) — PWA: three buttons replace the blocked-pane notice.
+      Browser test with a mocked pending permission + re-pinned digests.
+- [ ] T4 (S2,S3,S8) — Live verification against a real pending request, on a
+      session the user nominates. Evidence recorded here before merge.
+
+## Log
+
+- **L1** (verbatim, 2026-10-15): "necesito añadir en brain un input para escribir respuestas"
+- **L2** (verbatim): "no voy a subir nada aun, quedaria bien el añadir el input? se enviarian bien a back y llegarian a opencode po rejemplo?"
+- **L3** (verbatim): "entonces si no se puede interactuar no es un visual valido no? si me piden accion y no puedo ejecutarla es un problema"
+- **L4** (verbatim): "puedo escribir si o no?"
+- **L5** (verbatim): "1" → chosen branch: three buttons against opencode's permission API.
+- **L6** (verbatim): "worktree" → isolated worktree, never the shared `main` tree
+  (another session was merging into `main` while this was investigated).
+- **Investigation** (2026-10-15): `GET /permission` → `[]` HTTP 200;
+  `GET /api/permission/request` → `{"location":{...},"data":[]}` HTTP 200;
+  opencode 1.18.32. Security notes: the opencode server binds `0.0.0.0:4096`
+  and these routes carry no auth in the spec — pre-existing exposure, reported
+  to the user, not changed here.
+- **T1+T2 evidence** (2026-10-15): `tests/test_permissions.py` 15 passed,
+  `tests/test_server_permission.py` 12 passed. Full non-e2e suite: 1815 passed
+  in the worktree venv + `tests/browser` 151 passed (run with the main repo
+  venv: this worktree's playwright 1.64 wants chromium 1248 and the machine
+  has 1243, an environment gap, not a code failure) + `node --test tests/js`
+  383 passed. No commit in `main`; work stays on `feat/opencode-permission-reply`.

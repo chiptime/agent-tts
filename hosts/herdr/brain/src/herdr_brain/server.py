@@ -25,10 +25,10 @@ import threading
 import time
 from functools import lru_cache
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Literal, Optional
 from urllib.parse import parse_qs
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Path as PathParam, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Path as PathParam, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
@@ -76,6 +76,12 @@ from .speech import (
 # Module handle onto speech: the VS2.5 transport constants below are
 # read at USE time so monkeypatching them in speech affects this server.
 from . import speech as _speech
+from .permissions import (
+    OpenCodeError,
+    OpenCodeNotFound,
+    OpenCodePermissions,
+    REPLIES as PERMISSION_REPLIES,
+)
 from .stt import STATE_READY, STATE_UNAVAILABLE, UNAVAILABLE_HINT, Transcriber
 from .stt_engine import EngineTranscriber
 from .tools import BrainTools
@@ -326,6 +332,30 @@ class PaneReplyRequest(BaseModel):
         return value
 
 
+class PermissionReplyRequest(BaseModel):
+    """Answer to one opencode approval dialog.
+
+    ``reply`` is the exact contract value; an invented word is a 422 at the
+    edge and never reaches opencode as a guess.
+    """
+
+    request_id: str = Field(min_length=1, max_length=MAX_SESSION_ID_CHARS)
+    reply: Literal["once", "always", "reject"]
+    message: Optional[str] = Field(default=None, max_length=8_000)
+
+
+def _opencode_http_error(exc: OpenCodeError) -> HTTPException:
+    """Maps an opencode permission failure onto the phone's HTTP surface.
+
+    A request that is already gone is a 404 (the tap came too late); every
+    other failure — transport, status, payload shape — is a 502, so the PWA
+    never reports success it did not get.
+    """
+    if isinstance(exc, OpenCodeNotFound):
+        return HTTPException(status_code=404, detail=str(exc))
+    return HTTPException(status_code=502, detail=str(exc))
+
+
 def default_llm_factory(settings: Settings, tools: BrainTools) -> BrainLLM:
     return BrainLLM(settings, tools)
 
@@ -393,6 +423,7 @@ def create_app(
     transcriber: Optional[Transcriber] = None,
     daemon_probe: Optional[Callable[[], str]] = None,
     speech_registry: Optional[SpeechRegistry] = None,
+    permissions: Optional[OpenCodePermissions] = None,
 ) -> FastAPI:
     """Builds the FastAPI app with injectable backends for tests.
 
@@ -449,6 +480,14 @@ def create_app(
     # injectable like every other seam — tests drive small bounds and
     # fake clocks through the same object the handlers use.
     speech_jobs = speech_registry if speech_registry is not None else build_registry()
+
+    # Approval dialogs (opencode): the agent cannot be reached with a prompt
+    # while it waits at one, so the PWA answers through opencode's own
+    # permission API. Injectable like every other seam; the client is inert
+    # until called, so boot works with no opencode server running.
+    permissions_client = (
+        permissions if permissions is not None else OpenCodePermissions(cfg.opencode_url)
+    )
 
     if watcher is None:
         watcher = AgentWatcher(cfg, tts_renderer=synth)
@@ -1209,6 +1248,55 @@ def create_app(
             status_code=status,
             detail=result.get("detail") or "No se pudo entregar la respuesta.",
         )
+
+    @app.get("/pane/permission")
+    def pane_permission(
+        pane_id: str = Query(..., max_length=MAX_SESSION_ID_CHARS),
+    ) -> dict:
+        """The opencode approval dialog the viewed pane is waiting at.
+
+        Read-only and PWA-only. An unknown pane is a 404 and never falls back
+        to the focused one: the answer would land on the wrong agent. An
+        unreachable opencode server is a 502, never a silent "nothing
+        pending" — that would read as "there is nothing to answer".
+        """
+        info = tools.pane_info(pane_id)
+        if info is None:
+            raise HTTPException(status_code=404, detail="pane no encontrado")
+        session_id = info.get("session_id")
+        if not session_id:
+            return {"pending": None}
+        try:
+            pending = permissions_client.list_pending(
+                session_id=session_id, directory=info.get("cwd")
+            )
+        except OpenCodeError as exc:
+            raise _opencode_http_error(exc) from exc
+        if not pending:
+            return {"pending": None}
+        first = pending[0]
+        return {
+            "pending": {
+                "request_id": first.request_id,
+                "permission": first.permission,
+                "patterns": list(first.patterns),
+            }
+        }
+
+    @app.post("/pane/permission/reply")
+    def pane_permission_reply(body: PermissionReplyRequest) -> dict:
+        """Answers one opencode approval dialog.
+
+        PWA-only by construction — the same capability as an LLM tool would
+        let an agent approve its own permission request. ``reply`` is
+        validated at the edge (422), a request that is already gone is a 404
+        and an unreachable opencode server is a 502.
+        """
+        try:
+            ok = permissions_client.reply(body.request_id, body.reply, body.message)
+        except OpenCodeError as exc:
+            raise _opencode_http_error(exc) from exc
+        return {"ok": bool(ok)}
 
     @app.post("/approval/{gate_id}/approve")
     def approval_approve(gate_id: str) -> dict:
