@@ -317,6 +317,19 @@ it as a hint, not ground truth. The brain's prompt enforces the safety
 rule that matters: to answer a pending prompt on the user's behalf it must
 first `read_screen` and state what would be confirmed — never a blind yes.
 
+### Typed reply to the waiting agent
+
+When the pane you are viewing is the one waiting (a detected prompt, or a
+`blocked` status), the PWA shows a text input under the pending banner.
+Submitting it delivers **your own words** straight to that exact pane
+(`POST /pane/reply` with `{pane_id, text}`): no LLM turn and no approval
+gate, because the text comes from the keyboard rather than from speech or
+the model. The target must exist — an unknown `pane_id` is a `404` and is
+never redirected to the focused pane (a reply silently landing in the wrong
+agent would be hard to undo), a pane that rejects the prompt is a `409`, and
+any herdr failure is a `502`. `text` is required, must not be blank, and is
+capped at 8000 chars.
+
 The brain also serves its mobile PWA same-origin at `/` (static assets in
 `src/herdr_brain/static/`, mounted after the API routes): no CORS anywhere.
 

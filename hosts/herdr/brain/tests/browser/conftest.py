@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+import sys
 import tempfile
 from contextlib import ExitStack
 from dataclasses import dataclass
@@ -411,7 +412,12 @@ def karaoke_app(browser, pytestconfig):
             # Register immediately so partial fixture setup cannot leak a context.
             cleanup.callback(context.close)
             artifact_dir = Path(tempfile.mkdtemp(prefix="case-", dir=pytestconfig._karaoke_output))
+            # In a mixed run other test modules import the real server at
+            # collection time; remember it so the isolation check can tell
+            # "the harness imported it" from "it was already there".
+            server_preloaded = "herdr_brain.server" in sys.modules
             harness = KaraokeHarness(context, artifact_dir, history, external)
+            harness.server_preloaded = server_preloaded
             cleanup.callback(harness.close)
             harnesses.append(harness)
             return harness
