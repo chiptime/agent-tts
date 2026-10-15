@@ -29,6 +29,24 @@ _PROMPT_BLOCKED = "agent_blocked"
 _PROMPT_STALLED = "agent_prompt_stalled"
 _PROMPT_TIMEOUT = "timeout"
 
+# The key dialect a dialog may be driven with. Probed live against herdr
+# 0.9.1: these names are accepted, while `arrowleft`, `leftarrow` and
+# `ArrowLeft` come back as `invalid_key` with nothing written. The set is
+# closed on purpose — a name that is not here never reaches a live terminal,
+# and `sendKeys` argv is one door into a running TUI.
+DIALOG_KEYS = frozenset({"enter", "esc", "left", "right", "up", "down"})
+
+
+def is_valid_key(key: str) -> bool:
+    """Whether herdr's grammar accepts `key` (the verified subset)."""
+    if key in DIALOG_KEYS:
+        return True
+    # `ctrl+c` is the spelling herdr's own documentation uses: a modifier and
+    # exactly one lower-case letter.
+    if key.startswith("ctrl+") and len(key) == 6:
+        return key[5].isalpha() and key[5].islower()
+    return False
+
 
 class HerdrError(RuntimeError):
     """Raised when a herdr CLI invocation fails."""
@@ -163,7 +181,11 @@ class HerdrClient:
         return pick_active(self.list_agents())
 
     def read_screen(
-        self, pane_id: str, n_lines: Optional[int] = None, source: str = "visible"
+        self,
+        pane_id: str,
+        n_lines: Optional[int] = None,
+        source: str = "visible",
+        ansi: bool = False,
     ) -> str:
         """Reads terminal output of a pane (read-only).
 
@@ -171,22 +193,48 @@ class HerdrClient:
         viewport (clamped to 60 lines to avoid scrolling the operator's real
         screen); ``recent`` reads the scrollback backlog for explicit
         full-text reads (clamped to 120 lines).
+
+        ``ansi`` keeps the escape codes. A dialog's highlight — which option
+        is selected — exists ONLY there: a plain text read cannot say, and
+        the dialog guard's signature depends on seeing it.
         """
         requested = n_lines if n_lines and n_lines > 0 else self._settings.screen_lines
         cap = MAX_BACKLOG_LINES if source == "recent" else MAX_SCREEN_LINES
         clamped = min(requested, cap)
+        style = ["--ansi"] if ansi else ["--format", "text"]
         proc = self._run_cli(
             [
                 "agent", "read", pane_id,
                 "--source", source,
                 "--lines", str(clamped),
-                "--format", "text",
+                *style,
             ],
             timeout_s=15,
         )
         return proc.stdout
 
     # -- write path ----------------------------------------------------------
+
+    def send_keys(self, pane_id: str, keys: List[str]) -> None:
+        """Sends key presses to a pane — the surface an agent dialog answers.
+
+        Not a write path like ``send_prompt``: a keystroke lands in whatever
+        holds the terminal's focus, so the caller is expected to have the
+        dialog guard's verdict in hand first (see ``dialog.entry_guard``).
+
+        Every key is validated against the verified dialect BEFORE the CLI is
+        spawned. herdr refuses an unknown name with ``invalid_key`` and writes
+        nothing, so a doomed call is at best a wasted round-trip — and the
+        point of the dialect is that nothing unverified reaches a live pane.
+        """
+        if not keys:
+            raise HerdrError("refusing to send an empty key sequence")
+        for key in keys:
+            if not is_valid_key(key):
+                raise HerdrError(
+                    f"unsupported key {key!r}: herdr would refuse it (see is_valid_key)"
+                )
+        self._run_cli(["agent", "send-keys", pane_id, *keys], timeout_s=15)
 
     def create_tab(self, label: str, cwd: Optional[str] = None) -> dict:
         """Creates a new tab and returns ``{"tab_id", "pane_id"}``.

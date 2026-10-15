@@ -154,8 +154,16 @@ safest option and a naive pad would commit the riskiest one.
 
 ### Tasks for the port
 
-- [ ] T5 — port the guard: fresh read, signature equality (commit) vs
+- [x] T5 — port the guard: fresh read, signature equality (commit) vs
       identity (nav), three-valued polling, sanitised text.
+      **Done, in brain's own terms**: `src/herdr_brain/dialog.py` holds the
+      model (`DialogModel` / `DialogAction`), the two comparators, the entry
+      guard and the three-valued poll; `HerdrClient.send_keys` carries the
+      verified key dialect (`DIALOG_KEYS`, refused locally before the CLI is
+      spawned) and `read_screen(..., ansi=True)` keeps the escape codes the
+      signature needs. Text sanitising was deliberately left out: nothing
+      calls it yet, and it belongs with the reply-into-a-dialog path (T7).
+      Tests: `tests/test_dialog_guard.py`, `tests/test_herdr_send_keys.py`.
 - [ ] T6 — an opencode dialog adapter: parse the footer's own keys, derive
       the option rows WITH the highlight marker, expose a signature.
 - [ ] T7 — closed-loop choreography (walk to the target row, re-reading each
