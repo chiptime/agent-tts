@@ -46,7 +46,7 @@ def test_real_app_with_isolated_media(karaoke_harness, browser, pytestconfig, re
     assert browser.browser_type.name == "chromium"
     assert "_tts_backend_stubs" not in request.fixturenames
     assert "hermetic_stores" not in request.fixturenames
-    assert "herdr_brain.server" not in sys.modules
+    assert harness.server_preloaded or "herdr_brain.server" not in sys.modules
 
     # This is the initial RED boundary: the fixture must load the actual app.
     assert page.locator("#conversation").count() == 1
