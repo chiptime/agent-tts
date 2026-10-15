@@ -84,8 +84,12 @@ metadata{}, always[], tool{messageID, callID}}`.
       first asserted on prose, where an unrelated "once" in `create_session`'s
       description made it a false positive — it now asserts on tool names,
       parameter names and the exact reply enum.
-- [ ] T3 (S4,S6) — PWA: three buttons replace the blocked-pane notice.
+- [x] T3 (S4,S6) — PWA: three buttons replace the blocked-pane notice.
       Browser test with a mocked pending permission + re-pinned digests.
+      **Done**: `tests/browser/test_permission_buttons.py` (3 tests, one of
+      them clicks and asserts the exact posted body). The keys notice now
+      shows only when a blocked pane has NO opencode request pending —
+      another agent kind, or one already answered (S9).
 - [ ] T4 (S2,S3,S8) — Live verification against a real pending request, on a
       session the user nominates. Evidence recorded here before merge.
 
@@ -103,9 +107,16 @@ metadata{}, always[], tool{messageID, callID}}`.
   opencode 1.18.32. Security notes: the opencode server binds `0.0.0.0:4096`
   and these routes carry no auth in the spec — pre-existing exposure, reported
   to the user, not changed here.
-- **T1+T2 evidence** (2026-10-15): `tests/test_permissions.py` 15 passed,
+- **T1+T2 evidence** (2026-10-15): `tests/test_permissions.py` 15 passed;
   `tests/test_server_permission.py` 12 passed. Full non-e2e suite: 1815 passed
   in the worktree venv + `tests/browser` 151 passed (run with the main repo
   venv: this worktree's playwright 1.64 wants chromium 1248 and the machine
   has 1243, an environment gap, not a code failure) + `node --test tests/js`
   383 passed. No commit in `main`; work stays on `feat/opencode-permission-reply`.
+- **T3 evidence** (2026-10-15): browser suite 154 passed, 0 errors; JS 383
+  passed. The harness's "Undeclared traffic was blocked" guard caught that
+  `test_pane_reply_visibility.py` had no `/pane/permission` route declared
+  once the blocked pane started asking for its dialog — a teardown error
+  from an incomplete mock, not a gating bug. Visual check at a 390px
+  viewport: the three buttons render under the pending banner; "Permitir
+  una vez" takes its own row because three do not fit the phone width.

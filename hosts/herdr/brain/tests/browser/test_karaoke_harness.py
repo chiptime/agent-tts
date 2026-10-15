@@ -15,8 +15,8 @@ EXPECTED_DIGESTS = {
     # served static files (the sheet grouping and the typed-reply input),
     # so these three hashes have to be recomputed from disk after every
     # merge that touches index.html, app.js or herd-group.js.
-    "/": "28dfca894f3e0137191d641d7aba54344d888716211b4cd6bcca26fe244218d1",
-    "/app.js": "cdbd4c3273f5e091f94ab893eeddc0875d3f1c8d635784634d1a73a4f2c7ca1c",
+    "/": "b814da81e3bbd46d42b0dea32523faa8b4204696b4a79034a9b67bc09c1c3422",
+    "/app.js": "5eb698d059bd6e8a60eb55debdf92383ef6d378b110df597cc898d1b7785a9dd",
     "/herd-group.js": "08296c7208e14dc1d5e46186b645d02089f8addef502b50eb11e61b186829674",
     "/toast.js": "6c306cbe005036b7d697af7c3a6faa1fa5b90a6b444ee23176516b197c8df7e3",
     "/reader.js": "28daec6199b0e756e1285b40f20fc860c1d9b4d2169cb2433c1ccfb12db31a76",

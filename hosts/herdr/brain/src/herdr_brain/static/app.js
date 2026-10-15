@@ -54,6 +54,11 @@
   var replyInput = $("pane-reply-input");
   var replySend = $("pane-reply-send");
   var replyKeys = $("pane-reply-keys");
+  var permissionBox = $("pane-permission");
+  var permissionWhat = $("pane-permission-what");
+  var permissionOnce = $("pp-once");
+  var permissionAlways = $("pp-always");
+  var permissionReject = $("pp-reject");
   var viewScreen = $("view-screen");
   var convList = $("conv-list");
   var herdNote = $("herd-note");
@@ -1049,6 +1054,12 @@
   var lastHerd = [];
   var lastPending = { detected: false };
   var pendingBannerTapPane = null;
+  /* Approval dialog of the viewed pane (opencode only). `permissionPane` is
+   * the pane the answer belongs to — kept so a reply can be re-read for the
+   * SAME pane after answering. */
+  var permissionPane = null;
+  var permissionRequest = null;
+  var permissionBlocked = false;
   var lastEffectivePane = null;
 
   /* Agent display name (picker trigger, sheet rows, glance label):
@@ -1366,8 +1377,109 @@
     if (replyTarget) replyForm.setAttribute("data-pane", replyTarget);
     else replyForm.removeAttribute("data-pane");
     replyForm.classList.toggle("hidden", !replyTarget);
-    replyKeys.classList.toggle("hidden", !(viewed && viewedBlocked));
+    refreshPermission(viewed && viewedBlocked ? viewed : null);
   }
+
+  /* Approval dialog (opencode): a blocked agent cannot be reached with a
+   * prompt — herdr refuses it before writing any input — so the answer goes
+   * through opencode's permission API. Fetched once per pane: renderPending
+   * runs on every poll and must not re-request on each one. */
+  function refreshPermission(paneId) {
+    permissionBlocked = !!paneId;
+    if (!paneId) {
+      permissionPane = null;
+      permissionRequest = null;
+      renderPermission();
+      return;
+    }
+    if (permissionPane === paneId) {
+      renderPermission();
+      return;
+    }
+    permissionPane = paneId;
+    permissionRequest = null;
+    renderPermission();
+    fetch("/pane/permission?pane_id=" + encodeURIComponent(paneId))
+      .then(function (resp) {
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        return resp.json();
+      })
+      .then(function (data) {
+        if (permissionPane !== paneId) return;  // the view moved on
+        permissionRequest = (data && data.pending) || null;
+        renderPermission();
+      })
+      .catch(function () {
+        if (permissionPane !== paneId) return;
+        permissionRequest = null;  // fail-soft: the keys notice remains
+        renderPermission();
+      });
+  }
+
+  function renderPermission() {
+    var show = !!(permissionRequest && permissionPane);
+    if (show) {
+      var what = permissionRequest.patterns && permissionRequest.patterns.length
+        ? permissionRequest.patterns.join(", ")
+        : "permiso";
+      permissionWhat.textContent = (permissionRequest.permission
+        ? permissionRequest.permission + ": " : "") + what;
+    } else {
+      permissionWhat.textContent = "";
+    }
+    permissionBox.classList.toggle("hidden", !show);
+    /* The keys notice is the fallback for a dialog this path cannot answer:
+       another agent kind, or one already answered elsewhere. */
+    replyKeys.classList.toggle("hidden", !(permissionBlocked && !show));
+  }
+
+  var PERMISSION_TOAST = {
+    once: "Permiso concedido una vez",
+    always: "Permiso concedido siempre",
+    reject: "Permiso rechazado"
+  };
+
+  function sendPermission(reply) {
+    if (!permissionRequest) return;
+    var requestId = permissionRequest.request_id;
+    var pane = permissionPane;
+    setPermissionBusy(true);
+    fetch("/pane/permission/reply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ request_id: requestId, reply: reply })
+    })
+      .then(function (resp) {
+        if (resp.ok) {
+          showToast(PERMISSION_TOAST[reply] || "Permiso enviado", 3000);
+          // Re-read the SAME pane: the dialog may already be gone.
+          permissionPane = null;
+          permissionRequest = null;
+          refreshPermission(pane);
+          return null;
+        }
+        return resp.json().then(
+          function (body) { return body && body.detail; },
+          function () { return null; }
+        ).then(function (detail) {
+          showToast("No se pudo responder: " + (typeof detail === "string" ? detail : "error " + resp.status), 6000);
+        });
+      })
+      .catch(function () {
+        showToast("No se pudo responder: sin conexión con el brain", 6000);
+      })
+      .then(function () { setPermissionBusy(false); });
+  }
+
+  function setPermissionBusy(busy) {
+    [permissionOnce, permissionAlways, permissionReject].forEach(function (button) {
+      button.disabled = busy;
+    });
+  }
+
+  permissionOnce.addEventListener("click", function () { sendPermission("once"); });
+  permissionAlways.addEventListener("click", function () { sendPermission("always"); });
+  permissionReject.addEventListener("click", function () { sendPermission("reject"); });
 
   replyForm.addEventListener("submit", function (event) {
     event.preventDefault();

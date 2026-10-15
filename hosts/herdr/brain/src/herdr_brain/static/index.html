@@ -398,6 +398,36 @@
       font-size: var(--fs-xs);
       line-height: 1.35;
     }
+    /* The agent's approval dialog: answered through opencode's permission
+     * API (once | always | reject). "Permitir siempre" persists a rule, so
+     * it is deliberately the least prominent of the three. */
+    #pane-permission {
+      margin: 0 var(--sp-3) var(--sp-2);
+      padding: var(--sp-2) var(--sp-3);
+      border-radius: 10px;
+      background: var(--chip-bg);
+    }
+    #pane-permission-what {
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-size: var(--fs-xs);
+      line-height: 1.35;
+      word-break: break-word;
+    }
+    .pp-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .pp-actions button {
+      flex: 1 1 auto;
+      min-height: 44px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--text);
+      font-weight: 600;
+    }
+    #pp-always { opacity: 0.85; }
+    #pp-reject { color: var(--danger); }
+    #pane-permission button:disabled { opacity: 0.55; }
     #glance-label {
       flex: 0 0 auto;
       padding: 8px 12px 2px;
@@ -1378,6 +1408,14 @@
       <button id="pane-reply-send" type="submit">Enviar</button>
     </form>
     <div id="pane-reply-keys" class="hidden">El agente espera en un diálogo — respóndele con teclas desde la terminal.</div>
+    <div id="pane-permission" class="hidden">
+      <div id="pane-permission-what"></div>
+      <div class="pp-actions">
+        <button id="pp-once" type="button">Permitir una vez</button>
+        <button id="pp-always" type="button">Permitir siempre</button>
+        <button id="pp-reject" type="button">Rechazar</button>
+      </div>
+    </div>
     <span id="glance-label">Vista del agente</span>
     <div id="glance-turns"></div>
     <div id="glance-empty" class="hidden">Sin conversación del agente todavía</div>

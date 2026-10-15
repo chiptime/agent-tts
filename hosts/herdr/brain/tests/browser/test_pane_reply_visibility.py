@@ -42,6 +42,10 @@ def _load(karaoke_app, herd):
     harness = karaoke_app()
     harness.respond("/herd", herd)
     harness.respond("/view", PENDING_VIEW, query=("pane_id",))
+    # A blocked pane makes the PWA ask for its opencode dialog; the harness
+    # blocks undeclared traffic, so this route must be declared even when the
+    # answer is "nothing pending" (the keys notice then stays visible).
+    harness.respond("/pane/permission", {"pending": None}, query=("pane_id",))
     return harness.load()
 
 
