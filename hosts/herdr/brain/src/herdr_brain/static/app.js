@@ -53,6 +53,7 @@
   var replyForm = $("pane-reply");
   var replyInput = $("pane-reply-input");
   var replySend = $("pane-reply-send");
+  var replyKeys = $("pane-reply-keys");
   var viewScreen = $("view-screen");
   var convList = $("conv-list");
   var herdNote = $("herd-note");
@@ -1345,18 +1346,27 @@
     }
     pendingBannerTapPane = tapPane;
 
-    /* Direct reply: offered only while the pane being viewed is the one
-     * waiting (a detected prompt, or reported blocked by the herd). The
-     * target is fixed on the form so a late poll cannot retarget a
-     * half-typed reply. */
+    /* Direct reply: offered only where delivery is actually possible.
+     * herdr refuses `agent prompt` for an agent already waiting at an
+     * approval/question dialog (agent_blocked, before any input is
+     * written), so a blocked pane gets a notice instead of an input that
+     * would always fail with a 409 — its dialog is answered with key
+     * presses, which the PWA does not synthesize. Otherwise the pane must
+     * be the one showing the prompt. The target is fixed on the form so a
+     * late poll cannot retarget a half-typed reply. */
     var viewed = lastEffectivePane || selectedPane;
-    var replyTarget = viewed && (detected || selBlocked) ? viewed : null;
+    var viewedBlocked = false;
+    for (i = 0; i < blocked.length; i++) {
+      if (blocked[i].pane_id === viewed) { viewedBlocked = true; break; }
+    }
+    var replyTarget = viewed && detected && !viewedBlocked ? viewed : null;
     if (replyTarget && replyForm.getAttribute("data-pane") !== replyTarget) {
       replyInput.value = "";
     }
     if (replyTarget) replyForm.setAttribute("data-pane", replyTarget);
     else replyForm.removeAttribute("data-pane");
     replyForm.classList.toggle("hidden", !replyTarget);
+    replyKeys.classList.toggle("hidden", !(viewed && viewedBlocked));
   }
 
   replyForm.addEventListener("submit", function (event) {
