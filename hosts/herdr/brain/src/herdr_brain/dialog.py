@@ -59,6 +59,13 @@ class DialogModel:
     #: guard compares it, so it must be non-empty and must change whenever
     #: that region's text changes.
     signature: str
+    #: Which action carries the highlight, when the screen shows one. Kept OUT
+    #: of the identity comparison on purpose: the highlight moving is what the
+    #: previous arrow was for, so `selected` belongs to the signature, not to
+    #: "is this still the same dialog".
+    selected: Optional[int] = None
+    #: The keys the screen's own footer named for committing, e.g. ("enter",).
+    commit_keys: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

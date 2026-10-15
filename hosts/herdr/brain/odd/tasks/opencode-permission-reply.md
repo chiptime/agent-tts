@@ -164,8 +164,20 @@ safest option and a naive pad would commit the riskiest one.
       signature needs. Text sanitising was deliberately left out: nothing
       calls it yet, and it belongs with the reply-into-a-dialog path (T7).
       Tests: `tests/test_dialog_guard.py`, `tests/test_herdr_send_keys.py`.
-- [ ] T6 — an opencode dialog adapter: parse the footer's own keys, derive
+- [x] T6 — an opencode dialog adapter: parse the footer's own keys, derive
       the option rows WITH the highlight marker, expose a signature.
+      **Done**: `src/herdr_brain/dialog_opencode.py`. The dialog was captured
+      live with `herdr agent read --ansi` and kept as
+      `tests/fixtures/opencode-permission-dialog.ansi` (real escape codes, so
+      the tests run against the TUI's own bytes). The selection is the run
+      drawn as an inked pill (dark text on a light background — the maximum
+      of bg-minus-fg on the line), the options are its tight group, the keys
+      come from the (key, verb) hint pairs the dialog prints
+      (`⇆ select` → left/right, `enter confirm` → enter, validated against
+      `is_valid_key`), and the signature marks the selected label. A styled
+      screen with no readable selection, or one naming no usable key, returns
+      `None`: fail closed, because an unsigned model would let a stale tap
+      through.
 - [ ] T7 — closed-loop choreography (walk to the target row, re-reading each
       step) + a PWA-only endpoint; `send-keys` keys are `left`/`right`/`enter`
       (`arrowleft`/`ArrowLeft` are rejected by herdr with `invalid_key`).
