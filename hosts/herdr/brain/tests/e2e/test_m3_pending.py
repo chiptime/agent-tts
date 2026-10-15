@@ -10,8 +10,12 @@ What this milestone adds on the phone (VS3.6): SSE ``transition`` events
 also feed a durable pending ledger — ``localStorage["herdr.speech.pending.v1"]``
 (cap 100, visible overflow, persist-uncertain banner) rendered as the
 JS-built ``#pending-panel`` with per-record Escuchar/Anunciado/Descartar.
-The announcement itself keeps flowing through the announcer and the ONE
-sequential audio queue; stopping a response job never touches records.
+The panel lives OFF the document flow now (pending-notices-in-settings-sheet):
+it mounts inside the Pendientes sheet (``#pending-sheet``), opened from the
+Ajustes sheet (⚙ → ``#pending-open``), so it never pushes the cockpit when
+it grows or shrinks. The announcement itself keeps flowing through the
+announcer and the ONE sequential audio queue; stopping a response job never
+touches records.
 
 The browser tests below prove, through real playback:
   1. cross-channel independence — a long identified answer playing on the
@@ -27,8 +31,9 @@ The browser tests below prove, through real playback:
   4. visible overflow — an oversized persisted store caps at 100 records,
       shows the ``+N recortados`` badge (never a silent trim), and a record
       is still listenable by regenerating speech from its text;
-  5. last-row reachability — the 100-row panel's LAST row can scroll its
-      action buttons clear of the fixed call footer (geometry pin).
+  5. last-row reachability — the 100-row list scrolls INSIDE the Pendientes
+      sheet body: its LAST row stays clear of the fixed call footer and its
+      action button is a real pointer target (geometry pin).
 
 The sixth test is the milestone's host-side integration half (no browser):
 a REAL subprocess of the host pending CLI is killed with SIGKILL mid-claim
@@ -369,23 +374,49 @@ def basename(url: str) -> str:
     return url.rsplit("/", 1)[-1]
 
 
+def open_pending(pwa):
+    """Opens the Pendientes sheet from Ajustes (⚙ → #pending-open).
+
+    The panel used to live in the document flow; it now mounts inside
+    #pending-sheet-body — a fixed, inert, transform-hidden sheet — so any
+    real interaction must open the sheet first. Idempotent: a second call
+    with the sheet already open is a no-op."""
+    if pwa.evaluate(
+        "() => document.getElementById('pending-sheet')"
+        ".classList.contains('open')"
+    ):
+        return
+    pwa.click("#settings-btn")
+    pwa.wait_for_selector("#settings-sheet.open", timeout=10000)
+    pwa.click("#pending-open")
+    pwa.wait_for_selector("#pending-sheet.open", timeout=10000)
+    # The sheet slides in over ~280ms; wait for that transition to settle
+    # so a caller that measures geometry reads the final position, not a
+    # mid-slide translateY.
+    pwa.wait_for_function(
+        """() => {
+            const t = getComputedStyle(
+                document.getElementById('pending-sheet')).transform;
+            if (t === 'none') return true;
+            const m = t.match(/matrix\\(([^)]+)\\)/);
+            if (!m) return true;
+            return Math.abs(Number(m[1].split(',')[5] || 0)) < 1;
+        }""",
+        timeout=10000,
+    )
+
+
 def click_row_action(pwa, row_text: str, action: str):
-    """Clicks one pending row's action button. The pending list carries
-    the footer clearance as real scrollable document height (see the
-    last-row geometry pin below), so plain scrollIntoView reaches every
-    row; the document-end jump stays as belt-and-braces for any row
-    that still lands in the footer's zone. A real pointer click, never
-    a synthetic JS dispatch."""
+    """Clicks one pending row's action button. The list scrolls INSIDE
+    the Pendientes sheet body (#pending-sheet-body), so the sheet is
+    opened first and the row is brought into view within that container.
+    A real pointer click, never a synthetic JS dispatch."""
+    open_pending(pwa)
     pwa.evaluate(
         """(rowText) => {
             const row = Array.from(document.querySelectorAll('#pending-panel li'))
                 .find(r => r.textContent.indexOf(rowText) !== -1);
-            if (!row) return;
-            row.scrollIntoView({block: 'center'});
-            const rect = row.getBoundingClientRect();
-            if (rect.bottom > window.innerHeight - 130) {
-                window.scrollTo(0, document.documentElement.scrollHeight);
-            }
+            if (row) row.scrollIntoView({block: 'center'});
         }""",
         row_text,
     )
@@ -691,27 +722,25 @@ def test_overflow_visible_regenerated(brain_m3, pwa_m3):
 
 
 # ---------------------------------------------------------------------------
-# Test 5 — geometry pin: the LAST row scrolls clear of the fixed footer
+# Test 5 — reachability pin: the LAST row scrolls inside the Pendientes sheet
 # ---------------------------------------------------------------------------
 
 
-def test_pending_last_row_reachable_above_footer(brain_m3, pwa_m3):
-    """The 100-row panel on a phone-height viewport: the LAST row's
-    action buttons must be able to scroll CLEAR of the fixed call
-    footer. The body's own 104px padding-bottom cannot provide this —
-    body is height:100%, so overflowing rows poke below the padded box
-    and that padding never becomes scrollable document space. The fix
-    under test (app.js PENDING_FOOTER_CLEARANCE) makes the pending
-    list itself carry the footer clearance as real in-flow height, so
-    the document can scroll past the last row.
+def test_pending_last_row_reachable_in_sheet(brain_m3, pwa_m3):
+    """The 100-row panel on a phone-height viewport scrolls INSIDE the
+    Pendientes sheet (#pending-sheet-body). This is the design change: the
+    panel left the document flow — it used to push the whole cockpit when
+    it grew or shrank — and now lives in a fixed, bottom-anchored sheet
+    opened from Ajustes (⚙ → Pendientes). The LAST row must be reachable
+    by scrolling that sheet body, must sit clear of the fixed call footer
+    (the sheet is anchored above it), and its action button must be a real
+    pointer target — a real click then proves the record is actionable,
+    not merely visible.
 
-    Seeding localStorage directly (the overflow test's path), reload,
-    scroll the panel to its bottom, bring the LAST row into view the
-    way anything reaches it (scrollIntoView center), and assert the
-    row's bottom edge sits above the fixed footer's top at the
-    achieved scroll position. A real pointer click on the last row's
-    action button then proves the record is actionable, not merely
-    visible."""
+    Seeding localStorage directly (the overflow test's path), reload, open
+    the sheet, scroll its body to the bottom, bring the LAST row into view
+    (scrollIntoView center, the way anything reaches it) and assert the row
+    sits inside the sheet body and above the fixed footer."""
     pwa_m3.set_viewport_size({"width": 390, "height": 844})
     seed = {
         "records": [
@@ -742,43 +771,50 @@ def test_pending_last_row_reachable_above_footer(brain_m3, pwa_m3):
         " return p && !p.classList.contains('hidden'); }",
         timeout=10000,
     )
+    open_pending(pwa_m3)
 
     geo = pwa_m3.evaluate(
         """() => {
-            // Bottom of the panel: the document end IS the panel end
-            // (everything after it in the DOM is fixed or hidden).
-            window.scrollTo(0, document.documentElement.scrollHeight);
+            // The sheet body IS the scroll container now; the document
+            // never scrolls for the panel.
+            const body = document.getElementById('pending-sheet-body');
+            body.scrollTop = body.scrollHeight;
             const rows = document.querySelectorAll('#pending-panel li');
             const last = rows[rows.length - 1];
             // The user's reach: center the last row like any other.
             last.scrollIntoView({block: 'center'});
             const rect = last.getBoundingClientRect();
+            const bodyRect = body.getBoundingClientRect();
             const footerTop = document.querySelector('footer')
                 .getBoundingClientRect().top;
             return {
                 rows: rows.length,
-                scrollY: window.scrollY,
-                maxScrollY: document.documentElement.scrollHeight
-                    - window.innerHeight,
+                scrollTop: body.scrollTop,
+                maxScrollTop: body.scrollHeight - body.clientHeight,
                 lastBottom: rect.bottom,
+                bodyBottom: bodyRect.bottom,
                 footerTop: footerTop,
             };
         }"""
     )
     assert geo["rows"] == 100, f"cap not enforced: {geo}"
-    assert geo["scrollY"] > 0, (
-        f"a 100-row panel on 844px never scrolled: {geo}"
+    assert geo["scrollTop"] > 0, (
+        f"a 100-row list inside the sheet never scrolled: {geo}"
     )
     tolerance = 2  # px, rounding only
+    assert geo["lastBottom"] <= geo["bodyBottom"] + tolerance, (
+        "the LAST row is clipped by the sheet body: "
+        f"bottom={geo['lastBottom']:.1f} bodyBottom={geo['bodyBottom']:.1f}"
+    )
     assert geo["lastBottom"] <= geo["footerTop"] + tolerance, (
-        "the LAST row's buttons stay under the fixed footer: "
+        "the LAST row's buttons sit under the fixed footer: "
         f"bottom={geo['lastBottom']:.1f} footerTop={geo['footerTop']:.1f} "
-        f"at scrollY={geo['scrollY']:.0f}/{geo['maxScrollY']:.0f}"
+        f"at scrollTop={geo['scrollTop']:.0f}/{geo['maxScrollTop']:.0f}"
     )
 
     # Actionable, not just visible: a real pointer click on the last
     # row's button (Playwright scrolls it into view and checks the hit
-    # target — the fixed footer must not intercept the pointer).
+    # target — the sheet bounds and the fixed footer must not intercept).
     last_text = "texto pin-119 termino su turno"
     pwa_m3.locator("#pending-panel li").filter(
         has_text=last_text).get_by_role(
@@ -789,10 +825,12 @@ def test_pending_last_row_reachable_above_footer(brain_m3, pwa_m3):
     assert marked and marked["state"] == "announced", (
         f"the last row's button click never landed: {marked}"
     )
-    print(f"[M3 evidence] last of {geo['rows']} rows scrolls "
-          f"{geo['footerTop'] - geo['lastBottom']:.1f}px clear of the "
-          f"fixed footer and its button click lands "
-          f"(scrollY={geo['scrollY']:.0f}/{geo['maxScrollY']:.0f})")
+    print(f"[M3 evidence] last of {geo['rows']} rows scrolls inside the "
+          f"Pendientes sheet body and above the fixed footer "
+          f"(footerTop-lastBottom="
+          f"{geo['footerTop'] - geo['lastBottom']:.1f}px, "
+          f"scrollTop={geo['scrollTop']:.0f}/{geo['maxScrollTop']:.0f})")
+
 
 
 # ---------------------------------------------------------------------------

@@ -74,6 +74,11 @@ recuperables sin reproducción hasta una acción deliberada permitida.
 - **Teléfono:** los registros de anuncio ganan estado persistente por dispositivo
   **[PROPUESTA — LOCKED en T8]**: `localStorage["herdr.speech.pending.v1"]` (tope 100 +
   overflow visible) para sobrevivir recarga/cierre.
+  - **(Nota UI 2026-10-15):** el panel cliente `#pending-panel` dejó el flujo del
+    documento — movía el layout del cockpit — y vive ahora en una bottom sheet
+    dedicada, abierta desde Ajustes (⚙ → `🔔 Pendientes (N)`); filas y acciones
+    (🔊 Escuchar / ✓ Anunciado / ✕ Descartar) sin cambios. Detalle y evidencia en
+    `hosts/herdr/brain/odd/tasks/pending-notices-in-settings-sheet.md`.
 - **Atribución/época:** `pane_id`+`agent`+`status` ya viajan; la consolidación se keyed por
   sesión y estado con época **[PROPUESTA — LOCKED en T7: `pane_pid` de tmux; cambio de
   `pane_pid` ⇒ época nueva ⇒ no terminales a `expired` visible; sin `pane_pid` ⇒ flag
