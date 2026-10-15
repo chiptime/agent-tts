@@ -1071,7 +1071,10 @@
 
   /* Keyed in-place update (FR10/AC8): sheet rows are reused per pane_id
    * and touched only when their content changed, so the 5s poll can
-   * never swallow a tap or reset the sheet's scroll. */
+   * never swallow a tap or reset the sheet's scroll. Group and subgroup
+   * headers are reused the same way, keyed by data-head, so the grouping
+   * (2026-10-15: state, then "Últimos 30 min" inside each state) never
+   * turns the poll into a full rebuild. */
   function renderHerd(herd) {
     if (!Array.isArray(herd)) herd = [];
     lastHerd = herd;
@@ -1086,13 +1089,22 @@
     }
 
     var existing = {};
+    var existingHeads = {};
     var i, el;
     for (i = 0; i < convList.children.length; i++) {
       el = convList.children[i];
-      existing[el.getAttribute("data-pane")] = el;
+      /* Two keyed families live in the list: rows by pane_id, and the
+       * group/subgroup headers by data-head. Both are reused in place. */
+      var paneAttr = el.getAttribute("data-pane");
+      if (paneAttr) existing[paneAttr] = el;
+      else {
+        var headAttr = el.getAttribute("data-head");
+        if (headAttr) existingHeads[headAttr] = el;
+      }
     }
-    var wanted = [];
+    var rowById = {};
     var seen = {};
+    var seenHeads = {};
     var pickerName = "";
     var pickerSub = "";
     for (i = 0; i < herd.length; i++) {
@@ -1158,20 +1170,68 @@
       if (el.className !== cls) el.className = cls;
       if (el.getAttribute("aria-current") !== ariaNow) el.setAttribute("aria-current", ariaNow);
       if (el.title !== title) el.title = title;
-      wanted.push(el);
+      rowById[id] = el;
       if (id === effective) { pickerName = name; pickerSub = subText; }
     }
+    /* Grouping (2026-10-15): the sheet used to be a flat list, which made
+     * the agent WAITING FOR THE HUMAN as hard to spot as the idle ones.
+     * Headers carry no state and no listener, so they are re-keyed by
+     * data-head and reused exactly like rows are by pane_id. */
+    function headNode(key, cls, text) {
+      var node = existingHeads[key];
+      if (!node) {
+        node = document.createElement("div");
+        node.setAttribute("data-head", key);
+        existingHeads[key] = node;
+      }
+      if (node.className !== cls) node.className = cls;
+      if (node.textContent !== text) node.textContent = text;
+      seenHeads[key] = true;
+      return node;
+    }
+
+    var ordered = [];
+    var sections = window.HerdGroup && typeof window.HerdGroup.groupHerd === "function"
+      ? window.HerdGroup.groupHerd(herd)
+      : null;
+    if (sections) {
+      for (i = 0; i < sections.length; i++) {
+        ordered.push(headNode("g:" + sections[i].key, "conv-group", sections[i].label));
+        var subs = sections[i].subgroups;
+        for (var j = 0; j < subs.length; j++) {
+          if (subs[j].label) {
+            ordered.push(headNode(
+              "g:" + sections[i].key + "/" + subs[j].key, "conv-subgroup", subs[j].label
+            ));
+          }
+          for (var k = 0; k < subs[j].rows.length; k++) {
+            var subRow = rowById[subs[j].rows[k].pane_id];
+            if (subRow) ordered.push(subRow);
+          }
+        }
+      }
+    } else {
+      /* Degraded path: a herd-group.js that did not load must never empty
+       * the switcher, so fall back to the flat list this sheet always was. */
+      for (i = 0; i < herd.length; i++) {
+        if (rowById[herd[i].pane_id]) ordered.push(rowById[herd[i].pane_id]);
+      }
+    }
+
     var stale = [];
     for (i = 0; i < convList.children.length; i++) {
-      if (!seen[convList.children[i].getAttribute("data-pane")]) stale.push(convList.children[i]);
+      el = convList.children[i];
+      var stalePane = el.getAttribute("data-pane");
+      var staleHead = el.getAttribute("data-head");
+      if (stalePane ? !seen[stalePane] : !seenHeads[staleHead]) stale.push(el);
     }
     for (i = 0; i < stale.length; i++) stale[i].remove();
-    var sameOrder = wanted.length === convList.children.length;
-    for (i = 0; sameOrder && i < wanted.length; i++) {
-      if (convList.children[i] !== wanted[i]) sameOrder = false;
+    var sameOrder = ordered.length === convList.children.length;
+    for (i = 0; sameOrder && i < ordered.length; i++) {
+      if (convList.children[i] !== ordered[i]) sameOrder = false;
     }
     if (!sameOrder) {
-      for (i = 0; i < wanted.length; i++) convList.appendChild(wanted[i]);
+      for (i = 0; i < ordered.length; i++) convList.appendChild(ordered[i]);
     }
     /* Picker trigger label: the effective pane's display name, with the
      * workspace as a gray tail ("name · workspace"). */

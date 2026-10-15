@@ -235,6 +235,11 @@ _VERSIONED_REFS = (
     ('src="/approval.js"', 'src="/approval.js?v={v}"'),
     ('src="/reader.js"', 'src="/reader.js?v={v}"'),
     ('src="/toast.js"', 'src="/toast.js?v={v}"'),
+    # herd-group.js loads BEFORE app.js (same reason as consult.js): the
+    # renderer degrades to a flat list when the module is missing, so a
+    # stale cached copy is not fatal — but the grouping must not silently
+    # disappear behind a cached index.
+    ('src="/herd-group.js"', 'src="/herd-group.js?v={v}"'),
     ('href="/manifest.webmanifest"', 'href="/manifest.webmanifest?v={v}"'),
     ('href="/icon.svg"', 'href="/icon.svg?v={v}"'),
 )

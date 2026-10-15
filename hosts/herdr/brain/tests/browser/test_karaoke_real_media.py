@@ -88,7 +88,7 @@ class RealMediaApp:
                       for name in ("short.mp3", "sample.mp3", "long.mp3")}
         names = ("index.html", "app.js", "karaoke.js", "toast.js", "reader.js", "speech.js",
                  "announce.js", "approval.js", "consult.js", "endpointing.js", "vad.js",
-                 "manifest.webmanifest", "icon.svg")
+                 "herd-group.js", "manifest.webmanifest", "icon.svg")
         self.static = {"/" + name: STATIC / name for name in names}
         self.static["/"] = STATIC / "index.html"
         self.api = {

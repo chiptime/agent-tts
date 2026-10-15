@@ -263,7 +263,8 @@ class KaraokeHarness:
         self.static = {"/": "index.html", "/index.html": "index.html"}
         for name in (
             "app.js", "endpointing.js", "vad.js", "approval.js", "reader.js",
-            "toast.js", "announce.js", "speech.js", "consult.js", "sw.js",
+            "toast.js", "announce.js", "speech.js", "consult.js",
+            "herd-group.js", "sw.js",
             "manifest.webmanifest", "icon.svg", "karaoke.js",
         ):
             if (STATIC / name).is_file():

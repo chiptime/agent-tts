@@ -865,6 +865,19 @@ class TestStatic:
         assert 'src="/announce.js"' in html
         assert html.index('src="/announce.js"') < html.index('src="/app.js')
 
+    def test_index_loads_herd_group_module_before_app(self, settings, audio_dir):
+        """The sheet grouping module must be in the page BEFORE app.js
+        consumes window.HerdGroup (same order contract as announce.js).
+        Unlike the announcer, a missing module is not fatal — the renderer
+        degrades to the flat list — so this pins the wiring, not a hard
+        failure mode. The asset is versioned through _VERSIONED_REFS, so
+        the served ref carries a ?v= query."""
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        client = TestClient(create_app(settings=cfg, llm_factory=lambda c, t: FakeLLM()))
+        html = client.get("/").text
+        assert 'src="/herd-group.js?v=' in html
+        assert html.index('src="/herd-group.js') < html.index('src="/app.js')
+
     def test_announce_js_served_by_static_mount(self, settings, audio_dir):
         """/announce.js resolves through the catch-all static mount
         (server.py mounts StaticFiles at "/" last) with JS content type
