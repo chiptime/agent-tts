@@ -107,6 +107,63 @@ metadata{}, always[], tool{messageID, callID}}`.
       Still worth one confirmation on a dialog a REAL agent raised, rather
       than one created through the API.
 
+## Superseded by the Panel port (2026-10-15)
+
+The HTTP permission API is NOT how a real dialog is answered in opencode
+1.18.32: opencode runs **two coexisting permission systems** — a V1 registry
+owned by the CLI/TUI and a V2 one owned by the service layer — and a real
+dialog lives in the TUI's, which no HTTP route exposes (all three lists were
+empty while a real dialog waited). The code below stays on the branch because
+it is a correct client for V2, and it becomes useful again if that change
+lands; it is NOT the shape this feature needs today.
+
+The working reference is **Panel**, a Herdr plugin already on this machine
+(`~/.config/herdr/plugins/github/herdr.panel-plugin`, bridge on
+127.0.0.1:8787). It has no opencode recipe yet (its verified families are
+claude, codex, omp, agy, grok; opencode is explicitly "tomorrow"), but its
+MECHANISM is the thing to port:
+
+- `web/src/lib/harness/guard.ts` — the safety skeleton, which is what this
+  feature was missing:
+  - **fresh read before every key**: re-read the pane and re-derive the
+    dialog model; never act on the render the user tapped.
+  - **the signature is the load-bearing check**, not the revision: Herdr's
+    `pane.read.revision` is a stub upstream (always 0, verified live
+    2026-07-05), so equality of the derived region — highlight included — is
+    what refuses a keystroke aimed at a dialog that has since been replaced.
+  - **two comparators**: a committing key (enter) requires strict equality;
+    a navigation key (arrow) uses a weaker identity check, because a moved
+    highlight is the EXPECTED result of the previous arrow, not drift.
+  - **three-valued polling** (8 × 350 ms) between steps: `ok` / `drifted`
+    (identity changed or dialog gone ⇒ NO further key — a blind stroke would
+    hit whatever replaced it) / `timeout` (same dialog, state never came ⇒ a
+    bounded retry of the same key is safe).
+  - **never synthesise a digit**: `.adr/0009` — the keys sent are always the
+    ones the screen's own footer named.
+- `web/src/lib/harness/menu-model.ts` — the neutral model: actions carry the
+  footer's own verb and the exact keys it named; the `signature` must be
+  non-empty and must change when the region's text changes; `nav` is set only
+  where the screen itself advertised the arrows.
+- `sanitizeTypedText` — collapse whitespace, strip C0/C1 controls before
+  typing into a focused TUI (ESC would cancel the dialog, BEL/ETX worse).
+
+The opencode dialog observed live: options `Allow once / Always allow /
+Reject`, footer `⇆ select   enter confirm`, and a bare `enter` opened the
+**Always allow** confirmation page — so the default highlight is NOT the
+safest option and a naive pad would commit the riskiest one.
+
+### Tasks for the port
+
+- [ ] T5 — port the guard: fresh read, signature equality (commit) vs
+      identity (nav), three-valued polling, sanitised text.
+- [ ] T6 — an opencode dialog adapter: parse the footer's own keys, derive
+      the option rows WITH the highlight marker, expose a signature.
+- [ ] T7 — closed-loop choreography (walk to the target row, re-reading each
+      step) + a PWA-only endpoint; `send-keys` keys are `left`/`right`/`enter`
+      (`arrowleft`/`ArrowLeft` are rejected by herdr with `invalid_key`).
+- [ ] T8 — live recipe derivation with Panel's method: ONE key at a time,
+      capturing the buffer, never committing until the mapping is known.
+
 ## Log
 
 - **L1** (verbatim, 2026-10-15): "necesito añadir en brain un input para escribir respuestas"
