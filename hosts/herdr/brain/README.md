@@ -319,16 +319,21 @@ first `read_screen` and state what would be confirmed — never a blind yes.
 
 ### Typed reply to the waiting agent
 
-When the pane you are viewing is the one waiting (a detected prompt, or a
-`blocked` status), the PWA shows a text input under the pending banner.
-Submitting it delivers **your own words** straight to that exact pane
+When the pane you are viewing is showing a prompt, the PWA offers a text
+input that delivers **your own words** straight to that exact pane
 (`POST /pane/reply` with `{pane_id, text}`): no LLM turn and no approval
 gate, because the text comes from the keyboard rather than from speech or
 the model. The target must exist — an unknown `pane_id` is a `404` and is
 never redirected to the focused pane (a reply silently landing in the wrong
-agent would be hard to undo), a pane that rejects the prompt is a `409`, and
-any herdr failure is a `502`. `text` is required, must not be blank, and is
-capped at 8000 chars.
+agent would be hard to undo), and any herdr failure is a `502`. `text` is
+required, must not be blank, and is capped at 8000 chars.
+
+The input is **not** offered for a pane with `blocked` status, and a `409`
+says why: `herdr agent prompt` refuses an agent already waiting at an
+approval or question dialog (`agent_blocked`) *before writing any input*, so
+text sent there would never arrive. That dialog is answered with key
+presses (`herdr agent send-keys`), which the PWA does not synthesize — it
+shows a notice telling you to answer it from the terminal instead.
 
 The brain also serves its mobile PWA same-origin at `/` (static assets in
 `src/herdr_brain/static/`, mounted after the API routes): no CORS anywhere.
