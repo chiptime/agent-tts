@@ -5,6 +5,7 @@
 | **Product** | herdr-brain (voice-assistant PWA) |
 | **Status** | Approved for implementation (design validated via interactive mockup) |
 | **Date** | 2026-09-23 |
+| **Amended** | 2026-10-16 — the cockpit body is now tabbed (§4.1); FR3's "~110px" terminal strip no longer applies |
 | **Effort** | M (~600–800 changed lines, 2 files, no server changes) |
 | **Mockup** | `docs/mockups/call-drawer-v2.html` (open in browser; "Actual vs Propuesta v2" switch) |
 
@@ -40,9 +41,9 @@ Phone held or lying on the kitchen counter; wet/gloved hands; one-handed use; sc
 │ Header (status · title · 🔊 ↺)│
 │ ⚠ Pending banner  (always)   │   ← never covered by drawer on ≥600px portrait
 │ Herd strip (chips)           │
-│ AGENT COCKPIT (primary)      │   ← turn list w/ scroll + "ver más" expansion
-│   · transcript turns         │     terminal preview w/ real scroll
-│   · terminal screen          │
+│ AGENT COCKPIT (primary)      │   ← ONE body, TWO tabs — see §4.1
+│   · [Vista del agente]       │     turn list w/ scroll + "ver más" expansion
+│   · [Pantalla]               │     terminal preview w/ real scroll
 │ [pill: call state ▲]         │   ← only while calling & drawer closed
 ├──────────────────────────────┤
 │ Footer  ⏸  📞/🔴  ⏹          │   ← always visible & tappable
@@ -54,7 +55,28 @@ Phone held or lying on the kitchen counter; wet/gloved hands; one-handed use; sc
    · user ↔ brain bubbles
 ```
 
-The existing full-screen sheet (`#sheet`, "Conversación"/"Pantalla" tabs) is **removed** — the cockpit absorbs both functions.
+The existing full-screen sheet (`#sheet`, "Conversación"/"Pantalla" tabs) is **removed** — the cockpit absorbs both functions. The cockpit body itself later split into two tabs (§4.1).
+
+### 4.1 Amendment — the cockpit body is tabbed (2026-10-15)
+
+The cockpit body no longer stacks the transcript over the terminal in one
+scroll. It is ONE surface with TWO tabs — **"Vista del agente"**
+(`#glance-turns`) and **"Pantalla"** (`#view-screen`) — with exactly one panel
+shown at a time, so each surface gets real height. **FR3's "~110px" strip no
+longer applies**: the terminal is no longer a permanent, cramped strip under
+the turns. The chosen tab is remembered in `localStorage`
+(`herdr-brain-agent-tab`).
+
+| | |
+|---|---|
+| **Task doc** | `odd/tasks/cockpit-tabs.md` |
+| **Commit** | `a3cd8d8` — feat(brain): split the cockpit body into agent/screen tabs |
+| **Markup** | `#agent-tabs` (`role="tablist"`) + `#agent-panel` / `#screen-panel` (`role="tabpanel"`), roving `tabindex`, ArrowLeft/ArrowRight |
+| **Tests** | `tests/browser/test_agent_tabs.py`, `tests/js/agent-tabs-wiring.test.js`, `tests/test_server.py::TestStatic::test_index_agent_view_tabs` |
+
+Everything else in this PRD (drawer, pill, footer, pending banner, z-order,
+keyed in-place updates) is unaffected: swapping tabs only changes which panel
+renders.
 
 ## 5. Functional Requirements
 
@@ -62,9 +84,9 @@ The existing full-screen sheet (`#sheet`, "Conversación"/"Pantalla" tabs) is **
 
 - **FR1.** Glance panel turn list: `overflow-y: auto` inside a bounded flex area; renders the **agent's session turns from the existing `GET /conversation` endpoint** (20 turns, 4000-char clip) instead of the 3-turn `/view` tail. `/view` continues to feed status chip, pending banner and terminal preview.
 - **FR2.** Turns longer than ~4 lines render clamped with a full-width **"ver más" `<button aria-expanded>`** row (never an inline span). Expansion fetches/uses the already-delivered 4000-char text and expands inline; "ver menos" collapses. Expansion + panel scroll position **survive the 5s poll** (see FR10).
-- **FR3.** Terminal preview: real scroll (~110px), fade mask on top edge. No hard clip.
+- **FR3.** Terminal preview: real scroll (~110px), fade mask on top edge. No hard clip. **Amended 2026-10-16 (§4.1):** the terminal is the "Pantalla" tab of the cockpit body, so it is no longer a ~110px strip — it takes the full body height when its tab is selected.
 - **FR4.** Pending banner: keeps the three current kinds (`question`/`error`/`permission`, distinct colors). When more than one agent is pending, banner aggregates ("2 agentes esperan tu OK"); tapping selects that agent. While the drawer is open on short screens (see FR13), a compact pending strip renders inside the drawer header area.
-- **FR5.** The full-screen sheet, its tabs, `openSheet`/`loadSheetConversation`/`renderSheetConversation` and CSS are deleted. Vestigial `lastViewJson` cache is deleted.
+- **FR5.** The full-screen sheet, its tabs, `openSheet`/`loadSheetConversation`/`renderSheetConversation` and CSS are deleted. Vestigial `lastViewJson` cache is deleted. (The cockpit tabs added later in §4.1 are a different thing: they live in the base screen, not in a sheet.)
 
 ### 5.2 Call drawer
 
