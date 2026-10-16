@@ -412,8 +412,10 @@
     #pane-reply button { padding: 10px 16px; font-weight: 600; background: var(--chip-bg); color: var(--text); }
     #pane-reply button:disabled { opacity: 0.55; }
     /* Shown instead of the input when the agent waits at a dialog: herdr
-     * refuses a prompt to a blocked agent, and that dialog is answered
-     * with key presses. */
+     * refuses a TEXT prompt to a blocked agent (agent_blocked, before any
+     * input is written), so its dialog is answered with KEYS (POST
+     * /pane/keys). The pad is deliberately explicit — it never auto-selects
+     * an option, so you always navigate and confirm yourself. */
     #pane-reply-keys {
       margin: 0 var(--sp-3) var(--sp-2);
       padding: var(--sp-2) var(--sp-3);
@@ -423,6 +425,26 @@
       font-size: var(--fs-xs);
       line-height: 1.35;
     }
+    .pane-keys {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: var(--sp-2);
+    }
+    .pane-keys button {
+      flex: 1 1 auto;
+      min-width: 46px;
+      min-height: 44px;
+      padding: 6px 10px;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--bg);
+      color: var(--text);
+    }
+    .pane-keys button:disabled { opacity: 0.55; }
     /* ── COCKPIT VIEW TABS ───────────────────────────────────────────
      * "Vista del agente" (transcript turns) and "pantalla" (terminal
      * preview) are two tabs of ONE cockpit body: one is shown at a time,
@@ -1463,7 +1485,18 @@
       <input id="pane-reply-input" type="text" placeholder="Responde al agente…" autocomplete="off" aria-label="Respuesta al agente">
       <button id="pane-reply-send" type="submit">Enviar</button>
     </form>
-    <div id="pane-reply-keys" class="hidden">El agente espera en un diálogo — respóndele con teclas desde la terminal.</div>
+    <div id="pane-reply-keys" class="hidden">
+      <span>El agente espera — respóndele con teclas:</span>
+      <div id="pane-keys" class="pane-keys" role="group" aria-label="Teclas para responder al diálogo">
+        <button type="button" data-key="left" aria-label="Izquierda">←</button>
+        <button type="button" data-key="right" aria-label="Derecha">→</button>
+        <button type="button" data-key="up" aria-label="Arriba">↑</button>
+        <button type="button" data-key="down" aria-label="Abajo">↓</button>
+        <button type="button" data-key="tab" aria-label="Tabulador">Tab</button>
+        <button type="button" data-key="esc" aria-label="Escape">Esc</button>
+        <button type="button" data-key="enter" aria-label="Intro">Enter</button>
+      </div>
+    </div>
     <div id="agent-tabs" class="agent-tabs" role="tablist" aria-label="Vistas del agente">
       <button id="tab-agent" class="agent-tab" type="button" role="tab" aria-selected="true" aria-controls="agent-panel" tabindex="0"><span id="glance-label">Vista del agente</span></button>
       <button id="tab-screen" class="agent-tab" type="button" role="tab" aria-selected="false" aria-controls="screen-panel" tabindex="-1">Pantalla</button>

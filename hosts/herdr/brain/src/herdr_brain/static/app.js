@@ -56,6 +56,7 @@
   var replyInput = $("pane-reply-input");
   var replySend = $("pane-reply-send");
   var replyKeys = $("pane-reply-keys");
+  var keysPad = $("pane-keys");
   var viewScreen = $("view-screen");
   var convList = $("conv-list");
   var herdNote = $("herd-note");
@@ -1470,6 +1471,64 @@
       })
       .then(function () { replySend.disabled = false; });
   });
+
+  /* ---------------- key pad: answer a BLOCKED agent's dialog --------------
+   * A pane waiting at an approval/question dialog cannot be answered with
+   * text — herdr refuses the prompt before writing anything — so its dialog
+   * is answered with keys (POST /pane/keys). The pad is deliberately
+   * explicit: it never auto-selects an option, so the choice is always the
+   * user's. One key per tap keeps each request small and the effect legible.
+   * The target is read at TAP time from the pane on screen, matching the
+   * reply input's anti-retarget discipline. */
+  var keysBusy = false;
+
+  function setKeysPadBusy(busy) {
+    if (!keysPad) return;
+    var buttons = keysPad.querySelectorAll("button");
+    for (var i = 0; i < buttons.length; i++) buttons[i].disabled = busy;
+  }
+
+  function sendKey(button) {
+    var key = button.getAttribute("data-key");
+    var paneId = lastEffectivePane || selectedPane;
+    if (!key || !paneId || keysBusy) return;
+    keysBusy = true;
+    setKeysPadBusy(true);
+    fetch("/pane/keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pane_id: paneId, keys: [key] })
+    })
+      .then(function (resp) {
+        if (resp.ok) {
+          /* The dialog usually closes or advances here: refresh now instead
+           * of waiting a whole 5s poll beat for the cockpit to catch up. */
+          refreshState();
+          return null;
+        }
+        return resp.json().then(
+          function (body) { return body && body.detail; },
+          function () { return null; }
+        ).then(function (detail) {
+          showToast("No se pudo enviar la tecla: " + (typeof detail === "string" ? detail : "error " + resp.status), 6000);
+        });
+      })
+      .catch(function () {
+        showToast("No se pudo enviar la tecla: sin conexión con el brain", 6000);
+      })
+      .then(function () {
+        keysBusy = false;
+        setKeysPadBusy(false);
+      });
+  }
+
+  if (keysPad) {
+    keysPad.addEventListener("click", function (event) {
+      var node = event.target;
+      var button = node && node.closest ? node.closest("button[data-key]") : null;
+      if (button) sendKey(button);
+    });
+  }
 
   pendingBanner.addEventListener("click", function () {
     if (pendingBannerTapPane && pendingBannerTapPane !== selectedPane) {

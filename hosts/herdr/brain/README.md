@@ -331,9 +331,23 @@ required, must not be blank, and is capped at 8000 chars.
 The input is **not** offered for a pane with `blocked` status, and a `409`
 says why: `herdr agent prompt` refuses an agent already waiting at an
 approval or question dialog (`agent_blocked`) *before writing any input*, so
-text sent there would never arrive. That dialog is answered with key
-presses (`herdr agent send-keys`), which the PWA does not synthesize — it
-shows a notice telling you to answer it from the terminal instead.
+text sent there would never arrive.
+
+### Key pad: answering a blocked agent's dialog
+
+That dialog is answered with **keys** instead, through `POST /pane/keys`
+with `{pane_id, keys}` — the one surface herdr documents for it
+(`herdr agent send-keys`, which validates every key before writing a byte).
+When the viewed pane is `blocked`, the PWA swaps the text input for a key
+pad: `←` `→` `↑` `↓` `Tab` `Esc` `Enter`, one deliberate key per tap. The
+pad never auto-selects an option, so choosing and confirming stay your
+decision — it will not answer a permission prompt for you.
+
+`keys` is a **closed set** (`up`, `down`, `left`, `right`, `enter`, `esc`,
+`tab`); anything else, an empty list, or more than 8 keys is a `422` before
+any CLI work. An unknown `pane_id` is a `404` and is never redirected —
+answering the *wrong* agent's permission dialog would be silent and hard to
+undo. Any herdr failure is a `502`.
 
 The brain also serves its mobile PWA same-origin at `/` (static assets in
 `src/herdr_brain/static/`, mounted after the API routes): no CORS anywhere.
