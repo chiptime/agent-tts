@@ -238,3 +238,22 @@ class TestHerdrClient:
         client = HerdrClient(make_settings(), runner=runner)
         with pytest.raises(HerdrError, match="agent_not_found"):
             client.send_prompt("p1", "hello")
+
+    def test_send_prompt_raises_when_the_error_carries_no_envelope(self):
+        """A non-zero exit with unparseable stderr must stay a FAILURE.
+
+        Only a recognized code turns an exit into a submission outcome; a
+        crash whose stderr is plain text (or empty) must never be reported
+        as a delivered prompt, which would invite the resend this whole
+        fix exists to prevent.
+        """
+        runner = FakeRunner(results=[(1, "", "herdr exploded")])
+        client = HerdrClient(make_settings(), runner=runner)
+        with pytest.raises(HerdrError, match="herdr exploded"):
+            client.send_prompt("p1", "hello")
+
+    def test_send_prompt_defaults_to_done_when_a_clean_exit_has_no_output(self):
+        """Exit 0 with empty stdout keeps the legacy default (``done``)."""
+        runner = FakeRunner(results=[(0, "", "")])
+        client = HerdrClient(make_settings(), runner=runner)
+        assert client.send_prompt("p1", "hello") == {"ok": True, "status": "done", "output": ""}
