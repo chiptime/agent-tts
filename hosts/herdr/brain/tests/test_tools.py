@@ -205,11 +205,13 @@ class TestSendToSession:
         assert result["delivered"] is True
         assert "note" not in result
 
-    def test_timeout_result_carries_delivery_truth(self, settings, make_stub):
-        stub = make_stub(prompt={"ok": False, "status": "timeout", "output": "timeout"})
+    @pytest.mark.parametrize("status", ["timeout", "stalled"])
+    def test_expired_completion_wait_carries_delivery_truth(self, settings, make_stub, status):
+        """Both mean the prompt WAS written; only the wait expired."""
+        stub = make_stub(prompt={"ok": False, "status": status, "output": status})
         tools = BrainTools(settings, herdr=stub)
         result = json.loads(tools.send_to_session("long task"))
-        assert result["status"] == "timeout"
+        assert result["status"] == status
         assert result["delivered"] is True
         assert "note" in result
         assert "still working" in result["note"]
