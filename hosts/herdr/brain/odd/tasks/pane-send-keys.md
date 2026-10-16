@@ -79,20 +79,31 @@ Hechos verificados:
 ## Tasks
 
 - **T1** (S1, S2) — `herdr.py`: `send_keys` + allowlist + validación previa.
-  *Ruta:* inline. *Estado:* pendiente.
+  *Ruta:* inline. *Estado:* hecho (`e0be868`).
 - **T2** (S3) — `tools.py`: `send_keys_to_pane` (misma disciplina que
-  `reply_to_pane`). *Ruta:* inline. *Estado:* pendiente.
+  `reply_to_pane`). *Ruta:* inline. *Estado:* hecho (`e0be868`).
 - **T3** (S4) — `server.py`: `POST /pane/keys` + modelo con validador de lista.
-  *Ruta:* inline. *Estado:* pendiente.
+  *Ruta:* inline. *Estado:* hecho (`3fbb0f9`).
 - **T4** (S5, S6, S7) — `index.html` + `app.js`: teclado, estados, target fijo.
-  *Ruta:* inline. *Estado:* pendiente.
-- **T5** (S1–S7) — tests: `test_herdr.py`, `test_tools.py`, `test_server.py`,
-  `tests/js/` (forma del cableado) y `tests/browser/` (visibilidad bloqueado vs
-  no bloqueado). *Ruta:* inline. *Estado:* pendiente.
-- **T6** (S8) — docs: aviso, `README.md`, PRD de la limitación. *Ruta:* inline.
-  *Estado:* pendiente.
+  *Ruta:* inline. *Estado:* hecho (`3fbb0f9`), y **corregido** en `bf5de8e`
+  tras el hallazgo del verificador (ver L8).
+- **T5** (S1–S7) — tests: `test_herdr.py::TestSendKeys`, `test_tools_keys.py`,
+  `test_server_keys.py`, `tests/browser/test_pane_reply_visibility.py`,
+  `tests/browser/test_pane_keys.py` (carrera S7 + guard S6) y
+  `tests/browser/test_pane_keys_races.py` (interleavings del verificador).
+  *Ruta:* inline. *Estado:* hecho. **Desviación declarada:** no se escribió un
+  test en `tests/js/`; el comportamiento equivalente (orden de la allowlist,
+  un POST por tap, guard de en-vuelo) queda pinneado end-to-end en el navegador,
+  que es evidencia más fuerte que una unitaria de forma. `node --test tests/js/`
+  sigue en 391 verde.
+- **T6** (S8) — docs: aviso, `README.md`, PRD del cockpit §4.2. *Ruta:* inline.
+  *Estado:* hecho (`3fbb0f9` + `bf5de8e`).
 - **T7** — **verificador independiente** sobre el diff (alto riesgo: item 2).
-  *Ruta:* delegada. *Estado:* pendiente.
+  *Ruta:* delegada. *Estado:* **hecho**, con dos rondas acotadas. Ronda 1:
+  S1–S6 cumplidos; **2 blockers** (S7 y S8). Corrección en `bf5de8e`. Ronda 2
+  (recheck acotado solo a esos blockers): **ambos resueltos, sin blockers
+  nuevos**, y confirmó que el test de regresión **no es vacuo** (falla en el
+  pre-fix con un POST real al pane equivocado).
 
 ## Log
 
@@ -131,3 +142,14 @@ Hechos verificados:
   `/view` guardado (`lastView`), y `renderHerd` re-renderiza con ese mismo
   payload en vez de con el objeto `pending` suelto. Regresión en
   `tests/browser/test_pane_keys.py`.
+- **L9** — recheck acotado (2026-10-16): el mismo verificador revalidó **solo**
+  los dos blockers. **Ambos resueltos; ningún blocker nuevo.** Además comprobó
+  que el test de regresión **no es vacuo**: copiado sin cambios al head
+  pre-fix (`3fbb0f9`) **falla**, con un POST interceptado real
+  `{"pane_id":"w1:p9","keys":["enter"]}` mientras la pantalla seguía siendo la
+  de `w1:p2`. Aportó tres interleavings más fuertes (switch explícito antes y
+  después del nuevo `/view`; respuesta vieja que llega la última; request ya
+  lanzado que no cambia de destino), commiteados como
+  `tests/browser/test_pane_keys_races.py`. Su cuarto probe (afirmar prosa
+  exacta dentro del PRD) se descartó a propósito: pinnea redacción, no
+  comportamiento, y rompería con cualquier edición de copy.
