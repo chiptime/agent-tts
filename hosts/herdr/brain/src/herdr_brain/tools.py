@@ -473,7 +473,7 @@ class BrainTools:
             "delivered": status != "blocked",
             "output_excerpt": excerpt,
         }
-        if status == "timeout":
+        if status in ("timeout", "stalled"):
             payload["note"] = (
                 "the prompt WAS delivered and the agent is still working on it; "
                 "only the completion wait expired — never resend or offer to "
