@@ -423,13 +423,53 @@
       font-size: var(--fs-xs);
       line-height: 1.35;
     }
-    #glance-label {
+    /* ── COCKPIT VIEW TABS ───────────────────────────────────────────
+     * "Vista del agente" (transcript turns) and "pantalla" (terminal
+     * preview) are two tabs of ONE cockpit body: one is shown at a time,
+     * so each surface gets real height — the terminal used to be a
+     * permanent, cramped 110px strip under the turns. */
+    .agent-tabs {
       flex: 0 0 auto;
-      padding: 8px 12px 2px;
-      font-size: 11px;
-      letter-spacing: 1px;
-      text-transform: uppercase;
+      display: flex;
+      gap: 4px;
+      padding: 6px 8px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .agent-tab {
+      flex: 1 1 0;
+      min-width: 0;
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 6px 10px;
+      border: 1px solid transparent;
+      border-bottom: 0;
+      border-radius: 10px 10px 0 0;
+      background: transparent;
       color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .5px;
+      text-transform: uppercase;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .agent-tab[aria-selected="true"] {
+      background: var(--chip-bg);
+      border-color: var(--line);
+      color: var(--text);
+    }
+    .agent-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+    /* The label now lives INSIDE its tab: it owns no box of its own. */
+    #glance-label { font: inherit; color: inherit; overflow: hidden; text-overflow: ellipsis; }
+    /* The shown panel is the cockpit body: it scrolls its own surface. */
+    .agent-panel {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
     }
     #glance-turns {
       flex: 1;
@@ -579,7 +619,8 @@
       text-align: center;
     }
     .gscreen-wrap {
-      flex: 0 0 auto;
+      flex: 1;
+      min-height: 0;
       position: relative;
       padding: 0 12px 10px;
     }
@@ -609,7 +650,8 @@
       font: var(--fs-xs)/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
       white-space: pre-wrap;
       word-break: break-word;
-      height: 110px;
+      flex: 1;
+      min-height: 0;
       overflow-y: auto;
       overscroll-behavior: contain;
     }
@@ -692,6 +734,7 @@
       #agent-view { margin: var(--sp-2) 10px 0; }
       #glance-turns { padding: 6px 8px; }
       .gturn { padding: 7px 10px; }
+      .agent-tabs { padding: 6px 6px 0; }
       .gscreen-wrap { padding: 0 10px 10px; }
     }
 
@@ -1421,12 +1464,19 @@
       <button id="pane-reply-send" type="submit">Enviar</button>
     </form>
     <div id="pane-reply-keys" class="hidden">El agente espera en un diálogo — respóndele con teclas desde la terminal.</div>
-    <span id="glance-label">Vista del agente</span>
-    <div id="glance-turns"></div>
-    <div id="glance-empty" class="hidden">Sin conversación del agente todavía</div>
-    <div class="gscreen-wrap hidden">
-      <span class="glabel">pantalla</span>
-      <pre id="view-screen" class="view-screen"></pre>
+    <div id="agent-tabs" class="agent-tabs" role="tablist" aria-label="Vistas del agente">
+      <button id="tab-agent" class="agent-tab" type="button" role="tab" aria-selected="true" aria-controls="agent-panel" tabindex="0"><span id="glance-label">Vista del agente</span></button>
+      <button id="tab-screen" class="agent-tab" type="button" role="tab" aria-selected="false" aria-controls="screen-panel" tabindex="-1">Pantalla</button>
+    </div>
+    <div id="agent-panel" class="agent-panel" role="tabpanel" aria-labelledby="tab-agent" tabindex="0">
+      <div id="glance-turns"></div>
+      <div id="glance-empty" class="hidden">Sin conversación del agente todavía</div>
+    </div>
+    <div id="screen-panel" class="agent-panel hidden" role="tabpanel" aria-labelledby="tab-screen" tabindex="0">
+      <div class="gscreen-wrap hidden">
+        <span class="glabel">pantalla</span>
+        <pre id="view-screen" class="view-screen"></pre>
+      </div>
     </div>
   </section>
 

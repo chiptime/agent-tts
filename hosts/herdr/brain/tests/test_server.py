@@ -821,6 +821,14 @@ class TestTts:
         assert resp.status_code == 502
 
 
+def _element_tag(html: str, element_id: str) -> str:
+    """The opening tag carrying ``id="<element_id>"`` — attribute checks
+    that never pin the surrounding markup order."""
+    idx = html.index(f'id="{element_id}"')
+    start = html.rindex("<", 0, idx)
+    return html[start:html.index(">", idx) + 1]
+
+
 class TestStatic:
     """The PWA is served same-origin from the brain server (zero CORS)."""
 
@@ -934,6 +942,47 @@ class TestStatic:
         assert "Vista del agente" in html
         assert "Enviar" in html
         assert "Escribe en su lugar…" in html
+
+    def test_index_agent_view_tabs(self, settings, audio_dir):
+        """The cockpit body is ONE surface with TWO tabs ("vista del
+        agente" / "pantalla"): exactly one panel shows at a time, instead
+        of the transcript stacked over the 110px terminal strip. Pins the
+        tablist/tab/tabpanel contract and which panel owns which surface."""
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        client = TestClient(create_app(settings=cfg, llm_factory=lambda c, t: FakeLLM()))
+        html = client.get("/").text
+
+        view_start = html.index('id="agent-view"')
+        view_slice = html[view_start:html.index("</section>", view_start)]
+
+        assert 'role="tablist"' in _element_tag(html, "agent-tabs")
+
+        tab_agent = _element_tag(html, "tab-agent")
+        assert 'role="tab"' in tab_agent
+        assert 'aria-selected="true"' in tab_agent  # agent view is the default tab
+        assert 'aria-controls="agent-panel"' in tab_agent
+
+        tab_screen = _element_tag(html, "tab-screen")
+        assert 'role="tab"' in tab_screen
+        assert 'aria-selected="false"' in tab_screen
+        assert 'aria-controls="screen-panel"' in tab_screen
+
+        agent_panel = _element_tag(html, "agent-panel")
+        assert 'role="tabpanel"' in agent_panel
+        assert "hidden" not in agent_panel  # the default tab is shown
+
+        screen_panel = _element_tag(html, "screen-panel")
+        assert 'role="tabpanel"' in screen_panel
+        assert "hidden" in screen_panel  # the other tab starts hidden
+
+        # Each panel owns one surface: turns inside #agent-panel, terminal
+        # inside #screen-panel — never both stacked in one body.
+        order = [
+            'id="agent-tabs"', 'id="agent-panel"', 'id="glance-turns"',
+            'id="screen-panel"', 'id="view-screen"',
+        ]
+        positions = [view_slice.index(marker) for marker in order]
+        assert positions == sorted(positions), positions
 
     def test_static_assets_served(self, settings, audio_dir):
         cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
