@@ -382,7 +382,7 @@ class TestSelection:
 
         original_read = stub.read_screen
 
-        def read_screen(pane_id, n_lines=None):
+        def read_screen(pane_id, n_lines=None, as_ansi=False):
             if pane_id == "w1:p2":
                 return "Continue with deploy? (y/n)"
             return original_read(pane_id, n_lines=n_lines)

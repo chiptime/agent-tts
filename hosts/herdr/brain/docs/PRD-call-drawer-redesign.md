@@ -88,6 +88,15 @@ input). So the cockpit swaps the reply input for a **key pad** — `←` `→` `
 confirming stay the user's decision; it will not answer a permission prompt
 for you.
 
+The pad is not blind. While the pane is `blocked`, `/view` also carries
+**`screen_runs`**: the screen WITH its colour and weight, read through
+`herdr agent read --format ansi` and emitted as JSON runs (`{t, fg?, bg?, b?}`).
+"Which option of the dialog is selected" exists ONLY in that styling, so
+reading the plain text threw the signal away and left the operator pressing
+keys without knowing what they would confirm. The PWA paints the runs with
+`createElement` + `textContent`: faithful, interpreting nothing, and unable to
+let terminal output inject markup.
+
 The pad's target is bound to the pane whose `/view` payload is on display,
 **never** to the live focus: a `/herd` poll can move the focus while a `/view`
 response is still in flight, and answering the dialog of a pane you are not

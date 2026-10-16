@@ -921,14 +921,14 @@ class TestStatic:
         )
         tools = BrainTools(settings, herdr=make_stub(agents=[active_agent, other]))
         view = tools.agent_view("w1:p2")
-        assert set(view.keys()) == {"status", "transcript", "screen", "pending"}
+        assert set(view.keys()) == {"status", "transcript", "screen", "screen_runs", "pending"}
         assert view["status"]["active"] is True
         assert view["status"]["pane_id"] == "w1:p2"
         assert set(view["pending"].keys()) == {"detected", "kind", "excerpt"}
         # Even on total read failure the keys exist (never an absent field).
         tools_fail = BrainTools(settings, herdr=make_stub(agents=[other], fail_screen=True))
         view_fail = tools_fail.agent_view("w1:p2")
-        assert set(view_fail.keys()) == {"status", "transcript", "screen", "pending"}
+        assert set(view_fail.keys()) == {"status", "transcript", "screen", "screen_runs", "pending"}
 
     def test_index_spanish_labels(self, settings, audio_dir):
         """User-facing labels are Spanish (single Spanish-speaking owner)."""

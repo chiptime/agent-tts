@@ -173,7 +173,7 @@ class TestReadTranscript:
         out = tools.read_transcript()
         assert out.startswith("[transcript unavailable")
         assert "visible text" in out
-        assert stub.screen_calls == [{"pane_id": active_agent.pane_id, "n_lines": None, "source": "visible"}]
+        assert stub.screen_calls == [{"pane_id": active_agent.pane_id, "n_lines": None, "source": "visible", "as_ansi": False}]
 
     def test_no_active_agent(self, settings, make_stub):
         tools = BrainTools(settings, herdr=make_stub(agents=[]))
@@ -190,6 +190,41 @@ class TestReadScreen:
     def test_screen_failure_reported(self, settings, make_stub):
         tools = BrainTools(settings, herdr=make_stub(fail_screen=True))
         assert tools.read_screen().startswith("error reading screen")
+
+
+class TestViewedScreenRuns:
+    """A blocked pane's dialog reaches the PWA with its styling intact."""
+
+    BLOCKED = AgentInfo(
+        pane_id="w1:p9",
+        agent="opencode",
+        status="blocked",
+        session_kind="id",
+        session_value="ses_blocked",
+        cwd="/repo",
+        title="Blocked",
+        focused=True,
+    )
+
+    def test_a_blocked_pane_carries_the_styled_screen(self, settings, make_stub):
+        stub = make_stub(agents=[self.BLOCKED])
+        tools = BrainTools(settings, herdr=stub)
+
+        view = tools.agent_view("w1:p9")
+
+        assert view["screen_runs"] == [
+            [{"t": "Allow once", "bg": "#3c3c3c"}, {"t": " Allow always Reject"}]
+        ]
+        # Plain read first (it feeds the banner), styled read only because the
+        # pane turned out to be blocked.
+        assert [call["as_ansi"] for call in stub.screen_calls] == [False, True]
+
+    def test_a_working_pane_carries_no_styled_screen(self, settings, make_stub):
+        stub = make_stub()
+        tools = BrainTools(settings, herdr=stub)
+
+        assert tools.agent_view().get("screen_runs") is None
+        assert [call["as_ansi"] for call in stub.screen_calls] == [False]
 
 
 class TestSendToSession:
@@ -451,7 +486,7 @@ class TestTargeting:
         stub = make_stub(agents=[active_agent, other], screen="other screen")
         tools = BrainTools(settings, herdr=stub)
         assert tools.read_screen(30, target=other) == "other screen"
-        assert stub.screen_calls == [{"pane_id": "w1:p2", "n_lines": 30, "source": "visible"}]
+        assert stub.screen_calls == [{"pane_id": "w1:p2", "n_lines": 30, "source": "visible", "as_ansi": False}]
 
     def test_read_transcript_honors_explicit_target(
         self, settings, make_stub, active_agent, monkeypatch, tmp_path
@@ -494,7 +529,7 @@ class TestTargeting:
         tools = BrainTools(settings, herdr=stub)
         view = tools.agent_view("w1:p2")
         assert view["status"]["pane_id"] == "w1:p2"
-        assert stub.screen_calls == [{"pane_id": "w1:p2", "n_lines": 12, "source": "visible"}]
+        assert stub.screen_calls == [{"pane_id": "w1:p2", "n_lines": 12, "source": "visible", "as_ansi": False}]
 
 
 class TestFullTextReads:
@@ -595,7 +630,7 @@ class TestFullTextReads:
         assert result["pane_id"] == active_agent.pane_id
         assert result["screen"] == "line1\nline2"
         assert stub.screen_calls[0] == {
-            "pane_id": active_agent.pane_id, "n_lines": 120, "source": "recent"
+            "pane_id": active_agent.pane_id, "n_lines": 120, "source": "recent", "as_ansi": False
         }
 
     def test_screen_full_falls_back_to_visible_when_scrollback_empty(
