@@ -196,18 +196,45 @@ class TestHerdrClient:
         with pytest.raises(HerdrError, match="empty"):
             client.send_prompt("p1", "   \n")
 
+    def test_send_prompt_reports_done_on_a_clean_exit(self):
+        runner = FakeRunner(results=[(0, "submitted", "")])
+        client = HerdrClient(make_settings(), runner=runner)
+        result = client.send_prompt("p1", "hello")
+        assert result == {"ok": True, "status": "done", "output": "submitted"}
+
     @pytest.mark.parametrize(
-        ("output", "expected_status", "expected_ok"),
+        ("code", "expected_status"),
         [
-            ("agent_blocked", "blocked", False),
-            ("agent_prompt_stalled", "stalled", False),
-            ("timeout", "timeout", False),
-            ("done", "done", True),
+            ("agent_blocked", "blocked"),
+            ("agent_prompt_stalled", "stalled"),
+            ("timeout", "timeout"),
         ],
     )
-    def test_send_prompt_status_parsing(self, output, expected_status, expected_ok):
-        runner = FakeRunner(results=[(0, output, "")])
+    def test_send_prompt_reads_a_submission_outcome_from_the_error_envelope(
+        self, code, expected_status
+    ):
+        """herdr reports these on STDERR with exit 1 (verified on 0.9.1).
+
+        ``herdr agent prompt --wait`` exits non-zero with an EMPTY stdout
+        and ``{"error": {"code": ...}}`` on stderr when the caller timeout
+        expires — after the prompt was already written to the pane. Reading
+        the exit code as the verdict turns a delivered prompt into a failure
+        and invites a resend that duplicates it.
+        """
+        envelope = json.dumps(
+            {"error": {"code": code, "message": "nope"}, "id": "cli:agent:prompt"}
+        )
+        runner = FakeRunner(results=[(1, "", envelope)])
         client = HerdrClient(make_settings(), runner=runner)
         result = client.send_prompt("p1", "hello")
         assert result["status"] == expected_status
-        assert result["ok"] is expected_ok
+        assert result["ok"] is False
+
+    def test_send_prompt_still_raises_on_an_unrelated_cli_error(self):
+        envelope = json.dumps(
+            {"error": {"code": "agent_not_found", "message": "gone"}, "id": "cli:agent:prompt"}
+        )
+        runner = FakeRunner(results=[(1, "", envelope)])
+        client = HerdrClient(make_settings(), runner=runner)
+        with pytest.raises(HerdrError, match="agent_not_found"):
+            client.send_prompt("p1", "hello")

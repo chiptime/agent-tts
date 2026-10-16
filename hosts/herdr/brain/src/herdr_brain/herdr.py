@@ -24,10 +24,23 @@ from .config import MAX_BACKLOG_LINES, MAX_SCREEN_LINES, Settings
 
 Runner = Callable[..., subprocess.CompletedProcess]
 
-# Well-known failure statuses reported by `herdr agent prompt`.
+# Well-known failure statuses reported by `herdr agent prompt`. They travel
+# in the CLI's JSON error envelope on STDERR with a non-zero exit (verified
+# against herdr 0.9.1), NOT as a status on stdout.
 _PROMPT_BLOCKED = "agent_blocked"
 _PROMPT_STALLED = "agent_prompt_stalled"
 _PROMPT_TIMEOUT = "timeout"
+
+# Those codes describe a SUBMISSION OUTCOME, not a failed invocation: the
+# prompt was either refused before any input (blocked) or already written to
+# the pane (stalled / timeout). Mapping them to a status keeps the exit code
+# from being read as the verdict, which would turn a delivered prompt into a
+# failure and invite a resend that duplicates it.
+_PROMPT_OUTCOME_CODES = {
+    _PROMPT_BLOCKED: "blocked",
+    _PROMPT_STALLED: "stalled",
+    _PROMPT_TIMEOUT: "timeout",
+}
 
 
 class HerdrError(RuntimeError):
@@ -140,7 +153,9 @@ class HerdrClient:
 
     # -- internals ---------------------------------------------------------
 
-    def _run_cli(self, args: List[str], timeout_s: float) -> subprocess.CompletedProcess:
+    def _run_cli(
+        self, args: List[str], timeout_s: float, allow_failure: bool = False
+    ) -> subprocess.CompletedProcess:
         cmd = [self._settings.herdr_bin, *args]
         try:
             proc = self._run(cmd, capture_output=True, text=True, timeout=timeout_s)
@@ -148,7 +163,7 @@ class HerdrClient:
             raise HerdrError(f"herdr timed out after {timeout_s}s: {' '.join(args)}") from exc
         except OSError as exc:
             raise HerdrError(f"failed to execute herdr CLI: {exc}") from exc
-        if proc.returncode != 0:
+        if proc.returncode != 0 and not allow_failure:
             detail = (proc.stderr or proc.stdout or "").strip()
             raise HerdrError(f"herdr exited with {proc.returncode}: {detail}")
         return proc
@@ -280,7 +295,15 @@ class HerdrClient:
         """Submits a prompt and waits for completion.
 
         Uses the verified flags: ``--wait --until done --timeout <ms>``.
-        Returns a dict with ``ok``, ``status`` and ``output``.
+        Returns a dict with ``ok``, ``status`` and ``output``, where status
+        is one of ``done`` | ``blocked`` | ``stalled`` | ``timeout``.
+
+        A submission outcome is NOT a failed invocation. herdr reports
+        ``agent_blocked`` / ``agent_prompt_stalled`` / ``timeout`` as a JSON
+        error envelope on stderr with a non-zero exit; in the last two cases
+        the prompt was already written to the pane, so only the completion
+        wait expired. Raising on the exit code would make a delivered prompt
+        look like a failure. Any OTHER non-zero exit still raises.
         """
         clean = sanitize_prompt_text(text)
         if not clean:
@@ -294,11 +317,41 @@ class HerdrClient:
                 "--timeout", str(effective_ms),
             ],
             timeout_s=effective_ms / 1000 + 30,
+            allow_failure=True,
         )
         output = (proc.stdout or "").strip()
+        if proc.returncode != 0:
+            code = _cli_error_code(proc.stderr, proc.stdout)
+            status = _PROMPT_OUTCOME_CODES.get(code)
+            if status is None:
+                detail = (proc.stderr or proc.stdout or "").strip()
+                raise HerdrError(f"herdr exited with {proc.returncode}: {detail}")
+            return {"ok": False, "status": status, "output": output}
         status = _prompt_status_from_output(output, default="done")
-        ok = proc.returncode == 0 and status == "done"
+        ok = status == "done"
         return {"ok": ok, "status": status, "output": output}
+
+
+def _cli_error_code(stderr: str, stdout: str = "") -> str:
+    """Extracts ``error.code`` from the CLI's JSON error envelope.
+
+    Every herdr failure prints ``{"error": {"code", "message"}, "id"}`` to
+    STDERR and exits non-zero — verified against herdr 0.9.1. Returns ``""``
+    when no envelope can be read (caller falls back to raising).
+    """
+    for raw in (stderr or "", stdout or ""):
+        for line in reversed(raw.splitlines()):
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            error = payload.get("error") if isinstance(payload, dict) else None
+            if isinstance(error, dict) and isinstance(error.get("code"), str):
+                return error["code"]
+    return ""
 
 
 def _prompt_status_from_output(output: str, default: str) -> str:
