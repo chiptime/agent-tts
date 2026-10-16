@@ -257,3 +257,59 @@ class TestHerdrClient:
         runner = FakeRunner(results=[(0, "", "")])
         client = HerdrClient(make_settings(), runner=runner)
         assert client.send_prompt("p1", "hello") == {"ok": True, "status": "done", "output": ""}
+
+
+class TestSendKeys:
+    """The dialog surface: ``herdr agent send-keys`` (see herdr --skill).
+
+    ``agent prompt`` refuses an agent waiting at a dialogue, so its dialog is
+    answered with logical keys. herdr validates every key before writing.
+    """
+
+    def test_passes_each_key_as_its_own_argv(self):
+        runner = FakeRunner(results=[(0, "", "")])
+        client = HerdrClient(make_settings(), runner=runner)
+
+        result = client.send_keys("w1:p2", ["right", "enter"])
+
+        assert runner.calls[0]["cmd"] == [
+            "herdr-fake", "agent", "send-keys", "w1:p2", "right", "enter",
+        ]
+        assert result["ok"] is True
+
+    @pytest.mark.parametrize("keys", [["ctrl+c"], ["y"], ["enter", "rm -rf /"], ["ENTER"]])
+    def test_refuses_a_key_outside_the_allowlist_without_running_anything(self, keys):
+        runner = FakeRunner(results=[])
+        client = HerdrClient(make_settings(), runner=runner)
+
+        with pytest.raises(HerdrError, match="unsupported key"):
+            client.send_keys("w1:p2", keys)
+
+        assert runner.calls == []
+
+    def test_refuses_an_empty_key_sequence(self):
+        runner = FakeRunner(results=[])
+        client = HerdrClient(make_settings(), runner=runner)
+
+        with pytest.raises(HerdrError, match="empty"):
+            client.send_keys("w1:p2", [])
+
+        assert runner.calls == []
+
+    def test_refuses_more_keys_than_the_cap(self):
+        runner = FakeRunner(results=[])
+        client = HerdrClient(make_settings(), runner=runner)
+
+        with pytest.raises(HerdrError, match="too many keys"):
+            client.send_keys("w1:p2", ["enter"] * 50)
+
+        assert runner.calls == []
+
+    def test_reports_a_cli_failure_without_raising(self):
+        runner = FakeRunner(results=[(1, "", "agent_not_found")])
+        client = HerdrClient(make_settings(), runner=runner)
+
+        result = client.send_keys("w9:p9", ["enter"])
+
+        assert result["ok"] is False
+        assert "agent_not_found" in result["error"]

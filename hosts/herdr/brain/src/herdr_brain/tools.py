@@ -50,7 +50,11 @@ MAX_AGENT_NAME_LEN = 24
 
 
 def _reply_result(outcome: str, pane_id: str, status: str = "", detail: str = "") -> dict:
-    """Uniform outcome envelope for :meth:`BrainTools.reply_to_pane`."""
+    """Uniform outcome envelope for the narrow pane-write paths.
+
+    Serves both :meth:`BrainTools.reply_to_pane` and
+    :meth:`BrainTools.send_keys_to_pane`.
+    """
     return {"outcome": outcome, "pane_id": pane_id, "status": status, "detail": detail}
 
 # opencode readiness via the user's `oa` entry point: `pane run` types the
@@ -508,6 +512,34 @@ class BrainTools:
                 "blocked", pane_id, status=status, detail="the agent rejected the reply"
             )
         return _reply_result("delivered", pane_id, status=status)
+
+    def send_keys_to_pane(self, pane_id: str, keys: list[str]) -> dict:
+        """Answers a BLOCKED agent's dialog with logical key presses.
+
+        ``herdr agent prompt`` refuses an agent waiting at an approval or
+        question dialog, so keys are the only way to answer it — the surface
+        ``herdr --skill`` documents. Same discipline as
+        :meth:`reply_to_pane`: the pane must exist (an unknown one is NEVER
+        redirected — answering the WRONG agent's permission dialog would be
+        silent and hard to undo), the key list is validated against the
+        client's closed allowlist, and nothing raises. The outcome is one of
+        ``sent`` | ``unknown_pane`` | ``error``.
+        """
+        try:
+            known = {agent.pane_id for agent in self._herdr.list_agents()}
+        except HerdrError as exc:
+            return _reply_result("error", pane_id, detail=f"cannot list panes: {exc}")
+        if pane_id not in known:
+            return _reply_result("unknown_pane", pane_id, detail="pane not found")
+        try:
+            result = self._herdr.send_keys(pane_id, keys)
+        except HerdrError as exc:
+            return _reply_result("error", pane_id, detail=f"cannot send keys: {exc}")
+        if not result.get("ok"):
+            return _reply_result(
+                "error", pane_id, detail=result.get("error") or "send-keys failed"
+            )
+        return _reply_result("sent", pane_id)
 
     def create_session(self, agent_kind: str, title: str, task: str = "", cwd: str = "") -> str:
         """Opens a NEW dedicated panel: tab + fresh agent (+ first task).
