@@ -5,7 +5,7 @@
 | **Product** | herdr-brain (voice-assistant PWA) |
 | **Status** | Approved for implementation (design validated via interactive mockup) |
 | **Date** | 2026-09-23 |
-| **Amended** | 2026-10-16 — the cockpit body is now tabbed (§4.1); FR3's "~110px" terminal strip no longer applies |
+| **Amended** | 2026-10-16 — the cockpit body is now tabbed (§4.1) and a key pad answers a blocked agent's dialog (§4.2); FR3's "~110px" terminal strip no longer applies |
 | **Effort** | M (~600–800 changed lines, 2 files, no server changes) |
 | **Mockup** | `docs/mockups/call-drawer-v2.html` (open in browser; "Actual vs Propuesta v2" switch) |
 
@@ -77,6 +77,32 @@ the turns. The chosen tab is remembered in `localStorage`
 Everything else in this PRD (drawer, pill, footer, pending banner, z-order,
 keyed in-place updates) is unaffected: swapping tabs only changes which panel
 renders.
+
+### 4.2 Amendment — a key pad answers a blocked agent's dialog (2026-10-16)
+
+An agent waiting at an approval or question dialog cannot be answered with
+text: `herdr agent prompt` refuses it (`agent_blocked`, before writing any
+input). So the cockpit swaps the reply input for a **key pad** — `←` `→` `↑`
+`↓` `Tab` `Esc` `Enter` — which posts one deliberate key per tap to
+`POST /pane/keys`. The pad never auto-selects an option, so navigating and
+confirming stay the user's decision; it will not answer a permission prompt
+for you.
+
+The pad's target is bound to the pane whose `/view` payload is on display,
+**never** to the live focus: a `/herd` poll can move the focus while a `/view`
+response is still in flight, and answering the dialog of a pane you are not
+looking at would be silent and hard to undo. `keys` is a closed set
+(`up`, `down`, `left`, `right`, `enter`, `esc`, `tab`); anything else, an
+empty list, or more than 8 keys is a `422` before any CLI work, and an unknown
+`pane_id` is a `404` that is never redirected.
+
+| | |
+|---|---|
+| **Task doc** | `odd/tasks/pane-send-keys.md` |
+| **Design** | `herdr --skill` — "Use logical keys for interactive agent UI controls" |
+| **Markup** | `#pane-reply-keys` (holds the pad; carries the frozen target in `data-pane`) + `#pane-keys` |
+| **Server** | `POST /pane/keys` (`server.py`), `BrainTools.send_keys_to_pane`, `HerdrClient.send_keys` |
+| **Tests** | `tests/browser/test_pane_keys.py`, `tests/browser/test_pane_reply_visibility.py`, `tests/test_server_keys.py`, `tests/test_tools_keys.py`, `tests/test_herdr.py::TestSendKeys` |
 
 ## 5. Functional Requirements
 
