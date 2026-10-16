@@ -102,13 +102,15 @@ ACTIVE_AGENT = AgentInfo(
 class StubHerdr:
     """HerdrClient test double: canned agents, screen and prompt results."""
 
-    def __init__(self, agents=None, screen="screen body", prompt=None, fail_screen=False):
+    def __init__(self, agents=None, screen="screen body", prompt=None, fail_screen=False, keys=None):
         self._agents = agents or []
         self._screen = screen
         self._prompt = prompt or {"ok": True, "status": "done", "output": "did it"}
         self._fail_screen = fail_screen
+        self._keys = keys or {"ok": True, "error": ""}
         self.screen_calls: list = []
         self.prompt_calls: list = []
+        self.key_calls: list = []
 
     def list_agents(self):
         return list(self._agents)
@@ -132,6 +134,11 @@ class StubHerdr:
             {"pane_id": pane_id, "text": sanitize_prompt_text(text), "timeout_ms": timeout_ms}
         )
         return self._prompt
+
+    def send_keys(self, pane_id, keys):
+        # Mirrors the real contract: one entry per key, no free text.
+        self.key_calls.append({"pane_id": pane_id, "keys": list(keys)})
+        return self._keys
 
 
 @pytest.fixture
