@@ -52,7 +52,7 @@ from .approval_lexicon import (
 )
 from .config import Settings
 from .consult import ConsultService
-from .herdr import HerdrError
+from .herdr import MAX_SEND_KEYS, SEND_KEY_ALLOWLIST, HerdrError
 from .history import HistoryStore, default_history_path
 from .llm import BrainLLM, BrainLLMError
 from .memory import MAX_MESSAGES, ConversationStore
@@ -323,6 +323,30 @@ class PaneReplyRequest(BaseModel):
     def _text_not_blank(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("text must not be blank")
+        return value
+
+
+class PaneKeysRequest(BaseModel):
+    """User-tapped keys to one exact pane (POST /pane/keys).
+
+    ``keys`` is a CLOSED set: a blocked agent's dialog is answered by
+    navigating and confirming, never by free text, so any key outside the
+    client's allowlist — or an empty or oversized sequence — is a 422 before
+    any CLI work happens.
+    """
+
+    pane_id: str = Field(min_length=1, max_length=MAX_SESSION_ID_CHARS)
+    keys: list[str] = Field(min_length=1, max_length=MAX_SEND_KEYS)
+
+    @field_validator("keys")
+    @classmethod
+    def _keys_allowed(cls, value: list[str]) -> list[str]:
+        unsupported = sorted({key for key in value if key not in SEND_KEY_ALLOWLIST})
+        if unsupported:
+            raise ValueError(
+                f"unsupported key(s): {', '.join(unsupported)} "
+                f"(allowed: {', '.join(SEND_KEY_ALLOWLIST)})"
+            )
         return value
 
 
@@ -1208,6 +1232,28 @@ def create_app(
         raise HTTPException(
             status_code=status,
             detail=result.get("detail") or "No se pudo entregar la respuesta.",
+        )
+
+    @app.post("/pane/keys")
+    def pane_keys(body: PaneKeysRequest) -> dict:
+        """Answers a BLOCKED agent's dialog with logical key presses.
+
+        ``herdr agent prompt`` refuses an agent waiting at an approval or
+        question dialog (``agent_blocked``, before any input is written), so
+        keys are the only way to answer it. The pane must exist (an unknown
+        one is a 404, never redirected — answering the wrong agent's
+        permission dialog would be silent and hard to undo); every key comes
+        from the closed allowlist the request model enforces (422 otherwise);
+        any herdr failure is a 502.
+        """
+        result = tools.send_keys_to_pane(body.pane_id, body.keys)
+        outcome = result["outcome"]
+        if outcome == "sent":
+            return {"ok": True, "pane_id": body.pane_id}
+        status = 404 if outcome == "unknown_pane" else 502
+        raise HTTPException(
+            status_code=status,
+            detail=result.get("detail") or "No se pudieron enviar las teclas.",
         )
 
     @app.post("/approval/{gate_id}/approve")
