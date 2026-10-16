@@ -3,9 +3,11 @@
 /* herdr-brain PWA: continuous hands-free call over a cockpit-first layout.
  *
  * Layout (PRD call-drawer-redesign + conversation-sheet redesign):
- * - BASE SCREEN = agent cockpit: glance turn list (fed by
- *   GET /conversation) with real scroll + "ver más" inline expansion,
- *   and the terminal preview (fed by /view) with real scroll. Agent /
+ * - BASE SCREEN = agent cockpit: ONE body with TWO tabs (vista del
+ *   agente / pantalla). The agent tab holds the glance turn list (fed by
+ *   GET /conversation) with real scroll + "ver más" inline expansion; the
+ *   pantalla tab holds the terminal preview (fed by /view) with real
+ *   scroll. Exactly one is shown at a time (the choice persists). Agent /
  *   conversation selection lives in the CONVERSATION SHEET, opened from
  *   the header picker trigger (the old #herd-strip chips are gone).
  * - THE CALL = bottom drawer anchored above the footer: auto-opens on
@@ -74,6 +76,10 @@
   var glanceTurns = $("glance-turns");
   var glanceEmpty = $("glance-empty");
   var glanceLabel = $("glance-label");
+  var tabAgent = $("tab-agent");
+  var tabScreen = $("tab-screen");
+  var agentPanel = $("agent-panel");
+  var screenPanel = $("screen-panel");
   var diagPanel = $("diag-panel");
   var diagText = $("diag-text");
   var diagStatus = $("diag-status");
@@ -123,6 +129,9 @@
   var SESSION_KEY = "herdr-brain-session";
   var PANE_KEY = "herdr-brain-pane";
   var MUTE_KEY = "herdr-brain-mute";
+  /* Which cockpit view tab was in use ("agent" = vista del agente,
+   * "screen" = pantalla): a reload lands back on it. */
+  var TAB_KEY = "herdr-brain-agent-tab";
   var sessionId = localStorage.getItem(SESSION_KEY);
   if (!sessionId) {
     sessionId = "s-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
@@ -1488,6 +1497,41 @@
     }
     agentView.classList.remove("hidden");  // reveal even if /conversation fails
   }
+
+  /* ---------------- cockpit view tabs (vista del agente / pantalla) ---------
+   * One cockpit body, two views: exactly one panel is shown at a time, so
+   * the terminal gets real height instead of a permanent 110px strip under
+   * the turns. The choice is remembered so a reload lands back on it. */
+
+  function applyAgentTab(name) {
+    var onScreen = name === "screen";
+    tabAgent.setAttribute("aria-selected", onScreen ? "false" : "true");
+    tabScreen.setAttribute("aria-selected", onScreen ? "true" : "false");
+    tabAgent.tabIndex = onScreen ? -1 : 0;
+    tabScreen.tabIndex = onScreen ? 0 : -1;
+    agentPanel.classList.toggle("hidden", onScreen);
+    screenPanel.classList.toggle("hidden", !onScreen);
+  }
+
+  function selectAgentTab(name) {
+    applyAgentTab(name);
+    localStorage.setItem(TAB_KEY, name === "screen" ? "screen" : "agent");
+  }
+
+  /* Roving tabindex: ArrowLeft/ArrowRight move the selection between the
+   * two tabs, like any ARIA tablist. */
+  function agentTabKeydown(event, other) {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    other.focus();
+    other.click();
+  }
+
+  tabAgent.addEventListener("click", function () { selectAgentTab("agent"); });
+  tabScreen.addEventListener("click", function () { selectAgentTab("screen"); });
+  tabAgent.addEventListener("keydown", function (event) { agentTabKeydown(event, tabScreen); });
+  tabScreen.addEventListener("keydown", function (event) { agentTabKeydown(event, tabAgent); });
+  applyAgentTab(localStorage.getItem(TAB_KEY) === "screen" ? "screen" : "agent");
 
   /* ---------------- glance turn list (from /conversation) ---------------- */
 
