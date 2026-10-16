@@ -31,7 +31,6 @@ usuario pidió explícitamente moverse entre ambas mediante tabs.
   servidor: `/view` y `/conversation` se reutilizan tal cual.
 - El copy de UI va en español ("Vista del agente", "Pantalla"); código,
   comentarios, tests y commit en inglés.
-- Estilo: código/comentarios/tests/commits en inglés; copy de UI en español.
 - Runners: `node --test tests/js/` y
   `uv run python -m pytest tests/browser/test_agent_tabs.py -q`.
 - Entrega: una unidad de trabajo (commit `a3cd8d8`); **sin push**.
