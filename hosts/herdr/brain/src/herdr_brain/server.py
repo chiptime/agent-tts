@@ -776,6 +776,7 @@ def create_app(
                 "status": _status_payload(None),
                 "transcript": None,
                 "screen": None,
+                "screen_runs": None,
                 "pending": {"detected": False, "kind": None, "excerpt": None},
             }
 

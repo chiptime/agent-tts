@@ -105,6 +105,7 @@ class StubHerdr:
     def __init__(self, agents=None, screen="screen body", prompt=None, fail_screen=False, keys=None):
         self._agents = agents or []
         self._screen = screen
+        self._screen_ansi = "\x1b[48;2;60;60;60mAllow once\x1b[0m Allow always Reject"
         self._prompt = prompt or {"ok": True, "status": "done", "output": "did it"}
         self._fail_screen = fail_screen
         self._keys = keys or {"ok": True, "error": ""}
@@ -120,12 +121,14 @@ class StubHerdr:
 
         return pick_active(self._agents)
 
-    def read_screen(self, pane_id, n_lines=None, source="visible"):
+    def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
         self.screen_calls.append(
-            {"pane_id": pane_id, "n_lines": n_lines, "source": source}
+            {"pane_id": pane_id, "n_lines": n_lines, "source": source, "as_ansi": as_ansi}
         )
         if self._fail_screen:
             raise HerdrError("read failed")
+        if as_ansi:
+            return self._screen_ansi
         return self._screen
 
     def send_prompt(self, pane_id, text, timeout_ms=None):

@@ -34,6 +34,7 @@ from .view import (
     SCREEN_TAIL_LINES,
     TRANSCRIPT_TAIL_TURNS,
     VIEW_TEXT_TRUNCATE,
+    ansi_runs,
     detect_pending,
     truncate_text,
 )
@@ -46,6 +47,10 @@ REPLY_WAIT_MS = 3_000
 HERD_LAST_TURN_CHARS = 160
 CONVERSATION_WINDOW = 20
 SCREEN_FULL_LINES = 120
+#: Lines read WITH styling for a blocked pane, so the PWA can show which
+#: option of the dialog is highlighted. Only read while blocked: the styling
+#: is exactly what decides a permission, and nothing else needs it.
+DIALOG_SCREEN_LINES = 30
 MAX_AGENT_NAME_LEN = 24
 
 
@@ -245,11 +250,17 @@ class BrainTools:
         return entries
 
     def screen_tail(
-        self, active: AgentInfo, n_lines: int = SCREEN_TAIL_LINES
+        self,
+        active: AgentInfo,
+        n_lines: int = SCREEN_TAIL_LINES,
+        as_ansi: bool = False,
     ) -> Optional[str]:
-        """Visible screen tail for a known pane; None on failure."""
+        """Visible screen tail for a known pane; None on failure.
+
+        ``as_ansi`` keeps the styling (see ``HerdrClient.read_screen``).
+        """
         try:
-            text = self._herdr.read_screen(active.pane_id, n_lines)
+            text = self._herdr.read_screen(active.pane_id, n_lines, as_ansi=as_ansi)
         except HerdrError:
             return None
         return text if text and text.strip() else None
@@ -354,10 +365,23 @@ class BrainTools:
             screen = self.screen_tail(target)
 
         pending = detect_pending(screen or "", target.status if target else "")
+
+        # A blocked pane is waiting at a dialog. Read it WITH styling so the
+        # PWA can show which option is highlighted: that information exists
+        # only as colour/attribute, and the plain-text screen throws it away.
+        # Faithful, never interpretive — it reproduces what the terminal
+        # rendered and decides nothing about what a key would do.
+        screen_runs: Optional[list] = None
+        if target is not None and (target.status or "").strip().lower() == "blocked":
+            styled = self.screen_tail(target, DIALOG_SCREEN_LINES, as_ansi=True)
+            if styled:
+                screen_runs = ansi_runs(styled)
+
         return {
             "status": status_payload(target),
             "transcript": transcript,
             "screen": screen,
+            "screen_runs": screen_runs,
             "pending": {
                 "detected": pending.detected,
                 "kind": pending.kind,

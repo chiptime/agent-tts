@@ -1560,23 +1560,51 @@
   });
 
   /* Terminal preview (FR3): set textContent ONLY on change so the user's
-   * scroll position inside the preview survives the poll. */
+   * scroll position inside the preview survives the poll.
+   *
+   * A blocked pane also arrives with `screen_runs` — the same screen WITH its
+   * colour and weight, because "which option of the dialog is selected" lives
+   * only in the styling. Reproducing it faithfully is what lets the operator
+   * see what a key would confirm; nothing here interprets it. */
   var lastScreenText = null;
+  var lastScreenSignature = null;
+
+  function paintScreenRuns(runs) {
+    var fragment = document.createDocumentFragment();
+    for (var l = 0; l < runs.length; l++) {
+      var line = runs[l] || [];
+      for (var r = 0; r < line.length; r++) {
+        var run = line[r] || {};
+        /* createElement + textContent: agent output can never inject markup. */
+        var node = document.createElement("span");
+        if (run.fg) node.style.color = run.fg;
+        if (run.bg) node.style.background = run.bg;
+        if (run.b) node.style.fontWeight = "700";
+        node.textContent = run.t || "";
+        fragment.appendChild(node);
+      }
+      if (l < runs.length - 1) fragment.appendChild(document.createTextNode("\n"));
+    }
+    viewScreen.textContent = "";
+    viewScreen.appendChild(fragment);
+  }
 
   function renderScreen(view) {
     var wrap = viewScreen.parentElement;  // .gscreen-wrap
+    var runs = (view && view.screen_runs) || null;
     var text = (view && view.screen) || "";
-    if (text) {
-      if (text !== lastScreenText) {
-        lastScreenText = text;
-        viewScreen.textContent = text;
-      }
-      wrap.classList.remove("hidden");
-    } else {
-      lastScreenText = null;
-      viewScreen.textContent = "";
-      wrap.classList.add("hidden");
+    var hasRuns = !!(runs && runs.length);
+    var signature = hasRuns ? "runs:" + JSON.stringify(runs) : "text:" + text;
+    if (signature !== lastScreenSignature) {
+      lastScreenSignature = signature;
+      if (hasRuns) paintScreenRuns(runs);
+      else viewScreen.textContent = text;
     }
+    /* Kept as the plain-text mirror: renderGlance uses it to decide whether
+     * the "sin conversación todavía" empty state applies. */
+    lastScreenText = hasRuns ? viewScreen.textContent : (text || null);
+    if (hasRuns || text) wrap.classList.remove("hidden");
+    else wrap.classList.add("hidden");
     agentView.classList.remove("hidden");  // reveal even if /conversation fails
   }
 
