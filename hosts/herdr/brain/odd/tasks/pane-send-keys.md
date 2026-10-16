@@ -73,8 +73,8 @@ Hechos verificados:
 - **S7** — El envío MUST fijar el pane objetivo en el momento del toque (igual
   disciplina anti-reapuntado que el input de respuesta: un poll tardío no puede
   redirigir las teclas a otro agente).
-- **S8** — Docs: el texto del aviso, `README.md` y el PRD que documenta la
-  limitación MUST describir el teclado.
+- **S8** — Docs: el texto del aviso, `README.md` y el PRD del cockpit
+  (`docs/PRD-call-drawer-redesign.md` §4.2) MUST describir el teclado.
 
 ## Tasks
 
@@ -118,3 +118,16 @@ Hechos verificados:
 - **L6** — gotcha heredado: cualquier edición de un fichero estático invalida
   `EXPECTED_DIGESTS` en `tests/browser/test_karaoke_harness.py` (pinnea los
   bytes servidos); recalcular desde disco y re-verificar tras cada edición.
+- **L7** — corrección de S8 (2026-10-16): la redacción original exigía «el PRD
+  que documenta la limitación», y ese PRD **no existía** — ninguno de los
+  cuatro PRD del brain mencionaba `agent_blocked`, `send-keys` ni el aviso
+  (comprobado con `grep`). Lo detectó el verificador independiente como
+  blocker. S8 se reescribe para apuntar al PRD del cockpit, que es donde un
+  lector buscaría la UI, y allí se añade §4.2.
+- **L8** — corrección del targeting (2026-10-16): el verificador reprodujo que
+  el pad podía responder al pane **B** mientras en pantalla estaba el diálogo
+  del pane **A** (un poll de `/herd` mueve el foco, `/view` aún no ha
+  respondido). El objetivo se ata ahora al pane que describe el payload de
+  `/view` guardado (`lastView`), y `renderHerd` re-renderiza con ese mismo
+  payload en vez de con el objeto `pending` suelto. Regresión en
+  `tests/browser/test_pane_keys.py`.

@@ -1121,6 +1121,10 @@
 
   var lastHerd = [];
   var lastPending = { detected: false };
+  /* The most recent /view payload: the ONLY description of the pane whose
+   * screen is on display, so reply/pad targeting can be bound to it instead
+   * of to the live focus (which a /herd poll can move on its own). */
+  var lastView = null;
   var pendingBannerTapPane = null;
   var lastEffectivePane = null;
 
@@ -1317,7 +1321,7 @@
     if (panePickerSub.textContent !== pickerSub) panePickerSub.textContent = pickerSub;
     panePickerSub.classList.toggle("hidden", !pickerSub);
     renderGlanceLabel();       // lastHerd just refreshed: recompute name
-    renderPending(lastPending);  // blocked-agent counts may have changed
+    renderPending(lastView);   // blocked-agent counts may have changed
   }
 
   function selectAgent(paneId) {
@@ -1361,8 +1365,23 @@
    * pending agents aggregate and tapping selects (cycles to) the next
    * blocked agent. The compact #d-pending strip mirrors the banner inside
    * the drawer on short screens (AC12, CSS media query). */
-  function renderPending(pending) {
-    lastPending = pending && pending.detected ? pending : { detected: false };
+  function renderPending(view) {
+    /* Called twice: from renderView with the fresh /view payload, and from
+     * renderHerd — with that same last payload — when blocked-agent counts
+     * change. Reading ONE stored payload keeps the banner, the reply target
+     * and the pad target describing the pane whose screen is on display,
+     * even when a /herd poll moved the focus in between. */
+    if (view && view.pending) {
+      lastPending = view.pending.detected ? view.pending : { detected: false };
+    }
+    /* The pane THIS payload describes — the pane whose /view state we are
+     * about to paint. Binding the reply/pad targets to it (instead of the
+     * live focus) is what keeps them honest: a /herd poll can move focus
+     * while a /view response is still in flight, and answering a permission
+     * dialog for a pane you are not looking at would be silent and hard to
+     * undo. Falls back to the live focus only when the payload names nobody
+     * (e.g. the never-500 /view fallback). */
+    var viewedPane = (view && view.status && view.status.pane_id) || null;
     var detected = lastPending.detected;
     var blocked = blockedAgents();
     var selBlocked = false;
@@ -1419,15 +1438,15 @@
     }
     pendingBannerTapPane = tapPane;
 
-    /* Direct reply: offered for whichever pane is on screen, because
-     * typing is the normal way to drive an agent. The ONE exception is an
-     * agent waiting at an approval/question dialog: herdr refuses a text
-     * prompt there (agent_blocked, before any input is written), so that
-     * pane gets a notice instead of an input that would always fail with
-     * a 409 — its dialog is answered with key presses, which the PWA does
-     * not synthesize. The target is fixed on the form so a late poll
-     * cannot retarget a half-typed reply. */
-    var viewed = lastEffectivePane || selectedPane;
+    /* Direct reply vs. key pad: typing is the normal way to drive an agent,
+     * so the input is offered for whichever pane is on screen. The ONE
+     * exception is an agent waiting at an approval/question dialog: herdr
+     * refuses a TEXT prompt there (agent_blocked, before any input is
+     * written), so that pane gets the KEY PAD instead (POST /pane/keys).
+     * Both targets are frozen on the pane this payload describes, so a late
+     * poll can neither retarget a half-typed reply nor point the pad at a
+     * dialog other than the one on screen. */
+    var viewed = viewedPane || lastEffectivePane || selectedPane;
     var viewedBlocked = false;
     for (i = 0; i < blocked.length; i++) {
       if (blocked[i].pane_id === viewed) { viewedBlocked = true; break; }
@@ -1439,7 +1458,11 @@
     if (replyTarget) replyForm.setAttribute("data-pane", replyTarget);
     else replyForm.removeAttribute("data-pane");
     replyForm.classList.toggle("hidden", !replyTarget);
-    replyKeys.classList.toggle("hidden", !(viewed && viewedBlocked));
+
+    var keysTarget = viewed && viewedBlocked ? viewed : null;
+    if (keysTarget) replyKeys.setAttribute("data-pane", keysTarget);
+    else replyKeys.removeAttribute("data-pane");
+    replyKeys.classList.toggle("hidden", !keysTarget);
   }
 
   replyForm.addEventListener("submit", function (event) {
@@ -1490,7 +1513,7 @@
 
   function sendKey(button) {
     var key = button.getAttribute("data-key");
-    var paneId = lastEffectivePane || selectedPane;
+    var paneId = replyKeys.getAttribute("data-pane");
     if (!key || !paneId || keysBusy) return;
     keysBusy = true;
     setKeysPadBusy(true);
@@ -1761,7 +1784,8 @@
   function renderView(view) {
     if (!view) return;
     safeRender("status", renderStatus, view.status);
-    safeRender("pending", renderPending, view.pending);
+    lastView = view;
+    safeRender("pending", renderPending, view);
     safeRender("screen", renderScreen, view);
     markPollOk();
   }
