@@ -190,7 +190,11 @@ class HerdrClient:
         return pick_active(self.list_agents())
 
     def read_screen(
-        self, pane_id: str, n_lines: Optional[int] = None, source: str = "visible"
+        self,
+        pane_id: str,
+        n_lines: Optional[int] = None,
+        source: str = "visible",
+        as_ansi: bool = False,
     ) -> str:
         """Reads terminal output of a pane (read-only).
 
@@ -198,6 +202,11 @@ class HerdrClient:
         viewport (clamped to 60 lines to avoid scrolling the operator's real
         screen); ``recent`` reads the scrollback backlog for explicit
         full-text reads (clamped to 120 lines).
+
+        ``as_ansi`` keeps the styling. That matters because "which option of a
+        dialog is selected" exists ONLY as colour/attribute — reading the
+        plain text throws that signal away. Callers that only need words (the
+        model) keep the default.
         """
         requested = n_lines if n_lines and n_lines > 0 else self._settings.screen_lines
         cap = MAX_BACKLOG_LINES if source == "recent" else MAX_SCREEN_LINES
@@ -207,7 +216,7 @@ class HerdrClient:
                 "agent", "read", pane_id,
                 "--source", source,
                 "--lines", str(clamped),
-                "--format", "text",
+                "--format", "ansi" if as_ansi else "text",
             ],
             timeout_s=15,
         )

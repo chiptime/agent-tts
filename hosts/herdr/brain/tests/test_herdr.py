@@ -182,6 +182,15 @@ class TestHerdrClient:
             "--format", "text",
         ]
 
+    def test_read_screen_can_keep_the_styling(self):
+        """``as_ansi`` is how the selection of a dialog survives the read."""
+        runner = FakeRunner(results=[(0, "styled", "")])
+        client = HerdrClient(make_settings(), runner=runner)
+
+        assert client.read_screen("w1:p2", as_ansi=True) == "styled"
+
+        assert runner.calls[0]["cmd"][-2:] == ["--format", "ansi"]
+
     def test_send_prompt_sanitizes_and_uses_verified_flags(self):
         runner = FakeRunner(results=[(0, "submitted", "")])
         client = HerdrClient(make_settings(), runner=runner)

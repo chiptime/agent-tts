@@ -343,6 +343,15 @@ pad: `←` `→` `↑` `↓` `Tab` `Esc` `Enter`, one deliberate key per tap. Th
 pad never auto-selects an option, so choosing and confirming stay your
 decision — it will not answer a permission prompt for you.
 
+The key pad answers nothing blind: while the viewed pane is `blocked`, `/view`
+also carries **`screen_runs`** — the same screen WITH its colour and weight,
+read through `herdr agent read --format ansi` and emitted as plain JSON runs
+(`{t, fg?, bg?, b?}`). "Which option of the dialog is selected" exists ONLY in
+that styling, so reading the plain text threw the signal away and left you
+pressing keys without knowing what they would confirm. The PWA paints the runs
+with `createElement` + `textContent`: a faithful mirror that interprets
+nothing, and that cannot let terminal output inject markup.
+
 `keys` is a **closed set** (`up`, `down`, `left`, `right`, `enter`, `esc`,
 `tab`); anything else, an empty list, or more than 8 keys is a `422` before
 any CLI work. An unknown `pane_id` is a `404` and is never redirected —

@@ -85,3 +85,34 @@ def test_a_stored_tab_choice_is_honored_on_load(karaoke_app):
     page = harness.load().page
     expect(page.locator("#screen-panel")).to_be_visible()
     expect(page.locator("#agent-panel")).to_be_hidden()
+
+
+def test_styled_screen_runs_reach_the_screen_without_letting_markup_through(karaoke_app):
+    """The dialog's highlight must survive, and agent output must stay text.
+
+    "Which option is selected" exists only as colour/attribute, so the screen
+    arrives as runs. They are painted with createElement + textContent: a
+    faithful mirror, never an interpretation, and never markup.
+    """
+    harness = karaoke_app()
+    view = dict(VIEW_WITH_SCREEN)
+    view["screen_runs"] = [
+        [
+            {"t": "Allow once", "bg": "#3c3c3c"},
+            {"t": " "},
+            {"t": "<b>Allow always</b>", "b": True},
+        ],
+    ]
+    harness.respond("/view", view, query=("pane_id",))
+    harness.respond("/conversation", TURNS, query=("pane_id",))
+
+    page = harness.load().page
+    page.locator("#tab-screen").click()
+
+    expect(page.locator("#view-screen")).to_have_text("Allow once <b>Allow always</b>")
+    first = page.evaluate(
+        "() => { const s = document.querySelector('#view-screen span');"
+        " return [s.style.background, s.textContent]; }"
+    )
+    assert first == ["rgb(60, 60, 60)", "Allow once"]
+    assert page.evaluate("() => document.querySelectorAll('#view-screen b').length") == 0
