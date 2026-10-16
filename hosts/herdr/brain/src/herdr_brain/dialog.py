@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Callable, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 #: Bounded verification polling between choreography steps. A TUI redraws
 #: well under a second; ~3s is the window before the caller refreshes.
@@ -70,7 +70,7 @@ class DialogModel:
 
 @dataclass(frozen=True)
 class GuardOutcome:
-    """The verdict of {@link entry_guard}.
+    """The verdict of :func:`entry_guard`.
 
     ``ok`` with the freshly derived model, or ``reason`` of ``changed`` (the
     screen moved underfoot — nothing may be sent) or ``error`` (the read
@@ -79,6 +79,23 @@ class GuardOutcome:
 
     ok: bool
     model: Optional[DialogModel] = None
+    reason: str = ""
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class AnswerOutcome:
+    """What actually happened, so the caller never reports a silent maybe.
+
+    ``sent`` is true only when the committing key went out. ``reason`` is
+    empty then, and otherwise names why nothing was committed: ``changed``
+    (the screen was not the dialog we started on, or it left), ``error`` (a
+    read failed), ``no_progress`` (the arrows moved nothing), ``unreachable_
+    option`` (the dialog named no navigation), ``no_commit_key`` (it named no
+    way to commit), or ``invalid_target``.
+    """
+
+    sent: bool
     reason: str = ""
     detail: str = ""
 
@@ -138,6 +155,94 @@ def entry_guard(
     if fresh is None or not same_dialog(fresh, tapped):
         return GuardOutcome(ok=False, reason="changed")
     return GuardOutcome(ok=True, model=fresh)
+
+
+def answer_dialog(
+    reader: Reader,
+    send_keys: Callable[[str, List[str]], None],
+    pane_id: str,
+    lines: int,
+    tapped: DialogModel,
+    target: int,
+    detect: Detect,
+    *,
+    sleep: Optional[Sleep] = None,
+    attempts: int = POLL_ATTEMPTS,
+    retries: int = 1,
+) -> AnswerOutcome:
+    """Answers the dialog by walking the highlight to ``target``, then committing.
+
+    Only the highlighted option is reachable with the committing key, so the
+    other two are reached by pressing the arrows the screen itself named —
+    re-reading after EVERY press, never sending a second key on the strength
+    of the first one's assumption. Nothing is committed until a fresh read
+    still shows our dialog with the highlight where we walked it.
+
+    Note what the pre-commit check is NOT: strict signature equality with
+    ``tapped``. The signature carries the highlight, so it MUST differ once
+    the highlight has moved — comparing it there would refuse every answer
+    that needed a walk. Identity against the walked model, plus the position,
+    is the honest check.
+    """
+    if not 0 <= target < len(tapped.actions):
+        return AnswerOutcome(sent=False, reason="invalid_target")
+
+    guard = entry_guard(reader, pane_id, lines, tapped, detect)
+    if not guard.ok or guard.model is None:
+        return AnswerOutcome(sent=False, reason=guard.reason or "changed", detail=guard.detail)
+    current = guard.model
+
+    if not current.commit_keys:
+        return AnswerOutcome(sent=False, reason="no_commit_key")
+    if current.selected is None:
+        return AnswerOutcome(sent=False, reason="changed")
+    if current.selected != target and not current.nav_keys:
+        return AnswerOutcome(sent=False, reason="unreachable_option")
+
+    # Bounded: a dialog that never moves must end in a refusal, not a loop.
+    budget = 2 * len(current.actions) + 2
+    for _ in range(budget):
+        if current.selected == target:
+            break
+        before = current.selected
+        key = current.nav_keys[1] if target > before else current.nav_keys[0]
+        moved = False
+        for _attempt in range(retries + 1):
+            send_keys(pane_id, [key])
+            verdict = poll_until(
+                reader,
+                pane_id,
+                lines,
+                current,
+                detect,
+                accept=lambda model, was=before: model.selected != was,
+                sleep=sleep,
+                attempts=attempts,
+            )
+            if verdict == "drifted":
+                return AnswerOutcome(sent=False, reason="changed")
+            if verdict == "ok":
+                moved = True
+                break
+        if not moved:
+            return AnswerOutcome(sent=False, reason="no_progress")
+        fresh = read_dialog(reader, pane_id, lines, detect)
+        if fresh is None or not same_dialog_identity(fresh, current) or fresh.selected is None:
+            return AnswerOutcome(sent=False, reason="changed")
+        current = fresh
+    else:
+        return AnswerOutcome(sent=False, reason="no_progress")
+
+    final = read_dialog(reader, pane_id, lines, detect)
+    if (
+        final is None
+        or not same_dialog_identity(final, current)
+        or final.selected != target
+    ):
+        return AnswerOutcome(sent=False, reason="changed")
+
+    send_keys(pane_id, list(current.commit_keys))
+    return AnswerOutcome(sent=True)
 
 
 def poll_until(
