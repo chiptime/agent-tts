@@ -178,14 +178,32 @@ safest option and a naive pad would commit the riskiest one.
       screen with no readable selection, or one naming no usable key, returns
       `None`: fail closed, because an unsigned model would let a stale tap
       through.
-- [ ] T7 — closed-loop choreography (walk to the target row, re-reading each
+- [x] T7 — closed-loop choreography (walk to the target row, re-reading each
       step) + a PWA-only endpoint; `send-keys` keys are `left`/`right`/`enter`
       (`arrowleft`/`ArrowLeft` are rejected by herdr with `invalid_key`).
+      **Mechanism done**: `dialog.answer_dialog` walks the highlight one arrow
+      at a time, re-reading after every press, and commits only when a fresh
+      read still shows our dialog with the highlight where it was walked. 12
+      tests, and LIVE end-to-end against a real dialog: detected
+      `['Allow once','Allow always','Reject']` with `selected=0`, walked to
+      index 2, `AnswerOutcome(sent=True)`, pane `blocked → done`, dialog gone.
+      The arrow behaviour itself was verified live first: `right` moved
+      0→1→2, `left` moved it back, and the detector read every step.
+      **Still to do**: the PWA-only endpoint and the buttons.
 - [ ] T8 — live recipe derivation with Panel's method: ONE key at a time,
       capturing the buffer, never committing until the mapping is known.
 
 ## Log
 
+- **T7 arrow + live evidence** (2026-10-15): before writing any choreography,
+  the load-bearing assumption was verified live — with a real dialog on
+  screen, `herdr agent send-keys <pane> right` moved the highlight
+  `Allow once → Allow always → Reject` and `left` moved it back, read each
+  step by this repo's own detector. Never sent `enter`. Then the whole stack
+  answered a real dialog: detected three options with `selected=0`, walked to
+  index 2 (Reject — the safe direction), `AnswerOutcome(sent=True)`, the pane
+  went `blocked → done` and the dialog disappeared. Lab tab closed; nothing
+  was approved.
 - **L1** (verbatim, 2026-10-15): "necesito añadir en brain un input para escribir respuestas"
 - **L2** (verbatim): "no voy a subir nada aun, quedaria bien el añadir el input? se enviarian bien a back y llegarian a opencode po rejemplo?"
 - **L3** (verbatim): "entonces si no se puede interactuar no es un visual valido no? si me piden accion y no puedo ejecutarla es un problema"
