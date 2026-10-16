@@ -1418,20 +1418,20 @@
     }
     pendingBannerTapPane = tapPane;
 
-    /* Direct reply: offered only where delivery is actually possible.
-     * herdr refuses `agent prompt` for an agent already waiting at an
-     * approval/question dialog (agent_blocked, before any input is
-     * written), so a blocked pane gets a notice instead of an input that
-     * would always fail with a 409 — its dialog is answered with key
-     * presses, which the PWA does not synthesize. Otherwise the pane must
-     * be the one showing the prompt. The target is fixed on the form so a
-     * late poll cannot retarget a half-typed reply. */
+    /* Direct reply: offered for whichever pane is on screen, because
+     * typing is the normal way to drive an agent. The ONE exception is an
+     * agent waiting at an approval/question dialog: herdr refuses a text
+     * prompt there (agent_blocked, before any input is written), so that
+     * pane gets a notice instead of an input that would always fail with
+     * a 409 — its dialog is answered with key presses, which the PWA does
+     * not synthesize. The target is fixed on the form so a late poll
+     * cannot retarget a half-typed reply. */
     var viewed = lastEffectivePane || selectedPane;
     var viewedBlocked = false;
     for (i = 0; i < blocked.length; i++) {
       if (blocked[i].pane_id === viewed) { viewedBlocked = true; break; }
     }
-    var replyTarget = viewed && detected && !viewedBlocked ? viewed : null;
+    var replyTarget = viewed && !viewedBlocked ? viewed : null;
     if (replyTarget && replyForm.getAttribute("data-pane") !== replyTarget) {
       replyInput.value = "";
     }
