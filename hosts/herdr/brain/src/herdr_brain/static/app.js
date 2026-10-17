@@ -57,6 +57,7 @@
   var replySend = $("pane-reply-send");
   var replyKeys = $("pane-reply-keys");
   var keysPad = $("pane-keys");
+  var keysHint = $("pane-keys-hint");
   var viewScreen = $("view-screen");
   var convList = $("conv-list");
   var herdNote = $("herd-note");
@@ -1460,6 +1461,12 @@
     replyForm.classList.toggle("hidden", !replyTarget);
 
     var keysTarget = viewed && viewedBlocked ? viewed : null;
+    /* A NEW dialog (different pane, or the pad reappearing) starts from the
+     * neutral hint; the acknowledgement of the last key must survive polls. */
+    if (keysTarget !== lastKeysTarget) {
+      lastKeysTarget = keysTarget;
+      setKeysHint(KEYS_HINT_DEFAULT);
+    }
     if (keysTarget) replyKeys.setAttribute("data-pane", keysTarget);
     else replyKeys.removeAttribute("data-pane");
     replyKeys.classList.toggle("hidden", !keysTarget);
@@ -1504,6 +1511,12 @@
    * The target is read at TAP time from the pane on screen, matching the
    * reply input's anti-retarget discipline. */
   var keysBusy = false;
+  var lastKeysTarget = null;
+  var KEYS_HINT_DEFAULT = "El agente espera — respóndele con teclas:";
+
+  function setKeysHint(text) {
+    if (keysHint && keysHint.textContent !== text) keysHint.textContent = text;
+  }
 
   function setKeysPadBusy(busy) {
     if (!keysPad) return;
@@ -1517,6 +1530,12 @@
     if (!key || !paneId || keysBusy) return;
     keysBusy = true;
     setKeysPadBusy(true);
+    /* Acknowledgement BEFORE the request: the pad must never leave the user
+     * wondering whether the tap landed. */
+    setKeysHint(
+      "Enviado: " + (button.getAttribute("aria-label") || key) +
+      " · esperando al agente…"
+    );
     fetch("/pane/keys", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1529,6 +1548,7 @@
           refreshState();
           return null;
         }
+        setKeysHint(KEYS_HINT_DEFAULT);
         return resp.json().then(
           function (body) { return body && body.detail; },
           function () { return null; }
@@ -1537,6 +1557,7 @@
         });
       })
       .catch(function () {
+        setKeysHint(KEYS_HINT_DEFAULT);
         showToast("No se pudo enviar la tecla: sin conexión con el brain", 6000);
       })
       .then(function () {
