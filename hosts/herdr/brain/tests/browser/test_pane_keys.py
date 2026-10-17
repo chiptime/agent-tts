@@ -141,3 +141,13 @@ def test_a_focus_poll_cannot_answer_a_different_visible_dialog(karaoke_app):
         page.evaluate("() => Promise.resolve()")
 
     assert all(send["pane_id"] == A for send in sends), sends
+
+
+def test_the_dialog_is_shown_next_to_the_pad(karaoke_app):
+    """The question was always in the screen text; now it sits where the keys are."""
+    harness = blocked_app(karaoke_app)
+    page = harness.page
+
+    dialog = page.locator("#pane-keys-dialog")
+    expect(dialog).to_be_visible()
+    expect(dialog).to_contain_text("PERMISSION FOR " + A)
