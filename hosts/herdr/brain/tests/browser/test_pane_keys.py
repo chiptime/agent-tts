@@ -84,6 +84,35 @@ def test_one_send_while_busy_then_a_failure_recovers(karaoke_app, failure):
     assert len(held) == 1
 
 
+def test_a_tap_acknowledges_itself_before_the_response(karaoke_app):
+    """The pad must never leave you wondering whether the tap landed."""
+    harness = blocked_app(karaoke_app)
+    page, held = harness.page, []
+    harness.context.route("**/pane/keys", lambda route: held.append(route))
+
+    hint = page.locator("#pane-keys-hint")
+    expect(hint).to_have_text("El agente espera — respóndele con teclas:")
+
+    page.locator('#pane-keys [data-key="enter"]').click()
+
+    expect(hint).to_contain_text("Enviado: Intro")
+    assert len(held) == 1
+    held[0].fulfill(json={"ok": True, "pane_id": A})
+
+
+def test_a_failed_tap_restores_the_neutral_hint(karaoke_app):
+    harness = blocked_app(karaoke_app)
+    page, held = harness.page, []
+    harness.context.route("**/pane/keys", lambda route: held.append(route))
+
+    hint = page.locator("#pane-keys-hint")
+    page.locator('#pane-keys [data-key="left"]').click()
+    expect(hint).to_contain_text("Enviado: Izquierda")
+
+    held[0].fulfill(status=502, json={"detail": "nope"})
+    expect(hint).to_have_text("El agente espera — respóndele con teclas:")
+
+
 def test_a_focus_poll_cannot_answer_a_different_visible_dialog(karaoke_app):
     """The regression: the pad answered the NEWLY focused pane's dialog."""
     harness = blocked_app(karaoke_app)
