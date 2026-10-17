@@ -445,6 +445,24 @@
       color: var(--text);
     }
     .pane-keys button:disabled { opacity: 0.55; }
+    /* The dialog itself, under the pad: the question and its options were
+     * already in the screen text, just never shown where the keys are. The
+     * last lines of the pane, faithful, scrollable. */
+    .pane-keys-dialog {
+      max-height: 150px;
+      overflow-y: auto;
+      margin-top: 6px;
+      padding: 6px 8px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      line-height: 1.35;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
     /* ── COCKPIT VIEW TABS ───────────────────────────────────────────
      * "Vista del agente" (transcript turns) and "pantalla" (terminal
      * preview) are two tabs of ONE cockpit body: one is shown at a time,
@@ -1496,6 +1514,7 @@
         <button type="button" data-key="esc" aria-label="Escape">Esc</button>
         <button type="button" data-key="enter" aria-label="Intro">Enter</button>
       </div>
+      <pre id="pane-keys-dialog" class="pane-keys-dialog hidden" aria-label="Diálogo del agente"></pre>
     </div>
     <div id="agent-tabs" class="agent-tabs" role="tablist" aria-label="Vistas del agente">
       <button id="tab-agent" class="agent-tab" type="button" role="tab" aria-selected="true" aria-controls="agent-panel" tabindex="0"><span id="glance-label">Vista del agente</span></button>
@@ -1568,8 +1587,8 @@
         <span class="s-label">Pendientes</span>
         <button id="pending-open" type="button" title="Ver los avisos pendientes">🔔 Pendientes (<span id="pending-menu-count">0</span>)</button>
       </div>
-      <span class="s-hint">Avisos de los agentes que esperan tu atención: escuchar, marcar como anunciado o descartar, en un panel que ya no mueve la pantalla.</span>
     </div>
+
   </section>
 
   <div id="conv-backdrop" aria-hidden="true"></div>

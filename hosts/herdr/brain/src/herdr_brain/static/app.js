@@ -58,6 +58,7 @@
   var replyKeys = $("pane-reply-keys");
   var keysPad = $("pane-keys");
   var keysHint = $("pane-keys-hint");
+  var keysDialog = $("pane-keys-dialog");
   var viewScreen = $("view-screen");
   var convList = $("conv-list");
   var herdNote = $("herd-note");
@@ -1470,6 +1471,7 @@
     if (keysTarget) replyKeys.setAttribute("data-pane", keysTarget);
     else replyKeys.removeAttribute("data-pane");
     replyKeys.classList.toggle("hidden", !keysTarget);
+    paintDialogPreview(keysTarget ? view : null);
   }
 
   replyForm.addEventListener("submit", function (event) {
@@ -1590,7 +1592,7 @@
   var lastScreenText = null;
   var lastScreenSignature = null;
 
-  function paintScreenRuns(runs) {
+  function paintRunsInto(target, runs) {
     var fragment = document.createDocumentFragment();
     for (var l = 0; l < runs.length; l++) {
       var line = runs[l] || [];
@@ -1606,8 +1608,32 @@
       }
       if (l < runs.length - 1) fragment.appendChild(document.createTextNode("\n"));
     }
-    viewScreen.textContent = "";
-    viewScreen.appendChild(fragment);
+    target.textContent = "";
+    target.appendChild(fragment);
+  }
+
+  /* The dialog under the pad: the LAST lines of the pane, faithful. The
+   * question and its options were always in the screen text — they simply
+   * were never where the keys are. No parsing, no guessing. */
+  var DIALOG_PREVIEW_LINES = 14;
+
+  function paintDialogPreview(view) {
+    if (!keysDialog) return;
+    var runs = (view && view.screen_runs) || null;
+    var text = (view && view.screen) || "";
+    if (runs && runs.length) {
+      paintRunsInto(keysDialog, runs.slice(Math.max(0, runs.length - DIALOG_PREVIEW_LINES)));
+      keysDialog.classList.remove("hidden");
+      return;
+    }
+    if (text) {
+      var lines = text.split("\n");
+      keysDialog.textContent = lines.slice(Math.max(0, lines.length - DIALOG_PREVIEW_LINES)).join("\n");
+      keysDialog.classList.remove("hidden");
+      return;
+    }
+    keysDialog.textContent = "";
+    keysDialog.classList.add("hidden");
   }
 
   function renderScreen(view) {
@@ -1618,7 +1644,7 @@
     var signature = hasRuns ? "runs:" + JSON.stringify(runs) : "text:" + text;
     if (signature !== lastScreenSignature) {
       lastScreenSignature = signature;
-      if (hasRuns) paintScreenRuns(runs);
+      if (hasRuns) paintRunsInto(viewScreen, runs);
       else viewScreen.textContent = text;
     }
     /* Kept as the plain-text mirror: renderGlance uses it to decide whether
