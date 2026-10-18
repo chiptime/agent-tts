@@ -114,5 +114,7 @@ def test_styled_screen_runs_reach_the_screen_without_letting_markup_through(kara
         "() => { const s = document.querySelector('#view-screen span');"
         " return [s.style.background, s.textContent]; }"
     )
-    assert first == ["rgb(60, 60, 60)", "Allow once"]
+    # Foreground only: the terminal's own background is NOT painted, because
+    # doing so produced a black box with black text on our dark theme.
+    assert first == ["", "Allow once"]
     assert page.evaluate("() => document.querySelectorAll('#view-screen b').length") == 0

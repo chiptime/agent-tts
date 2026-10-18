@@ -1600,8 +1600,10 @@
         var run = line[r] || {};
         /* createElement + textContent: agent output can never inject markup. */
         var node = document.createElement("span");
+        /* Foreground only. The terminal's own background belongs to the
+         * terminal: painting it over our theme produced a black box with
+         * black text, which is worse than no styling at all. */
         if (run.fg) node.style.color = run.fg;
-        if (run.bg) node.style.background = run.bg;
         if (run.b) node.style.fontWeight = "700";
         node.textContent = run.t || "";
         fragment.appendChild(node);
