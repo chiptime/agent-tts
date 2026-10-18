@@ -36,6 +36,7 @@ from .view import (
     VIEW_TEXT_TRUNCATE,
     ansi_runs,
     detect_pending,
+    parse_dialog,
     truncate_text,
 )
 
@@ -372,16 +373,21 @@ class BrainTools:
         # Faithful, never interpretive — it reproduces what the terminal
         # rendered and decides nothing about what a key would do.
         screen_runs: Optional[list] = None
+        dialog = None
         if target is not None and (target.status or "").strip().lower() == "blocked":
             styled = self.screen_tail(target, DIALOG_SCREEN_LINES, as_ansi=True)
             if styled:
                 screen_runs = ansi_runs(styled)
+            # The question tool's own shape, for readable HTML on the phone.
+            # Claims nothing about which option is selected.
+            dialog = parse_dialog(screen)
 
         return {
             "status": status_payload(target),
             "transcript": transcript,
             "screen": screen,
             "screen_runs": screen_runs,
+            "dialog": dialog,
             "pending": {
                 "detected": pending.detected,
                 "kind": pending.kind,

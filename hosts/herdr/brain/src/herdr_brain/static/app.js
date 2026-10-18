@@ -1619,8 +1619,54 @@
    * were never where the keys are. No parsing, no guessing. */
   var DIALOG_PREVIEW_LINES = 14;
 
+  /* The question tool as readable HTML: question, numbered options with
+   * descriptions, key hint. Built with createElement + textContent, so agent
+   * output can never inject markup. Says nothing about which option is
+   * selected - that signal does not exist in what herdr exposes. */
+  function paintDialogHtml(dialog) {
+    var box = document.createElement("div");
+    box.className = "dlg";
+    var question = document.createElement("div");
+    question.className = "dlg-q";
+    question.textContent = dialog.question || "";
+    box.appendChild(question);
+    (dialog.options || []).forEach(function (opt) {
+      var row = document.createElement("div");
+      row.className = "dlg-opt";
+      var num = document.createElement("span");
+      num.className = "dlg-num";
+      num.textContent = (opt.n || "") + ".";
+      var title = document.createElement("span");
+      title.className = "dlg-title";
+      title.textContent = " " + (opt.title || "");
+      row.appendChild(num);
+      row.appendChild(title);
+      if (opt.description) {
+        var desc = document.createElement("div");
+        desc.className = "dlg-desc";
+        desc.textContent = opt.description;
+        row.appendChild(desc);
+      }
+      box.appendChild(row);
+    });
+    if (dialog.hint) {
+      var hint = document.createElement("div");
+      hint.className = "dlg-hint";
+      hint.textContent = dialog.hint;
+      box.appendChild(hint);
+    }
+    keysDialog.textContent = "";
+    keysDialog.appendChild(box);
+  }
+
   function paintDialogPreview(view) {
     if (!keysDialog) return;
+    var dialog = (view && view.dialog) || null;
+    if (dialog && dialog.options && dialog.options.length) {
+      paintDialogHtml(dialog);
+      keysDialog.classList.remove("hidden");
+      return;
+    }
     var runs = (view && view.screen_runs) || null;
     var text = (view && view.screen) || "";
     if (runs && runs.length) {

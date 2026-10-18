@@ -151,3 +151,33 @@ def test_the_dialog_is_shown_next_to_the_pad(karaoke_app):
     dialog = page.locator("#pane-keys-dialog")
     expect(dialog).to_be_visible()
     expect(dialog).to_contain_text("PERMISSION FOR " + A)
+
+
+def test_a_question_tool_renders_as_readable_html(karaoke_app):
+    """The frontend contract for the parsed dialog: HTML, not a terminal."""
+    harness = karaoke_app()
+    harness.respond("/herd", herd())
+    harness.respond(
+        "/view",
+        {
+            "status": {"active": True, "pane_id": A, "agent_status": "blocked"},
+            "screen": "┃  ¿Seguimos con lo acordado?\n┃  1. Sí, con todo\n┃  2. No, para hoy",
+            "transcript": None,
+            "pending": {"detected": True, "kind": "question", "excerpt": "¿Seguimos?"},
+            "dialog": {
+                "question": "¿Seguimos con lo acordado?",
+                "options": [
+                    {"n": 1, "title": "Sí, con todo", "description": "Incluye también los tests."},
+                    {"n": 2, "title": "No, para hoy", "description": ""},
+                ],
+                "hint": "↑↓ select  enter submit  esc dismiss",
+            },
+        },
+        query=("pane_id",),
+    )
+    page = harness.load().page
+
+    expect(page.locator("#pane-keys-dialog .dlg-q")).to_have_text("¿Seguimos con lo acordado?")
+    expect(page.locator("#pane-keys-dialog .dlg-opt")).to_have_count(2)
+    expect(page.locator("#pane-keys-dialog .dlg-desc").first).to_contain_text("Incluye también los tests.")
+    expect(page.locator("#pane-keys-dialog .dlg-hint")).to_contain_text("select")

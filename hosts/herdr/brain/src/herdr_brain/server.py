@@ -777,6 +777,7 @@ def create_app(
                 "transcript": None,
                 "screen": None,
                 "screen_runs": None,
+                "dialog": None,
                 "pending": {"detected": False, "kind": None, "excerpt": None},
             }
 
