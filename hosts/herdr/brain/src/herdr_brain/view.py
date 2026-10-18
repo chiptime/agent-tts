@@ -9,6 +9,8 @@ ground truth about what the agent wants.
 
 from __future__ import annotations
 
+import re
+
 from dataclasses import dataclass
 from typing import Optional
 
@@ -220,3 +222,76 @@ def ansi_runs(text: Optional[str]) -> list:
     if line:
         out.append(line)
     return out
+
+
+_DIALOG_OPTION = re.compile(r"^(\d{1,2})\.\s+(.+)$")
+_DIALOG_GUTTER = re.compile(r"^[\u2503\u2502\u2506\u2507\u250a\u250b|\u2551]\s*")
+_DIALOG_HINT = re.compile(r"(select|submit|dismiss|confirm)", re.IGNORECASE)
+
+
+def _clean_dialog_line(raw: str) -> str:
+    line = raw.strip()
+    line = _DIALOG_GUTTER.sub("", line, count=1).strip()
+    # Terminal columns are separated by wide space runs: the pane's width
+    # appends unrelated side content (paths, status) to dialog lines.
+    return re.split(r"\s{3,}", line)[0].strip()
+
+
+def parse_dialog(text):
+    """Recovers a question tool's structure from pane text, or None.
+
+    The screen already carries the question, the numbered options with their
+    descriptions and the key hint; this shapes them so the PWA can paint
+    readable HTML instead of a terminal mirror. It deliberately says NOTHING
+    about which option is selected: that signal does not exist in anything
+    herdr exposes (no cursor in the api schema or snapshot; identical
+    backgrounds in the styled read).
+    """
+    lines = [_clean_dialog_line(raw) for raw in (text or "").splitlines()]
+    option_at = []
+    hint = ""
+    hint_at = -1
+    for i, line in enumerate(lines):
+        match = _DIALOG_OPTION.match(line)
+        if match:
+            option_at.append((i, int(match.group(1)), match.group(2).strip()))
+        elif not hint and line and _DIALOG_HINT.search(line):
+            hint = line
+            hint_at = i
+    if len(option_at) < 2:
+        return None
+
+    # The question: the nearest non-empty line(s) directly above the first
+    # option, stopping at the first gap once something was collected.
+    question_lines = []
+    i = option_at[0][0] - 1
+    while i >= 0 and len(question_lines) < 2:
+        line = lines[i]
+        if not line:
+            if question_lines:
+                break
+            i -= 1
+            continue
+        if _DIALOG_OPTION.match(line) or _DIALOG_HINT.search(line):
+            break
+        question_lines.insert(0, line)
+        i -= 1
+    if not question_lines:
+        return None
+
+    options = []
+    for pos, (index, number, title) in enumerate(option_at):
+        end = option_at[pos + 1][0] if pos + 1 < len(option_at) else len(lines)
+        description = []
+        for j in range(index + 1, end):
+            line = lines[j]
+            if not line:
+                continue
+            if j == hint_at or _DIALOG_HINT.search(line) or _DIALOG_OPTION.match(line):
+                break
+            description.append(line)
+        options.append(
+            {"n": number, "title": title, "description": " ".join(description)}
+        )
+
+    return {"question": " ".join(question_lines), "options": options, "hint": hint}
