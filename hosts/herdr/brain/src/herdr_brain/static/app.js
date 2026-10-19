@@ -2633,7 +2633,16 @@
   });
 
   function showToast(text, durationMs, kind, html) {
-    toast.show(text, { durationMs: durationMs, kind: kind, html: html });
+    /* Announcement toasts read "🔊 <label>: <phrase>" phrase by phrase: the
+     * label is their dismissal group, so closing one closes the whole
+     * announcement instead of re-opening on the next phrase. Anything else
+     * is ungrouped and can never be suppressed. */
+    var group = null;
+    if (typeof text === "string" && text.indexOf("\ud83d\udd0a ") === 0) {
+      var colon = text.indexOf(": ");
+      group = colon > 2 ? text.slice(2, colon) : text;
+    }
+    toast.show(text, { durationMs: durationMs, kind: kind, html: html, group: group });
   }
 
   function hideToast() {

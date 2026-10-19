@@ -416,14 +416,13 @@
      * input is written), so its dialog is answered with KEYS (POST
      * /pane/keys). The pad is deliberately explicit — it never auto-selects
      * an option, so you always navigate and confirm yourself. */
+    /* A SUBSECTION, not a card: no chrome, no inner padding — the pad and
+     * the dialog use the full cockpit width. */
     #pane-reply-keys {
-      margin: 0 var(--sp-3) var(--sp-2);
-      padding: var(--sp-2) var(--sp-3);
-      border-radius: 10px;
-      background: var(--chip-bg);
-      color: var(--muted);
-      font-size: var(--fs-xs);
-      line-height: 1.35;
+      margin: 0 10px var(--sp-2);
+      color: var(--text);
+      font-size: var(--fs-sm);
+      line-height: 1.4;
     }
     .pane-keys {
       display: flex;
@@ -458,18 +457,19 @@
       background: var(--bg);
       color: var(--text);
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-size: 12.5px;
+      font-size: 14px;
       line-height: 1.35;
       white-space: pre-wrap;
       word-break: break-word;
     }
     .dlg { font-family: system-ui, -apple-system, sans-serif; }
-    .dlg-q { font-weight: 700; margin: 2px 0 8px; font-size: 14px; white-space: normal; }
+    .pane-keys-dialog { background: transparent; }
+    .dlg-q { font-weight: 700; margin: 2px 0 8px; font-size: 15.5px; white-space: normal; }
     .dlg-opt { margin: 7px 0; white-space: normal; }
     .dlg-num { font-weight: 700; color: var(--accent); }
-    .dlg-title { font-weight: 600; font-size: 13px; }
-    .dlg-desc { color: var(--text); opacity: 0.78; margin: 2px 0 0 16px; font-size: 12px; white-space: normal; }
-    .dlg-hint { margin-top: 8px; color: var(--text); opacity: 0.6; font-size: 11px; white-space: normal; }
+    .dlg-title { font-weight: 600; font-size: 14.5px; }
+    .dlg-desc { color: var(--text); opacity: 0.78; margin: 2px 0 0 16px; font-size: 13.5px; white-space: normal; }
+    .dlg-hint { margin-top: 8px; color: var(--text); opacity: 0.6; font-size: 12px; white-space: normal; }
     /* ── COCKPIT VIEW TABS ───────────────────────────────────────────
      * "Vista del agente" (transcript turns) and "pantalla" (terminal
      * preview) are two tabs of ONE cockpit body: one is shown at a time,
@@ -851,7 +851,24 @@
       overflow-y: auto;
       overflow-x: hidden;
       -webkit-overflow-scrolling: touch;
+      padding-right: 46px;   /* room for the close X */
     }
+    /* Dismiss an announcement without waiting for its phrases to end. */
+    #toast .toast-close {
+      position: absolute;
+      top: 4px;
+      right: 4px;
+      min-width: 36px;
+      min-height: 36px;
+      border: none;
+      border-radius: 9px;
+      background: transparent;
+      color: inherit;
+      font-size: 15px;
+      font-weight: 700;
+      opacity: 0.55;
+    }
+    #toast .toast-close::after { content: "\2715"; }
     /* System warnings (herdr-tts daemon down): distinct amber styling. */
     #toast.warning { border-color: var(--warn); color: var(--warn); font-weight: 700; }
 

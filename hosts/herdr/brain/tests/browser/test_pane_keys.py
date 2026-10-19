@@ -181,3 +181,19 @@ def test_a_question_tool_renders_as_readable_html(karaoke_app):
     expect(page.locator("#pane-keys-dialog .dlg-opt")).to_have_count(2)
     expect(page.locator("#pane-keys-dialog .dlg-desc").first).to_contain_text("Incluye también los tests.")
     expect(page.locator("#pane-keys-dialog .dlg-hint")).to_contain_text("select")
+
+
+def test_the_toast_can_be_closed_with_its_x(karaoke_app):
+    """An announcement read phrase by phrase must be dismissable on demand."""
+    harness = blocked_app(karaoke_app)
+    page, held = harness.page, []
+    harness.context.route("**/pane/keys", lambda route: held.append(route))
+
+    page.locator('#pane-keys [data-key="enter"]').click()
+    held[0].fulfill(status=502, json={"detail": "synthetic failure"})
+    expect(page.locator("#toast")).to_be_visible()
+    expect(page.locator("#toast")).to_contain_text("No se pudo enviar la tecla")
+
+    page.locator("#toast .toast-close").click()
+
+    expect(page.locator("#toast")).to_be_hidden()
