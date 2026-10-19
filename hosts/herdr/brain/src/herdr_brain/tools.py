@@ -378,9 +378,15 @@ class BrainTools:
             styled = self.screen_tail(target, DIALOG_SCREEN_LINES, as_ansi=True)
             if styled:
                 screen_runs = ansi_runs(styled)
-            # The question tool's own shape, for readable HTML on the phone.
-            # Claims nothing about which option is selected.
-            dialog = parse_dialog(screen)
+            # Parse from the WIDE read: the plain screen tail is only 12 lines
+            # and a tall question tool does not fit in it, so the question
+            # line would be cut and the parse would fail. The runs already
+            # carry the escape-stripped text, so this costs no extra
+            # subprocess. Claims nothing about which option is selected.
+            wide_text = "\n".join(
+                "".join(run.get("t", "") for run in line) for line in (screen_runs or [])
+            )
+            dialog = parse_dialog(wide_text or screen or None)
 
         return {
             "status": status_payload(target),
