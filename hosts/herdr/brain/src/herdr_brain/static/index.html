@@ -11,17 +11,17 @@
     :root {
       --sp-1: 4px; --sp-2: 8px; --sp-3: 16px; --sp-4: 24px;
       --fs-lg: 22px; --fs-md: 16px; --fs-sm: 14px; --fs-xs: 12px;
-      /* OpenCode's own TUI palette, extracted from the ANSI the panes emit:
-       * the reader's markdown colours speak the same language as the
-       * terminal the agent actually rendered. */
-      --oc-purple: #9d7cd8;
-      --oc-green: #7fd88f;
-      --oc-amber: #f5a742;
-      --oc-blue: #5c9cf5;
-      /* The TUI's own surfaces, also from the captured ANSI: code blocks and
-       * the terminal preview sit on near-black, like the pane itself. */
-      --oc-bg: #0a0a0a;
-      --oc-panel: #141414;
+      /* Light-theme markdown uses deeper shades of the TUI's semantic
+       * colours. Pastel terminal colours lose contrast on white. */
+      --oc-purple: #6d28a5;
+      --oc-green: #166534;
+      --oc-amber: #92400e;
+      --oc-blue: #1d4ed8;
+      --oc-bg: #f0f2f5;
+      --oc-panel: #e9edf3;
+      /* ANSI foreground colours belong on a terminal surface in either theme. */
+      --terminal-bg: #0a0a0a;
+      --cockpit-bg: #ffffff;
       --warn-wash: #f4e8c3;
       --bg: #f4f6f9;
       --panel: #ffffff;
@@ -36,12 +36,12 @@
       --user-wash: rgba(18, 133, 92, 0.15);   /* accent-adjacent tint for the user's own turns */
       --user-line: rgba(18, 133, 92, 0.45);
     }
-    /* TWO EXPLICIT THEMES. The dark one speaks the TUI's own language:
-     * its base and panel are the near-blacks captured from the panes, so
-     * the whole interface sits where the agent renders. app.js sets
+    /* TWO EXPLICIT THEMES. The dark cockpit keeps the TUI's near-black,
+     * while the surrounding body is a lighter charcoal. app.js sets
      * data-theme on <html> (stored choice, else the system preference). */
     :root[data-theme="dark"] {
-      --bg: #0a0a0a;
+      --bg: #1b1d22;
+      --cockpit-bg: #0a0a0a;
       --panel: #141414;
       --text: #eeeeee;
       --muted: #808080;
@@ -51,6 +51,12 @@
       --warn: #f5a742;
       --blue: #5c9cf5;
       --chip-bg: #202020;
+      --oc-purple: #9d7cd8;
+      --oc-green: #7fd88f;
+      --oc-amber: #f5a742;
+      --oc-blue: #5c9cf5;
+      --oc-bg: #0a0a0a;
+      --oc-panel: #141414;
       --warn-wash: #3b2f11;
       --user-wash: rgba(127, 216, 143, 0.14);
       --user-line: rgba(127, 216, 143, 0.40);
@@ -69,8 +75,10 @@
       font: var(--fs-md)/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
       display: flex;
       flex-direction: column;
-      /* Cockpit content must never flow under the fixed footer. */
-      padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 104px);
+      /* Keep the primary call action viewport-anchored. app.js measures the
+       * footer, including safe-area and keyboard fallback, instead of
+       * reserving an oversized fixed gap below the cockpit. */
+      padding-bottom: var(--call-footer-height, calc(env(safe-area-inset-bottom, 0px) + 81px));
     }
     button { font: inherit; border: 0; border-radius: 12px; cursor: pointer; }
     .hidden { display: none !important; }
@@ -387,7 +395,7 @@
       border: none;
       border-top: 1px solid var(--line);
       border-radius: 0;
-      background: var(--panel);
+      background: var(--cockpit-bg);
       overflow: hidden;
     }
     /* Wide viewports: a centered column so the cockpit never
@@ -729,7 +737,7 @@
     .view-screen {
       margin: 0;
       padding: 8px 10px;
-      background: var(--oc-bg);
+      background: var(--terminal-bg);
       border-radius: 8px;
       color: var(--muted);
       font: var(--fs-xs)/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;

@@ -95,6 +95,29 @@
   var pendingMenuCount = $("pending-menu-count");
   var pendingEmpty = $("pending-empty");
 
+  /* The call button must stay viewport-anchored, even if the document grows.
+   * Reserve the footer's measured height so there is neither dead space nor
+   * overlap when text mode, wrapping, or safe-area padding changes it. */
+  var callFooter = document.querySelector("footer");
+  function syncCallFooterHeight() {
+    if (!callFooter) return;
+    var height = Math.ceil(callFooter.getBoundingClientRect().height) + "px";
+    if (document.documentElement.style.getPropertyValue("--call-footer-height") !== height) {
+      document.documentElement.style.setProperty("--call-footer-height", height);
+    }
+  }
+  if (callFooter) {
+    syncCallFooterHeight();
+    if (window.ResizeObserver) {
+      new ResizeObserver(syncCallFooterHeight).observe(callFooter);
+    } else {
+      window.addEventListener("resize", syncCallFooterHeight);
+      new MutationObserver(syncCallFooterHeight).observe(callFooter, {
+        subtree: true, childList: true, characterData: true, attributes: true
+      });
+    }
+  }
+
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   var recognition = null;
   var listening = false;        // a recognition object is running
