@@ -22,6 +22,7 @@
        * the terminal preview sit on near-black, like the pane itself. */
       --oc-bg: #0a0a0a;
       --oc-panel: #141414;
+      --warn-wash: #f4e8c3;
       --bg: #f4f6f9;
       --panel: #ffffff;
       --text: #17202b;
@@ -35,21 +36,24 @@
       --user-wash: rgba(18, 133, 92, 0.15);   /* accent-adjacent tint for the user's own turns */
       --user-line: rgba(18, 133, 92, 0.45);
     }
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --bg: #0f1115;
-        --panel: #171a21;
-        --text: #e6e9ef;
-        --muted: #8b93a3;
-        --line: #232833;
-        --accent: #4ade80;
-        --danger: #f87171;
-        --warn: #fbbf24;
-        --blue: #60a5fa;
-        --chip-bg: #2a2f3a;
-        --user-wash: rgba(74, 222, 128, 0.16);
-        --user-line: rgba(74, 222, 128, 0.40);
-      }
+    /* TWO EXPLICIT THEMES. The dark one speaks the TUI's own language:
+     * its base and panel are the near-blacks captured from the panes, so
+     * the whole interface sits where the agent renders. app.js sets
+     * data-theme on <html> (stored choice, else the system preference). */
+    :root[data-theme="dark"] {
+      --bg: #0a0a0a;
+      --panel: #141414;
+      --text: #eeeeee;
+      --muted: #808080;
+      --line: #262626;
+      --accent: #7fd88f;
+      --danger: #f87171;
+      --warn: #f5a742;
+      --blue: #5c9cf5;
+      --chip-bg: #202020;
+      --warn-wash: #3b2f11;
+      --user-wash: rgba(127, 216, 143, 0.14);
+      --user-line: rgba(127, 216, 143, 0.40);
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; }
@@ -401,11 +405,9 @@
     #pending-banner.error      { background: #f6d7d7; color: var(--danger); }
     #pending-banner.permission { background: #d8e6f8; color: var(--blue); }
     #pending-banner.actionable { cursor: pointer; }
-    @media (prefers-color-scheme: dark) {
-      #pending-banner.question   { background: #3b2f11; }
-      #pending-banner.error      { background: #3a1414; }
-      #pending-banner.permission { background: #14293a; }
-    }
+    :root[data-theme="dark"] #pending-banner.question   { background: #3b2f11; }
+    :root[data-theme="dark"] #pending-banner.error      { background: #3a1414; }
+    :root[data-theme="dark"] #pending-banner.permission { background: #14293a; }
     /* T7 coexistence (PRD action-approval-gate §8): while the approval
      * card is showing, the agent pending banner stays visible but
      * visually SECONDARY to the gate — dimmed and desaturated, never
@@ -983,7 +985,7 @@
       color: #7c1d1d;
       font-size: 14px;
     }
-    @media (prefers-color-scheme: dark) { #banner { background: #3a1414; color: #fecaca; } }
+    :root[data-theme="dark"] #banner { background: #3a1414; color: #fecaca; }
 
     /* Bottom call bar: always visible and tappable. */
     footer {
@@ -1100,7 +1102,7 @@
       font-variant-numeric: tabular-nums;
       flex: 0 0 auto;
     }
-    #voice-engine-btn {
+    #voice-engine-btn, #theme-btn {
       flex: 0 0 auto;
       min-height: 44px;
       padding: 4px 12px;
@@ -1112,7 +1114,7 @@
       border-radius: 999px;
       white-space: nowrap;
     }
-    #voice-engine-btn:active { transform: scale(0.96); }
+    #voice-engine-btn:active, #theme-btn:active { transform: scale(0.96); }
     /* Ajustes → Pendientes launcher (pending-notices-in-settings-sheet):
      * same pill button language as the engine toggle; the pending count
      * rides inside the label. */
@@ -1209,9 +1211,7 @@
     .turn { max-width: 86%; padding: 9px 13px; border-radius: 14px; white-space: pre-wrap; }
     .turn.user   { align-self: flex-end; background: #d9efe2; border-bottom-right-radius: 4px; }
     .turn.brain  { align-self: flex-start; background: var(--chip-bg); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
-    @media (prefers-color-scheme: dark) {
-      .turn.user { background: #234c31; }
-    }
+    :root[data-theme="dark"] .turn.user { background: #234c31; }
     .turn .who { display: block; font-size: 11px; color: var(--muted); margin-bottom: 3px; }
     /* Announcement bubble: visually distinct from the conversation flow. */
     .turn.announce {
@@ -1651,6 +1651,10 @@
       <div class="s-row">
         <span class="s-label">Motor de voz</span>
         <button id="voice-engine-btn" type="button">Voz: Servidor</button>
+      </div>
+      <div class="s-row">
+        <span class="s-label">Tema</span>
+        <button id="theme-btn" type="button">Tema: Oscuro</button>
       </div>
       <span class="s-hint">Servidor: transcribe en el back con whisper (robusto). Navegador: Web Speech de Chrome (más rápido, menos fiable en Android).</span>
       <div class="s-row">
