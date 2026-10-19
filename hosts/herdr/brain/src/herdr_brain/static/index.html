@@ -11,6 +11,13 @@
     :root {
       --sp-1: 4px; --sp-2: 8px; --sp-3: 16px; --sp-4: 24px;
       --fs-lg: 22px; --fs-md: 16px; --fs-sm: 14px; --fs-xs: 12px;
+      /* OpenCode's own TUI palette, extracted from the ANSI the panes emit:
+       * the reader's markdown colours speak the same language as the
+       * terminal the agent actually rendered. */
+      --oc-purple: #9d7cd8;
+      --oc-green: #7fd88f;
+      --oc-amber: #f5a742;
+      --oc-blue: #5c9cf5;
       --bg: #f4f6f9;
       --panel: #ffffff;
       --text: #17202b;
@@ -653,6 +660,22 @@
       padding: 4px 8px;
       text-align: left;
     }
+    /* Markdown colours (opencode TUI palette): headers and table headers
+     * purple, bold amber, code green, links blue. */
+    #glance-turns .reader-content h1,
+    #glance-turns .reader-content h2,
+    #glance-turns .reader-content h3,
+    #glance-turns .reader-content h4 { color: var(--oc-purple); }
+    #glance-turns .reader-content strong { color: var(--oc-amber); }
+    #glance-turns .reader-content code { color: var(--oc-green); }
+    #glance-turns .reader-content pre,
+    #glance-turns .reader-content pre code { color: var(--oc-green); }
+    #glance-turns .reader-content th {
+      color: var(--oc-purple);
+      font-weight: 700;
+      background: color-mix(in srgb, var(--oc-purple) 12%, transparent);
+    }
+    #glance-turns .reader-content a { color: var(--oc-blue); font-weight: 700; }
     #glance-turns .reader-content .tts-sent,
     #glance-turns .reader-content .tts-sent-cont {
       border-radius: 4px;
@@ -926,7 +949,18 @@
       white-space: pre-wrap;
       margin: 4px 0;
     }
-    #toast .toast-content a { color: var(--accent); font-weight: 700; }
+    #toast .toast-content a { color: var(--oc-blue); font-weight: 700; }
+    #toast .toast-content h1,
+    #toast .toast-content h2,
+    #toast .toast-content h3,
+    #toast .toast-content h4 { color: var(--oc-purple); margin: 6px 0 3px; }
+    #toast .toast-content strong { color: var(--oc-amber); }
+    #toast .toast-content code { color: var(--oc-green); }
+    #toast .toast-content th {
+      color: var(--oc-purple);
+      font-weight: 700;
+      background: color-mix(in srgb, var(--oc-purple) 12%, transparent);
+    }
 
     /* Error banner: fixed ABOVE the drawer so errors are never covered. */
     #banner {
