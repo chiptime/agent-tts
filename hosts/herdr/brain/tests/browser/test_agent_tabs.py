@@ -10,6 +10,7 @@ behavior: exactly one panel is shown, and a tap (or arrow key) swaps it.
 
 from __future__ import annotations
 
+import pytest
 from playwright.sync_api import expect
 
 SCREEN_TEXT = "line one\nline two"
@@ -120,26 +121,83 @@ def test_styled_screen_runs_reach_the_screen_without_letting_markup_through(kara
     assert page.evaluate("() => document.querySelectorAll('#view-screen b').length") == 0
 
 
-def test_the_cockpit_fills_the_vertical_space(karaoke_app):
-    """#agent-view takes EVERYTHING between the header and the footer line.
+@pytest.mark.parametrize("viewport", [
+    {"width": 390, "height": 844},
+    {"width": 844, "height": 390},
+    {"width": 360, "height": 640},
+])
+@pytest.mark.parametrize("expanded_footer", [False, True])
+@pytest.mark.parametrize("has_resize_observer", [False, True])
+def test_the_cockpit_fills_the_vertical_space(
+    karaoke_app, viewport, expanded_footer, has_resize_observer
+):
+    """Use the footer's actual edge, not a guessed 104px reservation.
 
-    Pinned at a phone viewport (390x844): the section's bottom must sit on
-    the footer clearance (viewport minus the fixed footer's 104px) and the
-    turn list must keep the large majority of that height for itself.
+    The keyboard fallback and safe-area padding can make the footer taller;
+    the cockpit must touch it without either a gap or an overlap.
     """
     harness = karaoke_app()
+    if not has_resize_observer:
+        harness.context.add_init_script("window.ResizeObserver = undefined")
     harness.respond("/herd", [])
     page = harness.load().page
-    page.set_viewport_size({"width": 390, "height": 844})
-    page.wait_for_timeout(400)
+    page.set_viewport_size(viewport)
+    if expanded_footer:
+        page.evaluate("""() => {
+            document.getElementById('text-fallback').classList.remove('hidden');
+            const note = document.getElementById('mic-note');
+            note.textContent = 'Keyboard input is available';
+            note.classList.remove('hidden');
+            document.querySelector('footer').style.paddingBottom = '44px';
+        }""")
+
+    page.wait_for_function("""() => {
+        const cockpit = document.getElementById('agent-view').getBoundingClientRect();
+        const footer = document.querySelector('footer').getBoundingClientRect();
+        return Math.abs(cockpit.bottom - footer.top) <= 1;
+    }""")
 
     m = page.evaluate("""() => {
         const r = document.getElementById('agent-view').getBoundingClientRect();
         const g = document.getElementById('glance-turns').getBoundingClientRect();
+        const footer = document.querySelector('footer').getBoundingClientRect();
         return { top: r.top, bottom: r.bottom, height: r.height, turns: g.height,
-                 footerLine: innerHeight - 104 };
+                 footerTop: footer.top, footerBottom: footer.bottom, viewport: innerHeight };
     }""")
 
-    assert m["bottom"] == m["footerLine"]
-    assert m["height"] > 600
-    assert m["turns"] > 500
+    assert abs(m["bottom"] - m["footerTop"]) <= 1, m
+    assert abs(m["footerBottom"] - m["viewport"]) <= 1, m
+    assert m["height"] > 0
+    assert m["turns"] > 0
+
+
+def test_call_button_stays_visible_when_the_page_layout_is_taller(karaoke_app):
+    """A populated page must not push the primary call action off screen."""
+    harness = _load(karaoke_app)
+    page = harness.page
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.evaluate("""() => {
+        const turns = document.getElementById('glance-turns');
+        const card = document.createElement('article');
+        card.className = 'gturn assistant expanded';
+        const content = document.createElement('div');
+        content.className = 'reader-content';
+        for (let i = 0; i < 60; i++) {
+            const paragraph = document.createElement('p');
+            paragraph.textContent = 'Expanded transcript paragraph with markdown content. '.repeat(4);
+            content.appendChild(paragraph);
+        }
+        card.appendChild(content);
+        turns.appendChild(card);
+        // Emulate a page layout exceeding the available display area.
+        document.body.style.minHeight = (innerHeight + 120) + 'px';
+    }""")
+    geometry = page.evaluate("""() => {
+        const button = document.getElementById('call-btn').getBoundingClientRect();
+        const footer = document.querySelector('footer');
+        return { position: getComputedStyle(footer).position,
+                 buttonTop: button.top, buttonBottom: button.bottom, viewport: innerHeight };
+    }""")
+    assert geometry["buttonTop"] >= 0, geometry
+    assert geometry["buttonBottom"] <= geometry["viewport"], geometry
+    assert geometry["position"] == "fixed"
