@@ -129,6 +129,31 @@
   var serverMicBusy = false;    // a server-engine capture is starting up
 
   /* Persistent per-install ids. */
+  var THEME_KEY = "herdr-brain-theme";
+  var themeBtn = $("theme-btn");
+
+  function applyTheme(name) {
+    document.documentElement.setAttribute("data-theme", name);
+    var meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute("content", name === "dark" ? "#0a0a0a" : "#f4f6f9");
+    if (themeBtn) themeBtn.textContent = name === "dark" ? "Tema: Oscuro" : "Tema: Claro";
+  }
+
+  var storedTheme = null;
+  try { storedTheme = localStorage.getItem(THEME_KEY); } catch (err) { /* private mode */ }
+  applyTheme(
+    storedTheme === "dark" || storedTheme === "light"
+      ? storedTheme
+      : (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+  );
+  if (themeBtn) {
+    themeBtn.addEventListener("click", function () {
+      var next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+      try { localStorage.setItem(THEME_KEY, next); } catch (err) { /* private mode */ }
+      applyTheme(next);
+    });
+  }
+
   var SESSION_KEY = "herdr-brain-session";
   var PANE_KEY = "herdr-brain-pane";
   var MUTE_KEY = "herdr-brain-mute";
@@ -2858,7 +2883,7 @@
   pendingBannerEl.setAttribute("role", "alert");
   pendingBannerEl.style.fontSize = "var(--fs-xs)";
   pendingBannerEl.style.padding = "6px 8px";
-  pendingBannerEl.style.background = "#f4e8c3";
+  pendingBannerEl.style.background = "var(--warn-wash)";
   pendingBannerEl.style.color = "var(--warn)";
 
   var pendingListEl = document.createElement("ul");
