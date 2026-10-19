@@ -42,6 +42,11 @@
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; }
+    /* Dynamic viewport: on a phone browser the URL bar collapses on scroll
+     * and 100% does not always follow it; the cockpit must use every pixel
+     * the device actually shows. In the installed PWA (standalone) dvh is
+     * the full screen. */
+    @supports (height: 100dvh) { html, body { height: 100dvh; } }
     body {
       margin: 0;
       background: var(--bg);
