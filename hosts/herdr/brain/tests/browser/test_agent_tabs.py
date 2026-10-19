@@ -118,3 +118,28 @@ def test_styled_screen_runs_reach_the_screen_without_letting_markup_through(kara
     # doing so produced a black box with black text on our dark theme.
     assert first == ["", "Allow once"]
     assert page.evaluate("() => document.querySelectorAll('#view-screen b').length") == 0
+
+
+def test_the_cockpit_fills_the_vertical_space(karaoke_app):
+    """#agent-view takes EVERYTHING between the header and the footer line.
+
+    Pinned at a phone viewport (390x844): the section's bottom must sit on
+    the footer clearance (viewport minus the fixed footer's 104px) and the
+    turn list must keep the large majority of that height for itself.
+    """
+    harness = karaoke_app()
+    harness.respond("/herd", [])
+    page = harness.load().page
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.wait_for_timeout(400)
+
+    m = page.evaluate("""() => {
+        const r = document.getElementById('agent-view').getBoundingClientRect();
+        const g = document.getElementById('glance-turns').getBoundingClientRect();
+        return { top: r.top, bottom: r.bottom, height: r.height, turns: g.height,
+                 footerLine: innerHeight - 104 };
+    }""")
+
+    assert m["bottom"] == m["footerLine"]
+    assert m["height"] > 600
+    assert m["turns"] > 500
