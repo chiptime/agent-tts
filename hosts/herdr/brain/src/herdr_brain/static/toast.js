@@ -52,6 +52,40 @@
     var el = deps && deps.el;
     var mountFormatted = deps && deps.mountFormatted;
     var timer = null;
+    var closeBtn = null;
+    var currentGroup = null;
+    var dismissed = {};
+    var DISMISS_TTL_MS = 5 * 60 * 1000;
+
+    function ensureClose() {
+      if (closeBtn) return closeBtn;
+      closeBtn = doc.createElement("button");
+      closeBtn.type = "button";
+      closeBtn.className = "toast-close";
+      closeBtn.setAttribute("aria-label", "Cerrar aviso");
+      /* No text node: the glyph is CSS (::after) so the toast's own text
+       * stays exactly the payload's text. */
+      /* Feature-checked: the Node suite's fake DOM has no event listeners;
+       * the button simply inert there, fully wired in a real browser. */
+      if (closeBtn.addEventListener) closeBtn.addEventListener("click", function () {
+        /* Closing one phrase closes the whole announcement: the remaining
+         * chunks of the same group stay suppressed for the TTL. */
+        if (currentGroup) dismissed[currentGroup] = Date.now();
+        hide();
+      });
+      return closeBtn;
+    }
+
+    function suppressed(group) {
+      if (!group) return false;
+      var at = dismissed[group];
+      if (!at) return false;
+      if (Date.now() - at > DISMISS_TTL_MS) {
+        delete dismissed[group];
+        return false;
+      }
+      return true;
+    }
 
     function hide() {
       if (timer) { clearTimeout(timer); timer = null; }
@@ -60,6 +94,8 @@
 
     function show(text, opts) {
       opts = opts || {};
+      if (suppressed(opts.group)) return;
+      currentGroup = opts.group || null;
       var body = null;
       if (opts.html && typeof mountFormatted === "function") {
         var candidate = doc.createElement("div");
@@ -78,6 +114,8 @@
         }
       }
       if (!body) el.textContent = text;   /* the historical plain path */
+      /* Re-appended on every show: the content reset above detaches it. */
+      el.appendChild(ensureClose());
       el.classList.toggle("warning", opts.kind === "warning");
       el.classList.remove("hidden");
       if (timer) { clearTimeout(timer); timer = null; }

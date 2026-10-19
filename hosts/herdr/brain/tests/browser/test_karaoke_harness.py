@@ -15,10 +15,10 @@ EXPECTED_DIGESTS = {
     # served static files (the sheet grouping and the typed-reply input),
     # so these three hashes have to be recomputed from disk after every
     # merge that touches index.html, app.js or herd-group.js.
-    "/": "b6af769195632beb6edf70cafd13f8530152a894826893e1d33787150f686fdc",
-    "/app.js": "11ccc8d479bf60e5c11be60b0fd99fb0422bd74693f79ba61ba043d48786e53e",
+    "/": "5823f191a3689e114fb2718afce3a981acfbf12ca65358afe3d5ba08cc725d97",
+    "/app.js": "d78c5cf86b4f9e81bcf0b4a537d83f81c61a2e624679fa1a3c7b9235659d38e0",
     "/herd-group.js": "08296c7208e14dc1d5e46186b645d02089f8addef502b50eb11e61b186829674",
-    "/toast.js": "6c306cbe005036b7d697af7c3a6faa1fa5b90a6b444ee23176516b197c8df7e3",
+    "/toast.js": "47a230495fbbe8af8ed63ea0daf2e77a08f41f48911da4f9cc230ddc904fdd5d",
     "/reader.js": "28daec6199b0e756e1285b40f20fc860c1d9b4d2169cb2433c1ccfb12db31a76",
     "/speech.js": "785b966f634ffaaa70d92a8bafbf9b8a13c658617de2707d99b80736142823e6",
     "/announce.js": "b56e0152c4369bbab32177311340882123d75a2373ab2f786d2f5b60b5a500fb",
