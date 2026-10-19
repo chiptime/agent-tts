@@ -704,3 +704,27 @@ class TestDispatch:
     def test_descriptions_distinguish_scopes(self, name, scope_hint):
         by_name = {tool["function"]["name"]: tool["function"]["description"] for tool in TOOLS_SCHEMA}
         assert scope_hint in by_name[name]
+
+
+class TestDialogParsedFromTheWideRead:
+    """The plain tail is 12 lines; a tall question tool does not fit in it."""
+
+    def test_the_dialog_is_parsed_from_the_wide_styled_read(self, settings, make_stub):
+        stub = make_stub(
+            agents=[TestViewedScreenRuns.BLOCKED],
+            screen="3. Sí, todos\n4. Type your own answer",  # cut plain tail
+        )
+        stub._screen_ansi = (
+            "┃  ¿La PRD incluye corregirlos?\n"
+            "┃  1. No, solo detectar\n"
+            "┃  2. Sí, los críticos\n"
+            "┃  3. Sí, todos\n"
+            "┃  4. Type your own answer\n"
+            "┃  ↑↓ select  enter submit  esc dismiss"
+        )
+        tools = BrainTools(settings, herdr=stub)
+
+        view = tools.agent_view("w1:p9")
+
+        assert view["dialog"]["question"] == "¿La PRD incluye corregirlos?"
+        assert [opt["n"] for opt in view["dialog"]["options"]] == [1, 2, 3, 4]

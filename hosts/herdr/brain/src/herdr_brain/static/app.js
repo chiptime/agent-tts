@@ -1617,7 +1617,7 @@
   /* The dialog under the pad: the LAST lines of the pane, faithful. The
    * question and its options were always in the screen text — they simply
    * were never where the keys are. No parsing, no guessing. */
-  var DIALOG_PREVIEW_LINES = 14;
+  var DIALOG_PREVIEW_LINES = 18;
 
   /* The question tool as readable HTML: question, numbered options with
    * descriptions, key hint. Built with createElement + textContent, so agent
@@ -1667,12 +1667,18 @@
       keysDialog.classList.remove("hidden");
       return;
     }
+    /* Fallback: PLAIN text, no terminal colours. The pane's own foreground
+     * greys over our dark theme were unreadable on a phone, and the styling
+     * carries no selection information anyway (verified: no cursor in the
+     * herdr surface). The runs text is preferred: it is the wide read. */
     var runs = (view && view.screen_runs) || null;
-    var text = (view && view.screen) || "";
+    var text = "";
     if (runs && runs.length) {
-      paintRunsInto(keysDialog, runs.slice(Math.max(0, runs.length - DIALOG_PREVIEW_LINES)));
-      keysDialog.classList.remove("hidden");
-      return;
+      text = runs.map(function (line) {
+        return line.map(function (run) { return run.t || ""; }).join("");
+      }).join("\n");
+    } else if (view && view.screen) {
+      text = view.screen;
     }
     if (text) {
       var lines = text.split("\n");

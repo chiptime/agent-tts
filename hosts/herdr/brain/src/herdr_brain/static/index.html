@@ -458,17 +458,18 @@
       background: var(--bg);
       color: var(--text);
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-size: 11px;
+      font-size: 12.5px;
       line-height: 1.35;
       white-space: pre-wrap;
       word-break: break-word;
     }
-    .dlg-q { font-weight: 700; margin: 2px 0 6px; font-family: inherit; white-space: normal; }
-    .dlg-opt { margin: 5px 0; white-space: normal; }
+    .dlg { font-family: system-ui, -apple-system, sans-serif; }
+    .dlg-q { font-weight: 700; margin: 2px 0 8px; font-size: 14px; white-space: normal; }
+    .dlg-opt { margin: 7px 0; white-space: normal; }
     .dlg-num { font-weight: 700; color: var(--accent); }
-    .dlg-title { font-weight: 600; }
-    .dlg-desc { color: var(--muted); margin: 1px 0 0 16px; font-size: 10px; }
-    .dlg-hint { margin-top: 6px; color: var(--muted); font-size: 10px; }
+    .dlg-title { font-weight: 600; font-size: 13px; }
+    .dlg-desc { color: var(--text); opacity: 0.78; margin: 2px 0 0 16px; font-size: 12px; white-space: normal; }
+    .dlg-hint { margin-top: 8px; color: var(--text); opacity: 0.6; font-size: 11px; white-space: normal; }
     /* ── COCKPIT VIEW TABS ───────────────────────────────────────────
      * "Vista del agente" (transcript turns) and "pantalla" (terminal
      * preview) are two tabs of ONE cockpit body: one is shown at a time,
