@@ -18,6 +18,10 @@
       --oc-green: #7fd88f;
       --oc-amber: #f5a742;
       --oc-blue: #5c9cf5;
+      /* The TUI's own surfaces, also from the captured ANSI: code blocks and
+       * the terminal preview sit on near-black, like the pane itself. */
+      --oc-bg: #0a0a0a;
+      --oc-panel: #141414;
       --bg: #f4f6f9;
       --panel: #ffffff;
       --text: #17202b;
@@ -373,15 +377,19 @@
       min-height: 0;
       display: flex;
       flex-direction: column;
-      margin: var(--sp-2) var(--sp-3) 0;
-      /* Wide viewports: a centered column so the cockpit never
-       * stretches absurdly. */
-      max-width: 760px;
-      margin-inline: auto;
-      border: 1px solid var(--line);
-      border-radius: 12px;
+      /* Edge to edge: every pixel goes to the text, which keeps its own
+       * inner padding for breathing room. */
+      margin: 0;
+      border: none;
+      border-top: 1px solid var(--line);
+      border-radius: 0;
       background: var(--panel);
       overflow: hidden;
+    }
+    /* Wide viewports: a centered column so the cockpit never
+     * stretches absurdly. */
+    @media (min-width: 900px) {
+      #agent-view { max-width: 760px; margin-inline: auto; }
     }
     #pending-banner {
       padding: var(--sp-3);
@@ -629,12 +637,12 @@
     #glance-turns .reader-content code {
       font-family: ui-monospace, monospace;
       font-size: 0.92em;
-      background: var(--chip-bg);
+      background: var(--oc-panel);
       border-radius: 4px;
       padding: 1px 4px;
     }
     #glance-turns .reader-content pre {
-      background: var(--chip-bg);
+      background: var(--oc-bg);
       border: 1px solid var(--line);
       border-radius: 8px;
       padding: 8px;
@@ -719,7 +727,7 @@
     .view-screen {
       margin: 0;
       padding: 8px 10px;
-      background: var(--chip-bg);
+      background: var(--oc-bg);
       border-radius: 8px;
       color: var(--muted);
       font: var(--fs-xs)/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -806,7 +814,6 @@
 
     /* Narrow phones: buy the cockpit text horizontal room. */
     @media (max-width: 480px) {
-      #agent-view { margin: var(--sp-2) 10px 0; }
       #glance-turns { padding: 6px 8px; }
       .gturn { padding: 7px 10px; }
       .agent-tabs { padding: 6px 6px 0; }
@@ -936,12 +943,12 @@
     #toast .toast-content code {
       font-family: ui-monospace, monospace;
       font-size: 0.92em;
-      background: var(--chip-bg);
+      background: var(--oc-panel);
       border-radius: 4px;
       padding: 1px 4px;
     }
     #toast .toast-content pre {
-      background: var(--chip-bg);
+      background: var(--oc-bg);
       border: 1px solid var(--line);
       border-radius: 8px;
       padding: 8px;
