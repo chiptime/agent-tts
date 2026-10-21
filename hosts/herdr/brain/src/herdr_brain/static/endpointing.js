@@ -69,14 +69,16 @@
 (function (global) {
   "use strict";
 
-  var DEFAULT_SILENCE_MS = 1200;
+  var DEFAULT_SILENCE_MS = 800;
   var DEFAULT_HARD_CAP_MS = 15000;
+  var MAX_HARD_CAP_MS = 60000;
   var DEFAULT_DUPLICATE_WINDOW_MS = 5000;
 
   function createEndpointer(options) {
     options = options || {};
     var silenceMs = typeof options.silenceMs === "number" ? options.silenceMs : DEFAULT_SILENCE_MS;
-    var hardCapMs = typeof options.hardCapMs === "number" ? options.hardCapMs : DEFAULT_HARD_CAP_MS;
+    var hardCapMs = Math.min(MAX_HARD_CAP_MS,
+      typeof options.hardCapMs === "number" ? options.hardCapMs : DEFAULT_HARD_CAP_MS);
     var duplicateWindowMs = typeof options.duplicateWindowMs === "number" ? options.duplicateWindowMs : DEFAULT_DUPLICATE_WINDOW_MS;
     var now = options.now || function () { return Date.now(); };
 

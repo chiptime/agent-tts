@@ -26,9 +26,9 @@ Acceptance and checks: retain the PRD's G-01 through G-12 commands and run each 
 
 ## Tasks
 
-- T-01 [S7] inline; completed; G-01 RED missing fixture, GREEN 13 browser tests (native capture/playback plus existing harness); commit: pending.
-- T-02 [S1] inline; in_progress; 800 ms conversational endpointing with 60-second cap; depends T-01; G-02; commit: pending.
-- T-03 [S2,S6] inline; pending; compatible first-sentence synthesis and cancellation transport; depends T-02; G-03; commit: pending.
+- T-01 [S7] inline; completed; G-01 RED missing fixture, GREEN 13 browser tests (native capture/playback plus existing harness); commit: e0654b2.
+- T-02 [S1] inline; completed; four new assertions RED then GREEN; G-02 and complete Node suite passed, 13 browser-harness cases passed; commit: pending.
+- T-03 [S2,S6] inline; in_progress; compatible first-sentence synthesis and cancellation transport; depends T-02; G-03; commit: pending.
 - T-04 [S3] inline; pending; ordered first/remainder playback; depends T-03; G-04; commit: pending.
 - T-05 [S4,S5,S14] inline; pending; echo-safe VAD barge-in and client abort; depends T-04; G-05; commit: pending.
 - T-06 [S6] inline; pending; request-disconnect cleanup of LLM/TTS work; depends T-05; G-06; commit: pending.
@@ -53,3 +53,4 @@ Acceptance and checks: retain the PRD's G-01 through G-12 commands and run each 
 - L10 / budgets: maximum two functional remediation rounds per milestone. Stop with one concrete decision on exhausted proof, crash, feedback loop, possible approval bypass or required consent; never claim completion while a required gate remains failed, skipped or pending.
 - L11 / baseline checks: Node exit 0 (371 dot-reporter cases); Python 1861 passed, four pre-existing `tests/e2e` failures: `test_m4_fallback.py::test_fake_providers_e2e[chromium]`, `test_m4_fallback.py::test_cancel_during_fallback_zero_further_attempts[chromium]`, `test_m4_fallback.py::test_no_duplicate_submissions[chromium]`, and `test_m3_pending.py::test_kill9_host_pending_recovers_uncertain_no_replay`. These are known baseline failures, not permission to ignore new failures.
 - L12 / T-01: generated reproducible 48 kHz PCM in external pytest scratch, launched Chromium with all three fake-media flags and kept capture, recording, decoder and media events native. G-01 and the existing browser-harness suite passed together (13 tests, 2.06 s). The pure signal proves deterministic audio I/O, not speech recognition accuracy or physical echo cancellation. Browser artifacts now default outside the checkout. Risk: none for the isolated test-only harness.
+- L13 / T-02: both endpointing engines default to 800 ms and retain explicit silence thresholds; existing 15-second default cap is preserved while configured caps are bounded at 60 seconds. New tests cover defaults, 700/900 ms tuning and the maximum; existing override/hysteresis/text-dedup tests remain green. Re-pinned only the two changed static hashes. G-02, the full Node suite and 13 browser-harness cases passed. Risk: none for the requested timing behavior; feature-level shared-interface differential verification remains pending.
