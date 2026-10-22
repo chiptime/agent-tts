@@ -286,6 +286,15 @@ class KaraokeHarness:
                                        "turns": external or [], "window": 20}, query=("pane_id",))
         self.respond("/approval/current", {"approval": None}, query=("session_id",))
         self.respond("/reset", {"ok": True}, method="POST")
+        # FR-13 shared call context: default payload keeps every legacy
+        # test on its locally-minted session (call_id null = no
+        # adoption); the desktop/handover tests override these routes
+        # with their shared service state.
+        self.respond("/call/context", {"call_id": None, "pane_id": None, "revision": 0})
+        self.respond(
+            "/call/context", {"call_id": None, "pane_id": None, "revision": 0},
+            method="POST",
+        )
         context.route("**/*", self._route)
         context.route_web_socket("**/*", self._block_socket)
         context.add_init_script(INIT_SCRIPT)

@@ -124,13 +124,30 @@ herdr plugin link .
 herdr plugin action invoke status --plugin herdr.brain
 herdr plugin action invoke restart --plugin herdr.brain
 herdr plugin action invoke url --plugin herdr.brain
+herdr plugin action invoke call --plugin herdr.brain
 
 # Or directly via the CLI launcher:
 bin/herdr-brain status
 bin/herdr-brain url
+bin/herdr-brain call
 bin/herdr-brain restart
 bin/herdr-brain stop
 ```
+
+### Desktop voice call (`herdr brain call`)
+
+`bin/herdr-brain call` opens the Panel voice-call UI — the SAME PWA the
+phone uses — in your desktop browser. It is another interface to one
+call, not a second voice stack: desktop and mobile share the same
+conversation, the same agent inventory and the same pending approvals,
+so you can hand over mid-call between phone and laptop.
+
+| Aspect | Behavior |
+|---|---|
+| Service gate | The command health-checks `localhost:$HERDR_BRAIN_PORT` first; if the service is down it errors honestly and never opens a dead page (and never starts/restarts the service for you). |
+| Browser opener | `HERDR_BRAIN_BROWSER` wins if set; otherwise `xdg-open`, then `open` (macOS). A missing or failing opener is an error, not a silent no-op. |
+| Microphone consent | The browser's own permission prompt IS the consent gate. The command never bypasses it; a blocked mic falls back to the in-page keyboard. |
+| Shared context | Every client adopts the shared call identity from `GET /call/context` at boot AND before every voice utterance routes, and publishes its explicit agent selection via `POST /call/context` (last writer wins, monotonic revision — a stale snapshot can never overwrite a newer selection). The same routing barrier recovers a gate the other device opened, and the server guards the `/ask` supersession boundary: a spoken gate decision («adelante», «no»…) re-explains a pending gate instead of discarding it, while deliberate new work supersedes as always. A failed live-context check drops the utterance with a visible notice rather than sending it to a stale target. |
 
 ### Option 2: systemd user unit (optional, Linux daemon mode)
 

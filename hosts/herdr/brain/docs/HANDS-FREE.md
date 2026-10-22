@@ -183,6 +183,48 @@ What cancellation intentionally does **not** do:
   synchronous test fakes that ignore cancellation cannot be killed in
   Python; the production client is the cancellable path.
 
+## Desktop call and handover (S12/S13)
+
+`herdr brain call` (plugin action or `bin/herdr-brain call`) opens the
+existing PWA in the workstation's browser after a health check — the
+desktop is another client of the SAME service, with the same
+getUserMedia/VAD/STT pipeline and the same speech queue the phone uses.
+
+- **Browser consent is native**: the command never bypasses the
+  microphone prompt or autoplay policy. If the browser blocks the mic,
+  the page says so and falls back to the keyboard; nothing is
+  auto-granted.
+- **One shared call**: at boot AND before the microphone arms (call
+  start, resume-from-pause) every client re-adopts the shared call
+  identity from `GET /call/context` (the default session — the same
+  namespace the global call history and the boot ring seed use) and
+  publishes its explicit agent selection via `POST /call/context`
+  (last writer wins, monotonic revision). A mic-arm barrier recovers a
+  gate the OTHER client opened after this page booted, before any
+  utterance can route, so handover keeps the conversation, the selected
+  agent and the pending approval gate even for already-open pages. A
+  stale async snapshot (revision older than what this client already
+  applied, e.g. a delayed boot response) never overwrites a newer
+  explicit selection; hanging up or pausing voids a pending barrier so
+  a late result never reopens the microphone.
+- **S14 survives handover**: a gate recovered by the second client
+  carries no playback authority — the recovery payload never includes
+  the explanation speech identity — so its spoken «adelante» gets the
+  clarify restate and only the restate's own receipt confirms. A
+  revised gate needs a fresh explanation from whoever confirms it.
+  The server enforces the same rule at the /ask supersession boundary:
+  a voice utterance the approval lexicon recognizes as a gate decision
+  («adelante», «no», a replace intent) that reaches /ask while a live
+  gate is pending re-explains that gate instead of discarding it —
+  atomically under the approval store's lock — while deliberate new
+  work keeps the legacy supersede. If the live shared-context check
+  itself fails, the client drops the utterance with an honest notice
+  instead of sending it to a stale target. A protected decision turn
+  that cannot register a speech job (the 32-slot registry is full)
+  keeps the ordinary text-only degraded contract — no render, no new
+  explanation authority, `speech: {status: degraded, reason:
+  registry-full}` — while the gate stays protected.
+
 ## Autonomous audio proof
 
 See [`tests/e2e/fixtures/README.md`](../tests/e2e/fixtures/README.md) for the

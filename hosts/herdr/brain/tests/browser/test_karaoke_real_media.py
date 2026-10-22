@@ -110,6 +110,10 @@ class RealMediaApp:
                                "turns": [{"role": "assistant", "text": "External replay fixture"}],
                                "window": 20}, {"pane_id"}),
             "/approval/current": ({"approval": None}, {"session_id"}),
+            # FR-13 shared call context: the default payload keeps these
+            # suites on their locally-minted session (call_id null = no
+            # adoption); the desktop/handover suite carries the real one.
+            "/call/context": ({"call_id": None, "pane_id": None, "revision": 0}, set()),
         }
         context.route("**/*", self.route)
         context.route_web_socket("**/*", self.block_socket)
