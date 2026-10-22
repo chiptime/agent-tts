@@ -56,7 +56,7 @@ from .consult import ConsultService
 from .herdr import MAX_SEND_KEYS, SEND_KEY_ALLOWLIST, HerdrError
 from .history import HistoryStore, default_history_path
 from .llm import BrainLLM, BrainLLMError, TurnCancelled
-from .memory import MAX_MESSAGES, ConversationStore
+from .memory import DEFAULT_SESSION, MAX_MESSAGES, ConversationStore
 from .reader import ReaderCache, turn_id
 from .speech import (
     PHASE_CANCELLED,
@@ -306,6 +306,14 @@ class ResetRequest(BaseModel):
     session_id: Optional[str] = Field(default=None, max_length=MAX_SESSION_ID_CHARS)
 
 
+class CallContextRequest(BaseModel):
+    """FR-13 shared-selection update: the pane one client picked. A
+    missing/blank value clears the shared selection (back to each
+    client's focused-pane fallback)."""
+
+    pane_id: Optional[str] = Field(default=None, max_length=MAX_SESSION_ID_CHARS)
+
+
 class SpeechCancelRequest(BaseModel):
     """VS1.3 cancel body. Both fields are required and non-empty (422).
 
@@ -460,6 +468,47 @@ def _log_abandoned_turn(future: "asyncio.Future") -> None:
 _SPEECH_NEXT_ACK_LOCK = threading.Lock()
 
 
+class CallContextStore:
+    """The ONE call's shared context seam (FR-13).
+
+    Desktop and mobile are two interfaces to the same call: the call
+    identity is the default session — the namespace the global call
+    history, the boot ring seed and id-less clients already share — and
+    this store adds only what the baseline lacked, the SELECTED pane
+    published by whichever client picked it last (last writer wins; the
+    monotonic ``revision`` lets a client tell a fresh snapshot from one
+    it already saw). In-memory by design: a restart simply returns to no
+    shared selection and every client falls back to its own last choice,
+    exactly like the per-device baseline. It holds NO conversation
+    content and NO approval authority — gates stay in the per-session
+    ApprovalGateStore keyed by the shared call id.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._pane_id: Optional[str] = None
+        self._revision = 0
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return {
+                "call_id": DEFAULT_SESSION,
+                "pane_id": self._pane_id,
+                "revision": self._revision,
+            }
+
+    def select(self, pane_id: Optional[str]) -> dict:
+        """Publishes (or, with None, clears) the shared pane selection."""
+        with self._lock:
+            self._pane_id = pane_id
+            self._revision += 1
+            return {
+                "call_id": DEFAULT_SESSION,
+                "pane_id": self._pane_id,
+                "revision": self._revision,
+            }
+
+
 def create_app(
     settings: Optional[Settings] = None,
     llm_factory: Optional[_LLMFactory] = None,
@@ -523,6 +572,10 @@ def create_app(
     for record in history.load_and_compact(last_n=MAX_MESSAGES):
         store.append(None, record["role"], record["text"])
     approval_store = ApprovalGateStore(timeout_s=cfg.approval_timeout_s)
+
+    # FR-13 shared call context: the identity + selection desktop and
+    # mobile hand over (see CallContextStore).
+    call_context_store = CallContextStore()
 
     # Speech job registry (voice-stack VS1.1): bounded, in-process, and
     # injectable like every other seam — tests drive small bounds and
@@ -606,6 +659,7 @@ def create_app(
     app.state.daemon_watcher = daemon_watcher
     app.state.transcriber = transcriber
     app.state.approval_store = approval_store
+    app.state.call_context = call_context_store
     app.state.speech_jobs = speech_jobs
     app.state.sse_heartbeat_s = sse_heartbeat_s
     app.state.sse_stream_limit = sse_stream_limit
@@ -804,6 +858,36 @@ def create_app(
         turns = history.load_before(before, capped)
         has_more = bool(turns) and bool(history.load_before(turns[0]["ts"], 1))
         return {"turns": turns, "has_more": has_more}
+
+    @app.get("/call/context")
+    def call_context() -> dict:
+        """The ONE call's shared context (FR-13): the call identity every
+        client — phone or laptop — adopts as its session id, plus the
+        pane selection published by whichever client chose last. Read
+        at boot by the PWA; never carries approval authority."""
+        return call_context_store.snapshot()
+
+    @app.post("/call/context")
+    def call_context_select(body: CallContextRequest) -> dict:
+        """Publishes one client's pane selection to the whole call.
+
+        Last writer wins and ``revision`` only grows: a stale snapshot is
+        recognizably old, never a conflict — two live clients converge on
+        whatever was selected last, mirroring how the tmux focus itself
+        behaves. The pane id is validated (short, single line) so the
+        shared slot can never smuggle a newline into a pane target.
+        """
+        pane = body.pane_id
+        if pane is not None:
+            pane = pane.strip()
+            if not pane:
+                pane = None
+            elif len(pane) > MAX_SESSION_ID_CHARS or re.search(r"[\r\n\t]", pane):
+                raise HTTPException(
+                    status_code=422,
+                    detail="pane_id must be a short single-line pane identifier",
+                )
+        return call_context_store.select(pane)
 
     @app.get("/state")
     def state() -> dict:
@@ -1085,10 +1169,21 @@ def create_app(
         def run_turn() -> dict:
             if body.reset:
                 store.reset(body.session_id)
-            # A new turn always retires the session's live gate (PRD §4): the
-            # user moved on, so an unanswered gate must never linger. propose()
-            # supersedes too, but a question-only ask must not leave a zombie.
-            approval_store.supersede(body.session_id)
+            # Turn opening vs the session's live gate (PRD §4 + S13):
+            # deliberate new work retires the unanswered gate exactly as
+            # always — but a VOICE DECISION the approval lexicon
+            # recognizes («adelante», «no», a replace intent — never a
+            # model guess) aimed at a gate another client opened after
+            # this one's context snapshot re-explains that gate instead
+            # of discarding it. The decision is atomic under the store's
+            # lock (begin_turn), so no interleaved ask can slip between
+            # the check and the retirement.
+            decision_intent = resolve_utterance(body.text) in (
+                OUTCOME_APPROVE, OUTCOME_REJECT, OUTCOME_REPLACE_INTENT,
+            )
+            pending = approval_store.begin_turn(body.session_id, decision_intent)
+            if pending is not None:
+                return _pending_gate_turn(pending, body, job, degraded)
             try:
                 # Inside the guarded zone: get_llm() itself raises
                 # BrainLLMError (missing GLM_API_KEY) and must keep
@@ -1525,6 +1620,83 @@ def create_app(
             if staged and job.ack_watermark < max(seg["seq"] for seg in staged):
                 return False
         return True
+
+    def _pending_gate_turn(
+        gate: ApprovalGate,
+        body: "TextRequest",
+        job: Optional[SpeechJob],
+        degraded: Optional[str] = None,
+    ) -> dict:
+        """S13/B2: a voice decision raced the client's context view into
+        /ask while a live gate (opened by ANOTHER client after that view)
+        is pending. The turn re-explains the CURRENT action in /ask's
+        response shape: the answer is the spoken restate, the approval
+        payload re-arms the gate on the client, and — exactly like the
+        clarify path — only a render that really happened binds an
+        explanation identity, atomically revision-checked. NOTHING
+        executes here: the client must still confirm through the normal
+        S14 path, presenting THIS restate's receipt (the turn's own
+        speech job when it drained the audio). No inherited receipt can
+        exist — the previous binding stays void unless this render
+        atomically replaces it at the same revision.
+
+        VS1.1 admission parity: a turn that could NOT register a speech
+        job (``degraded`` — e.g. the registry is full) keeps the exact
+        text-only degraded contract the ordinary path holds: NO render
+        (an unregistered, uncancellable audio job is exactly what the
+        registry bound exists to prevent), NO new explanation
+        authority, and the ``speech: {status: degraded, reason: …}``
+        marker the client already knows. The gate stays protected —
+        degradation never reopens the supersede path."""
+        line = clarify_line(gate)
+        audio_url = None if degraded is not None else speak_answer(line)
+        cancelled = job is not None and job.cancel_requested
+        explain_id: Optional[str] = None
+        if audio_url and not cancelled:
+            # Whose explanation identity is this? The voice turn's OWN
+            # speech job (the client knows the id and may present it
+            # after draining the restate), or a fresh clarify id for a
+            # text-mode turn. A cancelled turn binds nothing.
+            if job is not None:
+                explain_id = job.id
+            else:
+                explain_id = f"clarify-{uuid.uuid4().hex[:16]}"
+            try:
+                if job is None:
+                    speech_jobs.register(explain_id, uuid.uuid4().hex, gate.session_id)
+                speech_jobs.mark(explain_id, PHASE_COMPLETE)
+                bound = approval_store.bind_explanation(
+                    gate.gate_id, explain_id, expected_revision=gate.revision
+                )
+                if bound is None:
+                    explain_id = None  # gate changed under us: no binding
+            except (DuplicateActiveJob, RegistryFull, JobAlreadyTerminal, KeyError):
+                explain_id = None
+        if job is not None:
+            # The admitted job never leaks waiting: cancelled stays
+            # cancelled; otherwise audio rendered -> complete (its
+            # receipt may confirm after a full drain), else failed.
+            phase = (
+                PHASE_CANCELLED if cancelled
+                else PHASE_COMPLETE if audio_url
+                else PHASE_FAILED
+            )
+            _mark_phase_quietly(speech_jobs, job.id, phase)
+        response = {
+            "answer": line,
+            "pane_id": gate.action.pane_id,
+            "agent": gate.action.agent,
+            "session_id": gate.session_id,
+            "audio_url": audio_url,
+            "approval": approval_payload(gate, cfg.approval_timeout_s),
+        }
+        if degraded is not None:
+            # Exact ordinary-path degraded marker (VS2.4): text-only,
+            # no job id — nothing was registered.
+            response["speech"] = {"status": "degraded", "reason": degraded}
+        elif job is not None:
+            response["speech"] = {"id": job.id, "status": phase}
+        return response
 
     def _clarify_turn(gate: ApprovalGate, line: str) -> dict:
         """The clarify response (S14): restate the CURRENT action and —

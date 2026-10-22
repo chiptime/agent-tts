@@ -16,7 +16,7 @@ EXPECTED_DIGESTS = {
     # so these three hashes have to be recomputed from disk after every
     # merge that touches index.html, app.js or herd-group.js.
     "/": "6b6fa03501b43367b178cbafa46378be53452e36e2d7fc744a67057f25043f16",
-    "/app.js": "ed8e004f193d7f137ec912545b50f4f2662a0e3709f190a0d0657223dbf9a8b2",
+    "/app.js": "5d48bb4107e0ca1bb7e943a730b48eef47ae881f9f6ef25c92628c53a89cc1d2",
     "/herd-group.js": "08296c7208e14dc1d5e46186b645d02089f8addef502b50eb11e61b186829674",
     "/toast.js": "47a230495fbbe8af8ed63ea0daf2e77a08f41f48911da4f9cc230ddc904fdd5d",
     "/reader.js": "28daec6199b0e756e1285b40f20fc860c1d9b4d2169cb2433c1ccfb12db31a76",

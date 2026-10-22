@@ -190,6 +190,86 @@
   }
   var selectedPane = localStorage.getItem(PANE_KEY);
 
+  /* ---------------- shared call context (FR-13) ----------------
+   * Phone and laptop are two interfaces to ONE call. On boot AND before
+   * the microphone arms (call start, resume) the client adopts the
+   * server's shared call identity and the latest selected pane; a failed
+   * fetch keeps the last-known local context so an offline PWA still
+   * works. An explicit selection is PUBLISHED so the other device picks
+   * it up — last writer wins on the server, exactly like the tmux focus.
+   *
+   * Stale-response guard (B3): the shared revision is monotonic, and
+   * this client only applies a snapshot whose revision is not older
+   * than the newest it already applied (its own publish returns the
+   * post-write snapshot). A delayed boot response can therefore never
+   * overwrite a newer explicit selection. */
+  var sharedRevision = -1;
+
+  function applySharedContext(data) {
+    if (!data || typeof data.call_id !== "string" || !data.call_id) return;
+    var stale = typeof data.revision === "number" && data.revision < sharedRevision;
+    sessionId = data.call_id;
+    try { localStorage.setItem(SESSION_KEY, sessionId); } catch (err) { /* private mode */ }
+    if (stale) return;  // older snapshot: the newer local/shared intent stays
+    if (typeof data.revision === "number") sharedRevision = data.revision;
+    if (typeof data.pane_id === "string" && data.pane_id) {
+      selectedPane = data.pane_id;
+      try { localStorage.setItem(PANE_KEY, selectedPane); } catch (err) { /* private mode */ }
+    }
+  }
+
+  function adoptCallContext() {
+    return fetch("/call/context")
+      .then(function (resp) { return resp.ok ? resp.json() : null; })
+      .then(applySharedContext)
+      .catch(function () { /* offline: the local identity stays */ });
+  }
+
+  /* Live re-sync used by the utterance-routing barrier. Deliberately
+   * NOT the bare no-options GET the boot uses, so it never queues
+   * behind a held/delayed bootstrap response. Unlike the boot (fail-
+   * soft offline fallback), the LIVE shared-session check FAILS: the
+   * caller must never dispatch a voice utterance against an unknown
+   * shared state (a stale pane target, an unseen pending gate). */
+  function syncSharedContext() {
+    return fetch("/call/context", { method: "GET", cache: "no-store" })
+      .then(function (resp) {
+        if (!resp.ok) throw new Error("context " + resp.status);
+        return resp.json();
+      })
+      .then(applySharedContext);
+  }
+
+  function publishPaneSelection(paneId) {
+    fetch("/call/context", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pane_id: paneId || null })
+    })
+      .then(function (resp) { return resp.ok ? resp.json() : null; })
+      .then(function (data) {
+        /* The POST response IS the current shared state: apply it so a
+         * concurrent newer write from another client wins honestly
+         * (actual server LWW), and our own success records its
+         * revision as the newest this client has applied. */
+        if (data) applySharedContext(data);
+      })
+      .catch(function () { /* best effort: the local selection still applies */ });
+  }
+
+  /* Mic-arm stays synchronous (gesture/permission timing). The S13
+   * freshness barrier rides UTTERANCE ROUTING instead: every completed
+   * voice utterance waits one local round-trip for the latest shared
+   * context and for a gate the OTHER client may have opened, so it
+   * routes on current truth. A hang-up during that round-trip drops
+   * the utterance instead of asking into a dead call. */
+  function liveContextBarrier() {
+    return syncSharedContext().then(function () {
+      if (approvalFlow.active()) return null;
+      return approvalFlow.recover(sessionId);
+    });
+  }
+
   /* Mid-call reload marker (FR15): boot shows "Llamada cortada" and NEVER
    * auto-resumes the mic; a tap starts a fresh call. */
   var CALL_INTENT_KEY = "herdr-brain-call-intent";
@@ -1379,6 +1459,7 @@
     if (selectedPane === paneId) return;
     selectedPane = paneId;
     localStorage.setItem(PANE_KEY, paneId);
+    publishPaneSelection(paneId);
     /* Restyle chips NOW (no fetch): selection feedback must not wait for
      * the next 5s /herd poll. */
     safeRender("herd-restyle", renderHerd, lastHerd);
@@ -3687,10 +3768,30 @@
   }
 
   /* Utterance routing: a live gate OWNS the mic — confirming utterances
-   * go to /approval/{id}/resolve, never /ask (PRD §5). */
+   * go to /approval/{id}/resolve, never /ask (PRD §5). S13: the routing
+   * decision rides the live-context barrier FIRST, so the utterance is
+   * decided on the LATEST shared state — the pane another client
+   * selected, and a gate it opened after this page booted (recovered
+   * with NO playback receipt, S14) — instead of a voice confirm turning
+   * into an ordinary /ask that would supersede the shared gate. A
+   * client that already holds a live gate keeps it untouched, and a
+   * deliberate text-mode ask (no gate) keeps its legacy behavior.
+   * B1 fail-closed: when the live shared-context check itself FAILS,
+   * the utterance is dropped with an honest notice — never dispatched
+   * against a possibly-stale target. The mic resumes normally; the
+   * user simply speaks again. */
   function routeUtterance(text) {
-    if (approvalFlow.routeUtterance(text)) return Promise.resolve();
-    return ask(text);
+    return liveContextBarrier().then(
+      function () {
+        if (!inCall) return undefined;  // hung up during the barrier: drop it
+        if (approvalFlow.routeUtterance(text)) return undefined;
+        return ask(text);
+      },
+      function () {
+        showBanner("No pude confirmar el contexto de la llamada — vuelve a intentarlo.");
+        return undefined;
+      }
+    );
   }
 
   function dispatchUtterance() {
@@ -4206,7 +4307,9 @@
     openEvents();  // user gesture: unlocks autoplay for announcements
     // T7: a gate recovered at boot still owns the mic — the call enters
     // confirming (pill "Confirmar ▲", utterances -> gate resolve), not
-    // plain listening.
+    // plain listening. The mic arms synchronously; S13 freshness for a
+    // gate opened LATER by the other client is guaranteed at utterance
+    // routing (routeUtterance runs the live-context barrier).
     setCallState(micBaseState());
     startListening();
     openDrawer();  // AC1: the drawer auto-opens on call start
@@ -4345,7 +4448,26 @@
   renderDiag();
   buildMeterCells();
   updateGhost();
-  refreshState();
+  /* FR-13: adopt the shared call identity FIRST, so the first /view,
+   * /conversation and the gate recovery below all run as the ONE call
+   * (the shared pane selection included). Offline, the local identity
+   * from SESSION_KEY keeps the boot identical to the baseline. */
+  adoptCallContext().then(function () {
+    refreshState();
+    /* T7 reload recovery (PRD §5): ask the server whether the session
+     * still has a live gate (mid-gate reload — or a handover from the
+     * other device). A live payload re-enters confirming — the floating
+     * popup restores with the remaining countdown, drawer or no drawer
+     * (UX 2026-09-24: no auto-open; the pill "Confirmar ▲" still
+     * reopens the drawer). Async and failure-silent: boot neither waits
+     * nor breaks, and the mic stays off until the user taps back in
+     * (FR15); the call then resumes under confirming via micBaseState()
+     * in startCall(). A recovered gate carries NO playback authority
+     * (S14): this client must hear the restate before «adelante» works. */
+    approvalFlow.recover(sessionId).then(function (payload) {
+      if (payload) renderApprovalCard();  // immediate popup paint (arm already re-rendered)
+    });
+  });
   setInterval(refreshState, 5000);
   // FR-01 (PRD announcements-without-call): announcements must arrive with
   // the page open, call or no call. The eventsOpened guard keeps it
@@ -4390,18 +4512,6 @@
       renderPill();
     }
   } catch (err) { /* private mode: normal idle boot */ }
-
-  /* T7 reload recovery (PRD §5): ask the server whether the session
-   * still has a live gate (mid-gate reload). A live payload re-enters
-   * confirming — the floating popup restores with the remaining
-   * countdown, drawer or no drawer (UX 2026-09-24: no auto-open; the
-   * pill "Confirmar ▲" still reopens the drawer). Async and
-   * failure-silent: boot neither waits nor breaks, and the mic stays
-   * off until the user taps back in (FR15); the call then resumes
-   * under confirming via micBaseState() in startCall(). */
-  approvalFlow.recover(sessionId).then(function (payload) {
-    if (payload) renderApprovalCard();  // immediate popup paint (arm already re-rendered)
-  });
 
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js").catch(function () { /* best effort */ });

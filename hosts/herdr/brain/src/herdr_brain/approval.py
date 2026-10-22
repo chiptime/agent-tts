@@ -302,6 +302,35 @@ class ApprovalGateStore:
                 return gate
             return self._retire(gate, SUPERSEDED)
 
+    def begin_turn(
+        self, session_id: str | None, decision_intent: bool
+    ) -> ApprovalGate | None:
+        """Atomic /ask turn-opening decision (S13 handover race).
+
+        The legacy prologue retired the session's live gate on every new
+        turn. That is right for deliberate new work — but a voice
+        decision («adelante», «no», a replace intent — recognized by the
+        approval lexicon, never guessed) aimed at a gate another client
+        opened after this one's context snapshot must NOT discard it.
+        With ``decision_intent`` set and a live gate pending, the gate
+        is returned UNTOUCHED so the turn re-explains it; every other
+        turn keeps the exact legacy supersede and returns None (the
+        guard's return value means "protected gate to re-explain",
+        never "a gate that was retired"). The check and the retirement
+        share the one store lock, so no interleaved ask can slip
+        between the decision and the retirement (no check-then-
+        supersede TOCTOU).
+        """
+        key = self.normalize(session_id)
+        with self._lock:
+            gate = self._live_gate(key)
+            if gate is None or gate.state != PROPOSED:
+                return None
+            if decision_intent:
+                return gate
+            self._retire(gate, SUPERSEDED)
+            return None
+
     # All helpers below assume self._lock is held by the caller.
 
     def _live_gate(self, key: str) -> ApprovalGate | None:
