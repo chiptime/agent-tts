@@ -15,8 +15,8 @@ EXPECTED_DIGESTS = {
     # served static files (the sheet grouping and the typed-reply input),
     # so these three hashes have to be recomputed from disk after every
     # merge that touches index.html, app.js or herd-group.js.
-    "/": "6b6fa03501b43367b178cbafa46378be53452e36e2d7fc744a67057f25043f16",
-    "/app.js": "7b95f4dc3aa2bd9e850866271a25555209cb71fee4a6eda20d9c849c157d7bdf",
+    "/": "0c9e1a91314b45f198e2ce8fdd137df206f17178b83e39053595e6bb58fbfb26",
+    "/app.js": "1dbd2e75d56593494725e4fc292b2cba03c339ef532be076c7d0408961bbaad3",
     "/herd-group.js": "08296c7208e14dc1d5e46186b645d02089f8addef502b50eb11e61b186829674",
     "/toast.js": "47a230495fbbe8af8ed63ea0daf2e77a08f41f48911da4f9cc230ddc904fdd5d",
     "/reader.js": "28daec6199b0e756e1285b40f20fc860c1d9b4d2169cb2433c1ccfb12db31a76",
@@ -24,8 +24,8 @@ EXPECTED_DIGESTS = {
     "/announce.js": "b56e0152c4369bbab32177311340882123d75a2373ab2f786d2f5b60b5a500fb",
     "/approval.js": "b982f0ca6172380dcdb98f4d2841ac40c11fd691749429ca9424bb268c6b335a",
     "/consult.js": "fc2e4d18c206164fcec7a8baf2be1697e5b6d86152ed12c432169a70c1113bc4",
-    "/endpointing.js": "632421b05ffff5d1d84d7a248719692b835324492a858b19901541f5ea51061d",
-    "/vad.js": "03d7200920183a0e77a8065d6ff845d3384b7d699f572018547873e42aa287a8",
+    "/endpointing.js": "c22320f6f1989caf7bef332aab98647df4d7e64365ba5719756216b2729a22c9",
+    "/vad.js": "c53417121b030a9618acce76b8729e4e91bcfa9cde68eebdbfad4f3a654f9db5",
 }
 
 

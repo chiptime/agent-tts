@@ -386,7 +386,7 @@ class BrainTools:
             wide_text = "\n".join(
                 "".join(run.get("t", "") for run in line) for line in (screen_runs or [])
             )
-            dialog = parse_dialog(wide_text or screen or None)
+            dialog = parse_dialog(wide_text or screen or None, screen_runs=screen_runs)
 
         return {
             "status": status_payload(target),

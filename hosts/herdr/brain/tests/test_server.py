@@ -1556,6 +1556,34 @@ class TestReaderAsset:
         assert 'src="/reader.js"></script>' not in html  # no unversioned ref
 
 
+class TestMermaidAssets:
+    """/mermaid.min.js and /mermaid-viewer.js: versioned static assets under no-cache discipline."""
+
+    def test_mermaid_assets_served_no_cache(self, settings, audio_dir):
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        client = TestClient(
+            create_app(settings=cfg, llm_factory=lambda c, t: FakeLLM())
+        )
+        for path in ("/mermaid.min.js", "/mermaid-viewer.js"):
+            resp = client.get(path)
+            assert resp.status_code == 200
+            assert resp.headers["content-type"].startswith("text/javascript")
+            assert resp.headers["cache-control"] == "no-cache"
+            assert "content-security-policy" not in resp.headers
+
+    def test_mermaid_references_are_versioned(self, settings, audio_dir):
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        client = TestClient(
+            create_app(settings=cfg, version="abc1234",
+                       llm_factory=lambda c, t: FakeLLM())
+        )
+        html = client.get("/").text
+        assert 'src="/mermaid.min.js?v=abc1234"' in html
+        assert 'src="/mermaid-viewer.js?v=abc1234"' in html
+        assert 'src="/mermaid.min.js"></script>' not in html
+        assert 'src="/mermaid-viewer.js"></script>' not in html
+
+
 class TestRenderedConversation:
     """GET /conversation/{pane_id}/rendered — contract with injected fakes."""
 

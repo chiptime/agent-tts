@@ -69,8 +69,8 @@
 (function (global) {
   "use strict";
 
-  var DEFAULT_SILENCE_MS = 1200;
-  var DEFAULT_HARD_CAP_MS = 15000;
+  var DEFAULT_SILENCE_MS = 2000;
+  var DEFAULT_HARD_CAP_MS = 60000;
   var DEFAULT_DUPLICATE_WINDOW_MS = 5000;
 
   function createEndpointer(options) {

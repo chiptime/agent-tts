@@ -235,6 +235,8 @@ _VERSIONED_REFS = (
     ('src="/approval.js"', 'src="/approval.js?v={v}"'),
     ('src="/reader.js"', 'src="/reader.js?v={v}"'),
     ('src="/toast.js"', 'src="/toast.js?v={v}"'),
+    ('src="/mermaid.min.js"', 'src="/mermaid.min.js?v={v}"'),
+    ('src="/mermaid-viewer.js"', 'src="/mermaid-viewer.js?v={v}"'),
     # herd-group.js loads BEFORE app.js (same reason as consult.js): the
     # renderer degrades to a flat list when the module is missing, so a
     # stale cached copy is not fatal — but the grouping must not silently
@@ -608,6 +610,20 @@ def create_app(
     def toast_js() -> FileResponse:
         return FileResponse(
             STATIC_DIR / "toast.js", media_type="text/javascript",
+            headers=dict(_NO_CACHE_HEADERS),
+        )
+
+    @app.get("/mermaid.min.js", include_in_schema=False)
+    def mermaid_min_js() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "mermaid.min.js", media_type="text/javascript",
+            headers=dict(_NO_CACHE_HEADERS),
+        )
+
+    @app.get("/mermaid-viewer.js", include_in_schema=False)
+    def mermaid_viewer_js() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "mermaid-viewer.js", media_type="text/javascript",
             headers=dict(_NO_CACHE_HEADERS),
         )
 

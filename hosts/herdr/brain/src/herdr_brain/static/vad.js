@@ -23,10 +23,10 @@
 (function (global) {
   "use strict";
 
-  var DEFAULT_SILENCE_MS = 1200;
-  var DEFAULT_HARD_CAP_MS = 15000;
+  var DEFAULT_SILENCE_MS = 2000;
+  var DEFAULT_HARD_CAP_MS = 60000;
   var DEFAULT_OPEN_RATIO = 2.5;   // level > floor*ratio opens the gate
-  var DEFAULT_CLOSE_RATIO = 1.4;  // level < floor*ratio closes the gate
+  var DEFAULT_CLOSE_RATIO = 1.25; // level < floor*ratio closes the gate
   var DEFAULT_FLOOR = 0.004;      // initial/minimum noise floor (RMS)
   var DEFAULT_FLOOR_ALPHA = 0.1;  // EMA weight of each quiet frame
 

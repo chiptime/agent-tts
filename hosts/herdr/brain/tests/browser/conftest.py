@@ -267,6 +267,7 @@ class KaraokeHarness:
             "toast.js", "announce.js", "speech.js", "consult.js",
             "herd-group.js", "sw.js",
             "manifest.webmanifest", "icon.svg", "karaoke.js",
+            "mermaid.min.js", "mermaid-viewer.js", "tts-engine.js",
         ):
             if (STATIC / name).is_file():
                 self.static["/" + name] = name

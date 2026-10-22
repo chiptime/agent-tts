@@ -160,6 +160,7 @@
     var meta = document.querySelector('meta[name="theme-color"]');
     if (meta) meta.setAttribute("content", name === "dark" ? "#0a0a0a" : "#f4f6f9");
     if (themeBtn) themeBtn.textContent = name === "dark" ? "Tema: Oscuro" : "Tema: Claro";
+    if (typeof mermaidViewer !== "undefined" && mermaidViewer) mermaidViewer.setTheme(name);
   }
 
   var storedTheme = null;
@@ -225,7 +226,7 @@
     listening: "● Escuchando",
     recording: "● Grabando — habla",
     transcribing: "⏳ Entendiendo…",
-    thinking: "⏳ Pensando…",
+    thinking: "⏳ Infiriendo…",
     speaking: "🔊 Hablando",
     paused: "⏸ Micrófono en pausa",
     confirming: "Confirmar"
@@ -292,16 +293,22 @@
     var meterOn = active && !browser && (micOn || st === "recording");
     recMeterEl.classList.toggle("hidden", !meterOn);
     var status = "";
-    if (active && !browser) {
-      if (micOn) status = "○ escuchando…";
-      else if (st === "transcribing") status = "⏳ transcribiendo…";
-      else if (st === "paused") status = "⏸ micrófono en pausa";
+    if (active) {
+      if (st === "thinking") {
+        status = "⏳ Infiriendo…";
+      } else if (!browser) {
+        if (micOn) status = "○ escuchando…";
+        else if (st === "transcribing") status = "⏳ transcribiendo…";
+        else if (st === "paused") status = "⏸ micrófono en pausa";
+      }
     }
     if (status) {
       if (stripStatusEl.textContent !== status) stripStatusEl.textContent = status;
       stripStatusEl.classList.remove("hidden");
+      stripStatusEl.classList.toggle("thinking", st === "thinking");
     } else {
       stripStatusEl.classList.add("hidden");
+      stripStatusEl.classList.remove("thinking");
     }
   }
 
@@ -585,6 +592,44 @@
    * HTML by the same role+text content key renderGlance reconciles on. */
 
   var reader = Reader.createReader({ doc: document, http: fetch });
+  var mermaidViewer = typeof MermaidViewer !== "undefined"
+    ? MermaidViewer.createMermaidViewer({
+        doc: document,
+        mermaid: typeof mermaid !== "undefined" ? mermaid : null,
+        root: document.body,
+        theme: document.documentElement.getAttribute("data-theme") || "dark"
+      })
+    : null;
+  var ttsEngine = typeof TtsEngine !== "undefined"
+    ? TtsEngine.createTtsEngine({
+        doc: document,
+        win: window,
+        getActiveContainer: function () {
+          if (typeof drawer !== "undefined" && drawer && drawerOpen) {
+            return conv;
+          }
+          var assistantContents = glanceTurns.querySelectorAll(".gturn.assistant .reader-content");
+          if (assistantContents.length > 0) {
+            return assistantContents[assistantContents.length - 1];
+          }
+          return glanceTurns;
+        },
+        onSpeechStateChange: function (ev) {
+          if (ev.isPlaying) {
+            if (inCall && (callState === "listening" || callState === "confirming")) {
+              stopListening();
+              setCallState("speaking");
+            }
+          } else if (inCall && callState === "speaking" && !audioBusy && !speechCtl.activeId()) {
+            setCallState(micBaseState());
+            startListening();
+          }
+        }
+      })
+    : null;
+  if (ttsEngine) {
+    ttsEngine.injectUI(document.body);
+  }
   var readerPane = null;
   var readerSession = null;
   var lastConversationData = null;
@@ -592,7 +637,7 @@
   var glanceTap = null;
   var glanceIntentGeneration = 0;
   var readerNativeControl = "a, code, pre, button, input, textarea, select, summary, audio, video, " +
-    "[contenteditable]:not([contenteditable='false']), [role='link'], [role='textbox']";
+    "[contenteditable]:not([contenteditable='false']), [role='link'], [role='textbox'], .mermaid-card, .mermaid-card *";
 
   function cancelGlanceTap() {
     // Explicit retirement invalidates intent; natural media completion does not.
@@ -742,8 +787,31 @@
     var readerGeneration = reader.currentGeneration();
     cancelGlanceTap();
     var generation = glanceIntentGeneration;
-    // The first click of a native double click is indistinguishable until its
-    // second click. Defer only pointer activation; focused keyboard is immediate.
+
+    // Si la barra interactiva Web Speech está abierta, reproducir instantáneamente
+    if (ttsEngine && ttsEngine.supported && ttsEngine.state.isOpen) {
+      if (ttsEngine.state.activeContainer !== content) {
+        ttsEngine.indexContainer(content);
+      }
+      var targetSentenceEl = event.target.closest(".tts-sentence, [data-tts-id]");
+      if (targetSentenceEl) {
+        var rawTtsId = targetSentenceEl.getAttribute("data-tts-id");
+        if (rawTtsId) {
+          var ttsId = parseInt(rawTtsId, 10);
+          var sIndex = ttsEngine.state.sentences.findIndex(function (s) { return s.id === ttsId; });
+          if (sIndex !== -1) {
+            ttsEngine.playFromIndex(sIndex);
+            return;
+          }
+        }
+      }
+      if (ttsEngine.state.sentences.length > 0) {
+        ttsEngine.playFromIndex(0);
+        return;
+      }
+    }
+
+    // Fallback de reproducción previa con servidor
     glanceTap = setTimeout(function () {
       glanceTap = null;
       if (!control.isConnected || generation !== glanceIntentGeneration ||
@@ -807,6 +875,9 @@
     }
     el.readerHtml = html;
     if (turn.role === "assistant") prepareReaderControls(content);
+    if (mermaidViewer && content) {
+      mermaidViewer.renderIn(content);
+    }
     syncGlanceReplay();
   }
 
@@ -904,6 +975,13 @@
     button.title = "Leer en voz alta";
     button.addEventListener("click", function (event) {
       event.stopPropagation();
+      if (ttsEngine && ttsEngine.supported && ttsEngine.state.isOpen) {
+        ttsEngine.indexContainer(body);
+        if (ttsEngine.state.sentences.length > 0) {
+          ttsEngine.playFromIndex(0);
+          return;
+        }
+      }
       selectMainKaraoke(plan, 0);
     });
     turn.appendChild(button);
@@ -914,6 +992,30 @@
     if (ghost) ghost.remove();
     conv.appendChild(buildTurnEl(role, text, ts));
     conv.scrollTop = conv.scrollHeight;
+  }
+
+  function showThinkingBubble() {
+    removeThinkingBubble();
+    var ghost = document.getElementById("ghost-bubble");
+    if (ghost) ghost.remove();
+    var bubble = document.createElement("div");
+    bubble.id = "thinking-bubble";
+    bubble.className = "turn brain thinking";
+    var who = document.createElement("span");
+    who.className = "who";
+    who.textContent = "brain";
+    var content = document.createElement("span");
+    content.className = "thinking-label";
+    content.textContent = "⏳ Infiriendo…";
+    bubble.appendChild(who);
+    bubble.appendChild(content);
+    conv.appendChild(bubble);
+    conv.scrollTop = conv.scrollHeight;
+  }
+
+  function removeThinkingBubble() {
+    var bubble = document.getElementById("thinking-bubble");
+    if (bubble) bubble.remove();
   }
 
   /* ---------------- ver-más (older call turns) ---------------- */
@@ -1041,7 +1143,20 @@
     btn.addEventListener("click", function (event) {
       event.stopPropagation();  // never bubble into container-level taps
       if (btn.disabled) return;
+
       if (turn.matches("#glance-turns .gturn.assistant")) {
+        if (ttsEngine && ttsEngine.supported && ttsEngine.state.isOpen) {
+          var content = turn.querySelector(".reader-content");
+          if (content) {
+            if (ttsEngine.state.activeContainer !== content) {
+              ttsEngine.indexContainer(content);
+            }
+            if (ttsEngine.state.sentences.length > 0) {
+              ttsEngine.playFromIndex(0);
+              return;
+            }
+          }
+        }
         selectGlanceReplay(turn, null, true);
         return;
       }
@@ -1652,6 +1767,10 @@
          * terminal: painting it over our theme produced a black box with
          * black text, which is worse than no styling at all. */
         if (run.fg) node.style.color = run.fg;
+        if (run.rev) {
+          node.style.backgroundColor = "var(--accent, #3b82f6)";
+          node.style.color = "#ffffff";
+        }
         if (run.b) node.style.fontWeight = "700";
         node.textContent = run.t || "";
         fragment.appendChild(node);
@@ -1667,10 +1786,10 @@
    * were never where the keys are. No parsing, no guessing. */
   var DIALOG_PREVIEW_LINES = 18;
 
-  /* The question tool as readable HTML: question, numbered options with
-   * descriptions, key hint. Built with createElement + textContent, so agent
-   * output can never inject markup. Says nothing about which option is
-   * selected - that signal does not exist in what herdr exposes. */
+  /* The question or permission tool as readable HTML: question, details,
+   * options with descriptions/selection, key hint. Built with createElement +
+   * textContent, so agent output can never inject markup. Highlights the
+   * active option clearly so arrow key navigation is visible. */
   function paintDialogHtml(dialog) {
     var box = document.createElement("div");
     box.className = "dlg";
@@ -1678,15 +1797,34 @@
     question.className = "dlg-q";
     question.textContent = dialog.question || "";
     box.appendChild(question);
+    if (dialog.detail) {
+      var detail = document.createElement("div");
+      detail.className = "dlg-detail";
+      detail.textContent = dialog.detail;
+      box.appendChild(detail);
+    }
+    var isButtons = dialog.layout === "buttons";
+    var optContainer = isButtons ? document.createElement("div") : box;
+    if (isButtons) {
+      optContainer.className = "dlg-buttons";
+      box.appendChild(optContainer);
+    }
     (dialog.options || []).forEach(function (opt) {
+      if (isButtons) {
+        var btn = document.createElement("div");
+        btn.className = "dlg-btn" + (opt.selected ? " selected" : "");
+        btn.textContent = (opt.selected ? "● " : "") + (opt.title || "");
+        optContainer.appendChild(btn);
+        return;
+      }
       var row = document.createElement("div");
-      row.className = "dlg-opt";
+      row.className = "dlg-opt" + (opt.selected ? " selected" : "");
       var num = document.createElement("span");
       num.className = "dlg-num";
-      num.textContent = (opt.n || "") + ".";
+      num.textContent = (opt.selected ? "❯ " : "  ") + (opt.n != null ? opt.n + "." : "");
       var title = document.createElement("span");
       title.className = "dlg-title";
-      title.textContent = " " + (opt.title || "");
+      title.textContent = (opt.n != null ? " " : "") + (opt.title || "");
       row.appendChild(num);
       row.appendChild(title);
       if (opt.description) {
@@ -1715,21 +1853,16 @@
       keysDialog.classList.remove("hidden");
       return;
     }
-    /* Fallback: PLAIN text, no terminal colours. The pane's own foreground
-     * greys over our dark theme were unreadable on a phone, and the styling
-     * carries no selection information anyway (verified: no cursor in the
-     * herdr surface). The runs text is preferred: it is the wide read. */
+    /* Fallback: runs or plain text tail. */
     var runs = (view && view.screen_runs) || null;
-    var text = "";
     if (runs && runs.length) {
-      text = runs.map(function (line) {
-        return line.map(function (run) { return run.t || ""; }).join("");
-      }).join("\n");
-    } else if (view && view.screen) {
-      text = view.screen;
+      var tailRuns = runs.slice(Math.max(0, runs.length - DIALOG_PREVIEW_LINES));
+      paintRunsInto(keysDialog, tailRuns);
+      keysDialog.classList.remove("hidden");
+      return;
     }
-    if (text) {
-      var lines = text.split("\n");
+    if (view && view.screen) {
+      var lines = view.screen.split("\n");
       keysDialog.textContent = lines.slice(Math.max(0, lines.length - DIALOG_PREVIEW_LINES)).join("\n");
       keysDialog.classList.remove("hidden");
       return;
@@ -3505,6 +3638,7 @@
     askCount += 1;
     lastDispatch = text;
     addTurn("user", text);
+    showThinkingBubble();
     setCallState("thinking");
     stopListening();  // the mic must not hear the answer
     /* Identity BEFORE /ask: the request is synchronous, so an id minted by
@@ -3525,6 +3659,7 @@
     })
       .then(function (resp) {
         if (resp.status === 503) {
+          removeThinkingBubble();
           speechCtl.release(speech.speech_request_id);
           showBanner("El brain no está configurado: falta GLM_API_KEY en el servidor. " +
             "Defínela en el entorno del servicio (por ejemplo, un perfil de shell o un " +
@@ -3532,11 +3667,13 @@
           return;
         }
         if (!resp.ok) {
+          removeThinkingBubble();
           speechCtl.release(speech.speech_request_id);
           showBanner("La pregunta falló (HTTP " + resp.status + "). Prueba otra vez.");
           return;
         }
         return resp.json().then(function (data) {
+          removeThinkingBubble();
           addTurn("brain", data.answer || "(respuesta vacía)");
           // A chunk tap may have cancelled this identity while /ask was in
           // flight. Keep its answer, but never revive the retired audio job.
@@ -3569,6 +3706,7 @@
         });
       })
       .catch(function (err) {
+        removeThinkingBubble();
         speechCtl.release(speech.speech_request_id);
         if (err && /timeout/.test(String(err.message || err))) {
           showBanner("El brain tardó demasiado — vuelve a intentarlo.");
@@ -3577,6 +3715,7 @@
         }
       })
       .then(function () {
+        removeThinkingBubble();
         interimTextEl.textContent = "";
         renderInterimStrip();
         if (callState === "thinking") afterAnswer();
@@ -3906,7 +4045,8 @@
     listeningStartedAt = Date.now();
 
     var armUtterance = function () {
-      vad = window.Vad.createVad();
+      if (!vad) vad = window.Vad.createVad();
+      else vad.reset();
       recorderChunks = [];
       var mime = pickRecorderMime();
       try {
@@ -4033,6 +4173,7 @@
 
   function endCall() {
     inCall = false;
+    removeThinkingBubble();
     approvalFlow.cancel();  // hang up drops any live gate silently
     renderApprovalCard();   // ...and its card with it, immediately
     closeDrawer();  // AC4: drawer closes on hang up
@@ -4132,6 +4273,7 @@
   convNewBtn.addEventListener("click", function () {
     stopAudio();
     stopListening();
+    removeThinkingBubble();
     approvalFlow.cancel();  // a fresh conversation retires the live gate
     renderApprovalCard();
     if (endpointer) endpointer.reset();  // fresh conversation, fresh utterance

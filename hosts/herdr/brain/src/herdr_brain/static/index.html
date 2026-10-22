@@ -392,16 +392,16 @@
       /* Edge to edge: every pixel goes to the text, which keeps its own
        * inner padding for breathing room. */
       margin: 0;
+      max-width: 100vw;
       border: none;
       border-top: 1px solid var(--line);
       border-radius: 0;
       background: var(--cockpit-bg);
       overflow: hidden;
     }
-    /* Wide viewports: a centered column so the cockpit never
-     * stretches absurdly. */
+    /* Wide viewports: full width on desktop. */
     @media (min-width: 900px) {
-      #agent-view { max-width: 760px; margin-inline: auto; }
+      #agent-view { max-width: 100vw; }
     }
     #pending-banner {
       padding: var(--sp-3);
@@ -494,11 +494,18 @@
     }
     .dlg { font-family: system-ui, -apple-system, sans-serif; }
     .pane-keys-dialog { background: transparent; }
-    .dlg-q { font-weight: 700; margin: 2px 0 8px; font-size: 15.5px; white-space: normal; }
-    .dlg-opt { margin: 7px 0; white-space: normal; }
+    .dlg-q { font-weight: 700; margin: 2px 0 6px; font-size: 15.5px; white-space: normal; }
+    .dlg-detail { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; color: var(--accent); background: var(--hover); padding: 4px 8px; border-radius: 4px; margin: 4px 0 8px; word-break: break-all; }
+    .dlg-opt { margin: 6px 0; padding: 4px 6px; border-radius: 6px; transition: background 0.12s ease; white-space: normal; }
+    .dlg-opt.selected { background: rgba(59, 130, 246, 0.15); border-left: 3px solid var(--accent); padding-left: 8px; }
+    :root[data-theme="dark"] .dlg-opt.selected { background: rgba(59, 130, 246, 0.22); }
+    .dlg-opt.selected .dlg-title { color: var(--accent); font-weight: 700; }
     .dlg-num { font-weight: 700; color: var(--accent); }
     .dlg-title { font-weight: 600; font-size: 14.5px; }
     .dlg-desc { color: var(--text); opacity: 0.78; margin: 2px 0 0 16px; font-size: 13.5px; white-space: normal; }
+    .dlg-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 4px; }
+    .dlg-btn { padding: 6px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font-size: 13.5px; font-weight: 600; }
+    .dlg-btn.selected { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 700; box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.35); }
     .dlg-hint { margin-top: 8px; color: var(--text); opacity: 0.6; font-size: 12px; white-space: normal; }
     /* ── COCKPIT VIEW TABS ───────────────────────────────────────────
      * "Vista del agente" (transcript turns) and "pantalla" (terminal
@@ -704,6 +711,380 @@
       color: var(--panel);
     }
     #glance-turns .reader-content a { color: var(--accent); font-weight: 700; }
+
+    /* ---- Karaoke Interactivo (RFC-02: Client-Side Web Speech) ---- */
+    .tts-sentence {
+      position: relative;
+      cursor: pointer;
+      border-radius: 3px;
+      transition: background-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    .tts-sentence:hover {
+      background-color: rgba(0, 120, 212, 0.1);
+    }
+    :root[data-theme="dark"] .tts-sentence:hover {
+      background-color: rgba(255, 255, 255, 0.12);
+    }
+    .tts-sentence.tts-active {
+      background-color: rgba(255, 214, 0, 0.38) !important;
+      box-shadow: 0 0 0 3px rgba(255, 214, 0, 0.45);
+      color: inherit;
+    }
+    :root[data-theme="dark"] .tts-sentence.tts-active {
+      background-color: rgba(255, 193, 7, 0.30) !important;
+      box-shadow: 0 0 0 3px rgba(255, 193, 7, 0.45);
+    }
+
+    /* Indicador al saltar sobre diagramas o código */
+    .mermaid-card.tts-active,
+    pre.tts-active,
+    .mermaid.tts-active {
+      outline: 3px solid #ff9800 !important;
+      border-radius: 8px;
+    }
+
+    /* Filas de tabla clicables con efecto Karaoke */
+    tr.tts-table-row {
+      cursor: pointer;
+      transition: background-color 0.16s ease;
+    }
+    tr.tts-table-row:hover {
+      background-color: rgba(0, 120, 212, 0.08);
+    }
+    tr.tts-table-row.tts-active {
+      background-color: rgba(255, 214, 0, 0.35) !important;
+      box-shadow: inset 4px 0 0 var(--accent, #12855c);
+    }
+    :root[data-theme="dark"] tr.tts-table-row.tts-active {
+      background-color: rgba(255, 193, 7, 0.28) !important;
+      box-shadow: inset 4px 0 0 var(--accent, #7fd88f);
+    }
+
+    /* Botón flotante para abrir el lector TTS (#tts-fab) */
+    #tts-fab {
+      position: fixed;
+      bottom: calc(env(safe-area-inset-bottom, 0px) + 84px);
+      right: 16px;
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background: var(--accent, #12855c);
+      color: #fff;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
+      border: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 21;
+      transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.2s;
+    }
+    #tts-fab:hover {
+      transform: scale(1.08);
+    }
+    #tts-fab:active {
+      transform: scale(0.95);
+    }
+    #tts-fab svg {
+      width: 24px;
+      height: 24px;
+      fill: currentColor;
+    }
+    body:has(#tts-bar.tts-open) #tts-fab {
+      display: none;
+    }
+
+    /* Barra flotante de reproducción móvil (#tts-bar) */
+    #tts-bar {
+      position: fixed;
+      bottom: calc(env(safe-area-inset-bottom, 0px) + 90px);
+      left: 50%;
+      transform: translateX(-50%) translateY(160px);
+      width: min(92vw, 560px);
+      background: rgba(255, 255, 255, 0.96);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      box-shadow: 0 10px 32px rgba(0, 0, 0, 0.25);
+      padding: 10px 14px;
+      z-index: 22;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      opacity: 0;
+      pointer-events: none;
+      transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s ease;
+    }
+    :root[data-theme="dark"] #tts-bar {
+      background: rgba(24, 26, 32, 0.96);
+      box-shadow: 0 10px 32px rgba(0, 0, 0, 0.65);
+      color: #f1f5f9;
+    }
+    #tts-bar.tts-open {
+      transform: translateX(-50%) translateY(0);
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .tts-controls-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .tts-btn-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .tts-btn {
+      background: transparent;
+      border: none;
+      padding: 8px;
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: inherit;
+      transition: background-color 0.15s, transform 0.1s;
+    }
+    .tts-btn:hover {
+      background-color: rgba(0, 0, 0, 0.08);
+    }
+    :root[data-theme="dark"] .tts-btn:hover {
+      background-color: rgba(255, 255, 255, 0.12);
+    }
+    .tts-btn:active {
+      transform: scale(0.92);
+    }
+    .tts-btn svg {
+      width: 20px;
+      height: 20px;
+      fill: currentColor;
+    }
+    .tts-btn-play {
+      background: var(--accent, #12855c) !important;
+      color: #fff !important;
+      width: 40px;
+      height: 40px;
+      padding: 0;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    }
+    .tts-speed-badge {
+      font-size: 0.84rem;
+      font-weight: 700;
+      padding: 5px 9px;
+      border-radius: 8px;
+      background: var(--chip-bg);
+      border: 1px solid var(--line);
+      cursor: pointer;
+      color: inherit;
+      user-select: none;
+    }
+    .tts-status-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 0.78rem;
+      color: var(--muted);
+      padding: 0 4px;
+    }
+    .tts-hint {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    /* ---- Mermaid diagram viewer & modal ---- */
+    .mermaid-card {
+      margin: 10px 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      overflow: hidden;
+    }
+    .mermaid-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 10px;
+      background: color-mix(in srgb, var(--panel) 85%, var(--text) 15%);
+      border-bottom: 1px solid var(--line);
+      font-size: 12px;
+    }
+    .mermaid-badge {
+      font-weight: 700;
+      color: var(--accent);
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .mermaid-toolbar-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .mermaid-btn {
+      padding: 4px 9px;
+      border-radius: 6px;
+      border: 1px solid var(--line);
+      background: var(--bg);
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s ease, transform 0.1s ease;
+    }
+    .mermaid-btn:hover { background: var(--hover); }
+    .mermaid-btn:active { transform: scale(0.97); }
+    .mermaid-diagram-wrap {
+      padding: 14px 10px;
+      overflow-x: auto;
+      text-align: center;
+      cursor: pointer;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 80px;
+      background: color-mix(in srgb, var(--cockpit-bg, #0a0a0a) 60%, var(--panel) 40%);
+    }
+    .mermaid-diagram-wrap svg {
+      max-width: 100%;
+      height: auto;
+      display: block;
+      margin: 0 auto;
+    }
+    .mermaid-code-wrap {
+      padding: 8px;
+      border-top: 1px solid var(--line);
+      background: var(--bg);
+    }
+    .mermaid-code-wrap.hidden { display: none; }
+    .mermaid-code-wrap pre { margin: 0; }
+    .mermaid-error {
+      padding: 8px 12px;
+      color: var(--danger);
+      font-size: 13px;
+      background: color-mix(in srgb, var(--danger) 12%, transparent);
+      border-bottom: 1px solid var(--line);
+    }
+    .mermaid-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.72);
+      backdrop-filter: blur(3px);
+      z-index: 100;
+    }
+    .mermaid-backdrop.hidden { display: none; }
+    .mermaid-modal {
+      position: fixed;
+      inset: 12px;
+      z-index: 101;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+    }
+    .mermaid-modal.hidden { display: none; }
+    .mm-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+      flex-shrink: 0;
+    }
+    .mm-title-wrap {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .mm-title {
+      font-weight: 700;
+      font-size: 15px;
+      color: var(--text);
+    }
+    .mm-zoom-level {
+      font-size: 12px;
+      font-weight: 600;
+      padding: 2px 7px;
+      background: var(--bg);
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      color: var(--accent);
+    }
+    .mm-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .mm-btn {
+      min-width: 34px;
+      height: 34px;
+      padding: 0 10px;
+      border-radius: 6px;
+      border: 1px solid var(--line);
+      background: var(--bg);
+      color: var(--text);
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .mm-btn:hover { background: var(--hover); }
+    .mm-close-btn { font-size: 16px; color: var(--muted); }
+    .mm-close-btn:hover { color: var(--danger); }
+    .mm-viewport {
+      flex: 1;
+      min-height: 0;
+      position: relative;
+      overflow: hidden;
+      cursor: grab;
+      background: var(--cockpit-bg, #0a0a0a);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      user-select: none;
+      touch-action: none;
+    }
+    .mm-viewport.grabbing { cursor: grabbing; }
+    .mm-canvas {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 32px;
+      pointer-events: auto;
+    }
+    .mm-canvas svg {
+      display: block;
+      max-width: none !important;
+      height: auto;
+      flex-shrink: 0;
+    }
+    .mm-footer {
+      padding: 8px 14px;
+      border-top: 1px solid var(--line);
+      background: var(--panel);
+      text-align: center;
+      flex-shrink: 0;
+    }
+    .mm-hint {
+      font-size: 12px;
+      color: var(--muted);
+    }
+    @media (max-width: 480px) {
+      .mermaid-modal { inset: 6px; }
+      .mm-head { padding: 8px 10px; }
+      .mm-btn { min-width: 30px; height: 30px; padding: 0 6px; font-size: 12px; }
+      .mm-title { font-size: 13.5px; }
+    }
     #glance-empty {
       padding: var(--sp-3);
       font-size: var(--fs-sm);
@@ -1204,6 +1585,10 @@
     .meter i { flex: 1; border-radius: 2px; background: var(--chip-bg); }
     .meter i.lit { background: var(--accent); }
     #strip-status { color: var(--muted); font-weight: 600; font-size: var(--fs-sm); }
+    #strip-status.thinking {
+      color: var(--warn);
+      animation: live-pulse 1.4s ease-in-out infinite;
+    }
 
     /* Call conversation (drawer body) */
     #conversation {
@@ -1219,6 +1604,11 @@
     .turn { max-width: 86%; padding: 9px 13px; border-radius: 14px; white-space: pre-wrap; }
     .turn.user   { align-self: flex-end; background: #d9efe2; border-bottom-right-radius: 4px; }
     .turn.brain  { align-self: flex-start; background: var(--chip-bg); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+    .turn.brain.thinking {
+      color: var(--muted);
+      font-style: italic;
+      animation: live-pulse 1.4s ease-in-out infinite;
+    }
     :root[data-theme="dark"] .turn.user { background: #234c31; }
     .turn .who { display: block; font-size: 11px; color: var(--muted); margin-bottom: 3px; }
     /* Announcement bubble: visually distinct from the conversation flow. */
@@ -1711,6 +2101,30 @@
     <div id="diag-status">Última consulta: — · Último error: ninguno</div>
   </section>
 
+  <!-- Mermaid diagram lightbox modal (visor de gráficos) -->
+  <div id="mermaid-backdrop" class="mermaid-backdrop hidden" aria-hidden="true"></div>
+  <section id="mermaid-modal" class="mermaid-modal hidden" role="dialog" aria-modal="true" aria-label="Visor de diagrama Mermaid" inert>
+    <div class="mm-head">
+      <div class="mm-title-wrap">
+        <span class="mm-title">Diagrama Mermaid</span>
+        <span class="mm-zoom-level" id="mm-zoom-display">100%</span>
+      </div>
+      <div class="mm-actions">
+        <button id="mm-zoom-in" type="button" class="mm-btn" title="Acercar (Zoom +)">＋</button>
+        <button id="mm-zoom-out" type="button" class="mm-btn" title="Alejar (Zoom -)">－</button>
+        <button id="mm-zoom-reset" type="button" class="mm-btn" title="Restablecer zoom">↺</button>
+        <button id="mm-copy-code" type="button" class="mm-btn" title="Copiar código fuente">Copiar</button>
+        <button id="mm-close" type="button" class="mm-btn mm-close-btn" title="Cerrar visor">✕</button>
+      </div>
+    </div>
+    <div class="mm-viewport" id="mm-viewport">
+      <div class="mm-canvas" id="mm-canvas"></div>
+    </div>
+    <div class="mm-footer">
+      <span class="mm-hint">Arrastra para mover · Rueda o botones para zoom</span>
+    </div>
+  </section>
+
   <audio id="player"></audio>
   <script src="/endpointing.js"></script>
   <script src="/vad.js"></script>
@@ -1720,7 +2134,10 @@
     <script src="/karaoke.js"></script>
     <script src="/announce.js"></script>
     <script src="/herd-group.js"></script>
+    <script src="/mermaid.min.js"></script>
+    <script src="/mermaid-viewer.js"></script>
     <script src="/speech.js"></script>
+    <script src="/tts-engine.js"></script>
     <script src="/consult.js"></script>
     <script src="/app.js"></script>
 </body>
