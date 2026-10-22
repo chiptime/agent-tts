@@ -158,6 +158,22 @@ function segmentHarness(timerMode, withoutOnStatus) {
   return { player, fetch, timers, enqueued, statuses };
 }
 
+test("conversation first audio starts immediately and is never downloaded twice", async () => {
+  const h = segmentHarness();
+  h.player.start({ id: "conversation-1", sessionId: "s1", first: {
+    seq: 0, audio_url: "/audio/first.mp3", is_final: false
+  }});
+  assert.deepEqual(h.enqueued.map(item => [item.seq, item.url]), [[0, "/audio/first.mp3"]]);
+  assert.match(h.fetch.calls[0].url, /after=0&ack=-1/);
+  h.fetch.calls[0].resolve(response(200, {seq: 1, audio_url: "/audio/rest.mp3", is_final: true}));
+  await drain();
+  assert.deepEqual(h.enqueued.map(item => item.seq), [0, 1]);
+  h.player.onEnded(0);
+  h.player.onEnded(1);
+  assert.equal(h.player.state().ack, 1);
+  h.player.stop();
+});
+
 /* ---- identity ----------------------------------------------------------- */
 
 test("mintSpeechRequest: valid id + 256-bit hex token, zero-padded bytes", () => {
@@ -806,9 +822,9 @@ test("wiring: ask() mints the identity before /ask and sends it in the body", ()
   assert.ok(region.includes("speechCtl.begin(sessionId)"));
   assert.ok(/requestAsk\([\s\S]*?speech:\s*speech[\s\S]*?\)/.test(region),
     "the minted fields ride Consult.requestAsk into the /ask body");
-  assert.ok(region.includes('data.speech && data.speech.status === "delivering" && !data.audio_url'),
-    "a delivering protocol-2 turn without audio_url switches to the segment player");
-  assert.ok(region.includes("segmentPlayer.start({ id: speech.speech_request_id, sessionId: sessionId })"),
+  assert.ok(region.includes('data.speech && data.speech.status === "delivering"'),
+    "both protocol-2 and first-sentence turns switch to the segment player");
+  assert.ok(region.includes("segmentPlayer.start({ id: speech.speech_request_id, sessionId: sessionId,"),
     "the segment player streams that job into the same audio queue");
   assert.ok(region.includes("enqueueAudio(data.audio_url, null, speech.speech_request_id)"),
     "full-file enqueue stays for legacy AND v1-degraded identified turns");
