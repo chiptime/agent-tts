@@ -16,6 +16,7 @@ which T4 maps onto the reprompt budget.
 
 from __future__ import annotations
 
+import re
 import unicodedata
 
 # Outcomes. T4 maps these onto ApprovalGateStore decisions: approve ->
@@ -97,3 +98,86 @@ def resolve_utterance(text: str) -> str:
         ):
             return outcome
     return OUTCOME_UNKNOWN
+
+
+# -- terminal dialog choices (S9/FR-09) -----------------------------------
+#
+# A DIFFERENT question than the gate lexicon: an utterance names WHICH
+# option of a spoken terminal dialog to press ("dile que sí",
+# "selecciona la opción 1"), and the deterministic mapping happens in
+# tools.answer_dialog against the CURRENT dialog. Pure module, same
+# normalize; returns None for anything that is not an explicit choice —
+# vague sentences must fall through to conversation, never guess.
+
+# Dialog commands are short sentences, not bare words: allow a little
+# more room than the gate lexicon's 24 chars.
+DIALOG_MAX_UTTERANCE_CHARS = 48
+
+CHOICE_OPTION = "option"
+CHOICE_BOOLEAN = "boolean"
+CHOICE_YES = "yes"
+CHOICE_NO = "no"
+
+# A digit resolves as a choice only when the utterance names it AS an
+# option: an option/number word or a selection verb accompanies the
+# digit. A bare digit inside an unrelated sentence is not a choice.
+_DIALOG_NUMBER_RE = re.compile(r"\b(\d{1,2})\b")
+_DIALOG_NUMBER_CONTEXT = ("opcion", "option", "numero", "number")
+_DIALOG_SELECTION_VERBS = (
+    "selecciona", "elige", "escoge", "marca", "pulsa", "dile",
+    "select", "choose", "pick", "press",
+)
+# A negated or corrected command never selects: "no selecciones la
+# opción 1", "selecciona 2, no, mejor 1". The bare yes/no words are
+# matched FIRST (whole utterance), so plain "no" still resolves.
+_DIALOG_NEGATIONS = frozenset(
+    {"no", "nunca", "jamas", "tampoco", "ninguna", "ninguno",
+     "not", "never", "dont", "quits", "cancela"}
+)
+# Optional lead-in ("dile", "contesta que", "answer", "tell him") plus an
+# optional "que": the remainder must BE the yes/no word, whole.
+_DIALOG_YES_NO_RE = re.compile(
+    r"^(?:(?:dile|di|contesta|responde|answer|say|tell\s+(?:him|it))\s+)?"
+    r"(?:que\s+)?(si|yes|no|nope)$"
+)
+
+
+def resolve_dialog_choice(text: str):
+    """Maps a spoken dialog answer to a deterministic choice, or None.
+
+    Returns ``("option", n)`` for an explicitly numbered selection,
+    ``("boolean", "yes"|"no")`` for "dile que sí"/"que no"-style answers,
+    and None for anything that does not name exactly one unambiguous,
+    un-negated choice — vague sentences, negations ("no elijas la opción
+    2"), multiple numbers ("opción 1 o 2") and self-corrections
+    ("selecciona 2, no, mejor 1") must all fall through so the caller
+    asks the user instead of pressing anything.
+
+    Examples:
+        "dile que sí" -> ("boolean", "yes")
+        "selecciona la opción 1" -> ("option", 1)
+        "no selecciones la opción 1" / "opción 1 o 2" / "no sé" -> None
+    """
+    utterance = _normalize(text)
+    if not utterance or len(utterance) > DIALOG_MAX_UTTERANCE_CHARS:
+        return None
+    yes_no = _DIALOG_YES_NO_RE.fullmatch(utterance)
+    if yes_no is not None:
+        word = yes_no.group(1)
+        return (CHOICE_BOOLEAN, CHOICE_NO if word in ("no", "nope") else CHOICE_YES)
+    numbers = _DIALOG_NUMBER_RE.findall(utterance)
+    if len(numbers) != 1:
+        return None  # zero numbers, or several competing ones
+    if int(numbers[0]) == 0:
+        return None  # options are 1-based
+    words = set(_DIALOG_NUMBER_RE.sub(" ", utterance).split())
+    if words & _DIALOG_NEGATIONS:
+        return None  # a negated or corrected command selects nothing
+    has_context = any(word in utterance for word in _DIALOG_NUMBER_CONTEXT)
+    has_verb = any(
+        utterance.startswith(verb) or f" {verb}" in f" {utterance}"
+        for verb in _DIALOG_SELECTION_VERBS
+    )
+    if has_context or has_verb:
+        return (CHOICE_OPTION, int(numbers[0]))
+    return None

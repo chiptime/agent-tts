@@ -520,6 +520,68 @@ cmd_url() {
   fi
 }
 
+# Desktop voice-call entry (FR-12): open the SAME PWA the phone uses in
+# the workstation's browser. The browser's microphone prompt is the
+# consent gate — this command never bypasses it, and it never starts or
+# restarts the service: a dead service is an honest error, not a
+# surprise daemon. HERDR_BRAIN_BROWSER overrides the opener (tests and
+# alternative browsers); otherwise xdg-open (Linux) then open (macOS).
+resolve_browser_opener() {
+  if [[ -n "${HERDR_BRAIN_BROWSER:-}" ]]; then
+    printf '%s\n' "$HERDR_BRAIN_BROWSER"
+    return 0
+  fi
+  if command -v xdg-open >/dev/null 2>&1; then
+    command -v xdg-open
+    return 0
+  fi
+  if command -v open >/dev/null 2>&1; then
+    command -v open
+    return 0
+  fi
+  return 1
+}
+
+cmd_call() {
+  load_env
+  local port="${HERDR_BRAIN_PORT:-8741}"
+  local url="http://localhost:$port/"
+
+  # Health gate first: opening a browser at a dead URL is not parity.
+  if ! curl -fsS -m 2 "http://127.0.0.1:$port/health" >/dev/null 2>&1; then
+    {
+      echo "[herdr-brain] ERROR: Herdr Brain is not reachable at $url (health check failed)."
+      echo "  Start it first: bin/herdr-brain restart   (or check bin/herdr-brain status)"
+    } >&2
+    exit 1
+  fi
+
+  local opener
+  opener="$(resolve_browser_opener)" || {
+    {
+      echo "[herdr-brain] ERROR: no desktop browser opener found (tried \$HERDR_BRAIN_BROWSER, xdg-open, open)."
+      echo "  Set HERDR_BRAIN_BROWSER to a browser command, or open $url manually."
+    } >&2
+    exit 1
+  }
+
+  echo "[herdr-brain] Opening the Collie voice call in your desktop browser: $url"
+  if ! "$opener" "$url" >/dev/null 2>&1; then
+    {
+      echo "[herdr-brain] ERROR: the browser opener ($opener) failed."
+      echo "  Open $url manually."
+    } >&2
+    exit 1
+  fi
+  cat <<EOF
+[herdr-brain] The call UI is opening. It shares the same call as your phone:
+  the same conversation, agents and pending approvals.
+  - The browser will ask for microphone access — that prompt is the consent
+    gate; grant it to talk (a blocked mic falls back to the keyboard).
+  - If the call has not started, tap "📞 Llamar" in the page.
+EOF
+}
+
 cmd_stop() {
   touch "$SUPERVISOR_STOP_FLAG" 2>/dev/null || true
   local pid owner
@@ -583,6 +645,9 @@ case "${1:-status}" in
   url|--url)
     cmd_url
     ;;
+  call|--call)
+    cmd_call
+    ;;
   stop|--stop)
     cmd_stop
     ;;
@@ -609,7 +674,8 @@ case "${1:-status}" in
     claim_port "${2:-daemon}"
     ;;
   help|--help|-h)
-    echo "Usage: bin/herdr-brain [--no-first-run] [status|url|restart|stop|first-run|doctor|_daemon|_daemon-supervised]"
+    echo "Usage: bin/herdr-brain [--no-first-run] [status|url|call|restart|stop|first-run|doctor|_daemon|_daemon-supervised]"
+    echo "  call   open the Collie voice-call UI in the desktop browser (HERDR_BRAIN_BROWSER overrides the opener)"
     ;;
   *)
     load_env

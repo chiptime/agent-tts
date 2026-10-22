@@ -75,7 +75,14 @@ INIT = r"""
 
 
 class RealMediaApp:
-    def __init__(self, context):
+    def __init__(self, context, init=INIT):
+        """Route-only app over real media.
+
+        ``init`` swaps the before-page init script: the default keeps
+        this suite's no-microphone environment bit-identical, while a
+        caller (the barge-in suite's real fake-capture scenarios) can
+        allow real capture and add observation-only instrumentation.
+        """
         self.context = context
         self.blocked = []
         self.errors = []
@@ -104,10 +111,14 @@ class RealMediaApp:
                                "turns": [{"role": "assistant", "text": "External replay fixture"}],
                                "window": 20}, {"pane_id"}),
             "/approval/current": ({"approval": None}, {"session_id"}),
+            # FR-13 shared call context: the default payload keeps these
+            # suites on their locally-minted session (call_id null = no
+            # adoption); the desktop/handover suite carries the real one.
+            "/call/context": ({"call_id": None, "pane_id": None, "revision": 0}, set()),
         }
         context.route("**/*", self.route)
         context.route_web_socket("**/*", self.block_socket)
-        context.add_init_script(INIT)
+        context.add_init_script(init)
         self.page = context.new_page()
         self.page.on("pageerror", lambda error: self.errors.append(str(error)))
         self.page.set_default_timeout(5000)

@@ -1,20 +1,28 @@
 """Routing-policy and tool-loop tests with a fully mocked LLM client.
 
-No network: the OpenAI-compatible client is replaced by a scripted fake.
+No network: the OpenAI-compatible client is replaced by a scripted fake,
+and the transport-cancellation tests drive the PRODUCTION AsyncOpenAI
+stack over an httpx MockTransport that blocks inside HTTP I/O.
 """
 
 from __future__ import annotations
 
+import asyncio
+import itertools
 import json
+import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import httpx
 import pytest
+from openai import AsyncOpenAI
 
 from herdr_brain.approval import PROPOSED, SUPERSEDED, ApprovalGateStore
 from herdr_brain.config import Settings
 from herdr_brain.herdr import AgentInfo
-from herdr_brain.llm import SYSTEM_PROMPT, BrainLLM, BrainLLMError
+from herdr_brain.llm import SYSTEM_PROMPT, BrainLLM, BrainLLMError, TurnCancelled
 from herdr_brain.memory import ConversationStore
 from herdr_brain.tools import BrainTools
 
@@ -61,6 +69,20 @@ def make_brain(settings, stub, responses):
     # llm._approval_store (same convention as llm._client).
     llm.attach_approval_store(ApprovalGateStore(timeout_s=settings.approval_timeout_s))
     return llm, tools
+
+
+def test_executive_voice_style_reaches_the_provider(settings, make_stub):
+    stub = make_stub()
+    answer = "The fix reduces failures. The tests passed. I recommend reviewing it."
+    llm, _ = make_brain(settings, stub, responses=[text_response(answer)])
+    result = llm.ask("Summarize the agent's progress")
+    policy = llm._client.create_kwargs[0]["messages"][0]["content"]
+    for phrase in ("problem impact", "tests passed or failed", "required decision", "recommended next action"):
+        assert phrase in policy
+    assert "At most 3 short sentences" in policy
+    assert "stretch the sentence limit" not in policy
+    assert result["answer"] == answer
+    assert stub.prompt_calls == []
 
 
 class TestRoutingPolicy:
@@ -183,6 +205,8 @@ class TestRoutingPolicy:
             # On-demand consult surface (T9): read-only, no approval gate.
             "consult_work_status", "consult_history",
             "get_followup_context", "end_followup",
+            # Voice dialog answering (S9): keys stay server-mapped.
+            "answer_dialog",
         }
         system = first["messages"][0]["content"]
         assert system.startswith(SYSTEM_PROMPT)
@@ -208,6 +232,66 @@ class TestLiveContext:
 
         block = build_live_context(None)
         assert "none right now" in block
+
+    def test_block_with_a_terminal_dialog_carries_the_speakable_line(self, active_agent):
+        """S8: a dialog that needs speaking reaches the model as ONE
+        deterministic, verbatim line — question and every option label —
+        so the spoken prompt never paraphrases or drops a choice."""
+        from herdr_brain.llm import build_live_context
+
+        dialog = {
+            "question": "¿Corremos los tests?",
+            "options": [
+                {"n": 1, "title": "Sí", "description": ""},
+                {"n": 2, "title": "No", "description": ""},
+            ],
+            "hint": "↑↓ select  enter submit",
+        }
+        blocked = AgentInfo(**{**active_agent.__dict__, "status": "blocked"})
+
+        block = build_live_context(blocked, dialog=dialog)
+
+        assert "BLOCKED at a terminal question dialog" in block
+        # The speakable prompt rides the live block verbatim.
+        assert "Opción 1: Sí." in block and "Opción 2: No." in block
+        assert "¿Corremos los tests?" in block
+        assert "VERBATIM" in block
+
+    def test_block_without_a_dialog_is_unchanged(self, active_agent):
+        from herdr_brain.llm import build_live_context
+
+        plain = build_live_context(active_agent)
+        explicit_none = build_live_context(active_agent, dialog=None)
+        assert plain == explicit_none
+        assert "terminal question dialog" not in plain
+
+    def test_ask_explains_the_blocked_dialog_once_then_goes_quiet(
+        self, settings, make_stub, active_agent
+    ):
+        """The live context speaks a NEW dialog on first sight; while the
+        same dialog stays on screen later turns do not repeat it."""
+        from tests.test_voice_dialog import DialogStub
+
+        stub = DialogStub()
+        llm, tools = make_brain(
+            settings, stub, responses=[text_response("ok"), text_response("ok")]
+        )
+        blocked = AgentInfo(**{**active_agent.__dict__, "status": "blocked"})
+
+        first = llm.ask("qué está pasando?", pane_id=blocked.pane_id)
+        system_one = llm._client.create_kwargs[0]["messages"][0]["content"]
+        assert "terminal question dialog" in system_one
+        assert "Opción 1: Sí." in system_one
+        assert first["answer"] == "ok"
+
+        second = llm.ask("¿y ahora?", pane_id=blocked.pane_id)
+        system_two = llm._client.create_kwargs[1]["messages"][0]["content"]
+        # The STATIC prompt still describes the dialog policy; the LIVE
+        # speakable line is gone — the options are not re-read.
+        assert "Opción 1: Sí." not in system_two
+        assert "BLOCKED at a terminal question dialog" not in system_two
+        assert second["answer"] == "ok"
+
 
     def test_system_message_reflects_stubbed_active_pane(self, settings, make_stub, active_agent):
         llm, _ = make_brain(settings, make_stub(), responses=[text_response("ok")])
@@ -329,6 +413,13 @@ class TestPendingHint:
         assert "Never send a blind yes" in SYSTEM_PROMPT
         assert "FIRST read_screen" in SYSTEM_PROMPT
         assert "surface it to the user proactively" in SYSTEM_PROMPT
+
+    def test_terminal_dialog_rules_in_static_prompt(self):
+        """S8/S9 policy seams: speak the dialog line verbatim, forward the
+        user's exact words, never choose on the model's own initiative."""
+        assert "answer_dialog" in SYSTEM_PROMPT
+        assert "exact words" in SYSTEM_PROMPT
+        assert "never choose or press anything yourself" in SYSTEM_PROMPT
 
 
 class TestSelection:
@@ -578,6 +669,92 @@ class TestKeyHandling:
             BrainLLM(no_key, BrainTools(no_key, herdr=make_stub()))
 
 
+class TestDisconnectCancellation:
+    """Cooperative abort of the tool loop when the /ask client is gone.
+
+    The cancel event is the REQUEST-scoped disconnect signal (FR-06),
+    deliberately separate from a speech job's cancel event: every check
+    guards a side-effect boundary, so an abandoned turn can never open a
+    gate, dispatch a tool or land in memory.
+    """
+
+    def test_cancelled_before_any_round_makes_no_provider_call(self, settings, make_stub):
+        llm, _ = make_brain(settings, make_stub(), responses=[])
+        with pytest.raises(TurnCancelled):
+            llm.ask("question", cancel_event=_set_event())
+        assert llm._client.create_kwargs == []
+
+    def test_cancelled_between_rounds_stops_the_loop(self, settings, make_stub):
+        cancel = threading.Event()
+        scripted = ScriptedLLM([tool_call_response("c1", "get_status", {})])
+        original_create = scripted.chat.completions.create
+
+        def create(**kwargs):
+            response = original_create(**kwargs)  # record the round
+            cancel.set()  # the disconnect lands right after round 1 returns
+            return response
+
+        scripted.chat.completions.create = create
+        llm = BrainLLM(settings, BrainTools(settings, herdr=make_stub()), client=scripted)
+        with pytest.raises(TurnCancelled):
+            llm.ask("question", cancel_event=cancel)
+        assert len(scripted.create_kwargs) == 1  # no second provider round
+
+    def test_cancelled_before_tool_call_dispatches_nothing(self, settings, make_stub):
+        stub = make_stub()
+        cancel = threading.Event()
+        scripted = ScriptedLLM([tool_call_response("c1", "send_to_session", {"text": "x"})])
+        original_create = scripted.chat.completions.create
+
+        def create(**kwargs):
+            response = original_create(**kwargs)  # record the round
+            cancel.set()  # lands after the model asked for the send
+            return response
+
+        scripted.chat.completions.create = create
+        llm = BrainLLM(settings, BrainTools(settings, herdr=stub), client=scripted)
+        llm.attach_approval_store(ApprovalGateStore(timeout_s=settings.approval_timeout_s))
+        with pytest.raises(TurnCancelled):
+            llm.ask("manda x", cancel_event=cancel)
+        # The send never ran and no gate opened: the check guards the
+        # side-effect boundary itself (the screen read that remains is
+        # the live-context probe, which happens before any round).
+        assert stub.prompt_calls == []
+        assert llm._approval_store.current("default") is None  # no gate opened
+        assert len(scripted.create_kwargs) == 1  # no round after the tool loop died
+
+    def test_cancelled_before_store_write_keeps_memory_clean(self, settings, make_stub):
+        store = ConversationStore()
+        cancel = threading.Event()
+        scripted = ScriptedLLM([text_response("done")])
+
+        def create(**kwargs):
+            response = scripted.responses.pop(0)
+            cancel.set()  # answer exists, but the client is gone
+            return response
+
+        scripted.chat.completions.create = create
+        llm = BrainLLM(settings, BrainTools(settings, herdr=make_stub()), client=scripted)
+        llm.attach_store(store)
+        with pytest.raises(TurnCancelled):
+            llm.ask("question", cancel_event=cancel)
+        assert store.history("default") == []
+
+    def test_connected_turn_ignores_no_event_and_stores(self, settings, make_stub):
+        store = ConversationStore()
+        llm, _ = make_brain(settings, make_stub(), responses=[text_response("ok")])
+        llm.attach_store(store)
+        result = llm.ask("question", cancel_event=threading.Event())
+        assert result["answer"] == "ok"
+        assert [m.role for m in store.history("default")] == ["user", "assistant"]
+
+
+def _set_event() -> threading.Event:
+    event = threading.Event()
+    event.set()
+    return event
+
+
 class TestToolCallLogging:
     def test_tool_calls_logged_with_truncated_args(self, settings, make_stub, caplog):
         import logging as logging_module
@@ -642,3 +819,185 @@ class TestSystemPromptPolicy:
             "state the target and the text (verbatim if short), and wait "
             "— never narrate the send as done"
         ) in SYSTEM_PROMPT
+
+
+def completion_body(content="fine"):
+    return {
+        "id": "chatcmpl-test",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "glm-test",
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": content},
+            }
+        ],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+
+
+class ProbeAsyncClient(httpx.AsyncClient):
+    """Real httpx client whose MockTransport blocks INSIDE HTTP I/O and
+    records the two cancellation observables: the in-flight request task
+    receiving CancelledError, and aclose() running on the owned client.
+
+    Modes: "block" never completes (cancellation is the only way out),
+    "ok" answers immediately, "held" blocks on the release event."""
+
+    def __init__(self, mode="block", release=None):
+        self.aclosed = threading.Event()
+        self.cancelled = threading.Event()
+        self.request_count = 0
+        self._release = release
+
+        async def handler(request):
+            self.request_count += 1
+            if mode == "block":
+                try:
+                    await asyncio.Event().wait()  # in-flight HTTP I/O
+                except asyncio.CancelledError:
+                    self.cancelled.set()
+                    raise
+            elif mode == "held":
+                await asyncio.to_thread(self._release.wait, 5)
+            return httpx.Response(200, json=completion_body())
+
+        super().__init__(transport=httpx.MockTransport(handler))
+
+    async def aclose(self):
+        self.aclosed.set()
+        await super().aclose()
+
+
+def async_llm(settings, make_stub, factory):
+    return BrainLLM(
+        settings,
+        BrainTools(settings, herdr=make_stub()),
+        async_client_factory=factory,
+    )
+
+
+def owned_client(settings, probe):
+    return AsyncOpenAI(
+        api_key=settings.glm_api_key,
+        base_url=settings.glm_base_url,
+        http_client=probe,
+    )
+
+
+def run_ask_thread(llm, cancel_event):
+    outcome = {}
+
+    def run():
+        try:
+            outcome["result"] = llm.ask("question", cancel_event=cancel_event)
+        except BaseException as exc:  # noqa: BLE001 — recorded, asserted below
+            outcome["exc"] = exc
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread, outcome
+
+
+class TestProviderTransportCancellation:
+    """FR-06 correction: a disconnected ask() must abort the PRODUCTION
+    HTTP operation itself — the production AsyncOpenAI stack over a real
+    httpx transport — not merely signal a cooperative flag. These probes
+    block inside HTTP I/O and would otherwise hang until the provider's
+    own timeout."""
+
+    def test_disconnect_cancels_in_flight_http_and_closes_owned_transport(
+        self, settings, make_stub
+    ):
+        probe = ProbeAsyncClient("block")
+        llm = async_llm(settings, make_stub, lambda: owned_client(settings, probe))
+        cancel = threading.Event()
+        thread, outcome = run_ask_thread(llm, cancel)
+        try:
+            time.sleep(0.3)
+            cancelled_at = time.monotonic()
+            cancel.set()
+            thread.join(5)
+        finally:
+            cancel.set()
+            thread.join(5)
+        assert not thread.is_alive(), "worker must unblock promptly, not ride the provider timeout"
+        assert isinstance(outcome.get("exc"), TurnCancelled)
+        assert probe.cancelled.wait(1), "the awaited HTTP task itself was cancelled"
+        assert probe.aclosed.wait(1), "the owned transport was closed"
+        assert probe.request_count == 1
+        assert time.monotonic() - cancelled_at < 3  # far below any provider timeout
+
+    def test_cancelling_one_turn_leaves_a_concurrent_connected_turn_alone(
+        self, settings, make_stub
+    ):
+        probes = [ProbeAsyncClient("block"), ProbeAsyncClient("ok")]
+        created = []
+        first_client = threading.Event()
+        counter = itertools.count()
+
+        def factory():
+            index = next(counter)  # atomic: turns never share an owned client
+            created.append(index)
+            if index == 0:
+                first_client.set()
+            return owned_client(settings, probes[index])
+
+        llm = async_llm(settings, make_stub, factory)
+        cancel_a = threading.Event()
+        never = threading.Event()
+        thread_a, outcome_a = run_ask_thread(llm, cancel_a)
+        # Deterministic assignment: turn A owns the blocking transport
+        # before turn B even starts (its ask() opened the first client).
+        assert first_client.wait(2)
+        thread_b, outcome_b = run_ask_thread(llm, never)
+        try:
+            time.sleep(0.3)
+            cancel_a.set()
+            thread_a.join(5)
+            thread_b.join(5)
+        finally:
+            cancel_a.set()
+            thread_a.join(5)
+            never.set()
+            thread_b.join(5)
+        assert not thread_a.is_alive() and not thread_b.is_alive()
+        # The abandoned turn died through ITS owned transport...
+        assert isinstance(outcome_a.get("exc"), TurnCancelled)
+        assert probes[0].cancelled.wait(1)
+        assert probes[0].aclosed.wait(1)
+        # ...while the connected turn completed with a full answer through
+        # its own separate client, untouched by the cancellation.
+        assert outcome_b.get("result", {}).get("answer") == "fine"
+        assert not probes[1].cancelled.is_set()
+        assert probes[1].request_count == 1
+        assert len(created) == 2  # each turn owned its own client
+
+    def test_speech_job_cancel_event_never_aborts_the_provider_transport(
+        self, settings, make_stub
+    ):
+        """An explicit /speech cancel on a still-connected request must
+        keep the full textual-answer behavior: the provider channel only
+        reacts to the REQUEST-scoped disconnect event."""
+        release = threading.Event()
+        probe = ProbeAsyncClient("held", release)
+        llm = async_llm(settings, make_stub, lambda: owned_client(settings, probe))
+        job_cancel = threading.Event()  # the SPEECH job's event, not the request's
+        disconnect_event = threading.Event()  # never set: client stays connected
+        thread, outcome = run_ask_thread(llm, disconnect_event)
+        try:
+            time.sleep(0.2)
+            job_cancel.set()  # the user pressed stop-voice mid-turn
+            time.sleep(0.3)
+            assert thread.is_alive(), "a speech cancel must not abort the provider"
+            release.set()
+            thread.join(5)
+        finally:
+            release.set()
+            thread.join(5)
+        assert not thread.is_alive()
+        assert outcome.get("result", {}).get("answer") == "fine"
+        assert not probe.cancelled.is_set()
+        assert probe.request_count == 1

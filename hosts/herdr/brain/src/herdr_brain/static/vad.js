@@ -9,8 +9,8 @@
  * - Hysteresis: the gate OPENS above floor*openRatio (2.5) but only CLOSES
  *   below floor*closeRatio (1.4) — brief dips mid-word do not split an
  *   utterance.
- * - Utterance end: 1200ms continuously below the close threshold, or a
- *   15s hard cap measured from speech start.
+ * - Utterance end: 800ms continuously below the close threshold, or a
+ *   15s default hard cap measured from speech start (configurable up to 60s).
  *
  * API mirrors endpointing.js:
  *   push(level) -> bool   feed one frame's RMS; true when speech opens.
@@ -23,8 +23,9 @@
 (function (global) {
   "use strict";
 
-  var DEFAULT_SILENCE_MS = 2000;
-  var DEFAULT_HARD_CAP_MS = 60000;
+  var DEFAULT_SILENCE_MS = 800;
+  var DEFAULT_HARD_CAP_MS = 15000;
+  var MAX_HARD_CAP_MS = 60000;
   var DEFAULT_OPEN_RATIO = 2.5;   // level > floor*ratio opens the gate
   var DEFAULT_CLOSE_RATIO = 1.25; // level < floor*ratio closes the gate
   var DEFAULT_FLOOR = 0.004;      // initial/minimum noise floor (RMS)
@@ -33,7 +34,8 @@
   function createVad(options) {
     options = options || {};
     var silenceMs = typeof options.silenceMs === "number" ? options.silenceMs : DEFAULT_SILENCE_MS;
-    var hardCapMs = typeof options.hardCapMs === "number" ? options.hardCapMs : DEFAULT_HARD_CAP_MS;
+    var hardCapMs = Math.min(MAX_HARD_CAP_MS,
+      typeof options.hardCapMs === "number" ? options.hardCapMs : DEFAULT_HARD_CAP_MS);
     var openRatio = typeof options.openRatio === "number" ? options.openRatio : DEFAULT_OPEN_RATIO;
     var closeRatio = typeof options.closeRatio === "number" ? options.closeRatio : DEFAULT_CLOSE_RATIO;
     var minFloor = typeof options.minFloor === "number" ? options.minFloor : DEFAULT_FLOOR;

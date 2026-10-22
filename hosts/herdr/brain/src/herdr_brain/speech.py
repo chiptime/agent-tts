@@ -347,7 +347,7 @@ class SegmentBuffer:
     def _bound(self) -> int:
         return self._capacity if self._capacity is not None else SPEECH_SEGMENT_BUFFER
 
-    def add(self, segment: dict) -> bool:
+    def add(self, segment: dict, cancel_event=None) -> bool:
         """Stages one segment, blocking while full.
 
         Blocks up to SPEECH_PRODUCER_BLOCK_S (read at call time) polling
@@ -357,6 +357,8 @@ class SegmentBuffer:
         """
         deadline = time.monotonic() + SPEECH_PRODUCER_BLOCK_S
         while True:
+            if cancel_event is not None and cancel_event.is_set():
+                return False
             with self._lock:
                 if len(self._segments) < self._bound():
                     self._segments.append(dict(segment))
@@ -751,3 +753,60 @@ class SegmentedSpeechProducer:
             # a completeness condition.
             return PHASE_COMPLETE
         return None
+
+
+class SentenceSpeechProducer(SegmentedSpeechProducer):
+    """Conversation opt-in over CLI v1, sharing bounded /next and cancellation.
+
+    Only the first sentence is rendered on the request path. Remaining sentences
+    use the same cancellable renderer in one owned thread; no protocol-2 host or
+    unbounded audio queue is required. The inherited guarded phase transition
+    preserves the registry's terminal-once invariant.
+    """
+
+    def __init__(self, settings, registry, job, text, render):
+        super().__init__(settings, registry, job, text)
+        self._render = render
+        self._sentences = re.split(r"(?<=[.!?])\s+", (text or "").strip())
+        self.first_audio_url = None
+
+    def _stage_sentence(self, seq):
+        if self._job.cancel_event.is_set():
+            self._mark(PHASE_CANCELLED)
+            return None
+        url = self._render(self._sentences[seq], self._job.cancel_event)
+        if not url or self._job.cancel_event.is_set():
+            self._mark(PHASE_CANCELLED if self._job.cancel_event.is_set() else PHASE_FAILED)
+            return None
+        audio = self._settings.audio_dir / Path(url).name
+        if not self.buffer.add(
+            {"seq": seq, "file": audio.name, "bytes": audio.stat().st_size},
+            cancel_event=self._job.cancel_event,
+        ):
+            self._mark(PHASE_CANCELLED if self._job.cancel_event.is_set() else PHASE_DEGRADED)
+            return None
+        return url
+
+    def start(self):
+        self._mark(PHASE_RENDERING)
+        if len(self._sentences) > SPEECH_MAX_SEGMENTS:
+            self._mark(PHASE_DEGRADED)
+            return
+        self.first_audio_url = self._stage_sentence(0)
+        if not self.first_audio_url:
+            return
+        if len(self._sentences) == 1:
+            self._mark(PHASE_COMPLETE)
+            return
+        self._mark(PHASE_DELIVERING)
+        self.thread = threading.Thread(target=self._run, name=f"sentences-{self._job.id}", daemon=True)
+        self.thread.start()
+
+    def _run(self):
+        try:
+            for seq in range(1, len(self._sentences)):
+                if self._stage_sentence(seq) is None:
+                    return
+            self._mark(PHASE_COMPLETE)
+        except Exception:
+            self._mark(PHASE_CANCELLED if self._job.cancel_event.is_set() else PHASE_FAILED)

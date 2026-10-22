@@ -72,12 +72,28 @@
     var expired = false;    // countdown reached 0 (payload kept for the gray card)
     var dictating = false;  // listen_replace: next utterance is the NEW text
     var resolving = false;  // a resolve/PATCH/echo round is in flight
+    // S14 spoken-approval binding: pendingSpeech is the speech id whose
+    // COMPLETE playback would explain this gate; pendingClarify is the
+    // clarify restate ({speechId, url}) waiting to be heard. Only a
+    // genuinely finished playback of one of those promotes the id to
+    // explainedSpeech — the sole receipt a confirm word ever presents.
+    var pendingSpeech = null;
+    var pendingClarify = null;
+    var explainedSpeech = null;
 
-    function arm(approval) {
+    function clearExplanation() {
+      pendingSpeech = null;
+      pendingClarify = null;
+      explainedSpeech = null;
+    }
+
+    function arm(approval, speechId) {
       gate = approval;
       expiresAt = now() + (approval.expires_in_s || 0) * 1000;
       expired = false;
       dictating = false;
+      clearExplanation();
+      pendingSpeech = speechId || null;
       setState("confirming");
     }
 
@@ -86,6 +102,7 @@
       expiresAt = null;
       expired = false;
       dictating = false;
+      clearExplanation();
     }
 
     function gone() {
@@ -179,6 +196,10 @@
           gate = data.approval;  // created_at reset server-side: restart the ring
           expiresAt = now() + (data.approval.expires_in_s || 0) * 1000;
           dictating = false;
+          // S14: the revision is a DIFFERENT action — any receipt spoken
+          // for the old text is void until the revised action is
+          // explained and confirmed again.
+          clearExplanation();
           reEcho(data.approval.text);
         })
         .catch(function () {
@@ -308,6 +329,34 @@
         else setState("confirming");                    // TTS failed server-side
         return;
       }
+      if (decision === "clarify") {
+        // S14: the spoken word had no valid explanation receipt (or the
+        // action changed). Nothing executed; the server RESTATED the
+        // current action. Only a restate that really rendered carries an
+        // explain_speech_id: playing it to its end makes the NEXT
+        // explicit confirm provable. A silent clarify (TTS failure)
+        // authorizes nothing — confirming again just clarifies again.
+        resolving = false;
+        explainedSpeech = null;
+        pendingSpeech = null;
+        if (!gate || expired) {
+          gone();
+          return;
+        }
+        if (data.audio_url) {
+          // Always SPEAK the restate; only an identified one (a fresh
+          // speech job the server bound to this revision) can ever
+          // become a receipt after its playback ends.
+          if (data.explain_speech_id) {
+            pendingClarify = {speechId: data.explain_speech_id, url: data.audio_url};
+          }
+          playAudio(data.audio_url);
+        } else {
+          pendingClarify = null;
+          setState("confirming");
+        }
+        return;
+      }
       if (decision === "listen_replace") {
         resolving = false;
         if (!gate || expired) {
@@ -329,7 +378,10 @@
       resolving = true;
       setState("thinking");
       post("/approval/" + encodeURIComponent(gate.gate_id) + "/resolve", {
-        utterance: text
+        utterance: text,
+        // S14: the explanation receipt — presented ONLY when this client
+        // drained the explaining audio; null makes the server clarify.
+        speech_request_id: explainedSpeech
       }, replayTimeoutMs())
         .then(function (resp) {
           if (resp.status === 404) return null;
@@ -383,19 +435,54 @@
         });
     }
 
+    /* S14 explanation receipts — three completion seams, no others:
+     *  - noteItemPlayed(item): a FULL-FILE queue item really reached its
+     *    native 'ended' event. Marks only when the item IS the pending
+     *    explanation (its speech id) or the pending clarify restate
+     *    (its URL). Segment items never mark here: a momentarily empty
+     *    queue is not final playback (B7).
+     *  - noteSegmentJobComplete(id): the segment player finished the
+     *    job — final segment consumed and its ack delivered.
+     * Play failures, flushed queues, interrupted playback and missing
+     * remainders never promote spoken authority. */
+    function noteItemPlayed(item) {
+      if (!gate || expired || !item) return;
+      if (item.seq !== null && item.seq !== undefined) return;  // segments: job completion
+      if (pendingSpeech && item.speechRequestId === pendingSpeech) {
+        explainedSpeech = pendingSpeech;
+        pendingSpeech = null;
+        return;
+      }
+      if (pendingClarify && item.url === pendingClarify.url) {
+        explainedSpeech = pendingClarify.speechId;
+        pendingClarify = null;
+      }
+    }
+
+    function noteSegmentJobComplete(id) {
+      if (!gate || expired || !pendingSpeech) return;
+      if (id === pendingSpeech) {
+        explainedSpeech = pendingSpeech;
+        pendingSpeech = null;
+      }
+    }
+
     return {
       active: function () { return !!gate && !expired; },
       gate: function () { return gate; },
       isDictating: function () { return dictating; },
       isBusy: function () { return resolving; },
       isExpired: function () { return expired; },
+      explanationSpeechId: function () { return explainedSpeech; },
+      noteItemPlayed: noteItemPlayed,
+      noteSegmentJobComplete: noteSegmentJobComplete,
       remainingSeconds: function () {
         if (!gate) return 0;
         return Math.max(0, Math.ceil((expiresAt - now()) / 1000));
       },
-      open: function (approval) {
+      open: function (approval, speechId) {
         if (!approval || !approval.gate_id) return;
-        arm(approval);
+        arm(approval, speechId);
       },
       recover: recover,
       tick: function () {
@@ -413,6 +500,7 @@
         expired = false;
         dictating = false;
         resolving = false;
+        clearExplanation();
       }
     };
   }

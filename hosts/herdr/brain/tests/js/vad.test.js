@@ -15,6 +15,31 @@ function fakeClock(start = 0) {
 const QUIET = 0.002;   // typical noise-room RMS
 const SPEECH = 0.08;   // typical speech RMS
 
+test("conversational VAD defaults to 800ms with configurable 700/900ms endpoints", () => {
+  for (const silenceMs of [undefined, 700, 900]) {
+    const clock = fakeClock();
+    const vad = createVad({ now: clock.now, ...(silenceMs === undefined ? {} : { silenceMs }) });
+    vad.push(SPEECH);
+    clock.advance((silenceMs ?? 800) - 1);
+    vad.push(QUIET);
+    assert.equal(vad.shouldFinalize(), false);
+    clock.advance(1);
+    assert.equal(vad.shouldFinalize(), true);
+  }
+});
+
+test("configured VAD cannot exceed the 60-second safety cap", () => {
+  const clock = fakeClock();
+  const vad = createVad({ now: clock.now, silenceMs: 120000, hardCapMs: 120000 });
+  vad.push(SPEECH);
+  clock.advance(59999);
+  vad.push(SPEECH);
+  assert.equal(vad.shouldFinalize(), false);
+  clock.advance(1);
+  vad.push(SPEECH);
+  assert.equal(vad.shouldFinalize(), true);
+});
+
 test("quiet input never opens the gate", () => {
   const clock = fakeClock();
   const vad = createVad({ now: clock.now });
@@ -74,21 +99,21 @@ test("hysteresis: a brief dip mid-utterance does not end it", () => {
 
 test("utterance finalizes after silenceMs below the close threshold", () => {
   const clock = fakeClock();
-  const vad = createVad({ now: clock.now });
+  const vad = createVad({ now: clock.now, silenceMs: 1200 });
   clock.advance(100);
   vad.push(SPEECH);
-  clock.advance(1999);
+  clock.advance(1199);
   assert.equal(vad.shouldFinalize(), false);  // not yet
-  clock.advance(1);                           // 2000ms sharp
+  clock.advance(1);                           // 1200ms sharp (explicit override)
   assert.equal(vad.shouldFinalize(), true);
 });
 
-test("60s hard cap finalizes even with continuous speech", () => {
+test("15s default hard cap finalizes even with continuous speech", () => {
   const clock = fakeClock();
   const vad = createVad({ now: clock.now });
   clock.advance(100);
   vad.push(SPEECH);
-  for (let ms = 0; ms < 60000; ms += 100) {
+  for (let ms = 0; ms < 15000; ms += 100) {
     clock.advance(100);
     vad.push(SPEECH);  // never silent: the cap must end it
   }
