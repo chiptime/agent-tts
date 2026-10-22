@@ -2066,6 +2066,13 @@
           (status.state && status.state.indexOf("server-") === 0)) {
         speechCtl.release(status.id);
       }
+      /* S14 (B7): "complete" means the FINAL segment was consumed and
+       * its ack delivered — the only moment a segmented explanation has
+       * really been heard in full. A held or interrupted remainder never
+       * reaches this, so it never promotes spoken authority. */
+      if (status.state === "complete") {
+        approvalFlow.noteSegmentJobComplete(status.id);
+      }
       if (status.state === "degraded") {
         showBanner("No pude seguir bajando la voz por segmentos; la reproducción quedó degradada.");
       } else if (status.state && status.state.indexOf("server-") === 0) {
@@ -2460,6 +2467,9 @@
     // item — only resume when nothing else owns the audio.
     if (!audioBusy && !audioQueue.length && inCall && callState === "speaking") {
       stopBargeInMonitor();  // playback is over: the mic recovery owns detection
+      // No noteItemPlayed here (unlike onAudioEnded): audio that never
+      // played never explains a gate — a confirm word after a playback
+      // failure carries no receipt and the server clarifies.
       setCallState(micBaseState());
       startListening();
     }
@@ -2487,6 +2497,11 @@
     if (finished && typeof finished.seq === "number") segmentPlayer.onEnded(finished.seq);
     if (finished && finished.announcement) hideToast();
     if (!audioQueue.length) stopBtn.classList.add("hidden");
+    // S14 (B7): a FULL-FILE item that genuinely reached 'ended' is the
+    // only full-file explanation/clarify proof. Segment items never mark
+    // here — a momentarily empty queue is not final playback; the
+    // segment job's completion status owns that seam below.
+    approvalFlow.noteItemPlayed(finished);
     if (!audioQueue.length && inCall && callState === "speaking") {
       // The turn's audio is fully drained: the monitor's job is over,
       // and it must die BEFORE the mic re-arms (a live monitor hearing
@@ -3608,7 +3623,10 @@
             // A gate opened (PRD §4): enter confirming with the countdown
             // while the spoken echo ("… ¿Se envía?") plays through the
             // normal queue; onAudioEnded re-arms the mic under confirming.
-            approvalFlow.open(data.approval);
+            // S14: the turn's speech id is the EXPLANATION identity — the
+            // flow presents it as the receipt only if this client drains
+            // the whole playback (noteExplanationPlayed at queue end).
+            approvalFlow.open(data.approval, speech.speech_request_id || null);
             // UX 2026-09-24: the gate surfaces as the floating popup
             // (visible with the drawer open OR closed — text mode
             // included); the drawer no longer auto-opens, and the pill

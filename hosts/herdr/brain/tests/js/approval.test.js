@@ -115,7 +115,9 @@ test("a confirming utterance resolves against the gate, never /ask", async () =>
   assert.equal(h.http.calls.length, 1);
   assert.equal(h.http.calls[0].url, RESOLVE_URL);
   assert.equal(h.http.calls[0].options.method, "POST");
-  assert.deepEqual(bodyOf(h.http.calls[0]), { utterance: "no" });
+  // S14: the body carries the explanation receipt (null when the
+  // explanation never finished playing — the server then clarifies).
+  assert.deepEqual(bodyOf(h.http.calls[0]), { utterance: "no", speech_request_id: null });
 });
 
 test("without a live gate routing declines and the caller falls back to /ask", () => {
@@ -136,6 +138,132 @@ test("a second utterance during an in-flight round is swallowed", async () => {
   await flush();
   assert.equal(h.flow.active(), false);
   assert.equal(h.flow.routeUtterance("hola"), false);
+});
+
+/* ---- S14: the spoken receipt binds «adelante» to the explained action ---- */
+
+test("the explanation receipt is sent only after its full-file playback ended", async () => {
+  const h = harness({ plan: [{ json: { decision: "reject" } }] });
+  h.flow.open({ ...GATE }, "sp-expl-0001");
+  // The gate opened and audio is still playing: no receipt yet.
+  h.flow.routeUtterance("adelante");
+  await flush();
+  assert.equal(bodyOf(h.http.calls[0]).speech_request_id, null);
+
+  const h2 = harness({ plan: [{ json: { decision: "reject" } }] });
+  h2.flow.open({ ...GATE }, "sp-expl-0002");
+  // A SEGMENT item ending is never full playback (B7): no receipt.
+  h2.flow.noteItemPlayed({ url: "/audio/seg0.mp3", speechRequestId: "sp-expl-0002", seq: 0 });
+  assert.equal(h2.flow.explanationSpeechId(), null);
+  // The full-file item's own 'ended' is the proof.
+  h2.flow.noteItemPlayed({ url: "/audio/full.mp3", speechRequestId: "sp-expl-0002", seq: null });
+  h2.flow.routeUtterance("adelante");
+  await flush();
+  assert.equal(bodyOf(h2.http.calls[0]).speech_request_id, "sp-expl-0002");
+});
+
+test("segmented explanations mark only on final job completion", async () => {
+  const h = harness({ plan: [{ json: { decision: "reject" } }] });
+  h.flow.open({ ...GATE }, "sp-expl-0005");
+  h.flow.noteItemPlayed({ url: "/audio/seg0.mp3", speechRequestId: "sp-expl-0005", seq: 0 });
+  assert.equal(h.flow.explanationSpeechId(), null);
+  h.flow.noteSegmentJobComplete("sp-expl-0005");  // final segment consumed + acked
+  h.flow.routeUtterance("adelante");
+  await flush();
+  assert.equal(bodyOf(h.http.calls[0]).speech_request_id, "sp-expl-0005");
+});
+
+test("noteItemPlayed is inert for unrelated items", async () => {
+  const h = harness({ plan: [{ json: { decision: "reject" } }] });
+  h.flow.open({ ...GATE }, "sp-expl-0006");
+  h.flow.noteItemPlayed({ url: "/audio/ambient.mp3", speechRequestId: null, seq: null });
+  h.flow.noteItemPlayed({ url: "/audio/other.mp3", speechRequestId: "sp-someone-else", seq: null });
+  assert.equal(h.flow.explanationSpeechId(), null);
+  h.flow.routeUtterance("no");
+  await flush();
+  assert.equal(bodyOf(h.http.calls[0]).speech_request_id, null);
+});
+
+test("a recovered gate never inherits spoken authority", async () => {
+  const h = harness({
+    plan: [
+      { json: { approval: { ...GATE } } },  // GET /approval/current
+      { json: { decision: "clarify", answer: "repito", audio_url: null, approval: null } }
+    ]
+  });
+  await h.flow.recover("sess-1");
+  assert.equal(h.flow.active(), true);
+  h.flow.routeUtterance("adelante");
+  await flush();
+  assert.strictEqual(bodyOf(h.http.calls[1]).speech_request_id, null);
+});
+
+test("a revised gate drops any pending receipt (the action changed)", async () => {
+  const http = deferredHttp();
+  const h = harness({ http });
+  h.flow.open({ ...GATE }, "sp-expl-0003");
+  h.flow.noteItemPlayed({ url: "/audio/full.mp3", speechRequestId: "sp-expl-0003", seq: null });
+  // Replace-intent round: the server says listen_replace.
+  h.flow.routeUtterance("cambia el texto");
+  http.respond({ json: { decision: "listen_replace", answer: null, audio_url: null, approval: null } });
+  await flush();
+  // The dictation round: a non-command utterance comes back as reprompt,
+  // which the dictating client PATCHes as the new text.
+  h.flow.routeUtterance("nuevo texto");
+  http.respond({ json: { decision: "reprompt", answer: null, audio_url: null, approval: null } });
+  await flush();
+  http.respond({ json: { ok: true, approval: { ...GATE, text: "nuevo texto" } } });
+  await flush();
+  assert.equal(h.flow.gate().text, "nuevo texto");
+  // reEcho of the revised text (client /tts).
+  http.respond({ json: { audio_url: "/audio/e.mp3" } });
+  await flush();
+  // …and the NEXT confirm carries no stale receipt: the server must
+  // clarify before approving the revised action.
+  h.flow.routeUtterance("adelante");
+  http.respond({ json: { decision: "clarify", answer: "repito", audio_url: null } });
+  await flush();
+  assert.strictEqual(bodyOf(h.http.calls[4]).speech_request_id, null);
+});
+
+test("a rendered clarify restate authorizes only its heard confirm", async () => {
+  const http = deferredHttp();
+  const h = harness({ http });
+  h.flow.open({ ...GATE });
+  // Unproven «adelante»: the server restates and binds a fresh identity.
+  h.flow.routeUtterance("adelante");
+  http.respond({
+    json: {
+      decision: "clarify", answer: "Antes de confirmar…",
+      audio_url: "/audio/c.mp3", explain_speech_id: "clarify-000000000001", approval: null
+    }
+  });
+  await flush();
+  assert.equal(h.flow.active(), true);
+  assert.deepEqual(h.played, ["/audio/c.mp3"]);
+  assert.deepEqual(h.states, ["confirming", "thinking"]);  // audio owns the confirming return
+  // The restate's own 'ended' event is the proof for the NEXT confirm…
+  h.flow.noteItemPlayed({ url: "/audio/c.mp3", speechRequestId: null, seq: null });
+  h.flow.routeUtterance("sí");
+  http.respond({ json: { decision: "approve", answer: "Enviado", audio_url: null, approval: null } });
+  await flush();
+  assert.equal(bodyOf(h.http.calls[1]).speech_request_id, "clarify-000000000001");
+});
+
+test("a silent clarify (no audio) authorizes nothing", async () => {
+  const http = deferredHttp();
+  const h = harness({ http });
+  h.flow.open({ ...GATE });
+  h.flow.routeUtterance("adelante");
+  http.respond({ json: { decision: "clarify", answer: "repito", audio_url: null, approval: null } });
+  await flush();
+  assert.equal(h.flow.active(), true);
+  assert.deepEqual(h.states, ["confirming", "thinking", "confirming"]);
+  // Nothing was heard: repeated confirms still carry no receipt.
+  h.flow.routeUtterance("adelante");
+  http.respond({ json: { decision: "clarify", answer: "repito", audio_url: null, approval: null } });
+  await flush();
+  assert.strictEqual(bodyOf(h.http.calls[1]).speech_request_id, null);
 });
 
 /* ---- decision handling ---- */

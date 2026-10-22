@@ -191,6 +191,8 @@ class TestRoutingPolicy:
             # On-demand consult surface (T9): read-only, no approval gate.
             "consult_work_status", "consult_history",
             "get_followup_context", "end_followup",
+            # Voice dialog answering (S9): keys stay server-mapped.
+            "answer_dialog",
         }
         system = first["messages"][0]["content"]
         assert system.startswith(SYSTEM_PROMPT)
@@ -216,6 +218,66 @@ class TestLiveContext:
 
         block = build_live_context(None)
         assert "none right now" in block
+
+    def test_block_with_a_terminal_dialog_carries_the_speakable_line(self, active_agent):
+        """S8: a dialog that needs speaking reaches the model as ONE
+        deterministic, verbatim line — question and every option label —
+        so the spoken prompt never paraphrases or drops a choice."""
+        from herdr_brain.llm import build_live_context
+
+        dialog = {
+            "question": "¿Corremos los tests?",
+            "options": [
+                {"n": 1, "title": "Sí", "description": ""},
+                {"n": 2, "title": "No", "description": ""},
+            ],
+            "hint": "↑↓ select  enter submit",
+        }
+        blocked = AgentInfo(**{**active_agent.__dict__, "status": "blocked"})
+
+        block = build_live_context(blocked, dialog=dialog)
+
+        assert "BLOCKED at a terminal question dialog" in block
+        # The speakable prompt rides the live block verbatim.
+        assert "Opción 1: Sí." in block and "Opción 2: No." in block
+        assert "¿Corremos los tests?" in block
+        assert "VERBATIM" in block
+
+    def test_block_without_a_dialog_is_unchanged(self, active_agent):
+        from herdr_brain.llm import build_live_context
+
+        plain = build_live_context(active_agent)
+        explicit_none = build_live_context(active_agent, dialog=None)
+        assert plain == explicit_none
+        assert "terminal question dialog" not in plain
+
+    def test_ask_explains_the_blocked_dialog_once_then_goes_quiet(
+        self, settings, make_stub, active_agent
+    ):
+        """The live context speaks a NEW dialog on first sight; while the
+        same dialog stays on screen later turns do not repeat it."""
+        from tests.test_voice_dialog import DialogStub
+
+        stub = DialogStub()
+        llm, tools = make_brain(
+            settings, stub, responses=[text_response("ok"), text_response("ok")]
+        )
+        blocked = AgentInfo(**{**active_agent.__dict__, "status": "blocked"})
+
+        first = llm.ask("qué está pasando?", pane_id=blocked.pane_id)
+        system_one = llm._client.create_kwargs[0]["messages"][0]["content"]
+        assert "terminal question dialog" in system_one
+        assert "Opción 1: Sí." in system_one
+        assert first["answer"] == "ok"
+
+        second = llm.ask("¿y ahora?", pane_id=blocked.pane_id)
+        system_two = llm._client.create_kwargs[1]["messages"][0]["content"]
+        # The STATIC prompt still describes the dialog policy; the LIVE
+        # speakable line is gone — the options are not re-read.
+        assert "Opción 1: Sí." not in system_two
+        assert "BLOCKED at a terminal question dialog" not in system_two
+        assert second["answer"] == "ok"
+
 
     def test_system_message_reflects_stubbed_active_pane(self, settings, make_stub, active_agent):
         llm, _ = make_brain(settings, make_stub(), responses=[text_response("ok")])
@@ -337,6 +399,13 @@ class TestPendingHint:
         assert "Never send a blind yes" in SYSTEM_PROMPT
         assert "FIRST read_screen" in SYSTEM_PROMPT
         assert "surface it to the user proactively" in SYSTEM_PROMPT
+
+    def test_terminal_dialog_rules_in_static_prompt(self):
+        """S8/S9 policy seams: speak the dialog line verbatim, forward the
+        user's exact words, never choose on the model's own initiative."""
+        assert "answer_dialog" in SYSTEM_PROMPT
+        assert "exact words" in SYSTEM_PROMPT
+        assert "never choose or press anything yourself" in SYSTEM_PROMPT
 
 
 class TestSelection:
