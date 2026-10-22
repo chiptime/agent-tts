@@ -1186,6 +1186,7 @@ class TestApprovalRegression:
             "read_screen",
             "send_to_session",
             "create_session",
+            "answer_dialog",
         } | CONSULT_TOOL_NAMES
 
 
@@ -1316,4 +1317,3 @@ class TestPurgeAtServiceStart:
         finally:
             conn.close()
         assert remaining == 0
-

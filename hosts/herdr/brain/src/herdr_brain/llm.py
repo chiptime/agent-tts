@@ -30,7 +30,12 @@ from .config import Settings
 from .herdr import AgentInfo, HerdrError
 from .memory import ConversationStore, clip_content
 from .tools import BrainTools, TOOLS_SCHEMA
-from .view import PendingAction, SCREEN_TAIL_LINES, detect_pending
+from .view import (
+    PendingAction,
+    SCREEN_TAIL_LINES,
+    detect_pending,
+    speakable_dialog,
+)
 
 LOGGER = logging.getLogger("herdr_brain.tool_calls")
 
@@ -50,7 +55,12 @@ Honesty rules:
 
 Pending prompts:
 - When the live context shows a pending prompt, surface it to the user proactively in your answer.
-- If the user tells you to answer a pending prompt (e.g. "dile que sí"), FIRST read_screen to see exactly what would be confirmed and state it, THEN send_to_session with the user's answer. Never send a blind yes to something you have not read.
+- If the user tells you to answer a pending TEXT prompt (e.g. "dile que sí"), FIRST read_screen to see exactly what would be confirmed and state it, THEN send_to_session with the user's answer. Never send a blind yes to something you have not read.
+
+Terminal question dialogs (a blocked agent waiting on numbered options):
+- When the live context carries a "terminal question dialog" line, speak that line VERBATIM in your answer — the question and every option exactly as given; never paraphrase, skip or invent options — then wait for the user's choice. Do not call any tool yet.
+- When the user's message answers that spoken dialog with an explicit choice (e.g. "dile que sí", "selecciona la opción 1"), call answer_dialog with the user's exact words as the utterance, then relay the result truthfully (which option was pressed, or the refusal reason).
+- If the message names no explicit choice, never choose or press anything yourself — ask the user to name the option.
 
 Routing policy:
 - Selected session: for its state, recent history, summaries or doubts about what happened, answer yourself using live context and read_transcript (preferred — cheap and local), or read_screen as fallback; get_status re-checks only that selected session. NEVER send anything to the agent session for these.
@@ -82,6 +92,7 @@ def build_live_context(
     active: Optional[AgentInfo],
     now: Optional[datetime] = None,
     pending: Optional[PendingAction] = None,
+    dialog: Optional[dict] = None,
 ) -> str:
     """Renders the per-request live block appended to the system message."""
     # Naive datetimes are assumed local so %Z never renders empty.
@@ -105,6 +116,8 @@ def build_live_context(
         )
         if pending is not None and pending.detected:
             lines.append(_pending_hint_line(active, pending))
+        if dialog is not None:
+            lines.append(_dialog_hint_line(active, dialog))
     return "\n".join(lines)
 
 
@@ -126,6 +139,20 @@ def _pending_hint_line(active: AgentInfo, pending: PendingAction) -> str:
     if pending.excerpt:
         line += f': "{pending.excerpt}"'
     return line
+
+
+def _dialog_hint_line(active: AgentInfo, dialog: dict) -> str:
+    """The speakable terminal dialog (S8): the exact line to read out.
+
+    The deterministic speakable text rides the live block so the spoken
+    prompt can never paraphrase, drop or invent a business choice.
+    """
+    return (
+        "ATTENTION: the agent is BLOCKED at a terminal question dialog. "
+        "Speak it to the user NOW, VERBATIM from this line (never "
+        "paraphrase, never skip or invent options), then wait for their "
+        "choice:\n" + speakable_dialog(dialog, agent=active.agent)
+    )
 
 
 class BrainLLMError(RuntimeError):
@@ -370,6 +397,13 @@ class BrainLLM:
         key = ConversationStore.normalize(session_id)
         target = self._tools.resolve_target(pane_id)
         self._request_target = target
+        # Every ask is one turn for the spoken-dialog bindings (S9): a
+        # dialog explained in THIS turn may only be answered in a later
+        # one, because the user's words must postdate the explanation.
+        # The getattr guards keep injected test tool doubles working.
+        begin_turn = getattr(self._tools, "begin_turn", None)
+        if begin_turn is not None:
+            begin_turn()
 
         def aborted() -> bool:
             return cancel_event is not None and cancel_event.is_set()
@@ -422,7 +456,7 @@ class BrainLLM:
                 for call in choice.tool_calls:
                     if aborted():
                         raise TurnCancelled("client disconnected before a tool call")
-                    result, gate = self._invoke(call, session_key=key)
+                    result, gate = self._invoke(call, session_key=key, turn_text=question)
                     if gate is not None:
                         opened_gate = gate
                     messages.append(
@@ -452,18 +486,31 @@ class BrainLLM:
     def _live_context(self, target: Optional[AgentInfo]) -> str:
         """Builds the live block for the selected pane, best-effort."""
         pending = None
+        dialog = None
         if target is not None:
             screen = self._tools.screen_tail(target, SCREEN_TAIL_LINES)
             pending = detect_pending(screen or "", target.status)
-        return build_live_context(target, pending=pending)
+            # S8/S9: a blocked pane's dialog is handed to the model for
+            # speaking (explain_dialog records the binding; a voice answer
+            # in the same turn is refused by design). Test tool doubles
+            # without the seam keep their old live block.
+            explain = getattr(self._tools, "explain_dialog", None)
+            if explain is not None:
+                dialog = explain(target)
+        return build_live_context(target, pending=pending, dialog=dialog)
 
-    def _invoke(self, call: Any, session_key: str) -> tuple[str, Optional[ApprovalGate]]:
+    def _invoke(
+        self, call: Any, session_key: str, turn_text: Optional[str] = None
+    ) -> tuple[str, Optional[ApprovalGate]]:
         """Dispatches one tool call, turning every failure into a string.
 
         Mutating tools (``send_to_session``, ``create_session``) are NEVER
         dispatched: each is frozen into an approval gate instead (AC1 —
         no path executes them without an approved gate). Returns
-        ``(tool_message, gate_or_None)``.
+        ``(tool_message, gate_or_None)``. ``turn_text`` is the CURRENT
+        turn's real user text: it rides the dispatch so answer_dialog
+        authorizes against the user's actual words, never the model's
+        paraphrase of them (S9/B4).
         """
         try:
             arguments = json.loads(call.function.arguments or "{}")
@@ -482,6 +529,7 @@ class BrainLLM:
                 arguments,
                 target=self._request_target,
                 context_id=session_key,  # consult tools key on D08 isolation
+                turn_text=turn_text,
             ),
             None,
         )

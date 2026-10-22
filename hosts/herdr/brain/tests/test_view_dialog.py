@@ -12,7 +12,7 @@ Fixture text is the REAL dialog captured from a blocked opencode pane
 
 from __future__ import annotations
 
-from herdr_brain.view import parse_dialog
+from herdr_brain.view import dialog_fingerprint, parse_dialog, speakable_dialog
 
 REAL_DIALOG = """
      → Asked 1 question
@@ -64,6 +64,79 @@ def test_options_without_descriptions_still_parse():
 
     assert dialog["question"] == "¿Seguimos?"
     assert dialog["options"] == [
-        {"n": 1, "title": "Sí", "description": ""},
-        {"n": 2, "title": "No", "description": ""},
+        {"n": 1, "title": "Sí", "description": "", "selected": False},
+        {"n": 2, "title": "No", "description": "", "selected": False},
     ]
+    assert dialog["selected"] is None  # nothing visibly highlighted
+
+
+# -- speakable verbal prompt (S8/FR-08) ----------------------------------
+
+def test_speakable_dialog_speaks_the_real_question_and_every_option_label():
+    """S8: the spoken prompt carries the ACTUAL question and every option
+    label verbatim — nothing invented, no business choice omitted, and no
+    screen needed to know the choice."""
+    dialog = parse_dialog(REAL_DIALOG)
+
+    spoken = speakable_dialog(dialog, agent="opencode")
+
+    assert spoken.startswith("opencode pregunta:")
+    # The real question, verbatim.
+    assert "Cuando la suite descubra puntos flacos" in spoken
+    # Every numbered option label, verbatim and in order.
+    assert "Opción 1: No, solo detectar y priorizar (Recomendado)." in spoken
+    assert "Opción 2: Sí, los críticos." in spoken
+    assert "Opción 3: Sí, todos." in spoken
+    assert "Opción 4: Type your own answer." in spoken
+    assert spoken.index("Opción 1:") < spoken.index("Opción 2:") < spoken.index("Opción 3:")
+    # Concise: descriptions are NOT read out (the labels carry the choice).
+    assert "La PRD entrega la suite" not in spoken
+
+
+def test_speakable_dialog_without_agent_still_names_the_asker():
+    dialog = parse_dialog("¿Seguimos?\n  1. Sí\n  2. No\n  ↑↓ select  enter submit")
+
+    spoken = speakable_dialog(dialog)
+
+    assert "pregunta" in spoken
+    assert "¿Seguimos?" in spoken
+    assert "Opción 1: Sí." in spoken and "Opción 2: No." in spoken
+
+
+def test_speakable_dialog_of_nothing_is_empty():
+    assert speakable_dialog(None) == ""
+    assert speakable_dialog({}) == ""
+
+
+# -- dialog identity (S9 changed-dialog guard) ---------------------------
+
+def test_dialog_fingerprint_is_stable_and_content_sensitive():
+    dialog = parse_dialog(REAL_DIALOG)
+
+    assert dialog_fingerprint(dialog) == dialog_fingerprint(parse_dialog(REAL_DIALOG))
+    # A changed question is a different dialog.
+    revised = dict(dialog, question="¿Pregunta nueva?")
+    assert dialog_fingerprint(revised) != dialog_fingerprint(dialog)
+    # A changed option label is a different dialog (the action changed).
+    revised_options = [dict(opt) for opt in dialog["options"]]
+    revised_options[1] = dict(revised_options[1], title="Sí, todos los críticos")
+    assert dialog_fingerprint(dict(dialog, options=revised_options)) != dialog_fingerprint(dialog)
+    # A removed option is a different dialog.
+    assert dialog_fingerprint(dict(dialog, options=dialog["options"][:3])) != dialog_fingerprint(dialog)
+    # S14/B5: descriptions are MEANING-BEARING — a changed description
+    # ("Destino: staging" → "Destino: production") is a different action,
+    # so prior spoken authority must not survive it. Only whitespace is
+    # normalized (terminal wrapping noise), never the words.
+    drifted = [dict(opt, description="otro destino: production") for opt in dialog["options"]]
+    assert dialog_fingerprint(dict(dialog, options=drifted)) != dialog_fingerprint(dialog)
+    rewrapped = [dict(opt, description=" ".join(opt["description"].split()))
+                 for opt in dialog["options"]]
+    assert dialog_fingerprint(dict(dialog, options=rewrapped)) == dialog_fingerprint(dialog)
+    # Presentation-only selection changes never touch the identity.
+    marked = [dict(opt, selected=True) for opt in dialog["options"]]
+    assert dialog_fingerprint(dict(dialog, options=marked)) == dialog_fingerprint(dialog)
+
+
+def test_dialog_fingerprint_of_nothing_is_empty():
+    assert dialog_fingerprint(None) == ""
+    assert dialog_fingerprint({}) == ""

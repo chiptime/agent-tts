@@ -270,3 +270,120 @@ class TestApprovalTimeoutConfig:
     def test_env_override(self):
         env = {"HERDR_BRAIN_APPROVAL_TIMEOUT_S": "5"}
         assert load_settings(env).approval_timeout_s == 5
+
+
+class TestExplanationBinding:
+    """S14: a spoken «adelante» may only authorize the gate whose
+    explanation this request can prove. The store carries that proof as
+    an (speech job, revision) pair, checked ATOMICALLY with the approve
+    transition."""
+
+    def test_bind_explanation_records_the_speech_job_and_revision(self):
+        store = ApprovalGateStore(clock=FakeClock())
+        gate = store.propose("s1", "hola")
+        bound = store.bind_explanation(gate.gate_id, "sp-job-0001")
+        assert bound.explained_speech_id == "sp-job-0001"
+        assert bound.explained_revision == gate.revision
+        stored = store.get(gate.gate_id)
+        assert stored.explained_speech_id == "sp-job-0001"
+        assert stored.explained_revision == 0
+
+    def test_bind_explanation_rebinds_to_the_newest_explanation(self):
+        store = ApprovalGateStore(clock=FakeClock())
+        gate = store.propose("s1", "hola")
+        store.bind_explanation(gate.gate_id, "sp-job-0001")
+        store.bind_explanation(gate.gate_id, "sp-job-0002")
+        assert store.get(gate.gate_id).explained_speech_id == "sp-job-0002"
+
+    def test_bind_explanation_ignores_unknown_and_terminal_gates(self):
+        store = ApprovalGateStore(clock=FakeClock())
+        assert store.bind_explanation("nope", "sp-job-0001") is None
+        gate = store.propose("s1", "hola")
+        store.resolve(gate.gate_id, DECISION_REJECT)
+        assert store.bind_explanation(gate.gate_id, "sp-job-0001") is None
+        assert store.get(gate.gate_id).explained_speech_id is None
+
+    def test_bind_explanation_refuses_a_stale_revision(self):
+        """A PATCH racing the bind must leave the gate UNBOUND: the bind
+        states which revision it explained (B6/B8)."""
+        store = ApprovalGateStore(clock=FakeClock())
+        gate = store.propose("s1", "hola")
+        store.patch(gate.gate_id, "texto revisado")  # revision is now 1
+        assert store.bind_explanation(gate.gate_id, "sp-job-0001", expected_revision=0) is None
+        assert store.get(gate.gate_id).explained_speech_id is None
+        assert store.bind_explanation(
+            gate.gate_id, "sp-job-0001", expected_revision=1
+        ).explained_revision == 1
+
+    def test_new_gate_never_inherits_a_prior_explanation(self):
+        store = ApprovalGateStore(clock=FakeClock())
+        first = store.propose("s1", "uno")
+        store.bind_explanation(first.gate_id, "sp-job-0001")
+        second = store.propose("s1", "dos")  # supersedes the first
+        assert second.explained_speech_id is None
+        assert store.get(second.gate_id).explained_speech_id is None
+
+    def test_patch_bumps_the_revision_and_voids_the_explanation(self):
+        """A revised action is a DIFFERENT action: authority spoken for the
+        old text must not silently approve the new one."""
+        store = ApprovalGateStore(clock=FakeClock())
+        gate = store.propose("s1", "texto original")
+        store.bind_explanation(gate.gate_id, "sp-job-0001")
+
+        patched = store.patch(gate.gate_id, "texto revisado")
+
+        assert patched.revision == gate.revision + 1
+        assert patched.explained_speech_id is None
+        assert patched.explained_revision is None
+        assert store.get(gate.gate_id).action.text == "texto revisado"
+
+    def test_resolve_with_expectation_is_atomic_with_the_check(self):
+        """B8: the proven (speech id, revision) pair must still be the
+        gate's binding AT transition time — a revision landing between
+        the caller's validation and the resolve blocks the approve."""
+        store = ApprovalGateStore(clock=FakeClock())
+        gate = store.propose("s1", "run tests")
+        store.bind_explanation(gate.gate_id, "sp-job-0001")
+
+        # The caller validated (sp-job-0001, revision 0)…
+        store.patch(gate.gate_id, "delete tests")  # …then the action changed
+        resolved, applied = store.resolve(
+            gate.gate_id, DECISION_APPROVE, expect_explanation=("sp-job-0001", 0)
+        )
+        assert applied is False
+        assert resolved.state == PROPOSED
+        assert resolved.action.text == "delete tests"  # nothing executed
+
+        # The pair that matches the CURRENT binding still approves…
+        store.bind_explanation(gate.gate_id, "sp-job-0002")
+        resolved, applied = store.resolve(
+            gate.gate_id, DECISION_APPROVE, expect_explanation=("sp-job-0001", 1)
+        )
+        assert applied is False and resolved.state == PROPOSED
+        resolved, applied = store.resolve(
+            gate.gate_id, DECISION_APPROVE, expect_explanation=("sp-job-0002", 1)
+        )
+        assert applied is True and resolved.state == APPROVED
+        assert resolved.action.text == "delete tests"  # the frozen snapshot
+
+    def test_plain_resolve_without_expectation_still_works(self):
+        """The manual (button) approve path carries no expectation: it is
+        explicit direct authorization and must keep working (B6 note)."""
+        store = ApprovalGateStore(clock=FakeClock())
+        gate = store.propose("s1", "hola")
+        resolved, applied = store.resolve(gate.gate_id, DECISION_APPROVE)
+        assert applied is True and resolved.state == APPROVED
+
+    def test_resolve_keeps_the_binding_fields(self):
+        """Approve-once semantics are untouched by the S14 fields."""
+        store = ApprovalGateStore(clock=FakeClock())
+        gate = store.propose("s1", "hola")
+        store.bind_explanation(gate.gate_id, "sp-job-0001")
+        resolved, applied = store.resolve(
+            gate.gate_id, DECISION_APPROVE,
+            expect_explanation=("sp-job-0001", gate.revision),
+        )
+        assert applied is True and resolved.state == APPROVED
+        # A second approve is still a no-op.
+        again, applied_again = store.resolve(gate.gate_id, DECISION_APPROVE)
+        assert applied_again is False and again.state == APPROVED

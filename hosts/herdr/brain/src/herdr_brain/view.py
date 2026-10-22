@@ -224,7 +224,8 @@ def ansi_runs(text: Optional[str]) -> list:
     return out
 
 
-_DIALOG_OPTION = re.compile(r"^(\d{1,2})\.\s+(.+)$")
+_DIALOG_OPTION = re.compile(r"^(?:[❯>»›]\s*)?(\d{1,2})\.\s+(.+)$")
+_DIALOG_SELECTION_MARKER = "❯>»›"
 _DIALOG_GUTTER = re.compile(r"^[\u2503\u2502\u2506\u2507\u250a\u250b|\u2551]\s*")
 _DIALOG_HINT = re.compile(r"(select|submit|dismiss|confirm)", re.IGNORECASE)
 
@@ -242,19 +243,27 @@ def parse_dialog(text):
 
     The screen already carries the question, the numbered options with their
     descriptions and the key hint; this shapes them so the PWA can paint
-    readable HTML instead of a terminal mirror. It deliberately says NOTHING
-    about which option is selected: that signal does not exist in anything
-    herdr exposes (no cursor in the api schema or snapshot; identical
-    backgrounds in the styled read).
+    readable HTML instead of a terminal mirror. A leading selection marker
+    (``❯``, ``>``, ``»``, ``›``) on an option line is presentation, not
+    content: it is stripped from the label and recorded as that option's
+    ``selected`` flag (plus the dialog-level ``selected`` number) so the
+    spoken choices and the voice-answer path know the CURRENT highlight
+    without ever letting the marker leak into a spoken label. It claims
+    nothing beyond what the surface actually shows.
     """
     lines = [_clean_dialog_line(raw) for raw in (text or "").splitlines()]
     option_at = []
+    selected = None
     hint = ""
     hint_at = -1
     for i, line in enumerate(lines):
         match = _DIALOG_OPTION.match(line)
         if match:
-            option_at.append((i, int(match.group(1)), match.group(2).strip()))
+            number = int(match.group(1))
+            marked = line[0] in _DIALOG_SELECTION_MARKER
+            if marked and selected is None:
+                selected = number
+            option_at.append((i, number, match.group(2).strip(), marked))
         elif not hint and line and _DIALOG_HINT.search(line):
             hint = line
             hint_at = i
@@ -280,7 +289,7 @@ def parse_dialog(text):
         return None
 
     options = []
-    for pos, (index, number, title) in enumerate(option_at):
+    for pos, (index, number, title, marked) in enumerate(option_at):
         end = option_at[pos + 1][0] if pos + 1 < len(option_at) else len(lines)
         description = []
         for j in range(index + 1, end):
@@ -291,7 +300,90 @@ def parse_dialog(text):
                 break
             description.append(line)
         options.append(
-            {"n": number, "title": title, "description": " ".join(description)}
+            {
+                "n": number,
+                "title": title,
+                "description": " ".join(description),
+                "selected": marked,
+            }
         )
 
-    return {"question": " ".join(question_lines), "options": options, "hint": hint}
+    return {
+        "question": " ".join(question_lines),
+        "options": options,
+        "hint": hint,
+        "selected": selected,
+    }
+
+
+def speakable_dialog(dialog, agent=None) -> str:
+    """Renders a parsed dialog as ONE concise spoken prompt (S8/FR-08).
+
+    FAITHFUL, never interpretive: the actual question and every option
+    label verbatim — nothing invented, no business choice omitted — so a
+    user who cannot see the screen still knows exactly what the choice
+    is. Option DESCRIPTIONS are deliberately not read out (concise by
+    design); the labels carry the semantics. Example:
+
+        "opencode pregunta: ¿Corremos los tests? Opción 1: Sí. Opción 2: No."
+    """
+    if not dialog or not dialog.get("options"):
+        return ""
+    who = f"{agent} pregunta:" if agent else "El agente pregunta:"
+    question = " ".join((dialog.get("question") or "").split())
+    parts = [f"{who} {question}".strip()]
+    for option in dialog["options"]:
+        number = option.get("n")
+        title = " ".join(str(option.get("title") or "").split())
+        parts.append(f"Opción {number}: {title}.")
+    return " ".join(part for part in parts if part)
+
+
+def dialog_fingerprint(dialog) -> str:
+    """Stable identity of a dialog's business content (S9 changed-guard).
+
+    The question, every numbered option label AND its description, in
+    order: descriptions carry meaning-bearing content (destinations,
+    scopes, environments), so a dialog whose description changed is a
+    DIFFERENT action and prior spoken authority must not survive the
+    change. Presentation-only drift — the ``selected`` highlight marker
+    or ANSI styling — never reaches the flattened parse text and so
+    cannot perturb the identity. Whitespace is normalized so terminal
+    wrapping noise alone does not invalidate an explanation.
+    """
+    if not dialog:
+        return ""
+    parts = [" ".join((dialog.get("question") or "").split())]
+    for option in dialog.get("options") or []:
+        label = " ".join(str(option.get("title") or "").split())
+        description = " ".join(str(option.get("description") or "").split())
+        parts.append(f"{option.get('n')}. {label}\x1e{description}")
+    return "\x1f".join(parts)
+
+
+def selection_from_runs(runs, dialog) -> Optional[int]:
+    """The dialog's selected option number derived from ANSI backgrounds.
+
+    The styled read preserves per-run ``bg``; a question tool marks the
+    highlighted option by painting its line's background. Exactly one
+    option line carrying a background means a KNOWN selection; zero (no
+    styling) or several (ambiguous painting) mean unknown — the caller
+    must then refuse rather than guess. A textual ``❯`` marker already
+    recorded by ``parse_dialog`` always wins over styling.
+    """
+    if not runs or not dialog:
+        return dialog.get("selected") if dialog else None
+    if dialog.get("selected") is not None:
+        return dialog["selected"]
+    numbers = {option.get("n") for option in dialog.get("options") or []}
+    highlighted = set()
+    for line in runs:
+        if not any(run.get("bg") for run in line):
+            continue
+        flat = _clean_dialog_line("".join(run.get("t", "") for run in line))
+        match = _DIALOG_OPTION.match(flat)
+        if match and int(match.group(1)) in numbers:
+            highlighted.add(int(match.group(1)))
+    if len(highlighted) == 1:
+        return next(iter(highlighted))
+    return None

@@ -674,7 +674,7 @@ class TestDispatch:
         names = {tool["function"]["name"] for tool in TOOLS_SCHEMA}
         assert names == {
             "get_status", "read_transcript", "read_screen", "send_to_session",
-            "create_session", "list_open_sessions",
+            "create_session", "list_open_sessions", "answer_dialog",
             # On-demand consult surface (T9): read-only, no approval gate.
             "consult_work_status", "consult_history",
             "get_followup_context", "end_followup",

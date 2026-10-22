@@ -26,7 +26,20 @@ from typing import Callable, Dict, Optional
 
 from .config import MAX_SCREEN_LINES, Settings
 from .consult import ConsultService, intent_global, intent_history
-from .herdr import AgentInfo, HerdrClient, HerdrError, pick_active
+from .approval_lexicon import (
+    CHOICE_BOOLEAN,
+    CHOICE_OPTION,
+    CHOICE_YES,
+    _normalize as _lex_normalize,
+    resolve_dialog_choice,
+)
+from .herdr import (
+    MAX_SEND_KEYS,
+    AgentInfo,
+    HerdrClient,
+    HerdrError,
+    pick_active,
+)
 from .memory import clip_content
 from .transcripts import Turn, read_transcript, read_turns, read_title, turn_age_seconds
 from .tts import render_mp3  # noqa: F401  (re-exported for server wiring)
@@ -36,7 +49,9 @@ from .view import (
     VIEW_TEXT_TRUNCATE,
     ansi_runs,
     detect_pending,
+    dialog_fingerprint,
     parse_dialog,
+    selection_from_runs,
     truncate_text,
 )
 
@@ -137,6 +152,12 @@ class BrainTools:
         # and read-only tests keep working; the consult tools degrade to
         # an error string when it is absent.
         self._consult = consult
+        # Spoken terminal dialogs (S9): pane_id -> the dialog handed to the
+        # model for speaking, the ask-turn that handed it over, and whether
+        # any keys were sent to the pane since. One binding per pane; the
+        # LLM live context refreshes it every turn.
+        self._dialog_bindings: Dict[str, Dict] = {}
+        self._turn_seq: int = 0
 
     def attach_consult(self, consult: ConsultService) -> None:
         """Binds the consult service after construction.
@@ -375,18 +396,18 @@ class BrainTools:
         screen_runs: Optional[list] = None
         dialog = None
         if target is not None and (target.status or "").strip().lower() == "blocked":
-            styled = self.screen_tail(target, DIALOG_SCREEN_LINES, as_ansi=True)
-            if styled:
-                screen_runs = ansi_runs(styled)
-            # Parse from the WIDE read: the plain screen tail is only 12 lines
-            # and a tall question tool does not fit in it, so the question
-            # line would be cut and the parse would fail. The runs already
-            # carry the escape-stripped text, so this costs no extra
-            # subprocess. Claims nothing about which option is selected.
-            wide_text = "\n".join(
-                "".join(run.get("t", "") for run in line) for line in (screen_runs or [])
-            )
+            screen_runs, wide_text = self._dialog_runs(target)
+            # Parse from the WIDE read: the plain screen tail is only 12
+            # lines and a tall question tool does not fit in it, so the
+            # question line would be cut and the parse would fail. The
+            # runs already carry the escape-stripped text, so this costs
+            # no extra subprocess. Claims nothing about which option is
+            # selected.
             dialog = parse_dialog(wide_text or screen or None)
+            if dialog is not None:
+                # Same selection discipline as the voice path: marker
+                # first, else the single ANSI-backgrounded option line.
+                dialog["selected"] = selection_from_runs(screen_runs, dialog)
 
         return {
             "status": status_payload(target),
@@ -400,6 +421,268 @@ class BrainTools:
                 "excerpt": pending.excerpt,
             },
         }
+
+    # -- spoken terminal dialogs (S8/S9) ------------------------------------
+
+    def _dialog_runs(self, target: AgentInfo) -> tuple[Optional[list], Optional[str]]:
+        """The blocked pane's styled read, as ANSI runs plus flat text.
+
+        Shared by the /view payload and the voice dialog path so both
+        parse the SAME wide, escape-stripped screen.
+        """
+        styled = self.screen_tail(target, DIALOG_SCREEN_LINES, as_ansi=True)
+        if not styled:
+            return None, None
+        runs = ansi_runs(styled)
+        wide_text = "\n".join(
+            "".join(run.get("t", "") for run in line) for line in runs
+        )
+        return runs, wide_text
+
+    def read_dialog(
+        self, target: Optional[AgentInfo], fallback_text: Optional[str] = None
+    ) -> Optional[dict]:
+        """Parses the blocked pane's question dialog, or None (S8/S9).
+
+        The dialog's ``selected`` number comes from a textual ``❯`` marker
+        when present, else from the single ANSI-backgrounded option line
+        (``selection_from_runs``); zero or ambiguous styling leaves the
+        selection UNKNOWN and the voice path must then refuse.
+        """
+        if target is None or (target.status or "").strip().lower() != "blocked":
+            return None
+        runs, wide_text = self._dialog_runs(target)
+        dialog = parse_dialog(wide_text or fallback_text or None)
+        if dialog is None:
+            return None
+        dialog["selected"] = selection_from_runs(runs, dialog)
+        return dialog
+
+    def begin_turn(self) -> int:
+        """Advances the ask-turn counter and returns the new turn id.
+
+        Dialog bindings record the turn in which they were handed to the
+        model for speaking; a voice answer may only execute in a LATER
+        turn, because the user's words must postdate the explanation.
+        """
+        self._turn_seq += 1
+        return self._turn_seq
+
+    def explain_dialog(self, target: Optional[AgentInfo]) -> Optional[dict]:
+        """Returns the target's dialog when it must be SPOKEN now, else None.
+
+        Called while building the live context of every ask turn. A NEW
+        or CHANGED dialog is recorded as explained-in-THIS-turn and
+        returned for speaking; an unchanged, already-explained dialog
+        returns None (no re-reading the options on every turn). A pane
+        that left the blocked state drops its binding entirely.
+        """
+        if target is None:
+            return None
+        dialog = self.read_dialog(target)
+        if dialog is None:
+            self._dialog_bindings.pop(target.pane_id, None)
+            return None
+        binding = self._dialog_bindings.get(target.pane_id)
+        fingerprint = dialog_fingerprint(dialog)
+        if binding is not None and binding["fingerprint"] == fingerprint:
+            if binding["explained"]:
+                return None
+            # A dialog swapped in mid-answer was seen but never spoken:
+            # THIS handover is its explanation.
+            binding["explained"] = True
+            binding["turn"] = self._turn_seq
+            return dialog
+        self._dialog_bindings[target.pane_id] = {
+            "fingerprint": fingerprint,
+            "explained": True,
+            "turn": self._turn_seq,
+            "keys_sent": False,
+        }
+        return dialog
+
+    def _note_dialog_keys(self, pane_id: str) -> None:
+        """Any delivered key moved the dialog's highlight to an unknown
+        option: the binding stops authorizing voice answers."""
+        binding = self._dialog_bindings.get(pane_id)
+        if binding is not None:
+            binding["keys_sent"] = True
+
+    @staticmethod
+    def _title_is_choice(title: str, words: tuple) -> bool:
+        """A yes/no option is one whose FIRST word is the yes/no word
+        ("Sí", "Sí, los críticos", "No", "Yes, allow edits")."""
+        first = _lex_normalize(title).split(" ", 1)[0].rstrip(",.;:)")
+        return first in words
+
+    def answer_dialog(
+        self,
+        utterance: str,
+        target: Optional[AgentInfo] = None,
+        user_utterance: Optional[str] = None,
+    ) -> str:
+        """Answers a SPOKEN terminal dialog with the USER'S own words (S9).
+
+        Authorization is bound to the actual USER turn: when the dispatch
+        layer supplies ``user_utterance`` (the /ask turn's real text), the
+        choice is resolved from THAT — model-provided arguments can never
+        replace, paraphrase or invent the user's words. Direct calls
+        (``user_utterance`` None) treat ``utterance`` as the user's words.
+
+        The choice is matched deterministically against the CURRENT
+        dialog on the pane whose dialog was explained; keys are computed
+        from the dialog's KNOWN selection (``❯`` marker or the single
+        ANSI-backgrounded option), moving with ``up``/``down`` to the
+        requested option before ``enter``. Every refusal — nothing
+        explained yet, a same-turn choice, a changed or vanished dialog,
+        keys already sent, duplicate option numbers, an unknown
+        selection, or an unknown/ambiguous/negated choice — presses
+        NOTHING and says why.
+        """
+        def refused(reason: str, detail: str) -> str:
+            return json.dumps(
+                {"outcome": "refused", "reason": reason, "detail": detail},
+                ensure_ascii=False,
+            )
+
+        active = self._resolve(target)
+        if active is None:
+            return refused("no-pane", "no active agent pane to answer a dialog on")
+        binding = self._dialog_bindings.get(active.pane_id)
+        if binding is None:
+            return refused(
+                "not-explained",
+                "no terminal dialog has been spoken for this pane yet; "
+                "nothing was sent",
+            )
+        if binding["turn"] >= self._turn_seq:
+            return refused(
+                "just-appeared",
+                "this dialog first appeared in the current turn, so the user "
+                "has not heard it yet; speak it and wait for their choice",
+            )
+        dialog = self.read_dialog(active)
+        if dialog is None:
+            self._dialog_bindings.pop(active.pane_id, None)
+            return refused("gone", "the dialog is no longer on the pane; nothing was sent")
+        if dialog_fingerprint(dialog) != binding["fingerprint"]:
+            # A mid-turn swap: the new dialog was SEEN, never spoken. Mark
+            # it unexplained so the next turn's live context reads it out
+            # before any key may move.
+            self._dialog_bindings[active.pane_id] = {
+                "fingerprint": dialog_fingerprint(dialog),
+                "explained": False,
+                "turn": self._turn_seq,
+                "keys_sent": False,
+            }
+            return refused(
+                "changed",
+                "the question on the pane changed since it was spoken; it "
+                "will be spoken again before anything is pressed",
+            )
+        if binding["keys_sent"]:
+            return refused(
+                "keys-sent",
+                "keys were already sent to this dialog, so the highlighted "
+                "option is unknown; ask the user to use the keypad",
+            )
+        options = dialog.get("options") or []
+        numbers = [option.get("n") for option in options]
+        if len(set(numbers)) != len(numbers):
+            return refused(
+                "duplicate-options",
+                "the dialog repeats an option number, so a numbered choice "
+                "is ambiguous; ask the user to choose by keypad",
+            )
+        # THE authorization source: the real user turn when the dispatch
+        # layer provided it, never a model paraphrase.
+        authorization = user_utterance if user_utterance is not None else utterance
+        choice = resolve_dialog_choice(authorization)
+        if choice is None:
+            return refused(
+                "not-a-choice",
+                "the user's words name no single explicit option; ask the "
+                "user to say the option number or a plain sí/no",
+            )
+        index: Optional[int] = None
+        if choice[0] == CHOICE_OPTION:
+            wanted = choice[1]
+            for position, option in enumerate(options):
+                if option.get("n") == wanted:
+                    index = position
+                    break
+            if index is None:
+                return refused(
+                    "unknown-option",
+                    f"there is no option {wanted} in this dialog; nothing was sent",
+                )
+        elif choice[0] == CHOICE_BOOLEAN:
+            words = ("si", "yes") if choice[1] == CHOICE_YES else ("no", "nope")
+            matches = [
+                position
+                for position, option in enumerate(options)
+                if self._title_is_choice(str(option.get("title") or ""), words)
+            ]
+            if not matches:
+                return refused(
+                    "no-yes-no-option",
+                    "the options are not a plain sí/no; ask the user for the "
+                    "option number",
+                )
+            if len(matches) > 1:
+                return refused(
+                    "ambiguous-option",
+                    "several options read like " + ("sí" if choice[1] == CHOICE_YES else "no") +
+                    "; ask the user for the exact option number",
+                )
+            index = matches[0]
+        selected = dialog.get("selected")
+        if selected not in numbers:
+            return refused(
+                "selection-unknown",
+                "the dialog does not show which option is highlighted, so no "
+                "key sequence can be known to land on the requested choice; "
+                "ask the user to use the keypad",
+            )
+        current = numbers.index(selected)
+        if index == current:
+            keys = ["enter"]
+        elif index > current:
+            keys = ["down"] * (index - current) + ["enter"]
+        else:
+            keys = ["up"] * (current - index) + ["enter"]
+        if len(keys) > MAX_SEND_KEYS:
+            return refused(
+                "too-far",
+                f"option {index + 1} would need {len(keys)} keys, beyond the "
+                f"{MAX_SEND_KEYS}-key budget; ask the user to use the keypad",
+            )
+        result = self.send_keys_to_pane(active.pane_id, keys)
+        if result["outcome"] != "sent":
+            return json.dumps(
+                {
+                    "outcome": "refused",
+                    "reason": "send-failed",
+                    "detail": result.get("detail") or result["outcome"],
+                    "pane_id": active.pane_id,
+                },
+                ensure_ascii=False,
+            )
+        chosen = options[index]
+        return json.dumps(
+            {
+                "outcome": "answered",
+                "pane_id": active.pane_id,
+                "option": chosen.get("n"),
+                "title": chosen.get("title"),
+                "keys": keys,
+                "note": (
+                    "the user's choice was sent to the dialog; tell the user "
+                    "exactly which option was pressed and nothing more"
+                ),
+            },
+            ensure_ascii=False,
+        )
 
     def get_status(self, target: Optional[AgentInfo] = None) -> str:
         """JSON status of the target pane (default: focused)."""
@@ -575,6 +858,10 @@ class BrainTools:
             return _reply_result(
                 "error", pane_id, detail=result.get("error") or "send-keys failed"
             )
+        # Delivered keys moved the dialog highlight (if a dialog waits
+        # here): the manual pad keeps working, but the pane's spoken
+        # dialog binding stops authorizing voice answers (S9).
+        self._note_dialog_keys(pane_id)
         return _reply_result("sent", pane_id)
 
     def create_session(self, agent_kind: str, title: str, task: str = "", cwd: str = "") -> str:
@@ -797,12 +1084,16 @@ class BrainTools:
         arguments: Dict,
         target: Optional[AgentInfo] = None,
         context_id: Optional[str] = None,
+        turn_text: Optional[str] = None,
     ) -> str:
         """Calls a tool by name with JSON-ish arguments, returning a string.
 
         ``context_id`` is the main-call conversation key the consult
         tools key their report/followup isolation on (D08); read/write
-        pane tools ignore it."""
+        pane tools ignore it. ``turn_text`` is the CURRENT ask turn's
+        real user text — the authorization source for answer_dialog, so
+        model-provided arguments can never stand in for the user's words
+        (S9/B4); tools that do not need it ignore it."""
         handler: Optional[Callable] = {
             "get_status": self.get_status,
             "list_open_sessions": self.list_open_sessions,
@@ -810,6 +1101,7 @@ class BrainTools:
             "read_screen": self.read_screen,
             "send_to_session": self.send_to_session,
             "create_session": self.create_session,
+            "answer_dialog": self.answer_dialog,
             "consult_work_status": self.consult_work_status,
             "consult_history": self.consult_history,
             "get_followup_context": self.get_followup_context,
@@ -832,6 +1124,10 @@ class BrainTools:
                     str(arguments.get("title", "")),
                     str(arguments.get("task", "")),
                     str(arguments.get("cwd", "")),
+                )
+            if name == "answer_dialog":
+                return handler(
+                    str(arguments.get("utterance", "")), target, turn_text
                 )
             if name == "read_transcript":
                 return handler(int(arguments.get("n_turns", 10)), target)
@@ -1004,6 +1300,32 @@ TOOLS_SCHEMA = [
                     },
                 },
                 "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "answer_dialog",
+            "description": (
+                "Answers the SELECTED agent's terminal question dialog — the "
+                "one the live context told you to speak — with the USER'S "
+                "spoken choice. Pass the user's exact words VERBATIM as the "
+                "utterance (e.g. 'dile que sí', 'selecciona la opción 1'). "
+                "The choice is matched deterministically against the current "
+                "dialog; if the tool refuses (changed dialog, unknown or "
+                "ambiguous choice), relay the reason to the user and ask — "
+                "never choose or press anything yourself."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "utterance": {
+                        "type": "string",
+                        "description": "The user's exact words naming the choice.",
+                    },
+                },
+                "required": ["utterance"],
             },
         },
     },

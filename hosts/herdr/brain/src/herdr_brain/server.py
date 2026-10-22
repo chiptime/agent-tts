@@ -23,6 +23,7 @@ import re
 import subprocess
 import threading
 import time
+import uuid
 from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Optional
@@ -115,6 +116,17 @@ APPROVAL_CLOSER = "¿Se envía?"
 # Spoken re-prompt after one ambiguous confirming utterance
 # (PRD-action-approval-gate §4). Product copy; keep verbatim.
 REPROMPT_LINE = "¿Sí o no?"
+
+# Speech clip for the clarify restate (S14): long frozen texts stay
+# speakable; the full text is on the card and in the transcript.
+CLARIFY_TEXT_CLIP_CHARS = 160
+
+
+def _clip_for_speech(text: str) -> str:
+    text = " ".join((text or "").split())
+    if len(text) <= CLARIFY_TEXT_CLIP_CHARS:
+        return text
+    return text[: CLARIFY_TEXT_CLIP_CHARS - 1] + "…"
 
 
 # ntfy action buttons (F5 / HT-04) can only fire a plain HTTP request with a
@@ -309,6 +321,10 @@ class ResolveRequest(BaseModel):
     # Empty STT captures are allowed: the lexicon resolves them to
     # unknown, which feeds the reprompt budget (safe direction).
     utterance: str = Field(default="", max_length=8_000)
+    # S14 spoken-approval binding: the speech job whose PLAYBACK explained
+    # the gate (sent only when the client drained that audio). Absent or
+    # unproven receipts never execute — the endpoint clarifies instead.
+    speech_request_id: Optional[str] = Field(default=None, max_length=64)
 
 
 class ApprovalPatchRequest(BaseModel):
@@ -1117,6 +1133,18 @@ def create_app(
             # prompt, and that must never enter the call history.
             history.append("user", body.text)
             history.append("assistant", result.get("answer") or "")
+            # S14 spoken-approval binding: when the gate-opening turn
+            # carried a speech identity, THAT job is the explanation a
+            # later spoken «adelante» must prove (complete delivery, not
+            # a first sentence). The bind states the revision it
+            # explained, so a PATCH racing the response leaves the gate
+            # unbound instead of mis-binding the revised action.
+            # Legacy text turns leave it unbound.
+            opened = result.get("approval")
+            if opened is not None and job is not None:
+                approval_store.bind_explanation(
+                    opened.gate_id, job.id, expected_revision=opened.revision
+                )
             if job is None and degraded is None:
                 # Legacy turn: no registry interaction, no speech key —
                 # byte-comparable with the pre-speech surface.
@@ -1466,20 +1494,126 @@ def create_app(
         except Exception:  # noqa: BLE001 — no client left to receive an error
             logger.exception("ntfy approve replay failed for gate %s", gate.gate_id)
 
+    def _spoken_receipt_valid(
+        gate: ApprovalGate, speech_request_id: Optional[str]
+    ) -> bool:
+        """S14: «Adelante» authorizes ONLY the action whose explanation
+        this request can prove.
+
+        Proof is the speech job bound to THIS gate at THIS revision,
+        COMPLETE — every segment delivered, and for segmented delivery
+        every segment CONSUMED (the ack watermark reached the final seq,
+        so the client played the whole explanation, not a first
+        sentence) — and presented by the client that drained it. A
+        presented id that does not match the binding, a revised gate, an
+        incomplete job or a partly-consumed stream all fail here; the
+        authoritative re-check rides the atomic approve transition in
+        the store (``resolve(expect_explanation=...)``), so a PATCH can
+        never slip between validation and execution.
+        """
+        if not speech_request_id:
+            return False
+        if gate.explained_speech_id != speech_request_id:
+            return False
+        if gate.explained_revision is None or gate.explained_revision != gate.revision:
+            return False
+        job = speech_jobs.get(speech_request_id)
+        if job is None or job.phase != PHASE_COMPLETE:
+            return False
+        if job.segments is not None:
+            staged = job.segments.snapshot()
+            if staged and job.ack_watermark < max(seg["seq"] for seg in staged):
+                return False
+        return True
+
+    def _clarify_turn(gate: ApprovalGate, line: str) -> dict:
+        """The clarify response (S14): restate the CURRENT action and —
+        only when the restate actually rendered — bind a FRESH speech
+        identity to this revision, so the confirm word spoken after the
+        client played the restate proves THIS action. A failed render
+        binds nothing: an unspoken restate grants no authority, no
+        matter how many times the user confirms (B6)."""
+        audio_url = speak_answer(line)
+        explain_speech_id = None
+        if audio_url:
+            explain_speech_id = f"clarify-{uuid.uuid4().hex[:16]}"
+            try:
+                speech_jobs.register(explain_speech_id, uuid.uuid4().hex, gate.session_id)
+                speech_jobs.mark(explain_speech_id, PHASE_COMPLETE)
+                bound = approval_store.bind_explanation(
+                    gate.gate_id, explain_speech_id, expected_revision=gate.revision
+                )
+                if bound is None:
+                    explain_speech_id = None  # gate changed under us: no binding
+            except (DuplicateActiveJob, RegistryFull):
+                explain_speech_id = None
+        return {
+            "decision": "clarify",
+            "answer": line,
+            "audio_url": audio_url,
+            "explain_speech_id": explain_speech_id,
+            "approval": None,
+        }
+
+    def clarify_line(gate: ApprovalGate) -> str:
+        """Spoken clarify (S14): restates the CURRENT frozen action so the
+        next «sí» is an informed, explicit confirmation. Product copy;
+        keep speakable."""
+        if gate.tool == CREATE_SESSION:
+            summary = (
+                f"crear un panel {gate.action.agent_kind or 'agente'} "
+                f"«{gate.action.title or ''}»"
+            )
+            if gate.action.task:
+                summary += f" con la tarea: {_clip_for_speech(gate.action.task)}"
+        else:
+            summary = (
+                f"enviar a {gate.action.agent or 'el agente'}: "
+                f"{_clip_for_speech(gate.action.text or '')}"
+            )
+        return (
+            "Antes de confirmar: repito la acción pendiente. "
+            f"Se va a {summary}. "
+            "Di «sí» para confirmar o «no» para cancelar."
+        )
+
     @app.post("/approval/{gate_id}/resolve")
     def approval_resolve(gate_id: str, body: ResolveRequest) -> dict:
         """Voice path: maps a confirming-state STT utterance onto the gate.
 
         Response: ``{decision, answer, audio_url, approval}`` where decision
-        is approve / reject / listen_replace / reprompt (PRD §5). answer +
-        audio_url carry the report (approve) or the spoken re-prompt; the
-        reject and listen_replace outcomes stay silent server-side.
+        is approve / reject / listen_replace / reprompt / clarify (PRD §5 +
+        S14). answer + audio_url carry the report (approve) or the spoken
+        re-prompt/clarify; the reject and listen_replace outcomes stay
+        silent server-side. An approve word executes only with a valid
+        explanation receipt — the speech job bound to this gate at this
+        revision, complete and (for segments) fully consumed — checked
+        atomically with the approve transition. Anything less gets a
+        clarify that RESTATES the exact current action and, when that
+        restate really rendered, binds its own speech identity so the
+        confirm after hearing it is provable; a failed render binds
+        nothing (B6).
         """
         gate = live_gate_or_404(gate_id)
         outcome = resolve_utterance(body.utterance)
         if outcome == OUTCOME_APPROVE:
-            resolved, applied = approval_store.resolve(gate_id, DECISION_APPROVE)
+            if not _spoken_receipt_valid(gate, body.speech_request_id):
+                return _clarify_turn(gate, clarify_line(gate))
+            # The authoritative check rides the transition itself (B8):
+            # the proven (speech id, revision) pair must still be the
+            # gate's binding at approve time, under the store's lock — a
+            # PATCH landing between validation and here yields applied
+            # False and the gate stays proposed.
+            resolved, applied = approval_store.resolve(
+                gate_id,
+                DECISION_APPROVE,
+                expect_explanation=(body.speech_request_id, gate.revision),
+            )
             if not applied:
+                if resolved is not None and resolved.state == PROPOSED:
+                    # Raced a revision: the proven action is no longer
+                    # this action — restate the CURRENT one.
+                    return _clarify_turn(resolved, clarify_line(resolved))
                 raise gate_gone()
             turn = replay_and_report(resolved)
             return {
