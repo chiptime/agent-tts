@@ -54,7 +54,7 @@ from .config import Settings
 from .consult import ConsultService
 from .herdr import MAX_SEND_KEYS, SEND_KEY_ALLOWLIST, HerdrError
 from .history import HistoryStore, default_history_path
-from .llm import BrainLLM, BrainLLMError
+from .llm import BrainLLM, BrainLLMError, TurnCancelled
 from .memory import MAX_MESSAGES, ConversationStore
 from .reader import ReaderCache, turn_id
 from .speech import (
@@ -63,8 +63,10 @@ from .speech import (
     PHASE_FAILED,
     PHASE_RENDERING,
     DuplicateActiveJob,
+    JobAlreadyTerminal,
     RegistryFull,
     SegmentedSpeechProducer,
+    SentenceSpeechProducer,
     SpeechJob,
     SpeechRegistry,
     build_registry,
@@ -280,6 +282,7 @@ class TextRequest(BaseModel):
     session_id: Optional[str] = Field(default=None, max_length=MAX_SESSION_ID_CHARS)
     pane_id: Optional[str] = Field(default=None, max_length=MAX_SESSION_ID_CHARS)
     reset: bool = False
+    conversation: bool = False
     # Voice-stack VS1.1: optional speech job admission. Absent fields =
     # legacy turn, byte-comparable with the pre-speech surface (extra
     # fields are ignored, so old and new clients interoperate).
@@ -397,6 +400,42 @@ def _admit_speech_job(
 # broken — the consumer keeps draining what was already staged.
 def _next_terminal_broken(phase: str) -> bool:
     return is_terminal_phase(phase) and phase != PHASE_COMPLETE
+
+
+# Client-disconnect watch for POST /ask (FR-06): how often the event
+# loop polls Starlette's is_disconnected() while the turn runs in the
+# executor, and how long an abandoned turn gets to observe the abort
+# before the (unreadable) response is given up on. The worker keeps
+# running either way — it stops at its own next cooperative check.
+ASK_DISCONNECT_POLL_S = 0.25
+ASK_CANCEL_GRACE_S = 1.0
+
+
+def _mark_phase_quietly(
+    registry: SpeechRegistry, job_id: str, phase: str
+) -> Optional[SpeechJob]:
+    """Registry mark that tolerates a concurrent terminal landing.
+
+    The disconnect path may cancel the job while the abandoned turn is
+    still shaping its response; whoever lands second must not turn a
+    honest cancelled/complete job into a 500. The registry's
+    terminal-once invariant is untouched — this only swallows the
+    loser's JobAlreadyTerminal.
+    """
+    try:
+        return registry.mark(job_id, phase)
+    except JobAlreadyTerminal:
+        return None
+
+
+def _log_abandoned_turn(future: "asyncio.Future") -> None:
+    """Retrieves (and logs) an abandoned turn's outcome so a late worker
+    exception never surfaces as an unretrieved-exception warning."""
+    if future.cancelled():
+        return
+    exc = future.exception()
+    if exc is not None:
+        logger.warning("abandoned ask turn ended with %r", exc)
 
 
 # Validates+applies one /next ack against the job's watermark without
@@ -1006,97 +1045,198 @@ def create_app(
         return {"approval": approval}
 
     @app.post("/ask")
-    def ask(body: TextRequest) -> dict:
+    async def ask(request: Request, body: TextRequest) -> dict:
+        """One conversational turn, watched for client disconnect (FR-06).
+
+        The whole turn body runs in the executor exactly as it did when
+        this endpoint was sync (Starlette's threadpool worker); this
+        coroutine only adds the disconnect watch around it. The abort
+        signal is REQUEST-scoped and separate from the speech job's
+        cancel event: /speech/{id}/cancel mid-flight keeps the VS1.3
+        contract (full textual answer, cancelled speech), while a dead
+        connection stops the ACTUAL LLM/TTS work — the provider loop
+        checks the event before every round, tool and store write.
+        """
+        if body.conversation and body.speech_request_id is None:
+            raise HTTPException(status_code=422, detail="conversation requires speech_request_id and speech_cancel_token")
         # Speech admission (VS1.1) precedes EVERY side effect: malformed
         # ids and duplicate actives fail fast, and the job sits in
         # waiting_llm before the LLM loop starts so a cancel can land
         # while the model is still thinking.
         job, degraded = _admit_speech_job(body, speech_jobs)
-        if body.reset:
-            store.reset(body.session_id)
-        # A new turn always retires the session's live gate (PRD §4): the
-        # user moved on, so an unanswered gate must never linger. propose()
-        # supersedes too, but a question-only ask must not leave a zombie.
-        approval_store.supersede(body.session_id)
+        disconnect_event = threading.Event()
+
+        def run_turn() -> dict:
+            if body.reset:
+                store.reset(body.session_id)
+            # A new turn always retires the session's live gate (PRD §4): the
+            # user moved on, so an unanswered gate must never linger. propose()
+            # supersedes too, but a question-only ask must not leave a zombie.
+            approval_store.supersede(body.session_id)
+            try:
+                # Inside the guarded zone: get_llm() itself raises
+                # BrainLLMError (missing GLM_API_KEY) and must keep
+                # mapping to the same 503 as any turn failure.
+                llm = get_llm()
+                # takes_cancel_event marker (same convention as the TTS
+                # seam): the real BrainLLM opts into the disconnect
+                # event; classic 3-arg doubles keep their exact legacy
+                # call shape.
+                ask_kwargs = (
+                    {"cancel_event": disconnect_event}
+                    if getattr(llm, "takes_cancel_event", False)
+                    else {}
+                )
+                result = llm.ask(
+                    body.text,
+                    session_id=body.session_id,
+                    pane_id=body.pane_id,
+                    **ask_kwargs,
+                )
+            except TurnCancelled:
+                # Only the disconnect watch sets that event: the turn is
+                # abandoned. Converge the job on cancelled — abandon's
+                # request_cancel may have landed first; quiet either way.
+                if job is not None:
+                    _mark_phase_quietly(speech_jobs, job.id, PHASE_CANCELLED)
+                raise HTTPException(
+                    status_code=499, detail="client disconnected during ask"
+                )
+            except BrainLLMError as exc:
+                if job is not None:
+                    # The turn died before shaping: failed is terminal, so the
+                    # id frees for the client's retry instead of sticking.
+                    # Quiet mark: a concurrent disconnect-cancel may have
+                    # landed the terminal phase first.
+                    _mark_phase_quietly(speech_jobs, job.id, PHASE_FAILED)
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            # Persist the turn exactly once, mirroring the ring (raw question
+            # + raw answer — the approval closer is response shaping, not
+            # content). The seam is deliberately HERE, not inside llm.ask:
+            # the approve replay also calls llm.ask with a synthetic report
+            # prompt, and that must never enter the call history.
+            history.append("user", body.text)
+            history.append("assistant", result.get("answer") or "")
+            if job is None and degraded is None:
+                # Legacy turn: no registry interaction, no speech key —
+                # byte-comparable with the pre-speech surface.
+                return shape_ask_response(result)
+            if degraded is not None:
+                # Registry full: text-only degraded. Answer and history behave
+                # exactly as always; audio is skipped because an unregistered
+                # render could never be cancelled.
+                response = shape_ask_response(result, speak=False)
+                response["speech"] = {"status": "degraded", "reason": degraded}
+                return response
+            if job.cancel_requested:
+                # Cancel landed mid-flight: it touches ONLY speech — the
+                # textual answer and history are returned exactly as always.
+                _mark_phase_quietly(speech_jobs, job.id, PHASE_CANCELLED)
+                response = shape_ask_response(result, speak=False)
+                response["speech"] = {"id": job.id, "status": job.phase}
+                return response
+            if body.conversation:
+                producer = SentenceSpeechProducer(
+                    cfg, speech_jobs, job, speakable_answer(result), speak_answer,
+                )
+                job.segments = producer.buffer
+                job.producer = producer
+                producer.start()
+                response = shape_ask_response(result, speak=False)
+                response["audio_url"] = producer.first_audio_url
+                response["speech"] = {
+                    "id": job.id, "status": "delivering" if producer.first_audio_url else job.phase,
+                    "first_seq": 0,
+                    "first_is_final": len(producer._sentences) == 1,
+                }
+                return response
+            # Identified, non-degraded, non-cancelled turn (VS2.4): pick the
+            # speech path per contract tts-brain-v2.md — the probe is cached
+            # per tts_bin, so this adds one host check per binary, not per
+            # turn.
+            path, reason = choose_speech_path(cfg)
+            if path == "segmented":
+                # ASYNC segmented dispatch: the response returns right after
+                # the LLM while a per-job producer thread drives the host
+                # subprocess (render → segment moves → bounded staging).
+                producer = SegmentedSpeechProducer(
+                    cfg, speech_jobs, job, speakable_answer(result)
+                )
+                job.segments = producer.buffer
+                job.producer = producer
+                producer.start()
+                response = shape_ask_response(result, speak=False)
+                # "delivering" is the LITERAL contract dispatch status (T5),
+                # NOT an echo of the job's phase — internally the job rides
+                # rendering→delivering inside the registry while segments
+                # stream; /next (VS2.5) serves them from the registry.
+                # audio_url stays None: segments arrive via /next, never as
+                # one full file on this path.
+                response["speech"] = {"id": job.id, "status": "delivering"}
+                return response
+            _mark_phase_quietly(speech_jobs, job.id, PHASE_RENDERING)
+            response = shape_ask_response(result, cancel_event=job.cancel_event)
+            # speak_answer is fail-soft: a missing audio_url on a turn that
+            # had an answer means the render threw. WHICH throw decides the
+            # terminal phase honestly (VS1.3): audio won → complete; no
+            # audio + a cancel mark → cancelled (the abort landed mid-render
+            # — or raced the render, which the audio branch resolved first);
+            # any other render failure → failed.
+            if response.get("audio_url"):
+                _mark_phase_quietly(speech_jobs, job.id, PHASE_COMPLETE)
+            elif job.cancel_requested:
+                _mark_phase_quietly(speech_jobs, job.id, PHASE_CANCELLED)
+            else:
+                _mark_phase_quietly(speech_jobs, job.id, PHASE_FAILED)
+            # v1-only host (or failed probe) on an identified turn: the
+            # legacy full-file flow above stays EXACTLY as-is, plus the
+            # contract's VISIBLE degradation marker — the textual answer is
+            # never blocked (tts-brain-v2.md, Negotiation).
+            response["speech"] = {"id": job.id, "status": job.phase, "degraded": reason}
+            return response
+
+        future = asyncio.get_running_loop().run_in_executor(None, run_turn)
+        while True:
+            done, _ = await asyncio.wait(
+                {future}, timeout=ASK_DISCONNECT_POLL_S
+            )
+            if done:
+                return future.result()
+            if await request.is_disconnected():
+                break
+        # The connection died mid-turn: stop the ACTUAL work. The event
+        # aborts the provider loop at its next cooperative check, and the
+        # speech job dies through the ONE existing cancel path
+        # (token-verdict, idempotent) so renders and producers observe
+        # the same cancel any explicit /speech cancel produces.
+        disconnect_event.set()
+        if job is not None:
+            speech_jobs.request_cancel(
+                job.id, body.speech_cancel_token, body.session_id
+            )
+        logger.info(
+            "ask abandoned: client disconnected (%s)",
+            f"speech job {job.id}" if job is not None else "legacy turn",
+        )
         try:
-            result = get_llm().ask(
-                body.text, session_id=body.session_id, pane_id=body.pane_id
+            # Bounded grace for the worker to land its cooperative abort;
+            # after that the turn is discarded — nobody can read it. A
+            # returned connection closing NORMALLY never reaches here:
+            # the watch ends with run_turn, and the intentionally
+            # background remainder producer (conversation mode) lives on.
+            return await asyncio.wait_for(
+                asyncio.shield(future), timeout=ASK_CANCEL_GRACE_S
             )
-        except BrainLLMError as exc:
-            if job is not None:
-                # The turn died before shaping: failed is terminal, so the
-                # id frees for the client's retry instead of sticking.
-                speech_jobs.mark(job.id, PHASE_FAILED)
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-        # Persist the turn exactly once, mirroring the ring (raw question
-        # + raw answer — the approval closer is response shaping, not
-        # content). The seam is deliberately HERE, not inside llm.ask:
-        # the approve replay also calls llm.ask with a synthetic report
-        # prompt, and that must never enter the call history.
-        history.append("user", body.text)
-        history.append("assistant", result.get("answer") or "")
-        if job is None and degraded is None:
-            # Legacy turn: no registry interaction, no speech key —
-            # byte-comparable with the pre-speech surface.
-            return shape_ask_response(result)
-        if degraded is not None:
-            # Registry full: text-only degraded. Answer and history behave
-            # exactly as always; audio is skipped because an unregistered
-            # render could never be cancelled.
-            response = shape_ask_response(result, speak=False)
-            response["speech"] = {"status": "degraded", "reason": degraded}
-            return response
-        if job.cancel_requested:
-            # Cancel landed mid-flight: it touches ONLY speech — the
-            # textual answer and history are returned exactly as always.
-            speech_jobs.mark(job.id, PHASE_CANCELLED)
-            response = shape_ask_response(result, speak=False)
-            response["speech"] = {"id": job.id, "status": job.phase}
-            return response
-        # Identified, non-degraded, non-cancelled turn (VS2.4): pick the
-        # speech path per contract tts-brain-v2.md — the probe is cached
-        # per tts_bin, so this adds one host check per binary, not per
-        # turn.
-        path, reason = choose_speech_path(cfg)
-        if path == "segmented":
-            # ASYNC segmented dispatch: the response returns right after
-            # the LLM while a per-job producer thread drives the host
-            # subprocess (render → segment moves → bounded staging).
-            producer = SegmentedSpeechProducer(
-                cfg, speech_jobs, job, speakable_answer(result)
+        except asyncio.TimeoutError:
+            future.add_done_callback(_log_abandoned_turn)
+            raise HTTPException(
+                status_code=499, detail="client disconnected during ask"
             )
-            job.segments = producer.buffer
-            job.producer = producer
-            producer.start()
-            response = shape_ask_response(result, speak=False)
-            # "delivering" is the LITERAL contract dispatch status (T5),
-            # NOT an echo of the job's phase — internally the job rides
-            # rendering→delivering inside the registry while segments
-            # stream; /next (VS2.5) serves them from the registry.
-            # audio_url stays None: segments arrive via /next, never as
-            # one full file on this path.
-            response["speech"] = {"id": job.id, "status": "delivering"}
-            return response
-        speech_jobs.mark(job.id, PHASE_RENDERING)
-        response = shape_ask_response(result, cancel_event=job.cancel_event)
-        # speak_answer is fail-soft: a missing audio_url on a turn that
-        # had an answer means the render threw. WHICH throw decides the
-        # terminal phase honestly (VS1.3): audio won → complete; no
-        # audio + a cancel mark → cancelled (the abort landed mid-render
-        # — or raced the render, which the audio branch resolved first);
-        # any other render failure → failed.
-        if response.get("audio_url"):
-            speech_jobs.mark(job.id, PHASE_COMPLETE)
-        elif job.cancel_requested:
-            speech_jobs.mark(job.id, PHASE_CANCELLED)
-        else:
-            speech_jobs.mark(job.id, PHASE_FAILED)
-        # v1-only host (or failed probe) on an identified turn: the
-        # legacy full-file flow above stays EXACTLY as-is, plus the
-        # contract's VISIBLE degradation marker — the textual answer is
-        # never blocked (tts-brain-v2.md, Negotiation).
-        response["speech"] = {"id": job.id, "status": job.phase, "degraded": reason}
-        return response
+        except Exception as exc:  # noqa: BLE001 — the turn ended after abandon
+            logger.info("abandoned ask turn outcome: %r", exc)
+            raise HTTPException(
+                status_code=499, detail="client disconnected during ask"
+            )
 
     @app.post("/speech/{speech_request_id}/cancel")
     def speech_cancel(speech_request_id: str, body: SpeechCancelRequest) -> dict:

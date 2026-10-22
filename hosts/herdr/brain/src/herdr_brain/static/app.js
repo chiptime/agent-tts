@@ -2384,6 +2384,9 @@
       // The confirming mic is live too: never hear our own audio.
       if (callState === "listening" || callState === "confirming") stopListening();
       setCallState("speaking");
+      // FR-04: echo-safe barge-in listening during playback (no-op
+      // without a real AEC report — the call stays half-duplex).
+      startBargeInMonitor();
     }
     replaceAudioSource(item);
     stopBtn.classList.remove("hidden");
@@ -2456,6 +2459,7 @@
     // audioBusy guard: pumpAudio() above may have started the NEXT
     // item — only resume when nothing else owns the audio.
     if (!audioBusy && !audioQueue.length && inCall && callState === "speaking") {
+      stopBargeInMonitor();  // playback is over: the mic recovery owns detection
       setCallState(micBaseState());
       startListening();
     }
@@ -2484,6 +2488,10 @@
     if (finished && finished.announcement) hideToast();
     if (!audioQueue.length) stopBtn.classList.add("hidden");
     if (!audioQueue.length && inCall && callState === "speaking") {
+      // The turn's audio is fully drained: the monitor's job is over,
+      // and it must die BEFORE the mic re-arms (a live monitor hearing
+      // the user's next words would cancel the NEXT turn's job).
+      stopBargeInMonitor();
       setCallState(micBaseState());
       startListening();
     } else {
@@ -2493,6 +2501,7 @@
 
   function stopAudio() {
     cancelGlanceTap();
+    stopBargeInMonitor();  // a manual stop ends barge-in listening too
     if (karaokeCtl.state().plan) {
       karaokeCtl.stop(); // adapter disposes ONLY its item; foreign queue survives.
       return;
@@ -2615,6 +2624,8 @@
       "textMode:         " + textMode,
       "escuchando desde: " + (listeningStartedAt ? new Date(listeningStartedAt).toLocaleTimeString() : "—"),
       "ruido de sala:    " + (vad ? vad.floor().toFixed(4) : "—"),
+      "barge-in:         " + (bargeInTick ? (bargeInVad && bargeInVad.hasSpeech() ? "speech" : "armed") : "off") +
+        " (AEC " + (captureAecEnabled() ? "on" : "off") + ")",
       "errores recon.:   " + recFailures + " (último: " + lastRecError + ")",
       "preguntas /ask:   " + askCount,
       "último envío:     " + lastDispatch,
@@ -3109,14 +3120,33 @@
   /* ---------------- fetch with hard timeout ---------------- */
 
   function fetchWithTimeout(url, options, timeoutMs) {
+    options = options || {};
+    /* An external abort signal (barge-in killing the in-flight /ask,
+     * FR-05) rides along: its abort mirrors into OUR controller so the
+     * native fetch dies too — and is NOT relabeled as a timeout, so
+     * callers can tell a deliberate interruption from a slow brain. */
+    var external = options.signal || null;
     var controller = new AbortController();
-    var timer = setTimeout(function () { controller.abort(); }, timeoutMs || 30000);
-    return fetch(url, Object.assign({}, options || {}, { signal: controller.signal }))
+    var timedOut = false;
+    var onExternalAbort = function () { controller.abort(); };
+    if (external) {
+      if (external.aborted) controller.abort();
+      else external.addEventListener("abort", onExternalAbort);
+    }
+    var timer = setTimeout(function () {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs || 30000);
+    function cleanup() {
+      clearTimeout(timer);
+      if (external) external.removeEventListener("abort", onExternalAbort);
+    }
+    return fetch(url, Object.assign({}, options, { signal: controller.signal }))
       .then(
-        function (resp) { clearTimeout(timer); return resp; },
+        function (resp) { cleanup(); return resp; },
         function (err) {
-          clearTimeout(timer);
-          if (err && err.name === "AbortError") {
+          cleanup();
+          if (err && err.name === "AbortError" && timedOut) {
             err = new Error("timeout: el brain tardó demasiado en responder");
           }
           throw err;
@@ -3498,6 +3528,12 @@
     }
   }
 
+  /* Live AbortController of the in-flight /ask turn (FR-05): barge-in
+   * aborts the request instead of waiting out its 90 s budget. Cleared
+   * by the owning turn's finalizer; a newer turn's controller is never
+   * clobbered by an older turn's cleanup. */
+  var askAbort = null;
+
   function ask(text) {
     if (callState === "thinking") return Promise.resolve();
     cancelGlanceTap();
@@ -3511,13 +3547,23 @@
      * the server would arrive too late to cancel mid-render. null (no
      * crypto) keeps the legacy path untouched. */
     var speech = speechCtl.begin(sessionId) || {};
+    if (inCall && speech.speech_request_id) speech.conversation = true;
+    /* This turn's abort token: injected into the ONE /ask fetch through
+     * the Consult.requestAsk seam (it owns the wire shape; the injected
+     * fetch adds only the signal). */
+    var myAbort = new AbortController();
+    askAbort = myAbort;
+    var askFetch = function (url, options, timeoutMs) {
+      options = Object.assign({}, options || {}, { signal: myAbort.signal });
+      return fetchWithTimeout(url, options, timeoutMs);
+    };
     /* /ask spans the FULL consult turn (up to 60 s engine budget plus
      * model + TTS shaping) — the fixed 90 s policy AND the request
      * shape live in consult.js (Consult.requestAsk, tested in
      * tests/js/consult.test.js). The old inline 30 s aborted the fetch
      * while the server was still working, losing completed answers.
      * The speech identity rides along as an optional, additive field. */
-    return window.Consult.requestAsk(fetchWithTimeout, {
+    return window.Consult.requestAsk(askFetch, {
       text: text,
       sessionId: sessionId,
       paneId: selectedPane,
@@ -3541,13 +3587,16 @@
           // A chunk tap may have cancelled this identity while /ask was in
           // flight. Keep its answer, but never revive the retired audio job.
           if (!speech.speech_request_id || speechCtl.activeId() === speech.speech_request_id) {
-            if (data.speech && data.speech.status === "delivering" && !data.audio_url) {
+            if (data.speech && data.speech.status === "delivering") {
               /* Protocol-2 streaming turn: the answer arrives as segments
                * through /speech/{id}/next and enters the SAME sequential
                * queue (seq rides each item; onAudioEnded advances the ack).
                * The enqueue below still covers legacy turns AND v1-degraded
                * identified turns (full file with audio_url). */
-              segmentPlayer.start({ id: speech.speech_request_id, sessionId: sessionId });
+              segmentPlayer.start({ id: speech.speech_request_id, sessionId: sessionId,
+                first: data.audio_url && data.speech.first_seq === 0 ? {
+                  seq: 0, audio_url: data.audio_url, is_final: !!data.speech.first_is_final
+                } : null });
             } else if (data.audio_url) {
               enqueueAudio(data.audio_url, null, speech.speech_request_id);
             } else {
@@ -3570,6 +3619,12 @@
       })
       .catch(function (err) {
         speechCtl.release(speech.speech_request_id);
+        if (err && err.name === "AbortError") {
+          /* A deliberate abort (barge-in killed this turn): silent by
+           * design — the barge-in recovery already owns the call state,
+           * and a stale fetch must never repaint it. */
+          return;
+        }
         if (err && /timeout/.test(String(err.message || err))) {
           showBanner("El brain tardó demasiado — vuelve a intentarlo.");
         } else {
@@ -3577,8 +3632,11 @@
         }
       })
       .then(function () {
+        if (askAbort === myAbort) askAbort = null;
         interimTextEl.textContent = "";
         renderInterimStrip();
+        // A barge-in moved the call on (listening/recording): its own
+        // recovery owns the mic; this stale finalizer must not restart it.
         if (callState === "thinking") afterAnswer();
       });
   }
@@ -3818,6 +3876,7 @@
   }
 
   function teardownServerCall() {
+    stopBargeInMonitor();  // the analyser this monitor reads is going away
     releaseServerMic();
     if (audioContext) {
       try { audioContext.close(); } catch (err) { /* already closed */ }
@@ -3995,6 +4054,94 @@
     recorder = null;
     recorderChunks = [];
     vad = null;
+  }
+
+  /* ---------------- barge-in monitor (hands-free T-05, FR-04/05) -----
+   *
+   * While the SERVER engine plays an answer in-call, a lightweight VAD
+   * monitor keeps reading the SAME analyser the utterance loop uses —
+   * but ONLY when the real capture track reports echo cancellation:
+   * with AEC the browser strips the agent's own speaker output from
+   * the mic signal, so a gate opening is the USER's voice. Without an
+   * AEC report the call stays safe half-duplex (mic down during
+   * playback). The fake-device test flags prove the plumbing, never
+   * physical echo suppression.
+   *
+   * On speech onset the monitor fires bargeIn() ONCE: pause the player
+   * synchronously in the detection tick (within 100 ms of the detected
+   * frame), abort the in-flight /ask, cancel the server speech job and
+   * flush its queued audio — then recover the mic under micBaseState()
+   * so the interrupting utterance is captured (recording follows speech
+   * onset through the normal VAD loop). A barge-in NEVER touches the
+   * approval flow (S14): gates, cards and the confirming state survive
+   * it untouched. */
+
+  var BARGE_IN_TICK_MS = 50;   // detection cadence; the pause budget is 100 ms
+  var bargeInTick = null;
+  var bargeInVad = null;
+
+  function captureAecEnabled() {
+    if (!mediaStream) return false;
+    var tracks = mediaStream.getAudioTracks();
+    if (!tracks.length) return false;
+    try {
+      return tracks[0].getSettings().echoCancellation === true;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  function startBargeInMonitor() {
+    if (bargeInTick) return;   // single monitor across chained segments
+    if (!inCall || voiceEngine !== "servidor") return;
+    if (!analyser || !captureAecEnabled()) return;
+    bargeInVad = window.Vad.createVad();
+    bargeInTick = setInterval(bargeInFrame, BARGE_IN_TICK_MS);
+  }
+
+  function stopBargeInMonitor() {
+    if (bargeInTick) { clearInterval(bargeInTick); bargeInTick = null; }
+    bargeInVad = null;
+  }
+
+  function bargeInFrame() {
+    if (!inCall || callState !== "speaking" || !analyser || !bargeInVad) {
+      stopBargeInMonitor();   // playback ended or changed hands: self-disarm
+      return;
+    }
+    if (karaokeCtl.state().plan) {
+      // A manual karaoke replay owns the player; its own taps govern it.
+      stopBargeInMonitor();
+      return;
+    }
+    if (bargeInVad.push(frameRms())) bargeIn();
+  }
+
+  function bargeIn() {
+    stopBargeInMonitor();               // detection is one-shot
+    player.pause();                     // synchronous: same tick as detection
+    if (askAbort) askAbort.abort();     // kill the in-flight /ask fetch
+    segmentPlayer.stop("barge-in");     // no further /speech/next polls
+    var jobId = speechCtl.activeId();
+    if (jobId) {
+      speechCtl.cancel();               // POST /speech/{id}/cancel
+      Speech.purgeQueueById(audioQueue, jobId);
+    } else {
+      audioQueue.length = 0;            // unidentifiable output: clear all
+    }
+    audioBusy = false;
+    audioFinished = null;
+    player.muted = false;
+    player.removeAttribute("src");
+    player.load();
+    hideToast();
+    stopBtn.classList.add("hidden");
+    // Recover the mic under the gate-aware base state; the ongoing
+    // speech enters recording through the normal VAD loop. Ambient
+    // announcements stay queued (their records untouched): the user is
+    // talking — they drain on the next natural pump.
+    setCallState(micBaseState());
+    startListening();
   }
 
   /* Engine dispatch: one name pair, both engines. */

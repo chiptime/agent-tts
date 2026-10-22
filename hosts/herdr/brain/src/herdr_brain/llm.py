@@ -15,12 +15,15 @@ The harness per request:
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import json
 import logging
+import threading
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
-from openai import OpenAI
+from openai import AsyncOpenAI, OpenAI
 
 from .approval import ApprovalGate, ApprovalGateStore, CREATE_SESSION, SEND_TO_SESSION
 from .config import Settings
@@ -129,6 +132,15 @@ class BrainLLMError(RuntimeError):
     """Raised when the LLM cannot produce a final answer."""
 
 
+class TurnCancelled(BrainLLMError):
+    """The /ask turn was abandoned because its client disconnected.
+
+    Subclasses :class:`BrainLLMError` so an unguarded caller degrades
+    to the usual 503 instead of a 500; the /ask handler catches it
+    first and maps it to the disconnect story (FR-06).
+    """
+
+
 def build_openai_client(settings: Settings) -> OpenAI:
     """The ONE OpenAI-compatible client construction (GLM_API_KEY /
     GLM_BASE_URL env; no key ever enters the repository). Shared by
@@ -143,6 +155,22 @@ def build_openai_client(settings: Settings) -> OpenAI:
     return OpenAI(api_key=settings.glm_api_key, base_url=settings.glm_base_url)
 
 
+def build_async_openai_client(settings: Settings) -> AsyncOpenAI:
+    """Cancellable twin of build_openai_client: identical credentials and
+    base URL, async transport. Built PER CANCELLABLE TURN so a disconnect
+    can abort that request's HTTP task and close ITS client without ever
+    touching the shared sync client another turn may be using."""
+    if not settings.glm_api_key:
+        raise BrainLLMError(
+            "GLM_API_KEY is not set. Export it in your environment "
+            "(e.g. a shell profile or a sourced env file outside this "
+            "repository) and restart the brain."
+        )
+    return AsyncOpenAI(
+        api_key=settings.glm_api_key, base_url=settings.glm_base_url
+    )
+
+
 def summarize_tool_args(args: Dict[str, Any]) -> str:
     """Renders tool arguments for the audit log without full payloads."""
     parts = []
@@ -155,8 +183,109 @@ def summarize_tool_args(args: Dict[str, Any]) -> str:
     return " ".join(parts) if parts else "-"
 
 
+class _SyncProvider:
+    """The classic channel: the shared sync client, byte-identical call
+    semantics. Used for every turn that cannot be cancelled (approve
+    replays, plain calls) and for injected synchronous test fakes."""
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+
+    def create(self, **kwargs):
+        return self._client.chat.completions.create(**kwargs)
+
+    def close(self) -> None:
+        return None
+
+
+class _OwnedAsyncProvider:
+    """One cancellable turn's PRIVATE provider channel (FR-06).
+
+    Owns a dedicated event-loop thread and an AsyncOpenAI client built
+    for THIS request — never the shared sync client, never a client
+    another turn holds. Each provider round is submitted to the loop and
+    the sync worker blocks on the concurrent future; when the request's
+    disconnect event fires, the worker CANCELS that future, which cancels
+    the awaited HTTP task inside the loop (httpx aborts the in-flight
+    request), and teardown closes the owned client and its transport.
+    No thread is killed, no shared state mutated: concurrent turns each
+    own their channel, so cancelling one leaves the others untouched.
+
+    Honest limit: this aborts the HTTP generation itself. Tools already
+    dispatched between rounds (herdr CLI subprocesses) still run to
+    their own completion — the loop's cooperative checks merely prevent
+    any FURTHER round, tool, gate or memory write.
+    """
+
+    POLL_S = 0.05  # worker cadence watching the cancel event
+
+    def __init__(self, client_factory: Callable[[], Any], cancel_event) -> None:
+        self._factory = client_factory
+        self._cancel_event = cancel_event
+        self._client: Any = None
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(
+            target=self._loop.run_forever, daemon=True, name="llm-owned-provider"
+        )
+        self._thread.start()
+        try:
+            asyncio.run_coroutine_threadsafe(self._open(), self._loop).result(
+                timeout=5
+            )
+        except BaseException:
+            self.close()
+            raise
+
+    async def _open(self) -> None:
+        self._client = self._factory()
+
+    async def _close(self) -> None:
+        client, self._client = self._client, None
+        if client is not None:
+            await client.close()
+
+    async def _create(self, kwargs: dict):
+        return await self._client.chat.completions.create(**kwargs)
+
+    def create(self, **kwargs):
+        handle = asyncio.run_coroutine_threadsafe(
+            self._create(kwargs), self._loop
+        )
+        while True:
+            try:
+                return handle.result(timeout=self.POLL_S)
+            except concurrent.futures.TimeoutError:
+                if self._cancel_event is not None and self._cancel_event.is_set():
+                    # Cancel the AWAITED HTTP TASK itself: the loop
+                    # aborts the in-flight request, the future resolves
+                    # cancelled, and the worker unblocks below.
+                    handle.cancel()
+            except concurrent.futures.CancelledError:
+                raise TurnCancelled(
+                    "client disconnected: provider request aborted"
+                ) from None
+
+    def close(self) -> None:
+        loop, self._loop = self._loop, None
+        if loop is None:
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(self._close(), loop).result(timeout=5)
+        except Exception:  # noqa: BLE001 — teardown is best-effort
+            pass
+        loop.call_soon_threadsafe(loop.stop)
+        self._thread.join(timeout=5)
+        loop.close()
+
+
 class BrainLLM:
     """Runs one user question through the tool-calling loop with memory."""
+
+    # FR-06 marker (same convention as the TTS renderer seam): the
+    # server passes the request-scoped disconnect event to ask() only
+    # when the double/instance opts in, keeping every pre-existing
+    # 3-arg test fake green.
+    takes_cancel_event = True
 
     def __init__(
         self,
@@ -165,15 +294,41 @@ class BrainLLM:
         client: Optional[Any] = None,
         store: Optional[ConversationStore] = None,
         approval_store: Optional[ApprovalGateStore] = None,
+        async_client_factory: Optional[Callable[[], Any]] = None,
     ):
         self._settings = settings
         self._tools = tools
         self._client = client
         self._store = store
         self._approval_store = approval_store
+        self._async_client_factory = async_client_factory
         self._request_target: Optional[AgentInfo] = None
         if self._client is None:
             self._client = build_openai_client(settings)
+
+    def _open_provider(self, cancel_event: Optional[threading.Event]):
+        """Chooses this turn's provider channel.
+
+        No cancellation requested (approve replays, plain calls): the
+        shared sync client, byte-identical behavior. A cancellable turn
+        uses an OWNED async channel when one is available — an injected
+        async factory (tests control the transport) or, in production,
+        the real OpenAI client, whose rounds run on a private loop the
+        worker can cancel. Injected synchronous fakes keep the sync
+        path: the cooperative loop checks still guard them, because an
+        arbitrary synchronous function that ignores cancellation cannot
+        be killed in Python.
+        """
+        if cancel_event is None:
+            return _SyncProvider(self._client)
+        if self._async_client_factory is not None or isinstance(
+            self._client, OpenAI
+        ):
+            factory = self._async_client_factory or (
+                lambda: build_async_openai_client(self._settings)
+            )
+            return _OwnedAsyncProvider(factory, cancel_event)
+        return _SyncProvider(self._client)
 
     def attach_store(self, store: ConversationStore) -> None:
         """Binds a shared conversation store (used by the HTTP server)."""
@@ -188,6 +343,7 @@ class BrainLLM:
         question: str,
         session_id: Optional[str] = None,
         pane_id: Optional[str] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> Dict[str, Any]:
         """Returns ``{answer, pane_id, agent, session_id, approval}``.
 
@@ -196,11 +352,27 @@ class BrainLLM:
         frozen :class:`ApprovalGate` opened when a ``send_to_session``
         call was intercepted (None on ungated turns) — the send itself
         never executes here; only an approval replay may run it.
+
+        ``cancel_event`` (FR-06) is the REQUEST-scoped disconnect
+        signal, deliberately NOT the speech job's cancel event: a
+        /speech/{id}/cancel mid-flight keeps returning the full textual
+        answer (VS1.3). On the production OpenAI client the turn's
+        provider rounds run through an OWNED AsyncOpenAI channel
+        (:class:`_OwnedAsyncProvider`): firing the event CANCELS the
+        in-flight HTTP task (httpx aborts the request) and closes that
+        client's transport, then the loop's checks before every round,
+        tool dispatch and memory write raise :class:`TurnCancelled` —
+        an abandoned turn can never open a gate, run a further tool or
+        land in the ring. Injected synchronous fakes cannot be killed
+        in Python; for them the cooperative checks remain the guard.
         """
         store = self._store or ConversationStore()
         key = ConversationStore.normalize(session_id)
         target = self._tools.resolve_target(pane_id)
         self._request_target = target
+
+        def aborted() -> bool:
+            return cancel_event is not None and cancel_event.is_set()
 
         live = self._live_context(target)
         messages: List[Dict[str, Any]] = [
@@ -214,48 +386,58 @@ class BrainLLM:
 
         answer: Optional[str] = None
         opened_gate: Optional[ApprovalGate] = None
-        for _ in range(self._settings.max_tool_rounds + 1):
-            response = self._client.chat.completions.create(
-                model=self._settings.glm_model,
-                messages=messages,
-                tools=TOOLS_SCHEMA,
-                tool_choice="auto",
-            )
-            choice = response.choices[0].message
-            if not getattr(choice, "tool_calls", None):
-                answer = (choice.content or "").strip()
-                break
-
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": choice.content,
-                    "tool_calls": [
-                        {
-                            "id": call.id,
-                            "type": "function",
-                            "function": {
-                                "name": call.function.name,
-                                "arguments": call.function.arguments,
-                            },
-                        }
-                        for call in choice.tool_calls
-                    ],
-                }
-            )
-            for call in choice.tool_calls:
-                result, gate = self._invoke(call, session_key=key)
-                if gate is not None:
-                    opened_gate = gate
-                messages.append(
-                    {"role": "tool", "tool_call_id": call.id, "content": result}
+        provider = self._open_provider(cancel_event)
+        try:
+            for _ in range(self._settings.max_tool_rounds + 1):
+                if aborted():
+                    raise TurnCancelled("client disconnected before the model round")
+                response = provider.create(
+                    model=self._settings.glm_model,
+                    messages=messages,
+                    tools=TOOLS_SCHEMA,
+                    tool_choice="auto",
                 )
-        else:
-            answer = answer or ""
+                choice = response.choices[0].message
+                if not getattr(choice, "tool_calls", None):
+                    answer = (choice.content or "").strip()
+                    break
+
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": choice.content,
+                        "tool_calls": [
+                            {
+                                "id": call.id,
+                                "type": "function",
+                                "function": {
+                                    "name": call.function.name,
+                                    "arguments": call.function.arguments,
+                                },
+                            }
+                            for call in choice.tool_calls
+                        ],
+                    }
+                )
+                for call in choice.tool_calls:
+                    if aborted():
+                        raise TurnCancelled("client disconnected before a tool call")
+                    result, gate = self._invoke(call, session_key=key)
+                    if gate is not None:
+                        opened_gate = gate
+                    messages.append(
+                        {"role": "tool", "tool_call_id": call.id, "content": result}
+                    )
+            else:
+                answer = answer or ""
+        finally:
+            provider.close()
 
         if not answer:
             answer = "I could not put together an answer right now; try again or rephrase."
 
+        if aborted():
+            raise TurnCancelled("client disconnected before the turn was stored")
         store.append(key, "user", question)
         store.append(key, "assistant", answer)
 

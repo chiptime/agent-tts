@@ -16,11 +16,11 @@ EXPECTED_DIGESTS = {
     # so these three hashes have to be recomputed from disk after every
     # merge that touches index.html, app.js or herd-group.js.
     "/": "6b6fa03501b43367b178cbafa46378be53452e36e2d7fc744a67057f25043f16",
-    "/app.js": "7b95f4dc3aa2bd9e850866271a25555209cb71fee4a6eda20d9c849c157d7bdf",
+    "/app.js": "cceb9f3287ccd26f08c0347eaba36e06b3041d509938863806f86e25a9d9efef",
     "/herd-group.js": "08296c7208e14dc1d5e46186b645d02089f8addef502b50eb11e61b186829674",
     "/toast.js": "47a230495fbbe8af8ed63ea0daf2e77a08f41f48911da4f9cc230ddc904fdd5d",
     "/reader.js": "28daec6199b0e756e1285b40f20fc860c1d9b4d2169cb2433c1ccfb12db31a76",
-    "/speech.js": "785b966f634ffaaa70d92a8bafbf9b8a13c658617de2707d99b80736142823e6",
+    "/speech.js": "23b10e3ffe9b22c7480929cb33d12e4a0e3d378f49b841645ec670634a9fe709",
     "/announce.js": "b56e0152c4369bbab32177311340882123d75a2373ab2f786d2f5b60b5a500fb",
     "/approval.js": "b982f0ca6172380dcdb98f4d2841ac40c11fd691749429ca9424bb268c6b335a",
     "/consult.js": "fc2e4d18c206164fcec7a8baf2be1697e5b6d86152ed12c432169a70c1113bc4",
