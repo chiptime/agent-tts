@@ -64,6 +64,103 @@ def test_options_without_descriptions_still_parse():
 
     assert dialog["question"] == "¿Seguimos?"
     assert dialog["options"] == [
-        {"n": 1, "title": "Sí", "description": ""},
-        {"n": 2, "title": "No", "description": ""},
+        {"n": 1, "title": "Sí", "description": "", "selected": True},
+        {"n": 2, "title": "No", "description": "", "selected": False},
     ]
+
+
+def test_cursor_on_first_option_does_not_break_question_or_drop_option():
+    screen = """
+     He terminado de analizar el código.
+     ¿Quieres que aplique los cambios?
+       ❯ 1. Sí, aplicar ahora
+            Modifica los archivos según el plan.
+         2. No, cancelar
+            Descarta los cambios.
+       ↑↓ select  enter submit
+    """
+    dialog = parse_dialog(screen)
+
+    assert dialog is not None
+    assert dialog["question"] == "¿Quieres que aplique los cambios?"
+    assert len(dialog["options"]) == 2
+    assert dialog["options"][0]["n"] == 1
+    assert dialog["options"][0]["title"] == "Sí, aplicar ahora"
+    assert dialog["options"][0]["selected"] is True
+    assert dialog["options"][1]["n"] == 2
+    assert dialog["options"][1]["title"] == "No, cancelar"
+    assert dialog["options"][1]["selected"] is False
+
+
+def test_cursor_on_second_option_marks_it_selected():
+    screen = """
+     ¿Cuál prefieres?
+       1. Opción uno
+       > 2. Opción dos
+       3. Opción tres
+       ↑↓ select  enter submit
+    """
+    dialog = parse_dialog(screen)
+
+    assert dialog is not None
+    assert dialog["question"] == "¿Cuál prefieres?"
+    assert [opt["selected"] for opt in dialog["options"]] == [False, True, False]
+
+
+def test_multiline_wrapped_question():
+    screen = """
+     ¿Deseas continuar con la migración de base de datos
+     para el esquema de producción?
+       1. Sí
+       2. No
+       ↑↓ select  enter submit
+    """
+    dialog = parse_dialog(screen)
+
+    assert dialog is not None
+    assert dialog["question"] == (
+        "¿Deseas continuar con la migración de base de datos "
+        "para el esquema de producción?"
+    )
+
+
+def test_permission_prompt_horizontal_buttons():
+    screen = """
+     △ Permission required
+     → Shell command
+       $ npm test
+
+     Allow once   Allow always   Reject
+     ⇆ select  enter confirm
+    """
+    dialog = parse_dialog(screen)
+
+    assert dialog is not None
+    assert dialog["question"] == "Permission required: Shell command"
+    assert dialog["detail"] == "$ npm test"
+    assert dialog["layout"] == "buttons"
+    assert [opt["title"] for opt in dialog["options"]] == ["Allow once", "Allow always", "Reject"]
+    assert dialog["options"][0]["selected"] is True
+    assert dialog["hint"] == "⇆ select  enter confirm"
+
+
+def test_permission_prompt_selection_from_screen_runs():
+    screen = "△ Permission required\n→ Shell command\n  $ npm test\nAllow once   Allow always   Reject"
+    screen_runs = [
+        [{"t": "△ Permission required"}],
+        [{"t": "→ Shell command"}],
+        [{"t": "  $ npm test"}],
+        [
+            {"t": "Allow once", "bg": "#141414"},
+            {"t": "   "},
+            {"t": "Allow always", "bg": "#f59e0b"},
+            {"t": "   "},
+            {"t": "Reject", "bg": "#141414"},
+        ],
+    ]
+    dialog = parse_dialog(screen, screen_runs=screen_runs)
+
+    assert dialog is not None
+    assert dialog["options"][0]["selected"] is False
+    assert dialog["options"][1]["selected"] is True
+    assert dialog["options"][2]["selected"] is False

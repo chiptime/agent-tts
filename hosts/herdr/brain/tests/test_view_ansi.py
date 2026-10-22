@@ -58,3 +58,18 @@ def test_carriage_returns_are_normalised():
 
 def test_trailing_style_does_not_create_an_empty_run():
     assert ansi_runs("\x1b[1mA\x1b[0m") == [[{"t": "A", "b": True}]]
+
+
+def test_standard_ansi_foreground_and_background():
+    line = ansi_runs("\x1b[33m\x1b[42mHello\x1b[0m")[0]
+    assert line == [{"t": "Hello", "fg": "#cdcd00", "bg": "#00cd00"}]
+
+
+def test_bright_ansi_foreground_and_background():
+    line = ansi_runs("\x1b[91m\x1b[104mHello\x1b[0m")[0]
+    assert line == [{"t": "Hello", "fg": "#ff0000", "bg": "#5c5cff"}]
+
+
+def test_reverse_video():
+    line = ansi_runs("\x1b[7mSelected\x1b[27m Normal")[0]
+    assert line == [{"t": "Selected", "rev": True}, {"t": " Normal"}]

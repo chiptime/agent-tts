@@ -72,23 +72,23 @@ test("hysteresis: a brief dip mid-utterance does not end it", () => {
   assert.equal(vad.hasSpeech(), true);
 });
 
-test("utterance finalizes after 1200ms below the close threshold", () => {
+test("utterance finalizes after silenceMs below the close threshold", () => {
   const clock = fakeClock();
   const vad = createVad({ now: clock.now });
   clock.advance(100);
   vad.push(SPEECH);
-  clock.advance(1199);
+  clock.advance(1999);
   assert.equal(vad.shouldFinalize(), false);  // not yet
-  clock.advance(1);                           // 1200ms sharp
+  clock.advance(1);                           // 2000ms sharp
   assert.equal(vad.shouldFinalize(), true);
 });
 
-test("15s hard cap finalizes even with continuous speech", () => {
+test("60s hard cap finalizes even with continuous speech", () => {
   const clock = fakeClock();
   const vad = createVad({ now: clock.now });
   clock.advance(100);
   vad.push(SPEECH);
-  for (let ms = 0; ms < 15000; ms += 100) {
+  for (let ms = 0; ms < 60000; ms += 100) {
     clock.advance(100);
     vad.push(SPEECH);  // never silent: the cap must end it
   }
@@ -100,7 +100,7 @@ test("shouldFinalize latches: true exactly once until reset", () => {
   const vad = createVad({ now: clock.now });
   clock.advance(100);
   vad.push(SPEECH);
-  clock.advance(1300);
+  clock.advance(2100);
   assert.equal(vad.shouldFinalize(), true);
   assert.equal(vad.shouldFinalize(), false);  // latched
   assert.equal(vad.hasSpeech(), false);
@@ -113,7 +113,7 @@ test("reset starts a fresh utterance and keeps the adapted floor", () => {
   const learnedFloor = vad.floor();
   clock.advance(100);
   vad.push(SPEECH);
-  clock.advance(1300);
+  clock.advance(2100);
   assert.equal(vad.shouldFinalize(), true);
   vad.reset();
   assert.equal(vad.hasSpeech(), false);

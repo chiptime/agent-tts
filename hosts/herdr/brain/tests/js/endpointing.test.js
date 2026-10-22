@@ -157,7 +157,7 @@ test("snapshot: cap remaining never goes negative", () => {
 
 test("utterance accumulates across recognition session boundaries", () => {
   const clock = fakeClock();
-  const ep = createEndpointer({ now: clock.now });
+  const ep = createEndpointer({ now: clock.now, silenceMs: 1200 });
   // Session 1: interims, then Chrome flushes a final and ends the session.
   ep.push("el rebaño");
   ep.commit("el rebaño");
