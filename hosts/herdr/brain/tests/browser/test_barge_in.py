@@ -34,7 +34,7 @@ GATE = {
 BARGE_INIT = r"""
 (() => {
     const probe = window.__barge = {events: [], frames: [], pauses: [],
-        asks: [], abortedAsks: [], transcribes: 0, sources: []};
+        asks: [], abortedAsks: [], transcribes: 0, askResponses: 0, sources: []};
     class FixtureEventSource extends EventTarget {
         constructor(url) { super(); this.url = url; this.readyState = 1; probe.sources.push(this); }
         close() { this.readyState = 2; }
@@ -83,7 +83,12 @@ BARGE_INIT = r"""
                 probe.abortedAsks.push({index, t: performance.now()});
             });
         }
-        return nativeFetch(input, options);
+        const pending = nativeFetch(input, options);
+        if (path !== '/ask') return pending;
+        return pending.then(response => {
+            if (response.ok) probe.askResponses += 1;
+            return response;
+        });
     };
 })();
 """
@@ -305,6 +310,9 @@ def test_barge_in_pauses_playback_and_captures_new_utterance(barge_app):
     # ...and recovers the mic: the interrupting utterance is REALLY
     # captured (native recorder bytes) and dispatched as the next turn.
     app.page.wait_for_function("() => __barge.transcribes >= 2")
+    # Fetch initiation can precede the Python route callback. A successful
+    # second answer proves both service handlers recorded their requests.
+    app.page.wait_for_function("() => __barge.askResponses >= 2")
     assert app.transcribes[1] > 1000  # real webm bytes, not a sliver
     app.page.wait_for_function("() => __barge.asks.length === 2")
     assert app.asks[1]["speech_request_id"] != app.asks[0]["speech_request_id"]
