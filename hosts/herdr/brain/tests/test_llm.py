@@ -71,6 +71,20 @@ def make_brain(settings, stub, responses):
     return llm, tools
 
 
+def test_executive_voice_style_reaches_the_provider(settings, make_stub):
+    stub = make_stub()
+    answer = "The fix reduces failures. The tests passed. I recommend reviewing it."
+    llm, _ = make_brain(settings, stub, responses=[text_response(answer)])
+    result = llm.ask("Summarize the agent's progress")
+    policy = llm._client.create_kwargs[0]["messages"][0]["content"]
+    for phrase in ("problem impact", "tests passed or failed", "required decision", "recommended next action"):
+        assert phrase in policy
+    assert "At most 3 short sentences" in policy
+    assert "stretch the sentence limit" not in policy
+    assert result["answer"] == answer
+    assert stub.prompt_calls == []
+
+
 class TestRoutingPolicy:
     @pytest.mark.parametrize("question", ["sesiones tengo abiertas", "qué sesiones tengo abiertas?"])
     def test_open_session_question_reaches_inventory_and_surfaces_result(

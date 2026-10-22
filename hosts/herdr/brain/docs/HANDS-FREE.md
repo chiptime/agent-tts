@@ -1,5 +1,23 @@
 # Conversational voice call
 
+## Announcements and executive progress
+
+During a call, SSE announcements remain in the existing visual ledger and audio
+queue until the conversation is idle. Recording, buffered browser speech,
+transcription, a pending answer or speech segment, playback, paused calls and
+approval confirmation take priority. The queue can play an answer ahead of a
+deferred announcement; natural completion or stopping the answer releases the
+next announcement only when the idle-state guard permits it. Out-of-call mute,
+autoplay blocking and gesture-unlock behavior is unchanged.
+
+The provider's voice policy requests at most three short sentences: problem
+impact, verified test outcome, a blocking decision when relevant, and an
+explicit recommended next action. Verbatim terminal choices must not be hidden
+to shorten a response. Tests prove this policy reaches the provider; they do
+not claim that every live model response will obey it.
+
+## Endpointing
+
 Conversational endpointing now uses **800 ms of silence** by default in both
 the browser transcript endpointer and the local-engine RMS VAD. Their existing
 `silenceMs` option supports tuning, including 700–900 ms conversational values.
