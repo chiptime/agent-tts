@@ -16,12 +16,12 @@ EXPECTED_DIGESTS = {
     # so these three hashes have to be recomputed from disk after every
     # merge that touches index.html, app.js or herd-group.js.
     "/": "6b6fa03501b43367b178cbafa46378be53452e36e2d7fc744a67057f25043f16",
-    "/app.js": "ebe6d8a4c59b14eb9c23e6ecaf7b3eb7063422de27279f6e6527be0e8849a07c",
+    "/app.js": "ed8e004f193d7f137ec912545b50f4f2662a0e3709f190a0d0657223dbf9a8b2",
     "/herd-group.js": "08296c7208e14dc1d5e46186b645d02089f8addef502b50eb11e61b186829674",
     "/toast.js": "47a230495fbbe8af8ed63ea0daf2e77a08f41f48911da4f9cc230ddc904fdd5d",
     "/reader.js": "28daec6199b0e756e1285b40f20fc860c1d9b4d2169cb2433c1ccfb12db31a76",
     "/speech.js": "23b10e3ffe9b22c7480929cb33d12e4a0e3d378f49b841645ec670634a9fe709",
-    "/announce.js": "b56e0152c4369bbab32177311340882123d75a2373ab2f786d2f5b60b5a500fb",
+    "/announce.js": "e525a591e5268d2cbfc1d93956469b81da41fb3c87b17c43caccbc7ebd00e9df",
     # app.js and approval.js re-pinned for the T-07/T-08 spoken-dialog,
     # approval-binding and B1–B8 correction changes (gate speech id +
     # explanation receipts, clarify identity, item-aware playback proof);

@@ -842,8 +842,8 @@ test("wiring: stopAudio cancels server-side, purges by id, lets foreign audio co
   assert.ok(region.includes("Speech.purgeQueueById(audioQueue, jobId)"));
   assert.ok(region.includes("audioQueue.length = 0"), "no identified job: the legacy clear-all stays");
   assert.ok(region.includes("player.pause()"), "local audio stops immediately, always");
-  assert.ok(/if \(audioQueue\.length\) \{\s*pumpAudio\(\);\s*return;\s*\}/.test(region),
-    "other requests' queued audio keeps its turn after the cancel");
+  assert.ok(/if \(audioQueue\.length\) \{\s*pumpAudio\(\);\s*if \(audioBusy\) return;/.test(region),
+    "playable foreign audio keeps its turn; deferred announcements do not strand the call");
   /* VS3.6 (PRD03 FR-08): the stop purges SPEECH only — the pending
    * ledger of ambient announcements is a separate domain and must
    * survive every stop untouched (behavior proven in pending.test.js). */

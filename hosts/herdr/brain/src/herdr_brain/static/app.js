@@ -253,6 +253,7 @@
     }
     renderPill();
     renderInterimStrip();
+    if (state === "listening") Promise.resolve().then(pumpAudio);
   }
 
   /* Pill exists ONLY while calling with the drawer closed (state machine
@@ -2065,6 +2066,7 @@
       if (status.state === "complete" || status.state === "degraded" ||
           (status.state && status.state.indexOf("server-") === 0)) {
         speechCtl.release(status.id);
+        Promise.resolve().then(pumpAudio);
       }
       /* S14 (B7): "complete" means the FINAL segment was consumed and
        * its ack delivered — the only moment a segmented explanation has
@@ -2138,7 +2140,7 @@
       karaokeMedia = null;
     }
     pumpAudio();
-    if (!audioBusy && !audioQueue.length) {
+    if (!audioBusy) {
       stopBtn.classList.add("hidden");
       if (inCall && !speechCtl.activeId() && (callState === "speaking" || callState === "thinking" || callState === "paused")) {
         setCallState(micBaseState());
@@ -2319,6 +2321,13 @@
       });
       if (index === -1) return; // reserve the player while owned synthesis waits.
     }
+    var userBusy = dispatching || speechCtl.activeId() ||
+      (endpointer && endpointer.hasSpeech()) || (vad && vad.hasSpeech()) ||
+      (approvalFlow && approvalFlow.active());
+    if (audioQueue[index].announcement && !Announce.canPlayAnnouncement(inCall, callState, userBusy)) {
+      index = audioQueue.findIndex(function (queued) { return !queued.announcement; });
+      if (index === -1) return; // same queue, visual ledger retained; do not steal the turn.
+    }
     var item = audioQueue.splice(index, 1)[0];
     audioBusy = true;
     audioFinished = item;
@@ -2465,7 +2474,7 @@
     // the queue leaves the call stuck in "speaking" with a dead mic.
     // audioBusy guard: pumpAudio() above may have started the NEXT
     // item — only resume when nothing else owns the audio.
-    if (!audioBusy && !audioQueue.length && inCall && callState === "speaking") {
+    if (!audioBusy && inCall && callState === "speaking") {
       stopBargeInMonitor();  // playback is over: the mic recovery owns detection
       // No noteItemPlayed here (unlike onAudioEnded): audio that never
       // played never explains a gate — a confirm word after a playback
@@ -2502,7 +2511,7 @@
     // here — a momentarily empty queue is not final playback; the
     // segment job's completion status owns that seam below.
     approvalFlow.noteItemPlayed(finished);
-    if (!audioQueue.length && inCall && callState === "speaking") {
+    if (!audioQueue.some(function (queued) { return !queued.announcement; }) && inCall && callState === "speaking") {
       // The turn's audio is fully drained: the monitor's job is over,
       // and it must die BEFORE the mic re-arms (a live monitor hearing
       // the user's next words would cancel the NEXT turn's job).
@@ -2542,7 +2551,7 @@
     hideToast();
     if (audioQueue.length) {
       pumpAudio();
-      return;
+      if (audioBusy) return; // deferred announcements do not own the call state.
     }
     stopBtn.classList.add("hidden");
     if (inCall && callState === "speaking") {
@@ -3256,6 +3265,7 @@
   setInterval(function () {
     approvalFlow.tick();
     renderApprovalCard();
+    pumpAudio();  // retry deferred announcements only after the busy-state guard permits them.
     // Mic watchdog: Android can kill SpeechRecognition (audio focus,
     // silent SR crash) without a usable onend restart, leaving a live
     // call micless while the state expects listening. Re-arm when
@@ -4123,7 +4133,7 @@
   }
 
   function bargeInFrame() {
-    if (!inCall || callState !== "speaking" || !analyser || !bargeInVad) {
+    if (!inCall || !audioBusy || (callState !== "speaking" && callState !== "thinking") || !analyser || !bargeInVad) {
       stopBargeInMonitor();   // playback ended or changed hands: self-disarm
       return;
     }
@@ -4132,10 +4142,11 @@
       stopBargeInMonitor();
       return;
     }
-    if (bargeInVad.push(frameRms())) bargeIn();
+    var level = frameRms();
+    if (bargeInVad.push(level)) bargeIn(level);
   }
 
-  function bargeIn() {
+  function bargeIn(level) {
     stopBargeInMonitor();               // detection is one-shot
     player.pause();                     // synchronous: same tick as detection
     if (askAbort) askAbort.abort();     // kill the in-flight /ask fetch
@@ -4160,6 +4171,11 @@
     // talking — they drain on the next natural pump.
     setCallState(micBaseState());
     startListening();
+    if (vad && recorder && recorder.state === "recording") {
+      vad.push(level); // this detection already proves speech, even before the next capture frame.
+      utteranceStartedAt = Date.now();
+      setCallState("recording");
+    }
   }
 
   /* Engine dispatch: one name pair, both engines. */

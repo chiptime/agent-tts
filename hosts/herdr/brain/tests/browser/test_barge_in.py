@@ -341,28 +341,26 @@ def test_barge_in_aborts_inflight_ask_and_keeps_announcement_records(barge_app):
     def responder(body):
         if len(app.asks) == 0:
             return {"answer": "First answer.", "audio_url": "/audio/long.mp3"}, False
-        # The interrupting turn's /ask stays IN FLIGHT while the
-        # announcement plays over it.
+        # A follow-up /ask stays in flight while the preceding answer is
+        # still audible. Background announcements must NOT create playback.
         return {"answer": "held"}, True
 
     app.ask_responder = responder
     app.load()
     app.wait_playing()
-    app.wait_pause()  # first barge-in recovers the mic
+    app.page.locator("#text-input").evaluate("input => { input.value = 'Follow-up question'; }")
+    app.page.locator("#text-fallback").evaluate("form => form.requestSubmit()")
     app.page.wait_for_function("() => __barge.asks.length === 2")
 
-    # An ambient announcement plays while /ask #2 is in flight.
+    # S10: the announcement stays queued during the pending user turn.
     app.emit_announcement()
-    app.page.wait_for_function(
-        "() => __barge.events.some(e => e.type === 'playing' && "
-        "e.t > __barge.pauses[0])"
-    )
-    # Second barge-in: the announcement pauses and the in-flight /ask
-    # fetch is aborted through its real AbortController signal.
+    assert len([event for event in app.probe()["events"] if event["type"] == "playing"]) == 1
+    # User speech pauses the still-audible answer and aborts /ask #2
+    # through its actual AbortController signal.
     app.wait_pause()
     probe = app.probe()
     assert probe["asks"][-1]["aborted"] is True
-    assert len(app.cancels) == 2  # both barge-ins cancelled their jobs
+    assert len(app.cancels) == 1  # the active in-flight job is cancelled
     # The aborted turn degrades silently: no network-error banner.
     assert "Error de red" not in (app.page.locator("#banner").text_content() or "")
     # Ambient bookkeeping survives the interruption (records, not audio).
