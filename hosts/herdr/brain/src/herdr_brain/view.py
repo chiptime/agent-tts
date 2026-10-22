@@ -246,7 +246,8 @@ def ansi_runs(text: Optional[str]) -> list:
     return out
 
 
-_DIALOG_OPTION = re.compile(r"^(\d{1,2})[\.\)]\s+(.+)$")
+_DIALOG_OPTION = re.compile(r"^(?:[❯>»›]\s*)?(\d{1,2})[\.\)]\s+(.+)$")
+_DIALOG_SELECTION_MARKER = "❯>»›"
 _DIALOG_GUTTER = re.compile(r"^[\u2503\u2502\u2506\u2507\u250a\u250b|\u2551]\s*")
 _DIALOG_HINT = re.compile(r"(select|submit|dismiss|confirm)", re.IGNORECASE)
 _DIALOG_CURSOR = re.compile(r"^([❯>●*→›»►▸■✓✔]|\(\s*[•*xX✓✔]\s*\)|\[\s*[•*xX✓✔]\s*\])\s*")
@@ -330,32 +331,25 @@ def parse_dialog(text, screen_runs=None):
                     break
                 description.append(line)
 
-            selected = has_cursor or bool(
-                re.search(r"(\[✓\]|\[x\]|\(selected\)|\(active\)|✓)", title, re.IGNORECASE)
-            )
             options.append(
                 {
                     "n": number,
                     "title": title,
                     "description": " ".join(description),
-                    "selected": selected,
+                    "selected": has_cursor,
                 }
             )
 
-        # If no option was marked by cursor/title, inspect screen_runs if provided
-        if not any(opt.get("selected") for opt in options):
-            if screen_runs:
-                for pos, (index, _, _, _) in enumerate(option_at):
-                    if index < len(screen_runs):
-                        runs = screen_runs[index]
-                        if any(r.get("rev") or (r.get("bg") and not _is_default_bg(r.get("bg"))) for r in runs):
-                            options[pos]["selected"] = True
-                            break
-            # Fall back to option 0 if nothing indicated otherwise
-            if not any(opt.get("selected") for opt in options) and options:
-                options[0]["selected"] = True
-
-        return {"question": question, "options": options, "hint": hint, "layout": "list"}
+        marked = [opt["n"] for opt in options if opt["selected"]]
+        dialog = {
+            "question": question, "options": options, "hint": hint,
+            "layout": "list", "selected": marked[0] if len(marked) == 1 else None,
+        }
+        if not marked:
+            dialog["selected"] = selection_from_runs(screen_runs, dialog)
+        for option in options:
+            option["selected"] = option["n"] == dialog["selected"]
+        return dialog
 
     # Check for horizontal button-style permission prompts (e.g. OpenCode: Allow once   Allow always   Reject)
     button_idx = -1
@@ -393,23 +387,100 @@ def parse_dialog(text, screen_runs=None):
                 hint = lines[i]
                 break
 
-        selected_idx = 0
+        highlighted = set()
         if screen_runs and button_idx < len(screen_runs):
             btn_runs = screen_runs[button_idx]
             for i, btn in enumerate(buttons):
                 for r in btn_runs:
                     if btn.lower() in (r.get("t") or "").lower():
                         if r.get("rev") or (r.get("bg") and not _is_default_bg(r.get("bg"))):
-                            selected_idx = i
-                            break
+                            highlighted.add(i)
+
+        selected_idx = next(iter(highlighted)) if len(highlighted) == 1 else None
 
         options = [
             {"n": i + 1, "title": btn, "description": "", "selected": (i == selected_idx)}
             for i, btn in enumerate(buttons)
         ]
-        res = {"question": q, "options": options, "hint": hint, "layout": "buttons"}
+        res = {
+            "question": q, "options": options, "hint": hint, "layout": "buttons",
+            "selected": selected_idx + 1 if selected_idx is not None else None,
+        }
         if detail:
             res["detail"] = detail
         return res
 
+    return None
+
+
+def speakable_dialog(dialog, agent=None) -> str:
+    """Renders a parsed dialog as ONE concise spoken prompt (S8/FR-08).
+
+    FAITHFUL, never interpretive: the actual question and every option
+    label verbatim — nothing invented, no business choice omitted — so a
+    user who cannot see the screen still knows exactly what the choice
+    is. Option DESCRIPTIONS are deliberately not read out (concise by
+    design); the labels carry the semantics. Example:
+
+        "opencode pregunta: ¿Corremos los tests? Opción 1: Sí. Opción 2: No."
+    """
+    if not dialog or not dialog.get("options"):
+        return ""
+    who = f"{agent} pregunta:" if agent else "El agente pregunta:"
+    question = " ".join((dialog.get("question") or "").split())
+    parts = [f"{who} {question}".strip()]
+    for option in dialog["options"]:
+        number = option.get("n")
+        title = " ".join(str(option.get("title") or "").split())
+        parts.append(f"Opción {number}: {title}.")
+    return " ".join(part for part in parts if part)
+
+
+def dialog_fingerprint(dialog) -> str:
+    """Stable identity of a dialog's business content (S9 changed-guard).
+
+    The question, every numbered option label AND its description, in
+    order: descriptions carry meaning-bearing content (destinations,
+    scopes, environments), so a dialog whose description changed is a
+    DIFFERENT action and prior spoken authority must not survive the
+    change. Presentation-only drift — the ``selected`` highlight marker
+    or ANSI styling — never reaches the flattened parse text and so
+    cannot perturb the identity. Whitespace is normalized so terminal
+    wrapping noise alone does not invalidate an explanation.
+    """
+    if not dialog:
+        return ""
+    parts = [" ".join((dialog.get("question") or "").split())]
+    for option in dialog.get("options") or []:
+        label = " ".join(str(option.get("title") or "").split())
+        description = " ".join(str(option.get("description") or "").split())
+        parts.append(f"{option.get('n')}. {label}\x1e{description}")
+    return "\x1f".join(parts)
+
+
+def selection_from_runs(runs, dialog) -> Optional[int]:
+    """The dialog's selected option number derived from ANSI highlights.
+
+    The styled read preserves per-run ``bg`` and ``rev``; a question tool
+    marks a highlight with a non-default background or reverse video. Exactly one
+    option line carrying a highlight means a KNOWN selection; zero (no
+    styling) or several (ambiguous painting) mean unknown — the caller
+    must then refuse rather than guess. A textual ``❯`` marker already
+    recorded by ``parse_dialog`` always wins over styling.
+    """
+    if not runs or not dialog:
+        return dialog.get("selected") if dialog else None
+    if dialog.get("selected") is not None:
+        return dialog["selected"]
+    numbers = {option.get("n") for option in dialog.get("options") or []}
+    highlighted = set()
+    for line in runs:
+        if not any(run.get("rev") or not _is_default_bg(run.get("bg")) for run in line):
+            continue
+        flat = _clean_dialog_line("".join(run.get("t", "") for run in line))
+        match = _DIALOG_OPTION.match(flat)
+        if match and int(match.group(1)) in numbers:
+            highlighted.add(int(match.group(1)))
+    if len(highlighted) == 1:
+        return next(iter(highlighted))
     return None

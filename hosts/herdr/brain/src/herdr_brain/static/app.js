@@ -191,6 +191,86 @@
   }
   var selectedPane = localStorage.getItem(PANE_KEY);
 
+  /* ---------------- shared call context (FR-13) ----------------
+   * Phone and laptop are two interfaces to ONE call. On boot AND before
+   * the microphone arms (call start, resume) the client adopts the
+   * server's shared call identity and the latest selected pane; a failed
+   * fetch keeps the last-known local context so an offline PWA still
+   * works. An explicit selection is PUBLISHED so the other device picks
+   * it up — last writer wins on the server, exactly like the tmux focus.
+   *
+   * Stale-response guard (B3): the shared revision is monotonic, and
+   * this client only applies a snapshot whose revision is not older
+   * than the newest it already applied (its own publish returns the
+   * post-write snapshot). A delayed boot response can therefore never
+   * overwrite a newer explicit selection. */
+  var sharedRevision = -1;
+
+  function applySharedContext(data) {
+    if (!data || typeof data.call_id !== "string" || !data.call_id) return;
+    var stale = typeof data.revision === "number" && data.revision < sharedRevision;
+    sessionId = data.call_id;
+    try { localStorage.setItem(SESSION_KEY, sessionId); } catch (err) { /* private mode */ }
+    if (stale) return;  // older snapshot: the newer local/shared intent stays
+    if (typeof data.revision === "number") sharedRevision = data.revision;
+    if (typeof data.pane_id === "string" && data.pane_id) {
+      selectedPane = data.pane_id;
+      try { localStorage.setItem(PANE_KEY, selectedPane); } catch (err) { /* private mode */ }
+    }
+  }
+
+  function adoptCallContext() {
+    return fetch("/call/context")
+      .then(function (resp) { return resp.ok ? resp.json() : null; })
+      .then(applySharedContext)
+      .catch(function () { /* offline: the local identity stays */ });
+  }
+
+  /* Live re-sync used by the utterance-routing barrier. Deliberately
+   * NOT the bare no-options GET the boot uses, so it never queues
+   * behind a held/delayed bootstrap response. Unlike the boot (fail-
+   * soft offline fallback), the LIVE shared-session check FAILS: the
+   * caller must never dispatch a voice utterance against an unknown
+   * shared state (a stale pane target, an unseen pending gate). */
+  function syncSharedContext() {
+    return fetch("/call/context", { method: "GET", cache: "no-store" })
+      .then(function (resp) {
+        if (!resp.ok) throw new Error("context " + resp.status);
+        return resp.json();
+      })
+      .then(applySharedContext);
+  }
+
+  function publishPaneSelection(paneId) {
+    fetch("/call/context", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pane_id: paneId || null })
+    })
+      .then(function (resp) { return resp.ok ? resp.json() : null; })
+      .then(function (data) {
+        /* The POST response IS the current shared state: apply it so a
+         * concurrent newer write from another client wins honestly
+         * (actual server LWW), and our own success records its
+         * revision as the newest this client has applied. */
+        if (data) applySharedContext(data);
+      })
+      .catch(function () { /* best effort: the local selection still applies */ });
+  }
+
+  /* Mic-arm stays synchronous (gesture/permission timing). The S13
+   * freshness barrier rides UTTERANCE ROUTING instead: every completed
+   * voice utterance waits one local round-trip for the latest shared
+   * context and for a gate the OTHER client may have opened, so it
+   * routes on current truth. A hang-up during that round-trip drops
+   * the utterance instead of asking into a dead call. */
+  function liveContextBarrier() {
+    return syncSharedContext().then(function () {
+      if (approvalFlow.active()) return null;
+      return approvalFlow.recover(sessionId);
+    });
+  }
+
   /* Mid-call reload marker (FR15): boot shows "Llamada cortada" and NEVER
    * auto-resumes the mic; a tap starts a fresh call. */
   var CALL_INTENT_KEY = "herdr-brain-call-intent";
@@ -254,6 +334,7 @@
     }
     renderPill();
     renderInterimStrip();
+    if (state === "listening") Promise.resolve().then(pumpAudio);
   }
 
   /* Pill exists ONLY while calling with the drawer closed (state machine
@@ -1493,6 +1574,7 @@
     if (selectedPane === paneId) return;
     selectedPane = paneId;
     localStorage.setItem(PANE_KEY, paneId);
+    publishPaneSelection(paneId);
     /* Restyle chips NOW (no fetch): selection feedback must not wait for
      * the next 5s /herd poll. */
     safeRender("herd-restyle", renderHerd, lastHerd);
@@ -2198,6 +2280,14 @@
       if (status.state === "complete" || status.state === "degraded" ||
           (status.state && status.state.indexOf("server-") === 0)) {
         speechCtl.release(status.id);
+        Promise.resolve().then(pumpAudio);
+      }
+      /* S14 (B7): "complete" means the FINAL segment was consumed and
+       * its ack delivered — the only moment a segmented explanation has
+       * really been heard in full. A held or interrupted remainder never
+       * reaches this, so it never promotes spoken authority. */
+      if (status.state === "complete") {
+        approvalFlow.noteSegmentJobComplete(status.id);
       }
       if (status.state === "degraded") {
         showBanner("No pude seguir bajando la voz por segmentos; la reproducción quedó degradada.");
@@ -2264,7 +2354,7 @@
       karaokeMedia = null;
     }
     pumpAudio();
-    if (!audioBusy && !audioQueue.length) {
+    if (!audioBusy) {
       stopBtn.classList.add("hidden");
       if (inCall && !speechCtl.activeId() && (callState === "speaking" || callState === "thinking" || callState === "paused")) {
         setCallState(micBaseState());
@@ -2445,6 +2535,13 @@
       });
       if (index === -1) return; // reserve the player while owned synthesis waits.
     }
+    var userBusy = dispatching || speechCtl.activeId() ||
+      (endpointer && endpointer.hasSpeech()) || (vad && vad.hasSpeech()) ||
+      (approvalFlow && approvalFlow.active());
+    if (audioQueue[index].announcement && !Announce.canPlayAnnouncement(inCall, callState, userBusy)) {
+      index = audioQueue.findIndex(function (queued) { return !queued.announcement; });
+      if (index === -1) return; // same queue, visual ledger retained; do not steal the turn.
+    }
     var item = audioQueue.splice(index, 1)[0];
     audioBusy = true;
     audioFinished = item;
@@ -2517,6 +2614,9 @@
       // The confirming mic is live too: never hear our own audio.
       if (callState === "listening" || callState === "confirming") stopListening();
       setCallState("speaking");
+      // FR-04: echo-safe barge-in listening during playback (no-op
+      // without a real AEC report — the call stays half-duplex).
+      startBargeInMonitor();
     }
     replaceAudioSource(item);
     stopBtn.classList.remove("hidden");
@@ -2588,7 +2688,11 @@
     // the queue leaves the call stuck in "speaking" with a dead mic.
     // audioBusy guard: pumpAudio() above may have started the NEXT
     // item — only resume when nothing else owns the audio.
-    if (!audioBusy && !audioQueue.length && inCall && callState === "speaking") {
+    if (!audioBusy && inCall && callState === "speaking") {
+      stopBargeInMonitor();  // playback is over: the mic recovery owns detection
+      // No noteItemPlayed here (unlike onAudioEnded): audio that never
+      // played never explains a gate — a confirm word after a playback
+      // failure carries no receipt and the server clarifies.
       setCallState(micBaseState());
       startListening();
     }
@@ -2616,7 +2720,16 @@
     if (finished && typeof finished.seq === "number") segmentPlayer.onEnded(finished.seq);
     if (finished && finished.announcement) hideToast();
     if (!audioQueue.length) stopBtn.classList.add("hidden");
-    if (!audioQueue.length && inCall && callState === "speaking") {
+    // S14 (B7): a FULL-FILE item that genuinely reached 'ended' is the
+    // only full-file explanation/clarify proof. Segment items never mark
+    // here — a momentarily empty queue is not final playback; the
+    // segment job's completion status owns that seam below.
+    approvalFlow.noteItemPlayed(finished);
+    if (!audioQueue.some(function (queued) { return !queued.announcement; }) && inCall && callState === "speaking") {
+      // The turn's audio is fully drained: the monitor's job is over,
+      // and it must die BEFORE the mic re-arms (a live monitor hearing
+      // the user's next words would cancel the NEXT turn's job).
+      stopBargeInMonitor();
       setCallState(micBaseState());
       startListening();
     } else {
@@ -2626,6 +2739,7 @@
 
   function stopAudio() {
     cancelGlanceTap();
+    stopBargeInMonitor();  // a manual stop ends barge-in listening too
     if (karaokeCtl.state().plan) {
       karaokeCtl.stop(); // adapter disposes ONLY its item; foreign queue survives.
       return;
@@ -2651,7 +2765,7 @@
     hideToast();
     if (audioQueue.length) {
       pumpAudio();
-      return;
+      if (audioBusy) return; // deferred announcements do not own the call state.
     }
     stopBtn.classList.add("hidden");
     if (inCall && callState === "speaking") {
@@ -2748,6 +2862,8 @@
       "textMode:         " + textMode,
       "escuchando desde: " + (listeningStartedAt ? new Date(listeningStartedAt).toLocaleTimeString() : "—"),
       "ruido de sala:    " + (vad ? vad.floor().toFixed(4) : "—"),
+      "barge-in:         " + (bargeInTick ? (bargeInVad && bargeInVad.hasSpeech() ? "speech" : "armed") : "off") +
+        " (AEC " + (captureAecEnabled() ? "on" : "off") + ")",
       "errores recon.:   " + recFailures + " (último: " + lastRecError + ")",
       "preguntas /ask:   " + askCount,
       "último envío:     " + lastDispatch,
@@ -3242,14 +3358,33 @@
   /* ---------------- fetch with hard timeout ---------------- */
 
   function fetchWithTimeout(url, options, timeoutMs) {
+    options = options || {};
+    /* An external abort signal (barge-in killing the in-flight /ask,
+     * FR-05) rides along: its abort mirrors into OUR controller so the
+     * native fetch dies too — and is NOT relabeled as a timeout, so
+     * callers can tell a deliberate interruption from a slow brain. */
+    var external = options.signal || null;
     var controller = new AbortController();
-    var timer = setTimeout(function () { controller.abort(); }, timeoutMs || 30000);
-    return fetch(url, Object.assign({}, options || {}, { signal: controller.signal }))
+    var timedOut = false;
+    var onExternalAbort = function () { controller.abort(); };
+    if (external) {
+      if (external.aborted) controller.abort();
+      else external.addEventListener("abort", onExternalAbort);
+    }
+    var timer = setTimeout(function () {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs || 30000);
+    function cleanup() {
+      clearTimeout(timer);
+      if (external) external.removeEventListener("abort", onExternalAbort);
+    }
+    return fetch(url, Object.assign({}, options, { signal: controller.signal }))
       .then(
-        function (resp) { clearTimeout(timer); return resp; },
+        function (resp) { cleanup(); return resp; },
         function (err) {
-          clearTimeout(timer);
-          if (err && err.name === "AbortError") {
+          cleanup();
+          if (err && err.name === "AbortError" && timedOut) {
             err = new Error("timeout: el brain tardó demasiado en responder");
           }
           throw err;
@@ -3344,6 +3479,7 @@
   setInterval(function () {
     approvalFlow.tick();
     renderApprovalCard();
+    pumpAudio();  // retry deferred announcements only after the busy-state guard permits them.
     // Mic watchdog: Android can kill SpeechRecognition (audio focus,
     // silent SR crash) without a usable onend restart, leaving a live
     // call micless while the state expects listening. Re-arm when
@@ -3631,6 +3767,12 @@
     }
   }
 
+  /* Live AbortController of the in-flight /ask turn (FR-05): barge-in
+   * aborts the request instead of waiting out its 90 s budget. Cleared
+   * by the owning turn's finalizer; a newer turn's controller is never
+   * clobbered by an older turn's cleanup. */
+  var askAbort = null;
+
   function ask(text) {
     if (callState === "thinking") return Promise.resolve();
     cancelGlanceTap();
@@ -3645,13 +3787,23 @@
      * the server would arrive too late to cancel mid-render. null (no
      * crypto) keeps the legacy path untouched. */
     var speech = speechCtl.begin(sessionId) || {};
+    if (inCall && speech.speech_request_id) speech.conversation = true;
+    /* This turn's abort token: injected into the ONE /ask fetch through
+     * the Consult.requestAsk seam (it owns the wire shape; the injected
+     * fetch adds only the signal). */
+    var myAbort = new AbortController();
+    askAbort = myAbort;
+    var askFetch = function (url, options, timeoutMs) {
+      options = Object.assign({}, options || {}, { signal: myAbort.signal });
+      return fetchWithTimeout(url, options, timeoutMs);
+    };
     /* /ask spans the FULL consult turn (up to 60 s engine budget plus
      * model + TTS shaping) — the fixed 90 s policy AND the request
      * shape live in consult.js (Consult.requestAsk, tested in
      * tests/js/consult.test.js). The old inline 30 s aborted the fetch
      * while the server was still working, losing completed answers.
      * The speech identity rides along as an optional, additive field. */
-    return window.Consult.requestAsk(fetchWithTimeout, {
+    return window.Consult.requestAsk(askFetch, {
       text: text,
       sessionId: sessionId,
       paneId: selectedPane,
@@ -3678,13 +3830,16 @@
           // A chunk tap may have cancelled this identity while /ask was in
           // flight. Keep its answer, but never revive the retired audio job.
           if (!speech.speech_request_id || speechCtl.activeId() === speech.speech_request_id) {
-            if (data.speech && data.speech.status === "delivering" && !data.audio_url) {
+            if (data.speech && data.speech.status === "delivering") {
               /* Protocol-2 streaming turn: the answer arrives as segments
                * through /speech/{id}/next and enters the SAME sequential
                * queue (seq rides each item; onAudioEnded advances the ack).
                * The enqueue below still covers legacy turns AND v1-degraded
                * identified turns (full file with audio_url). */
-              segmentPlayer.start({ id: speech.speech_request_id, sessionId: sessionId });
+              segmentPlayer.start({ id: speech.speech_request_id, sessionId: sessionId,
+                first: data.audio_url && data.speech.first_seq === 0 ? {
+                  seq: 0, audio_url: data.audio_url, is_final: !!data.speech.first_is_final
+                } : null });
             } else if (data.audio_url) {
               enqueueAudio(data.audio_url, null, speech.speech_request_id);
             } else {
@@ -3696,7 +3851,10 @@
             // A gate opened (PRD §4): enter confirming with the countdown
             // while the spoken echo ("… ¿Se envía?") plays through the
             // normal queue; onAudioEnded re-arms the mic under confirming.
-            approvalFlow.open(data.approval);
+            // S14: the turn's speech id is the EXPLANATION identity — the
+            // flow presents it as the receipt only if this client drains
+            // the whole playback (noteExplanationPlayed at queue end).
+            approvalFlow.open(data.approval, speech.speech_request_id || null);
             // UX 2026-09-24: the gate surfaces as the floating popup
             // (visible with the drawer open OR closed — text mode
             // included); the drawer no longer auto-opens, and the pill
@@ -3708,6 +3866,12 @@
       .catch(function (err) {
         removeThinkingBubble();
         speechCtl.release(speech.speech_request_id);
+        if (err && err.name === "AbortError") {
+          /* A deliberate abort (barge-in killed this turn): silent by
+           * design — the barge-in recovery already owns the call state,
+           * and a stale fetch must never repaint it. */
+          return;
+        }
         if (err && /timeout/.test(String(err.message || err))) {
           showBanner("El brain tardó demasiado — vuelve a intentarlo.");
         } else {
@@ -3716,8 +3880,11 @@
       })
       .then(function () {
         removeThinkingBubble();
+        if (askAbort === myAbort) askAbort = null;
         interimTextEl.textContent = "";
         renderInterimStrip();
+        // A barge-in moved the call on (listening/recording): its own
+        // recovery owns the mic; this stale finalizer must not restart it.
         if (callState === "thinking") afterAnswer();
       });
   }
@@ -3740,10 +3907,30 @@
   }
 
   /* Utterance routing: a live gate OWNS the mic — confirming utterances
-   * go to /approval/{id}/resolve, never /ask (PRD §5). */
+   * go to /approval/{id}/resolve, never /ask (PRD §5). S13: the routing
+   * decision rides the live-context barrier FIRST, so the utterance is
+   * decided on the LATEST shared state — the pane another client
+   * selected, and a gate it opened after this page booted (recovered
+   * with NO playback receipt, S14) — instead of a voice confirm turning
+   * into an ordinary /ask that would supersede the shared gate. A
+   * client that already holds a live gate keeps it untouched, and a
+   * deliberate text-mode ask (no gate) keeps its legacy behavior.
+   * B1 fail-closed: when the live shared-context check itself FAILS,
+   * the utterance is dropped with an honest notice — never dispatched
+   * against a possibly-stale target. The mic resumes normally; the
+   * user simply speaks again. */
   function routeUtterance(text) {
-    if (approvalFlow.routeUtterance(text)) return Promise.resolve();
-    return ask(text);
+    return liveContextBarrier().then(
+      function () {
+        if (!inCall) return undefined;  // hung up during the barrier: drop it
+        if (approvalFlow.routeUtterance(text)) return undefined;
+        return ask(text);
+      },
+      function () {
+        showBanner("No pude confirmar el contexto de la llamada — vuelve a intentarlo.");
+        return undefined;
+      }
+    );
   }
 
   function dispatchUtterance() {
@@ -3957,6 +4144,7 @@
   }
 
   function teardownServerCall() {
+    stopBargeInMonitor();  // the analyser this monitor reads is going away
     releaseServerMic();
     if (audioContext) {
       try { audioContext.close(); } catch (err) { /* already closed */ }
@@ -4137,6 +4325,100 @@
     vad = null;
   }
 
+  /* ---------------- barge-in monitor (hands-free T-05, FR-04/05) -----
+   *
+   * While the SERVER engine plays an answer in-call, a lightweight VAD
+   * monitor keeps reading the SAME analyser the utterance loop uses —
+   * but ONLY when the real capture track reports echo cancellation:
+   * with AEC the browser strips the agent's own speaker output from
+   * the mic signal, so a gate opening is the USER's voice. Without an
+   * AEC report the call stays safe half-duplex (mic down during
+   * playback). The fake-device test flags prove the plumbing, never
+   * physical echo suppression.
+   *
+   * On speech onset the monitor fires bargeIn() ONCE: pause the player
+   * synchronously in the detection tick (within 100 ms of the detected
+   * frame), abort the in-flight /ask, cancel the server speech job and
+   * flush its queued audio — then recover the mic under micBaseState()
+   * so the interrupting utterance is captured (recording follows speech
+   * onset through the normal VAD loop). A barge-in NEVER touches the
+   * approval flow (S14): gates, cards and the confirming state survive
+   * it untouched. */
+
+  var BARGE_IN_TICK_MS = 50;   // detection cadence; the pause budget is 100 ms
+  var bargeInTick = null;
+  var bargeInVad = null;
+
+  function captureAecEnabled() {
+    if (!mediaStream) return false;
+    var tracks = mediaStream.getAudioTracks();
+    if (!tracks.length) return false;
+    try {
+      return tracks[0].getSettings().echoCancellation === true;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  function startBargeInMonitor() {
+    if (bargeInTick) return;   // single monitor across chained segments
+    if (!inCall || voiceEngine !== "servidor") return;
+    if (!analyser || !captureAecEnabled()) return;
+    bargeInVad = window.Vad.createVad();
+    bargeInTick = setInterval(bargeInFrame, BARGE_IN_TICK_MS);
+  }
+
+  function stopBargeInMonitor() {
+    if (bargeInTick) { clearInterval(bargeInTick); bargeInTick = null; }
+    bargeInVad = null;
+  }
+
+  function bargeInFrame() {
+    if (!inCall || !audioBusy || (callState !== "speaking" && callState !== "thinking") || !analyser || !bargeInVad) {
+      stopBargeInMonitor();   // playback ended or changed hands: self-disarm
+      return;
+    }
+    if (karaokeCtl.state().plan) {
+      // A manual karaoke replay owns the player; its own taps govern it.
+      stopBargeInMonitor();
+      return;
+    }
+    var level = frameRms();
+    if (bargeInVad.push(level)) bargeIn(level);
+  }
+
+  function bargeIn(level) {
+    stopBargeInMonitor();               // detection is one-shot
+    player.pause();                     // synchronous: same tick as detection
+    if (askAbort) askAbort.abort();     // kill the in-flight /ask fetch
+    segmentPlayer.stop("barge-in");     // no further /speech/next polls
+    var jobId = speechCtl.activeId();
+    if (jobId) {
+      speechCtl.cancel();               // POST /speech/{id}/cancel
+      Speech.purgeQueueById(audioQueue, jobId);
+    } else {
+      audioQueue.length = 0;            // unidentifiable output: clear all
+    }
+    audioBusy = false;
+    audioFinished = null;
+    player.muted = false;
+    player.removeAttribute("src");
+    player.load();
+    hideToast();
+    stopBtn.classList.add("hidden");
+    // Recover the mic under the gate-aware base state; the ongoing
+    // speech enters recording through the normal VAD loop. Ambient
+    // announcements stay queued (their records untouched): the user is
+    // talking — they drain on the next natural pump.
+    setCallState(micBaseState());
+    startListening();
+    if (vad && recorder && recorder.state === "recording") {
+      vad.push(level); // this detection already proves speech, even before the next capture frame.
+      utteranceStartedAt = Date.now();
+      setCallState("recording");
+    }
+  }
+
   /* Engine dispatch: one name pair, both engines. */
   function startListening() {
     // The "No te oigo" 5s hint must judge the CURRENT listening window:
@@ -4165,7 +4447,9 @@
     openEvents();  // user gesture: unlocks autoplay for announcements
     // T7: a gate recovered at boot still owns the mic — the call enters
     // confirming (pill "Confirmar ▲", utterances -> gate resolve), not
-    // plain listening.
+    // plain listening. The mic arms synchronously; S13 freshness for a
+    // gate opened LATER by the other client is guaranteed at utterance
+    // routing (routeUtterance runs the live-context barrier).
     setCallState(micBaseState());
     startListening();
     openDrawer();  // AC1: the drawer auto-opens on call start
@@ -4306,7 +4590,26 @@
   renderDiag();
   buildMeterCells();
   updateGhost();
-  refreshState();
+  /* FR-13: adopt the shared call identity FIRST, so the first /view,
+   * /conversation and the gate recovery below all run as the ONE call
+   * (the shared pane selection included). Offline, the local identity
+   * from SESSION_KEY keeps the boot identical to the baseline. */
+  adoptCallContext().then(function () {
+    refreshState();
+    /* T7 reload recovery (PRD §5): ask the server whether the session
+     * still has a live gate (mid-gate reload — or a handover from the
+     * other device). A live payload re-enters confirming — the floating
+     * popup restores with the remaining countdown, drawer or no drawer
+     * (UX 2026-09-24: no auto-open; the pill "Confirmar ▲" still
+     * reopens the drawer). Async and failure-silent: boot neither waits
+     * nor breaks, and the mic stays off until the user taps back in
+     * (FR15); the call then resumes under confirming via micBaseState()
+     * in startCall(). A recovered gate carries NO playback authority
+     * (S14): this client must hear the restate before «adelante» works. */
+    approvalFlow.recover(sessionId).then(function (payload) {
+      if (payload) renderApprovalCard();  // immediate popup paint (arm already re-rendered)
+    });
+  });
   setInterval(refreshState, 5000);
   // FR-01 (PRD announcements-without-call): announcements must arrive with
   // the page open, call or no call. The eventsOpened guard keeps it
@@ -4351,18 +4654,6 @@
       renderPill();
     }
   } catch (err) { /* private mode: normal idle boot */ }
-
-  /* T7 reload recovery (PRD §5): ask the server whether the session
-   * still has a live gate (mid-gate reload). A live payload re-enters
-   * confirming — the floating popup restores with the remaining
-   * countdown, drawer or no drawer (UX 2026-09-24: no auto-open; the
-   * pill "Confirmar ▲" still reopens the drawer). Async and
-   * failure-silent: boot neither waits nor breaks, and the mic stays
-   * off until the user taps back in (FR15); the call then resumes
-   * under confirming via micBaseState() in startCall(). */
-  approvalFlow.recover(sessionId).then(function (payload) {
-    if (payload) renderApprovalCard();  // immediate popup paint (arm already re-rendered)
-  });
 
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js").catch(function () { /* best effort */ });

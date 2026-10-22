@@ -12,6 +12,29 @@ function fakeClock(start = 0) {
   };
 }
 
+test("conversation defaults to 800ms and preserves configurable 700/900ms endpoints", () => {
+  for (const silenceMs of [undefined, 700, 900]) {
+    const clock = fakeClock();
+    const ep = createEndpointer({ now: clock.now, ...(silenceMs === undefined ? {} : { silenceMs }) });
+    ep.push("A conversational turn");
+    clock.advance((silenceMs ?? 800) - 1);
+    assert.equal(ep.shouldFinalize(), false);
+    clock.advance(1);
+    assert.equal(ep.shouldFinalize(), true);
+  }
+});
+
+test("configured endpointing cannot exceed the 60-second safety cap", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now, silenceMs: 120000, hardCapMs: 120000 });
+  ep.push("Continuous speech");
+  clock.advance(59999);
+  ep.push("Continuous speech still in progress");
+  assert.equal(ep.shouldFinalize(), false);
+  clock.advance(1);
+  assert.equal(ep.shouldFinalize(), true);
+});
+
 test("no speech: shouldFinalize stays false no matter the elapsed time", () => {
   const clock = fakeClock();
   const ep = createEndpointer({ now: clock.now });
@@ -89,7 +112,7 @@ test("whitespace-only interims never count as speech", () => {
 
 test("leading silence before speech does not trip the hard cap", () => {
   const clock = fakeClock();
-  const ep = createEndpointer({ now: clock.now, hardCapMs: 15000 });
+  const ep = createEndpointer({ now: clock.now, hardCapMs: 15000, silenceMs: 1200 });
   clock.advance(60_000);  // user says nothing for a minute
   ep.push("ahora hablo");
   clock.advance(1000);

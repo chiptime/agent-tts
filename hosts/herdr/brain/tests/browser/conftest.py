@@ -1,9 +1,12 @@
 """Isolated browser scope; never import the service or the parent conftest."""
 
 import json
+import math
 from pathlib import Path
+import struct
 import sys
 import tempfile
+import wave
 from contextlib import ExitStack
 from dataclasses import dataclass
 from urllib.parse import parse_qs, urlsplit
@@ -12,7 +15,7 @@ import pytest
 from playwright.sync_api import BrowserContext, Page, Request, Route
 
 
-RUNTIME = Path(__file__).resolve().parent / ".runtime"
+RUNTIME = Path(tempfile.gettempdir()) / "herdr-brain-browser"
 STATIC = Path(__file__).resolve().parents[2] / "src/herdr_brain/static"
 ORIGIN = "http://127.0.0.1:41731"
 
@@ -284,6 +287,15 @@ class KaraokeHarness:
                                        "turns": external or [], "window": 20}, query=("pane_id",))
         self.respond("/approval/current", {"approval": None}, query=("session_id",))
         self.respond("/reset", {"ok": True}, method="POST")
+        # FR-13 shared call context: default payload keeps every legacy
+        # test on its locally-minted session (call_id null = no
+        # adoption); the desktop/handover tests override these routes
+        # with their shared service state.
+        self.respond("/call/context", {"call_id": None, "pane_id": None, "revision": 0})
+        self.respond(
+            "/call/context", {"call_id": None, "pane_id": None, "revision": 0},
+            method="POST",
+        )
         context.route("**/*", self._route)
         context.route_web_socket("**/*", self._block_socket)
         context.add_init_script(INIT_SCRIPT)
@@ -375,7 +387,7 @@ class KaraokeHarness:
 
 
 def pytest_configure(config):
-    RUNTIME.mkdir(exist_ok=True)
+    RUNTIME.mkdir(parents=True, exist_ok=True)
     config._karaoke_output = Path(tempfile.mkdtemp(prefix="run-", dir=RUNTIME))
     config.option.output = str(config._karaoke_output)
 
@@ -432,3 +444,37 @@ def karaoke_app(browser, pytestconfig):
 @pytest.fixture
 def karaoke_harness(karaoke_app):
     return karaoke_app().load()
+
+
+@pytest.fixture
+def audio_capture_context(browser_type, tmp_path):
+    """Real fake-device capture, separate from the legacy mocked-media fixture.
+
+    Generate the canonical speech.wav outside the checkout. The periodic signal
+    is deterministic VAD input, not a claim that a speech recognizer heard words.
+    MP3 decoding and media events remain native. No physical devices are used.
+    """
+    assert browser_type.name == "chromium", "Fake capture requires Chromium"
+    capture = tmp_path / "speech.wav"
+    rate = 48000
+    frames = bytearray()
+    for index in range(rate * 4):
+        # Silence windows make both speech onset and endpointing observable.
+        voiced = 0.3 <= index / rate % 2 < 1.1
+        value = int(12000 * math.sin(2 * math.pi * 440 * index / rate)) if voiced else 0
+        frames.extend(struct.pack("<h", value))
+    with wave.open(str(capture), "wb") as wav:
+        wav.setparams((1, 2, rate, 0, "NONE", "not compressed"))
+        wav.writeframes(frames)
+    with browser_type.launch(args=[
+        "--use-fake-ui-for-media-stream",
+        "--use-fake-device-for-media-stream",
+        "--use-file-for-fake-audio-capture=" + str(capture),
+    ]) as browser:
+        context = browser.new_context(
+            permissions=["microphone"], service_workers="block", accept_downloads=False,
+        )
+        try:
+            yield context
+        finally:
+            context.close()

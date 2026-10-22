@@ -8,7 +8,16 @@
 
 const test = require("node:test");
 const assert = require("node:assert");
-const { createAnnouncer } = require("../../src/herdr_brain/static/announce.js");
+const { createAnnouncer, canPlayAnnouncement } = require("../../src/herdr_brain/static/announce.js");
+
+test("in-call announcements yield to every active conversation state", () => {
+  for (const state of ["recording", "transcribing", "thinking", "speaking", "confirming", "paused"]) {
+    assert.equal(canPlayAnnouncement(true, state, false), false, state);
+  }
+  assert.equal(canPlayAnnouncement(true, "listening", true), false, "buffered speech or pending segments");
+  assert.equal(canPlayAnnouncement(true, "listening", false), true, "conversational idle");
+  assert.equal(canPlayAnnouncement(false, "idle", false), true, "out-of-call policy is unchanged");
+});
 
 /* Recording harness mirroring how app.js wires the deps: showToast
  * keeps the historical (text, durationMs, kind, html) signature. */

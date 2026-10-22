@@ -244,6 +244,14 @@
       stopReason = null;
       inFlight = false;
       flushPollPending = false;
+      // Conversation responses already carry segment zero. Feed it through
+      // the normal queue once, then fetch only the remainder; ack still waits
+      // for the actual media-ended event, never for receipt of the response.
+      if (jobInfo.first && jobInfo.first.seq === 0 && jobInfo.first.audio_url) {
+        after = 0;
+        if (jobInfo.first.is_final) finalSeq = 0;
+        deps.enqueue({ speechRequestId: id, seq: 0, url: jobInfo.first.audio_url, announcement: null });
+      }
       maybePoll();
     }
 

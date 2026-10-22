@@ -539,7 +539,14 @@ class TestRejectEndpoint:
 
 
 class TestResolveEndpoint:
-    """/approval/{id}/resolve: voice lexicon + reprompt budget."""
+    """/approval/{id}/resolve: voice lexicon + reprompt budget + S14 binding."""
+
+    @staticmethod
+    def _complete_job(app, job_id, token="tok-1", session_id="s1"):
+        jobs = app.state.speech_jobs
+        jobs.register(job_id, token, session_id)
+        jobs.mark(job_id, "complete")
+        return job_id
 
     def test_approve_utterance_replays_and_reports(self, settings, audio_dir, monkeypatch):
         tools_cls = make_replay_tools()
@@ -551,8 +558,11 @@ class TestResolveEndpoint:
         gate = app.state.approval_store.propose(
             "s1", text="arregla el login", timeout_ms=120000, pane_id="w1:p9", agent="opencode"
         )
+        self._complete_job(app, "sp-approve-0001")
+        app.state.approval_store.bind_explanation(gate.gate_id, "sp-approve-0001")
         resp = TestClient(app).post(
-            f"/approval/{gate.gate_id}/resolve", json={"utterance": "sí, envíalo"}
+            f"/approval/{gate.gate_id}/resolve",
+            json={"utterance": "sí, envíalo", "speech_request_id": "sp-approve-0001"},
         )
         assert resp.status_code == 200
         body = resp.json()
@@ -563,6 +573,273 @@ class TestResolveEndpoint:
         sent = tools_cls.created[0].dispatches[0]
         assert sent["arguments"] == {"text": "arregla el login", "timeout_ms": 120000}
         assert app.state.approval_store.get(gate.gate_id).state == "approved"
+
+    def test_ask_binds_the_gate_explanation_to_its_speech_job(
+        self, settings, audio_dir, monkeypatch
+    ):
+        """The /ask turn that opens a gate records WHICH speech job carried
+        the explanation, so a later «adelante» can prove what was heard."""
+        tools_cls = make_replay_tools()
+
+        class GateOpeningLLM(FakeLLM):
+            def ask(self, text, session_id=None, pane_id=None):
+                self.calls.append(text)
+                gate = self.attached_approval_store.propose(
+                    session_id or "s1",
+                    text="arregla el login", pane_id="w1:p9", agent="opencode",
+                )
+                return {
+                    "answer": "Voy a enviar: arregla el login",
+                    "pane_id": "w1:p9", "agent": "opencode",
+                    "session_id": session_id or "s1", "approval": gate,
+                }
+
+        app = approval_app(
+            settings, audio_dir, monkeypatch, llm=GateOpeningLLM(), tools_cls=tools_cls
+        )
+        client = TestClient(app)
+        resp = client.post(
+            "/ask",
+            json={
+                "text": "dile que arregle el login", "session_id": "s1",
+                "speech_request_id": "sp-bind-00001", "speech_cancel_token": "tok-1",
+            },
+        )
+        assert resp.status_code == 200
+        gate = app.state.approval_store.current("s1")
+        assert gate is not None and gate.explained_speech_id == "sp-bind-00001"
+        # The turn's audio rendered: the job is complete server-side.
+        assert app.state.speech_jobs.get("sp-bind-00001").phase == "complete"
+        # The bound receipt is exactly what a spoken «adelante» presents.
+        resolve = client.post(
+            f"/approval/{gate.gate_id}/resolve",
+            json={"utterance": "adelante", "speech_request_id": "sp-bind-00001"},
+        )
+        assert resolve.status_code == 200
+        assert resolve.json()["decision"] == "approve"
+        assert tools_cls.created[0].dispatches
+
+    def test_ask_without_a_speech_identity_leaves_the_gate_unbound(
+        self, settings, audio_dir, monkeypatch
+    ):
+        class GateOpeningLLM(FakeLLM):
+            def ask(self, text, session_id=None, pane_id=None):
+                self.calls.append(text)
+                gate = self.attached_approval_store.propose(
+                    session_id or "s1", text="x", pane_id="w1:p9", agent="opencode"
+                )
+                return {
+                    "answer": "eco", "pane_id": "w1:p9", "agent": "opencode",
+                    "session_id": session_id or "s1", "approval": gate,
+                }
+
+        app = approval_app(settings, audio_dir, monkeypatch, llm=GateOpeningLLM())
+        resp = TestClient(app).post("/ask", json={"text": "algo", "session_id": "s1"})
+        assert resp.status_code == 200
+        gate = app.state.approval_store.current("s1")
+        assert gate.explained_speech_id is None
+
+    def test_adelante_with_a_stale_receipt_clarifies_and_never_executes(
+        self, settings, audio_dir, monkeypatch
+    ):
+        """S14: «Adelante» authorizes only the action whose explanation the
+        request can prove. A receipt from ANOTHER speech turn clarifies and
+        executes nothing; only the confirm presented AFTER the clarify
+        restate was actually played executes — no global bypass."""
+        tools_cls = make_replay_tools()
+        tts = FakeTTS()
+        app = approval_app(
+            settings, audio_dir, monkeypatch,
+            llm=FakeLLM(result={
+                "answer": "Enviado.", "pane_id": "w1:p9",
+                "agent": "opencode", "session_id": "s1",
+            }),
+            tools_cls=tools_cls, tts=tts,
+        )
+        gate = app.state.approval_store.propose(
+            "s1", text="arregla el login", timeout_ms=120000, pane_id="w1:p9", agent="opencode"
+        )
+        self._complete_job(app, "sp-real-00001")
+        app.state.approval_store.bind_explanation(gate.gate_id, "sp-real-00001")
+        client = TestClient(app)
+
+        stale = client.post(
+            f"/approval/{gate.gate_id}/resolve",
+            json={"utterance": "sí, envíalo", "speech_request_id": "sp-other-99999"},
+        )
+        body = stale.json()
+        assert stale.status_code == 200
+        assert body["decision"] == "clarify"
+        assert body["approval"] is None
+        # The clarify line RESTATES the current frozen action…
+        assert "arregla el login" in body["answer"]
+        assert body["audio_url"].startswith("/audio/")
+        assert tts.calls[-1]["text"] == body["answer"]
+        # …the restate really rendered, so it carries its OWN speech
+        # identity bound to this revision — not a bypass.
+        explain_id = body["explain_speech_id"]
+        assert explain_id and explain_id != "sp-other-99999"
+        stored = app.state.approval_store.get(gate.gate_id)
+        assert stored.state == "proposed"
+        assert stored.explained_speech_id == explain_id
+        assert stored.explained_revision == stored.revision
+        # …and nothing executed yet.
+        assert tools_cls.created[0].dispatches == []
+
+        # A confirm that does NOT present the restate's identity is inert —
+        # and that second clarify binds its OWN fresh identity.
+        again = client.post(
+            f"/approval/{gate.gate_id}/resolve", json={"utterance": "sí"}
+        )
+        assert again.json()["decision"] == "clarify"
+        assert tools_cls.created[0].dispatches == []
+        explain_id = again.json()["explain_speech_id"]
+        assert explain_id and explain_id != "sp-other-99999"
+
+        # The confirm presenting the LATEST restate's identity executes.
+        confirm = client.post(
+            f"/approval/{gate.gate_id}/resolve",
+            json={"utterance": "sí", "speech_request_id": explain_id},
+        )
+        assert confirm.json()["decision"] == "approve"
+        sent = tools_cls.created[0].dispatches[0]
+        assert sent["arguments"] == {"text": "arregla el login", "timeout_ms": 120000}
+
+    def test_silent_clarify_grants_no_authority_at_all(
+        self, settings, audio_dir, monkeypatch
+    ):
+        """B6: when the clarify restate FAILS to render (TTS down), no
+        identity is bound — repeated confirm words keep clarifying and
+        nothing ever executes."""
+        tools_cls = make_replay_tools()
+        app = approval_app(
+            settings, audio_dir, monkeypatch, tools_cls=tools_cls, tts=FakeTTS(fail=True)
+        )
+        gate = app.state.approval_store.propose(
+            "s1", text="run tests", timeout_ms=60000, pane_id="w1:p9", agent="opencode"
+        )
+        client = TestClient(app)
+        for _ in range(3):
+            resp = client.post(
+                f"/approval/{gate.gate_id}/resolve", json={"utterance": "adelante"}
+            )
+            assert resp.json()["decision"] == "clarify"
+            assert resp.json()["audio_url"] is None
+            assert resp.json()["explain_speech_id"] is None
+        stored = app.state.approval_store.get(gate.gate_id)
+        assert stored.state == "proposed" and stored.explained_speech_id is None
+        assert tools_cls.created[0].dispatches == []
+
+    def test_legacy_voice_approve_without_any_receipt_clarifies(
+        self, settings, audio_dir, monkeypatch
+    ):
+        """Intentional S14 tightening: a bare spoken approve with no
+        explanation receipt no longer executes — Panel restates the action
+        and waits for the explicit confirmation (documented contract change;
+        manual approve/reject/PATCH are untouched)."""
+        tools_cls = make_replay_tools()
+        app = approval_app(
+            settings, audio_dir, monkeypatch, tools_cls=tools_cls, tts=FakeTTS()
+        )
+        gate = app.state.approval_store.propose(
+            "s1", text="arregla el login", timeout_ms=120000, pane_id="w1:p9", agent="opencode"
+        )
+        resp = TestClient(app).post(
+            f"/approval/{gate.gate_id}/resolve", json={"utterance": "sí, envíalo"}
+        )
+        body = resp.json()
+        assert body["decision"] == "clarify"
+        assert tools_cls.created[0].dispatches == []
+        assert app.state.approval_store.get(gate.gate_id).state == "proposed"
+
+    def test_adelante_while_the_explanation_job_is_incomplete_clarifies(
+        self, settings, audio_dir, monkeypatch
+    ):
+        """A first sentence alone is not proof the whole action was
+        explained: the receipt's speech job must be COMPLETE."""
+        tools_cls = make_replay_tools()
+        app = approval_app(
+            settings, audio_dir, monkeypatch, tools_cls=tools_cls, tts=FakeTTS()
+        )
+        gate = app.state.approval_store.propose(
+            "s1", text="arregla el login", timeout_ms=120000, pane_id="w1:p9", agent="opencode"
+        )
+        app.state.speech_jobs.register("sp-partial-0001", "tok-1", "s1")  # never completes
+        app.state.approval_store.bind_explanation(gate.gate_id, "sp-partial-0001")
+        resp = TestClient(app).post(
+            f"/approval/{gate.gate_id}/resolve",
+            json={"utterance": "adelante", "speech_request_id": "sp-partial-0001"},
+        )
+        assert resp.json()["decision"] == "clarify"
+        assert tools_cls.created[0].dispatches == []
+
+    def test_revised_gate_rejects_authority_spoken_for_the_old_text(
+        self, settings, audio_dir, monkeypatch
+    ):
+        tools_cls = make_replay_tools()
+        app = approval_app(
+            settings, audio_dir, monkeypatch, tools_cls=tools_cls, tts=FakeTTS()
+        )
+        gate = app.state.approval_store.propose(
+            "s1", text="texto original", timeout_ms=120000, pane_id="w1:p9", agent="opencode"
+        )
+        self._complete_job(app, "sp-old-000001")
+        app.state.approval_store.bind_explanation(gate.gate_id, "sp-old-000001")
+        client = TestClient(app)
+        client.patch(f"/approval/{gate.gate_id}", json={"text": "texto revisado"})
+
+        resp = client.post(
+            f"/approval/{gate.gate_id}/resolve",
+            json={"utterance": "adelante", "speech_request_id": "sp-old-000001"},
+        )
+        body = resp.json()
+        assert body["decision"] == "clarify"
+        # The restate names the REVISED action, not the one that was explained.
+        assert "texto revisado" in body["answer"]
+        assert tools_cls.created[0].dispatches == []
+        # The revised action was never SPOKEN: authority requires hearing
+        # the restate and presenting its identity.
+        explain_id = body["explain_speech_id"]
+        assert explain_id and explain_id != "sp-old-000001"
+
+        bare = client.post(
+            f"/approval/{gate.gate_id}/resolve", json={"utterance": "sí"}
+        )
+        assert bare.json()["decision"] == "clarify"
+        assert tools_cls.created[0].dispatches == []
+        # The second restate binds its own identity; presenting THAT one…
+        explain_id = bare.json()["explain_speech_id"]
+        assert explain_id and explain_id != "sp-old-000001"
+
+        confirm = client.post(
+            f"/approval/{gate.gate_id}/resolve",
+            json={"utterance": "sí", "speech_request_id": explain_id},
+        )
+        assert confirm.json()["decision"] == "approve"
+        sent = tools_cls.created[0].dispatches[0]
+        assert sent["arguments"]["text"] == "texto revisado"
+
+    def test_clarify_does_not_consume_the_ambiguity_budget(
+        self, settings, audio_dir, monkeypatch
+    ):
+        """A receipt failure is not ambiguity: the unknown-utterance budget
+        still reprompts once before the safe auto-reject."""
+        app = approval_app(settings, audio_dir, monkeypatch, tts=FakeTTS())
+        gate = app.state.approval_store.propose(
+            "s1", text="algo", timeout_ms=60000, pane_id="w1:p9", agent="opencode"
+        )
+        client = TestClient(app)
+        first = client.post(
+            f"/approval/{gate.gate_id}/resolve", json={"utterance": "adelante"}
+        )
+        assert first.json()["decision"] == "clarify"
+        assert app.state.approval_store.get(gate.gate_id).reprompt_count == 0
+        second = client.post(
+            f"/approval/{gate.gate_id}/resolve", json={"utterance": "hola qué tal"}
+        )
+        assert second.json()["decision"] == "reprompt"
+        assert app.state.approval_store.get(gate.gate_id).reprompt_count == 1
+        assert app.state.approval_store.get(gate.gate_id).state == "proposed"
 
     def test_reject_utterance_is_silent(self, settings, audio_dir, monkeypatch):
         tts = FakeTTS()

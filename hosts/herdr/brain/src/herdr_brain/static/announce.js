@@ -174,7 +174,11 @@
     };
   }
 
-  var api = { createAnnouncer: createAnnouncer };
+  function canPlayAnnouncement(inCall, state, userBusy) {
+    return !inCall || (state === "listening" && !userBusy);
+  }
+
+  var api = { createAnnouncer: createAnnouncer, canPlayAnnouncement: canPlayAnnouncement };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
