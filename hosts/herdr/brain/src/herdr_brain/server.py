@@ -26,10 +26,10 @@ import time
 import uuid
 from functools import lru_cache
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Literal, Optional
 from urllib.parse import parse_qs
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Path as PathParam, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Path as PathParam, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
@@ -68,6 +68,7 @@ from .speech import (
     RegistryFull,
     SegmentedSpeechProducer,
     SentenceSpeechProducer,
+
     SpeechJob,
     SpeechRegistry,
     build_registry,
@@ -79,6 +80,12 @@ from .speech import (
 # Module handle onto speech: the VS2.5 transport constants below are
 # read at USE time so monkeypatching them in speech affects this server.
 from . import speech as _speech
+from .permissions import (
+    OpenCodeError,
+    OpenCodeNotFound,
+    OpenCodePermissions,
+    REPLIES as PERMISSION_REPLIES,
+)
 from .stt import STATE_READY, STATE_UNAVAILABLE, UNAVAILABLE_HINT, Transcriber
 from .stt_engine import EngineTranscriber
 from .tools import BrainTools
@@ -127,6 +134,55 @@ def _clip_for_speech(text: str) -> str:
     if len(text) <= CLARIFY_TEXT_CLIP_CHARS:
         return text
     return text[: CLARIFY_TEXT_CLIP_CHARS - 1] + "…"
+
+
+# ntfy action buttons (F5 / HT-04) can only fire a plain HTTP request with a
+# free-form body, so the action route accepts the decision in any of the
+# shapes a phone can send. Only these two words are ever accepted.
+_ACTION_DECISIONS = {"approve": DECISION_APPROVE, "reject": DECISION_REJECT}
+
+
+def _decision_word(value: object) -> Optional[str]:
+    if isinstance(value, str) and value.strip().lower() in _ACTION_DECISIONS:
+        return value.strip().lower()
+    return None
+
+
+def parse_action_decision(raw: bytes, query_decision: Optional[str] = None) -> Optional[str]:
+    """Extracts approve/reject from an ntfy action request, or ``None``.
+
+    Accepted: ``?decision=``, a bare word body (``approve``), a JSON object
+    (``{"decision": "approve"}``) or a JSON string, and a form body
+    (``decision=approve``) regardless of the Content-Type the phone sent.
+    """
+    if query_decision is not None:
+        return _decision_word(query_decision)
+    text = raw.decode("utf-8", errors="replace").strip()
+    if not text:
+        return None
+    word = _decision_word(text)
+    if word is not None:
+        return word
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        return _decision_word(payload.get("decision"))
+    if isinstance(payload, str):
+        return _decision_word(payload)
+    values = parse_qs(text).get("decision")
+    return _decision_word(values[0]) if values else None
+
+
+def bearer_or_query_token(request: Request) -> str:
+    """The credential a request presents: ``Authorization: Bearer`` first,
+    ``?token=`` as the fallback ntfy ``view``-less clients can use. Returns
+    "" when none is presented."""
+    scheme, _, value = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() == "bearer":
+        return value.strip()
+    return request.query_params.get("token", "")
 
 
 # ntfy action buttons (F5 / HT-04) can only fire a plain HTTP request with a
@@ -256,6 +312,7 @@ _VERSIONED_REFS = (
     # stale cached copy is not fatal — but the grouping must not silently
     # disappear behind a cached index.
     ('src="/herd-group.js"', 'src="/herd-group.js?v={v}"'),
+
     ('href="/manifest.webmanifest"', 'href="/manifest.webmanifest?v={v}"'),
     ('href="/icon.svg"', 'href="/icon.svg?v={v}"'),
 )
@@ -378,6 +435,31 @@ class PaneKeysRequest(BaseModel):
             )
         return value
 
+
+class PermissionReplyRequest(BaseModel):
+    """Answer to one opencode approval dialog, for one exact pane.
+
+    ``reply`` is the exact contract value; an invented word is a 422 at the
+    edge and never reaches opencode as a guess. ``pane_id`` is required
+    because opencode's reply route is session-scoped: the answer must name
+    the session it belongs to, and the pane is how the brain knows it.
+    """
+
+    pane_id: str = Field(min_length=1, max_length=MAX_SESSION_ID_CHARS)
+    request_id: str = Field(min_length=1, max_length=MAX_SESSION_ID_CHARS)
+    reply: Literal["once", "always", "reject"]
+
+
+def _opencode_http_error(exc: OpenCodeError) -> HTTPException:
+    """Maps an opencode permission failure onto the phone's HTTP surface.
+
+    A request that is already gone is a 404 (the tap came too late); every
+    other failure — transport, status, payload shape — is a 502, so the PWA
+    never reports success it did not get.
+    """
+    if isinstance(exc, OpenCodeNotFound):
+        return HTTPException(status_code=404, detail=str(exc))
+    return HTTPException(status_code=502, detail=str(exc))
 
 def default_llm_factory(settings: Settings, tools: BrainTools) -> BrainLLM:
     return BrainLLM(settings, tools)
@@ -523,6 +605,7 @@ def create_app(
     transcriber: Optional[Transcriber] = None,
     daemon_probe: Optional[Callable[[], str]] = None,
     speech_registry: Optional[SpeechRegistry] = None,
+    permissions: Optional[OpenCodePermissions] = None,
 ) -> FastAPI:
     """Builds the FastAPI app with injectable backends for tests.
 
@@ -583,6 +666,14 @@ def create_app(
     # injectable like every other seam — tests drive small bounds and
     # fake clocks through the same object the handlers use.
     speech_jobs = speech_registry if speech_registry is not None else build_registry()
+
+    # Approval dialogs (opencode): the agent cannot be reached with a prompt
+    # while it waits at one, so the PWA answers through opencode's own
+    # permission API. Injectable like every other seam; the client is inert
+    # until called, so boot works with no opencode server running.
+    permissions_client = (
+        permissions if permissions is not None else OpenCodePermissions(cfg.opencode_url)
+    )
 
     if watcher is None:
         watcher = AgentWatcher(cfg, tts_renderer=synth)
@@ -1536,6 +1627,65 @@ def create_app(
             status_code=status,
             detail=result.get("detail") or "No se pudieron enviar las teclas.",
         )
+
+    @app.get("/pane/permission")
+    def pane_permission(
+        pane_id: str = Query(..., max_length=MAX_SESSION_ID_CHARS),
+    ) -> dict:
+        """The opencode approval dialog the viewed pane is waiting at.
+
+        Read-only and PWA-only. An unknown pane is a 404 and never falls back
+        to the focused one: the answer would land on the wrong agent. An
+        unreachable opencode server is a 502, never a silent "nothing
+        pending" — that would read as "there is nothing to answer".
+        """
+        info = tools.pane_info(pane_id)
+        if info is None:
+            raise HTTPException(status_code=404, detail="pane no encontrado")
+        session_id = info.get("session_id")
+        if not session_id:
+            return {"pending": None}
+        try:
+            pending = permissions_client.list_pending(session_id=session_id)
+        except OpenCodeError as exc:
+            raise _opencode_http_error(exc) from exc
+        if not pending:
+            return {"pending": None}
+        first = pending[0]
+        return {
+            "pending": {
+                "request_id": first.request_id,
+                "permission": first.permission,
+                "patterns": list(first.patterns),
+            }
+        }
+
+    @app.post("/pane/permission/reply")
+    def pane_permission_reply(body: PermissionReplyRequest) -> dict:
+        """Answers one opencode approval dialog, for one exact pane.
+
+        PWA-only by construction — the same capability as an LLM tool would
+        let an agent approve its own permission request. The pane is resolved
+        exactly (never the focused fallback) and its session becomes part of
+        the opencode URL, so opencode itself refuses a request that does not
+        belong to that session. ``reply`` is validated at the edge (422), a
+        request that is already gone is a 404 and an unreachable opencode
+        server is a 502.
+        """
+        info = tools.pane_info(body.pane_id)
+        if info is None:
+            raise HTTPException(status_code=404, detail="pane no encontrado")
+        session_id = info.get("session_id")
+        if not session_id:
+            raise HTTPException(
+                status_code=409,
+                detail="Ese pane no tiene una sesión de opencode que pueda responder.",
+            )
+        try:
+            permissions_client.reply(body.request_id, body.reply, session_id)
+        except OpenCodeError as exc:
+            raise _opencode_http_error(exc) from exc
+        return {"ok": True}
 
     @app.post("/approval/{gate_id}/approve")
     def approval_approve(gate_id: str) -> dict:

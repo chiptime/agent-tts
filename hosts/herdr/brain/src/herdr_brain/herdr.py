@@ -54,6 +54,24 @@ SEND_KEY_ALLOWLIST = ("up", "down", "left", "right", "enter", "esc", "tab")
 #: caller bug, not a keystroke.
 MAX_SEND_KEYS = 8
 
+# The key dialect a dialog may be driven with. Probed live against herdr
+# 0.9.1: these names are accepted, while `arrowleft`, `leftarrow` and
+# `ArrowLeft` come back as `invalid_key` with nothing written. The set is
+# closed on purpose — a name that is not here never reaches a live terminal,
+# and `sendKeys` argv is one door into a running TUI.
+DIALOG_KEYS = frozenset({"enter", "esc", "left", "right", "up", "down"})
+
+
+def is_valid_key(key: str) -> bool:
+    """Whether herdr's grammar accepts `key` (the verified subset)."""
+    if key in DIALOG_KEYS:
+        return True
+    # `ctrl+c` is the spelling herdr's own documentation uses: a modifier and
+    # exactly one lower-case letter.
+    if key.startswith("ctrl+") and len(key) == 6:
+        return key[5].isalpha() and key[5].islower()
+    return False
+
 
 class HerdrError(RuntimeError):
     """Raised when a herdr CLI invocation fails."""
@@ -195,6 +213,7 @@ class HerdrClient:
         n_lines: Optional[int] = None,
         source: str = "visible",
         as_ansi: bool = False,
+
     ) -> str:
         """Reads terminal output of a pane (read-only).
 
@@ -207,6 +226,7 @@ class HerdrClient:
         dialog is selected" exists ONLY as colour/attribute — reading the
         plain text throws that signal away. Callers that only need words (the
         model) keep the default.
+
         """
         requested = n_lines if n_lines and n_lines > 0 else self._settings.screen_lines
         cap = MAX_BACKLOG_LINES if source == "recent" else MAX_SCREEN_LINES
@@ -223,6 +243,37 @@ class HerdrClient:
         return proc.stdout
 
     # -- write path ----------------------------------------------------------
+
+    def send_keys(self, pane_id: str, keys: List[str]) -> dict:
+        """Sends logical key presses to an agent (the DIALOG surface).
+
+        ``herdr agent prompt`` refuses an agent already waiting at an
+        approval or question dialog (``agent_blocked``, before any input is
+        written), so that dialog is answered with keys — the surface
+        ``herdr --skill`` documents as ``agent send-keys <target> <keys...>``,
+        with herdr validating every key before writing any bytes.
+
+        Each key MUST come from :data:`SEND_KEY_ALLOWLIST`; a key outside it
+        is refused BEFORE the CLI runs. Returns ``{ok, error}`` and never
+        raises on a CLI failure.
+        """
+        unsupported = sorted({key for key in keys if key not in SEND_KEY_ALLOWLIST})
+        if unsupported:
+            raise HerdrError(
+                f"unsupported key(s): {', '.join(unsupported)} "
+                f"(allowed: {', '.join(SEND_KEY_ALLOWLIST)})"
+            )
+        if not keys:
+            raise HerdrError("refusing to send an empty key sequence")
+        if len(keys) > MAX_SEND_KEYS:
+            raise HerdrError(
+                f"too many keys: {len(keys)} (max {MAX_SEND_KEYS})"
+            )
+        try:
+            self._run_cli(["agent", "send-keys", pane_id, *keys], timeout_s=15)
+        except HerdrError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "error": ""}
 
     def create_tab(self, label: str, cwd: Optional[str] = None) -> dict:
         """Creates a new tab and returns ``{"tab_id", "pane_id"}``.

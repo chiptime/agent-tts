@@ -96,6 +96,12 @@ DEFAULT_APPROVAL_TIMEOUT_S = 60
 DEFAULT_STT_BACKEND = "engine"
 STT_BACKENDS = ("engine", "builtin")
 
+# Local opencode server (the process that owns the agent sessions, started
+# by the user as `opencode web --port 4096`). Brain answers an agent's
+# approval dialog through its permission API because herdr refuses a prompt
+# to a blocked agent.
+DEFAULT_OPENCODE_URL = "http://127.0.0.1:4096"
+
 # Speech-to-text (faster-whisper). HARD RULE: the model is never
 # auto-downloaded — `python -m herdr_brain.stt pull` is the only download
 # path. stt_warmup=False (tests) disables the boot warmup thread entirely:
@@ -188,6 +194,9 @@ class Settings:
     # F5 / HT-04). Empty = no auth (the pre-F5 behaviour). repr=False keeps
     # it out of every log line that prints Settings.
     approval_token: str = dataclass_field(default="", repr=False)
+    # Where the local opencode server listens (see DEFAULT_OPENCODE_URL).
+    # Defaulted like every field above it: tests build Settings(**kwargs).
+    opencode_url: str = DEFAULT_OPENCODE_URL
 
     def __post_init__(self):
         # Accept plain strings for path fields regardless of the caller.
@@ -325,5 +334,6 @@ def load_settings(env: Optional[dict] = None) -> Settings:
         engram_db=getenv("HERDR_BRAIN_ENGRAM_DB") or None,
         brain_port=brain_port,
         stt_backend=raw_backend,
+        opencode_url=getenv("HERDR_BRAIN_OPENCODE_URL", DEFAULT_OPENCODE_URL),
         approval_token=getenv("HERDR_BRAIN_APPROVAL_TOKEN").strip(),
     )

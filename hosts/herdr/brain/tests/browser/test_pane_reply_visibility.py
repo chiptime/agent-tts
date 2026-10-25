@@ -65,6 +65,9 @@ def _load(karaoke_app, herd, view=PENDING_VIEW):
     harness = karaoke_app()
     harness.respond("/herd", herd)
     harness.respond("/view", view, query=("pane_id",))
+    # A blocked pane makes the PWA ask for its opencode dialog; no request
+    # fires for a working pane, but declaring it here is harmless there.
+    harness.respond("/pane/permission", {"pending": None}, query=("pane_id",))
     return harness.load()
 
 
@@ -99,6 +102,7 @@ def test_a_blocked_pane_offers_the_key_pad_with_the_whole_allowlist(karaoke_app)
     harness = karaoke_app()
     harness.respond("/herd", BLOCKED_AGENT)
     harness.respond("/view", PENDING_VIEW, query=("pane_id",))
+    harness.respond("/pane/permission", {"pending": None}, query=("pane_id",))
     harness.respond("/pane/keys", {"ok": True}, method="POST")
 
     page = harness.load().page
@@ -117,6 +121,7 @@ def test_tapping_a_key_posts_that_exact_key_to_the_viewed_pane(karaoke_app):
     harness = karaoke_app()
     harness.respond("/herd", BLOCKED_AGENT)
     harness.respond("/view", PENDING_VIEW, query=("pane_id",))
+    harness.respond("/pane/permission", {"pending": None}, query=("pane_id",))
     harness.respond("/pane/keys", {"ok": True}, method="POST")
 
     page = harness.load().page

@@ -494,6 +494,36 @@
     }
     .dlg { font-family: system-ui, -apple-system, sans-serif; }
     .pane-keys-dialog { background: transparent; }
+    /* The agent's approval dialog: answered through opencode's permission
+     * API (once | always | reject). "Permitir siempre" persists a rule, so
+     * it is deliberately the least prominent of the three. */
+    #pane-permission {
+      margin: 0 var(--sp-3) var(--sp-2);
+      padding: var(--sp-2) var(--sp-3);
+      border-radius: 10px;
+      background: var(--chip-bg);
+    }
+    #pane-permission-what {
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-size: var(--fs-xs);
+      line-height: 1.35;
+      word-break: break-word;
+    }
+    .pp-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .pp-actions button {
+      flex: 1 1 auto;
+      min-height: 44px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--text);
+      font-weight: 600;
+    }
+    #pp-always { opacity: 0.85; }
+    #pp-reject { color: var(--danger); }
+    #pane-permission button:disabled { opacity: 0.55; }
     .dlg-q { font-weight: 700; margin: 2px 0 6px; font-size: 15.5px; white-space: normal; }
     .dlg-detail { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; color: var(--accent); background: var(--hover); padding: 4px 8px; border-radius: 4px; margin: 4px 0 8px; word-break: break-all; }
     .dlg-opt { margin: 6px 0; padding: 4px 6px; border-radius: 6px; transition: background 0.12s ease; white-space: normal; }
@@ -512,8 +542,7 @@
      * preview) are two tabs of ONE cockpit body: one is shown at a time,
      * so each surface gets real height — the terminal used to be a
      * permanent, cramped 110px strip under the turns. */
-    .agent-tabs {
-      flex: 0 0 auto;
+    .agent-tabs {      flex: 0 0 auto;
       display: flex;
       gap: 4px;
       padding: 6px 8px 0;
@@ -1984,6 +2013,14 @@
       </div>
       <pre id="pane-keys-dialog" class="pane-keys-dialog hidden" aria-label="Diálogo del agente"></pre>
     </div>
+    <div id="pane-permission" class="hidden">
+      <div id="pane-permission-what"></div>
+      <div class="pp-actions">
+        <button id="pp-once" type="button">Permitir una vez</button>
+        <button id="pp-always" type="button">Permitir siempre</button>
+        <button id="pp-reject" type="button">Rechazar</button>
+      </div>
+    </div>
     <div id="agent-tabs" class="agent-tabs" role="tablist" aria-label="Vistas del agente">
       <button id="tab-agent" class="agent-tab" type="button" role="tab" aria-selected="true" aria-controls="agent-panel" tabindex="0"><span id="glance-label">Vista del agente</span></button>
       <button id="tab-screen" class="agent-tab" type="button" role="tab" aria-selected="false" aria-controls="screen-panel" tabindex="-1">Pantalla</button>
@@ -1996,8 +2033,7 @@
       <div class="gscreen-wrap hidden">
         <span class="glabel">pantalla</span>
         <pre id="view-screen" class="view-screen"></pre>
-      </div>
-    </div>
+      </div>    </div>
   </section>
 
   <button id="state-pill" class="hidden" role="status"><span id="pill-main"></span><span id="pill-sub" class="hidden"></span></button>
@@ -2135,8 +2171,7 @@
     <script src="/announce.js"></script>
     <script src="/herd-group.js"></script>
     <script src="/mermaid.min.js"></script>
-    <script src="/mermaid-viewer.js"></script>
-    <script src="/speech.js"></script>
+    <script src="/mermaid-viewer.js"></script>    <script src="/speech.js"></script>
     <script src="/tts-engine.js"></script>
     <script src="/consult.js"></script>
     <script src="/app.js"></script>

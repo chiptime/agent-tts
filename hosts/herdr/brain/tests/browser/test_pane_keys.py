@@ -48,6 +48,8 @@ def blocked_app(karaoke_app, focus=A):
         },
         query=("pane_id",),
     )
+    # A blocked opencode pane makes the PWA ask for its pending dialog.
+    harness.respond("/pane/permission", {"pending": None}, query=("pane_id",))
     harness.load()
     expect(harness.page.locator("#pane-keys")).to_be_visible()
     return harness
@@ -157,6 +159,7 @@ def test_a_question_tool_renders_as_readable_html(karaoke_app):
     """The frontend contract for the parsed dialog: HTML, not a terminal."""
     harness = karaoke_app()
     harness.respond("/herd", herd())
+    harness.respond("/pane/permission", {"pending": None}, query=("pane_id",))
     harness.respond(
         "/view",
         {

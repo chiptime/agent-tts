@@ -59,6 +59,15 @@
   var keysPad = $("pane-keys");
   var keysHint = $("pane-keys-hint");
   var keysDialog = $("pane-keys-dialog");
+  var replyForm = $("pane-reply");
+  var replyInput = $("pane-reply-input");
+  var replySend = $("pane-reply-send");
+  var replyKeys = $("pane-reply-keys");
+  var permissionBox = $("pane-permission");
+  var permissionWhat = $("pane-permission-what");
+  var permissionOnce = $("pp-once");
+  var permissionAlways = $("pp-always");
+  var permissionReject = $("pp-reject");
   var viewScreen = $("view-screen");
   var convList = $("conv-list");
   var herdNote = $("herd-note");
@@ -909,7 +918,6 @@
     glanceSuppressed = false;
     selectGlanceReplay(control.closest(".gturn.assistant"), control.getAttribute("data-sent-idx"));
   });
-
   function readerSync(pane, session) {
     /* Identity change: reader.js discards the held snapshot as a unit
      * (generation bump), so held-HTML lookups go null until the new
@@ -959,8 +967,7 @@
     if (mermaidViewer && content) {
       mermaidViewer.renderIn(content);
     }
-    syncGlanceReplay();
-  }
+    syncGlanceReplay();  }
 
   /* ---------------- conversation (drawer body) ---------------- */
 
@@ -1067,7 +1074,6 @@
     });
     turn.appendChild(button);
   }
-
   function addTurn(role, text, ts) {
     var ghost = document.getElementById("ghost-bubble");
     if (ghost) ghost.remove();
@@ -1240,8 +1246,7 @@
         }
         selectGlanceReplay(turn, null, true);
         return;
-      }
-      // Loading state: /tts synthesis takes seconds on mobile; without
+      }      // Loading state: /tts synthesis takes seconds on mobile; without
       // this the tap looks dead. The button recovers as soon as the
       // audio is enqueued (or the request fails — banner already shown).
       btn.disabled = true;
@@ -1372,6 +1377,12 @@
    * of to the live focus (which a /herd poll can move on its own). */
   var lastView = null;
   var pendingBannerTapPane = null;
+  /* Approval dialog of the viewed pane (opencode only). `permissionPane` is
+   * the pane the answer belongs to — kept so a reply can be re-read for the
+   * SAME pane after answering. */
+  var permissionPane = null;
+  var permissionRequest = null;
+  var permissionBlocked = false;
   var lastEffectivePane = null;
 
   /* Agent display name (picker trigger, sheet rows, glance label):
@@ -1717,6 +1728,7 @@
     else replyKeys.removeAttribute("data-pane");
     replyKeys.classList.toggle("hidden", !keysTarget);
     paintDialogPreview(keysTarget ? view : null);
+    refreshPermission(viewed && viewedBlocked ? viewed : null);
   }
 
   replyForm.addEventListener("submit", function (event) {
@@ -1748,6 +1760,107 @@
       })
       .then(function () { replySend.disabled = false; });
   });
+
+  /* Approval dialog (opencode): a blocked agent cannot be reached with a
+   * prompt — herdr refuses it before writing any input — so the answer goes
+   * through opencode's permission API. Fetched once per pane: renderPending
+   * runs on every poll and must not re-request on each one. */
+  function refreshPermission(paneId) {
+    permissionBlocked = !!paneId;
+    if (!paneId) {
+      permissionPane = null;
+      permissionRequest = null;
+      renderPermission();
+      return;
+    }
+    if (permissionPane === paneId) {
+      renderPermission();
+      return;
+    }
+    permissionPane = paneId;
+    permissionRequest = null;
+    renderPermission();
+    fetch("/pane/permission?pane_id=" + encodeURIComponent(paneId))
+      .then(function (resp) {
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        return resp.json();
+      })
+      .then(function (data) {
+        if (permissionPane !== paneId) return;  // the view moved on
+        permissionRequest = (data && data.pending) || null;
+        renderPermission();
+      })
+      .catch(function () {
+        if (permissionPane !== paneId) return;
+        permissionRequest = null;  // fail-soft: the keys notice remains
+        renderPermission();
+      });
+  }
+
+  function renderPermission() {
+    var show = !!(permissionRequest && permissionPane);
+    if (show) {
+      var what = permissionRequest.patterns && permissionRequest.patterns.length
+        ? permissionRequest.patterns.join(", ")
+        : "permiso";
+      permissionWhat.textContent = (permissionRequest.permission
+        ? permissionRequest.permission + ": " : "") + what;
+    } else {
+      permissionWhat.textContent = "";
+    }
+    permissionBox.classList.toggle("hidden", !show);
+    /* The keys notice is the fallback for a dialog this path cannot answer:
+       another agent kind, or one already answered elsewhere. */
+    replyKeys.classList.toggle("hidden", !(permissionBlocked && !show));
+  }
+
+  var PERMISSION_TOAST = {
+    once: "Permiso concedido una vez",
+    always: "Permiso concedido siempre",
+    reject: "Permiso rechazado"
+  };
+
+  function sendPermission(reply) {
+    if (!permissionRequest) return;
+    var requestId = permissionRequest.request_id;
+    var pane = permissionPane;
+    setPermissionBusy(true);
+    fetch("/pane/permission/reply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pane_id: pane, request_id: requestId, reply: reply })
+    })
+      .then(function (resp) {
+        if (resp.ok) {
+          showToast(PERMISSION_TOAST[reply] || "Permiso enviado", 3000);
+          // Re-read the SAME pane: the dialog may already be gone.
+          permissionPane = null;
+          permissionRequest = null;
+          refreshPermission(pane);
+          return null;
+        }
+        return resp.json().then(
+          function (body) { return body && body.detail; },
+          function () { return null; }
+        ).then(function (detail) {
+          showToast("No se pudo responder: " + (typeof detail === "string" ? detail : "error " + resp.status), 6000);
+        });
+      })
+      .catch(function () {
+        showToast("No se pudo responder: sin conexión con el brain", 6000);
+      })
+      .then(function () { setPermissionBusy(false); });
+  }
+
+  function setPermissionBusy(busy) {
+    [permissionOnce, permissionAlways, permissionReject].forEach(function (button) {
+      button.disabled = busy;
+    });
+  }
+
+  permissionOnce.addEventListener("click", function () { sendPermission("once"); });
+  permissionAlways.addEventListener("click", function () { sendPermission("always"); });
+  permissionReject.addEventListener("click", function () { sendPermission("reject"); });
 
   /* ---------------- key pad: answer a BLOCKED agent's dialog --------------
    * A pane waiting at an approval/question dialog cannot be answered with
@@ -1818,8 +1931,41 @@
       var node = event.target;
       var button = node && node.closest ? node.closest("button[data-key]") : null;
       if (button) sendKey(button);
-    });
-  }
+    });  }
+
+  permissionOnce.addEventListener("click", function () { sendPermission("once"); });
+  permissionAlways.addEventListener("click", function () { sendPermission("always"); });
+  permissionReject.addEventListener("click", function () { sendPermission("reject"); });
+
+  replyForm.addEventListener("submit", function (event) {
+    event.preventDefault();
+    var paneId = replyForm.getAttribute("data-pane");
+    var text = replyInput.value.trim();
+    if (!paneId || !text || replySend.disabled) return;
+    replySend.disabled = true;
+    fetch("/pane/reply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pane_id: paneId, text: text })
+    })
+      .then(function (resp) {
+        if (resp.ok) {
+          replyInput.value = "";
+          showToast("Respuesta enviada al agente", 3000);
+          return null;
+        }
+        return resp.json().then(
+          function (body) { return body && body.detail; },
+          function () { return null; }
+        ).then(function (detail) {
+          showToast("No se pudo enviar: " + (typeof detail === "string" ? detail : "error " + resp.status), 6000);
+        });
+      })
+      .catch(function () {
+        showToast("No se pudo enviar: sin conexión con el brain", 6000);
+      })
+      .then(function () { replySend.disabled = false; });
+  });
 
   pendingBanner.addEventListener("click", function () {
     if (pendingBannerTapPane && pendingBannerTapPane !== selectedPane) {
@@ -2490,8 +2636,7 @@
   }).observe(glanceTurns, { childList: true, subtree: true, characterData: true,
     attributes: true, attributeFilter: ["data-sent-idx", "hidden", "aria-hidden"] });
 
-  function enqueueAudio(url, announcement, speechRequestId, seq) {
-    audioQueue.push({
+  function enqueueAudio(url, announcement, speechRequestId, seq) {    audioQueue.push({
       url: url,
       announcement: announcement || null,
       chunkOffset: announcement && announcement.chunkOffset || 0,
@@ -2546,8 +2691,7 @@
       index = audioQueue.findIndex(function (queued) { return !queued.announcement; });
       if (index === -1) return; // same queue, visual ledger retained; do not steal the turn.
     }
-    var item = audioQueue.splice(index, 1)[0];
-    audioBusy = true;
+    var item = audioQueue.splice(index, 1)[0];    audioBusy = true;
     audioFinished = item;
     item.source = new URL(item.url, document.baseURI).href;
     if (item.karaoke) {
@@ -2749,8 +2893,7 @@
       return;
     }
     /* A streamed job stops polling too; the purge below owns the queue. */
-    segmentPlayer.stop();
-    var jobId = speechCtl.activeId();
+    segmentPlayer.stop();    var jobId = speechCtl.activeId();
     if (jobId) {
       /* Identified request: cancel ITS voice on the server and drop only
        * ITS queued audio — other requests and ambient announcements keep
@@ -3324,7 +3467,6 @@
   });
 
   renderPendingSection(pendingStore.snapshot());
-
   function openEvents() {
     if (eventsOpened || !window.EventSource) return;
     eventsOpened = true;
@@ -3812,8 +3954,7 @@
       sessionId: sessionId,
       paneId: selectedPane,
       speech: speech
-    })
-      .then(function (resp) {
+    })      .then(function (resp) {
         if (resp.status === 503) {
           removeThinkingBubble();
           speechCtl.release(speech.speech_request_id);
@@ -3850,16 +3991,14 @@
               speechCtl.release(speech.speech_request_id);
               if (!data.approval) afterAnswer();
             }
-          }
-          if (data.approval) {
+          }          if (data.approval) {
             // A gate opened (PRD §4): enter confirming with the countdown
             // while the spoken echo ("… ¿Se envía?") plays through the
             // normal queue; onAudioEnded re-arms the mic under confirming.
             // S14: the turn's speech id is the EXPLANATION identity — the
             // flow presents it as the receipt only if this client drains
             // the whole playback (noteExplanationPlayed at queue end).
-            approvalFlow.open(data.approval, speech.speech_request_id || null);
-            // UX 2026-09-24: the gate surfaces as the floating popup
+            approvalFlow.open(data.approval, speech.speech_request_id || null);            // UX 2026-09-24: the gate surfaces as the floating popup
             // (visible with the drawer open OR closed — text mode
             // included); the drawer no longer auto-opens, and the pill
             // "Confirmar ▲" still reopens it for the transcript.
