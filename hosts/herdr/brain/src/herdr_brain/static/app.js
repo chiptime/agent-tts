@@ -1964,8 +1964,7 @@
       if (hasRuns) paintRunsInto(viewScreen, runs);
       else viewScreen.textContent = text;
     }
-    /* Kept as the plain-text mirror: renderGlance uses it to decide whether
-     * the "sin conversación todavía" empty state applies. */
+    /* Keep the terminal's plain-text mirror separate from the reader state. */
     lastScreenText = hasRuns ? viewScreen.textContent : (text || null);
     if (hasRuns || text) wrap.classList.remove("hidden");
     else wrap.classList.add("hidden");
@@ -2158,8 +2157,13 @@
       mountReader(wanted[i], turns[i]);
     }
 
-    if (!turns.length && !lastScreenText) glanceEmpty.classList.remove("hidden");
-    else glanceEmpty.classList.add("hidden");
+    /* Terminal text lives in a separate tab and cannot fill an empty reader. */
+    if (!turns.length) {
+      glanceEmpty.textContent = data && data.agent && !data.session_id
+        ? "No se ha identificado la sesión del agente. Consulta la pestaña Pantalla."
+        : "Sin conversación del agente todavía. Consulta la pestaña Pantalla.";
+      glanceEmpty.classList.remove("hidden");
+    } else glanceEmpty.classList.add("hidden");
     agentView.classList.remove("hidden");
 
     /* Scroll preservation (AC7): pinned-at-bottom stays pinned; content

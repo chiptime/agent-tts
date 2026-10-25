@@ -74,6 +74,14 @@ daemons do not source them, so the env file is the single stable contract.
 | `HERDR_BRAIN_SCREEN_LINES` | `40` | default visible lines for `read_screen` |
 | `OPENCODE_DB` / `CLAUDE_PROJECTS_ROOT` | store defaults | transcript store overrides (tests) |
 
+### Empty agent reader
+
+If **Vista del agente** has no conversation, it shows an explanation and points
+to **Pantalla** for the terminal snapshot. A missing session identifier is
+reported separately from a session with no conversation yet. Terminal output
+does not hide this notice, and the notice disappears when messages arrive.
+The notice does not repair the agent integration or infer a session identity.
+
 ## Speech backend contract (surface v1)
 
 **herdr-tts is the brain's official speech backend** — a designed
