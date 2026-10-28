@@ -457,8 +457,10 @@ once at least one device is paired:
   any other logic (anti DNS-rebinding). `HERDR_BRAIN_ALLOW_ANY_HOST=1` is
   the warned opt-out.
 - **Origin/CSRF** — an `Origin`, when present, must be same-origin with
-  the Host (or explicitly allowed); a write with no `Origin` from a
-  non-loopback Host is rejected. Reads never require `Origin`.
+  the Host (or explicitly allowed); a write — or `POST /pair`, which
+  mints a write credential — with no `Origin` from a non-loopback Host
+  is rejected (browsers always send `Origin` on POSTs, so the PWA is
+  unaffected). Reads never require `Origin`.
 - **Optional identity/device gates** — `HERDR_BRAIN_TRUSTED_USER`
   (Tailscale-User-Login under `tailscale serve`, fail-closed) and
   `HERDR_BRAIN_DEVICE_HEADER`/`HERDR_BRAIN_DEVICE_ALLOWLIST` for reverse
@@ -476,10 +478,22 @@ requirement turns on with the first pairing. **Migration note:** pairing
 the first device removes write access from every unpaired client (the
 PWA offers the pairing flow on a "not paired" 403). `POST
 /approval/{id}/action` keeps `HERDR_BRAIN_APPROVAL_TOKEN` alone, because
-ntfy cannot attach a device bearer; write-gated routes are `/pane/reply`,
+ntfy cannot attach a device bearer (and sends no `Origin`); write-gated
+routes are `/pane/reply`,
 `/pane/keys`, `/pane/permission/reply`, `/approval/{id}/approve|reject|resolve`,
 `PATCH /approval/{id}`, `/ask`, `/transcribe`, `/reset` and
 `/devices/revoke`.
+
+The requirement fails CLOSED: a corrupt, truncated or entry-incomplete
+`paired-devices.json` keeps every write refused with no device
+authorized — only an absent file or a well-formed zero-device registry
+(the file revoking the last device writes) leaves writes open, and
+`herdr-brain pair` always recovers the state (a claim rewrites a valid
+registry). `pair --label` refuses an unusable label (empty after
+trimming, or over 48 characters) instead of silently letting the phone
+choose one; the state directory is retightened to `0700` (files `0600`)
+even when the nested audio directory created it first with the default
+umask.
 
 Write routes on a blocked device answer 403 `dispositivo no emparejado`;
 revoked devices keep read access (`GET /herd`, `/view`, …).

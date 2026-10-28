@@ -6,9 +6,10 @@ one-time code, writes only its SHA-256 under
 the operator's terminal. The phone posts ``{code,label}`` to ``POST
 /pair``, which mints a 256-bit token, stores only ITS SHA-256 in
 ``paired-devices.json`` and returns the token exactly once. The write
-requirement turns on exactly when the registry is non-empty — pairing
-the first device arms it for everyone, pairing nobody keeps the brain
-exactly as it was.
+requirement turns on with the first pairing and turns off again only
+for an absent registry or a well-formed zero-device one — a corrupt
+file fails CLOSED, enforcement on with nobody authorized (doc 01
+AC10).
 
 Times are epoch seconds throughout. JSON keys keep Panel's camelCase
 field names so the on-disk documents match the reference format.
@@ -22,6 +23,7 @@ import json
 import os
 import re
 import secrets
+import stat
 import threading
 from pathlib import Path
 from typing import Callable, Optional
@@ -56,6 +58,29 @@ DEFAULT_STATE_DIR = "~/.local/state/herdr-brain"
 def default_state_dir() -> Path:
     """The documented default state dir (coherent with DEFAULT_AUDIO_DIR)."""
     return Path(DEFAULT_STATE_DIR).expanduser()
+
+
+def ensure_private_dir(path: Path) -> None:
+    """0700 for the state dir, even when something else created it first.
+
+    mkdir's mode only applies at creation: audio storage nested under
+    the state dir (``audio_dir=<state>/audio``) can create the directory
+    with the default umask, and a surviving group-writable mode would
+    leave credential hashes and the audit trail readable beyond the
+    operator (T4 B5). An existing directory owned by the current user is
+    retightened with chmod; one owned by somebody else is left alone —
+    the write that follows fails on its own with a clearer error than a
+    chmod we are not entitled to would give.
+    """
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        info = path.stat()
+    except OSError:
+        return
+    if info.st_uid != os.geteuid():
+        return
+    if stat.S_IMODE(info.st_mode) != 0o700:
+        os.chmod(path, 0o700)
 
 
 # ── pure helpers ─────────────────────────────────────────────────────────────
@@ -176,6 +201,24 @@ def coerce_registry(raw: object) -> dict:
             "lastSeenAt": seen if isinstance(seen, (int, float)) and not isinstance(seen, bool) else 0,
         })
     return {"devices": devices}
+
+
+def enforced_from_registry(raw: object) -> bool:
+    """Whether this PARSED registry content keeps the bearer requirement
+    on. Fail closed (doc 01 AC10, T4 B1): only a WELL-FORMED registry
+    with zero devices — the file revoking the last device writes —
+    reads as "not enforced", and so does an absent file (handled by the
+    caller). An unparsable/truncated file, a non-registry shape, or a
+    registry whose entries coercion drops keeps the requirement ON with
+    NO device authorized: coercing corruption down to "empty" would
+    silently reopen every write the operator had armed. A registry with
+    at least one kept device is the normal enforced state."""
+    if not isinstance(raw, dict):
+        return True
+    devices = raw.get("devices")
+    if not isinstance(devices, list):
+        return True
+    return bool(devices)
 
 
 def normalize_label(raw: object) -> Optional[str]:
@@ -312,10 +355,14 @@ class PairingStore:
     mtime) plus the enrolment and revocation operations the endpoints
     and the CLI drive.
 
-    "Enforced" is not a setting — it is "the registry is non-empty".
-    Pairing nobody keeps the brain exactly as it was; pairing one device
-    turns the requirement on for every device, the only ordering that
-    cannot lock the operator out of their own brain halfway through.
+    "Enforced" is not a setting — it is "the registry says devices are
+    paired". Pairing nobody (absent file) keeps the brain exactly as it
+    was; pairing one device turns the requirement on for every device,
+    the only ordering that cannot lock the operator out of their own
+    brain halfway through. A CORRUPT registry keeps the requirement on
+    with no device authorized (fail closed, doc 01 AC10) — and a claim
+    rewrites a valid registry, so ``herdr-brain pair`` is always the
+    way back in.
     """
 
     def __init__(self, state_dir, now: Callable[[], float] = None,
@@ -346,7 +393,7 @@ class PairingStore:
         """tempfile with a unique name + os.replace: readers never see a
         half-written file, and two writers never collide on one temp
         name (the pid plus a counter keeps them apart)."""
-        self.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        ensure_private_dir(self.state_dir)
         tmp = path.with_name(
             f"{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
         )
@@ -377,31 +424,42 @@ class PairingStore:
 
     # -- the gate --
 
-    def registry(self) -> dict:
-        """The registry as of this instant: one stat per request, a
-        re-parse only when the file identity (inode — every atomic
-        replace lands a new one — plus mtime and size) changed, so a
-        CLI revocation lands on the very next request without a
-        restart."""
+    def _load(self) -> tuple:
+        """``(coerced registry, enforced)`` as of this instant: one stat
+        per request, a re-parse only when the file identity (inode —
+        every atomic replace lands a new one — plus mtime and size)
+        changed, so a CLI revocation lands on the very next request
+        without a restart. An absent file is the one non-enforced
+        answer a corrupt file can never borrow (doc 01 AC10)."""
         try:
             st = self.registry_path.stat()
             key = f"{st.st_ino}:{st.st_mtime_ns}:{st.st_size}"
         except OSError:
             with self._lock:
                 self._registry_cache = None
-            return coerce_registry(None)
+            return coerce_registry(None), False
         cached = self._registry_cache
         if cached is not None and cached[0] == key:
-            return coerce_registry(cached[1])
-        raw = self._read_json(self.registry_path)
-        with self._lock:
-            self._registry_cache = (key, raw)
-        return coerce_registry(raw)
+            raw = cached[1]
+        else:
+            raw = self._read_json(self.registry_path)
+            with self._lock:
+                self._registry_cache = (key, raw)
+        return coerce_registry(raw), enforced_from_registry(raw)
+
+    def registry(self) -> dict:
+        """The registry as of this instant (see ``_load``). Corrupt
+        entries are dropped here; whether dropping them lifts the write
+        requirement is ``enforced()``'s separate, fail-closed answer."""
+        return self._load()[0]
 
     def enforced(self) -> bool:
-        """Whether a bearer token is required for writes — i.e. whether
-        anything is paired at all."""
-        return bool(self.registry()["devices"])
+        """Whether a bearer token is required for writes. ON for any
+        registry content except an ABSENT file or a well-formed
+        zero-device registry (the post-revoke shape); a corrupt or
+        truncated file stays ON with no device authorized — the
+        requirement the operator armed cannot be corrupted away."""
+        return self._load()[1]
 
     def resolve(self, token: Optional[str]) -> Optional[dict]:
         """The device this request's bearer token belongs to, or None.
@@ -446,7 +504,16 @@ class PairingStore:
         """Mint a one-time code and persist only its hash. Returns the
         code for the terminal (the only copy that will ever exist) plus
         its expiry. A second mint overwrites the pending file, killing
-        the previous code — the intended way to cancel one."""
+        the previous code — the intended way to cancel one.
+
+        A pinned label is normalized and validated HERE, at the source:
+        an unusable one raises instead of silently pinning nothing (the
+        claim would fall back to the phone's label, leaving the operator
+        a revoke handle they never chose — T4 B4)."""
+        if label is not None:
+            label = normalize_label(label)
+            if label is None:
+                raise ValueError("label must be 1-48 usable characters")
         now = self._now()
         code = generate_code(self._random)
         pending = new_pending(code, now, label=label)

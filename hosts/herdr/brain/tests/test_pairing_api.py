@@ -341,32 +341,64 @@ def test_approval_action_without_any_token_is_still_401(state_dir):
 # ── AC10 through the surface: corrupt files never authorize writes ──────────
 
 
-def test_corrupt_registry_files_never_authorize_and_the_service_stays_up(
-    client, state_dir
-):
-    (state_dir / pairing.DEVICES_FILENAME).write_text("{broken json", encoding="utf-8")
-    (state_dir / pairing.PENDING_FILENAME).write_text("nope", encoding="utf-8")
+@pytest.mark.parametrize("raw", ["{", "", '{"devices":[{"label":"incomplete"}]}'])
+def test_s1_corrupt_registry_never_opens_writes(client, state_dir, raw):
+    """T4 B1 (doc 01 AC10): once a device is paired, a corrupt registry
+    never lifts the write requirement — enforcement is OFF only for an
+    absent file or a WELL-FORMED zero-device registry. Unparsable,
+    truncated or incomplete-entry files keep every write refused with
+    nobody authorized, and the service stays up."""
+    pair_device(client, state_dir)  # enforcement is on
+    (state_dir / pairing.DEVICES_FILENAME).write_text(raw, encoding="utf-8")
 
-    assert client.get("/health").status_code == 200
-    # Corruption degrades to "fewer devices" (doc 01 Riesgos): the
-    # requirement switches off exactly like an empty registry — a
-    # corrupt entry NEVER authorizes the bearer it used to match.
-    assert client.get("/devices").json()["enforced"] is False
+    assert client.get("/health").status_code == 200  # the service stays up
+    assert client.get("/devices").json()["enforced"] is True
+    resp = client.post("/pane/reply", json={"pane_id": "w1:p2", "text": "go"})
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == "dispositivo no emparejado"
+    # Even a paired device's bearer can no longer be matched: corruption
+    # authorizes nobody.
     resp = client.post(
-        "/pane/reply", json={"pane_id": "w1:p2", "text": "go"},
+        "/pane/reply",
+        json={"pane_id": "w1:p2", "text": "go"},
         headers={"Authorization": "Bearer whatever"},
     )
+    assert resp.status_code == 403
+
+
+def test_valid_empty_registry_keeps_today_open_behavior(client, state_dir):
+    """Revoking the last device keeps today's semantics: the well-formed
+    zero-device registry (what `revoke` writes) is the one corrupt shape
+    that does NOT keep enforcement on."""
+    token = pair_device(client, state_dir)
+    assert client.post("/devices/revoke", json={"label": "phone"},
+                       headers={"Authorization": f"Bearer {token}"}).status_code == 200
+    assert client.get("/devices").json()["enforced"] is False
+    assert client.post("/pane/reply", json={"pane_id": "w1:p2", "text": "go"}).status_code == 200
+
+
+def test_pair_recovers_a_corrupt_registry_over_http(client, state_dir):
+    """T4 B1: `pair` via the CLI must still recover — a claim rewrites a
+    valid registry, so a corrupt file cannot lock the operator out."""
+    pair_device(client, state_dir)
+    (state_dir / pairing.DEVICES_FILENAME).write_text("{", encoding="utf-8")
+    assert client.post("/pane/reply", json={"pane_id": "w1:p2", "text": "go"}).status_code == 403
+
+    store = pairing.PairingStore(state_dir)
+    minted = store.mint()
+    resp = client.post("/pair", json={"code": minted["code"], "label": "tablet"})
     assert resp.status_code == 200
-    # And a corrupted-but-parseable registry with an empty tokenHash
-    # authorizes nobody either.
-    (state_dir / pairing.DEVICES_FILENAME).write_text(
-        json.dumps({"devices": [{"label": "x", "tokenHash": ""}]}), encoding="utf-8"
-    )
-    resp = client.post(
-        "/pane/reply", json={"pane_id": "w1:p2", "text": "go"},
-        headers={"Authorization": "Bearer "},
-    )
-    assert resp.status_code == 200  # entry dropped → not enforced, still no grant
+    auth = {"Authorization": f"Bearer {resp.json()['token']}"}
+    assert client.post("/pane/reply", json={"pane_id": "w1:p2", "text": "go"},
+                       headers=auth).status_code == 200
+
+
+def test_corrupt_pending_file_still_refuses_cleanly(client, state_dir):
+    (state_dir / pairing.PENDING_FILENAME).write_text("nope", encoding="utf-8")
+    assert client.get("/health").status_code == 200
+    resp = client.post("/pair", json={"code": "AB23CD45", "label": "x"})
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "no-pending"
 
 
 # ── file hygiene surfaced through the endpoints ──────────────────────────────
@@ -374,10 +406,11 @@ def test_corrupt_registry_files_never_authorize_and_the_service_stays_up(
 
 def test_pairing_files_are_owner_only_after_endpoint_claims(client, state_dir):
     pair_device(client, state_dir)
-    # The credential files are owner-only; the directory itself is
-    # shared with audio/ here (0700-on-create is pinned in
-    # test_pairing.py's store tests, which own the dir).
+    # The credential files are owner-only, and the state dir is 0700
+    # even when audio/ created it first with the default umask (T4 B5:
+    # a pre-existing dir is retightened, not just created 0700).
     assert stat.S_IMODE((state_dir / pairing.DEVICES_FILENAME).stat().st_mode) == 0o600
+    assert stat.S_IMODE(state_dir.stat().st_mode) == 0o700
 
 
 def test_state_dir_setting_respected(state_dir, tmp_path):

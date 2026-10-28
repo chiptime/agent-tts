@@ -236,3 +236,15 @@ test("isNotPairedResponse matches only the pairing 403 detail", async () => {
   assert.equal(ui.isNotPairedResponse({ status: 403, detail: "host no permitido" }), false);
   assert.equal(ui.isNotPairedResponse({ status: 404, detail: NOT_PAIRED_DETAIL }), false);
 });
+
+test("isNotPairedResponse accepts the parsed body app.js hands it", async () => {
+  /* T4 B3: maybeOfferPairing already knows the HTTP status (it gates on
+   * resp.status === 403 itself) and passes the PARSED JSON body — a
+   * body has no .status, so requiring one meant the pairing hint could
+   * never appear on any write route. The body shape must match. */
+  const { ui } = makeUI();
+  assert.equal(ui.isNotPairedResponse({ detail: NOT_PAIRED_DETAIL }), true);
+  assert.equal(ui.isNotPairedResponse({ detail: "dispositivo no autorizado" }), false);
+  assert.equal(ui.isNotPairedResponse({}), false);
+  assert.equal(ui.isNotPairedResponse(null), false);
+});

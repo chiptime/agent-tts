@@ -234,6 +234,40 @@ def test_mint_can_pin_the_device_label_for_the_claim(tmp_path: Path):
     assert pending["label"] == "móvil"
 
 
+def test_mint_pins_the_normalized_label(tmp_path: Path):
+    """The pin is stored exactly as the claim will read it back, so a
+    padded-but-usable label pins its trimmed form."""
+    store = pairing.PairingStore(tmp_path, now=FakeClock())
+    store.mint(label="  mi móvil\n")
+    pending = json.loads((tmp_path / pairing.PENDING_FILENAME).read_text())
+    assert pending["label"] == "mi móvil"
+
+
+def test_mint_rejects_an_unusable_pinned_label(tmp_path: Path):
+    """T4 B4: an unusable explicit label is an error at the source, not
+    a silent fall-back to the phone's label. Nothing is written."""
+    store = pairing.PairingStore(tmp_path, now=FakeClock())
+    for bad in ("", "   ", "x" * 49):
+        with pytest.raises(ValueError):
+            store.mint(label=bad)
+    assert not (tmp_path / pairing.PENDING_FILENAME).exists()
+
+
+def test_write_atomic_tightens_an_existing_loose_state_dir(tmp_path: Path):
+    """T4 B5: audio_dir nests under the state dir and can create it
+    first with the default umask — mkdir's mode only applies at
+    creation, so the first pairing write must retighten 0775 to 0700."""
+    state = tmp_path / "state"
+    (state / "audio").mkdir(parents=True)
+    state.chmod(0o775)
+
+    store = pairing.PairingStore(state, now=FakeClock())
+    store.mint()
+
+    assert stat.S_IMODE(state.stat().st_mode) == 0o700
+    assert stat.S_IMODE((state / pairing.PENDING_FILENAME).stat().st_mode) == 0o600
+
+
 def test_claim_returns_the_token_once_and_destroys_the_pending(tmp_path: Path):
     clock = FakeClock()
     store = pairing.PairingStore(tmp_path, now=clock)
@@ -345,19 +379,79 @@ def test_resolve_stamp_never_resurrects_a_revoked_device(tmp_path: Path):
     assert server.registry()["devices"] == []
 
 
-def test_corrupt_files_degrade_to_fewer_devices_never_empty_credentials(tmp_path: Path):
+def test_corrupt_files_fail_closed_never_authorize_anyone(tmp_path: Path):
+    """AC10 (T4 B1): corruption degrades to "no device authorized", and
+    the requirement itself only lifts for a WELL-FORMED empty registry
+    (the file revoking the last device writes)."""
     clock = FakeClock()
     store = pairing.PairingStore(tmp_path, now=clock)
     (tmp_path / pairing.DEVICES_FILENAME).write_text("{not json", encoding="utf-8")
-    assert store.enforced() is False
+    assert store.enforced() is True  # unparsable: enforced, nobody authorized
     assert store.resolve("anything") is None
+    assert store.registry() == {"devices": []}
+
+    (tmp_path / pairing.DEVICES_FILENAME).write_text("", encoding="utf-8")
+    assert store.enforced() is True  # truncated to nothing: same answer
 
     (tmp_path / pairing.DEVICES_FILENAME).write_text(
         json.dumps({"devices": [{"label": "x", "tokenHash": ""}]}), encoding="utf-8"
     )
-    assert store.enforced() is False  # the incomplete entry is dropped
+    assert store.enforced() is True  # every entry incomplete: same answer
+    assert store.resolve("anything") is None
+
     (tmp_path / pairing.PENDING_FILENAME).write_text("[]", encoding="utf-8")
     assert store.claim("AB23CD45", "phone") == ("fail", "no-pending")
+
+    # The one corrupt shape that lifts the requirement: none. Only the
+    # well-formed zero-device registry (post-revoke) does.
+    (tmp_path / pairing.DEVICES_FILENAME).write_text(
+        json.dumps({"devices": []}), encoding="utf-8"
+    )
+    assert store.enforced() is False
+
+
+def test_partial_corruption_keeps_the_valid_devices_enforced(tmp_path: Path):
+    """A registry with one valid and one incomplete entry degrades to
+    "fewer devices" (doc 01 Riesgos): the valid credential keeps
+    working, the incomplete one authorizes nobody."""
+    store = pairing.PairingStore(tmp_path, now=FakeClock())
+    minted = store.mint()
+    _, outcome = store.claim(minted["code"], "phone")
+    token = outcome["token"]
+
+    raw = json.dumps({"devices": [
+        json.loads((tmp_path / pairing.DEVICES_FILENAME).read_text())["devices"][0],
+        {"label": "incomplete"},
+    ]})
+    (tmp_path / pairing.DEVICES_FILENAME).write_text(raw, encoding="utf-8")
+
+    assert store.enforced() is True
+    assert store.resolve(token)["label"] == "phone"
+    assert store.resolve("other-token") is None
+
+
+def test_claim_recovers_a_corrupt_registry(tmp_path: Path):
+    """T4 B1: `pair` must still recover a corrupt registry — the claim
+    rewrites a VALID registry, so the operator is never locked out of
+    their own brain by a truncated file."""
+    store = pairing.PairingStore(tmp_path, now=FakeClock())
+    minted = store.mint(label="phone")
+    (tmp_path / pairing.DEVICES_FILENAME).write_text("{", encoding="utf-8")
+
+    status, outcome = store.claim(minted["code"], "ignored-label")
+    assert status == "ok"
+    assert outcome["label"] == "phone"  # the pinned label survives
+    assert store.enforced() is True
+    assert store.resolve(outcome["token"])["label"] == "phone"
+    # The corrupt bytes are gone: the file parses again.
+    assert json.loads((tmp_path / pairing.DEVICES_FILENAME).read_text()) == {
+        "devices": [json.loads(json.dumps({
+            "label": "phone",
+            "tokenHash": pairing.sha256_hex(outcome["token"]),
+            "createdAt": 1_000.0,
+            "lastSeenAt": 1_000.0,
+        }))]
+    }
 
 
 def test_default_state_dir_is_the_documented_one():
@@ -395,6 +489,21 @@ def test_cli_pair_supports_pinning_the_label(tmp_path, monkeypatch, capsys):
     assert run_cli(["pair", "--label", "móvil"], monkeypatch, state) == 0
     pending = json.loads((state / pairing.PENDING_FILENAME).read_text(encoding="utf-8"))
     assert pending["label"] == "móvil"
+
+
+@pytest.mark.parametrize("label", ["", "x" * 49])
+def test_cli_pair_rejects_an_invalid_explicit_label(label, tmp_path, monkeypatch, capsys):
+    """T4 B4: an explicit but unusable --label exits non-zero with a
+    clear stderr message and writes nothing at all — the operator asked
+    for a specific revoke handle and must hear that it cannot be pinned
+    (a silent replacement would leave a mystery label in `devices
+    list`)."""
+    state = tmp_path / "state"
+    code = run_cli(["pair", "--label", label], monkeypatch, state)
+    assert code != 0
+    err = capsys.readouterr().err
+    assert "--label" in err
+    assert not state.exists()  # not even the state dir was created
 
 
 def test_cli_devices_list_and_revoke_without_restart(tmp_path, monkeypatch, capsys):

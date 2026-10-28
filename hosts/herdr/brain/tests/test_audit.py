@@ -159,6 +159,25 @@ def test_record_creates_0600_file_inside_0700_dir(tmp_path):
     assert parsed["detail"]["text"] == "hi"
 
 
+def test_record_tightens_an_existing_loose_state_dir_and_file(tmp_path):
+    """T4 B5: the state dir can already exist at the default umask (the
+    audio dir nests under it and may create it first), and an older
+    deployment may have left a looser audit.log — the first write
+    retightens both to 0700/0600 instead of trusting creation modes."""
+    state = tmp_path / "state"
+    state.mkdir()
+    state.chmod(0o775)
+    path = state / "audit.log"
+    path.write_text("", encoding="utf-8")
+    path.chmod(0o644)
+
+    AuditLog(path).record({"action": "pane.reply", "detail": {"outcome": "delivered"}})
+
+    assert stat.S_IMODE(state.stat().st_mode) == 0o700
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert len(path.read_text(encoding="utf-8").splitlines()) == 1
+
+
 def test_record_never_raises_on_an_unwritable_path(tmp_path):
     blocker = tmp_path / "blocker"
     blocker.write_text("a file where the state dir should be")

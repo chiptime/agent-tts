@@ -120,9 +120,10 @@ def check_access(
       be loopback (dev-server pages driving a loopback brain), or be
       explicitly allowed. Browsers omit Origin on same-origin GETs (so
       the poll passes) and send it on POSTs.
-    - Origin required for writes: a state-changing request with no
-      Origin is trusted only from loopback (curl on the host) — or
-      under ``allow_any_host``, which has already accepted the host
+    - Origin required for writes: a state-changing request (or the
+      ``/pair`` bootstrap, which hands out write credentials — T4 B2)
+      with no Origin is trusted only from loopback (curl on the host) —
+      or under ``allow_any_host``, which has already accepted the host
       hole. Browsers always send Origin on fetch POSTs, so a missing
       Origin on a remote write is a non-browser or Origin-stripped
       request.
@@ -149,9 +150,12 @@ def check_access(
         )
         if not allowed:
             return CROSS_ORIGIN
-    elif level == "write" and not (is_loopback_host(host) or cfg.allow_any_host):
-        # A write with no Origin from a non-loopback Host isn't a real
-        # browser request — refuse.
+    elif level in ("write", "pair") and not (
+        is_loopback_host(host) or cfg.allow_any_host
+    ):
+        # A write — or the /pair bootstrap, which mints a write
+        # credential — with no Origin from a non-loopback Host isn't a
+        # real browser request: refuse (T4 B2).
         return ORIGIN_REQUIRED
 
     if cfg.trusted_user:

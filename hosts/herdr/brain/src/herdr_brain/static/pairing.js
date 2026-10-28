@@ -46,8 +46,15 @@
       return headers;
     }
 
+    /* Callers hand over the PARSED 403 BODY ({detail}) — app.js's
+     * maybeOfferPairing has already gated on the HTTP status itself —
+     * or a {status, detail} pair. The detail is the byte-compared
+     * part; a status, when the object carries one at all, must be the
+     * 403 (T4 B3: requiring .status on a parsed body meant the hint
+     * could never appear on any write route). */
     function isNotPairedResponse(resp) {
-      return !!resp && resp.status === 403 && resp.detail === NOT_PAIRED_DETAIL;
+      if (!resp || resp.detail !== NOT_PAIRED_DETAIL) return false;
+      return resp.status === undefined || resp.status === 403;
     }
 
     /* ---- rendering (the whole card lives in #pairing-box) ---- */

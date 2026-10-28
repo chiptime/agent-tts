@@ -39,6 +39,7 @@ from .pairing import (
     PENDING_FILENAME,
     PairingStore,
     coerce_registry,
+    normalize_label,
 )
 
 EXIT_OK = 0
@@ -79,6 +80,18 @@ def _read_registry(state_dir: Path) -> dict:
 
 
 def cmd_pair(args, state_dir: Optional[Path] = None) -> int:
+    # An EXPLICIT label that cannot be pinned is an error, not a silent
+    # fall-back to the phone's label (T4 B4): the operator asked for a
+    # revoke handle and must hear that it cannot be minted — validated
+    # before anything is written.
+    if args.label is not None and normalize_label(args.label) is None:
+        print(
+            "error: --label must be 1-48 characters after trimming "
+            "(newlines and tabs collapse to spaces)",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+
     store = _store(state_dir)
     pending_path = store.state_dir / PENDING_FILENAME
     replaced = pending_path.exists()
@@ -165,7 +178,8 @@ def main(argv: Optional[Sequence[str]] = None, state_dir: Optional[Path] = None)
     pair_parser = sub.add_parser("pair", help="mint a one-time code the phone spends on POST /pair")
     pair_parser.add_argument(
         "--label",
-        help="pin the device label for the claim (the revoke handle); "
+        help="pin the device label for the claim (the revoke handle; "
+        "1-48 characters, else the command refuses); "
         "without it the phone chooses the label",
     )
 

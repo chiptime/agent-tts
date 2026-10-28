@@ -19,11 +19,14 @@ import logging
 import math
 import os
 import re
+import stat
 import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional, Union
+
+from .pairing import ensure_private_dir
 
 logger = logging.getLogger("herdr_brain.audit")
 
@@ -210,7 +213,15 @@ class AuditLog:
         with self._lock:
             if self._bytes is None:
                 try:
-                    self._bytes = os.stat(self._path).st_size
+                    info = os.stat(self._path)
+                    self._bytes = info.st_size
+                    # 0600 even for a file an older deployment left
+                    # looser: the trail may echo reply text (T4 B5).
+                    if (
+                        info.st_uid == os.geteuid()
+                        and stat.S_IMODE(info.st_mode) != 0o600
+                    ):
+                        os.chmod(self._path, 0o600)
                 except OSError:
                     self._bytes = 0  # missing or unreadable — write, don't lose
             if self._bytes >= self._max_bytes:
@@ -226,9 +237,10 @@ class AuditLog:
                     # trail beats a missing line.
             payload = line.encode("utf-8")
             # 0700 dir / 0600 file: the trail may echo reply text. Both
-            # modes carry no group/other bits, so the umask can only
-            # make them more restrictive.
-            self._path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            # modes carry no group/other bits, and ensure_private_dir
+            # RETIGHTENS a dir another feature created with the default
+            # umask (audio_dir nests under the state dir — T4 B5).
+            ensure_private_dir(self._path.parent)
             fd = os.open(
                 self._path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600
             )

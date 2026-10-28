@@ -369,3 +369,23 @@ def test_pair_route_takes_the_write_origin_gate_but_no_device_gates():
         "POST", "/pair", cfg, store,
     )
     assert refusal == "origin cruzado"
+
+
+def test_pair_without_origin_from_non_loopback_host_is_rejected():
+    """T4 B2: /pair mints a WRITE credential, so the write rule "no
+    Origin from a non-loopback Host" binds it too — the bootstrap is
+    exempt from the device gates, never from Host/Origin."""
+    cfg = gate_settings()
+    store = StubStore(devices=["phone"])
+    _, refusal = access.guard(
+        headers(host="node.tail1234.ts.net:8443"), "POST", "/pair", cfg, store
+    )
+    assert refusal == "origin requerido"
+    # The phone's real shape (browsers always send Origin on POST) and
+    # the operator's loopback shell both pass.
+    assert access.check_access(
+        headers(host="node.tail1234.ts.net:8443",
+                origin="https://node.tail1234.ts.net:8443"),
+        "pair", cfg,
+    ) is None
+    assert access.check_access(headers(host="127.0.0.1"), "pair", cfg) is None
