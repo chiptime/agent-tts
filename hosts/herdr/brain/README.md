@@ -86,6 +86,7 @@ daemons do not source them, so the env file is the single stable contract.
 | `HERDR_BRAIN_TRUSTED_USER` | *(empty)* | under `tailscale serve`, require a matching `Tailscale-User-Login`; a missing header is rejected too (fail-closed). `HERDR_BRAIN_TRUSTED_USER_OPTIONAL=1` tolerates the missing header |
 | `HERDR_BRAIN_DEVICE_HEADER` / `HERDR_BRAIN_DEVICE_ALLOWLIST` | *(empty)* | reverse-proxy device gate: when the header name is set, writes require an allowlisted value in it (absent header ⇒ read-only) |
 | `HERDR_BRAIN_AUDIT_CONTENT` | `preview` | audit-log content mode: `preview` keeps a 120-char single-line preview of reply text; `none` redacts every content string to the constant `⟨redacted⟩` (metadata such as outcomes, keys and revisions survives) — see [Audit log](#audit-log) |
+| `HERDR_BRAIN_SECRET_MASKING` | *(on)* | secret masking on outgoing text (S14): provider API keys, JWTs, PEM private-key blocks, `Authorization: Bearer` tokens, URL credentials and secret-named `KEY=value` assignments are replaced with hint placeholders (`sk-ant-…[masked]`, `[masked:jwt]`; spoken as "clave oculta") in the pane mirror, history pages, reading views, SSE announcements, the LLM live context and speech renders. Set to `off` (also `0`/`false`/`no`) to serve text verbatim; stored data is never rewritten |
 
 ### Empty agent reader
 
@@ -473,14 +474,19 @@ presses, one tap at a time, never auto-answered.
 ## Device pairing and the access gate
 
 Every route runs behind a fail-closed access gate (device pairing, F1), and
-every **write** route additionally requires a paired-device bearer token
-once at least one device is paired:
+once at least one device is paired, **every write AND every read** requires
+that device's bearer token (S11) — except the surfaces that must answer
+before any credential can exist: `/health`, the PWA shell and its static
+assets (`/`, `*.js`, `*.css`, icons, the manifest, the service worker),
+`POST /pair` (the bootstrap itself), `POST /approval/{id}/action` (keeps
+`HERDR_BRAIN_APPROVAL_TOKEN`, because ntfy cannot attach a device bearer)
+and the `/speech/{id}/*` transport (job-token bound, unchanged):
 
 - **Host allowlist (always on)** — the request's `Host` must be a loopback
   form, any `*.ts.net` name (so the phone's
   `https://<machine>.<tailnet>.ts.net:8443` access keeps working with no
-  new configuration), a `HERDR_BRAIN_ALLOWED_HOSTS` entry, or the host of
-  a `HERDR_BRAIN_ALLOWED_ORIGINS` origin. Anything else is a 403 before
+  new configuration), a `HERDR_BRAIN_ALLOWED_HOSTS` entry, or the host of a
+  `HERDR_BRAIN_ALLOWED_ORIGINS` origin. Anything else is a 403 before
   any other logic (anti DNS-rebinding). `HERDR_BRAIN_ALLOW_ANY_HOST=1` is
   the warned opt-out.
 - **Origin/CSRF** — an `Origin`, when present, must be same-origin with
@@ -496,34 +502,64 @@ once at least one device is paired:
   code (10 min TTL, 5 attempts, only its hash on disk). The phone spends
   it in **Ajustes → Emparejar** and receives a 256-bit bearer token shown
   exactly once; the PWA stores it in `localStorage` and attaches
-  `Authorization: Bearer` on every write fetch. `bin/herdr-brain devices
-  list` / `devices revoke <label>` manage the registry; a revocation
-  applies on the device's next request, no restart.
+  `Authorization: Bearer` on every fetch (reads included). `bin/herdr-brain
+  devices list` / `devices revoke <label>` manage the registry; a
+  revocation or an expiry change applies on the device's next request, no
+  restart.
+- **`/pair` rate limit** — at most 10 claim attempts per client address
+  per minute, then a 429 with a `Retry-After`; a refused attempt consumes
+  nothing (in-process budget, the pairing files stay untouched).
+  The service disables proxy-header rewriting so a caller cannot change
+  its limiter identity with `X-Forwarded-For`. Connections from a
+  co-located reverse proxy share that proxy's transport-peer budget.
+- **Token expiry (optional, per device)** — `bin/herdr-brain pair
+  --expires <dur>` enrols the claiming device with a deadline (counted
+  from pairing; `30d`, `12h`, `45m`, `90s` — one value, one unit),
+  `devices set-expiry <label> <dur>` arms or re-arms it and
+  `devices clear-expiry <label>` removes it (`devices list` shows the
+  deadline). An expired token answers 403 `dispositivo caducado` and the
+  PWA offers re-pairing; a registry entry from before the feature (no
+  `expiresAt`) never expires.
 
 **With no device paired, every route behaves exactly as before** — the
 requirement turns on with the first pairing. **Migration note:** pairing
-the first device removes write access from every unpaired client (the
-PWA offers the pairing flow on a "not paired" 403). `POST
-/approval/{id}/action` keeps `HERDR_BRAIN_APPROVAL_TOKEN` alone, because
-ntfy cannot attach a device bearer (and sends no `Origin`); write-gated
-routes are `/pane/reply`,
+the first device removes access from every unpaired client (the PWA
+offers the pairing flow on the "not paired" 403 — on reads too).
+`POST /approval/{id}/action` keeps `HERDR_BRAIN_APPROVAL_TOKEN` alone,
+because ntfy cannot attach a device bearer (and sends no `Origin`);
+write-gated routes are `/pane/reply`,
 `/pane/keys`, `/pane/permission/reply`, `/approval/{id}/approve|reject|resolve`,
 `PATCH /approval/{id}`, `/ask`, `/transcribe`, `/reset` and
 `/devices/revoke`.
+
+**EventSource and `<audio src>` cannot send headers**, so exactly
+`GET /events` and `GET /audio/{name}` also accept the credential as a
+`?device_token=` query parameter; the PWA appends it on those two
+transports only, and the gate ignores the parameter everywhere else —
+never on a write. The parameter never reaches the logs this project
+controls: the uvicorn access log runs through a redaction filter that
+rewrites any `device_token=` value out of the line (`log_config=None`
+keeps uvicorn from installing its own unfiltered access handler).
+Encoded parameter names and repeated token parameters are redacted too.
+After pairing or revocation, the PWA replaces its single event stream
+with one using the current credential; queued media uses the current
+credential when playback actually begins.
 
 The requirement fails CLOSED: a corrupt, truncated or entry-incomplete
 `paired-devices.json` keeps every write refused with no device
 authorized — only an absent file or a well-formed zero-device registry
 (the file revoking the last device writes) leaves writes open, and
 `herdr-brain pair` always recovers the state (a claim rewrites a valid
-registry). `pair --label` refuses an unusable label (empty after
-trimming, or over 48 characters) instead of silently letting the phone
-choose one; the state directory is retightened to `0700` (files `0600`)
-even when the nested audio directory created it first with the default
-umask.
+registry). A present-but-unusable `expiresAt` drops the entry (it never
+widens into "never expires"). `pair --label` refuses an unusable label
+(empty after trimming, or over 48 characters) instead of silently letting
+the phone choose one; the state directory is retightened to `0700`
+(files `0600`) even when the nested audio directory created it first
+with the default umask.
 
-Write routes on a blocked device answer 403 `dispositivo no emparejado`;
-revoked devices keep read access (`GET /herd`, `/view`, …).
+Routes on a blocked device answer 403 `dispositivo no emparejado` (or
+`dispositivo caducado`); a revoked or expired device loses reads and
+writes alike — the recovery is the pairing flow.
 
 Both permission routes above are PWA-only and carry the device bearer like
 every other write. `HERDR_BRAIN_APPROVAL_TOKEN` protects only the ntfy

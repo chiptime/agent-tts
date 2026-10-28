@@ -36,6 +36,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from .config import Settings
 from .herdr import AgentInfo, HerdrClient, HerdrError
+from .secrets_mask import mask_text
 from .transcripts import read_turns
 from .tts import new_audio_path
 from .view import SCREEN_TAIL_LINES, detect_pending
@@ -123,10 +124,14 @@ def clip_detail(text: Optional[str], cap: int) -> Optional[str]:
 
 
 def agent_label(agent: AgentInfo) -> str:
-    """Speakable label: agent kind plus short title or cwd basename."""
+    """Speakable label: agent kind plus short title or cwd basename.
+
+    Masked BEFORE the length cut (S14): a secret inside the cwd or
+    title must not survive the truncation as a partial prefix.
+    """
     base = Path(agent.cwd).name if agent.cwd else ""
     tail = base or (agent.title or "")
-    label = f"{agent.agent} {tail}".strip()
+    label = mask_text(f"{agent.agent} {tail}".strip())
     if len(label) > LABEL_MAX_CHARS:
         label = label[: LABEL_MAX_CHARS - 3].rstrip() + "..."
     return label or agent.agent
@@ -280,12 +285,14 @@ class AgentWatcher:
             except Exception:  # noqa: BLE001
                 turns = None
             if turns:
-                sentence = clip_detail(turns[-1].text, cap)
+                # Mask BEFORE clipping (S14): the cap could otherwise cut
+                # a credential into a half the detectors no longer match.
+                sentence = clip_detail(mask_text(turns[-1].text), cap)
                 if sentence:
                     return sentence
         screen = self._screen(agent)
         first_line = screen.splitlines()[0].strip() if screen else None
-        return clip_detail(first_line, cap) or FALLBACK_DETAIL
+        return clip_detail(mask_text(first_line), cap) if first_line else FALLBACK_DETAIL
 
     def _blocked_detail(self, agent: AgentInfo) -> str:
         cap = self._settings.announce_max_chars
@@ -293,12 +300,12 @@ class AgentWatcher:
         if screen:
             pending = detect_pending(screen, agent.status)
             if pending.detected and pending.excerpt:
-                return clip_detail(pending.excerpt, cap)
+                return clip_detail(mask_text(pending.excerpt), cap)
             first_line = next(
                 (ln.strip() for ln in screen.splitlines() if ln.strip()), None
             )
             if first_line:
-                return clip_detail(first_line, cap)
+                return clip_detail(mask_text(first_line), cap)
         return FALLBACK_DETAIL
 
     def _screen(self, agent: AgentInfo) -> Optional[str]:

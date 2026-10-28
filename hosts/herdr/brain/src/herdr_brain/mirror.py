@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Optional
 
 from .config import MAX_SCREEN_LINES
+from .secrets_mask import mask_runs
 from .view import ansi_runs
 
 #: Lines a mirror read asks for when the client names none.
@@ -42,8 +43,14 @@ def mirror_payload(
     status: Optional[str],
     styled_screen: Optional[str],
 ) -> dict:
-    """Shapes the /pane/{id}/mirror body from one styled screen read."""
-    runs = ansi_runs(styled_screen) if styled_screen else []
+    """Shapes the /pane/{id}/mirror body from one styled screen read.
+
+    Secrets are masked on the JOINED line text (so a credential split
+    across styled runs is caught) and the line is re-split preserving
+    every style — the operator sees what the pane showed, minus any
+    credential that happened to be on it (S14).
+    """
+    runs = mask_runs(ansi_runs(styled_screen)) if styled_screen else []
     return {
         "pane_id": pane_id,
         "agent": agent,

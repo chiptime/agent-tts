@@ -29,6 +29,7 @@ from .approval import ApprovalGate, ApprovalGateStore, CREATE_SESSION, SEND_TO_S
 from .config import Settings
 from .herdr import AgentInfo, HerdrError
 from .memory import ConversationStore, clip_content
+from .secrets_mask import mask_text
 from .tools import BrainTools, TOOLS_SCHEMA
 from .view import (
     PendingAction,
@@ -120,7 +121,9 @@ def build_live_context(
             lines.append(_pending_hint_line(active, pending))
         if dialog is not None:
             lines.append(_dialog_hint_line(active, dialog))
-    return "\n".join(lines)
+    # One pass over the finished block (S14): screen excerpts, dialog
+    # labels, titles and cwd leave for the provider masked.
+    return mask_text("\n".join(lines))
 
 
 _PENDING_KIND_PHRASES = {
@@ -414,8 +417,10 @@ class BrainLLM:
         messages: List[Dict[str, Any]] = [
             {"role": "system", "content": f"{SYSTEM_PROMPT}\n\n{live}"},
             # The store keeps turns in full (display reads them unclipped);
-            # the LLM prompt is where the token budget is enforced.
-            *[{"role": m.role, "content": clip_content(m.content)}
+            # the LLM prompt is where the token budget is enforced. Each
+            # turn is masked BEFORE the clip so a secret at the clip edge
+            # cannot half-survive into the provider request (S14).
+            *[{"role": m.role, "content": clip_content(mask_text(m.content))}
               for m in store.history(key)],
             {"role": "user", "content": question},
         ]
@@ -429,7 +434,12 @@ class BrainLLM:
                     raise TurnCancelled("client disconnected before the model round")
                 response = provider.create(
                     model=self._settings.glm_model,
-                    messages=messages,
+                    # Provider boundary (S14): EVERY outbound request
+                    # carries a masked copy — live context, ring history,
+                    # the user turn, tool results and the model's own
+                    # echoed call arguments. The working `messages` list
+                    # and every store keep their raw bytes.
+                    messages=self._masked_for_provider(messages),
                     tools=TOOLS_SCHEMA,
                     tool_choice="auto",
                 )
@@ -478,12 +488,46 @@ class BrainLLM:
         store.append(key, "assistant", answer)
 
         return {
-            "answer": answer,
+            # The answer leaves masked (S14) — it is the /ask response
+            # text and the spoken render — while the ring above keeps
+            # the raw model output for internal continuity.
+            "answer": mask_text(answer),
             "pane_id": target.pane_id if target else None,
             "agent": target.agent if target else None,
             "session_id": key,
             "approval": opened_gate,
         }
+
+    @staticmethod
+    def _masked_for_provider(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Masked deep copy of one provider request's messages (S14).
+
+        Copies every message dict; nothing internal is rewritten. Tool
+        result contents and the model's echoed call arguments are
+        masked too — arguments used for authorization/execution are
+        parsed and dispatched from the RAW call objects before this
+        copy is ever built, so masking here cannot alter an action.
+        """
+        out: List[Dict[str, Any]] = []
+        for message in messages:
+            masked = dict(message)
+            content = masked.get("content")
+            if isinstance(content, str) and content:
+                masked["content"] = mask_text(content)
+            calls = masked.get("tool_calls")
+            if isinstance(calls, list):
+                safe_calls = []
+                for call in calls:
+                    safe = dict(call)
+                    function = dict(call.get("function") or {})
+                    arguments = function.get("arguments")
+                    if isinstance(arguments, str) and arguments:
+                        function["arguments"] = mask_text(arguments)
+                    safe["function"] = function
+                    safe_calls.append(safe)
+                masked["tool_calls"] = safe_calls
+            out.append(masked)
+        return out
 
     def _live_context(self, target: Optional[AgentInfo]) -> str:
         """Builds the live block for the selected pane, best-effort."""

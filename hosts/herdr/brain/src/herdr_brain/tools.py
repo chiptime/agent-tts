@@ -47,6 +47,7 @@ from .history_view import (
 )
 from .memory import clip_content
 from .mirror import clamp_lines, mirror_payload
+from .secrets_mask import mask_runs, mask_text
 from .transcripts import (
     Turn,
     connector_for,
@@ -126,7 +127,12 @@ def sanitize_agent_name(title: str) -> str:
 
 
 def status_payload(active: Optional[AgentInfo]) -> dict:
-    """Shapes the active-pane status shared by /state and /view."""
+    """Shapes the active-pane status shared by /state and /view.
+
+    Free-text metadata (title, cwd) is masked at this display seam
+    (S14): a recognized secret inside either still renders as a hint
+    placeholder, while the lookup ids stay exact.
+    """
     if active is None:
         return {
             "active": False,
@@ -142,8 +148,8 @@ def status_payload(active: Optional[AgentInfo]) -> dict:
         "pane_id": active.pane_id,
         "agent": active.agent,
         "agent_status": active.status,
-        "title": active.title,
-        "cwd": active.cwd,
+        "title": mask_text(active.title) if active.title else active.title,
+        "cwd": mask_text(active.cwd) if active.cwd else active.cwd,
         "session_id": active.session_value,
     }
 
@@ -241,7 +247,12 @@ class BrainTools:
         turn = self._latest_turn(agent)
         if turn is None:
             return None
-        return {"role": turn.role, "text": truncate_text(turn.text, HERD_LAST_TURN_CHARS)}
+        # Mask BEFORE clipping so a secret cut at the excerpt boundary
+        # cannot half-survive (S14).
+        return {
+            "role": turn.role,
+            "text": truncate_text(mask_text(turn.text), HERD_LAST_TURN_CHARS),
+        }
 
     def herd(self, now: Optional[datetime] = None) -> list:
         """Every agent pane with status, latest turn and how long ago it was.
@@ -267,7 +278,7 @@ class BrainTools:
                 if turn is None
                 else {
                     "role": turn.role,
-                    "text": truncate_text(turn.text, HERD_LAST_TURN_CHARS),
+                    "text": truncate_text(mask_text(turn.text), HERD_LAST_TURN_CHARS),
                 }
             )
             entries.append(
@@ -275,8 +286,9 @@ class BrainTools:
                     "pane_id": agent.pane_id,
                     "agent": agent.agent,
                     "agent_status": agent.status,
-                    "title": agent.title,
-                    "cwd": agent.cwd,
+                    # Display metadata masked (S14); ids stay exact.
+                    "title": mask_text(agent.title) if agent.title else agent.title,
+                    "cwd": mask_text(agent.cwd) if agent.cwd else agent.cwd,
                     "session_id": agent.session_value if agent.session_kind == "id" else None,
                     "focused": agent.focused,
                     "last_turn": last_turn,
@@ -325,7 +337,12 @@ class BrainTools:
         if not turns:
             return None
         return [
-            {"role": turn.role, "text": truncate_text(turn.text, VIEW_TEXT_TRUNCATE)}
+            {
+                "role": turn.role,
+                # Mask before the view clip (S14): a secret spanning the
+                # 300-char cut must not leak its surviving half.
+                "text": truncate_text(mask_text(turn.text), VIEW_TEXT_TRUNCATE),
+            }
             for turn in turns
         ]
 
@@ -355,17 +372,19 @@ class BrainTools:
                 # one assistant turn as SEVERAL messages (one per tool-loop
                 # step), so the reading view would render every narration
                 # fragment as its own turn — fragments typically end in ":"
-                # right before a tool call.
+                # right before a tool call. Turn text is masked at this
+                # output boundary (S14).
                 for turn in raw:
+                    safe_text = mask_text(turn.text)
                     if turns and turns[-1]["role"] == turn.role:
-                        turns[-1]["text"] += "\n\n" + turn.text
+                        turns[-1]["text"] += "\n\n" + safe_text
                     else:
-                        turns.append({"role": turn.role, "text": turn.text})
+                        turns.append({"role": turn.role, "text": safe_text})
         return {
             "pane_id": target.pane_id,
             "agent": target.agent,
             "session_id": target.session_value or None,
-            "title": target.title,
+            "title": mask_text(target.title) if target.title else target.title,
             "turns": turns,
             "window": CONVERSATION_WINDOW,
         }
@@ -390,10 +409,12 @@ class BrainTools:
                 text = self._herdr.read_screen(target.pane_id, MAX_SCREEN_LINES)
             except HerdrError:
                 text = None
+        screen = text if text and text.strip() else None
         return {
             "pane_id": target.pane_id,
             "agent": target.agent,
-            "screen": text if text and text.strip() else None,
+            # Reading-view boundary (S14): scrollback leaves masked.
+            "screen": mask_text(screen) if screen else None,
         }
 
     def history_page(
@@ -444,7 +465,7 @@ class BrainTools:
                 "pane_id": target.pane_id,
                 "agent": target.agent,
                 "session_id": session_id,
-                "title": target.title,
+                "title": mask_text(target.title) if target.title else target.title,
             }
         )
         return page
@@ -483,6 +504,12 @@ class BrainTools:
 
         pending = detect_pending(screen or "", target.status if target else "")
 
+        # Output masking (S14): detection keeps reading the RAW screen
+        # (the heuristic is unchanged), every field that leaves for the
+        # PWA is masked below — screen text, styled runs, the parsed
+        # dialog and the pending excerpt.
+        safe_screen = mask_text(screen) if screen else None
+
         # A blocked pane is waiting at a dialog. Read it WITH styling so the
         # PWA can show which option is highlighted: that information exists
         # only as colour/attribute, and the plain-text screen throws it away.
@@ -491,14 +518,16 @@ class BrainTools:
         screen_runs: Optional[list] = None
         dialog = None
         if target is not None and (target.status or "").strip().lower() == "blocked":
-            screen_runs, wide_text = self._dialog_runs(target)
+            raw_runs, wide_text = self._dialog_runs(target)
+            screen_runs = mask_runs(raw_runs) if raw_runs else raw_runs
             # Parse from the WIDE read: the plain screen tail is only 12
             # lines and a tall question tool does not fit in it, so the
             # question line would be cut and the parse would fail. The
             # runs already carry the escape-stripped text, so this costs
             # no extra subprocess. Claims nothing about which option is
             # selected.
-            dialog = parse_dialog(wide_text or screen or None, screen_runs=screen_runs)
+            safe_wide = mask_text(wide_text) if wide_text else wide_text
+            dialog = parse_dialog(safe_wide or safe_screen or None, screen_runs=screen_runs)
             if dialog is not None:
                 # Same selection discipline as the voice path: marker
                 # first, else the single ANSI-backgrounded option line.
@@ -507,13 +536,13 @@ class BrainTools:
         return {
             "status": status_payload(target),
             "transcript": transcript,
-            "screen": screen,
+            "screen": safe_screen,
             "screen_runs": screen_runs,
             "dialog": dialog,
             "pending": {
                 "detected": pending.detected,
                 "kind": pending.kind,
-                "excerpt": pending.excerpt,
+                "excerpt": mask_text(pending.excerpt) if pending.excerpt else None,
             },
         }
 
@@ -825,8 +854,9 @@ class BrainTools:
                     "pane_id": agent.pane_id,
                     "agent": agent.agent,
                     "status": agent.status,
-                    "title": agent.title,
-                    "cwd": agent.cwd,
+                    # Display metadata masked (S14); ids stay exact.
+                    "title": mask_text(agent.title) if agent.title else agent.title,
+                    "cwd": mask_text(agent.cwd) if agent.cwd else agent.cwd,
                     "session_id": agent.session_value if agent.session_kind == "id" else None,
                     "focused": agent.focused,
                 }

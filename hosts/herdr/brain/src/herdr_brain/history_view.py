@@ -17,6 +17,7 @@ import binascii
 import json
 from typing import List, Optional
 
+from .secrets_mask import mask_text
 from .transcripts import Turn
 
 #: Page size the PWA history view asks for first (matches its initial
@@ -65,7 +66,9 @@ def decode_cursor(token: Optional[str]) -> int:
 def _turn_dict(turn: Turn) -> dict:
     return {
         "role": turn.role,
-        "text": turn.text,
+        # Output concern only (S14): the page masks, the store never
+        # rewrites a byte.
+        "text": mask_text(turn.text),
         "created_at": turn.created_at.isoformat() if turn.created_at else None,
     }
 
