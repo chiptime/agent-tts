@@ -1,4 +1,4 @@
-"""Access gate (Panel parity F1, doc 01 §2-§4): Host allowlist
+"""Access gate (doc 01 §2-§4): Host allowlist
 (fail-closed), Origin/CSRF same-origin rules, optional Tailscale
 identity, optional proxy device header, and the write/read route
 classification — with the distinct 403 texts of doc 01 §5.
@@ -88,7 +88,7 @@ def test_hosts_derived_from_allowed_origins_are_allowed():
 
 def test_allow_any_host_is_the_documented_opt_out():
     # The pure host matcher stays fail-closed; the opt-out is applied by
-    # check_access before it (Panel's isHostAllowed/checkAccess split).
+    # check_access before it (the is_host_allowed/check_access split).
     assert access.is_host_allowed("evil.example", gate_settings()) is False
     cfg = gate_settings(allow_any_host=True)
     assert access.check_access(headers(host="evil.example"), "read", cfg) is None
@@ -149,8 +149,8 @@ def test_read_without_origin_passes_from_allowed_hosts():
 
 
 def test_loopback_origin_on_a_non_loopback_host_is_allowed():
-    # Panel parity: localhost origins (dev server pages driving the
-    # loopback-deployed bridge) stay allowed.
+    # localhost origins (dev-server pages driving the tailnet-deployed
+    # brain) stay allowed.
     cfg = gate_settings()
     assert access.check_access(
         headers(host="node.tail1234.ts.net:8443", origin="http://localhost:5173"),

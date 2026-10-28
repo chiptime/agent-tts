@@ -1,4 +1,4 @@
-/* node --test suite for the PWA device pairing module (Panel parity F1).
+/* node --test suite for the PWA device pairing module.
  *
  * The fake DOM implements only the surface pairing.js touches (the same
  * plain-object approach as toast.test.js: no jsdom, no dependencies).

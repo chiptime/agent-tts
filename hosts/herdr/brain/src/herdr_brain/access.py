@@ -1,6 +1,8 @@
-"""Access gate for the brain's HTTP surface (Panel parity F1, doc 01 §2-§5).
+"""Access gate for the brain's HTTP surface (doc 01 §2-§5).
 
-Three independent doors that compose by AND on every WRITE route:
+The brain answers one phone over one tailnet, and every guard here
+exists because that perimeter alone is not an identity. Three
+independent doors compose by AND on every WRITE route:
 
 1. ``check_access`` — Host allowlist (fail-closed, anti DNS-rebinding),
    Origin same-origin rule (anti CSRF) and the optional Tailscale

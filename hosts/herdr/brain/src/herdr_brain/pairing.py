@@ -1,18 +1,26 @@
-"""Device pairing: a credential the device holds (Panel parity F1, doc 01).
+"""Device pairing: a write credential the phone itself holds.
 
-Port of ``panel:bridge/pairing.ts``. ``bin/herdr-brain pair`` mints a
-one-time code, writes only its SHA-256 under
-``<HERDR_BRAIN_STATE_DIR>/pairing-pending.json`` and prints the code to
-the operator's terminal. The phone posts ``{code,label}`` to ``POST
-/pair``, which mints a 256-bit token, stores only ITS SHA-256 in
-``paired-devices.json`` and returns the token exactly once. The write
-requirement turns on with the first pairing and turns off again only
-for an absent registry or a well-formed zero-device one — a corrupt
-file fails CLOSED, enforcement on with nobody authorized (doc 01
-AC10).
+The brain's surface is driven from a phone — a PWA that can ask the
+server to type into a live terminal. A write of that weight needs a
+credential the DEVICE owns, not one the network asserts: a tailnet
+name says where a request arrived from, never which pocket it left.
+This module is that credential's whole lifecycle.
 
-Times are epoch seconds throughout. JSON keys keep Panel's camelCase
-field names so the on-disk documents match the reference format.
+Enrolment is a bootstrap problem — the phone asking to be paired is
+the one party that cannot yet prove anything — so it runs out of
+band. The operator's terminal mints a one-time code
+(``bin/herdr-brain pair``) and prints it; only its SHA-256 is written
+under ``<HERDR_BRAIN_STATE_DIR>/pairing-pending.json``. The phone
+posts ``{code,label}`` to ``POST /pair``, which mints a 256-bit
+token, stores only ITS SHA-256 in ``paired-devices.json`` and returns
+the token exactly once. The write requirement turns on with the first
+pairing and turns off again only for an absent registry or a
+well-formed zero-device one — a corrupt file fails CLOSED, enforcement
+on with nobody authorized (doc 01 AC10).
+
+Times are epoch seconds throughout. JSON keys are camelCase — the
+on-disk shape these state files already carry; a different spelling
+would orphan every registry an existing deployment has written.
 """
 
 from __future__ import annotations
@@ -49,8 +57,6 @@ CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTWXYZ"
 SEEN_THROTTLE_S = 60.0
 
 _TOKEN_BYTES = 32  # 256-bit bearer tokens.
-
-EMPTY_REGISTRY: dict = {"devices": []}
 
 DEFAULT_STATE_DIR = "~/.local/state/herdr-brain"
 

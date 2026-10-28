@@ -1,4 +1,4 @@
-"""Device pairing state module (Panel parity F1, doc 01 §1).
+"""Device pairing state module (doc 01 §1).
 
 Pure decisions and the on-disk store under HERDR_BRAIN_STATE_DIR:
 hash-only persistence, TTL/attempt-bounded codes, defensive coercion,
@@ -536,7 +536,7 @@ def test_cli_devices_revoke_unknown_label_fails_with_the_paired_names(
     store.claim(minted["code"], "phone")
 
     # Unknown label is a plain failure (USAGE is reserved for a missing
-    # argument), matching Panel's devices revoke.
+    # argument), so a script can tell "bad label" from "no label".
     code = run_cli(["devices", "revoke", "ghost"], monkeypatch, state)
     assert code == 1
     err = capsys.readouterr().err

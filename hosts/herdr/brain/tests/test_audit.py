@@ -1,4 +1,4 @@
-"""Audit trail unit surface (Panel parity F1, doc 02): the pure JSONL
+"""Audit trail unit surface (doc 02): the pure JSONL
 line format (byte-stable, injected clock), sanitization/redaction, the
 ``HERDR_BRAIN_AUDIT_CONTENT`` knob, file modes, single-generation
 rotation and the fire-and-forget writer that never raises.
@@ -64,8 +64,7 @@ def test_optional_fields_are_omitted_not_null():
 
 
 def test_preview_collapses_newlines_and_truncates_at_120():
-    # Every newline run becomes one space — including a trailing one,
-    # exactly like Panel's replace(/[\r\n]+/g, " ").
+    # Every newline run becomes one space — including a trailing one.
     out = sanitize({"text": "line one\nline two\r\n\r\nend\n"})
     assert out["text"] == "line one line two end "
     out = sanitize({"text": "single line"})

@@ -1,11 +1,13 @@
-/* herdr-brain PWA device pairing (Panel parity F1, doc 01 §6).
+/* herdr-brain PWA device pairing.
  *
- * The phone's half of pairing: spend the one-time code the operator
- * reads off `herdr-brain pair`, keep the returned bearer token in
- * localStorage and attach it as `Authorization: Bearer` on every write
- * fetch (app.js wires authHeaders into its wrappers). The code is
- * minted on the TERMINAL, never in this UI — a "pair this device"
- * button would be authorised by nothing.
+ * The phone's half of the credential the brain's write routes require:
+ * spend the one-time code the operator reads off `herdr-brain pair`,
+ * keep the returned bearer token in localStorage and attach it as
+ * `Authorization: Bearer` on every write fetch (app.js wires
+ * authHeaders into its wrappers). The code is minted on the TERMINAL,
+ * never in this UI — a "pair this device" button would be authorised
+ * by nothing, because the phone asking to be paired is the one party
+ * that cannot yet prove anything.
  *
  * Pure DOM module in the toast.js/approval.js shape: no dependencies,
  * every seam (request, storage, doc, openSettings, onPaired) injected

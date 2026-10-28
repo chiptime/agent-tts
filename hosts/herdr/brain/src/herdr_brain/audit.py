@@ -1,5 +1,4 @@
-"""Append-only JSONL audit trail of write-level actions (Panel parity
-F1, doc 02). Port of ``panel:bridge/audit.ts``.
+"""Append-only JSONL audit trail of write-level actions (doc 02).
 
 Every write the brain accepts can type into a real terminal or resolve a
 frozen gate, so who-did-what-when is recorded as one JSONL line per
@@ -31,7 +30,7 @@ from .pairing import ensure_private_dir
 logger = logging.getLogger("herdr_brain.audit")
 
 # Cap on any single string value written into a line — a 2 000-char
-# reply becomes a 120-char preview (exact Panel parity, L4).
+# reply becomes a 120-char preview (doc 02, L4).
 MAX_STR = 120
 
 # How much of a value's CONTENT the trail keeps. "preview" (default): a
@@ -143,9 +142,9 @@ def format_audit_line(entry: dict, now: float, content: str = DEFAULT_AUDIT_CONT
 
     Pure — ``now`` (epoch seconds) is injected so tests are
     deterministic. Stable field order (ts, action, pane_id?, session_id?,
-    device?, detail); optional attribution is omitted (not null) when
-    absent, exactly as Panel omits absent attributes. ``ts`` is ISO
-    8601 UTC.
+    device?, detail); optional attribution is OMITTED rather than
+    written as null, so a line says exactly what is known. ``ts`` is
+    ISO 8601 UTC.
     """
     line: dict = {
         "ts": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
@@ -163,7 +162,7 @@ def format_audit_line(entry: dict, now: float, content: str = DEFAULT_AUDIT_CONT
 
 # Cap on the live ``audit.log`` before it rotates. Not an env var and
 # not a config key: a knob whose only wrong setting is "unbounded" is
-# not a choice worth offering (Panel's rule, kept).
+# not a choice worth offering.
 AUDIT_MAX_BYTES = 5 * 1024 * 1024
 
 
@@ -175,8 +174,8 @@ class AuditLog:
     entry can never break the user action it was auditing. Appends are
     serialized behind a lock because the size is tracked in memory
     (seeded by one stat, incremented per line) — interleaved writes
-    would make that counter fiction; the lock is the Python equivalent
-    of Panel's chained promises.
+    would make that counter fiction, so the lock is what keeps the
+    rotation decision honest.
     """
 
     def __init__(
