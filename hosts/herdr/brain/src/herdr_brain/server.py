@@ -185,55 +185,6 @@ def bearer_or_query_token(request: Request) -> str:
     return request.query_params.get("token", "")
 
 
-# ntfy action buttons (F5 / HT-04) can only fire a plain HTTP request with a
-# free-form body, so the action route accepts the decision in any of the
-# shapes a phone can send. Only these two words are ever accepted.
-_ACTION_DECISIONS = {"approve": DECISION_APPROVE, "reject": DECISION_REJECT}
-
-
-def _decision_word(value: object) -> Optional[str]:
-    if isinstance(value, str) and value.strip().lower() in _ACTION_DECISIONS:
-        return value.strip().lower()
-    return None
-
-
-def parse_action_decision(raw: bytes, query_decision: Optional[str] = None) -> Optional[str]:
-    """Extracts approve/reject from an ntfy action request, or ``None``.
-
-    Accepted: ``?decision=``, a bare word body (``approve``), a JSON object
-    (``{"decision": "approve"}``) or a JSON string, and a form body
-    (``decision=approve``) regardless of the Content-Type the phone sent.
-    """
-    if query_decision is not None:
-        return _decision_word(query_decision)
-    text = raw.decode("utf-8", errors="replace").strip()
-    if not text:
-        return None
-    word = _decision_word(text)
-    if word is not None:
-        return word
-    try:
-        payload = json.loads(text)
-    except ValueError:
-        payload = None
-    if isinstance(payload, dict):
-        return _decision_word(payload.get("decision"))
-    if isinstance(payload, str):
-        return _decision_word(payload)
-    values = parse_qs(text).get("decision")
-    return _decision_word(values[0]) if values else None
-
-
-def bearer_or_query_token(request: Request) -> str:
-    """The credential a request presents: ``Authorization: Bearer`` first,
-    ``?token=`` as the fallback ntfy ``view``-less clients can use. Returns
-    "" when none is presented."""
-    scheme, _, value = request.headers.get("authorization", "").partition(" ")
-    if scheme.lower() == "bearer":
-        return value.strip()
-    return request.query_params.get("token", "")
-
-
 def approval_payload(gate: ApprovalGate, timeout_s: int, now: Optional[float] = None) -> dict:
     """Shapes the ``approval{}`` object of /ask (and approval endpoints).
 
