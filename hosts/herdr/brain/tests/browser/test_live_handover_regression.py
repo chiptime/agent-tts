@@ -100,7 +100,7 @@ class Device:
               const real = window.fetch.bind(window);
               window.fetch = async (input, opts) => {
                 const response = await real(input, opts);
-                if (input === '/call/context' && !opts) {
+                if (input === '/call/context' && !(opts && opts.method)) {
                   const data = await response.json();
                   window.bootSnapshot = data;
                   await new Promise(resolve => { window.releaseBoot = resolve; });
