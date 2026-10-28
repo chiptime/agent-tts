@@ -13,6 +13,7 @@ from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path
 from typing import Optional, Union
 
+from .audit import AUDIT_CONTENTS, DEFAULT_AUDIT_CONTENT
 from .pairing import DEFAULT_STATE_DIR
 
 DEFAULT_GLM_BASE_URL = "https://api.z.ai/api/paas/v4/"
@@ -221,6 +222,13 @@ class Settings:
     # write must carry an allowlisted value in the named header.
     device_header: str = ""
     device_allowlist: tuple = ()
+    # ── Audit trail (Panel parity F1, doc 02) ──
+    # HERDR_BRAIN_AUDIT_CONTENT: "preview" keeps a bounded single-line
+    # preview of content fields in each audit line; "none" redacts every
+    # content string to the constant ⟨redacted⟩ (the metadata allowlist
+    # in audit.py survives). Appended WITH a default like every knob
+    # above: tests construct Settings(**SETTINGS_KWARGS).
+    audit_content: str = DEFAULT_AUDIT_CONTENT
 
     def __post_init__(self):
         # Accept plain strings for path fields regardless of the caller.
@@ -322,6 +330,17 @@ def load_settings(env: Optional[dict] = None) -> Settings:
             f"expected one of {', '.join(STT_BACKENDS)}"
         )
 
+    # Audit content mode: same loud-failure rule — a typo must never
+    # silently switch redaction off (or on).
+    raw_audit_content = getenv(
+        "HERDR_BRAIN_AUDIT_CONTENT", DEFAULT_AUDIT_CONTENT
+    ).strip().lower()
+    if raw_audit_content not in AUDIT_CONTENTS:
+        raise ValueError(
+            f"invalid HERDR_BRAIN_AUDIT_CONTENT value {raw_audit_content!r}: "
+            f"expected one of {', '.join(AUDIT_CONTENTS)}"
+        )
+
     return Settings(
         herdr_bin=getenv("HERDR_BIN", "herdr"),
         glm_api_key=getenv("GLM_API_KEY") or None,
@@ -379,4 +398,5 @@ def load_settings(env: Optional[dict] = None) -> Settings:
         trusted_user_optional=_flag(environ, "HERDR_BRAIN_TRUSTED_USER_OPTIONAL"),
         device_header=getenv("HERDR_BRAIN_DEVICE_HEADER").strip(),
         device_allowlist=_split_csv(getenv("HERDR_BRAIN_DEVICE_ALLOWLIST")),
+        audit_content=raw_audit_content,
     )

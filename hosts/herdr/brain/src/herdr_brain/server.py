@@ -52,6 +52,7 @@ from .approval_lexicon import (
     resolve_utterance,
 )
 from . import access as access_module
+from .audit import AuditLog
 from .config import Settings
 from .consult import ConsultService
 from .herdr import MAX_SEND_KEYS, SEND_KEY_ALLOWLIST, HerdrError
@@ -689,6 +690,36 @@ def create_app(
     # every route behaves exactly as before (S7).
     pairing_store = PairingStore(cfg.state_dir)
 
+    # Audit trail (Panel parity F1, doc 02): one JSONL line per write
+    # action at <state_dir>/audit.log. Lazy like the pairing store —
+    # boot touches no disk — and record() never raises, so the audited
+    # action can never be failed by it.
+    audit_log = AuditLog(cfg.state_dir / "audit.log", content=cfg.audit_content)
+
+    def audit_device(request: Optional[Request]) -> Optional[str]:
+        """The paired-device label the access middleware resolved for
+        this request, or None on channels that carry no device identity
+        (the ntfy action route never presents a device bearer)."""
+        return getattr(request.state, "device", None) if request is not None else None
+
+    def audit_gate_decision(
+        action: str,
+        gate: ApprovalGate,
+        device: Optional[str],
+        extra: Optional[dict] = None,
+    ) -> None:
+        """One audit line for a gate decision: gate_id, tool and the
+        revision the decision applied to (the NEW revision on patch)."""
+        detail = {"gate_id": gate.gate_id, "tool": gate.tool, "revision": gate.revision}
+        if extra:
+            detail.update(extra)
+        audit_log.record({
+            "action": action,
+            "pane_id": gate.action.pane_id,
+            "device": device,
+            "detail": detail,
+        })
+
     # Approval dialogs (opencode): the agent cannot be reached with a prompt
     # while it waits at one, so the PWA answers through opencode's own
     # permission API. Injectable like every other seam; the client is inert
@@ -1308,6 +1339,16 @@ def create_app(
         # waiting_llm before the LLM loop starts so a cancel can land
         # while the model is still thinking.
         job, degraded = _admit_speech_job(body, speech_jobs)
+        # Voice-channel traceability (doc 02 §3): exactly one line per
+        # accepted turn, with the utterance LENGTH and the target pane —
+        # never the transcript (same rule as Panel's stt route).
+        audit_log.record({
+            "action": "ask",
+            "pane_id": body.pane_id,
+            "session_id": body.session_id,
+            "device": audit_device(request),
+            "detail": {"chars": len(body.text)},
+        })
         disconnect_event = threading.Event()
 
         def run_turn() -> dict:
@@ -1615,7 +1656,7 @@ def create_app(
             time.sleep(_speech.SPEECH_NEXT_POLL_S)
 
     @app.post("/pane/reply")
-    def pane_reply(body: PaneReplyRequest) -> dict:
+    def pane_reply(request: Request, body: PaneReplyRequest) -> dict:
         """Delivers a user-typed reply straight to one exact pane.
 
         No LLM and no approval gate: the text is the user's own keyboard
@@ -1627,6 +1668,12 @@ def create_app(
         """
         result = tools.reply_to_pane(body.pane_id, body.text)
         outcome = result["outcome"]
+        audit_log.record({
+            "action": "pane.reply",
+            "pane_id": body.pane_id,
+            "device": audit_device(request),
+            "detail": {"outcome": outcome, "text": body.text},
+        })
         if outcome == "delivered":
             return {"ok": True, "pane_id": body.pane_id}
         if outcome == "blocked":
@@ -1644,7 +1691,7 @@ def create_app(
         )
 
     @app.post("/pane/keys")
-    def pane_keys(body: PaneKeysRequest) -> dict:
+    def pane_keys(request: Request, body: PaneKeysRequest) -> dict:
         """Answers a BLOCKED agent's dialog with logical key presses.
 
         ``herdr agent prompt`` refuses an agent waiting at an approval or
@@ -1657,6 +1704,15 @@ def create_app(
         """
         result = tools.send_keys_to_pane(body.pane_id, body.keys)
         outcome = result["outcome"]
+        # The keys come from a closed allowlist of 7 values — metadata,
+        # not content — so they survive redaction like every other
+        # allowlisted field.
+        audit_log.record({
+            "action": "pane.keys",
+            "pane_id": body.pane_id,
+            "device": audit_device(request),
+            "detail": {"outcome": outcome, "keys": body.keys},
+        })
         if outcome == "sent":
             return {"ok": True, "pane_id": body.pane_id}
         status = 404 if outcome == "unknown_pane" else 502
@@ -1698,7 +1754,7 @@ def create_app(
         }
 
     @app.post("/pane/permission/reply")
-    def pane_permission_reply(body: PermissionReplyRequest) -> dict:
+    def pane_permission_reply(request: Request, body: PermissionReplyRequest) -> dict:
         """Answers one opencode approval dialog, for one exact pane.
 
         PWA-only by construction — the same capability as an LLM tool would
@@ -1722,6 +1778,14 @@ def create_app(
             permissions_client.reply(body.request_id, body.reply, session_id)
         except OpenCodeError as exc:
             raise _opencode_http_error(exc) from exc
+        # ``reply`` comes from a closed enum and ``request_id`` names the
+        # answered dialog — metadata, never content.
+        audit_log.record({
+            "action": "pane.permission.reply",
+            "pane_id": body.pane_id,
+            "device": audit_device(request),
+            "detail": {"reply": body.reply, "request_id": body.request_id},
+        })
         return {"ok": True}
 
     # ── Device pairing (Panel parity F1; access.py classifies the
@@ -1730,7 +1794,7 @@ def create_app(
     # bootstrap on one would make pairing unreachable. ──────────────
 
     @app.post("/pair")
-    def pair(body: PairRequest) -> dict:
+    def pair(request: Request, body: PairRequest) -> dict:
         """Exchange ``{code,label}`` for a one-time bearer token.
 
         The credential this route hands out is worthless without a code
@@ -1746,6 +1810,11 @@ def create_app(
         status, outcome = pairing_store.claim(body.code, label)
         if status != "ok":
             raise HTTPException(status_code=400, detail=outcome)
+        audit_log.record({
+            "action": "pair",
+            "device": audit_device(request),  # set only when a paired device re-pairs
+            "detail": {"label": outcome["label"]},
+        })
         return {"token": outcome["token"], "label": outcome["label"]}
 
     def _devices_payload(request: Request) -> dict:
@@ -1784,10 +1853,15 @@ def create_app(
             raise HTTPException(status_code=422, detail="label must be 1-48 usable characters")
         if not pairing_store.revoke(label):
             raise HTTPException(status_code=404, detail="no paired device with that label")
+        audit_log.record({
+            "action": "device.revoke",
+            "device": audit_device(request),
+            "detail": {"label": label},
+        })
         return _devices_payload(request)
 
     @app.post("/approval/{gate_id}/approve")
-    def approval_approve(gate_id: str) -> dict:
+    def approval_approve(gate_id: str, request: Request) -> dict:
         """Replays the frozen send exactly once and reports the outcome.
 
         Same response shape as /ask (report answer + TTS audio_url). The
@@ -1798,15 +1872,17 @@ def create_app(
         resolved, applied = approval_store.resolve(gate_id, DECISION_APPROVE)
         if not applied:
             raise gate_gone()
+        audit_gate_decision("approval.approve", resolved, audit_device(request))
         return replay_and_report(resolved)
 
     @app.post("/approval/{gate_id}/reject")
-    def approval_reject(gate_id: str) -> dict:
+    def approval_reject(gate_id: str, request: Request) -> dict:
         """Silent cancellation: no TTS is generated server-side (PRD §5)."""
         live_gate_or_404(gate_id)
         resolved, applied = approval_store.resolve(gate_id, DECISION_REJECT)
         if not applied:
             raise gate_gone()
+        audit_gate_decision("approval.reject", resolved, audit_device(request))
         return {"ok": True, "state": resolved.state}
 
     @app.post("/approval/{gate_id}/action")
@@ -1843,6 +1919,14 @@ def create_app(
         resolved, applied = approval_store.resolve(gate_id, _ACTION_DECISIONS[word])
         if not applied:
             raise gate_gone()
+        # ntfy cannot attach a device bearer: the line records the
+        # decision without a device field — a channel limitation made
+        # explicit on the line itself, never inferred.
+        audit_log.record({
+            "action": "approval.action",
+            "pane_id": resolved.action.pane_id,
+            "detail": {"decision": word, "gate_id": resolved.gate_id},
+        })
         if word == "approve":
             background.add_task(run_action_replay, resolved)
         return {"ok": True, "decision": word, "state": resolved.state}
@@ -1851,8 +1935,13 @@ def create_app(
         """Background half of an ntfy approve: the response already left."""
         try:
             replay_and_report(gate, speak=False)
+            outcome = "ok"
         except Exception:  # noqa: BLE001 — no client left to receive an error
             logger.exception("ntfy approve replay failed for gate %s", gate.gate_id)
+            outcome = "error"
+        # The approve and its execution are decoupled in time, so the
+        # retry leaves its own line with its outcome (doc 02 §4).
+        audit_gate_decision("approval.replay", gate, None, extra={"outcome": outcome})
 
     def _spoken_receipt_valid(
         gate: ApprovalGate, speech_request_id: Optional[str]
@@ -2015,7 +2104,7 @@ def create_app(
         )
 
     @app.post("/approval/{gate_id}/resolve")
-    def approval_resolve(gate_id: str, body: ResolveRequest) -> dict:
+    def approval_resolve(gate_id: str, request: Request, body: ResolveRequest) -> dict:
         """Voice path: maps a confirming-state STT utterance onto the gate.
 
         Response: ``{decision, answer, audio_url, approval}`` where decision
@@ -2052,6 +2141,12 @@ def create_app(
                     # this action — restate the CURRENT one.
                     return _clarify_turn(resolved, clarify_line(resolved))
                 raise gate_gone()
+            # Spoken proof carried the authority: the line states that
+            # and WHICH frozen revision it executed (doc 02 §6).
+            audit_gate_decision(
+                "approval.resolve", resolved, audit_device(request),
+                extra={"decision": "approve", "spoken": True},
+            )
             turn = replay_and_report(resolved)
             return {
                 "decision": "approve",
@@ -2063,6 +2158,10 @@ def create_app(
             resolved, applied = approval_store.resolve(gate_id, DECISION_REJECT)
             if not applied:
                 raise gate_gone()
+            audit_gate_decision(
+                "approval.resolve", resolved, audit_device(request),
+                extra={"decision": "reject"},
+            )
             return {"decision": "reject", "answer": None, "audio_url": None, "approval": None}
         if outcome == OUTCOME_REPLACE_INTENT:
             # The gate stays live and untouched: the replacement text is
@@ -2075,6 +2174,10 @@ def create_app(
             resolved, applied = approval_store.resolve(gate_id, DECISION_REJECT)
             if not applied:
                 raise gate_gone()
+            audit_gate_decision(
+                "approval.resolve", resolved, audit_device(request),
+                extra={"decision": "reject"},
+            )
             return {"decision": "reject", "answer": None, "audio_url": None, "approval": None}
         approval_store.resolve(gate_id, DECISION_REPROMPT)
         return {
@@ -2085,7 +2188,7 @@ def create_app(
         }
 
     @app.patch("/approval/{gate_id}")
-    def approval_patch(gate_id: str, body: ApprovalPatchRequest) -> dict:
+    def approval_patch(gate_id: str, request: Request, body: ApprovalPatchRequest) -> dict:
         """Manual edit or voice re-dictation result: swaps the frozen
         editable field (text for send gates, task for create gates; the
         wire body is ``text`` either way) and restarts the timer (the
@@ -2094,6 +2197,9 @@ def create_app(
         updated = approval_store.patch(gate_id, body.text)
         if updated is None:
             raise gate_gone()
+        # updated.revision IS the new revision after the bump — the
+        # trace says WHICH frozen text the gate now holds.
+        audit_gate_decision("approval.patch", updated, audit_device(request))
         return {"ok": True, "approval": approval_payload(updated, cfg.approval_timeout_s)}
 
     @app.post("/tts")

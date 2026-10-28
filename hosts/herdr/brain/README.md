@@ -75,12 +75,13 @@ daemons do not source them, so the env file is the single stable contract.
 | `OPENCODE_DB` / `CLAUDE_PROJECTS_ROOT` | store defaults | transcript store overrides (tests) |
 | `HERDR_BRAIN_OPENCODE_URL` | `http://127.0.0.1:4096` | local opencode server; the PWA answers an agent's approval dialog through its permission API |
 | `HERDR_BRAIN_APPROVAL_TOKEN` | *(empty = no auth)* | shared secret for `POST /approval/{id}/action` (ntfy action buttons), as `Authorization: Bearer` or `?token=`. Empty leaves that route as open as the PWA routes |
-| `HERDR_BRAIN_STATE_DIR` | `~/.local/state/herdr-brain` | device-pairing state (`pairing-pending.json`, `paired-devices.json`; dir 0700, files 0600, only SHA-256 hashes on disk) |
+| `HERDR_BRAIN_STATE_DIR` | `~/.local/state/herdr-brain` | device-pairing state and the audit log (`pairing-pending.json`, `paired-devices.json`, `audit.log`; dir 0700, files 0600, only SHA-256 hashes of credentials on disk) |
 | `HERDR_BRAIN_ALLOWED_HOSTS` | *(empty)* | extra allowed `Host` headers beyond loopback and `*.ts.net` (anti DNS-rebinding; see [Device pairing and the access gate](#device-pairing-and-the-access-gate)) |
 | `HERDR_BRAIN_ALLOWED_ORIGINS` | *(empty)* | extra allowed `Origin` values (each one's host also joins the Host allowlist) |
 | `HERDR_BRAIN_ALLOW_ANY_HOST` | *(empty)* | `1` turns Host validation OFF — the DNS-rebinding hole; warned opt-out for exotic proxies |
 | `HERDR_BRAIN_TRUSTED_USER` | *(empty)* | under `tailscale serve`, require a matching `Tailscale-User-Login`; a missing header is rejected too (fail-closed). `HERDR_BRAIN_TRUSTED_USER_OPTIONAL=1` tolerates the missing header |
 | `HERDR_BRAIN_DEVICE_HEADER` / `HERDR_BRAIN_DEVICE_ALLOWLIST` | *(empty)* | reverse-proxy device gate: when the header name is set, writes require an allowlisted value in it (absent header ⇒ read-only) |
+| `HERDR_BRAIN_AUDIT_CONTENT` | `preview` | audit-log content mode: `preview` keeps a 120-char single-line preview of reply text; `none` redacts every content string to the constant `⟨redacted⟩` (metadata such as outcomes, keys and revisions survives) — see [Audit log](#audit-log) |
 
 ### Empty agent reader
 
@@ -369,6 +370,21 @@ approval or question dialog (`agent_blocked`) *before writing any input*, so
 text sent there would never arrive. An opencode dialog is answered with the
 buttons below instead.
 
+### Destructive-command confirmation (typed replies)
+
+A typed reply goes straight into a real terminal, so the PWA runs a
+destructive-command guard before sending it: `static/destructive.js`
+(a pure module, unit-tested with `node:test`) flags a small, reviewed set
+of **7 patterns ported 1:1 from Panel** — recursive `rm`, force-push,
+`sudo`, `--force`, `dd if=`, `mkfs`, and a redirect onto a system path.
+When the typed text matches, the send requires a **second tap** through a
+confirm dialog that names the pattern before `POST /pane/reply` leaves the
+phone; the key pad (`/pane/keys`) is unaffected, and a pattern that does
+not match sends on the first tap as always. The guard is deliberately
+conservative (word-boundary anchored, no false positives on look-alikes
+such as "assume"): a false positive costs one extra tap, a false negative
+costs a shell.
+
 ### Key pad: answering a blocked agent's dialog
 
 That dialog is answered with **keys** instead, through `POST /pane/keys`
@@ -474,6 +490,46 @@ action route, because ntfy is a third party that cannot send headers.
 
 The brain also serves its mobile PWA same-origin at `/` (static assets in
 `src/herdr_brain/static/`, mounted after the API routes): no CORS anywhere.
+
+## Audit log
+
+Every write the brain accepts can type into a real terminal or resolve a
+frozen gate, so each one leaves **one JSONL line** in
+`<HERDR_BRAIN_STATE_DIR>/audit.log` (default
+`~/.local/state/herdr-brain/audit.log`). The file is created `0600` inside
+the `0700` state dir — it may echo reply text — and a line looks like:
+
+```json
+{"ts":"2026-10-28T09:16:58+00:00","action":"pane.reply","pane_id":"w1:p2","device":"phone","detail":{"outcome":"delivered","text":"deploy the fix"}}
+```
+
+- **What is audited**: `pane.reply`, `pane.keys`,
+  `pane.permission.reply`, `approval.approve|reject|resolve|patch` (with
+  `gate_id`, `tool` and the revision the decision applied to; a voice
+  approval via spoken proof carries `spoken: true`), the ntfy
+  `approval.action` plus its `approval.replay` outcome (approve and its
+  execution are decoupled in time), `pair`, `device.revoke`, and one
+  `ask` line per turn with `chars` (the utterance **length**, never the
+  transcript). The `device` field is the paired-device label from the
+  access gate and is omitted on channels that carry no identity (ntfy).
+  Reads, `/tts` (the PWA's local echo), the speech transport and SSE
+  announcements produce no lines.
+- **Content modes** (`HERDR_BRAIN_AUDIT_CONTENT`): `preview` (default)
+  keeps a bounded, single-line 120-char preview of content fields;
+  `none` redacts every content string inside `detail` to the constant
+  `⟨redacted⟩` — never a length — while an allowlist of action metadata
+  (outcomes, key names, revisions, gate ids, decisions, replies,
+  request ids, utterance lengths) survives. The default direction is
+  the feature: a detail field added later redacts until it is
+  deliberately allowlisted. Choose `none` if replies may contain
+  secrets typed by the operator; the trace still answers who-what-when.
+- **Rotation**: the live file is capped at 5 MB (fixed, no knob) with
+  exactly one rotated generation — at the cap `audit.log` becomes
+  `audit.log.1`, replacing any previous one. A failed rotation still
+  appends: an oversized trail beats a missing line.
+- **Failure isolation**: the audit write is fire-and-forget — a full
+  disk or an unwritable path logs a warning and never changes the
+  status or body of the action it records.
 
 ## Phone access over Tailscale (PWA)
 

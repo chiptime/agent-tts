@@ -155,8 +155,11 @@ class StubHerdr:
 
 
 @pytest.fixture
-def settings() -> Settings:
-    return Settings(**SETTINGS_KWARGS)
+def settings(tmp_path) -> Settings:
+    # The state dir (pairing + the audit log) is per test: the audit
+    # trail now appends on every write route, so the shared fixed /tmp
+    # path would couple tests through one audit.log.
+    return Settings(**{**SETTINGS_KWARGS, "state_dir": str(tmp_path / "state")})
 
 
 @pytest.fixture
