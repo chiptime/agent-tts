@@ -158,7 +158,7 @@ bin/herdr-brain stop
 ### Desktop voice call (`herdr brain call`)
 
 
-`bin/herdr-brain call` opens the Panel voice-call UI — the SAME PWA the
+`bin/herdr-brain call` opens the voice-call UI — the SAME PWA the
 phone uses — in your desktop browser. It is another interface to one
 call, not a second voice stack: desktop and mobile share the same
 conversation, the same agent inventory and the same pending approvals,
@@ -402,7 +402,7 @@ buttons below instead.
 A typed reply goes straight into a real terminal, so the PWA runs a
 destructive-command guard before sending it: `static/destructive.js`
 (a pure module, unit-tested with `node:test`) flags a small, reviewed set
-of **7 patterns ported 1:1 from Panel** — recursive `rm`, force-push,
+of **7 patterns from a guard design proven in practice** — recursive `rm`, force-push,
 `sudo`, `--force`, `dd if=`, `mkfs`, and a redirect onto a system path.
 When the typed text matches, the send requires a **second tap** through a
 confirm dialog that names the pattern before `POST /pane/reply` leaves the
@@ -472,7 +472,7 @@ presses, one tap at a time, never auto-answered.
 
 ## Device pairing and the access gate
 
-Every route runs behind a fail-closed access gate (Panel parity F1), and
+Every route runs behind a fail-closed access gate (device pairing, F1), and
 every **write** route additionally requires a paired-device bearer token
 once at least one device is paired:
 
@@ -577,10 +577,10 @@ the `0700` state dir — it may echo reply text — and a line looks like:
 The brain listens on `127.0.0.1:8741`. To reach it from the phone over your
 tailnet (this is documentation, not something the repo runs):
 
-> **IMPORTANT — never use port 443.** The root HTTPS port of this node is
-> owned by Panel's bridge (127.0.0.1:8787), a third-party Herdr plugin.
-> Serving the brain there stomps Panel for every device on the tailnet.
-> The brain gets its own port:
+> **IMPORTANT — never use port 443.** The root HTTPS port of this node may
+> be owned by another service (an existing Herdr web plugin already serving
+> there). Serving the brain on the same port stomps that service for every
+> device on the tailnet. The brain gets its own port:
 
 ```bash
 tailscale serve --bg --https=8443 http://127.0.0.1:8741
@@ -682,7 +682,7 @@ the focused pane. The live context block marks the selection explicitly
 the focused one. Conversation memory stays keyed by the client session id —
 selection is per-request.
 
-The system prompt carries the full harness: the panel identity, concrete
+The system prompt carries the full harness: the assistant identity, concrete
 capabilities, honesty rules (never invent transcript or screen content; a
 failed read becomes one plain sentence plus a retry hint), routing policy
 (state/history/summary questions are answered from `read_transcript` or

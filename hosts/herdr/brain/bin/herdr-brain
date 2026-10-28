@@ -565,7 +565,7 @@ cmd_call() {
     exit 1
   }
 
-  echo "[herdr-brain] Opening the Panel voice call in your desktop browser: $url"
+  echo "[herdr-brain] Opening the voice call in your desktop browser: $url"
   if ! "$opener" "$url" >/dev/null 2>&1; then
     {
       echo "[herdr-brain] ERROR: the browser opener ($opener) failed."
@@ -674,7 +674,7 @@ case "${1:-status}" in
     claim_port "${2:-daemon}"
     ;;
   pair|--pair|devices|--devices)
-    # Device pairing (Panel parity F1): mint codes, list and revoke
+    # Device pairing (F1 security): mint codes, list and revoke
     # devices. Pure file work under HERDR_BRAIN_STATE_DIR — no daemon,
     # no port claims; the running server re-reads the registry per
     # request, so revocations land without a restart.
@@ -687,7 +687,7 @@ case "${1:-status}" in
     ;;
   help|--help|-h)
     echo "Usage: bin/herdr-brain [--no-first-run] [status|url|call|restart|stop|first-run|doctor|pair|devices|_daemon|_daemon-supervised]"
-    echo "  call   open the Panel voice-call UI in the desktop browser (HERDR_BRAIN_BROWSER overrides the opener)"
+    echo "  call   open the voice-call UI in the desktop browser (HERDR_BRAIN_BROWSER overrides the opener)"
     echo "  pair   mint a one-time code: the phone spends it in Ajustes to enrol this device (write access turns on with the first pairing)"
     echo "  devices {list|revoke <label>}   show paired devices, or drop one (applies without a restart)"
     ;;

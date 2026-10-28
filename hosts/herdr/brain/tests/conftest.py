@@ -34,7 +34,7 @@ SETTINGS_KWARGS = dict(
     stt_device="auto",
     stt_compute="auto",
     stt_warmup=False,  # tests: never start the warmup thread / touch the model
-    # Access gate stance (Panel parity F1): the TestClient transport's
+    # Access gate stance (F1 security): the TestClient transport's
     # Host ("testserver") is not a real routable host, so the legacy
     # suite rides the documented HERDR_BRAIN_ALLOW_ANY_HOST opt-out —
     # same precedent as stt_warmup=False. The gate itself is pinned with

@@ -1,4 +1,4 @@
-"""The PWA's migration path on a "not paired" 403 (Panel parity F1, S4).
+"""The PWA's migration path on a "not paired" 403 (F1 security, S4).
 
 Pairing the first device removes write access from every unpaired
 client; the recovery the operator sees is the pairing hint (`.pair-hint`)

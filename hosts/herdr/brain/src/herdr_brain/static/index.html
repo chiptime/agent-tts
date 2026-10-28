@@ -173,7 +173,7 @@
       #pane-picker { padding: 8px 10px; gap: 5px; }
     }
 
-    /* ── CONVERSATION SHEET (Panel-style session switcher) ──────────
+    /* ── CONVERSATION SHEET (session switcher) ──────────
      * The header picker opens a bottom sheet anchored above the footer
      * like the drawer: "＋ Nueva conversación" FIRST, then one keyed
      * row per herd agent (the old #herd-strip chips live here now).
@@ -1973,7 +1973,7 @@
     .s-label { font-size: 14px; }
     .s-hint { font-size: 12px; color: var(--muted); line-height: 1.5; }
 
-    /* ── Device pairing card (Panel parity F1): pairing.js builds it
+    /* ── Device pairing card (F1 device pairing): pairing.js builds it
      * inside #pairing-box in the Ajustes sheet. Same visual language as
      * the settings rows — inputs and buttons hit the 44px tap target. */
     .pairing-box { display: flex; flex-direction: column; gap: 10px; padding-top: 4px; }
@@ -2129,7 +2129,7 @@
         <span class="s-label">Pendientes</span>
         <button id="pending-open" type="button" title="Ver los avisos pendientes">🔔 Pendientes (<span id="pending-menu-count">0</span>)</button>
       </div>
-      <!-- Device pairing (Panel parity F1): pairing.js builds the card
+      <!-- Device pairing (F1 device pairing): pairing.js builds the card
            (estado + código + etiqueta + lista de dispositivos) inside
            #pairing-box. The code is minted on the operator's terminal
            (bin/herdr-brain pair); this card only spends it. -->

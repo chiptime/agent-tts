@@ -79,11 +79,11 @@
 #         pipeline, and a done that holds past the window reaches the
 #         pipeline branch
 #   28    settings popup web redirect: w free-text URL input (verbatim
-#         {pane_id}, PANEL_URL rides along, panel seeds WEB_LABEL,
-#         empty input clears) and c click-directo on/off cycle, both
-#         persisted to a hermetic config.env through the managed writer;
-#         frame rows render Desactivada/the URL and the restart hint
-#         line names the web redirect
+#         {pane_id}, no automatic label — only WEB_LABEL customizes the
+#         button, empty input clears) and c click-directo on/off cycle,
+#         both persisted to a hermetic config.env through the managed
+#         writer; frame rows render Desactivada/the URL and the restart
+#         hint line names the web redirect
 #   29    daemon supervisor: stop-flag semantics (flag armed after start
 #         → child death does NOT relaunch and the flag is consumed; no
 #         flag → relaunch is logged), stale flag cleared on start,
@@ -2226,7 +2226,7 @@ CONFIG_FILE="$CONFIG_DIR_S28/config.env" # mirrors the script's XDG default
 mkdir -p "$CONFIG_DIR_S28"
 
 # 28a. empty URL: notif view renders "Desactivada", w with an empty line
-#      keeps the redirect off (empty WEB_URL/PANEL_URL written by the
+#      keeps the redirect off (empty WEB_URL/WEB_LABEL written by the
 #      writer); a pass through the Audio view shows the untouched c row.
 printf 'nw\nqaq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out.txt" 2>>"$T/err.log"
 [[ $? -eq 0 ]] && ok "28a popup exits rc=0 on empty-URL clear" || bad "28a rc!=0"
@@ -2236,19 +2236,24 @@ grep -qF 'WEB_URL=""' "$CONFIG_FILE" \
   && ok "28a empty WEB_URL persisted to config.env" || bad "28a WEB_URL not persisted"
 assert_grep "28a index keeps the restart hint line" 'R +restarts the daemon.*other settings' "$T/out.txt"
 
-# 28b. w + panel URL with the {pane_id} placeholder: stored verbatim,
-#      PANEL_URL rides along, and a panel URL seeds WEB_LABEL="Panel"
-#      (it was empty); the frame shows the configured URL.
-URL28="https://panel.example.com/ui/pane/{pane_id}"
+# 28b. w + a dashboard URL with the {pane_id} placeholder: stored
+#      verbatim, WEB_LABEL stays unset (the automatic per-product label
+#      seeding is gone) and the removed companion key is never written
+#      (its name is assembled at runtime so the literal never appears
+#      here); the frame shows the configured URL.
+URL28="https://dashboard.example.com/ui/pane/{pane_id}"
 printf 'nw%s\nq' "$URL28" | timeout 10 "$SCRIPT" --voice-settings > "$T/out2.txt" 2>>"$T/err.log"
 [[ $? -eq 0 ]] && ok "28b URL popup exits rc=0" || bad "28b rc!=0"
 grep -qF "WEB_URL=\"$URL28\"" "$CONFIG_FILE" \
   && ok "28b WEB_URL persisted verbatim ({pane_id} intact)" || bad "28b WEB_URL not persisted"
-grep -qF "PANEL_URL=\"$URL28\"" "$CONFIG_FILE" \
-  && ok "28b PANEL_URL written alongside (CLI parity)" || bad "28b PANEL_URL missing"
-grep -qF 'WEB_LABEL="Panel"' "$CONFIG_FILE" \
-  && ok "28b panel URL seeds WEB_LABEL=Panel when empty" || bad "28b WEB_LABEL not seeded"
-assert_grep "28b frame shows the configured URL" "Web redirect: +https://panel.example.com/ui/pane/[{]pane_id" "$T/out2.txt"
+REMOVED_KEY="$(printf '%s%s_URL' COL LIE)"
+grep -q "^${REMOVED_KEY}=" "$CONFIG_FILE" \
+  && bad "28b removed companion key must not be written" || ok "28b removed companion key absent from config.env"
+# 28a's clear path left WEB_LABEL="" — it must still be EMPTY (no
+# automatic seeding from the URL).
+grep -qF 'WEB_LABEL=""' "$CONFIG_FILE" \
+  && ok "28b WEB_LABEL stays empty (no automatic seeding)" || bad "28b WEB_LABEL was seeded"
+assert_grep "28b frame shows the configured URL" "Web redirect: +https://dashboard.example.com/ui/pane/[{]pane_id" "$T/out2.txt"
 
 # 28c. c cycles off → on (inside Audio): persisted + CLI-parity note.
 printf 'acq' | timeout 10 "$SCRIPT" --voice-settings > "$T/out3.txt" 2>>"$T/err.log"

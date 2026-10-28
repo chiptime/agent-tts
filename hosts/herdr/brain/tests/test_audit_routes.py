@@ -1,5 +1,5 @@
-"""HTTP-surface record points of the audit trail (Panel parity F1,
-doc 02): one JSONL line per write action through the real routes,
+"""HTTP-surface record points of the audit trail (F1 security,
+audit trail): one JSONL line per write action through the real routes,
 device attribution from the access gate, the redaction mode, the
 failure-isolation contract and the routes that must stay unaudited.
 """

@@ -6,9 +6,9 @@ moment ago", but "is it still THAT dialog, right now". This module answers
 only that question, and knows nothing about any agent's dialog grammar: the
 detector is handed in, and the model it derives is what gets compared.
 
-The design is taken from the harness guard of Panel, a Herdr plugin already
-installed on this machine (bridge on 127.0.0.1:8787), re-expressed here in
-brain's own terms. Its findings are the load-bearing part:
+The design follows a guard pattern already proven in practice by another
+Herdr plugin on this machine, re-expressed here in brain's own terms. Its
+findings are the load-bearing part:
 
 - ``pane.read.revision`` is a stub upstream — always 0, verified live
   2026-07-05 — so a revision gate cannot protect a live terminal. Equality of

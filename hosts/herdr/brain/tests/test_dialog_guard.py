@@ -5,8 +5,8 @@ dialog look like this a moment ago" but "is it still THAT dialog, right
 now". The machinery here is model-parametric — it knows nothing about any
 agent's dialog grammar, only how to refuse.
 
-Design taken from the harness guard of Panel (a Herdr plugin already on this
-machine, bridge on 127.0.0.1:8787), reimplemented in brain's own terms. Its
+Design following a guard pattern proven in practice by another Herdr plugin
+on this machine, reimplemented in brain's own terms. Its
 empirical findings are the load-bearing part:
 
   - Herdr's ``pane.read.revision`` is a stub upstream (always 0, verified

@@ -200,7 +200,7 @@ class Settings:
     # Where the local opencode server listens (see DEFAULT_OPENCODE_URL).
     # Defaulted like every field above it: tests build Settings(**kwargs).
     opencode_url: str = DEFAULT_OPENCODE_URL
-    # ── Device pairing + access gate (Panel parity F1, doc 01) ──
+    # ── Device pairing + access gate (F1 security) ──
     # Appended WITH defaults like every knob above: tests construct
     # Settings(**SETTINGS_KWARGS), so a required field would break every
     # existing construction.
@@ -222,7 +222,7 @@ class Settings:
     # write must carry an allowlisted value in the named header.
     device_header: str = ""
     device_allowlist: tuple = ()
-    # ── Audit trail (Panel parity F1, doc 02) ──
+    # ── Audit trail (F1 security) ──
     # HERDR_BRAIN_AUDIT_CONTENT: "preview" keeps a bounded single-line
     # preview of content fields in each audit line; "none" redacts every
     # content string to the constant ⟨redacted⟩ (the metadata allowlist
@@ -389,7 +389,7 @@ def load_settings(env: Optional[dict] = None) -> Settings:
         stt_backend=raw_backend,
         opencode_url=getenv("HERDR_BRAIN_OPENCODE_URL", DEFAULT_OPENCODE_URL),
         approval_token=getenv("HERDR_BRAIN_APPROVAL_TOKEN").strip(),
-        # ── Device pairing + access gate (Panel parity F1, doc 01) ──
+        # ── Device pairing + access gate (F1 security) ──
         state_dir=Path(getenv("HERDR_BRAIN_STATE_DIR", DEFAULT_STATE_DIR)).expanduser(),
         allowed_hosts=_split_csv(getenv("HERDR_BRAIN_ALLOWED_HOSTS")),
         allowed_origins=_split_csv(getenv("HERDR_BRAIN_ALLOWED_ORIGINS")),

@@ -35,7 +35,7 @@ flowchart TD
         DASH -.->|mute · snooze · proveedor\nsettle · reinicio daemon| GATE
 
         FILE[Fichero MP3 sintetizado] --> OUT{Fan-out de Salidas}
-        OUT --> NTFY[Push Móvil ntfy.sh\naudio inline · deep link Panel]
+        OUT --> NTFY[Push Móvil ntfy.sh\naudio inline · deep link web]
         OUT --> HIST[Historial por chat\n+ almacén con retención]
         OUT --> GLYPH[Glifos de título del pane\nhecho / mute / snooze]
         OUT --> POD[Episodio de Podcast RSS]
@@ -70,7 +70,7 @@ flowchart TD
 - **Audio Mutex Lock:** Cerrojo en `/tmp/herdr-tts-playing.lock` que serializa los eventos concurrentes (encola o descarta) **sin interrumpir jamás la reproducción en curso**. Vive en el host porque aquí nace la concurrencia (múltiples panes lanzando eventos); el motor es *connection-scoped*: atiende la conexión que entra sin conocer cuántas existen ni su tipología.
 - **Filtrado por Foco (`scope: focused`):** Solo vocaliza automáticamente el pane que el usuario está observando activamente.
 - **Delegación de Extracción (Agent Forwarding):** Para agentes conocidos, el host solo identifica `agent_kind` + `session_id` y delega la lectura al motor (`--agent` / `--session-id`). Para shells genéricas, captura el scrollback y lo entrega en bruto: el motor extrae el último turno. El flag `--pre-extracted` existe para hosts que ya conocen el mensaje exacto (p. ej. herdr-brain vía eventos) y no lo usa este host.
-- **Notificaciones Push Móviles:** Envío del fichero de audio sintetizado a la app `ntfy.sh` en Android/iOS con reproductor en pantalla de bloqueo y deep links a la interfaz web (Panel).
+- **Notificaciones Push Móviles:** Envío del fichero de audio sintetizado a la app `ntfy.sh` en Android/iOS con reproductor en pantalla de bloqueo y deep links a una interfaz web externa (opcional).
 
 ### Nivel 2: `agent-tts` (Standalone Speech Engine)
 - **Responsabilidad:** Motor de síntesis, audio nativo y sanitización de texto para terminales. El motor **no conoce el concepto de pane**: posee el conocimiento de fuente de cada agente.

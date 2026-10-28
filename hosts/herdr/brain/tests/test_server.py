@@ -734,7 +734,7 @@ class TestResolveEndpoint:
         self, settings, audio_dir, monkeypatch
     ):
         """Intentional S14 tightening: a bare spoken approve with no
-        explanation receipt no longer executes — Panel restates the action
+        explanation receipt no longer executes — the assistant restates the action
         and waits for the explicit confirmation (documented contract change;
         manual approve/reject/PATCH are untouched)."""
         tools_cls = make_replay_tools()
@@ -1117,7 +1117,7 @@ class TestStatic:
         html = resp.text
         # PRD-call-drawer-redesign contract: the full-screen sheet is gone
         # (absorbed by the cockpit); the call lives in #call-drawer. The
-        # Panel-style header picker (#pane-picker) + #conv-sheet own
+        # The header picker (#pane-picker) + #conv-sheet own
         # conversation selection; the old #herd-strip and the cryptic
         # #new-conversation header button are absorbed by the sheet.
         for element_id in (

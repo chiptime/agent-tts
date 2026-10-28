@@ -252,7 +252,7 @@ def antigravity_root(tmp_path):
         root,
         ANTIGRAVITY_SESSION,
         [
-            _agy_event(1, "USER_INPUT", content="<USER_REQUEST> pregúntale a Panel algo"),
+            _agy_event(1, "USER_INPUT", content="<USER_REQUEST> pregúntale a Atlas algo"),
             _agy_event(2, "PLANNER_RESPONSE", content="Respuesta antigua del planner"),
             _agy_event(3, "PLANNER_RESPONSE", thinking="razonamiento interno", tool_calls="read_file"),
             _agy_event(

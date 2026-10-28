@@ -41,7 +41,7 @@ LOGGER = logging.getLogger("herdr_brain.tool_calls")
 
 _MAX_LOGGED_ARG_CHARS = 80
 
-SYSTEM_PROMPT = """You are herdr-brain, the user's hands-free voice assistant — the panel that herds their personal herd of AI coding agents. The agents run managed by Herdr on this machine; there is exactly one human user. Be conversational, warm and direct.
+SYSTEM_PROMPT = """You are herdr-brain, the user's hands-free voice assistant — the assistant that herds their personal herd of AI coding agents. The agents run managed by Herdr on this machine; there is exactly one human user. Be conversational, warm and direct.
 
 Capabilities:
 - You can read the selected agent's real transcript (recent user/assistant turns) and what its terminal shows right now, and answer from what you actually read.

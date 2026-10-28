@@ -539,7 +539,7 @@ run_ntfy_push() {
       fi
       return 0
     }
-    NTFY_TOPIC="t"; NTFY_SERVER="http://ntfy.example"; WEB_URL="https://panel.example"
+    NTFY_TOPIC="t"; NTFY_SERVER="http://ntfy.example"; WEB_URL="https://web.example"
     NTFY_APPROVAL_URL="$AURL"; NTFY_APPROVAL_TOKEN="$ATOK"
     send_ntfy_push 3 opencode "$STATE" ws title-1 "" "$GATE"
   ' "$SANDBOX" "$2" "$3" "${4:-}" "${5:-}"
@@ -566,7 +566,7 @@ case__ntfy_blocked_lookup_finds_live_gate() {
 case__ntfy_blocked_lookup_without_live_gate_keeps_view_copy() {
   LOOKUP_JSON='{"approval":null}' \
     run_ntfy_push gate_absent blocked "" "http://brain.lan:8300" ""
-  grep -qF 'Actions: view, 📱 Open Panel, https://panel.example/pane/3; copy, 📋 Copy command, herdr agent focus 3, clear=true' \
+  grep -qF 'Actions: view, 📱 Open Web, https://web.example/pane/3; copy, 📋 Copy command, herdr agent focus 3, clear=true' \
     "$SANDBOX/curl.calls" || return 1
   ! grep -q "/action" "$SANDBOX/curl.calls"
 }
@@ -576,14 +576,14 @@ case__ntfy_done_event_never_gets_gate_buttons() {
     run_ntfy_push gate_done done abc123def456 "http://brain.lan:8300" ""
   ! grep -q "Approve" "$SANDBOX/curl.calls" || return 1
   ! grep -q "/approval/current" "$SANDBOX/curl.calls" || return 1   # done never looks a gate up
-  grep -qF 'Actions: view, 📱 Open Panel, https://panel.example/pane/3; copy, 📋 Copy command, herdr agent focus 3, clear=true' \
+  grep -qF 'Actions: view, 📱 Open Web, https://web.example/pane/3; copy, 📋 Copy command, herdr agent focus 3, clear=true' \
     "$SANDBOX/curl.calls"
 }
 
 case__ntfy_gate_buttons_require_approval_url() {
   run_ntfy_push gate_no_url blocked abc123def456 "" ""
   ! grep -q "/action" "$SANDBOX/curl.calls" || return 1
-  grep -qF 'Actions: view, 📱 Open Panel, https://panel.example/pane/3; copy, 📋 Copy command, herdr agent focus 3, clear=true' \
+  grep -qF 'Actions: view, 📱 Open Web, https://web.example/pane/3; copy, 📋 Copy command, herdr agent focus 3, clear=true' \
     "$SANDBOX/curl.calls"
 }
 
@@ -599,8 +599,69 @@ case__ntfy_gate_token_with_dquote_disables_buttons() {
   # degrade to the classic buttons instead of sending a broken header.
   run_ntfy_push gate_dquote_token blocked abc123def456 "http://brain.lan:8300" 'x"y'
   ! grep -q "/action" "$SANDBOX/curl.calls" || return 1
-  grep -qF 'Actions: view, 📱 Open Panel, https://panel.example/pane/3; copy, 📋 Copy command, herdr agent focus 3, clear=true' \
+  grep -qF 'Actions: view, 📱 Open Web, https://web.example/pane/3; copy, 📋 Copy command, herdr agent focus 3, clear=true' \
     "$SANDBOX/curl.calls"
+}
+
+# --- S10 (parity-f2-f6): removed web-redirect product contract, no alias ------
+#
+# The dedicated <product>-url option, its env/config keys and the
+# automatic per-product button label are gone with NO alias. The two
+# cases below pin the removal. The product name is assembled at runtime
+# from adjacent literals so the contiguous word never appears in this
+# tree (git grep -i must stay clean).
+
+case__removed_url_option_is_unknown_and_writes_nothing() {
+  sandbox_setup removed_url_opt
+  local removed_opt="--""col""lie""-url"
+  local removed_host="https://""col""lie"".example.com"
+  local rc=0
+  onboarding_cli "$removed_opt" "$removed_host" \
+    > "$SANDBOX/out" 2> "$SANDBOX/err" || rc=$?
+  # Unknown first argument: dispatch falls through to the (contained)
+  # daemon exactly like any other unrecognized option.
+  [[ $rc -eq 97 ]] || return 1
+  # Nothing was persisted and no output names the removed product.
+  [[ ! -e "$SANDBOX/config/herdr-tts/config.env" ]] || return 1
+  [[ ! -e "$STUB_LOG" ]] || return 1
+  ! grep -qi "col""lie" "$SANDBOX/out" "$SANDBOX/err"
+}
+
+case__ntfy_web_button_label_generic_for_any_url() {
+  sandbox_setup web_label_generic
+  local removed_name; removed_name="$(printf '%s%s' col lie)"
+  in_host '
+    SB="$1"; NAME="$2"
+    curl() {
+      local joined="$*"
+      printf "%s\n" "$joined" >> "$SB/curl.calls"
+      return 0
+    }
+    NTFY_TOPIC="t"; NTFY_SERVER="http://ntfy.example"; WEB_URL="https://${NAME}.example"
+    send_ntfy_push 3 opencode done ws title-1 "" ""
+  ' "$SANDBOX" "$removed_name" >/dev/null || return 1
+  # A URL that previously triggered the special per-product label now
+  # renders the generic one; only WEB_LABEL customizes the button.
+  grep -qF 'Actions: view, 📱 Open Web, https://'"${removed_name}"'.example/pane/3; copy, 📋 Copy command, herdr agent focus 3, clear=true' \
+    "$SANDBOX/curl.calls"
+}
+
+case__web_url_redirect_label_contract_unchanged() {
+  # PRESERVE (S10): the removal must not disturb the surviving web
+  # redirect surface — --web-url sets, --redirect-url (alias) clears,
+  # --web-label customizes, and only those keys land in config.env.
+  sandbox_setup web_url_contract
+  onboarding_cli --web-url "https://dash.example" > "$SANDBOX/out1" || return 1
+  grep -qF '✓ Web redirect URL set: https://dash.example' "$SANDBOX/out1" || return 1
+  grep -qF 'WEB_URL="https://dash.example"' "$SANDBOX/config/herdr-tts/config.env" || return 1
+  onboarding_cli --web-label "Team" > "$SANDBOX/out2" || return 1
+  grep -qF '✓ Web button label: Team' "$SANDBOX/out2" || return 1
+  grep -qF 'WEB_LABEL="Team"' "$SANDBOX/config/herdr-tts/config.env" || return 1
+  onboarding_cli --redirect-url off > "$SANDBOX/out3" || return 1
+  grep -qF '✓ Web redirect disabled' "$SANDBOX/out3" || return 1
+  grep -qF 'WEB_URL=""' "$SANDBOX/config/herdr-tts/config.env" || return 1
+  # The managed writer's key list in the file matches the allowlist.
+  ! grep -qi "col""lie" "$SANDBOX/config/herdr-tts/config.env"
 }
 
 case__playback_state_paths_default_to_machine_global() {

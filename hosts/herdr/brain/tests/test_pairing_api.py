@@ -1,5 +1,5 @@
 """Pairing endpoints and enforcement through the HTTP surface
-(Panel parity F1, doc 01): POST /pair, GET /devices,
+(F1 security, device pairing): POST /pair, GET /devices,
 POST /devices/revoke, write-gated routes acquiring a bearer
 requirement exactly when the registry is non-empty, and the ntfy
 action route keeping HERDR_BRAIN_APPROVAL_TOKEN alone.

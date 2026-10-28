@@ -1,4 +1,4 @@
-"""The destructive-command guard on the typed reply (Panel parity S6).
+"""The destructive-command guard on the typed reply (destructive guard).
 
 ``POST /pane/reply`` types into a real terminal, so a reply matching one of
 the reviewed destructive patterns (``static/destructive.js``) needs a second,

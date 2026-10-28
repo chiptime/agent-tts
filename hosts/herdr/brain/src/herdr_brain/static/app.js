@@ -503,7 +503,7 @@
   settingsCloseBtn.addEventListener("click", closeSettings);
 
   /* ---------------- conversation sheet ----------------
-   * Panel-style session switcher: the header picker trigger opens a
+   * Session switcher: the header picker trigger opens a
    * bottom sheet anchored above the footer. "＋ Nueva conversación"
    * (the old header ↺ button) sits FIRST, then one keyed row per herd
    * agent (the old #herd-strip chips live here now). ✕ / backdrop /
@@ -1736,7 +1736,7 @@
     var paneId = replyForm.getAttribute("data-pane");
     var text = replyInput.value.trim();
     if (!paneId || !text || replySend.disabled) return;
-    /* Destructive-command guard (Panel parity): the reply types into a
+    /* Destructive-command guard: the reply types into a
      * real terminal, so a matching send needs a second, explicit tap. It
      * runs on the final composer text, so typed and dictated text alike. */
     var destructive = window.DestructiveGuard ? window.DestructiveGuard.isDestructiveInput(text) : null;
@@ -3481,7 +3481,7 @@
     };
   }
 
-  /* ---------------- device credential (Panel parity F1) ----------------
+  /* ---------------- device credential (F1 device pairing) ----------------
    * The paired-device bearer token lives in localStorage; every WRITE
    * fetch carries it (the server only demands it once a device is
    * paired — with an empty registry everything works exactly as
@@ -3605,7 +3605,7 @@
     banner: showBanner
   });
 
-  /* Device pairing UI (Panel parity F1): mounts inside Ajustes and
+  /* Device pairing UI (F1 device pairing): mounts inside Ajustes and
    * owns the bearer token every write fetch attaches. Refreshed at
    * boot (fail-soft: an older brain predates /devices) and after each
    * pair/revoke. The code is minted on the operator's terminal — this

@@ -194,7 +194,7 @@ def bearer_or_query_token(request: Request) -> str:
 
 
 class AccessMiddleware:
-    """Raw ASGI access gate (Panel parity F1; see ``access.py``).
+    """Raw ASGI access gate (F1 security; see ``access.py``).
 
     Deliberately NOT BaseHTTPMiddleware: the pass-through ``__call__``
     leaves /events streaming and /ask's disconnect detection exactly as
@@ -685,13 +685,13 @@ def create_app(
     # fake clocks through the same object the handlers use.
     speech_jobs = speech_registry if speech_registry is not None else build_registry()
 
-    # Device pairing (Panel parity F1): lazy — nothing is read at boot,
+    # Device pairing (F1 security): lazy — nothing is read at boot,
     # the registry is re-stat'ed per request so a CLI revocation in
     # another process applies without a restart. With an empty registry
     # every route behaves exactly as before (S7).
     pairing_store = PairingStore(cfg.state_dir)
 
-    # Audit trail (Panel parity F1, doc 02): one JSONL line per write
+    # Audit trail (F1 security): one JSONL line per write
     # action at <state_dir>/audit.log. Lazy like the pairing store —
     # boot touches no disk — and record() never raises, so the audited
     # action can never be failed by it.
@@ -1392,7 +1392,7 @@ def create_app(
         job, degraded = _admit_speech_job(body, speech_jobs)
         # Voice-channel traceability (doc 02 §3): exactly one line per
         # accepted turn, with the utterance LENGTH and the target pane —
-        # never the transcript (same rule as Panel's stt route).
+        # never the transcript (same rule as the stt route).
         audit_log.record({
             "action": "ask",
             "pane_id": body.pane_id,
@@ -1839,7 +1839,7 @@ def create_app(
         })
         return {"ok": True}
 
-    # ── Device pairing (Panel parity F1; access.py classifies the
+        # ── Device pairing (F1 security; access.py classifies the
     # levels: /pair takes the write Host/Origin gate but no device
     # gates — a device that never paired holds no token, so gating the
     # bootstrap on one would make pairing unreachable. ──────────────
@@ -1871,8 +1871,8 @@ def create_app(
     def _devices_payload(request: Request) -> dict:
         # "current" is resolved at RESPONSE time, not from the
         # middleware's request-time label: a device that just revoked
-        # itself must already read as current=None (Panel resolves the
-        # bearer after the revocation for the same reason).
+        # itself must already read as current=None (the bearer is
+        # resolved after the revocation for the same reason).
         from .pairing import bearer_token as _bearer
 
         token = _bearer(request.headers.get)

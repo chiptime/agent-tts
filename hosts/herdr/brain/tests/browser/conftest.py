@@ -288,7 +288,7 @@ class KaraokeHarness:
                                        "turns": external or [], "window": 20}, query=("pane_id",))
         self.respond("/approval/current", {"approval": None}, query=("session_id",))
         self.respond("/reset", {"ok": True}, method="POST")
-        # Device pairing (Panel parity F1): the boot /devices poll the
+        # Device pairing (F1 security): the boot /devices poll the
         # pairing card runs. Default keeps every legacy test on the
         # unpaired (unenforced) stance — exactly the pre-F1 behavior.
         self.respond("/devices", {"enforced": False, "current": None, "devices": []})
