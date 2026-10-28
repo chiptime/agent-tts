@@ -155,12 +155,16 @@ def test_write_with_a_wrong_bearer_is_refused_with_the_same_text(client, state_d
     assert resp.json()["detail"] == "dispositivo no emparejado"
 
 
-# ── AC3: reads always work; revocation lands without a restart ───────────────
+# ── AC3 (amended by S11): revocation lands without a restart ─────────────────
 
 
-def test_valid_token_read_works_and_revoked_device_keeps_read_loses_write(
+def test_valid_token_read_works_and_revoked_device_loses_read_and_write(
     client, state_dir
 ):
+    """S11 refocused the F1 stance ("a revoked device keeps read
+    access"): once pairing is enforced, reads carry the device
+    requirement too, so a revoked device loses BOTH doors — same 403
+    text, no restart, the tablet's pairing keeping enforcement on."""
     phone_token = pair_device(client, state_dir, label="phone")
     pair_device(client, state_dir, label="tablet")  # keeps enforcement on
     auth = {"Authorization": f"Bearer {phone_token}"}
@@ -171,7 +175,9 @@ def test_valid_token_read_works_and_revoked_device_keeps_read_loses_write(
     assert cli.revoke("phone") is True
     assert cli.enforced() is True  # the tablet still enforces
 
-    assert client.get("/herd", headers=auth).status_code == 200  # read survives
+    resp = client.get("/herd", headers=auth)
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == "dispositivo no emparejado"
     resp = client.post("/pane/reply", json={"pane_id": "w1:p2", "text": "go"}, headers=auth)
     assert resp.status_code == 403
     assert resp.json()["detail"] == "dispositivo no emparejado"
@@ -352,7 +358,12 @@ def test_s1_corrupt_registry_never_opens_writes(client, state_dir, raw):
     (state_dir / pairing.DEVICES_FILENAME).write_text(raw, encoding="utf-8")
 
     assert client.get("/health").status_code == 200  # the service stays up
-    assert client.get("/devices").json()["enforced"] is True
+    # S11: enforcement on with nobody authorized reads the same on every
+    # gated route — GET /devices itself answers the pairing 403 now (the
+    # unpaired signal), so the refusal IS the "still enforced" proof.
+    resp = client.get("/devices")
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == "dispositivo no emparejado"
     resp = client.post("/pane/reply", json={"pane_id": "w1:p2", "text": "go"})
     assert resp.status_code == 403
     assert resp.json()["detail"] == "dispositivo no emparejado"

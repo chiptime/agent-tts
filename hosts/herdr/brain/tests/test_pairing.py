@@ -197,9 +197,11 @@ def test_to_device_wire_never_leaks_token_hashes():
         {"label": "b", "tokenHash": "i" * 64, "createdAt": 3, "lastSeenAt": 4},
     ]})
     wire = pairing.to_device_wire(registry, current="b")
+    # expiresAt: None is the S11 addition (the F1 shape never expires);
+    # the token hashes still never reach the wire.
     assert wire == [
-        {"label": "a", "createdAt": 1, "lastSeenAt": 2, "current": False},
-        {"label": "b", "createdAt": 3, "lastSeenAt": 4, "current": True},
+        {"label": "a", "createdAt": 1, "lastSeenAt": 2, "expiresAt": None, "current": False},
+        {"label": "b", "createdAt": 3, "lastSeenAt": 4, "expiresAt": None, "current": True},
     ]
     assert "tokenHash" not in json.dumps(wire)
 
@@ -545,3 +547,272 @@ def test_cli_devices_revoke_unknown_label_fails_with_the_paired_names(
 
 def test_cli_devices_requires_a_subverb(tmp_path, monkeypatch):
     assert run_cli(["devices"], monkeypatch, tmp_path / "state") == 2
+
+
+# ── token expiry (S11): duration parsing, registry shape, resolve ─────────────
+
+
+@pytest.mark.parametrize(
+    "raw,seconds",
+    [
+        ("30d", 30 * 24 * 3600),
+        ("12h", 12 * 3600),
+        ("45m", 45 * 60),
+        ("90s", 90.0),
+        ("2w", 14 * 24 * 3600),
+        ("1h30m", None),   # one value, one unit — compound input is a usage error
+        ("30", None),      # a bare number is ambiguous, not silently seconds
+        ("0d", None),      # a zero/negative expiry is no expiry at all
+        ("-5h", None),
+        ("bogus", None),
+        ("100y", None),    # only s/m/h/d/w exist
+        ("", None),
+    ],
+)
+def test_parse_duration_accepts_one_value_and_unit(raw, seconds):
+    assert pairing.parse_duration(raw) == seconds
+
+
+def test_coerce_registry_keeps_a_numeric_expires_at_and_drops_garbage():
+    kept = pairing.coerce_registry({"devices": [
+        {"label": "a", "tokenHash": "h" * 64, "expiresAt": 2_000.5},
+        {"label": "b", "tokenHash": "h" * 64},  # F1 shape: never expires
+    ]})
+    assert kept["devices"][0]["expiresAt"] == 2_000.5
+    assert "expiresAt" not in kept["devices"][1]
+
+    dropped = pairing.coerce_registry({"devices": [
+        {"label": "c", "tokenHash": "h" * 64, "expiresAt": "forever"},
+        {"label": "d", "tokenHash": "h" * 64, "expiresAt": True},
+        {"label": "e", "tokenHash": "h" * 64, "expiresAt": 0},
+    ]})
+    # Fail-closed: a present-but-unusable expiresAt drops the ENTRY, it
+    # never widens into "never expires" (doc 01 AC10 stance).
+    assert kept["devices"][0]["label"] == "a"
+    assert [d["label"] for d in dropped["devices"]] == []
+
+
+def test_to_device_wire_carries_the_expiry_for_the_ui():
+    wire = pairing.to_device_wire({"devices": [
+        {"label": "a", "tokenHash": "x", "createdAt": 1, "lastSeenAt": 2,
+         "expiresAt": 3_000.0},
+        {"label": "b", "tokenHash": "y", "createdAt": 1, "lastSeenAt": 2},
+    ]}, current="a")
+    assert wire[0]["expiresAt"] == 3_000.0
+    assert wire[1]["expiresAt"] is None
+
+
+def test_claim_enrols_the_expiry_the_operator_minted(tmp_path: Path):
+    clock = FakeClock()
+    store = pairing.PairingStore(tmp_path / "state", now=clock)
+    minted = store.mint(expires_in_s=3600.0)
+    assert minted["expiresInS"] == 3600.0
+
+    clock.advance(10.0)  # claimed ten minutes after the mint
+    status, outcome = store.claim(minted["code"], "phone")
+    assert status == "ok"
+
+    registry = json.loads((store.registry_path).read_text(encoding="utf-8"))
+    # The deadline runs from the CLAIM (when the credential is born),
+    # not from when the operator typed the command.
+    assert registry["devices"][0]["expiresAt"] == 1_010.0 + 3600.0
+
+
+def test_claim_without_expires_enrols_an_f1_shaped_device(tmp_path: Path):
+    store = pairing.PairingStore(tmp_path / "state", now=lambda: 1_000.0)
+    minted = store.mint()
+    assert "expiresInS" not in minted
+    store.claim(minted["code"], "phone")
+    registry = json.loads((store.registry_path).read_text(encoding="utf-8"))
+    assert "expiresAt" not in registry["devices"][0]
+
+
+def test_mint_rejects_an_unusable_expiry(tmp_path: Path):
+    store = pairing.PairingStore(tmp_path / "state")
+    with pytest.raises(ValueError):
+        store.mint(expires_in_s=0)
+    assert not (tmp_path / "state" / pairing.PENDING_FILENAME).exists()
+
+
+def test_resolve_status_separates_ok_expired_and_invalid(tmp_path: Path):
+    clock = FakeClock()
+    store = pairing.PairingStore(tmp_path / "state", now=clock)
+    minted = store.mint(expires_in_s=600.0)
+    _, outcome = store.claim(minted["code"], "phone")
+    token = outcome["token"]
+
+    status, device = store.resolve_status(token)
+    assert status == "ok"
+    assert device["label"] == "phone"
+
+    clock.advance(601.0)
+    status, device = store.resolve_status(token)
+    assert status == "expired"
+    assert device["label"] == "phone"
+
+    assert store.resolve_status("not-a-token") == ("invalid", None)
+    assert store.resolve_status(None) == ("invalid", None)
+
+
+def test_resolve_of_an_expired_token_stops_answering_and_stamps_nothing(tmp_path: Path):
+    """The legacy ``resolve`` contract keeps its F1 shape (device or
+    None) and an expired credential is simply gone from it; the stamp
+    never runs for a device that is being refused."""
+    clock = FakeClock()
+    store = pairing.PairingStore(tmp_path / "state", now=clock)
+    minted = store.mint(expires_in_s=600.0)
+    _, outcome = store.claim(minted["code"], "phone")
+    token = outcome["token"]
+
+    clock.advance(601.0)
+    assert store.resolve(token) is None
+
+    registry = json.loads((store.registry_path).read_text(encoding="utf-8"))
+    assert registry["devices"][0]["lastSeenAt"] == registry["devices"][0]["createdAt"]
+
+
+def test_peek_answers_without_touching_the_registry(tmp_path: Path):
+    """B4: the read-only resolution the /pair bootstrap uses for audit
+    attribution — no lastSeenAt stamp, no registry write (byte-identical),
+    and an expired credential answers None like ``resolve`` does."""
+    clock = FakeClock()
+    store = pairing.PairingStore(tmp_path / "state", now=clock)
+    minted = store.mint()
+    _, outcome = store.claim(minted["code"], "phone")
+    token = outcome["token"]
+
+    clock.advance(60.0)
+    before = store.registry_path.read_bytes()
+    device = store.peek(token)
+    assert device is not None
+    assert device["label"] == "phone"
+    assert store.registry_path.read_bytes() == before
+
+    assert store.peek("not-a-token") is None
+    assert store.peek(None) is None
+
+    clock.advance(600.0)  # past the claim's lifetime: no expiresAt armed…
+    assert store.peek(token) is not None  # …an F1 token never runs out
+
+    store.set_expiry("phone", 1.0)
+    clock.advance(2.0)
+    stable = store.registry_path.read_bytes()
+    assert store.peek(token) is None  # expired answers like resolve: gone
+    assert store.registry_path.read_bytes() == stable
+
+
+def test_set_and_clear_expiry_write_the_registry_atomically(tmp_path: Path):
+    clock = FakeClock()
+    store = pairing.PairingStore(tmp_path / "state", now=clock)
+    minted = store.mint()
+    store.claim(minted["code"], "phone")
+
+    assert store.set_expiry("phone", 1800.0) is True
+    registry = json.loads((store.registry_path).read_text(encoding="utf-8"))
+    assert registry["devices"][0]["expiresAt"] == 1_000.0 + 1800.0
+
+    assert store.clear_expiry("phone") is True
+    registry = json.loads((store.registry_path).read_text(encoding="utf-8"))
+    assert "expiresAt" not in registry["devices"][0]
+
+    assert store.set_expiry("ghost", 60.0) is False
+    assert store.clear_expiry("ghost") is False
+
+    with pytest.raises(ValueError):
+        store.set_expiry("phone", -1)
+
+
+# -- the /pair rate limit (S11): bounded, in-process, per client address -----
+
+
+def test_rate_limit_verdict_allows_ten_attempts_per_minute():
+    decide = pairing.rate_limit_retry_after
+    stamps = [1_000.0 + i for i in range(9)]
+    assert decide(stamps, now=1_005.0) is None            # 10th fits
+    stamps.append(1_009.0)
+    assert decide(stamps, now=1_010.0) is not None        # 11th refused
+    # Old attempts age out of the window.
+    assert decide(stamps, now=1_060.5) is None
+    # The retry hint is bounded by the window and never zero.
+    assert decide(stamps, now=1_010.0) == 50
+    assert decide([1_000.0] * 10, now=1_030.0) == 30
+
+
+def test_claim_rate_limiter_is_per_client_and_bounded_in_memory():
+    clock = FakeClock()
+    limiter = pairing.ClaimRateLimiter(now=clock, max_clients=8)
+
+    for _ in range(10):
+        assert limiter.check("10.0.0.1") is None
+    # All ten attempts share one instant, so the wait is the full window.
+    assert limiter.check("10.0.0.1") == 60
+
+    # A different address has its own budget.
+    assert limiter.check("10.0.0.2") is None
+
+    # The window slides: after 61s the first address may try again.
+    clock.advance(61.0)
+    assert limiter.check("10.0.0.1") is None
+
+    # Bounded bookkeeping: one entry per client, capped.
+    for i in range(20):
+        limiter.check(f"10.1.{i}.1")
+    assert len(limiter.clients()) <= 8
+
+
+# -- CLI (S11): --expires, set-expiry, clear-expiry, expiry in list ----------
+
+
+def test_cli_pair_expires_writes_the_duration_into_the_pending(tmp_path, monkeypatch, capsys):
+    state = tmp_path / "state"
+    assert run_cli(["pair", "--expires", "30d"], monkeypatch, state) == 0
+    pending = json.loads((state / pairing.PENDING_FILENAME).read_text(encoding="utf-8"))
+    assert pending["expiresInS"] == 30 * 24 * 3600
+    out = capsys.readouterr().out
+    assert "30d" in out
+
+
+@pytest.mark.parametrize("dur", ["bogus", "30", "0d"])
+def test_cli_pair_expires_rejects_an_unusable_duration(dur, tmp_path, monkeypatch, capsys):
+    state = tmp_path / "state"
+    assert run_cli(["pair", "--expires", dur], monkeypatch, state) != 0
+    err = capsys.readouterr().err
+    assert "--expires" in err
+    assert not state.exists()
+
+
+def test_cli_set_and_clear_expiry(tmp_path, monkeypatch, capsys):
+    state = tmp_path / "state"
+    store = pairing.PairingStore(state)
+    minted = store.mint()
+    store.claim(minted["code"], "phone")
+
+    assert run_cli(["devices", "set-expiry", "phone", "12h"], monkeypatch, state) == 0
+    out = capsys.readouterr().out
+    assert "phone" in out
+    # The CLI verb arms "12h from now" on its own wall clock — the
+    # enrolment's fake clock (if any) is irrelevant to the verb.
+    import time as time_module
+
+    registry = json.loads((state / pairing.DEVICES_FILENAME).read_text(encoding="utf-8"))
+    assert registry["devices"][0]["expiresAt"] == pytest.approx(
+        time_module.time() + 12 * 3600, abs=5
+    )
+
+    assert run_cli(["devices", "list"], monkeypatch, state) == 0
+    assert "caduca" in capsys.readouterr().out
+
+    assert run_cli(["devices", "clear-expiry", "phone"], monkeypatch, state) == 0
+    registry = json.loads((state / pairing.DEVICES_FILENAME).read_text(encoding="utf-8"))
+    assert "expiresAt" not in registry["devices"][0]
+
+
+def test_cli_set_expiry_unknown_label_lists_the_paired_names(tmp_path, monkeypatch, capsys):
+    state = tmp_path / "state"
+    store = pairing.PairingStore(state, now=lambda: 1_000.0)
+    minted = store.mint()
+    store.claim(minted["code"], "phone")
+
+    assert run_cli(["devices", "set-expiry", "ghost", "1h"], monkeypatch, state) == 1
+    err = capsys.readouterr().err
+    assert "ghost" in err and "phone" in err

@@ -1,8 +1,10 @@
-"""Access gate for the brain's HTTP surface (doc 01 §2-§5).
+"""Access gate for the brain's HTTP surface (doc 01 §2-§5, S11).
 
 The brain answers one phone over one tailnet, and every guard here
 exists because that perimeter alone is not an identity. Three
-independent doors compose by AND on every WRITE route:
+independent doors compose by AND on every WRITE route — and, once
+pairing is enforced, on READS too (S11), minus the shell/bootstrap
+exemptions that must answer before any credential can exist:
 
 1. ``check_access`` — Host allowlist (fail-closed, anti DNS-rebinding),
    Origin same-origin rule (anti CSRF) and the optional Tailscale
@@ -11,7 +13,9 @@ independent doors compose by AND on every WRITE route:
    (``HERDR_BRAIN_DEVICE_HEADER``), for deployments behind a trusted
    reverse proxy. Off by default.
 3. Device pairing — enforced exactly when ``paired-devices.json`` is
-   non-empty: a write must carry the bearer token of a paired device.
+   non-empty: the request must carry the bearer token of a paired,
+   unexpired device (``device_token`` query parameter on the two
+   headerless GET transports, see ``query_token_allowed``).
 
 Each refusal carries its own 403 text (doc 01 §5), so the PWA can tell
 "this device holds no credential" (offer pairing) from "this host is
@@ -54,6 +58,10 @@ IDENTITY_REQUIRED = "identidad requerida"
 IDENTITY_NOT_TRUSTED = "identidad no confiable"
 DEVICE_NOT_AUTHORISED = "dispositivo no autorizado"
 DEVICE_NOT_PAIRED = "dispositivo no emparejado"
+# S11: a token that matched a paired device whose deadline has passed.
+# Distinct from NOT_PAIRED on purpose: the fix is re-pairing (or the
+# operator extending the deadline), and the PWA says which.
+DEVICE_EXPIRED = "dispositivo caducado"
 
 
 def _strip_port(host: str) -> str:
@@ -229,13 +237,67 @@ def classify(method: str, path: str) -> str:
     return "read"
 
 
+# ── the S11 read gate ─────────────────────────────────────────────────────────
+#
+# Once pairing is enforced, READS carry the device requirement too —
+# except the surfaces that must answer before any credential can exist
+# or that hold credentials of their own. The PWA shell is one of them:
+# it has to LOAD before it can offer the pairing flow. StaticFiles
+# serves any file in static/, so assets are exempted by shape (name +
+# asset suffix at the root), not by an exact list that would silently
+# gate the next file someone drops in.
+_DEVICE_EXEMPT_RULES = (
+    ("GET", re.compile(r"^/health$")),
+    ("GET", re.compile(r"^/(index\.html)?$")),
+    ("GET", re.compile(
+        r"^/[A-Za-z0-9][A-Za-z0-9._-]*"
+        r"\.(js|css|svg|png|ico|webp|jpe?g|gif|woff2?|ttf|webmanifest|map)$"
+    )),
+    ("POST", re.compile(r"^/approval/[^/]+/action$")),  # ntfy: its own token
+    (None, re.compile(r"^/speech/[^/]+/(next|cancel)$")),  # job-token bound
+    ("POST", re.compile(r"^/pair$")),  # the bootstrap itself (defence in depth)
+)
+
+
+def is_device_exempt(method: str, path: str) -> bool:
+    """Whether this route NEVER demands the device credential, however
+    enforcement stands. ``method=None`` rules match any method."""
+    for rule_method, pattern in _DEVICE_EXEMPT_RULES:
+        if rule_method is not None and method != rule_method:
+            continue
+        if pattern.match(path):
+            return True
+    return False
+
+
+# EventSource and <audio src> cannot send headers: exactly these two
+# GET transports may carry the device token as a ``device_token`` query
+# parameter instead (S11.2) — never any other route, never a write.
+_QUERY_TOKEN_ROUTES = (
+    ("GET", re.compile(r"^/events$")),
+    ("GET", re.compile(r"^/audio/[^/]+$")),
+)
+
+
+def query_token_allowed(method: str, path: str) -> bool:
+    """Whether this request may present the device credential in the
+    query string. Confined by an allowlist, not denied by a list of
+    writes: a new route opts IN, it cannot inherit the hole."""
+    for route_method, pattern in _QUERY_TOKEN_ROUTES:
+        if method == route_method and pattern.match(path):
+            return True
+    return False
+
+
 class PairingGate(Protocol):
-    """The pairing dependency, structurally: the two synchronous
-    questions the request path asks."""
+    """The pairing dependency, structurally: the questions the request
+    path asks."""
 
     def enforced(self) -> bool: ...
 
-    def resolve(self, token: Optional[str]) -> Optional[dict]: ...
+    def resolve_status(self, token: Optional[str]) -> tuple: ...
+
+    def peek(self, token: Optional[str]) -> Optional[dict]: ...
 
 
 def guard(
@@ -244,13 +306,24 @@ def guard(
     path: str,
     cfg: AccessConfig,
     pairing: Optional[PairingGate],
+    query_token: Optional[str] = None,
 ) -> tuple[Optional[str], Optional[str]]:
     """The combined gate used by the middleware. Returns
     ``(device_label, refusal_text)`` — exactly one of the two is set.
 
     On success the device label (None when no paired bearer was
     presented) is exposed to handlers as ``request.state.device`` for
-    the audit log (T3)."""
+    the audit log (T3).
+
+    ``query_token`` is the ``device_token`` query parameter the caller
+    extracted; the guard accepts it as a credential only on the two
+    headerless GET transports (see ``query_token_allowed``) and a
+    header bearer always wins when both are present.
+
+    Under enforcement (S11) every route demands the device credential
+    except the exemptions of ``is_device_exempt`` — the write routes of
+    doc 01 §4 AND the reads: an unpaired client's 403 is the signal
+    that opens the PWA's pairing flow."""
     level = classify(method, path)
 
     refusal = check_access(headers, level, cfg)
@@ -262,14 +335,33 @@ def guard(
         if not header_gate["authorized"]:
             return None, DEVICE_NOT_AUTHORISED
 
-    device = None
+    status, device = "invalid", None
     if pairing is not None:
         from .pairing import bearer_token
 
         token = bearer_token(headers.get)
-        device = pairing.resolve(token) if token else None
+        if not token and query_token and query_token_allowed(method, path):
+            token = query_token
+        if token:
+            if level == "pair":
+                # B4: the bootstrap is device-exempt, so the bearer is
+                # resolved only for the audit line's attribution — and
+                # READ-ONLY (``peek``): a refused (429) pair request
+                # must leave the registry byte-identical, with no
+                # lastSeenAt stamp on a valid credential.
+                device = pairing.peek(token)
+            else:
+                status, device = pairing.resolve_status(token)
 
-    if level == "write" and pairing is not None and pairing.enforced() and device is None:
+    needs_device = pairing is not None and pairing.enforced() and (
+        level == "write" or (level == "read" and not is_device_exempt(method, path))
+    )
+    if needs_device and status == "expired":
+        # The device IS known — its credential simply ran out. Saying
+        # "not paired" here would hide the one thing the operator set
+        # up on purpose (S11.3).
+        return None, DEVICE_EXPIRED
+    if needs_device and device is None:
         # Distinct from DEVICE_NOT_AUTHORISED on purpose: "not
         # authorised" is the operator's proxy allowlist, "not paired"
         # is this device's own missing credential — fixed in completely

@@ -27,7 +27,7 @@ import uuid
 from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Literal, Optional
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, unquote_plus
 
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Path as PathParam, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
@@ -61,6 +61,7 @@ from .history_view import HISTORY_DEFAULT_LIMIT, clamp_limit
 from .llm import BrainLLM, BrainLLMError, TurnCancelled
 from .memory import DEFAULT_SESSION, MAX_MESSAGES, ConversationStore
 from .pairing import (
+    ClaimRateLimiter,
     PairingStore,
     normalize_label as normalize_device_label,
     to_device_wire,
@@ -204,6 +205,10 @@ class AccessMiddleware:
     ``request.state.device``; the audit log, T3, consumes it). On
     refusal a plain 403 JSON body — the same ``{"detail": …}`` shape
     every other refusal in this app uses — with one text per gate.
+
+    The ``device_token`` query parameter (S11.2) is extracted here and
+    handed to the guard, which confines it to the two headerless GET
+    transports (/events, /audio/{name}); everywhere else it is inert.
     """
 
     def __init__(self, app, cfg: Settings, pairing: PairingStore):
@@ -219,8 +224,12 @@ class AccessMiddleware:
             key.decode("latin-1").lower(): value.decode("latin-1")
             for key, value in scope.get("headers", [])
         }
+        from urllib.parse import parse_qsl
+
+        query = dict(parse_qsl(scope.get("query_string", b"").decode("latin-1")))
         label, refusal = access_module.guard(
-            headers, scope["method"], scope["path"], self.cfg, self.pairing
+            headers, scope["method"], scope["path"], self.cfg, self.pairing,
+            query_token=query.get("device_token"),
         )
         if refusal is not None:
             body = json.dumps({"detail": refusal}, ensure_ascii=False).encode("utf-8")
@@ -234,6 +243,61 @@ class AccessMiddleware:
         if label is not None:
             scope.setdefault("state", {})["device"] = label
         await self.app(scope, receive, send)
+
+
+# The device token can ride a query parameter (S11.2), and uvicorn's
+# access log echoes request lines WITH query strings — the one log we
+# control that would otherwise persist the credential. Redaction walks
+# the query string's actual key=value pairs, decoding each key exactly
+# as parse_qsl does, so EVERY spelling the server accepts is caught:
+# percent-encoded (device%5Ftoken), repeated keys, and the ntfy action
+# route's ``token``. Spellings the server does NOT accept (e.g.
+# double-encoded) cannot carry a live credential, and every other
+# argument survives byte-identical.
+_REDACTED_QUERY_VALUE = "⟨redactado⟩"
+_SENSITIVE_QUERY_KEYS = frozenset({"device_token", "token"})
+
+
+def _redact_query_pair(pair: str) -> str:
+    """One ``key=value`` pair of a query string, its value replaced when
+    the percent-decoded key is a credential the server accepts."""
+    key, sep, _value = pair.partition("=")
+    if sep and unquote_plus(key) in _SENSITIVE_QUERY_KEYS:
+        return key + sep + _REDACTED_QUERY_VALUE
+    return pair
+
+
+def redact_query_tokens(text: str) -> str:
+    """Replace the value of every credential-carrying query parameter in
+    ``text`` — plain, percent-encoded or repeated — leaving the rest of
+    the line untouched. Pure — the logging filter and the tests share
+    it."""
+    words = text.split(" ")
+    changed = False
+    for index, word in enumerate(words):
+        base, mark, query = word.partition("?")
+        if not mark or not query:
+            continue
+        pairs = [_redact_query_pair(pair) for pair in query.split("&")]
+        redone = "&".join(pairs)
+        if redone != query:
+            words[index] = base + mark + redone
+            changed = True
+    return " ".join(words) if changed else text
+
+
+class RedactQueryToken(logging.Filter):
+    """uvicorn.access filter: no access line leaves the process carrying
+    a device token. Mutates the record in place (msg collapsed, args
+    cleared) so any later formatting is safe too."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        redacted = redact_query_tokens(message)
+        if redacted != message:
+            record.msg = redacted
+            record.args = None
+        return True
 
 
 def approval_payload(gate: ApprovalGate, timeout_s: int, now: Optional[float] = None) -> dict:
@@ -690,6 +754,11 @@ def create_app(
     # another process applies without a restart. With an empty registry
     # every route behaves exactly as before (S7).
     pairing_store = PairingStore(cfg.state_dir)
+
+    # S11: the /pair claim budget — in-process, bounded, per client
+    # address (see pairing.ClaimRateLimiter). Lives with the app, never
+    # in the pairing files.
+    pair_limiter = ClaimRateLimiter()
 
     # Audit trail (F1 security): one JSONL line per write
     # action at <state_dir>/audit.log. Lazy like the pairing store —
@@ -1854,7 +1923,20 @@ def create_app(
         reason word (no timing or count leaks back — the attempts left
         are the operator's business, on the operator's terminal). The
         token is returned exactly once and never stored in the clear.
+
+        Rate limited (S11): at most 10 claim attempts per client address
+        per minute, then a 429 with a Retry-After — checked BEFORE the
+        claim so a refused attempt consumes nothing and touches no
+        pairing file.
         """
+        client = request.client.host if request.client else "unknown"
+        retry_after = pair_limiter.check(client)
+        if retry_after is not None:
+            raise HTTPException(
+                status_code=429,
+                detail="demasiados intentos de emparejamiento",
+                headers={"Retry-After": str(retry_after)},
+            )
         label = normalize_device_label(body.label)
         if label is None:
             raise HTTPException(status_code=422, detail="label must be 1-48 usable characters")
@@ -1872,14 +1954,18 @@ def create_app(
         # "current" is resolved at RESPONSE time, not from the
         # middleware's request-time label: a device that just revoked
         # itself must already read as current=None (the bearer is
-        # resolved after the revocation for the same reason).
+        # resolved after the revocation for the same reason). An
+        # EXPIRED token resolves to no current device either — the PWA
+        # learns it is unpaired from the state, or from the read 403
+        # the gate answers with (S11).
         from .pairing import bearer_token as _bearer
 
         token = _bearer(request.headers.get)
         current = None
         if token:
-            device = pairing_store.resolve(token)
-            current = device["label"] if device else None
+            status, device = pairing_store.resolve_status(token)
+            if status == "ok":
+                current = device["label"]
         return {
             "enforced": pairing_store.enforced(),
             "current": current,
@@ -2277,6 +2363,31 @@ def create_app(
     return app
 
 
+def uvicorn_launch_kwargs(host: str, settings: Settings) -> dict:
+    """The uvicorn.run() kwargs of the production entry point (B3).
+
+    ``proxy_headers=False`` is a security property, not an optimization:
+    uvicorn's default ProxyHeadersMiddleware rewrites the ASGI client
+    address from client-controlled X-Forwarded-For whenever the peer is
+    in the (loopback-default) trusted set — and the /pair claim limiter
+    keys on that address, so with proxy-header trust on, a forger
+    rotates the limiter's key with every request. With it off,
+    ``scope["client"]`` is always the real transport peer. Consequence,
+    deliberate: connections from a CO-LOCATED reverse proxy all share
+    that proxy's transport-peer budget unless a separately trusted
+    scheme is explicitly supported. The Tailscale trusted-user header
+    is unaffected — the access gate reads ``Tailscale-User-Login``
+    itself, never uvicorn's proxy machinery. Bindings (host/port) are
+    unchanged by this helper.
+    """
+    return {
+        "host": host,
+        "port": settings.brain_port,
+        "log_config": None,
+        "proxy_headers": False,
+    }
+
+
 def main() -> None:  # pragma: no cover - manual entrypoint
     import logging
     import os
@@ -2292,12 +2403,19 @@ def main() -> None:  # pragma: no cover - manual entrypoint
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # uvicorn's access log echoes request lines WITH query strings, and
+    # /events?device_token=… would persist the credential in the journal
+    # (S11.2). The filter rewrites any device_token value out of the
+    # record; log_config=None keeps uvicorn from installing its own
+    # unfiltered access handler — its records propagate to the root
+    # handler instead, THROUGH this filter.
+    logging.getLogger("uvicorn.access").addFilter(RedactQueryToken())
 
     # Default loopback; override (e.g. 0.0.0.0 under WSL2 with a Windows-side
     # tailscale serve proxy) via HERDR_BRAIN_HOST.
     host = os.getenv("HERDR_BRAIN_HOST", "127.0.0.1")
     settings = load_settings()
-    uvicorn.run(create_app(settings), host=host, port=settings.brain_port)
+    uvicorn.run(create_app(settings), **uvicorn_launch_kwargs(host, settings))
 
 
 if __name__ == "__main__":  # pragma: no cover

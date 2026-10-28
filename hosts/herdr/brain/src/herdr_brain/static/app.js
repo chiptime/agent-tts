@@ -229,7 +229,7 @@
   }
 
   function adoptCallContext() {
-    return fetch("/call/context")
+    return readFetch("/call/context")
       .then(function (resp) { return resp.ok ? resp.json() : null; })
       .then(applySharedContext)
       .catch(function () { /* offline: the local identity stays */ });
@@ -242,7 +242,7 @@
    * caller must never dispatch a voice utterance against an unknown
    * shared state (a stale pane target, an unseen pending gate). */
   function syncSharedContext() {
-    return fetch("/call/context", { method: "GET", cache: "no-store" })
+    return readFetch("/call/context", { method: "GET", cache: "no-store" })
       .then(function (resp) {
         if (!resp.ok) throw new Error("context " + resp.status);
         return resp.json();
@@ -251,7 +251,7 @@
   }
 
   function publishPaneSelection(paneId) {
-    fetch("/call/context", {
+    readFetch("/call/context", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ pane_id: paneId || null })
@@ -1146,7 +1146,7 @@
     if (!cursor) { btn.remove(); return; }
     /* The raw ts contains "+" (UTC offset): encode it or the server
      * would read it as a space and mis-parse the cursor. */
-    fetch("/call-history?before=" + encodeURIComponent(cursor) + "&limit=25")
+    readFetch("/call-history?before=" + encodeURIComponent(cursor) + "&limit=25")
       .then(function (resp) {
         if (!resp.ok) throw new Error("HTTP " + resp.status);
         return resp.json();
@@ -1293,7 +1293,7 @@
     var chain = Promise.resolve();
     plans.forEach(function (plan) {
       chain = chain.then(function () {
-        return fetch("/tts", {
+        return readFetch("/tts", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ text: plan.piece })
@@ -1788,7 +1788,7 @@
     permissionPane = paneId;
     permissionRequest = null;
     renderPermission();
-    fetch("/pane/permission?pane_id=" + encodeURIComponent(paneId))
+    readFetch("/pane/permission?pane_id=" + encodeURIComponent(paneId))
       .then(function (resp) {
         if (!resp.ok) throw new Error("HTTP " + resp.status);
         return resp.json();
@@ -2314,7 +2314,7 @@
 
   function refreshView() {
     var qs = selectedPane ? "?pane_id=" + encodeURIComponent(selectedPane) : "";
-    fetch("/view" + qs)
+    readFetch("/view" + qs)
       .then(function (resp) {
         if (!resp.ok) throw new Error("HTTP " + resp.status);
         return resp.json();
@@ -2327,7 +2327,7 @@
 
   function refreshConversation() {
     var qs = selectedPane ? "?pane_id=" + encodeURIComponent(selectedPane) : "";
-    fetch("/conversation" + qs)
+    readFetch("/conversation" + qs)
       .then(function (resp) {
         if (!resp.ok) throw new Error("HTTP " + resp.status);
         return resp.json();
@@ -2348,7 +2348,7 @@
   }
 
   function refreshState() {
-    fetch("/herd")
+    readFetch("/herd")
       .then(function (resp) {
         if (!resp.ok) throw new Error("HTTP " + resp.status);
         return resp.json();
@@ -2441,7 +2441,7 @@
   }
 
   function replaceAudioSource(item) {
-    var source = new URL(item.url, document.baseURI);
+    var source = new URL(mediaSourceUrl(item.url), document.baseURI);
     if (!item.karaoke) player.muted = false;
     // The first source already has no predecessor. Stamp every replacement
     // with a browser-only fragment, never sent to the audio endpoint. Even
@@ -2495,14 +2495,18 @@
   }
 
   var karaokeCtl = Karaoke.createController({
-    fetch: function (url, options) { return fetch(url, options); },
+    fetch: function (url, options) { return fetch(url, withDeviceAuth(options)); },
     createAbortController: function () { return new AbortController(); },
     player: { load: function (owned, events) {
       var startAtZero = !!glanceReplay && glanceReplay.plan === owned.plan &&
         glanceReplay.sentIdx === null && glanceReplay.readerText === null;
+      /* The item keeps the BARE url (reuse comparisons stay stable);
+       * the credential is applied when the source is assigned to the
+       * player — same /audio query-token rule as enqueueAudio (S11.2):
+       * the karaoke transport is an <audio src> too. */
       var item = { url: owned.url, karaoke: owned, events: events, announcement: null,
         speechRequestId: null, seq: null, disposed: false, metadataReady: false,
-        startAtZero: startAtZero, source: new URL(owned.url, document.baseURI).href, listeners: [] };
+        startAtZero: startAtZero, source: new URL(mediaSourceUrl(owned.url), document.baseURI).href, listeners: [] };
       audioQueue.unshift(item);
       pumpAudio();
       return {
@@ -2616,7 +2620,19 @@
   }).observe(glanceTurns, { childList: true, subtree: true, characterData: true,
     attributes: true, attributeFilter: ["data-sent-idx", "hidden", "aria-hidden"] });
 
-  function enqueueAudio(url, announcement, speechRequestId, seq) {    audioQueue.push({
+  /* <audio src> cannot send headers: the /audio transport carries the
+   * device credential as a query parameter (S11.2; the server confines
+   * the parameter to /events and /audio). Other URLs pass through
+   * untouched. Applied at SOURCE-ASSIGNMENT time, not enqueue time
+   * (B1): audio queued before a pairing/revoke/expiry transition plays
+   * with the credential that exists when it actually loads — never the
+   * bare/old URL frozen into the queue. */
+  function mediaSourceUrl(url) {
+    return pairingUI ? pairingUI.withQueryToken(url) : url;
+  }
+
+  function enqueueAudio(url, announcement, speechRequestId, seq) {
+    audioQueue.push({
       url: url,
       announcement: announcement || null,
       chunkOffset: announcement && announcement.chunkOffset || 0,
@@ -2673,7 +2689,7 @@
     }
     var item = audioQueue.splice(index, 1)[0];    audioBusy = true;
     audioFinished = item;
-    item.source = new URL(item.url, document.baseURI).href;
+    item.source = new URL(mediaSourceUrl(item.url), document.baseURI).href;
     if (item.karaoke) {
       var reusable = karaokeMedia && karaokeMedia.plan === item.karaoke.plan &&
         karaokeMedia.pieceIndex === item.karaoke.pieceIndex && karaokeMedia.url === item.url &&
@@ -3447,38 +3463,72 @@
   });
 
   renderPendingSection(pendingStore.snapshot());
+  /* The ONE SSE transport (B1): opened once at boot (or the first call
+   * gesture) with whatever credential exists then, and REOPENED — the
+   * old source closed, a new one opened, the same single message
+   * handler — whenever pairing, revocation or expiry changes the
+   * credential it must carry. No listener or timer is ever duplicated,
+   * and reopening only reconnects: nothing executes on its own. */
+  var eventsSource = null;
+
+  function eventsUrl() {
+    /* EventSource cannot send headers: /events carries the device
+     * credential as a query parameter instead (S11.2). No token in
+     * localStorage → the bare /events URL, byte-identical to before. */
+    return pairingUI ? pairingUI.withQueryToken("/events") : "/events";
+  }
+
+  function attachEvents(url) {
+    var source = new EventSource(url);
+    source.onmessage = handleEventsMessage;
+    eventsSource = source;
+  }
+
   function openEvents() {
     if (eventsOpened || !window.EventSource) return;
     eventsOpened = true;
-    var source = new EventSource("/events");
-    source.onmessage = function (event) {
-      var ann;
-      try { ann = JSON.parse(event.data); } catch (err) { return; }
-      if (ann && ann.type === "system") {
-        // System warnings (e.g. herdr-tts daemon down): the toast always
-        // shows — even muted, this is the surviving channel speaking.
-        var isWarning = ann.kind === "warning";
-        showToast((isWarning ? "⚠️ " : "✅ ") + ann.text, isWarning ? 8000 : 5000,
-          isWarning ? "warning" : null);
-        if (!muted() && ann.audio_url) enqueueAudio(ann.audio_url, ann);
-        return;
-      }
-      if (ann && (ann.type === "consulting" || ann.type === "consult_report")) {
-        // T10: consult state + report panel ride the same SSE stream.
-        // Display-only by contract — never enqueueAudio'd (FR-14).
-        if (consultUI) safeRender("consult", consultUI.handleEvent, ann);
-        return;
-      }
-      if (!ann || ann.type !== "transition") return;
-      // VS3.6: the pending ledger records the transition (bookkeeping +
-      // recovery only); the announcement itself keeps flowing through
-      // the announcer below — this is not a second queue.
-      pendingStore.observe(ann);
-      // FR-07: every agent's transition flows through the announcer
-      // (muted toast / play on arrival / blocked drop), with the in-call
-      // playback path delegated to the existing queue below it.
-      announcer.handle(ann);
-    };
+    attachEvents(eventsUrl());
+  }
+
+  function reopenEvents() {
+    if (!eventsOpened || !window.EventSource) return;
+    var url = new URL(eventsUrl(), location.href).href;
+    /* Idempotent by URL: while the live transport already carries the
+     * current credential, nothing moves (the 5s read polls re-offer
+     * pairing on every beat; only a real credential change reopens). */
+    if (eventsSource && eventsSource.readyState !== 2 &&
+        eventsSource.url === url) return;
+    if (eventsSource) eventsSource.close();
+    attachEvents(url);
+  }
+
+  function handleEventsMessage(event) {
+    var ann;
+    try { ann = JSON.parse(event.data); } catch (err) { return; }
+    if (ann && ann.type === "system") {
+      // System warnings (e.g. herdr-tts daemon down): the toast always
+      // shows — even muted, this is the surviving channel speaking.
+      var isWarning = ann.kind === "warning";
+      showToast((isWarning ? "⚠️ " : "✅ ") + ann.text, isWarning ? 8000 : 5000,
+        isWarning ? "warning" : null);
+      if (!muted() && ann.audio_url) enqueueAudio(ann.audio_url, ann);
+      return;
+    }
+    if (ann && (ann.type === "consulting" || ann.type === "consult_report")) {
+      // T10: consult state + report panel ride the same SSE stream.
+      // Display-only by contract — never enqueueAudio'd (FR-14).
+      if (consultUI) safeRender("consult", consultUI.handleEvent, ann);
+      return;
+    }
+    if (!ann || ann.type !== "transition") return;
+    // VS3.6: the pending ledger records the transition (bookkeeping +
+    // recovery only); the announcement itself keeps flowing through
+    // the announcer below — this is not a second queue.
+    pendingStore.observe(ann);
+    // FR-07: every agent's transition flows through the announcer
+    // (muted toast / play on arrival / blocked drop), with the in-call
+    // playback path delegated to the existing queue below it.
+    announcer.handle(ann);
   }
 
   /* ---------------- device credential (F1 device pairing) ----------------
@@ -3497,13 +3547,36 @@
     });
   }
 
+  /* Every data fetch (read or write) carries the device bearer once a
+   * device is paired (S11: reads are gated too), and a pairing 403 on
+   * a READ opens the same recovery flow the writes already offered. */
+  function readFetch(url, options) {
+    return fetch(url, withDeviceAuth(options)).then(function (resp) {
+      maybeOfferPairing(resp);
+      return resp;
+    });
+  }
+
   function maybeOfferPairing(resp) {
-    /* A 403 «dispositivo no emparejado» on any write opens the pairing
-     * flow (Ajustes) instead of a dead-end toast — the migration path
-     * the moment the first device pairs. Cheap: only 403s are read. */
+    /* A 403 «dispositivo no emparejado» (or «dispositivo caducado»,
+     * S11.3 — the recovery is the same flow) on any route opens the
+     * pairing flow (Ajustes) instead of a dead-end toast — the
+     * migration path the moment the first device pairs. Cheap: only
+     * 403s are read. */
     if (!pairingUI || !resp || resp.status !== 403) return Promise.resolve(null);
     return resp.clone().json().then(function (body) {
-      if (body && pairingUI.isNotPairedResponse(body)) pairingUI.offer();
+      if (!body) return null;
+      if (pairingUI.isNotPairedResponse(body)) {
+        pairingUI.offer();
+        /* B1: the credential this transport was built on (or the lack
+         * of one) is no longer current — re-derive it. Idempotent: the
+         * stored token decides the URL, and every 5s poll re-offers. */
+        reopenEvents();
+      } else if (pairingUI.isExpiredResponse(body)) {
+        pairingUI.offer(true);
+        reopenEvents();
+      }
+      return null;
     }).catch(function () { /* not JSON — not our 403 */ });
   }
 
@@ -3619,6 +3692,15 @@
       openSettings: openSettings,
       onPaired: function () {
         showToast("Dispositivo emparejado — la escritura queda habilitada", 4000);
+        /* B1: the claim stored a NEW credential — the SSE transport
+         * must carry it from here on (the boot source was built bare,
+         * or on the expired token that opened the pair form). */
+        reopenEvents();
+      },
+      onRevoked: function () {
+        /* B1: our credential died — the transport re-derives its URL
+         * from the (now empty) storage on the next credential state. */
+        reopenEvents();
       }
     });
     pairingUI.refresh();
@@ -4798,7 +4880,7 @@
    * the "Ver más" pager above the first turn. Best effort by design:
    * on failure it warns and boot continues untouched (same contract as
    * approvalFlow.recover). */
-  fetch("/call-history")
+  readFetch("/call-history")
     .then(function (resp) {
       if (!resp.ok) throw new Error("HTTP " + resp.status);
       return resp.json();

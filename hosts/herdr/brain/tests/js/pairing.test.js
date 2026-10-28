@@ -9,7 +9,7 @@
 const test = require("node:test");
 const assert = require("node:assert");
 const path = require("node:path");
-const { createPairingUI, TOKEN_KEY, NOT_PAIRED_DETAIL } =
+const { createPairingUI, TOKEN_KEY, NOT_PAIRED_DETAIL, EXPIRED_DETAIL } =
   require("../../src/herdr_brain/static/pairing.js");
 
 /* ---- fake DOM (test infrastructure, toast.test.js subset) ---- */
@@ -209,6 +209,40 @@ test("revoke posts the label with the bearer and clears a self-revoke", async ()
   assert.equal(ui.isPaired(), false);
 });
 
+test("a self-revoke that drops the credential fires onRevoked", async () => {
+  /* B1: app.js reopens the SSE transport when the local credential
+   * dies, so the UI must say so — but only when the token is actually
+   * dropped (revoking ANOTHER device keeps ours). */
+  const events = [];
+  const http = makeRequest();
+  const storage = makeStorage();
+  storage.items[TOKEN_KEY] = "tok-1";
+  const ui = createPairingUI({
+    request: http.request,
+    storage,
+    doc: makeDoc(),
+    openSettings: () => {},
+    onPaired: () => {},
+    onRevoked: () => events.push("revoked"),
+  });
+
+  // Another device's revoke: the response keeps us current.
+  http.responder.queue = [
+    { status: 200, json: { enforced: true, current: "móvil", devices: [] } },
+  ];
+  await ui.revoke("otro");
+  assert.equal(storage.items[TOKEN_KEY], "tok-1");
+  assert.deepEqual(events, []);
+
+  // Self-revoke: the token dies and the callback fires exactly once.
+  http.responder.queue = [
+    { status: 200, json: { enforced: false, current: null, devices: [] } },
+  ];
+  await ui.revoke("móvil");
+  assert.equal(storage.items[TOKEN_KEY], undefined);
+  assert.deepEqual(events, ["revoked"]);
+});
+
 /* ---- auth headers for the app's write fetches ---- */
 
 test("authHeaders adds the bearer only when a token exists", async () => {
@@ -247,4 +281,90 @@ test("isNotPairedResponse accepts the parsed body app.js hands it", async () => 
   assert.equal(ui.isNotPairedResponse({ detail: "dispositivo no autorizado" }), false);
   assert.equal(ui.isNotPairedResponse({}), false);
   assert.equal(ui.isNotPairedResponse(null), false);
+});
+
+/* ---- S11: reads gated, expiry, query token ---- */
+
+test("exports the expired 403 detail", () => {
+  assert.equal(EXPIRED_DETAIL, "dispositivo caducado");
+});
+
+test("refresh learns 'unpaired' from the 403 itself (S11 read gate)", async () => {
+  /* GET /devices is gated once enforcement is on; the not-paired 403
+   * IS the signal. The card renders the pairing form, and the state
+   * says enforced so the status line shows the locked copy. */
+  const { ui, http } = makeUI();
+  http.responder.queue = [
+    { status: 403, json: { detail: NOT_PAIRED_DETAIL } },
+  ];
+  const state = await ui.refresh();
+  assert.equal(state.enforced, true);
+  assert.equal(state.current, null);
+  assert.deepEqual(state.devices, []);
+});
+
+test("refresh learns 'expired' from its own 403 detail", async () => {
+  const { ui, http } = makeUI();
+  http.responder.queue = [
+    { status: 403, json: { detail: EXPIRED_DETAIL } },
+  ];
+  const state = await ui.refresh();
+  assert.equal(state.enforced, true);
+  assert.equal(state.current, null);
+});
+
+test("isExpiredResponse matches only the expired 403 detail", () => {
+  const { ui } = makeUI();
+  assert.equal(ui.isExpiredResponse({ detail: EXPIRED_DETAIL }), true);
+  assert.equal(ui.isExpiredResponse({ status: 403, detail: EXPIRED_DETAIL }), true);
+  assert.equal(ui.isExpiredResponse({ detail: NOT_PAIRED_DETAIL }), false);
+  assert.equal(ui.isExpiredResponse({ status: 404, detail: EXPIRED_DETAIL }), false);
+  assert.equal(ui.isExpiredResponse(null), false);
+});
+
+test("offer opens settings once, not on every refused poll", () => {
+  const { ui, events } = makeUI();
+  ui.offer();
+  ui.offer();
+  assert.deepEqual(events, ["open-settings"]);
+});
+
+test("withQueryToken appends the token only to /events and /audio/*", () => {
+  const { ui, storage } = makeUI();
+  storage.items[TOKEN_KEY] = "tok-9";
+  assert.equal(ui.withQueryToken("/events"), "/events?device_token=tok-9");
+  assert.equal(ui.withQueryToken("/audio/clip.mp3"), "/audio/clip.mp3?device_token=tok-9");
+  assert.equal(ui.withQueryToken("/events?x=1"), "/events?x=1&device_token=tok-9");
+  /* Never a write, never another read: the parameter is a concession to
+   * two headerless GET transports, nothing else. */
+  assert.equal(ui.withQueryToken("/herd"), "/herd");
+  assert.equal(ui.withQueryToken("/pane/reply"), "/pane/reply");
+  assert.equal(ui.withQueryToken("/audio/a/b.mp3"), "/audio/a/b.mp3");
+});
+
+test("withQueryToken without a token changes nothing", () => {
+  const { ui } = makeUI();
+  assert.equal(ui.withQueryToken("/events"), "/events");
+  assert.equal(ui.withQueryToken("/audio/clip.mp3"), "/audio/clip.mp3");
+});
+
+test("device rows show their expiry when the wire carries one", async () => {
+  const { ui, http, doc } = makeUI();
+  http.responder.queue = [
+    { status: 200, json: { enforced: true, current: "a", devices: [
+      { label: "a", createdAt: 10, lastSeenAt: 20, expiresAt: 3000, current: true },
+      { label: "b", createdAt: 11, lastSeenAt: 21, expiresAt: null, current: false },
+    ] } },
+  ];
+  await ui.refresh();
+  const root = doc.getElementById("pairing-box");
+  /* The fake DOM keeps each node's own textContent only, so gather it
+   * by walking the tree the way a real textContent would. */
+  function allText(node) {
+    return (node.textContent || "") + node.children.map(allText).join("");
+  }
+  const joined = allText(root);
+  /* Exactly the device WITH an expiresAt carries the word; the
+   * F1-shaped one (expiresAt null) renders no deadline. */
+  assert.equal(joined.split("caduca").length - 1, 1);
 });

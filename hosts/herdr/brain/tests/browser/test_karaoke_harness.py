@@ -17,9 +17,15 @@ EXPECTED_DIGESTS = {
     # merge that touches index.html, app.js or herd-group.js.
     # "/" and "/app.js" re-pinned for device pairing (F1): the Ajustes
     # card, the bearer on write fetches and pairing.js wiring; then for the
-    # destructive-command guard (destructive.js + composer confirmation).
+    # destructive-command guard (destructive.js + composer confirmation);
+    # then for S11 (reads carry the bearer, EventSource/<audio> carry the
+    # S11 (reads carry the bearer, EventSource/<audio> carry the
+    # device_token query parameter, the read-403 pairing offer and the
+    # caducado hint); then for the B1 correction (the SSE transport
+    # reopens with the current credential on pairing/revoke/expiry, and
+    # media URLs are credentialised at source-assignment time).
     "/": "77c92c679c2892be5cd593580fcbb6d13e72661740b38376597952476391d55c",
-    "/app.js": "a7677124cc4a87c268cc772aee5be4721b75352ca64d2158495c782a7ee3ec04",
+    "/app.js": "11e24beeb26b7dbe868ff52b2d51b6b854af3102b2fc407fb0b3cd127bf4fcf1",
     "/herd-group.js": "08296c7208e14dc1d5e46186b645d02089f8addef502b50eb11e61b186829674",
     "/toast.js": "47a230495fbbe8af8ed63ea0daf2e77a08f41f48911da4f9cc230ddc904fdd5d",
     "/reader.js": "28daec6199b0e756e1285b40f20fc860c1d9b4d2169cb2433c1ccfb12db31a76",

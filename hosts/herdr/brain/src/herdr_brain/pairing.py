@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import secrets
@@ -56,14 +57,45 @@ CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTWXYZ"
 # every 1.5s must not become a write.
 SEEN_THROTTLE_S = 60.0
 
+# The /pair claim budget (S11): at most this many claim attempts per
+# client address per window, then 429 with a Retry-After. Refused
+# attempts are not recorded, so a flood of 429s cannot push a client's
+# recovery further out.
+PAIR_RATE_ATTEMPTS = 10
+PAIR_RATE_WINDOW_S = 60.0
+
 _TOKEN_BYTES = 32  # 256-bit bearer tokens.
 
 DEFAULT_STATE_DIR = "~/.local/state/herdr-brain"
+
+# Duration units `pair --expires` / `devices set-expiry` accept. One
+# value, one unit — a compound ("1h30m") or bare number is refused
+# rather than guessed.
+_DURATION_RE = re.compile(r"^([0-9]+(?:\.[0-9]+)?)([smhdw])$")
 
 
 def default_state_dir() -> Path:
     """The documented default state dir (coherent with DEFAULT_AUDIO_DIR)."""
     return Path(DEFAULT_STATE_DIR).expanduser()
+
+
+_DURATION_UNITS_S = {"s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0, "w": 604800.0}
+
+
+def parse_duration(raw: object) -> Optional[float]:
+    """``"30d"`` → 2592000.0; None for anything the operator did not
+    spell as one positive value plus a unit (s/m/h/d/w). A bare number
+    or a compound is refused, not guessed — an expiry is a security
+    knob and "30" meaning seconds-or-days is how it goes wrong."""
+    if not isinstance(raw, str):
+        return None
+    match = _DURATION_RE.match(raw.strip())
+    if match is None:
+        return None
+    seconds = float(match.group(1)) * _DURATION_UNITS_S[match.group(2)]
+    if seconds <= 0 or seconds != seconds or seconds in (float("inf"),):
+        return None
+    return seconds
 
 
 def ensure_private_dir(path: Path) -> None:
@@ -135,11 +167,15 @@ def generate_token(random: Callable[[int], bytes] = secrets.token_bytes) -> str:
 
 
 def new_pending(code: str, now: float, ttl_s: float = CODE_TTL_S,
-                label: Optional[str] = None) -> dict:
+                label: Optional[str] = None,
+                expires_in_s: Optional[float] = None) -> dict:
     """A fresh pending pairing for ``code``, expiring ``ttl_s`` from ``now``.
 
     ``label`` (optional) pins the device label the claim will use, so
-    the operator — not the phone — chooses the revoke handle."""
+    the operator — not the phone — chooses the revoke handle.
+    ``expires_in_s`` (optional) is the TOKEN expiry the enrolled device
+    will carry; it rides the pending because the credential is born at
+    the claim, and the deadline must run from there, not from the mint."""
     pending = {
         "codeHash": sha256_hex(normalize_code(code)),
         "expiresAt": now + ttl_s,
@@ -147,12 +183,15 @@ def new_pending(code: str, now: float, ttl_s: float = CODE_TTL_S,
     }
     if label is not None:
         pending["label"] = label
+    if expires_in_s is not None:
+        pending["expiresInS"] = expires_in_s
     return pending
 
 
 def coerce_pending(raw: object) -> Optional[dict]:
     """Coerce an untrusted parsed value into a pending pairing, or None.
-    An optional pinned label survives only when it is a usable string."""
+    An optional pinned label survives only when it is a usable string;
+    an optional token-expiry duration survives only when usable."""
     if not isinstance(raw, dict):
         return None
     code_hash = raw.get("codeHash")
@@ -172,6 +211,10 @@ def coerce_pending(raw: object) -> Optional[dict]:
     label = normalize_label(raw.get("label"))
     if label is not None:
         pending["label"] = label
+    expires_in = raw.get("expiresInS")
+    if isinstance(expires_in, (int, float)) and not isinstance(expires_in, bool) \
+            and expires_in > 0:
+        pending["expiresInS"] = float(expires_in)
     return pending
 
 
@@ -180,7 +223,10 @@ def coerce_registry(raw: object) -> dict:
     entry that isn't a complete device. A half-written or hand-edited
     file degrades to "fewer paired devices", never to a device with an
     empty tokenHash — which would otherwise authorise a caller whose
-    token hashes to ""."""
+    token hashes to "". An ``expiresAt`` that is present but not a
+    usable timestamp drops the entry too (S11): "forever" hand-edited
+    into the file must not widen into a credential that never runs out;
+    an ABSENT key is the F1 shape and simply never expires."""
     if not isinstance(raw, dict):
         return {"devices": []}
     entries = raw.get("devices")
@@ -200,12 +246,19 @@ def coerce_registry(raw: object) -> dict:
             continue
         created = entry.get("createdAt")
         seen = entry.get("lastSeenAt")
-        devices.append({
+        device = {
             "label": label,
             "tokenHash": token_hash,
             "createdAt": created if isinstance(created, (int, float)) and not isinstance(created, bool) else 0,
             "lastSeenAt": seen if isinstance(seen, (int, float)) and not isinstance(seen, bool) else 0,
-        })
+        }
+        expires_at = entry.get("expiresAt")
+        if expires_at is not None:
+            if not isinstance(expires_at, (int, float)) or isinstance(expires_at, bool) \
+                    or not expires_at > 0:
+                continue
+            device["expiresAt"] = float(expires_at)
+        devices.append(device)
     return {"devices": devices}
 
 
@@ -283,22 +336,27 @@ def find_by_token(registry: dict, token: Optional[str]) -> Optional[dict]:
     return found
 
 
+def device_expired(device: dict, now: float) -> bool:
+    """Whether the device's optional token deadline has passed. Absent
+    (the F1 shape) means the credential never runs out."""
+    expires_at = device.get("expiresAt")
+    return expires_at is not None and now >= expires_at
+
+
 def add_device(registry: dict, device: dict) -> Optional[dict]:
     """Add a device, or None when the label is already taken (labels are
     the revoke handle)."""
     if any(d["label"] == device["label"] for d in registry["devices"]):
         return None
-    return {
-        "devices": [
-            *registry["devices"],
-            {
-                "label": device["label"],
-                "tokenHash": device["tokenHash"],
-                "createdAt": device["now"],
-                "lastSeenAt": device["now"],
-            },
-        ],
+    entry = {
+        "label": device["label"],
+        "tokenHash": device["tokenHash"],
+        "createdAt": device["now"],
+        "lastSeenAt": device["now"],
     }
+    if device.get("expiresAt") is not None:
+        entry["expiresAt"] = device["expiresAt"]
+    return {"devices": [*registry["devices"], entry]}
 
 
 def remove_device(registry: dict, label: str) -> Optional[dict]:
@@ -328,12 +386,14 @@ def touch_device(registry: dict, label: str, now: float,
 
 def to_device_wire(registry: dict, current: Optional[str]) -> list:
     """The wire shape of the registry for GET /devices — the token
-    hashes never leave this module."""
+    hashes never leave this module. ``expiresAt`` is None for the F1
+    shape (never expires)."""
     return [
         {
             "label": d["label"],
             "createdAt": d["createdAt"],
             "lastSeenAt": d["lastSeenAt"],
+            "expiresAt": d.get("expiresAt"),
             "current": d["label"] == current,
         }
         for d in registry["devices"]
@@ -467,16 +527,20 @@ class PairingStore:
         requirement the operator armed cannot be corrupted away."""
         return self._load()[1]
 
-    def resolve(self, token: Optional[str]) -> Optional[dict]:
-        """The device this request's bearer token belongs to, or None.
-        Also stamps lastSeenAt, throttled: a failed stamp must never
-        fail the request it decorates, and the stamp is re-derived from
-        disk inside the write so it can never resurrect a device the
-        CLI revoked between the read and the write."""
+    def resolve_status(self, token: Optional[str]) -> tuple:
+        """The three-way answer the request path needs (S11):
+        ``("ok", device)`` for a live credential, ``("expired", device)``
+        for a token that matched but ran out (its own 403 text, and no
+        lastSeen stamp — a refused device is not "seen"), ``("invalid",
+        None)`` for everything else. On "ok" the lastSeenAt stamp runs,
+        throttled and re-derived from disk exactly as ``resolve`` always
+        did (see below)."""
         registry = self.registry()
         device = find_by_token(registry, token)
         if device is None:
-            return None
+            return "invalid", None
+        if device_expired(device, self._now()):
+            return "expired", device
         touched = touch_device(registry, device["label"], self._now())
         if touched is not None:
             try:
@@ -502,11 +566,32 @@ class PairingStore:
                 logging.getLogger("herdr_brain.pairing").warning(
                     "could not stamp lastSeenAt: %s", exc
                 )
+        return "ok", device
+
+    def resolve(self, token: Optional[str]) -> Optional[dict]:
+        """The device this request's bearer token belongs to, or None.
+        The F1 contract unchanged: an expired token simply stops
+        answering here too (the three-way split lives in
+        ``resolve_status``)."""
+        status, device = self.resolve_status(token)
+        return device if status == "ok" else None
+
+    def peek(self, token: Optional[str]) -> Optional[dict]:
+        """The LIVE device this bearer belongs to, read-only: no
+        lastSeenAt stamp, no registry write (B4 — the /pair bootstrap
+        resolves a presented bearer only for audit attribution, and a
+        refused bootstrap must leave the registry byte-identical).
+        Unknown and expired tokens answer None, the same shape
+        ``resolve`` keeps."""
+        device = find_by_token(self.registry(), token)
+        if device is None or device_expired(device, self._now()):
+            return None
         return device
 
     # -- enrolment --
 
-    def mint(self, label: Optional[str] = None) -> dict:
+    def mint(self, label: Optional[str] = None,
+             expires_in_s: Optional[float] = None) -> dict:
         """Mint a one-time code and persist only its hash. Returns the
         code for the terminal (the only copy that will ever exist) plus
         its expiry. A second mint overwrites the pending file, killing
@@ -515,19 +600,28 @@ class PairingStore:
         A pinned label is normalized and validated HERE, at the source:
         an unusable one raises instead of silently pinning nothing (the
         claim would fall back to the phone's label, leaving the operator
-        a revoke handle they never chose — T4 B4)."""
+        a revoke handle they never chose — T4 B4). ``expires_in_s``,
+        when given, is the token deadline the claiming device will be
+        enrolled with (S11) — validated for the same reason: an expiry
+        that is zero or negative is no expiry, and pretending otherwise
+        would hand out a credential the operator believes is bounded."""
         if label is not None:
             label = normalize_label(label)
             if label is None:
                 raise ValueError("label must be 1-48 usable characters")
+        if expires_in_s is not None and (not expires_in_s > 0):
+            raise ValueError("expires must be a positive duration in seconds")
         now = self._now()
         code = generate_code(self._random)
-        pending = new_pending(code, now, label=label)
+        pending = new_pending(code, now, label=label, expires_in_s=expires_in_s)
         self._write_atomic(
             self.pending_path,
             json.dumps(pending, ensure_ascii=False, indent=2) + "\n",
         )
-        return {"code": code, "expiresAt": pending["expiresAt"], "label": label}
+        minted = {"code": code, "expiresAt": pending["expiresAt"], "label": label}
+        if expires_in_s is not None:
+            minted["expiresInS"] = expires_in_s
+        return minted
 
     def claim(self, code: str, label: str) -> tuple:
         """Claim the pending code and enrol ``label``. On success the
@@ -552,12 +646,18 @@ class PairingStore:
             # chose; otherwise the phone's (validated) label.
             effective = pending.get("label") if pending.get("label") else label
             token = generate_token(self._random)
-            current = coerce_registry(self._read_json(self.registry_path))
-            enrolled = add_device(current, {
+            now = self._now()
+            enrolment = {
                 "label": effective,
                 "tokenHash": sha256_hex(token),
-                "now": self._now(),
-            })
+                "now": now,
+            }
+            # The token deadline runs from the CLAIM — the moment the
+            # credential is born — not from when the code was minted.
+            if pending.get("expiresInS") is not None:
+                enrolment["expiresAt"] = now + pending["expiresInS"]
+            current = coerce_registry(self._read_json(self.registry_path))
+            enrolled = add_device(current, enrolment)
             # A duplicate label leaves the pending pairing alive: the
             # operator retries with another name rather than re-running
             # `herdr-brain pair`.
@@ -591,3 +691,114 @@ class PairingStore:
                 json.dumps(next_registry, ensure_ascii=False, indent=2) + "\n",
             )
             return True
+
+    # -- token expiry (S11) --
+
+    def set_expiry(self, label: str, seconds: float) -> bool:
+        """Arm (or re-arm) the label's token deadline ``seconds`` from
+        now. False means no such label; a non-positive duration raises
+        (the CLI validates the spelling — this guards the meaning).
+        Re-arming a deadline that already ran out is the operator
+        extending a lapsed phone, not a special case. Applies on the
+        device's next request, no restart (same mtime re-read as
+        revocation)."""
+        if not seconds > 0:
+            raise ValueError("expiry must be a positive duration in seconds")
+        return self._rewrite_device(label, lambda d: {**d, "expiresAt": self._now() + seconds})
+
+    def clear_expiry(self, label: str) -> bool:
+        """Remove the label's deadline — the token goes back to the F1
+        shape and never runs out. False means no such label."""
+        return self._rewrite_device(label, lambda d: {k: v for k, v in d.items() if k != "expiresAt"})
+
+    def _rewrite_device(self, label: str, change) -> bool:
+        """Read-modify-write ONE device entry under the lock, re-derived
+        from disk so a concurrent CLI verb can never be silently
+        undone (the same invariant the lastSeen stamp keeps)."""
+        with self._lock:
+            current = coerce_registry(self._read_json(self.registry_path))
+            if not any(d["label"] == label for d in current["devices"]):
+                return False
+            next_registry = {
+                "devices": [
+                    change(d) if d["label"] == label else d
+                    for d in current["devices"]
+                ],
+            }
+            self._write_atomic(
+                self.registry_path,
+                json.dumps(next_registry, ensure_ascii=False, indent=2) + "\n",
+            )
+            return True
+
+
+# ── the /pair rate limit (S11) ────────────────────────────────────────────────
+
+
+def rate_limit_retry_after(
+    stamps, now: float,
+    limit: int = PAIR_RATE_ATTEMPTS, window_s: float = PAIR_RATE_WINDOW_S,
+):
+    """Pure verdict over a client's previous attempt timestamps: None
+    when one more attempt fits, else the seconds until the oldest
+    counted attempt ages out of the window (a full window's wait at
+    most, and never 0 — a sub-second hint tells the client to hammer)."""
+    recent = [t for t in stamps if now - t < window_s]
+    if len(recent) < limit:
+        return None
+    oldest = min(recent)
+    wait = window_s - (now - oldest)
+    return max(1, math.ceil(wait))
+
+
+class ClaimRateLimiter:
+    """In-process, bounded bookkeeping behind ``POST /pair``: at most
+    ``limit`` claim attempts per client address per window, then a 429
+    with the retry hint. Bounded BY CONSTRUCTION — one deque per client
+    capped at ``limit`` stamps, at most ``max_clients`` clients tracked
+    (beyond that the least recently active is dropped, which can only
+    let an attacker through EARLIER, never keep an honest client out),
+    stamps pruned as they age out."""
+
+    def __init__(
+        self,
+        now: Optional[Callable[[], float]] = None,
+        limit: int = PAIR_RATE_ATTEMPTS,
+        window_s: float = PAIR_RATE_WINDOW_S,
+        max_clients: int = 1024,
+    ):
+        import time
+
+        self._now = now or time.time
+        self._limit = limit
+        self._window_s = window_s
+        self._max_clients = max_clients
+        self._attempts: dict = {}  # client -> list of stamps, oldest first
+
+    def clients(self) -> list:
+        """The tracked client addresses (test visibility; bounded)."""
+        return list(self._attempts)
+
+    def check(self, client: str, now: Optional[float] = None) -> Optional[int]:
+        """Record one attempt and answer: None when it may proceed, or
+        the Retry-After seconds when the budget is spent. Refused
+        attempts are NOT recorded — punishing retries would stretch the
+        window with every 429, and the honest recovery time is exactly
+        "when the 10 recorded attempts age out"."""
+        now = self._now() if now is None else now
+        retry_after = rate_limit_retry_after(
+            self._attempts.get(client, ()), now, self._limit, self._window_s
+        )
+        if retry_after is not None:
+            return retry_after
+
+        stamps = [t for t in self._attempts.get(client, ()) if now - t < self._window_s]
+        stamps.append(now)
+        self._attempts[client] = stamps
+
+        if len(self._attempts) > self._max_clients:
+            # Evict the client whose newest stamp is oldest (least
+            # recently active), never the caller's own fresh entry.
+            coldest = min(self._attempts, key=lambda c: self._attempts[c][-1])
+            del self._attempts[coldest]
+        return None

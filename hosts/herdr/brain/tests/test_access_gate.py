@@ -284,15 +284,26 @@ class StubStore:
         self._devices = list(devices)
         self._tokens = set(tokens)
         self.resolved = []
+        self.peeked = []
 
     def enforced(self):
         return bool(self._devices)
 
-    def resolve(self, token):
+    def resolve_status(self, token):
         self.resolved.append(token)
+        if token in self._tokens:
+            return "ok", {"label": "phone"}
+        return "invalid", None
+
+    def peek(self, token):
+        self.peeked.append(token)
         if token in self._tokens:
             return {"label": "phone"}
         return None
+
+    def resolve(self, token):
+        status, device = self.resolve_status(token)
+        return device if status == "ok" else None
 
 
 def test_write_guard_layers_the_three_gates_with_distinct_texts():
@@ -339,6 +350,23 @@ def test_write_guard_resolves_the_device_label_for_handlers():
     )
     assert refusal is None
     assert label == "phone"
+
+
+def test_the_pair_bootstrap_resolves_the_bearer_read_only():
+    """B4: /pair is device-exempt, so the bearer it may carry is only
+    audit attribution — resolved READ-ONLY (``peek``), never through
+    ``resolve_status`` (which stamps lastSeenAt). A refused (429) pair
+    request must leave the registry byte-identical."""
+    cfg = gate_settings()
+    store = StubStore(devices=["phone"], tokens=("good-token",))
+    label, refusal = access.guard(
+        headers(host="127.0.0.1", authorization="Bearer good-token"),
+        "POST", "/pair", cfg, store,
+    )
+    assert refusal is None
+    assert label == "phone"  # attribution survives for the audit line
+    assert store.resolved == []  # no credential touch on the bootstrap
+    assert store.peeked == ["good-token"]
 
 
 def test_write_guard_passes_without_a_registry():
@@ -389,3 +417,146 @@ def test_pair_without_origin_from_non_loopback_host_is_rejected():
         "pair", cfg,
     ) is None
     assert access.check_access(headers(host="127.0.0.1"), "pair", cfg) is None
+
+
+# ── reads under enforcement (S11): the device exemption and query token ──────
+
+
+@pytest.mark.parametrize(
+    "method,path,exempt",
+    [
+        # The PWA shell must load before any credential exists: health,
+        # index, assets and the service worker stay open.
+        ("GET", "/health", True),
+        ("GET", "/", True),
+        ("GET", "/index.html", True),
+        ("GET", "/app.js", True),
+        ("GET", "/pairing.js", True),
+        ("GET", "/mermaid.min.js", True),
+        ("GET", "/sw.js", True),
+        ("GET", "/manifest.webmanifest", True),
+        ("GET", "/icon.svg", True),
+        ("GET", "/styles.css", True),
+        # The bootstrap and the two routes with credentials of their own.
+        ("POST", "/pair", True),
+        ("POST", "/approval/g1/action", True),
+        ("GET", "/speech/job1/next", True),
+        ("POST", "/speech/job1/cancel", True),
+        # Everything the PWA reads for data is gated once enforced.
+        ("GET", "/herd", False),
+        ("GET", "/view", False),
+        ("GET", "/state", False),
+        ("GET", "/events", False),
+        ("GET", "/audio/x.mp3", False),
+        ("GET", "/devices", False),
+        ("GET", "/history", False),
+        ("GET", "/screen", False),
+        ("POST", "/tts", False),
+        ("POST", "/call/context", False),
+        ("GET", "/no-such-route", False),
+        # Only asset-LIKE names are exempt: an API path with a .js suffix
+        # carved into it is still data.
+        ("GET", "/history.js", True),  # a static asset name, not a route
+        ("GET", "/events.js", True),
+    ],
+)
+def test_device_exemption_matrix(method, path, exempt):
+    assert access.is_device_exempt(method, path) is exempt
+
+
+@pytest.mark.parametrize(
+    "method,path,allowed",
+    [
+        ("GET", "/events", True),
+        ("GET", "/audio/clip.mp3", True),
+        ("POST", "/events", False),      # never a write, and not real anyway
+        ("GET", "/herd", False),
+        ("POST", "/pane/reply", False),
+        ("POST", "/pair", False),
+        ("GET", "/audio/sub/clip.mp3", False),  # one path segment, like the route
+    ],
+)
+def test_query_token_is_confined_to_events_and_audio_gets(method, path, allowed):
+    assert access.query_token_allowed(method, path) is allowed
+
+
+def test_read_guard_demands_a_device_once_pairing_is_enforced():
+    cfg = gate_settings()
+    store = StubStore(devices=["phone"])
+    _, refusal = access.guard(headers(host="127.0.0.1"), "GET", "/herd", cfg, store)
+    assert refusal == "dispositivo no emparejado"
+
+    ok = StubStore(devices=["phone"], tokens=("good-token",))
+    _, refusal = access.guard(
+        headers(host="127.0.0.1", authorization="Bearer good-token"),
+        "GET", "/herd", cfg, ok,
+    )
+    assert refusal is None
+
+
+def test_read_guard_exempts_the_shell_so_the_pwa_can_boot_to_pair():
+    cfg = gate_settings()
+    store = StubStore(devices=["phone"])  # enforced, no credential
+    for method, path in (("GET", "/"), ("GET", "/health"), ("GET", "/app.js")):
+        _, refusal = access.guard(headers(host="127.0.0.1"), method, path, cfg, store)
+        assert refusal is None, path
+
+
+def test_read_guard_without_a_registry_stays_open():
+    """S9: nothing paired, nothing demanded — on reads too."""
+    cfg = gate_settings()
+    store = StubStore()
+    _, refusal = access.guard(headers(host="127.0.0.1"), "GET", "/herd", cfg, store)
+    assert refusal is None
+
+
+def test_an_expired_credential_is_refused_with_its_own_text():
+    cfg = gate_settings()
+
+    class ExpiredStore(StubStore):
+        def resolve_status(self, token):
+            if token in self._tokens:
+                return "expired", {"label": "phone"}
+            return "invalid", None
+
+    store = ExpiredStore(devices=["phone"], tokens=("old-token",))
+    for method, path in (("GET", "/herd"), ("POST", "/pane/reply")):
+        _, refusal = access.guard(
+            headers(host="127.0.0.1", authorization="Bearer old-token"),
+            method, path, cfg, store,
+        )
+        assert refusal == "dispositivo caducado", path
+
+
+def test_the_query_token_opens_only_its_two_get_routes():
+    cfg = gate_settings()
+    store = StubStore(devices=["phone"], tokens=("good-token",))
+
+    for path in ("/events", "/audio/x.mp3"):
+        _, refusal = access.guard(
+            headers(host="127.0.0.1"), "GET", path, cfg, store,
+            query_token="good-token",
+        )
+        assert refusal is None, path
+
+    # Everywhere else the parameter is inert — including writes.
+    _, refusal = access.guard(
+        headers(host="127.0.0.1"), "GET", "/herd", cfg, store,
+        query_token="good-token",
+    )
+    assert refusal == "dispositivo no emparejado"
+    _, refusal = access.guard(
+        headers(host="127.0.0.1"), "POST", "/pane/reply", cfg, store,
+        query_token="good-token",
+    )
+    assert refusal == "dispositivo no emparejado"
+
+
+def test_a_wrong_query_token_refuses_like_a_wrong_bearer():
+    cfg = gate_settings()
+    store = StubStore(devices=["phone"], tokens=("good-token",))
+    _, refusal = access.guard(
+        headers(host="127.0.0.1"), "GET", "/events", cfg, store,
+        query_token="not-a-token",
+    )
+    assert refusal == "dispositivo no emparejado"

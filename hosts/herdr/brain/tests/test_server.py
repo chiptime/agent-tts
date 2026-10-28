@@ -918,10 +918,13 @@ class TestApprovalPatchEndpoint:
 
     def test_patch_updates_text_and_restarts_timer(self, settings, audio_dir, monkeypatch):
         app = approval_app(settings, audio_dir, monkeypatch, approval_timeout_s=3)
+        client = TestClient(app)
+        # Warm the client first: the window below must measure only the
+        # sleep, not the first request's one-off startup cost.
+        client.get("/health")
         gate = app.state.approval_store.propose(
             "s1", text="original", timeout_ms=1000, pane_id="w1:p9", agent="opencode"
         )
-        client = TestClient(app)
         time.sleep(1.1)  # burn past a second boundary of the 3 s window
         before = client.get("/approval/current", params={"session_id": "s1"}).json()["approval"]
         assert before["expires_in_s"] == 2  # 3 s window with ~1.1 s burned
