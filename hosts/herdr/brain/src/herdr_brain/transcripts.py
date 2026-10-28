@@ -8,9 +8,12 @@ are implemented here with multi-turn queries:
   (``message``/``part`` tables, JSON ``$.role`` / ``$.type`` filters).
 - Claude Code: JSONL sessions at ``~/.claude/projects/<munged-cwd>/<uuid>.jsonl``
   with a reverse tail scan capped at 8 MB.
+- Antigravity: JSONL step transcripts under ``~/.gemini/antigravity-cli``.
 
-Session-id shapes follow the voice layer's sniffing rules: ``ses_*`` routes to
-OpenCode, UUID-like ids to the Claude-style stores. All access is read-only.
+Harness-name routing lives in :mod:`herdr_brain.transcript_readers`
+(the registry); this module keeps the original three connectors, the
+session-id shape fallback and the LLM-facing formatting. All access is
+read-only.
 """
 
 from __future__ import annotations
@@ -20,10 +23,16 @@ import json
 import os
 import re
 import sqlite3
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
+
+from .transcript_readers.base import (
+    Turn,
+    iso_to_utc as _iso_to_utc,
+    reverse_tail_lines as _reverse_tail_lines,
+)
+from .transcript_readers.registry import TranscriptRegistry
 
 # Session id shapes (shared with the voice layer's connectors).
 OPENCODE_SESSION_RE = re.compile(r"^ses_[A-Za-z0-9_-]{6,}$")
@@ -36,40 +45,8 @@ ANTIGRAVITY_SESSION_RE = re.compile(r"^[\da-fA-F-]{16,}$")
 
 # Safety caps matching the voice layer's connectors.
 _CLAUDE_SCAN_CAP_BYTES = 8 * 1024 * 1024
-_CHUNK_SIZE = 64 * 1024
 MAX_TURNS = 50
 MAX_TURN_CHARS = 2_000
-
-
-@dataclass(frozen=True)
-class Turn:
-    """One user or assistant message from a transcript."""
-
-    role: str
-    text: str
-    created_at: Optional[datetime] = None
-
-
-def _iso_to_utc(value: object) -> Optional[datetime]:
-    """Parses an ISO 8601 event timestamp into an aware UTC datetime.
-
-    Claude Code emits ``timestamp`` and Antigravity ``created_at`` in this
-    shape (``2026-10-10T15:24:00.817Z``). A naive value is assumed UTC; an
-    unparseable or missing one yields ``None`` — an unknown time is never
-    guessed (a file mtime is not an event time).
-    """
-    if not isinstance(value, str) or not value.strip():
-        return None
-    text = value.strip()
-    if text.endswith(("Z", "z")):
-        text = text[:-1] + "+00:00"
-    try:
-        parsed = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
 
 
 def _epoch_ms_to_utc(value: object) -> Optional[datetime]:
@@ -108,11 +85,13 @@ class TranscriptError(RuntimeError):
 class OpencodeTranscript:
     """Read-only multi-turn connector over OpenCode's local SQLite database."""
 
+    name = "opencode"
+
     def __init__(self, db_path: Optional[str] = None):
         resolved = db_path or os.environ.get("OPENCODE_DB") or DEFAULT_OPENCODE_DB
         self.db_path = str(Path(resolved).expanduser())
 
-    def read(self, session_id: str, n_turns: int = 10) -> List[Turn]:
+    def read(self, session_id: str, n_turns: int = 10, skip_newest: int = 0) -> List[Turn]:
         if not session_id or not OPENCODE_SESSION_RE.match(session_id):
             return []
         if not os.path.isfile(self.db_path):
@@ -155,7 +134,9 @@ class OpencodeTranscript:
                 order.append(message_id)
             parts[message_id].append(text)
         turns: List[Turn] = []
-        for message_id in order:
+        # ``order`` is newest-first; paging skips whole MESSAGES (a turn),
+        # never parts, so offset and window agree with the history cursor.
+        for message_id in order[max(0, skip_newest):]:
             if len(turns) >= n_turns:
                 break
             turns.append(
@@ -189,12 +170,14 @@ class OpencodeTranscript:
 class ClaudeTranscript:
     """Read-only multi-turn connector over Claude-style JSONL transcripts."""
 
+    name = "claude"
+
     def __init__(self, root: Optional[str] = None, scan_cap: int = _CLAUDE_SCAN_CAP_BYTES):
         resolved = root or os.environ.get("CLAUDE_PROJECTS_ROOT") or DEFAULT_CLAUDE_ROOT
         self.root = str(Path(resolved).expanduser())
         self.scan_cap = scan_cap
 
-    def read(self, session_id: str, n_turns: int = 10) -> List[Turn]:
+    def read(self, session_id: str, n_turns: int = 10, skip_newest: int = 0) -> List[Turn]:
         if not session_id or not CLAUDE_SESSION_RE.match(session_id):
             return []
         matches = sorted(glob.glob(os.path.join(self.root, "*", f"{session_id}.jsonl")))
@@ -202,6 +185,7 @@ class ClaudeTranscript:
             return []
 
         turns: List[Turn] = []
+        skipped = 0
         for raw_line in _reverse_tail_lines(matches[0], self.scan_cap):
             if len(turns) >= n_turns:
                 break
@@ -219,6 +203,9 @@ class ClaudeTranscript:
                 continue
             text = _claude_event_text(event)
             if text:
+                if skipped < skip_newest:
+                    skipped += 1
+                    continue
                 turns.append(
                     Turn(
                         role=str(kind),
@@ -258,6 +245,8 @@ def _antigravity_user_text(content) -> Optional[str]:
 class AntigravityTranscript:
     """Read-only multi-turn connector over Antigravity CLI's JSONL transcripts."""
 
+    name = "antigravity"
+
     def __init__(
         self,
         root: Optional[str] = None,
@@ -271,7 +260,7 @@ class AntigravityTranscript:
             self.root = str(expanded)
         self.scan_cap = scan_cap
 
-    def read(self, session_id: str, n_turns: int = 10) -> List[Turn]:
+    def read(self, session_id: str, n_turns: int = 10, skip_newest: int = 0) -> List[Turn]:
         if not session_id or not ANTIGRAVITY_SESSION_RE.match(session_id):
             return []
 
@@ -287,6 +276,7 @@ class AntigravityTranscript:
             return []
 
         turns: List[Turn] = []
+        skipped = 0
         for raw_line in _reverse_tail_lines(path, self.scan_cap):
             if len(turns) >= n_turns:
                 break
@@ -305,10 +295,16 @@ class AntigravityTranscript:
             if event_type == "USER_INPUT":
                 text = _antigravity_user_text(event.get("content"))
                 if text:
+                    if skipped < skip_newest:
+                        skipped += 1
+                        continue
                     turns.append(Turn(role="user", text=text, created_at=stamp))
             elif event_type == "PLANNER_RESPONSE":
                 content = event.get("content")
                 if isinstance(content, str) and content.strip():
+                    if skipped < skip_newest:
+                        skipped += 1
+                        continue
                     turns.append(
                         Turn(role="assistant", text=content.strip(), created_at=stamp)
                     )
@@ -340,6 +336,73 @@ class AntigravityTranscript:
         return None
 
 
+def connector_for(
+    agent: str,
+    session_id: str,
+    opencode: Optional[OpencodeTranscript] = None,
+    claude: Optional[ClaudeTranscript] = None,
+    antigravity: Optional[AntigravityTranscript] = None,
+) -> Optional[object]:
+    """The connector a pane's history is read through, or None.
+
+    Same policy as :func:`read_turns` (registry name first, session-id
+    shape second) exposed as one lookup so the history endpoint and the
+    conversation window can never disagree about whose store a pane
+    reads.
+    """
+    registry = _build_registry(opencode, claude, antigravity)
+    reader = registry.resolve(agent)
+    if reader is not None:
+        return reader
+    return _shape_fallback_reader(registry, session_id)
+
+
+def _build_registry(
+    opencode: Optional[OpencodeTranscript] = None,
+    claude: Optional[ClaudeTranscript] = None,
+    antigravity: Optional[AntigravityTranscript] = None,
+) -> "TranscriptRegistry":
+    """The shared harness registry, honouring the injectable connectors.
+
+    Readers are constructed per call (same as before the registry), so
+    environment root changes keep applying without a restart. Explicit
+    instances replace their defaults one-for-one — the documented seam
+    the existing tests drive.
+    """
+    from .transcript_readers.registry import default_registry
+
+    if opencode is None and claude is None and antigravity is None:
+        return default_registry()
+    registry = default_registry()
+    readers = dict(registry._readers)  # noqa: SLF001 — same-package seam
+    if opencode is not None:
+        readers[opencode.name] = opencode
+    if claude is not None:
+        readers[claude.name] = claude
+    if antigravity is not None:
+        readers[antigravity.name] = antigravity
+    return TranscriptRegistry(readers)
+
+
+def _shape_fallback_reader(
+    registry: "TranscriptRegistry", session_id: str
+) -> Optional[object]:
+    """Connector sniffed from the session id shape (registry-driven).
+
+    Same policy as ever: ``ses_*`` is OpenCode; a UUID-ish id is read as
+    Antigravity first and Claude second (both stores share the shape).
+    """
+    if OPENCODE_SESSION_RE.match(session_id or ""):
+        return registry.resolve("opencode")
+    if CLAUDE_SESSION_RE.match(session_id or ""):
+        for harness in ("antigravity", "claude"):
+            reader = registry.resolve(harness)
+            if reader is not None and reader.read(session_id, 1):
+                return reader
+        return registry.resolve("antigravity")
+    return None
+
+
 def read_title(
     agent: str,
     session_id: str,
@@ -349,27 +412,21 @@ def read_title(
 ) -> Optional[str]:
     """Routes to the matching connector and returns the session's conversation title.
 
-    Returns None when no connector matches, the session store is unreadable,
-    or the session has no assigned title.
+    Name routing goes through the harness registry (aliases included);
+    a UUID-shaped id whose named connector knows no title still gets the
+    shape fallback. Returns None when no connector matches, the session
+    store is unreadable, or the session has no assigned title.
     """
-    opencode = opencode or OpencodeTranscript()
-    claude = claude or ClaudeTranscript()
-    antigravity = antigravity or AntigravityTranscript()
+    registry = _build_registry(opencode, claude, antigravity)
 
-    key = (agent or "").strip().lower()
-    if key in ("opencode", "oa"):
-        return opencode.read_title(session_id)
-    elif key in ("antigravity", "agy"):
-        return antigravity.read_title(session_id)
-    elif key in ("claude", "codex"):
-        return claude.read_title(session_id)
-    elif OPENCODE_SESSION_RE.match(session_id):
-        return opencode.read_title(session_id)
-    elif ANTIGRAVITY_SESSION_RE.match(session_id):
-        title = antigravity.read_title(session_id)
-        if not title:
-            title = claude.read_title(session_id)
-        return title
+    reader = registry.resolve(agent)
+    if reader is not None:
+        # A named harness answers with its own title support — no shape
+        # sniffing behind its back (the registry is the decision site).
+        return reader.read_title(session_id)
+    fallback = _shape_fallback_reader(registry, session_id)
+    if fallback is not None:
+        return fallback.read_title(session_id)
     return None
 
 
@@ -383,31 +440,23 @@ def read_turns(
 ) -> Optional[List[Turn]]:
     """Routes to the matching connector and returns structured turns.
 
-    Routing mirrors the voice layer: match by agent name first, then sniff the
-    session id shape. Returns ``None`` when no connector matches or nothing
-    readable is found, so callers can fall back to a terminal screen read.
+    Routing mirrors the voice layer: match by harness name through the
+    registry first, then sniff the session id shape. Returns ``None``
+    when no connector matches or nothing readable is found, so callers
+    can fall back to a terminal screen read.
     """
     n_turns = max(1, min(n_turns, MAX_TURNS))
-    opencode = opencode or OpencodeTranscript()
-    claude = claude or ClaudeTranscript()
-    antigravity = antigravity or AntigravityTranscript()
+    registry = _build_registry(opencode, claude, antigravity)
 
-    key = (agent or "").strip().lower()
-    if key in ("opencode", "oa"):
-        turns = opencode.read(session_id, n_turns)
-    elif key in ("antigravity", "agy"):
-        turns = antigravity.read(session_id, n_turns)
-    elif key in ("claude", "codex"):
-        turns = claude.read(session_id, n_turns) if CLAUDE_SESSION_RE.match(session_id) else []
-    elif OPENCODE_SESSION_RE.match(session_id):
-        turns = opencode.read(session_id, n_turns)
-    elif CLAUDE_SESSION_RE.match(session_id):
-        turns = antigravity.read(session_id, n_turns)
-        if not turns:
-            turns = claude.read(session_id, n_turns)
-    else:
+    reader = registry.resolve(agent)
+    if reader is not None:
+        turns = reader.read(session_id, n_turns)
+        return turns or None
+
+    fallback = _shape_fallback_reader(registry, session_id)
+    if fallback is None:
         return None
-
+    turns = fallback.read(session_id, n_turns)
     return turns or None
 
 
@@ -472,29 +521,3 @@ def _claude_event_text(event: dict) -> Optional[str]:
     ]
     text = "\n".join(block for block in blocks if block)
     return text or None
-
-
-def _reverse_tail_lines(path: str, cap_bytes: int):
-    """Yields complete lines of a file newest-first, capped to ``cap_bytes``.
-
-    Same chunked reverse-scan approach as the Claude-style voice connectors.
-    """
-    try:
-        size = os.path.getsize(path)
-    except OSError:
-        return
-
-    with open(path, "rb") as fh:
-        position = size
-        scanned = 0
-        remainder = b""
-        while position > 0 and scanned < cap_bytes:
-            step = min(_CHUNK_SIZE, position, cap_bytes - scanned)
-            position -= step
-            scanned += step
-            fh.seek(position)
-            chunk = fh.read(step) + remainder
-            lines = chunk.split(b"\n")
-            remainder = lines.pop(0) if position > 0 else b""
-            for line in reversed(lines):
-                yield line

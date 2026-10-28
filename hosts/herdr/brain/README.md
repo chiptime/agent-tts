@@ -72,7 +72,11 @@ daemons do not source them, so the env file is the single stable contract.
 | `HERDR_BRAIN_PROMPT_TIMEOUT_MS` | `180000` | default wait for `send_to_session` |
 | `HERDR_BRAIN_MAX_TOOL_ROUNDS` | `4` | LLM tool-loop guard |
 | `HERDR_BRAIN_SCREEN_LINES` | `40` | default visible lines for `read_screen` |
-| `OPENCODE_DB` / `CLAUDE_PROJECTS_ROOT` | store defaults | transcript store overrides (tests) |
+| `OPENCODE_DB` / `CLAUDE_PROJECTS_ROOT` / `ANTIGRAVITY_ROOT` | store defaults | transcript store overrides (tests) |
+| `CODEX_ROOT` | `~/.codex/sessions` | codex rollout transcripts root |
+| `GROK_ROOT` | `~/.grok/sessions` | grok Build chat-history root |
+| `PI_ROOTS` | `~/.pi/agent/sessions:~/.omp/agent/sessions` | pi/omp session roots (colon-separated list; first root holding the session wins) |
+| `HERMES_ROOT` | `~/.hermes` | hermes root (`state.db` plus `profiles/*/state.db`) |
 | `HERDR_BRAIN_OPENCODE_URL` | `http://127.0.0.1:4096` | local opencode server; the PWA answers an agent's approval dialog through its permission API |
 | `HERDR_BRAIN_APPROVAL_TOKEN` | *(empty = no auth)* | shared secret for `POST /approval/{id}/action` (ntfy action buttons), as `Authorization: Bearer` or `?token=`. Empty leaves that route as open as the PWA routes |
 | `HERDR_BRAIN_STATE_DIR` | `~/.local/state/herdr-brain` | device-pairing state and the audit log (`pairing-pending.json`, `paired-devices.json`, `audit.log`; dir 0700, files 0600, only SHA-256 hashes of credentials on disk) |
@@ -283,6 +287,24 @@ curl -s "localhost:8741/conversation?pane_id=w1:p2"
 # Last 20 turns, full text (capped at 4000 chars/turn as a token guard).
 # The transcript readers have no cursor, so there is no older-page fetch.
 
+curl -s "localhost:8741/history?pane_id=w1:p2&limit=60"
+# → {"pane_id":"w1:p2","agent":"opencode","session_id":"ses_…","title":"…",
+#     "turns":[{"role":"user","text":"…UNCLIPPED…","created_at":"…"},…],
+#     "reason":null,"cursor":"<opaque>","has_more":true,"limit":60}
+# The WHOLE transcript, one page at a time: newest-first windows walking
+# older via the opaque cursor (each page is chronological inside). Turns
+# arrive unclipped; limit is bounded to [1,200]; a malformed cursor
+# degrades to the newest page. An agent with no readable history answers
+# {"turns":[],"reason":"no-session"} — never a 500.
+
+curl -s "localhost:8741/pane/w1:p2/mirror?lines=40"
+# → {"pane_id":"w1:p2","agent":"opencode","status":"working",
+#     "runs":[[{"t":"OK","b":true,"fg":"#00cd00"},…],…],"text":"OK build passed…"}
+# The visible window as faithful ANSI runs (same parser as the blocked
+# dialog path) plus escape-stripped text. No terminal emulation: herdr
+# already rendered the grid. lines clamps to [1,60]; an unknown pane is
+# a 404; a failed read degrades to empty runs.
+
 curl -s "localhost:8741/screen?pane_id=w1:p2"
 # → {"pane_id":"w1:p2","agent":"opencode","screen":"…last ~120 scrollback lines…"}
 # → {"status": {…same as /state…},
@@ -328,6 +350,11 @@ Events). Design choices:
   `blocked` prefers the pending excerpt. Fallback: "sin detalle disponible".
 - **Boot silence**: the first poll snapshots state as a baseline —
   pre-existing agents are never announced.
+- **Adaptive cadence**: one loop, one decision site. The baseline poll
+  runs every ~4 s; while an SSE subscriber was seen inside the 10 s
+  attention window AND some pane is blocked, the next wait shortens to
+  ~1.5 s (a dialog worth catching within seconds). Attention decays by
+  itself — no per-client timer exists.
 - **Debounce**: the same pane+status is not re-announced within 60 s.
 - **Text never blocks on TTS**: the mp3 renders best-effort; on failure the
   event still arrives with `audio_url: null`. Announcement files (`ann-*.mp3`)
@@ -668,15 +695,30 @@ injected every turn.
 
 ## Transcripts
 
-`read_transcript` implements the same store contracts as the TUI voice
-layer's connectors, but with multi-turn queries (that layer only exposes
-the last assistant message):
+Harness routing lives in a registry (`transcript_readers/registry.py`):
+the agent's own name (or a declared alias — `omp → pi`, `oa →
+opencode`, `agy → antigravity`) resolves to one connector; a
+session-id shape sniff is the fallback. An agent with no connector is
+an ordinary "no session", never an error. Every connector is read-only
+and reads whole turns:
 
-- **OpenCode** (`ses_*` ids, agent `opencode`): read-only SQLite at
+- **OpenCode** (`ses_*` ids, agent `opencode`): SQLite at
   `~/.local/share/opencode/opencode.db`, `message`/`part` JSON filtering.
-- **Claude Code** (UUID-like ids, agents `claude`/`codex`/`antigravity`):
-  reverse tail scan (8 MB cap) of `~/.claude/projects/<munged>/<uuid>.jsonl`.
-- Anything else: connector returns nothing → screen fallback.
+- **Claude Code** (UUID-like ids, agent `claude`): reverse tail scan
+  (8 MB cap) of `~/.claude/projects/<munged>/<uuid>.jsonl`.
+- **Antigravity** (agent `antigravity`): step JSONL under
+  `~/.gemini/antigravity-cli`.
+- **Codex** (agent `codex`): rollout JSONL under `~/.codex/sessions`
+  (`response_item` rows only — the log double-books every turn).
+- **Grok Build** (agent `grok`): `chat_history.jsonl` session folders
+  under `~/.grok/sessions` (only real `<user_query>` prompts render).
+- **pi / Oh My Pi** (agents `pi`, `omp`): session JSONL under
+  `~/.pi/agent/sessions` and `~/.omp/agent/sessions` (first root that
+  holds the session wins).
+- **Hermes** (agent `hermes`): per-profile SQLite `state.db` under
+  `~/.hermes` (root db first, then every `profiles/*/state.db`).
+
+Anything else: connector returns nothing → screen fallback.
 
 ## Tests and smoke
 
@@ -707,8 +749,5 @@ timeout expires first.
 ## Known limitations (fase 1)
 
 - Active pane only; multi-pane targeting arrives with the PWA phase.
-- Multi-turn transcripts are implemented for OpenCode and Claude-shaped
-  stores; `codex`/`antigravity` sessions fall back to `read_screen` unless
-  their stores match the Claude JSONL shape.
 - TTS defaults follow the engine (voice `elvira`); provider flags can be
   injected via `HERDR_BRAIN_TTS_ARGS`.

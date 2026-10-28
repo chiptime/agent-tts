@@ -40,8 +40,21 @@ from .herdr import (
     HerdrError,
     pick_active,
 )
+from .history_view import (
+    HISTORY_DEFAULT_LIMIT,
+    clamp_limit,
+    read_history_page,
+)
 from .memory import clip_content
-from .transcripts import Turn, read_transcript, read_turns, read_title, turn_age_seconds
+from .mirror import clamp_lines, mirror_payload
+from .transcripts import (
+    Turn,
+    connector_for,
+    read_transcript,
+    read_turns,
+    read_title,
+    turn_age_seconds,
+)
 from .tts import render_mp3  # noqa: F401  (re-exported for server wiring)
 from .view import (
     SCREEN_TAIL_LINES,
@@ -68,6 +81,11 @@ SCREEN_FULL_LINES = 120
 #: is exactly what decides a permission, and nothing else needs it.
 DIALOG_SCREEN_LINES = 30
 MAX_AGENT_NAME_LEN = 24
+#: Triage order of agent states in the herd (doc 05): a pane waiting for
+#: the human outranks one merely busy; an unknown state sorts last, never
+#: between two known ones.
+STATUS_RANK = {"blocked": 0, "working": 1, "done": 2, "idle": 3}
+_UNKNOWN_STATUS_RANK = 4
 
 
 def _reply_result(outcome: str, pane_id: str, status: str = "", detail: str = "") -> dict:
@@ -269,6 +287,13 @@ class BrainTools:
                     ),
                 }
             )
+        # Declared triage ranking (doc 05): blocked first, unknown last.
+        # Stable, so panes inside one rank keep the CLI's own order.
+        entries.sort(
+            key=lambda entry: STATUS_RANK.get(
+                (entry["agent_status"] or "").strip().lower(), _UNKNOWN_STATUS_RANK
+            )
+        )
         return entries
 
     def screen_tail(
@@ -370,6 +395,76 @@ class BrainTools:
             "agent": target.agent,
             "screen": text if text and text.strip() else None,
         }
+
+    def history_page(
+        self,
+        pane_id: Optional[str] = None,
+        cursor: Optional[str] = None,
+        limit: int = HISTORY_DEFAULT_LIMIT,
+    ) -> dict:
+        """One cursor page of a pane's FULL transcript (reading view).
+
+        Complements /conversation: same pane resolution, same connector
+        choice, but bounded pages of unclipped turns walking older via
+        the opaque cursor. An agent with no readable history is an
+        ordinary ``no-session`` page, never an error.
+        """
+        target = self.resolve_target(pane_id)
+        if target is None:
+            return {
+                "pane_id": pane_id,
+                "agent": None,
+                "session_id": None,
+                "title": None,
+                "turns": [],
+                "reason": "no-session",
+                "cursor": None,
+                "has_more": False,
+                "limit": clamp_limit(limit),
+            }
+        reader = None
+        session_id = target.session_value or None
+        if session_id:
+            try:
+                reader = connector_for(target.agent, session_id)
+            except Exception:  # noqa: BLE001 — history must degrade, not 500
+                reader = None
+        try:
+            page = read_history_page(reader, session_id, cursor, limit)
+        except Exception:  # noqa: BLE001 — a broken store is an empty page
+            page = {
+                "turns": [],
+                "reason": "no-session",
+                "cursor": None,
+                "has_more": False,
+                "limit": clamp_limit(limit),
+            }
+        page.update(
+            {
+                "pane_id": target.pane_id,
+                "agent": target.agent,
+                "session_id": session_id,
+                "title": target.title,
+            }
+        )
+        return page
+
+    def pane_mirror(
+        self, pane_id: Optional[str] = None, lines: Optional[int] = None
+    ) -> Optional[dict]:
+        """The pane's visible window as ANSI runs (live mirror view).
+
+        None when no pane resolves (the route answers 404); a styled
+        read that fails or comes back blank yields empty runs — the
+        mirror degrades to "nothing to show", never to an error.
+        """
+        target = self.resolve_target(pane_id)
+        if target is None:
+            return None
+        bounded = clamp_lines(lines)
+        styled = self.screen_tail(target, bounded, as_ansi=True)
+        return mirror_payload(target.pane_id, target.agent, target.status, styled)
+
 
     def agent_view(self, pane_id: Optional[str] = None) -> dict:
         """Composes everything GET /view needs, never raising.

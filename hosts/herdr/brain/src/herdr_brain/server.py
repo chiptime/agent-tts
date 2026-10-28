@@ -57,6 +57,7 @@ from .config import Settings
 from .consult import ConsultService
 from .herdr import MAX_SEND_KEYS, SEND_KEY_ALLOWLIST, HerdrError
 from .history import HistoryStore, default_history_path
+from .history_view import HISTORY_DEFAULT_LIMIT, clamp_limit
 from .llm import BrainLLM, BrainLLMError, TurnCancelled
 from .memory import DEFAULT_SESSION, MAX_MESSAGES, ConversationStore
 from .pairing import (
@@ -1104,6 +1105,35 @@ def create_app(
             return {"pane_id": pane_id, "agent": None, "session_id": None,
                     "turns": [], "window": 20}
 
+    @app.get("/history")
+    def transcript_history(
+        pane_id: Optional[str] = None,
+        cursor: Optional[str] = None,
+        limit: int = HISTORY_DEFAULT_LIMIT,
+    ) -> dict:
+        """Full transcript of one pane, one cursor page at a time (doc 05).
+
+        Reading complement to /conversation: unclipped turns walking
+        older through the opaque cursor (newest page first). An agent
+        without a readable history is an ordinary ``no-session`` page,
+        never an error. (Named ``transcript_history`` because the
+        /call-history store owns the ``history`` name in this scope.)
+        """
+        try:
+            return tools.history_page(pane_id, cursor, limit)
+        except Exception:  # noqa: BLE001 — a reading endpoint never 500s
+            return {
+                "pane_id": pane_id,
+                "agent": None,
+                "session_id": None,
+                "title": None,
+                "turns": [],
+                "reason": "no-session",
+                "cursor": None,
+                "has_more": False,
+                "limit": clamp_limit(limit),
+            }
+
     @app.get("/conversation/{pane_id}/rendered")
     def conversation_rendered(
         pane_id: str = PathParam(max_length=MAX_SESSION_ID_CHARS),
@@ -1147,6 +1177,27 @@ def create_app(
             return tools.screen_full(pane_id)
         except Exception:  # noqa: BLE001
             return {"pane_id": pane_id, "agent": None, "screen": None}
+
+    @app.get("/pane/{pane_id}/mirror")
+    def pane_mirror(
+        pane_id: str = PathParam(max_length=MAX_SESSION_ID_CHARS),
+        lines: Optional[int] = None,
+    ) -> dict:
+        """The pane's visible window as ANSI runs plus plain text (doc 05).
+
+        One styled read parsed by the same ``ansi_runs`` the blocked
+        dialog path uses — NO terminal emulation (herdr already renders
+        the grid). Line counts clamp to the visible-window cap. An
+        unknown pane is a 404; a failed or blank read degrades to empty
+        runs, never to an error.
+        """
+        try:
+            payload = tools.pane_mirror(pane_id, lines)
+        except Exception:  # noqa: BLE001 — the mirror degrades, never 500s
+            payload = None
+        if payload is None:
+            raise HTTPException(status_code=404, detail="pane not found")
+        return payload
 
     # -- answer shaping + approval resolution (shared by /ask and approve) --
 

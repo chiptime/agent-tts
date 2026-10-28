@@ -18,6 +18,11 @@ Behavioral guarantees:
   on consumers and survives with zero clients.
 - TTS is best-effort: a rendering failure still publishes the text event
   with ``audio_url: null``.
+- Adaptive cadence (doc 05): one loop, one decision site. The baseline
+  poll runs every ``POLL_INTERVAL_S``; while an SSE subscriber was seen
+  inside ``ATTENTION_WINDOW_S`` AND a pane is blocked, the next wait
+  shortens to ``FAST_POLL_INTERVAL_S``. No per-client timer exists —
+  attention is deduced from the hub, and it decays by itself.
 """
 
 from __future__ import annotations
@@ -36,6 +41,14 @@ from .tts import new_audio_path
 from .view import SCREEN_TAIL_LINES, detect_pending
 
 POLL_INTERVAL_S = 4.0
+#: Cadence floor while somebody is watching a blocked pane (doc 05): the
+#: changes worth catching within seconds happen when a pane waits at a
+#: dialog, so only that state earns the fast poll.
+FAST_POLL_INTERVAL_S = 1.5
+#: How long a watch signal keeps the fast cadence armed. An SSE
+#: subscriber present at poll time refreshes it; no subscriber lets it
+#: decay back to the baseline cadence within one window.
+ATTENTION_WINDOW_S = 10.0
 DEBOUNCE_S = 60.0
 ANNOUNCE_STATUSES = ("done", "blocked")
 ANNOUNCEMENT_PREFIX = "ann-"
@@ -66,6 +79,11 @@ class AnnouncementHub:
     def unsubscribe(self, sub_id: int) -> None:
         with self._lock:
             self._subscribers.pop(sub_id, None)
+
+    def subscriber_count(self) -> int:
+        """Live subscribers right now — the "somebody is watching" signal."""
+        with self._lock:
+            return len(self._subscribers)
 
     def publish(self, announcement: dict) -> None:
         """Delivers to every subscriber, dropping their oldest on overflow."""
@@ -136,6 +154,10 @@ class AgentWatcher:
         self._debounce = debounce_s
         self._baseline: Optional[Dict[str, str]] = None
         self._last_announced: Dict[Tuple[str, str], float] = {}
+        # Attention (doc 05 cadence): timestamp of the last poll that saw
+        # a live SSE subscriber. ``-inf`` means nobody has watched since
+        # the watcher was created.
+        self._last_attention: float = float("-inf")
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -151,7 +173,10 @@ class AgentWatcher:
         self._stop.set()
 
     def _run(self) -> None:
-        while not self._stop.wait(self._poll_interval):
+        # Adaptive (doc 05): the wait for the NEXT cycle is re-asked every
+        # loop, so the cadence re-arms in this one place and a poll that
+        # failed costs nothing — the next tick simply re-asks again.
+        while not self._stop.wait(self.next_interval_s()):
             try:
                 self.poll_once()
             except Exception:  # noqa: BLE001 — the watcher must never die
@@ -159,12 +184,32 @@ class AgentWatcher:
 
     # -- core logic ------------------------------------------------------------
 
+    def next_interval_s(self) -> float:
+        """Interval to wait before the NEXT cycle.
+
+        Fast only while BOTH hold: attention is fresh (an SSE subscriber
+        was seen inside the attention window) and a pane is blocked. Any
+        other state — nobody watching, or nothing to watch closely —
+        rides the baseline cadence.
+        """
+        fresh = self._clock() - self._last_attention <= ATTENTION_WINDOW_S
+        blocked = any(
+            status == "blocked" for status in (self._baseline or {}).values()
+        )
+        if fresh and blocked:
+            return FAST_POLL_INTERVAL_S
+        return self._poll_interval
+
     def poll_once(self) -> List[dict]:
         """One diff cycle; returns the announcements produced (empty at baseline)."""
         try:
             agents = self._herdr.list_agents()
         except Exception:  # noqa: BLE001 — a broken CLI must stay silent
             return []
+        # A live SSE subscriber is somebody watching the herd right now:
+        # refresh the attention window this cycle (doc 05 cadence).
+        if self.hub.subscriber_count() > 0:
+            self._last_attention = self._clock()
         current = {agent.pane_id: agent for agent in agents}
 
         if self._baseline is None:
