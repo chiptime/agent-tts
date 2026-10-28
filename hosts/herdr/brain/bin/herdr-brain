@@ -673,9 +673,23 @@ case "${1:-status}" in
     export HERDR_BRAIN_PORT
     claim_port "${2:-daemon}"
     ;;
+  pair|--pair|devices|--devices)
+    # Device pairing (Panel parity F1): mint codes, list and revoke
+    # devices. Pure file work under HERDR_BRAIN_STATE_DIR — no daemon,
+    # no port claims; the running server re-reads the registry per
+    # request, so revocations land without a restart.
+    verb="$1"
+    shift
+    load_env
+    ensure_venv
+    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$REPO_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
+      exec "$REPO_DIR/.venv/bin/python" -m herdr_brain.pairing_cli "$verb" "$@"
+    ;;
   help|--help|-h)
-    echo "Usage: bin/herdr-brain [--no-first-run] [status|url|call|restart|stop|first-run|doctor|_daemon|_daemon-supervised]"
+    echo "Usage: bin/herdr-brain [--no-first-run] [status|url|call|restart|stop|first-run|doctor|pair|devices|_daemon|_daemon-supervised]"
     echo "  call   open the Panel voice-call UI in the desktop browser (HERDR_BRAIN_BROWSER overrides the opener)"
+    echo "  pair   mint a one-time code: the phone spends it in Ajustes to enrol this device (write access turns on with the first pairing)"
+    echo "  devices {list|revoke <label>}   show paired devices, or drop one (applies without a restart)"
     ;;
   *)
     load_env

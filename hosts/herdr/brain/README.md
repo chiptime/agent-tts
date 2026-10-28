@@ -75,6 +75,12 @@ daemons do not source them, so the env file is the single stable contract.
 | `OPENCODE_DB` / `CLAUDE_PROJECTS_ROOT` | store defaults | transcript store overrides (tests) |
 | `HERDR_BRAIN_OPENCODE_URL` | `http://127.0.0.1:4096` | local opencode server; the PWA answers an agent's approval dialog through its permission API |
 | `HERDR_BRAIN_APPROVAL_TOKEN` | *(empty = no auth)* | shared secret for `POST /approval/{id}/action` (ntfy action buttons), as `Authorization: Bearer` or `?token=`. Empty leaves that route as open as the PWA routes |
+| `HERDR_BRAIN_STATE_DIR` | `~/.local/state/herdr-brain` | device-pairing state (`pairing-pending.json`, `paired-devices.json`; dir 0700, files 0600, only SHA-256 hashes on disk) |
+| `HERDR_BRAIN_ALLOWED_HOSTS` | *(empty)* | extra allowed `Host` headers beyond loopback and `*.ts.net` (anti DNS-rebinding; see [Device pairing and the access gate](#device-pairing-and-the-access-gate)) |
+| `HERDR_BRAIN_ALLOWED_ORIGINS` | *(empty)* | extra allowed `Origin` values (each one's host also joins the Host allowlist) |
+| `HERDR_BRAIN_ALLOW_ANY_HOST` | *(empty)* | `1` turns Host validation OFF — the DNS-rebinding hole; warned opt-out for exotic proxies |
+| `HERDR_BRAIN_TRUSTED_USER` | *(empty)* | under `tailscale serve`, require a matching `Tailscale-User-Login`; a missing header is rejected too (fail-closed). `HERDR_BRAIN_TRUSTED_USER_OPTIONAL=1` tolerates the missing header |
+| `HERDR_BRAIN_DEVICE_HEADER` / `HERDR_BRAIN_DEVICE_ALLOWLIST` | *(empty)* | reverse-proxy device gate: when the header name is set, writes require an allowlisted value in it (absent header ⇒ read-only) |
 
 ### Empty agent reader
 
@@ -421,8 +427,49 @@ A blocked pane whose dialog is **not** opencode's — claude, codex, agy —
 keeps the key pad above: those dialogs are answered with deliberate key
 presses, one tap at a time, never auto-answered.
 
-Both routes carry no token and rely on the tailnet being the boundary, like
-every other PWA route. `HERDR_BRAIN_APPROVAL_TOKEN` protects only the ntfy
+## Device pairing and the access gate
+
+Every route runs behind a fail-closed access gate (Panel parity F1), and
+every **write** route additionally requires a paired-device bearer token
+once at least one device is paired:
+
+- **Host allowlist (always on)** — the request's `Host` must be a loopback
+  form, any `*.ts.net` name (so the phone's
+  `https://<machine>.<tailnet>.ts.net:8443` access keeps working with no
+  new configuration), a `HERDR_BRAIN_ALLOWED_HOSTS` entry, or the host of
+  a `HERDR_BRAIN_ALLOWED_ORIGINS` origin. Anything else is a 403 before
+  any other logic (anti DNS-rebinding). `HERDR_BRAIN_ALLOW_ANY_HOST=1` is
+  the warned opt-out.
+- **Origin/CSRF** — an `Origin`, when present, must be same-origin with
+  the Host (or explicitly allowed); a write with no `Origin` from a
+  non-loopback Host is rejected. Reads never require `Origin`.
+- **Optional identity/device gates** — `HERDR_BRAIN_TRUSTED_USER`
+  (Tailscale-User-Login under `tailscale serve`, fail-closed) and
+  `HERDR_BRAIN_DEVICE_HEADER`/`HERDR_BRAIN_DEVICE_ALLOWLIST` for reverse
+  proxies.
+- **Device pairing** — `bin/herdr-brain pair` mints a one-time 8-character
+  code (10 min TTL, 5 attempts, only its hash on disk). The phone spends
+  it in **Ajustes → Emparejar** and receives a 256-bit bearer token shown
+  exactly once; the PWA stores it in `localStorage` and attaches
+  `Authorization: Bearer` on every write fetch. `bin/herdr-brain devices
+  list` / `devices revoke <label>` manage the registry; a revocation
+  applies on the device's next request, no restart.
+
+**With no device paired, every route behaves exactly as before** — the
+requirement turns on with the first pairing. **Migration note:** pairing
+the first device removes write access from every unpaired client (the
+PWA offers the pairing flow on a "not paired" 403). `POST
+/approval/{id}/action` keeps `HERDR_BRAIN_APPROVAL_TOKEN` alone, because
+ntfy cannot attach a device bearer; write-gated routes are `/pane/reply`,
+`/pane/keys`, `/pane/permission/reply`, `/approval/{id}/approve|reject|resolve`,
+`PATCH /approval/{id}`, `/ask`, `/transcribe`, `/reset` and
+`/devices/revoke`.
+
+Write routes on a blocked device answer 403 `dispositivo no emparejado`;
+revoked devices keep read access (`GET /herd`, `/view`, …).
+
+Both permission routes above are PWA-only and carry the device bearer like
+every other write. `HERDR_BRAIN_APPROVAL_TOKEN` protects only the ntfy
 action route, because ntfy is a third party that cannot send headers.
 
 The brain also serves its mobile PWA same-origin at `/` (static assets in

@@ -13,6 +13,8 @@ from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path
 from typing import Optional, Union
 
+from .pairing import DEFAULT_STATE_DIR
+
 DEFAULT_GLM_BASE_URL = "https://api.z.ai/api/paas/v4/"
 DEFAULT_GLM_MODEL = "glm-5"
 
@@ -197,10 +199,32 @@ class Settings:
     # Where the local opencode server listens (see DEFAULT_OPENCODE_URL).
     # Defaulted like every field above it: tests build Settings(**kwargs).
     opencode_url: str = DEFAULT_OPENCODE_URL
+    # ── Device pairing + access gate (Panel parity F1, doc 01) ──
+    # Appended WITH defaults like every knob above: tests construct
+    # Settings(**SETTINGS_KWARGS), so a required field would break every
+    # existing construction.
+    # State dir for pairing-pending.json / paired-devices.json (and later
+    # audit.log). Coherent with DEFAULT_AUDIO_DIR's root.
+    state_dir: Path = Path(DEFAULT_STATE_DIR).expanduser()
+    # Access gate (access.py). All default to "off/empty", which keeps
+    # the fail-closed Host allowlist on its L5 default set: loopback
+    # forms + *.ts.net + these entries.
+    allowed_hosts: tuple = ()
+    allowed_origins: tuple = ()
+    allow_any_host: bool = False
+    # Tailscale identity under `tailscale serve`: Tailscale-User-Login
+    # must match when set; fail-closed on a missing header unless
+    # trusted_user_optional.
+    trusted_user: str = ""
+    trusted_user_optional: bool = False
+    # Reverse-proxy device header/allowlist (doc 01 §2): when set, a
+    # write must carry an allowlisted value in the named header.
+    device_header: str = ""
+    device_allowlist: tuple = ()
 
     def __post_init__(self):
         # Accept plain strings for path fields regardless of the caller.
-        for field in ("tts_home", "tts_bin", "audio_dir"):
+        for field in ("tts_home", "tts_bin", "audio_dir", "state_dir"):
             value = getattr(self, field)
             if not isinstance(value, Path):
                 object.__setattr__(self, field, Path(value).expanduser())
@@ -239,6 +263,16 @@ def _persisted_brain_port(environ: dict) -> Optional[int]:
                 raw = raw[1:-1]
             return _parse_brain_port(raw, str(path))
     return None
+
+
+def _split_csv(raw: str) -> tuple:
+    """Comma-separated env value -> tuple of non-empty stripped items."""
+    return tuple(item.strip() for item in raw.split(",") if item.strip())
+
+
+def _flag(env: dict, name: str) -> bool:
+    """Truthy spellings for boolean env toggles (1/true/yes)."""
+    return str(env.get(name, "")).strip().lower() in ("1", "true", "yes")
 
 
 def load_settings(env: Optional[dict] = None) -> Settings:
@@ -336,4 +370,13 @@ def load_settings(env: Optional[dict] = None) -> Settings:
         stt_backend=raw_backend,
         opencode_url=getenv("HERDR_BRAIN_OPENCODE_URL", DEFAULT_OPENCODE_URL),
         approval_token=getenv("HERDR_BRAIN_APPROVAL_TOKEN").strip(),
+        # ── Device pairing + access gate (Panel parity F1, doc 01) ──
+        state_dir=Path(getenv("HERDR_BRAIN_STATE_DIR", DEFAULT_STATE_DIR)).expanduser(),
+        allowed_hosts=_split_csv(getenv("HERDR_BRAIN_ALLOWED_HOSTS")),
+        allowed_origins=_split_csv(getenv("HERDR_BRAIN_ALLOWED_ORIGINS")),
+        allow_any_host=_flag(environ, "HERDR_BRAIN_ALLOW_ANY_HOST"),
+        trusted_user=getenv("HERDR_BRAIN_TRUSTED_USER").strip(),
+        trusted_user_optional=_flag(environ, "HERDR_BRAIN_TRUSTED_USER_OPTIONAL"),
+        device_header=getenv("HERDR_BRAIN_DEVICE_HEADER").strip(),
+        device_allowlist=_split_csv(getenv("HERDR_BRAIN_DEVICE_ALLOWLIST")),
     )

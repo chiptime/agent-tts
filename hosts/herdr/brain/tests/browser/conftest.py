@@ -271,6 +271,7 @@ class KaraokeHarness:
             "herd-group.js", "sw.js",
             "manifest.webmanifest", "icon.svg", "karaoke.js",
             "mermaid.min.js", "mermaid-viewer.js", "tts-engine.js",
+            "pairing.js",
         ):
             if (STATIC / name).is_file():
                 self.static["/" + name] = name
@@ -287,6 +288,10 @@ class KaraokeHarness:
                                        "turns": external or [], "window": 20}, query=("pane_id",))
         self.respond("/approval/current", {"approval": None}, query=("session_id",))
         self.respond("/reset", {"ok": True}, method="POST")
+        # Device pairing (Panel parity F1): the boot /devices poll the
+        # pairing card runs. Default keeps every legacy test on the
+        # unpaired (unenforced) stance — exactly the pre-F1 behavior.
+        self.respond("/devices", {"enforced": False, "current": None, "devices": []})
         # FR-13 shared call context: default payload keeps every legacy
         # test on its locally-minted session (call_id null = no
         # adoption); the desktop/handover tests override these routes

@@ -1972,6 +1972,40 @@
     .s-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
     .s-label { font-size: 14px; }
     .s-hint { font-size: 12px; color: var(--muted); line-height: 1.5; }
+
+    /* ── Device pairing card (Panel parity F1): pairing.js builds it
+     * inside #pairing-box in the Ajustes sheet. Same visual language as
+     * the settings rows — inputs and buttons hit the 44px tap target. */
+    .pairing-box { display: flex; flex-direction: column; gap: 10px; padding-top: 4px; }
+    .pair-hint {
+      font-size: 12px; line-height: 1.5; color: var(--text);
+      background: var(--chip-bg); border: 1px solid var(--line);
+      border-radius: 10px; padding: 8px 10px;
+    }
+    .pair-status { font-size: 13px; color: var(--muted); }
+    .pair-form { display: flex; flex-direction: column; gap: 8px; }
+    .pair-form input {
+      min-height: 44px; padding: 0 12px;
+      border: 1px solid var(--line); border-radius: 10px;
+      background: var(--panel-2); color: var(--text);
+      font-size: 15px; text-transform: uppercase;
+    }
+    .pair-form input.pair-label { text-transform: none; }
+    .pair-form button {
+      min-height: 44px; border: none; border-radius: 10px;
+      background: var(--accent); color: #fff;
+      font-size: 14px; font-weight: 700; cursor: pointer;
+    }
+    .pair-error { font-size: 12px; color: #ff8f6b; }
+    .pair-devices { display: flex; flex-direction: column; gap: 6px; }
+    .pair-device { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .pair-device-label { font-size: 13px; }
+    .pair-device button {
+      min-height: 40px; padding: 0 12px;
+      border: 1px solid var(--line); border-radius: 10px;
+      background: var(--panel-2); color: var(--text);
+      font-size: 13px; cursor: pointer;
+    }
   </style>
 </head>
 <body>
@@ -2095,6 +2129,11 @@
         <span class="s-label">Pendientes</span>
         <button id="pending-open" type="button" title="Ver los avisos pendientes">🔔 Pendientes (<span id="pending-menu-count">0</span>)</button>
       </div>
+      <!-- Device pairing (Panel parity F1): pairing.js builds the card
+           (estado + código + etiqueta + lista de dispositivos) inside
+           #pairing-box. The code is minted on the operator's terminal
+           (bin/herdr-brain pair); this card only spends it. -->
+      <div id="pairing-box" class="pairing-box" aria-live="polite"></div>
     </div>
 
   </section>
@@ -2164,7 +2203,8 @@
   <audio id="player"></audio>
   <script src="/endpointing.js"></script>
   <script src="/vad.js"></script>
-  <script src="/approval.js"></script>
+    <script src="/approval.js"></script>
+    <script src="/pairing.js"></script>
     <script src="/reader.js"></script>
     <script src="/toast.js"></script>
     <script src="/karaoke.js"></script>

@@ -1737,17 +1737,18 @@
     var text = replyInput.value.trim();
     if (!paneId || !text || replySend.disabled) return;
     replySend.disabled = true;
-    fetch("/pane/reply", {
+    fetch("/pane/reply", withDeviceAuth({
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ pane_id: paneId, text: text })
-    })
+    }))
       .then(function (resp) {
         if (resp.ok) {
           replyInput.value = "";
           showToast("Respuesta enviada al agente", 3000);
           return null;
         }
+        maybeOfferPairing(resp);
         return resp.json().then(
           function (body) { return body && body.detail; },
           function () { return null; }
@@ -1825,11 +1826,11 @@
     var requestId = permissionRequest.request_id;
     var pane = permissionPane;
     setPermissionBusy(true);
-    fetch("/pane/permission/reply", {
+    fetch("/pane/permission/reply", withDeviceAuth({
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ pane_id: pane, request_id: requestId, reply: reply })
-    })
+    }))
       .then(function (resp) {
         if (resp.ok) {
           showToast(PERMISSION_TOAST[reply] || "Permiso enviado", 3000);
@@ -1839,6 +1840,7 @@
           refreshPermission(pane);
           return null;
         }
+        maybeOfferPairing(resp);
         return resp.json().then(
           function (body) { return body && body.detail; },
           function () { return null; }
@@ -1896,11 +1898,11 @@
       "Enviado: " + (button.getAttribute("aria-label") || key) +
       " · esperando al agente…"
     );
-    fetch("/pane/keys", {
+    fetch("/pane/keys", withDeviceAuth({
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ pane_id: paneId, keys: [key] })
-    })
+    }))
       .then(function (resp) {
         if (resp.ok) {
           /* The dialog usually closes or advances here: refresh now instead
@@ -1909,6 +1911,7 @@
           return null;
         }
         setKeysHint(KEYS_HINT_DEFAULT);
+        maybeOfferPairing(resp);
         return resp.json().then(
           function (body) { return body && body.detail; },
           function () { return null; }
@@ -1943,17 +1946,18 @@
     var text = replyInput.value.trim();
     if (!paneId || !text || replySend.disabled) return;
     replySend.disabled = true;
-    fetch("/pane/reply", {
+    fetch("/pane/reply", withDeviceAuth({
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ pane_id: paneId, text: text })
-    })
+    }))
       .then(function (resp) {
         if (resp.ok) {
           replyInput.value = "";
           showToast("Respuesta enviada al agente", 3000);
           return null;
         }
+        maybeOfferPairing(resp);
         return resp.json().then(
           function (body) { return body && body.detail; },
           function () { return null; }
@@ -3501,6 +3505,32 @@
     };
   }
 
+  /* ---------------- device credential (Panel parity F1) ----------------
+   * The paired-device bearer token lives in localStorage; every WRITE
+   * fetch carries it (the server only demands it once a device is
+   * paired — with an empty registry everything works exactly as
+   * before). pairingUI (below) owns the token; these helpers only
+   * read/attach it so the write paths stay one-liners. */
+  var pairingUI = null;
+
+  function withDeviceAuth(options) {
+    options = options || {};
+    if (!pairingUI) return options;
+    return Object.assign({}, options, {
+      headers: pairingUI.authHeaders(options.headers)
+    });
+  }
+
+  function maybeOfferPairing(resp) {
+    /* A 403 «dispositivo no emparejado» on any write opens the pairing
+     * flow (Ajustes) instead of a dead-end toast — the migration path
+     * the moment the first device pairs. Cheap: only 403s are read. */
+    if (!pairingUI || !resp || resp.status !== 403) return Promise.resolve(null);
+    return resp.clone().json().then(function (body) {
+      if (body && pairingUI.isNotPairedResponse(body)) pairingUI.offer();
+    }).catch(function () { /* not JSON — not our 403 */ });
+  }
+
   /* ---------------- fetch with hard timeout ---------------- */
 
   function fetchWithTimeout(url, options, timeoutMs) {
@@ -3525,9 +3555,13 @@
       clearTimeout(timer);
       if (external) external.removeEventListener("abort", onExternalAbort);
     }
-    return fetch(url, Object.assign({}, options, { signal: controller.signal }))
+    return fetch(url, withDeviceAuth(Object.assign({}, options, { signal: controller.signal })))
       .then(
-        function (resp) { cleanup(); return resp; },
+        function (resp) {
+          cleanup();
+          maybeOfferPairing(resp);
+          return resp;
+        },
         function (err) {
           cleanup();
           if (err && err.name === "AbortError" && timedOut) {
@@ -3594,6 +3628,25 @@
     },
     banner: showBanner
   });
+
+  /* Device pairing UI (Panel parity F1): mounts inside Ajustes and
+   * owns the bearer token every write fetch attaches. Refreshed at
+   * boot (fail-soft: an older brain predates /devices) and after each
+   * pair/revoke. The code is minted on the operator's terminal — this
+   * card only spends it. */
+  if (window.Pairing) {
+    pairingUI = window.Pairing.createPairingUI({
+      request: function (url, options, timeoutMs) {
+        return fetchWithTimeout(url, options, timeoutMs || 15000);
+      },
+      storage: localStorage,
+      openSettings: openSettings,
+      onPaired: function () {
+        showToast("Dispositivo emparejado — la escritura queda habilitada", 4000);
+      }
+    });
+    pairingUI.refresh();
+  }
 
   function approvalSetState(state) {
     if (!inCall) {
@@ -4709,12 +4762,13 @@
     updateGhost();
     hideBanner();
     closeConvSheet();
-    fetch("/reset", {
+    fetch("/reset", withDeviceAuth({
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ session_id: sessionId })
-    }).then(function (resp) {
+    })).then(function (resp) {
       if (resp.ok) showToast("Conversación nueva iniciada", 4000);
+      else maybeOfferPairing(resp);
     }).catch(function () {
       showBanner("No se pudo reiniciar la conversación en el servidor.");
     });

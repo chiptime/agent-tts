@@ -51,12 +51,18 @@ from .approval_lexicon import (
     OUTCOME_REPLACE_INTENT,
     resolve_utterance,
 )
+from . import access as access_module
 from .config import Settings
 from .consult import ConsultService
 from .herdr import MAX_SEND_KEYS, SEND_KEY_ALLOWLIST, HerdrError
 from .history import HistoryStore, default_history_path
 from .llm import BrainLLM, BrainLLMError, TurnCancelled
 from .memory import DEFAULT_SESSION, MAX_MESSAGES, ConversationStore
+from .pairing import (
+    PairingStore,
+    normalize_label as normalize_device_label,
+    to_device_wire,
+)
 from .reader import ReaderCache, turn_id
 from .speech import (
     PHASE_CANCELLED,
@@ -185,6 +191,49 @@ def bearer_or_query_token(request: Request) -> str:
     return request.query_params.get("token", "")
 
 
+class AccessMiddleware:
+    """Raw ASGI access gate (Panel parity F1; see ``access.py``).
+
+    Deliberately NOT BaseHTTPMiddleware: the pass-through ``__call__``
+    leaves /events streaming and /ask's disconnect detection exactly as
+    they are — a security wrapper must not change transport behavior.
+    On success the resolved paired-device label lands in
+    ``scope["state"]["device"]`` (surfaced to handlers as
+    ``request.state.device``; the audit log, T3, consumes it). On
+    refusal a plain 403 JSON body — the same ``{"detail": …}`` shape
+    every other refusal in this app uses — with one text per gate.
+    """
+
+    def __init__(self, app, cfg: Settings, pairing: PairingStore):
+        self.app = app
+        self.cfg = cfg
+        self.pairing = pairing
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = {
+            key.decode("latin-1").lower(): value.decode("latin-1")
+            for key, value in scope.get("headers", [])
+        }
+        label, refusal = access_module.guard(
+            headers, scope["method"], scope["path"], self.cfg, self.pairing
+        )
+        if refusal is not None:
+            body = json.dumps({"detail": refusal}, ensure_ascii=False).encode("utf-8")
+            await send({
+                "type": "http.response.start",
+                "status": 403,
+                "headers": [(b"content-type", b"application/json")],
+            })
+            await send({"type": "http.response.body", "body": body})
+            return
+        if label is not None:
+            scope.setdefault("state", {})["device"] = label
+        await self.app(scope, receive, send)
+
+
 def approval_payload(gate: ApprovalGate, timeout_s: int, now: Optional[float] = None) -> dict:
     """Shapes the ``approval{}`` object of /ask (and approval endpoints).
 
@@ -254,6 +303,7 @@ _VERSIONED_REFS = (
     ('src="/endpointing.js"', 'src="/endpointing.js?v={v}"'),
     ('src="/vad.js"', 'src="/vad.js?v={v}"'),
     ('src="/approval.js"', 'src="/approval.js?v={v}"'),
+    ('src="/pairing.js"', 'src="/pairing.js?v={v}"'),
     ('src="/reader.js"', 'src="/reader.js?v={v}"'),
     ('src="/toast.js"', 'src="/toast.js?v={v}"'),
     ('src="/mermaid.min.js"', 'src="/mermaid.min.js?v={v}"'),
@@ -390,8 +440,8 @@ class PaneKeysRequest(BaseModel):
 class PermissionReplyRequest(BaseModel):
     """Answer to one opencode approval dialog, for one exact pane.
 
-    ``reply`` is the exact contract value; an invented word is a 422 at the
-    edge and never reaches opencode as a guess. ``pane_id`` is required
+    ``reply`` is the exact contract value; an invented word is a 422 at
+    the edge and never reaches opencode as a guess. ``pane_id`` is required
     because opencode's reply route is session-scoped: the answer must name
     the session it belongs to, and the pane is how the brain knows it.
     """
@@ -399,6 +449,20 @@ class PermissionReplyRequest(BaseModel):
     pane_id: str = Field(min_length=1, max_length=MAX_SESSION_ID_CHARS)
     request_id: str = Field(min_length=1, max_length=MAX_SESSION_ID_CHARS)
     reply: Literal["once", "always", "reject"]
+
+
+class PairRequest(BaseModel):
+    """POST /pair body: the one-time code read off the operator's
+    terminal plus this device's label (the revoke handle)."""
+
+    code: str = Field(min_length=1, max_length=64)
+    label: str = Field(min_length=1, max_length=64)
+
+
+class DeviceRevokeRequest(BaseModel):
+    """POST /devices/revoke body: the paired device's label."""
+
+    label: str = Field(min_length=1, max_length=64)
 
 
 def _opencode_http_error(exc: OpenCodeError) -> HTTPException:
@@ -618,6 +682,12 @@ def create_app(
     # fake clocks through the same object the handlers use.
     speech_jobs = speech_registry if speech_registry is not None else build_registry()
 
+    # Device pairing (Panel parity F1): lazy — nothing is read at boot,
+    # the registry is re-stat'ed per request so a CLI revocation in
+    # another process applies without a restart. With an empty registry
+    # every route behaves exactly as before (S7).
+    pairing_store = PairingStore(cfg.state_dir)
+
     # Approval dialogs (opencode): the agent cannot be reached with a prompt
     # while it waits at one, so the PWA answers through opencode's own
     # permission API. Injectable like every other seam; the client is inert
@@ -699,6 +769,7 @@ def create_app(
         return llm_holder["instance"]
 
     app = FastAPI(title="herdr-brain", version=__version__)
+    app.add_middleware(AccessMiddleware, cfg=cfg, pairing=pairing_store)
     app.state.watcher = watcher
     app.state.daemon_watcher = daemon_watcher
     app.state.transcriber = transcriber
@@ -747,6 +818,13 @@ def create_app(
     def approval_js() -> FileResponse:
         return FileResponse(
             STATIC_DIR / "approval.js", media_type="text/javascript",
+            headers=dict(_NO_CACHE_HEADERS),
+        )
+
+    @app.get("/pairing.js", include_in_schema=False)
+    def pairing_js() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "pairing.js", media_type="text/javascript",
             headers=dict(_NO_CACHE_HEADERS),
         )
 
@@ -1637,6 +1715,68 @@ def create_app(
         except OpenCodeError as exc:
             raise _opencode_http_error(exc) from exc
         return {"ok": True}
+
+    # ── Device pairing (Panel parity F1; access.py classifies the
+    # levels: /pair takes the write Host/Origin gate but no device
+    # gates — a device that never paired holds no token, so gating the
+    # bootstrap on one would make pairing unreachable. ──────────────
+
+    @app.post("/pair")
+    def pair(body: PairRequest) -> dict:
+        """Exchange ``{code,label}`` for a one-time bearer token.
+
+        The credential this route hands out is worthless without a code
+        the operator read off their own terminal within the last ten
+        minutes, behind a five-attempt counter. Failures are one bare
+        reason word (no timing or count leaks back — the attempts left
+        are the operator's business, on the operator's terminal). The
+        token is returned exactly once and never stored in the clear.
+        """
+        label = normalize_device_label(body.label)
+        if label is None:
+            raise HTTPException(status_code=422, detail="label must be 1-48 usable characters")
+        status, outcome = pairing_store.claim(body.code, label)
+        if status != "ok":
+            raise HTTPException(status_code=400, detail=outcome)
+        return {"token": outcome["token"], "label": outcome["label"]}
+
+    def _devices_payload(request: Request) -> dict:
+        # "current" is resolved at RESPONSE time, not from the
+        # middleware's request-time label: a device that just revoked
+        # itself must already read as current=None (Panel resolves the
+        # bearer after the revocation for the same reason).
+        from .pairing import bearer_token as _bearer
+
+        token = _bearer(request.headers.get)
+        current = None
+        if token:
+            device = pairing_store.resolve(token)
+            current = device["label"] if device else None
+        return {
+            "enforced": pairing_store.enforced(),
+            "current": current,
+            "devices": to_device_wire(pairing_store.registry(), current),
+        }
+
+    @app.get("/devices")
+    def devices(request: Request) -> dict:
+        """Read-only on purpose: an unpaired device can still see whether
+        pairing is on and which devices hold credentials. The token
+        hashes never reach this shape."""
+        return _devices_payload(request)
+
+    @app.post("/devices/revoke")
+    def devices_revoke(request: Request, body: DeviceRevokeRequest) -> dict:
+        """Drop one device's credential (write-gated by the access
+        middleware). Revoking YOURSELF is allowed — that is how a device
+        un-pairs — and the last device leaving switches enforcement back
+        off, the one ordering that cannot strand the operator."""
+        label = normalize_device_label(body.label)
+        if label is None:
+            raise HTTPException(status_code=422, detail="label must be 1-48 usable characters")
+        if not pairing_store.revoke(label):
+            raise HTTPException(status_code=404, detail="no paired device with that label")
+        return _devices_payload(request)
 
     @app.post("/approval/{gate_id}/approve")
     def approval_approve(gate_id: str) -> dict:

@@ -96,7 +96,7 @@ class RealMediaApp:
         names = ("index.html", "app.js", "karaoke.js", "toast.js", "reader.js", "speech.js",
                  "announce.js", "approval.js", "consult.js", "endpointing.js", "vad.js",
                  "herd-group.js", "manifest.webmanifest", "icon.svg",
-                 "mermaid.min.js", "mermaid-viewer.js", "tts-engine.js")
+                 "mermaid.min.js", "mermaid-viewer.js", "tts-engine.js", "pairing.js")
         self.static = {"/" + name: STATIC / name for name in names}
         self.static["/"] = STATIC / "index.html"
         self.api = {
@@ -105,6 +105,9 @@ class RealMediaApp:
                 {"role": "brain", "text": ANSWER, "ts": "2026-01-01T00:00:01Z"},
             ], "has_more": False}, {"before", "limit"}),
             "/herd": ([], set()),
+            # Device pairing boot poll (F1): unpaired default keeps the
+            # pre-F1 stance.
+            "/devices": ({"enforced": False, "current": None, "devices": []}, set()),
             "/view": ({"status": {"active": False}, "screen": None, "transcript": None,
                        "pending": {"detected": False}}, {"pane_id"}),
             "/conversation": ({"pane_id": None, "session_id": None, "agent": None,
