@@ -36,6 +36,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from .config import Settings
 from .herdr import AgentInfo, HerdrClient, HerdrError
+from .mux import create_mux
 from .secrets_mask import mask_text
 from .transcripts import read_turns
 from .tts import new_audio_path
@@ -151,7 +152,7 @@ class AgentWatcher:
         debounce_s: float = DEBOUNCE_S,
     ):
         self._settings = settings
-        self._herdr = herdr or HerdrClient(settings)
+        self._herdr = herdr or create_mux(settings)
         self._tts = tts_renderer
         self.hub = hub or AnnouncementHub()
         self._clock = clock

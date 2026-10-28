@@ -40,6 +40,7 @@ from .herdr import (
     HerdrError,
     pick_active,
 )
+from .mux import create_mux
 from .history_view import (
     HISTORY_DEFAULT_LIMIT,
     clamp_limit,
@@ -166,7 +167,7 @@ class BrainTools:
         consult: Optional[ConsultService] = None,
     ):
         self._settings = settings
-        self._herdr = herdr or HerdrClient(settings)
+        self._herdr = herdr or create_mux(settings)
         # Injectable readiness-loop primitives (tests drive them without
         # real 40 s waits); production uses monotonic time and real sleep.
         self._clock = clock or time.monotonic

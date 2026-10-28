@@ -86,6 +86,7 @@ daemons do not source them, so the env file is the single stable contract.
 | `HERDR_BRAIN_TRUSTED_USER` | *(empty)* | under `tailscale serve`, require a matching `Tailscale-User-Login`; a missing header is rejected too (fail-closed). `HERDR_BRAIN_TRUSTED_USER_OPTIONAL=1` tolerates the missing header |
 | `HERDR_BRAIN_DEVICE_HEADER` / `HERDR_BRAIN_DEVICE_ALLOWLIST` | *(empty)* | reverse-proxy device gate: when the header name is set, writes require an allowlisted value in it (absent header ⇒ read-only) |
 | `HERDR_BRAIN_AUDIT_CONTENT` | `preview` | audit-log content mode: `preview` keeps a 120-char single-line preview of reply text; `none` redacts every content string to the constant `⟨redacted⟩` (metadata such as outcomes, keys and revisions survives) — see [Audit log](#audit-log) |
+| `HERDR_BRAIN_MUX` | `herdr` | terminal multiplexer the brain drives: `herdr`, `tmux` or `zellij` (see [Multiplexers](#multiplexers)) |
 | `HERDR_BRAIN_SECRET_MASKING` | *(on)* | secret masking on outgoing text (S14): provider API keys, JWTs, PEM private-key blocks, `Authorization: Bearer` tokens, URL credentials and secret-named `KEY=value` assignments are replaced with hint placeholders (`sk-ant-…[masked]`, `[masked:jwt]`; spoken as "clave oculta") in the pane mirror, history pages, reading views, SSE announcements, the LLM live context and speech renders. Set to `off` (also `0`/`false`/`no`) to serve text verbatim; stored data is never rewritten |
 
 ### Empty agent reader
@@ -567,6 +568,23 @@ action route, because ntfy is a third party that cannot send headers.
 
 The brain also serves its mobile PWA same-origin at `/` (static assets in
 `src/herdr_brain/static/`, mounted after the API routes): no CORS anywhere.
+
+## Multiplexers
+
+`HERDR_BRAIN_MUX` chooses the multiplexer: `herdr` (default), `tmux` or
+`zellij`; binaries can be overridden with `HERDR_BIN`, `HERDR_TMUX_BIN` and
+`HERDR_ZELLIJ_BIN`. Outside herdr the brain degrades on purpose:
+
+| Capability | herdr | tmux | zellij |
+|---|---|---|---|
+| Pane list, styled mirror | yes | yes | yes |
+| Scrollback | yes | yes | no |
+| Keys, typed replies, tabs | yes | yes (no completion wait) | no |
+| Agent status, sessions, start agents | yes | no (panes are shells) | no |
+
+Each adapter publishes only capabilities it has evidence for, and anything
+it cannot do returns an explicit refusal, never a silent failure. An unknown
+`HERDR_BRAIN_MUX` value fails at startup.
 
 ## Audit log
 

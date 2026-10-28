@@ -653,11 +653,11 @@ class ConsultService:
             AntigravityEvidenceProvider,
             ClaudeEvidenceProvider,
         )
-        from .herdr import HerdrClient
+        from .mux import create_mux
 
         providers = {
             "herdr_session": HerdrSessionProvider(
-                herdr_client if herdr_client is not None else HerdrClient(settings)
+                herdr_client if herdr_client is not None else create_mux(settings)
             ),
             "opencode": OpencodeEvidenceProvider(opencode_db or settings.opencode_db),
             "claude": ClaudeEvidenceProvider(claude_root or settings.claude_root),
