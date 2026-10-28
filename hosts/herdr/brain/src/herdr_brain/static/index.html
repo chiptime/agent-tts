@@ -654,6 +654,78 @@
       font-weight: 700;
     }
     .gturn.has-more .ver-mas { display: flex; }
+    /* ── HISTORIAL TAB (doc 05): the FULL transcript, one cursor page at
+     * a time. Same column language as the glance list; turns arrive
+     * unclipped (reading surface), older pages prepend under what is
+     * held and the pager stays pinned at the panel's bottom. */
+    #history-turns {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 6px 10px;
+    }
+    .hturn {
+      flex: 0 0 auto;
+      background: var(--chip-bg);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 8px 12px;
+      font-size: var(--fs-sm);
+      line-height: 1.5;
+    }
+    .ht-role {
+      display: block;
+      font-size: 11px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      font-weight: 700;
+      color: var(--accent);
+      margin-bottom: 2px;
+    }
+    .hturn.user {
+      width: 88%;
+      margin-left: auto;
+      background: var(--user-wash);
+      border-color: var(--user-line);
+    }
+    .hturn.user .ht-role {
+      color: var(--warn);
+      text-align: right;
+      padding-left: 12px;
+    }
+    /* Full text, no "ver más" clamp: this IS the reading surface the
+     * glance window only previews. */
+    .ht-text {
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    #history-more {
+      flex: 0 0 auto;
+      width: 100%;
+      min-height: 48px;
+      margin: 6px 10px 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      color: var(--accent);
+      font-size: var(--fs-sm);
+      font-weight: 700;
+    }
+    #history-more:disabled { opacity: 0.55; }
+    #history-empty, #mirror-empty {
+      padding: var(--sp-3);
+      font-size: var(--fs-sm);
+      color: var(--muted);
+      font-style: italic;
+      text-align: center;
+    }
     /* ---- formatted reader surface (reader-html-integration) ---- *
      * Every rule is scoped under #glance-turns .reader-content so the
      * reader styling can never leak into the chat drawer or the call
@@ -2058,6 +2130,8 @@
     <div id="agent-tabs" class="agent-tabs" role="tablist" aria-label="Vistas del agente">
       <button id="tab-agent" class="agent-tab" type="button" role="tab" aria-selected="true" aria-controls="agent-panel" tabindex="0"><span id="glance-label">Vista del agente</span></button>
       <button id="tab-screen" class="agent-tab" type="button" role="tab" aria-selected="false" aria-controls="screen-panel" tabindex="-1">Pantalla</button>
+      <button id="tab-history" class="agent-tab" type="button" role="tab" aria-selected="false" aria-controls="history-panel" tabindex="-1">Historial</button>
+      <button id="tab-terminal" class="agent-tab" type="button" role="tab" aria-selected="false" aria-controls="terminal-panel" tabindex="-1">Terminal</button>
     </div>
     <div id="agent-panel" class="agent-panel" role="tabpanel" aria-labelledby="tab-agent" tabindex="0">
       <div id="glance-turns"></div>
@@ -2068,6 +2142,23 @@
         <span class="glabel">pantalla</span>
         <pre id="view-screen" class="view-screen"></pre>
       </div>    </div>
+    <!-- Historial (doc 05): the pane's FULL transcript, one cursor page
+         at a time; "Cargar más" (and a scroll parked at the very top)
+         walk older pages, prepended without duplicates. -->
+    <div id="history-panel" class="agent-panel hidden" role="tabpanel" aria-labelledby="tab-history" tabindex="0">
+      <div id="history-turns" aria-label="Historial completo del agente"></div>
+      <button id="history-more" class="hidden" type="button">Cargar más</button>
+      <div id="history-empty" class="hidden">Sin historial de este agente todavía</div>
+    </div>
+    <!-- Terminal (doc 05): the LIVE pane mirror — the visible window as
+         ANSI runs, repainted on the 5s poll while this tab is shown. -->
+    <div id="terminal-panel" class="agent-panel hidden" role="tabpanel" aria-labelledby="tab-terminal" tabindex="0">
+      <div class="gscreen-wrap hidden" id="mirror-wrap">
+        <span class="glabel">terminal en vivo</span>
+        <pre id="mirror-screen" class="view-screen" aria-label="Espejo de la terminal del agente"></pre>
+      </div>
+      <div id="mirror-empty" class="hidden">Sin terminal que mostrar todavía</div>
+    </div>
   </section>
 
   <button id="state-pill" class="hidden" role="status"><span id="pill-main"></span><span id="pill-sub" class="hidden"></span></button>
@@ -2206,6 +2297,7 @@
     <script src="/approval.js"></script>
     <script src="/pairing.js"></script>
     <script src="/destructive.js"></script>
+    <script src="/history.js"></script>
     <script src="/reader.js"></script>
     <script src="/toast.js"></script>
     <script src="/karaoke.js"></script>

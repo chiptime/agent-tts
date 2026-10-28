@@ -92,6 +92,16 @@
   var tabScreen = $("tab-screen");
   var agentPanel = $("agent-panel");
   var screenPanel = $("screen-panel");
+  var tabHistory = $("tab-history");
+  var tabTerminal = $("tab-terminal");
+  var historyPanel = $("history-panel");
+  var terminalPanel = $("terminal-panel");
+  var historyTurns = $("history-turns");
+  var historyMore = $("history-more");
+  var historyEmpty = $("history-empty");
+  var mirrorWrap = $("mirror-wrap");
+  var mirrorScreen = $("mirror-screen");
+  var mirrorEmpty = $("mirror-empty");
   var diagPanel = $("diag-panel");
   var diagText = $("diag-text");
   var diagStatus = $("diag-status");
@@ -1424,7 +1434,12 @@
       herdNote.textContent = "El agente seleccionado desapareció — volviendo al enfocado.";
       selectedPane = effective;
       if (effective) localStorage.setItem(PANE_KEY, effective);
+      refreshMirror();  // the cockpit now shows another pane: re-read now
     }
+    /* Reading views (doc 05) follow the pane the cockpit is showing —
+     * the explicit selection, or the focused pane when nobody picked:
+     * a cursor page and a pane-addressed mirror never mix panes. */
+    historyFollowPane();
 
     var existing = {};
     var existingHeads = {};
@@ -1592,6 +1607,10 @@
     glanceNeedsWipe = true;  // another agent's turns: full keyed-cache reset
     readerSync(paneId, null);  // reader snapshot from the old pane is stale
     lastScreenText = null;
+    /* Reading views (doc 05) follow the new pane: the history model
+     * resets and the mirror re-reads if its tab is being shown. */
+    historyPaneChanged();
+    refreshMirror();
     refreshView();
     refreshConversation();
   }
@@ -2097,40 +2116,289 @@
     agentView.classList.remove("hidden");  // reveal even if /conversation fails
   }
 
-  /* ---------------- cockpit view tabs (vista del agente / pantalla) ---------
-   * One cockpit body, two views: exactly one panel is shown at a time, so
-   * the terminal gets real height instead of a permanent 110px strip under
-   * the turns. The choice is remembered so a reload lands back on it. */
+  /* ---------------- cockpit view tabs (vista del agente / pantalla / ---
+   * historial / terminal) --------------------------------------------- *
+   * One cockpit body, four views: exactly one panel is shown at a time,
+   * so every surface gets real height instead of a permanent strip
+   * under another. The choice is remembered so a reload lands back on
+   * it. Tabs live in DOM order and the roving tabindex walks that order
+   * with ArrowLeft/ArrowRight, like any ARIA tablist. */
+
+  var AGENT_TABS = [
+    { id: "agent", tab: tabAgent, panel: agentPanel },
+    { id: "screen", tab: tabScreen, panel: screenPanel },
+    { id: "history", tab: tabHistory, panel: historyPanel },
+    { id: "terminal", tab: tabTerminal, panel: terminalPanel },
+  ];
+  var currentAgentTabId = "agent";
+
+  function agentTabById(name) {
+    for (var i = 0; i < AGENT_TABS.length; i++) {
+      if (AGENT_TABS[i].id === name) return AGENT_TABS[i];
+    }
+    return null;
+  }
 
   function applyAgentTab(name) {
-    var onScreen = name === "screen";
-    tabAgent.setAttribute("aria-selected", onScreen ? "false" : "true");
-    tabScreen.setAttribute("aria-selected", onScreen ? "true" : "false");
-    tabAgent.tabIndex = onScreen ? -1 : 0;
-    tabScreen.tabIndex = onScreen ? 0 : -1;
-    agentPanel.classList.toggle("hidden", onScreen);
-    screenPanel.classList.toggle("hidden", !onScreen);
+    var entry = agentTabById(name) || AGENT_TABS[0];
+    currentAgentTabId = entry.id;
+    for (var i = 0; i < AGENT_TABS.length; i++) {
+      var selected = AGENT_TABS[i] === entry;
+      AGENT_TABS[i].tab.setAttribute("aria-selected", selected ? "true" : "false");
+      AGENT_TABS[i].tab.tabIndex = selected ? 0 : -1;
+      AGENT_TABS[i].panel.classList.toggle("hidden", !selected);
+    }
   }
 
   function selectAgentTab(name) {
     applyAgentTab(name);
-    localStorage.setItem(TAB_KEY, name === "screen" ? "screen" : "agent");
+    localStorage.setItem(TAB_KEY, currentAgentTabId);
+    /* Reading views load on entry: the first history page on open, an
+     * immediate mirror read (the 5s poll keeps them fresh afterwards). */
+    if (currentAgentTabId === "history") openHistoryTab();
+    if (currentAgentTabId === "terminal") refreshMirror();
   }
 
-  /* Roving tabindex: ArrowLeft/ArrowRight move the selection between the
-   * two tabs, like any ARIA tablist. */
-  function agentTabKeydown(event, other) {
+  /* Roving tabindex: ArrowLeft/ArrowRight move the selection through
+   * the tablist in DOM order, wrapping at the ends. */
+  function agentTabKeydown(event, index) {
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
     event.preventDefault();
-    other.focus();
-    other.click();
+    var delta = event.key === "ArrowRight" ? 1 : -1;
+    var next = AGENT_TABS[(index + delta + AGENT_TABS.length) % AGENT_TABS.length];
+    next.tab.focus();
+    next.tab.click();
   }
 
   tabAgent.addEventListener("click", function () { selectAgentTab("agent"); });
   tabScreen.addEventListener("click", function () { selectAgentTab("screen"); });
-  tabAgent.addEventListener("keydown", function (event) { agentTabKeydown(event, tabScreen); });
-  tabScreen.addEventListener("keydown", function (event) { agentTabKeydown(event, tabAgent); });
-  applyAgentTab(localStorage.getItem(TAB_KEY) === "screen" ? "screen" : "agent");
+  tabHistory.addEventListener("click", function () { selectAgentTab("history"); });
+  tabTerminal.addEventListener("click", function () { selectAgentTab("terminal"); });
+  tabAgent.addEventListener("keydown", function (event) { agentTabKeydown(event, 0); });
+  tabScreen.addEventListener("keydown", function (event) { agentTabKeydown(event, 1); });
+  tabHistory.addEventListener("keydown", function (event) { agentTabKeydown(event, 2); });
+  tabTerminal.addEventListener("keydown", function (event) { agentTabKeydown(event, 3); });
+  applyAgentTab(agentTabById(localStorage.getItem(TAB_KEY)) ? localStorage.getItem(TAB_KEY) : "agent");
+
+  /* ---------------- Historial tab: full transcript by cursor (doc 05) -
+   * The pagination state machine is the pure HistoryView module
+   * (static/history.js, tested in tests/js); this wiring owns fetches
+   * (readFetch: bearer + pairing 403 recovery), the DOM (text nodes
+   * only) and the generation guard that keeps a late response from an
+   * abandoned pane out of the view. */
+
+  var historyModel = window.HistoryView ? HistoryView.createHistoryModel() : null;
+  var historySeq = 0;
+  var HISTORY_MORE_LABEL = "Cargar más";
+  var HISTORY_BUSY_LABEL = "Cargando…";
+  var HISTORY_TOP_THRESHOLD = 24;  // px from the top that counts as "parked at the oldest edge"
+
+  /* The pane the cockpit is actually reading, same convention as the
+   * glance label: an explicit selection wins, else the pane /herd is
+   * showing (lastEffectivePane). A bare selectedPane follows the FOCUSED
+   * pane server-side — fine for stateless /view, wrong for cursor pages
+   * and pane-addressed mirror reads, which need one concrete pane. */
+  function effectivePaneForReads() {
+    return selectedPane || lastEffectivePane;
+  }
+
+  function openHistoryTab() {
+    if (historyModel) loadHistoryFirstPage();
+  }
+
+  /* The pane under the cockpit changed (explicit selection or a /herd
+   * poll moving the effective pane): everything held for the old pane is
+   * dropped, and the reading views reload only when their tab is shown. */
+  function historyPaneChanged() {
+    if (!historyModel) return;
+    historySeq++;
+    historyModel.reset();
+    if (currentAgentTabId === "history") loadHistoryFirstPage();
+  }
+
+  function historyFollowPane() {
+    if (!historyModel) return;
+    if (historyModel.state().paneId === effectivePaneForReads()) return;
+    historyPaneChanged();
+  }
+
+  function setHistoryBusy(busy) {
+    if (!historyMore) return;
+    if (busy) {
+      historyMore.disabled = true;
+      historyMore.textContent = HISTORY_BUSY_LABEL;
+    } else {
+      historyMore.disabled = false;
+      historyMore.textContent = HISTORY_MORE_LABEL;
+    }
+  }
+
+  function buildHistoryTurn(turn) {
+    var el = document.createElement("div");
+    el.className = "hturn " + (turn.role === "user" ? "user" : "assistant");
+    var roleEl = document.createElement("span");
+    roleEl.className = "ht-role";
+    roleEl.textContent = turn.role === "user" ? "tú" : "agente";
+    var textEl = document.createElement("span");
+    textEl.className = "ht-text";
+    /* textContent only: transcript text is data to read, never markup. */
+    textEl.textContent = turn.text || "";
+    el.appendChild(roleEl);
+    el.appendChild(textEl);
+    return el;
+  }
+
+  function renderHistoryFirstPage(result) {
+    var st = historyModel.state();
+    historyTurns.textContent = "";
+    var fragment = document.createDocumentFragment();
+    for (var i = 0; i < result.turns.length; i++) {
+      fragment.appendChild(buildHistoryTurn(result.turns[i]));
+    }
+    historyTurns.appendChild(fragment);
+    historyTurns.scrollTop = historyTurns.scrollHeight;
+    var empty = !result.turns.length;
+    historyEmpty.classList.toggle("hidden", !empty);
+    historyMore.classList.toggle("hidden", !(empty ? false : st.hasMore));
+    if (empty) historyEmpty.textContent = "Sin historial de este agente todavía";
+  }
+
+  function renderHistoryOlderPage(result) {
+    /* Prepend the genuinely-new turns and keep the viewport on the same
+     * content: everything shifted down by the added height. */
+    var beforeHeight = historyTurns.scrollHeight;
+    var beforeTop = historyTurns.scrollTop;
+    var fragment = document.createDocumentFragment();
+    for (var i = 0; i < result.prepend.length; i++) {
+      fragment.appendChild(buildHistoryTurn(result.prepend[i]));
+    }
+    historyTurns.insertBefore(fragment, historyTurns.firstChild);
+    historyTurns.scrollTop = beforeTop + (historyTurns.scrollHeight - beforeHeight);
+    historyMore.classList.toggle("hidden", !historyModel.state().hasMore);
+  }
+
+  function loadHistoryFirstPage() {
+    if (!historyModel) return;
+    var paneId = effectivePaneForReads();
+    var req = historyModel.firstPage(paneId);
+    if (!req) return;
+    var seq = ++historySeq;
+    setHistoryBusy(true);
+    readFetch(req.url)
+      .then(function (resp) {
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        return resp.json();
+      })
+      .then(function (data) {
+        if (seq !== historySeq) return;  // a newer request superseded this one
+        renderHistoryFirstPage(historyModel.applyFirstPage(data));
+      })
+      .catch(function () {
+        if (seq !== historySeq) return;
+        historyModel.fail();
+        historyTurns.textContent = "";
+        historyMore.classList.add("hidden");
+        historyEmpty.textContent = "No se pudo cargar el historial — vuelve a abrir la pestaña para reintentar";
+        historyEmpty.classList.remove("hidden");
+      })
+      .then(function () {
+        if (seq === historySeq) setHistoryBusy(false);
+      });
+  }
+
+  function loadHistoryOlderPage() {
+    if (!historyModel) return;
+    var req = historyModel.olderPage();
+    if (!req) return;
+    var seq = ++historySeq;
+    setHistoryBusy(true);
+    readFetch(req.url)
+      .then(function (resp) {
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        return resp.json();
+      })
+      .then(function (data) {
+        if (seq !== historySeq) return;
+        renderHistoryOlderPage(historyModel.applyOlderPage(data));
+      })
+      .catch(function () {
+        if (seq !== historySeq) return;
+        historyModel.fail();  // what is on screen stays; the pager retries
+      })
+      .then(function () {
+        if (seq === historySeq) setHistoryBusy(false);
+      });
+  }
+
+  if (historyMore) {
+    historyMore.addEventListener("click", function () { loadHistoryOlderPage(); });
+  }
+  /* Scroll-to-top loading: parked at the oldest edge with more pages to
+   * come, the next older page loads without hunting for the button. */
+  if (historyTurns) {
+    historyTurns.addEventListener("scroll", function () {
+      if (!historyModel) return;
+      var st = historyModel.state();
+      if (st.hasMore && !st.loading &&
+          historyTurns.scrollTop <= HISTORY_TOP_THRESHOLD) {
+        loadHistoryOlderPage();
+      }
+    });
+  }
+
+  /* ---------------- Terminal tab: live pane mirror (doc 05) ----------
+   * /pane/{id}/mirror serves the visible window as ANSI runs (masked
+   * server-side); paintRunsInto reproduces them faithfully. The mirror
+   * rides the SAME 5s poll as /herd, /view and /conversation — but only
+   * while its tab is visible: a hidden tab issues no fetch at all. No
+   * terminal emulation here, the pane already did it. */
+
+  var lastMirrorSignature = null;
+
+  function mirrorTabVisible() {
+    return !!(terminalPanel && !terminalPanel.classList.contains("hidden") &&
+      !agentView.classList.contains("hidden"));
+  }
+
+  function refreshMirror() {
+    if (!mirrorTabVisible()) return;
+    var paneId = effectivePaneForReads();
+    var url = window.HistoryView ? HistoryView.mirrorUrl(paneId) : null;
+    if (!url) {
+      mirrorEmpty.classList.remove("hidden");
+      return;
+    }
+    readFetch(url)
+      .then(function (resp) {
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        return resp.json();
+      })
+      .then(function (data) {
+        /* Same pane expression that chose the URL: a pane that moved
+         * while the read was in flight is not painted over. */
+        if (!mirrorTabVisible() || effectivePaneForReads() !== paneId) return;
+        var runs = (data && data.runs) || [];
+        var signature = JSON.stringify(runs);
+        if (signature !== lastMirrorSignature) {
+          lastMirrorSignature = signature;
+          if (runs.length) {
+            paintRunsInto(mirrorScreen, runs);
+            mirrorWrap.classList.remove("hidden");
+          } else {
+            mirrorScreen.textContent = "";
+            mirrorWrap.classList.add("hidden");
+          }
+          mirrorEmpty.classList.toggle("hidden", runs.length > 0);
+        }
+      })
+      .catch(function () { /* the next poll beat retries */ });
+  }
+
+  /* A reload that lands on a reading tab starts its read immediately —
+   * the same first page / first mirror the tap would have asked for. */
+  if (currentAgentTabId === "history") openHistoryTab();
+  if (currentAgentTabId === "terminal") refreshMirror();
+
 
   /* ---------------- glance turn list (from /conversation) ---------------- */
 
@@ -2359,6 +2627,10 @@
       });
     refreshView();
     refreshConversation();
+    /* The live mirror rides the same 5s beat — gated by its own tab
+     * visibility inside refreshMirror, so a hidden terminal costs no
+     * fetch at all. */
+    refreshMirror();
   }
 
   /* ---------------- audio playback (single queue) ---------------- */

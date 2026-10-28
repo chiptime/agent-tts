@@ -23,9 +23,10 @@ EXPECTED_DIGESTS = {
     # device_token query parameter, the read-403 pairing offer and the
     # caducado hint); then for the B1 correction (the SSE transport
     # reopens with the current credential on pairing/revoke/expiry, and
-    # media URLs are credentialised at source-assignment time).
-    "/": "77c92c679c2892be5cd593580fcbb6d13e72661740b38376597952476391d55c",
-    "/app.js": "11e24beeb26b7dbe868ff52b2d51b6b854af3102b2fc407fb0b3cd127bf4fcf1",
+    # media URLs are credentialised at source-assignment time); then
+    # for the T2 reading views (Historial + Terminal tabs, history.js).
+    "/": "736e43677253648c96690e11e273ce0cfb9b1966c47804fa8fb1257e6848f9e9",
+    "/app.js": "8e7649f7467b80aeb71eafb6520260db669a6eaf397ffa0bb191e8f992fec60c",
     "/herd-group.js": "08296c7208e14dc1d5e46186b645d02089f8addef502b50eb11e61b186829674",
     "/toast.js": "47a230495fbbe8af8ed63ea0daf2e77a08f41f48911da4f9cc230ddc904fdd5d",
     "/reader.js": "28daec6199b0e756e1285b40f20fc860c1d9b4d2169cb2433c1ccfb12db31a76",
