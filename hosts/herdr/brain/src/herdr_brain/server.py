@@ -304,6 +304,7 @@ _VERSIONED_REFS = (
     ('src="/vad.js"', 'src="/vad.js?v={v}"'),
     ('src="/approval.js"', 'src="/approval.js?v={v}"'),
     ('src="/pairing.js"', 'src="/pairing.js?v={v}"'),
+    ('src="/destructive.js"', 'src="/destructive.js?v={v}"'),
     ('src="/reader.js"', 'src="/reader.js?v={v}"'),
     ('src="/toast.js"', 'src="/toast.js?v={v}"'),
     ('src="/mermaid.min.js"', 'src="/mermaid.min.js?v={v}"'),
@@ -825,6 +826,13 @@ def create_app(
     def pairing_js() -> FileResponse:
         return FileResponse(
             STATIC_DIR / "pairing.js", media_type="text/javascript",
+            headers=dict(_NO_CACHE_HEADERS),
+        )
+
+    @app.get("/destructive.js", include_in_schema=False)
+    def destructive_js() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "destructive.js", media_type="text/javascript",
             headers=dict(_NO_CACHE_HEADERS),
         )
 

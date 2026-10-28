@@ -36,7 +36,7 @@ for _name in (
     "app.js", "endpointing.js", "vad.js", "approval.js", "reader.js",
     "toast.js", "announce.js", "speech.js", "consult.js",
     "herd-group.js", "sw.js", "manifest.webmanifest", "icon.svg",
-    "karaoke.js", "pairing.js",
+    "karaoke.js", "pairing.js", "destructive.js",
 ):
     if (STATIC / _name).is_file():
         STATIC_FILES["/" + _name] = _name

@@ -16,9 +16,10 @@ EXPECTED_DIGESTS = {
     # so these three hashes have to be recomputed from disk after every
     # merge that touches index.html, app.js or herd-group.js.
     # "/" and "/app.js" re-pinned for device pairing (F1): the Ajustes
-    # card, the bearer on write fetches and pairing.js wiring.
-    "/": "6b55641aad40b6efd2a3cc348b60781fb9651e6624e25471fe49663555c74db7",
-    "/app.js": "cdedaee2c54dc923725d6702ae33d616edd43b890402dbfef4f197bcdfa6fae1",
+    # card, the bearer on write fetches and pairing.js wiring; then for the
+    # destructive-command guard (destructive.js + composer confirmation).
+    "/": "e56f916f229c8a6021cd9ebe65dca576b356cb032f91bceb96897183dbf197d9",
+    "/app.js": "1c15ee4b5682e730a6efbc97767fb6ce064784476b98d7548abc9e8891209de9",
     "/herd-group.js": "08296c7208e14dc1d5e46186b645d02089f8addef502b50eb11e61b186829674",
     "/toast.js": "47a230495fbbe8af8ed63ea0daf2e77a08f41f48911da4f9cc230ddc904fdd5d",
     "/reader.js": "28daec6199b0e756e1285b40f20fc860c1d9b4d2169cb2433c1ccfb12db31a76",

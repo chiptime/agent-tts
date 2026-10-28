@@ -1736,6 +1736,13 @@
     var paneId = replyForm.getAttribute("data-pane");
     var text = replyInput.value.trim();
     if (!paneId || !text || replySend.disabled) return;
+    /* Destructive-command guard (Panel parity): the reply types into a
+     * real terminal, so a matching send needs a second, explicit tap. It
+     * runs on the final composer text, so typed and dictated text alike. */
+    var destructive = window.DestructiveGuard ? window.DestructiveGuard.isDestructiveInput(text) : null;
+    if (destructive && !window.confirm(
+      "Este envío parece destructivo: " + destructive + ".\n\n" + text + "\n\n¿Enviar igualmente?"
+    )) return;
     replySend.disabled = true;
     fetch("/pane/reply", withDeviceAuth({
       method: "POST",
@@ -1939,37 +1946,6 @@
   permissionOnce.addEventListener("click", function () { sendPermission("once"); });
   permissionAlways.addEventListener("click", function () { sendPermission("always"); });
   permissionReject.addEventListener("click", function () { sendPermission("reject"); });
-
-  replyForm.addEventListener("submit", function (event) {
-    event.preventDefault();
-    var paneId = replyForm.getAttribute("data-pane");
-    var text = replyInput.value.trim();
-    if (!paneId || !text || replySend.disabled) return;
-    replySend.disabled = true;
-    fetch("/pane/reply", withDeviceAuth({
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pane_id: paneId, text: text })
-    }))
-      .then(function (resp) {
-        if (resp.ok) {
-          replyInput.value = "";
-          showToast("Respuesta enviada al agente", 3000);
-          return null;
-        }
-        maybeOfferPairing(resp);
-        return resp.json().then(
-          function (body) { return body && body.detail; },
-          function () { return null; }
-        ).then(function (detail) {
-          showToast("No se pudo enviar: " + (typeof detail === "string" ? detail : "error " + resp.status), 6000);
-        });
-      })
-      .catch(function () {
-        showToast("No se pudo enviar: sin conexión con el brain", 6000);
-      })
-      .then(function () { replySend.disabled = false; });
-  });
 
   pendingBanner.addEventListener("click", function () {
     if (pendingBannerTapPane && pendingBannerTapPane !== selectedPane) {
