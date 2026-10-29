@@ -1,0 +1,32 @@
+# Key presets — labelled sequences over the EXISTING keypad allowlist.
+#
+# Copy to ~/.config/herdr-brain/keys.toml (or the directory named by
+# HERDR_BRAIN_CONFIG_DIR). The file reloads by mtime on the next request.
+#
+# Two hard rules reuse the dialog-answer discipline; a preset that breaks
+# either is skipped at load time with the reason in `herdr-brain config
+# check` — never offered as a button that could fail mid-press:
+#
+#   - every key MUST already be in the brain's send-key allowlist:
+#     up, down, left, right, enter, esc, tab, 0-9
+#     (PageUp, Home, End, Delete, ctrl chords, F-keys are NOT sendable);
+#   - a preset may use at most 8 keys (the send-key budget).
+#
+# Shared rules (see quick-replies.toml.example): unknown fields rejected,
+# unique ids per file, scoped rows replace (never merge with) the global
+# catalog. Presets are resolved server-side: a client names a row id and
+# never sends key names of its own.
+
+# A global preset: offered for every pane.
+[[keys]]
+id = "down-two"                   # optional: stable row id (derived from
+                                  # the label slug when omitted).
+label = "Down two"                # required: the button text.
+keys = ["down", "down"]           # required: 1-8 allowlisted key names,
+                                  # sent as ONE ordered batch.
+
+# A scoped preset: offered only to shell panes.
+[[keys]]
+label = "Shell confirm"
+keys = ["enter"]
+scope = "shell"

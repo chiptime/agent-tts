@@ -1,0 +1,36 @@
+# Quick replies — one-tap phrases for the reply dock.
+#
+# Copy to ~/.config/herdr-brain/quick-replies.toml (or the directory named
+# by HERDR_BRAIN_CONFIG_DIR) and edit freely. The file reloads by mtime on
+# the next request; no restart is needed.
+#
+# Rows are validated one by one: a malformed row is skipped and reported
+# (file, row, reason) by `herdr-brain config check`, and every healthy row
+# keeps serving. Nothing is ever sanitized in place — a row containing an
+# ASCII control character is skipped, because its phrase is sent verbatim
+# into a live terminal.
+#
+# Every file shares these rules:
+#   - unknown fields are rejected (the reason names the field);
+#   - ids are unique per file: an explicit duplicate id skips the row;
+#   - an empty file (or a missing one) means an empty catalog, never an
+#     error.
+
+# A global row: offered for every agent pane.
+[[replies]]
+id = "ship-it"                    # optional: stable row id a client can name.
+                                  # Derived from the label slug when omitted
+                                  # ("Ship it" -> "ship-it").
+label = "Ship it"                 # required: the dock button text.
+text = "Looks good, ship it"      # required: the phrase sent verbatim
+                                  # through the existing reply path.
+
+# A scoped row replaces the GLOBAL catalog for that family — scoped rows
+# never merge with the global ones. Scope is an agent family name
+# (claude, codex, opencode, opencode2, cursor, kiro, muse, pi, grok,
+# hermes, antigravity, ...) or `shell` for plain shell panes. Matching is
+# case-insensitive.
+[[replies]]
+label = "Compact now"
+text = "/compact"
+scope = "opencode"
