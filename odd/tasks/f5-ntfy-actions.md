@@ -19,7 +19,7 @@ a phone (ROADMAP F2 remains pending).
 | `POST /approval/{gate_id}/resolve` takes `approve`/`reject` | `/resolve` takes `{utterance}` and runs the voice lexicon; approve/reject live at `POST /approval/{id}/approve` and `/reject` (no body) | Add a dedicated `POST /approval/{gate_id}/action` (ntfy-shaped: decision via raw text, JSON, form or `?decision=`), reusing the same store and replay path. Existing routes untouched |
 | Brain has an approval secret | No auth anywhere in the Brain today | New optional `HERDR_BRAIN_APPROVAL_TOKEN`; empty = no auth (current behaviour) |
 | Plugin knows a gate id | Gate ids exist only inside the Brain (`/ask` freezes a gate); the watcher's `blocked` event has none | `send_ntfy_push` resolves the live gate with `GET {local brain}/approval/current` (best effort) or takes it as an optional 7th arg |
-| "web URL" is the Brain | `WEB_URL` may be Panel / a `{pane_id}` template | New `NTFY_APPROVAL_URL` (phone-reachable Brain base URL); buttons only when it is set |
+| "web URL" is the Brain | `WEB_URL` may be a dashboard URL / a `{pane_id}` template | New `NTFY_APPROVAL_URL` (phone-reachable Brain base URL); buttons only when it is set |
 | Up to N buttons | ntfy accepts at most 3 actions per message (extra actions make the push invalid) | With a gate the header is exactly Approve / Stop / Open; the old view/copy pair is dropped for that push |
 
 ## Checklist

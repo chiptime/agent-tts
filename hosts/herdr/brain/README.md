@@ -72,9 +72,29 @@ daemons do not source them, so the env file is the single stable contract.
 | `HERDR_BRAIN_PROMPT_TIMEOUT_MS` | `180000` | default wait for `send_to_session` |
 | `HERDR_BRAIN_MAX_TOOL_ROUNDS` | `4` | LLM tool-loop guard |
 | `HERDR_BRAIN_SCREEN_LINES` | `40` | default visible lines for `read_screen` |
-| `OPENCODE_DB` / `CLAUDE_PROJECTS_ROOT` | store defaults | transcript store overrides (tests) |
+| `OPENCODE_DB` / `CLAUDE_PROJECTS_ROOT` / `ANTIGRAVITY_ROOT` | store defaults | transcript store overrides (tests) |
+| `CODEX_ROOT` | `~/.codex/sessions` | codex rollout transcripts root |
+| `GROK_ROOT` | `~/.grok/sessions` | grok Build chat-history root |
+| `PI_ROOTS` | `~/.pi/agent/sessions:~/.omp/agent/sessions` | pi/omp session roots (colon-separated list; first root holding the session wins) |
+| `HERMES_ROOT` | `~/.hermes` | hermes root (`state.db` plus `profiles/*/state.db`) |
+| `CURSOR_ROOT` | `~/.cursor/projects` | Cursor CLI agent-transcript root (`<root>/<project>/agent-transcripts/<sid>/<sid>.jsonl`) |
+| `KIRO_ROOT` | `~/.kiro/sessions` | Kiro V3 sessions root (`<root>/<bucket>/<sess_id>/messages.jsonl`) |
+| `MUSE_ROOT` | `~/.local/share/muse/sessions` | Muse sessions root (date-partitioned `session.jsonl`) |
+| `OPENCODE2_DB` | `~/.local/share/opencode/opencode.db` | OpenCode 2 transcript store (`session_v2`/`session_message`; same physical db as 1.x) |
 | `HERDR_BRAIN_OPENCODE_URL` | `http://127.0.0.1:4096` | local opencode server; the PWA answers an agent's approval dialog through its permission API |
 | `HERDR_BRAIN_APPROVAL_TOKEN` | *(empty = no auth)* | shared secret for `POST /approval/{id}/action` (ntfy action buttons), as `Authorization: Bearer` or `?token=`. Empty leaves that route as open as the PWA routes |
+| `HERDR_BRAIN_STATE_DIR` | `~/.local/state/herdr-brain` | device-pairing state and the audit log (`pairing-pending.json`, `paired-devices.json`, `audit.log`; dir 0700, files 0600, only SHA-256 hashes of credentials on disk) |
+| `HERDR_BRAIN_ALLOWED_HOSTS` | *(empty)* | extra allowed `Host` headers beyond loopback and `*.ts.net` (anti DNS-rebinding; see [Device pairing and the access gate](#device-pairing-and-the-access-gate)) |
+| `HERDR_BRAIN_ALLOWED_ORIGINS` | *(empty)* | extra allowed `Origin` values (each one's host also joins the Host allowlist) |
+| `HERDR_BRAIN_ALLOW_ANY_HOST` | *(empty)* | `1` turns Host validation OFF — the DNS-rebinding hole; warned opt-out for exotic proxies |
+| `HERDR_BRAIN_TRUSTED_USER` | *(empty)* | under `tailscale serve`, require a matching `Tailscale-User-Login`; a missing header is rejected too (fail-closed). `HERDR_BRAIN_TRUSTED_USER_OPTIONAL=1` tolerates the missing header |
+| `HERDR_BRAIN_DEVICE_HEADER` / `HERDR_BRAIN_DEVICE_ALLOWLIST` | *(empty)* | reverse-proxy device gate: when the header name is set, writes require an allowlisted value in it (absent header ⇒ read-only) |
+| `HERDR_BRAIN_AUDIT_CONTENT` | `preview` | audit-log content mode: `preview` keeps a 120-char single-line preview of reply text; `none` redacts every content string to the constant `⟨redacted⟩` (metadata such as outcomes, keys and revisions survives) — see [Audit log](#audit-log) |
+| `HERDR_BRAIN_MUX` | `herdr` | terminal multiplexer the brain drives: `herdr`, `tmux` or `zellij` (see [Multiplexers](#multiplexers)) |
+| `HERDR_BRAIN_CREW_PORT` | `8747` | the crew listener's own TLS port (S7; bound only when the roster declares a crew — see [Crew federation](#crew-federation-s7-one-lead-peers-over-pinned-mtls)) |
+| `HERDR_BRAIN_CREW_HOST` | `127.0.0.1` | the crew listener's bind; set it to the tailnet interface on crew hosts |
+| `HERDR_BRAIN_CREW_SECRET` | *(empty)* | the crew secret for the DAEMON (the roster stores only its hash); alternatively write it once to `<state>/crew-secret` (mode 600) |
+| `HERDR_BRAIN_SECRET_MASKING` | *(on)* | secret masking on outgoing text (S14): provider API keys, JWTs, PEM private-key blocks, `Authorization: Bearer` tokens, URL credentials and secret-named `KEY=value` assignments are replaced with hint placeholders (`sk-ant-…[masked]`, `[masked:jwt]`; spoken as "clave oculta") in the pane mirror, history pages, reading views, SSE announcements, the LLM live context and speech renders. Set to `off` (also `0`/`false`/`no`) to serve text verbatim; stored data is never rewritten |
 
 ### Empty agent reader
 
@@ -147,7 +167,7 @@ bin/herdr-brain stop
 ### Desktop voice call (`herdr brain call`)
 
 
-`bin/herdr-brain call` opens the Panel voice-call UI — the SAME PWA the
+`bin/herdr-brain call` opens the voice-call UI — the SAME PWA the
 phone uses — in your desktop browser. It is another interface to one
 call, not a second voice stack: desktop and mobile share the same
 conversation, the same agent inventory and the same pending approvals,
@@ -267,6 +287,18 @@ curl -N localhost:8741/events
 #          "label":"opencode repo","text":"opencode repo terminó: Migración aplicada",
 #          "audio_url":"/audio/ann-<hex>.mp3"}
 
+# web push (S5): the public key the PWA subscribes with (null = soft-off)
+curl -s localhost:8741/push/key
+# → {"enabled":true,"public_key":"BJyWsP1x…"}
+# writes (device-gated + audited): POST /push/subscribe {endpoint,keys,…},
+# POST /push/unsubscribe {endpoint}, POST /push/test
+
+# brain messages (S13): operator send + one pane's inbox
+curl -s localhost:8741/msg/send -H 'content-type: application/json' \
+     -d '{"address":"w1:p2#ses_…","body":"¿cómo va?"}'
+# → {"id":"bm_ab12…","state":"typed","reason":""}
+curl -s "localhost:8741/msg/inbox?pane_id=w1:p2"
+
 
 curl -s "localhost:8741/view?pane_id=w1:p2"   # any herd member (default: focused)
 
@@ -275,6 +307,24 @@ curl -s "localhost:8741/conversation?pane_id=w1:p2"
 #     "turns":[{"role":"user","text":"…full text…"},…],"window":20}
 # Last 20 turns, full text (capped at 4000 chars/turn as a token guard).
 # The transcript readers have no cursor, so there is no older-page fetch.
+
+curl -s "localhost:8741/history?pane_id=w1:p2&limit=60"
+# → {"pane_id":"w1:p2","agent":"opencode","session_id":"ses_…","title":"…",
+#     "turns":[{"role":"user","text":"…UNCLIPPED…","created_at":"…"},…],
+#     "reason":null,"cursor":"<opaque>","has_more":true,"limit":60}
+# The WHOLE transcript, one page at a time: newest-first windows walking
+# older via the opaque cursor (each page is chronological inside). Turns
+# arrive unclipped; limit is bounded to [1,200]; a malformed cursor
+# degrades to the newest page. An agent with no readable history answers
+# {"turns":[],"reason":"no-session"} — never a 500.
+
+curl -s "localhost:8741/pane/w1:p2/mirror?lines=40"
+# → {"pane_id":"w1:p2","agent":"opencode","status":"working",
+#     "runs":[[{"t":"OK","b":true,"fg":"#00cd00"},…],…],"text":"OK build passed…"}
+# The visible window as faithful ANSI runs (same parser as the blocked
+# dialog path) plus escape-stripped text. No terminal emulation: herdr
+# already rendered the grid. lines clamps to [1,60]; an unknown pane is
+# a 404; a failed read degrades to empty runs.
 
 curl -s "localhost:8741/screen?pane_id=w1:p2"
 # → {"pane_id":"w1:p2","agent":"opencode","screen":"…last ~120 scrollback lines…"}
@@ -321,6 +371,11 @@ Events). Design choices:
   `blocked` prefers the pending excerpt. Fallback: "sin detalle disponible".
 - **Boot silence**: the first poll snapshots state as a baseline —
   pre-existing agents are never announced.
+- **Adaptive cadence**: one loop, one decision site. The baseline poll
+  runs every ~4 s; while an SSE subscriber was seen inside the 10 s
+  attention window AND some pane is blocked, the next wait shortens to
+  ~1.5 s (a dialog worth catching within seconds). Attention decays by
+  itself — no per-client timer exists.
 - **Debounce**: the same pane+status is not re-announced within 60 s.
 - **Text never blocks on TTS**: the mp3 renders best-effort; on failure the
   event still arrives with `audio_url: null`. Announcement files (`ann-*.mp3`)
@@ -333,6 +388,64 @@ the same element with a toast showing the digest. The speaker toggle mutes
 announcement audio only (a silent toast still appears); chat answers always
 play. Install note: if the phone never plays announcements, tap Call once
 after reload — browsers require one gesture per session before autoplay.
+
+#### Spoken locale (S4): `es` default, `en` added
+
+Everything the brain SPEAKS is assembled from templates — the watcher
+digests («necesita tu atención», «terminó») and the deterministic gate
+closers («¿Se envía?», «¿Sí o no?») — and those templates live in
+`spoken_lexicon.py` per locale. The call's locale is published once
+through the shared context and read by every spoken surface:
+
+```text
+POST /call/context {"locale": "en"}    # es (default) | en; anything else is IGNORED
+GET  /call/context                     # → …, "locale": "en"
+```
+
+Spanish stays byte-identical by default (installed phones and the whole
+pre-existing suite pin those exact strings); only an explicit `en`
+switches the wording («needs your attention», «finished», "Send it?",
+"Yes or no?"). The spoken clarify restate (S14) keeps its Spanish
+wording in v1 — it is long product copy, not a closer.
+
+### Web Push (avisos push)
+
+The same watcher that feeds SSE also feeds **Web Push** (VAPID, S5): when
+the call is closed and the phone is idle, blocked/done transitions still
+reach the lock screen. ntfy stays as it is (its approval action buttons
+keep `HERDR_BRAIN_APPROVAL_TOKEN`); Web Push is the brain's own channel,
+end-to-end encrypted to each subscribed phone (RFC 8291 payloads and RFC
+8292 VAPID signatures, built on the `cryptography` package).
+
+- **Keys**: one VAPID pair per brain, in `<state-dir>/vapid.json` (0600) or
+  the `HERDR_BRAIN_VAPID_*` environment. Without keys the server runs
+  **soft-off**: every route works, nothing sends. An operator who already
+  holds a pair imports it — `herdr-brain push import <dotenv-path>` prints
+  **only the public key** (the private half never crosses a terminal);
+  `herdr-brain push list` shows subscribed endpoints and
+  `herdr-brain push test` sends one round-trip notification per device.
+- **Coalescing and retraction**: transitions inside a ~2 s window collapse
+  into one summary per kind (one agent is named, several are counted). A
+  pane handled inside the window never reaches the phone; once delivered,
+  the slot retracts (`Resuelto`) or is replaced by whoever still needs you.
+  A blocked notification carries the **blocking question** as its body.
+- **Prompt-cache warning**: a pane idle too long gets one heads-up before
+  its hot context dies (5 min TTL, 1 min margin), once per idle period.
+  The watcher's poll supplies the activity estimate — no second timer.
+- **PWA**: Ajustes → **Avisos push** (Activar / Probar / Desactivar).
+  Subscribing uses the service worker's PushManager with the brain's
+  public key and the device bearer, so the server attributes the
+  subscription to the paired device (write-gated, audited).
+- **Gate buttons focus, never approve**: a blocked notification may carry
+  Aprobar/Rechazar actions, but the service worker deliberately **never
+  answers them itself** — it holds no credential (the device bearer lives
+  in the page's localStorage; shipping the server's approval token inside
+  a payload would put a write secret on a weaker surface). Every tap only
+  focuses or opens the PWA on that gate; the decision then happens in the
+  approval card, behind the access gate, like every other write.
+- **Fail-closed store**: a corrupt `push-subscriptions.json` is never
+  reset — subscribe answers a 500 and not one byte changes until the
+  operator repairs it (the file holds per-device delivery keys).
 
 ### Pending-action detection (heuristic)
 
@@ -363,6 +476,81 @@ approval or question dialog (`agent_blocked`) *before writing any input*, so
 text sent there would never arrive. An opencode dialog is answered with the
 buttons below instead.
 
+### Destructive-command confirmation (typed replies)
+
+A typed reply goes straight into a real terminal, so the PWA runs a
+destructive-command guard before sending it: `static/destructive.js`
+(a pure module, unit-tested with `node:test`) flags a small, reviewed set
+of **7 patterns from a guard design proven in practice** — recursive `rm`, force-push,
+`sudo`, `--force`, `dd if=`, `mkfs`, and a redirect onto a system path.
+When the typed text matches, the send requires a **second tap** through a
+confirm dialog that names the pattern before `POST /pane/reply` leaves the
+phone; the key pad (`/pane/keys`) is unaffected, and a pattern that does
+not match sends on the first tap as always. The guard is deliberately
+conservative (word-boundary anchored, no false positives on look-alikes
+such as "assume"): a false positive costs one extra tap, a false negative
+costs a shell.
+
+### Verified sends, receipts, Stop and Steer (S12)
+
+A typed reply is no longer a blind send. Before `POST /pane/reply` types
+your text, the brain reads the pane screen; after the send it reads it
+again on a bounded short poll; and what the terminal actually did comes
+back as a **receipt** with a closed outcome set:
+
+| Outcome | Meaning |
+|---|---|
+| `effective` | the agent visibly took the turn (the send waited to completion) |
+| `sent` | submitted, no confirmation yet (the wait expired while the agent works) |
+| `typed_not_submitted` | the text sits **typed in the input line** and was never submitted |
+| `discarded` | the typed draft was cleared through its receipt |
+| `refused` | nothing was written (a blocked agent, or a multiplexer refusal) |
+| `unknown` | could not tell — the PWA says so explicitly, never guesses |
+
+The receipt (`{id, outcome, detail}` — detail masked by the secret
+masker, never carrying the text) rides the `200` response and is kept in
+a bounded in-memory store listed by `GET /pane/receipts?pane_id=`. **Text
+is never re-sent automatically**: a `typed_not_submitted` draft is
+finished by you, through `POST /pane/receipt/{id}/submit` (presses Enter
+— nothing else) or `POST /pane/receipt/{id}/discard` (clears the draft
+with `esc`, a key that never types a character and never executes
+anything). Both act only while the receipt is still
+`typed_not_submitted` (a `409` otherwise), both are write-classified
+behind the access gate and audited (`pane.receipt.submit` /
+`pane.receipt.discard`). A receipt whose echo survives the follow-up
+stays `typed_not_submitted` and re-offers the buttons — the read-back
+always wins over the claim.
+
+The PWA shows the outcome in Spanish next to the composer (text nodes
+only), and the spoken confirmation says «enviado» **only** for
+`effective`/`sent`; `unknown` says so out loud.
+
+**Stop** — interrupt a running turn with `POST /pane/stop {pane_id}`.
+The interrupt key comes from a per-harness table (`esc` for the
+claude/codex/opencode-style chat TUIs); a harness outside the table
+is refused with a `422` — the brain will not guess an interrupt into a
+terminal it cannot reason about. In the PWA the Stop button arms with a
+**double tap**: the first tap arms for ~3 s (the button says so), only
+the second tap inside the window sends. **Stop also works by voice**
+(«para al agente» / «stop»): the `stop_agent` tool is advertised to the
+model as a **gated** action — the spoken path proposes the SAME approval
+gate a send uses (never bypassing the verbal binding), and the user's
+confirmation executes the frozen interrupt through the approve replay.
+
+**Steer** — inject a message into a RUNNING turn with
+`POST /pane/reply` plus `steer: true`. Accepted only for harnesses the
+steer table names (the chat TUIs that queue a mid-turn message);
+anything else is a `422` with the alternative spelled out. The PWA
+exposes steer **only** as a deliberate secondary action — press and
+hold Enviar (~0.6 s); a normal tap never steers — and there is no
+visible steer control.
+
+Compatibility: the pre-S12 mapping is unchanged — `delivered` stays
+`200 {ok: true, pane_id}` (plus the receipt), `blocked` 409,
+`unknown_pane` 404, herdr failures 502. The one honest refinement: a
+draft the terminal never took now answers `ok: false` with its receipt
+instead of pretending it was delivered.
+
 ### Key pad: answering a blocked agent's dialog
 
 That dialog is answered with **keys** instead, through `POST /pane/keys`
@@ -383,10 +571,74 @@ with `createElement` + `textContent`: a faithful mirror that interprets
 nothing, and that cannot let terminal output inject markup.
 
 `keys` is a **closed set** (`up`, `down`, `left`, `right`, `enter`, `esc`,
-`tab`); anything else, an empty list, or more than 8 keys is a `422` before
-any CLI work. An unknown `pane_id` is a `404` and is never redirected —
-answering the *wrong* agent's permission dialog would be silent and hard to
-undo. Any herdr failure is a `502`.
+`tab`, and the digits `0`–`9` — the dialogs that print numbered options
+commit on the digit); anything else, an empty list, or more than 8 keys is a
+`422` before any CLI work. An unknown `pane_id` is a `404` and is never
+redirected — answering the *wrong* agent's permission dialog would be silent
+and hard to undo. Any herdr failure is a `502`.
+
+### Dialogs by harness: recognized options as buttons
+
+When the viewed pane is blocked, the brain tries to READ its dialog with a
+per-harness recognizer (`src/herdr_brain/dialogs/`). A recognized dialog
+turns each option into a **native button** above the key pad; `/view` carries
+it as the `structured` field (question, options with label and description,
+kind, and a `fingerprint` — never the key recipes, which stay server-side):
+
+```json
+"structured": {
+  "unread": false, "agent": "claude", "kind": "select",
+  "question": "Which fruit do you want?",
+  "options": [{"label": "Manzana", "description": "", "checked": null}],
+  "fingerprint": "…", "recipe": "keys"
+}
+```
+
+A tap posts `POST /pane/dialog/answer {pane_id, fingerprint, option}`. The
+server **re-reads the pane** and re-derives the dialog: a screen whose
+fingerprint moved under the tap is a `409` and nothing is sent. Options whose
+screen prints a number are answered with that digit (plus `enter` where the
+dialog's footer says so); dialogs without digits are answered by the guard's
+pointer walk (one arrow, a re-read, only then the commit). Every attempt is
+audited as `pane.dialog.answer`, and the route is device-gated like every
+other write.
+
+Dialogs the recognizers deliberately do NOT trust — a notes field that owns
+the keyboard, a parked card that swallows digits, pi's multi-select — come
+back as `"unread": true` and the PWA shows the explicit **"No puedo leer
+este diálogo"** card with the manual key pad as the way out. A blocked
+screen no recognizer claimed at all keeps the pre-existing state (the
+legacy preview or the plain blocked/unknown pending notice, always the key
+pad) and `/view` carries no `structured` field for it: the field is
+additive, so every pane without a recognized dialog keeps its exact
+previous shape. Nothing is ever guessed.
+
+Support matrix (recognizers fail closed: anything unrecognized stays on the
+key pad):
+
+| Harness | Recognized dialogs | Recipe |
+|---|---|---|
+| claude | select, permission, trust, wizard steps | digit (+`enter` on select family) |
+| codex | folder trust, exec approval, `request_user_input` | digit alone (notes state → unread) |
+| grok | radio ask, permission card | digit alone (parked → unread) |
+| pi / omp | the Ask box (single select) | pointer walk (multi-select → unread) |
+| opencode (1.x) | question bar, permission pill | digit alone / walk |
+| opencode2 (2.x) | question bar (session_v2 generation) | digit alone |
+| antigravity (agy) | pointed numbered lists | pointer walk (no digit verified) |
+| kiro | approval panel, workspace trust | pointer walk (`Always …` rows never buttons) |
+| muse | approval, single/multi select, trust | digit (jump) + `enter`; trust digit alone |
+| cursor | none (dialogs replace the input box and no recipe is verified) | unread card + key pad |
+
+Rows that PERSIST a rule (codex/grok "don't ask again", kiro "Always
+allow/deny", muse "Always allow") are never buttons: the one-shot and reject
+rows are, so a tap can never change a session's approval rules by accident.
+
+The spoken path gains the same reading: when the generic heuristic cannot
+parse a screen but the pane's harness has a recognizer, the structured
+options shape what the voice reads (labels, descriptions, selection).
+Answering by voice stays under the existing S8/S9 binding — the user's
+explicit words, the dialog's known selection, arrow-walked within the key
+budget, with every refusal pressing nothing.
 
 ### Answering an opencode approval dialog
 
@@ -421,26 +673,352 @@ A blocked pane whose dialog is **not** opencode's — claude, codex, agy —
 keeps the key pad above: those dialogs are answered with deliberate key
 presses, one tap at a time, never auto-answered.
 
-Both routes carry no token and rely on the tailnet being the boundary, like
-every other PWA route. `HERDR_BRAIN_APPROVAL_TOKEN` protects only the ntfy
+### Brain messages (`herdr-brain msg`, S13)
+
+Short messages between agent panes, and from the operator, delivered by
+typing one header line into the **idle** receiver's pane. An address is
+`<pane>#<session-token>` — the token pins which conversation was meant,
+so a replaced agent refuses the message instead of a stranger reading it.
+Messages never confer authority: the header always says who spoke.
+
+- **From the PWA**: the cockpit's **✉ Mensaje** button (shown when the
+  viewed pane has a live agent session) sends through `POST /msg/send`
+  with the device's label as the sender — write-gated and audited, with
+  the walky service owning delivery. A busy receiver is **held**, not
+  dropped: the message types itself when the pane goes idle, up to 60
+  minutes, then waits in the receiver's inbox. The toast speaks that
+  honestly (delivered / held / refused with the server's reason).
+- **From a pane**: `herdr-brain msg who|send|reply|inbox|status|cancel`
+  (run inside a herdr pane — the pane environment is the identity).
+- **Anti-loop rails**: 4000-char cap, 30 messages per sender and 6 per
+  pair per 10 minutes, a 4-hop reply-chain limit, and no self-sends.
+- **Delivery**: the running server's watcher poll drives the delivery
+  tick (no second timer); the CLI also ticks on send.
+
+### Operator surfaces: replies, commands, key presets, launchers (S3)
+
+Four TOML files under the brain's config dir (`~/.config/herdr-brain/`,
+overridable via `HERDR_BRAIN_CONFIG_DIR`) turn the operator's habits
+into panel surfaces. Validation is row by row: a malformed row is
+**skipped** with one logged reason while its healthy siblings keep
+serving, and files reload by mtime on the next request — no restart.
+
+| File | Rows | Serves |
+|---|---|---|
+| `quick-replies.toml` | `[[replies]]` `label`+`text` (+`scope`) | the PWA reply dock (sent via `POST /pane/reply`) |
+| `commands.toml` | `[[commands]]` `label`+`command` (starts `/`) | the slash palette (a trailing space leaves the composer open) |
+| `keys.toml` | `[[keys]]` `label`+`keys` (send-key allowlist only) | labelled key presets |
+| `launchers.toml` | `[[launchers]]` `label`+`argv` (+`cwd`,`no_prompts`) | the launch allowlist — shells only |
+
+Rows are identified by `id` (explicit) or a slug of the label, and
+`scope = "<agent-family>"` makes the row REPLACE the global catalog for
+that family (substitution, not fusion).
+
+Routes (the launcher/key shapes are a frozen contract for the PWA):
+
+```text
+GET  /operator/config?agent=<family>
+#  → {"quick_replies":[{"id","label","text"}],
+#      "commands":[{"id","label","command"}],
+#      "key_presets":[{"id","label","keys"}],
+#      "launchers":[{"id","label","no_prompts"}]}   ← argv NEVER crosses
+POST /operator/launch  {"id", "confirm"?}
+#  names a launcher row by id — 404 unknown, 409 "confirmation_required"
+#  (a no_prompts row without confirm) or "cwd_missing"; executes via
+#  mux create_tab + pane_run(plan.command_line); audited operator.launch
+POST /operator/preset  {"pane_id", "id"}
+#  keys resolved SERVER-side by the pane's agent family, sent through
+#  the /pane/keys path; audited operator.preset
+```
+
+Both writes are classified writes (device gate + audit) and neither is
+exposed to the LLM. A client can never supply a command line or a key
+sequence — only the id of a row the operator authored.
+
+```bash
+bin/herdr-brain config check     # per-file report; exit 1 if any row was skipped
+```
+
+## Device pairing and the access gate
+
+Every route runs behind a fail-closed access gate (device pairing, F1), and
+once at least one device is paired, **every write AND every read** requires
+that device's bearer token (S11) — except the surfaces that must answer
+before any credential can exist: `/health`, the PWA shell and its static
+assets (`/`, `*.js`, `*.css`, icons, the manifest, the service worker),
+`POST /pair` (the bootstrap itself), `POST /approval/{id}/action` (keeps
+`HERDR_BRAIN_APPROVAL_TOKEN`, because ntfy cannot attach a device bearer)
+and the `/speech/{id}/*` transport (job-token bound, unchanged):
+
+- **Host allowlist (always on)** — the request's `Host` must be a loopback
+  form, any `*.ts.net` name (so the phone's
+  `https://<machine>.<tailnet>.ts.net:8443` access keeps working with no
+  new configuration), a `HERDR_BRAIN_ALLOWED_HOSTS` entry, or the host of a
+  `HERDR_BRAIN_ALLOWED_ORIGINS` origin. Anything else is a 403 before
+  any other logic (anti DNS-rebinding). `HERDR_BRAIN_ALLOW_ANY_HOST=1` is
+  the warned opt-out.
+- **Origin/CSRF** — an `Origin`, when present, must be same-origin with
+  the Host (or explicitly allowed); a write — or `POST /pair`, which
+  mints a write credential — with no `Origin` from a non-loopback Host
+  is rejected (browsers always send `Origin` on POSTs, so the PWA is
+  unaffected). Reads never require `Origin`.
+- **Optional identity/device gates** — `HERDR_BRAIN_TRUSTED_USER`
+  (Tailscale-User-Login under `tailscale serve`, fail-closed) and
+  `HERDR_BRAIN_DEVICE_HEADER`/`HERDR_BRAIN_DEVICE_ALLOWLIST` for reverse
+  proxies.
+- **Device pairing** — `bin/herdr-brain pair` mints a one-time 8-character
+  code (10 min TTL, 5 attempts, only its hash on disk). The phone spends
+  it in **Ajustes → Emparejar** and receives a 256-bit bearer token shown
+  exactly once; the PWA stores it in `localStorage` and attaches
+  `Authorization: Bearer` on every fetch (reads included). `bin/herdr-brain
+  devices list` / `devices revoke <label>` manage the registry; a
+  revocation or an expiry change applies on the device's next request, no
+  restart.
+- **`/pair` rate limit** — at most 10 claim attempts per client address
+  per minute, then a 429 with a `Retry-After`; a refused attempt consumes
+  nothing (in-process budget, the pairing files stay untouched).
+  The service disables proxy-header rewriting so a caller cannot change
+  its limiter identity with `X-Forwarded-For`. Connections from a
+  co-located reverse proxy share that proxy's transport-peer budget.
+- **Token expiry (optional, per device)** — `bin/herdr-brain pair
+  --expires <dur>` enrols the claiming device with a deadline (counted
+  from pairing; `30d`, `12h`, `45m`, `90s` — one value, one unit),
+  `devices set-expiry <label> <dur>` arms or re-arms it and
+  `devices clear-expiry <label>` removes it (`devices list` shows the
+  deadline). An expired token answers 403 `dispositivo caducado` and the
+  PWA offers re-pairing; a registry entry from before the feature (no
+  `expiresAt`) never expires.
+
+**With no device paired, every route behaves exactly as before** — the
+requirement turns on with the first pairing. **Migration note:** pairing
+the first device removes access from every unpaired client (the PWA
+offers the pairing flow on the "not paired" 403 — on reads too).
+`POST /approval/{id}/action` keeps `HERDR_BRAIN_APPROVAL_TOKEN` alone,
+because ntfy cannot attach a device bearer (and sends no `Origin`);
+write-gated routes are `/pane/reply`,
+`/pane/keys`, `/pane/permission/reply`, `/approval/{id}/approve|reject|resolve`,
+`PATCH /approval/{id}`, `/ask`, `/transcribe`, `/reset` and
+`/devices/revoke`.
+
+**EventSource and `<audio src>` cannot send headers**, so exactly
+`GET /events` and `GET /audio/{name}` also accept the credential as a
+`?device_token=` query parameter; the PWA appends it on those two
+transports only, and the gate ignores the parameter everywhere else —
+never on a write. The parameter never reaches the logs this project
+controls: the uvicorn access log runs through a redaction filter that
+rewrites any `device_token=` value out of the line (`log_config=None`
+keeps uvicorn from installing its own unfiltered access handler).
+Encoded parameter names and repeated token parameters are redacted too.
+After pairing or revocation, the PWA replaces its single event stream
+with one using the current credential; queued media uses the current
+credential when playback actually begins.
+
+The requirement fails CLOSED: a corrupt, truncated or entry-incomplete
+`paired-devices.json` keeps every write refused with no device
+authorized — only an absent file or a well-formed zero-device registry
+(the file revoking the last device writes) leaves writes open, and
+`herdr-brain pair` always recovers the state (a claim rewrites a valid
+registry). A present-but-unusable `expiresAt` drops the entry (it never
+widens into "never expires"). `pair --label` refuses an unusable label
+(empty after trimming, or over 48 characters) instead of silently letting
+the phone choose one; the state directory is retightened to `0700`
+(files `0600`) even when the nested audio directory created it first
+with the default umask.
+
+Routes on a blocked device answer 403 `dispositivo no emparejado` (or
+`dispositivo caducado`); a revoked or expired device loses reads and
+writes alike — the recovery is the pairing flow.
+
+Both permission routes above are PWA-only and carry the device bearer like
+every other write. `HERDR_BRAIN_APPROVAL_TOKEN` protects only the ntfy
 action route, because ntfy is a third party that cannot send headers.
 
 The brain also serves its mobile PWA same-origin at `/` (static assets in
 `src/herdr_brain/static/`, mounted after the API routes): no CORS anywhere.
+
+## Multiplexers
+
+`HERDR_BRAIN_MUX` chooses the multiplexer: `herdr` (default), `tmux` or
+`zellij`; binaries can be overridden with `HERDR_BIN`, `HERDR_TMUX_BIN` and
+`HERDR_ZELLIJ_BIN`. Outside herdr the brain degrades on purpose:
+
+| Capability | herdr | tmux | zellij |
+|---|---|---|---|
+| Pane list, styled mirror | yes | yes | yes |
+| Scrollback | yes | yes | no |
+| Keys, typed replies, tabs | yes | yes (no completion wait) | no |
+| Agent status, sessions, start agents | yes | no (panes are shells) | no |
+
+Each adapter publishes only capabilities it has evidence for, and anything
+it cannot do returns an explicit refusal, never a silent failure. An unknown
+`HERDR_BRAIN_MUX` value fails at startup.
+
+## Audit log
+
+Every write the brain accepts can type into a real terminal or resolve a
+frozen gate, so each one leaves **one JSONL line** in
+`<HERDR_BRAIN_STATE_DIR>/audit.log` (default
+`~/.local/state/herdr-brain/audit.log`). The file is created `0600` inside
+the `0700` state dir — it may echo reply text — and a line looks like:
+
+```json
+{"ts":"2026-10-28T09:16:58+00:00","action":"pane.reply","pane_id":"w1:p2","device":"phone","detail":{"outcome":"delivered","text":"deploy the fix"}}
+```
+
+- **What is audited**: `pane.reply`, `pane.keys`,
+  `pane.permission.reply`, `approval.approve|reject|resolve|patch` (with
+  `gate_id`, `tool` and the revision the decision applied to; a voice
+  approval via spoken proof carries `spoken: true`), the ntfy
+  `approval.action` plus its `approval.replay` outcome (approve and its
+  execution are decoupled in time), `pair`, `device.revoke`, the push
+  writes (`push.subscribe`, `push.unsubscribe`, `push.test` — the
+  endpoint is metadata; the delivery keys never leave the store), the
+  operator message send (`msg.send`, with a masked preview), and one
+  `ask` line per turn with `chars` (the utterance **length**, never the
+  transcript). The `device` field is the paired-device label from the
+  access gate and is omitted on channels that carry no identity (ntfy).
+  Reads, `/tts` (the PWA's local echo), the speech transport and SSE
+  announcements produce no lines.
+- **Content modes** (`HERDR_BRAIN_AUDIT_CONTENT`): `preview` (default)
+  keeps a bounded, single-line 120-char preview of content fields;
+  `none` redacts every content string inside `detail` to the constant
+  `⟨redacted⟩` — never a length — while an allowlist of action metadata
+  (outcomes, key names, revisions, gate ids, decisions, replies,
+  request ids, utterance lengths) survives. The default direction is
+  the feature: a detail field added later redacts until it is
+  deliberately allowlisted. Choose `none` if replies may contain
+  secrets typed by the operator; the trace still answers who-what-when.
+- **Rotation**: the live file is capped at 5 MB (fixed, no knob) with
+  exactly one rotated generation — at the cap `audit.log` becomes
+  `audit.log.1`, replacing any previous one. A failed rotation still
+  appends: an oversized trail beats a missing line.
+- **Failure isolation**: the audit write is fire-and-forget — a full
+  disk or an unwritable path logs a warning and never changes the
+  status or body of the action it records.
+
+## Crew federation (S7): one lead, peers over pinned mTLS
+
+A brain starts **solo** — no crew, no listeners, no bytes of overhead.
+Federation is operator-driven and manual:
+
+```bash
+# on the lead
+bin/herdr-brain crew init                      # mints + prints the secret ONCE
+bin/herdr-brain crew join-token               # one use, 10 minutes
+# save the secret for the daemon (0600) or export HERDR_BRAIN_CREW_SECRET
+echo 'the-secret' > ~/.local/state/herdr-brain/crew-secret && chmod 600 $_
+
+# on each peer (secret via stdin '-' or '@file', never argv)
+bin/herdr-brain crew join --name <peer> --lead-name <lead> \
+  --lead-url https://<lead>:8747 --lead-cert @lead.pem \
+  --url https://<peer>:8747 --cert @own.pem --secret - --token <token>
+
+bin/herdr-brain crew list | remove | promote | rotate-secret
+```
+
+The roster lives at `<state>/crew.json` (0600, atomic writes); a corrupt
+roster fails CLOSED everywhere — the crew routes answer the uniform 401
+and the CLI refuses — never a silent reset to solo. Promotion is manual
+(`crew promote`), by design.
+
+**What the daemon runs when the roster declares a crew** (role lead or
+peer):
+
+- A second TLS listener on `HERDR_BRAIN_CREW_PORT` (default **8747**)
+  serving `/crew/v1/*` — this host's panes, gates and writes over the
+  pinned link (`CrewService`, two factors: pinned client cert + crew
+  secret; enrolment by join token). A peer requires the enrolled
+  certificate in the handshake; the lead keeps the enrolment window
+  open and every other route still fails closed in the app layer. Solo
+  starts none of this.
+- **Lead-side routing**: `GET /herd` merges the peers (remote panes
+  carry `host`, unreachable peers are listed explicitly); pane ops on
+  `<host>:<pane>` ids (`/view`, `/history`, `/pane/{id}/mirror`,
+  `/pane/reply|keys|dialog/answer`) proxy through `CrewClient` with the
+  host prefix stripped on the wire. A host-shaped prefix naming no
+  member is a 422 — never a local fallback that would strip it — unless
+  the full id names a real local pane (local ids can look host-shaped:
+  `w1:p9`).
+- **Gates stay with the owner**: a remote gate surfaced by
+  `GET /approval/current` carries its `host`; approving/rejecting it
+  (PWA buttons, ntfy actions) forwards the decision to the owner, whose
+  answer travels back verbatim. The lead never resolves a remote gate
+  locally.
+
+Name discipline: member names are routing prefixes — never name a peer
+after a local window prefix (`w1`, `w2`…).
+
+## PWA: offline shell, updates, language and settings
+
+- **Offline shell** — the service worker precaches the shell versioned by
+  the build stamp (`brain-shell-<build>`) and deletes older brain caches on
+  activate. Navigations go to the network first and fall back to the cached
+  shell (a «Sin conexión» banner shows while offline). API responses are
+  never cached.
+- **Updates** — the PWA polls `GET /build` (`{"build": "<stamp>"}`, the
+  same stamp as every `?v=` asset ref and the footer) and shows «Nueva
+  versión disponible — Recargar» once per build; open tabs agree on one
+  reload through `BroadcastChannel`. The stamp is resolved when the server
+  starts, so restart the service after a deploy.
+- **Language** — Ajustes → Idioma switches `es`/`en` without reloading,
+  persists per device and publishes `POST /call/context {"locale"}` so the
+  spoken announcements and gate closers follow it (Spanish is the default).
+- **Settings** — theme (auto, light, dark), text size, Zen mode and haptics
+  (shown only where the browser supports vibration), all per device.
+- **Operator dock** — quick replies, commands, key presets and launchers
+  from the operator TOML files (see Operator surfaces); hidden when the
+  config route is absent.
 
 ## Phone access over Tailscale (PWA)
 
 The brain listens on `127.0.0.1:8741`. To reach it from the phone over your
 tailnet (this is documentation, not something the repo runs):
 
-> **IMPORTANT — never use port 443.** The root HTTPS port of this node is
-> owned by Panel's bridge (127.0.0.1:8787), a third-party Herdr plugin.
-> Serving the brain there stomps Panel for every device on the tailnet.
-> The brain gets its own port:
+> **IMPORTANT — never use port 443.** The root HTTPS port of this node may
+> be owned by another service (an existing Herdr web plugin already serving
+> there). Serving the brain on the same port stomps that service for every
+> device on the tailnet. The brain gets its own port:
 
 ```bash
 tailscale serve --bg --https=8443 http://127.0.0.1:8741
 ```
+
+### Cutover tooling (S8)
+
+The live cutover (taking 443, retiring the other service) is the
+operator's; the CLI prints — never runs — the exact commands:
+
+```bash
+bin/herdr-brain serve                 # prints: tailscale serve --bg --https=8443 http://127.0.0.1:8741
+bin/herdr-brain serve --root          # the post-cutover root: tailscale serve --bg http://127.0.0.1:8741
+bin/herdr-brain serve --root --serve-status <(tailscale serve status --json)
+                                      # + warns when another service owns 443 (read from the RECORDED json)
+bin/herdr-brain unserve [--root]      # prints the matching off command
+bin/herdr-brain qr                    # prints the PWA's public URL (HERDR_BRAIN_REMOTE_URL / config.env)
+bin/herdr-brain logs [-n 50] [-f]     # tail $STATE_DIR/server.log
+```
+
+`qr` prints the URL rather than an ASCII QR: a scannable QR needs an
+encoder and the brain is stdlib-only here — copy the URL or run any
+local `qrencode -t ANSI` yourself.
+
+Deep links: `GET /pane/{pane_id}` answers **302 → `/?pane_id=<id>`**,
+so an already-configured external «Open Web» button
+(`${URL}/pane/${pane_id}`) opens the brain's PWA with that pane
+preselected.
+
+`herdr-brain doctor` now runs a second, brain-side stage after the
+onboarding probes: port conflicts (8741 / the crew port 8747), the
+root-443 ownership hint from a recorded `tailscale serve status --json`
+(`--serve-status FILE|-`), VAPID keys present, push subscription store
+health, crew roster health and operator config health. With `--json`
+the ops stage's text goes to stderr so the onboarding JSON stays
+parseable.
+
+macOS: `deploy/herdr-brain.plist.template` + `deploy/install-launchd.sh`
+render a launchd agent (`~/Library/LaunchAgents/dev.herdr.brain.plist`,
+KeepAlive + RunAtLoad) mirroring the systemd user unit. The repo never
+runs launchctl — the installer prints the bootstrap commands for you.
 
 Open on the phone (note the port):
 
@@ -530,6 +1108,7 @@ payloads).
 | `read_transcript(n_turns)` | read | recent user/assistant turns (preferred for Q&A) |
 | `read_screen(n_lines)` | read | visible terminal text (fallback) |
 | `send_to_session(text, timeout_ms?)` | **write** | forward new work, wait for completion |
+| `stop_agent` | **write, gated** | interrupt the selected session's running turn; proposes the approval gate, executes on confirmation |
 
 Every endpoint and tool is **target-aware**: pass `pane_id` (/view query
 param, /ask body field) to operate on any agent in the herd; the default is
@@ -538,7 +1117,7 @@ the focused pane. The live context block marks the selection explicitly
 the focused one. Conversation memory stays keyed by the client session id —
 selection is per-request.
 
-The system prompt carries the full harness: the panel identity, concrete
+The system prompt carries the full harness: the assistant identity, concrete
 capabilities, honesty rules (never invent transcript or screen content; a
 failed read becomes one plain sentence plus a retry hint), routing policy
 (state/history/summary questions are answered from `read_transcript` or
@@ -551,15 +1130,45 @@ injected every turn.
 
 ## Transcripts
 
-`read_transcript` implements the same store contracts as the TUI voice
-layer's connectors, but with multi-turn queries (that layer only exposes
-the last assistant message):
+Harness routing lives in a registry (`transcript_readers/registry.py`):
+the agent's own name (or a declared alias — `omp → pi`, `oa →
+opencode`, `agy → antigravity`) resolves to one connector; a
+session-id shape sniff is the fallback. An agent with no connector is
+an ordinary "no session", never an error. Every connector is read-only
+and reads whole turns:
 
-- **OpenCode** (`ses_*` ids, agent `opencode`): read-only SQLite at
+- **OpenCode** (`ses_*` ids, agent `opencode`): SQLite at
   `~/.local/share/opencode/opencode.db`, `message`/`part` JSON filtering.
-- **Claude Code** (UUID-like ids, agents `claude`/`codex`/`antigravity`):
-  reverse tail scan (8 MB cap) of `~/.claude/projects/<munged>/<uuid>.jsonl`.
-- Anything else: connector returns nothing → screen fallback.
+- **Claude Code** (UUID-like ids, agent `claude`): reverse tail scan
+  (8 MB cap) of `~/.claude/projects/<munged>/<uuid>.jsonl`.
+- **Antigravity** (agent `antigravity`): step JSONL under
+  `~/.gemini/antigravity-cli`.
+- **Codex** (agent `codex`): rollout JSONL under `~/.codex/sessions`
+  (`response_item` rows only — the log double-books every turn).
+- **Grok Build** (agent `grok`): `chat_history.jsonl` session folders
+  under `~/.grok/sessions` (only real `<user_query>` prompts render).
+- **pi / Oh My Pi** (agents `pi`, `omp`): session JSONL under
+  `~/.pi/agent/sessions` and `~/.omp/agent/sessions` (first root that
+  holds the session wins).
+- **Hermes** (agent `hermes`): per-profile SQLite `state.db` under
+  `~/.hermes` (root db first, then every `profiles/*/state.db`).
+- **Cursor CLI** (agent `cursor`): agent transcripts under
+  `~/.cursor/projects/<project>/agent-transcripts/<sid>/<sid>.jsonl`
+  (`CURSOR_ROOT` overrides; the row shape is pinned by the synthesized
+  fixture pending a live capture — absent root degrades to screen).
+- **Kiro V3** (agent `kiro`): `messages.jsonl` under
+  `~/.kiro/sessions/<bucket>/<sess_id>/` (`KIRO_ROOT` overrides);
+  `user` and `assistant` Say/Summary rows render, synthetic steering
+  hand-offs and tool rows do not.
+- **Muse** (agent `muse`): `session.jsonl` under
+  `~/.local/share/muse/sessions/YYYY/MM/DD/<uuid>/` (`MUSE_ROOT`
+  overrides); accepted user intents and committed assistant messages
+  render, command and stream rows do not.
+- **OpenCode 2** (agent `opencode2`): the `session_v2` store in
+  `opencode.db` (`session_message` rows, role in `type`, text inline in
+  `data`; `OPENCODE2_DB` overrides).
+
+Anything else: connector returns nothing → screen fallback.
 
 ## Tests and smoke
 
@@ -590,8 +1199,5 @@ timeout expires first.
 ## Known limitations (fase 1)
 
 - Active pane only; multi-pane targeting arrives with the PWA phase.
-- Multi-turn transcripts are implemented for OpenCode and Claude-shaped
-  stores; `codex`/`antigravity` sessions fall back to `read_screen` unless
-  their stores match the Claude JSONL shape.
 - TTS defaults follow the engine (voice `elvira`); provider flags can be
   injected via `HERDR_BRAIN_TTS_ARGS`.

@@ -273,7 +273,6 @@ DEFAULT_NTFY_APPROVAL_TOKEN=""
 DEFAULT_WEB_URL=""
 DEFAULT_WEB_LABEL=""
 DEFAULT_CLICK_REDIRECT="off"
-DEFAULT_PANEL_URL=""
 DEFAULT_AUTO_LANG="off"
 DEFAULT_PODCAST_ENABLED="off"
 DEFAULT_PODCAST_PORT="8844"
@@ -420,11 +419,9 @@ NTFY_TOPIC="${NTFY_TOPIC:-${HERDR_NTFY_TOPIC:-$DEFAULT_NTFY_TOPIC}}"
 NTFY_SERVER="${NTFY_SERVER:-${HERDR_NTFY_SERVER:-$DEFAULT_NTFY_SERVER}}"
 NTFY_APPROVAL_URL="${NTFY_APPROVAL_URL:-${HERDR_NTFY_APPROVAL_URL:-$DEFAULT_NTFY_APPROVAL_URL}}"
 NTFY_APPROVAL_TOKEN="${NTFY_APPROVAL_TOKEN:-${HERDR_BRAIN_APPROVAL_TOKEN:-$DEFAULT_NTFY_APPROVAL_TOKEN}}"
-WEB_URL="${WEB_URL:-${PANEL_URL:-${HERDR_WEB_URL:-${HERDR_PANEL_URL:-$DEFAULT_WEB_URL}}}}"
+WEB_URL="${WEB_URL:-${HERDR_WEB_URL:-$DEFAULT_WEB_URL}}"
 WEB_LABEL="${WEB_LABEL:-${HERDR_WEB_LABEL:-$DEFAULT_WEB_LABEL}}"
 CLICK_REDIRECT="${CLICK_REDIRECT:-$DEFAULT_CLICK_REDIRECT}"
-# Backwards compatibility alias
-PANEL_URL="${WEB_URL}"
 
 # ─── UI language & user-facing text (i18n) ───────────────────
 # Every user-facing string (echo / printf / notify / TUI frames / help)
@@ -474,7 +471,6 @@ TT_EN[play.missing]="⚠️ Nothing to play: the audio file is missing or empty"
 TT_EN[play.ctx.local]="local playback"
 TT_EN[ntfy.open_web]="Open Web"
 TT_EN[ntfy.open_label]="Open %s"
-TT_EN[ntfy.open_panel]="Open Panel"
 TT_EN[ntfy.open_approval]="Open approval"
 TT_EN[ntfy.approve]="✅ Approve"
 TT_EN[ntfy.stop]="❌ Stop"
@@ -572,7 +568,7 @@ TT_EN[status.ntfy_on]="  Mobile push:  🔔 Active (ntfy: %s | Server: %s)"
 TT_EN[status.ntfy_off]="  Mobile push:  ⚪ Off (optional via --ntfy-topic <topic>)"
 TT_EN[status.redirect_on]="  Redirect:     📱 %s (%s)"
 TT_EN[status.click_through]="  Click-through: %s (on = open web when tapping the notification; off = open the audio player)"
-TT_EN[status.redirect_off]="  Redirect:     ⚪ Off (optional via --web-url <url> or --panel-url <url>)"
+TT_EN[status.redirect_off]="  Redirect:     ⚪ Off (optional via --web-url <url>)"
 TT_EN[snooze.stage.1]="5 minutes"
 TT_EN[snooze.stage.2]="30 minutes"
 TT_EN[snooze.stage.3]="2 hours"
@@ -696,7 +692,7 @@ TT_EN[settings.notif.off]="✓ ntfy mobile notifications disabled"
 TT_EN[settings.notif.topic_set]="✓ ntfy topic set: %s"
 TT_EN[settings.notif.podcast_on]="✓ Automatic podcast feed publishing enabled"
 TT_EN[settings.notif.podcast_off]="✓ Automatic podcast feed publishing disabled"
-TT_EN[settings.notif.web_input_title]="\n Web redirect URL\n   e.g.: https://panel.mydomain.com/chat/{pane_id}\n   without {pane_id} /pane/<id> is appended · empty Enter = disable\n > "
+TT_EN[settings.notif.web_input_title]="\n Web redirect URL\n   e.g.: https://dashboard.example.com/chat/{pane_id}\n   without {pane_id} /pane/<id> is appended · empty Enter = disable\n > "
 TT_EN[settings.notif.web_input_cancelled]="Input cancelled: could not read the URL"
 TT_EN[settings.notif.web_off]="✓ Web redirect disabled (standard notifications, no external URL)"
 TT_EN[settings.notif.web_set]="✓ Web redirect URL set: %s"
@@ -912,8 +908,7 @@ TT_EN[help.eleven_model]="  --eleven-model <model>   ElevenLabs model (default: 
 TT_EN[help.notif.header]="Mobile notifications (optional):"
 TT_EN[help.ntfy_topic]="  --ntfy-topic <topic>     ntfy.sh topic to receive pushes with audio on mobile (or 'off')"
 TT_EN[help.ntfy_server]="  --ntfy-server <url>      Custom ntfy server (default: https://ntfy.sh)"
-TT_EN[help.web_url]="  --web-url <url>          Optional web UI / dashboard URL (e.g. Panel) (or 'off')"
-TT_EN[help.panel_url]="  --panel-url <url>       Alias of --web-url for Panel"
+TT_EN[help.web_url]="  --web-url <url>          Optional web UI / dashboard URL (or 'off')"
 TT_EN[help.web_label]="  --web-label <text>       Custom label for the web action button"
 TT_EN[help.click_redirect]="  --click-redirect on|off  Redirect when tapping the notification card (default: off)"
 TT_EN[help.podcast.header]="Private RSS podcast (to listen on mobile with Pocket Casts / Overcast / Apple Podcasts):"
@@ -1018,7 +1013,6 @@ TT_ES[play.missing]="⚠️ Nada que reproducir: el audio no existe o está vac�
 TT_ES[play.ctx.local]="reproducción local"
 TT_ES[ntfy.open_web]="Abrir Web"
 TT_ES[ntfy.open_label]="Abrir %s"
-TT_ES[ntfy.open_panel]="Abrir Panel"
 TT_ES[ntfy.open_approval]="Abrir aprobación"
 TT_ES[ntfy.approve]="✅ Aprobar"
 TT_ES[ntfy.stop]="❌ Detener"
@@ -1116,7 +1110,7 @@ TT_ES[status.ntfy_on]="  Push móvil:   🔔 Activo (ntfy: %s | Servidor: %s)"
 TT_ES[status.ntfy_off]="  Push móvil:   ⚪ Desactivado (opcional vía --ntfy-topic <topic>)"
 TT_ES[status.redirect_on]="  Redirección:  📱 %s (%s)"
 TT_ES[status.click_through]="  Click directo: %s (on = abrir web al tocar notificación; off = abrir reproductor de audio)"
-TT_ES[status.redirect_off]="  Redirección:  ⚪ Desactivada (opcional vía --web-url <url> o --panel-url <url>)"
+TT_ES[status.redirect_off]="  Redirección:  ⚪ Desactivada (opcional vía --web-url <url>)"
 TT_ES[snooze.stage.1]="5 minutos"
 TT_ES[snooze.stage.2]="30 minutos"
 TT_ES[snooze.stage.3]="2 horas"
@@ -1240,7 +1234,7 @@ TT_ES[settings.notif.off]="✓ Notificaciones móviles de ntfy desactivadas"
 TT_ES[settings.notif.topic_set]="✓ Topic de ntfy configurado: %s"
 TT_ES[settings.notif.podcast_on]="✓ Publicación automática en feed de podcast activada"
 TT_ES[settings.notif.podcast_off]="✓ Publicación automática en feed de podcast desactivada"
-TT_ES[settings.notif.web_input_title]="\n URL de redirección web\n   ej.: https://panel.midominio.com/chat/{pane_id}\n   sin {pane_id} se añade /pane/<id> · Enter vacío = desactivar\n > "
+TT_ES[settings.notif.web_input_title]="\n URL de redirección web\n   ej.: https://dashboard.midominio.com/chat/{pane_id}\n   sin {pane_id} se añade /pane/<id> · Enter vacío = desactivar\n > "
 TT_ES[settings.notif.web_input_cancelled]="Entrada cancelada: no se pudo leer la URL"
 TT_ES[settings.notif.web_off]="✓ Redirección web desactivada (notificaciones estándar sin URL externa)"
 TT_ES[settings.notif.web_set]="✓ URL de redirección configurada: %s"
@@ -1454,8 +1448,7 @@ TT_ES[help.eleven_model]="  --eleven-model <model>   Modelo ElevenLabs (default:
 TT_ES[help.notif.header]="Notificaciones móviles (opcional):"
 TT_ES[help.ntfy_topic]="  --ntfy-topic <topic>     Topic de ntfy.sh para recibir push con audio en móvil (o 'off')"
 TT_ES[help.ntfy_server]="  --ntfy-server <url>      Servidor ntfy personalizado (default: https://ntfy.sh)"
-TT_ES[help.web_url]="  --web-url <url>          URL opcional de web UI / dashboard (p. ej. Panel) (o 'off')"
-TT_ES[help.panel_url]="  --panel-url <url>       Alias de --web-url para Panel"
+TT_ES[help.web_url]="  --web-url <url>          URL opcional de web UI / dashboard (o 'off')"
 TT_ES[help.web_label]="  --web-label <texto>      Etiqueta personalizada para el botón de acción web"
 TT_ES[help.click_redirect]="  --click-redirect on|off  Redirigir al tocar la tarjeta de notificación (default: off)"
 TT_ES[help.podcast.header]="Podcast RSS privado (para escuchar en móvil con Pocket Casts / Overcast / Apple Podcasts):"
@@ -1567,7 +1560,6 @@ NTFY_APPROVAL_URL="${NTFY_APPROVAL_URL}"
 WEB_URL="${WEB_URL}"
 WEB_LABEL="${WEB_LABEL}"
 CLICK_REDIRECT="${CLICK_REDIRECT}"
-PANEL_URL="${WEB_URL}"
 EOF
 }
 
@@ -1593,9 +1585,9 @@ CONFIG_SET_BACKED_UP=0
 config_set() { # <KEY> <VALUE> → rc 1 on rejection or write failure (warning on stderr)
   local key="$1" value="$2"
   case "$key" in
-    TTS_PROVIDER|TTS_PLAYBACK|HERDR_TTS_AUDIO_RETENTION_DAYS|TTS_SETTLE_SECONDS|WEB_URL|WEB_LABEL|CLICK_REDIRECT|PANEL_URL|TTS_AUTO_SCOPE|TTS_AUTO_LANG|PODCAST_ENABLED|TTS_DEBOUNCE_SECONDS|TTS_READER_AUTO|NTFY_TOPIC|TTS_VOICE|HERDR_TTS_LANG|TTS_THEME|TTS_STT|TTS_PTT|TTS_PTT_ENTER|TTS_PTT_SILENCE_SECONDS|TTS_PTT_MAX_SECONDS|TTS_REMINDERS|TTS_REMINDER_START_MIN|TTS_REMINDER_BACKOFF|TTS_REMINDER_MAX) ;;
+    TTS_PROVIDER|TTS_PLAYBACK|HERDR_TTS_AUDIO_RETENTION_DAYS|TTS_SETTLE_SECONDS|WEB_URL|WEB_LABEL|CLICK_REDIRECT|TTS_AUTO_SCOPE|TTS_AUTO_LANG|PODCAST_ENABLED|TTS_DEBOUNCE_SECONDS|TTS_READER_AUTO|NTFY_TOPIC|TTS_VOICE|HERDR_TTS_LANG|TTS_THEME|TTS_STT|TTS_PTT|TTS_PTT_ENTER|TTS_PTT_SILENCE_SECONDS|TTS_PTT_MAX_SECONDS|TTS_REMINDERS|TTS_REMINDER_START_MIN|TTS_REMINDER_BACKOFF|TTS_REMINDER_MAX) ;;
     *)
-      echo "config_set: unmanaged key '${key}' (allowed: TTS_PROVIDER, TTS_PLAYBACK, HERDR_TTS_AUDIO_RETENTION_DAYS, TTS_SETTLE_SECONDS, WEB_URL, WEB_LABEL, CLICK_REDIRECT, PANEL_URL, TTS_AUTO_SCOPE, TTS_AUTO_LANG, PODCAST_ENABLED, TTS_DEBOUNCE_SECONDS, TTS_READER_AUTO, NTFY_TOPIC, TTS_VOICE, HERDR_TTS_LANG, TTS_THEME, TTS_STT, TTS_PTT, TTS_PTT_ENTER, TTS_PTT_SILENCE_SECONDS, TTS_PTT_MAX_SECONDS, TTS_REMINDERS, TTS_REMINDER_START_MIN, TTS_REMINDER_BACKOFF, TTS_REMINDER_MAX)" >&2
+      echo "config_set: unmanaged key '${key}' (allowed: TTS_PROVIDER, TTS_PLAYBACK, HERDR_TTS_AUDIO_RETENTION_DAYS, TTS_SETTLE_SECONDS, WEB_URL, WEB_LABEL, CLICK_REDIRECT, TTS_AUTO_SCOPE, TTS_AUTO_LANG, PODCAST_ENABLED, TTS_DEBOUNCE_SECONDS, TTS_READER_AUTO, NTFY_TOPIC, TTS_VOICE, HERDR_TTS_LANG, TTS_THEME, TTS_STT, TTS_PTT, TTS_PTT_ENTER, TTS_PTT_SILENCE_SECONDS, TTS_PTT_MAX_SECONDS, TTS_REMINDERS, TTS_REMINDER_START_MIN, TTS_REMINDER_BACKOFF, TTS_REMINDER_MAX)" >&2
       return 1
       ;;
   esac
@@ -2356,8 +2348,6 @@ send_ntfy_push() {
     btn_label="$(tt ntfy.open_web)"
     if [[ -n "$WEB_LABEL" ]]; then
       btn_label="$(tt ntfy.open_label "$WEB_LABEL")"
-    elif [[ "${WEB_URL,,}" =~ panel ]]; then
-      btn_label="$(tt ntfy.open_panel)"
     fi
 
     action_buttons="view, 📱 ${btn_label}, ${target_url}; copy, $(tt ntfy.copy_cmd), ${focus_cmd}, clear=true"
@@ -3096,10 +3086,7 @@ show_status() {
     echo "$(tt status.ntfy_off)"
   fi
   if [[ -n "$WEB_URL" ]]; then
-    local label="${WEB_LABEL:-}"
-    if [[ -z "$label" ]]; then
-      [[ "${WEB_URL,,}" =~ panel ]] && label="Panel" || label="Web"
-    fi
+    local label="${WEB_LABEL:-Web}"
     echo "$(tt status.redirect_on "$label" "$WEB_URL")"
     echo "$(tt status.click_through "$CLICK_REDIRECT")"
   else
@@ -5847,10 +5834,9 @@ settings_cycle_value() { # <provider|target|retention|settle> <current> → next
 # daemon_restart: on success it sets SETTINGS_NOTE, on a failed spawn it
 # sets SETTINGS_WARN — both render inline on the next frame.
 # w/t read one free-text line from the popup pane (a real terminal):
-# the URL persists to WEB_URL + PANEL_URL verbatim ({pane_id}
+# the URL persists to WEB_URL verbatim ({pane_id}
 # placeholder included) and an empty line clears the redirect (and the
-# label), while a panel URL seeds WEB_LABEL="Panel" when it is still
-# unset; t reads the ntfy topic the same way (empty = off). All notes
+# label); t reads the ntfy topic the same way (empty = off). All notes
 # mirror the CLI wording.
 # Returns 1 when the key closes the settings UI (q / Esc / Enter on the
 # index); any other key returns 0 so the caller re-renders.
@@ -6089,10 +6075,9 @@ settings_handle_key() { # <key>
         w|W)
           # Free-text input inside the popup (a real terminal): one line is the
           # URL, an empty line clears the redirect. Persisted through the managed
-          # writer like every other key: WEB_URL and PANEL_URL ride together
-          # (same pair the CLI --web-url path writes), and a panel URL seeds
-          # WEB_LABEL="Panel" while it is still unset. The {pane_id}
-          # placeholder is stored verbatim — send_ntfy_push expands it.
+          # writer like every other key (the same key the CLI --web-url path
+          # writes). The {pane_id} placeholder is stored verbatim —
+          # send_ntfy_push expands it.
           local new_url=""
           printf '%s' "$(tt settings.notif.web_input_title)"
           if ! read -r new_url; then
@@ -6100,21 +6085,16 @@ settings_handle_key() { # <key>
             return 0
           fi
           if [[ -z "$new_url" ]]; then
-            if config_set WEB_URL "" && config_set PANEL_URL "" && config_set WEB_LABEL ""; then
+            if config_set WEB_URL "" && config_set WEB_LABEL ""; then
               WEB_URL=""
-              PANEL_URL=""
               WEB_LABEL=""
               SETTINGS_NOTE="$(tt settings.notif.web_off)"
             else
               SETTINGS_WARN="$(tt settings.save_failed WEB_URL)"
             fi
           else
-            if config_set WEB_URL "$new_url" && config_set PANEL_URL "$new_url"; then
+            if config_set WEB_URL "$new_url"; then
               WEB_URL="$new_url"
-              PANEL_URL="$new_url"
-              if [[ "${new_url,,}" =~ panel && -z "$WEB_LABEL" ]] && config_set WEB_LABEL "Panel"; then
-                WEB_LABEL="Panel"
-              fi
               SETTINGS_NOTE="$(tt settings.notif.web_set "$new_url")"
             else
               SETTINGS_WARN="$(tt settings.save_failed WEB_URL)"
@@ -8192,20 +8172,14 @@ case "${1:-}" in
     save_config
     echo "$(tt cli.ntfy.server "$NTFY_SERVER")"
     ;;
-  --web-url|--panel-url|--redirect-url)
-    opt="$1"
+  --web-url|--redirect-url)
     if [[ "${2:-}" == "off" || "${2:-}" == "none" || -z "${2:-}" ]]; then
       WEB_URL=""
-      PANEL_URL=""
       WEB_LABEL=""
       save_config
       echo "$(tt cli.web.off)"
     else
       WEB_URL="$2"
-      PANEL_URL="$2"
-      if [[ "$opt" == "--panel-url" && -z "$WEB_LABEL" ]]; then
-        WEB_LABEL="Panel"
-      fi
       save_config
       echo "$(tt cli.web.set "$WEB_URL")"
     fi
@@ -8590,7 +8564,6 @@ run_podcast_server(port=int(sys.argv[1]), podcast_dir=sys.argv[2])
     "$(tt help.ntfy_topic)"
     "$(tt help.ntfy_server)"
     "$(tt help.web_url)"
-    "$(tt help.panel_url)"
     "$(tt help.web_label)"
     "$(tt help.click_redirect)"
     ""

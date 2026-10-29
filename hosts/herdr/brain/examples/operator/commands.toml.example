@@ -1,0 +1,33 @@
+# Commands — the slash palette offered while typing in an agent pane's
+# composer.
+#
+# Copy to ~/.config/herdr-brain/commands.toml (or the directory named by
+# HERDR_BRAIN_CONFIG_DIR). The file reloads by mtime on the next request.
+#
+# Rows are validated one by one: a malformed row is skipped and reported
+# by `herdr-brain config check`, the healthy rows keep serving. These
+# strings are served to every browser that reads the panel — labels, not
+# secrets.
+#
+# Shared rules (see quick-replies.toml.example): unknown fields rejected,
+# unique ids per file, scoped rows replace (never merge with) the global
+# catalog for that agent family.
+
+# A global command: offered for every agent pane.
+[[commands]]
+id = "compact"                    # optional: stable row id (derived from
+                                  # the label slug when omitted).
+label = "Compact"                 # required: the palette entry text.
+command = "/compact"              # required: must start with "/".
+
+# An argument hint: a trailing space means "complete, do not send" — the
+# composer is left on "/review " so the operator finishes the argument.
+[[commands]]
+label = "Review file"
+command = "/review "
+
+# A scoped row: offered only to claude panes, replacing the global rows.
+[[commands]]
+label = "Claude-only"
+command = "/claude-specific"
+scope = "claude"

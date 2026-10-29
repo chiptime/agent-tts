@@ -1,0 +1,20 @@
+[
+  {
+    "id": 1,
+    "title": "opencode",
+    "cwd": "/Users/bruno/Code/repo",
+    "is_focused": true,
+    "is_floating": false,
+    "is_fullscreen": false,
+    "exit_code": null
+  },
+  {
+    "id": 2,
+    "title": "repl (python)",
+    "cwd": null,
+    "is_focused": false,
+    "is_floating": false,
+    "is_fullscreen": false,
+    "exit_code": 0
+  }
+]

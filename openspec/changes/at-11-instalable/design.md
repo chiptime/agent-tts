@@ -177,7 +177,7 @@ resolves to its real checkout, not to `~/.local/bin`.
 The third row rests on evidence, not assumption: `herdr 0.9.1`'s `InstalledPluginInfo` carries
 **both** `managed_path` and `plugin_root` as distinct fields alongside `owner`/`subdir`
 (observed in the binary's serde type table), and an existing GitHub-installed plugin
-(`~/.config/herdr/plugins/github/herdr.panel-*`) is a **full git checkout** — `git rev-parse
+(a plugin directory under `~/.config/herdr/plugins/github/`) is a **full git checkout** — `git rev-parse
 --show-toplevel` resolves to the plugin root. Two separate path fields only make sense when
 `plugin_root = managed_path/<subdir>`.
 

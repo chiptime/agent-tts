@@ -178,8 +178,15 @@ def reset_capabilities_cache() -> None:
 
 
 def sanitize_for_speech(text: str) -> str:
-    """Collapses whitespace/newlines into a speakable line."""
-    return " ".join(text.split())
+    """Collapses whitespace/newlines into a speakable line (secrets masked).
+
+    Every spoken render funnels through here, so a credential that
+    reached an answer text is spoken as the natural masked phrase (S14)
+    instead of being read out loud.
+    """
+    from .secrets_mask import mask_for_speech
+
+    return " ".join(mask_for_speech(text).split())
 
 
 def _render_command(settings: Settings, text: str, out_path: Path) -> list:

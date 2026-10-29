@@ -27,10 +27,10 @@ import uuid
 from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Literal, Optional
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, unquote_plus
 
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Path as PathParam, Query, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
@@ -51,13 +51,39 @@ from .approval_lexicon import (
     OUTCOME_REPLACE_INTENT,
     resolve_utterance,
 )
+from . import access as access_module
+from .audit import AuditLog
 from .config import Settings
 from .consult import ConsultService
+from .crew.aggregate import split_pane_id
+from .crew.client import CrewRemoteRefused, CrewUnreachable
+from .crew_runtime import CrewGateway, create_crew_app, load_roster as load_crew_roster
 from .herdr import MAX_SEND_KEYS, SEND_KEY_ALLOWLIST, HerdrError
 from .history import HistoryStore, default_history_path
-from .llm import BrainLLM, BrainLLMError, TurnCancelled
+from .history_view import HISTORY_DEFAULT_LIMIT, clamp_limit
+from .llm import STOP_AGENT, BrainLLM, BrainLLMError, TurnCancelled
 from .memory import DEFAULT_SESSION, MAX_MESSAGES, ConversationStore
+from .mux import create_mux
+from .operator_config import (
+    LaunchRefusedError,
+    OperatorConfig,
+    UnknownRowError,
+)
+from .pairing import (
+    ClaimRateLimiter,
+    PairingStore,
+    normalize_label as normalize_device_label,
+    to_device_wire,
+)
 from .reader import ReaderCache, turn_id
+from .send_receipts import SendReceiptStore
+from .spoken_lexicon import (
+    DEFAULT_LOCALE,
+    LOCALES as SPOKEN_LOCALES,
+    approval_closer as locale_approval_closer,
+    locale_provider_from,
+    reprompt_line as locale_reprompt_line,
+)
 from .speech import (
     PHASE_CANCELLED,
     PHASE_COMPLETE,
@@ -100,7 +126,15 @@ from .tts import (
     tts_backend_status,
 )
 from .tts_daemon import DAEMON_UP, DaemonWatcher, daemon_status
+from .walky import (
+    MessageNotFound as MsgNotFound,
+    StoreError as MsgStoreError,
+    WalkyRefusal,
+    WalkyService,
+)
 from .watcher import AgentWatcher
+from .webpush import StoreError as PushStoreError, WebPushService
+from .webpush.vapid import VapidError
 
 _TTSRenderer = Callable[[Settings, str, Path], Path]
 _ReaderRenderer = Callable[[Settings, str, Path], "tuple[str, dict]"]
@@ -117,7 +151,9 @@ CALL_HISTORY_TURNS = 200
 
 # Deterministic approval closer (PRD-action-approval-gate §7): appended
 # server-side to the spoken answer whenever a gate opens — the question
-# wording never depends on the model. Product copy; keep verbatim.
+# wording never depends on the model. Product copy; keep verbatim. The
+# Spanish value is the DEFAULT; the spoken-lexicon carries the same
+# string plus the other locales' wording.
 APPROVAL_CLOSER = "¿Se envía?"
 
 # Spoken re-prompt after one ambiguous confirming utterance
@@ -185,53 +221,110 @@ def bearer_or_query_token(request: Request) -> str:
     return request.query_params.get("token", "")
 
 
-# ntfy action buttons (F5 / HT-04) can only fire a plain HTTP request with a
-# free-form body, so the action route accepts the decision in any of the
-# shapes a phone can send. Only these two words are ever accepted.
-_ACTION_DECISIONS = {"approve": DECISION_APPROVE, "reject": DECISION_REJECT}
+class AccessMiddleware:
+    """Raw ASGI access gate (F1 security; see ``access.py``).
 
+    Deliberately NOT BaseHTTPMiddleware: the pass-through ``__call__``
+    leaves /events streaming and /ask's disconnect detection exactly as
+    they are — a security wrapper must not change transport behavior.
+    On success the resolved paired-device label lands in
+    ``scope["state"]["device"]`` (surfaced to handlers as
+    ``request.state.device``; the audit log, T3, consumes it). On
+    refusal a plain 403 JSON body — the same ``{"detail": …}`` shape
+    every other refusal in this app uses — with one text per gate.
 
-def _decision_word(value: object) -> Optional[str]:
-    if isinstance(value, str) and value.strip().lower() in _ACTION_DECISIONS:
-        return value.strip().lower()
-    return None
-
-
-def parse_action_decision(raw: bytes, query_decision: Optional[str] = None) -> Optional[str]:
-    """Extracts approve/reject from an ntfy action request, or ``None``.
-
-    Accepted: ``?decision=``, a bare word body (``approve``), a JSON object
-    (``{"decision": "approve"}``) or a JSON string, and a form body
-    (``decision=approve``) regardless of the Content-Type the phone sent.
+    The ``device_token`` query parameter (S11.2) is extracted here and
+    handed to the guard, which confines it to the two headerless GET
+    transports (/events, /audio/{name}); everywhere else it is inert.
     """
-    if query_decision is not None:
-        return _decision_word(query_decision)
-    text = raw.decode("utf-8", errors="replace").strip()
-    if not text:
-        return None
-    word = _decision_word(text)
-    if word is not None:
-        return word
-    try:
-        payload = json.loads(text)
-    except ValueError:
-        payload = None
-    if isinstance(payload, dict):
-        return _decision_word(payload.get("decision"))
-    if isinstance(payload, str):
-        return _decision_word(payload)
-    values = parse_qs(text).get("decision")
-    return _decision_word(values[0]) if values else None
+
+    def __init__(self, app, cfg: Settings, pairing: PairingStore):
+        self.app = app
+        self.cfg = cfg
+        self.pairing = pairing
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = {
+            key.decode("latin-1").lower(): value.decode("latin-1")
+            for key, value in scope.get("headers", [])
+        }
+        from urllib.parse import parse_qsl
+
+        query = dict(parse_qsl(scope.get("query_string", b"").decode("latin-1")))
+        label, refusal = access_module.guard(
+            headers, scope["method"], scope["path"], self.cfg, self.pairing,
+            query_token=query.get("device_token"),
+        )
+        if refusal is not None:
+            body = json.dumps({"detail": refusal}, ensure_ascii=False).encode("utf-8")
+            await send({
+                "type": "http.response.start",
+                "status": 403,
+                "headers": [(b"content-type", b"application/json")],
+            })
+            await send({"type": "http.response.body", "body": body})
+            return
+        if label is not None:
+            scope.setdefault("state", {})["device"] = label
+        await self.app(scope, receive, send)
 
 
-def bearer_or_query_token(request: Request) -> str:
-    """The credential a request presents: ``Authorization: Bearer`` first,
-    ``?token=`` as the fallback ntfy ``view``-less clients can use. Returns
-    "" when none is presented."""
-    scheme, _, value = request.headers.get("authorization", "").partition(" ")
-    if scheme.lower() == "bearer":
-        return value.strip()
-    return request.query_params.get("token", "")
+# The device token can ride a query parameter (S11.2), and uvicorn's
+# access log echoes request lines WITH query strings — the one log we
+# control that would otherwise persist the credential. Redaction walks
+# the query string's actual key=value pairs, decoding each key exactly
+# as parse_qsl does, so EVERY spelling the server accepts is caught:
+# percent-encoded (device%5Ftoken), repeated keys, and the ntfy action
+# route's ``token``. Spellings the server does NOT accept (e.g.
+# double-encoded) cannot carry a live credential, and every other
+# argument survives byte-identical.
+_REDACTED_QUERY_VALUE = "⟨redactado⟩"
+_SENSITIVE_QUERY_KEYS = frozenset({"device_token", "token"})
+
+
+def _redact_query_pair(pair: str) -> str:
+    """One ``key=value`` pair of a query string, its value replaced when
+    the percent-decoded key is a credential the server accepts."""
+    key, sep, _value = pair.partition("=")
+    if sep and unquote_plus(key) in _SENSITIVE_QUERY_KEYS:
+        return key + sep + _REDACTED_QUERY_VALUE
+    return pair
+
+
+def redact_query_tokens(text: str) -> str:
+    """Replace the value of every credential-carrying query parameter in
+    ``text`` — plain, percent-encoded or repeated — leaving the rest of
+    the line untouched. Pure — the logging filter and the tests share
+    it."""
+    words = text.split(" ")
+    changed = False
+    for index, word in enumerate(words):
+        base, mark, query = word.partition("?")
+        if not mark or not query:
+            continue
+        pairs = [_redact_query_pair(pair) for pair in query.split("&")]
+        redone = "&".join(pairs)
+        if redone != query:
+            words[index] = base + mark + redone
+            changed = True
+    return " ".join(words) if changed else text
+
+
+class RedactQueryToken(logging.Filter):
+    """uvicorn.access filter: no access line leaves the process carrying
+    a device token. Mutates the record in place (msg collapsed, args
+    cleared) so any later formatting is safe too."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        redacted = redact_query_tokens(message)
+        if redacted != message:
+            record.msg = redacted
+            record.args = None
+        return True
 
 
 def approval_payload(gate: ApprovalGate, timeout_s: int, now: Optional[float] = None) -> dict:
@@ -254,6 +347,19 @@ def approval_payload(gate: ApprovalGate, timeout_s: int, now: Optional[float] = 
             "title": gate.action.title,
             "task": gate.action.task,
             "cwd": gate.action.cwd,
+            "timeout_ms": gate.action.timeout_ms,
+            "expires_in_s": max(0, math.ceil(remaining)),
+        }
+    if gate.tool == STOP_AGENT:
+        # The stop gate rides the SEND card shape (the approval flow's
+        # second variant): a fixed Spanish marker instead of the frozen
+        # prompt — there is no prompt, only the interrupt about to run.
+        return {
+            "gate_id": gate.gate_id,
+            "tool": gate.tool,
+            "pane_id": gate.action.pane_id,
+            "agent": gate.action.agent,
+            "text": "⏹ detener el turno en curso",
             "timeout_ms": gate.action.timeout_ms,
             "expires_in_s": max(0, math.ceil(remaining)),
         }
@@ -303,8 +409,20 @@ _VERSIONED_REFS = (
     ('src="/endpointing.js"', 'src="/endpointing.js?v={v}"'),
     ('src="/vad.js"', 'src="/vad.js?v={v}"'),
     ('src="/approval.js"', 'src="/approval.js?v={v}"'),
+    ('src="/pairing.js"', 'src="/pairing.js?v={v}"'),
+    ('src="/destructive.js"', 'src="/destructive.js?v={v}"'),
+    ('src="/history.js"', 'src="/history.js?v={v}"'),
+    ('src="/dialogs.js"', 'src="/dialogs.js?v={v}"'),
+    ('src="/receipts.js"', 'src="/receipts.js?v={v}"'),
     ('src="/reader.js"', 'src="/reader.js?v={v}"'),
     ('src="/toast.js"', 'src="/toast.js?v={v}"'),
+    ('src="/push.js"', 'src="/push.js?v={v}"'),
+    ('src="/i18n.js"', 'src="/i18n.js?v={v}"'),
+    ('src="/i18n/es.js"', 'src="/i18n/es.js?v={v}"'),
+    ('src="/i18n/en.js"', 'src="/i18n/en.js?v={v}"'),
+    ('src="/settings.js"', 'src="/settings.js?v={v}"'),
+    ('src="/updates.js"', 'src="/updates.js?v={v}"'),
+    ('src="/dock.js"', 'src="/dock.js?v={v}"'),
     ('src="/mermaid.min.js"', 'src="/mermaid.min.js?v={v}"'),
     ('src="/mermaid-viewer.js"', 'src="/mermaid-viewer.js?v={v}"'),
     # herd-group.js loads BEFORE app.js (same reason as consult.js): the
@@ -368,9 +486,15 @@ class ResetRequest(BaseModel):
 class CallContextRequest(BaseModel):
     """FR-13 shared-selection update: the pane one client picked. A
     missing/blank value clears the shared selection (back to each
-    client's focused-pane fallback)."""
+    client's focused-pane fallback).
+
+    ``locale`` (S4) publishes the call's SPOKEN locale: ``es`` (the
+    default) or ``en``. A value the lexicon does not know is IGNORED —
+    the previous locale survives — and a non-string fails edge
+    validation like every other field here."""
 
     pane_id: Optional[str] = Field(default=None, max_length=MAX_SESSION_ID_CHARS)
+    locale: Optional[str] = Field(default=None, max_length=8)
 
 
 class SpeechCancelRequest(BaseModel):
@@ -399,10 +523,17 @@ class ApprovalPatchRequest(BaseModel):
 
 
 class PaneReplyRequest(BaseModel):
-    """User-typed reply to one exact pane (POST /pane/reply)."""
+    """User-typed reply to one exact pane (POST /pane/reply).
+
+    ``steer`` (S12) asks to inject the text into a RUNNING turn; the
+    server refuses it for harnesses outside the steer table (a 422, no
+    byte written). Default false: the plain reply stays the only
+    default path.
+    """
 
     pane_id: str = Field(min_length=1, max_length=MAX_SESSION_ID_CHARS)
     text: str = Field(min_length=1, max_length=8_000)
+    steer: bool = False
 
     @field_validator("text")
     @classmethod
@@ -410,6 +541,12 @@ class PaneReplyRequest(BaseModel):
         if not value.strip():
             raise ValueError("text must not be blank")
         return value
+
+
+class PaneStopRequest(BaseModel):
+    """POST /pane/stop body: the exact pane whose turn to interrupt."""
+
+    pane_id: str = Field(min_length=1, max_length=MAX_SESSION_ID_CHARS)
 
 
 class PaneKeysRequest(BaseModel):
@@ -439,8 +576,8 @@ class PaneKeysRequest(BaseModel):
 class PermissionReplyRequest(BaseModel):
     """Answer to one opencode approval dialog, for one exact pane.
 
-    ``reply`` is the exact contract value; an invented word is a 422 at the
-    edge and never reaches opencode as a guess. ``pane_id`` is required
+    ``reply`` is the exact contract value; an invented word is a 422 at
+    the edge and never reaches opencode as a guess. ``pane_id`` is required
     because opencode's reply route is session-scoped: the answer must name
     the session it belongs to, and the pane is how the brain knows it.
     """
@@ -448,6 +585,100 @@ class PermissionReplyRequest(BaseModel):
     pane_id: str = Field(min_length=1, max_length=MAX_SESSION_ID_CHARS)
     request_id: str = Field(min_length=1, max_length=MAX_SESSION_ID_CHARS)
     reply: Literal["once", "always", "reject"]
+
+
+class PaneDialogAnswerRequest(BaseModel):
+    """One tapped option of a RECOGNIZED dialog (POST /pane/dialog/answer).
+
+    ``fingerprint`` is the dialog identity the /view render carried:
+    the server re-reads the pane and refuses (409) when the screen
+    moved under the tap, so a stale render can never fire keys.
+    ``option`` is the tapped option's index in that render.
+    """
+
+    pane_id: str = Field(min_length=1, max_length=MAX_SESSION_ID_CHARS)
+    fingerprint: str = Field(min_length=1, max_length=64)
+    option: int = Field(ge=0, le=99)
+
+
+class PairRequest(BaseModel):
+    """POST /pair body: the one-time code read off the operator's
+    terminal plus this device's label (the revoke handle)."""
+
+    code: str = Field(min_length=1, max_length=64)
+    label: str = Field(min_length=1, max_length=64)
+
+
+class DeviceRevokeRequest(BaseModel):
+    """POST /devices/revoke body: the paired device's label."""
+
+    label: str = Field(min_length=1, max_length=64)
+
+
+class PushKeysRequest(BaseModel):
+    """The browser PushSubscription's encryption keys."""
+
+    p256dh: str = Field(min_length=1, max_length=256)
+    auth: str = Field(min_length=1, max_length=256)
+
+
+class PushSubscribeRequest(BaseModel):
+    """POST /push/subscribe body: one browser PushSubscription.
+
+    The service re-validates and owns persistence; the edge model only
+    pins the shape (a 422 before any store write on a bad payload).
+    ``replaces`` names the endpoint a re-subscribing browser retired.
+    """
+
+    endpoint: str = Field(min_length=1, max_length=2048)
+    keys: PushKeysRequest
+    user_agent: Optional[str] = Field(default=None, max_length=160)
+    replaces: Optional[str] = Field(default=None, max_length=2048)
+
+
+class PushUnsubscribeRequest(BaseModel):
+    """POST /push/unsubscribe body: the endpoint being dropped."""
+
+    endpoint: str = Field(min_length=1, max_length=2048)
+
+
+class MsgSendRequest(BaseModel):
+    """POST /msg/send body: one operator message to one pane.
+
+    ``address`` is the walky address ``<pane>#<session-token>`` — the
+    token pins WHICH conversation the operator meant, so a replaced
+    agent never receives a message meant for its predecessor.
+    """
+
+    address: str = Field(min_length=3, max_length=MAX_SESSION_ID_CHARS * 2 + 1)
+    body: str = Field(min_length=1, max_length=8_000)
+
+    @field_validator("body")
+    @classmethod
+    def _body_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("body must not be blank")
+        return value
+
+
+class OperatorLaunchRequest(BaseModel):
+    """Launcher execution request (S3): the client NAMES a row.
+
+    ``id`` is the operator-authored row id; ``confirm`` is the second
+    tap a ``no_prompts`` row demands. A command line can never arrive
+    here — the body has no field for one."""
+
+    id: str = Field(min_length=1, max_length=128)
+    confirm: bool = False
+
+
+class OperatorPresetRequest(BaseModel):
+    """Key-preset request (S3): the keys are resolved SERVER-side from
+    the operator's ``keys.toml`` against the pane's agent family —
+    never supplied by the client."""
+
+    pane_id: str = Field(min_length=1, max_length=MAX_SESSION_ID_CHARS)
+    id: str = Field(min_length=1, max_length=128)
 
 
 def _opencode_http_error(exc: OpenCodeError) -> HTTPException:
@@ -572,6 +803,11 @@ class CallContextStore:
         self._lock = threading.Lock()
         self._pane_id: Optional[str] = None
         self._revision = 0
+        # Spoken locale (S4): the one spoken language of THIS call,
+        # published like the pane selection (last writer wins). The
+        # default is the product default — Spanish — and stays until a
+        # client publishes a known locale.
+        self._locale: str = DEFAULT_LOCALE
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -579,18 +815,81 @@ class CallContextStore:
                 "call_id": DEFAULT_SESSION,
                 "pane_id": self._pane_id,
                 "revision": self._revision,
+                "locale": self._locale,
             }
 
-    def select(self, pane_id: Optional[str]) -> dict:
-        """Publishes (or, with None, clears) the shared pane selection."""
+    def locale(self) -> str:
+        """The call's spoken locale (read by the watcher and the gate
+        closers)."""
+        with self._lock:
+            return self._locale
+
+    def select(
+        self, pane_id: Optional[str], locale: Optional[str] = None
+    ) -> dict:
+        """Publishes (or, with None, clears) the shared pane selection.
+
+        ``locale`` changes the spoken locale ONLY when it names a
+        locale the lexicon knows; anything else leaves it untouched
+        (the "else ignored" contract — a typo never resets the call to
+        a language nobody chose)."""
         with self._lock:
             self._pane_id = pane_id
+            if locale in SPOKEN_LOCALES:
+                self._locale = locale
             self._revision += 1
             return {
                 "call_id": DEFAULT_SESSION,
                 "pane_id": self._pane_id,
                 "revision": self._revision,
+                "locale": self._locale,
             }
+
+
+class HerdNotifier:
+    """The watcher hook's fan-out (S5/S13): one poll beat, two services.
+
+    Rides the watcher's existing cycle — the brain never grows a second
+    timer. Each half is isolated: a push failure must not stop brain
+    message delivery (the watcher already tolerates a total failure, but
+    one failing backend should not take the other down with it).
+    """
+
+    def __init__(self, push: Optional[WebPushService], msg: Optional[WalkyService]):
+        self._push = push
+        self._msg = msg
+
+    def transition(self, pane_id, label, status, text=None, question=None,
+                   gate_id=None) -> None:
+        if self._push is None:
+            return
+        try:
+            self._push.notify_transition(
+                pane_id, label, status, text=text, question=question,
+                gate_id=gate_id,
+            )
+        except Exception:  # noqa: BLE001 — push is an advisory channel
+            logger.warning("web push transition hook failed", exc_info=True)
+
+    def handled(self, pane_id, label=None) -> None:
+        if self._push is None:
+            return
+        try:
+            self._push.notify_handled(pane_id, label)
+        except Exception:  # noqa: BLE001
+            logger.warning("web push handled hook failed", exc_info=True)
+
+    def tick(self, panes=()) -> None:
+        if self._push is not None:
+            try:
+                self._push.tick(panes=panes)
+            except Exception:  # noqa: BLE001
+                logger.warning("web push tick failed", exc_info=True)
+        if self._msg is not None:
+            try:
+                self._msg.tick()
+            except Exception:  # noqa: BLE001
+                logger.warning("brain message delivery tick failed", exc_info=True)
 
 
 def create_app(
@@ -606,6 +905,10 @@ def create_app(
     daemon_probe: Optional[Callable[[], str]] = None,
     speech_registry: Optional[SpeechRegistry] = None,
     permissions: Optional[OpenCodePermissions] = None,
+    push_service: Optional[WebPushService] = None,
+    msg_service: Optional[WalkyService] = None,
+    operator_config: Optional[OperatorConfig] = None,
+    crew: Optional[CrewGateway] = None,
 ) -> FastAPI:
     """Builds the FastAPI app with injectable backends for tests.
 
@@ -658,6 +961,11 @@ def create_app(
         store.append(None, record["role"], record["text"])
     approval_store = ApprovalGateStore(timeout_s=cfg.approval_timeout_s)
 
+    # Verified-send receipts (S12): bounded, in-memory, newest first —
+    # phone-side UI state, not a log (the audit trail owns who-did-what).
+    # A restart returns to no receipts, exactly like the gates above.
+    receipt_store = SendReceiptStore()
+
     # FR-13 shared call context: the identity + selection desktop and
     # mobile hand over (see CallContextStore).
     call_context_store = CallContextStore()
@@ -667,6 +975,118 @@ def create_app(
     # fake clocks through the same object the handlers use.
     speech_jobs = speech_registry if speech_registry is not None else build_registry()
 
+    # Device pairing (F1 security): lazy — nothing is read at boot,
+    # the registry is re-stat'ed per request so a CLI revocation in
+    # another process applies without a restart. With an empty registry
+    # every route behaves exactly as before (S7).
+    pairing_store = PairingStore(cfg.state_dir)
+
+    # S11: the /pair claim budget — in-process, bounded, per client
+    # address (see pairing.ClaimRateLimiter). Lives with the app, never
+    # in the pairing files.
+    pair_limiter = ClaimRateLimiter()
+
+    # Operator surfaces (S3): the four validated TOML files, reloaded by
+    # mtime per request. Injectable like every seam; the default reads
+    # HERDR_BRAIN_CONFIG_DIR / XDG like config.env.
+    if operator_config is None:
+        operator_config = OperatorConfig()
+
+    # Crew federation (S7): the lead-side gateway exists ONLY when this
+    # host declared a crew (roster role lead/peer). Injectable for
+    # tests; a corrupt roster disables crew routing loudly while the
+    # local brain keeps serving byte-identically (S9).
+    crew_gateway: Optional[CrewGateway] = crew
+    if crew_gateway is None:
+        try:
+            roster_probe = load_crew_roster(cfg.state_dir)
+        except Exception as exc:  # noqa: BLE001 — CrewRosterCorrupt, loudly
+            logger.error("crew roster unreadable — serving solo: %s", exc)
+            roster_probe = None
+        if roster_probe is not None and roster_probe.has_crew:
+            crew_gateway = CrewGateway(cfg.state_dir)
+
+    # Audit trail (F1 security): one JSONL line per write
+    # action at <state_dir>/audit.log. Lazy like the pairing store —
+    # boot touches no disk — and record() never raises, so the audited
+    # action can never be failed by it.
+    audit_log = AuditLog(cfg.state_dir / "audit.log", content=cfg.audit_content)
+
+    def audit_device(request: Optional[Request]) -> Optional[str]:
+        """The paired-device label the access middleware resolved for
+        this request, or None on channels that carry no device identity
+        (the ntfy action route never presents a device bearer)."""
+        return getattr(request.state, "device", None) if request is not None else None
+
+    def audit_gate_decision(
+        action: str,
+        gate: ApprovalGate,
+        device: Optional[str],
+        extra: Optional[dict] = None,
+    ) -> None:
+        """One audit line for a gate decision: gate_id, tool and the
+        revision the decision applied to (the NEW revision on patch)."""
+        detail = {"gate_id": gate.gate_id, "tool": gate.tool, "revision": gate.revision}
+        if extra:
+            detail.update(extra)
+        audit_log.record({
+            "action": action,
+            "pane_id": gate.action.pane_id,
+            "device": device,
+            "detail": detail,
+        })
+
+    # ── Crew routing helpers (S7; all no-ops while this brain is solo) ──
+
+    def crew_remote_peer(pane_id: Optional[str]) -> Optional[str]:
+        """The enrolled peer a pane id routes to, or None → local.
+
+        ``<host>:<pane>`` with an ENROLLED host proxies through the
+        crew link. A host-shaped prefix naming no member is only local
+        when the full id names a real local pane (local ids can look
+        host-shaped: ``w1:p9``); otherwise it is an explicit unknown
+        crew host — an error, never a silent local fallback that would
+        strip the prefix and write to the wrong pane.
+        """
+        if crew_gateway is None or not pane_id:
+            return None
+        peer = crew_gateway.route_pane(pane_id)
+        if peer is not None:
+            return peer
+        host, _rest = split_pane_id(pane_id)
+        if host is None:
+            return None
+        if tools.pane_info(pane_id) is not None:
+            return None  # a genuinely local pane that merely looks prefixed
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"'{host}' no es un host del crew: el id no es local ni "
+                "enrutable; nada se envió."
+            ),
+        )
+
+    def crew_call(peer: str, call):
+        """Runs one ``CrewClient`` call with uniform failure mapping:
+        the peer's refusal status travels back as-is, an unreachable
+        peer is a 503 that names it."""
+        client = crew_gateway.client_for(peer) if crew_gateway else None
+        if client is None:
+            raise HTTPException(
+                status_code=503,
+                detail=f"el peer del crew '{peer}' no está disponible",
+            )
+        try:
+            return call(client)
+        except CrewRemoteRefused as exc:
+            detail = (
+                exc.body.get("detail") if isinstance(exc.body, dict) else None
+            ) or f"el peer del crew '{peer}' rechazó la operación"
+            raise HTTPException(status_code=int(exc.status), detail=detail) from exc
+        except CrewUnreachable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
     # Approval dialogs (opencode): the agent cannot be reached with a prompt
     # while it waits at one, so the PWA answers through opencode's own
     # permission API. Injectable like every other seam; the client is inert
@@ -675,8 +1095,42 @@ def create_app(
         permissions if permissions is not None else OpenCodePermissions(cfg.opencode_url)
     )
 
+    # Web Push (S5): soft-off without VAPID keys — the server runs,
+    # nothing sends. A PRESENT but broken key configuration is loud but
+    # never fatal to the rest of the brain (S9): the routes answer 503
+    # until the operator repairs the keys. The corrupt-subscription case
+    # needs no guard here — the store refuses writes and the routes map
+    # that refusal to a 500 without resetting a byte.
+    if push_service is not None:
+        push_service_ = push_service
+    else:
+        try:
+            push_service_ = WebPushService(cfg.state_dir, audit_log=audit_log)
+        except VapidError as exc:
+            logger.error("web push misconfigured — routes answer 503: %s", exc)
+            push_service_ = None
+
+    # Brain messages (S13): the operator/PWA half of the walky service,
+    # sharing the audit log. A corrupt ledger must not take the whole
+    # brain down (S9): the msg routes answer 503 until it is repaired.
+    if msg_service is not None:
+        msg_service_ = msg_service
+    else:
+        try:
+            msg_service_ = WalkyService(
+                cfg.state_dir, mux=create_mux(cfg), audit=audit_log
+            )
+        except MsgStoreError as exc:
+            logger.error("brain messages unavailable — routes answer 503: %s", exc)
+            msg_service_ = None
+
     if watcher is None:
-        watcher = AgentWatcher(cfg, tts_renderer=synth)
+        watcher = AgentWatcher(
+            cfg,
+            tts_renderer=synth,
+            notifier=HerdNotifier(push_service_, msg_service_),
+            locale_provider=locale_provider_from(call_context_store),
+        )
         watcher.start()
 
     # Consulting-state events (FR-18 seam): consult start/end rides the
@@ -748,6 +1202,7 @@ def create_app(
         return llm_holder["instance"]
 
     app = FastAPI(title="herdr-brain", version=__version__)
+    app.add_middleware(AccessMiddleware, cfg=cfg, pairing=pairing_store)
     app.state.watcher = watcher
     app.state.daemon_watcher = daemon_watcher
     app.state.transcriber = transcriber
@@ -799,6 +1254,41 @@ def create_app(
             headers=dict(_NO_CACHE_HEADERS),
         )
 
+    @app.get("/pairing.js", include_in_schema=False)
+    def pairing_js() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "pairing.js", media_type="text/javascript",
+            headers=dict(_NO_CACHE_HEADERS),
+        )
+
+    @app.get("/history.js", include_in_schema=False)
+    def history_js() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "history.js", media_type="text/javascript",
+            headers=dict(_NO_CACHE_HEADERS),
+        )
+
+    @app.get("/dialogs.js", include_in_schema=False)
+    def dialogs_js() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "dialogs.js", media_type="text/javascript",
+            headers=dict(_NO_CACHE_HEADERS),
+        )
+
+    @app.get("/receipts.js", include_in_schema=False)
+    def receipts_js() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "receipts.js", media_type="text/javascript",
+            headers=dict(_NO_CACHE_HEADERS),
+        )
+
+    @app.get("/destructive.js", include_in_schema=False)
+    def destructive_js() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "destructive.js", media_type="text/javascript",
+            headers=dict(_NO_CACHE_HEADERS),
+        )
+
     @app.get("/reader.js", include_in_schema=False)
     def reader_js() -> FileResponse:
         return FileResponse(
@@ -826,13 +1316,42 @@ def create_app(
             STATIC_DIR / "mermaid-viewer.js", media_type="text/javascript",
             headers=dict(_NO_CACHE_HEADERS),
         )
-
     @app.get("/sw.js", include_in_schema=False)
     def sw_js() -> FileResponse:
         return FileResponse(
-            STATIC_DIR / "sw.js", media_type="text/javascript",
+            STATIC_DIR / "sw.js",
+            media_type="text/javascript",
             headers=dict(_NO_CACHE_HEADERS),
         )
+
+    @app.get("/push.js", include_in_schema=False)
+    def push_js() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "push.js",
+            media_type="text/javascript",
+            headers=dict(_NO_CACHE_HEADERS),
+        )
+
+    def _static_js(name: str) -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / name,
+            media_type="text/javascript",
+            headers=dict(_NO_CACHE_HEADERS),
+        )
+
+    for _name in ("i18n.js", "i18n/es.js", "i18n/en.js", "settings.js", "updates.js", "dock.js"):
+        app.add_api_route(
+            "/" + _name,
+            (lambda _n=_name: _static_js(_n)),
+            methods=["GET"],
+            include_in_schema=False,
+        )
+
+    @app.get("/build", include_in_schema=False)
+    def build_stamp() -> dict:
+        # The build this process serves (the same stamp as every ?v= ref
+        # and the footer); the PWA compares it to notice a new deploy.
+        return {"build": build}
 
     @app.get("/manifest.webmanifest", include_in_schema=False)
     def manifest() -> FileResponse:
@@ -983,6 +1502,8 @@ def create_app(
         whatever was selected last, mirroring how the tmux focus itself
         behaves. The pane id is validated (short, single line) so the
         shared slot can never smuggle a newline into a pane target.
+        The optional ``locale`` names the call's spoken language; a
+        value the lexicon does not know changes nothing.
         """
         pane = body.pane_id
         if pane is not None:
@@ -994,7 +1515,8 @@ def create_app(
                     status_code=422,
                     detail="pane_id must be a short single-line pane identifier",
                 )
-        return call_context_store.select(pane)
+        locale = body.locale.strip().lower() if body.locale else None
+        return call_context_store.select(pane, locale=locale)
 
     @app.get("/state")
     def state() -> dict:
@@ -1005,19 +1527,43 @@ def create_app(
             return _status_payload(None)
 
     @app.get("/herd")
-    def herd() -> list:
-        """All agent panes with status and their latest transcript turn."""
+    def herd() -> object:
+        """All agent panes with status and their latest transcript turn.
+
+        In a crew (S7) the LEAD merges its peers: remote panes carry
+        their ``host`` tag, local panes keep the single-host shape, and
+        a peer that cannot be reached appears explicitly under
+        ``peers`` instead of vanishing. Solo keeps the exact list shape
+        every installed PWA already consumes."""
         try:
-            return tools.herd()
+            local = tools.herd()
         except Exception:  # noqa: BLE001 — the herd endpoint never 500s
-            return []
+            local = []
+        if crew_gateway is None:
+            return local
+        try:
+            return crew_gateway.merged_herd(local)
+        except Exception:  # noqa: BLE001 — a broken crew never 500s the herd
+            logger.warning("crew herd merge failed — serving the local herd",
+                           exc_info=True)
+            return local
 
     @app.get("/view")
     def view(pane_id: Optional[str] = None) -> dict:
-        """Superset of /state for one pane (default: focused)."""
+        """Superset of /state for one pane (default: focused).
+
+        A remote crew pane (``<host>:<pane>``) proxies to its owner's
+        ``/crew/v1/view``; an unknown host prefix is a 422, never a
+        local fallback."""
+        peer = crew_remote_peer(pane_id)
+        if peer is not None:
+            _, rest = split_pane_id(pane_id or "")
+            return crew_call(peer, lambda client: client.view(rest))
         try:
             return tools.agent_view(pane_id)
         except Exception:  # noqa: BLE001 — the view endpoint never 500s
+            # No `structured` key here: a recognizer's claim is the only
+            # thing that adds it (additive field, pre-S2 shape kept).
             return {
                 "status": _status_payload(None),
                 "transcript": None,
@@ -1035,6 +1581,45 @@ def create_app(
         except Exception:  # noqa: BLE001
             return {"pane_id": pane_id, "agent": None, "session_id": None,
                     "turns": [], "window": 20}
+
+    @app.get("/history")
+    def transcript_history(
+        pane_id: Optional[str] = None,
+        cursor: Optional[str] = None,
+        limit: int = HISTORY_DEFAULT_LIMIT,
+    ) -> dict:
+        """Full transcript of one pane, one cursor page at a time (doc 05).
+
+        Reading complement to /conversation: unclipped turns walking
+        older through the opaque cursor (newest page first). An agent
+        without a readable history is an ordinary ``no-session`` page,
+        never an error. (Named ``transcript_history`` because the
+        /call-history store owns the ``history`` name in this scope.)
+        Remote crew panes proxy to their owner (S7).
+        """
+        peer = crew_remote_peer(pane_id)
+        if peer is not None:
+            _, rest = split_pane_id(pane_id or "")
+            return crew_call(
+                peer,
+                lambda client: client.history(
+                    rest, cursor=cursor, limit=limit
+                ),
+            )
+        try:
+            return tools.history_page(pane_id, cursor, limit)
+        except Exception:  # noqa: BLE001 — a reading endpoint never 500s
+            return {
+                "pane_id": pane_id,
+                "agent": None,
+                "session_id": None,
+                "title": None,
+                "turns": [],
+                "reason": "no-session",
+                "cursor": None,
+                "has_more": False,
+                "limit": clamp_limit(limit),
+            }
 
     @app.get("/conversation/{pane_id}/rendered")
     def conversation_rendered(
@@ -1079,6 +1664,34 @@ def create_app(
             return tools.screen_full(pane_id)
         except Exception:  # noqa: BLE001
             return {"pane_id": pane_id, "agent": None, "screen": None}
+
+    @app.get("/pane/{pane_id}/mirror")
+    def pane_mirror(
+        pane_id: str = PathParam(max_length=MAX_SESSION_ID_CHARS),
+        lines: Optional[int] = None,
+    ) -> dict:
+        """The pane's visible window as ANSI runs plus plain text (doc 05).
+
+        One styled read parsed by the same ``ansi_runs`` the blocked
+        dialog path uses — NO terminal emulation (herdr already renders
+        the grid). Line counts clamp to the visible-window cap. An
+        unknown pane is a 404; a failed or blank read degrades to empty
+        runs, never to an error. A remote crew pane proxies to its
+        owner (S7).
+        """
+        peer = crew_remote_peer(pane_id)
+        if peer is not None:
+            _, rest = split_pane_id(pane_id)
+            return crew_call(
+                peer, lambda client: client.mirror(rest, lines=lines)
+            )
+        try:
+            payload = tools.pane_mirror(pane_id, lines)
+        except Exception:  # noqa: BLE001 — the mirror degrades, never 500s
+            payload = None
+        if payload is None:
+            raise HTTPException(status_code=404, detail="pane not found")
+        return payload
 
     # -- answer shaping + approval resolution (shared by /ask and approve) --
 
@@ -1126,10 +1739,13 @@ def create_app(
         """The answer text exactly as speech would render it: the
         deterministic approval closer appended AFTER the model's echo
         when a gate opened. Shared by the audio render path and the
-        segmented producer (VS2.4) so both speak the SAME shaped text."""
+        segmented producer (VS2.4) so both speak the SAME shaped text.
+        The closer's wording follows the call's spoken locale (S4);
+        the default keeps the historical Spanish string verbatim."""
         answer = result.get("answer")
         if result.get("approval") is not None:
-            return f"{answer} {APPROVAL_CLOSER}" if answer else APPROVAL_CLOSER
+            closer = locale_approval_closer(call_context_store.locale())
+            return f"{answer} {closer}" if answer else closer
         return answer
 
     def shape_ask_response(
@@ -1186,6 +1802,8 @@ def create_app(
         """
         if gate.tool == CREATE_SESSION:
             return _replay_create_and_report(gate, speak)
+        if gate.tool == STOP_AGENT:
+            return _replay_stop_and_report(gate, speak)
         target = tools.resolve_target(gate.action.pane_id)
         tool_result = tools.dispatch(
             SEND_TO_SESSION,
@@ -1200,6 +1818,31 @@ def create_app(
             "delivered and the agent is still working on it — say that, and do NOT "
             "offer to resend or retry (it would duplicate the prompt). "
             'Only "blocked" means the message did not go through.'
+        )
+        try:
+            result = get_llm().ask(
+                report_prompt,
+                session_id=gate.session_id,
+                pane_id=gate.action.pane_id,
+            )
+        except BrainLLMError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return shape_ask_response(result, speak=speak)
+
+    def _replay_stop_and_report(gate: ApprovalGate, speak: bool = True) -> dict:
+        """Approve execution for stop gates (S12): the frozen interrupt
+        runs against the exact pane the gate named, then the model
+        reports. A refusal outcome (unknown harness, mux failure) is
+        reported as what it is — the turn was NOT stopped."""
+        stopped = tools.stop_pane(gate.action.pane_id or "")
+        report_prompt = (
+            f"The approved interrupt ran on {gate.action.agent or 'the agent'} "
+            f"(pane {gate.action.pane_id or 'unknown'}). Result:\n\n"
+            f"{stopped['outcome']}"
+            + (f" ({stopped['detail']})" if stopped.get("detail") else "")
+            + ".\n\nReport the outcome to the user in one or two short "
+            "spoken sentences. Only 'stopped' means the turn was "
+            "interrupted; anything else means it was NOT — say that."
         )
         try:
             result = get_llm().ask(
@@ -1244,11 +1887,26 @@ def create_app(
     def approval_current(session_id: Optional[str] = None) -> dict:
         """The session's live gate or ``{approval: null}`` — reload
         recovery for the PWA (PRD §5). Same session-id source as /ask:
-        absent id normalizes to the default session."""
+        absent id normalizes to the default session.
+
+        In a crew (S7) a lead with no local gate asks the fresh peers:
+        the first live REMOTE gate comes back tagged with its ``host``
+        and its id is indexed so the decision routes forward to the
+        owner — the gate is never resolved locally."""
         gate = approval_store.current(session_id)
         approval = (
             approval_payload(gate, cfg.approval_timeout_s) if gate is not None else None
         )
+        if approval is None and crew_gateway is not None:
+            try:
+                remote = crew_gateway.remote_current_gate()
+            except Exception:  # noqa: BLE001 — crew probing never 500s here
+                logger.warning("crew approval probe failed", exc_info=True)
+                remote = None
+            if remote is not None:
+                payload, host = remote
+                approval = dict(payload)
+                approval["host"] = host
         return {"approval": approval}
 
     @app.post("/ask")
@@ -1271,6 +1929,16 @@ def create_app(
         # waiting_llm before the LLM loop starts so a cancel can land
         # while the model is still thinking.
         job, degraded = _admit_speech_job(body, speech_jobs)
+        # Voice-channel traceability (doc 02 §3): exactly one line per
+        # accepted turn, with the utterance LENGTH and the target pane —
+        # never the transcript (same rule as the stt route).
+        audit_log.record({
+            "action": "ask",
+            "pane_id": body.pane_id,
+            "session_id": body.session_id,
+            "device": audit_device(request),
+            "detail": {"chars": len(body.text)},
+        })
         disconnect_event = threading.Event()
 
         def run_turn() -> dict:
@@ -1578,20 +2246,105 @@ def create_app(
             time.sleep(_speech.SPEECH_NEXT_POLL_S)
 
     @app.post("/pane/reply")
-    def pane_reply(body: PaneReplyRequest) -> dict:
-        """Delivers a user-typed reply straight to one exact pane.
+    def pane_reply(request: Request, body: PaneReplyRequest) -> dict:
+        """Delivers a user-typed reply straight to one exact pane, VERIFIED.
 
         No LLM and no approval gate: the text is the user's own keyboard
         input. The pane must exist (an unknown one is a 404, never
         redirected); a pane already waiting at a dialog is a 409 — herdr
-        refuses that prompt before writing any input, so the detail points
-        at the dialog instead of pretending the text was refused by the
-        agent — and any herdr failure is a 502.
+        refuses that prompt before writing any input — and any herdr
+        failure is a 502.
+
+        S12 adds the read-back: the screen read before and after the send
+        classifies what the terminal actually did, and every response
+        gains a ``receipt`` (closed outcome set). The receipt never
+        re-sends text: a ``typed_not_submitted`` draft is finished with
+        the dedicated submit/discard routes below. ``steer`` asks to
+        inject into a RUNNING turn and is refused (422) for harnesses
+        outside the steer table — the plain reply stays the only default.
+        A remote crew pane (``<host>:<pane>``) proxies to its owner's
+        /crew/v1/reply; the owner's outcome mapping travels back
+        verbatim and the write is audited here as the operator's.
         """
-        result = tools.reply_to_pane(body.pane_id, body.text)
+        crew_peer = crew_remote_peer(body.pane_id)
+        if crew_peer is not None:
+            _, remote_id = split_pane_id(body.pane_id)
+            result = crew_call(
+                crew_peer, lambda client: client.reply(remote_id, body.text)
+            )
+            audit_log.record({
+                "action": "pane.reply",
+                "pane_id": body.pane_id,
+                "device": audit_device(request),
+                "detail": {
+                    "outcome": "delivered", "text": body.text, "crew": True,
+                },
+            })
+            return result if isinstance(result, dict) else {"ok": True}
+        verified = getattr(tools, "verified_reply_to_pane", None)
+        if verified is not None:
+            result = verified(body.pane_id, body.text, steer=body.steer)
+        else:
+            # Pre-S12 tool doubles (the same hasattr convention as
+            # attach_consult): no read-back exists and steer — a
+            # capability those surfaces cannot vouch for — is refused.
+            if body.steer:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "Ese agente no admite inyectar mensajes en un turno "
+                        "en curso; envía la respuesta normal y espera a que "
+                        "termine."
+                    ),
+                )
+            result = tools.reply_to_pane(body.pane_id, body.text)
+            # A pre-S12 double models the pre-S12 surface: legacy
+            # envelope, legacy body — no receipt key is added.
         outcome = result["outcome"]
+        receipt_fields = result.get("receipt")
+        receipt = None
+        if receipt_fields is not None:
+            receipt = receipt_store.record(
+                body.pane_id,
+                receipt_fields["outcome"],
+                detail=receipt_fields["detail"],
+                text_hint=receipt_fields["text_hint"],
+            )
+        # The pane.reply audit line keeps its pinned shape for the plain
+        # reply ({"outcome", "text"}); the S12 additions ride along only
+        # when they carry NEW facts — a steer is a different send, and a
+        # draft that needs follow-up names the receipt the phone holds.
+        detail = {"outcome": outcome, "text": body.text}
+        if body.steer:
+            detail["steer"] = True
+        if receipt is not None and receipt["outcome"] in (
+            "typed_not_submitted", "refused", "unknown"
+        ):
+            detail["receipt"] = {"id": receipt["id"], "outcome": receipt["outcome"]}
+        audit_log.record({
+            "action": "pane.reply",
+            "pane_id": body.pane_id,
+            "device": audit_device(request),
+            "detail": detail,
+        })
+        if outcome == "unsupported_steer":
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Ese agente no admite inyectar mensajes en un turno en "
+                    "curso; envía la respuesta normal y espera a que termine."
+                ),
+            )
         if outcome == "delivered":
-            return {"ok": True, "pane_id": body.pane_id}
+            if receipt is not None and receipt["outcome"] == "typed_not_submitted":
+                # Typed, but the terminal never took it: NOT ok — the
+                # phone keeps the composer's receipt card with Submit/
+                # Discard instead of clearing it as sent.
+                return {"ok": False, "pane_id": body.pane_id, "receipt": receipt}
+            if receipt is None:
+                # Legacy tool double: legacy body, byte for byte.
+                return {"ok": True, "pane_id": body.pane_id}
+            return {"ok": True, "pane_id": body.pane_id, "receipt": receipt}
         if outcome == "blocked":
             raise HTTPException(
                 status_code=409,
@@ -1606,8 +2359,143 @@ def create_app(
             detail=result.get("detail") or "No se pudo entregar la respuesta.",
         )
 
+    @app.get("/pane/receipts")
+    def pane_receipts(
+        pane_id: Optional[str] = Query(default=None, max_length=MAX_SESSION_ID_CHARS),
+    ) -> dict:
+        """The pane's recent send receipts, newest first (S12).
+
+        Read-only and bounded like every receipt surface: an optional
+        ``pane_id`` filters, no parameter lists everything the in-memory
+        store still holds. No text ever travels — the receipt carries
+        the outcome, a masked detail and a masked text tail."""
+        return {"pane_id": pane_id, "receipts": receipt_store.list(pane_id)}
+
+    def _live_typed_receipt_or_error(receipt_id: str) -> dict:
+        """The receipt a submit/discard may act on, or its HTTP error.
+
+        Only a ``typed_not_submitted`` receipt is actionable: any other
+        outcome is a 409 (the draft is gone — finished, discarded or
+        never typed), an unknown id a 404."""
+        receipt = receipt_store.get(receipt_id)
+        if receipt is None:
+            raise HTTPException(
+                status_code=404, detail="recibo no encontrado"
+            )
+        if receipt["outcome"] != "typed_not_submitted":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Ese recibo ya no tiene un texto pendiente de enviar "
+                    f"(estado: {receipt['outcome']})."
+                ),
+            )
+        return receipt
+
+    def _resolve_receipt_and_audit(
+        request: Request, action: str, receipt: dict, result: dict
+    ) -> dict:
+        """Applies one submit/discard result to its receipt, audited.
+
+        A key failure is a 502 with the receipt UNTOUCHED (nothing was
+        written); every other outcome resolves the receipt — ``sent`` /
+        ``discarded`` on success, ``typed_not_submitted`` when the echo
+        survived (the card stays re-offerable), ``unknown`` when the
+        screen could not be read. ``ok`` is true only for the resolved
+        outcome the action wanted."""
+        outcome = result["outcome"]
+        if outcome == "error":
+            audit_log.record({
+                "action": action,
+                "pane_id": receipt["pane_id"],
+                "device": audit_device(request),
+                "detail": {"id": receipt["id"], "outcome": outcome,
+                           "reason": result.get("detail", "")},
+            })
+            raise HTTPException(
+                status_code=502,
+                detail=result.get("detail") or "No se pudo completar la acción.",
+            )
+        resolved = receipt_store.resolve(
+            receipt["id"], outcome, detail=result.get("detail", "")
+        )
+        audit_log.record({
+            "action": action,
+            "pane_id": receipt["pane_id"],
+            "device": audit_device(request),
+            "detail": {"id": receipt["id"], "outcome": outcome},
+        })
+        return {
+            "ok": outcome in ("sent", "discarded"),
+            "pane_id": receipt["pane_id"],
+            "receipt": resolved,
+        }
+
+    @app.post("/pane/receipt/{receipt_id}/submit")
+    def pane_receipt_submit(request: Request, receipt_id: str) -> dict:
+        """Presses Enter on one typed-but-not-submitted draft (S12).
+
+        The ONE follow-up the receipt protocol allows: no text is ever
+        re-sent (that would duplicate the draft) — only the commit key,
+        then the same read-back decides the outcome. The receipt flips
+        to ``sent`` when the echo left the input line, stays
+        ``typed_not_submitted`` (re-offerable) when it did not.
+        """
+        receipt = _live_typed_receipt_or_error(receipt_id)
+        result = tools.submit_typed_text(receipt["pane_id"], receipt["text_hint"])
+        return _resolve_receipt_and_audit(request, "pane.receipt.submit", receipt, result)
+
+    @app.post("/pane/receipt/{receipt_id}/discard")
+    def pane_receipt_discard(request: Request, receipt_id: str) -> dict:
+        """Clears one typed draft with the safe key recipe (S12).
+
+        ``esc`` for every harness: it never types a character and never
+        executes anything — on chat TUIs it drops the draft. The receipt
+        flips to ``discarded`` once the read-back sees the input line
+        clean; a surviving echo keeps it ``typed_not_submitted``.
+        """
+        receipt = _live_typed_receipt_or_error(receipt_id)
+        result = tools.discard_typed_text(receipt["pane_id"], "", receipt["text_hint"])
+        return _resolve_receipt_and_audit(request, "pane.receipt.discard", receipt, result)
+
+    @app.post("/pane/stop")
+    def pane_stop(request: Request, body: PaneStopRequest) -> dict:
+        """Interrupts one pane's RUNNING turn (S12).
+
+        The interrupt key comes from the per-harness table (``esc`` for
+        the claude/codex/opencode chat TUIs); a harness outside it is a
+        422 — the brain refuses to guess an interrupt into a terminal it
+        cannot reason about. Exact pane as everywhere (unknown = 404,
+        never the focused fallback), keys ride the closed allowlist, and
+        every attempt is audited.
+        """
+        result = tools.stop_pane(body.pane_id)
+        outcome = result["outcome"]
+        audit_log.record({
+            "action": "pane.stop",
+            "pane_id": body.pane_id,
+            "device": audit_device(request),
+            "detail": {"outcome": outcome, "keys": result.get("keys", [])},
+        })
+        if outcome == "stopped":
+            return {"ok": True, "pane_id": body.pane_id, "keys": result["keys"]}
+        if outcome == "unknown_pane":
+            raise HTTPException(status_code=404, detail="pane no encontrado")
+        if outcome == "unsupported_harness":
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "No sé interrumpir ese agente con seguridad; usa su "
+                    "propio atajo de teclado en la terminal."
+                ),
+            )
+        raise HTTPException(
+            status_code=502,
+            detail=result.get("detail") or "No se pudo detener el agente.",
+        )
+
     @app.post("/pane/keys")
-    def pane_keys(body: PaneKeysRequest) -> dict:
+    def pane_keys(request: Request, body: PaneKeysRequest) -> dict:
         """Answers a BLOCKED agent's dialog with logical key presses.
 
         ``herdr agent prompt`` refuses an agent waiting at an approval or
@@ -1616,16 +2504,119 @@ def create_app(
         one is a 404, never redirected — answering the wrong agent's
         permission dialog would be silent and hard to undo); every key comes
         from the closed allowlist the request model enforces (422 otherwise);
-        any herdr failure is a 502.
+        any herdr failure is a 502. A remote crew pane proxies to its owner
+        (S7) with the keys riding the owner's identical code path.
         """
+        crew_peer = crew_remote_peer(body.pane_id)
+        if crew_peer is not None:
+            _, remote_id = split_pane_id(body.pane_id)
+            result = crew_call(
+                crew_peer, lambda client: client.keys(remote_id, body.keys)
+            )
+            audit_log.record({
+                "action": "pane.keys",
+                "pane_id": body.pane_id,
+                "device": audit_device(request),
+                "detail": {"outcome": "sent", "keys": body.keys, "crew": True},
+            })
+            return result if isinstance(result, dict) else {"ok": True}
         result = tools.send_keys_to_pane(body.pane_id, body.keys)
         outcome = result["outcome"]
+        # The keys come from a closed allowlist of 7 values — metadata,
+        # not content — so they survive redaction like every other
+        # allowlisted field.
+        audit_log.record({
+            "action": "pane.keys",
+            "pane_id": body.pane_id,
+            "device": audit_device(request),
+            "detail": {"outcome": outcome, "keys": body.keys},
+        })
         if outcome == "sent":
             return {"ok": True, "pane_id": body.pane_id}
         status = 404 if outcome == "unknown_pane" else 502
         raise HTTPException(
             status_code=status,
             detail=result.get("detail") or "No se pudieron enviar las teclas.",
+        )
+
+    @app.post("/pane/dialog/answer")
+    def pane_dialog_answer(request: Request, body: PaneDialogAnswerRequest) -> dict:
+        """Answers one RECOGNIZED dialog option a button was tapped for.
+
+        The guarded button-tap path (S2): the server RE-READS the pane,
+        re-derives the structured dialog and refuses with 409 when the
+        fingerprint changed under the tap — no key ever leaves on the
+        strength of a stale render. A keys recipe (the numbering the
+        screen printed) goes out as one sequence after the entry guard;
+        a walk recipe is walked by the guard with a re-read after every
+        arrow. The pane is resolved exactly (unknown pane = 404, never
+        the focused fallback), a refused option index is a 422, a
+        multiplexer without logical keys is a 502 with its own
+        explanation, and every attempt is audited. A remote crew pane
+        proxies to its owner's identical code path (S7).
+        """
+        crew_peer = crew_remote_peer(body.pane_id)
+        if crew_peer is not None:
+            _, remote_id = split_pane_id(body.pane_id)
+            result = crew_call(
+                crew_peer,
+                lambda client: client.dialog_answer(
+                    remote_id,
+                    {"fingerprint": body.fingerprint, "option": body.option},
+                ),
+            )
+            audit_log.record({
+                "action": "pane.dialog.answer",
+                "pane_id": body.pane_id,
+                "device": audit_device(request),
+                "detail": {
+                    "outcome": "answered", "option": body.option,
+                    "fingerprint": body.fingerprint, "crew": True,
+                },
+            })
+            return result if isinstance(result, dict) else {"ok": True}
+        result = tools.answer_structured_dialog(
+            body.pane_id, body.fingerprint, body.option
+        )
+        outcome = result["outcome"]
+        # The fingerprint names the answered dialog and the option index
+        # is metadata — neither carries terminal content.
+        audit_log.record({
+            "action": "pane.dialog.answer",
+            "pane_id": body.pane_id,
+            "device": audit_device(request),
+            "detail": {
+                "outcome": outcome,
+                "reason": result.get("reason", ""),
+                "option": body.option,
+                "fingerprint": body.fingerprint,
+            },
+        })
+        if outcome == "answered":
+            return {
+                "ok": True,
+                "pane_id": body.pane_id,
+                "option": body.option,
+                "label": result.get("label", ""),
+            }
+        reason = result.get("reason", "")
+        if reason == "unknown_pane":
+            raise HTTPException(status_code=404, detail="pane no encontrado")
+        if reason == "invalid_target":
+            raise HTTPException(
+                status_code=422, detail="Esa opción no está en este diálogo."
+            )
+        if reason in ("changed", "no_progress", "unreachable_option"):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "El diálogo cambió antes de responder; nada se envió. "
+                    "Mira la pantalla de nuevo y responde al diálogo nuevo."
+                ),
+            )
+        raise HTTPException(
+            status_code=502,
+            detail=result.get("detail") or "No se pudo responder el diálogo.",
         )
 
     @app.get("/pane/permission")
@@ -1661,7 +2652,7 @@ def create_app(
         }
 
     @app.post("/pane/permission/reply")
-    def pane_permission_reply(body: PermissionReplyRequest) -> dict:
+    def pane_permission_reply(request: Request, body: PermissionReplyRequest) -> dict:
         """Answers one opencode approval dialog, for one exact pane.
 
         PWA-only by construction — the same capability as an LLM tool would
@@ -1685,29 +2676,477 @@ def create_app(
             permissions_client.reply(body.request_id, body.reply, session_id)
         except OpenCodeError as exc:
             raise _opencode_http_error(exc) from exc
+        # ``reply`` comes from a closed enum and ``request_id`` names the
+        # answered dialog — metadata, never content.
+        audit_log.record({
+            "action": "pane.permission.reply",
+            "pane_id": body.pane_id,
+            "device": audit_device(request),
+            "detail": {"reply": body.reply, "request_id": body.request_id},
+        })
         return {"ok": True}
 
+        # ── Device pairing (F1 security; access.py classifies the
+    # levels: /pair takes the write Host/Origin gate but no device
+    # gates — a device that never paired holds no token, so gating the
+    # bootstrap on one would make pairing unreachable. ──────────────
+
+    @app.post("/pair")
+    def pair(request: Request, body: PairRequest) -> dict:
+        """Exchange ``{code,label}`` for a one-time bearer token.
+
+        The credential this route hands out is worthless without a code
+        the operator read off their own terminal within the last ten
+        minutes, behind a five-attempt counter. Failures are one bare
+        reason word (no timing or count leaks back — the attempts left
+        are the operator's business, on the operator's terminal). The
+        token is returned exactly once and never stored in the clear.
+
+        Rate limited (S11): at most 10 claim attempts per client address
+        per minute, then a 429 with a Retry-After — checked BEFORE the
+        claim so a refused attempt consumes nothing and touches no
+        pairing file.
+        """
+        client = request.client.host if request.client else "unknown"
+        retry_after = pair_limiter.check(client)
+        if retry_after is not None:
+            raise HTTPException(
+                status_code=429,
+                detail="demasiados intentos de emparejamiento",
+                headers={"Retry-After": str(retry_after)},
+            )
+        label = normalize_device_label(body.label)
+        if label is None:
+            raise HTTPException(status_code=422, detail="label must be 1-48 usable characters")
+        status, outcome = pairing_store.claim(body.code, label)
+        if status != "ok":
+            raise HTTPException(status_code=400, detail=outcome)
+        audit_log.record({
+            "action": "pair",
+            "device": audit_device(request),  # set only when a paired device re-pairs
+            "detail": {"label": outcome["label"]},
+        })
+        return {"token": outcome["token"], "label": outcome["label"]}
+
+    def _devices_payload(request: Request) -> dict:
+        # "current" is resolved at RESPONSE time, not from the
+        # middleware's request-time label: a device that just revoked
+        # itself must already read as current=None (the bearer is
+        # resolved after the revocation for the same reason). An
+        # EXPIRED token resolves to no current device either — the PWA
+        # learns it is unpaired from the state, or from the read 403
+        # the gate answers with (S11).
+        from .pairing import bearer_token as _bearer
+
+        token = _bearer(request.headers.get)
+        current = None
+        if token:
+            status, device = pairing_store.resolve_status(token)
+            if status == "ok":
+                current = device["label"]
+        return {
+            "enforced": pairing_store.enforced(),
+            "current": current,
+            "devices": to_device_wire(pairing_store.registry(), current),
+        }
+
+    @app.get("/devices")
+    def devices(request: Request) -> dict:
+        """Read-only on purpose: an unpaired device can still see whether
+        pairing is on and which devices hold credentials. The token
+        hashes never reach this shape."""
+        return _devices_payload(request)
+
+    @app.post("/devices/revoke")
+    def devices_revoke(request: Request, body: DeviceRevokeRequest) -> dict:
+        """Drop one device's credential (write-gated by the access
+        middleware). Revoking YOURSELF is allowed — that is how a device
+        un-pairs — and the last device leaving switches enforcement back
+        off, the one ordering that cannot strand the operator."""
+        label = normalize_device_label(body.label)
+        if label is None:
+            raise HTTPException(status_code=422, detail="label must be 1-48 usable characters")
+        if not pairing_store.revoke(label):
+            raise HTTPException(status_code=404, detail="no paired device with that label")
+        audit_log.record({
+            "action": "device.revoke",
+            "device": audit_device(request),
+            "detail": {"label": label},
+        })
+        return _devices_payload(request)
+
+    # -- Web Push (S5) ------------------------------------------------------
+
+    def _push_or_503() -> WebPushService:
+        if push_service_ is None:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Web Push no está disponible en este brain: falta o falla "
+                    "la configuración VAPID (revisa el arranque o `herdr-brain "
+                    "push import`)."
+                ),
+            )
+        return push_service_
+
+    @app.get("/push/key")
+    def push_key() -> dict:
+        """The VAPID public key the PWA subscribes with (read-only).
+
+        ``enabled: false`` is the soft-off state — no keys configured,
+        nothing was ever sent. The public key is a publication, not a
+        secret: it only names the sender to the push service.
+        """
+        push = _push_or_503()
+        return {"enabled": push.enabled, "public_key": push.public_key()}
+
+    @app.post("/push/subscribe")
+    def push_subscribe(request: Request, body: PushSubscribeRequest) -> dict:
+        """Stores one browser PushSubscription, attributed to the paired
+        device that presented it.
+
+        The service validates and owns persistence (atomic write, bound
+        of 8, ``replaces`` retirement) and writes the audit line itself.
+        A corrupt store answers 500 WITHOUT resetting a single byte —
+        the file holds per-device delivery keys.
+        """
+        push = _push_or_503()
+        payload = {
+            "endpoint": body.endpoint,
+            "keys": {
+                "p256dh": body.keys.p256dh,
+                "auth": body.keys.auth,
+            },
+            "user_agent": body.user_agent or "",
+            "replaces": body.replaces,
+        }
+        try:
+            record = push.subscribe(payload, device=audit_device(request))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except PushStoreError as exc:
+            # Loud, never a silent reset (risk item 1).
+            logger.error("push subscribe refused: %s", exc)
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "El almacén de suscripciones push está dañado; arréglalo "
+                    "o elimínalo a mano — no se ha tocado ni un byte."
+                ),
+            ) from exc
+        return record
+
+    @app.post("/push/unsubscribe")
+    def push_unsubscribe(request: Request, body: PushUnsubscribeRequest) -> dict:
+        """Drops one endpoint. Idempotent: an unknown endpoint is ok."""
+        push = _push_or_503()
+        try:
+            removed = push.unsubscribe(body.endpoint, device=audit_device(request))
+        except PushStoreError as exc:
+            logger.error("push unsubscribe refused: %s", exc)
+            raise HTTPException(
+                status_code=500,
+                detail="El almacén de suscripciones push está dañado.",
+            ) from exc
+        return {"ok": removed}
+
+    @app.post("/push/test")
+    def push_test(request: Request) -> dict:
+        """One round-trip notification per subscribed device.
+
+        The service refuses to send on a corrupt store (its honest
+        ``sent: 0``); this route adds the audit line the interactive
+        test deserves — the operator pressed the button.
+        """
+        push = _push_or_503()
+        try:
+            result = push.test_notification()
+        except PushStoreError as exc:
+            logger.error("push test refused: %s", exc)
+            raise HTTPException(
+                status_code=500,
+                detail="El almacén de suscripciones push está dañado.",
+            ) from exc
+        audit_log.record({
+            "action": "push.test",
+            "device": audit_device(request),
+            "detail": {"sent": result["sent"]},
+        })
+        return result
+
+    # -- Brain messages, operator half (S13) --------------------------------
+
+    @app.post("/msg/send")
+    def msg_send(request: Request, body: MsgSendRequest) -> dict:
+        """One operator message to one pane, through the walky service.
+
+        The sender identity is the paired device label — the same
+        authority every other write here carries — and the service owns
+        delivery (hold while busy, type when idle, 60-minute give-up)
+        plus its own ``msg.send`` audit line with the masked preview.
+        Refusals answer 422 with the walky text verbatim: they are
+        operator-readable by design.
+        """
+        if msg_service_ is None:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Los mensajes del brain no están disponibles: el registro "
+                    "de mensajes está dañado (revisa el arranque)."
+                ),
+            )
+        device = audit_device(request) or "pwa"
+        try:
+            message = msg_service_.operator_send(device, body.address, body.body)
+        except WalkyRefusal as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except MsgStoreError as exc:
+            logger.error("msg send refused: %s", exc)
+            raise HTTPException(
+                status_code=500,
+                detail="El registro de mensajes del brain está dañado.",
+            ) from exc
+        return {
+            "id": message.id,
+            "state": message.state,
+            "reason": message.reason,
+        }
+
+    @app.get("/msg/inbox")
+    def msg_inbox(
+        pane_id: str = Query(default="", max_length=MAX_SESSION_ID_CHARS),
+    ) -> dict:
+        """One pane's unread messages, marking them read (S13).
+
+        The pane's own agent reads this through the CLI; the PWA view is
+        the operator's window into the same inbox. An unknown pane is an
+        ordinary empty inbox, never an error.
+        """
+        if msg_service_ is None:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Los mensajes del brain no están disponibles: el registro "
+                    "de mensajes está dañado (revisa el arranque)."
+                ),
+            )
+        if not pane_id.strip():
+            raise HTTPException(
+                status_code=422, detail="pane_id es obligatorio"
+            )
+        try:
+            messages = msg_service_.inbox(pane_id)
+        except MsgStoreError as exc:
+            logger.error("msg inbox refused: %s", exc)
+            raise HTTPException(
+                status_code=500,
+                detail="El registro de mensajes del brain está dañado.",
+            ) from exc
+        return {
+            "pane_id": pane_id,
+            "messages": [m.as_dict() for m in messages],
+        }
+
+    # ── Operator surfaces (S3, doc 06) — read dock + two writes ──────
+
+    @app.get("/operator/config")
+    def operator_config_route(agent: Optional[str] = Query(default=None)) -> dict:
+        """The four operator surfaces resolved for one agent family.
+
+        The contract is FROZEN for the PWA: quick replies carry their
+        verbatim text, commands their slash text, key presets their
+        key sequence, and launchers ONLY their identity — the argv of a
+        launcher row NEVER crosses this route. Scoped rows REPLACE the
+        global catalog for their family (doc 06 substitution rule);
+        files reload by mtime on the next request, no restart.
+        """
+        pane = operator_config.for_pane(agent or "")
+        return {
+            "quick_replies": [
+                {"id": row.id, "label": row.label, "text": row.text}
+                for row in pane.quick_replies
+            ],
+            "commands": [
+                {"id": row.id, "label": row.label, "command": row.command}
+                for row in pane.commands
+            ],
+            "key_presets": [
+                {"id": row.id, "label": row.label, "keys": list(row.keys)}
+                for row in pane.key_presets
+            ],
+            "launchers": [
+                {"id": row.id, "label": row.label, "no_prompts": row.no_prompts}
+                for row in operator_config.launchers()
+            ],
+        }
+
+    @app.post("/operator/launch")
+    def operator_launch(request: Request, body: OperatorLaunchRequest) -> dict:
+        """Executes ONE allowlisted launcher row in a fresh shell tab.
+
+        The client names a row by id; the plan (argv → shell line, cwd)
+        is derived ONLY from the operator's validated file. An unknown
+        id is a 404; a ``no_prompts`` row without the explicit
+        confirmation and a configured cwd that no longer exists are
+        409s with their reason words; a multiplexer failure is a 502.
+        Every attempt is audited as ``operator.launch``.
+        """
+        try:
+            plan = operator_config.launch_plan(body.id, confirm=body.confirm)
+        except UnknownRowError:
+            audit_log.record({
+                "action": "operator.launch",
+                "device": audit_device(request),
+                "detail": {"outcome": "unknown", "id": body.id},
+            })
+            raise HTTPException(status_code=404, detail="unknown launcher row")
+        except LaunchRefusedError as exc:
+            audit_log.record({
+                "action": "operator.launch",
+                "device": audit_device(request),
+                "detail": {"outcome": exc.reason, "id": body.id},
+            })
+            raise HTTPException(status_code=409, detail=exc.reason)
+        try:
+            created = tools.launch_operator_tab(
+                plan.label, plan.cwd, plan.command_line
+            )
+        except Exception as exc:  # noqa: BLE001 — the mux surfaces its failure
+            audit_log.record({
+                "action": "operator.launch",
+                "device": audit_device(request),
+                "detail": {"outcome": "error", "id": body.id},
+            })
+            raise HTTPException(
+                status_code=502,
+                detail=f"No se pudo lanzar {plan.label!r}: {exc}",
+            ) from exc
+        audit_log.record({
+            "action": "operator.launch",
+            "pane_id": created.get("pane_id"),
+            "device": audit_device(request),
+            "detail": {
+                "outcome": "executed", "id": body.id,
+                "pane_id": created.get("pane_id"),
+            },
+        })
+        return {
+            "ok": True,
+            "id": body.id,
+            "label": plan.label,
+            "tab_id": created.get("tab_id"),
+            "pane_id": created.get("pane_id"),
+        }
+
+    @app.post("/operator/preset")
+    def operator_preset(request: Request, body: OperatorPresetRequest) -> dict:
+        """Sends one labelled key preset to one exact pane.
+
+        The keys are resolved SERVER-side from ``keys.toml`` against the
+        pane's agent family (scope substitution, same rule as the dock)
+        and ride the exact /pane/keys code path — same allowlist, same
+        unknown-pane 404, same herdr-failure 502. The client never
+        supplies keys. Audited as ``operator.preset``.
+        """
+        info = tools.pane_info(body.pane_id)
+        if info is None:
+            raise HTTPException(status_code=404, detail="pane no encontrado")
+        family = info.get("agent") or ""
+        catalog = operator_config.for_pane(family).key_presets
+        preset = next((row for row in catalog if row.id == body.id), None)
+        if preset is None:
+            audit_log.record({
+                "action": "operator.preset",
+                "pane_id": body.pane_id,
+                "device": audit_device(request),
+                "detail": {"outcome": "unknown", "id": body.id},
+            })
+            raise HTTPException(
+                status_code=404,
+                detail=f"unknown key preset {body.id!r} for {family or 'this agent'}",
+            )
+        result = tools.send_keys_to_pane(body.pane_id, list(preset.keys))
+        outcome = result["outcome"]
+        audit_log.record({
+            "action": "operator.preset",
+            "pane_id": body.pane_id,
+            "device": audit_device(request),
+            "detail": {"outcome": outcome, "id": body.id, "keys": list(preset.keys)},
+        })
+        if outcome == "sent":
+            return {"ok": True, "pane_id": body.pane_id}
+        status = 404 if outcome == "unknown_pane" else 502
+        raise HTTPException(
+            status_code=status,
+            detail=result.get("detail") or "No se pudieron enviar las teclas.",
+        )
+
+    def _forward_remote_gate(gate_id: str, decision: str, request: Request):
+        """A REMOTE crew gate's decision forwarded to its owner through
+        the gateway's GateRouter (S7). Returns the route-shaped reply
+        when the gate was remote, or None so the caller's LOCAL
+        handling continues untouched. The owner's verdict travels back
+        verbatim — its 404 for a dead gate is the answer."""
+        if crew_gateway is None:
+            return None
+        forwarded = crew_gateway.forward_gate(gate_id, decision)
+        if forwarded is None:
+            return None
+        audit_log.record({
+            "action": "approval.forward",
+            "device": audit_device(request),
+            "detail": {
+                "gate_id": gate_id,
+                "decision": decision,
+                "owner": forwarded.owner,
+            },
+        })
+        if forwarded.status >= 400:
+            raise HTTPException(
+                status_code=forwarded.status,
+                detail=(
+                    forwarded.payload.get("detail")
+                    if isinstance(forwarded.payload, dict)
+                    else "el dueño del gate rechazó la decisión"
+                ),
+            )
+        body = forwarded.payload if isinstance(forwarded.payload, dict) else {}
+        body.setdefault("ok", True)
+        body.setdefault("decision", decision)
+        return body
+
     @app.post("/approval/{gate_id}/approve")
-    def approval_approve(gate_id: str) -> dict:
+    def approval_approve(gate_id: str, request: Request) -> dict:
         """Replays the frozen send exactly once and reports the outcome.
 
         Same response shape as /ask (report answer + TTS audio_url). The
         replay IS the single approve execution; a second approve finds a
-        terminal gate and 404s (approve-once, AC6).
+        terminal gate and 404s (approve-once, AC6). A REMOTE crew gate
+        (S7) forwards the decision to its owner — the owner replays and
+        reports; this store never held the gate.
         """
+        forwarded = _forward_remote_gate(gate_id, "approve", request)
+        if forwarded is not None:
+            return forwarded
         live_gate_or_404(gate_id)
         resolved, applied = approval_store.resolve(gate_id, DECISION_APPROVE)
         if not applied:
             raise gate_gone()
+        audit_gate_decision("approval.approve", resolved, audit_device(request))
         return replay_and_report(resolved)
 
     @app.post("/approval/{gate_id}/reject")
-    def approval_reject(gate_id: str) -> dict:
-        """Silent cancellation: no TTS is generated server-side (PRD §5)."""
+    def approval_reject(gate_id: str, request: Request) -> dict:
+        """Silent cancellation: no TTS is generated server-side (PRD §5).
+        A REMOTE crew gate forwards the cancel to its owner (S7)."""
+        forwarded = _forward_remote_gate(gate_id, "reject", request)
+        if forwarded is not None:
+            return forwarded
         live_gate_or_404(gate_id)
         resolved, applied = approval_store.resolve(gate_id, DECISION_REJECT)
         if not applied:
             raise gate_gone()
+        audit_gate_decision("approval.reject", resolved, audit_device(request))
         return {"ok": True, "state": resolved.state}
 
     @app.post("/approval/{gate_id}/action")
@@ -1740,10 +3179,23 @@ def create_app(
             raise HTTPException(
                 status_code=422, detail='decision must be "approve" or "reject"'
             )
+        # A REMOTE crew gate forwards to its owner BEFORE any local
+        # lookup: this store never held it (S7).
+        forwarded = _forward_remote_gate(gate_id, word, request)
+        if forwarded is not None:
+            return forwarded
         live_gate_or_404(gate_id)
         resolved, applied = approval_store.resolve(gate_id, _ACTION_DECISIONS[word])
         if not applied:
             raise gate_gone()
+        # ntfy cannot attach a device bearer: the line records the
+        # decision without a device field — a channel limitation made
+        # explicit on the line itself, never inferred.
+        audit_log.record({
+            "action": "approval.action",
+            "pane_id": resolved.action.pane_id,
+            "detail": {"decision": word, "gate_id": resolved.gate_id},
+        })
         if word == "approve":
             background.add_task(run_action_replay, resolved)
         return {"ok": True, "decision": word, "state": resolved.state}
@@ -1752,8 +3204,13 @@ def create_app(
         """Background half of an ntfy approve: the response already left."""
         try:
             replay_and_report(gate, speak=False)
+            outcome = "ok"
         except Exception:  # noqa: BLE001 — no client left to receive an error
             logger.exception("ntfy approve replay failed for gate %s", gate.gate_id)
+            outcome = "error"
+        # The approve and its execution are decoupled in time, so the
+        # retry leaves its own line with its outcome (doc 02 §4).
+        audit_gate_decision("approval.replay", gate, None, extra={"outcome": outcome})
 
     def _spoken_receipt_valid(
         gate: ApprovalGate, speech_request_id: Optional[str]
@@ -1916,7 +3373,7 @@ def create_app(
         )
 
     @app.post("/approval/{gate_id}/resolve")
-    def approval_resolve(gate_id: str, body: ResolveRequest) -> dict:
+    def approval_resolve(gate_id: str, request: Request, body: ResolveRequest) -> dict:
         """Voice path: maps a confirming-state STT utterance onto the gate.
 
         Response: ``{decision, answer, audio_url, approval}`` where decision
@@ -1953,6 +3410,12 @@ def create_app(
                     # this action — restate the CURRENT one.
                     return _clarify_turn(resolved, clarify_line(resolved))
                 raise gate_gone()
+            # Spoken proof carried the authority: the line states that
+            # and WHICH frozen revision it executed (doc 02 §6).
+            audit_gate_decision(
+                "approval.resolve", resolved, audit_device(request),
+                extra={"decision": "approve", "spoken": True},
+            )
             turn = replay_and_report(resolved)
             return {
                 "decision": "approve",
@@ -1964,6 +3427,10 @@ def create_app(
             resolved, applied = approval_store.resolve(gate_id, DECISION_REJECT)
             if not applied:
                 raise gate_gone()
+            audit_gate_decision(
+                "approval.resolve", resolved, audit_device(request),
+                extra={"decision": "reject"},
+            )
             return {"decision": "reject", "answer": None, "audio_url": None, "approval": None}
         if outcome == OUTCOME_REPLACE_INTENT:
             # The gate stays live and untouched: the replacement text is
@@ -1976,17 +3443,22 @@ def create_app(
             resolved, applied = approval_store.resolve(gate_id, DECISION_REJECT)
             if not applied:
                 raise gate_gone()
+            audit_gate_decision(
+                "approval.resolve", resolved, audit_device(request),
+                extra={"decision": "reject"},
+            )
             return {"decision": "reject", "answer": None, "audio_url": None, "approval": None}
         approval_store.resolve(gate_id, DECISION_REPROMPT)
+        reprompt = locale_reprompt_line(call_context_store.locale())
         return {
             "decision": "reprompt",
-            "answer": REPROMPT_LINE,
-            "audio_url": speak_answer(REPROMPT_LINE),
+            "answer": reprompt,
+            "audio_url": speak_answer(reprompt),
             "approval": None,
         }
 
     @app.patch("/approval/{gate_id}")
-    def approval_patch(gate_id: str, body: ApprovalPatchRequest) -> dict:
+    def approval_patch(gate_id: str, request: Request, body: ApprovalPatchRequest) -> dict:
         """Manual edit or voice re-dictation result: swaps the frozen
         editable field (text for send gates, task for create gates; the
         wire body is ``text`` either way) and restarts the timer (the
@@ -1995,6 +3467,9 @@ def create_app(
         updated = approval_store.patch(gate_id, body.text)
         if updated is None:
             raise gate_gone()
+        # updated.revision IS the new revision after the bump — the
+        # trace says WHICH frozen text the gate now holds.
+        audit_gate_decision("approval.patch", updated, audit_device(request))
         return {"ok": True, "approval": approval_payload(updated, cfg.approval_timeout_s)}
 
     @app.post("/tts")
@@ -2015,13 +3490,215 @@ def create_app(
             raise HTTPException(status_code=404, detail="not found")
         return FileResponse(path, media_type="audio/mpeg")
 
+    @app.get("/pane/{pane_id}", include_in_schema=False)
+    def pane_deep_link(
+        pane_id: str = PathParam(max_length=MAX_SESSION_ID_CHARS),
+    ) -> RedirectResponse:
+        """Deep-link compatibility (S8, doc 11 fase 3): an external
+        button already builds ``${URL}/pane/${pane_id}`` (the tts-plugin
+        «Abrir Web»), so the brain answers it with a 302 to the PWA
+        shell with that pane PRESELECTED — ``/?pane_id=<id>``, percent-
+        encoded, read-classified, no state touched here. Registered
+        AFTER the explicit /pane/* routes so nothing is captured."""
+        from urllib.parse import quote
+
+        if re.search(r"[\r\n]", pane_id):
+            raise HTTPException(status_code=404, detail="not found")
+        return RedirectResponse(
+            url=f"/?pane_id={quote(pane_id, safe='')}", status_code=302
+        )
+
+
+    # ── the peer-side crew surface (S7) ─────────────────────────────────
+    #
+    # Built only when this host declared a crew: the same tools, gates
+    # and audit the local routes use, served over the pinned /crew/v1/*
+    # dispatcher for the lead. The handlers mirror their HTTP routes'
+    # outcome mapping (the crew wire carries (status, payload) tuples);
+    # a solo brain builds none of this — zero crew bytes anywhere.
+
+    def _crew_reply_outcome(result: dict, pane_id: str) -> tuple:
+        outcome = result["outcome"]
+        if outcome == "delivered":
+            receipt = result.get("receipt")
+            body = {"ok": receipt is None or receipt.get("outcome") != "typed_not_submitted",
+                    "pane_id": pane_id}
+            if receipt is not None:
+                body["receipt"] = receipt
+            return 200, body
+        if outcome == "blocked":
+            return 409, {"detail": "agent_blocked"}
+        if outcome == "unknown_pane":
+            return 404, {"detail": "pane not found"}
+        return 502, {"detail": result.get("detail") or "reply failed"}
+
+    crew_handlers: Optional[dict] = None
+    if crew_gateway is not None:
+        def _safe_int(raw, default):
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                return default
+
+        def _h_herd():
+            return tools.herd()
+
+        def _h_view(pane_id):
+            return tools.agent_view(pane_id)
+
+        def _h_history(pane_id, **query):
+            return tools.history_page(
+                pane_id, query.get("cursor"), _safe_int(
+                    query.get("limit"), HISTORY_DEFAULT_LIMIT
+                )
+            )
+
+        def _h_mirror(pane_id, **query):
+            payload = tools.pane_mirror(pane_id, query.get("lines"))
+            if payload is None:
+                return 404, {"detail": "pane not found"}
+            return payload
+
+        def _h_reply(pane_id, text):
+            if not isinstance(text, str) or not text.strip():
+                return 400, {"detail": "text is required"}
+            verified = getattr(tools, "verified_reply_to_pane", None)
+            result = (
+                verified(pane_id, text)
+                if verified is not None
+                else tools.reply_to_pane(pane_id, text)
+            )
+            return _crew_reply_outcome(result, pane_id)
+
+        def _h_keys(pane_id, keys):
+            if not isinstance(keys, list) or not keys:
+                return 400, {"detail": "keys must be a non-empty array"}
+            result = tools.send_keys_to_pane(pane_id, keys)
+            outcome = result["outcome"]
+            if outcome == "sent":
+                return {"ok": True, "pane_id": pane_id}
+            return (404 if outcome == "unknown_pane" else 502), {
+                "detail": result.get("detail") or "send-keys failed"
+            }
+
+        def _h_dialog_answer(pane_id, **payload):
+            result = tools.answer_structured_dialog(
+                pane_id, payload.get("fingerprint"), payload.get("option")
+            )
+            outcome = result["outcome"]
+            if outcome == "answered":
+                return {
+                    "ok": True, "pane_id": pane_id,
+                    "option": payload.get("option"),
+                    "label": result.get("label", ""),
+                }
+            reason = result.get("reason", "")
+            status = 404 if reason == "unknown_pane" else (
+                422 if reason == "invalid_target" else (
+                    409 if reason in ("changed", "no_progress", "unreachable_option")
+                    else 502
+                )
+            )
+            return status, {"detail": reason or "dialog answer failed"}
+
+        def _h_approval_current(pane_id=None, **_query):
+            session = None
+            if pane_id:
+                info = tools.pane_info(pane_id)
+                session = (info or {}).get("session_id")
+            gate = approval_store.current(session)
+            return {
+                "approval": (
+                    approval_payload(gate, cfg.approval_timeout_s)
+                    if gate is not None
+                    else None
+                )
+            }
+
+        def _h_approval_action(gate_id, decision):
+            word = decision if decision in ("approve", "reject") else None
+            if word is None:
+                return 400, {"detail": "decision must be approve or reject"}
+            gate = approval_store.get(gate_id)
+            if gate is None or gate.state != PROPOSED:
+                return 404, {"detail": "gate dead"}
+            resolved, applied = approval_store.resolve(
+                gate_id,
+                DECISION_APPROVE if word == "approve" else DECISION_REJECT,
+            )
+            if not applied:
+                return 404, {"detail": "gate dead"}
+            audit_gate_decision(
+                "approval.action", resolved, None,
+                extra={"decision": word, "crew": True},
+            )
+            if word == "approve":
+                replay_and_report(resolved, speak=False)
+            return {"ok": True, "decision": word, "state": resolved.state}
+
+        crew_handlers = {
+            "herd": _h_herd,
+            "view": _h_view,
+            "history": _h_history,
+            "mirror": _h_mirror,
+            "reply": _h_reply,
+            "keys": _h_keys,
+            "dialog_answer": _h_dialog_answer,
+            "approval_current": _h_approval_current,
+            "approval_action": _h_approval_action,
+        }
+
+        from .crew.enrol import JoinTokens
+        from .crew.roster import CrewRoster
+
+        def _roster_loader() -> CrewRoster:
+            # The service's own discipline: a corrupt roster raises here
+            # and every crew request answers the uniform 401 (fail
+            # closed), never a silent solo reset.
+            return load_crew_roster(cfg.state_dir)
+
+        app.state.crew_app = create_crew_app(
+            crew_handlers,
+            _roster_loader,
+            join_tokens=JoinTokens(cfg.state_dir),
+        )
+        app.state.crew_handlers = crew_handlers
+
+    app.state.crew = crew_gateway
+
     # Static PWA assets, mounted last so every API route above wins.
     app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
 
     return app
 
 
+def uvicorn_launch_kwargs(host: str, settings: Settings) -> dict:
+    """The uvicorn.run() kwargs of the production entry point (B3).
+
+    ``proxy_headers=False`` is a security property, not an optimization:
+    uvicorn's default ProxyHeadersMiddleware rewrites the ASGI client
+    address from client-controlled X-Forwarded-For whenever the peer is
+    in the (loopback-default) trusted set — and the /pair claim limiter
+    keys on that address, so with proxy-header trust on, a forger
+    rotates the limiter's key with every request. With it off,
+    ``scope["client"]`` is always the real transport peer. Consequence,
+    deliberate: connections from a CO-LOCATED reverse proxy all share
+    that proxy's transport-peer budget unless a separately trusted
+    scheme is explicitly supported. The Tailscale trusted-user header
+    is unaffected — the access gate reads ``Tailscale-User-Login``
+    itself, never uvicorn's proxy machinery. Bindings (host/port) are
+    unchanged by this helper.
+    """
+    return {
+        "host": host,
+        "port": settings.brain_port,
+        "log_config": None,
+        "proxy_headers": False,
+    }
+
+
 def main() -> None:  # pragma: no cover - manual entrypoint
+    import asyncio
     import logging
     import os
 
@@ -2036,12 +3713,68 @@ def main() -> None:  # pragma: no cover - manual entrypoint
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # uvicorn's access log echoes request lines WITH query strings, and
+    # /events?device_token=… would persist the credential in the journal
+    # (S11.2). The filter rewrites any device_token value out of the
+    # record; log_config=None keeps uvicorn from installing its own
+    # unfiltered access handler — its records propagate to the root
+    # handler instead, THROUGH this filter.
+    logging.getLogger("uvicorn.access").addFilter(RedactQueryToken())
 
     # Default loopback; override (e.g. 0.0.0.0 under WSL2 with a Windows-side
     # tailscale serve proxy) via HERDR_BRAIN_HOST.
     host = os.getenv("HERDR_BRAIN_HOST", "127.0.0.1")
     settings = load_settings()
-    uvicorn.run(create_app(settings), host=host, port=settings.brain_port)
+    app = create_app(settings)
+
+    # The crew listener (S7): a SECOND uvicorn server on the crew's own
+    # TLS port, started ONLY when the roster declares a crew (lead or
+    # peer). Solo — the default — runs exactly one server through the
+    # pinned uvicorn.run contract (test_resolve B3) exactly as before.
+    from . import crew_runtime
+
+    try:
+        roster = crew_runtime.load_roster(settings.state_dir)
+    except Exception as exc:  # noqa: BLE001 — corrupt: serve solo, loudly
+        logging.getLogger("herdr_brain.server").error(
+            "crew roster unreadable — no crew listener: %s", exc
+        )
+        roster = None
+    crew_kwargs = None
+    if crew_runtime.listener_should_start(roster):
+        crew_kwargs = crew_runtime.listener_kwargs(
+            roster,
+            settings.state_dir,
+            host=os.getenv(
+                crew_runtime.ENV_CREW_HOST, crew_runtime.DEFAULT_CREW_HOST
+            ),
+            port=settings.crew_port,
+        )
+        if crew_kwargs is not None:
+            logging.getLogger("herdr_brain.server").info(
+                "crew listener starting on %s:%s (role %s)",
+                crew_kwargs["host"], crew_kwargs["port"], roster.role,
+            )
+
+    if crew_kwargs is None:
+        uvicorn.run(app, **uvicorn_launch_kwargs(host, settings))
+        return
+
+    crew_app = getattr(app.state, "crew_app", None)
+    if crew_app is None:  # the roster flipped after create_app read it
+        uvicorn.run(app, **uvicorn_launch_kwargs(host, settings))
+        return
+
+    primary = uvicorn.Config(app, **uvicorn_launch_kwargs(host, settings))
+    crew_config = uvicorn.Config(crew_app, **crew_kwargs)
+
+    async def _serve_both() -> None:
+        await asyncio.gather(
+            uvicorn.Server(primary).serve(),
+            uvicorn.Server(crew_config).serve(),
+        )
+
+    asyncio.run(_serve_both())
 
 
 if __name__ == "__main__":  # pragma: no cover

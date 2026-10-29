@@ -40,6 +40,31 @@
     { key: "idle", label: "Inactivo" },
     { key: "other", label: "Otros" }
   ];
+
+  /* i18n (S4): the page injects t() after boot; without it the
+   * built-in Spanish labels are the single source (node suite). */
+  var translator = null;
+
+  function useTranslator(tFn) {
+    translator = typeof tFn === "function" ? tFn : null;
+  }
+
+  function tr(key, fallback) {
+    if (!translator) return fallback;
+    var value = translator(key);
+    return value && value !== key ? value : fallback;
+  }
+
+  function labels() {
+    return {
+      recent: tr("herd.recent", RECENT_LABEL),
+      blocked: tr("herd.g_blocked", "Bloqueado"),
+      working: tr("herd.g_working", "Trabajando"),
+      done: tr("herd.g_done", "Listo"),
+      idle: tr("herd.g_idle", "Inactivo"),
+      other: tr("herd.g_other", "Otros"),
+    };
+  }
   var OTHER_KEY = "other";
 
   function sectionKeyOf(agent) {
@@ -79,14 +104,14 @@
       if (!bucket) continue;
       var subgroups = [];
       if (bucket.recent.length) {
-        subgroups.push({ key: "recent", label: RECENT_LABEL, rows: bucket.recent });
+        subgroups.push({ key: "recent", label: labels().recent, rows: bucket.recent });
       }
       if (bucket.older.length) {
         /* Empty label: the renderer draws a header only when there is
          * one, so "the rest" stays a continuation of the same state. */
         subgroups.push({ key: "older", label: "", rows: bucket.older });
       }
-      sections.push({ key: section.key, label: section.label, subgroups: subgroups });
+      sections.push({ key: section.key, label: labels()[section.key] || section.label, subgroups: subgroups });
     }
     return sections;
   }
@@ -95,6 +120,7 @@
     groupHerd: groupHerd,
     RECENT_WINDOW_S: RECENT_WINDOW_S,
     RECENT_LABEL: RECENT_LABEL,
+    useTranslator: useTranslator,
     SECTIONS: SECTIONS
   };
 

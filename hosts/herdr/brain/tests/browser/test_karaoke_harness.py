@@ -15,10 +15,28 @@ EXPECTED_DIGESTS = {
     # served static files (the sheet grouping and the typed-reply input),
     # so these three hashes have to be recomputed from disk after every
     # merge that touches index.html, app.js or herd-group.js.
-    "/": "0df405cb5dc9bd94a43a3e03f95b691d3373b66f94cec1bf082f8ca9c626b3a5",
-    "/app.js": "aa4e10c703248bd2746601450c4fc84625641bb0b7734605bd7b63258a68a520",
-    "/herd-group.js": "08296c7208e14dc1d5e46186b645d02089f8addef502b50eb11e61b186829674",
-    "/toast.js": "47a230495fbbe8af8ed63ea0daf2e77a08f41f48911da4f9cc230ddc904fdd5d",
+    # "/" and "/app.js" re-pinned for device pairing (F1): the Ajustes
+    # card, the bearer on write fetches and pairing.js wiring; then for the
+    # destructive-command guard (destructive.js + composer confirmation);
+    # then for S11 (reads carry the bearer, EventSource/<audio> carry the
+    # device_token query parameter, the read-403 pairing offer and the
+    # caducado hint); then for the B1 correction (the SSE transport
+    # reopens with the current credential on pairing/revoke/expiry, and
+    # media URLs are credentialised at source-assignment time); then
+    # for the T2 reading views (Historial + Terminal tabs, history.js);
+    # then for S2 (recognized-dialog buttons above the keypad, the
+    # unread-dialog card, the digit row and dialogs.js); then for S12
+    # (verified sends: the receipt card, the Stop button and the steer
+    # long-press in the composer, receipts.js); then for S5/S13 (the
+    # Avisos push card + push.js, the Mensaje composer, and the sw.js
+    # push/notificationclick handlers).
+    "/": "71fe7fca7fbc4c48818c45c5e63dcd3ef6afa8a9201e12b79b03aad94fa417aa",
+    "/app.js": "880d8829048f942e8a37cf35415e51fa1b2ff146133b44f886fdf53d32433e40",
+    "/push.js": "92d48b517ad298a87cf668560867bbe2101e458b5c76fc0d950983e1add0db91",
+    "/receipts.js": "ca7b22c52c8160a3ac577f694eb65ec0798b77cd6ac179a5c567dffdc1fb2ba9",
+    "/dialogs.js": "0e5b6afde7ef662591f66fc69891e3b1ec343fafe0d2c5be8fbef0c5a124a4c0",
+    "/herd-group.js": "e923e48334e72e303ee3399edfd4d69f5c1bb4d49ef906f9eb9d5c8932c7426c",
+    "/toast.js": "cbccb72b22530ff8f83250bebd8d498ca20977db9536aa094aa759bb9632357e",
     "/reader.js": "28daec6199b0e756e1285b40f20fc860c1d9b4d2169cb2433c1ccfb12db31a76",
     "/speech.js": "23b10e3ffe9b22c7480929cb33d12e4a0e3d378f49b841645ec670634a9fe709",
     "/announce.js": "e525a591e5268d2cbfc1d93956469b81da41fb3c87b17c43caccbc7ebd00e9df",
@@ -30,6 +48,14 @@ EXPECTED_DIGESTS = {
     "/consult.js": "fc2e4d18c206164fcec7a8baf2be1697e5b6d86152ed12c432169a70c1113bc4",
     "/endpointing.js": "86c1b18218b22d9f2a812b3209322f7691eb468019a53278653f5375326f0664",
     "/vad.js": "fcce79bcf4182dc493dbae6c3f790cf5a1a83ccc0d45714c520b612f87dbf4d1",
+    # S4/S3 PWA unit: i18n runtime + dictionaries, settings sheet,
+    # update notice, operator dock, offline-shell sw.js.
+    "/dock.js": "4a5dc20d575c3c9e5f098116fc9314f24297b2934cb3142bc885b6e1d0155adb",
+    "/i18n.js": "8bcd2ceb9f56109afaa0ec158e1a6f002799c4a983261b9d58cd38723c06719f",
+    "/i18n/en.js": "fefa8f369fd0b4f2c752f152a246cc6cd5397bea25a6966ba1643fcc14ea9d12",
+    "/i18n/es.js": "0440820378f02fb928a8a1a3ec021e54dec54124e5152e4ec3d6d7691c872896",
+    "/settings.js": "066cda900dd70cf6369587617d37b2c95bfa4d81d6d6ff6908372397f428babf",
+    "/updates.js": "7f87250cf6cd9c2b8944da632fe036d0c18a87a90f48f70b84e18bcd338cfa84",
 }
 
 

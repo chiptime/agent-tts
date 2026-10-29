@@ -29,6 +29,7 @@ from .approval import ApprovalGate, ApprovalGateStore, CREATE_SESSION, SEND_TO_S
 from .config import Settings
 from .herdr import AgentInfo, HerdrError
 from .memory import ConversationStore, clip_content
+from .secrets_mask import mask_text
 from .tools import BrainTools, TOOLS_SCHEMA
 from .view import (
     PendingAction,
@@ -39,9 +40,16 @@ from .view import (
 
 LOGGER = logging.getLogger("herdr_brain.tool_calls")
 
+#: The gated stop tool (S12): interrupting the RUNNING agent's turn is a
+#: mutating action, so it freezes behind the SAME approval gate as a
+#: send — a spoken «para al agente» proposes, the user's confirmation
+#: disposes. Never dispatched directly by the tool loop; advertised in
+#: TOOLS_SCHEMA and the system prompt since the voice remainder landed.
+STOP_AGENT = "stop_agent"
+
 _MAX_LOGGED_ARG_CHARS = 80
 
-SYSTEM_PROMPT = """You are herdr-brain, the user's hands-free voice assistant — the panel that herds their personal herd of AI coding agents. The agents run managed by Herdr on this machine; there is exactly one human user. Be conversational, warm and direct.
+SYSTEM_PROMPT = """You are herdr-brain, the user's hands-free voice assistant — the assistant that herds their personal herd of AI coding agents. The agents run managed by Herdr on this machine; there is exactly one human user. Be conversational, warm and direct.
 
 Capabilities:
 - You can read the selected agent's real transcript (recent user/assistant turns) and what its terminal shows right now, and answer from what you actually read.
@@ -68,6 +76,7 @@ Routing policy:
 - Overall project state: use consult_work_status (slow consolidated global report) ONLY when the user explicitly asks about overall/global work state across projects.
 - Past work: use consult_history for historical work across development chats and Engram; recent history within the selected session stays on read_transcript. These read-only questions never send work to an agent.
 - New work or actions: forward them with send_to_session and wait for completion, then report the result. Do not do the agent's work yourself.
+- Stopping: when the user asks to stop or interrupt the running turn («para al agente», «stop»), call stop_agent — it can interrupt the running turn, but only as a gated proposal: state which agent will be stopped and wait for the user's confirmation; the interrupt executes when they approve, never before.
 - Unsure whether it is a question or a task: read the transcript first, then decide.
 
 Approval gate:
@@ -120,7 +129,9 @@ def build_live_context(
             lines.append(_pending_hint_line(active, pending))
         if dialog is not None:
             lines.append(_dialog_hint_line(active, dialog))
-    return "\n".join(lines)
+    # One pass over the finished block (S14): screen excerpts, dialog
+    # labels, titles and cwd leave for the provider masked.
+    return mask_text("\n".join(lines))
 
 
 _PENDING_KIND_PHRASES = {
@@ -414,8 +425,10 @@ class BrainLLM:
         messages: List[Dict[str, Any]] = [
             {"role": "system", "content": f"{SYSTEM_PROMPT}\n\n{live}"},
             # The store keeps turns in full (display reads them unclipped);
-            # the LLM prompt is where the token budget is enforced.
-            *[{"role": m.role, "content": clip_content(m.content)}
+            # the LLM prompt is where the token budget is enforced. Each
+            # turn is masked BEFORE the clip so a secret at the clip edge
+            # cannot half-survive into the provider request (S14).
+            *[{"role": m.role, "content": clip_content(mask_text(m.content))}
               for m in store.history(key)],
             {"role": "user", "content": question},
         ]
@@ -429,7 +442,12 @@ class BrainLLM:
                     raise TurnCancelled("client disconnected before the model round")
                 response = provider.create(
                     model=self._settings.glm_model,
-                    messages=messages,
+                    # Provider boundary (S14): EVERY outbound request
+                    # carries a masked copy — live context, ring history,
+                    # the user turn, tool results and the model's own
+                    # echoed call arguments. The working `messages` list
+                    # and every store keep their raw bytes.
+                    messages=self._masked_for_provider(messages),
                     tools=TOOLS_SCHEMA,
                     tool_choice="auto",
                 )
@@ -478,12 +496,46 @@ class BrainLLM:
         store.append(key, "assistant", answer)
 
         return {
-            "answer": answer,
+            # The answer leaves masked (S14) — it is the /ask response
+            # text and the spoken render — while the ring above keeps
+            # the raw model output for internal continuity.
+            "answer": mask_text(answer),
             "pane_id": target.pane_id if target else None,
             "agent": target.agent if target else None,
             "session_id": key,
             "approval": opened_gate,
         }
+
+    @staticmethod
+    def _masked_for_provider(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Masked deep copy of one provider request's messages (S14).
+
+        Copies every message dict; nothing internal is rewritten. Tool
+        result contents and the model's echoed call arguments are
+        masked too — arguments used for authorization/execution are
+        parsed and dispatched from the RAW call objects before this
+        copy is ever built, so masking here cannot alter an action.
+        """
+        out: List[Dict[str, Any]] = []
+        for message in messages:
+            masked = dict(message)
+            content = masked.get("content")
+            if isinstance(content, str) and content:
+                masked["content"] = mask_text(content)
+            calls = masked.get("tool_calls")
+            if isinstance(calls, list):
+                safe_calls = []
+                for call in calls:
+                    safe = dict(call)
+                    function = dict(call.get("function") or {})
+                    arguments = function.get("arguments")
+                    if isinstance(arguments, str) and arguments:
+                        function["arguments"] = mask_text(arguments)
+                    safe["function"] = function
+                    safe_calls.append(safe)
+                masked["tool_calls"] = safe_calls
+            out.append(masked)
+        return out
 
     def _live_context(self, target: Optional[AgentInfo]) -> str:
         """Builds the live block for the selected pane, best-effort."""
@@ -525,6 +577,8 @@ class BrainLLM:
             return self._gate_send(arguments, session_key)
         if call.function.name == CREATE_SESSION:
             return self._gate_create(arguments, session_key)
+        if call.function.name == STOP_AGENT:
+            return self._gate_stop(arguments, session_key)
         return (
             self._tools.dispatch(
                 call.function.name,
@@ -574,6 +628,48 @@ class BrainLLM:
             f"pending user approval (gate {gate.gate_id}): the prompt was NOT "
             "sent. State the target and the exact text, then wait for the "
             "user's decision; never say it was sent.",
+            gate,
+        )
+
+    def _gate_stop(
+        self, arguments: Dict[str, Any], session_key: str
+    ) -> tuple[str, Optional[ApprovalGate]]:
+        """Freezes the interrupt of the selected pane's RUNNING turn (S12).
+
+        The spoken path must not bypass the verbal binding: «para al
+        agente» PROPOSES the gate, the user's confirmation disposes. No
+        arguments are trusted from the model — the target is the
+        already-resolved request pane, exactly what the approve replay
+        will interrupt. Mirrors :meth:`_gate_send`'s failure modes: no
+        target, or no store, means the stop is still blocked — fail
+        safe, never execute.
+        """
+        target = self._request_target
+        if target is None:
+            return "error: no active agent pane", None
+        if self._approval_store is None:
+            return (
+                "error: stop_agent is blocked pending user approval, but "
+                "no approval gate store is wired; nothing was interrupted",
+                None,
+            )
+        gate = self._approval_store.propose(
+            session_key,
+            text="",
+            pane_id=target.pane_id,
+            agent=target.agent,
+            tool=STOP_AGENT,
+        )
+        LOGGER.info(
+            "approval gate opened gate_id=%s tool=stop_agent pane_id=%s agent=%s",
+            gate.gate_id,
+            target.pane_id,
+            target.agent,
+        )
+        return (
+            f"pending user approval (gate {gate.gate_id}): the interrupt was "
+            "NOT sent. State which agent will be stopped, then wait for the "
+            "user's decision; never say it was stopped.",
             gate,
         )
 

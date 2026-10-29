@@ -61,7 +61,7 @@
       if (closeBtn) return closeBtn;
       closeBtn = doc.createElement("button");
       closeBtn.type = "button";
-      closeBtn.className = "toast-close";
+      closeBtn.classList.add("toast-close");
       closeBtn.setAttribute("aria-label", "Cerrar aviso");
       /* No text node: the glyph is CSS (::after) so the toast's own text
        * stays exactly the payload's text. */
@@ -92,6 +92,23 @@
       el.classList.add("hidden");
     }
 
+    /* Optional action button (update notice S4): a plain labelled
+     * button appended AFTER the body — textContent only, so a toast
+     * never gains markup. The tap both hides and hands over. */
+    function ensureAction(action) {
+      var btn = doc.createElement("button");
+      btn.type = "button";
+      btn.classList.add("toast-action");
+      btn.textContent = action.label;
+      if (btn.addEventListener) {
+        btn.addEventListener("click", function () {
+          hide();
+          action.onClick();
+        });
+      }
+      return btn;
+    }
+
     function show(text, opts) {
       opts = opts || {};
       if (suppressed(opts.group)) return;
@@ -116,6 +133,9 @@
       if (!body) el.textContent = text;   /* the historical plain path */
       /* Re-appended on every show: the content reset above detaches it. */
       el.appendChild(ensureClose());
+      if (opts.action && typeof opts.action.onClick === "function" && opts.action.label) {
+        el.appendChild(ensureAction(opts.action));
+      }
       el.classList.toggle("warning", opts.kind === "warning");
       el.classList.remove("hidden");
       if (timer) { clearTimeout(timer); timer = null; }
@@ -220,9 +240,7 @@
     return pieces;
   }
 
-  var api = { createToast: createToast, chunkifyText: chunkifyText, splitForTts: splitForTts };
-
-  if (typeof module !== "undefined" && module.exports) {
+  var api = { createToast: createToast, chunkifyText: chunkifyText, splitForTts: splitForTts };  if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
   } else {
     global.Toast = api;

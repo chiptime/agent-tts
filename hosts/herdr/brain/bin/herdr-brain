@@ -180,12 +180,30 @@ REAL_SCRIPT="$(readlink -f "${BASH_SOURCE[0]}")"
 REPO_DIR="$(herdr_resolve_root herdr-brain)"
 
 # Doctor dispatch precedes mkdir, env sourcing and service/bootstrap paths.
+# Two stages, both before any bootstrap write: the onboarding doctor
+# (install probes, unchanged) and then the brain-side ops doctor (S8:
+# ports, root 443, VAPID, push store, crew roster, operator config).
+# Exit code: the first non-zero wins. With --json the ops stage's text
+# goes to stderr so the onboarding JSON on stdout stays parseable.
 case "${1:-}" in
   doctor|--doctor)
     mode="$1"
     shift
     PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$REPO_DIR/src${PYTHONPATH:+:$PYTHONPATH}" herdr_first_run brain "$REPO_DIR/.venv/bin/python" "$mode" "$@"
-    exit $?
+    doctor_rc=$?
+    if [[ -x "$REPO_DIR/.venv/bin/python" ]]; then
+      ops_args=(doctor "$@")
+      if [[ " $* " == *" --json "* ]]; then
+        PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$REPO_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
+          "$REPO_DIR/.venv/bin/python" -m herdr_brain.ops_cli "${ops_args[@]}" 1>&2 || doctor_rc=$(( doctor_rc ? doctor_rc : 1 ))
+      else
+        echo ""
+        echo "─── brain ops doctor ───"
+        PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$REPO_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
+          "$REPO_DIR/.venv/bin/python" -m herdr_brain.ops_cli "${ops_args[@]}" || doctor_rc=$(( doctor_rc ? doctor_rc : 1 ))
+      fi
+    fi
+    exit $doctor_rc
     ;;
   first-run|--first-run)
     for arg in "$@"; do
@@ -565,7 +583,7 @@ cmd_call() {
     exit 1
   }
 
-  echo "[herdr-brain] Opening the Panel voice call in your desktop browser: $url"
+  echo "[herdr-brain] Opening the voice call in your desktop browser: $url"
   if ! "$opener" "$url" >/dev/null 2>&1; then
     {
       echo "[herdr-brain] ERROR: the browser opener ($opener) failed."
@@ -673,9 +691,77 @@ case "${1:-status}" in
     export HERDR_BRAIN_PORT
     claim_port "${2:-daemon}"
     ;;
+  pair|--pair|devices|--devices)
+    # Device pairing (F1 security): mint codes, list and revoke
+    # devices. Pure file work under HERDR_BRAIN_STATE_DIR — no daemon,
+    # no port claims; the running server re-reads the registry per
+    # request, so revocations land without a restart.
+    verb="$1"
+    shift
+    load_env
+    ensure_venv
+    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$REPO_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
+      exec "$REPO_DIR/.venv/bin/python" -m herdr_brain.pairing_cli "$verb" "$@"
+    ;;
+  msg|--msg)
+    # Brain messages (S13): short messages between agent panes and from
+    # the operator. Runs from inside a pane (herdr injects HERDR_ENV and
+    # HERDR_PANE_ID); pure state work under HERDR_BRAIN_STATE_DIR plus
+    # the multiplexer — no daemon, no port claims. The delivery tick
+    # rides the running server's watcher; the CLI also ticks on send.
+    shift
+    load_env
+    ensure_venv
+    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$REPO_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
+      exec "$REPO_DIR/.venv/bin/python" -m herdr_brain.walky "$@"
+    ;;
+  push|--push)
+    # Web Push (S5): VAPID key import (prints only the public key),
+    # subscription list and transport test. Pure state work under
+    # HERDR_BRAIN_STATE_DIR — no daemon, no port claims; the running
+    # server loads the same key file per send.
+    shift
+    load_env
+    ensure_venv
+    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$REPO_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
+      exec "$REPO_DIR/.venv/bin/python" -m herdr_brain.push_cli "$@"
+    ;;
+  crew|--crew)
+    # Crew federation (S7): init/join-token/join/list/remove/promote/
+    # rotate-secret over the roster under HERDR_BRAIN_STATE_DIR. Pure
+    # state + certificate work — no daemon, no port claims; the daemon
+    # re-reads the roster per request and per crew call.
+    shift
+    load_env
+    ensure_venv
+    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$REPO_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
+      exec "$REPO_DIR/.venv/bin/python" -m herdr_brain.crew "$@"
+    ;;
+  serve|--serve|unserve|--unserve|qr|--qr|logs|--logs|config|--config)
+    # Cutover tooling (S8) + the operator-config check (S3). serve/
+    # unserve PRINT the exact tailscale commands — the brain never runs
+    # tailscale; logs reads the daemon log; config check reports the
+    # four TOML surfaces row by row.
+    verb="$1"
+    shift
+    load_env
+    ensure_venv
+    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$REPO_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
+      exec "$REPO_DIR/.venv/bin/python" -m herdr_brain.ops_cli "$verb" "$@"
+    ;;
   help|--help|-h)
-    echo "Usage: bin/herdr-brain [--no-first-run] [status|url|call|restart|stop|first-run|doctor|_daemon|_daemon-supervised]"
-    echo "  call   open the Panel voice-call UI in the desktop browser (HERDR_BRAIN_BROWSER overrides the opener)"
+    echo "Usage: bin/herdr-brain [--no-first-run] [status|url|call|restart|stop|first-run|doctor|pair|devices|msg|push|crew|serve|unserve|qr|logs|config|_daemon|_daemon-supervised]"
+    echo "  call   open the voice-call UI in the desktop browser (HERDR_BRAIN_BROWSER overrides the opener)"
+    echo "  pair   mint a one-time code: the phone spends it in Ajustes to enrol this device (write access turns on with the first pairing)"
+    echo "  devices {list|revoke <label>}   show paired devices, or drop one (applies without a restart)"
+    echo "  msg    {who|send|reply|inbox|status|cancel}   brain messages between agent panes (run from inside a pane)"
+    echo "  push   {import <dotenv>|list|test}   Web Push keys and subscriptions (import prints only the public key)"
+    echo "  crew   {init|join-token|join|list|remove|promote|rotate-secret}   multi-machine federation (manual promotion)"
+    echo "  serve  {[--root|--https=PORT] [--serve-status FILE|-]}   PRINT the tailscale serve command (never runs it)"
+    echo "  unserve {[--root]}   PRINT the tailscale serve unset command"
+    echo "  qr     print the PWA's public URL"
+    echo "  logs   {[-n N] [-f]}   tail the daemon log"
+    echo "  config {check}   per-file report of the operator TOML surfaces (quick-replies, commands, keys, launchers)"
     ;;
   *)
     load_env

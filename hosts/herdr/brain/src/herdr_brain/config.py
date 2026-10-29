@@ -13,6 +13,9 @@ from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path
 from typing import Optional, Union
 
+from .audit import AUDIT_CONTENTS, DEFAULT_AUDIT_CONTENT
+from .pairing import DEFAULT_STATE_DIR
+
 DEFAULT_GLM_BASE_URL = "https://api.z.ai/api/paas/v4/"
 DEFAULT_GLM_MODEL = "glm-5"
 
@@ -22,6 +25,12 @@ DEFAULT_GLM_MODEL = "glm-5"
 # cannot import the monorepo-root tools module without adding a runtime
 # dependency, which design Decision 1 forbids.
 DEFAULT_BRAIN_PORT = 8741
+
+# Crew federation (S7): the TLS listener's own port and bind. A dedicated
+# second listener keeps the pinned mTLS out of the PWA port entirely; a
+# solo brain never binds it (crew_runtime.listener_kwargs returns None).
+DEFAULT_CREW_PORT = 8747
+DEFAULT_CREW_HOST = "127.0.0.1"
 
 # Verified live layout: herdr-tts is the speech backend, consumed ONLY
 # through its versioned CLI surface (contract v1). The home points at the
@@ -190,6 +199,11 @@ class Settings:
     # existing construction.
     brain_port: int = DEFAULT_BRAIN_PORT
     stt_backend: str = DEFAULT_STT_BACKEND
+    # Crew federation (S7): appended WITH defaults like every knob above
+    # (tests construct Settings(**SETTINGS_KWARGS)). The crew listener
+    # is built from these only when the roster declares a crew.
+    crew_port: int = DEFAULT_CREW_PORT
+    crew_host: str = DEFAULT_CREW_HOST
     # Shared secret for POST /approval/{id}/action (ntfy action buttons,
     # F5 / HT-04). Empty = no auth (the pre-F5 behaviour). repr=False keeps
     # it out of every log line that prints Settings.
@@ -197,10 +211,39 @@ class Settings:
     # Where the local opencode server listens (see DEFAULT_OPENCODE_URL).
     # Defaulted like every field above it: tests build Settings(**kwargs).
     opencode_url: str = DEFAULT_OPENCODE_URL
+    # ── Device pairing + access gate (F1 security) ──
+    # Appended WITH defaults like every knob above: tests construct
+    # Settings(**SETTINGS_KWARGS), so a required field would break every
+    # existing construction.
+    # State dir for pairing-pending.json / paired-devices.json (and later
+    # audit.log). Coherent with DEFAULT_AUDIO_DIR's root.
+    state_dir: Path = Path(DEFAULT_STATE_DIR).expanduser()
+    # Access gate (access.py). All default to "off/empty", which keeps
+    # the fail-closed Host allowlist on its L5 default set: loopback
+    # forms + *.ts.net + these entries.
+    allowed_hosts: tuple = ()
+    allowed_origins: tuple = ()
+    allow_any_host: bool = False
+    # Tailscale identity under `tailscale serve`: Tailscale-User-Login
+    # must match when set; fail-closed on a missing header unless
+    # trusted_user_optional.
+    trusted_user: str = ""
+    trusted_user_optional: bool = False
+    # Reverse-proxy device header/allowlist (doc 01 §2): when set, a
+    # write must carry an allowlisted value in the named header.
+    device_header: str = ""
+    device_allowlist: tuple = ()
+    # ── Audit trail (F1 security) ──
+    # HERDR_BRAIN_AUDIT_CONTENT: "preview" keeps a bounded single-line
+    # preview of content fields in each audit line; "none" redacts every
+    # content string to the constant ⟨redacted⟩ (the metadata allowlist
+    # in audit.py survives). Appended WITH a default like every knob
+    # above: tests construct Settings(**SETTINGS_KWARGS).
+    audit_content: str = DEFAULT_AUDIT_CONTENT
 
     def __post_init__(self):
         # Accept plain strings for path fields regardless of the caller.
-        for field in ("tts_home", "tts_bin", "audio_dir"):
+        for field in ("tts_home", "tts_bin", "audio_dir", "state_dir"):
             value = getattr(self, field)
             if not isinstance(value, Path):
                 object.__setattr__(self, field, Path(value).expanduser())
@@ -239,6 +282,16 @@ def _persisted_brain_port(environ: dict) -> Optional[int]:
                 raw = raw[1:-1]
             return _parse_brain_port(raw, str(path))
     return None
+
+
+def _split_csv(raw: str) -> tuple:
+    """Comma-separated env value -> tuple of non-empty stripped items."""
+    return tuple(item.strip() for item in raw.split(",") if item.strip())
+
+
+def _flag(env: dict, name: str) -> bool:
+    """Truthy spellings for boolean env toggles (1/true/yes)."""
+    return str(env.get(name, "")).strip().lower() in ("1", "true", "yes")
 
 
 def load_settings(env: Optional[dict] = None) -> Settings:
@@ -288,6 +341,17 @@ def load_settings(env: Optional[dict] = None) -> Settings:
             f"expected one of {', '.join(STT_BACKENDS)}"
         )
 
+    # Audit content mode: same loud-failure rule — a typo must never
+    # silently switch redaction off (or on).
+    raw_audit_content = getenv(
+        "HERDR_BRAIN_AUDIT_CONTENT", DEFAULT_AUDIT_CONTENT
+    ).strip().lower()
+    if raw_audit_content not in AUDIT_CONTENTS:
+        raise ValueError(
+            f"invalid HERDR_BRAIN_AUDIT_CONTENT value {raw_audit_content!r}: "
+            f"expected one of {', '.join(AUDIT_CONTENTS)}"
+        )
+
     return Settings(
         herdr_bin=getenv("HERDR_BIN", "herdr"),
         glm_api_key=getenv("GLM_API_KEY") or None,
@@ -334,6 +398,22 @@ def load_settings(env: Optional[dict] = None) -> Settings:
         engram_db=getenv("HERDR_BRAIN_ENGRAM_DB") or None,
         brain_port=brain_port,
         stt_backend=raw_backend,
+        crew_port=_parse_brain_port(
+            getenv("HERDR_BRAIN_CREW_PORT", str(DEFAULT_CREW_PORT)),
+            "HERDR_BRAIN_CREW_PORT",
+        ),
+        crew_host=getenv("HERDR_BRAIN_CREW_HOST", DEFAULT_CREW_HOST).strip()
+        or DEFAULT_CREW_HOST,
         opencode_url=getenv("HERDR_BRAIN_OPENCODE_URL", DEFAULT_OPENCODE_URL),
         approval_token=getenv("HERDR_BRAIN_APPROVAL_TOKEN").strip(),
+        # ── Device pairing + access gate (F1 security) ──
+        state_dir=Path(getenv("HERDR_BRAIN_STATE_DIR", DEFAULT_STATE_DIR)).expanduser(),
+        allowed_hosts=_split_csv(getenv("HERDR_BRAIN_ALLOWED_HOSTS")),
+        allowed_origins=_split_csv(getenv("HERDR_BRAIN_ALLOWED_ORIGINS")),
+        allow_any_host=_flag(environ, "HERDR_BRAIN_ALLOW_ANY_HOST"),
+        trusted_user=getenv("HERDR_BRAIN_TRUSTED_USER").strip(),
+        trusted_user_optional=_flag(environ, "HERDR_BRAIN_TRUSTED_USER_OPTIONAL"),
+        device_header=getenv("HERDR_BRAIN_DEVICE_HEADER").strip(),
+        device_allowlist=_split_csv(getenv("HERDR_BRAIN_DEVICE_ALLOWLIST")),
+        audit_content=raw_audit_content,
     )

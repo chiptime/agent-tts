@@ -34,6 +34,16 @@ SETTINGS_KWARGS = dict(
     stt_device="auto",
     stt_compute="auto",
     stt_warmup=False,  # tests: never start the warmup thread / touch the model
+    # Access gate stance (F1 security): the TestClient transport's
+    # Host ("testserver") is not a real routable host, so the legacy
+    # suite rides the documented HERDR_BRAIN_ALLOW_ANY_HOST opt-out —
+    # same precedent as stt_warmup=False. The gate itself is pinned with
+    # its own Settings (allow_any_host=False) in test_access_gate.py and
+    # test_pairing_api.py.
+    allow_any_host=True,
+    # Pairing state stays off the real HOME: the store is built from
+    # Settings on every create_app call.
+    state_dir="/tmp/herdr-brain-test-state",
 )
 
 _STUB_BIN = """#!/bin/sh
@@ -145,8 +155,11 @@ class StubHerdr:
 
 
 @pytest.fixture
-def settings() -> Settings:
-    return Settings(**SETTINGS_KWARGS)
+def settings(tmp_path) -> Settings:
+    # The state dir (pairing + the audit log) is per test: the audit
+    # trail now appends on every write route, so the shared fixed /tmp
+    # path would couple tests through one audit.log.
+    return Settings(**{**SETTINGS_KWARGS, "state_dir": str(tmp_path / "state")})
 
 
 @pytest.fixture

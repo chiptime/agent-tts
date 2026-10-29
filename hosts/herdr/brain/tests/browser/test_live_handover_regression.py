@@ -100,7 +100,7 @@ class Device:
               const real = window.fetch.bind(window);
               window.fetch = async (input, opts) => {
                 const response = await real(input, opts);
-                if (input === '/call/context' && !opts) {
+                if (input === '/call/context' && !(opts && opts.method)) {
                   const data = await response.json();
                   window.bootSnapshot = data;
                   await new Promise(resolve => { window.releaseBoot = resolve; });
@@ -260,5 +260,7 @@ def test_context_validation_and_read_only_endpoints_preserve_data(live_service,t
     same=client.post("/call/context",json={"pane_id":PANES[0]}).json()
     assert same["revision"]==original["revision"]+1
     cleared=client.post("/call/context",json={"pane_id":None}).json()
-    assert cleared=={"call_id":"default","pane_id":None,"revision":same["revision"]+1}
+    # Spoken-locale field (server-side i18n): additive, defaults to es.
+    assert cleared=={"call_id":"default","pane_id":None,
+                     "revision":same["revision"]+1,"locale":"es"}
     assert data_hashes()==before

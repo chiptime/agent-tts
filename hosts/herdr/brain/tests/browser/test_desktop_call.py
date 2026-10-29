@@ -36,7 +36,10 @@ for _name in (
     "app.js", "endpointing.js", "vad.js", "approval.js", "reader.js",
     "toast.js", "announce.js", "speech.js", "consult.js",
     "herd-group.js", "sw.js", "manifest.webmanifest", "icon.svg",
-    "karaoke.js",
+    "karaoke.js", "pairing.js", "destructive.js", "history.js", "dialogs.js",
+    "receipts.js", "push.js",
+    "i18n.js", "i18n/es.js", "i18n/en.js", "settings.js", "updates.js", "dock.js",
+    "mermaid.min.js", "mermaid-viewer.js", "tts-engine.js",
 ):
     if (STATIC / _name).is_file():
         STATIC_FILES["/" + _name] = _name
@@ -134,6 +137,20 @@ def make_route(
             return route.fulfill(
                 status=200, headers={"content-type": "text/event-stream"},
                 body=": connected\n\n",
+            )
+        if method == "GET" and path == "/build":
+            # S4 update notice: an older brain predates /build — the
+            # poller stands down on the 404.
+            return route.fulfill(status=404, json={"detail": "no build endpoint"})
+        if method == "GET" and path == "/operator/config" and set(query) <= {"agent"}:
+            # S3 operator dock: no operator TOML — the dock stays hidden.
+            return route.fulfill(status=404, json={"detail": "no operator config"})
+        if method == "GET" and path == "/devices":
+            # Device pairing boot poll (F1): unpaired default keeps the
+            # pre-F1 stance.
+            return route.fulfill(
+                status=200,
+                json={"enforced": False, "current": None, "devices": []},
             )
         if method == "GET" and path == "/call-history" and set(query) <= {"before", "limit"}:
             return route.fulfill(json={"turns": service.turns, "has_more": False})

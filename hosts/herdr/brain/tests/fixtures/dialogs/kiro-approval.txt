@@ -1,0 +1,9 @@
+ Print the deny probe message requires approval
+ shell ◆ printf brain_deny_probe
+
+ › Allow
+   Always allow
+   Deny
+   Always deny
+ ────────────────────────────────────────────────────────────────────────────────
+ esc to close · ↑↓ to navigate · ↵ to select · Tab to edit

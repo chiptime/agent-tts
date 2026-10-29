@@ -35,13 +35,39 @@ from .approval_lexicon import (
 )
 from .herdr import (
     MAX_SEND_KEYS,
+    SEND_KEY_ALLOWLIST,
     AgentInfo,
     HerdrClient,
     HerdrError,
     pick_active,
 )
+from .mux import create_mux
+from .mux.refusal import MuxRefusal
+from .send_receipts import (
+    classify_followup,
+    classify_send,
+    discard_recipe,
+    echo_tail,
+    interrupt_recipe,
+    steer_supported,
+)
+from .history_view import (
+    HISTORY_DEFAULT_LIMIT,
+    clamp_limit,
+    read_history_page,
+)
 from .memory import clip_content
-from .transcripts import Turn, read_transcript, read_turns, read_title, turn_age_seconds
+from .mirror import clamp_lines, mirror_payload
+from .secrets_mask import mask_runs, mask_text
+from .dialogs import recognize as recognize_dialog
+from .transcripts import (
+    Turn,
+    connector_for,
+    read_transcript,
+    read_turns,
+    read_title,
+    turn_age_seconds,
+)
 from .tts import render_mp3  # noqa: F401  (re-exported for server wiring)
 from .view import (
     SCREEN_TAIL_LINES,
@@ -63,11 +89,23 @@ REPLY_WAIT_MS = 3_000
 HERD_LAST_TURN_CHARS = 160
 CONVERSATION_WINDOW = 20
 SCREEN_FULL_LINES = 120
+# Verified sends (S12): how many screen lines the before/after reads need
+# (the input box lives at the tail) and how the bounded after-poll behaves.
+# The poll stops early the moment the screen moves — the interval only
+# bounds the wait when the pane is quiet.
+VERIFIED_SCREEN_LINES = 30
+VERIFIED_POLL_READS = 3
+VERIFIED_POLL_INTERVAL_S = 0.35
 #: Lines read WITH styling for a blocked pane, so the PWA can show which
 #: option of the dialog is highlighted. Only read while blocked: the styling
 #: is exactly what decides a permission, and nothing else needs it.
 DIALOG_SCREEN_LINES = 30
 MAX_AGENT_NAME_LEN = 24
+#: Triage order of agent states in the herd (doc 05): a pane waiting for
+#: the human outranks one merely busy; an unknown state sorts last, never
+#: between two known ones.
+STATUS_RANK = {"blocked": 0, "working": 1, "done": 2, "idle": 3}
+_UNKNOWN_STATUS_RANK = 4
 
 
 def _reply_result(outcome: str, pane_id: str, status: str = "", detail: str = "") -> dict:
@@ -108,7 +146,12 @@ def sanitize_agent_name(title: str) -> str:
 
 
 def status_payload(active: Optional[AgentInfo]) -> dict:
-    """Shapes the active-pane status shared by /state and /view."""
+    """Shapes the active-pane status shared by /state and /view.
+
+    Free-text metadata (title, cwd) is masked at this display seam
+    (S14): a recognized secret inside either still renders as a hint
+    placeholder, while the lookup ids stay exact.
+    """
     if active is None:
         return {
             "active": False,
@@ -124,8 +167,8 @@ def status_payload(active: Optional[AgentInfo]) -> dict:
         "pane_id": active.pane_id,
         "agent": active.agent,
         "agent_status": active.status,
-        "title": active.title,
-        "cwd": active.cwd,
+        "title": mask_text(active.title) if active.title else active.title,
+        "cwd": mask_text(active.cwd) if active.cwd else active.cwd,
         "session_id": active.session_value,
     }
 
@@ -142,7 +185,7 @@ class BrainTools:
         consult: Optional[ConsultService] = None,
     ):
         self._settings = settings
-        self._herdr = herdr or HerdrClient(settings)
+        self._herdr = herdr or create_mux(settings)
         # Injectable readiness-loop primitives (tests drive them without
         # real 40 s waits); production uses monotonic time and real sleep.
         self._clock = clock or time.monotonic
@@ -223,7 +266,12 @@ class BrainTools:
         turn = self._latest_turn(agent)
         if turn is None:
             return None
-        return {"role": turn.role, "text": truncate_text(turn.text, HERD_LAST_TURN_CHARS)}
+        # Mask BEFORE clipping so a secret cut at the excerpt boundary
+        # cannot half-survive (S14).
+        return {
+            "role": turn.role,
+            "text": truncate_text(mask_text(turn.text), HERD_LAST_TURN_CHARS),
+        }
 
     def herd(self, now: Optional[datetime] = None) -> list:
         """Every agent pane with status, latest turn and how long ago it was.
@@ -249,7 +297,7 @@ class BrainTools:
                 if turn is None
                 else {
                     "role": turn.role,
-                    "text": truncate_text(turn.text, HERD_LAST_TURN_CHARS),
+                    "text": truncate_text(mask_text(turn.text), HERD_LAST_TURN_CHARS),
                 }
             )
             entries.append(
@@ -257,8 +305,9 @@ class BrainTools:
                     "pane_id": agent.pane_id,
                     "agent": agent.agent,
                     "agent_status": agent.status,
-                    "title": agent.title,
-                    "cwd": agent.cwd,
+                    # Display metadata masked (S14); ids stay exact.
+                    "title": mask_text(agent.title) if agent.title else agent.title,
+                    "cwd": mask_text(agent.cwd) if agent.cwd else agent.cwd,
                     "session_id": agent.session_value if agent.session_kind == "id" else None,
                     "focused": agent.focused,
                     "last_turn": last_turn,
@@ -269,6 +318,13 @@ class BrainTools:
                     ),
                 }
             )
+        # Declared triage ranking (doc 05): blocked first, unknown last.
+        # Stable, so panes inside one rank keep the CLI's own order.
+        entries.sort(
+            key=lambda entry: STATUS_RANK.get(
+                (entry["agent_status"] or "").strip().lower(), _UNKNOWN_STATUS_RANK
+            )
+        )
         return entries
 
     def screen_tail(
@@ -300,7 +356,12 @@ class BrainTools:
         if not turns:
             return None
         return [
-            {"role": turn.role, "text": truncate_text(turn.text, VIEW_TEXT_TRUNCATE)}
+            {
+                "role": turn.role,
+                # Mask before the view clip (S14): a secret spanning the
+                # 300-char cut must not leak its surviving half.
+                "text": truncate_text(mask_text(turn.text), VIEW_TEXT_TRUNCATE),
+            }
             for turn in turns
         ]
 
@@ -330,17 +391,19 @@ class BrainTools:
                 # one assistant turn as SEVERAL messages (one per tool-loop
                 # step), so the reading view would render every narration
                 # fragment as its own turn — fragments typically end in ":"
-                # right before a tool call.
+                # right before a tool call. Turn text is masked at this
+                # output boundary (S14).
                 for turn in raw:
+                    safe_text = mask_text(turn.text)
                     if turns and turns[-1]["role"] == turn.role:
-                        turns[-1]["text"] += "\n\n" + turn.text
+                        turns[-1]["text"] += "\n\n" + safe_text
                     else:
-                        turns.append({"role": turn.role, "text": turn.text})
+                        turns.append({"role": turn.role, "text": safe_text})
         return {
             "pane_id": target.pane_id,
             "agent": target.agent,
             "session_id": target.session_value or None,
-            "title": target.title,
+            "title": mask_text(target.title) if target.title else target.title,
             "turns": turns,
             "window": CONVERSATION_WINDOW,
         }
@@ -365,11 +428,83 @@ class BrainTools:
                 text = self._herdr.read_screen(target.pane_id, MAX_SCREEN_LINES)
             except HerdrError:
                 text = None
+        screen = text if text and text.strip() else None
         return {
             "pane_id": target.pane_id,
             "agent": target.agent,
-            "screen": text if text and text.strip() else None,
+            # Reading-view boundary (S14): scrollback leaves masked.
+            "screen": mask_text(screen) if screen else None,
         }
+
+    def history_page(
+        self,
+        pane_id: Optional[str] = None,
+        cursor: Optional[str] = None,
+        limit: int = HISTORY_DEFAULT_LIMIT,
+    ) -> dict:
+        """One cursor page of a pane's FULL transcript (reading view).
+
+        Complements /conversation: same pane resolution, same connector
+        choice, but bounded pages of unclipped turns walking older via
+        the opaque cursor. An agent with no readable history is an
+        ordinary ``no-session`` page, never an error.
+        """
+        target = self.resolve_target(pane_id)
+        if target is None:
+            return {
+                "pane_id": pane_id,
+                "agent": None,
+                "session_id": None,
+                "title": None,
+                "turns": [],
+                "reason": "no-session",
+                "cursor": None,
+                "has_more": False,
+                "limit": clamp_limit(limit),
+            }
+        reader = None
+        session_id = target.session_value or None
+        if session_id:
+            try:
+                reader = connector_for(target.agent, session_id)
+            except Exception:  # noqa: BLE001 — history must degrade, not 500
+                reader = None
+        try:
+            page = read_history_page(reader, session_id, cursor, limit)
+        except Exception:  # noqa: BLE001 — a broken store is an empty page
+            page = {
+                "turns": [],
+                "reason": "no-session",
+                "cursor": None,
+                "has_more": False,
+                "limit": clamp_limit(limit),
+            }
+        page.update(
+            {
+                "pane_id": target.pane_id,
+                "agent": target.agent,
+                "session_id": session_id,
+                "title": mask_text(target.title) if target.title else target.title,
+            }
+        )
+        return page
+
+    def pane_mirror(
+        self, pane_id: Optional[str] = None, lines: Optional[int] = None
+    ) -> Optional[dict]:
+        """The pane's visible window as ANSI runs (live mirror view).
+
+        None when no pane resolves (the route answers 404); a styled
+        read that fails or comes back blank yields empty runs — the
+        mirror degrades to "nothing to show", never to an error.
+        """
+        target = self.resolve_target(pane_id)
+        if target is None:
+            return None
+        bounded = clamp_lines(lines)
+        styled = self.screen_tail(target, bounded, as_ansi=True)
+        return mirror_payload(target.pane_id, target.agent, target.status, styled)
+
 
     def agent_view(self, pane_id: Optional[str] = None) -> dict:
         """Composes everything GET /view needs, never raising.
@@ -388,6 +523,12 @@ class BrainTools:
 
         pending = detect_pending(screen or "", target.status if target else "")
 
+        # Output masking (S14): detection keeps reading the RAW screen
+        # (the heuristic is unchanged), every field that leaves for the
+        # PWA is masked below — screen text, styled runs, the parsed
+        # dialog and the pending excerpt.
+        safe_screen = mask_text(screen) if screen else None
+
         # A blocked pane is waiting at a dialog. Read it WITH styling so the
         # PWA can show which option is highlighted: that information exists
         # only as colour/attribute, and the plain-text screen throws it away.
@@ -395,32 +536,70 @@ class BrainTools:
         # rendered and decides nothing about what a key would do.
         screen_runs: Optional[list] = None
         dialog = None
+        structured = None
         if target is not None and (target.status or "").strip().lower() == "blocked":
-            screen_runs, wide_text = self._dialog_runs(target)
+            raw_runs, wide_text = self._dialog_runs(target)
+            screen_runs = mask_runs(raw_runs) if raw_runs else raw_runs
             # Parse from the WIDE read: the plain screen tail is only 12
             # lines and a tall question tool does not fit in it, so the
             # question line would be cut and the parse would fail. The
             # runs already carry the escape-stripped text, so this costs
             # no extra subprocess. Claims nothing about which option is
             # selected.
-            dialog = parse_dialog(wide_text or screen or None, screen_runs=screen_runs)
+            safe_wide = mask_text(wide_text) if wide_text else wide_text
+            dialog = parse_dialog(safe_wide or safe_screen or None, screen_runs=screen_runs)
             if dialog is not None:
                 # Same selection discipline as the voice path: marker
                 # first, else the single ANSI-backgrounded option line.
                 dialog["selected"] = selection_from_runs(screen_runs, dialog)
+            structured = self._structured_payload(target, wide_text)
 
-        return {
+        payload = {
             "status": status_payload(target),
             "transcript": transcript,
-            "screen": screen,
+            "screen": safe_screen,
             "screen_runs": screen_runs,
             "dialog": dialog,
             "pending": {
                 "detected": pending.detected,
                 "kind": pending.kind,
-                "excerpt": pending.excerpt,
+                "excerpt": mask_text(pending.excerpt) if pending.excerpt else None,
             },
         }
+        if structured is not None:
+            # The field is ADDITIVE: panes without a recognizer's claim
+            # (working panes, screens only the generic heuristic reads,
+            # blocked screens nobody recognized) keep the exact pre-S2
+            # /view shape.
+            payload["structured"] = structured
+        return payload
+
+    def _structured_payload(
+        self, target: AgentInfo, wide_text: Optional[str]
+    ) -> Optional[dict]:
+        """The structured dialog of a BLOCKED pane, masked for /view.
+
+        ``None`` unless a per-harness recognizer CLAIMED the screen: a
+        claim becomes the button model (or, for a dialog the recognizer
+        positively refuses to make tappable — a notes field that owns
+        the keyboard, a parked card — the explicit ``unread`` state the
+        PWA pairs with the manual keypad). No claim at all means the
+        pre-S2 contract stands: the generic heuristic's legacy preview,
+        or the plain blocked/unknown pending state, plus the keypad.
+        """
+        if target is None or not wide_text:
+            return None
+        model = recognize_dialog(target.agent, wide_text)
+        if model is None:
+            return None
+        payload = model.payload()
+        for option in payload.get("options") or []:
+            option["label"] = mask_text(option.get("label") or "")
+            option["description"] = mask_text(option.get("description") or "")
+        for field in ("question", "hint", "detail"):
+            if payload.get(field):
+                payload[field] = mask_text(payload[field])
+        return payload
 
     # -- spoken terminal dialogs (S8/S9) ------------------------------------
 
@@ -448,15 +627,173 @@ class BrainTools:
         when present, else from the single ANSI-backgrounded option line
         (``selection_from_runs``); zero or ambiguous styling leaves the
         selection UNKNOWN and the voice path must then refuse.
+
+        When the generic heuristic cannot read the screen but the pane's
+        harness HAS a structured recognizer (S2), the structured model
+        shapes the same legacy dict — so the SPOKEN path reads the
+        harness's real options (labels, descriptions, selection) for
+        harnesses the heuristic never understood, while the answer
+        choreography and its binding stay exactly as they were.
         """
         if target is None or (target.status or "").strip().lower() != "blocked":
             return None
         runs, wide_text = self._dialog_runs(target)
         dialog = parse_dialog(wide_text or fallback_text or None)
         if dialog is None:
-            return None
+            model = recognize_dialog(target.agent, wide_text or "")
+            if model is None or model.unread:
+                return None
+            selected = (
+                model.selected + 1
+                if model.selected is not None and 0 <= model.selected < len(model.options)
+                else None
+            )
+            return {
+                "question": model.question,
+                "options": [
+                    {
+                        "n": position + 1,
+                        "title": option.label,
+                        "description": option.description,
+                        "selected": position == model.selected,
+                    }
+                    for position, option in enumerate(model.options)
+                ],
+                "hint": model.hint,
+                "layout": "list",
+                "selected": selected,
+            }
         dialog["selected"] = selection_from_runs(runs, dialog)
         return dialog
+
+    def answer_structured_dialog(
+        self, pane_id: str, fingerprint: str, option: int
+    ) -> dict:
+        """Answers a RECOGNIZED dialog option a button was tapped for (S2).
+
+        One tap, all the discipline of a keystroke into a live terminal:
+
+        - the pane is resolved EXACTLY (an unknown pane is never
+          redirected — answering the WRONG agent's permission dialog
+          would be silent and hard to undo);
+        - the pane is RE-READ and the structured dialog re-derived: a
+          screen whose fingerprint moved under the tap refuses with
+          ``changed`` and no key leaves;
+        - a KEYS recipe (the numbering the screen printed) is sent as
+          one guarded sequence through the closed allowlist; a WALK
+          recipe is walked by the guard — one arrow, a re-read, only
+          then the commit;
+        - a multiplexer that cannot send logical keys refuses with the
+          adapter's own explanation (graceful, never a crash).
+
+        The outcome is ``answered`` or ``refused`` with a reason, so
+        the PWA can say exactly what happened.
+        """
+        from . import dialog as dialog_guard
+
+        def refused(reason: str, detail: str = "") -> dict:
+            return {
+                "outcome": "refused",
+                "reason": reason,
+                "detail": detail,
+                "pane_id": pane_id,
+                "option": option,
+            }
+
+        try:
+            agents = self._herdr.list_agents()
+        except HerdrError as exc:
+            return refused("error", f"cannot list panes: {exc}")
+        target = next((agent for agent in agents if agent.pane_id == pane_id), None)
+        if target is None:
+            return refused("unknown_pane", "pane not found")
+
+        reader = self._dialog_reader(pane_id)
+
+        def detect(text: Optional[str]):
+            model = recognize_dialog(target.agent, text or "")
+            if model is None or model.unread:
+                return None
+            return model.as_guard_model()
+
+        try:
+            fresh_text = reader(pane_id, DIALOG_SCREEN_LINES)
+        except HerdrError as exc:
+            return refused("error", f"cannot read the pane: {exc}")
+        model = recognize_dialog(target.agent, fresh_text or "")
+        if model is None or model.unread:
+            return refused("changed", "the dialog is no longer readable")
+        if model.fingerprint != fingerprint:
+            return refused(
+                "changed", "the dialog changed before the answer; nothing was sent"
+            )
+        if not 0 <= option < len(model.options):
+            return refused("invalid_target", "that option is not on this dialog")
+
+        def sender(target_pane: str, keys: list) -> None:
+            result = self.send_keys_to_pane(target_pane, keys)
+            if result["outcome"] != "sent":
+                raise HerdrError(
+                    result.get("detail") or result["outcome"] or "send-keys failed"
+                )
+
+        chosen = model.options[option]
+        if chosen.keys:
+            guard = dialog_guard.entry_guard(
+                reader, pane_id, DIALOG_SCREEN_LINES, model.as_guard_model(), detect
+            )
+            if not guard.ok:
+                return refused(guard.reason or "changed", guard.detail)
+            keys = list(chosen.keys)
+            if len(keys) > MAX_SEND_KEYS or not all(
+                key in SEND_KEY_ALLOWLIST for key in keys
+            ):
+                return refused("invalid_target", "the recipe left the key dialect")
+            try:
+                sender(pane_id, keys)
+            except HerdrError as exc:
+                return refused("send-failed", str(exc))
+            return {
+                "outcome": "answered",
+                "pane_id": pane_id,
+                "option": option,
+                "keys": keys,
+                "label": chosen.label,
+            }
+
+        try:
+            outcome = dialog_guard.answer_dialog(
+                reader,
+                sender,
+                pane_id,
+                DIALOG_SCREEN_LINES,
+                model.as_guard_model(),
+                option,
+                detect,
+                sleep=self._sleeper,
+            )
+        except HerdrError as exc:
+            # The walk's own sender refused (a multiplexer without
+            # logical keys says so in the message): explainable, never
+            # a crash.
+            return refused("send-failed", str(exc))
+        if outcome.sent:
+            return {
+                "outcome": "answered",
+                "pane_id": pane_id,
+                "option": option,
+                "keys": list(model.commit_keys),
+                "label": chosen.label,
+            }
+        return refused(outcome.reason or "changed", outcome.detail)
+
+    def _dialog_reader(self, pane_id: str):
+        """The guard's reader: a styled read of one pane's tail."""
+
+        def reader(target_pane: str, lines: int) -> str:
+            return self._herdr.read_screen(target_pane, lines, as_ansi=True)
+
+        return reader
 
     def begin_turn(self) -> int:
         """Advances the ask-turn counter and returns the new turn id.
@@ -730,8 +1067,9 @@ class BrainTools:
                     "pane_id": agent.pane_id,
                     "agent": agent.agent,
                     "status": agent.status,
-                    "title": agent.title,
-                    "cwd": agent.cwd,
+                    # Display metadata masked (S14); ids stay exact.
+                    "title": mask_text(agent.title) if agent.title else agent.title,
+                    "cwd": mask_text(agent.cwd) if agent.cwd else agent.cwd,
                     "session_id": agent.session_value if agent.session_kind == "id" else None,
                     "focused": agent.focused,
                 }
@@ -886,6 +1224,211 @@ class BrainTools:
         # dialog binding stops authorizing voice answers (S9).
         self._note_dialog_keys(pane_id)
         return _reply_result("sent", pane_id)
+
+    # -- operator launchers (S3; PWA-only, never in TOOLS_SCHEMA) --------
+
+    def launch_operator_tab(
+        self, label: str, cwd: Optional[str], command_line: str
+    ) -> dict:
+        """Executes ONE validated launcher row in a fresh shell tab.
+
+        The label, cwd and command line all come from the operator's
+        validated ``launchers.toml`` row (``LaunchPlan``) — never from
+        client input; the client only names the row. Launchers start
+        shells only: ``create_tab`` makes the tab and ``pane_run``
+        types the derived shell line verbatim plus Enter (the same
+        primitive ``_launch_opencode_via_oa`` uses). Raises
+        :class:`HerdrError` on any multiplexer failure so the route can
+        answer an honest 502. NOT exposed to the LLM: like
+        ``permissions``, this surface deliberately stays out of
+        ``TOOLS_SCHEMA``.
+        """
+        created = self._herdr.create_tab(label, cwd=cwd or None)
+        self._herdr.pane_run(created["pane_id"], command_line)
+        return created
+
+    # -- verified sends, stop and steer (S12) ─────────────────────────────
+
+    def _verified_read(self, pane_id: str) -> Optional[str]:
+        """One plain-text screen read; None on failure (evidence, not truth)."""
+        try:
+            return self._herdr.read_screen(pane_id, VERIFIED_SCREEN_LINES)
+        except HerdrError:
+            return None
+
+    def _verified_poll(self, pane_id: str, before: Optional[str], sent_text: str):
+        """Bounded short poll after a send: up to VERIFIED_POLL_READS
+        screen reads, stopping early once the screen shows the send
+        landed (the body moved) or definitively did not (the echo sits
+        stable on the input line)."""
+        from .send_receipts import text_echoed_on_input
+
+        afters: list = []
+        for _ in range(VERIFIED_POLL_READS):
+            after = self._verified_read(pane_id)
+            afters.append(after)
+            if after is not None and after != before:
+                if not text_echoed_on_input(after, sent_text):
+                    break  # the body moved and the text left the input line
+            self._sleeper(VERIFIED_POLL_INTERVAL_S)
+        return afters
+
+    def verified_reply_to_pane(self, pane_id: str, text: str, steer: bool = False) -> dict:
+        """Delivers a user-TYPED reply and classifies what happened (S12).
+
+        Same narrow contract as :meth:`reply_to_pane` — exact pane, no
+        LLM, no gate, never raises — plus the read-back: the screen read
+        BEFORE the send, the mux's own claim and a bounded poll of
+        screens AFTER it feed :func:`classify_send`. The envelope keeps
+        the legacy ``outcome`` vocabulary (``delivered`` | ``blocked`` |
+        ``unknown_pane`` | ``error`` | ``unsupported_steer``) so the HTTP
+        mapping is unchanged, and gains ``receipt`` — the closed-set
+        outcome, the Spanish detail and the masked text tail the
+        submit/discard follow-ups need. The receipt carries NO id: the
+        server owns the store, tools owns the evidence.
+        """
+        try:
+            agents = self._herdr.list_agents()
+        except HerdrError as exc:
+            return _reply_result("error", pane_id, detail=f"cannot list panes: {exc}")
+        target = next((agent for agent in agents if agent.pane_id == pane_id), None)
+        if target is None:
+            return _reply_result("unknown_pane", pane_id, detail="pane not found")
+        if steer and not steer_supported(target.agent):
+            return _reply_result(
+                "unsupported_steer",
+                pane_id,
+                detail=(
+                    f"a running turn of a {target.agent or 'unknown'} agent cannot be "
+                    "steered; send a normal reply instead"
+                ),
+            )
+
+        def receipt_fields(outcome: str, detail: str) -> dict:
+            return {
+                "outcome": outcome,
+                "detail": mask_text(detail),
+                "text_hint": mask_text(echo_tail(text)),
+            }
+
+        before = self._verified_read(pane_id)
+        try:
+            result = self._herdr.send_prompt(pane_id, text, REPLY_WAIT_MS)
+        except MuxRefusal as exc:
+            return {
+                **_reply_result("error", pane_id, detail=f"cannot send reply: {exc}"),
+                "receipt": receipt_fields("refused", f"el multiplexer rechazó el envío: {exc}"),
+            }
+        except HerdrError as exc:
+            return {
+                **_reply_result("error", pane_id, detail=f"cannot send reply: {exc}"),
+                "receipt": receipt_fields("unknown", f"no se pudo enviar: {exc}"),
+            }
+        status = result["status"]
+        if status == "blocked":
+            return {
+                **_reply_result(
+                    "blocked", pane_id, status=status,
+                    detail="the agent rejected the reply",
+                ),
+                "receipt": receipt_fields(
+                    "refused", "el agente rechazó el texto antes de escribir nada"
+                ),
+            }
+        afters = self._verified_poll(pane_id, before, text)
+        outcome, detail = classify_send(before, afters, text, status)
+        return {
+            **_reply_result("delivered", pane_id, status=status),
+            "receipt": receipt_fields(outcome, detail),
+        }
+
+    def submit_typed_text(self, pane_id: str, text_hint: str) -> dict:
+        """Presses Enter on a typed-but-not-submitted draft (S12).
+
+        The one follow-up the receipt protocol allows: no text is ever
+        re-sent (that would duplicate the draft), only the commit key —
+        then the same read-back decides whether the echo left the input
+        line. Outcome: ``sent`` | ``typed_not_submitted`` | ``unknown`` |
+        ``error``.
+        """
+        return self._followup_typed(pane_id, ["enter"], text_hint, "sent")
+
+    def discard_typed_text(self, pane_id: str, agent_kind: str, text_hint: str) -> dict:
+        """Clears a typed draft with the safe per-harness recipe (S12).
+
+        ``esc`` for every harness (see :func:`discard_recipe`): it never
+        types a character and never executes anything — on chat TUIs it
+        drops the draft, on a plain shell it is a no-op. Outcome:
+        ``discarded`` | ``typed_not_submitted`` | ``unknown`` | ``error``.
+        """
+        return self._followup_typed(
+            pane_id, list(discard_recipe(agent_kind)), text_hint, "discarded"
+        )
+
+    def _followup_typed(
+        self, pane_id: str, keys: list, text_hint: str, resolved: str
+    ) -> dict:
+        def follow(outcome: str, detail: str) -> dict:
+            return {"outcome": outcome, "detail": mask_text(detail), "pane_id": pane_id}
+
+        key_result = self.send_keys_to_pane(pane_id, keys)
+        if key_result["outcome"] != "sent":
+            return follow("error", key_result.get("detail") or "send-keys failed")
+        afters: list = []
+        from .send_receipts import text_echoed_on_input
+
+        for _ in range(VERIFIED_POLL_READS):
+            after = self._verified_read(pane_id)
+            afters.append(after)
+            if after is None or not text_echoed_on_input(after, text_hint):
+                break  # unreadable, or the echo already left
+            self._sleeper(VERIFIED_POLL_INTERVAL_S)
+        outcome, detail = classify_followup(afters, text_hint, resolved)
+        return follow(outcome, detail)
+
+    def stop_pane(self, pane_id: str) -> dict:
+        """Interrupts one pane's RUNNING turn with its harness recipe (S12).
+
+        The recipe comes from the per-harness interrupt table; a harness
+        outside it is a REFUSAL (``unsupported_harness``) — guessing an
+        interrupt key into an unknown TUI is exactly the mistake the
+        table exists to prevent. Exact pane as everywhere (never the
+        focused fallback); keys ride the same closed allowlist.
+        """
+        def stop_result(outcome: str, detail: str = "", keys: Optional[list] = None) -> dict:
+            return {
+                "outcome": outcome,
+                "pane_id": pane_id,
+                "keys": keys or [],
+                "detail": detail,
+            }
+
+        try:
+            agents = self._herdr.list_agents()
+        except HerdrError as exc:
+            return stop_result("error", f"cannot list panes: {exc}")
+        target = next((agent for agent in agents if agent.pane_id == pane_id), None)
+        if target is None:
+            return stop_result("unknown_pane", "pane not found")
+        recipe = interrupt_recipe(target.agent)
+        if recipe is None:
+            return stop_result(
+                "unsupported_harness",
+                f"no interrupt recipe for harness {target.agent or 'unknown'!r}",
+            )
+        keys = list(recipe)
+        try:
+            key_result = self._herdr.send_keys(pane_id, keys)
+        except HerdrError as exc:
+            return stop_result("error", f"cannot send interrupt: {exc}")
+        if not key_result.get("ok"):
+            return stop_result(
+                "error", key_result.get("error") or "send-keys failed", keys
+            )
+        # An interrupt key on a pane with a spoken dialog binding ends
+        # that binding's authority (S9), exactly like a manual key.
+        self._note_dialog_keys(pane_id)
+        return stop_result("stopped", "", keys)
 
     def create_session(self, agent_kind: str, title: str, task: str = "", cwd: str = "") -> str:
         """Opens a NEW dedicated panel: tab + fresh agent (+ first task).
@@ -1125,6 +1668,7 @@ class BrainTools:
             "send_to_session": self.send_to_session,
             "create_session": self.create_session,
             "answer_dialog": self.answer_dialog,
+            "stop_agent": self.stop_pane,
             "consult_work_status": self.consult_work_status,
             "consult_history": self.consult_history,
             "get_followup_context": self.get_followup_context,
@@ -1151,6 +1695,18 @@ class BrainTools:
             if name == "answer_dialog":
                 return handler(
                     str(arguments.get("utterance", "")), target, turn_text
+                )
+            if name == "stop_agent":
+                # The approve replay drives stop_pane directly (it needs
+                # the structured result); the live loop never reaches
+                # here (the gate freezes it first). This branch keeps the
+                # dispatch contract: every tool answers a string.
+                stopped = self.stop_pane(
+                    str(arguments.get("pane_id", "") or "")
+                    or (target.pane_id if target else "")
+                )
+                return "stop " + stopped["outcome"] + (
+                    ": " + stopped["detail"] if stopped["detail"] else ""
                 )
             if name == "read_transcript":
                 return handler(int(arguments.get("n_turns", 10)), target)
@@ -1431,6 +1987,25 @@ TOOLS_SCHEMA = [
                 },
                 "required": ["agent_kind", "title"],
             },
+        },
+    },
+    # S12 voice remainder: the gated interrupt of the running turn is
+    # advertised at last (gate + approve replay were already wired in
+    # llm.py/_gate_stop and the server's stop replay). No arguments are
+    # model-trusted — the gate freezes the REQUEST's target pane.
+    {
+        "type": "function",
+        "function": {
+            "name": "stop_agent",
+            "description": (
+                "GATED (never runs on the spot): interrupts the RUNNING "
+                "turn of the selected session. Use when the user asks to "
+                "stop the agent («para al agente», «stop»); the interrupt "
+                "is frozen behind the same user approval gate as a send — "
+                "propose it, state which agent will be stopped, and wait "
+                "for the user's confirmation. Never narrate it as done."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
     {

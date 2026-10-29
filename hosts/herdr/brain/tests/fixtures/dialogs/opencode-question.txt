@@ -1,0 +1,13 @@
+┃
+┃  Which colour?
+┃
+┃  1. Red
+┃     warm
+┃  2. Green
+┃     calm
+┃  3. Blue
+┃     cool
+┃  4. Type your own answer
+┃
+┃  ↑↓ select  enter submit  esc dismiss
+┃

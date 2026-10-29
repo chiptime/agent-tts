@@ -1187,6 +1187,7 @@ class TestApprovalRegression:
             "send_to_session",
             "create_session",
             "answer_dialog",
+            "stop_agent",
         } | CONSULT_TOOL_NAMES
 
 

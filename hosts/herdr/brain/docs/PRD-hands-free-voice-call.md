@@ -1,4 +1,4 @@
-# PRD & Execution Loop: Hands-Free Conversational Voice Call ("Panel Call")
+# PRD & Execution Loop: Hands-Free Conversational Voice Call ("Brain Voice Call")
 
 | Field | Value |
 |---|---|
@@ -311,7 +311,7 @@ Scenario: Hands-free confirmation of a file-modifying task
 - **Gate**: G-09
 
 ##### T-10 — Executive audio summaries and next-action prompt styling
-- **Intent**: Refine Panel's system prompt for voice-first senior progress reports with clear action hooks (FR-11).
+- **Intent**: Refine the assistant's system prompt for voice-first senior progress reports with clear action hooks (FR-11).
 - **Depends**: T-09
 - **Edit allowlist**: `hosts/herdr/brain/src/herdr_brain/llm.py`
 - **Test creator**: existing `hosts/herdr/brain/tests/test_llm.py`

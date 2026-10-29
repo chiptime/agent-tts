@@ -27,7 +27,7 @@ The default utterance hard cap remains 15 seconds. The existing `hardCapMs`
 option can increase it, but never beyond the **60-second safety ceiling**.
 Silence before the first speech frame does not consume this budget.
 
-## Barge-in (interrupting Panel by voice)
+## Barge-in (interrupting the assistant by voice)
 
 When the **server voice engine** plays an answer in-call, a lightweight VAD
 monitor keeps reading the capture analyser — but **only when the real
@@ -111,7 +111,7 @@ Every refusal presses nothing and tells the user why.
 ## Spoken approval binding (S14)
 
 **Intentional contract tightening.** «Adelante» authorizes *only the exact
-action Panel just explained*, and the proof must be verifiable
+action the assistant just explained*, and the proof must be verifiable
 server-side. There is **no bypass**: the reconfirm shortcut was removed
 after independent verification showed a failed restate (or another
 client) could inherit authority.

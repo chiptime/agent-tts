@@ -107,7 +107,7 @@ metadata{}, always[], tool{messageID, callID}}`.
       Still worth one confirmation on a dialog a REAL agent raised, rather
       than one created through the API.
 
-## Superseded by the Panel port (2026-10-15)
+## Superseded by the current guard implementation (2026-10-15)
 
 The HTTP permission API is NOT how a real dialog is answered in opencode
 1.18.32: opencode runs **two coexisting permission systems** — a V1 registry
@@ -117,9 +117,8 @@ empty while a real dialog waited). The code below stays on the branch because
 it is a correct client for V2, and it becomes useful again if that change
 lands; it is NOT the shape this feature needs today.
 
-The working reference is **Panel**, a Herdr plugin already on this machine
-(`~/.config/herdr/plugins/github/herdr.panel-plugin`, bridge on
-127.0.0.1:8787). It has no opencode recipe yet (its verified families are
+The working reference is another Herdr plugin already installed on this
+machine (its bridge listens on 127.0.0.1:8787). It has no opencode recipe yet (its verified families are
 claude, codex, omp, agy, grok; opencode is explicitly "tomorrow"), but its
 MECHANISM is the thing to port:
 
@@ -190,7 +189,7 @@ safest option and a naive pad would commit the riskiest one.
       The arrow behaviour itself was verified live first: `right` moved
       0→1→2, `left` moved it back, and the detector read every step.
       **Still to do**: the PWA-only endpoint and the buttons.
-- [ ] T8 — live recipe derivation with Panel's method: ONE key at a time,
+- [ ] T8 — live recipe derivation with the reference plugin's method: ONE key at a time,
       capturing the buffer, never committing until the mapping is known.
 
 ## Log

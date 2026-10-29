@@ -96,7 +96,8 @@ class RealMediaApp:
         names = ("index.html", "app.js", "karaoke.js", "toast.js", "reader.js", "speech.js",
                  "announce.js", "approval.js", "consult.js", "endpointing.js", "vad.js",
                  "herd-group.js", "manifest.webmanifest", "icon.svg",
-                 "mermaid.min.js", "mermaid-viewer.js", "tts-engine.js")
+                 "mermaid.min.js", "mermaid-viewer.js", "tts-engine.js", "pairing.js", "destructive.js", "history.js", "dialogs.js", "receipts.js", "push.js",
+                 "i18n.js", "i18n/es.js", "i18n/en.js", "settings.js", "updates.js", "dock.js")
         self.static = {"/" + name: STATIC / name for name in names}
         self.static["/"] = STATIC / "index.html"
         self.api = {
@@ -105,6 +106,9 @@ class RealMediaApp:
                 {"role": "brain", "text": ANSWER, "ts": "2026-01-01T00:00:01Z"},
             ], "has_more": False}, {"before", "limit"}),
             "/herd": ([], set()),
+            # Device pairing boot poll (F1): unpaired default keeps the
+            # pre-F1 stance.
+            "/devices": ({"enforced": False, "current": None, "devices": []}, set()),
             "/view": ({"status": {"active": False}, "screen": None, "transcript": None,
                        "pending": {"detected": False}}, {"pane_id"}),
             "/conversation": ({"pane_id": None, "session_id": None, "agent": None,
@@ -115,6 +119,12 @@ class RealMediaApp:
             # suites on their locally-minted session (call_id null = no
             # adoption); the desktop/handover suite carries the real one.
             "/call/context": ({"call_id": None, "pane_id": None, "revision": 0}, set()),
+            # S4 update notice: the served build matches the footer
+            # ("dev" in this raw-index harness) — no toast.
+            "/build": ({"build": "dev"}, set()),
+            # S3 operator dock: an empty catalog keeps the dock hidden.
+            "/operator/config": ({"quick_replies": [], "commands": [],
+                                  "key_presets": [], "launchers": []}, {"agent"}),
         }
         context.route("**/*", self.route)
         context.route_web_socket("**/*", self.block_socket)

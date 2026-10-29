@@ -31,7 +31,7 @@ command = ["bin/herdr-brain", "url"]
 [[actions]]
 id = "call"
 title = "Herdr Brain: Call"
-description = "Open the Panel voice-call UI in the desktop browser (same call, agents and approvals as the phone)"
+description = "Open the voice-call UI in the desktop browser (same call, agents and approvals as the phone)"
 contexts = ["workspace", "global"]
 command = ["bin/herdr-brain", "call"]
 

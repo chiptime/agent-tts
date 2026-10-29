@@ -1,0 +1,6 @@
+
+  ● opencode
+
+  Ready when you are.
+
+> fix the auth bug and run the full suite

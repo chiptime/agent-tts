@@ -1,0 +1,15 @@
+{
+  "Port": 443,
+  "Proxy": {
+    "443": {
+      "TLS": "on",
+      "TCP": {"HTTP": true},
+      "Targets": [{"Proxy": "http://127.0.0.1:8787"}]
+    },
+    "8443": {
+      "TLS": "on",
+      "TCP": {"HTTP": true},
+      "Targets": [{"Proxy": "http://127.0.0.1:8741"}]
+    }
+  }
+}

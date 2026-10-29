@@ -1,0 +1,6 @@
+│ 1/2 Which fruit?
+│
+│ ❯ 1. Manzana
+│   2. Pera
+│
+  Enter to select · ↑/↓ to navigate · Esc to cancel

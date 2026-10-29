@@ -1,0 +1,4 @@
+$ git status
+On branch feat/brain-parity-f2
+nothing to commit, working tree clean
+$

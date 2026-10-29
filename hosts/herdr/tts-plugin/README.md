@@ -36,7 +36,7 @@ When orchestrating multiple autonomous coding agents in Herdr (Claude Code, Open
 | **Focus-Aware Filtering** | ❌ Speaks every background event | ❌ No | 🟢 **`scope: focused`** (default) |
 | **Intermediate-Step Filtering** | ❌ No | ❌ No | 🟢 **Settle window** (intermediate `done` flickers dropped) |
 | **Mobile Audio Push** | ❌ No | ⚠️ Call only | 🟢 **Native `ntfy.sh` with inline MP3 player** |
-| **Optional Web Deep-Linking** | ❌ No | ❌ No | 🟢 **Panel, custom dashboard, or standalone** |
+| **Optional Web Deep-Linking** | ❌ No | ❌ No | 🟢 **Custom dashboard or standalone** |
 | **On-Demand Reading** | ❌ Passive trigger only | ⚠️ Phone only | 🟢 **`prefix + r`** (Play/Stop toggle) |
 | **Instant Kill-Switch** | ❌ No | ❌ No | 🟢 **`prefix + s`** (<0.2s instant halt) |
 | **Agent Terminal Cleaning** | ❌ Minimal (200 char hard limit) | ❌ LLM-generated summary | 🟢 **Deep cleaner** (ANSI, box, tokens) |
@@ -473,7 +473,6 @@ herdr-tts --voice alvaro       # Set voice (elvira, alvaro, ximena, dalia, jorge
 herdr-tts --rate +25%          # Set speech speed (+0%, +20%, +35%)
 herdr-tts --ntfy-topic <topic> # Set ntfy.sh topic for mobile audio notifications (or 'off')
 herdr-tts --web-url <url>      # Set optional web UI/dashboard base URL for deep-links (or 'off')
-herdr-tts --panel-url <url>   # Alias for --web-url (sets action button to 'Abrir Panel')
 herdr-tts --click-redirect on  # Optional: tap notification body to open web URL directly (default: off)
 herdr-tts --render-pane <pane> # Export clean assistant speech of a pane directly to .mp3
 herdr-tts --speak "Hello"      # Synthesize custom text directly
@@ -561,7 +560,7 @@ herdr-tts --provider kokoro
 `herdr-tts` can forward agent completion and attention events to your phone using [`ntfy.sh`](https://ntfy.sh):
 
 * **Standalone & Audio-First:** The primary purpose of push integration is delivering the event notification and generated neural `.mp3` directly to your phone. In the ntfy app (Android/iOS), you can press Play directly in the notification or notification feed without unlocking your computer.
-* **Strictly Optional Web Redirection:** By default, notifications require zero web interface and do not force redirection. If you use [Panel](https://panel.example) or another web dashboard, you can configure an optional redirect URL. When enabled, a dedicated action button (*"📱 Abrir Panel"* or *"📱 Abrir Web"*) appears below the notification to jump straight to `/pane/<pane_id>` without hijacking the notification tap or audio player.
+* **Strictly Optional Web Redirection:** By default, notifications require zero web interface and do not force redirection. If you use a web dashboard for your agents, you can configure an optional redirect URL. When enabled, a dedicated action button (*"📱 Abrir Web"*, or your own `--web-label` text) appears below the notification to jump straight to `/pane/<pane_id>` without hijacking the notification tap or audio player.
 * **Clipboard Helper:** Every notification includes a one-tap action button (*"📋 Copiar comando"*) to copy `herdr agent focus <pane_id>` to your clipboard.
 * **Zero Additional Daemons:** Runs within the existing `herdr-tts` daemon—zero extra background processes or duplicate TTS synthesis.
 
@@ -574,12 +573,9 @@ herdr-tts --provider kokoro
 herdr-tts --ntfy-topic "my-secret-topic-9k2"
 ```
 
-To optionally add deep-links to Panel or a custom web UI:
+To optionally add deep-links to a custom web UI:
 ```bash
-# Optional Panel integration:
-herdr-tts --panel-url "https://my-desktop.tailscale.net"
-
-# Or generic web dashboard (supports {pane_id} template):
+# Web dashboard deep-linking (supports {pane_id} template):
 herdr-tts --web-url "https://dashboard.example.com/panes/{pane_id}"
 
 # To disable web redirection at any time:
@@ -653,9 +649,9 @@ ELEVENLABS_MODEL="eleven_multilingual_v2"
 NTFY_TOPIC="my-secret-topic-9k2"
 NTFY_SERVER="https://ntfy.sh"
 
-# Optional Web UI / Panel Deep-Linking (off by default):
-WEB_URL=""                  # Or "https://my-desktop.tailscale.net"
-WEB_LABEL="Panel"
+# Optional Web UI Deep-Linking (off by default):
+WEB_URL=""                  # Or "https://dashboard.example.com/panes/{pane_id}"
+WEB_LABEL=""                # Custom action-button label; empty = "Abrir Web"
 CLICK_REDIRECT="off"        # "off" = tap opens ntfy player; "on" = tap opens web URL
 
 # Ambient pane-title glyphs (default on):
@@ -821,7 +817,7 @@ En el **índice** hay además dos teclas globales: `l` cicla el **idioma de la i
 |---|---|---|
 | `t` | Topic ntfy | texto libre: escribe el topic (`Enter` vacío, `off` o `none` = desactivar push); el topic actúa de credencial en ntfy.sh — compártelo solo con tus dispositivos |
 | `f` | Podcast feed | `off` ↔ `on` (publica cada audio en el feed RSS privado) |
-| `w` | Redirección web | texto libre: escribe la URL (`Enter` vacío = desactivar); guarda `WEB_URL` y `PANEL_URL`; una URL con "panel" fija `WEB_LABEL="Panel"` si la etiqueta está vacía; el marcador `{pane_id}` se guarda tal cual |
+| `w` | Redirección web | texto libre: escribe la URL (`Enter` vacío = desactivar); guarda `WEB_URL`; la etiqueta del botón se personaliza con `WEB_LABEL` (vacía = "Abrir Web"); el marcador `{pane_id}` se guarda tal cual |
 
 ### ⚙️ Lectura automática (`r`)
 
@@ -834,7 +830,7 @@ En el **índice** hay además dos teclas globales: `l` cicla el **idioma de la i
 
 * **Navegación**: dentro de una categoría, `q` / `Esc` / `Enter` **vuelven al índice**; desde el índice salen de los Ajustes — al menú principal si entraste con `a`, o cierre directo en el popup independiente (`herdr-tts --voice-settings`, acción `voice-settings` del plugin, entrypoint `tts-settings`). `settings` sigue siendo un id ligable en `keymap.json`, pero **sin acorde por defecto**: los ajustes no gastan una tecla de core.
 * Kokoro y Piper requieren instalar el modelo antes: `agent-tts voice install <modelo>`.
-* La escritura es **gestionada**: solo toca las claves `TTS_PROVIDER`, `TTS_AUTO_SCOPE`, `TTS_AUTO_LANG`, `PODCAST_ENABLED`, `TTS_DEBOUNCE_SECONDS`, `TTS_READER_AUTO`, `NTFY_TOPIC`, `TTS_VOICE`, `TTS_PLAYBACK`, `HERDR_TTS_AUDIO_RETENTION_DAYS`, `TTS_SETTLE_SECONDS`, `WEB_URL`, `PANEL_URL`, `WEB_LABEL`, `CLICK_REDIRECT`, `HERDR_TTS_LANG` y `TTS_THEME` de `config.env` — reescribe la línea existente o añade un bloque gestionado al final, preserva el resto del fichero byte a byte, escribe de forma atómica (tmp + mv) y deja la versión previa en `config.env.bak` (las excepciones son `v`, que usa el marcador `auto_muted`, y `n`/`u`, que escriben los flags de `voices.json`). `TTS_THEME` (tema del terminal, `dark`|`light`) es una clave avanzada **sin knob en Ajustes**: se gestiona vía `config_set` o editando `config.env` directamente — pensada para operadores con terminales de fondo claro (p. ej. roster en paneles de agentes).
+* La escritura es **gestionada**: solo toca las claves `TTS_PROVIDER`, `TTS_AUTO_SCOPE`, `TTS_AUTO_LANG`, `PODCAST_ENABLED`, `TTS_DEBOUNCE_SECONDS`, `TTS_READER_AUTO`, `NTFY_TOPIC`, `TTS_VOICE`, `TTS_PLAYBACK`, `HERDR_TTS_AUDIO_RETENTION_DAYS`, `TTS_SETTLE_SECONDS`, `WEB_URL`, `WEB_LABEL`, `CLICK_REDIRECT`, `HERDR_TTS_LANG` y `TTS_THEME` de `config.env` — reescribe la línea existente o añade un bloque gestionado al final, preserva el resto del fichero byte a byte, escribe de forma atómica (tmp + mv) y deja la versión previa en `config.env.bak` (las excepciones son `v`, que usa el marcador `auto_muted`, y `n`/`u`, que escriben los flags de `voices.json`). `TTS_THEME` (tema del terminal, `dark`|`light`) es una clave avanzada **sin knob en Ajustes**: se gestiona vía `config_set` o editando `config.env` directamente — pensada para operadores con terminales de fondo claro (p. ej. roster en paneles de agentes).
 * La tecla `R` (mayúscula, en el **índice**) **reinicia el daemon** al instante y confirma en pantalla con `✓ Daemon reiniciado`; equivale a `herdr-tts --restart-daemon`.
 * Los cambios aplican a **nuevos procesos**: `p`, `g`, `i`, `f`, `b`, `d`, `s`, `w` y el `p` de Lectura automática (popup lector, `TTS_READER_AUTO`) aplican al reiniciar el daemon — ahora con una tecla (`R` en el índice de Ajustes) o `herdr-tts --restart-daemon`. Las excepciones son `v`, `n`, `u` y `r`: se consultan en cada evento o frame, así que cambian **al vuelo**, sin reiniciar. El idioma de la interfaz (`l`) también cambia al vuelo **dentro del popup** (re-renderiza al instante); el resto de procesos lo aplican al arrancar, con precedencia `HERDR_TTS_LANG` de entorno > `config.env` > `en`. El tema (`TTS_THEME`, sin knob — ver arriba) también se adopta en vivo: un popup abierto re-renderiza con el nuevo tema en el siguiente frame — títulos en color de acento, pistas y marcos en atenuado, notas y avisos coloreados — y el **dashboard en marcha lo adopta en el siguiente fotograma** (re-lee `TTS_THEME` de `config.env` en cada frame); el resto de superficies lo aplican al arrancar, con la misma precedencia para `TTS_THEME`.
 

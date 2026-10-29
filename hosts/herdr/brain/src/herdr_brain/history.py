@@ -31,6 +31,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from .secrets_mask import mask_text
+
 HISTORY_DB_FILENAME = "call_history.db"
 LEGACY_HISTORY_FILENAME = "call_history.jsonl"
 IMPORTED_SUFFIX = ".imported"
@@ -90,6 +92,14 @@ def is_strictly_older(ts: str, before_ts: str) -> bool:
     return ts < before_ts
 
 
+def _masked_record(record: dict) -> dict:
+    """A served copy of one record with its text masked (S14).
+
+    New dict, never a mutation: the stored row is untouched.
+    """
+    return {"ts": record["ts"], "role": record["role"], "text": mask_text(record["text"])}
+
+
 def _valid_record(record: object) -> Optional[dict]:
     """Returns the record as a plain dict, or None when malformed."""
     if not isinstance(record, dict):
@@ -140,10 +150,14 @@ class HistoryStore:
     def load(self, last_n: Optional[int] = None) -> list:
         """Returns the stored records, oldest first (optionally only
         ``last_n``). Rows outside the known roles — only reachable
-        through direct DB writes — are skipped, never raised."""
+        through direct DB writes — are skipped, never raised.
+
+        Served records mask their text (S14): the read feeds the PWA
+        transcript; the table itself keeps every raw byte.
+        """
         with self._lock:
             records = self._select_all()
-        return self._tail(records, last_n)
+        return [_masked_record(record) for record in self._tail(records, last_n)]
 
     def load_before(self, before_ts: Optional[str], limit: int) -> list:
         """Returns up to ``limit`` records strictly OLDER than
@@ -154,18 +168,24 @@ class HistoryStore:
         and filters in Python using the timestamp-aware comparison (see
         :func:`is_strictly_older`) — fine at the ≤2000-row compaction
         bound; ``limit <= 0`` yields an empty page like :meth:`load`.
+        Served records mask their text (S14), exactly like load().
         """
         with self._lock:
             records = self._select_all()
         if before_ts is not None:
             records = [r for r in records if is_strictly_older(r["ts"], before_ts)]
-        return self._tail(records, limit)
+        return [_masked_record(record) for record in self._tail(records, limit)]
 
     def load_and_compact(self, last_n: Optional[int] = None) -> list:
         """Boot-side load: same as :meth:`load`, plus opportunistic
         compaction — when the table holds more than ``COMPACT_ABOVE``
         records it is trimmed (one DELETE) keeping only the last
-        ``COMPACT_KEEP``."""
+        ``COMPACT_KEEP``.
+
+        Deliberately RAW (no S14 masking): this feeds the boot-time
+        conversation ring — internal state whose provider boundary is
+        BrainLLM — and must never rewrite what compaction persists.
+        """
         with self._lock:
             records = self._select_all()
             if len(records) > COMPACT_ABOVE:

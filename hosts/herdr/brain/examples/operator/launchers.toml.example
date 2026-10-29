@@ -1,0 +1,46 @@
+# Launchers — the ONLY surface that executes anything from the panel.
+#
+# Copy to ~/.config/herdr-brain/launchers.toml (or the directory named by
+# HERDR_BRAIN_CONFIG_DIR). The file reloads by mtime on the next request.
+#
+# THIS FILE IS THE ALLOWLIST. A client (the PWA) names a row by its id
+# and never supplies a command line; the brain resolves the id to the
+# exact argv below. Launchers start shells only — a fresh shell tab, the
+# argv typed into it, no agent wiring.
+#
+# Rows are validated one by one and NOTHING is sanitized in place:
+#   - argv must be an array of strings — a shell command line (a plain
+#     string field) is rejected by shape;
+#   - any ASCII control character in any field rejects the row: an
+#     embedded newline could type a second line the operator never
+#     reviewed;
+#   - unknown fields are rejected; ids are unique per file.
+# Launchers are not exposed to the LLM tool surface.
+
+# A plain launcher: the panel creates a shell tab and runs the argv.
+[[launchers]]
+id = "editor"                     # optional: stable row id a client names
+                                  # (derived from the label slug when
+                                  # omitted).
+label = "Open editor"             # required: the dock entry text.
+argv = ["nvim", "notes.md"]       # required: non-empty array of
+                                  # non-empty strings. Never a shell string.
+
+# A working-directory launcher.
+[[launchers]]
+id = "status"
+label = "Project status"
+argv = ["git", "status", "--short"]
+cwd = "/home/you/projects/thing"  # optional: ABSOLUTE path. It must exist
+                                  # when launched — a missing cwd refuses
+                                  # the launch instead of falling back.
+
+# A high-attention launcher: the launch endpoint then demands an explicit
+# confirmation before anything runs.
+[[launchers]]
+id = "deploy"
+label = "Deploy"
+argv = ["make", "deploy"]
+cwd = "/home/you/projects/thing"
+no_prompts = true                 # optional boolean: requires an explicit
+                                  # confirm at launch time.

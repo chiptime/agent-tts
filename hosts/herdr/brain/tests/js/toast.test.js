@@ -122,6 +122,10 @@ function makeElement(tag) {
   });
   node.querySelectorAll = sel => descendants(node).filter(el => el.nodeType === 1 && matches(el, sel));
   node.querySelector = sel => node.querySelectorAll(sel)[0] || null;
+  node.addEventListener = (type, handler) => {
+    node.listeners = node.listeners || {};
+    node.listeners[type] = handler;
+  };
   return node;
 }
 
@@ -423,4 +427,31 @@ test("split_hard_cuts_unbroken_tokens_at_the_limit", () => {
   const mixed = splitForTts("x".repeat(150) + " sigue el texto normal aqui.", 50);
   assert.deepEqual(mixed.slice(0, 3), ["x".repeat(50), "x".repeat(50), "x".repeat(50)]);
   assert.equal(mixed[3], "sigue el texto normal aqui.");
+});
+
+/* ---- 1.8 optional action button (S4 update notice) ---- */
+
+test("action_button_renders_as_text_and_hides_on_tap", () => {
+  const h = harness();
+  let clicked = 0;
+  h.toast.show("Nueva versión disponible — Recargar", {
+    action: { label: "Recargar", onClick: () => { clicked += 1; } },
+  });
+  const button = h.toastEl.querySelector(".toast-action");
+  assert.ok(button, "the action button mounts inside the toast");
+  assert.equal(button.textContent, "Recargar");
+  assert.equal(h.doc.writeLog().length, 0, "no innerHTML anywhere");
+  assert.equal(button.children.filter(c => c.nodeType === 1).length, 0,
+    "the label is a text node, never markup");
+  button.listeners.click();
+  assert.equal(clicked, 1, "the tap hands over to the caller");
+  assert.equal(h.toastEl.classList.contains("hidden"), true,
+    "the tap also closes the toast");
+});
+
+test("a_toast_without_action_keeps_the_historical_dom", () => {
+  const h = harness();
+  h.toast.show("aviso normal");
+  assert.equal(h.toastEl.querySelector(".toast-action"), null);
+  assert.ok(h.toastEl.querySelector(".toast-close"), "close glyph still present");
 });

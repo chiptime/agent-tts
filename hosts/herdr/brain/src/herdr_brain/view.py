@@ -14,6 +14,8 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
+from .secrets_mask import mask_text
+
 # Tail sizes used by GET /view and the LLM live-context hint.
 TRANSCRIPT_TAIL_TURNS = 3
 SCREEN_TAIL_LINES = 12
@@ -65,8 +67,17 @@ def detect_pending(screen_text: Optional[str], agent_status: str = "") -> Pendin
     - ``detected`` is true when a line matched OR the agent status is
       ``blocked``. If only the status fired, the excerpt falls back to the
       last non-empty screen line and kind stays ``None`` (unknown ask).
+
+    The WHOLE screen is masked before any line is scanned (S14), so the
+    excerpt can never carry a secret its 200-char clip half-preserved.
+    The excerpt is derived hint text: masking runs unhinted, keeping
+    the kind of what was hidden but never a raw provider prefix.
     """
-    lines = [ln.strip() for ln in (screen_text or "").splitlines() if ln.strip()]
+    lines = [
+        ln.strip()
+        for ln in mask_text(screen_text or "", hinted=False).splitlines()
+        if ln.strip()
+    ]
     excerpt: Optional[str] = None
     kind: Optional[str] = None
 

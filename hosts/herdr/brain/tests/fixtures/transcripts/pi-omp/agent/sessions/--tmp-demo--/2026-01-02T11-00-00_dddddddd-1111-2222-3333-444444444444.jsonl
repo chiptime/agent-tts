@@ -1,0 +1,3 @@
+{"type":"session","version":3,"id":"dddddddd-1111-2222-3333-444444444444","timestamp":"2026-01-02T11:00:00.000Z","cwd":"/tmp/demo"}
+{"type":"message","id":"n1","parentId":null,"timestamp":"2026-01-02T11:00:05.000Z","message":{"role":"user","content":[{"type":"text","text":"levantar el servidor de vista previa"}]}}
+{"type":"message","id":"n2","parentId":"n1","timestamp":"2026-01-02T11:00:10.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Vista previa sirviendo en http://127.0.0.1:4173."}]}}

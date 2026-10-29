@@ -71,7 +71,7 @@ def test_call_uses_configured_port_and_only_one_opener(cli):
     run,log,files,stubs=cli
     result=run("call")
     assert result.returncode==0 and result.stderr==""
-    assert result.stdout == """[herdr-brain] Opening the Panel voice call in your desktop browser: http://localhost:8765/
+    assert result.stdout == """[herdr-brain] Opening the voice call in your desktop browser: http://localhost:8765/
 [herdr-brain] The call UI is opening. It shares the same call as your phone:
   the same conversation, agents and pending approvals.
   - The browser will ask for microphone access — that prompt is the consent

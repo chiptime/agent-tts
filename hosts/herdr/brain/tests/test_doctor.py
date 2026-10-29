@@ -254,13 +254,17 @@ def test_real_dispatch_before_bootstrap_or_config_writes(tmp_path, role, command
     python = checkout / "hosts/herdr/brain/.venv/bin/python" if role == "brain" else data / "herdr-tts/venv/bin/python"
     python.parent.mkdir(parents=True); python.symlink_to(sys.executable)
     env = {"HOME": str(home), "XDG_CONFIG_HOME": str(config), "XDG_DATA_HOME": str(data),
-           "XDG_STATE_HOME": str(tmp_path / "state"), "XDG_CACHE_HOME": str(tmp_path / "cache"),
-           "HERDR_TTS_DAEMON_PID_FILE": str(tmp_path / "absent.pid"),
-           "PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"}
+            "XDG_STATE_HOME": str(tmp_path / "state"), "XDG_CACHE_HOME": str(tmp_path / "cache"),
+            "HERDR_TTS_DAEMON_PID_FILE": str(tmp_path / "absent.pid"),
+            "PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"}
     before = snapshot(tmp_path)
     result = subprocess.run(["bash", str(next(launcher.iterdir())), *command, "--json"],
                             env=env, capture_output=True, text=True, timeout=30)
     assert result.returncode == 1, result.stderr
-    assert len(json.loads(result.stdout)["checks"]) == 6
+    # The launcher's doctor now runs a SECOND stage (brain ops rows, S8)
+    # after the onboarding JSON; only the first JSON document on stdout
+    # is the onboarding report, so parse exactly that.
+    first_json, _ = json.JSONDecoder().raw_decode(result.stdout.lstrip())
+    assert len(first_json["checks"]) == 6
     assert snapshot(tmp_path) == before
 

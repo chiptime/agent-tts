@@ -157,7 +157,7 @@ We recommend **Approach 1 (Host-Layer Python Stdlib Pipeline in `lib/reader_pipe
      5. Host CLI / bridge access (e.g. `bin/herdr-tts --render-html <in> <out.html>` and Python module).
      6. Comprehensive hermetic test suite in `scripts/smoke-tests.sh` (Scenario 39).
    - **OUT OF SCOPE for HT-15 (Recommended for Follow-up HT-16)**:
-     - The interactive follow-along Reading Modal UI itself (terminal modal frame, curses/tput display loop, Panel web view, real-time keyboard navigation hooks). HT-15 delivers the complete, verified *engine pipeline* feeding that reader.
+     - The interactive follow-along Reading Modal UI itself (terminal modal frame, curses/tput display loop, the external web dashboard view, real-time keyboard navigation hooks). HT-15 delivers the complete, verified *engine pipeline* feeding that reader.
 
 ---
 
