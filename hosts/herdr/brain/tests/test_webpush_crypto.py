@@ -1,12 +1,11 @@
 """Web Push crypto primitives against published vectors (S5).
 
-The brain has no crypto dependency in its venv (no ``cryptography``, no
-``pywebpush``), so the package carries a small, self-contained
-implementation of exactly the primitives Web Push needs: P-256 (ECDH +
-deterministic ECDSA), HKDF-SHA256 and AES-128-GCM. These tests pin each
-primitive to a published external vector — NIST GCM, RFC 5869, RFC 6979
-appendix A.2.5 and the widely-reproduced NIST P-256 test point — so
-correctness does not rest on the implementation verifying itself.
+``webpush/crypto.py`` adapts the ``cryptography`` library to the wire
+shapes Web Push uses: P-256 (ECDH + deterministic ECDSA), HKDF-SHA256 and
+AES-128-GCM. These tests pin each primitive to a published external vector
+— NIST GCM, RFC 5869, RFC 6979 appendix A.2.5 and the widely-reproduced
+NIST P-256 test point — so the adapter (key encodings, raw ``r || s``
+signatures, tag handling) is checked against independent values.
 """
 
 from __future__ import annotations

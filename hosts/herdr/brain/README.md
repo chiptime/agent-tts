@@ -414,7 +414,8 @@ The same watcher that feeds SSE also feeds **Web Push** (VAPID, S5): when
 the call is closed and the phone is idle, blocked/done transitions still
 reach the lock screen. ntfy stays as it is (its approval action buttons
 keep `HERDR_BRAIN_APPROVAL_TOKEN`); Web Push is the brain's own channel,
-end-to-end encrypted to each subscribed phone.
+end-to-end encrypted to each subscribed phone (RFC 8291 payloads and RFC
+8292 VAPID signatures, built on the `cryptography` package).
 
 - **Keys**: one VAPID pair per brain, in `<state-dir>/vapid.json` (0600) or
   the `HERDR_BRAIN_VAPID_*` environment. Without keys the server runs
