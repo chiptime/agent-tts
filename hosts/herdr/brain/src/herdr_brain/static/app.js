@@ -29,6 +29,15 @@
 
 (function () {
   var $ = function (id) { return document.getElementById(id); };
+
+  /* S4 i18n: es is the source locale (the default boot is
+   * byte-identical to the pre-i18n UI); a missing runtime falls back
+   * to the KEY so a broken load is loud, never silently Spanish in
+   * English mode. Agent/server text (titles, excerpts, receipts)
+   * never passes through t(). */
+  var t = window.I18N && typeof window.I18N.t === "function"
+    ? window.I18N.t
+    : function (key) { return key; };
   var callBtn = $("call-btn");
   var pauseBtn = $("pause-btn");
   var stopBtn = $("stop-audio");
@@ -191,27 +200,59 @@
   var THEME_KEY = "herdr-brain-theme";
   var themeBtn = $("theme-btn");
 
-  function applyTheme(name) {
-    document.documentElement.setAttribute("data-theme", name);
-    var meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.setAttribute("content", name === "dark" ? "#0a0a0a" : "#f4f6f9");
-    if (themeBtn) themeBtn.textContent = name === "dark" ? "Tema: Oscuro" : "Tema: Claro";
-    if (typeof mermaidViewer !== "undefined" && mermaidViewer) mermaidViewer.setTheme(name);
+  /* S4 theme: a 3-state cycle auto|claro|oscuro on the SAME data-theme
+   * attribute the CSS always consumed. applyTheme takes the RESOLVED
+   * theme plus the chosen MODE (the button labels the mode); the cycle
+   * helper lives in settings.js so the first tap from auto flips the
+   * system resolution — the toggle contract the suite pins. */
+  function storedThemeMode() {
+    try {
+      var stored = localStorage.getItem(THEME_KEY);
+      if (stored === "light" || stored === "dark" || stored === "auto") return stored;
+    } catch (err) { /* private mode */ }
+    return "auto";
   }
 
-  var storedTheme = null;
-  try { storedTheme = localStorage.getItem(THEME_KEY); } catch (err) { /* private mode */ }
-  applyTheme(
-    storedTheme === "dark" || storedTheme === "light"
-      ? storedTheme
-      : (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
-  );
+  function systemPrefersDark() {
+    return !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  }
+
+  function applyTheme(resolved, mode) {
+    document.documentElement.setAttribute("data-theme", resolved);
+    var meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute("content", resolved === "dark" ? "#0a0a0a" : "#f4f6f9");
+    if (themeBtn) {
+      themeBtn.textContent = mode === "auto"
+        ? t("settings.theme_auto")
+        : (mode === "dark" ? t("settings.theme_dark") : t("settings.theme_light"));
+    }
+    if (typeof mermaidViewer !== "undefined" && mermaidViewer) mermaidViewer.setTheme(resolved);
+  }
+
+  var themeMode = storedThemeMode();
+  var resolve = window.BrainSettings ? BrainSettings.resolvedTheme : function (mode, dark) {
+    return mode === "auto" ? (dark ? "dark" : "light") : mode;
+  };
+  applyTheme(resolve(themeMode, systemPrefersDark()), themeMode);
+
   if (themeBtn) {
     themeBtn.addEventListener("click", function () {
-      var next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+      if (!window.BrainSettings) return;
+      var next = BrainSettings.nextThemeMode(themeMode, systemPrefersDark());
       try { localStorage.setItem(THEME_KEY, next); } catch (err) { /* private mode */ }
-      applyTheme(next);
+      themeMode = next;
+      applyTheme(resolve(themeMode, systemPrefersDark()), themeMode);
     });
+  }
+  /* Auto follows the system while the PWA stays open. */
+  if (window.matchMedia) {
+    try {
+      window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function () {
+        if (themeMode === "auto") {
+          applyTheme(resolve(themeMode, systemPrefersDark()), themeMode);
+        }
+      });
+    } catch (err) { /* older engines: the next boot re-resolves */ }
   }
 
   var SESSION_KEY = "herdr-brain-session";
@@ -339,13 +380,13 @@
   var meterLit = -1;
 
   var PILL_TEXT = {
-    listening: "● Escuchando",
-    recording: "● Grabando — habla",
-    transcribing: "⏳ Entendiendo…",
-    thinking: "⏳ Infiriendo…",
-    speaking: "🔊 Hablando",
-    paused: "⏸ Micrófono en pausa",
-    confirming: "Confirmar"
+    listening: "strip.listening",
+    recording: "strip.recording",
+    transcribing: "strip.transcribing",
+    thinking: "strip.thinking",
+    speaking: "strip.speaking",
+    paused: "strip.paused",
+    confirming: "call.confirm"
   };
 
   function setCallState(state) {
@@ -357,16 +398,16 @@
     }
     pillSub.classList.add("hidden");
     if (state === "idle") {
-      callBtn.textContent = "📞 Llamar";
+      callBtn.textContent = t("call.start");
       callBtn.classList.remove("oncall");
       pauseBtn.classList.add("hidden");
     } else {
-      callBtn.textContent = "🔴 Colgar";
+      callBtn.textContent = t("call.end");
       callBtn.classList.add("oncall");
       var micControllable = state === "listening" || state === "recording" ||
         state === "paused" || state === "confirming";
       pauseBtn.classList.toggle("hidden", !micControllable);
-      pauseBtn.textContent = state === "paused" ? "▶ Reanudar" : "⏸ Pausa";
+      pauseBtn.textContent = state === "paused" ? t("call.resume") : t("call.pause");
     }
     renderPill();
     renderInterimStrip();
@@ -378,7 +419,7 @@
    * and drawer-open are pill-free (FR12). */
   function renderPill() {
     if (interruptedFromReload && !inCall) {
-      pillMain.textContent = "Llamada cortada — ¿Volver a llamar?";
+      pillMain.textContent = t("call.cut_recall");
       statePill.className = "interrupted";
       statePill.classList.remove("hidden");
       return;
@@ -388,7 +429,7 @@
      * drawer) or a typing user never sees the popup at all. */
     if (inCall && !drawerOpen && callState !== "idle" &&
         (!textMode || (approvalFlow && approvalFlow.active()))) {
-      pillMain.textContent = (PILL_TEXT[callState] || callState) + " ▲";
+      pillMain.textContent = (PILL_TEXT[callState] ? t(PILL_TEXT[callState]) : callState) + " ▲";
       statePill.className = callState;
       statePill.classList.remove("hidden");
       return;
@@ -412,11 +453,11 @@
     var status = "";
     if (active) {
       if (st === "thinking") {
-        status = "⏳ Infiriendo…";
+        status = t("strip.thinking");
       } else if (!browser) {
         if (micOn) status = "○ escuchando…";
-        else if (st === "transcribing") status = "⏳ transcribiendo…";
-        else if (st === "paused") status = "⏸ micrófono en pausa";
+        else if (st === "transcribing") status = t("strip.transcribing_lower");
+        else if (st === "paused") status = t("strip.paused_lower");
       }
     }
     if (status) {
@@ -676,11 +717,11 @@
 
   /* ---------------- diagnostics ---------------- */
 
-  var diag = { lastPoll: null, lastError: "ninguno" };
+  var diag = { lastPoll: null, errorKey: "diag.none" };
 
   function markPollOk() {
     diag.lastPoll = new Date();
-    diag.lastError = "ninguno";
+    diag.errorKey = "diag.none";
     renderDiag();
   }
 
@@ -694,7 +735,7 @@
   function renderDiag() {
     if (!diagStatus) return;
     var when = diag.lastPoll ? diag.lastPoll.toLocaleTimeString() : "—";
-    diagStatus.textContent = "Última consulta: " + when + " · Último error: " + diag.lastError;
+    diagStatus.textContent = t("diag.status", { when: when, error: diag.lastError || t(diag.errorKey) });
   }
 
   function safeRender(name, fn, arg) {
@@ -781,7 +822,7 @@
       if (!/^(0|[1-9]\d*)$/.test(index) || control.closest(readerNativeControl)) return;
       control.tabIndex = 0;
       control.setAttribute("role", "button");
-      control.setAttribute("aria-label", "Escuchar desde la frase " + (Number(index) + 1));
+      control.setAttribute("aria-label", t("glance.replay_from", { n: Number(index) + 1 }));
       control.setAttribute("aria-pressed", control.classList.contains("tts-selected") ? "true" : "false");
     });
   }
@@ -1009,7 +1050,7 @@
     if (!hasTurns && !ghost) {
       ghost = document.createElement("div");
       ghost.id = "ghost-bubble";
-      ghost.textContent = "Di algo — te escucho";
+      ghost.textContent = t("ghost.hint");
       conv.appendChild(ghost);
     } else if (hasTurns && ghost) {
       ghost.remove();
@@ -1050,7 +1091,7 @@
       control.tabIndex = 0;
       control.setAttribute("role", "button");
       control.setAttribute("data-ordinal", chunk.ordinal);
-      control.setAttribute("aria-label", "Escuchar fragmento " + chunk.ordinal + " de " + plan.chunks.length);
+      control.setAttribute("aria-label", t("glance.replay_piece", { n: chunk.ordinal, total: plan.chunks.length }));
       control.setAttribute("aria-pressed", "false");
       var press = null;
       var suppressed = false;
@@ -1089,9 +1130,9 @@
     var button = document.createElement("button");
     button.type = "button";
     button.className = "replay-btn";
-    button.textContent = "🔊 Escuchar";
-    button.setAttribute("aria-label", "Leer esta respuesta en voz alta");
-    button.title = "Leer en voz alta";
+    button.textContent = t("glance.replay");
+    button.setAttribute("aria-label", t("tts.read_this"));
+    button.title = t("tts.read_aloud");
     button.addEventListener("click", function (event) {
       event.stopPropagation();
       if (ttsEngine && ttsEngine.supported && ttsEngine.state.isOpen) {
@@ -1124,7 +1165,7 @@
     who.textContent = "brain";
     var content = document.createElement("span");
     content.className = "thinking-label";
-    content.textContent = "⏳ Infiriendo…";
+    content.textContent = t("strip.thinking");
     bubble.appendChild(who);
     bubble.appendChild(content);
     conv.appendChild(bubble);
@@ -1161,8 +1202,8 @@
     var btn = document.createElement("button");
     btn.type = "button";
     btn.className = "history-more";
-    btn.textContent = "Ver más";
-    btn.setAttribute("aria-label", "Cargar turnos anteriores de la llamada");
+    btn.textContent = t("glance.more");
+    btn.setAttribute("aria-label", t("glance.more_aria"));
     btn.setAttribute("data-before", cursor);
     btn.addEventListener("click", onHistoryMore);
     var first = firstTurnEl();
@@ -1221,7 +1262,7 @@
     turn.className = "turn announce";
     var who = document.createElement("span");
     who.className = "who";
-    who.textContent = "🔊 anuncio · " + (label || "agente");
+    who.textContent = t("announce.who", { label: label || t("announce.label_default") });
     var body = document.createElement("span");
     body.textContent = text || "";
     turn.appendChild(who);
@@ -1255,8 +1296,8 @@
     var btn = document.createElement("button");
     btn.className = "replay-btn";
     btn.type = "button";
-    btn.setAttribute("aria-label", "Leer esta respuesta en voz alta");
-    btn.title = "Leer en voz alta";
+    btn.setAttribute("aria-label", t("tts.read_this"));
+    btn.title = t("tts.read_aloud");
     btn.textContent = "🔊 Escuchar";
     btn.addEventListener("click", function (event) {
       event.stopPropagation();  // never bubble into container-level taps
@@ -1282,7 +1323,7 @@
       // audio is enqueued (or the request fails — banner already shown).
       btn.disabled = true;
       btn.setAttribute("aria-busy", "true");
-      btn.textContent = "⏳ Sintetizando…";
+      btn.textContent = t("strip.synthesizing");
       var restore = function () {
         btn.disabled = false;
         btn.removeAttribute("aria-busy");
@@ -1332,8 +1373,8 @@
           .then(function (resp) {
             if (!resp.ok) {
               showBanner(single
-                ? "No pude sintetizar el audio (HTTP " + resp.status + ")."
-                : "No pude sintetizar una parte del audio (HTTP " + resp.status + ").");
+                ? t("tts.synth_failed", { status: resp.status })
+                : t("tts.synth_failed_part", { status: resp.status }));
               return;
             }
             return resp.json().then(function (data) {
@@ -1354,8 +1395,8 @@
           })
           .catch(function () {
             showBanner(single
-              ? "No pude sintetizar el audio — revisa la conexión."
-              : "No pude sintetizar una parte del audio — revisa la conexión.");
+              ? t("tts.synth_retry")
+              : t("tts.synth_retry_part"));
           });
       });
     });
@@ -1403,6 +1444,7 @@
 
   var lastHerd = [];
   var lastPending = { detected: false };
+  var lastPendingSignal = null;
   /* The most recent /view payload: the ONLY description of the pane whose
    * screen is on display, so reply/pad targeting can be bound to it instead
    * of to the live focus (which a /herd poll can move on its own). */
@@ -1436,7 +1478,7 @@
   }
 
   /* Small Spanish label for a sheet row's status pill (idle hides it). */
-  var AGENT_STATUS_TEXT = { working: "trabajando", blocked: "bloqueado", done: "listo" };
+  var AGENT_STATUS_TEXT = { working: "status.working", blocked: "status.blocked", done: "status.done" };
 
   /* Keyed in-place update (FR10/AC8): sheet rows are reused per pane_id
    * and touched only when their content changed, so the 5s poll can
@@ -1449,10 +1491,11 @@
     lastHerd = herd;
     var effective = effectiveSelected(herd);
     lastEffectivePane = effective;
+    refreshOperatorDock();
     var fellBack = !!(selectedPane && effective !== selectedPane);
     herdNote.classList.toggle("hidden", !fellBack);
     if (fellBack) {
-      herdNote.textContent = "El agente seleccionado desapareció — volviendo al enfocado.";
+      herdNote.textContent = t("herd.disappeared");
       selectedPane = effective;
       if (effective) localStorage.setItem(PANE_KEY, effective);
       refreshMirror();  // the cockpit now shows another pane: re-read now
@@ -1524,7 +1567,7 @@
       }
       var status = agent.agent_status || "";
       var statusText = status && status !== "idle"
-        ? (AGENT_STATUS_TEXT[status] || status) : "";
+        ? (AGENT_STATUS_TEXT[status] ? t(AGENT_STATUS_TEXT[status]) : status) : "";
       var dotCls = "st " + status;
       var ariaNow = id === effective ? "true" : "false";
       var dotNode = el.firstChild;
@@ -1641,7 +1684,7 @@
   function renderStatus(state) {
     var chipText, chipClass;
     if (!state || !state.active) {
-      chipText = "nadie";
+      chipText = t("status.nobody");
       chipClass = "chip";
     } else {
       chipText = state.agent_status || "?";
@@ -1694,7 +1737,7 @@
     var tapPane = null;
     if (count >= 2) {
       pendingBanner.className = "pending permission actionable";
-      pendingBanner.textContent = count + " agentes esperan tu OK — toca para atender";
+      pendingBanner.textContent = t("pending.many", { count: count });
       actionable = true;
       if (otherBlocked) {
         tapPane = otherBlocked.pane_id;
@@ -1706,16 +1749,17 @@
     } else if (detected) {
       var kind = lastPending.kind || "question";
       var headline = {
-        permission: "Pide permiso",
-        error: "Error del agente",
-        question: "El agente pregunta"
-      }[lastPending.kind] || "Necesita tu atención";
+        permission: t("pending.permission"),
+        error: t("pending.error"),
+        question: t("pending.question")
+      }[lastPending.kind] || t("pending.attention");
       pendingBanner.className = "pending " + kind;
-      pendingBanner.textContent = headline + ": " + (lastPending.excerpt || "mira la pantalla");
+      pendingBanner.textContent = headline + ": " + (lastPending.excerpt || t("pending.fallback_excerpt"));
     } else if (blocked.length === 1) {
       pendingBanner.className = "pending permission actionable";
-      pendingBanner.textContent = (blocked[0].title || blocked[0].agent || "Un agente") +
-        " espera tu OK — toca para verlo";
+      pendingBanner.textContent = t("pending.one", {
+        name: blocked[0].title || blocked[0].agent || t("pending.agent_fallback")
+      });
       actionable = true;
       tapPane = blocked[0].pane_id;
     } else {
@@ -1735,6 +1779,13 @@
       dPendingEl.textContent = "";
     }
     pendingBannerTapPane = tapPane;
+    /* S4 haptics: a NEW visible banner (fresh gate or changed signal)
+     * buzzes; a steady poll repaint never does. */
+    if (settingsPanel) {
+      var signal = hidden ? null : pendingBanner.textContent;
+      if (signal && signal !== lastPendingSignal) settingsPanel.buzz("gate");
+      lastPendingSignal = signal;
+    }
 
     /* Direct reply vs. key pad: typing is the normal way to drive an agent,
      * so the input is offered for whichever pane is on screen. The ONE
@@ -1811,10 +1862,10 @@
      * runs on the final composer text, so typed and dictated text alike. */
     var destructive = window.DestructiveGuard ? window.DestructiveGuard.isDestructiveInput(text) : null;
     if (destructive && !window.confirm(
-      "Este envío parece destructivo: " + destructive + ".\n\n" + text + "\n\n¿Enviar igualmente?"
+      t("reply.destructive_confirm", { match: destructive, text: text })
     )) return;
     replySend.disabled = true;
-    if (steer) showToast("Inyectando en el turno en curso…", 3000);
+    if (steer) showToast(t("reply.steering"), 3000);
     var payload = window.Receipts
       ? window.Receipts.replyPayload(paneId, text, steer)
       : { pane_id: paneId, text: text };
@@ -1837,7 +1888,7 @@
               window.Receipts.speakOutcome(receipt.outcome);
             } else {
               hideReceipt();
-              showToast("Respuesta enviada al agente", 3000);
+              showToast(t("reply.sent"), 3000);
             }
             return null;
           }, function () { return null; });
@@ -1847,11 +1898,11 @@
           function (body) { return body && body.detail; },
           function () { return null; }
         ).then(function (detail) {
-          showToast("No se pudo enviar: " + (typeof detail === "string" ? detail : "error " + resp.status), 6000);
+          showToast(t("reply.fail", { detail: typeof detail === "string" ? detail : "error " + resp.status }), 6000);
         });
       })
       .catch(function () {
-        showToast("No se pudo enviar: sin conexión con el brain", 6000);
+        showToast(t("reply.fail_offline"), 6000);
       })
       .then(function () { replySend.disabled = false; });
   }
@@ -1900,6 +1951,7 @@
     receiptDiscardBtn.setAttribute("data-url", model.discardUrl || "");
     receiptDiscardBtn.setAttribute("data-id", receipt.id || "");
     receiptCard.classList.remove("hidden");
+    if (settingsPanel) settingsPanel.buzz("receipt");
   }
 
   function hideReceipt() {
@@ -1937,11 +1989,11 @@
           function (body) { return body && body.detail; },
           function () { return null; }
         ).then(function (detail) {
-          showToast("No se pudo completar: " + (typeof detail === "string" ? detail : "error " + resp.status), 6000);
+          showToast(t("reply.followup_fail", { detail: typeof detail === "string" ? detail : "error " + resp.status }), 6000);
         });
       })
       .catch(function () {
-        showToast("No se pudo completar: sin conexión con el brain", 6000);
+        showToast(t("reply.followup_fail_offline"), 6000);
       })
       .then(function () { button.disabled = false; });
   }
@@ -1958,12 +2010,12 @@
    * inside the window sends POST /pane/stop. */
   var stopArming = window.Receipts ? window.Receipts.createStopArming(null, 3000) : null;
   var stopDisarmTimer = null;
-  var STOP_IDLE_LABEL = "■ Detener";
-  var STOP_ARMED_LABEL = "¿Detener? Toca otra vez";
+  var STOP_IDLE_LABEL = function () { return t("call.stop"); };
+  var STOP_ARMED_LABEL = function () { return t("call.stop_armed"); };
 
   function paintStopIdle() {
     paneStopBtn.classList.remove("armed");
-    paneStopBtn.textContent = STOP_IDLE_LABEL;
+    paneStopBtn.textContent = STOP_IDLE_LABEL();
   }
 
   if (paneStopBtn) {
@@ -1974,7 +2026,7 @@
       var step = stopArming.tap();
       if (step === "armed") {
         paneStopBtn.classList.add("armed");
-        paneStopBtn.textContent = STOP_ARMED_LABEL;
+        paneStopBtn.textContent = STOP_ARMED_LABEL();
         if (stopDisarmTimer !== null) clearTimeout(stopDisarmTimer);
         stopDisarmTimer = setTimeout(function () {
           stopArming.disarm();
@@ -1992,18 +2044,18 @@
       }))
         .then(function (resp) {
           if (resp.ok) {
-            showToast("Turno interrumpido", 3000);
+            showToast(t("call.stopped"), 3000);
             return null;
           }
           return resp.json().then(
             function (body) { return body && body.detail; },
             function () { return null; }
           ).then(function (detail) {
-            showToast("No se pudo detener: " + (typeof detail === "string" ? detail : "error " + resp.status), 6000);
+            showToast(t("stop.fail", { detail: typeof detail === "string" ? detail : "error " + resp.status }), 6000);
           });
         })
         .catch(function () {
-          showToast("No se pudo detener: sin conexión con el brain", 6000);
+          showToast(t("stop.fail_offline"), 6000);
         })
         .then(function () { paneStopBtn.disabled = false; });
     });
@@ -2034,13 +2086,13 @@
 
   function msgOutcomeToast(message) {
     var lines = {
-      typed: "Mensaje entregado al agente",
-      queued: "Mensaje en camino al agente",
-      held: "El agente está ocupado — se entregará cuando esté libre (máx. 60 min)",
-      waiting_in_inbox: "El agente no se puso libre; el mensaje quedó en su bandeja"
+      typed: t("msg.delivered"),
+      queued: t("msg.queued"),
+      held: t("msg.held"),
+      waiting_in_inbox: t("msg.inbox")
     };
-    var line = lines[message.state] || ("Mensaje " + (message.state || "enviado"));
-    if (message.state === "refused" && message.reason) line = "No se envió: " + message.reason;
+    var line = lines[message.state] || t("msg.generic", { state: message.state || "enviado" });
+    if (message.state === "refused" && message.reason) line = t("msg.refused", { reason: message.reason });
     showToast(line, 5000);
   }
 
@@ -2093,7 +2145,7 @@
           });
         })
         .catch(function () {
-          showToast("No se pudo enviar el mensaje: sin conexión con el brain", 6000);
+          showToast(t("msg.fail_offline"), 6000);
         })
         .then(function () { paneMsgSend.disabled = false; });
     });
@@ -2153,9 +2205,9 @@
   }
 
   var PERMISSION_TOAST = {
-    once: "Permiso concedido una vez",
-    always: "Permiso concedido siempre",
-    reject: "Permiso rechazado"
+    once: "permission.once_toast",
+    always: "permission.always_toast",
+    reject: "permission.reject_toast"
   };
 
   function sendPermission(reply) {
@@ -2170,7 +2222,7 @@
     }))
       .then(function (resp) {
         if (resp.ok) {
-          showToast(PERMISSION_TOAST[reply] || "Permiso enviado", 3000);
+          showToast(PERMISSION_TOAST[reply] ? t(PERMISSION_TOAST[reply]) : t("permission.sent_toast"), 3000);
           // Re-read the SAME pane: the dialog may already be gone.
           permissionPane = null;
           permissionRequest = null;
@@ -2234,10 +2286,7 @@
     setKeysPadBusy(true);
     /* Acknowledgement BEFORE the request: the pad must never leave the user
      * wondering whether the tap landed. */
-    setKeysHint(
-      "Enviado: " + (button.getAttribute("aria-label") || key) +
-      " · esperando al agente…"
-    );
+    setKeysHint(t("keys.sent", { label: button.getAttribute("aria-label") || key }));
     fetch("/pane/keys", withDeviceAuth({
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2256,12 +2305,12 @@
           function (body) { return body && body.detail; },
           function () { return null; }
         ).then(function (detail) {
-          showToast("No se pudo enviar la tecla: " + (typeof detail === "string" ? detail : "error " + resp.status), 6000);
+          showToast(t("keys.fail", { detail: typeof detail === "string" ? detail : "error " + resp.status }), 6000);
         });
       })
       .catch(function () {
         setKeysHint(KEYS_HINT_DEFAULT);
-        showToast("No se pudo enviar la tecla: sin conexión con el brain", 6000);
+        showToast(t("keys.fail_offline"), 6000);
       })
       .then(function () {
         keysBusy = false;
@@ -2509,7 +2558,7 @@
     if (!lastStructured || !window.Dialogs || isNaN(index) || !paneId || dialogBusy) return;
     dialogBusy = true;
     setDialogButtonsBusy(true);
-    setDialogStatus("Enviando la respuesta…");
+    setDialogStatus(t("reply.sending"));
     var labels = (lastStructured.options || []).map(function (option) {
       return option.label;
     });
@@ -2647,8 +2696,8 @@
 
   var historyModel = window.HistoryView ? HistoryView.createHistoryModel() : null;
   var historySeq = 0;
-  var HISTORY_MORE_LABEL = "Cargar más";
-  var HISTORY_BUSY_LABEL = "Cargando…";
+  var HISTORY_MORE_LABEL = function () { return t("history.more"); };
+  var HISTORY_BUSY_LABEL = function () { return t("common.loading"); };
   var HISTORY_TOP_THRESHOLD = 24;  // px from the top that counts as "parked at the oldest edge"
 
   /* The pane the cockpit is actually reading, same convention as the
@@ -2684,10 +2733,10 @@
     if (!historyMore) return;
     if (busy) {
       historyMore.disabled = true;
-      historyMore.textContent = HISTORY_BUSY_LABEL;
+      historyMore.textContent = HISTORY_BUSY_LABEL();
     } else {
       historyMore.disabled = false;
-      historyMore.textContent = HISTORY_MORE_LABEL;
+      historyMore.textContent = HISTORY_MORE_LABEL();
     }
   }
 
@@ -2756,7 +2805,7 @@
         historyModel.fail();
         historyTurns.textContent = "";
         historyMore.classList.add("hidden");
-        historyEmpty.textContent = "No se pudo cargar el historial — vuelve a abrir la pestaña para reintentar";
+        historyEmpty.textContent = t("history.fail");
         historyEmpty.classList.remove("hidden");
       })
       .then(function () {
@@ -2913,7 +2962,7 @@
         break;
       }
     }
-    var label = "Vista del agente" + (name ? " · " + name : "");
+    var label = t("glance.label") + (name ? " · " + name : "");
     if (glanceLabel.textContent !== label) glanceLabel.textContent = label;
   }
 
@@ -2945,19 +2994,20 @@
       (free[k] || (free[k] = [])).push(existing[i]);
     }
     var wanted = [];
+    /* `turn`, not `t`: the i18n helper t() must stay reachable here. */
     for (i = 0; i < turns.length; i++) {
-      var t = turns[i];
-      var key = t.role + "\u0000" + t.text;
+      var turn = turns[i];
+      var key = turn.role + "\u0000" + turn.text;
       var pool = free[key];
       if (pool && pool.length) {
         el = pool.shift();
       } else {
-        el = buildGlanceTurn(t.role, t.text);
+        el = buildGlanceTurn(turn.role, turn.text);
         /* Expansion carry-over (AC7): if the turn that used to sit at
          * this position was expanded, the rebuilt one stays expanded. */
         var oldHere = existing[i];
         if (oldHere && oldHere.classList.contains("expanded") &&
-            oldHere.getAttribute("data-role") === t.role) {
+            oldHere.getAttribute("data-role") === turn.role) {
           el.classList.add("expanded");
           var btn = el.querySelector(".ver-mas");
           btn.setAttribute("aria-expanded", "true");
@@ -3012,8 +3062,8 @@
     /* Terminal text lives in a separate tab and cannot fill an empty reader. */
     if (!turns.length) {
       glanceEmpty.textContent = data && data.agent && !data.session_id
-        ? "No se ha identificado la sesión del agente. Consulta la pestaña Pantalla."
-        : "Sin conversación del agente todavía. Consulta la pestaña Pantalla.";
+        ? t("glance.empty_no_identified")
+        : t("glance.empty_no_session");
       glanceEmpty.classList.remove("hidden");
     } else glanceEmpty.classList.add("hidden");
     agentView.classList.remove("hidden");
@@ -3112,9 +3162,9 @@
     crypto: window.crypto,
     onStatus: function (status) {
       if (status.state === "cancel-unconfirmed") {
-        showBanner("No pude confirmar con el servidor que se canceló la voz; el audio local ya se detuvo.");
+        showBanner(t("tts.cancel_unconfirmed"));
       } else if (status.state === "cancel-forbidden" || status.state === "cancel-rejected") {
-        showBanner("El servidor rechazó la cancelación de la voz (" + status.state + ").");
+        showBanner(t("tts.cancel_rejected", { state: status.state }));
       }
     }
   });
@@ -3150,9 +3200,9 @@
         approvalFlow.noteSegmentJobComplete(status.id);
       }
       if (status.state === "degraded") {
-        showBanner("No pude seguir bajando la voz por segmentos; la reproducción quedó degradada.");
+        showBanner(t("tts.segments_degraded"));
       } else if (status.state && status.state.indexOf("server-") === 0) {
-        showBanner("La voz del servidor terminó (" + status.state.slice(7) + ").");
+        showBanner(t("tts.server_ended", { state: status.state.slice(7) }));
       }
     }
   });
@@ -3200,7 +3250,7 @@
     if (button) {
       button.disabled = false;
       button.removeAttribute("aria-busy");
-      button.textContent = "🔊 Escuchar";
+      button.textContent = t("glance.replay");
     }
   }
 
@@ -3283,7 +3333,7 @@
         if (state.phase === "preparing" && button) {
           button.disabled = true;
           button.setAttribute("aria-busy", "true");
-          button.textContent = "⏳ Sintetizando…";
+          button.textContent = t("strip.synthesizing");
         }
       }
       if (inCall && state.phase !== "paused") {
@@ -3323,14 +3373,14 @@
       }
       if (!karaokePopup || karaokePopup.generation !== snapshot.generation || karaokePopup.index !== snapshot.activeGlobalIndex) {
         var keepHidden = karaokePopup && karaokePopup.generation === snapshot.generation && toastEl.classList.contains("hidden");
-        showToast("🔊 " + (external ? "agente" : "brain") + ": " + snapshot.chunk.popupText);
+        showToast(t("announce.toast", { label: external ? t("announce.agent") : "brain", text: snapshot.chunk.popupText }));
         if (keepHidden) toastEl.classList.add("hidden");
         karaokePopup = { generation: snapshot.generation, index: snapshot.activeGlobalIndex };
       }
     },
     onFailure: function (failure) {
       cancelGlanceTap();
-      karaokeFailureNotice = "No pude reproducir la parte " + (failure.pieceIndex + 1) + " del audio — prueba otra vez.";
+      karaokeFailureNotice = t("tts.piece_failed", { n: failure.pieceIndex + 1 });
       showBanner(karaokeFailureNotice);
       if (glanceReplay && glanceReplay.plan === failure.plan) karaokeCtl.stop();
     }
@@ -3475,9 +3525,9 @@
          * piece's chunkOffset so the advance never repaints backwards. */
         item.teleprompter = item.announcement.chunks;
         item.teleprompterIdx = item.announcement.chunkOffset || 0;
-        showToast("🔊 " + item.announcement.label + ": " + item.teleprompter[0]);
+        showToast(t("announce.toast", { label: item.announcement.label, text: item.teleprompter[0] }));
       } else {
-        showToast("🔊 " + item.announcement.label + ": " + item.announcement.text,
+        showToast(t("announce.toast", { label: item.announcement.label, text: item.announcement.text }),
           undefined, null, item.announcement.html);
       }
       /* FR13: distinct anuncio bubble in the call + toast above drawer. */
@@ -3695,7 +3745,7 @@
       var idx = (audioFinished.chunkOffset || 0) + localIdx;   // global window number
       if (idx === audioFinished.teleprompterIdx) return;  // same window: keep it
       audioFinished.teleprompterIdx = idx;
-      showToast("🔊 " + audioFinished.announcement.label + ": " + chunks[localIdx]);
+      showToast(t("announce.toast", { label: audioFinished.announcement.label, text: chunks[localIdx] }));
     } catch (err) {
       /* cosmetic sync only: swallow, playback is untouchable */
     }
@@ -3802,7 +3852,7 @@
     mountFormatted: reader.mountTurn
   });
 
-  function showToast(text, durationMs, kind, html) {
+  function showToast(text, durationMs, kind, html, action) {
     /* Announcement toasts read "🔊 <label>: <phrase>" phrase by phrase: the
      * label is their dismissal group, so closing one closes the whole
      * announcement instead of re-opening on the next phrase. Anything else
@@ -3812,7 +3862,7 @@
       var colon = text.indexOf(": ");
       group = colon > 2 ? text.slice(2, colon) : text;
     }
-    toast.show(text, { durationMs: durationMs, kind: kind, html: html, group: group });
+    toast.show(text, { durationMs: durationMs, kind: kind, html: html, group: group, action: action });
   }
 
   function hideToast() {
@@ -4008,11 +4058,11 @@
   pendingHead.style.fontSize = "var(--fs-xs)";
   pendingHead.style.color = "var(--muted)";
   var pendingTitle = document.createElement("span");
-  pendingTitle.textContent = "📋 Pendientes (";
+  pendingTitle.textContent = t("pendsheet.title_open");
   var pendingCountEl = document.createElement("span");
   pendingCountEl.textContent = "0";
   var pendingTitleClose = document.createElement("span");
-  pendingTitleClose.textContent = ")";
+  pendingTitleClose.textContent = t("pendsheet.title_close");
   var pendingOverflowEl = document.createElement("span");
   pendingOverflowEl.className = "hidden";
   pendingOverflowEl.style.marginLeft = "8px";
@@ -4116,13 +4166,13 @@
       });
       return btn;
     }
-    var listenBtn = rowBtn("🔊 Escuchar", "Volver a escuchar este aviso", function () {
+    var listenBtn = rowBtn(t("glance.replay"), t("pendsheet.listen_aria"), function () {
       pendingStore.listen(id);
     });
-    var okBtn = rowBtn("✓ Anunciado", "Marcar como anunciado", function () {
+    var okBtn = rowBtn(t("pendsheet.announced"), t("pendsheet.announced_aria"), function () {
       pendingStore.mark_announced(id);
     });
-    var noBtn = rowBtn("✕ Descartar", "Descartar este pendiente", function () {
+    var noBtn = rowBtn(t("pendsheet.discard"), t("pendsheet.discard_aria"), function () {
       pendingStore.discard(id);
     });
     actions.appendChild(listenBtn);
@@ -4148,9 +4198,7 @@
     pendingOverflowEl.classList.toggle("hidden", !snap.overflow_count);
     pendingBannerEl.classList.toggle("hidden", !snap.persist_uncertain);
     if (snap.persist_uncertain) {
-      pendingBannerEl.textContent =
-        "No pude guardar los pendientes en este dispositivo " +
-        "(¿modo privado o sin espacio?). La lista NO es persistente hasta recargar.";
+      pendingBannerEl.textContent = t("pendsheet.save_failed");
     }
     var seen = {};
     for (var i = 0; i < snap.records.length; i++) {
@@ -4397,7 +4445,7 @@
       /* Silent expiry (PRD §6): gray card + system drawer turn, no
        * spoken line; the card then dismisses back to normal flow. */
       renderApprovalCard();
-      addSystemTurn("⏱ Acción cancelada por tiempo");
+      addSystemTurn(t("pendsheet.timeout"));
       if (approvalCardDismissTimer) clearTimeout(approvalCardDismissTimer);
       approvalCardDismissTimer = setTimeout(function () {
         approvalCardDismissTimer = null;
@@ -4421,7 +4469,7 @@
       storage: localStorage,
       openSettings: openSettings,
       onPaired: function () {
-        showToast("Dispositivo emparejado — la escritura queda habilitada", 4000);
+        showToast(t("pair.paired_toast"), 4000);
         /* B1: the claim stored a NEW credential — the SSE transport
          * must carry it from here on (the boot source was built bare,
          * or on the expired token that opened the pair form). */
@@ -4571,9 +4619,9 @@
      * for the frozen panel spec; hidden on send gates. */
     var createRows = document.createElement("div");
     createRows.className = "ap-create hidden";
-    var agentRow = apRow("Agente");
-    var titleRow = apRow("Título");
-    var taskRow = apRow("Tarea");
+    var agentRow = apRow(t("approval.agent_row"));
+    var titleRow = apRow(t("approval.title_row"));
+    var taskRow = apRow(t("approval.task_row"));
     createRows.appendChild(agentRow.row);
     createRows.appendChild(titleRow.row);
     createRows.appendChild(taskRow.row);
@@ -4582,7 +4630,7 @@
     /* Dictation hint: the re-dictar round is live (PRD §5 precedence). */
     var dict = document.createElement("div");
     dict.className = "ap-dict hidden";
-    dict.textContent = "🎙 Dicta el texto nuevo — «sí» envía, «no» cancela";
+    dict.textContent = t("approval.dict_new");
     el.appendChild(dict);
 
     /* Inline manual edit: textarea + save/discard (PRD §3.1). */
@@ -4594,8 +4642,8 @@
     editBox.appendChild(editArea);
     var editRow = document.createElement("div");
     editRow.className = "ap-edit-row";
-    var saveBtn = apButton("ap-btn ap-save", "✓ Guardar");
-    var discardBtn = apButton("ap-btn ap-discard", "✕ Descartar");
+    var saveBtn = apButton("ap-btn ap-save", t("approval.save"));
+    var discardBtn = apButton("ap-btn ap-discard", t("approval.discard"));
     editRow.appendChild(saveBtn);
     editRow.appendChild(discardBtn);
     editBox.appendChild(editRow);
@@ -4603,10 +4651,10 @@
 
     var actions = document.createElement("div");
     actions.className = "ap-actions";
-    var sendBtn = apButton("ap-btn ap-send", "✓ Enviar");
-    var editBtn = apButton("ap-btn ap-edit-btn", "✏️ Editar");
-    var redictBtn = apButton("ap-btn ap-redict", "🎙 Re-dictar");
-    var cancelBtn = apButton("ap-btn ap-cancel", "✕ Cancelar");
+    var sendBtn = apButton("ap-btn ap-send", t("approval.send"));
+    var editBtn = apButton("ap-btn ap-edit-btn", t("approval.edit"));
+    var redictBtn = apButton("ap-btn ap-redict", t("approval.redict"));
+    var cancelBtn = apButton("ap-btn ap-cancel", t("approval.cancel"));
     actions.appendChild(sendBtn);
     actions.appendChild(editBtn);
     actions.appendChild(redictBtn);
@@ -4692,9 +4740,9 @@
     /* Busy round (approve replay in flight): an honest "sending" title
      * instead of the target — expiry cannot fire mid-round, so the ring
      * just holds at its last value until the round settles. */
-    var title = busy ? "📤 Enviando…" :
-      (expired ? "⏱ Tiempo agotado" :
-        (isCreate ? "🆕 Crear panel" : "📤 Para: " + approvalTargetLabel(g)));
+    var title = busy ? t("approval.sending") :
+      (expired ? t("approval.expired") :
+        (isCreate ? t("approval.create") : t("approval.to", { target: approvalTargetLabel(g) })));
     if (approvalCard.title.textContent !== title) {
       approvalCard.title.textContent = title;
     }
@@ -4725,8 +4773,8 @@
     approvalCard.el.classList.toggle("expired", expired);
     approvalCard.dict.classList.toggle("hidden", !approvalFlow.isDictating() || expired);
     var dictText = isCreate
-      ? "🎙 Dicta la tarea nueva — «sí» crea el panel, «no» cancela"
-      : "🎙 Dicta el texto nuevo — «sí» envía, «no» cancela";
+      ? t("approval.dict_task")
+      : t("approval.dict_new");
     if (approvalCard.dict.textContent !== dictText) {
       approvalCard.dict.textContent = dictText;
     }
@@ -4764,6 +4812,7 @@
       approvalFloat.appendChild(approvalCard.el);
     }
     updateApprovalCard();
+    if (settingsPanel) settingsPanel.buzz("gate");
   }
 
   /* ---------------- ask pipeline ---------------- */
@@ -4823,15 +4872,13 @@
         if (resp.status === 503) {
           removeThinkingBubble();
           speechCtl.release(speech.speech_request_id);
-          showBanner("El brain no está configurado: falta GLM_API_KEY en el servidor. " +
-            "Defínela en el entorno del servicio (por ejemplo, un perfil de shell o un " +
-            "archivo de entorno fuera de este repositorio) y reinicia el servicio.");
+          showBanner(t("brain.not_configured"));
           return;
         }
         if (!resp.ok) {
           removeThinkingBubble();
           speechCtl.release(speech.speech_request_id);
-          showBanner("La pregunta falló (HTTP " + resp.status + "). Prueba otra vez.");
+          showBanner(t("brain.ask_failed", { status: resp.status }));
           return;
         }
         return resp.json().then(function (data) {
@@ -4881,9 +4928,9 @@
           return;
         }
         if (err && /timeout/.test(String(err.message || err))) {
-          showBanner("El brain tardó demasiado — vuelve a intentarlo.");
+          showBanner(t("brain.timeout"));
         } else {
-          showBanner("Error de red hablando con el brain.");
+          showBanner(t("brain.network"));
         }
       })
       .then(function () {
@@ -4935,7 +4982,7 @@
         return ask(text);
       },
       function () {
-        showBanner("No pude confirmar el contexto de la llamada — vuelve a intentarlo.");
+        showBanner(t("brain.context_failed"));
         return undefined;
       }
     );
@@ -5011,15 +5058,14 @@
     recognition.onerror = function (event) {
       lastRecError = event.error || "desconocido";
       if (event.error === "not-allowed" || event.error === "service-not-allowed") {
-        showBanner("Micrófono BLOQUEADO: concede el permiso en el navegador " +
-          "(menú ⋮ → Ajustes del sitio → Micrófono) y vuelve a llamar.");
-        enterTextMode("Micrófono bloqueado — usa el teclado o concede el permiso en el navegador.");
+        showBanner(t("voice.blocked"));
+        enterTextMode(t("voice.keyboard_fallback"));
         return;
       }
       if (event.error === "aborted") return;
       recFailures += 1;
       if (recFailures > 8) {
-        enterTextMode("El reconocimiento de voz falla repetidamente — cambiado a teclado.");
+        enterTextMode(t("voice.rec_fails"));
       }
       /* no-speech and friends: silent restart with backoff (onend). */
     };
@@ -5055,7 +5101,7 @@
         // say it out loud in the pill.
         var elapsed = Date.now() - listeningStartedAt;
         if (!endpointer.hasSpeech() && elapsed > 5000) {
-          pillSub.textContent = "No te oigo — comprueba el micro";
+          pillSub.textContent = t("voice.hearing_hint");
           pillSub.classList.remove("hidden");
         } else if (endpointer.hasSpeech()) {
           pillSub.classList.add("hidden");
@@ -5174,21 +5220,20 @@
         if (!resp.ok) {
           return resp.json().catch(function () { return {}; }).then(function (data) {
             var detail = data && data.detail ? data.detail : ("HTTP " + resp.status);
-            showBanner("No pude transcribir (HTTP " + resp.status + "): " + detail);
+            showBanner(t("voice.transcribe_failed", { status: resp.status, detail: detail }));
           });
         }
         return resp.json().then(function (data) {
           var text = (data && data.text ? data.text : "").trim();
           if (!text) {
-            showBanner("No entendí el audio — inténtalo otra vez.");
+            showBanner(t("voice.not_understood"));
             return;
           }
           return routeUtterance(text);  // confirming -> gate resolve; else /ask
         });
       })
       .catch(function (err) {
-        showBanner("No pude enviar el audio al servidor — " +
-          (err && err.message ? err.message : "error de red") + ".");
+        showBanner(t("voice.audio_send_failed", { detail: err && err.message ? err.message : t("voice.network_error") }));
       })
       .then(function () {
         dispatching = false;
@@ -5234,7 +5279,7 @@
     if (recorder && recorder.state === "recording") return;
     if (callState !== "listening" && callState !== "confirming") return;
     if (!serverEngineSupported()) {
-      showBanner("Este navegador no soporta el motor Servidor — usa el motor Navegador.");
+      showBanner(t("voice.engine_unavailable"));
       return;
     }
     serverMicBusy = true;
@@ -5250,7 +5295,7 @@
                         : new MediaRecorder(mediaStream);
       } catch (err) {
         serverMicBusy = false;
-        showBanner("No pude abrir la grabación — prueba el motor Navegador.");
+        showBanner(t("voice.record_failed"));
         return;
       }
       recorder.ondataavailable = function (event) {
@@ -5281,7 +5326,7 @@
         // Parity with the browser engine: 5s of dead mic gets called out.
         var elapsed = Date.now() - listeningStartedAt;
         if (!vad.hasSpeech() && elapsed > 5000) {
-          pillSub.textContent = "No te oigo — comprueba el micro";
+          pillSub.textContent = t("voice.hearing_hint");
           pillSub.classList.remove("hidden");
         } else if (vad.hasSpeech()) {
           pillSub.classList.add("hidden");
@@ -5311,12 +5356,10 @@
       serverMicBusy = false;
       var name = err && err.name ? err.name : "";
       if (name === "NotAllowedError" || name === "SecurityError") {
-        showBanner("Micrófono BLOQUEADO: concede el permiso en el navegador " +
-          "(menú ⋮ → Ajustes del sitio → Micrófono) y vuelve a llamar.");
-        enterTextMode("Micrófono bloqueado — usa el teclado o concede el permiso en el navegador.");
+        showBanner(t("voice.blocked"));
+        enterTextMode(t("voice.keyboard_fallback"));
       } else {
-        showBanner("No pude abrir el micrófono (" + (name || "error") +
-          ") — prueba el motor Navegador.");
+        showBanner(t("voice.mic_failed", { name: name || "error" }));
         if (inCall && callState === "listening") setCallState("paused");
       }
     });
@@ -5498,22 +5541,23 @@
   });
 
   function renderVoiceEngine() {
-    voiceEngineBtn.textContent = "Voz: " +
-      (voiceEngine === "servidor" ? "Servidor" : "Navegador");
+    voiceEngineBtn.textContent = voiceEngine === "servidor"
+      ? t("settings.voice_server")
+      : t("settings.voice_browser");
     voiceEngineBtn.title = voiceEngine === "servidor"
-      ? "Motor Servidor: tu voz se transcribe en el servidor (funciona con auriculares BT). Toca para cambiar al Navegador."
-      : "Motor Navegador: reconocimiento del navegador (Web Speech). Toca para cambiar al Servidor.";
+      ? t("settings.voice_server_title")
+      : t("settings.voice_browser_title");
     renderInterimStrip();
   }
 
   voiceEngineBtn.addEventListener("click", function () {
     var next = voiceEngine === "servidor" ? "navegador" : "servidor";
     if (next === "navegador" && !SR) {
-      showBanner("El motor Navegador no está disponible en este navegador.");
+      showBanner(t("voice.browser_missing"));
       return;
     }
     if (next === "servidor" && !serverEngineSupported()) {
-      showBanner("El motor Servidor no está disponible en este navegador.");
+      showBanner(t("voice.server_missing"));
       return;
     }
     voiceEngine = next;
@@ -5551,7 +5595,7 @@
     if (!SR && !serverEngineSupported()) {
       pauseBtn.classList.add("hidden");
       fallbackForm.classList.remove("hidden");
-      enterTextMode("Ni reconocimiento de voz ni micrófono disponibles en este navegador — modo teclado.");
+      enterTextMode(t("voice.no_stt"));
     } else if (!SR) {
       // Web Speech missing (e.g. desktop Firefox): servidor is the only engine.
       voiceEngine = "servidor";
@@ -5579,10 +5623,10 @@
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ session_id: sessionId })
     })).then(function (resp) {
-      if (resp.ok) showToast("Conversación nueva iniciada", 4000);
+      if (resp.ok) showToast(t("herd.new_started"), 4000);
       else maybeOfferPairing(resp);
     }).catch(function () {
-      showBanner("No se pudo reiniciar la conversación en el servidor.");
+      showBanner(t("herd.new_failed"));
     });
     if (inCall && callState === "listening") startListening();
   });
@@ -5664,7 +5708,191 @@
     }
   } catch (err) { /* private mode: normal idle boot */ }
 
+  /* ---------------- S4: offline banner, i18n wiring, Ajustes --------
+   * The offline shell is the service worker's job; the PAGE paints the
+   * honest "sin conexión" banner on the online/offline events so the
+   * operator knows why nothing answers. */
+
+  var settingsPanel = null;
+
+  var offlineBannerEl = $("offline-banner");
+  if (offlineBannerEl) {
+    var paintOffline = function () {
+      offlineBannerEl.classList.toggle("hidden", navigator.onLine !== false);
+    };
+    window.addEventListener("online", paintOffline);
+    window.addEventListener("offline", paintOffline);
+    paintOffline();
+  }
+
+  /* The newer modules keep their built-in Spanish lines as fallbacks;
+   * the live runtime overrides them once, here, and a locale change
+   * re-paints every JS-managed label immediately (the 5s poll repaints
+   * the data-driven surfaces on its own). */
+  if (window.I18N) {
+    if (window.Receipts && window.Receipts.useTranslator) window.Receipts.useTranslator(I18N.t);
+    if (window.Dialogs && window.Dialogs.useTranslator) window.Dialogs.useTranslator(I18N.t);
+    if (window.HerdGroup && window.HerdGroup.useTranslator) window.HerdGroup.useTranslator(I18N.t);
+    I18N.subscribe(function () {
+      applyTheme(resolve(themeMode, systemPrefersDark()), themeMode);
+      renderVoiceEngine();
+      renderPending(lastView);
+      renderPill();
+      paintStopIdle();
+      renderHerd(lastHerd);
+      refreshState();
+    });
+  }
+
+  /* Ajustes appearance rows (settings.js): per-device, text nodes only.
+   * A locale change also PUBLISHES the choice to POST /call/context so
+   * the server can speak the language the operator reads (the field is
+   * additive; an older brain simply ignores it). */
+  if (window.BrainSettings) {
+    settingsPanel = BrainSettings.createSettings({
+      doc: document,
+      storage: localStorage,
+      navigator: navigator,
+      i18n: window.I18N || null,
+      rows: {
+        font: $("font-btn"),
+        zen: $("zen-btn"),
+        haptics: $("haptics-btn"),
+        hapticsRow: $("haptics-row"),
+        language: $("language-btn"),
+      },
+      labels: {
+        font: function (key) { return t(key); },
+        zen: function (key) { return t(key); },
+        haptics: function (key) { return t(key); },
+        language: function (key) { return t(key); },
+      },
+      postLocale: function (code) {
+        readFetch("/call/context", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ locale: code }),
+        }).catch(function () { /* older brains ignore the field */ });
+      },
+    });
+  }
+
+  /* Build-stamp update notice (updates.js): GET /build vs the footer
+   * stamp, one toast per build, BroadcastChannel arbitration between
+   * tabs, and a silent stand-down when the server predates /build. */
+  var brainUpdater = null;
+  if (window.BrainUpdates) {
+    brainUpdater = BrainUpdates.createUpdater({
+      fetchBuild: function () {
+        return readFetch("/build").then(function (resp) {
+          if (resp.status === 404) return "absent";
+          if (!resp.ok) return null;
+          return resp.json().then(
+            function (body) { return body && body.build ? String(body.build) : null; },
+            function () { return null; }
+          );
+        }).catch(function () { return null; });
+      },
+      footerBuild: function () {
+        var el = $("app-version");
+        var text = el ? String(el.textContent || "").replace(/^v/, "") : "";
+        return text || null;
+      },
+      show: function (build, action) {
+        showToast(t("update.available"), 0, null, null, {
+          label: t("update.reload"),
+          onClick: action.onClick,
+        });
+      },
+      hide: hideToast,
+      reload: function () { window.location.reload(); },
+      post: function (message) {
+        try {
+          var channel = new BroadcastChannel("brain-updates");
+          channel.postMessage(message);
+          channel.close();
+        } catch (err) { /* no BroadcastChannel: this tab decides alone */ }
+      },
+      onMessage: function (handler) {
+        try {
+          var channel = new BroadcastChannel("brain-updates");
+          channel.onmessage = function (event) { handler(event.data); };
+        } catch (err) { /* solo tab */ }
+      },
+    }).start();
+    window.__brainUpdater = brainUpdater;
+  }
+
+  /* Operator dock (dock.js): the four TOML surfaces. Sends and fills
+   * ride the composer's VERIFIED reply path (destructive guard
+   * included); presets and launches only ever name a row id. */
+  var operatorDock = null;
+  var lastDockKey = null;
+  if (window.OperatorDock) {
+    operatorDock = OperatorDock.createDock({
+      doc: document,
+      root: $("operator-dock"),
+      t: t,
+      toast: function (text) { showToast(text, 5000); },
+      sendReply: function (text) {
+        replyInput.value = text;
+        sendComposerReply(false);
+      },
+      fillComposer: function (text) {
+        replyInput.value = text;
+        try { replyInput.focus(); } catch (err) { /* detached */ }
+      },
+      post: function (url, body) {
+        return fetch(url, withDeviceAuth({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }));
+      },
+      getConfig: function (url) {
+        if (!url) return Promise.resolve(null);
+        return readFetch(url).then(function (resp) {
+          if (!resp.ok) return null;   /* 404 and errors alike: hidden */
+          return resp.json().catch(function () { return null; });
+        });
+      },
+      show: function () {
+        var el = $("operator-dock");
+        if (el) el.classList.remove("hidden");
+      },
+      hide: function () {
+        var el = $("operator-dock");
+        if (el) el.classList.add("hidden");
+      },
+    });
+  }
+
+  /* The dock follows the effective pane's agent FAMILY; a poll that
+   * changes neither family nor pane never refetches. */
+  function refreshOperatorDock() {
+    if (!operatorDock) return;
+    var pane = lastEffectivePane;
+    var family = null;
+    for (var i = 0; i < lastHerd.length; i++) {
+      if (lastHerd[i].pane_id === pane) { family = lastHerd[i].agent || null; break; }
+    }
+    var key = (family || "?") + "|" + (pane || "?");
+    if (key === lastDockKey) return;
+    lastDockKey = key;
+    operatorDock.update(family, pane);
+  }
+
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("/sw.js").catch(function () { /* best effort */ });
+    navigator.serviceWorker.register("/sw.js").then(function (reg) {
+      /* Tell the worker which shell build THIS page booted with, so
+       * runtime cache fills land in the right brain-shell cache even
+       * while an old worker is still active. */
+      var el = $("app-version");
+      var build = el ? String(el.textContent || "").replace(/^v/, "") : "dev";
+      var target = reg.active || reg.installing || reg.waiting;
+      if (target && target.postMessage) {
+        try { target.postMessage({ type: "brain-shell-build", build: build }); } catch (err) { /* best effort */ }
+      }
+    }).catch(function () { /* best effort */ });
   }
 })();

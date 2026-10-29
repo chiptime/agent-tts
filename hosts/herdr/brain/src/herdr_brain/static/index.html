@@ -10,7 +10,11 @@
   <style>
     :root {
       --sp-1: 4px; --sp-2: 8px; --sp-3: 16px; --sp-4: 24px;
-      --fs-lg: 22px; --fs-md: 16px; --fs-sm: 14px; --fs-xs: 12px;
+      /* S4 text size: the whole type scale rides --font-scale
+         (Ajustes → Tamaño del texto, 3 steps, per-device). */
+      --font-scale: 1;
+      --fs-lg: calc(22px * var(--font-scale)); --fs-md: calc(16px * var(--font-scale));
+      --fs-sm: calc(14px * var(--font-scale)); --fs-xs: calc(12px * var(--font-scale));
       /* Light-theme markdown uses deeper shades of the TUI's semantic
        * colours. Pastel terminal colours lose contrast on white. */
       --oc-purple: #6d28a5;
@@ -2172,6 +2176,9 @@
     }
     .s-body { padding: 14px 16px 2px; display: flex; flex-direction: column; gap: 10px; }
     .s-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    /* display:flex above would beat the hidden attribute; the
+       haptics row hides ENTIRELY where the device cannot buzz. */
+    .s-row[hidden] { display: none !important; }
     .s-label { font-size: 14px; }
     .s-hint { font-size: 12px; color: var(--muted); line-height: 1.5; }
 
@@ -2219,19 +2226,59 @@
       font-size: 13px; cursor: pointer;
     }
     .push-actions button:disabled { opacity: 0.55; }
+
+    /* ---- S4: offline banner, update action, zen, dock ---- */
+    #offline-banner {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 90;
+      background: #7a2828; color: #fecaca; font-size: var(--fs-xs);
+      text-align: center; padding: 5px 8px; font-weight: 700;
+    }
+    #offline-banner.hidden { display: none; }
+    .toast-action {
+      margin-left: 10px; padding: 4px 12px; border-radius: 6px;
+      border: 1px solid var(--line); background: var(--chip-bg);
+      color: var(--text); font-weight: 800; font-size: var(--fs-xs);
+      min-height: 34px;
+    }
+    body.zen header, body.zen #agent-tabs, body.zen #herd-note,
+    body.zen #version-footer { display: none; }
+    body.zen #agent-view { padding-top: 6px; }
+    #operator-dock {
+      display: flex; flex-direction: column; gap: 8px;
+      padding: 8px 10px; margin: 0 0 8px;
+      border: 1px solid var(--line); border-radius: 10px;
+      background: var(--panel);
+    }
+    #operator-dock.hidden { display: none; }
+    .dock-section { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .dock-label {
+      flex: 0 0 100%; font-size: var(--fs-xs); color: var(--muted);
+      font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    .dock-btn {
+      padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line);
+      background: var(--chip-bg); color: var(--text); font-size: var(--fs-sm);
+      font-weight: 600; max-width: 100%; overflow-wrap: anywhere;
+    }
+    .dock-btn.dock-armed {
+      background: #7a2828; border-color: #b91c1c; color: #fecaca; font-weight: 800;
+    }
   </style>
 </head>
 <body>
   <header>
     <span id="status-chip" class="chip">…</span>
-    <button id="pane-picker" type="button" aria-haspopup="dialog" aria-expanded="false" title="Cambiar de conversación"><span class="pp-caret" aria-hidden="true">▾</span><span id="pane-picker-label">conectando…</span><span id="pane-picker-sub" class="hidden"></span></button>
+    <button id="pane-picker" type="button" aria-haspopup="dialog" aria-expanded="false" title="Cambiar de conversación" data-i18n-title="header.pane_picker_title"><span class="pp-caret" aria-hidden="true">▾</span><span id="pane-picker-label" data-i18n="header.connecting">conectando…</span><span id="pane-picker-sub" class="hidden"></span></button>
     <span id="header-version" class="chip">v<span id="app-version-header">?</span></span>
-    <button id="settings-btn" class="head-btn" title="Ajustes">⚙</button>
-    <button id="mute-btn" class="head-btn" title="Silenciar anuncios">🔊</button>
+    <button id="settings-btn" class="head-btn" title="Ajustes" data-i18n-title="header.settings_title">⚙</button>
+    <button id="mute-btn" class="head-btn" title="Silenciar anuncios" data-i18n-title="header.mute_title">🔊</button>
   </header>
   <div id="toast" class="hidden"></div>
-  <button id="voice-unlock" class="hidden" type="button">🔊 Activar voz</button>
+  <button id="voice-unlock" class="hidden" type="button" data-i18n="header.voice_unlock">🔊 Activar voz</button>
   <div id="banner" class="banner hidden" role="alert"></div>
+  <!-- S4 offline shell: painted by the page when the network is
+       down; the service worker serves the cached shell under it. -->
+  <div id="offline-banner" class="hidden" role="status" data-i18n="offline.banner">Sin conexión</div>
 
   <div id="herd-note" class="hidden"></div>
 
@@ -2244,8 +2291,8 @@
   <section id="agent-view" class="hidden">
     <div id="pending-banner" class="pending hidden"></div>
     <form id="pane-reply" class="hidden">
-      <input id="pane-reply-input" type="text" placeholder="Responde al agente…" autocomplete="off" aria-label="Respuesta al agente">
-      <button id="pane-reply-send" type="submit">Enviar</button>
+      <input id="pane-reply-input" type="text" placeholder="Responde al agente…" autocomplete="off" aria-label="Respuesta al agente" data-i18n-placeholder="reply.placeholder" data-i18n-aria-label="reply.aria">
+      <button id="pane-reply-send" type="submit" data-i18n="common.send">Enviar</button>
     </form>
     <!-- Verified send receipt (S12): what the terminal actually did with
          the reply. Submit/Discard only while a draft sits typed and
@@ -2254,87 +2301,91 @@
       <span id="pane-receipt-label" class="receipt-label"></span>
       <span id="pane-receipt-detail" class="receipt-detail"></span>
       <div id="pane-receipt-actions" class="receipt-actions hidden">
-        <button id="pane-receipt-submit" type="button" class="receipt-submit">Enviar ahora</button>
-        <button id="pane-receipt-discard" type="button">Descartar</button>
+        <button id="pane-receipt-submit" type="button" class="receipt-submit" data-i18n="receipt.submit">Enviar ahora</button>
+        <button id="pane-receipt-discard" type="button" data-i18n="common.discard">Descartar</button>
       </div>
     </div>
     <!-- Stop (S12): interrupt the running turn. Double-tap arming: the
          first tap arms for ~3 s, the second sends POST /pane/stop. -->
-    <button id="pane-stop" class="hidden" type="button">■ Detener</button>
+    <button id="pane-stop" class="hidden" type="button" data-i18n="call.stop">■ Detener</button>
+    <!-- Operator dock (S3): quick replies / commands / key presets /
+         launchers from the operator's TOML, rendered by dock.js. Text
+         nodes only — an operator label is data, never markup. -->
+    <div id="operator-dock" class="hidden"></div>
     <!-- Brain message to this pane (S13): opens the small operator
          composer below; it sends through POST /msg/send addressed to
          pane#session, held until the receiver is idle. Text nodes only. -->
-    <button id="pane-msg" class="hidden" type="button">✉ Mensaje</button>
+    <button id="pane-msg" class="hidden" type="button" data-i18n="msg.button">✉ Mensaje</button>
     <form id="pane-msg-form" class="hidden">
-      <input id="pane-msg-input" type="text" placeholder="Mensaje para el agente…" autocomplete="off" aria-label="Mensaje de operador al agente">
-      <button id="pane-msg-send" type="submit">Enviar</button>
-      <button id="pane-msg-cancel" type="button">Cancelar</button>
+      <input id="pane-msg-input" type="text" placeholder="Mensaje para el agente…" autocomplete="off" aria-label="Mensaje de operador al agente" data-i18n-placeholder="msg.placeholder" data-i18n-aria-label="msg.aria">
+      <button id="pane-msg-send" type="submit" data-i18n="common.send">Enviar</button>
+      <button id="pane-msg-cancel" type="button" data-i18n="common.cancel">Cancelar</button>
     </form>
     <div id="pane-reply-keys" class="hidden">
-      <span id="pane-keys-hint">El agente espera — respóndele con teclas:</span>
-      <div id="dialog-buttons" class="dialog-buttons hidden" role="group" aria-label="Opciones del diálogo"></div>
+      <span id="pane-keys-hint" data-i18n="keys.hint">El agente espera — respóndele con teclas:</span>
+      <div id="dialog-buttons" class="dialog-buttons hidden" role="group" aria-label="Opciones del diálogo" data-i18n-aria-label="dialogs.group_aria"></div>
       <div id="dialog-unread" class="dialog-unread hidden" aria-live="polite"></div>
       <div id="dialog-status" class="dialog-status hidden" aria-live="polite"></div>
-      <div id="pane-keys" class="pane-keys" role="group" aria-label="Teclas para responder al diálogo">
-        <button type="button" data-key="left" aria-label="Izquierda">←</button>
-        <button type="button" data-key="right" aria-label="Derecha">→</button>
-        <button type="button" data-key="up" aria-label="Arriba">↑</button>
-        <button type="button" data-key="down" aria-label="Abajo">↓</button>
-        <button type="button" data-key="tab" aria-label="Tabulador">Tab</button>
-        <button type="button" data-key="esc" aria-label="Escape">Esc</button>
-        <button type="button" data-key="enter" aria-label="Intro">Enter</button>
-        <button type="button" data-key="1" aria-label="Uno">1</button>
-        <button type="button" data-key="2" aria-label="Dos">2</button>
-        <button type="button" data-key="3" aria-label="Tres">3</button>
-        <button type="button" data-key="4" aria-label="Cuatro">4</button>
-        <button type="button" data-key="5" aria-label="Cinco">5</button>
-        <button type="button" data-key="6" aria-label="Seis">6</button>
-        <button type="button" data-key="7" aria-label="Siete">7</button>
-        <button type="button" data-key="8" aria-label="Ocho">8</button>
-        <button type="button" data-key="9" aria-label="Nueve">9</button>
-        <button type="button" data-key="0" aria-label="Cero">0</button>
+      <div id="pane-keys" class="pane-keys" role="group" aria-label="Teclas para responder al diálogo" data-i18n-aria-label="keys.group_aria">
+        <button type="button" data-key="left" aria-label="Izquierda" data-i18n-aria-label="keys.left">←</button>
+        <button type="button" data-key="right" aria-label="Derecha" data-i18n-aria-label="keys.right">→</button>
+        <button type="button" data-key="up" aria-label="Arriba" data-i18n-aria-label="keys.up">↑</button>
+        <button type="button" data-key="down" aria-label="Abajo" data-i18n-aria-label="keys.down">↓</button>
+        <button type="button" data-key="tab" aria-label="Tabulador" data-i18n-aria-label="keys.tab">Tab</button>
+        <button type="button" data-key="esc" aria-label="Escape" data-i18n-aria-label="keys.esc">Esc</button>
+        <button type="button" data-key="enter" aria-label="Intro" data-i18n-aria-label="keys.enter">Enter</button>
+        <button type="button" data-key="1" aria-label="Uno" data-i18n-aria-label="keys.d1">1</button>
+        <button type="button" data-key="2" aria-label="Dos" data-i18n-aria-label="keys.d2">2</button>
+        <button type="button" data-key="3" aria-label="Tres" data-i18n-aria-label="keys.d3">3</button>
+        <button type="button" data-key="4" aria-label="Cuatro" data-i18n-aria-label="keys.d4">4</button>
+        <button type="button" data-key="5" aria-label="Cinco" data-i18n-aria-label="keys.d5">5</button>
+        <button type="button" data-key="6" aria-label="Seis" data-i18n-aria-label="keys.d6">6</button>
+        <button type="button" data-key="7" aria-label="Siete" data-i18n-aria-label="keys.d7">7</button>
+        <button type="button" data-key="8" aria-label="Ocho" data-i18n-aria-label="keys.d8">8</button>
+        <button type="button" data-key="9" aria-label="Nueve" data-i18n-aria-label="keys.d9">9</button>
+        <button type="button" data-key="0" aria-label="Cero" data-i18n-aria-label="keys.d0">0</button>
       </div>
-      <pre id="pane-keys-dialog" class="pane-keys-dialog hidden" aria-label="Diálogo del agente"></pre>
+      <pre id="pane-keys-dialog" class="pane-keys-dialog hidden" aria-label="Diálogo del agente" data-i18n-aria-label="keys.dialog_aria"></pre>
     </div>
     <div id="pane-permission" class="hidden">
       <div id="pane-permission-what"></div>
       <div class="pp-actions">
-        <button id="pp-once" type="button">Permitir una vez</button>
-        <button id="pp-always" type="button">Permitir siempre</button>
-        <button id="pp-reject" type="button">Rechazar</button>
+        <button id="pp-once" type="button" data-i18n="permission.once">Permitir una vez</button>
+        <button id="pp-always" type="button" data-i18n="permission.always">Permitir siempre</button>
+        <button id="pp-reject" type="button" data-i18n="permission.reject">Rechazar</button>
       </div>
     </div>
-    <div id="agent-tabs" class="agent-tabs" role="tablist" aria-label="Vistas del agente">
-      <button id="tab-agent" class="agent-tab" type="button" role="tab" aria-selected="true" aria-controls="agent-panel" tabindex="0"><span id="glance-label">Vista del agente</span></button>
-      <button id="tab-screen" class="agent-tab" type="button" role="tab" aria-selected="false" aria-controls="screen-panel" tabindex="-1">Pantalla</button>
-      <button id="tab-history" class="agent-tab" type="button" role="tab" aria-selected="false" aria-controls="history-panel" tabindex="-1">Historial</button>
-      <button id="tab-terminal" class="agent-tab" type="button" role="tab" aria-selected="false" aria-controls="terminal-panel" tabindex="-1">Terminal</button>
+    <div id="agent-tabs" class="agent-tabs" role="tablist" aria-label="Vistas del agente" data-i18n-aria-label="tabs.aria">
+      <button id="tab-agent" class="agent-tab" type="button" role="tab" aria-selected="true" aria-controls="agent-panel" tabindex="0"><span id="glance-label" data-i18n="tabs.agent">Vista del agente</span></button>
+      <button id="tab-screen" class="agent-tab" type="button" role="tab" aria-selected="false" aria-controls="screen-panel" tabindex="-1" data-i18n="tabs.screen">Pantalla</button>
+      <button id="tab-history" class="agent-tab" type="button" role="tab" aria-selected="false" aria-controls="history-panel" tabindex="-1" data-i18n="tabs.history">Historial</button>
+      <button id="tab-terminal" class="agent-tab" type="button" role="tab" aria-selected="false" aria-controls="terminal-panel" tabindex="-1" data-i18n="tabs.terminal">Terminal</button>
     </div>
     <div id="agent-panel" class="agent-panel" role="tabpanel" aria-labelledby="tab-agent" tabindex="0">
       <div id="glance-turns"></div>
-      <div id="glance-empty" class="hidden">Sin conversación del agente todavía</div>
+      <div id="glance-empty" class="hidden" data-i18n="glance.empty">Sin conversación del agente todavía</div>
     </div>
     <div id="screen-panel" class="agent-panel hidden" role="tabpanel" aria-labelledby="tab-screen" tabindex="0">
       <div class="gscreen-wrap hidden">
-        <span class="glabel">pantalla</span>
+        <span class="glabel" data-i18n="panel.screen">pantalla</span>
         <pre id="view-screen" class="view-screen"></pre>
       </div>    </div>
     <!-- Historial (doc 05): the pane's FULL transcript, one cursor page
          at a time; "Cargar más" (and a scroll parked at the very top)
          walk older pages, prepended without duplicates. -->
     <div id="history-panel" class="agent-panel hidden" role="tabpanel" aria-labelledby="tab-history" tabindex="0">
-      <div id="history-turns" aria-label="Historial completo del agente"></div>
-      <button id="history-more" class="hidden" type="button">Cargar más</button>
-      <div id="history-empty" class="hidden">Sin historial de este agente todavía</div>
+      <div id="history-turns" aria-label="Historial completo del agente" data-i18n-aria-label="history.aria"></div>
+      <button id="history-more" class="hidden" type="button" data-i18n="history.more">Cargar más</button>
+      <div id="history-empty" class="hidden" data-i18n="history.empty">Sin historial de este agente todavía</div>
     </div>
     <!-- Terminal (doc 05): the LIVE pane mirror — the visible window as
          ANSI runs, repainted on the 5s poll while this tab is shown. -->
     <div id="terminal-panel" class="agent-panel hidden" role="tabpanel" aria-labelledby="tab-terminal" tabindex="0">
       <div class="gscreen-wrap hidden" id="mirror-wrap">
-        <span class="glabel">terminal en vivo</span>
-        <pre id="mirror-screen" class="view-screen" aria-label="Espejo de la terminal del agente"></pre>
+        <span class="glabel" data-i18n="panel.terminal">terminal en vivo</span>
+        <pre id="mirror-screen" class="view-screen" aria-label="Espejo de la terminal del agente" data-i18n-aria-label="panel.mirror_aria"></pre>
       </div>
-      <div id="mirror-empty" class="hidden">Sin terminal que mostrar todavía</div>
+      <div id="mirror-empty" class="hidden" data-i18n="panel.terminal_empty">Sin terminal que mostrar todavía</div>
     </div>
   </section>
 
@@ -2348,22 +2399,22 @@
   <footer>
     <div id="mic-note" class="hidden"></div>
     <div class="controls">
-      <button id="pause-btn" class="side-btn hidden">⏸ Pausa</button>
-      <button id="call-btn">📞 Llamar</button>
-      <button id="stop-audio" class="side-btn hidden">■ Parar audio</button>
+      <button id="pause-btn" class="side-btn hidden" data-i18n="call.pause">⏸ Pausa</button>
+      <button id="call-btn" data-i18n="call.start">📞 Llamar</button>
+      <button id="stop-audio" class="side-btn hidden" data-i18n="call.stop_audio">■ Parar audio</button>
     </div>
     <form id="text-fallback" class="hidden">
-      <input id="text-input" type="text" placeholder="Escribe en su lugar…" autocomplete="off">
-      <button type="submit">Enviar</button>
+      <input id="text-input" type="text" placeholder="Escribe en su lugar…" autocomplete="off" data-i18n-placeholder="call.fallback_placeholder">
+      <button type="submit" data-i18n="common.send">Enviar</button>
     </form>
   </footer>
 
-  <section id="call-drawer" role="dialog" aria-modal="false" aria-label="Llamada con brain" inert>
+  <section id="call-drawer" role="dialog" aria-modal="false" aria-label="Llamada con brain" data-i18n-aria-label="call.title" inert>
     <div class="d-grab" aria-hidden="true"></div>
     <div class="d-head">
-      <span class="d-title"><span class="live-dot" aria-hidden="true">●</span> Llamada con brain</span>
+      <span class="d-title"><span class="live-dot" aria-hidden="true">●</span> <span data-i18n="call.title">Llamada con brain</span></span>
       <span id="call-timer" aria-hidden="true">00:00</span>
-      <button id="drawer-close" type="button" title="Minimizar la llamada (sigue en marcha)">▼</button>
+      <button id="drawer-close" type="button" title="Minimizar la llamada (sigue en marcha)" data-i18n-title="call.minimize_title">▼</button>
     </div>
     <div id="d-pending"></div>
     <div id="interim" aria-live="off">
@@ -2378,24 +2429,41 @@
     <div id="call-consult-indicator" class="hidden" aria-live="polite"></div>
   </section>
 
-  <section id="settings-sheet" role="dialog" aria-modal="false" aria-label="Ajustes" inert>
+  <section id="settings-sheet" role="dialog" aria-modal="false" aria-label="Ajustes" data-i18n-aria-label="settings.aria" inert>
     <div class="s-head">
-      <span class="s-title">Ajustes</span>
-      <button id="settings-close" type="button" title="Cerrar ajustes">✕</button>
+      <span class="s-title" data-i18n="settings.title">Ajustes</span>
+      <button id="settings-close" type="button" title="Cerrar ajustes" data-i18n-title="settings.close_title">✕</button>
     </div>
     <div class="s-body">
       <div class="s-row">
-        <span class="s-label">Motor de voz</span>
+        <span class="s-label" data-i18n="settings.voice_engine">Motor de voz</span>
         <button id="voice-engine-btn" type="button">Voz: Servidor</button>
       </div>
       <div class="s-row">
-        <span class="s-label">Tema</span>
+        <span class="s-label" data-i18n="settings.theme">Tema</span>
         <button id="theme-btn" type="button">Tema: Oscuro</button>
       </div>
-      <span class="s-hint">Servidor: transcribe en el back con whisper (robusto). Navegador: Web Speech de Chrome (más rápido, menos fiable en Android).</span>
+      <span class="s-hint" data-i18n="settings.hint">Servidor: transcribe en el back con whisper (robusto). Navegador: Web Speech de Chrome (más rápido, menos fiable en Android).</span>
+      <!-- S4 idioma / apariencia: per-device, wired by settings.js. -->
       <div class="s-row">
-        <span class="s-label">Pendientes</span>
-        <button id="pending-open" type="button" title="Ver los avisos pendientes">🔔 Pendientes (<span id="pending-menu-count">0</span>)</button>
+        <span class="s-label" data-i18n="settings.language">Idioma</span>
+        <button id="language-btn" type="button">Idioma: Español</button>
+      </div>
+      <div class="s-row">
+        <span class="s-label" data-i18n="settings.font">Tamaño del texto</span>
+        <button id="font-btn" type="button">Texto: Normal</button>
+      </div>
+      <div class="s-row">
+        <span class="s-label" data-i18n="settings.zen">Modo Zen</span>
+        <button id="zen-btn" type="button">Modo Zen: No</button>
+      </div>
+      <div class="s-row" id="haptics-row">
+        <span class="s-label" data-i18n="settings.haptics">Háptica</span>
+        <button id="haptics-btn" type="button">Háptica: Sí</button>
+      </div>
+      <div class="s-row">
+        <span class="s-label" data-i18n="settings.pending">Pendientes</span>
+        <button id="pending-open" type="button" title="Ver los avisos pendientes" data-i18n-title="settings.pending_open_aria">🔔 Pendientes (<span id="pending-menu-count">0</span>)</button>
       </div>
       <!-- Device pairing (F1 device pairing): pairing.js builds the card
             (estado + código + etiqueta + lista de dispositivos) inside
@@ -2411,13 +2479,13 @@
   </section>
 
   <div id="conv-backdrop" aria-hidden="true"></div>
-  <section id="conv-sheet" role="dialog" aria-modal="true" aria-label="Conversaciones" inert>
+  <section id="conv-sheet" role="dialog" aria-modal="true" aria-label="Conversaciones" data-i18n-aria-label="conv.aria" inert>
     <div class="cs-head">
-      <span class="cs-title">Conversaciones</span>
-      <button id="conv-close" type="button" title="Cerrar">✕</button>
+      <span class="cs-title" data-i18n="conv.title">Conversaciones</span>
+      <button id="conv-close" type="button" title="Cerrar" data-i18n-title="conv.close">✕</button>
     </div>
     <div class="cs-actions">
-      <button id="conv-new" type="button">＋ Nueva conversación</button>
+      <button id="conv-new" type="button" data-i18n="herd.new_conversation">＋ Nueva conversación</button>
     </div>
     <div id="conv-list"></div>
   </section>
@@ -2427,13 +2495,13 @@
        document flow, so the list never pushes the cockpit. Opened from
        the Ajustes sheet (⚙). -->
   <div id="pending-backdrop" aria-hidden="true"></div>
-  <section id="pending-sheet" role="dialog" aria-modal="true" aria-label="Pendientes" inert>
+  <section id="pending-sheet" role="dialog" aria-modal="true" aria-label="Pendientes" data-i18n-aria-label="pendsheet.aria" inert>
     <div class="cs-head">
-      <span class="cs-title">Pendientes</span>
-      <button id="pending-close" type="button" title="Cerrar">✕</button>
+      <span class="cs-title" data-i18n="pendsheet.title">Pendientes</span>
+      <button id="pending-close" type="button" title="Cerrar" data-i18n-title="pendsheet.close">✕</button>
     </div>
     <div id="pending-sheet-body">
-      <div id="pending-empty">Sin pendientes</div>
+      <div id="pending-empty" data-i18n="pendsheet.empty">Sin pendientes</div>
     </div>
   </section>
 
@@ -2441,34 +2509,34 @@
 
   <section id="diag-panel" class="hidden">
     <div class="sheet-head">
-      <span id="diag-title" style="flex:1;font-weight:700;">Diagnóstico de voz</span>
-      <button id="diag-close" style="min-height:48px;padding:0 16px;font-weight:800;background:var(--chip-bg);color:var(--text);">✕ Cerrar</button>
+      <span id="diag-title" style="flex:1;font-weight:700;" data-i18n="diag.title">Diagnóstico de voz</span>
+      <button id="diag-close" style="min-height:48px;padding:0 16px;font-weight:800;background:var(--chip-bg);color:var(--text);" data-i18n="diag.close">✕ Cerrar</button>
     </div>
-    <div class="sheet-body"><pre id="diag-text">Cargando…</pre></div>
-    <div id="diag-status">Última consulta: — · Último error: ninguno</div>
+    <div class="sheet-body"><pre id="diag-text" data-i18n="common.loading">Cargando…</pre></div>
+    <div id="diag-status" data-i18n="diag.initial">Última consulta: — · Último error: ninguno</div>
   </section>
 
   <!-- Mermaid diagram lightbox modal (visor de gráficos) -->
   <div id="mermaid-backdrop" class="mermaid-backdrop hidden" aria-hidden="true"></div>
-  <section id="mermaid-modal" class="mermaid-modal hidden" role="dialog" aria-modal="true" aria-label="Visor de diagrama Mermaid" inert>
+  <section id="mermaid-modal" class="mermaid-modal hidden" role="dialog" aria-modal="true" aria-label="Visor de diagrama Mermaid" data-i18n-aria-label="mermaid.aria" inert>
     <div class="mm-head">
       <div class="mm-title-wrap">
-        <span class="mm-title">Diagrama Mermaid</span>
+        <span class="mm-title" data-i18n="mermaid.title">Diagrama Mermaid</span>
         <span class="mm-zoom-level" id="mm-zoom-display">100%</span>
       </div>
       <div class="mm-actions">
-        <button id="mm-zoom-in" type="button" class="mm-btn" title="Acercar (Zoom +)">＋</button>
-        <button id="mm-zoom-out" type="button" class="mm-btn" title="Alejar (Zoom -)">－</button>
-        <button id="mm-zoom-reset" type="button" class="mm-btn" title="Restablecer zoom">↺</button>
-        <button id="mm-copy-code" type="button" class="mm-btn" title="Copiar código fuente">Copiar</button>
-        <button id="mm-close" type="button" class="mm-btn mm-close-btn" title="Cerrar visor">✕</button>
+        <button id="mm-zoom-in" type="button" class="mm-btn" title="Acercar (Zoom +)" data-i18n-title="mermaid.zoom_in_title">＋</button>
+        <button id="mm-zoom-out" type="button" class="mm-btn" title="Alejar (Zoom -)" data-i18n-title="mermaid.zoom_out_title">－</button>
+        <button id="mm-zoom-reset" type="button" class="mm-btn" title="Restablecer zoom" data-i18n-title="mermaid.zoom_reset_title">↺</button>
+        <button id="mm-copy-code" type="button" class="mm-btn" title="Copiar código fuente" data-i18n="mermaid.copy" data-i18n-title="mermaid.copy_title">Copiar</button>
+        <button id="mm-close" type="button" class="mm-btn mm-close-btn" title="Cerrar visor" data-i18n-title="mermaid.close_title">✕</button>
       </div>
     </div>
     <div class="mm-viewport" id="mm-viewport">
       <div class="mm-canvas" id="mm-canvas"></div>
     </div>
     <div class="mm-footer">
-      <span class="mm-hint">Arrastra para mover · Rueda o botones para zoom</span>
+      <span class="mm-hint" data-i18n="mermaid.hint">Arrastra para mover · Rueda o botones para zoom</span>
     </div>
   </section>
 
@@ -2491,6 +2559,12 @@
     <script src="/mermaid-viewer.js"></script>    <script src="/speech.js"></script>
     <script src="/tts-engine.js"></script>
     <script src="/consult.js"></script>
+    <script src="/i18n.js"></script>
+    <script src="/i18n/es.js"></script>
+    <script src="/i18n/en.js"></script>
+    <script src="/settings.js"></script>
+    <script src="/updates.js"></script>
+    <script src="/dock.js"></script>
     <script src="/app.js"></script>
 </body>
 </html>

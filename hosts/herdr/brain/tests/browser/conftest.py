@@ -281,6 +281,10 @@ class KaraokeHarness:
             "mermaid.min.js", "mermaid-viewer.js", "tts-engine.js",
             "pairing.js", "destructive.js", "history.js", "dialogs.js",
             "receipts.js", "push.js",
+            # S4/S3 PWA unit: i18n runtime + dictionaries, settings,
+            # update notice, operator dock.
+            "i18n.js", "i18n/es.js", "i18n/en.js",
+            "settings.js", "updates.js", "dock.js",
         ):
             if (STATIC / name).is_file():
                 self.static["/" + name] = name
@@ -306,6 +310,15 @@ class KaraokeHarness:
         # VAPID keys) — the card renders its operator hint and nothing
         # subscribes.
         self.respond("/push/key", {"enabled": False, "public_key": None})
+        # S4 update notice: the boot /build poll the updater runs. The
+        # 404 default stands the poller down (an older brain predates
+        # the endpoint) — exactly the graceful fallback the page ships.
+        self.respond("/build", {"detail": "no build endpoint"}, status=404)
+        # S3 operator dock: the boot /operator/config fetch the dock
+        # runs once the herd names an agent family. The 404 default
+        # keeps the dock hidden (no operator TOML on this install).
+        self.respond("/operator/config", {"detail": "no operator config"}, status=404,
+                     query=("agent",))
         # FR-13 shared call context: default payload keeps every legacy
         # test on its locally-minted session (call_id null = no
         # adoption); the desktop/handover tests override these routes

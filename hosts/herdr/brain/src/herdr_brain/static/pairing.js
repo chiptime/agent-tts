@@ -37,6 +37,17 @@
     var doc = options.doc || document;
     var openSettings = options.openSettings || function () {};
     var onPaired = options.onPaired || function () {};
+    /* i18n (S4): the page injects the dictionary runtime's t(); the
+     * built-in Spanish lines stay the fallback (and the node suite's
+     * single source). The device label and the code are DATA — they
+     * never translate. */
+    var translate = options.t || null;
+
+    function tr(key, fallback) {
+      if (!translate) return fallback;
+      var value = translate(key);
+      return value && value !== key ? value : fallback;
+    }
     /* B1: fired when THIS device's local credential dies (self-revoke,
      * or a revoke response that leaves no current device while a token
      * was held) — app.js reopens the SSE transport on it. Revoking
@@ -114,25 +125,28 @@
 
       if (offerPending) {
         root.appendChild(el("div", "pair-hint",
-          "Este brain exige un dispositivo emparejado para escribir. " +
-          "Pide un código con `herdr-brain pair` en la máquina y empareja aquí."));
+          tr("pair.write_required",
+            "Este brain exige un dispositivo emparejado para escribir. " +
+            "Pide un código con `herdr-brain pair` en la máquina y empareja aquí.")));
       }
       if (expiredPending) {
         root.appendChild(el("div", "pair-hint pair-hint-expired",
-          "El token de este dispositivo caducó. Pide un código nuevo con " +
-          "`herdr-brain pair` y vuelve a emparejar (o pide al operador ampliar " +
-          "el plazo con `devices set-expiry`)."));
+          tr("pair.token_expired",
+            "El token de este dispositivo caducó. Pide un código nuevo con " +
+            "`herdr-brain pair` y vuelve a emparejar (o pide al operador ampliar " +
+            "el plazo con `devices set-expiry`).")));
       }
 
       var status = el("div", "pair-status");
       if (state.current) {
-        status.textContent = "📱 Emparejado como «" + state.current + "»";
+        status.textContent = tr("pair.paired_status", "📱 Emparejado como «{name}»")
+          .replace("{name}", state.current);
       } else if (expiredPending) {
-        status.textContent = "🔒 Token caducado: vuelve a emparejar";
+        status.textContent = tr("pair.expired_status", "🔒 Token caducado: vuelve a emparejar");
       } else if (state.enforced) {
-        status.textContent = "🔒 Bloqueado: dispositivo no emparejado";
+        status.textContent = tr("pair.blocked_status", "🔒 Bloqueado: dispositivo no emparejado");
       } else {
-        status.textContent = "Sin emparejar (escritura y lectura siguen abiertas)";
+        status.textContent = tr("pair.open_status", "Sin emparejar (escritura y lectura siguen abiertas)");
       }
       root.appendChild(status);
 
@@ -141,14 +155,14 @@
         var code = el("input", "pair-code");
         code.setAttribute("type", "text");
         code.setAttribute("inputmode", "latin");
-        code.setAttribute("placeholder", "Código (8 caracteres)");
+        code.setAttribute("placeholder", tr("pair.code_placeholder", "Código (8 caracteres)"));
         code.setAttribute("maxlength", "12");
         code.setAttribute("autocomplete", "off");
         var label = el("input", "pair-label");
         label.setAttribute("type", "text");
-        label.setAttribute("placeholder", "Nombre del dispositivo");
+        label.setAttribute("placeholder", tr("pair.label_placeholder", "Nombre del dispositivo"));
         label.setAttribute("maxlength", "48");
-        var submit = el("button", "pair-submit", "Emparejar");
+        var submit = el("button", "pair-submit", tr("pair.submit", "Emparejar"));
         submit.setAttribute("type", "submit");
         form.appendChild(code);
         form.appendChild(label);
@@ -172,13 +186,14 @@
       var list = el("div", "pair-devices");
       (state.devices || []).forEach(function (device) {
         var row = el("div", "pair-device");
-        var label = device.label + (device.current ? " (este dispositivo)" : "");
+        var label = device.label + (device.current ? tr("pair.this_device", " (este dispositivo)") : "");
         if (typeof device.expiresAt === "number" && device.expiresAt > 0) {
-          label += " · caduca " + new Date(device.expiresAt * 1000).toISOString().slice(0, 16).replace("T", " ");
+          label += tr("pair.expires", " · caduca {when}").replace("{when}",
+            new Date(device.expiresAt * 1000).toISOString().slice(0, 16).replace("T", " "));
         }
         row.appendChild(el("span", "pair-device-label", label));
         var revoke = el("button", "pair-revoke",
-          device.current ? "Desvincular" : "Revocar");
+          device.current ? tr("pair.unlink", "Desvincular") : tr("pair.revoke", "Revocar"));
         revoke.setAttribute("type", "button");
         revoke.addEventListener("click", function () {
           revoke.disabled = true;
@@ -192,13 +207,14 @@
 
     function pairErrorText(reason) {
       var texts = {
-        "no-pending": "No hay ningún emparejamiento pendiente — pide un código nuevo.",
-        "expired": "El código caducó (dura 10 minutos) — pide otro.",
-        "exhausted": "Demasiados intentos fallidos — pide otro código.",
-        "bad-code": "Código incorrecto — revisa los caracteres.",
-        "duplicate-label": "Ese nombre ya está en uso — elige otro."
+        "no-pending": tr("pair.no_pending", "No hay ningún emparejamiento pendiente — pide un código nuevo."),
+        "expired": tr("pair.code_expired", "El código caducó (dura 10 minutos) — pide otro."),
+        "exhausted": tr("pair.exhausted", "Demasiados intentos fallidos — pide otro código."),
+        "bad-code": tr("pair.bad_code", "Código incorrecto — revisa los caracteres."),
+        "duplicate-label": tr("pair.duplicate_label", "Ese nombre ya está en uso — elige otro.")
       };
-      return texts[reason] || "No se pudo emparejar (" + reason + ").";
+      return texts[reason] || tr("pair.generic_fail", "No se pudo emparejar ({reason}).")
+        .replace("{reason}", reason);
     }
 
     /* ---- the wire ---- */

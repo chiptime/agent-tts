@@ -44,12 +44,30 @@
     unknown: "No puedo confirmar si se envió.",
   };
 
+  /* i18n (S4): the page injects the dictionary runtime's t() after
+   * boot; without it (node suite, standalone) the built-in Spanish
+   * tables above stay the single source. A drifted or missing key
+   * falls back to the built-in line, never shows a raw key. */
+  var translator = null;
+
+  function useTranslator(tFn) {
+    translator = typeof tFn === "function" ? tFn : null;
+  }
+
+  function tr(key, fallback) {
+    if (!translator) return fallback;
+    var value = translator(key);
+    return value && value !== key ? value : fallback;
+  }
+
   function outcomeLabel(outcome) {
-    return OUTCOME_LABELS[outcome] || OUTCOME_LABELS.unknown;
+    var known = OUTCOME_LABELS[outcome] ? outcome : "unknown";
+    return tr("receipts.outcome_" + known, OUTCOME_LABELS[known]);
   }
 
   function speakPhrase(outcome) {
-    return SPEECH_PHRASES[outcome] || null;
+    if (!SPEECH_PHRASES[outcome]) return null;   /* unknown stays silent, as before */
+    return tr("receipts.speech_" + outcome, SPEECH_PHRASES[outcome]);
   }
 
   /* Says the outcome through the local speech synthesizer when the
@@ -135,6 +153,7 @@
     OUTCOMES: OUTCOMES,
     OUTCOME_LABELS: OUTCOME_LABELS,
     SPEECH_PHRASES: SPEECH_PHRASES,
+    useTranslator: useTranslator,
     outcomeLabel: outcomeLabel,
     speakPhrase: speakPhrase,
     speakOutcome: speakOutcome,

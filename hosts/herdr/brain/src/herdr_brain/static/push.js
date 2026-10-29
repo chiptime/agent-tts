@@ -28,6 +28,16 @@
     };
     var doc = options.doc || document;
     var showToast = options.showToast || function () {};
+    /* i18n (S4): the page injects the dictionary runtime's t(); the
+     * built-in Spanish lines stay the fallback (and the node suite's
+     * single source). */
+    var translate = options.t || null;
+
+    function tr(key, fallback) {
+      if (!translate) return fallback;
+      var value = translate(key);
+      return value && value !== key ? value : fallback;
+    }
 
     /* State as the card renders it: serverKeys = the brain has VAPID
      * keys; subscription = this browser's endpoint (kept locally so the
@@ -63,39 +73,42 @@
       if (!root) return;
       clear(root);
 
-      root.appendChild(el("div", "push-title", "Avisos push"));
+      root.appendChild(el("div", "push-title", tr("push.title", "Avisos push")));
 
       var status;
       if (state.serverKeys === false) {
-        status = "Sin claves en el servidor — pide al operador importarlas " +
-          "(`herdr-brain push import`) o generar un par nuevo.";
+        status = tr("push.no_keys",
+          "Sin claves en el servidor — pide al operador importarlas " +
+          "(`herdr-brain push import`) o generar un par nuevo.");
       } else if (notificationPermission() === "denied") {
-        status = "El navegador bloquea las notificaciones; actívalas en los " +
-          "ajustes del sitio y vuelve a intentarlo.";
+        status = tr("push.blocked",
+          "El navegador bloquea las notificaciones; actívalas en los " +
+          "ajustes del sitio y vuelve a intentarlo.");
       } else if (state.endpoint) {
-        status = "🔔 Avisos activos en este dispositivo";
+        status = tr("push.active", "🔔 Avisos activos en este dispositivo");
       } else {
-        status = "Sin avisos push en este dispositivo";
+        status = tr("push.off", "Sin avisos push en este dispositivo");
       }
       root.appendChild(el("div", "push-status", status));
 
       if (state.serverKeys === false) return;
 
       var row = el("div", "push-actions");
-      var enable = el("button", "push-enable", state.endpoint ? "Reactivar" : "Activar");
+      var enable = el("button", "push-enable",
+          state.endpoint ? tr("push.reenable", "Reactivar") : tr("push.enable", "Activar"));
       enable.setAttribute("type", "button");
       enable.disabled = state.busy || notificationPermission() === "denied";
       enable.addEventListener("click", function () { enablePush(enable); });
       row.appendChild(enable);
 
       if (state.endpoint) {
-        var test = el("button", "push-test", "Probar");
+        var test = el("button", "push-test", tr("push.test", "Probar"));
         test.setAttribute("type", "button");
         test.disabled = state.busy;
         test.addEventListener("click", function () { sendTest(test); });
         row.appendChild(test);
 
-        var disable = el("button", "push-disable", "Desactivar");
+        var disable = el("button", "push-disable", tr("push.disable", "Desactivar"));
         disable.setAttribute("type", "button");
         disable.disabled = state.busy;
         disable.addEventListener("click", function () { disablePush(disable); });
@@ -176,12 +189,13 @@
             if (outcome !== "ok") throw new Error(String(outcome));
             state.endpoint = subscription.endpoint;
             state.enabled = true;
-            showToast("Avisos push activados", 4000);
+            showToast(tr("push.enabled_toast", "Avisos push activados"), 4000);
             return "ok";
           });
         })
         .catch(function (err) {
-          showToast("No se pudieron activar los avisos: " + (err && err.message ? err.message : err), 6000);
+          showToast(tr("push.enable_failed", "No se pudieron activar los avisos: {error}")
+              .replace("{error}", err && err.message ? err.message : err), 6000);
           return null;
         })
         .then(function (outcome) {
@@ -216,11 +230,11 @@
         .then(function () {
           state.endpoint = null;
           state.enabled = false;
-          showToast("Avisos push desactivados", 4000);
+          showToast(tr("push.disabled_toast", "Avisos push desactivados"), 4000);
           return "ok";
         })
         .catch(function () {
-          showToast("No se pudieron desactivar los avisos — prueba otra vez", 6000);
+          showToast(tr("push.disable_failed", "No se pudieron desactivar los avisos — prueba otra vez"), 6000);
           return null;
         })
         .then(function (outcome) {
@@ -246,15 +260,15 @@
             var sent = body && typeof body.sent === "number" ? body.sent : 0;
             showToast(
               sent > 0
-                ? "Notificación de prueba enviada (" + sent + ")"
-                : "No se envió nada — ¿hay otro dispositivo suscrito?",
+                ? tr("push.test_sent", "Notificación de prueba enviada ({sent})").replace("{sent}", sent)
+                : tr("push.test_none", "No se envió nada — ¿hay otro dispositivo suscrito?"),
               5000
             );
             return "ok";
           });
         })
         .catch(function () {
-          showToast("La prueba no llegó al brain — sin conexión", 6000);
+          showToast(tr("push.test_failed", "La prueba no llegó al brain — sin conexión"), 6000);
           return null;
         })
         .then(function (outcome) {

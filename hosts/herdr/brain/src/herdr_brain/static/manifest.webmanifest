@@ -5,6 +5,8 @@
   "description": "Talk to your AI coding agents managed by Herdr.",
   "start_url": "/",
   "display": "standalone",
+  "orientation": "any",
+  "lang": "es",
   "background_color": "#0f1115",
   "theme_color": "#0f1115",
   "icons": [
