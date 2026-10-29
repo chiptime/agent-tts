@@ -181,6 +181,7 @@ class WalkyService:
         hops: int,
         parent_id: Optional[str],
         action: str,
+        message_id: Optional[str] = None,
     ) -> Message:
         if not body or not body.strip():
             raise WalkyRefusal("refusing to send an empty message")
@@ -207,7 +208,7 @@ class WalkyService:
 
         now = self._clock()
         message = Message(
-            id=self._ids(),
+            id=message_id or self._ids(),
             from_kind=from_kind,
             from_key=from_key,
             from_address=from_address,

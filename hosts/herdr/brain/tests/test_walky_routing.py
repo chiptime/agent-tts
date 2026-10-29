@@ -25,7 +25,7 @@ def roster(role: str, self_name: str, lead: str, peers: tuple = ()) -> SimpleNam
         self_name=self_name,
         lead_name=lead,
         peers=members,
-        has_crew=lambda: role in ("lead", "peer"),
+        has_crew=role in ("lead", "peer"),
     )
 
 

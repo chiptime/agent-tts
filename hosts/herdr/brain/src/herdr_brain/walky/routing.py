@@ -48,7 +48,7 @@ def _crew_active(roster) -> bool:
     if roster is None:
         return False
     has_crew = getattr(roster, "has_crew", None)
-    return bool(has_crew()) if callable(has_crew) else False
+    return bool(has_crew()) if callable(has_crew) else bool(has_crew)
 
 
 def route_address(address: str, *, roster, local_pane_ids: Iterable[str]) -> Route:
