@@ -5,7 +5,7 @@ from herdr_brain.config import Settings
 from herdr_brain.server import approval_payload
 from tests.conftest import SETTINGS_KWARGS
 from tests.test_server import approval_app, make_replay_tools, FakeTTS
-from tests.browser.test_voice_dialog import say, wait_post, post_body, play_through
+from tests.browser.test_voice_dialog_browser import say, wait_post, post_body, play_through
 
 @pytest.fixture
 def service(tmp_path, monkeypatch):

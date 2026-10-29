@@ -129,7 +129,7 @@ def test_captured_barge_speech_beats_idle_microtask(audio_capture_context):
 
 
 def test_confirmation_does_not_yield_to_background(karaoke_app):
-    from tests.browser.test_voice_dialog import GATE
+    from tests.browser.test_voice_dialog_browser import GATE
     h = app(karaoke_app)
     h.respond("/ask", {"answer": "A proposed action", "audio_url": "/audio/explain.mp3", "approval": GATE}, method="POST")
     h.page.locator("#text-input").evaluate("el => { el.value = 'Propose work'; }")
