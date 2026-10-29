@@ -1,0 +1,4 @@
+{"timestamp": "2026-10-28T09:00:00Z", "role": "user", "text": "Resume the failing test in tests/js and tell me which one broke."}
+{"timestamp": "2026-10-28T09:00:05Z", "role": "assistant", "text": "The broken test is dialogs.test.js: the module under test does not export createDialogButtons."}
+{"timestamp": "2026-10-28T09:01:00Z", "role": "user", "text": "Fix it and run the suite again."}
+{"timestamp": "2026-10-28T09:01:20Z", "role": "assistant", "text": "Fixed and green: 462 tests pass now."}

@@ -96,7 +96,7 @@ class RealMediaApp:
         names = ("index.html", "app.js", "karaoke.js", "toast.js", "reader.js", "speech.js",
                  "announce.js", "approval.js", "consult.js", "endpointing.js", "vad.js",
                  "herd-group.js", "manifest.webmanifest", "icon.svg",
-                 "mermaid.min.js", "mermaid-viewer.js", "tts-engine.js", "pairing.js", "destructive.js", "history.js")
+                 "mermaid.min.js", "mermaid-viewer.js", "tts-engine.js", "pairing.js", "destructive.js", "history.js", "dialogs.js")
         self.static = {"/" + name: STATIC / name for name in names}
         self.static["/"] = STATIC / "index.html"
         self.api = {

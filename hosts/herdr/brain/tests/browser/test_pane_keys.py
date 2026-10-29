@@ -63,15 +63,21 @@ def test_one_send_while_busy_then_a_failure_recovers(karaoke_app, failure):
 
     enter = page.locator('#pane-keys [data-key="enter"]')
     expect(page.locator("#pane-reply")).to_be_hidden()
+    # The pad is exactly the closed allowlist: navigation keys plus the
+    # digit row S2 added (the dialogs that print numbers commit on them).
     assert page.locator("#pane-keys button").evaluate_all(
         "bs => bs.map(b => b.dataset.key)"
-    ) == ["left", "right", "up", "down", "tab", "esc", "enter"]
+    ) == [
+        "left", "right", "up", "down", "tab", "esc", "enter",
+        "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
+    ]
 
     enter.click()
     expect(enter).to_be_disabled()
     enter.dispatch_event("click")  # a second tap while in flight must be inert
     assert len(held) == 1
-    assert page.locator("#pane-keys button:disabled").count() == 7
+    # Every key of the pad (17 with the digit row) is disabled mid-send.
+    assert page.locator("#pane-keys button:disabled").count() == 17
     assert held[0].request.post_data_json == {"pane_id": A, "keys": ["enter"]}
 
     if failure == "http":

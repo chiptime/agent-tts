@@ -372,6 +372,7 @@ _VERSIONED_REFS = (
     ('src="/pairing.js"', 'src="/pairing.js?v={v}"'),
     ('src="/destructive.js"', 'src="/destructive.js?v={v}"'),
     ('src="/history.js"', 'src="/history.js?v={v}"'),
+    ('src="/dialogs.js"', 'src="/dialogs.js?v={v}"'),
     ('src="/reader.js"', 'src="/reader.js?v={v}"'),
     ('src="/toast.js"', 'src="/toast.js?v={v}"'),
     ('src="/mermaid.min.js"', 'src="/mermaid.min.js?v={v}"'),
@@ -517,6 +518,20 @@ class PermissionReplyRequest(BaseModel):
     pane_id: str = Field(min_length=1, max_length=MAX_SESSION_ID_CHARS)
     request_id: str = Field(min_length=1, max_length=MAX_SESSION_ID_CHARS)
     reply: Literal["once", "always", "reject"]
+
+
+class PaneDialogAnswerRequest(BaseModel):
+    """One tapped option of a RECOGNIZED dialog (POST /pane/dialog/answer).
+
+    ``fingerprint`` is the dialog identity the /view render carried:
+    the server re-reads the pane and refuses (409) when the screen
+    moved under the tap, so a stale render can never fire keys.
+    ``option`` is the tapped option's index in that render.
+    """
+
+    pane_id: str = Field(min_length=1, max_length=MAX_SESSION_ID_CHARS)
+    fingerprint: str = Field(min_length=1, max_length=64)
+    option: int = Field(ge=0, le=99)
 
 
 class PairRequest(BaseModel):
@@ -938,6 +953,13 @@ def create_app(
             headers=dict(_NO_CACHE_HEADERS),
         )
 
+    @app.get("/dialogs.js", include_in_schema=False)
+    def dialogs_js() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "dialogs.js", media_type="text/javascript",
+            headers=dict(_NO_CACHE_HEADERS),
+        )
+
     @app.get("/destructive.js", include_in_schema=False)
     def destructive_js() -> FileResponse:
         return FileResponse(
@@ -1164,6 +1186,8 @@ def create_app(
         try:
             return tools.agent_view(pane_id)
         except Exception:  # noqa: BLE001 — the view endpoint never 500s
+            # No `structured` key here: a recognizer's claim is the only
+            # thing that adds it (additive field, pre-S2 shape kept).
             return {
                 "status": _status_payload(None),
                 "transcript": None,
@@ -1847,6 +1871,65 @@ def create_app(
         raise HTTPException(
             status_code=status,
             detail=result.get("detail") or "No se pudieron enviar las teclas.",
+        )
+
+    @app.post("/pane/dialog/answer")
+    def pane_dialog_answer(request: Request, body: PaneDialogAnswerRequest) -> dict:
+        """Answers one RECOGNIZED dialog option a button was tapped for.
+
+        The guarded button-tap path (S2): the server RE-READS the pane,
+        re-derives the structured dialog and refuses with 409 when the
+        fingerprint changed under the tap — no key ever leaves on the
+        strength of a stale render. A keys recipe (the numbering the
+        screen printed) goes out as one sequence after the entry guard;
+        a walk recipe is walked by the guard with a re-read after every
+        arrow. The pane is resolved exactly (unknown pane = 404, never
+        the focused fallback), a refused option index is a 422, a
+        multiplexer without logical keys is a 502 with its own
+        explanation, and every attempt is audited.
+        """
+        result = tools.answer_structured_dialog(
+            body.pane_id, body.fingerprint, body.option
+        )
+        outcome = result["outcome"]
+        # The fingerprint names the answered dialog and the option index
+        # is metadata — neither carries terminal content.
+        audit_log.record({
+            "action": "pane.dialog.answer",
+            "pane_id": body.pane_id,
+            "device": audit_device(request),
+            "detail": {
+                "outcome": outcome,
+                "reason": result.get("reason", ""),
+                "option": body.option,
+                "fingerprint": body.fingerprint,
+            },
+        })
+        if outcome == "answered":
+            return {
+                "ok": True,
+                "pane_id": body.pane_id,
+                "option": body.option,
+                "label": result.get("label", ""),
+            }
+        reason = result.get("reason", "")
+        if reason == "unknown_pane":
+            raise HTTPException(status_code=404, detail="pane no encontrado")
+        if reason == "invalid_target":
+            raise HTTPException(
+                status_code=422, detail="Esa opción no está en este diálogo."
+            )
+        if reason in ("changed", "no_progress", "unreachable_option"):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "El diálogo cambió antes de responder; nada se envió. "
+                    "Mira la pantalla de nuevo y responde al diálogo nuevo."
+                ),
+            )
+        raise HTTPException(
+            status_code=502,
+            detail=result.get("detail") or "No se pudo responder el diálogo.",
         )
 
     @app.get("/pane/permission")

@@ -19,14 +19,16 @@ EXPECTED_DIGESTS = {
     # card, the bearer on write fetches and pairing.js wiring; then for the
     # destructive-command guard (destructive.js + composer confirmation);
     # then for S11 (reads carry the bearer, EventSource/<audio> carry the
-    # S11 (reads carry the bearer, EventSource/<audio> carry the
     # device_token query parameter, the read-403 pairing offer and the
     # caducado hint); then for the B1 correction (the SSE transport
     # reopens with the current credential on pairing/revoke/expiry, and
     # media URLs are credentialised at source-assignment time); then
-    # for the T2 reading views (Historial + Terminal tabs, history.js).
-    "/": "736e43677253648c96690e11e273ce0cfb9b1966c47804fa8fb1257e6848f9e9",
-    "/app.js": "8e7649f7467b80aeb71eafb6520260db669a6eaf397ffa0bb191e8f992fec60c",
+    # for the T2 reading views (Historial + Terminal tabs, history.js);
+    # then for S2 (recognized-dialog buttons above the keypad, the
+    # unread-dialog card, the digit row and dialogs.js).
+    "/": "9e4340536d041ce546415580c5243ea8d8fa8d815e045bed15ea7b3cd2f4957e",
+    "/app.js": "154c0520df3a235c44ce9981c2e031a01bd7b8afdadc5318690e10ec1c30efb2",
+    "/dialogs.js": "fc756929f679082745e6dbb7eb613e5c83aecbf94d7d1130dd67c8c72e932c03",
     "/herd-group.js": "08296c7208e14dc1d5e46186b645d02089f8addef502b50eb11e61b186829674",
     "/toast.js": "47a230495fbbe8af8ed63ea0daf2e77a08f41f48911da4f9cc230ddc904fdd5d",
     "/reader.js": "28daec6199b0e756e1285b40f20fc860c1d9b4d2169cb2433c1ccfb12db31a76",

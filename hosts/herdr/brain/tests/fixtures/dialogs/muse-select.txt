@@ -1,0 +1,10 @@
+◇ Request user input Color — running (22s)
+
+  Which color do you prefer?
+
+  › 1. Red (Recommended)
+    2. Green
+    3. Blue
+    4. None of the above  Optionally, add details in notes (tab).
+
+  Enter to select · ↑/↓ to move · Tab for an optional note · Esc to interrupt

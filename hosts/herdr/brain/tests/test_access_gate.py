@@ -240,6 +240,8 @@ def test_device_header_gate_matrix():
         ("POST", "/ask", "write"),
         ("POST", "/transcribe", "write"),
         ("POST", "/reset", "write"),
+        # S2: the guarded button-tap path types into a terminal.
+        ("POST", "/pane/dialog/answer", "write"),
         # Read-only set (doc 01 §4): everything else.
         ("GET", "/health", "read"),
         ("GET", "/state", "read"),

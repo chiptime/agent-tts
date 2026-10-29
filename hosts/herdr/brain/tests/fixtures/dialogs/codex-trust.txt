@@ -1,0 +1,6 @@
+> You are in /tmp/probe
+  Do you trust the contents of this directory? Working with untrusted
+  contents comes with risks.
+› 1. Yes, continue
+  2. No, quit
+  Press enter to continue

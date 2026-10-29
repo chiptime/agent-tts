@@ -31,11 +31,15 @@ from typing import List, Optional
 
 from .base import Turn, iso_to_utc, parse_json_line, reverse_tail_lines, SCAN_CAP_BYTES
 
-DEFAULT_PI_ROOTS = ("~/.pi/agent/sessions", "~/.omp/agent/sessions")
+DEFAULT_PI_ROOTS = (
+    "~/.pi/agent/sessions",
+    "~/.gentle-shell/agent/sessions",
+    "~/.omp/agent/sessions",
+)
 ENV_PI_ROOTS = "PI_ROOTS"
 
 PI_SESSION_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE
 )
 
 
@@ -77,8 +81,17 @@ class PiTranscript:
         self.scan_cap = scan_cap
 
     def _session_file(self, session_id: str) -> Optional[str]:
+        if not session_id:
+            return None
+        expanded = os.path.expanduser(session_id)
+        if os.path.isfile(expanded) and expanded.endswith(".jsonl"):
+            return expanded
+        match = PI_SESSION_RE.search(session_id)
+        if not match:
+            return None
+        uuid_str = match.group(0)
         for root in self.roots:
-            matches = sorted(glob.glob(os.path.join(root, "*", f"*_{session_id}.jsonl")))
+            matches = sorted(glob.glob(os.path.join(root, "*", f"*_{uuid_str}.jsonl")))
             if matches:
                 return matches[0]
         return None
@@ -86,7 +99,7 @@ class PiTranscript:
     def read(
         self, session_id: str, n_turns: int = 10, skip_newest: int = 0
     ) -> List[Turn]:
-        if not session_id or not PI_SESSION_RE.match(session_id):
+        if not session_id:
             return []
         path = self._session_file(session_id)
         if path is None:

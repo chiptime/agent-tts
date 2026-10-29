@@ -1,0 +1,9 @@
+Would you like to run the following command?
+
+  $ ls -la /tmp/muse-sandbox
+  Stage 1/1
+  Current argv: ["ls","-la","/tmp/muse-sandbox"]
+
+› 1. Allow this stage once (y)
+  2. Always allow in this workspace: ls ... (p)
+  3. Abort the entire command (esc)

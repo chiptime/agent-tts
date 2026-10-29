@@ -102,12 +102,18 @@ def test_dialog_keys_are_sendable(key: str):
     assert is_sendable_key(key) is True
 
 
+def test_digits_are_sendable_for_numbered_dialogs():
+    # S2: the dialogs that print numbered options commit on the digit, so
+    # 0-9 joined the closed allowlist — and this orthography carries them
+    # to the multiplexers like any other sendable key.
+    assert [is_sendable_key(str(digit)) for digit in range(10)] == [True] * 10
+
+
 @pytest.mark.parametrize(
     "key",
     [
         "ctrl+c",  # a real chord, but dialogs are navigated, not interrupted
         "shift+tab",
-        "0",
         "f7",
         "alt+x",
         "delete",

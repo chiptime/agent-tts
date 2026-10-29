@@ -474,6 +474,59 @@
       color: var(--text);
     }
     .pane-keys button:disabled { opacity: 0.55; }
+    /* Recognized dialog options, above the pad: one native button per
+     * option (dialogs.js builds the model, app.js paints it with
+     * createElement/textContent only — a label is never markup). The
+     * tap names the option; the server re-reads the pane before any
+     * key leaves (POST /pane/dialog/answer). */
+    .dialog-buttons {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: var(--sp-2);
+    }
+    .dialog-buttons button {
+      display: block;
+      width: 100%;
+      min-height: 44px;
+      padding: 8px 12px;
+      text-align: left;
+      font: inherit;
+      font-size: 13px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--bg);
+      color: var(--text);
+      cursor: pointer;
+    }
+    .dialog-buttons button:disabled { opacity: 0.55; }
+    .dialog-buttons .dlg-opt-desc {
+      display: block;
+      margin-top: 2px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    /* The explicit "cannot read this dialog" card: honest about the
+     * state, and the keypad below stays the way out. */
+    .dialog-unread {
+      margin-top: var(--sp-2);
+      padding: 10px 12px;
+      border: 1px dashed var(--line);
+      border-radius: 10px;
+      background: var(--bg);
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .dialog-unread strong { color: var(--text); font-size: 13px; }
+    /* The outcome line of a tap: what was answered, or why nothing
+     * left (a changed dialog refuses with 409 and says so). */
+    .dialog-status {
+      margin-top: 6px;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--muted);
+    }
     /* The dialog itself, under the pad: the question and its options were
      * already in the screen text, just never shown where the keys are. The
      * last lines of the pane, faithful, scrollable. */
@@ -2108,6 +2161,9 @@
     </form>
     <div id="pane-reply-keys" class="hidden">
       <span id="pane-keys-hint">El agente espera — respóndele con teclas:</span>
+      <div id="dialog-buttons" class="dialog-buttons hidden" role="group" aria-label="Opciones del diálogo"></div>
+      <div id="dialog-unread" class="dialog-unread hidden" aria-live="polite"></div>
+      <div id="dialog-status" class="dialog-status hidden" aria-live="polite"></div>
       <div id="pane-keys" class="pane-keys" role="group" aria-label="Teclas para responder al diálogo">
         <button type="button" data-key="left" aria-label="Izquierda">←</button>
         <button type="button" data-key="right" aria-label="Derecha">→</button>
@@ -2116,6 +2172,16 @@
         <button type="button" data-key="tab" aria-label="Tabulador">Tab</button>
         <button type="button" data-key="esc" aria-label="Escape">Esc</button>
         <button type="button" data-key="enter" aria-label="Intro">Enter</button>
+        <button type="button" data-key="1" aria-label="Uno">1</button>
+        <button type="button" data-key="2" aria-label="Dos">2</button>
+        <button type="button" data-key="3" aria-label="Tres">3</button>
+        <button type="button" data-key="4" aria-label="Cuatro">4</button>
+        <button type="button" data-key="5" aria-label="Cinco">5</button>
+        <button type="button" data-key="6" aria-label="Seis">6</button>
+        <button type="button" data-key="7" aria-label="Siete">7</button>
+        <button type="button" data-key="8" aria-label="Ocho">8</button>
+        <button type="button" data-key="9" aria-label="Nueve">9</button>
+        <button type="button" data-key="0" aria-label="Cero">0</button>
       </div>
       <pre id="pane-keys-dialog" class="pane-keys-dialog hidden" aria-label="Diálogo del agente"></pre>
     </div>
@@ -2298,6 +2364,7 @@
     <script src="/pairing.js"></script>
     <script src="/destructive.js"></script>
     <script src="/history.js"></script>
+    <script src="/dialogs.js"></script>
     <script src="/reader.js"></script>
     <script src="/toast.js"></script>
     <script src="/karaoke.js"></script>

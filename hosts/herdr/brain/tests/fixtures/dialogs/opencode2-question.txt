@@ -1,0 +1,11 @@
+┃
+┃  ¿Desplegamos a producción?
+┃
+┃  1. Sí, con smoke tests
+┃     lanza la batería completa primero
+┃  2. No, espera
+┃     retiene el despliegue
+┃  3. Type your own answer
+┃
+┃  ⇆ tab  ↑↓ select  enter confirm  esc dismiss
+┃

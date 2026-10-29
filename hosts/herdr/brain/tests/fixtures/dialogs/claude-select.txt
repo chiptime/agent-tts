@@ -1,0 +1,8 @@
+│ Which fruit do you want?
+│ Pick the one you like best.
+│
+│ ❯ 1. Manzana
+│   2. Pera
+│   3. Naranja
+│
+  Enter to select · ↑/↓ to navigate · Esc to cancel

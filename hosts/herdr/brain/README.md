@@ -77,6 +77,10 @@ daemons do not source them, so the env file is the single stable contract.
 | `GROK_ROOT` | `~/.grok/sessions` | grok Build chat-history root |
 | `PI_ROOTS` | `~/.pi/agent/sessions:~/.omp/agent/sessions` | pi/omp session roots (colon-separated list; first root holding the session wins) |
 | `HERMES_ROOT` | `~/.hermes` | hermes root (`state.db` plus `profiles/*/state.db`) |
+| `CURSOR_ROOT` | `~/.cursor/projects` | Cursor CLI agent-transcript root (`<root>/<project>/agent-transcripts/<sid>/<sid>.jsonl`) |
+| `KIRO_ROOT` | `~/.kiro/sessions` | Kiro V3 sessions root (`<root>/<bucket>/<sess_id>/messages.jsonl`) |
+| `MUSE_ROOT` | `~/.local/share/muse/sessions` | Muse sessions root (date-partitioned `session.jsonl`) |
+| `OPENCODE2_DB` | `~/.local/share/opencode/opencode.db` | OpenCode 2 transcript store (`session_v2`/`session_message`; same physical db as 1.x) |
 | `HERDR_BRAIN_OPENCODE_URL` | `http://127.0.0.1:4096` | local opencode server; the PWA answers an agent's approval dialog through its permission API |
 | `HERDR_BRAIN_APPROVAL_TOKEN` | *(empty = no auth)* | shared secret for `POST /approval/{id}/action` (ntfy action buttons), as `Authorization: Bearer` or `?token=`. Empty leaves that route as open as the PWA routes |
 | `HERDR_BRAIN_STATE_DIR` | `~/.local/state/herdr-brain` | device-pairing state and the audit log (`pairing-pending.json`, `paired-devices.json`, `audit.log`; dir 0700, files 0600, only SHA-256 hashes of credentials on disk) |
@@ -434,10 +438,74 @@ with `createElement` + `textContent`: a faithful mirror that interprets
 nothing, and that cannot let terminal output inject markup.
 
 `keys` is a **closed set** (`up`, `down`, `left`, `right`, `enter`, `esc`,
-`tab`); anything else, an empty list, or more than 8 keys is a `422` before
-any CLI work. An unknown `pane_id` is a `404` and is never redirected —
-answering the *wrong* agent's permission dialog would be silent and hard to
-undo. Any herdr failure is a `502`.
+`tab`, and the digits `0`–`9` — the dialogs that print numbered options
+commit on the digit); anything else, an empty list, or more than 8 keys is a
+`422` before any CLI work. An unknown `pane_id` is a `404` and is never
+redirected — answering the *wrong* agent's permission dialog would be silent
+and hard to undo. Any herdr failure is a `502`.
+
+### Dialogs by harness: recognized options as buttons
+
+When the viewed pane is blocked, the brain tries to READ its dialog with a
+per-harness recognizer (`src/herdr_brain/dialogs/`). A recognized dialog
+turns each option into a **native button** above the key pad; `/view` carries
+it as the `structured` field (question, options with label and description,
+kind, and a `fingerprint` — never the key recipes, which stay server-side):
+
+```json
+"structured": {
+  "unread": false, "agent": "claude", "kind": "select",
+  "question": "Which fruit do you want?",
+  "options": [{"label": "Manzana", "description": "", "checked": null}],
+  "fingerprint": "…", "recipe": "keys"
+}
+```
+
+A tap posts `POST /pane/dialog/answer {pane_id, fingerprint, option}`. The
+server **re-reads the pane** and re-derives the dialog: a screen whose
+fingerprint moved under the tap is a `409` and nothing is sent. Options whose
+screen prints a number are answered with that digit (plus `enter` where the
+dialog's footer says so); dialogs without digits are answered by the guard's
+pointer walk (one arrow, a re-read, only then the commit). Every attempt is
+audited as `pane.dialog.answer`, and the route is device-gated like every
+other write.
+
+Dialogs the recognizers deliberately do NOT trust — a notes field that owns
+the keyboard, a parked card that swallows digits, pi's multi-select — come
+back as `"unread": true` and the PWA shows the explicit **"No puedo leer
+este diálogo"** card with the manual key pad as the way out. A blocked
+screen no recognizer claimed at all keeps the pre-existing state (the
+legacy preview or the plain blocked/unknown pending notice, always the key
+pad) and `/view` carries no `structured` field for it: the field is
+additive, so every pane without a recognized dialog keeps its exact
+previous shape. Nothing is ever guessed.
+
+Support matrix (recognizers fail closed: anything unrecognized stays on the
+key pad):
+
+| Harness | Recognized dialogs | Recipe |
+|---|---|---|
+| claude | select, permission, trust, wizard steps | digit (+`enter` on select family) |
+| codex | folder trust, exec approval, `request_user_input` | digit alone (notes state → unread) |
+| grok | radio ask, permission card | digit alone (parked → unread) |
+| pi / omp | the Ask box (single select) | pointer walk (multi-select → unread) |
+| opencode (1.x) | question bar, permission pill | digit alone / walk |
+| opencode2 (2.x) | question bar (session_v2 generation) | digit alone |
+| antigravity (agy) | pointed numbered lists | pointer walk (no digit verified) |
+| kiro | approval panel, workspace trust | pointer walk (`Always …` rows never buttons) |
+| muse | approval, single/multi select, trust | digit (jump) + `enter`; trust digit alone |
+| cursor | none (dialogs replace the input box and no recipe is verified) | unread card + key pad |
+
+Rows that PERSIST a rule (codex/grok "don't ask again", kiro "Always
+allow/deny", muse "Always allow") are never buttons: the one-shot and reject
+rows are, so a tap can never change a session's approval rules by accident.
+
+The spoken path gains the same reading: when the generic heuristic cannot
+parse a screen but the pane's harness has a recognizer, the structured
+options shape what the voice reads (labels, descriptions, selection).
+Answering by voice stays under the existing S8/S9 binding — the user's
+explicit words, the dialog's known selection, arrow-walked within the key
+budget, with every refusal pressing nothing.
 
 ### Answering an opencode approval dialog
 
@@ -771,6 +839,21 @@ and reads whole turns:
   holds the session wins).
 - **Hermes** (agent `hermes`): per-profile SQLite `state.db` under
   `~/.hermes` (root db first, then every `profiles/*/state.db`).
+- **Cursor CLI** (agent `cursor`): agent transcripts under
+  `~/.cursor/projects/<project>/agent-transcripts/<sid>/<sid>.jsonl`
+  (`CURSOR_ROOT` overrides; the row shape is pinned by the synthesized
+  fixture pending a live capture — absent root degrades to screen).
+- **Kiro V3** (agent `kiro`): `messages.jsonl` under
+  `~/.kiro/sessions/<bucket>/<sess_id>/` (`KIRO_ROOT` overrides);
+  `user` and `assistant` Say/Summary rows render, synthetic steering
+  hand-offs and tool rows do not.
+- **Muse** (agent `muse`): `session.jsonl` under
+  `~/.local/share/muse/sessions/YYYY/MM/DD/<uuid>/` (`MUSE_ROOT`
+  overrides); accepted user intents and committed assistant messages
+  render, command and stream rows do not.
+- **OpenCode 2** (agent `opencode2`): the `session_v2` store in
+  `opencode.db` (`session_message` rows, role in `type`, text inline in
+  `data`; `OPENCODE2_DB` overrides).
 
 Anything else: connector returns nothing → screen fallback.
 

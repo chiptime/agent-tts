@@ -43,12 +43,17 @@ _PROMPT_OUTCOME_CODES = {
 }
 
 #: The ONLY keys the brain will forward to an agent. A permission dialog is
-#: answered by navigating (arrows/tab) and confirming (enter) or dismissing
-#: (esc) — never by free text, and never by guessing which option a key
-#: selects. herdr validates keys server-side too; this list is the brain's
-#: own guard so nothing outside it can ever reach the CLI. Verified against
-#: herdr 0.9.1 (``esc`` is the canonical Escape name).
-SEND_KEY_ALLOWLIST = ("up", "down", "left", "right", "enter", "esc", "tab")
+#: answered by navigating (arrows/tab), confirming (enter), dismissing
+#: (esc) or picking a NUMBERED option directly (digits 0-9: the dialogs
+#: that print numbers commit on them — everything else is still refused,
+#: and free text never reaches a pane). herdr validates keys server-side
+#: too; this list is the brain's own guard so nothing outside it can
+#: ever reach the CLI. Verified against herdr 0.9.1 (``esc`` is the
+#: canonical Escape name).
+SEND_KEY_ALLOWLIST = (
+    "up", "down", "left", "right", "enter", "esc", "tab",
+    "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+)
 
 #: A dialog is answered by a short, deliberate sequence. Anything longer is a
 #: caller bug, not a keystroke.
@@ -58,8 +63,10 @@ MAX_SEND_KEYS = 8
 # 0.9.1: these names are accepted, while `arrowleft`, `leftarrow` and
 # `ArrowLeft` come back as `invalid_key` with nothing written. The set is
 # closed on purpose — a name that is not here never reaches a live terminal,
-# and `sendKeys` argv is one door into a running TUI.
-DIALOG_KEYS = frozenset({"enter", "esc", "left", "right", "up", "down"})
+# and `sendKeys` argv is one door into a running TUI. Digits 0-9 join the
+# dialect for the dialogs that print numbered options (a digit is ONE key,
+# never a multi-digit number: the tenth option stays out of reach).
+DIALOG_KEYS = frozenset({"enter", "esc", "left", "right", "up", "down", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"})
 
 
 def is_valid_key(key: str) -> bool:
@@ -402,37 +409,6 @@ class HerdrClient:
         status = _prompt_status_from_output(output, default="done")
         ok = status == "done"
         return {"ok": ok, "status": status, "output": output}
-
-    def send_keys(self, pane_id: str, keys: List[str]) -> dict:
-        """Sends logical key presses to an agent (the DIALOG surface).
-
-        ``herdr agent prompt`` refuses an agent already waiting at an
-        approval or question dialog (``agent_blocked``, before any input is
-        written), so that dialog is answered with keys — the surface
-        ``herdr --skill`` documents as ``agent send-keys <target> <keys...>``,
-        with herdr validating every key before writing any bytes.
-
-        Each key MUST come from :data:`SEND_KEY_ALLOWLIST`; a key outside it
-        is refused BEFORE the CLI runs. Returns ``{ok, error}`` and never
-        raises on a CLI failure.
-        """
-        unsupported = sorted({key for key in keys if key not in SEND_KEY_ALLOWLIST})
-        if unsupported:
-            raise HerdrError(
-                f"unsupported key(s): {', '.join(unsupported)} "
-                f"(allowed: {', '.join(SEND_KEY_ALLOWLIST)})"
-            )
-        if not keys:
-            raise HerdrError("refusing to send an empty key sequence")
-        if len(keys) > MAX_SEND_KEYS:
-            raise HerdrError(
-                f"too many keys: {len(keys)} (max {MAX_SEND_KEYS})"
-            )
-        try:
-            self._run_cli(["agent", "send-keys", pane_id, *keys], timeout_s=15)
-        except HerdrError as exc:
-            return {"ok": False, "error": str(exc)}
-        return {"ok": True, "error": ""}
 
 
 def _cli_error_code(stderr: str, stdout: str = "") -> str:

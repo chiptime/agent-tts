@@ -17,8 +17,12 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Protocol
 
 from .codex import CodexTranscript
+from .cursor import CursorTranscript
 from .grok import GrokTranscript
 from .hermes import HermesTranscript
+from .kiro import KiroTranscript
+from .muse import MuseTranscript
+from .opencode2 import Opencode2Transcript
 from .pi import PiTranscript
 
 
@@ -82,8 +86,12 @@ def default_registry() -> TranscriptRegistry:
         AntigravityTranscript.name: AntigravityTranscript(),
         ClaudeTranscript.name: ClaudeTranscript(),
         CodexTranscript.name: CodexTranscript(),
+        CursorTranscript.name: CursorTranscript(),
         GrokTranscript.name: GrokTranscript(),
         HermesTranscript.name: HermesTranscript(),
+        KiroTranscript.name: KiroTranscript(),
+        MuseTranscript.name: MuseTranscript(),
+        Opencode2Transcript.name: Opencode2Transcript(),
         OpencodeTranscript.name: OpencodeTranscript(),
         PiTranscript.name: PiTranscript(),
     }

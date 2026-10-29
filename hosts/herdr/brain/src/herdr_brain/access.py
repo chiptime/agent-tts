@@ -211,6 +211,7 @@ def device_auth(headers: Mapping[str, str], cfg: AccessConfig) -> dict:
 _WRITE_RULES = (
     ("POST", re.compile(r"^/pane/reply$")),
     ("POST", re.compile(r"^/pane/keys$")),
+    ("POST", re.compile(r"^/pane/dialog/answer$")),
     ("POST", re.compile(r"^/pane/permission/reply$")),
     ("POST", re.compile(r"^/approval/[^/]+/(approve|reject|resolve)$")),
     ("PATCH", re.compile(r"^/approval/[^/]+$")),

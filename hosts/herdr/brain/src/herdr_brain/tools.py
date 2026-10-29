@@ -35,6 +35,7 @@ from .approval_lexicon import (
 )
 from .herdr import (
     MAX_SEND_KEYS,
+    SEND_KEY_ALLOWLIST,
     AgentInfo,
     HerdrClient,
     HerdrError,
@@ -49,6 +50,7 @@ from .history_view import (
 from .memory import clip_content
 from .mirror import clamp_lines, mirror_payload
 from .secrets_mask import mask_runs, mask_text
+from .dialogs import recognize as recognize_dialog
 from .transcripts import (
     Turn,
     connector_for,
@@ -518,6 +520,7 @@ class BrainTools:
         # rendered and decides nothing about what a key would do.
         screen_runs: Optional[list] = None
         dialog = None
+        structured = None
         if target is not None and (target.status or "").strip().lower() == "blocked":
             raw_runs, wide_text = self._dialog_runs(target)
             screen_runs = mask_runs(raw_runs) if raw_runs else raw_runs
@@ -533,8 +536,9 @@ class BrainTools:
                 # Same selection discipline as the voice path: marker
                 # first, else the single ANSI-backgrounded option line.
                 dialog["selected"] = selection_from_runs(screen_runs, dialog)
+            structured = self._structured_payload(target, wide_text)
 
-        return {
+        payload = {
             "status": status_payload(target),
             "transcript": transcript,
             "screen": safe_screen,
@@ -546,6 +550,40 @@ class BrainTools:
                 "excerpt": mask_text(pending.excerpt) if pending.excerpt else None,
             },
         }
+        if structured is not None:
+            # The field is ADDITIVE: panes without a recognizer's claim
+            # (working panes, screens only the generic heuristic reads,
+            # blocked screens nobody recognized) keep the exact pre-S2
+            # /view shape.
+            payload["structured"] = structured
+        return payload
+
+    def _structured_payload(
+        self, target: AgentInfo, wide_text: Optional[str]
+    ) -> Optional[dict]:
+        """The structured dialog of a BLOCKED pane, masked for /view.
+
+        ``None`` unless a per-harness recognizer CLAIMED the screen: a
+        claim becomes the button model (or, for a dialog the recognizer
+        positively refuses to make tappable — a notes field that owns
+        the keyboard, a parked card — the explicit ``unread`` state the
+        PWA pairs with the manual keypad). No claim at all means the
+        pre-S2 contract stands: the generic heuristic's legacy preview,
+        or the plain blocked/unknown pending state, plus the keypad.
+        """
+        if target is None or not wide_text:
+            return None
+        model = recognize_dialog(target.agent, wide_text)
+        if model is None:
+            return None
+        payload = model.payload()
+        for option in payload.get("options") or []:
+            option["label"] = mask_text(option.get("label") or "")
+            option["description"] = mask_text(option.get("description") or "")
+        for field in ("question", "hint", "detail"):
+            if payload.get(field):
+                payload[field] = mask_text(payload[field])
+        return payload
 
     # -- spoken terminal dialogs (S8/S9) ------------------------------------
 
@@ -573,15 +611,173 @@ class BrainTools:
         when present, else from the single ANSI-backgrounded option line
         (``selection_from_runs``); zero or ambiguous styling leaves the
         selection UNKNOWN and the voice path must then refuse.
+
+        When the generic heuristic cannot read the screen but the pane's
+        harness HAS a structured recognizer (S2), the structured model
+        shapes the same legacy dict — so the SPOKEN path reads the
+        harness's real options (labels, descriptions, selection) for
+        harnesses the heuristic never understood, while the answer
+        choreography and its binding stay exactly as they were.
         """
         if target is None or (target.status or "").strip().lower() != "blocked":
             return None
         runs, wide_text = self._dialog_runs(target)
         dialog = parse_dialog(wide_text or fallback_text or None)
         if dialog is None:
-            return None
+            model = recognize_dialog(target.agent, wide_text or "")
+            if model is None or model.unread:
+                return None
+            selected = (
+                model.selected + 1
+                if model.selected is not None and 0 <= model.selected < len(model.options)
+                else None
+            )
+            return {
+                "question": model.question,
+                "options": [
+                    {
+                        "n": position + 1,
+                        "title": option.label,
+                        "description": option.description,
+                        "selected": position == model.selected,
+                    }
+                    for position, option in enumerate(model.options)
+                ],
+                "hint": model.hint,
+                "layout": "list",
+                "selected": selected,
+            }
         dialog["selected"] = selection_from_runs(runs, dialog)
         return dialog
+
+    def answer_structured_dialog(
+        self, pane_id: str, fingerprint: str, option: int
+    ) -> dict:
+        """Answers a RECOGNIZED dialog option a button was tapped for (S2).
+
+        One tap, all the discipline of a keystroke into a live terminal:
+
+        - the pane is resolved EXACTLY (an unknown pane is never
+          redirected — answering the WRONG agent's permission dialog
+          would be silent and hard to undo);
+        - the pane is RE-READ and the structured dialog re-derived: a
+          screen whose fingerprint moved under the tap refuses with
+          ``changed`` and no key leaves;
+        - a KEYS recipe (the numbering the screen printed) is sent as
+          one guarded sequence through the closed allowlist; a WALK
+          recipe is walked by the guard — one arrow, a re-read, only
+          then the commit;
+        - a multiplexer that cannot send logical keys refuses with the
+          adapter's own explanation (graceful, never a crash).
+
+        The outcome is ``answered`` or ``refused`` with a reason, so
+        the PWA can say exactly what happened.
+        """
+        from . import dialog as dialog_guard
+
+        def refused(reason: str, detail: str = "") -> dict:
+            return {
+                "outcome": "refused",
+                "reason": reason,
+                "detail": detail,
+                "pane_id": pane_id,
+                "option": option,
+            }
+
+        try:
+            agents = self._herdr.list_agents()
+        except HerdrError as exc:
+            return refused("error", f"cannot list panes: {exc}")
+        target = next((agent for agent in agents if agent.pane_id == pane_id), None)
+        if target is None:
+            return refused("unknown_pane", "pane not found")
+
+        reader = self._dialog_reader(pane_id)
+
+        def detect(text: Optional[str]):
+            model = recognize_dialog(target.agent, text or "")
+            if model is None or model.unread:
+                return None
+            return model.as_guard_model()
+
+        try:
+            fresh_text = reader(pane_id, DIALOG_SCREEN_LINES)
+        except HerdrError as exc:
+            return refused("error", f"cannot read the pane: {exc}")
+        model = recognize_dialog(target.agent, fresh_text or "")
+        if model is None or model.unread:
+            return refused("changed", "the dialog is no longer readable")
+        if model.fingerprint != fingerprint:
+            return refused(
+                "changed", "the dialog changed before the answer; nothing was sent"
+            )
+        if not 0 <= option < len(model.options):
+            return refused("invalid_target", "that option is not on this dialog")
+
+        def sender(target_pane: str, keys: list) -> None:
+            result = self.send_keys_to_pane(target_pane, keys)
+            if result["outcome"] != "sent":
+                raise HerdrError(
+                    result.get("detail") or result["outcome"] or "send-keys failed"
+                )
+
+        chosen = model.options[option]
+        if chosen.keys:
+            guard = dialog_guard.entry_guard(
+                reader, pane_id, DIALOG_SCREEN_LINES, model.as_guard_model(), detect
+            )
+            if not guard.ok:
+                return refused(guard.reason or "changed", guard.detail)
+            keys = list(chosen.keys)
+            if len(keys) > MAX_SEND_KEYS or not all(
+                key in SEND_KEY_ALLOWLIST for key in keys
+            ):
+                return refused("invalid_target", "the recipe left the key dialect")
+            try:
+                sender(pane_id, keys)
+            except HerdrError as exc:
+                return refused("send-failed", str(exc))
+            return {
+                "outcome": "answered",
+                "pane_id": pane_id,
+                "option": option,
+                "keys": keys,
+                "label": chosen.label,
+            }
+
+        try:
+            outcome = dialog_guard.answer_dialog(
+                reader,
+                sender,
+                pane_id,
+                DIALOG_SCREEN_LINES,
+                model.as_guard_model(),
+                option,
+                detect,
+                sleep=self._sleeper,
+            )
+        except HerdrError as exc:
+            # The walk's own sender refused (a multiplexer without
+            # logical keys says so in the message): explainable, never
+            # a crash.
+            return refused("send-failed", str(exc))
+        if outcome.sent:
+            return {
+                "outcome": "answered",
+                "pane_id": pane_id,
+                "option": option,
+                "keys": list(model.commit_keys),
+                "label": chosen.label,
+            }
+        return refused(outcome.reason or "changed", outcome.detail)
+
+    def _dialog_reader(self, pane_id: str):
+        """The guard's reader: a styled read of one pane's tail."""
+
+        def reader(target_pane: str, lines: int) -> str:
+            return self._herdr.read_screen(target_pane, lines, as_ansi=True)
+
+        return reader
 
     def begin_turn(self) -> int:
         """Advances the ask-turn counter and returns the new turn id.

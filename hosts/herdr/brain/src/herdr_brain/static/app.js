@@ -59,6 +59,9 @@
   var keysPad = $("pane-keys");
   var keysHint = $("pane-keys-hint");
   var keysDialog = $("pane-keys-dialog");
+  var dialogButtonsBox = $("dialog-buttons");
+  var dialogUnreadCard = $("dialog-unread");
+  var dialogStatusLabel = $("dialog-status");
   var replyForm = $("pane-reply");
   var replyInput = $("pane-reply-input");
   var replySend = $("pane-reply-send");
@@ -2075,6 +2078,16 @@
   function paintDialogPreview(view) {
     if (!keysDialog) return;
     var dialog = (view && view.dialog) || null;
+    var buttonsPainted = paintStructuredDialog((view && view.structured) || null);
+    if (buttonsPainted) {
+      /* The buttons ARE the dialog: the raw preview below would only
+       * duplicate what each button already says. */
+      keysDialog.classList.add("hidden");
+      keysDialog.textContent = "";
+      return;
+    }
+    /* An UNREAD dialog keeps the raw preview: it is exactly what the
+     * user needs to drive the manual keypad. */
     if (dialog && dialog.options && dialog.options.length) {
       paintDialogHtml(dialog);
       keysDialog.classList.remove("hidden");
@@ -2096,6 +2109,140 @@
     }
     keysDialog.textContent = "";
     keysDialog.classList.add("hidden");
+  }
+
+  /* ---------------- recognized dialogs: buttons above the pad --------------
+   * When the server RECOGNIZES the blocked pane's dialog (dialogs.js
+   * builds the model from /view's `structured` field), each option is
+   * one native button. The tap names the option; the server re-reads
+   * the pane and refuses (409) if the screen moved under the tap, so
+   * no key ever leaves on the strength of a stale render. A dialog the
+   * server could NOT read paints the explicit card instead — the
+   * manual keypad below is always the way out. All painting is
+   * createElement + textContent: a label is never markup. */
+  var dialogBusy = false;
+  var lastStructured = null;
+  var lastDialogIdentity = null;
+
+  function setDialogButtonsBusy(busy) {
+    if (!dialogButtonsBox) return;
+    var buttons = dialogButtonsBox.querySelectorAll("button");
+    for (var i = 0; i < buttons.length; i++) buttons[i].disabled = busy;
+  }
+
+  function setDialogStatus(text) {
+    if (!dialogStatusLabel) return;
+    if (text) {
+      if (dialogStatusLabel.textContent !== text) dialogStatusLabel.textContent = text;
+      dialogStatusLabel.classList.remove("hidden");
+    } else {
+      dialogStatusLabel.textContent = "";
+      dialogStatusLabel.classList.add("hidden");
+    }
+  }
+
+  function paintStructuredDialog(structured) {
+    if (!dialogButtonsBox || !window.Dialogs) return false;
+    lastStructured = structured;
+    var buttons = window.Dialogs.buttonsFor(structured);
+    if (buttons && structured && structured.fingerprint) {
+      var paneId = replyKeys.getAttribute("data-pane") || "";
+      var identity = paneId + "|" + structured.fingerprint;
+      if (identity !== lastDialogIdentity) {
+        /* A NEW dialog clears the old outcome line: it belongs to the
+         * render it answered, not to this one. */
+        lastDialogIdentity = identity;
+        setDialogStatus("");
+        dialogButtonsBox.textContent = "";
+        buttons.forEach(function (option) {
+          var button = document.createElement("button");
+          button.type = "button";
+          button.setAttribute("data-index", String(option.index));
+          var label = document.createElement("span");
+          label.textContent = option.label;
+          button.appendChild(label);
+          if (option.description) {
+            var description = document.createElement("span");
+            description.className = "dlg-opt-desc";
+            description.textContent = option.description;
+            button.appendChild(description);
+          }
+          dialogButtonsBox.appendChild(button);
+        });
+      }
+      dialogButtonsBox.classList.remove("hidden");
+      if (dialogUnreadCard) dialogUnreadCard.classList.add("hidden");
+      return true;
+    }
+    dialogButtonsBox.classList.add("hidden");
+    if (structured && structured.unread && dialogUnreadCard) {
+      var card = window.Dialogs.unreadCard(structured.agent);
+      if (dialogUnreadCard.getAttribute("data-agent") !== String(structured.agent)) {
+        dialogUnreadCard.setAttribute("data-agent", String(structured.agent));
+        dialogUnreadCard.textContent = "";
+        var title = document.createElement("strong");
+        title.textContent = card.title;
+        dialogUnreadCard.appendChild(title);
+        dialogUnreadCard.appendChild(document.createTextNode(" " + card.body));
+      }
+      dialogUnreadCard.classList.remove("hidden");
+    } else if (dialogUnreadCard) {
+      dialogUnreadCard.classList.add("hidden");
+    }
+    return false;
+  }
+
+  function answerDialogButton(button) {
+    var index = parseInt(button.getAttribute("data-index"), 10);
+    var paneId = replyKeys.getAttribute("data-pane");
+    if (!lastStructured || !window.Dialogs || isNaN(index) || !paneId || dialogBusy) return;
+    dialogBusy = true;
+    setDialogButtonsBusy(true);
+    setDialogStatus("Enviando la respuesta…");
+    var labels = (lastStructured.options || []).map(function (option) {
+      return option.label;
+    });
+    var payload = window.Dialogs.answerPayload(
+      paneId, lastStructured.fingerprint, index);
+    fetch("/pane/dialog/answer", withDeviceAuth({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    }))
+      .then(function (resp) {
+        if (!resp.ok) maybeOfferPairing(resp);
+        return resp.json().catch(function () { return null; }).then(function (body) {
+          return { ok: resp.ok, status: resp.status, body: body };
+        });
+      })
+      .then(function (result) {
+        if (result.ok) {
+          var answered = result.body && result.body.option != null
+            ? result.body.option : index;
+          setDialogStatus(window.Dialogs.statusFor({ ok: true, option: answered }, labels));
+          /* The dialog usually closes or advances here: refresh now
+           * instead of waiting a whole poll beat. */
+          refreshState();
+          return null;
+        }
+        setDialogStatus(window.Dialogs.statusFor({ status: result.status }, labels));
+        return null;
+      })
+      .catch(function () {
+        setDialogStatus(window.Dialogs.statusFor(null, labels));
+      })
+      .then(function () {
+        dialogBusy = false;
+        setDialogButtonsBusy(false);
+      });
+  }
+
+  if (dialogButtonsBox) {
+    dialogButtonsBox.addEventListener("click", function (event) {
+      var node = event.target;
+      var button = node && node.closest ? node.closest("button[data-index]") : null;
+      if (button) answerDialogButton(button);
+    });
   }
 
   function renderScreen(view) {

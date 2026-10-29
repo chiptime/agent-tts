@@ -1,0 +1,8 @@
+{"id": "row-1", "timestamp": "2026-10-28T09:00:00Z", "payload": {"type": "session_start", "cwd": "/tmp/kiro-demo"}}
+{"id": "row-2", "timestamp": "2026-10-28T09:00:02Z", "payload": {"type": "user", "content": "Explain the approval panel fixture to me."}}
+{"id": "row-3", "timestamp": "2026-10-28T09:00:10Z", "payload": {"type": "assistant", "operationType": "Say", "content": "The panel lists Allow, Always allow, Deny and Always deny, with a pointer walk and Enter."}}
+{"id": "row-4", "timestamp": "2026-10-28T09:00:12Z", "payload": {"type": "tool_call", "toolCallId": "tooluse_1", "toolName": "shell", "args": {"command": "printf hi"}, "status": "approved"}}
+{"id": "row-5", "timestamp": "2026-10-28T09:00:13Z", "payload": {"type": "tool_result", "toolCallId": "tooluse_1", "content": "hi", "success": true}}
+{"id": "row-6", "timestamp": "2026-10-28T09:00:20Z", "payload": {"type": "user", "content": "handed off mid turn", "_meta": {"kiro": {"syntheticUserMessageReason": "steering"}}}}
+{"id": "row-7", "timestamp": "2026-10-28T09:00:30Z", "payload": {"type": "assistant", "operationType": "Say", "content": "Anything else on the panel?"}}
+{"id": "row-8", "timestamp": "2026-10-28T09:00:40Z", "payload": {"type": "assistant", "operationType": "Summary", "content": "Session compacted: the panel was explained and one command approved."}}

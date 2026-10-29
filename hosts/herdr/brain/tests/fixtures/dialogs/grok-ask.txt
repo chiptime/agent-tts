@@ -1,0 +1,6 @@
+┃  Which color theme should the dashboard use?
+┃  1 (○) Red    Warm red palette
+┃  2 (○) Green  Calm green palette
+┃  3 (○) Blue   Cool blue palette
+┃  z (○) Type your answer here
+Tab:next answer  │  Esc:scrollback  │  Shift+x:dismiss

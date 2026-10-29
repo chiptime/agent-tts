@@ -1,0 +1,11 @@
+◈ Request user input Toppings — running (23s)
+
+  Which pizza toppings do you want?
+
+  › 1. [ ] Cheese (Recommended)
+    2. [x] Pepperoni
+    3. [ ] Mushrooms
+    4. [ ] None of the above
+    5. Submit answer (1 checked)
+
+  Enter to toggle · Submit row to continue · ↑/↓ to move · Esc to interrupt

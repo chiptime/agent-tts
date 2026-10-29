@@ -113,7 +113,10 @@ def test_a_blocked_pane_offers_the_key_pad_with_the_whole_allowlist(karaoke_app)
 
     assert page.evaluate(
         "() => [...document.querySelectorAll('#pane-keys button')].map(b => b.dataset.key)"
-    ) == ["left", "right", "up", "down", "tab", "esc", "enter"]
+    ) == [
+        "left", "right", "up", "down", "tab", "esc", "enter",
+        "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
+    ]
 
 
 def test_tapping_a_key_posts_that_exact_key_to_the_viewed_pane(karaoke_app):

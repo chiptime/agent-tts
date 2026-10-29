@@ -46,7 +46,10 @@ class TestRegistryResolution:
     """Doc 05 AC2: exact-name resolution, declared aliases, no-connector."""
 
     def test_every_supported_harness_resolves_by_exact_name(self, registry_env):
-        expected = {"antigravity", "claude", "codex", "grok", "hermes", "opencode", "pi"}
+        expected = {
+            "antigravity", "claude", "codex", "cursor", "grok", "hermes",
+            "kiro", "muse", "opencode", "opencode2", "pi",
+        }
         assert set(registry_env.harnesses()) == expected
         for name in expected:
             assert registry_env.resolve(name) is not None, name
@@ -113,6 +116,19 @@ class TestFixtureStores:
         assert [t.role for t in turns] == ["user", "assistant", "user", "assistant"]
         assert turns[0].text == "abre el panel de metricas"
         assert turns[1].text == "Panel abierto en el puerto 4096."
+
+    def test_pi_reads_from_direct_session_path(self, registry_env):
+        file_path = str(
+            FIXTURES
+            / "pi"
+            / "agent"
+            / "sessions"
+            / "--home-bruno-Code-hungry--"
+            / "2026-01-02T10-00-00_cccccccc-1111-2222-3333-444444444444.jsonl"
+        )
+        turns = registry_env.resolve("pi").read(file_path, 10)
+        assert [t.role for t in turns] == ["user", "assistant", "user", "assistant"]
+        assert turns[0].text == "abre el panel de metricas"
 
     def test_omp_reads_pis_format_from_its_own_root(self, monkeypatch):
         monkeypatch.setenv(

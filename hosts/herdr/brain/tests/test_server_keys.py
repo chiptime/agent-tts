@@ -76,3 +76,23 @@ def test_an_unknown_key_names_the_allowed_set(client):
     detail = str(resp.json()["detail"])
     assert "ctrl+c" in detail
     assert "enter" in detail
+
+
+@pytest.mark.parametrize(
+    "keys",
+    [
+        ["3"],
+        ["0"],
+        ["2", "enter"],
+        ["down", "down", "enter"],
+    ],
+)
+def test_digit_sequences_are_valid_dialog_answers(client, keys):
+    """S2: the dialogs that print numbered options commit on the digit,
+    so digits 0-9 joined the closed allowlist — letters and free text
+    still never reach a pane."""
+    resp = client.post("/pane/keys", json={"pane_id": "w1:p2", "keys": keys})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "pane_id": "w1:p2"}
+    assert FakeTools.sent == [("w1:p2", keys)]
