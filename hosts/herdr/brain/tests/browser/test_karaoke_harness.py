@@ -32,7 +32,7 @@ EXPECTED_DIGESTS = {
     # push/notificationclick handlers).
     "/": "71fe7fca7fbc4c48818c45c5e63dcd3ef6afa8a9201e12b79b03aad94fa417aa",
     "/app.js": "880d8829048f942e8a37cf35415e51fa1b2ff146133b44f886fdf53d32433e40",
-    "/push.js": "92d48b517ad298a87cf668560867bbe2101e458b5c76fc0d950983e1add0db91",
+    "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "ca7b22c52c8160a3ac577f694eb65ec0798b77cd6ac179a5c567dffdc1fb2ba9",
     "/dialogs.js": "0e5b6afde7ef662591f66fc69891e3b1ec343fafe0d2c5be8fbef0c5a124a4c0",
     "/herd-group.js": "e923e48334e72e303ee3399edfd4d69f5c1bb4d49ef906f9eb9d5c8932c7426c",
@@ -52,8 +52,8 @@ EXPECTED_DIGESTS = {
     # update notice, operator dock, offline-shell sw.js.
     "/dock.js": "4a5dc20d575c3c9e5f098116fc9314f24297b2934cb3142bc885b6e1d0155adb",
     "/i18n.js": "8bcd2ceb9f56109afaa0ec158e1a6f002799c4a983261b9d58cd38723c06719f",
-    "/i18n/en.js": "fefa8f369fd0b4f2c752f152a246cc6cd5397bea25a6966ba1643fcc14ea9d12",
-    "/i18n/es.js": "0440820378f02fb928a8a1a3ec021e54dec54124e5152e4ec3d6d7691c872896",
+    "/i18n/en.js": "baffeac479eb0fc18b2c196b0a8582dba613996755ac2237bba66db2a5054e05",
+    "/i18n/es.js": "0db0b67407f1f979b234ea7965f7bdb2f98e9fffff4779f75ed4d3ab97eca563",
     "/settings.js": "066cda900dd70cf6369587617d37b2c95bfa4d81d6d6ff6908372397f428babf",
     "/updates.js": "7f87250cf6cd9c2b8944da632fe036d0c18a87a90f48f70b84e18bcd338cfa84",
 }

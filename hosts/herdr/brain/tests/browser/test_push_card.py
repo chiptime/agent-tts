@@ -99,7 +99,7 @@ def test_card_without_server_keys_shows_the_operator_hint(karaoke_app):
     )
     page.locator("#settings-btn").click()
     expect(page.locator("#push-box .push-status")).to_contain_text(
-        "Sin claves en el servidor"
+        "no pudo crear sus claves de push"
     )
     assert page.locator("#push-box .push-enable").count() == 0
 

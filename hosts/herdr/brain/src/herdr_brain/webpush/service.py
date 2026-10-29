@@ -1,8 +1,9 @@
 """The facade the rest of the brain talks to (S5).
 
 ``WebPushService`` composes the whole package: key resolution (env →
-``vapid.json``, soft-off when neither), the subscription store with its
-audit trail, the coalescing coordinator, encrypted fan-out with store
+``vapid.json`` → generate once, soft-off if creation is unavailable), the
+subscription store with its audit trail, the coalescing coordinator,
+encrypted fan-out with store
 accounting (prune on 404/410, witnessed eviction), and the prompt-cache
 warning tick. Everything injectable — transport, clock, environ — so
 tests and the CLI verbs drive it without a network.
@@ -24,7 +25,7 @@ from .cachewarn import CacheWarnEngine
 from .coordinator import CACHE_TAG, TEST_TAG, NotificationCoordinator
 from .sender import PushSender
 from .store import SubscriptionStore, push_service_origin
-from .vapid import VapidKeys, load_keys
+from .vapid import VapidKeys, load_or_create_keys
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +51,15 @@ class WebPushService:
         self._clock = clock or time.time
         self._audit = audit_log
         environ = os.environ if _environ is None else _environ
-        self._keys: Optional[VapidKeys] = load_keys(Path(state_dir), environ=environ)
+        try:
+            self._keys: Optional[VapidKeys] = load_or_create_keys(
+                Path(state_dir), environ=environ
+            )
+        except OSError as exc:
+            # A state dir we cannot write must not take the brain down:
+            # push stays off (routes still answer) and the reason is logged.
+            logger.error("web push disabled: cannot create VAPID keys: %s", exc)
+            self._keys = None
         self._store = SubscriptionStore(Path(state_dir), clock=self._clock)
         self._sender = (
             PushSender(self._keys, transport=transport, clock=self._clock)

@@ -121,11 +121,14 @@ class TestKey:
         assert body["enabled"] is True
         assert body["public_key"] == push.public_key()
 
-    def test_key_reports_soft_off_without_keys(self, state_dir):
+    def test_key_is_available_without_any_operator_setup(self, state_dir):
         client = make_client(state_dir)
         resp = client.get("/push/key")
         assert resp.status_code == 200
-        assert resp.json() == {"enabled": False, "public_key": None}
+        body = resp.json()
+        assert body["enabled"] is True
+        assert isinstance(body["public_key"], str) and body["public_key"]
+        assert (state_dir / "vapid.json").exists()
 
 
 class TestSubscribe:

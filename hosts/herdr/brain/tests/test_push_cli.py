@@ -195,10 +195,11 @@ class TestTest:
         assert transport.requests[0]["url"] == "https://push.example.invalid/one"
         assert "1" in out  # the sent count is printed
 
-    def test_test_without_keys_says_push_is_off(self, tmp_path):
+    def test_test_on_a_fresh_install_creates_keys_and_reports_no_devices(self, tmp_path):
         state = tmp_path / "state"
         transport = FakeTransport()
         code, out, err = run(["test"], state, transport=transport)
         assert code == 1
         assert transport.requests == []
-        assert "VAPID" in err or "apagado" in err
+        assert (state / "vapid.json").exists()
+        assert "suscripciones" in err

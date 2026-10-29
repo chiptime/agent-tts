@@ -9,10 +9,14 @@ The operator's half of the push channel. Every storage, crypto and
 delivery decision lives in :mod:`herdr_brain.webpush`; this module is
 the terminal, the state dir, and the words an operator reads.
 
-``import`` exists for the operator who already holds a VAPID pair from
-an older panel: the dotenv reader matches ``*_VAPID_*`` keys by suffix
-(the other product keeps its own prefix — brain never writes it down)
-and prints ONLY the public key, because the private half must never
+The brain creates its own VAPID pair on first start, so no verb is
+needed to enable push. ``import`` is optional: it replaces that pair with
+one the operator already holds (restart the service afterwards). Browsers
+still enable notifications explicitly; Activar registers the subscription
+with this server and replaces one bound to a different application-server
+key. The dotenv reader matches ``*_VAPID_*`` keys by
+suffix (the other product keeps its own prefix — brain never writes it
+down) and prints ONLY the public key, because the private half must never
 land in a terminal transcript. ``test`` sends one round-trip
 notification per subscribed device — run it from the phone's Ajustes
 card or from here; both drive the same service.
@@ -42,8 +46,8 @@ USAGE = """usage: herdr-brain push <verb> [args]
   list                   list subscribed push endpoints (oldest first)
   test                   send one test notification per subscribed device
 
-Keys live in <state-dir>/vapid.json (0600). Without them the server
-runs soft-off: no route breaks, nothing sends."""
+Keys live in <state-dir>/vapid.json (0600) and are created on first
+start; import replaces them (restart the service afterwards)."""
 
 _VERBS = ("import", "list", "test")
 
@@ -134,8 +138,8 @@ def _cmd_list(service: WebPushService, out: IO, err: IO) -> int:
 def _cmd_test(service: WebPushService, out: IO, err: IO) -> int:
     if not service.enabled:
         _print(
-            "ERROR: web push está apagado — no hay claves VAPID. "
-            "Importa un par con `herdr-brain push import <dotenv>` o genera uno nuevo.",
+            "ERROR: web push está apagado — no se pudieron crear las claves VAPID "
+            "(¿se puede escribir en el directorio de estado?).",
             err,
         )
         return EXIT_FAIL

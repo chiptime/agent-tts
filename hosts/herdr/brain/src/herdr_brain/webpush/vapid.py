@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -113,8 +114,9 @@ def load_keys(
 ) -> Optional[VapidKeys]:
     """Env first, then the key file; ``None`` when nothing is configured.
 
-    A missing configuration is the soft-off state (the server runs
-    without push); a PRESENT but broken one is loud, never guessed.
+    This read-only helper does not generate keys. The service uses
+    ``load_or_create_keys`` for first-start initialization; a PRESENT but
+    broken configuration is always loud, never guessed.
     """
     env = os.environ if environ is None else environ
     env_public = env.get(ENV_PUBLIC, "").strip()
@@ -144,6 +146,66 @@ def load_keys(
     except KeyError as exc:
         raise VapidError(f"{path} is missing field {exc}") from exc
     return _validate(public, private, subject)
+
+
+def _create_key_file(path: Path, keys: VapidKeys) -> bool:
+    """Writes a brand-new ``vapid.json`` at 0600 without ever replacing one.
+
+    The key is written to a private temp file and hard-linked into place:
+    ``os.link`` fails if the target exists, so two processes starting at the
+    same time cannot each keep a different pair. Returns False when another
+    process won the race (the caller then loads that file).
+    """
+    ensure_private_dir(path.parent)
+    payload = json.dumps(
+        {
+            "public": keys.public_b64url,
+            "private": crypto.b64url_encode(keys.private.to_bytes(32, "big")),
+            "subject": keys.subject,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        try:
+            os.write(fd, payload.encode("utf-8"))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def load_or_create_keys(
+    state_dir: Path, environ: Optional[Dict[str, str]] = None
+) -> VapidKeys:
+    """The brain's VAPID pair: configured keys if any, else its own.
+
+    Environment and an existing ``vapid.json`` win exactly as in
+    :func:`load_keys` (a broken file stays loud and is never replaced). With
+    nothing configured, a fresh pair is generated and persisted once, so
+    push works on a new install with no operator step. Raises ``OSError``
+    when the state dir cannot be written.
+    """
+    loaded = load_keys(state_dir, environ=environ)
+    if loaded is not None:
+        return loaded
+    path = Path(state_dir) / VAPID_FILENAME
+    _create_key_file(path, generate_keys())
+    created = load_keys(state_dir, environ={})
+    if created is None:  # pragma: no cover — the file was just written
+        raise VapidError(f"could not read back {path}")
+    return created
 
 
 #: Suffixes the dotenv import matches, generically prefixed.

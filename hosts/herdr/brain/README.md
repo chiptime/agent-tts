@@ -418,10 +418,15 @@ end-to-end encrypted to each subscribed phone (RFC 8291 payloads and RFC
 8292 VAPID signatures, built on the `cryptography` package).
 
 - **Keys**: one VAPID pair per brain, in `<state-dir>/vapid.json` (0600) or
-  the `HERDR_BRAIN_VAPID_*` environment. Without keys the server runs
-  **soft-off**: every route works, nothing sends. An operator who already
-  holds a pair imports it — `herdr-brain push import <dotenv-path>` prints
-  **only the public key** (the private half never crosses a terminal);
+  the `HERDR_BRAIN_VAPID_*` environment (which wins). **No setup step**: the
+  service generates its pair on first start and keeps it. Only if the
+  state dir cannot be written does push stay **soft-off** (every route
+  works, nothing sends). Reusing a pair you already hold is optional —
+  `herdr-brain push import <dotenv-path>` replaces it (restart afterwards)
+  and prints **only the public key** (the private half never crosses a
+  terminal). Each browser still enables notifications explicitly. On
+  **Activar**, the PWA registers its subscription with the brain and
+  replaces one bound to a different application-server key;
   `herdr-brain push list` shows subscribed endpoints and
   `herdr-brain push test` sends one round-trip notification per device.
 - **Coalescing and retraction**: transitions inside a ~2 s window collapse

@@ -66,6 +66,19 @@
       return bytes;
     }
 
+    /* True only when the subscription exposes exactly the key we would
+     * subscribe with; an unknown key is never trusted. */
+    function sameKey(subscription, wanted) {
+      var issued = subscription && subscription.options && subscription.options.applicationServerKey;
+      if (!issued) return false;
+      var bytes = new Uint8Array(issued);
+      if (bytes.length !== wanted.length) return false;
+      for (var i = 0; i < bytes.length; i++) {
+        if (bytes[i] !== wanted[i]) return false;
+      }
+      return true;
+    }
+
     /* ---- rendering (the whole card lives in #push-box) ---- */
 
     function render() {
@@ -78,8 +91,8 @@
       var status;
       if (state.serverKeys === false) {
         status = tr("push.no_keys",
-          "Sin claves en el servidor — pide al operador importarlas " +
-          "(`herdr-brain push import`) o generar un par nuevo.");
+          "El servidor no pudo crear sus claves de push — revisa " +
+          "`herdr-brain doctor`.");
       } else if (notificationPermission() === "denied") {
         status = tr("push.blocked",
           "El navegador bloquea las notificaciones; actívalas en los " +
@@ -176,12 +189,21 @@
           if (!registration || !registration.pushManager) {
             throw new Error("este navegador no soporta Web Push");
           }
-          return registration.pushManager.getSubscription().then(function (existing) {
-            if (existing) return existing;
+          var wanted = applicationServerKey(state.publicKey);
+          function subscribeFresh() {
             return registration.pushManager.subscribe({
               userVisibleOnly: true,
-              applicationServerKey: applicationServerKey(state.publicKey)
+              applicationServerKey: wanted
             });
+          }
+          return registration.pushManager.getSubscription().then(function (existing) {
+            if (!existing) return subscribeFresh();
+            /* A subscription is bound to the key that issued it: one made
+             * for another server key (an earlier panel on this origin, or a
+             * pair replaced by `push import`) would accept nothing we send.
+             * Reuse it only when its key is provably ours. */
+            if (sameKey(existing, wanted)) return existing;
+            return Promise.resolve(existing.unsubscribe()).then(subscribeFresh);
           });
         })
         .then(function (subscription) {

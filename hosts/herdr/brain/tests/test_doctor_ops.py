@@ -81,11 +81,12 @@ class TestRoot443Ownership:
 
 
 class TestPushRows:
-    def test_missing_vapid_is_a_soft_failure_with_the_import_hint(self, tmp_path):
+    def test_missing_vapid_points_at_starting_the_service(self, tmp_path):
         rows = doctor.check_push(tmp_path)
         vapid = next(r for r in rows if r.name == "vapid")
         assert vapid.ok is False
-        assert "push import" in vapid.hint
+        assert "first start" in vapid.detail
+        assert "herdr-brain restart" in vapid.hint
 
     def test_present_vapid_passes_without_leaking_the_private_key(self, tmp_path):
         from herdr_brain.webpush.vapid import generate_keys, save_keys

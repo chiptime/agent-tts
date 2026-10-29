@@ -315,7 +315,7 @@
 
     /* ---- push card ---- */
     "push.title": "Push notices",
-    "push.no_keys": "No keys on the server — ask the operator to import them (`herdr-brain push import`) or generate a new pair.",
+    "push.no_keys": "The server could not create its push keys — check `herdr-brain doctor`.",
     "push.blocked": "The browser blocks notifications; enable them in the site settings and try again.",
     "push.active": "🔔 Notices active on this device",
     "push.off": "No push notices on this device",

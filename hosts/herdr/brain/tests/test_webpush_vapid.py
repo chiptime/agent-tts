@@ -153,3 +153,113 @@ def test_vapid_jwt_rejects_bad_subject():
     )
     with pytest.raises(vapid.VapidError):
         vapid.build_vapid_jwt(keys, audience="https://push.example.net", now=0.0)
+
+
+# ── load_or_create_keys: the brain owns its own pair ─────────────────────────
+
+
+def test_first_start_creates_a_private_key_file_once(tmp_path):
+    import stat
+
+    created = vapid.load_or_create_keys(tmp_path, environ={})
+    path = tmp_path / vapid.VAPID_FILENAME
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    again = vapid.load_or_create_keys(tmp_path, environ={})
+    assert again.public == created.public
+    assert vapid.load_keys(tmp_path, environ={}).public == created.public
+
+
+def test_configured_environment_wins_and_writes_nothing(tmp_path):
+    keys = vapid.generate_keys("mailto:ops@example.com")
+    env = {
+        vapid.ENV_PUBLIC: keys.public_b64url,
+        vapid.ENV_PRIVATE: crypto.b64url_encode(keys.private.to_bytes(32, "big")),
+        vapid.ENV_SUBJECT: keys.subject,
+    }
+    loaded = vapid.load_or_create_keys(tmp_path, environ=env)
+    assert loaded.public == keys.public
+    assert not (tmp_path / vapid.VAPID_FILENAME).exists()
+
+
+def test_a_broken_key_file_is_never_replaced(tmp_path):
+    path = tmp_path / vapid.VAPID_FILENAME
+    path.write_text("{not json", encoding="utf-8")
+    with pytest.raises(vapid.VapidError):
+        vapid.load_or_create_keys(tmp_path, environ={})
+    assert path.read_text(encoding="utf-8") == "{not json"
+
+
+def test_concurrent_first_starts_agree_on_one_pair(tmp_path):
+    import threading
+
+    results, errors = [], []
+
+    def start():
+        try:
+            results.append(vapid.load_or_create_keys(tmp_path, environ={}).public)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=start) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+    assert len(set(results)) == 1
+    assert vapid.load_keys(tmp_path, environ={}).public == results[0]
+
+
+def test_separate_processes_create_one_pair_without_overwriting(tmp_path):
+    import subprocess
+    import sys
+    import time
+
+    state = tmp_path / "state"
+    gate = tmp_path / "start"
+    ready = [tmp_path / f"ready-{i}" for i in range(8)]
+    script = """
+from pathlib import Path
+import sys
+import time
+from herdr_brain.webpush.vapid import load_or_create_keys
+
+state, ready, gate = map(Path, sys.argv[1:])
+ready.touch()
+deadline = time.monotonic() + 20
+while not gate.exists():
+    if time.monotonic() > deadline:
+        raise RuntimeError("start barrier timed out")
+    time.sleep(0.005)
+print(load_or_create_keys(state, environ={}).public_b64url)
+"""
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-c", script, str(state), str(marker), str(gate)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for marker in ready
+    ]
+    try:
+        deadline = time.monotonic() + 20
+        while not all(marker.exists() for marker in ready):
+            assert time.monotonic() < deadline, "workers did not reach the start barrier"
+            time.sleep(0.005)
+        gate.touch()
+        public_keys = []
+        for process in processes:
+            out, err = process.communicate(timeout=20)
+            assert process.returncode == 0, err
+            public_keys.append(out.strip())
+        assert len(set(public_keys)) == 1
+        assert vapid.load_keys(state, environ={}).public_b64url == public_keys[0]
+        assert stat.S_IMODE(state.stat().st_mode) == 0o700
+        assert stat.S_IMODE((state / vapid.VAPID_FILENAME).stat().st_mode) == 0o600
+        assert sorted(p.name for p in state.iterdir()) == [vapid.VAPID_FILENAME]
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=10)

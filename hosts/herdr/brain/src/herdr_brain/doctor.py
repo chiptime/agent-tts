@@ -180,12 +180,13 @@ def check_push(state_dir) -> list[CheckResult]:
     try:
         keys = load_keys(state_dir)
         if keys is None:
-            # The documented soft-off state: nothing broken, nothing
-            # armed — a repair hint, not an alarm.
+            # The service creates its own pair on first start; a missing
+            # file only means it has not started here yet (doctor stays
+            # read-only and never creates it).
             rows.append(CheckResult(
-                "vapid", False, "no VAPID keys configured — push is soft-off",
-                "import a pair with `herdr-brain push import <dotenv>` (prints "
-                "only the public key)",
+                "vapid", False, "no VAPID keys yet — the service creates them on first start",
+                "start the brain service (`herdr-brain restart`); to reuse an "
+                "existing pair instead, `herdr-brain push import <dotenv>`",
             ))
         else:
             rows.append(CheckResult(

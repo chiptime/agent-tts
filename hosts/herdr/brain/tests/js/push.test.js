@@ -142,7 +142,7 @@ test("refresh reads /push/key and renders the card", async () => {
   assert.ok(root.children.length > 0);
 });
 
-test("a brain without keys renders the operator hint and no buttons", async () => {
+test("a brain that could not create keys renders the doctor hint and no buttons", async () => {
   const { doc } = makeUI();
   const http = makeRequest();
   http.responder.queue = [{ status: 200, json: { enabled: false, public_key: null } }];
@@ -150,7 +150,7 @@ test("a brain without keys renders the operator hint and no buttons", async () =
   await card.refresh();
   const root = doc.getElementById("push-box");
   const texts = root.children.map((c) => c.textContent).join(" ");
-  assert.match(texts, /Sin claves en el servidor/);
+  assert.match(texts, /no pudo crear sus claves de push/);
   assert.equal(findButton(root, "push-actions"), null);
 });
 
@@ -293,4 +293,82 @@ test("a zero-count test is reported honestly", async () => {
     made.doc.getElementById("push-box"), "push-test"
   ));
   assert.match(made.toasts[0].text, /No se envió nada/);
+});
+
+/* ---- a subscription issued for another key is replaced ---- */
+
+function keyBytes(b64url) {
+  const padding = "=".repeat((4 - (b64url.length % 4)) % 4);
+  return Uint8Array.from(Buffer.from((b64url + padding).replace(/-/g, "+").replace(/_/g, "/"), "base64"));
+}
+
+function existingSubscription(serverKeyB64, calls) {
+  return Object.assign({
+    toJSON: () => SUBSCRIPTION,
+    options: { applicationServerKey: serverKeyB64 === null ? null : keyBytes(serverKeyB64).buffer },
+    unsubscribe() { calls.unsubscribe++; return Promise.resolve(true); },
+  }, SUBSCRIPTION);
+}
+
+async function enableWithExisting(existingKey) {
+  const made = makeUI();
+  const calls = made.registration.calls;
+  made.registration.pushManager.getSubscription = () => {
+    calls.getSubscription++;
+    return Promise.resolve(existingSubscription(existingKey, calls));
+  };
+  made.http.responder.queue = [
+    { status: 200, json: { enabled: true, public_key: "BRAINKEY" } },
+    { status: 200, json: { endpoint: SUBSCRIPTION.endpoint } },
+  ];
+  await made.ui.refresh();
+  const outcome = await made.ui.enable(findButton(made.doc.getElementById("push-box"), "push-enable"));
+  return { made, calls, outcome };
+}
+
+test("an existing subscription for the brain's own key is reused", async () => {
+  const { calls, outcome } = await enableWithExisting("BRAINKEY");
+  assert.equal(outcome, "ok");
+  assert.equal(calls.unsubscribe, 0);
+  assert.equal(calls.subscribe.length, 0);
+});
+
+test("an existing subscription for another server key is replaced", async () => {
+  const { calls, outcome } = await enableWithExisting("OTHERKEY");
+  assert.equal(outcome, "ok");
+  assert.equal(calls.unsubscribe, 1);
+  assert.equal(calls.subscribe.length, 1);
+  assert.deepEqual(Array.from(calls.subscribe[0].applicationServerKey), Array.from(keyBytes("BRAINKEY")));
+});
+
+test("a subscription that does not expose its key is replaced, never trusted", async () => {
+  const { calls, outcome } = await enableWithExisting(null);
+  assert.equal(outcome, "ok");
+  assert.equal(calls.unsubscribe, 1);
+  assert.equal(calls.subscribe.length, 1);
+});
+
+test("a single-bit key mismatch replaces the old subscription", async () => {
+  const changed = new Uint8Array(keyBytes("BRAINKEY"));
+  changed[0] ^= 1;
+  const { calls, outcome } = await enableWithExisting(Buffer.from(changed).toString("base64url"));
+  assert.equal(outcome, "ok");
+  assert.equal(calls.unsubscribe, 1);
+  assert.equal(calls.subscribe.length, 1);
+  assert.deepEqual(Array.from(calls.subscribe[0].applicationServerKey), Array.from(keyBytes("BRAINKEY")));
+});
+
+test("denied permission never mutates an existing subscription or the server", async () => {
+  const made = makeUI();
+  made.setPermission("denied");
+  made.http.responder.queue = [
+    { status: 200, json: { enabled: true, public_key: "BRAINKEY" } },
+  ];
+  await made.ui.refresh();
+  const outcome = await made.ui.enable(findButton(made.doc.getElementById("push-box"), "push-enable"));
+  assert.equal(outcome, null);
+  assert.equal(made.registration.calls.getSubscription, 0);
+  assert.equal(made.registration.calls.unsubscribe, 0);
+  assert.equal(made.registration.calls.subscribe.length, 0);
+  assert.deepEqual(made.http.calls.map((call) => call.url), ["/push/key"]);
 });

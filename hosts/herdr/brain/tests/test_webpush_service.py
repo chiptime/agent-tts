@@ -74,7 +74,23 @@ def _subscribe(service, endpoint="https://push.example/sub/1", device="movil"):
     )
 
 
-def test_without_keys_the_service_is_soft_off(tmp_path, clock):
+def test_without_configured_keys_the_service_creates_its_own_pair(tmp_path, clock):
+    service = _service(tmp_path, FakeTransport(), clock, keys=False)
+    assert service.enabled is True
+    assert isinstance(service.public_key(), str)
+    assert (tmp_path / "vapid.json").exists()
+    # A second process on the same state dir signs with the same pair.
+    other = _service(tmp_path, FakeTransport(), clock, keys=False)
+    assert other.public_key() == service.public_key()
+
+
+def test_an_unwritable_state_dir_degrades_to_soft_off(tmp_path, clock, monkeypatch):
+    from herdr_brain.webpush import vapid
+
+    def refuse(*args, **kwargs):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(vapid, "_create_key_file", refuse)
     service = _service(tmp_path, FakeTransport(), clock, keys=False)
     assert service.enabled is False
     assert service.public_key() is None
