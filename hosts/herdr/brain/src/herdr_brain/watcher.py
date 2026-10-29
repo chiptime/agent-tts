@@ -44,6 +44,7 @@ from .config import Settings
 from .herdr import AgentInfo, HerdrClient, HerdrError
 from .mux import create_mux
 from .secrets_mask import mask_text
+from .spoken_lexicon import DEFAULT_LOCALE, LOCALES, fallback_detail
 from .transcripts import read_turns
 from .tts import new_audio_path
 from .view import SCREEN_TAIL_LINES, detect_pending
@@ -157,6 +158,7 @@ class AgentWatcher:
         poll_interval_s: float = POLL_INTERVAL_S,
         debounce_s: float = DEBOUNCE_S,
         notifier=None,
+        locale_provider: Optional[Callable[[], str]] = None,
     ):
         self._settings = settings
         self._herdr = herdr or create_mux(settings)
@@ -167,6 +169,10 @@ class AgentWatcher:
         self._debounce = debounce_s
         self._baseline: Optional[Dict[str, str]] = None
         self._last_announced: Dict[Tuple[str, str], float] = {}
+        # Spoken locale (S4): the call context publishes it; an absent
+        # or silent provider speaks the Spanish default (byte-identical
+        # to the pre-i18n announcements).
+        self._locale_provider = locale_provider
         # Notifier hook (S5/S13): structural duck type — transition /
         # handled / tick. Optional on purpose: the watcher's own tests
         # (and any embedding) construct it bare.
@@ -324,16 +330,37 @@ class AgentWatcher:
 
     # -- digest building ---------------------------------------------------
 
+    def _locale(self) -> str:
+        """The locale this announcement speaks (S4). Failures — no
+        provider, a raising one, a value the lexicon does not know —
+        all land on the Spanish default; a spoken string never crashes
+        on its locale lookup."""
+        if self._locale_provider is None:
+            return DEFAULT_LOCALE
+        try:
+            value = self._locale_provider()
+        except Exception:  # noqa: BLE001 — announcements never break here
+            return DEFAULT_LOCALE
+        return value if value in LOCALES else DEFAULT_LOCALE
+
     def _digest(self, agent: AgentInfo) -> Tuple[str, str, Optional[str]]:
         """The announcement's three facts: speakable label, the spoken
         digest text, and the raw blocking question (blocked only — the
         pending excerpt or first screen line, WITHOUT the label prefix;
-        push notifications carry it as their body)."""
+        push notifications carry it as their body).
+
+        Templates come from the spoken lexicon in the call's locale;
+        the Spanish templates are the historical strings verbatim."""
+        from . import spoken_lexicon
+
         label = agent_label(agent)
+        locale = self._locale()
         if agent.status == "blocked":
             question = self._blocked_detail(agent)
-            return label, f"{label} necesita tu atención: {question}", question
-        return label, f"{label} terminó: {self._done_detail(agent)}", None
+            text = spoken_lexicon.blocked_announcement(locale, label, question)
+            return label, text, question
+        text = spoken_lexicon.done_announcement(locale, label, self._done_detail(agent))
+        return label, text, None
 
     def _build_announcement(
         self,
@@ -389,7 +416,9 @@ class AgentWatcher:
                     return sentence
         screen = self._screen(agent)
         first_line = screen.splitlines()[0].strip() if screen else None
-        return clip_detail(mask_text(first_line), cap) if first_line else FALLBACK_DETAIL
+        return clip_detail(mask_text(first_line), cap) if first_line else fallback_detail(
+            self._locale()
+        )
 
     def _blocked_detail(self, agent: AgentInfo) -> str:
         cap = self._settings.announce_max_chars
@@ -403,7 +432,7 @@ class AgentWatcher:
             )
             if first_line:
                 return clip_detail(mask_text(first_line), cap)
-        return FALLBACK_DETAIL
+        return fallback_detail(self._locale())
 
     def _screen(self, agent: AgentInfo) -> Optional[str]:
         try:

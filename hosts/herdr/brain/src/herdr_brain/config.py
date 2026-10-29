@@ -26,6 +26,12 @@ DEFAULT_GLM_MODEL = "glm-5"
 # dependency, which design Decision 1 forbids.
 DEFAULT_BRAIN_PORT = 8741
 
+# Crew federation (S7): the TLS listener's own port and bind. A dedicated
+# second listener keeps the pinned mTLS out of the PWA port entirely; a
+# solo brain never binds it (crew_runtime.listener_kwargs returns None).
+DEFAULT_CREW_PORT = 8747
+DEFAULT_CREW_HOST = "127.0.0.1"
+
 # Verified live layout: herdr-tts is the speech backend, consumed ONLY
 # through its versioned CLI surface (contract v1). The home points at the
 # herdr-tts repo root; the CLI derives everything else (including its own
@@ -193,6 +199,11 @@ class Settings:
     # existing construction.
     brain_port: int = DEFAULT_BRAIN_PORT
     stt_backend: str = DEFAULT_STT_BACKEND
+    # Crew federation (S7): appended WITH defaults like every knob above
+    # (tests construct Settings(**SETTINGS_KWARGS)). The crew listener
+    # is built from these only when the roster declares a crew.
+    crew_port: int = DEFAULT_CREW_PORT
+    crew_host: str = DEFAULT_CREW_HOST
     # Shared secret for POST /approval/{id}/action (ntfy action buttons,
     # F5 / HT-04). Empty = no auth (the pre-F5 behaviour). repr=False keeps
     # it out of every log line that prints Settings.
@@ -387,6 +398,12 @@ def load_settings(env: Optional[dict] = None) -> Settings:
         engram_db=getenv("HERDR_BRAIN_ENGRAM_DB") or None,
         brain_port=brain_port,
         stt_backend=raw_backend,
+        crew_port=_parse_brain_port(
+            getenv("HERDR_BRAIN_CREW_PORT", str(DEFAULT_CREW_PORT)),
+            "HERDR_BRAIN_CREW_PORT",
+        ),
+        crew_host=getenv("HERDR_BRAIN_CREW_HOST", DEFAULT_CREW_HOST).strip()
+        or DEFAULT_CREW_HOST,
         opencode_url=getenv("HERDR_BRAIN_OPENCODE_URL", DEFAULT_OPENCODE_URL),
         approval_token=getenv("HERDR_BRAIN_APPROVAL_TOKEN").strip(),
         # ── Device pairing + access gate (F1 security) ──

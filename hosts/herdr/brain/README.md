@@ -91,6 +91,9 @@ daemons do not source them, so the env file is the single stable contract.
 | `HERDR_BRAIN_DEVICE_HEADER` / `HERDR_BRAIN_DEVICE_ALLOWLIST` | *(empty)* | reverse-proxy device gate: when the header name is set, writes require an allowlisted value in it (absent header ⇒ read-only) |
 | `HERDR_BRAIN_AUDIT_CONTENT` | `preview` | audit-log content mode: `preview` keeps a 120-char single-line preview of reply text; `none` redacts every content string to the constant `⟨redacted⟩` (metadata such as outcomes, keys and revisions survives) — see [Audit log](#audit-log) |
 | `HERDR_BRAIN_MUX` | `herdr` | terminal multiplexer the brain drives: `herdr`, `tmux` or `zellij` (see [Multiplexers](#multiplexers)) |
+| `HERDR_BRAIN_CREW_PORT` | `8747` | the crew listener's own TLS port (S7; bound only when the roster declares a crew — see [Crew federation](#crew-federation-s7-one-lead-peers-over-pinned-mtls)) |
+| `HERDR_BRAIN_CREW_HOST` | `127.0.0.1` | the crew listener's bind; set it to the tailnet interface on crew hosts |
+| `HERDR_BRAIN_CREW_SECRET` | *(empty)* | the crew secret for the DAEMON (the roster stores only its hash); alternatively write it once to `<state>/crew-secret` (mode 600) |
 | `HERDR_BRAIN_SECRET_MASKING` | *(on)* | secret masking on outgoing text (S14): provider API keys, JWTs, PEM private-key blocks, `Authorization: Bearer` tokens, URL credentials and secret-named `KEY=value` assignments are replaced with hint placeholders (`sk-ant-…[masked]`, `[masked:jwt]`; spoken as "clave oculta") in the pane mirror, history pages, reading views, SSE announcements, the LLM live context and speech renders. Set to `off` (also `0`/`false`/`no`) to serve text verbatim; stored data is never rewritten |
 
 ### Empty agent reader
@@ -386,6 +389,25 @@ announcement audio only (a silent toast still appears); chat answers always
 play. Install note: if the phone never plays announcements, tap Call once
 after reload — browsers require one gesture per session before autoplay.
 
+#### Spoken locale (S4): `es` default, `en` added
+
+Everything the brain SPEAKS is assembled from templates — the watcher
+digests («necesita tu atención», «terminó») and the deterministic gate
+closers («¿Se envía?», «¿Sí o no?») — and those templates live in
+`spoken_lexicon.py` per locale. The call's locale is published once
+through the shared context and read by every spoken surface:
+
+```text
+POST /call/context {"locale": "en"}    # es (default) | en; anything else is IGNORED
+GET  /call/context                     # → …, "locale": "en"
+```
+
+Spanish stays byte-identical by default (installed phones and the whole
+pre-existing suite pin those exact strings); only an explicit `en`
+switches the wording («needs your attention», «finished», "Send it?",
+"Yes or no?"). The spoken clarify restate (S14) keeps its Spanish
+wording in v1 — it is long product copy, not a closer.
+
 ### Web Push (avisos push)
 
 The same watcher that feeds SSE also feeds **Web Push** (VAPID, S5): when
@@ -672,6 +694,50 @@ Messages never confer authority: the header always says who spoke.
 - **Delivery**: the running server's watcher poll drives the delivery
   tick (no second timer); the CLI also ticks on send.
 
+### Operator surfaces: replies, commands, key presets, launchers (S3)
+
+Four TOML files under the brain's config dir (`~/.config/herdr-brain/`,
+overridable via `HERDR_BRAIN_CONFIG_DIR`) turn the operator's habits
+into panel surfaces. Validation is row by row: a malformed row is
+**skipped** with one logged reason while its healthy siblings keep
+serving, and files reload by mtime on the next request — no restart.
+
+| File | Rows | Serves |
+|---|---|---|
+| `quick-replies.toml` | `[[replies]]` `label`+`text` (+`scope`) | the PWA reply dock (sent via `POST /pane/reply`) |
+| `commands.toml` | `[[commands]]` `label`+`command` (starts `/`) | the slash palette (a trailing space leaves the composer open) |
+| `keys.toml` | `[[keys]]` `label`+`keys` (send-key allowlist only) | labelled key presets |
+| `launchers.toml` | `[[launchers]]` `label`+`argv` (+`cwd`,`no_prompts`) | the launch allowlist — shells only |
+
+Rows are identified by `id` (explicit) or a slug of the label, and
+`scope = "<agent-family>"` makes the row REPLACE the global catalog for
+that family (substitution, not fusion).
+
+Routes (the launcher/key shapes are a frozen contract for the PWA):
+
+```text
+GET  /operator/config?agent=<family>
+#  → {"quick_replies":[{"id","label","text"}],
+#      "commands":[{"id","label","command"}],
+#      "key_presets":[{"id","label","keys"}],
+#      "launchers":[{"id","label","no_prompts"}]}   ← argv NEVER crosses
+POST /operator/launch  {"id", "confirm"?}
+#  names a launcher row by id — 404 unknown, 409 "confirmation_required"
+#  (a no_prompts row without confirm) or "cwd_missing"; executes via
+#  mux create_tab + pane_run(plan.command_line); audited operator.launch
+POST /operator/preset  {"pane_id", "id"}
+#  keys resolved SERVER-side by the pane's agent family, sent through
+#  the /pane/keys path; audited operator.preset
+```
+
+Both writes are classified writes (device gate + audit) and neither is
+exposed to the LLM. A client can never supply a command line or a key
+sequence — only the id of a row the operator authored.
+
+```bash
+bin/herdr-brain config check     # per-file report; exit 1 if any row was skipped
+```
+
 ## Device pairing and the access gate
 
 Every route runs behind a fail-closed access gate (device pairing, F1), and
@@ -829,6 +895,79 @@ the `0700` state dir — it may echo reply text — and a line looks like:
   disk or an unwritable path logs a warning and never changes the
   status or body of the action it records.
 
+## Crew federation (S7): one lead, peers over pinned mTLS
+
+A brain starts **solo** — no crew, no listeners, no bytes of overhead.
+Federation is operator-driven and manual:
+
+```bash
+# on the lead
+bin/herdr-brain crew init                      # mints + prints the secret ONCE
+bin/herdr-brain crew join-token               # one use, 10 minutes
+# save the secret for the daemon (0600) or export HERDR_BRAIN_CREW_SECRET
+echo 'the-secret' > ~/.local/state/herdr-brain/crew-secret && chmod 600 $_
+
+# on each peer (secret via stdin '-' or '@file', never argv)
+bin/herdr-brain crew join --name <peer> --lead-name <lead> \
+  --lead-url https://<lead>:8747 --lead-cert @lead.pem \
+  --url https://<peer>:8747 --cert @own.pem --secret - --token <token>
+
+bin/herdr-brain crew list | remove | promote | rotate-secret
+```
+
+The roster lives at `<state>/crew.json` (0600, atomic writes); a corrupt
+roster fails CLOSED everywhere — the crew routes answer the uniform 401
+and the CLI refuses — never a silent reset to solo. Promotion is manual
+(`crew promote`), by design.
+
+**What the daemon runs when the roster declares a crew** (role lead or
+peer):
+
+- A second TLS listener on `HERDR_BRAIN_CREW_PORT` (default **8747**)
+  serving `/crew/v1/*` — this host's panes, gates and writes over the
+  pinned link (`CrewService`, two factors: pinned client cert + crew
+  secret; enrolment by join token). A peer requires the enrolled
+  certificate in the handshake; the lead keeps the enrolment window
+  open and every other route still fails closed in the app layer. Solo
+  starts none of this.
+- **Lead-side routing**: `GET /herd` merges the peers (remote panes
+  carry `host`, unreachable peers are listed explicitly); pane ops on
+  `<host>:<pane>` ids (`/view`, `/history`, `/pane/{id}/mirror`,
+  `/pane/reply|keys|dialog/answer`) proxy through `CrewClient` with the
+  host prefix stripped on the wire. A host-shaped prefix naming no
+  member is a 422 — never a local fallback that would strip it — unless
+  the full id names a real local pane (local ids can look host-shaped:
+  `w1:p9`).
+- **Gates stay with the owner**: a remote gate surfaced by
+  `GET /approval/current` carries its `host`; approving/rejecting it
+  (PWA buttons, ntfy actions) forwards the decision to the owner, whose
+  answer travels back verbatim. The lead never resolves a remote gate
+  locally.
+
+Name discipline: member names are routing prefixes — never name a peer
+after a local window prefix (`w1`, `w2`…).
+
+## PWA: offline shell, updates, language and settings
+
+- **Offline shell** — the service worker precaches the shell versioned by
+  the build stamp (`brain-shell-<build>`) and deletes older brain caches on
+  activate. Navigations go to the network first and fall back to the cached
+  shell (a «Sin conexión» banner shows while offline). API responses are
+  never cached.
+- **Updates** — the PWA polls `GET /build` (`{"build": "<stamp>"}`, the
+  same stamp as every `?v=` asset ref and the footer) and shows «Nueva
+  versión disponible — Recargar» once per build; open tabs agree on one
+  reload through `BroadcastChannel`. The stamp is resolved when the server
+  starts, so restart the service after a deploy.
+- **Language** — Ajustes → Idioma switches `es`/`en` without reloading,
+  persists per device and publishes `POST /call/context {"locale"}` so the
+  spoken announcements and gate closers follow it (Spanish is the default).
+- **Settings** — theme (auto, light, dark), text size, Zen mode and haptics
+  (shown only where the browser supports vibration), all per device.
+- **Operator dock** — quick replies, commands, key presets and launchers
+  from the operator TOML files (see Operator surfaces); hidden when the
+  config route is absent.
+
 ## Phone access over Tailscale (PWA)
 
 The brain listens on `127.0.0.1:8741`. To reach it from the phone over your
@@ -842,6 +981,43 @@ tailnet (this is documentation, not something the repo runs):
 ```bash
 tailscale serve --bg --https=8443 http://127.0.0.1:8741
 ```
+
+### Cutover tooling (S8)
+
+The live cutover (taking 443, retiring the other service) is the
+operator's; the CLI prints — never runs — the exact commands:
+
+```bash
+bin/herdr-brain serve                 # prints: tailscale serve --bg --https=8443 http://127.0.0.1:8741
+bin/herdr-brain serve --root          # the post-cutover root: tailscale serve --bg http://127.0.0.1:8741
+bin/herdr-brain serve --root --serve-status <(tailscale serve status --json)
+                                      # + warns when another service owns 443 (read from the RECORDED json)
+bin/herdr-brain unserve [--root]      # prints the matching off command
+bin/herdr-brain qr                    # prints the PWA's public URL (HERDR_BRAIN_REMOTE_URL / config.env)
+bin/herdr-brain logs [-n 50] [-f]     # tail $STATE_DIR/server.log
+```
+
+`qr` prints the URL rather than an ASCII QR: a scannable QR needs an
+encoder and the brain is stdlib-only here — copy the URL or run any
+local `qrencode -t ANSI` yourself.
+
+Deep links: `GET /pane/{pane_id}` answers **302 → `/?pane_id=<id>`**,
+so an already-configured external «Open Web» button
+(`${URL}/pane/${pane_id}`) opens the brain's PWA with that pane
+preselected.
+
+`herdr-brain doctor` now runs a second, brain-side stage after the
+onboarding probes: port conflicts (8741 / the crew port 8747), the
+root-443 ownership hint from a recorded `tailscale serve status --json`
+(`--serve-status FILE|-`), VAPID keys present, push subscription store
+health, crew roster health and operator config health. With `--json`
+the ops stage's text goes to stderr so the onboarding JSON stays
+parseable.
+
+macOS: `deploy/herdr-brain.plist.template` + `deploy/install-launchd.sh`
+render a launchd agent (`~/Library/LaunchAgents/dev.herdr.brain.plist`,
+KeepAlive + RunAtLoad) mirroring the systemd user unit. The repo never
+runs launchctl — the installer prints the bootstrap commands for you.
 
 Open on the phone (note the port):
 

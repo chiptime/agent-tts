@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- herdr-brain — launchd agent TEMPLATE (S8, doc 11 fase 7).
+
+     Rendered by deploy/install-launchd.sh: every @-delimited token below
+     is replaced with a value discovered at install time and the result is
+     written to ~/Library/LaunchAgents/dev.herdr.brain.plist. The
+     generated plist is never committed; this template carries no
+     machine-specific absolute path. It mirrors the systemd user unit
+     (deploy/herdr-brain.service.tmpl): KeepAlive + RunAtLoad are the
+     launchd spelling of Restart=on-failure + WantedBy=default.target,
+     and the GLM key stays in the EnvironmentFile the operator owns —
+     never in this repo or in the plist. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.herdr.brain</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>@PYTHON@</string>
+        <string>-m</string>
+        <string>herdr_brain.server</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>@INSTALL_DIR@</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HERDR_BRAIN_HOST</key>
+        <string>0.0.0.0</string>
+        <key>HERDR_BRAIN_PORT</key>
+        <string>@PORT@</string>
+        <key>HERDR_BIN</key>
+        <string>@HERDR_BIN@</string>
+        <key>HERDR_TTS_HOME</key>
+        <string>@TTS_HOME@</string>
+    </dict>
+
+    <key>EnvironmentVariablesFile</key>
+    <string>@ENV_FILE@</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>3</integer>
+
+    <key>StandardOutPath</key>
+    <string>@STATE_DIR@/server.log</string>
+    <key>StandardErrorPath</key>
+    <string>@STATE_DIR@/server.log</string>
+</dict>
+</plist>

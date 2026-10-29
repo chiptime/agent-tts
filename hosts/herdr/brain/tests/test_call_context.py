@@ -122,7 +122,10 @@ class TestCallContextEndpoint:
         client = make_client(audio_dir, monkeypatch)
         resp = client.get("/call/context")
         assert resp.status_code == 200
-        assert resp.json() == {"call_id": DEFAULT_SESSION, "pane_id": None, "revision": 0}
+        assert resp.json() == {
+            "call_id": DEFAULT_SESSION, "pane_id": None, "revision": 0,
+            "locale": "es",
+        }
 
     def test_select_pane_publishes_and_bumps_revision(self, audio_dir, monkeypatch):
         client = make_client(audio_dir, monkeypatch)
@@ -130,6 +133,7 @@ class TestCallContextEndpoint:
         assert first.status_code == 200
         assert first.json() == {
             "call_id": DEFAULT_SESSION, "pane_id": "w1:p9", "revision": 1,
+            "locale": "es",
         }
         # A second client reads the same selection; its own later write
         # wins (last writer) and the revision only ever grows.
@@ -147,7 +151,10 @@ class TestCallContextEndpoint:
         assert client.post("/call/context", json={"pane_id": "w1:p9\nrm"}).status_code == 422
         # An explicit empty selection clears the shared pane.
         cleared = client.post("/call/context", json={"pane_id": "   "})
-        assert cleared.json() == {"call_id": DEFAULT_SESSION, "pane_id": None, "revision": 2}
+        assert cleared.json() == {
+            "call_id": DEFAULT_SESSION, "pane_id": None, "revision": 2,
+            "locale": "es",
+        }
 
     def test_shared_call_id_is_the_default_session_namespace(self, audio_dir, monkeypatch):
         client = make_client(audio_dir, monkeypatch)

@@ -229,6 +229,12 @@ _WRITE_RULES = (
     # S13 operator messages: the send types into a real pane (through
     # the walky delivery gate). The inbox read stays a read.
     ("POST", re.compile(r"^/msg/send$")),
+    # S3 operator surfaces: a launch executes an allowlisted row in a
+    # fresh shell tab, a preset types keys into a live pane — both are
+    # writes behind the device gate and the audit log, exactly like the
+    # manual reply/keys routes they ride. GET /operator/config stays a
+    # read (labels, never secrets — the operator authored them).
+    ("POST", re.compile(r"^/operator/(launch|preset)$")),
     ("POST", re.compile(r"^/ask$")),
     ("POST", re.compile(r"^/transcribe$")),
     ("POST", re.compile(r"^/reset$")),

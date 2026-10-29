@@ -1225,6 +1225,28 @@ class BrainTools:
         self._note_dialog_keys(pane_id)
         return _reply_result("sent", pane_id)
 
+    # -- operator launchers (S3; PWA-only, never in TOOLS_SCHEMA) --------
+
+    def launch_operator_tab(
+        self, label: str, cwd: Optional[str], command_line: str
+    ) -> dict:
+        """Executes ONE validated launcher row in a fresh shell tab.
+
+        The label, cwd and command line all come from the operator's
+        validated ``launchers.toml`` row (``LaunchPlan``) — never from
+        client input; the client only names the row. Launchers start
+        shells only: ``create_tab`` makes the tab and ``pane_run``
+        types the derived shell line verbatim plus Enter (the same
+        primitive ``_launch_opencode_via_oa`` uses). Raises
+        :class:`HerdrError` on any multiplexer failure so the route can
+        answer an honest 502. NOT exposed to the LLM: like
+        ``permissions``, this surface deliberately stays out of
+        ``TOOLS_SCHEMA``.
+        """
+        created = self._herdr.create_tab(label, cwd=cwd or None)
+        self._herdr.pane_run(created["pane_id"], command_line)
+        return created
+
     # -- verified sends, stop and steer (S12) ─────────────────────────────
 
     def _verified_read(self, pane_id: str) -> Optional[str]:
