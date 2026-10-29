@@ -42,6 +42,15 @@ from .herdr import (
     pick_active,
 )
 from .mux import create_mux
+from .mux.refusal import MuxRefusal
+from .send_receipts import (
+    classify_followup,
+    classify_send,
+    discard_recipe,
+    echo_tail,
+    interrupt_recipe,
+    steer_supported,
+)
 from .history_view import (
     HISTORY_DEFAULT_LIMIT,
     clamp_limit,
@@ -80,6 +89,13 @@ REPLY_WAIT_MS = 3_000
 HERD_LAST_TURN_CHARS = 160
 CONVERSATION_WINDOW = 20
 SCREEN_FULL_LINES = 120
+# Verified sends (S12): how many screen lines the before/after reads need
+# (the input box lives at the tail) and how the bounded after-poll behaves.
+# The poll stops early the moment the screen moves — the interval only
+# bounds the wait when the pane is quiet.
+VERIFIED_SCREEN_LINES = 30
+VERIFIED_POLL_READS = 3
+VERIFIED_POLL_INTERVAL_S = 0.35
 #: Lines read WITH styling for a blocked pane, so the PWA can show which
 #: option of the dialog is highlighted. Only read while blocked: the styling
 #: is exactly what decides a permission, and nothing else needs it.
@@ -1209,6 +1225,189 @@ class BrainTools:
         self._note_dialog_keys(pane_id)
         return _reply_result("sent", pane_id)
 
+    # -- verified sends, stop and steer (S12) ─────────────────────────────
+
+    def _verified_read(self, pane_id: str) -> Optional[str]:
+        """One plain-text screen read; None on failure (evidence, not truth)."""
+        try:
+            return self._herdr.read_screen(pane_id, VERIFIED_SCREEN_LINES)
+        except HerdrError:
+            return None
+
+    def _verified_poll(self, pane_id: str, before: Optional[str], sent_text: str):
+        """Bounded short poll after a send: up to VERIFIED_POLL_READS
+        screen reads, stopping early once the screen shows the send
+        landed (the body moved) or definitively did not (the echo sits
+        stable on the input line)."""
+        from .send_receipts import text_echoed_on_input
+
+        afters: list = []
+        for _ in range(VERIFIED_POLL_READS):
+            after = self._verified_read(pane_id)
+            afters.append(after)
+            if after is not None and after != before:
+                if not text_echoed_on_input(after, sent_text):
+                    break  # the body moved and the text left the input line
+            self._sleeper(VERIFIED_POLL_INTERVAL_S)
+        return afters
+
+    def verified_reply_to_pane(self, pane_id: str, text: str, steer: bool = False) -> dict:
+        """Delivers a user-TYPED reply and classifies what happened (S12).
+
+        Same narrow contract as :meth:`reply_to_pane` — exact pane, no
+        LLM, no gate, never raises — plus the read-back: the screen read
+        BEFORE the send, the mux's own claim and a bounded poll of
+        screens AFTER it feed :func:`classify_send`. The envelope keeps
+        the legacy ``outcome`` vocabulary (``delivered`` | ``blocked`` |
+        ``unknown_pane`` | ``error`` | ``unsupported_steer``) so the HTTP
+        mapping is unchanged, and gains ``receipt`` — the closed-set
+        outcome, the Spanish detail and the masked text tail the
+        submit/discard follow-ups need. The receipt carries NO id: the
+        server owns the store, tools owns the evidence.
+        """
+        try:
+            agents = self._herdr.list_agents()
+        except HerdrError as exc:
+            return _reply_result("error", pane_id, detail=f"cannot list panes: {exc}")
+        target = next((agent for agent in agents if agent.pane_id == pane_id), None)
+        if target is None:
+            return _reply_result("unknown_pane", pane_id, detail="pane not found")
+        if steer and not steer_supported(target.agent):
+            return _reply_result(
+                "unsupported_steer",
+                pane_id,
+                detail=(
+                    f"a running turn of a {target.agent or 'unknown'} agent cannot be "
+                    "steered; send a normal reply instead"
+                ),
+            )
+
+        def receipt_fields(outcome: str, detail: str) -> dict:
+            return {
+                "outcome": outcome,
+                "detail": mask_text(detail),
+                "text_hint": mask_text(echo_tail(text)),
+            }
+
+        before = self._verified_read(pane_id)
+        try:
+            result = self._herdr.send_prompt(pane_id, text, REPLY_WAIT_MS)
+        except MuxRefusal as exc:
+            return {
+                **_reply_result("error", pane_id, detail=f"cannot send reply: {exc}"),
+                "receipt": receipt_fields("refused", f"el multiplexer rechazó el envío: {exc}"),
+            }
+        except HerdrError as exc:
+            return {
+                **_reply_result("error", pane_id, detail=f"cannot send reply: {exc}"),
+                "receipt": receipt_fields("unknown", f"no se pudo enviar: {exc}"),
+            }
+        status = result["status"]
+        if status == "blocked":
+            return {
+                **_reply_result(
+                    "blocked", pane_id, status=status,
+                    detail="the agent rejected the reply",
+                ),
+                "receipt": receipt_fields(
+                    "refused", "el agente rechazó el texto antes de escribir nada"
+                ),
+            }
+        afters = self._verified_poll(pane_id, before, text)
+        outcome, detail = classify_send(before, afters, text, status)
+        return {
+            **_reply_result("delivered", pane_id, status=status),
+            "receipt": receipt_fields(outcome, detail),
+        }
+
+    def submit_typed_text(self, pane_id: str, text_hint: str) -> dict:
+        """Presses Enter on a typed-but-not-submitted draft (S12).
+
+        The one follow-up the receipt protocol allows: no text is ever
+        re-sent (that would duplicate the draft), only the commit key —
+        then the same read-back decides whether the echo left the input
+        line. Outcome: ``sent`` | ``typed_not_submitted`` | ``unknown`` |
+        ``error``.
+        """
+        return self._followup_typed(pane_id, ["enter"], text_hint, "sent")
+
+    def discard_typed_text(self, pane_id: str, agent_kind: str, text_hint: str) -> dict:
+        """Clears a typed draft with the safe per-harness recipe (S12).
+
+        ``esc`` for every harness (see :func:`discard_recipe`): it never
+        types a character and never executes anything — on chat TUIs it
+        drops the draft, on a plain shell it is a no-op. Outcome:
+        ``discarded`` | ``typed_not_submitted`` | ``unknown`` | ``error``.
+        """
+        return self._followup_typed(
+            pane_id, list(discard_recipe(agent_kind)), text_hint, "discarded"
+        )
+
+    def _followup_typed(
+        self, pane_id: str, keys: list, text_hint: str, resolved: str
+    ) -> dict:
+        def follow(outcome: str, detail: str) -> dict:
+            return {"outcome": outcome, "detail": mask_text(detail), "pane_id": pane_id}
+
+        key_result = self.send_keys_to_pane(pane_id, keys)
+        if key_result["outcome"] != "sent":
+            return follow("error", key_result.get("detail") or "send-keys failed")
+        afters: list = []
+        from .send_receipts import text_echoed_on_input
+
+        for _ in range(VERIFIED_POLL_READS):
+            after = self._verified_read(pane_id)
+            afters.append(after)
+            if after is None or not text_echoed_on_input(after, text_hint):
+                break  # unreadable, or the echo already left
+            self._sleeper(VERIFIED_POLL_INTERVAL_S)
+        outcome, detail = classify_followup(afters, text_hint, resolved)
+        return follow(outcome, detail)
+
+    def stop_pane(self, pane_id: str) -> dict:
+        """Interrupts one pane's RUNNING turn with its harness recipe (S12).
+
+        The recipe comes from the per-harness interrupt table; a harness
+        outside it is a REFUSAL (``unsupported_harness``) — guessing an
+        interrupt key into an unknown TUI is exactly the mistake the
+        table exists to prevent. Exact pane as everywhere (never the
+        focused fallback); keys ride the same closed allowlist.
+        """
+        def stop_result(outcome: str, detail: str = "", keys: Optional[list] = None) -> dict:
+            return {
+                "outcome": outcome,
+                "pane_id": pane_id,
+                "keys": keys or [],
+                "detail": detail,
+            }
+
+        try:
+            agents = self._herdr.list_agents()
+        except HerdrError as exc:
+            return stop_result("error", f"cannot list panes: {exc}")
+        target = next((agent for agent in agents if agent.pane_id == pane_id), None)
+        if target is None:
+            return stop_result("unknown_pane", "pane not found")
+        recipe = interrupt_recipe(target.agent)
+        if recipe is None:
+            return stop_result(
+                "unsupported_harness",
+                f"no interrupt recipe for harness {target.agent or 'unknown'!r}",
+            )
+        keys = list(recipe)
+        try:
+            key_result = self._herdr.send_keys(pane_id, keys)
+        except HerdrError as exc:
+            return stop_result("error", f"cannot send interrupt: {exc}")
+        if not key_result.get("ok"):
+            return stop_result(
+                "error", key_result.get("error") or "send-keys failed", keys
+            )
+        # An interrupt key on a pane with a spoken dialog binding ends
+        # that binding's authority (S9), exactly like a manual key.
+        self._note_dialog_keys(pane_id)
+        return stop_result("stopped", "", keys)
+
     def create_session(self, agent_kind: str, title: str, task: str = "", cwd: str = "") -> str:
         """Opens a NEW dedicated panel: tab + fresh agent (+ first task).
 
@@ -1447,6 +1646,7 @@ class BrainTools:
             "send_to_session": self.send_to_session,
             "create_session": self.create_session,
             "answer_dialog": self.answer_dialog,
+            "stop_agent": self.stop_pane,
             "consult_work_status": self.consult_work_status,
             "consult_history": self.consult_history,
             "get_followup_context": self.get_followup_context,
@@ -1473,6 +1673,18 @@ class BrainTools:
             if name == "answer_dialog":
                 return handler(
                     str(arguments.get("utterance", "")), target, turn_text
+                )
+            if name == "stop_agent":
+                # The approve replay drives stop_pane directly (it needs
+                # the structured result); the live loop never reaches
+                # here (the gate freezes it first). This branch keeps the
+                # dispatch contract: every tool answers a string.
+                stopped = self.stop_pane(
+                    str(arguments.get("pane_id", "") or "")
+                    or (target.pane_id if target else "")
+                )
+                return "stop " + stopped["outcome"] + (
+                    ": " + stopped["detail"] if stopped["detail"] else ""
                 )
             if name == "read_transcript":
                 return handler(int(arguments.get("n_turns", 10)), target)
@@ -1755,6 +1967,13 @@ TOOLS_SCHEMA = [
             },
         },
     },
+    # S12 note: the stop_agent tool (gated interrupt of the running turn)
+    # is implemented and tested at the gate and replay level (llm.py
+    # _gate_stop, server replay) but is deliberately NOT advertised here
+    # yet: the exact TOOLS_SCHEMA name set is pinned by baseline tests
+    # outside this change's surfaces. Wiring the voice utterance
+    # «para al agente» end to end needs exactly this entry plus the
+    # system-prompt line — a one-commit follow-up.
     {
         "type": "function",
         "function": {

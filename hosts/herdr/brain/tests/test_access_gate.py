@@ -240,8 +240,13 @@ def test_device_header_gate_matrix():
         ("POST", "/ask", "write"),
         ("POST", "/transcribe", "write"),
         ("POST", "/reset", "write"),
-        # S2: the guarded button-tap path types into a terminal.
         ("POST", "/pane/dialog/answer", "write"),
+        # S12 verified sends: the follow-ups type keys and the interrupt
+        # stops a live turn — writes; the receipts listing is a read.
+        ("POST", "/pane/stop", "write"),
+        ("POST", "/pane/receipt/rct-abc123/submit", "write"),
+        ("POST", "/pane/receipt/rct-abc123/discard", "write"),
+        ("GET", "/pane/receipts", "read"),
         # Read-only set (doc 01 §4): everything else.
         ("GET", "/health", "read"),
         ("GET", "/state", "read"),

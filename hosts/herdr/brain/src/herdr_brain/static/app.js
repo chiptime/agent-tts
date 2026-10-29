@@ -66,6 +66,14 @@
   var replyInput = $("pane-reply-input");
   var replySend = $("pane-reply-send");
   var replyKeys = $("pane-reply-keys");
+  /* Verified send (S12): the receipt card + the Stop button. */
+  var receiptCard = $("pane-receipt");
+  var receiptLabel = $("pane-receipt-label");
+  var receiptDetail = $("pane-receipt-detail");
+  var receiptActions = $("pane-receipt-actions");
+  var receiptSubmitBtn = $("pane-receipt-submit");
+  var receiptDiscardBtn = $("pane-receipt-discard");
+  var paneStopBtn = $("pane-stop");
   var permissionBox = $("pane-permission");
   var permissionWhat = $("pane-permission-what");
   var permissionOnce = $("pp-once");
@@ -1738,6 +1746,17 @@
     if (replyTarget) replyForm.setAttribute("data-pane", replyTarget);
     else replyForm.removeAttribute("data-pane");
     replyForm.classList.toggle("hidden", !replyTarget);
+    /* The Stop button rides the composer's target (S12): same pane, and
+     * disarmed whenever the target moves — an armed stop must never
+     * point at a pane the user stopped looking at. A receipt card from
+     * another pane is equally stale. */
+    if (replyTarget !== lastReplyTarget) {
+      if (stopArming) stopArming.disarm();
+      paintStopIdle();
+      hideReceipt();
+      lastReplyTarget = replyTarget;
+    }
+    if (paneStopBtn) paneStopBtn.classList.toggle("hidden", !replyTarget);
 
     var keysTarget = viewed && viewedBlocked ? viewed : null;
     /* A NEW dialog (different pane, or the pad reappearing) starts from the
@@ -1755,6 +1774,16 @@
 
   replyForm.addEventListener("submit", function (event) {
     event.preventDefault();
+    if (steerJustSent) { steerJustSent = false; return; }
+    sendComposerReply(false);
+  });
+
+  /* The composer send, VERIFIED (S12): the response carries a receipt
+   * with the closed outcome set — the card, the toast and the spoken
+   * phrase all read it. `ok:false` on a 200 means the terminal never
+   * took the text (typed_not_submitted): the phone keeps the receipt
+   * card with Submit/Discard instead of pretending it was sent. */
+  function sendComposerReply(steer) {
     var paneId = replyForm.getAttribute("data-pane");
     var text = replyInput.value.trim();
     if (!paneId || !text || replySend.disabled) return;
@@ -1766,16 +1795,33 @@
       "Este envío parece destructivo: " + destructive + ".\n\n" + text + "\n\n¿Enviar igualmente?"
     )) return;
     replySend.disabled = true;
+    if (steer) showToast("Inyectando en el turno en curso…", 3000);
+    var payload = window.Receipts
+      ? window.Receipts.replyPayload(paneId, text, steer)
+      : { pane_id: paneId, text: text };
     fetch("/pane/reply", withDeviceAuth({
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pane_id: paneId, text: text })
+      body: JSON.stringify(payload)
     }))
       .then(function (resp) {
         if (resp.ok) {
-          replyInput.value = "";
-          showToast("Respuesta enviada al agente", 3000);
-          return null;
+          return resp.json().then(function (body) {
+            /* The text left the phone either way: a surviving draft
+             * lives in the pane's input line now, and re-sending the
+             * composer text would duplicate it. */
+            replyInput.value = "";
+            var receipt = body && body.receipt;
+            if (receipt && window.Receipts) {
+              paintReceipt(receipt);
+              showToast(window.Receipts.outcomeLabel(receipt.outcome), 4000);
+              window.Receipts.speakOutcome(receipt.outcome);
+            } else {
+              hideReceipt();
+              showToast("Respuesta enviada al agente", 3000);
+            }
+            return null;
+          }, function () { return null; });
         }
         maybeOfferPairing(resp);
         return resp.json().then(
@@ -1789,7 +1835,160 @@
         showToast("No se pudo enviar: sin conexión con el brain", 6000);
       })
       .then(function () { replySend.disabled = false; });
+  }
+
+  /* Steer (S12): a deliberate secondary action, NEVER the default. The
+   * regular tap submits through the form; only pressing and HOLDING the
+   * Enviar button (~600 ms) injects into the running turn. There is no
+   * visible steer control — the long-press is the whole surface. */
+  var steerHoldTimer = null;
+  var steerJustSent = false;
+  var STEER_HOLD_MS = 600;
+
+  function cancelSteerHold() {
+    if (steerHoldTimer !== null) {
+      clearTimeout(steerHoldTimer);
+      steerHoldTimer = null;
+    }
+  }
+
+  replySend.addEventListener("pointerdown", function () {
+    cancelSteerHold();
+    steerHoldTimer = setTimeout(function () {
+      steerHoldTimer = null;
+      steerJustSent = true;
+      sendComposerReply(true);
+    }, STEER_HOLD_MS);
   });
+  ["pointerup", "pointercancel", "pointerleave"].forEach(function (type) {
+    replySend.addEventListener(type, cancelSteerHold);
+  });
+
+  /* The receipt card: text nodes only, Submit/Discard only while the
+   * draft sits typed and unsubmitted. Both follow-ups POST the receipt
+   * id — the draft's text NEVER re-sends. */
+  function paintReceipt(receipt) {
+    if (!window.Receipts || !receiptCard) return;
+    var model = window.Receipts.cardModel(receipt);
+    if (!model) { hideReceipt(); return; }
+    receiptLabel.textContent = model.label;
+    receiptDetail.textContent = model.detail ? " · " + model.detail : "";
+    receiptActions.classList.toggle("hidden", model.variant !== "typed");
+    receiptSubmitBtn.disabled = false;
+    receiptDiscardBtn.disabled = false;
+    receiptSubmitBtn.setAttribute("data-url", model.submitUrl || "");
+    receiptSubmitBtn.setAttribute("data-id", receipt.id || "");
+    receiptDiscardBtn.setAttribute("data-url", model.discardUrl || "");
+    receiptDiscardBtn.setAttribute("data-id", receipt.id || "");
+    receiptCard.classList.remove("hidden");
+  }
+
+  function hideReceipt() {
+    if (!receiptCard) return;
+    receiptCard.classList.add("hidden");
+  }
+
+  function sendReceiptFollowup(button, kind) {
+    var url = button.getAttribute("data-url");
+    var id = button.getAttribute("data-id");
+    if (!url || !id || button.disabled) return;
+    button.disabled = true;
+    fetch(url, withDeviceAuth({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(
+        kind === "discard"
+          ? window.Receipts.discardPayload(id)
+          : window.Receipts.submitPayload(id)
+      )
+    }))
+      .then(function (resp) {
+        if (resp.ok) {
+          return resp.json().then(function (body) {
+            var receipt = body && body.receipt;
+            if (receipt) {
+              paintReceipt(receipt);
+              showToast(window.Receipts.outcomeLabel(receipt.outcome), 4000);
+              window.Receipts.speakOutcome(receipt.outcome);
+            }
+            return null;
+          }, function () { return null; });
+        }
+        return resp.json().then(
+          function (body) { return body && body.detail; },
+          function () { return null; }
+        ).then(function (detail) {
+          showToast("No se pudo completar: " + (typeof detail === "string" ? detail : "error " + resp.status), 6000);
+        });
+      })
+      .catch(function () {
+        showToast("No se pudo completar: sin conexión con el brain", 6000);
+      })
+      .then(function () { button.disabled = false; });
+  }
+
+  receiptSubmitBtn.addEventListener("click", function () {
+    sendReceiptFollowup(receiptSubmitBtn, "submit");
+  });
+  receiptDiscardBtn.addEventListener("click", function () {
+    sendReceiptFollowup(receiptDiscardBtn, "discard");
+  });
+
+  /* Stop (S12): double-tap arming. The first tap arms the button for
+   * ~3 s (it says so and turns the armed color); only a second tap
+   * inside the window sends POST /pane/stop. */
+  var stopArming = window.Receipts ? window.Receipts.createStopArming(null, 3000) : null;
+  var stopDisarmTimer = null;
+  var STOP_IDLE_LABEL = "■ Detener";
+  var STOP_ARMED_LABEL = "¿Detener? Toca otra vez";
+
+  function paintStopIdle() {
+    paneStopBtn.classList.remove("armed");
+    paneStopBtn.textContent = STOP_IDLE_LABEL;
+  }
+
+  if (paneStopBtn) {
+    paneStopBtn.addEventListener("click", function () {
+      if (!stopArming) return;
+      var paneId = replyForm.getAttribute("data-pane");
+      if (!paneId) return;
+      var step = stopArming.tap();
+      if (step === "armed") {
+        paneStopBtn.classList.add("armed");
+        paneStopBtn.textContent = STOP_ARMED_LABEL;
+        if (stopDisarmTimer !== null) clearTimeout(stopDisarmTimer);
+        stopDisarmTimer = setTimeout(function () {
+          stopArming.disarm();
+          paintStopIdle();
+        }, 3000);
+        return;
+      }
+      stopArming.disarm();
+      paintStopIdle();
+      paneStopBtn.disabled = true;
+      fetch("/pane/stop", withDeviceAuth({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pane_id: paneId })
+      }))
+        .then(function (resp) {
+          if (resp.ok) {
+            showToast("Turno interrumpido", 3000);
+            return null;
+          }
+          return resp.json().then(
+            function (body) { return body && body.detail; },
+            function () { return null; }
+          ).then(function (detail) {
+            showToast("No se pudo detener: " + (typeof detail === "string" ? detail : "error " + resp.status), 6000);
+          });
+        })
+        .catch(function () {
+          showToast("No se pudo detener: sin conexión con el brain", 6000);
+        })
+        .then(function () { paneStopBtn.disabled = false; });
+    });
+  }
 
   /* Approval dialog (opencode): a blocked agent cannot be reached with a
    * prompt — herdr refuses it before writing any input — so the answer goes
@@ -1903,6 +2102,9 @@
    * reply input's anti-retarget discipline. */
   var keysBusy = false;
   var lastKeysTarget = null;
+  /* S12: the pane the composer last targeted — moving it disarms the
+   * stop button and drops the stale receipt card. */
+  var lastReplyTarget = null;
   var KEYS_HINT_DEFAULT = "El agente espera — respóndele con teclas:";
 
   function setKeysHint(text) {

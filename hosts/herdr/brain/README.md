@@ -418,6 +418,68 @@ conservative (word-boundary anchored, no false positives on look-alikes
 such as "assume"): a false positive costs one extra tap, a false negative
 costs a shell.
 
+### Verified sends, receipts, Stop and Steer (S12)
+
+A typed reply is no longer a blind send. Before `POST /pane/reply` types
+your text, the brain reads the pane screen; after the send it reads it
+again on a bounded short poll; and what the terminal actually did comes
+back as a **receipt** with a closed outcome set:
+
+| Outcome | Meaning |
+|---|---|
+| `effective` | the agent visibly took the turn (the send waited to completion) |
+| `sent` | submitted, no confirmation yet (the wait expired while the agent works) |
+| `typed_not_submitted` | the text sits **typed in the input line** and was never submitted |
+| `discarded` | the typed draft was cleared through its receipt |
+| `refused` | nothing was written (a blocked agent, or a multiplexer refusal) |
+| `unknown` | could not tell — the PWA says so explicitly, never guesses |
+
+The receipt (`{id, outcome, detail}` — detail masked by the secret
+masker, never carrying the text) rides the `200` response and is kept in
+a bounded in-memory store listed by `GET /pane/receipts?pane_id=`. **Text
+is never re-sent automatically**: a `typed_not_submitted` draft is
+finished by you, through `POST /pane/receipt/{id}/submit` (presses Enter
+— nothing else) or `POST /pane/receipt/{id}/discard` (clears the draft
+with `esc`, a key that never types a character and never executes
+anything). Both act only while the receipt is still
+`typed_not_submitted` (a `409` otherwise), both are write-classified
+behind the access gate and audited (`pane.receipt.submit` /
+`pane.receipt.discard`). A receipt whose echo survives the follow-up
+stays `typed_not_submitted` and re-offers the buttons — the read-back
+always wins over the claim.
+
+The PWA shows the outcome in Spanish next to the composer (text nodes
+only), and the spoken confirmation says «enviado» **only** for
+`effective`/`sent`; `unknown` says so out loud.
+
+**Stop** — interrupt a running turn with `POST /pane/stop {pane_id}`.
+The interrupt key comes from a per-harness table (`esc` for the
+claude/codex/opencode-style chat TUIs); a harness outside the table
+is refused with a `422` — the brain will not guess an interrupt into a
+terminal it cannot reason about. In the PWA the Stop button arms with a
+**double tap**: the first tap arms for ~3 s (the button says so), only
+the second tap inside the window sends. The voice route («para al
+agente» / «stop») is designed to propose the SAME approval gate a send
+uses — the spoken path must never bypass the verbal binding — and its
+gate and approve replay are wired and tested (`stop_agent` behind the
+gate store); advertising the tool to the model is a pending one-commit
+follow-up, held back only by baseline tests that pin the exact
+advertised tool-name set.
+
+**Steer** — inject a message into a RUNNING turn with
+`POST /pane/reply` plus `steer: true`. Accepted only for harnesses the
+steer table names (the chat TUIs that queue a mid-turn message);
+anything else is a `422` with the alternative spelled out. The PWA
+exposes steer **only** as a deliberate secondary action — press and
+hold Enviar (~0.6 s); a normal tap never steers — and there is no
+visible steer control.
+
+Compatibility: the pre-S12 mapping is unchanged — `delivered` stays
+`200 {ok: true, pane_id}` (plus the receipt), `blocked` 409,
+`unknown_pane` 404, herdr failures 502. The one honest refinement: a
+draft the terminal never took now answers `ok: false` with its receipt
+instead of pretending it was delivered.
+
 ### Key pad: answering a blocked agent's dialog
 
 That dialog is answered with **keys** instead, through `POST /pane/keys`

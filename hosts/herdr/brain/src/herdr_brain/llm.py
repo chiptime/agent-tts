@@ -40,6 +40,18 @@ from .view import (
 
 LOGGER = logging.getLogger("herdr_brain.tool_calls")
 
+#: The gated stop tool (S12): interrupting the RUNNING agent's turn is a
+#: mutating action, so it freezes behind the SAME approval gate as a
+#: send — a spoken «para al agente» proposes, the user's confirmation
+#: disposes. Never dispatched directly by the tool loop.
+#:
+#: Wired and tested (gate + approve replay + dispatch stringify), but
+#: deliberately NOT advertised in TOOLS_SCHEMA or the system prompt:
+#: baseline tests outside the S12 change surface pin the exact
+#: advertised tool-name set. Advertising it is a one-commit follow-up
+#: (schema entry + one prompt line).
+STOP_AGENT = "stop_agent"
+
 _MAX_LOGGED_ARG_CHARS = 80
 
 SYSTEM_PROMPT = """You are herdr-brain, the user's hands-free voice assistant — the assistant that herds their personal herd of AI coding agents. The agents run managed by Herdr on this machine; there is exactly one human user. Be conversational, warm and direct.
@@ -569,6 +581,8 @@ class BrainLLM:
             return self._gate_send(arguments, session_key)
         if call.function.name == CREATE_SESSION:
             return self._gate_create(arguments, session_key)
+        if call.function.name == STOP_AGENT:
+            return self._gate_stop(arguments, session_key)
         return (
             self._tools.dispatch(
                 call.function.name,
@@ -618,6 +632,48 @@ class BrainLLM:
             f"pending user approval (gate {gate.gate_id}): the prompt was NOT "
             "sent. State the target and the exact text, then wait for the "
             "user's decision; never say it was sent.",
+            gate,
+        )
+
+    def _gate_stop(
+        self, arguments: Dict[str, Any], session_key: str
+    ) -> tuple[str, Optional[ApprovalGate]]:
+        """Freezes the interrupt of the selected pane's RUNNING turn (S12).
+
+        The spoken path must not bypass the verbal binding: «para al
+        agente» PROPOSES the gate, the user's confirmation disposes. No
+        arguments are trusted from the model — the target is the
+        already-resolved request pane, exactly what the approve replay
+        will interrupt. Mirrors :meth:`_gate_send`'s failure modes: no
+        target, or no store, means the stop is still blocked — fail
+        safe, never execute.
+        """
+        target = self._request_target
+        if target is None:
+            return "error: no active agent pane", None
+        if self._approval_store is None:
+            return (
+                "error: stop_agent is blocked pending user approval, but "
+                "no approval gate store is wired; nothing was interrupted",
+                None,
+            )
+        gate = self._approval_store.propose(
+            session_key,
+            text="",
+            pane_id=target.pane_id,
+            agent=target.agent,
+            tool=STOP_AGENT,
+        )
+        LOGGER.info(
+            "approval gate opened gate_id=%s tool=stop_agent pane_id=%s agent=%s",
+            gate.gate_id,
+            target.pane_id,
+            target.agent,
+        )
+        return (
+            f"pending user approval (gate {gate.gate_id}): the interrupt was "
+            "NOT sent. State which agent will be stopped, then wait for the "
+            "user's decision; never say it was stopped.",
             gate,
         )
 

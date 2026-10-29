@@ -213,6 +213,12 @@ _WRITE_RULES = (
     ("POST", re.compile(r"^/pane/keys$")),
     ("POST", re.compile(r"^/pane/dialog/answer$")),
     ("POST", re.compile(r"^/pane/permission/reply$")),
+    # S12 verified sends: the submit/discard follow-ups type keys into a
+    # real terminal, and the interrupt stops a live turn — writes, gated
+    # and audited like the replies they finish. GET /pane/receipts stays
+    # a read (device-gated once pairing is enforced, never exempt).
+    ("POST", re.compile(r"^/pane/stop$")),
+    ("POST", re.compile(r"^/pane/receipt/[^/]+/(submit|discard)$")),
     ("POST", re.compile(r"^/approval/[^/]+/(approve|reject|resolve)$")),
     ("PATCH", re.compile(r"^/approval/[^/]+$")),
     ("POST", re.compile(r"^/devices/revoke$")),

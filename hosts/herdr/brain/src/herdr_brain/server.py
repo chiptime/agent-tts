@@ -58,7 +58,7 @@ from .consult import ConsultService
 from .herdr import MAX_SEND_KEYS, SEND_KEY_ALLOWLIST, HerdrError
 from .history import HistoryStore, default_history_path
 from .history_view import HISTORY_DEFAULT_LIMIT, clamp_limit
-from .llm import BrainLLM, BrainLLMError, TurnCancelled
+from .llm import STOP_AGENT, BrainLLM, BrainLLMError, TurnCancelled
 from .memory import DEFAULT_SESSION, MAX_MESSAGES, ConversationStore
 from .pairing import (
     ClaimRateLimiter,
@@ -67,6 +67,7 @@ from .pairing import (
     to_device_wire,
 )
 from .reader import ReaderCache, turn_id
+from .send_receipts import SendReceiptStore
 from .speech import (
     PHASE_CANCELLED,
     PHASE_COMPLETE,
@@ -323,6 +324,19 @@ def approval_payload(gate: ApprovalGate, timeout_s: int, now: Optional[float] = 
             "timeout_ms": gate.action.timeout_ms,
             "expires_in_s": max(0, math.ceil(remaining)),
         }
+    if gate.tool == STOP_AGENT:
+        # The stop gate rides the SEND card shape (the approval flow's
+        # second variant): a fixed Spanish marker instead of the frozen
+        # prompt — there is no prompt, only the interrupt about to run.
+        return {
+            "gate_id": gate.gate_id,
+            "tool": gate.tool,
+            "pane_id": gate.action.pane_id,
+            "agent": gate.action.agent,
+            "text": "⏹ detener el turno en curso",
+            "timeout_ms": gate.action.timeout_ms,
+            "expires_in_s": max(0, math.ceil(remaining)),
+        }
     return {
         "gate_id": gate.gate_id,
         "tool": gate.tool,
@@ -373,6 +387,7 @@ _VERSIONED_REFS = (
     ('src="/destructive.js"', 'src="/destructive.js?v={v}"'),
     ('src="/history.js"', 'src="/history.js?v={v}"'),
     ('src="/dialogs.js"', 'src="/dialogs.js?v={v}"'),
+    ('src="/receipts.js"', 'src="/receipts.js?v={v}"'),
     ('src="/reader.js"', 'src="/reader.js?v={v}"'),
     ('src="/toast.js"', 'src="/toast.js?v={v}"'),
     ('src="/mermaid.min.js"', 'src="/mermaid.min.js?v={v}"'),
@@ -469,10 +484,17 @@ class ApprovalPatchRequest(BaseModel):
 
 
 class PaneReplyRequest(BaseModel):
-    """User-typed reply to one exact pane (POST /pane/reply)."""
+    """User-typed reply to one exact pane (POST /pane/reply).
+
+    ``steer`` (S12) asks to inject the text into a RUNNING turn; the
+    server refuses it for harnesses outside the steer table (a 422, no
+    byte written). Default false: the plain reply stays the only
+    default path.
+    """
 
     pane_id: str = Field(min_length=1, max_length=MAX_SESSION_ID_CHARS)
     text: str = Field(min_length=1, max_length=8_000)
+    steer: bool = False
 
     @field_validator("text")
     @classmethod
@@ -480,6 +502,12 @@ class PaneReplyRequest(BaseModel):
         if not value.strip():
             raise ValueError("text must not be blank")
         return value
+
+
+class PaneStopRequest(BaseModel):
+    """POST /pane/stop body: the exact pane whose turn to interrupt."""
+
+    pane_id: str = Field(min_length=1, max_length=MAX_SESSION_ID_CHARS)
 
 
 class PaneKeysRequest(BaseModel):
@@ -756,6 +784,11 @@ def create_app(
         store.append(None, record["role"], record["text"])
     approval_store = ApprovalGateStore(timeout_s=cfg.approval_timeout_s)
 
+    # Verified-send receipts (S12): bounded, in-memory, newest first —
+    # phone-side UI state, not a log (the audit trail owns who-did-what).
+    # A restart returns to no receipts, exactly like the gates above.
+    receipt_store = SendReceiptStore()
+
     # FR-13 shared call context: the identity + selection desktop and
     # mobile hand over (see CallContextStore).
     call_context_store = CallContextStore()
@@ -957,6 +990,13 @@ def create_app(
     def dialogs_js() -> FileResponse:
         return FileResponse(
             STATIC_DIR / "dialogs.js", media_type="text/javascript",
+            headers=dict(_NO_CACHE_HEADERS),
+        )
+
+    @app.get("/receipts.js", include_in_schema=False)
+    def receipts_js() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "receipts.js", media_type="text/javascript",
             headers=dict(_NO_CACHE_HEADERS),
         )
 
@@ -1406,6 +1446,8 @@ def create_app(
         """
         if gate.tool == CREATE_SESSION:
             return _replay_create_and_report(gate, speak)
+        if gate.tool == STOP_AGENT:
+            return _replay_stop_and_report(gate, speak)
         target = tools.resolve_target(gate.action.pane_id)
         tool_result = tools.dispatch(
             SEND_TO_SESSION,
@@ -1420,6 +1462,31 @@ def create_app(
             "delivered and the agent is still working on it — say that, and do NOT "
             "offer to resend or retry (it would duplicate the prompt). "
             'Only "blocked" means the message did not go through.'
+        )
+        try:
+            result = get_llm().ask(
+                report_prompt,
+                session_id=gate.session_id,
+                pane_id=gate.action.pane_id,
+            )
+        except BrainLLMError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return shape_ask_response(result, speak=speak)
+
+    def _replay_stop_and_report(gate: ApprovalGate, speak: bool = True) -> dict:
+        """Approve execution for stop gates (S12): the frozen interrupt
+        runs against the exact pane the gate named, then the model
+        reports. A refusal outcome (unknown harness, mux failure) is
+        reported as what it is — the turn was NOT stopped."""
+        stopped = tools.stop_pane(gate.action.pane_id or "")
+        report_prompt = (
+            f"The approved interrupt ran on {gate.action.agent or 'the agent'} "
+            f"(pane {gate.action.pane_id or 'unknown'}). Result:\n\n"
+            f"{stopped['outcome']}"
+            + (f" ({stopped['detail']})" if stopped.get("detail") else "")
+            + ".\n\nReport the outcome to the user in one or two short "
+            "spoken sentences. Only 'stopped' means the turn was "
+            "interrupted; anything else means it was NOT — say that."
         )
         try:
             result = get_llm().ask(
@@ -1809,25 +1876,86 @@ def create_app(
 
     @app.post("/pane/reply")
     def pane_reply(request: Request, body: PaneReplyRequest) -> dict:
-        """Delivers a user-typed reply straight to one exact pane.
+        """Delivers a user-typed reply straight to one exact pane, VERIFIED.
 
         No LLM and no approval gate: the text is the user's own keyboard
         input. The pane must exist (an unknown one is a 404, never
         redirected); a pane already waiting at a dialog is a 409 — herdr
-        refuses that prompt before writing any input, so the detail points
-        at the dialog instead of pretending the text was refused by the
-        agent — and any herdr failure is a 502.
+        refuses that prompt before writing any input — and any herdr
+        failure is a 502.
+
+        S12 adds the read-back: the screen read before and after the send
+        classifies what the terminal actually did, and every response
+        gains a ``receipt`` (closed outcome set). The receipt never
+        re-sends text: a ``typed_not_submitted`` draft is finished with
+        the dedicated submit/discard routes below. ``steer`` asks to
+        inject into a RUNNING turn and is refused (422) for harnesses
+        outside the steer table — the plain reply stays the only default.
         """
-        result = tools.reply_to_pane(body.pane_id, body.text)
+        verified = getattr(tools, "verified_reply_to_pane", None)
+        if verified is not None:
+            result = verified(body.pane_id, body.text, steer=body.steer)
+        else:
+            # Pre-S12 tool doubles (the same hasattr convention as
+            # attach_consult): no read-back exists and steer — a
+            # capability those surfaces cannot vouch for — is refused.
+            if body.steer:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "Ese agente no admite inyectar mensajes en un turno "
+                        "en curso; envía la respuesta normal y espera a que "
+                        "termine."
+                    ),
+                )
+            result = tools.reply_to_pane(body.pane_id, body.text)
+            # A pre-S12 double models the pre-S12 surface: legacy
+            # envelope, legacy body — no receipt key is added.
         outcome = result["outcome"]
+        receipt_fields = result.get("receipt")
+        receipt = None
+        if receipt_fields is not None:
+            receipt = receipt_store.record(
+                body.pane_id,
+                receipt_fields["outcome"],
+                detail=receipt_fields["detail"],
+                text_hint=receipt_fields["text_hint"],
+            )
+        # The pane.reply audit line keeps its pinned shape for the plain
+        # reply ({"outcome", "text"}); the S12 additions ride along only
+        # when they carry NEW facts — a steer is a different send, and a
+        # draft that needs follow-up names the receipt the phone holds.
+        detail = {"outcome": outcome, "text": body.text}
+        if body.steer:
+            detail["steer"] = True
+        if receipt is not None and receipt["outcome"] in (
+            "typed_not_submitted", "refused", "unknown"
+        ):
+            detail["receipt"] = {"id": receipt["id"], "outcome": receipt["outcome"]}
         audit_log.record({
             "action": "pane.reply",
             "pane_id": body.pane_id,
             "device": audit_device(request),
-            "detail": {"outcome": outcome, "text": body.text},
+            "detail": detail,
         })
+        if outcome == "unsupported_steer":
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Ese agente no admite inyectar mensajes en un turno en "
+                    "curso; envía la respuesta normal y espera a que termine."
+                ),
+            )
         if outcome == "delivered":
-            return {"ok": True, "pane_id": body.pane_id}
+            if receipt is not None and receipt["outcome"] == "typed_not_submitted":
+                # Typed, but the terminal never took it: NOT ok — the
+                # phone keeps the composer's receipt card with Submit/
+                # Discard instead of clearing it as sent.
+                return {"ok": False, "pane_id": body.pane_id, "receipt": receipt}
+            if receipt is None:
+                # Legacy tool double: legacy body, byte for byte.
+                return {"ok": True, "pane_id": body.pane_id}
+            return {"ok": True, "pane_id": body.pane_id, "receipt": receipt}
         if outcome == "blocked":
             raise HTTPException(
                 status_code=409,
@@ -1840,6 +1968,141 @@ def create_app(
         raise HTTPException(
             status_code=status,
             detail=result.get("detail") or "No se pudo entregar la respuesta.",
+        )
+
+    @app.get("/pane/receipts")
+    def pane_receipts(
+        pane_id: Optional[str] = Query(default=None, max_length=MAX_SESSION_ID_CHARS),
+    ) -> dict:
+        """The pane's recent send receipts, newest first (S12).
+
+        Read-only and bounded like every receipt surface: an optional
+        ``pane_id`` filters, no parameter lists everything the in-memory
+        store still holds. No text ever travels — the receipt carries
+        the outcome, a masked detail and a masked text tail."""
+        return {"pane_id": pane_id, "receipts": receipt_store.list(pane_id)}
+
+    def _live_typed_receipt_or_error(receipt_id: str) -> dict:
+        """The receipt a submit/discard may act on, or its HTTP error.
+
+        Only a ``typed_not_submitted`` receipt is actionable: any other
+        outcome is a 409 (the draft is gone — finished, discarded or
+        never typed), an unknown id a 404."""
+        receipt = receipt_store.get(receipt_id)
+        if receipt is None:
+            raise HTTPException(
+                status_code=404, detail="recibo no encontrado"
+            )
+        if receipt["outcome"] != "typed_not_submitted":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Ese recibo ya no tiene un texto pendiente de enviar "
+                    f"(estado: {receipt['outcome']})."
+                ),
+            )
+        return receipt
+
+    def _resolve_receipt_and_audit(
+        request: Request, action: str, receipt: dict, result: dict
+    ) -> dict:
+        """Applies one submit/discard result to its receipt, audited.
+
+        A key failure is a 502 with the receipt UNTOUCHED (nothing was
+        written); every other outcome resolves the receipt — ``sent`` /
+        ``discarded`` on success, ``typed_not_submitted`` when the echo
+        survived (the card stays re-offerable), ``unknown`` when the
+        screen could not be read. ``ok`` is true only for the resolved
+        outcome the action wanted."""
+        outcome = result["outcome"]
+        if outcome == "error":
+            audit_log.record({
+                "action": action,
+                "pane_id": receipt["pane_id"],
+                "device": audit_device(request),
+                "detail": {"id": receipt["id"], "outcome": outcome,
+                           "reason": result.get("detail", "")},
+            })
+            raise HTTPException(
+                status_code=502,
+                detail=result.get("detail") or "No se pudo completar la acción.",
+            )
+        resolved = receipt_store.resolve(
+            receipt["id"], outcome, detail=result.get("detail", "")
+        )
+        audit_log.record({
+            "action": action,
+            "pane_id": receipt["pane_id"],
+            "device": audit_device(request),
+            "detail": {"id": receipt["id"], "outcome": outcome},
+        })
+        return {
+            "ok": outcome in ("sent", "discarded"),
+            "pane_id": receipt["pane_id"],
+            "receipt": resolved,
+        }
+
+    @app.post("/pane/receipt/{receipt_id}/submit")
+    def pane_receipt_submit(request: Request, receipt_id: str) -> dict:
+        """Presses Enter on one typed-but-not-submitted draft (S12).
+
+        The ONE follow-up the receipt protocol allows: no text is ever
+        re-sent (that would duplicate the draft) — only the commit key,
+        then the same read-back decides the outcome. The receipt flips
+        to ``sent`` when the echo left the input line, stays
+        ``typed_not_submitted`` (re-offerable) when it did not.
+        """
+        receipt = _live_typed_receipt_or_error(receipt_id)
+        result = tools.submit_typed_text(receipt["pane_id"], receipt["text_hint"])
+        return _resolve_receipt_and_audit(request, "pane.receipt.submit", receipt, result)
+
+    @app.post("/pane/receipt/{receipt_id}/discard")
+    def pane_receipt_discard(request: Request, receipt_id: str) -> dict:
+        """Clears one typed draft with the safe key recipe (S12).
+
+        ``esc`` for every harness: it never types a character and never
+        executes anything — on chat TUIs it drops the draft. The receipt
+        flips to ``discarded`` once the read-back sees the input line
+        clean; a surviving echo keeps it ``typed_not_submitted``.
+        """
+        receipt = _live_typed_receipt_or_error(receipt_id)
+        result = tools.discard_typed_text(receipt["pane_id"], "", receipt["text_hint"])
+        return _resolve_receipt_and_audit(request, "pane.receipt.discard", receipt, result)
+
+    @app.post("/pane/stop")
+    def pane_stop(request: Request, body: PaneStopRequest) -> dict:
+        """Interrupts one pane's RUNNING turn (S12).
+
+        The interrupt key comes from the per-harness table (``esc`` for
+        the claude/codex/opencode chat TUIs); a harness outside it is a
+        422 — the brain refuses to guess an interrupt into a terminal it
+        cannot reason about. Exact pane as everywhere (unknown = 404,
+        never the focused fallback), keys ride the closed allowlist, and
+        every attempt is audited.
+        """
+        result = tools.stop_pane(body.pane_id)
+        outcome = result["outcome"]
+        audit_log.record({
+            "action": "pane.stop",
+            "pane_id": body.pane_id,
+            "device": audit_device(request),
+            "detail": {"outcome": outcome, "keys": result.get("keys", [])},
+        })
+        if outcome == "stopped":
+            return {"ok": True, "pane_id": body.pane_id, "keys": result["keys"]}
+        if outcome == "unknown_pane":
+            raise HTTPException(status_code=404, detail="pane no encontrado")
+        if outcome == "unsupported_harness":
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "No sé interrumpir ese agente con seguridad; usa su "
+                    "propio atajo de teclado en la terminal."
+                ),
+            )
+        raise HTTPException(
+            status_code=502,
+            detail=result.get("detail") or "No se pudo detener el agente.",
         )
 
     @app.post("/pane/keys")

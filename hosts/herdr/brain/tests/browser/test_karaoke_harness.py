@@ -25,9 +25,12 @@ EXPECTED_DIGESTS = {
     # media URLs are credentialised at source-assignment time); then
     # for the T2 reading views (Historial + Terminal tabs, history.js);
     # then for S2 (recognized-dialog buttons above the keypad, the
-    # unread-dialog card, the digit row and dialogs.js).
-    "/": "9e4340536d041ce546415580c5243ea8d8fa8d815e045bed15ea7b3cd2f4957e",
-    "/app.js": "154c0520df3a235c44ce9981c2e031a01bd7b8afdadc5318690e10ec1c30efb2",
+    # unread-dialog card, the digit row and dialogs.js); then for S12
+    # (verified sends: the receipt card, the Stop button and the steer
+    # long-press in the composer, receipts.js).
+    "/": "ab5cf16bcb0b72a87247eaca28e85270a21f5540192d98a46bd5190ea04db242",
+    "/app.js": "effc9782fb752541821d72227793921e5784f2827e6dae8789657e070e5ea1cd",
+    "/receipts.js": "bc6b56b6e59b0a543a14c0516a752a700d4beaebc8b2d6b314651c7f3217e32e",
     "/dialogs.js": "fc756929f679082745e6dbb7eb613e5c83aecbf94d7d1130dd67c8c72e932c03",
     "/herd-group.js": "08296c7208e14dc1d5e46186b645d02089f8addef502b50eb11e61b186829674",
     "/toast.js": "47a230495fbbe8af8ed63ea0daf2e77a08f41f48911da4f9cc230ddc904fdd5d",

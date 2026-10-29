@@ -441,6 +441,54 @@
     }
     #pane-reply button { padding: 10px 16px; font-weight: 600; background: var(--chip-bg); color: var(--text); }
     #pane-reply button:disabled { opacity: 0.55; }
+    /* Verified send (S12): the receipt card tells what the terminal did.
+     * Text nodes only — the label and detail are never markup. The
+     * Submit/Discard pair appears ONLY for a typed_not_submitted draft. */
+    #pane-receipt {
+      margin: 0 10px var(--sp-2);
+      padding: var(--sp-2) var(--sp-3);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel-2);
+      color: var(--text);
+      font-size: var(--fs-sm);
+      line-height: 1.45;
+    }
+    #pane-receipt.hidden { display: none; }
+    #pane-receipt .receipt-label { font-weight: 700; }
+    #pane-receipt .receipt-detail { color: var(--muted); }
+    #pane-receipt .receipt-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: var(--sp-2);
+    }
+    #pane-receipt .receipt-actions button {
+      flex: 1;
+      min-height: 44px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--bg);
+      color: var(--text);
+      font: inherit;
+      font-weight: 600;
+    }
+    #pane-receipt .receipt-actions button:disabled { opacity: 0.55; }
+    #pane-receipt .receipt-actions button.receipt-submit { border-color: var(--accent); }
+    /* Stop (S12): double-tap arming — the first tap arms (the button says
+     * so), only the second tap inside the window sends the interrupt. */
+    #pane-stop {
+      margin: 0 10px var(--sp-2);
+      min-height: 44px;
+      width: calc(100% - 20px);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--bg);
+      color: var(--text);
+      font: inherit;
+      font-weight: 600;
+    }
+    #pane-stop.hidden { display: none; }
+    #pane-stop.armed { border-color: #ff8f6b; color: #ff8f6b; }
     /* Shown instead of the input when the agent waits at a dialog: herdr
      * refuses a TEXT prompt to a blocked agent (agent_blocked, before any
      * input is written), so its dialog is answered with KEYS (POST
@@ -2159,6 +2207,20 @@
       <input id="pane-reply-input" type="text" placeholder="Responde al agente…" autocomplete="off" aria-label="Respuesta al agente">
       <button id="pane-reply-send" type="submit">Enviar</button>
     </form>
+    <!-- Verified send receipt (S12): what the terminal actually did with
+         the reply. Submit/Discard only while a draft sits typed and
+         unsubmitted; app.js paints it with text nodes only. -->
+    <div id="pane-receipt" class="hidden" aria-live="polite">
+      <span id="pane-receipt-label" class="receipt-label"></span>
+      <span id="pane-receipt-detail" class="receipt-detail"></span>
+      <div id="pane-receipt-actions" class="receipt-actions hidden">
+        <button id="pane-receipt-submit" type="button" class="receipt-submit">Enviar ahora</button>
+        <button id="pane-receipt-discard" type="button">Descartar</button>
+      </div>
+    </div>
+    <!-- Stop (S12): interrupt the running turn. Double-tap arming: the
+         first tap arms for ~3 s, the second sends POST /pane/stop. -->
+    <button id="pane-stop" class="hidden" type="button">■ Detener</button>
     <div id="pane-reply-keys" class="hidden">
       <span id="pane-keys-hint">El agente espera — respóndele con teclas:</span>
       <div id="dialog-buttons" class="dialog-buttons hidden" role="group" aria-label="Opciones del diálogo"></div>
@@ -2365,6 +2427,7 @@
     <script src="/destructive.js"></script>
     <script src="/history.js"></script>
     <script src="/dialogs.js"></script>
+    <script src="/receipts.js"></script>
     <script src="/reader.js"></script>
     <script src="/toast.js"></script>
     <script src="/karaoke.js"></script>
