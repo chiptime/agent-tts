@@ -246,6 +246,16 @@ class CrewClient:
 
     # -- proxied reads ─────────────────────────────────────────────────────
 
+    def message(self, operation: str, payload: dict) -> object:
+        """Brain-message RPC, over the same pinned/authenticated link.
+
+        Mutations are never retried here: a lost response is not proof
+        that the receiving host did nothing.
+        """
+        if operation not in ("who", "send", "status", "cancel"):
+            raise ValueError("unknown brain-message operation")
+        return self._call("POST", f"/crew/v1/msg/{operation}", json_body=payload)
+
     def herd(self) -> object:
         return self._call("GET", "/crew/v1/herd")
 
