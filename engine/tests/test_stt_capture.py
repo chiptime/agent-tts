@@ -235,6 +235,13 @@ class TestCaptureScript:
 
 
 class TestPowerShellCaptureRun:
+    @pytest.fixture(autouse=True)
+    def _powershell_on_path(self, monkeypatch):
+        # run() resolves powershell.exe before dispatching to any runner
+        # (by design), so these runner-driven tests pin a located binary
+        # instead of depending on the host having Windows interop.
+        monkeypatch.setattr(cap_mod.shutil, "which", lambda name: "/mnt/c/powershell.exe")
+
     def test_happy_path_trims_and_reports_honest_max_duration(self):
         cfg = CaptureConfig(max_seconds=10.0)
         wav = make_wav(tone_pcm(2.0, LOUD) + tone_pcm(8.0, SILENT))
