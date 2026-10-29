@@ -1,5 +1,5 @@
  Print the deny probe message requires approval
- shell ◆ printf panel_deny_probe
+ shell ◆ printf brain_deny_probe
 
  › Allow
    Always allow
