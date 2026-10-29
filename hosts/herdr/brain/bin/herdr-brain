@@ -685,11 +685,24 @@ case "${1:-status}" in
     PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$REPO_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
       exec "$REPO_DIR/.venv/bin/python" -m herdr_brain.pairing_cli "$verb" "$@"
     ;;
+  msg|--msg)
+    # Brain messages (S13): short messages between agent panes and from
+    # the operator. Runs from inside a pane (herdr injects HERDR_ENV and
+    # HERDR_PANE_ID); pure state work under HERDR_BRAIN_STATE_DIR plus
+    # the multiplexer — no daemon, no port claims. The delivery tick
+    # rides the running server's watcher; the CLI also ticks on send.
+    shift
+    load_env
+    ensure_venv
+    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$REPO_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
+      exec "$REPO_DIR/.venv/bin/python" -m herdr_brain.walky "$@"
+    ;;
   help|--help|-h)
-    echo "Usage: bin/herdr-brain [--no-first-run] [status|url|call|restart|stop|first-run|doctor|pair|devices|_daemon|_daemon-supervised]"
+    echo "Usage: bin/herdr-brain [--no-first-run] [status|url|call|restart|stop|first-run|doctor|pair|devices|msg|_daemon|_daemon-supervised]"
     echo "  call   open the voice-call UI in the desktop browser (HERDR_BRAIN_BROWSER overrides the opener)"
     echo "  pair   mint a one-time code: the phone spends it in Ajustes to enrol this device (write access turns on with the first pairing)"
     echo "  devices {list|revoke <label>}   show paired devices, or drop one (applies without a restart)"
+    echo "  msg    {who|send|reply|inbox|status|cancel}   brain messages between agent panes (run from inside a pane)"
     ;;
   *)
     load_env
