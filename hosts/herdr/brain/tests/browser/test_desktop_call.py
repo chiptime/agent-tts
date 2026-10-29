@@ -39,6 +39,7 @@ for _name in (
     "karaoke.js", "pairing.js", "destructive.js", "history.js", "dialogs.js",
     "receipts.js", "push.js",
     "i18n.js", "i18n/es.js", "i18n/en.js", "settings.js", "updates.js", "dock.js",
+    "mermaid.min.js", "mermaid-viewer.js", "tts-engine.js",
 ):
     if (STATIC / _name).is_file():
         STATIC_FILES["/" + _name] = _name
