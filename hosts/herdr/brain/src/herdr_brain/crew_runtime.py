@@ -163,6 +163,13 @@ class CrewGateway:
         client = self._clients.get(peer)
         if client is None:
             kwargs: dict = {"secret_provider": self._secret_provider, "now": self._now}
+            # This host's own crew certificate: the peer's listener
+            # requires it and its two-factor check reads its pin.
+            tls_dir = self._state_dir / CREW_TLS_DIRNAME
+            own_cert, own_key = tls_dir / "crew.crt", tls_dir / "crew.key"
+            if own_cert.exists() and own_key.exists():
+                kwargs["client_cert"] = own_cert
+                kwargs["client_key"] = own_key
             if self._transport_factory is not None:
                 kwargs["transport"] = self._transport_factory(peer, entry["url"], cert_pem)
             client = CrewClient(peer, entry["url"], cert_pem, **kwargs)

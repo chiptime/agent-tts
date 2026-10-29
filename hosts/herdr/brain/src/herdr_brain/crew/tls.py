@@ -72,7 +72,9 @@ def pin_of_pem(pem: str) -> str:
     return pin_of_der(pem_to_der(pem))
 
 
-def pinned_client_context(cert_pem: str) -> ssl.SSLContext:
+def pinned_client_context(
+    cert_pem: str, client_cert=None, client_key=None
+) -> ssl.SSLContext:
     """A client SSLContext that trusts EXACTLY one certificate.
 
     The pinned certificate is loaded as the only trust anchor and
@@ -81,6 +83,10 @@ def pinned_client_context(cert_pem: str) -> ssl.SSLContext:
     hostname matching. A different server certificate fails the
     handshake; a pin check in the application layer is never reached
     because the TLS layer already refused.
+
+    ``client_cert``/``client_key`` are THIS host's crew certificate:
+    the listener requires a client certificate and the two-factor check
+    reads its pin, so a crew call without it authenticates as nobody.
     """
     pem_to_der(cert_pem)  # fail early on a bad PEM, before any context
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
@@ -89,6 +95,8 @@ def pinned_client_context(cert_pem: str) -> ssl.SSLContext:
     context.check_hostname = False  # the pin is the identity, not the name
     context.verify_mode = ssl.CERT_REQUIRED
     context.load_verify_locations(cadata=cert_pem)
+    if client_cert is not None and client_key is not None:
+        context.load_cert_chain(str(client_cert), keyfile=str(client_key))
     return context
 
 
