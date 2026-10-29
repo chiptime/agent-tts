@@ -74,6 +74,12 @@
   var receiptSubmitBtn = $("pane-receipt-submit");
   var receiptDiscardBtn = $("pane-receipt-discard");
   var paneStopBtn = $("pane-stop");
+  /* Brain message (S13): the small operator composer for the viewed pane. */
+  var paneMsgBtn = $("pane-msg");
+  var paneMsgForm = $("pane-msg-form");
+  var paneMsgInput = $("pane-msg-input");
+  var paneMsgSend = $("pane-msg-send");
+  var paneMsgCancel = $("pane-msg-cancel");
   var permissionBox = $("pane-permission");
   var permissionWhat = $("pane-permission-what");
   var permissionOnce = $("pp-once");
@@ -505,6 +511,10 @@
     settingsOpen = true;
     settingsSheet.classList.add("open");
     settingsSheet.removeAttribute("inert");
+    /* The Avisos push card refreshes here, not at boot (S5): the card
+     * answers to the operator looking at it, and a closed sheet costs
+     * no push traffic. */
+    if (pushUI) pushUI.refresh();
     try { history.pushState({ herdrSettings: true }, ""); } catch (err) { /* non-http */ }
     try { settingsCloseBtn.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
   }
@@ -1758,6 +1768,15 @@
     }
     if (paneStopBtn) paneStopBtn.classList.toggle("hidden", !replyTarget);
 
+    /* Brain message (S13): addressable whenever the viewed pane has a
+     * live agent session (the walky address pins that session — a
+     * replaced agent refuses the message instead of receiving it).
+     * Offered for BLOCKED panes too: the delivery gate holds the
+     * message until the pane is idle again, which is the whole point
+     * of a message versus a typed reply. */
+    var msgSession = (view && view.status && view.status.session_id) || null;
+    updateMsgTarget(viewed && msgSession ? { pane: viewed, session: msgSession } : null);
+
     var keysTarget = viewed && viewedBlocked ? viewed : null;
     /* A NEW dialog (different pane, or the pad reappearing) starts from the
      * neutral hint; the acknowledgement of the last key must survive polls. */
@@ -1987,6 +2006,96 @@
           showToast("No se pudo detener: sin conexión con el brain", 6000);
         })
         .then(function () { paneStopBtn.disabled = false; });
+    });
+  }
+
+  /* Brain message, operator half (S13): ✉ Mensaje opens a small
+   * composer that sends through POST /msg/send, addressed to
+   * pane#session — the session token pins WHICH conversation the
+   * operator meant, so a replaced agent refuses the message instead of
+   * a stranger receiving it. The walky delivery gate holds it while the
+   * receiver is busy and types it when idle; the outcome toast speaks
+   * that honestly. Text nodes only. */
+  var msgTarget = null;
+
+  function updateMsgTarget(target) {
+    var changed = (target && target.pane) !== (msgTarget && msgTarget.pane);
+    msgTarget = target;
+    if (paneMsgBtn) paneMsgBtn.classList.toggle("hidden", !target);
+    if (changed) closeMsgComposer();
+  }
+
+  function closeMsgComposer() {
+    if (!paneMsgForm) return;
+    paneMsgForm.classList.add("hidden");
+    if (paneMsgInput) paneMsgInput.value = "";
+    if (paneMsgSend) paneMsgSend.disabled = false;
+  }
+
+  function msgOutcomeToast(message) {
+    var lines = {
+      typed: "Mensaje entregado al agente",
+      queued: "Mensaje en camino al agente",
+      held: "El agente está ocupado — se entregará cuando esté libre (máx. 60 min)",
+      waiting_in_inbox: "El agente no se puso libre; el mensaje quedó en su bandeja"
+    };
+    var line = lines[message.state] || ("Mensaje " + (message.state || "enviado"));
+    if (message.state === "refused" && message.reason) line = "No se envió: " + message.reason;
+    showToast(line, 5000);
+  }
+
+  if (paneMsgBtn) {
+    paneMsgBtn.addEventListener("click", function () {
+      if (!msgTarget) return;
+      if (paneMsgForm.classList.contains("hidden")) {
+        paneMsgForm.classList.remove("hidden");
+        if (paneMsgInput) paneMsgInput.focus();
+      } else {
+        closeMsgComposer();
+      }
+    });
+  }
+  if (paneMsgCancel) {
+    paneMsgCancel.addEventListener("click", closeMsgComposer);
+  }
+  if (paneMsgForm) {
+    paneMsgForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      if (!msgTarget || paneMsgSend.disabled) return;
+      var text = paneMsgInput.value.trim();
+      if (!text) return;
+      paneMsgSend.disabled = true;
+      fetch("/msg/send", withDeviceAuth({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          address: msgTarget.pane + "#" + msgTarget.session,
+          body: text
+        })
+      }))
+        .then(function (resp) {
+          if (resp.ok) {
+            return resp.json().then(function (body) {
+              msgOutcomeToast(body || {});
+              closeMsgComposer();
+              return null;
+            }, function () { return null; });
+          }
+          return resp.json().then(
+            function (body) { return body && body.detail; },
+            function () { return null; }
+          ).then(function (detail) {
+            showToast(
+              "No se pudo enviar el mensaje: " +
+              (typeof detail === "string" ? detail : "error " + resp.status),
+              6000
+            );
+          });
+        })
+        .catch(function () {
+          showToast("No se pudo enviar el mensaje: sin conexión con el brain", 6000);
+        })
+        .then(function () { paneMsgSend.disabled = false; });
     });
   }
 
@@ -4325,6 +4434,30 @@
       }
     });
     pairingUI.refresh();
+  }
+
+  /* Web Push card (S5): mounts inside Ajustes below the pairing card.
+   * Subscribes through the service worker's PushManager with the
+   * brain's public key; every request rides the same authenticated
+   * wrapper (the server attributes the subscription to this paired
+   * device). Refreshed when Ajustes OPENS — the card answers to the
+   * operator looking at it, and the boot poll stays free of push
+   * traffic. Fail-soft by design: a brain without push keys, a browser
+   * without service workers — the card explains, the call goes on. */
+  var pushUI = null;
+  if (window.Push) {
+    pushUI = window.Push.createPushUI({
+      request: function (url, options, timeoutMs) {
+        return fetchWithTimeout(url, options, timeoutMs || 15000);
+      },
+      getRegistration: function () {
+        if (!("serviceWorker" in navigator)) return Promise.resolve(null);
+        return navigator.serviceWorker.getRegistration().catch(function () {
+          return null;
+        });
+      },
+      showToast: showToast
+    });
   }
 
   function approvalSetState(state) {

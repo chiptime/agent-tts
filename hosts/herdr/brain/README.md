@@ -284,6 +284,18 @@ curl -N localhost:8741/events
 #          "label":"opencode repo","text":"opencode repo terminó: Migración aplicada",
 #          "audio_url":"/audio/ann-<hex>.mp3"}
 
+# web push (S5): the public key the PWA subscribes with (null = soft-off)
+curl -s localhost:8741/push/key
+# → {"enabled":true,"public_key":"BJyWsP1x…"}
+# writes (device-gated + audited): POST /push/subscribe {endpoint,keys,…},
+# POST /push/unsubscribe {endpoint}, POST /push/test
+
+# brain messages (S13): operator send + one pane's inbox
+curl -s localhost:8741/msg/send -H 'content-type: application/json' \
+     -d '{"address":"w1:p2#ses_…","body":"¿cómo va?"}'
+# → {"id":"bm_ab12…","state":"typed","reason":""}
+curl -s "localhost:8741/msg/inbox?pane_id=w1:p2"
+
 
 curl -s "localhost:8741/view?pane_id=w1:p2"   # any herd member (default: focused)
 
@@ -374,6 +386,44 @@ announcement audio only (a silent toast still appears); chat answers always
 play. Install note: if the phone never plays announcements, tap Call once
 after reload — browsers require one gesture per session before autoplay.
 
+### Web Push (avisos push)
+
+The same watcher that feeds SSE also feeds **Web Push** (VAPID, S5): when
+the call is closed and the phone is idle, blocked/done transitions still
+reach the lock screen. ntfy stays as it is (its approval action buttons
+keep `HERDR_BRAIN_APPROVAL_TOKEN`); Web Push is the brain's own channel,
+end-to-end encrypted to each subscribed phone.
+
+- **Keys**: one VAPID pair per brain, in `<state-dir>/vapid.json` (0600) or
+  the `HERDR_BRAIN_VAPID_*` environment. Without keys the server runs
+  **soft-off**: every route works, nothing sends. An operator who already
+  holds a pair imports it — `herdr-brain push import <dotenv-path>` prints
+  **only the public key** (the private half never crosses a terminal);
+  `herdr-brain push list` shows subscribed endpoints and
+  `herdr-brain push test` sends one round-trip notification per device.
+- **Coalescing and retraction**: transitions inside a ~2 s window collapse
+  into one summary per kind (one agent is named, several are counted). A
+  pane handled inside the window never reaches the phone; once delivered,
+  the slot retracts (`Resuelto`) or is replaced by whoever still needs you.
+  A blocked notification carries the **blocking question** as its body.
+- **Prompt-cache warning**: a pane idle too long gets one heads-up before
+  its hot context dies (5 min TTL, 1 min margin), once per idle period.
+  The watcher's poll supplies the activity estimate — no second timer.
+- **PWA**: Ajustes → **Avisos push** (Activar / Probar / Desactivar).
+  Subscribing uses the service worker's PushManager with the brain's
+  public key and the device bearer, so the server attributes the
+  subscription to the paired device (write-gated, audited).
+- **Gate buttons focus, never approve**: a blocked notification may carry
+  Aprobar/Rechazar actions, but the service worker deliberately **never
+  answers them itself** — it holds no credential (the device bearer lives
+  in the page's localStorage; shipping the server's approval token inside
+  a payload would put a write secret on a weaker surface). Every tap only
+  focuses or opens the PWA on that gate; the decision then happens in the
+  approval card, behind the access gate, like every other write.
+- **Fail-closed store**: a corrupt `push-subscriptions.json` is never
+  reset — subscribe answers a 500 and not one byte changes until the
+  operator repairs it (the file holds per-device delivery keys).
+
 ### Pending-action detection (heuristic)
 
 `/view.pending` and the LLM hint come from `detect_pending`, which is
@@ -458,13 +508,11 @@ claude/codex/opencode-style chat TUIs); a harness outside the table
 is refused with a `422` — the brain will not guess an interrupt into a
 terminal it cannot reason about. In the PWA the Stop button arms with a
 **double tap**: the first tap arms for ~3 s (the button says so), only
-the second tap inside the window sends. The voice route («para al
-agente» / «stop») is designed to propose the SAME approval gate a send
-uses — the spoken path must never bypass the verbal binding — and its
-gate and approve replay are wired and tested (`stop_agent` behind the
-gate store); advertising the tool to the model is a pending one-commit
-follow-up, held back only by baseline tests that pin the exact
-advertised tool-name set.
+the second tap inside the window sends. **Stop also works by voice**
+(«para al agente» / «stop»): the `stop_agent` tool is advertised to the
+model as a **gated** action — the spoken path proposes the SAME approval
+gate a send uses (never bypassing the verbal binding), and the user's
+confirmation executes the frozen interrupt through the approve replay.
 
 **Steer** — inject a message into a RUNNING turn with
 `POST /pane/reply` plus `steer: true`. Accepted only for harnesses the
@@ -602,6 +650,28 @@ A blocked pane whose dialog is **not** opencode's — claude, codex, agy —
 keeps the key pad above: those dialogs are answered with deliberate key
 presses, one tap at a time, never auto-answered.
 
+### Brain messages (`herdr-brain msg`, S13)
+
+Short messages between agent panes, and from the operator, delivered by
+typing one header line into the **idle** receiver's pane. An address is
+`<pane>#<session-token>` — the token pins which conversation was meant,
+so a replaced agent refuses the message instead of a stranger reading it.
+Messages never confer authority: the header always says who spoke.
+
+- **From the PWA**: the cockpit's **✉ Mensaje** button (shown when the
+  viewed pane has a live agent session) sends through `POST /msg/send`
+  with the device's label as the sender — write-gated and audited, with
+  the walky service owning delivery. A busy receiver is **held**, not
+  dropped: the message types itself when the pane goes idle, up to 60
+  minutes, then waits in the receiver's inbox. The toast speaks that
+  honestly (delivered / held / refused with the server's reason).
+- **From a pane**: `herdr-brain msg who|send|reply|inbox|status|cancel`
+  (run inside a herdr pane — the pane environment is the identity).
+- **Anti-loop rails**: 4000-char cap, 30 messages per sender and 6 per
+  pair per 10 minutes, a 4-hop reply-chain limit, and no self-sends.
+- **Delivery**: the running server's watcher poll drives the delivery
+  tick (no second timer); the CLI also ticks on send.
+
 ## Device pairing and the access gate
 
 Every route runs behind a fail-closed access gate (device pairing, F1), and
@@ -733,7 +803,10 @@ the `0700` state dir — it may echo reply text — and a line looks like:
   `gate_id`, `tool` and the revision the decision applied to; a voice
   approval via spoken proof carries `spoken: true`), the ntfy
   `approval.action` plus its `approval.replay` outcome (approve and its
-  execution are decoupled in time), `pair`, `device.revoke`, and one
+  execution are decoupled in time), `pair`, `device.revoke`, the push
+  writes (`push.subscribe`, `push.unsubscribe`, `push.test` — the
+  endpoint is metadata; the delivery keys never leave the store), the
+  operator message send (`msg.send`, with a masked preview), and one
   `ask` line per turn with `chars` (the utterance **length**, never the
   transcript). The `device` field is the paired-device label from the
   access gate and is omitted on channels that carry no identity (ntfy).
@@ -858,6 +931,7 @@ payloads).
 | `read_transcript(n_turns)` | read | recent user/assistant turns (preferred for Q&A) |
 | `read_screen(n_lines)` | read | visible terminal text (fallback) |
 | `send_to_session(text, timeout_ms?)` | **write** | forward new work, wait for completion |
+| `stop_agent` | **write, gated** | interrupt the selected session's running turn; proposes the approval gate, executes on confirmation |
 
 Every endpoint and tool is **target-aware**: pass `pane_id` (/view query
 param, /ask body field) to operate on any agent in the herd; the default is

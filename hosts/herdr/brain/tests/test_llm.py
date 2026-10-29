@@ -207,6 +207,8 @@ class TestRoutingPolicy:
             "get_followup_context", "end_followup",
             # Voice dialog answering (S9): keys stay server-mapped.
             "answer_dialog",
+            # S12 voice remainder: the gated interrupt, advertised.
+            "stop_agent",
         }
         system = first["messages"][0]["content"]
         assert system.startswith(SYSTEM_PROMPT)
@@ -420,6 +422,13 @@ class TestPendingHint:
         assert "answer_dialog" in SYSTEM_PROMPT
         assert "exact words" in SYSTEM_PROMPT
         assert "never choose or press anything yourself" in SYSTEM_PROMPT
+
+    def test_stop_agent_is_advertised_in_the_static_prompt(self):
+        """S12 voice remainder: the gated interrupt is now part of the
+        advertised surface — the prompt names the tool AND repeats that
+        it only ever proposes, the user's confirmation disposes."""
+        assert "stop_agent" in SYSTEM_PROMPT
+        assert "interrupt the running turn" in SYSTEM_PROMPT
 
 
 class TestSelection:

@@ -23,6 +23,12 @@ Behavioral guarantees:
   inside ``ATTENTION_WINDOW_S`` AND a pane is blocked, the next wait
   shortens to ``FAST_POLL_INTERVAL_S``. No per-client timer exists —
   attention is deduced from the hub, and it decays by itself.
+- Notifier hook (S5/S13): an OPTIONAL callback object riding the same
+  poll — no second timer. It hears every announced transition (with the
+  blocking question the digest already extracted), every pane that
+  leaves blocked/done, and one ``tick`` per cycle with each live pane's
+  last-activity estimate. The watcher owns the resilience rule: a
+  notifier that raises never breaks polling.
 """
 
 from __future__ import annotations
@@ -150,6 +156,7 @@ class AgentWatcher:
         clock: Callable[[], float] = time.monotonic,
         poll_interval_s: float = POLL_INTERVAL_S,
         debounce_s: float = DEBOUNCE_S,
+        notifier=None,
     ):
         self._settings = settings
         self._herdr = herdr or create_mux(settings)
@@ -160,6 +167,15 @@ class AgentWatcher:
         self._debounce = debounce_s
         self._baseline: Optional[Dict[str, str]] = None
         self._last_announced: Dict[Tuple[str, str], float] = {}
+        # Notifier hook (S5/S13): structural duck type — transition /
+        # handled / tick. Optional on purpose: the watcher's own tests
+        # (and any embedding) construct it bare.
+        self._notifier = notifier
+        # Last-activity estimate per pane (the watcher's clock domain):
+        # refreshed while a pane works or changes state, frozen while it
+        # idles. This is the S5 cache-warning feed — an honest proxy,
+        # since the multiplexer exposes no activity timestamps.
+        self._last_activity: Dict[str, float] = {}
         # Attention (doc 05 cadence): timestamp of the last poll that saw
         # a live SSE subscriber. ``-inf`` means nobody has watched since
         # the watcher was created.
@@ -216,10 +232,25 @@ class AgentWatcher:
         # refresh the attention window this cycle (doc 05 cadence).
         if self.hub.subscriber_count() > 0:
             self._last_attention = self._clock()
+        now_ts = self._clock()
         current = {agent.pane_id: agent for agent in agents}
+
+        # Activity estimate (S5): a working pane is active by definition,
+        # and ANY state change is activity — both refresh the stamp an
+        # idle pane leaves frozen.
+        for pane_id, agent in current.items():
+            if (
+                agent.status == "working"
+                or self._baseline is None
+                or self._baseline.get(pane_id) != agent.status
+            ):
+                self._last_activity[pane_id] = now_ts
+        for gone in self._last_activity.keys() - current.keys():
+            self._last_activity.pop(gone, None)
 
         if self._baseline is None:
             self._baseline = {pid: agent.status for pid, agent in current.items()}
+            self._notify_tick(current)
             return []
 
         produced: List[dict] = []
@@ -233,26 +264,91 @@ class AgentWatcher:
             if now_ts - self._last_announced.get(key, float("-inf")) < self._debounce:
                 continue
             self._last_announced[key] = now_ts
-            announcement = self._build_announcement(agent)
+            label, text, question = self._digest(agent)
+            announcement = self._build_announcement(agent, label, text)
             self.hub.publish(announcement)
             produced.append(announcement)
+            # Same decision site as the SSE publish above: a debounced
+            # repeat stays silent on BOTH channels. No gate id here —
+            # approval gates belong to the /ask flow, not the watcher.
+            self._notify(
+                "transition",
+                pane_id,
+                label,
+                agent.status,
+                text=text,
+                question=question,
+            )
+
+        # State-driven handled (S5 retraction): a pane that no longer
+        # needs the operator closes its push slot — also when its
+        # blocked transition was debounced, and also when the pane
+        # vanished entirely.
+        for pane_id, status in self._baseline.items():
+            if status not in ANNOUNCE_STATUSES:
+                continue
+            if current.get(pane_id, None) is None or (
+                current[pane_id].status != status
+            ):
+                self._notify("handled", pane_id)
 
         self._baseline = {pid: agent.status for pid, agent in current.items()}
         self._cleanup_old_audio()
+        self._notify_tick(current)
         return produced
+
+    # -- notifier fan-out ---------------------------------------------------
+
+    def _notify(self, method: str, *args, **kwargs) -> None:
+        """One notifier call that can never break the poll cycle."""
+        if self._notifier is None:
+            return
+        try:
+            getattr(self._notifier, method)(*args, **kwargs)
+        except Exception:  # noqa: BLE001 — resilience rule of this hook
+            return
+
+    def _notify_tick(self, current: Dict[str, AgentInfo]) -> None:
+        """One per-poll beat: the live panes with their activity stamps."""
+        if self._notifier is None:
+            return
+        panes = [
+            (
+                pane_id,
+                agent_label(agent),
+                self._last_activity.get(pane_id, self._clock()),
+            )
+            for pane_id, agent in current.items()
+        ]
+        self._notify("tick", panes=panes)
 
     # -- digest building ---------------------------------------------------
 
-    def _build_announcement(self, agent: AgentInfo) -> dict:
+    def _digest(self, agent: AgentInfo) -> Tuple[str, str, Optional[str]]:
+        """The announcement's three facts: speakable label, the spoken
+        digest text, and the raw blocking question (blocked only — the
+        pending excerpt or first screen line, WITHOUT the label prefix;
+        push notifications carry it as their body)."""
         label = agent_label(agent)
+        if agent.status == "blocked":
+            question = self._blocked_detail(agent)
+            return label, f"{label} necesita tu atención: {question}", question
+        return label, f"{label} terminó: {self._done_detail(agent)}", None
+
+    def _build_announcement(
+        self,
+        agent: AgentInfo,
+        label: Optional[str] = None,
+        text: Optional[str] = None,
+    ) -> dict:
         # Audio/visual parity (product decision 2026-09-25): the SAME digest
         # string is the SSE text payload and the spoken announcement, so
         # what you hear is exactly what you read. The replay button (🔊
         # Escuchar) re-synthesizes this same string through POST /tts.
-        if agent.status == "blocked":
-            text = f"{label} necesita tu atención: {self._blocked_detail(agent)}"
-        else:
-            text = f"{label} terminó: {self._done_detail(agent)}"
+        # ``label``/``text`` arrive pre-computed from _digest so a poll
+        # reads the screen ONCE per transition (the push hook reuses them).
+        if label is None or text is None:
+            label, text, _ = self._digest(agent)
 
         audio_url: Optional[str] = None
         try:

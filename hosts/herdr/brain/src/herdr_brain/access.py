@@ -222,6 +222,13 @@ _WRITE_RULES = (
     ("POST", re.compile(r"^/approval/[^/]+/(approve|reject|resolve)$")),
     ("PATCH", re.compile(r"^/approval/[^/]+$")),
     ("POST", re.compile(r"^/devices/revoke$")),
+    # S5 web push: subscribing/unsubscribing changes which phones the
+    # brain may wake, and a transport test IS a delivery — all three are
+    # writes behind the device gate and the audit log.
+    ("POST", re.compile(r"^/push/(subscribe|unsubscribe|test)$")),
+    # S13 operator messages: the send types into a real pane (through
+    # the walky delivery gate). The inbox read stays a read.
+    ("POST", re.compile(r"^/msg/send$")),
     ("POST", re.compile(r"^/ask$")),
     ("POST", re.compile(r"^/transcribe$")),
     ("POST", re.compile(r"^/reset$")),

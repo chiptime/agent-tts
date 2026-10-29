@@ -489,6 +489,35 @@
     }
     #pane-stop.hidden { display: none; }
     #pane-stop.armed { border-color: #ff8f6b; color: #ff8f6b; }
+    /* Brain message (S13): the operator's small composer, hidden until
+     * ✉ Mensaje opens it. Same visual language as the reply composer. */
+    #pane-msg {
+      margin: 0 10px var(--sp-2);
+      min-height: 44px;
+      width: calc(100% - 20px);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--bg);
+      color: var(--text);
+      font: inherit;
+      font-weight: 600;
+    }
+    #pane-msg.hidden { display: none; }
+    #pane-msg-form { display: flex; gap: 8px; margin: 0 10px var(--sp-2); }
+    #pane-msg-form.hidden { display: none; }
+    #pane-msg-form input {
+      flex: 1;
+      min-width: 0;
+      font: inherit;
+      min-height: 44px;
+      padding: var(--sp-2) var(--sp-3);
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: var(--bg);
+      color: var(--text);
+    }
+    #pane-msg-form button { padding: 10px 16px; font-weight: 600; background: var(--chip-bg); color: var(--text); }
+    #pane-msg-form button:disabled { opacity: 0.55; }
     /* Shown instead of the input when the agent waits at a dialog: herdr
      * refuses a TEXT prompt to a blocked agent (agent_blocked, before any
      * input is written), so its dialog is answered with KEYS (POST
@@ -2179,6 +2208,17 @@
       background: var(--panel-2); color: var(--text);
       font-size: 13px; cursor: pointer;
     }
+    /* Web Push card (S5): rides the pairing box's visual language. */
+    .push-title { font-size: 13px; font-weight: 700; color: var(--text); }
+    .push-status { font-size: 13px; color: var(--muted); }
+    .push-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .push-actions button {
+      min-height: 40px; padding: 0 12px;
+      border: 1px solid var(--line); border-radius: 10px;
+      background: var(--panel-2); color: var(--text);
+      font-size: 13px; cursor: pointer;
+    }
+    .push-actions button:disabled { opacity: 0.55; }
   </style>
 </head>
 <body>
@@ -2221,6 +2261,15 @@
     <!-- Stop (S12): interrupt the running turn. Double-tap arming: the
          first tap arms for ~3 s, the second sends POST /pane/stop. -->
     <button id="pane-stop" class="hidden" type="button">■ Detener</button>
+    <!-- Brain message to this pane (S13): opens the small operator
+         composer below; it sends through POST /msg/send addressed to
+         pane#session, held until the receiver is idle. Text nodes only. -->
+    <button id="pane-msg" class="hidden" type="button">✉ Mensaje</button>
+    <form id="pane-msg-form" class="hidden">
+      <input id="pane-msg-input" type="text" placeholder="Mensaje para el agente…" autocomplete="off" aria-label="Mensaje de operador al agente">
+      <button id="pane-msg-send" type="submit">Enviar</button>
+      <button id="pane-msg-cancel" type="button">Cancelar</button>
+    </form>
     <div id="pane-reply-keys" class="hidden">
       <span id="pane-keys-hint">El agente espera — respóndele con teclas:</span>
       <div id="dialog-buttons" class="dialog-buttons hidden" role="group" aria-label="Opciones del diálogo"></div>
@@ -2349,10 +2398,14 @@
         <button id="pending-open" type="button" title="Ver los avisos pendientes">🔔 Pendientes (<span id="pending-menu-count">0</span>)</button>
       </div>
       <!-- Device pairing (F1 device pairing): pairing.js builds the card
-           (estado + código + etiqueta + lista de dispositivos) inside
-           #pairing-box. The code is minted on the operator's terminal
-           (bin/herdr-brain pair); this card only spends it. -->
+            (estado + código + etiqueta + lista de dispositivos) inside
+            #pairing-box. The code is minted on the operator's terminal
+            (bin/herdr-brain pair); this card only spends it. -->
       <div id="pairing-box" class="pairing-box" aria-live="polite"></div>
+      <!-- Web Push (S5): push.js builds the "Avisos push" card (estado +
+           Activar/Desactivar/Probar) inside #push-box, subscribing via
+           the service worker's PushManager with the brain's public key. -->
+      <div id="push-box" class="pairing-box" aria-live="polite"></div>
     </div>
 
   </section>
@@ -2428,6 +2481,7 @@
     <script src="/history.js"></script>
     <script src="/dialogs.js"></script>
     <script src="/receipts.js"></script>
+    <script src="/push.js"></script>
     <script src="/reader.js"></script>
     <script src="/toast.js"></script>
     <script src="/karaoke.js"></script>

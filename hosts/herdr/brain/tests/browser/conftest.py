@@ -56,6 +56,14 @@ INIT_SCRIPT = r"""
     }
     window.EventSource = FixtureEventSource;
     window.SpeechRecognition = window.webkitSpeechRecognition = FixtureRecognition;
+    // Web Push boundary (S5): a real phone starts at "default" — the
+    // blocked-SW harness context reports "denied", which the Avisos
+    // card would render as a browser problem it does not have. The
+    // push-card tests stub requestPermission per click.
+    if (typeof Notification === "undefined" || !Notification.permission ||
+        Notification.permission === "denied") {
+        window.Notification = { permission: "default" };
+    }
     if (navigator.serviceWorker) {
         Object.defineProperty(navigator.serviceWorker, 'register', {configurable: true, value: () =>
             Promise.reject(new DOMException('Service workers are blocked in this harness', 'SecurityError'))});
@@ -272,7 +280,7 @@ class KaraokeHarness:
             "manifest.webmanifest", "icon.svg", "karaoke.js",
             "mermaid.min.js", "mermaid-viewer.js", "tts-engine.js",
             "pairing.js", "destructive.js", "history.js", "dialogs.js",
-            "receipts.js",
+            "receipts.js", "push.js",
         ):
             if (STATIC / name).is_file():
                 self.static["/" + name] = name
@@ -293,6 +301,11 @@ class KaraokeHarness:
         # pairing card runs. Default keeps every legacy test on the
         # unpaired (unenforced) stance — exactly the pre-F1 behavior.
         self.respond("/devices", {"enforced": False, "current": None, "devices": []})
+        # Web Push (S5): the boot /push/key poll the Avisos card runs.
+        # Default keeps every legacy test on the soft-off stance (no
+        # VAPID keys) — the card renders its operator hint and nothing
+        # subscribes.
+        self.respond("/push/key", {"enabled": False, "public_key": None})
         # FR-13 shared call context: default payload keeps every legacy
         # test on its locally-minted session (call_id null = no
         # adoption); the desktop/handover tests override these routes

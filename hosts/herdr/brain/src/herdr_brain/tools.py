@@ -1967,13 +1967,25 @@ TOOLS_SCHEMA = [
             },
         },
     },
-    # S12 note: the stop_agent tool (gated interrupt of the running turn)
-    # is implemented and tested at the gate and replay level (llm.py
-    # _gate_stop, server replay) but is deliberately NOT advertised here
-    # yet: the exact TOOLS_SCHEMA name set is pinned by baseline tests
-    # outside this change's surfaces. Wiring the voice utterance
-    # «para al agente» end to end needs exactly this entry plus the
-    # system-prompt line — a one-commit follow-up.
+    # S12 voice remainder: the gated interrupt of the running turn is
+    # advertised at last (gate + approve replay were already wired in
+    # llm.py/_gate_stop and the server's stop replay). No arguments are
+    # model-trusted — the gate freezes the REQUEST's target pane.
+    {
+        "type": "function",
+        "function": {
+            "name": "stop_agent",
+            "description": (
+                "GATED (never runs on the spot): interrupts the RUNNING "
+                "turn of the selected session. Use when the user asks to "
+                "stop the agent («para al agente», «stop»); the interrupt "
+                "is frozen behind the same user approval gate as a send — "
+                "propose it, state which agent will be stopped, and wait "
+                "for the user's confirmation. Never narrate it as done."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
     {
         "type": "function",
         "function": {

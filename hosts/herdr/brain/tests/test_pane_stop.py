@@ -118,20 +118,20 @@ def test_stop_agent_without_a_target_or_store_stays_blocked(settings, make_stub)
     assert stub.key_calls == []
 
 
-def test_the_stop_gate_is_wired_but_not_yet_advertised(settings, make_stub):
-    """The voice boundary, honestly: the gate and replay are wired and
-    tested, while the TOOLS_SCHEMA advertisement stays out until the
-    baseline tests pinning the advertised name set (outside this
-    change's surfaces) are updated with it."""
+def test_the_stop_gate_is_advertised_but_only_executes_on_approval(settings, make_stub):
+    """The voice boundary, honestly: the interrupt IS advertised now
+    (TOOLS_SCHEMA + the system prompt, the S12 voice remainder), and
+    advertising only ever PROPOSES — the gate and approve replay stay
+    the single execution path, pinned by the tests above."""
     from herdr_brain.tools import TOOLS_SCHEMA
 
     names = {tool["function"]["name"] for tool in TOOLS_SCHEMA}
-    assert "stop_agent" not in names
+    assert "stop_agent" in names
     llm, _ = make_brain(settings, make_stub(), responses=[text_response("ok")])
     llm.ask("hola")
     policy = llm._client.create_kwargs[0]["messages"][0]["content"]
-    assert "stop_agent" not in policy
-    # But a scripted stop_agent call (what advertising will enable) is
+    assert "stop_agent" in policy
+    # But a scripted stop_agent call (what advertising enables) is
     # gated exactly like a send — pinned by the tests above.
 
 

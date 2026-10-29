@@ -247,6 +247,16 @@ def test_device_header_gate_matrix():
         ("POST", "/pane/receipt/rct-abc123/submit", "write"),
         ("POST", "/pane/receipt/rct-abc123/discard", "write"),
         ("GET", "/pane/receipts", "read"),
+        # S5 web push: subscription changes and a transport test are
+        # writes behind the device gate; the public key is a read.
+        ("POST", "/push/subscribe", "write"),
+        ("POST", "/push/unsubscribe", "write"),
+        ("POST", "/push/test", "write"),
+        ("GET", "/push/key", "read"),
+        # S13 brain messages: the operator send types into a pane; the
+        # inbox listing stays a read.
+        ("POST", "/msg/send", "write"),
+        ("GET", "/msg/inbox", "read"),
         # Read-only set (doc 01 §4): everything else.
         ("GET", "/health", "read"),
         ("GET", "/state", "read"),

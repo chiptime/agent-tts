@@ -697,12 +697,24 @@ case "${1:-status}" in
     PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$REPO_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
       exec "$REPO_DIR/.venv/bin/python" -m herdr_brain.walky "$@"
     ;;
+  push|--push)
+    # Web Push (S5): VAPID key import (prints only the public key),
+    # subscription list and transport test. Pure state work under
+    # HERDR_BRAIN_STATE_DIR — no daemon, no port claims; the running
+    # server loads the same key file per send.
+    shift
+    load_env
+    ensure_venv
+    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$REPO_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
+      exec "$REPO_DIR/.venv/bin/python" -m herdr_brain.push_cli "$@"
+    ;;
   help|--help|-h)
-    echo "Usage: bin/herdr-brain [--no-first-run] [status|url|call|restart|stop|first-run|doctor|pair|devices|msg|_daemon|_daemon-supervised]"
+    echo "Usage: bin/herdr-brain [--no-first-run] [status|url|call|restart|stop|first-run|doctor|pair|devices|msg|push|_daemon|_daemon-supervised]"
     echo "  call   open the voice-call UI in the desktop browser (HERDR_BRAIN_BROWSER overrides the opener)"
     echo "  pair   mint a one-time code: the phone spends it in Ajustes to enrol this device (write access turns on with the first pairing)"
     echo "  devices {list|revoke <label>}   show paired devices, or drop one (applies without a restart)"
     echo "  msg    {who|send|reply|inbox|status|cancel}   brain messages between agent panes (run from inside a pane)"
+    echo "  push   {import <dotenv>|list|test}   Web Push keys and subscriptions (import prints only the public key)"
     ;;
   *)
     load_env

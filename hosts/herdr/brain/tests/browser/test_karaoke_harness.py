@@ -27,9 +27,12 @@ EXPECTED_DIGESTS = {
     # then for S2 (recognized-dialog buttons above the keypad, the
     # unread-dialog card, the digit row and dialogs.js); then for S12
     # (verified sends: the receipt card, the Stop button and the steer
-    # long-press in the composer, receipts.js).
-    "/": "ab5cf16bcb0b72a87247eaca28e85270a21f5540192d98a46bd5190ea04db242",
-    "/app.js": "effc9782fb752541821d72227793921e5784f2827e6dae8789657e070e5ea1cd",
+    # long-press in the composer, receipts.js); then for S5/S13 (the
+    # Avisos push card + push.js, the Mensaje composer, and the sw.js
+    # push/notificationclick handlers).
+    "/": "4a035f822d18bfa4957425a0cb63464be99c1f739f6c9823c7a46718995de966",
+    "/app.js": "8c8af6a701f522b510e97847dbbae83207b1c3e1a4ce34cdcc8174b4e2fd686c",
+    "/push.js": "f18b5fc42e44598cce1e73f7b84e72b07996ae9740849c3ce86193e10dcf6017",
     "/receipts.js": "bc6b56b6e59b0a543a14c0516a752a700d4beaebc8b2d6b314651c7f3217e32e",
     "/dialogs.js": "fc756929f679082745e6dbb7eb613e5c83aecbf94d7d1130dd67c8c72e932c03",
     "/herd-group.js": "08296c7208e14dc1d5e46186b645d02089f8addef502b50eb11e61b186829674",

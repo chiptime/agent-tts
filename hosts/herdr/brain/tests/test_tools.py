@@ -675,10 +675,22 @@ class TestDispatch:
         assert names == {
             "get_status", "read_transcript", "read_screen", "send_to_session",
             "create_session", "list_open_sessions", "answer_dialog",
+            # S12 voice remainder: the gated interrupt joins the
+            # advertised set (gate + approve replay were already wired).
+            "stop_agent",
             # On-demand consult surface (T9): read-only, no approval gate.
             "consult_work_status", "consult_history",
             "get_followup_context", "end_followup",
         }
+
+    def test_stop_agent_schema_is_gated_and_argument_free(self):
+        by_name = {tool["function"]["name"]: tool["function"] for tool in TOOLS_SCHEMA}
+        stop = by_name["stop_agent"]
+        # No model-trusted arguments: the gate freezes the REQUEST's
+        # target pane, exactly what the approve replay interrupts.
+        assert stop["parameters"] == {"type": "object", "properties": {}, "required": []}
+        assert "GATED" in stop["description"]
+        assert "approval" in stop["description"]
 
     def test_descriptions_carry_cost_hints(self):
         by_name = {tool["function"]["name"]: tool["function"]["description"] for tool in TOOLS_SCHEMA}

@@ -60,6 +60,7 @@ from .history import HistoryStore, default_history_path
 from .history_view import HISTORY_DEFAULT_LIMIT, clamp_limit
 from .llm import STOP_AGENT, BrainLLM, BrainLLMError, TurnCancelled
 from .memory import DEFAULT_SESSION, MAX_MESSAGES, ConversationStore
+from .mux import create_mux
 from .pairing import (
     ClaimRateLimiter,
     PairingStore,
@@ -110,7 +111,15 @@ from .tts import (
     tts_backend_status,
 )
 from .tts_daemon import DAEMON_UP, DaemonWatcher, daemon_status
+from .walky import (
+    MessageNotFound as MsgNotFound,
+    StoreError as MsgStoreError,
+    WalkyRefusal,
+    WalkyService,
+)
 from .watcher import AgentWatcher
+from .webpush import StoreError as PushStoreError, WebPushService
+from .webpush.vapid import VapidError
 
 _TTSRenderer = Callable[[Settings, str, Path], Path]
 _ReaderRenderer = Callable[[Settings, str, Path], "tuple[str, dict]"]
@@ -390,6 +399,7 @@ _VERSIONED_REFS = (
     ('src="/receipts.js"', 'src="/receipts.js?v={v}"'),
     ('src="/reader.js"', 'src="/reader.js?v={v}"'),
     ('src="/toast.js"', 'src="/toast.js?v={v}"'),
+    ('src="/push.js"', 'src="/push.js?v={v}"'),
     ('src="/mermaid.min.js"', 'src="/mermaid.min.js?v={v}"'),
     ('src="/mermaid-viewer.js"', 'src="/mermaid-viewer.js?v={v}"'),
     # herd-group.js loads BEFORE app.js (same reason as consult.js): the
@@ -576,6 +586,52 @@ class DeviceRevokeRequest(BaseModel):
     label: str = Field(min_length=1, max_length=64)
 
 
+class PushKeysRequest(BaseModel):
+    """The browser PushSubscription's encryption keys."""
+
+    p256dh: str = Field(min_length=1, max_length=256)
+    auth: str = Field(min_length=1, max_length=256)
+
+
+class PushSubscribeRequest(BaseModel):
+    """POST /push/subscribe body: one browser PushSubscription.
+
+    The service re-validates and owns persistence; the edge model only
+    pins the shape (a 422 before any store write on a bad payload).
+    ``replaces`` names the endpoint a re-subscribing browser retired.
+    """
+
+    endpoint: str = Field(min_length=1, max_length=2048)
+    keys: PushKeysRequest
+    user_agent: Optional[str] = Field(default=None, max_length=160)
+    replaces: Optional[str] = Field(default=None, max_length=2048)
+
+
+class PushUnsubscribeRequest(BaseModel):
+    """POST /push/unsubscribe body: the endpoint being dropped."""
+
+    endpoint: str = Field(min_length=1, max_length=2048)
+
+
+class MsgSendRequest(BaseModel):
+    """POST /msg/send body: one operator message to one pane.
+
+    ``address`` is the walky address ``<pane>#<session-token>`` — the
+    token pins WHICH conversation the operator meant, so a replaced
+    agent never receives a message meant for its predecessor.
+    """
+
+    address: str = Field(min_length=3, max_length=MAX_SESSION_ID_CHARS * 2 + 1)
+    body: str = Field(min_length=1, max_length=8_000)
+
+    @field_validator("body")
+    @classmethod
+    def _body_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("body must not be blank")
+        return value
+
+
 def _opencode_http_error(exc: OpenCodeError) -> HTTPException:
     """Maps an opencode permission failure onto the phone's HTTP surface.
 
@@ -719,6 +775,52 @@ class CallContextStore:
             }
 
 
+class HerdNotifier:
+    """The watcher hook's fan-out (S5/S13): one poll beat, two services.
+
+    Rides the watcher's existing cycle — the brain never grows a second
+    timer. Each half is isolated: a push failure must not stop brain
+    message delivery (the watcher already tolerates a total failure, but
+    one failing backend should not take the other down with it).
+    """
+
+    def __init__(self, push: Optional[WebPushService], msg: Optional[WalkyService]):
+        self._push = push
+        self._msg = msg
+
+    def transition(self, pane_id, label, status, text=None, question=None,
+                   gate_id=None) -> None:
+        if self._push is None:
+            return
+        try:
+            self._push.notify_transition(
+                pane_id, label, status, text=text, question=question,
+                gate_id=gate_id,
+            )
+        except Exception:  # noqa: BLE001 — push is an advisory channel
+            logger.warning("web push transition hook failed", exc_info=True)
+
+    def handled(self, pane_id, label=None) -> None:
+        if self._push is None:
+            return
+        try:
+            self._push.notify_handled(pane_id, label)
+        except Exception:  # noqa: BLE001
+            logger.warning("web push handled hook failed", exc_info=True)
+
+    def tick(self, panes=()) -> None:
+        if self._push is not None:
+            try:
+                self._push.tick(panes=panes)
+            except Exception:  # noqa: BLE001
+                logger.warning("web push tick failed", exc_info=True)
+        if self._msg is not None:
+            try:
+                self._msg.tick()
+            except Exception:  # noqa: BLE001
+                logger.warning("brain message delivery tick failed", exc_info=True)
+
+
 def create_app(
     settings: Optional[Settings] = None,
     llm_factory: Optional[_LLMFactory] = None,
@@ -732,6 +834,8 @@ def create_app(
     daemon_probe: Optional[Callable[[], str]] = None,
     speech_registry: Optional[SpeechRegistry] = None,
     permissions: Optional[OpenCodePermissions] = None,
+    push_service: Optional[WebPushService] = None,
+    msg_service: Optional[WalkyService] = None,
 ) -> FastAPI:
     """Builds the FastAPI app with injectable backends for tests.
 
@@ -847,8 +951,39 @@ def create_app(
         permissions if permissions is not None else OpenCodePermissions(cfg.opencode_url)
     )
 
+    # Web Push (S5): soft-off without VAPID keys — the server runs,
+    # nothing sends. A PRESENT but broken key configuration is loud but
+    # never fatal to the rest of the brain (S9): the routes answer 503
+    # until the operator repairs the keys. The corrupt-subscription case
+    # needs no guard here — the store refuses writes and the routes map
+    # that refusal to a 500 without resetting a byte.
+    if push_service is not None:
+        push_service_ = push_service
+    else:
+        try:
+            push_service_ = WebPushService(cfg.state_dir, audit_log=audit_log)
+        except VapidError as exc:
+            logger.error("web push misconfigured — routes answer 503: %s", exc)
+            push_service_ = None
+
+    # Brain messages (S13): the operator/PWA half of the walky service,
+    # sharing the audit log. A corrupt ledger must not take the whole
+    # brain down (S9): the msg routes answer 503 until it is repaired.
+    if msg_service is not None:
+        msg_service_ = msg_service
+    else:
+        try:
+            msg_service_ = WalkyService(
+                cfg.state_dir, mux=create_mux(cfg), audit=audit_log
+            )
+        except MsgStoreError as exc:
+            logger.error("brain messages unavailable — routes answer 503: %s", exc)
+            msg_service_ = None
+
     if watcher is None:
-        watcher = AgentWatcher(cfg, tts_renderer=synth)
+        watcher = AgentWatcher(
+            cfg, tts_renderer=synth, notifier=HerdNotifier(push_service_, msg_service_)
+        )
         watcher.start()
 
     # Consulting-state events (FR-18 seam): consult start/end rides the
@@ -1034,11 +1169,19 @@ def create_app(
             STATIC_DIR / "mermaid-viewer.js", media_type="text/javascript",
             headers=dict(_NO_CACHE_HEADERS),
         )
-
     @app.get("/sw.js", include_in_schema=False)
     def sw_js() -> FileResponse:
         return FileResponse(
-            STATIC_DIR / "sw.js", media_type="text/javascript",
+            STATIC_DIR / "sw.js",
+            media_type="text/javascript",
+            headers=dict(_NO_CACHE_HEADERS),
+        )
+
+    @app.get("/push.js", include_in_schema=False)
+    def push_js() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "push.js",
+            media_type="text/javascript",
             headers=dict(_NO_CACHE_HEADERS),
         )
 
@@ -2350,6 +2493,178 @@ def create_app(
             "detail": {"label": label},
         })
         return _devices_payload(request)
+
+    # -- Web Push (S5) ------------------------------------------------------
+
+    def _push_or_503() -> WebPushService:
+        if push_service_ is None:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Web Push no está disponible en este brain: falta o falla "
+                    "la configuración VAPID (revisa el arranque o `herdr-brain "
+                    "push import`)."
+                ),
+            )
+        return push_service_
+
+    @app.get("/push/key")
+    def push_key() -> dict:
+        """The VAPID public key the PWA subscribes with (read-only).
+
+        ``enabled: false`` is the soft-off state — no keys configured,
+        nothing was ever sent. The public key is a publication, not a
+        secret: it only names the sender to the push service.
+        """
+        push = _push_or_503()
+        return {"enabled": push.enabled, "public_key": push.public_key()}
+
+    @app.post("/push/subscribe")
+    def push_subscribe(request: Request, body: PushSubscribeRequest) -> dict:
+        """Stores one browser PushSubscription, attributed to the paired
+        device that presented it.
+
+        The service validates and owns persistence (atomic write, bound
+        of 8, ``replaces`` retirement) and writes the audit line itself.
+        A corrupt store answers 500 WITHOUT resetting a single byte —
+        the file holds per-device delivery keys.
+        """
+        push = _push_or_503()
+        payload = {
+            "endpoint": body.endpoint,
+            "keys": {
+                "p256dh": body.keys.p256dh,
+                "auth": body.keys.auth,
+            },
+            "user_agent": body.user_agent or "",
+            "replaces": body.replaces,
+        }
+        try:
+            record = push.subscribe(payload, device=audit_device(request))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except PushStoreError as exc:
+            # Loud, never a silent reset (risk item 1).
+            logger.error("push subscribe refused: %s", exc)
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "El almacén de suscripciones push está dañado; arréglalo "
+                    "o elimínalo a mano — no se ha tocado ni un byte."
+                ),
+            ) from exc
+        return record
+
+    @app.post("/push/unsubscribe")
+    def push_unsubscribe(request: Request, body: PushUnsubscribeRequest) -> dict:
+        """Drops one endpoint. Idempotent: an unknown endpoint is ok."""
+        push = _push_or_503()
+        try:
+            removed = push.unsubscribe(body.endpoint, device=audit_device(request))
+        except PushStoreError as exc:
+            logger.error("push unsubscribe refused: %s", exc)
+            raise HTTPException(
+                status_code=500,
+                detail="El almacén de suscripciones push está dañado.",
+            ) from exc
+        return {"ok": removed}
+
+    @app.post("/push/test")
+    def push_test(request: Request) -> dict:
+        """One round-trip notification per subscribed device.
+
+        The service refuses to send on a corrupt store (its honest
+        ``sent: 0``); this route adds the audit line the interactive
+        test deserves — the operator pressed the button.
+        """
+        push = _push_or_503()
+        try:
+            result = push.test_notification()
+        except PushStoreError as exc:
+            logger.error("push test refused: %s", exc)
+            raise HTTPException(
+                status_code=500,
+                detail="El almacén de suscripciones push está dañado.",
+            ) from exc
+        audit_log.record({
+            "action": "push.test",
+            "device": audit_device(request),
+            "detail": {"sent": result["sent"]},
+        })
+        return result
+
+    # -- Brain messages, operator half (S13) --------------------------------
+
+    @app.post("/msg/send")
+    def msg_send(request: Request, body: MsgSendRequest) -> dict:
+        """One operator message to one pane, through the walky service.
+
+        The sender identity is the paired device label — the same
+        authority every other write here carries — and the service owns
+        delivery (hold while busy, type when idle, 60-minute give-up)
+        plus its own ``msg.send`` audit line with the masked preview.
+        Refusals answer 422 with the walky text verbatim: they are
+        operator-readable by design.
+        """
+        if msg_service_ is None:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Los mensajes del brain no están disponibles: el registro "
+                    "de mensajes está dañado (revisa el arranque)."
+                ),
+            )
+        device = audit_device(request) or "pwa"
+        try:
+            message = msg_service_.operator_send(device, body.address, body.body)
+        except WalkyRefusal as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except MsgStoreError as exc:
+            logger.error("msg send refused: %s", exc)
+            raise HTTPException(
+                status_code=500,
+                detail="El registro de mensajes del brain está dañado.",
+            ) from exc
+        return {
+            "id": message.id,
+            "state": message.state,
+            "reason": message.reason,
+        }
+
+    @app.get("/msg/inbox")
+    def msg_inbox(
+        pane_id: str = Query(default="", max_length=MAX_SESSION_ID_CHARS),
+    ) -> dict:
+        """One pane's unread messages, marking them read (S13).
+
+        The pane's own agent reads this through the CLI; the PWA view is
+        the operator's window into the same inbox. An unknown pane is an
+        ordinary empty inbox, never an error.
+        """
+        if msg_service_ is None:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Los mensajes del brain no están disponibles: el registro "
+                    "de mensajes está dañado (revisa el arranque)."
+                ),
+            )
+        if not pane_id.strip():
+            raise HTTPException(
+                status_code=422, detail="pane_id es obligatorio"
+            )
+        try:
+            messages = msg_service_.inbox(pane_id)
+        except MsgStoreError as exc:
+            logger.error("msg inbox refused: %s", exc)
+            raise HTTPException(
+                status_code=500,
+                detail="El registro de mensajes del brain está dañado.",
+            ) from exc
+        return {
+            "pane_id": pane_id,
+            "messages": [m.as_dict() for m in messages],
+        }
 
     @app.post("/approval/{gate_id}/approve")
     def approval_approve(gate_id: str, request: Request) -> dict:

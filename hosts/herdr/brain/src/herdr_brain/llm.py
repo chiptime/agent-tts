@@ -43,13 +43,8 @@ LOGGER = logging.getLogger("herdr_brain.tool_calls")
 #: The gated stop tool (S12): interrupting the RUNNING agent's turn is a
 #: mutating action, so it freezes behind the SAME approval gate as a
 #: send — a spoken «para al agente» proposes, the user's confirmation
-#: disposes. Never dispatched directly by the tool loop.
-#:
-#: Wired and tested (gate + approve replay + dispatch stringify), but
-#: deliberately NOT advertised in TOOLS_SCHEMA or the system prompt:
-#: baseline tests outside the S12 change surface pin the exact
-#: advertised tool-name set. Advertising it is a one-commit follow-up
-#: (schema entry + one prompt line).
+#: disposes. Never dispatched directly by the tool loop; advertised in
+#: TOOLS_SCHEMA and the system prompt since the voice remainder landed.
 STOP_AGENT = "stop_agent"
 
 _MAX_LOGGED_ARG_CHARS = 80
@@ -81,6 +76,7 @@ Routing policy:
 - Overall project state: use consult_work_status (slow consolidated global report) ONLY when the user explicitly asks about overall/global work state across projects.
 - Past work: use consult_history for historical work across development chats and Engram; recent history within the selected session stays on read_transcript. These read-only questions never send work to an agent.
 - New work or actions: forward them with send_to_session and wait for completion, then report the result. Do not do the agent's work yourself.
+- Stopping: when the user asks to stop or interrupt the running turn («para al agente», «stop»), call stop_agent — it can interrupt the running turn, but only as a gated proposal: state which agent will be stopped and wait for the user's confirmation; the interrupt executes when they approve, never before.
 - Unsure whether it is a question or a task: read the transcript first, then decide.
 
 Approval gate:
