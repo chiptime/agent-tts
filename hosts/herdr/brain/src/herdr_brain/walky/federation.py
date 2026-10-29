@@ -98,10 +98,16 @@ class FederatedWalkyService(WalkyService):
         recent = [m for m in [*self._store.all(), *self._outbox.all()]
                   if self._clock() - m.created <= WINDOW_S]
         if sum(m.from_key == from_key for m in recent) >= SENDER_MAX:
-            raise WalkyRefusal(f"sender rate limit reached: {SENDER_MAX} messages per 10 minutes")
+            raise WalkyRefusal(
+                f"sender rate limit reached: {SENDER_MAX} messages per "
+                f"{int(WINDOW_S / 60)} minutes; wait before sending more"
+            )
         pair = frozenset({from_key, to_pane})
         if sum(frozenset({m.from_key, m.to_pane}) == pair for m in recent) >= PAIR_MAX:
-            raise WalkyRefusal(f"pair rate limit reached: {PAIR_MAX} messages per 10 minutes")
+            raise WalkyRefusal(
+                f"pair rate limit reached: {PAIR_MAX} messages per "
+                f"{int(WINDOW_S / 60)} minutes between these two panes; slow down"
+            )
 
     def send(self, sender, address, body):
         return self._send(sender, None, address, body, 0, None)
@@ -114,9 +120,14 @@ class FederatedWalkyService(WalkyService):
         if parent.to_pane != sender.pane_id:
             raise WalkyRefusal("that message is not in your inbox")
         if parent.from_kind == "operator":
-            raise WalkyRefusal("operator messages cannot be answered from a pane")
+            raise WalkyRefusal(
+                "operator messages cannot be answered from a pane; "
+                "the operator reads this pane's output directly"
+            )
         if parent.hops >= MAX_HOPS:
-            raise WalkyRefusal(f"reply chain limit reached ({MAX_HOPS} hops)")
+            raise WalkyRefusal(
+                f"reply chain limit reached ({MAX_HOPS} hops); start a fresh send instead"
+            )
         return self._send(sender, None, parent.from_address, body, parent.hops + 1, parent.id)
 
     def _send(self, sender, device, address, body, hops, parent_id):
@@ -259,13 +270,16 @@ class FederatedWalkyService(WalkyService):
             if roster.role != "lead" or target not in roster.peers:
                 raise WalkyRefusal("unknown crew destination; nothing was sent")
             # Relays cannot nest. Only a lead forwards, only to its members.
-            result = self._client(target).message(op, {**payload, "_origin": origin})
+            client = self._client(target)
             if op in ("send", "cancel"):
+                # Record dispatch BEFORE crossing the wire: an owner may
+                # accept even if its response never returns. This is an
+                # attempt record, not an assertion of remote success.
                 self._audit.record({"action": f"msg.relay.{op}", "detail": {
                     "id": payload.get("id"), "origin": origin, "host": target,
-                    "preview": _preview(payload.get("body", "")),
+                    "phase": "dispatch", "preview": _preview(payload.get("body", "")),
                 }})
-            return result
+            return client.message(op, {**payload, "_origin": origin})
         if op == "who":
             rows = [{**asdict(replace(r, address=qualify(roster.self_name, r.address),
                                      label=f"[{roster.self_name}] {r.label}", you=False)),
