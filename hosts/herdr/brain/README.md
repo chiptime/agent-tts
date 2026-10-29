@@ -700,6 +700,44 @@ Messages never confer authority: the header always says who spoke.
 - **Delivery**: the running server's watcher poll drives the delivery
   tick (no second timer); the CLI also ticks on send.
 
+#### Across crew machines
+
+With an enrolled crew, `herdr-brain msg who` also lists remote panes as
+`<host>:<pane>#<session-token>`, and explicitly lists unreachable hosts.
+Copy the complete address, including the session token:
+
+```bash
+herdr-brain msg who
+herdr-brain msg send 'host-b:w1:p2#session-token' 'The API change is ready.'
+herdr-brain msg status 'host-b:bm_messageid'
+```
+
+Peers communicate through the lead, using the existing pinned mTLS and
+crew secret. The owner host stores and delivers the message; its inbox
+header includes the origin host so `reply` returns to the right machine.
+The PWA's `POST /msg/send` accepts the same remote addresses without
+changing its device authentication. Local addresses and solo CLI output
+keep their previous meaning.
+
+- `status` and `cancel` ask the owner; a lost answer is **uncertain**,
+  never proof of delivery or cancellation. Do not resend blindly.
+- A read-only destination check refuses an offline or replaced pane
+  before recording a message. Once dispatch begins, a lost outcome
+  leaves an uncertain receipt; no automatic retry is performed.
+- Sender and pair limits cover incoming and outgoing messages, keyed
+  by host to distinguish identically named panes. Only an authenticated
+  lead can relay another member's origin. Crew hosts are trusted to
+  attest their own local panes; this is not a multi-tenant boundary.
+- Private receipts use `<state_dir>/crew-outbox/messages/ledger.json`
+  (0600), separate from the unchanged local inbox format. The owner's
+  admission/cancel/delivery transitions share a cross-process lock;
+  network calls do not hold that lock. Audit previews are masked on
+  the origin, relay and owner; message text is masked before dispatch.
+
+Validation with in-memory crew transports and loopback TLS is not a
+live deployment test. Before cutover, exercise send, reply, hold, status
+and cancel on two enrolled machines, including an unavailable peer.
+
 ### Operator surfaces: replies, commands, key presets, launchers (S3)
 
 Four TOML files under the brain's config dir (`~/.config/herdr-brain/`,
