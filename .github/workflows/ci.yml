@@ -83,6 +83,17 @@ jobs:
         working-directory: hosts/herdr/brain
         run: node --test tests/js/
 
+      # Three separate processes: the Playwright suites (browser, e2e) start
+      # their own event loop and servers, and sharing one pytest process
+      # with the API tests makes both sides fail in ways neither does alone.
       - name: Run brain Python tests
         working-directory: hosts/herdr/brain
-        run: python -m pytest tests/ -q
+        run: python -m pytest tests/ -q --ignore=tests/browser --ignore=tests/e2e
+
+      - name: Run brain browser tests
+        working-directory: hosts/herdr/brain
+        run: python -m pytest tests/browser -q
+
+      - name: Run brain end-to-end tests
+        working-directory: hosts/herdr/brain
+        run: python -m pytest tests/e2e -q
