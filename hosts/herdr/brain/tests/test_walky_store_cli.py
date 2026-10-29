@@ -92,7 +92,12 @@ def test_no_temp_files_left_behind(tmp_path):
     svc = WalkyService(state_dir=tmp_path, mux=mux, clock=Clock(), id_factory=ids())
     for i in range(5):
         svc.operator_send("phone", "w2:p2#ses_b", f"msg {i}")
-    leftovers = [p.name for p in (tmp_path / "messages").iterdir() if p.name != "ledger.json"]
+    # The ledger and its persistent save lock are the only files; no temp
+    # file of an interrupted or completed save may remain.
+    leftovers = [
+        p.name for p in (tmp_path / "messages").iterdir()
+        if p.name not in ("ledger.json", "ledger.lock")
+    ]
     assert leftovers == []
 
 
