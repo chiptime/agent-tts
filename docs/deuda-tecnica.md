@@ -23,7 +23,7 @@
 
 - **edge p95 — ACEPTADO (decisión del maintainer 2026-09-25)**: 584,1 ms p95 medido con daemon caliente y edge real (`metrics/edge/edge-p95-local-20260925T072309Z.json`). El presupuesto de 250 ms (RNF-AT-04-1) se interpreta como objetivo de **despacho local** (cumplido: ≤0,086 ms); con providers de red el dominante es el RTT de síntesis, no deuda del motor. Si el radio mode de herdr exigiera latencia menor, la vía sería streaming por primer-chunk como ítem propio (no abierto).
 - **RAM kokoro caliente** (DoD 1.2): pendiente de instalar kokoro en el entorno y medir.
-- **Smoke 8h** (RNF-AT-04-4): lanzado 2026-09-25 09:35 CEST desde el worktree (PID 534917, `metrics/smoke/smoke-8h-20260925T0935Z.log`); **leer y registrar el JSON aquí al cierre (~17:35 CEST)**.
+- **Smoke 8h** (RNF-AT-04-4): lanzado 2026-09-25 09:35 CEST desde el worktree (PID 534917). **Sin resultado registrable**: `metrics/smoke/smoke-8h-20260925T0935Z.log` está vacío (0 bytes, verificado 2026-10-30), así que la medición no cuenta como hecha. Pendiente relanzar el smoke 8h y registrar su JSON aquí.
 
 ## 4. Roadmap aplazado del paquete P1 (por el paraguas, no por defectos)
 
@@ -36,11 +36,11 @@
 Estado de [`docs/technical-debt-prd.md`](technical-debt-prd.md) verificado el 2026-09-25:
 
 - `.github/workflows/ci.yml` **existe** (TD-02 arrancado en algún punto posterior a la PRD).
-- `tests/conftest.py` y los markers/`[tool.pytest.ini_options]` del diseño TD-02 **no están** — verificar el alcance real de lo que cubre el `ci.yml` vigente antes de dar TD-02 por cerrada o completar su resto.
+- `tests/conftest.py` y los markers/`[tool.pytest.ini_options]` del diseño TD-02 **no están** (re-verificado 2026-10-30: siguen ausentes en `engine/`; el CI ya corre los cuatro jobs en verde) — verificar el alcance real de lo que cubre el `ci.yml` vigente antes de dar TD-02 por cerrada o completar su resto.
 - TD-01 (Piper streaming persistente opt-in) y TD-03 (conector Orca): sin señales de ejecución; estado según su PRD.
 
 ## 6. Housekeeping
 
-- **Push de `main`**: 22 commits por delante de `origin/main` (bloque 1.3 + merge `a9f11b9` + docs). Decisión del maintainer.
+- ~~**Push de `main`**~~: resuelto. Verificado 2026-10-30: `main` = `origin/main` (`2c550cf`), 0 commits por delante.
 - **Comunicar el contrato congelado a herdr-tts** (HT-03/HT-10): el artefacto es `contracts/ipc-v2.md`.
-- **Tras registrar el smoke**: borrar el worktree `<repo>-worktrees/bloque-1.3` y la rama `feat/at-08-cola-y-cadena` (main lo contiene todo).
+- ~~**Limpieza de bloque 1.3**~~: resuelto. Verificado 2026-10-30: ya no existen el worktree `<repo>-worktrees/bloque-1.3` ni la rama `feat/at-08-cola-y-cadena`.
