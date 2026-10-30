@@ -8,7 +8,7 @@
 - **Source PRD:** `hosts/herdr/tts-plugin/docs/prds/HT-05-recordatorios-escalados.md` — sha256 `94d3a923a8de25fb71ac51eeb5ac40fd3302e2461f9d96bfc81dcfb3283d1803`
 - **Block plan:** `hosts/herdr/tts-plugin/docs/prds/bloques/BLOQUE-3-loop-movil.md`
 - **`prd` skill dependency (resolved):** `/home/bruno/.config/opencode/skills/prd/SKILL.md`
-- **Baseline:** `HEAD=6ff5d0a3e8de4fd47fda95cf6b66baab2023edf9`, clean working tree on `main`
+- **Baseline:** `HEAD=50ebb3392666f09100d59c4788fa463ce14bb5b6`, clean working tree on `main`
 - **Readiness:** `ready_for_bootstrap` — D1–D3 confirmed by the maintainer (2026-10-11); see **Gaps** below (unverified pytest runner; FUTURE harness gate)
 
 ---
@@ -43,7 +43,7 @@
 - Test creator: this task adds unit cases to `tests/test_pending_queue.py`
 - Evidence: pytest cases for the backoff sequence (2m→5m→15m), max M, reset, persistence across reopen, and O(chats) behavior
 - Gate: G-02
-- Status: ✅ DONE — commit `56b32bb`. G-02 rc=0 (184 passed); G-01 rc=0 (all suites OK). Independent verification caught a reproducible PEM leak; the fix makes `admit` redact before truncation and `reminder_due` fail closed (snippet omitted on any secret-opener residue). + T-01b (D8 `suppressed`): 190 passed; independently verified PASS (progression preserved to index MAX).
+- Status: ✅ DONE — commit `50b9be2`. G-02 rc=0 (184 passed); G-01 rc=0 (all suites OK). Independent verification caught a reproducible PEM leak; the fix makes `admit` redact before truncation and `reminder_due` fail closed (snippet omitted on any secret-opener residue). + T-01b (D8 `suppressed`): 190 passed; independently verified PASS (progression preserved to index MAX).
 
 ### T-02 — Config surface
 - Intent: `TTS_REMINDERS`, `TTS_REMINDER_START_MIN`, `TTS_REMINDER_BACKOFF`, `TTS_REMINDER_MAX` (defaults off/5/"2,5,15"/3). Traces to RF-HT-05-1. (D5)
@@ -146,7 +146,7 @@ Resolved — D1–D3 confirmed by the maintainer (2026-10-11). G-02 runner resol
 ```markdown
 ## Resume bookmark (maintained by the future executor)
 - Pack identity: odd/tasks/ht-05-recordatorios-escalados.md — sha256 pending finalization (pack is draft)
-- Completed: T-01 (`56b32bb`); T-01b `suppressed` (`7c3c482`); T-02 (`7837181`); T-03 (`8e22aec`); T-04 (`c7d049f`); T-05 (countdown + docs)
+- Completed: T-01 (`50b9be2`); T-01b `suppressed` (`ddafba3`); T-02 (`db07986`); T-03 (`4961466`); T-04 (`8e749f1`); T-05 (countdown + docs)
 - Active task: (none) — all five tasks implemented; budget remaining: 2 remediation rounds per milestone
 - Next action: close-out. Remaining real work is human/hardware only: physical F2 validation (ntfy priority on device) and real-use metrics (blockade→response baseline before enabling). Follow-up: `tests/voice_cases.sh` leaks machine-global `/tmp/herdr-tts-*.lock/.pid` (pre-existing).
 ```

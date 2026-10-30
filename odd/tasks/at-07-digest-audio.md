@@ -7,7 +7,7 @@
 - **Entrypoint (this doc):** `odd/tasks/at-07-digest-audio.md`
 - **Source PRD:** `docs/prds/AT-07-digest-audio.md` — sha256 `c42c146ba7283d6f2d7e9a8b10fc9665bf34acfca6586975244a485e58b2c21e`
 - **`prd` skill dependency (resolved):** `/home/bruno/.config/opencode/skills/prd/SKILL.md`
-- **Baseline:** `HEAD=0de17b3113cc1ad1315e98daf129906f284c8362`, clean tree on `main`
+- **Baseline:** `HEAD=a96b6dbd73dec44b260fe901dc877b04819b9c73`, clean tree on `main`
 - **Readiness:** `ready_for_bootstrap` — D1 + A1 confirmed by the maintainer (2026-10-11); see **Gaps** (new files are FUTURE)
 
 ---

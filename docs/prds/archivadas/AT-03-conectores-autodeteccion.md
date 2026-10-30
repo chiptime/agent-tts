@@ -1,5 +1,5 @@
 **ID**: PRD-AT-03 · **Proyecto**: agent-tts
-**Prioridad final (revisión 2026-09-22)**: P2 · **Estado**: EJECUTADA (recortada a verificación OpenCode) (Fecha de cierre: 2026-09-28, commit: `3bb5e1b`)
+**Prioridad final (revisión 2026-09-22)**: P2 · **Estado**: EJECUTADA (recortada a verificación OpenCode) (Fecha de cierre: 2026-09-28, commit: `7cf1ac8`)
 **Dependencias**: Ninguna
 
 > **Reconciliación (2026-10-05)**: `engine/src/agent_tts/sources/opencode.py` consulta por sesión en modo solo lectura; `sources/base.py` conserva la autodetección por ID. La prueba web es la evidencia histórica de cierre, no una prueba repetida en F1. Gemini, Goose y detección por `/proc` no están implementados ni se declaran ejecutados.

@@ -62,7 +62,7 @@ derived from actual execution rather than prose.
 
 - [x] MQ-00 Prepare the isolated worktree and locate immutable M1 source.
   Evidence: preparation task `ses_f0905a991ffebMdxN4BJasO6WK`; clean container
-  at `e49571eae8ea17004307f18d673ce7f72a1dbe2c`, no source fixes/materialization.
+  at `7b795bf4b44058a4428c2f7925d6bce33a4f6817`, no source fixes/materialization.
 - [x] MQ-01 Recover source, prove equivalence and establish own environment/run.
   Evidence: maintenance run `20261001T162700Z-m1q` (own namespace
   `~/.local/state/voice-stack-maintenance-runs/`): 30 blob writes (18 missing
@@ -76,7 +76,7 @@ derived from actual execution rather than prose.
   trio collided with the live real daemon — now `AGENT_TTS_*`-overridable,
   scenario-local in `new_env`; 40e identity safeguard was silently skipping
   worktree checkouts — `.git`-file-aware, plus pin repaired to published
-  origin/main `e592ef31c828c5c637b3737604f173b1e0a07b80` after blob-identity
+  origin/main `a922acd784b0beac73496fe662c3f612f6574452` after blob-identity
   + F1–F9 parity proof). Final full smoke: **exit 0, 988/988**; 40e = 63
   checks green, oracle files == pin. Logs under the maintenance run
   `evidence/{red,red2,green}/`. Authored repair delta ~24 lines / 3 files.
@@ -182,7 +182,7 @@ derived from actual execution rather than prose.
   (product delta carries no decision constructs; harness = instrument,
   printed explicitly; 9/9 cases OK) + bootstrap.sh pin line measured by the
   dedicated sterile mini-gate: **1/1 = 100%** (fake HOME/uv/git-free, no
-  network; pin `e592ef31…` asserted in the recorded install argv).
+  network; pin `a922acd7…` asserted in the recorded install argv).
   Tooling repairs this phase (each RED/GREEN with selftests, all green:
   coverage_gate is_prod `/lib/`, bash_changed_lines `PS4 ${BASH_SOURCE:-}` +
   is_bash_file product-only + defs/labels, bash_matrix string-blanking +
@@ -196,7 +196,7 @@ derived from actual execution rather than prose.
   HOST-PY false not_applicable, BASH-LINES scope — repaired as above). No
   preexisting-FAIL waiver applied anywhere: the vs1d-era smoke failures were
   FIXED (MQ-02), not waived. Deployment note (owner decision, not blocking
-  source acceptance): bootstrap pin `e592ef31…` is the published PRE-cancel
+  source acceptance): bootstrap pin `a922acd7…` is the published PRE-cancel
   engine (oracle parity); a fresh install from bootstrap would NOT contain
   the M1 cancel IPC (uncommitted in C). SOURCE_ACCEPTED ≠
   PUBLISHED_INSTALL — release-pin coordination stays with the owner.
@@ -245,7 +245,7 @@ derived from actual execution rather than prose.
   final bounded functional check. Parent native `gentle-ai review mode
   status --cwd` check confirms off, decided by clone_local. Absence of a
   marker is not proof of off (the unset default is on). Nothing was
-  toggled. Bootstrap pin note: e592ef31 proves ORACLE parity only
+  toggled. Bootstrap pin note: a922acd7 proves ORACLE parity only
   (published pre-cancel engine); final M1 proof runs on C's editable
   engine — deployment-pin coordination stays with the owner.
 

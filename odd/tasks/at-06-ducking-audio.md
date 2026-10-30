@@ -7,7 +7,7 @@
 - **Entrypoint (this doc):** `odd/tasks/at-06-ducking-audio.md`
 - **Source PRD:** `docs/prds/AT-06-ducking-audio.md` — sha256 `ae7db58012f399bc105f2f1542a94ea4dde8191d3b2e96dc813e788d6e5355f0`
 - **`prd` skill dependency (resolved):** `/home/bruno/.config/opencode/skills/prd/SKILL.md`
-- **Baseline:** `HEAD=705d8b2240ecd6220b53ac62d0cf9874fb36ec46`, clean tree on `main`
+- **Baseline:** `HEAD=f9f8761dcda574b14a2851c2df67dc770fe78480`, clean tree on `main`
 - **Readiness:** `ready_for_bootstrap` — D4 + D2 confirmed (2026-10-11); D3/M2 stays a Windows-only milestone (see **Gaps**)
 
 ---

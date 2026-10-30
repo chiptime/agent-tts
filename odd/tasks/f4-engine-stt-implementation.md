@@ -8,7 +8,7 @@ terminal dictation in the plugin without requiring the brain service.
 ## Current unit and authorization
 
 - Worktree: `agent-tts-worktrees/f4-stt-core`; branch: `feat/f4-stt-core`.
-- Base: `ed2fbfe`. User authorized local implementation; no remote operations.
+- Base: `51d5bb7`. User authorized local implementation; no remote operations.
 - Unit U1: generic offline-safe STT core and a separate resident worker.
 - Preserve the docs-only `f4-engine` worktree and canonical `main`.
 - No live model calls/downloads, microphones, user state, or providers in tests.
@@ -63,7 +63,7 @@ terminal dictation in the plugin without requiring the brain service.
 
 ## Progress and proof
 
-U1 implemented on `feat/f4-stt-core` (base `ed2fbfe`), uncommitted per
+U1 implemented on `feat/f4-stt-core` (base `51d5bb7`), uncommitted per
 local-only policy.
 
 **Artifacts**: `engine/src/agent_tts/stt/{__init__,transcriber,worker,cli}.py`,
@@ -94,7 +94,7 @@ reports hung native calls honestly.
 - Full `engine/tests/`: 1054 passed, 11 skipped (first full run all
   green; one later run hit `test_chain_playback.py::test_chain_honors_stop_flag_mid_file_remaining_files_not_played`).
 - That chain test is a PRE-EXISTING flake: reproduced 3/8 failures on the
-  untouched canonical checkout at the same base commit `ed2fbfe` (no
+  untouched canonical checkout at the same base commit `51d5bb7` (no
   resets; main left clean).
 - CLI smoke: `-m agent_tts.stt.cli --help` exit 0 listing all four ops;
   `status` with isolated missing socket → JSON `worker_unavailable` +
@@ -192,7 +192,7 @@ sensitivity (repro 3/3 custom vs 0/3 default); default TMPDIR → 1085
 passed / 11 skipped / 1 failed =
 test_daemon.py::test_play_registering_during_shutdown_is_refused_not_orphaned,
 a second pre-existing timing flake (reproduced 2/3 isolated on the
-untouched base checkout ed2fbfe; main left clean). CLI smoke: help=0,
+untouched base checkout 51d5bb7; main left clean). CLI smoke: help=0,
 unavailable-socket status=5. `git diff --check` clean; only the 12
 allowed surfaces dirty.
 
@@ -221,7 +221,7 @@ Full end-to-end verification against the REAL machine (brain venv, real HF cache
 | Real gap 4: no `shutdown` verb | CLI subcommand + polling protocol; honest rc 0/1 |
 | Smoke run | serve (brain venv, no miniaudio) -> READY ~3 s on model `small` from the real cache -> transcribe `short.mp3` -> `{"ok": true, "text": "Thanks for watching!"}` (0.9 s) -> shutdown rc 0, socket removed, process exited cleanly |
 | Full engine suite | 1094 passed / 11 skipped / 0 failed |
-| Delivery | `2d1cb7d` (U1) + `0a488a9` (fixes) merged fast-forward to local `main`; pushed to `origin/main` and `origin/feat/f4-stt-core` (authorized by maintainer) |
+| Delivery | `ac955ce` (U1) + `30bd834` (fixes) merged fast-forward to local `main`; pushed to `origin/main` and `origin/feat/f4-stt-core` (authorized by maintainer) |
 
 Independent verification of U1 remains PENDING (verifier runtime usage limit); the
 real-machine smoke test above is the maintainer-visible functional evidence.
@@ -247,13 +247,13 @@ real-machine smoke test above is the maintainer-visible functional evidence.
   preserved (same 503-with-hint semantics).
 - Tests: 35 new (test_stt_engine.py); focused 52/52; brain suite 1381 passed
   (excl e2e/browser; 1 browser + 3 e2e chromium failures and m3/m4 hangs are
-  PRE-EXISTING on baseline eadbd14, reproduced without the changes).
+  PRE-EXISTING on baseline 6e4f0e3, reproduced without the changes).
 - Pre-existing environmental failures flagged for the known-failures list.
 
 
 ## Independent verification CLOSED (2026-10-08)
 
-- gentle-ai-verify verdict at main `56fb0be`: **U1 / U2 / U3 / F4.10 all PASS**.
+- gentle-ai-verify verdict at main `75ad2c9`: **U1 / U2 / U3 / F4.10 all PASS**.
   Corroborated by parent spot checks (engine focused 75-76/0, plugin battery
   119/119, brain focused 52/52) and real-machine evidence (capture 11025 Hz
   with mic signal RMS 150; transcribe "Thanks for watching!" 0.9 s; clean

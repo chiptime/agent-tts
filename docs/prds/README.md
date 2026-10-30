@@ -30,7 +30,7 @@ La migración a monorepo absorbió tres repositorios independientes, implementan
   - **VS0–VS4 (Voice Stack Core):** Streaming incremental, cancelación rápida, cola de pendientes y fallback (`contracts/tts-brain-v2.md`) — **EJECUTADA / IMPLEMENTADA** (validación física en dispositivo real F2 pendiente).
 - **Otras PRDs activas post-migración:**
   - **AT-11:** Producto instalable independiente con first-run onboarding (`AT-11-instalable-first-run.md`) — **IMPLEMENTADA** (M1–M4 fusionados en `main`; aceptación `--milestone 4` 8 PASS/0 FAIL/1 BLOCKED; 3.5 y 4.2 abiertas hasta la firma del UAT V3 humano, que cubre el escenario 9).
-  - **Brain karaoke fragments:** Fragmentos seleccionables inline de karaoke (`herdr-brain-karaoke-fragments.md`) — **EJECUTADA / IMPLEMENTADA** en `main` (`964f6b5`).
+  - **Brain karaoke fragments:** Fragmentos seleccionables inline de karaoke (`herdr-brain-karaoke-fragments.md`) — **EJECUTADA / IMPLEMENTADA** en `main` (`61c4f10`).
 
 ---
 
@@ -40,14 +40,14 @@ La migración a monorepo absorbió tres repositorios independientes, implementan
 
 | ID | Fichero | Feature | Prioridad final | Estado real | Esfuerzo |
 |---|---|---|---|---|---|
-| AT-01 | [archivadas/AT-01-streaming-frames-mp3.md](archivadas/AT-01-streaming-frames-mp3.md) | Streaming incremental por frames de MP3 | P3 | **EJECUTADA** (2026-09-29, commits `510ceaa` / `a3ee900`) | L |
+| AT-01 | [archivadas/AT-01-streaming-frames-mp3.md](archivadas/AT-01-streaming-frames-mp3.md) | Streaming incremental por frames de MP3 | P3 | **EJECUTADA** (2026-09-29, commits `58bb698` / `0d09ed3`) | L |
 | AT-02 | [AT-02-stt-whispercpp.md](AT-02-stt-whispercpp.md) | STT y captura de micrófono como capacidad del motor (antes: whisper.cpp; antes: cliente del brain) | P4 | **IMPLEMENTADA (F4)** — STT y captura como capacidad del motor (`engine/src/agent_tts/stt`); validación física F2 pendiente | M |
-| AT-03 | [archivadas/AT-03-conectores-autodeteccion.md](archivadas/AT-03-conectores-autodeteccion.md) | Conectores restantes y auto-detección del agente | P2 | **EJECUTADA (recortada a OpenCode)** (2026-09-28, commit `3bb5e1b`) | M |
-| AT-04 | [archivadas/AT-04-daemon-persistente.md](archivadas/AT-04-daemon-persistente.md) | Modo daemon persistente del motor (`--serve`) | P1 | **EJECUTADA (BLOQUE 1.2)** (2026-09-24/25, commits `64681be` / `c8d5665`) | L |
+| AT-03 | [archivadas/AT-03-conectores-autodeteccion.md](archivadas/AT-03-conectores-autodeteccion.md) | Conectores restantes y auto-detección del agente | P2 | **EJECUTADA (recortada a OpenCode)** (2026-09-28, commit `7cf1ac8`) | M |
+| AT-04 | [archivadas/AT-04-daemon-persistente.md](archivadas/AT-04-daemon-persistente.md) | Modo daemon persistente del motor (`--serve`) | P1 | **EJECUTADA (BLOQUE 1.2)** (2026-09-24/25, commits `4411b41` / `bb0ac53`) | L |
 | AT-05 | [AT-05-prosodia-estado.md](AT-05-prosodia-estado.md) | Prosodia consciente de estado | P4 | **Postergada** | M |
 | AT-06 | [AT-06-ducking-audio.md](AT-06-ducking-audio.md) | Ducking y prioridad de audio | P3 | **PARCIAL**: M1 local (detección `pactl`, gain, política opt-in, status `comm_active`) fusionada en `main`; M2 winhost (transporte `activity`+`gain_db`) hecho, clasificación WASAPI nativa pendiente (M-01) | M |
 | AT-07 | [AT-07-digest-audio.md](AT-07-digest-audio.md) | Compilado de audio / digest (`--digest`) | P3 | **IMPLEMENTADO** (`feat/at-07-digest-audio`): ventana, merge consciente de contenedor, capítulos ID3v2 CHAP, integración podcast; validación móvil real pendiente | S-M |
-| AT-08 | [archivadas/AT-08-cola-prioridades.md](archivadas/AT-08-cola-prioridades.md) | Cola con prioridades y reproducción encadenada | P1 | **EJECUTADA (BLOQUE 1.3)** (2026-09-25, commits `7231f9e` / `c8d5665`) | M-L |
+| AT-08 | [archivadas/AT-08-cola-prioridades.md](archivadas/AT-08-cola-prioridades.md) | Cola con prioridades y reproducción encadenada | P1 | **EJECUTADA (BLOQUE 1.3)** (2026-09-25, commits `c613689` / `bb0ac53`) | M-L |
 
 ### Host Plugin (`herdr-tts`)
 
@@ -72,9 +72,9 @@ La migración a monorepo absorbió tres repositorios independientes, implementan
 
 | ID / Componente | Fichero / Ubicación | Feature | Prioridad / Tipo | Estado real |
 |---|---|---|---|---|
-| AT-09 | [archivadas/AT-09-canal-de-control.md](archivadas/AT-09-canal-de-control.md) | Propiedad del canal de control (socket, lock y framing) | P1 (motor) | **EJECUTADA (BLOQUE 1.1)** (2026-09-24, commits `1dde8f2` / `c8d5665`) |
-| AT-10 | [archivadas/AT-10-monorepo-ecosistema.md](archivadas/AT-10-monorepo-ecosistema.md) | Monorepo del ecosistema: engine + contracts + hosts | P2 (arquitectura) | **EJECUTADA** (2026-09-28, commits `b972e4b` / `29429e3`) |
-| AT-11 | [AT-11-instalable-first-run.md](AT-11-instalable-first-run.md) | Producto instalable independiente con first-run onboarding | P1 (producto) | **Parcial** (M1 y tarea 2.1 hechas; 14 tareas de M2–M4 pendientes; commit `c577041`) |
+| AT-09 | [archivadas/AT-09-canal-de-control.md](archivadas/AT-09-canal-de-control.md) | Propiedad del canal de control (socket, lock y framing) | P1 (motor) | **EJECUTADA (BLOQUE 1.1)** (2026-09-24, commits `d162741` / `bb0ac53`) |
+| AT-10 | [archivadas/AT-10-monorepo-ecosistema.md](archivadas/AT-10-monorepo-ecosistema.md) | Monorepo del ecosistema: engine + contracts + hosts | P2 (arquitectura) | **EJECUTADA** (2026-09-28, commits `8bbc45f` / `7df409b`) |
+| AT-11 | [AT-11-instalable-first-run.md](AT-11-instalable-first-run.md) | Producto instalable independiente con first-run onboarding | P1 (producto) | **Parcial** (M1 y tarea 2.1 hechas; 14 tareas de M2–M4 pendientes; commit `a8e9aab`) |
 | HT-13 | [../../hosts/herdr/tts-plugin/docs/prds/archivadas/HT-13-consumo-api-publica-motor.md](../../hosts/herdr/tts-plugin/docs/prds/archivadas/HT-13-consumo-api-publica-motor.md) | Consumo de la API pública del motor (de-duplicación) | P1 (host) | **EJECUTADA / IMPLEMENTADA** (2026-09-28) |
 | HT-14 | [../../hosts/herdr/tts-plugin/docs/prds/archivadas/HT-14-tema-claro.md](../../hosts/herdr/tts-plugin/docs/prds/archivadas/HT-14-tema-claro.md) | Tema claro configurable (`TTS_THEME` en `bin/herdr-tts`) | P2 (host) | **EJECUTADA / IMPLEMENTADA** |
 | HT-15 | [../../hosts/herdr/tts-plugin/docs/prds/archivadas/HT-15-markdown-html-pipeline.md](../../hosts/herdr/tts-plugin/docs/prds/archivadas/HT-15-markdown-html-pipeline.md) | Transformación Markdown/HTML para lectura sincronizada | P2 (host) | **EJECUTADA / IMPLEMENTADA** |
@@ -101,12 +101,12 @@ La migración a monorepo absorbió tres repositorios independientes, implementan
    - Hito 1 (HT-11): audición de voces en paleta fzf implementada con tests de preview, caché LRU 20 MB y asignación global (paquete R3 completado).
 3. **BLOQUE 3 — Loop móvil (HT-04 → HT-05):**
    - **Estado:** **PARCIAL** en [`../../hosts/herdr/tts-plugin/docs/prds/bloques/BLOQUE-3-loop-movil.md`](../../hosts/herdr/tts-plugin/docs/prds/bloques/BLOQUE-3-loop-movil.md).
-   - Hito 1 (HT-04 / F5): Implementado y fusionado en `main` (`0b615d2`) — botones `✅ Approve` / `❌ Stop` / `📱 Open` en push `blocked` sobre `/approval/{gate}/action` del brain. Validación física F2 pendiente.
+   - Hito 1 (HT-04 / F5): Implementado y fusionado en `main` (`ee09756`) — botones `✅ Approve` / `❌ Stop` / `📱 Open` en push `blocked` sobre `/approval/{gate}/action` del brain. Validación física F2 pendiente.
    - Hito 2 (HT-05): Recordatorios escalados con backoff sobre `pending_queue.py` (P2 backlog).
 4. **BLOQUE 4 — Radio mode y verificación OpenCode (HT-03 + AT-03 recortada):**
    - **Estado:** **PARCIAL** en [`../../hosts/herdr/tts-plugin/docs/prds/bloques/BLOQUE-4-radio-y-verificacion.md`](../../hosts/herdr/tts-plugin/docs/prds/bloques/BLOQUE-4-radio-y-verificacion.md).
    - Hito 0: Verificación de AT-03 contra SQLite de OpenCode completada y validada (2026-09-28).
-   - Hito 1: Radio mode core (`herdr-tts --radio`, command id `radio`): **COMPLETADO y fusionado en `main`** (`dd496c3`).
+   - Hito 1: Radio mode core (`herdr-tts --radio`, command id `radio`): **COMPLETADO y fusionado en `main`** (`97bc94d`).
    - Hito 2: Mejoras progresivas (identidad hablada y cola prioritaria hechas; resumen LLM `TTS_RADIO_LLM_SUMMARY` opcional en backlog; medición de métricas de uso real pendiente).
 
 ---
@@ -115,5 +115,5 @@ La migración a monorepo absorbió tres repositorios independientes, implementan
 
 - **AT-08 habilita HT-03/HT-10:** La cola con `enqueue` + `play-chain` sostiene el radio mode (HT-03) y las capacidades de orquestación de audio de herdr (HT-10).
 - **AT-07 habilita HT-08:** El digest de audio es la base del briefing matinal de herdr.
-- **AT-02 / HT-01 y el STT:** decisión 2026-10-07 (2.ª revisión del día): la capacidad STT (`faster-whisper`, reutilizado por extracción del brain) y la captura de micrófono pertenecen al motor `agent-tts` (AT-02, extra opcional, descarga de modelo siempre explícita). HT-01 consume esa capacidad por la interfaz pública del motor; el dictado funciona con el brain apagado. La migración del brain a esta capacidad es una unidad posterior separada y opcional (F4.10). El diseño intermedio de cliente HTTP sobre `POST /transcribe` (mismo día, commit `ed2fbfe`) quedó superado; HT-04 mantiene sus endpoints del brain como decisión separada.
+- **AT-02 / HT-01 y el STT:** decisión 2026-10-07 (2.ª revisión del día): la capacidad STT (`faster-whisper`, reutilizado por extracción del brain) y la captura de micrófono pertenecen al motor `agent-tts` (AT-02, extra opcional, descarga de modelo siempre explícita). HT-01 consume esa capacidad por la interfaz pública del motor; el dictado funciona con el brain apagado. La migración del brain a esta capacidad es una unidad posterior separada y opcional (F4.10). El diseño intermedio de cliente HTTP sobre `POST /transcribe` (mismo día, commit `51d5bb7`) quedó superado; HT-04 mantiene sus endpoints del brain como decisión separada.
 - **Canal de control y PWA:** `herdr-brain` interactúa con el host vía contratos versionados (`contracts/tts-brain-v1.md`), disponiendo de puertas de aprobación interactivas (`/approval/*`) para operaciones del asistente.

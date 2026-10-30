@@ -4,7 +4,7 @@
 
 > **Nota de destino (2026-10-07, decisión final del maintainer):** la capacidad STT compartida **y** la captura de micrófono pertenecen al motor `agent-tts`, reutilizando la implementación `faster-whisper` ya existente en el brain (extracción, no segunda pila whisper.cpp). El plugin consume la interfaz pública del motor; el dictado **no** requiere que el brain esté arrancado. La migración del brain a esta capacidad del motor es una rebanada posterior, separada y opcional.
 >
-> **Cronología de la decisión:** (1) 2026-09-22 diseño original whisper.cpp local; (2) 2026-10-06 directiva de "cobertura dual" (D-R2); (3) 2026-10-07 primera revisión: cliente HTTP del plugin sobre `POST /transcribe` del brain (commit `ed2fbfe`); (4) 2026-10-07 decisión vigente: el motor es dueño del STT y de la captura. Los diseños (1) y (3) quedan como historia en los apéndices.
+> **Cronología de la decisión:** (1) 2026-09-22 diseño original whisper.cpp local; (2) 2026-10-06 directiva de "cobertura dual" (D-R2); (3) 2026-10-07 primera revisión: cliente HTTP del plugin sobre `POST /transcribe` del brain (commit `51d5bb7`); (4) 2026-10-07 decisión vigente: el motor es dueño del STT y de la captura. Los diseños (1) y (3) quedan como historia en los apéndices.
 
 # PRD-AT-02 — STT y captura de micrófono como capacidad del motor
 
@@ -70,6 +70,6 @@ El descubrimiento del brain (`HERDR_BRAIN_PORT` → `config.env` → 8741, `conf
 
 Capa STT local del motor: subcomando `agent-tts --transcribe` con transcripción de fichero (`--transcribe FILE`) y captura en vivo (`--mic`); jerarquía `stt/` espejo de `providers/` con `STTProvider` y `WhisperCppSTT` resolviendo binario (`whisper-cli`/`whisper-cpp`/`main`) y modelo GGML; captura con `arecord`/`ffmpeg`; extras `agent-tts[stt]`. Postergada P4 el 2026-09-22; superada.
 
-## Apéndice B — cliente HTTP del plugin sobre el brain (2026-10-07, commit `ed2fbfe`, superado el mismo día)
+## Apéndice B — cliente HTTP del plugin sobre el brain (2026-10-07, commit `51d5bb7`, superado el mismo día)
 
 El plugin dictaba audio y lo enviaba a `POST /transcribe` del brain (multipart `audio`, `{"text"}`), con `TTS_STT_URL`/`TTS_STT_TIMEOUT` propuestas y aviso visible con el brain caído. Contrato del endpoint verificado entonces en `server.py:598-624` (503 unavailable/loading, 400 vacío). Superado horas después por la decisión de que el motor es dueño del STT y la captura; el brain conserva hoy ese endpoint (la migración es la F4.10 opcional).

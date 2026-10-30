@@ -4,9 +4,9 @@
 **Predecessor**: `hosts/herdr/brain/odd/tasks/herdr-brain-on-demand-context.md` (completed; PRD
 `docs/prds/herdr-brain-on-demand-context.md`, D01-D03, FR-03/04/12/24). This is a small linked
 extension; it does not restate that roadmap.
-**Branch at preparation**: `fix/brain-interim-transcript-duplication` @ `e592ef3` (unrelated
+**Branch at preparation**: `fix/brain-interim-transcript-duplication` @ `a922acd` (unrelated
 transcription work; no branch exists for this feature)
-**Source-stage branch**: `fix/brain-open-session-inventory` @ `5e833fe` (clean at writer start;
+**Source-stage branch**: `fix/brain-open-session-inventory` @ `244c02a` (clean at writer start;
 no branch or commit operations performed)
 **Created**: 2026-10-05
 **Status**: MERGED TO LOCAL MAIN (unpushed). T1 closed: source implemented, verified, committed
@@ -83,7 +83,7 @@ selected session, open-session inventory, consolidated global status, and histor
 - Delivery: `ask-on-risk`. Forecast ~100-200 authored lines (the 400-line heuristic is advisory).
   No commit, push or deploy is authorized and scope is unchanged. If a work-unit commit is later
   authorized: Conventional Commit, explicit paths only (never the unrelated dirty files listed
-  under Progress). The parent created `fix/brain-open-session-inventory` from `main` @ `5e833fe`
+  under Progress). The parent created `fix/brain-open-session-inventory` from `main` @ `244c02a`
   before delegating the source stage; subsequent git actions remain parent-owned.
 - RDD: OFF (clone-local); no native review transaction.
 - Engram: project `dotfiles`, topic `odd/open-session-inventory/tasks`, full mirror of this file
@@ -166,9 +166,9 @@ Closure is named passing tests, never promises.
 - 2026-10-05 preparation (read-only; no source or test edits). Anchors above were verified
   against the working tree. Findings beyond the brief: D-1; the sibling silent-empty sites;
   the predecessor's recorded merge SHA `e68a05d` exists as a commit but is not an ancestor of
-  HEAD, while the delivered consult code is reachable under other SHAs (for example `d7de194`),
-  so cite the predecessor by symbol or subject. HEAD `e592ef3` is contained in `main`
-  (`3c9f94b`, 7 commits ahead, 0 branch-only commits).
+  HEAD, while the delivered consult code is reachable under other SHAs (for example `f7c5e94`),
+  so cite the predecessor by symbol or subject. HEAD `a922acd` is contained in `main`
+  (`1cd06ff`, 7 commits ahead, 0 branch-only commits).
 - Parent confirmed `main` advanced concurrently, but its seven new commits
   do not change the five planned source/test surfaces. Source implementation
   stays on the current branch; no merge, branch switch, or movement of other
@@ -185,7 +185,7 @@ Closure is named passing tests, never promises.
 
 ### Source-stage evidence (2026-10-05)
 
-- Start inspection: clean tree, branch `fix/brain-open-session-inventory`, HEAD `5e833fe`.
+- Start inspection: clean tree, branch `fix/brain-open-session-inventory`, HEAD `244c02a`.
   The cancelled attempt left no changes. Both parent-supplied skill paths were read.
 - Fresh baseline, before test additions or source edits:
   - `.venv/bin/python -m pytest tests/test_tools.py tests/test_llm.py tests/test_consult.py -q`:
@@ -247,10 +247,10 @@ Closure is named passing tests, never promises.
 ## Next step
 
 1. T1 disposition (2026-10-07): parent committed the six feature paths with explicit paths
-   (tracker included) on a feature branch cut from `main` @ `3656fb9` and merged it into local
+   (tracker included) on a feature branch cut from `main` @ `f8dca65` and merged it into local
    `main` with a merge commit, following repository convention. NO push to origin was performed,
    per explicit user instruction. `.atl/skill-registry.md` remains uncommitted as unrelated
-   tooling noise. The stale branch `fix/brain-open-session-inventory` @ `5e833fe` was left
+   tooling noise. The stale branch `fix/brain-open-session-inventory` @ `244c02a` was left
    untouched and remains 21+ commits behind.
 2. Repair the pending Engram mirror only with an authoritative runtime session identity; no
    blind retry or invented identity is permitted.

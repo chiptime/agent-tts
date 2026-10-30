@@ -1,5 +1,5 @@
 **ID**: PRD-AT-01 · **Proyecto**: agent-tts
-**Prioridad final (revisión 2026-09-22)**: P3 · **Estado**: EJECUTADA (Fecha de cierre: 2026-09-29, commit: `510ceaa` / `a3ee900`)
+**Prioridad final (revisión 2026-09-22)**: P3 · **Estado**: EJECUTADA (Fecha de cierre: 2026-09-29, commit: `58bb698` / `0d09ed3`)
 **Dependencias**: Ninguna
 
 > **Nota de reconciliación (2026-10-05)**: Postergada en la revisión del 22/09; ejecutada después con parser MP3, decoder continuo y pipeline en `engine/src/agent_tts/stream/` y `cli.py`. El cuerpo conserva el diseño original, no un estado pendiente.

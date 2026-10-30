@@ -4,7 +4,7 @@
 **Created**: 2026-09-25
 **Status**: IMPLEMENTADA (T1–T6, 2026-09-25)
 
-> **Estado reconciliado (2026-10-05)**: `history.py` persiste en SQLite (`call_history.db`); `server.py` expone `GET /call-history` con `before`, `limit` (25 por defecto, máximo 200) y `has_more`, además de reset y carga inicial del contexto. Tests presentes: `tests/test_history.py` y `tests/test_call_history_api.py`. Referencias del monorepo: `856d857` (paginación), `89ba080` (SQLite). El diseño JSONL y los hashes standalone del cuerpo son historia, no trabajo pendiente. F1 verifica fuentes, sin consultar historial personal ni repetir suites.
+> **Estado reconciliado (2026-10-05)**: `history.py` persiste en SQLite (`call_history.db`); `server.py` expone `GET /call-history` con `before`, `limit` (25 por defecto, máximo 200) y `has_more`, además de reset y carga inicial del contexto. Tests presentes: `tests/test_history.py` y `tests/test_call_history_api.py`. Referencias del monorepo: `aead8f4` (paginación), `a23b2bf` (SQLite). El diseño JSONL y los hashes standalone del cuerpo son historia, no trabajo pendiente. F1 verifica fuentes, sin consultar historial personal ni repetir suites.
 
 ## Objective
 

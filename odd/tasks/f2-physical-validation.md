@@ -36,7 +36,7 @@ running brain and the same phone.
 
 | # | Prerequisite | Verified fact |
 |---|---|---|
-| P1 | Code base contains the whole voice-stack | `main` @ `5e833fe` is an ancestor of this branch; `feat/voice-stack` is merged into `main`. Old worktree `agent-tts-worktrees/voice-stack` no longer exists on disk. |
+| P1 | Code base contains the whole voice-stack | `main` @ `244c02a` is an ancestor of this branch; `feat/voice-stack` is merged into `main`. Old worktree `agent-tts-worktrees/voice-stack` no longer exists on disk. |
 | P2 | v2 host capability | `bin/herdr-tts:7038` handles `--render-text-segmented` in BOTH the canonical checkout and this worktree; brain negotiates via `host_supported_protocols` (`speech.py:98-108`). |
 | P3 | Brain launch env vars | `HERDR_BRAIN_HOST` (default `127.0.0.1`, `server.py:1229`), `HERDR_BRAIN_PORT` (default 8741, `config.py:24`), `GLM_API_KEY` (`config.py:220`, optional; without it `/ask` returns 503). |
 | P4 | Default TTS host | `DEFAULT_TTS_HOME = ~/Code/personal/agent-tts/hosts/herdr/tts-plugin` (`config.py:30`): canonical plugin is the default and speaks protocol-2 — no override needed for v2. |

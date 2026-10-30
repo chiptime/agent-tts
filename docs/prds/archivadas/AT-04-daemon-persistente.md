@@ -1,5 +1,5 @@
 **ID**: PRD-AT-04 · **Proyecto**: agent-tts
-**Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: EJECUTADA (BLOQUE 1.2) (Fecha de cierre: 2026-09-24/2026-09-25, commit: `64681be` / `c8d5665`)
+**Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: EJECUTADA (BLOQUE 1.2) (Fecha de cierre: 2026-09-24/2026-09-25, commit: `4411b41` / `bb0ac53`)
 **Dependencias**: AT-09 (dura, prerrequisito); sinergia con AT-08
 
 > **Reconciliación (2026-10-05)**: Aprobada el 22/09 y ejecutada por vía única en `engine/src/agent_tts/daemon.py` y `cli.py`. Cierre del alcance acordado, no certificación de todas las métricas: se conservan los pendientes y mediciones del BLOQUE 1.2 y el registro vivo `docs/deuda-tecnica.md`.

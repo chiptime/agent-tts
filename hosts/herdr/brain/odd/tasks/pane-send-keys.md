@@ -79,13 +79,13 @@ Hechos verificados:
 ## Tasks
 
 - **T1** (S1, S2) — `herdr.py`: `send_keys` + allowlist + validación previa.
-  *Ruta:* inline. *Estado:* hecho (`e0be868`).
+  *Ruta:* inline. *Estado:* hecho (`b0e9b03`).
 - **T2** (S3) — `tools.py`: `send_keys_to_pane` (misma disciplina que
-  `reply_to_pane`). *Ruta:* inline. *Estado:* hecho (`e0be868`).
+  `reply_to_pane`). *Ruta:* inline. *Estado:* hecho (`b0e9b03`).
 - **T3** (S4) — `server.py`: `POST /pane/keys` + modelo con validador de lista.
-  *Ruta:* inline. *Estado:* hecho (`3fbb0f9`).
+  *Ruta:* inline. *Estado:* hecho (`9fd63bc`).
 - **T4** (S5, S6, S7) — `index.html` + `app.js`: teclado, estados, target fijo.
-  *Ruta:* inline. *Estado:* hecho (`3fbb0f9`), y **corregido** en `bf5de8e`
+  *Ruta:* inline. *Estado:* hecho (`9fd63bc`), y **corregido** en `b82ae48`
   tras el hallazgo del verificador (ver L8).
 - **T5** (S1–S7) — tests: `test_herdr.py::TestSendKeys`, `test_tools_keys.py`,
   `test_server_keys.py`, `tests/browser/test_pane_reply_visibility.py`,
@@ -97,10 +97,10 @@ Hechos verificados:
   que es evidencia más fuerte que una unitaria de forma. `node --test tests/js/`
   sigue en 391 verde.
 - **T6** (S8) — docs: aviso, `README.md`, PRD del cockpit §4.2. *Ruta:* inline.
-  *Estado:* hecho (`3fbb0f9` + `bf5de8e`).
+  *Estado:* hecho (`9fd63bc` + `b82ae48`).
 - **T7** — **verificador independiente** sobre el diff (alto riesgo: item 2).
   *Ruta:* delegada. *Estado:* **hecho**, con dos rondas acotadas. Ronda 1:
-  S1–S6 cumplidos; **2 blockers** (S7 y S8). Corrección en `bf5de8e`. Ronda 2
+  S1–S6 cumplidos; **2 blockers** (S7 y S8). Corrección en `b82ae48`. Ronda 2
   (recheck acotado solo a esos blockers): **ambos resueltos, sin blockers
   nuevos**, y confirmó que el test de regresión **no es vacuo** (falla en el
   pre-fix con un POST real al pane equivocado).
@@ -145,7 +145,7 @@ Hechos verificados:
 - **L9** — recheck acotado (2026-10-16): el mismo verificador revalidó **solo**
   los dos blockers. **Ambos resueltos; ningún blocker nuevo.** Además comprobó
   que el test de regresión **no es vacuo**: copiado sin cambios al head
-  pre-fix (`3fbb0f9`) **falla**, con un POST interceptado real
+  pre-fix (`9fd63bc`) **falla**, con un POST interceptado real
   `{"pane_id":"w1:p9","keys":["enter"]}` mientras la pantalla seguía siendo la
   de `w1:p2`. Aportó tres interleavings más fuertes (switch explícito antes y
   después del nuevo `/view`; respuesta vieja que llega la última; request ya

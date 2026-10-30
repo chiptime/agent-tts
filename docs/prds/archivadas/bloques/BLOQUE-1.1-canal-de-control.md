@@ -2,7 +2,7 @@
 
 **Alcance**: PRD-AT-09 · **Prioridad**: P1 · **Esfuerzo**: S-M
 **Repositorio**: agent-tts · **Estado**: COMPLETADO (2026-09-23; cobertura Windows real aplazada)
-**Referencias Git**: `05624a1`, `16f11aa`; refuerzo posterior `1dde8f2` (2026-09-24).
+**Referencias Git**: `36a726b`, `c701afc`; refuerzo posterior `d162741` (2026-09-24).
 
 > **Estado reconciliado (2026-10-05)**: `engine/src/agent_tts/{ownership,ipc}.py` implementan propiedad y transporte. Aprobado el 22/09; el cuerpo conserva el diseño y la excepción explícita del DoD §5 sobre la primitiva Windows.
 

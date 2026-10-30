@@ -34,12 +34,12 @@ Inventario de las 20 features originales (AT-01–AT-08 + HT-01–HT-12) y extra
 | AT-05/06/07; HT-03/05/06/07/08/10/11 | Sin ejecutar; HT-05 en BACKLOG sobre `pending_queue.py`, HT-11 prioridad baja |
 | HT-09/12 | Descartadas |
 | AT-09/10; HT-13–HT-16; podcast RSS | Implementadas; HT-14 config-only, sin knob de Apariencia |
-| AT-11 | PARCIAL: M1 y tarea 2.1 hechas (`c577041`); resto M2–M4 pendiente |
+| AT-11 | PARCIAL: M1 y tarea 2.1 hechas (`a8e9aab`); resto M2–M4 pendiente |
 | Brain on-demand-context; approval-gate | Implementadas; bucle autónomo no habilitado; approval Chrome Android pendiente |
 | VS0; VS1–VS4; VSX | Fundación y cuatro hitos implementados; cierre `automated_complete`, validación física pendiente |
 
-Evidencia de voice-stack: `8d9a1a1` (fundación), `182ed76` (cancelación motor),
-`def986a` (host), `962e542` (brain), `36a8997` (fallback), `507e761` (E2E).
+Evidencia de voice-stack: `6589760` (fundación), `a561a0d` (cancelación motor),
+`de4e8d6` (host), `39f559a` (brain), `27f605a` (fallback), `15961a2` (E2E).
 La fundación se registró el 30/09; los commits de producción y E2E son del 03/10,
 posteriores al cierre de ejecución registrado el 01/10. No se confunden las fechas.
 VS3 entrega anuncios pendientes, no los recordatorios escalados HT-05.

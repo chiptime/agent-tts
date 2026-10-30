@@ -2,7 +2,7 @@
 
 **Alcance**: PRD-AT-04 · **Prioridad**: P1 · **Esfuerzo**: L
 **Repositorio**: agent-tts · **Estado**: COMPLETADO (alcance acordado, 2026-09-24)
-**Referencias Git**: `43bf5d8`, `8e9ce26`, `ce49cdf`.
+**Referencias Git**: `116f6c1`, `49c9eaa`, `e4313ee`.
 
 > **Estado reconciliado (2026-10-05)**: Daemon y delegación presentes en `engine/src/agent_tts/{daemon,cli}.py`. Aprobado el 22/09; se conserva el cuerpo histórico con sus mediciones: edge p95 no cumple 250 ms, y las verificaciones kokoro/8 h no se certifican aquí.
 

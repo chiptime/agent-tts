@@ -146,7 +146,7 @@ fixing it would require the unapproved prefix suppression).
 - 2026-10-01: reproduced committed/interim overlap and post-dispatch
   interim echo with Node against the current module. Baseline mapper
   reports 203/203 JavaScript tests passing before regression additions.
-- 2026-10-01 T3 verified (RED observed pre-fix on e592ef3, then GREEN):
+- 2026-10-01 T3 verified (RED observed pre-fix on a922acd, then GREEN):
   repro `commit('cuántas sesiones');push('cuántas sesiones tengo')`
   returned "cuántas sesiones cuántas sesiones tengo" before, single
   phrase after; full echo `push('hola mundo')` at +1000ms after
@@ -196,6 +196,6 @@ fixing it would require the unapproved prefix suppression).
 - Pending: real mobile validation (no handset session run), commit
   (awaits explicit authorization), deployment (not authorized).
 - 2026-10-05 local consolidation authorization supersedes the commit wait:
-  pending T3 bytes preserved in `3fe9b38`, integrated into main by `16f64d8`.
+  pending T3 bytes preserved in `7d9bc7d`, integrated into main by `68f5941`.
   Fresh consolidated JavaScript suite: 266 passed, 0 failed; brain Python suite:
   1363 passed. Real handset validation and deployment remain pending.

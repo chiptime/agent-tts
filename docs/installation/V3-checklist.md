@@ -99,7 +99,7 @@ Evidence sources: **V1** = unit/hygiene tests; **V2** = acceptance harness scena
 ### Frozen-contract byte-identity check
 
 ```
-git diff e9aab2a -- contracts/tts-brain-v1.md contracts/ipc-v2.md   # → empty
+git diff 28cdee5 -- contracts/tts-brain-v1.md contracts/ipc-v2.md   # → empty
 ```
 
 Result observed during this draft: **empty (no diff)**. Record any future drift here.

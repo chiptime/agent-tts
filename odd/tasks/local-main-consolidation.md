@@ -16,7 +16,7 @@ is after 19:00 Monday–Thursday, from 16:00 Friday, unrestricted weekends.
 
 ## Problem and constraints
 
-- Local `main` starts at `3c9f94b`; locally available `origin/main` is `f89a8d4`.
+- Local `main` starts at `1cd06ff`; locally available `origin/main` is `b3008cc`.
 - Root transcription work is uncommitted; AT-11 has pending design/task changes.
 - M1 quality contains earlier implementations, overlaps, and unique test tooling.
 - AT-11 conflicts must retain both portable onboarding and current main behavior.
@@ -103,8 +103,8 @@ feature acceptance and asset-safe worktree deletion are not implied.
 
 ### Writer start — 2026-10-05
 
-- Confirmed original tips: root fix `e592ef3`, M1 `e49571e`, AT-11
-  `c577041`, voice-stack `f89a8d4`, main `3c9f94b`; eight branches and
+- Confirmed original tips: root fix `a922acd`, M1 `7b795bf`, AT-11
+  `a8e9aab`, voice-stack `b3008cc`, main `1cd06ff`; eight branches and
   four registered worktrees match the handoff. Voice-stack is clean.
 - Loaded the exact `/home/bruno/.agents/skills/work-unit-commits/SKILL.md`
   and `/home/bruno/.agents/skills/cognitive-doc-design/SKILL.md` files.
@@ -120,9 +120,9 @@ feature acceptance and asset-safe worktree deletion are not implied.
 
 | Original branch | Original tip | Preservation commit | Scope |
 | --- | --- | --- | --- |
-| `fix/brain-interim-transcript-duplication` | `e592ef3` | `3fe9b38` | Interim fix/tests, three pending plans, latest registry, narrow ignores |
-| `fix/voice-stack-m1-quality` | `e49571e` | `6a4cfb3` | All 18 modified tracked files and 28 listed untracked files, including the real MP3 fixture |
-| `feat/at-11-instalable` | `c577041` | `133deaa` | Pending design and task documentation |
+| `fix/brain-interim-transcript-duplication` | `a922acd` | `7d9bc7d` | Interim fix/tests, three pending plans, latest registry, narrow ignores |
+| `fix/voice-stack-m1-quality` | `7b795bf` | `0d1c6c0` | All 18 modified tracked files and 28 listed untracked files, including the real MP3 fixture |
+| `feat/at-11-instalable` | `a8e9aab` | `d249dde` | Pending design and task documentation |
 
 All three snapshots passed `git diff --cached --check`; M1 and AT-11
 post-commit `git status --short` were empty. Snapshot tests/runtime: N/A,
@@ -132,7 +132,7 @@ than destructively reverted. No secrets/runtime/cache paths were staged.
 
 ### M1 reconciliation (hunk-reviewed, historical bytes retained)
 
-- Main was fast-forwarded locally to `f89a8d4`; root fix merged as `16f64d8`.
+- Main was fast-forwarded locally to `b3008cc`; root fix merged as `68f5941`.
 - Four tracked M1 files equal main byte-for-byte: engine `daemon.py`,
   `queue_manager.py`, brain `watcher.py`, `test_tts.py`. Identical new tests
   and the binary fixture were identified by Git blob identity.
@@ -140,7 +140,7 @@ than destructively reverted. No secrets/runtime/cache paths were staged.
   `static/index.html`, `tts.py` and corresponding speech tests retain main's
   segmented protocol, watermark transport, pending panel, degraded markers,
   consult timeout/versioning and crypto fallback. M1's older hunks remove
-  these advances; their original bytes remain in `6a4cfb3` ancestry.
+  these advances; their original bytes remain in `0d1c6c0` ancestry.
 - `tests/e2e/conftest.py` adds M1's unique opt-in instrumentation to the
   otherwise identical main fixture. Unique `test_m1_glue_paths.py`, combined
   Bash/sterile bootstrap harnesses, evidence runner/validator, JS coverage
@@ -149,7 +149,7 @@ than destructively reverted. No secrets/runtime/cache paths were staged.
   admission, localization and operator cases, plus M1's unique playback
   isolation overrides and two tests. Smoke keeps worktree-aware oracle
   checks and isolated playback paths. Bootstrap pin temporarily preserves
-  M1's `e592ef3` pending AT-11 reconciliation.
+  M1's `a922acd` pending AT-11 reconciliation.
 - Bash line gate keeps main's broader structural regexes and strict-shell
   selftests, plus M1's non-Bash/instrument controls. Matrix keeps main's
   continuation ranges, changed-line scope, case-star/no-match logic and
@@ -181,7 +181,7 @@ than destructively reverted. No secrets/runtime/cache paths were staged.
 - Bootstrap retains main's pytest/coverage dependencies and AT-11's portable
   local `engine/` discovery and selected immutable `d66616bc…` pin. Offline Git
   comparison found identical `engine/pyproject.toml` and oracle
-  `boundaries.py`/`cleaner.py`/`redact.py` at `d66616bc…` and M1's `e592ef3`.
+  `boundaries.py`/`cleaner.py`/`redact.py` at `d66616bc…` and M1's `a922acd`.
   No remote availability or published-cancel capability is claimed.
 - Smoke combines AT-11's checked dual-layout oracle with M1 `.git`-file-aware
   worktree detection and isolation. Static shape pins are updated for nested
@@ -199,11 +199,11 @@ than destructively reverted. No secrets/runtime/cache paths were staged.
 
 ### T2 completion evidence
 
-- Merge commits: root `16f64d8`, M1 `4714b34`, AT-11 `c4dbb10`,
-  autoloop `bd9ca5b` (original `fc7ca68` retained without implementing its plan).
+- Merge commits: root `68f5941`, M1 `5127cd5`, AT-11 `bf890dc`,
+  autoloop `de82739` (original `ab8a327` retained without implementing its plan).
 - After the merges, `git merge-base --is-ancestor <tip> main` succeeded for
-  all eight local branch tips, including `238fca5`, `0d038c3`, `f89a8d4`,
-  `fcab220`, `6a4cfb3`, `133deaa`, `fc7ca68` and current main.
+  all eight local branch tips, including `417c31a`, `539a0dc`, `b3008cc`,
+  `4af9688`, `0d1c6c0`, `d249dde`, `ab8a327` and current main.
 - T3 was open at the first writer handoff; independent verification and the
   subsequent bounded archival completion are recorded below. No low-risk claim.
 
@@ -235,8 +235,8 @@ smoke's install/daemon scenarios are sandboxed fake-tool/process tests.
   145.11s. Hygiene now passes; the failure moved to existing
   `tests/test_daemon.py::test_play_registering_during_shutdown_is_refused_not_orphaned`
   (expected shutdown refusal, observed `status=stopped`). The same test passed
-  on the first full run. Source and test are byte-identical to `f89a8d4`:
-  `git diff --exit-code f89a8d4 -- engine/src/agent_tts/daemon.py
+  on the first full run. Source and test are byte-identical to `b3008cc`:
+  `git diff --exit-code b3008cc -- engine/src/agent_tts/daemon.py
   engine/src/agent_tts/queue_manager.py engine/tests/test_daemon.py` exits 0.
 - One bounded diagnostic rerun: `.venv/bin/python -m pytest
   tests/test_daemon.py::test_play_registering_during_shutdown_is_refused_not_orphaned
@@ -261,12 +261,12 @@ smoke's install/daemon scenarios are sandboxed fake-tool/process tests.
 
 ### First Git handoff — 19:10 metadata
 
-- Verification correction/evidence commit: `d0bbb3a` at metadata 19:09 +02:00.
-  Documentation commit `d31997d` uses metadata 19:10 +02:00. Both author and
+- Verification correction/evidence commit: `722b5d3` at metadata 19:09 +02:00.
+  Documentation commit `fb6b5f3` uses metadata 19:10 +02:00. Both author and
   committer timestamps were checked equal and strictly increasing across the
   nine earlier commits (19:01–19:09); the final commit is checked after creation.
 - All four worktrees have empty `git status --short`: root main, AT-11
-  `133deaa`, M1 `6a4cfb3`, voice-stack `f89a8d4` (untouched).
+  `d249dde`, M1 `0d1c6c0`, voice-stack `b3008cc` (untouched).
 - All eight branch tips are ancestors of main; no branch/worktree/file deletion,
   stash, history rewrite, fetch, push, dependency install or live deployment.
 - `git diff --check` and `git ls-files -u` are clean; no Git operation remains
@@ -286,7 +286,7 @@ writer's earlier failures; no long suites are rerun for this passive archive.
 | Engine `.venv/bin/python -m pytest tests/ -q` | 967 passed, 11 skipped, 5 warnings, 143.61s; full-run GREEN |
 | Brain `.venv/bin/python -m pytest tests/test_resolve.py -q` | 35 passed, 0.59s |
 | Parent `python3 scripts/voice-stack/bash_matrix.py --selftest` | `SELFTEST_OK` |
-| Parent native read-only assessment of committed `f89a8d4..main` at `d31997d` | **HIGH**: executable-mode/bootstrap shell changes; 65 paths, 12,393 lines |
+| Parent native read-only assessment of committed `b3008cc..main` at `fb6b5f3` | **HIGH**: executable-mode/bootstrap shell changes; 65 paths, 12,393 lines |
 | Parent Git/date spot check | All eight tips merged, four worktrees clean, both fields on ten new commits validated 19:01–19:10 +02:00 |
 
 RDD remains **OFF**. No native START, review transaction or reassessment is
@@ -307,15 +307,15 @@ actual acceptance/installation/deployment/live-provider checks remain unrun.
   Mode is `100644` (non-executable). Archive is not imported or executed and has
   no runtime consumers. Functional RED/runtime harness: N/A, passive historical
   preservation; verification is byte equality, hashes, mode and Git ancestry.
-- Archive commit on original M1 branch: `8885ce6`, both metadata fields
-  2026-10-05 19:11 +02:00. Main merges its actual advanced tip as `fb1f7a6`,
+- Archive commit on original M1 branch: `42c3336`, both metadata fields
+  2026-10-05 19:11 +02:00. Main merges its actual advanced tip as `1a23508`,
   both fields 19:12 +02:00. Final tracker commit uses both fields 19:13 +02:00.
 - Active main production `hosts/herdr/tts-plugin/lib/pending_queue.py` is untouched:
   on-disk and committed blob `478d5001e46966da4291d0a94f983ba6d4e53c08` before
   and after the merge. No force-add of the ignored production path.
 - `git diff --no-index` original versus archive and cached `git diff --check`
   both passed. Rollback boundary is the archival path only; no runtime behavior.
-  Final checks cover committed `d31997d..main`, all eight advanced branch tips,
+  Final checks cover committed `fb6b5f3..main`, all eight advanced branch tips,
   four worktree statuses, absence of Git operations and both new date fields.
 
 #### Follow-ups retained, not repaired

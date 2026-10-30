@@ -2,7 +2,7 @@
 
 > **Estado actual: `automated_complete` (VS0→VSX, 2026-10-01).** Fuente del cierre:
 > [MANUAL-TESTS.md](MANUAL-TESTS.md), cabecera; código y E2E presentes en el monorepo
-> (`182ed76`, `def986a`, `962e542`, `36a8997`, `507e761`). Queda la verificación física
+> (`a561a0d`, `de4e8d6`, `39f559a`, `27f605a`, `15961a2`). Queda la verificación física
 > de §8 y ROADMAP F2. Reconciliado el 2026-10-05 sin repetir los gates ni leer evidencia local.
 > El bloque DRAFT y la solicitud §1 que siguen se conservan intactos como contrato original,
 > no como estado vigente ni orden de ejecutar otra vez. Los scripts nombrados abajo existen;

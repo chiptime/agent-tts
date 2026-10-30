@@ -1,10 +1,10 @@
 # F3 — Red de tests crítica del plugin (R4, opción B)
 
-**Feature id:** `f3-plugin-critical-tests` · **Worktree:** `agent-tts-worktrees/f3-tests` · **Branch:** `test/plugin-critical-bash-net` (from `main` @ `5e833fe`)
+**Feature id:** `f3-plugin-critical-tests` · **Worktree:** `agent-tts-worktrees/f3-tests` · **Branch:** `test/plugin-critical-bash-net` (from `main` @ `244c02a`)
 **Fuente:** `docs/voice-stack/ROADMAP.md` §4-F3, decisión D2 (portar solo lo crítico).
 
 ## Objetivo
-Antes de que HT-01/HT-04/HT-11 toquen `hosts/herdr/tts-plugin/bin/herdr-tts` (7.419 líneas), los escenarios críticos del legado (`smoke-tests.sh` @ `4c572a4`, 462 aserciones) tienen cobertura ejecutable en el formato actual (`tests/host_cli_cases.sh`, `tests/matrix/`, `tests/all_bash_harnesses.sh`).
+Antes de que HT-01/HT-04/HT-11 toquen `hosts/herdr/tts-plugin/bin/herdr-tts` (7.419 líneas), los escenarios críticos del legado (`smoke-tests.sh` @ `a6a4172`, 462 aserciones) tienen cobertura ejecutable en el formato actual (`tests/host_cli_cases.sh`, `tests/matrix/`, `tests/all_bash_harnesses.sh`).
 
 ## Alcance autorizado
 Tests y su documentación dentro de `hosts/herdr/tts-plugin/tests/`. Sin cambios en `bin/herdr-tts` ni código de producto (si un test revela un bug, se documenta, no se corrige aquí). Commits en la rama de feature (política de horas del maintainer). Sin push.
@@ -21,7 +21,7 @@ Delegated direct: un explorador (T1) y un escritor (T2-T4). TDD: los tests porta
 ## Progreso
 Creado 2026-10-05.
 
-2026-10-06: auditoría contrastada con `git show 4c572a4:hosts/herdr/tts-plugin/scripts/smoke-tests.sh` (4.143 líneas) y las funciones actuales. Batería inicial sin cambios: **29 host + 3 bootstrap OK, 0 FAIL**. Escritura acotada a los cinco archivos autorizados; producto y matriz intactos. Temporales autorizados por el padre en `/tmp/opencode/f3-runtime/`, con `TMPDIR` redirigido y `PYTHONDONTWRITEBYTECODE=1`.
+2026-10-06: auditoría contrastada con `git show a6a4172:hosts/herdr/tts-plugin/scripts/smoke-tests.sh` (4.143 líneas) y las funciones actuales. Batería inicial sin cambios: **29 host + 3 bootstrap OK, 0 FAIL**. Escritura acotada a los cinco archivos autorizados; producto y matriz intactos. Temporales autorizados por el padre en `/tmp/opencode/f3-runtime/`, con `TMPDIR` redirigido y `PYTHONDONTWRITEBYTECODE=1`.
 
 Implementados **40 casos** independientes en `critical_cases.sh`: gate 9, mute/snooze 5, voces 6, keymap 10, daemon 6 y writer 4. Mismo protocolo `CASE`, filtro `CASES=`, sandbox e `in_host`, sin copiar helpers legacy. `host_cli_cases.sh` solo añade pins de rutas; conserva todas sus aserciones. Wrapper y job CI Ubuntu añadidos; no se han hecho commits ni push. Se supera la heurística de 400 líneas: el aislamiento independiente, los guards explícitos, el reap de hijos y seis controles de mutación justifican el tamaño, sin comprimir tests para cuadrar un presupuesto.
 
@@ -31,7 +31,7 @@ Implementados **40 casos** independientes en `critical_cases.sh`: gate 9, mute/s
 
 El legado tenía aproximadamente 462 aserciones, no 462 casos independientes. La matriz actual vincula alternativas modificadas a casos existentes; no demuestra cobertura del comportamiento crítico completo. Los watchers actuales sustituyen `gate_agent_event`: **no ejercen el gate real**.
 
-| Bloque legado @ `4c572a4` | Clasificación / cobertura previa | Decisión F3 |
+| Bloque legado @ `a6a4172` | Clasificación / cobertura previa | Decisión F3 |
 |---|---|---|
 | s20, 253–290: takeover y guard de identidad | Crítico; descubierto | PID y takeover sobre hijos propios, proceso no relacionado preservado |
 | s26, 1925–2007: stop/restart y fallback | Crítico; descubierto | Stop por pidfile y fail-open; restart y sweep real excluidos (ver T3) |
@@ -44,7 +44,7 @@ El legado tenía aproximadamente 462 aserciones, no 462 casos independientes. La
 | s25/s30, 1800–1924 y 2230–2299: config_set | Crítico solo el writer; descubierto | Upsert/dedupe, admisión, `.bak`, directorio no escribible; no portar UI |
 | gate_agent_event (actual 3039), load/save (2754/2762), CLI 6939 | Mayor hueco: el legado nunca llamó directamente al gate | Casos nuevos por CLI y source: mute, snooze, debounce, persistencia y fail-open |
 | Dashboard/overlays, paleta, menús, themes/i18n, layer audit, reader, skill, retention | No crítico para esta tarea | Excluido; inventario T3 abajo |
-| s33/s34: bootstrap/install | Obsoleto frente a onboarding portable | No trasladar supuestos antiguos; cambios corroborados en `c577041` y `7e41bd0`; conservar harness bootstrap actual |
+| s33/s34: bootstrap/install | Obsoleto frente a onboarding portable | No trasladar supuestos antiguos; cambios corroborados en `a8e9aab` y `b846658`; conservar harness bootstrap actual |
 
 Corrección respecto al legado: `voice_auto_assign` actual usa el catálogo del engine (primeras cuatro voces), no una paleta estática; sin catálogo o con proveedor no rotatorio vuelve a la voz global. El test inyecta un catálogo conocido y prueba también su ausencia.
 
@@ -167,11 +167,11 @@ Casos: 31 host, 44 critical (42+2), 3 bootstrap = 78. El drift global previo del
 
 Verificación independiente final: batería completa **78 OK / 0 FAIL** y regresiones de identidad obsoleta y padre terminado **2 OK / 0 FAIL**. Veredicto técnico PASS con las limitaciones documentadas; CI remoto no ejecutado. El oráculo de huérfano prueba ausencia de proceso vivo, no `waitpid` sobre un no-hijo adoptado. RDD desactivado por preferencia clone-local, sin revisión nativa.
 
-F3 verificada localmente (T1–T4 cerrados, batería conectada a CI). Las correcciones posteriores a `6838f29` permanecen sin commit. No se ha realizado push. F4 (`AT-02` reenfocada + `HT-01`) es el siguiente desarrollo de producto; F2 sigue pendiente de prueba física.
+F3 verificada localmente (T1–T4 cerrados, batería conectada a CI). Las correcciones posteriores a `ce93f28` permanecen sin commit. No se ha realizado push. F4 (`AT-02` reenfocada + `HT-01`) es el siguiente desarrollo de producto; F2 sigue pendiente de prueba física.
 
 ## Delivery strategy
 
 - Human selected option 1: `ask-on-risk` with `stacked-to-main`. Each review slice targets `main`; dependent slices wait for their predecessors. No PR creation, push, or merge is authorized by this selection.
-- Existing work-unit boundary: `6838f29` (critical test net and CI, 914 authored changed lines). The existing commit is retained; no history rewrite or size exception is inferred. A bounded cohesive slicing pass is still required before preparing PRs.
+- Existing work-unit boundary: `ce93f28` (critical test net and CI, 914 authored changed lines). The existing commit is retained; no history rewrite or size exception is inferred. A bounded cohesive slicing pass is still required before preparing PRs.
 - Pending work unit: sandbox containment and owned-fixture cleanup corrections, with the observed independent 78/0 verification and this task record. Current tracked diff before this strategy entry: 389 authored changed lines.
 - One-time commit exception: the maintainer explicitly authorized this local F3 correction commit outside the usual time window on 2026-10-07 at approximately 01:47 CEST. Use the real clock; no date fabrication, push, or PR is authorized. The normal time policy remains unchanged for later commits.

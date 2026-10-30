@@ -2,7 +2,7 @@
 
 **Alcance**: PRD-AT-08 · **Prioridad**: P1 · **Esfuerzo**: M-L
 **Repositorio**: agent-tts · **Estado**: COMPLETADO (Cola y Cadena, 2026-09-25)
-**Referencias Git**: `3a9c59e`, `ec1b541`, `7231f9e`, `0d3f340`.
+**Referencias Git**: `378bb31`, `35da77d`, `c613689`, `fc6538a`.
 
 > **Estado reconciliado (2026-10-05)**: Cola, cadena y contrato presentes en `engine/src/agent_tts/` y `contracts/ipc-v2.md`. Aprobado el 22/09; las secciones de pendientes anteriores a T6/T8 son históricas. Se conservan métricas incumplidas y residuales; el cierre no los convierte en pruebas satisfactorias.
 

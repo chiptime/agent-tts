@@ -70,7 +70,7 @@ the turns. The chosen tab is remembered in `localStorage`
 | | |
 |---|---|
 | **Task doc** | `odd/tasks/cockpit-tabs.md` |
-| **Commit** | `a3cd8d8` — feat(brain): split the cockpit body into agent/screen tabs |
+| **Commit** | `a256f5c` — feat(brain): split the cockpit body into agent/screen tabs |
 | **Markup** | `#agent-tabs` (`role="tablist"`) + `#agent-panel` / `#screen-panel` (`role="tabpanel"`), roving `tabindex`, ArrowLeft/ArrowRight |
 | **Tests** | `tests/browser/test_agent_tabs.py`, `tests/js/agent-tabs-wiring.test.js`, `tests/test_server.py::TestStatic::test_index_agent_view_tabs` |
 

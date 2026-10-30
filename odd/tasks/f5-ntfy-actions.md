@@ -1,6 +1,6 @@
 # F5 — HT-04 refocused: ntfy action buttons over the Herdr Brain approval API
 
-**Status**: DONE (code + tests + docs; physical phone validation pending = F2) · **Branch**: `feat/f5-ntfy-actions` (worktree `~/Code/personal/agent-tts-worktrees/f5-ntfy`, base `main` = `a12e727`)
+**Status**: DONE (code + tests + docs; physical phone validation pending = F2) · **Branch**: `feat/f5-ntfy-actions` (worktree `~/Code/personal/agent-tts-worktrees/f5-ntfy`, base `main` = `f30436d`)
 **Engram topic**: `odd/f5-ntfy-actions/tasks` (project `agent-tts`)
 
 ## Intent
@@ -61,8 +61,8 @@ a phone (ROADMAP F2 remains pending).
 
 ## Commits
 
-- `2ef657b` feat(brain): accept ntfy action resolve requests
-- `13ff28c` feat(tts-plugin): add approve/stop ntfy action buttons
+- `3818a18` feat(brain): accept ntfy action resolve requests
+- `41c351d` feat(tts-plugin): add approve/stop ntfy action buttons
 - `<this commit>` docs(roadmap): mark F5 ntfy buttons implemented pending physical validation
 
 ## Notes / risks

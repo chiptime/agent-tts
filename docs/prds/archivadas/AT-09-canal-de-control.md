@@ -1,5 +1,5 @@
 **ID**: PRD-AT-09 · **Proyecto**: agent-tts
-**Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: EJECUTADA (BLOQUE 1.1) (Fecha de cierre: 2026-09-24, commit: `1dde8f2` / `c8d5665`)
+**Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: EJECUTADA (BLOQUE 1.1) (Fecha de cierre: 2026-09-24, commit: `d162741` / `bb0ac53`)
 **Dependencias**: Ninguna (prerrequisito duro de AT-04)
 
 > **Reconciliación (2026-10-05)**: Aprobada el 22/09; propiedad implementada en `engine/src/agent_tts/ownership.py` e `ipc.py`. El framing inicial evolucionó a v2 con AT-08. La comprobación de la primitiva de bloqueo en Windows real sigue aplazada según BLOQUE 1.1.

@@ -7,7 +7,7 @@
 | **Date** | 2026-09-24 |
 | **Effort** | Implementación servidor + UI entregada; cierre manual pendiente |
 
-> **Estado reconciliado (2026-10-05)**: `/approval/current`, approve/reject/resolve y PATCH están implementados en `src/herdr_brain/server.py`, con `tests/test_approval.py`, tests de rutas y JS. Referencias del monorepo: `2abb17e` (endpoints), `22e2fc2` (popup flotante, fuera del drawer). El cuerpo conserva el diseño original, incluida la ubicación inicial de la tarjeta. No se declara validación física: T8 sigue abierto para la repetición de pruebas en Chrome Android (ROADMAP F2).
+> **Estado reconciliado (2026-10-05)**: `/approval/current`, approve/reject/resolve y PATCH están implementados en `src/herdr_brain/server.py`, con `tests/test_approval.py`, tests de rutas y JS. Referencias del monorepo: `a579cd8` (endpoints), `b112858` (popup flotante, fuera del drawer). El cuerpo conserva el diseño original, incluida la ubicación inicial de la tarjeta. No se declara validación física: T8 sigue abierto para la repetición de pruebas en Chrome Android (ROADMAP F2).
 
 ---
 

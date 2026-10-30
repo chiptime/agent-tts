@@ -2,7 +2,7 @@
 **Alcance**: PRD-HT-02 + PRD-HT-11 · **Prioridad**: P1 · **Esfuerzo agregado**: S-M (HT-02 ya implementada en paralelo)
 **Repositorio**: herdr-tts · **Estado**: COMPLETADO (ambos hitos terminados)
 
-> **Estado reconciliado (2026-10-05, actualizado al cierre del 2026-10-06)**: HT-02 integrada en `d94edf7`: `resolve_voice`, `voice_map_set` y `--voice-for` en `bin/herdr-tts`; el picker solo permitía seleccionar/aplicar/cancelar, sin el preview bilingüe, auto-stop ni caché LRU de HT-11. A la fecha de reconciliación HT-11 seguía pendiente con prioridad baja (ROADMAP, D4); fue ejecutada el 2026-10-06 junto al hito de integración, completando ambos hitos del bloque. El estado de WIP del cuerpo es historia del 22/09, no del árbol actual.
+> **Estado reconciliado (2026-10-05, actualizado al cierre del 2026-10-06)**: HT-02 integrada en `45807ea`: `resolve_voice`, `voice_map_set` y `--voice-for` en `bin/herdr-tts`; el picker solo permitía seleccionar/aplicar/cancelar, sin el preview bilingüe, auto-stop ni caché LRU de HT-11. A la fecha de reconciliación HT-11 seguía pendiente con prioridad baja (ROADMAP, D4); fue ejecutada el 2026-10-06 junto al hito de integración, completando ambos hitos del bloque. El estado de WIP del cuerpo es historia del 22/09, no del árbol actual.
 
 ### Objetivo del bloque
 

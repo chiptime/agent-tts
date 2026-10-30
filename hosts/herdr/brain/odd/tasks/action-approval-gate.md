@@ -5,7 +5,7 @@
 **Created**: 2026-09-24
 **Status**: IMPLEMENTADA con tests — T1–T7 hechas; T8 parcial, validación Chrome Android pendiente
 
-> **Estado reconciliado (2026-10-05)**: Rutas `/approval/*` en `src/herdr_brain/server.py` y store en `approval.py`; tests presentes en `tests/test_approval.py`, `tests/test_server.py` y `tests/js/approval.test.js`. Referencias del monorepo: `2abb17e`, `22e2fc2`. El plan y los hashes standalone del cuerpo son históricos. No se han repetido suites ni pruebas físicas en F1; T8 no se marca completa (ROADMAP F2).
+> **Estado reconciliado (2026-10-05)**: Rutas `/approval/*` en `src/herdr_brain/server.py` y store en `approval.py`; tests presentes en `tests/test_approval.py`, `tests/test_server.py` y `tests/js/approval.test.js`. Referencias del monorepo: `a579cd8`, `b112858`. El plan y los hashes standalone del cuerpo son históricos. No se han repetido suites ni pruebas físicas en F1; T8 no se marca completa (ROADMAP F2).
 
 ## Objective
 

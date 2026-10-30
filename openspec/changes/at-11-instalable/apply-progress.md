@@ -7,7 +7,7 @@ cumulative content plus exact commit hashes (this file ships inside its own work
 contain that hash).
 
 Hash-only branch rewrite verified earlier: refreshed mapping supersedes pre-rewrite IDs
-(a022c44→d89abc7, 3712ced→aae51ea, b30cd0a→0682845, b037b6f→401a4b8). Cumulative state: **12/26 tasks
+(a022c44→1bad588, 3712ced→c1cfb39, b30cd0a→6e8b850, b037b6f→7cda04a). Cumulative state: **12/26 tasks
 complete** (M1 closed with no baseline exception; M2 opened by task 2.1 — the shared resolver layer).
 
 ## Task 2.1 — `resolve.py` + bash resolvers: monorepo root, `HERDR_BIN`, port, `HERDR_TTS_HOME` (slice 9, PR 12) — COMPLETE
@@ -70,7 +70,7 @@ and `hosts/herdr/brain/bin/herdr-brain` (resolver block + wiring), `hosts/herdr/
 ## Task 1.8 — Scenarios 1+2 `plugin-fresh-clone`, `plugin-subdir-install` (slice 8, PR 11) — COMPLETE via the authorized candidate branch (design Decision 11)
 
 **First pass (preserved history)**: authored and run truthfully BLOCKED against the then-unpublished
-stable route (`d5df787` shim fix + `ce2afed` scenarios) — that blocked evidence for the STABLE route
+stable route (`0e79fa2` shim fix + `5edc986` scenarios) — that blocked evidence for the STABLE route
 stays recorded below and in `/tmp/opencode/at11-m1`: the remote `v0.16.0` tag is absent and public
 `main` still carries legacy URLs + pin `32e9bafb`. Nothing in the candidate run repairs, publishes, or
 validates the stable route.
@@ -83,8 +83,8 @@ tests a–f). After the local commit, the authorized validation branch was creat
 session `chiptime` over HTTPS with a per-command credential helper (no global git config change, no
 SSH): explicit refspec `feat/at-11-instalable:refs/heads/validation/at-11-instalable` to
 `https://github.com/chiptime/agent-tts.git`, fast-forward-only (the remote ref was ABSENT → create;
-`main` untouched at `e592ef31`). Remote ref verified resolving to the pushed commit
-`63d58714ae003efaf1c0f2cfe633818900db0082` before the V2 run. No tag, PR, merge, release, deletion,
+`main` untouched at `a922acd7`). Remote ref verified resolving to the pushed commit
+`6c099a1fa8f14a799cb4f06d1eca9251ca6a294b` before the V2 run. No tag, PR, merge, release, deletion,
 or force operation was performed; V3 remains the human gate.
 
 **What changed (code work unit)**: `hosts/herdr/tts-plugin/README.md` — the `id=install-plugin-curl`
@@ -116,11 +116,11 @@ green; earlier real failures stay FAIL — a masking flaw found and fixed during
 
 | Evidence | Result |
 |---|---|
-| RED pass (harness at `27ecb68`, old README still HEAD, scenarios from the working tree) | Scenario 1 **FAIL — 1 ok / 3 fail** (test a RED: zero ref expansions found; hardcoded v0.16.0 outside the expansion; candidate unresolvable recorded as fail, not masked). Scenario 2 **BLOCKED** — "authorized candidate ref validation/at-11-instalable does not resolve to a commit at the documented origin … no substitute ref, M1 stays open" (the ref was not yet pushed). Exit 1 |
-| Authorized remote write | `git -c credential.helper='!gh auth git-credential' push https://github.com/chiptime/agent-tts.git feat/at-11-instalable:refs/heads/validation/at-11-instalable` → `* [new branch]` (remote ref was absent ⇒ create is the fast-forward); `gh auth status` confirmed the ACTIVE session is the named `chiptime`; post-push `git ls-remote` shows `63d58714ae003efaf1c0f2cfe633818900db0082 refs/heads/validation/at-11-instalable` == local HEAD. No token material printed; no PR opened (GitHub's PR suggestion ignored) |
-| Harness (GREEN, `--milestone 1 --record --record-dir /tmp/opencode/at11-m1-v2`) | **exit 0** — `2 PASS · 0 FAIL · 0 BLOCKED · 7 NOT-YET-ACTIVATED (activated: 2)` at commit `63d5871`; journal `/tmp/opencode/at11-m1-v2/clean-install-63d5871.json`; scenario evidence preserved under `/tmp/opencode/at11-m1-v2/evidence/` (a `--keep` re-run, identical results, provided the assert.log/candidate.json artifacts) |
-| Scenario 1 state | **PASS — 20 ok / 0 fail / 0 stubbed**: static tests a+b green; candidate `validation/at-11-instalable` → `63d58714ae003efaf1c0f2cfe633818900db0082`; literal documented curl block completed at the candidate ref; installer reports cloning at the ref; installed checkout HEAD == candidate commit; fetched installer script byte-identical to the candidate tree; OQ-6 legs green — exact SHA `d66616bc…` fetched BY FULL ID from `https://github.com/chiptime/agent-tts.git`, resolves to exactly the pin, pinned tree materializes `hosts/herdr/tts-plugin/` + `engine/`; no-override bootstrap installs engine from the pinned public ref; `direct_url.json` records `commit_id == d66616bc…`, `subdirectory == engine`, documented url; no-claim scan green |
-| Scenario 2 state | **PASS — 16 ok / 0 fail / 0 stubbed**: real herdr 0.9.1; candidate resolved; verbatim `id=install-plugin-github` block refused non-interactively (observed); candidate leg `--ref validation/at-11-instalable --yes` completed in the clean environment; registration `plugin_root == managed_path/hosts/herdr/tts-plugin` (`…/plugins/github/herdr.tts-683bf97d4464/hosts/herdr/tts-plugin`), `resolved_commit == 63d58714…` (attribution), full monorepo incl. `engine/`, managed_path a git checkout root, clone origin == documented HTTPS origin; `[[build]]` venv imports `agent_tts`; `direct_url.json` `commit_id == d66616bc…` + `subdirectory == engine`; no-claim scan green. Diagnostic fallback leg NOT triggered (candidate leg passed). **OQ-1 CONFIRMED on the candidate route — vendoring fallback not needed** |
+| RED pass (harness at `3c86f27`, old README still HEAD, scenarios from the working tree) | Scenario 1 **FAIL — 1 ok / 3 fail** (test a RED: zero ref expansions found; hardcoded v0.16.0 outside the expansion; candidate unresolvable recorded as fail, not masked). Scenario 2 **BLOCKED** — "authorized candidate ref validation/at-11-instalable does not resolve to a commit at the documented origin … no substitute ref, M1 stays open" (the ref was not yet pushed). Exit 1 |
+| Authorized remote write | `git -c credential.helper='!gh auth git-credential' push https://github.com/chiptime/agent-tts.git feat/at-11-instalable:refs/heads/validation/at-11-instalable` → `* [new branch]` (remote ref was absent ⇒ create is the fast-forward); `gh auth status` confirmed the ACTIVE session is the named `chiptime`; post-push `git ls-remote` shows `6c099a1fa8f14a799cb4f06d1eca9251ca6a294b refs/heads/validation/at-11-instalable` == local HEAD. No token material printed; no PR opened (GitHub's PR suggestion ignored) |
+| Harness (GREEN, `--milestone 1 --record --record-dir /tmp/opencode/at11-m1-v2`) | **exit 0** — `2 PASS · 0 FAIL · 0 BLOCKED · 7 NOT-YET-ACTIVATED (activated: 2)` at commit `6c099a1`; journal `/tmp/opencode/at11-m1-v2/clean-install-63d5871.json`; scenario evidence preserved under `/tmp/opencode/at11-m1-v2/evidence/` (a `--keep` re-run, identical results, provided the assert.log/candidate.json artifacts) |
+| Scenario 1 state | **PASS — 20 ok / 0 fail / 0 stubbed**: static tests a+b green; candidate `validation/at-11-instalable` → `6c099a1fa8f14a799cb4f06d1eca9251ca6a294b`; literal documented curl block completed at the candidate ref; installer reports cloning at the ref; installed checkout HEAD == candidate commit; fetched installer script byte-identical to the candidate tree; OQ-6 legs green — exact SHA `d66616bc…` fetched BY FULL ID from `https://github.com/chiptime/agent-tts.git`, resolves to exactly the pin, pinned tree materializes `hosts/herdr/tts-plugin/` + `engine/`; no-override bootstrap installs engine from the pinned public ref; `direct_url.json` records `commit_id == d66616bc…`, `subdirectory == engine`, documented url; no-claim scan green |
+| Scenario 2 state | **PASS — 16 ok / 0 fail / 0 stubbed**: real herdr 0.9.1; candidate resolved; verbatim `id=install-plugin-github` block refused non-interactively (observed); candidate leg `--ref validation/at-11-instalable --yes` completed in the clean environment; registration `plugin_root == managed_path/hosts/herdr/tts-plugin` (`…/plugins/github/herdr.tts-683bf97d4464/hosts/herdr/tts-plugin`), `resolved_commit == 6c099a1f…` (attribution), full monorepo incl. `engine/`, managed_path a git checkout root, clone origin == documented HTTPS origin; `[[build]]` venv imports `agent_tts`; `direct_url.json` `commit_id == d66616bc…` + `subdirectory == engine`; no-claim scan green. Diagnostic fallback leg NOT triggered (candidate leg passed). **OQ-1 CONFIRMED on the candidate route — vendoring fallback not needed** |
 | Engine V1 suite | `UV_PROJECT_ENVIRONMENT=/tmp/opencode/at11-engine-venv uv run --locked --offline --extra dev python -m pytest tests/ -q` → run 1: 1 failed (`test_chain_playback.py::test_chain_honors_stop_flag_mid_file_remaining_files_not_played`, a timing-sensitive test; no engine file was touched by this batch) + 806 passed, 11 skipped; isolated re-run of that module: 9 passed; **full re-run: 807 passed, 11 skipped** — matching the M1 baseline; the single first-run failure is reported as flaky, not waived |
 | Brain V1 suite | worktree-local `UV_PROJECT_ENVIRONMENT=/tmp/opencode/at11-brain-venv`: `python -m pytest tests/ -q` → **571 passed**; `node --test tests/js/` → **179 pass / 0 fail** |
 | Plugin V1 suite | `cd hosts/herdr/tts-plugin && bash scripts/smoke-tests.sh` → **`1022 passed, 0 failed`**, exit 0, `16s host playback state invariant across the full suite run` green (no signal ever sent to the host daemon; no external host-state change observed) |
@@ -130,7 +130,7 @@ green; earlier real failures stay FAIL — a masking flaw found and fixed during
 ### M1 closure decision: CLOSED — candidate-branch V2 green, all three V1 suites green, no baseline exception
 
 V2 scenarios 1 and 2 PASS from genuine installs against the authorized candidate branch
-`validation/at-11-instalable` @ `63d58714ae003efaf1c0f2cfe633818900db0082`, with journal evidence naming
+`validation/at-11-instalable` @ `6c099a1fa8f14a799cb4f06d1eca9251ca6a294b`, with journal evidence naming
 the branch ref, its resolved commit, the engine SHA `d66616bce3ad8193f11ae615bd58bb4508eb65be`,
 `#subdirectory=engine`, and `plugin_root = managed_path/hosts/herdr/tts-plugin`. Decision-11 RED tests
 a–f green. All three V1 suites green (engine 807/11s, brain 571 + 179 JS, plugin 1022/0) with the 16n/40e
@@ -170,7 +170,7 @@ HTTP 404, pin not fetchable) → `block()` with the precise reason, only when ev
 green; any real failure stays FAIL; consequences of an already-blocked prerequisite are skipped, never
 bad-lined.
 
-**Defect found and fixed (separate commit `d5df787`)**: `scripts/acceptance/origin-shim` treated every
+**Defect found and fixed (separate commit `0e79fa2`)**: `scripts/acceptance/origin-shim` treated every
 non-URL first positional as a remote NAME, so uv's local cache→checkout clones (`git clone --no-hardlinks
 <db> <checkout>`, absolute paths — no network origin by construction) died with exit 30 "cannot resolve
 git remote". One-line fix: `/*|./*|../*` → local-only passthrough, matching the shim's own documented
@@ -179,7 +179,7 @@ all shim policy tests) green after the fix: 13 passed.
 
 **Public-origin findings (read-only diagnostics + scenario evidence)**: the origin
 `https://github.com/chiptime/agent-tts.git` currently serves NO tags — the documented curl route's
-`v0.16.0` raw URL answers HTTP 404; public main (`e592ef31`) still pins `32e9bafbb113…` (no `engine/`
+`v0.16.0` raw URL answers HTTP 404; public main (`a922acd7`) still pins `32e9bafbb113…` (no `engine/`
 subdirectory — fetch succeeds, subdirectory missing); the exact pin `d66616bc…` IS served by full-SHA
 fetch (GitHub retains it although it is on no public ref) — proven inside the sandbox by scenario 1 leg B.
 
@@ -193,7 +193,7 @@ fetch (GitHub retains it although it is on no public ref) — proven inside the 
 | Engine V1 suite (M1 closure leg) | `cd engine && UV_PROJECT_ENVIRONMENT=/tmp/opencode/at11-engine-venv uv run --locked --offline --extra dev python -m pytest tests/ -q` → **807 passed, 11 skipped** (124.95s) |
 | Brain V1 suite (M1 closure leg) | `hosts/herdr/brain` with worktree-local `UV_PROJECT_ENVIRONMENT=/tmp/opencode/at11-brain-venv` (main-checkout venv is editable-bound to main's src — not usable for worktree truth): `python -m pytest tests/ -q` → **571 passed**; `node --test tests/js/` → **179 pass, 0 fail** |
 | Plugin V1 suite (M1 closure leg) | `cd hosts/herdr/tts-plugin && bash scripts/smoke-tests.sh` → **`1022 passed, 0 failed`**, exit 0, `16s host playback state invariant across the full suite run` green (no live-daemon interference; no signal ever sent to the host daemon) |
-| Rollback boundary | Scenario files + this evidence revert as one work-unit commit (`test(acceptance): add real clean-install scenarios`); the shim local-path fix reverts separately (`d5df787`) but doing so re-breaks every uv install inside the sandbox; tasks.md checkbox intentionally untouched (task not complete) |
+| Rollback boundary | Scenario files + this evidence revert as one work-unit commit (`test(acceptance): add real clean-install scenarios`); the shim local-path fix reverts separately (`0e79fa2`) but doing so re-breaks every uv install inside the sandbox; tasks.md checkbox intentionally untouched (task not complete) |
 | Changed lines | 01-plugin-fresh-clone.sh 177; 02-plugin-subdir-install.sh 199; origin-shim +1 (separate commit) — **~377 authored lines** (within the 400-line budget; tasks.md estimated ~240) |
 
 ### First-pass M1 decision (PRESERVED — superseded by the Decision-11 closure above; the stable-route findings remain true and unclaimed)
@@ -388,7 +388,7 @@ and no other source/spec file was modified.
 `raw.githubusercontent.com/chiptime/agent-tts/<ref>/hosts/herdr/tts-plugin/scripts/install.sh`;
 npm README gains an explicit "not published to the npm registry" status section and a support-scope note
 (Linux/WSL2/macOS targets, no native Windows, no validated cross-platform coverage); Homebrew formula
-url/homepage → monorepo with tag `v0.16.0` = revision `516db8f72ed834f0c09f9570ebbaf7c4d2a0d530` (verified
+url/homepage → monorepo with tag `v0.16.0` = revision `d0355c8c0b0401c06b84a0a77a6da9d52542a51b` (verified
 via `git rev-parse v0.16.0` in this worktree), stages only `hosts/herdr/tts-plugin/*` into the keg, and
 documents that first-run onboarding is NOT available on the keg route; Homebrew README mirrors the
 monorepo staging + wizard limitation and fixes the recommended install command to
@@ -419,7 +419,7 @@ root) and keeps `tools/herdr_onboarding` (wizard) out of the keg, consistent wit
 **Corrective follow-up (validator retry — persistent V1 evidence closed)**: the fresh phase-contract
 validator rejected the scratch-runner proof: `engine/tests/test_versioned_tree_hygiene.py` did not include
 the five task-1.6 packaging files in its versioned `LEGACY_FREE_FILES` manifest, and a scratch runner is not
-persistent V1 evidence. Follow-up work unit (separate commit, `a2f56dc` NOT amended) extended
+persistent V1 evidence. Follow-up work unit (separate commit, `b8f8d71` NOT amended) extended
 `LEGACY_FREE_FILES` with exactly the five packaging paths — `packaging/npm/package.json`,
 `packaging/npm/bin/herdr-tts`, `packaging/npm/README.md`, `packaging/homebrew/herdr-tts.rb`,
 `packaging/homebrew/README.md` — as an exact file list with an inline comment explaining why it is not a
@@ -435,14 +435,14 @@ tasks.md Files line + this artifact) — no other work unit's behavior depends o
 
 ## Earlier tasks (1.1–1.5, evidence carried forward from Engram #9678)
 
-- **1.1** harness core `0a6e9fd`; **1.2** origin shim/extractor/hygiene framework `aae51ea`; **1.3** scenario 3
-  + scan scope `0682845`; **1.4** installer monorepo corrections + smoke 34a–34j `401a4b8`
-  (pre-rewrite IDs: 3712ced, b30cd0a, b037b6f). Planning artifacts base `d89abc7` (pre-rewrite a022c44);
-  planning-scope docs expansion `673c49b` (6 openspec files, 922 authored lines).
-- **1.5** bootstrap dev-mode `engine/` derivation (audit B5) `1ed9d3f`. RED: full suite `994 passed, 8 failed`
+- **1.1** harness core `b8fa52a`; **1.2** origin shim/extractor/hygiene framework `c1cfb39`; **1.3** scenario 3
+  + scan scope `6e8b850`; **1.4** installer monorepo corrections + smoke 34a–34j `7cda04a`
+  (pre-rewrite IDs: 3712ced, b30cd0a, b037b6f). Planning artifacts base `1bad588` (pre-rewrite a022c44);
+  planning-scope docs expansion `01d518d` (6 openspec files, 922 authored lines).
+- **1.5** bootstrap dev-mode `engine/` derivation (audit B5) `1a0a7e8`. RED: full suite `994 passed, 8 failed`
   (6 focused 33d/33e/33h + baseline 16n/40e). GREEN: `1001 passed, 1 failed (40e)` twice; 16n timing-flaky
   under load (task 1.10 owns determinism); suite NOT claimed green while 40e remains. Engine hygiene 13 passed.
-  Runtime harness N/A per work-unit table. Rollback: revert `1ed9d3f` alone; 1.11 sequenced after (pin untouched,
+  Runtime harness N/A per work-unit table. Rollback: revert `1a0a7e8` alone; 1.11 sequenced after (pin untouched,
   `AGENT_TTS_REF` still `32e9bafb…` until task 1.11).
 
 ## Mode and delivery
@@ -450,11 +450,11 @@ tasks.md Files line + this artifact) — no other work unit's behavior depends o
 - Mode: **Standard** at workspace level; tasks 1.10 and 1.11 are **plugin-strict-TDD** tasks (local
   `strict_tdd: true` governs `smoke-tests.sh` — RED smoke assertions authored before the production
   change; see the TDD Cycle Evidence tables above). Tasks 1.6/1.7/1.9/1.8 were not plugin-strict-TDD
-  tasks (1.8's Decision-11 RED tests a–f are embedded harness assertions, proven RED at `27ecb68`
+  tasks (1.8's Decision-11 RED tests a–f are embedded harness assertions, proven RED at `3c86f27`
   before the code commit).
 - Delivery: auto-chain, **feature-branch-chain**; task 1.8 is slice 8 / PR 11; apply creates
   work-unit commits only. The ONE authorized remote exception (design Decision 11, Engram #9783) is
-  the push-only candidate ref `validation/at-11-instalable` (created at `63d58714…`, fast-forward-only,
+  the push-only candidate ref `validation/at-11-instalable` (created at `6c099a1f…`, fast-forward-only,
   gh session `chiptime`, HTTPS) — never a PR, never part of the chain; M2–M4 V2 updates of that same
   ref follow the same narrow authorization.
 
@@ -477,19 +477,19 @@ its BLOCKED evidence stands.
 
 ## Tasks 2.2–2.5 (M2 slices 10–13, PRs 15–18) — COMPLETE
 
-Branch `feat/at-11-onboarding-m2` (worktree `agent-tts-worktrees/at11-onboarding`, based on `a12e727`);
+Branch `feat/at-11-onboarding-m2` (worktree `agent-tts-worktrees/at11-onboarding`, based on `f30436d`);
 local commits only, nothing pushed. **Task 2.1 state at start**: present and green on this branch
-(`c577041` is an ancestor of `HEAD`; `tools/herdr_onboarding/resolve.py` and the byte-identical bash
+(`a8e9aab` is an ancestor of `HEAD`; `tools/herdr_onboarding/resolve.py` and the byte-identical bash
 `herdr_resolve_*` blocks exist; `tests/test_resolve.py` 35 passed). The Decision-12 local re-slice
 (9a/9b/9c, backup ref `backup/at-11-task-2.1-c577041`) has **not** been performed here (the backup ref does
 not exist) and was out of scope; the resolver block was not modified by any of these tasks.
 
 | Task | Commit | Focused verification (observed) |
 |------|--------|---------------------------------|
-| 2.2 launcher repair | `4ba2efb` | RED: `test_launcher_repair.py` 6 failed/11 passed + hygiene `brain-launcher` scope failing (3 findings) → GREEN: 17 passed + hygiene 13 passed |
-| 2.3 port policy | `66ce2ad` | RED: `test_port_policy.py` 12 failed/7 passed → GREEN: 19 passed (foreign listener survives, exit 98) |
-| 2.4 systemd template | `8f58172` | RED: `test_systemd_template.py` 20 failed/3 passed → GREEN: 23 passed; `clean-install.sh --milestone 2` scenario 3 FAIL(5) → `PASS` |
-| 2.5 CLI exposure | `425deef` | RED: smoke 34k–34q 17 failures (`1061 passed, 19 failed`) → GREEN `1078 passed, 2 failed` (17a/17c = base failures) |
+| 2.2 launcher repair | `3915af0` | RED: `test_launcher_repair.py` 6 failed/11 passed + hygiene `brain-launcher` scope failing (3 findings) → GREEN: 17 passed + hygiene 13 passed |
+| 2.3 port policy | `33431de` | RED: `test_port_policy.py` 12 failed/7 passed → GREEN: 19 passed (foreign listener survives, exit 98) |
+| 2.4 systemd template | `809c8af` | RED: `test_systemd_template.py` 20 failed/3 passed → GREEN: 23 passed; `clean-install.sh --milestone 2` scenario 3 FAIL(5) → `PASS` |
+| 2.5 CLI exposure | `d4be291` | RED: smoke 34k–34q 17 failures (`1061 passed, 19 failed`) → GREEN `1078 passed, 2 failed` (17a/17c = base failures) |
 
 **Task 2.2** — removed from `bin/herdr-brain`: the dotfiles key scrape (C2), the personal tailnet domain and
 the Tailscale probing (C4; the optional remote URL now comes only from `HERDR_BRAIN_REMOTE_URL`, env or
@@ -518,27 +518,27 @@ or a non-directory `~/.local/bin` before any mutation; new stage links the launc
 `export PATH=…` fix, refreshes its own link; uninstall print gained steps 5 (managed CLI link) and 6
 (first-run marker `~/.config/herdr-tts/first-run.done`). README updated.
 
-### Verification of record (final tree `425deef`)
+### Verification of record (final tree `d4be291`)
 
 - `cd hosts/herdr/brain && uv run pytest tests/test_resolve.py -q` → `35 passed`.
 - `cd hosts/herdr/brain && uv run python -m pytest tests/test_resolve.py tests/test_launcher_repair.py tests/test_port_policy.py tests/test_systemd_template.py -q` → `94 passed`.
 - `cd hosts/herdr/brain && uv run python -m pytest tests/ -q --ignore=tests/browser` → `5 failed, 1467 passed`; the 5 failures (`tests/e2e/test_m2_stream.py` ×3, `tests/e2e/test_m4_fallback.py` ×2, chromium) are identical on the base tree (`5 failed, 1408 passed` before this work). `tests/browser` (Chromium harness) fails/errors on the base too (79 failed + 5 errors on base) — environmental; `node --test tests/js/` not run (`config.py`/static untouched). Plain `pytest tests/` (no `python -m`) fails collection with `No module named 'tests'` on base too.
 - `cd engine && uv run --with pytest pytest tests/test_versioned_tree_hygiene.py -q` → `13 passed`.
 - `bash scripts/acceptance/clean-install.sh --milestone 2` → scenarios 1, 2, 3 `PASS`, exit 0 (scenarios 1/2 install from the remote candidate ref, so they do not exercise these local commits until `validation/at-11-instalable` is fast-forwarded).
-- `bash hosts/herdr/tts-plugin/scripts/smoke-tests.sh` → `1078 passed, 2 failed` (17a, 17c — also `1052 passed, 2 failed` on a `git archive a12e727` export; environmental).
+- `bash hosts/herdr/tts-plugin/scripts/smoke-tests.sh` → `1078 passed, 2 failed` (17a, 17c — also `1052 passed, 2 failed` on a `git archive f30436d` export; environmental).
 - `rg -n "linuxbrew|\.dotfiles|tail2640fd" hosts/herdr/brain/bin/herdr-brain hosts/herdr/brain/deploy` → no matches.
 
-Work-unit commit for this evidence: the `docs(odd)` commit following `425deef` (cannot name its own hash).
+Work-unit commit for this evidence: the `docs(odd)` commit following `d4be291` (cannot name its own hash).
 
 ### Risks left for the maintainer
 
 - `hosts/herdr/brain/src/herdr_brain/config.py` still hard-codes `DEFAULT_TTS_HOME = "~/Code/personal/agent-tts/…"` and `llm.py` still tells users to use `~/.dotfiles/shell/private-env.sh` — both outside this unit's edit surface; the unit works around the first via `@TTS_HOME@`.
 - Brain README still contains maintainer paths in unrelated prose (`cd ~/Code/personal/agent-tts/…`) — task 4.3 (docs final pass).
-- Task 2.1 local re-slice (Decision 12) APPLIED on branch `feat/at-11-slices-9abc` (9a `f88b06e`, 9b `7c6a6fe`, 9c `7d21cc8`; union diff vs `backup/at-11-task-2.1-c577041` EMPTY; per-slice verification green: 17 → 30 → parity 4 + smoke 1054). `main` keeps `c577041` un-rewritten: ~106 evidence-bearing commits sit on top of it (F4, HT-03, M2, F5), so a rewrite would invalidate their recorded hashes — no rebasing of the M2 commits is needed.
+- Task 2.1 local re-slice (Decision 12) APPLIED on branch `feat/at-11-slices-9abc` (9a `aee1cc2`, 9b `d243a4e`, 9c `923e5bc`; union diff vs `backup/at-11-task-2.1-c577041` EMPTY; per-slice verification green: 17 → 30 → parity 4 + smoke 1054). `main` keeps `a8e9aab` un-rewritten: ~106 evidence-bearing commits sit on top of it (F4, HT-03, M2, F5), so a rewrite would invalidate their recorded hashes — no rebasing of the M2 commits is needed.
 
 ## Task 2.6 — Scenario 7 `reinstall-idempotent` (slice 14, PR 19) — COMPLETE
 
-Branch `feat/at-11-completion` (worktree `/home/bruno/Code/personal/agent-tts`); local commit `4abad10`
+Branch `feat/at-11-completion` (worktree `/home/bruno/Code/personal/agent-tts`); local commit `b6087d0`
 ("test(acceptance): scenario 7 reinstall-idempotent"), 268 lines, nothing pushed. Registry row already
 shipped with task 1.1 (`reinstall-idempotent`, `activates_at_milestone 2`) — no registry, harness or
 hygiene-manifest change was needed (`scripts/acceptance` was already a seeded hygiene scope; the scenario
@@ -570,7 +570,7 @@ assertion — the journal records `"stubbed": false`).
 (scratch checkout, never committed), the scenario reports `FAIL credentials/preferences: the merge altered
 the user's non-key lines` — the preservation assertion provably detects the broken property.
 
-### Verification of record (final tree `4abad10`)
+### Verification of record (final tree `b6087d0`)
 
 - `bash scripts/acceptance/clean-install.sh --milestone 2` → scenarios 1, 2, 3, 7 `PASS` (7: 27 ok / 0
   fail / 0 stubbed), exit 0.
@@ -583,9 +583,9 @@ the user's non-key lines` — the preservation assertion provably detects the br
 ### Milestone-2 closure status (tasks.md "Milestone-2 closure")
 
 The closure condition is "V1 green + `--milestone 2` (scenarios 3, 7 `PASS`; scenario 3 newly activated —
-no regression on previously green scenarios 1, 2) + work-unit commit(s)". Observed on `4abad10`:
+no regression on previously green scenarios 1, 2) + work-unit commit(s)". Observed on `b6087d0`:
 `--milestone 2` reports scenarios 3 and 7 `PASS` with scenarios 1 and 2 still `PASS` (no regression,
-exit 0), and the work-unit commits exist (`4abad10` + this docs commit). The candidate-branch update clause
+exit 0), and the work-unit commits exist (`b6087d0` + this docs commit). The candidate-branch update clause
 ("if a V2 run needs the new local commits") did not trigger: scenarios 1/2 install from the remote candidate
 ref and passed unchanged, while scenario 7 exercises the local checkout — no push was needed (and none was
 made). V1 state: engine hygiene green as verified above; the brain and plugin suites were not re-run by
@@ -634,7 +634,7 @@ natural code for 3.5's noninteractive-hint "start daemon anyway" path). Flagged 
 
 ## Task 3.2 — Credential capture (slice 16, PR 21) — COMPLETE
 
-Branch `feat/at-11-completion`, on top of 3.1 skeleton `dc072c9` (re-verified: `tests/test_first_run.py` 40 passed
+Branch `feat/at-11-completion`, on top of 3.1 skeleton `7c86502` (re-verified: `tests/test_first_run.py` 40 passed
 inside the 87-test focused run below; its seam, exit contract and marker lifecycle untouched). Resumed after a
 provider usage limit interrupted the previous writer, which had left four untracked files
 (`tools/herdr_onboarding/{prompts.py,secrets.py,steps/credentials.py}` + `hosts/herdr/brain/tests/test_credentials.py`);
@@ -689,7 +689,7 @@ tighten the exit-10 subprocess assertions. Any gate exception text already passe
 
 ## Task 3.3 — Voice + keymap steps (slice 17, PR 22) — COMPLETE (plugin-suite column not exercised)
 
-Branch `feat/at-11-completion`, on top of 3.2 `4512eb8`. Files: `tools/herdr_onboarding/steps/{voice.py,keymap.py,__init__.py}`,
+Branch `feat/at-11-completion`, on top of 3.2 `e83bc21`. Files: `tools/herdr_onboarding/steps/{voice.py,keymap.py,__init__.py}`,
 `tools/herdr_onboarding/{wizard.py,cli.py,prompts.py}`, tests `hosts/herdr/brain/tests/{test_onboarding_voice.py,
 test_onboarding_keymap.py,test_first_run.py}`. No plugin, brain-runtime, engine or contract file was touched.
 
@@ -734,7 +734,7 @@ test_onboarding_keymap.py,test_first_run.py}`. No plugin, brain-runtime, engine 
 
 ## Task 3.4 — STT consent step (slice 18, PR 23) — V1 COMPLETE, V2 scenarios 5/6 NOT AUTHORED
 
-Branch `feat/at-11-completion`, on top of 3.3 `d718948`. Files: `tools/herdr_onboarding/steps/{stt.py,__init__.py}` +
+Branch `feat/at-11-completion`, on top of 3.3 `bf3cbe1`. Files: `tools/herdr_onboarding/steps/{stt.py,__init__.py}` +
 `hosts/herdr/brain/tests/test_onboarding_stt.py`. The CLI flag, option field and env name (`--stt`, `WizardOptions.stt`,
 `HERDR_ONBOARDING_STT`) were introduced with 3.3's shared plumbing. No brain runtime, engine, contract or plugin file changed.
 
@@ -802,7 +802,7 @@ Branch `feat/at-11-completion`, on top of 3.3 `d718948`. Files: `tools/herdr_onb
 
 ## Completion-branch resume — task 3.5 implementation, 3.3/3.4 proof reconciliation
 
-Branch `feat/at-11-completion`, HEAD `52e3790` plus the uncommitted candidate tree.
+Branch `feat/at-11-completion`, HEAD `c63faf0` plus the uncommitted candidate tree.
 Inherited edits from the cancelled writer were inspected and preserved, not discarded.
 The previously missing exact edit surface `hosts/herdr/brain/tests/test_credentials.py`
 was approved separately; no other scope expansion occurred. Unrelated dirty
@@ -873,7 +873,7 @@ printed; subsequent credential-process runs use only the declared external doubl
 | `bash tests/all_bash_harnesses.sh` (plugin cwd) | Initial GREEN exit 0; final GREEN **exit 0, 142 named cases OK / 0 FAIL**. All nine child harnesses run. |
 | `env -i PATH="/usr/bin:/bin" HERDR_TTS_REAL_VENV="/home/bruno/Code/personal/agent-tts/engine/.venv/bin/python" PYTHONDONTWRITEBYTECODE=1 bash scripts/smoke-tests.sh` (plugin cwd) | **exit 1, 1074 passed / 8 failed**. Missing UTF-8 locale caused six decoding/count failures; 17a/17c expected 21 bindings although the current template contains 23 (PTT/radio already shipped). |
 | `env -i PATH="/usr/bin:/bin" LANG=C.UTF-8 LC_ALL=C.UTF-8 HERDR_TTS_REAL_VENV="/home/bruno/Code/personal/agent-tts/engine/.venv/bin/python" PYTHONDONTWRITEBYTECODE=1 bash scripts/smoke-tests.sh` (plugin cwd) | **exit 0, 1082 passed / 0 failed**. 17a/17c now require exact count 23 plus PTT/radio identity/null/order, not a weakened lower bound. Existing non-fatal s42a initial config-directory diagnostic is visible; its assertions pass. 16s host-state invariant passes. |
-| `git diff e9aab2a -- contracts/tts-brain-v1.md contracts/ipc-v2.md` (root) | **exit 0, empty**; focused digest assertions also pass. |
+| `git diff 28cdee5 -- contracts/tts-brain-v1.md contracts/ipc-v2.md` (root) | **exit 0, empty**; focused digest assertions also pass. |
 
 Full brain was run **once**, with a clean env, isolated HOME/XDG and no live daemon
 pidfile. Exact command (brain cwd):
@@ -992,7 +992,7 @@ the global milestone command remain unproven; no new completion tick is added.
 
 ## Tasks 4.1 → 4.2 — Doctor and acceptance scenarios (2026-10-09) — LOCAL DIFF / PARTIAL
 
-Branch `feat/at-11-completion`, base HEAD `2dfeee12533bbb4f34a25db9b82ba30f6596382b`.
+Branch `feat/at-11-completion`, base HEAD `09ba15f833d0241e843d9e47ec9b56719698bf9b`.
 No branch switch, stage, commit, remote write, installer execution, dependency change,
 model download, live host service or real credential/auth/session access was performed.
 The unrelated dirty `docs/ESTADO-Y-PENDIENTES.md` was preserved. The writer loaded the
@@ -1095,7 +1095,7 @@ Evidence: `/tmp/at11-clean-install.YbRRhf/evidence/`, dedicated `doctor-breakage
 `post-wizard.log`. This is working-tree overlay evidence, not committed-HEAD evidence.
 `bash scripts/acceptance/clean-install.sh --milestone 4` is UNRUN because network scenarios
 1/2 are unauthorized. The real scenario-9 leg is UNRUN/BLOCKED, never replaced by local PASS.
-`git diff e9aab2a -- contracts` is EMPTY. A repo-wide `git diff --check` reports pre-existing
+`git diff 28cdee5 -- contracts` is EMPTY. A repo-wide `git diff --check` reports pre-existing
 trailing whitespace in the unrelated document; scoped tracked implementation checks pass.
 
 ### Work-unit and rollback handoff
@@ -1130,11 +1130,11 @@ Candidate Git blob identities (not commit identities):
 
 ## Checkbox reconciliation after milestone-4 acceptance (2026-10-10)
 
-Evidence: `HERDR_ACCEPTANCE_ALLOW_MODEL_DOWNLOAD=1 HERDR_ACCEPTANCE_PYTHON=<brain venv python> bash scripts/acceptance/clean-install.sh --milestone 4 --keep` at `8e96f04` + harness fix `d63f29d` → **8 PASS · 0 FAIL · 1 BLOCKED** (scenario 9 `post-wizard-health`: live brain/TTS/herdr required).
+Evidence: `HERDR_ACCEPTANCE_ALLOW_MODEL_DOWNLOAD=1 HERDR_ACCEPTANCE_PYTHON=<brain venv python> bash scripts/acceptance/clean-install.sh --milestone 4 --keep` at `f76b834` + harness fix `dc9401b` → **8 PASS · 0 FAIL · 1 BLOCKED** (scenario 9 `post-wizard-health`: live brain/TTS/herdr required).
 
 - **3.4 ticked** — scenario 5 executed a real Hugging Face `base` model pull, the speech-surface contract check, and a real STT `ready` handler (`download.log`: "STT model 'base' ready"); daemon doubled.
-- **4.1 ticked** — doctor six checks with remediation (`c991c36`), scenario 8 PASS.
-- **4.3 ticked** — canonical docs pass (`f1207e0`, `8e96f04`); allowlist pending entries resolved; hygiene 13 passed.
+- **4.1 ticked** — doctor six checks with remediation (`d7aee90`), scenario 8 PASS.
+- **4.3 ticked** — canonical docs pass (`0255935`, `f76b834`); allowlist pending entries resolved; hygiene 13 passed.
 - **4.4 ticked** — `docs/installation/V3-checklist.md` authored with both timing readings, friction log, traceability matrix and frozen-contract check. The human UAT run and sign-off themselves remain open (human-owned).
 - **3.5 and 4.2 stay open** — both depend on scenario 9 with live services, still BLOCKED by design.
 

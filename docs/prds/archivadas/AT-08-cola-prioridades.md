@@ -1,5 +1,5 @@
 **ID**: PRD-AT-08 · **Proyecto**: agent-tts
-**Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: EJECUTADA (BLOQUE 1.3) (Fecha de cierre: 2026-09-25, commit: `7231f9e` / `c8d5665`)
+**Prioridad final (revisión 2026-09-22)**: P1 · **Estado**: EJECUTADA (BLOQUE 1.3) (Fecha de cierre: 2026-09-25, commit: `c613689` / `bb0ac53`)
 **Dependencias**: AT-04 recomendada
 
 > **Reconciliación (2026-10-05)**: Aprobada el 22/09 y ejecutada en `engine/src/agent_tts/{queue_manager,chain,daemon,cli}.py`. Cierre de Cola y Cadena en el alcance del BLOQUE 1.3; winhost v2, aging y demás residuales no se dan por resueltos.

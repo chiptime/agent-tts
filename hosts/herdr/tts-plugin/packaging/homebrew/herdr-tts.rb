@@ -21,7 +21,7 @@ class HerdrTts < Formula
   homepage "https://github.com/chiptime/agent-tts"
   url "https://github.com/chiptime/agent-tts.git",
       tag:      "v0.16.0",
-      revision: "516db8f72ed834f0c09f9570ebbaf7c4d2a0d530"
+      revision: "d0355c8c0b0401c06b84a0a77a6da9d52542a51b"
   license "MIT"
 
   depends_on "python@3.12" => [:build, :test]

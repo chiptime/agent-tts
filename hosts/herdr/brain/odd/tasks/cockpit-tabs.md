@@ -2,7 +2,7 @@
 
 **Repo:** `hosts/herdr/brain` (monorepo `agent-tts`)
 **Created:** 2026-10-15 · **Reconstruido:** 2026-10-16 (ver L2)
-**Status:** implementado + tests verdes + commiteado (`a3cd8d8`); **sin push**
+**Status:** implementado + tests verdes + commiteado (`a256f5c`); **sin push**
 **Design:** amplía `docs/PRD-call-drawer-redesign.md` §4.1 (el PRD describía un
 cockpit de un solo cuerpo con el terminal en una franja ~110px; ver FR3
 enmendado)
@@ -33,7 +33,7 @@ usuario pidió explícitamente moverse entre ambas mediante tabs.
   comentarios, tests y commit en inglés.
 - Runners: `node --test tests/js/` y
   `uv run python -m pytest tests/browser/test_agent_tabs.py -q`.
-- Entrega: una unidad de trabajo (commit `a3cd8d8`); **sin push**.
+- Entrega: una unidad de trabajo (commit `a256f5c`); **sin push**.
 
 ## Specs
 
@@ -76,7 +76,7 @@ usuario pidió explícitamente moverse entre ambas mediante tabs.
   unidad propia: se revirtieron temporalmente los hunks ajenos y se verificó
   **por hash** que la reconstrucción era byte-exacta (`app.js` volvió a
   `b57c7b93…`, el valor que esta feature había pinneado) antes de commitear
-  `a3cd8d8`. Los `S#` de arriba describen lo que el código hace, no un plan
+  `a256f5c`. Los `S#` de arriba describen lo que el código hace, no un plan
   previo.
 - **L3** — evidencia: `node --test tests/js/` 391/391; `uv run python -m pytest
   tests/browser tests/js -q` 156/156; `uv run python -m pytest tests

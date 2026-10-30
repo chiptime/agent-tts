@@ -3,7 +3,7 @@
 **Alcance**: PRD-HT-03 (P2) + tarea de verificación de PRD-AT-03 · **Prioridad**: P2 · **Esfuerzo agregado**: M + 10 min
 **Repositorios**: herdr-tts (radio) + agent-tts (verificación) · **Estado**: PARCIAL (hito 0 y hito 1 hechos; hito 2 — mejoras progresivas — pendiente)
 
-> **Estado reconciliado (2026-10-05)**: AT-03 recortada cerrada en `3bb5e1b` (2026-09-28); conector OpenCode por ID presente en `engine/src/agent_tts/sources/`. `bin/herdr-tts` no tenía comando `radio` ni configuración `TTS_RADIO_*`. El cuerpo conserva el plan original.
+> **Estado reconciliado (2026-10-05)**: AT-03 recortada cerrada en `7cf1ac8` (2026-09-28); conector OpenCode por ID presente en `engine/src/agent_tts/sources/`. `bin/herdr-tts` no tenía comando `radio` ni configuración `TTS_RADIO_*`. El cuerpo conserva el plan original.
 >
 > **Actualización (2026-10-08)**: el **Hito 1 (Radio core) está COMPLETADO**: `herdr-tts --radio` y el command id `radio` están implementados con tests (`tests/radio_cases.sh`); detalle y decisiones en [HT-03](archivadas/HT-03-radio-mode.md) (ahora archivada, estado EXECUTED). Queda pendiente la medición de las métricas de aceptación sobre uso real y el Hito 2: 2a (cabecera con identidad hablada, ya se aplica cuando `voices.json` está en uso — verificada en `radio_header_title_truncation_and_ht02_identity`), 2b (encolado priorizado: implementado con fallback secuencial; falta validarlo contra el daemon real) y 2c (`TTS_RADIO_LLM_SUMMARY`, sin empezar).
 

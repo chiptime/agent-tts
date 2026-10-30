@@ -44,7 +44,7 @@ authorized a local commit only, with author and committer dates set to
 The writer must stop for an out-of-surface dependency or design blocker. The
 existing browser conftest, all other tests, backend, and frozen PRD are read-only.
 Unrelated worktree changes must remain untouched. Implementation branch:
-`feat/glance-sentence-replay`, starting at `9514e6c`.
+`feat/glance-sentence-replay`, starting at `7d78894`.
 
 ## Acceptance and checks
 
@@ -98,7 +98,7 @@ including the isolated browser suite. Tests were kept complete rather than compr
 to match the advisory forecast. A single local work-unit commit is now authorized;
 publication remains deferred and unrelated WIP is excluded.
 Parent runtime root is still the owning repository; unrelated concurrent docs
-commit `9c05992` advanced both branches without changing implementation inputs.
+commit `6d26036` advanced both branches without changing implementation inputs.
 Next step: retain the local commit; main integration/publication may be considered
 only after 2026-10-06 19:00 Europe/Madrid. Physical UAT remains pending.
 
@@ -147,7 +147,7 @@ suites, backend, provider, deployment, or historical PRD edits. Preserve unrelat
 WIP and stop if an allowed file changes concurrently.
 
 Starting branch/HEAD: `feat/glance-sentence-replay` /
-`4618da2f6ba30e44154e165e850bd9ab230fcc7a`. Initial SHA-256 fingerprints captured
+`f9eee613169a299476f87b13c966ef55882c87c9`. Initial SHA-256 fingerprints captured
 for all eight allowed tracker/source/test files and all six unrelated WIP files;
 allowed files were unchanged immediately before this tracker append.
 Forecast: approximately 550–850 authored changes, advisory only; retain complete
@@ -205,7 +205,7 @@ Extension GSR-05 writer verification complete:
   `karaoke.js` and its Node suite remain byte-identical to baseline.
 - Concurrency checks matched all expected allowed-file hashes after authored
   edits and all six unrelated WIP baseline hashes. Branch/HEAD remained
-  `feat/glance-sentence-replay` / `4618da2f6ba30e44154e165e850bd9ab230fcc7a`.
+  `feat/glance-sentence-replay` / `f9eee613169a299476f87b13c966ef55882c87c9`.
   No index operations, commits, publication, restarts, or installations occurred.
 - Delivery: one local uncommitted candidate. Parent independent verification,
   diff assessment, and physical audible/mobile acceptance remain **pending**.
@@ -334,7 +334,7 @@ GSR-07 evidence (each browser suite run separately in the authorized
   envelope unchanged. Changed files are exactly `reader_pipeline.py`
   (`eea51176…8c6e`), new `tests/test_reader_alignment.py`
   (`09790dda…c15a7`), and this tracker. Branch/HEAD unchanged
-  (`feat/glance-sentence-replay` / `4618da2f…0fcc7a`); nothing staged or
+  (`feat/glance-sentence-replay` / `f9eee613…0fcc7a`); nothing staged or
   committed. Parent independent verification and physical-device UAT remain
   **pending**.
 
@@ -347,7 +347,7 @@ cached envelope `48780e66….json` `b21d063a…a814`. Previous frontend candidat
 `4a8217b9…6b8a`, `tests/js/reader.test.js` `681b4e90…f51f`) and unrelated WIP
 fingerprints captured unchanged at extension start.
 Branch/HEAD: `feat/glance-sentence-replay` /
-`4618da2f6ba30e44154e165e850bd9ab230fcc7a`. Runner: repository
+`f9eee613169a299476f87b13c966ef55882c87c9`. Runner: repository
 `engine/.venv` (Python 3.14, pytest 9.1.1), no installs.
 
 ### Blocker correction: exact-mode scope (GSR-06/07 reopened → re-closed)
@@ -406,7 +406,7 @@ round: exactly `reader_pipeline.py` (`91a527dd…8000`) and
 Frozen PRD, previous frontend candidate, all six unrelated WIP files, and
 the cached envelope byte-identical to baseline; `lib/__pycache__` untouched
 this round; branch/HEAD unchanged (`feat/glance-sentence-replay` /
-`4618da2f…0fcc7a`); nothing staged or committed. Parent independent recheck
+`f9eee613…0fcc7a`); nothing staged or committed. Parent independent recheck
 and physical-device UAT remain **pending**.
 
 ### Parent generator-extension closure
@@ -498,7 +498,7 @@ Renderer/frontend candidate and unrelated WIP hashed unchanged:
 `tools.py` `ceb6ace8…0c5c`, `test_consult.py` `e04b289f…0c67`,
 `test_llm.py` `a83c4276…0bd8`, `test_tools.py` `bfb4e2a5…7a2e`.
 Branch/HEAD: `feat/glance-sentence-replay` /
-`4618da2f6ba30e44154e165e850bd9ab230fcc7a`. Forecast: minimal (~60-120
+`f9eee613169a299476f87b13c966ef55882c87c9`. Forecast: minimal (~60-120
 authored lines across source, tests, and this tracker); advisory only.
 Runner: the existing installed Brain `.venv` built-in pytest with
 `PYTHONDONTWRITEBYTECODE=1`, no installs; no smoke suites run this round,
@@ -648,7 +648,7 @@ broad smoke writes, no source edits beyond this tracker append.
   PRD `176c8f1a…93e73`, and all six unrelated WIP files
   (`open-session-inventory.md`, `llm.py`, `tools.py`, `test_consult.py`,
   `test_llm.py`, `test_tools.py`). Branch/HEAD unchanged
-  (`feat/glance-sentence-replay` / `4618da2f…0fcc7a`); nothing staged or
+  (`feat/glance-sentence-replay` / `f9eee613…0fcc7a`); nothing staged or
   committed. `reader_cache/2/*` (nine envelopes at last inspection) are
   new service-side runtime writes after the restart and are the only
   observed state changes; no claim is made that other runtime state is
@@ -725,7 +725,7 @@ the two corresponding changed-script digests in
 `karaoke.js`, `tests/js/karaoke.test.js`, `index.html`, conftest, backend,
 engine, providers and all six unrelated WIP files remain frozen and
 byte-identical. Starting branch/HEAD `feat/glance-sentence-replay` /
-`4618da2f6ba30e44154e165e850bd9ab230fcc7a`; tracker baseline this round
+`f9eee613169a299476f87b13c966ef55882c87c9`; tracker baseline this round
 `41247d82b1027367a2e101d2201e2ee1719e8b0385c962009dba3c030c5aa180` with
 all allowed-file and unrelated-WIP fingerprints matching the GSR-09 end
 state before this append. Forecast: approximately 350–650 authored lines
@@ -823,7 +823,7 @@ GSR-10/11 evidence (all observed this round, strict TDD):
   `reader_pipeline.py` (`91a527dd…8000`), `tests/test_reader.py`
   (`cf482b4c…`), both other browser suites, and all six unrelated WIP
   files. Branch/HEAD unchanged (`feat/glance-sentence-replay` /
-  `4618da2f…0fcc7a`); nothing staged or committed; no restart, service
+  `f9eee613…0fcc7a`); nothing staged or committed; no restart, service
   operation, install, download or provider call occurred. `git diff
   --check` passed.
 - GSR-10 and GSR-11 checked. Parent independent verification, the manual
@@ -922,7 +922,7 @@ same isolated runner env; no Python unit conftest, no smoke py_compile):
   (`8e02aa82…`), `reader_pipeline.py` (`91a527dd…8000`),
   `tests/test_reader.py` (`cf482b4c…`), the frozen PRD path, and all six
   unrelated WIP files byte-identical to the round's baselines. Branch/HEAD
-  unchanged (`feat/glance-sentence-replay` / `4618da2…0fcc7a`); `git
+  unchanged (`feat/glance-sentence-replay` / `f9eee61…0fcc7a`); `git
   diff --check` passed; nothing staged or committed; no restart, service
   operation, install, download or provider call.
 - GSR-10/11 re-closed on corrected proof. Parent independent recheck, the
@@ -951,9 +951,9 @@ observation cap; this local tracker is authoritative.
 
 ### Final closure: merged, published, verified on device (2026-10-07)
 
-The complete feature merged to local main (50c7e75) as one merge over 4618da2
-plus three work-unit commits (698725e renderer anchors, 7f48075 cache profile 2,
-4739b56 popup-range highlight), then pushed: origin/main is at 50c7e75. Device
+The complete feature merged to local main (a9fb2c0) as one merge over f9eee61
+plus three work-unit commits (d7a8337 renderer anchors, 7744554 cache profile 2,
+df061f9 popup-range highlight), then pushed: origin/main is at a9fb2c0. Device
 acceptance confirmed by Bruno: audio and highlight work on the phone over
 Tailscale HTTPS (serve 8443 -> localhost:8741, persistent --bg; the earlier
 aborted serve command had dropped the listener). Everything above that described

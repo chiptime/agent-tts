@@ -4,7 +4,7 @@
 
 > **Nota de destino (2026-10-07, decisión final del maintainer):** diseño cerrado: keymap id `ptt` con modo **toggle** únicamente, captura de micrófono y transcripción como capacidad del **motor** (AT-02, `faster-whisper` reutilizado), consumida por el plugin vía su interfaz pública; confirmación en overlay e inyección con `herdr pane send-text` (literal, sin Enter) seguido de Enter opcional. El dictado **no requiere el brain**; puede estar apagado. Motor sin dependencia/modelo STT o captura no disponible: aviso visible, nada se inyecta, sin descarga implícita ni arranque de servicios. Interruptor propio; con ambos interruptores (AT-02 y HT-01) en `off`, comportamiento idéntico al actual. **Nada de esto está implementado todavía.**
 >
-> **Historia de esta nota:** 2026-09-22 diseño original (whisper.cpp local + `send-keys`); 2026-10-06 "cobertura dual" (D-R2); 2026-10-07 primera revisión (STT del brain vía `POST /transcribe`, commit `ed2fbfe`) — superada el mismo día por la decisión vigente: el motor es dueño del STT y de la captura, el plugin consume su interfaz pública.
+> **Historia de esta nota:** 2026-09-22 diseño original (whisper.cpp local + `send-keys`); 2026-10-06 "cobertura dual" (D-R2); 2026-10-07 primera revisión (STT del brain vía `POST /transcribe`, commit `51d5bb7`) — superada el mismo día por la decisión vigente: el motor es dueño del STT y de la captura, el plugin consume su interfaz pública.
 
 # PRD-HT-01 — Push-to-Talk intercom (hablar al agente)
 
@@ -88,7 +88,7 @@ Modo `hold`, dictado continuo, wake-word, STT en cloud, control de la UI de Herd
 
 ## Apéndice histórico — diseños superados (2026-09-22 y 2026-10-07)
 
-Original (2026-09-22): modos `hold`+`toggle`, STT 100% local whisper.cpp en el motor, `send-keys` o "el verbo equivalente", `TTS_PTT_MODE` y `HERDR_TTS_STT_MODEL`. Primera revisión (2026-10-07, commit `ed2fbfe`): transcripción delegada al brain vía `POST /transcribe` con `TTS_STT`/`TTS_STT_URL`/`TTS_STT_TIMEOUT` propuestas. Ambos superados por la decisión vigente: solo `toggle`, STT y captura del motor (AT-02), `send-text` literal + Enter opcional, independencia del brain.
+Original (2026-09-22): modos `hold`+`toggle`, STT 100% local whisper.cpp en el motor, `send-keys` o "el verbo equivalente", `TTS_PTT_MODE` y `HERDR_TTS_STT_MODEL`. Primera revisión (2026-10-07, commit `51d5bb7`): transcripción delegada al brain vía `POST /transcribe` con `TTS_STT`/`TTS_STT_URL`/`TTS_STT_TIMEOUT` propuestas. Ambos superados por la decisión vigente: solo `toggle`, STT y captura del motor (AT-02), `send-text` literal + Enter opcional, independencia del brain.
 
 ## Plan de implementación (F4 — todo pendiente)
 

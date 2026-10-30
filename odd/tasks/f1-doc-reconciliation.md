@@ -1,6 +1,6 @@
 # F1 — Reconciliación documental (base veraz)
 
-**Feature id:** `f1-doc-reconciliation` · **Worktree:** `agent-tts-worktrees/roadmap` · **Branch:** `docs/voice-stack-roadmap` (from `main` @ `5e833fe`)
+**Feature id:** `f1-doc-reconciliation` · **Worktree:** `agent-tts-worktrees/roadmap` · **Branch:** `docs/voice-stack-roadmap` (from `main` @ `244c02a`)
 **Fuente:** `docs/voice-stack/ROADMAP.md` §4-F1 y `docs/voice-stack/RECONCILIATION-PLAN.md` (R1, R2).
 
 ## Objetivo
@@ -33,10 +33,10 @@ Creado y reconciliado el 2026-10-05 en `docs/voice-stack-roadmap`. T1–T7 termi
 
 | Tarea | Resultado y evidencia de fuente |
 |---|---|
-| T1 | Cabeceras cerradas: AT-01 `c2b8175`/`a3ee900` (29/09); AT-03 `3bb5e1b` (28/09, solo alcance OpenCode); AT-04 `43bf5d8`/`8e9ce26`/`ce49cdf` (24/09); AT-08 `3a9c59e`/`ec1b541`/`7231f9e`/`0d3f340` (25/09); AT-09 `05624a1`/`16f11aa` (23/09, refuerzo `1dde8f2` el 24/09); AT-10 `d53a333`/`9454732`/`a3f9f3e`/`90db9b9`/`29429e3` (28/09). Fechas y hashes contrastados con Git; código correspondiente leído. |
-| T2 | BLOQUE-1 y 1.x completados en el alcance acordado, sin certificar métricas/residuales. BLOQUE-2 parcial: `resolve_voice`/`voice_map_set` implementados (`d94edf7`), picker sin preview HT-11. BLOQUE-3 sin ejecutar: ntfy solo view/copy, sin recordatorios escalados. BLOQUE-4 parcial: AT-03 cerrada, sin comando/configuración radio. |
-| T3 | Tres índices con las 20 originales y extras, puntero al ROADMAP. AT-11 parcial: M1 y tarea 2.1 (`c577041`) hechas; 14 tareas restantes. HT-14 se describe config-only, no como knob de Apariencia entregado. |
-| T4 | Approval: rutas implementadas (`server.py`, `2abb17e`), popup flotante (`22e2fc2`), tests presentes; T8/Chrome Android abierta. Historial SQLite y GET paginado presentes (`856d857`, `89ba080`). BLOQUE-1.3 integrado, sin duplicado pendiente T8; registro previo conservado como historia. |
+| T1 | Cabeceras cerradas: AT-01 `196ed56`/`0d09ed3` (29/09); AT-03 `7cf1ac8` (28/09, solo alcance OpenCode); AT-04 `116f6c1`/`49c9eaa`/`e4313ee` (24/09); AT-08 `378bb31`/`35da77d`/`c613689`/`fc6538a` (25/09); AT-09 `36a726b`/`c701afc` (23/09, refuerzo `d162741` el 24/09); AT-10 `3cbf0d1`/`ebe7720`/`2214530`/`42394a3`/`7df409b` (28/09). Fechas y hashes contrastados con Git; código correspondiente leído. |
+| T2 | BLOQUE-1 y 1.x completados en el alcance acordado, sin certificar métricas/residuales. BLOQUE-2 parcial: `resolve_voice`/`voice_map_set` implementados (`45807ea`), picker sin preview HT-11. BLOQUE-3 sin ejecutar: ntfy solo view/copy, sin recordatorios escalados. BLOQUE-4 parcial: AT-03 cerrada, sin comando/configuración radio. |
+| T3 | Tres índices con las 20 originales y extras, puntero al ROADMAP. AT-11 parcial: M1 y tarea 2.1 (`a8e9aab`) hechas; 14 tareas restantes. HT-14 se describe config-only, no como knob de Apariencia entregado. |
+| T4 | Approval: rutas implementadas (`server.py`, `a579cd8`), popup flotante (`b112858`), tests presentes; T8/Chrome Android abierta. Historial SQLite y GET paginado presentes (`aead8f4`, `a23b2bf`). BLOQUE-1.3 integrado, sin duplicado pendiente T8; registro previo conservado como historia. |
 | T5 | Banners de cierre según MANUAL-TESTS (01/10), distintos de la fecha de commits (03/10). Rutas de scripts/tests comprobadas con `ls` antes de retirar marcadores. Contrato DRAFT y solicitud §1 intactos; se conservan marcadores genéricos históricos, runner opcional sin ruta e instalación del tooling no verificada. Plan de reconciliación conservado con nota superior. |
 | T6 | Cuatro notas de destino del 05/10: AT-02 cliente del STT brain; HT-01 viva; ambas con on/off. HT-04 atajo sobre brain, sin listener propio. HT-05 backlog separado de VS3, sobre `pending_queue.py`, con reset dependiente de HT-01/04. |
 | T7 | Solo Markdown permitido modificado; dos untracked preexistentes conservados. Enlaces nuevos con destino existente. Los 13 estados hallados son diferidos válidos o historia fechada; la evidencia del comando añade una autocoincidencia (14 resultados), no una cabecera falsa. |
@@ -47,11 +47,11 @@ Reconciliadas las cabeceras y notas pendientes de la primera pasada, dentro de l
 
 | Tarea de segunda pasada | Resultado |
 |---|---|
-| 1 | AT-11: PARCIAL; M1 completado y tarea 2.1 hecha (`af8680d`, `c577041`, 2026-10-02). Recuento: 12 tareas hechas de 26, 14 pendientes (5 en M2, 5 en M3, 4 en M4). El «Siguiente paso» original se identifica como previo al inicio. |
-| 2 | Brain: PARCIAL para el conjunto de la PRD; contexto e informes implementados (`d7de194`, `2cb3a50`), bucle autónomo FR-42..45 futuro, no habilitado. Nota fechada con enlaces al registro y cobertura; cuerpo intacto. |
-| 3 | HT-02: EJECUTADA desde el 2026-09-22 (`d94edf7`); asignación persistente verificada. HT-11 sigue pendiente como compañera de audición, con prioridad baja según D4. |
+| 1 | AT-11: PARCIAL; M1 completado y tarea 2.1 hecha (`019ec0c`, `a8e9aab`, 2026-10-02). Recuento: 12 tareas hechas de 26, 14 pendientes (5 en M2, 5 en M3, 4 en M4). El «Siguiente paso» original se identifica como previo al inicio. |
+| 2 | Brain: PARCIAL para el conjunto de la PRD; contexto e informes implementados (`f7c5e94`, `ab3ace8`), bucle autónomo FR-42..45 futuro, no habilitado. Nota fechada con enlaces al registro y cobertura; cuerpo intacto. |
+| 3 | HT-02: EJECUTADA desde el 2026-09-22 (`45807ea`); asignación persistente verificada. HT-11 sigue pendiente como compañera de audición, con prioridad baja según D4. |
 | 4 | HT-11: prioridad baja (D4, 2026-10-05), F6; AT-02/HT-01 antes. La nota del 22/09 permanece como historia. |
-| 5 | HT-14: EJECUTADA en alcance config-only (`TTS_THEME`); Apariencia retirada el 2026-09-24 (`e75d55e`), adopción del tema en `d0de97d`. El archivo del 23/09 refleja el diseño anterior, no un selector actual. |
+| 5 | HT-14: EJECUTADA en alcance config-only (`TTS_THEME`); Apariencia retirada el 2026-09-24 (`6c928a3`), adopción del tema en `00c97bf`. El archivo del 23/09 refleja el diseño anterior, no un selector actual. |
 | 6 | ROADMAP §4-F7: M1 hecho, M2 parcial por tarea 2.1 y 14 tareas pendientes; sin cambios de decisiones ni secuencia. |
 | 7 | Ambos índices coherentes con las cinco PRDs; preservados los cambios de primera pasada y el resto del árbol. No se inspecciona ni modifica el checkout principal. |
 
@@ -88,10 +88,10 @@ Marcadores restantes en EXECUTION/TASKS: cabeceras originales históricas, comen
 ### Segunda pasada (2026-10-05)
 
 - Base observada antes de editar: branch `docs/voice-stack-roadmap`, raíz `agent-tts-worktrees/roadmap`, 27 Markdown tracked modificados y dos untracked preexistentes (`ROADMAP.md` y este documento).
-- AT-11: lectura completa del plan de tareas y recuento con `rg -c '^- \[x\] [1-4]\.[0-9]+ ' openspec/changes/at-11-instalable/tasks.md && rg -c '^- \[ \] [1-4]\.[0-9]+ ' openspec/changes/at-11-instalable/tasks.md`: 12 y 14, exit 0. Contraste con `scripts/install.sh`, `scripts/bootstrap.sh`, `tools/herdr_onboarding/resolve.py`, resolvers del launcher y Git (`af8680d`, `c577041`). No se confunden tareas funcionales con slices de revisión.
-- HT-02/HT-11: código de `resolve_voice`, `voice_map_set`, `run_voice_for_picker` y sus llamadas leído; el picker permite aplicar/cancelar, no preview de navegación. Fecha y entrega de HT-02 contrastadas con Git (`d94edf7`).
-- HT-14: `config_set`, `theme_sync`, `theme_color` y `settings_render` leídos; la categoría no está en el render actual. El diff de `e75d55e` retira dispatch, render e i18n de Apariencia; `d0de97d` conserva adopción del tema. Se leyó el archivo del 23/09 sin tomar su snapshot como estado actual.
-- Brain: `ConsultService` compone providers, `ReportStore`, `FreshnessChecker`, `QueryEngine` y `FollowupStore`; `server.py` lo conecta a `BrainTools`. Lectura del registro ODD y cobertura contrastada con el código y logs de `d7de194`/`2cb3a50`; contexto entregado no equivale a bucle autónomo de implementación.
+- AT-11: lectura completa del plan de tareas y recuento con `rg -c '^- \[x\] [1-4]\.[0-9]+ ' openspec/changes/at-11-instalable/tasks.md && rg -c '^- \[ \] [1-4]\.[0-9]+ ' openspec/changes/at-11-instalable/tasks.md`: 12 y 14, exit 0. Contraste con `scripts/install.sh`, `scripts/bootstrap.sh`, `tools/herdr_onboarding/resolve.py`, resolvers del launcher y Git (`019ec0c`, `a8e9aab`). No se confunden tareas funcionales con slices de revisión.
+- HT-02/HT-11: código de `resolve_voice`, `voice_map_set`, `run_voice_for_picker` y sus llamadas leído; el picker permite aplicar/cancelar, no preview de navegación. Fecha y entrega de HT-02 contrastadas con Git (`45807ea`).
+- HT-14: `config_set`, `theme_sync`, `theme_color` y `settings_render` leídos; la categoría no está en el render actual. El diff de `6c928a3` retira dispatch, render e i18n de Apariencia; `00c97bf` conserva adopción del tema. Se leyó el archivo del 23/09 sin tomar su snapshot como estado actual.
+- Brain: `ConsultService` compone providers, `ReportStore`, `FreshnessChecker`, `QueryEngine` y `FollowupStore`; `server.py` lo conecta a `BrainTools`. Lectura del registro ODD y cobertura contrastada con el código y logs de `f7c5e94`/`ab3ace8`; contexto entregado no equivale a bucle autónomo de implementación.
 - CodeGraph confirmó ausencia de índice en este worktree; lectura acotada como alternativa, sin crear índice. TDD no aplica a documentación pasiva; no se ejecutan suites, instaladores, servicios, pruebas físicas ni evaluaciones con modelo real, y no se recertifican resultados históricos.
 
 Comandos de verificación ejecutados por separado, en primer plano y desde el worktree `roadmap`:
@@ -101,13 +101,13 @@ Comandos de verificación ejecutados por separado, en primer plano y desde el wo
 | `git status --short` | 32 Markdown tracked modificados (27 de primera pasada + cinco PRDs); mismos dos untracked preexistentes. Esta pasada solo edita las nueve rutas autorizadas; resto conservado. |
 | `git diff --name-only \| grep -v '\.md$'` | Sin salida: ninguna ruta tracked no Markdown; ausencia de coincidencias esperada. |
 | `git diff --check` | Sin salida ni errores de espacios en el diff tracked. |
-| `git cat-file -e af8680d^{commit}` | Éxito, sin salida. |
-| `git cat-file -e c577041^{commit}` | Éxito, sin salida. |
-| `git cat-file -e d94edf7^{commit}` | Éxito, sin salida. |
-| `git cat-file -e d0de97d^{commit}` | Éxito, sin salida. |
-| `git cat-file -e e75d55e^{commit}` | Éxito, sin salida. |
-| `git cat-file -e d7de194^{commit}` | Éxito, sin salida. |
-| `git cat-file -e 2cb3a50^{commit}` | Éxito, sin salida. |
+| `git cat-file -e 019ec0c^{commit}` | Éxito, sin salida. |
+| `git cat-file -e a8e9aab^{commit}` | Éxito, sin salida. |
+| `git cat-file -e 45807ea^{commit}` | Éxito, sin salida. |
+| `git cat-file -e 00c97bf^{commit}` | Éxito, sin salida. |
+| `git cat-file -e 6c928a3^{commit}` | Éxito, sin salida. |
+| `git cat-file -e f7c5e94^{commit}` | Éxito, sin salida. |
+| `git cat-file -e ab3ace8^{commit}` | Éxito, sin salida. |
 | `ls docs/prds/../../{openspec/changes/at-11-instalable/tasks.md,hosts/herdr/brain/{odd/tasks/herdr-brain-on-demand-context.md,docs/on-demand-context-coverage.md}} hosts/herdr/tts-plugin/docs/prds/{HT-11-audicion-voces.md,../../openspec/changes/archive/2026-09-23-ht-14-light-theme/archive-report.md}` | Cinco destinos presentes; cubre todos los enlaces relativos nuevos de esta pasada. |
 
 `ROADMAP.md` y este documento siguen sin trackear; se revisan por lectura, no se incluyen en `git diff --check`. Ninguna verificación estructural requerida se omite. Árbol sin commit, stage, push, stash ni cambios de configuración Git.

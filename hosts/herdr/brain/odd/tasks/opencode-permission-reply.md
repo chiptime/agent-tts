@@ -277,7 +277,7 @@ safest option and a naive pad would commit the riskiest one.
     the only remaining step and it needs a dialog waiting on purpose.
 - **e2e attribution** (2026-10-15): the full e2e run reported 4 failed /
   28 passed. NOT caused by this work: the same tests fail identically on a
-  detached worktree of the branch base (`7bd7c47`, no permission commits).
+  detached worktree of the branch base (`44ab40b`, no permission commits).
   Reproduced in isolation on both trees —
   `test_m4_fallback::test_cancel_during_fallback_zero_further_attempts`
   ("submit evidence never satisfied … : []"),

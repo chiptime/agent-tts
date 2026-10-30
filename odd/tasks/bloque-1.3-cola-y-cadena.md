@@ -1,7 +1,7 @@
 # BLOQUE 1.3 — Cola con prioridades y reproducción encadenada (AT-08)
 
 **Estado**: COMPLETADO e integrado (2026-09-25) · **Rama histórica**: `feat/at-08-cola-y-cadena` (base original `885442f`)
-**Referencias vigentes**: `3a9c59e` (cola), `ec1b541` (cadena), `7231f9e` (contrato), `0d3f340` (merge). Documento versionado; el registro original también tiene espejo Engram `odd/bloque-1.3-cola-y-cadena/tasks`.
+**Referencias vigentes**: `378bb31` (cola), `35da77d` (cadena), `c613689` (contrato), `fc6538a` (merge). Documento versionado; el registro original también tiene espejo Engram `odd/bloque-1.3-cola-y-cadena/tasks`.
 
 > **Reconciliación (2026-10-05)**: Código presente en `engine/src/agent_tts/{queue_manager,chain,daemon,cli}.py`, contrato en `contracts/ipc-v2.md`. Se conserva el cierre de sesión anterior a la integración como historia, no como estado actual de entrega. Las métricas incumplidas y residuales aceptados no se declaran resueltos; su mantenimiento vive en `docs/deuda-tecnica.md`. F1 no repite mediciones ni revisión.
 

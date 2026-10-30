@@ -18,7 +18,7 @@ El orden vigente es [ROADMAP.md](../../../../../docs/voice-stack/ROADMAP.md). El
 | HT-08 | [HT-08-briefing-matinal.md](HT-08-briefing-matinal.md) | Briefing matinal automático | P4 | Postergada | M |
 | HT-10 | [HT-10-chain-replay.md](HT-10-chain-replay.md) | Chain replay contextual del host (no la cadena AT-08 del motor) | P5 | Aprobada (baja), sin ejecutar | S-M |
 
-**Entregas adicionales:** podcast RSS implementado (`ab4ef32`); brain on-demand-context implementado (`d7de194`, `2cb3a50`); approval-gate implementada con tests (`2abb17e`), Chrome Android pendiente. VS0–VS4/VSX cerrados `automated_complete` (validación física pendiente). AT-01/03/04/08/09/10 ejecutadas; AT-02 e HT-01 implementadas (STT + captura en motor y plugin); HT-03 radio core implementado (`dd496c3`); HT-04 botones ntfy implementados (`0b615d2`); AT-11 M1–M4 completados y fusionados en main (`db660b0`); AT-05/06/07 en backlog.
+**Entregas adicionales:** podcast RSS implementado (`7cb01c7`); brain on-demand-context implementado (`f7c5e94`, `ab3ace8`); approval-gate implementada con tests (`a579cd8`), Chrome Android pendiente. VS0–VS4/VSX cerrados `automated_complete` (validación física pendiente). AT-01/03/04/08/09/10 ejecutadas; AT-02 e HT-01 implementadas (STT + captura en motor y plugin); HT-03 radio core implementado (`97bc94d`); HT-04 botones ntfy implementados (`ee09756`); AT-11 M1–M4 completados y fusionados en main (`c16e398`); AT-05/06/07 en backlog.
 
 ## PRDs archivadas / implementadas
 
@@ -69,7 +69,7 @@ Veredictos del maintainer aplicados el 22 de septiembre de 2026 sobre el borrado
 
 ## Nota de reconciliación (2026-10-07 — decisiones F4/F5 del maintainer; actualización 2.ª del mismo día)
 
-> Existió una nota de "cobertura dual" (2026-10-06, Decisión D-R2) que mantenía listener HTTP propio y capa STT local en roadmap; quedó **superada** por las decisiones del 2026-10-07. La primera revisión del día (cliente STT del plugin sobre `POST /transcribe` del brain, commit `ed2fbfe`) quedó **superada a su vez** por la decisión vigente: el STT y la captura pertenecen al motor.
+> Existió una nota de "cobertura dual" (2026-10-06, Decisión D-R2) que mantenía listener HTTP propio y capa STT local en roadmap; quedó **superada** por las decisiones del 2026-10-07. La primera revisión del día (cliente STT del plugin sobre `POST /transcribe` del brain, commit `51d5bb7`) quedó **superada a su vez** por la decisión vigente: el STT y la captura pertenecen al motor.
 
 Alineación decidida:
 - **HT-01 (Push-to-Talk intercom):** Activa (P4), diseño cerrado 2026-10-07 (2.ª revisión): command id `ptt`, modo `toggle` únicamente, STT y captura de micrófono como capacidad del motor (AT-02) consumida por la interfaz pública, overlay de confirmación e inyección con `herdr pane send-text` + Enter opcional. Interruptor propio; el dictado **no requiere el brain** (puede estar apagado); motor sin dependencia/modelo = aviso visible sin inyección. Pendiente de implementar (ver plan F4.1-F4.10 en su PRD).

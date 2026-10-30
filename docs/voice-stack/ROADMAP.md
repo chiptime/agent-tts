@@ -1,7 +1,7 @@
 # ROADMAP — voice-stack y monorepo (post-consolidación)
 
 **Fecha:** 5 de octubre de 2026
-**Base:** `main` @ `5e833fe` (todas las ramas y worktrees históricos ya son ancestros de `main`).
+**Base:** `main` @ `244c02a` (todas las ramas y worktrees históricos ya son ancestros de `main`).
 **Sustituye en la práctica a:** el orden lineal de [RECONCILIATION-PLAN.md](RECONCILIATION-PLAN.md) (2/10), que quedó parcialmente obsoleto. Ese documento sigue siendo válido como inventario de huecos; este define el orden de trabajo.
 
 ---
@@ -12,9 +12,9 @@ El plan asumía "VS1-VS4 sin empezar". **No es así.** Verificado contra `main`:
 
 | Afirmación del plan | Realidad hoy | Evidencia |
 |---|---|---|
-| H8/R6: VS1-VS4 sin empezar; `EXECUTION.md` §1 sin autorizar | **Implementados y cerrados `automated_complete` (VS0→VSX, 2026-10-01).** Solo queda la verificación física | `speech.py`, `pending_queue.py`, `segmented_render.py`, `fallback.py`; commits `182ed76`, `def986a`, `962e542`, `36a8997`, `507e761`; `MANUAL-TESTS.md` líneas 3-12 |
+| H8/R6: VS1-VS4 sin empezar; `EXECUTION.md` §1 sin autorizar | **Implementados y cerrados `automated_complete` (VS0→VSX, 2026-10-01).** Solo queda la verificación física | `speech.py`, `pending_queue.py`, `segmented_render.py`, `fallback.py`; commits `a561a0d`, `de4e8d6`, `39f559a`, `27f605a`, `15961a2`; `MANUAL-TESTS.md` líneas 3-12 |
 | D-R6a: autorizar `EXECUTION.md` §1 | **Obsoleta.** La ejecución ya ocurrió; `EXECUTION.md` y `TASKS.md` siguen diciendo DRAFT / `[FUTURE]` | `EXECUTION.md:3`, `TASKS.md` (marcadores FUTURE) |
-| H5: `tests/` del plugin con 4 entradas; sin G-BASH-MATRIX | **Parcial.** Existen `all_bash_harnesses.sh`, `host_cli_cases.sh`, `matrix/`, `bash_matrix.py` y 5 ficheros pytest. Falta portar los escenarios críticos del legado (`4c572a4`: `smoke-tests.sh`, 4.143 líneas, 462 aserciones; el plan decía ~520) | `hosts/herdr/tts-plugin/tests/`, `scripts/voice-stack/` |
+| H5: `tests/` del plugin con 4 entradas; sin G-BASH-MATRIX | **Parcial.** Existen `all_bash_harnesses.sh`, `host_cli_cases.sh`, `matrix/`, `bash_matrix.py` y 5 ficheros pytest. Falta portar los escenarios críticos del legado (`a6a4172`: `smoke-tests.sh`, 4.143 líneas, 462 aserciones; el plan decía ~520) | `hosts/herdr/tts-plugin/tests/`, `scripts/voice-stack/` |
 | H6: `herdr-tts` de 7.189 líneas | Sigue abierto; el fichero tiene **7.419** líneas y `voice.picker` solo tiene binds de aplicar/cancelar | `bin/herdr-tts` |
 | H7: `src/` y `dist/` en la raíz con `git rm` | Estaban **sin trackear** (`git ls-files src dist` vacío), así que bastaba borrarlas del disco. **Hecho el 2026-10-05** (D5) | raíz |
 | H2: fichas de bloques | Abierto. BLOQUE-1 está en `docs/prds/archivadas/bloques/`; **BLOQUE-2/3/4 están en `hosts/herdr/tts-plugin/docs/prds/bloques/`**, no donde dice el plan | rutas |
@@ -34,7 +34,7 @@ El problema ya no es "construir voice-stack", sino **cerrar con honestidad lo co
 
 | # | Decisión | Resultado |
 |---|---|---|
-| D1a | AT-02 (STT) | **Reenfocada, no archivada** (decisión original arriba, 2026-10-05: el plugin consume el STT del brain en vez de montar whisper.cpp). **Actualización de propiedad (2026-10-07, posterior y vigente):** el STT y la captura de micrófono pertenecen al **motor** — `faster-whisper` reutilizado por extracción del brain (`stt.py`), extra opcional, descarga de modelo siempre explícita; pasó antes por el diseño intermedio de cliente HTTP del plugin (mismo día, commit `ed2fbfe`, superado). Debe poder **activarse y desactivarse**. |
+| D1a | AT-02 (STT) | **Reenfocada, no archivada** (decisión original arriba, 2026-10-05: el plugin consume el STT del brain en vez de montar whisper.cpp). **Actualización de propiedad (2026-10-07, posterior y vigente):** el STT y la captura de micrófono pertenecen al **motor** — `faster-whisper` reutilizado por extracción del brain (`stt.py`), extra opcional, descarga de modelo siempre explícita; pasó antes por el diseño intermedio de cliente HTTP del plugin (mismo día, commit `51d5bb7`, superado). Debe poder **activarse y desactivarse**. |
 | D1b | HT-01 (push-to-talk) | **Sigue viva** (original 2026-10-05: reconocimiento en el brain vía AT-02). **Actualización (2026-10-07, posterior y vigente):** acorde, pane y overlay en el plugin; **captura y STT desde la capacidad del motor** (AT-02) por su interfaz pública; el dictado funciona con el brain apagado. Debe poder **activarse y desactivarse**. |
 | D1c | HT-04 (control móvil) | **Sigue viva, reenfocada.** Botones ntfy como atajo ligero que llama a los endpoints del brain (`/approval/*`, `/ask`); no es una vía independiente. |
 | D2 | Recuperación de tests (R4) | **Opción B:** auditar el legado y portar solo lo crítico sobre la matriz existente. |
@@ -77,15 +77,15 @@ F1 base veraz ─┬─► F3 red de tests (R4-B) ─► F4 AT-02 + HT-01 ─►
 
 ### F3 — Red de tests del plugin (R4, opción B)
 
-> **Estado (2026-10-07): HECHA** e integrada en `main` local (`6838f29`, `a707f44`; seguimiento en `odd/tasks/f3-plugin-critical-tests.md`). Verificación independiente: batería completa del plugin sin fallos (97 casos OK tras integrar nuevos harnesses). Limitaciones documentadas: CI remoto no ejecutado; la limpieza de procesos de prueba cubre fixtures registrados y la señalización por pid conserva una ventana TOCTOU inherente.
+> **Estado (2026-10-07): HECHA** e integrada en `main` local (`ce93f28`, `b5f77b7`; seguimiento en `odd/tasks/f3-plugin-critical-tests.md`). Verificación independiente: batería completa del plugin sin fallos (97 casos OK tras integrar nuevos harnesses). Limitaciones documentadas: CI remoto no ejecutado; la limpieza de procesos de prueba cubre fixtures registrados y la señalización por pid conserva una ventana TOCTOU inherente.
 
-- **R4a** Auditar `smoke-tests.sh` de `4c572a4` (4.143 líneas, 462 aserciones): qué cubría y qué sigue siendo crítico (gating, snooze, mute, debounce, voces, keymap apply/rollback, ciclo de vida del daemon).
+- **R4a** Auditar `smoke-tests.sh` de `a6a4172` (4.143 líneas, 462 aserciones): qué cubría y qué sigue siendo crítico (gating, snooze, mute, debounce, voces, keymap apply/rollback, ciclo de vida del daemon).
 - **R4b** Portar solo lo crítico al formato existente (`tests/matrix/bash-decisions.json`, `host_cli_cases.sh`, `all_bash_harnesses.sh`). Esfuerzo estimado ≈ 1 día.
 - **DoD:** `all_bash_harnesses.sh` cubre los escenarios críticos y corre en CI.
 
 ### F4 — AT-02 reenfocada + HT-01 (hablar al agente desde el plugin)
 
-> **Estado (2026-10-08): U1-U3 IMPLEMENTADOS y publicados** (`origin/main` @ `58fbdf0`; commits `2d1cb7d`, `0a488a9`, `bc8d19b`, `e094b07`). STT + captura en el motor, worker residente, plugin cableado (`ptt` con interruptores `TTS_STT`/`TTS_PTT`, por defecto OFF). Probado real en este equipo: transcripción end-to-end `"Thanks for watching!"` (0,9 s) con shutdown limpio.
+> **Estado (2026-10-08): U1-U3 IMPLEMENTADOS y publicados** (`origin/main` @ `cde818b`; commits `ac955ce`, `30bd834`, `24d8bbe`, `d7f5698`). STT + captura en el motor, worker residente, plugin cableado (`ptt` con interruptores `TTS_STT`/`TTS_PTT`, por defecto OFF). Probado real en este equipo: transcripción end-to-end `"Thanks for watching!"` (0,9 s) con shutdown limpio.
 >
 > **Cómo probarlo ya (dictado real):**
 > 1. Arranca el worker STT con un intérprete que tenga faster-whisper (el venv del brain lo tiene; el modelo `small` ya está en caché): `<venv-python> -m agent_tts.stt.cli serve`.
@@ -94,7 +94,7 @@ F1 base veraz ─┬─► F3 red de tests (R4-B) ─► F4 AT-02 + HT-01 ─►
 >
 > Pendiente: U4 validación en dispositivo real (micrófono del host Windows con el script MCI — solo probado con runners falsos), verificación independiente de U1 (límite de runtime del verificador). F4.10 migración del brain: IMPLEMENTADA en rama `feat/f4-stt-core` (backend STT por defecto `engine` vía CLI del worker residente; escape `HERDR_BRAIN_STT_BACKEND=builtin`; contrato HTTP del navegador/servidor preservado) — pendiente de revisión/fusión, no marca F4 completo.
 
-> **Rediseño de propiedad (2026-10-07, decisión vigente):** el STT y la captura de micrófono pertenecen al motor. El diseño intermedio de este mismo día (plugin → `POST /transcribe` del brain, commit `ed2fbfe`) quedó superado; ver cronología en D1a/D1b.
+> **Rediseño de propiedad (2026-10-07, decisión vigente):** el STT y la captura de micrófono pertenecen al motor. El diseño intermedio de este mismo día (plugin → `POST /transcribe` del brain, commit `51d5bb7`) quedó superado; ver cronología en D1a/D1b.
 
 - **AT-02 (motor):** capacidad STT genérica — extracción de `Transcriber`/política de modelo del brain (`stt.py`), extra opcional (`agent-tts[stt]`, precedente kokoro), descarga de modelo siempre explícita, captura de micrófono PowerShell (análogo de entrada de `powershell_playback.py`). Configuración genérica del motor, no atada a ajustes de host. Interruptor propio.
 - **HT-01 (plugin):** acorde que abre el micrófono en modo **toggle** (misma pulsación o timeout de silencio cortan; `hold` descartado por la suposición press-only del keymap, a verificar), STT y captura desde la interfaz pública del motor, texto reconocido con confirmación visual breve e inyección en el panel enfocado; interruptor propio. Motor sin dependencia/modelo o captura caída: aviso visible, nada se inyecta, sin descarga implícita ni arranque de servicios. El dictado **no requiere el brain** (puede estar apagado).
@@ -107,7 +107,7 @@ F1 base veraz ─┬─► F3 red de tests (R4-B) ─► F4 AT-02 + HT-01 ─►
 ### F5 — HT-04 reenfocada (botones ntfy sobre el brain)
 
 - Acciones en la notificación ntfy (continuar/detener) que llaman a los endpoints del brain; sin listener propio duplicado.
-- **Estado (2026-10-09): FUSIONADA en `main` (commits `2ef657b`, `13ff28c`, merge `0b615d2`).** Brain: `POST /approval/{gate}/action` (decisión como palabra/JSON/form/`?decision=`, token opcional `HERDR_BRAIN_APPROVAL_TOKEN` con comparación en tiempo constante, approve en background sin TTS; `tests/test_approval_ntfy.py`). Plugin: `send_ntfy_push` emite `✅ Approve`/`❌ Stop`/`📱 Open` solo en pushes `blocked` con gate vivo y `NTFY_APPROVAL_URL`; búsqueda best-effort del gate por `GET /approval/current` (sesión por defecto); sin URL/gate o en `done`/`idle`, comportamiento idéntico al previo (casos `ntfy_*` en `tests/host_cli_cases.sh`). Pendiente: validación física F2 en dispositivo real.
+- **Estado (2026-10-09): FUSIONADA en `main` (commits `3818a18`, `41c351d`, merge `ee09756`).** Brain: `POST /approval/{gate}/action` (decisión como palabra/JSON/form/`?decision=`, token opcional `HERDR_BRAIN_APPROVAL_TOKEN` con comparación en tiempo constante, approve en background sin TTS; `tests/test_approval_ntfy.py`). Plugin: `send_ntfy_push` emite `✅ Approve`/`❌ Stop`/`📱 Open` solo en pushes `blocked` con gate vivo y `NTFY_APPROVAL_URL`; búsqueda best-effort del gate por `GET /approval/current` (sesión por defecto); sin URL/gate o en `done`/`idle`, comportamiento idéntico al previo (casos `ntfy_*` en `tests/host_cli_cases.sh`). Pendiente: validación física F2 en dispositivo real.
 - **Depende de:** F2 (`/approval` validado en Chrome Android) como gate de cierre de experiencia física.
 
 ### F6 — HT-11 audición de voces (prioridad baja, tras F4/F5)
@@ -118,10 +118,10 @@ F1 base veraz ─┬─► F3 red de tests (R4-B) ─► F4 AT-02 + HT-01 ─►
 
 | Línea | Estado | Siguiente paso |
 |---|---|---|
-| AT-11 instalable | M1–M4 implementados y fusionados en `main` (`db660b0`, `e85200d`, `c210e04`) | Checklist V3 humano en máquina limpia (`docs/installation/V3-checklist.md`) |
+| AT-11 instalable | M1–M4 implementados y fusionados en `main` (`c16e398`, `d60aa5f`, `25a0d7a`) | Checklist V3 humano en máquina limpia (`docs/installation/V3-checklist.md`) |
 | brain: `open-session-inventory` | Integrado en `main` | Cerrado |
-| HT-03 (Radio mode) | Hito 1 core implementado y fusionado en `main` (`dd496c3`, `aa835d8`); archivada | Verificación con métricas de uso real (Hito 2) |
-| brain: `karaoke-fragments` | Implementado y fusionado en `main` (`964f6b5`) | Cerrado |
+| HT-03 (Radio mode) | Hito 1 core implementado y fusionado en `main` (`97bc94d`, `ddce99e`); archivada | Verificación con métricas de uso real (Hito 2) |
+| brain: `karaoke-fragments` | Implementado y fusionado en `main` (`61c4f10`) | Cerrado |
 | brain: `create-session-tool` | Planificado | Priorizar tras lo anterior |
 | brain: `transcription-duplication` | Residual abierto | Cerrar o descartar |
 | `autoloop` | Solo bootstrap | Decidir si sigue vivo |

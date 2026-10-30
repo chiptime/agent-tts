@@ -209,7 +209,7 @@ No open product question is delegated to the executor. The PRD is approved; only
 | Binding | Value |
 |---|---|
 | Canonical repository root | `/home/bruno/Code/personal/agent-tts` — parent-selected owning checkout; not the worker's dotfiles root or a different fork/worktree. |
-| Planning base HEAD | `5e833fe9bcc9545cf6805307d1e8dc871a9565b8` — original planning observation, not a claim about current HEAD. |
+| Planning base HEAD | `244c02acc28f89e9a9fb73ae5bd614f77cfa7c66` — original planning observation, not a claim about current HEAD. |
 | Observed branch | Original planning observed `fix/brain-open-session-inventory`, local `main` at the same HEAD, a clean initial worktree and HEAD 34 ahead / 0 behind `origin/main`. Consolidation encounters unrelated WIP in inventory, llm, tools and Python tests; it preserves that WIP. No branch switch or remote contact occurred. |
 | Tier | Compact: one client subsystem, shared chunk/state logic plus DOM/audio glue and a browser-test foundation; direct one-task work would hide their ordering. |
 | Resolved PRD skill | `/home/bruno/.config/opencode/skills/prd/SKILL.md` — successfully read exact runtime skill path. |
