@@ -18,9 +18,9 @@ El trabajo restante real se divide en decisiones de publicación/corte, dos fren
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
 │          FRENTE 0: PARIDAD DEL BRAIN — PUBLICACIÓN Y CORTE             │
-│   • F1–F6 fusionados en main; mensajes entre hosts de crew COMPLETOS   │
-│     en rama local feat/brain-crew-messages (sin publicar)              │
-│   • Pendiente: push + PRs, validación en dos máquinas, corte en vivo   │
+│   • F1–F6 y mensajes entre hosts de crew fusionados en main local      │
+│     (merge 2f9e855, sin publicar)                                      │
+│   • Pendiente: push, validaciones doc 11, dos máquinas, corte en vivo  │
 └───────────────────────────────────┬────────────────────────────────────┘
                                     │
 ┌───────────────────────────────────▼────────────────────────────────────┐
@@ -51,9 +51,9 @@ El trabajo restante real se divide en decisiones de publicación/corte, dos fren
 ### Frente 0 — Paridad del brain: publicación y corte
 
 - **Fusionado en `main` (F1–F6):** historial paginado y espejo de pane, diálogos por harness con botones, configuración TOML del operador (respuestas, comandos, presets de teclas, launchers por allowlist), shell offline + aviso de actualización + i18n `es`/`en`, Web Push VAPID (sobre `cryptography`) junto a ntfy, puerto de multiplexer (herdr, tmux, zellij), federación crew lead/peer con mTLS pineado y secreto de crew, tooling de corte (`serve`/`unserve`/`qr`/`logs`, chequeos de `doctor`, unidad launchd), lecturas con token de dispositivo + caducidad y rate limit de `/pair`, envío verificado con recibos + Stop/Steer, mensajes entre panes locales, enmascarado de secretos y generación automática de claves VAPID al primer arranque.
-- **Rama local `feat/brain-crew-messages` (7 commits sobre `254dc83`, sin publicar):** `herdr-brain msg` entre hosts del crew — direcciones `<host>:<pane>#<token>`, entrega en el host dueño con la misma compuerta, identidad de origen atestiguada por transporte, límites antilazo en emisor y receptor, `status`/`cancel` remotos, auditoría en cada host. Incluye el fix de certificado cliente en llamadas crew salientes (`5d3ddd4`), un defecto previo de F5 que rompía todo handshake real lead→peer. Verificación independiente: S1–S11 cumplidas tras una corrección (`88febc3`) y recheck.
+- **Fusionado en `main` local (merge `2f9e855` de `feat/brain-crew-messages`, 7 commits sobre `254dc83`; sin publicar):** `herdr-brain msg` entre hosts del crew — direcciones `<host>:<pane>#<token>`, entrega en el host dueño con la misma compuerta, identidad de origen atestiguada por transporte, límites antilazo en emisor y receptor, `status`/`cancel` remotos, auditoría en cada host. Incluye el fix de certificado cliente en llamadas crew salientes (`5d3ddd4`), un defecto previo de F5 que rompía todo handshake real lead→peer. Verificación independiente: S1–S11 cumplidas tras una corrección (`88febc3`) y recheck.
 - **Pendiente (decisiones del maintainer):**
-  1. Push de la rama y PRs stacked-to-main (la unidad de entrega en el host dueño, `66f3ada`, supera 400 líneas: recomendado `size:exception`).
+  1. Push de `main` (incluye el merge de mensajes entre hosts; suite unitaria del brain 3349 OK y JS 576 OK tras el merge).
   2. Validación en vivo con dos máquinas reales del crew (hoy solo probado con mTLS en loopback).
   3. **Corte en vivo** al brain (tomar 443, importar/activar push, retirar el panel anterior). Lo ejecuta el usuario; ningún agente lo hace.
 - **Fallos conocidos fuera de este trabajo:** 1 test de navegador y 4 e2e fallan también en la base `254dc83` (banner offline en red aislada y motor no disponible en el entorno de pruebas).
