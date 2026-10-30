@@ -5,7 +5,8 @@ which probes the INSTALL): these rows are the running brain's own
 surfaces —
 
 * ``port-brain`` / ``port-crew`` — someone already listening on the
-  brain's (or the crew listener's) port;
+  brain's (or the crew listener's) port; a running brain answering its
+  own ``/health`` on the PWA port is healthy, not a conflict;
 * ``root-443`` — who owns the tailnet's HTTPS root, read from a
   RECORDED ``tailscale serve status --json`` the operator supplies;
   the brain never runs tailscale (L4), so the raw text comes in and the
@@ -26,6 +27,7 @@ from __future__ import annotations
 
 import json
 import socket
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -57,14 +59,39 @@ def _default_port_probe(port: int) -> bool:
         return False
 
 
+def _default_self_probe(port: int) -> bool:
+    """Whether the listener on this loopback port is a herdr-brain.
+
+    One GET of ``/health`` with a tiny timeout; the brain answers
+    ``{"status": "ok", "version", "stt", "tts"}``. Anything else (no
+    answer, another shape, not JSON) is a foreign listener. The body is
+    never reflected into a detail string."""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=0.5) as resp:
+            body = json.loads(resp.read(4096))
+    except (OSError, ValueError):
+        return False
+    return (
+        isinstance(body, dict)
+        and body.get("status") == "ok"
+        and all(key in body for key in ("version", "stt", "tts"))
+    )
+
+
 def check_ports(
-    probe: Callable[[int], bool], brain_port: int, crew_port: int
+    probe: Callable[[int], bool], brain_port: int, crew_port: int,
+    is_self: Optional[Callable[[int], bool]] = None,
 ) -> list[CheckResult]:
     """The two ports this daemon wants: the PWA port always, the crew
     port whenever a crew exists (probing it is harmless either way —
-    free simply means available)."""
+    free simply means available). A busy PWA port is healthy when
+    ``is_self`` recognises the listener as this brain."""
     rows = []
-    if probe(brain_port):
+    if probe(brain_port) and is_self is not None and is_self(brain_port):
+        rows.append(CheckResult(
+            "port-brain", True, f"this brain is listening on 127.0.0.1:{brain_port}"
+        ))
+    elif probe(brain_port):
         rows.append(CheckResult(
             "port-brain", False,
             f"something is already listening on 127.0.0.1:{brain_port}",
@@ -88,24 +115,39 @@ def check_ports(
 # ── root 443 ownership, from a RECORDED status ──────────────────────────────
 
 
-def _walk_for_443(node) -> tuple[Optional[object], bool]:
-    """Recursively find a ``"443"`` (or 443) key in the recorded status
-    and return (its value, found). The tailscale status shape has moved
-    across versions; scanning for the port key keeps the check generic
-    instead of pinning one schema."""
+def _is_443_key(key) -> bool:
+    """A port-443 key: the bare port (``"443"``/443) or the
+    ``"<host>:443"`` form ``tailscale serve status --json`` uses under
+    ``Web``."""
+    return key == "443" or key == 443 or (isinstance(key, str) and key.endswith(":443"))
+
+
+def _collect_443(node, found: list) -> None:
     if isinstance(node, dict):
         for key, value in node.items():
-            if key == "443" or key == 443:
-                return value, True
-            inner, found = _walk_for_443(value)
-            if found:
-                return inner, True
+            if _is_443_key(key):
+                found.append(value)
+            else:
+                _collect_443(value, found)
     elif isinstance(node, list):
         for item in node:
-            inner, found = _walk_for_443(item)
-            if found:
-                return inner, True
-    return None, False
+            _collect_443(item, found)
+
+
+def _walk_for_443(node) -> tuple[Optional[object], bool]:
+    """Find the port-443 entry in the recorded status and return (its
+    value, found). The tailscale status shape has moved across
+    versions, so every 443 key is collected generically; the first one
+    that names a proxy target wins (the real shape lists a bare
+    ``TCP."443"`` with no target before ``Web."<host>:443"``)."""
+    candidates: list = []
+    _collect_443(node, candidates)
+    if not candidates:
+        return None, False
+    for value in candidates:
+        if _targets_text(value) != "an unnamed target":
+            return value, True
+    return candidates[0], True
 
 
 def _targets_text(root_value) -> str:
@@ -295,7 +337,7 @@ def run_all(
 ) -> list[CheckResult]:
     """Every brain-side row in report order."""
     probe = port_probe or _default_port_probe
-    rows = list(check_ports(probe, brain_port, crew_port))
+    rows = list(check_ports(probe, brain_port, crew_port, is_self=_default_self_probe))
     if serve_status_text is not None:
         rows.append(check_root_443(serve_status_text, brain_port))
     rows.extend(check_push(state_dir))

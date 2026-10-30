@@ -40,6 +40,57 @@ class TestPortConflicts:
         assert rows[0].ok is False
         assert "8741" in rows[0].detail and "8741" in rows[0].hint
 
+    def test_this_brain_listening_on_its_port_passes(self):
+        rows = doctor.check_ports(
+            probe=lambda port: port == 8741, brain_port=8741, crew_port=8747,
+            is_self=lambda port: port == 8741,
+        )
+        assert rows[0].ok is True
+        assert "this brain is listening on 127.0.0.1:8741" in rows[0].detail
+
+    def test_foreign_listener_still_fails_with_self_probe(self):
+        rows = doctor.check_ports(
+            probe=lambda port: port == 8741, brain_port=8741, crew_port=8747,
+            is_self=lambda port: False,
+        )
+        assert rows[0].ok is False
+        assert "something is already listening on 127.0.0.1:8741" in rows[0].detail
+
+    def test_run_all_recognises_the_running_brain(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(doctor, "_default_self_probe", lambda port: port == 8741)
+        rows = doctor.run_all(tmp_path, 8741, 8747, port_probe=lambda port: port == 8741)
+        assert rows[0].name == "port-brain" and rows[0].ok is True
+
+    def test_self_probe_reads_the_brain_health_shape(self, monkeypatch):
+        bodies = {
+            8741: b'{"status":"ok","version":"0.1.0","stt":"unavailable","tts":"ok"}',
+            8787: b'{"status":"ok"}',
+        }
+
+        class _Resp:
+            def __init__(self, body):
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self, n=-1):
+                return self.body
+
+        def fake_urlopen(url, timeout):
+            port = int(url.split(":")[2].split("/")[0])
+            if port not in bodies:
+                raise OSError("refused")
+            return _Resp(bodies[port])
+
+        monkeypatch.setattr(doctor.urllib.request, "urlopen", fake_urlopen)
+        assert doctor._default_self_probe(8741) is True
+        assert doctor._default_self_probe(8787) is False
+        assert doctor._default_self_probe(9999) is False
+
     def test_busy_crew_port_fails(self):
         rows = doctor.check_ports(
             probe=lambda port: port == 8747, brain_port=8741, crew_port=8747
@@ -70,6 +121,20 @@ class TestRoot443Ownership:
         row = doctor.check_root_443(text, brain_port=8741)
         assert row.ok is True
         assert "no mapping on 443" in row.detail
+
+    def test_real_tailscale_shape_names_the_other_owner(self):
+        text = (FIXTURES / "serve-status-real-other-owns-443.json").read_text()
+        row = doctor.check_root_443(text, brain_port=8741)
+        assert row.ok is True
+        assert "another service owns the HTTPS root port" in row.detail
+        assert "http://127.0.0.1:8787" in row.detail
+        assert "8741" not in row.detail  # the 8443 mapping is not the root
+
+    def test_real_tailscale_shape_recognises_this_brain_on_443(self):
+        text = (FIXTURES / "serve-status-real-brain-owns-443.json").read_text()
+        row = doctor.check_root_443(text, brain_port=8741)
+        assert row.ok is True
+        assert "already points at this brain (http://127.0.0.1:8741)" in row.detail
 
     def test_unparseable_status_is_an_honest_not_a_crash(self):
         row = doctor.check_root_443("not json", brain_port=8741)
