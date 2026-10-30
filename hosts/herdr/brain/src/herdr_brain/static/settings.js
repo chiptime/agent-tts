@@ -165,6 +165,13 @@
         applyZen();
       });
     }
+    if (rows.zenExit && rows.zenExit.addEventListener) {
+      rows.zenExit.addEventListener("click", function () {
+        settings.zen = false;
+        persist();
+        applyZen();
+      });
+    }
     if (rows.haptics && rows.haptics.addEventListener && hapticsSupported(navigatorObj)) {
       rows.haptics.addEventListener("click", function () {
         hapticsOn = !hapticsOn;
@@ -199,6 +206,11 @@
         try { return navigatorObj.vibrate(pattern) === true || true; } catch (err) { return false; }
       },
       get: function () { return Object.assign({}, settings); },
+      setZen: function (val) {
+        settings.zen = !!val;
+        persist();
+        applyZen();
+      },
     };
   }
 

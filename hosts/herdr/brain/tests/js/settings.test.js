@@ -110,7 +110,7 @@ function makeDeps(overrides) {
   const buzzes = [];
   const localePosts = [];
   const rows = {
-    font: rowElement(), zen: rowElement(), haptics: rowElement(), language: rowElement(),
+    font: rowElement(), zen: rowElement(), zenExit: rowElement(), haptics: rowElement(), language: rowElement(),
   };
   const deps = Object.assign({
     doc: doc,
@@ -170,6 +170,27 @@ test("zen choice persists", () => {
   const second = makeDeps({ storage: first.storage });
   createSettings(second.deps);
   assert.equal(second.doc.body.classList.contains("zen"), true);
+});
+
+test("zenExit button exits zen mode", () => {
+  const { deps, doc, rows } = makeDeps();
+  const settings = createSettings(deps);
+  rows.zen.click();
+  assert.equal(doc.body.classList.contains("zen"), true);
+  rows.zenExit.click();
+  assert.equal(doc.body.classList.contains("zen"), false);
+  assert.equal(settings.get().zen, false);
+});
+
+test("setZen programmatic exit", () => {
+  const { deps, doc } = makeDeps();
+  const settings = createSettings(deps);
+  settings.setZen(true);
+  assert.equal(doc.body.classList.contains("zen"), true);
+  assert.equal(settings.get().zen, true);
+  settings.setZen(false);
+  assert.equal(doc.body.classList.contains("zen"), false);
+  assert.equal(settings.get().zen, false);
 });
 
 test("the haptics row is hidden when vibrate is unsupported", () => {

@@ -226,6 +226,8 @@
     "settings.zen": "Modo Zen",
     "settings.zen_on": "Modo Zen: Sí",
     "settings.zen_off": "Modo Zen: No",
+    "settings.zen_exit": "✕ Salir Zen",
+    "settings.zen_exit_title": "Salir del Modo Zen",
     "settings.haptics": "Háptica",
     "settings.haptics_on": "Háptica: Sí",
     "settings.haptics_off": "Háptica: No",
