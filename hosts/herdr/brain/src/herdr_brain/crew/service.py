@@ -24,6 +24,7 @@ Route table (the contract between crew versions across machines):
     POST /crew/v1/pane/{pane_id}/dialog/answer  {…}
     GET  /crew/v1/approval/current?pane_id=
     POST /crew/v1/approval/{gate_id}/action   {"decision"}
+    POST /crew/v1/msg/{who,send,status,cancel}  message payload
 """
 
 from __future__ import annotations
@@ -46,6 +47,10 @@ HANDLER_KEYS = (
     "dialog_answer",
     "approval_current",
     "approval_action",
+    "msg_who",
+    "msg_send",
+    "msg_status",
+    "msg_cancel",
 )
 
 _NOT_FOUND = (404, {"detail": "not found"})
@@ -68,6 +73,8 @@ def _routes() -> dict:
         ("POST", "/crew/v1/pane/{pane}/dialog/answer"): ("dialog_answer", "pane_path_body"),
         ("GET", "/crew/v1/approval/current"): ("approval_current", "pane_query_rest"),
         ("POST", "/crew/v1/approval/{gate_id}/action"): ("approval_action", "gate_action"),
+        **{("POST", f"/crew/v1/msg/{op}"): (f"msg_{op}", "member_body")
+           for op in ("who", "send", "status", "cancel")},
     }
 
 
@@ -121,12 +128,13 @@ class CrewService:
             return refusal_response()
         from .auth import check_crew_auth
 
-        if check_crew_auth(headers_get, peer_cert_der, roster, now=self._now()) is None:
+        member = check_crew_auth(headers_get, peer_cert_der, roster, now=self._now())
+        if member is None:
             return refusal_response()
 
         if not isinstance(match, tuple):
             return _METHOD_NOT_ALLOWED if match == "bad-method" else _NOT_FOUND
-        return self._dispatch(match, query, body)
+        return self._dispatch(match, query, body, member)
 
     # -- routing internals ------------------------------------------------
 
@@ -175,7 +183,7 @@ class CrewService:
             return refusal_response()  # token-side failures: uniform
         return 200, {"member": name, "entry": entry}
 
-    def _dispatch(self, match, query: dict, body: dict) -> tuple:
+    def _dispatch(self, match, query: dict, body: dict, member: str) -> tuple:
         handler_key, kwargs_kind, kwargs = match
         handler = self._handlers.get(handler_key)
         if not callable(handler):
@@ -183,7 +191,11 @@ class CrewService:
 
         call_kwargs = dict(kwargs)
         try:
-            if kwargs_kind == "plain":
+            if kwargs_kind == "member_body":
+                # Transport identity is never taken from JSON, including
+                # when a body contains a field named 'member'.
+                result = handler(member=member, payload=body)
+            elif kwargs_kind == "plain":
                 result = handler()
             elif kwargs_kind == "pane_query":
                 call_kwargs["pane_id"] = query.get("pane_id")

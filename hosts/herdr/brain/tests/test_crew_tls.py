@@ -122,3 +122,69 @@ def test_ensure_host_certificate_generates_then_reuses(tmp_path: Path) -> None:
 
     cert2, key2, pin2 = ensure_host_certificate(tmp_path, "host-a")
     assert (cert2, pin2) == (cert, pin)  # stable identity across restarts
+
+
+# ── a real mutual-TLS handshake (the client presents its own certificate) ───
+
+
+def _handshake(server_ctx: ssl.SSLContext, client_ctx: ssl.SSLContext):
+    """One loopback handshake; returns the client DER the server saw,
+    or the exception the handshake raised on the client side."""
+    import socket
+    import threading
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    seen: dict = {}
+
+    def serve() -> None:
+        conn, _ = listener.accept()
+        try:
+            with server_ctx.wrap_socket(conn, server_side=True) as tls:
+                seen["der"] = tls.getpeercert(binary_form=True)
+                tls.recv(1)
+        except (ssl.SSLError, OSError) as exc:
+            seen["server_error"] = exc
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    try:
+        raw = socket.create_connection(listener.getsockname(), timeout=5)
+        with client_ctx.wrap_socket(raw) as tls:
+            tls.sendall(b"x")
+            tls.recv(1)
+    except (ssl.SSLError, OSError) as exc:
+        seen.setdefault("client_error", exc)
+    thread.join(timeout=5)
+    listener.close()
+    return seen
+
+
+@pytest.mark.skipif(shutil.which("openssl") is None, reason="openssl binary not available")
+def test_client_presents_its_own_certificate_to_a_requiring_listener(tmp_path: Path) -> None:
+    server_cert, server_key, _ = ensure_host_certificate(tmp_path / "lead", "lead")
+    client_cert, client_key, client_pin = ensure_host_certificate(tmp_path / "peer", "peer")
+    server_ctx = server_ssl_context(server_cert, server_key, client_cert, require_client=True)
+    client_ctx = pinned_client_context(
+        server_cert.read_text(encoding="utf-8"),
+        client_cert=client_cert,
+        client_key=client_key,
+    )
+
+    seen = _handshake(server_ctx, client_ctx)
+
+    assert "der" in seen, seen
+    assert pin_of_der(seen["der"]) == client_pin  # the pin auth.check_crew_auth reads
+
+
+@pytest.mark.skipif(shutil.which("openssl") is None, reason="openssl binary not available")
+def test_client_without_its_certificate_is_still_refused(tmp_path: Path) -> None:
+    server_cert, server_key, _ = ensure_host_certificate(tmp_path / "lead", "lead")
+    client_cert, _key, _ = ensure_host_certificate(tmp_path / "peer", "peer")
+    server_ctx = server_ssl_context(server_cert, server_key, client_cert, require_client=True)
+    client_ctx = pinned_client_context(server_cert.read_text(encoding="utf-8"))
+
+    seen = _handshake(server_ctx, client_ctx)
+
+    assert "der" not in seen  # previous behavior kept: no certificate, no session

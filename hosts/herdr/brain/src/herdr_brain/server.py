@@ -1117,8 +1117,10 @@ def create_app(
         msg_service_ = msg_service
     else:
         try:
-            msg_service_ = WalkyService(
-                cfg.state_dir, mux=create_mux(cfg), audit=audit_log
+            from .walky.federation import create_message_service
+
+            msg_service_ = create_message_service(
+                cfg.state_dir, mux=create_mux(cfg), audit=audit_log, gateway=crew_gateway
             )
         except MsgStoreError as exc:
             logger.error("brain messages unavailable — routes answer 503: %s", exc)
@@ -3647,6 +3649,8 @@ def create_app(
             "approval_current": _h_approval_current,
             "approval_action": _h_approval_action,
         }
+        if msg_service_ is not None and hasattr(msg_service_, "crew_handlers"):
+            crew_handlers.update(msg_service_.crew_handlers())
 
         from .crew.enrol import JoinTokens
         from .crew.roster import CrewRoster

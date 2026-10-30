@@ -477,3 +477,45 @@ class TestListenerDecision:
     def test_listener_never_starts_for_a_solo_roster(self, tmp_path):
         roster = CrewRoster.load(tmp_path / "empty-state")
         assert listener_kwargs(roster, tmp_path / "empty-state") is None
+
+
+# ── outgoing crew calls present this host's crew certificate ────────────────
+
+
+class TestOutgoingClientCertificate:
+    def _capture(self, monkeypatch) -> list:
+        import herdr_brain.crew.client as client_module
+
+        calls: list = []
+
+        def fake_context(cert_pem, client_cert=None, client_key=None):
+            calls.append((client_cert, client_key))
+            return object()
+
+        monkeypatch.setattr(client_module, "pinned_client_context", fake_context)
+        monkeypatch.setattr(client_module, "UrllibTransport", lambda context: object())
+        return calls
+
+    def test_client_for_loads_the_host_certificate_when_present(self, tmp_path, monkeypatch):
+        calls = self._capture(monkeypatch)
+        state = tmp_path / "state"
+        state.mkdir()
+        write_lead_roster(state)
+        tls_dir = state / "crew-tls"
+        tls_dir.mkdir()
+        (tls_dir / "crew.crt").write_text("cert")
+        (tls_dir / "crew.key").write_text("key")
+
+        CrewGateway(state, secret_provider=lambda: "crew-secret-1").client_for("host-b")
+
+        assert calls == [(tls_dir / "crew.crt", tls_dir / "crew.key")]
+
+    def test_client_for_without_host_certificate_keeps_the_pin_only(self, tmp_path, monkeypatch):
+        calls = self._capture(monkeypatch)
+        state = tmp_path / "state"
+        state.mkdir()
+        write_lead_roster(state)
+
+        CrewGateway(state, secret_provider=lambda: "crew-secret-1").client_for("host-b")
+
+        assert calls == [(None, None)]  # honest: the peer answers the uniform 401

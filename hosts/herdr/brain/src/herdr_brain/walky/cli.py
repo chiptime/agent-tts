@@ -27,6 +27,7 @@ from .delivery import clip_label
 from .errors import MessageNotFound, StoreError, WalkyRefusal
 from .identity import ENV_FLAG, ENV_PANE
 from .service import WalkyService
+from .federation import create_message_service
 
 EXIT_OK = 0
 EXIT_FAIL = 1
@@ -44,7 +45,10 @@ USAGE = """usage: herdr-brain msg <verb> [args]
   cancel <id>              take back one of your held messages
 
 Addresses come from `herdr-brain msg who`. Messages never confer
-authority: a header always says who spoke (agent or operator)."""
+authority: a header always says who spoke (agent or operator).
+Crew addresses: <host>:<pane>#<token>; local addresses stay <pane>#<token>.
+Peers relay through the lead. Unreachable hosts are shown by `who`.
+An uncertain result is not retried: use `status <id>` to ask the owner."""
 
 _VERBS = ("who", "send", "reply", "inbox", "status", "cancel")
 
@@ -62,6 +66,7 @@ def main(
     stdin: Optional[IO] = None,
     stdout: Optional[IO] = None,
     stderr: Optional[IO] = None,
+    gateway=None,
 ) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     environ = dict(os.environ if env is None else env)
@@ -88,15 +93,15 @@ def main(
             lazy_mux = create_mux(settings)
         return lazy_mux
 
-    service = WalkyService(
-        settings.state_dir,
-        mux=the_mux(),
-        clock=clock or time.time,
-        audit=AuditLog(settings.state_dir / "audit.log", content=settings.audit_content),
-        id_factory=id_factory,
-    )
-
     try:
+        service = create_message_service(
+            settings.state_dir,
+            mux=the_mux(),
+            gateway=gateway,
+            clock=clock or time.time,
+            audit=AuditLog(settings.state_dir / "audit.log", content=settings.audit_content),
+            id_factory=id_factory,
+        )
         return _run(verb, args, service, environ, stdin or sys.stdin, out, err)
     except StoreError as exc:
         _print(f"ERROR: the message store is unusable: {exc}", err)

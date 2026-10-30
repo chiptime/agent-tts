@@ -73,6 +73,10 @@ POST /crew/v1/pane/{pane_id}/keys          {"keys": […]}
 POST /crew/v1/pane/{pane_id}/dialog/answer {…dialog payload…}
 GET  /crew/v1/approval/current?pane_id=
 POST /crew/v1/approval/{gate_id}/action    {"decision": …}
+POST /crew/v1/msg/who                    {…message payload…}
+POST /crew/v1/msg/send                   {…message payload…}
+POST /crew/v1/msg/status                 {…message payload…}
+POST /crew/v1/msg/cancel                 {…message payload…}
 ```
 
 Handlers are injected: `herd()`, `view(pane_id)`, `history(pane_id, **q)`,
@@ -82,6 +86,14 @@ Handlers are injected: `herd()`, `view(pane_id)`, `history(pane_id, **q)`,
 or `(status, payload)`; the owner's 404 for a dead gate travels as-is.
 The dispatcher re-reads the roster per request, so rotations,
 revocations and promotions land without a restart.
+
+Message handlers receive `member` (the authenticated TLS identity) and
+`payload` (the untrusted JSON body) as separate keyword arguments.
+An identically named body field cannot replace the transport identity.
+`CrewClient.message(operation, payload)` uses the existing pinned crew
+transport and bearer secret. It never retries mutations: a lost response
+does not establish that the destination did nothing. These additive
+routes return 404 until a message handler is installed by the server.
 
 ## Lead-side integration (parent wiring)
 

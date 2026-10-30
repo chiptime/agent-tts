@@ -188,6 +188,8 @@ class CrewClient:
         *,
         transport: Optional[CrewTransport] = None,
         ssl_context=None,
+        client_cert=None,
+        client_key=None,
         timeout_s: float = DEFAULT_TIMEOUT_S,
         now: Optional[Callable[[], float]] = None,
     ):
@@ -201,7 +203,9 @@ class CrewClient:
         if transport is not None:
             self._transport = transport
         else:
-            context = ssl_context or pinned_client_context(cert_pem)
+            context = ssl_context or pinned_client_context(
+                cert_pem, client_cert=client_cert, client_key=client_key
+            )
             self._transport = UrllibTransport(context)
 
     # -- the wire ---------------------------------------------------------
@@ -241,6 +245,16 @@ class CrewClient:
         return response.body
 
     # -- proxied reads ─────────────────────────────────────────────────────
+
+    def message(self, operation: str, payload: dict) -> object:
+        """Brain-message RPC, over the same pinned/authenticated link.
+
+        Mutations are never retried here: a lost response is not proof
+        that the receiving host did nothing.
+        """
+        if operation not in ("who", "send", "status", "cancel"):
+            raise ValueError("unknown brain-message operation")
+        return self._call("POST", f"/crew/v1/msg/{operation}", json_body=payload)
 
     def herd(self) -> object:
         return self._call("GET", "/crew/v1/herd")
