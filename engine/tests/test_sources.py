@@ -111,7 +111,7 @@ def _write_claude_session(root, session_id, lines):
     project = root / "-home-bruno-project"
     project.mkdir(parents=True, exist_ok=True)
     path = project / f"{session_id}.jsonl"
-    path.write_text("\n".join(json.dumps(l) for l in lines) + "\n", encoding="utf-8")
+    path.write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
     return path
 
 
@@ -150,7 +150,7 @@ def test_claude_reads_last_assistant_text(claude_root):
 
 def test_claude_skips_textless_assistant_and_continues_backwards(claude_root):
     path = claude_root / "-home-bruno-project" / f"{CLAUDE_SESSION}.jsonl"
-    events = [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines()]
+    events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     # A newer assistant message that only ran tools: the reader must keep
     # scanning backwards to the previous assistant message that has text.
     events.extend(
@@ -282,7 +282,7 @@ def test_antigravity_reads_last_planner_response(antigravity_root):
 
 def test_antigravity_skips_tool_summaries_and_system_noise(antigravity_root):
     path = antigravity_root / ANTIGRAVITY_SESSION / ".system_generated" / "logs" / "transcript.jsonl"
-    events = [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines()]
+    events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     # Trailing GENERIC tool summaries, system chatter and a fresh user input
     # are newer than the last planner response but must never be returned.
     events.extend(
@@ -303,7 +303,7 @@ def test_antigravity_skips_tool_summaries_and_system_noise(antigravity_root):
 
 def test_antigravity_skips_thinking_only_and_empty_planner_lines(antigravity_root):
     path = antigravity_root / ANTIGRAVITY_SESSION / ".system_generated" / "logs" / "transcript.jsonl"
-    events = [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines()]
+    events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     # Newer planner lines with only thinking/tool payload or blank content
     # carry no user-visible prose: keep scanning backwards.
     events.extend(
@@ -430,7 +430,7 @@ def test_codex_reads_last_assistant_output_text(codex_root):
 
 def test_codex_skips_event_msg_noise_and_aborted_user_blocks(codex_root):
     path = codex_root / "2026" / "08" / "19" / f"rollout-2026-08-19T08-42-50-{CODEX_SESSION}.jsonl"
-    events = [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines()]
+    events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     # Newer environment noise (token counts, an interrupted user turn) must
     # not displace the last real assistant message.
     events.extend(

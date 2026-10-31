@@ -547,7 +547,7 @@ class AudioSession:
             output_lines.append("")
         output_lines.append(footer)
 
-        buf = "\x1b[H" + "\n".join(l + "\x1b[K" for l in output_lines[:rows])
+        buf = "\x1b[H" + "\n".join(line + "\x1b[K" for line in output_lines[:rows])
         sys.stdout.write(buf)
         sys.stdout.flush()
 

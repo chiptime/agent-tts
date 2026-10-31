@@ -35,7 +35,6 @@ from agent_tts.chain import (
     decode_chain_files,
     missing_chain_files,
 )
-from agent_tts.daemon import Daemon, ProviderCache
 from agent_tts.wav import pcm_to_wav
 
 RATE = 24000  # fabricated decoded segments (unit tests)

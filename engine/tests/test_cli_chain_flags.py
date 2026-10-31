@@ -140,7 +140,7 @@ def test_play_chain_rejected_with_play_file(monkeypatch, capsys, tmp_path):
         daemon_mod, "delegate_enqueue", enqueue
     ):
         code = _run_cli(monkeypatch, ["cli.py", "--play-chain", a, "--play-file", a])
-    captured = capsys.readouterr()
+    capsys.readouterr()
     assert code == 2
     play.assert_not_called()
 
@@ -165,6 +165,6 @@ def test_chain_gap_without_play_chain_rejected(monkeypatch, capsys):
         daemon_mod, "delegate_enqueue", enqueue
     ):
         code = _run_cli(monkeypatch, ["cli.py", "hola", "--chain-gap", "100"])
-    captured = capsys.readouterr()
+    capsys.readouterr()
     assert code == 2
     play.assert_not_called()

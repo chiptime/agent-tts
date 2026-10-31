@@ -459,10 +459,10 @@ def extract_last_turn(text: str) -> str:
 
     def get_clean_slice(slice_lines):
         filtered = []
-        for l in slice_lines:
-            cl = strip_ansi(l).strip()
+        for line in slice_lines:
+            cl = strip_ansi(line).strip()
             if not is_terminal_noise(cl):
-                filtered.append(l)
+                filtered.append(line)
         return "\n".join(filtered).strip()
 
     if not prompt_indices:

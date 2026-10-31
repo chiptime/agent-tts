@@ -5,7 +5,7 @@ allowing developers to subscribe on mobile podcast apps (Pocket Casts, Overcast,
 100% standard library (zero external dependencies).
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import format_datetime
 import http.server
@@ -13,7 +13,7 @@ import json
 import os
 import re
 import socketserver
-from typing import List, Optional
+from typing import List
 import xml.sax.saxutils as saxutils
 
 DEFAULT_PODCAST_DIR = os.environ.get(

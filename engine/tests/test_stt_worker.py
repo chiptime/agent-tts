@@ -31,7 +31,6 @@ from agent_tts.stt.transcriber import (
 )
 from agent_tts.stt.worker import (
     FRAME_VERSION,
-    MAX_AUDIO_BYTES,
     SttWorker,
     AddressInUseError,
     BusyError,
@@ -696,7 +695,6 @@ class TestLifecycleBounds:
     def test_missing_extra_worker_reply_is_typed(self, tmp_path, monkeypatch):
         """F3: absent hub library surfaces as missing_extra through the
         worker protocol, not a generic error."""
-        import types as _types
 
         monkeypatch.setitem(sys.modules, "huggingface_hub", None)
         t = Transcriber(SttSettings(), loader=lambda: FakeModel())

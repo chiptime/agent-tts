@@ -14,7 +14,6 @@ import os
 import re
 from typing import Iterator, Optional
 
-from agent_tts.sources.base import CLAUDE_SESSION_RE
 
 DEFAULT_ROOT = os.path.expanduser("~/.claude/projects")
 

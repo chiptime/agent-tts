@@ -275,7 +275,6 @@ def test_play_no_play_mode_synthesizes_without_session(channel, monkeypatch):
 
 
 def test_play_with_file_plays_through_session(channel, monkeypatch, tmp_path):
-    import array
     import struct
     import wave
 

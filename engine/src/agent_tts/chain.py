@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import array
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Callable, List, Optional, Sequence, Tuple
 

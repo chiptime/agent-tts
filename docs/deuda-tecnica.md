@@ -36,7 +36,7 @@
 Estado de [`docs/technical-debt-prd.md`](technical-debt-prd.md) verificado el 2026-09-25:
 
 - `.github/workflows/ci.yml` **existe** (TD-02 arrancado en algún punto posterior a la PRD).
-- `tests/conftest.py` y los markers/`[tool.pytest.ini_options]` del diseño TD-02 **no están** (re-verificado 2026-10-30: siguen ausentes en `engine/`; el CI ya corre los cuatro jobs en verde) — verificar el alcance real de lo que cubre el `ci.yml` vigente antes de dar TD-02 por cerrada o completar su resto.
+- **TD-02 completado en local (2026-10-31)**: `engine/tests/conftest.py` con los markers `needs_audio`/`needs_powershell`/`windows_only`, `[tool.pytest.ini_options]` y `ruff` en `[dev]`, job `engine-lint` (solo `ruff check` con reglas de corrección E4/E7/E9/F; `ruff format` fuera por decisión del maintainer), macOS añadido a la matriz y badge de CI. Pendiente: primer run remoto; Windows y macOS siguen con `continue-on-error` hasta verse en verde. `providers/` queda exento de F401 por la congelación FR-06.
 - TD-01 (Piper streaming persistente opt-in) y TD-03 (conector Orca): sin señales de ejecución; estado según su PRD.
 
 ## 6. Housekeeping

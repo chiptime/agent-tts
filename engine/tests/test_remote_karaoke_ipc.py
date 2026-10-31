@@ -9,7 +9,6 @@ persistent process is faked for the pipe-handoff ramp tests.
 """
 
 import io
-import struct
 import subprocess
 
 import pytest

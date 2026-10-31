@@ -6,7 +6,6 @@ or inter-frame glitches. Provides a configurable pre-roll buffer to prevent audi
 
 import array
 import queue
-import sys
 import threading
 import time
 from dataclasses import dataclass

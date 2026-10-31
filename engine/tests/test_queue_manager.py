@@ -418,7 +418,6 @@ def test_preempt_waits_for_the_terminated_session_before_dispatching_next():
     handle.block_on_wait = True  # the cancelled playback is still unwinding
 
     preempted = {}
-    done = threading.Event()
 
     def preempt():
         preempted["id"] = manager.enqueue(priority=Priority.BLOCKED, policy=Policy.PREEMPT)
@@ -660,7 +659,7 @@ def test_coalesce_window_closes_exactly_at_the_boundary():
     runner = ScriptedRunner(clock)
     manager = make_manager(runner, clock, coalesce_window_sec=5.0)
 
-    gate = manager.enqueue(priority=Priority.WORKING, policy=Policy.QUEUE)
+    manager.enqueue(priority=Priority.WORKING, policy=Policy.QUEUE)
     _coalesce_event(manager, "a")  # opens the window at t=0
     clock.advance(4.99)
     _coalesce_event(manager, "b")  # still inside: merges
@@ -678,7 +677,7 @@ def test_different_event_types_never_merge():
     runner = ScriptedRunner(clock)
     manager = make_manager(runner, clock)
 
-    gate = manager.enqueue(priority=Priority.WORKING, policy=Policy.QUEUE)
+    manager.enqueue(priority=Priority.WORKING, policy=Policy.QUEUE)
     _coalesce_event(manager, "a", event_type="jobs finished")
     _coalesce_event(manager, "x", event_type="agents blocked")
 
@@ -695,7 +694,7 @@ def test_merged_item_keeps_the_window_owners_priority():
     runner = ScriptedRunner(clock)
     manager = make_manager(runner, clock)
 
-    gate = manager.enqueue(priority=Priority.WORKING, policy=Policy.QUEUE)
+    manager.enqueue(priority=Priority.WORKING, policy=Policy.QUEUE)
     _coalesce_event(manager, "a", priority=Priority.DONE)
     _coalesce_event(manager, "b", priority=Priority.BLOCKED)  # same type, merges
 
@@ -710,7 +709,7 @@ def test_coalesce_item_dispatches_without_waiting_for_the_window():
     runner = ScriptedRunner(clock)
     manager = make_manager(runner, clock)
 
-    item = _coalesce_event(manager, "a")
+    _coalesce_event(manager, "a")
 
     assert len(runner.dispatched) == 1  # went straight to the speaker
     snap = manager.snapshot()
@@ -741,7 +740,7 @@ def test_announcement_lists_at_most_three_identifiers_and_sums_the_rest():
     runner = ScriptedRunner(clock)
     manager = make_manager(runner, clock)
 
-    gate = manager.enqueue(priority=Priority.WORKING, policy=Policy.QUEUE)
+    manager.enqueue(priority=Priority.WORKING, policy=Policy.QUEUE)
     _coalesce_event(manager, "a")
     _coalesce_event(manager, "b")
     _coalesce_event(manager, "c")
@@ -759,7 +758,7 @@ def test_single_coalesce_item_has_no_synthesized_announcement():
     runner = ScriptedRunner(clock)
     manager = make_manager(runner, clock)
 
-    gate = manager.enqueue(priority=Priority.WORKING, policy=Policy.QUEUE)
+    manager.enqueue(priority=Priority.WORKING, policy=Policy.QUEUE)
     _coalesce_event(manager, "a")
 
     assert manager.snapshot().pending[0].announcement == ""
@@ -770,7 +769,7 @@ def test_enqueue_returns_the_surviving_item_id_when_merging():
     runner = ScriptedRunner(clock)
     manager = make_manager(runner, clock)
 
-    gate = manager.enqueue(priority=Priority.WORKING, policy=Policy.QUEUE)
+    manager.enqueue(priority=Priority.WORKING, policy=Policy.QUEUE)
     first = _coalesce_event(manager, "a")
     second = _coalesce_event(manager, "b")
 
@@ -874,7 +873,7 @@ def test_watchdog_timeout_is_configurable():
     runner = ScriptedRunner(clock)
     manager = make_manager(runner, clock, wedged_timeout_sec=0.5)
 
-    active = manager.enqueue(priority=Priority.WORKING, policy=Policy.QUEUE)
+    manager.enqueue(priority=Priority.WORKING, policy=Policy.QUEUE)
     clock.advance(0.49)
     assert manager.check_watchdog() is False
     clock.advance(0.02)
@@ -890,7 +889,7 @@ def test_watchdog_without_handle_waits_for_one():
         return None
 
     manager = make_manager(handleless_runner, clock, wedged_timeout_sec=1.0)
-    active = manager.enqueue(priority=Priority.WORKING, policy=Policy.QUEUE)
+    manager.enqueue(priority=Priority.WORKING, policy=Policy.QUEUE)
     clock.advance(100.0)
     assert manager.check_watchdog() is False
     assert manager.snapshot().active is not None
@@ -1073,7 +1072,7 @@ def test_snapshot_as_dict_is_json_ready():
 
     # The merged coalesce item is visible while it waits: re-run the
     # merge shape and inspect the pending dict serialization.
-    gate2 = manager.enqueue(priority=Priority.WORKING, policy=Policy.QUEUE)
+    manager.enqueue(priority=Priority.WORKING, policy=Policy.QUEUE)
     _coalesce_event(manager, "x")
     _coalesce_event(manager, "y")
     pending_payload = manager.snapshot().as_dict()

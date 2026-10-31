@@ -541,7 +541,7 @@ def test_contract_sequence_order_on_local(channel, monkeypatch):
     _install_decode_stub(monkeypatch, hold_sec=30.0, item_sec=0.04)
     d = _start_daemon(channel, monkeypatch, events, gate=gate)
     try:
-        played = _run_contract_sequence(channel["sock"], events, playback="local", start_label="S-HOLD")
+        _run_contract_sequence(channel["sock"], events, playback="local", start_label="S-HOLD")
         gate.set()  # S-B3P already preempted the anchor; drain the rest
         _wait_until(
             lambda: sum(1 for e in events if e[0] == "end") == len(CONTRACT_EXPECTED_LABELS) + 1,
@@ -596,7 +596,7 @@ def test_contract_sequence_order_on_wsl_ps(channel, monkeypatch):
     monkeypatch.setattr(psp.PowershellSession, "play", traced_play)
     d = _start_daemon(channel, monkeypatch, events, play_patch=False)
     try:
-        played = _run_contract_sequence(channel["sock"], events, playback="wsl-ps", start_label="S-HOLD")
+        _run_contract_sequence(channel["sock"], events, playback="wsl-ps", start_label="S-HOLD")
         _wait_until(
             lambda: sum(1 for e in events if e[0] == "end") == len(CONTRACT_EXPECTED_LABELS) + 1,
             timeout_sec=30.0,

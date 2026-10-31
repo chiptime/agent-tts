@@ -10,7 +10,6 @@ channel (isolated lock/pid env, decoy socket default, self-exit idle
 timeout) so it can never touch the system channel either.
 """
 
-import json
 import os
 import socket
 import subprocess

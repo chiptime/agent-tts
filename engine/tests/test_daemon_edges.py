@@ -12,8 +12,6 @@ import os
 import socket
 import subprocess
 import threading
-import time
-from pathlib import Path
 
 import pytest
 
@@ -37,7 +35,9 @@ from agent_tts.ipc import encode_frame
 def _accept_close_server(path):
     """Accepts connections and closes them immediately (rude peer)."""
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    srv.bind(path); srv.listen(2); srv.settimeout(5)
+    srv.bind(path)
+    srv.listen(2)
+    srv.settimeout(5)
 
     def _run():
         try:
@@ -48,8 +48,10 @@ def _accept_close_server(path):
                     return
                 conn.close()
         finally:
-            try: srv.close()
-            except OSError: pass
+            try:
+                srv.close()
+            except OSError:
+                pass
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
@@ -59,7 +61,9 @@ def _accept_close_server(path):
 def _reply_server(path, reply):
     """Accepts, reads one frame, answers a fixed reply (or nothing)."""
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    srv.bind(path); srv.listen(2); srv.settimeout(5)
+    srv.bind(path)
+    srv.listen(2)
+    srv.settimeout(5)
 
     def _run():
         try:
@@ -76,8 +80,10 @@ def _reply_server(path, reply):
                     except OSError:
                         pass
         finally:
-            try: srv.close()
-            except OSError: pass
+            try:
+                srv.close()
+            except OSError:
+                pass
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
@@ -188,7 +194,8 @@ def test_shutdown_strands_waiters_and_survives_raising_sessions():
 
 def test_pid_alive_matrix():
     assert _pid_alive(os.getpid()) is True
-    gone = subprocess.Popen(["true"]); gone.wait()
+    gone = subprocess.Popen(["true"])
+    gone.wait()
     assert _pid_alive(gone.pid) is False
     assert _pid_alive(1) is True  # alive, merely not ours to signal
 

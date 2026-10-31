@@ -635,7 +635,6 @@ class TestShutdownSubcommand:
 
         monkeypatch.setattr(stt_cli.os.path, "exists", fake_exists)
         calls = {"n": 0}
-        real_sleep = stt_cli.time.sleep
 
         def fast_sleep(_):
             calls["n"] += 1

@@ -1,9 +1,8 @@
 """Unit tests for the MP3 frame parser (PRD-AT-01)."""
 
-import struct
 import unittest
 
-from agent_tts.stream.mp3_parser import Mp3FrameInfo, Mp3FrameParser, parse_frame_header, parse_id3v2_size
+from agent_tts.stream.mp3_parser import Mp3FrameParser, parse_frame_header, parse_id3v2_size
 
 
 def make_frame_header(

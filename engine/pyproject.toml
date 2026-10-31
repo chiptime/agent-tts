@@ -43,6 +43,7 @@ stt = [
 dev = [
     "pytest>=7.0.0",
     "coverage>=7.6,<8",
+    "ruff>=0.6,<1",
 ]
 
 [project.scripts]
@@ -53,3 +54,27 @@ agent-tts-stt = "agent_tts.stt.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --tb=short"
+testpaths = ["tests"]
+markers = [
+    "needs_audio: requires a real audio playback device (skipped in CI)",
+    "needs_powershell: requires powershell.exe on Windows",
+    "windows_only: only runs on the Windows platform",
+]
+
+[tool.ruff]
+target-version = "py39"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# Correctness-only baseline (TD-02, lint scope decided 2026-10-31):
+# no style rules, no line-length rule and no `ruff format` gate.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# providers/ is frozen by the fallback design (FR-06, guarded by
+# tests/test_fallback_chain.py::test_providers_not_rewritten): its
+# unused imports are tolerated instead of edited. __init__ re-exports.
+"src/agent_tts/providers/*.py" = ["F401"]

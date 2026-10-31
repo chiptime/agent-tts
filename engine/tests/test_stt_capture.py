@@ -17,8 +17,6 @@ import pytest
 import agent_tts.stt.capture as cap_mod
 
 from agent_tts.stt.capture import (
-    FRAME_MS,
-    MAX_WAV_BYTES,
     CaptureConfig,
     CaptureOversizeError,
     CaptureUnavailableError,
@@ -183,14 +181,18 @@ class TestTrimTrailingSilence:
         def wav8():
             buf = io.BytesIO()
             with wavemod.open(buf, "wb") as w:
-                w.setnchannels(1); w.setsampwidth(1); w.setframerate(16000)
+                w.setnchannels(1)
+                w.setsampwidth(1)
+                w.setframerate(16000)
                 w.writeframes(b"\x80\xff\x80\x80")  # loud, silence, silence
             return buf.getvalue()
 
         def wav24():
             buf = io.BytesIO()
             with wavemod.open(buf, "wb") as w:
-                w.setnchannels(1); w.setsampwidth(3); w.setframerate(16000)
+                w.setnchannels(1)
+                w.setsampwidth(3)
+                w.setframerate(16000)
                 w.writeframes(b"\x00\x00\x00" * 100)
             return buf.getvalue()
 

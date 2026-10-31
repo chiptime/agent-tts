@@ -1,5 +1,6 @@
 # agent-tts
 
+[![CI](https://github.com/chiptime/agent-tts/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/chiptime/agent-tts/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg)]()
 [![RAM Footprint](https://img.shields.io/badge/RAM-%3C2.5%20MB-green.svg)]()

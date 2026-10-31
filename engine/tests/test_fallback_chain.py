@@ -35,10 +35,8 @@ from agent_tts.fallback import (
     FallbackConfigError,
     FallbackLink,
     SynthesisIntent,
-    WalkResult,
     classify_exception,
     fallback_config_path,
-    link_key_missing,
     load_fallback_config,
     run_fallback_synthesis,
 )
@@ -485,7 +483,6 @@ def test_providers_not_rewritten(tmp_path, monkeypatch):
     fallback._reset_fallback_config_cache()
 
     factory = make_factory(registry)
-    original_get_provider = fallback.get_provider
     monkeypatch.setattr(fallback, "get_provider", factory)
     result = asyncio.run(cli.synthesize(text="hi", provider="alpha", voice="v1"))
 

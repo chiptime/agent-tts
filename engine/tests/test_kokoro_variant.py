@@ -20,7 +20,6 @@ from unittest import mock
 from agent_tts.providers.kokoro import KokoroTTSProvider
 from agent_tts.voices import (
     ENV_KOKORO_VARIANT,
-    KOKORO_VARIANT_FP32,
     KOKORO_VARIANT_QUANTIZED,
     VoiceStoreError,
     install_voice,

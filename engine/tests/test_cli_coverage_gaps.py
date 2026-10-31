@@ -27,7 +27,6 @@ import os
 import sys
 import threading
 from collections import deque
-from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -511,7 +510,7 @@ class ExplodingDecoder:
 
     def decode_generator(self):
         raise RuntimeError("decoder exploded")
-        yield  # noqa: unreachable - makes this a generator function
+        yield  # unreachable: makes this a generator function
 
 
 @pytest.mark.parametrize("decoder_cls,expected_err", [
@@ -554,7 +553,7 @@ class CountdownDecoder:
         yield FakeDecoded()
         yield FakeDecoded()
         raise RuntimeError("decoder blew mid-stream")
-        yield  # noqa: unreachable - makes this a generator function
+        yield  # unreachable: makes this a generator function
 
 
 def test_pipelined_remaining_frames_error_surfaces_after_play(monkeypatch, capsys):

@@ -12,7 +12,6 @@ Windows byte locks are mandatory and must not overlap the content
 has no mutex power and only the owner writes it.
 """
 
-import os
 import sys
 
 from agent_tts.constants import IPC_PORT_FILE

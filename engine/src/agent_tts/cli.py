@@ -13,10 +13,6 @@ from typing import List, Optional
 
 from agent_tts.audio import AudioSession, _write_player_locks, cleanup_locks
 from agent_tts.boundaries import (
-    BoundaryMap,
-    Paragraph,
-    Sentence,
-    Word,
     build_boundaries_from_word_events,
     estimate_boundaries_from_text,
 )

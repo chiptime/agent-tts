@@ -6,7 +6,7 @@ Zero external API requirement, zero latency, 100% offline heuristics.
 """
 
 import re
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 
 def _extract_git_diff(text: str) -> Optional[str]:
@@ -94,7 +94,7 @@ def _extract_test_results(text: str) -> Optional[str]:
 def _extract_traceback(text: str) -> Optional[str]:
     """Detects and summarizes Python tracebacks or JS unhandled exceptions."""
     if "Traceback (most recent call last):" in text:
-        lines = [l.strip() for l in text.strip().splitlines() if l.strip()]
+        lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
         last_line = lines[-1] if lines else "Error desconocido"
 
         # Find location of last frame
