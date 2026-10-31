@@ -213,13 +213,54 @@ def test_text_size_walks_three_css_steps(karaoke_harness):
 def test_zen_hides_chrome_and_keeps_the_call(karaoke_harness):
     harness = karaoke_harness
     page = harness.page
+    assert page.locator("#zen-exit-btn").is_hidden()
     page.locator("#settings-btn").click()
     page.locator("#zen-btn").click()
     assert page.evaluate("() => document.body.classList.contains('zen')") is True
     assert page.locator("header").is_hidden()
     assert page.locator("#call-btn").is_visible()
+    assert page.locator("#zen-exit-btn").is_visible()
     page.locator("#zen-btn").click()
     assert page.locator("header").is_visible()
+    assert page.locator("#zen-exit-btn").is_hidden()
+
+
+def test_zen_exit_button_restores_chrome(karaoke_harness):
+    harness = karaoke_harness
+    page = harness.page
+    page.locator("#settings-btn").click()
+    page.locator("#zen-btn").click()
+    assert page.evaluate("() => document.body.classList.contains('zen')") is True
+    assert page.locator("#zen-exit-btn").is_visible()
+    page.locator("#settings-close").click()
+    # Sheet closed, header hidden, exit button accessible
+    assert page.locator("header").is_hidden()
+    page.locator("#zen-exit-btn").click()
+    assert page.evaluate("() => document.body.classList.contains('zen')") is False
+    assert page.locator("header").is_visible()
+    assert page.locator("#zen-exit-btn").is_hidden()
+    assert page.evaluate(
+        "() => JSON.parse(localStorage.getItem('herdr-brain-settings-v1')).zen"
+    ) is False
+    assert page.locator("#zen-btn").text_content() == "Modo Zen: No"
+
+
+def test_escape_closes_settings_first_then_exits_zen(karaoke_harness):
+    harness = karaoke_harness
+    page = harness.page
+    page.locator("#settings-btn").click()
+    page.locator("#zen-btn").click()
+    page.keyboard.press("Escape")
+    assert page.evaluate(
+        "() => document.getElementById('settings-sheet').classList.contains('open')"
+    ) is False
+    assert page.evaluate("() => document.body.classList.contains('zen')") is True
+    page.keyboard.press("Escape")
+    assert page.evaluate("() => document.body.classList.contains('zen')") is False
+    assert page.locator("header").is_visible()
+    assert page.evaluate(
+        "() => JSON.parse(localStorage.getItem('herdr-brain-settings-v1')).zen"
+    ) is False
 
 
 def test_haptics_row_hidden_without_vibrate(karaoke_app):

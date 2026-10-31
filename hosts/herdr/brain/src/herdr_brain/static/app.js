@@ -613,10 +613,15 @@
   convBackdrop.addEventListener("click", closeConvSheet);
   document.addEventListener("keydown", function (event) {
     /* Escape closes the topmost sheet — never from under the settings
-     * sheet. */
+     * sheet. If no sheet is open and zen mode is active, escape exits zen. */
     if (event.key !== "Escape") return;
     if (pendingSheetOpen) { closePendingSheet(); return; }
-    if (convSheetOpen && !settingsOpen) closeConvSheet();
+    if (convSheetOpen && !settingsOpen) { closeConvSheet(); return; }
+    if (settingsOpen) { closeSettings(); return; }
+    if (settingsPanel && settingsPanel.get && settingsPanel.get().zen) {
+      settingsPanel.setZen(false);
+      return;
+    }
   });
 
   /* ---------------- pending sheet ----------------
@@ -5757,6 +5762,7 @@
       rows: {
         font: $("font-btn"),
         zen: $("zen-btn"),
+        zenExit: $("zen-exit-btn"),
         haptics: $("haptics-btn"),
         hapticsRow: $("haptics-row"),
         language: $("language-btn"),

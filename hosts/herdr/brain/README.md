@@ -1007,7 +1007,9 @@ after a local window prefix (`w1`, `w2`…).
   persists per device and publishes `POST /call/context {"locale"}` so the
   spoken announcements and gate closers follow it (Spanish is the default).
 - **Settings** — theme (auto, light, dark), text size, Zen mode and haptics
-  (shown only where the browser supports vibration), all per device.
+  (shown only where the browser supports vibration), all per device. Zen
+  hides the header; leave it with the floating **✕ Salir Zen** button or
+  with Escape (Escape closes an open sheet first).
 - **Operator dock** — quick replies, commands, key presets and launchers
   from the operator TOML files (see Operator surfaces); hidden when the
   config route is absent.

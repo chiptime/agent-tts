@@ -29,9 +29,10 @@ EXPECTED_DIGESTS = {
     # (verified sends: the receipt card, the Stop button and the steer
     # long-press in the composer, receipts.js); then for S5/S13 (the
     # Avisos push card + push.js, the Mensaje composer, and the sw.js
-    # push/notificationclick handlers).
-    "/": "71fe7fca7fbc4c48818c45c5e63dcd3ef6afa8a9201e12b79b03aad94fa417aa",
-    "/app.js": "880d8829048f942e8a37cf35415e51fa1b2ff146133b44f886fdf53d32433e40",
+    # push/notificationclick handlers); then for the Zen exit control
+    # (floating exit button, Escape exits Zen, i18n labels, setZen).
+    "/": "378143ff1d202fef5232b5edfe3eb96ecbb16156be5840a33329d908acc9b5f8",
+    "/app.js": "2c7fbacf512611c5c9bd32d13d395451e3c8a41c8b442262816d5dce56e7d31c",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "ca7b22c52c8160a3ac577f694eb65ec0798b77cd6ac179a5c567dffdc1fb2ba9",
     "/dialogs.js": "0e5b6afde7ef662591f66fc69891e3b1ec343fafe0d2c5be8fbef0c5a124a4c0",
@@ -52,9 +53,9 @@ EXPECTED_DIGESTS = {
     # update notice, operator dock, offline-shell sw.js.
     "/dock.js": "4a5dc20d575c3c9e5f098116fc9314f24297b2934cb3142bc885b6e1d0155adb",
     "/i18n.js": "8bcd2ceb9f56109afaa0ec158e1a6f002799c4a983261b9d58cd38723c06719f",
-    "/i18n/en.js": "baffeac479eb0fc18b2c196b0a8582dba613996755ac2237bba66db2a5054e05",
-    "/i18n/es.js": "0db0b67407f1f979b234ea7965f7bdb2f98e9fffff4779f75ed4d3ab97eca563",
-    "/settings.js": "066cda900dd70cf6369587617d37b2c95bfa4d81d6d6ff6908372397f428babf",
+    "/i18n/en.js": "231f7c1b1bbd591fd9dbb6178aa8b553367d093a6a7b103de3f6f321a55e9e77",
+    "/i18n/es.js": "c44cabfc28ef5d25cc83bc14d86e372283987502eb0f831c797803f37e346db7",
+    "/settings.js": "1c2cf3ed92bf959c19ecde0107618b8d1ff0690d2c6fa7c842a2fdc551e05f72",
     "/updates.js": "7f87250cf6cd9c2b8944da632fe036d0c18a87a90f48f70b84e18bcd338cfa84",
 }
 
