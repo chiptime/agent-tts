@@ -32,6 +32,8 @@ Este PRD cubre únicamente la deuda técnica aceptada. Todo se implementa bajo e
 
 ## TD-01 — Piper Sentence-Group Streaming con Proceso Persistente (opt-in)
 
+> **Estado (2026-10-31): EJECUTADO.** Implementación en `engine/src/agent_tts/providers/piper.py` y `engine/src/agent_tts/text.py`; tests en `engine/tests/test_stream_piper.py`. **TD-02** también completado en local (ver `docs/deuda-tecnica.md` §5).
+
 ### Problema (verificado)
 
 - `PiperTTSProvider` (`src/agent_tts/providers/piper.py`) no define `synthesize_stream()`; hereda `supports_stream = False` de `base.py`.

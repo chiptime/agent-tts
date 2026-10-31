@@ -552,8 +552,8 @@ We have an active vision to expand `agent-tts` into the definitive neural TTS en
   - The CLI is always a client: a 200 ms ping gate, transparent daemon auto-start, kill-and-respawn of wedged daemons, warm provider cache between requests, idle-timeout lifecycle (30 min auto-started / none explicit), and `play`/`ping`/`shutdown` IPC commands (`--serve`/`--foreground`).
 - [x] 📋 **Priority Playback Queue & Gapless Chains (AT-08):**
   - A priority queue inside the daemon serializes every announcement into one active session — scheduling by event priority (`blocked > done > working`, FIFO per level), per-event policy (`queue`/`preempt`/`coalesce` with a configurable merge window), one coalesced announcement for bursts, liveness watchdog, and full queue visibility in `status`; `enqueue` fire-and-forget IPC plus `--priority`/`--policy` CLI flags, and `--play-chain FILE...` for gapless back-to-back replay of multiple files in one session with chain-global seek/phrase navigation (frozen IPC contract: [docs/ipc-contract-v2.md](docs/ipc-contract-v2.md)).
-- [ ] 🎙️ **Per-Provider Pipelining (Piper):**
-  - OpenAI and ElevenLabs now stream via chunked MP3 HTTP delivery with transparent full-response fallback (`--stream auto`, ≥ 400 chars); only the local Piper backend remains.
+- [x] 🎙️ **Per-Provider Pipelining (Piper, TD-01):**
+  - OpenAI and ElevenLabs stream via chunked MP3 HTTP delivery with transparent full-response fallback (`--stream auto`, ≥ 400 chars); Piper streams sentence groups from one persistent process with `--stream on` only (never `auto`).
 - [x] ⚡ **Incremental MP3 Frame-Accurate Byte Streaming (AT-01):**
   - Frame-level MP3 byte streaming (`engine/src/agent_tts/stream/`): bytes are decoded as they arrive from the network, lowering time-to-first-audio below sentence-group pipelining.
 - [x] 🔒 **Automated Secret & Credential Redaction Engine (`redact.py`):**

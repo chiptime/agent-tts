@@ -37,7 +37,7 @@ Estado de [`docs/technical-debt-prd.md`](technical-debt-prd.md) verificado el 20
 
 - `.github/workflows/ci.yml` **existe** (TD-02 arrancado en algún punto posterior a la PRD).
 - **TD-02 completado en local (2026-10-31)**: `engine/tests/conftest.py` con los markers `needs_audio`/`needs_powershell`/`windows_only`, `[tool.pytest.ini_options]` y `ruff` en `[dev]`, job `engine-lint` (solo `ruff check` con reglas de corrección E4/E7/E9/F; `ruff format` fuera por decisión del maintainer), macOS añadido a la matriz y badge de CI. Pendiente: primer run remoto; Windows y macOS siguen con `continue-on-error` hasta verse en verde. `providers/` queda exento de F401 por la congelación FR-06.
-- TD-01 (Piper streaming persistente opt-in) y TD-03 (conector Orca): sin señales de ejecución; estado según su PRD.
+- **TD-01 ejecutado** (verificado 2026-10-31): `PiperTTSProvider.synthesize_stream()` con un proceso persistente (`supports_stream`/`stream_yields_group_chunks`), splitter compartido en `engine/src/agent_tts/text.py`, `--stream on` solo (nunca `auto`); criterios del PRD cubiertos en `engine/tests/test_stream_piper.py` (52 OK con `test_stream.py`). TD-03 (conector Orca): sigue en backlog.
 
 ## 6. Housekeeping
 
