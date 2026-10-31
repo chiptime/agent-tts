@@ -18,8 +18,8 @@ El trabajo restante real se divide en decisiones de publicación/corte, dos fren
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
 │          FRENTE 0: PARIDAD DEL BRAIN — PUBLICACIÓN Y CORTE             │
-│   • F1–F6 y mensajes entre hosts de crew fusionados en main local      │
-│     (merge 2f9e855, sin publicar)                                      │
+│   • F1–F6, mensajes entre hosts de crew y salida de Zen en main local  │
+│     (merges 2f9e855 y zen-exit, sin publicar)                          │
 │   • Pendiente: push, validaciones doc 11, dos máquinas, corte en vivo  │
 └───────────────────────────────────┬────────────────────────────────────┘
                                     │
@@ -42,7 +42,7 @@ El trabajo restante real se divide en decisiones de publicación/corte, dos fren
 │   • HT-10: Chain replay contextual (prioridad P5)                      │
 │   • AT-05 (Prosodia); AT-06 M2 clasificación WASAPI pendiente          │
 │   • AT-07 validación móvil pendiente; motor: Piper pipelining,         │
-│     streaming MP3 por frames, CI Windows                               │
+│     CI Windows                                                         │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -119,6 +119,8 @@ Todo el código de Voice Stack (VS0 a VS4), STT Core (F4) y botones ntfy (F5) es
 2. **AT-06 — Ducking de audio:** P3. **M1 local ✅ implementada y fusionada** en `main` (detección `pactl` read-only, política `duck|pause|ignore` opt-in con default `ignore`, gain software con restauración exacta, `comm_active` en status; cero configuración del sistema). **M2 winhost ⚠️ transporte hecho** (consulta `activity` request-reply + `gain_db` en el header v1); la **clasificación WASAPI nativa queda pendiente** (Windows-only, validación manual M-01). Pack: [`odd/tasks/at-06-ducking-audio.md`](../odd/tasks/at-06-ducking-audio.md).
 3. **AT-05 — Prosodia consciente de estado:** P4. Modulación de velocidad/tono según la urgencia del evento.
 4. **HT-10 — Chain replay contextual:** P5. Replay de cadena de eventos en el host.
-5. **Motor (ítems abiertos del roadmap del README):** pipelining por proveedor para Piper (TD-01), streaming MP3 incremental por frames, cobertura CI en Windows nativo (WASAPI y loopback TCP) e integración con Orca (TD-03, a la espera de requisitos del maintainer).
+5. **Motor (ítems abiertos del roadmap del README):** pipelining por proveedor para Piper (TD-01), cobertura CI en Windows nativo (WASAPI y loopback TCP) e integración con Orca (TD-03, a la espera de requisitos del maintainer).
 
 Deuda técnica, residuales aceptados y mediciones abiertas: [`docs/deuda-tecnica.md`](deuda-tecnica.md).
+
+> El streaming MP3 por frames (AT-01) está **EJECUTADO** y en `main` (`196ed56`, PRD archivada en `docs/prds/archivadas/AT-01-streaming-frames-mp3.md`); figuraba aquí como pendiente por error.

@@ -553,8 +553,8 @@ We have an active vision to expand `agent-tts` into the definitive neural TTS en
   - A priority queue inside the daemon serializes every announcement into one active session — scheduling by event priority (`blocked > done > working`, FIFO per level), per-event policy (`queue`/`preempt`/`coalesce` with a configurable merge window), one coalesced announcement for bursts, liveness watchdog, and full queue visibility in `status`; `enqueue` fire-and-forget IPC plus `--priority`/`--policy` CLI flags, and `--play-chain FILE...` for gapless back-to-back replay of multiple files in one session with chain-global seek/phrase navigation (frozen IPC contract: [docs/ipc-contract-v2.md](docs/ipc-contract-v2.md)).
 - [ ] 🎙️ **Per-Provider Pipelining (Piper):**
   - OpenAI and ElevenLabs now stream via chunked MP3 HTTP delivery with transparent full-response fallback (`--stream auto`, ≥ 400 chars); only the local Piper backend remains.
-- [ ] ⚡ **Incremental MP3 Frame-Accurate Byte Streaming:**
-  - Replace sentence-group pipelining with frame-level MP3 byte streaming for even lower time-to-first-audio.
+- [x] ⚡ **Incremental MP3 Frame-Accurate Byte Streaming (AT-01):**
+  - Frame-level MP3 byte streaming (`engine/src/agent_tts/stream/`): bytes are decoded as they arrive from the network, lowering time-to-first-audio below sentence-group pipelining.
 - [x] 🔒 **Automated Secret & Credential Redaction Engine (`redact.py`):**
   - High-speed heuristic sanitizer that automatically redacts API keys (`sk-...`, `ghp_...`, `glpat-...`), JWTs, authorization headers, generic credential assignments, PEM private keys, and long hashes from terminal text before vocalization or publishing to RSS/ntfy feeds (runs once inside the shared cleaning stage).
 - [x] 🧠 **Hybrid High-Level LLM Summarizer (`--llm-summary`):**
