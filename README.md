@@ -161,6 +161,23 @@ The OpenAI and ElevenLabs providers also consume their HTTP responses incrementa
 git log -20 | agent-tts --stream on --highlight
 ```
 
+### Content-Aware Prosody (`--prosody`)
+
+Off by default. With `--prosody subtle` (or `on`, stronger) each sentence group is classified from its format, never from loose words: errors (`Traceback`, `ERROR`, `FAILED`, `ValueError:`) are read slower and lower after a 300 ms pause, warnings (`WARNING`, `DEPRECATED`, `BLOCKED`) slightly slower, omitted code blocks slower with a 150 ms pause around them, and questions (`?`, `¿`) with a higher pitch. The spoken text never changes, and the karaoke timeline includes the pauses.
+
+Prosody needs one synthesis call per group, so it pipelines `--stream auto` texts of any length in sentence-group mode (no frame streaming for that run); it is ignored with `--stream frames` and `--auto-lang`. Pitch changes only apply where the provider honors pitch (`edge`); other providers keep the rate and the pauses. Pauses are not included in the merged audio file written by `--output`.
+
+```bash
+cargo test 2>&1 | agent-tts --prosody subtle
+export AGENT_TTS_PROSODY=subtle   # default mode for every run
+```
+
+Tune the deltas per mode and class in `~/.config/agent-tts/prosody.json` (or `AGENT_TTS_PROSODY_CONFIG`); a broken file or entry prints a warning and keeps the defaults:
+
+```json
+{"subtle": {"error": {"rate": -10, "pitch": -4, "pause_ms": 400}}}
+```
+
 ### Interactive IPC & Semantic Sentence Navigation
 
 While `agent-tts` is speaking in the background, you can control playback instantly from another shell, tmux keybinding, or script:

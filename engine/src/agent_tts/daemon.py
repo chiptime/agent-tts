@@ -72,6 +72,7 @@ import miniaudio
 
 from agent_tts import __version__
 from agent_tts import audio as audio_mod
+from agent_tts import prosody
 from agent_tts.audio import _write_player_locks, cleanup_locks
 from agent_tts.chain import ChainError, assemble_chain_files
 from agent_tts.constants import (
@@ -771,6 +772,7 @@ class Daemon:
                     stream=payload.get("stream") or "auto",
                     persist_name=payload.get("persist_name") or None,
                     engine=self._build_engine(payload),
+                    prosody_mode=prosody.resolve_mode(payload.get("prosody")),
                 )
             )
             return "status=done"
@@ -1015,6 +1017,7 @@ class Daemon:
                             stream=payload.get("stream") or "auto",
                             persist_name=payload.get("persist_name") or None,
                             engine=self._build_engine(payload),
+                            prosody_mode=prosody.resolve_mode(payload.get("prosody")),
                         )
                     )
                 if bool(session.state.get("stop")):

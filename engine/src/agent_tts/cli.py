@@ -1,6 +1,7 @@
 """Command-line interface and high-level synthesis helpers for agent-tts."""
 
 import argparse
+import array
 import asyncio
 from datetime import date
 import json
@@ -9,6 +10,7 @@ import signal
 import sys
 import threading
 import time
+import types
 from typing import List, Optional
 
 from agent_tts.audio import AudioSession, _write_player_locks, cleanup_locks
@@ -22,7 +24,7 @@ from agent_tts.boundaries import (
 from agent_tts.boundaries import shift_boundary_map  # noqa: F401 - re-export
 from agent_tts.cleaner import clean_agent_text
 from agent_tts.constants import DEFAULT_RATE, DEFAULT_VOICE
-from agent_tts import ducking, edge_compat, fallback
+from agent_tts import ducking, edge_compat, fallback, prosody
 from agent_tts.powershell_playback import PowershellSession, is_wsl_ps_available
 from agent_tts.providers import TTSProvider, get_provider
 from agent_tts.sources import read_last_agent_message
@@ -367,6 +369,7 @@ def use_pipelined_stream(
     output_file: Optional[str],
     podcast: bool,
     text_len: int,
+    prosody: str = "off",
 ) -> bool:
     """Decides whether playback should use pipelined streaming (groups or frames).
 
@@ -374,10 +377,14 @@ def use_pipelined_stream(
     normally and the merged audio is written to the file once playback
     completes — the file appears at the end of the run, not progressively.
     Podcast mode and ``no_play`` keep refusing (unchanged semantics).
+    An active ``prosody`` mode (AT-05) pipelines ``auto`` texts of any length
+    so each sentence group can carry its own rate/pitch.
     """
     if no_play or stream not in ("auto", "on", "frames", "groups") or podcast:
         return False
     if stream in ("on", "frames", "groups"):
+        return True
+    if prosody != "off":
         return True
     return provider in STREAM_AUTO_PROVIDERS and text_len >= STREAM_AUTO_MIN_CHARS
 
@@ -443,6 +450,7 @@ async def _speak_pipelined(
     engine: Optional[TTSProvider] = None,
     stream: str = "groups",
     audibility: Optional["fallback.AudibilityProbe"] = None,
+    prosody_mode: str = "off",
 ) -> None:
     """Plays the first synthesized segment while remaining audio is synthesized and appended live.
 
@@ -471,6 +479,18 @@ async def _speak_pipelined(
     groups = split_sentence_groups(text)
     if audibility is None:
         audibility = fallback.AudibilityProbe()
+
+    # AT-05: per-group rate/pitch/pause. ``off`` yields no plan and keeps
+    # the exact global rate/pitch path. A plan needs one synthesize call
+    # per group, so it is dropped for an explicit ``--stream frames`` and
+    # for --auto-lang (whose groups are re-split per language).
+    prosody_plan = prosody.plan_groups(groups, prosody_mode, rate, pitch)
+    if prosody_plan is not None and (stream == "frames" or auto_lang):
+        print(
+            "Stream: prosody needs per-group synthesis; ignored with --stream frames or --auto-lang",
+            file=sys.stderr,
+        )
+        prosody_plan = None
 
     def note_partial_stop(where: str) -> None:
         """Records and prints the job's honest partial/uncertain stop (VS4.3)."""
@@ -541,6 +561,8 @@ async def _speak_pipelined(
         stream_yields_group_chunks=stream_yields_group_chunks,
         auto_lang=auto_lang,
     )
+    if prosody_plan is not None:
+        stream_mode = "groups"
 
     boundary_events: List[dict] = []
 
@@ -609,6 +631,7 @@ async def _speak_pipelined(
         and engine is not None
         and supports_stream
         and stream_yields_group_chunks
+        and prosody_plan is None
     ):
         stream_gen = engine.synthesize_stream(text, voice, rate, volume, pitch, stop_checker=check_stop)
 
@@ -789,13 +812,37 @@ async def _speak_pipelined(
             except Exception:
                 pass
 
-    async def synthesize_group(group_text: str):
+    def group_voice(idx: int):
+        """The (rate, pitch) for one group: its prosody entry or the globals."""
+        if prosody_plan is not None and 0 <= idx < len(prosody_plan):
+            return prosody_plan[idx].rate, prosody_plan[idx].pitch
+        return rate, pitch
+
+    def append_pause(idx: int, decoded) -> None:
+        """Appends the group's planned silence (AT-05) and shifts the karaoke timeline."""
+        if prosody_plan is None or not 0 <= idx < len(prosody_plan):
+            return
+        pause_ms = prosody_plan[idx].pause_ms
+        if pause_ms <= 0:
+            return
+        frames = int(round(decoded.sample_rate * pause_ms / 1000.0))
+        silence = types.SimpleNamespace(
+            sample_rate=decoded.sample_rate,
+            nchannels=decoded.nchannels,
+            sample_width=getattr(decoded, "sample_width", 2),
+            samples=array.array(decoded.samples.typecode, bytes(frames * decoded.nchannels * decoded.samples.itemsize)),
+        )
+        if session.append_pcm(silence):
+            progress["offset"] += pause_ms / 1000.0
+
+    async def synthesize_group(group_text: str, idx: int = -1):
+        group_rate, group_pitch = group_voice(idx)
         return await synthesize(
             text=group_text,
             voice=voice,
-            rate=rate,
+            rate=group_rate,
             volume=volume,
-            pitch=pitch,
+            pitch=group_pitch,
             provider=provider,
             openai_key=openai_key,
             openai_base_url=openai_base_url,
@@ -827,7 +874,7 @@ async def _speak_pipelined(
             if check_stop():
                 return None
             try:
-                result = await synthesize_group(group_text)
+                result = await synthesize_group(group_text, idx)
             except Exception as e:
                 print(f"Stream: group {idx} failed: {e}", file=sys.stderr)
                 continue
@@ -860,7 +907,7 @@ async def _speak_pipelined(
                 break
             group_text = groups[idx]
             try:
-                result = await synthesize_group(group_text)
+                result = await synthesize_group(group_text, idx)
             except Exception as e:
                 print(f"Stream: group {idx} failed: {e}", file=sys.stderr)
                 continue
@@ -881,6 +928,7 @@ async def _speak_pipelined(
                 print(f"Stream: group {idx} failed: {e}", file=sys.stderr)
                 continue
             rendered_chunks.append(bytes(result))
+            append_pause(idx, decoded)
             if not session.append_pcm(decoded):
                 continue
             # VS4.3: committed to the speaker — audible from now on.
@@ -1086,6 +1134,7 @@ async def _play_speech(
     stream: str = "auto",
     persist_name: Optional[str] = None,
     engine: Optional[TTSProvider] = None,
+    prosody_mode: str = "off",
 ) -> None:
     """Runs the synthesis + playback pipeline over a prepared session.
 
@@ -1102,6 +1151,7 @@ async def _play_speech(
         output_file=output_file,
         podcast=podcast,
         text_len=len(text),
+        prosody=prosody_mode,
     )
 
     def check_stop():
@@ -1129,6 +1179,7 @@ async def _play_speech(
             persist_name=persist_name,
             engine=engine,
             stream=stream,
+            prosody_mode=prosody_mode,
         )
         return
 
@@ -1203,6 +1254,7 @@ async def speak(
     stream: str = "auto",
     playback: str = "local",
     persist_name: Optional[str] = None,
+    prosody_mode: str = "off",
 ) -> None:
     """Synthesizes and plays audio with interactive controls."""
     session = None
@@ -1250,6 +1302,7 @@ async def speak(
             podcast_title=podcast_title,
             stream=stream,
             persist_name=persist_name,
+            prosody_mode=prosody_mode,
         )
     except Exception as e:
         print(f"Playback error: {e}", file=sys.stderr)
@@ -1405,6 +1458,14 @@ def build_parser() -> argparse.ArgumentParser:
         default="auto",
         help="Pipelined playback: auto, on (pipelined), frames (continuous MP3 frame decoding), "
         "groups (sentence-group synthesis), off; with --output the merged file is written after playback",
+    )
+    parser.add_argument(
+        "--prosody",
+        choices=["off", "subtle", "on"],
+        default=None,
+        help="Content-aware prosody: errors slower and lower, questions higher, pauses before "
+        "errors and around code (off by default; AGENT_TTS_PROSODY sets the default; "
+        "tune it in ~/.config/agent-tts/prosody.json)",
     )
     parser.add_argument(
         "--playback",
@@ -1839,6 +1900,7 @@ def main():
             "podcast": args.podcast,
             "podcast_title": args.podcast_title,
             "stream": args.stream,
+            "prosody": prosody.resolve_mode(args.prosody),
             "persist_name": args.agent or args.session_id or "cli",
             # Raw flag value: the daemon resolves it per request (RF-AT-04-6);
             # absent means the daemon's startup AGENT_TTS_PLAYBACK applies.
