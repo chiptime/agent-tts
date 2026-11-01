@@ -1,5 +1,7 @@
 **ID**: PRD-AT-05 · **Proyecto**: agent-tts
-**Prioridad final (revisión 2026-09-22)**: P4 · **Estado**: Postergada
+**Prioridad final (revisión 2026-09-22)**: P4 · **Estado**: Descartada (2026-11-01)
+
+> **Descartada (2026-11-01)**: se implementó una v1 opt-in (`--prosody off|subtle|on`, clasificación por frase, commits `6436710` y `69e8421`), el maintainer la probó de oído y funcionaba, pero prefirió no tenerla; revertida en `e3357ff` y `976e049`. Si se retoma, esos commits contienen el diseño y los tests.
 **Dependencias**: Ninguna
 
 > **Nota de revisión (22/09/2026)**: Postergada en revisión: requiere dedicación continua (tablas, corpus, tests A/B); el núcleo no la necesita.
