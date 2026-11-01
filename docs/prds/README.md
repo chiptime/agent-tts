@@ -15,7 +15,7 @@ La migración a monorepo absorbió tres repositorios independientes, implementan
 - **20 features del roadmap original (revisión 22/09/2026):**
   - **12 Ejecutadas / Implementadas en main:** AT-01 (streaming frames MP3), AT-02 (STT core del motor), AT-03 (conectores OpenCode), AT-04 (daemon persistente), AT-07 (digest de audio `--digest`), AT-08 (cola con prioridades), HT-01 (push-to-talk intercom), HT-02 (voces por agente), HT-03 (radio mode core), HT-04 (control móvil vía ntfy buttons), HT-05 (recordatorios escalados de atención), HT-11 (audición de voces en paleta).
   - **1 Aprobada pendiente / Backlog diferido:** HT-10 (chain replay). AT-06 (ducking) queda **PARCIAL**: M1 local implementada y fusionada; M2 winhost transporte hecho, clasificación WASAPI nativa pendiente.
-  - **3 Postergadas:** HT-06 (auto-snooze), HT-07 (filtro semántico), HT-08 (briefing matinal).
+  - **4 Postergadas:** AT-05 (prosodia), HT-06 (auto-snooze), HT-07 (filtro semántico), HT-08 (briefing matinal).
   - **2 Descartadas:** HT-09 (espacialización estéreo), HT-12 (watchers de texto).
 - **10 features nuevas fuera de roadmap (post-revisión / monorepo):**
   - **AT-09:** Propiedad del canal de control (flock, socket, framing) — **EJECUTADA** (BLOQUE 1.1).
@@ -44,7 +44,7 @@ La migración a monorepo absorbió tres repositorios independientes, implementan
 | AT-02 | [AT-02-stt-whispercpp.md](AT-02-stt-whispercpp.md) | STT y captura de micrófono como capacidad del motor (antes: whisper.cpp; antes: cliente del brain) | P4 | **IMPLEMENTADA (F4)** — STT y captura como capacidad del motor (`engine/src/agent_tts/stt`); validación física F2 pendiente | M |
 | AT-03 | [archivadas/AT-03-conectores-autodeteccion.md](archivadas/AT-03-conectores-autodeteccion.md) | Conectores restantes y auto-detección del agente | P2 | **EJECUTADA (recortada a OpenCode)** (2026-09-28, commit `7cf1ac8`) | M |
 | AT-04 | [archivadas/AT-04-daemon-persistente.md](archivadas/AT-04-daemon-persistente.md) | Modo daemon persistente del motor (`--serve`) | P1 | **EJECUTADA (BLOQUE 1.2)** (2026-09-24/25, commits `4411b41` / `bb0ac53`) | L |
-| AT-05 | [AT-05-prosodia-estado.md](AT-05-prosodia-estado.md) | Prosodia consciente de estado | P4 | **Implementada v1** (off por defecto) | M |
+| AT-05 | [AT-05-prosodia-estado.md](AT-05-prosodia-estado.md) | Prosodia consciente de estado | P4 | **Postergada** | M |
 | AT-06 | [AT-06-ducking-audio.md](AT-06-ducking-audio.md) | Ducking y prioridad de audio | P3 | **PARCIAL**: M1 local (detección `pactl`, gain, política opt-in, status `comm_active`) fusionada en `main`; M2 winhost (transporte `activity`+`gain_db`) hecho, clasificación WASAPI nativa pendiente (M-01) | M |
 | AT-07 | [AT-07-digest-audio.md](AT-07-digest-audio.md) | Compilado de audio / digest (`--digest`) | P3 | **IMPLEMENTADO** (`feat/at-07-digest-audio`): ventana, merge consciente de contenedor, capítulos ID3v2 CHAP, integración podcast; validación móvil real pendiente | S-M |
 | AT-08 | [archivadas/AT-08-cola-prioridades.md](archivadas/AT-08-cola-prioridades.md) | Cola con prioridades y reproducción encadenada | P1 | **EJECUTADA (BLOQUE 1.3)** (2026-09-25, commits `c613689` / `bb0ac53`) | M-L |
