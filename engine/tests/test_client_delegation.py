@@ -526,6 +526,11 @@ def test_signal_handler_raises_interrupt_while_delegating():
         cli._delegated_playback.clear()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="os.kill(pid, SIGINT) is TerminateProcess on Windows and would kill the test runner; "
+    "the handler logic is covered by the two direct signal_handler tests above",
+)
 def test_sigint_during_delegated_playback_forwards_stop_and_exits_130(channel, monkeypatch):
     """SOS-2: a real SIGINT mid-delegation forwards stop to the daemon before exiting."""
     import signal as signal_mod
