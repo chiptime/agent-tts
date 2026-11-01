@@ -386,7 +386,8 @@ class TestRealLoaderOfflineContract:
         t.warmup()
         assert t.state == STATE_READY
         used = recorded["model_args"][0][0]
-        assert used != source_path and used.startswith(snap_root)
+        # realpath: macOS's /tmp is a symlink to /private/tmp and the loader resolves it.
+        assert used != source_path and os.path.realpath(used).startswith(os.path.realpath(snap_root))
         assert Path(used, "tokenizer.json").is_file()  # offline branch
         assert recorded["snapshot_calls"][0]["repo_id"] == "Systran/faster-whisper-small"
         assert recorded["snapshot_calls"][0]["local_files_only"] is True

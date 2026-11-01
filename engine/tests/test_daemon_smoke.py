@@ -10,8 +10,11 @@ Also records the resting RSS evidence for RNF-AT-04-2 (no local model
 loaded): the daemon process must stay under 80 MB at rest.
 """
 
+import os
 import sys
 from pathlib import Path
+
+import pytest
 
 _SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
@@ -22,6 +25,10 @@ from daemon_smoke import run_smoke  # noqa: E402
 RESTING_RSS_LIMIT_MB = 80.0
 
 
+@pytest.mark.skipif(
+    not os.path.exists("/proc/self/status"),
+    reason="the smoke reads VmRSS from /proc (Linux only)",
+)
 def test_short_smoke_real_daemon_rest_is_stable():
     report = run_smoke(duration_sec=3.0, interval_sec=0.5)
     assert report["failures"] == [], report["failures"]
