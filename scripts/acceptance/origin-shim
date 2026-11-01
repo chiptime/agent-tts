@@ -66,19 +66,32 @@ origin_allowed() {
 # host_of <url> — print the lowercase host of a URL-ish string, rc 1 if none.
 # Handles scheme://user@host:port/path, scheme-relative //host/path, and
 # scp-style git@host:path.
+# lower <s> — ASCII lowercase in pure bash: macOS ships bash 3.2 (no
+# ${v,,}) and the sandbox PATH carries no tr.
+lower() {
+  local s=$1 out="" c t i
+  local up=ABCDEFGHIJKLMNOPQRSTUVWXYZ lo=abcdefghijklmnopqrstuvwxyz
+  for (( i = 0; i < ${#s}; i++ )); do
+    c=${s:i:1}
+    case $up in *"$c"*) t=${up%%"$c"*}; c=${lo:${#t}:1} ;; esac
+    out+=$c
+  done
+  printf '%s' "$out"
+}
+
 host_of() {
   local u=$1 h
   u=${u%%\?*}; u=${u%%#*}
   case $u in
     *://*) h=${u#*://}; h=${h%%/*} ;;
     //*)   h=${u#//};   h=${h%%/*} ;;
-    git@*) h=${u#git@}; h=${h%%:*}; printf '%s' "${h,,}"; return 0 ;;
+    git@*) h=${u#git@}; h=${h%%:*}; lower "$h"; return 0 ;;
     *)     return 1 ;;
   esac
   h=${h%%:*}                           # strip port
   h=${h##*@}                           # strip userinfo
   [[ -n $h ]] || return 1
-  printf '%s' "${h,,}"
+  lower "$h"
 }
 
 refuse() { # refuse <host-or-reason> <detail>

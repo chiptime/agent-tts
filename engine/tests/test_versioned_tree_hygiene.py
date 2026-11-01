@@ -407,6 +407,16 @@ def test_shim_blocks_non_allowlisted_curl_host(tmp_path: Path) -> None:
     assert "BLOCKED-ORIGIN: evil.example.com" in res.stderr
 
 
+def test_shim_lowercases_mixed_case_hosts(tmp_path: Path) -> None:
+    # Host normalization is pure bash (macOS bash 3.2 has no ${v,,}).
+    env, link = shim_env(tmp_path, "curl", ORIGINS_FIXTURE)
+    blocked = run_tool(env, link, "-fsSL", "https://Evil.Example.COM/install.sh")
+    assert blocked.returncode == 30
+    assert "BLOCKED-ORIGIN: evil.example.com" in blocked.stderr
+    allowed = run_tool(env, link, "-fsSL", "https://GitHub.com/x/y")
+    assert allowed.returncode == 31 and "real curl not found" in allowed.stderr
+
+
 def test_shim_exact_and_glob_matching(tmp_path: Path) -> None:
     env, link = shim_env(tmp_path, "curl", ORIGINS_FIXTURE)
     # Allowlisted host passes the gate (fails later only because no real
