@@ -23,7 +23,7 @@
 
 - **edge p95 — ACEPTADO (decisión del maintainer 2026-09-25)**: 584,1 ms p95 medido con daemon caliente y edge real (`metrics/edge/edge-p95-local-20260925T072309Z.json`). El presupuesto de 250 ms (RNF-AT-04-1) se interpreta como objetivo de **despacho local** (cumplido: ≤0,086 ms); con providers de red el dominante es el RTT de síntesis, no deuda del motor. Si el radio mode de herdr exigiera latencia menor, la vía sería streaming por primer-chunk como ítem propio (no abierto).
 - **RAM kokoro caliente** (DoD 1.2): pendiente de instalar kokoro en el entorno y medir.
-- **Smoke 8h** (RNF-AT-04-4): la corrida del 2026-09-25 no dejó resultado (log de 0 bytes). **Relanzado 2026-10-31 09:45 CEST** de forma desacoplada (`setsid nohup`, fin ~17:45 CEST) con salida en `engine/metrics/smoke/smoke-8h-20261031T0845Z.log`; prueba corta previa de 5 s OK (RSS 44,3 MB, crecimiento 0 %). Registrar aquí el JSON final.
+- **Smoke 8h** (RNF-AT-04-4): ✅ **CUMPLIDO** (corrida 2026-10-31 09:45 → ~18:25 CEST, `engine/metrics/smoke/smoke-8h-20261031T0845Z.log`, local): `result: ok`, 0 fallos, todos los pings OK, RSS estable 45.540 kB del primer al último muestreo (crecimiento 0,0 % frente al límite del 5 %, reposo 44,5 MB < 80 MB de RNF-AT-04-2). La corrida del 2026-09-25 no dejó resultado (log vacío).
 
 ## 4. Roadmap aplazado del paquete P1 (por el paraguas, no por defectos)
 
