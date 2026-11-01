@@ -481,23 +481,16 @@ async def _speak_pipelined(
         audibility = fallback.AudibilityProbe()
 
     # AT-05: per-group rate/pitch/pause. ``off`` yields no plan and keeps
-    # the exact global grouping and rate/pitch path. An active mode splits
-    # the text where the prosody class changes, so even a short mixed
-    # announcement gets its contrast; it needs one synthesize call per
-    # group, so it is dropped for an explicit ``--stream frames`` and for
-    # --auto-lang (whose groups are re-split per language).
-    if prosody_mode not in prosody.MODES:
-        raise ValueError(f"unknown prosody mode {prosody_mode!r}")
-    prosody_plan = None
-    if prosody_mode != "off":
-        if stream == "frames" or auto_lang:
-            print(
-                "Stream: prosody needs per-group synthesis; ignored with --stream frames or --auto-lang",
-                file=sys.stderr,
-            )
-        else:
-            groups = prosody.split_by_class(text)
-            prosody_plan = prosody.plan_groups(groups, prosody_mode, rate, pitch)
+    # the exact global rate/pitch path. A plan needs one synthesize call
+    # per group, so it is dropped for an explicit ``--stream frames`` and
+    # for --auto-lang (whose groups are re-split per language).
+    prosody_plan = prosody.plan_groups(groups, prosody_mode, rate, pitch)
+    if prosody_plan is not None and (stream == "frames" or auto_lang):
+        print(
+            "Stream: prosody needs per-group synthesis; ignored with --stream frames or --auto-lang",
+            file=sys.stderr,
+        )
+        prosody_plan = None
 
     def note_partial_stop(where: str) -> None:
         """Records and prints the job's honest partial/uncertain stop (VS4.3)."""
