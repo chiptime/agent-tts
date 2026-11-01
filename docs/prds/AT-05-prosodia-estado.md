@@ -1,7 +1,7 @@
 **ID**: PRD-AT-05 · **Proyecto**: agent-tts
 **Prioridad final (revisión 2026-09-22)**: P4 · **Estado**: Implementada v1 (2026-11-01)
 
-> **v1 (2026-11-01)**: `engine/src/agent_tts/prosody.py` + orquestación por grupos en `cli.py`. Decisiones: **`off` por defecto** (no `subtle`) hasta medir falsos positivos con textos reales; clasificación por grupo de frases, no por segmento; solo modo por grupos (frames y `--auto-lang` la ignoran); sin SSML; las pausas no entran en el audio persistido. Tests: `engine/tests/test_prosody.py`.
+> **v1 (2026-11-01)**: `engine/src/agent_tts/prosody.py` + orquestación por grupos en `cli.py`. Decisiones: **`off` por defecto** (no `subtle`) hasta medir falsos positivos con textos reales; clasificación por frase, con el texto partido donde cambia la clase (frases seguidas de la misma clase comparten una llamada de síntesis), para que también los anuncios cortos tengan contraste; solo modo por grupos (frames y `--auto-lang` la ignoran); sin SSML; las pausas no entran en el audio persistido. Tests: `engine/tests/test_prosody.py`.
 **Dependencias**: Ninguna
 
 > **Nota de revisión (22/09/2026)**: Postergada en revisión: requiere dedicación continua (tablas, corpus, tests A/B); el núcleo no la necesita.

@@ -163,7 +163,7 @@ git log -20 | agent-tts --stream on --highlight
 
 ### Content-Aware Prosody (`--prosody`)
 
-Off by default. With `--prosody subtle` (or `on`, stronger) each sentence group is classified from its format, never from loose words: errors (`Traceback`, `ERROR`, `FAILED`, `ValueError:`) are read slower and lower after a 300 ms pause, warnings (`WARNING`, `DEPRECATED`, `BLOCKED`) slightly slower, omitted code blocks slower with a 150 ms pause around them, and questions (`?`, `¿`) with a higher pitch. The spoken text never changes, and the karaoke timeline includes the pauses.
+Off by default. With `--prosody subtle` (or `on`, stronger) each sentence is classified from its format, never from loose words, and the text is split wherever the class changes, so even a short announcement mixing prose, an error and a question gets its contrast (consecutive sentences of one class stay in one synthesis call): errors (`Traceback`, `ERROR`, `FAILED`, `ValueError:`) are read slower and lower after a 300 ms pause, warnings (`WARNING`, `DEPRECATED`, `BLOCKED`) slightly slower, omitted code blocks slower with a 150 ms pause around them, and questions (`?`, `¿`) with a higher pitch. The spoken text never changes, and the karaoke timeline includes the pauses.
 
 Prosody needs one synthesis call per group, so it pipelines `--stream auto` texts of any length in sentence-group mode (no frame streaming for that run); it is ignored with `--stream frames` and `--auto-lang`. Pitch changes only apply where the provider honors pitch (`edge`); other providers keep the rate and the pauses. Pauses are not included in the merged audio file written by `--output`.
 

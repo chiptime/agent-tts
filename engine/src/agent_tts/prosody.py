@@ -27,6 +27,8 @@ import sys
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+from agent_tts.text import split_sentence_groups
+
 MODES = ("off", "subtle", "on")
 CLASSES = ("error", "warning", "code", "question", "normal")
 FIELDS = ("rate", "pitch", "pause_ms")
@@ -80,6 +82,40 @@ def classify(group: str) -> str:
     if stripped.endswith("?") or "¿" in stripped:
         return "question"
     return "normal"
+
+
+def split_by_class(text: str, max_chars: int = 250) -> List[str]:
+    """Sentence groups that never mix prosody classes.
+
+    Sentences are split like ``split_sentence_groups`` (lines, then
+    ``.``/``!``/``?``); consecutive sentences of the same class are joined
+    while they fit ``max_chars``, so a short announcement mixing prose, an
+    error and a question becomes three groups, and a run of one class
+    still costs one synthesis call. Sentences longer than the budget go
+    through ``split_sentence_groups`` (comma split). Words are never
+    altered.
+    """
+    sentences: List[str] = []
+    for line in (text or "").strip().splitlines():
+        line = line.strip()
+        if line:
+            sentences.extend(s.strip() for s in re.split(r"(?<=[.!?])\s+", line) if s.strip())
+    groups: List[str] = []
+    current, current_kind = "", None
+    for sentence in sentences:
+        kind = classify(sentence)
+        if current and kind == current_kind and len(current) + 1 + len(sentence) <= max_chars:
+            current = f"{current} {sentence}"
+            continue
+        if current:
+            groups.append(current)
+        current, current_kind = sentence, kind
+    if current:
+        groups.append(current)
+    result: List[str] = []
+    for group in groups:
+        result.extend(split_sentence_groups(group, max_chars) if len(group) > max_chars else [group])
+    return result
 
 
 def parse_signed(value: str) -> float:

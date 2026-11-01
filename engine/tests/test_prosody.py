@@ -66,6 +66,43 @@ def test_shift_pitch(base, delta, expected):
     assert prosody.shift_pitch(base, delta) == expected
 
 
+# ── splitting by class ─────────────────────────────────────────────────────
+
+
+def test_split_by_class_separates_a_short_mixed_text():
+    text = "All 42 tests passed. ERROR: could not connect. Do you want me to retry?"
+    assert prosody.split_by_class(text) == [
+        "All 42 tests passed.",
+        "ERROR: could not connect.",
+        "Do you want me to retry?",
+    ]
+
+
+def test_split_by_class_keeps_same_class_sentences_together():
+    text = "Build done. Lint clean. ERROR: db down. FAILED: 3 tests. Done for today."
+    assert prosody.split_by_class(text) == [
+        "Build done. Lint clean.",
+        "ERROR: db down. FAILED: 3 tests.",
+        "Done for today.",
+    ]
+
+
+def test_split_by_class_respects_the_group_budget():
+    sentence = "This sentence is plain prose of moderate length."
+    groups = prosody.split_by_class(" ".join([sentence] * 12), max_chars=120)
+    assert len(groups) > 1
+    assert all(len(g) <= 120 for g in groups)
+
+
+def test_split_by_class_never_changes_the_spoken_words():
+    text = "Ok.\nERROR: boom!\n\n¿Sigo? Fine."
+    assert " ".join(prosody.split_by_class(text)).split() == text.split()
+
+
+def test_split_by_class_of_empty_text():
+    assert prosody.split_by_class("   ") == []
+
+
 # ── plans ──────────────────────────────────────────────────────────────────
 
 
@@ -157,7 +194,7 @@ class TestPipelinedProsody(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def _run(self, mode, max_chars=40):
+    def _run(self, mode):
         calls = []
 
         async def fake_synthesize(**kwargs):
@@ -165,12 +202,9 @@ class TestPipelinedProsody(unittest.TestCase):
             return SynthesisResult(b"fake-mp3-bytes", BoundaryMap())
 
         session = FakeRemoteSession()
-        from agent_tts.text import split_sentence_groups as real_split
 
         with mock.patch("agent_tts.cli.synthesize", fake_synthesize), mock.patch(
             "agent_tts.cli.miniaudio.decode", lambda data: make_decoded(2400)
-        ), mock.patch(
-            "agent_tts.cli.split_sentence_groups", lambda text: real_split(text, max_chars=max_chars)
         ):
             asyncio.run(
                 _speak_pipelined(
@@ -196,9 +230,9 @@ class TestPipelinedProsody(unittest.TestCase):
 
     def test_off_sends_the_global_rate_and_pitch_to_every_group(self):
         calls, session = self._run("off")
-        assert len(calls) == 3
-        assert {(rate, pitch) for _, rate, pitch in calls} == {("+10%", "+0Hz")}
-        assert len(session.appended) == 2  # no silence segments
+        # Unchanged grouping: the short text stays one group, global values.
+        assert calls == [(TEXT, "+10%", "+0Hz")]
+        assert session.appended == []  # no silence segments
 
     def test_subtle_sends_per_group_values_and_inserts_pauses(self):
         calls, session = self._run("subtle")
