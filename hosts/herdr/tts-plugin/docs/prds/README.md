@@ -16,7 +16,7 @@ El orden vigente es [ROADMAP.md](../../../../../docs/voice-stack/ROADMAP.md). El
 | HT-06 | [HT-06-auto-snooze-reunion.md](HT-06-auto-snooze-reunion.md) | Auto-snooze contextual (modo reunión) | P4 | Postergada | M |
 | HT-07 | [HT-07-filtro-semantico.md](HT-07-filtro-semantico.md) | Filtro semántico de importancia | P4 | Postergada | M |
 | HT-08 | [HT-08-briefing-matinal.md](HT-08-briefing-matinal.md) | Briefing matinal automático | P4 | Postergada | M |
-| HT-10 | [HT-10-chain-replay.md](HT-10-chain-replay.md) | Chain replay contextual del host (no la cadena AT-08 del motor) | P5 | Aprobada (baja), sin ejecutar | S-M |
+| HT-10 | [HT-10-chain-replay.md](HT-10-chain-replay.md) | Chain replay contextual del host (no la cadena AT-08 del motor) | P5 | Descartada (2026-11-01, cubierta por el brain) | S-M |
 
 **Entregas adicionales:** podcast RSS implementado (`7cb01c7`); brain on-demand-context implementado (`f7c5e94`, `ab3ace8`); approval-gate implementada con tests (`a579cd8`), Chrome Android pendiente. VS0–VS4/VSX cerrados `automated_complete` (validación física pendiente). AT-01/03/04/08/09/10 ejecutadas; AT-02 e HT-01 implementadas (STT + captura en motor y plugin); HT-03 radio core implementado (`97bc94d`); HT-04 botones ntfy implementados (`ee09756`); AT-11 M1–M4 completados y fusionados en main (`c16e398`); AT-05/06/07 en backlog.
 
@@ -63,7 +63,7 @@ Veredictos del maintainer aplicados el 22 de septiembre de 2026 sobre el borrado
 
 - **Aprobadas P1:** HT-02, HT-04, HT-05, HT-11 (identidad vocal completa + loop móvil con recordatorios).
 - **Aprobada P2:** HT-03, sin requisito de LLM para existir (resumen heurístico offline por defecto; LLM solo experimental, RF-HT-03-9).
-- **Aprobada P5 (baja):** HT-10.
+- **Descartada (2026-11-01):** HT-10 — descartada el 2026-11-01: su caso principal (decidir un bloqueo con contexto) lo cubre el brain (pregunta por voz, historial paginado y espejo del pane en el PWA).
 - **Postergadas P4:** HT-01 (doble candado: AT-02 postergada + `pane send-keys` inexistente), HT-06, HT-07, HT-08.
 - **Descartadas:** HT-09 y HT-12.
 

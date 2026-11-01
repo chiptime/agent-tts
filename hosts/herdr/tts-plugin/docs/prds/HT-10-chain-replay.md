@@ -1,5 +1,7 @@
 **ID**: PRD-HT-10 · **Proyecto**: herdr-tts
-**Prioridad final (revisión 2026-09-22)**: P5 · **Estado**: Aprobada
+**Prioridad final (revisión 2026-09-22)**: P5 · **Estado**: Descartada (2026-11-01)
+
+> **Descartada (2026-11-01, decisión del maintainer)**: su caso de uso principal — decidir un bloqueo con el contexto de turnos previos — ya lo cubre el brain: se le pregunta por voz qué dijo el agente, y el PWA tiene historial paginado y espejo del pane. HT-10 solo aportaría el audio literal encadenado desde el plugin sin el brain. No se implementó código.
 **Dependencias**: PRD-AT-08 (`--play-chain`)
 
 # PRD-HT-10 — Chain replay contextual

@@ -14,7 +14,7 @@ La migración a monorepo absorbió tres repositorios independientes, implementan
 
 - **20 features del roadmap original (revisión 22/09/2026):**
   - **12 Ejecutadas / Implementadas en main:** AT-01 (streaming frames MP3), AT-02 (STT core del motor), AT-03 (conectores OpenCode), AT-04 (daemon persistente), AT-07 (digest de audio `--digest`), AT-08 (cola con prioridades), HT-01 (push-to-talk intercom), HT-02 (voces por agente), HT-03 (radio mode core), HT-04 (control móvil vía ntfy buttons), HT-05 (recordatorios escalados de atención), HT-11 (audición de voces en paleta).
-  - **1 Aprobada pendiente / Backlog diferido:** HT-10 (chain replay). AT-06 (ducking) queda **PARCIAL**: M1 local implementada y fusionada; M2 winhost transporte hecho, clasificación WASAPI nativa pendiente.
+  - **Backlog diferido:** HT-10 (chain replay) **descartada** el 2026-11-01. AT-06 (ducking) queda **PARCIAL**: M1 local implementada y fusionada; M2 winhost transporte hecho, clasificación WASAPI nativa pendiente.
   - **3 Postergadas:** HT-06 (auto-snooze), HT-07 (filtro semántico), HT-08 (briefing matinal).
   - **2 Descartadas:** HT-09 (espacialización estéreo), HT-12 (watchers de texto).
 - **10 features nuevas fuera de roadmap (post-revisión / monorepo):**
@@ -62,7 +62,7 @@ La migración a monorepo absorbió tres repositorios independientes, implementan
 | HT-07 | [../../hosts/herdr/tts-plugin/docs/prds/HT-07-filtro-semantico.md](../../hosts/herdr/tts-plugin/docs/prds/HT-07-filtro-semantico.md) | Filtro semántico de importancia | P4 | **Postergada** | M |
 | HT-08 | [../../hosts/herdr/tts-plugin/docs/prds/HT-08-briefing-matinal.md](../../hosts/herdr/tts-plugin/docs/prds/HT-08-briefing-matinal.md) | Briefing matinal automático | P4 | **Postergada** | M |
 | HT-09 | [../../hosts/herdr/tts-plugin/docs/prds/descartadas/HT-09-espacializacion-estreo.md](../../hosts/herdr/tts-plugin/docs/prds/descartadas/HT-09-espacializacion-estreo.md) | Espacialización estéreo por pane | — | **Descartada** | — |
-| HT-10 | [../../hosts/herdr/tts-plugin/docs/prds/HT-10-chain-replay.md](../../hosts/herdr/tts-plugin/docs/prds/HT-10-chain-replay.md) | Chain replay contextual | P5 | **Aprobada (baja)** (pendiente) | S-M |
+| HT-10 | [../../hosts/herdr/tts-plugin/docs/prds/HT-10-chain-replay.md](../../hosts/herdr/tts-plugin/docs/prds/HT-10-chain-replay.md) | Chain replay contextual | P5 | **Descartada** (2026-11-01, cubierta por el brain) | S-M |
 | HT-11 | [../../hosts/herdr/tts-plugin/docs/prds/archivadas/HT-11-audicion-voces.md](../../hosts/herdr/tts-plugin/docs/prds/archivadas/HT-11-audicion-voces.md) | Audición de voces en la paleta | P1 | **EJECUTADA / IMPLEMENTADA** (2026-10-06, Bloque 2 cerrado) | S |
 | HT-12 | [../../hosts/herdr/tts-plugin/docs/prds/descartadas/HT-12-watchers-texto.md](../../hosts/herdr/tts-plugin/docs/prds/descartadas/HT-12-watchers-texto.md) | Watchers personalizados de texto | — | **Descartada** | — |
 

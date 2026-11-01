@@ -42,5 +42,5 @@ Estado de [`docs/technical-debt-prd.md`](technical-debt-prd.md) verificado el 20
 ## 6. Housekeeping
 
 - ~~**Push de `main`**~~: resuelto. Verificado 2026-10-30: `main` = `origin/main` (`2c550cf`), 0 commits por delante.
-- **Comunicar el contrato congelado a herdr-tts** (HT-03/HT-10): el artefacto es `contracts/ipc-v2.md`.
+- **Comunicar el contrato congelado a herdr-tts** (HT-03): el artefacto es `contracts/ipc-v2.md`.
 - ~~**Limpieza de bloque 1.3**~~: resuelto. Verificado 2026-10-30: ya no existen el worktree `<repo>-worktrees/bloque-1.3` ni la rama `feat/at-08-cola-y-cadena`.
