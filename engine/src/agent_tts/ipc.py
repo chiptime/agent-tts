@@ -195,17 +195,32 @@ def server_socket(
     owner is still alive but unbound.
     """
     if _is_windows():
-        if not owns_channel() and (require_ownership or os.path.exists(IPC_PORT_FILE)):
+        port_file = socket_path if socket_path.endswith(".port") else IPC_PORT_FILE
+        if require_ownership and not owns_channel():
             return None
+        if os.path.exists(port_file):
+            if _channel_is_live(port_file):
+                return None
+            if require_ownership and not owns_channel():
+                return None
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
         try:
-            with open(IPC_PORT_FILE, "w") as f:
+            with open(port_file, "w") as f:
                 f.write(str(port))
-        except OSError:
-            pass
+        except OSError as exc:
+            try:
+                sock.close()
+            except OSError:
+                pass
+            print(
+                f"ipc: cannot write control port file {port_file}: {exc}; "
+                "interactive control unavailable",
+                file=sys.stderr,
+            )
+            return None
         return sock
     if require_ownership and not owns_channel():
         # Lost (or never entered) the election: a free path is not ours to
@@ -291,17 +306,25 @@ def connect_to_server(socket_path: str = IPC_SOCKET) -> Optional[socket.socket]:
     Returns a connected socket, or None when no server is reachable.
     """
     if _is_windows():
-        if not os.path.exists(IPC_PORT_FILE):
+        port_file = socket_path if socket_path.endswith(".port") else IPC_PORT_FILE
+        if not os.path.exists(port_file):
             return None
         try:
-            with open(IPC_PORT_FILE) as f:
+            with open(port_file) as f:
                 port = int(f.read().strip())
         except (OSError, ValueError):
             return None
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(CLIENT_TIMEOUT_SEC)
-        sock.connect(("127.0.0.1", port))
-        return sock
+        try:
+            sock.connect(("127.0.0.1", port))
+            return sock
+        except OSError:
+            try:
+                sock.close()
+            except OSError:
+                pass
+            return None
     if not os.path.exists(socket_path):
         return None
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -392,6 +415,7 @@ class IPCServer:
         self.server_sock: Optional[socket.socket] = None
         self.thread: Optional[threading.Thread] = None
         self._running = False
+        self._bound = False
 
     def start(self) -> None:
         """Binds to socket and starts background listener thread.
@@ -409,6 +433,7 @@ class IPCServer:
             )
             if self.server_sock is None:
                 return
+            self._bound = True
             # A generous accept backlog: concurrent event hosts (the
             # AT-08 burst scenario fires tens of enqueues at once) must
             # not see transient connection refusals while the accept
@@ -421,6 +446,7 @@ class IPCServer:
             self.thread.start()
         except Exception:
             self.server_sock = None
+            self._bound = False
 
     def _listen_loop(self) -> None:
         while self._running and self.server_sock:
@@ -481,6 +507,8 @@ class IPCServer:
     def stop(self) -> None:
         """Stops listener and removes the transport markers this process owns."""
         self._running = False
+        was_bound = self._bound
+        self._bound = False
         if self.server_sock:
             try:
                 self.server_sock.close()
@@ -491,17 +519,20 @@ class IPCServer:
             self.thread.join(timeout=0.3)
             self.thread = None
         # Ownership-aware transport cleanup (RF-AT-09-3): only the elected
-        # owner removes the marker; a losing process leaves the winner's
-        # transport in place.
+        # owner that actually bound the endpoint removes the marker; a losing
+        # process leaves the winner's transport in place.
         owned = owns_channel()
-        for path in self._cleanup_paths():
-            if owned and os.path.exists(path):
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
+        if was_bound and owned:
+            for path in self._cleanup_paths():
+                if os.path.exists(path):
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
 
     def _cleanup_paths(self):
         if _is_windows():
+            if self.socket_path.endswith(".port"):
+                return [self.socket_path]
             return [IPC_PORT_FILE]
         return [self.socket_path]

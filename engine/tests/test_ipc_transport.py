@@ -5,6 +5,8 @@ import socket
 import threading
 import time
 
+import pytest
+
 import agent_tts.ipc as ipc
 from agent_tts.audio import AudioSession
 from agent_tts.boundaries import BoundaryMap, Sentence
@@ -38,6 +40,8 @@ def _echo_server(sock, max_connections=4):
 
 
 def test_posix_unix_socket_selection(tmp_path):
+    if not hasattr(socket, "AF_UNIX"):
+        pytest.skip("AF_UNIX not available on this platform")
     path = str(tmp_path / "test.sock")
     srv = ipc.server_socket(path)
     assert srv.family == socket.AF_UNIX
@@ -55,6 +59,8 @@ def test_posix_unix_socket_selection(tmp_path):
 
 
 def test_posix_connect_without_socket_file_returns_none(tmp_path):
+    if not hasattr(socket, "AF_UNIX"):
+        pytest.skip("AF_UNIX not available on this platform")
     missing = str(tmp_path / "missing.sock")
     assert ipc.connect_to_server(socket_path=missing) is None
     assert ipc.send_ipc_command("status", socket_path=missing) is None

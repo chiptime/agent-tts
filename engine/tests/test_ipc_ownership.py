@@ -6,7 +6,6 @@ live player's socket, expose its own channel, or clobber its marker files.
 """
 
 import os
-import signal
 import socket
 import subprocess
 import sys
@@ -16,7 +15,8 @@ import pytest
 
 import agent_tts.ipc as ipc
 import agent_tts.ownership as ownership
-from agent_tts import audio
+from agent_tts import audio, constants
+from tests.ipc_test_support import channel_endpoint
 
 
 @pytest.fixture
@@ -30,10 +30,15 @@ def channel(tmp_path, monkeypatch):
         "lock": str(tmp_path / "playing.lock"),
         "pid": str(tmp_path / "current.pid"),
         "sock": str(tmp_path / "player.sock"),
+        "port": str(tmp_path / "agent-tts-ipc.port"),
     }
     monkeypatch.setattr(audio, "LOCK_FILE", paths["lock"])
     monkeypatch.setattr(audio, "PID_FILE", paths["pid"])
     monkeypatch.setattr(audio, "IPC_SOCKET", paths["sock"])
+    monkeypatch.setattr(constants, "IPC_PORT_FILE", paths["port"])
+    monkeypatch.setattr(ipc, "IPC_PORT_FILE", paths["port"])
+    monkeypatch.setattr(ownership, "IPC_PORT_FILE", paths["port"])
+    monkeypatch.setenv("AGENT_TTS_PORT_FILE", paths["port"])
     yield paths
     audio.cleanup_locks()
 
@@ -44,6 +49,8 @@ def _child_env(channel):
     env["AGENT_TTS_LOCK_FILE"] = channel["lock"]
     env["AGENT_TTS_PID_FILE"] = channel["pid"]
     env["AGENT_TTS_SOCKET"] = channel["sock"]
+    if "port" in channel:
+        env["AGENT_TTS_PORT_FILE"] = channel["port"]
     return env
 
 
@@ -139,10 +146,19 @@ def test_owner_reclaims_orphan_socket_after_connection_refusal(channel):
     The orphan is detected by connection failure, never by a preemptive
     remove, and only the flock-elected owner may reclaim it.
     """
-    stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    stale.bind(channel["sock"])
-    stale.close()  # crash leftover: path exists, nobody serves it
-    assert os.path.exists(channel["sock"])
+    endpoint = channel_endpoint(channel)
+    if sys.platform == "win32":
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(("127.0.0.1", 0))
+        dead_port = s.getsockname()[1]
+        s.close()
+        with open(endpoint, "w") as f:
+            f.write(str(dead_port))
+    else:
+        stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        stale.bind(channel["sock"])
+        stale.close()  # crash leftover: path exists, nobody serves it
+    assert os.path.exists(endpoint)
 
     audio._write_player_locks()
     server = ipc.IPCServer(
@@ -159,9 +175,18 @@ def test_owner_reclaims_orphan_socket_after_connection_refusal(channel):
 
 def test_non_owner_never_reclaims_an_orphan_socket(channel):
     """RF-AT-09-2: without winning the election, an orphan path stays untouched."""
-    stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    stale.bind(channel["sock"])
-    stale.close()
+    endpoint = channel_endpoint(channel)
+    if sys.platform == "win32":
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(("127.0.0.1", 0))
+        dead_port = s.getsockname()[1]
+        s.close()
+        with open(endpoint, "w") as f:
+            f.write(str(dead_port))
+    else:
+        stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        stale.bind(channel["sock"])
+        stale.close()
 
     server = ipc.IPCServer(
         command_handler=lambda cmd: "status=playing owner=B", socket_path=channel["sock"]
@@ -171,7 +196,7 @@ def test_non_owner_never_reclaims_an_orphan_socket(channel):
         assert server.server_sock is None  # no election won: no channel
     finally:
         server.stop()
-    assert os.path.exists(channel["sock"])  # the orphan file was left in place
+    assert os.path.exists(endpoint)  # the orphan file was left in place
 
 
 # --- Ownership-aware cleanup (RF-AT-09-3) -------------------------------------------
@@ -188,7 +213,8 @@ def test_non_owner_server_stop_keeps_transport_marker(channel):
     assert server.server_sock is not None
     server.stop()
     # This process never won the election: the transport file stays.
-    assert os.path.exists(channel["sock"])
+    endpoint = channel_endpoint(channel)
+    assert os.path.exists(endpoint)
 
 
 def test_owner_cleanup_removes_channel_files(channel):
@@ -203,7 +229,8 @@ def test_owner_cleanup_removes_channel_files(channel):
     assert server.server_sock is not None
     server.stop()
     audio.cleanup_locks()
-    assert not os.path.exists(channel["sock"])
+    endpoint = channel_endpoint(channel)
+    assert not os.path.exists(endpoint)
     assert not os.path.exists(channel["lock"])
     assert not os.path.exists(channel["pid"])
     assert not ownership.owns_channel()
@@ -245,17 +272,18 @@ def test_owner_killed_with_sigkill_leaves_channel_reclaimable(channel):
         assert _wait_for_reply("status=playing owner=child", channel["sock"]) == (
             "status=playing owner=child"
         )
-        assert os.path.exists(channel["sock"])
+        endpoint = channel_endpoint(channel)
+        assert os.path.exists(endpoint)
 
-        proc.send_signal(signal.SIGKILL)
+        proc.kill()
         proc.wait(timeout=10)
     finally:
         if proc.poll() is None:
             proc.kill()
             proc.wait()
 
-    # The owner died without cleanup: the socket file remains, orphaned.
-    assert os.path.exists(channel["sock"])
+    # The owner died without cleanup: the endpoint file remains, orphaned.
+    assert os.path.exists(endpoint)
 
     # Next startup wins the election (the kernel already dropped the flock)
     # and reclaims the channel; no test removes the stale socket by hand.
@@ -283,10 +311,12 @@ _OWNER_CHILD = (
     "import time\n"
     "import agent_tts.audio as audio\n"
     "import agent_tts.ipc as ipc\n"
+    "import agent_tts.ownership as ownership\n"
     "sock, marker, transport = sys.argv[1], sys.argv[2], sys.argv[3]\n"
     "if transport == 'tcp':\n"
     "    ipc._is_windows = lambda: True\n"
     "    ipc.IPC_PORT_FILE = marker\n"
+    "    ownership.IPC_PORT_FILE = marker\n"
     "audio._write_player_locks()\n"
     "server = ipc.IPCServer(\n"
     "    command_handler=lambda cmd: 'status=playing owner=A',\n"
@@ -309,6 +339,8 @@ def test_ownership_election_contract_over_both_transports(
     branches (the TCP side reuses the existing _is_windows branch) to prove
     the ownership semantics do not diverge per transport.
     """
+    if transport == "unix" and not hasattr(socket, "AF_UNIX"):
+        pytest.skip("AF_UNIX not available on this platform")
     marker = str(tmp_path / "ipc.port")
     if transport == "tcp":
         monkeypatch.setattr(ipc, "_is_windows", lambda: True)
@@ -343,7 +375,7 @@ def test_ownership_election_contract_over_both_transports(
         finally:
             b.stop()
 
-        proc.send_signal(signal.SIGKILL)
+        proc.kill()
         proc.wait(timeout=10)
     finally:
         if proc.poll() is None:
@@ -382,6 +414,8 @@ def test_unexpected_bind_failure_warns_on_stderr(tmp_path, capsys):
     lost election, Windows non-owner) stay quiet — one warning line only
     here.
     """
+    if not hasattr(socket, "AF_UNIX"):
+        pytest.skip("AF_UNIX not available on this platform")
     # Missing parent directory: bind fails with ENOENT, not EADDRINUSE.
     unbindable = str(tmp_path / "no-such-dir" / "player.sock")
 
@@ -405,6 +439,8 @@ def test_orphan_reclaim_failure_warns_on_stderr(tmp_path, monkeypatch, capsys):
     read-only-directory case forced here) or from the rebind (path
     cleared, then left unusable).
     """
+    if not hasattr(socket, "AF_UNIX"):
+        pytest.skip("AF_UNIX not available on this platform")
     monkeypatch.setattr(audio, "LOCK_FILE", str(tmp_path / "playing.lock"))
     monkeypatch.setattr(audio, "PID_FILE", str(tmp_path / "current.pid"))
     monkeypatch.setattr(audio, "IPC_SOCKET", str(tmp_path / "player.sock"))
@@ -443,6 +479,8 @@ def test_require_ownership_never_takes_a_free_path_posix(channel):
     but the plain free path used to be bound unconditionally: a losing B
     could expose the channel while the elected owner A had not bound yet.
     """
+    if not hasattr(socket, "AF_UNIX"):
+        pytest.skip("AF_UNIX not available on this platform")
     assert ipc.server_socket(socket_path=channel["sock"], require_ownership=True) is None
     assert not os.path.exists(channel["sock"])
 
@@ -552,7 +590,8 @@ def test_loser_wiring_never_binds_the_free_path_before_the_owner(channel, tmp_pa
     try:
         # A won the election and is alive — but the channel path is free.
         assert _wait_for_file(elected), "owner A never won the election"
-        assert not os.path.exists(channel["sock"])
+        endpoint = channel_endpoint(channel)
+        assert not os.path.exists(endpoint)
 
         # B loses the election and must not take the free path.
         loser = subprocess.run(
@@ -564,7 +603,7 @@ def test_loser_wiring_never_binds_the_free_path_before_the_owner(channel, tmp_pa
         )
         assert loser.returncode == 0, loser.stderr
         assert "B_BOUND False" in loser.stdout
-        assert not os.path.exists(channel["sock"])  # B never created the channel
+        assert not os.path.exists(endpoint)  # B never created the channel
 
         # The elected owner binds the still-free path and answers commands.
         open(go, "w").close()
@@ -594,9 +633,10 @@ def test_ipc_server_requires_ownership_by_default(channel):
     """
     server = ipc.IPCServer(command_handler=lambda cmd: "ok", socket_path=channel["sock"])
     server.start()
+    endpoint = channel_endpoint(channel)
     try:
         assert server.server_sock is None  # no election: no channel
-        assert not os.path.exists(channel["sock"])
+        assert not os.path.exists(endpoint)
     finally:
         server.stop()
 
@@ -631,8 +671,9 @@ def test_loser_remote_sessions_never_bind_the_free_path(channel):
     holds the flock); the remote player B loses the election and must not
     expose the channel on the still-free path.
     """
+    endpoint = channel_endpoint(channel)
     audio._write_player_locks()  # this process is A: elected, alive, unbound
-    assert not os.path.exists(channel["sock"])
+    assert not os.path.exists(endpoint)
 
     loser = subprocess.run(
         [sys.executable, "-c", _REMOTE_LOSER_CHILD],
@@ -645,7 +686,7 @@ def test_loser_remote_sessions_never_bind_the_free_path(channel):
         assert loser.returncode == 0, loser.stderr
         assert "PS_BOUND False" in loser.stdout
         assert "WH_BOUND False" in loser.stdout
-        assert not os.path.exists(channel["sock"])  # nobody stole the path
+        assert not os.path.exists(endpoint)  # nobody stole the path
     finally:
         audio.cleanup_locks()
 

@@ -11,6 +11,7 @@ import json
 import os
 import socket
 import subprocess
+import sys
 import threading
 
 import pytest
@@ -28,14 +29,13 @@ from agent_tts.daemon import (
     send_enqueue,
     send_play,
 )
-from agent_tts.ipc import encode_frame
-
+from agent_tts.ipc import encode_frame, server_socket
 
 
 def _accept_close_server(path):
     """Accepts connections and closes them immediately (rude peer)."""
-    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    srv.bind(path)
+    srv = server_socket(path, require_ownership=False)
+    assert srv is not None
     srv.listen(2)
     srv.settimeout(5)
 
@@ -60,8 +60,8 @@ def _accept_close_server(path):
 
 def _reply_server(path, reply):
     """Accepts, reads one frame, answers a fixed reply (or nothing)."""
-    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    srv.bind(path)
+    srv = server_socket(path, require_ownership=False)
+    assert srv is not None
     srv.listen(2)
     srv.settimeout(5)
 
@@ -194,10 +194,11 @@ def test_shutdown_strands_waiters_and_survives_raising_sessions():
 
 def test_pid_alive_matrix():
     assert _pid_alive(os.getpid()) is True
-    gone = subprocess.Popen(["true"])
+    gone = subprocess.Popen([sys.executable, "-c", "import sys; sys.exit(0)"])
     gone.wait()
     assert _pid_alive(gone.pid) is False
-    assert _pid_alive(1) is True  # alive, merely not ours to signal
+    target = 4 if sys.platform == "win32" else 1
+    assert _pid_alive(target) is True  # alive, merely not ours to signal
 
 
 def test_probe_daemon_empty_reply_is_wedged(tmp_path):

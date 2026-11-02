@@ -17,10 +17,11 @@ import pytest
 
 import agent_tts.daemon as daemon_mod
 import agent_tts.ipc as ipc
-from agent_tts import audio
+from agent_tts import audio, constants, ownership
 from agent_tts.audio import AudioSession
 from agent_tts.daemon import Daemon, ProviderCache, _inject_daemon_fields
 from agent_tts.queue_manager import Policy, Priority, QueueManager
+from tests.ipc_test_support import channel_endpoint
 
 
 @pytest.fixture
@@ -30,10 +31,15 @@ def channel(tmp_path, monkeypatch):
         "lock": str(tmp_path / "playing.lock"),
         "pid": str(tmp_path / "current.pid"),
         "sock": str(tmp_path / "player.sock"),
+        "port": str(tmp_path / "agent-tts-ipc.port"),
     }
     monkeypatch.setattr(audio, "LOCK_FILE", paths["lock"])
     monkeypatch.setattr(audio, "PID_FILE", paths["pid"])
     monkeypatch.setattr(audio, "IPC_SOCKET", paths["sock"])
+    monkeypatch.setattr(constants, "IPC_PORT_FILE", paths["port"])
+    monkeypatch.setattr(ipc, "IPC_PORT_FILE", paths["port"])
+    monkeypatch.setattr(ownership, "IPC_PORT_FILE", paths["port"])
+    monkeypatch.setenv("AGENT_TTS_PORT_FILE", paths["port"])
     yield paths
     audio.cleanup_locks()
 
@@ -850,7 +856,8 @@ def test_shutdown_command_stops_daemon_and_frees_channel(channel, monkeypatch):
     import os
 
     d = _start_daemon(channel, monkeypatch)
-    assert os.path.exists(channel["sock"])
+    endpoint = channel_endpoint(channel)
+    assert os.path.exists(endpoint)
     assert os.path.exists(channel["pid"])
     with open(channel["pid"]) as f:
         assert f.read() == str(__import__("os").getpid())  # PID_FILE: informational marker (RF-AT-04-1)
@@ -860,7 +867,7 @@ def test_shutdown_command_stops_daemon_and_frees_channel(channel, monkeypatch):
 
     d._test_thread.join(timeout=5.0)
     # Orderly exit frees the channel: socket and pid markers are gone.
-    assert not os.path.exists(channel["sock"])
+    assert not os.path.exists(endpoint)
     assert not os.path.exists(channel["pid"])
     assert not os.path.exists(channel["lock"])
 
