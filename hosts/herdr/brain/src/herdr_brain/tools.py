@@ -241,6 +241,37 @@ class BrainTools:
         except HerdrError:
             return None
 
+    def _resolve_open_pane(
+        self, pane_id: str
+    ) -> tuple[Optional[AgentInfo], Optional[str]]:
+        """One uniquely-identified CURRENT open pane, or a fail-closed reason.
+
+        Consult reads (S2/S4) name a pane by the exact id the open-session
+        inventory reported. The identity resolves against a FRESH pane
+        listing only, so a pane that closed since the inventory is unknown
+        — and unknown, ambiguous and unavailable all fail closed instead
+        of ever falling back to the selected pane (the same exact-pane
+        discipline as :meth:`pane_info`). The resolved pane is NOT
+        tracked: consulting another pane never redirects later writes or
+        changes the global selection.
+        """
+        try:
+            agents = self._herdr.list_agents()
+        except HerdrError as exc:
+            return None, f"error listing open panes: {exc}"
+        matches = [agent for agent in agents if agent.pane_id == pane_id]
+        if not matches:
+            return None, (
+                f"error: unknown pane {pane_id}: not currently open; call "
+                "list_open_sessions and pass one of those pane ids"
+            )
+        if len(matches) > 1:
+            return None, (
+                f"error: ambiguous pane {pane_id}: matches {len(matches)} "
+                "open panes; refusing to pick one"
+            )
+        return matches[0], None
+
     def status_payload(self) -> dict:
         """Active-pane status dict, degrading to {active: false} on errors."""
         try:
@@ -1084,13 +1115,31 @@ class BrainTools:
             payload["detail"] = "0 open sessions."
         return json.dumps(payload, ensure_ascii=False)
 
-    def read_transcript(self, n_turns: int = 10, target: Optional[AgentInfo] = None) -> str:
+    def read_transcript(
+        self,
+        n_turns: int = 10,
+        target: Optional[AgentInfo] = None,
+        pane_id: Optional[str] = None,
+    ) -> str:
         """Recent user/assistant turns for the target's session.
 
         Preferred path for state/history questions. Falls back to a screen
         read when the transcript connector cannot serve the session.
+
+        ``pane_id`` (S2/S4) consults ANOTHER currently-open pane instead:
+        it resolves uniquely against a fresh pane listing
+        (:meth:`_resolve_open_pane`) and never falls back — unknown,
+        stale, ambiguous or unavailable ids fail closed as error strings
+        rather than silently reading the selected pane. The consult
+        changes no selection and no write target, and rides the same
+        bounded, masked transcript path as the selected-pane read.
         """
-        active = self._resolve(target)
+        if pane_id:
+            active, error = self._resolve_open_pane(pane_id)
+            if active is None:
+                return error
+        else:
+            active = self._resolve(target)
         if active is None:
             return "error: no active agent pane"
         if active.session_value:
@@ -1709,7 +1758,21 @@ class BrainTools:
                     ": " + stopped["detail"] if stopped["detail"] else ""
                 )
             if name == "read_transcript":
-                return handler(int(arguments.get("n_turns", 10)), target)
+                # S2/S4 pane consult: a model-named pane_id retargets the
+                # READ only (resolved fail-closed inside the tool); absent,
+                # empty or whitespace means "the selected pane", exactly
+                # as before. Reject other types rather than silently using
+                # the selected pane or matching a stringified value.
+                pane_id = arguments.get("pane_id")
+                if pane_id is not None and not isinstance(pane_id, str):
+                    raise TypeError("pane_id must be a string")
+                if pane_id is not None:
+                    pane_id = pane_id.strip() or None
+                return handler(
+                    int(arguments.get("n_turns", 10)),
+                    target,
+                    pane_id=pane_id,
+                )
             if name == "read_screen":
                 return handler(int(arguments.get("n_lines", 40)), target)
             if name == "consult_work_status":
@@ -1848,7 +1911,10 @@ TOOLS_SCHEMA = [
                 "Cheap and local: the recent real user/assistant turns of the "
                 "selected session. Use this FIRST for what happened, state, history "
                 "or summaries within that session, not an open-session inventory "
-                "or cross-project past work."
+                "or cross-project past work. To consult a DIFFERENT open pane, "
+                "pass its pane_id exactly as list_open_sessions reported it; "
+                "unknown, closed or ambiguous pane ids fail — relay the error, "
+                "never read another pane instead."
             ),
             "parameters": {
                 "type": "object",
@@ -1856,6 +1922,15 @@ TOOLS_SCHEMA = [
                     "n_turns": {
                         "type": "integer",
                         "description": "How many recent turns to read (default 10).",
+                    },
+                    "pane_id": {
+                        "type": "string",
+                        "description": (
+                            "Optional pane_id from list_open_sessions whose "
+                            "recent turns to read instead of the selected "
+                            "session's. Omit it to keep reading the selected "
+                            "session."
+                        ),
                     },
                 },
                 "required": [],
