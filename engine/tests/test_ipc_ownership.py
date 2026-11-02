@@ -347,6 +347,10 @@ def test_ownership_election_contract_over_both_transports(
     if transport == "tcp":
         monkeypatch.setattr(ipc, "_is_windows", lambda: True)
         monkeypatch.setattr(ipc, "IPC_PORT_FILE", marker)
+        # Windows elects on a sentinel byte of the marker, so the parent
+        # must try the SAME file the child locked or it "wins" a lock that
+        # nobody else ever contested.
+        monkeypatch.setattr(ownership, "IPC_PORT_FILE", marker)
 
     proc = subprocess.Popen(
         [sys.executable, "-c", _OWNER_CHILD, channel["sock"], marker, transport],

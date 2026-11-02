@@ -426,7 +426,7 @@ def test_bash_helpers_use_forward_slashes_for_windows_paths(monkeypatch):
     assert calls[1][0][1] == "C:/test workspace/bin/curl"
 
 
-def assert_gate_passed(res, tool: str) -> None:
+def assert_gate_passed(res, tool: str, host: str) -> None:
     """The allowlisted request reached the tool, i.e. was not refused.
 
     On POSIX the probe PATH holds only the shim, so "real <tool> not found"
@@ -434,6 +434,11 @@ def assert_gate_passed(res, tool: str) -> None:
     so the real tool runs and whatever it returns is not the policy's
     verdict: the portable proof is that the request was never refused.
     """
+    assert f"BLOCKED-ORIGIN: {host}" not in res.stderr, res.stderr
+    if "unverified-redirect-chain" in res.stderr:
+        # The host passed the gate; the sandbox has no network, so the
+        # manual redirect resolution refused the transfer itself.
+        return
     assert "BLOCKED-ORIGIN" not in res.stderr, res.stderr
     if sys.platform != "win32":
         assert res.returncode == 31 and f"real {tool} not found" in res.stderr
@@ -453,7 +458,7 @@ def test_shim_lowercases_mixed_case_hosts(tmp_path: Path) -> None:
     assert blocked.returncode == 30
     assert "BLOCKED-ORIGIN: evil.example.com" in blocked.stderr
     allowed = run_tool(env, link, "-fsSL", "https://GitHub.com/x/y")
-    assert_gate_passed(allowed, "curl")
+    assert_gate_passed(allowed, "curl", "github.com")
 
 
 def test_shim_exact_and_glob_matching(tmp_path: Path) -> None:
@@ -461,10 +466,10 @@ def test_shim_exact_and_glob_matching(tmp_path: Path) -> None:
     # Allowlisted host passes the gate (fails later only because no real
     # curl exists on the probe PATH — that failure is the pass proof).
     ok = run_tool(env, link, "-fsSL", "https://github.com/x/y")
-    assert_gate_passed(ok, "curl")
+    assert_gate_passed(ok, "curl", "github.com")
     # Wildcard entry matches the LFS CDN family...
     glob_hit = run_tool(env, link, "-fsSL", "https://cdn-lfs-7.huggingface.co/m")
-    assert_gate_passed(glob_hit, "curl")  # cdn-lfs*.huggingface.co matches by glob
+    assert_gate_passed(glob_hit, "curl", "cdn-lfs-7.huggingface.co")  # cdn-lfs*.huggingface.co matches by glob
     # ...but NOT hosts that merely contain the suffix as a substring.
     fake = run_tool(env, link, "-fsSL", "https://not-huggingface.co/m")
     assert fake.returncode == 30 and "BLOCKED-ORIGIN: not-huggingface.co" in fake.stderr
@@ -477,7 +482,7 @@ def test_shim_blocks_non_allowlisted_git_clone(tmp_path: Path) -> None:
     assert "BLOCKED-ORIGIN: evil.example.com" in res.stderr
     # Allowlisted clone passes the gate (no real git reachable → rc 31).
     ok = run_tool(env, link, "clone", "https://github.com/chiptime/agent-tts.git", "dst")
-    assert_gate_passed(ok, "git")
+    assert_gate_passed(ok, "git", "github.com")
 
 
 def test_shim_resolves_scp_style_and_ports(tmp_path: Path) -> None:

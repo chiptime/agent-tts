@@ -1456,6 +1456,21 @@ def _windows_pid_image_name(pid: int) -> Optional[str]:
             pass
 
 
+def _posix_pid_cmdline(pid: int) -> Optional[bytes]:
+    """Command line of a PID via ps(1) where /proc is unavailable."""
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "command=", "-p", str(pid)],
+            capture_output=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    return (result.stdout or b"").lower()
+
+
 def _pid_looks_like_agent_tts(pid: int) -> bool:
     """Identity check before killing a wedged owner; unknown identity means no.
 
@@ -1472,7 +1487,11 @@ def _pid_looks_like_agent_tts(pid: int) -> bool:
         with open(f"/proc/{pid}/cmdline", "rb") as f:
             cmdline = f.read().replace(b"\x00", b" ").lower()
     except OSError:
-        return False
+        # No /proc (macOS, BSD): ask ps, which costs one short subprocess
+        # and keeps the identity requirement instead of dropping it.
+        cmdline = _posix_pid_cmdline(pid)
+        if cmdline is None:
+            return False
     return b"agent_tts" in cmdline or b"agent-tts" in cmdline
 
 
