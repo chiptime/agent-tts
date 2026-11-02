@@ -585,6 +585,7 @@ def test_orchestration_failopen_on_invalid_config(tmp_path, capsys):
         load_fallback_config(path)
 
 
+@pytest.mark.skipif(not hasattr(os, "geteuid"), reason="requires POSIX chmod unreadability")
 def test_unreadable_config_typed_error(tmp_path):
     """An unreadable file is a typed error too, never a raw OSError."""
     if os.geteuid() == 0:
@@ -598,6 +599,20 @@ def test_unreadable_config_typed_error(tmp_path):
         assert "could not read file" in excinfo.value.reason
     finally:
         path.chmod(0o644)
+
+
+def test_permission_denied_config_is_typed_on_every_platform(tmp_path, monkeypatch):
+    """The loader's error contract does not depend on POSIX chmod semantics."""
+    path = tmp_path / "secret.json"
+    path.write_text("{}", encoding="utf-8")
+
+    def denied(*args, **kwargs):
+        raise PermissionError("access denied")
+
+    monkeypatch.setattr(fallback, "open", denied, raising=False)
+    with pytest.raises(FallbackConfigError) as excinfo:
+        load_fallback_config(str(path))
+    assert "could not read file" in excinfo.value.reason
 
 
 def test_attempt_log_counts():

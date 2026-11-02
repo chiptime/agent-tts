@@ -316,11 +316,11 @@ FIXTURE_README = (
 
 def bash_doc_block(checkout: Path, scen_dir: Path, func: str, rel: str, block_id: str):
     script = (
-        f"export HERDR_ACCEPTANCE_API=1; source {shlex.quote(str(HARNESS))}; "
-        f"CHECKOUT={shlex.quote(str(checkout))}; SCEN_DIR={shlex.quote(str(scen_dir))}; "
+        f"export HERDR_ACCEPTANCE_API=1; source {shlex.quote(HARNESS.as_posix())}; "
+        f"CHECKOUT={shlex.quote(checkout.as_posix())}; SCEN_DIR={shlex.quote(scen_dir.as_posix())}; "
         f"{func} {shlex.quote(rel)} {shlex.quote(block_id)}"
     )
-    return subprocess.run(["bash", "-c", script], capture_output=True, text=True, cwd=checkout)
+    return subprocess.run([BASH, "-c", script], capture_output=True, text=True, cwd=checkout)
 
 
 def test_doc_block_unknown_id_fails_and_executes_nothing(tmp_path: Path) -> None:
@@ -383,9 +383,9 @@ def shim_env(tmp_path: Path, tool: str, origins: str) -> tuple[dict[str, str], P
     if not link.exists():
         link.symlink_to(SHIM)
     env = {
-        "PATH": str(bin_dir),  # nothing else reachable: hermetic policy probe
-        "HERDR_ALLOWED_ORIGINS": str(tmp_path / "origins.txt"),
-        "HOME": str(tmp_path),
+        "PATH": bin_dir.as_posix(),  # nothing else reachable: hermetic policy probe
+        "HERDR_ALLOWED_ORIGINS": (tmp_path / "origins.txt").as_posix(),
+        "HOME": tmp_path.as_posix(),
     }
     (tmp_path / "origins.txt").write_text(origins, encoding="utf-8")
     return env, link
@@ -397,7 +397,32 @@ ORIGINS_FIXTURE = "github.com\nraw.githubusercontent.com\ncdn-lfs*.huggingface.c
 def run_tool(env: dict[str, str], link: Path, *args: str):
     # Invoke through bash explicitly (absolute path: the restricted child
     # PATH holds nothing but the shim, so 'bash' cannot be resolved there).
-    return subprocess.run([BASH, str(link), *args], capture_output=True, text=True, env=env)
+    return subprocess.run([BASH, link.as_posix(), *args], capture_output=True, text=True, env=env)
+
+
+def test_bash_helpers_use_forward_slashes_for_windows_paths(monkeypatch):
+    from pathlib import PureWindowsPath
+
+    calls = []
+
+    def record_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", record_run)
+    harness = PureWindowsPath("C:/test workspace/scripts/clean-install.sh")
+    checkout = PureWindowsPath("C:/test workspace/checkout")
+    scenario = PureWindowsPath("C:/test workspace/scenario")
+    link = PureWindowsPath("C:/test workspace/bin/curl")
+    monkeypatch.setitem(globals(), "HARNESS", harness)
+    bash_doc_block(checkout, scenario, "doc_block", "README.md", "safe")
+    run_tool({}, link, "https://evil.example.com")
+
+    script = calls[0][0][2]
+    assert "source 'C:/test workspace/scripts/clean-install.sh'" in script
+    assert "CHECKOUT='C:/test workspace/checkout'" in script
+    assert "SCEN_DIR='C:/test workspace/scenario'" in script
+    assert calls[1][0][1] == "C:/test workspace/bin/curl"
 
 
 def test_shim_blocks_non_allowlisted_curl_host(tmp_path: Path) -> None:

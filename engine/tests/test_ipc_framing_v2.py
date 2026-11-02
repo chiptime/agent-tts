@@ -145,9 +145,9 @@ def test_a1_double_prime_slow_chunked_sender_payload_arrives_intact():
         body = payload.encode("utf-8")
         header = FRAME_MAGIC + bytes([FRAME_VERSION]) + struct.pack(">I", len(body))
 
-        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client = ipc.connect_to_server(sock_file)
+        assert client is not None
         client.settimeout(30.0)
-        client.connect(sock_file)
         try:
             client.sendall(header[:4])  # header itself arrives split
             time.sleep(0.1)
@@ -188,9 +188,9 @@ def test_a1_double_prime_sender_pausing_per_chunk_under_header_timeout_only():
         payload = "seek " + "y" * (256 * 1024)
         body = payload.encode("utf-8")
         header = FRAME_MAGIC + bytes([FRAME_VERSION]) + struct.pack(">I", len(body))
-        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client = ipc.connect_to_server(sock_file)
+        assert client is not None
         client.settimeout(30.0)
-        client.connect(sock_file)
         try:
             client.sendall(header)
             for start in range(0, len(body), 16 * 1024):
@@ -218,9 +218,9 @@ def test_a2_double_prime_b1_prime_oversize_header_gets_typed_error_reply():
         sock_file = tmp.name
     server = _echo_server(sock_file, calls)
     try:
-        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client = ipc.connect_to_server(sock_file)
+        assert client is not None
         client.settimeout(10.0)
-        client.connect(sock_file)
         try:
             client.sendall(
                 FRAME_MAGIC + bytes([FRAME_VERSION]) + struct.pack(">I", 0xFFFFFFF0)
@@ -323,8 +323,8 @@ def test_stale_line_protocol_daemon_is_classified_wedged_for_respawn(tmp_path):
     existing kill-and-respawn machinery (RF-AT-04-8) replaces it — no
     new respawn path is needed."""
     sock_path = str(tmp_path / "stale.sock")
-    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    listener.bind(sock_path)
+    listener = ipc.server_socket(sock_path, require_ownership=False)
+    assert listener is not None
     listener.listen(2)
 
     def v1_serve():
@@ -356,8 +356,8 @@ def test_probe_classifies_non_v2_reply_as_foreign(tmp_path):
     """A live owner that answers bytes which are not a v2 frame is
     foreign (an embedded/older non-daemon owner), not our daemon."""
     sock_path = str(tmp_path / "foreign.sock")
-    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    listener.bind(sock_path)
+    listener = ipc.server_socket(sock_path, require_ownership=False)
+    assert listener is not None
     listener.listen(2)
 
     def foreign_serve():
@@ -389,9 +389,9 @@ def test_at_cap_payload_round_trips_exactly():
         sock_file = tmp.name
     server = _echo_server(sock_file)
     try:
-        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client = ipc.connect_to_server(sock_file)
+        assert client is not None
         client.settimeout(60.0)
-        client.connect(sock_file)
         try:
             send_frame(client, "y" * MAX_PAYLOAD)
             reply = read_frame(client)

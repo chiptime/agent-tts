@@ -25,7 +25,10 @@ PID_FILE = os.environ.get("AGENT_TTS_PID_FILE", os.path.join(tempfile.gettempdir
 IPC_SOCKET = os.environ.get("AGENT_TTS_SOCKET", os.path.join(tempfile.gettempdir(), "agent-tts-player.sock"))
 # Windows has no AF_UNIX sockets in the default flow: the IPC server binds an
 # ephemeral TCP port on 127.0.0.1 and persists it to this marker file.
-IPC_PORT_FILE = os.path.join(tempfile.gettempdir(), "agent-tts-ipc.port")
+IPC_PORT_FILE = os.environ.get(
+    "AGENT_TTS_PORT_FILE",
+    os.path.join(tempfile.gettempdir(), "agent-tts-ipc.port"),
+)
 
 # --- Daemon (vía única, AT-04) -------------------------------------------------
 # Client handshake gate (RF-AT-04-5): a ping that gets no answer within this

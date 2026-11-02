@@ -324,6 +324,10 @@ class TestRuntimeAssetSnapshot:
         assert "not available locally" in t.error()
         assert recorded["paths"] == []  # native ctor never ran
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="snapshot root reuse requires POSIX owner UID and mode 0700 validation",
+    )
     def test_snapshot_reused_across_restarts(self, tmp_path, monkeypatch):
         source = self.make_source(tmp_path)
         self.install_fake_native(monkeypatch)
@@ -335,6 +339,10 @@ class TestRuntimeAssetSnapshot:
         targets = {p.parent for p in snap_root.rglob("tokenizer.json")}
         assert len(targets) == 1  # same snapshot dir, no duplication
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="snapshot root safety check requires POSIX file mode 0700 and owner UID",
+    )
     def test_snapshot_root_rejects_unsafe_existing_dir(self, tmp_path):
         from agent_tts.stt.transcriber import ensure_snapshot_root
 
@@ -380,6 +388,10 @@ class TestRealLoaderOfflineContract:
         monkeypatch.setenv("HF_HUB_CACHE", tempfile.mkdtemp())
         return recorded, str(snapshot_path), str(snap_root)
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="offline loader contract test requires POSIX owner UID for snapshot root validation",
+    )
     def test_real_loader_passes_resolved_local_path_not_alias(self, monkeypatch):
         recorded, source_path, snap_root = self._install_fakes(monkeypatch)
         t = Transcriber(SttSettings(model="small"), snapshot_dir=snap_root)
@@ -623,6 +635,10 @@ class TestRuntimeSnapshotSymlinks:
     links (target resolved from the WRONG directory) and the model dir
     verified as 'incomplete'. The snapshot must link/copy the blob inode."""
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="snapshot root directory creation requires POSIX owner UID and mode 0700",
+    )
     def test_relative_symlink_entries_snapshot_the_blob(self, tmp_path) -> None:
         cache = tmp_path / "cache"
         blobs = cache / "blobs"

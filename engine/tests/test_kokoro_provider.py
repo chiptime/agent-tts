@@ -146,16 +146,33 @@ class TestKokoroLazyDependencies(unittest.TestCase):
         self.assertIn("espeak-ng", str(ctx.exception))
 
     def test_espeak_binary_phonemizes_via_subprocess(self):
+        import subprocess
+
+        real_run = subprocess.run
         with tempfile.TemporaryDirectory() as tmp:
-            script = os.path.join(tmp, "fake-espeak-ng")
-            with open(script, "w") as f:
-                f.write("#!/bin/sh\ncat > /dev/null\necho 'holɐ'\n")
-            os.chmod(script, 0o755)
+            script = os.path.join(tmp, "fake-espeak-ng.py")
+            with open(script, "w", encoding="utf-8") as f:
+                f.write(
+                    "import sys\n"
+                    "assert sys.stdin.buffer.read() == b'hola mundo'\n"
+                    "sys.stdout.buffer.write('holɐ'.encode('utf-8'))\n"
+                )
             prov = KokoroTTSProvider()
             with mock.patch.dict(sys.modules, {"phonemizer": None}), mock.patch(
                 "agent_tts.providers.kokoro.shutil.which", return_value=script
-            ):
+            ), mock.patch("agent_tts.providers.kokoro.subprocess.run") as run:
+                # Keep a real UTF-8 subprocess on every OS without relying on
+                # Windows executing a POSIX shell-script shebang.
+                run.side_effect = lambda argv, **kwargs: real_run([sys.executable, script], **kwargs)
                 self.assertEqual(prov._default_phonemize("hola mundo", "ef_dora"), "holɐ")
+                run.assert_called_once_with(
+                    [script, "--ipa", "-q", "--stdin", "-v", "es"],
+                    input=b"hola mundo",
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    timeout=30,
+                    check=True,
+                )
 
     def test_espeak_voice_mapping(self):
         prov = KokoroTTSProvider()

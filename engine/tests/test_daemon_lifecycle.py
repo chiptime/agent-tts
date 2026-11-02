@@ -18,9 +18,10 @@ import pytest
 
 import agent_tts.daemon as daemon_mod
 import agent_tts.ipc as ipc
-from agent_tts import audio
+from agent_tts import audio, constants, ownership
 from agent_tts.audio import AudioSession
 from agent_tts.daemon import Daemon, ProviderCache, autostart_idle_timeout_sec
+from tests.ipc_test_support import channel_endpoint
 
 
 @pytest.fixture
@@ -29,10 +30,15 @@ def channel(tmp_path, monkeypatch):
         "lock": str(tmp_path / "playing.lock"),
         "pid": str(tmp_path / "current.pid"),
         "sock": str(tmp_path / "player.sock"),
+        "port": str(tmp_path / "agent-tts-ipc.port"),
     }
     monkeypatch.setattr(audio, "LOCK_FILE", paths["lock"])
     monkeypatch.setattr(audio, "PID_FILE", paths["pid"])
     monkeypatch.setattr(audio, "IPC_SOCKET", paths["sock"])
+    monkeypatch.setattr(constants, "IPC_PORT_FILE", paths["port"])
+    monkeypatch.setattr(ipc, "IPC_PORT_FILE", paths["port"])
+    monkeypatch.setattr(ownership, "IPC_PORT_FILE", paths["port"])
+    monkeypatch.setenv("AGENT_TTS_PORT_FILE", paths["port"])
     yield paths
     audio.cleanup_locks()
 
@@ -111,16 +117,17 @@ def test_autostart_timeout_invalid_values_keep_default(monkeypatch, capsys):
 def test_idle_daemon_exits_orderly_and_frees_channel(channel, monkeypatch):
     d = _make_daemon(channel, monkeypatch, idle_timeout_sec=0.5)
     thread = _run_in_thread(d)
+    endpoint = channel_endpoint(channel)
     try:
         assert _wait_ping(channel) is not None
-        assert os.path.exists(channel["sock"])
+        assert os.path.exists(endpoint)
         assert os.path.exists(channel["pid"])
     finally:
         pass
     thread.join(timeout=5.0)
     assert not thread.is_alive()
     # Orderly idle exit frees the channel per BLOQUE 1.1 ownership rules.
-    assert not os.path.exists(channel["sock"])
+    assert not os.path.exists(endpoint)
     assert not os.path.exists(channel["pid"])
     assert not os.path.exists(channel["lock"])
 
@@ -160,7 +167,7 @@ def test_requests_reset_the_idle_clock(channel, monkeypatch):
     thread.join(timeout=6.0)
     assert not thread.is_alive()
     assert time.monotonic() - last_ping_at >= 2.0
-    assert not os.path.exists(channel["sock"])
+    assert not os.path.exists(channel_endpoint(channel))
 
 
 def test_active_playback_blocks_idle_exit(channel, monkeypatch):
@@ -194,7 +201,7 @@ def test_active_playback_blocks_idle_exit(channel, monkeypatch):
     assert box == ["status=stopped"]
     thread.join(timeout=5.0)
     assert not thread.is_alive()
-    assert not os.path.exists(channel["sock"])
+    assert not os.path.exists(channel_endpoint(channel))
 
 
 def test_explicit_daemon_without_timeout_survives_idle_window(channel, monkeypatch):
@@ -208,7 +215,7 @@ def test_explicit_daemon_without_timeout_survives_idle_window(channel, monkeypat
     assert ipc.send_ipc_command("ping", socket_path=channel["sock"]).startswith("pong")
     d.request_shutdown()
     thread.join(timeout=5.0)
-    assert not os.path.exists(channel["sock"])
+    assert not os.path.exists(channel_endpoint(channel))
 
 
 # --- CLI flag wiring ------------------------------------------------------------------

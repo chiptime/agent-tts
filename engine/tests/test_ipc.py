@@ -1,5 +1,4 @@
 import json
-import socket
 import tempfile
 import time
 import unittest
@@ -53,11 +52,11 @@ class TestCommandFraming(unittest.TestCase):
         return server
 
     def _roundtrip(self, sock_file, payload: bytes) -> str:
-        from agent_tts.ipc import read_frame
+        from agent_tts.ipc import connect_to_server, read_frame
 
-        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client = connect_to_server(sock_file)
+        assert client is not None
         client.settimeout(30.0)
-        client.connect(sock_file)
         try:
             client.sendall(payload)
             return read_frame(client)
@@ -65,7 +64,7 @@ class TestCommandFraming(unittest.TestCase):
             client.close()
 
     def test_command_split_across_packets_is_read_to_the_exact_length(self):
-        from agent_tts.ipc import FRAME_MAGIC, FRAME_VERSION, encode_frame
+        from agent_tts.ipc import FRAME_MAGIC, FRAME_VERSION, connect_to_server, encode_frame
 
         with tempfile.NamedTemporaryFile(suffix=".sock", delete=True) as tmp:
             sock_file = tmp.name
@@ -74,9 +73,9 @@ class TestCommandFraming(unittest.TestCase):
             payload = "seek " + "x" * 3000  # spans several packet-sized pieces
             frame = encode_frame(payload)
             head, tail = frame[:1500], frame[1500:]
-            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            client = connect_to_server(sock_file)
+            assert client is not None
             client.settimeout(30.0)
-            client.connect(sock_file)
             try:
                 # First piece carries an incomplete header/body: the server
                 # must keep reading until the announced length, not trust a
@@ -128,15 +127,21 @@ class TestCommandFraming(unittest.TestCase):
         rejected up front with an explicit ERR reply, never buffered."""
         import struct
 
-        from agent_tts.ipc import FRAME_MAGIC, FRAME_VERSION, MAX_PAYLOAD, read_frame
+        from agent_tts.ipc import (
+            FRAME_MAGIC,
+            FRAME_VERSION,
+            MAX_PAYLOAD,
+            connect_to_server,
+            read_frame,
+        )
 
         with tempfile.NamedTemporaryFile(suffix=".sock", delete=True) as tmp:
             sock_file = tmp.name
         server = self._serve_echo(sock_file)
         try:
-            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            client = connect_to_server(sock_file)
+            assert client is not None
             client.settimeout(10.0)
-            client.connect(sock_file)
             try:
                 client.sendall(
                     FRAME_MAGIC

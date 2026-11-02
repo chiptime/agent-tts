@@ -58,6 +58,18 @@ class TestHelpSmoke:
 
 
 class TestStatus:
+    def test_native_windows_status_is_typed_unsupported(self, tmp_path, capsys, monkeypatch):
+        monkeypatch.setattr(sttw, "_is_windows", lambda: True)
+        code = run_cli(["status", "--socket", str(tmp_path / "stt.sock")])
+        assert code == 7  # transport_unsupported
+        payload = last_json(capsys.readouterr().out)
+        assert payload["error"]["kind"] == "transport_unsupported"
+        assert "WSL" in payload["error"]["message"]
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="status against missing socket requires POSIX Unix socket worker (native Windows raises TransportUnsupportedError)",
+    )
     def test_unavailable_socket_is_actionable_nonzero(self, tmp_path, capsys):
         code = run_cli(["status", "--socket", str(tmp_path / "missing.sock")])
         out = capsys.readouterr()
@@ -67,6 +79,10 @@ class TestStatus:
         assert payload["error"]["kind"] == "worker_unavailable"
         assert "agent-tts-stt serve" in out.err
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="resident STT worker requires POSIX Unix socket (WSL2 on Windows)",
+    )
     def test_status_against_live_worker(self, tmp_path, capsys):
         sock = tmp_path / "stt.sock"
         w = start_worker(sock)
@@ -80,6 +96,20 @@ class TestStatus:
 
 
 class TestTranscribe:
+    def test_native_windows_transcribe_is_typed_unsupported(self, tmp_path, capsys, monkeypatch):
+        audio = tmp_path / "clip.webm"
+        audio.write_bytes(b"x")
+        monkeypatch.setattr(sttw, "_is_windows", lambda: True)
+        code = run_cli(["transcribe", "--file", str(audio), "--socket", str(tmp_path / "stt.sock")])
+        assert code == 7  # transport_unsupported
+        payload = last_json(capsys.readouterr().out)
+        assert payload["error"]["kind"] == "transport_unsupported"
+        assert "WSL" in payload["error"]["message"]
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="resident STT worker requires POSIX Unix socket (WSL2 on Windows)",
+    )
     def test_missing_extra_maps_to_exit_6_via_worker(self, tmp_path, capsys, monkeypatch):
         import sys as _sys
 
@@ -101,6 +131,10 @@ class TestTranscribe:
         finally:
             w.stop()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="resident STT worker requires POSIX Unix socket (WSL2 on Windows)",
+    )
     def test_happy_path_prints_json_text(self, tmp_path, capsys):
         sock = tmp_path / "stt.sock"
         w = start_worker(sock)
@@ -113,6 +147,10 @@ class TestTranscribe:
         finally:
             w.stop()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="resident STT worker requires POSIX Unix socket (WSL2 on Windows)",
+    )
     def test_model_unavailable_exit_code(self, tmp_path, capsys):
         sock = tmp_path / "stt.sock"
         w = start_worker(sock, fake_transcriber(cached=False))
@@ -127,6 +165,10 @@ class TestTranscribe:
         finally:
             w.stop()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="resident STT worker requires POSIX Unix socket (WSL2 on Windows)",
+    )
     def test_busy_exit_code(self, tmp_path, capsys):
         sock = tmp_path / "stt.sock"
         w = start_worker(sock)
@@ -197,6 +239,10 @@ class TestServe:
         assert payload["error"]["kind"] == "transport_unsupported"
         assert "WSL" in payload["error"]["message"]
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="resident STT worker lifecycle requires POSIX Unix socket (WSL2 on Windows)",
+    )
     def test_serve_then_shutdown_op_lifecycle(self, tmp_path):
         import threading
         import time
@@ -230,6 +276,10 @@ class TestServe:
         assert not sock.exists()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="resident STT worker subprocess lifecycle requires POSIX Unix socket (WSL2 on Windows)",
+)
 class TestServeSubprocessLifecycle:
     """Authorized fake-model worker subprocess (no real model/network).
 
@@ -616,6 +666,14 @@ class TestShutdownSubcommand:
     final clean/hung report belongs to the serve process (its stderr/exit
     code) — and the CLI polls until the socket disappears (bounded).
     """
+
+    def test_native_windows_shutdown_is_typed_unsupported(self, tmp_path, capsys, monkeypatch):
+        monkeypatch.setattr(sttw, "_is_windows", lambda: True)
+        code = run_cli(["shutdown", "--socket", str(tmp_path / "stt.sock")])
+        assert code == 7  # transport_unsupported
+        payload = last_json(capsys.readouterr().out)
+        assert payload["error"]["kind"] == "transport_unsupported"
+        assert "WSL" in payload["error"]["message"]
 
     def test_shutdown_polls_until_socket_gone_then_zero(self, capsys, tmp_path) -> None:
         sent = []

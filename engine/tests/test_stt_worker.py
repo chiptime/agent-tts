@@ -130,12 +130,20 @@ class TestFraming:
 
 
 class TestRuntimeDir:
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="XDG runtime dir validation requires POSIX owner UID and mode bits",
+    )
     def test_valid_xdg_runtime_dir_is_preferred(self, tmp_path, monkeypatch):
         xdg = tmp_path / "xdg"
         xdg.mkdir(mode=0o700)
         monkeypatch.setenv("XDG_RUNTIME_DIR", str(xdg))
         assert stt_runtime_dir() == str(xdg / "agent-tts-stt")
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="XDG runtime dir validation requires POSIX owner UID and mode bits",
+    )
     def test_group_writable_xdg_is_rejected(self, tmp_path, monkeypatch):
         xdg = tmp_path / "xdg-bad"
         xdg.mkdir()
@@ -149,6 +157,10 @@ class TestRuntimeDir:
         monkeypatch.setenv("AGENT_TTS_STT_RUNTIME_DIR", str(override))
         assert stt_runtime_dir() == str(override)
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="runtime dir creation requires POSIX mode 0700 enforcement",
+    )
     def test_ensure_creates_mode_0700(self, tmp_path):
         target = tmp_path / "runtime"
         ensure_runtime_dir(str(target))
@@ -156,6 +168,10 @@ class TestRuntimeDir:
         assert stat.S_ISDIR(st.st_mode)
         assert st.st_mode & 0o077 == 0
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="runtime dir safety check requires POSIX owner UID and symlink checks",
+    )
     def test_ensure_rejects_symlink_dir(self, tmp_path):
         real = tmp_path / "real"
         real.mkdir()
@@ -164,6 +180,10 @@ class TestRuntimeDir:
         with pytest.raises(UnsafeEndpointError):
             ensure_runtime_dir(str(link))
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="runtime dir safety check requires POSIX file permissions and owner UID",
+    )
     def test_ensure_rejects_group_permissions(self, tmp_path):
         target = tmp_path / "loose"
         target.mkdir()
@@ -171,6 +191,10 @@ class TestRuntimeDir:
         with pytest.raises(UnsafeEndpointError):
             ensure_runtime_dir(str(target))
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="runtime dir safety check requires POSIX owner UID",
+    )
     def test_ensure_rejects_foreign_owner(self, tmp_path, monkeypatch):
         target = tmp_path / "foreign"
         target.mkdir(mode=0o700)
@@ -184,6 +208,10 @@ class TestRuntimeDir:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="client socket target validation requires POSIX AF_UNIX transport",
+)
 class TestClientTargetValidation:
     def test_rejects_symlink_socket(self, tmp_path):
         real = tmp_path / "real.sock"
@@ -216,6 +244,10 @@ class TestClientTargetValidation:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="resident STT worker protocol requires POSIX AF_UNIX socket (WSL2 on Windows)",
+)
 class TestWorkerProtocol:
     def test_socket_is_mode_0600(self, tmp_path):
         sock = tmp_path / "stt.sock"
@@ -406,6 +438,10 @@ class TestWorkerProtocol:
             w.stop()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="resident STT worker audio bounds require POSIX AF_UNIX socket (WSL2 on Windows)",
+)
 class TestAudioBoundary:
     """Real caps end-to-end (no patched constants): a maximum-legal audio
     request must fit the frame envelope (base64 + JSON overhead)."""
@@ -461,6 +497,10 @@ def _bind_stale_socket(path: Path) -> None:
     s.close()  # leaves the file behind on purpose
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="socket ownership and teardown require POSIX AF_UNIX and file permissions (WSL2 on Windows)",
+)
 class TestSocketOwnership:
     def test_stale_socket_is_preserved_with_actionable_error(self, tmp_path):
         sock = tmp_path / "stt.sock"
@@ -587,9 +627,19 @@ class TestLifecycleBounds:
         with pytest.raises(TransportUnsupportedError) as exc:
             w.start()
         assert "WSL" in str(exc.value)
+        assert exc.value.exit_code == 7
+        assert exc.value.kind == "transport_unsupported"
         with pytest.raises(TransportUnsupportedError):
+            w.serve()
+        with pytest.raises(TransportUnsupportedError) as req_exc:
             stt_request({"op": "status"}, socket_path=str(tmp_path / "s.sock"))
+        assert "WSL" in str(req_exc.value)
+        assert req_exc.value.exit_code == 7
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="resident STT worker requires POSIX Unix socket (WSL2 on Windows)",
+    )
     def test_hung_inference_shutdown_is_bounded_and_honest(self, tmp_path):
         release = threading.Event()
         FakeModel.block_event = release
@@ -623,6 +673,10 @@ class TestLifecycleBounds:
         finally:
             FakeModel.block_event = None
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="resident STT worker requires POSIX Unix socket (WSL2 on Windows)",
+    )
     def test_connection_cap_returns_busy(self, tmp_path, monkeypatch):
         monkeypatch.setattr(sttw, "MAX_CONNECTIONS", 2)
         sock = tmp_path / "stt.sock"
@@ -651,6 +705,10 @@ class TestLifecycleBounds:
                 s.close()
             w.stop()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="AF_UNIX socket bind and fcntl lock require POSIX (WSL2 on Windows)",
+    )
     def test_failed_bind_releases_every_owned_resource(self, tmp_path):
         """F5: a startup failure (here: overlong AF_UNIX path) must not
         leave the election flock held by the dead worker object."""
@@ -674,6 +732,10 @@ class TestLifecycleBounds:
         finally:
             handle.close()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="resident STT worker requires POSIX Unix socket (WSL2 on Windows)",
+    )
     def test_connection_registry_prunes_completed_threads(self, tmp_path):
         sock = tmp_path / "stt.sock"
         w = start_worker(sock)
@@ -692,6 +754,10 @@ class TestLifecycleBounds:
         finally:
             w.stop()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="resident STT worker requires POSIX Unix socket (WSL2 on Windows)",
+    )
     def test_missing_extra_worker_reply_is_typed(self, tmp_path, monkeypatch):
         """F3: absent hub library surfaces as missing_extra through the
         worker protocol, not a generic error."""
@@ -710,6 +776,10 @@ class TestLifecycleBounds:
         finally:
             w.stop()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="resident STT worker requires POSIX Unix socket (WSL2 on Windows)",
+    )
     def test_stuck_warmup_shutdown_reports_unfinished_startup(self, tmp_path):
         """F2: a hung loader (before any transcribe) must be counted in the
         shutdown report — not clean=True/hung=0 while startup is stuck."""
@@ -743,6 +813,10 @@ class TestLifecycleBounds:
             if warm is not None:
                 warm.join(timeout=5)
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="resident STT worker requires POSIX Unix socket (WSL2 on Windows)",
+    )
     def test_recovery_status_refreshes_after_failed_then_succeeding_load(self, tmp_path):
         calls = {"n": 0}
 
@@ -777,6 +851,10 @@ class TestLifecycleBounds:
         finally:
             w.stop()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="resident STT worker requires POSIX Unix socket (WSL2 on Windows)",
+    )
     def test_subprocess_cli_against_live_worker(self, tmp_path):
         sock = tmp_path / "stt.sock"
         w = start_worker(sock, fake_transcriber())

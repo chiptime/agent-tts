@@ -31,7 +31,7 @@ from agent_tts.daemon import (
     send_ipc_command,
     send_play,
 )
-from agent_tts.ipc import encode_frame, read_frame
+from agent_tts.ipc import encode_frame, read_frame, server_socket
 from agent_tts.providers.base import TTSProvider
 
 
@@ -44,8 +44,8 @@ class FrameServer:
     def __init__(self, handler, socket_path):
         self.handler = handler
         self.path = socket_path
-        self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.server.bind(socket_path)
+        self.server = server_socket(socket_path, require_ownership=False)
+        assert self.server is not None
         self.server.listen(4)
         self.server.settimeout(5)
         self.thread = threading.Thread(target=self._serve, daemon=True)
@@ -156,8 +156,8 @@ def test_probe_daemon_classifies_the_channel(sock_path, tmp_path):
     assert probe_daemon(timeout_sec=0.2, socket_path=str(tmp_path / "none.sock"))[0] == "unreachable"
     # wedged: accepts, never answers
     silent_path = str(tmp_path / "silent.sock")
-    silent = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    silent.bind(silent_path)
+    silent = server_socket(silent_path, require_ownership=False)
+    assert silent is not None
     silent.listen(2)
     try:
         assert probe_daemon(timeout_sec=0.2, socket_path=silent_path)[0] == "wedged"

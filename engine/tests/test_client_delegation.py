@@ -11,7 +11,6 @@ timeout) so it can never touch the system channel either.
 """
 
 import os
-import socket
 import subprocess
 import sys
 import threading
@@ -22,7 +21,7 @@ import pytest
 
 import agent_tts.daemon as daemon_mod
 import agent_tts.ipc as ipc
-from agent_tts import audio
+from agent_tts import audio, constants
 from agent_tts.audio import AudioSession
 from agent_tts.constants import PING_TIMEOUT_SEC
 from agent_tts.daemon import (
@@ -43,10 +42,14 @@ def channel(tmp_path, monkeypatch):
         "lock": str(tmp_path / "playing.lock"),
         "pid": str(tmp_path / "current.pid"),
         "sock": str(tmp_path / "player.sock"),
+        "port": str(tmp_path / "agent-tts-ipc.port"),
     }
     monkeypatch.setattr(audio, "LOCK_FILE", paths["lock"])
     monkeypatch.setattr(audio, "PID_FILE", paths["pid"])
     monkeypatch.setattr(audio, "IPC_SOCKET", paths["sock"])
+    monkeypatch.setattr(constants, "IPC_PORT_FILE", paths["port"])
+    monkeypatch.setattr(ipc, "IPC_PORT_FILE", paths["port"])
+    monkeypatch.setenv("AGENT_TTS_PORT_FILE", paths["port"])
     yield paths
     audio.cleanup_locks()
 
@@ -165,12 +168,13 @@ def test_probe_foreign_with_non_daemon_owner(channel):
 
 _WEDGED_CHILD = (
     "import sys\n"
-    "import socket\n"
     "import time\n"
     "import agent_tts.audio as audio\n"
+    "from agent_tts.ipc import server_socket\n"
     "audio._write_player_locks()\n"
-    "srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n"
-    "srv.bind(sys.argv[1])\n"
+    "srv = server_socket(sys.argv[1], require_ownership=False)\n"
+    "if srv is None:\n"
+    "    sys.exit(1)\n"
     "srv.listen(5)\n"
     "print('READY', flush=True)\n"
     "while True:\n"
@@ -187,6 +191,8 @@ def _child_env(channel):
     env["AGENT_TTS_LOCK_FILE"] = channel["lock"]
     env["AGENT_TTS_PID_FILE"] = channel["pid"]
     env["AGENT_TTS_SOCKET"] = channel["sock"]
+    if "port" in channel:
+        env["AGENT_TTS_PORT_FILE"] = channel["port"]
     return env
 
 
@@ -203,13 +209,13 @@ def _start_wedged_child(channel):
         if proc.poll() is not None:
             raise AssertionError(f"wedged child died: {proc.stderr.read()}")
         try:
-            probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            probe.settimeout(0.2)
-            probe.connect(channel["sock"])
-            probe.close()
-            return proc
+            probe = ipc.connect_to_server(channel["sock"])
+            if probe is not None:
+                probe.close()
+                return proc
         except OSError:
-            time.sleep(0.05)
+            pass
+        time.sleep(0.05)
     proc.kill()
     raise AssertionError("wedged child never exposed the socket")
 

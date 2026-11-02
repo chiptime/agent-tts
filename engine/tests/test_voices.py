@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 import shutil
 import tempfile
 import unittest
@@ -177,7 +178,18 @@ class TestDownloadFile(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
 
     def _file_url(self, name: str, payload: bytes) -> str:
-        return "file://" + _write_source_file(os.path.join(self.tmp, name), payload)
+        path = _write_source_file(os.path.join(self.tmp, name), payload)
+        return Path(path).as_uri()
+
+    def test_local_file_url_escapes_spaces_and_fragment_characters(self):
+        payload = b"voice bytes with URI-sensitive source name"
+        url = self._file_url("voice sample#1.bin", payload)
+        self.assertIn("voice%20sample%231.bin", url)
+        dest = os.path.join(self.tmp, "dest-special", "model.bin")
+        self.assertEqual(download_file(url, dest, progress=False), len(payload))
+        with open(dest, "rb") as source:
+            self.assertEqual(source.read(), payload)
+        self.assertEqual(os.listdir(os.path.dirname(dest)), ["model.bin"])
 
     def test_local_file_url_download_is_atomic(self):
         dest = os.path.join(self.tmp, "dest", "model.bin")

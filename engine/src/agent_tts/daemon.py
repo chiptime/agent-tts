@@ -1327,7 +1327,67 @@ def probe_daemon(
             pass
 
 
+def _pid_alive_win32(pid: int) -> bool:
+    """Safe Windows process liveness check using non-terminating Win32 queries."""
+    import ctypes
+    from ctypes import wintypes
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    SYNCHRONIZE = 0x00100000
+    WAIT_OBJECT_0 = 0x00000000
+    WAIT_TIMEOUT = 0x00000102
+    ERROR_ACCESS_DENIED = 5
+    STILL_ACTIVE = 259
+
+    try:
+        kernel32 = ctypes.windll.kernel32
+    except AttributeError:
+        return True
+
+    try:
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    except (AttributeError, TypeError):
+        pass
+
+    access = PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE
+    handle = kernel32.OpenProcess(access, False, pid)
+    if not handle:
+        get_last_error = getattr(kernel32, "GetLastError", getattr(ctypes, "GetLastError", getattr(ctypes, "get_last_error", lambda: 0)))
+        err = get_last_error()
+        if err == ERROR_ACCESS_DENIED:
+            return True
+        return False
+
+    try:
+        res = kernel32.WaitForSingleObject(handle, 0)
+        if res == WAIT_TIMEOUT:
+            return True
+        if res == WAIT_OBJECT_0:
+            return False
+        exit_code = wintypes.DWORD()
+        if hasattr(kernel32, "GetExitCodeProcess"):
+            kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+            kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+            if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return exit_code.value == STILL_ACTIVE
+        return False
+    finally:
+        try:
+            kernel32.CloseHandle(handle)
+        except Exception:
+            pass
+
+
 def _pid_alive(pid: int) -> bool:
+    if sys.platform == "win32":
+        if pid <= 0:
+            return False
+        return _pid_alive_win32(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
