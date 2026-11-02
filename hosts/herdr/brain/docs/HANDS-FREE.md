@@ -18,14 +18,28 @@ not claim that every live model response will obey it.
 
 ## Endpointing
 
-Conversational endpointing now uses **800 ms of silence** by default in both
-the browser transcript endpointer and the local-engine RMS VAD. Their existing
-`silenceMs` option supports tuning, including 700–900 ms conversational values.
-Explicit legacy thresholds remain supported.
+The call uses an adaptive silence window in both the browser transcript
+endpointer and the server-engine RMS VAD: it starts at **1.2 seconds** and
+grows with the utterance to at most **2.5 seconds**. Longer turns therefore
+allow longer thinking pauses, at the cost of a longer wait before a reply.
+The standalone helpers retain their previous defaults and explicit options.
 
-The default utterance hard cap remains 15 seconds. The existing `hardCapMs`
-option can increase it, but never beyond the **60-second safety ceiling**.
-Silence before the first speech frame does not consume this budget.
+The server voice engine rotates its recorder every 45 seconds of continuous
+speech, transcribes the segments in order and sends one combined turn after
+the user stops. If a segment cannot be transcribed, the incomplete turn is
+not sent; the call asks the user to repeat it. An uninterrupted turn has a
+10-minute safety limit, which is announced when reached. Independent segment
+transcriptions can still misrecognize a word at a segment boundary; real
+device testing is needed to assess recognition and acoustic performance.
+
+## Open-pane context
+
+The selected pane remains the default for questions and actions. For a
+question about another open Herdr agent pane, the assistant can list the
+open sessions and call `read_transcript` with that pane's ID. Unknown,
+closed or ambiguous IDs are refused rather than redirected to the selected
+pane. A read does not change the selected pane or the target of later
+actions, and other transcripts are not inserted into every prompt.
 
 ## Barge-in (interrupting the assistant by voice)
 
