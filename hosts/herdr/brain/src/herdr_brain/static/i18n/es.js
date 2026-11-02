@@ -248,6 +248,8 @@
     "voice.audio_send_failed": "No pude enviar el audio al servidor — {detail}.",
     "voice.network_error": "error de red",
     "voice.not_understood": "No entendí el audio — inténtalo otra vez.",
+    "voice.turn_cap_cut": "Turno cerrado por el límite de duración; sigue hablando para continuar en un turno nuevo",
+    "voice.turn_gap": "No pude transcribir todo el turno. No se envió nada; vuelve a decirlo.",
 
     /* ---- brain errors ---- */
     "brain.not_configured": "El brain no está configurado: falta GLM_API_KEY en el servidor. Defínela en el entorno del servicio (por ejemplo, un perfil de shell o un archivo de entorno fuera de este repositorio) y reinicia el servicio.",

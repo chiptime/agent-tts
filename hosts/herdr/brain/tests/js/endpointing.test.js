@@ -2,7 +2,8 @@
 
 const test = require("node:test");
 const assert = require("node:assert");
-const { createEndpointer } = require("../../src/herdr_brain/static/endpointing.js");
+const Endpointing = require("../../src/herdr_brain/static/endpointing.js");
+const { createEndpointer } = Endpointing;
 
 function fakeClock(start = 0) {
   let t = start;
@@ -17,11 +18,92 @@ test("conversation defaults to 800ms and preserves configurable 700/900ms endpoi
     const clock = fakeClock();
     const ep = createEndpointer({ now: clock.now, ...(silenceMs === undefined ? {} : { silenceMs }) });
     ep.push("A conversational turn");
-    clock.advance((silenceMs ?? 800) - 1);
+    clock.advance((silenceMs ?? Endpointing.DEFAULT_SILENCE_MS) - 1);
     assert.equal(ep.shouldFinalize(), false);
     clock.advance(1);
     assert.equal(ep.shouldFinalize(), true);
   }
+});
+
+test("explicit silenceMs alone keeps the baseline flat behavior (parent repro)", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now, silenceMs: 800 });
+  ep.push("hola");                    // t=0
+  clock.advance(5000);
+  ep.push("hola que tal");            // change at t=5000 (5s span)
+  clock.advance(799);
+  assert.equal(ep.shouldFinalize(), false);
+  clock.advance(1);                   // t=5800
+  assert.equal(ep.shouldFinalize(), true);
+});
+
+test("default configuration never grows the silence window", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now });
+  ep.push("hola");
+  clock.advance(5000);
+  ep.push("hola que tal");            // 5s of speech span
+  clock.advance(799);
+  assert.equal(ep.shouldFinalize(), false);
+  clock.advance(1);
+  assert.equal(ep.shouldFinalize(), true);  // flat 800ms despite the span
+});
+
+test("opted-in silence budget grows with utterance length so pauses stop splitting turns", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now, silenceMs: 1200, silenceGrowthPerS: 200, maxSilenceMs: 2500 });
+  let text = "oye";
+  ep.push(text);                              // first captured text at t=0
+  for (let t = 1000; t <= 5000; t += 1000) {  // continuous growth to t=5s
+    clock.advance(1000);
+    text += " palabra" + t;
+    ep.push(text);
+  }
+  // 5s of speech -> budget 1200 + 5*200 = 2200ms. A natural 1.6s pause
+  // mid-turn must NOT finalize.
+  clock.advance(1600);
+  assert.equal(ep.shouldFinalize(), false);
+  clock.advance(600);                         // silence reaches 2200ms
+  assert.equal(ep.shouldFinalize(), true);
+  assert.equal(ep.finalize(), text);          // every captured word survives
+});
+
+test("opted-in silence budget is bounded by the 2500ms ceiling", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now, silenceMs: 1200, silenceGrowthPerS: 200, maxSilenceMs: 2500 });
+  let text = "oye";
+  ep.push(text);
+  for (let t = 1000; t <= 10000; t += 1000) { // 10s of speech: growth saturates
+    clock.advance(1000);
+    text += " p" + t;
+    ep.push(text);
+  }
+  clock.advance(2400);
+  assert.equal(ep.shouldFinalize(), false);   // 2400ms < 2500ms ceiling
+  clock.advance(100);
+  assert.equal(ep.shouldFinalize(), true);
+});
+
+test("silenceGrowthPerS 0 keeps a flat silence window (previous behavior)", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now, silenceMs: 1200, silenceGrowthPerS: 0 });
+  ep.push("primera parte");
+  clock.advance(1100);
+  ep.push("primera parte y segunda");
+  clock.advance(1100);
+  assert.equal(ep.shouldFinalize(), false);   // only 1100ms of silence
+  clock.advance(100);
+  assert.equal(ep.shouldFinalize(), true);    // flat 1200ms, no growth
+});
+
+test("maxSilenceMs never sits below the base silence window", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now, silenceMs: 2000, maxSilenceMs: 500 });
+  ep.push("hola que tal");
+  clock.advance(1999);
+  assert.equal(ep.shouldFinalize(), false);
+  clock.advance(1);
+  assert.equal(ep.shouldFinalize(), true);
 });
 
 test("configured endpointing cannot exceed the 60-second safety cap", () => {
@@ -86,6 +168,71 @@ test("hard cap finalizes even with continuous speech", () => {
   ep.push("palabra extra");
   clock.advance(1000);  // 15s since speech began; silence only 1s
   assert.equal(ep.shouldFinalize(), true);
+});
+
+test("15s default hard cap finalizes even with continuous speech", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now });
+  let text = "palabra";
+  ep.push(text);
+  // Text changes every 700ms stay under the flat 800ms default silence,
+  // so only the cap can end this turn.
+  for (let t = 700; t <= 14700; t += 700) {
+    clock.advance(700);
+    text += " " + t;
+    ep.push(text);
+  }
+  assert.equal(ep.shouldFinalize(), false);  // 14.7s of changes: nothing fires
+  clock.advance(700);                        // t=15400
+  assert.equal(ep.shouldFinalize(), true);   // the default cap bounds it
+  assert.equal(ep.lastFinalizeReason(), "cap");
+  assert.equal(ep.finalize(), text);         // captured words preserved
+});
+
+test("utteranceCapMs replaces the legacy cap and reports its own reason", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now, utteranceCapMs: 30000 });
+  let text = "palabra";
+  ep.push(text);
+  for (let t = 1000; t <= 29000; t += 1000) {
+    clock.advance(1000);
+    text += " " + t;
+    ep.push(text);
+  }
+  assert.equal(ep.shouldFinalize(), false);  // the legacy 15s cap is NOT active
+  for (let t = 30000; t <= 30000; t += 1000) {
+    clock.advance(1000);
+    text += " fin";
+    ep.push(text);
+  }
+  assert.equal(ep.shouldFinalize(), true);   // bounded at the configured 30s
+  assert.equal(ep.lastFinalizeReason(), "utteranceCap");
+  assert.equal(ep.finalize(), text);
+});
+
+test("silence finalize reports the silence reason", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now });
+  ep.push("una frase corta");
+  clock.advance(2000);
+  assert.equal(ep.shouldFinalize(), true);
+  assert.equal(ep.lastFinalizeReason(), "silence");
+});
+
+test("snapshot silence remaining reflects the opted-in grown budget", () => {
+  const clock = fakeClock();
+  const ep = createEndpointer({ now: clock.now, silenceMs: 1200, silenceGrowthPerS: 200, maxSilenceMs: 2500 });
+  let text = "oye";
+  ep.push(text);
+  for (let t = 1000; t <= 5000; t += 1000) {
+    clock.advance(1000);
+    text += " p" + t;
+    ep.push(text);
+  }
+  clock.advance(1500);
+  const snap = ep.snapshot();
+  assert.equal(snap.silenceRemainingMs, 2200 - 1500);  // budget grew to 2200ms
+  assert.equal(snap.silenceMs, 1200);                  // raw configured base stays
 });
 
 test("finalize returns the text and resets the utterance", () => {

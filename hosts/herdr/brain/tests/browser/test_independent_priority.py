@@ -2,6 +2,7 @@
 import json
 import pytest
 from tests.browser.test_karaoke_fragments import app, ready, source
+from tests.browser.test_barge_in import barge_capture_context
 
 
 def announce(h, name="one"):
@@ -100,9 +101,9 @@ def test_streaming_gap_reserves_turn(karaoke_app, finish):
     no_actions(h)
 
 
-def test_captured_barge_speech_beats_idle_microtask(audio_capture_context):
+def test_captured_barge_speech_beats_idle_microtask(barge_capture_context):
     from tests.browser.test_barge_in import BargeInApp, detection_frame, ORIGIN
-    h = BargeInApp(audio_capture_context)
+    h = BargeInApp(barge_capture_context)
     held = []
     def transcribe(route):
         if h.asks:
@@ -123,7 +124,7 @@ def test_captured_barge_speech_beats_idle_microtask(audio_capture_context):
         assert any(r["pane_id"] == "w1:p2" for r in p["pending"]["records"])
         assert h.approval_posts == []
     finally:
-        audio_capture_context.close()
+        barge_capture_context.close()
         assert h.blocked == []
         assert h.errors == []
 

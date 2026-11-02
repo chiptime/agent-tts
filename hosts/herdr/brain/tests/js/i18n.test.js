@@ -71,6 +71,17 @@ test("every es value is a non-empty string", () => {
   }
 });
 
+test("the turn endpointing notices exist in both locales", () => {
+  // S1: the endpointing cap cut and the segment-gap warning are operator
+  // visible — neither may exist as an untranslated hardcoded string.
+  for (const dict of [es, en]) {
+    assert.equal(typeof dict["voice.turn_cap_cut"], "string", "voice.turn_cap_cut");
+    assert.ok(dict["voice.turn_cap_cut"].length > 0, "voice.turn_cap_cut");
+    assert.equal(typeof dict["voice.turn_gap"], "string", "voice.turn_gap");
+    assert.ok(dict["voice.turn_gap"].length > 0, "voice.turn_gap");
+  }
+});
+
 /* ---- t(): lookup, interpolation, fallback ---- */
 
 test("t() renders the es string by default", () => {
