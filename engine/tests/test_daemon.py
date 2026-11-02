@@ -15,6 +15,8 @@ from unittest import mock
 
 import pytest
 
+from ipc_test_support import assert_channel_closed
+
 import agent_tts.daemon as daemon_mod
 import agent_tts.ipc as ipc
 from agent_tts import audio, constants, ownership
@@ -867,7 +869,7 @@ def test_shutdown_command_stops_daemon_and_frees_channel(channel, monkeypatch):
 
     d._test_thread.join(timeout=5.0)
     # Orderly exit frees the channel: socket and pid markers are gone.
-    assert not os.path.exists(endpoint)
+    assert_channel_closed(endpoint)
     assert not os.path.exists(channel["pid"])
     assert not os.path.exists(channel["lock"])
 

@@ -161,12 +161,13 @@ def test_a1_double_prime_slow_chunked_sender_payload_arrives_intact():
                 for start in range(half, len(body), 32 * 1024):
                     client.sendall(body[start : start + 32 * 1024])
                     time.sleep(0.01)
-            except BrokenPipeError:
+            except (BrokenPipeError, ConnectionResetError):
                 # The server consumed the COMPLETE frame and closed while
                 # this raw sender still had write() calls in flight; the
-                # in-flight tail races the close. A real client sends one
-                # sendall and never writes again, so it cannot hit this.
-                # The reply below proves every byte was received.
+                # in-flight tail races the close. Windows reports that race
+                # as WSAECONNRESET instead of a broken pipe. A real client
+                # sends one sendall and never writes again, so it cannot
+                # hit this; the reply below proves every byte was received.
                 pass
             reply = _read_reply_frame(client)
         finally:

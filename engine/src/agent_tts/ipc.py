@@ -524,11 +524,21 @@ class IPCServer:
         owned = owns_channel()
         if was_bound and owned:
             for path in self._cleanup_paths():
-                if os.path.exists(path):
-                    try:
-                        os.remove(path)
-                    except OSError:
-                        pass
+                if not os.path.exists(path):
+                    continue
+                try:
+                    os.remove(path)
+                except OSError:
+                    # Windows cannot unlink the marker while this process
+                    # holds its ownership lock (a mandatory byte-range lock
+                    # keeps the file open), so the leftover must not be able
+                    # to name a live channel: truncate it instead.
+                    if _is_windows():
+                        try:
+                            with open(path, "w"):
+                                pass
+                        except OSError:
+                            pass
 
     def _cleanup_paths(self):
         if _is_windows():

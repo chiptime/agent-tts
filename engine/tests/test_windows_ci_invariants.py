@@ -12,6 +12,8 @@ import pytest
 
 from agent_tts import daemon, ipc, ownership
 
+from ipc_test_support import assert_channel_closed
+
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -52,7 +54,7 @@ def test_owner_gate_and_failed_stop_preserve_marker_bytes(tcp, tmp_path):
         assert ipc.send_ipc_command("ping") == "pong"
     finally:
         winner.stop()
-    assert not tcp.exists()
+    assert_channel_closed(str(tcp))
 
     successor = ipc.IPCServer(lambda _: "next")
     successor.start()
@@ -142,7 +144,7 @@ def test_port_override_inherited_without_global_write(tcp):
     assert result.returncode == 0
     assert result.stderr == ""
     assert result.stdout == str(tcp) + "\n"
-    assert not tcp.exists()
+    assert_channel_closed(str(tcp))
 
 
 def test_interprocess_owner_and_marker_are_preserved(tcp, tmp_path):
@@ -181,4 +183,21 @@ ownership.release_channel_ownership()
     finally:
         _, error = child.communicate(input="q", timeout=10)
     assert child.returncode == 0, error
-    assert not tcp.exists()
+    assert_channel_closed(str(tcp))
+
+
+@pytest.mark.parametrize(
+    "image, expected",
+    [("python.exe", True), ("PythonW.EXE", True), ("sleep.exe", False), (None, False)],
+)
+def test_win32_daemon_identity_is_required_before_a_kill(monkeypatch, image, expected):
+    """A wedged-owner kill needs a verified identity; unknown means no."""
+    monkeypatch.setattr(daemon, "_is_windows", lambda: True)
+    monkeypatch.setattr(daemon, "_windows_pid_image_name", lambda pid: image)
+    assert daemon._pid_looks_like_agent_tts(4242) is expected
+
+
+def test_posix_unknown_identity_refuses_a_kill(monkeypatch):
+    """No /proc entry (recycled or unreadable PID) is not "ours"."""
+    monkeypatch.setattr(daemon, "_is_windows", lambda: False)
+    assert daemon._pid_looks_like_agent_tts(4_000_000) is False

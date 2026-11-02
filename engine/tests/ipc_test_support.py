@@ -36,3 +36,20 @@ def setup_channel_paths(tmp_path, monkeypatch) -> dict:
     monkeypatch.setattr(ownership, "IPC_PORT_FILE", paths["port"])
     monkeypatch.setenv("AGENT_TTS_PORT_FILE", paths["port"])
     return paths
+
+
+def assert_channel_closed(endpoint: str) -> None:
+    """The endpoint no longer names a channel a client could use.
+
+    POSIX removes the socket file; Windows cannot unlink the marker while
+    the owner still holds its ownership lock (a mandatory byte-range lock
+    keeps it open), so it is truncated instead. Both outcomes must leave
+    nothing reachable, and POSIX must additionally leave no file behind.
+    """
+    from agent_tts import ipc
+
+    assert not ipc._channel_is_live(endpoint), f"endpoint still answers: {endpoint}"
+    if not ipc._is_windows():
+        import os
+
+        assert not os.path.exists(endpoint), f"endpoint file left behind: {endpoint}"

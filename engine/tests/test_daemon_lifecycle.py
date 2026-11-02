@@ -16,6 +16,8 @@ from unittest import mock
 
 import pytest
 
+from ipc_test_support import assert_channel_closed
+
 import agent_tts.daemon as daemon_mod
 import agent_tts.ipc as ipc
 from agent_tts import audio, constants, ownership
@@ -127,7 +129,7 @@ def test_idle_daemon_exits_orderly_and_frees_channel(channel, monkeypatch):
     thread.join(timeout=5.0)
     assert not thread.is_alive()
     # Orderly idle exit frees the channel per BLOQUE 1.1 ownership rules.
-    assert not os.path.exists(endpoint)
+    assert_channel_closed(endpoint)
     assert not os.path.exists(channel["pid"])
     assert not os.path.exists(channel["lock"])
 
@@ -167,7 +169,7 @@ def test_requests_reset_the_idle_clock(channel, monkeypatch):
     thread.join(timeout=6.0)
     assert not thread.is_alive()
     assert time.monotonic() - last_ping_at >= 2.0
-    assert not os.path.exists(channel_endpoint(channel))
+    assert_channel_closed(channel_endpoint(channel))
 
 
 def test_active_playback_blocks_idle_exit(channel, monkeypatch):
@@ -201,7 +203,7 @@ def test_active_playback_blocks_idle_exit(channel, monkeypatch):
     assert box == ["status=stopped"]
     thread.join(timeout=5.0)
     assert not thread.is_alive()
-    assert not os.path.exists(channel_endpoint(channel))
+    assert_channel_closed(channel_endpoint(channel))
 
 
 def test_explicit_daemon_without_timeout_survives_idle_window(channel, monkeypatch):
@@ -215,7 +217,7 @@ def test_explicit_daemon_without_timeout_survives_idle_window(channel, monkeypat
     assert ipc.send_ipc_command("ping", socket_path=channel["sock"]).startswith("pong")
     d.request_shutdown()
     thread.join(timeout=5.0)
-    assert not os.path.exists(channel_endpoint(channel))
+    assert_channel_closed(channel_endpoint(channel))
 
 
 # --- CLI flag wiring ------------------------------------------------------------------

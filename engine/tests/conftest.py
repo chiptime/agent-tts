@@ -29,9 +29,15 @@ def pytest_runtest_setup(item):
 def isolate_ipc_port_file(request, tmp_path, monkeypatch):
     """Isolates IPC_PORT_FILE into tmp_path so parallel/sequential tests never collide on Windows."""
     if "test_constants" in request.node.nodeid:
+        yield  # that module asserts the real default marker
         return
     port_file = str(tmp_path / "agent-tts-ipc.port")
     monkeypatch.setenv("AGENT_TTS_PORT_FILE", port_file)
     monkeypatch.setattr(constants, "IPC_PORT_FILE", port_file)
     monkeypatch.setattr(ipc, "IPC_PORT_FILE", port_file)
     monkeypatch.setattr(ownership, "IPC_PORT_FILE", port_file)
+    # Ownership is process-global state: a test that acquires the channel
+    # must not decide the outcome of the next one.
+    ownership.release_channel_ownership()
+    yield
+    ownership.release_channel_ownership()

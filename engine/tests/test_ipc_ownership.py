@@ -13,6 +13,8 @@ import time
 
 import pytest
 
+from ipc_test_support import assert_channel_closed
+
 import agent_tts.ipc as ipc
 import agent_tts.ownership as ownership
 from agent_tts import audio, constants
@@ -230,7 +232,7 @@ def test_owner_cleanup_removes_channel_files(channel):
     server.stop()
     audio.cleanup_locks()
     endpoint = channel_endpoint(channel)
-    assert not os.path.exists(endpoint)
+    assert_channel_closed(endpoint)
     assert not os.path.exists(channel["lock"])
     assert not os.path.exists(channel["pid"])
     assert not ownership.owns_channel()
@@ -591,7 +593,7 @@ def test_loser_wiring_never_binds_the_free_path_before_the_owner(channel, tmp_pa
         # A won the election and is alive — but the channel path is free.
         assert _wait_for_file(elected), "owner A never won the election"
         endpoint = channel_endpoint(channel)
-        assert not os.path.exists(endpoint)
+        assert_channel_closed(endpoint)
 
         # B loses the election and must not take the free path.
         loser = subprocess.run(
@@ -603,7 +605,7 @@ def test_loser_wiring_never_binds_the_free_path_before_the_owner(channel, tmp_pa
         )
         assert loser.returncode == 0, loser.stderr
         assert "B_BOUND False" in loser.stdout
-        assert not os.path.exists(endpoint)  # B never created the channel
+        assert_channel_closed(endpoint)  # B never created the channel
 
         # The elected owner binds the still-free path and answers commands.
         open(go, "w").close()
@@ -636,7 +638,7 @@ def test_ipc_server_requires_ownership_by_default(channel):
     endpoint = channel_endpoint(channel)
     try:
         assert server.server_sock is None  # no election: no channel
-        assert not os.path.exists(endpoint)
+        assert_channel_closed(endpoint)
     finally:
         server.stop()
 
@@ -673,7 +675,7 @@ def test_loser_remote_sessions_never_bind_the_free_path(channel):
     """
     endpoint = channel_endpoint(channel)
     audio._write_player_locks()  # this process is A: elected, alive, unbound
-    assert not os.path.exists(endpoint)
+    assert_channel_closed(endpoint)
 
     loser = subprocess.run(
         [sys.executable, "-c", _REMOTE_LOSER_CHILD],
@@ -686,7 +688,7 @@ def test_loser_remote_sessions_never_bind_the_free_path(channel):
         assert loser.returncode == 0, loser.stderr
         assert "PS_BOUND False" in loser.stdout
         assert "WH_BOUND False" in loser.stdout
-        assert not os.path.exists(endpoint)  # nobody stole the path
+        assert_channel_closed(endpoint)  # nobody stole the path
     finally:
         audio.cleanup_locks()
 

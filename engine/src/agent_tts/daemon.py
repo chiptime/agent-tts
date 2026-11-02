@@ -1384,7 +1384,7 @@ def _pid_alive_win32(pid: int) -> bool:
 
 
 def _pid_alive(pid: int) -> bool:
-    if sys.platform == "win32":
+    if _is_windows():
         if pid <= 0:
             return False
         return _pid_alive_win32(pid)
@@ -1399,19 +1399,80 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _pid_looks_like_agent_tts(pid: int) -> bool:
-    """Best-effort identity check before killing a wedged owner.
+#: Images a wedged agent-tts daemon may run as on Windows. The daemon is
+#: ``python -m agent_tts.daemon``; the name is the only identity Windows
+#: exposes without the /proc cmdline, so it is a necessary (not sufficient)
+#: signal and anything else is refused.
+_WINDOWS_DAEMON_IMAGES = frozenset(
+    {"python.exe", "pythonw.exe", "python3.exe", "py.exe"}
+)
 
-    POSIX: the owner's cmdline must mention agent_tts/agent-tts. When
-    /proc is unavailable (non-POSIX), the check cannot run — but the
-    wedge probe already proved a hung owner exists and PID_FILE was
-    written by whoever owns the channel, so killing proceeds.
+
+def _is_windows() -> bool:
+    """Platform seam for the Windows-only liveness paths (tests patch this)."""
+    return sys.platform == "win32"
+
+
+def _windows_pid_image_name(pid: int) -> Optional[str]:
+    """Image name of a live PID via QueryFullProcessImageNameW, or None.
+
+    Only PROCESS_QUERY_LIMITED_INFORMATION is requested (no terminate or
+    suspend rights). A PID this process cannot open — already exited, or
+    owned by someone else — yields None, and callers must treat that as
+    "identity unknown", never as "ours".
     """
+    import ctypes
+    from ctypes import wintypes
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    try:
+        kernel32 = ctypes.windll.kernel32
+    except AttributeError:  # pragma: no cover - non-Windows
+        return None
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return None
+    try:
+        size = wintypes.DWORD(32768)
+        buffer = ctypes.create_unicode_buffer(size.value)
+        if not kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+            return None
+        return os.path.basename(buffer.value)
+    finally:
+        try:
+            kernel32.CloseHandle(handle)
+        except Exception:  # noqa: BLE001 - closing must never mask the verdict
+            pass
+
+
+def _pid_looks_like_agent_tts(pid: int) -> bool:
+    """Identity check before killing a wedged owner; unknown identity means no.
+
+    POSIX: the owner's cmdline must mention agent_tts/agent-tts. Windows:
+    the image must be a Python interpreter (the daemon runs
+    ``python -m agent_tts.daemon``), and an unopenable PID is refused. The
+    wedge probe proves a hung listener exists, but PIDs are recycled, so
+    the kill never proceeds on an unverified identity.
+    """
+    if _is_windows():
+        image = _windows_pid_image_name(pid)
+        return bool(image) and image.lower() in _WINDOWS_DAEMON_IMAGES
     try:
         with open(f"/proc/{pid}/cmdline", "rb") as f:
             cmdline = f.read().replace(b"\x00", b" ").lower()
     except OSError:
-        return True
+        return False
     return b"agent_tts" in cmdline or b"agent-tts" in cmdline
 
 

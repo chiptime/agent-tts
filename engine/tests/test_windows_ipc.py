@@ -35,10 +35,12 @@ def test_windows_server_socket_never_overwrites_live_marker(tmp_path, monkeypatc
     monkeypatch.setattr(ipc, "_is_windows", lambda: True)
     monkeypatch.setattr(ipc, "IPC_PORT_FILE", port_marker)
 
-    # First server binds and creates the marker
-    server1 = server_socket(require_ownership=False)
-    assert server1 is not None
-    server1.listen(1)
+    # First server: a real IPC server with an accept loop (a raw listen
+    # socket has a backlog of one, so a second probe could not connect and
+    # an unresponsive probe is exactly what "reclaim a wedged owner" wants).
+    server1 = IPCServer(command_handler=lambda cmd: "pong", require_ownership=False)
+    server1.start()
+    assert server1.server_sock is not None
 
     try:
         # A second server (even with require_ownership=False or same process)
@@ -46,7 +48,8 @@ def test_windows_server_socket_never_overwrites_live_marker(tmp_path, monkeypatc
         server2 = server_socket(require_ownership=False)
         assert server2 is None
 
-        # Even if this process owns the channel, a second server must not steal a live server's marker!
+        # Even if this process owns the channel, a second server must not
+        # steal a live server's marker.
         monkeypatch.setattr(ownership, "owns_channel", lambda: True)
         monkeypatch.setattr(ipc, "owns_channel", lambda: True)
         server3 = server_socket(require_ownership=True)
@@ -55,9 +58,9 @@ def test_windows_server_socket_never_overwrites_live_marker(tmp_path, monkeypatc
         # Verify the marker still points to server1
         with open(port_marker) as f:
             port = int(f.read().strip())
-        assert port == server1.getsockname()[1]
+        assert port == server1.server_sock.getsockname()[1]
     finally:
-        server1.close()
+        server1.stop()
         if os.path.exists(port_marker):
             os.remove(port_marker)
 
