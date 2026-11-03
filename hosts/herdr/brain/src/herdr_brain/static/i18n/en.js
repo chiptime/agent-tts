@@ -250,6 +250,7 @@
     "voice.not_understood": "I didn't understand the audio — try again.",
     "voice.turn_cap_cut": "Turn closed at the duration limit; keep talking to continue in a new turn",
     "voice.turn_gap": "Could not transcribe the whole turn. Nothing was sent; please repeat it.",
+    "voice.call_switched": "Call now pointing at {name}",
 
     /* ---- brain errors ---- */
     "brain.not_configured": "The brain is not configured: GLM_API_KEY is missing on the server. Set it in the service environment (for example a shell profile or an env file outside this repository) and restart the service.",
@@ -380,7 +381,26 @@
     "dock.confirm_title": "Tap again to confirm",
     "dock.cwd_missing": "Could not launch: working directory missing",
     "dock.launch_failed": "Could not launch — try again",
-    "dock.preset_failed": "Could not send the preset — try again"
+    "dock.preset_failed": "Could not send the preset — try again",
+
+    /* ---- calls history (T5) ---- */
+    "calls.title": "Calls",
+    "calls.loading": "Loading calls…",
+    "calls.empty": "No calls recorded",
+    "calls.error": "Failed to load calls",
+    "calls.status_open": "In progress",
+    "calls.status_ended": "Ended",
+    "calls.status_interrupted": "Interrupted",
+    "calls.turns_count": "{count} turns",
+    "calls.duration": "{duration}",
+    "calls.back": "← Back",
+    "calls.detail_title": "Call details",
+    "calls.detail_loading": "Loading transcript…",
+    "calls.detail_empty": "No turns in this call",
+    "calls.detail_error": "Failed to load transcript",
+    "calls.load_more": "Load more",
+    "calls.role_user": "You",
+    "calls.role_assistant": "Brain"
   };
 
   if (typeof module !== "undefined" && module.exports) {

@@ -250,6 +250,7 @@
     "voice.not_understood": "No entendí el audio — inténtalo otra vez.",
     "voice.turn_cap_cut": "Turno cerrado por el límite de duración; sigue hablando para continuar en un turno nuevo",
     "voice.turn_gap": "No pude transcribir todo el turno. No se envió nada; vuelve a decirlo.",
+    "voice.call_switched": "Llamada apuntando a {name}",
 
     /* ---- brain errors ---- */
     "brain.not_configured": "El brain no está configurado: falta GLM_API_KEY en el servidor. Defínela en el entorno del servicio (por ejemplo, un perfil de shell o un archivo de entorno fuera de este repositorio) y reinicia el servicio.",
@@ -380,7 +381,26 @@
     "dock.confirm_title": "Toca otra vez para confirmar",
     "dock.cwd_missing": "No se pudo lanzar: falta el directorio de trabajo",
     "dock.launch_failed": "No se pudo lanzar — prueba otra vez",
-    "dock.preset_failed": "No se pudo enviar el preset — prueba otra vez"
+    "dock.preset_failed": "No se pudo enviar el preset — prueba otra vez",
+
+    /* ---- calls history (T5) ---- */
+    "calls.title": "Llamadas",
+    "calls.loading": "Cargando llamadas…",
+    "calls.empty": "Sin llamadas registradas",
+    "calls.error": "Error al cargar las llamadas",
+    "calls.status_open": "En curso",
+    "calls.status_ended": "Finalizada",
+    "calls.status_interrupted": "Interrumpida",
+    "calls.turns_count": "{count} turnos",
+    "calls.duration": "{duration}",
+    "calls.back": "← Volver",
+    "calls.detail_title": "Detalle de llamada",
+    "calls.detail_loading": "Cargando transcripción…",
+    "calls.detail_empty": "Sin turnos en esta llamada",
+    "calls.detail_error": "Error al cargar la transcripción",
+    "calls.load_more": "Cargar más",
+    "calls.role_user": "Tú",
+    "calls.role_assistant": "Brain"
   };
 
   if (typeof module !== "undefined" && module.exports) {

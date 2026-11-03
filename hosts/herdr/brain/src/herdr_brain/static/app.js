@@ -527,6 +527,7 @@
     drawer.removeAttribute("inert");
     try { history.pushState({ herdrDrawer: true }, ""); } catch (err) { /* non-http origins */ }
     conv.scrollTop = conv.scrollHeight;  // newest turn (AC1/AC3)
+    if (callsUI) callsUI.refresh();  // the Llamadas list opens current
     renderPill();
     try { drawerCloseBtn.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
   }
@@ -1715,6 +1716,18 @@
     refreshMirror();
     refreshView();
     refreshConversation();
+  }
+
+  /* Voice session switching (S5/S7): a switch_session turn (or an
+   * approved create) lands here through the /ask-shaped response. The
+   * selection applies through the SAME path a chip tap takes — persist,
+   * publish, restyle, reset reading views — plus a spoken-adjacent
+   * toast naming the new target. */
+  function applyVoiceSwitch(switchPane) {
+    if (!switchPane || !switchPane.pane_id) return;
+    var label = switchPane.title || switchPane.agent || switchPane.pane_id;
+    if (switchPane.pane_id !== selectedPane) selectAgent(switchPane.pane_id);
+    showToast(t("voice.call_switched", { name: label }), 4000);
   }
 
   /* ---------------- status / pending / terminal (from /view) ---------------- */
@@ -4491,8 +4504,27 @@
         renderApprovalCard();
       }, APPROVAL_DISMISS_MS);
     },
-    banner: showBanner
+    banner: showBanner,
+    onSwitchPane: applyVoiceSwitch
   });
+
+  /* Call history (S6/S7): the drawer's "Llamadas" section is the
+   * dependency-injected calls module — mounted once, refreshed every
+   * time the drawer opens so the list is current without a poll. */
+  var callsUI = null;
+  if (window.Calls) {
+    var callsContainer = document.getElementById("calls-container");
+    var callsSection = document.getElementById("calls-section");
+    if (callsContainer) {
+      callsUI = window.Calls.createCallsUI({
+        doc: document,
+        http: function (url) { return readFetch(url); },
+        t: t
+      });
+      callsUI.mount(callsContainer);
+      if (callsSection) callsSection.classList.remove("hidden");
+    }
+  }
 
   /* Device pairing UI (F1 device pairing): mounts inside Ajustes and
    * owns the bearer token every write fetch attaches. Refreshed at
@@ -4921,6 +4953,7 @@
         }
         return resp.json().then(function (data) {
           removeThinkingBubble();
+          if (data.switch_pane) applyVoiceSwitch(data.switch_pane);
           addTurn("brain", data.answer || "(respuesta vacía)");
           // A chunk tap may have cancelled this identity while /ask was in
           // flight. Keep its answer, but never revive the retired audio job.
@@ -5645,6 +5678,10 @@
     inCall = true;
     callStartedAt = Date.now();
     markCallIntent();
+    /* Per-call history (S6/S7): the server opens the record and tags
+     * every turn of THIS call with it. Best-effort — a failed start
+     * must never block the call itself. */
+    readFetch("/call/start", { method: "POST" }).catch(function () { /* history is best-effort */ });
     startCallTimer();
     requestWakeLock();
     openEvents();  // user gesture: unlocks autoplay for announcements
@@ -5672,6 +5709,9 @@
     stopCallTimer();
     releaseWakeLock();
     clearCallIntent();
+    /* Close the per-call record (duration, turn count). Best-effort:
+     * a brain restart already closed it as interrupted server-side. */
+    readFetch("/call/end", { method: "POST" }).catch(function () { /* history is best-effort */ });
     resetInterimContent();
     setCallState("idle");  // pill disappears; idle is pill-free (FR12)
   }

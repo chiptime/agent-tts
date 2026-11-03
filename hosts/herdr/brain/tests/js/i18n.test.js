@@ -82,6 +82,22 @@ test("the turn endpointing notices exist in both locales", () => {
   }
 });
 
+test("the calls history strings exist in both locales", () => {
+  const callKeys = [
+    "calls.title", "calls.loading", "calls.empty", "calls.error",
+    "calls.status_open", "calls.status_ended", "calls.status_interrupted",
+    "calls.turns_count", "calls.duration", "calls.back", "calls.detail_title",
+    "calls.detail_loading", "calls.detail_empty", "calls.detail_error",
+    "calls.load_more", "calls.role_user", "calls.role_assistant",
+  ];
+  for (const dict of [es, en]) {
+    for (const key of callKeys) {
+      assert.equal(typeof dict[key], "string", key);
+      assert.ok(dict[key].length > 0, key);
+    }
+  }
+});
+
 /* ---- t(): lookup, interpolation, fallback ---- */
 
 test("t() renders the es string by default", () => {

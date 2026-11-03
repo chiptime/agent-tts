@@ -31,8 +31,8 @@ EXPECTED_DIGESTS = {
     # Avisos push card + push.js, the Mensaje composer, and the sw.js
     # push/notificationclick handlers); then for the Zen exit control
     # (floating exit button, Escape exits Zen, i18n labels, setZen).
-    "/": "378143ff1d202fef5232b5edfe3eb96ecbb16156be5840a33329d908acc9b5f8",
-    "/app.js": "51ca0464023bd3fcbd4e482386871567c50ddfcc7fbfbc13672293ae8e53527c",
+    "/": "1f19282cb5e6289a20a58ce108c86889d449a3d77d75f0a73ec39c2c5f89a456",
+    "/app.js": "1f35932490294887998ee8767ab985dda4841e1fc87b477fbe8ceed3ed0566f9",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "ca7b22c52c8160a3ac577f694eb65ec0798b77cd6ac179a5c567dffdc1fb2ba9",
     "/dialogs.js": "0e5b6afde7ef662591f66fc69891e3b1ec343fafe0d2c5be8fbef0c5a124a4c0",
@@ -45,7 +45,7 @@ EXPECTED_DIGESTS = {
     # approval-binding and B1–B8 correction changes (gate speech id +
     # explanation receipts, clarify identity, item-aware playback proof);
     # no other static bytes changed.
-    "/approval.js": "0254382dac1fd1be00d608d2476a1ec82582dfd502a48bad6a0c5cc8041d741f",
+    "/approval.js": "af8c8517ec62e9ee8bc82aa9804e2656c722c690164c07709c1e1e32f70c8c8d",
     "/consult.js": "fc2e4d18c206164fcec7a8baf2be1697e5b6d86152ed12c432169a70c1113bc4",
     "/endpointing.js": "7f5b6e58ecbae33f3134625fb242e6f5b5001c579714ad79cddb18f4044eb9f8",
     "/vad.js": "0bb7e5891c2da564aa1ab88b763a6d85381f374b0ed4c90e8eab498b4ffe2cad",
@@ -53,10 +53,11 @@ EXPECTED_DIGESTS = {
     # update notice, operator dock, offline-shell sw.js.
     "/dock.js": "4a5dc20d575c3c9e5f098116fc9314f24297b2934cb3142bc885b6e1d0155adb",
     "/i18n.js": "8bcd2ceb9f56109afaa0ec158e1a6f002799c4a983261b9d58cd38723c06719f",
-    "/i18n/en.js": "5d776afd1b0c2246fbf11c71e6d78c3d7342a7bae6dde531fc4f1016595b9a8d",
-    "/i18n/es.js": "4e59f304bc8eaa1a044677d46ff8efc4d516c526c2c115579a861db44e75a92c",
+    "/i18n/en.js": "5f23bf0fbc7daf491174f30af1aa729dc6e03c31870d4b2faf0947f786317567",
+    "/i18n/es.js": "cc5937bc82b5dc9f3da1cee9f06e7ec0c7ebb128edd8a09fc3787317c02ffbaf",
     "/settings.js": "1c2cf3ed92bf959c19ecde0107618b8d1ff0690d2c6fa7c842a2fdc551e05f72",
     "/updates.js": "7f87250cf6cd9c2b8944da632fe036d0c18a87a90f48f70b84e18bcd338cfa84",
+    "/calls.js": "7bf67180b41dedc9dafaf0ce9e95413c7204ebd49da6de80c2133b27e17870c7",
 }
 
 

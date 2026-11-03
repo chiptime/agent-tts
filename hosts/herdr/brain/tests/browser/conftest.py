@@ -280,7 +280,7 @@ class KaraokeHarness:
             "manifest.webmanifest", "icon.svg", "karaoke.js",
             "mermaid.min.js", "mermaid-viewer.js", "tts-engine.js",
             "pairing.js", "destructive.js", "history.js", "dialogs.js",
-            "receipts.js", "push.js",
+            "receipts.js", "push.js", "calls.js",
             # S4/S3 PWA unit: i18n runtime + dictionaries, settings,
             # update notice, operator dock.
             "i18n.js", "i18n/es.js", "i18n/en.js",
@@ -294,6 +294,9 @@ class KaraokeHarness:
                 {"role": "brain", "text": self.answer_text, "ts": "2026-01-01T00:00:01Z"},
             ]
         self.respond("/call-history", {"turns": history, "has_more": False}, query=("before", "limit"))
+        # Per-call history (S6/S7): the boot-mounted Llamadas section
+        # fetches the list; the default keeps it empty for legacy tests.
+        self.respond("/calls", {"calls": [], "has_more": False}, query=("before", "limit"))
         self.respond("/herd", [])
         self.respond("/view", {"status": {"active": False}, "screen": None,
                                "transcript": None, "pending": {"detected": False}}, query=("pane_id",))
