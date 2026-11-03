@@ -10,9 +10,11 @@ Verifies:
 
 from __future__ import annotations
 
-import pytest
 import re
+
 from playwright.sync_api import expect
+
+from test_karaoke_fragments import source
 
 SURFACE = "#glance-turns .gturn.assistant"
 CONTENT = SURFACE + " .reader-content"
@@ -134,16 +136,66 @@ def test_interactive_sentence_click_and_navigation(karaoke_app):
     sentences = page.locator(".tts-sentence")
     sentences.first.click()
     expect(sentences.first).to_have_class(re.compile(r"\btts-active\b"))
-    expect(page.locator("#tts-status-text")).to_contain_text("Frase 1 de 4")
+    expect(page.locator("#tts-status-text")).to_contain_text("Frase 1 de 5")
 
     # Next button advances active sentence to Frase 2
     page.locator("#tts-next-btn").click()
-    expect(page.locator("#tts-status-text")).to_contain_text("Frase 2 de 4")
+    expect(page.locator("#tts-status-text")).to_contain_text("Frase 2 de 5")
 
     # Prev button moves back to Frase 1
     page.locator("#tts-prev-btn").click()
-    expect(page.locator("#tts-status-text")).to_contain_text("Frase 1 de 4")
+    expect(page.locator("#tts-status-text")).to_contain_text("Frase 1 de 5")
 
     # Stop button clears .tts-active
     page.locator("#tts-stop-btn").click()
     expect(page.locator(".tts-active")).to_have_count(0)
+
+
+def test_click_text_without_bar_uses_browser_tts(karaoke_app):
+    harness = _load_app(karaoke_app)
+    page = harness.page
+
+    # Sin abrir antes la barra (ni el FAB): el click directo sobre el texto
+    # indexa el turno y habla con Web Speech, nunca con el servidor (/tts).
+    page.locator(CONTENT + " .tts-sent").first.click()
+
+    expect(page.locator("#tts-bar")).to_have_class(re.compile(r"\btts-open\b"))
+    expect(page.locator("#tts-status-text")).to_contain_text("Frase 1 de")
+    expect(page.locator(CONTENT + " .tts-sentence").first).to_have_class(
+        re.compile(r"\btts-active\b"))
+    assert "/tts" not in page.evaluate("() => __karaokeHarness.fetchCalls")
+
+
+def test_click_second_sentence_starts_from_it(karaoke_app):
+    harness = _load_app(karaoke_app)
+    page = harness.page
+
+    page.locator(CONTENT + " .tts-sent").nth(1).click()
+
+    expect(page.locator("#tts-status-text")).to_contain_text("Frase 2 de")
+    second = page.locator(CONTENT + " .tts-sentence").nth(1)
+    expect(second).to_have_class(re.compile(r"\btts-active\b"))
+    expect(page.locator(CONTENT + " .tts-sentence").first).not_to_have_class(
+        re.compile(r"\btts-active\b"))
+    assert "/tts" not in page.evaluate("() => __karaokeHarness.fetchCalls")
+
+
+def test_click_text_stops_active_server_replay(karaoke_app):
+    harness = _load_app(karaoke_app)
+    page = harness.page
+
+    # Replay servidor activo (botón Escuchar → POST /tts → audio).
+    harness.queue_tts(audio_url="/audio/full.mp3")
+    page.locator(SURFACE + " .replay-btn").click()
+    source(harness, "/full.mp3")
+    harness.media("metadata", duration=100)
+    page.wait_for_function("() => !__karaokeHarness.media.snapshot().paused")
+
+    # Click sobre el texto: el motor del navegador toma el mando y el
+    # audio del servidor se detiene en el acto.
+    page.locator(CONTENT + " .tts-sent").first.click()
+    expect(page.locator("#tts-bar")).to_have_class(re.compile(r"\btts-open\b"))
+    page.wait_for_function("() => __karaokeHarness.media.snapshot().paused")
+    expect(page.locator("#glance-turns .tts-selected")).to_have_count(0)
+    assert page.evaluate(
+        "() => __karaokeHarness.fetchCalls.filter(p => p === '/tts').length") == 1

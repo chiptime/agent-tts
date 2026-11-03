@@ -30,9 +30,14 @@ EXPECTED_DIGESTS = {
     # long-press in the composer, receipts.js); then for S5/S13 (the
     # Avisos push card + push.js, the Mensaje composer, and the sw.js
     # push/notificationclick handlers); then for the Zen exit control
-    # (floating exit button, Escape exits Zen, i18n labels, setZen).
-    "/": "1f19282cb5e6289a20a58ce108c86889d449a3d77d75f0a73ec39c2c5f89a456",
-    "/app.js": "1f35932490294887998ee8767ab985dda4841e1fc87b477fbe8ceed3ed0566f9",
+    # (floating exit button, Escape exits Zen, i18n labels, setZen);
+    # then for the call continuation window, the silent Android speech
+    # gate for the Browser engine and the "call transcription" settings
+    # labels (index.html, app.js + both i18n); then for the glance
+    # click-to-speech handover to the Web Speech engine (click on text
+    # indexes the turn and plays in-browser, server audio stops).
+    "/": "34bf4b30e2da9c0a29df2b3b8658693293e410da33ca9da7e0f6158312d98fd3",
+    "/app.js": "769079c202e86cb6d8db2524aa7f2c3ebbc5e60a23d3a376654e4d8a766ffb58",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "ca7b22c52c8160a3ac577f694eb65ec0798b77cd6ac179a5c567dffdc1fb2ba9",
     "/dialogs.js": "0e5b6afde7ef662591f66fc69891e3b1ec343fafe0d2c5be8fbef0c5a124a4c0",
@@ -53,8 +58,8 @@ EXPECTED_DIGESTS = {
     # update notice, operator dock, offline-shell sw.js.
     "/dock.js": "4a5dc20d575c3c9e5f098116fc9314f24297b2934cb3142bc885b6e1d0155adb",
     "/i18n.js": "8bcd2ceb9f56109afaa0ec158e1a6f002799c4a983261b9d58cd38723c06719f",
-    "/i18n/en.js": "5f23bf0fbc7daf491174f30af1aa729dc6e03c31870d4b2faf0947f786317567",
-    "/i18n/es.js": "cc5937bc82b5dc9f3da1cee9f06e7ec0c7ebb128edd8a09fc3787317c02ffbaf",
+    "/i18n/en.js": "754dff121d28fab91eecf7e91d23fc946bdec148595f42cdbdd7d418c917ca1b",
+    "/i18n/es.js": "efb584ae7a956b7eb74c4dce39a832de589e0101028ed75af79fec9750227fac",
     "/settings.js": "1c2cf3ed92bf959c19ecde0107618b8d1ff0690d2c6fa7c842a2fdc551e05f72",
     "/updates.js": "7f87250cf6cd9c2b8944da632fe036d0c18a87a90f48f70b84e18bcd338cfa84",
     "/calls.js": "7bf67180b41dedc9dafaf0ce9e95413c7204ebd49da6de80c2133b27e17870c7",

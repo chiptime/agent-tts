@@ -241,7 +241,11 @@
         var textNodes = [];
         var walker = doc.createTreeWalker(block, NodeFilter.SHOW_TEXT, {
           acceptNode: function (node) {
-            if (!node.textContent || !node.textContent.trim()) return NodeFilter.FILTER_REJECT;
+            // Los nodos de solo espacios SE ACEPTAN: son los separadores
+            // entre frases repartidas en varios spans hijos (p.ej. los
+            // .tts-sent del reader). Rechazarlos pegaría "frase.Siguiente"
+            // y el segmentador fusionaría dos frases en una.
+            if (!node.textContent) return NodeFilter.FILTER_REJECT;
             if (node.parentElement && node.parentElement.closest &&
                 node.parentElement.closest('.headerlink, .mermaid, .mermaid-card, pre, svg, script, style')) {
               return NodeFilter.FILTER_REJECT;
@@ -251,13 +255,14 @@
         });
 
         var tNode;
-        while ((tNode = walker.nextNode())) {
+        while (tNode = walker.nextNode()) {
           textNodes.push(tNode);
         }
 
         if (textNodes.length === 0) continue;
 
         var fullText = textNodes.map(function (n) { return n.textContent; }).join('');
+        if (!fullText.trim()) continue;
         var segments = splitIntoSentences(fullText);
         if (segments.length === 0) continue;
 

@@ -37,6 +37,18 @@ POLL_PROBE = """(() => {
     };
 })();"""
 
+# El click sobre el texto usa el TTS del navegador (Web Speech) cuando está
+# disponible; este script lo oculta para ejercitar el fallback del servidor,
+# que es el camino que esta suite pinea.
+NO_WEBSPEECH = """(() => {
+    try {
+        Object.defineProperty(window, 'speechSynthesis',
+            {configurable: true, get: () => undefined});
+        Object.defineProperty(window, 'SpeechSynthesisUtterance',
+            {configurable: true, get: () => undefined});
+    } catch (e) { /* best effort: engine degrades a servidor */ }
+})();"""
+
 
 def payload(*, pane=PANE, session=SESSION, texts=(RAW,), html=HTML):
     turns = [{"turn_id": "reader-" + str(i), "role": "assistant", "text": text,
@@ -57,6 +69,7 @@ def app(karaoke_app, *, texts=(RAW,), html=HTML, user=False):
         data["turns"].insert(0, {"turn_id": "user-0", "role": "user", "text": RAW, "html": HTML})
     responses(harness, data)
     harness.context.add_init_script(POLL_PROBE)
+    harness.context.add_init_script(NO_WEBSPEECH)
     harness.context.add_init_script("localStorage.setItem('herdr-brain-voice-engine', 'navegador');")
     harness.page.set_default_timeout(2000)
     harness.page.set_viewport_size({"width": 1000, "height": 1000})
@@ -783,6 +796,7 @@ def native_glance(real_media_browser):
     harness.api["/conversation"] = (data, {"pane_id"})
     harness.api["/conversation/" + quote(PANE, safe="") + "/rendered"] = (data, set())
     context.add_init_script(POLL_PROBE)
+    context.add_init_script(NO_WEBSPEECH)
     try:
         yield harness.load()
     finally:

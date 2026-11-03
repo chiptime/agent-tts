@@ -1003,25 +1003,35 @@
     cancelGlanceTap();
     var generation = glanceIntentGeneration;
 
-    // Si la barra interactiva Web Speech está abierta, reproducir instantáneamente
-    if (ttsEngine && ttsEngine.supported && ttsEngine.state.isOpen) {
+    // Click sobre el texto → TTS del navegador (Web Speech), como la
+    // documentación de modular-saas (RFC-02): indexa el turno bajo demanda,
+    // abre la barra y habla AL INSTANTE. El servidor queda sólo como
+    // fallback: navegador sin Web Speech o contenido sin frases indexables.
+    if (ttsEngine && ttsEngine.supported) {
       if (ttsEngine.state.activeContainer !== content) {
         ttsEngine.indexContainer(content);
       }
-      var targetSentenceEl = event.target.closest(".tts-sentence, [data-tts-id]");
+      // El target se resolvió ANTES de indexar: los spans nuevos quedan
+      // debajo, no encima. elementFromPoint re-resuelve la frase tocada
+      // sobre el DOM ya indexado (con fallback al target original).
+      var hit = (document.elementFromPoint && event.clientX !== undefined)
+        ? document.elementFromPoint(event.clientX, event.clientY) : null;
+      var targetSentenceEl = (hit || event.target).closest(".tts-sentence, [data-tts-id]");
+      var ttsIndex = 0;
       if (targetSentenceEl) {
         var rawTtsId = targetSentenceEl.getAttribute("data-tts-id");
-        if (rawTtsId) {
-          var ttsId = parseInt(rawTtsId, 10);
-          var sIndex = ttsEngine.state.sentences.findIndex(function (s) { return s.id === ttsId; });
-          if (sIndex !== -1) {
-            ttsEngine.playFromIndex(sIndex);
-            return;
-          }
-        }
+        var ttsId = rawTtsId ? parseInt(rawTtsId, 10) : NaN;
+        var sIndex = isNaN(ttsId) ? -1
+          : ttsEngine.state.sentences.findIndex(function (s) { return s.id === ttsId; });
+        if (sIndex !== -1) ttsIndex = sIndex;
       }
       if (ttsEngine.state.sentences.length > 0) {
-        ttsEngine.playFromIndex(0);
+        // El motor toma el mando: cualquier audio/teleprompter del servidor
+        // se detiene (mismos efectos que el botón stop).
+        if (audioBusy || glanceReplay || karaokeCtl.state().plan || speechCtl.activeId()) {
+          stopAudio();
+        }
+        ttsEngine.playFromIndex(ttsIndex);
         return;
       }
     }
