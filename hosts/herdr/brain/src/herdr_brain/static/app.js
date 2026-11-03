@@ -17,8 +17,11 @@
  *
  * Call state machine: idle -> listening -> thinking -> speaking -> listening…
  * - ONE recognition lifecycle per listening session (continuous=true) with
- *   SELF-ENDPOINTING (static/endpointing.js): dispatch on isFinal, on 1200ms
- *   of interim silence, or on a 15s hard cap. No mic during /ask or TTS.
+ *   SELF-ENDPOINTING (static/endpointing.js): dispatch on isFinal or on a
+ *   grown silence window (1200ms base, 2500ms ceiling) after the last
+ *   transcript change — natural pauses keep one turn and long speech is
+ *   never cut mid-word; only a pathological never-quiet utterance closes
+ *   at the announced 10-minute bound. No mic during /ask or TTS.
  * - Announcements arrive over SSE and queue behind any in-flight audio.
  * - Every poll render is KEYED (FR10): conversation sheet rows and glance
  *   turns are updated in place per id/content, so the 5s poll never
@@ -186,6 +189,13 @@
    * Web Speech path stays as "navegador" fallback; the choice persists. */
   var VOICE_KEY = "herdr-brain-voice-engine";
   var voiceEngine = localStorage.getItem(VOICE_KEY) === "navegador" ? "navegador" : "servidor";
+  /* Android's Web Speech plays the system earcon on every recognizer
+   * start() and ends a session at each short pause, so a plain restart
+   * loop beeps nonstop while the user is quiet. With the Browser engine
+   * on Android an idle mic is therefore watched by a SILENT getUserMedia
+   * gate, and recognition starts only when speech begins (see
+   * armBrowserGate). The engine stays the user's choice. */
+  var IS_ANDROID = /Android/i.test(navigator.userAgent || "");
   var mediaStream = null;       // getUserMedia stream, live for the whole call
   var audioContext = null;
   var analyser = null;
@@ -195,6 +205,43 @@
   var recorder = null;          // MediaRecorder for the CURRENT utterance
   var recorderChunks = [];
   var serverMicBusy = false;    // a server-engine capture is starting up
+
+  /* Hands-free endpointing profile (S1). Both engines OPT IN explicitly:
+   * a silence window that GROWS with the utterance (1200ms base +200ms
+   * per second of speech, 2500ms ceiling) keeps natural pauses inside ONE
+   * turn. The server engine additionally bounds memory/transport with
+   * recorder SEGMENTS (segmentMs): each 45s chunk of ongoing speech
+   * uploads immediately and only its TRANSCRIPT accumulates, so a long
+   * turn is never cut to keep a blob small. The absolute utterance bound
+   * (utteranceCapMs, 10 minutes) exists for pathological never-quiet
+   * input only — far beyond turn-taking speech — and when it fires the
+   * close is announced (voice.turn_cap_cut) while the captured words
+   * still ride the single dispatch. */
+  var VOICE_SILENCE_MS = 1200;
+  var VOICE_SILENCE_GROWTH_PER_S_MS = 200;
+  var VOICE_MAX_SILENCE_MS = 2500;
+  var VOICE_SEGMENT_MS = 45000;
+  var VOICE_UTTERANCE_CAP_MS = 600000;
+  /* Continuation window (server engine): after the silence closes a
+   * phrase, capture keeps running for this long while that phrase is
+   * already uploading. Speech resuming inside the window rejoins the SAME
+   * turn instead of becoming a second one, so a long thinking pause no
+   * longer cuts the speaker off; the wait overlaps the transcription, so
+   * it adds little latency. */
+  var VOICE_CONTINUATION_MS = 1500;
+  var SERVER_VOICE_OPTIONS = {
+    silenceMs: VOICE_SILENCE_MS,
+    silenceGrowthPerS: VOICE_SILENCE_GROWTH_PER_S_MS,
+    maxSilenceMs: VOICE_MAX_SILENCE_MS,
+    segmentMs: VOICE_SEGMENT_MS,
+    utteranceCapMs: VOICE_UTTERANCE_CAP_MS
+  };
+  var BROWSER_VOICE_OPTIONS = {
+    silenceMs: VOICE_SILENCE_MS,
+    silenceGrowthPerS: VOICE_SILENCE_GROWTH_PER_S_MS,
+    maxSilenceMs: VOICE_MAX_SILENCE_MS,
+    utteranceCapMs: VOICE_UTTERANCE_CAP_MS
+  };
 
   /* Persistent per-install ids. */
   var THEME_KEY = "herdr-brain-theme";
@@ -494,6 +541,7 @@
     drawer.removeAttribute("inert");
     try { history.pushState({ herdrDrawer: true }, ""); } catch (err) { /* non-http origins */ }
     conv.scrollTop = conv.scrollHeight;  // newest turn (AC1/AC3)
+    if (callsUI) callsUI.refresh();  // the Llamadas list opens current
     renderPill();
     try { drawerCloseBtn.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
   }
@@ -955,25 +1003,35 @@
     cancelGlanceTap();
     var generation = glanceIntentGeneration;
 
-    // Si la barra interactiva Web Speech está abierta, reproducir instantáneamente
-    if (ttsEngine && ttsEngine.supported && ttsEngine.state.isOpen) {
+    // Click sobre el texto → TTS del navegador (Web Speech), como la
+    // documentación de modular-saas (RFC-02): indexa el turno bajo demanda,
+    // abre la barra y habla AL INSTANTE. El servidor queda sólo como
+    // fallback: navegador sin Web Speech o contenido sin frases indexables.
+    if (ttsEngine && ttsEngine.supported) {
       if (ttsEngine.state.activeContainer !== content) {
         ttsEngine.indexContainer(content);
       }
-      var targetSentenceEl = event.target.closest(".tts-sentence, [data-tts-id]");
+      // El target se resolvió ANTES de indexar: los spans nuevos quedan
+      // debajo, no encima. elementFromPoint re-resuelve la frase tocada
+      // sobre el DOM ya indexado (con fallback al target original).
+      var hit = (document.elementFromPoint && event.clientX !== undefined)
+        ? document.elementFromPoint(event.clientX, event.clientY) : null;
+      var targetSentenceEl = (hit || event.target).closest(".tts-sentence, [data-tts-id]");
+      var ttsIndex = 0;
       if (targetSentenceEl) {
         var rawTtsId = targetSentenceEl.getAttribute("data-tts-id");
-        if (rawTtsId) {
-          var ttsId = parseInt(rawTtsId, 10);
-          var sIndex = ttsEngine.state.sentences.findIndex(function (s) { return s.id === ttsId; });
-          if (sIndex !== -1) {
-            ttsEngine.playFromIndex(sIndex);
-            return;
-          }
-        }
+        var ttsId = rawTtsId ? parseInt(rawTtsId, 10) : NaN;
+        var sIndex = isNaN(ttsId) ? -1
+          : ttsEngine.state.sentences.findIndex(function (s) { return s.id === ttsId; });
+        if (sIndex !== -1) ttsIndex = sIndex;
       }
       if (ttsEngine.state.sentences.length > 0) {
-        ttsEngine.playFromIndex(0);
+        // El motor toma el mando: cualquier audio/teleprompter del servidor
+        // se detiene (mismos efectos que el botón stop).
+        if (audioBusy || glanceReplay || karaokeCtl.state().plan || speechCtl.activeId()) {
+          stopAudio();
+        }
+        ttsEngine.playFromIndex(ttsIndex);
         return;
       }
     }
@@ -1682,6 +1740,18 @@
     refreshMirror();
     refreshView();
     refreshConversation();
+  }
+
+  /* Voice session switching (S5/S7): a switch_session turn (or an
+   * approved create) lands here through the /ask-shaped response. The
+   * selection applies through the SAME path a chip tap takes — persist,
+   * publish, restyle, reset reading views — plus a spoken-adjacent
+   * toast naming the new target. */
+  function applyVoiceSwitch(switchPane) {
+    if (!switchPane || !switchPane.pane_id) return;
+    var label = switchPane.title || switchPane.agent || switchPane.pane_id;
+    if (switchPane.pane_id !== selectedPane) selectAgent(switchPane.pane_id);
+    showToast(t("voice.call_switched", { name: label }), 4000);
   }
 
   /* ---------------- status / pending / terminal (from /view) ---------------- */
@@ -4458,8 +4528,27 @@
         renderApprovalCard();
       }, APPROVAL_DISMISS_MS);
     },
-    banner: showBanner
+    banner: showBanner,
+    onSwitchPane: applyVoiceSwitch
   });
+
+  /* Call history (S6/S7): the drawer's "Llamadas" section is the
+   * dependency-injected calls module — mounted once, refreshed every
+   * time the drawer opens so the list is current without a poll. */
+  var callsUI = null;
+  if (window.Calls) {
+    var callsContainer = document.getElementById("calls-container");
+    var callsSection = document.getElementById("calls-section");
+    if (callsContainer) {
+      callsUI = window.Calls.createCallsUI({
+        doc: document,
+        http: function (url) { return readFetch(url); },
+        t: t
+      });
+      callsUI.mount(callsContainer);
+      if (callsSection) callsSection.classList.remove("hidden");
+    }
+  }
 
   /* Device pairing UI (F1 device pairing): mounts inside Ajustes and
    * owns the bearer token every write fetch attaches. Refreshed at
@@ -4888,6 +4977,7 @@
         }
         return resp.json().then(function (data) {
           removeThinkingBubble();
+          if (data.switch_pane) applyVoiceSwitch(data.switch_pane);
           addTurn("brain", data.answer || "(respuesta vacía)");
           // A chunk tap may have cancelled this identity while /ask was in
           // flight. Keep its answer, but never revive the retired audio job.
@@ -4953,12 +5043,15 @@
     *
     * ONE recognition lifecycle per listening session, continuous=true.
     * Chrome often never finalizes interim results, so endpointing.js decides:
-    * dispatch on isFinal, on 1200ms of interim silence, or at a 15s hard cap.
+    * dispatch on isFinal or on a grown silence window (1200ms base up to
+    * 2500ms — natural pauses keep one turn); a never-quiet utterance only
+    * closes at the announced 10-minute bound.
     * After dispatch the mic stays off through /ask + TTS; onAudioEnded
     * restarts it. onend restarts ONLY while listening, single-flight.
     */
 
   function teardownRecognition() {
+    releaseBrowserGate();
     if (epTick) { clearInterval(epTick); epTick = null; }
     if (recognition) {
       try { recognition.stop(); } catch (err) { /* already stopped */ }
@@ -4996,8 +5089,12 @@
   function dispatchUtterance() {
     if (dispatching || !endpointer) return;
     if (callState !== "listening" && callState !== "confirming") return;
+    // Read the reason BEFORE finalize() resets the utterance state.
+    var why = endpointer.lastFinalizeReason();
+    var capCut = why === "cap" || why === "utteranceCap";
     var text = endpointer.finalize();
     if (!text) { endpointer.reset(); return; }
+    if (capCut) showBanner(t("voice.turn_cap_cut"));  // a bound close is visible
     dispatching = true;
     interimTextEl.textContent = "";
     teardownRecognition();
@@ -5014,17 +5111,81 @@
     });
   }
 
-  function startBrowserListening() {
+  /* Silent speech gate (Browser engine on Android). While no utterance
+   * is pending, a getUserMedia capture + energy VAD watches the mic with
+   * no sound; on speech onset the gate releases its stream and Web Speech
+   * starts, so the earcon plays once when a turn begins (and when Android
+   * ends a session mid-turn), never in an idle loop. The first syllable
+   * can be clipped while the recognizer opens. A failed gate falls back
+   * to starting recognition directly. */
+  var browserGate = null;
+  var browserGateVad = null;  // survives gates: keeps the learned floor
+
+  function browserGateNeeded() {
+    return IS_ANDROID && !(endpointer && endpointer.hasSpeech()) &&
+      !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.Vad);
+  }
+
+  function releaseBrowserGate() {
+    var gate = browserGate;
+    browserGate = null;
+    if (!gate) return;
+    if (gate.tick) clearInterval(gate.tick);
+    if (gate.ctx) { try { gate.ctx.close(); } catch (err) { /* closed */ } }
+    if (gate.stream) gate.stream.getTracks().forEach(function (track) { track.stop(); });
+  }
+
+  function armBrowserGate() {
+    if (browserGate) return;  // single-flight (the 1s watchdog re-enters)
+    var gate = browserGate = { stream: null, ctx: null, tick: null };
+    navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true }
+    }).then(function (stream) {
+      if (browserGate !== gate) {  // released while opening
+        stream.getTracks().forEach(function (track) { track.stop(); });
+        return;
+      }
+      gate.stream = stream;
+      var Ctx = window.AudioContext || window.webkitAudioContext;
+      gate.ctx = new Ctx();
+      var gateAnalyser = gate.ctx.createAnalyser();
+      gateAnalyser.fftSize = 4096;
+      gate.ctx.createMediaStreamSource(stream).connect(gateAnalyser);
+      var buf = new Float32Array(gateAnalyser.fftSize);
+      if (!browserGateVad) browserGateVad = window.Vad.createVad();
+      else browserGateVad.reset();
+      gate.tick = setInterval(function () {
+        if (browserGate !== gate) return;
+        gateAnalyser.getFloatTimeDomainData(buf);
+        var sum = 0;
+        for (var i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+        if (browserGateVad.push(Math.sqrt(sum / buf.length))) {
+          releaseBrowserGate();     // free the mic for the recognizer
+          startBrowserListening(true);
+        }
+      }, 100);
+    }).catch(function () {
+      if (browserGate !== gate) return;
+      browserGate = null;
+      startBrowserListening(true);  // no gate: legacy direct start
+    });
+  }
+
+  function startBrowserListening(fromGate) {
     if (textMode || !SR) return;
     if (callState !== "listening" && callState !== "confirming") return;
     if (listening || dispatching) return;
     manualStop = false;
+    if (!fromGate && browserGateNeeded()) {
+      armBrowserGate();  // banners stay: the watchdog re-enters every 1s
+      return;
+    }
     hideBanner();
     listeningStartedAt = Date.now();
     // The endpointer SURVIVES recognition session restarts (Chrome ends
     // sessions every few seconds; committed text must carry over). Only a
     // dispatch (finalize), hang-up or new conversation resets it.
-    if (!endpointer) endpointer = window.Endpointing.createEndpointer();
+    if (!endpointer) endpointer = window.Endpointing.createEndpointer(BROWSER_VOICE_OPTIONS);
     lastInterimRaw = endpointer.text();
     interimTextEl.textContent = lastInterimRaw.length > 120
       ? "…" + lastInterimRaw.slice(-120)
@@ -5126,6 +5287,7 @@
 
   function stopBrowserListening() {
     manualStop = true;
+    releaseBrowserGate();
     if (recRestartTimer) { clearTimeout(recRestartTimer); recRestartTimer = null; }
     if (epTick) { clearInterval(epTick); epTick = null; }
     if (recognition) {
@@ -5138,10 +5300,14 @@
     *
     * getUserMedia (echoCancellation + noiseSuppression) is kept open for the
     * whole call — unlike SpeechRecognition it honors BT headset mics. vad.js
-    * bounds each utterance (adaptive noise floor + hysteresis; end after
-    * 1.2s below threshold or 15s hard cap); one MediaRecorder per utterance
-    * captures webm/opus, POSTs it to /transcribe and the text enters the
-    * same dispatch pipeline as Web Speech (thinking → speak → resume).
+    * bounds each utterance (adaptive noise floor + hysteresis; end on a
+    * silence window that grows with the utterance — 1.2s base, 2.5s ceiling);
+    * every 45s of ongoing speech a recorder SEGMENT uploads its chunk and a
+    * fresh recorder takes over, so long turns are bounded in memory and
+    * transport without ever dispatching a partial /ask. Each segment
+    * captures webm/opus, POSTs it to /transcribe and the accumulated text
+    * enters the same dispatch pipeline as Web Speech (thinking → speak →
+    * resume).
     * Between utterances the recorder and the VAD loop are torn down so the
     * mic never hears the agent's own TTS; the stream itself stays live.
     * The drawer strip shows a live level meter from the SAME RMS frames
@@ -5192,6 +5358,7 @@
   }
 
   function releaseServerMic() {
+    discardServerTurn();
     releaseVadLoopOnly();
     if (recorder && recorder.state !== "inactive") {
       try { recorder.onstop = null; recorder.stop(); } catch (err) { /* noop */ }
@@ -5215,32 +5382,191 @@
     }
   }
 
-  function dispatchServerUtterance(blob) {
-    dispatching = true;
-    setCallState("transcribing");  // ⏳ Entendiendo…
-    var form = new FormData();
-    form.append("audio", blob, "clip.webm");
-    fetchWithTimeout("/transcribe", { method: "POST", body: form }, 60000)
-      .then(function (resp) {
-        if (!resp.ok) {
-          return resp.json().catch(function () { return {}; }).then(function (data) {
-            var detail = data && data.detail ? data.detail : ("HTTP " + resp.status);
-            showBanner(t("voice.transcribe_failed", { status: resp.status, detail: detail }));
-          });
+  /* One logical turn may span several recorder SEGMENTS. Every
+   * segmentMs of ongoing speech the current recorder is rotated: the
+   * finished chunk uploads immediately (memory and each /transcribe stay
+   * bounded) and its transcript appends to the turn text IN ORDER — a
+   * serial upload queue keeps chunk order deterministic. The turn still
+   * dispatches ONCE: only the natural silence (or the absolute utterance
+   * bound, announced) ends it, and the accumulated text rides one /ask.
+   * A failed segment is disclosed (voice.turn_gap); the dispatch carries
+   * what survived instead of pretending the turn is complete. */
+  // Each turn owns its queue and cancellation signal. A late recorder or
+  // transcription callback must never contribute to a later call.
+  var serverTurn = null;
+
+  function discardServerTurn() {
+    var old = serverTurn;
+    serverTurn = null;
+    if (!old) return;
+    if (old.finalizing && !old.routed) dispatching = false;
+    old.controller.abort();
+  }
+
+  function isCurrentServerTurn(turn) {
+    return inCall && serverTurn === turn;
+  }
+
+  function armRecorder() {
+    var mime = pickRecorderMime();
+    var chunks = [];
+    var rec;
+    try {
+      rec = mime ? new MediaRecorder(mediaStream, { mimeType: mime })
+                 : new MediaRecorder(mediaStream);
+    } catch (err) {
+      return null;
+    }
+    rec.ondataavailable = function (event) {
+      // Real MediaRecorder emits Blobs (.size); tolerate typed arrays too.
+      if (event.data && (event.data.size || event.data.length)) {
+        chunks.push(event.data);
+      }
+    };
+    rec.start(250);  // flush chunks regularly; we stop at the boundary
+    return { recorder: rec, chunks: chunks };
+  }
+
+  /* tolerateEmpty: the segment is one WHOLE phrase (it started at the
+   * turn start or at a resume, and silence closed it). An empty transcript
+   * there is noise (a cough, a breath before resuming), not a lost stretch
+   * of speech, so it never voids the turn. A segment cut by rotation stays
+   * strict: an empty one means words went missing. */
+  function queueServerSegment(turn, rec, chunks, tolerateEmpty) {
+    var capturedMime = rec.mimeType || "";
+    // Reserve the queue position BEFORE stop() completes. MediaRecorder
+    // events may arrive out of order even though segments were recorded in
+    // order; a later segment must never become a partial, early turn.
+    var stopped = new Promise(function (resolve) {
+      rec.onstop = resolve;
+      try { rec.stop(); } catch (err) { resolve(); }
+    });
+    turn.segmentCount += 1;
+    turn.uploads = turn.uploads.then(function () {
+      return stopped.then(function () {
+        if (!isCurrentServerTurn(turn)) return;
+        var blob = new Blob(chunks, { type: capturedMime || "audio/webm" });
+        if (blob.size < 1000) {
+          turn.hadGap = true;
+          return;
         }
-        return resp.json().then(function (data) {
-          var text = (data && data.text ? data.text : "").trim();
-          if (!text) {
-            showBanner(t("voice.not_understood"));
-            return;
+        var form = new FormData();
+        form.append("audio", blob, "clip.webm");
+        return fetchWithTimeout("/transcribe", {
+          method: "POST", body: form, signal: turn.controller.signal
+        }, 60000).then(function (resp) {
+          if (!resp.ok) {
+            return resp.json().catch(function () { return {}; }).then(function (data) {
+              throw new Error(data && data.detail ? data.detail : ("HTTP " + resp.status));
+            });
           }
-          return routeUtterance(text);  // confirming -> gate resolve; else /ask
+          return resp.json();
+        }).then(function (data) {
+          if (!isCurrentServerTurn(turn)) return;
+          var text = (data && data.text ? data.text : "").trim();
+          if (text) turn.text = turn.text ? turn.text + " " + text : text;
+          else if (!tolerateEmpty) turn.hadEmptySegment = true;
+        }).catch(function () {
+          if (isCurrentServerTurn(turn)) turn.hadGap = true;
         });
-      })
-      .catch(function (err) {
-        showBanner(t("voice.audio_send_failed", { detail: err && err.message ? err.message : t("voice.network_error") }));
-      })
-      .then(function () {
+      });
+    });
+    return turn.uploads;
+  }
+
+  function rotateServerSegment() {
+    if (!serverTurn || !recorder || recorder.state === "inactive") return;
+    var next = armRecorder();       // successor FIRST: capture never gaps
+    if (!next) return;              // cannot rotate: keep the current recorder
+    var closing = recorder;
+    var chunks = recorderChunks;
+    recorder = next.recorder;
+    recorderChunks = next.chunks;
+    if (vad) vad.markSegment();
+    queueServerSegment(serverTurn, closing, chunks, false);
+    serverTurn.wholePhrase = false;  // the next chunk continues a cut phrase
+  }
+
+  /* Ends the utterance: the final chunk joins the upload queue, then the
+   * accumulated turn text dispatches through the same routing as the
+   * browser engine (gate resolve while confirming, else /ask).
+   * A silence close first opens the continuation window: a successor
+   * recorder keeps capturing while the phrase uploads, and speech inside
+   * the window resumes the same turn (resumeServerTurn). A bound-driven
+   * close, or a recorder that cannot be armed, dispatches at once. */
+  function finishServerUtterance(allowContinuation) {
+    if (!serverTurn || !recorder || recorder.state === "inactive") return;
+    var turn = serverTurn;
+    var closing = recorder;
+    var chunks = recorderChunks;
+    // Only a SILENCE-closed whole phrase may be empty noise; a cap close
+    // stays strict (an empty capped stretch means words went missing).
+    var wholePhrase = turn.wholePhrase && !!allowContinuation;
+    var next = allowContinuation ? armRecorder() : null;
+    if (!next) {
+      releaseVadLoopOnly();
+      recorder = null;
+      recorderChunks = [];
+      queueServerSegment(turn, closing, chunks, wholePhrase);
+      dispatchServerTurn(turn);
+      return;
+    }
+    recorder = next.recorder;        // successor FIRST: capture never gaps
+    recorderChunks = next.chunks;
+    queueServerSegment(turn, closing, chunks, wholePhrase);
+    turn.wholePhrase = true;
+    turn.pendingSince = Date.now();
+    if (vad) vad.reset();            // keeps the learned floor
+    setCallState("transcribing");
+  }
+
+  /* Speech came back inside the continuation window: the successor
+   * recorder (live since the close) becomes this turn's next segment. */
+  function resumeServerTurn() {
+    serverTurn.pendingSince = null;
+    if (!utteranceStartedAt) utteranceStartedAt = Date.now();
+    setCallState("recording");
+  }
+
+  /* The window elapsed in silence: the successor's audio is only the
+   * quiet that followed, so it is discarded, never uploaded. */
+  function closeServerTurn() {
+    var turn = serverTurn;
+    turn.pendingSince = null;
+    releaseVadLoopOnly();
+    var spare = recorder;
+    recorder = null;
+    recorderChunks = [];
+    if (spare && spare.state !== "inactive") {
+      try { spare.onstop = null; spare.stop(); } catch (err) { /* noop */ }
+    }
+    dispatchServerTurn(turn);
+  }
+
+  function dispatchServerTurn(turn) {
+    if (!isCurrentServerTurn(turn)) return;
+    turn.finalizing = true;
+    dispatching = true;
+    setCallState("transcribing");
+    turn.uploads.then(function () {
+      if (!isCurrentServerTurn(turn)) return;
+      var text = turn.text.trim();
+      // A missing stretch can invert the meaning of the surviving words.
+      // Never send an incomplete turn to the model or an approval gate.
+      if (turn.hadGap || (turn.hadEmptySegment && turn.segmentCount > 1)) {
+        dispatching = false;
+        showBanner(t("voice.turn_gap"));
+        afterAnswer();
+        return;
+      }
+      if (!text) {
+        dispatching = false;
+        showBanner(t("voice.not_understood"));
+        afterAnswer();
+        return;
+      }
+      turn.routed = true;
+      routeUtterance(text).then(function () {
         dispatching = false;
         interimTextEl.textContent = "";
         renderInterimStrip();
@@ -5250,25 +5576,7 @@
         // paused and idle states own their own resume path.
         if (callState !== "speaking" && callState !== "paused" && callState !== "idle") afterAnswer();
       });
-  }
-
-  function finishServerUtterance() {
-    if (!recorder || recorder.state === "inactive") return;
-    releaseVadLoopOnly();
-    var capturedMime = recorder.mimeType || "";
-    var onStop = function () {
-      recorder = null;
-      var blob = new Blob(recorderChunks, { type: capturedMime || "audio/webm" });
-      recorderChunks = [];
-      if (blob.size < 1000) {  // a sliver: no real audio captured
-        if (inCall && callState === "recording") setCallState(micBaseState());
-        if (callState === "listening" || callState === "confirming") startServerListening();
-        return;
-      }
-      dispatchServerUtterance(blob);
-    };
-    recorder.onstop = onStop;
-    try { recorder.stop(); } catch (err) { onStop(); }
+    });
   }
 
   function releaseVadLoopOnly() {
@@ -5291,31 +5599,35 @@
     listeningStartedAt = Date.now();
 
     var armUtterance = function () {
-      if (!vad) vad = window.Vad.createVad();
+      if (!vad) vad = window.Vad.createVad(SERVER_VOICE_OPTIONS);
       else vad.reset();
-      recorderChunks = [];
-      var mime = pickRecorderMime();
-      try {
-        recorder = mime ? new MediaRecorder(mediaStream, { mimeType: mime })
-                        : new MediaRecorder(mediaStream);
-      } catch (err) {
+      serverTurn = {
+        text: "", uploads: Promise.resolve(), hadGap: false,
+        hadEmptySegment: false, segmentCount: 0, finalizing: false,
+        routed: false, controller: new AbortController(),
+        wholePhrase: true, pendingSince: null
+      };
+      var armed = armRecorder();
+      if (!armed) {
+        discardServerTurn();
         serverMicBusy = false;
         showBanner(t("voice.record_failed"));
         return;
       }
-      recorder.ondataavailable = function (event) {
-        // Real MediaRecorder emits Blobs (.size); tolerate typed arrays too.
-        if (event.data && (event.data.size || event.data.length)) {
-          recorderChunks.push(event.data);
-        }
-      };
-      recorder.start(250);  // flush chunks regularly; we stop at the boundary
+      recorder = armed.recorder;
+      recorderChunks = armed.chunks;
       releaseVadLoopOnly();
       vadTick = setInterval(function () {
         if (!vad) return;
         var rms = frameRms();
         var speaking = vad.push(rms);
         updateRecMeter(rms);  // FR8: level meter from the live VAD RMS
+        if (serverTurn && serverTurn.pendingSince !== null) {
+          // Continuation window: resume the same turn, or close it.
+          if (speaking) resumeServerTurn();
+          else if (Date.now() - serverTurn.pendingSince >= VOICE_CONTINUATION_MS) closeServerTurn();
+          return;
+        }
         if (callState === "listening" || callState === "confirming") {
           if (speaking || vad.hasSpeech()) {
             if (!utteranceStartedAt) utteranceStartedAt = Date.now();
@@ -5325,7 +5637,19 @@
           updateRecElapsed();  // FR8: elapsed utterance time
         }
         if (vad.shouldFinalize()) {
-          finishServerUtterance();
+          // A bound-driven close must be visible: the captured audio is
+          // still dispatched (finishServerUtterance never drops it).
+          var why = vad.lastFinalizeReason && vad.lastFinalizeReason();
+          if (why === "cap" || why === "utteranceCap") {
+            showBanner(t("voice.turn_cap_cut"));
+          }
+          finishServerUtterance(why === "silence");
+          return;
+        }
+        // Segment boundary: rotate the recorder chunk (upload now, keep
+        // the words client-side). Transport chunking, never a dispatch.
+        if (vad.shouldSegment()) {
+          rotateServerSegment();
           return;
         }
         // Parity with the browser engine: 5s of dead mic gets called out.
@@ -5353,7 +5677,9 @@
       audioContext = new Ctx();
       var source = audioContext.createMediaStreamSource(stream);
       analyser = audioContext.createAnalyser();
-      analyser.fftSize = 1024;
+      // 4096 samples (~85ms at 48kHz) cover almost the whole 100ms VAD
+      // tick: a short 21ms window could land on a gap between syllables.
+      analyser.fftSize = 4096;
       source.connect(analyser);
       vadSampleBuf = new Float32Array(analyser.fftSize);
       armUtterance();
@@ -5372,6 +5698,7 @@
 
   function stopServerListening() {
     manualStop = true;
+    discardServerTurn();
     releaseVadLoopOnly();
     if (recorder && recorder.state !== "inactive") {
       try { recorder.onstop = null; recorder.stop(); } catch (err) { /* noop */ }
@@ -5498,6 +5825,10 @@
     inCall = true;
     callStartedAt = Date.now();
     markCallIntent();
+    /* Per-call history (S6/S7): the server opens the record and tags
+     * every turn of THIS call with it. Best-effort — a failed start
+     * must never block the call itself. */
+    readFetch("/call/start", { method: "POST" }).catch(function () { /* history is best-effort */ });
     startCallTimer();
     requestWakeLock();
     openEvents();  // user gesture: unlocks autoplay for announcements
@@ -5525,6 +5856,9 @@
     stopCallTimer();
     releaseWakeLock();
     clearCallIntent();
+    /* Close the per-call record (duration, turn count). Best-effort:
+     * a brain restart already closed it as interrupted server-side. */
+    readFetch("/call/end", { method: "POST" }).catch(function () { /* history is best-effort */ });
     resetInterimContent();
     setCallState("idle");  // pill disappears; idle is pill-free (FR12)
   }

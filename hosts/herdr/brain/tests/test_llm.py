@@ -209,6 +209,8 @@ class TestRoutingPolicy:
             "answer_dialog",
             # S12 voice remainder: the gated interrupt, advertised.
             "stop_agent",
+            # S5/S7: voice switching of the call's target pane.
+            "switch_session",
         }
         system = first["messages"][0]["content"]
         assert system.startswith(SYSTEM_PROMPT)

@@ -14,6 +14,7 @@ recovers a live gate after reload (PRD-action-approval-gate §5).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import json
 import logging
@@ -412,6 +413,7 @@ _VERSIONED_REFS = (
     ('src="/pairing.js"', 'src="/pairing.js?v={v}"'),
     ('src="/destructive.js"', 'src="/destructive.js?v={v}"'),
     ('src="/history.js"', 'src="/history.js?v={v}"'),
+    ('src="/calls.js"', 'src="/calls.js?v={v}"'),
     ('src="/dialogs.js"', 'src="/dialogs.js?v={v}"'),
     ('src="/receipts.js"', 'src="/receipts.js?v={v}"'),
     ('src="/reader.js"', 'src="/reader.js?v={v}"'),
@@ -439,21 +441,65 @@ _HEADER_VERSION_PLACEHOLDER = '<span id="app-version-header">?</span>'
 
 
 @lru_cache(maxsize=1)
+def _static_shell_digest() -> Optional[str]:
+    """First 8 hex chars of a content digest over every static shell file.
+
+    The PWA's offline shell (sw.js) caches assets under their ``?v=<build>``
+    URL, so the build stamp must reflect the SERVED bytes. With a dirty
+    static tree the plain HEAD hash would keep the phone serving the
+    previous shell from Cache Storage after every restart. Failures here
+    degrade to no suffix — stamping must never break boot.
+    """
+    try:
+        hasher = hashlib.sha256()
+        for path in sorted(STATIC_DIR.rglob("*")):
+            if path.is_file():
+                hasher.update(path.relative_to(STATIC_DIR).as_posix().encode())
+                hasher.update(path.read_bytes())
+        return hasher.hexdigest()[:8]
+    except Exception:  # noqa: BLE001 — a missing/unreadable static dir
+        return None
+
+
+@lru_cache(maxsize=1)
 def resolve_version() -> str:
-    """Git short hash of the running build, cached at startup ('dev' fallback)."""
+    """Git short hash of the running build, cached at startup ('dev' fallback).
+
+    On a DIRTY static tree the stamp appends ``-s<digest>`` of the served
+    static bytes, so every uncommitted shell edit becomes a new build and
+    the phone's service worker fetches it instead of replaying the stale
+    precache. A clean tree keeps the plain hash, byte-identical to
+    deployed builds.
+    """
+    repo = Path(__file__).resolve().parents[2]
+    base = "dev"
     try:
         proc = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
             capture_output=True,
             text=True,
             timeout=5,
-            cwd=str(Path(__file__).resolve().parents[2]),
+            cwd=str(repo),
         )
         if proc.returncode == 0 and proc.stdout.strip():
-            return proc.stdout.strip()
+            base = proc.stdout.strip()
     except Exception:  # noqa: BLE001 — a missing git must never break the server
+        return "dev"
+    try:
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--", str(STATIC_DIR)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=str(repo),
+        )
+        if status.returncode == 0 and status.stdout.strip():
+            digest = _static_shell_digest()
+            if digest:
+                return f"{base}-s{digest}"
+    except Exception:  # noqa: BLE001 — no git metadata: plain hash serves
         pass
-    return "dev"
+    return base
 
 
 def render_index(version: str) -> str:
@@ -481,6 +527,10 @@ class TextRequest(BaseModel):
 
 class ResetRequest(BaseModel):
     session_id: Optional[str] = Field(default=None, max_length=MAX_SESSION_ID_CHARS)
+
+
+class CallEndRequest(BaseModel):
+    call_id: Optional[str] = Field(default=None, max_length=MAX_SESSION_ID_CHARS)
 
 
 class CallContextRequest(BaseModel):
@@ -952,6 +1002,11 @@ def create_app(
     reader_cache = ReaderCache(cfg, renderer=reader_renderer or render_html)
     store = ConversationStore()
     history = HistoryStore(default_history_path(cfg))
+    # In-memory holder for the active call id (T5). Set by POST /call/start,
+    # cleared by POST /call/end. A server restart loses it (turns logged
+    # afterwards without a new /call/start will have call_id=NULL, exactly
+    # the legacy shape).
+    active_call: dict[str, Optional[str]] = {"call_id": None}
     # Boot seed: restore the conversation ring from the persisted call
     # history so LLM context survives service restarts. Only the default
     # session is seeded — the call history is one global call. This is
@@ -969,6 +1024,10 @@ def create_app(
     # FR-13 shared call context: the identity + selection desktop and
     # mobile hand over (see CallContextStore).
     call_context_store = CallContextStore()
+    # Voice session switching (S5/S7): the tools publish every voice
+    # switch into the SAME shared selection a chip tap writes.
+    if hasattr(tools, "attach_call_context"):
+        tools.attach_call_context(call_context_store)
 
     # Speech job registry (voice-stack VS1.1): bounded, in-process, and
     # injectable like every other seam — tests drive small bounds and
@@ -1270,6 +1329,13 @@ def create_app(
             headers=dict(_NO_CACHE_HEADERS),
         )
 
+    @app.get("/calls.js", include_in_schema=False)
+    def calls_js() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "calls.js", media_type="text/javascript",
+            headers=dict(_NO_CACHE_HEADERS),
+        )
+
     @app.get("/dialogs.js", include_in_schema=False)
     def dialogs_js() -> FileResponse:
         return FileResponse(
@@ -1486,6 +1552,66 @@ def create_app(
         turns = history.load_before(before, capped)
         has_more = bool(turns) and bool(history.load_before(turns[0]["ts"], 1))
         return {"turns": turns, "has_more": has_more}
+
+    @app.post("/call/start")
+    def call_start() -> dict:
+        """Starts a call and records it as the server-side ACTIVE call.
+
+        A restart loses the active call holder; subsequent turns outside
+        a call will have call_id=NULL, preserving the legacy shape.
+        """
+        call_id = history.start_call()
+        active_call["call_id"] = call_id
+        call = history.get_call(call_id)
+        return {
+            "call_id": call_id,
+            "started_at": call["started_at"] if call is not None else _utc_now_iso(),
+        }
+
+    @app.post("/call/end")
+    def call_end(body: Optional[CallEndRequest] = None) -> dict:
+        """Finalizes the ACTIVE call (or a body call_id if given).
+
+        Fails 404 if no call is active or the specified call is unknown.
+        Fails 409 if the call is already closed.
+        """
+        target_id = (body.call_id if body and body.call_id else None) or active_call.get("call_id")
+        if not target_id:
+            raise HTTPException(status_code=404, detail="no active call to end")
+        call = history.get_call(target_id)
+        if call is None:
+            raise HTTPException(status_code=404, detail=f"call '{target_id}' not found")
+        if call.get("status") != "open":
+            raise HTTPException(
+                status_code=409,
+                detail=f"call '{target_id}' is already closed ({call.get('status')})",
+            )
+        finalized = history.end_call(target_id)
+        if active_call.get("call_id") == target_id:
+            active_call["call_id"] = None
+        return finalized
+
+    @app.get("/calls")
+    def list_calls(before: Optional[str] = None, limit: int = 25) -> dict:
+        """Newest-first metadata pages of calls, clamped to CALL_HISTORY_TURNS."""
+        capped = max(1, min(limit, CALL_HISTORY_TURNS))
+        calls = history.list_calls(before, capped)
+        has_more = bool(calls) and bool(history.list_calls(calls[-1]["started_at"], 1))
+        return {"calls": calls, "has_more": has_more}
+
+    @app.get("/calls/{call_id}")
+    def get_call_detail(call_id: str, before: Optional[str] = None, limit: int = 25) -> dict:
+        """Oldest-first masked turn pages for one call, clamped to CALL_HISTORY_TURNS."""
+        call = history.get_call(call_id)
+        if call is None:
+            raise HTTPException(status_code=404, detail=f"call '{call_id}' not found")
+        capped = max(1, min(limit, CALL_HISTORY_TURNS))
+        try:
+            turns = history.call_turns(call_id, before, capped)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"call '{call_id}' not found")
+        has_more = bool(turns) and bool(history.call_turns(call_id, turns[0]["ts"], 1))
+        return {"call": call, "turns": turns, "has_more": has_more}
 
     @app.get("/call/context")
     def call_context() -> dict:
@@ -1766,7 +1892,7 @@ def create_app(
             # (The closer was already folded into ``answer`` above,
             # appended after the model's echo so the approval question
             # never depends on it.)
-        return {
+        response = {
             "answer": answer,
             "pane_id": result.get("pane_id"),
             "agent": result.get("agent"),
@@ -1774,6 +1900,11 @@ def create_app(
             "audio_url": speak_answer(answer, cancel_event) if speak else None,
             "approval": approval,
         }
+        # Additive routing payload (S5/S7): a voice switch that must
+        # reach the client's selection, passed through verbatim.
+        if result.get("switch_pane") is not None:
+            response["switch_pane"] = result["switch_pane"]
+        return response
 
     def gate_gone() -> HTTPException:
         """404 for unknown, expired, superseded or already-resolved gates.
@@ -1858,7 +1989,12 @@ def create_app(
 
     def _replay_create_and_report(gate: ApprovalGate, speak: bool = True) -> dict:
         """Approve execution for create gates: dispatch the frozen panel
-        spec (no target — the tool creates its own pane), then report."""
+        spec (no target — the tool creates its own pane), then report.
+
+        S5/S7: an approved creation points the CALL at the new panel —
+        the same shared selection a chip tap publishes — and the
+        response carries ``switch_pane`` so the approving client applies
+        it locally too. A failed creation (tool error) switches nothing."""
         tool_result = tools.dispatch(
             CREATE_SESSION,
             {
@@ -1868,6 +2004,10 @@ def create_app(
                 "cwd": gate.action.cwd or "",
             },
         )
+        created = getattr(tools, "last_created", None)
+        created = created() if callable(created) else None
+        if created is not None:
+            call_context_store.select(created.pane_id)
         report_prompt = (
             f"The approved panel creation ran: agent kind "
             f"{gate.action.agent_kind or 'unknown'}, title "
@@ -1880,10 +2020,18 @@ def create_app(
             result = get_llm().ask(
                 report_prompt,
                 session_id=gate.session_id,
+                pane_id=created.pane_id if created is not None else None,
             )
         except BrainLLMError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-        return shape_ask_response(result, speak=speak)
+        response = shape_ask_response(result, speak=speak)
+        if created is not None:
+            response["switch_pane"] = {
+                "pane_id": created.pane_id,
+                "agent": created.agent,
+                "title": created.title or "",
+            }
+        return response
 
     @app.get("/approval/current")
     def approval_current(session_id: Optional[str] = None) -> dict:
@@ -2003,8 +2151,8 @@ def create_app(
             # content). The seam is deliberately HERE, not inside llm.ask:
             # the approve replay also calls llm.ask with a synthetic report
             # prompt, and that must never enter the call history.
-            history.append("user", body.text)
-            history.append("assistant", result.get("answer") or "")
+            history.append("user", body.text, call_id=active_call.get("call_id"))
+            history.append("assistant", result.get("answer") or "", call_id=active_call.get("call_id"))
             # S14 spoken-approval binding: when the gate-opening turn
             # carried a speech identity, THAT job is the explanation a
             # later spoken «adelante» must prove (complete delivery, not

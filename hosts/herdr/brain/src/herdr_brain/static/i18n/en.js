@@ -203,16 +203,16 @@
     "settings.aria": "Settings",
     "settings.title": "Settings",
     "settings.close_title": "Close settings",
-    "settings.voice_engine": "Voice engine",
-    "settings.voice_server": "Voice: Server",
-    "settings.voice_browser": "Voice: Browser",
-    "settings.voice_server_title": "Server engine: your voice is transcribed on the server (works with BT headsets). Tap to switch to Browser.",
-    "settings.voice_browser_title": "Browser engine: browser speech recognition (Web Speech). Tap to switch to Server.",
+    "settings.voice_engine": "Call transcription",
+    "settings.voice_server": "Dictation: Server",
+    "settings.voice_browser": "Dictation: Browser",
+    "settings.voice_server_title": "Call transcription on the server (whisper; works with BT headsets). Does not affect read-aloud. Tap to switch to Browser.",
+    "settings.voice_browser_title": "Call transcription with the browser recognizer (Web Speech). Does not affect read-aloud. Tap to switch to Server.",
     "settings.theme": "Theme",
     "settings.theme_auto": "Theme: Auto",
     "settings.theme_light": "Theme: Light",
     "settings.theme_dark": "Theme: Dark",
-    "settings.hint": "Server: transcribes in the back with whisper (robust). Browser: Chrome Web Speech (faster, less reliable on Android).",
+    "settings.hint": "Only changes how your voice is transcribed during the call; reading the screen aloud is separate. Server: whisper in the back (robust, no beeps). Browser: Chrome Web Speech (live text; on Android it beeps when each turn starts).",
     "settings.pending": "Pending",
     "settings.pending_open_aria": "See pending notices",
     "settings.pending_open": "🔔 Pending ({count})",
@@ -248,6 +248,9 @@
     "voice.audio_send_failed": "Could not send the audio to the server — {detail}.",
     "voice.network_error": "network error",
     "voice.not_understood": "I didn't understand the audio — try again.",
+    "voice.turn_cap_cut": "Turn closed at the duration limit; keep talking to continue in a new turn",
+    "voice.turn_gap": "Could not transcribe the whole turn. Nothing was sent; please repeat it.",
+    "voice.call_switched": "Call now pointing at {name}",
 
     /* ---- brain errors ---- */
     "brain.not_configured": "The brain is not configured: GLM_API_KEY is missing on the server. Set it in the service environment (for example a shell profile or an env file outside this repository) and restart the service.",
@@ -378,7 +381,26 @@
     "dock.confirm_title": "Tap again to confirm",
     "dock.cwd_missing": "Could not launch: working directory missing",
     "dock.launch_failed": "Could not launch — try again",
-    "dock.preset_failed": "Could not send the preset — try again"
+    "dock.preset_failed": "Could not send the preset — try again",
+
+    /* ---- calls history (T5) ---- */
+    "calls.title": "Calls",
+    "calls.loading": "Loading calls…",
+    "calls.empty": "No calls recorded",
+    "calls.error": "Failed to load calls",
+    "calls.status_open": "In progress",
+    "calls.status_ended": "Ended",
+    "calls.status_interrupted": "Interrupted",
+    "calls.turns_count": "{count} turns",
+    "calls.duration": "{duration}",
+    "calls.back": "← Back",
+    "calls.detail_title": "Call details",
+    "calls.detail_loading": "Loading transcript…",
+    "calls.detail_empty": "No turns in this call",
+    "calls.detail_error": "Failed to load transcript",
+    "calls.load_more": "Load more",
+    "calls.role_user": "You",
+    "calls.role_assistant": "Brain"
   };
 
   if (typeof module !== "undefined" && module.exports) {

@@ -201,6 +201,14 @@ class BrainTools:
         # LLM live context refreshes it every turn.
         self._dialog_bindings: Dict[str, Dict] = {}
         self._turn_seq: int = 0
+        # Voice session switching (S5/S7): the pane the CURRENT turn
+        # switched the call to (cleared at begin_turn; published to the
+        # shared call context when one is attached), and the panel the
+        # last successful create_session opened (the approve replay
+        # retargets the call to it).
+        self._turn_switch: Optional[AgentInfo] = None
+        self._last_created: Optional[AgentInfo] = None
+        self._call_context = None
 
     def attach_consult(self, consult: ConsultService) -> None:
         """Binds the consult service after construction.
@@ -209,6 +217,14 @@ class BrainTools:
         boot and attaches the shared service right after, and injected
         test doubles are free to skip this entirely."""
         self._consult = consult
+
+    def attach_call_context(self, context) -> None:
+        """Binds the shared call-context store after construction.
+
+        The server wires the FR-13 CallContextStore here so a voice
+        switch publishes the call's selection exactly like a chip tap;
+        doubles without the seam switch without publishing."""
+        self._call_context = context
 
     # -- tools --------------------------------------------------------------
 
@@ -240,6 +256,63 @@ class BrainTools:
             return self._track(self._herdr.active_agent())
         except HerdrError:
             return None
+
+    def _resolve_open_pane(
+        self, pane_id: str
+    ) -> tuple[Optional[AgentInfo], Optional[str]]:
+        """One uniquely-identified CURRENT open pane, or a fail-closed reason.
+
+        Consult reads (S2/S4) name a pane by the exact id the open-session
+        inventory reported. The identity resolves against a FRESH pane
+        listing only, so a pane that closed since the inventory is unknown
+        — and unknown, ambiguous and unavailable all fail closed instead
+        of ever falling back to the selected pane (the same exact-pane
+        discipline as :meth:`pane_info`). The resolved pane is NOT
+        tracked: consulting another pane never redirects later writes or
+        changes the global selection.
+        """
+        try:
+            agents = self._herdr.list_agents()
+        except HerdrError as exc:
+            return None, f"error listing open panes: {exc}"
+        matches = [agent for agent in agents if agent.pane_id == pane_id]
+        if not matches:
+            return None, (
+                f"error: unknown pane {pane_id}: not currently open; call "
+                "list_open_sessions and pass one of those pane ids"
+            )
+        if len(matches) > 1:
+            return None, (
+                f"error: ambiguous pane {pane_id}: matches {len(matches)} "
+                "open panes; refusing to pick one"
+            )
+        return matches[0], None
+
+    def switch_session(self, pane_id: str) -> str:
+        """Points the CALL at another currently-open pane (S5/S7).
+
+        The routing twin of a chip tap, not a write: the named pane
+        resolves with the same fail-closed discipline as every
+        named-pane read (unknown, stale, ambiguous and unavailable ids
+        are errors to relay), then becomes the request target for the
+        REST of the turn — a same-turn gated send freezes against the
+        new pane — and is published to the shared call context so the
+        other device follows. Switching executes nothing and never
+        touches a live approval gate (gates stay bound to the pane they
+        were proposed for).
+        """
+        resolved, error = self._resolve_open_pane(pane_id)
+        if resolved is None:
+            return error or f"error: unknown pane {pane_id}"
+        self._track(resolved)
+        self._turn_switch = resolved
+        if self._call_context is not None:
+            try:
+                self._call_context.select(resolved.pane_id)
+            except Exception:  # noqa: BLE001 — publishing is best-effort routing
+                pass
+        label = resolved.title or resolved.agent or resolved.pane_id
+        return f"Llamada apuntando a {label} ({resolved.pane_id})."
 
     def status_payload(self) -> dict:
         """Active-pane status dict, degrading to {active: false} on errors."""
@@ -803,7 +876,16 @@ class BrainTools:
         turn, because the user's words must postdate the explanation.
         """
         self._turn_seq += 1
+        self._turn_switch = None  # a switch never leaks into a later turn
         return self._turn_seq
+
+    def turn_switch(self) -> Optional[AgentInfo]:
+        """The pane a switch_session call moved THIS turn's call to."""
+        return self._turn_switch
+
+    def last_created(self) -> Optional[AgentInfo]:
+        """The panel the last successful create_session opened."""
+        return self._last_created
 
     def explain_dialog(self, target: Optional[AgentInfo]) -> Optional[dict]:
         """Returns the target's dialog when it must be SPOKEN now, else None.
@@ -1084,13 +1166,31 @@ class BrainTools:
             payload["detail"] = "0 open sessions."
         return json.dumps(payload, ensure_ascii=False)
 
-    def read_transcript(self, n_turns: int = 10, target: Optional[AgentInfo] = None) -> str:
+    def read_transcript(
+        self,
+        n_turns: int = 10,
+        target: Optional[AgentInfo] = None,
+        pane_id: Optional[str] = None,
+    ) -> str:
         """Recent user/assistant turns for the target's session.
 
         Preferred path for state/history questions. Falls back to a screen
         read when the transcript connector cannot serve the session.
+
+        ``pane_id`` (S2/S4) consults ANOTHER currently-open pane instead:
+        it resolves uniquely against a fresh pane listing
+        (:meth:`_resolve_open_pane`) and never falls back — unknown,
+        stale, ambiguous or unavailable ids fail closed as error strings
+        rather than silently reading the selected pane. The consult
+        changes no selection and no write target, and rides the same
+        bounded, masked transcript path as the selected-pane read.
         """
-        active = self._resolve(target)
+        if pane_id:
+            active, error = self._resolve_open_pane(pane_id)
+            if active is None:
+                return error
+        else:
+            active = self._resolve(target)
         if active is None:
             return "error: no active agent pane"
         if active.session_value:
@@ -1469,18 +1569,19 @@ class BrainTools:
                 return f"error starting agent: {exc} (tab {tab_id} was created)"
         # The new pane is now the conversation's focus: track it the same
         # way every resolve does, so subsequent reads target the new panel.
-        self._track(
-            AgentInfo(
-                pane_id=pane_id,
-                agent=name,
-                status="idle",
-                session_kind="",
-                session_value="",
-                cwd=clean_cwd,
-                title=clean_title,
-                focused=True,
-            )
+        created_info = AgentInfo(
+            pane_id=pane_id,
+            agent=name,
+            status="idle",
+            session_kind="",
+            session_value="",
+            cwd=clean_cwd,
+            title=clean_title,
+            focused=True,
         )
+        self._track(created_info)
+        # The approve replay retargets the call to the panel it opened.
+        self._last_created = created_info
         clean_task = (task or "").strip()
         if not clean_task:
             return (
@@ -1669,6 +1770,7 @@ class BrainTools:
             "create_session": self.create_session,
             "answer_dialog": self.answer_dialog,
             "stop_agent": self.stop_pane,
+            "switch_session": self.switch_session,
             "consult_work_status": self.consult_work_status,
             "consult_history": self.consult_history,
             "get_followup_context": self.get_followup_context,
@@ -1709,9 +1811,31 @@ class BrainTools:
                     ": " + stopped["detail"] if stopped["detail"] else ""
                 )
             if name == "read_transcript":
-                return handler(int(arguments.get("n_turns", 10)), target)
+                # S2/S4 pane consult: a model-named pane_id retargets the
+                # READ only (resolved fail-closed inside the tool); absent,
+                # empty or whitespace means "the selected pane", exactly
+                # as before. Reject other types rather than silently using
+                # the selected pane or matching a stringified value.
+                pane_id = arguments.get("pane_id")
+                if pane_id is not None and not isinstance(pane_id, str):
+                    raise TypeError("pane_id must be a string")
+                if pane_id is not None:
+                    pane_id = pane_id.strip() or None
+                return handler(
+                    int(arguments.get("n_turns", 10)),
+                    target,
+                    pane_id=pane_id,
+                )
             if name == "read_screen":
                 return handler(int(arguments.get("n_lines", 40)), target)
+            if name == "switch_session":
+                # Same discipline as read_transcript's pane_id: strings
+                # only, other types are invalid arguments (never a silent
+                # switch to the selected pane).
+                pane_id = arguments.get("pane_id")
+                if pane_id is not None and not isinstance(pane_id, str):
+                    raise TypeError("pane_id must be a string")
+                return handler(pane_id.strip() if pane_id else "")
             if name == "consult_work_status":
                 return handler(
                     str(arguments.get("projects", "")),
@@ -1848,7 +1972,10 @@ TOOLS_SCHEMA = [
                 "Cheap and local: the recent real user/assistant turns of the "
                 "selected session. Use this FIRST for what happened, state, history "
                 "or summaries within that session, not an open-session inventory "
-                "or cross-project past work."
+                "or cross-project past work. To consult a DIFFERENT open pane, "
+                "pass its pane_id exactly as list_open_sessions reported it; "
+                "unknown, closed or ambiguous pane ids fail — relay the error, "
+                "never read another pane instead."
             ),
             "parameters": {
                 "type": "object",
@@ -1856,6 +1983,15 @@ TOOLS_SCHEMA = [
                     "n_turns": {
                         "type": "integer",
                         "description": "How many recent turns to read (default 10).",
+                    },
+                    "pane_id": {
+                        "type": "string",
+                        "description": (
+                            "Optional pane_id from list_open_sessions whose "
+                            "recent turns to read instead of the selected "
+                            "session's. Omit it to keep reading the selected "
+                            "session."
+                        ),
                     },
                 },
                 "required": [],
@@ -1879,6 +2015,35 @@ TOOLS_SCHEMA = [
                     },
                 },
                 "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "switch_session",
+            "description": (
+                "Points the CALL at another open pane when the user asks to "
+                "switch ('cámbiate al panel de pagos', 'ahora pregúntale al "
+                "otro'). Get the exact pane_id from list_open_sessions; "
+                "unknown, closed or ambiguous ids fail — relay the error and "
+                "keep the current target. This only changes routing: it "
+                "executes nothing, and sends, dialogs and stops still follow "
+                "the normal approval flow. State the new target in your "
+                "answer so the user hears where the call points now."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pane_id": {
+                        "type": "string",
+                        "description": (
+                            "Exact pane_id from list_open_sessions to point "
+                            "the call at."
+                        ),
+                    },
+                },
+                "required": ["pane_id"],
             },
         },
     },

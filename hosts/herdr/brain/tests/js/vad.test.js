@@ -2,7 +2,8 @@
 
 const test = require("node:test");
 const assert = require("node:assert");
-const { createVad } = require("../../src/herdr_brain/static/vad.js");
+const Vad = require("../../src/herdr_brain/static/vad.js");
+const { createVad } = Vad;
 
 function fakeClock(start = 0) {
   let t = start;
@@ -20,12 +21,94 @@ test("conversational VAD defaults to 800ms with configurable 700/900ms endpoints
     const clock = fakeClock();
     const vad = createVad({ now: clock.now, ...(silenceMs === undefined ? {} : { silenceMs }) });
     vad.push(SPEECH);
-    clock.advance((silenceMs ?? 800) - 1);
+    clock.advance((silenceMs ?? Vad.DEFAULT_SILENCE_MS) - 1);
     vad.push(QUIET);
     assert.equal(vad.shouldFinalize(), false);
     clock.advance(1);
     assert.equal(vad.shouldFinalize(), true);
   }
+});
+
+test("explicit silenceMs alone keeps the baseline flat behavior (parent repro)", () => {
+  const clock = fakeClock();
+  const vad = createVad({ now: clock.now, silenceMs: 800 });
+  vad.push(SPEECH);                 // t=0
+  clock.advance(5000);
+  vad.push(SPEECH);                 // still speech at t=5000 (5s span)
+  clock.advance(799);
+  vad.push(QUIET);
+  assert.equal(vad.shouldFinalize(), false);  // 799ms < the configured 800ms
+  clock.advance(1);                           // t=5800
+  assert.equal(vad.shouldFinalize(), true);   // exact 800ms after the last loud frame
+});
+
+test("default configuration never grows the silence window", () => {
+  const clock = fakeClock();
+  const vad = createVad({ now: clock.now });
+  clock.advance(100);
+  vad.push(SPEECH);
+  for (let ms = 0; ms < 5000; ms += 100) { clock.advance(100); vad.push(SPEECH); }
+  clock.advance(799);
+  assert.equal(vad.shouldFinalize(), false);
+  clock.advance(1);
+  assert.equal(vad.shouldFinalize(), true);   // flat 800ms despite the 5s span
+});
+
+test("opted-in silence budget grows with utterance length so pauses stop splitting turns", () => {
+  const clock = fakeClock();
+  const vad = createVad({ now: clock.now, silenceMs: 1200, silenceGrowthPerS: 200, maxSilenceMs: 2500 });
+  clock.advance(100);
+  vad.push(SPEECH);                          // gate opens at t=100
+  for (let ms = 0; ms < 5000; ms += 100) {   // 5s of continuous speech
+    clock.advance(100);
+    vad.push(SPEECH);
+  }
+  // 5s of speech -> budget 1200 + 5*200 = 2200ms. A natural 1.6s thinking
+  // pause mid-turn must NOT finalize the utterance.
+  clock.advance(1600);
+  vad.push(QUIET);
+  assert.equal(vad.shouldFinalize(), false);
+  clock.advance(600);                        // silence reaches 2200ms
+  assert.equal(vad.shouldFinalize(), true);
+});
+
+test("opted-in silence budget is bounded by the 2500ms ceiling", () => {
+  const clock = fakeClock();
+  const vad = createVad({ now: clock.now, silenceMs: 1200, silenceGrowthPerS: 200, maxSilenceMs: 2500 });
+  clock.advance(100);
+  vad.push(SPEECH);
+  for (let ms = 0; ms < 10000; ms += 100) {  // 10s of speech: growth saturates
+    clock.advance(100);
+    vad.push(SPEECH);
+  }
+  clock.advance(2400);
+  vad.push(QUIET);
+  assert.equal(vad.shouldFinalize(), false);  // 2400ms < 2500ms ceiling
+  clock.advance(100);
+  assert.equal(vad.shouldFinalize(), true);
+});
+
+test("silenceGrowthPerS 0 keeps a flat silence window (previous behavior)", () => {
+  const clock = fakeClock();
+  const vad = createVad({ now: clock.now, silenceMs: 1200, silenceGrowthPerS: 0 });
+  clock.advance(100);
+  vad.push(SPEECH);
+  for (let ms = 0; ms < 5000; ms += 100) { clock.advance(100); vad.push(SPEECH); }
+  clock.advance(1199);
+  assert.equal(vad.shouldFinalize(), false);
+  clock.advance(1);
+  assert.equal(vad.shouldFinalize(), true);
+});
+
+test("maxSilenceMs never sits below the base silence window", () => {
+  const clock = fakeClock();
+  const vad = createVad({ now: clock.now, silenceMs: 2000, maxSilenceMs: 500 });
+  clock.advance(100);
+  vad.push(SPEECH);
+  clock.advance(1999);
+  assert.equal(vad.shouldFinalize(), false);
+  clock.advance(1);
+  assert.equal(vad.shouldFinalize(), true);
 });
 
 test("configured VAD cannot exceed the 60-second safety cap", () => {
@@ -118,6 +201,67 @@ test("15s default hard cap finalizes even with continuous speech", () => {
     vad.push(SPEECH);  // never silent: the cap must end it
   }
   assert.equal(vad.shouldFinalize(), true);
+  assert.equal(vad.lastFinalizeReason(), "cap");
+});
+
+test("utteranceCapMs replaces the legacy cap and reports its own reason", () => {
+  const clock = fakeClock();
+  const vad = createVad({ now: clock.now, utteranceCapMs: 30000 });
+  clock.advance(100);
+  vad.push(SPEECH);
+  for (let ms = 0; ms < 29000; ms += 100) {
+    clock.advance(100);
+    vad.push(SPEECH);
+  }
+  assert.equal(vad.shouldFinalize(), false);  // the legacy 15s cap is NOT active
+  for (let ms = 0; ms < 1000; ms += 100) {
+    clock.advance(100);
+    vad.push(SPEECH);
+  }
+  assert.equal(vad.shouldFinalize(), true);   // bounded at the configured 30s
+  assert.equal(vad.lastFinalizeReason(), "utteranceCap");
+});
+
+test("shouldSegment marks recorder-rotation boundaries only while speech runs", () => {
+  const clock = fakeClock();
+  // The app's server-engine profile: segments at 45s, far utterance cap.
+  const vad = createVad({
+    now: clock.now, silenceMs: 1200, silenceGrowthPerS: 200, maxSilenceMs: 2500,
+    segmentMs: 45000, utteranceCapMs: 600000,
+  });
+  assert.equal(vad.shouldSegment(), false);   // no speech yet
+  clock.advance(100);
+  vad.push(SPEECH);
+  for (let ms = 0; ms < 44000; ms += 100) { clock.advance(100); vad.push(SPEECH); }
+  assert.equal(vad.shouldSegment(), false);   // 44.1s < 45s since speech began
+  clock.advance(1000);                        // speech is 45s old (started t=100)
+  vad.push(SPEECH);
+  assert.equal(vad.shouldSegment(), true);    // crossed the boundary mid-speech
+  vad.markSegment();                          // caller rotated the recorder
+  clock.advance(1000);
+  vad.push(SPEECH);
+  assert.equal(vad.shouldSegment(), false);   // re-armed for the next segment
+  assert.equal(vad.shouldFinalize(), false);  // segmentation never ends the turn
+});
+
+test("without segmentMs shouldSegment never fires", () => {
+  const clock = fakeClock();
+  const vad = createVad({ now: clock.now });
+  clock.advance(100);
+  vad.push(SPEECH);
+  clock.advance(60000);
+  vad.push(SPEECH);
+  assert.equal(vad.shouldSegment(), false);
+});
+
+test("silence finalize reports the silence reason", () => {
+  const clock = fakeClock();
+  const vad = createVad({ now: clock.now });
+  clock.advance(100);
+  vad.push(SPEECH);
+  clock.advance(2000);
+  assert.equal(vad.shouldFinalize(), true);
+  assert.equal(vad.lastFinalizeReason(), "silence");
 });
 
 test("shouldFinalize latches: true exactly once until reset", () => {

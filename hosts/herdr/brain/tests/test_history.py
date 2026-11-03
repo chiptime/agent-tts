@@ -78,7 +78,7 @@ class TestAppendLoad:
             row = cursor.fetchone()
         finally:
             conn.close()
-        assert columns == {"id", "ts", "role", "text"}
+        assert columns == {"id", "ts", "role", "text", "call_id"}
         assert (row[1], row[2], row[3]) == (store.load()[0]["ts"], "user", "hola")
 
     def test_append_empty_text_is_stored_as_empty_string(self, tmp_path):

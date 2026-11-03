@@ -96,7 +96,7 @@ class RealMediaApp:
         names = ("index.html", "app.js", "karaoke.js", "toast.js", "reader.js", "speech.js",
                  "announce.js", "approval.js", "consult.js", "endpointing.js", "vad.js",
                  "herd-group.js", "manifest.webmanifest", "icon.svg",
-                 "mermaid.min.js", "mermaid-viewer.js", "tts-engine.js", "pairing.js", "destructive.js", "history.js", "dialogs.js", "receipts.js", "push.js",
+                 "mermaid.min.js", "mermaid-viewer.js", "tts-engine.js", "pairing.js", "destructive.js", "history.js", "dialogs.js", "receipts.js", "push.js", "calls.js",
                  "i18n.js", "i18n/es.js", "i18n/en.js", "settings.js", "updates.js", "dock.js")
         self.static = {"/" + name: STATIC / name for name in names}
         self.static["/"] = STATIC / "index.html"
@@ -105,6 +105,7 @@ class RealMediaApp:
                 {"role": "user", "text": "Synthetic question", "ts": "2026-01-01T00:00:00Z"},
                 {"role": "brain", "text": ANSWER, "ts": "2026-01-01T00:00:01Z"},
             ], "has_more": False}, {"before", "limit"}),
+            "/calls": ({"calls": [], "has_more": False}, {"before", "limit"}),
             "/herd": ([], set()),
             # Device pairing boot poll (F1): unpaired default keeps the
             # pre-F1 stance.
@@ -162,6 +163,10 @@ class RealMediaApp:
                     return route.fulfill(json={"answer": ANSWER, "audio_url": "/audio/sample.mp3"})
                 if path == "/reset" or path in {"/speech/" + job + "/cancel" for job in self.jobs}:
                     return route.fulfill(json={"status": "cancelled", "ok": True})
+                if path == "/call/start":
+                    return route.fulfill(json={"call_id": "call-synthetic-1", "started_at": "2026-01-01T00:00:00Z"})
+                if path == "/call/end":
+                    return route.fulfill(json={"call_id": "call-synthetic-1", "status": "ended"})
             if method == "GET" and not query and path in {"/audio/" + name for name in self.audio}:
                 if self.hold_audio:
                     self.held_audio.append(route)

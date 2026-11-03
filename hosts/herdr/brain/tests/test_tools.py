@@ -681,6 +681,8 @@ class TestDispatch:
             # On-demand consult surface (T9): read-only, no approval gate.
             "consult_work_status", "consult_history",
             "get_followup_context", "end_followup",
+            # S5/S7: voice switching of the call's target pane.
+            "switch_session",
         }
 
     def test_stop_agent_schema_is_gated_and_argument_free(self):

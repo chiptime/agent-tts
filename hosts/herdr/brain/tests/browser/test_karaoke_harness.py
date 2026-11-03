@@ -30,9 +30,14 @@ EXPECTED_DIGESTS = {
     # long-press in the composer, receipts.js); then for S5/S13 (the
     # Avisos push card + push.js, the Mensaje composer, and the sw.js
     # push/notificationclick handlers); then for the Zen exit control
-    # (floating exit button, Escape exits Zen, i18n labels, setZen).
-    "/": "378143ff1d202fef5232b5edfe3eb96ecbb16156be5840a33329d908acc9b5f8",
-    "/app.js": "2c7fbacf512611c5c9bd32d13d395451e3c8a41c8b442262816d5dce56e7d31c",
+    # (floating exit button, Escape exits Zen, i18n labels, setZen);
+    # then for the call continuation window, the silent Android speech
+    # gate for the Browser engine and the "call transcription" settings
+    # labels (index.html, app.js + both i18n); then for the glance
+    # click-to-speech handover to the Web Speech engine (click on text
+    # indexes the turn and plays in-browser, server audio stops).
+    "/": "34bf4b30e2da9c0a29df2b3b8658693293e410da33ca9da7e0f6158312d98fd3",
+    "/app.js": "769079c202e86cb6d8db2524aa7f2c3ebbc5e60a23d3a376654e4d8a766ffb58",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "ca7b22c52c8160a3ac577f694eb65ec0798b77cd6ac179a5c567dffdc1fb2ba9",
     "/dialogs.js": "0e5b6afde7ef662591f66fc69891e3b1ec343fafe0d2c5be8fbef0c5a124a4c0",
@@ -45,18 +50,19 @@ EXPECTED_DIGESTS = {
     # approval-binding and B1–B8 correction changes (gate speech id +
     # explanation receipts, clarify identity, item-aware playback proof);
     # no other static bytes changed.
-    "/approval.js": "0254382dac1fd1be00d608d2476a1ec82582dfd502a48bad6a0c5cc8041d741f",
+    "/approval.js": "af8c8517ec62e9ee8bc82aa9804e2656c722c690164c07709c1e1e32f70c8c8d",
     "/consult.js": "fc2e4d18c206164fcec7a8baf2be1697e5b6d86152ed12c432169a70c1113bc4",
-    "/endpointing.js": "86c1b18218b22d9f2a812b3209322f7691eb468019a53278653f5375326f0664",
-    "/vad.js": "fcce79bcf4182dc493dbae6c3f790cf5a1a83ccc0d45714c520b612f87dbf4d1",
+    "/endpointing.js": "7f5b6e58ecbae33f3134625fb242e6f5b5001c579714ad79cddb18f4044eb9f8",
+    "/vad.js": "0bb7e5891c2da564aa1ab88b763a6d85381f374b0ed4c90e8eab498b4ffe2cad",
     # S4/S3 PWA unit: i18n runtime + dictionaries, settings sheet,
     # update notice, operator dock, offline-shell sw.js.
     "/dock.js": "4a5dc20d575c3c9e5f098116fc9314f24297b2934cb3142bc885b6e1d0155adb",
     "/i18n.js": "8bcd2ceb9f56109afaa0ec158e1a6f002799c4a983261b9d58cd38723c06719f",
-    "/i18n/en.js": "231f7c1b1bbd591fd9dbb6178aa8b553367d093a6a7b103de3f6f321a55e9e77",
-    "/i18n/es.js": "c44cabfc28ef5d25cc83bc14d86e372283987502eb0f831c797803f37e346db7",
+    "/i18n/en.js": "754dff121d28fab91eecf7e91d23fc946bdec148595f42cdbdd7d418c917ca1b",
+    "/i18n/es.js": "efb584ae7a956b7eb74c4dce39a832de589e0101028ed75af79fec9750227fac",
     "/settings.js": "1c2cf3ed92bf959c19ecde0107618b8d1ff0690d2c6fa7c842a2fdc551e05f72",
     "/updates.js": "7f87250cf6cd9c2b8944da632fe036d0c18a87a90f48f70b84e18bcd338cfa84",
+    "/calls.js": "7bf67180b41dedc9dafaf0ce9e95413c7204ebd49da6de80c2133b27e17870c7",
 }
 
 

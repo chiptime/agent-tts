@@ -18,14 +18,78 @@ not claim that every live model response will obey it.
 
 ## Endpointing
 
-Conversational endpointing now uses **800 ms of silence** by default in both
-the browser transcript endpointer and the local-engine RMS VAD. Their existing
-`silenceMs` option supports tuning, including 700–900 ms conversational values.
-Explicit legacy thresholds remain supported.
+The call uses an adaptive silence window in both the browser transcript
+endpointer and the server-engine RMS VAD: it starts at **1.2 seconds** and
+grows with the utterance to at most **2.5 seconds**. Longer turns therefore
+allow longer thinking pauses, at the cost of a longer wait before a reply.
+The standalone helpers retain their previous defaults and explicit options.
 
-The default utterance hard cap remains 15 seconds. The existing `hardCapMs`
-option can increase it, but never beyond the **60-second safety ceiling**.
-Silence before the first speech frame does not consume this budget.
+The server voice engine rotates its recorder every 45 seconds of continuous
+speech, transcribes the segments in order and sends one combined turn after
+the user stops. If a segment cannot be transcribed, the incomplete turn is
+not sent; the call asks the user to repeat it. An uninterrupted turn has a
+10-minute safety limit, which is announced when reached.
+
+When silence closes a phrase, the server engine keeps capturing for a
+**1.5-second continuation window** while that phrase is already being
+transcribed. If the user speaks again inside the window, the new speech
+joins the same turn instead of starting a second one; otherwise the turn is
+sent and the quiet captured during the window is discarded. Because the
+window overlaps the transcription, it adds little reply latency. A phrase
+that transcribes to nothing (a cough or breath before resuming) does not
+void the turn; an empty segment cut by the 45-second rotation still does.
+
+The call transcription engine (Settings → "Call transcription":
+Server or Browser) is the user's choice on every platform and only affects
+how the call hears the user; reading the screen aloud is a separate
+feature. Android's Web Speech recognizer plays a system beep on every
+start and ends its session at each short pause, and a web page cannot
+silence that beep. With the Browser engine on Android, an idle mic is
+therefore watched by a silent getUserMedia speech gate, and recognition
+starts only when the user begins to speak: the beep marks the start of a
+turn (and a session Android ends mid-turn), never an idle loop. The first
+syllable can be clipped while the recognizer opens; the Server engine
+never beeps. Independent segment
+transcriptions can still misrecognize a word at a segment boundary; real
+device testing is needed to assess recognition and acoustic performance.
+
+## Open-pane context
+
+The selected pane remains the default for questions and actions. For a
+question about another open Herdr agent pane, the assistant can list the
+open sessions and call `read_transcript` with that pane's ID. Unknown,
+closed or ambiguous IDs are refused rather than redirected to the selected
+pane. A read does not change the selected pane or the target of later
+actions, and other transcripts are not inserted into every prompt.
+
+## In-call session switching
+
+By voice, "cámbiate al panel de pagos" retargets the call: the
+`switch_session` tool resolves the named pane against the CURRENT open
+listing (fail-closed on unknown, stale, ambiguous or malformed ids),
+makes it the request target for the rest of the turn — a same-turn
+gated send freezes against the new pane — and publishes the shared
+selection exactly like a chip tap, so the other device follows. The
+/ask-shaped response carries an additive `switch_pane` field the client
+applies, confirming out loud (and via toast) where the call points now.
+An approved `create_session` replay retargets the call to the new panel
+through the same field. Switching executes nothing: sends, dialogs and
+stops keep their approval gates, and a live gate stays bound to the
+pane it was proposed for.
+
+## Call history
+
+Each call is recorded separately: `POST /call/start` opens a record
+(started_at, and any call left open by a crash or restart is closed as
+`interrupted` on the next start), every turn of the active call is
+tagged with its call id, and `POST /call/end` finalizes duration and
+turn count. The PWA's drawer gains a "Llamadas" section (static/
+calls.js): a list of past calls (date, duration, turns, status) that
+opens each call's masked transcript, paginated. The LLM's conversation
+memory is unchanged — still the single global compacted ring — and the
+legacy `GET /call-history` keeps serving it. Honest limits: a server
+restart mid-call loses the active-call link (those turns land untagged
+and the record closes as interrupted at the next start).
 
 ## Barge-in (interrupting the assistant by voice)
 

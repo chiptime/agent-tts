@@ -54,6 +54,7 @@ SYSTEM_PROMPT = """You are herdr-brain, the user's hands-free voice assistant �
 Capabilities:
 - You can read the selected agent's real transcript (recent user/assistant turns) and what its terminal shows right now, and answer from what you actually read.
 - You can list ALL open sessions, including idle agents, with a cheap read-only metadata query; the selected session is not the whole inventory.
+- You can consult any OTHER open pane on demand: list the panes (list_open_sessions), then read one pane's recent turns by passing its exact pane_id to read_transcript.
 - You can forward new work to the active agent and wait until it finishes, then report the outcome.
 - Your answers are spoken aloud: the service renders the speech after you answer, so write clean speakable text.
 
@@ -73,6 +74,8 @@ Terminal question dialogs (a blocked agent waiting on numbered options):
 Routing policy:
 - Selected session: for its state, recent history, summaries or doubts about what happened, answer yourself using live context and read_transcript (preferred — cheap and local), or read_screen as fallback; get_status re-checks only that selected session. NEVER send anything to the agent session for these.
 - Open sessions: for 'which sessions/agents are open?' use list_open_sessions — a cheap metadata-only inventory of ALL open sessions, including idle, from any selected pane. Do not use a selected-session view or consult_work_status for a simple listing.
+- Another open pane: for the state or recent history of a DIFFERENT pane the user names, first list_open_sessions for its exact pane_id, then read_transcript with that pane_id. The consult is read-only and never changes which pane your sends, approvals, dialogs or stop proposals target; an unknown, closed or ambiguous pane id is an error to relay to the user — never silently read the selected or another pane instead.
+- Switching the call: when the user asks to point the call at another open pane ("cámbiate al panel de pagos"), call switch_session with the exact pane_id from list_open_sessions and then state the new target out loud. A switch only changes routing; it never executes anything and never affects a pending approval. After an approved panel creation the call points at the new panel automatically.
 - Overall project state: use consult_work_status (slow consolidated global report) ONLY when the user explicitly asks about overall/global work state across projects.
 - Past work: use consult_history for historical work across development chats and Engram; recent history within the selected session stays on read_transcript. These read-only questions never send work to an agent.
 - New work or actions: forward them with send_to_session and wait for completion, then report the result. Do not do the agent's work yourself.
@@ -479,6 +482,13 @@ class BrainLLM:
                     result, gate = self._invoke(call, session_key=key, turn_text=question)
                     if gate is not None:
                         opened_gate = gate
+                    # A voice switch mid-turn retargets the REST of the
+                    # turn (a same-turn gated send freezes on the new pane).
+                    switched = getattr(self._tools, "turn_switch", None)
+                    if callable(switched):
+                        switched = switched()
+                    if switched is not None:
+                        self._request_target = switched
                     messages.append(
                         {"role": "tool", "tool_call_id": call.id, "content": result}
                     )
@@ -495,7 +505,7 @@ class BrainLLM:
         store.append(key, "user", question)
         store.append(key, "assistant", answer)
 
-        return {
+        response = {
             # The answer leaves masked (S14) — it is the /ask response
             # text and the spoken render — while the ring above keeps
             # the raw model output for internal continuity.
@@ -505,6 +515,18 @@ class BrainLLM:
             "session_id": key,
             "approval": opened_gate,
         }
+        # Additive routing payload (S5/S7): the pane a voice switch
+        # pointed the call at, so the client applies the selection.
+        switched = getattr(self._tools, "turn_switch", None)
+        if callable(switched):
+            switched = switched()
+        if switched is not None:
+            response["switch_pane"] = {
+                "pane_id": switched.pane_id,
+                "agent": switched.agent,
+                "title": mask_text(switched.title or ""),
+            }
+        return response
 
     @staticmethod
     def _masked_for_provider(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

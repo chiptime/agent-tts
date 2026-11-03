@@ -1091,22 +1091,34 @@ sheet with two tabs — **Conversación** (last 20 turns, full text) and
 
 ### The call is continuous
 
-One tap starts the call; it stays open. The state machine is
-`listening → thinking → speaking → listening`: the mic is forced off while
-any audio plays so it never hears its own voice, tapping the state pill
-while speaking is barge-in (cuts the audio, back to listening), and a pause
-button shuts the mic up without ending the call. Persistent recognition
-failure falls back to keyboard input with a notice.
+One tap starts the call; it stays open. The state machine moves between
+listening, recording, transcription, thinking and speaking; a pause button
+stops the mic without ending the call. During server-engine playback, voice
+barge-in is enabled only when the capture track reports echo cancellation;
+otherwise the call remains half-duplex. Persistent recognition failure falls
+back to keyboard input with a notice.
 
-Voice turns are **self-endpointed** (`static/endpointing.js`, pure logic,
-unit-tested with `node:test`): Chrome often never finalizes interim
-results, so the brain dispatches on `isFinal`, on **1200 ms of interim
-silence**, or at a **15 s hard cap** from speech start — whichever comes
-first. After dispatch the mic stays off through `/ask` + TTS and restarts
-when the answer finishes. All user-facing labels are Spanish; the UI
-follows light/dark automatically. Answers are spoken in full — the
-renderer's char guard is 4000 chars and digest shortening (`--tldr`) is
-never applied to chat answers.
+Voice turns are **self-endpointed**: the call's silence window grows from
+1.2 to 2.5 seconds for longer utterances. The server engine transcribes
+45-second recorder segments in order and sends one combined turn after the
+user finishes; a failed or unrecognized segment prevents sending an
+incomplete turn. After a phrase ends, speech that resumes within a
+1.5-second continuation window joins the same turn. The engine (Settings →
+"Call transcription") stays selectable; on Android the Browser engine
+starts Web Speech only when speech begins, so its beep marks a turn instead
+of looping while idle. A continuously active turn is capped at 10 minutes with a
+visible notice. The standalone endpointing helpers retain their legacy
+defaults. See [hands-free details](docs/HANDS-FREE.md) for acoustic and
+segment-boundary limitations. Answers are spoken in full — the renderer's
+char guard is 4000 chars and digest shortening (`--tldr`) is never applied
+to chat answers.
+
+Inside a call you can manage the session by voice: "cámbiate al panel de
+pagos" retargets the call through `switch_session` (fail-closed pane ids,
+spoken confirmation, other devices follow via the shared call context),
+and an approved voice-created panel becomes the call's target. Every call
+is recorded (start, end, duration, turns) and browsable in the drawer's
+**Llamadas** section, while the LLM's memory stays the single global ring.
 
 Every async surface has Spanish loading/empty/error states, and the agent
 sheet shows a diagnostics line (**Última consulta / Último error**) to make
@@ -1145,12 +1157,14 @@ Tool calls the LLM makes during `/ask` are audit-logged to the
 `herdr_brain.tool_calls` logger with name + truncated arguments (never full
 payloads).
 
-## Tools exposed to the LLM (fase 1: active pane only)
+## Tools exposed to the LLM (selected pane by default)
 
 | Tool | Reads/Writes | Purpose |
 |---|---|---|
 | `get_status` | read | agent kind, status, pane id, session id, cwd, title |
-| `read_transcript(n_turns)` | read | recent user/assistant turns (preferred for Q&A) |
+| `list_open_sessions` | read | discover open agent panes and their metadata |
+| `read_transcript(n_turns, pane_id?)` | read | recent user/assistant turns from the selected pane or another currently open pane |
+| `switch_session(pane_id)` | read (routing) | point the CALL at another open pane by voice; fail-closed ids, no effect on approval gates |
 | `read_screen(n_lines)` | read | visible terminal text (fallback) |
 | `send_to_session(text, timeout_ms?)` | **write** | forward new work, wait for completion |
 | `stop_agent` | **write, gated** | interrupt the selected session's running turn; proposes the approval gate, executes on confirmation |
@@ -1160,7 +1174,9 @@ param, /ask body field) to operate on any agent in the herd; the default is
 the focused pane. The live context block marks the selection explicitly
 (`Selected agent: … — focused: yes/no`), and a stale pane_id falls back to
 the focused one. Conversation memory stays keyed by the client session id —
-selection is per-request.
+selection is per-request. For `read_transcript`, a named pane must resolve
+uniquely in the current open-pane list; a stale or unknown ID is refused.
+Reading another pane does not change the target of subsequent actions.
 
 The system prompt carries the full harness: the assistant identity, concrete
 capabilities, honesty rules (never invent transcript or screen content; a

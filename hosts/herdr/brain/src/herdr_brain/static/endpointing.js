@@ -55,8 +55,20 @@
  *   silence/hard-cap clocks. Any change of the interim text marks
  *   speech activity and resets the silence timer.
  * - shouldFinalize(): true when there is speech AND either
- *   (a) silence_ms elapsed since the last combined-text change, or
- *   (b) hard_cap_ms elapsed since speech began.
+ *   (a) the silence window elapsed since the last combined-text change
+ *       (800ms default — the exact legacy behavior; callers OPT IN to a
+ *       grown window via silenceGrowthPerS/maxSilenceMs, 200ms per second
+ *       of speech with a ceiling, so a natural pause inside a long turn
+ *       does not split it), or
+ *   (b) the active cap elapsed since speech began: the legacy hard cap
+ *       (15s default, 60s max) — or, when the caller opts in with
+ *       utteranceCapMs, that far bound instead, for callers whose turns
+ *       must survive long monologues (text accumulation bounds memory;
+ *       the cap exists for pathological never-quiet input only).
+ *   The reason for the last true verdict is exposed via
+ *   lastFinalizeReason() ("silence" | "cap" | "utteranceCap") so a caller
+ *   can surface a bound-driven close honestly — a bound never drops the
+ *   captured words.
  * - finalize(): returns the combined text and resets everything, but
  *   remembers the dispatched text (folded words + time) for the
  *   re-emission guard above; reset() deliberately keeps that memory —
@@ -69,16 +81,30 @@
 (function (global) {
   "use strict";
 
-  var DEFAULT_SILENCE_MS = 800;
+  var DEFAULT_SILENCE_MS = 800;              // silence window at utterance start
+  var DEFAULT_SILENCE_GROWTH_PER_S_MS = 0;   // OPT-IN: growth per second of speech
   var DEFAULT_HARD_CAP_MS = 15000;
   var MAX_HARD_CAP_MS = 60000;
+  var MIN_UTTERANCE_CAP_MS = 1000;           // opt-in utteranceCapMs sanity range
+  var MAX_UTTERANCE_CAP_MS = 3600000;
   var DEFAULT_DUPLICATE_WINDOW_MS = 5000;
 
   function createEndpointer(options) {
     options = options || {};
     var silenceMs = typeof options.silenceMs === "number" ? options.silenceMs : DEFAULT_SILENCE_MS;
+    var silenceGrowthPerS = typeof options.silenceGrowthPerS === "number" &&
+      options.silenceGrowthPerS >= 0 ? options.silenceGrowthPerS : DEFAULT_SILENCE_GROWTH_PER_S_MS;
+    var maxSilenceMs = Math.max(silenceMs,
+      typeof options.maxSilenceMs === "number" ? options.maxSilenceMs : silenceMs);
     var hardCapMs = Math.min(MAX_HARD_CAP_MS,
       typeof options.hardCapMs === "number" ? options.hardCapMs : DEFAULT_HARD_CAP_MS);
+    /* utteranceCapMs OPTS IN to the far absolute bound and REPLACES the
+     * legacy hard cap: a turn that must survive long monologues cannot be
+     * cut mid-speech at 15-60s. */
+    var utteranceCapMs = typeof options.utteranceCapMs === "number" &&
+      options.utteranceCapMs >= MIN_UTTERANCE_CAP_MS
+      ? Math.min(MAX_UTTERANCE_CAP_MS, options.utteranceCapMs) : null;
+    var activeCapMs = utteranceCapMs !== null ? utteranceCapMs : hardCapMs;
     var duplicateWindowMs = typeof options.duplicateWindowMs === "number" ? options.duplicateWindowMs : DEFAULT_DUPLICATE_WINDOW_MS;
     var now = options.now || function () { return Date.now(); };
 
@@ -88,6 +114,20 @@
     var speechStartedAt = null; // time the first captured text arrived
     var lastFinalSignature = null; // folded words of the last DISPATCHED utterance
     var lastFinalAt = null;   // when finalize() dispatched it
+    var finalizeReason = null; // why shouldFinalize last returned true
+
+    /* The silence window for the CURRENT pause. With growth 0 (the
+     * default) it is the caller's flat silenceMs — the exact legacy
+     * behavior. Opted in, the base grows with the utterance's speech span
+     * (last text change minus first captured text — fixed while the user
+     * is quiet, so the window does not run away while we wait), clamped
+     * to [silenceMs, maxSilenceMs]. */
+    function silenceWindowMs() {
+      if (lastChangeAt === null || speechStartedAt === null) return silenceMs;
+      var speechMs = Math.max(0, lastChangeAt - speechStartedAt);
+      var window = silenceMs + (speechMs / 1000) * silenceGrowthPerS;
+      return Math.min(maxSilenceMs, Math.max(silenceMs, window));
+    }
 
   function combined() {
     /* Merged, not concatenated: the fresh session's interim usually
@@ -244,8 +284,14 @@
     function shouldFinalize() {
       if (!hasSpeech()) return false;
       var t = now();
-      if (lastChangeAt !== null && t - lastChangeAt >= silenceMs) return true;
-      if (speechStartedAt !== null && t - speechStartedAt >= hardCapMs) return true;
+      if (lastChangeAt !== null && t - lastChangeAt >= silenceWindowMs()) {
+        finalizeReason = "silence";
+        return true;
+      }
+      if (speechStartedAt !== null && t - speechStartedAt >= activeCapMs) {
+        finalizeReason = utteranceCapMs !== null ? "utteranceCap" : "cap";
+        return true;
+      }
       return false;
     }
 
@@ -273,7 +319,9 @@
       lastChangeAt = null;
       speechStartedAt = null;
       /* lastFinalSignature/lastFinalAt survive on purpose: the dispatch
-       * memory outlives the utterance; the window expires it. */
+       * memory outlives the utterance; the window expires it. finalizeReason
+       * survives too: the caller reads it after shouldFinalize() flipped,
+       * before the next utterance overwrites it. */
     }
 
     function snapshot() {
@@ -290,12 +338,12 @@
         speechStartedAt: speechStartedAt,
         lastChangeAt: lastChangeAt,
         silenceMs: silenceMs,
-        hardCapMs: hardCapMs,
+        hardCapMs: activeCapMs,   // the ACTIVE bound (utteranceCapMs when set)
         silenceRemainingMs: speaking && lastChangeAt !== null
-          ? Math.max(0, silenceMs - (t - lastChangeAt))
+          ? Math.max(0, silenceWindowMs() - (t - lastChangeAt))
           : null,
         capRemainingMs: speaking && speechStartedAt !== null
-          ? Math.max(0, hardCapMs - (t - speechStartedAt))
+          ? Math.max(0, activeCapMs - (t - speechStartedAt))
           : null,
         shouldFinalize: shouldFinalize()
       };
@@ -306,6 +354,7 @@
       commit: commit,
       hasSpeech: hasSpeech,
       shouldFinalize: shouldFinalize,
+      lastFinalizeReason: function () { return finalizeReason; },
       silenceFor: silenceFor,
       finalize: finalize,
       reset: reset,
@@ -317,6 +366,7 @@
   var api = {
     createEndpointer: createEndpointer,
     DEFAULT_SILENCE_MS: DEFAULT_SILENCE_MS,
+    DEFAULT_SILENCE_GROWTH_PER_S_MS: DEFAULT_SILENCE_GROWTH_PER_S_MS,
     DEFAULT_HARD_CAP_MS: DEFAULT_HARD_CAP_MS,
     DEFAULT_DUPLICATE_WINDOW_MS: DEFAULT_DUPLICATE_WINDOW_MS
   };

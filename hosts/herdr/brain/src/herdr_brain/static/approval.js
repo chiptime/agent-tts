@@ -66,6 +66,7 @@
     var playAudio = options.playAudio || function () {};
     var onExpired = options.onExpired || function () {};
     var banner = options.banner || function () {};
+    var onSwitchPane = options.onSwitchPane || function () {};
 
     var gate = null;        // live approval payload {gate_id, text, expires_in_s, ...}
     var expiresAt = null;   // epoch ms when the countdown reaches 0
@@ -231,6 +232,7 @@
           }
           resolving = false;
           finish();
+          if (data.switch_pane) onSwitchPane(data.switch_pane);
           renderAnswer({ answer: data.answer, audio_url: data.audio_url });
           if (!data.audio_url) setState("listening");
         })
@@ -308,6 +310,7 @@
         // explicit "listening" emission re-arms the mic.
         resolving = false;
         finish();
+        if (data.switch_pane) onSwitchPane(data.switch_pane);
         renderAnswer({ answer: data.answer, audio_url: data.audio_url });
         if (!data.audio_url) setState("listening");
         return;

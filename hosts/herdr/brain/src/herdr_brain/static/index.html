@@ -1836,6 +1836,170 @@
       flex-direction: column;
       gap: 10px;
     }
+    /* ── CALLS DRAWER SECTION (T5) ────────────────────────── */
+    #calls-section {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      padding: 12px 14px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .calls-root {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      width: 100%;
+    }
+    .calls-list-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 4px;
+    }
+    .calls-title {
+      margin: 0;
+      font-size: var(--fs-md);
+      font-weight: 700;
+      color: var(--text);
+    }
+    .calls-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .call-item {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px 14px;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      transition: background 0.15s ease;
+    }
+    .call-item:active {
+      transform: scale(0.99);
+      background: var(--chip-bg);
+    }
+    .call-item-main {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .call-date {
+      font-size: var(--fs-sm);
+      font-weight: 600;
+      color: var(--text);
+    }
+    .call-status {
+      font-size: var(--fs-xs);
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--chip-bg);
+      color: var(--muted);
+    }
+    .call-status.status-open {
+      background: rgba(18, 133, 92, 0.15);
+      color: var(--accent);
+    }
+    .call-status.status-ended {
+      background: var(--chip-bg);
+      color: var(--muted);
+    }
+    .call-status.status-interrupted {
+      background: rgba(245, 167, 66, 0.18);
+      color: var(--warn);
+    }
+    .call-item-sub {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: var(--fs-xs);
+      color: var(--muted);
+    }
+    .calls-loading,
+    .calls-empty,
+    .calls-error,
+    .calls-detail-loading,
+    .calls-detail-empty,
+    .calls-detail-error {
+      padding: 18px 12px;
+      text-align: center;
+      color: var(--muted);
+      font-size: var(--fs-sm);
+    }
+    .calls-error,
+    .calls-detail-error {
+      color: var(--danger);
+    }
+    .calls-detail-nav {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+    .calls-back-btn {
+      background: var(--chip-bg);
+      color: var(--text);
+      padding: 6px 12px;
+      font-size: var(--fs-sm);
+      font-weight: 600;
+      border-radius: 8px;
+    }
+    .calls-detail-title {
+      font-size: var(--fs-md);
+      font-weight: 700;
+    }
+    .calls-detail-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      background: var(--chip-bg);
+      border-radius: 10px;
+      font-size: var(--fs-xs);
+      color: var(--muted);
+    }
+    .calls-detail-turns {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .call-turn {
+      padding: 8px 12px;
+      border-radius: 12px;
+      max-width: 88%;
+      white-space: pre-wrap;
+      font-size: var(--fs-sm);
+    }
+    .call-turn.user {
+      align-self: flex-end;
+      background: var(--user-wash);
+      border: 1px solid var(--user-line);
+      color: var(--text);
+    }
+    .call-turn.assistant {
+      align-self: flex-start;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      color: var(--text);
+    }
+    .turn-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 4px;
+      font-size: var(--fs-xs);
+      color: var(--muted);
+      font-weight: 600;
+    }
     .turn { max-width: 86%; padding: 9px 13px; border-radius: 14px; white-space: pre-wrap; }
     .turn.user   { align-self: flex-end; background: #d9efe2; border-bottom-right-radius: 4px; }
     .turn.brain  { align-self: flex-start; background: var(--chip-bg); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
@@ -2457,6 +2621,10 @@
          the "Consultando…" indicator here as a floating overlay —
          never a conversation row, never chat height. -->
     <div id="call-consult-indicator" class="hidden" aria-live="polite"></div>
+    <!-- Llamadas section (T5): per-call history list and transcript detail -->
+    <section id="calls-section" class="calls-section hidden" aria-label="Llamadas" data-i18n-aria-label="calls.title">
+      <div id="calls-container"></div>
+    </section>
   </section>
 
   <section id="settings-sheet" role="dialog" aria-modal="false" aria-label="Ajustes" data-i18n-aria-label="settings.aria" inert>
@@ -2466,14 +2634,14 @@
     </div>
     <div class="s-body">
       <div class="s-row">
-        <span class="s-label" data-i18n="settings.voice_engine">Motor de voz</span>
-        <button id="voice-engine-btn" type="button">Voz: Servidor</button>
+        <span class="s-label" data-i18n="settings.voice_engine">Transcripción de la llamada</span>
+        <button id="voice-engine-btn" type="button">Dictado: Servidor</button>
       </div>
       <div class="s-row">
         <span class="s-label" data-i18n="settings.theme">Tema</span>
         <button id="theme-btn" type="button">Tema: Oscuro</button>
       </div>
-      <span class="s-hint" data-i18n="settings.hint">Servidor: transcribe en el back con whisper (robusto). Navegador: Web Speech de Chrome (más rápido, menos fiable en Android).</span>
+      <span class="s-hint" data-i18n="settings.hint">Solo cambia cómo se transcribe tu voz en la llamada; la lectura en voz alta de la pantalla es aparte. Servidor: whisper en el back (robusto, sin pitidos). Navegador: Web Speech de Chrome (texto en vivo; en Android pita al empezar cada turno).</span>
       <!-- S4 idioma / apariencia: per-device, wired by settings.js. -->
       <div class="s-row">
         <span class="s-label" data-i18n="settings.language">Idioma</span>
@@ -2589,6 +2757,7 @@
     <script src="/mermaid-viewer.js"></script>    <script src="/speech.js"></script>
     <script src="/tts-engine.js"></script>
     <script src="/consult.js"></script>
+    <script src="/calls.js"></script>
     <script src="/i18n.js"></script>
     <script src="/i18n/es.js"></script>
     <script src="/i18n/en.js"></script>

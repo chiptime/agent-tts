@@ -1,15 +1,23 @@
 """Client barge-in over REAL fake capture and native playback (FR-04/05, T-05).
 
-Chromium runs with all three fake-media flags and the canonical WAV from
-``audio_capture_context``: getUserMedia, MediaRecorder, RMS analysis,
-MP3 decoding and every media event are native. The init script only
-OBSERVES (timestamps the real analyser frames, pause calls and /ask
-abort signals) and stubs the pure service boundaries (EventSource,
-SpeechRecognition) exactly like the real-media suite. No media event is
-ever synthesized here.
+Chromium runs with all three fake-media flags and a deterministic WAV whose
+envelope the CURRENT endpointing completes (2.0s of voiced tone per 5.5s
+loop, 3.5s of silence between bursts — the gaps clear the grown silence
+budget's 2500ms ceiling, so each burst group closes one utterance and the
+suite keeps driving real /transcribe turns; the retired flat-800ms silence
+was the only reason the old 0.8s/1.2s envelope could finish turns):
+getUserMedia, MediaRecorder, RMS analysis, MP3 decoding and every media
+event are native. The init script only OBSERVES (timestamps the real
+analyser frames, pause calls and /ask abort signals) and stubs the pure
+service boundaries (EventSource, SpeechRecognition) exactly like the
+real-media suite. No media event is ever synthesized here. The tone is
+deterministic VAD input, never an acoustic-quality claim.
 """
 
+import math
 import re
+import struct
+import wave
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -20,6 +28,35 @@ from tests.browser.test_karaoke_real_media import ORIGIN, RealMediaApp
 
 ROOT = Path(__file__).resolve().parents[2]
 MAIN = "#conversation .turn.brain"
+
+
+@pytest.fixture
+def barge_capture_context(browser_type, tmp_path):
+    """Fake capture whose silence gaps the current endpointing completes."""
+    assert browser_type.name == "chromium", "Fake capture requires Chromium"
+    capture = tmp_path / "speech.wav"
+    rate = 48000
+    with wave.open(str(capture), "wb") as wav:
+        wav.setparams((1, 2, rate, 0, "NONE", "not compressed"))
+        frames = bytearray()
+        for index in range(rate * 11):  # two full 5.5s periods; Chromium loops
+            voiced = (index / rate) % 5.5 < 2.0
+            value = int(12000 * math.sin(2 * math.pi * 440 * index / rate)) if voiced else 0
+            frames.extend(struct.pack("<h", value))
+        wav.writeframes(frames)
+    browser = browser_type.launch(args=[
+        "--use-fake-ui-for-media-stream",
+        "--use-fake-device-for-media-stream",
+        "--use-file-for-fake-audio-capture=" + str(capture),
+    ])
+    context = browser.new_context(
+        permissions=["microphone"], service_workers="block", accept_downloads=False,
+    )
+    try:
+        yield context
+    finally:
+        context.close()
+        browser.close()
 
 GATE = {
     "gate_id": "gate-barge-0001",
@@ -189,6 +226,10 @@ class BargeInApp(RealMediaApp):
                 return route.fulfill(json={"ok": True})
             if path == "/reset":
                 return route.fulfill(json={"ok": True})
+            if path == "/call/start":
+                return route.fulfill(json={"call_id": "call-synthetic-1", "started_at": "2026-01-01T00:00:00Z"})
+            if path == "/call/end":
+                return route.fulfill(json={"call_id": "call-synthetic-1", "status": "ended"})
         self.blocked.append(request.url)
         route.abort("blockedbyclient")
 
@@ -231,12 +272,12 @@ class BargeInApp(RealMediaApp):
 
 
 @pytest.fixture
-def barge_app(audio_capture_context):
-    app = BargeInApp(audio_capture_context)
+def barge_app(barge_capture_context):
+    app = BargeInApp(barge_capture_context)
     try:
         yield app
     finally:
-        audio_capture_context.close()
+        barge_capture_context.close()
         assert not app.blocked, "Unexpected traffic was blocked: " + repr(app.blocked)
         assert not app.errors, app.errors
 
@@ -250,10 +291,10 @@ def detection_frame(probe):
     return frames[-1], pause
 
 
-def test_fake_capture_track_reports_aec_enabled(audio_capture_context):
+def test_fake_capture_track_reports_aec_enabled(barge_capture_context):
     """The premise of the AEC-gated monitor: this environment's REAL
     capture track reports echo cancellation enabled."""
-    context = audio_capture_context
+    context = barge_capture_context
     # mediaDevices needs a secure context: serve a page at the loopback
     # origin (potentially trustworthy), never about:blank.
     context.route("**/*", lambda route: route.fulfill(
@@ -384,8 +425,8 @@ NO_AEC_EXTRA = r"""
 """
 
 
-def test_without_aec_report_the_call_stays_half_duplex(audio_capture_context):
-    app = BargeInApp(audio_capture_context, extra_init=NO_AEC_EXTRA)
+def test_without_aec_report_the_call_stays_half_duplex(barge_capture_context):
+    app = BargeInApp(barge_capture_context, extra_init=NO_AEC_EXTRA)
     try:
         app.load()
         app.wait_playing()
@@ -407,6 +448,6 @@ def test_without_aec_report_the_call_stays_half_duplex(audio_capture_context):
             "p => String(p.src || p.currentSrc)")
         assert "/audio/long.mp3" in src
     finally:
-        audio_capture_context.close()
+        barge_capture_context.close()
         assert not app.blocked, "Unexpected traffic was blocked: " + repr(app.blocked)
         assert not app.errors, app.errors

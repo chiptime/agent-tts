@@ -203,16 +203,16 @@
     "settings.aria": "Ajustes",
     "settings.title": "Ajustes",
     "settings.close_title": "Cerrar ajustes",
-    "settings.voice_engine": "Motor de voz",
-    "settings.voice_server": "Voz: Servidor",
-    "settings.voice_browser": "Voz: Navegador",
-    "settings.voice_server_title": "Motor Servidor: tu voz se transcribe en el servidor (funciona con auriculares BT). Toca para cambiar al Navegador.",
-    "settings.voice_browser_title": "Motor Navegador: reconocimiento del navegador (Web Speech). Toca para cambiar al Servidor.",
+    "settings.voice_engine": "Transcripción de la llamada",
+    "settings.voice_server": "Dictado: Servidor",
+    "settings.voice_browser": "Dictado: Navegador",
+    "settings.voice_server_title": "Transcripción de la llamada en el servidor (whisper; funciona con auriculares BT). No afecta a la lectura en voz alta. Toca para cambiar al Navegador.",
+    "settings.voice_browser_title": "Transcripción de la llamada con el reconocimiento del navegador (Web Speech). No afecta a la lectura en voz alta. Toca para cambiar al Servidor.",
     "settings.theme": "Tema",
     "settings.theme_auto": "Tema: Auto",
     "settings.theme_light": "Tema: Claro",
     "settings.theme_dark": "Tema: Oscuro",
-    "settings.hint": "Servidor: transcribe en el back con whisper (robusto). Navegador: Web Speech de Chrome (más rápido, menos fiable en Android).",
+    "settings.hint": "Solo cambia cómo se transcribe tu voz en la llamada; la lectura en voz alta de la pantalla es aparte. Servidor: whisper en el back (robusto, sin pitidos). Navegador: Web Speech de Chrome (texto en vivo; en Android pita al empezar cada turno).",
     "settings.pending": "Pendientes",
     "settings.pending_open_aria": "Ver los avisos pendientes",
     "settings.pending_open": "🔔 Pendientes ({count})",
@@ -248,6 +248,9 @@
     "voice.audio_send_failed": "No pude enviar el audio al servidor — {detail}.",
     "voice.network_error": "error de red",
     "voice.not_understood": "No entendí el audio — inténtalo otra vez.",
+    "voice.turn_cap_cut": "Turno cerrado por el límite de duración; sigue hablando para continuar en un turno nuevo",
+    "voice.turn_gap": "No pude transcribir todo el turno. No se envió nada; vuelve a decirlo.",
+    "voice.call_switched": "Llamada apuntando a {name}",
 
     /* ---- brain errors ---- */
     "brain.not_configured": "El brain no está configurado: falta GLM_API_KEY en el servidor. Defínela en el entorno del servicio (por ejemplo, un perfil de shell o un archivo de entorno fuera de este repositorio) y reinicia el servicio.",
@@ -378,7 +381,26 @@
     "dock.confirm_title": "Toca otra vez para confirmar",
     "dock.cwd_missing": "No se pudo lanzar: falta el directorio de trabajo",
     "dock.launch_failed": "No se pudo lanzar — prueba otra vez",
-    "dock.preset_failed": "No se pudo enviar el preset — prueba otra vez"
+    "dock.preset_failed": "No se pudo enviar el preset — prueba otra vez",
+
+    /* ---- calls history (T5) ---- */
+    "calls.title": "Llamadas",
+    "calls.loading": "Cargando llamadas…",
+    "calls.empty": "Sin llamadas registradas",
+    "calls.error": "Error al cargar las llamadas",
+    "calls.status_open": "En curso",
+    "calls.status_ended": "Finalizada",
+    "calls.status_interrupted": "Interrumpida",
+    "calls.turns_count": "{count} turnos",
+    "calls.duration": "{duration}",
+    "calls.back": "← Volver",
+    "calls.detail_title": "Detalle de llamada",
+    "calls.detail_loading": "Cargando transcripción…",
+    "calls.detail_empty": "Sin turnos en esta llamada",
+    "calls.detail_error": "Error al cargar la transcripción",
+    "calls.load_more": "Cargar más",
+    "calls.role_user": "Tú",
+    "calls.role_assistant": "Brain"
   };
 
   if (typeof module !== "undefined" && module.exports) {
