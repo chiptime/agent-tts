@@ -37,7 +37,7 @@ for _name in (
     "toast.js", "announce.js", "speech.js", "consult.js",
     "herd-group.js", "sw.js", "manifest.webmanifest", "icon.svg",
     "karaoke.js", "pairing.js", "destructive.js", "history.js", "dialogs.js",
-    "receipts.js", "push.js",
+    "receipts.js", "push.js", "calls.js",
     "i18n.js", "i18n/es.js", "i18n/en.js", "settings.js", "updates.js", "dock.js",
     "mermaid.min.js", "mermaid-viewer.js", "tts-engine.js",
 ):
@@ -154,6 +154,8 @@ def make_route(
             )
         if method == "GET" and path == "/call-history" and set(query) <= {"before", "limit"}:
             return route.fulfill(json={"turns": service.turns, "has_more": False})
+        if method == "GET" and path == "/calls" and set(query) <= {"before", "limit"}:
+            return route.fulfill(json={"calls": [], "has_more": False})
         if method == "GET" and path == "/herd":
             return route.fulfill(json=HERD)
         if method == "GET" and path == "/view" and set(query) <= {"pane_id"}:
@@ -196,6 +198,10 @@ def make_route(
             return route.fulfill(json={"text": text})
         if method == "POST" and path == "/ask":
             return route.fulfill(json=service.handle_ask(request.post_data_json))
+        if method == "POST" and path == "/call/start":
+            return route.fulfill(json={"call_id": service.call_id or "call-synthetic-1", "started_at": "2026-01-01T00:00:00Z"})
+        if method == "POST" and path == "/call/end":
+            return route.fulfill(json={"call_id": service.call_id or "call-synthetic-1", "status": "ended"})
         if method == "POST" and path == "/approval/g-1/resolve":
             body = request.post_data_json or {}
             service.resolves.append({

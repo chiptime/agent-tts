@@ -226,6 +226,10 @@ class BargeInApp(RealMediaApp):
                 return route.fulfill(json={"ok": True})
             if path == "/reset":
                 return route.fulfill(json={"ok": True})
+            if path == "/call/start":
+                return route.fulfill(json={"call_id": "call-synthetic-1", "started_at": "2026-01-01T00:00:00Z"})
+            if path == "/call/end":
+                return route.fulfill(json={"call_id": "call-synthetic-1", "status": "ended"})
         self.blocked.append(request.url)
         route.abort("blockedbyclient")
 

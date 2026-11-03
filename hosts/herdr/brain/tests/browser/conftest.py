@@ -304,6 +304,16 @@ class KaraokeHarness:
                                        "turns": external or [], "window": 20}, query=("pane_id",))
         self.respond("/approval/current", {"approval": None}, query=("session_id",))
         self.respond("/reset", {"ok": True}, method="POST")
+        self.respond(
+            "/call/start",
+            {"call_id": "call-synthetic-1", "started_at": "2026-01-01T00:00:00Z"},
+            method="POST",
+        )
+        self.respond(
+            "/call/end",
+            {"call_id": "call-synthetic-1", "status": "ended"},
+            method="POST",
+        )
         # Device pairing (F1 security): the boot /devices poll the
         # pairing card runs. Default keeps every legacy test on the
         # unpaired (unenforced) stance — exactly the pre-F1 behavior.
