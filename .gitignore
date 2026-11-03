@@ -38,3 +38,5 @@ htmlcov/
 
 # Generated systemd unit (rendered from deploy/herdr-brain.service.tmpl by deploy/install.sh)
 hosts/herdr/brain/deploy/*.service
+.opencode/
+engine/metrics/
