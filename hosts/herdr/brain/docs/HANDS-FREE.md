@@ -41,6 +41,35 @@ closed or ambiguous IDs are refused rather than redirected to the selected
 pane. A read does not change the selected pane or the target of later
 actions, and other transcripts are not inserted into every prompt.
 
+## In-call session switching
+
+By voice, "cámbiate al panel de pagos" retargets the call: the
+`switch_session` tool resolves the named pane against the CURRENT open
+listing (fail-closed on unknown, stale, ambiguous or malformed ids),
+makes it the request target for the rest of the turn — a same-turn
+gated send freezes against the new pane — and publishes the shared
+selection exactly like a chip tap, so the other device follows. The
+/ask-shaped response carries an additive `switch_pane` field the client
+applies, confirming out loud (and via toast) where the call points now.
+An approved `create_session` replay retargets the call to the new panel
+through the same field. Switching executes nothing: sends, dialogs and
+stops keep their approval gates, and a live gate stays bound to the
+pane it was proposed for.
+
+## Call history
+
+Each call is recorded separately: `POST /call/start` opens a record
+(started_at, and any call left open by a crash or restart is closed as
+`interrupted` on the next start), every turn of the active call is
+tagged with its call id, and `POST /call/end` finalizes duration and
+turn count. The PWA's drawer gains a "Llamadas" section (static/
+calls.js): a list of past calls (date, duration, turns, status) that
+opens each call's masked transcript, paginated. The LLM's conversation
+memory is unchanged — still the single global compacted ring — and the
+legacy `GET /call-history` keeps serving it. Honest limits: a server
+restart mid-call loses the active-call link (those turns land untagged
+and the record closes as interrupted at the next start).
+
 ## Barge-in (interrupting the assistant by voice)
 
 When the **server voice engine** plays an answer in-call, a lightweight VAD

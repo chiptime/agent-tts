@@ -1109,6 +1109,13 @@ segment-boundary limitations. Answers are spoken in full — the renderer's
 char guard is 4000 chars and digest shortening (`--tldr`) is never applied
 to chat answers.
 
+Inside a call you can manage the session by voice: "cámbiate al panel de
+pagos" retargets the call through `switch_session` (fail-closed pane ids,
+spoken confirmation, other devices follow via the shared call context),
+and an approved voice-created panel becomes the call's target. Every call
+is recorded (start, end, duration, turns) and browsable in the drawer's
+**Llamadas** section, while the LLM's memory stays the single global ring.
+
 Every async surface has Spanish loading/empty/error states, and the agent
 sheet shows a diagnostics line (**Última consulta / Último error**) to make
 reporting issues easy.
@@ -1153,6 +1160,7 @@ payloads).
 | `get_status` | read | agent kind, status, pane id, session id, cwd, title |
 | `list_open_sessions` | read | discover open agent panes and their metadata |
 | `read_transcript(n_turns, pane_id?)` | read | recent user/assistant turns from the selected pane or another currently open pane |
+| `switch_session(pane_id)` | read (routing) | point the CALL at another open pane by voice; fail-closed ids, no effect on approval gates |
 | `read_screen(n_lines)` | read | visible terminal text (fallback) |
 | `send_to_session(text, timeout_ms?)` | **write** | forward new work, wait for completion |
 | `stop_agent` | **write, gated** | interrupt the selected session's running turn; proposes the approval gate, executes on confirmation |
