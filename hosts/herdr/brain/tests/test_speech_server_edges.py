@@ -131,8 +131,10 @@ def test_empty_answer_produces_no_audio(audio_dir):
 @pytest.fixture
 def fresh_version_cache():
     server_mod.resolve_version.cache_clear()
+    server_mod._static_shell_digest.cache_clear()
     yield
     server_mod.resolve_version.cache_clear()
+    server_mod._static_shell_digest.cache_clear()
 
 
 def test_resolve_version_degrades_to_dev(monkeypatch, fresh_version_cache):
@@ -149,6 +151,43 @@ def test_resolve_version_degrades_to_dev(monkeypatch, fresh_version_cache):
 
     monkeypatch.setattr(server_mod.subprocess, "run", no_git)
     assert server_mod.resolve_version() == "dev"  # git missing entirely
+
+
+def _fake_git(shell_status):
+    """subprocess.run double: HEAD is deadbee, `git status` says `shell_status`."""
+    def run(cmd, **_kwargs):
+        if cmd[1] == "rev-parse":
+            return types.SimpleNamespace(returncode=0, stdout="deadbee\n")
+        assert cmd[1] == "status"
+        return types.SimpleNamespace(returncode=0, stdout=shell_status)
+    return run
+
+
+def test_resolve_version_clean_static_keeps_plain_hash(monkeypatch, fresh_version_cache):
+    monkeypatch.setattr(server_mod.subprocess, "run", _fake_git(""))
+    assert server_mod.resolve_version() == "deadbee"
+
+
+def test_resolve_version_dirty_static_appends_shell_digest(monkeypatch, fresh_version_cache, tmp_path):
+    import hashlib
+
+    (tmp_path / "app.js").write_text("console.log(1)")
+    monkeypatch.setattr(server_mod, "STATIC_DIR", tmp_path)
+    monkeypatch.setattr(server_mod.subprocess, "run", _fake_git(" M static/app.js\n"))
+
+    # The stamp must reflect the SERVED bytes: the PWA's offline shell is
+    # cache-keyed by ?v=<build>, so an uncommitted static edit is a NEW
+    # build — the plain HEAD hash would keep phones replaying stale bytes.
+    expected = hashlib.sha256(b"app.js" + b"console.log(1)").hexdigest()[:8]
+    assert server_mod.resolve_version() == f"deadbee-s{expected}"
+
+    # Editing the shell changes the digest, so a restart (cache re-boot)
+    # serves a new stamp.
+    (tmp_path / "app.js").write_text("console.log(2)")
+    server_mod._static_shell_digest.cache_clear()
+    server_mod.resolve_version.cache_clear()
+    changed = hashlib.sha256(b"app.js" + b"console.log(2)").hexdigest()[:8]
+    assert server_mod.resolve_version() == f"deadbee-s{changed}"
 
 
 def test_create_app_without_settings_loads_them(monkeypatch, audio_dir):

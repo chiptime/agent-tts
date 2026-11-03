@@ -14,6 +14,7 @@ recovers a live gate after reload (PRD-action-approval-gate §5).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import json
 import logging
@@ -440,21 +441,65 @@ _HEADER_VERSION_PLACEHOLDER = '<span id="app-version-header">?</span>'
 
 
 @lru_cache(maxsize=1)
+def _static_shell_digest() -> Optional[str]:
+    """First 8 hex chars of a content digest over every static shell file.
+
+    The PWA's offline shell (sw.js) caches assets under their ``?v=<build>``
+    URL, so the build stamp must reflect the SERVED bytes. With a dirty
+    static tree the plain HEAD hash would keep the phone serving the
+    previous shell from Cache Storage after every restart. Failures here
+    degrade to no suffix — stamping must never break boot.
+    """
+    try:
+        hasher = hashlib.sha256()
+        for path in sorted(STATIC_DIR.rglob("*")):
+            if path.is_file():
+                hasher.update(path.relative_to(STATIC_DIR).as_posix().encode())
+                hasher.update(path.read_bytes())
+        return hasher.hexdigest()[:8]
+    except Exception:  # noqa: BLE001 — a missing/unreadable static dir
+        return None
+
+
+@lru_cache(maxsize=1)
 def resolve_version() -> str:
-    """Git short hash of the running build, cached at startup ('dev' fallback)."""
+    """Git short hash of the running build, cached at startup ('dev' fallback).
+
+    On a DIRTY static tree the stamp appends ``-s<digest>`` of the served
+    static bytes, so every uncommitted shell edit becomes a new build and
+    the phone's service worker fetches it instead of replaying the stale
+    precache. A clean tree keeps the plain hash, byte-identical to
+    deployed builds.
+    """
+    repo = Path(__file__).resolve().parents[2]
+    base = "dev"
     try:
         proc = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
             capture_output=True,
             text=True,
             timeout=5,
-            cwd=str(Path(__file__).resolve().parents[2]),
+            cwd=str(repo),
         )
         if proc.returncode == 0 and proc.stdout.strip():
-            return proc.stdout.strip()
+            base = proc.stdout.strip()
     except Exception:  # noqa: BLE001 — a missing git must never break the server
+        return "dev"
+    try:
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--", str(STATIC_DIR)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=str(repo),
+        )
+        if status.returncode == 0 and status.stdout.strip():
+            digest = _static_shell_digest()
+            if digest:
+                return f"{base}-s{digest}"
+    except Exception:  # noqa: BLE001 — no git metadata: plain hash serves
         pass
-    return "dev"
+    return base
 
 
 def render_index(version: str) -> str:
