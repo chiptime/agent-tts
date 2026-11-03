@@ -1102,7 +1102,11 @@ Voice turns are **self-endpointed**: the call's silence window grows from
 1.2 to 2.5 seconds for longer utterances. The server engine transcribes
 45-second recorder segments in order and sends one combined turn after the
 user finishes; a failed or unrecognized segment prevents sending an
-incomplete turn. A continuously active turn is capped at 10 minutes with a
+incomplete turn. After a phrase ends, speech that resumes within a
+1.5-second continuation window joins the same turn. The engine (Settings →
+"Call transcription") stays selectable; on Android the Browser engine
+starts Web Speech only when speech begins, so its beep marks a turn instead
+of looping while idle. A continuously active turn is capped at 10 minutes with a
 visible notice. The standalone endpointing helpers retain their legacy
 defaults. See [hands-free details](docs/HANDS-FREE.md) for acoustic and
 segment-boundary limitations. Answers are spoken in full — the renderer's

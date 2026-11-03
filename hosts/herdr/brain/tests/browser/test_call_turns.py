@@ -227,19 +227,39 @@ def write_wav(path, *, total_s, period_s, voiced_from, voiced_to):
         wav.writeframes(frames)
 
 
-def capture_context(browser_type, tmp_path, *, total_s, period_s, voiced_from, voiced_to):
+def write_wav_windows(path, *, total_s, windows):
+    """Deterministic 440 Hz tone inside each (start_s, end_s) window."""
+    rate = 48000
+    with wave.open(str(path), "wb") as wav:
+        wav.setparams((1, 2, rate, 0, "NONE", "not compressed"))
+        frames = bytearray()
+        for index in range(int(rate * total_s)):
+            at = index / rate
+            voiced = any(start <= at < end for start, end in windows)
+            value = int(12000 * math.sin(2 * math.pi * 440 * index / rate)) if voiced else 0
+            frames.extend(struct.pack("<h", value))
+        wav.writeframes(frames)
+
+
+def capture_context(browser_type, tmp_path, *, total_s, period_s=None, voiced_from=None,
+                    voiced_to=None, windows=None, user_agent=None):
     """Chromium fake capture over a custom deterministic WAV envelope."""
     assert browser_type.name == "chromium", "Fake capture requires Chromium"
     capture = tmp_path / "speech.wav"
-    write_wav(capture, total_s=total_s, period_s=period_s,
-              voiced_from=voiced_from, voiced_to=voiced_to)
+    if windows is not None:
+        write_wav_windows(capture, total_s=total_s, windows=windows)
+    else:
+        write_wav(capture, total_s=total_s, period_s=period_s,
+                  voiced_from=voiced_from, voiced_to=voiced_to)
     browser = browser_type.launch(args=[
         "--use-fake-ui-for-media-stream",
         "--use-fake-device-for-media-stream",
         "--use-file-for-fake-audio-capture=" + str(capture),
     ])
+    extra = {"user_agent": user_agent} if user_agent else {}
     context = browser.new_context(
         permissions=["microphone"], service_workers="block", accept_downloads=False,
+        **extra,
     )
     try:
         yield context
@@ -267,6 +287,61 @@ def tolling_capture_context(browser_type, tmp_path):
     # the 45s (fast-clock) segment boundary, then a NATURAL end.
     yield from capture_context(browser_type, tmp_path,
                                total_s=8.0, period_s=8.0, voiced_from=0.0, voiced_to=6.0)
+
+
+@pytest.fixture
+def resumed_capture_context(browser_type, tmp_path):
+    # 1s phrase, a 1.8s pause (longer than its 1.4s silence window), then
+    # the speaker resumes for 1s: one thought with a long thinking pause.
+    yield from capture_context(browser_type, tmp_path, total_s=12.0,
+                               windows=[(0.2, 1.2), (3.0, 4.0)])
+
+
+@pytest.fixture
+def separate_turns_capture_context(browser_type, tmp_path):
+    # Same first phrase, but the next one starts well after the turn ended.
+    yield from capture_context(browser_type, tmp_path, total_s=12.0,
+                               windows=[(0.2, 1.2), (6.0, 7.0)])
+
+
+PIXEL_7_PRO_UA = (
+    "Mozilla/5.0 (Linux; Android 14; Pixel 7 Pro) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36"
+)
+
+
+@pytest.fixture
+def android_capture_context(browser_type, tmp_path):
+    # One phrase, then a pause far longer than the continuation window.
+    yield from capture_context(browser_type, tmp_path, total_s=8.0, period_s=8.0,
+                               voiced_from=0.2, voiced_to=1.2, user_agent=PIXEL_7_PRO_UA)
+
+
+ANDROID_SERVER_DEFAULT = r"""
+window.__webSpeechStarts = 0;
+class CountingRecognition {
+  start() { window.__webSpeechStarts += 1; }
+  stop() {}
+  abort() {}
+}
+window.SpeechRecognition = CountingRecognition;
+window.webkitSpeechRecognition = CountingRecognition;
+"""
+
+
+COUNT_WEB_SPEECH = r"""
+localStorage.setItem('herdr-brain-voice-engine', 'navegador');
+window.__webSpeechStarts = 0;
+// A counting Web Speech stand-in: on Android every real start() plays the
+// recognizer earcon, so the call must never reach it there.
+class CountingRecognition {
+  start() { window.__webSpeechStarts += 1; }
+  stop() {}
+  abort() {}
+}
+window.SpeechRecognition = CountingRecognition;
+window.webkitSpeechRecognition = CountingRecognition;
+"""
 
 
 def close_app(context, app):
@@ -463,5 +538,95 @@ def test_server_old_transcription_cannot_dispatch_into_a_new_call(tolling_captur
           JSON.stringify({text: 'stale command'}), {status: 200, headers: {'Content-Type': 'application/json'}}))""")
         app.page.wait_for_timeout(1500)
         assert app.asks == []
+    finally:
+        close_app(context, app)
+
+
+def wait_python_asks(app, count, timeout_ms=15000):
+    """Polls the Python-side /ask record (route handlers run while waiting)."""
+    waited = 0
+    while len(app.asks) < count and waited < timeout_ms:
+        app.page.wait_for_timeout(100)
+        waited += 100
+    assert len(app.asks) >= count, f"expected {count} /ask, saw {len(app.asks)}"
+    return waited
+
+
+def test_server_resumed_speech_after_a_long_pause_stays_one_turn(resumed_capture_context):
+    """S1 (Pixel report "me corta mientras hablo"): a thinking pause longer
+    than the silence window used to dispatch the first phrase alone and
+    lose the rest to a second turn. Speech that resumes inside the
+    continuation window rejoins the SAME turn: one /ask, both phrases."""
+    context = resumed_capture_context
+    app = BargeInApp(context)
+    app.transcript_replies = [{"text": "uno"}, {"text": "dos"}]
+    app.ask_responder = lambda body: ({"answer": "ok"}, False)
+    try:
+        app.load()
+        wait_python_asks(app, 1)
+        assert app.asks[0]["text"] == "uno dos"
+    finally:
+        close_app(context, app)
+
+
+def test_server_turn_still_ends_when_the_speaker_stays_quiet(separate_turns_capture_context):
+    """PRESERVE turn-taking: the continuation window is bounded, so a
+    phrase followed by real silence dispatches on its own, before the
+    next phrase begins."""
+    context = separate_turns_capture_context
+    app = BargeInApp(context)
+    app.transcript_replies = [{"text": "uno"}, {"text": "dos"}]
+    app.ask_responder = lambda body: ({"answer": "ok"}, False)
+    try:
+        app.load()
+        waited = wait_python_asks(app, 1)
+        assert app.asks[0]["text"] == "uno"
+        assert waited < 5500  # dispatched before the second phrase (6s) began
+    finally:
+        close_app(context, app)
+
+
+def test_android_server_call_never_uses_web_speech_and_toggle_is_allowed(android_capture_context):
+    """S2: on Android the default Server engine never starts Web Speech
+    (whose every start() plays the system beep), and the engine choice
+    stays the user's: the toggle switches to Navegador."""
+    context = android_capture_context
+    app = BargeInApp(context, extra_init=ANDROID_SERVER_DEFAULT)
+    app.transcript_replies = [{"text": "hola"}]
+    app.ask_responder = lambda body: ({"answer": "ok"}, False)
+    try:
+        app.load()
+        wait_python_asks(app, 1)
+        assert app.asks[0]["text"] == "hola"
+        assert app.page.evaluate("() => window.__webSpeechStarts") == 0
+        app.page.evaluate("() => document.getElementById('voice-engine-btn').click()")
+        assert app.page.evaluate(
+            "() => localStorage.getItem('herdr-brain-voice-engine')") == "navegador"
+    finally:
+        close_app(context, app)
+
+
+@pytest.fixture
+def android_late_speech_context(browser_type, tmp_path):
+    # 3s of silence, then speech: the idle stretch must stay beep-free.
+    yield from capture_context(browser_type, tmp_path, total_s=8.0,
+                               windows=[(3.0, 4.5)], user_agent=PIXEL_7_PRO_UA)
+
+
+def test_android_browser_engine_starts_recognition_only_on_speech(android_late_speech_context):
+    """S3 ("no le veo a que tenga que estar pitando todo el rato"): with the
+    Browser engine on Android, an idle mic is watched silently and Web
+    Speech (one beep per start) starts only when speech begins."""
+    context = android_late_speech_context
+    app = BargeInApp(context, extra_init=COUNT_WEB_SPEECH)
+    try:
+        app.load()
+        app.page.wait_for_timeout(2000)  # inside the silent stretch
+        assert app.page.evaluate("() => window.__webSpeechStarts") == 0
+        assert app.page.evaluate(
+            "() => localStorage.getItem('herdr-brain-voice-engine')") == "navegador"
+        app.page.wait_for_function("() => window.__webSpeechStarts === 1", timeout=6000)
+        app.page.wait_for_timeout(1500)
+        assert app.page.evaluate("() => window.__webSpeechStarts") == 1
     finally:
         close_app(context, app)

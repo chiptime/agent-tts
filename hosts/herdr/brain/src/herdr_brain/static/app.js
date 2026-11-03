@@ -189,6 +189,13 @@
    * Web Speech path stays as "navegador" fallback; the choice persists. */
   var VOICE_KEY = "herdr-brain-voice-engine";
   var voiceEngine = localStorage.getItem(VOICE_KEY) === "navegador" ? "navegador" : "servidor";
+  /* Android's Web Speech plays the system earcon on every recognizer
+   * start() and ends a session at each short pause, so a plain restart
+   * loop beeps nonstop while the user is quiet. With the Browser engine
+   * on Android an idle mic is therefore watched by a SILENT getUserMedia
+   * gate, and recognition starts only when speech begins (see
+   * armBrowserGate). The engine stays the user's choice. */
+  var IS_ANDROID = /Android/i.test(navigator.userAgent || "");
   var mediaStream = null;       // getUserMedia stream, live for the whole call
   var audioContext = null;
   var analyser = null;
@@ -215,6 +222,13 @@
   var VOICE_MAX_SILENCE_MS = 2500;
   var VOICE_SEGMENT_MS = 45000;
   var VOICE_UTTERANCE_CAP_MS = 600000;
+  /* Continuation window (server engine): after the silence closes a
+   * phrase, capture keeps running for this long while that phrase is
+   * already uploading. Speech resuming inside the window rejoins the SAME
+   * turn instead of becoming a second one, so a long thinking pause no
+   * longer cuts the speaker off; the wait overlaps the transcription, so
+   * it adds little latency. */
+  var VOICE_CONTINUATION_MS = 1500;
   var SERVER_VOICE_OPTIONS = {
     silenceMs: VOICE_SILENCE_MS,
     silenceGrowthPerS: VOICE_SILENCE_GROWTH_PER_S_MS,
@@ -5027,6 +5041,7 @@
     */
 
   function teardownRecognition() {
+    releaseBrowserGate();
     if (epTick) { clearInterval(epTick); epTick = null; }
     if (recognition) {
       try { recognition.stop(); } catch (err) { /* already stopped */ }
@@ -5086,11 +5101,75 @@
     });
   }
 
-  function startBrowserListening() {
+  /* Silent speech gate (Browser engine on Android). While no utterance
+   * is pending, a getUserMedia capture + energy VAD watches the mic with
+   * no sound; on speech onset the gate releases its stream and Web Speech
+   * starts, so the earcon plays once when a turn begins (and when Android
+   * ends a session mid-turn), never in an idle loop. The first syllable
+   * can be clipped while the recognizer opens. A failed gate falls back
+   * to starting recognition directly. */
+  var browserGate = null;
+  var browserGateVad = null;  // survives gates: keeps the learned floor
+
+  function browserGateNeeded() {
+    return IS_ANDROID && !(endpointer && endpointer.hasSpeech()) &&
+      !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.Vad);
+  }
+
+  function releaseBrowserGate() {
+    var gate = browserGate;
+    browserGate = null;
+    if (!gate) return;
+    if (gate.tick) clearInterval(gate.tick);
+    if (gate.ctx) { try { gate.ctx.close(); } catch (err) { /* closed */ } }
+    if (gate.stream) gate.stream.getTracks().forEach(function (track) { track.stop(); });
+  }
+
+  function armBrowserGate() {
+    if (browserGate) return;  // single-flight (the 1s watchdog re-enters)
+    var gate = browserGate = { stream: null, ctx: null, tick: null };
+    navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true }
+    }).then(function (stream) {
+      if (browserGate !== gate) {  // released while opening
+        stream.getTracks().forEach(function (track) { track.stop(); });
+        return;
+      }
+      gate.stream = stream;
+      var Ctx = window.AudioContext || window.webkitAudioContext;
+      gate.ctx = new Ctx();
+      var gateAnalyser = gate.ctx.createAnalyser();
+      gateAnalyser.fftSize = 4096;
+      gate.ctx.createMediaStreamSource(stream).connect(gateAnalyser);
+      var buf = new Float32Array(gateAnalyser.fftSize);
+      if (!browserGateVad) browserGateVad = window.Vad.createVad();
+      else browserGateVad.reset();
+      gate.tick = setInterval(function () {
+        if (browserGate !== gate) return;
+        gateAnalyser.getFloatTimeDomainData(buf);
+        var sum = 0;
+        for (var i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+        if (browserGateVad.push(Math.sqrt(sum / buf.length))) {
+          releaseBrowserGate();     // free the mic for the recognizer
+          startBrowserListening(true);
+        }
+      }, 100);
+    }).catch(function () {
+      if (browserGate !== gate) return;
+      browserGate = null;
+      startBrowserListening(true);  // no gate: legacy direct start
+    });
+  }
+
+  function startBrowserListening(fromGate) {
     if (textMode || !SR) return;
     if (callState !== "listening" && callState !== "confirming") return;
     if (listening || dispatching) return;
     manualStop = false;
+    if (!fromGate && browserGateNeeded()) {
+      armBrowserGate();  // banners stay: the watchdog re-enters every 1s
+      return;
+    }
     hideBanner();
     listeningStartedAt = Date.now();
     // The endpointer SURVIVES recognition session restarts (Chrome ends
@@ -5198,6 +5277,7 @@
 
   function stopBrowserListening() {
     manualStop = true;
+    releaseBrowserGate();
     if (recRestartTimer) { clearTimeout(recRestartTimer); recRestartTimer = null; }
     if (epTick) { clearInterval(epTick); epTick = null; }
     if (recognition) {
@@ -5337,7 +5417,12 @@
     return { recorder: rec, chunks: chunks };
   }
 
-  function queueServerSegment(turn, rec, chunks) {
+  /* tolerateEmpty: the segment is one WHOLE phrase (it started at the
+   * turn start or at a resume, and silence closed it). An empty transcript
+   * there is noise (a cough, a breath before resuming), not a lost stretch
+   * of speech, so it never voids the turn. A segment cut by rotation stays
+   * strict: an empty one means words went missing. */
+  function queueServerSegment(turn, rec, chunks, tolerateEmpty) {
     var capturedMime = rec.mimeType || "";
     // Reserve the queue position BEFORE stop() completes. MediaRecorder
     // events may arrive out of order even though segments were recorded in
@@ -5370,7 +5455,7 @@
           if (!isCurrentServerTurn(turn)) return;
           var text = (data && data.text ? data.text : "").trim();
           if (text) turn.text = turn.text ? turn.text + " " + text : text;
-          else turn.hadEmptySegment = true;
+          else if (!tolerateEmpty) turn.hadEmptySegment = true;
         }).catch(function () {
           if (isCurrentServerTurn(turn)) turn.hadGap = true;
         });
@@ -5388,20 +5473,63 @@
     recorder = next.recorder;
     recorderChunks = next.chunks;
     if (vad) vad.markSegment();
-    queueServerSegment(serverTurn, closing, chunks);
+    queueServerSegment(serverTurn, closing, chunks, false);
+    serverTurn.wholePhrase = false;  // the next chunk continues a cut phrase
   }
 
   /* Ends the utterance: the final chunk joins the upload queue, then the
    * accumulated turn text dispatches through the same routing as the
-   * browser engine (gate resolve while confirming, else /ask). */
-  function finishServerUtterance() {
+   * browser engine (gate resolve while confirming, else /ask).
+   * A silence close first opens the continuation window: a successor
+   * recorder keeps capturing while the phrase uploads, and speech inside
+   * the window resumes the same turn (resumeServerTurn). A bound-driven
+   * close, or a recorder that cannot be armed, dispatches at once. */
+  function finishServerUtterance(allowContinuation) {
     if (!serverTurn || !recorder || recorder.state === "inactive") return;
-    releaseVadLoopOnly();
     var turn = serverTurn;
     var closing = recorder;
     var chunks = recorderChunks;
+    // Only a SILENCE-closed whole phrase may be empty noise; a cap close
+    // stays strict (an empty capped stretch means words went missing).
+    var wholePhrase = turn.wholePhrase && !!allowContinuation;
+    var next = allowContinuation ? armRecorder() : null;
+    if (!next) {
+      releaseVadLoopOnly();
+      recorder = null;
+      recorderChunks = [];
+      queueServerSegment(turn, closing, chunks, wholePhrase);
+      dispatchServerTurn(turn);
+      return;
+    }
+    recorder = next.recorder;        // successor FIRST: capture never gaps
+    recorderChunks = next.chunks;
+    queueServerSegment(turn, closing, chunks, wholePhrase);
+    turn.wholePhrase = true;
+    turn.pendingSince = Date.now();
+    if (vad) vad.reset();            // keeps the learned floor
+    setCallState("transcribing");
+  }
+
+  /* Speech came back inside the continuation window: the successor
+   * recorder (live since the close) becomes this turn's next segment. */
+  function resumeServerTurn() {
+    serverTurn.pendingSince = null;
+    if (!utteranceStartedAt) utteranceStartedAt = Date.now();
+    setCallState("recording");
+  }
+
+  /* The window elapsed in silence: the successor's audio is only the
+   * quiet that followed, so it is discarded, never uploaded. */
+  function closeServerTurn() {
+    var turn = serverTurn;
+    turn.pendingSince = null;
+    releaseVadLoopOnly();
+    var spare = recorder;
     recorder = null;
-    queueServerSegment(turn, closing, chunks);
+    recorderChunks = [];
+    if (spare && spare.state !== "inactive") {
+      try { spare.onstop = null; spare.stop(); } catch (err) { /* noop */ }
+    }
     dispatchServerTurn(turn);
   }
 
@@ -5466,7 +5594,8 @@
       serverTurn = {
         text: "", uploads: Promise.resolve(), hadGap: false,
         hadEmptySegment: false, segmentCount: 0, finalizing: false,
-        routed: false, controller: new AbortController()
+        routed: false, controller: new AbortController(),
+        wholePhrase: true, pendingSince: null
       };
       var armed = armRecorder();
       if (!armed) {
@@ -5483,6 +5612,12 @@
         var rms = frameRms();
         var speaking = vad.push(rms);
         updateRecMeter(rms);  // FR8: level meter from the live VAD RMS
+        if (serverTurn && serverTurn.pendingSince !== null) {
+          // Continuation window: resume the same turn, or close it.
+          if (speaking) resumeServerTurn();
+          else if (Date.now() - serverTurn.pendingSince >= VOICE_CONTINUATION_MS) closeServerTurn();
+          return;
+        }
         if (callState === "listening" || callState === "confirming") {
           if (speaking || vad.hasSpeech()) {
             if (!utteranceStartedAt) utteranceStartedAt = Date.now();
@@ -5498,7 +5633,7 @@
           if (why === "cap" || why === "utteranceCap") {
             showBanner(t("voice.turn_cap_cut"));
           }
-          finishServerUtterance();
+          finishServerUtterance(why === "silence");
           return;
         }
         // Segment boundary: rotate the recorder chunk (upload now, keep
@@ -5532,7 +5667,9 @@
       audioContext = new Ctx();
       var source = audioContext.createMediaStreamSource(stream);
       analyser = audioContext.createAnalyser();
-      analyser.fftSize = 1024;
+      // 4096 samples (~85ms at 48kHz) cover almost the whole 100ms VAD
+      // tick: a short 21ms window could land on a gap between syllables.
+      analyser.fftSize = 4096;
       source.connect(analyser);
       vadSampleBuf = new Float32Array(analyser.fftSize);
       armUtterance();

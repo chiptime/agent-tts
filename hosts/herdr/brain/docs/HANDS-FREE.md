@@ -28,7 +28,28 @@ The server voice engine rotates its recorder every 45 seconds of continuous
 speech, transcribes the segments in order and sends one combined turn after
 the user stops. If a segment cannot be transcribed, the incomplete turn is
 not sent; the call asks the user to repeat it. An uninterrupted turn has a
-10-minute safety limit, which is announced when reached. Independent segment
+10-minute safety limit, which is announced when reached.
+
+When silence closes a phrase, the server engine keeps capturing for a
+**1.5-second continuation window** while that phrase is already being
+transcribed. If the user speaks again inside the window, the new speech
+joins the same turn instead of starting a second one; otherwise the turn is
+sent and the quiet captured during the window is discarded. Because the
+window overlaps the transcription, it adds little reply latency. A phrase
+that transcribes to nothing (a cough or breath before resuming) does not
+void the turn; an empty segment cut by the 45-second rotation still does.
+
+The call transcription engine (Settings → "Call transcription":
+Server or Browser) is the user's choice on every platform and only affects
+how the call hears the user; reading the screen aloud is a separate
+feature. Android's Web Speech recognizer plays a system beep on every
+start and ends its session at each short pause, and a web page cannot
+silence that beep. With the Browser engine on Android, an idle mic is
+therefore watched by a silent getUserMedia speech gate, and recognition
+starts only when the user begins to speak: the beep marks the start of a
+turn (and a session Android ends mid-turn), never an idle loop. The first
+syllable can be clipped while the recognizer opens; the Server engine
+never beeps. Independent segment
 transcriptions can still misrecognize a word at a segment boundary; real
 device testing is needed to assess recognition and acoustic performance.
 
