@@ -210,6 +210,96 @@ test("error state renders when http rejects", async () => {
   assert.equal(errorEl.textContent, "[calls.error]");
 });
 
+test("detail view shows a resume button that calls onResume with the call", async () => {
+  const doc = makeDoc();
+  const t = makeTranslator();
+  const callsData = {
+    calls: [
+      {
+        call_id: "call-7",
+        started_at: "2026-11-03T10:00:00Z",
+        ended_at: "2026-11-03T10:01:00Z",
+        duration_s: 60.0,
+        turn_count: 2,
+        status: "ended",
+      },
+    ],
+    has_more: false,
+  };
+  const detailData = { call: callsData.calls[0], turns: [], has_more: false };
+
+  const http = (url) => {
+    if (url === "/calls" || url.startsWith("/calls?")) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(callsData) });
+    }
+    if (url === "/calls/call-7" || url.startsWith("/calls/call-7?")) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(detailData) });
+    }
+    return Promise.reject(new Error("unexpected: " + url));
+  };
+
+  const resumed = [];
+  const container = doc.createElement("div");
+  const ui = CallsModule.createCallsUI({
+    doc, http, t,
+    onResume: (call) => resumed.push(call),
+  });
+  ui.mount(container);
+
+  await new Promise(resolve => setTimeout(resolve, 10));
+
+  const items = container.querySelectorAll(".call-item");
+  items[0].click();
+  await new Promise(resolve => setTimeout(resolve, 10));
+
+  const resumeBtn = container.querySelector(".calls-resume-btn");
+  assert.ok(resumeBtn, "resume button renders in detail view");
+  assert.ok(resumeBtn.textContent.includes("[calls.resume]"));
+  assert.equal(resumed.length, 0);
+  resumeBtn.click();
+  assert.equal(resumed.length, 1);
+  assert.equal(resumed[0].call_id, "call-7");
+});
+
+test("no resume button when onResume is not provided", async () => {
+  const doc = makeDoc();
+  const t = makeTranslator();
+  const callsData = {
+    calls: [
+      {
+        call_id: "call-8",
+        started_at: "2026-11-03T10:00:00Z",
+        ended_at: null,
+        duration_s: null,
+        turn_count: 0,
+        status: "open",
+      },
+    ],
+    has_more: false,
+  };
+  const detailData = { call: callsData.calls[0], turns: [], has_more: false };
+
+  const http = (url) => {
+    if (url === "/calls" || url.startsWith("/calls?")) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(callsData) });
+    }
+    if (url === "/calls/call-8" || url.startsWith("/calls/call-8?")) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(detailData) });
+    }
+    return Promise.reject(new Error("unexpected: " + url));
+  };
+
+  const container = doc.createElement("div");
+  const ui = CallsModule.createCallsUI({ doc, http, t });
+  ui.mount(container);
+
+  await new Promise(resolve => setTimeout(resolve, 10));
+  container.querySelectorAll(".call-item")[0].click();
+  await new Promise(resolve => setTimeout(resolve, 10));
+
+  assert.equal(container.querySelector(".calls-resume-btn"), null);
+});
+
 test("tapping a call opens detail view with transcript turns and back button", async () => {
   const doc = makeDoc();
   const t = makeTranslator();

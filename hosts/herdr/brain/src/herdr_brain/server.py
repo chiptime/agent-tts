@@ -1591,6 +1591,26 @@ def create_app(
             active_call["call_id"] = None
         return finalized
 
+    @app.post("/calls/{call_id}/resume")
+    def call_resume(call_id: str) -> dict:
+        """Reopens a PREVIOUS call as the ACTIVE call and reseeds the
+        conversation ring from its turns («volver a una llamada
+        anterior»): the agent answers with that call's context, and new
+        turns append to that same call record."""
+        try:
+            call, turns = history.resume_call(call_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"call '{call_id}' not found")
+        active_call["call_id"] = call_id
+        # Reseed the ring exactly like the boot seed: the default session
+        # resets and the call's RAW turns replay into it. A longer call
+        # than the ring simply evicts its oldest turns (same semantics
+        # as load_and_compact at boot).
+        store.reset(None)
+        for turn in turns:
+            store.append(None, turn["role"], turn["text"])
+        return call
+
     @app.get("/calls")
     def list_calls(before: Optional[str] = None, limit: int = 25) -> dict:
         """Newest-first metadata pages of calls, clamped to CALL_HISTORY_TURNS."""

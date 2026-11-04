@@ -394,6 +394,7 @@
     "calls.turns_count": "{count} turnos",
     "calls.duration": "{duration}",
     "calls.back": "← Volver",
+    "calls.resume": "Retomar llamada",
     "calls.detail_title": "Detalle de llamada",
     "calls.detail_loading": "Cargando transcripción…",
     "calls.detail_empty": "Sin turnos en esta llamada",

@@ -125,6 +125,22 @@
     detailNav.appendChild(backBtn);
     detailNav.appendChild(detailTitle);
 
+    // "Volver a esta llamada": optional — the button only exists when the
+    // host app injects onResume (app.js owns the actual call machinery:
+    // mic, timer, state machine). Tapping hands the WHOLE call object
+    // back; this module never starts a call itself.
+    var resumeBtn = null;
+    if (typeof deps.onResume === "function") {
+      resumeBtn = doc.createElement("button");
+      resumeBtn.setAttribute("type", "button");
+      resumeBtn.classList.add("calls-resume-btn");
+      resumeBtn.textContent = t("calls.resume");
+      resumeBtn.addEventListener("click", function () {
+        if (selectedCall) deps.onResume(selectedCall);
+      });
+      detailNav.appendChild(resumeBtn);
+    }
+
     var detailHeader = doc.createElement("div");
     detailHeader.classList.add("calls-detail-header");
 

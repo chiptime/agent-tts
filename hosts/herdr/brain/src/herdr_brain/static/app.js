@@ -4543,7 +4543,8 @@
       callsUI = window.Calls.createCallsUI({
         doc: document,
         http: function (url) { return readFetch(url); },
-        t: t
+        t: t,
+        onResume: function (call) { resumeCall(call.call_id); }
       });
       callsUI.mount(callsContainer);
       if (callsSection) callsSection.classList.remove("hidden");
@@ -5819,7 +5820,7 @@
 
   /* ---------------- call button / pause / voice engine toggle ------------- */
 
-  function startCall() {
+  function startCall(resumeCallId) {
     interruptedFromReload = false;
     clearCallIntent();
     inCall = true;
@@ -5827,8 +5828,19 @@
     markCallIntent();
     /* Per-call history (S6/S7): the server opens the record and tags
      * every turn of THIS call with it. Best-effort — a failed start
-     * must never block the call itself. */
-    readFetch("/call/start", { method: "POST" }).catch(function () { /* history is best-effort */ });
+     * must never block the call itself. A RESUMED call reopens the
+     * previous record instead (POST /calls/{id}/resume) so new turns
+     * append to it and the agent context reloads from its turns; a
+     * failed resume falls back to a fresh call rather than blocking. */
+    var startUrl = resumeCallId
+      ? "/calls/" + encodeURIComponent(resumeCallId) + "/resume"
+      : "/call/start";
+    readFetch(startUrl, { method: "POST" })
+      .catch(function () {
+        if (!resumeCallId) return null;
+        return readFetch("/call/start", { method: "POST" });
+      })
+      .catch(function () { /* history is best-effort */ });
     startCallTimer();
     requestWakeLock();
     openEvents();  // user gesture: unlocks autoplay for announcements
@@ -5868,6 +5880,14 @@
     if (inCall) endCall();
     else startCall();
   });
+
+  /* "Volver a una llamada anterior": one ACTIVE call at a time — a live
+   * call hangs up first, then the chosen record reopens server-side
+   * (turns reseed the agent context) and the mic starts on it. */
+  function resumeCall(callId) {
+    if (inCall) endCall();
+    startCall(callId);
+  }
 
   pauseBtn.addEventListener("click", function () {
     if (callState === "listening" || callState === "recording" || callState === "confirming") {

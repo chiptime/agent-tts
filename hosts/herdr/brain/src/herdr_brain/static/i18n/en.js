@@ -394,6 +394,7 @@
     "calls.turns_count": "{count} turns",
     "calls.duration": "{duration}",
     "calls.back": "← Back",
+    "calls.resume": "Resume call",
     "calls.detail_title": "Call details",
     "calls.detail_loading": "Loading transcript…",
     "calls.detail_empty": "No turns in this call",

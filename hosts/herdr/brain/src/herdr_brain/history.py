@@ -265,6 +265,79 @@ class HistoryStore:
             finally:
                 conn.close()
 
+    def resume_call(self, call_id: str) -> tuple[dict, list[dict]]:
+        """Reopens one call as the ACTIVE call ("volver a una llamada anterior").
+
+        Other dangling open calls are closed as interrupted exactly like
+        :meth:`start_call` would; the target then reopens — a CLOSED call
+        gets a fresh ``started_at`` (duration counts the resumed session,
+        not the gap between calls), an already-OPEN one keeps its window.
+        Returns the call metadata plus the call's RAW (unmasked) turns,
+        oldest first, so the caller can reseed the conversation ring.
+
+        Raises KeyError if call_id is unknown.
+        """
+        with self._lock:
+            if not self._path.exists():
+                raise KeyError(f"unknown call_id: {call_id}")
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT call_id, started_at, status FROM calls WHERE call_id = ?",
+                    (call_id,),
+                ).fetchone()
+                if row is None:
+                    raise KeyError(f"unknown call_id: {call_id}")
+                cid, _s_at, status = row
+                with conn:
+                    open_rows = conn.execute(
+                        "SELECT call_id, started_at FROM calls "
+                        "WHERE status = 'open' AND call_id != ?",
+                        (cid,),
+                    ).fetchall()
+                    for other_id, other_started in open_rows:
+                        last_turn = conn.execute(
+                            "SELECT ts FROM turns WHERE call_id = ? ORDER BY id DESC LIMIT 1",
+                            (other_id,),
+                        ).fetchone()
+                        e_at = last_turn[0] if last_turn is not None else other_started
+                        dur = _calc_duration_s(other_started, e_at)
+                        cnt = int(conn.execute(
+                            "SELECT COUNT(*) FROM turns WHERE call_id = ?",
+                            (other_id,),
+                        ).fetchone()[0])
+                        conn.execute(
+                            "UPDATE calls SET ended_at = ?, duration_s = ?, turn_count = ?, status = 'interrupted' WHERE call_id = ?",
+                            (e_at, dur, cnt, other_id),
+                        )
+                    if status != "open":
+                        conn.execute(
+                            "UPDATE calls SET started_at = ?, ended_at = NULL, duration_s = NULL, status = 'open' WHERE call_id = ?",
+                            (_utc_now_iso(), cid),
+                        )
+                    meta = conn.execute(
+                        "SELECT call_id, started_at, ended_at, duration_s, turn_count, status FROM calls WHERE call_id = ?",
+                        (cid,),
+                    ).fetchone()
+                    turn_rows = conn.execute(
+                        "SELECT ts, role, text FROM turns WHERE call_id = ? AND role IN (?, ?) ORDER BY id",
+                        (cid, *ROLES),
+                    ).fetchall()
+            finally:
+                conn.close()
+        call = {
+            "call_id": meta[0],
+            "started_at": meta[1],
+            "ended_at": meta[2],
+            "duration_s": meta[3],
+            "turn_count": meta[4],
+            "status": meta[5],
+        }
+        turns = [
+            {"ts": ts, "role": role, "text": text} for ts, role, text in turn_rows
+        ]
+        return call, turns
+
     def get_call(self, call_id: str) -> Optional[dict]:
         """Returns the metadata dict of one call, or None if not found."""
         with self._lock:

@@ -195,6 +195,56 @@ class TestStoreCalls:
         assert len(page2) == 1
         assert page2[0]["call_id"] == c1
 
+    def test_resume_call_reopens_ended_call_with_fresh_started_at_and_raw_turns(self, tmp_path):
+        store = HistoryStore(tmp_path / HISTORY_DB_FILENAME)
+        c1 = store.start_call()
+        store.append("user", "hola", call_id=c1)
+        store.append("assistant", "buenas", call_id=c1)
+        store.end_call(c1)
+
+        call, turns = store.resume_call(c1)
+        assert call["call_id"] == c1
+        assert call["status"] == "open"
+        assert call["ended_at"] is None
+        assert call["duration_s"] is None
+        assert call["turn_count"] == 2
+        # RAW turns (no S14 masking): they seed the conversation ring,
+        # exactly like the boot-time load_and_compact path.
+        assert [(t["role"], t["text"]) for t in turns] == [
+            ("user", "hola"),
+            ("assistant", "buenas"),
+        ]
+
+    def test_resume_call_unknown_id_fails_closed(self, tmp_path):
+        store = HistoryStore(tmp_path / HISTORY_DB_FILENAME)
+        with pytest.raises(KeyError):
+            store.resume_call("call-unknown")
+
+    def test_resume_call_closes_other_dangling_open_calls(self, tmp_path):
+        store = HistoryStore(tmp_path / HISTORY_DB_FILENAME)
+        c1 = store.start_call()
+        store.append("user", "colgada sin cerrar", call_id=c1)
+        c2 = store.start_call()
+        store.end_call(c2)
+
+        call, _turns = store.resume_call(c2)
+        assert call["status"] == "open"
+
+        dangling = store.get_call(c1)
+        assert dangling["status"] == "interrupted"
+        assert dangling["ended_at"] is not None
+
+    def test_resume_call_on_open_call_keeps_started_at(self, tmp_path):
+        store = HistoryStore(tmp_path / HISTORY_DB_FILENAME)
+        c = store.start_call()
+        original = store.get_call(c)
+        store.append("user", "en curso", call_id=c)
+
+        call, turns = store.resume_call(c)
+        assert call["status"] == "open"
+        assert call["started_at"] == original["started_at"]
+        assert [(t["role"], t["text"]) for t in turns] == [("user", "en curso")]
+
     def test_append_2_arg_legacy_leaves_call_id_null(self, tmp_path):
         store = HistoryStore(tmp_path / HISTORY_DB_FILENAME)
         store.append("user", "legacy turn")
@@ -344,6 +394,77 @@ class TestCallRoutes:
     def test_get_call_detail_404_for_unknown_id(self, audio_dir):
         client = make_client(audio_dir)
         resp = client.get("/calls/nonexistent-call-id")
+        assert resp.status_code == 404
+
+class RingSnapshotLLM(FakeLLM):
+    """FakeLLM that snapshots the conversation ring at every ask."""
+
+    def ask(self, text, session_id=None, pane_id=None):
+        self.calls.append(text)
+        if self.attached_store is not None:
+            key = session_id or "default"
+            self.ring_snapshots.append(
+                [(m.role, m.content) for m in self.attached_store.history(key)]
+            )
+        return super().ask(text, session_id=session_id, pane_id=pane_id)
+
+
+class TestResumeRoute:
+    def test_resume_reopens_call_seeds_ring_and_tags_new_turns(self, audio_dir):
+        llm = RingSnapshotLLM()
+        client = make_client(audio_dir, llm=llm)
+
+        # First call: two turns, then ended.
+        first = client.post("/call/start").json()["call_id"]
+        client.post("/ask", json={"text": "pregunta vieja"})
+        client.post("/call/end")
+
+        # An unrelated later call pollutes the conversation ring.
+        client.post("/call/start")
+        client.post("/ask", json={"text": "otra llamada"})
+
+        # Resume the FIRST call.
+        resp = client.post(f"/calls/{first}/resume")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["call_id"] == first
+        assert body["status"] == "open"
+
+        # New turns are tagged with the resumed call, not the polluter.
+        client.post("/ask", json={"text": "seguimos"})
+        detail = client.get(f"/calls/{first}").json()
+        texts = [t["text"] for t in detail["turns"]]
+        assert "pregunta vieja" in texts
+        assert "seguimos" in texts
+        assert "otra llamada" not in texts
+
+        # The ring was RESEEDED from the resumed call only: the resumed
+        # call's turns are the context, the polluter's turns are gone.
+        resumed_ring = llm.ring_snapshots[-1]
+        contents = [content for _role, content in resumed_ring]
+        assert "pregunta vieja" in contents
+        assert "otra llamada" not in contents
+        assert "seguimos" not in contents  # the new question rides the prompt, not the ring
+
+        # Ending the call finalizes the REOPENED record.
+        end = client.post("/call/end").json()
+        assert end["call_id"] == first
+        assert end["status"] == "ended"
+        assert end["turn_count"] == 4  # pregunta vieja + answer + seguimos + answer
+
+    def test_resume_after_end_reports_resumed_session_duration(self, audio_dir):
+        client = make_client(audio_dir)
+        first = client.post("/call/start").json()["call_id"]
+        client.post("/ask", json={"text": "hola"})
+        ended = client.post("/call/end").json()
+
+        resumed = client.post(f"/calls/{first}/resume").json()
+        assert resumed["duration_s"] is None
+        assert resumed["started_at"] >= ended["started_at"]
+
+    def test_resume_unknown_call_404(self, audio_dir):
+        client = make_client(audio_dir)
+        resp = client.post("/calls/call-nonexistent/resume")
         assert resp.status_code == 404
 
     def test_call_history_and_boot_ring_byte_compat_with_no_call_db(self, audio_dir):
