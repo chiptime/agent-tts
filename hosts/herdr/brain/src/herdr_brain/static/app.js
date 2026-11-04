@@ -5210,6 +5210,21 @@
     });
   }
 
+  /* Recognizer language = the APP's language (the call's spoken
+   * locale), never the OS alone: an English phone recognizing Spanish
+   * speech as en-US returns unrelated words. The OS regional variant
+   * survives only when it is the same language (es-AR stays es-AR). */
+  var RECOGNITION_DEFAULT_REGION = { es: "es-ES", en: "en-US" };
+
+  function recognitionLang() {
+    var app = window.I18N && typeof window.I18N.getLocale === "function"
+      ? window.I18N.getLocale() : "es";
+    var os = String(navigator.language || "");
+    var base = os.toLowerCase().split("-")[0];
+    if (os && base === app) return os;
+    return RECOGNITION_DEFAULT_REGION[app] || "es-ES";
+  }
+
   function startBrowserListening(fromGate) {
     if (textMode || !SR) return;
     if (callState !== "listening" && callState !== "confirming") return;
@@ -5231,7 +5246,7 @@
       : (lastInterimRaw || "…");
 
     recognition = new SR();
-    recognition.lang = navigator.language || "es-ES";
+    recognition.lang = recognitionLang();
     recognition.interimResults = true;
     recognition.continuous = true;
     srSawResult = false;
@@ -5290,14 +5305,21 @@
       if (epTick) { clearInterval(epTick); epTick = null; }
       var micLive = callState === "listening" || callState === "confirming";
       if (micLive && !manualStop && !textMode) {
+        // Mid-turn (an utterance is open): Android ended the session at a
+        // short pause. Every ms of gap is lost speech, so reopen at once;
+        // the doubling backoff stays for empty/failed sessions. An error
+        // loop stays bounded: the silence window dispatches the open
+        // utterance and recFailures falls back to text mode.
+        var midTurn = !!(endpointer && endpointer.hasSpeech());
+        var delay = midTurn ? 0 : recRestartDelay;
         // Self-clear on fire: a stale handle would permanently disarm
         // the 1s mic watchdog (its guard is !recRestartTimer).
-        voiceTimelinePush("sr:restart", recRestartDelay + " ms");
+        voiceTimelinePush("sr:restart", delay + " ms" + (midTurn ? " (mid-turn)" : ""));
         recRestartTimer = setTimeout(function () {
           recRestartTimer = null;
           startListening();
-        }, recRestartDelay);
-        recRestartDelay = Math.min(recRestartDelay * 2, 3000);
+        }, delay);
+        if (!midTurn) recRestartDelay = Math.min(recRestartDelay * 2, 3000);
       } else if (interimTextEl.textContent === "…") {
         interimTextEl.textContent = "";
       }

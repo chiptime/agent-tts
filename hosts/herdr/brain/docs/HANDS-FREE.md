@@ -64,6 +64,14 @@ are clipped and phrases are lost. Server is therefore the default and
 the recommended engine for calls on Android; the Browser engine remains
 a manual choice for platforms where Web Speech behaves.
 
+The Browser recognizer listens in the app's language (Settings →
+language; Spanish by default), not the phone's system language: an
+English phone keeps recognizing a Spanish call as `es-ES`, while a
+system already in the same language keeps its region (`es-AR`). When
+Android ends a session at a short pause while the utterance is still
+open, the recognizer reopens at once instead of waiting through the
+error backoff, so the gap loses as little speech as possible.
+
 The idle diagnostics overlay (long-press the call button, ≥800 ms, not
 during a call) ends with the **browser-dictation timeline**: the last
 recorded actions — gate armed/open/speech, recognizer start, first

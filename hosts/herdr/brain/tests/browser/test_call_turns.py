@@ -176,6 +176,54 @@ def test_silence_window_holds_a_pause_two_seconds_longer(karaoke_app):
     assert post_body(harness, "/ask")["text"] == "oye brain"
 
 
+def browser_lang_app(karaoke_app, os_language):
+    """Browser-engine call whose OS reports ``os_language``."""
+    harness = karaoke_app()
+    harness.context.add_init_script(VOICE_CLOCK_INIT)
+    harness.context.add_init_script(
+        "Object.defineProperty(navigator, 'language', {get: () => %r});" % os_language)
+    harness.respond("/ask", {"answer": "Hecho.", "audio_url": None}, method="POST")
+    harness.load()
+    harness.page.set_default_timeout(10000)
+    harness.page.locator("#call-btn").click()
+    harness.page.wait_for_function("() => __karaokeHarness.recognitions.length > 0")
+    return harness
+
+
+def test_browser_recognizer_follows_the_app_language_not_the_os(karaoke_app):
+    """A phone whose OS is English must still recognize the call in the
+    app's language (Spanish by default): an en-US recognizer hearing
+    Spanish "transcribe cualquier cosa"."""
+    harness = browser_lang_app(karaoke_app, "en-US")
+    assert harness.page.evaluate("() => __karaokeHarness.recognitions[0].lang") == "es-ES"
+
+
+def test_browser_recognizer_keeps_the_os_region_of_the_same_language(karaoke_app):
+    """PRESERVE: an OS already in the app's language keeps its regional
+    variant (es-AR stays es-AR)."""
+    harness = browser_lang_app(karaoke_app, "es-AR")
+    assert harness.page.evaluate("() => __karaokeHarness.recognitions[0].lang") == "es-AR"
+
+
+def test_mid_turn_recognizer_restarts_without_growing_backoff(karaoke_app):
+    """Android ends a recognition session at each short pause while the
+    utterance is still open. Every restart gap is lost speech, so a
+    mid-turn restart reopens at once instead of doubling 300→600→1200ms;
+    the open utterance still dispatches whole."""
+    harness = voice_turn_app(karaoke_app)
+    feed(harness, 0, "necesito que", final=False)
+    for index in range(4):
+        harness.page.evaluate(
+            "i => __karaokeHarness.recognitions[i].emit('end')", index)
+        harness.page.wait_for_function(
+            "n => __karaokeHarness.recognitions.length > n", arg=index + 1, timeout=250)
+    assert ask_count(harness) == 0
+    feed(harness, 4, "necesito que revises el plan", final=True)
+    advance(harness, 4300)
+    wait_post(harness, "/ask")
+    assert post_body(harness, "/ask")["text"] == "necesito que revises el plan"
+
+
 def test_voice_diag_renders_browser_timeline(karaoke_app):
     """The idle diagnostics overlay renders the browser-dictation
     timeline: recognizer start, first result, final and dispatch, each
