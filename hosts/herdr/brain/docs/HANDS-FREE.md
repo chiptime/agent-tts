@@ -15,14 +15,17 @@ impact, verified test outcome, a blocking decision when relevant, and an
 explicit recommended next action. Verbatim terminal choices must not be hidden
 to shorten a response. Tests prove this policy reaches the provider; they do
 not claim that every live model response will obey it.
-
 ## Endpointing
 
 The call uses an adaptive silence window in both the browser transcript
-endpointer and the server-engine RMS VAD: it starts at **1.2 seconds** and
-grows with the utterance to at most **2.5 seconds**. Longer turns therefore
-allow longer thinking pauses, at the cost of a longer wait before a reply.
-The standalone helpers retain their previous defaults and explicit options.
+endpointer and the server-engine RMS VAD: it starts at **3.2 seconds**
+and grows with the utterance to at most **4.5 seconds** (operator
+decision 2026-11-04, "ampliar los tiempos en al menos 2 segundos": while
+the Android recognizer restarts, no interim results arrive and that dead
+air used to finish the turn mid-speech — "corta instantáneo al hablar").
+Longer turns therefore allow longer thinking pauses, at the cost of a
+longer wait before a reply. The standalone helpers retain their previous
+defaults and explicit options.
 
 The server voice engine rotates its recorder every 45 seconds of continuous
 speech, transcribes the segments in order and sends one combined turn after
@@ -52,6 +55,22 @@ syllable can be clipped while the recognizer opens; the Server engine
 never beeps. Independent segment
 transcriptions can still misrecognize a word at a segment boundary; real
 device testing is needed to assess recognition and acoustic performance.
+
+On a real Android device (Pixel, 2026-11) the gate handoff proved
+unusable: the recognizer opens late, Android ends its session at each
+short pause, and a speaker who keeps talking cycles gate ↔ recognizer
+roughly every two seconds — the mic indicator jumps, utterance onsets
+are clipped and phrases are lost. Server is therefore the default and
+the recommended engine for calls on Android; the Browser engine remains
+a manual choice for platforms where Web Speech behaves.
+
+The idle diagnostics overlay (long-press the call button, ≥800 ms, not
+during a call) ends with the **browser-dictation timeline**: the last
+recorded actions — gate armed/open/speech, recognizer start, first
+result, final, end, restart, dispatch — each stamped with the gap to the
+previous action. It records durations only (no transcript text) and
+clears at each call start, so a failed call can be read back after
+hanging up: where the time went and which action ate the speech.
 
 ## Open-pane context
 
@@ -90,6 +109,16 @@ memory is unchanged — still the single global compacted ring — and the
 legacy `GET /call-history` keeps serving it. Honest limits: a server
 restart mid-call loses the active-call link (those turns land untagged
 and the record closes as interrupted at the next start).
+
+### Resuming a previous call
+
+The transcript detail offers **"Retomar llamada"**: `POST /calls/{call_id}/resume`
+reopens that record as the ACTIVE call (a closed one gets a fresh
+`started_at`, so duration counts the resumed session; any other open
+call closes as `interrupted`) and reseeds the conversation ring from the
+call's raw turns — the agent answers with that call's context and new
+turns append to it. A resume that fails client-side falls back to a
+fresh `POST /call/start`; the call itself is never blocked by history.
 
 ## Barge-in (interrupting the assistant by voice)
 

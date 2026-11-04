@@ -1099,7 +1099,7 @@ otherwise the call remains half-duplex. Persistent recognition failure falls
 back to keyboard input with a notice.
 
 Voice turns are **self-endpointed**: the call's silence window grows from
-1.2 to 2.5 seconds for longer utterances. The server engine transcribes
+3.2 to 4.5 seconds for longer utterances. The server engine transcribes
 45-second recorder segments in order and sends one combined turn after the
 user finishes; a failed or unrecognized segment prevents sending an
 incomplete turn. After a phrase ends, speech that resumes within a

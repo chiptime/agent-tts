@@ -183,6 +183,23 @@
   var lastRecError = "ninguno";
   var textMode = false;         // mic unavailable: keyboard fallback
 
+  /* Browser-dictation timeline (PRD-02 scope, observe-only): a bounded
+   * ring of the moments that shape a voice turn — gate arming/firing,
+   * recognizer start/first-result/final/end, restarts, dispatches —
+   * each stamped with Date.now() and durations only (no transcript
+   * text). The idle diagnostics overlay renders the tail with the gap
+   * to the previous action, so a real-device capture shows WHERE the
+   * time between actions goes instead of guessing. A new call clears
+   * it; 80 entries span several ping-pong cycles with room to spare. */
+  var voiceTimeline = [];
+  var VOICE_TIMELINE_CAP = 80;
+  var srSawResult = false;      // first-result marker for the CURRENT SR session
+
+  function voiceTimelinePush(ev, detail) {
+    voiceTimeline.push({ t: Date.now(), ev: ev, d: detail || "" });
+    if (voiceTimeline.length > VOICE_TIMELINE_CAP) voiceTimeline.shift();
+  }
+
   /* Voice engine v2: "servidor" (getUserMedia + VAD + /transcribe) is the
    * default — Android Chrome's SpeechRecognition ignores BT headset mics
    * and returns zero results, while getUserMedia does honor them. The old
@@ -207,19 +224,22 @@
   var serverMicBusy = false;    // a server-engine capture is starting up
 
   /* Hands-free endpointing profile (S1). Both engines OPT IN explicitly:
-   * a silence window that GROWS with the utterance (1200ms base +200ms
-   * per second of speech, 2500ms ceiling) keeps natural pauses inside ONE
-   * turn. The server engine additionally bounds memory/transport with
-   * recorder SEGMENTS (segmentMs): each 45s chunk of ongoing speech
+   * a silence window that GROWS with the utterance keeps natural pauses
+   * inside ONE turn. The server engine additionally bounds memory/transport
+   * with recorder SEGMENTS (segmentMs): each 45s chunk of ongoing speech
    * uploads immediately and only its TRANSCRIPT accumulates, so a long
    * turn is never cut to keep a blob small. The absolute utterance bound
    * (utteranceCapMs, 10 minutes) exists for pathological never-quiet
    * input only — far beyond turn-taking speech — and when it fires the
    * close is announced (voice.turn_cap_cut) while the captured words
-   * still ride the single dispatch. */
-  var VOICE_SILENCE_MS = 1200;
+   * still ride the single dispatch.
+   * 2026-11-04 ("ampliar los tiempos en al menos 2 segundos"): base and
+   * ceiling grew by 2s — a recognizer restart's dead air (no interim
+   * results while SpeechRecognition reopens) must not finish the turn
+   * mid-speech; the cost is a slower natural turn close. */
+  var VOICE_SILENCE_MS = 3200;
   var VOICE_SILENCE_GROWTH_PER_S_MS = 200;
-  var VOICE_MAX_SILENCE_MS = 2500;
+  var VOICE_MAX_SILENCE_MS = 4500;
   var VOICE_SEGMENT_MS = 45000;
   var VOICE_UTTERANCE_CAP_MS = 600000;
   /* Continuation window (server engine): after the silence closes a
@@ -3878,6 +3898,17 @@
     } else {
       lines.push("endpointer:        (sin sesión activa)");
     }
+    /* Browser-dictation timeline tail: each entry with the gap to the
+     * PREVIOUS action — the deltas are the diagnosis (a gate cycle, a
+     * recognizer that dies, a silence-close while it reopens). */
+    lines.push("timeline (" + voiceTimeline.length + "):");
+    var from = Math.max(0, voiceTimeline.length - 12);
+    for (var i = from; i < voiceTimeline.length; i++) {
+      var entry = voiceTimeline[i];
+      var gap = i > 0 ? entry.t - voiceTimeline[i - 1].t : 0;
+      lines.push("  " + new Date(entry.t).toLocaleTimeString() + "  +" + gap + "ms  " +
+        entry.ev + (entry.d ? " " + entry.d : ""));
+    }
     lines.push("diagnóstico:      " + diag.lastError);
     diagText.textContent = lines.join("\n");
   }
@@ -4648,6 +4679,7 @@
         inCall && !audioBusy && !dispatching && !manualStop && !textMode &&
         !listening && !recRestartTimer &&
         (callState === "listening" || callState === "confirming")) {
+      voiceTimelinePush("watchdog:rearm");
       startListening();
     }
   }, 1000);
@@ -5055,6 +5087,7 @@
     releaseBrowserGate();
     if (epTick) { clearInterval(epTick); epTick = null; }
     if (recognition) {
+      voiceTimelinePush("sr:teardown");
       try { recognition.stop(); } catch (err) { /* already stopped */ }
     }
     listening = false;
@@ -5096,6 +5129,7 @@
     var text = endpointer.finalize();
     if (!text) { endpointer.reset(); return; }
     if (capCut) showBanner(t("voice.turn_cap_cut"));  // a bound close is visible
+    voiceTimelinePush("dispatch", why + ", " + text.length + " ch");
     dispatching = true;
     interimTextEl.textContent = "";
     teardownRecognition();
@@ -5138,6 +5172,7 @@
 
   function armBrowserGate() {
     if (browserGate) return;  // single-flight (the 1s watchdog re-enters)
+    voiceTimelinePush("gate:arming");
     var gate = browserGate = { stream: null, ctx: null, tick: null };
     navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true }
@@ -5146,6 +5181,7 @@
         stream.getTracks().forEach(function (track) { track.stop(); });
         return;
       }
+      voiceTimelinePush("gate:open");
       gate.stream = stream;
       var Ctx = window.AudioContext || window.webkitAudioContext;
       gate.ctx = new Ctx();
@@ -5161,12 +5197,14 @@
         var sum = 0;
         for (var i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
         if (browserGateVad.push(Math.sqrt(sum / buf.length))) {
+          voiceTimelinePush("gate:speech", "floor " + browserGateVad.floor().toFixed(4));
           releaseBrowserGate();     // free the mic for the recognizer
           startBrowserListening(true);
         }
       }, 100);
-    }).catch(function () {
+    }).catch(function (err) {
       if (browserGate !== gate) return;
+      voiceTimelinePush("gate:fail", err && err.name ? err.name : "");
       browserGate = null;
       startBrowserListening(true);  // no gate: legacy direct start
     });
@@ -5196,6 +5234,8 @@
     recognition.lang = navigator.language || "es-ES";
     recognition.interimResults = true;
     recognition.continuous = true;
+    srSawResult = false;
+    voiceTimelinePush("sr:start", fromGate ? "desde puerta" : "directo");
 
     recognition.onresult = function (event) {
       if (!endpointer) return;
@@ -5206,11 +5246,16 @@
         if (event.results[i].isFinal) finals += (finals ? " " : "") + transcript;
         else interim += transcript;
       }
+      if (!srSawResult && (interim || finals)) {
+        srSawResult = true;
+        voiceTimelinePush("sr:first", (interim || finals).length + " ch");
+      }
       if (finals) {
         // Finalized chunk (typically flushed when a session ends): COMMIT,
         // never dispatch — Chrome finalizes per phrase, not per utterance;
         // the silence/cap endpointing decides when the utterance is done.
         endpointer.commit(finals);
+        voiceTimelinePush("sr:final", finals.length + " ch");
         recRestartDelay = 300;
         recFailures = 0;
       }
@@ -5224,6 +5269,7 @@
 
     recognition.onerror = function (event) {
       lastRecError = event.error || "desconocido";
+      voiceTimelinePush("sr:error", lastRecError);
       if (event.error === "not-allowed" || event.error === "service-not-allowed") {
         showBanner(t("voice.blocked"));
         enterTextMode(t("voice.keyboard_fallback"));
@@ -5239,12 +5285,14 @@
 
     recognition.onend = function () {
       listening = false;
+      voiceTimelinePush("sr:end");
       if (dispatching) return;  // deliberate stop: ask() owns the next transition
       if (epTick) { clearInterval(epTick); epTick = null; }
       var micLive = callState === "listening" || callState === "confirming";
       if (micLive && !manualStop && !textMode) {
         // Self-clear on fire: a stale handle would permanently disarm
         // the 1s mic watchdog (its guard is !recRestartTimer).
+        voiceTimelinePush("sr:restart", recRestartDelay + " ms");
         recRestartTimer = setTimeout(function () {
           recRestartTimer = null;
           startListening();
@@ -5278,6 +5326,7 @@
       listening = false;
       // Self-clear on fire: a stale handle would permanently disarm
       // the 1s mic watchdog (its guard is !recRestartTimer).
+      voiceTimelinePush("sr:restart", recRestartDelay + " ms (excepción)");
       recRestartTimer = setTimeout(function () {
         recRestartTimer = null;
         startListening();
@@ -5288,6 +5337,7 @@
 
   function stopBrowserListening() {
     manualStop = true;
+    voiceTimelinePush("sr:stop", "manual");
     releaseBrowserGate();
     if (recRestartTimer) { clearTimeout(recRestartTimer); recRestartTimer = null; }
     if (epTick) { clearInterval(epTick); epTick = null; }
@@ -5825,6 +5875,7 @@
     clearCallIntent();
     inCall = true;
     callStartedAt = Date.now();
+    voiceTimeline.length = 0;  // fresh timeline per call (PRD-02 scope)
     markCallIntent();
     /* Per-call history (S6/S7): the server opens the record and tags
      * every turn of THIS call with it. Best-effort — a failed start

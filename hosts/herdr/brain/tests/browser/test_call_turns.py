@@ -21,6 +21,7 @@ Two engines, two clock strategies, zero real microphones:
 """
 
 import math
+import re
 import struct
 import wave
 
@@ -127,7 +128,7 @@ def test_natural_pause_keeps_one_turn(karaoke_app):
     advance(harness, 1200)
     feed(harness, 0, "oye brain", final=True)
     # Natural thinking pause between phrases: 1300ms. The grown budget
-    # (1200 + 2.4*200 = 1680ms) must hold both phrases in ONE turn.
+    # (3200 + 4.3*200 = 4060ms) must hold both phrases in ONE turn.
     advance(harness, 1300)
     harness.page.wait_for_timeout(400)  # real epTicks evaluate the frozen clock
     assert ask_count(harness) == 0
@@ -136,7 +137,7 @@ def test_natural_pause_keeps_one_turn(karaoke_app):
     advance(harness, 600)
     feed(harness, 0, "necesito que revises el plan", final=True)
     # ...and only the closing silence dispatches it, whole.
-    advance(harness, 2200)
+    advance(harness, 4300)
     wait_post(harness, "/ask")
     assert ask_count(harness) == 1
     assert post_body(harness, "/ask")["text"] == "oye brain necesito que revises el plan"
@@ -146,10 +147,57 @@ def test_short_command_still_ends_the_turn(karaoke_app):
     """PRESERVE: turn-taking still works — a short command dispatches once."""
     harness = voice_turn_app(karaoke_app)
     feed(harness, 0, "qué tal", final=True)
-    advance(harness, 1300)
+    advance(harness, 3400)
     wait_post(harness, "/ask")
     assert ask_count(harness) == 1
     assert post_body(harness, "/ask")["text"] == "qué tal"
+
+
+def test_silence_window_holds_a_pause_two_seconds_longer(karaoke_app):
+    """SPEC (2026-11-04, "ampliar los tiempos en al menos 2 segundos"):
+    the silence window grew by 2s (base 1200→3200, ceiling 2500→4500).
+    A 2.6s mid-turn pause — longer than the OLD 2500ms ceiling — must
+    now hold the turn open (the old profile dispatched a fragment
+    exactly here, the "corta instantáneo al hablar" report); the turn
+    still closes on real silence afterwards."""
+    harness = voice_turn_app(karaoke_app)
+    feed(harness, 0, "oye", final=False)
+    advance(harness, 1000)
+    feed(harness, 0, "oye brain", final=True)
+    # 2.6s pause: past the old ceiling, inside the new grown window
+    # (3200 + 1.0*200 = 3400ms).
+    advance(harness, 2600)
+    harness.page.wait_for_timeout(400)  # real epTicks evaluate the frozen clock
+    assert ask_count(harness) == 0
+    # Real silence closes the whole turn, once.
+    advance(harness, 1200)
+    wait_post(harness, "/ask")
+    assert ask_count(harness) == 1
+    assert post_body(harness, "/ask")["text"] == "oye brain"
+
+
+def test_voice_diag_renders_browser_timeline(karaoke_app):
+    """The idle diagnostics overlay renders the browser-dictation
+    timeline: recognizer start, first result, final and dispatch, each
+    stamped with the gap to the previous action — durations only, so a
+    real-device capture shows where the time between actions goes
+    (PRD-02 scope: observe, never change turn behavior)."""
+    harness = voice_turn_app(karaoke_app)
+    feed(harness, 0, "qué tal", final=True)
+    advance(harness, 3400)
+    wait_post(harness, "/ask")
+    # Hang up (the call button toggles), then open the idle-only overlay
+    # with a >=800ms press on the same button.
+    harness.page.locator("#call-btn").click()
+    harness.page.locator("#call-btn").dispatch_event("pointerdown")
+    harness.page.wait_for_timeout(900)
+    harness.page.locator("#call-btn").dispatch_event("pointerup")
+    text = harness.page.locator("#diag-text").inner_text()
+    assert "timeline" in text
+    for marker in ("sr:start", "sr:first", "sr:final", "dispatch", "sr:end"):
+        assert marker in text, marker
+    # Every entry carries the gap to the previous action.
+    assert re.search(r"\+\d+ms", text)
 
 
 def test_speech_across_the_old_cap_stays_one_complete_turn(karaoke_app):
@@ -171,8 +219,9 @@ def test_speech_across_the_old_cap_stays_one_complete_turn(karaoke_app):
     harness.page.wait_for_timeout(400)
     # Mid-speech at fake t=50s, beyond the old 45s cap: nothing dispatched.
     assert ask_count(harness) == 0
-    # Natural end: silence closes the turn exactly once, with both sides.
-    advance(harness, 2600)
+    # Natural end: silence closes the turn exactly once, with both sides
+    # (grown window clamped to the 4500ms ceiling).
+    advance(harness, 4700)
     wait_post(harness, "/ask")
     assert ask_count(harness) == 1
     body = post_body(harness, "/ask")["text"]
@@ -291,17 +340,19 @@ def tolling_capture_context(browser_type, tmp_path):
 
 @pytest.fixture
 def resumed_capture_context(browser_type, tmp_path):
-    # 1s phrase, a 1.8s pause (longer than its 1.4s silence window), then
-    # the speaker resumes for 1s: one thought with a long thinking pause.
+    # 1s phrase, a 4.2s pause (past the 3.4s grown silence window, so the
+    # phrase closes and uploads), then the speaker resumes for 1s INSIDE
+    # the continuation window: one thought with a long thinking pause.
     yield from capture_context(browser_type, tmp_path, total_s=12.0,
-                               windows=[(0.2, 1.2), (3.0, 4.0)])
+                               windows=[(0.2, 1.2), (5.4, 6.4)])
 
 
 @pytest.fixture
 def separate_turns_capture_context(browser_type, tmp_path):
-    # Same first phrase, but the next one starts well after the turn ended.
-    yield from capture_context(browser_type, tmp_path, total_s=12.0,
-                               windows=[(0.2, 1.2), (6.0, 7.0)])
+    # Same first phrase, but the next one starts well after the turn
+    # ended (the 3.2s window closes the first phrase by ~4.6s).
+    yield from capture_context(browser_type, tmp_path, total_s=13.0,
+                               windows=[(0.2, 1.2), (8.0, 9.0)])
 
 
 PIXEL_7_PRO_UA = (
@@ -555,8 +606,10 @@ def wait_python_asks(app, count, timeout_ms=15000):
 def test_server_resumed_speech_after_a_long_pause_stays_one_turn(resumed_capture_context):
     """S1 (Pixel report "me corta mientras hablo"): a thinking pause longer
     than the silence window used to dispatch the first phrase alone and
-    lose the rest to a second turn. Speech that resumes inside the
-    continuation window rejoins the SAME turn: one /ask, both phrases."""
+    lose the rest to a second turn. With the grown window the pause is
+    held inside the SAME open utterance (and a pause past the window
+    still rejoins through the continuation window): one /ask, both
+    phrases."""
     context = resumed_capture_context
     app = BargeInApp(context)
     app.transcript_replies = [{"text": "uno"}, {"text": "dos"}]
@@ -581,7 +634,9 @@ def test_server_turn_still_ends_when_the_speaker_stays_quiet(separate_turns_capt
         app.load()
         waited = wait_python_asks(app, 1)
         assert app.asks[0]["text"] == "uno"
-        assert waited < 5500  # dispatched before the second phrase (6s) began
+        # the 3.2s window closes the phrase by ~4.6s; the dispatch must
+        # land before the second phrase (8s) begins
+        assert waited < 7500
     finally:
         close_app(context, app)
 

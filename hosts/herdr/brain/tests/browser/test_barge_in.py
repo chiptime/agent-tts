@@ -1,9 +1,9 @@
 """Client barge-in over REAL fake capture and native playback (FR-04/05, T-05).
 
 Chromium runs with all three fake-media flags and a deterministic WAV whose
-envelope the CURRENT endpointing completes (2.0s of voiced tone per 5.5s
-loop, 3.5s of silence between bursts — the gaps clear the grown silence
-budget's 2500ms ceiling, so each burst group closes one utterance and the
+envelope the CURRENT endpointing completes (2.0s of voiced tone per 7.5s
+loop, 5.5s of silence between bursts — the gaps clear the grown silence
+budget's 4500ms ceiling, so each burst group closes one utterance and the
 suite keeps driving real /transcribe turns; the retired flat-800ms silence
 was the only reason the old 0.8s/1.2s envelope could finish turns):
 getUserMedia, MediaRecorder, RMS analysis, MP3 decoding and every media
@@ -39,8 +39,8 @@ def barge_capture_context(browser_type, tmp_path):
     with wave.open(str(capture), "wb") as wav:
         wav.setparams((1, 2, rate, 0, "NONE", "not compressed"))
         frames = bytearray()
-        for index in range(rate * 11):  # two full 5.5s periods; Chromium loops
-            voiced = (index / rate) % 5.5 < 2.0
+        for index in range(rate * 15):  # two full 7.5s periods; Chromium loops
+            voiced = (index / rate) % 7.5 < 2.0
             value = int(12000 * math.sin(2 * math.pi * 440 * index / rate)) if voiced else 0
             frames.extend(struct.pack("<h", value))
         wav.writeframes(frames)
