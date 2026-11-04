@@ -4,7 +4,7 @@
 |---|---|
 | **Product** | `herdr-brain` (PWA / Service) |
 | **Document Type** | PRD (Roadmap Phase 1 — streaming build) |
-| **Status** | `draft` |
+| **Status** | `approved — milestone 1 (2026-11-04)` |
 | **Date** | 2026-11-03 |
 | **Depends on** | Decision gate (PRD-09, ROADMAP §7), PRD-02 (before/after measurement) |
 | **Composed Skills** | `prd`, `cognitive-doc-design` |
@@ -82,12 +82,18 @@ MediaRecorder 45 s segments ──► POST /transcribe  (unchanged recovery mode
 - **Battery cost** of a continuously running AudioWorklet: observed, not optimized, here.
 - **Proxy/CDN WebSocket support** on whatever hosts the PWA: deployment prerequisite; verified in V3.
 
-## 8. Open Questions
+## 8. Closed Decisions (grill 2026-11-04, milestone 1)
 
-1. First-message auth vs scrubbed query parameter for the socket (FR-01) — decide once, reuse for PRD-04's downlink messages.
-2. Exact frame size (100 ms is an ASSUMPTION) — fixed after a short device trial.
-3. Should the server ring buffer live per-call or per-device? (One call per device is today's reality; per-call chosen unless evidence says otherwise.)
+Decision ids refer to the ledger in ROADMAP §11.
+
+- **Engine (D15)**: the uplink serves a third, opt-in call engine "Dictado: En vivo"; Servidor and Navegador stay intact. It becomes the default only after the operator's Pixel acceptance (D11).
+- **Failure path (D1)**: a socket that fails or drops mid-call falls back automatically to today's Servidor segment-POST transport with a visible notice; the call is never dropped. A brain that is unreachable at call start refuses the call with a clear notice instead of starting a call nobody hears.
+- **Privacy (D9)**: raw audio is never persisted; the server ring buffer lives in memory only and dies with the call.
+- **One streaming device (accepted assumption)**: a single device streams audio per call; another client on the same call only observes.
+- **Socket auth (was open question 1)**: first-message auth (the device token travels in the first frame, never in the URL), so no token can reach the access journal.
+- **Frame size (was open question 2)**: measured, not asked (D6); 100 ms is the starting value.
+- **Ring buffer scope (was open question 3)**: per call.
 
 ## 9. Execution Boundaries
 
-Transport only (FR-01..FR-08). No STT, no turn logic, no downlink changes; those are PRD-04/05/06. Discoveries outside scope are documented under `## Escalated / Out-of-Scope Issues`. This PRD is a `draft` behind the ROADMAP §7 gate; launching implementation is a separate explicit decision.
+Transport only (FR-01..FR-08). No STT, no turn logic, no downlink changes; those are PRD-04/05/06. Discoveries outside scope are documented under `## Escalated / Out-of-Scope Issues`. The ROADMAP §7 gate is decided (build, 2026-11-04) and this PRD is launched as part of milestone 1.
