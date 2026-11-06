@@ -287,6 +287,15 @@ class EngineTranscriber:
                 pass
         return self._transcribe_result(proc)
 
+    def transcribe_in_memory(self, data: bytes, suffix: str = ".wav") -> str:
+        """Engine backend cannot transcribe in-memory without disk persistence (D9).
+
+        Explicitly fails closed per D9 privacy rule.
+        """
+        raise EngineSttError(
+            "D9 violation: engine backend cannot transcribe in-memory without persisting raw audio to disk"
+        )
+
     def _transcribe_result(self, proc) -> str:
         if proc.returncode == 0:
             try:

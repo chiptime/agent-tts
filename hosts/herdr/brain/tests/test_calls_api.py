@@ -195,18 +195,23 @@ class TestStoreCalls:
         assert len(page2) == 1
         assert page2[0]["call_id"] == c1
 
-    def test_resume_call_reopens_ended_call_with_fresh_started_at_and_raw_turns(self, tmp_path):
+    def test_resume_call_keeps_original_start_and_records_resumed_at(self, tmp_path):
         store = HistoryStore(tmp_path / HISTORY_DB_FILENAME)
         c1 = store.start_call()
         store.append("user", "hola", call_id=c1)
         store.append("assistant", "buenas", call_id=c1)
         store.end_call(c1)
+        original = store.get_call(c1)
+        assert original["resumed_at"] is None
 
         call, turns = store.resume_call(c1)
         assert call["call_id"] == c1
         assert call["status"] == "open"
+        assert call["started_at"] == original["started_at"]  # identity kept
+        assert call["resumed_at"] is not None  # the RETAKE moment, recorded apart
+        assert call["resumed_at"] >= original["ended_at"]
         assert call["ended_at"] is None
-        assert call["duration_s"] is None
+        assert call["duration_s"] is None  # duration stays unfinalized while open
         assert call["turn_count"] == 2
         # RAW turns (no S14 masking): they seed the conversation ring,
         # exactly like the boot-time load_and_compact path.
@@ -234,7 +239,7 @@ class TestStoreCalls:
         assert dangling["status"] == "interrupted"
         assert dangling["ended_at"] is not None
 
-    def test_resume_call_on_open_call_keeps_started_at(self, tmp_path):
+    def test_resume_call_on_open_call_keeps_timing_untouched(self, tmp_path):
         store = HistoryStore(tmp_path / HISTORY_DB_FILENAME)
         c = store.start_call()
         original = store.get_call(c)
@@ -243,7 +248,43 @@ class TestStoreCalls:
         call, turns = store.resume_call(c)
         assert call["status"] == "open"
         assert call["started_at"] == original["started_at"]
+        assert call["resumed_at"] is None  # same session: no retake recorded
         assert [(t["role"], t["text"]) for t in turns] == [("user", "en curso")]
+
+    def test_end_after_resume_accumulates_active_duration(self, tmp_path):
+        store = HistoryStore(tmp_path / HISTORY_DB_FILENAME)
+        c = store.start_call()
+        store.append("user", "primera sesión", call_id=c)
+        first_close = store.end_call(c)
+        assert first_close["duration_s"] >= 0.0  # fast test: ~zero session
+
+        store.resume_call(c)
+        store.append("user", "segunda sesión", call_id=c)
+        second_close = store.end_call(c)
+
+        assert second_close["status"] == "ended"
+        assert second_close["turn_count"] == 2
+        # accumulated ACTIVE time: session 1 + session 2 (never the gap)
+        assert second_close["duration_s"] >= first_close["duration_s"]
+        assert second_close["resumed_at"] is not None
+
+    def test_dangling_resumed_call_interrupted_accumulates_duration(self, tmp_path):
+        store = HistoryStore(tmp_path / HISTORY_DB_FILENAME)
+        c1 = store.start_call()
+        store.append("user", "uno", call_id=c1)
+        store.end_call(c1)
+        store.resume_call(c1)
+        store.append("user", "dos", call_id=c1)
+
+        # A new start dangles the resumed call: closed as interrupted,
+        # duration = accumulated active time, identity intact.
+        c2 = store.start_call()
+        assert c2 != c1
+        dangled = store.get_call(c1)
+        assert dangled["status"] == "interrupted"
+        assert dangled["started_at"] == store.get_call(c1)["started_at"]
+        assert dangled["resumed_at"] is not None
+        assert dangled["duration_s"] is not None
 
     def test_append_2_arg_legacy_leaves_call_id_null(self, tmp_path):
         store = HistoryStore(tmp_path / HISTORY_DB_FILENAME)
@@ -452,15 +493,26 @@ class TestResumeRoute:
         assert end["status"] == "ended"
         assert end["turn_count"] == 4  # pregunta vieja + answer + seguimos + answer
 
-    def test_resume_after_end_reports_resumed_session_duration(self, audio_dir):
+    def test_resume_after_end_keeps_start_and_reports_resumed_at(self, audio_dir):
         client = make_client(audio_dir)
         first = client.post("/call/start").json()["call_id"]
         client.post("/ask", json={"text": "hola"})
         ended = client.post("/call/end").json()
 
         resumed = client.post(f"/calls/{first}/resume").json()
+        assert resumed["started_at"] == ended["started_at"]  # original kept
+        assert resumed["resumed_at"] is not None
+        assert resumed["resumed_at"] >= ended["ended_at"]
         assert resumed["duration_s"] is None
-        assert resumed["started_at"] >= ended["started_at"]
+
+        # Ending again: duration accumulates both ACTIVE sessions.
+        final = client.post("/call/end").json()
+        assert final["duration_s"] >= ended["duration_s"]
+        assert final["resumed_at"] == resumed["resumed_at"]
+
+        # The served detail carries resumed_at for the UI.
+        detail = client.get(f"/calls/{first}").json()
+        assert detail["call"]["resumed_at"] == resumed["resumed_at"]
 
     def test_resume_unknown_call_404(self, audio_dir):
         client = make_client(audio_dir)

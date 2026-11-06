@@ -238,6 +238,8 @@ _WRITE_RULES = (
     ("POST", re.compile(r"^/ask$")),
     ("POST", re.compile(r"^/transcribe$")),
     ("POST", re.compile(r"^/reset$")),
+    ("GET", re.compile(r"^/call/stream$")),
+    ("WEBSOCKET", re.compile(r"^/call/stream$")),
 )
 
 
@@ -251,6 +253,8 @@ def classify(method: str, path: str) -> str:
     the speech transport (job-token authenticated, unchanged)."""
     if method == "POST" and path == "/pair":
         return "pair"
+    if path == "/call/stream":
+        return "write"
     for route_method, pattern in _WRITE_RULES:
         if method == route_method and pattern.match(path):
             return "write"
@@ -276,6 +280,7 @@ _DEVICE_EXEMPT_RULES = (
     ("POST", re.compile(r"^/approval/[^/]+/action$")),  # ntfy: its own token
     (None, re.compile(r"^/speech/[^/]+/(next|cancel)$")),  # job-token bound
     ("POST", re.compile(r"^/pair$")),  # the bootstrap itself (defence in depth)
+    (None, re.compile(r"^/call/stream$")),  # first-message device-token auth (PRD-03 / D9)
 )
 
 
@@ -373,8 +378,11 @@ def guard(
             else:
                 status, device = pairing.resolve_status(token)
 
-    needs_device = pairing is not None and pairing.enforced() and (
-        level == "write" or (level == "read" and not is_device_exempt(method, path))
+    needs_device = (
+        pairing is not None
+        and pairing.enforced()
+        and not is_device_exempt(method, path)
+        and (level in ("write", "read"))
     )
     if needs_device and status == "expired":
         # The device IS known — its credential simply ran out. Saying

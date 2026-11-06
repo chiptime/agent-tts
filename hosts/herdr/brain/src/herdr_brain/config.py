@@ -120,6 +120,20 @@ DEFAULT_STT_MODEL = "small"
 DEFAULT_STT_DEVICE = "auto"
 DEFAULT_STT_COMPUTE = "auto"
 
+# Live engine STT (S4, D7/D12/D13): the "Dictado: En vivo" engine gets a
+# DEDICATED in-process faster-whisper model, independent of the shared
+# /transcribe backend (the engine CLI cannot serve the D9 in-memory socket
+# path). The default is large-v3 BY NAME, resolved strictly from local
+# caches — never downloaded; the deploy points
+# HERDR_BRAIN_LIVE_STT_MODEL at llm-hub's model files (a snapshot dir or
+# the HF repo cache dir). No machine-specific path ships as a default.
+DEFAULT_LIVE_STT_MODEL = "large-v3"
+# D13: share the GPU (with Qwen) using the lowest-memory compute type that
+# keeps live partials; degrade to the fallback model when VRAM is short.
+DEFAULT_LIVE_STT_DEVICE = "cuda"
+DEFAULT_LIVE_STT_COMPUTE = "int8_float16"
+DEFAULT_LIVE_STT_FALLBACK_MODEL = "small"
+
 # Reader (formatted conversation rendering). Distinct from tts_timeout_s
 # (240 s, calibrated for speech): an interactive reader turn is a fast
 # local transform, so 30 s bounds a hung renderer without pinning the
@@ -240,6 +254,16 @@ class Settings:
     # in audit.py survives). Appended WITH a default like every knob
     # above: tests construct Settings(**SETTINGS_KWARGS).
     audit_content: str = DEFAULT_AUDIT_CONTENT
+    # ── Live engine STT (S4, D7/D12/D13) ──
+    # Appended WITH a default like the knobs above. The live engine's
+    # dedicated in-process model — a faster-whisper size name, a snapshot
+    # dir, or an HF repo cache dir (resolved to its snapshot in stt.py);
+    # loaded strictly from local files. See the DEFAULT_LIVE_STT_* block
+    # for the never-download and degrade-once policy.
+    live_stt_model: str = DEFAULT_LIVE_STT_MODEL
+    live_stt_device: str = DEFAULT_LIVE_STT_DEVICE
+    live_stt_compute: str = DEFAULT_LIVE_STT_COMPUTE
+    live_stt_fallback_model: str = DEFAULT_LIVE_STT_FALLBACK_MODEL
 
     def __post_init__(self):
         # Accept plain strings for path fields regardless of the caller.
@@ -416,4 +440,11 @@ def load_settings(env: Optional[dict] = None) -> Settings:
         device_header=getenv("HERDR_BRAIN_DEVICE_HEADER").strip(),
         device_allowlist=_split_csv(getenv("HERDR_BRAIN_DEVICE_ALLOWLIST")),
         audit_content=raw_audit_content,
+        # ── Live engine STT (S4) ──
+        live_stt_model=getenv("HERDR_BRAIN_LIVE_STT_MODEL", DEFAULT_LIVE_STT_MODEL),
+        live_stt_device=getenv("HERDR_BRAIN_LIVE_STT_DEVICE", DEFAULT_LIVE_STT_DEVICE),
+        live_stt_compute=getenv("HERDR_BRAIN_LIVE_STT_COMPUTE", DEFAULT_LIVE_STT_COMPUTE),
+        live_stt_fallback_model=getenv(
+            "HERDR_BRAIN_LIVE_STT_FALLBACK_MODEL", DEFAULT_LIVE_STT_FALLBACK_MODEL
+        ),
     )

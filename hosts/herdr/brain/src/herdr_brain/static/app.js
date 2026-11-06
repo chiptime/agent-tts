@@ -205,7 +205,18 @@
    * and returns zero results, while getUserMedia does honor them. The old
    * Web Speech path stays as "navegador" fallback; the choice persists. */
   var VOICE_KEY = "herdr-brain-voice-engine";
-  var voiceEngine = localStorage.getItem(VOICE_KEY) === "navegador" ? "navegador" : "servidor";
+  var storedVoice = (function () {
+    try { return localStorage.getItem(VOICE_KEY); } catch (e) { return null; }
+  })();
+  var voiceEngine = storedVoice === "navegador"
+    ? "navegador"
+    : (storedVoice === "live" || storedVoice === "envivo" ? "live" : "servidor");
+  var liveWs = null;
+  var liveWorkletNode = null;
+  var liveSendBuf = null;
+  var liveTurn = null;
+  var liveMicBusy = false;
+  var liveDispatchRouted = false;  // the live dispatch reached routeUtterance (B1)
   /* Android's Web Speech plays the system earcon on every recognizer
    * start() and ends a session at each short pause, so a plain restart
    * loop beeps nonstop while the user is quiet. With the Browser engine
@@ -5392,6 +5403,11 @@
       typeof window.MediaRecorder !== "undefined" && window.Vad);
   }
 
+  function liveEngineSupported() {
+    return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia &&
+      typeof window.WebSocket !== "undefined" && window.Vad);
+  }
+
   function frameRms() {
     analyser.getFloatTimeDomainData(vadSampleBuf);
     var sum = 0;
@@ -5875,6 +5891,280 @@
     }
   }
 
+  function stopLiveListening() {
+    manualStop = true;
+    releaseVadLoopOnly();
+    if (liveWorkletNode) {
+      try { liveWorkletNode.disconnect(); } catch (err) { /* noop */ }
+      liveWorkletNode = null;
+    }
+    if (liveWs) {
+      try {
+        liveWs.onopen = null;
+        liveWs.onmessage = null;
+        liveWs.onerror = null;
+        liveWs.onclose = null;
+        liveWs.close();
+      } catch (err) { /* noop */ }
+      liveWs = null;
+    }
+    if (liveSendBuf) liveSendBuf.clear();
+    liveTurn = null;
+    liveDispatchRouted = false;
+    liveMicBusy = false;
+    vad = null;
+  }
+
+  function teardownLiveCall() {
+    stopLiveListening();
+  }
+
+  function fallbackToServidor(noticeKey) {
+    if (!inCall) return;
+    /* B1: a live dispatch still awaiting its transcript can never
+     * complete once the socket is gone — surface the lost phrase
+     * (never silently) and release the dispatch guard so the Servidor
+     * recorder below can actually arm. A dispatch that already reached
+     * routeUtterance completes on its own; afterAnswer() then re-arms
+     * the (now Servidor) mic when the answer finishes. */
+    var lostLiveUtterance = dispatching && !liveDispatchRouted;
+    stopLiveListening();
+    voiceEngine = "servidor";
+    renderVoiceEngine();
+    showBanner(t(lostLiveUtterance
+      ? "voice.stream_utterance_lost"
+      : (noticeKey || "voice.stream_fallback")));
+    if (lostLiveUtterance) dispatching = false;
+    if (callState === "listening" || callState === "recording" || callState === "transcribing" || callState === "confirming") {
+      setCallState(micBaseState());
+      startServerListening();
+    }
+  }
+
+  /* A1 (PRD-03 FR-03): while the socket is OPEN, ws.bufferedAmount is
+   * the backpressure signal. Above the bound the frame routes through
+   * the bounded buffer (drop oldest, keep ~2 s) instead of another
+   * unbounded ws.send; once the socket drains below the bound, queued
+   * frames flush before the live frame so ordering holds. */
+  function sendLiveFrame(frame) {
+    if (!liveWs || liveWs.readyState !== WebSocket.OPEN ||
+        (window.StreamUplink && window.StreamUplink.shouldBuffer(liveWs.bufferedAmount))) {
+      if (liveSendBuf) liveSendBuf.push(frame);
+      return;
+    }
+    if (liveSendBuf && liveSendBuf.length() > 0) {
+      var queued = liveSendBuf.flush();
+      for (var i = 0; i < queued.length; i++) {
+        try { liveWs.send(queued[i]); } catch (err) { break; }
+      }
+    }
+    try { liveWs.send(frame); } catch (err) { /* socket died mid-send */ }
+  }
+
+  function startLiveListening() {
+    if (textMode || dispatching || liveMicBusy) return;
+    if (callState !== "listening" && callState !== "confirming") return;
+    if (!liveEngineSupported()) {
+      showBanner(t("voice.live_missing"));
+      fallbackToServidor();
+      return;
+    }
+    liveMicBusy = true;
+    listeningStartedAt = Date.now();
+
+    var protocol = location.protocol === "https:" ? "wss:" : "ws:";
+    var wsUrl = protocol + "//" + location.host + "/call/stream";
+    var ws = null;
+    try {
+      ws = new WebSocket(wsUrl);
+      ws.binaryType = "arraybuffer";
+    } catch (err) {
+      liveMicBusy = false;
+      fallbackToServidor();
+      return;
+    }
+    liveWs = ws;
+    liveSendBuf = window.StreamUplink ? new window.StreamUplink.BoundedSendBuffer({ maxFrames: 20 }) : null;
+
+    ws.onopen = function () {
+      var token = "";
+      try { token = localStorage.getItem("herdr_brain_device_token") || ""; } catch (e) {}
+      try {
+        ws.send(JSON.stringify({ type: "auth", token: token }));
+      } catch (e) {
+        fallbackToServidor();
+        return;
+      }
+      if (liveSendBuf && liveSendBuf.length() > 0) {
+        var flushed = liveSendBuf.flush();
+        for (var f = 0; f < flushed.length; f++) {
+          try { ws.send(flushed[f]); } catch (e) { break; }
+        }
+      }
+    };
+
+    ws.onerror = function () {
+      fallbackToServidor();
+    };
+
+    ws.onclose = function () {
+      if (inCall && voiceEngine === "live" && !manualStop) {
+        fallbackToServidor();
+      }
+    };
+
+    ws.onmessage = function (ev) {
+      var data;
+      try { data = JSON.parse(ev.data); } catch (e) { return; }
+      if (data && data.type === "error") {
+        /* A2: the engine backend failed closed (D9) — never leave the
+         * call stuck in transcribing; recover exactly like a socket
+         * failure (notice + Servidor fallback). */
+        fallbackToServidor("voice.stream_error");
+        return;
+      }
+      if (data && (data.type === "transcript" || data.type === "final")) {
+        var text = (data.text || "").trim();
+        if (text) {
+          liveDispatchRouted = true;  // B1: this utterance completed
+          routeUtterance(text).then(function () {
+            dispatching = false;
+            interimTextEl.textContent = "";
+            renderInterimStrip();
+            if (callState !== "speaking" && callState !== "paused" && callState !== "idle") afterAnswer();
+          });
+        } else {
+          dispatching = false;
+          showBanner(t("voice.not_understood"));
+          afterAnswer();
+        }
+      }
+    };
+
+    var armLiveUtterance = function () {
+      if (!vad) vad = window.Vad.createVad(SERVER_VOICE_OPTIONS);
+      else vad.reset();
+      liveTurn = { onsetAt: null, speaking: false };
+
+      if (audioContext && mediaStream) {
+        try {
+          var source = audioContext.createMediaStreamSource(mediaStream);
+          if (audioContext.audioWorklet && typeof AudioWorkletNode !== "undefined") {
+            audioContext.audioWorklet.addModule("/stream-worklet.js").then(function () {
+              if (!liveWs) return;
+              var workletNode = new AudioWorkletNode(audioContext, "stream-audio-processor");
+              liveWorkletNode = workletNode;
+              source.connect(workletNode);
+              workletNode.port.onmessage = function (event) {
+                sendLiveFrame(event.data);
+              };
+            }).catch(function () {
+              setupLiveScriptProcessor(source);
+            });
+          } else {
+            setupLiveScriptProcessor(source);
+          }
+        } catch (e) {
+          // fallback
+        }
+      }
+
+      releaseVadLoopOnly();
+      vadTick = setInterval(function () {
+        if (!vad) return;
+        var rms = frameRms();
+        var speaking = vad.push(rms);
+        updateRecMeter(rms);
+        if (callState === "listening" || callState === "confirming") {
+          if (speaking || vad.hasSpeech()) {
+            if (!utteranceStartedAt) utteranceStartedAt = Date.now();
+            if (!liveTurn.onsetAt) liveTurn.onsetAt = Date.now();
+            setCallState("recording");
+          }
+        } else if (callState === "recording") {
+          updateRecElapsed();
+        }
+        if (vad.shouldFinalize()) {
+          var why = vad.lastFinalizeReason && vad.lastFinalizeReason();
+          if (why === "cap" || why === "utteranceCap") {
+            showBanner(t("voice.turn_cap_cut"));
+          }
+          finishLiveUtterance();
+          return;
+        }
+        var elapsed = Date.now() - listeningStartedAt;
+        if (!vad.hasSpeech() && elapsed > 5000) {
+          pillSub.textContent = t("voice.hearing_hint");
+          pillSub.classList.remove("hidden");
+        } else if (vad.hasSpeech()) {
+          pillSub.classList.add("hidden");
+        }
+      }, 100);
+      liveMicBusy = false;
+    };
+
+    function finishLiveUtterance() {
+      releaseVadLoopOnly();
+      setCallState("transcribing");
+      dispatching = true;
+      liveDispatchRouted = false;  // B1: awaiting the transcript again
+      var durationMs = liveTurn && liveTurn.onsetAt ? (Date.now() - liveTurn.onsetAt) : 1000;
+      if (liveWs && liveWs.readyState === WebSocket.OPEN) {
+        liveWs.send(JSON.stringify({
+          type: "transcribe",
+          duration_ms: durationMs,
+          pre_roll_ms: 500
+        }));
+      } else {
+        fallbackToServidor();
+      }
+    }
+
+    function setupLiveScriptProcessor(source) {
+      try {
+        var sp = audioContext.createScriptProcessor(4096, 1, 1);
+        liveWorkletNode = sp;
+        source.connect(sp);
+        sp.connect(audioContext.destination);
+        sp.onaudioprocess = function (e) {
+          var float32 = e.inputBuffer.getChannelData(0);
+          if (window.StreamUplink) {
+            var pcm16 = window.StreamUplink.downsampleTo16kPCM16(float32, audioContext.sampleRate);
+            if (pcm16 && pcm16.buffer) sendLiveFrame(pcm16.buffer);
+          }
+        };
+      } catch (err) { /* noop */ }
+    }
+
+    if (mediaStream && audioContext) {
+      armLiveUtterance();
+      return;
+    }
+    navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true }
+    }).then(function (stream) {
+      mediaStream = stream;
+      var tracks = stream.getAudioTracks ? stream.getAudioTracks() : [];
+      if (tracks && tracks.length > 0) {
+        tracks[0].onended = function () {
+          showBanner(t("voice.input_lost"));
+          fallbackToServidor();
+        };
+      }
+      var Ctx = window.AudioContext || window.webkitAudioContext;
+      audioContext = new Ctx();
+      var source = audioContext.createMediaStreamSource(stream);
+      analyser = audioContext.createAnalyser();
+      analyser.fftSize = 4096;
+      source.connect(analyser);
+      vadSampleBuf = new Float32Array(analyser.fftSize);
+      armLiveUtterance();
+    }).catch(function (err) {
+      liveMicBusy = false;
+      fallbackToServidor();
+    });
+  }
+
   /* Engine dispatch: one name pair, both engines. */
   function startListening() {
     // The "No te oigo" 5s hint must judge the CURRENT listening window:
@@ -5882,19 +6172,62 @@
     // resume through here while the old window's timestamp lingers).
     listeningStartedAt = Date.now();
     if (voiceEngine === "servidor") startServerListening();
+    else if (voiceEngine === "live") startLiveListening();
     else startBrowserListening();
   }
 
   function stopListening() {
     if (voiceEngine === "servidor") stopServerListening();
+    else if (voiceEngine === "live") stopLiveListening();
     else stopBrowserListening();
   }
 
   /* ---------------- call button / pause / voice engine toggle ------------- */
 
+  /* POST the call-start (or resume) record for the live engine's D1
+   * refusal (B4): resolves with the response only when the brain
+   * accepted it (2xx), null when it did not, and mirrors the resume ->
+   * fresh-start chain. Servidor and Navegador never use this: they keep
+   * the fire-and-forget chain in beginCall. */
+  function liveStartProbe(resumeCallId) {
+    var attempt = function (url) {
+      return readFetch(url, { method: "POST" }).then(function (resp) {
+        return resp && resp.ok ? resp : null;
+      });
+    };
+    if (!resumeCallId) return attempt("/call/start");
+    return attempt("/calls/" + encodeURIComponent(resumeCallId) + "/resume")
+      .catch(function () { return null; })
+      .then(function (resp) {
+        return resp || attempt("/call/start");
+      });
+  }
+
   function startCall(resumeCallId) {
+    if (voiceEngine === "live") {
+      /* S3/D1 (B4): a live call nobody would hear must never start. The
+       * brain must first accept the call record — a network error or a
+       * non-2xx on POST /call/start refuses the call with a visible
+       * notice instead of a silently deaf call. */
+      liveStartProbe(resumeCallId).then(function (resp) {
+        if (resp) beginCall(resumeCallId);
+        else showBanner(t("voice.stream_unreachable"));
+      }).catch(function () {
+        showBanner(t("voice.stream_unreachable"));
+      });
+      return;
+    }
+    beginCall(resumeCallId);
+  }
+
+  function beginCall(resumeCallId, startAlreadySent) {
     interruptedFromReload = false;
     clearCallIntent();
+    /* Call-scoped live state resets (B2): a previous call's deliberate
+     * stop must never suppress this call's socket fallback, and a
+     * dispatch stranded by a dropped call must never disarm the mic. */
+    manualStop = false;
+    dispatching = false;
     inCall = true;
     callStartedAt = Date.now();
     voiceTimeline.length = 0;  // fresh timeline per call (PRD-02 scope)
@@ -5905,15 +6238,17 @@
      * previous record instead (POST /calls/{id}/resume) so new turns
      * append to it and the agent context reloads from its turns; a
      * failed resume falls back to a fresh call rather than blocking. */
-    var startUrl = resumeCallId
-      ? "/calls/" + encodeURIComponent(resumeCallId) + "/resume"
-      : "/call/start";
-    readFetch(startUrl, { method: "POST" })
-      .catch(function () {
-        if (!resumeCallId) return null;
-        return readFetch("/call/start", { method: "POST" });
-      })
-      .catch(function () { /* history is best-effort */ });
+    if (!startAlreadySent) {
+      var startUrl = resumeCallId
+        ? "/calls/" + encodeURIComponent(resumeCallId) + "/resume"
+        : "/call/start";
+      readFetch(startUrl, { method: "POST" })
+        .catch(function () {
+          if (!resumeCallId) return null;
+          return readFetch("/call/start", { method: "POST" });
+        })
+        .catch(function () { /* history is best-effort */ });
+    }
     startCallTimer();
     requestWakeLock();
     openEvents();  // user gesture: unlocks autoplay for announcements
@@ -5935,6 +6270,7 @@
     closeDrawer();  // AC4: drawer closes on hang up
     stopListening();
     teardownServerCall();  // release the getUserMedia stream + AudioContext
+    teardownLiveCall();
     if (endpointer) endpointer.reset();  // no stale partial in the next call
     stopAudio();
     hideToast();
@@ -5973,20 +6309,30 @@
   });
 
   function renderVoiceEngine() {
-    voiceEngineBtn.textContent = voiceEngine === "servidor"
-      ? t("settings.voice_server")
-      : t("settings.voice_browser");
-    voiceEngineBtn.title = voiceEngine === "servidor"
-      ? t("settings.voice_server_title")
-      : t("settings.voice_browser_title");
+    if (voiceEngine === "servidor") {
+      voiceEngineBtn.textContent = t("settings.voice_server");
+      voiceEngineBtn.title = t("settings.voice_server_title");
+    } else if (voiceEngine === "navegador") {
+      voiceEngineBtn.textContent = t("settings.voice_browser");
+      voiceEngineBtn.title = t("settings.voice_browser_title");
+    } else {
+      voiceEngineBtn.textContent = t("settings.voice_live");
+      voiceEngineBtn.title = t("settings.voice_live_title");
+    }
     renderInterimStrip();
   }
 
   voiceEngineBtn.addEventListener("click", function () {
-    var next = voiceEngine === "servidor" ? "navegador" : "servidor";
+    var next;
+    if (voiceEngine === "servidor") next = "navegador";
+    else if (voiceEngine === "navegador") next = "live";
+    else next = "servidor";
+
     if (next === "navegador" && !SR) {
-      showBanner(t("voice.browser_missing"));
-      return;
+      next = "live";
+    }
+    if (next === "live" && !liveEngineSupported()) {
+      next = "servidor";
     }
     if (next === "servidor" && !serverEngineSupported()) {
       showBanner(t("voice.server_missing"));
@@ -6002,6 +6348,7 @@
       stopListening();
       teardownServerCall();
       teardownRecognition();
+      teardownLiveCall();
       if (callState === "recording" || callState === "transcribing") {
         dispatching = false;  // abandon the in-flight utterance cleanly
         setCallState(micBaseState());
@@ -6024,12 +6371,12 @@
   });
 
   function initSpeech() {
-    if (!SR && !serverEngineSupported()) {
+    if (!SR && !serverEngineSupported() && !liveEngineSupported()) {
       pauseBtn.classList.add("hidden");
       fallbackForm.classList.remove("hidden");
       enterTextMode(t("voice.no_stt"));
-    } else if (!SR) {
-      // Web Speech missing (e.g. desktop Firefox): servidor is the only engine.
+    } else if (!SR && voiceEngine === "navegador") {
+      // Web Speech missing (e.g. desktop Firefox): servidor is the fallback.
       voiceEngine = "servidor";
       localStorage.setItem(VOICE_KEY, voiceEngine);
     }

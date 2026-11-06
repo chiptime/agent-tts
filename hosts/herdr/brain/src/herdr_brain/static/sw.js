@@ -54,6 +54,7 @@ var SHELL_ASSETS = [
   "/tts-engine.js", "/consult.js",
   "/i18n.js", "/i18n/es.js", "/i18n/en.js",
   "/settings.js", "/updates.js", "/dock.js",
+  "/stream-uplink.js", "/stream-worklet.js",
   "/sw.js", "/manifest.webmanifest", "/icon.svg",
 ];
 var SHELL_ASSET_SET = {};

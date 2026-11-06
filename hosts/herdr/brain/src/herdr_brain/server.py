@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Callable, Literal, Optional
 from urllib.parse import parse_qs, unquote_plus
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Path as PathParam, Query, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Path as PathParam, Query, Request, UploadFile, WebSocket
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
@@ -113,7 +113,7 @@ from .permissions import (
     OpenCodePermissions,
     REPLIES as PERMISSION_REPLIES,
 )
-from .stt import STATE_READY, STATE_UNAVAILABLE, UNAVAILABLE_HINT, Transcriber
+from .stt import STATE_READY, STATE_UNAVAILABLE, UNAVAILABLE_HINT, LiveTranscriber, Transcriber
 from .stt_engine import EngineTranscriber
 from .tools import BrainTools
 from .tools import status_payload as _status_payload
@@ -245,7 +245,7 @@ class AccessMiddleware:
         self.pairing = pairing
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http":
+        if scope["type"] not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return
         headers = {
@@ -255,11 +255,15 @@ class AccessMiddleware:
         from urllib.parse import parse_qsl
 
         query = dict(parse_qsl(scope.get("query_string", b"").decode("latin-1")))
+        method = scope.get("method", "GET")
         label, refusal = access_module.guard(
-            headers, scope["method"], scope["path"], self.cfg, self.pairing,
+            headers, method, scope["path"], self.cfg, self.pairing,
             query_token=query.get("device_token"),
         )
         if refusal is not None:
+            if scope["type"] == "websocket":
+                await send({"type": "websocket.close", "code": 1008})
+                return
             body = json.dumps({"detail": refusal}, ensure_ascii=False).encode("utf-8")
             await send({
                 "type": "http.response.start",
@@ -952,6 +956,7 @@ def create_app(
     sse_stream_limit: Optional[int] = None,
     version: Optional[str] = None,
     transcriber: Optional[Transcriber] = None,
+    live_transcriber: Optional[Transcriber] = None,
     daemon_probe: Optional[Callable[[], str]] = None,
     speech_registry: Optional[SpeechRegistry] = None,
     permissions: Optional[OpenCodePermissions] = None,
@@ -972,6 +977,11 @@ def create_app(
     created and warmed in the background ONLY when the model files are
     already local and ``settings.stt_warmup`` is on (default in production,
     off in tests) — the server never downloads the model by itself.
+    ``live_transcriber`` is the same seam for the live engine's DEDICATED
+    in-process model (S4): injected for tests, otherwise a LiveTranscriber
+    built from the live settings and warmed in the background only when its
+    primary model is local. /call/stream uses it; /transcribe keeps the
+    shared ``transcriber`` exactly as before.
     ``tts_renderer`` keeps its classic 3-arg contract; a double that
     declares ``takes_cancel_event = True`` additionally receives the
     speech job's cancel event (4th arg) on identified /ask turns, so
@@ -1217,6 +1227,18 @@ def create_app(
             # In engine mode this fires only the CLI status probe.
             transcriber.maybe_start_warmup()
 
+    if live_transcriber is None:
+        # S4 (D7/D12/D13): the live engine's DEDICATED in-process
+        # transcriber — independent of the shared backend because the
+        # engine CLI cannot serve the D9 in-memory socket path. Built from
+        # the live settings and warmed in the background ONLY when its
+        # primary model is local (large-v3 by name resolves from local
+        # caches; the deploy points HERDR_BRAIN_LIVE_STT_MODEL at
+        # llm-hub's model files). NEVER downloads.
+        live_transcriber = LiveTranscriber(cfg)
+        if cfg.stt_warmup:
+            live_transcriber.maybe_start_warmup()
+
     # Speech backend contract (fail-soft): a missing herdr-tts must never
     # crash the server — text answers keep working, only speech degrades.
     tts_status, tts_detail = tts_backend_status(cfg)
@@ -1267,6 +1289,7 @@ def create_app(
     app.state.watcher = watcher
     app.state.daemon_watcher = daemon_watcher
     app.state.transcriber = transcriber
+    app.state.live_transcriber = live_transcriber
     app.state.approval_store = approval_store
     app.state.call_context = call_context_store
     app.state.speech_jobs = speech_jobs
@@ -1552,6 +1575,21 @@ def create_app(
         turns = history.load_before(before, capped)
         has_more = bool(turns) and bool(history.load_before(turns[0]["ts"], 1))
         return {"turns": turns, "has_more": has_more}
+
+    @app.websocket("/call/stream")
+    async def call_stream_endpoint(websocket: WebSocket) -> None:
+        """PRD-03 streaming uplink carrying PCM16 mono frames from an AudioWorklet."""
+        from .call_stream import handle_call_stream
+
+        # S4: the live engine transcribes through its DEDICATED in-process
+        # transcriber; only a missing one falls back to the shared backend
+        # (tests that inject just ``transcriber`` keep the T1 shape).
+        await handle_call_stream(
+            websocket=websocket,
+            pairing_store=pairing_store,
+            transcriber=live_transcriber if live_transcriber is not None else transcriber,
+            active_call=active_call,
+        )
 
     @app.post("/call/start")
     def call_start() -> dict:

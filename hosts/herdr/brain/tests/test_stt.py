@@ -11,6 +11,7 @@ import io
 import subprocess
 import sys
 import threading
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -19,10 +20,15 @@ from fastapi.testclient import TestClient
 from herdr_brain.config import Settings
 from herdr_brain.server import create_app
 from herdr_brain.stt import (
+    LIVE_NOTICE_MODEL_ABSENT,
+    LIVE_NOTICE_OOM,
     PULL_COMMAND,
+    STATE_LOADING,
     STATE_READY,
     STATE_UNAVAILABLE,
+    LiveTranscriber,
     Transcriber,
+    resolve_snapshot_dir,
 )
 
 
@@ -323,6 +329,203 @@ class TestModelPresence:
 
         monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", boom)
         assert model_is_cached("small") is False
+
+
+class TestResolveSnapshotDir:
+    """S4: live-model reference resolution — name / model dir / HF repo
+    cache dir -> the exact path WhisperModel accepts. Never touches the
+    network."""
+
+    def test_repo_cache_dir_resolves_via_refs_main(self, tmp_path):
+        repo = tmp_path / "models--Systran--faster-whisper-large-v3"
+        (repo / "snapshots" / "aaa").mkdir(parents=True)
+        (repo / "snapshots" / "bbb").mkdir()
+        (repo / "refs").mkdir()
+        (repo / "refs" / "main").write_text("bbb\n", encoding="utf-8")
+        assert resolve_snapshot_dir(str(repo)) == str(repo / "snapshots" / "bbb")
+
+    def test_repo_cache_dir_with_single_snapshot_and_no_ref(self, tmp_path):
+        repo = tmp_path / "models--Systran--faster-whisper-large-v3"
+        (repo / "snapshots" / "only").mkdir(parents=True)
+        assert resolve_snapshot_dir(str(repo)) == str(repo / "snapshots" / "only")
+
+    def test_plain_name_and_plain_model_dir_pass_through(self, tmp_path):
+        assert resolve_snapshot_dir("large-v3") == "large-v3"
+        model_dir = tmp_path / "ct2-export"
+        model_dir.mkdir()
+        assert resolve_snapshot_dir(str(model_dir)) == str(model_dir)
+
+    def test_repo_cache_dir_without_usable_snapshot_is_none(self, tmp_path):
+        empty = tmp_path / "empty-repo"
+        (empty / "snapshots").mkdir(parents=True)
+        assert resolve_snapshot_dir(str(empty)) is None
+        two = tmp_path / "two-snapshots"
+        (two / "snapshots" / "a").mkdir(parents=True)
+        (two / "snapshots" / "b").mkdir()
+        assert resolve_snapshot_dir(str(two)) is None
+
+
+class TestLiveTranscriber:
+    """S4 (D7/D12/D13): the live engine's dedicated in-process
+    transcriber — loaded strictly from local files on the configured GPU,
+    degrading ONCE to the fallback model with a notice reason when the
+    primary is absent or CUDA/OOM strikes."""
+
+    @staticmethod
+    def _local_model(tmp_path, name="live-large", weights=True):
+        model_dir = tmp_path / name
+        model_dir.mkdir(parents=True, exist_ok=True)
+        if weights:
+            (model_dir / "model.bin").write_bytes(b"weights")
+        return model_dir
+
+    def test_live_load_is_local_files_only_on_configured_gpu(
+        self, settings, tmp_path, monkeypatch
+    ):
+        import faster_whisper
+
+        captured = {}
+
+        class FakeWhisperModel:
+            def __init__(self, model, device=None, compute_type=None, local_files_only=False):
+                captured.update(
+                    model=model,
+                    device=device,
+                    compute_type=compute_type,
+                    local_files_only=local_files_only,
+                )
+
+        monkeypatch.setattr(faster_whisper, "WhisperModel", FakeWhisperModel)
+        # Repo-cache layout: WhisperModel must receive the resolved
+        # snapshot dir, never the repo root.
+        repo = tmp_path / "models--Systran--faster-whisper-large-v3"
+        snap = repo / "snapshots" / "edaa"
+        snap.mkdir(parents=True)
+        (snap / "model.bin").write_bytes(b"weights")
+        cfg = replace(
+            settings,
+            live_stt_model=str(repo),
+            live_stt_device="cuda",
+            live_stt_compute="int8_float16",
+        )
+        t = LiveTranscriber(cfg)
+        t.warmup()
+        assert t.state == STATE_READY
+        assert captured["model"] == str(snap)
+        assert captured["device"] == "cuda"
+        assert captured["compute_type"] == "int8_float16"
+        assert captured["local_files_only"] is True  # HARD RULE: never downloads
+
+    def test_oom_at_load_degrades_to_fallback_with_notice(self, settings, tmp_path):
+        calls = []
+
+        def cuda_oom():
+            calls.append("primary")
+            raise RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB")
+
+        t = LiveTranscriber(
+            replace(settings, live_stt_model=str(self._local_model(tmp_path))),
+            loader=cuda_oom,
+            fallback_loader=lambda: (calls.append("fallback"), FakeModel())[1],
+        )
+        t.warmup()
+        assert t.state == STATE_READY  # degraded, still serving live audio
+        assert t.notice_reason == LIVE_NOTICE_OOM
+        assert calls == ["primary", "fallback"]
+        assert t.transcribe_in_memory(b"fake-wav") == "el rebaño está en orden"
+
+    def test_oom_at_transcribe_degrades_once_and_retries(self, settings, tmp_path):
+        class OOMAtTranscribe:
+            def transcribe(self, path, language=None):
+                raise RuntimeError("CUDA error: out of memory during decode")
+
+        loads = []
+
+        def counting_primary():
+            loads.append("primary")
+            return OOMAtTranscribe()
+
+        t = LiveTranscriber(
+            replace(settings, live_stt_model=str(self._local_model(tmp_path))),
+            loader=counting_primary,
+            fallback_loader=FakeModel,
+        )
+        # First call: the primary OOMs at transcribe -> degrade once ->
+        # retry the same audio on the fallback.
+        assert t.transcribe_in_memory(b"fake-wav") == "el rebaño está en orden"
+        assert t.notice_reason == LIVE_NOTICE_OOM
+        # Later calls ride the fallback; the primary is never reloaded.
+        assert t.transcribe_in_memory(b"fake-wav") == "el rebaño está en orden"
+        assert loads == ["primary"]
+
+    def test_absent_primary_degrades_without_touching_the_gpu(self, settings, tmp_path):
+        calls = []
+        repo = tmp_path / "repo-no-snapshot"
+        (repo / "snapshots").mkdir(parents=True)  # unresolvable: no ref, no snapshot
+        t = LiveTranscriber(
+            replace(settings, live_stt_model=str(repo)),
+            loader=lambda: (calls.append("primary"), FakeModel())[1],
+            fallback_loader=lambda: (calls.append("fallback"), FakeModel())[1],
+        )
+        t.warmup()
+        assert t.state == STATE_READY
+        assert t.notice_reason == LIVE_NOTICE_MODEL_ABSENT
+        assert calls == ["fallback"]  # the primary loader never runs
+
+        # A snapshot dir without the CT2 weights counts as absent too.
+        t2 = LiveTranscriber(
+            replace(settings, live_stt_model=str(self._local_model(tmp_path, weights=False))),
+            loader=lambda: (calls.append("primary2"), FakeModel())[1],
+            fallback_loader=lambda: (calls.append("fallback2"), FakeModel())[1],
+        )
+        t2.warmup()
+        assert t2.notice_reason == LIVE_NOTICE_MODEL_ABSENT
+
+    def test_non_cuda_load_error_propagates_without_degrading(self, settings, tmp_path):
+        def forbidden_fallback():
+            raise AssertionError("fallback must not load on non-CUDA errors")
+
+        def corrupt():
+            raise RuntimeError("could not load model weights")
+
+        t = LiveTranscriber(
+            replace(settings, live_stt_model=str(self._local_model(tmp_path))),
+            loader=corrupt,
+            fallback_loader=forbidden_fallback,
+        )
+        t.warmup()
+        assert t.state == STATE_UNAVAILABLE
+        assert t.notice_reason is None
+        assert "could not load" in t.error()
+
+    def test_boot_warmup_skipped_when_primary_absent(self, settings, tmp_path, monkeypatch):
+        """Boot rule: no warm thread when the primary is not local — a
+        default deploy without HERDR_BRAIN_LIVE_STT_MODEL stays cold until
+        first use (and no test ever loads a real model through boot)."""
+
+        def forbidden_warmup():
+            raise AssertionError("warmup must not run when the primary is absent")
+
+        monkeypatch.setattr(LiveTranscriber, "warmup", forbidden_warmup)
+        repo = tmp_path / "repo-no-snapshot"
+        (repo / "snapshots").mkdir(parents=True)
+        t = LiveTranscriber(replace(settings, live_stt_model=str(repo)))
+        assert t.maybe_start_warmup() is None
+        assert t.state == STATE_LOADING
+
+    def test_boot_warmup_with_present_primary_starts_thread(self, settings, tmp_path):
+        t = LiveTranscriber(
+            replace(
+                settings,
+                live_stt_model=str(self._local_model(tmp_path)),
+                live_stt_fallback_model="small",
+            ),
+            loader=lambda: FakeModel(),
+        )
+        thread = t.maybe_start_warmup()
+        assert thread is not None and thread.daemon
+        thread.join(timeout=5)
+        assert t.state == STATE_READY
 
 
 class TestCli:

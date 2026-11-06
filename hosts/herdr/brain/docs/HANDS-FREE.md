@@ -80,6 +80,15 @@ previous action. It records durations only (no transcript text) and
 clears at each call start, so a failed call can be read back after
 hanging up: where the time went and which action ate the speech.
 
+### Live streaming engine ("Dictado: En vivo", PRD-03)
+
+An opt-in third voice engine (`live` / "Dictado: En vivo") streams continuous PCM16 16 kHz mono frames over WebSocket `/call/stream` from an AudioWorklet:
+- **In-memory ring buffer (D9)**: Audio is buffered strictly in memory (bounded to 120 seconds, dies with the connection) and never persisted to disk. Utterance windows include ~500 ms pre-roll to catch speech onset without clipping.
+- **Security & Perimeter**: Protected by Host allowlist, Origin same-origin/allowlist, and Tailscale identity checks. Device token is authenticated via the first WebSocket message fail-closed (preventing credentials in access logs).
+- **Graceful Fallback & Input Loss**: If the WebSocket fails or drops, the client automatically falls back to Servidor segment-POST transport with a visible notice without dropping the call. Microphones disconnecting mid-call trigger input loss signaling.
+
+The live engine transcribes through a **dedicated in-process faster-whisper model** (S4), separate from the Servidor `/transcribe` backend: `large-v3` loaded strictly from local files — never downloaded — configured with `HERDR_BRAIN_LIVE_STT_MODEL` (a model name, a snapshot dir, or an HF repo cache dir such as llm-hub's `models--Systran--faster-whisper-large-v3`), `HERDR_BRAIN_LIVE_STT_DEVICE` (default `cuda`) and `HERDR_BRAIN_LIVE_STT_COMPUTE` (default `int8_float16`, the lowest-memory GPU compute type that keeps live partials). When the model is missing locally or CUDA memory runs short (D13), the call degrades once to `HERDR_BRAIN_LIVE_STT_FALLBACK_MODEL` (default `small`) and the client receives a single informational `{"type":"notice"}` message — a notice never triggers the Servidor transport fallback. Measured on the RTX 4090: `large-v3` at `int8_float16` takes ≈3.7–4.9 s to load and ≈2.2 GiB of resident VRAM (≈2.3 GiB while transcribing), leaving roughly 2.7–3.2 GiB of headroom next to Qwen's measured ~18.5–19 GiB peak on the 24 GiB card.
+
 ## Open-pane context
 
 The selected pane remains the default for questions and actions. For a

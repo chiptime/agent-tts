@@ -69,6 +69,10 @@ daemons do not source them, so the env file is the single stable contract.
 | `HERDR_BRAIN_VOICE` / `HERDR_BRAIN_RATE` / `HERDR_BRAIN_MAX_CHARS` | `elvira` / `+0%` / `300` | synthesis knobs |
 | `HERDR_BRAIN_TTS_ARGS` | *(empty)* | extra engine flags (e.g. `--piper`, `--tldr`) |
 | `HERDR_BRAIN_AUDIO_DIR` | `~/.local/state/herdr-brain/audio` | rendered mp3 directory |
+| `HERDR_BRAIN_LIVE_STT_MODEL` | `large-v3` | live-engine ("Dictado: En vivo") STT model: a faster-whisper size name, a snapshot dir, or an HF repo cache dir (e.g. llm-hub's `models--Systran--faster-whisper-large-v3`); resolved locally only — never downloaded |
+| `HERDR_BRAIN_LIVE_STT_DEVICE` | `cuda` | device for the live-engine STT model (shares the GPU with llm-hub's Qwen; see [Conversational voice call](docs/HANDS-FREE.md)) |
+| `HERDR_BRAIN_LIVE_STT_COMPUTE` | `int8_float16` | compute type for the live-engine STT model (lowest-memory GPU type that keeps live partials) |
+| `HERDR_BRAIN_LIVE_STT_FALLBACK_MODEL` | `small` | degrade-once fallback when the live model is missing locally or CUDA memory is short; the live client gets a single informational `notice` message |
 | `HERDR_BRAIN_PROMPT_TIMEOUT_MS` | `180000` | default wait for `send_to_session` |
 | `HERDR_BRAIN_MAX_TOOL_ROUNDS` | `4` | LLM tool-loop guard |
 | `HERDR_BRAIN_SCREEN_LINES` | `40` | default visible lines for `read_screen` |

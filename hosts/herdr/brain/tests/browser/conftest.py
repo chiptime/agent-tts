@@ -285,6 +285,7 @@ class KaraokeHarness:
             # update notice, operator dock.
             "i18n.js", "i18n/es.js", "i18n/en.js",
             "settings.js", "updates.js", "dock.js",
+            "stream-uplink.js", "stream-worklet.js",
         ):
             if (STATIC / name).is_file():
                 self.static["/" + name] = name
@@ -366,7 +367,12 @@ class KaraokeHarness:
 
     def _block_socket(self, route):
         self.blocked_requests.append({"method": "WEBSOCKET", "url": route.url})
-        route.close()
+        try:
+            route._impl_obj._channel.send_may_fail(
+                "closePage", None, {"code": 1008, "reason": "blocked", "wasClean": False}
+            )
+        except Exception:
+            pass
 
     def _route(self, route):
         request = route.request
