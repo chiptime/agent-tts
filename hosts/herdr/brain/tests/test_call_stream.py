@@ -1869,7 +1869,12 @@ def test_vad_opt_in_negotiates_silero_and_streams_framing_events(tmp_path):
     with client.websocket_connect("/call/stream") as ws:
         _auth_vad(ws)
         status = ws.receive_json()
-        assert status == {"type": "vad_status", "engine": "silero", "reason": None}
+        assert status == {
+            "type": "vad_status",
+            "engine": "silero",
+            "reason": None,
+            "smart_turn": False,
+        }
 
         # 3 chunks of loud speech: onset (2-chunk debounce) -> speech_start
         for _ in range(3):
@@ -2276,9 +2281,12 @@ class _ScriptedStreamSocket:
 
 
 class _FakeTurnDetector:
-    def __init__(self, result=(0.9, "complete", None), loaded=True):
+    def __init__(
+        self, result=(0.9, "complete", None), loaded=True, raise_on_classify=False
+    ):
         self.result = result
         self.loaded = loaded
+        self.raise_on_classify = raise_on_classify
         self.load_calls = 0
         self.audios = []
         self.unavailable_reason = (
@@ -2291,6 +2299,8 @@ class _FakeTurnDetector:
 
     def classify(self, audio):
         self.audios.append(audio)
+        if self.raise_on_classify:
+            raise RuntimeError("boom /secret/path key=val")
         return self.result
 
 
@@ -2338,6 +2348,7 @@ def test_smart_turn_disabled_sends_no_advisory_and_leaves_framing_unchanged(
         "type": "vad_status",
         "engine": "silero",
         "reason": None,
+        "smart_turn": False,
     }
     events = [m for m in sock.sent if m.get("type") == "vad"]
     assert any(m.get("event") == "speech_start" for m in events), events
@@ -2419,3 +2430,252 @@ def test_smart_turn_unavailable_at_load_emits_once_and_never_classifies():
     assert detector.audios == []
     assert not any(m.get("event") == "turn_complete" for m in sock.sent)
     assert sock.closed is False
+
+
+# ---- S6/FR-02 extender-only (L56/L59): capability + bounded probe ----
+#
+# Real Spanish data showed a 16.1% false-complete rate for human speech, so
+# the detector must NEVER shorten a turn. The server advertises the
+# capability in ``vad_status.smart_turn``; a client may send a bounded
+# ``turn_probe`` before its energy close and receives exactly one advisory
+# ``turn_probe_result``. A probe never mutates turn state, never sends a
+# transcript and never closes anything; disabled/unavailable answers
+# ``unavailable`` immediately without touching the model.
+
+
+def test_vad_status_advertises_smart_turn_only_when_the_detector_is_ready():
+    """vad_status names the real capability: true only after a successful
+    load, false when disabled or when the model failed to load."""
+    import herdr_brain.call_stream as call_stream
+
+    engine = FakeContentVadEngine()
+    detector = _FakeTurnDetector()
+    messages = [
+        {"text": '{"type":"auth","token":"","vad":true}'},
+        {"type": "websocket.disconnect"},
+    ]
+    sock = _ScriptedStreamSocket(messages)
+    run_async(
+        call_stream.handle_call_stream(
+            sock, None, None, vad_engine=engine, turn_detector=detector
+        )
+    )
+
+    assert sock.sent[0] == {"type": "auth_ok"}
+    assert sock.sent[1] == {
+        "type": "vad_status",
+        "engine": "silero",
+        "reason": None,
+        "smart_turn": True,
+    }
+
+    # Disabled: the same message, capability false.
+    sock_disabled = _ScriptedStreamSocket(messages)
+    run_async(
+        call_stream.handle_call_stream(
+            sock_disabled, None, None, vad_engine=FakeContentVadEngine()
+        )
+    )
+    assert sock_disabled.sent[1] == {
+        "type": "vad_status",
+        "engine": "silero",
+        "reason": None,
+        "smart_turn": False,
+    }
+
+
+def test_vad_status_smart_turn_false_when_the_detector_cannot_load():
+    """An enabled-but-unavailable detector is not a capability: the client
+    must not spend a round-trip probing it."""
+    import herdr_brain.call_stream as call_stream
+    from herdr_brain import turn_detector as turn_detector_module
+
+    detector = _FakeTurnDetector(loaded=False)
+    detector.unavailable_reason = turn_detector_module.UNAVAILABLE_MODEL_MISSING
+    messages = [
+        {"text": '{"type":"auth","token":"","vad":true}'},
+        {"type": "websocket.disconnect"},
+    ]
+    sock = _ScriptedStreamSocket(messages)
+    run_async(
+        call_stream.handle_call_stream(
+            sock, None, None,
+            vad_engine=FakeContentVadEngine(), turn_detector=detector,
+        )
+    )
+
+    assert sock.sent[1] == {
+        "type": "vad_status",
+        "engine": "silero",
+        "reason": None,
+        "smart_turn": False,
+    }
+    assert any(
+        m.get("event") == "unavailable" for m in sock.sent
+    ), sock.sent
+
+
+def test_turn_probe_when_disabled_answers_unavailable_without_inference(
+    monkeypatch,
+):
+    """Disabled capability: one bounded ``unavailable`` result, no model
+    inference, and the socket keeps its exact turn protocol."""
+    import herdr_brain.call_stream as call_stream
+
+    monkeypatch.setattr(call_stream, "default_turn_detector", lambda: None)
+    messages = [
+        {"text": '{"type":"auth","token":""}'},
+        {"bytes": LOUD_100MS},
+        {"bytes": LOUD_100MS},
+        {"bytes": LOUD_100MS},
+        {"text": '{"type":"stream","action":"start"}'},
+        {"text": '{"type":"turn_probe","duration_ms":1200,"pre_roll_ms":500}'},
+        {"text": '{"type":"ping"}'},
+        {"type": "websocket.disconnect"},
+    ]
+    sock = _ScriptedStreamSocket(messages)
+    run_async(call_stream.handle_call_stream(sock, None, None))
+
+    assert sock.sent == [
+        {"type": "auth_ok"},
+        {"type": "turn_probe_result", "verdict": "unavailable"},
+        {"type": "pong"},
+    ]
+    assert not any(
+        m.get("type") in ("transcript", "final", "partial", "error")
+        for m in sock.sent
+    )
+
+
+def test_turn_probe_evaluates_the_window_and_never_mutates_the_turn():
+    """Enabled: the detector sees the bounded ring window and one advisory
+    result follows. No transcript, no error, no duplicate stop advisory."""
+    import herdr_brain.call_stream as call_stream
+
+    detector = _FakeTurnDetector(result=(0.42, "incomplete", None))
+    messages = _stream_messages(vad=False) + [
+        {"text": '{"type":"turn_probe","duration_ms":1200,"pre_roll_ms":500}'},
+        {"text": '{"type":"stream","action":"stop"}'},
+        {"text": '{"type":"ping"}'},
+        {"type": "websocket.disconnect"},
+    ]
+    sock = _ScriptedStreamSocket(messages)
+    run_async(
+        call_stream.handle_call_stream(
+            sock, None, None, turn_detector=detector
+        )
+    )
+
+    results = [m for m in sock.sent if m.get("type") == "turn_probe_result"]
+    assert results == [
+        {"type": "turn_probe_result", "verdict": "incomplete", "prob": 0.42}
+    ]
+    assert len(detector.audios) == 1
+    assert isinstance(detector.audios[0], np.ndarray)
+    assert detector.audios[0].dtype == np.float32
+    assert 0 < detector.audios[0].size <= 8 * 16000
+    # A probed turn must not receive the legacy stop advisory a second time.
+    assert not any(m.get("event") == "turn_complete" for m in sock.sent)
+    assert not any(m.get("type") in ("transcript", "error") for m in sock.sent)
+    assert sock.sent[-1] == {"type": "pong"}
+
+
+def test_turn_probe_inference_failure_answers_unavailable_and_keeps_serving():
+    """Any classifier failure is one bounded ``unavailable``; the socket
+    keeps its turn path and no transcript or exception text leaks."""
+    import herdr_brain.call_stream as call_stream
+
+    detector = _FakeTurnDetector(raise_on_classify=True)
+    messages = [
+        {"text": '{"type":"auth","token":""}'},
+        {"bytes": LOUD_100MS},
+        {"bytes": LOUD_100MS},
+        {"bytes": LOUD_100MS},
+        {"text": '{"type":"stream","action":"start"}'},
+        {"text": '{"type":"turn_probe","duration_ms":1200,"pre_roll_ms":500}'},
+        {"text": '{"type":"ping"}'},
+        {"type": "websocket.disconnect"},
+    ]
+    sock = _ScriptedStreamSocket(messages)
+    run_async(
+        call_stream.handle_call_stream(
+            sock, None, None, turn_detector=detector
+        )
+    )
+
+    results = [m for m in sock.sent if m.get("type") == "turn_probe_result"]
+    assert len(results) == 1
+    assert results[0]["verdict"] == "unavailable"
+    assert isinstance(results[0]["reason"], str) and results[0]["reason"]
+    assert "boom" not in str(results[0]) and "/secret/path" not in str(results[0])
+    assert not any(m.get("type") in ("transcript", "error") for m in sock.sent)
+    assert sock.sent[-1] == {"type": "pong"}
+
+
+def test_turn_probe_malformed_fields_and_prob_are_bounded():
+    """Untrusted probe fields never reach the model unbounded and the
+    answer's probability stays in [0, 1]."""
+    import herdr_brain.call_stream as call_stream
+
+    detector = _FakeTurnDetector(result=(1.7, "incomplete", None))
+    messages = [
+        {"text": '{"type":"auth","token":""}'},
+        {"bytes": LOUD_100MS},
+        {"bytes": LOUD_100MS},
+        {"bytes": LOUD_100MS},
+        {"text": '{"type":"stream","action":"start"}'},
+        {
+            "text": (
+                '{"type":"turn_probe","duration_ms":"loud",'
+                '"pre_roll_ms":1000000000}'
+            )
+        },
+        {"text": '{"type":"ping"}'},
+        {"type": "websocket.disconnect"},
+    ]
+    sock = _ScriptedStreamSocket(messages)
+    run_async(
+        call_stream.handle_call_stream(
+            sock, None, None, turn_detector=detector
+        )
+    )
+
+    results = [m for m in sock.sent if m.get("type") == "turn_probe_result"]
+    assert results == [
+        {"type": "turn_probe_result", "verdict": "incomplete", "prob": 1.0}
+    ]
+    assert len(detector.audios) == 1
+    assert detector.audios[0].size <= 8 * 16000
+    assert sock.sent[-1] == {"type": "pong"}
+
+
+def test_diag_logs_bounded_smart_turn_outcome_and_extension(caplog):
+    """Level-only diagnostics: the client may report the Smart Turn outcome
+    and how much the close was extended, never audio or transcript text."""
+    import herdr_brain.call_stream as call_stream
+
+    messages = [
+        {"text": '{"type":"auth","token":""}'},
+        {
+            "text": (
+                '{"type":"diag","mode":"worklet","posted":10,"sent":10,'
+                '"queued":0,"buffered":0,"fails":0,"maxrms":0.02,'
+                '"ctx":"running","build":"b1","reason":"","state":"recording",'
+                '"st":"deferred","ext":900,"probes":2}'
+            )
+        },
+        {"type": "websocket.disconnect"},
+    ]
+    sock = _ScriptedStreamSocket(messages)
+    with caplog.at_level(logging.INFO):
+        run_async(call_stream.handle_call_stream(sock, None, None))
+
+    diag_lines = [
+        r.getMessage() for r in caplog.records
+        if "live client diag" in r.getMessage()
+    ]
+    assert len(diag_lines) == 1
+    line = diag_lines[0]
+    assert "st=deferred" in line
+    assert "ext=900" in line
+    assert "probes=2" in line

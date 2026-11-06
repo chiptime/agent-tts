@@ -171,7 +171,8 @@
     ctx: 12,
     build: 24,
     reason: 24,
-    state: 14
+    state: 14,
+    st: 12
   };
 
   function diagToken(value, limit) {
@@ -203,7 +204,13 @@
       ctx: diagToken(src.ctx, DIAG_TOKENS.ctx),
       build: diagToken(src.build, DIAG_TOKENS.build),
       reason: diagToken(src.reason, DIAG_TOKENS.reason),
-      state: diagToken(src.state, DIAG_TOKENS.state)
+      state: diagToken(src.state, DIAG_TOKENS.state),
+      /* L59 extender-only diagnostics: the Smart Turn outcome and how much
+       * the close was extended. Tokens and numbers only — never audio or
+       * transcript text. */
+      st: diagToken(src.st, DIAG_TOKENS.st),
+      ext: diagNumber(src.ext),
+      probes: diagNumber(src.probes)
     };
   }
 

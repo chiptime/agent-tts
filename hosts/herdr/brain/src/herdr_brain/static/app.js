@@ -239,6 +239,24 @@
   var SILERO_HOLD_MAX_MS = 12000;       // D6: tunable once measured on-device
   var liveVadOpinion = { engine: null, reason: null, speech: false, at: 0 };
   var liveQuietSince = null;            // energy VAD quiet streak start (ms)
+  /* S6/FR-02 amended (D18, L56/L59): the local Smart Turn v3.2 detector is
+   * EXTENDER-ONLY. Real Spanish human audio measured a 16.1% false-complete
+   * rate, so a `complete` verdict must NEVER shorten a turn (D3). When the
+   * server advertises `smart_turn: true`, the client probes just before its
+   * energy close: a fresh `incomplete` may DEFER the close (bounded), while
+   * `complete`/`unavailable`/timeout close exactly as today. A missing or
+   * false capability spends zero round-trips. */
+  var SMART_TURN_PROBE_TIMEOUT_MS = 300;   // L58: detector p95 ≈ 102 ms
+  var SMART_TURN_EXTEND_BUDGET_MS = 1500;  // total extra wait per turn
+  var SMART_TURN_PROBE_LIMIT = 2;          // probes per turn
+  var SMART_TURN_RETRY_MS = 400;           // wait before re-probing a deferral
+  var liveSmartTurn = false;               // capability from vad_status
+  var liveProbe = null;                    // { pending, sentAt, spoke }
+  var liveProbeTimer = null;               // result deadline (~300 ms)
+  var liveProbeRetryTimer = null;          // deferred re-probe after incomplete
+  var liveProbeCount = 0;                  // probes sent this turn
+  var liveExtendMs = 0;                    // extra wait accrued this turn
+  var liveSmartTurnDiag = "off";           // bounded level-only outcome token
   var liveWorkletNode = null;
   /* ONE MediaStreamSource per call feeds the analyser AND every uplink
    * arm. A second createMediaStreamSource() on the same MediaStream is
@@ -6104,6 +6122,8 @@
   function stopLiveListening() {
     manualStop = true;
     releaseVadLoopOnly();
+    clearLiveProbeTimers();  // L59: a probe never outlives its capture
+    liveProbe = null;
     liveRejoin = null;  // S7: the rejoin window dies with the capture
     disposeLiveCapture();
     if (liveWs) {
@@ -6169,6 +6189,7 @@
     liveDispatchRouted = false;
     dispatching = false;
     liveTurn = { onsetAt: Date.now(), speaking: true };
+    resetLiveSmartTurnTurn();  // L59: the resumed segment gets its own budget
     liveQuietSince = null;
     if (liveTracker) liveTracker.reset();
     utteranceStartedAt = Date.now();
@@ -6267,9 +6288,28 @@
    * opinion. Untrusted input — only the known shapes change state, and a
    * runtime "unavailable" downgrades to the energy fallback for the rest
    * of the socket (never claims silero it no longer has). */
+  /* L59: Smart Turn probe timers/state are per utterance. A new socket
+   * starts from the OFF capability and zero budget; a new utterance resets
+   * only the counters, so the negotiated capability survives the call. */
+  function clearLiveProbeTimers() {
+    if (liveProbeTimer) { clearTimeout(liveProbeTimer); liveProbeTimer = null; }
+    if (liveProbeRetryTimer) { clearTimeout(liveProbeRetryTimer); liveProbeRetryTimer = null; }
+  }
+
+  function resetLiveSmartTurnTurn() {
+    clearLiveProbeTimers();
+    liveProbe = null;
+    liveProbeCount = 0;
+    liveExtendMs = 0;
+    liveSmartTurnDiag = liveSmartTurn ? "idle" : "off";
+  }
+
   function resetLiveVadOpinion() {
     liveVadOpinion = { engine: null, reason: null, speech: false, at: 0 };
     liveQuietSince = null;
+    clearLiveProbeTimers();
+    liveSmartTurn = false;
+    resetLiveSmartTurnTurn();
   }
 
   function onLiveVadMessage(data) {
@@ -6280,6 +6320,10 @@
         speech: false,
         at: Date.now()
       };
+      /* The capability is the server's measured truth: only an explicit
+       * true enables the probe. Anything else keeps today's path. */
+      liveSmartTurn = data.smart_turn === true;
+      liveSmartTurnDiag = liveSmartTurn ? "ready" : "off";
       voiceTimelinePush("vad:" + liveVadOpinion.engine, "");
       return;
     }
@@ -6443,6 +6487,13 @@
     ws.onmessage = function (ev) {
       var data;
       try { data = JSON.parse(ev.data); } catch (e) { return; }
+      if (data && data.type === "turn_probe_result") {
+        /* L59 extender-only: an advisory verdict for a probe we sent. It
+         * never dispatches on its own; the energy endpointer still owns
+         * the close (an `incomplete` may only DEFER it). */
+        handleTurnProbeResult(data);
+        return;
+      }
       if (data && data.type === "error") {
         /* A2: the engine backend failed closed (D9) — never leave the
          * call stuck in transcribing; recover exactly like a socket
@@ -6582,6 +6633,7 @@
       if (!vad) vad = window.Vad.createVad(SERVER_VOICE_OPTIONS);
       else vad.reset();
       liveTurn = { onsetAt: null, speaking: false };
+      resetLiveSmartTurnTurn();  // L59: fresh probe budget for this utterance
       liveTracker = window.StreamUplink && window.StreamUplink.LiveTranscriptTracker
         ? new window.StreamUplink.LiveTranscriptTracker()
         : null;
@@ -6640,6 +6692,13 @@
         var rms = frameRms();
         if (rms > liveMaxRms) liveMaxRms = rms;
         var speaking = vad.push(rms);
+        /* L59 D3 safety net: while a probe waits, remember whether the user
+         * resumed speaking. A `complete` verdict must not cut that speech
+         * (the detector's real-audio false-complete rate is 16.1%). */
+        if (liveProbe && liveProbe.pending && liveProbe.spoke !== true) {
+          var floor = vad.floor ? vad.floor() : 0;
+          if (rms > Math.max(0.008, floor * 2.5)) liveProbe.spoke = true;
+        }
         updateRecMeter(rms);
         /* Level-only uplink diagnostics: every ~2 s while the live
          * engine owns the mic, tell the server whether the graph is
@@ -6665,7 +6724,10 @@
                   ctx: audioContext ? audioContext.state : "none",
                   build: servedBuild,
                   reason: liveCaptureReason,
-                  state: callState
+                  state: callState,
+                  st: liveSmartTurnDiag,
+                  ext: Math.round(liveExtendMs),
+                  probes: liveProbeCount
                 })
                 : {
                   type: "diag",
@@ -6678,7 +6740,10 @@
                   ctx: audioContext ? audioContext.state : "none",
                   build: servedBuild,
                   reason: liveCaptureReason,
-                  state: callState
+                  state: callState,
+                  st: liveSmartTurnDiag,
+                  ext: Math.round(liveExtendMs),
+                  probes: liveProbeCount
                 };
               liveWs.send(JSON.stringify(diagPayload));
             } catch (e) { /* socket dying */ }
@@ -6726,6 +6791,10 @@
          * stands. */
         if (!sileroDefersClose() && vad.shouldFinalize()) {
           var why = vad.lastFinalizeReason && vad.lastFinalizeReason();
+          /* L59: a bounded Smart Turn probe may DEFER this close. It can
+           * never shorten the turn: `complete` proceeds, `incomplete`
+           * waits (bounded), and any cap-driven close bypasses it. */
+          if (maybeProbeBeforeClose(why)) return;
           if (why === "cap" || why === "utteranceCap") {
             showBanner(t("voice.turn_cap_cut"));
           }
@@ -6747,7 +6816,122 @@
       liveMicBusy = false;
     };
 
+    /* L59: extender-only Smart Turn probe. Called only when the energy VAD
+     * is about to finalize (a cap close never reaches it). Returns true when
+     * a probe is in flight and the close must wait for the advisory. */
+    function liveProbeBudgetLeft() {
+      if (!liveSmartTurn) return false;
+      if (liveProbeCount >= SMART_TURN_PROBE_LIMIT) return false;
+      if (liveExtendMs >= SMART_TURN_EXTEND_BUDGET_MS) return false;
+      if (liveTurn && liveTurn.onsetAt &&
+          (Date.now() - liveTurn.onsetAt) >=
+            VOICE_UTTERANCE_CAP_MS - SMART_TURN_EXTEND_BUDGET_MS) {
+        return false;
+      }
+      return true;
+    }
+
+    function maybeProbeBeforeClose(why) {
+      if (why === "cap" || why === "utteranceCap") return false;  // FR-07
+      if (!liveProbeBudgetLeft()) return false;
+      if (liveProbe && liveProbe.pending) return true;  // already waiting
+      return sendTurnProbe();
+    }
+
+    function sendTurnProbe() {
+      if (!liveSmartTurn || !liveWs || liveWs.readyState !== WebSocket.OPEN) {
+        return false;
+      }
+      var now = Date.now();
+      if (liveProbe && liveProbe.pending) return true;
+      if (liveProbeCount >= SMART_TURN_PROBE_LIMIT) return false;
+      if (liveExtendMs >= SMART_TURN_EXTEND_BUDGET_MS) return false;
+      liveProbeCount += 1;
+      liveProbe = { pending: true, sentAt: now, spoke: false };
+      liveSmartTurnDiag = "probe";
+      var durationMs = liveTurn && liveTurn.onsetAt
+        ? Math.max(1, now - liveTurn.onsetAt) : 1000;
+      try {
+        liveWs.send(JSON.stringify({
+          type: "turn_probe",
+          duration_ms: durationMs,
+          pre_roll_ms: 500
+        }));
+      } catch (e) {
+        liveProbe = null;
+        liveProbeCount -= 1;
+        return false;
+      }
+      if (liveProbeTimer) clearTimeout(liveProbeTimer);
+      liveProbeTimer = setTimeout(function () {
+        liveProbeTimer = null;
+        if (!liveProbe || !liveProbe.pending) return;
+        liveProbe = null;
+        liveSmartTurnDiag = "timeout";
+        finishLiveUtterance();  // a silent server closes exactly as today
+      }, SMART_TURN_PROBE_TIMEOUT_MS);
+      return true;
+    }
+
+    function deferLiveClose(reasonToken) {
+      /* `incomplete` (or resumed speech during the probe): keep recording,
+       * clear the latched energy close so resumed speech reopens normally,
+       * and re-probe after a short bounded retry. The utterance onset is
+       * NEVER moved, so the eventual transcribe still carries the whole
+       * turn from the ring. */
+      liveProbe = null;
+      liveSmartTurnDiag = reasonToken || "deferred";
+      if (vad) vad.reset();  // keeps the learned floor
+      liveQuietSince = null;
+      if (!liveProbeBudgetLeft()) {
+        liveSmartTurnDiag = "exhausted";
+        finishLiveUtterance();
+        return;
+      }
+      if (liveProbeRetryTimer) clearTimeout(liveProbeRetryTimer);
+      liveProbeRetryTimer = setTimeout(function () {
+        liveProbeRetryTimer = null;
+        if (vad && vad.hasSpeech()) return;  // the user resumed; VAD owns the close
+        if (!sendTurnProbe()) {
+          liveSmartTurnDiag = "exhausted";
+          finishLiveUtterance();
+        }
+      }, SMART_TURN_RETRY_MS);
+    }
+
+    function handleTurnProbeResult(data) {
+      if (!liveProbe || !liveProbe.pending) return;  // stale/unsolicited
+      if (liveProbeTimer) { clearTimeout(liveProbeTimer); liveProbeTimer = null; }
+      var spokeDuringProbe = liveProbe.spoke === true;
+      var elapsed = Math.max(0, Date.now() - liveProbe.sentAt);
+      liveExtendMs += elapsed;
+      liveProbe = null;
+      var verdict = data && data.verdict;
+      if (verdict === "incomplete") {
+        deferLiveClose("deferred");
+        return;
+      }
+      if (verdict === "unavailable") {
+        /* The detector cannot answer: stop spending round-trips for the
+         * rest of this socket and close exactly as today. */
+        liveSmartTurn = false;
+        liveSmartTurnDiag = "unavail";
+        finishLiveUtterance();
+        return;
+      }
+      /* EXTENDER-ONLY: `complete` never shortens — but if the user resumed
+       * while the probe was in flight, closing now would cut the speaker. */
+      if (spokeDuringProbe) {
+        deferLiveClose("resumed");
+        return;
+      }
+      liveSmartTurnDiag = "complete";
+      finishLiveUtterance();
+    }
+
     function finishLiveUtterance() {
+      clearLiveProbeTimers();
+      liveProbe = null;
       /* S7 (PRD-05/D10): the VAD loop STAYS ARMED — between this close
        * and the answer start (transcribing + thinking) resumed speech
        * rejoins the turn. The finalize latch clears so pushes live

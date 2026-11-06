@@ -1749,3 +1749,182 @@ def test_worklet_without_frames_rearms_script_processor_and_reports_reason(karao
         if d["mode"] == "script" and d["reason"] == "worklet_no_frames"
     ][-1]
     assert diag["posted"] > 0, diag
+
+
+# ---- S6/FR-02 extender-only (L56/L59): Smart Turn probe before the close ----
+#
+# Real Spanish human audio showed a 16.1% false-complete rate, so the
+# detector must NEVER shorten a turn (D3). The client's energy VAD stays the
+# decision owner; when the server advertises ``smart_turn: true`` the client
+# sends a bounded ``turn_probe`` just before its silence close and waits at
+# most ~300 ms. ``incomplete`` may DEFER the close (bounded count + budget),
+# ``complete``/``unavailable``/timeout closes exactly like today, and a
+# capability that is absent/false adds zero round-trips.
+
+
+def _turn_probes(page):
+    return page.evaluate(
+        "() => window.__sent.filter(s => typeof s === 'string' && "
+        "s.indexOf('\"turn_probe\"') >= 0).map(s => JSON.parse(s))"
+    )
+
+
+def _turn_probe_count(page):
+    return page.evaluate(
+        "() => window.__sent.filter(s => typeof s === 'string' && "
+        "s.indexOf('\"turn_probe\"') >= 0).length"
+    )
+
+
+def _enable_smart_turn(page):
+    _emit_vad(
+        page,
+        {"type": "vad_status", "engine": "silero", "reason": None, "smart_turn": True},
+    )
+
+
+def test_smart_turn_incomplete_defers_the_close_and_keeps_recording(karaoke_app):
+    """L59/D3: a fresh ``incomplete`` verdict DEFERS the energy close, the
+    mic keeps recording, and the eventual transcribe still carries the WHOLE
+    turn (the deferral is inside duration_ms — no audio is lost)."""
+    harness, page = _rejoin_boot(karaoke_app)
+    page.locator("#call-btn").click()
+    _tone_on(page)
+    _wait_sent_count(page, '"start"', 1)
+    _enable_smart_turn(page)
+    _tone_off(page)
+
+    _wait_sent_count(page, '"turn_probe"', 1, timeout=12000)
+    assert not page.evaluate(_sent_has(page, "transcribe")), \
+        "the turn closed before the advisory arrived"
+    first_probe = _turn_probes(page)[0]
+
+    # The advisory is debounced (inside the ~300 ms budget): defer the close.
+    _emit_vad(page, {"type": "turn_probe_result", "verdict": "incomplete", "prob": 0.02})
+    page.wait_for_timeout(100)
+    assert not page.evaluate(_sent_has(page, "transcribe")), \
+        "an incomplete verdict still closed the turn"
+
+    frames_before = page.evaluate(
+        "() => window.__sent.filter(s => s === 'binary').length"
+    )
+    page.wait_for_timeout(200)
+    frames_after = page.evaluate(
+        "() => window.__sent.filter(s => s === 'binary').length"
+    )
+    assert frames_after > frames_before, "the mic stopped recording while deferred"
+    assert page.locator("#call-btn").evaluate("b => b.classList.contains('oncall')")
+
+    # The bounded retry probes again; a complete answer then closes once.
+    _wait_sent_count(page, '"turn_probe"', 2, timeout=4000)
+    _emit_vad(page, {"type": "turn_probe_result", "verdict": "complete", "prob": 0.98})
+    _wait_sent_count(page, '"transcribe"', 1, timeout=5000)
+
+    transcribe = page.evaluate(
+        "() => window.__sent.filter(s => typeof s === 'string' && "
+        "s.indexOf('transcribe') >= 0).map(s => JSON.parse(s))[0]"
+    )
+    assert transcribe["duration_ms"] >= first_probe["duration_ms"] + 250, \
+        "the deferred audio was not carried into the turn window"
+    assert page.evaluate(
+        "() => window.__sent.filter(s => typeof s === 'string' && "
+        "s.indexOf('transcribe') >= 0).length"
+    ) == 1, "the turn transcribed more than once"
+
+
+def test_smart_turn_complete_closes_exactly_like_today(karaoke_app):
+    """A ``complete`` verdict proceeds with today's exact close: stop
+    immediately followed by one transcribe, no extra probe."""
+    harness, page = _rejoin_boot(karaoke_app)
+    page.locator("#call-btn").click()
+    _tone_on(page)
+    _wait_sent_count(page, '"start"', 1)
+    _enable_smart_turn(page)
+    _tone_off(page)
+
+    _wait_sent_count(page, '"turn_probe"', 1, timeout=12000)
+    assert not page.evaluate(_sent_has(page, "transcribe"))
+    _emit_vad(page, {"type": "turn_probe_result", "verdict": "complete", "prob": 0.97})
+    _wait_sent_count(page, '"transcribe"', 1, timeout=5000)
+
+    sent = _sent_strings(page)
+    stops = [i for i, s in enumerate(sent) if '"stop"' in s.replace(" ", "")]
+    transcribes = [
+        i for i, s in enumerate(sent) if '"transcribe"' in s.replace(" ", "")
+    ]
+    assert stops and transcribes
+    assert transcribes[0] - stops[0] == 1, "messages between stop and transcribe"
+    assert _turn_probe_count(page) == 1, "a complete verdict probed again"
+
+
+def test_smart_turn_timeout_closes_exactly_like_today(karaoke_app):
+    """No advisory within the ~300 ms budget: the close proceeds exactly as
+    today instead of waiting forever."""
+    harness, page = _rejoin_boot(karaoke_app)
+    page.locator("#call-btn").click()
+    _tone_on(page)
+    _wait_sent_count(page, '"start"', 1)
+    _enable_smart_turn(page)
+    _tone_off(page)
+
+    _wait_sent_count(page, '"turn_probe"', 1, timeout=12000)
+    _wait_sent_count(page, '"transcribe"', 1, timeout=4000)
+    assert _turn_probe_count(page) == 1
+
+
+def test_smart_turn_disabled_capability_adds_no_round_trip(karaoke_app):
+    """PRESERVE: ``smart_turn: false`` (and an old server with no field)
+    behaves exactly as today — zero turn_probe messages."""
+    harness, page = _rejoin_boot(karaoke_app)
+    page.locator("#call-btn").click()
+    _tone_on(page)
+    _wait_sent_count(page, '"start"', 1)
+    _emit_vad(
+        page,
+        {"type": "vad_status", "engine": "silero", "reason": None, "smart_turn": False},
+    )
+    _tone_off(page)
+
+    _wait_sent_count(page, '"transcribe"', 1, timeout=12000)
+    assert _turn_probe_count(page) == 0, "a disabled capability still probed"
+
+
+def test_smart_turn_extension_is_bounded_by_probe_count(karaoke_app):
+    """Bounded: two incomplete verdicts exhaust the probe count and the
+    close proceeds — an incomplete detector can never hold the turn open
+    forever."""
+    harness, page = _rejoin_boot(karaoke_app)
+    page.locator("#call-btn").click()
+    _tone_on(page)
+    _wait_sent_count(page, '"start"', 1)
+    _enable_smart_turn(page)
+    _tone_off(page)
+
+    _wait_sent_count(page, '"turn_probe"', 1, timeout=12000)
+    _emit_vad(page, {"type": "turn_probe_result", "verdict": "incomplete", "prob": 0.03})
+    _wait_sent_count(page, '"turn_probe"', 2, timeout=4000)
+    _emit_vad(page, {"type": "turn_probe_result", "verdict": "incomplete", "prob": 0.03})
+
+    _wait_sent_count(page, '"transcribe"', 1, timeout=4000)
+    assert _turn_probe_count(page) == 2, "the probe count bound was exceeded"
+
+
+def test_smart_turn_never_probes_past_the_utterance_cap(karaoke_app):
+    """FR-07: the hard utterance cap still wins — a cap-driven close never
+    spends a probe, however fresh the detector capability is."""
+    harness, page = _rejoin_boot(karaoke_app)
+    page.locator("#call-btn").click()
+    _tone_on(page)
+    _wait_sent_count(page, '"start"', 1)
+    _enable_smart_turn(page)
+    _tone_off(page)
+
+    # Push the page clock past the 10-minute hard cap: the energy VAD's own
+    # cap latches and the close must bypass Smart Turn entirely.
+    page.evaluate("""() => {
+        window.__realNow = Date.now;
+        Date.now = () => window.__realNow() + 600001;
+    }""")
+    page.wait_for_function(_sent_has(page, "transcribe"), timeout=5000)
+    assert _turn_probe_count(page) == 0, "a cap close spent a Smart Turn probe"
+    page.evaluate("() => { Date.now = window.__realNow; }")

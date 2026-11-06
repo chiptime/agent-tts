@@ -8,6 +8,7 @@ import inspect
 import io
 import json
 import logging
+import math
 import wave
 from typing import Optional
 
@@ -20,6 +21,8 @@ from .stt import Transcriber, live_vocabulary_hint
 from .stream_vad import SileroVadEngine
 from .turn_detector import (
     UNAVAILABLE_INFERENCE_ERROR,
+    VERDICT_COMPLETE,
+    VERDICT_INCOMPLETE,
     VERDICT_UNAVAILABLE,
     TurnDetector,
     default_turn_detector,
@@ -67,6 +70,15 @@ RING_GAP_TOLERANCE_MS = 50  # byte-alignment/float slack below which a
 # It reads the last 8 s ending at the client's silence close (the model's
 # native window; preprocess trims/pads again) and never decides a turn.
 TURN_DETECTOR_WINDOW_MS = 8000
+
+# L59 extender-only: real Spanish human audio showed a 16.1% false-complete
+# rate, so a verdict may only ever DEFER the client's energy close, never
+# shorten a turn (D3). A client that sees ``smart_turn`` in ``vad_status``
+# may send a bounded ``turn_probe`` just before its close; the server
+# evaluates the same native window and answers one ``turn_probe_result``.
+# Probe fields are untrusted socket input: each is clamped, and the window
+# never exceeds the model's native 8 s (the existing advisory seam).
+TURN_PROBE_MAX_FIELD_MS = 60000.0
 
 # Silent-window guard. Whisper echoes its ``initial_prompt`` (the live
 # vocabulary hint) or hallucinates a word ("you") when it is fed silence,
@@ -204,6 +216,28 @@ def window_has_no_speech(pcm16_data: bytes) -> bool:
     if len(pcm16_data) < MIN_INFERENCE_AUDIO_MS * BYTES_PER_SECOND // 1000:
         return True
     return peak_frame_rms(pcm16_data) < SILENCE_FRAME_RMS_THRESHOLD
+
+
+def _bounded_probe_ms(raw: object, default: float) -> float:
+    """Untrusted probe timing field -> a finite non-negative millisecond
+    value, clamped to :data:`TURN_PROBE_MAX_FIELD_MS`."""
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return default
+    value = float(raw)
+    if not math.isfinite(value):
+        return default
+    return max(0.0, min(value, TURN_PROBE_MAX_FIELD_MS))
+
+
+def _bounded_prob(raw: object) -> Optional[float]:
+    """Detector probability -> ``[0, 1]`` rounded for the wire, or None
+    when the value is not a finite number."""
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    value = float(raw)
+    if not math.isfinite(value):
+        return None
+    return round(min(1.0, max(0.0, value)), 4)
 
 
 def validate_device_token(
@@ -878,12 +912,41 @@ async def handle_call_stream(
 
     await send_stt_notice_once()
 
+    # S6/FR-02 amended (D18): optional local semantic completion detector.
+    # Disabled by default; an injected detector always wins (tests and a
+    # future composition-root seam). The bounded load runs off the event
+    # loop once per connection. It is resolved BEFORE vad_status so the
+    # capability the client may rely on (``smart_turn``) is the truth
+    # actually measured here: true only when enabled AND loaded.
+    advisory_detector = (
+        turn_detector if turn_detector is not None else (
+            default_turn_detector() if local_models_allowed else None
+        )
+    )
+    advisory_available = False
+    advisory_failure_reason: Optional[str] = None
+    if advisory_detector is not None:
+        loop = asyncio.get_running_loop()
+        try:
+            advisory_available = await loop.run_in_executor(
+                None, advisory_detector.ensure_loaded
+            )
+        except Exception:  # noqa: BLE001 — advisory only
+            advisory_available = False
+        if not advisory_available:
+            advisory_failure_reason = (
+                getattr(advisory_detector, "unavailable_reason", None)
+                or "smart_turn_unavailable"
+            )
+
     # S6/FR-06: negotiate the VAD actually in use for opted-in clients.
     # The engine load happens off the event loop (bounded, once per
     # process); every outcome — silero, or energy + a reason token when
     # the runtime/weights/session are unavailable — is reported
     # truthfully so the client's debug panel can show it. A framer is
-    # per-connection: its h/c state never crosses calls.
+    # per-connection: its h/c state never crosses calls. The same message
+    # advertises whether the extender-only Smart Turn probe exists: a
+    # false capability keeps the client on today's zero-round-trip path.
     framer = None
     if wants_vad:
         engine = vad_engine if vad_engine is not None else (
@@ -894,51 +957,41 @@ async def handle_call_stream(
         if available:
             framer = engine.new_framer()
             await websocket.send_json(
-                {"type": "vad_status", "engine": "silero", "reason": None}
+                {
+                    "type": "vad_status",
+                    "engine": "silero",
+                    "reason": None,
+                    "smart_turn": advisory_available,
+                }
             )
         else:
             await websocket.send_json({
                 "type": "vad_status",
                 "engine": "energy",
                 "reason": getattr(engine, "unavailable_reason", None) or "local_models_disabled",
+                "smart_turn": advisory_available,
             })
 
-    # S6/FR-02 amended (D18): optional local semantic completion detector.
-    # Disabled by default; an injected detector always wins (tests and a
-    # future composition-root seam). The bounded load runs off the event
-    # loop once per connection; a failure is one `unavailable` event and
-    # the call continues exactly as today (no turn change, no transcript).
-    advisory_detector = (
-        turn_detector if turn_detector is not None else (
-            default_turn_detector() if local_models_allowed else None
-        )
-    )
-    if advisory_detector is not None:
-        loop = asyncio.get_running_loop()
+    # Enabled but unavailable: one bounded event and the call continues
+    # exactly as today (no turn change, no transcript, no probe).
+    if advisory_detector is not None and not advisory_available:
+        advisory_detector = None
         try:
-            advisory_available = await loop.run_in_executor(
-                None, advisory_detector.ensure_loaded
+            await websocket.send_json(
+                {"type": "vad", "event": "unavailable", "reason": advisory_failure_reason}
             )
         except Exception:  # noqa: BLE001 — advisory only
-            advisory_available = False
-        if not advisory_available:
-            reason = (
-                getattr(advisory_detector, "unavailable_reason", None)
-                or "smart_turn_unavailable"
-            )
-            advisory_detector = None
-            try:
-                await websocket.send_json(
-                    {"type": "vad", "event": "unavailable", "reason": reason}
-                )
-            except Exception:  # noqa: BLE001 — advisory only
-                pass
+            pass
 
     ring_buffer = AudioRingBuffer(max_seconds=120.0)
     # Diagnostics (level only, never content): how much audio this
     # connection delivered. Tells a silent phone uplink apart from a
     # transcription problem without logging any audio.
     stream_bytes = 0
+    # L59: a probe already delivered this utterance's advisory. The legacy
+    # ``stream stop`` advisory is suppressed for that turn so one turn never
+    # produces two verdicts; non-probing clients keep the old behavior.
+    probed_this_turn = False
     # D8: the vocabulary hint is read once per connection (operators edit
     # the env between runs, not mid-call).
     session = StreamingTranscriptionSession(
@@ -1011,13 +1064,88 @@ async def handle_call_stream(
                     logger.info(
                         "live client diag: mode=%s posted=%d sent=%d "
                         "queued=%d buffered=%d fails=%d maxrms=%.4f "
-                        "ctx=%s build=%s reason=%s state=%s",
+                        "ctx=%s build=%s reason=%s state=%s st=%s ext=%d probes=%d",
                         _token("mode", 12), int(_n("posted")), int(_n("sent")),
                         int(_n("queued")), int(_n("buffered")), int(_n("fails")),
                         _n("maxrms"), _token("ctx", 12),
                         _token("build", 24), _token("reason", 24),
-                        _token("state", 14),
+                        _token("state", 14), _token("st", 12),
+                        int(_n("ext")), int(_n("probes")),
                     )
+                    continue
+                if cmd == "turn_probe":
+                    # L59 extender-only: the client's energy endpointer is
+                    # still the decision owner — this answers ONE advisory
+                    # over the same bounded ring window as the stop seam.
+                    # It never touches turn state, never sends a transcript
+                    # and never closes anything (D3).
+                    probed_this_turn = True
+                    if advisory_detector is None:
+                        await websocket.send_json({
+                            "type": "turn_probe_result",
+                            "verdict": VERDICT_UNAVAILABLE,
+                        })
+                        continue
+                    duration_ms = _bounded_probe_ms(payload.get("duration_ms"), 0.0)
+                    pre_roll_ms = _bounded_probe_ms(
+                        payload.get("pre_roll_ms"), DEFAULT_PREROLL_MS
+                    )
+                    window_ms = duration_ms + pre_roll_ms
+                    if window_ms <= 0:
+                        window_ms = TURN_DETECTOR_WINDOW_MS
+                    window_ms = min(window_ms, TURN_DETECTOR_WINDOW_MS)
+                    total_ms = ring_buffer.total_ms()
+                    start_ms = max(0.0, total_ms - window_ms)
+                    audio = pcm16_to_audio(
+                        ring_buffer.get_range(start_ms, total_ms)
+                    )
+                    if audio.size:
+                        try:
+                            loop = asyncio.get_running_loop()
+                            prob, verdict, reason = await loop.run_in_executor(
+                                None, advisory_detector.classify, audio
+                            )
+                        except Exception:  # noqa: BLE001 — advisory only
+                            prob, verdict, reason = (
+                                None,
+                                VERDICT_UNAVAILABLE,
+                                UNAVAILABLE_INFERENCE_ERROR,
+                            )
+                    else:
+                        prob, verdict, reason = (
+                            None,
+                            VERDICT_UNAVAILABLE,
+                            "smart_turn_bad_audio",
+                        )
+                    if verdict not in (VERDICT_COMPLETE, VERDICT_INCOMPLETE):
+                        verdict = VERDICT_UNAVAILABLE
+                        reason = reason or UNAVAILABLE_INFERENCE_ERROR
+                    # Level-only probe diagnostics (numbers/tokens only).
+                    logger.info(
+                        "live turn probe diag: verdict=%s prob=%s window_ms=%d "
+                        "window_bytes=%d",
+                        verdict,
+                        "%.3f" % _bounded_prob(prob) if _bounded_prob(prob) is not None else "?",
+                        int(window_ms),
+                        int(audio.nbytes),
+                    )
+                    result: dict = {
+                        "type": "turn_probe_result",
+                        "verdict": verdict,
+                    }
+                    prob_value = _bounded_prob(prob)
+                    if verdict != VERDICT_UNAVAILABLE and prob_value is not None:
+                        result["prob"] = prob_value
+                    if verdict == VERDICT_UNAVAILABLE:
+                        result["reason"] = reason or UNAVAILABLE_INFERENCE_ERROR
+                        # A detector that cannot answer stops being a
+                        # capability for this connection; the client then
+                        # closes exactly like today.
+                        advisory_detector = None
+                    try:
+                        await websocket.send_json(result)
+                    except Exception:  # noqa: BLE001 — socket already dying
+                        pass
                     continue
                 if cmd == "transcribe":
                     # L20 fail-closed parity: a turn whose words could not
@@ -1108,6 +1236,7 @@ async def handle_call_stream(
                         # audio is behind us — the next utterance's
                         # partials start a fresh window.
                         session.reset_after_transcript()
+                    probed_this_turn = False
                 elif cmd == "stream":
                     # T3 utterance gating: the client's VAD onset opens
                     # the partial loop, its silence close ends it. This
@@ -1115,6 +1244,7 @@ async def handle_call_stream(
                     # the GPU (S5: partials run WHILE SPEAKING).
                     if payload.get("action") == "start":
                         session.start_utterance()
+                        probed_this_turn = False
                     elif payload.get("action") == "stop":
                         session.stop_utterance()
                         # S6/FR-02 amended: one ADVISORY verdict over the
@@ -1122,7 +1252,13 @@ async def handle_call_stream(
                         # This never closes/reopens a turn (D3), sends no
                         # transcript, and any failure stops the advisory
                         # stream with one bounded `unavailable`.
-                        if advisory_detector is not None:
+                        #
+                        # L59: a client that already probed this utterance
+                        # got its advisory before the close, so the legacy
+                        # stop verdict is suppressed — one turn, one verdict.
+                        already_probed = probed_this_turn
+                        probed_this_turn = False
+                        if advisory_detector is not None and not already_probed:
                             total_ms = ring_buffer.total_ms()
                             start_ms = max(
                                 0.0, total_ms - TURN_DETECTOR_WINDOW_MS
@@ -1165,6 +1301,7 @@ async def handle_call_stream(
                 elif cmd == "clear":
                     ring_buffer.clear()
                     session.clear()
+                    probed_this_turn = False
                     if framer is not None:
                         framer.reset()  # framing state dies with the ring
                 elif cmd == "ping":
