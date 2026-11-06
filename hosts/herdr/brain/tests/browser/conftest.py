@@ -69,10 +69,12 @@ INIT_SCRIPT = r"""
             Promise.reject(new DOMException('Service workers are blocked in this harness', 'SecurityError'))});
     }
     const devices = navigator.mediaDevices || {};
-    Object.defineProperty(devices, 'getUserMedia', {configurable: true, value: () => {
-        harness.microphoneCalls++;
-        return Promise.reject(new DOMException('No physical microphone in this harness', 'NotAllowedError'));
-    }});
+    if (window.__harnessRealMic !== true) {
+        Object.defineProperty(devices, 'getUserMedia', {configurable: true, value: () => {
+            harness.microphoneCalls++;
+            return Promise.reject(new DOMException('No physical microphone in this harness', 'NotAllowedError'));
+        }});
+    }
     if (!navigator.mediaDevices) {
         Object.defineProperty(navigator, 'mediaDevices', {value: devices});
     }
@@ -262,7 +264,8 @@ class KaraokeHarness:
     origin = ORIGIN
     answer_text = "A synthetic Brain answer for the isolated browser harness."
 
-    def __init__(self, context: BrowserContext, artifact_dir: Path, history=None, external=None):
+    def __init__(self, context: BrowserContext, artifact_dir: Path, history=None, external=None,
+                 real_mic: bool = False):
         self.context = context
         self.artifact_dir = artifact_dir
         self.requests = []
@@ -344,6 +347,11 @@ class KaraokeHarness:
         )
         context.route("**/*", self._route)
         context.route_web_socket("**/*", self._block_socket)
+        if real_mic:
+            # The fake-device launch flags from audio_capture_context are
+            # real: keep the native getUserMedia instead of the harness
+            # rejection. This flag runs BEFORE INIT_SCRIPT.
+            context.add_init_script("window.__harnessRealMic = true;")
         context.add_init_script(INIT_SCRIPT)
         self.page = context.new_page()
         self.page.on("pageerror", lambda error: self.page_errors.append(str(error)))

@@ -83,11 +83,42 @@ hanging up: where the time went and which action ate the speech.
 ### Live streaming engine ("Dictado: En vivo", PRD-03)
 
 An opt-in third voice engine (`live` / "Dictado: En vivo") streams continuous PCM16 16 kHz mono frames over WebSocket `/call/stream` from an AudioWorklet:
-- **In-memory ring buffer (D9)**: Audio is buffered strictly in memory (bounded to 120 seconds, dies with the connection) and never persisted to disk. Utterance windows include ~500 ms pre-roll to catch speech onset without clipping.
+- **In-memory brain ring buffer**: Audio is buffered in memory (bounded to 120 seconds, dies with the connection). The hub service currently writes each transcription window to a temporary file inside its container and deletes it afterwards. Utterance windows include ~500 ms pre-roll to catch speech onset without clipping.
 - **Security & Perimeter**: Protected by Host allowlist, Origin same-origin/allowlist, and Tailscale identity checks. Device token is authenticated via the first WebSocket message fail-closed (preventing credentials in access logs).
 - **Graceful Fallback & Input Loss**: If the WebSocket fails or drops, the client automatically falls back to Servidor segment-POST transport with a visible notice without dropping the call. Microphones disconnecting mid-call trigger input loss signaling.
+- **One microphone source per call**: the client creates a single `MediaStreamSource` per call and shares it between the level analyser and every uplink arm (AudioWorklet, or the ScriptProcessor fallback), routing the worklet through a zero-gain node to the destination so the graph is always pulled. A second source on the same stream is the working hypothesis for a phone whose analyser heard speech while the uplink streamed silence; this is verified only in desktop Chromium, not on an Android device.
 
-The live engine transcribes through a **dedicated in-process faster-whisper model** (S4), separate from the Servidor `/transcribe` backend: `large-v3` loaded strictly from local files — never downloaded — configured with `HERDR_BRAIN_LIVE_STT_MODEL` (a model name, a snapshot dir, or an HF repo cache dir such as llm-hub's `models--Systran--faster-whisper-large-v3`), `HERDR_BRAIN_LIVE_STT_DEVICE` (default `cuda`) and `HERDR_BRAIN_LIVE_STT_COMPUTE` (default `int8_float16`, the lowest-memory GPU compute type that keeps live partials). When the model is missing locally or CUDA memory runs short (D13), the call degrades once to `HERDR_BRAIN_LIVE_STT_FALLBACK_MODEL` (default `small`) and the client receives a single informational `{"type":"notice"}` message — a notice never triggers the Servidor transport fallback. Measured on the RTX 4090: `large-v3` at `int8_float16` takes ≈3.7–4.9 s to load and ≈2.2 GiB of resident VRAM (≈2.3 GiB while transcribing), leaving roughly 2.7–3.2 GiB of headroom next to Qwen's measured ~18.5–19 GiB peak on the 24 GiB card.
+By default, both live and `/transcribe` delegate to llm-hub-whisper. Each live window uses an independent WebSocket; the brain loads no Whisper, Silero or Smart Turn models. Configure the service endpoints with `HERDR_BRAIN_WHISPER_WS_URL` and `HERDR_BRAIN_WHISPER_HEALTH_URL`. The legacy in-process model settings apply only with `HERDR_BRAIN_STT_BACKEND=builtin`; `engine` preserves the external batch worker and uses the hub for live audio.
+
+#### Live partial transcription (PRD-04, T3)
+
+While you speak, the socket streams **partial transcript text** into the interim strip:
+
+- **Utterance gating**: the client's VAD onset sends `{"type":"stream","action":"start"}`; the silence close sends `{"type":"stream","action":"stop"}` immediately before the turn-end `transcribe` command. Partials run only while speaking — idle silence and the agent's own playback never reach the GPU.
+- **Local agreement (FR-02)**: roughly once per second of new audio the server transcribes the growing window from the utterance origin (each pass capped at ~5 s of audio, FR-05) and emits `{"type":"partial"}` with the current best guess plus `{"type":"final"}` for the token prefix that stopped changing across consecutive passes. The sequence is deterministic for the same audio.
+- **One dispatch per turn (FR-04/AC4)**: `final` messages are display-only. The turn-end `transcript` message remains the single dispatch source — it routes through the same voice-turn path exactly once, and no partial ever triggers `/ask`. The window resets at every turn boundary, so a new utterance's partials never re-emit the finished turn's text, and late results from a pass that outlived its utterance are dropped server-side.
+- **One inference in flight per call (FR-05)**: partial passes and the turn-end transcription share a single per-connection lock; audio arriving mid-pass is picked up by the next pass, never silently lost.
+- **Language and vocabulary**: the hub service controls its language globally and does not support the app's per-call locale. The operator-editable `HERDR_BRAIN_LIVE_STT_VOCABULARY` is sent as the initial prompt (the service retains its last 200 characters).
+- **No inference on silence**: Whisper echoes its recognition hint (the transcript `PR rama herdr opencode`) or hallucinates a word (`you`) when fed silence, so the server never calls the model on a window without speech. Both the streaming passes and the turn-end transcribe measure the int16 RMS of the loudest 20 ms frame and require at least 300 ms of audio; below `SILENCE_FRAME_RMS_THRESHOLD = 100` (≈ −50 dBFS) the window is skipped — passes settle as no-ops (a full silent window slides the origin so later speech is still heard) and the turn-end answers `{"type":"transcript","text":""}`, which the client treats as "not understood". The threshold sits above digital silence and sensor noise (0–~40) and well below whispered speech (≈180–600) and the client's own speech onset (≥ ~330), so quiet real speech still passes; the loudest-frame measure keeps a short word inside seconds of silence from being diluted. The vocabulary hint itself is unchanged.
+
+#### Speech after the close rejoins the turn (PRD-05/D10, S7)
+
+Between a turn's silence close and the answer starting, the live capture stays armed on the same socket: speech that resumes in that window — while the turn's transcript is still being computed or while its `/ask` is in flight — **rejoins the same turn** instead of becoming a second one. The in-flight ask is cancelled (its late response is discarded, never rendered), and when the resumed speech closes, the *whole* utterance (both segments' text, joined) dispatches as one turn with one user bubble.
+
+- The window spans `transcribing` and `thinking`; it closes the moment the answer arrives — audio playback, an approval gate or a failed ask. Speech once the answer plays is interruption/barge-in, which is milestone 2 (PRD-07) and intentionally not implemented.
+- Capture through the window streams into the same in-memory ring (D9: nothing is written to disk, and no partial passes run unless speech actually resumes).
+- Honest failures: if the socket drops while a rejoined utterance is still un-dispatched, the lost phrase is surfaced with the existing notice and the Servidor fallback arms; a resume that transcribes to nothing still re-dispatches the cancelled segment's words — the user's words are never dropped silently.
+
+#### Silero speech/silence framing (PRD-05 FR-01/FR-06, S6 — partial)
+
+The default hub backend uses the existing client energy endpointer and reports `energy` with reason `local_models_disabled`. The local Silero and Smart Turn models are available only with the explicit `builtin` backend. There is no semantic turn-completion decision in hub mode.
+
+- **Builtin model**: the live socket reuses the `silero_vad_v6.onnx` weights bundled inside the installed `faster-whisper` package, run with the installed `onnxruntime` on `CPUExecutionProvider`.
+- **Opt-in and truthful**: the client sends `"vad": true` in the auth message; the server answers one `{"type":"vad_status","engine":"silero"|"energy","reason":…}` and then `{"type":"vad"}` events (`speech_start`, `speech_end`, `heartbeat` ≈1/s while speech is active, `unavailable`). Clients that do not opt in see no new messages. The idle diagnostics overlay (long-press 📞) shows the VAD actually in use (`vad framing:`), and shows energy — never silero — when the runtime, weights or session are unavailable or fail mid-call.
+- **State isolation**: one builtin framer per connection owns its backlog and h/c recurrence; only the loaded ONNX session is shared. The hub's separate temporary-file behavior is described above.
+- **Safe integration only**: the client's energy endpointer still owns the turn close. Silero's single power is to **defer an energy silence close** while its fresh opinion (heartbeat ≤ 2.5 s old) still says speech, for at most 12 s of energy silence (placeholder bound, D6 — to be measured on a device). It can never close or shorten a turn, a stale/failed opinion hands the close back to the energy windows, and the 10-minute cap passes through.
+- **Fallback (FR-06)**: missing runtime, missing weights, a failed session or any mid-call error fails closed to the energy endpointer with today's windows (3.2–4.5 s); the socket and the call are never dropped because of framing.
+- **Not proven**: accuracy and latency on real speech, soft-speech/noise behaviour and the ≤ 1.5 s first-audio goal need the Pixel acceptance (S9); the semantic detector remains the S6 blocker.
 
 ## Open-pane context
 
@@ -130,12 +161,15 @@ and the record closes as interrupted at the next start).
 ### Resuming a previous call
 
 The transcript detail offers **"Retomar llamada"**: `POST /calls/{call_id}/resume`
-reopens that record as the ACTIVE call (a closed one gets a fresh
-`started_at`, so duration counts the resumed session; any other open
-call closes as `interrupted`) and reseeds the conversation ring from the
-call's raw turns — the agent answers with that call's context and new
-turns append to it. A resume that fails client-side falls back to a
-fresh `POST /call/start`; the call itself is never blocked by history.
+reopens that record as the ACTIVE call and reseeds the conversation ring
+from the call's raw turns — the agent answers with that call's context
+and new turns append to it. The call KEEPS its original `started_at` (a
+retake is not a new call): the retake moment is recorded in `resumed_at`
+(shown in the detail as "Retomada …") and the accumulated duration is
+frozen, so the final `duration_s` counts ACTIVE time across sessions —
+never the gap between them. Any other open call closes as `interrupted`.
+A resume that fails client-side falls back to a fresh
+`POST /call/start`; the call itself is never blocked by history.
 
 ## Barge-in (interrupting the assistant by voice)
 
@@ -276,6 +310,26 @@ the ring; the unreadable response is closed with status 499. Concurrent
 turns each own their channel, so cancelling one leaves connected requests
 untouched.
 
+The same cancellation holds when the disconnect lands **with the answer
+already in hand** — after the provider loop finished but before the turn was
+persisted. A turn that can be rejected never writes the shared ring
+directly: it **stages** its user/assistant pair (identities reserved up
+front, ring untouched) and hands the staging to the `/ask` caller, whose
+post-answer re-check is the turn's **commit boundary**. On rejection the
+staging is aborted — since nothing ever landed, **nothing is evicted**: even
+at the ring's full capacity (16 messages) a cancelled turn cannot cost an
+earlier one, and the ring reads exactly as if the rejected turn had never
+existed. The answer is dropped instead of persisted, no history rows are
+written, no explanation is bound, and a gate the cancelled turn had proposed
+is retired (`superseded`) under the approval store's lock, scoped to that
+exact gate id and the revision the turn observed. An approval that already
+landed, a gate the user patched, or a newer turn's gate is never touched —
+and no already-executed action is ever claimed undone. When the boundary
+passes instead, the staged pair lands in one lock-held commit (bounded
+eviction of the oldest messages happens there, only for accepted turns) and
+the history rows follow immediately, so the in-memory ring and SQLite agree
+on both sides of the line.
+
 What cancellation intentionally does **not** do:
 
 - A `/speech/{id}/next` disconnect cancels nothing — only the explicit cancel
@@ -292,6 +346,15 @@ What cancellation intentionally does **not** do:
   loop checks only prevent any further work afterward. Injected
   synchronous test fakes that ignore cancellation cannot be killed in
   Python; the production client is the cancellable path.
+- Turn-opening effects that already ran before the disconnect was observed
+  are not rolled back: a `reset` that cleared the ring, and the legacy
+  supersede of a still-unanswered gate at turn start, stay done. The
+  re-dispatched turn of a resumed utterance supersedes identically, so
+  restoring them would only invite races.
+- Detection is cooperative and polled: the server reacts once ASGI surfaces
+  the disconnect (poll cadence 250 ms), so a network that dies silently is
+  only noticed at the next poll, and work already past a check completes to
+  its next boundary.
 
 ## Desktop call and handover (S12/S13)
 

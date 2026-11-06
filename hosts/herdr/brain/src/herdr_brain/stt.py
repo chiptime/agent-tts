@@ -61,6 +61,51 @@ UNAVAILABLE_HINT = (
 LIVE_NOTICE_OOM = "live_stt_fallback_oom"
 LIVE_NOTICE_MODEL_ABSENT = "live_stt_fallback_model_absent"
 
+# D8: the live engine's recognition hint — the transcription language is
+# forced to the app locale and an operator-editable list of technical
+# terms rides along as the whisper initial prompt. The default carries
+# the vocabulary this project is actually spoken about; operators
+# override it with HERDR_BRAIN_LIVE_STT_VOCABULARY (comma/space
+# separated; whitespace-only disables the hint entirely).
+DEFAULT_LIVE_VOCABULARY = ("commit", "push", "PR", "rama", "herdr", "opencode")
+LIVE_VOCABULARY_ENV = "HERDR_BRAIN_LIVE_STT_VOCABULARY"
+_MAX_VOCAB_TERMS = 60
+_MAX_VOCAB_TERM_CHARS = 40
+_MAX_VOCAB_PROMPT_CHARS = 300
+
+
+def live_vocabulary_hint() -> Optional[str]:
+    """The D8 technical-vocabulary prompt for live transcription.
+
+    Bounded and control-character free by construction: a hostile or
+    oversized env value can never blow up the whisper prompt. Returns
+    None when the operator disabled the hint (whitespace-only value).
+    """
+    raw = os.environ.get(LIVE_VOCABULARY_ENV)
+    if raw is None:
+        terms: list[str] = list(DEFAULT_LIVE_VOCABULARY)
+    else:
+        terms = [
+            term for term in
+            (chunk.strip() for chunk in raw.replace(";", ",").split(","))
+            if term
+        ]
+    cleaned: list[str] = []
+    for term in terms:
+        # Keep printable characters and inner spaces; drop control
+        # characters (newlines, NULs, tabs) and normalize whitespace runs.
+        safe = "".join(
+            ch for ch in term
+            if ch.isprintable() and (not ch.isspace() or ch == " ")
+        )
+        safe = " ".join(safe.split())[:_MAX_VOCAB_TERM_CHARS].strip()
+        if safe:
+            cleaned.append(safe)
+    prompt = " ".join(cleaned[:_MAX_VOCAB_TERMS])
+    if len(prompt) > _MAX_VOCAB_PROMPT_CHARS:
+        prompt = prompt[:_MAX_VOCAB_PROMPT_CHARS].rsplit(" ", 1)[0]
+    return prompt or None
+
 # faster-whisper size aliases -> HuggingFace repos (mirrors
 # faster_whisper.utils._MODELS for the sizes we document, without importing
 # ctranslate2 just to answer "is it cached?").
@@ -246,11 +291,20 @@ class Transcriber:
                 pass
         return " ".join(text.split())
 
-    def transcribe_in_memory(self, data: bytes, suffix: str = ".wav") -> str:
-        """Transcribes audio data in-memory without persisting raw audio to disk (D9)."""
+    def transcribe_in_memory(self, data: bytes, suffix: str = ".wav",
+                             language: Optional[str] = None,
+                             initial_prompt: Optional[str] = None) -> str:
+        """Transcribes audio data in-memory without persisting raw audio to disk (D9).
+
+        ``language`` and ``initial_prompt`` carry the live engine's D8
+        hints (app locale + technical vocabulary); both stay None on the
+        shared paths so the model call shape is unchanged for them.
+        """
         model = self._ensure_model()
         buf = io.BytesIO(data)
-        segments, _info = model.transcribe(buf, language=None)
+        segments, _info = model.transcribe(
+            buf, language=language, initial_prompt=initial_prompt
+        )
         text = " ".join(segment.text for segment in segments).strip()
         return " ".join(text.split())
 
@@ -367,13 +421,18 @@ class LiveTranscriber(Transcriber):
 
     # ── transcription with D13 degradation ──
 
-    def transcribe_in_memory(self, data: bytes, suffix: str = ".wav") -> str:
+    def transcribe_in_memory(self, data: bytes, suffix: str = ".wav",
+                             language: Optional[str] = None,
+                             initial_prompt: Optional[str] = None) -> str:
         """In-memory transcription (D9: the only live path), degrading
         once to the fallback when CUDA/OOM strikes mid-call and retrying
-        the same audio on it. A second OOM propagates — degradation is
-        exactly once."""
+        the same audio on it — with the D8 hints (app locale, technical
+        vocabulary) intact on the retry. A second OOM propagates —
+        degradation is exactly once."""
         try:
-            return super().transcribe_in_memory(data, suffix)
+            return super().transcribe_in_memory(
+                data, suffix, language=language, initial_prompt=initial_prompt
+            )
         except RuntimeError as exc:
             if not _is_cuda_oom_error(exc):
                 raise
@@ -382,7 +441,9 @@ class LiveTranscriber(Transcriber):
                     self._model = self._fallback_loader()
                     self._fallback_active = True
                     self.notice_reason = LIVE_NOTICE_OOM
-            return super().transcribe_in_memory(data, suffix)
+            return super().transcribe_in_memory(
+                data, suffix, language=language, initial_prompt=initial_prompt
+            )
 
 
 def _load_local_whisper(model_ref: str, settings: Settings):
@@ -429,6 +490,9 @@ def main(argv: Optional[list] = None) -> int:
             from .stt_engine import run_engine_pull
 
             return run_engine_pull()
+        if settings.stt_backend == "hub":
+            print("The hub manages its own STT model; no local model was downloaded.")
+            return 0
         transcriber = Transcriber(settings)
         name = settings.stt_model
         if transcriber.model_present():

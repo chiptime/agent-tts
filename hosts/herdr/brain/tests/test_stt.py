@@ -44,11 +44,15 @@ class FakeModel:
 
     last_path: str | None = None
     fail = False
+    last_language: str | None = None
+    last_initial_prompt: str | None = None
 
-    def transcribe(self, path, language=None):
+    def transcribe(self, path, language=None, initial_prompt=None):
         if FakeModel.fail:
             raise RuntimeError("decode failed")
         FakeModel.last_path = path
+        FakeModel.last_language = language
+        FakeModel.last_initial_prompt = initial_prompt
         return (
             iter([type("Seg", (), {"text": " el rebaño está en orden "})]),
             type("Info", (), {"language": "es"}),
@@ -436,7 +440,7 @@ class TestLiveTranscriber:
 
     def test_oom_at_transcribe_degrades_once_and_retries(self, settings, tmp_path):
         class OOMAtTranscribe:
-            def transcribe(self, path, language=None):
+            def transcribe(self, path, language=None, initial_prompt=None):
                 raise RuntimeError("CUDA error: out of memory during decode")
 
         loads = []
@@ -545,3 +549,80 @@ class TestCli:
         with pytest.raises(SystemExit) as exc:
             main([])
         assert exc.value.code != 0  # subcommand is required; no accidental pull
+
+
+class TestLiveStreamingHints:
+    """T3 (PRD-04/D8): the live socket forces the app locale on
+    transcription and passes an operator-editable technical-vocabulary
+    hint as the recognition prompt."""
+
+    def test_transcribe_in_memory_forwards_language_and_prompt(self, settings):
+        t = make_transcriber(settings)
+        t.transcribe_in_memory(b"fake-wav", language="es", initial_prompt="commit push")
+        assert FakeModel.last_language == "es"
+        assert FakeModel.last_initial_prompt == "commit push"
+
+    def test_transcribe_in_memory_defaults_unchanged(self, settings):
+        """Preserve: with no hints the model call keeps today's shape
+        (language=None, no prompt)."""
+        t = make_transcriber(settings)
+        t.transcribe_in_memory(b"fake-wav")
+        assert FakeModel.last_language is None
+        assert FakeModel.last_initial_prompt is None
+
+    def test_live_transcriber_forwards_hints_through_degradation(
+        self, settings, tmp_path
+    ):
+        """D13+D8: hints survive the OOM degrade-and-retry path."""
+        t = LiveTranscriber(
+            replace(settings, live_stt_model=str(
+                TestLiveTranscriber._local_model(tmp_path)
+            )),
+            loader=lambda: _OOMOnPurpose(),
+            fallback_loader=FakeModel,
+        )
+        out = t.transcribe_in_memory(b"fake-wav", language="en", initial_prompt="PR")
+        assert out == "el rebaño está en orden"
+        assert FakeModel.last_language == "en"
+        assert FakeModel.last_initial_prompt == "PR"
+
+    def test_default_vocabulary_hint(self, monkeypatch):
+        from herdr_brain.stt import live_vocabulary_hint
+
+        monkeypatch.delenv("HERDR_BRAIN_LIVE_STT_VOCABULARY", raising=False)
+        hint = live_vocabulary_hint()
+        assert hint is not None
+        for term in ("commit", "push", "PR", "rama", "herdr", "opencode"):
+            assert term in hint
+
+    def test_env_vocabulary_overrides_the_default(self, monkeypatch):
+        from herdr_brain.stt import live_vocabulary_hint
+
+        monkeypatch.setenv("HERDR_BRAIN_LIVE_STT_VOCABULARY", "k8s, deploy, staging")
+        assert live_vocabulary_hint() == "k8s deploy staging"
+
+    def test_empty_env_disables_the_hint(self, monkeypatch):
+        from herdr_brain.stt import live_vocabulary_hint
+
+        monkeypatch.setenv("HERDR_BRAIN_LIVE_STT_VOCABULARY", "   ,  ")
+        assert live_vocabulary_hint() is None
+
+    def test_vocabulary_hint_is_bounded_and_control_char_free(self, monkeypatch):
+        """Hostile or oversized vocabulary input can never blow up the
+        whisper prompt: bounded length, no newlines/control characters."""
+        from herdr_brain.stt import live_vocabulary_hint
+
+        monkeypatch.setenv(
+            "HERDR_BRAIN_LIVE_STT_VOCABULARY",
+            "ok\n" + "x" * 500 + "\t " + " ".join(["term"] * 400),
+        )
+        hint = live_vocabulary_hint()
+        assert hint is not None
+        assert len(hint) <= 300
+        assert "\n" not in hint
+        assert "\t" not in hint
+
+
+class _OOMOnPurpose:
+    def transcribe(self, path, language=None, initial_prompt=None):
+        raise RuntimeError("CUDA out of memory during decode")

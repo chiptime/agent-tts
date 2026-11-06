@@ -33,6 +33,19 @@
 (function () {
   var $ = function (id) { return document.getElementById(id); };
 
+  /* The build stamp THIS app.js was served with (?v=<build>); the footer
+   * is the fallback for an unstamped dev shell. The live diag reports it
+   * so a stale cached shell is visible in the journal instead of guessed. */
+  var servedBuild = (function () {
+    var src = "";
+    try { src = (document.currentScript && document.currentScript.src) || ""; } catch (err) {}
+    var match = /[?&]v=([A-Za-z0-9._\-]+)/.exec(src);
+    if (match && match[1]) return match[1];
+    var el = document.getElementById("app-version");
+    var text = el ? String(el.textContent || "").replace(/^v/, "") : "";
+    return text || "dev";
+  })();
+
   /* S4 i18n: es is the source locale (the default boot is
    * byte-identical to the pre-i18n UI); a missing runtime falls back
    * to the KEY so a broken load is loud, never silently Spanish in
@@ -212,11 +225,66 @@
     ? "navegador"
     : (storedVoice === "live" || storedVoice === "envivo" ? "live" : "servidor");
   var liveWs = null;
+  /* S6 (PRD-05 FR-01/FR-06/FR-07, T4): the server frames speech/silence
+   * with Silero and streams advisory opinions over the live socket. The
+   * client's energy VAD stays the endpointer and Silero gets ONE power:
+   * while its fresh opinion says "speech" it can DEFER an energy silence
+   * close, bounded (a heartbeat that stops refreshing, or a hold longer
+   * than SILERO_HOLD_MAX_MS, hands the close back to the energy windows).
+   * It can never close or shorten a turn, and the local semantic
+   * completion detector (FR-02/FR-03) is NOT part of this seam. The
+   * opinion survives hang-up on purpose so diagnostics can report the
+   * last negotiated VAD; every new live socket starts it over. */
+  var SILERO_OPINION_FRESH_MS = 2500;   // heartbeats arrive ~1/s
+  var SILERO_HOLD_MAX_MS = 12000;       // D6: tunable once measured on-device
+  var liveVadOpinion = { engine: null, reason: null, speech: false, at: 0 };
+  var liveQuietSince = null;            // energy VAD quiet streak start (ms)
   var liveWorkletNode = null;
+  /* ONE MediaStreamSource per call feeds the analyser AND every uplink
+   * arm. A second createMediaStreamSource() on the same MediaStream is
+   * the working hypothesis for the Android silent-stream defect (the
+   * analyser heard speech while the uplink streamed zeros), so arms
+   * never create their own. The worklet's output is pulled through a
+   * zero-gain GainNode into the destination (liveWorkletGain) so the
+   * graph keeps processing even where an unconnected worklet is not. */
+  var liveMediaSource = null;
+  var liveMediaSourceCtx = null;
+  var liveMediaSourceStream = null;
+  var liveWorkletGain = null;
   var liveSendBuf = null;
+  /* Level-only diagnostics (numbers, never audio): how many PCM frames
+   * the capture actually produced and how loud the analyser saw them.
+   * Reported to the server log so a silent phone uplink is measurable
+   * without a device inspector. */
+  var liveFramesPosted = 0;
+  var liveFramesSent = 0;
+  var liveSendFails = 0;
+  var liveMaxRms = 0;
+  var liveLastDiagAt = 0;
+  var liveCaptureMode = "";
+  /* L53: why the capture is on the ScriptProcessor path (or "" when the
+   * worklet is healthy). Reported in the 2 s diag, numbers/tokens only. */
+  var liveCaptureReason = "";
+  /* Worklet health watchdog: a loaded worklet that posts ZERO frames in
+   * ~1 s while its socket is OPEN is the 3,200-bytes-per-10-s Android
+   * defect; re-arm through the ScriptProcessor and keep the reason. */
+  var liveWorkletWatch = null;
+  var liveWorkletToken = null;
   var liveTurn = null;
   var liveMicBusy = false;
   var liveDispatchRouted = false;  // the live dispatch reached routeUtterance (B1)
+  /* S7 (PRD-05/D10, T4): speech resuming after the turn closed but
+   * BEFORE the answer starts rejoins the SAME turn. Null = no rejoin
+   * window. "watch": the turn closed (transcribe requested or its /ask
+   * in flight) and the live VAD loop watches for resumed speech;
+   * "resumed": a resume was detected — the in-flight ask is cancelled
+   * and the resumed utterance records; its transcript dispatches the
+   * WHOLE utterance once (StreamUplink.LiveRejoinText accumulates the
+   * text). The window dies the moment the answer starts (audio, gate
+   * or failure) or the capture tears down — speech during playback is
+   * barge-in, owned by PRD-07 (milestone 2). */
+  var liveRejoin = null;
+  var liveTracker = null;          // T3: LiveTranscriptTracker for the current utterance
   /* Android's Web Speech plays the system earcon on every recognizer
    * start() and ends a session at each short pause, so a plain restart
    * loop beeps nonstop while the user is quiet. With the Browser engine
@@ -517,7 +585,9 @@
 
   /* Interim strip (FR8) — engine-dependent, lives at the drawer top:
    * navegador -> live interim text; servidor -> recording indicator +
-   * level meter + elapsed utterance time (never simulated text).
+   * level meter + elapsed utterance time (never simulated text); live
+   * (T3/PRD-04) -> the level meter AND the streamed partial text once
+   * the first partial arrives (real transcription, never simulated).
    * "confirming" renders like listening: the mic stays live, only the
    * dispatch routing changes (approval resolve instead of /ask). */
   function renderInterimStrip() {
@@ -525,7 +595,9 @@
     var st = callState;
     var browser = voiceEngine === "navegador";
     var micOn = st === "listening" || st === "confirming";
-    interimTextEl.classList.toggle("hidden", !(active && browser && micOn));
+    var liveText = voiceEngine === "live" && !!interimTextEl.textContent &&
+      (micOn || st === "recording");
+    interimTextEl.classList.toggle("hidden", !(active && ((browser && micOn) || liveText)));
     var meterOn = active && !browser && (micOn || st === "recording");
     recMeterEl.classList.toggle("hidden", !meterOn);
     var status = "";
@@ -1245,6 +1317,22 @@
     if (ghost) ghost.remove();
     conv.appendChild(buildTurnEl(role, text, ts));
     conv.scrollTop = conv.scrollHeight;
+  }
+
+  /* S7 (PRD-05/D10): a rejoined turn re-dispatches the WHOLE utterance
+   * after its first segment already rendered a user bubble — the whole
+   * text REPLACES that bubble instead of stacking a duplicate turn.
+   * Returns false when there is no prior user bubble (the caller falls
+   * back to a plain addTurn). */
+  function replaceLastUserTurn(text) {
+    var turns = conv.querySelectorAll(".turn.user");
+    var last = turns.length ? turns[turns.length - 1] : null;
+    if (!last) return false;
+    var body = last.children.length > 1 ? last.children[1] : null;
+    if (!body) return false;
+    body.textContent = text;
+    conv.scrollTop = conv.scrollHeight;
+    return true;
   }
 
   function showThinkingBubble() {
@@ -3891,6 +3979,7 @@
       "textMode:         " + textMode,
       "escuchando desde: " + (listeningStartedAt ? new Date(listeningStartedAt).toLocaleTimeString() : "—"),
       "ruido de sala:    " + (vad ? vad.floor().toFixed(4) : "—"),
+      "vad framing:      " + liveVadDiagValue(),
       "barge-in:         " + (bargeInTick ? (bargeInVad && bargeInVad.hasSpeech() ? "speech" : "armed") : "off") +
         " (AEC " + (captureAecEnabled() ? "on" : "off") + ")",
       "errores recon.:   " + recFailures + " (último: " + lastRecError + ")",
@@ -4681,12 +4770,14 @@
     // call micless while the state expects listening. Re-arm when
     // nothing else owns the mic; startListening is single-flight, and
     // a pending scheduled restart keeps its own backoff.
-    // BROWSER ENGINE ONLY: the server engine (v2) keeps its own
-    // per-utterance lifecycle and never sets the v1 `listening` flag —
-    // a watchdog tick here would re-arm it mid-cycle, resetting
-    // recorderChunks and stacking a second MediaRecorder on the stream
-    // (empty/corrupt webm -> "Invalid data" at /transcribe).
-    if (voiceEngine !== "servidor" &&
+    // NAVEGADOR ENGINE ONLY: servidor (v2) and the live engine keep
+    // their own per-utterance/socket lifecycle and never set the v1
+    // `listening` flag — a watchdog tick here would re-arm them
+    // mid-cycle: servidor stacks a second MediaRecorder on the stream
+    // (empty/corrupt webm -> "Invalid data" at /transcribe), and live
+    // stacks a second /call/stream socket, leaking the first (D9:
+    // one streaming connection per call).
+    if (voiceEngine === "navegador" &&
         inCall && !audioBusy && !dispatching && !manualStop && !textMode &&
         !listening && !recRestartTimer &&
         (callState === "listening" || callState === "confirming")) {
@@ -4971,21 +5062,46 @@
    * clobbered by an older turn's cleanup. */
   var askAbort = null;
 
-  function ask(text) {
+  function ask(text, opts) {
+    opts = opts || {};
     if (callState === "thinking") return Promise.resolve();
     cancelGlanceTap();
     if (karaokeCtl.state().plan) karaokeCtl.stop();
     askCount += 1;
     lastDispatch = text;
-    addTurn("user", text);
+    /* S7 (PRD-05/D10): a live-engine dispatch keeps the streaming
+     * capture ARMED through thinking — the rejoin watch (armed at the
+     * turn close) listens for resumed speech until this ask resolves.
+     * Every other engine (and a live socket already gone, e.g. after a
+     * fallback) stops listening exactly as before: the mic must not
+     * hear the answer. */
+    var keepLiveCapture = !!(opts.liveRejoin && voiceEngine === "live" &&
+      inCall && liveWs);
+    /* S7: a rejoined re-dispatch replaces its first segment's user
+     * bubble — the whole utterance renders as ONE turn. */
+    if (opts.replaceUserTurn && replaceLastUserTurn(text)) {
+      var ghost0 = document.getElementById("ghost-bubble");
+      if (ghost0) ghost0.remove();
+    } else {
+      addTurn("user", text);
+    }
     showThinkingBubble();
     setCallState("thinking");
-    stopListening();  // the mic must not hear the answer
+    if (!keepLiveCapture) stopListening();  // the mic must not hear the answer
     /* Identity BEFORE /ask: the request is synchronous, so an id minted by
      * the server would arrive too late to cancel mid-render. null (no
      * crypto) keeps the legacy path untouched. */
     var speech = speechCtl.begin(sessionId) || {};
     if (inCall && speech.speech_request_id) speech.conversation = true;
+    /* S7: the window closes the moment this ask resolves (answer, gate
+     * or failure) — the capture must be down before any answer audio
+     * can play (echo) and the next arm must not leak this socket
+     * (L12). A SUPERSEDED ask (a resume is already recording the same
+     * turn) leaves the capture to the rejoined utterance. */
+    var endRejoin = function () {
+      if (liveRejoin && liveRejoin.phase === "resumed") return;
+      endLiveRejoinCapture();
+    };
     /* This turn's abort token: injected into the ONE /ask fetch through
      * the Consult.requestAsk seam (it owns the wire shape; the injected
      * fetch adds only the signal). */
@@ -5002,24 +5118,39 @@
      * while the server was still working, losing completed answers.
      * The speech identity rides along as an optional, additive field. */
     return window.Consult.requestAsk(askFetch, {
-      text: text,
-      sessionId: sessionId,
-      paneId: selectedPane,
-      speech: speech
-    })      .then(function (resp) {
+        text: text,
+        sessionId: sessionId,
+        paneId: selectedPane,
+        speech: speech
+      })      .then(function (resp) {
+        /* S7 race: a resume aborted this ask but the response still
+         * landed — a stale answer must never render, own playback or
+         * repaint the call (the resumed recording owns it). */
+        if (myAbort.signal.aborted) {
+          speechCtl.release(speech.speech_request_id);
+          return;
+        }
         if (resp.status === 503) {
+          endRejoin();
           removeThinkingBubble();
           speechCtl.release(speech.speech_request_id);
           showBanner(t("brain.not_configured"));
           return;
         }
         if (!resp.ok) {
+          endRejoin();
           removeThinkingBubble();
           speechCtl.release(speech.speech_request_id);
           showBanner(t("brain.ask_failed", { status: resp.status }));
           return;
         }
         return resp.json().then(function (data) {
+          if (myAbort.signal.aborted) {
+            /* The abort raced the body read: same discard. */
+            speechCtl.release(speech.speech_request_id);
+            return;
+          }
+          endRejoin();
           removeThinkingBubble();
           if (data.switch_pane) applyVoiceSwitch(data.switch_pane);
           addTurn("brain", data.answer || "(respuesta vacía)");
@@ -5059,11 +5190,17 @@
       })
       .catch(function (err) {
         removeThinkingBubble();
+        var aborted = !!(err && err.name === "AbortError");
+        /* S7: only a real failure closes the rejoin window here — an
+         * abort means barge-in (servidor) or a resume (live) already
+         * owns the capture. */
+        if (!aborted) endRejoin();
         speechCtl.release(speech.speech_request_id);
-        if (err && err.name === "AbortError") {
-          /* A deliberate abort (barge-in killed this turn): silent by
-           * design — the barge-in recovery already owns the call state,
-           * and a stale fetch must never repaint it. */
+        if (aborted) {
+          /* A deliberate abort (barge-in or an S7 resume killed this
+           * turn): silent by design — the recovery that aborted it
+           * already owns the call state, and a stale fetch must never
+           * repaint it. */
           return;
         }
         if (err && /timeout/.test(String(err.message || err))) {
@@ -5075,8 +5212,12 @@
       .then(function () {
         removeThinkingBubble();
         if (askAbort === myAbort) askAbort = null;
-        interimTextEl.textContent = "";
-        renderInterimStrip();
+        /* S7: while a resumed utterance records, its partials own the
+         * strip — this (possibly aborted) ask must not clear them. */
+        if (!(liveRejoin && liveRejoin.phase === "resumed")) {
+          interimTextEl.textContent = "";
+          renderInterimStrip();
+        }
         // A barge-in moved the call on (listening/recording): its own
         // recovery owns the mic; this stale finalizer must not restart it.
         if (callState === "thinking") afterAnswer();
@@ -5117,12 +5258,12 @@
    * the utterance is dropped with an honest notice — never dispatched
    * against a possibly-stale target. The mic resumes normally; the
    * user simply speaks again. */
-  function routeUtterance(text) {
+  function routeUtterance(text, opts) {
     return liveContextBarrier().then(
       function () {
         if (!inCall) return undefined;  // hung up during the barrier: drop it
         if (approvalFlow.routeUtterance(text)) return undefined;
-        return ask(text);
+        return ask(text, opts);
       },
       function () {
         showBanner(t("brain.context_failed"));
@@ -5891,13 +6032,80 @@
     }
   }
 
+  /* L53: the live engine's analyser AND AudioWorkletNode only produce
+   * anything while the AudioContext is actually running, and Android
+   * creates it suspended when it is not inside the tap gesture. Create
+   * and resume it in the call-start click (startCall) / every re-arm,
+   * then VERIFY the state before declaring the mic armed. Never a
+   * silently deaf live call. */
+  function primeLiveAudioContext() {
+    var Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return null;
+    if (!audioContext || audioContext.state === "closed") {
+      try { audioContext = new Ctx(); } catch (err) { audioContext = null; return null; }
+    }
+    if (audioContext.state !== "running" && typeof audioContext.resume === "function") {
+      try { audioContext.resume(); } catch (err) { /* checked below */ }
+    }
+    return audioContext;
+  }
+
+  function ensureLiveAudioRunning() {
+    var ctx = primeLiveAudioContext();
+    if (!ctx) return Promise.resolve(false);
+    if (ctx.state === "running") return Promise.resolve(true);
+    if (typeof ctx.resume !== "function") return Promise.resolve(false);
+    return Promise.resolve().then(function () {
+      return ctx.resume();
+    }).then(function () {
+      return ctx.state === "running";
+    }).catch(function () {
+      return false;
+    });
+  }
+
+  /* The call's single MediaStreamSource (see liveMediaSource). Created on
+   * first use for the CURRENT audioContext + mediaStream; a source that
+   * belongs to a previous context/stream is never reused. */
+  function ensureLiveMediaSource() {
+    if (liveMediaSource &&
+        liveMediaSourceCtx === audioContext &&
+        liveMediaSourceStream === mediaStream) {
+      return liveMediaSource;
+    }
+    liveMediaSource = audioContext.createMediaStreamSource(mediaStream);
+    liveMediaSourceCtx = audioContext;
+    liveMediaSourceStream = mediaStream;
+    return liveMediaSource;
+  }
+
+  /* Detach the current uplink node (AudioWorkletNode or ScriptProcessor)
+   * and its pull gain from the graph. The shared source stays alive. */
+  function disposeLiveCapture() {
+    if (liveWorkletWatch) { clearTimeout(liveWorkletWatch); liveWorkletWatch = null; }
+    liveWorkletToken = null;
+    var node = liveWorkletNode;
+    var gain = liveWorkletGain;
+    liveWorkletNode = null;
+    liveWorkletGain = null;
+    if (node) {
+      try { node.onaudioprocess = null; } catch (err) { /* noop */ }
+      try { if (node.port) node.port.onmessage = null; } catch (err) { /* noop */ }
+      if (liveMediaSource) {
+        try { liveMediaSource.disconnect(node); } catch (err) { /* not connected */ }
+      }
+      try { node.disconnect(); } catch (err) { /* noop */ }
+    }
+    if (gain) {
+      try { gain.disconnect(); } catch (err) { /* noop */ }
+    }
+  }
+
   function stopLiveListening() {
     manualStop = true;
     releaseVadLoopOnly();
-    if (liveWorkletNode) {
-      try { liveWorkletNode.disconnect(); } catch (err) { /* noop */ }
-      liveWorkletNode = null;
-    }
+    liveRejoin = null;  // S7: the rejoin window dies with the capture
+    disposeLiveCapture();
     if (liveWs) {
       try {
         liveWs.onopen = null;
@@ -5910,6 +6118,9 @@
     }
     if (liveSendBuf) liveSendBuf.clear();
     liveTurn = null;
+    liveTracker = null;  // T3: the streaming display state dies with the socket
+    interimTextEl.textContent = "";
+    renderInterimStrip();
     liveDispatchRouted = false;
     liveMicBusy = false;
     vad = null;
@@ -5917,6 +6128,76 @@
 
   function teardownLiveCall() {
     stopLiveListening();
+    // The call is over (its AudioContext is closed): drop the source.
+    liveMediaSource = null;
+    liveMediaSourceCtx = null;
+    liveMediaSourceStream = null;
+  }
+
+  /* S7 (PRD-05/D10, T4): the rejoin primitives. endLiveRejoinCapture
+   * closes the window AND the live capture — called when the answer
+   * starts (audio, gate or failure) or any playback takes the call,
+   * so the mic never hears the agent and the next arm cannot leak this
+   * socket (L12). beginLiveRejoin consumes a resume detected inside the
+   * window: the in-flight ask is cancelled and the resumed speech
+   * records as the continuation of the SAME turn. */
+  function endLiveRejoinCapture() {
+    liveRejoin = null;
+    if (voiceEngine === "live") stopLiveListening();
+  }
+
+  function beginLiveRejoin() {
+    if (!liveRejoin || liveRejoin.phase !== "watch") return;
+    liveRejoin.phase = "resumed";
+    if (callState === "thinking" && askAbort) {
+      /* Cancel the in-flight ask exactly like barge-in kills a turn
+       * (FR-05): the fetch dies, and a response that still lands is
+       * discarded by ask's aborted guard. The speech identity is
+       * released by ask's own catch — no server cancel is posted from
+       * here: during thinking nothing of this turn ever reached the
+       * client (nothing can play), and cancelling a job the server may
+       * not have minted yet would only surface refusal banners on a
+       * normal resume. */
+      askAbort.abort();
+      var jobId = speechCtl.activeId();
+      if (jobId) Speech.purgeQueueById(audioQueue, jobId);
+      removeThinkingBubble();
+    }
+    /* The resumed utterance opens a NEW dispatch cycle: a socket drop
+     * from here must surface the lost phrase (B1), and partials must
+     * render again (they are gated on !dispatching). */
+    liveDispatchRouted = false;
+    dispatching = false;
+    liveTurn = { onsetAt: Date.now(), speaking: true };
+    liveQuietSince = null;
+    if (liveTracker) liveTracker.reset();
+    utteranceStartedAt = Date.now();
+    setCallState("recording");
+    sendLiveStreamControl("start");
+  }
+
+  /* L13/D13: server notice reasons are UNTRUSTED tokens — only the known
+   * degradation reasons map to their own localized wording; anything else
+   * renders the generic safe notice. Raw server strings never reach the
+   * UI. A notice is informational only: no engine switch, no call
+   * interruption (the engine switch belongs to fallbackToServidor,
+   * driven by socket errors alone). live_audio_gap (L16) reuses the
+   * existing turn-gap wording: part of the turn could not be
+   * transcribed (the stream's bounded buffer dropped audio faster than
+   * inference covered it) — please repeat it. Still informational: the
+   * call and socket continue. */
+  var LIVE_NOTICE_BANNERS = {
+    "live_stt_fallback_oom": "voice.live_fallback_oom",
+    "live_stt_fallback_model_absent": "voice.live_fallback_model_absent",
+    "live_audio_gap": "voice.turn_gap"
+  };
+
+  function showLiveSttNotice(reason) {
+    var key = typeof reason === "string" &&
+      Object.prototype.hasOwnProperty.call(LIVE_NOTICE_BANNERS, reason)
+      ? LIVE_NOTICE_BANNERS[reason]
+      : "voice.live_fallback_generic";
+    showBanner(t(key));
   }
 
   function fallbackToServidor(noticeKey) {
@@ -5928,17 +6209,134 @@
      * routeUtterance completes on its own; afterAnswer() then re-arms
      * the (now Servidor) mic when the answer finishes. */
     var lostLiveUtterance = dispatching && !liveDispatchRouted;
+    /* S7: a resume already cancelled the ask and its words live in the
+     * recording — the rejoined turn is un-routed exactly like a pending
+     * transcript: surface it, never drop it silently. */
+    var rejoinRecording = !!(liveRejoin && liveRejoin.phase === "resumed");
     stopLiveListening();
     voiceEngine = "servidor";
     renderVoiceEngine();
-    showBanner(t(lostLiveUtterance
+    showBanner(t(lostLiveUtterance || rejoinRecording
       ? "voice.stream_utterance_lost"
       : (noticeKey || "voice.stream_fallback")));
-    if (lostLiveUtterance) dispatching = false;
+    if (lostLiveUtterance || rejoinRecording) dispatching = false;
     if (callState === "listening" || callState === "recording" || callState === "transcribing" || callState === "confirming") {
       setCallState(micBaseState());
       startServerListening();
     }
+  }
+
+  /* L53: the live mic could not be opened. Keep the engine as Servidor
+   * (so Resume retries with the engine that still works) but do NOT
+   * auto-arm it: its own getUserMedia would immediately overwrite the
+   * DISTINCT live banner with the generic one. Permission denial keeps
+   * the historical Micrófono BLOQUEADO + keyboard semantics. */
+  function leaveLiveForServidorPaused() {
+    stopLiveListening();
+    manualStop = false;  // the call continues; a later live arm may fall back
+    voiceEngine = "servidor";
+    renderVoiceEngine();
+    if (callState !== "idle" && callState !== "paused") setCallState("paused");
+  }
+
+  function liveMicFailed(err) {
+    liveMicBusy = false;
+    var name = err && err.name ? err.name : "";
+    leaveLiveForServidorPaused();
+    if (name === "NotAllowedError" || name === "SecurityError") {
+      showBanner(t("voice.blocked"));
+      enterTextMode(t("voice.keyboard_fallback"));
+    } else if (name === "NotFoundError" || name === "NotReadableError") {
+      showBanner(t("voice.live_mic_not_found"));
+    } else {
+      showBanner(t("voice.live_mic_failed", { name: name || "error" }));
+    }
+  }
+
+  /* navigator.mediaDevices itself is missing: no engine can open a mic.
+   * A DISTINCT banner (not the socket-fallback wording) and the keyboard,
+   * never a live call that would silently hear nothing. */
+  function liveMicUnavailable() {
+    liveMicBusy = false;
+    leaveLiveForServidorPaused();
+    showBanner(t("voice.live_mic_unavailable"));
+    if (!serverEngineSupported()) enterTextMode(t("voice.no_stt"));
+  }
+
+  /* S6 (FR-06): fold one server framing message into the advisory
+   * opinion. Untrusted input — only the known shapes change state, and a
+   * runtime "unavailable" downgrades to the energy fallback for the rest
+   * of the socket (never claims silero it no longer has). */
+  function resetLiveVadOpinion() {
+    liveVadOpinion = { engine: null, reason: null, speech: false, at: 0 };
+    liveQuietSince = null;
+  }
+
+  function onLiveVadMessage(data) {
+    if (data.type === "vad_status") {
+      liveVadOpinion = {
+        engine: data.engine === "silero" ? "silero" : "energy",
+        reason: typeof data.reason === "string" ? data.reason : null,
+        speech: false,
+        at: Date.now()
+      };
+      voiceTimelinePush("vad:" + liveVadOpinion.engine, "");
+      return;
+    }
+    if (liveVadOpinion.engine !== "silero") return;
+    if (data.event === "speech_start" || (data.event === "heartbeat" && data.speech === true)) {
+      liveVadOpinion.speech = true;
+      liveVadOpinion.at = Date.now();
+    } else if (data.event === "speech_end") {
+      liveVadOpinion.speech = false;
+      liveVadOpinion.at = Date.now();
+    } else if (data.event === "unavailable") {
+      liveVadOpinion = { engine: "energy", reason: "runtime_failed", speech: false, at: Date.now() };
+      voiceTimelinePush("vad:energy", "runtime");
+    }
+  }
+
+  /* True when an energy SILENCE close should wait for Silero (D3: never
+   * cut the speaker). Never when the energy VAD is still loud (nothing
+   * to defer; the cap must reach shouldFinalize), past the hold bound,
+   * or near the pathological utterance cap (FR-07 passes through). */
+  function sileroDefersClose() {
+    if (liveVadOpinion.engine !== "silero" || !liveVadOpinion.speech) return false;
+    var now = Date.now();
+    if (now - liveVadOpinion.at > SILERO_OPINION_FRESH_MS) return false;
+    if (liveQuietSince === null || now - liveQuietSince >= SILERO_HOLD_MAX_MS) return false;
+    if (liveTurn && liveTurn.onsetAt && now - liveTurn.onsetAt >= VOICE_UTTERANCE_CAP_MS - SILERO_HOLD_MAX_MS) {
+      return false;
+    }
+    return true;
+  }
+
+  function liveVadDiagValue() {
+    var o = liveVadOpinion;
+    if (o.engine === "silero") {
+      return t("diag.vad_silero") + (liveWs ? "" : " " + t("diag.vad_last_call"));
+    }
+    if (o.engine === "energy") {
+      var why = {
+        silero_vad_no_runtime: "diag.vad_reason_runtime",
+        silero_vad_model_missing: "diag.vad_reason_model",
+        silero_vad_load_failed: "diag.vad_reason_load",
+        runtime_failed: "diag.vad_reason_failed"
+      }[o.reason];
+      return t("diag.vad_energy") + (why ? " — " + t(why) : "") + (liveWs ? "" : " " + t("diag.vad_last_call"));
+    }
+    if (liveWs) return t("diag.vad_negotiating");
+    return voiceEngine === "live" ? t("diag.vad_energy") : "—";
+  }
+
+  /* T3 (PRD-04): utterance gating for the server-side partial loop —
+   * "start" at VAD onset, "stop" at the silence close. Both are advisory
+   * controls on the same socket; a dead socket swallows them silently
+   * (the server's own session state is per-connection). */
+  function sendLiveStreamControl(action) {
+    if (!liveWs || liveWs.readyState !== WebSocket.OPEN) return;
+    try { liveWs.send(JSON.stringify({ type: "stream", action: action })); }
+    catch (err) { /* socket died mid-send */ }
   }
 
   /* A1 (PRD-03 FR-03): while the socket is OPEN, ws.bufferedAmount is
@@ -5955,15 +6353,21 @@
     if (liveSendBuf && liveSendBuf.length() > 0) {
       var queued = liveSendBuf.flush();
       for (var i = 0; i < queued.length; i++) {
-        try { liveWs.send(queued[i]); } catch (err) { break; }
+        try { liveWs.send(queued[i]); liveFramesSent += 1; } catch (err) { liveSendFails += 1; break; }
       }
     }
-    try { liveWs.send(frame); } catch (err) { /* socket died mid-send */ }
+    try { liveWs.send(frame); liveFramesSent += 1; } catch (err) { liveSendFails += 1; /* socket died mid-send */ }
   }
 
   function startLiveListening() {
     if (textMode || dispatching || liveMicBusy) return;
     if (callState !== "listening" && callState !== "confirming") return;
+    /* L53: navigator.mediaDevices missing is a DISTINCT failure from a
+     * permission/hardware error and from an engine-capability miss. */
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      liveMicUnavailable();
+      return;
+    }
     if (!liveEngineSupported()) {
       showBanner(t("voice.live_missing"));
       fallbackToServidor();
@@ -5971,6 +6375,9 @@
     }
     liveMicBusy = true;
     listeningStartedAt = Date.now();
+    /* Fresh call: the gesture already ran in startCall. Re-arm/engine
+     * switch: resume here (a running context is a no-op). */
+    primeLiveAudioContext();
 
     var protocol = location.protocol === "https:" ? "wss:" : "ws:";
     var wsUrl = protocol + "//" + location.host + "/call/stream";
@@ -5984,13 +6391,33 @@
       return;
     }
     liveWs = ws;
+    resetLiveVadOpinion();  // S6: a new socket negotiates its own framing
     liveSendBuf = window.StreamUplink ? new window.StreamUplink.BoundedSendBuffer({ maxFrames: 20 }) : null;
+    liveFramesPosted = 0;
+    liveFramesSent = 0;
+    liveSendFails = 0;
+    liveMaxRms = 0;
+    liveLastDiagAt = 0;
+    liveCaptureMode = "";
+    liveCaptureReason = "";
 
     ws.onopen = function () {
       var token = "";
       try { token = localStorage.getItem("herdr_brain_device_token") || ""; } catch (e) {}
+      /* D8 (T3): publish the app locale with the auth message — the
+       * socket forces the transcription language to it. Same accessor
+       * the navegador engine uses for its recognition language. */
+      var locale = "es";
       try {
-        ws.send(JSON.stringify({ type: "auth", token: token }));
+        if (window.I18N && typeof window.I18N.getLocale === "function") {
+          locale = window.I18N.getLocale() || "es";
+        }
+      } catch (e) { /* keep the default */ }
+      try {
+        /* S6: opt into server-side Silero framing. Servers that predate
+         * it ignore the field and never send vad messages — the energy
+         * endpointer then runs exactly as before. */
+        ws.send(JSON.stringify({ type: "auth", token: token, locale: locale, vad: true }));
       } catch (e) {
         fallbackToServidor();
         return;
@@ -6023,17 +6450,95 @@
         fallbackToServidor("voice.stream_error");
         return;
       }
-      if (data && (data.type === "transcript" || data.type === "final")) {
+      if (data && (data.type === "vad_status" || data.type === "vad")) {
+        onLiveVadMessage(data);  // S6: advisory framing, never a dispatch
+        return;
+      }
+      if (data && data.type === "notice") {
+        /* L13: the live model degraded (D13) — a visible localized
+         * banner only; the engine, the socket and the call continue
+         * untouched. */
+        showLiveSttNotice(data.reason);
+        return;
+      }
+      if (data && data.type === "partial") {
+        /* T3 (PRD-04/S5): live partial text while speaking — display
+         * only. A partial NEVER dispatches /ask (AC4) and is ignored
+         * while a dispatch is routing (a late partial must not repaint
+         * the strip the transcript already closed). */
+        if (liveTracker && !dispatching &&
+            (callState === "recording" || callState === "listening" || callState === "confirming")) {
+          interimTextEl.textContent = liveTracker.onPartial(data.text);
+          renderInterimStrip();
+        }
+        return;
+      }
+      if (data && data.type === "final") {
+        /* T3 (PRD-04/FR-02/FR-04): a stable, locally-agreed prefix.
+         * Display-level only — the turn-end transcript message stays the
+         * ONE dispatch source, so finals join the voice turn path exactly
+         * once (never per final). */
+        if (liveTracker && !dispatching &&
+            (callState === "recording" || callState === "listening" || callState === "confirming")) {
+          interimTextEl.textContent = liveTracker.onFinal(data.text);
+          renderInterimStrip();
+        }
+        return;
+      }
+      if (data && data.type === "transcript") {
         var text = (data.text || "").trim();
+        /* T3: the turn is over — drop the streaming display state so a
+         * late message of the finished utterance can never bleed into
+         * the next one. */
+        if (liveTracker) liveTracker.reset();
+        /* S7 (PRD-05/D10): transcripts of a rejoined turn.
+         * While the resumed speech is STILL RECORDING (phase
+         * "resumed"), a transcript is an earlier segment of the SAME
+         * turn — accumulate it, never dispatch. At the resumed close
+         * (routed: an earlier segment already dispatched), the
+         * transcript merges into the WHOLE utterance and dispatches
+         * exactly once; a fresh turn's transcript just dispatches, and
+         * a later resume joins onto its text. */
+        if (liveRejoin && liveRejoin.phase === "resumed" && liveRejoin.text) {
+          if (liveRejoin.routed || liveRejoin.text.segmentOne !== null) {
+            liveRejoin.text.rejoin(text);
+          } else {
+            liveRejoin.text.holdSegmentOne(text);
+          }
+          return;  // still recording the resumed speech
+        }
+        if (liveRejoin && liveRejoin.text &&
+            (liveRejoin.routed || liveRejoin.text.segmentOne !== null)) {
+          text = liveRejoin.text.rejoin(text);  // the resumed close: the WHOLE utterance
+        } else if (liveRejoin && liveRejoin.text) {
+          liveRejoin.text.base(text);
+        }
         if (text) {
           liveDispatchRouted = true;  // B1: this utterance completed
-          routeUtterance(text).then(function () {
+          /* S7: when an earlier segment of this turn already dispatched
+           * (its ask was cancelled by the resume), the whole text
+           * REPLACES that segment's user bubble — one turn, no stack. */
+          var replaceTurn = !!(liveRejoin && liveRejoin.routed);
+          if (liveRejoin) liveRejoin.routed = true;
+          routeUtterance(text, { liveRejoin: true, replaceUserTurn: replaceTurn }).then(function () {
+            /* S7: when a resume already cancelled this ask, the resumed
+             * recording owns the call — this stale completion must not
+             * clear its strip or re-arm anything. */
+            if (liveRejoin && liveRejoin.phase === "resumed") return;
             dispatching = false;
             interimTextEl.textContent = "";
             renderInterimStrip();
+            if (callState === "transcribing") {
+              /* No ask ever ran for this transcript (context barrier
+               * failed or a gate consumed the text): close the rejoin
+               * watch before re-arming, or the next arm leaks this
+               * still-open socket (L12). */
+              stopLiveListening();
+            }
             if (callState !== "speaking" && callState !== "paused" && callState !== "idle") afterAnswer();
           });
         } else {
+          endLiveRejoinCapture();  // S7: the window dies with this failed turn
           dispatching = false;
           showBanner(t("voice.not_understood"));
           afterAnswer();
@@ -6041,31 +6546,91 @@
       }
     };
 
+    /* L53 health: a worklet can load and connect yet post nothing (the
+     * Android 3,200-bytes-per-10-s class). Where an actual worklet
+     * exists, ~1 s of an OPEN socket with zero new frames re-arms the
+     * ScriptProcessor path and records WHY in the diag. */
+    function scheduleLiveWorkletHealth(source) {
+      if (liveWorkletWatch) { clearTimeout(liveWorkletWatch); liveWorkletWatch = null; }
+      var token = {};
+      var baseline = liveFramesPosted;
+      var checks = 0;
+      liveWorkletToken = token;
+      var tick = function () {
+        liveWorkletWatch = null;
+        if (liveWorkletToken !== token) return;
+        if (!liveWs || liveWs !== ws || !inCall || voiceEngine !== "live") return;
+        /* A 100 ms worklet should deliver ~10 frames per second. The
+         * device defect left ~2 frames in TEN seconds, so "not even a
+         * few frames" is the signal, not a strict zero. */
+        if (liveFramesPosted - baseline >= 3) return;
+        if (liveWs.readyState !== WebSocket.OPEN) {
+          // The socket may still be connecting; a deaf worklet is only
+          // provable once the uplink exists. Bounded retry.
+          checks += 1;
+          if (checks <= 4) liveWorkletWatch = setTimeout(tick, 1000);
+          return;
+        }
+        liveWorkletToken = null;
+        liveCaptureReason = "worklet_no_frames";
+        try { setupLiveScriptProcessor(source); } catch (err) { /* keep worklet */ }
+      };
+      liveWorkletWatch = setTimeout(tick, 1000);
+    }
+
     var armLiveUtterance = function () {
       if (!vad) vad = window.Vad.createVad(SERVER_VOICE_OPTIONS);
       else vad.reset();
       liveTurn = { onsetAt: null, speaking: false };
+      liveTracker = window.StreamUplink && window.StreamUplink.LiveTranscriptTracker
+        ? new window.StreamUplink.LiveTranscriptTracker()
+        : null;
 
       if (audioContext && mediaStream) {
+        var source = null;
         try {
-          var source = audioContext.createMediaStreamSource(mediaStream);
+          disposeLiveCapture();  // a re-arm never stacks a second uplink node
+          // The call's ONE source — shared with the analyser, never a new one.
+          source = ensureLiveMediaSource();
           if (audioContext.audioWorklet && typeof AudioWorkletNode !== "undefined") {
-            audioContext.audioWorklet.addModule("/stream-worklet.js").then(function () {
-              if (!liveWs) return;
+            /* L53: stamp the worklet with the build app.js was served
+             * with. It is loaded by URL (never referenced by the index),
+             * so a bare URL could be served cache-first from an older
+             * build; the stamp makes a stale processor impossible. */
+            var workletUrl = "/stream-worklet.js?v=" + encodeURIComponent(servedBuild);
+            audioContext.audioWorklet.addModule(workletUrl).then(function () {
+              if (!liveWs || liveWs !== ws) return;  // the arm was torn down while loading
+              disposeLiveCapture();
               var workletNode = new AudioWorkletNode(audioContext, "stream-audio-processor");
+              // Standard pull guarantee: worklet -> zero-gain -> destination
+              // (silent; the processor writes no output).
+              var pullGain = audioContext.createGain();
+              pullGain.gain.value = 0;
               liveWorkletNode = workletNode;
+              liveWorkletGain = pullGain;
               source.connect(workletNode);
+              workletNode.connect(pullGain);
+              pullGain.connect(audioContext.destination);
               workletNode.port.onmessage = function (event) {
+                liveCaptureMode = "worklet";
+                liveFramesPosted += 1;
                 sendLiveFrame(event.data);
               };
+              scheduleLiveWorkletHealth(source);
             }).catch(function () {
+              if (!liveWs || liveWs !== ws) return;
+              liveCaptureReason = "worklet_load_failed";
               setupLiveScriptProcessor(source);
             });
           } else {
+            liveCaptureReason = "no_audioworklet";
             setupLiveScriptProcessor(source);
           }
         } catch (e) {
-          // fallback
+          if (source) {
+            liveCaptureReason = "worklet_setup_failed";
+            try { setupLiveScriptProcessor(source); } catch (err) { /* no capture */ }
+          }
         }
       }
 
@@ -6073,18 +6638,93 @@
       vadTick = setInterval(function () {
         if (!vad) return;
         var rms = frameRms();
+        if (rms > liveMaxRms) liveMaxRms = rms;
         var speaking = vad.push(rms);
         updateRecMeter(rms);
+        /* Level-only uplink diagnostics: every ~2 s while the live
+         * engine owns the mic, tell the server whether the graph is
+         * actually running, how many frames the capture produced vs
+         * sent, which capture path is live and how loud the analyser
+         * heard the mic (numbers/tokens only — never audio or text). */
+        if (liveWs && liveWs.readyState === WebSocket.OPEN &&
+            voiceEngine === "live") {
+          var diagNow = Date.now();
+          if (diagNow - liveLastDiagAt >= 2000) {
+            liveLastDiagAt = diagNow;
+            try {
+              var diagPayload = window.StreamUplink &&
+                window.StreamUplink.buildDiag
+                ? window.StreamUplink.buildDiag({
+                  mode: liveCaptureMode || "none",
+                  posted: liveFramesPosted,
+                  sent: liveFramesSent,
+                  queued: liveSendBuf ? liveSendBuf.length() : 0,
+                  buffered: liveWs ? liveWs.bufferedAmount : -1,
+                  fails: liveSendFails,
+                  maxrms: Math.round(liveMaxRms * 100000) / 100000,
+                  ctx: audioContext ? audioContext.state : "none",
+                  build: servedBuild,
+                  reason: liveCaptureReason,
+                  state: callState
+                })
+                : {
+                  type: "diag",
+                  mode: liveCaptureMode || "none",
+                  posted: liveFramesPosted,
+                  sent: liveFramesSent,
+                  buffered: liveWs ? liveWs.bufferedAmount : -1,
+                  fails: liveSendFails,
+                  maxrms: Math.round(liveMaxRms * 100000) / 100000,
+                  ctx: audioContext ? audioContext.state : "none",
+                  build: servedBuild,
+                  reason: liveCaptureReason,
+                  state: callState
+                };
+              liveWs.send(JSON.stringify(diagPayload));
+            } catch (e) { /* socket dying */ }
+            liveMaxRms = 0;
+          }
+        }
+        /* S6: energy quiet streak, the clock Silero's bounded hold runs
+         * against (only meaningful once an utterance is open). */
+        if (speaking) liveQuietSince = null;
+        else if (liveQuietSince === null && vad.hasSpeech()) liveQuietSince = Date.now();
+        /* S7 (PRD-05/D10): between the turn close and the answer start,
+         * resumed speech rejoins the SAME turn. Any audio starting while
+         * the window is open ENDS it — speech during playback is
+         * barge-in (PRD-07, milestone 2) and the capture must be down
+         * before the mic can hear the answer (echo; no verified AEC,
+         * D4). */
+        if (liveRejoin && callState === "speaking") {
+          endLiveRejoinCapture();
+          return;
+        }
+        if (liveRejoin && liveRejoin.phase === "watch" && speaking &&
+            (callState === "transcribing" || callState === "thinking")) {
+          beginLiveRejoin();
+          return;
+        }
         if (callState === "listening" || callState === "confirming") {
           if (speaking || vad.hasSpeech()) {
             if (!utteranceStartedAt) utteranceStartedAt = Date.now();
-            if (!liveTurn.onsetAt) liveTurn.onsetAt = Date.now();
+            if (!liveTurn.onsetAt) {
+              liveTurn.onsetAt = Date.now();
+              /* T3 (PRD-04/S5): speech onset opens the server-side
+               * partial loop — partials run WHILE SPEAKING; idle silence
+               * and the agent's playback never reach the GPU. A fresh
+               * utterance also resets the display tracker. */
+              if (liveTracker) liveTracker.reset();
+              sendLiveStreamControl("start");
+            }
             setCallState("recording");
           }
         } else if (callState === "recording") {
           updateRecElapsed();
         }
-        if (vad.shouldFinalize()) {
+        /* S6 (D3): Silero may only DEFER the silence close — shouldFinalize
+         * latches, so it is simply not consulted while the bounded hold
+         * stands. */
+        if (!sileroDefersClose() && vad.shouldFinalize()) {
           var why = vad.lastFinalizeReason && vad.lastFinalizeReason();
           if (why === "cap" || why === "utteranceCap") {
             showBanner(t("voice.turn_cap_cut"));
@@ -6092,8 +6732,12 @@
           finishLiveUtterance();
           return;
         }
+        // S7: the dead-mic hint belongs to a listening window only — the
+        // armed tick now also runs through transcribing/thinking, where
+        // the strip already shows the call state.
         var elapsed = Date.now() - listeningStartedAt;
-        if (!vad.hasSpeech() && elapsed > 5000) {
+        if ((callState === "listening" || callState === "confirming") &&
+            !vad.hasSpeech() && elapsed > 5000) {
           pillSub.textContent = t("voice.hearing_hint");
           pillSub.classList.remove("hidden");
         } else if (vad.hasSpeech()) {
@@ -6104,12 +6748,35 @@
     };
 
     function finishLiveUtterance() {
-      releaseVadLoopOnly();
+      /* S7 (PRD-05/D10): the VAD loop STAYS ARMED — between this close
+       * and the answer start (transcribing + thinking) resumed speech
+       * rejoins the turn. The finalize latch clears so pushes live
+       * again; the loop tears down with the socket (stopLiveListening),
+       * when the answer starts (endLiveRejoinCapture), or at the next
+       * onset (beginLiveRejoin flips the watch into recording). A close
+       * of a RESUMED segment keeps its accumulator and routed flag: the
+       * whole rejoined turn is still in flight, and a further resume
+       * while it transcribes rejoins too. */
+      if (vad) vad.reset();
+      liveQuietSince = null;
+      var prevRejoin = liveRejoin && liveRejoin.phase === "resumed" ? liveRejoin : null;
+      liveRejoin = {
+        phase: "watch",
+        routed: prevRejoin ? prevRejoin.routed : false,
+        text: prevRejoin ? prevRejoin.text :
+          (window.StreamUplink && window.StreamUplink.LiveRejoinText
+            ? new window.StreamUplink.LiveRejoinText()
+            : null)
+      };
       setCallState("transcribing");
       dispatching = true;
       liveDispatchRouted = false;  // B1: awaiting the transcript again
       var durationMs = liveTurn && liveTurn.onsetAt ? (Date.now() - liveTurn.onsetAt) : 1000;
       if (liveWs && liveWs.readyState === WebSocket.OPEN) {
+        /* T3: stop the partial loop BEFORE the turn-end transcribe —
+         * the server serializes both behind its one-inference lock and
+         * drops whatever the last pass was still computing. */
+        sendLiveStreamControl("stop");
         liveWs.send(JSON.stringify({
           type: "transcribe",
           duration_ms: durationMs,
@@ -6122,6 +6789,7 @@
 
     function setupLiveScriptProcessor(source) {
       try {
+        disposeLiveCapture();  // drop a half-built worklet path before falling back
         var sp = audioContext.createScriptProcessor(4096, 1, 1);
         liveWorkletNode = sp;
         source.connect(sp);
@@ -6129,6 +6797,8 @@
         sp.onaudioprocess = function (e) {
           var float32 = e.inputBuffer.getChannelData(0);
           if (window.StreamUplink) {
+            liveCaptureMode = "script";
+            liveFramesPosted += 1;
             var pcm16 = window.StreamUplink.downsampleTo16kPCM16(float32, audioContext.sampleRate);
             if (pcm16 && pcm16.buffer) sendLiveFrame(pcm16.buffer);
           }
@@ -6137,7 +6807,22 @@
     }
 
     if (mediaStream && audioContext) {
-      armLiveUtterance();
+      /* Every re-arm resumes and VERIFIES the shared context before the
+       * capture is declared armed (L53: Android can suspend it between
+       * utterances). A context that cannot run falls back to Servidor
+       * with its own banner, never a silently deaf live call. */
+      ensureLiveAudioRunning().then(function (running) {
+        if (!running) {
+          if (inCall && voiceEngine === "live") {
+            fallbackToServidor("voice.live_audio_suspended");
+          } else {
+            liveMicBusy = false;
+          }
+          return;
+        }
+        if (!inCall || voiceEngine !== "live") { liveMicBusy = false; return; }
+        armLiveUtterance();
+      });
       return;
     }
     navigator.mediaDevices.getUserMedia({
@@ -6151,17 +6836,33 @@
           fallbackToServidor();
         };
       }
-      var Ctx = window.AudioContext || window.webkitAudioContext;
-      audioContext = new Ctx();
-      var source = audioContext.createMediaStreamSource(stream);
+      primeLiveAudioContext();
+      if (!audioContext) {
+        liveMicBusy = false;
+        leaveLiveForServidorPaused();
+        showBanner(t("voice.live_audio_suspended"));
+        return;
+      }
+      // ONE source per call: the analyser and every uplink arm share it.
+      var source = ensureLiveMediaSource();
       analyser = audioContext.createAnalyser();
       analyser.fftSize = 4096;
       source.connect(analyser);
       vadSampleBuf = new Float32Array(analyser.fftSize);
-      armLiveUtterance();
+      ensureLiveAudioRunning().then(function (running) {
+        if (!running) {
+          if (inCall && voiceEngine === "live") {
+            fallbackToServidor("voice.live_audio_suspended");
+          } else {
+            liveMicBusy = false;
+          }
+          return;
+        }
+        if (!inCall || voiceEngine !== "live") { liveMicBusy = false; return; }
+        armLiveUtterance();
+      });
     }).catch(function (err) {
-      liveMicBusy = false;
-      fallbackToServidor();
+      liveMicFailed(err);
     });
   }
 
@@ -6205,14 +6906,33 @@
 
   function startCall(resumeCallId) {
     if (voiceEngine === "live") {
+      /* L53: the AudioContext must be created/resumed inside THIS tap —
+       * liveStartProbe is async, so beginCall (and the old getUserMedia
+       * context creation) lands outside the gesture window and Android
+       * leaves the graph suspended. Prime it now; close it only if the
+       * brain refuses the call (D1). */
+      primeLiveAudioContext();
+      var discardPrimedContext = function () {
+        if (mediaStream || !audioContext) return;
+        try { audioContext.close(); } catch (err) { /* already closed */ }
+        audioContext = null;
+      };
       /* S3/D1 (B4): a live call nobody would hear must never start. The
        * brain must first accept the call record — a network error or a
        * non-2xx on POST /call/start refuses the call with a visible
        * notice instead of a silently deaf call. */
       liveStartProbe(resumeCallId).then(function (resp) {
-        if (resp) beginCall(resumeCallId);
-        else showBanner(t("voice.stream_unreachable"));
+        /* L11: the probe already opened the record (fresh, resumed, or
+         * resumed-then-fresh after a refused resume) — pass the flag so
+         * beginCall never POSTs a second record that would linger as an
+         * interrupted orphan in the history. */
+        if (resp) beginCall(resumeCallId, true);
+        else {
+          discardPrimedContext();
+          showBanner(t("voice.stream_unreachable"));
+        }
       }).catch(function () {
+        discardPrimedContext();
         showBanner(t("voice.stream_unreachable"));
       });
       return;
@@ -6228,6 +6948,7 @@
      * dispatch stranded by a dropped call must never disarm the mic. */
     manualStop = false;
     dispatching = false;
+    liveRejoin = null;  // S7: a stranded rejoin window never crosses calls
     inCall = true;
     callStartedAt = Date.now();
     voiceTimeline.length = 0;  // fresh timeline per call (PRD-02 scope)

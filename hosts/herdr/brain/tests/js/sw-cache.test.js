@@ -93,6 +93,18 @@ test("explicit shell assets are cache-first, stamped or bare", () => {
   assert.equal(sw.fetchPlan(new URL(ORIGIN + "/sw.js"), "GET"), "asset");
 });
 
+test("the audio worklet is network-first so a stale build never serves", () => {
+  // /stream-worklet.js feeds the live uplink and is not referenced by the
+  // rendered index, so it has no build stamp of its own. Serving it
+  // cache-first could freeze an old processor in the PWA; it stays in the
+  // shell (offline fallback) but always tries the network first.
+  assert.equal(sw.fetchPlan(new URL(ORIGIN + "/stream-worklet.js"), "GET"), "asset-network-first");
+  assert.equal(sw.fetchPlan(new URL(ORIGIN + "/stream-worklet.js?v=ab69618"), "GET"), "asset-network-first");
+  assert.ok(sw.SHELL_ASSETS.includes("/stream-worklet.js"));
+  // Every other shell asset keeps the cache-first contract.
+  assert.equal(sw.fetchPlan(new URL(ORIGIN + "/stream-uplink.js?v=ab69618"), "GET"), "asset");
+});
+
 test("the static /history.js asset is NOT the /history API", () => {
   assert.equal(sw.fetchPlan(new URL(ORIGIN + "/history.js?v=ab69618"), "GET"), "asset");
   assert.equal(sw.fetchPlan(new URL(ORIGIN + "/history"), "GET"), "bypass");

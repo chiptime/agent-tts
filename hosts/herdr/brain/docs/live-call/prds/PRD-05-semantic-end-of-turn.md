@@ -38,7 +38,7 @@ Gemini Live's contrast (ROADMAP §3): the server sees the audio and decides turn
 ## 3. Functional Requirements
 
 - **FR-01**: Speech/silence framing for turn decisions MUST come from Silero VAD, either as client-side WASM or server-side over the PRD-03 socket (placement is a spike decision inside this PRD; see Open Questions).
-- **FR-02**: A turn-completion detector MUST decide end of turn from the stream of partial transcripts (PRD-04): a small classifier or a constrained LLM call with a strict output contract (`complete` / `incomplete`), evaluated on each new partial.
+- **FR-02** (amended 2026-11-05, D18): A turn-completion detector MUST decide end of turn locally. Its input MAY be the stream of partial transcripts (PRD-04) OR the raw utterance audio (for example a bundled local ONNX turn detector); the implementation is chosen by measurement against FR-03/FR-04 and D3, and the two may be compared side by side before one is adopted. Either way the decision MUST be local — no partial text or audio leaves the machine by default — and MUST produce a `complete` / `incomplete` verdict per evaluated point.
 - **FR-03**: End of turn MUST be adaptive: a clear semantic completion with trailing silence dispatches at the short end (target ASSUMPTION: ≤ 700 ms of silence, matching the hands-free PRD's endpointing goal, `docs/PRD-hands-free-voice-call.md` FR-01), while an incomplete-looking utterance keeps waiting up to today's ceiling (2.5 s, `app.js:221`) and honors the continuation-window concept (`app.js:230`).
 - **FR-04**: The detector MUST NOT dispatch on a pause the user experiences as mid-sentence — the acceptance session replays the user's failure report ("me corta mientras hablo, haciendo que tengo que hacer mas de un turno") as an explicit test case.
 - **FR-05**: Detector decisions MUST be logged with the deciding partial (text excluded from any exported metrics — durations and labels only, per PRD-02 FR-06 privacy shape).
@@ -85,6 +85,7 @@ Decision ids refer to the ledger in ROADMAP §11.
 - **Screen (D5)**: milestone 1 targets a call with the screen on (wake lock); screen-off belongs to PRD-08.
 - **Acceptance (D11)**: the operator signs off on the Pixel 7 Pro: 20 natural turns with deliberate pauses and zero cuts, the first phrase never lost, first audio ≤ 1.5 s, a 5-minute call with no lost turn.
 - **Silero placement, detector implementation, call budget (were open questions 1-3)**: measured within the D2 constraint (D6).
+- **Detector input (D18)**: the local detector MAY take raw audio instead of partial transcripts. A candidate audio-based local ONNX model was evaluated on generated signals only (local, CPU); padding/normalisation sensitivity, reference-preprocessing parity and Spanish real-speech quality are still unproven, so audio input is an allowed alternative, not an adopted behaviour. Adoption still requires the FR-03/FR-04 acceptance evidence on the operator's device.
 
 ## 8. Execution Boundaries
 

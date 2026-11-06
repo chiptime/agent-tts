@@ -302,6 +302,35 @@ class ApprovalGateStore:
                 return gate
             return self._retire(gate, SUPERSEDED)
 
+    def cancel_proposed(
+        self,
+        gate_id: str,
+        expected_revision: int | None = None,
+    ) -> ApprovalGate | None:
+        """Retires a still-PROPOSED gate opened by a cancelled turn (S7).
+
+        A turn whose client disconnected mid-flight never delivered the
+        gate's explanation, so its proposal must not linger as the
+        session's live gate waiting for an approval nobody was asked
+        for. STRICTLY identity-scoped: only this exact ``gate_id``, only
+        while still PROPOSED, and — when stated — only at the
+        ``revision`` the cancelled turn observed. Anything else is a
+        no-op returning None: an APPROVED gate may have already executed
+        (approve-once is absolute; this never undoes a send), a PATCHed
+        gate carries someone's newer edit, and a gate another turn
+        already superseded or replaced is not this cancellation's to
+        touch. The check and the retirement share the store lock, so an
+        approve racing this cancel resolves one way or the other —
+        never both.
+        """
+        with self._lock:
+            gate = self._gates.get(gate_id)
+            if gate is None or gate.state != PROPOSED:
+                return None
+            if expected_revision is not None and gate.revision != expected_revision:
+                return None
+            return self._retire(gate, SUPERSEDED)
+
     def begin_turn(
         self, session_id: str | None, decision_intent: bool
     ) -> ApprovalGate | None:

@@ -19,7 +19,13 @@ import httpx
 import pytest
 from openai import AsyncOpenAI
 
-from herdr_brain.approval import PROPOSED, SUPERSEDED, ApprovalGateStore
+from herdr_brain.approval import (
+    APPROVED,
+    DECISION_APPROVE,
+    PROPOSED,
+    SUPERSEDED,
+    ApprovalGateStore,
+)
 from herdr_brain.config import Settings
 from herdr_brain.herdr import AgentInfo
 from herdr_brain.llm import SYSTEM_PROMPT, BrainLLM, BrainLLMError, TurnCancelled
@@ -35,6 +41,22 @@ def tool_call_response(call_id, name, arguments, content=None):
                 id=call_id,
                 function=SimpleNamespace(name=name, arguments=json.dumps(arguments)),
             )
+        ],
+    )
+    return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+
+def tool_calls_response(calls):
+    """One assistant round asking for SEVERAL tools at once (the loop
+    must check cancellation between the calls of a single round)."""
+    message = SimpleNamespace(
+        content=None,
+        tool_calls=[
+            SimpleNamespace(
+                id=call_id,
+                function=SimpleNamespace(name=name, arguments=json.dumps(arguments)),
+            )
+            for call_id, name, arguments in calls
         ],
     )
     return SimpleNamespace(choices=[SimpleNamespace(message=message)])
@@ -752,12 +774,224 @@ class TestDisconnectCancellation:
         assert store.history("default") == []
 
     def test_connected_turn_ignores_no_event_and_stores(self, settings, make_stub):
+        """A connected turn reports its ring pair as a STAGING (L34):
+        nothing lands until the caller commits at its own boundary —
+        the caller here is the test, standing in for the server."""
         store = ConversationStore()
         llm, _ = make_brain(settings, make_stub(), responses=[text_response("ok")])
         llm.attach_store(store)
         result = llm.ask("question", cancel_event=threading.Event())
         assert result["answer"] == "ok"
+        assert store.history("default") == []  # staged, not landed
+        result["ring_commit"].commit()
         assert [m.role for m in store.history("default")] == ["user", "assistant"]
+
+    def test_uncancellable_turn_commits_to_the_ring_inline(self, settings, make_stub):
+        """PRESERVE: turns without a cancel event (approve replays, CLI
+        calls) keep the classic inline ring commit — no staging, no
+        receipt, nothing for a caller to commit."""
+        store = ConversationStore()
+        llm, _ = make_brain(settings, make_stub(), responses=[text_response("ok")])
+        llm.attach_store(store)
+        result = llm.ask("question")
+        assert "ring_commit" not in result
+        assert [m.role for m in store.history("default")] == ["user", "assistant"]
+
+    def test_cancelled_after_gate_proposed_retires_it(self, settings, make_stub):
+        """S7: the gate THIS turn opened dies with the cancelled turn —
+        its explanation never reached anyone, so nobody may approve it
+        later through /approval/current."""
+        cancel = threading.Event()
+        scripted = ScriptedLLM([
+            tool_call_response("c1", "send_to_session", {"text": "x"}),
+            text_response("done"),
+        ])
+        original_create = scripted.chat.completions.create
+
+        def create(**kwargs):
+            response = original_create(**kwargs)
+            if len(scripted.create_kwargs) == 2:
+                cancel.set()  # the disconnect lands with the answer in hand
+            return response
+
+        scripted.chat.completions.create = create
+        llm = BrainLLM(settings, BrainTools(settings, herdr=make_stub()), client=scripted)
+        llm.attach_approval_store(ApprovalGateStore(timeout_s=settings.approval_timeout_s))
+        with pytest.raises(TurnCancelled):
+            llm.ask("manda x", cancel_event=cancel)
+        gates = list(llm._approval_store._gates.values())
+        assert len(gates) == 1
+        assert gates[0].state == SUPERSEDED  # retired with the turn
+        assert llm._approval_store.current("default") is None
+
+    def test_cancelled_between_same_round_calls_dispatches_no_second_gate(
+        self, settings, make_stub
+    ):
+        """Two sends asked in ONE round: the disconnect landing while the
+        first gate freezes must stop the second dispatch, and the one
+        frozen gate must be retired — never left as the live proposal."""
+        store = ApprovalGateStore(timeout_s=settings.approval_timeout_s)
+        cancel = threading.Event()
+        proposed: list = []
+        original_propose = store.propose
+
+        def propose(*args, **kwargs):
+            gate = original_propose(*args, **kwargs)
+            proposed.append(gate.gate_id)
+            cancel.set()  # the disconnect lands after the first gate froze
+            return gate
+
+        store.propose = propose
+        scripted = ScriptedLLM([
+            tool_calls_response([
+                ("c1", "send_to_session", {"text": "uno"}),
+                ("c2", "send_to_session", {"text": "dos"}),
+            ]),
+            text_response("listo"),
+        ])
+        llm = BrainLLM(
+            settings, BrainTools(settings, herdr=make_stub()), client=scripted
+        )
+        llm.attach_approval_store(store)
+        with pytest.raises(TurnCancelled):
+            llm.ask("manda dos", cancel_event=cancel)
+        assert len(proposed) == 1  # the second send never froze a gate
+        assert len(scripted.create_kwargs) == 1  # and no further round ran
+        assert store.get(proposed[0]).state == SUPERSEDED
+        assert store.current("default") is None
+
+    def test_connected_gate_turn_keeps_its_proposed_gate(self, settings, make_stub):
+        """PRESERVE: retirement rides ONLY the cancellation path — a
+        healthy turn's gate stays proposed for the user to approve."""
+        llm, _ = make_brain(
+            settings, make_stub(),
+            responses=[
+                tool_call_response("c1", "send_to_session", {"text": "x"}),
+                text_response("Te lo preparo."),
+            ],
+        )
+        result = llm.ask("manda x", cancel_event=threading.Event())
+        gate = llm._approval_store.current("default")
+        assert gate is not None and gate.state == PROPOSED
+        assert result["approval"].gate_id == gate.gate_id
+
+    def test_ask_reports_its_ring_commit_receipt(self, settings, make_stub):
+        """S7/L32+L34: a cancellable turn hands its caller the staging
+        that owns the ring pair — identities reserved up front, shared
+        ring untouched until the caller's commit boundary."""
+        store = ConversationStore()
+        llm, _ = make_brain(settings, make_stub(), responses=[text_response("ok")])
+        llm.attach_store(store)
+        result = llm.ask("question", cancel_event=threading.Event())
+        staged = result["ring_commit"]
+        assert staged.session_id == "default"
+        assert len(staged.seqs) == 2
+        assert store.history("default") == []  # nothing landed yet
+        committed = staged.commit()
+        messages = store.history("default")
+        assert [m.seq for m in messages] == list(staged.seqs)
+        assert [m.role for m in messages] == ["user", "assistant"]
+        assert [m.seq for m in committed] == list(staged.seqs)
+
+
+class TestRingRevoke:
+    """Identity-scoped ring revocation (S7/L32): a turn the server
+    rejects after its ring commit removes exactly its own messages."""
+
+    def test_append_assigns_unique_stable_identity(self):
+        store = ConversationStore()
+        first = store.append("s1", "user", "uno")
+        second = store.append("s1", "assistant", "dos")
+        assert first.seq != second.seq
+        assert [m.seq for m in store.history("s1")] == [first.seq, second.seq]
+
+    def test_revoke_removes_only_the_named_messages(self):
+        # Interleaved concurrent turns on ONE session: revoking the
+        # ghost pair must leave the legitimate pair untouched.
+        store = ConversationStore()
+        ghost_user = store.append("s1", "user", "ghost q")
+        real_user = store.append("s1", "user", "real q")
+        ghost_answer = store.append("s1", "assistant", "ghost a")
+        real_answer = store.append("s1", "assistant", "real a")
+        assert store.revoke("s1", [ghost_user.seq, ghost_answer.seq]) == 2
+        assert [m.content for m in store.history("s1")] == ["real q", "real a"]
+
+    def test_identical_text_is_not_confused_for_identity(self):
+        store = ConversationStore()
+        ghost = store.append("s1", "user", "repetido")
+        keeper = store.append("s1", "user", "repetido")
+        assert store.revoke("s1", [ghost.seq]) == 1
+        assert [m.content for m in store.history("s1")] == ["repetido"]
+
+    def test_revoke_stays_inside_its_own_session(self):
+        store = ConversationStore()
+        ghost = store.append("s1", "user", "ghost")
+        store.append("s2", "user", "keeper")
+        assert store.revoke("s2", [ghost.seq]) == 0  # not that session's id
+        assert store.revoke("s1", [ghost.seq]) == 1
+        assert [m.content for m in store.history("s2")] == ["keeper"]
+
+    def test_revoke_after_reset_never_hits_newer_messages(self):
+        # Identities are store-wide and never reused: a receipt from
+        # before a reset cannot point at re-seeded messages.
+        store = ConversationStore()
+        ghost = store.append("s1", "user", "ghost")
+        store.reset("s1")
+        store.append("s1", "user", "fresh")
+        assert store.revoke("s1", [ghost.seq]) == 0
+        assert [m.content for m in store.history("s1")] == ["fresh"]
+
+    def test_revoke_with_already_evicted_ids_is_quiet(self):
+        store = ConversationStore(max_messages=2)
+        evicted = store.append("s1", "user", "a")
+        store.append("s1", "assistant", "b")
+        store.append("s1", "user", "c")  # evicts "a"
+        assert store.revoke("s1", [evicted.seq]) == 0
+        assert [m.content for m in store.history("s1")] == ["b", "c"]
+
+
+class TestCancelProposedStore:
+    """``ApprovalGateStore.cancel_proposed``: the identity- and
+    revision-scoped retirement a cancelled /ask turn owes its own gate
+    (S7 hardening). Approve-once, patches and newer gates are absolute."""
+
+    @staticmethod
+    def _store_with_gate():
+        store = ApprovalGateStore(timeout_s=60)
+        gate = store.propose("s1", text="hola")
+        return store, gate
+
+    def test_retires_proposed_gate_and_clears_live_slot(self):
+        store, gate = self._store_with_gate()
+        retired = store.cancel_proposed(gate.gate_id, expected_revision=gate.revision)
+        assert retired is not None and retired.state == SUPERSEDED
+        assert store.get(gate.gate_id).state == SUPERSEDED
+        assert store.current("s1") is None
+
+    def test_unknown_gate_is_ignored_and_siblings_untouched(self):
+        store, gate = self._store_with_gate()
+        assert store.cancel_proposed("no-such-gate") is None
+        assert store.current("s1").gate_id == gate.gate_id
+
+    def test_approved_gate_is_never_undone(self):
+        store, gate = self._store_with_gate()
+        _resolved, applied = store.resolve(gate.gate_id, DECISION_APPROVE)
+        assert applied
+        assert store.cancel_proposed(gate.gate_id, expected_revision=gate.revision) is None
+        assert store.get(gate.gate_id).state == APPROVED
+
+    def test_patched_gate_revision_mismatch_is_ignored(self):
+        store, gate = self._store_with_gate()
+        store.patch(gate.gate_id, "otra cosa")
+        assert store.cancel_proposed(gate.gate_id, expected_revision=gate.revision) is None
+        assert store.get(gate.gate_id).state == PROPOSED  # someone's edit survives
+
+    def test_gate_superseded_by_newer_turn_stays_untouched(self):
+        store, gate = self._store_with_gate()
+        newer = store.propose("s1", text="nuevo")
+        assert store.cancel_proposed(gate.gate_id, expected_revision=gate.revision) is None
+        assert store.get(gate.gate_id).state == SUPERSEDED  # already retired
+        assert store.current("s1").gate_id == newer.gate_id
 
 
 def _set_event() -> threading.Event:

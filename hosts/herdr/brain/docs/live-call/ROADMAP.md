@@ -229,6 +229,7 @@ Closed with the operator before implementation. Owner "operator" = product decis
 | D15 | Third opt-in engine "Dictado: En vivo"; default only after Pixel acceptance | operator |
 | D16 | The two Browser-dictation fixes ship separately (commit 8749e73) | operator |
 | D17 | Branch `feat/live-call-streaming`, work-unit commits; `main` only after the Pixel acceptance | operator |
+| D18 | The local turn detector MAY take raw audio instead of partial transcripts; adoption still requires the FR-03/FR-04 no-cut evidence (local-only, no user audio/text leaves the machine) | operator |
 
 Accepted assumptions: the phone reaches the PC over Tailscale and the PC must be on; one device streams audio per call; GLM stays the LLM and the approval gate is unchanged.
 
