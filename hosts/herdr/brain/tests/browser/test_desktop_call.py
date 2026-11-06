@@ -40,6 +40,7 @@ for _name in (
     "receipts.js", "push.js", "calls.js",
     "i18n.js", "i18n/es.js", "i18n/en.js", "settings.js", "updates.js", "dock.js",
     "mermaid.min.js", "mermaid-viewer.js", "tts-engine.js",
+    "stream-uplink.js", "stream-worklet.js",
 ):
     if (STATIC / _name).is_file():
         STATIC_FILES["/" + _name] = _name

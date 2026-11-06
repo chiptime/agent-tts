@@ -54,10 +54,18 @@ var SHELL_ASSETS = [
   "/tts-engine.js", "/consult.js",
   "/i18n.js", "/i18n/es.js", "/i18n/en.js",
   "/settings.js", "/updates.js", "/dock.js",
+  "/stream-uplink.js", "/stream-worklet.js",
   "/sw.js", "/manifest.webmanifest", "/icon.svg",
 ];
 var SHELL_ASSET_SET = {};
 for (var i = 0; i < SHELL_ASSETS.length; i++) SHELL_ASSET_SET[SHELL_ASSETS[i]] = true;
+
+/* Assets that must never be frozen at an older build. /stream-worklet.js
+ * is loaded by app.js (not referenced by the rendered index), so it has
+ * no ?v= stamp of its own: cache-first could keep an old AudioWorklet
+ * processor in the PWA forever. It stays in SHELL_ASSETS for the offline
+ * fallback, but the network is always tried first. */
+var NETWORK_FIRST_ASSETS = { "/stream-worklet.js": true };
 
 /* The API denylist, spelled out for the reader — the routing rule is
  * default-deny, so this list is documentation plus a belt: even if a
@@ -109,14 +117,16 @@ function shellFromIndex(html) {
 }
 
 /* One request URL → routing strategy.
- *  "navigation" — network-first, cached-shell fallback
- *  "asset"      — cache-first (explicit shell list only)
- *  "bypass"     — the worker never touches it (network only) */
+ *  "navigation"           — network-first, cached-shell fallback
+ *  "asset-network-first"  — shell asset that must refresh (worklet)
+ *  "asset"                — cache-first (explicit shell list only)
+ *  "bypass"               — the worker never touches it (network only) */
 function fetchPlan(url, method) {
   if (!url || method !== "GET") return "bypass";
   if (url.origin !== self.location.origin) return "bypass";
   var path = url.pathname;
   if (path === "/" || path === "/index.html") return "navigation";
+  if (NETWORK_FIRST_ASSETS[path] === true) return "asset-network-first";
   if (SHELL_ASSET_SET[path] === true) return "asset";
   return "bypass";
 }
@@ -239,6 +249,27 @@ self.addEventListener("fetch", function (event) {
     return;
   }
 
+  if (plan === "asset-network-first") {
+    /* Freshness wins for the worklet; the cached copy (current build,
+     * 200/basic only) is the offline fallback. */
+    event.respondWith(
+      fetch(event.request).then(function (resp) {
+        if (cacheableResponse(resp.status, resp.redirected, resp.type)) {
+          var copy = resp.clone();
+          caches.open(currentShellCache()).then(function (cache) {
+            cache.put(event.request, copy);
+          });
+        }
+        return resp;
+      }).catch(function () {
+        return caches.match(event.request).then(function (hit) {
+          return hit || Response.error();
+        });
+      })
+    );
+    return;
+  }
+
   if (plan === "asset") {
     event.respondWith(
       caches.match(event.request).then(function (hit) {
@@ -330,6 +361,7 @@ if (typeof module !== "undefined" && module.exports) {
     cacheableResponse: cacheableResponse,
     cachesToSweep: cachesToSweep,
     SHELL_ASSETS: SHELL_ASSETS,
+    NETWORK_FIRST_ASSETS: NETWORK_FIRST_ASSETS,
     API_DENYLIST: API_DENYLIST,
   };
 }

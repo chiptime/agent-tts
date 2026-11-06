@@ -4,7 +4,7 @@
 |---|---|
 | **Product** | `herdr-brain` (PWA / Service) |
 | **Document Type** | PRD (Roadmap Phase 2 — streaming build) |
-| **Status** | `draft` |
+| **Status** | `approved — milestone 1 (2026-11-04)` |
 | **Date** | 2026-11-03 |
 | **Depends on** | PRD-03 (WebSocket uplink); benefits from PRD-01 (interim strip already shows server-side preview text) |
 | **Composed Skills** | `prd`, `cognitive-doc-design` |
@@ -71,11 +71,17 @@ STT is whole-blob today: `/transcribe` receives a finished webm segment and the 
 - **Final/whole-blob divergence** on noisy audio (local agreement freezes early): the A/B acceptance criterion exists to catch exactly this.
 - **Message congestion** if partials outpace the socket: partials are lossy by design (latest wins); finals are not.
 
-## 7. Open Questions
+## 7. Closed Decisions (grill 2026-11-04, milestone 1)
 
-1. Window size and pass cadence (ASSUMPTIONs above) — tune against PRD-02 measurements.
-2. Does the current engine pull CLI's streaming passthrough carry interim output suitable for partials, or only progress? (Spike task inside this PRD before FR-06.)
+Decision ids refer to the ledger in ROADMAP §11.
+
+- **Model (D7, D12)**: faster-whisper `large-v3`, reusing the model files already in llm-hub's cache (`data/whisper-cache`, `models--Systran--faster-whisper-large-v3`) by local path — no download. llm-hub's `whisper-service` itself is NOT reused: it runs on CPU int8 (moved off the GPU for Qwen) and is too slow for live partials.
+- **Placement (D13)**: on the RTX 4090, sharing VRAM with llm-hub's Qwen; the lowest-memory GPU compute type that keeps live partials. When VRAM is unavailable the live call degrades to `small` with a visible notice instead of failing. VRAM headroom with Qwen loaded is measured before the milestone closes.
+- **Language and vocabulary (D8)**: the transcription language is forced to the app locale, and an operator-editable list of technical terms (commit, push, PR, rama, herdr, opencode, …) is passed as a recognition hint.
+- **Privacy (D9)**: partial text is shown live while the user speaks; audio is never stored — only each turn's final text enters the call history, as today.
+- **Window size and cadence (was open question 1)**: measured (D6).
+- **Engine passthrough (was open question 2)**: settled by the implementation spike (D6).
 
 ## 8. Execution Boundaries
 
-STT streaming only (FR-01..FR-07). End-of-turn semantics, LLM, and TTS are untouched. Discoveries outside scope go to `## Escalated / Out-of-Scope Issues`. This PRD is a `draft` behind the ROADMAP §7 gate; launching implementation is a separate explicit decision.
+STT streaming only (FR-01..FR-07). End-of-turn semantics, LLM, and TTS are untouched. Discoveries outside scope go to `## Escalated / Out-of-Scope Issues`. The ROADMAP §7 gate is decided (build, 2026-11-04) and this PRD is launched as part of milestone 1.

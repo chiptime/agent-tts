@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Callable, Literal, Optional
 from urllib.parse import parse_qs, unquote_plus
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Path as PathParam, Query, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Path as PathParam, Query, Request, UploadFile, WebSocket
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
@@ -113,7 +113,7 @@ from .permissions import (
     OpenCodePermissions,
     REPLIES as PERMISSION_REPLIES,
 )
-from .stt import STATE_READY, STATE_UNAVAILABLE, UNAVAILABLE_HINT, Transcriber
+from .stt import STATE_READY, STATE_UNAVAILABLE, UNAVAILABLE_HINT, LiveTranscriber, Transcriber
 from .stt_engine import EngineTranscriber
 from .tools import BrainTools
 from .tools import status_payload as _status_payload
@@ -245,7 +245,7 @@ class AccessMiddleware:
         self.pairing = pairing
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http":
+        if scope["type"] not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return
         headers = {
@@ -255,11 +255,15 @@ class AccessMiddleware:
         from urllib.parse import parse_qsl
 
         query = dict(parse_qsl(scope.get("query_string", b"").decode("latin-1")))
+        method = scope.get("method", "GET")
         label, refusal = access_module.guard(
-            headers, scope["method"], scope["path"], self.cfg, self.pairing,
+            headers, method, scope["path"], self.cfg, self.pairing,
             query_token=query.get("device_token"),
         )
         if refusal is not None:
+            if scope["type"] == "websocket":
+                await send({"type": "websocket.close", "code": 1008})
+                return
             body = json.dumps({"detail": refusal}, ensure_ascii=False).encode("utf-8")
             await send({
                 "type": "http.response.start",
@@ -432,6 +436,19 @@ _VERSIONED_REFS = (
     # stale cached copy is not fatal — but the grouping must not silently
     # disappear behind a cached index.
     ('src="/herd-group.js"', 'src="/herd-group.js?v={v}"'),
+    # L55: every shell asset must carry the build stamp. A bare ref is
+    # cached cache-first by sw.js under a stable URL, so a page still
+    # controlled by the previous worker serves the OLD helper next to the
+    # NEW app.js (the 2026-11-06 device mix: old stream-uplink.js without
+    # LiveTranscriptTracker/buildDiag -> no on-screen interim text and the
+    # diag fell back to a payload without `queued`). Stamped refs change
+    # with the build, so even a stale worker misses its cache and fetches
+    # the served bytes.
+    ('src="/stream-uplink.js"', 'src="/stream-uplink.js?v={v}"'),
+    ('src="/announce.js"', 'src="/announce.js?v={v}"'),
+    ('src="/karaoke.js"', 'src="/karaoke.js?v={v}"'),
+    ('src="/speech.js"', 'src="/speech.js?v={v}"'),
+    ('src="/tts-engine.js"', 'src="/tts-engine.js?v={v}"'),
 
     ('href="/manifest.webmanifest"', 'href="/manifest.webmanifest?v={v}"'),
     ('href="/icon.svg"', 'href="/icon.svg?v={v}"'),
@@ -952,6 +969,8 @@ def create_app(
     sse_stream_limit: Optional[int] = None,
     version: Optional[str] = None,
     transcriber: Optional[Transcriber] = None,
+    live_transcriber: Optional[Transcriber] = None,
+    vad_engine: Optional["SileroVadEngine"] = None,
     daemon_probe: Optional[Callable[[], str]] = None,
     speech_registry: Optional[SpeechRegistry] = None,
     permissions: Optional[OpenCodePermissions] = None,
@@ -972,6 +991,10 @@ def create_app(
     created and warmed in the background ONLY when the model files are
     already local and ``settings.stt_warmup`` is on (default in production,
     off in tests) — the server never downloads the model by itself.
+    ``live_transcriber`` is an injection seam for the live engine. Hub mode
+    shares the batch transcriber; builtin explicitly selects local models.
+    ``vad_engine`` is an injection seam for framing; hub mode defaults to
+    the client energy fallback without loading local model weights.
     ``tts_renderer`` keeps its classic 3-arg contract; a double that
     declares ``takes_cancel_event = True`` additionally receives the
     speech job's cancel event (4th arg) on identified /ask turns, so
@@ -1203,19 +1226,43 @@ def create_app(
         consult.attach_event_sink(watcher.hub.publish)
 
     if transcriber is None:
-        # Backend wiring (F4.10): the default "engine" backend delegates
-        # to the agent-tts resident worker; "builtin" keeps the legacy
-        # in-process Transcriber. Both expose the same duck-typed surface,
-        # so /health and /transcribe stay contract-identical.
+        # All backends expose the same duck-typed transcription surface.
         if cfg.stt_backend == "builtin":
             transcriber = Transcriber(cfg)
-        else:
+        elif cfg.stt_backend == "engine":
             transcriber = EngineTranscriber(cfg)
-        if cfg.stt_warmup:
+        else:
+            from .stt_hub import HubTranscriber
+
+            transcriber = HubTranscriber(cfg.whisper_ws_url, cfg.whisper_health_url)
+        if cfg.stt_warmup or cfg.stt_backend == "hub":
             # Warm from local files only; flips to unavailable (with the
             # pull hint) when the model was never pulled. NEVER downloads.
             # In engine mode this fires only the CLI status probe.
             transcriber.maybe_start_warmup()
+
+    if live_transcriber is None:
+        # Engine's CLI has no in-memory live interface; use the hub.
+        if cfg.stt_backend == "builtin":
+            live_transcriber = LiveTranscriber(cfg)
+            if cfg.stt_warmup:
+                live_transcriber.maybe_start_warmup()
+        elif cfg.stt_backend == "hub":
+            live_transcriber = transcriber
+        else:
+            from .stt_hub import HubTranscriber
+
+            live_transcriber = HubTranscriber(cfg.whisper_ws_url, cfg.whisper_health_url)
+
+    if vad_engine is None and cfg.stt_backend == "builtin":
+        # S6 (PRD-05 FR-01): Silero speech/silence framing over the live
+        # socket. Cheap to build, loaded lazily ONCE on the first
+        # opted-in connection (off the event loop); reuses faster-whisper's
+        # bundled weights with onnxruntime CPU — no download, no new
+        # dependency. A failed load reports the energy fallback (FR-06).
+        from .stream_vad import SileroVadEngine
+
+        vad_engine = SileroVadEngine()
 
     # Speech backend contract (fail-soft): a missing herdr-tts must never
     # crash the server — text answers keep working, only speech degrades.
@@ -1267,6 +1314,7 @@ def create_app(
     app.state.watcher = watcher
     app.state.daemon_watcher = daemon_watcher
     app.state.transcriber = transcriber
+    app.state.live_transcriber = live_transcriber
     app.state.approval_store = approval_store
     app.state.call_context = call_context_store
     app.state.speech_jobs = speech_jobs
@@ -1507,9 +1555,10 @@ def create_app(
         MediaRecorder, or any media faster-whisper decodes via PyAV) ->
         ``{"text": "..."}``."""
         if transcriber.state == STATE_UNAVAILABLE:
+            unavailable_hint = getattr(transcriber, "unavailable_hint", UNAVAILABLE_HINT)
             raise HTTPException(
                 status_code=503,
-                detail="Transcripción no disponible: " + UNAVAILABLE_HINT + ".",
+                detail="Transcripción no disponible: " + unavailable_hint + ".",
             )
         if transcriber.state != STATE_READY:
             raise HTTPException(
@@ -1552,6 +1601,21 @@ def create_app(
         turns = history.load_before(before, capped)
         has_more = bool(turns) and bool(history.load_before(turns[0]["ts"], 1))
         return {"turns": turns, "has_more": has_more}
+
+    @app.websocket("/call/stream")
+    async def call_stream_endpoint(websocket: WebSocket) -> None:
+        """PRD-03 streaming uplink carrying PCM16 mono frames from an AudioWorklet."""
+        from .call_stream import handle_call_stream
+
+        # Both surfaces share the hub client unless explicitly overridden.
+        await handle_call_stream(
+            websocket=websocket,
+            pairing_store=pairing_store,
+            transcriber=live_transcriber if live_transcriber is not None else transcriber,
+            active_call=active_call,
+            vad_engine=vad_engine,
+            local_models_allowed=cfg.stt_backend == "builtin",
+        )
 
     @app.post("/call/start")
     def call_start() -> dict:
@@ -2112,6 +2176,17 @@ def create_app(
         disconnect_event = threading.Event()
 
         def run_turn() -> dict:
+            # Queued-worker guard (S7): the disconnect may already have
+            # been observed while this executor task sat queued behind a
+            # saturated pool. A turn whose client is gone before it even
+            # starts must not open — no reset, no gate retirement, no
+            # provider round.
+            if disconnect_event.is_set():
+                if job is not None:
+                    _mark_phase_quietly(speech_jobs, job.id, PHASE_CANCELLED)
+                raise HTTPException(
+                    status_code=499, detail="client disconnected during ask"
+                )
             if body.reset:
                 store.reset(body.session_id)
             # Turn opening vs the session's live gate (PRD §4 + S13):
@@ -2166,6 +2241,39 @@ def create_app(
                     # landed the terminal phase first.
                     _mark_phase_quietly(speech_jobs, job.id, PHASE_FAILED)
                 raise HTTPException(status_code=503, detail=str(exc)) from exc
+            # Post-answer disconnect check (S7): the answer existed, but
+            # the client is already gone — the re-dispatched whole
+            # utterance must not find a phantom persisted turn, and the
+            # grace window below must not hand a dead connection a
+            # response nobody can read. This is the turn's COMMIT
+            # BOUNDARY: the staged ring pair is aborted (it never
+            # landed, so NOTHING is evicted — not even at full
+            # capacity), the gate this turn proposed is retired by
+            # identity, and nothing further persists. Past this check
+            # the turn is committed everywhere and a later disconnect
+            # never un-commits it.
+            if disconnect_event.is_set():
+                staged = result.get("ring_commit")
+                if staged is not None:
+                    staged.abort()  # the ring keeps exactly what it had
+                opened = result.get("approval")
+                if opened is not None:
+                    approval_store.cancel_proposed(
+                        opened.gate_id, expected_revision=opened.revision
+                    )
+                if job is not None:
+                    _mark_phase_quietly(speech_jobs, job.id, PHASE_CANCELLED)
+                raise HTTPException(
+                    status_code=499, detail="client disconnected during ask"
+                )
+            # Land the staged ring pair (L34): the lock-held commit is
+            # the memory-side half of the boundary — bounded eviction of
+            # the oldest messages happens HERE, only for an accepted
+            # turn — and the history rows follow immediately, so ring
+            # and SQLite agree on both sides of this line.
+            staged = result.get("ring_commit")
+            if staged is not None:
+                staged.commit()
             # Persist the turn exactly once, mirroring the ring (raw question
             # + raw answer — the approval closer is response shaping, not
             # content). The seam is deliberately HERE, not inside llm.ask:

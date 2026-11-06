@@ -264,7 +264,7 @@ class TestSttCliBackendSwitch:
         def forbidden(_settings):
             raise AssertionError("legacy Transcriber must not run in engine mode")
 
-        monkeypatch.setattr(stt_module, "load_settings", lambda: cfg(settings))
+        monkeypatch.setattr(stt_module, "load_settings", lambda: cfg(settings, stt_backend="engine"))
         monkeypatch.setattr(stt_module, "Transcriber", forbidden)
         called = {}
 
@@ -335,7 +335,7 @@ class TestServerWiring:
 
         FakeEngine = self._fake_engine()
         monkeypatch.setattr(server_module, "EngineTranscriber", FakeEngine)
-        client = TestClient(create_app(settings=cfg(settings), version="t"))
+        client = TestClient(create_app(settings=cfg(settings, stt_backend="engine"), version="t"))
         assert FakeEngine.built_with is not None
         assert client.get("/health").json()["stt"] == "loading"
         assert FakeEngine.warmup_calls == 0  # stt_warmup=False in test settings
@@ -345,7 +345,7 @@ class TestServerWiring:
 
         FakeEngine = self._fake_engine()
         monkeypatch.setattr(server_module, "EngineTranscriber", FakeEngine)
-        TestClient(create_app(settings=cfg(settings, stt_warmup=True), version="t"))
+        TestClient(create_app(settings=cfg(settings, stt_backend="engine", stt_warmup=True), version="t"))
         assert FakeEngine.warmup_calls == 1
 
     def test_builtin_backend_builds_legacy_transcriber(self, settings, monkeypatch):
@@ -375,8 +375,8 @@ class TestServerWiring:
 
 
 class TestConfigBackend:
-    def test_default_backend_is_engine(self):
-        assert load_settings({}).stt_backend == "engine"
+    def test_default_backend_is_hub(self):
+        assert load_settings({}).stt_backend == "hub"
 
     def test_env_selects_builtin(self):
         env = {"HERDR_BRAIN_STT_BACKEND": "builtin"}
@@ -391,7 +391,7 @@ class TestServerTranscribeIntegration:
     """The exact /transcribe + /health contract over the engine backend."""
 
     def _client(self, settings, audio_dir, transcriber):
-        client_settings = cfg(settings, audio_dir=str(audio_dir))
+        client_settings = cfg(settings, audio_dir=str(audio_dir), stt_backend="engine")
         return TestClient(
             create_app(settings=client_settings, version="t", transcriber=transcriber)
         )

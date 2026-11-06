@@ -1143,15 +1143,33 @@ class TestStatic:
 
     def test_index_loads_announce_module_before_app(self, settings, audio_dir):
         """PRD announcements-without-call (FR-01 wiring): the pure policy
-        module must load BEFORE app.js consumes window.Announce. Honest
-        asset contract: /announce.js is served by the catch-all
-        StaticFiles mount WITHOUT a ?v= query — adding one would need a
-        _VERSIONED_REFS (server.py) change that delivery 1 excludes."""
+        module must load BEFORE app.js consumes window.Announce. L55: the
+        ref carries the build stamp like every shell asset, so a page still
+        controlled by the previous worker cannot serve a stale copy next to
+        the new app.js."""
         cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
         client = TestClient(create_app(settings=cfg, llm_factory=lambda c, t: FakeLLM()))
         html = client.get("/").text
-        assert 'src="/announce.js"' in html
-        assert html.index('src="/announce.js"') < html.index('src="/app.js')
+        assert 'src="/announce.js?v=' in html
+        assert html.index('src="/announce.js') < html.index('src="/app.js')
+
+    def test_index_versions_every_shell_helper_before_app(self, settings, audio_dir):
+        """L55: a stale cache-first helper next to the new app.js broke the
+        device (old stream-uplink.js without LiveTranscriptTracker/buildDiag
+        -> no on-screen interim text). Every helper the app consumes must be
+        stamped, and the live helper must still load before app.js."""
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        client = TestClient(create_app(settings=cfg, llm_factory=lambda c, t: FakeLLM()))
+        html = client.get("/").text
+        for path in (
+            "/stream-uplink.js",
+            "/announce.js",
+            "/karaoke.js",
+            "/speech.js",
+            "/tts-engine.js",
+        ):
+            assert f'src="{path}?v=' in html, f"{path} must carry the build stamp"
+        assert html.index('src="/stream-uplink.js') < html.index('src="/app.js')
 
     def test_index_loads_herd_group_module_before_app(self, settings, audio_dir):
         """The sheet grouping module must be in the page BEFORE app.js

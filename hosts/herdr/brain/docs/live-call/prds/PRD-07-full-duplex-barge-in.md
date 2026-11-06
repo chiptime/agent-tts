@@ -80,6 +80,13 @@ Safety invariant from the hands-free PRD, restated because it is load-bearing he
 - **Watermark accuracy**: ack latency may lag actual audibility by a segment fraction; FR-03's "plus current sentence" absorbs it (ASSUMPTION validated in V3 by history inspection).
 - **Race between cancel and next-turn dispatch**: the interrupted user's new utterance must not race the cancellation; ordering is asserted in V2.
 
+## 6b. Grill Decisions (2026-11-04, milestone 2)
+
+- Milestone 2 per D14 (ROADMAP §11).
+- **What interrupts (D4)**: a short acknowledgement ("ajá", "sí", "vale") never interrupts the answer; a real phrase does.
+- **Echo (D4)**: without verified echo cancellation on the device, barge-in stays OFF (half-duplex) rather than risking self-interruption.
+- **Speech before the answer starts (D10)**: rejoins the turn (PRD-05), it is not a barge-in.
+
 ## 7. Open Questions
 
 1. Does tier-b (no-AEC) pass the 10-answer no-self-trigger session on device, or does half-duplex remain the default without AEC? (Device-dependent; decided by V3 evidence.)

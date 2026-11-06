@@ -189,6 +189,17 @@
       metaTime.classList.add("call-meta-time");
       metaTime.textContent = formatTime(call.started_at);
 
+      // The call KEEPS its original start; a retake is shown apart,
+      // next to it, so "Retomar" never rewrites the call's history.
+      var metaResumed = null;
+      if (call.resumed_at) {
+        metaResumed = doc.createElement("span");
+        metaResumed.classList.add("call-meta-resumed");
+        metaResumed.textContent = t("calls.resumed_at", {
+          time: formatTime(call.resumed_at)
+        });
+      }
+
       var metaStatus = doc.createElement("span");
       metaStatus.classList.add("call-status", "status-" + (call.status || "open"));
       metaStatus.textContent = t("calls.status_" + (call.status || "open"));
@@ -199,6 +210,7 @@
       metaDur.textContent = durStr ? t("calls.duration", { duration: durStr }) : "";
 
       detailHeader.appendChild(metaTime);
+      if (metaResumed) detailHeader.appendChild(metaResumed);
       detailHeader.appendChild(metaStatus);
       if (durStr) detailHeader.appendChild(metaDur);
 

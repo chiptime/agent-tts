@@ -74,6 +74,11 @@ The remaining batch point is upstream: the LLM's tokens are not streamed, so the
 - **Provider streaming support**: GLM streaming availability/shape is a provider fact — verified in the V3 session, not assumed (flagged ASSUMPTION until then).
 - **Segment pacing vs synthesis speed**: if TTS is slower than token arrival, behavior is simply protocol-2's existing queueing; no new mechanism needed.
 
+## 6b. Grill Decisions (2026-11-04, milestone 2)
+
+- Milestone 2 per D14 (ROADMAP §11); launched after milestone 1's Pixel acceptance.
+- **Priority (D3)**: never cutting the speaker wins over speed; the first-audio target for the live call is ≤ 1.5 s after the user really finished.
+
 ## 7. Open Questions
 
 1. Numeric first-audio target: set as "baseline minus X" once PRD-02's baseline exists; the ~1 s figure stays aspirational (ASSUMPTION).

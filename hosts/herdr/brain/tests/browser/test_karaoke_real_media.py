@@ -97,7 +97,8 @@ class RealMediaApp:
                  "announce.js", "approval.js", "consult.js", "endpointing.js", "vad.js",
                  "herd-group.js", "manifest.webmanifest", "icon.svg",
                  "mermaid.min.js", "mermaid-viewer.js", "tts-engine.js", "pairing.js", "destructive.js", "history.js", "dialogs.js", "receipts.js", "push.js", "calls.js",
-                 "i18n.js", "i18n/es.js", "i18n/en.js", "settings.js", "updates.js", "dock.js")
+                 "i18n.js", "i18n/es.js", "i18n/en.js", "settings.js", "updates.js", "dock.js",
+                 "stream-uplink.js", "stream-worklet.js")
         self.static = {"/" + name: STATIC / name for name in names}
         self.static["/"] = STATIC / "index.html"
         self.api = {

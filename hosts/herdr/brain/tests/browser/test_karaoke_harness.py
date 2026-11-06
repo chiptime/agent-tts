@@ -35,9 +35,11 @@ EXPECTED_DIGESTS = {
     # gate for the Browser engine and the "call transcription" settings
     # labels (index.html, app.js + both i18n); then for the glance
     # click-to-speech handover to the Web Speech engine (click on text
-    # indexes the turn and plays in-browser, server audio stops).
-    "/": "34bf4b30e2da9c0a29df2b3b8658693293e410da33ca9da7e0f6158312d98fd3",
-    "/app.js": "769079c202e86cb6d8db2524aa7f2c3ebbc5e60a23d3a376654e4d8a766ffb58",
+    # indexes the turn and plays in-browser, server audio stops); then for
+    # the live call engine (stream-uplink.js script tag, the En vivo engine
+    # and its fallback notices in app.js + both i18n).
+    "/": "da8f528697640998a3f366ef3cabfc75611661d5bad4d2c18bcb18f4d738faee",
+    "/app.js": "d980f61f44bcf5fdb1ade13844a8fc17cae18dd2ccf66a280adccbc4f7701c1a",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "ca7b22c52c8160a3ac577f694eb65ec0798b77cd6ac179a5c567dffdc1fb2ba9",
     "/dialogs.js": "0e5b6afde7ef662591f66fc69891e3b1ec343fafe0d2c5be8fbef0c5a124a4c0",
@@ -58,8 +60,8 @@ EXPECTED_DIGESTS = {
     # update notice, operator dock, offline-shell sw.js.
     "/dock.js": "4a5dc20d575c3c9e5f098116fc9314f24297b2934cb3142bc885b6e1d0155adb",
     "/i18n.js": "8bcd2ceb9f56109afaa0ec158e1a6f002799c4a983261b9d58cd38723c06719f",
-    "/i18n/en.js": "754dff121d28fab91eecf7e91d23fc946bdec148595f42cdbdd7d418c917ca1b",
-    "/i18n/es.js": "efb584ae7a956b7eb74c4dce39a832de589e0101028ed75af79fec9750227fac",
+    "/i18n/en.js": "e88ea08775d4687ca50f292b5b4a7629d212f45e1c3f23351e33d2307833d0af",
+    "/i18n/es.js": "b78f039bea79119290a6426c10271456b9452796821b7e753abfef9344870ef3",
     "/settings.js": "1c2cf3ed92bf959c19ecde0107618b8d1ff0690d2c6fa7c842a2fdc551e05f72",
     "/updates.js": "7f87250cf6cd9c2b8944da632fe036d0c18a87a90f48f70b84e18bcd338cfa84",
     "/calls.js": "7bf67180b41dedc9dafaf0ce9e95413c7204ebd49da6de80c2133b27e17870c7",

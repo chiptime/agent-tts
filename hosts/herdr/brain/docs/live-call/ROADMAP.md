@@ -159,7 +159,7 @@ The streaming track (PRD-03..07) is a multi-PRD investment. PRD-09 evaluates the
 
 **Decision rule**: record build / buy / hybrid in this section, with the date and the criteria values that decided it. If "buy", PRD-03..07 are superseded by a new vendor-integration PRD and this roadmap is updated to point at it. The gate MUST NOT be passed by default: PRD-03+ work starts only after the decision is written here.
 
-**Decision**: _(pending PRD-09)_ —
+**Decision**: **build** — 2026-11-04, operator decision ("prefiero construir la solución"), taken without running the PRD-09 spike. Rationale: local-first audio and decisions, no per-minute vendor cost, no conflict with the hands-free PRD's "cloud-only proprietary vendor lock-in" non-goal. PRD-09 is not required to proceed; it stays available as an optional comparison. Trigger: on the Pixel 7 Pro the Browser engine's speech gate swallows the opening phrase ("tengo que hablar primero para que sepa que estoy hablando… ya se come una frase"), which no Web Speech tuning removes. The streaming track (PRD-03 → 04 → 05 → 07, PRD-06 in parallel) is open; each PRD still needs its own launch.
 
 ---
 
@@ -203,3 +203,34 @@ Every PRD in this roadmap verifies with the existing deterministic harness, plus
 - **V3 — real-device acceptance (manual)**: a checklist run on the Pixel 7 Pro PWA for the behaviors Chromium cannot produce (system earcons, audio focus, Bluetooth routing, screen-off). V3 signs off each PRD before it is considered done.
 
 No PRD in this roadmap is authorized for implementation by this document; each is a `draft` and launch is a separate, explicit decision.
+
+---
+
+## 11. Decision ledger (grill 2026-11-04)
+
+Closed with the operator before implementation. Owner "operator" = product decision; "agent" = technical, decided by measurement.
+
+| # | Decision | Owner |
+|---|---|---|
+| D1 | Socket failure falls back automatically to Servidor (segments) with a notice; an unreachable brain refuses the call | operator |
+| D2 | End of turn decided by a LOCAL detector first; GLM only as tie-breaker, only if measurements justify it | operator |
+| D3 | Never cutting the speaker wins over speed; first audio ≤ 1.5 s after the user finished | operator |
+| D4 | Short acknowledgements never interrupt, a phrase does; no verified AEC → no barge-in | operator |
+| D5 | Milestone 1 with the screen on (wake lock); screen-off later (PRD-08) | operator |
+| D6 | Frame size, STT window, VAD placement and detector internals decided by measurement | agent |
+| D7 | Whisper `large-v3`, reusing llm-hub's model files (no download); `small` as fallback | operator |
+| D8 | Language forced to the app locale + editable technical-vocabulary hint | operator |
+| D9 | Live partial text shown; raw audio never stored, only each turn's final text | operator |
+| D10 | Speech after a close: rejoins the turn before the answer starts, interrupts during it | operator |
+| D11 | Acceptance on the Pixel 7 Pro: 20 natural turns with zero cuts, first phrase intact, first audio ≤ 1.5 s, 5-minute call with no lost turn | operator |
+| D12 | llm-hub's model is reused, not its CPU `whisper-service` (too slow for live partials) | agent |
+| D13 | Whisper on the GPU sharing VRAM with Qwen; degrade to `small` with a notice when VRAM is short; headroom measured | operator |
+| D14 | Milestone 1 = PRD-03 + PRD-04 + PRD-05; milestone 2 = PRD-06 + PRD-07 | operator |
+| D15 | Third opt-in engine "Dictado: En vivo"; default only after Pixel acceptance | operator |
+| D16 | The two Browser-dictation fixes ship separately (commit 8749e73) | operator |
+| D17 | Branch `feat/live-call-streaming`, work-unit commits; `main` only after the Pixel acceptance | operator |
+| D18 | The local turn detector MAY take raw audio instead of partial transcripts; adoption still requires the FR-03/FR-04 no-cut evidence (local-only, no user audio/text leaves the machine) | operator |
+
+Accepted assumptions: the phone reaches the PC over Tailscale and the PC must be on; one device streams audio per call; GLM stays the LLM and the approval gate is unchanged.
+
+Status: PRD-03, PRD-04, PRD-05 **approved — milestone 1**. PRD-06, PRD-07 milestone 2. PRD-01/02/08/09 unchanged (PRD-09 optional after the build decision).

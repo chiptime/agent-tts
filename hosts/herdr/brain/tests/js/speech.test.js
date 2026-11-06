@@ -816,7 +816,9 @@ test("late continuations after a stop or restart never touch the new state", asy
 /* ---- app.js wiring (shape pins; behavior is E2E territory) --------------- */
 
 test("wiring: ask() mints the identity before /ask and sends it in the body", () => {
-  const start = appSrc.indexOf("function ask(text)");
+  const match = /function ask\s*\(\s*text(?:\s*,\s*opts)?\s*\)/.exec(appSrc);
+  assert.ok(match, "ask must accept the turn text");
+  const start = match.index;
   const end = appSrc.indexOf("speech recognition: browser engine");
   const region = appSrc.slice(start, end);
   assert.ok(region.includes("speechCtl.begin(sessionId)"));

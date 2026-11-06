@@ -300,6 +300,52 @@ test("no resume button when onResume is not provided", async () => {
   assert.equal(container.querySelector(".calls-resume-btn"), null);
 });
 
+test("detail shows the retake time when the call was resumed", async () => {
+  const doc = makeDoc();
+  const t = makeTranslator();
+  const callsData = {
+    calls: [
+      {
+        call_id: "call-9",
+        started_at: "2026-11-03T10:00:00Z",
+        ended_at: null,
+        duration_s: null,
+        turn_count: 3,
+        status: "open",
+        resumed_at: "2026-11-04T13:00:00Z",
+      },
+    ],
+    has_more: false,
+  };
+  const detailData = { call: callsData.calls[0], turns: [], has_more: false };
+
+  const http = (url) => {
+    if (url === "/calls" || url.startsWith("/calls?")) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(callsData) });
+    }
+    if (url === "/calls/call-9" || url.startsWith("/calls/call-9?")) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(detailData) });
+    }
+    return Promise.reject(new Error("unexpected: " + url));
+  };
+
+  const container = doc.createElement("div");
+  const ui = CallsModule.createCallsUI({ doc, http, t: t });
+  ui.mount(container);
+
+  await new Promise(resolve => setTimeout(resolve, 10));
+  container.querySelectorAll(".call-item")[0].click();
+  await new Promise(resolve => setTimeout(resolve, 10));
+
+  const resumedEl = container.querySelector(".call-meta-resumed");
+  assert.ok(resumedEl, "resumed marker renders in detail header");
+  assert.ok(resumedEl.textContent.includes("[calls.resumed_at]"));
+  assert.ok(resumedEl.textContent.includes("time="));
+  // The ORIGINAL start time stays as the call's time.
+  const header = container.querySelector(".calls-detail-header");
+  assert.ok(header.textContent.includes("[calls.resumed_at]"));
+});
+
 test("tapping a call opens detail view with transcript turns and back button", async () => {
   const doc = makeDoc();
   const t = makeTranslator();

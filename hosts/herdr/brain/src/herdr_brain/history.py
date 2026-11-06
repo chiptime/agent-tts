@@ -66,7 +66,9 @@ CREATE TABLE IF NOT EXISTS calls (
     ended_at TEXT,
     duration_s REAL,
     turn_count INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL
+    status TEXT NOT NULL,
+    resumed_at TEXT,
+    base_duration_s REAL NOT NULL DEFAULT 0
 )
 """
 
@@ -98,6 +100,20 @@ def _calc_duration_s(started_at: str, ended_at: str) -> float:
         except TypeError:
             pass
     return 0.0
+
+
+def _accumulated_duration_s(
+    started_at: str,
+    resumed_at: Optional[str],
+    base_duration_s: Optional[float],
+    closed_at: str,
+) -> float:
+    """Total ACTIVE duration at close: the accumulated base plus the
+    session that just ended — counted from ``resumed_at`` when the call
+    was retaken, else from the original ``started_at``. The gap between
+    sessions never counts."""
+    session = _calc_duration_s(resumed_at or started_at, closed_at)
+    return max(0.0, base_duration_s or 0.0) + session
 
 
 def is_strictly_older(ts: str, before_ts: str) -> bool:
@@ -193,25 +209,7 @@ class HistoryStore:
             conn = self._connect()
             try:
                 with conn:
-                    open_rows = conn.execute(
-                        "SELECT call_id, started_at FROM calls WHERE status = 'open'"
-                    ).fetchall()
-                    for cid, s_at in open_rows:
-                        last_turn = conn.execute(
-                            "SELECT ts FROM turns WHERE call_id = ? ORDER BY id DESC LIMIT 1",
-                            (cid,),
-                        ).fetchone()
-                        e_at = last_turn[0] if last_turn is not None else s_at
-                        dur = _calc_duration_s(s_at, e_at)
-                        cnt = int(conn.execute(
-                            "SELECT COUNT(*) FROM turns WHERE call_id = ?",
-                            (cid,),
-                        ).fetchone()[0])
-                        conn.execute(
-                            "UPDATE calls SET ended_at = ?, duration_s = ?, turn_count = ?, status = 'interrupted' WHERE call_id = ?",
-                            (e_at, dur, cnt, cid),
-                        )
-
+                    self._interrupt_dangling(conn)
                     new_id = f"call-{uuid.uuid4().hex[:16]}"
                     now_ts = _utc_now_iso()
                     conn.execute(
@@ -225,6 +223,10 @@ class HistoryStore:
     def end_call(self, call_id: str) -> dict:
         """Finalizes an open call record with duration, turn count, and status 'ended'.
 
+        Duration is the ACCUMULATED active time across sessions when the
+        call was resumed: base (previous sessions) + the one just closed.
+        The gap between sessions never counts.
+
         Raises KeyError if call_id is unknown.
         Raises ValueError if call is already closed.
         """
@@ -234,17 +236,17 @@ class HistoryStore:
             conn = self._connect()
             try:
                 row = conn.execute(
-                    "SELECT call_id, started_at, status FROM calls WHERE call_id = ?",
+                    "SELECT call_id, started_at, status, resumed_at, base_duration_s FROM calls WHERE call_id = ?",
                     (call_id,),
                 ).fetchone()
                 if row is None:
                     raise KeyError(f"unknown call_id: {call_id}")
-                cid, s_at, status = row
+                cid, s_at, status, r_at, base = row
                 if status != "open":
                     raise ValueError(f"call {call_id} already closed with status '{status}'")
 
                 now_ts = _utc_now_iso()
-                dur = _calc_duration_s(s_at, now_ts)
+                dur = _accumulated_duration_s(s_at, r_at, base, now_ts)
                 cnt = int(conn.execute(
                     "SELECT COUNT(*) FROM turns WHERE call_id = ?",
                     (call_id,),
@@ -261,6 +263,7 @@ class HistoryStore:
                     "duration_s": dur,
                     "turn_count": cnt,
                     "status": "ended",
+                    "resumed_at": r_at,
                 }
             finally:
                 conn.close()
@@ -269,9 +272,12 @@ class HistoryStore:
         """Reopens one call as the ACTIVE call ("volver a una llamada anterior").
 
         Other dangling open calls are closed as interrupted exactly like
-        :meth:`start_call` would; the target then reopens — a CLOSED call
-        gets a fresh ``started_at`` (duration counts the resumed session,
-        not the gap between calls), an already-OPEN one keeps its window.
+        :meth:`start_call` would. The target keeps its ORIGINAL
+        ``started_at`` — a retake is not a new call — and records
+        ``resumed_at`` (the retake moment) apart, freezing its
+        accumulated duration in ``base_duration_s`` so the final total
+        counts ACTIVE time only, never the gap between sessions. An
+        already-OPEN target keeps its timing untouched (same session).
         Returns the call metadata plus the call's RAW (unmasked) turns,
         oldest first, so the caller can reseed the conversation ring.
 
@@ -283,40 +289,24 @@ class HistoryStore:
             conn = self._connect()
             try:
                 row = conn.execute(
-                    "SELECT call_id, started_at, status FROM calls WHERE call_id = ?",
+                    "SELECT call_id, status, duration_s, base_duration_s FROM calls WHERE call_id = ?",
                     (call_id,),
                 ).fetchone()
                 if row is None:
                     raise KeyError(f"unknown call_id: {call_id}")
-                cid, _s_at, status = row
+                cid, status, dur_s, base_s = row
                 with conn:
-                    open_rows = conn.execute(
-                        "SELECT call_id, started_at FROM calls "
-                        "WHERE status = 'open' AND call_id != ?",
-                        (cid,),
-                    ).fetchall()
-                    for other_id, other_started in open_rows:
-                        last_turn = conn.execute(
-                            "SELECT ts FROM turns WHERE call_id = ? ORDER BY id DESC LIMIT 1",
-                            (other_id,),
-                        ).fetchone()
-                        e_at = last_turn[0] if last_turn is not None else other_started
-                        dur = _calc_duration_s(other_started, e_at)
-                        cnt = int(conn.execute(
-                            "SELECT COUNT(*) FROM turns WHERE call_id = ?",
-                            (other_id,),
-                        ).fetchone()[0])
-                        conn.execute(
-                            "UPDATE calls SET ended_at = ?, duration_s = ?, turn_count = ?, status = 'interrupted' WHERE call_id = ?",
-                            (e_at, dur, cnt, other_id),
-                        )
+                    self._interrupt_dangling(conn, exclude_call_id=cid)
                     if status != "open":
+                        accumulated = dur_s if dur_s is not None else (base_s or 0.0)
                         conn.execute(
-                            "UPDATE calls SET started_at = ?, ended_at = NULL, duration_s = NULL, status = 'open' WHERE call_id = ?",
-                            (_utc_now_iso(), cid),
+                            "UPDATE calls SET ended_at = NULL, duration_s = NULL, "
+                            "status = 'open', resumed_at = ?, base_duration_s = ? "
+                            "WHERE call_id = ?",
+                            (_utc_now_iso(), accumulated, cid),
                         )
                     meta = conn.execute(
-                        "SELECT call_id, started_at, ended_at, duration_s, turn_count, status FROM calls WHERE call_id = ?",
+                        "SELECT call_id, started_at, ended_at, duration_s, turn_count, status, resumed_at FROM calls WHERE call_id = ?",
                         (cid,),
                     ).fetchone()
                     turn_rows = conn.execute(
@@ -332,6 +322,7 @@ class HistoryStore:
             "duration_s": meta[3],
             "turn_count": meta[4],
             "status": meta[5],
+            "resumed_at": meta[6],
         }
         turns = [
             {"ts": ts, "role": role, "text": text} for ts, role, text in turn_rows
@@ -346,7 +337,7 @@ class HistoryStore:
             conn = self._connect()
             try:
                 row = conn.execute(
-                    "SELECT call_id, started_at, ended_at, duration_s, turn_count, status FROM calls WHERE call_id = ?",
+                    "SELECT call_id, started_at, ended_at, duration_s, turn_count, status, resumed_at FROM calls WHERE call_id = ?",
                     (call_id,),
                 ).fetchone()
                 if row is None:
@@ -358,6 +349,7 @@ class HistoryStore:
                     "duration_s": row[3],
                     "turn_count": row[4],
                     "status": row[5],
+                    "resumed_at": row[6],
                 }
             finally:
                 conn.close()
@@ -376,7 +368,7 @@ class HistoryStore:
             conn = self._connect()
             try:
                 rows = conn.execute(
-                    "SELECT call_id, started_at, ended_at, duration_s, turn_count, status FROM calls ORDER BY started_at DESC, rowid DESC"
+                    "SELECT call_id, started_at, ended_at, duration_s, turn_count, status, resumed_at FROM calls ORDER BY started_at DESC, rowid DESC"
                 ).fetchall()
             finally:
                 conn.close()
@@ -389,6 +381,7 @@ class HistoryStore:
                 "duration_s": r[3],
                 "turn_count": r[4],
                 "status": r[5],
+                "resumed_at": r[6],
             }
             for r in rows
         ]
@@ -493,6 +486,36 @@ class HistoryStore:
 
     # -- internals (callers already hold the lock) --------------------
 
+    def _interrupt_dangling(
+        self, conn: sqlite3.Connection, exclude_call_id: Optional[str] = None
+    ) -> None:
+        """Closes every OPEN call (except ``exclude_call_id``) as
+        interrupted with accumulated ACTIVE duration. The caller owns
+        the surrounding transaction."""
+        query = (
+            "SELECT call_id, started_at, resumed_at, base_duration_s "
+            "FROM calls WHERE status = 'open'"
+        )
+        params: tuple = ()
+        if exclude_call_id is not None:
+            query += " AND call_id != ?"
+            params = (exclude_call_id,)
+        for cid, s_at, r_at, base in conn.execute(query, params).fetchall():
+            last_turn = conn.execute(
+                "SELECT ts FROM turns WHERE call_id = ? ORDER BY id DESC LIMIT 1",
+                (cid,),
+            ).fetchone()
+            e_at = last_turn[0] if last_turn is not None else (r_at or s_at)
+            dur = _accumulated_duration_s(s_at, r_at, base, e_at)
+            cnt = int(conn.execute(
+                "SELECT COUNT(*) FROM turns WHERE call_id = ?",
+                (cid,),
+            ).fetchone()[0])
+            conn.execute(
+                "UPDATE calls SET ended_at = ?, duration_s = ?, turn_count = ?, status = 'interrupted' WHERE call_id = ?",
+                (e_at, dur, cnt, cid),
+            )
+
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self._path)
 
@@ -509,6 +532,19 @@ class HistoryStore:
                 if "call_id" not in columns:
                     conn.execute("ALTER TABLE turns ADD COLUMN call_id TEXT")
                 conn.execute(_INDEX_TURNS_CALL_ID)
+                # Resume semantics (retomar): the retake moment and the
+                # frozen accumulated duration. Existing databases gain
+                # the columns with identity-preserving defaults (NULL /
+                # 0), so old rows behave exactly as before.
+                call_columns = {
+                    row[1] for row in conn.execute("PRAGMA table_info(calls)").fetchall()
+                }
+                if "resumed_at" not in call_columns:
+                    conn.execute("ALTER TABLE calls ADD COLUMN resumed_at TEXT")
+                if "base_duration_s" not in call_columns:
+                    conn.execute(
+                        "ALTER TABLE calls ADD COLUMN base_duration_s REAL NOT NULL DEFAULT 0"
+                    )
         finally:
             conn.close()
 

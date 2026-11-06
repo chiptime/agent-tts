@@ -69,6 +69,11 @@ daemons do not source them, so the env file is the single stable contract.
 | `HERDR_BRAIN_VOICE` / `HERDR_BRAIN_RATE` / `HERDR_BRAIN_MAX_CHARS` | `elvira` / `+0%` / `300` | synthesis knobs |
 | `HERDR_BRAIN_TTS_ARGS` | *(empty)* | extra engine flags (e.g. `--piper`, `--tldr`) |
 | `HERDR_BRAIN_AUDIO_DIR` | `~/.local/state/herdr-brain/audio` | rendered mp3 directory |
+| `HERDR_BRAIN_STT_BACKEND` | `hub` | `hub` delegates batch and live STT; `engine` retains the external worker for batch; `builtin` explicitly enables in-process models |
+| `HERDR_BRAIN_WHISPER_WS_URL` | `ws://127.0.0.1:8765/ws/transcribe` | llm-hub-whisper transcription WebSocket |
+| `HERDR_BRAIN_WHISPER_HEALTH_URL` | `http://127.0.0.1:8766/health` | llm-hub-whisper health endpoint |
+| `HERDR_BRAIN_LIVE_STT_MODEL` / `DEVICE` / `COMPUTE` / `FALLBACK_MODEL` | `large-v3` / `cuda` / `int8_float16` / `small` | Local live-model settings used only when `HERDR_BRAIN_STT_BACKEND=builtin` |
+| `HERDR_BRAIN_LIVE_STT_VOCABULARY` | `commit, push, PR, rama, herdr, opencode` | technical-vocabulary recognition hint for live partial transcription (D8): comma/space separated terms, whitespace-only disables the hint; bounded to 60 terms / 300 characters |
 | `HERDR_BRAIN_PROMPT_TIMEOUT_MS` | `180000` | default wait for `send_to_session` |
 | `HERDR_BRAIN_MAX_TOOL_ROUNDS` | `4` | LLM tool-loop guard |
 | `HERDR_BRAIN_SCREEN_LINES` | `40` | default visible lines for `read_screen` |
@@ -1103,7 +1108,17 @@ Voice turns are **self-endpointed**: the call's silence window grows from
 45-second recorder segments in order and sends one combined turn after the
 user finishes; a failed or unrecognized segment prevents sending an
 incomplete turn. After a phrase ends, speech that resumes within a
-1.5-second continuation window joins the same turn. The engine (Settings →
+1.5-second continuation window joins the same turn. The live engine
+("Dictado: En vivo") extends that idea across the whole pre-answer gap:
+its streaming capture stays armed while the turn's transcript is computed
+and its `/ask` is in flight, so speech resuming after the close but before
+the answer starts rejoins the same turn — the in-flight ask is cancelled
+and the whole utterance re-dispatches as one turn (speech during playback
+is barge-in, milestone 2). It also asks the brain for speech/silence
+framing. The default hub backend uses the client energy fallback without local weights; builtin can use Silero, whose framing can
+only defer a silence close, falls back to the energy windows when
+unavailable, and the diagnostics overlay reports which VAD is active — the
+semantic end-of-turn detector is not installed yet. The engine (Settings →
 "Call transcription") stays selectable; on Android the Browser engine
 starts Web Speech only when speech begins, so its beep marks a turn instead
 of looping while idle. A continuously active turn is capped at 10 minutes with a

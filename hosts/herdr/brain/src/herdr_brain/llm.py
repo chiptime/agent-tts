@@ -408,6 +408,13 @@ class BrainLLM:
         an abandoned turn can never open a gate, run a further tool or
         land in the ring. Injected synchronous fakes cannot be killed
         in Python; for them the cooperative checks remain the guard.
+        A gate the turn DID open before the abort is retired with it
+        (``cancel_proposed``: identity- and revision-scoped), so an
+        unexplained proposal never lingers as the session's live gate.
+        A turn that completes stages its ring pair instead of appending
+        (L34): the result's ``ring_commit`` carries the staging and the
+        CALLER lands it at its own commit boundary — a rejected turn
+        never touches the ring, so it can never evict earlier context.
         """
         store = self._store or ConversationStore()
         key = ConversationStore.normalize(session_id)
@@ -438,72 +445,94 @@ class BrainLLM:
 
         answer: Optional[str] = None
         opened_gate: Optional[ApprovalGate] = None
-        provider = self._open_provider(cancel_event)
         try:
-            for _ in range(self._settings.max_tool_rounds + 1):
-                if aborted():
-                    raise TurnCancelled("client disconnected before the model round")
-                response = provider.create(
-                    model=self._settings.glm_model,
-                    # Provider boundary (S14): EVERY outbound request
-                    # carries a masked copy — live context, ring history,
-                    # the user turn, tool results and the model's own
-                    # echoed call arguments. The working `messages` list
-                    # and every store keep their raw bytes.
-                    messages=self._masked_for_provider(messages),
-                    tools=TOOLS_SCHEMA,
-                    tool_choice="auto",
-                )
-                choice = response.choices[0].message
-                if not getattr(choice, "tool_calls", None):
-                    answer = (choice.content or "").strip()
-                    break
-
-                messages.append(
-                    {
-                        "role": "assistant",
-                        "content": choice.content,
-                        "tool_calls": [
-                            {
-                                "id": call.id,
-                                "type": "function",
-                                "function": {
-                                    "name": call.function.name,
-                                    "arguments": call.function.arguments,
-                                },
-                            }
-                            for call in choice.tool_calls
-                        ],
-                    }
-                )
-                for call in choice.tool_calls:
+            provider = self._open_provider(cancel_event)
+            try:
+                for _ in range(self._settings.max_tool_rounds + 1):
                     if aborted():
-                        raise TurnCancelled("client disconnected before a tool call")
-                    result, gate = self._invoke(call, session_key=key, turn_text=question)
-                    if gate is not None:
-                        opened_gate = gate
-                    # A voice switch mid-turn retargets the REST of the
-                    # turn (a same-turn gated send freezes on the new pane).
-                    switched = getattr(self._tools, "turn_switch", None)
-                    if callable(switched):
-                        switched = switched()
-                    if switched is not None:
-                        self._request_target = switched
-                    messages.append(
-                        {"role": "tool", "tool_call_id": call.id, "content": result}
+                        raise TurnCancelled("client disconnected before the model round")
+                    response = provider.create(
+                        model=self._settings.glm_model,
+                        # Provider boundary (S14): EVERY outbound request
+                        # carries a masked copy — live context, ring history,
+                        # the user turn, tool results and the model's own
+                        # echoed call arguments. The working `messages` list
+                        # and every store keep their raw bytes.
+                        messages=self._masked_for_provider(messages),
+                        tools=TOOLS_SCHEMA,
+                        tool_choice="auto",
                     )
-            else:
-                answer = answer or ""
-        finally:
-            provider.close()
+                    choice = response.choices[0].message
+                    if not getattr(choice, "tool_calls", None):
+                        answer = (choice.content or "").strip()
+                        break
 
-        if not answer:
-            answer = "I could not put together an answer right now; try again or rephrase."
+                    messages.append(
+                        {
+                            "role": "assistant",
+                            "content": choice.content,
+                            "tool_calls": [
+                                {
+                                    "id": call.id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": call.function.name,
+                                        "arguments": call.function.arguments,
+                                    },
+                                }
+                                for call in choice.tool_calls
+                            ],
+                        }
+                    )
+                    for call in choice.tool_calls:
+                        if aborted():
+                            raise TurnCancelled("client disconnected before a tool call")
+                        result, gate = self._invoke(call, session_key=key, turn_text=question)
+                        if gate is not None:
+                            opened_gate = gate
+                        # A voice switch mid-turn retargets the REST of the
+                        # turn (a same-turn gated send freezes on the new pane).
+                        switched = getattr(self._tools, "turn_switch", None)
+                        if callable(switched):
+                            switched = switched()
+                        if switched is not None:
+                            self._request_target = switched
+                        messages.append(
+                            {"role": "tool", "tool_call_id": call.id, "content": result}
+                        )
+                else:
+                    answer = answer or ""
+            finally:
+                provider.close()
 
-        if aborted():
-            raise TurnCancelled("client disconnected before the turn was stored")
-        store.append(key, "user", question)
-        store.append(key, "assistant", answer)
+            if not answer:
+                answer = "I could not put together an answer right now; try again or rephrase."
+
+            if aborted():
+                raise TurnCancelled("client disconnected before the turn was stored")
+        except TurnCancelled:
+            # An abandoned turn's gate dies with it (S7): its explanation
+            # reached nobody, so the proposal must not survive as the
+            # session's live gate. Identity- and revision-scoped under
+            # the approval store's lock — a gate another client already
+            # resolved or patched, or a newer turn's gate, is never
+            # touched, and an executed approval is never undone.
+            self._retire_cancelled_gate(opened_gate)
+            raise
+        # Ring commit (S7/L34): a CANCELLABLE turn stages its pair and
+        # hands the staging to its caller — the shared ring is touched
+        # only at the caller's commit boundary, so a rejected turn never
+        # lands and never evicts (at full capacity the eviction of older
+        # context would be real and unrecoverable). Uncancellable turns
+        # (approve replays, plain calls) keep the classic inline append.
+        staged = None
+        if cancel_event is not None:
+            staged = store.stage_turn(key)
+            staged.append("user", question)
+            staged.append("assistant", answer)
+        else:
+            store.append(key, "user", question)
+            store.append(key, "assistant", answer)
 
         response = {
             # The answer leaves masked (S14) — it is the /ask response
@@ -515,6 +544,12 @@ class BrainLLM:
             "session_id": key,
             "approval": opened_gate,
         }
+        if staged is not None:
+            # Commit receipt (S7): the staging that owns this turn's
+            # ring pair. The /ask caller commits it at its boundary (or
+            # aborts it on rejection — nothing ever landed). Shaped
+            # responses never forward this key to the wire.
+            response["ring_commit"] = staged
         # Additive routing payload (S5/S7): the pane a voice switch
         # pointed the call at, so the client applies the selection.
         switched = getattr(self._tools, "turn_switch", None)
@@ -527,6 +562,20 @@ class BrainLLM:
                 "title": mask_text(switched.title or ""),
             }
         return response
+
+    def _retire_cancelled_gate(self, gate: Optional[ApprovalGate]) -> None:
+        """Retires the gate THIS cancelled turn proposed, if any.
+
+        Delegates to the approval store's identity-scoped
+        ``cancel_proposed`` (revision-checked under the store lock); the
+        getattr guard keeps injected store doubles without the seam
+        working — the same convention as the tools ``begin_turn`` probe.
+        """
+        if gate is None or self._approval_store is None:
+            return
+        retire = getattr(self._approval_store, "cancel_proposed", None)
+        if callable(retire):
+            retire(gate.gate_id, expected_revision=gate.revision)
 
     @staticmethod
     def _masked_for_provider(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

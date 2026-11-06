@@ -98,12 +98,12 @@ DEFAULT_MAX_TOOL_ROUNDS = 4
 # expiry check on every gate touch — no background timer thread.
 DEFAULT_APPROVAL_TIMEOUT_S = 60
 
-# Speech-to-text backend (F4.10 migration): "engine" delegates to the
-# agent-tts resident worker through its CLI (the default since the
-# migration); "builtin" is the documented escape hatch back to the
-# legacy in-process faster-whisper Transcriber.
-DEFAULT_STT_BACKEND = "engine"
-STT_BACKENDS = ("engine", "builtin")
+# Hub is model-free in this process; engine is the legacy external worker
+# and builtin explicitly opts into in-process inference.
+DEFAULT_STT_BACKEND = "hub"
+STT_BACKENDS = ("hub", "engine", "builtin")
+DEFAULT_WHISPER_WS_URL = "ws://127.0.0.1:8765/ws/transcribe"
+DEFAULT_WHISPER_HEALTH_URL = "http://127.0.0.1:8766/health"
 
 # Local opencode server (the process that owns the agent sessions, started
 # by the user as `opencode web --port 4096`). Brain answers an agent's
@@ -119,6 +119,27 @@ DEFAULT_OPENCODE_URL = "http://127.0.0.1:4096"
 DEFAULT_STT_MODEL = "small"
 DEFAULT_STT_DEVICE = "auto"
 DEFAULT_STT_COMPUTE = "auto"
+
+# Legacy builtin live-model settings; the default hub backend ignores them.
+DEFAULT_LIVE_STT_MODEL = "large-v3"
+# D13: share the GPU (with Qwen) using the lowest-memory compute type that
+# keeps live partials; degrade to the fallback model when VRAM is short.
+DEFAULT_LIVE_STT_DEVICE = "cuda"
+DEFAULT_LIVE_STT_COMPUTE = "int8_float16"
+DEFAULT_LIVE_STT_FALLBACK_MODEL = "small"
+
+# Local semantic turn completion (PRD-05 FR-02 amended, D18). Smart Turn
+# v3.2 CPU ONNX, audio-native and local-only; ADVISORY, never the turn
+# decision owner (D3). Default OFF until the Pixel no-cut evidence exists;
+# the weights are runtime state (never the repository) pulled by
+# scripts/fetch-smart-turn.sh. Threshold 0.5 mirrors the reference.
+DEFAULT_SMART_TURN_MODEL = str(
+    Path(DEFAULT_STATE_DIR).expanduser()
+    / "models"
+    / "smart-turn-v3.2-cpu.onnx"
+)
+DEFAULT_SMART_TURN_ENABLED = False
+DEFAULT_SMART_TURN_THRESHOLD = 0.5
 
 # Reader (formatted conversation rendering). Distinct from tts_timeout_s
 # (240 s, calibrated for speech): an interactive reader turn is a fast
@@ -199,6 +220,8 @@ class Settings:
     # existing construction.
     brain_port: int = DEFAULT_BRAIN_PORT
     stt_backend: str = DEFAULT_STT_BACKEND
+    whisper_ws_url: str = DEFAULT_WHISPER_WS_URL
+    whisper_health_url: str = DEFAULT_WHISPER_HEALTH_URL
     # Crew federation (S7): appended WITH defaults like every knob above
     # (tests construct Settings(**SETTINGS_KWARGS)). The crew listener
     # is built from these only when the roster declares a crew.
@@ -240,6 +263,22 @@ class Settings:
     # in audit.py survives). Appended WITH a default like every knob
     # above: tests construct Settings(**SETTINGS_KWARGS).
     audit_content: str = DEFAULT_AUDIT_CONTENT
+    # ── Live engine STT (S4, D7/D12/D13) ──
+    # Appended WITH a default like the knobs above. The live engine's
+    # dedicated in-process model — a faster-whisper size name, a snapshot
+    # dir, or an HF repo cache dir (resolved to its snapshot in stt.py);
+    # loaded strictly from local files. See the DEFAULT_LIVE_STT_* block
+    # for the never-download and degrade-once policy.
+    live_stt_model: str = DEFAULT_LIVE_STT_MODEL
+    live_stt_device: str = DEFAULT_LIVE_STT_DEVICE
+    live_stt_compute: str = DEFAULT_LIVE_STT_COMPUTE
+    live_stt_fallback_model: str = DEFAULT_LIVE_STT_FALLBACK_MODEL
+    # ── Local semantic turn completion (PRD-05 FR-02 amended, D18) ──
+    # Appended WITH defaults like every knob above. Default OFF; the model
+    # path is runtime state and the detector is advisory only.
+    smart_turn_model: str = DEFAULT_SMART_TURN_MODEL
+    smart_turn_enabled: bool = DEFAULT_SMART_TURN_ENABLED
+    smart_turn_threshold: float = DEFAULT_SMART_TURN_THRESHOLD
 
     def __post_init__(self):
         # Accept plain strings for path fields regardless of the caller.
@@ -292,6 +331,19 @@ def _split_csv(raw: str) -> tuple:
 def _flag(env: dict, name: str) -> bool:
     """Truthy spellings for boolean env toggles (1/true/yes)."""
     return str(env.get(name, "")).strip().lower() in ("1", "true", "yes")
+
+
+def _parse_probability(raw: str, source: str) -> float:
+    """A probability knob in [0, 1]; a typo fails loudly at load time."""
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ValueError(
+            f"invalid {source} value {raw!r}: expected a number in [0, 1]"
+        ) from None
+    if not 0.0 <= value <= 1.0:
+        raise ValueError(f"invalid {source} value {raw!r}: expected 0-1")
+    return value
 
 
 def load_settings(env: Optional[dict] = None) -> Settings:
@@ -398,6 +450,8 @@ def load_settings(env: Optional[dict] = None) -> Settings:
         engram_db=getenv("HERDR_BRAIN_ENGRAM_DB") or None,
         brain_port=brain_port,
         stt_backend=raw_backend,
+        whisper_ws_url=getenv("HERDR_BRAIN_WHISPER_WS_URL", DEFAULT_WHISPER_WS_URL),
+        whisper_health_url=getenv("HERDR_BRAIN_WHISPER_HEALTH_URL", DEFAULT_WHISPER_HEALTH_URL),
         crew_port=_parse_brain_port(
             getenv("HERDR_BRAIN_CREW_PORT", str(DEFAULT_CREW_PORT)),
             "HERDR_BRAIN_CREW_PORT",
@@ -416,4 +470,23 @@ def load_settings(env: Optional[dict] = None) -> Settings:
         device_header=getenv("HERDR_BRAIN_DEVICE_HEADER").strip(),
         device_allowlist=_split_csv(getenv("HERDR_BRAIN_DEVICE_ALLOWLIST")),
         audit_content=raw_audit_content,
+        # ── Live engine STT (S4) ──
+        live_stt_model=getenv("HERDR_BRAIN_LIVE_STT_MODEL", DEFAULT_LIVE_STT_MODEL),
+        live_stt_device=getenv("HERDR_BRAIN_LIVE_STT_DEVICE", DEFAULT_LIVE_STT_DEVICE),
+        live_stt_compute=getenv("HERDR_BRAIN_LIVE_STT_COMPUTE", DEFAULT_LIVE_STT_COMPUTE),
+        live_stt_fallback_model=getenv(
+            "HERDR_BRAIN_LIVE_STT_FALLBACK_MODEL", DEFAULT_LIVE_STT_FALLBACK_MODEL
+        ),
+        # ── Local semantic turn completion (PRD-05 FR-02 amended, D18) ──
+        smart_turn_model=getenv(
+            "HERDR_BRAIN_SMART_TURN_MODEL", DEFAULT_SMART_TURN_MODEL
+        ),
+        smart_turn_enabled=_flag(environ, "HERDR_BRAIN_SMART_TURN_ENABLED"),
+        smart_turn_threshold=_parse_probability(
+            getenv(
+                "HERDR_BRAIN_SMART_TURN_THRESHOLD",
+                str(DEFAULT_SMART_TURN_THRESHOLD),
+            ),
+            "HERDR_BRAIN_SMART_TURN_THRESHOLD",
+        ),
     )
