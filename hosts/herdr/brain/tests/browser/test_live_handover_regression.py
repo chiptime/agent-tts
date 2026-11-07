@@ -114,7 +114,10 @@ class Device:
         self.page.wait_for_function("() => document.getElementById('pane-picker-label').textContent !== 'Cargando…'")
         self.page.wait_for_timeout(150)
     def wait_ask(self):
-        self.page.wait_for_timeout(6000)
+        # The real fake-microphone utterance ends at ~2 s, then the server
+        # endpointer may wait 4.5 s plus a 1.5 s continuation window. Keep
+        # observing the whole window even in tests asserting no request.
+        self.page.wait_for_timeout(12000)
         return [json.loads(body) for method,path,body in self.requests if method=="POST" and path=="/ask"]
 
 @pytest.mark.parametrize("direction", ["forward", "reverse-paused"])

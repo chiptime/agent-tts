@@ -448,7 +448,9 @@ class KaraokeHarness:
 def pytest_configure(config):
     RUNTIME.mkdir(parents=True, exist_ok=True)
     config._karaoke_output = Path(tempfile.mkdtemp(prefix="run-", dir=RUNTIME))
-    config.option.output = str(config._karaoke_output)
+    # pytest-playwright may delete its output in a mixed browser/e2e run;
+    # keep that cleanup confined to a child, never the harness artifact root.
+    config.option.output = str(config._karaoke_output / "playwright-output")
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -458,8 +460,18 @@ def delete_output_dir():
 
 @pytest.fixture(scope="session")
 def browser_type_launch_args(browser_type_launch_args, pytestconfig):
+    # In a mixed browser+e2e session this fixture instantiates FIRST and the
+    # cached session browser outlives the e2e conftest's own launch-args
+    # override, so the autoplay flag must ride here too — e2e drives
+    # player.play() programmatically (no user gesture) and would otherwise
+    # stall on every wait. Harness media tests stub HTMLMediaElement, so the
+    # relaxed policy changes nothing for them.
+    args = list(browser_type_launch_args.get("args") or [])
+    if "--autoplay-policy=no-user-gesture-required" not in args:
+        args.append("--autoplay-policy=no-user-gesture-required")
     return {
         **browser_type_launch_args,
+        "args": args,
         "downloads_path": str(pytestconfig._karaoke_output / "downloads"),
         "traces_dir": str(pytestconfig._karaoke_output / "traces"),
     }

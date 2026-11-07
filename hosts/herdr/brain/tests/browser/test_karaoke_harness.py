@@ -38,8 +38,8 @@ EXPECTED_DIGESTS = {
     # indexes the turn and plays in-browser, server audio stops); then for
     # the live call engine (stream-uplink.js script tag, the En vivo engine
     # and its fallback notices in app.js + both i18n).
-    "/": "da8f528697640998a3f366ef3cabfc75611661d5bad4d2c18bcb18f4d738faee",
-    "/app.js": "d980f61f44bcf5fdb1ade13844a8fc17cae18dd2ccf66a280adccbc4f7701c1a",
+    "/": "d8c570142a4ecd1c1a84509ea3ac7daf9291f7c6475194ac38566f553287e3d9",
+    "/app.js": "21a5daba262ce4bed9b25ff60ba8c2bc73c522316c365f4a57352ab31d53a975",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "ca7b22c52c8160a3ac577f694eb65ec0798b77cd6ac179a5c567dffdc1fb2ba9",
     "/dialogs.js": "0e5b6afde7ef662591f66fc69891e3b1ec343fafe0d2c5be8fbef0c5a124a4c0",
@@ -60,11 +60,11 @@ EXPECTED_DIGESTS = {
     # update notice, operator dock, offline-shell sw.js.
     "/dock.js": "4a5dc20d575c3c9e5f098116fc9314f24297b2934cb3142bc885b6e1d0155adb",
     "/i18n.js": "8bcd2ceb9f56109afaa0ec158e1a6f002799c4a983261b9d58cd38723c06719f",
-    "/i18n/en.js": "e88ea08775d4687ca50f292b5b4a7629d212f45e1c3f23351e33d2307833d0af",
-    "/i18n/es.js": "b78f039bea79119290a6426c10271456b9452796821b7e753abfef9344870ef3",
+    "/i18n/en.js": "ab41217063cdc3a27d8eeb576b07df424d66bea5409a67ecabf9ad9cef10c00b",
+    "/i18n/es.js": "31dd0dac51c9c4db6ea4beab3da55bf3892212cf7bd99f05146f01a558716d8e",
     "/settings.js": "1c2cf3ed92bf959c19ecde0107618b8d1ff0690d2c6fa7c842a2fdc551e05f72",
     "/updates.js": "7f87250cf6cd9c2b8944da632fe036d0c18a87a90f48f70b84e18bcd338cfa84",
-    "/calls.js": "7bf67180b41dedc9dafaf0ce9e95413c7204ebd49da6de80c2133b27e17870c7",
+    "/calls.js": "9b9ec591709d282c6e673770b2ffc1ed1562650104d8e8393126d186aa764165",
 }
 
 
