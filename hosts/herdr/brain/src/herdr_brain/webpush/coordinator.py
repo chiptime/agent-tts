@@ -5,7 +5,7 @@ service wires the sink to encrypted fan-out. The cycle a notification
 lives through (doc 08):
 
 - **Coalesce**: transitions arriving inside a short window become ONE
-  summary per kind (``blocked`` and ``done`` never share a title), the
+  summary per kind (``blocked``, ``done`` and ``error`` never share a title), the
   agent named when alone, counted when several.
 - **Cancel**: a pane handled inside the window never reaches the phone.
 - **Retract**: once delivered, a handled pane retracts — the slot
@@ -33,7 +33,7 @@ TEST_TAG = "brain-test"
 PAYLOAD_VERSION = 1
 
 #: Statuses the coordinator reacts to (the watcher's announcement set).
-HANDLED_STATUSES = ("blocked", "done")
+HANDLED_STATUSES = ("blocked", "done", "error")
 
 
 @dataclass
@@ -71,6 +71,10 @@ def _summary_payload(transition: _Transition) -> dict:
             payload["question"] = transition.question
         if transition.gate_id:
             payload["actions"] = _gate_actions(transition.gate_id)
+    elif transition.status == "error":
+        # The watcher passes the error message in the question slot.
+        payload["title"] = f"{transition.label} se detuvo por un error"
+        payload["body"] = transition.question or transition.text or "Se detuvo por un error."
     else:
         payload["title"] = f"{transition.label} terminó"
         payload["body"] = transition.text or "Tarea terminada."
@@ -84,6 +88,9 @@ def _plural_payload(status: str, transitions: List[_Transition]) -> dict:
     if status == "blocked":
         title = f"{count} agentes bloqueados"
         body = "Te necesitan: " + ", ".join(labels)
+    elif status == "error":
+        title = f"{count} agentes se detuvieron por un error"
+        body = "Con error: " + ", ".join(labels)
     else:
         title = f"{count} agentes terminaron"
         body = "Terminaron: " + ", ".join(labels)

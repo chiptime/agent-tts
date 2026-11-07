@@ -160,7 +160,8 @@ function pushNotificationOptions(payload) {
   var options = {
     tag: data.tag || "brain-herd",
     data: { paneId: data.pane_id || null, gate: null },
-    requireInteraction: data.kind === "blocked"
+    /* blocked and error both mean an agent stopped and needs the human. */
+    requireInteraction: data.kind === "blocked" || data.kind === "error"
   };
   if (data.body) options.body = data.body;
   if (data.actions && data.actions.length) {

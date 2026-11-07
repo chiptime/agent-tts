@@ -145,3 +145,32 @@ def test_tick_without_pending_sends_nothing(captured):
     coord = NotificationCoordinator(window_s=WINDOW, clock=lambda: 100.0, sink=sink)
     coord.tick(now=200.0)
     assert events == []
+
+
+def test_single_error_agent_says_it_stopped_with_the_error(captured):
+    events, sink = captured
+    coord = NotificationCoordinator(window_s=WINDOW, clock=lambda: 100.0, sink=sink)
+    coord.transition(
+        "p1", "opencode repo", "error",
+        text="opencode repo se detuvo por un error: The usage limit has been reached",
+        question="The usage limit has been reached", now=100.0,
+    )
+    coord.tick(now=100.0 + WINDOW + 0.1)
+    payload = events[0]["payload"]
+    assert payload["kind"] == "error"
+    assert payload["pane_id"] == "p1"
+    assert payload["title"] == "opencode repo se detuvo por un error"
+    assert payload["body"] == "The usage limit has been reached"
+
+
+def test_several_error_agents_coalesce_and_retract(captured):
+    events, sink = captured
+    coord = NotificationCoordinator(window_s=WINDOW, clock=lambda: 100.0, sink=sink)
+    coord.transition("p1", "a", "error", question="x", now=100.0)
+    coord.transition("p2", "b", "error", question="y", now=100.0)
+    coord.tick(now=100.0 + WINDOW + 0.1)
+    assert events[0]["payload"]["title"] == "2 agentes se detuvieron por un error"
+    assert events[0]["payload"]["body"] == "Con error: a, b"
+    coord.handled("p1")
+    coord.handled("p2")
+    assert events[-1]["payload"]["kind"] == "cleared"

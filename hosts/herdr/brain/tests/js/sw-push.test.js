@@ -52,6 +52,13 @@ test("a done notification does not hold the lock screen", () => {
   assert.equal(options.requireInteraction, false);
 });
 
+test("an error notification holds the lock screen: the agent stopped", () => {
+  const options = pushNotificationOptions({
+    kind: "error", title: "x se detuvo por un error", body: "usage limit", tag: "brain-herd",
+  });
+  assert.equal(options.requireInteraction, true);
+});
+
 test("gate actions ride the options with the gate id in the data", () => {
   const options = pushNotificationOptions({
     kind: "blocked",

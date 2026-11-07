@@ -24,13 +24,14 @@ LOCALES = ("es", "en")
 DEFAULT_LOCALE = "es"
 
 #: One bundle per locale with the SAME keys (pinned by tests). Keys:
-#: ``blocked``/``done`` take ``{label}`` + the detail slot, ``fallback``
+#: ``blocked``/``done``/``error`` take ``{label}`` + the detail slot, ``fallback``
 #: replaces an unreadable detail, ``closer``/``reprompt`` are the
 #: deterministic approval closers.
 LEXICON: dict[str, dict[str, str]] = {
     "es": {
         "blocked": "{label} necesita tu atención: {question}",
         "done": "{label} terminó: {detail}",
+        "error": "{label} se detuvo por un error: {detail}",
         "fallback": "sin detalle disponible",
         "closer": "¿Se envía?",
         "reprompt": "¿Sí o no?",
@@ -38,6 +39,7 @@ LEXICON: dict[str, dict[str, str]] = {
     "en": {
         "blocked": "{label} needs your attention: {question}",
         "done": "{label} finished: {detail}",
+        "error": "{label} stopped on an error: {detail}",
         "fallback": "no detail available",
         "closer": "Send it?",
         "reprompt": "Yes or no?",
@@ -70,6 +72,11 @@ def blocked_announcement(locale: Optional[str], label: str, question: str) -> st
 def done_announcement(locale: Optional[str], label: str, detail: str) -> str:
     """The spoken digest for a pane that finished its turn."""
     return _bundle(locale)["done"].format(label=label, detail=detail)
+
+
+def error_announcement(locale: Optional[str], label: str, detail: str) -> str:
+    """The spoken digest for a pane whose turn ended on an error."""
+    return _bundle(locale)["error"].format(label=label, detail=detail)
 
 
 def fallback_detail(locale: Optional[str]) -> str:

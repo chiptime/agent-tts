@@ -283,9 +283,13 @@ curl -s localhost:8741/state
 curl -s localhost:8741/herd
 # → [{"pane_id":"w7:p4","agent":"opencode","agent_status":"working","title":"OpenCode",
 #     "cwd":"/repo","session_id":"ses_…","focused":true,
-#     "last_turn":{"role":"assistant","text":"…"}}, …]
+#     "last_turn":{"role":"assistant","text":"…"},"last_turn_age_s":12.5,
+#     "agent_error":null}, …]
+# agent_error is {"name":…,"message":…} when the pane's session stopped on an
+# error (OpenCode usage limit, provider failure, context overflow); the PWA
+# shows such a pane under "Con error".
 
-# live announcements (SSE): transitions into done/blocked
+# live announcements (SSE) and web push: transitions into done/blocked/error
 curl -N localhost:8741/events
 # → : connected
 # → data: {"type":"transition","pane_id":"w1:p2","agent":"opencode","status":"done",

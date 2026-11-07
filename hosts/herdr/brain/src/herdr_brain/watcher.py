@@ -2,7 +2,8 @@
 
 Design (deliberate, fase 2b): transition-triggered announcements built from
 templates plus the agent's digest (no LLM call: instant and free). When an
-agent's status transitions INTO "done" or "blocked", the event is spoken AND
+agent's status transitions INTO "done", "blocked" or "error" (a session that
+stopped on an error, derived from its transcript), the event is spoken AND
 shipped as text in the same SSE payload — the announcement audio is rendered
 from the exact same digest string, so audio and visual always carry identical
 content (product decision 2026-09-25). Transitions into "idle" are
@@ -37,6 +38,7 @@ import queue
 import threading
 import time
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -45,7 +47,7 @@ from .herdr import AgentInfo, HerdrClient, HerdrError
 from .mux import create_mux
 from .secrets_mask import mask_text
 from .spoken_lexicon import DEFAULT_LOCALE, LOCALES, fallback_detail
-from .transcripts import read_turns
+from .transcripts import read_session_error, read_turns
 from .tts import new_audio_path
 from .view import SCREEN_TAIL_LINES, detect_pending
 
@@ -59,7 +61,11 @@ FAST_POLL_INTERVAL_S = 1.5
 #: decay back to the baseline cadence within one window.
 ATTENTION_WINDOW_S = 10.0
 DEBOUNCE_S = 60.0
-ANNOUNCE_STATUSES = ("done", "blocked")
+ANNOUNCE_STATUSES = ("done", "blocked", "error")
+#: Effective state of a pane whose session stopped on an error (OpenCode
+#: usage limit, provider failure, context overflow). herdr reports such a
+#: pane as idle/done, so the watcher derives it from the transcript.
+ERROR_STATUS = "error"
 ANNOUNCEMENT_PREFIX = "ann-"
 ANNOUNCEMENT_MAX_AGE_S = 3600
 FALLBACK_DETAIL = "sin detalle disponible"
@@ -146,7 +152,7 @@ def agent_label(agent: AgentInfo) -> str:
 
 
 class AgentWatcher:
-    """Polls the agent list and announces transitions into done/blocked."""
+    """Polls the agent list and announces transitions into done/blocked/error."""
 
     def __init__(
         self,
@@ -239,7 +245,16 @@ class AgentWatcher:
         if self.hub.subscriber_count() > 0:
             self._last_attention = self._clock()
         now_ts = self._clock()
-        current = {agent.pane_id: agent for agent in agents}
+        # Effective state: a pane that stopped on an error is announced
+        # (and retracted) as "error" instead of herdr's idle/done.
+        errors: Dict[str, dict] = {}
+        current: Dict[str, AgentInfo] = {}
+        for agent in agents:
+            error = read_session_error(agent.agent, agent.status, agent.session_value)
+            if error is not None:
+                errors[agent.pane_id] = error
+                agent = replace(agent, status=ERROR_STATUS)
+            current[agent.pane_id] = agent
 
         # Activity estimate (S5): a working pane is active by definition,
         # and ANY state change is activity — both refresh the stamp an
@@ -270,7 +285,7 @@ class AgentWatcher:
             if now_ts - self._last_announced.get(key, float("-inf")) < self._debounce:
                 continue
             self._last_announced[key] = now_ts
-            label, text, question = self._digest(agent)
+            label, text, question = self._digest(agent, errors.get(pane_id))
             announcement = self._build_announcement(agent, label, text)
             self.hub.publish(announcement)
             produced.append(announcement)
@@ -343,7 +358,9 @@ class AgentWatcher:
             return DEFAULT_LOCALE
         return value if value in LOCALES else DEFAULT_LOCALE
 
-    def _digest(self, agent: AgentInfo) -> Tuple[str, str, Optional[str]]:
+    def _digest(
+        self, agent: AgentInfo, error: Optional[dict] = None
+    ) -> Tuple[str, str, Optional[str]]:
         """The announcement's three facts: speakable label, the spoken
         digest text, and the raw blocking question (blocked only — the
         pending excerpt or first screen line, WITHOUT the label prefix;
@@ -355,6 +372,14 @@ class AgentWatcher:
 
         label = agent_label(agent)
         locale = self._locale()
+        if agent.status == ERROR_STATUS:
+            # The error message rides as the "question" slot: it is the
+            # push body, exactly like a blocked pane's question.
+            raw = (error or {}).get("message") or (error or {}).get("name") or ""
+            detail = clip_detail(mask_text(raw), self._settings.announce_max_chars)
+            detail = detail or fallback_detail(locale)
+            text = spoken_lexicon.error_announcement(locale, label, detail)
+            return label, text, detail
         if agent.status == "blocked":
             question = self._blocked_detail(agent)
             text = spoken_lexicon.blocked_announcement(locale, label, question)

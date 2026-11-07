@@ -64,6 +64,7 @@ from .transcripts import (
     Turn,
     connector_for,
     read_transcript,
+    read_session_error,
     read_turns,
     read_title,
     turn_age_seconds,
@@ -335,29 +336,13 @@ class BrainTools:
         return turns[-1]
 
     def _agent_error(self, agent: AgentInfo) -> Optional[dict]:
-        """The error a pane's session stopped on, or None (never raises).
-
-        Only harnesses whose reader offers ``read_error`` can report one; a
-        pane that is working or blocked again is not stopped, so it reports
-        none even if its newest stored message is still the failure.
-        """
-        if not agent.session_value:
-            return None
-        if (agent.status or "").strip().lower() in ("working", "blocked"):
-            return None
-        try:
-            reader = connector_for(agent.agent, agent.session_value)
-            read_error = getattr(reader, "read_error", None)
-            error = read_error(agent.session_value) if read_error else None
-        except Exception:  # noqa: BLE001 — per-agent failure must not spread
-            return None
-        if not error:
+        """The error a pane's session stopped on, masked and clipped, or None."""
+        error = read_session_error(agent.agent, agent.status, agent.session_value)
+        if error is None:
             return None
         return {
-            "name": str(error.get("name") or ""),
-            "message": truncate_text(
-                mask_text(str(error.get("message") or "")), HERD_LAST_TURN_CHARS
-            ),
+            "name": error["name"],
+            "message": truncate_text(mask_text(error["message"]), HERD_LAST_TURN_CHARS),
         }
 
     def last_turn(self, agent: AgentInfo) -> Optional[dict]:

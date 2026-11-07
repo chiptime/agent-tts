@@ -232,3 +232,63 @@ class TestResilience:
         watcher.poll_once()
         stub._agents = [make_agent(status="done")]
         assert len(watcher.poll_once()) == 1
+
+
+def _errored_db(tmp_path, session, recovered=False):
+    import json
+    import sqlite3
+
+    db = tmp_path / "watch-err.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE IF NOT EXISTS message (id TEXT PRIMARY KEY, session_id TEXT, time_created INT, data TEXT)")
+    conn.execute("CREATE TABLE IF NOT EXISTS part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INT, data TEXT)")
+    conn.execute(
+        "INSERT OR REPLACE INTO message VALUES ('e1', ?, 1, ?)",
+        (session, json.dumps({
+            "role": "assistant",
+            "error": {"name": "APIError", "data": {"message": "The usage limit has been reached"}},
+        })),
+    )
+    if recovered:
+        conn.execute(
+            "INSERT OR REPLACE INTO message VALUES ('e2', ?, 2, ?)",
+            (session, json.dumps({"role": "user"})),
+        )
+    conn.commit()
+    conn.close()
+    return db
+
+
+class TestErrorTransitions:
+    def test_a_pane_that_stops_on_an_error_announces_error_not_done(
+        self, settings, make_stub, notifier, tmp_path, monkeypatch
+    ):
+        stub = make_stub(agents=[make_agent(status="working")])
+        watcher = make_watcher(settings, stub, notifier)
+        watcher.poll_once()  # baseline: working
+
+        monkeypatch.setenv("OPENCODE_DB", str(_errored_db(tmp_path, "ses_watch000001")))
+        stub._agents = [make_agent(status="done")]
+        produced = watcher.poll_once()
+
+        assert [a["status"] for a in produced] == ["error"]
+        assert "The usage limit has been reached" in produced[0]["text"]
+        call = notifier.transitions[0]
+        assert call["status"] == "error"
+        assert call["question"] == "The usage limit has been reached"
+        assert call["text"] == produced[0]["text"]
+
+    def test_handled_when_the_errored_session_moves_on(
+        self, settings, make_stub, notifier, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("OPENCODE_DB", str(_errored_db(tmp_path, "ses_watch000001")))
+        stub = make_stub(agents=[make_agent(status="working")])
+        watcher = make_watcher(settings, stub, notifier)
+        watcher.poll_once()
+        stub._agents = [make_agent(status="idle")]
+        watcher.poll_once()
+        assert notifier.handled_panes == []
+
+        _errored_db(tmp_path, "ses_watch000001", recovered=True)
+        watcher.poll_once()
+        assert notifier.handled_panes == ["w1:p1"]

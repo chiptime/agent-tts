@@ -394,6 +394,31 @@ def connector_for(
     return _shape_fallback_reader(registry, session_id)
 
 
+#: herdr states in which an agent is still alive; an error never applies.
+LIVE_STATUSES = ("working", "blocked")
+
+
+def read_session_error(agent: str, status: str, session_id: str) -> Optional[dict]:
+    """``{name, message}`` when a pane's session stopped on an error, else None.
+
+    The one decision site shared by /herd and the watcher. A pane that is
+    working or blocked is alive, so it never reports an error; only
+    connectors offering ``read_error`` (OpenCode today) can report one.
+    Never raises: any failure reads as "no error".
+    """
+    if not session_id or (status or "").strip().lower() in LIVE_STATUSES:
+        return None
+    try:
+        reader = connector_for(agent, session_id)
+        read_error = getattr(reader, "read_error", None)
+        error = read_error(session_id) if read_error else None
+    except Exception:  # noqa: BLE001 — a per-pane failure must not spread
+        return None
+    if not error:
+        return None
+    return {"name": str(error.get("name") or ""), "message": str(error.get("message") or "")}
+
+
 def _build_registry(
     opencode: Optional[OpencodeTranscript] = None,
     claude: Optional[ClaudeTranscript] = None,
