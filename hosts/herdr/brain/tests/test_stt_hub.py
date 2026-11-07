@@ -55,6 +55,40 @@ def test_hub_transcribes_independent_audio_windows_and_prompt(monkeypatch):
     assert all(options["ping_interval"] is None for _, options in connections)
 
 
+def test_hub_sends_per_connection_language(monkeypatch):
+    """The per-call locale (D8) reaches the hub on the wire."""
+    from herdr_brain.stt_hub import HubTranscriber
+
+    sent = []
+
+    class Socket:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def send(self, data): sent.append(data)
+        def recv(self, timeout):
+            if len(sent) == 1 and isinstance(sent[0], str):
+                return json.dumps({"type": "ack", "language": "en"})
+            return json.dumps({"type": "partial", "text": "hello"})
+
+    monkeypatch.setattr("herdr_brain.stt_hub.connect", lambda *a, **kw: Socket())
+
+    t = HubTranscriber()
+    # With a prompt: the language rides the initial_prompt message.
+    assert t.transcribe_in_memory(b"a" * 120, language="en", initial_prompt="vocabulary") == "hello"
+    assert json.loads(sent[0]) == {
+        "type": "initial_prompt", "text": "vocabulary", "language": "en"}
+    assert sent[1] == b"a" * 120
+    sent.clear()
+    # Language alone: a dedicated config message before the audio.
+    assert t.transcribe_in_memory(b"b" * 120, language="en") == "hello"
+    assert json.loads(sent[0]) == {"type": "config", "language": "en"}
+    assert sent[1] == b"b" * 120
+    sent.clear()
+    # No language: the legacy wire format, byte for byte.
+    assert t.transcribe_in_memory(b"c" * 120, language=None, initial_prompt="vocabulary") == "hello"
+    assert json.loads(sent[0]) == {"type": "initial_prompt", "text": "vocabulary"}
+
+
 def test_hub_pull_does_not_load_or_download_local_model(monkeypatch, capsys):
     from herdr_brain import stt
 
@@ -113,7 +147,14 @@ def test_default_app_uses_hub_for_batch_and_live_without_local_models(settings, 
     with client.websocket_connect("/call/stream") as ws:
         ws.send_json({"type": "auth", "vad": True})
         assert ws.receive_json()["type"] == "auth_ok"
-        assert ws.receive_json() == {"type": "vad_status", "engine": "energy", "reason": "local_models_disabled"}
+        # Field-level assertions: the payload grows with unrelated features
+        # (smart_turn rides the same vad_status message); this test pins the
+        # hub-mode framing guarantee only — energy fallback with the
+        # local-models-disabled reason, never a local Silero load.
+        status = ws.receive_json()
+        assert status["type"] == "vad_status"
+        assert status["engine"] == "energy"
+        assert status["reason"] == "local_models_disabled"
         ws.send_bytes(b"\xe8\x03" * 6400)
         ws.send_json({"type": "transcribe", "duration_ms": 400, "pre_roll_ms": 0})
         assert ws.receive_json()["text"] == "live result"

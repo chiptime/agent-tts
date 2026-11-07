@@ -75,8 +75,21 @@ class HubTranscriber:
             if _SUPPORTS_SYNC_KEEPALIVE:
                 options["ping_interval"] = None
             with connect(self.ws_url, **options) as ws:
-                if initial_prompt:
-                    ws.send(json.dumps({"type": "initial_prompt", "text": initial_prompt}))
+                # Per-connection language (D8): llm-hub applies it to this
+                # connection only. It rides the initial_prompt when there is
+                # one; alone it goes as a dedicated config message. Absent →
+                # no field → the hub keeps its global default (legacy format).
+                if initial_prompt and language:
+                    first = {"type": "initial_prompt", "text": initial_prompt,
+                             "language": language}
+                elif initial_prompt:
+                    first = {"type": "initial_prompt", "text": initial_prompt}
+                elif language:
+                    first = {"type": "config", "language": language}
+                else:
+                    first = None
+                if first is not None:
+                    ws.send(json.dumps(first))
                     if json.loads(ws.recv(timeout=5)).get("type") != "ack":
                         raise ValueError("invalid whisper prompt acknowledgement")
                 ws.send(data)
