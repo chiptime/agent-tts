@@ -663,7 +663,9 @@
     try { history.pushState({ herdrDrawer: true }, ""); } catch (err) { /* non-http origins */ }
     conv.scrollTop = conv.scrollHeight;  // newest turn (AC1/AC3)
     if (callsUI) callsUI.refresh();  // the Llamadas list opens current
+    refreshState();  // a frozen phone snapshot never greets the drawer
     renderPill();
+
     try { drawerCloseBtn.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
   }
 
@@ -762,6 +764,7 @@
     if (convSheetOpen) return;
     convSheetOpen = true;
     setConvSheet(true);
+    refreshState();  // the session list opens with live statuses
     try { history.pushState({ herdrConvSheet: true }, ""); } catch (err) { /* non-http origins */ }
     try { convCloseBtn.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
   }
@@ -885,9 +888,28 @@
   }
 
   document.addEventListener("visibilitychange", function () {
-    /* Chrome silently drops wake locks on tab hide: re-acquire mid-call. */
-    if (document.visibilityState === "visible" && inCall) requestWakeLock();
+    /* Chrome silently drops wake locks on tab hide: re-acquire mid-call.
+     * Android also freezes timers while the PWA is backgrounded or the
+     * screen is off, so the 5s poll may be dead on return: repaint every
+     * surface at once the moment the app is visible again. */
+    if (document.visibilityState === "visible") {
+      if (inCall) requestWakeLock();
+      refreshOnResume();
+    }
   });
+
+  /* Resume/focus refresh (Android PWA): after a freeze, a page restore
+   * or a focus change the periodic poll can be arbitrarily stale.
+   * Throttled so a burst of events costs one refresh. */
+  var lastResumeRefreshAt = 0;
+  function refreshOnResume() {
+    var now = Date.now();
+    if (now - lastResumeRefreshAt < 1000) return;
+    lastResumeRefreshAt = now;
+    refreshState();
+  }
+  window.addEventListener("pageshow", refreshOnResume);
+  window.addEventListener("focus", refreshOnResume);
 
   /* ---------------- diagnostics ---------------- */
 
@@ -4531,6 +4553,10 @@
     // (muted toast / play on arrival / blocked drop), with the in-call
     // playback path delegated to the existing queue below it.
     announcer.handle(ann);
+    /* The transition means a pane just changed state (done/blocked):
+     * repaint the herd NOW instead of waiting for the next 5s beat, so
+     * "terminó" is visible the moment the event says so. */
+    refreshState();
   }
 
   /* ---------------- device credential (F1 device pairing) ----------------
