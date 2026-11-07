@@ -59,6 +59,8 @@
     "status.working": "working",
     "status.blocked": "blocked",
     "status.done": "done",
+    "status.error": "error",
+    "status.error_title": "stopped on an error: {message}",
 
     /* ---- reply composer ---- */
     "reply.placeholder": "Reply to the agent…",
@@ -172,6 +174,7 @@
     "herd.disappeared": "The selected agent vanished — falling back to the focused one.",
     "herd.recent": "Last 30 min",
     "herd.g_blocked": "Blocked",
+    "herd.g_error": "Error",
     "herd.g_working": "Working",
     "herd.g_done": "Done",
     "herd.g_idle": "Idle",

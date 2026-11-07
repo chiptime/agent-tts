@@ -59,6 +59,8 @@
     "status.working": "trabajando",
     "status.blocked": "bloqueado",
     "status.done": "listo",
+    "status.error": "error",
+    "status.error_title": "se detuvo por un error: {message}",
 
     /* ---- reply composer ---- */
     "reply.placeholder": "Responde al agente…",
@@ -172,6 +174,7 @@
     "herd.disappeared": "El agente seleccionado desapareció — volviendo al enfocado.",
     "herd.recent": "Últimos 30 min",
     "herd.g_blocked": "Bloqueado",
+    "herd.g_error": "Con error",
     "herd.g_working": "Trabajando",
     "herd.g_done": "Listo",
     "herd.g_idle": "Inactivo",

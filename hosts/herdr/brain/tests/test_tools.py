@@ -316,6 +316,56 @@ class TestHerd:
         # Second agent's store does not exist: isolated failure, null turn.
         assert herd[1]["last_turn"] is None
 
+    def test_herd_reports_an_agent_stopped_on_an_error(
+        self, settings, make_stub, monkeypatch, tmp_path
+    ):
+        """An OpenCode turn that ended on a provider error leaves the pane
+        idle with no visible answer; herd surfaces the error so the PWA can
+        show the agent stopped. A later message, a user abort or a pane that
+        is working again clears it."""
+        import sqlite3
+
+        errored = self._agent("w1:p1", "ses_herderr00aaa", status="done")
+        recovered = self._agent("w1:p2", "ses_herderr00bbb")
+        aborted = self._agent("w1:p3", "ses_herderr00ccc")
+        retrying = self._agent("w1:p4", "ses_herderr00ddd", status="working")
+        db = tmp_path / "err.db"
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INT, data TEXT)")
+        conn.execute("CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INT, data TEXT)")
+        api_error = {
+            "role": "assistant",
+            "error": {"name": "APIError", "data": {"message": "The usage limit has been reached"}},
+        }
+        rows = [
+            ("a1", "ses_herderr00aaa", 1, {"role": "user"}),
+            ("a2", "ses_herderr00aaa", 2, api_error),
+            ("b1", "ses_herderr00bbb", 1, api_error),
+            ("b2", "ses_herderr00bbb", 2, {"role": "assistant"}),
+            ("c1", "ses_herderr00ccc", 1, {
+                "role": "assistant",
+                "error": {"name": "MessageAbortedError", "data": {"message": "Aborted"}},
+            }),
+            ("d1", "ses_herderr00ddd", 1, api_error),
+        ]
+        for mid, ses, ts, data in rows:
+            conn.execute("INSERT INTO message VALUES (?, ?, ?, ?)", (mid, ses, ts, json.dumps(data)))
+        conn.commit()
+        conn.close()
+        monkeypatch.setenv("OPENCODE_DB", str(db))
+
+        tools = BrainTools(settings, herdr=make_stub(agents=[errored, recovered, aborted, retrying]))
+        by_pane = {entry["pane_id"]: entry for entry in tools.herd()}
+
+        assert by_pane["w1:p1"]["agent_error"] == {
+            "name": "APIError",
+            "message": "The usage limit has been reached",
+        }
+        assert by_pane["w1:p1"]["agent_status"] == "done"
+        assert by_pane["w1:p2"]["agent_error"] is None
+        assert by_pane["w1:p3"]["agent_error"] is None
+        assert by_pane["w1:p4"]["agent_error"] is None
+
     def test_herd_session_id_only_for_id_kind(self, settings, make_stub):
         plain = self._agent("w1:p3", "whatever", kind="none")
         tools = BrainTools(settings, herdr=make_stub(agents=[plain]))

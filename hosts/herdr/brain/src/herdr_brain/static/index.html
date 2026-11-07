@@ -112,6 +112,7 @@
     .chip.idle    { color: var(--accent); }
     .chip.blocked { color: var(--danger); }
     .chip.done    { color: var(--blue); }
+    .chip.error   { color: var(--danger); }
     #pane-picker {
       /* Conversation picker trigger: keeps the old title's slot (flex:1,
        * shrinkable, ellipsized) but reads as a tappable bordered pill in
@@ -318,6 +319,7 @@
     .conv-row .st.idle    { color: var(--muted); }
     .conv-row .st.blocked { color: var(--danger); }
     .conv-row .st.done    { color: var(--accent); }
+    .conv-row .st.error   { color: var(--danger); }
     .cr-main {
       flex: 1;
       min-width: 0;
@@ -352,6 +354,7 @@
     .cr-status.working { color: var(--warn); }
     .cr-status.blocked { color: var(--danger); }
     .cr-status.done    { color: var(--accent); }
+    .cr-status.error   { color: var(--danger); }
     .cr-check { flex: 0 0 auto; color: var(--accent); font-weight: 800; }
     .conv-row.current {
       /* 2px inset accent rail marks the current conversation. */

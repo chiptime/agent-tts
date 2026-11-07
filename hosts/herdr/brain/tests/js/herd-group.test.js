@@ -128,3 +128,26 @@ test("order inside a subgroup follows the herd order (stable for keyed updates)"
   ]);
   assert.deepEqual(paneIds(sections[0].subgroups[0].rows), ["x1", "x2", "x3"]);
 });
+
+test("an agent stopped on an error gets its own section right after bloqueado", () => {
+  const errored = row("p-err", "done", 10);
+  errored.agent_error = { name: "APIError", message: "The usage limit has been reached" };
+  const sections = groupHerd([
+    row("p-idle", "idle", 10),
+    errored,
+    row("p-working", "working", 10),
+    row("p-blocked", "blocked", 10)
+  ]);
+  assert.deepEqual(
+    sections.map(function (s) { return s.key; }),
+    ["blocked", "error", "working", "idle"]
+  );
+  assert.equal(sections[1].label, "Con error");
+  assert.deepEqual(paneIds(sections[1].subgroups[0].rows), ["p-err"]);
+});
+
+test("a null agent_error keeps the pane in its herdr state", () => {
+  const plain = row("p-done", "done", 10);
+  plain.agent_error = null;
+  assert.deepEqual(groupHerd([plain]).map(function (s) { return s.key; }), ["done"]);
+});

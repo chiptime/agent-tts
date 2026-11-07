@@ -1700,7 +1700,24 @@
   }
 
   /* Small Spanish label for a sheet row's status pill (idle hides it). */
-  var AGENT_STATUS_TEXT = { working: "status.working", blocked: "status.blocked", done: "status.done" };
+  var AGENT_STATUS_TEXT = {
+    working: "status.working", blocked: "status.blocked", done: "status.done", error: "status.error"
+  };
+
+  /* A pane whose last turn ended on an error (agent_error from /herd)
+   * shows "error" instead of herdr's idle/done: it stopped, and that is
+   * what the human needs to see. */
+  function displayStatus(agent) {
+    if (agent && agent.agent_error) return "error";
+    return (agent && agent.agent_status) || "";
+  }
+
+  function herdEntry(paneId) {
+    for (var i = 0; i < lastHerd.length; i++) {
+      if (lastHerd[i].pane_id === paneId) return lastHerd[i];
+    }
+    return null;
+  }
 
   /* Keyed in-place update (FR10/AC8): sheet rows are reused per pane_id
    * and touched only when their content changed, so the 5s poll can
@@ -1751,7 +1768,9 @@
       var id = agent.pane_id;
       seen[id] = true;
       var name = agentDisplayName(agent);
-      var title = (agent.title || "") + (agent.last_turn ? " — " + agent.last_turn.text : "");
+      var title = (agent.title || "") + (agent.agent_error
+        ? " — " + t("status.error_title", { message: agent.agent_error.message || agent.agent_error.name })
+        : (agent.last_turn ? " — " + agent.last_turn.text : ""));
       var cls = "conv-row" + (id === effective ? " current" : "");
       el = existing[id];
       if (!el) {
@@ -1787,7 +1806,7 @@
           };
         })(id));
       }
-      var status = agent.agent_status || "";
+      var status = displayStatus(agent);
       var statusText = status && status !== "idle"
         ? (AGENT_STATUS_TEXT[status] ? t(AGENT_STATUS_TEXT[status]) : status) : "";
       var dotCls = "st " + status;
@@ -1797,7 +1816,9 @@
       var nameNode = mainNode.firstChild;
       var subNode = nameNode.nextSibling;
       var statusNode = mainNode.nextSibling;
-      var subText = agentWorkspaceSub(agent);
+      var subText = agent.agent_error
+        ? "⚠ " + (agent.agent_error.message || agent.agent_error.name)
+        : agentWorkspaceSub(agent);
       var pillCls = "cr-status" + (statusText ? " " + status : "");
       if (dotNode.className !== dotCls) dotNode.className = dotCls;
       if (nameNode.textContent !== name) nameNode.textContent = name;
@@ -1921,8 +1942,10 @@
       chipText = t("status.nobody");
       chipClass = "chip";
     } else {
-      chipText = state.agent_status || "?";
-      chipClass = "chip " + (state.agent_status || "");
+      var herdRow = herdEntry(state.pane_id);
+      var shown = herdRow && herdRow.agent_error ? "error" : (state.agent_status || "");
+      chipText = shown || "?";
+      chipClass = "chip " + shown;
     }
     if (chip.textContent !== chipText) chip.textContent = chipText;
     if (chip.className !== chipClass) chip.className = chipClass;

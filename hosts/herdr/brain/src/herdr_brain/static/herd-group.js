@@ -35,6 +35,10 @@
    * catch-all for a state this build does not know. */
   var SECTIONS = [
     { key: "blocked", label: "Bloqueado" },
+    /* An agent whose last turn ended on an error (usage limit, provider
+     * failure) sits idle with nothing new to read: it stopped and needs
+     * the human almost as much as a blocked one. */
+    { key: "error", label: "Con error" },
     { key: "working", label: "Trabajando" },
     { key: "done", label: "Listo" },
     { key: "idle", label: "Inactivo" },
@@ -59,6 +63,7 @@
     return {
       recent: tr("herd.recent", RECENT_LABEL),
       blocked: tr("herd.g_blocked", "Bloqueado"),
+      error: tr("herd.g_error", "Con error"),
       working: tr("herd.g_working", "Trabajando"),
       done: tr("herd.g_done", "Listo"),
       idle: tr("herd.g_idle", "Inactivo"),
@@ -68,6 +73,9 @@
   var OTHER_KEY = "other";
 
   function sectionKeyOf(agent) {
+    /* The backend only sends agent_error for a pane that is not working
+     * or blocked, so an error never hides a live state. */
+    if (agent && agent.agent_error) return "error";
     var status = String((agent && agent.agent_status) || "").toLowerCase();
     for (var i = 0; i < SECTIONS.length; i++) {
       if (SECTIONS[i].key === status && SECTIONS[i].key !== OTHER_KEY) {

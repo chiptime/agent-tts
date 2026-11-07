@@ -149,6 +149,43 @@ class OpencodeTranscript:
         turns.reverse()
         return turns
 
+    def read_error(self, session_id: str) -> Optional[dict]:
+        """The error the session's newest message ended on, or None.
+
+        OpenCode records a failed turn (provider error, usage limit, context
+        overflow) as an assistant message whose ``$.error`` is set and that
+        usually carries no text part, so the agent simply stops with nothing
+        new to read. Only the NEWEST message counts: any later message means
+        the session moved on. A user abort (``MessageAbortedError``) is a
+        deliberate stop, not a failure, and is ignored.
+        """
+        if not session_id or not OPENCODE_SESSION_RE.match(session_id):
+            return None
+        if not os.path.isfile(self.db_path):
+            return None
+        sql = """
+        SELECT json_extract(data, '$.role'),
+               json_extract(data, '$.error.name'),
+               json_extract(data, '$.error.data.message')
+        FROM message
+        WHERE session_id = ?
+        ORDER BY time_created DESC, id DESC
+        LIMIT 1
+        """
+        uri = f"{Path(self.db_path).resolve().as_uri()}?mode=ro"
+        try:
+            with sqlite3.connect(uri, uri=True) as conn:
+                row = conn.execute(sql, (session_id,)).fetchone()
+        except (sqlite3.Error, OSError):
+            return None
+        if not row or row[0] != "assistant" or not row[1]:
+            return None
+        name = str(row[1])
+        if name == "MessageAbortedError":
+            return None
+        message = row[2] if isinstance(row[2], str) and row[2].strip() else name
+        return {"name": name, "message": message.strip()}
+
     def read_title(self, session_id: str) -> Optional[str]:
         if not session_id or not OPENCODE_SESSION_RE.match(session_id):
             return None
