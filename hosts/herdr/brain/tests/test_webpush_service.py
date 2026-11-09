@@ -210,14 +210,14 @@ def test_test_notification_round_trip(tmp_path, clock, keys_env):
     assert body[20] == 65  # idlen: the uncompressed point length
     salt = body[:16]
     sealed = body[86:]
-    prk = crypto.hkdf_sha256(
-        crypto.ecdh_p256(receiver_priv, delivery_public) + auth_secret,
-        salt,
+    ikm = crypto.hkdf_sha256(
+        crypto.ecdh_p256(receiver_priv, delivery_public),
+        auth_secret,
         b"WebPush: info\x00" + crypto.public_from_private(receiver_priv) + delivery_public,
         32,
     )
-    cek = crypto.hkdf_sha256(prk, salt, b"Content-Encoding: aes128gcm\x00", 16)
-    nonce = crypto.hkdf_sha256(prk, salt, b"Content-Encoding: nonce\x00", 12)
+    cek = crypto.hkdf_sha256(ikm, salt, b"Content-Encoding: aes128gcm\x00", 16)
+    nonce = crypto.hkdf_sha256(ikm, salt, b"Content-Encoding: nonce\x00", 12)
     content = crypto.aes128gcm_decrypt(cek, nonce, sealed)
     payload = json.loads(content[: content.rfind(b"\x02")])
     assert payload["v"] == 1

@@ -764,7 +764,9 @@
     if (convSheetOpen) return;
     convSheetOpen = true;
     setConvSheet(true);
-    refreshState();  // the session list opens with live statuses
+    /* The session list opens with live statuses. Herd only: a /view
+     * fetch here would race the one the row tap is about to start. */
+    refreshHerd();
     try { history.pushState({ herdrConvSheet: true }, ""); } catch (err) { /* non-http origins */ }
     try { convCloseBtn.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
   }
@@ -3380,7 +3382,7 @@
       });
   }
 
-  function refreshState() {
+  function refreshHerd() {
     readFetch("/herd")
       .then(function (resp) {
         if (!resp.ok) throw new Error("HTTP " + resp.status);
@@ -3390,6 +3392,10 @@
       .catch(function (err) {
         markPollError("herd", err);
       });
+  }
+
+  function refreshState() {
+    refreshHerd();
     refreshView();
     refreshConversation();
     /* The live mirror rides the same 5s beat — gated by its own tab

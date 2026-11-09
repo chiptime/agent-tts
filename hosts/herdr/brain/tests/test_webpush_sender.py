@@ -48,11 +48,11 @@ def _decrypt_body(body: bytes, receiver_private: int, auth_secret: bytes) -> byt
     sealed = body[21 + idlen :]
     assert rs == 4096
     server_public = key_id
-    ikm = crypto.ecdh_p256(receiver_private, server_public) + auth_secret
+    shared_secret = crypto.ecdh_p256(receiver_private, server_public)
     info = b"WebPush: info\x00" + crypto.public_from_private(receiver_private) + server_public
-    prk = crypto.hkdf_sha256(ikm, salt, info, 32)
-    cek = crypto.hkdf_sha256(prk, salt, b"Content-Encoding: aes128gcm\x00", 16)
-    nonce = crypto.hkdf_sha256(prk, salt, b"Content-Encoding: nonce\x00", 12)
+    ikm = crypto.hkdf_sha256(shared_secret, auth_secret, info, 32)
+    cek = crypto.hkdf_sha256(ikm, salt, b"Content-Encoding: aes128gcm\x00", 16)
+    nonce = crypto.hkdf_sha256(ikm, salt, b"Content-Encoding: nonce\x00", 12)
     content = crypto.aes128gcm_decrypt(cek, nonce, sealed)
     delim = content.rfind(b"\x02")
     assert delim >= 0
@@ -92,6 +92,28 @@ def test_sender_rejects_unsendable_topic():
 
 
 # ── the wire request ─────────────────────────────────────────────────────────
+
+
+def test_encryption_matches_rfc8291_section_5_vector():
+    # Published receiver, sender and salt: this checks interoperability,
+    # not merely agreement with our own receiver implementation.
+    decode = crypto.b64url_decode
+    receiver_public = decode(
+        "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcx"
+        "aOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4"
+    )
+    sender_private = int.from_bytes(decode("yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw"), "big")
+    auth_secret = decode("BTBZMqHH6r4Tts7J_aSIgg")
+    salt = decode("DGv6ra1nlYgDCS1FRnbzlw")
+    expected = decode(
+        "DGv6ra1nlYgDCS1FRnbzlwAAEABBBP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27ml"
+        "mlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A_yl95bQpu6cVPT"
+        "pK4Mqgkf1CXztLVBSt2Ks3oZwbuwXPXLWyouBWLVWGNWQexSgSxsj_Qulcy4a-fN"
+    )
+    assert sender_mod.encrypt_payload(
+        b"When I grow up, I want to be a watermelon",
+        receiver_public, auth_secret, sender_private, salt,
+    ) == expected
 
 
 def test_request_shape_and_headers():

@@ -38,12 +38,13 @@ EXPECTED_DIGESTS = {
     # indexes the turn and plays in-browser, server audio stops); then for
     # the live call engine (stream-uplink.js script tag, the En vivo engine
     # and its fallback notices in app.js + both i18n).
-    "/": "d8c570142a4ecd1c1a84509ea3ac7daf9291f7c6475194ac38566f553287e3d9",
-    "/app.js": "21a5daba262ce4bed9b25ff60ba8c2bc73c522316c365f4a57352ab31d53a975",
+    # Re-pinned after the agent-error UI and session-picker refresh changes.
+    "/": "04042a4abd9538d2791c13555759bec3766d1953f0e9fb10769437027b1528b1",
+    "/app.js": "6fbd2d5d31e30364631a537423e0ffd232b15a171803da1615a2a6579b9f23d9",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "ca7b22c52c8160a3ac577f694eb65ec0798b77cd6ac179a5c567dffdc1fb2ba9",
     "/dialogs.js": "0e5b6afde7ef662591f66fc69891e3b1ec343fafe0d2c5be8fbef0c5a124a4c0",
-    "/herd-group.js": "e923e48334e72e303ee3399edfd4d69f5c1bb4d49ef906f9eb9d5c8932c7426c",
+    "/herd-group.js": "de284c825e3c99aef07db2dd53198484ec8b7ceba94dd97dbbae0303560df399",
     "/toast.js": "cbccb72b22530ff8f83250bebd8d498ca20977db9536aa094aa759bb9632357e",
     "/reader.js": "28daec6199b0e756e1285b40f20fc860c1d9b4d2169cb2433c1ccfb12db31a76",
     "/speech.js": "23b10e3ffe9b22c7480929cb33d12e4a0e3d378f49b841645ec670634a9fe709",
@@ -60,8 +61,8 @@ EXPECTED_DIGESTS = {
     # update notice, operator dock, offline-shell sw.js.
     "/dock.js": "4a5dc20d575c3c9e5f098116fc9314f24297b2934cb3142bc885b6e1d0155adb",
     "/i18n.js": "8bcd2ceb9f56109afaa0ec158e1a6f002799c4a983261b9d58cd38723c06719f",
-    "/i18n/en.js": "ab41217063cdc3a27d8eeb576b07df424d66bea5409a67ecabf9ad9cef10c00b",
-    "/i18n/es.js": "31dd0dac51c9c4db6ea4beab3da55bf3892212cf7bd99f05146f01a558716d8e",
+    "/i18n/en.js": "8309dc144af1946a92656cb6f4b823b779c15854a142f4a043bd76e00af2ed1d",
+    "/i18n/es.js": "796ef54a9026b8103493e21bb8006653e56bd5bf3f68d456a189bd78ff63e0be",
     "/settings.js": "1c2cf3ed92bf959c19ecde0107618b8d1ff0690d2c6fa7c842a2fdc551e05f72",
     "/updates.js": "7f87250cf6cd9c2b8944da632fe036d0c18a87a90f48f70b84e18bcd338cfa84",
     "/calls.js": "9b9ec591709d282c6e673770b2ffc1ed1562650104d8e8393126d186aa764165",

@@ -253,6 +253,37 @@ class ClaudeTranscript:
         turns.reverse()
         return turns
 
+    def read_error(self, session_id: str) -> Optional[dict]:
+        """The API error the session's newest turn event ended on, or None.
+
+        Claude Code records a failed request as a synthetic assistant event
+        flagged ``isApiErrorMessage`` whose text block holds the error
+        ("API Error: …") and whose ``error`` names its class. Only the
+        newest user/assistant event counts: anything later means the
+        session moved on. Bookkeeping events (system, summaries) are skipped.
+        """
+        if not session_id or not CLAUDE_SESSION_RE.match(session_id):
+            return None
+        matches = sorted(glob.glob(os.path.join(self.root, "*", f"{session_id}.jsonl")))
+        if not matches:
+            return None
+        for raw_line in _reverse_tail_lines(matches[0], self.scan_cap):
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if not isinstance(event, dict) or event.get("type") not in ("user", "assistant"):
+                continue
+            if event.get("type") != "assistant" or event.get("isApiErrorMessage") is not True:
+                return None
+            name = event.get("error") if isinstance(event.get("error"), str) else ""
+            message = _claude_event_text(event) or name or "API Error"
+            return {"name": name or "APIError", "message": message}
+        return None
+
     def read_title(self, session_id: str) -> Optional[str]:
         return None
 
@@ -297,19 +328,50 @@ class AntigravityTranscript:
             self.root = str(expanded)
         self.scan_cap = scan_cap
 
-    def read(self, session_id: str, n_turns: int = 10, skip_newest: int = 0) -> List[Turn]:
+    def _transcript_path(self, session_id: str) -> Optional[str]:
         if not session_id or not ANTIGRAVITY_SESSION_RE.match(session_id):
-            return []
-
+            return None
         base_dir = Path(self.root) / session_id / ".system_generated" / "logs"
-        full_path = base_dir / "transcript_full.jsonl"
-        norm_path = base_dir / "transcript.jsonl"
+        for candidate in (base_dir / "transcript_full.jsonl", base_dir / "transcript.jsonl"):
+            if candidate.is_file():
+                return str(candidate)
+        return None
 
-        if full_path.is_file():
-            path = str(full_path)
-        elif norm_path.is_file():
-            path = str(norm_path)
-        else:
+    def read_error(self, session_id: str) -> Optional[dict]:
+        """The error the session's newest step ended on, or None.
+
+        Antigravity logs a failed model call as an ``ERROR_MESSAGE`` step
+        (``"API error (attempt 8): RESOURCE_EXHAUSTED …"``). Retries log one
+        per attempt, so only the NEWEST conversation step counts: a later
+        user input, planner response or tool step means it moved on.
+        Bookkeeping steps (system messages, checkpoints) are skipped.
+        """
+        path = self._transcript_path(session_id)
+        if path is None:
+            return None
+        for raw_line in _reverse_tail_lines(path, self.scan_cap):
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if not isinstance(event, dict):
+                continue
+            event_type = event.get("type")
+            if event_type not in ("USER_INPUT", "PLANNER_RESPONSE", "GENERIC", "ERROR_MESSAGE"):
+                continue
+            if event_type != "ERROR_MESSAGE":
+                return None
+            error = event.get("error")
+            message = error.strip() if isinstance(error, str) and error.strip() else "error"
+            return {"name": "ERROR_MESSAGE", "message": message}
+        return None
+
+    def read(self, session_id: str, n_turns: int = 10, skip_newest: int = 0) -> List[Turn]:
+        path = self._transcript_path(session_id)
+        if path is None:
             return []
 
         turns: List[Turn] = []
@@ -403,7 +465,8 @@ def read_session_error(agent: str, status: str, session_id: str) -> Optional[dic
 
     The one decision site shared by /herd and the watcher. A pane that is
     working or blocked is alive, so it never reports an error; only
-    connectors offering ``read_error`` (OpenCode today) can report one.
+    connectors offering ``read_error`` (OpenCode, Claude Code, pi/omp and
+    Antigravity) can report one.
     Never raises: any failure reads as "no error".
     """
     if not session_id or (status or "").strip().lower() in LIVE_STATUSES:

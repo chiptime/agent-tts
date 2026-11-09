@@ -286,8 +286,9 @@ curl -s localhost:8741/herd
 #     "last_turn":{"role":"assistant","text":"…"},"last_turn_age_s":12.5,
 #     "agent_error":null}, …]
 # agent_error is {"name":…,"message":…} when the pane's session stopped on an
-# error (OpenCode usage limit, provider failure, context overflow); the PWA
-# shows such a pane under "Con error".
+# error (usage limit, provider failure, context overflow), read from the
+# OpenCode, Claude Code, pi/omp and Antigravity stores; the PWA shows such a
+# pane under "Con error" and web push announces it.
 
 # live announcements (SSE) and web push: transitions into done/blocked/error
 curl -N localhost:8741/events

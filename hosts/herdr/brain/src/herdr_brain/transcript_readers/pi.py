@@ -131,5 +131,30 @@ class PiTranscript:
         turns.reverse()
         return turns
 
+    def read_error(self, session_id: str) -> Optional[dict]:
+        """The error the session's newest message ended on, or None.
+
+        pi records a failed request as an assistant message with
+        ``stopReason: "error"`` and the provider's text in ``errorMessage``.
+        Only the newest ``message`` event counts (bookkeeping events are
+        skipped); ``stopReason: "aborted"`` is a deliberate user stop.
+        """
+        path = self._session_file(session_id) if session_id else None
+        if path is None:
+            return None
+        for raw_line in reverse_tail_lines(path, self.scan_cap):
+            event = parse_json_line(raw_line)
+            if event is None or event.get("type") != "message":
+                continue
+            message = event.get("message")
+            if not isinstance(message, dict):
+                continue
+            if message.get("role") != "assistant" or message.get("stopReason") != "error":
+                return None
+            text = message.get("errorMessage")
+            text = text.strip() if isinstance(text, str) and text.strip() else "error"
+            return {"name": "error", "message": text}
+        return None
+
     def read_title(self, session_id: str) -> Optional[str]:
         return None

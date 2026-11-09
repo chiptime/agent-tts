@@ -518,3 +518,109 @@ class TestTurnAge:
         now = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
         created = datetime(2026, 1, 1, 0, 5, tzinfo=timezone.utc)
         assert turn_age_seconds(created, now) == 0.0
+
+
+class TestReadSessionError:
+    """A session that stopped on an error is reported per harness from its
+    own store; a later event, a user abort or a live pane clears it."""
+
+    CLAUDE_SESSION = "0f1e2d3c-1111-2222-3333-777788889999"
+    PI_SESSION = "11112222-3333-4444-5555-666677778888"
+
+    def _claude(self, tmp_path, events):
+        project = tmp_path / "-home-bruno-project"
+        project.mkdir(exist_ok=True)
+        (project / f"{self.CLAUDE_SESSION}.jsonl").write_text(
+            "\n".join(json.dumps(e) for e in events), encoding="utf-8"
+        )
+        from herdr_brain.transcripts import ClaudeTranscript
+
+        return ClaudeTranscript(root=str(tmp_path))
+
+    def _pi(self, tmp_path, messages):
+        folder = tmp_path / "--home-bruno-repo--"
+        folder.mkdir(exist_ok=True)
+        lines = [{"type": "session", "version": 3, "id": self.PI_SESSION}]
+        for message in messages:
+            lines.append({"type": "message", "id": "x", "timestamp": "2026-09-09T06:51:43Z",
+                          "message": message})
+        lines.append({"type": "thinking_level_change", "thinkingLevel": "high"})
+        (folder / f"2026-09-09T06-51-42_{self.PI_SESSION}.jsonl").write_text(
+            "\n".join(json.dumps(line) for line in lines), encoding="utf-8"
+        )
+        from herdr_brain.transcript_readers.pi import PiTranscript
+
+        return PiTranscript(roots=[str(tmp_path)])
+
+    def test_claude_api_error_is_reported(self, tmp_path):
+        reader = self._claude(tmp_path, [
+            {"type": "user", "message": {"role": "user", "content": "go"}},
+            {"type": "assistant", "isApiErrorMessage": True, "error": "rate_limit",
+             "message": {"role": "assistant", "model": "<synthetic>", "content": [
+                 {"type": "text", "text": "API Error: 429 rate limited"}]}},
+            {"type": "system", "subtype": "turn_duration"},
+        ])
+        assert reader.read_error(self.CLAUDE_SESSION) == {
+            "name": "rate_limit", "message": "API Error: 429 rate limited",
+        }
+
+    def test_claude_error_followed_by_a_turn_is_cleared(self, tmp_path):
+        reader = self._claude(tmp_path, [
+            {"type": "assistant", "isApiErrorMessage": True,
+             "message": {"role": "assistant", "content": [{"type": "text", "text": "API Error"}]}},
+            {"type": "user", "message": {"role": "user", "content": "retry"}},
+        ])
+        assert reader.read_error(self.CLAUDE_SESSION) is None
+
+    def test_pi_error_stop_is_reported_and_abort_is_not(self, tmp_path):
+        errored = self._pi(tmp_path, [
+            {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+            {"role": "assistant", "content": [], "stopReason": "error",
+             "errorMessage": "429: Monthly usage limit reached"},
+        ])
+        assert errored.read_error(self.PI_SESSION) == {
+            "name": "error", "message": "429: Monthly usage limit reached",
+        }
+        aborted = self._pi(tmp_path, [
+            {"role": "assistant", "content": [], "stopReason": "aborted",
+             "errorMessage": "Request was aborted"},
+        ])
+        assert aborted.read_error(self.PI_SESSION) is None
+
+    def test_pi_error_followed_by_a_message_is_cleared(self, tmp_path):
+        reader = self._pi(tmp_path, [
+            {"role": "assistant", "content": [], "stopReason": "error", "errorMessage": "boom"},
+            {"role": "user", "content": [{"type": "text", "text": "again"}]},
+        ])
+        assert reader.read_error(self.PI_SESSION) is None
+
+    AGY_SESSION = "00aed5a6-05b6-42ab-922e-0140a3f9ffff"
+
+    def _agy(self, tmp_path, events):
+        logs = tmp_path / self.AGY_SESSION / ".system_generated" / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        (logs / "transcript_full.jsonl").write_text(
+            "\n".join(json.dumps(e) for e in events), encoding="utf-8"
+        )
+        from herdr_brain.transcripts import AntigravityTranscript
+
+        return AntigravityTranscript(root=str(tmp_path))
+
+    def test_antigravity_final_error_message_is_reported(self, tmp_path):
+        reader = self._agy(tmp_path, [
+            {"type": "USER_INPUT", "content": "go"},
+            {"type": "ERROR_MESSAGE", "source": "SYSTEM",
+             "error": "API error (attempt 8): RESOURCE_EXHAUSTED (code 429): quota"},
+            {"type": "CHECKPOINT"},
+        ])
+        assert reader.read_error(self.AGY_SESSION) == {
+            "name": "ERROR_MESSAGE",
+            "message": "API error (attempt 8): RESOURCE_EXHAUSTED (code 429): quota",
+        }
+
+    def test_antigravity_error_followed_by_a_step_is_cleared(self, tmp_path):
+        reader = self._agy(tmp_path, [
+            {"type": "ERROR_MESSAGE", "error": "API error (attempt 1): UNAVAILABLE"},
+            {"type": "PLANNER_RESPONSE", "content": "retrying worked"},
+        ])
+        assert reader.read_error(self.AGY_SESSION) is None
