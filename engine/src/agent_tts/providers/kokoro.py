@@ -70,6 +70,12 @@ ESPEAK_VOICE_MAP = {
 }
 
 STYLE_DIM = 256  # float32 style vector per voice entry
+# Kokoro's BERT encoder has 512 positions: 510 phoneme ids plus the two pads.
+# Longer inputs fail inside onnxruntime ("invalid expand shape"), so long
+# texts are synthesized in runs of at most this many ids.
+MAX_PHONEME_IDS = 510
+# Preferred split points, strongest pause first: sentence end, clause, word.
+_SPLIT_PRIORITY = (".!?…", ";:,—", " ")
 
 
 def _kokoro_error(message: str) -> RuntimeError:
@@ -240,10 +246,33 @@ class KokoroTTSProvider(TTSProvider):
 
     def _tokenize(self, phonemes: str) -> List[int]:
         """Maps IPA phonemes to token ids; unsupported symbols are dropped."""
+        return self._tokenize_chunks(phonemes)[0]
+
+    def _tokenize_chunks(self, phonemes: str) -> List[List[int]]:
+        """Maps phonemes to padded id runs that each fit the model context.
+
+        Runs split after the strongest pause available inside the window
+        (sentence end, then clause, then word); a window with no separator
+        is cut hard at the limit. Every id is kept, in order.
+        """
         vocab = self._load_vocab()
         pad = vocab.get("$", 0)
         ids = [vocab[ch] for ch in phonemes if ch in vocab]
-        return [pad] + ids + [pad]
+        split_tiers = [{vocab[ch] for ch in tier if ch in vocab} for tier in _SPLIT_PRIORITY]
+
+        runs: List[List[int]] = []
+        start = 0
+        while len(ids) - start > MAX_PHONEME_IDS:
+            end = start + MAX_PHONEME_IDS
+            for tier in split_tiers:
+                cut = next((i + 1 for i in range(end - 1, start, -1) if ids[i] in tier), None)
+                if cut is not None:
+                    end = cut
+                    break
+            runs.append(ids[start:end])
+            start = end
+        runs.append(ids[start:])
+        return [[pad] + run + [pad] for run in runs]
 
     def _read_style(self, voice: str) -> bytes:
         """Loads the raw float32 style vector (1 x 256) for the voice."""
@@ -377,12 +406,14 @@ class KokoroTTSProvider(TTSProvider):
         session = self._get_session()  # validates model + onnxruntime up front
         del session
         phonemes = self._phonemize(text, voice_id)
-        tokens = self._tokenize(phonemes)
+        token_runs = self._tokenize_chunks(phonemes)
         style = self._read_style(voice_id)
-        if stop_checker and stop_checker():
-            return SynthesisResult(b"", BoundaryMap())
-
-        raw_f32 = self._infer(tokens, style, speed)
+        raw_parts = []
+        for tokens in token_runs:
+            if stop_checker and stop_checker():
+                return SynthesisResult(b"", BoundaryMap())
+            raw_parts.append(self._infer(tokens, style, speed))
+        raw_f32 = b"".join(raw_parts)
         wav = self._floats_to_wav(raw_f32, self.SAMPLE_RATE)
         if stop_checker and stop_checker():
             return SynthesisResult(b"", BoundaryMap())

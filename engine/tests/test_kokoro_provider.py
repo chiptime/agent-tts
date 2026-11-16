@@ -249,6 +249,48 @@ class TestKokoroSynthesis(unittest.TestCase):
             self.assertEqual(tokens, [0, 50, 57, 54, 43, 0])  # pad + hola + pad
             self.assertEqual(float(feed["speed"][0]), 1.0)
 
+    def test_long_text_is_split_into_chunks_within_model_context(self):
+        # The real model's BERT encoder has 512 positions (510 ids + 2 pads);
+        # a whole agent message in one run failed with "invalid expand shape".
+        vocab = {"$": 0, " ": 16, ".": 4, "h": 50, "o": 57, "l": 54, "a": 43}
+        phonemes = " ".join(["hola."] * 400)  # 2399 ids, far above 510
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_store(tmp, vocab=vocab)
+            session = FakeSession()
+            prov = KokoroTTSProvider(
+                store_root=tmp,
+                session_factory=lambda p: session,
+                phonemize_fn=lambda text, voice: phonemes,
+            )
+            result = asyncio.run(prov.synthesize("Hola. " * 400, "ef_dora", "+0%"))
+
+            self.assertGreater(len(session.calls), 1)
+            chunks = [c["input_ids"].tolist()[0] for c in session.calls]
+            for chunk in chunks:
+                self.assertLessEqual(len(chunk), 512)
+                self.assertEqual((chunk[0], chunk[-1]), (0, 0))  # padded per run
+            # Every id is kept, in order, and splits land after a word.
+            inner = [chunk[1:-1] for chunk in chunks]
+            self.assertEqual(sum(inner, []), [vocab[ch] for ch in phonemes])
+            for part in inner[:-1]:
+                self.assertIn(part[-1], (vocab[" "], vocab["."]))
+            # The audio of every run is concatenated into one WAV.
+            self.assertEqual(len(result) - 44, len(session.calls) * SAMPLES * 2)
+
+    def test_long_text_without_separators_is_hard_split(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_store(tmp)
+            session = FakeSession()
+            prov = KokoroTTSProvider(
+                store_root=tmp,
+                session_factory=lambda p: session,
+                phonemize_fn=lambda text, voice: "hola" * 300,
+            )
+            asyncio.run(prov.synthesize("x", "ef_dora", "+0%"))
+
+            chunks = [c["input_ids"].tolist()[0] for c in session.calls]
+            self.assertEqual([len(c) for c in chunks], [512, 512, 182])
+
     def test_legacy_tokens_export_falls_back_to_tokens_name(self):
         with tempfile.TemporaryDirectory() as tmp:
             _make_store(tmp)
