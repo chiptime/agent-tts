@@ -30,6 +30,19 @@ inference per call and emits a complete PCM buffer, so there is no incremental
 audio surface to yield frames from. Interactive latency is instead provided by
 the CLI's pipelined sentence-group streaming, which already calls
 ``synthesize()`` once per sentence group while playback runs.
+
+Memory budget (issue #1): the ONNX session is created with the CPU memory
+arena DISABLED (``enable_cpu_mem_arena=False``). With the arena on,
+onnxruntime retains its PEAK allocation for the session's whole lifetime
+(model + arena ≈ 500 MiB–1 GiB held forever after one synthesis — the
+daemon's observed high-water mark); with the arena off, per-run activations
+allocate and free directly, so steady-state retention is the model weights
+only (fp32 ≈ 325 MB, quantized ≈ 92 MB). The arena is a throughput
+optimization for repeated same-shape runs; chunked synthesis runs varying
+shapes (each chunk sized to its text), which would grow the retained peak
+to the largest chunk anyway. On top of this, the daemon's ProviderCache
+evicts this provider (``retains_model_session=True``) after its idle
+window, releasing even the weights back to the OS.
 """
 
 import json
@@ -71,6 +84,13 @@ class KokoroTTSProvider(TTSProvider):
     SAMPLE_RATE = 24000
 
     DEFAULT_VOICE = "ef_dora"  # sensible Spanish default for this repo
+
+    # This provider loads the ONNX model into THIS process and keeps the
+    # InferenceSession resident on the instance (model weights + runtime
+    # allocator state). The daemon's ProviderCache evicts such cached
+    # instances after their idle window (issue #1) so the memory returns
+    # to the OS; see the memory-budget note in this module's docstring.
+    retains_model_session: bool = True
 
     def __init__(
         self,
@@ -128,7 +148,12 @@ class KokoroTTSProvider(TTSProvider):
     # --- Lazy heavy dependencies ---------------------------------------------
 
     def _get_session(self):
-        """Creates (and caches) the onnxruntime InferenceSession for the model."""
+        """Creates (and caches) the onnxruntime InferenceSession for the model.
+
+        The default factory disables the CPU memory arena (memory budget,
+        see the module docstring): the session retains its weights, never
+        its peak-run allocations.
+        """
         if self._session is not None:
             return self._session
         if not self.is_available():
@@ -147,9 +172,13 @@ class KokoroTTSProvider(TTSProvider):
                 "(equivalent to: pip install onnxruntime)\n"
                 "Then make sure the model is downloaded: agent-tts voice install kokoro"
             ) from e
-        factory = self.session_factory or (
-            lambda path: ort.InferenceSession(path, providers=["CPUExecutionProvider"])
-        )
+
+        def default_factory(path: str):
+            options = ort.SessionOptions()
+            options.enable_cpu_mem_arena = False
+            return ort.InferenceSession(path, sess_options=options, providers=["CPUExecutionProvider"])
+
+        factory = self.session_factory or default_factory
         self._session = factory(self.model_path)
         return self._session
 

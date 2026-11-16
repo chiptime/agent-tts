@@ -4,6 +4,7 @@ import shutil
 import struct
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -135,6 +136,33 @@ class TestKokoroLazyDependencies(unittest.TestCase):
                 with self.assertRaises(RuntimeError) as ctx:
                     asyncio.run(prov.synthesize("hola", "ef_dora", "+0%"))
             self.assertIn("pip install onnxruntime", str(ctx.exception))
+
+    def test_default_session_factory_disables_the_cpu_arena(self):
+        """Issue #1: the default ORT session bounds retention (no memory arena)."""
+        created = {}
+
+        class FakeOptions:
+            enable_cpu_mem_arena = True  # ORT's default until the factory turns it off
+
+        def fake_session(path, sess_options=None, providers=None):
+            created["path"] = path
+            created["options"] = sess_options
+            created["providers"] = providers
+            return FakeSession()
+
+        fake_ort = types.SimpleNamespace(
+            SessionOptions=lambda: FakeOptions(),
+            InferenceSession=fake_session,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_store(tmp)
+            prov = KokoroTTSProvider(store_root=tmp)  # no session_factory: default path
+            with mock.patch.dict(sys.modules, {"onnxruntime": fake_ort}):
+                session = prov._get_session()
+        self.assertIsInstance(session, FakeSession)
+        self.assertEqual(created["path"], prov.model_path)
+        self.assertEqual(created["providers"], ["CPUExecutionProvider"])
+        self.assertFalse(created["options"].enable_cpu_mem_arena)
 
     def test_missing_espeak_and_phonemizer_raises_actionable_error(self):
         prov = KokoroTTSProvider()
