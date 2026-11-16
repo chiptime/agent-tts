@@ -62,8 +62,8 @@ FAST_POLL_INTERVAL_S = 1.5
 ATTENTION_WINDOW_S = 10.0
 DEBOUNCE_S = 60.0
 ANNOUNCE_STATUSES = ("done", "blocked", "error")
-#: Effective state of a pane whose session stopped on an error (OpenCode
-#: usage limit, provider failure, context overflow). herdr reports such a
+#: Effective state of a pane whose session stopped on an error (usage
+#: limit, provider failure, context overflow). herdr reports such a
 #: pane as idle/done, so the watcher derives it from the transcript.
 ERROR_STATUS = "error"
 ANNOUNCEMENT_PREFIX = "ann-"

@@ -341,7 +341,7 @@ class BrainTools:
         if error is None:
             return None
         return {
-            "name": error["name"],
+            "name": truncate_text(mask_text(error["name"]), HERD_LAST_TURN_CHARS),
             "message": truncate_text(mask_text(error["message"]), HERD_LAST_TURN_CHARS),
         }
 

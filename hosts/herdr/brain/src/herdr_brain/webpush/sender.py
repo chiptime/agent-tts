@@ -107,11 +107,11 @@ def encrypt_payload(
 ) -> bytes:
     """RFC 8291 ``aes128gcm`` body: header + one sealed record."""
     delivery_public = crypto.public_from_private(delivery_private)
-    ikm = crypto.ecdh_p256(delivery_private, ua_public) + auth_secret
+    shared_secret = crypto.ecdh_p256(delivery_private, ua_public)
     info = b"WebPush: info\x00" + ua_public + delivery_public
-    prk = crypto.hkdf_sha256(ikm, salt, info, 32)
-    cek = crypto.hkdf_sha256(prk, salt, b"Content-Encoding: aes128gcm\x00", 16)
-    nonce = crypto.hkdf_sha256(prk, salt, b"Content-Encoding: nonce\x00", 12)
+    ikm = crypto.hkdf_sha256(shared_secret, auth_secret, info, 32)
+    cek = crypto.hkdf_sha256(ikm, salt, b"Content-Encoding: aes128gcm\x00", 16)
+    nonce = crypto.hkdf_sha256(ikm, salt, b"Content-Encoding: nonce\x00", 12)
     # RFC 8188 content: data || 0x02 delim || zero padding.
     content = plaintext + b"\x02"
     sealed = crypto.aes128gcm_encrypt(cek, nonce, content)

@@ -366,6 +366,29 @@ class TestHerd:
         assert by_pane["w1:p3"]["agent_error"] is None
         assert by_pane["w1:p4"]["agent_error"] is None
 
+    def test_herd_masks_claude_error_name_and_message(self, settings, make_stub, monkeypatch, tmp_path):
+        from dataclasses import replace
+
+        from herdr_brain.secrets_mask import mask_text
+
+        session = "11112222-3333-4444-5555-666677778888"
+        secret = "sk-ant-api03-" + "a" * 48
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / f"{session}.jsonl").write_text(json.dumps({
+            "type": "assistant", "isApiErrorMessage": True, "error": secret,
+            "message": {"role": "assistant", "content": "quota " + secret},
+        }), encoding="utf-8")
+        monkeypatch.setenv("CLAUDE_PROJECTS_ROOT", str(tmp_path))
+        assert mask_text(secret) != secret
+        agent = replace(self._agent("w1:p1", session), agent="claude")
+
+        error = BrainTools(settings, herdr=make_stub(agents=[agent])).herd()[0]["agent_error"]
+
+        assert error is not None
+        assert secret not in error["name"]
+        assert secret not in error["message"]
+
     def test_herd_session_id_only_for_id_kind(self, settings, make_stub):
         plain = self._agent("w1:p3", "whatever", kind="none")
         tools = BrainTools(settings, herdr=make_stub(agents=[plain]))
