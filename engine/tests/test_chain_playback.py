@@ -89,7 +89,9 @@ def _advancing_play(events, gate=None):
     Advances ``current_frame`` at the real sample rate (4 ms ticks),
     honoring pause and the stop flag; a ``gate`` holds the cursor at 0
     until opened (the deterministic build-up seam). Records the exact
-    PCM stream handed to the device so tests assert on the bytes.
+    PCM stream handed to the device — the session buffer (raw_bytes),
+    which under the streaming chain path holds the whole chain the
+    prepare_pcm/append_pcm producer fed in — so tests assert on bytes.
     """
 
     def play(self, decoded):
@@ -111,7 +113,7 @@ def _advancing_play(events, gate=None):
                 self.current_frame = min(self.total_frames, self.current_frame + tick_frames)
             time.sleep(0.004)
         interrupted = bool(self.state["stop"])
-        events.append(("end", self.label, time.monotonic(), "interrupted" if interrupted else "completed", bytes(decoded.samples)))
+        events.append(("end", self.label, time.monotonic(), "interrupted" if interrupted else "completed", bytes(self.raw_bytes)))
         self.state["status"] = "stopped"
 
     return play
@@ -322,7 +324,8 @@ def test_chain_honors_stop_flag_mid_file_remaining_files_not_played(channel, mon
 
     def controlled_play(self, decoded):
         with self.lock:
-            self._load_decoded_locked(decoded)
+            if not self._buffer_loaded:
+                self._load_decoded_locked(decoded)
             self.state["status"] = "playing"
         generator = self._stream_generator()
         next(generator)
@@ -419,6 +422,52 @@ def test_chain_gap_travels_the_wire_and_spaces_items(channel, monkeypatch, tmp_p
         _wait_until(lambda: any(e[0] == "end" for e in events), message="chain never drained")
         silence = array.array("h", [0] * int(WAV_RATE * 0.2 * WAV_CH)).tobytes()
         assert events[-1][4] == _file_pcm(1, 0.3) + silence + _file_pcm(2, 0.3)
+    finally:
+        _stop_daemon(d)
+
+
+def test_chain_streams_segments_into_the_session_buffer(channel, monkeypatch, tmp_path):
+    """Issue #1: the chain feeds per-file segments (prepare + append), never one giant load.
+
+    The streaming seam: prepare_pcm exactly once (the first segment
+    preloads the buffer), append_pcm per remaining file, and
+    _load_decoded_locked exactly once (from prepare — play() never
+    re-loads a preloaded buffer, and no assembled full-PCM stream is
+    ever built).
+    """
+    a = _write_wav(tmp_path / "a.wav", 1, 0.3)
+    b = _write_wav(tmp_path / "b.wav", 2, 0.2)
+    events = []
+    calls = {"prepare": 0, "append": 0, "load": 0}
+    real_prepare = AudioSession.prepare_pcm
+    real_append = AudioSession.append_pcm
+    real_load = AudioSession._load_decoded_locked
+
+    def counting_prepare(self, decoded):
+        calls["prepare"] += 1
+        return real_prepare(self, decoded)
+
+    def counting_append(self, decoded):
+        calls["append"] += 1
+        return real_append(self, decoded)
+
+    def counting_load(self, decoded):
+        calls["load"] += 1
+        return real_load(self, decoded)
+
+    monkeypatch.setattr(AudioSession, "prepare_pcm", counting_prepare)
+    monkeypatch.setattr(AudioSession, "append_pcm", counting_append)
+    monkeypatch.setattr(AudioSession, "_load_decoded_locked", counting_load)
+    d = _start_daemon(channel, monkeypatch, events)
+    try:
+        reply = ipc.send_ipc_command(
+            "enqueue " + json.dumps({"chain": [str(a), str(b)]}), socket_path=channel["sock"]
+        )
+        assert reply.startswith("ok=true"), reply
+        _wait_until(lambda: any(e[0] == "end" for e in events), message="chain never finished")
+        assert calls == {"prepare": 1, "append": 1, "load": 1}
+        # The streamed buffer is still the exact gapless concatenation.
+        assert events[-1][4] == _file_pcm(1, 0.3) + _file_pcm(2, 0.2)
     finally:
         _stop_daemon(d)
 

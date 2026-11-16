@@ -637,17 +637,26 @@ class AudioSession:
         yield b""
 
     def play(self, decoded) -> None:
-        """Plays decoded PCM frames via miniaudio.PlaybackDevice; supports live-buffer streaming."""
+        """Plays decoded PCM frames via miniaudio.PlaybackDevice; supports live-buffer streaming.
+
+        The decoded object is dropped once the session buffer owns the PCM
+        (issue #1): the buffer IS the playback surface, so the caller's
+        decoded copy — potentially a whole digest — must not stay pinned
+        for the whole playback. Callers that pass an unbound expression
+        (``session.play(miniaudio.decode(data))``) release it here; a
+        caller binding its own reference keeps pinning it (its choice).
+        """
         with self.lock:
             if not self._buffer_loaded:
                 self._load_decoded_locked(decoded)
+            sample_fmt = getattr(decoded, "sample_format", miniaudio.SampleFormat.SIGNED16)
+            decoded = None  # the session buffer owns the PCM now
             self.state["status"] = "playing"
             self._playback_live = True
 
         if self._duck_policy != "ignore":
             self._apply_ducking(self._duck_state)
             self._check_ducking()
-        sample_fmt = getattr(decoded, "sample_format", miniaudio.SampleFormat.SIGNED16)
         try:
             device = miniaudio.PlaybackDevice(
                 output_format=sample_fmt,

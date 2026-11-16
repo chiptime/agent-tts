@@ -73,7 +73,7 @@ import miniaudio
 from agent_tts import __version__
 from agent_tts import audio as audio_mod
 from agent_tts.audio import _write_player_locks, cleanup_locks
-from agent_tts.chain import ChainError, assemble_chain_files
+from agent_tts.chain import ChainError, decode_chain_files, plan_chain, plan_gap_segment
 from agent_tts.constants import (
     DAEMON_LOG_FILE,
     DAEMON_START_TIMEOUT_SEC,
@@ -180,6 +180,14 @@ def encode_queue_fields(snapshot_dict: dict) -> str:
     return f"queue_len={snapshot_dict['queue_len']} queue={text}"
 
 
+# Idle window before the provider cache evicts a provider that holds a
+# resident in-process model (kokoro's ONNX session + allocator arena,
+# issue #1). Long enough that alternating hosts never pay a model reload,
+# short enough that a one-off fallback synthesis's memory returns to the
+# OS instead of pinning ~500 MiB–1 GiB for the daemon's whole lifetime.
+PROVIDER_MODEL_IDLE_EVICT_SEC = 600.0
+
+
 class ProviderCache:
     """Keeps provider instances alive between daemon requests (RNF-AT-04-5).
 
@@ -187,13 +195,45 @@ class ProviderCache:
     requests with the same configuration reuse the same instance (warm
     kokoro ONNX session, no per-call construction); a different
     configuration gets its own instance without evicting the previous one.
+
+    Eviction (issue #1): a provider that loads a MODEL into this process
+    (``retains_model_session=True`` — kokoro's ONNX session and its
+    allocator arena) is evicted after ``model_idle_evict_sec`` of
+    inactivity, swept on each ``get()``. Dropping the instance releases
+    the model + arena back to the OS, so a daemon whose hosts play Edge
+    voices does not hold a one-off fallback kokoro's ~500 MiB–1 GiB
+    forever. The cost is explicit: a request arriving after the idle
+    window reloads the model (a few seconds). Subprocess and HTTP
+    providers hold no model memory and are never evicted.
     """
 
-    def __init__(self, factory: Callable[..., TTSProvider] = get_provider):
+    def __init__(
+        self,
+        factory: Callable[..., TTSProvider] = get_provider,
+        model_idle_evict_sec: Optional[float] = None,
+    ):
         self._factory = factory
+        self._model_idle_evict_sec = (
+            PROVIDER_MODEL_IDLE_EVICT_SEC if model_idle_evict_sec is None else model_idle_evict_sec
+        )
         self._lock = threading.Lock()
         self._instances: dict = {}
+        self._last_used: dict = {}
         self.last_name = ""
+
+    def _evict_idle_model_sessions(self, now: float) -> None:
+        """Drops cached providers whose resident model outlived the idle window.
+
+        Caller must hold self.lock. The idle clock is each instance's last
+        use; ``_last_used`` entries for unknown keys (defensive) sweep too.
+        """
+        if self._model_idle_evict_sec <= 0:
+            return
+        for key, instance in list(self._instances.items()):
+            idle = now - self._last_used.get(key, now)
+            if getattr(instance, "retains_model_session", False) and idle > self._model_idle_evict_sec:
+                del self._instances[key]
+                self._last_used.pop(key, None)
 
     def get(
         self,
@@ -215,7 +255,9 @@ class ProviderCache:
             eleven_model or "",
             piper_model or "",
         )
+        now = time.monotonic()
         with self._lock:
+            self._evict_idle_model_sessions(now)
             instance = self._instances.get(key)
             if instance is None:
                 instance = self._factory(
@@ -228,6 +270,7 @@ class ProviderCache:
                     piper_model=piper_model,
                 )
                 self._instances[key] = instance
+            self._last_used[key] = now
             self.last_name = name
             return instance
 
@@ -1177,14 +1220,30 @@ class Daemon:
             return cli._build_playback_session("local", label, **session_kwargs)
 
     @staticmethod
-    def _play_file(session, file_path: str) -> None:
-        """Decodes an audio file and plays it through the active session."""
+    def _decode_audio_file(file_path: str):
+        """Reads and decodes one audio file; the encoded bytes die with this frame.
+
+        Memory (issue #1): the encoded bytes must not outlive the decode —
+        a 30-min digest WAV is as big encoded as decoded, so holding both
+        through playback would double the buffer's footprint.
+        """
         with open(file_path, "rb") as f:
             data = f.read()
-        session.play(miniaudio.decode(data))
+        return miniaudio.decode(data)
+
+    @staticmethod
+    def _play_file(session, file_path: str) -> None:
+        """Decodes an audio file and plays it through the active session.
+
+        Memory (issue #1): the encoded bytes release with the decode
+        frame and play() drops its decoded reference once the session
+        buffer owns the PCM — playback sustains only the session buffer,
+        not file bytes + decoded PCM + buffer.
+        """
+        session.play(Daemon._decode_audio_file(file_path))
 
     def _play_chain(self, session, files: list, gap_ms, item_id: int) -> None:
-        """Plays the chain as ONE session over the assembled stream (RF-AT-08-4).
+        """Plays the chain as ONE session streamed segment by segment (RF-AT-08-4, issue #1).
 
         The files decode into one continuous PCM stream with the
         configurable inter-item silence (agent_tts.chain); the session's
@@ -1195,33 +1254,61 @@ class Daemon:
         queue-side terminate (stop flag) cuts mid-stream so the files
         after the cut are never played.
 
+        Memory (issue #1): the navigation plan composes WITHOUT the
+        concatenated PCM (:func:`plan_chain`), and the per-file decoded
+        segments stream into the session's own buffer (``prepare_pcm`` +
+        ``append_pcm``), each released once appended — the concatenated
+        stream exists only inside the session buffer, never as an extra
+        assembled copy. The gap rides ``plan_gap_segment`` (16-bit zeros,
+        like assemble's).
+
         A ChainError (missing/undecodable file, format mismatch) raises
         RuntimeError: the worker marks the item FAILED with the message
-        (A5 visibility).
+        (A5 visibility). Validation and plan happen BEFORE any audio
+        plays, so a bad chain fails the item without sound.
         """
         try:
-            assembled = assemble_chain_files(files, float(gap_ms or 0))
+            sources = decode_chain_files(files)
+            plan = plan_chain(sources, float(gap_ms or 0))
         except ChainError as e:
             raise RuntimeError(str(e)) from e
         with session.lock:
-            session.boundaries = assembled.boundaries
+            session.boundaries = plan.boundaries
+
+        silence = plan_gap_segment(plan, float(gap_ms or 0))
+        # Stream the per-file segments into the session buffer. The first
+        # segment preloads it (play() skips re-initialization — the
+        # pipelined path's prepare-then-play seam); every later one
+        # appends with the inter-item silence in between. Segments release
+        # as they land, so live PCM is the buffer plus what is not yet
+        # appended — never buffer + full chain + an assembled copy.
+        decodeds = [source.decoded for source in sources]
+        del sources
+        first = decodeds[0]
+        session.prepare_pcm(first)
+        decodeds[0] = None
+        for index, decoded in enumerate(decodeds[1:], start=1):
+            if silence is not None:
+                session.append_pcm(silence)
+            session.append_pcm(decoded)
+            decodeds[index] = None
 
         done = threading.Event()
         watcher = threading.Thread(
             target=self._watch_chain_boundaries,
-            args=(session, assembled, item_id, done),
+            args=(session, plan, item_id, done),
             name="agent-tts-chain-trace",
             daemon=True,
         )
         watcher.start()
         try:
-            session.play(assembled.decoded)
+            session.play(first)
         finally:
             done.set()
             watcher.join(timeout=1.0)  # flush late chain-item traces before finalize
 
     @staticmethod
-    def _watch_chain_boundaries(session, assembled, item_id: int, done: threading.Event) -> None:
+    def _watch_chain_boundaries(session, plan, item_id: int, done: threading.Event) -> None:
         """Traces each chain item's start as the playback cursor crosses it.
 
         The seam definition (RNF-AT-08-1 chain application): the trace
@@ -1231,9 +1318,11 @@ class Daemon:
         — the quantity the < 50 ms budget bounds. Position comes from
         the session itself (``pos_frames`` when the target exposes it,
         else the frame cursor), so the seam rides targets that report a
-        live position and stays quiet on those that do not.
+        live position and stays quiet on those that do not. The plan is
+        the navigation metadata only (items' chain-global starts); it
+        carries no PCM and stays cheap to hold for the whole playback.
         """
-        pending = [(item.index, item.start_sec) for item in assembled.items]
+        pending = [(item.index, item.start_sec) for item in plan.items]
         position_of = getattr(session, "pos_frames", None)
         while pending and not done.is_set():
             state = session.state

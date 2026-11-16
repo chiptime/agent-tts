@@ -31,6 +31,14 @@ class TTSProvider:
     # chunks map to groups by index. Raw HTTP fragment streams keep the
     # per-group path until they adopt this contract.
     stream_yields_group_chunks: bool = False
+    # True when a synthesis call loads a MODEL into THIS process and keeps
+    # it resident on the instance (in-process ONNX sessions and their
+    # allocator arenas). The daemon's ProviderCache treats such cached
+    # instances as evictable after an idle window (issue #1): dropping the
+    # instance releases the model + arena memory back to the OS. Providers
+    # that shell out to a subprocess (piper) or hold no model memory
+    # (HTTP providers) keep the default False and are never evicted.
+    retains_model_session: bool = False
 
     async def synthesize(
         self,

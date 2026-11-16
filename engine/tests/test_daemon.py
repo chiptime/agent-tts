@@ -877,6 +877,12 @@ def test_shutdown_command_stops_daemon_and_frees_channel(channel, monkeypatch):
 # --- Provider cache (RNF-AT-04-5) -----------------------------------------------------
 
 
+class _ModelSessionEngine(StubEngine):
+    """A stub provider that claims resident in-process model memory (kokoro's shape)."""
+
+    retains_model_session = True
+
+
 def test_provider_cache_reuses_instance_per_configuration():
     built = []
 
@@ -898,6 +904,93 @@ def test_provider_cache_reuses_instance_per_configuration():
     assert c is not a
     assert cache.last_name == "openai"
     assert cache.get(provider_name="edge") is a
+
+
+def test_provider_cache_evicts_idle_model_session_after_ttl():
+    """Issue #1: a resident-model provider (kokoro) is dropped after its idle window."""
+    built = []
+
+    def factory(**kwargs):
+        engine = _ModelSessionEngine()
+        built.append(engine)
+        return engine
+
+    cache = ProviderCache(factory=factory, model_idle_evict_sec=0.05)
+    first = cache.get(provider_name="kokoro")
+    assert cache.get(provider_name="kokoro") is first  # warm while in use
+    time.sleep(0.08)  # outlive the idle window
+    second = cache.get(provider_name="kokoro")
+    assert second is not first
+    assert len(built) == 2  # the reload is the explicit cost of eviction
+    assert len(cache._instances) == 1  # the stale instance did not linger
+    assert first not in cache._instances.values()
+
+
+def test_provider_cache_never_evicts_non_model_providers():
+    """Subprocess/HTTP providers hold no model memory: they stay cached forever."""
+    built = []
+
+    def factory(**kwargs):
+        engine = StubEngine()
+        built.append(engine)
+        return engine
+
+    cache = ProviderCache(factory=factory, model_idle_evict_sec=0.02)
+    first = cache.get(provider_name="edge")
+    time.sleep(0.08)
+    assert cache.get(provider_name="edge") is first
+    assert len(built) == 1
+
+
+def test_provider_cache_last_use_resets_the_model_idle_clock():
+    """The idle window counts from the LAST use, not from construction."""
+    cache = ProviderCache(factory=lambda **kwargs: _ModelSessionEngine(), model_idle_evict_sec=0.10)
+    first = cache.get(provider_name="kokoro")
+    time.sleep(0.06)
+    assert cache.get(provider_name="kokoro") is first  # refreshed: still warm
+    time.sleep(0.06)
+    assert cache.get(provider_name="kokoro") is first  # 0.12 s since first, 0.06 s since last
+    time.sleep(0.14)
+    assert cache.get(provider_name="kokoro") is not first  # quiet past the window: evicted
+
+
+def test_play_file_releases_decoded_pcm_after_buffer_load(channel, monkeypatch, tmp_path):
+    """Issue #1: file replay sustains only the session buffer.
+
+    play() drops its decoded reference once the buffer owns the PCM, and
+    _play_file passes it as an unbound expression — neither holds a stale
+    strong reference to a potentially whole-digest PCM after load. (The
+    encoded bytes release with the decode helper's frame by construction.)
+    """
+    import gc
+    import weakref
+
+    path = tmp_path / "clip.wav"
+    import array as array_mod
+
+    from agent_tts.wav import pcm_to_wav
+
+    path.write_bytes(pcm_to_wav(array_mod.array("h", [7] * 2400), 24000, 1, 2))
+
+    decoded_boxes = []
+
+    def fake_play(self, decoded):
+        # Keep ONLY a weak reference: a strong ref here would pin the PCM.
+        decoded_boxes.append(weakref.ref(decoded))
+        self._load_decoded_locked(decoded)
+        self.state["status"] = "playing"
+
+    monkeypatch.setattr(AudioSession, "play", fake_play)
+    session = AudioSession(label="file-mem")
+    Daemon._play_file(session, str(path))
+    gc.collect()
+    # The decoded PCM: play() dropped it; _play_file never bound it.
+    assert decoded_boxes[0]() is None
+    # Behavior unchanged: the session buffer still holds the audio
+    # (miniaudio may resample, so assert loaded-and-consistent, not exact).
+    assert session.total_frames > 0
+    assert session.total_frames == len(session.raw_bytes) // session.frame_size
+    assert session._buffer_loaded
 
 
 def test_daemon_reuses_warm_engine_across_plays(channel, monkeypatch):
