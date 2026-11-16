@@ -1,0 +1,28 @@
+# Live call latency — quick wins first
+
+Objective: make the live call feel like a call, in the order the operator approved from the 2026-11-17 gap analysis: quick wins (per-engine silence window, Smart Turn on, PRD-02 instrumentation) now; PRD-06 (streaming LLM+TTS), PRD-07 (barge-in) and the GPU model decision follow as their own features.
+Branch: `feat/live-call-latency` · Delivery: `exception-ok` (D17 pattern: work-unit commits, operator merges after Pixel acceptance) · Test runner: `hosts/herdr/brain/.venv/bin/python -m pytest` from `hosts/herdr/brain`, `node --test tests/js`.
+
+## Specs
+
+Gap analysis (Engram obs #12992, topic `live-call/latency-analysis`): end-of-speech → first audio ≈ 5–11 s vs D3 target ≤ 1.5 s. Root causes ranked: RC1 shared 3.2–4.5 s silence window, RC2 no streaming response (PRD-06 unbuilt), RC3 no barge-in (PRD-07 unbuilt), RC4 Smart Turn built but disabled, RC5 GPU contention, RC6 STT finals cadence.
+
+- **S1** — Per-engine silence window: the live engine closes turns on its own sub-second energy window (base ~900 ms, bounded growth, cap ~1600 ms) instead of inheriting the shared `VOICE_SILENCE_MS` 3200→4500 ms constants (`app.js:337-339`), which are the 2026-11-04 Navegador recognizer-restart workaround (`app.js:333-336`) — a problem the live engine does not have; its closes are already guarded by Silero deferral, the speech-energy gate and the Smart Turn extender. Servidor and Navegador keep today's values untouched. Acceptance: RED→GREEN browser test proving the live close lands well under the 3.2 s shared window, existing server/browser engine timing tests unchanged.
+- **S2** — Smart Turn enabled on the running service: `HERDR_BRAIN_SMART_TURN_ENABLED=1` added to the existing `~/.config/systemd/user/herdr-brain.service.d/live-stt.conf` drop-in, service restarted, journal confirms the ONNX loaded and `vad_status` advertises `smart_turn`. Extender-only policy (feature log L59/L60) unchanged: an `incomplete` verdict may defer a close, `complete` never shortens one. Device feel (Pixel) deferred to the operator.
+- **S3** — PRD-02 latency instrumentation: every live turn reports the end-to-end stage breakdown (silence close → dispatch → ask resolved → first audio played) as one structured server-side log line, so later PRD-06/PRD-07 work is measured against a real baseline instead of felt. Detailed spec when T3 starts.
+
+## Tasks
+
+| ID | Specs | Route | Status | Evidence |
+|---|---|---|---|---|
+| T1 | S1 | inline (small, one understood change) | done (L3) | RED 3400 ms → GREEN ~1.1 s |
+| T2 | S2 | inline (config outside repo, no commit) | pending | — |
+| T3 | S3 | inline (spec first) | pending | — |
+
+Later features, in the operator's approved order, each with its own feature doc when started: PRD-06 streaming LLM+TTS (`docs/live-call/prds/PRD-06-streaming-llm-and-tts.md`), PRD-07 full-duplex barge-in (PRD-07), RC5 live-STT model size decision (large-v3 int8 vs medium/small on the shared GPU).
+
+## Log
+
+- **L1** (2026-11-17, verbatim): "dale en ese orden, documentalo para ir poco a poco"
+- **L2**: order approved from the 2026-11-17 deep analysis: (1) quick wins — per-engine silence window, Smart Turn on, PRD-02 instrumentation; (2) PRD-06; (3) PRD-07; (4) RC5 GPU/model decision. RC1 evidence: live engine creates its VAD with `SERVER_VOICE_OPTIONS` at `app.js:6688`; constants shared by all engines at `app.js:337-361`. Smart Turn model already at `~/.local/state/herdr-brain/models/smart-turn-v3.2-cpu.onnx` (8,679,182 bytes, verified). Service drop-in exists at `~/.config/systemd/user/herdr-brain.service.d/live-stt.conf`.
+- **L3**: T1 done inline. RED: new browser test `test_live_engine_closes_on_its_own_short_silence_window` measured the close at **3400 ms** on the shared window (empirical RC1 confirmation). GREEN: `LIVE_VOICE_OPTIONS` (900 ms base, +100 ms/s speech growth, 1600 ms cap) defined beside the engine options and used by `armLiveUtterance`; Servidor/Navegador untouched. Checks: live suite 61 passed, `test_call_turns.py` 21 passed (server-engine differential), `node --test tests/js` 626 passed. Measured close after: ~1.1 s. Risk: none (no high-risk item: additive per-engine config, no contract/data/security/concurrency change).

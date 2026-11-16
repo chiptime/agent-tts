@@ -359,6 +359,22 @@
     maxSilenceMs: VOICE_MAX_SILENCE_MS,
     utteranceCapMs: VOICE_UTTERANCE_CAP_MS
   };
+  /* Live-engine window (2026-11-17 gap analysis, RC1): the shared values
+   * above carry the Navegador recognizer-restart workaround — dead air the
+   * live engine pays for a problem it does not have. Its closes are
+   * already guarded three ways (Silero deferral, the speech-energy gate,
+   * the Smart Turn extender), so it takes a sub-second-class window:
+   * base 900 ms, +100 ms per second of speech, capped at 1600 ms. S9
+   * device acceptance may tune these; keep them easy to find. */
+  var LIVE_VOICE_SILENCE_MS = 900;
+  var LIVE_VOICE_SILENCE_GROWTH_PER_S_MS = 100;
+  var LIVE_MAX_SILENCE_MS = 1600;
+  var LIVE_VOICE_OPTIONS = {
+    silenceMs: LIVE_VOICE_SILENCE_MS,
+    silenceGrowthPerS: LIVE_VOICE_SILENCE_GROWTH_PER_S_MS,
+    maxSilenceMs: LIVE_MAX_SILENCE_MS,
+    utteranceCapMs: VOICE_UTTERANCE_CAP_MS
+  };
 
   /* Persistent per-install ids. */
   var THEME_KEY = "herdr-brain-theme";
@@ -6685,7 +6701,9 @@
     }
 
     var armLiveUtterance = function () {
-      if (!vad) vad = window.Vad.createVad(SERVER_VOICE_OPTIONS);
+      /* RC1: the live engine's own window — NOT SERVER_VOICE_OPTIONS
+       * (the 3.2 s Navegador workaround; see LIVE_VOICE_OPTIONS above). */
+      if (!vad) vad = window.Vad.createVad(LIVE_VOICE_OPTIONS);
       else vad.reset();
       liveTurn = { onsetAt: null, speaking: false };
       resetLiveSmartTurnTurn();  // L59: fresh probe budget for this utterance

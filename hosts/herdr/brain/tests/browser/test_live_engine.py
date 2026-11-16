@@ -1,6 +1,7 @@
 """Browser tests for Dictado: En vivo engine and fallback (PRD-03 Task T1)."""
 
 import json
+import time
 from urllib.parse import urlsplit
 
 import pytest
@@ -947,6 +948,31 @@ def test_live_capture_stays_armed_through_thinking(karaoke_app):
     page.evaluate("() => window.__releaseAsk()")
     page.wait_for_function(
         "() => document.body.textContent.indexOf('primera respuesta') >= 0", timeout=10000
+    )
+
+
+def test_live_engine_closes_on_its_own_short_silence_window(karaoke_app):
+    """RC1 (2026-11-17 gap analysis): the live engine must not inherit the
+    shared 3200->4500 ms silence window — that +2 s is the Navegador
+    recognizer-restart workaround baked into VOICE_SILENCE_MS, a problem
+    the live engine does not have (Silero deferral, the speech-energy gate
+    and the Smart Turn extender guard its closes). Turn taking must stay
+    sub-second-class: the transcribe control leaves near the live window,
+    not after 3.2 s of dead air."""
+    harness, page = _rejoin_boot(karaoke_app)
+    page.evaluate("""() => {
+        window.__askReplies.push({status: 200, body: {answer: 'respuesta corta', audio_url: null}});
+    }""")
+    page.locator("#call-btn").click()
+    _tone_on(page)
+    _wait_sent_count(page, '"start"', 1)
+    started = time.monotonic()
+    _tone_off(page)
+    _wait_sent_count(page, '"transcribe"', 1, timeout=6000)
+    elapsed_ms = (time.monotonic() - started) * 1000.0
+    assert elapsed_ms < 2500.0, (
+        f"live silence close took {elapsed_ms:.0f} ms — still waiting the "
+        "shared 3.2 s Navegador workaround window (RC1)"
     )
 
 
