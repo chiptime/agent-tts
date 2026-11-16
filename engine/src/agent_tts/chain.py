@@ -51,11 +51,14 @@ from agent_tts.boundaries import (
 
 __all__ = [
     "ChainError",
+    "ChainPlan",
     "ChainSource",
     "ChainItemView",
     "AssembledChain",
     "missing_chain_files",
     "decode_chain_files",
+    "plan_chain",
+    "plan_gap_segment",
     "assemble_chain",
     "assemble_chain_files",
 ]
@@ -98,6 +101,25 @@ class AssembledChain:
     items: Tuple[ChainItemView, ...]
 
 
+@dataclass(frozen=True)
+class ChainPlan:
+    """The chain's navigation plan: combined boundary map + item views, no PCM.
+
+    :func:`plan_chain` validates and composes WITHOUT materializing the
+    concatenated stream (memory: O(one item), never O(chain)); the
+    daemon's streaming playback feeds per-file decoded segments through
+    the session's buffer (``prepare_pcm`` + ``append_pcm``) against this
+    map (issue #1: a 30-min chain must not transiently hold full-PCM
+    copies).
+    """
+
+    boundaries: BoundaryMap
+    items: Tuple[ChainItemView, ...]
+    sample_rate: int
+    nchannels: int
+    sample_width: int
+
+
 def missing_chain_files(paths: Sequence[str]) -> List[str]:
     """Returns the paths that do not exist, in order (client-side discipline)."""
     return [path for path in paths if not os.path.exists(path)]
@@ -136,11 +158,14 @@ def _silence_samples(sample_rate: int, nchannels: int, seconds: float) -> array.
     return array.array("h", [0] * (int(round(sample_rate * seconds)) * nchannels))
 
 
-def assemble_chain(sources: Sequence[ChainSource], gap_ms: float = 0.0) -> AssembledChain:
-    """Concatenates the sources into one continuous stream + combined map.
+def _validate_chain_sources(
+    sources: Sequence[ChainSource], gap_ms: float
+) -> Tuple[int, int, int]:
+    """The assemble/plan validation contract: gap type, non-empty, one format.
 
-    The gap (``gap_ms``, default 0) is inserted BETWEEN items only —
-    never around the chain. Every source must share one sample format.
+    Every source must share the FIRST source's sample format (mismatched
+    files raise :class:`ChainError`, mirroring ``merge_chunks_to_audio``'s
+    discipline — resampling is out of scope). Returns the shared format.
     """
     if not isinstance(gap_ms, (int, float)) or isinstance(gap_ms, bool) or gap_ms < 0:
         raise ChainError(f"chain gap must be a non-negative number of milliseconds: {gap_ms!r}")
@@ -164,34 +189,38 @@ def assemble_chain(sources: Sequence[ChainSource], gap_ms: float = 0.0) -> Assem
                 f"{getattr(decoded, 'sample_width', 2) * 8}bit != "
                 f"{sample_rate}Hz/{nchannels}ch/{sample_width * 8}bit"
             )
+    return sample_rate, nchannels, sample_width
 
-    gap_sec = float(gap_ms) / 1000.0
-    silence = _silence_samples(sample_rate, nchannels, gap_sec)
 
-    pcm = array.array("h")
+def _compose_chain_map(
+    sources_meta: Sequence[Tuple[float, str, Optional[BoundaryMap]]], gap_sec: float
+) -> Tuple[BoundaryMap, Tuple[ChainItemView, ...]]:
+    """Composes the chain-global map + item views from per-item metadata.
+
+    ``sources_meta`` carries ``(duration_sec, name, boundaries_or_None)``
+    per item, in chain order; the gap advances the offset BETWEEN items
+    (never around the chain). The composition primitive is the streaming
+    pipeline's ``boundaries.shift_boundary_map``; files without boundary
+    metadata get ONE synthetic navigation unit each — a sentence and a
+    paragraph whose text is the file's basename — so phrase navigation
+    walks file boundaries honestly instead of inventing text.
+    """
     sentences: List[Sentence] = []
     words: List = []
     paragraphs: List[Paragraph] = []
     items: List[ChainItemView] = []
     offset_sec = 0.0
     sent_base = word_base = para_base = 0
-    for index, source in enumerate(sources):
+    for index, (duration_sec, name, boundaries) in enumerate(sources_meta):
         if index > 0:
-            pcm.extend(silence)
             offset_sec += gap_sec
-        samples = source.decoded.samples
-        duration_sec = len(samples) / float(sample_rate * nchannels)
-        name = source.name or f"item {index}"
-        pcm.extend(samples)
-
-        if source.boundaries is not None:
-            shifted = shift_boundary_map(source.boundaries, offset_sec, sent_base, word_base, para_base)
+        name = name or f"item {index}"
+        if boundaries is not None:
+            shifted = shift_boundary_map(boundaries, offset_sec, sent_base, word_base, para_base)
             sentences.extend(shifted.sentences)
             words.extend(shifted.words)
             paragraphs.extend(shifted.paragraphs)
         else:
-            # No metadata (the common render-store case): the file itself
-            # is one navigation unit — honest text, chain-global bounds.
             sentences.append(
                 Sentence(
                     index=sent_base,
@@ -217,18 +246,92 @@ def assemble_chain(sources: Sequence[ChainSource], gap_ms: float = 0.0) -> Assem
         sent_base = len(sentences)
         word_base = len(words)
         para_base = len(paragraphs)
+    return BoundaryMap(sentences=sentences, words=words, paragraphs=paragraphs), tuple(items)
+
+
+def plan_chain(sources: Sequence[ChainSource], gap_ms: float = 0.0) -> ChainPlan:
+    """Validates the sources and composes the chain-global map without PCM.
+
+    The validation contract is :func:`assemble_chain`'s (gap type,
+    non-empty list, one shared sample format) with identical errors in
+    the same order; the composition core is shared too, so the map and
+    item views are identical to the assembled path's. Nothing here
+    concatenates PCM: per-item durations come from the decoded segments,
+    which the caller streams into the session buffer and releases.
+    """
+    sample_rate, nchannels, sample_width = _validate_chain_sources(sources, gap_ms)
+    gap_sec = float(gap_ms) / 1000.0
+    meta = []
+    for source in sources:
+        duration_sec = len(source.decoded.samples) / float(sample_rate * nchannels)
+        meta.append((duration_sec, source.name, source.boundaries))
+    boundaries, items = _compose_chain_map(meta, gap_sec)
+    return ChainPlan(
+        boundaries=boundaries,
+        items=items,
+        sample_rate=sample_rate,
+        nchannels=nchannels,
+        sample_width=sample_width,
+    )
+
+
+def plan_gap_segment(plan: ChainPlan, gap_ms: float = 0.0) -> Any:
+    """A decoded-like all-zero segment for one inter-item gap (append_pcm ready).
+
+    The silence array is 16-bit signed (``array('h')`` — assemble's own
+    silence representation); when the chain's sample width differs,
+    ``append_pcm`` skips the segment with its standard mismatch warning.
+    A zero-gap chain needs no segment (``None``).
+    """
+    gap_sec = float(gap_ms) / 1000.0
+    if gap_sec <= 0:
+        return None
+    return SimpleNamespace(
+        sample_rate=plan.sample_rate,
+        nchannels=plan.nchannels,
+        sample_width=2,
+        samples=_silence_samples(plan.sample_rate, plan.nchannels, gap_sec),
+    )
+
+
+def assemble_chain(sources: Sequence[ChainSource], gap_ms: float = 0.0) -> AssembledChain:
+    """Concatenates the sources into one continuous stream + combined map.
+
+    The gap (``gap_ms``, default 0) is inserted BETWEEN items only —
+    never around the chain. Every source must share one sample format.
+    The navigation plan (combined map + item views) is composed by
+    :func:`plan_chain`'s shared core; this function additionally builds
+    the concatenated PCM (in-memory: prefer :func:`plan_chain` + segment
+    streaming when the chain is large).
+    """
+    sample_rate, nchannels, sample_width = _validate_chain_sources(sources, gap_ms)
+
+    gap_sec = float(gap_ms) / 1000.0
+    silence = _silence_samples(sample_rate, nchannels, gap_sec)
+
+    pcm = array.array("h")
+    for index, source in enumerate(sources):
+        if index > 0:
+            pcm.extend(silence)
+        pcm.extend(source.decoded.samples)
+
+    meta = []
+    for source in sources:
+        duration_sec = len(source.decoded.samples) / float(sample_rate * nchannels)
+        meta.append((duration_sec, source.name, source.boundaries))
+    boundaries, items = _compose_chain_map(meta, gap_sec)
 
     decoded = SimpleNamespace(
         sample_rate=sample_rate,
         nchannels=nchannels,
         sample_width=sample_width,
-        duration=offset_sec,
+        duration=items[-1].start_sec + items[-1].duration_sec,
         samples=pcm,
     )
     return AssembledChain(
         decoded=decoded,
-        boundaries=BoundaryMap(sentences=sentences, words=words, paragraphs=paragraphs),
-        items=tuple(items),
+        boundaries=boundaries,
+        items=items,
     )
 
 

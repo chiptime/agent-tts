@@ -34,6 +34,7 @@ from agent_tts.chain import (
     assemble_chain_files,
     decode_chain_files,
     missing_chain_files,
+    plan_chain,
 )
 from agent_tts.wav import pcm_to_wav
 
@@ -181,6 +182,50 @@ def test_synthetic_map_gives_one_navigation_unit_per_file():
     # Item views carry the chain-global offsets the trace seam watches.
     assert [it.start_sec for it in chain.items] == pytest.approx([0.0, 0.6, 1.2])
     assert [it.duration_sec for it in chain.items] == pytest.approx([0.5, 0.5, 0.5])
+
+
+# --- streaming plan: the combined map without concatenated PCM -------------------------
+
+
+def test_plan_chain_matches_assemble_chain_map_and_items():
+    """plan_chain composes the SAME combined map and item views as assemble."""
+    sources = [
+        ChainSource(_decoded(1, 1.0), "a.wav", boundaries=_two_sentence_map("a", 1.0)),
+        ChainSource(_decoded(2, 1.0), "b.wav"),
+    ]
+    for gap_ms in (0.0, 250.0):
+        plan = plan_chain(sources, gap_ms)
+        assembled = assemble_chain(sources, gap_ms)
+        assert plan.boundaries.sentences == assembled.boundaries.sentences
+        assert plan.boundaries.words == assembled.boundaries.words
+        assert plan.boundaries.paragraphs == assembled.boundaries.paragraphs
+        assert plan.items == assembled.items
+
+
+def test_plan_chain_carries_the_shared_format_and_no_pcm():
+    """The plan is navigation metadata only: format fields, no decoded stream."""
+    plan = plan_chain(
+        [ChainSource(_decoded(1, 0.5, nchannels=2), "a.wav"), ChainSource(_decoded(2, 0.5, nchannels=2), "b.wav")],
+        gap_ms=50.0,
+    )
+    assert plan.sample_rate == RATE
+    assert plan.nchannels == 2
+    assert plan.sample_width == 2
+    assert not hasattr(plan, "decoded")
+    assert [it.name for it in plan.items] == ["a.wav", "b.wav"]
+    # Durations come from the decoded segments, gaps advance the offset.
+    assert [it.start_sec for it in plan.items] == pytest.approx([0.0, 0.55])
+
+
+def test_plan_chain_rejects_the_same_invalid_inputs_as_assemble():
+    """Validation parity: identical errors, in the same order."""
+    sources = [ChainSource(_decoded(1, 0.1), "a.wav")]
+    with pytest.raises(ChainError, match="chain must contain at least one file"):
+        plan_chain([])
+    with pytest.raises(ChainError, match="chain gap must be a non-negative"):
+        plan_chain(sources, gap_ms=-1)
+    with pytest.raises(ChainError, match="chain item 1 format mismatch"):
+        plan_chain([sources[0], ChainSource(_decoded(2, 0.1, rate=44100), "b.wav")])
 
 
 # --- file inputs -----------------------------------------------------------------------
