@@ -411,6 +411,10 @@ class StreamingTranscriptionSession:
         self._active = False
         self._task: Optional[asyncio.Task] = None
         self._origin_ms = 0.0
+        self._utterance_start_ms = 0.0  # fixed at start_utterance; the
+        # pass loop's origin slides forward as it commits finals — this
+        # anchor does NOT, so the turn-end window can still reach the
+        # utterance's true (possibly Silero-back-dated) head.
         self._boundary_ms = 0.0  # position of the last known turn boundary
         self._last_pass_ms = 0.0
         self._prev_tokens: list[str] = []
@@ -450,13 +454,37 @@ class StreamingTranscriptionSession:
         when the full-window one-shot regresses."""
         return self._finals_text
 
+    @property
+    def origin_ms(self) -> float:
+        """The current utterance's window origin on the ring timeline
+        (Silero-anchored when the client's start trailed the neural
+        onset — see start_utterance)."""
+        return self._origin_ms
+
+    @property
+    def utterance_start_ms(self) -> float:
+        """The utterance's TRUE start anchor (Silero-back-dated when the
+        client's stream start trailed the neural onset). Unlike
+        :attr:`origin_ms`, the pass loop's commits never slide it — the
+        turn-end window uses it so a long phrase keeps its head."""
+        return self._utterance_start_ms
+
     # ── client control messages ──
 
-    def start_utterance(self) -> None:
+    def start_utterance(self, origin_hint_ms: Optional[float] = None) -> None:
         """``stream start``: a new utterance begins at the VAD onset. The
         window origin keeps ~500 ms of pre-onset audio — except after a
         known turn boundary, where the boundary wins (no preroll into a
-        finished turn)."""
+        finished turn).
+
+        ``origin_hint_ms`` is the SERVER-side Silero speech onset for
+        this utterance when the framer saw one. A late client ``stream
+        start`` — quiet mics open the energy gate mid-phrase — must not
+        amputate the head of the phrase (2026-11-17 device failure:
+        "solo me toma las últimas palabras"; the audio sits in the ring,
+        only the origin excluded it): when the neural onset precedes the
+        client's start, the origin back-dates to it (minus the same
+        preroll, never before the turn boundary)."""
         self._generation += 1
         self._active = True
         self._error_latched = False
@@ -469,9 +497,16 @@ class StreamingTranscriptionSession:
         self._flushing = False
         self._flush_remaining = 0
         self._parity_failed = False
-        self._origin_ms = max(
+        origin = max(
             self._boundary_ms, self._ring.total_ms() - STREAM_PREROLL_MS
         )
+        if origin_hint_ms is not None and origin_hint_ms >= self._boundary_ms:
+            hinted = max(
+                self._boundary_ms, float(origin_hint_ms) - STREAM_PREROLL_MS
+            )
+            origin = min(origin, hinted)
+        self._origin_ms = origin
+        self._utterance_start_ms = origin
         self._last_pass_ms = self._origin_ms
         self._schedule_pass()
 
@@ -938,6 +973,10 @@ async def handle_call_stream(
     token = None
     locale: Optional[str] = None
     wants_vad = False
+    # The server-side Silero onset of the CURRENT speech burst (ring
+    # timeline), cleared at speech_end — the late-onset anchor for
+    # start_utterance (see its docstring).
+    vad_speech_onset_ms: Optional[float] = None
     is_auth_shape = False
     if "text" in first_msg and first_msg["text"]:
         try:
@@ -1090,6 +1129,17 @@ async def handle_call_stream(
                     # socket and the turn path must never notice.
                     try:
                         for event in framer.feed(msg["bytes"]):
+                            ev = event.get("event")
+                            if ev == "speech_start":
+                                at = event.get("at_ms")
+                                vad_speech_onset_ms = (
+                                    float(at)
+                                    if isinstance(at, (int, float))
+                                    else ring_buffer.total_ms()
+                                )
+                            elif ev == "speech_end":
+                                # The next utterance earns a fresh onset.
+                                vad_speech_onset_ms = None
                             await websocket.send_json({"type": "vad", **event})
                     except Exception as exc:  # noqa: BLE001 — framing is advisory
                         framer = None
@@ -1275,7 +1325,17 @@ async def handle_call_stream(
                         continue
                     duration_ms = float(payload.get("duration_ms", 0))
                     pre_roll_ms = float(payload.get("pre_roll_ms", DEFAULT_PREROLL_MS))
-                    pcm16 = ring_buffer.get_window(duration_ms=duration_ms, pre_roll_ms=pre_roll_ms)
+                    # Late-onset anchor (2026-11-17): the client measures
+                    # duration_ms from ITS energy onset, which on a quiet
+                    # mic opens mid-phrase — the window must also cover
+                    # the session's Silero-anchored origin, or the turn-end
+                    # transcript amputates the head the partials already
+                    # showed ("solo las últimas palabras").
+                    client_start_ms = ring_buffer.total_ms() - (
+                        max(duration_ms, 0.0) + max(pre_roll_ms, 0.0)
+                    )
+                    start_ms = min(client_start_ms, session.utterance_start_ms)
+                    pcm16 = ring_buffer.get_range(max(0.0, start_ms))
                     # Diagnostics (level only): connection audio volume vs
                     # the turn window's peak sample, so a silent uplink is
                     # distinguishable from a transcription failure.
@@ -1356,7 +1416,10 @@ async def handle_call_stream(
                     # keeps idle silence and the agent's own playback off
                     # the GPU (S5: partials run WHILE SPEAKING).
                     if payload.get("action") == "start":
-                        session.start_utterance()
+                        # Late-onset anchor: a client start that trails
+                        # the neural onset back-dates the window to the
+                        # true speech start (start_utterance docstring).
+                        session.start_utterance(origin_hint_ms=vad_speech_onset_ms)
                         probed_this_turn = False
                     elif payload.get("action") == "stop":
                         session.stop_utterance()
