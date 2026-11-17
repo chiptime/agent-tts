@@ -270,6 +270,13 @@ DEFAULT_NTFY_APPROVAL_URL=""
 # Shared secret for those buttons; must match the brain's
 # HERDR_BRAIN_APPROVAL_TOKEN (the alias lets co-located daemons share it).
 DEFAULT_NTFY_APPROVAL_TOKEN=""
+# HT-17: ntfy sequence IDs make one notification per agent update in place
+# (server ≥ v2.18). off = today's one-shot pushes (default); update = every
+# event replaces the previous one; update+clear also dismisses it after done.
+DEFAULT_NTFY_SEQUENCE="off"
+# HT-17/RF-4: HT-05's final high-priority reminder opts out of sequence IDs so
+# a later routine update can never replace (silence) that escalation.
+NTFY_SEQ_OPTOUT_PRIORITY="high"
 DEFAULT_WEB_URL=""
 DEFAULT_WEB_LABEL=""
 DEFAULT_CLICK_REDIRECT="off"
@@ -419,6 +426,7 @@ NTFY_TOPIC="${NTFY_TOPIC:-${HERDR_NTFY_TOPIC:-$DEFAULT_NTFY_TOPIC}}"
 NTFY_SERVER="${NTFY_SERVER:-${HERDR_NTFY_SERVER:-$DEFAULT_NTFY_SERVER}}"
 NTFY_APPROVAL_URL="${NTFY_APPROVAL_URL:-${HERDR_NTFY_APPROVAL_URL:-$DEFAULT_NTFY_APPROVAL_URL}}"
 NTFY_APPROVAL_TOKEN="${NTFY_APPROVAL_TOKEN:-${HERDR_BRAIN_APPROVAL_TOKEN:-$DEFAULT_NTFY_APPROVAL_TOKEN}}"
+NTFY_SEQUENCE="${NTFY_SEQUENCE:-${HERDR_NTFY_SEQUENCE:-$DEFAULT_NTFY_SEQUENCE}}"
 WEB_URL="${WEB_URL:-${HERDR_WEB_URL:-$DEFAULT_WEB_URL}}"
 WEB_LABEL="${WEB_LABEL:-${HERDR_WEB_LABEL:-$DEFAULT_WEB_LABEL}}"
 CLICK_REDIRECT="${CLICK_REDIRECT:-$DEFAULT_CLICK_REDIRECT}"
@@ -484,6 +492,10 @@ TT_EN[ntfy.idle.title]="💤 %s idle"
 TT_EN[ntfy.idle.body]="Agent %s%s went idle."
 TT_EN[ntfy.push.audio]="[ntfy] 📤 Sending audio push (%s bytes) for %s to %s"
 TT_EN[ntfy.push.text]="[ntfy] 📤 Sending text push for %s to %s"
+# HT-17: one-line diagnostics only — a sequence-aware publish never surfaces
+# a user-facing error, and an unknown knob value degrades to "off".
+TT_EN[ntfy.seq.fallback]="[ntfy] sequence IDs rejected by the server; sent a one-shot push (%s)"
+TT_EN[ntfy.sequence.invalid]="⚠️ NTFY_SEQUENCE=%s is not one of off|update|update+clear; using off"
 TT_EN[podcast.published]="🎙️ Episode published to the private podcast feed"
 TT_EN[podcast.no_pane]="⚠️ No focused pane in Herdr"
 TT_EN[podcast.pane_empty_pub]="ℹ️ Pane %s has no content to publish"
@@ -1026,6 +1038,8 @@ TT_ES[ntfy.idle.title]="💤 %s idle"
 TT_ES[ntfy.idle.body]="Agente %s%s pasó a idle."
 TT_ES[ntfy.push.audio]="[ntfy] 📤 Enviando push con audio (%s bytes) para %s a %s"
 TT_ES[ntfy.push.text]="[ntfy] 📤 Enviando push de texto para %s a %s"
+TT_ES[ntfy.seq.fallback]="[ntfy] el servidor rechazó los sequence IDs; push enviado como one-shot (%s)"
+TT_ES[ntfy.sequence.invalid]="⚠️ NTFY_SEQUENCE=%s no es off|update|update+clear; se usa off"
 TT_ES[podcast.published]="🎙️ Episodio publicado en el feed privado de podcast"
 TT_ES[podcast.no_pane]="⚠️ No hay ningún pane enfocado en Herdr"
 TT_ES[podcast.pane_empty_pub]="ℹ️ El pane %s no tiene contenido para publicar"
@@ -1533,6 +1547,17 @@ tt() { # <key> [printf-args...] → translated text on stdout
   printf "$msg" "$@"
 }
 
+# HT-17: NTFY_SEQUENCE is a closed enum. An unknown hand-edited value warns
+# ONCE at startup and degrades to "off", so junk can never half-enable
+# in-place updates or clear-after-done.
+case "$NTFY_SEQUENCE" in
+  off|update|update+clear) ;;
+  *)
+    echo "$(tt ntfy.sequence.invalid "$NTFY_SEQUENCE")" >&2
+    NTFY_SEQUENCE="off"
+    ;;
+esac
+
 save_config() {
   cat > "$CONFIG_FILE" <<EOF
 TTS_PROVIDER="${TTS_PROVIDER}"
@@ -1557,6 +1582,7 @@ PIPER_MODEL="${PIPER_MODEL}"
 NTFY_TOPIC="${NTFY_TOPIC}"
 NTFY_SERVER="${NTFY_SERVER}"
 NTFY_APPROVAL_URL="${NTFY_APPROVAL_URL}"
+NTFY_SEQUENCE="${NTFY_SEQUENCE}"
 WEB_URL="${WEB_URL}"
 WEB_LABEL="${WEB_LABEL}"
 CLICK_REDIRECT="${CLICK_REDIRECT}"
@@ -2294,6 +2320,28 @@ build_approval_actions() { # <gate_id> → Actions header value; rc 1 when the t
     "$(tt ntfy.open_approval)" "$base"
 }
 
+# ─── HT-17: updatable notifications (ntfy sequence IDs) ───────
+# One notification per agent that mutates to its latest state: publishing
+# with a stable X-Sequence-ID makes ntfy ≥ v2.18 replace the client-side
+# notification in place (the server cache stays append-only). Exactly ONE
+# publish path exists (send_ntfy_push); this block only supplies the
+# identity, the per-process published set, and the opt-in clear.
+
+# Sequence ids this process published (assoc: id → 1). RF-3 only dismisses a
+# sequence that was actually published here first.
+declare -A NTFY_SEQ_PUBLISHED=()
+
+ntfy_sequence_id() { # <pane_id> → stable ntfy sequence id ([-_A-Za-z0-9], ≤ 64)
+  # Pane ids are already stable in herdr, so the derived id is stable across
+  # that agent's events; forbidden bytes fold to '-' (LC_ALL=C keeps UTF-8
+  # multi-byte input deterministic: one dash per byte).
+  local raw="${1:-}"
+  [[ -n "$raw" ]] || raw="unknown"
+  local safe
+  safe="$(LC_ALL=C printf 'agent-%s' "$raw" | LC_ALL=C tr -c 'A-Za-z0-9_-' '-')"
+  printf '%s' "${safe:0:64}"
+}
+
 send_ntfy_push() {
   local pane_id="$1"
   local agent="$2"
@@ -2394,6 +2442,18 @@ send_ntfy_push() {
   [[ -n "$priority_override" ]] && priority="$priority_override"
   [[ -n "$body_override" ]] && body="$body_override"
 
+  # HT-17: in-place update identity, added as the X-Sequence-ID header (the
+  # publish URL/topic construction stays untouched). HT-05's escalating
+  # high-priority reminder opts out so a later update can never silence it.
+  local sequence_id=""
+  if [[ "$NTFY_SEQUENCE" != "off" && "$priority_override" != "$NTFY_SEQ_OPTOUT_PRIORITY" ]]; then
+    sequence_id="$(ntfy_sequence_id "$pane_id")"
+  fi
+  local had_sequence_publish=false
+  if [[ -n "$sequence_id" && -n "${NTFY_SEQ_PUBLISHED[$sequence_id]:-}" ]]; then
+    had_sequence_publish=true
+  fi
+
   local -a headers=(
     -H "Title: ${title}"
     -H "Priority: ${priority}"
@@ -2406,7 +2466,10 @@ send_ntfy_push() {
     headers+=(-H "Actions: ${action_buttons}")
   fi
 
+  local http_status=""
+  local is_audio=false
   if [[ -n "$audio_path" && -f "$audio_path" && -s "$audio_path" ]]; then
+    is_audio=true
     local safe_body="${body//$'\n'/ · }"
     local audio_bytes
     audio_bytes=$(stat -c%s "$audio_path" 2>/dev/null || echo "unknown")
@@ -2415,10 +2478,47 @@ send_ntfy_push() {
       -H "Filename: ${pane_id//:/_}-response.mp3"
     )
     echo "[$(date +%H:%M:%S)] $(tt ntfy.push.audio "$audio_bytes" "$pane_id" "$NTFY_TOPIC")"
-    curl -s --connect-timeout 5 --max-time 30 "${headers[@]}" -T "${audio_path}" "${ntfy_url}" > /dev/null 2>&1 || true
+    if [[ -n "$sequence_id" ]]; then
+      http_status="$(curl -s --connect-timeout 5 --max-time 30 "${headers[@]}" \
+        -H "X-Sequence-ID: ${sequence_id}" -T "${audio_path}" "${ntfy_url}" \
+        -o /dev/null -w '%{http_code}' 2>/dev/null || true)"
+    else
+      curl -s --connect-timeout 5 --max-time 30 "${headers[@]}" -T "${audio_path}" "${ntfy_url}" > /dev/null 2>&1 || true
+    fi
   else
     echo "[$(date +%H:%M:%S)] $(tt ntfy.push.text "$pane_id" "$NTFY_TOPIC")"
-    curl -s --connect-timeout 5 --max-time 15 "${headers[@]}" -d "${body}" "${ntfy_url}" > /dev/null 2>&1 || true
+    if [[ -n "$sequence_id" ]]; then
+      http_status="$(curl -s --connect-timeout 5 --max-time 15 "${headers[@]}" \
+        -H "X-Sequence-ID: ${sequence_id}" -d "${body}" "${ntfy_url}" \
+        -o /dev/null -w '%{http_code}' 2>/dev/null || true)"
+    else
+      curl -s --connect-timeout 5 --max-time 15 "${headers[@]}" -d "${body}" "${ntfy_url}" > /dev/null 2>&1 || true
+    fi
+  fi
+
+  [[ -n "$sequence_id" ]] || return 0
+
+  # RF-5: a non-2xx answer means the server predates sequence IDs (or rejected
+  # this one). Retry ONCE as today's plain one-shot and log exactly one line;
+  # the user never sees an error.
+  if [[ "$http_status" != 2* ]]; then
+    echo "[$(date +%H:%M:%S)] $(tt ntfy.seq.fallback "$sequence_id")"
+    if [[ "$is_audio" == true ]]; then
+      curl -s --connect-timeout 5 --max-time 30 "${headers[@]}" -T "${audio_path}" "${ntfy_url}" > /dev/null 2>&1 || true
+    else
+      curl -s --connect-timeout 5 --max-time 15 "${headers[@]}" -d "${body}" "${ntfy_url}" > /dev/null 2>&1 || true
+    fi
+    return 0
+  fi
+
+  NTFY_SEQ_PUBLISHED["$sequence_id"]=1
+
+  # RF-3: opt-in dismissal. Only update+clear, only after a done, and only
+  # when this process published that same sequence before: the done update
+  # replaces the previous state, then the clear marks it read and drops it
+  # from the drawer (US-HT-17-2). Best effort: failures stay silent.
+  if [[ "$NTFY_SEQUENCE" == "update+clear" && "$state" == "done" && "$had_sequence_publish" == true ]]; then
+    curl -s --connect-timeout 2 --max-time 5 -X PUT "${ntfy_url}/${sequence_id}/clear" > /dev/null 2>&1 || true
   fi
 }
 
