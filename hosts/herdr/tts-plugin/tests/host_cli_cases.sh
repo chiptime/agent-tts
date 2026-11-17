@@ -735,6 +735,66 @@ case__ntfy_sequence_id_is_sanitized_stable_and_bounded() {
   [[ "$d" =~ ^[-_A-Za-z0-9]+$ ]]                       # ASCII-only, even for UTF-8
 }
 
+# --- HT-19: idle left the push matrix ---------------------------------------
+#
+# The catalog (PRD-HT-19) cuts the standalone idle push: idle is silent state
+# (a drawer update via HT-17), never a new notification. NTFY_IDLE_PUSH=on
+# restores the old working→idle push byte for byte; the default is off.
+
+# RF-1: the gate helper is off by default and for any non-"on" value; only
+# "on" enables. rc 127 (helper missing) surfaces as MISSING so this case is
+# RED until the helper exists.
+case__ntfy_idle_gate_helper_off_by_default() {
+  sandbox_setup idle_gate
+  in_host '
+    g() { if ntfy_idle_push_enabled; then echo ENABLED; else r=$?; if [[ $r -eq 127 ]]; then echo MISSING; else echo DISABLED; fi; fi; }
+    { g; NTFY_IDLE_PUSH=on g; NTFY_IDLE_PUSH=off g; NTFY_IDLE_PUSH=junk g; } > "$1/gate" 2>&1
+  ' "$SANDBOX" > "$SANDBOX/out" 2> "$SANDBOX/err" || return 1
+  diff -u - "$SANDBOX/gate" <<'EOF'
+DISABLED
+ENABLED
+DISABLED
+DISABLED
+EOF
+}
+
+# Structural pin (same trust level as the sibling event gates): the watcher's
+# idle branch must consult the helper, not just its own inline conditions.
+case__ntfy_idle_gate_is_wired_into_the_watcher() {
+  sandbox_setup idle_wire
+  in_host 'declare -f watch_agent_pane | grep -q ntfy_idle_push_enabled' \
+    > "$SANDBOX/out" 2> "$SANDBOX/err"
+}
+
+# RF-1 restore path: with NTFY_IDLE_PUSH=on the idle push keeps today's exact
+# request byte for byte (golden captured against the pre-cut request).
+case__ntfy_idle_push_on_mode_preserves_the_old_request() {
+  run_ntfy_seq idle_preserve off '
+    NTFY_IDLE_PUSH=on
+    send_ntfy_push 3 opencode idle ws title-1 ""
+  ' || return 1
+  cat > "$SANDBOX/expected" <<'EOF'
+ARG<-s>
+ARG<--connect-timeout>
+ARG<5>
+ARG<--max-time>
+ARG<15>
+ARG<-H>
+ARG<Title: 💤 opencode [title-1] (3) idle>
+ARG<-H>
+ARG<Priority: low>
+ARG<-H>
+ARG<Tags: zzz>
+ARG<-H>
+ARG<Actions: copy, 📋 Copy command, herdr agent focus 3, clear=true>
+ARG<-d>
+ARG<Agent opencode [title-1] (3) in ws went idle.>
+ARG<http://ntfy.example/t>
+CALL
+EOF
+  diff -u "$SANDBOX/expected" "$SANDBOX/curl.calls"
+}
+
 # The knob is a closed enum: an unknown value is off plus ONE warning line.
 case__ntfy_sequence_unknown_mode_warns_once_and_stays_off() {
   sandbox_setup seq_invalid

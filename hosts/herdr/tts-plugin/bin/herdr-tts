@@ -277,6 +277,9 @@ DEFAULT_NTFY_SEQUENCE="off"
 # HT-17/RF-4: HT-05's final high-priority reminder opts out of sequence IDs so
 # a later routine update can never replace (silence) that escalation.
 NTFY_SEQ_OPTOUT_PRIORITY="high"
+# HT-19: idle left the push matrix — silent state (drawer update via HT-17),
+# never a standalone push. on restores the old working→idle push byte for byte.
+DEFAULT_NTFY_IDLE_PUSH="off"
 DEFAULT_WEB_URL=""
 DEFAULT_WEB_LABEL=""
 DEFAULT_CLICK_REDIRECT="off"
@@ -427,6 +430,7 @@ NTFY_SERVER="${NTFY_SERVER:-${HERDR_NTFY_SERVER:-$DEFAULT_NTFY_SERVER}}"
 NTFY_APPROVAL_URL="${NTFY_APPROVAL_URL:-${HERDR_NTFY_APPROVAL_URL:-$DEFAULT_NTFY_APPROVAL_URL}}"
 NTFY_APPROVAL_TOKEN="${NTFY_APPROVAL_TOKEN:-${HERDR_BRAIN_APPROVAL_TOKEN:-$DEFAULT_NTFY_APPROVAL_TOKEN}}"
 NTFY_SEQUENCE="${NTFY_SEQUENCE:-${HERDR_NTFY_SEQUENCE:-$DEFAULT_NTFY_SEQUENCE}}"
+NTFY_IDLE_PUSH="${NTFY_IDLE_PUSH:-${HERDR_NTFY_IDLE_PUSH:-$DEFAULT_NTFY_IDLE_PUSH}}"
 WEB_URL="${WEB_URL:-${HERDR_WEB_URL:-$DEFAULT_WEB_URL}}"
 WEB_LABEL="${WEB_LABEL:-${HERDR_WEB_LABEL:-$DEFAULT_WEB_LABEL}}"
 CLICK_REDIRECT="${CLICK_REDIRECT:-$DEFAULT_CLICK_REDIRECT}"
@@ -2342,6 +2346,12 @@ ntfy_sequence_id() { # <pane_id> → stable ntfy sequence id ([-_A-Za-z0-9], ≤
   printf '%s' "${safe:0:64}"
 }
 
+# HT-19 matrix: the idle event is silent state, never a standalone push —
+# unless the maintainer opts back in with NTFY_IDLE_PUSH=on.
+ntfy_idle_push_enabled() {
+  [[ "$NTFY_IDLE_PUSH" == "on" ]]
+}
+
 send_ntfy_push() {
   local pane_id="$1"
   local agent="$2"
@@ -3999,7 +4009,7 @@ watch_agent_pane() {
             fi
           fi
         fi
-      elif [[ "$new_state" == "idle" && "$prev_state" == "working" && -n "$NTFY_TOPIC" ]]; then
+      elif [[ "$new_state" == "idle" && "$prev_state" == "working" && -n "$NTFY_TOPIC" ]] && ntfy_idle_push_enabled; then
         send_ntfy_push "$pane_id" "$agent_name" "idle" "$workspace" "$title_desc" ""
       fi
     fi
