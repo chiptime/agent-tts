@@ -1073,6 +1073,38 @@ async def handle_call_stream(
                         int(_n("ext")), int(_n("probes")),
                     )
                     continue
+                if cmd == "turn_timing":
+                    # PRD-02 latency baseline: the LIVE client's per-turn
+                    # stage breakdown (numbers and one bounded reason token
+                    # only — same policy as the diag line, never audio or
+                    # transcript text). Two reports may arrive per turn:
+                    # reason=ask rides the still-open capture socket at ask
+                    # resolution; reason=audio is the stashed playback
+                    # report delivered by the next re-armed socket (the S7
+                    # echo rule closes the capture before answer audio).
+                    # -1 marks a stage the turn never reached.
+                    def _ms(key: str) -> int:
+                        value = payload.get(key)
+                        if isinstance(value, bool) or not isinstance(value, (int, float)):
+                            return -1
+                        return int(value)
+
+                    def _tok(key: str, limit: int) -> str:
+                        value = payload.get(key)
+                        if not isinstance(value, str):
+                            return "?"
+                        return "".join(
+                            ch for ch in value if ch >= " " and ch != "\x7f"
+                        )[:limit] or "?"
+
+                    logger.info(
+                        "live turn timing: reason=%s close_dispatch_ms=%d "
+                        "dispatch_ask_ms=%d ask_audio_ms=%d total_ms=%d",
+                        _tok("reason", 8),
+                        _ms("close_dispatch_ms"), _ms("dispatch_ask_ms"),
+                        _ms("ask_audio_ms"), _ms("total_ms"),
+                    )
+                    continue
                 if cmd == "turn_probe":
                     # L59 extender-only: the client's energy endpointer is
                     # still the decision owner — this answers ONE advisory

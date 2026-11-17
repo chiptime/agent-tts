@@ -291,6 +291,11 @@
   var liveTurn = null;
   var liveMicBusy = false;
   var liveDispatchRouted = false;  // the live dispatch reached routeUtterance (B1)
+  /* PRD-02 (live-call latency baseline): one timing record per LIVE turn,
+   * anchored at the "transcribe" close and reported once over the socket
+   * by sendLiveTurnTiming(). Null outside a live turn — every other
+   * engine's path is untouched. */
+  var liveTiming = null;
   /* S7 (PRD-05/D10, T4): speech resuming after the turn closed but
    * BEFORE the answer starts rejoins the SAME turn. Null = no rejoin
    * window. "watch": the turn closed (transcribe requested or its /ask
@@ -474,6 +479,18 @@
       selectedPane = data.pane_id;
       try { localStorage.setItem(PANE_KEY, selectedPane); } catch (err) { /* private mode */ }
     }
+  }
+
+  /* Push deep link (S5): a notification tap that OPENED this window
+   * carries its chat as ?pane_id=. The boot applies it AFTER the
+   * shared context (the tap is the operator's latest intent, so it
+   * beats the last shared pane) and consumes it once — the URL is
+   * cleaned whether or not the pane still exists. */
+  function deepLinkPane() {
+    try {
+      var m = window.location.search.match(/[?&]pane_id=([^&]+)/);
+      return m ? decodeURIComponent(m[1]) : null;
+    } catch (err) { return null; }
   }
 
   function adoptCallContext() {
@@ -5166,6 +5183,11 @@
      * hear the answer. */
     var keepLiveCapture = !!(opts.liveRejoin && voiceEngine === "live" &&
       inCall && liveWs);
+    /* PRD-02: the dispatch mark for this live turn (a re-dispatched
+     * rejoined utterance re-anchored its close already). */
+    if (liveTiming && liveTiming.dispatchedAt == null && keepLiveCapture) {
+      liveTiming.dispatchedAt = performance.now();
+    }
     /* S7: a rejoined re-dispatch replaces its first segment's user
      * bubble — the whole utterance renders as ONE turn. */
     if (opts.replaceUserTurn && replaceLastUserTurn(text)) {
@@ -5219,6 +5241,13 @@
           speechCtl.release(speech.speech_request_id);
           return;
         }
+        /* PRD-02: the ask resolved (any status counts — the turn's LLM
+         * work is done at this point) and the capture socket is still
+         * open here, before endRejoin() closes it for the answer. */
+        if (liveTiming && liveTiming.askDoneAt == null) {
+          liveTiming.askDoneAt = performance.now();
+        }
+        sendLiveTurnTimingAsk();
         if (resp.status === 503) {
           endRejoin();
           removeThinkingBubble();
@@ -5256,8 +5285,10 @@
                 first: data.audio_url && data.speech.first_seq === 0 ? {
                   seq: 0, audio_url: data.audio_url, is_final: !!data.speech.first_is_final
                 } : null });
+              stashLiveTurnTimingAudio();  // PRD-02: playback initiated
             } else if (data.audio_url) {
               enqueueAudio(data.audio_url, null, speech.speech_request_id);
+              stashLiveTurnTimingAudio();  // PRD-02: playback initiated
             } else {
               speechCtl.release(speech.speech_request_id);
               if (!data.approval) afterAnswer();
@@ -6454,6 +6485,57 @@
     catch (err) { /* socket died mid-send */ }
   }
 
+  /* PRD-02: report this live turn's latency stages as numbers-only JSON
+   * on the live socket (same policy as the diag line — no text, no
+   * audio). TWO reports, forced by the S7 lifecycle: the capture socket
+   * is CLOSED before answer audio may play (echo), so the ask-resolution
+   * report ("ask": close -> dispatch -> ask resolved) goes out on the
+   * still-open socket, while the playback-initiated report ("audio":
+   * ask -> first playback, close -> first playback) is STASHED and
+   * delivered when the next live socket opens (the re-arm after the
+   * answer — deferred delivery, timestamps measured at the right
+   * moments). Stages a turn never reached report -1. */
+  function liveTimingDelta(from, to) {
+    return (from != null && to != null) ? Math.round(to - from) : -1;
+  }
+
+  function sendLiveTurnTimingAsk() {
+    if (!liveTiming || liveTiming.askSent) return;
+    liveTiming.askSent = true;
+    if (!liveWs || liveWs.readyState !== WebSocket.OPEN) return;
+    try {
+      liveWs.send(JSON.stringify({
+        type: "turn_timing",
+        reason: "ask",
+        close_dispatch_ms: liveTimingDelta(liveTiming.closeAt, liveTiming.dispatchedAt),
+        dispatch_ask_ms: liveTimingDelta(liveTiming.dispatchedAt, liveTiming.askDoneAt),
+        ask_audio_ms: -1,
+        total_ms: liveTimingDelta(liveTiming.closeAt, liveTiming.askDoneAt)
+      }));
+    } catch (err) { /* socket died mid-send */ }
+  }
+
+  function stashLiveTurnTimingAudio() {
+    if (!liveTiming || liveTiming.audioSent) return;
+    liveTiming.audioSent = true;
+    var at = performance.now();
+    liveTiming.pending = {
+      reason: "audio",
+      ask_audio_ms: liveTimingDelta(liveTiming.askDoneAt, at),
+      total_ms: liveTimingDelta(liveTiming.closeAt, at)
+    };
+  }
+
+  /* Delivered on the NEXT live socket (see the lifecycle note above). */
+  function flushLiveTurnTiming() {
+    if (!liveTiming || !liveTiming.pending) return;
+    var report = liveTiming.pending;
+    liveTiming.pending = null;
+    try {
+      liveWs.send(JSON.stringify(Object.assign({ type: "turn_timing" }, report)));
+    } catch (err) { /* socket died mid-send */ }
+  }
+
   /* A1 (PRD-03 FR-03): while the socket is OPEN, ws.bufferedAmount is
    * the backpressure signal. Above the bound the frame routes through
    * the bounded buffer (drop oldest, keep ~2 s) instead of another
@@ -6537,6 +6619,10 @@
         fallbackToServidor();
         return;
       }
+      /* PRD-02: deliver a stashed playback-timing report from the
+       * previous turn — its socket was closed before the answer audio
+       * could play (S7 echo rule), so this re-arm carries it. */
+      flushLiveTurnTiming();
       if (liveSendBuf && liveSendBuf.length() > 0) {
         var flushed = liveSendBuf.flush();
         for (var f = 0; f < flushed.length; f++) {
@@ -7030,6 +7116,9 @@
       liveDispatchRouted = false;  // B1: awaiting the transcript again
       var durationMs = liveTurn && liveTurn.onsetAt ? (Date.now() - liveTurn.onsetAt) : 1000;
       if (liveWs && liveWs.readyState === WebSocket.OPEN) {
+        /* PRD-02: a fresh timing record per close — the rejoined
+         * re-dispatch of a resumed turn re-anchors here. */
+        liveTiming = { closeAt: performance.now() };
         /* T3: stop the partial loop BEFORE the turn-end transcribe —
          * the server serializes both behind its one-inference lock and
          * drops whatever the last pass was still computing. */
@@ -7405,6 +7494,16 @@
    * (the shared pane selection included). Offline, the local identity
    * from SESSION_KEY keeps the boot identical to the baseline. */
   adoptCallContext().then(function () {
+    /* The notification tap's chat, applied before the first render so
+     * the PWA boots straight into the conversation. Consumed once: a
+     * later reload or chip tap never jumps back to the notification's
+     * pane, and a stale pane id degrades through the effective-pane
+     * fallback. */
+    var linked = deepLinkPane();
+    if (linked) {
+      try { history.replaceState(null, "", "/"); } catch (err) { /* offline origin */ }
+      if (linked !== selectedPane) selectAgent(linked);
+    }
     refreshState();
     /* T7 reload recovery (PRD §5): ask the server whether the session
      * still has a live gate (mid-gate reload — or a handover from the
@@ -7641,6 +7740,17 @@
   }
 
   if ("serviceWorker" in navigator) {
+    /* A notification tap on an ALREADY-OPEN window: the worker focuses
+     * it and sends the chat here (it never reloads a live window). A
+     * pane the herd no longer knows (stale notification) is ignored so
+     * it cannot hijack the shared selection; an unloaded herd applies
+     * anyway and degrades through the effective-pane fallback. */
+    navigator.serviceWorker.addEventListener("message", function (event) {
+      var data = event && event.data;
+      if (!data || data.type !== "brain-open-pane" || !data.paneId) return;
+      var target = String(data.paneId);
+      if (!lastHerd.length || herdEntry(target)) selectAgent(target);
+    });
     navigator.serviceWorker.register("/sw.js").then(function (reg) {
       /* Tell the worker which shell build THIS page booted with, so
        * runtime cache fills land in the right brain-shell cache even

@@ -960,6 +960,7 @@ def test_live_engine_closes_on_its_own_short_silence_window(karaoke_app):
     sub-second-class: the transcribe control leaves near the live window,
     not after 3.2 s of dead air."""
     harness, page = _rejoin_boot(karaoke_app)
+    page.on("pageerror", lambda e: print("PAGEERROR:", e))
     page.evaluate("""() => {
         window.__askReplies.push({status: 200, body: {answer: 'respuesta corta', audio_url: null}});
     }""")
@@ -974,6 +975,46 @@ def test_live_engine_closes_on_its_own_short_silence_window(karaoke_app):
         f"live silence close took {elapsed_ms:.0f} ms — still waiting the "
         "shared 3.2 s Navegador workaround window (RC1)"
     )
+
+
+def test_live_turn_sends_stage_timing_report(karaoke_app):
+    """PRD-02: every live turn reports its latency stages over the live
+    socket as {"type":"turn_timing"} messages — the baseline the
+    PRD-06/PRD-07 work will be measured against. The S7 lifecycle closes
+    the capture socket before answer audio may play, so the ask-resolution
+    report ("ask": close -> dispatch -> ask resolved) rides the still-open
+    socket, and the playback report ("audio") is stashed for the next
+    socket. This turn has no audio: exactly one "ask" report, no stash."""
+    harness, page = _rejoin_boot(karaoke_app)
+    page.evaluate("""() => {
+        window.__askReplies.push({status: 200, body: {answer: 'respuesta corta', audio_url: null}});
+    }""")
+    page.locator("#call-btn").click()
+    _speak_close(page)
+    # The fake socket has no server behind it: deliver the final
+    # transcript by hand so the client dispatches the (faked) ask.
+    page.evaluate("() => window.__wsList[0].emit({type: 'transcript', text: 'hola buenos dia'})")
+    page.wait_for_function(
+        "() => window.__sent.some(s => typeof s === 'string' && s.indexOf('turn_timing') >= 0)",
+        timeout=10000,
+    )
+    timing = page.evaluate("""() => {
+        const raw = window.__sent
+            .filter(s => typeof s === 'string' && s.indexOf('turn_timing') >= 0)
+            .pop();
+        return JSON.parse(raw);
+    }""")
+    assert timing["reason"] == "ask", f"unexpected reason: {timing}"
+    assert timing["close_dispatch_ms"] >= 0, f"missing close->dispatch: {timing}"
+    assert timing["dispatch_ask_ms"] >= 0, f"missing dispatch->ask: {timing}"
+    assert timing["ask_audio_ms"] == -1, f"no-audio turn must not report audio: {timing}"
+    assert timing["total_ms"] >= timing["close_dispatch_ms"], f"bad total: {timing}"
+    # No stash pending: nothing flushed on the re-armed socket either.
+    stashed = page.evaluate(
+        "() => window.__sent.filter(s => typeof s === 'string'"
+        " && s.indexOf('\\\"audio\\\"') >= 0).length"
+    )
+    assert stashed == 0, "a no-audio turn must not stash an audio report"
 
 
 def test_resumed_speech_rejoins_the_turn_and_cancels_the_inflight_ask(karaoke_app):

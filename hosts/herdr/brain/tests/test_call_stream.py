@@ -150,6 +150,54 @@ def test_websocket_accepts_valid_device_token(tmp_path):
         assert resp["type"] == "auth_ok"
 
 
+def test_turn_timing_logs_stage_breakdown(tmp_path, caplog):
+    """PRD-02: the live client's per-turn latency report must reach the
+    journal as ONE structured line (numbers + a bounded reason token,
+    never audio or transcript text), with -1 for stages the turn never
+    reached. Both reports (ask on the open socket, the stashed audio one
+    from the next re-arm) share this handler."""
+    store = PairingStore(tmp_path)
+    minted = store.mint()
+    app = build_app(tmp_path)
+    client = TestClient(app)
+    token = client.post(
+        "/pair", json={"code": minted["code"], "label": "test-phone"}
+    ).json()["token"]
+
+    with caplog.at_level(logging.INFO, logger="herdr_brain.call_stream"):
+        with client.websocket_connect("/call/stream") as ws:
+            ws.send_json({"type": "auth", "token": token})
+            assert ws.receive_json()["type"] == "auth_ok"
+            ws.send_json({
+                "type": "turn_timing",
+                "reason": "ask",
+                "close_dispatch_ms": 412,
+                "dispatch_ask_ms": 2871,
+                "ask_audio_ms": -1,
+                "total_ms": 3283,
+            })
+            ws.send_json({
+                "type": "turn_timing",
+                "reason": "audio",
+                "ask_audio_ms": 640,
+                "total_ms": 3923,
+                "close_dispatch_ms": "not-a-number",  # rejected -> -1
+            })
+            time.sleep(0.15)
+
+    text = caplog.text
+    assert "live turn timing:" in text
+    assert "reason=ask" in text
+    assert "close_dispatch_ms=412" in text
+    assert "dispatch_ask_ms=2871" in text
+    assert "ask_audio_ms=-1" in text
+    assert "total_ms=3283" in text
+    assert "reason=audio" in text
+    assert "ask_audio_ms=640" in text
+    # A non-numeric field degrades to -1, never crashes the socket.
+    assert "close_dispatch_ms=-1" in text
+
+
 def test_client_diag_logs_audio_context_state_build_and_reason(tmp_path, caplog):
     """L53(d): the 2 s client diag must reach the journal with the
     AudioContext state, capture mode, frame counters, analyser peak and
