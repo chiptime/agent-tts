@@ -31,6 +31,22 @@ What each source actually records (verified against real local artifacts,
 * antigravity / aider — their transcripts carry no per-request token usage,
   so the report says so explicitly instead of guessing ("not measurable for
   <agent>").
+
+Where the MODEL of each request lives (verified against real local
+artifacts, 2026-11-17, for ``agent-tts last-model`` — HT-19 L8/S4a):
+
+* claude  — assistant events carry ``message.model`` (e.g.
+  ``"claude-sonnet-5-5"``). Stream-chunk lines of one response share it.
+* opencode — ``message.data`` JSON carries ``modelID`` at the top level
+  (plus ``providerID``, e.g. ``zai-coding-plan``); every assistant row with
+  token usage carries it, and mid-session model switches are common, so the
+  LAST request's model is the one that owns the freshest context.
+* codex   — ``turn_context`` events carry ``payload.model`` (e.g.
+  ``"gpt-5.5"``); ``token_count`` events carry none, so the model in effect
+  for each request is the one from the latest ``turn_context`` at that point
+  in the stream.
+* antigravity / aider — no model identity in their transcripts: the command
+  errors honestly instead of guessing.
 """
 
 import argparse
@@ -42,7 +58,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from agent_tts.sources.base import CLAUDE_SESSION_RE, OPENCODE_SESSION_RE
 
@@ -66,6 +82,7 @@ class TurnUsage:
     input_tokens: int  # uncached input tokens
     cached_tokens: int  # tokens served from the prompt cache
     cache_write_tokens: int  # tokens written to the cache, 0 when unrecorded
+    model: Optional[str] = None  # model id serving the request, when recorded
 
 
 @dataclass
@@ -100,6 +117,13 @@ def _iso_utc(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _clean_model(value) -> Optional[str]:
+    """Returns the model id when it is a usable string, else None."""
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
 # ─── Claude Code producer ────────────────────────────────────
 
 
@@ -112,7 +136,7 @@ def probe_claude(session_id: str, root: str) -> ProbeResult:
     result.source_path = matches[0]
 
     saw_assistant = False
-    raw = []  # (group_key, timestamp, usage) per assistant line with usage
+    raw = []  # (group_key, timestamp, usage, model) per assistant line with usage
     with open(matches[0], "r", encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
@@ -128,17 +152,21 @@ def probe_claude(session_id: str, root: str) -> ProbeResult:
             ts = _parse_iso_ts(event.get("timestamp"))
             message = event.get("message")
             usage = message.get("usage") if isinstance(message, dict) else None
+            model = message.get("model") if isinstance(message, dict) else None
             if ts is None or not isinstance(usage, dict):
                 continue
             key = message.get("id") or event.get("requestId") or id(event)
-            raw.append((key, ts, usage))
+            raw.append((key, ts, usage, _clean_model(model)))
 
     # Collapse consecutive stream-chunk lines of one API response (they share
     # the message id and repeat the same usage) into a single request.
     turns: List[TurnUsage] = []
     previous_key = object()
-    for key, ts, usage in raw:
+    for key, ts, usage, model in raw:
         if key == previous_key:
+            # A later chunk may carry the model the first line lacked.
+            if model and turns[-1].model is None:
+                turns[-1].model = model
             continue
         previous_key = key
         turns.append(
@@ -147,6 +175,7 @@ def probe_claude(session_id: str, root: str) -> ProbeResult:
                 input_tokens=_as_int(usage.get("input_tokens")),
                 cached_tokens=_as_int(usage.get("cache_read_input_tokens")),
                 cache_write_tokens=_as_int(usage.get("cache_creation_input_tokens")),
+                model=model,
             )
         )
 
@@ -214,6 +243,7 @@ def probe_opencode(session_id: str, db_path: str) -> ProbeResult:
                 input_tokens=numbers[0],
                 cached_tokens=numbers[2],
                 cache_write_tokens=numbers[3],
+                model=_clean_model(record.get("modelID")),
             )
         )
 
@@ -247,6 +277,7 @@ def probe_codex(session_id: str, sessions_root: str) -> ProbeResult:
     turns: List[TurnUsage] = []
     previous_snapshot = None
     saw_events = False
+    current_model = None  # from the latest turn_context at this point
     with open(path, "r", encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
@@ -256,7 +287,19 @@ def probe_codex(session_id: str, sessions_root: str) -> ProbeResult:
                 event = json.loads(line)
             except (json.JSONDecodeError, ValueError):
                 continue
-            if not isinstance(event, dict) or event.get("type") != "event_msg":
+            if not isinstance(event, dict):
+                continue
+            event_type = event.get("type")
+            if event_type == "turn_context":
+                # The model serving the upcoming requests; token_count
+                # events themselves carry none.
+                payload = event.get("payload")
+                if isinstance(payload, dict):
+                    model = _clean_model(payload.get("model"))
+                    if model:
+                        current_model = model
+                continue
+            if event_type != "event_msg":
                 continue
             payload = event.get("payload")
             if not isinstance(payload, dict) or payload.get("type") != "token_count":
@@ -283,6 +326,7 @@ def probe_codex(session_id: str, sessions_root: str) -> ProbeResult:
                     input_tokens=snapshot[0],
                     cached_tokens=snapshot[1],
                     cache_write_tokens=0,
+                    model=current_model,
                 )
             )
 
@@ -530,6 +574,78 @@ def _candidates(agent: Optional[str], session_id: str) -> List[str]:
     return []
 
 
+def _registries(
+    claude_root: str, opencode_db: str, codex_root: str, antigravity_root: str
+) -> Tuple[Dict[str, Callable], Dict[str, Callable]]:
+    """Agent name -> probe and latest-session callables over resolved roots."""
+    probes: Dict[str, Callable] = {
+        "claude": lambda session_id: probe_claude(session_id, claude_root),
+        "opencode": lambda session_id: probe_opencode(session_id, opencode_db),
+        "codex": lambda session_id: probe_codex(session_id, codex_root),
+        "antigravity": lambda session_id: probe_antigravity(session_id, antigravity_root),
+        "aider": probe_aider,
+    }
+    latests: Dict[str, Callable] = {
+        "claude": lambda: _latest_claude_session(claude_root),
+        "opencode": lambda: _latest_opencode_session(opencode_db),
+        "codex": lambda: _latest_codex_session(codex_root),
+        "antigravity": lambda: _latest_antigravity_session(antigravity_root),
+        "aider": lambda: None,  # aider has no session store
+    }
+    return probes, latests
+
+
+def _resolve_and_probe(
+    agent: Optional[str],
+    session_id: Optional[str],
+    probes: Dict[str, Callable],
+    latests: Dict[str, Callable],
+    err,
+    unknown_agent_rc: int,
+) -> Tuple[Optional[ProbeResult], int]:
+    """Shared resolution for the read-only transcript probes.
+
+    Resolves the session (explicit id, else the agent's latest session),
+    applies the connector-style session-id sniffing and tries candidates in
+    order until one has a transcript. Returns ``(result, exit_code)``; a
+    non-zero exit code means an error was already printed to ``err`` and the
+    caller must stop.
+    """
+    label = agent or "auto"
+    if session_id:
+        names = _candidates(agent, session_id)
+        if not names:
+            print(f"Error: no transcript found for {label}/{session_id}", file=err)
+            return None, 1
+    else:
+        names = _candidates(agent, "ses_placeholder-sniff")
+        if agent and not names:
+            print(f"Error: unknown agent '{agent}'", file=err)
+            return None, unknown_agent_rc
+        if names == ["aider"]:
+            # Aider has no session store: the id is a pass-through label, so
+            # the honest degradation works without one.
+            session_id = None
+        else:
+            session_id = next(
+                (sid for sid in (latests[name]() for name in names) if sid), None
+            )
+            if not session_id:
+                print(f"Error: no transcript found for {agent or names[0]}", file=err)
+                return None, 1
+
+    result: Optional[ProbeResult] = None
+    for name in names:
+        result = probes[name](session_id)
+        if result.status != STATUS_MISSING:
+            break
+    assert result is not None
+    if result.status == STATUS_MISSING:
+        print(f"Error: no transcript found for {label}/{session_id}", file=err)
+        return None, 1
+    return result, 0
+
+
 def handle_cache_report_command(
     argv: List[str],
     out=None,
@@ -571,70 +687,16 @@ def handle_cache_report_command(
     codex_root = codex_root or DEFAULT_CODEX_ROOT
     antigravity_root = antigravity_root or DEFAULT_ANTIGRAVITY_ROOT
 
-    def _probe(agent: str, session_id: Optional[str]) -> ProbeResult:
-        if agent == "claude":
-            return probe_claude(session_id, claude_root)
-        if agent == "opencode":
-            return probe_opencode(session_id, opencode_db)
-        if agent == "codex":
-            return probe_codex(session_id, codex_root)
-        if agent == "antigravity":
-            return probe_antigravity(session_id, antigravity_root)
-        return probe_aider(session_id)
-
-    def _latest(agent: str) -> Optional[str]:
-        if agent == "claude":
-            return _latest_claude_session(claude_root)
-        if agent == "opencode":
-            return _latest_opencode_session(opencode_db)
-        if agent == "codex":
-            return _latest_codex_session(codex_root)
-        if agent == "antigravity":
-            return _latest_antigravity_session(antigravity_root)
-        return None  # aider has no session store
-
-    session_id = args.session_id
-    if session_id:
-        names = _candidates(args.agent, session_id)
-        if not names:
-            print(
-                f"Error: no transcript found for {args.agent or 'auto'}/{session_id}",
-                file=err,
-            )
-            return 1
-    else:
-        names = _candidates(args.agent, "ses_placeholder-sniff")
-        if args.agent and not names:
-            print(f"Error: unknown agent '{args.agent}'", file=err)
-            return 2
-        if names == ["aider"]:
-            # Aider has no session store: the id is a pass-through label, so
-            # the honest degradation works without one.
-            session_id = None
-        else:
-            session_id = next((sid for sid in map(_latest, names) if sid), None)
-            if not session_id:
-                print(
-                    f"Error: no transcript found for {args.agent or names[0]}",
-                    file=err,
-                )
-                return 1
-
-    result: Optional[ProbeResult] = None
-    for name in names:
-        result = _probe(name, session_id)
-        if result.status != STATUS_MISSING:
-            break
+    probes, latests = _registries(claude_root, opencode_db, codex_root, antigravity_root)
+    result, rc = _resolve_and_probe(
+        args.agent, args.session_id, probes, latests, err, unknown_agent_rc=2
+    )
+    if rc:
+        return rc
     assert result is not None
-    if result.status == STATUS_MISSING:
-        print(
-            f"Error: no transcript found for {args.agent or 'auto'}/{session_id}",
-            file=err,
-        )
-        return 1
     if result.status == STATUS_NO_REQUESTS:
         print(
-            f"Error: session {session_id} ({result.agent}) has no assistant requests",
+            f"Error: session {result.session_id} ({result.agent}) has no assistant requests",
             file=err,
         )
         return 1
@@ -666,4 +728,77 @@ def handle_cache_report_command(
         print(render_json(result, summary, args.limit), file=out, end="")
     else:
         print(render_text(result, summary, args.limit), file=out, end="")
+    return 0
+
+
+# ─── Last model of the freshest request (HT-19 L8/S4a) ───────
+
+
+def handle_last_model_command(
+    argv: List[str],
+    out=None,
+    err=None,
+    claude_root: Optional[str] = None,
+    opencode_db: Optional[str] = None,
+    codex_root: Optional[str] = None,
+    antigravity_root: Optional[str] = None,
+) -> int:
+    """Entry point for ``agent-tts last-model``. Returns a process exit code.
+
+    Prints the model of the LAST assistant request of the session — the
+    model holding the freshest context, so the plugin can key the pre-cool
+    TTL per model. Reuses the cache-report request pipeline (chunk/snapshot
+    dedupe included); never guesses: unknown agent, missing transcript or
+    unrecorded model all fail with a clear stderr message and rc 1.
+    """
+    parser = argparse.ArgumentParser(
+        prog="agent-tts last-model",
+        description="Model of the last assistant request in a session "
+        "(the model holding the freshest context)",
+    )
+    parser.add_argument(
+        "--agent",
+        default=None,
+        help="Agent tool name (opencode, claude, codex, antigravity, aider); "
+        "omitted, the session id shape is sniffed like the connector layer",
+    )
+    parser.add_argument(
+        "--session-id",
+        default=None,
+        help="Agent session id; omitted, the agent's most recent session is used",
+    )
+    args = parser.parse_args(argv)
+    out = out or sys.stdout
+    err = err or sys.stderr
+
+    claude_root = claude_root or DEFAULT_CLAUDE_ROOT
+    opencode_db = opencode_db or os.environ.get("OPENCODE_DB") or DEFAULT_OPENCODE_DB
+    codex_root = codex_root or DEFAULT_CODEX_ROOT
+    antigravity_root = antigravity_root or DEFAULT_ANTIGRAVITY_ROOT
+
+    probes, latests = _registries(claude_root, opencode_db, codex_root, antigravity_root)
+    result, rc = _resolve_and_probe(
+        args.agent, args.session_id, probes, latests, err, unknown_agent_rc=1
+    )
+    if rc:
+        return rc
+    assert result is not None
+    if result.status == STATUS_NO_REQUESTS:
+        print(
+            f"Error: session {result.session_id} ({result.agent}) has no assistant "
+            "requests",
+            file=err,
+        )
+        return 1
+
+    model = result.turns[-1].model if result.turns else None
+    if result.status != STATUS_OK or not model:
+        reason = f" - {result.reason}" if result.reason else ""
+        print(
+            f"Error: no model recorded for {result.agent} session "
+            f"{result.session_id or '-'}{reason}",
+            file=err,
+        )
+        return 1
+    print(model, file=out)
     return 0
