@@ -353,30 +353,26 @@ def test_transcript_is_hint_capture_unit():
 
 
 def test_resolve_turn_transcript_unit():
-    """2026-11-17 'en este caso' device case (unit): the user read correct
-    agreed partials, then the full-window one-shot returned 3 generic
-    words for a ~2 s utterance — the agreed finals must win. Plus the
-    neighbouring decisions: hint captures never win, a richer full
-    window keeps its unstable tail (L18/L20), symmetric empty cases."""
+    """2026-11-17 operator decision: the dispatched turn must read EXACTLY
+    like the live strip the user watched — the agreed finals win whenever
+    they exist (the server close waits for the flush, so they cover the
+    whole utteration); the full-window one-shot is only the fallback, and
+    a hint capture never wins."""
     from herdr_brain.call_stream import resolve_turn_transcript
 
     hint = "commit, push, PR, rama, herdr, opencode"
     finals = "podrías decirme si le ves sentido a este chat"
-    # THE device case: short hallucination vs the agreed phrase.
+    # THE rule: finals are the dispatched truth, full window never
+    # overrides them (no wording surprises in the bubble).
     assert resolve_turn_transcript("en este caso", finals, hint) == finals
-    # A hint-capture window with real agreed finals: finals win.
-    assert resolve_turn_transcript("PR rama herdr opencode", finals, hint) == finals
-    # A hint capture with echo finals too: degrade to the empty path.
-    assert resolve_turn_transcript("PR rama herdr opencode", "PR rama", hint) == ""
-    # A richer full window keeps its unstable tail (L18/L20 parity).
-    assert (
-        resolve_turn_transcript(finals + " completo", finals, hint)
-        == finals + " completo"
-    )
-    # Equal candidates: the full window stands.
-    assert resolve_turn_transcript(finals, finals, hint) == finals
-    # No finals at all: today's behavior untouched.
+    assert resolve_turn_transcript(finals + " completo", finals, hint) == finals
+    assert resolve_turn_transcript("Podrías decirme si le ves sentido a este chat.", finals, hint) == finals
+    # No finals at all: the full window stands (hint-filtered).
     assert resolve_turn_transcript("hola buenos días", "", hint) == "hola buenos días"
+    assert resolve_turn_transcript("PR rama herdr opencode", "", hint) == ""
+    # Echo finals: degrade to the hint-filtered full window.
+    assert resolve_turn_transcript("abrí el PR de herdr", "PR rama", hint) == "abrí el PR de herdr"
+    assert resolve_turn_transcript("PR rama herdr opencode", "PR rama", hint) == ""
 
 
 def test_hint_capture_transcript_degrades_to_empty(tmp_path):

@@ -227,28 +227,24 @@ def resolve_turn_transcript(
 ) -> str:
     """The turn-end transcript decision.
 
-    The full-window one-shot inference is NOT agreement-checked; the
-    streaming finals are (PRD-04 consecutive-pass agreement). The
-    2026-11-17 device case: the user read correct live partials, then the
-    turn-end window returned "en este caso" for a ~2 s utterance — a
-    short hallucination that replaced the truth in the user's bubble.
-
-    Rules, in order:
-    - a pure hint capture (full or finals) is never the truth: it
-      degrades to the other candidate or the empty not-understood path;
-    - a full window carrying LESS THAN HALF the agreed finals' words is a
-      regression: the locally-agreed finals win;
-    - anything else keeps the full-window transcript (it may legitimately
-      carry an unstable tail the finals trimmed, L18/L20).
+    2026-11-17 operator decision ("que se vea tanto en transcripcion
+    como en el chat lo mismo"): the text the user WATCHED converge on
+    the live strip is the text that gets dispatched — strip and chat
+    bubble must read the same. The streaming finals are that text
+    (PRD-04 consecutive-pass agreement, and the server-owned close
+    waits for the turn-end flush, so the finals cover the whole
+    utteration by dispatch time — the old L18 unstable-tail risk is
+    gone). The full-window one-shot stays only as the fallback when no
+    finals ever stabilized, and a pure hint capture never wins.
     """
-    full = (full_text or "").strip()
     finals = (finals_text or "").strip()
     if transcript_is_hint_capture(finals, initial_prompt):
         finals = ""  # the agreed text itself is an echo: no truth to keep
+    if finals:
+        return finals
+    full = (full_text or "").strip()
     if transcript_is_hint_capture(full, initial_prompt):
         full = ""
-    if finals and len(full.split()) * 2 < len(finals.split()):
-        return finals
     return full
 
 
