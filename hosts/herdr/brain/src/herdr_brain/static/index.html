@@ -205,8 +205,7 @@
       transition: opacity 0.28s ease;
     }
     #conv-sheet,
-    #pending-sheet,
-    #calls-section {
+    #pending-sheet {
       position: fixed;
       left: 0; right: 0;
       bottom: calc(env(safe-area-inset-bottom, 0px) + 96px);
@@ -228,7 +227,36 @@
       transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1), visibility 0s 0.28s;
     }
     #conv-sheet.open,
-    #pending-sheet.open,
+    #pending-sheet.open {
+      transform: translateY(0);
+      visibility: visible;
+      transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+    /* Llamadas popup (2026-11-17, 2nd pass): anchored at the viewport
+     * FLOOR — bottom: 0, no reserved strip for the footer's hang-up
+     * button (z 20 covers z 16 while open), no slit can open above it.
+     * The bottom padding only clears the gesture bar's safe area. */
+    #calls-section {
+      position: fixed;
+      left: 0; right: 0;
+      bottom: 0;
+      max-width: 760px;
+      margin-inline: auto;
+      max-height: 60dvh;
+      padding-bottom: env(safe-area-inset-bottom, 0px);
+      display: flex;
+      flex-direction: column;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-bottom: 0;
+      border-radius: 18px 18px 0 0;
+      box-shadow: 0 -12px 40px #0006;
+      z-index: 20;            /* above drawer (15) AND footer (16); below toast (25), diag (30) */
+      overflow: hidden;
+      transform: translateY(calc(100% + 32px));
+      visibility: hidden;
+      transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1), visibility 0s 0.28s;
+    }
     #calls-section.open {
       transform: translateY(0);
       visibility: visible;

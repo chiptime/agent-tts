@@ -2242,6 +2242,27 @@ def test_calls_history_lives_in_a_popup_launched_from_the_drawer_head(karaoke_ap
         }"""
     )
     assert over, "the popup must render OVER the open drawer"
+    # 2026-11-17 (2nd pass): the popup anchors at the viewport FLOOR and
+    # COVERS the footer — no reserved strip for the hang-up button, no
+    # transparent slit above it (the gap the drawer itself once had).
+    geo = page.evaluate(
+        """() => {
+            const sheet = document.getElementById('calls-section');
+            const s = sheet.getBoundingClientRect();
+            const b = document.getElementById('call-btn').getBoundingClientRect();
+            const hit = document.elementFromPoint(
+                b.left + b.width / 2, b.top + b.height / 2);
+            return {
+                vh: window.innerHeight,
+                sheetBottom: s.bottom,
+                coversFooter: !!hit && sheet.contains(hit),
+            };
+        }"""
+    )
+    assert geo["sheetBottom"] >= geo["vh"] - 2, \
+        "the popup must reach the viewport floor (bottom: 0)"
+    assert geo["coversFooter"], \
+        "the popup must cover the footer — no reserved hang-up strip"
     # ✕ closes the popup; the call (drawer) keeps running untouched.
     page.locator("#calls-close").click()
     page.wait_for_function(

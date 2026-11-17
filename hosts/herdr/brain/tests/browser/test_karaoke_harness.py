@@ -49,8 +49,9 @@ EXPECTED_DIGESTS = {
     # both i18n) and the 80dvh sheet diving behind the footer (index.html).
     # Re-pinned once more for the Llamadas popup: the history left the
     # drawer for a 🕘-launched sheet (index.html + app.js; calls.js rides
-    # unchanged).
-    "/": "4fb2b346f7006087cd3b7631bac1c8b1a56d4c9832d0f569dafdc0a9d5aa2651",
+    # unchanged) — then the sheet anchored at the viewport floor covering
+    # the footer (index.html only).
+    "/": "6b82d9f0cdd9c2f4f1b164135f8e1954df771f212a092e5ffcb5be7aa645df6b",
     "/app.js": "23b0482ffae545f395b7fde98787d998d06b43a59e45dedde43a7e7392cc06ff",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "ca7b22c52c8160a3ac577f694eb65ec0798b77cd6ac179a5c567dffdc1fb2ba9",
