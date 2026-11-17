@@ -603,6 +603,163 @@ case__ntfy_gate_token_with_dquote_disables_buttons() {
     "$SANDBOX/curl.calls"
 }
 
+# --- HT-17: updatable notifications via ntfy sequence IDs --------------------
+#
+# NTFY_SEQUENCE=off (default) must keep today's exact one-shot request; update
+# adds the X-Sequence-ID header (one stable id per pane); update+clear also
+# PUTs /<topic>/<seq>/clear after a done whose sequence this process already
+# published; a non-2xx answer to the seq-carrying publish falls back to ONE
+# plain one-shot with a single log line. curl is stubbed AFTER the source:
+# every argv element is recorded as one ARG<...> line (newlines flattened),
+# each call closes with CALL, and a seq-carrying call prints SEQ_STATUS so the
+# launcher parses a 2xx.
+
+# $1=sandbox · $2=NTFY_SEQUENCE mode · $3=snippet run after the stub setup
+run_ntfy_seq() {
+  sandbox_setup "$1"
+  SEQ_STATUS="${SEQ_STATUS:-200}" in_host '
+    SB="$1"; MODE="$2"
+    curl() {
+      local a flat is_seq=false
+      for a in "$@"; do
+        flat="${a//$'"'"'\n'"'"'/\\n}"
+        printf "ARG<%s>\n" "$flat" >> "$SB/curl.calls"
+        [[ "$a" == "X-Sequence-ID: "* ]] && is_seq=true
+      done
+      printf "CALL\n" >> "$SB/curl.calls"
+      [[ "$is_seq" == true ]] && printf "%s" "${SEQ_STATUS:-200}"
+      return 0
+    }
+    NTFY_TOPIC="t"; NTFY_SERVER="http://ntfy.example"; WEB_URL=""
+    NTFY_APPROVAL_URL=""; NTFY_APPROVAL_TOKEN=""
+    NTFY_SEQUENCE="$MODE"
+  '"$3" "$SANDBOX" "$2" > "$SANDBOX/out" 2> "$SANDBOX/err"
+}
+
+# RF-6: off (and the default) reproduces today's request byte for byte —
+# same argv, same order, no sequence header, a single one-shot call.
+case__ntfy_sequence_off_keeps_the_plain_one_shot_request() {
+  run_ntfy_seq seq_off off 'send_ntfy_push 3 opencode done ws title-1 "" ""' || return 1
+  cat > "$SANDBOX/expected" <<'EOF'
+ARG<-s>
+ARG<--connect-timeout>
+ARG<5>
+ARG<--max-time>
+ARG<15>
+ARG<-H>
+ARG<Title: ✅ opencode [title-1] (3) finished>
+ARG<-H>
+ARG<Priority: default>
+ARG<-H>
+ARG<Tags: white_check_mark,robot>
+ARG<-H>
+ARG<Actions: copy, 📋 Copy command, herdr agent focus 3, clear=true>
+ARG<-d>
+ARG<Agent opencode [title-1] (3) in ws finished its task.\n\n→ To view: herdr agent focus 3>
+ARG<http://ntfy.example/t>
+CALL
+EOF
+  diff -u "$SANDBOX/expected" "$SANDBOX/curl.calls"
+}
+
+case__ntfy_sequence_default_matches_off() {
+  # The knob's default is off: leaving NTFY_SEQUENCE untouched keeps the same
+  # request (sourced value, never set by the snippet).
+  run_ntfy_seq seq_default off 'send_ntfy_push 3 opencode done ws title-1 "" ""' || return 1
+  run_ntfy_seq seq_default_off off 'send_ntfy_push 3 opencode done ws title-1 "" ""' || return 1
+  diff -u "$SANDBOX_ROOT/seq_default/curl.calls" "$SANDBOX_ROOT/seq_default_off/curl.calls"
+}
+
+# RF-2/RF-4: update carries the sanitized pane id as X-Sequence-ID on every
+# event; the actions travel unchanged inside the message and no clear is sent.
+case__ntfy_sequence_update_adds_header_and_never_clears() {
+  run_ntfy_seq seq_update update '
+    send_ntfy_push 3 opencode blocked ws title-1 "" ""
+    send_ntfy_push 3 opencode done ws title-1 "" ""
+  ' || return 1
+  [[ "$(grep -cx CALL "$SANDBOX/curl.calls")" -eq 2 ]] || return 1
+  [[ "$(grep -cxF 'ARG<X-Sequence-ID: agent-3>' "$SANDBOX/curl.calls")" -eq 2 ]] || return 1
+  grep -qxF 'ARG<Actions: copy, 📋 Copy command, herdr agent focus 3, clear=true>' \
+    "$SANDBOX/curl.calls" || return 1
+  ! grep -q "/clear" "$SANDBOX/curl.calls"
+}
+
+# RF-3: update+clear dismisses the sequence after done, but only when this
+# process published the same sequence before.
+case__ntfy_sequence_update_clear_after_done() {
+  run_ntfy_seq seq_clear 'update+clear' '
+    send_ntfy_push 3 opencode blocked ws title-1 "" ""
+    send_ntfy_push 3 opencode done ws title-1 "" ""
+  ' || return 1
+  [[ "$(grep -cx CALL "$SANDBOX/curl.calls")" -eq 3 ]] || return 1
+  grep -qxF 'ARG<-X>' "$SANDBOX/curl.calls" || return 1
+  grep -qxF 'ARG<PUT>' "$SANDBOX/curl.calls" || return 1
+  grep -qxF 'ARG<http://ntfy.example/t/agent-3/clear>' "$SANDBOX/curl.calls" || return 1
+  [[ "$(grep -cF '/clear' "$SANDBOX/curl.calls")" -eq 1 ]]
+}
+
+case__ntfy_sequence_clear_requires_a_prior_publish() {
+  run_ntfy_seq seq_clear_none 'update+clear' \
+    'send_ntfy_push 3 opencode done ws title-1 "" ""' || return 1
+  [[ "$(grep -cx CALL "$SANDBOX/curl.calls")" -eq 1 ]] || return 1
+  ! grep -q "/clear" "$SANDBOX/curl.calls"
+}
+
+# RF-5: a rejected seq publish retries once as today's plain one-shot and
+# logs exactly one line; the user sees no error.
+case__ntfy_sequence_rejection_falls_back_to_one_shot() {
+  SEQ_STATUS=404 run_ntfy_seq seq_fallback update \
+    'send_ntfy_push 3 opencode done ws title-1 "" ""' || return 1
+  [[ "$(grep -cx CALL "$SANDBOX/curl.calls")" -eq 2 ]] || return 1
+  local first retry
+  first="$(awk '/^CALL$/{exit} {print}' "$SANDBOX/curl.calls")"
+  retry="$(awk 'seen {print} /^CALL$/{seen=1}' "$SANDBOX/curl.calls")"
+  [[ "$first" == *'ARG<X-Sequence-ID: agent-3>'* ]] || return 1
+  [[ "$retry" != *"X-Sequence-ID"* ]] || return 1
+  grep -qxF 'ARG<http://ntfy.example/t>' "$SANDBOX/curl.calls" || return 1
+  [[ "$(grep -cF 'one-shot push' "$SANDBOX/out")" -eq 1 ]]
+}
+
+# RF-1: identity is stable per agent, ntfy-safe ([-_A-Za-z0-9]) and ≤ 64.
+case__ntfy_sequence_id_is_sanitized_stable_and_bounded() {
+  sandbox_setup seq_id
+  local long
+  long="$(printf 'p%.0s' {1..100})"
+  in_host 'ntfy_sequence_id "$1"; echo; ntfy_sequence_id "$1"; echo; ntfy_sequence_id "$2"; echo; ntfy_sequence_id "$3"; echo' \
+    'pane:1/2 x' "$long" '✓pane' > "$SANDBOX/out" || return 1
+  local a b c d
+  { read -r a; read -r b; read -r c; read -r d; } < "$SANDBOX/out" || return 1
+  [[ "$a" == "agent-pane-1-2-x" ]] || return 1       # forbidden chars folded
+  [[ "$b" == "$a" ]] || return 1                     # stable across events
+  [[ "$c" =~ ^[-_A-Za-z0-9]+$ && ${#c} -eq 64 ]] || return 1
+  [[ "$d" =~ ^[-_A-Za-z0-9]+$ ]]                       # ASCII-only, even for UTF-8
+}
+
+# The knob is a closed enum: an unknown value is off plus ONE warning line.
+case__ntfy_sequence_unknown_mode_warns_once_and_stays_off() {
+  sandbox_setup seq_invalid
+  NTFY_SEQUENCE=bogus in_host '
+    SB="$1"
+    curl() { local a; for a in "$@"; do printf "ARG<%s>\n" "$a" >> "$SB/curl.calls"; done; printf "CALL\n" >> "$SB/curl.calls"; return 0; }
+    NTFY_TOPIC="t"; NTFY_SERVER="http://ntfy.example"; WEB_URL=""
+    printf "mode=%s\n" "$NTFY_SEQUENCE"
+    send_ntfy_push 3 opencode done ws title-1 "" ""
+  ' "$SANDBOX" > "$SANDBOX/out" 2> "$SANDBOX/err" || return 1
+  [[ "$(grep -cF 'NTFY_SEQUENCE=bogus is not one of' "$SANDBOX/err")" -eq 1 ]] || return 1
+  grep -qx 'mode=off' "$SANDBOX/out" || return 1
+  ! grep -q "X-Sequence-ID" "$SANDBOX/curl.calls"
+}
+
+# RF-4: HT-05's final high-priority reminder opts out so no later update can
+# replace (silence) the escalation.
+case__ntfy_sequence_high_alert_opts_out() {
+  run_ntfy_seq seq_high_alert update \
+    'send_ntfy_push 3 opencode done ws title-1 "" "" high "still waiting"' || return 1
+  [[ "$(grep -cx CALL "$SANDBOX/curl.calls")" -eq 1 ]] || return 1
+  grep -qxF 'ARG<Priority: high>' "$SANDBOX/curl.calls" || return 1
+  ! grep -q "X-Sequence-ID" "$SANDBOX/curl.calls"
+}
+
 # --- S10 (parity-f2-f6): removed web-redirect product contract, no alias ------
 #
 # The dedicated <product>-url option, its env/config keys and the
