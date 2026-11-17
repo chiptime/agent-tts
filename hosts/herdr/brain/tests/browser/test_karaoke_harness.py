@@ -39,8 +39,13 @@ EXPECTED_DIGESTS = {
     # the live call engine (stream-uplink.js script tag, the En vivo engine
     # and its fallback notices in app.js + both i18n).
     # Re-pinned after the agent-error UI and session-picker refresh changes.
+    # app.js re-pinned for the push deep link (S5): a notification tap
+    # opens the chat it is about (?pane_id= boot deep link consumed once
+    # + the brain-open-pane worker message); sw.js rides the same change
+    # but is not served (nor requested) in this harness. Includes the
+    # concurrent live-engine app.js hunks on this tree.
     "/": "04042a4abd9538d2791c13555759bec3766d1953f0e9fb10769437027b1528b1",
-    "/app.js": "6fbd2d5d31e30364631a537423e0ffd232b15a171803da1615a2a6579b9f23d9",
+    "/app.js": "5dd2660aa6230b9a5eb0d86e89eeb83ceb5eb3df7546606c9ac54f961bcb66d8",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "ca7b22c52c8160a3ac577f694eb65ec0798b77cd6ac179a5c567dffdc1fb2ba9",
     "/dialogs.js": "0e5b6afde7ef662591f66fc69891e3b1ec343fafe0d2c5be8fbef0c5a124a4c0",
