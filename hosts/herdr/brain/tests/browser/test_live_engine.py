@@ -2149,3 +2149,45 @@ def test_drawer_new_call_hangs_up_resets_and_redials(karaoke_app):
     page.wait_for_function("() => window.__gumCount >= 2", timeout=15000)
     _tone_on(page)
     _wait_sent_count(page, '"start"', 2)
+
+
+def test_open_drawer_spans_80pct_and_dives_behind_the_footer(karaoke_app):
+    """2026-11-17 device report: a transparent slit opened between the
+    open drawer and the footer, and the drawer felt short. The open
+    drawer must span ~80% of the viewport, reach DOWN behind the footer
+    (the footer's opaque panel is the seam — the cockpit can never show
+    through between them) and keep the footer's buttons on top of it."""
+    harness, page = _live_boot(karaoke_app)
+    page.locator("#call-btn").click()
+    page.wait_for_function(
+        "() => document.getElementById('call-drawer').classList.contains('open')",
+        timeout=15000,
+    )
+    page.wait_for_timeout(400)  # let the 0.3s slide settle
+    geo = page.evaluate(
+        """() => {
+            const drawer = document.getElementById('call-drawer');
+            const footer = document.querySelector('footer');
+            const btn = document.getElementById('call-btn');
+            const d = drawer.getBoundingClientRect();
+            const f = footer.getBoundingClientRect();
+            const b = btn.getBoundingClientRect();
+            const hit = document.elementFromPoint(
+                b.left + b.width / 2, b.top + b.height / 2);
+            return {
+                vh: window.innerHeight,
+                drawerH: d.height,
+                drawerBottom: d.bottom,
+                footerTop: f.top,
+                footerOnTop: !!hit && (footer.contains(hit) || hit === footer),
+            };
+        }"""
+    )
+    assert geo["drawerH"] >= 0.78 * geo["vh"], \
+        f"drawer spans {geo['drawerH']}px of {geo['vh']}px — expected ~80%"
+    assert geo["drawerBottom"] >= geo["vh"] - 2, \
+        "the drawer must reach the viewport floor (bottom: 0)"
+    assert geo["drawerBottom"] >= geo["footerTop"] - 1, \
+        "no slit: the drawer must dive behind the footer"
+    assert geo["footerOnTop"], \
+        "the footer's buttons must stay visible on top of the drawer"

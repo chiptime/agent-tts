@@ -798,7 +798,13 @@ def native_glance(real_media_browser):
     context.add_init_script(POLL_PROBE)
     context.add_init_script(NO_WEBSPEECH)
     try:
-        yield harness.load()
+        loaded = harness.load()
+        # The call drawer now spans 80dvh from the floor (2026-11-17): the
+        # glance strip above it must still expose the sentence anchors this
+        # suite reselects mid-call, so give the shared 1000x1000 boot the
+        # extra headroom the taller sheet needs.
+        loaded.page.set_viewport_size({"width": 1000, "height": 1200})
+        yield loaded
     finally:
         context.close()
         assert not harness.blocked, harness.blocked

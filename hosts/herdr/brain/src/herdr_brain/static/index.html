@@ -1614,11 +1614,14 @@
     }
     :root[data-theme="dark"] #banner { background: #3a1414; color: #fecaca; }
 
-    /* Bottom call bar: always visible and tappable. */
+    /* Bottom call bar: always visible and tappable. z 16 keeps it ON TOP
+     * of the call drawer (15): the drawer dives behind it to the floor,
+     * so the bar's opaque panel is the seam — a transparent slit can
+     * never open between them (2026-11-17 device report). */
     footer {
       position: fixed;
       left: 0; right: 0; bottom: 0;
-      z-index: 9;
+      z-index: 16;
       padding: var(--sp-2) var(--sp-3) calc(env(safe-area-inset-bottom, 0px) + var(--sp-3));
       background: var(--panel);
       border-top: 1px solid var(--line);
@@ -1666,19 +1669,23 @@
     #mic-note { font-size: var(--fs-xs); color: var(--muted); text-align: center; }
 
     /* ── CALL DRAWER ──────────────────────────────────────────────────
-     * The voice call lives in a drawer anchored ABOVE the footer: it
-     * slides over the cockpit, closes without hanging up, and never
-     * covers the footer or the toast. */
+     * The voice call lives in a bottom sheet that spans ~80% of the
+     * viewport and slides over the cockpit: it closes without hanging
+     * up, and it DIVES BEHIND the footer (z 16) down to the floor — the
+     * footer's opaque panel is the seam, so no transparent slit can open
+     * between them whatever the footer's real height. The bottom padding
+     * keeps the sheet's content above the footer's buttons. */
     #call-drawer {
       position: fixed;
       left: 0; right: 0;
       /* Wide viewports: same centered 760px column as the cockpit. */
       max-width: 760px;
       margin-inline: auto;
-      bottom: calc(env(safe-area-inset-bottom, 0px) + 96px);
-      height: min(58vh, calc(100vh - 260px));
-      height: min(58%, calc(100dvh - 260px));
+      bottom: 0;
+      height: 80vh;
+      height: 80dvh;
       min-height: 140px;
+      padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 96px);
       background: var(--panel);
       border: 1px solid var(--line);
       border-bottom: 0;
