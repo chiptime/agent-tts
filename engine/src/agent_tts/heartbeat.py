@@ -241,8 +241,14 @@ def load_heartbeat_settings(
             ),
         )
 
-    parsed = urllib.parse.urlsplit(server)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+    try:
+        parsed = urllib.parse.urlsplit(server)
+        valid_server = parsed.scheme in ("http", "https") and bool(parsed.netloc)
+    except ValueError:
+        # Malformed URLs (e.g. "http://[invalid") must fail open into the
+        # not-armed result: config loading may never crash the daemon.
+        valid_server = False
+    if not valid_server:
         return HeartbeatSettings(
             enabled=True,
             error=f"{ENV_HEARTBEAT_SERVER}={server!r} must be an http(s) URL",
@@ -427,6 +433,8 @@ class Heartbeat:
                 if self._stop.wait(self.config.interval_s):
                     break
                 self._beat()
+                if self._state == "unsupported":
+                    break
         finally:
             # "unsupported" is the truthful terminal state (the server
             # refused and `status` must keep saying so); everything else
@@ -450,12 +458,7 @@ class Heartbeat:
             if exc.transient:
                 self._note_failure(exc)
                 return
-            self._state = "unsupported"
-            self._log(
-                "agent-tts: heartbeat not armed: ntfy server rejected the "
-                f"scheduled sequence publish ({exc}); updating scheduled "
-                "notifications needs ntfy v2.18 or newer"
-            )
+            self._disarm(exc)
         except Exception as exc:  # noqa: BLE001 - never raise into the daemon
             self._note_failure(exc)
         else:
@@ -464,10 +467,28 @@ class Heartbeat:
     def _beat(self) -> None:
         try:
             self._publish(self.config)
+        except PublishRejected as exc:
+            # A permanent rejection is the same capability refusal the gate
+            # checks for, even when it arrives after the first transient
+            # failure: retrying would schedule a fresh message every interval
+            # (the spam scenario RF-3 exists to prevent), so disarm.
+            if exc.transient:
+                self._note_failure(exc)
+            else:
+                self._disarm(exc)
         except Exception as exc:  # noqa: BLE001 - one failed beat never kills the loop
             self._note_failure(exc)
         else:
             self._mark_success()
+
+    def _disarm(self, exc: PublishRejected) -> None:
+        """Terminal capability refusal: stop publishing, report why (RF-3)."""
+        self._state = "unsupported"
+        self._log(
+            "agent-tts: heartbeat not armed: ntfy server rejected the "
+            f"scheduled sequence publish ({exc}); updating scheduled "
+            "notifications needs ntfy v2.18 or newer"
+        )
 
     def _note_failure(self, exc: BaseException) -> None:
         if not self._failed:

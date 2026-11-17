@@ -158,6 +158,16 @@ def test_invalid_interval_and_priority_refuse_config():
     assert settings.config is None and "TTS_HEARTBEAT_PRIORITY" in settings.error
 
 
+def test_invalid_ipv6_server_is_rejected_without_exception():
+    settings = load_heartbeat_settings({
+        "TTS_HEARTBEAT": "on",
+        "TTS_HEARTBEAT_SERVER": "http://[invalid",
+        "TTS_HEARTBEAT_TOPIC": "alerts",
+    })
+    assert settings.config is None
+    assert "TTS_HEARTBEAT_SERVER" in settings.error
+
+
 def test_urgent_priority_maps_to_five():
     settings = _enabled_settings(TTS_HEARTBEAT_PRIORITY="urgent")
     assert settings.config is not None
@@ -256,6 +266,26 @@ def test_capability_gate_stops_on_server_rejection():
     assert heartbeat.state == "unsupported"
     assert len(calls) == 1  # never enters the repeating loop
     assert heartbeat.status_fields() == "heartbeat=unsupported"
+
+
+def test_gate_rejects_permanent_error_after_transient_failure():
+    calls = []
+
+    def publish(config):
+        calls.append(config)
+        if len(calls) == 1:
+            raise PublishUnavailable("offline")
+        raise PublishRejected(404)
+
+    heartbeat = Heartbeat(_config(interval_s=0.02, window_s=0.06), publish=publish)
+    try:
+        heartbeat.start()
+        assert _wait_until(lambda: heartbeat.state == "unsupported")
+        heartbeat.thread.join(timeout=1)
+        assert not heartbeat.thread.is_alive()
+        assert len(calls) == 2
+    finally:
+        heartbeat.stop(timeout=1)
 
 
 def test_publish_failure_never_kills_the_loop():
