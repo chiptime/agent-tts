@@ -2416,19 +2416,45 @@ ntfy_idle_push_enabled() {
   [[ "$NTFY_IDLE_PUSH" == "on" ]]
 }
 
+# HT-19/F2 (RF-2): per-pane focus-sustain tracking on the watcher's own
+# poll cadence — the same discipline as HT-05's daemon-side sampling: a
+# focus switch (or a backwards clock) restarts the timer, and strictly
+# more than 2 s of continuous focus counts as attention. The watcher
+# samples on every wake and after the settle window, around the push
+# decision.
+declare -A FOCUS_SINCE=() # pane_id → epoch focus was first observed here
+
+focus_sustain_sample() {
+  local focused now pane
+  focused="$(get_focused_pane)"
+  now=$(date +%s)
+  if [[ "${#FOCUS_SINCE[@]}" -gt 0 ]]; then
+    for pane in "${!FOCUS_SINCE[@]}"; do
+      if [[ "$pane" != "$focused" ]] || (( now < ${FOCUS_SINCE[$pane]} )); then
+        unset "FOCUS_SINCE[$pane]"
+      fi
+    done
+  fi
+  [[ -n "$focused" ]] && FOCUS_SINCE["$focused"]="${FOCUS_SINCE[$focused]:-$now}"
+  return 0
+}
+
 # HT-19/F2 (N2): gate for the end-of-turn push. With the knob on (the
 # approved noise cut), a done push fires only when the operator is NOT
-# attending the pane — HT-05's per-pane focus observation used directly.
-# The >2 s sustain in daemon_reminders separates a drive-by focus from a
-# parked one across 4 s polls; this is a single-shot decision at end of
-# turn, where a false "attended" only withholds a push the on-screen
-# result and the focused-pane voice already cover. Blocked (N1) and the
-# HT-05 reminder pushes are never gated here.
+# attending the pane. RF-2: attended means >2 s of CONTINUOUS recorded
+# focus — same strict threshold family as HT-05's reminder reset — so a
+# brief glance never swallows a notification (the safe failure is one
+# redundant push, never a lost one). No observation history (fresh
+# watcher, or focus arrived after the last sample) means NOT attended.
+# Blocked (N1) and the HT-05 reminder pushes are never gated here.
 ntfy_done_push_permitted() { # <pane_id> → 0 push · 1 attended: skip
   [[ "$NTFY_DONE_UNATTENDED_ONLY" == "on" ]] || return 0
   local focused
   focused="$(get_focused_pane)"
-  [[ -n "$1" && "$focused" == "$1" ]] && return 1
+  [[ -n "$1" && "$focused" == "$1" ]] || return 0
+  local now
+  now=$(date +%s)
+  (( now - ${FOCUS_SINCE[$1]:-$now} > 2 )) && return 1
   return 0
 }
 
@@ -3789,7 +3815,7 @@ daemon_reminders() { # <raw_agents_json>
     daemon_log "reminders: core call failed; sweep continues"
     return 0
   fi
-  local workspace title priority should_speak_local precool_final
+  local workspace title priority should_speak_local
   while IFS= read -r reminder; do
     [[ -n "$reminder" ]] || continue
     reminder=$(jq -ce 'select(type == "object")
@@ -3817,17 +3843,14 @@ daemon_reminders() { # <raw_agents_json>
       should_speak_local=false
     fi
     priority=""
-    precool_final=false
     (( index == 10#$TTS_REMINDER_MAX )) && priority=high
-    # HT-19/F3 (N3): with precool on, the final reminder never pushes —
-    # the phone escalation belongs to the precool sequence (its single
-    # urgent publish at T_cold). The voice reminder itself and the
-    # intermediate busy/background fallback pushes are untouched.
-    if [[ -n "$priority" && "${NTFY_PRECOOL:-off}" == "on" ]]; then
-      priority=""
-      precool_final=true
-    fi
-    if [[ "$precool_final" == false && ( -n "$priority" || "$should_speak_local" == false ) ]]; then
+    # HT-19/F3 (N3, matrix cut #2): with precool on, HT-05's push side
+    # collapses into the N3 sequence ENTIRELY — the final escalation AND
+    # the intermediate muted/busy/background fallbacks emit no standalone
+    # push; only the voice reminder (with its timing and escalation state)
+    # keeps running. With precool off (default) this is byte-identical to
+    # the pre-HT-19 behavior.
+    if [[ "${NTFY_PRECOOL:-off}" != "on" && ( -n "$priority" || "$should_speak_local" == false ) ]]; then
       workspace=$(jq -r '.workspace_id // ""' <<<"$row")
       title=$(jq -r '.terminal_title_stripped // .terminal_title // ""' <<<"$row")
       # Network latency must not delay watcher discovery or normal audio.
@@ -4043,6 +4066,11 @@ watch_agent_pane() {
     local new_state
     new_state=$(echo "$info" | jq -r '.result.agent.agent_status // .result.agent_status // "unknown"' 2>/dev/null || echo "unknown")
 
+    # HT-19/F2 (RF-2): anchor this wake's focus-sustain observation before
+    # the settle window; the post-settle re-sample below keeps it honest
+    # (a focus switch in between resets the per-pane timer).
+    focus_sustain_sample
+
     # Settle window (v0.16): agents flicker working→done→working between the
     # steps of ONE logical turn (tool batches, subagents, thinking), and
     # every flicker used to fire the full synthesis + ntfy push pipeline as
@@ -4062,6 +4090,9 @@ watch_agent_pane() {
         new_state="$settled_state"
       fi
     fi
+    # HT-19/F2 (RF-2): post-settle re-sample — the settle window itself is
+    # the sustain interval a real done decision observes.
+    focus_sustain_sample
     # Agent identity for the connector layer: the engine (agent-tts) owns the
     # transcript knowledge and resolves the last assistant message itself.
     local agent_kind

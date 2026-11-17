@@ -798,9 +798,10 @@ EOF
 # --- HT-19/F2 (N2): attention-gated done push ---------------------------------
 #
 # NTFY_DONE_UNATTENDED_ONLY=on (default): the end-of-turn push fires only
-# when the operator is NOT attending the pane (HT-05's per-pane focus
-# observation, used directly at the single-shot decision point). The voice
-# side is never gated; blocked (N1) is never gated; off restores today's
+# when the operator is NOT attending the pane — HT-05's >2 s sustained
+# focus signal, tracked per pane on the watcher's own poll cadence. A
+# brief glance (<2 s of recorded focus) never suppresses. The voice side
+# is never gated; blocked (N1) is never gated; off restores today's
 # unconditional push byte for byte.
 
 # $1 sandbox · $2 state (done|blocked) · $3 focus target ("3" = attending)
@@ -808,12 +809,17 @@ EOF
 # Drives ONE full watcher announcement with ntfy enabled: curl is stubbed
 # AFTER the source (same ARG/CALL recorder as run_ntfy_seq), focus comes
 # from a file, and the renderer produces no audio bytes so the push lands
-# on the deterministic text branch.
+# on the deterministic text branch. The clock is faked over $SB/now (same
+# discipline as the HT-05 reminder cases) and sleep ADVANCES it, so the
+# 3 s settle window supplies the sustain interval a real run observes.
+# FOCUS_FLIP=1 makes the FIRST focus sample answer "other" (focus arrives
+# only after the wake sample): no sustained history at decision time.
 run_watcher_ntfy() {
   sandbox_setup "$1"
+  printf '1000\n' > "$SANDBOX/now"
   printf '%s\n' "${3:-other}" > "$SANDBOX/focus"
-  STUB_EXIT=0 in_host '
-    SB="$1"; STATE="$2"; DONEGATE="${4:-on}"
+  FOCUS_FLIP="${FOCUS_FLIP:-}" STUB_EXIT=0 in_host '
+    SB="$1"; STATE="$2"; DONEGATE="${4:-}"; FOCUS_FLIP="${FOCUS_FLIP:-}"
     # Containment: the watcher allocates its synthesis-error scratch from
     # an absolute /tmp template; redirect it into the sandbox and neutral
     # the product error reporter (renders here cannot fail).
@@ -832,7 +838,12 @@ run_watcher_ntfy() {
       esac
       exit 42
     }
-    get_focused_pane() { cat "$SB/focus"; }
+    date() { if [[ "$*" == "+%s" ]]; then cat "$SB/now"; else command date "$@"; fi; }
+    _focus_n=0
+    get_focused_pane() {
+      _focus_n=$(( _focus_n + 1 ))
+      if [[ "$FOCUS_FLIP" == 1 && "$_focus_n" == 1 ]]; then printf "other\n"; else cat "$SB/focus"; fi
+    }
     curl() {
       local a flat
       for a in "$@"; do
@@ -842,7 +853,10 @@ run_watcher_ntfy() {
       printf "CALL\n" >> "$SB/curl.calls"
       return 0
     }
-    sleep() { :; }
+    sleep() {
+      local s="${1:-0}"; s="${s%.*}"
+      printf "%s\n" "$(( $(cat "$SB/now") + s ))" > "$SB/now"
+    }
     gate_agent_event() { return 1; }
     is_auto_muted() { return 1; }
     is_playing() { return 1; }
@@ -855,20 +869,57 @@ run_watcher_ntfy() {
     play_audio_file() { return 0; }
     NTFY_TOPIC="t"; NTFY_SERVER="http://ntfy.example"; WEB_URL=""
     NTFY_DONE_UNATTENDED_ONLY="$DONEGATE"
-    PODCAST_ENABLED="off"; TTS_AUTO_SCOPE="all"; TTS_SETTLE_SECONDS="0"
+    PODCAST_ENABLED="off"; TTS_AUTO_SCOPE="all"; TTS_SETTLE_SECONDS="3"
     rc=0
     ( watch_agent_pane 3 opencode ) > "$SB/out" 2> "$SB/werr" || rc=$?
     echo "rc=$rc" > "$SB/rc"
   ' "$SANDBOX" "$2" "$3" "${4:-on}"
 }
 
-# RF-2: default on + attending the pane → no push at all, while the audio
-# side still renders (the gate touches only the push).
+# RF-2: default on + sustained attention (>2 s across the settle window)
+# → no push at all, while the audio side still renders.
 case__ntfy_done_gate_attended_skips_push() {
   run_watcher_ntfy done_attended done 3 || return 1
   [[ "$(cat "$SANDBOX/rc")" == "rc=42" ]] || return 1
   [[ ! -e "$SANDBOX/curl.calls" ]] || return 1
   [[ "$(wc -l < "$SANDBOX/render.targets")" -eq 1 ]] || return 1
+}
+
+# RF-2 (verifier blocker 1): a brief glance is NOT attention. Focus on
+# the pane only from the post-wake sample on → no >2 s of recorded
+# sustain at decision time → the push still fires with today's bytes.
+case__done_brief_focus_does_not_suppress_push() {
+  FOCUS_FLIP=1 run_watcher_ntfy done_brief done 3 || return 1
+  [[ "$(cat "$SANDBOX/rc")" == "rc=42" ]] || return 1
+  [[ "$(grep -cx CALL "$SANDBOX/curl.calls")" -eq 1 ]] || return 1
+  grep -qF 'ARG<Title: ✅ opencode [title-1] (3) finished>' "$SANDBOX/curl.calls"
+}
+
+# RF-2, function level: with NO observation history at all, the gate
+# permits the push — the safe failure is a redundant push, never a lost
+# notification.
+case__done_gate_no_history_permits_push() {
+  sandbox_setup done_no_history
+  in_host '
+    get_focused_pane() { printf 3; }
+    ntfy_done_push_permitted 3
+  '
+}
+
+# RF-2, function level: >2 s of continuously sampled focus (1000 → 1003)
+# suppresses; the sampler, not the test, owns the observation state.
+case__done_gate_sustained_focus_suppresses_push() {
+  sandbox_setup done_sustained
+  in_host '
+    SB="$1"
+    date() { if [[ "$*" == "+%s" ]]; then cat "$SB/now"; else command date "$@"; fi; }
+    get_focused_pane() { printf 3; }
+    printf "1000\n" > "$SB/now"
+    focus_sustain_sample
+    printf "1003\n" > "$SB/now"
+    ntfy_done_push_permitted 3 && exit 1
+    exit 0
+  ' "$SANDBOX"
 }
 
 # RF-2: unattended → the push keeps today's exact request bytes.
@@ -1076,6 +1127,28 @@ case__precool_invalid_range_disables_with_one_error() {
     > "$SANDBOX/out" 2> "$SANDBOX/err" || return 1
   [[ "$(grep -cF 'precool disabled: need 0 < NTFY_PRECOOL_WARN_S < NTFY_PRECOOL_COLD_S (got warn=100 cold=100)' "$SANDBOX/err")" -eq 1 ]] || return 1
   grep -qx 'precool=off' "$SANDBOX/out"
+}
+
+# RF-3 (verifier blocker 2): with precool on, HT-05's push side collapses
+# into N3 ENTIRELY — the muted/busy/background fallback of an intermediate
+# reminder must not emit a standalone push either (matrix cut #2). Voice
+# and timing are untouched; precool's own first tick only arms (no card).
+case__precool_suppresses_intermediate_muted_reminder_push() {
+  sandbox_setup precool_intermediate_muted
+  in_host '
+    SB="$1"
+    NTFY_PRECOOL=on; TTS_REMINDERS=on; TTS_REMINDER_MAX=3
+    VENV_PYTHON=core
+    core() { printf "%s\n" "{\"pane_id\":\"3\",\"index\":1,\"text\":\"Reminder\"}"; }
+    get_focused_pane() { printf other; }
+    gate_agent_event() { return 1; }
+    is_auto_muted() { return 0; }
+    speak_text() { :; }
+    send_ntfy_push() { printf "push\n" >> "$SB/ntfy-capture"; }
+    daemon_reminders "{\"result\":{\"agents\":[{\"pane_id\":\"3\",\"agent\":\"opencode\",\"agent_status\":\"done\"}]}}"
+    wait
+    [[ ! -s "$SB/ntfy-capture" ]]
+  ' "$SANDBOX" > "$SANDBOX/out" 2> "$SANDBOX/err"
 }
 
 # Structural pin: precool rides the HT-05 sweep (no second scheduler).
