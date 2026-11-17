@@ -2060,3 +2060,46 @@ def test_interim_strip_follows_long_transcriptions(karaoke_app):
     )
     assert overflowed, "the fixture should overflow the ~2-line cap"
     assert glued, "the strip must stay glued to the newest text"
+
+
+def test_interim_meter_owns_top_row_above_transcription(karaoke_app):
+    """2026-11-17 layout: the voice meter owns the TOP row of the interim
+    strip (dot + elapsed + cells, with the state label beside it) and the
+    transcription rolls on its OWN row right below it — keeping the ~2-line
+    cap and the glue to the newest text."""
+    harness, page = _rejoin_boot(karaoke_app)
+    page.locator("#call-btn").click()
+    _tone_on(page)
+    _wait_sent_count(page, '"start"', 1)
+    page.evaluate(
+        "t => window.__wsList[0].emit({type: 'partial', text: t})",
+        "el medidor queda arriba y la tira debajo " * 6,
+    )
+    page.wait_for_function(
+        "() => document.getElementById('interim-text').textContent.length > 100",
+        timeout=5000,
+    )
+    layout = page.evaluate(
+        """() => {
+            const meter = document.getElementById('rec-meter');
+            const status = document.getElementById('strip-status');
+            const text = document.getElementById('interim-text');
+            const m = meter.getBoundingClientRect();
+            const s = status.getBoundingClientRect();
+            const t = text.getBoundingClientRect();
+            return {
+                meterShown: !meter.classList.contains('hidden'),
+                textShown: !text.classList.contains('hidden'),
+                meterAboveText: m.bottom <= t.top + 1,
+                statusWithMeter: s.height === 0 ||
+                    (s.top >= m.top - 1 && s.bottom <= m.bottom + 1),
+                overflowed: text.scrollHeight > text.clientHeight + 2,
+                glued: text.scrollTop + text.clientHeight >= text.scrollHeight - 2,
+            };
+        }"""
+    )
+    assert layout["meterShown"] and layout["textShown"]
+    assert layout["meterAboveText"], "the meter must render above the transcription"
+    assert layout["statusWithMeter"], "the state label must share the meter row"
+    assert layout["overflowed"], "the fixture should overflow the ~2-line cap"
+    assert layout["glued"], "the strip must stay glued to the newest text"

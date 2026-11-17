@@ -1789,19 +1789,24 @@
     }
     /* Interim strip — engine-dependent (FR8):
      *  navegador -> live interim text + caret
-     *  servidor  -> recording dot + elapsed utterance time + level meter */
+     *  servidor  -> recording dot + elapsed utterance time + level meter
+     * Layout (2026-11-17): the meter owns the TOP row (dot + elapsed +
+     * cells, state label beside it); the transcription rolls on its OWN
+     * row right below it. Visibility stays governed by renderInterimStrip
+     * (app.js) — this CSS only stacks the rows. */
     #interim {
       flex: 0 0 auto;
       min-height: 42px;
       display: flex;
-      align-items: center;
-      gap: 10px;
+      flex-direction: column;
+      justify-content: center;
+      gap: 4px;
       padding: 8px 14px;
       border-bottom: 1px dashed var(--line);
       font-size: var(--fs-md);
     }
+    #interim-top { display: flex; align-items: center; gap: 10px; }
     #interim-text {
-      flex: 1;
       min-height: 1.4em;
       max-height: 2.9em;
       /* Long phrases keep writing below the fold — follow the newest
@@ -2632,9 +2637,11 @@
     </div>
     <div id="d-pending"></div>
     <div id="interim" aria-live="off">
+      <div id="interim-top">
+        <span id="rec-meter" class="hidden"><span class="rec-dot" aria-hidden="true">●</span><span id="rec-elapsed">0:00</span><span class="meter" id="meter-cells" aria-hidden="true"></span></span>
+        <span id="strip-status" class="hidden"></span>
+      </div>
       <span id="interim-text" class="hidden"></span>
-      <span id="rec-meter" class="hidden"><span class="rec-dot" aria-hidden="true">●</span><span id="rec-elapsed">0:00</span><span class="meter" id="meter-cells" aria-hidden="true"></span></span>
-      <span id="strip-status" class="hidden"></span>
     </div>
     <main id="conversation" aria-live="polite"></main>
     <!-- Transient consult status pill (FR-18/D06): consult.js mounts
