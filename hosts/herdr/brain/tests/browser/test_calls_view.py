@@ -65,11 +65,10 @@ def test_calls_list_renders_items_and_detail_navigation(karaoke_app):
     page.evaluate("""
         () => {
             const container = document.getElementById("calls-container");
-            const drawer = document.getElementById("call-drawer");
-            drawer.style.transition = "none";
-            drawer.classList.add("open");
-            drawer.removeAttribute("inert");
-            document.getElementById("calls-section").classList.remove("hidden");
+            const sheet = document.getElementById("calls-section");
+            sheet.style.transition = "none";
+            sheet.classList.add("open");
+            sheet.removeAttribute("inert");
             const ui = window.Calls.createCallsUI({
                 doc: document,
                 http: (url) => window.fetch(url).then(r => r.json()),
@@ -112,11 +111,10 @@ def test_calls_empty_state_renders(karaoke_app):
     page.evaluate("""
         () => {
             const container = document.getElementById("calls-container");
-            const drawer = document.getElementById("call-drawer");
-            drawer.style.transition = "none";
-            drawer.classList.add("open");
-            drawer.removeAttribute("inert");
-            document.getElementById("calls-section").classList.remove("hidden");
+            const sheet = document.getElementById("calls-section");
+            sheet.style.transition = "none";
+            sheet.classList.add("open");
+            sheet.removeAttribute("inert");
             const ui = window.Calls.createCallsUI({
                 doc: document,
                 http: (url) => window.fetch(url).then(r => r.json()),
@@ -138,11 +136,10 @@ def test_calls_error_state_renders(karaoke_app):
     page.evaluate("""
         () => {
             const container = document.getElementById("calls-container");
-            const drawer = document.getElementById("call-drawer");
-            drawer.style.transition = "none";
-            drawer.classList.add("open");
-            drawer.removeAttribute("inert");
-            document.getElementById("calls-section").classList.remove("hidden");
+            const sheet = document.getElementById("calls-section");
+            sheet.style.transition = "none";
+            sheet.classList.add("open");
+            sheet.removeAttribute("inert");
             const ui = window.Calls.createCallsUI({
                 doc: document,
                 http: (url) => window.fetch(url).then(r => {

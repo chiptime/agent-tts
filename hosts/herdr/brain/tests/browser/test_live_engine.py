@@ -410,16 +410,21 @@ def _live_resume_boot(karaoke_app, resume_status=200):
     page.evaluate("() => localStorage.setItem('herdr-brain-voice-engine','live')")
     page.reload()
     page.wait_for_timeout(800)
-    # Reveal the boot-mounted Llamadas UI: the section is hidden and the
-    # drawer closed until a call starts — the calls module is already live.
+    # Reveal the boot-mounted Llamadas UI through the real path: force
+    # the drawer open (no call yet), then open the history POPUP from
+    # the 🕘 head button — the calls module is already live.
     page.evaluate("""
         () => {
             const drawer = document.getElementById("call-drawer");
             if (drawer) { drawer.classList.add("open"); drawer.removeAttribute("inert"); }
-            const section = document.getElementById("calls-section");
-            if (section) section.classList.remove("hidden");
         }
     """)
+    page.locator("#calls-open").click()
+    page.wait_for_function(
+        "() => document.getElementById('calls-section').classList.contains('open')",
+        timeout=5000,
+    )
+    page.wait_for_timeout(300)
     return harness, page
 
 
@@ -2191,3 +2196,58 @@ def test_open_drawer_spans_80pct_and_dives_behind_the_footer(karaoke_app):
         "no slit: the drawer must dive behind the footer"
     assert geo["footerOnTop"], \
         "the footer's buttons must stay visible on top of the drawer"
+
+
+def test_calls_history_lives_in_a_popup_launched_from_the_drawer_head(karaoke_app):
+    """2026-11-17: the Llamadas history is NOT the main thing mid-call —
+    it left the drawer. The 🕘 button beside the ✚ opens it as a sheet
+    OVER the drawer (same band as Conversaciones), the list renders
+    current, and closing the popup leaves the call untouched."""
+    harness, page = _live_boot(karaoke_app)
+    harness.respond(
+        "/calls", {"calls": [RESUME_CALL], "has_more": False}, query=("before", "limit")
+    )
+
+    # In a live call the drawer auto-opens (AC1).
+    page.locator("#call-btn").click()
+    page.wait_for_function(
+        "() => document.getElementById('call-drawer').classList.contains('open')",
+        timeout=15000,
+    )
+    # The section left the drawer's DOM.
+    assert not page.evaluate(
+        "() => document.getElementById('call-drawer')"
+        ".contains(document.getElementById('calls-section'))"
+    ), "the calls history must not live inside the drawer"
+    # The 🕘 launcher opens the popup over the drawer; refresh() makes
+    # the list current (the boot fetch predates the /calls response).
+    page.locator("#calls-open").click()
+    page.wait_for_function(
+        "() => document.getElementById('calls-section').classList.contains('open')",
+        timeout=5000,
+    )
+    page.wait_for_function(
+        "() => document.querySelectorAll('#calls-container .call-item').length > 0",
+        timeout=5000,
+    )
+    page.wait_for_timeout(400)  # let the 0.28s sheet slide settle
+    over = page.evaluate(
+        """() => {
+            const item = document.querySelector('#calls-container .call-item');
+            const r = item.getBoundingClientRect();
+            const hit = document.elementFromPoint(
+                r.left + r.width / 2, r.top + r.height / 2);
+            const sheet = document.getElementById('calls-section');
+            return !!hit && sheet.contains(hit);
+        }"""
+    )
+    assert over, "the popup must render OVER the open drawer"
+    # ✕ closes the popup; the call (drawer) keeps running untouched.
+    page.locator("#calls-close").click()
+    page.wait_for_function(
+        "() => !document.getElementById('calls-section').classList.contains('open')",
+        timeout=5000,
+    )
+    assert page.evaluate(
+        "() => document.getElementById('call-drawer').classList.contains('open')"
+    ), "closing the history popup must NOT close the call drawer"

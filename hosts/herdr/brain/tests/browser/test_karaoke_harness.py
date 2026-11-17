@@ -47,8 +47,11 @@ EXPECTED_DIGESTS = {
     # Re-pinned again for the live-call drawer work (2026-11-17): the
     # stacked interim strip + the ✚ new-call button (index.html, app.js,
     # both i18n) and the 80dvh sheet diving behind the footer (index.html).
-    "/": "0406fbc753bda94cc533388452b46b3e1dbee146591f0c108b35117525586b83",
-    "/app.js": "ae987d9bf7d413c7350f67ca2a88d605aa0fb5d55006c089243e5f289bffc301",
+    # Re-pinned once more for the Llamadas popup: the history left the
+    # drawer for a 🕘-launched sheet (index.html + app.js; calls.js rides
+    # unchanged).
+    "/": "4fb2b346f7006087cd3b7631bac1c8b1a56d4c9832d0f569dafdc0a9d5aa2651",
+    "/app.js": "23b0482ffae545f395b7fde98787d998d06b43a59e45dedde43a7e7392cc06ff",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "ca7b22c52c8160a3ac577f694eb65ec0798b77cd6ac179a5c567dffdc1fb2ba9",
     "/dialogs.js": "0e5b6afde7ef662591f66fc69891e3b1ec343fafe0d2c5be8fbef0c5a124a4c0",

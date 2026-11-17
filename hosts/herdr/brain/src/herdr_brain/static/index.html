@@ -187,7 +187,8 @@
      * sheet: the two sheets are mutually exclusive, so they share the
      * backdrop rules and the z-index band. */
     #conv-backdrop,
-    #pending-backdrop {
+    #pending-backdrop,
+    #calls-backdrop {
       position: fixed;
       inset: 0;
       z-index: 19;            /* dims drawer (15) and settings (17); sheet is 20 */
@@ -197,13 +198,15 @@
       transition: opacity 0.28s ease, visibility 0s 0.28s;
     }
     #conv-backdrop.open,
-    #pending-backdrop.open {
+    #pending-backdrop.open,
+    #calls-backdrop.open {
       opacity: 1;
       visibility: visible;
       transition: opacity 0.28s ease;
     }
     #conv-sheet,
-    #pending-sheet {
+    #pending-sheet,
+    #calls-section {
       position: fixed;
       left: 0; right: 0;
       bottom: calc(env(safe-area-inset-bottom, 0px) + 96px);
@@ -225,7 +228,8 @@
       transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1), visibility 0s 0.28s;
     }
     #conv-sheet.open,
-    #pending-sheet.open {
+    #pending-sheet.open,
+    #calls-section.open {
       transform: translateY(0);
       visibility: visible;
       transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
@@ -239,7 +243,8 @@
       border-bottom: 1px solid var(--line);
     }
     .cs-title { flex: 1; min-width: 0; font-size: 15px; font-weight: 700; }
-    #conv-close {
+    #conv-close,
+    #calls-close {
       flex: 0 0 auto;
       width: 48px;
       height: 48px;
@@ -1790,6 +1795,20 @@
       border-radius: 10px;
     }
     #call-new:active { transform: scale(0.96); }
+    /* 🕘 Llamadas launcher (2026-11-17): same header-button language as
+     * the ✚ — opens the history popup over the drawer. */
+    #calls-open {
+      flex: 0 0 auto;
+      width: 48px;
+      height: 48px;
+      font-size: 16px;
+      font-weight: 700;
+      background: var(--chip-bg);
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+    }
+    #calls-open:active { transform: scale(0.96); }
     /* Compact pending strip: on short/landscape screens the base banner
      * would be covered by the drawer, so pending info repeats in the
      * drawer header area (AC12). */
@@ -1870,7 +1889,10 @@
       gap: 10px;
     }
     /* ── CALLS DRAWER SECTION (T5) ────────────────────────── */
-    #calls-section {
+    /* Llamadas popup body: the sheet frame comes from the shared band
+     * above; the container is the scrollable list body (#conv-list's
+     * role) under the .cs-head bar. */
+    #calls-section #calls-container {
       flex: 1;
       min-height: 0;
       overflow-y: auto;
@@ -2353,7 +2375,8 @@
       #settings-sheet, #settings-sheet.open { transition: none; }
       #conv-sheet, #conv-sheet.open { transition: none; }
       #pending-sheet, #pending-sheet.open { transition: none; }
-      #conv-backdrop, #conv-backdrop.open { transition: none; }
+      #conv-backdrop, #conv-backdrop.open,
+      #calls-backdrop, #calls-section, #calls-section.open { transition: none; }
       #pending-backdrop, #pending-backdrop.open { transition: none; }
     }
 
@@ -2655,6 +2678,7 @@
       <span class="d-title"><span class="live-dot" aria-hidden="true">●</span> <span data-i18n="call.title">Llamada con brain</span></span>
       <span id="call-timer" aria-hidden="true">00:00</span>
       <button id="call-new" type="button" title="Nueva llamada (cuelga la actual y empieza de cero)" data-i18n-title="call.new_title" aria-label="Nueva llamada" data-i18n-aria-label="call.new_title">✚</button>
+      <button id="calls-open" type="button" title="Llamadas" data-i18n-title="calls.title" aria-label="Llamadas" data-i18n-aria-label="calls.title">🕘</button>
       <button id="drawer-close" type="button" title="Minimizar la llamada (sigue en marcha)" data-i18n-title="call.minimize_title">▼</button>
     </div>
     <div id="d-pending"></div>
@@ -2667,13 +2691,9 @@
     </div>
     <main id="conversation" aria-live="polite"></main>
     <!-- Transient consult status pill (FR-18/D06): consult.js mounts
-         the "Consultando…" indicator here as a floating overlay —
-         never a conversation row, never chat height. -->
+          the "Consultando…" indicator here as a floating overlay —
+          never a conversation row, never chat height. -->
     <div id="call-consult-indicator" class="hidden" aria-live="polite"></div>
-    <!-- Llamadas section (T5): per-call history list and transcript detail -->
-    <section id="calls-section" class="calls-section hidden" aria-label="Llamadas" data-i18n-aria-label="calls.title">
-      <div id="calls-container"></div>
-    </section>
   </section>
 
   <section id="settings-sheet" role="dialog" aria-modal="false" aria-label="Ajustes" data-i18n-aria-label="settings.aria" inert>
@@ -2735,6 +2755,20 @@
       <button id="conv-new" type="button" data-i18n="herd.new_conversation">＋ Nueva conversación</button>
     </div>
     <div id="conv-list"></div>
+  </section>
+
+  <div id="calls-backdrop" aria-hidden="true"></div>
+  <!-- Llamadas popup (2026-11-17): the call history LEFT the drawer — it
+       is not the main thing mid-call. Launched from the 🕘 button beside
+       the ✚ in the drawer head; rides the same sheet band as
+       Conversaciones (backdrop 19 / sheet 20). ✕ / backdrop / Escape /
+       Android back all close it. -->
+  <section id="calls-section" role="dialog" aria-modal="true" aria-label="Llamadas" data-i18n-aria-label="calls.title" inert>
+    <div class="cs-head">
+      <span class="cs-title" data-i18n="calls.title">Llamadas</span>
+      <button id="calls-close" type="button" title="Cerrar" data-i18n-title="conv.close">✕</button>
+    </div>
+    <div id="calls-container"></div>
   </section>
 
   <!-- Pending announcements sheet (pending-notices-in-settings-sheet):

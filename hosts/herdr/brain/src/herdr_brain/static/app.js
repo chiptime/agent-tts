@@ -124,6 +124,11 @@
   var settingsCloseBtn = $("settings-close");
   var convSheet = $("conv-sheet");
   var convBackdrop = $("conv-backdrop");
+  var callsBackdrop = $("calls-backdrop");
+  var callsOpenBtn = $("calls-open");
+  var callsCloseBtn = $("calls-close");
+  var callsSheetEl = $("calls-section");
+  var callsSheetOpen = false;
   var convCloseBtn = $("conv-close");
   var convNewBtn = $("conv-new");
   var callTimerEl = $("call-timer");
@@ -749,7 +754,12 @@
       setPendingSheet(false);
       try { settingsBtn.focus({ preventScroll: true }); } catch (err) { /* noop */ }
     }
-    if (drawerOpen && !st.herdrDrawer && !st.herdrConvSheet && !st.herdrSettings) {
+    if (callsSheetOpen && !st.herdrCallsSheet) {
+      callsSheetOpen = false;
+      setCallsSheet(false);
+      try { callsOpenBtn.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
+    }
+    if (drawerOpen && !st.herdrDrawer && !st.herdrConvSheet && !st.herdrSettings && !st.herdrCallsSheet) {
       drawerOpen = false;
       drawer.classList.remove("open");
       drawer.setAttribute("inert", "");
@@ -831,10 +841,48 @@
   });
   convCloseBtn.addEventListener("click", closeConvSheet);
   convBackdrop.addEventListener("click", closeConvSheet);
+
+  /* ---------------- Llamadas popup (2026-11-17) ----------------
+   * The call history LEFT the drawer (it is not the main thing
+   * mid-call): the 🕘 button beside the ✚ opens it as a sheet over
+   * the drawer. Same contract as Conversaciones — ✕ / backdrop /
+   * Escape / Android back all close it; focus returns to the trigger. */
+  function setCallsSheet(open) {
+    callsBackdrop.classList.toggle("open", open);
+    callsSheetEl.classList.toggle("open", open);
+    if (open) callsSheetEl.removeAttribute("inert");
+    else callsSheetEl.setAttribute("inert", "");
+  }
+
+  function openCallsSheet() {
+    if (callsSheetOpen) return;
+    callsSheetOpen = true;
+    setCallsSheet(true);
+    if (callsUI) callsUI.refresh();  // the list opens current
+    try { history.pushState({ herdrCallsSheet: true }, ""); } catch (err) { /* non-http */ }
+    try { callsCloseBtn.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
+  }
+
+  function closeCallsSheet() {
+    if (!callsSheetOpen) return;
+    callsSheetOpen = false;
+    setCallsSheet(false);
+    if (history.state && history.state.herdrCallsSheet) history.back();  // pop our entry; popstate no-ops
+    try { callsOpenBtn.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
+  }
+
+  callsOpenBtn.addEventListener("click", openCallsSheet);
+  callsCloseBtn.addEventListener("click", closeCallsSheet);
+  callsBackdrop.addEventListener("click", closeCallsSheet);
+
   document.addEventListener("keydown", function (event) {
     /* Escape closes the topmost sheet — never from under the settings
-     * sheet. If no sheet is open and zen mode is active, escape exits zen. */
+     * sheet. The Llamadas popup can only sit on TOP (its sole trigger
+     * lives in the drawer head, which every other sheet covers), so it
+     * closes first. If no sheet is open and zen mode is active, escape
+     * exits zen. */
     if (event.key !== "Escape") return;
+    if (callsSheetOpen) { closeCallsSheet(); return; }
     if (pendingSheetOpen) { closePendingSheet(); return; }
     if (convSheetOpen && !settingsOpen) { closeConvSheet(); return; }
     if (settingsOpen) { closeSettings(); return; }
@@ -4786,22 +4834,24 @@
     onSwitchPane: applyVoiceSwitch
   });
 
-  /* Call history (S6/S7): the drawer's "Llamadas" section is the
-   * dependency-injected calls module — mounted once, refreshed every
-   * time the drawer opens so the list is current without a poll. */
+  /* Call history (S6/S7): the calls module is dependency-injected and
+   * mounted ONCE into the Llamadas POPUP (#calls-section sheet, opened
+   * with the 🕘 drawer-head button); refresh() runs every time the
+   * sheet opens, so the list is current without a poll. */
   var callsUI = null;
   if (window.Calls) {
     var callsContainer = document.getElementById("calls-container");
-    var callsSection = document.getElementById("calls-section");
     if (callsContainer) {
       callsUI = window.Calls.createCallsUI({
         doc: document,
         http: function (url) { return readFetch(url); },
         t: t,
-        onResume: function (call) { resumeCall(call.call_id); }
+        onResume: function (call) {
+          closeCallsSheet();  // resuming redials: the popup goes with the call
+          resumeCall(call.call_id);
+        }
       });
       callsUI.mount(callsContainer);
-      if (callsSection) callsSection.classList.remove("hidden");
     }
   }
 
