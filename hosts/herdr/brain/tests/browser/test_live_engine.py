@@ -2103,3 +2103,49 @@ def test_interim_meter_owns_top_row_above_transcription(karaoke_app):
     assert layout["statusWithMeter"], "the state label must share the meter row"
     assert layout["overflowed"], "the fixture should overflow the ~2-line cap"
     assert layout["glued"], "the strip must stay glued to the newest text"
+
+
+def test_drawer_new_call_hangs_up_resets_and_redials(karaoke_app):
+    """2026-11-17 unified new-call: ONE tap on the drawer-head ✚ hangs up
+    the live call (POST /call/end closes the record — it stays in the
+    history), wipes the agent session (POST /reset, same as #conv-new),
+    clears the chat and dials a FRESH call (second POST /call/start) —
+    without leaving the drawer, and the fresh mic streams again."""
+    harness, page = _rejoin_boot(karaoke_app)
+    page.locator("#call-btn").click()
+    _tone_on(page)
+    _wait_sent_count(page, '"start"', 1)
+
+    # Boot history painted turns; the new call must wipe them.
+    page.wait_for_function(
+        "() => document.querySelectorAll('#conversation .turn').length > 0",
+        timeout=5000,
+    )
+    page.locator("#call-new").click(timeout=5000)
+
+    page.wait_for_function(
+        "() => window.__karaokeHarness.fetchCalls.includes('/reset')", timeout=10000
+    )
+    ends = _posts(harness, "/call/end")
+    starts = _posts(harness, "/call/start")
+    resets = _posts(harness, "/reset")
+    assert len(ends) == 1, "the new call must close the previous record"
+    assert len(starts) == 2, "the new call must dial a fresh record"
+    assert len(resets) == 1, "the new call must wipe the session context"
+    # The old record closed BEFORE the fresh one opened.
+    paths = [
+        urlsplit(r.url).path for r in harness.requests if r.method == "POST"
+    ]
+    assert paths.index("/call/end") < len(paths) - 1 - paths[::-1].index("/call/start"), \
+        "/call/end must precede the fresh /call/start"
+    # The chat cleared (the ghost placeholder is NOT a turn) and the
+    # drawer reopened on the fresh call.
+    assert page.locator("#conversation .turn").count() == 0, \
+        "the new call must start with a clean chat"
+    assert page.locator("#call-drawer").evaluate(
+        "el => el.classList.contains('open')"
+    ), "the drawer must stay open on the fresh call"
+    # The fresh mic really streams: a second tone onset opens the turn.
+    page.wait_for_function("() => window.__gumCount >= 2", timeout=15000)
+    _tone_on(page)
+    _wait_sent_count(page, '"start"', 2)

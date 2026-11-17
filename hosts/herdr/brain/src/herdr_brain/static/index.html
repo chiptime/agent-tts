@@ -1769,6 +1769,20 @@
       border: 1px solid var(--line);
       border-radius: 10px;
     }
+    /* "Nueva llamada" (2026-11-17): same header-button language as the
+     * minimize ▼ — ONE tap = hang up + wipe the session context + redial. */
+    #call-new {
+      flex: 0 0 auto;
+      width: 48px;
+      height: 48px;
+      font-size: 18px;
+      font-weight: 700;
+      background: var(--chip-bg);
+      color: var(--accent);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+    }
+    #call-new:active { transform: scale(0.96); }
     /* Compact pending strip: on short/landscape screens the base banner
      * would be covered by the drawer, so pending info repeats in the
      * drawer header area (AC12). */
@@ -2633,6 +2647,7 @@
     <div class="d-head">
       <span class="d-title"><span class="live-dot" aria-hidden="true">●</span> <span data-i18n="call.title">Llamada con brain</span></span>
       <span id="call-timer" aria-hidden="true">00:00</span>
+      <button id="call-new" type="button" title="Nueva llamada (cuelga la actual y empieza de cero)" data-i18n-title="call.new_title" aria-label="Nueva llamada" data-i18n-aria-label="call.new_title">✚</button>
       <button id="drawer-close" type="button" title="Minimizar la llamada (sigue en marcha)" data-i18n-title="call.minimize_title">▼</button>
     </div>
     <div id="d-pending"></div>

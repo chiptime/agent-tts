@@ -118,6 +118,7 @@
   var callConsultIndicator = $("call-consult-indicator");
   var drawer = $("call-drawer");
   var drawerCloseBtn = $("drawer-close");
+  var callNewBtn = $("call-new");
   var settingsSheet = $("settings-sheet");
   var settingsBtn = $("settings-btn");
   var settingsCloseBtn = $("settings-close");
@@ -7401,6 +7402,31 @@
     }
     startCall(callId);
   }
+
+  /* "Nueva llamada" from the drawer head (2026-11-17): ONE gesture = hang
+   * up (the record closes in the history), wipe the agent session context
+   * (same POST /reset as #conv-new) and dial a FRESH call. startCall runs
+   * synchronously inside the tap so the live AudioContext primes within
+   * the gesture window (L53); the reset lands while the new mic arms. */
+  callNewBtn.addEventListener("click", function () {
+    if (!inCall) return;  // drawer-scoped: only meaningful mid-call
+    voiceTimelinePush("call_end", "new");
+    endCall();  // closes the record (POST /call/end) + full teardown
+    conv.textContent = "";  // fresh call, clean chat
+    updateGhost();
+    hideBanner();
+    fetch("/reset", withDeviceAuth({
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId })
+    })).then(function (resp) {
+      if (resp.ok) showToast(t("call.new_started"), 4000);
+      else maybeOfferPairing(resp);
+    }).catch(function () {
+      showBanner(t("call.new_failed"));
+    });
+    startCall();  // fresh record — no resume id
+  });
 
   pauseBtn.addEventListener("click", function () {
     if (callState === "listening" || callState === "recording" || callState === "confirming") {
