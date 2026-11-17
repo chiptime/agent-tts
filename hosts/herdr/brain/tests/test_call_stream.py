@@ -62,6 +62,25 @@ def make_spy_transcriber(settings: Settings) -> Transcriber:
     return t
 
 
+class _FixedTextModel:
+    """Live-spy variant returning a FIXED text (hint-capture tests)."""
+
+    text = "PR rama herdr opencode"
+
+    def transcribe(self, path, language=None, initial_prompt=None):
+        return (
+            iter([type("Seg", (), {"text": type(self).text})]),
+            type("Info", (), {"language": "es"}),
+        )
+
+
+def make_fixed_text_transcriber(settings: Settings, text: str) -> Transcriber:
+    _FixedTextModel.text = text
+    t = Transcriber(settings, loader=lambda: _FixedTextModel(), cached=lambda: True)
+    t.state = STATE_READY
+    return t
+
+
 class ServerSpyModel:
     """Shared /transcribe double — distinct text from the live SpyModel."""
 
@@ -316,6 +335,146 @@ def test_websocket_buffers_frames_and_transcribes_with_preroll(tmp_path):
         # 1000 ms utterance + 500 ms pre-roll = 1500 ms = 24,000 samples
         assert SpyModel.transcribe_calls == 1
         assert SpyModel.last_sample_count == 24000
+
+
+def test_transcript_is_hint_capture_unit():
+    """2026-11-17 device regression (unit): a transcript composed ENTIRELY
+    of vocabulary-hint terms is a Whisper initial_prompt echo; anything
+    carrying a real word passes."""
+    from herdr_brain.call_stream import transcript_is_hint_capture
+
+    hint = "commit, push, PR, rama, herdr, opencode"
+    assert transcript_is_hint_capture("PR rama herdr opencode", hint)
+    assert transcript_is_hint_capture("pr, RAMA herdr!", hint)  # case/punct
+    assert not transcript_is_hint_capture("abrí el PR de herdr", hint)
+    assert not transcript_is_hint_capture("", hint)
+    assert not transcript_is_hint_capture("PR rama", None)  # no hint in play
+    assert not transcript_is_hint_capture("hola buenos días", hint)
+
+
+def test_hint_capture_transcript_degrades_to_empty(tmp_path):
+    """2026-11-17 device regression: the echo 'PR rama herdr opencode'
+    must reach the client as an EMPTY transcript (the existing
+    not-understood path), never dispatch garbage to the model."""
+    store = PairingStore(tmp_path)
+    minted = store.mint()
+    app = build_app(
+        tmp_path,
+        transcriber=make_fixed_text_transcriber(
+            _stream_cfg(tmp_path), "PR rama herdr opencode"
+        ),
+    )
+    client = TestClient(app)
+    pair_resp = client.post("/pair", json={"code": minted["code"], "label": "test-phone"})
+    assert pair_resp.status_code == 200
+    token = pair_resp.json()["token"]
+
+    with client.websocket_connect("/call/stream") as ws:
+        ws.send_json({"type": "auth", "token": token})
+        assert ws.receive_json()["type"] == "auth_ok"
+        for _ in range(15):
+            ws.send_bytes(SPEECH_100MS)
+        ws.send_json({"type": "transcribe", "duration_ms": 1000, "pre_roll_ms": 500})
+        reply = ws.receive_json()
+        assert reply["type"] in ("transcript", "final")
+        assert reply["text"] == ""
+
+
+def test_real_speech_mentioning_hint_terms_passes(tmp_path):
+    """The filter never drops legitimate speech that happens to mention
+    hint terms — only pure-hint captures degrade."""
+    store = PairingStore(tmp_path)
+    minted = store.mint()
+    app = build_app(
+        tmp_path,
+        transcriber=make_fixed_text_transcriber(
+            _stream_cfg(tmp_path), "abrí el PR de herdr"
+        ),
+    )
+    client = TestClient(app)
+    pair_resp = client.post("/pair", json={"code": minted["code"], "label": "test-phone"})
+    assert pair_resp.status_code == 200
+    token = pair_resp.json()["token"]
+
+    with client.websocket_connect("/call/stream") as ws:
+        ws.send_json({"type": "auth", "token": token})
+        assert ws.receive_json()["type"] == "auth_ok"
+        for _ in range(15):
+            ws.send_bytes(SPEECH_100MS)
+        ws.send_json({"type": "transcribe", "duration_ms": 1000, "pre_roll_ms": 500})
+        reply = ws.receive_json()
+        assert reply["type"] in ("transcript", "final")
+        assert reply["text"] == "abrí el PR de herdr"
+
+
+def test_hub_backend_with_smart_turn_enabled_advertises_it(tmp_path, monkeypatch):
+    """2026-11-17 gate regression: stt_backend='hub' + Smart Turn
+    explicitly enabled must let the socket build its LOCAL aux models —
+    vad_status advertises smart_turn — instead of the builtin-only gate
+    that silently disabled the detector AND Silero deferral. The detector
+    is faked (fast): this pins the GATE, not the model."""
+    import herdr_brain.call_stream as call_stream_module
+
+    class _FakeDetector:
+        unavailable_reason = None
+
+        def ensure_loaded(self) -> bool:
+            return True
+
+    monkeypatch.setattr(
+        call_stream_module, "default_turn_detector", lambda: _FakeDetector()
+    )
+
+    store = PairingStore(tmp_path)
+    minted = store.mint()
+    app = build_app(tmp_path, stt_backend="hub", smart_turn_enabled=True)
+    client = TestClient(app)
+    pair_resp = client.post("/pair", json={"code": minted["code"], "label": "test-phone"})
+    assert pair_resp.status_code == 200
+    token = pair_resp.json()["token"]
+
+    with client.websocket_connect("/call/stream") as ws:
+        ws.send_json({"type": "auth", "token": token, "vad": True})
+        assert ws.receive_json()["type"] == "auth_ok"
+        status = None
+        for _ in range(4):
+            msg = ws.receive_json()
+            if msg.get("type") == "vad_status":
+                status = msg
+                break
+        assert status is not None, "vad_status never arrived"
+        assert status["smart_turn"] is True
+
+
+def test_hub_backend_without_smart_turn_stays_energy_gated(tmp_path, monkeypatch):
+    """The other side of the gate: a hub deployment that did NOT opt into
+    local models keeps today's energy-only behavior (no detector build)."""
+    import herdr_brain.call_stream as call_stream_module
+
+    def _boom():  # must never be consulted
+        raise AssertionError("default_turn_detector consulted while gated off")
+
+    monkeypatch.setattr(call_stream_module, "default_turn_detector", _boom)
+
+    store = PairingStore(tmp_path)
+    minted = store.mint()
+    app = build_app(tmp_path, stt_backend="hub", smart_turn_enabled=False)
+    client = TestClient(app)
+    pair_resp = client.post("/pair", json={"code": minted["code"], "label": "test-phone"})
+    assert pair_resp.status_code == 200
+    token = pair_resp.json()["token"]
+
+    with client.websocket_connect("/call/stream") as ws:
+        ws.send_json({"type": "auth", "token": token, "vad": True})
+        assert ws.receive_json()["type"] == "auth_ok"
+        status = None
+        for _ in range(4):
+            msg = ws.receive_json()
+            if msg.get("type") == "vad_status":
+                status = msg
+                break
+        assert status is not None, "vad_status never arrived"
+        assert status["smart_turn"] is False
 
 
 def test_websocket_rejects_unallowed_host(tmp_path):

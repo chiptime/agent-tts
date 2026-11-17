@@ -179,6 +179,38 @@ class AudioRingBuffer:
         return len(self._buffer)
 
 
+def _norm_tokens(text: str) -> list:
+    """Lowercased alphanumeric tokens (unicode-aware, no regex import)."""
+    tokens: list = []
+    for raw in text.split():
+        tok = "".join(ch for ch in raw if ch.isalnum())
+        if tok:
+            tokens.append(tok.lower())
+    return tokens
+
+
+def transcript_is_hint_capture(
+    text: Optional[str], initial_prompt: Optional[str]
+) -> bool:
+    """True when EVERY token of a live final transcript is a vocabulary-
+    hint term: Whisper echoing its ``initial_prompt``.
+
+    Two device classes proved this (L52: silence windows echoed the hint;
+    2026-11-17: a quiet mid-phrase-cut fragment returned exactly
+    "PR rama herdr opencode" — three default hint terms, no real word).
+    A legitimate utterance about PRs also carries non-hint words, so this
+    never drops real speech; a capture degrades to the empty-transcript
+    path ("no te entendí") instead of dispatching garbage to the model.
+    """
+    if not text or not initial_prompt:
+        return False
+    spoken = _norm_tokens(text)
+    if not spoken:
+        return False
+    hint = set(_norm_tokens(initial_prompt))
+    return bool(hint) and all(tok in hint for tok in spoken)
+
+
 def pcm16_to_wav_bytes(pcm16_data: bytes, sample_rate: int = SAMPLE_RATE) -> bytes:
     """Wraps raw 16 kHz mono PCM16 bytes in a standard WAV container in memory."""
     buf = io.BytesIO()
@@ -993,13 +1025,15 @@ async def handle_call_stream(
     # produces two verdicts; non-probing clients keep the old behavior.
     probed_this_turn = False
     # D8: the vocabulary hint is read once per connection (operators edit
-    # the env between runs, not mid-call).
+    # the env between runs, not mid-call). Kept in scope: the turn-end
+    # transcript filter needs the same terms Whisper was biased with.
+    live_hint = live_vocabulary_hint()
     session = StreamingTranscriptionSession(
         websocket,
         transcriber,
         ring_buffer,
         language=locale,
-        initial_prompt=live_vocabulary_hint(),
+        initial_prompt=live_hint,
     )
 
     # 2. Frame streaming and transcription loop
@@ -1258,6 +1292,14 @@ async def handle_call_stream(
                     else:
                         await send_stt_notice_once()
                         text_str = (text or "").strip()
+                        if transcript_is_hint_capture(text_str, live_hint):
+                            # Hint capture (see the helper): degrade to the
+                            # empty-transcript path — never dispatch the
+                            # vocabulary echo to the model as a real turn.
+                            logger.info(
+                                "live transcript filtered: hint capture"
+                            )
+                            text_str = ""
                         await websocket.send_json({
                             "type": "transcript",
                             "text": text_str,

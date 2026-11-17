@@ -1677,8 +1677,12 @@
   function enterTextMode(reason) {
     if (textMode) return;
     textMode = true;
-    if (inCall) endCall();  // endCall closes the drawer (AC4/AC11)
-    else closeDrawer();     // FR11: the drawer and the soft keyboard never coexist
+    /* PRD-02: name the call-ender in the diag timeline — a call that
+     * "ends itself" on the device must be attributable from one look. */
+    if (inCall) {
+      voiceTimelinePush("call_end", "text-mode");
+      endCall();  // endCall closes the drawer (AC4/AC11)
+    } else closeDrawer();     // FR11: the drawer and the soft keyboard never coexist
     fallbackForm.classList.remove("hidden");
     showMicNote(reason);
     renderPill();
@@ -7353,7 +7357,10 @@
 
   callBtn.addEventListener("click", function () {
     if (longPressFired) { longPressFired = false; return; }  // diag opened: swallow
-    if (inCall) endCall();
+    if (inCall) {
+      voiceTimelinePush("call_end", "hang-up");
+      endCall();
+    }
     else startCall();
   });
 
@@ -7361,7 +7368,10 @@
    * call hangs up first, then the chosen record reopens server-side
    * (turns reseed the agent context) and the mic starts on it. */
   function resumeCall(callId) {
-    if (inCall) endCall();
+    if (inCall) {
+      voiceTimelinePush("call_end", "resume");
+      endCall();
+    }
     startCall(callId);
   }
 
