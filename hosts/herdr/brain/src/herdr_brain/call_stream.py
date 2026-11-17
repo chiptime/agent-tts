@@ -211,6 +211,36 @@ def transcript_is_hint_capture(
     return bool(hint) and all(tok in hint for tok in spoken)
 
 
+def resolve_turn_transcript(
+    full_text: Optional[str], finals_text: Optional[str], initial_prompt: Optional[str]
+) -> str:
+    """The turn-end transcript decision.
+
+    The full-window one-shot inference is NOT agreement-checked; the
+    streaming finals are (PRD-04 consecutive-pass agreement). The
+    2026-11-17 device case: the user read correct live partials, then the
+    turn-end window returned "en este caso" for a ~2 s utterance — a
+    short hallucination that replaced the truth in the user's bubble.
+
+    Rules, in order:
+    - a pure hint capture (full or finals) is never the truth: it
+      degrades to the other candidate or the empty not-understood path;
+    - a full window carrying LESS THAN HALF the agreed finals' words is a
+      regression: the locally-agreed finals win;
+    - anything else keeps the full-window transcript (it may legitimately
+      carry an unstable tail the finals trimmed, L18/L20).
+    """
+    full = (full_text or "").strip()
+    finals = (finals_text or "").strip()
+    if transcript_is_hint_capture(finals, initial_prompt):
+        finals = ""  # the agreed text itself is an echo: no truth to keep
+    if transcript_is_hint_capture(full, initial_prompt):
+        full = ""
+    if finals and len(full.split()) * 2 < len(finals.split()):
+        return finals
+    return full
+
+
 def pcm16_to_wav_bytes(pcm16_data: bytes, sample_rate: int = SAMPLE_RATE) -> bytes:
     """Wraps raw 16 kHz mono PCM16 bytes in a standard WAV container in memory."""
     buf = io.BytesIO()
@@ -412,6 +442,13 @@ class StreamingTranscriptionSession:
         # successful transcript its finals cannot match.
         self._covered_ms = 0.0
         self._parity_failed = False
+
+    @property
+    def finals_text(self) -> str:
+        """The accumulated, locally-agreed final fragments of the current
+        utterance — the trust anchor resolve_turn_transcript falls back to
+        when the full-window one-shot regresses."""
+        return self._finals_text
 
     # ── client control messages ──
 
@@ -1291,15 +1328,17 @@ async def handle_call_stream(
                         })
                     else:
                         await send_stt_notice_once()
-                        text_str = (text or "").strip()
-                        if transcript_is_hint_capture(text_str, live_hint):
-                            # Hint capture (see the helper): degrade to the
-                            # empty-transcript path — never dispatch the
-                            # vocabulary echo to the model as a real turn.
+                        raw_str = (text or "").strip()
+                        text_str = resolve_turn_transcript(
+                            raw_str, session.finals_text, live_hint
+                        )
+                        if text_str != raw_str:
+                            # Bounded, text-free: says the decision fired,
+                            # never what was said.
                             logger.info(
-                                "live transcript filtered: hint capture"
+                                "live transcript adjusted: hint capture or "
+                                "full-window regression to agreed finals"
                             )
-                            text_str = ""
                         await websocket.send_json({
                             "type": "transcript",
                             "text": text_str,

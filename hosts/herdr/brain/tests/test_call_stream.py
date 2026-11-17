@@ -352,6 +352,33 @@ def test_transcript_is_hint_capture_unit():
     assert not transcript_is_hint_capture("hola buenos días", hint)
 
 
+def test_resolve_turn_transcript_unit():
+    """2026-11-17 'en este caso' device case (unit): the user read correct
+    agreed partials, then the full-window one-shot returned 3 generic
+    words for a ~2 s utterance — the agreed finals must win. Plus the
+    neighbouring decisions: hint captures never win, a richer full
+    window keeps its unstable tail (L18/L20), symmetric empty cases."""
+    from herdr_brain.call_stream import resolve_turn_transcript
+
+    hint = "commit, push, PR, rama, herdr, opencode"
+    finals = "podrías decirme si le ves sentido a este chat"
+    # THE device case: short hallucination vs the agreed phrase.
+    assert resolve_turn_transcript("en este caso", finals, hint) == finals
+    # A hint-capture window with real agreed finals: finals win.
+    assert resolve_turn_transcript("PR rama herdr opencode", finals, hint) == finals
+    # A hint capture with echo finals too: degrade to the empty path.
+    assert resolve_turn_transcript("PR rama herdr opencode", "PR rama", hint) == ""
+    # A richer full window keeps its unstable tail (L18/L20 parity).
+    assert (
+        resolve_turn_transcript(finals + " completo", finals, hint)
+        == finals + " completo"
+    )
+    # Equal candidates: the full window stands.
+    assert resolve_turn_transcript(finals, finals, hint) == finals
+    # No finals at all: today's behavior untouched.
+    assert resolve_turn_transcript("hola buenos días", "", hint) == "hola buenos días"
+
+
 def test_hint_capture_transcript_degrades_to_empty(tmp_path):
     """2026-11-17 device regression: the echo 'PR rama herdr opencode'
     must reach the client as an EMPTY transcript (the existing
