@@ -11,7 +11,12 @@ from __future__ import annotations
 
 import pytest
 
-from herdr_brain.webpush.coordinator import NotificationCoordinator
+from herdr_brain.webpush.coordinator import (
+    NotificationCoordinator,
+    cache_tag,
+    cache_warn_payload,
+)
+from herdr_brain.webpush.sender import topic_sendable
 
 WINDOW = 2.0
 
@@ -174,3 +179,35 @@ def test_several_error_agents_coalesce_and_retract(captured):
     coord.handled("p1")
     coord.handled("p2")
     assert events[-1]["payload"]["kind"] == "cleared"
+
+
+class TestCacheWarnPayload:
+    """The cache warning's wording, pinned where it is built (the
+    tick sends it verbatim): an honest countdown inside the margin,
+    and COLD wording instead of the absurd "caduca en menos de 0 s"."""
+
+    def test_counts_down_inside_the_margin(self):
+        payload = cache_warn_payload("opencode repo", idle_s=240.0, expires_in_s=60.0)
+        assert payload["kind"] == "cache-warn"
+        assert payload["pane_id"] is None or isinstance(payload["pane_id"], str)
+        assert "opencode repo lleva 4 min sin actividad" in payload["body"]
+        assert "caduca en menos de 60 s" in payload["body"]
+
+    def test_says_cold_instead_of_a_zero_second_countdown(self):
+        payload = cache_warn_payload("opencode repo", idle_s=400.0, expires_in_s=0.0)
+        assert "ya está frío" in payload["body"]
+        assert "0 s" not in payload["body"]
+
+    def test_minutes_floor_like_a_clock_would(self):
+        payload = cache_warn_payload("claude-1", idle_s=359.0, expires_in_s=0.0)
+        assert "lleva 5 min sin actividad" in payload["body"]
+
+
+class TestCacheTag:
+    def test_one_collapse_key_per_pane(self):
+        assert cache_tag("w1:p1") != cache_tag("w2:p2")
+
+    def test_stable_and_sendable(self):
+        tag = cache_tag("w14:p2")
+        assert tag == cache_tag("w14:p2")
+        assert topic_sendable(tag)

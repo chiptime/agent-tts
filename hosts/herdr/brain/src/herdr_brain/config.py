@@ -161,6 +161,11 @@ DEFAULT_ANNOUNCE_MAX_CHARS = 300
 # queryfsm.DEFAULT_BUDGET_SECONDS / DEFAULT_NARROW_* (config cannot
 # import queryfsm without an import cycle through evidence->herdr).
 DEFAULT_CONSULT_BUDGET_S = 60.0
+
+#: Cache-warn TTL default (doc 08: a 5-minute cache window). Kept in
+#: sync with webpush.cachewarn.DEFAULT_TTL_S; this copy is the knob
+#: the operator's env overrides.
+DEFAULT_CACHEWARN_TTL_S = 300.0
 DEFAULT_CONSULT_NARROW_ITEMS = 4000
 DEFAULT_CONSULT_NARROW_CHARS = 500_000
 
@@ -209,6 +214,10 @@ class Settings:
     consult_narrow_items: int = DEFAULT_CONSULT_NARROW_ITEMS
     consult_narrow_chars: int = DEFAULT_CONSULT_NARROW_CHARS
     consult_max_span_days: int = DEFAULT_CONSULT_MAX_SPAN_DAYS
+    # Cache-warn TTL (S5): how long an agent's hot context survives
+    # after its last activity, in seconds. Agents with 1 h prompt
+    # caches set 3600 and stop being warned twelve times an hour.
+    cachewarn_ttl_s: float = DEFAULT_CACHEWARN_TTL_S
     report_db: Optional[str] = None
     followup_db: Optional[str] = None
     opencode_db: Optional[str] = None
@@ -434,6 +443,9 @@ def load_settings(env: Optional[dict] = None) -> Settings:
         )),
         consult_budget_s=float(getenv(
             "HERDR_BRAIN_CONSULT_BUDGET_S", str(DEFAULT_CONSULT_BUDGET_S)
+        )),
+        cachewarn_ttl_s=float(getenv(
+            "HERDR_BRAIN_CACHEWARN_TTL_S", str(DEFAULT_CACHEWARN_TTL_S)
         )),
         consult_narrow_items=int(getenv(
             "HERDR_BRAIN_CONSULT_NARROW_ITEMS", str(DEFAULT_CONSULT_NARROW_ITEMS)

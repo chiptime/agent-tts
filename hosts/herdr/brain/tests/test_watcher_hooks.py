@@ -5,7 +5,9 @@ OPTIONAL callback so the watcher's own tests keep constructing it bare.
 Contract pinned here:
 
 - one ``tick(panes=...)`` per successful poll, with a
-  ``(pane_id, label, last_activity)`` row per live pane;
+  ``(pane_id, label, idle_s)`` row per live pane — the idle is a
+  DELTA, never an absolute stamp, so the consumer's clock domain
+  cannot disagree with the watcher's;
 - ``transition(...)`` exactly once per ANNOUNCED transition (same
   decision site as the SSE hub — debounced repeats stay silent) with the
   blocking question the digest already extracted;
@@ -83,40 +85,39 @@ class TestTick:
         assert len(notifier.ticks) == 1
         rows = notifier.ticks[0]
         assert len(rows) == 1
-        pane_id, label, last_activity = rows[0]
+        pane_id, label, idle_s = rows[0]
         assert pane_id == "w1:p1"
         assert label == "opencode repo"
-        assert last_activity > 0
+        assert idle_s == 0.0  # the stamp is this very poll
 
-    def test_working_pane_refreshes_its_last_activity(self, settings, make_stub, notifier):
+    def test_working_pane_reports_no_idle(self, settings, make_stub, notifier):
         clock = FakeClock()
         stub = make_stub(agents=[make_agent(status="working")])
         watcher = make_watcher(settings, stub, notifier, clock=clock)
         watcher.poll_once()
-        first = notifier.ticks[0][0][2]
+        assert notifier.ticks[0][0][2] == 0.0
         clock.advance(12.0)
         stub._agents = [make_agent(status="working")]
         watcher.poll_once()
-        second = notifier.ticks[1][0][2]
-        assert second > first
+        # Working refreshes the stamp every poll: the idle delta stays 0.
+        assert notifier.ticks[1][0][2] == 0.0
 
-    def test_idle_pane_freezes_its_last_activity(self, settings, make_stub, notifier):
+    def test_idle_pane_idle_delta_grows_from_the_change(self, settings, make_stub, notifier):
         clock = FakeClock()
         stub = make_stub(agents=[make_agent(status="working")])
         watcher = make_watcher(settings, stub, notifier, clock=clock)
         watcher.poll_once()
-        working_stamp = notifier.ticks[0][0][2]
+        assert notifier.ticks[0][0][2] == 0.0
         clock.advance(20.0)
         stub._agents = [make_agent(status="idle")]
         watcher.poll_once()
         # The working→idle CHANGE is activity (the agent worked until
-        # now) — the stamp moves to the change, then FREEZES.
-        idle_stamp = notifier.ticks[1][0][2]
-        assert idle_stamp == working_stamp + 20.0
+        # now) — the delta restarts, then GROWS with no activity.
+        assert notifier.ticks[1][0][2] == 0.0
         clock.advance(30.0)
         stub._agents = [make_agent(status="idle")]
         watcher.poll_once()
-        assert notifier.ticks[2][0][2] == idle_stamp
+        assert notifier.ticks[2][0][2] == 30.0
 
     def test_no_tick_when_the_agent_list_is_unreachable(self, settings, make_stub, notifier):
         class DeadStub:

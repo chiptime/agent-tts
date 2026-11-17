@@ -22,7 +22,12 @@ from typing import Callable, Dict, Iterable, Optional, Tuple
 
 from ..audit import AuditLog
 from .cachewarn import CacheWarnEngine
-from .coordinator import CACHE_TAG, TEST_TAG, NotificationCoordinator
+from .coordinator import (
+    TEST_TAG,
+    NotificationCoordinator,
+    cache_tag,
+    cache_warn_payload,
+)
 from .sender import PushSender
 from .store import SubscriptionStore, push_service_origin
 from .vapid import VapidKeys, load_or_create_keys
@@ -30,7 +35,11 @@ from .vapid import VapidKeys, load_or_create_keys
 logger = logging.getLogger(__name__)
 
 #: What a caller may pass as ``panes`` to :meth:`WebPushService.tick`.
-PaneActivity = Tuple[str, str, float]  # (pane_id, label, last_activity)
+#: The third element is an idle DELTA in seconds — never an absolute
+#: stamp: a monotonic watcher and this service's wall clock cannot be
+#: subtracted from each other (they once were; every pane warned with
+#: a ~1.79e9 s idle).
+PaneActivity = Tuple[str, str, float]  # (pane_id, label, idle_s)
 
 
 class WebPushService:
@@ -182,26 +191,15 @@ class WebPushService:
         if panes is None:
             return
         current = self._clock() if now is None else now
-        for pane_id, label, last_activity in panes:
-            due = self._cache_engine.observe(pane_id, float(last_activity), current)
+        for pane_id, label, idle_s in panes:
+            due = self._cache_engine.observe(pane_id, float(idle_s), current)
             if due is None:
                 continue
-            minutes = int(due["idle_s"] // 60)
-            remaining = int(due["expires_in_s"])
-            self._dispatch(
-                {
-                    "v": 1,
-                    "kind": "cache-warn",
-                    "pane_id": pane_id,
-                    "title": "Contexto caliente a punto de caducar",
-                    "body": (
-                        f"{label} lleva {minutes} min sin actividad; su contexto "
-                        f"caduca en menos de {remaining} s."
-                    ),
-                    "tag": CACHE_TAG,
-                },
-                CACHE_TAG,
-            )
+            tag = cache_tag(pane_id)
+            payload = cache_warn_payload(label, due["idle_s"], due["expires_in_s"])
+            payload["pane_id"] = pane_id  # the tap deep-links to this chat
+            payload["tag"] = tag
+            self._dispatch(payload, tag)
 
     # -- delivery -----------------------------------------------------------
 

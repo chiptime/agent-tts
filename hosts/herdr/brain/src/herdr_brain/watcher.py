@@ -183,10 +183,12 @@ class AgentWatcher:
         # handled / tick. Optional on purpose: the watcher's own tests
         # (and any embedding) construct it bare.
         self._notifier = notifier
-        # Last-activity estimate per pane (the watcher's clock domain):
-        # refreshed while a pane works or changes state, frozen while it
-        # idles. This is the S5 cache-warning feed — an honest proxy,
-        # since the multiplexer exposes no activity timestamps.
+        # Last-activity estimate per pane, in the watcher's own clock
+        # domain: refreshed while a pane works or changes state, frozen
+        # while it idles. The notifier tick converts it to idle DELTAS
+        # before it leaves this module — the S5 cache-warning feed must
+        # never leak an absolute stamp across a clock-domain boundary.
+        # An honest proxy: the multiplexer exposes no activity stamps.
         self._last_activity: Dict[str, float] = {}
         # Attention (doc 05 cadence): timestamp of the last poll that saw
         # a live SSE subscriber. ``-inf`` means nobody has watched since
@@ -330,14 +332,17 @@ class AgentWatcher:
             return
 
     def _notify_tick(self, current: Dict[str, AgentInfo]) -> None:
-        """One per-poll beat: the live panes with their activity stamps."""
+        """One per-poll beat: the live panes with their idle DELTAS —
+        domain-free by construction, so the push service's wall clock
+        can never be subtracted from this watcher's monotonic one."""
         if self._notifier is None:
             return
+        now_ts = self._clock()
         panes = [
             (
                 pane_id,
                 agent_label(agent),
-                self._last_activity.get(pane_id, self._clock()),
+                max(0.0, now_ts - self._last_activity.get(pane_id, now_ts)),
             )
             for pane_id, agent in current.items()
         ]
