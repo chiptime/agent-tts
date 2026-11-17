@@ -1534,6 +1534,13 @@ def main():
 
         sys.exit(handle_voice_command(sys.argv[2:] or ["list"]))
 
+    # Read-only prompt-cache measurement (HT-19 F2b): same pre-parser
+    # dispatch pattern; the probe lives in agent_tts.cache_probe.
+    if len(sys.argv) > 1 and sys.argv[1] == "cache-report":
+        from agent_tts.cache_probe import handle_cache_report_command
+
+        sys.exit(handle_cache_report_command(sys.argv[2:]))
+
     parser = build_parser()
     args = parser.parse_args()
 
