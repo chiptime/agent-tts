@@ -294,6 +294,13 @@ DEFAULT_NTFY_DONE_UNATTENDED_ONLY="on"
 DEFAULT_NTFY_PRECOOL="off"
 DEFAULT_NTFY_PRECOOL_COLD_S="1440"
 DEFAULT_NTFY_PRECOOL_WARN_S="540"
+# HT-19/L8 (N3): the applicable cache TTL belongs to the MODEL of the chat's
+# last execution (cache = model+prefix), so the pre-cool clock can be keyed
+# per model. The map stays EMPTY by default — an empty map is exactly the
+# COLD_S clock above. Sensible shipped map (opt-in):
+#   NTFY_PRECOOL_TTL_MAP='*glm*=1440,*claude*=300,*gpt*=600,*=1440'
+# (Anthropic's 5-min default cache → 300 s; keep a catch-all last.)
+DEFAULT_NTFY_PRECOOL_TTL_MAP=""
 DEFAULT_WEB_URL=""
 DEFAULT_WEB_LABEL=""
 DEFAULT_CLICK_REDIRECT="off"
@@ -449,6 +456,7 @@ NTFY_DONE_UNATTENDED_ONLY="${NTFY_DONE_UNATTENDED_ONLY:-${HERDR_NTFY_DONE_UNATTE
 NTFY_PRECOOL="${NTFY_PRECOOL:-${HERDR_NTFY_PRECOOL:-$DEFAULT_NTFY_PRECOOL}}"
 NTFY_PRECOOL_COLD_S="${NTFY_PRECOOL_COLD_S:-${HERDR_NTFY_PRECOOL_COLD_S:-$DEFAULT_NTFY_PRECOOL_COLD_S}}"
 NTFY_PRECOOL_WARN_S="${NTFY_PRECOOL_WARN_S:-${HERDR_NTFY_PRECOOL_WARN_S:-$DEFAULT_NTFY_PRECOOL_WARN_S}}"
+NTFY_PRECOOL_TTL_MAP="${NTFY_PRECOOL_TTL_MAP:-${HERDR_NTFY_PRECOOL_TTL_MAP:-$DEFAULT_NTFY_PRECOOL_TTL_MAP}}"
 WEB_URL="${WEB_URL:-${HERDR_WEB_URL:-$DEFAULT_WEB_URL}}"
 WEB_LABEL="${WEB_LABEL:-${HERDR_WEB_LABEL:-$DEFAULT_WEB_LABEL}}"
 CLICK_REDIRECT="${CLICK_REDIRECT:-$DEFAULT_CLICK_REDIRECT}"
@@ -524,6 +532,7 @@ TT_EN[ntfy.precool.range]="⚠️ precool disabled: need 0 < NTFY_PRECOOL_WARN_S
 TT_EN[ntfy.precool.title]="🧊 %s: context cooling"
 TT_EN[ntfy.precool.warn.body]="Agent %s has waited %s min unattended — engage now, before re-entry gets expensive.\n\n→ To engage: %s"
 TT_EN[ntfy.precool.cold.body]="Agent %s went cold after %s min unattended — re-entry now means rebuilding the thread.\n\n→ To engage: %s"
+TT_EN[ntfy.precool.ttlmap.invalid]="⚠️ NTFY_PRECOOL_TTL_MAP: skipped malformed entries (%s); the rest still applies"
 TT_EN[podcast.published]="🎙️ Episode published to the private podcast feed"
 TT_EN[podcast.no_pane]="⚠️ No focused pane in Herdr"
 TT_EN[podcast.pane_empty_pub]="ℹ️ Pane %s has no content to publish"
@@ -1074,6 +1083,7 @@ TT_ES[ntfy.precool.range]="⚠️ precool desactivado: se necesita 0 < NTFY_PREC
 TT_ES[ntfy.precool.title]="🧊 %s: el contexto se enfría"
 TT_ES[ntfy.precool.warn.body]="El agente %s lleva %s min esperando sin atención — conviene entrar ahora, antes de que la re-entrada salga cara.\n\n→ Para entrar: %s"
 TT_ES[ntfy.precool.cold.body]="El agente %s quedó frío tras %s min sin atención — re-entrar ahora significa reconstruir el hilo.\n\n→ Para entrar: %s"
+TT_ES[ntfy.precool.ttlmap.invalid]="⚠️ NTFY_PRECOOL_TTL_MAP: se omiten las entradas mal formadas (%s); el resto se aplica"
 TT_ES[podcast.published]="🎙️ Episodio publicado en el feed privado de podcast"
 TT_ES[podcast.no_pane]="⚠️ No hay ningún pane enfocado en Herdr"
 TT_ES[podcast.pane_empty_pub]="ℹ️ El pane %s no tiene contenido para publicar"
@@ -1629,6 +1639,37 @@ if [[ "$NTFY_PRECOOL" == "on" ]] \
   echo "$(tt ntfy.precool.range "$NTFY_PRECOOL_WARN_S" "$NTFY_PRECOOL_COLD_S")" >&2
   NTFY_PRECOOL="off"
 fi
+
+# HT-19/L8 (N3): model-keyed TTLs. NTFY_PRECOOL_TTL_MAP is an ordered,
+# comma-separated list of glob=seconds pairs; the pattern is matched against
+# the model of the chat's last execution case-insensitively and the FIRST
+# match wins. Syntax-broken pairs — no '=', empty pattern, empty or
+# non-numeric seconds — are skipped with ONE aggregate warning line, never
+# fatal; the surviving pairs keep their order. The effective map is echoed
+# nowhere else.
+PRECOOL_TTL_PAT=()
+PRECOOL_TTL_SEC=()
+if [[ -n "$NTFY_PRECOOL_TTL_MAP" ]]; then
+  IFS=',' read -r -a _pttl_pairs <<<"$NTFY_PRECOOL_TTL_MAP"
+  _pttl_bad=""
+  for _pttl_pair in "${_pttl_pairs[@]}"; do
+    # Tolerate spaces around the separators only; the pattern itself may
+    # contain anything else (model strings carry dots and dashes).
+    _pttl_pair="${_pttl_pair#"${_pttl_pair%%[![:space:]]*}"}"
+    _pttl_pair="${_pttl_pair%"${_pttl_pair##*[![:space:]]}"}"
+    [[ -n "$_pttl_pair" ]] || continue
+    _pttl_pat="${_pttl_pair%%=*}"
+    _pttl_sec="${_pttl_pair#*=}"
+    if [[ "$_pttl_pair" != *=* || -z "$_pttl_pat" || ! "$_pttl_sec" =~ ^[0-9]+$ ]]; then
+      _pttl_bad="${_pttl_bad:+$_pttl_bad, }$_pttl_pair"
+      continue
+    fi
+    PRECOOL_TTL_PAT+=("$_pttl_pat")
+    PRECOOL_TTL_SEC+=("$((10#$_pttl_sec))")
+  done
+  [[ -z "$_pttl_bad" ]] || echo "$(tt ntfy.precool.ttlmap.invalid "$_pttl_bad")" >&2
+fi
+unset _pttl_pairs _pttl_pair _pttl_pat _pttl_sec _pttl_bad
 
 save_config() {
   cat > "$CONFIG_FILE" <<EOF
@@ -3708,10 +3749,48 @@ reset_reminder_attention() { # <pane_id>
 declare -A PRECOOL_SINCE=() # pane_id → epoch of the first unattended sweep
 declare -A PRECOOL_STAGE=() # pane_id → "" | warn | cold
 declare -A PRECOOL_MIN=()   # pane_id → minutes carried by the last publish
+declare -A PRECOOL_COLD=()  # pane_id → per-item cold seconds (model-keyed TTL, L8)
 
 precool_cut() { # <pane_id> — attention/resolution ends the sequence
-  unset "PRECOOL_SINCE[$1]" "PRECOOL_STAGE[$1]" "PRECOOL_MIN[$1]" 2>/dev/null || true
+  unset "PRECOOL_SINCE[$1]" "PRECOOL_STAGE[$1]" "PRECOOL_MIN[$1]" "PRECOOL_COLD[$1]" 2>/dev/null || true
   return 0
+}
+
+# HT-19/L8 (N3): cache = model+prefix, so the TTL that applies to a pending
+# item is the one of the MODEL of its last execution. The engine owns the
+# transcript knowledge: `agent-tts last-model` resolves it (same venv-python
+# seam as the stt CLI). Best-effort and bounded — any failure or empty answer
+# means "unknown model" and the global COLD_S clock, never a broken sweep.
+# The first matching pattern wins; a mapped TTL that cannot satisfy
+# 0 < WARN_S < cold_item is discarded the same way (the global pair already
+# validated at startup).
+precool_resolve_ttl() { # <agent_kind> <session_id> — echoes the item's cold seconds
+  local cold="$NTFY_PRECOOL_COLD_S"
+  if (( ${#PRECOOL_TTL_PAT[@]} > 0 )) && [[ -n "$1" ]]; then
+    local model=""
+    local -a lm_args=(last-model --agent "$1")
+    [[ -n "$2" ]] && lm_args+=(--session-id "$2")
+    model=$(timeout "${HERDR_TTS_PRECOOL_LM_TIMEOUT:-5}" "$VENV_PYTHON" -m agent_tts.cli \
+      "${lm_args[@]}" 2>/dev/null) || model=""
+    model="${model%%$'\n'*}"
+    if [[ -n "$model" ]]; then
+      # Case-insensitive glob match: lowercase both sides (simple *glm*
+      # patterns; no nocasematch shopt to save/restore).
+      local ml="${model,,}"
+      local pat i ttl=""
+      for i in "${!PRECOOL_TTL_PAT[@]}"; do
+        pat="${PRECOOL_TTL_PAT[$i],,}"
+        if [[ "$ml" == $pat ]]; then
+          ttl="${PRECOOL_TTL_SEC[$i]}"
+          break
+        fi
+      done
+      if [[ -n "$ttl" ]] && (( NTFY_PRECOOL_WARN_S > 0 && ttl > NTFY_PRECOOL_WARN_S )); then
+        cold="$ttl"
+      fi
+    fi
+  fi
+  printf '%s\n' "$cold"
 }
 
 precool_tick() { # <pane_id> <row> <now>
@@ -3724,20 +3803,31 @@ precool_tick() { # <pane_id> <row> <now>
     PRECOOL_SINCE["$pane_id"]="$now"
     PRECOOL_STAGE["$pane_id"]=""
     PRECOOL_MIN["$pane_id"]=""
+    # HT-19/L8: resolve the item's model-keyed TTL ONCE, at arm time — the
+    # bounded engine call answers here and the value sticks for the item's
+    # lifetime (no per-tick engine traffic). The agents-list row already
+    # carries the pane's agent_session (agent tool + session id).
+    local agent_kind session_id
+    agent_kind=$(jq -r '.agent_session.agent // empty' <<<"$row" 2>/dev/null || true)
+    session_id=$(jq -r '.agent_session.value // empty' <<<"$row" 2>/dev/null || true)
+    PRECOOL_COLD["$pane_id"]="$(precool_resolve_ttl "$agent_kind" "$session_id")"
     return 0
   fi
+  # Per-item cold (model-keyed) with the global WARN_S margin; WARN_S < cold
+  # was validated per item at resolution time.
+  local cold="${PRECOOL_COLD[$pane_id]:-$NTFY_PRECOOL_COLD_S}"
   local elapsed=$(( now - since ))
-  local warn_at=$(( NTFY_PRECOOL_COLD_S - NTFY_PRECOOL_WARN_S ))
+  local warn_at=$(( cold - NTFY_PRECOOL_WARN_S ))
   (( elapsed >= warn_at )) || return 0
   local mins=$(( elapsed / 60 ))
   if [[ "$stage" == "warn" ]]; then
     # Same visible minute and not cold yet: nothing new to mutate.
-    if (( elapsed < NTFY_PRECOOL_COLD_S )) && [[ "${PRECOOL_MIN[$pane_id]:-}" == "$mins" ]]; then
+    if (( elapsed < cold )) && [[ "${PRECOOL_MIN[$pane_id]:-}" == "$mins" ]]; then
       return 0
     fi
   fi
   local priority=""
-  if (( elapsed >= NTFY_PRECOOL_COLD_S )); then
+  if (( elapsed >= cold )); then
     priority="urgent"
     PRECOOL_STAGE["$pane_id"]="cold"
   else

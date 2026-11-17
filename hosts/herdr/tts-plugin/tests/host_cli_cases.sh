@@ -1168,6 +1168,215 @@ case__precool_rides_the_reminder_sweep() {
     > "$SANDBOX/out" 2> "$SANDBOX/err"
 }
 
+# --- HT-19/L8 (N3): model-keyed pre-cool TTL (NTFY_PRECOOL_TTL_MAP) -------------
+#
+# The applicable cache TTL belongs to the MODEL of the chat's last execution
+# (cache = model+prefix). When precool ARMS an item, the plugin asks the
+# engine once — `agent-tts last-model --agent <kind> [--session-id <id>]`
+# through the same venv-python seam as the stt CLI — and maps the answer
+# through the ordered glob=seconds map (case-insensitive, FIRST match wins).
+# Unknown model / no match / engine failure / empty map keep the global
+# COLD_S clock. The venv stub dispatches on the argv shape: last-model
+# answers LAST_MODEL / LAST_MODEL_RC; every other call keeps the generic
+# STUB_OUT/STUB_EXIT recording contract.
+
+# $1 sandbox · $2 cold_s · $3 warn_s · $4 snippet; TTL_MAP (default: unset —
+# pins the empty default), LAST_MODEL / LAST_MODEL_RC (engine stub answer)
+# and NO_AGENT_SESSION (row without agent_session data) feed the resolver.
+run_precool_ttl_seq() {
+  sandbox_setup "$1"
+  printf '1000\n' > "$SANDBOX/now"
+  printf 'other\n' > "$SANDBOX/focus"
+  local row='{"pane_id":"3","agent":"opencode","agent_status":"done","workspace_id":"ws","terminal_title_stripped":"title-1","agent_session":{"agent":"opencode","value":"sess-3"}}'
+  if [[ -n "${NO_AGENT_SESSION:-}" ]]; then
+    row='{"pane_id":"3","agent":"opencode","agent_status":"done","workspace_id":"ws","terminal_title_stripped":"title-1"}'
+  fi
+  printf '{"result":{"agents":[%s]}}\n' "$row" > "$SANDBOX/agents.json"
+  cat > "$SANDBOX/data/herdr-tts/venv/bin/python" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$STUB_LOG"
+if [[ "${1:-} ${2:-}" == "-m agent_tts.cli" && "${3:-}" == "last-model" ]]; then
+  [[ -n "${LAST_MODEL:-}" ]] && printf '%s\n' "$LAST_MODEL"
+  exit "${LAST_MODEL_RC:-0}"
+fi
+if [[ -n "${STUB_OUT:-}" ]]; then echo "$STUB_OUT"; fi
+exit "${STUB_EXIT:-0}"
+STUB
+  chmod +x "$SANDBOX/data/herdr-tts/venv/bin/python"
+  NTFY_PRECOOL="${PRECOOL_MODE:-on}" NTFY_PRECOOL_COLD_S="${2:-600}" NTFY_PRECOOL_WARN_S="${3:-180}" \
+  NTFY_PRECOOL_TTL_MAP="${TTL_MAP:-}" LAST_MODEL="${LAST_MODEL:-}" LAST_MODEL_RC="${LAST_MODEL_RC:-0}" \
+    in_host '
+    SB="$1"
+    date() { if [[ "$*" == "+%s" ]]; then cat "$SB/now"; else command date "$@"; fi; }
+    get_focused_pane() { cat "$SB/focus"; }
+    is_auto_muted() { return 1; }
+    is_playing() { return 1; }
+    speak_text() { printf "%s\n" "$1" >> "$SB/voice.calls"; }
+    curl() {
+      local a flat is_seq=false
+      for a in "$@"; do
+        flat="${a//$'"'"'\n'"'"'/\\n}"
+        printf "ARG<%s>\n" "$flat" >> "$SB/curl.calls"
+        [[ "$a" == "X-Sequence-ID: "* ]] && is_seq=true
+      done
+      printf "CALL\n" >> "$SB/curl.calls"
+      [[ "$is_seq" == true ]] && printf "%s" "${SEQ_STATUS:-200}"
+      return 0
+    }
+    TTS_REMINDERS=on; TTS_REMINDER_START_MIN=1; TTS_REMINDER_BACKOFF="1,1"; TTS_REMINDER_MAX=3
+    TTS_DEBOUNCE_SECONDS=20; TTS_AUTO_SCOPE=all
+    NTFY_TOPIC="t"; NTFY_SERVER="http://ntfy.example"; WEB_URL=""
+    NTFY_APPROVAL_URL=""; NTFY_APPROVAL_TOKEN=""
+    sweep() { daemon_reminders "$(cat "$SB/agents.json")"; wait; }
+    now() { printf "%s\n" "$1" > "$SB/now"; }
+    focus() { printf "%s\n" "$1" > "$SB/focus"; }
+  '"$4" "$SANDBOX" > "$SANDBOX/out" 2> "$SANDBOX/err"
+}
+
+# Empty map (the default): the global COLD_S clock applies and the engine is
+# never asked for a model — no last-model traffic at all.
+case__precool_ttl_map_default_empty_keeps_global_clock() {
+  run_precool_ttl_seq ttl_default 240 180 '
+    sweep
+    now 1060; sweep
+    now 1240; sweep
+  ' || return 1
+  [[ "$(grep -cx CALL "$SANDBOX/curl.calls")" -eq 2 ]] || return 1
+  [[ "$(grep -cF "Priority: urgent" "$SANDBOX/curl.calls")" -eq 1 ]] || return 1
+  grep -qF "went cold after 4 min unattended" "$SANDBOX/curl.calls" || return 1
+  ! grep -q "last-model" "$STUB_LOG"
+}
+
+# A matching pattern re-keys the item clock to the mapped TTL (model matched
+# case-insensitively: GLM-4.7 vs *glm*): warn at TTL−warn, ONE urgent
+# escalation at the mapped TTL — and exactly ONE engine call for the item's
+# whole lifetime (the resolved TTL is cached, not re-asked per tick).
+case__precool_ttl_map_match_keys_item_clock_once() {
+  TTL_MAP='*glm*=300' LAST_MODEL='GLM-4.7' \
+    run_precool_ttl_seq ttl_match 1440 60 '
+      sweep
+      now 1239; sweep
+      now 1240; sweep
+      now 1300; sweep
+      now 1360; sweep
+      now 1500; sweep
+    ' || return 1
+  [[ "$(grep -cx CALL "$SANDBOX/curl.calls")" -eq 2 ]] || return 1
+  [[ "$(grep -cF "Priority: urgent" "$SANDBOX/curl.calls")" -eq 1 ]] || return 1
+  [[ "$(grep -cF "has waited 4 min unattended" "$SANDBOX/curl.calls")" -eq 1 ]] || return 1
+  grep -qF "went cold after 5 min unattended" "$SANDBOX/curl.calls" || return 1
+  [[ "$(grep -c -- "-m agent_tts.cli last-model --agent opencode --session-id sess-3" "$STUB_LOG")" -eq 1 ]]
+}
+
+# FIRST match wins: both *glm* and the * catch-all match the model; the
+# ordered first entry (300 s → escalation at 5 min) keys the clock, not the
+# later 900 s entry.
+case__precool_ttl_map_first_match_wins() {
+  TTL_MAP='*glm*=300,*=900' LAST_MODEL='glm-4.7' \
+    run_precool_ttl_seq ttl_order 1440 60 '
+      sweep
+      now 1240; sweep
+      now 1300; sweep
+      now 1900; sweep
+      now 1960; sweep
+    ' || return 1
+  [[ "$(grep -cx CALL "$SANDBOX/curl.calls")" -eq 2 ]] || return 1
+  grep -qF "went cold after 5 min unattended" "$SANDBOX/curl.calls" || return 1
+  ! grep -qF "went cold after 15 min unattended" "$SANDBOX/curl.calls"
+}
+
+# No pattern matches the model → the global COLD_S clock applies.
+case__precool_ttl_map_no_match_falls_back_to_global() {
+  TTL_MAP='*claude*=300' LAST_MODEL='glm-4.7' \
+    run_precool_ttl_seq ttl_nomatch 240 60 '
+      sweep
+      now 1180; sweep
+      now 1240; sweep
+    ' || return 1
+  [[ "$(grep -cx CALL "$SANDBOX/curl.calls")" -eq 2 ]] || return 1
+  [[ "$(grep -cF "has waited 3 min unattended" "$SANDBOX/curl.calls")" -eq 1 ]] || return 1
+  grep -qF "went cold after 4 min unattended" "$SANDBOX/curl.calls"
+}
+
+# A failed (rc 1, per the engine contract) or timed-out last-model call is
+# "unknown model": the global clock keys the item and the sweep survives
+# (cards still publish on the later sweeps).
+case__precool_ttl_map_last_model_failure_and_timeout_fall_back() {
+  TTL_MAP='*glm*=300' LAST_MODEL_RC=1 \
+    run_precool_ttl_seq ttl_lm_fail 240 60 '
+      sweep
+      now 1180; sweep
+      now 1240; sweep
+    ' || return 1
+  [[ "$(grep -cx CALL "$SANDBOX/curl.calls")" -eq 2 ]] || return 1
+  grep -qF "went cold after 4 min unattended" "$SANDBOX/curl.calls" || return 1
+  TTL_MAP='*glm*=300' LAST_MODEL='GLM-4.7' \
+    run_precool_ttl_seq ttl_lm_timeout 240 60 '
+      timeout() { return 124; }
+      sweep
+      now 1180; sweep
+      now 1240; sweep
+    ' || return 1
+  [[ "$(grep -cx CALL "$SANDBOX/curl.calls")" -eq 2 ]] || return 1
+  grep -qF "went cold after 4 min unattended" "$SANDBOX/curl.calls"
+}
+
+# Malformed pairs (no '=', empty pattern, non-numeric/empty seconds) are
+# skipped with ONE aggregate warning line naming them; the surviving pairs
+# keep their order and still apply.
+case__precool_ttl_map_malformed_pairs_warn_once_rest_applies() {
+  sandbox_setup ttl_malformed
+  NTFY_PRECOOL_TTL_MAP='*glm*=300, bogus ,zz=abc,=5,*x*=' \
+    in_host 'printf "pairs=%s\n" "${#PRECOOL_TTL_PAT[@]}"' \
+    > "$SANDBOX/out" 2> "$SANDBOX/err" || return 1
+  [[ "$(grep -cF "NTFY_PRECOOL_TTL_MAP" "$SANDBOX/err")" -eq 1 ]] || return 1
+  grep -qF "skipped malformed entries (bogus, zz=abc, =5, *x*=)" "$SANDBOX/err" || return 1
+  grep -qx "pairs=1" "$SANDBOX/out" || return 1
+  TTL_MAP='*glm*=300,bogus,zz=abc' LAST_MODEL='glm-4.7' \
+    run_precool_ttl_seq ttl_malformed_live 1440 60 '
+      sweep
+      now 1240; sweep
+      now 1300; sweep
+    ' || return 1
+  grep -qF "went cold after 5 min unattended" "$SANDBOX/curl.calls"
+}
+
+# L8c: a pane without agent_session data cannot resolve a model — no engine
+# call at all, global clock.
+case__precool_ttl_map_missing_agent_session_falls_back() {
+  NO_AGENT_SESSION=1 TTL_MAP='*glm*=300' LAST_MODEL='GLM-4.7' \
+    run_precool_ttl_seq ttl_nosess 240 60 '
+      sweep
+      now 1180; sweep
+      now 1240; sweep
+    ' || return 1
+  [[ "$(grep -cx CALL "$SANDBOX/curl.calls")" -eq 2 ]] || return 1
+  grep -qF "went cold after 4 min unattended" "$SANDBOX/curl.calls" || return 1
+  ! grep -q "last-model" "$STUB_LOG"
+}
+
+# A mapped TTL that cannot satisfy 0 < WARN_S < cold_item is discarded; the
+# already-validated global pair applies.
+case__precool_ttl_map_mapped_ttl_below_warn_falls_back() {
+  TTL_MAP='*glm*=100' LAST_MODEL='glm-4.7' \
+    run_precool_ttl_seq ttl_small 240 180 '
+      sweep
+      now 1060; sweep
+      now 1100; sweep
+      now 1240; sweep
+    ' || return 1
+  [[ "$(grep -cF "went cold" "$SANDBOX/curl.calls")" -eq 1 ]] || return 1
+  grep -qF "went cold after 4 min unattended" "$SANDBOX/curl.calls" || return 1
+  ! grep -qF "went cold after 1 min unattended" "$SANDBOX/curl.calls"
+}
+
+# Structural pin: the arming path consults the resolver (no inline mapping).
+case__precool_ttl_resolver_wired_into_arming() {
+  sandbox_setup ttl_wire
+  in_host 'declare -f precool_tick | grep -q precool_resolve_ttl' \
+    > "$SANDBOX/out" 2> "$SANDBOX/err"
+}
+
 # The knob is a closed enum: an unknown value is off plus ONE warning line.
 case__ntfy_sequence_unknown_mode_warns_once_and_stays_off() {
   sandbox_setup seq_invalid
