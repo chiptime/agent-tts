@@ -86,6 +86,11 @@ from agent_tts.constants import (
     IPC_SOCKET,
     PING_TIMEOUT_SEC,
 )
+from agent_tts.heartbeat import (
+    Heartbeat,
+    HeartbeatSettings,
+    load_heartbeat_settings,
+)
 from agent_tts.ipc import (
     IPCServer,
     CommandTooLargeError,
@@ -492,6 +497,11 @@ class Daemon:
         self._shutting_down = False
         self.ipc_server: Optional[IPCServer] = None
         self._cli = None  # set by run(); lazily imported otherwise
+        # Heartbeat dead man's switch (HT-18): run() reads TTS_HEARTBEAT and
+        # arms a dedicated thread only when explicitly enabled. Both stay
+        # None when disabled, so no heartbeat code path executes (RF-4).
+        self.heartbeat: Optional[Heartbeat] = None
+        self._heartbeat_settings: Optional[HeartbeatSettings] = None
 
     # --- Request clock (RF-AT-04-7) -------------------------------------------
 
@@ -512,6 +522,54 @@ class Daemon:
 
     def request_shutdown(self) -> None:
         self._stop.set()
+
+    # --- Heartbeat dead man's switch (HT-18) -----------------------------------
+
+    def _start_heartbeat_if_enabled(self) -> None:
+        """Arms the heartbeat thread only when ``TTS_HEARTBEAT=on`` (RF-1..RF-4).
+
+        Disabled or invalid configuration leaves ``self.heartbeat`` None and
+        the daemon behaves exactly as before; the error line names the
+        offending variables (RF-2). The capability gate itself runs inside
+        the thread, so a slow ntfy server never delays the control channel.
+        """
+        settings = load_heartbeat_settings()
+        self._heartbeat_settings = settings
+        if not settings.enabled:
+            return
+        if settings.config is None:
+            print(
+                f"agent-tts: heartbeat not armed: {settings.error}",
+                file=sys.stderr,
+            )
+            return
+        heartbeat = Heartbeat(settings.config)
+        try:
+            heartbeat.start()
+        except Exception as exc:
+            # The heartbeat may never cost the daemon its control channel.
+            print(f"agent-tts: heartbeat not armed: {exc}", file=sys.stderr)
+            return
+        self.heartbeat = heartbeat
+
+    def _stop_heartbeat(self) -> None:
+        """Stops and joins the heartbeat thread (RF-1), outside every lock."""
+        heartbeat = self.heartbeat
+        if heartbeat is None:
+            return
+        try:
+            heartbeat.stop()
+        except Exception:
+            pass
+
+    def _heartbeat_status_fields(self) -> str:
+        """Heartbeat kv fields for ``status`` (RF-6); empty when off (RF-4)."""
+        if self.heartbeat is not None:
+            return " " + self.heartbeat.status_fields()
+        settings = self._heartbeat_settings
+        if settings is not None and settings.enabled:
+            return " heartbeat=not_armed"
+        return ""
 
     def _install_signal_handlers(self) -> None:
         """SIGTERM/SIGINT trigger the orderly shutdown path (RF-AT-04-1).
@@ -571,6 +629,7 @@ class Daemon:
             return 1
 
         self._install_signal_handlers()
+        self._start_heartbeat_if_enabled()
         try:
             while not self._stop.is_set():
                 if self._idle_expired():
@@ -588,6 +647,7 @@ class Daemon:
         registers after the snapshot would otherwise run through the
         drain without ever receiving stop (RS-1).
         """
+        self._stop_heartbeat()  # first: the heartbeat never outlives the daemon
         with self._lock:
             self._shutting_down = True
             sessions = list(self._sessions)
@@ -663,6 +723,7 @@ class Daemon:
                     f"provider={provider} playback={self.startup_target} "
                     "comm_active=false "
                     f"{self._queue_status_fields()}"
+                    f"{self._heartbeat_status_fields()}"
                 )
             if action == "stop":
                 # Idempotent silence: nothing is playing, the user's goal
@@ -679,7 +740,8 @@ class Daemon:
             # queue fields ride along since RF-AT-08-5.
             reply = _inject_daemon_fields(
                 reply,
-                f" uptime={self.uptime_sec():.0f} {self._queue_status_fields()}",
+                f" uptime={self.uptime_sec():.0f} {self._queue_status_fields()}"
+                f"{self._heartbeat_status_fields()}",
                 comm_active=session.state.get("comm_active"),
             )
         elif reply.startswith("ERR: "):
