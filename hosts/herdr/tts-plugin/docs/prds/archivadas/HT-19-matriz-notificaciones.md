@@ -1,5 +1,5 @@
 **ID**: PRD-HT-19 · **Proyecto**: agent-tts (host plugin `herdr-tts` + motor)
-**Prioridad**: P2 · **Estado**: **Aprobada y EJECUTADA (F1–F3)** en `feat/ht19-notification-matrix` (sin publicar; merge/push a decisión del maintainer). La matriz es normativa para todo push futuro. Pendiente: F4 (activación de N4 + F2 física de toda la matriz en Android).
+**Prioridad**: P2 · **Estado**: **EJECUTADA / ARCHIVADA (2026-11-17)** — fusionada y publicada en `main` (merge de `feat/ht19-notification-matrix`, 12+ commits). La matriz es normativa para todo push futuro. Pendiente: F4 (activación de N4 + F2 física de toda la matriz en Android) y seguimiento del TTL con `cache-report`.
 **Dependencias**: HT-17 (sequence IDs, ya en `main`) para el "estado mudo"; HT-05 (maquinaria de atención: foco >2 s, snooze, debounce) para N2/N3; HT-18 (heartbeat) para N4.
 
 # PRD-HT-19 — Matriz de notificaciones push (catálogo y momentos)
