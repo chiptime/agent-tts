@@ -75,7 +75,7 @@ async def drive(name: str, pcm: bytes, speech_ms: int):
         # server_turns: the framer needs SILENCE FRAMES to emit
         # speech_end (like the phone's continuous uplink) — the server
         # then closes the turn itself after its silence window.
-        for _ in range(25):
+        for _ in range(35):
             await ws.send(b"\x00" * 3200)
             await asyncio.sleep(0.1)
         await ws.send(json.dumps({"type": "stream", "action": "stop"}))

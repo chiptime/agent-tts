@@ -109,9 +109,12 @@ MIN_INFERENCE_AUDIO_MS = MIN_PASS_AUDIO_MS
 # Server-owned turns (PRD-05 core, 2026-11-17): after Silero's own
 # speech_end, this much EXTRA silence closes the turn (the neural engine
 # already consumed its end-of-speech window); an `incomplete` Smart Turn
-# verdict retries once after the extender delay. Total worst-case close
-# ≈ CLOSE + 2×RETRY — bounded, and speech resuming at ANY point cancels.
-SERVER_TURNS_CLOSE_S = 0.9
+# verdict retries once after the extender delay. 1.6 s (2026-11-17
+# device tuning): the operator's natural mid-phrase pauses run ~2 s and
+# a 0.9 s window split a question at every one of them — with the ask
+# budget at tens of seconds, +0.7 s of close is free; never-cut (D3)
+# beats snappiness here.
+SERVER_TURNS_CLOSE_S = 1.6
 SERVER_TURNS_EXTENDER_RETRY_S = 0.4
 
 # L13: the ONLY wording a transcription failure ever sends to the client.

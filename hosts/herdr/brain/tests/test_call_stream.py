@@ -2973,7 +2973,7 @@ def test_server_owned_turns_transcribe_without_client_controls(tmp_path):
         # speech_end plus the server's close window.
         for f in frames:
             ws.send_bytes(f)
-        for _ in range(25):  # 2.5 s of silence
+        for _ in range(35):  # 3.5 s of silence (close 1.6 s + extender margin)
             ws.send_bytes(b"\x00" * 3200)
 
         deadline = time.monotonic() + 15
@@ -3020,7 +3020,7 @@ def test_legacy_controls_are_noops_in_server_turns_mode(tmp_path):
         # The real flow: speech + silence; exactly ONE transcript arrives.
         for f in frames:
             ws.send_bytes(f)
-        for _ in range(25):
+        for _ in range(35):
             ws.send_bytes(b"\x00" * 3200)
         deadline = time.monotonic() + 15
         transcripts = 0
