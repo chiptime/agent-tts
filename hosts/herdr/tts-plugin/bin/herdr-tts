@@ -277,6 +277,30 @@ DEFAULT_NTFY_SEQUENCE="off"
 # HT-17/RF-4: HT-05's final high-priority reminder opts out of sequence IDs so
 # a later routine update can never replace (silence) that escalation.
 NTFY_SEQ_OPTOUT_PRIORITY="high"
+# HT-19: idle left the push matrix — silent state (drawer update via HT-17),
+# never a standalone push. on restores the old working→idle push byte for byte.
+DEFAULT_NTFY_IDLE_PUSH="off"
+# HT-19/F2 (N2): a done push interrupts only when the operator is not
+# already attending the pane; off restores the unconditional push.
+DEFAULT_NTFY_DONE_UNATTENDED_ONLY="on"
+# HT-19/F3 (N3): pre-cooling — one mutating notification for a pending item
+# nobody attends, escalated once when the thread goes cold. New
+# interruption ⇒ opt-in (repo convention). Cache-anchored clock (maintainer
+# decision, 2026-11-17): COLD_S anchors to the LOWER BOUND of the observed
+# provider cache TTL (GLM/zai plan: 24-65 min window, one clean session via
+# `agent-tts cache-report`) and WARN_S is the engagement margin before it —
+# warn at TTL−margin (~15 min with these defaults). For short-TTL providers
+# (e.g. Anthropic's 5-min default) set COLD_S/WARN_S to that provider's TTL.
+DEFAULT_NTFY_PRECOOL="off"
+DEFAULT_NTFY_PRECOOL_COLD_S="1440"
+DEFAULT_NTFY_PRECOOL_WARN_S="540"
+# HT-19/L8 (N3): the applicable cache TTL belongs to the MODEL of the chat's
+# last execution (cache = model+prefix), so the pre-cool clock can be keyed
+# per model. The map stays EMPTY by default — an empty map is exactly the
+# COLD_S clock above. Sensible shipped map (opt-in):
+#   NTFY_PRECOOL_TTL_MAP='*glm*=1440,*claude*=300,*gpt*=600,*=1440'
+# (Anthropic's 5-min default cache → 300 s; keep a catch-all last.)
+DEFAULT_NTFY_PRECOOL_TTL_MAP=""
 DEFAULT_WEB_URL=""
 DEFAULT_WEB_LABEL=""
 DEFAULT_CLICK_REDIRECT="off"
@@ -427,6 +451,12 @@ NTFY_SERVER="${NTFY_SERVER:-${HERDR_NTFY_SERVER:-$DEFAULT_NTFY_SERVER}}"
 NTFY_APPROVAL_URL="${NTFY_APPROVAL_URL:-${HERDR_NTFY_APPROVAL_URL:-$DEFAULT_NTFY_APPROVAL_URL}}"
 NTFY_APPROVAL_TOKEN="${NTFY_APPROVAL_TOKEN:-${HERDR_BRAIN_APPROVAL_TOKEN:-$DEFAULT_NTFY_APPROVAL_TOKEN}}"
 NTFY_SEQUENCE="${NTFY_SEQUENCE:-${HERDR_NTFY_SEQUENCE:-$DEFAULT_NTFY_SEQUENCE}}"
+NTFY_IDLE_PUSH="${NTFY_IDLE_PUSH:-${HERDR_NTFY_IDLE_PUSH:-$DEFAULT_NTFY_IDLE_PUSH}}"
+NTFY_DONE_UNATTENDED_ONLY="${NTFY_DONE_UNATTENDED_ONLY:-${HERDR_NTFY_DONE_UNATTENDED_ONLY:-$DEFAULT_NTFY_DONE_UNATTENDED_ONLY}}"
+NTFY_PRECOOL="${NTFY_PRECOOL:-${HERDR_NTFY_PRECOOL:-$DEFAULT_NTFY_PRECOOL}}"
+NTFY_PRECOOL_COLD_S="${NTFY_PRECOOL_COLD_S:-${HERDR_NTFY_PRECOOL_COLD_S:-$DEFAULT_NTFY_PRECOOL_COLD_S}}"
+NTFY_PRECOOL_WARN_S="${NTFY_PRECOOL_WARN_S:-${HERDR_NTFY_PRECOOL_WARN_S:-$DEFAULT_NTFY_PRECOOL_WARN_S}}"
+NTFY_PRECOOL_TTL_MAP="${NTFY_PRECOOL_TTL_MAP:-${HERDR_NTFY_PRECOOL_TTL_MAP:-$DEFAULT_NTFY_PRECOOL_TTL_MAP}}"
 WEB_URL="${WEB_URL:-${HERDR_WEB_URL:-$DEFAULT_WEB_URL}}"
 WEB_LABEL="${WEB_LABEL:-${HERDR_WEB_LABEL:-$DEFAULT_WEB_LABEL}}"
 CLICK_REDIRECT="${CLICK_REDIRECT:-$DEFAULT_CLICK_REDIRECT}"
@@ -496,6 +526,13 @@ TT_EN[ntfy.push.text]="[ntfy] 📤 Sending text push for %s to %s"
 # a user-facing error, and an unknown knob value degrades to "off".
 TT_EN[ntfy.seq.fallback]="[ntfy] sequence IDs rejected by the server; sent a one-shot push (%s)"
 TT_EN[ntfy.sequence.invalid]="⚠️ NTFY_SEQUENCE=%s is not one of off|update|update+clear; using off"
+TT_EN[ntfy.donegate.invalid]="⚠️ NTFY_DONE_UNATTENDED_ONLY=%s is not on|off; using on"
+TT_EN[ntfy.precool.invalid]="⚠️ NTFY_PRECOOL=%s is not on|off; using off"
+TT_EN[ntfy.precool.range]="⚠️ precool disabled: need 0 < NTFY_PRECOOL_WARN_S < NTFY_PRECOOL_COLD_S (got warn=%s cold=%s)"
+TT_EN[ntfy.precool.title]="🧊 %s: context cooling"
+TT_EN[ntfy.precool.warn.body]="Agent %s has waited %s min unattended — engage now, before re-entry gets expensive.\n\n→ To engage: %s"
+TT_EN[ntfy.precool.cold.body]="Agent %s went cold after %s min unattended — re-entry now means rebuilding the thread.\n\n→ To engage: %s"
+TT_EN[ntfy.precool.ttlmap.invalid]="⚠️ NTFY_PRECOOL_TTL_MAP: skipped malformed entries (%s); the rest still applies"
 TT_EN[podcast.published]="🎙️ Episode published to the private podcast feed"
 TT_EN[podcast.no_pane]="⚠️ No focused pane in Herdr"
 TT_EN[podcast.pane_empty_pub]="ℹ️ Pane %s has no content to publish"
@@ -1040,6 +1077,13 @@ TT_ES[ntfy.push.audio]="[ntfy] 📤 Enviando push con audio (%s bytes) para %s a
 TT_ES[ntfy.push.text]="[ntfy] 📤 Enviando push de texto para %s a %s"
 TT_ES[ntfy.seq.fallback]="[ntfy] el servidor rechazó los sequence IDs; push enviado como one-shot (%s)"
 TT_ES[ntfy.sequence.invalid]="⚠️ NTFY_SEQUENCE=%s no es off|update|update+clear; se usa off"
+TT_ES[ntfy.donegate.invalid]="⚠️ NTFY_DONE_UNATTENDED_ONLY=%s no es on|off; se usa on"
+TT_ES[ntfy.precool.invalid]="⚠️ NTFY_PRECOOL=%s no es on|off; se usa off"
+TT_ES[ntfy.precool.range]="⚠️ precool desactivado: se necesita 0 < NTFY_PRECOOL_WARN_S < NTFY_PRECOOL_COLD_S (warn=%s cold=%s)"
+TT_ES[ntfy.precool.title]="🧊 %s: el contexto se enfría"
+TT_ES[ntfy.precool.warn.body]="El agente %s lleva %s min esperando sin atención — conviene entrar ahora, antes de que la re-entrada salga cara.\n\n→ Para entrar: %s"
+TT_ES[ntfy.precool.cold.body]="El agente %s quedó frío tras %s min sin atención — re-entrar ahora significa reconstruir el hilo.\n\n→ Para entrar: %s"
+TT_ES[ntfy.precool.ttlmap.invalid]="⚠️ NTFY_PRECOOL_TTL_MAP: se omiten las entradas mal formadas (%s); el resto se aplica"
 TT_ES[podcast.published]="🎙️ Episodio publicado en el feed privado de podcast"
 TT_ES[podcast.no_pane]="⚠️ No hay ningún pane enfocado en Herdr"
 TT_ES[podcast.pane_empty_pub]="ℹ️ El pane %s no tiene contenido para publicar"
@@ -1557,6 +1601,75 @@ case "$NTFY_SEQUENCE" in
     NTFY_SEQUENCE="off"
     ;;
 esac
+
+# HT-19/F2: NTFY_DONE_UNATTENDED_ONLY is a closed enum. An unknown
+# hand-edited value degrades to "on" — the approved noise cut is the safe
+# direction — with ONE warning line, never fatal.
+case "$NTFY_DONE_UNATTENDED_ONLY" in
+  on|off) ;;
+  *)
+    echo "$(tt ntfy.donegate.invalid "$NTFY_DONE_UNATTENDED_ONLY")" >&2
+    NTFY_DONE_UNATTENDED_ONLY="on"
+    ;;
+esac
+
+# HT-19/F3: precool enum first, then timer sanity. Junk seconds normalize
+# to the defaults (same style as TTS_SETTLE_SECONDS, with the 10# cast
+# stripping leading zeros); the pair must then satisfy 0 < warn < cold or
+# precool stays off with ONE error line naming the vars — never fatal.
+case "$NTFY_PRECOOL" in
+  on|off) ;;
+  *)
+    echo "$(tt ntfy.precool.invalid "$NTFY_PRECOOL")" >&2
+    NTFY_PRECOOL="off"
+    ;;
+esac
+if [[ "$NTFY_PRECOOL_COLD_S" =~ ^[0-9]+$ ]]; then
+  NTFY_PRECOOL_COLD_S="$((10#$NTFY_PRECOOL_COLD_S))"
+else
+  NTFY_PRECOOL_COLD_S="$DEFAULT_NTFY_PRECOOL_COLD_S"
+fi
+if [[ "$NTFY_PRECOOL_WARN_S" =~ ^[0-9]+$ ]]; then
+  NTFY_PRECOOL_WARN_S="$((10#$NTFY_PRECOOL_WARN_S))"
+else
+  NTFY_PRECOOL_WARN_S="$DEFAULT_NTFY_PRECOOL_WARN_S"
+fi
+if [[ "$NTFY_PRECOOL" == "on" ]] \
+   && ! (( NTFY_PRECOOL_WARN_S > 0 && NTFY_PRECOOL_COLD_S > NTFY_PRECOOL_WARN_S )); then
+  echo "$(tt ntfy.precool.range "$NTFY_PRECOOL_WARN_S" "$NTFY_PRECOOL_COLD_S")" >&2
+  NTFY_PRECOOL="off"
+fi
+
+# HT-19/L8 (N3): model-keyed TTLs. NTFY_PRECOOL_TTL_MAP is an ordered,
+# comma-separated list of glob=seconds pairs; the pattern is matched against
+# the model of the chat's last execution case-insensitively and the FIRST
+# match wins. Syntax-broken pairs — no '=', empty pattern, empty or
+# non-numeric seconds — are skipped with ONE aggregate warning line, never
+# fatal; the surviving pairs keep their order. The effective map is echoed
+# nowhere else.
+PRECOOL_TTL_PAT=()
+PRECOOL_TTL_SEC=()
+if [[ -n "$NTFY_PRECOOL_TTL_MAP" ]]; then
+  IFS=',' read -r -a _pttl_pairs <<<"$NTFY_PRECOOL_TTL_MAP"
+  _pttl_bad=""
+  for _pttl_pair in "${_pttl_pairs[@]}"; do
+    # Tolerate spaces around the separators only; the pattern itself may
+    # contain anything else (model strings carry dots and dashes).
+    _pttl_pair="${_pttl_pair#"${_pttl_pair%%[![:space:]]*}"}"
+    _pttl_pair="${_pttl_pair%"${_pttl_pair##*[![:space:]]}"}"
+    [[ -n "$_pttl_pair" ]] || continue
+    _pttl_pat="${_pttl_pair%%=*}"
+    _pttl_sec="${_pttl_pair#*=}"
+    if [[ "$_pttl_pair" != *=* || -z "$_pttl_pat" || ! "$_pttl_sec" =~ ^[0-9]+$ ]]; then
+      _pttl_bad="${_pttl_bad:+$_pttl_bad, }$_pttl_pair"
+      continue
+    fi
+    PRECOOL_TTL_PAT+=("$_pttl_pat")
+    PRECOOL_TTL_SEC+=("$((10#$_pttl_sec))")
+  done
+  [[ -z "$_pttl_bad" ]] || echo "$(tt ntfy.precool.ttlmap.invalid "$_pttl_bad")" >&2
+fi
+unset _pttl_pairs _pttl_pair _pttl_pat _pttl_sec _pttl_bad
 
 save_config() {
   cat > "$CONFIG_FILE" <<EOF
@@ -2342,6 +2455,54 @@ ntfy_sequence_id() { # <pane_id> → stable ntfy sequence id ([-_A-Za-z0-9], ≤
   printf '%s' "${safe:0:64}"
 }
 
+# HT-19 matrix: the idle event is silent state, never a standalone push —
+# unless the maintainer opts back in with NTFY_IDLE_PUSH=on.
+ntfy_idle_push_enabled() {
+  [[ "$NTFY_IDLE_PUSH" == "on" ]]
+}
+
+# HT-19/F2 (RF-2): per-pane focus-sustain tracking on the watcher's own
+# poll cadence — the same discipline as HT-05's daemon-side sampling: a
+# focus switch (or a backwards clock) restarts the timer, and strictly
+# more than 2 s of continuous focus counts as attention. The watcher
+# samples on every wake and after the settle window, around the push
+# decision.
+declare -A FOCUS_SINCE=() # pane_id → epoch focus was first observed here
+
+focus_sustain_sample() {
+  local focused now pane
+  focused="$(get_focused_pane)"
+  now=$(date +%s)
+  if [[ "${#FOCUS_SINCE[@]}" -gt 0 ]]; then
+    for pane in "${!FOCUS_SINCE[@]}"; do
+      if [[ "$pane" != "$focused" ]] || (( now < ${FOCUS_SINCE[$pane]} )); then
+        unset "FOCUS_SINCE[$pane]"
+      fi
+    done
+  fi
+  [[ -n "$focused" ]] && FOCUS_SINCE["$focused"]="${FOCUS_SINCE[$focused]:-$now}"
+  return 0
+}
+
+# HT-19/F2 (N2): gate for the end-of-turn push. With the knob on (the
+# approved noise cut), a done push fires only when the operator is NOT
+# attending the pane. RF-2: attended means >2 s of CONTINUOUS recorded
+# focus — same strict threshold family as HT-05's reminder reset — so a
+# brief glance never swallows a notification (the safe failure is one
+# redundant push, never a lost one). No observation history (fresh
+# watcher, or focus arrived after the last sample) means NOT attended.
+# Blocked (N1) and the HT-05 reminder pushes are never gated here.
+ntfy_done_push_permitted() { # <pane_id> → 0 push · 1 attended: skip
+  [[ "$NTFY_DONE_UNATTENDED_ONLY" == "on" ]] || return 0
+  local focused
+  focused="$(get_focused_pane)"
+  [[ -n "$1" && "$focused" == "$1" ]] || return 0
+  local now
+  now=$(date +%s)
+  (( now - ${FOCUS_SINCE[$1]:-$now} > 2 )) && return 1
+  return 0
+}
+
 send_ntfy_push() {
   local pane_id="$1"
   local agent="$2"
@@ -2434,19 +2595,37 @@ send_ntfy_push() {
       priority="low"
       tags="zzz"
       ;;
+    precool)
+      # HT-19/F3 (N3): the mutating pre-cooling card. body_override carries
+      # the unattended minutes; a "urgent" priority override selects the
+      # cold (escalated) wording over the warning one.
+      title="$(tt ntfy.precool.title "$display_name")"
+      if [[ "$priority_override" == "urgent" ]]; then
+        body="$(tt ntfy.precool.cold.body "$display_name${workspace:+$(tt ntfy.done.in "$workspace")}" "$body_override" "$focus_cmd")"
+      else
+        body="$(tt ntfy.precool.warn.body "$display_name${workspace:+$(tt ntfy.done.in "$workspace")}" "$body_override" "$focus_cmd")"
+      fi
+      priority="default"
+      tags="snowflake,robot"
+      ;;
     *)
       return 0
       ;;
   esac
 
   [[ -n "$priority_override" ]] && priority="$priority_override"
-  [[ -n "$body_override" ]] && body="$body_override"
+  # HT-19/F3: the precool case builds its body FROM body_override (the
+  # unattended minutes), so the blanket replacement must not clobber it.
+  [[ "$state" != "precool" && -n "$body_override" ]] && body="$body_override"
 
   # HT-17: in-place update identity, added as the X-Sequence-ID header (the
   # publish URL/topic construction stays untouched). HT-05's escalating
   # high-priority reminder opts out so a later update can never silence it.
+  # HT-19/F3: the precool card is inherently a mutation of the agent's live
+  # notification — it always carries the pane seq, whatever NTFY_SEQUENCE
+  # is (a one-shot precool push would break the "no new card" contract).
   local sequence_id=""
-  if [[ "$NTFY_SEQUENCE" != "off" && "$priority_override" != "$NTFY_SEQ_OPTOUT_PRIORITY" ]]; then
+  if [[ "$state" == "precool" || ( "$NTFY_SEQUENCE" != "off" && "$priority_override" != "$NTFY_SEQ_OPTOUT_PRIORITY" ) ]]; then
     sequence_id="$(ntfy_sequence_id "$pane_id")"
   fi
   local had_sequence_publish=false
@@ -3557,6 +3736,114 @@ reset_reminder_attention() { # <pane_id>
   return 0
 }
 
+# ─── HT-19/F3 (N3): pre-cooling mutating notification ──────────
+# One mutating card per unattended pending item (done/blocked nobody
+# looks at): a warning publish at T_cold − T_warn that only re-publishes
+# on the same per-pane sequence ID (in-place replace, never a new card)
+# while the item stays unattended, and exactly ONE urgent escalation at
+# T_cold. The state rides the HT-05 sweep on purpose — no second
+# scheduler — so it lives only in the daemon process: a restart re-arms
+# the clock, which can only ever delay the warning (the shared seq keeps
+# it one card). Attention, mute/snooze or the pane leaving done/blocked
+# ends the sequence (RF-3).
+declare -A PRECOOL_SINCE=() # pane_id → epoch of the first unattended sweep
+declare -A PRECOOL_STAGE=() # pane_id → "" | warn | cold
+declare -A PRECOOL_MIN=()   # pane_id → minutes carried by the last publish
+declare -A PRECOOL_COLD=()  # pane_id → per-item cold seconds (model-keyed TTL, L8)
+
+precool_cut() { # <pane_id> — attention/resolution ends the sequence
+  unset "PRECOOL_SINCE[$1]" "PRECOOL_STAGE[$1]" "PRECOOL_MIN[$1]" "PRECOOL_COLD[$1]" 2>/dev/null || true
+  return 0
+}
+
+# HT-19/L8 (N3): cache = model+prefix, so the TTL that applies to a pending
+# item is the one of the MODEL of its last execution. The engine owns the
+# transcript knowledge: `agent-tts last-model` resolves it (same venv-python
+# seam as the stt CLI). Best-effort and bounded — any failure or empty answer
+# means "unknown model" and the global COLD_S clock, never a broken sweep.
+# The first matching pattern wins; a mapped TTL that cannot satisfy
+# 0 < WARN_S < cold_item is discarded the same way (the global pair already
+# validated at startup).
+precool_resolve_ttl() { # <agent_kind> <session_id> — echoes the item's cold seconds
+  local cold="$NTFY_PRECOOL_COLD_S"
+  if (( ${#PRECOOL_TTL_PAT[@]} > 0 )) && [[ -n "$1" ]]; then
+    local model=""
+    local -a lm_args=(last-model --agent "$1")
+    [[ -n "$2" ]] && lm_args+=(--session-id "$2")
+    model=$(timeout "${HERDR_TTS_PRECOOL_LM_TIMEOUT:-5}" "$VENV_PYTHON" -m agent_tts.cli \
+      "${lm_args[@]}" 2>/dev/null) || model=""
+    model="${model%%$'\n'*}"
+    if [[ -n "$model" ]]; then
+      # Case-insensitive glob match: lowercase both sides (simple *glm*
+      # patterns; no nocasematch shopt to save/restore).
+      local ml="${model,,}"
+      local pat i ttl=""
+      for i in "${!PRECOOL_TTL_PAT[@]}"; do
+        pat="${PRECOOL_TTL_PAT[$i],,}"
+        if [[ "$ml" == $pat ]]; then
+          ttl="${PRECOOL_TTL_SEC[$i]}"
+          break
+        fi
+      done
+      if [[ -n "$ttl" ]] && (( NTFY_PRECOOL_WARN_S > 0 && ttl > NTFY_PRECOOL_WARN_S )); then
+        cold="$ttl"
+      fi
+    fi
+  fi
+  printf '%s\n' "$cold"
+}
+
+precool_tick() { # <pane_id> <row> <now>
+  [[ "${NTFY_PRECOOL:-off}" == "on" ]] || return 0
+  local pane_id="$1" row="$2" now="$3"
+  local stage="${PRECOOL_STAGE[$pane_id]:-}"
+  [[ "$stage" != "cold" ]] || return 0
+  local since="${PRECOOL_SINCE[$pane_id]:-}"
+  if [[ -z "$since" ]]; then
+    PRECOOL_SINCE["$pane_id"]="$now"
+    PRECOOL_STAGE["$pane_id"]=""
+    PRECOOL_MIN["$pane_id"]=""
+    # HT-19/L8: resolve the item's model-keyed TTL ONCE, at arm time — the
+    # bounded engine call answers here and the value sticks for the item's
+    # lifetime (no per-tick engine traffic). The agents-list row already
+    # carries the pane's agent_session (agent tool + session id).
+    local agent_kind session_id
+    agent_kind=$(jq -r '.agent_session.agent // empty' <<<"$row" 2>/dev/null || true)
+    session_id=$(jq -r '.agent_session.value // empty' <<<"$row" 2>/dev/null || true)
+    PRECOOL_COLD["$pane_id"]="$(precool_resolve_ttl "$agent_kind" "$session_id")"
+    return 0
+  fi
+  # Per-item cold (model-keyed) with the global WARN_S margin; WARN_S < cold
+  # was validated per item at resolution time.
+  local cold="${PRECOOL_COLD[$pane_id]:-$NTFY_PRECOOL_COLD_S}"
+  local elapsed=$(( now - since ))
+  local warn_at=$(( cold - NTFY_PRECOOL_WARN_S ))
+  (( elapsed >= warn_at )) || return 0
+  local mins=$(( elapsed / 60 ))
+  if [[ "$stage" == "warn" ]]; then
+    # Same visible minute and not cold yet: nothing new to mutate.
+    if (( elapsed < cold )) && [[ "${PRECOOL_MIN[$pane_id]:-}" == "$mins" ]]; then
+      return 0
+    fi
+  fi
+  local priority=""
+  if (( elapsed >= cold )); then
+    priority="urgent"
+    PRECOOL_STAGE["$pane_id"]="cold"
+  else
+    PRECOOL_STAGE["$pane_id"]="warn"
+  fi
+  PRECOOL_MIN["$pane_id"]="$mins"
+  local agent workspace title_desc
+  agent=$(jq -r '.agent // .pane_id' <<<"$row" 2>/dev/null || true)
+  workspace=$(jq -r '.workspace_id // ""' <<<"$row" 2>/dev/null || true)
+  title_desc=$(jq -r '.terminal_title_stripped // .terminal_title // ""' <<<"$row" 2>/dev/null || true)
+  # Network latency must not delay the sweep (same discipline as the
+  # reminder delivery below). body_override carries the unattended
+  # minutes for the precool card wording.
+  ( send_ntfy_push "$pane_id" "$agent" "precool" "$workspace" "$title_desc" "" "" "$priority" "$mins" || true ) &
+}
+
 # HT-05: one reminder-core call per enabled sweep, using the same pinned
 # interpreter/environment as VS3. Temporary debounce holds preserve Python
 # progression; mute/snooze and non-attention panes disappear from both lists.
@@ -3598,6 +3885,24 @@ daemon_reminders() { # <raw_agents_json>
     esac
   done <<<"$rows"
 
+  # HT-19/F3 (N3): precool rides this same sweep (TTS_REMINDERS owns the
+  # loop; no second scheduler). A sequence lives only while the pane stays
+  # an attention candidate: sustained focus, mute/snooze (suppressed) or
+  # leaving done/blocked drops it from the map and ends the sequence.
+  if [[ "${NTFY_PRECOOL:-off}" == "on" ]]; then
+    local precool_pane
+    if [[ "${#PRECOOL_SINCE[@]}" -gt 0 ]]; then
+      for precool_pane in "${!PRECOOL_SINCE[@]}"; do
+        [[ -n "${attention[$precool_pane]:-}" ]] || precool_cut "$precool_pane"
+      done
+    fi
+    if [[ "${#attention[@]}" -gt 0 ]]; then
+      for precool_pane in "${!attention[@]}"; do
+        precool_tick "$precool_pane" "${attention[$precool_pane]}" "$now"
+      done
+    fi
+  fi
+
   # Capture status as well as stdout: a failed command (including partial
   # output) never produces reminder audio or prevents the normal sweep.
   if ! due=$("$VENV_PYTHON" "${PLUGIN_ROOT}/lib/pending_queue.py" reminders "${args[@]}" 2>/dev/null); then
@@ -3633,7 +3938,13 @@ daemon_reminders() { # <raw_agents_json>
     fi
     priority=""
     (( index == 10#$TTS_REMINDER_MAX )) && priority=high
-    if [[ -n "$priority" || "$should_speak_local" == false ]]; then
+    # HT-19/F3 (N3, matrix cut #2): with precool on, HT-05's push side
+    # collapses into the N3 sequence ENTIRELY — the final escalation AND
+    # the intermediate muted/busy/background fallbacks emit no standalone
+    # push; only the voice reminder (with its timing and escalation state)
+    # keeps running. With precool off (default) this is byte-identical to
+    # the pre-HT-19 behavior.
+    if [[ "${NTFY_PRECOOL:-off}" != "on" && ( -n "$priority" || "$should_speak_local" == false ) ]]; then
       workspace=$(jq -r '.workspace_id // ""' <<<"$row")
       title=$(jq -r '.terminal_title_stripped // .terminal_title // ""' <<<"$row")
       # Network latency must not delay watcher discovery or normal audio.
@@ -3849,6 +4160,11 @@ watch_agent_pane() {
     local new_state
     new_state=$(echo "$info" | jq -r '.result.agent.agent_status // .result.agent_status // "unknown"' 2>/dev/null || echo "unknown")
 
+    # HT-19/F2 (RF-2): anchor this wake's focus-sustain observation before
+    # the settle window; the post-settle re-sample below keeps it honest
+    # (a focus switch in between resets the per-pane timer).
+    focus_sustain_sample
+
     # Settle window (v0.16): agents flicker working→done→working between the
     # steps of ONE logical turn (tool batches, subagents, thinking), and
     # every flicker used to fire the full synthesis + ntfy push pipeline as
@@ -3868,6 +4184,9 @@ watch_agent_pane() {
         new_state="$settled_state"
       fi
     fi
+    # HT-19/F2 (RF-2): post-settle re-sample — the settle window itself is
+    # the sustain interval a real done decision observes.
+    focus_sustain_sample
     # Agent identity for the connector layer: the engine (agent-tts) owns the
     # transcript knowledge and resolves the last assistant message itself.
     local agent_kind
@@ -3942,7 +4261,9 @@ watch_agent_pane() {
           fi
 
           # 2. Push notification (mobile via ntfy, if configured)
-          if [[ -n "$NTFY_TOPIC" ]]; then
+          # HT-19/F2 (N2): only the done push is attention-gated; blocked
+          # (N1) always pushes and the audio side above is untouched.
+          if [[ -n "$NTFY_TOPIC" ]] && { [[ "$new_state" != "done" ]] || ntfy_done_push_permitted "$pane_id"; }; then
             send_ntfy_push "$pane_id" "$agent_name" "$new_state" "$workspace" "$title_desc" "$render_target"
           fi
 
@@ -3999,7 +4320,7 @@ watch_agent_pane() {
             fi
           fi
         fi
-      elif [[ "$new_state" == "idle" && "$prev_state" == "working" && -n "$NTFY_TOPIC" ]]; then
+      elif [[ "$new_state" == "idle" && "$prev_state" == "working" && -n "$NTFY_TOPIC" ]] && ntfy_idle_push_enabled; then
         send_ntfy_push "$pane_id" "$agent_name" "idle" "$workspace" "$title_desc" ""
       fi
     fi

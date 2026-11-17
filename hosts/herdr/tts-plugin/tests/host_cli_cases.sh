@@ -735,6 +735,648 @@ case__ntfy_sequence_id_is_sanitized_stable_and_bounded() {
   [[ "$d" =~ ^[-_A-Za-z0-9]+$ ]]                       # ASCII-only, even for UTF-8
 }
 
+# --- HT-19: idle left the push matrix ---------------------------------------
+#
+# The catalog (PRD-HT-19) cuts the standalone idle push: idle is silent state
+# (a drawer update via HT-17), never a new notification. NTFY_IDLE_PUSH=on
+# restores the old working→idle push byte for byte; the default is off.
+
+# RF-1: the gate helper is off by default and for any non-"on" value; only
+# "on" enables. rc 127 (helper missing) surfaces as MISSING so this case is
+# RED until the helper exists.
+case__ntfy_idle_gate_helper_off_by_default() {
+  sandbox_setup idle_gate
+  in_host '
+    g() { if ntfy_idle_push_enabled; then echo ENABLED; else r=$?; if [[ $r -eq 127 ]]; then echo MISSING; else echo DISABLED; fi; fi; }
+    { g; NTFY_IDLE_PUSH=on g; NTFY_IDLE_PUSH=off g; NTFY_IDLE_PUSH=junk g; } > "$1/gate" 2>&1
+  ' "$SANDBOX" > "$SANDBOX/out" 2> "$SANDBOX/err" || return 1
+  diff -u - "$SANDBOX/gate" <<'EOF'
+DISABLED
+ENABLED
+DISABLED
+DISABLED
+EOF
+}
+
+# Structural pin (same trust level as the sibling event gates): the watcher's
+# idle branch must consult the helper, not just its own inline conditions.
+case__ntfy_idle_gate_is_wired_into_the_watcher() {
+  sandbox_setup idle_wire
+  in_host 'declare -f watch_agent_pane | grep -q ntfy_idle_push_enabled' \
+    > "$SANDBOX/out" 2> "$SANDBOX/err"
+}
+
+# RF-1 restore path: with NTFY_IDLE_PUSH=on the idle push keeps today's exact
+# request byte for byte (golden captured against the pre-cut request).
+case__ntfy_idle_push_on_mode_preserves_the_old_request() {
+  run_ntfy_seq idle_preserve off '
+    NTFY_IDLE_PUSH=on
+    send_ntfy_push 3 opencode idle ws title-1 ""
+  ' || return 1
+  cat > "$SANDBOX/expected" <<'EOF'
+ARG<-s>
+ARG<--connect-timeout>
+ARG<5>
+ARG<--max-time>
+ARG<15>
+ARG<-H>
+ARG<Title: 💤 opencode [title-1] (3) idle>
+ARG<-H>
+ARG<Priority: low>
+ARG<-H>
+ARG<Tags: zzz>
+ARG<-H>
+ARG<Actions: copy, 📋 Copy command, herdr agent focus 3, clear=true>
+ARG<-d>
+ARG<Agent opencode [title-1] (3) in ws went idle.>
+ARG<http://ntfy.example/t>
+CALL
+EOF
+  diff -u "$SANDBOX/expected" "$SANDBOX/curl.calls"
+}
+
+# --- HT-19/F2 (N2): attention-gated done push ---------------------------------
+#
+# NTFY_DONE_UNATTENDED_ONLY=on (default): the end-of-turn push fires only
+# when the operator is NOT attending the pane — HT-05's >2 s sustained
+# focus signal, tracked per pane on the watcher's own poll cadence. A
+# brief glance (<2 s of recorded focus) never suppresses. The voice side
+# is never gated; blocked (N1) is never gated; off restores today's
+# unconditional push byte for byte.
+
+# $1 sandbox · $2 state (done|blocked) · $3 focus target ("3" = attending)
+# · $4 NTFY_DONE_UNATTENDED_ONLY value (default on)
+# Drives ONE full watcher announcement with ntfy enabled: curl is stubbed
+# AFTER the source (same ARG/CALL recorder as run_ntfy_seq), focus comes
+# from a file, and the renderer produces no audio bytes so the push lands
+# on the deterministic text branch. The clock is faked over $SB/now (same
+# discipline as the HT-05 reminder cases) and sleep ADVANCES it, so the
+# 3 s settle window supplies the sustain interval a real run observes.
+# FOCUS_FLIP=1 makes the FIRST focus sample answer "other" (focus arrives
+# only after the wake sample): no sustained history at decision time.
+run_watcher_ntfy() {
+  sandbox_setup "$1"
+  printf '1000\n' > "$SANDBOX/now"
+  printf '%s\n' "${3:-other}" > "$SANDBOX/focus"
+  FOCUS_FLIP="${FOCUS_FLIP:-}" STUB_EXIT=0 in_host '
+    SB="$1"; STATE="$2"; DONEGATE="${4:-}"; FOCUS_FLIP="${FOCUS_FLIP:-}"
+    # Containment: the watcher allocates its synthesis-error scratch from
+    # an absolute /tmp template; redirect it into the sandbox and neutral
+    # the product error reporter (renders here cannot fail).
+    mktemp() {
+      local template="${1:-}"
+      [[ "$template" == "/tmp/herdr-tts-synth-err.XXXXXX" ]] || return 97
+      command mktemp "$SB/tmp/herdr-tts-synth-err.XXXXXX"
+    }
+    report_tts_error() { :; }
+    herdr_n=0
+    herdr() {
+      herdr_n=$((herdr_n+1))
+      case "$1 $2" in
+        "agent wait") [[ "$herdr_n" -eq 1 ]] && return 0 ;;
+        "agent get") printf %s "{\"result\":{\"agent\":{\"agent_status\":\"$STATE\",\"agent_session\":{\"agent\":\"opencode\",\"value\":\"sess-1\"},\"workspace_id\":\"ws\",\"terminal_title_stripped\":\"title-1\"}}}" && return 0 ;;
+      esac
+      exit 42
+    }
+    date() { if [[ "$*" == "+%s" ]]; then cat "$SB/now"; else command date "$@"; fi; }
+    _focus_n=0
+    get_focused_pane() {
+      _focus_n=$(( _focus_n + 1 ))
+      if [[ "$FOCUS_FLIP" == 1 && "$_focus_n" == 1 ]]; then printf "other\n"; else cat "$SB/focus"; fi
+    }
+    curl() {
+      local a flat
+      for a in "$@"; do
+        flat="${a//$'"'"'\n'"'"'/\\n}"
+        printf "ARG<%s>\n" "$flat" >> "$SB/curl.calls"
+      done
+      printf "CALL\n" >> "$SB/curl.calls"
+      return 0
+    }
+    sleep() {
+      local s="${1:-0}"; s="${s%.*}"
+      printf "%s\n" "$(( $(cat "$SB/now") + s ))" > "$SB/now"
+    }
+    gate_agent_event() { return 1; }
+    is_auto_muted() { return 1; }
+    is_playing() { return 1; }
+    read_pane_text() { echo "texto del turno"; }
+    resolve_voice() { echo elvira; }
+    spoken_prefix() { echo ""; }
+    render_text_audio() { printf "%s\n" "$1" >> "$SB/render.targets"; }
+    audio_retention_days() { echo 0; }
+    audio_duration_secs() { echo 0; }
+    play_audio_file() { return 0; }
+    NTFY_TOPIC="t"; NTFY_SERVER="http://ntfy.example"; WEB_URL=""
+    NTFY_DONE_UNATTENDED_ONLY="$DONEGATE"
+    PODCAST_ENABLED="off"; TTS_AUTO_SCOPE="all"; TTS_SETTLE_SECONDS="3"
+    rc=0
+    ( watch_agent_pane 3 opencode ) > "$SB/out" 2> "$SB/werr" || rc=$?
+    echo "rc=$rc" > "$SB/rc"
+  ' "$SANDBOX" "$2" "$3" "${4:-on}"
+}
+
+# RF-2: default on + sustained attention (>2 s across the settle window)
+# → no push at all, while the audio side still renders.
+case__ntfy_done_gate_attended_skips_push() {
+  run_watcher_ntfy done_attended done 3 || return 1
+  [[ "$(cat "$SANDBOX/rc")" == "rc=42" ]] || return 1
+  [[ ! -e "$SANDBOX/curl.calls" ]] || return 1
+  [[ "$(wc -l < "$SANDBOX/render.targets")" -eq 1 ]] || return 1
+}
+
+# RF-2 (verifier blocker 1): a brief glance is NOT attention. Focus on
+# the pane only from the post-wake sample on → no >2 s of recorded
+# sustain at decision time → the push still fires with today's bytes.
+case__done_brief_focus_does_not_suppress_push() {
+  FOCUS_FLIP=1 run_watcher_ntfy done_brief done 3 || return 1
+  [[ "$(cat "$SANDBOX/rc")" == "rc=42" ]] || return 1
+  [[ "$(grep -cx CALL "$SANDBOX/curl.calls")" -eq 1 ]] || return 1
+  grep -qF 'ARG<Title: ✅ opencode [title-1] (3) finished>' "$SANDBOX/curl.calls"
+}
+
+# RF-2, function level: with NO observation history at all, the gate
+# permits the push — the safe failure is a redundant push, never a lost
+# notification.
+case__done_gate_no_history_permits_push() {
+  sandbox_setup done_no_history
+  in_host '
+    get_focused_pane() { printf 3; }
+    ntfy_done_push_permitted 3
+  '
+}
+
+# RF-2, function level: >2 s of continuously sampled focus (1000 → 1003)
+# suppresses; the sampler, not the test, owns the observation state.
+case__done_gate_sustained_focus_suppresses_push() {
+  sandbox_setup done_sustained
+  in_host '
+    SB="$1"
+    date() { if [[ "$*" == "+%s" ]]; then cat "$SB/now"; else command date "$@"; fi; }
+    get_focused_pane() { printf 3; }
+    printf "1000\n" > "$SB/now"
+    focus_sustain_sample
+    printf "1003\n" > "$SB/now"
+    ntfy_done_push_permitted 3 && exit 1
+    exit 0
+  ' "$SANDBOX"
+}
+
+# RF-2: unattended → the push keeps today's exact request bytes.
+case__ntfy_done_gate_unattended_keeps_today_request() {
+  run_watcher_ntfy done_unattended done other || return 1
+  [[ "$(cat "$SANDBOX/rc")" == "rc=42" ]] || return 1
+  cat > "$SANDBOX/expected" <<'EOF'
+ARG<-s>
+ARG<--connect-timeout>
+ARG<5>
+ARG<--max-time>
+ARG<15>
+ARG<-H>
+ARG<Title: ✅ opencode [title-1] (3) finished>
+ARG<-H>
+ARG<Priority: default>
+ARG<-H>
+ARG<Tags: white_check_mark,robot>
+ARG<-H>
+ARG<Actions: copy, 📋 Copy command, herdr agent focus 3, clear=true>
+ARG<-d>
+ARG<Agent opencode [title-1] (3) in ws finished its task.\n\n→ To view: herdr agent focus 3>
+ARG<http://ntfy.example/t>
+CALL
+EOF
+  diff -u "$SANDBOX/expected" "$SANDBOX/curl.calls"
+}
+
+# US-HT-19-4 restore path: off = today's unconditional done push, byte for
+# byte, even while the pane is attended.
+case__ntfy_done_gate_off_golden_today_request() {
+  run_watcher_ntfy done_gate_off done 3 off || return 1
+  [[ "$(cat "$SANDBOX/rc")" == "rc=42" ]] || return 1
+  cat > "$SANDBOX/expected" <<'EOF'
+ARG<-s>
+ARG<--connect-timeout>
+ARG<5>
+ARG<--max-time>
+ARG<15>
+ARG<-H>
+ARG<Title: ✅ opencode [title-1] (3) finished>
+ARG<-H>
+ARG<Priority: default>
+ARG<-H>
+ARG<Tags: white_check_mark,robot>
+ARG<-H>
+ARG<Actions: copy, 📋 Copy command, herdr agent focus 3, clear=true>
+ARG<-d>
+ARG<Agent opencode [title-1] (3) in ws finished its task.\n\n→ To view: herdr agent focus 3>
+ARG<http://ntfy.example/t>
+CALL
+EOF
+  diff -u "$SANDBOX/expected" "$SANDBOX/curl.calls"
+}
+
+# N1 is never gated: blocked pushes through even while attending the pane.
+case__ntfy_done_gate_blocked_never_gated() {
+  run_watcher_ntfy done_gate_blocked blocked 3 || return 1
+  [[ "$(cat "$SANDBOX/rc")" == "rc=42" ]] || return 1
+  [[ "$(grep -cx CALL "$SANDBOX/curl.calls")" -eq 1 ]] || return 1
+  grep -qF 'ARG<Title: 🔴 opencode [title-1] (3) needs attention>' "$SANDBOX/curl.calls" || return 1
+  grep -qF 'ARG<Priority: high>' "$SANDBOX/curl.calls"
+}
+
+# Closed enum: junk degrades to on with exactly ONE warning line.
+case__ntfy_done_gate_junk_warns_once_and_stays_on() {
+  sandbox_setup donegate_enum
+  NTFY_DONE_UNATTENDED_ONLY=junk in_host 'printf "mode=%s\n" "$NTFY_DONE_UNATTENDED_ONLY"' \
+    > "$SANDBOX/out" 2> "$SANDBOX/err" || return 1
+  [[ "$(grep -cF 'NTFY_DONE_UNATTENDED_ONLY=junk is not on|off; using on' "$SANDBOX/err")" -eq 1 ]] || return 1
+  grep -qx 'mode=on' "$SANDBOX/out"
+}
+
+# Structural pin (same trust level as the sibling event gates): the
+# watcher's push site must consult the helper, not an inline condition.
+case__ntfy_done_gate_is_wired_into_the_watcher() {
+  sandbox_setup done_wire
+  in_host 'declare -f watch_agent_pane | grep -q ntfy_done_push_permitted' \
+    > "$SANDBOX/out" 2> "$SANDBOX/err"
+}
+
+# --- HT-19/F3 (N3): pre-cooling mutating notification --------------------------
+#
+# NTFY_PRECOOL=off (default): HT-05 keeps its final high-priority push byte
+# for byte. on: one warn publish at T_cold−T_warn that only re-publishes on
+# the same per-pane sequence ID, exactly one urgent escalation at T_cold,
+# and attention ends the sequence. The clock is faked exactly like the
+# HT-05 reminder cases (date override over a $SB/now file; no sleeps).
+
+# $1 sandbox · $2 cold_s · $3 warn_s · $4 snippet; PRECOOL_MODE (default on)
+# and STUB_OUT feed the reminder core (STUB_OUT = emitted due reminders).
+run_precool_seq() {
+  sandbox_setup "$1"
+  printf '1000\n' > "$SANDBOX/now"
+  printf 'other\n' > "$SANDBOX/focus"
+  printf '%s\n' '{"result":{"agents":[{"pane_id":"3","agent":"opencode","agent_status":"done","workspace_id":"ws","terminal_title_stripped":"title-1"}]}}' > "$SANDBOX/agents.json"
+  NTFY_PRECOOL="${PRECOOL_MODE:-on}" NTFY_PRECOOL_COLD_S="${2:-600}" NTFY_PRECOOL_WARN_S="${3:-180}" \
+    in_host '
+    SB="$1"
+    date() { if [[ "$*" == "+%s" ]]; then cat "$SB/now"; else command date "$@"; fi; }
+    get_focused_pane() { cat "$SB/focus"; }
+    is_auto_muted() { return 1; }
+    is_playing() { return 1; }
+    speak_text() { printf "%s\n" "$1" >> "$SB/voice.calls"; }
+    curl() {
+      local a flat is_seq=false
+      for a in "$@"; do
+        flat="${a//$'"'"'\n'"'"'/\\n}"
+        printf "ARG<%s>\n" "$flat" >> "$SB/curl.calls"
+        [[ "$a" == "X-Sequence-ID: "* ]] && is_seq=true
+      done
+      printf "CALL\n" >> "$SB/curl.calls"
+      [[ "$is_seq" == true ]] && printf "%s" "${SEQ_STATUS:-200}"
+      return 0
+    }
+    TTS_REMINDERS=on; TTS_REMINDER_START_MIN=1; TTS_REMINDER_BACKOFF="1,1"; TTS_REMINDER_MAX=3
+    TTS_DEBOUNCE_SECONDS=20; TTS_AUTO_SCOPE=all
+    NTFY_TOPIC="t"; NTFY_SERVER="http://ntfy.example"; WEB_URL=""
+    NTFY_APPROVAL_URL=""; NTFY_APPROVAL_TOKEN=""
+    sweep() { daemon_reminders "$(cat "$SB/agents.json")"; wait; }
+    now() { printf "%s\n" "$1" > "$SB/now"; }
+    focus() { printf "%s\n" "$1" > "$SB/focus"; }
+  '"$4" "$SANDBOX" > "$SANDBOX/out" 2> "$SANDBOX/err"
+}
+
+# Defaults pin (cache-anchored clock, maintainer decision 2026-11-17): COLD_S
+# anchors to the observed provider-TTL lower bound (GLM: ~24 min), WARN_S is
+# the engagement margin before it (~9 min → warning at ~15 min of silence).
+case__precool_defaults_are_cache_anchored() {
+  sandbox_setup precool_defaults
+  in_host 'printf "%s/%s\n" "$NTFY_PRECOOL_COLD_S" "$NTFY_PRECOOL_WARN_S"' \
+    > "$SANDBOX/out" 2> "$SANDBOX/err" || return 1
+  [[ "$(cat "$SANDBOX/out")" == "1440/540" ]]
+}
+
+# RF-3 restore path: with precool off (the default), the final reminder
+# keeps today's exact push bytes and the voice reminder still speaks.
+case__precool_off_keeps_ht05_final_push_bytes() {
+  PRECOOL_MODE=off STUB_OUT='{"pane_id":"3","index":3,"text":"Reminder: still waiting"}' \
+    run_precool_seq precool_off 180 60 'now 1060; sweep' || return 1
+  [[ "$(grep -cx CALL "$SANDBOX/curl.calls")" -eq 1 ]] || return 1
+  cat > "$SANDBOX/expected" <<'EOF'
+ARG<-s>
+ARG<--connect-timeout>
+ARG<5>
+ARG<--max-time>
+ARG<15>
+ARG<-H>
+ARG<Title: ✅ opencode [title-1] (3) finished>
+ARG<-H>
+ARG<Priority: high>
+ARG<-H>
+ARG<Tags: white_check_mark,robot>
+ARG<-H>
+ARG<Actions: copy, 📋 Copy command, herdr agent focus 3, clear=true>
+ARG<-d>
+ARG<Reminder: still waiting>
+ARG<http://ntfy.example/t>
+CALL
+EOF
+  diff -u "$SANDBOX/expected" "$SANDBOX/curl.calls" || return 1
+  [[ "$(cat "$SANDBOX/voice.calls")" == 'Reminder: still waiting' ]]
+}
+
+# RF-3: warn at cold−warn on the pane seq, same-minute ticks do not
+# republish, later minutes update the same seq, exactly ONE urgent
+# escalation at cold — and HT-05's final high push never fires alongside.
+# Timeline (cold=240, warn=180): arm@1000, warn@1060 (1 min), updates at
+# 1120/1180 (2, 3 min), escalation@1240 (4 min, urgent), silent@1300.
+case__precool_on_mutating_sequence_and_single_escalation() {
+  STUB_OUT='{"pane_id":"3","index":3,"text":"Reminder: still waiting"}' \
+    run_precool_seq precool_on 240 180 '
+      sweep
+      now 1060; sweep
+      now 1090; sweep
+      now 1120; sweep
+      now 1180; sweep
+      now 1240; sweep
+      now 1300; sweep
+    ' || return 1
+  [[ "$(grep -cx CALL "$SANDBOX/curl.calls")" -eq 4 ]] || return 1
+  [[ "$(grep -cxF 'ARG<X-Sequence-ID: agent-3>' "$SANDBOX/curl.calls")" -eq 4 ]] || return 1
+  [[ "$(grep -cF 'Priority: urgent' "$SANDBOX/curl.calls")" -eq 1 ]] || return 1
+  [[ "$(grep -cF 'Priority: default' "$SANDBOX/curl.calls")" -eq 3 ]] || return 1
+  ! grep -qF 'Priority: high' "$SANDBOX/curl.calls" || return 1
+  [[ "$(grep -cF 'has waited 1 min unattended' "$SANDBOX/curl.calls")" -eq 1 ]] || return 1
+  [[ "$(grep -cF 'has waited 2 min unattended' "$SANDBOX/curl.calls")" -eq 1 ]] || return 1
+  [[ "$(grep -cF 'has waited 3 min unattended' "$SANDBOX/curl.calls")" -eq 1 ]] || return 1
+  [[ "$(grep -cF 'went cold after 4 min unattended' "$SANDBOX/curl.calls")" -eq 1 ]] || return 1
+  [[ "$(grep -cF 'context cooling' "$SANDBOX/curl.calls")" -eq 4 ]] || return 1
+  # Voice reminders kept speaking on every sweep (7 due reminders here).
+  [[ "$(wc -l < "$SANDBOX/voice.calls")" -eq 7 ]]
+}
+
+# RF-3: attending the pane ends the sequence — no stale escalation from
+# the pre-attention clock once the operator looks away again (a paused
+# clock would escalate on the very next unattended sweep).
+case__precool_attention_cuts_sequence() {
+  run_precool_seq precool_cut 180 60 '
+      sweep
+      focus 3; now 1001; sweep
+      now 1004; sweep
+      focus other; now 1300; sweep
+      now 1310; sweep
+    ' || return 1
+  [[ ! -e "$SANDBOX/curl.calls" ]]
+}
+
+# Invalid timer pair: precool disabled + exactly ONE error line naming
+# both vars; never fatal.
+case__precool_invalid_range_disables_with_one_error() {
+  sandbox_setup precool_range
+  NTFY_PRECOOL=on NTFY_PRECOOL_COLD_S=100 NTFY_PRECOOL_WARN_S=100 \
+    in_host 'printf "precool=%s\n" "$NTFY_PRECOOL"' \
+    > "$SANDBOX/out" 2> "$SANDBOX/err" || return 1
+  [[ "$(grep -cF 'precool disabled: need 0 < NTFY_PRECOOL_WARN_S < NTFY_PRECOOL_COLD_S (got warn=100 cold=100)' "$SANDBOX/err")" -eq 1 ]] || return 1
+  grep -qx 'precool=off' "$SANDBOX/out"
+}
+
+# RF-3 (verifier blocker 2): with precool on, HT-05's push side collapses
+# into N3 ENTIRELY — the muted/busy/background fallback of an intermediate
+# reminder must not emit a standalone push either (matrix cut #2). Voice
+# and timing are untouched; precool's own first tick only arms (no card).
+case__precool_suppresses_intermediate_muted_reminder_push() {
+  sandbox_setup precool_intermediate_muted
+  in_host '
+    SB="$1"
+    NTFY_PRECOOL=on; TTS_REMINDERS=on; TTS_REMINDER_MAX=3
+    VENV_PYTHON=core
+    core() { printf "%s\n" "{\"pane_id\":\"3\",\"index\":1,\"text\":\"Reminder\"}"; }
+    get_focused_pane() { printf other; }
+    gate_agent_event() { return 1; }
+    is_auto_muted() { return 0; }
+    speak_text() { :; }
+    send_ntfy_push() { printf "push\n" >> "$SB/ntfy-capture"; }
+    daemon_reminders "{\"result\":{\"agents\":[{\"pane_id\":\"3\",\"agent\":\"opencode\",\"agent_status\":\"done\"}]}}"
+    wait
+    [[ ! -s "$SB/ntfy-capture" ]]
+  ' "$SANDBOX" > "$SANDBOX/out" 2> "$SANDBOX/err"
+}
+
+# Structural pin: precool rides the HT-05 sweep (no second scheduler).
+case__precool_rides_the_reminder_sweep() {
+  sandbox_setup precool_wire
+  in_host 'declare -f daemon_reminders | grep -q precool_tick' \
+    > "$SANDBOX/out" 2> "$SANDBOX/err"
+}
+
+# --- HT-19/L8 (N3): model-keyed pre-cool TTL (NTFY_PRECOOL_TTL_MAP) -------------
+#
+# The applicable cache TTL belongs to the MODEL of the chat's last execution
+# (cache = model+prefix). When precool ARMS an item, the plugin asks the
+# engine once — `agent-tts last-model --agent <kind> [--session-id <id>]`
+# through the same venv-python seam as the stt CLI — and maps the answer
+# through the ordered glob=seconds map (case-insensitive, FIRST match wins).
+# Unknown model / no match / engine failure / empty map keep the global
+# COLD_S clock. The venv stub dispatches on the argv shape: last-model
+# answers LAST_MODEL / LAST_MODEL_RC; every other call keeps the generic
+# STUB_OUT/STUB_EXIT recording contract.
+
+# $1 sandbox · $2 cold_s · $3 warn_s · $4 snippet; TTL_MAP (default: unset —
+# pins the empty default), LAST_MODEL / LAST_MODEL_RC (engine stub answer)
+# and NO_AGENT_SESSION (row without agent_session data) feed the resolver.
+run_precool_ttl_seq() {
+  sandbox_setup "$1"
+  printf '1000\n' > "$SANDBOX/now"
+  printf 'other\n' > "$SANDBOX/focus"
+  local row='{"pane_id":"3","agent":"opencode","agent_status":"done","workspace_id":"ws","terminal_title_stripped":"title-1","agent_session":{"agent":"opencode","value":"sess-3"}}'
+  if [[ -n "${NO_AGENT_SESSION:-}" ]]; then
+    row='{"pane_id":"3","agent":"opencode","agent_status":"done","workspace_id":"ws","terminal_title_stripped":"title-1"}'
+  fi
+  printf '{"result":{"agents":[%s]}}\n' "$row" > "$SANDBOX/agents.json"
+  cat > "$SANDBOX/data/herdr-tts/venv/bin/python" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$STUB_LOG"
+if [[ "${1:-} ${2:-}" == "-m agent_tts.cli" && "${3:-}" == "last-model" ]]; then
+  [[ -n "${LAST_MODEL:-}" ]] && printf '%s\n' "$LAST_MODEL"
+  exit "${LAST_MODEL_RC:-0}"
+fi
+if [[ -n "${STUB_OUT:-}" ]]; then echo "$STUB_OUT"; fi
+exit "${STUB_EXIT:-0}"
+STUB
+  chmod +x "$SANDBOX/data/herdr-tts/venv/bin/python"
+  NTFY_PRECOOL="${PRECOOL_MODE:-on}" NTFY_PRECOOL_COLD_S="${2:-600}" NTFY_PRECOOL_WARN_S="${3:-180}" \
+  NTFY_PRECOOL_TTL_MAP="${TTL_MAP:-}" LAST_MODEL="${LAST_MODEL:-}" LAST_MODEL_RC="${LAST_MODEL_RC:-0}" \
+    in_host '
+    SB="$1"
+    date() { if [[ "$*" == "+%s" ]]; then cat "$SB/now"; else command date "$@"; fi; }
+    get_focused_pane() { cat "$SB/focus"; }
+    is_auto_muted() { return 1; }
+    is_playing() { return 1; }
+    speak_text() { printf "%s\n" "$1" >> "$SB/voice.calls"; }
+    curl() {
+      local a flat is_seq=false
+      for a in "$@"; do
+        flat="${a//$'"'"'\n'"'"'/\\n}"
+        printf "ARG<%s>\n" "$flat" >> "$SB/curl.calls"
+        [[ "$a" == "X-Sequence-ID: "* ]] && is_seq=true
+      done
+      printf "CALL\n" >> "$SB/curl.calls"
+      [[ "$is_seq" == true ]] && printf "%s" "${SEQ_STATUS:-200}"
+      return 0
+    }
+    TTS_REMINDERS=on; TTS_REMINDER_START_MIN=1; TTS_REMINDER_BACKOFF="1,1"; TTS_REMINDER_MAX=3
+    TTS_DEBOUNCE_SECONDS=20; TTS_AUTO_SCOPE=all
+    NTFY_TOPIC="t"; NTFY_SERVER="http://ntfy.example"; WEB_URL=""
+    NTFY_APPROVAL_URL=""; NTFY_APPROVAL_TOKEN=""
+    sweep() { daemon_reminders "$(cat "$SB/agents.json")"; wait; }
+    now() { printf "%s\n" "$1" > "$SB/now"; }
+    focus() { printf "%s\n" "$1" > "$SB/focus"; }
+  '"$4" "$SANDBOX" > "$SANDBOX/out" 2> "$SANDBOX/err"
+}
+
+# Empty map (the default): the global COLD_S clock applies and the engine is
+# never asked for a model — no last-model traffic at all.
+case__precool_ttl_map_default_empty_keeps_global_clock() {
+  run_precool_ttl_seq ttl_default 240 180 '
+    sweep
+    now 1060; sweep
+    now 1240; sweep
+  ' || return 1
+  [[ "$(grep -cx CALL "$SANDBOX/curl.calls")" -eq 2 ]] || return 1
+  [[ "$(grep -cF "Priority: urgent" "$SANDBOX/curl.calls")" -eq 1 ]] || return 1
+  grep -qF "went cold after 4 min unattended" "$SANDBOX/curl.calls" || return 1
+  ! grep -q "last-model" "$STUB_LOG"
+}
+
+# A matching pattern re-keys the item clock to the mapped TTL (model matched
+# case-insensitively: GLM-4.7 vs *glm*): warn at TTL−warn, ONE urgent
+# escalation at the mapped TTL — and exactly ONE engine call for the item's
+# whole lifetime (the resolved TTL is cached, not re-asked per tick).
+case__precool_ttl_map_match_keys_item_clock_once() {
+  TTL_MAP='*glm*=300' LAST_MODEL='GLM-4.7' \
+    run_precool_ttl_seq ttl_match 1440 60 '
+      sweep
+      now 1239; sweep
+      now 1240; sweep
+      now 1300; sweep
+      now 1360; sweep
+      now 1500; sweep
+    ' || return 1
+  [[ "$(grep -cx CALL "$SANDBOX/curl.calls")" -eq 2 ]] || return 1
+  [[ "$(grep -cF "Priority: urgent" "$SANDBOX/curl.calls")" -eq 1 ]] || return 1
+  [[ "$(grep -cF "has waited 4 min unattended" "$SANDBOX/curl.calls")" -eq 1 ]] || return 1
+  grep -qF "went cold after 5 min unattended" "$SANDBOX/curl.calls" || return 1
+  [[ "$(grep -c -- "-m agent_tts.cli last-model --agent opencode --session-id sess-3" "$STUB_LOG")" -eq 1 ]]
+}
+
+# FIRST match wins: both *glm* and the * catch-all match the model; the
+# ordered first entry (300 s → escalation at 5 min) keys the clock, not the
+# later 900 s entry.
+case__precool_ttl_map_first_match_wins() {
+  TTL_MAP='*glm*=300,*=900' LAST_MODEL='glm-4.7' \
+    run_precool_ttl_seq ttl_order 1440 60 '
+      sweep
+      now 1240; sweep
+      now 1300; sweep
+      now 1900; sweep
+      now 1960; sweep
+    ' || return 1
+  [[ "$(grep -cx CALL "$SANDBOX/curl.calls")" -eq 2 ]] || return 1
+  grep -qF "went cold after 5 min unattended" "$SANDBOX/curl.calls" || return 1
+  ! grep -qF "went cold after 15 min unattended" "$SANDBOX/curl.calls"
+}
+
+# No pattern matches the model → the global COLD_S clock applies.
+case__precool_ttl_map_no_match_falls_back_to_global() {
+  TTL_MAP='*claude*=300' LAST_MODEL='glm-4.7' \
+    run_precool_ttl_seq ttl_nomatch 240 60 '
+      sweep
+      now 1180; sweep
+      now 1240; sweep
+    ' || return 1
+  [[ "$(grep -cx CALL "$SANDBOX/curl.calls")" -eq 2 ]] || return 1
+  [[ "$(grep -cF "has waited 3 min unattended" "$SANDBOX/curl.calls")" -eq 1 ]] || return 1
+  grep -qF "went cold after 4 min unattended" "$SANDBOX/curl.calls"
+}
+
+# A failed (rc 1, per the engine contract) or timed-out last-model call is
+# "unknown model": the global clock keys the item and the sweep survives
+# (cards still publish on the later sweeps).
+case__precool_ttl_map_last_model_failure_and_timeout_fall_back() {
+  TTL_MAP='*glm*=300' LAST_MODEL_RC=1 \
+    run_precool_ttl_seq ttl_lm_fail 240 60 '
+      sweep
+      now 1180; sweep
+      now 1240; sweep
+    ' || return 1
+  [[ "$(grep -cx CALL "$SANDBOX/curl.calls")" -eq 2 ]] || return 1
+  grep -qF "went cold after 4 min unattended" "$SANDBOX/curl.calls" || return 1
+  TTL_MAP='*glm*=300' LAST_MODEL='GLM-4.7' \
+    run_precool_ttl_seq ttl_lm_timeout 240 60 '
+      timeout() { return 124; }
+      sweep
+      now 1180; sweep
+      now 1240; sweep
+    ' || return 1
+  [[ "$(grep -cx CALL "$SANDBOX/curl.calls")" -eq 2 ]] || return 1
+  grep -qF "went cold after 4 min unattended" "$SANDBOX/curl.calls"
+}
+
+# Malformed pairs (no '=', empty pattern, non-numeric/empty seconds) are
+# skipped with ONE aggregate warning line naming them; the surviving pairs
+# keep their order and still apply.
+case__precool_ttl_map_malformed_pairs_warn_once_rest_applies() {
+  sandbox_setup ttl_malformed
+  NTFY_PRECOOL_TTL_MAP='*glm*=300, bogus ,zz=abc,=5,*x*=' \
+    in_host 'printf "pairs=%s\n" "${#PRECOOL_TTL_PAT[@]}"' \
+    > "$SANDBOX/out" 2> "$SANDBOX/err" || return 1
+  [[ "$(grep -cF "NTFY_PRECOOL_TTL_MAP" "$SANDBOX/err")" -eq 1 ]] || return 1
+  grep -qF "skipped malformed entries (bogus, zz=abc, =5, *x*=)" "$SANDBOX/err" || return 1
+  grep -qx "pairs=1" "$SANDBOX/out" || return 1
+  TTL_MAP='*glm*=300,bogus,zz=abc' LAST_MODEL='glm-4.7' \
+    run_precool_ttl_seq ttl_malformed_live 1440 60 '
+      sweep
+      now 1240; sweep
+      now 1300; sweep
+    ' || return 1
+  grep -qF "went cold after 5 min unattended" "$SANDBOX/curl.calls"
+}
+
+# L8c: a pane without agent_session data cannot resolve a model — no engine
+# call at all, global clock.
+case__precool_ttl_map_missing_agent_session_falls_back() {
+  NO_AGENT_SESSION=1 TTL_MAP='*glm*=300' LAST_MODEL='GLM-4.7' \
+    run_precool_ttl_seq ttl_nosess 240 60 '
+      sweep
+      now 1180; sweep
+      now 1240; sweep
+    ' || return 1
+  [[ "$(grep -cx CALL "$SANDBOX/curl.calls")" -eq 2 ]] || return 1
+  grep -qF "went cold after 4 min unattended" "$SANDBOX/curl.calls" || return 1
+  ! grep -q "last-model" "$STUB_LOG"
+}
+
+# A mapped TTL that cannot satisfy 0 < WARN_S < cold_item is discarded; the
+# already-validated global pair applies.
+case__precool_ttl_map_mapped_ttl_below_warn_falls_back() {
+  TTL_MAP='*glm*=100' LAST_MODEL='glm-4.7' \
+    run_precool_ttl_seq ttl_small 240 180 '
+      sweep
+      now 1060; sweep
+      now 1100; sweep
+      now 1240; sweep
+    ' || return 1
+  [[ "$(grep -cF "went cold" "$SANDBOX/curl.calls")" -eq 1 ]] || return 1
+  grep -qF "went cold after 4 min unattended" "$SANDBOX/curl.calls" || return 1
+  ! grep -qF "went cold after 1 min unattended" "$SANDBOX/curl.calls"
+}
+
+# Structural pin: the arming path consults the resolver (no inline mapping).
+case__precool_ttl_resolver_wired_into_arming() {
+  sandbox_setup ttl_wire
+  in_host 'declare -f precool_tick | grep -q precool_resolve_ttl' \
+    > "$SANDBOX/out" 2> "$SANDBOX/err"
+}
+
 # The knob is a closed enum: an unknown value is off plus ONE warning line.
 case__ntfy_sequence_unknown_mode_warns_once_and_stays_off() {
   sandbox_setup seq_invalid
