@@ -36,10 +36,17 @@ Hoy el sistema notifica **eventos** del agente (done/blocked/idle), y los evento
 
 ### Fases
 
-- **F1 (este ciclo):** corte de `idle` con knob + casos de test (RED→GREEN) + esta PRD. Activación recomendada en uso real: `NTFY_SEQUENCE=update`.
+- **F1 (ejecutada, `feat/ht19-notification-matrix`):** corte de `idle` con knob + casos de test (RED→GREEN) + esta PRD. Activación recomendada en uso real: `NTFY_SEQUENCE=update`.
 - **F2:** N2 — gating por atención del push de `done` (reuso de la maquinaria de foco de HT-05).
-- **F3:** N3 — timer predictivo `T_cold − T_warn` con notificación mutante única + escalada final única a 5; colapso del lado push de HT-05 (la voz mantiene su escalada propia).
+- **F2b (añadida tras la revisión de caché, 2026-11-17):** **modo medición de caché** — sondeo read-only del usage (`cached_tokens` y equivalentes) desde los transcripts que los conectores del motor ya leen; reporta hit/miss por sesión tras cada gap y el **TTL observado**; sin push, sin daemon. Si una fuente no expone usage, lo declara ("no medible para \<agente\>") en vez de adivinar. Con esos datos se decide si existe N3b/keepalive o mueren. Fundamento: el caché no es observable en vivo y el TTL varía por proveedor (Anthropic 5 min/1 h documentados; GLM no documentado, pero expone `prompt_tokens_details.cached_tokens` por response).
+- **F3:** N3 — timer predictivo `T_cold − T_warn` con notificación mutante única + escalada única a 5; colapso del lado push de HT-05 (la voz mantiene su escalada propia).
 - **F4:** activación de N4 en operación real y F2 física de todo (sesión Android: matriz completa en dispositivo).
+
+### Decisiones de ejecución (2026-11-17, maintainer: "me cierra, dejémoslo así y termina el desarrollo")
+
+- N2 con `NTFY_DONE_UNATTENDED_ONLY=on` **por defecto** (el corte de ruido es la feature aprobada; `off` restaura el push incondicional byte-a-byte). El push de `blocked` (N1) jamás se gatea.
+- N3 con `NTFY_PRECOOL=off` por defecto (interrupción nueva ⇒ opt-in, convención del repo); `NTFY_PRECOOL_COLD_S=600`, `NTFY_PRECOOL_WARN_S=180`, validación `warn < cold`. Con `on`, el push final de alta de HT-05 difiere a N3 (sin duplicar); con `off`, HT-05 queda byte-idéntico.
+- F2b vive en el motor (los conectores son del motor; "el motor es dueño del transcript"), read-only, sin push.
 
 ### Historias de usuario (US-HT-19-...)
 
