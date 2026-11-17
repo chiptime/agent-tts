@@ -795,6 +795,296 @@ EOF
   diff -u "$SANDBOX/expected" "$SANDBOX/curl.calls"
 }
 
+# --- HT-19/F2 (N2): attention-gated done push ---------------------------------
+#
+# NTFY_DONE_UNATTENDED_ONLY=on (default): the end-of-turn push fires only
+# when the operator is NOT attending the pane (HT-05's per-pane focus
+# observation, used directly at the single-shot decision point). The voice
+# side is never gated; blocked (N1) is never gated; off restores today's
+# unconditional push byte for byte.
+
+# $1 sandbox · $2 state (done|blocked) · $3 focus target ("3" = attending)
+# · $4 NTFY_DONE_UNATTENDED_ONLY value (default on)
+# Drives ONE full watcher announcement with ntfy enabled: curl is stubbed
+# AFTER the source (same ARG/CALL recorder as run_ntfy_seq), focus comes
+# from a file, and the renderer produces no audio bytes so the push lands
+# on the deterministic text branch.
+run_watcher_ntfy() {
+  sandbox_setup "$1"
+  printf '%s\n' "${3:-other}" > "$SANDBOX/focus"
+  STUB_EXIT=0 in_host '
+    SB="$1"; STATE="$2"; DONEGATE="${4:-on}"
+    # Containment: the watcher allocates its synthesis-error scratch from
+    # an absolute /tmp template; redirect it into the sandbox and neutral
+    # the product error reporter (renders here cannot fail).
+    mktemp() {
+      local template="${1:-}"
+      [[ "$template" == "/tmp/herdr-tts-synth-err.XXXXXX" ]] || return 97
+      command mktemp "$SB/tmp/herdr-tts-synth-err.XXXXXX"
+    }
+    report_tts_error() { :; }
+    herdr_n=0
+    herdr() {
+      herdr_n=$((herdr_n+1))
+      case "$1 $2" in
+        "agent wait") [[ "$herdr_n" -eq 1 ]] && return 0 ;;
+        "agent get") printf %s "{\"result\":{\"agent\":{\"agent_status\":\"$STATE\",\"agent_session\":{\"agent\":\"opencode\",\"value\":\"sess-1\"},\"workspace_id\":\"ws\",\"terminal_title_stripped\":\"title-1\"}}}" && return 0 ;;
+      esac
+      exit 42
+    }
+    get_focused_pane() { cat "$SB/focus"; }
+    curl() {
+      local a flat
+      for a in "$@"; do
+        flat="${a//$'"'"'\n'"'"'/\\n}"
+        printf "ARG<%s>\n" "$flat" >> "$SB/curl.calls"
+      done
+      printf "CALL\n" >> "$SB/curl.calls"
+      return 0
+    }
+    sleep() { :; }
+    gate_agent_event() { return 1; }
+    is_auto_muted() { return 1; }
+    is_playing() { return 1; }
+    read_pane_text() { echo "texto del turno"; }
+    resolve_voice() { echo elvira; }
+    spoken_prefix() { echo ""; }
+    render_text_audio() { printf "%s\n" "$1" >> "$SB/render.targets"; }
+    audio_retention_days() { echo 0; }
+    audio_duration_secs() { echo 0; }
+    play_audio_file() { return 0; }
+    NTFY_TOPIC="t"; NTFY_SERVER="http://ntfy.example"; WEB_URL=""
+    NTFY_DONE_UNATTENDED_ONLY="$DONEGATE"
+    PODCAST_ENABLED="off"; TTS_AUTO_SCOPE="all"; TTS_SETTLE_SECONDS="0"
+    rc=0
+    ( watch_agent_pane 3 opencode ) > "$SB/out" 2> "$SB/werr" || rc=$?
+    echo "rc=$rc" > "$SB/rc"
+  ' "$SANDBOX" "$2" "$3" "${4:-on}"
+}
+
+# RF-2: default on + attending the pane → no push at all, while the audio
+# side still renders (the gate touches only the push).
+case__ntfy_done_gate_attended_skips_push() {
+  run_watcher_ntfy done_attended done 3 || return 1
+  [[ "$(cat "$SANDBOX/rc")" == "rc=42" ]] || return 1
+  [[ ! -e "$SANDBOX/curl.calls" ]] || return 1
+  [[ "$(wc -l < "$SANDBOX/render.targets")" -eq 1 ]] || return 1
+}
+
+# RF-2: unattended → the push keeps today's exact request bytes.
+case__ntfy_done_gate_unattended_keeps_today_request() {
+  run_watcher_ntfy done_unattended done other || return 1
+  [[ "$(cat "$SANDBOX/rc")" == "rc=42" ]] || return 1
+  cat > "$SANDBOX/expected" <<'EOF'
+ARG<-s>
+ARG<--connect-timeout>
+ARG<5>
+ARG<--max-time>
+ARG<15>
+ARG<-H>
+ARG<Title: ✅ opencode [title-1] (3) finished>
+ARG<-H>
+ARG<Priority: default>
+ARG<-H>
+ARG<Tags: white_check_mark,robot>
+ARG<-H>
+ARG<Actions: copy, 📋 Copy command, herdr agent focus 3, clear=true>
+ARG<-d>
+ARG<Agent opencode [title-1] (3) in ws finished its task.\n\n→ To view: herdr agent focus 3>
+ARG<http://ntfy.example/t>
+CALL
+EOF
+  diff -u "$SANDBOX/expected" "$SANDBOX/curl.calls"
+}
+
+# US-HT-19-4 restore path: off = today's unconditional done push, byte for
+# byte, even while the pane is attended.
+case__ntfy_done_gate_off_golden_today_request() {
+  run_watcher_ntfy done_gate_off done 3 off || return 1
+  [[ "$(cat "$SANDBOX/rc")" == "rc=42" ]] || return 1
+  cat > "$SANDBOX/expected" <<'EOF'
+ARG<-s>
+ARG<--connect-timeout>
+ARG<5>
+ARG<--max-time>
+ARG<15>
+ARG<-H>
+ARG<Title: ✅ opencode [title-1] (3) finished>
+ARG<-H>
+ARG<Priority: default>
+ARG<-H>
+ARG<Tags: white_check_mark,robot>
+ARG<-H>
+ARG<Actions: copy, 📋 Copy command, herdr agent focus 3, clear=true>
+ARG<-d>
+ARG<Agent opencode [title-1] (3) in ws finished its task.\n\n→ To view: herdr agent focus 3>
+ARG<http://ntfy.example/t>
+CALL
+EOF
+  diff -u "$SANDBOX/expected" "$SANDBOX/curl.calls"
+}
+
+# N1 is never gated: blocked pushes through even while attending the pane.
+case__ntfy_done_gate_blocked_never_gated() {
+  run_watcher_ntfy done_gate_blocked blocked 3 || return 1
+  [[ "$(cat "$SANDBOX/rc")" == "rc=42" ]] || return 1
+  [[ "$(grep -cx CALL "$SANDBOX/curl.calls")" -eq 1 ]] || return 1
+  grep -qF 'ARG<Title: 🔴 opencode [title-1] (3) needs attention>' "$SANDBOX/curl.calls" || return 1
+  grep -qF 'ARG<Priority: high>' "$SANDBOX/curl.calls"
+}
+
+# Closed enum: junk degrades to on with exactly ONE warning line.
+case__ntfy_done_gate_junk_warns_once_and_stays_on() {
+  sandbox_setup donegate_enum
+  NTFY_DONE_UNATTENDED_ONLY=junk in_host 'printf "mode=%s\n" "$NTFY_DONE_UNATTENDED_ONLY"' \
+    > "$SANDBOX/out" 2> "$SANDBOX/err" || return 1
+  [[ "$(grep -cF 'NTFY_DONE_UNATTENDED_ONLY=junk is not on|off; using on' "$SANDBOX/err")" -eq 1 ]] || return 1
+  grep -qx 'mode=on' "$SANDBOX/out"
+}
+
+# Structural pin (same trust level as the sibling event gates): the
+# watcher's push site must consult the helper, not an inline condition.
+case__ntfy_done_gate_is_wired_into_the_watcher() {
+  sandbox_setup done_wire
+  in_host 'declare -f watch_agent_pane | grep -q ntfy_done_push_permitted' \
+    > "$SANDBOX/out" 2> "$SANDBOX/err"
+}
+
+# --- HT-19/F3 (N3): pre-cooling mutating notification --------------------------
+#
+# NTFY_PRECOOL=off (default): HT-05 keeps its final high-priority push byte
+# for byte. on: one warn publish at T_cold−T_warn that only re-publishes on
+# the same per-pane sequence ID, exactly one urgent escalation at T_cold,
+# and attention ends the sequence. The clock is faked exactly like the
+# HT-05 reminder cases (date override over a $SB/now file; no sleeps).
+
+# $1 sandbox · $2 cold_s · $3 warn_s · $4 snippet; PRECOOL_MODE (default on)
+# and STUB_OUT feed the reminder core (STUB_OUT = emitted due reminders).
+run_precool_seq() {
+  sandbox_setup "$1"
+  printf '1000\n' > "$SANDBOX/now"
+  printf 'other\n' > "$SANDBOX/focus"
+  printf '%s\n' '{"result":{"agents":[{"pane_id":"3","agent":"opencode","agent_status":"done","workspace_id":"ws","terminal_title_stripped":"title-1"}]}}' > "$SANDBOX/agents.json"
+  NTFY_PRECOOL="${PRECOOL_MODE:-on}" NTFY_PRECOOL_COLD_S="${2:-600}" NTFY_PRECOOL_WARN_S="${3:-180}" \
+    in_host '
+    SB="$1"
+    date() { if [[ "$*" == "+%s" ]]; then cat "$SB/now"; else command date "$@"; fi; }
+    get_focused_pane() { cat "$SB/focus"; }
+    is_auto_muted() { return 1; }
+    is_playing() { return 1; }
+    speak_text() { printf "%s\n" "$1" >> "$SB/voice.calls"; }
+    curl() {
+      local a flat is_seq=false
+      for a in "$@"; do
+        flat="${a//$'"'"'\n'"'"'/\\n}"
+        printf "ARG<%s>\n" "$flat" >> "$SB/curl.calls"
+        [[ "$a" == "X-Sequence-ID: "* ]] && is_seq=true
+      done
+      printf "CALL\n" >> "$SB/curl.calls"
+      [[ "$is_seq" == true ]] && printf "%s" "${SEQ_STATUS:-200}"
+      return 0
+    }
+    TTS_REMINDERS=on; TTS_REMINDER_START_MIN=1; TTS_REMINDER_BACKOFF="1,1"; TTS_REMINDER_MAX=3
+    TTS_DEBOUNCE_SECONDS=20; TTS_AUTO_SCOPE=all
+    NTFY_TOPIC="t"; NTFY_SERVER="http://ntfy.example"; WEB_URL=""
+    NTFY_APPROVAL_URL=""; NTFY_APPROVAL_TOKEN=""
+    sweep() { daemon_reminders "$(cat "$SB/agents.json")"; wait; }
+    now() { printf "%s\n" "$1" > "$SB/now"; }
+    focus() { printf "%s\n" "$1" > "$SB/focus"; }
+  '"$4" "$SANDBOX" > "$SANDBOX/out" 2> "$SANDBOX/err"
+}
+
+# RF-3 restore path: with precool off (the default), the final reminder
+# keeps today's exact push bytes and the voice reminder still speaks.
+case__precool_off_keeps_ht05_final_push_bytes() {
+  PRECOOL_MODE=off STUB_OUT='{"pane_id":"3","index":3,"text":"Reminder: still waiting"}' \
+    run_precool_seq precool_off 180 60 'now 1060; sweep' || return 1
+  [[ "$(grep -cx CALL "$SANDBOX/curl.calls")" -eq 1 ]] || return 1
+  cat > "$SANDBOX/expected" <<'EOF'
+ARG<-s>
+ARG<--connect-timeout>
+ARG<5>
+ARG<--max-time>
+ARG<15>
+ARG<-H>
+ARG<Title: ✅ opencode [title-1] (3) finished>
+ARG<-H>
+ARG<Priority: high>
+ARG<-H>
+ARG<Tags: white_check_mark,robot>
+ARG<-H>
+ARG<Actions: copy, 📋 Copy command, herdr agent focus 3, clear=true>
+ARG<-d>
+ARG<Reminder: still waiting>
+ARG<http://ntfy.example/t>
+CALL
+EOF
+  diff -u "$SANDBOX/expected" "$SANDBOX/curl.calls" || return 1
+  [[ "$(cat "$SANDBOX/voice.calls")" == 'Reminder: still waiting' ]]
+}
+
+# RF-3: warn at cold−warn on the pane seq, same-minute ticks do not
+# republish, later minutes update the same seq, exactly ONE urgent
+# escalation at cold — and HT-05's final high push never fires alongside.
+# Timeline (cold=240, warn=180): arm@1000, warn@1060 (1 min), updates at
+# 1120/1180 (2, 3 min), escalation@1240 (4 min, urgent), silent@1300.
+case__precool_on_mutating_sequence_and_single_escalation() {
+  STUB_OUT='{"pane_id":"3","index":3,"text":"Reminder: still waiting"}' \
+    run_precool_seq precool_on 240 180 '
+      sweep
+      now 1060; sweep
+      now 1090; sweep
+      now 1120; sweep
+      now 1180; sweep
+      now 1240; sweep
+      now 1300; sweep
+    ' || return 1
+  [[ "$(grep -cx CALL "$SANDBOX/curl.calls")" -eq 4 ]] || return 1
+  [[ "$(grep -cxF 'ARG<X-Sequence-ID: agent-3>' "$SANDBOX/curl.calls")" -eq 4 ]] || return 1
+  [[ "$(grep -cF 'Priority: urgent' "$SANDBOX/curl.calls")" -eq 1 ]] || return 1
+  [[ "$(grep -cF 'Priority: default' "$SANDBOX/curl.calls")" -eq 3 ]] || return 1
+  ! grep -qF 'Priority: high' "$SANDBOX/curl.calls" || return 1
+  [[ "$(grep -cF 'has waited 1 min unattended' "$SANDBOX/curl.calls")" -eq 1 ]] || return 1
+  [[ "$(grep -cF 'has waited 2 min unattended' "$SANDBOX/curl.calls")" -eq 1 ]] || return 1
+  [[ "$(grep -cF 'has waited 3 min unattended' "$SANDBOX/curl.calls")" -eq 1 ]] || return 1
+  [[ "$(grep -cF 'went cold after 4 min unattended' "$SANDBOX/curl.calls")" -eq 1 ]] || return 1
+  [[ "$(grep -cF 'context cooling' "$SANDBOX/curl.calls")" -eq 4 ]] || return 1
+  # Voice reminders kept speaking on every sweep (7 due reminders here).
+  [[ "$(wc -l < "$SANDBOX/voice.calls")" -eq 7 ]]
+}
+
+# RF-3: attending the pane ends the sequence — no stale escalation from
+# the pre-attention clock once the operator looks away again (a paused
+# clock would escalate on the very next unattended sweep).
+case__precool_attention_cuts_sequence() {
+  run_precool_seq precool_cut 180 60 '
+      sweep
+      focus 3; now 1001; sweep
+      now 1004; sweep
+      focus other; now 1300; sweep
+      now 1310; sweep
+    ' || return 1
+  [[ ! -e "$SANDBOX/curl.calls" ]]
+}
+
+# Invalid timer pair: precool disabled + exactly ONE error line naming
+# both vars; never fatal.
+case__precool_invalid_range_disables_with_one_error() {
+  sandbox_setup precool_range
+  NTFY_PRECOOL=on NTFY_PRECOOL_COLD_S=100 NTFY_PRECOOL_WARN_S=100 \
+    in_host 'printf "precool=%s\n" "$NTFY_PRECOOL"' \
+    > "$SANDBOX/out" 2> "$SANDBOX/err" || return 1
+  [[ "$(grep -cF 'precool disabled: need 0 < NTFY_PRECOOL_WARN_S < NTFY_PRECOOL_COLD_S (got warn=100 cold=100)' "$SANDBOX/err")" -eq 1 ]] || return 1
+  grep -qx 'precool=off' "$SANDBOX/out"
+}
+
+# Structural pin: precool rides the HT-05 sweep (no second scheduler).
+case__precool_rides_the_reminder_sweep() {
+  sandbox_setup precool_wire
+  in_host 'declare -f daemon_reminders | grep -q precool_tick' \
+    > "$SANDBOX/out" 2> "$SANDBOX/err"
+}
+
 # The knob is a closed enum: an unknown value is off plus ONE warning line.
 case__ntfy_sequence_unknown_mode_warns_once_and_stays_off() {
   sandbox_setup seq_invalid
