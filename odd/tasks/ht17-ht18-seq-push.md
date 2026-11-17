@@ -29,16 +29,20 @@ S2 (HT-18 completa — PRD: `hosts/herdr/tts-plugin/docs/prds/HT-18-heartbeat-de
 
 | ID | Spec | Route | Status | Commit / evidencia |
 |---|---|---|---|---|
-| T0 | docs | inline | done | PRDs HT-17/18 + índice README + este doc |
-| T1 | S1 | delegated (gentle-ai-worker) | pending | — |
-| T2 | S2 | delegated (gentle-ai-worker) | pending | — |
-| T3 | seam: suites completas plugin+engine en el worktree | inline | pending | — |
-| T4 | verificación independiente HT-18 (Risk item 4: concurrency) | gentle-ai-verify | pending | — |
-| T5 | review assess por unidad (RDD) | inline | pending | — |
-| T6 | merge a `main` + push + update ESTADO-Y-PENDIENTES | inline | pending | — |
+| T0 | docs | inline | done | `4f3daf5` |
+| T1 | S1 | delegated (gentle-ai-worker) | done | `59c3ba4` — 58/58 casos plugin, diferencial off byte-idéntico |
+| T2 | S2 | delegated (gentle-ai-worker) | done | `8c331c8` + fix `7f194de` — 21/21 focused, daemon suites 85 OK, engine suite 1513 OK |
+| T3 | seam: suites completas plugin+engine en el worktree | inline | done | plugin 58/58 (parent re-run); engine 1513 passed/2 skipped (worker, forma CI `cd engine`) |
+| T4 | verificación independiente HT-18 (Risk item 4: concurrency) | gentle-ai-verify | done | not-ready → 2 blockers → corrección `7f194de` → recheck 21/21; 2 advisories documentados |
+| T5 | review assess por unidad (RDD) | inline | done | assess `high` (shell signals) review_due=true, pero RDD **off (clone_local)** → sin ciclo nativo por decisión del maintainer |
+| T6 | merge a `main` + push + update ESTADO-Y-PENDIENTES | inline | done | merge + push origin main (autorizado L1) |
 
 ## Log
 
 L1 (2026-11-17, verbatim): "abordalo, cunado termines mergea a master y pushea"
 L2: Antes de arrancar se detectó el checkout sobre `feat/live-call-latency` (7 commits propios del maintainer); se creó worktree aislado desde `main`; el checkout original quedó limpio. `main` = `origin/main` (`1b71a25` de antemano, 0 commits sin publicar) — el push final publica únicamente este merge.
 L3: Decisión de diseño heredada de las PRDs: defaults `NTFY_SEQUENCE=off` y `TTS_HEARTBEAT=off` (convención opt-in del repo, como HT-05); nadie cambia comportamiento existente sin opt-in explícito.
+L4 (verificación T4): el verificador independiente devolvió not-ready con 2 blockers reproducibles: (1) bypass del gate — un fallo transitorio seguido de rechazos permanentes (404) dejaba el loop reintentando en `probing` infinito (RF-3); (2) `TTS_HEARTBEAT_SERVER` malformado (`http://[invalid`) lanzaba `ValueError` post-IPC y tumbaba el startup del daemon (RF-2/RF-5). Advisories documentados SIN fix en este ciclo: resultado del join ignorado (thread puede sobrevivir ≤6 s a teardown) y `_shutting_down` seteado después del join (ventana de admisión). El fallo `test_providers_not_rewritten` en scratch sin .git es idéntico en el baseline (pre-existente).
+L5 (corrección, batch único): `7f194de` — `_disarm()` desde cualquier rechazo permanente (gate o beat), `load_heartbeat_settings` nunca raise (config malformada → no armar + error que nombra la var), 2 tests de regresión añadidos. RED→GREEN: 2 failed → 21 passed.
+L6 (RDD): assess sobre el diff dio `high` (señales shell_process) con review_due=true, pero `gentle-ai review mode status` reports **off (clone_local)** — decisión previa del maintainer; no se arrancó ciclo de review. Verificación ordinaria completa: focused + daemon suites + diferenciales + verificador independiente.
+L7 (entrega): merge `feat/ht17-ht18-seq-push` → `main` y push a origin (autorizado en L1). El branch `feat/live-call-latency` del maintainer quedó intocado (7 commits propios). Riesgo residual compartido: validación física F2 pendiente para ambas features (replace in-place real en Android, entrega de la alerta del heartbeat con daemon muerto).
