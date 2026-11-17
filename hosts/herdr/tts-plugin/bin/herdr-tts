@@ -285,11 +285,15 @@ DEFAULT_NTFY_IDLE_PUSH="off"
 DEFAULT_NTFY_DONE_UNATTENDED_ONLY="on"
 # HT-19/F3 (N3): pre-cooling — one mutating notification for a pending item
 # nobody attends, escalated once when the thread goes cold. New
-# interruption ⇒ opt-in (repo convention). T_cold is the expensive
-# re-entry point; the warning lands T_warn seconds before it.
+# interruption ⇒ opt-in (repo convention). Cache-anchored clock (maintainer
+# decision, 2026-11-17): COLD_S anchors to the LOWER BOUND of the observed
+# provider cache TTL (GLM/zai plan: 24-65 min window, one clean session via
+# `agent-tts cache-report`) and WARN_S is the engagement margin before it —
+# warn at TTL−margin (~15 min with these defaults). For short-TTL providers
+# (e.g. Anthropic's 5-min default) set COLD_S/WARN_S to that provider's TTL.
 DEFAULT_NTFY_PRECOOL="off"
-DEFAULT_NTFY_PRECOOL_COLD_S="600"
-DEFAULT_NTFY_PRECOOL_WARN_S="180"
+DEFAULT_NTFY_PRECOOL_COLD_S="1440"
+DEFAULT_NTFY_PRECOOL_WARN_S="540"
 DEFAULT_WEB_URL=""
 DEFAULT_WEB_LABEL=""
 DEFAULT_CLICK_REDIRECT="off"

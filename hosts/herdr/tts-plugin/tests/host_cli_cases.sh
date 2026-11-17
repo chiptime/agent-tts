@@ -1045,6 +1045,16 @@ run_precool_seq() {
   '"$4" "$SANDBOX" > "$SANDBOX/out" 2> "$SANDBOX/err"
 }
 
+# Defaults pin (cache-anchored clock, maintainer decision 2026-11-17): COLD_S
+# anchors to the observed provider-TTL lower bound (GLM: ~24 min), WARN_S is
+# the engagement margin before it (~9 min → warning at ~15 min of silence).
+case__precool_defaults_are_cache_anchored() {
+  sandbox_setup precool_defaults
+  in_host 'printf "%s/%s\n" "$NTFY_PRECOOL_COLD_S" "$NTFY_PRECOOL_WARN_S"' \
+    > "$SANDBOX/out" 2> "$SANDBOX/err" || return 1
+  [[ "$(cat "$SANDBOX/out")" == "1440/540" ]]
+}
+
 # RF-3 restore path: with precool off (the default), the final reminder
 # keeps today's exact push bytes and the voice reminder still speaks.
 case__precool_off_keeps_ht05_final_push_bytes() {

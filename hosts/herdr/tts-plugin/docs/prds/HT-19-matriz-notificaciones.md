@@ -18,11 +18,11 @@ Hoy el sistema notifica **eventos** del agente (done/blocked/idle), y los evento
 |---|---|---|---|---|
 | **N1** | Acción requerida (pregunta / permiso / blocked) | Inmediato al crearse el gate | 4–5 + botones F5 + deep link al chat | **Ya existe** (F5 + pane deep link) |
 | **N2** | Fin de turno | Turno completado + sobrevivió la ventana de coalescing existente + operador **sin atender** (foco observado >2 s reinicia la atención, como HT-05) | 3 | F2: gating por atención sobre el `done` actual |
-| **N3** | Pre-enfriamiento | Ítem pendiente sin atender y acercándose al punto de re-entrada cara: UNA notificación a `T_cold − T_warn` que de ahí solo se **actualiza** (HT-17) mientras siga desatendido; escalada única a prioridad 5 en `T_cold` | 3 → 5 | F3: evolución de HT-05 — sus 3 pushes (5/7/12 min) colapsan en 1 mutante |
+| **N3** | Pre-enfriamiento (reloj anclado al caché) | Ítem pendiente sin atender: UNA notificación a `TTL_caché − margen` que de ahí solo se **actualiza** (HT-17) mientras siga desatendido; escalada única a prioridad 5 en `TTL_caché`. El TTL ancla a la **cota inferior observada** del proveedor (medición F2b vía `agent-tts cache-report`) | 3 → 5 | F3: evolución de HT-05 — sus 3 pushes (5/7/12 min) colapsan en 1 mutante |
 | **N4** | Host/daemon caído | Dead man's switch de HT-18 | 4 | **Ya existe** (opt-in, `TTS_HEARTBEAT=on`) |
 | **N5** | Panel de flota (opcional) | Nunca interrumpe: un sequence ID por host con "2 working · 1 blocked", solo actualización | 1 (muda) | Sin planificar; agregar solo si el maintainer extraña el overview tras los cortes |
 
-**Defaults de N3:** `T_cold ≈ 10 min`, `T_warn ≈ 3 min` → primer aviso a los ~7 min de desatención. Ajustables por config.
+**Defaults de N3 (reajustados 2026-11-17, ancla de caché):** `NTFY_PRECOOL_COLD_S=1440` (cota inferior del TTL observado del plan GLM: ventana 24–65 min), `NTFY_PRECOOL_WARN_S=540` (margen de re-enganche) → primer aviso a los **~15 min** de silencio, escalada a los **~24 min**. Para proveedores de TTL corto (p. ej. Anthropic default 5 min), configurar `COLD_S`/`WARN_S` al TTL de ese proveedor. El TTL no es un contrato: el proveedor puede cambiarlo sin aviso (precedente: Anthropic 1 h → 5 min a principios de 2026) — seguir midiendo con `cache-report`.
 
 ### Estado mudo (jamás push nuevo ni sonido)
 
