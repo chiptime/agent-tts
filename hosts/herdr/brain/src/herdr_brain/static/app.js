@@ -251,6 +251,12 @@
   var SMART_TURN_PROBE_LIMIT = 2;          // probes per turn
   var SMART_TURN_RETRY_MS = 400;           // wait before re-probing a deferral
   var liveSmartTurn = false;               // capability from vad_status
+  /* PRD-05 core (2026-11-17): with server_turns the SERVER owns the
+   * utterance boundaries (Silero onset open, silence+extender close).
+   * The client's energy gate stops sending stream controls and never
+   * closes on its own — it renders partials/finals and dispatches the
+   * transcript the server sends. */
+  var liveServerTurns = false;
   var liveProbe = null;                    // { pending, sentAt, spoke }
   var liveProbeTimer = null;               // result deadline (~300 ms)
   var liveProbeRetryTimer = null;          // deferred re-probe after incomplete
@@ -6415,6 +6421,7 @@
     liveQuietSince = null;
     clearLiveProbeTimers();
     liveSmartTurn = false;
+    liveServerTurns = false;
     resetLiveSmartTurnTurn();
   }
 
@@ -6430,6 +6437,7 @@
        * true enables the probe. Anything else keeps today's path. */
       liveSmartTurn = data.smart_turn === true;
       liveSmartTurnDiag = liveSmartTurn ? "ready" : "off";
+      liveServerTurns = data.server_turns === true;
       voiceTimelinePush("vad:" + liveVadOpinion.engine, "");
       return;
     }
@@ -6442,6 +6450,9 @@
       liveVadOpinion.at = Date.now();
     } else if (data.event === "unavailable") {
       liveVadOpinion = { engine: "energy", reason: "runtime_failed", speech: false, at: Date.now() };
+      /* The framer died: the server stopped owning turns — the energy
+       * gate (start/stop/transcribe) is the owner again. */
+      liveServerTurns = false;
       voiceTimelinePush("vad:energy", "runtime");
     }
   }
@@ -6699,6 +6710,10 @@
       }
       if (data && data.type === "transcript") {
         var text = (data.text || "").trim();
+        /* PRD-02 in server_turns mode: the server's close arrives WITH
+         * the transcript — anchor the timing record here (dispatch and
+         * ask markers follow in ask()). */
+        if (liveServerTurns) liveTiming = { closeAt: performance.now() };
         /* T3: the turn is over — drop the streaming display state so a
          * late message of the finished utterance can never bleed into
          * the next one. */
@@ -6940,9 +6955,11 @@
               /* T3 (PRD-04/S5): speech onset opens the server-side
                * partial loop — partials run WHILE SPEAKING; idle silence
                * and the agent's playback never reach the GPU. A fresh
-               * utterance also resets the display tracker. */
+               * utterance also resets the display tracker. With
+               * server_turns the framer already opened the turn at the
+               * NEURAL onset — strictly earlier than this gate. */
               if (liveTracker) liveTracker.reset();
-              sendLiveStreamControl("start");
+              if (!liveServerTurns) sendLiveStreamControl("start");
             }
             setCallState("recording");
           }
@@ -6951,8 +6968,9 @@
         }
         /* S6 (D3): Silero may only DEFER the silence close — shouldFinalize
          * latches, so it is simply not consulted while the bounded hold
-         * stands. */
-        if (!sileroDefersClose() && vad.shouldFinalize()) {
+         * stands. With server_turns the server owns the close entirely:
+         * this gate only feeds the rec meter and the cap. */
+        if (!liveServerTurns && !sileroDefersClose() && vad.shouldFinalize()) {
           var why = vad.lastFinalizeReason && vad.lastFinalizeReason();
           /* L59: a bounded Smart Turn probe may DEFER this close. It can
            * never shorten the turn: `complete` proceeds, `incomplete`
@@ -7121,17 +7139,20 @@
       var durationMs = liveTurn && liveTurn.onsetAt ? (Date.now() - liveTurn.onsetAt) : 1000;
       if (liveWs && liveWs.readyState === WebSocket.OPEN) {
         /* PRD-02: a fresh timing record per close — the rejoined
-         * re-dispatch of a resumed turn re-anchors here. */
-        liveTiming = { closeAt: performance.now() };
+         * re-dispatch of a resumed turn re-anchors here. (server_turns
+         * mode: the close anchor moves to the transcript arrival.) */
+        if (!liveServerTurns) liveTiming = { closeAt: performance.now() };
         /* T3: stop the partial loop BEFORE the turn-end transcribe —
          * the server serializes both behind its one-inference lock and
          * drops whatever the last pass was still computing. */
-        sendLiveStreamControl("stop");
-        liveWs.send(JSON.stringify({
-          type: "transcribe",
-          duration_ms: durationMs,
-          pre_roll_ms: 500
-        }));
+        if (!liveServerTurns) {
+          sendLiveStreamControl("stop");
+          liveWs.send(JSON.stringify({
+            type: "transcribe",
+            duration_ms: durationMs,
+            pre_roll_ms: 500
+          }));
+        }
       } else {
         fallbackToServidor();
       }

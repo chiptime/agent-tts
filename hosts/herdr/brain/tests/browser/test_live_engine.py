@@ -1995,3 +1995,36 @@ def test_smart_turn_never_probes_past_the_utterance_cap(karaoke_app):
     page.wait_for_function(_sent_has(page, "transcribe"), timeout=5000)
     assert _turn_probe_count(page) == 0, "a cap close spent a Smart Turn probe"
     page.evaluate("() => { Date.now = window.__realNow; }")
+
+
+def test_server_turns_client_never_sends_controls_and_dispatches(karaoke_app):
+    """server_turns (PRD-05 core): when vad_status advertises it, the
+    client's energy gate sends NO stream controls — the server owns the
+    turn — and a server-sent transcript dispatches the ask as usual."""
+    harness, page = _rejoin_boot(karaoke_app)
+    page.evaluate("""() => {
+        window.__askReplies.push({status: 200, body: {answer: 'respuesta del servidor', audio_url: null}});
+    }""")
+    page.locator("#call-btn").click()
+    # The socket must exist (and the capability land) BEFORE any speech
+    # onset can fire — under suite load the connect races the emit.
+    page.wait_for_function("() => window.__wsList.length === 1", timeout=10000)
+    page.evaluate(
+        "() => window.__wsList[0].emit({type: 'vad_status', engine: 'silero',"
+        " smart_turn: false, server_turns: true})"
+    )
+    _tone_on(page)
+    page.wait_for_timeout(1200)  # the energy gate opens; no control may leave
+    sent = page.evaluate(
+        "() => window.__sent.filter(s => typeof s === 'string'"
+        " && s.indexOf('stream') >= 0).length"
+    )
+    assert sent == 0, "client sent stream controls in server_turns mode"
+    page.evaluate(
+        "() => window.__wsList[0].emit({type: 'transcript', text: 'hola desde el servidor'})"
+    )
+    page.wait_for_function("() => window.__askLog.length === 1", timeout=10000)
+    page.wait_for_function(
+        "() => document.body.textContent.indexOf('respuesta del servidor') >= 0",
+        timeout=10000,
+    )
