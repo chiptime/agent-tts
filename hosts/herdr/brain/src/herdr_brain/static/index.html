@@ -1804,11 +1804,15 @@
       flex: 1;
       min-height: 1.4em;
       max-height: 2.9em;
-      overflow: hidden;
+      /* Long phrases keep writing below the fold — follow the newest
+         text instead of looking frozen ("no deja escribir más"). */
+      overflow-y: auto;
+      scrollbar-width: none;
       font-weight: 700;
       font-style: italic;
       color: var(--text);
     }
+    #interim-text::-webkit-scrollbar { display: none; }
     #interim-text::after { content: "▌"; animation: caret-blink 1s steps(1) infinite; }
     @keyframes caret-blink { 50% { opacity: 0; } }
     #rec-meter { display: flex; align-items: center; gap: 8px; flex: 1; }

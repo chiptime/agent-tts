@@ -655,6 +655,12 @@
     var liveText = voiceEngine === "live" && !!interimTextEl.textContent &&
       (micOn || st === "recording");
     interimTextEl.classList.toggle("hidden", !(active && ((browser && micOn) || liveText)));
+    /* The strip is capped at ~2 lines by design — a long phrase keeps
+     * writing below the fold, so GLUE the view to the newest text
+     * (subtitles that roll) instead of looking frozen mid-phrase. */
+    if (liveText || (browser && micOn)) {
+      interimTextEl.scrollTop = interimTextEl.scrollHeight;
+    }
     var meterOn = active && !browser && (micOn || st === "recording");
     recMeterEl.classList.toggle("hidden", !meterOn);
     var status = "";

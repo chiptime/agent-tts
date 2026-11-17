@@ -2028,3 +2028,35 @@ def test_server_turns_client_never_sends_controls_and_dispatches(karaoke_app):
         "() => document.body.textContent.indexOf('respuesta del servidor') >= 0",
         timeout=10000,
     )
+
+
+def test_interim_strip_follows_long_transcriptions(karaoke_app):
+    """2026-11-17 device report ('no deja escribir más'): the interim strip
+    is capped at ~2 lines by design — a long phrase must keep the NEWEST
+    text visible (glued to the bottom, rolling subtitles) instead of
+    writing invisibly below the fold and looking frozen."""
+    harness, page = _rejoin_boot(karaoke_app)
+    page.evaluate("""() => {
+        window.__askReplies.push({status: 200, body: {answer: 'ok', audio_url: null}});
+    }""")
+    page.locator("#call-btn").click()
+    _tone_on(page)
+    _wait_sent_count(page, '"start"', 1)
+    long_text = "esta es una frase muy larga que sigue y sigue " * 6
+    page.evaluate(
+        "t => window.__wsList[0].emit({type: 'partial', text: t})", long_text
+    )
+    page.wait_for_function(
+        "() => document.getElementById('interim-text').textContent.length > 100",
+        timeout=5000,
+    )
+    overflowed = page.evaluate(
+        "() => { const el = document.getElementById('interim-text');"
+        " return el.scrollHeight > el.clientHeight + 2; }"
+    )
+    glued = page.evaluate(
+        "() => { const el = document.getElementById('interim-text');"
+        " return el.scrollTop + el.clientHeight >= el.scrollHeight - 2; }"
+    )
+    assert overflowed, "the fixture should overflow the ~2-line cap"
+    assert glued, "the strip must stay glued to the newest text"
