@@ -18,6 +18,7 @@ terminal, so it earns the same discipline as every other key route:
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -32,6 +33,10 @@ FIXTURES = Path(__file__).parent / "fixtures" / "dialogs"
 
 CLAUDE_SELECT = (FIXTURES / "claude-select.txt").read_text(encoding="utf-8")
 GROK_PERMISSION = (FIXTURES / "grok-permission.txt").read_text(encoding="utf-8")
+OPENCODE_MULTI = (FIXTURES / "opencode-multi.txt").read_text(encoding="utf-8")
+OPENCODE_MULTI_CONFIRM = (FIXTURES / "opencode-multi-confirm.txt").read_text(
+    encoding="utf-8"
+)
 
 BLOCKED_CLAUDE = AgentInfo(
     pane_id="w1:p3",
@@ -52,6 +57,17 @@ BLOCKED_GROK = AgentInfo(
     session_value="bbbbbbbb-1111-2222-3333-444444444444",
     cwd="/repo",
     title="Grok",
+    focused=True,
+)
+
+BLOCKED_OPENCODE = AgentInfo(
+    pane_id="w1:p3",
+    agent="opencode",
+    status="blocked",
+    session_kind="id",
+    session_value="00000000-1111-2222-3333-444444444444",
+    cwd="/repo",
+    title="OpenCode",
     focused=True,
 )
 
@@ -644,6 +660,174 @@ class TestMultiSelectAnswer:
 
         assert empty.status_code == 422
         assert repeated.status_code == 422
+
+
+def opencode_multi_screen(checked) -> str:
+    """The pinned ``opencode-multi.txt`` list with the given 0-based
+    boxes checked — the redraw the toggle choreography reads back."""
+    screen = OPENCODE_MULTI
+    for index, name in enumerate(("Red", "Green", "Blue", "Yellow")):
+        glyph = "✓" if index in checked else " "
+        screen = re.sub(
+            rf"{index + 1}\. \[[xX✔✓ ]\] {re.escape(name)}",
+            f"{index + 1}. [{glyph}] {name}",
+            screen,
+        )
+    return screen
+
+
+def opencode_confirm_screen(answer: str) -> str:
+    """The pinned Confirm-tab review (``opencode-multi-confirm.txt``)
+    with the given answer line."""
+    return OPENCODE_MULTI_CONFIRM.replace("Colour: Red", f"Colour: {answer}")
+
+
+class OpenCodeMultiStub(DialogTapStub):
+    """Drives the pinned OpenCode multi-select exactly as the reference
+    measured it (QUESTION_NOTES.md): a digit flips its own box,
+    ``tab`` moves to the Confirm tab — and back, for with two tabs
+    every move goes the other way — and ``enter`` submits only from
+    the Confirm tab."""
+
+    LABELS = ("Red", "Green", "Blue", "Yellow")
+
+    def __init__(self, agents, checked):
+        super().__init__(agents, "")
+        self.checked = set(checked)
+        self.on_confirm = False
+        self.closed = False
+
+    def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+        if self.closed:
+            return "$ pytest -q\n..........\n10 passed in 0.02s\n$ _"
+        if self.on_confirm:
+            picked = [
+                name
+                for index, name in enumerate(self.LABELS)
+                if index in self.checked
+            ]
+            return opencode_confirm_screen(", ".join(picked) or "(not answered)")
+        return opencode_multi_screen(self.checked)
+
+    def send_keys(self, pane_id, keys):
+        super().send_keys(pane_id, keys)
+        for key in keys:
+            if key in ("1", "2", "3", "4"):
+                index = int(key) - 1
+                if index in self.checked:
+                    self.checked.discard(index)
+                else:
+                    self.checked.add(index)
+            elif key == "tab":
+                self.on_confirm = not self.on_confirm
+            elif key == "enter" and self.on_confirm:
+                self.closed = True
+        return {"ok": True, "error": ""}
+
+
+class HijackedOpenCodeTabStub(OpenCodeMultiStub):
+    """After ``tab`` the redraw is ANOTHER dialog's list — never this
+    dialog's Confirm review: the commit must stop with nothing further
+    sent (no ``enter``)."""
+
+    def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+        if self.on_confirm:
+            return opencode_multi_screen(self.checked).replace(
+                "Which colours?", "Which sauces?"
+            ).replace("Colour   Confirm", "Sauce   Confirm")
+        return super().read_screen(pane_id, n_lines, source, as_ansi)
+
+
+class WizardStripOpenCodeStub(OpenCodeMultiStub):
+    """The same list under a THREE-chip strip (a many-question call's
+    step): the active chip is painted style, so no commit can be
+    derived from text alone."""
+
+    def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+        return super().read_screen(
+            pane_id, n_lines, source, as_ansi
+        ).replace("Colour   Confirm", "Colour   Size   Confirm")
+
+
+class TestOpenCodeMultiTabCommit:
+    """T4b: the pinned OpenCode multi-select carries NO submit row —
+    the reference measured the commit as the Confirm tab's own
+    choreography (a digit toggles its own box, ``tab`` reaches
+    Confirm, ``enter`` submits there). The boxes are toggled and
+    verified exactly as on Claude; then ``tab`` must land THIS dialog's
+    Confirm review — the same tab chips, the review footer — before
+    ``enter``. Anything else is a 409 with nothing further sent."""
+
+    def _post(self, client, choices, fingerprint):
+        return client.post(
+            "/pane/dialog/answer",
+            json={
+                "pane_id": "w1:p3",
+                "fingerprint": fingerprint,
+                "choices": choices,
+            },
+        )
+
+    def test_choices_toggle_then_tab_to_confirm_and_enter(self, make_client):
+        stub = OpenCodeMultiStub([BLOCKED_OPENCODE], checked={0})
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        fingerprint = _fingerprint("opencode", stub.read_screen("w1:p3"))
+
+        response = self._post(client, [1, 2], fingerprint)
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["ok"] is True
+        assert body["choices"] == [1, 2]
+        # Red's pre-checked box turns OFF and Green and Blue turn ON —
+        # one digit each, re-read between — then the measured commit:
+        # tab reaches the Confirm tab, enter submits on it.
+        assert stub.key_calls == [
+            {"pane_id": "w1:p3", "keys": ["1"]},
+            {"pane_id": "w1:p3", "keys": ["2"]},
+            {"pane_id": "w1:p3", "keys": ["3"]},
+            {"pane_id": "w1:p3", "keys": ["tab"]},
+            {"pane_id": "w1:p3", "keys": ["enter"]},
+        ]
+        assert stub.closed is True
+        entries = audit_entries(client)
+        answer = next(e for e in entries if e["action"] == "pane.dialog.answer")
+        assert answer["detail"]["outcome"] == "answered"
+        assert answer["detail"]["choices"] == [1, 2]
+
+    def test_a_wizard_step_strip_refuses_before_any_key(self, make_client):
+        """A three-chip strip has another question's tab between the
+        active one and Confirm (the wrap was measured), and Enter on a
+        checkbox step would TOGGLE a box: no commit is derivable from
+        text, so the answer refuses before sending a key."""
+        stub = WizardStripOpenCodeStub([BLOCKED_OPENCODE], checked=set())
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        fingerprint = _fingerprint("opencode", stub.read_screen("w1:p3"))
+
+        response = self._post(client, [0], fingerprint)
+
+        assert response.status_code == 422
+        assert stub.key_calls == []
+
+    def test_drift_after_tab_is_a_409_and_no_enter_leaves(self, make_client):
+        stub = HijackedOpenCodeTabStub([BLOCKED_OPENCODE], checked=set())
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        fingerprint = _fingerprint("opencode", stub.read_screen("w1:p3"))
+
+        response = self._post(client, [0], fingerprint)
+
+        assert response.status_code == 409
+        assert "cambió" in response.json()["detail"]
+        # The toggle and the tab left; the hijacked redraw — not this
+        # dialog's Confirm review — got NOTHING further.
+        assert stub.key_calls == [
+            {"pane_id": "w1:p3", "keys": ["1"]},
+            {"pane_id": "w1:p3", "keys": ["tab"]},
+        ]
+        assert stub.closed is False
+        entries = audit_entries(client)
+        assert entries[-1]["detail"]["reason"] == "changed"
+        assert entries[-1]["detail"]["choices"] == [0]
 
 
 def free_text_screen(pointer: int, typed: str = "") -> str:

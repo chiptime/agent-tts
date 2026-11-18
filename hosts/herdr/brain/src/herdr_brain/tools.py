@@ -930,6 +930,11 @@ class BrainTools:
         its identity changed, a box never flipped — stops the answer
         with ``changed`` and sends NOTHING further: half a selection is
         never submitted blindly.
+
+        A dialog with NO submit row but a two-chip tab strip (the
+        OpenCode multi the reference pinned, T4b) commits with the
+        strip's own measured choreography instead — see
+        :meth:`_commit_multiselect_tabs`.
         """
         from . import dialog as dialog_guard
 
@@ -947,7 +952,16 @@ class BrainTools:
             for index, option in enumerate(model.options)
             if option.checked is None
         ]
-        if not boxes or len(submit_rows) != 1:
+        if not boxes:
+            return refused("invalid_target", "this dialog has no checkbox rows")
+        # The tab-strip commit exists only when the strip's last chip is
+        # ONE tab away: two chips mean the active one is the question
+        # (the footer's ``enter toggle`` verb is the active tab's own),
+        # so ``tab`` lands on Confirm/Submit. A longer strip may hold
+        # another question between them and the active chip is painted
+        # style, invisible in text — no commit can be derived, refuse.
+        tab_commit = not submit_rows and len(model.tab_strip) == 2
+        if not tab_commit and len(submit_rows) != 1:
             return refused("invalid_target", "this dialog has no single submit row")
         wanted = sorted(set(choices))
         for index in wanted:
@@ -989,6 +1003,11 @@ class BrainTools:
                     "changed", "the checked boxes do not match the requested selection"
                 )
 
+        if tab_commit:
+            return self._commit_multiselect_tabs(
+                pane_id, current, wanted, reader, sender, refused
+            )
+
         try:
             outcome = dialog_guard.answer_dialog(
                 reader,
@@ -1010,6 +1029,58 @@ class BrainTools:
                 "label": current.options[submit_rows[0]].label,
             }
         return refused(outcome.reason or "changed", outcome.detail)
+
+    def _commit_multiselect_tabs(
+        self, pane_id, model, wanted, reader, sender, refused
+    ) -> dict:
+        """The tab-strip commit (T4b): the OpenCode pinned multi's own
+        measured choreography — ``tab`` reaches the Confirm/Submit tab
+        and ``enter`` submits there (the reference's key plan; with two
+        chips the question tab is provably the active one, because the
+        footer's ``enter toggle`` verb follows the ACTIVE tab).
+
+        Every step is verified against the terminal, never assumed:
+        the landing after ``tab`` must be THIS dialog's review — the
+        same tab chips over the review footer — read back within the
+        guard's own poll bound. Anything else stops the answer with
+        ``changed`` and sends NOTHING further: ``enter`` on a checkbox
+        step would toggle a box, so a selection is never submitted to
+        a screen that was not read first.
+        """
+        from . import dialog as dialog_guard
+        from .dialogs.adapters.opencode import confirm_review
+
+        chips = tuple(model.tab_strip)
+        try:
+            sender(pane_id, ["tab"])
+        except HerdrError as exc:
+            return refused("send-failed", str(exc))
+
+        pause = self._sleeper or time.sleep
+        landed = False
+        for _ in range(dialog_guard.POLL_ATTEMPTS):
+            pause(dialog_guard.POLL_DELAY_MS / 1000)
+            text = reader(pane_id, DIALOG_SCREEN_LINES)
+            if tuple(confirm_review((text or "").splitlines()) or ()) == chips:
+                landed = True
+                break
+        if not landed:
+            return refused(
+                "changed",
+                "the dialog never reached its Confirm tab; "
+                "nothing further was sent",
+            )
+
+        try:
+            sender(pane_id, ["enter"])
+        except HerdrError as exc:
+            return refused("send-failed", str(exc))
+        return {
+            "outcome": "answered",
+            "pane_id": pane_id,
+            "choices": wanted,
+            "label": chips[-1],
+        }
 
     def _await_box(self, pane_id, index, want, tapped, readd):
         """Waits, bounded, for the toggled box to show ``want``.

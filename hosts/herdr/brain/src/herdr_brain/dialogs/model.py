@@ -91,6 +91,12 @@ class StructuredDialog:
     nav_keys: Tuple[str, ...] = ()
     commit_keys: Tuple[str, ...] = ()
     selected: Optional[int] = None
+    #: OpenCode tab-strip metadata (T4b): the question-chip labels the
+    #: pinned grammar read, ending in the ``Confirm``/``Submit`` chip.
+    #: The choices choreography derives its commit from them (``tab``
+    #: reaches the last chip only when it is one tab away); empty on
+    #: every other dialog, and never sent to the PWA.
+    tab_strip: Tuple[str, ...] = ()
     #: The explicit cannot-read state (no options, no keys, ever).
     unread: bool = False
     #: Why it cannot be read, when it cannot.

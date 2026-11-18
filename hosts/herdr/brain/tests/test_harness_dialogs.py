@@ -495,6 +495,9 @@ class TestOpencodeMulti:
         # the commit (tab to Confirm, enter there) is not a row recipe.
         assert [o.checked for o in model.options].count(None) == 0
         assert model.nav_keys == () and model.commit_keys == ()
+        # The tab strip rides along additively (T4b): the chips the
+        # commit choreography derives `tab`+`enter` from.
+        assert model.tab_strip == ("Colour", "Confirm")
 
     def test_opencode2_multi_with_the_submit_chip_reads_the_same(self):
         model = detect("opencode2", fixture("opencode2-multi.txt"))
@@ -504,6 +507,22 @@ class TestOpencodeMulti:
         assert labels(model) == ["Ham", "Olives", "Cheese", "Mushroom"]
         assert [o.checked for o in model.options] == [True, False, False, False]
         assert recipes(model) == [("1",), ("2",), ("3",), ("4",)]
+        assert model.tab_strip == ("Toppings", "Submit")
+
+    def test_the_confirm_review_stays_unclaimed_and_reads_its_chips(self):
+        """The Confirm tab's own screen (footer ``⇆ tab  enter submit
+        esc dismiss``) is not an answerable list: no recognizer claims
+        it. The commit choreography verifies it through the adapter's
+        review reader, which returns the tab strip it saw — the same
+        chips the list carried, the identity of the landing."""
+        screen = fixture("opencode-multi-confirm.txt")
+
+        model = detect("opencode", screen)
+
+        assert model is None
+        from herdr_brain.dialogs.adapters.opencode import confirm_review
+
+        assert confirm_review(screen.splitlines()) == ["Colour", "Confirm"]
 
     def test_multi_fingerprint_ignores_its_own_box_flips(self):
         """The answer choreography flips boxes ON PURPOSE: the digest is

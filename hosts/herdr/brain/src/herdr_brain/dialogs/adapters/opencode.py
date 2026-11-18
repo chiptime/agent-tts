@@ -153,11 +153,11 @@ class _QuestionAdapterBase(AdapterBase):
         TOGGLES its own box whatever the pointer is on (each option's
         ``keys``), and the commit is the Confirm tab's own ``tab`` +
         ``enter`` — no row on this screen carries it, so the model
-        offers NO submit row rather than synthesize one, and the
-        choices choreography refuses before sending a key. The pointer
-        is painted STYLE (a colour chip), invisible in text: no walk
-        is claimed. The fingerprint erases the box glyphs — the
-        choreography flips them on purpose.
+        offers NO submit row and carries the tab chips instead
+        (``tab_strip``): the choices choreography derives the commit
+        from them. The pointer is painted STYLE (a colour chip),
+        invisible in text: no walk is claimed. The fingerprint erases
+        the box glyphs — the choreography flips them on purpose.
         """
         flat = " ".join(footer.split())
         if not _MULTI_PINNED_FOOTER.search(flat):
@@ -251,11 +251,73 @@ class _QuestionAdapterBase(AdapterBase):
                 _boxes_normalized(dialog_region(texts, first_option))
             ),
             hint=footer,
+            tab_strip=tuple(tab_chips),
         )
 
 
 def _is_free_text(label: str) -> bool:
     return label.strip().lower().startswith("type your own answer")
+
+
+#: The Confirm/Submit tab's review footer (whitespace-insensitive):
+#: the same hint family minus the list verbs — neither ``↑↓ select``
+#: nor ``enter toggle`` survives on the last tab (QUESTION_NOTES.md
+#: footer table; the review captures
+#: ``oc--question--multi--confirm.txt`` / ``oc--v211-question--
+#: multi--review.txt``). The negative half refuses every list footer
+#: of the same family, so only the review claims it.
+_REVIEW_PINNED_FOOTER = re.compile(
+    r"⇆\s*tab\b.*?enter\s+submit\b.*?esc\s+dismiss\b",
+    re.IGNORECASE,
+)
+_REVIEW_LIST_VERBS = re.compile(r"↑↓\s*select|enter\s+toggle", re.IGNORECASE)
+#: How far above the review footer the tab strip may sit: the review
+#: body is one ``Header: value`` row per question and 1.x heads it
+#: with ``Review``, so two chips sit at most a handful of rows up.
+_REVIEW_STRIP_LOOKBACK = 8
+
+
+def confirm_review(lines: List[str]) -> Optional[List[str]]:
+    """The tab chips when the screen is the Confirm/Submit tab's review
+    of a tabbed question dialog, else ``None``.
+
+    This is the LANDING the commit choreography must read back after
+    ``tab`` (T4b): the review footer pins the shape, and the tab strip
+    — the same chips the list carried — names WHICH dialog's review it
+    is. The review body's ``Header: value`` rows are not parsed: the
+    answers were already verified box by box on the list, and the
+    body's own words are the terminal's retelling, not a contract.
+    """
+    texts = [line.rstrip() for line in lines]
+    tail = [text for text in texts if text.strip()][-6:]
+    if not any(_BAR in text for text in tail):
+        return None
+    footer = strip_gutter(footer_line(texts)).strip()
+    if not footer:
+        return None
+    flat = " ".join(footer.split())
+    if not _REVIEW_PINNED_FOOTER.search(flat):
+        return None
+    if _REVIEW_LIST_VERBS.search(flat):
+        return None
+
+    footer_index = next(
+        (
+            index
+            for index in range(len(texts) - 1, -1, -1)
+            if texts[index].strip()
+            and strip_gutter(texts[index]).strip() == footer
+        ),
+        len(texts),
+    )
+    # Above the footer: the review body (`Header: value` rows, 1.x's
+    # `Review` heading, bare rows), then the tab strip. A body row is
+    # single-spaced words, so it never parses as two-or-more chips.
+    for index in range(footer_index - 1, max(-1, footer_index - 1 - _REVIEW_STRIP_LOOKBACK), -1):
+        chips = _tab_chips(strip_gutter(texts[index]).strip())
+        if chips is not None:
+            return chips
+    return None
 
 
 def _tab_chips(row: str) -> Optional[List[str]]:
