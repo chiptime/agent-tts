@@ -85,6 +85,22 @@ _SUBMIT_ROW = re.compile(r"^submit$", re.IGNORECASE)
 #: Pointer glyphs the family draws on the highlighted row.
 _POINTER_GLYPHS = "❯›>→►▸"
 
+#: A step marker the stepper can trust (S4): ``N/M`` with a sane ratio.
+#: Anything else keeps today's model (marker string, no step metadata)
+#: and the PWA renders the dialog as a plain one.
+_STEP_META = re.compile(r"^(\d{1,2})/(\d{1,2})$")
+
+
+def _step_meta(marker: str) -> Tuple[Optional[int], Optional[int]]:
+    """``"1/2"`` → ``(1, 2)``; every other shape → ``(None, None)``."""
+    match = _STEP_META.match(marker)
+    if not match:
+        return None, None
+    step, total = int(match.group(1)), int(match.group(2))
+    if step < 1 or total < 1 or step > total:
+        return None, None
+    return step, total
+
 
 class ClaudeAdapter(AdapterBase):
     agent = "claude"
@@ -119,6 +135,7 @@ class ClaudeAdapter(AdapterBase):
         if not question:
             return None
         step = step_marker_above(lines, first)
+        step_number, step_total = _step_meta(step)
         # S3: the select family keeps the free-text rows of the block —
         # re-collect with them counted as rows instead of block-enders.
         # The multiselect above keeps the default (its closed checkbox
@@ -141,6 +158,8 @@ class ClaudeAdapter(AdapterBase):
             fingerprint=fingerprint_region(dialog_region(lines, first)),
             hint=footer,
             step=step,
+            step_number=step_number,
+            step_total=step_total,
             selected=next(
                 (position for position, row in enumerate(rows) if row[3]), None
             ),
@@ -181,6 +200,11 @@ class ClaudeAdapter(AdapterBase):
         if boxes < 2 or not submit:
             return None
 
+        # A multi-select step of a wizard keeps its answering kind and
+        # gains the marker + stepper metadata (S4): the PWA drives it
+        # with the same choices path, one step at a time.
+        step = step_marker_above(lines, first)
+        step_number, step_total = _step_meta(step)
         return StructuredDialog(
             agent=self.agent,
             kind="multiselect",
@@ -190,6 +214,9 @@ class ClaudeAdapter(AdapterBase):
                 _state_normalized(dialog_region(lines, first))
             ),
             hint=footer,
+            step=step,
+            step_number=step_number,
+            step_total=step_total,
             nav_keys=("up", "down"),
             commit_keys=("enter",),
             selected=next(

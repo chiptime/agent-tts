@@ -195,3 +195,276 @@ test("confirmFreeText: reuses the injected reply.destructive_confirm wording", (
     "This send looks destructive: git push --force.\n\ngit push --force\n\nSend anyway?");
   Dialogs.useTranslator(null);
 });
+
+/* Wizard (S4): a wizard step whose payload carries `wizard: {step,
+ * steps}` gets a stepper. Each step's answer is captured LOCALLY with
+ * the same option/choices/text model; Next posts one step at a time
+ * through the existing endpoint payloads; the LAST step stops at a
+ * review (Confirm sends it, Edit returns to a capture without sending);
+ * any drift — a 409 changed response, or a next dialog that is not the
+ * expected step — aborts with the changed card and never retries. */
+
+const WIZARD_STEP1 = {
+  agent: "claude",
+  kind: "wizard_step",
+  wizard: { step: 1, steps: 2 },
+  question: "Which fruit do you want?",
+  options: [
+    { label: "Manzana", description: "" },
+    { label: "Pera", description: "" },
+  ],
+  fingerprint: "fp1",
+  recipe: "keys",
+};
+
+const WIZARD_STEP2 = {
+  agent: "claude",
+  kind: "multiselect",
+  wizard: { step: 2, steps: 2 },
+  question: "Which toppings?",
+  options: [
+    { label: "Cheese", checked: false },
+    { label: "Pepperoni", checked: true },
+    { label: "Submit", checked: null },
+  ],
+  fingerprint: "fp2",
+  recipe: "keys",
+};
+
+function recordingSend(result) {
+  const calls = [];
+  const fn = function (payload) {
+    calls.push(payload);
+    return Promise.resolve(result || { ok: true, status: 200, body: {} });
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+/* The canonical two-step run: step 1 captured and posted, step 2 (the
+ * last) captured and held at the review. */
+async function wizardAtReview(send) {
+  const wizard = Dialogs.wizardSession(send);
+  wizard.feed(WIZARD_STEP1, "w1:p3");
+  wizard.pick(1);
+  await wizard.next();
+  wizard.feed(WIZARD_STEP2, "w1:p3");
+  wizard.toggle(0);
+  await wizard.next();
+  return wizard;
+}
+
+test("wizardOf: only a well-formed wizard metadata object counts", () => {
+  assert.deepEqual(Dialogs.wizardOf(WIZARD_STEP1), { step: 1, steps: 2 });
+  assert.deepEqual(Dialogs.wizardOf(WIZARD_STEP2), { step: 2, steps: 2 });
+  assert.equal(Dialogs.wizardOf(STRUCTURED), null);
+  assert.equal(Dialogs.wizardOf({ unread: true, agent: "claude" }), null);
+  assert.equal(Dialogs.wizardOf(null), null);
+  assert.equal(
+    Dialogs.wizardOf({ kind: "wizard_step", wizard: { step: 2 } }), null);
+  assert.equal(
+    Dialogs.wizardOf({ kind: "wizard_step", wizard: { step: 0, steps: 2 } }),
+    null);
+  assert.equal(
+    Dialogs.wizardOf({ kind: "wizard_step", wizard: { step: 3, steps: 2 } }),
+    null);
+});
+
+test("wizard: Next posts the captured step-1 option exactly once", async () => {
+  const send = recordingSend();
+  const wizard = Dialogs.wizardSession(send);
+  wizard.feed(WIZARD_STEP1, "w1:p3");
+  assert.equal(wizard.view().mode, "capturing");
+
+  wizard.pick(1);
+  const result = await wizard.next();
+
+  assert.ok(result.ok);
+  assert.equal(send.calls.length, 1);
+  assert.deepEqual(send.calls[0], {
+    pane_id: "w1:p3", fingerprint: "fp1", option: 1,
+  });
+  assert.equal(wizard.view().mode, "waiting");
+  /* Waiting for the next step's dialog: no path posts again. */
+  await wizard.next();
+  await wizard.confirm();
+  assert.equal(send.calls.length, 1);
+});
+
+test("wizard: an empty capture never posts", async () => {
+  const send = recordingSend();
+  const wizard = Dialogs.wizardSession(send);
+  wizard.feed(WIZARD_STEP1, "w1:p3");
+
+  const result = await wizard.next();
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "empty");
+  assert.equal(send.calls.length, 0);
+  assert.equal(wizard.view().mode, "capturing");
+});
+
+test("wizard: the last step stops at a review listing every answer", async () => {
+  const send = recordingSend();
+  const wizard = await wizardAtReview(send);
+
+  assert.equal(send.calls.length, 1);  /* only step 1 left */
+  const view = wizard.view();
+  assert.equal(view.mode, "reviewing");
+  assert.equal(view.steps, 2);
+  assert.equal(view.answers.length, 2);
+  assert.equal(view.answers[0].question, "Which fruit do you want?");
+  assert.deepEqual(view.answers[0].labels, ["Pera"]);
+  assert.equal(view.answers[0].submitted, true);
+  assert.deepEqual(view.answers[1].labels, ["Cheese", "Pepperoni"]);
+  assert.equal(view.answers[1].submitted, false);
+});
+
+test("wizard: Edit returns to a step's capture without posting", async () => {
+  const send = recordingSend();
+  const wizard = await wizardAtReview(send);
+
+  wizard.edit(1);
+
+  const view = wizard.view();
+  assert.equal(view.mode, "capturing");
+  assert.equal(view.current, 1);
+  assert.equal(send.calls.length, 1);  /* nothing new posted */
+  /* The capture is restored to what that step chose. */
+  assert.equal(wizard.pickedIndex(), 1);
+});
+
+test("wizard: Confirm sends the pending last step and finishes", async () => {
+  const send = recordingSend();
+  const wizard = await wizardAtReview(send);
+
+  const result = await wizard.confirm();
+
+  assert.ok(result.ok);
+  assert.equal(send.calls.length, 2);
+  assert.deepEqual(send.calls[1], {
+    pane_id: "w1:p3", fingerprint: "fp2", choices: [0, 1],
+  });
+  const view = wizard.view();
+  assert.equal(view.mode, "waiting");
+  assert.equal(view.answers[1].submitted, true);
+  /* The dialog leaving the pane completes the wizard (nothing pending). */
+  wizard.feed(null, "w1:p3");
+  assert.equal(wizard.view().mode, "idle");
+});
+
+test("wizard: a 409 changed response aborts with the card and no retries", async () => {
+  const send = recordingSend({ ok: false, status: 409, body: {} });
+  const wizard = Dialogs.wizardSession(send);
+  wizard.feed(WIZARD_STEP1, "w1:p3");
+  wizard.pick(0);
+
+  const result = await wizard.next();
+
+  assert.equal(result.ok, false);
+  const view = wizard.view();
+  assert.equal(view.mode, "aborted");
+  assert.equal(view.error, "changed");
+  assert.ok(/cambió/i.test(Dialogs.wizardChangedMessage()));
+  /* No path posts again, and later dialogs do not restart the machine. */
+  await wizard.next();
+  await wizard.confirm();
+  wizard.feed(WIZARD_STEP2, "w1:p3");
+  assert.equal(send.calls.length, 1);
+  assert.equal(wizard.view().mode, "aborted");
+});
+
+test("wizard: a next dialog that is not the expected step aborts", async () => {
+  const send = recordingSend();
+  const wizard = Dialogs.wizardSession(send);
+  wizard.feed(WIZARD_STEP1, "w1:p3");
+  wizard.pick(0);
+  await wizard.next();
+
+  const wrongStep = Object.assign({}, WIZARD_STEP2, {
+    wizard: { step: 1, steps: 2 },
+    fingerprint: "fpX",
+  });
+  wizard.feed(wrongStep, "w1:p3");
+
+  assert.equal(wizard.view().mode, "aborted");
+  await wizard.confirm();
+  assert.equal(send.calls.length, 1);
+});
+
+test("wizard: while waiting, the un-advanced same screen is tolerated", async () => {
+  const send = recordingSend();
+  const wizard = Dialogs.wizardSession(send);
+  wizard.feed(WIZARD_STEP1, "w1:p3");
+  wizard.pick(1);
+  await wizard.next();
+
+  /* The pane's redraw lag: the SAME step, same fingerprint, again. */
+  wizard.feed(WIZARD_STEP1, "w1:p3");
+  assert.equal(wizard.view().mode, "waiting");
+
+  wizard.feed(WIZARD_STEP2, "w1:p3");
+  const view = wizard.view();
+  assert.equal(view.mode, "capturing");
+  assert.equal(view.current, 2);
+});
+
+test("wizard: Back rewinds only local selections, never a sent step", async () => {
+  const send = recordingSend();
+  const wizard = Dialogs.wizardSession(send);
+  wizard.feed(WIZARD_STEP1, "w1:p3");
+
+  /* Nothing marked yet on the first step: nothing to rewind. */
+  let back = wizard.back();
+  assert.deepEqual(back, { ok: false, reason: "first" });
+
+  wizard.pick(1);
+  back = wizard.back();
+  assert.deepEqual(back, { ok: true });
+  assert.equal(wizard.pickedIndex(), null);
+  assert.equal(send.calls.length, 0);
+
+  /* After a step was submitted, Back has nothing local to rewind and
+   * says WHY: an already-sent step cannot be un-sent. */
+  wizard.pick(0);
+  await wizard.next();
+  wizard.feed(WIZARD_STEP2, "w1:p3");
+  wizard.toggle(2);
+  back = wizard.back();
+  assert.deepEqual(back, { ok: false, reason: "sent" });
+});
+
+test("wizard chrome: translated labels with Spanish fallbacks", () => {
+  assert.equal(Dialogs.wizardProgressLabel(1, 2), "Paso 1 de 2");
+  assert.equal(Dialogs.wizardNextLabel(), "Siguiente");
+  assert.equal(Dialogs.wizardBackLabel(), "Atrás");
+  assert.ok(/enviad/.test(Dialogs.wizardBackDisabledReason("sent")));
+  assert.ok(/nada/i.test(Dialogs.wizardBackDisabledReason("first")));
+  assert.ok(/revis/i.test(Dialogs.wizardReviewTitle()));
+  assert.ok(/confirmar/i.test(Dialogs.wizardConfirmLabel()));
+  assert.equal(Dialogs.wizardEditLabel(), "Editar");
+  assert.ok(/cambió/i.test(Dialogs.wizardChangedMessage()));
+
+  Dialogs.useTranslator(function (key) {
+    return ({
+      "dialogs.wizard_progress": "Step {step} of {steps}",
+      "dialogs.wizard_next": "Next",
+      "dialogs.wizard_back": "Back",
+      "dialogs.wizard_back_sent": "Sent steps cannot be undone.",
+      "dialogs.wizard_review_title": "Review your answers",
+      "dialogs.wizard_confirm": "Confirm and send",
+      "dialogs.wizard_edit": "Edit",
+      "dialogs.wizard_changed": "The wizard changed; nothing further was sent.",
+    })[key] || key;
+  });
+  assert.equal(Dialogs.wizardProgressLabel(2, 3), "Step 2 of 3");
+  assert.equal(Dialogs.wizardNextLabel(), "Next");
+  assert.equal(Dialogs.wizardBackLabel(), "Back");
+  assert.equal(Dialogs.wizardBackDisabledReason("sent"),
+    "Sent steps cannot be undone.");
+  assert.equal(Dialogs.wizardReviewTitle(), "Review your answers");
+  assert.equal(Dialogs.wizardConfirmLabel(), "Confirm and send");
+  assert.equal(Dialogs.wizardEditLabel(), "Edit");
+  assert.ok(/changed/.test(Dialogs.wizardChangedMessage()));
+  Dialogs.useTranslator(null);
+});

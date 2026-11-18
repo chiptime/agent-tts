@@ -38,6 +38,8 @@ CORPUS = {
         "claude-permission.txt",
         "claude-trust.txt",
         "claude-wizard.txt",
+        "claude-wizard-2of2.txt",
+        "claude-wizard-multi.txt",
         "claude-multi.txt",
     ),
     "codex": ("codex-trust.txt", "codex-approval.txt", "codex-ask.txt"),
@@ -253,6 +255,89 @@ class TestClaudeFreeText:
         )
 
         assert detect("claude", screen) is None
+
+
+class TestWizardStepMetadata:
+    """S4: the ``N/M`` marker a wizard step already carries becomes the
+    step metadata (current + total) the PWA stepper orchestrates over.
+
+    Strictly additive and strictly parsed: only a well-formed ``N/M``
+    (1-based, current ≤ total) yields ``step``/``steps``; anything else
+    keeps today's exact payload — no ``wizard`` key, the marker string
+    untouched — and the PWA treats the dialog as a plain one."""
+
+    def test_step_one_of_two_parses_current_and_total(self):
+        model = detect("claude", fixture("claude-wizard.txt"))
+
+        assert model.kind == "wizard_step"
+        assert model.step == "1/2"
+        assert model.step_number == 1
+        assert model.step_total == 2
+        payload = model.payload()
+        assert payload["wizard"] == {"step": 1, "steps": 2}
+        # The marker string keeps today's shape for every wizard dialog.
+        assert payload["step"] == "1/2"
+
+    def test_step_two_of_two_parses_the_same_way(self):
+        model = detect("claude", fixture("claude-wizard-2of2.txt"))
+
+        assert model.kind == "wizard_step"
+        assert model.step == "2/2"
+        assert model.step_number == 2
+        assert model.step_total == 2
+        assert model.payload()["wizard"] == {"step": 2, "steps": 2}
+
+    def test_a_multiselect_step_carries_marker_and_metadata(self):
+        """A multi-select wizard step keeps its answering kind and gains
+        the same metadata — the PWA's stepper drives it with the
+        existing ``choices`` path."""
+        model = detect("claude", fixture("claude-wizard-multi.txt"))
+
+        assert model.kind == "multiselect"
+        assert model.step == "2/2"
+        assert model.step_number == 2
+        assert model.step_total == 2
+        assert model.payload()["wizard"] == {"step": 2, "steps": 2}
+
+    def test_a_plain_select_and_multiselect_keep_today_payload(self):
+        for name in ("claude-select.txt", "claude-multi.txt"):
+            payload = detect("claude", fixture(name)).payload()
+
+            assert "wizard" not in payload
+            assert payload["step"] == ""
+
+    def test_an_unparsable_marker_keeps_today_payload_with_no_wizard(self):
+        """Detection itself only ever yields ``N/M`` markers, so the
+        fail-safe is pinned at the model: a dialog whose marker does not
+        parse carries NO step metadata and the PWA renders it plain."""
+        from herdr_brain.dialogs.model import StructuredDialog
+
+        raw = StructuredDialog(
+            agent="claude",
+            kind="wizard_step",
+            question="Q",
+            options=(),
+            fingerprint="f",
+            step="x/y",
+        )
+        payload = raw.payload()
+
+        assert "wizard" not in payload
+        assert payload["step"] == "x/y"
+
+    def test_a_nonsense_ratio_declines_metadata_but_keeps_the_dialog(self):
+        screen = fixture("claude-wizard.txt").replace("1/2", "3/2")
+
+        model = detect("claude", screen)
+
+        assert model is not None and model.kind == "wizard_step"
+        assert model.step == "3/2"
+        assert model.step_number is None
+        assert model.step_total is None
+        assert "wizard" not in model.payload()
+
+    def test_a_neutral_buffer_still_declines(self):
+        assert detect("claude", fixture("neutral-terminal.txt")) is None
 
 
 class TestCodex:

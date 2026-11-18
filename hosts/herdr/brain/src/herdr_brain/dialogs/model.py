@@ -80,6 +80,12 @@ class StructuredDialog:
     hint: str = ""
     #: Wizard/wizard-step marker as the screen prints it ("1/2").
     step: str = ""
+    #: The SAME marker parsed for the PWA stepper (S4): current step
+    #: (1-based) and total. ``None`` unless ``step`` is a well-formed
+    #: ``N/M`` — anything unparsable keeps today's payload (no
+    #: ``wizard`` key) and renders as a plain dialog.
+    step_number: Optional[int] = None
+    step_total: Optional[int] = None
     #: Walk-class facts: the screen's own arrows, its commit key, and
     #: which option carries the pointer.
     nav_keys: Tuple[str, ...] = ()
@@ -110,6 +116,14 @@ class StructuredDialog:
             "kind": self.kind,
             "question": self.question,
             "step": self.step,
+            # Additive on purpose (S4): the stepper metadata rides along
+            # ONLY when the marker parsed, so every payload without it
+            # keeps its exact previous shape.
+            **(
+                {"wizard": {"step": self.step_number, "steps": self.step_total}}
+                if self.step_number is not None and self.step_total is not None
+                else {}
+            ),
             "hint": self.hint,
             "fingerprint": self.fingerprint,
             "recipe": "keys" if any(option.keys for option in self.options) else "walk",

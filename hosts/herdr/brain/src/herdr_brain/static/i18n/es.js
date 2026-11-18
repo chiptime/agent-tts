@@ -129,6 +129,15 @@
     "dialogs.changed": "El diálogo cambió antes de responder; nada se envió. Mira la pantalla y responde al diálogo nuevo, o usa el teclado.",
     "dialogs.option_gone": "Esa opción ya no está en el diálogo; usa el teclado.",
     "dialogs.fail": "No se pudo responder el diálogo; usa el teclado.",
+    "dialogs.wizard_progress": "Paso {step} de {steps}",
+    "dialogs.wizard_next": "Siguiente",
+    "dialogs.wizard_back": "Atrás",
+    "dialogs.wizard_back_sent": "Los pasos ya enviados no se pueden deshacer; Atrás solo limpia lo marcado en el paso actual.",
+    "dialogs.wizard_back_empty": "No hay nada marcado en este paso.",
+    "dialogs.wizard_review_title": "Revisa tus respuestas",
+    "dialogs.wizard_confirm": "Confirmar y enviar",
+    "dialogs.wizard_edit": "Editar",
+    "dialogs.wizard_changed": "El asistente cambió antes de terminar (la pantalla o los pasos difieren de lo revisado). No se envió nada más; mira la pantalla y responde al diálogo actual, o usa el teclado.",
 
     /* ---- permission dialog ---- */
     "permission.once": "Permitir una vez",

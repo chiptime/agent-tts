@@ -2929,6 +2929,31 @@
    * selectionModel). An option tap mutates this and NEVER posts; only
    * the explicit submit button turns it into one POST. */
   var dialogMultiSelection = null;
+  /* The wizard stepper (S4): dialogs.js's state machine, fed every
+   * render of the pane's dialog. While it holds the pane its stepper
+   * replaces the plain card; each step still answers through the SAME
+   * guarded endpoint, one step at a time, and drift aborts it — the
+   * machine never retries on its own. */
+  var dialogWizard = window.Dialogs && window.Dialogs.wizardSession
+    ? window.Dialogs.wizardSession(postDialogAnswer) : null;
+  var wizardPaintIdentity = "";
+
+  function postDialogAnswer(payload) {
+    /* The SAME endpoint, credential path and result shape every dialog
+     * tap already uses — the wizard only decides WHEN a payload leaves
+     * (one step per Next, the pending last step on Confirm). */
+    return fetch("/pane/dialog/answer", withDeviceAuth({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    }))
+      .then(function (resp) {
+        if (!resp.ok) maybeOfferPairing(resp);
+        return resp.json().catch(function () { return null; }).then(function (body) {
+          return { ok: resp.ok, status: resp.status, body: body };
+        });
+      });
+  }
 
   function setDialogButtonsBusy(busy) {
     if (!dialogButtonsBox) return;
@@ -2950,9 +2975,22 @@
   function paintStructuredDialog(structured) {
     if (!dialogButtonsBox || !window.Dialogs) return false;
     lastStructured = structured;
+    var paneId = replyKeys.getAttribute("data-pane") || "";
+    /* Every render of the pane's dialog feeds the wizard machine: it
+     * advances on the dialogs the posts produce and aborts on drift.
+     * While it holds the pane (capturing / reviewing / waiting) the
+     * stepper IS the card; idle and aborted fall through to today's
+     * plain card below. */
+    if (dialogWizard) dialogWizard.feed(structured, paneId);
+    var wizardView = dialogWizard ? dialogWizard.view() : null;
+    if (wizardView && wizardView.mode !== "idle" &&
+        wizardView.mode !== "aborted") {
+      paintWizardStepper(wizardView);
+      if (dialogUnreadCard) dialogUnreadCard.classList.add("hidden");
+      return true;
+    }
     var buttons = window.Dialogs.buttonsFor(structured);
     if (buttons && structured && structured.fingerprint) {
-      var paneId = replyKeys.getAttribute("data-pane") || "";
       var identity = paneId + "|" + structured.fingerprint;
       if (identity !== lastDialogIdentity) {
         /* A NEW dialog clears the old outcome line: it belongs to the
@@ -3001,6 +3039,19 @@
           submit.textContent = window.Dialogs.submitLabel();
           dialogButtonsBox.appendChild(submit);
         }
+        /* An aborted wizard keeps the plain card (the dialog stays
+         * answerable exactly as before S4) and adds the drift notice:
+         * nothing is retried behind the user's back. */
+        if (wizardView && wizardView.mode === "aborted") {
+          var abortCard = document.createElement("div");
+          abortCard.className = "dlg-wizard-abort";
+          var abortTitle = document.createElement("strong");
+          abortTitle.textContent = window.Dialogs.wizardChangedMessage();
+          abortCard.appendChild(abortTitle);
+          dialogButtonsBox.insertBefore(
+            abortCard, dialogButtonsBox.firstChild);
+          setDialogStatus(window.Dialogs.wizardChangedMessage());
+        }
       }
       dialogButtonsBox.classList.remove("hidden");
       if (dialogUnreadCard) dialogUnreadCard.classList.add("hidden");
@@ -3022,6 +3073,222 @@
       dialogUnreadCard.classList.add("hidden");
     }
     return false;
+  }
+
+  /* ---------------- wizard stepper (S4) ------------------------------------
+   * The stepper's DOM: a progress line, the current step's capture (the
+   * same option rows / checkbox toggles / free-text editor the plain
+   * card uses, but every tap is LOCAL until Next sends the step), and
+   * Next/Back; the last step swaps the capture for a review listing
+   * every captured answer with Confirm/Edit. All painting is
+   * createElement + textContent: a label is never markup. */
+  function repaintWizardCard() {
+    wizardPaintIdentity = "";
+    paintStructuredDialog(lastStructured);
+  }
+
+  function paintWizardStepper(view) {
+    if (!dialogButtonsBox) return;
+    var paneId = replyKeys.getAttribute("data-pane") || "";
+    var fingerprint = view.structured ? view.structured.fingerprint : "";
+    var identity = [
+      paneId, view.mode, view.current, view.steps, fingerprint,
+    ].join("|");
+    if (identity !== wizardPaintIdentity) {
+      wizardPaintIdentity = identity;
+      /* The plain card must fully rebuild whenever the wizard stops
+       * owning this pane's dialog. */
+      lastDialogIdentity = null;
+      setDialogStatus("");
+      dialogButtonsBox.textContent = "";
+      dialogMultiSelection = null;
+      var progress = document.createElement("div");
+      progress.className = "dlg-wizard-progress";
+      progress.textContent = window.Dialogs.wizardProgressLabel(
+        view.current, view.steps);
+      dialogButtonsBox.appendChild(progress);
+      if (view.mode === "capturing" && view.structured) {
+        paintWizardCapture(view);
+      } else if (view.mode === "reviewing") {
+        paintWizardReview(view);
+      }
+      /* waiting: the progress line alone — the next step's dialog (or
+       * the pane's resumption) repaints this box on the next read. */
+    }
+    dialogButtonsBox.classList.remove("hidden");
+  }
+
+  function paintWizardCapture(view) {
+    var options = view.structured.options || [];
+    options.forEach(function (option, index) {
+      var button = document.createElement("button");
+      button.type = "button";
+      /* data-wizard-index routes the tap to the wizard's LOCAL capture;
+       * data-index lets the shared free-text editor find its row. */
+      button.setAttribute("data-wizard-index", String(index));
+      button.setAttribute("data-index", String(index));
+      if (option.checked != null) {
+        button.setAttribute(
+          "aria-pressed", String(dialogWizard.isSelected(index)));
+      }
+      if (option.free_text === true) {
+        button.setAttribute("data-free-text", "1");
+      }
+      var label = document.createElement("span");
+      label.textContent = option.label == null ? "" : String(option.label);
+      button.appendChild(label);
+      if (option.description) {
+        var description = document.createElement("span");
+        description.className = "dlg-opt-desc";
+        description.textContent = option.description;
+        button.appendChild(description);
+      }
+      dialogButtonsBox.appendChild(button);
+    });
+    var back = document.createElement("button");
+    back.type = "button";
+    back.setAttribute("data-wizard-back", "1");
+    back.textContent = window.Dialogs.wizardBackLabel();
+    if (!view.canBack) {
+      /* Back rewinds LOCAL selections only: a step already sent cannot
+       * be un-sent, so the disabled button says why. */
+      back.disabled = true;
+      back.title = window.Dialogs.wizardBackDisabledReason(view.backReason);
+    }
+    dialogButtonsBox.appendChild(back);
+    var next = document.createElement("button");
+    next.type = "button";
+    next.setAttribute("data-wizard-next", "1");
+    next.className = "dlg-submit";
+    next.textContent = window.Dialogs.wizardNextLabel();
+    dialogButtonsBox.appendChild(next);
+  }
+
+  function paintWizardReview(view) {
+    var title = document.createElement("div");
+    title.className = "dlg-wizard-review";
+    var strong = document.createElement("strong");
+    strong.textContent = window.Dialogs.wizardReviewTitle();
+    title.appendChild(strong);
+    dialogButtonsBox.appendChild(title);
+    view.answers.forEach(function (answer) {
+      var row = document.createElement("div");
+      row.className = "dlg-wizard-answer";
+      var question = document.createElement("span");
+      question.textContent = window.Dialogs.wizardProgressLabel(
+        answer.step, view.steps) + " · " + answer.question;
+      row.appendChild(question);
+      var chosen = document.createElement("span");
+      chosen.className = "dlg-opt-desc";
+      var text = answer.labels.join(", ");
+      if (answer.text) {
+        text = (text ? text + " — " : "") + answer.text;
+      }
+      chosen.textContent = text;
+      row.appendChild(chosen);
+      /* Edit returns to that step's capture WITHOUT sending anything;
+       * re-sending an already-submitted step stays the server's call
+       * (its fingerprint guard), never the PWA's optimism. */
+      var edit = document.createElement("button");
+      edit.type = "button";
+      edit.setAttribute("data-wizard-edit", String(answer.step));
+      edit.textContent = window.Dialogs.wizardEditLabel();
+      row.appendChild(edit);
+      dialogButtonsBox.appendChild(row);
+    });
+    var confirm = document.createElement("button");
+    confirm.type = "button";
+    confirm.setAttribute("data-wizard-confirm", "1");
+    confirm.className = "dlg-submit";
+    confirm.textContent = window.Dialogs.wizardConfirmLabel();
+    dialogButtonsBox.appendChild(confirm);
+  }
+
+  function handleWizardOption(button) {
+    if (!dialogWizard || dialogBusy) return;
+    var index = parseInt(button.getAttribute("data-wizard-index"), 10);
+    if (isNaN(index)) return;
+    var view = dialogWizard.view();
+    if (view.mode !== "capturing" || !view.structured) return;
+    var option = (view.structured.options || [])[index];
+    if (!option) return;
+    if (option.checked != null) {
+      /* A checkbox tap is LOCAL state only — one explicit Next sends
+       * the whole step, exactly like the plain multiselect card. */
+      if (dialogWizard.toggle(index)) {
+        button.setAttribute(
+          "aria-pressed", String(dialogWizard.isSelected(index)));
+      }
+      return;
+    }
+    if (option.free_text === true) {
+      openFreeTextEditor(button);
+      return;
+    }
+    /* The pick is a radio: one row carries aria-current at a time. */
+    dialogWizard.pick(index);
+    var siblings = dialogButtonsBox.querySelectorAll(
+      "button[data-wizard-index]");
+    for (var i = 0; i < siblings.length; i++) {
+      siblings[i].removeAttribute("aria-current");
+    }
+    button.setAttribute("aria-current", "true");
+  }
+
+  function runWizardSend(action) {
+    if (!dialogWizard || dialogBusy) return;
+    dialogBusy = true;
+    setDialogButtonsBusy(true);
+    setDialogStatus(t("reply.sending"));
+    action().then(function (result) {
+      dialogBusy = false;
+      setDialogButtonsBusy(false);
+      if (result.ok) {
+        setDialogStatus("");
+        /* The review/abort repaint happens NOW (no server round-trip
+         * changed the dialog); the next step still needs a read. */
+        repaintWizardCard();
+        refreshState();
+        return;
+      }
+      if (result.reason === "empty") {
+        setDialogStatus(t("dialogs.none_selected"));
+        return;
+      }
+      if (dialogWizard.view().mode === "aborted") {
+        /* Drift the server refused (409 changed) or the stepper saw
+         * (unexpected step): surface it, never retry. */
+        setDialogStatus(window.Dialogs.wizardChangedMessage());
+        repaintWizardCard();
+      }
+    });
+  }
+
+  function sendWizardNext() {
+    runWizardSend(function () { return dialogWizard.next(); });
+  }
+
+  function sendWizardConfirm() {
+    runWizardSend(function () { return dialogWizard.confirm(); });
+  }
+
+  function sendWizardBack() {
+    if (!dialogWizard || dialogBusy) return;
+    var result = dialogWizard.back();
+    if (result.ok) {
+      setDialogStatus("");
+      repaintWizardCard();
+      return;
+    }
+    setDialogStatus(window.Dialogs.wizardBackDisabledReason(result.reason));
+  }
+
+  function doWizardEdit(step) {
+    if (!dialogWizard || dialogBusy) return;
+    if (dialogWizard.edit(Number(step))) {
+      setDialogStatus("");
+      repaintWizardCard();
+    }
   }
 
   function answerDialogButton(button) {
@@ -3137,6 +3404,37 @@
   if (dialogButtonsBox) {
     dialogButtonsBox.addEventListener("click", function (event) {
       var node = event.target;
+      var closest = node && node.closest ? node.closest.bind(node) : null;
+      if (closest) {
+        /* The wizard stepper's own controls route first: its option
+         * rows also carry data-index, but inside a wizard every tap is
+         * LOCAL until Next/Confirm sends the step. */
+        var wizardNext = closest("button[data-wizard-next]");
+        if (wizardNext) {
+          sendWizardNext();
+          return;
+        }
+        var wizardBack = closest("button[data-wizard-back]");
+        if (wizardBack) {
+          sendWizardBack();
+          return;
+        }
+        var wizardEdit = closest("button[data-wizard-edit]");
+        if (wizardEdit) {
+          doWizardEdit(wizardEdit.getAttribute("data-step"));
+          return;
+        }
+        var wizardConfirm = closest("button[data-wizard-confirm]");
+        if (wizardConfirm) {
+          sendWizardConfirm();
+          return;
+        }
+        var wizardOption = closest("button[data-wizard-index]");
+        if (wizardOption) {
+          handleWizardOption(wizardOption);
+          return;
+        }
+      }
       var submit = node && node.closest
         ? node.closest("button[data-submit]") : null;
       if (submit) {
@@ -3228,6 +3526,17 @@
     if (destructive && !window.confirm(
       window.Dialogs.confirmFreeText(text, destructive)
     )) return;
+    /* Inside a wizard the editor only CAPTURES the step's answer —
+     * the step's Next (or the review's Confirm) is what sends it. */
+    if (dialogWizard && dialogWizard.view().mode === "capturing" &&
+        dialogWizard.freeTextOption() === index) {
+      dialogWizard.setText(text);
+      closeFreeTextEditor();
+      setDialogStatus(window.Dialogs.statusFor(
+        { ok: true, option: index }, labelsOfCurrentDialog()));
+      repaintWizardCard();
+      return;
+    }
     dialogBusy = true;
     setDialogButtonsBusy(true);
     setDialogStatus(t("reply.sending"));

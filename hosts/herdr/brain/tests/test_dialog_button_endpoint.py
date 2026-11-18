@@ -942,3 +942,130 @@ class TestFreeTextValidation:
         )
 
         assert response.status_code == 422
+
+
+WIZARD_STEP1 = (FIXTURES / "claude-wizard.txt").read_text(encoding="utf-8")
+
+
+class WizardTwoStepStub(DialogTapStub):
+    """Drives a two-question wizard with the S4 fixtures: step 1 is the
+    select screen (``1/2``), step 2 the multi-select screen (``2/2``).
+    A digit+Enter on step 1 advances to step 2; the multi-select keys
+    behave like MultiSelectStub; the submit's Enter closes the wizard."""
+
+    def __init__(self, agents):
+        super().__init__(agents, "")
+        self.phase = 1
+        self.checked = set()
+        self.pointer = 0
+
+    def _render(self):
+        if self.phase == 1:
+            return WIZARD_STEP1
+        if self.phase == 2:
+            # The marker must sit directly above the block (with only a
+            # blank between), exactly like the wizard fixtures.
+            return multi_screen(self.checked, self.pointer).replace(
+                "│ Which toppings do you want?\n│ Pick every one you like.\n",
+                "│ 2/2 Which toppings?\n",
+            )
+        return "$ pytest -q\n..........\n10 passed in 0.02s\n$ _"
+
+    def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+        return self._render()
+
+    def send_keys(self, pane_id, keys):
+        super().send_keys(pane_id, keys)
+        for key in keys:
+            if self.phase == 1:
+                if key == "enter":
+                    self.phase = 2
+            elif self.phase == 2:
+                if key in ("1", "2", "3"):
+                    index = int(key) - 1
+                    if index in self.checked:
+                        self.checked.discard(index)
+                    else:
+                        self.checked.add(index)
+                    self.pointer = index
+                elif key == "4":
+                    self.pointer = 3
+                elif key == "down":
+                    self.pointer = min(3, self.pointer + 1)
+                elif key == "up":
+                    self.pointer = max(0, self.pointer - 1)
+                elif key == "enter":
+                    self.phase = 3
+        return {"ok": True, "error": ""}
+
+
+class TestWizardTwoStepFlow:
+    """S4 proof: the wizard needs NO endpoint fields. Step 1 answers
+    with ``option`` and the screen advances to step 2; step 2 answers
+    with ``choices`` and the pane resumes. A step-1 answer that arrives
+    when the screen is already at step 2 is the 409 ``changed`` the PWA
+    surfaces as its abort card — the guard, not the client, decides."""
+
+    def test_both_steps_flow_through_option_then_choices(self, make_client):
+        stub = WizardTwoStepStub([BLOCKED_CLAUDE])
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+
+        step1 = recognize("claude", WIZARD_STEP1)
+        assert step1.payload()["wizard"] == {"step": 1, "steps": 2}
+        first = client.post(
+            "/pane/dialog/answer",
+            json={
+                "pane_id": "w1:p3",
+                "fingerprint": step1.fingerprint,
+                "option": 1,
+            },
+        )
+        assert first.status_code == 200
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["2", "enter"]}]
+
+        step2 = recognize("claude", stub.read_screen("w1:p3"))
+        assert step2.kind == "multiselect"
+        assert step2.payload()["wizard"] == {"step": 2, "steps": 2}
+        second = client.post(
+            "/pane/dialog/answer",
+            json={
+                "pane_id": "w1:p3",
+                "fingerprint": step2.fingerprint,
+                "choices": [0, 2],
+            },
+        )
+        assert second.status_code == 200
+        assert second.json()["choices"] == [0, 2]
+        assert [call["keys"] for call in stub.key_calls[1:]] == [
+            ["1"], ["3"], ["down"], ["enter"],
+        ]
+        assert stub.phase == 3
+
+        entries = audit_entries(client)
+        answers = [e for e in entries if e["action"] == "pane.dialog.answer"]
+        assert [a["detail"].get("option") for a in answers] == [1, None]
+        assert [a["detail"].get("choices") for a in answers] == [None, [0, 2]]
+
+    def test_a_stale_step_fingerprint_against_the_next_screen_is_a_409(
+        self, make_client
+    ):
+        """The server-side stop: a step answered against a screen that
+        already moved to another step sends NOTHING — the drift the PWA
+        must surface, never retry around."""
+        stub = WizardTwoStepStub([BLOCKED_CLAUDE])
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        step1 = recognize("claude", WIZARD_STEP1)
+        stub.phase = 2  # the screen already advanced
+
+        response = client.post(
+            "/pane/dialog/answer",
+            json={
+                "pane_id": "w1:p3",
+                "fingerprint": step1.fingerprint,
+                "option": 0,
+            },
+        )
+
+        assert response.status_code == 409
+        assert "cambió" in response.json()["detail"]
+        assert stub.key_calls == []

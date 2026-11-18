@@ -129,6 +129,15 @@
     "dialogs.changed": "The dialog changed before answering; nothing was sent. Look at the screen and answer the new dialog, or use the keypad.",
     "dialogs.option_gone": "That option is no longer in the dialog; use the keypad.",
     "dialogs.fail": "Could not answer the dialog; use the keypad.",
+    "dialogs.wizard_progress": "Step {step} of {steps}",
+    "dialogs.wizard_next": "Next",
+    "dialogs.wizard_back": "Back",
+    "dialogs.wizard_back_sent": "Steps already sent cannot be undone; Back only clears what you marked on the current step.",
+    "dialogs.wizard_back_empty": "Nothing is marked on this step.",
+    "dialogs.wizard_review_title": "Review your answers",
+    "dialogs.wizard_confirm": "Confirm and send",
+    "dialogs.wizard_edit": "Edit",
+    "dialogs.wizard_changed": "The wizard changed before finishing (the screen or steps differ from what you reviewed). Nothing further was sent; look at the screen and answer the current dialog, or use the keypad.",
 
     /* ---- permission dialog ---- */
     "permission.once": "Allow once",
