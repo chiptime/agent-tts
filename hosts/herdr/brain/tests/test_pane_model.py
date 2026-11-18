@@ -139,6 +139,55 @@ def test_background_mode_answers_cached_then_refreshes_without_blocking():
     assert res.model("claude", "s1") == "m1"
 
 
+def test_background_spawn_failure_answers_none_and_does_not_wedge_the_key():
+    runner = FakeRunner(stdout="m1\n")
+    attempts = []
+
+    def flaky_spawn(job):
+        attempts.append(job)
+        if len(attempts) == 1:
+            raise RuntimeError("can't start new thread")
+
+    res = PaneModelResolver(
+        python_resolver=lambda: "/py", runner=runner, clock=Clock(),
+        background=True, spawn=flaky_spawn, enabled=True,
+    )
+    assert res.model("claude", "s1") is None  # spawn raised: honest None, no raise
+    assert res.model("claude", "s1") is None  # key not stuck inflight: retries spawn
+    assert len(attempts) == 2
+    attempts[1]()
+    assert res.model("claude", "s1") == "m1"
+
+
+def test_raising_clock_keeps_the_never_raise_promise_in_background_mode():
+    runner = FakeRunner(stdout="m1\n")
+    spawned = []
+
+    def broken_clock():
+        raise RuntimeError("clock unavailable")
+
+    res = PaneModelResolver(
+        python_resolver=lambda: "/py", runner=runner, clock=broken_clock,
+        background=True, spawn=spawned.append, enabled=True,
+    )
+    assert res.model("claude", "s1") is None
+    spawned[0]()  # _refresh survives the raising clock and clears inflight
+    assert res.model("claude", "s1") == "m1"  # cached answer, still no raise
+
+
+def test_raising_clock_keeps_the_never_raise_promise_in_foreground_mode():
+    runner = FakeRunner(stdout="m1\n")
+
+    def broken_clock():
+        raise RuntimeError("clock unavailable")
+
+    res = PaneModelResolver(
+        python_resolver=lambda: "/py", runner=runner, clock=broken_clock,
+        background=False, enabled=True,
+    )
+    assert res.model("claude", "s1") == "m1"  # lookup ran; broken clock is not a raise
+
+
 # ── wiring: /view status and /herd entries carry the model ──────────────────
 
 

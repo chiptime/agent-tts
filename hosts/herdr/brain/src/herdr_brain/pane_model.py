@@ -93,6 +93,13 @@ class PaneModelResolver:
         self._inflight: Set[Tuple[str, str]] = set()
         self._lock = threading.Lock()
 
+    def _now(self) -> float:
+        """A clock read that keeps the never-raise promise (0.0 on failure)."""
+        try:
+            return self._clock()
+        except Exception:  # noqa: BLE001 — a broken clock must not break a poll
+            return 0.0
+
     def model(self, agent: Optional[str], session_id: Optional[str]) -> Optional[str]:
         """The pane's model, or None when unknown. Never raises."""
         if not self.enabled or not session_id:
@@ -103,13 +110,16 @@ class PaneModelResolver:
         key = (engine_agent, session_id)
         with self._lock:
             entry = self._cache.get(key)
-            if entry is not None and entry.expires_at > self._clock():
+            if entry is not None and entry.expires_at > self._now():
                 return entry.model
             known = entry.model if entry is not None else None
             if self._background:
                 if key not in self._inflight:
                     self._inflight.add(key)
-                    self._spawn(lambda: self._refresh(key))
+                    try:
+                        self._spawn(lambda: self._refresh(key))
+                    except Exception:  # noqa: BLE001 — spawn failure must not break a poll
+                        self._inflight.discard(key)  # so a later call retries
                 return known
         return self._refresh(key)
 
@@ -119,7 +129,7 @@ class PaneModelResolver:
         except Exception:  # noqa: BLE001 — a lookup must never break a poll
             model = None
         with self._lock:
-            self._cache[key] = _Entry(model, self._clock() + self.ttl_s)
+            self._cache[key] = _Entry(model, self._now() + self.ttl_s)
             self._inflight.discard(key)
         return model
 
