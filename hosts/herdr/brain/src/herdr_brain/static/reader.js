@@ -42,6 +42,13 @@
   function createReader(deps) {
     var doc = deps && deps.doc;
     var http = deps && deps.http;
+    /* Optional snapshot URL builder: renderedUrl(pane) -> fetch path.
+     * Default stays the pane-transcript conversation snapshot; a second
+     * reader instance (the call drawer) mounts the call-transcript
+     * snapshot without reimplementing any of this file's contracts. */
+    var renderedUrl = (deps && typeof deps.renderedUrl === "function")
+      ? deps.renderedUrl
+      : function (pane) { return "/conversation/" + encodeURIComponent(String(pane)) + "/rendered"; };
     var generation = 0;
     var curPane = null;
     var curSession = null;
@@ -339,7 +346,7 @@
     function requestSnapshot(pane, session) {
       syncIdentity(pane, session);
       var token = generation;   /* captured at REQUEST time */
-      return http("/conversation/" + encodeURIComponent(String(pane)) + "/rendered")
+      return http(renderedUrl(pane))
         .then(function (r) {
           if (!r.ok) throw new Error("HTTP " + r.status);
           return r.json();

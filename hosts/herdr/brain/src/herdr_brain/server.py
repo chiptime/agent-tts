@@ -1606,6 +1606,39 @@ def create_app(
         has_more = bool(turns) and bool(history.load_before(turns[0]["ts"], 1))
         return {"turns": turns, "has_more": has_more}
 
+    @app.get("/call-history/rendered")
+    def call_history_rendered(
+        before: Optional[str] = None, limit: int = 25
+    ) -> dict:
+        """Rendered page of the call transcript (call-chat-formatted).
+
+        The call drawer paints /call-history; this endpoint serves the
+        SAME page (same pagination contract, masked S14 text) with the
+        reader html/map rendered by the shared ReaderCache. Fail-soft:
+        html/map null TOGETHER with text always present, so the drawer
+        never loses its raw surface.
+        """
+        capped = max(1, min(limit, CALL_HISTORY_TURNS))
+        turns = history.load_before(before, capped)
+        has_more = bool(turns) and bool(history.load_before(turns[0]["ts"], 1))
+        rendered = reader_cache.render_snapshot(
+            [{"role": t["role"], "text": t["text"]} for t in turns]
+        )
+        return {
+            "turns": [
+                {
+                    "turn_id": turn_id(None, index, turn.get("role", ""), turn.get("text", "")),
+                    "role": turn.get("role"),
+                    "text": turn.get("text"),
+                    "ts": turns[index].get("ts"),
+                    "html": turn.get("html"),
+                    "map": turn.get("map"),
+                }
+                for index, turn in enumerate(rendered)
+            ],
+            "has_more": has_more,
+        }
+
     @app.websocket("/call/stream")
     async def call_stream_endpoint(websocket: WebSocket) -> None:
         """PRD-03 streaming uplink carrying PCM16 mono frames from an AudioWorklet."""

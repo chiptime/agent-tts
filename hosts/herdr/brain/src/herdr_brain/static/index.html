@@ -896,40 +896,50 @@
       font-style: italic;
       text-align: center;
     }
-    /* ---- formatted reader surface (reader-html-integration) ---- *
-     * Every rule is scoped under #glance-turns .reader-content so the
-     * reader styling can never leak into the chat drawer or the call
-     * UI. When a formatted mount exists, the plain .gt-text view hides
-     * (the reader payload replaces it); without one, .gt-text remains
-     * the surface exactly as before. */
+    /* ---- formatted reader surface (reader-html-integration + call-
+     * chat-formatted) ---- * The glance keeps its exact scope; the call
+     * drawer joins it DELIBERATELY: :is() widens every rule to both
+     * #glance-turns and #conversation, so the drawer renders the same
+     * server payload with the same styling and nothing leaks anywhere
+     * else. When a formatted mount exists, the plain view hides (the
+     * reader payload replaces it); without one, the raw surface remains
+     * exactly as before. The drawer's raw body is its span:not(.who)
+     * (karaoke chunk spans included): hiding it must neither detach nor
+     * recreate them — the controller still owns those nodes for live and
+     * replay audio. */
     #glance-turns .gturn.has-rendered .gt-text { display: none; }
-    #glance-turns .reader-content {
+    /* DIRECT child only: a descendant span would also hide the
+     * .reader-content's own tts-sent spans and collapse the bubble to
+     * nothing (the plain body span is a direct child; the reader
+     * content's spans are not). */
+    #conversation .turn.has-rendered > span:not(.who) { display: none; }
+    :is(#glance-turns, #conversation) .reader-content {
       white-space: normal;
       word-break: break-word;
       overflow-x: auto;
     }
-    #glance-turns .reader-content h1,
-    #glance-turns .reader-content h2,
-    #glance-turns .reader-content h3,
-    #glance-turns .reader-content h4 {
+    :is(#glance-turns, #conversation) .reader-content h1,
+    :is(#glance-turns, #conversation) .reader-content h2,
+    :is(#glance-turns, #conversation) .reader-content h3,
+    :is(#glance-turns, #conversation) .reader-content h4 {
       margin: 8px 0 4px;
       line-height: 1.3;
     }
-    #glance-turns .reader-content h1 { font-size: 1.25em; }
-    #glance-turns .reader-content h2 { font-size: 1.15em; }
-    #glance-turns .reader-content h3,
-    #glance-turns .reader-content h4 { font-size: 1.05em; }
-    #glance-turns .reader-content p { margin: 4px 0; }
-    #glance-turns .reader-content strong { font-weight: 800; }
-    #glance-turns .reader-content em { font-style: italic; }
-    #glance-turns .reader-content code {
+    :is(#glance-turns, #conversation) .reader-content h1 { font-size: 1.25em; }
+    :is(#glance-turns, #conversation) .reader-content h2 { font-size: 1.15em; }
+    :is(#glance-turns, #conversation) .reader-content h3,
+    :is(#glance-turns, #conversation) .reader-content h4 { font-size: 1.05em; }
+    :is(#glance-turns, #conversation) .reader-content p { margin: 4px 0; }
+    :is(#glance-turns, #conversation) .reader-content strong { font-weight: 800; }
+    :is(#glance-turns, #conversation) .reader-content em { font-style: italic; }
+    :is(#glance-turns, #conversation) .reader-content code {
       font-family: ui-monospace, monospace;
       font-size: 0.92em;
       background: var(--oc-panel);
       border-radius: 4px;
       padding: 1px 4px;
     }
-    #glance-turns .reader-content pre {
+    :is(#glance-turns, #conversation) .reader-content pre {
       background: var(--oc-bg);
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -937,51 +947,56 @@
       overflow-x: auto;
       margin: 6px 0;
     }
-    #glance-turns .reader-content pre code { background: none; padding: 0; }
-    #glance-turns .reader-content ul,
-    #glance-turns .reader-content ol {
+    :is(#glance-turns, #conversation) .reader-content pre code { background: none; padding: 0; }
+    :is(#glance-turns, #conversation) .reader-content ul,
+    :is(#glance-turns, #conversation) .reader-content ol {
       margin: 4px 0;
       padding-left: 20px;
     }
-    #glance-turns .reader-content table {
+    :is(#glance-turns, #conversation) .reader-content table {
       border-collapse: collapse;
       margin: 6px 0;
       max-width: 100%;
       display: block;           /* horizontally scrollable tables */
       overflow-x: auto;
     }
-    #glance-turns .reader-content th,
-    #glance-turns .reader-content td {
+    :is(#glance-turns, #conversation) .reader-content th,
+    :is(#glance-turns, #conversation) .reader-content td {
       border: 1px solid var(--line);
       padding: 4px 8px;
       text-align: left;
     }
     /* Markdown colours (opencode TUI palette): headers and table headers
      * purple, bold amber, code green, links blue. */
-    #glance-turns .reader-content h1,
-    #glance-turns .reader-content h2,
-    #glance-turns .reader-content h3,
-    #glance-turns .reader-content h4 { color: var(--oc-purple); }
-    #glance-turns .reader-content strong { color: var(--oc-amber); }
-    #glance-turns .reader-content code { color: var(--oc-green); }
-    #glance-turns .reader-content pre,
-    #glance-turns .reader-content pre code { color: var(--oc-green); }
-    #glance-turns .reader-content th {
+    :is(#glance-turns, #conversation) .reader-content h1,
+    :is(#glance-turns, #conversation) .reader-content h2,
+    :is(#glance-turns, #conversation) .reader-content h3,
+    :is(#glance-turns, #conversation) .reader-content h4 { color: var(--oc-purple); }
+    :is(#glance-turns, #conversation) .reader-content strong { color: var(--oc-amber); }
+    :is(#glance-turns, #conversation) .reader-content code { color: var(--oc-green); }
+    :is(#glance-turns, #conversation) .reader-content pre,
+    :is(#glance-turns, #conversation) .reader-content pre code { color: var(--oc-green); }
+    :is(#glance-turns, #conversation) .reader-content th {
       color: var(--oc-purple);
       font-weight: 700;
       background: color-mix(in srgb, var(--oc-purple) 12%, transparent);
     }
-    #glance-turns .reader-content a { color: var(--oc-blue); font-weight: 700; }
-    #glance-turns .reader-content .tts-sent,
-    #glance-turns .reader-content .tts-sent-cont {
+    :is(#glance-turns, #conversation) .reader-content a { color: var(--oc-blue); font-weight: 700; }
+    :is(#glance-turns, #conversation) .reader-content .tts-sent,
+    :is(#glance-turns, #conversation) .reader-content .tts-sent-cont {
       border-radius: 4px;
-      cursor: pointer;          /* manual sentence selection */
+      cursor: pointer;          /* manual sentence selection (glance) */
     }
-    #glance-turns .reader-content .tts-selected {
+    :is(#glance-turns, #conversation) .reader-content .tts-selected {
       background: var(--accent);
       color: var(--panel);
     }
-    #glance-turns .reader-content a { color: var(--accent); font-weight: 700; }
+    :is(#glance-turns, #conversation) .reader-content a { color: var(--accent); font-weight: 700; }
+    /* The drawer mounts the payload read-only: its sentence anchors are
+     * not card controls there (the glance owns the click/keyboard TTS
+     * path), so they keep the default cursor and never pose as buttons. */
+    #conversation .reader-content .tts-sent,
+    #conversation .reader-content .tts-sent-cont { cursor: default; }
 
     /* ---- Karaoke Interactivo (RFC-02: Client-Side Web Speech) ---- */
     .tts-sentence {

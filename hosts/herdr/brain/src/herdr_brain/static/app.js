@@ -1046,6 +1046,17 @@
    * HTML by the same role+text content key renderGlance reconciles on. */
 
   var reader = Reader.createReader({ doc: document, http: fetch });
+  /* The call drawer renders the CALL transcript, not the pane transcript:
+   * a second reader instance mounts /call-history/rendered — the same
+   * mount/neutralize/harden contracts, content-keyed by role+text (the
+   * ReaderCache is text-hash-based, so pane-transcript overlap stays a
+   * cache hit). Identity is stable ("call-history"); the snapshot is
+   * replaced wholesale per fetch. */
+  var callReader = Reader.createReader({
+    doc: document,
+    http: fetch,
+    renderedUrl: function () { return "/call-history/rendered"; },
+  });
   var mermaidViewer = typeof MermaidViewer !== "undefined"
     ? MermaidViewer.createMermaidViewer({
         doc: document,
@@ -1375,7 +1386,76 @@
     turn.appendChild(who);
     turn.appendChild(body);
     if (role === "brain") mountMainKaraoke(turn, body, text);
+    /* Formatted reader mount (call-chat-formatted): the drawer renders the
+     * same server-rendered HTML the glance does. rawRole/rawText pin the
+     * content key the snapshot repaint re-uses; at build time the html is
+     * usually still absent, so the raw surface shows and the next snapshot
+     * upgrades it (progressive fill). */
+    turn.rawRole = role;
+    turn.rawText = text;
+    mountCallReader(turn, role, text);
+    scheduleCallReaderSnapshot();
     return turn;
+  }
+
+  /* Mount (or unmount) the reader surface on ONE call-drawer turn. All
+   * construction is delegated to reader.mountTurn: innerHTML stays a
+   * reader.js contract, never re-implemented here. The raw body span is
+   * never touched — only hidden by CSS while .has-rendered. */
+  function mountCallReader(turn, role, text) {
+    var state = karaokeCtl.state();
+    if (turn.karaokePlan && state.plan === turn.karaokePlan) return;
+    /* The drawer speaks user/brain; the history payload speaks
+     * user/assistant — one role hop keeps the snapshot content key. */
+    var html = callReader.htmlFor(role === "brain" ? "assistant" : role, text);
+    var content = turn.querySelector(".reader-content");
+    if (!html) {
+      if (content) content.remove();
+      if (turn.readerHtml) {
+        turn.readerHtml = null;
+        turn.classList.remove("has-rendered");
+      }
+      return;
+    }
+    if (turn.readerHtml === html && content) return;   /* already mounted */
+    if (!content) {
+      content = document.createElement("div");
+      content.className = "reader-content";
+      turn.appendChild(content);
+    }
+    turn.classList.add("has-rendered");
+    callReader.mountTurn(content, { text: text, html: html });
+    turn.readerHtml = html;
+    if (mermaidViewer && content) mermaidViewer.renderIn(content);
+  }
+
+  /* Snapshot repaint for the WHOLE drawer: re-run the mount decision for
+   * every real turn (skips the ghost bubble and announce/system rows by
+   * the rawText marker). Cheap: htmlFor is a held-snapshot lookup. */
+  function paintCallTurnsReader() {
+    var turns = conv.querySelectorAll(".turn");
+    for (var i = 0; i < turns.length; i++) {
+      if (typeof turns[i].rawText !== "string") continue;
+      mountCallReader(turns[i], turns[i].rawRole || "brain", turns[i].rawText);
+    }
+  }
+
+  /* Call-transcript snapshot fetch, burst-collapsed: buildTurnEl fires on
+   * every turn (boot repaint adds 25 in a tight loop) and one trailing
+   * timer turns each burst into ONE fetch. The new call-history/rendered
+   * page answers from the warm ReaderCache whenever it can; a turn that
+   * misses the render budget keeps its raw text and formats on a later
+   * cycle (progressive fill). */
+  var callReaderTimer = null;
+  function scheduleCallReaderSnapshot() {
+    if (callReaderTimer) return;
+    callReaderTimer = setTimeout(function () {
+      callReaderTimer = null;
+      callReader.loadRendered("call-history", null).then(function (turns) {
+        if (!turns) return;   /* stale or failed: raw text stays */
+        paintCallTurnsReader();
+      });
+    }, 60);
   }
 
   var karaokeTurnSequence = 0;
@@ -1467,6 +1547,9 @@
     var body = last.children.length > 1 ? last.children[1] : null;
     if (!body) return false;
     body.textContent = text;
+    last.rawText = text;
+    mountCallReader(last, "user", text);
+    scheduleCallReaderSnapshot();
     conv.scrollTop = conv.scrollHeight;
     return true;
   }
@@ -3473,6 +3556,7 @@
         renderGlanceLabel();
         safeRender("glance", renderGlance, data);
         requestReaderSnapshot();  // always-formatted: rendered fetch on load AND every refresh
+        scheduleCallReaderSnapshot();  // the call drawer's own snapshot poll
         markPollOk();
       })
       .catch(function (err) {

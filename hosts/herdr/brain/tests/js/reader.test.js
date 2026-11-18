@@ -1044,3 +1044,29 @@ test("reader_source_has_no_global_document", () => {
   assert.ok(!/\bdocument\b/.test(source),
     "reader.js must receive its DOM surface by injection (Decision 1)");
 });
+
+test("renderedUrl_override_targets_another_snapshot_endpoint", async () => {
+  // The call drawer's reader instance rides the SAME contracts with a
+  // custom snapshot endpoint (call-chat-formatted); the default reader
+  // keeps the pane-transcript conversation URL untouched.
+  const calls = [];
+  const doc = makeDoc();
+  const http = url => {
+    calls.push(url);
+    return Promise.resolve(resp({ turns: [] }));
+  };
+  const reader = createReader({
+    doc, http,
+    renderedUrl: () => "/call-history/rendered",
+  });
+  await reader.loadRendered("call-history", null);
+  assert.deepEqual(calls, ["/call-history/rendered"]);
+
+  const defaultCalls = [];
+  const defaults = createReader({
+    doc: makeDoc(),
+    http: url => { defaultCalls.push(url); return Promise.resolve(resp({ turns: [] })); },
+  });
+  await defaults.requestSnapshot("w1:p9", "ses_x");
+  assert.deepEqual(defaultCalls, ["/conversation/w1%3Ap9/rendered"]);
+});
