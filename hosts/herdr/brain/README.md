@@ -654,7 +654,14 @@ parse a screen but the pane's harness has a recognizer, the structured
 options shape what the voice reads (labels, descriptions, selection).
 Answering by voice stays under the existing S8/S9 binding — the user's
 explicit words, the dialog's known selection, arrow-walked within the key
-budget, with every refusal pressing nothing.
+budget, with every refusal pressing nothing. Multi-select and free-text
+questions are answered by voice through the SAME guarded choreography a
+tap uses: a spoken set ("marca la uno y la tres" with the model's
+`choices`) resolves from the user's words into the verified
+toggle-and-submit recipe, and a spoken free-text answer ("responde: …"
+with the row's `option` and `text`) is typed through the verified
+clear-type-verify recipe — a text matching the destructive analyzer is
+refused outright, because voice has no second tap.
 
 ### Answering an opencode approval dialog
 

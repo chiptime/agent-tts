@@ -31,7 +31,10 @@ from .approval_lexicon import (
     CHOICE_OPTION,
     CHOICE_YES,
     _normalize as _lex_normalize,
+    destructive_text_reason,
     resolve_dialog_choice,
+    resolve_dialog_choices,
+    resolve_dialog_free_text,
 )
 from .herdr import (
     MAX_SEND_KEYS,
@@ -1313,6 +1316,9 @@ class BrainTools:
         utterance: str,
         target: Optional[AgentInfo] = None,
         user_utterance: Optional[str] = None,
+        choices: Optional[list] = None,
+        option: Optional[int] = None,
+        text: Optional[str] = None,
     ) -> str:
         """Answers a SPOKEN terminal dialog with the USER'S own words (S9).
 
@@ -1331,6 +1337,16 @@ class BrainTools:
         keys already sent, duplicate option numbers, an unknown
         selection, or an unknown/ambiguous/negated choice — presses
         NOTHING and says why.
+
+        Two additive spoken forms (S5) keep the same binding and route
+        through the SAME structured answering path a PWA tap uses
+        (:meth:`answer_structured_dialog` — never a second
+        choreography): ``choices`` (the user's spoken words per item)
+        answers a multi-select — the SET is resolved from the user's
+        words alone — and ``option`` + ``text`` answer that option's
+        free-text row, with the typed text likewise resolved from the
+        user's spoken words and refused when it matches the destructive
+        analyzer (voice has no second tap).
         """
         def refused(reason: str, detail: str) -> str:
             return json.dumps(
@@ -1390,6 +1406,11 @@ class BrainTools:
         # THE authorization source: the real user turn when the dispatch
         # layer provided it, never a model paraphrase.
         authorization = user_utterance if user_utterance is not None else utterance
+        if choices is not None or text is not None or option is not None:
+            return self._answer_dialog_spoken_form(
+                active, authorization,
+                choices=choices, option=option, text=text, refused=refused,
+            )
         choice = resolve_dialog_choice(authorization)
         if choice is None:
             return refused(
@@ -1472,6 +1493,199 @@ class BrainTools:
                 "note": (
                     "the user's choice was sent to the dialog; tell the user "
                     "exactly which option was pressed and nothing more"
+                ),
+            },
+            ensure_ascii=False,
+        )
+
+    def _spoken_structured_model(self, active: AgentInfo):
+        """The recognizer's CURRENT model of the pane, or None.
+
+        The structured answering path identifies dialogs by the
+        recognizer's fingerprint (a digest of the region), not by the
+        voice binding's view-level identity — so a spoken multi-select
+        or free-text answer derives that fingerprint from a fresh read
+        through the SAME reader the structured path itself uses. The
+        verbal binding has ALREADY guarded the explanation's identity;
+        this read is what hands the answer to the button-tap discipline.
+        """
+        reader = self._dialog_reader(active.pane_id)
+        try:
+            fresh = reader(active.pane_id, DIALOG_SCREEN_LINES)
+        except HerdrError:
+            return None
+        model = recognize_dialog(active.agent, fresh or "")
+        if model is None or model.unread:
+            return None
+        return model
+
+    def _answer_dialog_spoken_form(
+        self,
+        active: AgentInfo,
+        authorization: str,
+        choices: Optional[list],
+        option: Optional[int],
+        text: Optional[str],
+        refused,
+    ) -> str:
+        """The S5 spoken forms: multi-select sets and free-text answers.
+
+        Both resolve WHAT to send from the user's words alone (the
+        model's ``choices`` fragments and ``text`` only declare the
+        FORM — the same B4 rule that makes the user's single choice
+        win over forwarded words), and both delegate to
+        :meth:`answer_structured_dialog` — the exact code
+        ``POST /pane/dialog/answer`` calls — so the toggle/walk/type
+        choreography, drift guards and allowlist live in one place.
+        """
+        # Exactly one answer form, mirroring the endpoint's contract.
+        if text is not None:
+            if choices is not None:
+                return refused(
+                    "invalid-arguments",
+                    "text answers one option: pass option with text, never choices",
+                )
+            if option is None:
+                return refused(
+                    "invalid-arguments",
+                    "a free-text answer needs the option number of the "
+                    "free-text row it answers",
+                )
+        elif choices is not None:
+            if option is not None:
+                return refused(
+                    "invalid-arguments",
+                    "choices and option are two answer forms; pass exactly one",
+                )
+            if (
+                not isinstance(choices, list)
+                or not choices
+                or not all(
+                    isinstance(item, str) and item.strip() for item in choices
+                )
+            ):
+                return refused(
+                    "invalid-arguments",
+                    "choices must be the user's spoken words, one string per "
+                    "selected option",
+                )
+        else:
+            return refused(
+                "invalid-arguments",
+                "option without text is not a spoken answer; the choice "
+                "travels as the utterance",
+            )
+
+        model = self._spoken_structured_model(active)
+        if model is None:
+            return refused(
+                "unread-dialog",
+                "this dialog has no verified button path to answer through; "
+                "ask the user to use the keypad",
+            )
+
+        if choices is not None:
+            # The SET comes from the user's words alone; an ambiguous,
+            # negated or competing item refuses exactly as a single one
+            # does today.
+            spoken = resolve_dialog_choices(authorization)
+            if spoken is None:
+                return refused(
+                    "not-a-choice",
+                    "the user's words name no explicit selection set; ask "
+                    "them to list the option numbers",
+                )
+            indices = []
+            for wanted in spoken:
+                if not 1 <= wanted <= len(model.options):
+                    return refused(
+                        "unknown-option",
+                        f"there is no option {wanted} in this dialog; "
+                        "nothing was sent",
+                    )
+                indices.append(wanted - 1)
+            result = self.answer_structured_dialog(
+                active.pane_id, model.fingerprint, choices=indices
+            )
+            if result["outcome"] != "answered":
+                return refused(
+                    result.get("reason") or "changed",
+                    result.get("detail") or "",
+                )
+            picked = sorted(indices)
+            return json.dumps(
+                {
+                    "outcome": "answered",
+                    "pane_id": active.pane_id,
+                    "choices": [index + 1 for index in picked],
+                    "titles": [
+                        model.options[index].label for index in picked
+                    ],
+                    "note": (
+                        "the user's selection was sent to the dialog; tell "
+                        "the user exactly which options were marked and "
+                        "nothing more"
+                    ),
+                },
+                ensure_ascii=False,
+            )
+
+        # The free-text form: the typed words are the user's spoken
+        # answer, extracted verbatim — never the model's paraphrase.
+        if not isinstance(text, str) or not text.strip():
+            return refused(
+                "invalid-arguments",
+                "text must be the user's spoken answer for the free-text row",
+            )
+        if not isinstance(option, int) or isinstance(option, bool):
+            return refused(
+                "invalid-arguments",
+                "option must be the free-text option's number as explained",
+            )
+        if resolve_dialog_choice(authorization) is not None:
+            return refused(
+                "not-a-choice",
+                "the user's words name a choice, not a free-text answer; "
+                "answer it as a choice instead",
+            )
+        typed = resolve_dialog_free_text(authorization)
+        if typed is None:
+            return refused(
+                "not-a-choice",
+                "the user's words carry no declared free-text answer; ask "
+                "them to say 'responde: …' naming the text",
+            )
+        danger = destructive_text_reason(typed)
+        if danger is not None:
+            return refused(
+                "destructive-text",
+                f"the spoken answer looks destructive: {danger}. Voice "
+                "never types it — use the keypad or the phone's dialog "
+                "card, where the second tap confirms",
+            )
+        if not 1 <= option <= len(model.options):
+            return refused(
+                "unknown-option",
+                f"there is no option {option} in this dialog; nothing was sent",
+            )
+        result = self.answer_structured_dialog(
+            active.pane_id, model.fingerprint, option=option - 1, text=typed
+        )
+        if result["outcome"] != "answered":
+            return refused(
+                result.get("reason") or "changed",
+                result.get("detail") or "",
+            )
+        return json.dumps(
+            {
+                "outcome": "answered",
+                "pane_id": active.pane_id,
+                "option": option,
+                "title": model.options[option - 1].label,
+                "text": typed,
+                "note": (
+                    "the user's spoken answer was typed and submitted; tell "
+                    "the user exactly what was typed and nothing more"
                 ),
             },
             ensure_ascii=False,
@@ -2169,8 +2383,33 @@ class BrainTools:
                     str(arguments.get("cwd", "")),
                 )
             if name == "answer_dialog":
+                spoken_choices = arguments.get("choices")
+                if spoken_choices is not None and (
+                    not isinstance(spoken_choices, list)
+                    or not all(
+                        isinstance(item, str) and item.strip()
+                        for item in spoken_choices
+                    )
+                ):
+                    raise TypeError(
+                        "choices must be a list of non-empty strings"
+                    )
+                spoken_option = arguments.get("option")
+                if spoken_option is not None and (
+                    not isinstance(spoken_option, int)
+                    or isinstance(spoken_option, bool)
+                ):
+                    raise TypeError("option must be an integer")
+                spoken_text = arguments.get("text")
+                if spoken_text is not None and not isinstance(spoken_text, str):
+                    raise TypeError("text must be a string")
                 return handler(
-                    str(arguments.get("utterance", "")), target, turn_text
+                    str(arguments.get("utterance", "")),
+                    target,
+                    turn_text,
+                    choices=spoken_choices,
+                    option=spoken_option,
+                    text=spoken_text,
                 )
             if name == "stop_agent":
                 # The approve replay drives stop_pane directly (it needs
@@ -2430,10 +2669,19 @@ TOOLS_SCHEMA = [
                 "one the live context told you to speak — with the USER'S "
                 "spoken choice. Pass the user's exact words VERBATIM as the "
                 "utterance (e.g. 'dile que sí', 'selecciona la opción 1'). "
-                "The choice is matched deterministically against the current "
+                "For a MULTI-select question pass the user's words per item "
+                "as choices (e.g. utterance 'marca la uno y la tres' with "
+                "choices ['la uno', 'la tres']); for a free-text row pass "
+                "option (its number as explained) with text set to the "
+                "user's spoken answer after their lead-in (e.g. utterance "
+                "'responde: usa la rama main' with option 3 and text 'usa "
+                "la rama main'). The selection and the typed words are "
+                "always resolved from the user's words, never yours. The "
+                "answer is matched deterministically against the current "
                 "dialog; if the tool refuses (changed dialog, unknown or "
-                "ambiguous choice), relay the reason to the user and ask — "
-                "never choose or press anything yourself."
+                "ambiguous choice, destructive text), relay the reason to "
+                "the user and ask — never choose, type or press anything "
+                "yourself."
             ),
             "parameters": {
                 "type": "object",
@@ -2441,6 +2689,28 @@ TOOLS_SCHEMA = [
                     "utterance": {
                         "type": "string",
                         "description": "The user's exact words naming the choice.",
+                    },
+                    "choices": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "The user's exact spoken words for EACH option "
+                            "they selected on a multi-select dialog."
+                        ),
+                    },
+                    "option": {
+                        "type": "integer",
+                        "description": (
+                            "The free-text row's option number as explained "
+                            "(only with text)."
+                        ),
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": (
+                            "The user's spoken answer for the free-text row "
+                            "(only with option)."
+                        ),
                     },
                 },
                 "required": ["utterance"],

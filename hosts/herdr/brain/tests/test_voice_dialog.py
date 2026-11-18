@@ -12,10 +12,16 @@ Every refusal must leave the pane untouched (no keys sent).
 from __future__ import annotations
 
 import json
+from typing import Optional
 
 import pytest
 
-from herdr_brain.approval_lexicon import resolve_dialog_choice
+from herdr_brain.approval_lexicon import (
+    destructive_text_reason,
+    resolve_dialog_choice,
+    resolve_dialog_choices,
+    resolve_dialog_free_text,
+)
 from herdr_brain.herdr import AgentInfo
 from herdr_brain.tools import BrainTools
 from herdr_brain.view import ansi_runs, parse_dialog
@@ -420,3 +426,612 @@ class TestAnswerDialog:
         assert result["outcome"] == "answered"
         assert result["option"] == 2  # the USER said 2; the model's 1 loses
         assert stub.key_calls == [{"pane_id": "w1:p9", "keys": ["down", "enter"]}]
+
+
+# -- S5: multi-select and free-text answers by voice ------------------------
+#
+# The spoken forms of parity-f7b S5: a multiselect is answered by a
+# multi-choice utterance ("marca la uno y la tres"), a free-text row by
+# a spoken answer ("responde: usa la rama main"). Both keep the S9
+# verbal binding (explain first, a later turn's words, refusals that
+# press nothing) and both ride the SAME structured answering path the
+# PWA's POST /pane/dialog/answer uses — no second choreography.
+
+BLOCKED_CLAUDE = AgentInfo(
+    pane_id="w1:p3",
+    agent="claude",
+    status="blocked",
+    session_kind="id",
+    session_value="00000000-1111-2222-3333-444444444444",
+    cwd="/repo",
+    title="Claude",
+    focused=True,
+)
+
+
+def voice_multi_screen(checked, pointer) -> str:
+    """The claude multi-select shape the endpoint suite pinned: three
+    checkbox rows plus a submit row, pointer included."""
+    names = ("Cheese", "Pepperoni", "Mushrooms")
+    rows = []
+    for index, name in enumerate(names):
+        marker = "Filled checkbox" if index in checked else "Empty checkbox"
+        arrow = "❯" if index == pointer else " "
+        rows.append(f"│ {arrow} {index + 1}. {marker} {name}")
+    arrow = "❯" if pointer == 3 else " "
+    rows.append(f"│ {arrow} 4. Submit")
+    return (
+        "│ Which toppings do you want?\n"
+        "│ Pick every one you like.\n"
+        "│\n"
+        + "\n".join(rows)
+        + "\n│\n"
+        + "  Space to select · Enter to submit · ↑/↓ to navigate · Esc to cancel\n"
+    )
+
+
+def voice_free_text_screen(pointer, typed: str = "") -> str:
+    """The claude select shape with a ``Type something.`` free-text row;
+    once text is typed the row shows it verbatim."""
+    row3 = typed if typed else "Type something."
+    return (
+        "│ Which fruit do you want?\n"
+        "│ Pick the one you like best.\n"
+        "│\n"
+        f"│ {'❯' if pointer == 0 else ' '} 1. Manzana\n"
+        f"│ {'❯' if pointer == 1 else ' '} 2. Pera\n"
+        f"│ {'❯' if pointer == 2 else ' '} 3. {row3}\n"
+        "│\n"
+        "  Enter to select · ↑/↓ to navigate · Esc to cancel\n"
+    )
+
+
+class VoiceMultiStub(DialogStub):
+    """Drives the multi-select screen like the endpoint suite's stub: a
+    digit flips its box and moves the pointer there, the arrows walk,
+    Enter closes the dialog."""
+
+    def __init__(self, checked, pointer=0):
+        super().__init__(agents=[BLOCKED_CLAUDE])
+        self.checked = set(checked)
+        self.pointer = pointer
+        self.closed = False
+        self.swapped: Optional[str] = None
+
+    def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+        self.screen_calls.append(
+            {"pane_id": pane_id, "n_lines": n_lines, "source": source, "as_ansi": as_ansi}
+        )
+        if self.closed:
+            return "$ pytest -q\n..........\n10 passed in 0.02s\n$ _"
+        screen = voice_multi_screen(self.checked, self.pointer)
+        if self.swapped:
+            return screen.replace("Which toppings", self.swapped)
+        return screen
+
+    def send_keys(self, pane_id, keys):
+        self.key_calls.append({"pane_id": pane_id, "keys": list(keys)})
+        for key in keys:
+            if key in ("1", "2", "3"):
+                index = int(key) - 1
+                if index in self.checked:
+                    self.checked.discard(index)
+                else:
+                    self.checked.add(index)
+                self.pointer = index
+            elif key == "4":
+                self.pointer = 3
+            elif key == "down":
+                self.pointer = min(3, self.pointer + 1)
+            elif key == "up":
+                self.pointer = max(0, self.pointer - 1)
+            elif key == "enter":
+                self.closed = True
+        return self._keys
+
+
+class VoiceFreeTextStub(DialogStub):
+    """Drives the free-text select: a digit moves the pointer to its row
+    (the field takes the keyboard), literal text lands in the row
+    verbatim, Enter commits the typed answer."""
+
+    def __init__(self):
+        super().__init__(agents=[BLOCKED_CLAUDE])
+        self.pointer = 0
+        self.typed = ""
+        self.closed = False
+        self.swapped: Optional[str] = None
+        self.text_calls: list = []
+
+    def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+        self.screen_calls.append(
+            {"pane_id": pane_id, "n_lines": n_lines, "source": source, "as_ansi": as_ansi}
+        )
+        if self.closed:
+            return "$ pytest -q\n..........\n10 passed in 0.02s\n$ _"
+        screen = voice_free_text_screen(self.pointer, self.typed)
+        if self.swapped:
+            return screen.replace("Which fruit", self.swapped)
+        return screen
+
+    def send_keys(self, pane_id, keys):
+        self.key_calls.append({"pane_id": pane_id, "keys": list(keys)})
+        for key in keys:
+            if key in ("1", "2", "3"):
+                self.pointer = int(key) - 1
+            elif key == "enter" and self.typed:
+                self.closed = True
+        return self._keys
+
+    def send_text(self, pane_id, text):
+        self.text_calls.append({"pane_id": pane_id, "text": text})
+        self.typed = text
+
+
+def build_tools(settings, stub):
+    return BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
+
+
+def explain_claude_and_advance(tools_obj):
+    tools_obj.begin_turn()
+    dialog = tools_obj.explain_dialog(BLOCKED_CLAUDE)
+    assert dialog is not None
+    tools_obj.begin_turn()
+    return dialog
+
+
+class TestMultiChoiceUtteranceLexicon:
+    """resolve_dialog_choices: a multi-selection utterance → the exact
+    spoken option set, with the same fail-closed discipline as a single
+    choice (negations, competing alternatives and junk all fall through).
+    """
+
+    @pytest.mark.parametrize(
+        ("utterance", "expected"),
+        [
+            # The S5 acceptance utterance, verbatim.
+            ("marca la uno y la tres", (1, 3)),
+            # Digits, context words and comma lists.
+            ("selecciona las opciones 1 y 3", (1, 3)),
+            ("marca la 1, la 3 y la 5", (1, 3, 5)),
+            ("elige 2 y 4", (2, 4)),
+            # Number words in Spanish and English.
+            ("marca la dos y la cuatro", (2, 4)),
+            ("pick one and three", (1, 3)),
+            # One item is still a valid (singleton) selection set.
+            ("marca la uno", (1,)),
+        ],
+    )
+    def test_multi_selections_resolve(self, utterance, expected):
+        assert resolve_dialog_choices(utterance) == expected
+
+    @pytest.mark.parametrize(
+        "utterance",
+        [
+            "",
+            "hola",
+            "dile que sí",                  # a boolean answer, not a set
+            "opción 1 o 2",                  # competing alternatives
+            "marca la uno o la tres",        # "o" never joins a set
+            "no marques la 1 y la 3",        # negated
+            "selecciona 2, no, mejor 1",     # self-corrected
+            "marca la 1 y la 1",             # a repeated mention
+            "marca la 0 y la 2",             # options are 1-based
+            "baja el volumen 50",            # a digit without choice context
+            "marca la uno y luego la tres",  # junk word inside the list
+        ],
+    )
+    def test_ambiguous_or_vague_multi_utterances_are_not_sets(self, utterance):
+        assert resolve_dialog_choices(utterance) is None
+
+
+class TestFreeTextUtteranceLexicon:
+    """resolve_dialog_free_text: a spoken free-text answer must NAME
+    itself as one ("responde: …"); the remainder is the text, verbatim.
+    """
+
+    @pytest.mark.parametrize(
+        ("utterance", "expected"),
+        [
+            ("responde: usa la rama main", "usa la rama main"),
+            ("responde que usa la rama main", "usa la rama main"),
+            ("dile usa la rama main", "usa la rama main"),
+            ("contesta: main", "main"),
+            ("Responde: usa la rama Main", "usa la rama Main"),
+            ("answer: use the main branch", "use the main branch"),
+        ],
+    )
+    def test_lead_in_answers_resolve(self, utterance, expected):
+        assert resolve_dialog_free_text(utterance) == expected
+
+    @pytest.mark.parametrize(
+        "utterance",
+        [
+            "",
+            "usa la rama main",   # no lead-in: not a declared free-text answer
+            "responde:",          # nothing after the lead-in
+            "responde",           # the bare verb is not an answer
+        ],
+    )
+    def test_undeclared_or_blank_answers_are_none(self, utterance):
+        assert resolve_dialog_free_text(utterance) is None
+
+
+class TestDestructiveTextAnalyzer:
+    """The server-side twin of the PWA's destructive.js: same segments,
+    same words, same rules, same Spanish reasons — voice free-text is
+    checked against it because no second tap exists by voice.
+    """
+
+    @pytest.mark.parametrize(
+        ("text", "reason"),
+        [
+            ("rm -rf /", "rm -r (borrado recursivo)"),
+            ("git push -f origin main", "git push --force (reescribe el historial)"),
+            ("sudo pacman -Syu", "sudo (se ejecuta como root)"),
+            ("convert --force out.png", "flag --force"),
+            ("dd if=img.iso of=/dev/sda", "dd if= (escritura cruda en disco)"),
+            ("mkfs.ext4 /dev/sda", "mkfs (formatea un sistema de ficheros)"),
+            ("echo hi > /etc/passwd", "redirect a una ruta del sistema"),
+            ("sudo rm -rf /tmp/demo", "rm -r (borrado recursivo)"),
+        ],
+    )
+    def test_destructive_commands_carry_their_reason(self, text, reason):
+        assert destructive_text_reason(text) == reason
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "",
+            "usa la rama main",
+            "grep -r pattern .",
+            "asume que sí",
+            "echo hi > /dev/null",
+        ],
+    )
+    def test_ordinary_answers_are_not_destructive(self, text):
+        assert destructive_text_reason(text) is None
+
+    def test_every_segment_is_analyzed(self):
+        """The split on ; & | newlines is what makes scoping honest: a
+        destructive segment anywhere in the answer fires, and the rules
+        see the words quotes would otherwise group."""
+        assert (
+            destructive_text_reason("sudo rm -rf x; grep -r pattern .")
+            == "rm -r (borrado recursivo)"
+        )
+        assert (
+            destructive_text_reason('bash -c "sudo reboot"')
+            == "sudo (se ejecuta como root)"
+        )
+
+
+class TestVoiceMultiSelectAnswer:
+    """S5: "marca la uno y la tres" answers a multi-select after
+    explain_dialog, through the SAME structured path a PWA tap uses."""
+
+    def _tools(self, settings, checked=set(), pointer=0):
+        stub = VoiceMultiStub(checked, pointer)
+        return build_tools(settings, stub), stub
+
+    def test_marca_la_uno_y_la_tres_marks_the_exact_set_and_submits(
+        self, settings
+    ):
+        built, stub = self._tools(settings, checked={1})
+        explain_claude_and_advance(built)
+
+        result = json.loads(
+            built.answer_dialog(
+                "marca la uno y la tres",
+                BLOCKED_CLAUDE,
+                choices=["la uno", "la tres"],
+            )
+        )
+
+        assert result["outcome"] == "answered"
+        assert result["pane_id"] == "w1:p3"
+        # The SPOKEN numbering the explanation used rides the result.
+        assert result["choices"] == [1, 3]
+        assert result["titles"] == ["Cheese", "Mushrooms"]
+        # The structured choreography: every wrong box turned off and
+        # every requested one on — one digit each, re-read between —
+        # then the walk to Submit and Enter.
+        assert stub.key_calls == [
+            {"pane_id": "w1:p3", "keys": ["1"]},
+            {"pane_id": "w1:p3", "keys": ["2"]},
+            {"pane_id": "w1:p3", "keys": ["3"]},
+            {"pane_id": "w1:p3", "keys": ["down"]},
+            {"pane_id": "w1:p3", "keys": ["enter"]},
+        ]
+        assert stub.checked == {0, 2}
+        # The spoken confirmation: the note names the selection set.
+        assert "options" in result["note"]
+
+    def test_multi_choice_without_any_explanation_is_refused(self, settings):
+        built, stub = self._tools(settings)
+        built.begin_turn()
+
+        result = json.loads(
+            built.answer_dialog(
+                "marca la uno y la tres", BLOCKED_CLAUDE, choices=["la uno", "la tres"]
+            )
+        )
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "not-explained"
+        assert stub.key_calls == []
+
+    def test_a_changed_dialog_refuses_before_any_key(self, settings):
+        built, stub = self._tools(settings)
+        explain_claude_and_advance(built)
+        stub.swapped = "Which sauces"  # the agent redrew a different question
+
+        result = json.loads(
+            built.answer_dialog(
+                "marca la uno y la tres", BLOCKED_CLAUDE, choices=["la uno", "la tres"]
+            )
+        )
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "changed"
+        assert stub.key_calls == []
+
+    def test_an_ambiguous_multi_item_refuses_like_a_single_one(self, settings):
+        """An item joined by "o" (or the usual single-choice ambiguity)
+        refuses the WHOLE answer with the same reason as today."""
+        built, stub = self._tools(settings)
+        explain_claude_and_advance(built)
+
+        result = json.loads(
+            built.answer_dialog(
+                "marca la uno o la tres", BLOCKED_CLAUDE, choices=["la uno"]
+            )
+        )
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "not-a-choice"
+        assert stub.key_calls == []
+
+    def test_an_unknown_option_in_the_set_is_refused(self, settings):
+        built, stub = self._tools(settings)
+        explain_claude_and_advance(built)
+
+        result = json.loads(
+            built.answer_dialog(
+                "marca la uno y la nueve", BLOCKED_CLAUDE, choices=["la uno"]
+            )
+        )
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "unknown-option"
+        assert stub.key_calls == []
+
+    def test_multi_utterance_without_the_param_stays_single_discipline(
+        self, settings
+    ):
+        """PRESERVE: with no ``choices`` argument the utterance resolves
+        through the SINGLE-choice lexicon exactly as before — a
+        multi-number sentence is not a choice there."""
+        built, stub = self._tools(settings)
+        explain_claude_and_advance(built)
+
+        result = json.loads(
+            built.answer_dialog("marca la uno y la tres", BLOCKED_CLAUDE)
+        )
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "not-a-choice"
+        assert stub.key_calls == []
+
+    def test_multi_answer_rides_the_dispatch_boundary_by_name(self, settings):
+        built, stub = self._tools(settings)
+        explain_claude_and_advance(built)
+
+        result = json.loads(
+            built.dispatch(
+                "answer_dialog",
+                {"utterance": "marca la uno y la tres", "choices": ["la uno", "la tres"]},
+                target=BLOCKED_CLAUDE,
+            )
+        )
+
+        assert result["outcome"] == "answered"
+        assert result["choices"] == [1, 3]
+        assert stub.checked == {0, 2}
+
+    def test_user_words_win_over_the_forwarded_fragments(self, settings):
+        """B4 discipline on lists: the model's fragment list can never
+        add an option the user did not name."""
+        built, stub = self._tools(settings)
+        explain_claude_and_advance(built)
+
+        result = json.loads(
+            built.answer_dialog(
+                "marca la uno y la tres",
+                BLOCKED_CLAUDE,
+                user_utterance="marca la uno",
+                choices=["la uno", "la tres"],
+            )
+        )
+
+        assert result["outcome"] == "answered"
+        assert result["choices"] == [1]  # only what the USER named
+        assert stub.checked == {0}
+
+    def test_choices_and_text_together_is_refused(self, settings):
+        built, stub = self._tools(settings)
+        explain_claude_and_advance(built)
+
+        result = json.loads(
+            built.dispatch(
+                "answer_dialog",
+                {
+                    "utterance": "marca la uno",
+                    "choices": ["la uno"],
+                    "text": "hola",
+                },
+                target=BLOCKED_CLAUDE,
+            )
+        )
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "invalid-arguments"
+        assert stub.key_calls == []
+
+
+class TestVoiceFreeTextAnswer:
+    """S5: "responde: X" answers a free-text row after explain_dialog,
+    through the SAME typed-field recipe a PWA tap uses."""
+
+    def _tools(self, settings):
+        stub = VoiceFreeTextStub()
+        return build_tools(settings, stub), stub
+
+    def test_responde_types_and_commits_the_spoken_text(self, settings):
+        built, stub = self._tools(settings)
+        explain_claude_and_advance(built)
+
+        result = json.loads(
+            built.answer_dialog(
+                "responde: usa la rama main",
+                BLOCKED_CLAUDE,
+                option=3,
+                text="usa la rama main",
+            )
+        )
+
+        assert result["outcome"] == "answered"
+        assert result["pane_id"] == "w1:p3"
+        assert result["option"] == 3
+        assert result["text"] == "usa la rama main"
+        # The structured recipe: the row's digit focuses the field, the
+        # clears run one verified key each, the literal text rides the
+        # typing surface, Enter commits.
+        assert [call["keys"] for call in stub.key_calls] == [
+            ["3"], ["ctrl+u"], ["ctrl+k"], ["enter"],
+        ]
+        assert stub.text_calls == [{"pane_id": "w1:p3", "text": "usa la rama main"}]
+        assert stub.closed is True
+        # The spoken confirmation: the note names the typed text.
+        assert "typed" in result["note"]
+
+    def test_free_text_without_any_explanation_is_refused(self, settings):
+        built, stub = self._tools(settings)
+        built.begin_turn()
+
+        result = json.loads(
+            built.answer_dialog(
+                "responde: usa la rama main", BLOCKED_CLAUDE, option=3, text="usa la rama main"
+            )
+        )
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "not-explained"
+        assert stub.key_calls == []
+        assert stub.text_calls == []
+
+    def test_a_changed_dialog_refuses_before_any_key(self, settings):
+        built, stub = self._tools(settings)
+        explain_claude_and_advance(built)
+        stub.swapped = "Which sauce"  # the agent redrew a different question
+
+        result = json.loads(
+            built.answer_dialog(
+                "responde: usa la rama main", BLOCKED_CLAUDE, option=3, text="usa la rama main"
+            )
+        )
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "changed"
+        assert stub.key_calls == []
+        assert stub.text_calls == []
+
+    def test_destructive_text_by_voice_is_refused(self, settings):
+        """The pinned decision: the destructive analyzer (the PWA's
+        destructive.js, ported server-side) has no second tap by voice,
+        so a matching free-text answer is REFUSED naming the danger —
+        voice never types it."""
+        built, stub = self._tools(settings)
+        explain_claude_and_advance(built)
+
+        result = json.loads(
+            built.answer_dialog(
+                "responde: sudo rm -rf /tmp/demo",
+                BLOCKED_CLAUDE,
+                option=3,
+                text="sudo rm -rf /tmp/demo",
+            )
+        )
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "destructive-text"
+        assert "rm -r (borrado recursivo)" in result["detail"]
+        assert stub.key_calls == []
+        assert stub.text_calls == []
+        assert stub.closed is False
+
+    def test_user_words_win_over_the_forwarded_text(self, settings):
+        """B4 discipline on text: the model's text argument can never
+        substitute what the user actually said."""
+        built, stub = self._tools(settings)
+        explain_claude_and_advance(built)
+
+        result = json.loads(
+            built.answer_dialog(
+                "responde: usa la rama main",
+                BLOCKED_CLAUDE,
+                user_utterance="responde: usa la rama main",
+                option=3,
+                text="sudo rm -rf /",
+            )
+        )
+
+        assert result["outcome"] == "answered"
+        assert stub.text_calls == [{"pane_id": "w1:p3", "text": "usa la rama main"}]
+        assert stub.closed is True
+
+    def test_a_choice_utterance_never_becomes_free_text(self, settings):
+        built, stub = self._tools(settings)
+        explain_claude_and_advance(built)
+
+        result = json.loads(
+            built.answer_dialog(
+                "dile que sí", BLOCKED_CLAUDE, option=3, text="sí"
+            )
+        )
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "not-a-choice"
+        assert stub.key_calls == []
+        assert stub.text_calls == []
+
+    def test_text_without_an_option_is_refused(self, settings):
+        built, stub = self._tools(settings)
+        explain_claude_and_advance(built)
+
+        result = json.loads(
+            built.answer_dialog(
+                "responde: usa la rama main", BLOCKED_CLAUDE, text="usa la rama main"
+            )
+        )
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "invalid-arguments"
+        assert stub.key_calls == []
+
+    def test_an_undeclared_free_text_answer_is_refused(self, settings):
+        """No lead-in, no answer: the user's words must NAME the text
+        for the model to be allowed to type anything."""
+        built, stub = self._tools(settings)
+        explain_claude_and_advance(built)
+
+        result = json.loads(
+            built.answer_dialog(
+                "usa la rama main", BLOCKED_CLAUDE, option=3, text="usa la rama main"
+            )
+        )
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "not-a-choice"
+        assert stub.key_calls == []
+        assert stub.text_calls == []
