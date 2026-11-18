@@ -8286,7 +8286,29 @@
       return match ? { confirm: true, match: match } : { confirm: false };
     }
 
-    return { folderChoices: folderChoices, formState: formState, taskGuard: taskGuard };
+    /* One client-minted request id per LAUNCH TAP (S2, doc 03 §4): the
+     * server registers it after every refusal passed and replays the
+     * cached response to a repeat, so a double-tap or a duplicated
+     * send of the same tap yields ONE tab. A network-failed tap mints
+     * a NEW id on the next tap — if the first attempt actually landed
+     * server-side, that retry may create a second tab; the receipt
+     * makes the common double-send case safe, not every retry. The
+     * uuid rides crypto.randomUUID when the context offers it and
+     * falls back to an ns-<time>-<rand> shape otherwise. */
+    function mintRequestId(uuidFn, nowMs, random) {
+      try {
+        var id = typeof uuidFn === "function" ? uuidFn() : null;
+        if (typeof id === "string" && id) return id;
+      } catch (err) { /* non-secure context or absent crypto */ }
+      return "ns-" + (nowMs || 0).toString(36) + "-" + (random || 0).toString(36).slice(2, 10);
+    }
+
+    return {
+      folderChoices: folderChoices,
+      formState: formState,
+      taskGuard: taskGuard,
+      mintRequestId: mintRequestId,
+    };
   }
   /* @new-session-pure-end */
 
@@ -8552,6 +8574,16 @@
         cwd: newSessionState.cwd,
         title: title || null,
         task: taskText || null,
+        /* Fresh per tap (S2): a repeat of this same request_id replays
+         * the first response server-side; see mintRequestId above. */
+        request_id: nsModel.mintRequestId(
+          function () {
+            return window.crypto && window.crypto.randomUUID
+              ? window.crypto.randomUUID() : null;
+          },
+          Date.now(),
+          Math.random()
+        ),
       }),
     }))
       .then(function (resp) {

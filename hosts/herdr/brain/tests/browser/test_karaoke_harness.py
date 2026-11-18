@@ -69,8 +69,11 @@ EXPECTED_DIGESTS = {
     # (app.js) and the newsession.* keys (both i18n). The sheet fetches
     # /session/roots and /operator/config only when OPENED, so boot-time
     # traffic is unchanged.
+    # app.js re-pinned for parity-f7c S2 (idempotent launch): the sheet
+    # mints a fresh request_id per Launch tap (mintRequestId in the pure
+    # model + the field in the POST /session/new body). No other bytes.
     "/": "5fa87e94aec7e455b259bbf10f58141ec79b2c8ab20e8fc3eceda066bba22675",
-    "/app.js": "22ddec80f526fac31898d84a04f5b7cc24043257e65130383470bfea05d56718",
+    "/app.js": "f1d432100d1fe4be649aff90b3c4a1ef8e2ce7e473978e4dfc3ce6e4b7efb1a7",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "ca7b22c52c8160a3ac577f694eb65ec0798b77cd6ac179a5c567dffdc1fb2ba9",
     "/dialogs.js": "04e7f198b51e05b4d73fcc7a07bb4d8dd8b25141258403449e04baf641141c67",

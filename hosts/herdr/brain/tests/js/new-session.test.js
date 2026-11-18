@@ -122,6 +122,26 @@ test("an empty task and a missing analyzer never block the launch", () => {
   assert.deepEqual(model.taskGuard("rm -rf /", null), { confirm: false });
 });
 
+/* ---- mintRequestId: one id per launch tap (S2, doc 03 §4) ---- */
+
+test("the request id rides crypto's uuid when the page offers one", () => {
+  assert.equal(
+    model.mintRequestId(() => "11111111-2222-4333-8444-555555555555", 1000, 0.5),
+    "11111111-2222-4333-8444-555555555555",
+  );
+});
+
+test("a missing or throwing randomUUID falls back to time+random", () => {
+  /* 1000 → "rs" and 0.5 → "0.i" in base 36: the fallback is a plain
+   * ns-<time>-<rand> shape — client-uniqueness is all idempotency
+   * needs, not cryptographic identity. */
+  assert.equal(model.mintRequestId(null, 1000, 0.5), "ns-rs-i");
+  assert.equal(
+    model.mintRequestId(() => { throw new Error("insecure context"); }, 1000, 0.5),
+    "ns-rs-i",
+  );
+});
+
 /* ---- wiring pins (shape, the pending-wiring discipline) ---- */
 
 test("the sheet and its entry exist in the shell", () => {
@@ -138,6 +158,11 @@ test("the launch posts /session/new through withDeviceAuth", () => {
   assert.ok(appSrc.includes('"/session/new"'));
   assert.ok(/fetch\("\/session\/new",\s*withDeviceAuth\(/.test(appSrc),
     "the launch must ride withDeviceAuth like every write");
+});
+
+test("the launch body mints and carries a request_id per tap", () => {
+  assert.ok(/request_id:\s*nsModel\.mintRequestId\(/.test(appSrc),
+    "the /session/new body must mint a fresh request_id on every Launch tap");
 });
 
 test("the destructive guard reuses the composer's confirm copy", () => {

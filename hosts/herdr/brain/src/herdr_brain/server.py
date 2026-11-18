@@ -63,6 +63,7 @@ from .herdr import MAX_SEND_KEYS, SEND_KEY_ALLOWLIST, HerdrError
 from .history import HistoryStore, default_history_path
 from .history_view import HISTORY_DEFAULT_LIMIT, clamp_limit
 from .llm import STOP_AGENT, BrainLLM, BrainLLMError, TurnCancelled
+from .launch_receipts import LaunchReceiptStore
 from .memory import DEFAULT_SESSION, MAX_MESSAGES, ConversationStore
 from .mux import create_mux
 from .operator_config import (
@@ -782,12 +783,15 @@ class SessionNewRequest(BaseModel):
     harness from the server's CLOSED list and a cwd inside the
     operator's roots; everything else is derived server-side. No
     command line, no agent argv — the launch itself is
-    ``BrainTools.create_session``, byte-identical to the voice path."""
+    ``BrainTools.create_session``, byte-identical to the voice path.
+    ``request_id`` (S2, doc 03 §4) is the client-minted idempotency
+    key: present, a repeat replays the first successful response."""
 
     harness: str = Field(min_length=1, max_length=64)
     cwd: str = Field(min_length=1, max_length=1024)
     title: Optional[str] = Field(default=None, max_length=200)
     task: Optional[str] = Field(default=None, max_length=8_000)
+    request_id: Optional[str] = Field(default=None, max_length=128)
 
 
 #: Live-pane cwds the "New" sheet's folder picker offers, at most.
@@ -1179,6 +1183,11 @@ def create_app(
     # address (see pairing.ClaimRateLimiter). Lives with the app, never
     # in the pairing files.
     pair_limiter = ClaimRateLimiter()
+
+    # Idempotent launches (parity-f7c S2, doc 03 §4): on-disk receipts
+    # under <state_dir>/launch-receipts.json. Lazy like the pairing
+    # store — boot reads nothing; the first receipted launch loads.
+    launch_receipts = LaunchReceiptStore(cfg.state_dir)
 
     # Operator surfaces (S3): the four validated TOML files, reloaded by
     # mtime per request. Injectable like every seam; the default reads
@@ -3543,7 +3552,13 @@ def create_app(
         does not censor. The route is PWA-only: voice already has its
         own gated ``create_session`` tool, so nothing here joins
         ``TOOLS_SCHEMA``. Audited as ``session.new`` with device
-        attribution and LENGTHS, never content."""
+        attribution and LENGTHS, never content.
+
+        Idempotent when ``request_id`` is present (S2, doc 03 §4): the
+        receipt store registers the id only AFTER every refusal passed
+        and only on SUCCESS, so a repeated (or concurrent) request
+        replays the cached first response — one tab, one audit line —
+        while a failed launch stays retryable under the same id."""
         def refuse(reason: str) -> None:
             audit_log.record({
                 "action": "session.new",
@@ -3563,29 +3578,36 @@ def create_app(
             refuse("root_not_allowed")
         title = (body.title or "").strip() or f"{harness} · {Path(resolved).name}"
         task = (body.task or "").strip()
-        result = tools.create_session(harness, title, task, resolved)
-        # The same pane handle the approve replay reads: the created
-        # AgentInfo, when the double kept the property.
-        created = getattr(tools, "last_created", None)
-        created = created() if callable(created) else None
-        pane_id = created.pane_id if created is not None else None
-        outcome = "error" if result.startswith("error") else "executed"
-        audit_log.record({
-            "action": "session.new",
-            "pane_id": pane_id,
-            "device": audit_device(request),
-            "detail": {
-                "outcome": outcome,
-                "harness": harness,
-                "cwd": resolved,
-                # Lengths only — the same discipline as /ask (doc 02 §3).
-                "chars": {"title": len(title), "task": len(task)},
+        request_id = (body.request_id or "").strip() or None
+
+        def do_launch() -> dict:
+            result = tools.create_session(harness, title, task, resolved)
+            # The same pane handle the approve replay reads: the created
+            # AgentInfo, when the double kept the property.
+            created = getattr(tools, "last_created", None)
+            created = created() if callable(created) else None
+            pane_id = created.pane_id if created is not None else None
+            outcome = "error" if result.startswith("error") else "executed"
+            audit_log.record({
+                "action": "session.new",
                 "pane_id": pane_id,
-            },
-        })
-        if outcome == "error":
-            raise HTTPException(status_code=502, detail=result)
-        return {"ok": True, "result": result, "pane_id": pane_id}
+                "device": audit_device(request),
+                "detail": {
+                    "outcome": outcome,
+                    "harness": harness,
+                    "cwd": resolved,
+                    # Lengths only — the same discipline as /ask (doc 02 §3).
+                    "chars": {"title": len(title), "task": len(task)},
+                    "pane_id": pane_id,
+                },
+            })
+            if outcome == "error":
+                raise HTTPException(status_code=502, detail=result)
+            return {"ok": True, "result": result, "pane_id": pane_id}
+
+        if request_id is None:
+            return do_launch()
+        return launch_receipts.launch_once(request_id, do_launch)
 
     @app.post("/operator/preset")
     def operator_preset(request: Request, body: OperatorPresetRequest) -> dict:
