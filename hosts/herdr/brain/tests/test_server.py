@@ -183,6 +183,8 @@ class TestState:
             "title": active_agent.title,
             "cwd": active_agent.cwd,
             "session_id": active_agent.session_value,
+            # Additive since parity F7a S3: unknown model is null.
+            "model": None,
         }
 
     def test_state_no_active_pane(self, settings, audio_dir, monkeypatch):

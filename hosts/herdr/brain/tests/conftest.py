@@ -193,4 +193,6 @@ def pytest_runtest_protocol(item, nextitem):
         with pytest.MonkeyPatch.context() as patch:
             patch.setenv("OPENCODE_DB", str(Path(root) / "nonexistent-opencode.db"))
             patch.setenv("CLAUDE_PROJECTS_ROOT", str(Path(root) / "nonexistent-claude"))
+            # Never spawn the real engine `last-model` CLI (parity F7a S3).
+            patch.setenv("HERDR_BRAIN_PANE_MODEL", "off")
             return (yield)

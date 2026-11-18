@@ -1878,8 +1878,10 @@
   function agentWorkspaceSub(agent) {
     var name = agentDisplayName(agent);
     var ws = (agent.cwd || "").split("/").filter(Boolean).pop() || "";
-    if (!ws || ws === name) return "";
-    return ws;
+    if (ws === name) ws = "";
+    /* Parity F7a S3: the pane's last-request model, when /herd knows it. */
+    var model = agent.model || "";
+    return [ws, model].filter(Boolean).join(" · ");
   }
 
   /* Small Spanish label for a sheet row's status pill (idle hides it). */

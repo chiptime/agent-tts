@@ -43,6 +43,7 @@ from .herdr import (
 )
 from .mux import create_mux
 from .mux.refusal import MuxRefusal
+from .pane_model import PaneModelResolver
 from .send_receipts import (
     classify_followup,
     classify_send,
@@ -146,12 +147,13 @@ def sanitize_agent_name(title: str) -> str:
     return slug or _AGENT_NAME_FALLBACK
 
 
-def status_payload(active: Optional[AgentInfo]) -> dict:
+def status_payload(active: Optional[AgentInfo], model: Optional[str] = None) -> dict:
     """Shapes the active-pane status shared by /state and /view.
 
     Free-text metadata (title, cwd) is masked at this display seam
     (S14): a recognized secret inside either still renders as a hint
-    placeholder, while the lookup ids stay exact.
+    placeholder, while the lookup ids stay exact. ``model`` (parity F7a
+    S3) is the pane's last-request model, or None when unknown.
     """
     if active is None:
         return {
@@ -162,6 +164,7 @@ def status_payload(active: Optional[AgentInfo]) -> dict:
             "title": None,
             "cwd": None,
             "session_id": None,
+            "model": None,
         }
     return {
         "active": True,
@@ -171,6 +174,7 @@ def status_payload(active: Optional[AgentInfo]) -> dict:
         "title": mask_text(active.title) if active.title else active.title,
         "cwd": mask_text(active.cwd) if active.cwd else active.cwd,
         "session_id": active.session_value,
+        "model": model,
     }
 
 
@@ -184,9 +188,12 @@ class BrainTools:
         clock: Optional[Callable[[], float]] = None,
         sleeper: Optional[Callable[[float], None]] = None,
         consult: Optional[ConsultService] = None,
+        pane_model: Optional[PaneModelResolver] = None,
     ):
         self._settings = settings
         self._herdr = herdr or create_mux(settings)
+        # Model per pane (parity F7a S3): background lookups, never blocking.
+        self._pane_model = pane_model or PaneModelResolver()
         # Injectable readiness-loop primitives (tests drive them without
         # real 40 s waits); production uses monotonic time and real sleep.
         self._clock = clock or time.monotonic
@@ -321,7 +328,16 @@ class BrainTools:
             active = self._track(self._herdr.active_agent())
         except HerdrError:
             active = None
-        return status_payload(active)
+        return status_payload(active, self._model_of(active))
+
+    def _model_of(self, agent: Optional[AgentInfo]) -> Optional[str]:
+        """The pane's last-request model, or None (never raises)."""
+        if agent is None or agent.session_kind != "id":
+            return None
+        try:
+            return self._pane_model.model(agent.agent, agent.session_value)
+        except Exception:  # noqa: BLE001 — display metadata never breaks a poll
+            return None
 
     def _latest_turn(self, agent: AgentInfo) -> Optional[Turn]:
         """Newest transcript turn for one agent, or None on any failure."""
@@ -393,6 +409,7 @@ class BrainTools:
                     "title": mask_text(agent.title) if agent.title else agent.title,
                     "cwd": mask_text(agent.cwd) if agent.cwd else agent.cwd,
                     "session_id": agent.session_value if agent.session_kind == "id" else None,
+                    "model": self._model_of(agent),
                     "focused": agent.focused,
                     "last_turn": last_turn,
                     "last_turn_age_s": (
@@ -640,7 +657,7 @@ class BrainTools:
             structured = self._structured_payload(target, wide_text)
 
         payload = {
-            "status": status_payload(target),
+            "status": status_payload(target, self._model_of(target)),
             "transcript": transcript,
             "screen": safe_screen,
             "screen_runs": screen_runs,

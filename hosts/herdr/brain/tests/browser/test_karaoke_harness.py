@@ -53,8 +53,9 @@ EXPECTED_DIGESTS = {
     # the footer (index.html only).
     # Re-pinned on the merged main bytes for the formatted call-drawer
     # reader (/call-history/rendered: index.html, app.js, reader.js).
+    # app.js re-pinned for the pane model in the herd row sub-line (parity F7a S3).
     "/": "006f3b98dddc95f468029e74b9738ccb0c0635d875a7932e3468842cd3d6e8d5",
-    "/app.js": "6970847a90de63e3a938d83481d9fb70c8abd4a08161e71538655fbeac161fe3",
+    "/app.js": "9a8d46ff773d1332504cc439f22954cb7dc3c8546f5528d49d31e39d311bd8c3",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "ca7b22c52c8160a3ac577f694eb65ec0798b77cd6ac179a5c567dffdc1fb2ba9",
     "/dialogs.js": "0e5b6afde7ef662591f66fc69891e3b1ec343fafe0d2c5be8fbef0c5a124a4c0",
