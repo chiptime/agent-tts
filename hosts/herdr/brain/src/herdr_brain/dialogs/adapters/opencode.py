@@ -6,15 +6,24 @@ under their labels, and a footer whose words pin the recipe:
 
 - ``↑↓ select  enter submit  esc dismiss`` (single select): the digit
   alone submits, pointer-independent. Recipe ``(digit,)``.
-- the multi-select and Confirm-tab footers (``enter toggle``,
-  ``⇆ tab … enter confirm`` with a tab strip) are UNREAD for now: the
-  tab strip's state changes what every digit does, and no recipe is
-  inferred.
+- ``⇆ tab  ↑↓ select  enter toggle  esc dismiss`` (multi select): the
+  tabbed list the reference product measured keystroke by keystroke
+  on opencode 1.18.33/34 and 2.1.1 — a digit TOGGLES its own box
+  (pointer-independent), Space does nothing, and the commit is the
+  ``Confirm``/``Submit`` tab's own ``tab`` then ``enter``. Only that
+  exactly-pinned shape upgrades to ``multiselect`` (see
+  :meth:`_QuestionAdapterBase._multiselect`); every other multi-ish
+  footer stays UNREAD below, exactly as before.
+- the multi-QUESTION single-select footer (``⇆ tab … enter
+  confirm``): the digit selects and advances — read as today's plain
+  ``select``; the Confirm-tab review (``⇆ tab  enter submit``) claims
+  nothing (``None``).
 
-The 2.x generation draws the same shape (registered as ``opencode2``);
-the permission pill dialog keeps its own dedicated recognizer below,
-which re-uses the existing ANSI pill detector and answers with the
-walk the pill's own footer advertises.
+The 2.x generation draws the same shapes (registered as ``opencode2``;
+2.1 adds a grey ``Questions`` title and spells the last tab chip
+``Submit``); the permission pill dialog keeps its own dedicated
+recognizer below, which re-uses the existing ANSI pill detector and
+answers with the walk the pill's own footer advertises.
 """
 
 from __future__ import annotations
@@ -23,7 +32,7 @@ import re
 from typing import List, Optional
 
 from ..model import DialogOption, StructuredDialog, fingerprint_region, unread
-from ..numbered import strip_gutter
+from ..numbered import split_checked, strip_gutter
 from . import AdapterBase, dialog_region, footer_line
 
 _SELECT_FOOTER = re.compile(r"↑↓\s*select.*enter\s+(?:submit|confirm)", re.IGNORECASE)
@@ -31,8 +40,24 @@ _SELECT_FOOTER = re.compile(r"↑↓\s*select.*enter\s+(?:submit|confirm)", re.I
 #: select footer also carries ``⇆ tab`` but commits with ``enter
 #: confirm`` — the toggle verb is what marks the box card.
 _MULTI_FOOTER = re.compile(r"enter\s+toggle|␣\s*toggle", re.IGNORECASE)
+#: The EXACTLY pinned multi-select footer (whitespace-insensitive):
+#: the reference's own footer grammar — ``enter (submit|toggle|
+#: confirm) esc dismiss`` with the ``⇆ tab`` and ``↑↓ select`` hints
+#: (markers.ts QUESTION_FOOTER_ROW + questionFooter's tabs/list) —
+#: restricted to the one verb/tabs/list combination the reference
+#: lifted as the multi-select list (question-tabs.ts: ``verb=toggle``
+#: with the tab bar and the list). Every other ``enter toggle``
+#: footer falls back to the unread umbrella.
+_MULTI_PINNED_FOOTER = re.compile(
+    r"⇆\s*tab\b.*?↑↓\s*select\b.*?enter\s+toggle\b.*?esc\s+dismiss\b",
+    re.IGNORECASE,
+)
 _BAR = "┃"
 _DESCRIPTION_INDENT = re.compile(r"^\s{4,}\S")
+_NUMBERED_ROW = re.compile(r"^(?P<number>\d{1,2})\.\s+(?P<label>.+?)\s*$")
+#: The last chip of the tab strip: ``Confirm`` (1.18.x) or ``Submit``
+#: (opencode 2.1) — the reference's LAST_TAB_LABELS.
+_LAST_TAB_CHIP = frozenset({"Confirm", "Submit"})
 
 
 class _QuestionAdapterBase(AdapterBase):
@@ -48,6 +73,9 @@ class _QuestionAdapterBase(AdapterBase):
             return None
 
         if _MULTI_FOOTER.search(footer):
+            pinned = self._multiselect(texts, footer)
+            if pinned is not None:
+                return pinned
             return unread(
                 self.agent, "the tab strip changes what every digit does", lines
             )
@@ -70,7 +98,7 @@ class _QuestionAdapterBase(AdapterBase):
             stripped = strip_gutter(text).strip()
             if not stripped:
                 continue
-            match = re.match(r"^(?P<number>\d{1,2})\.\s+(?P<label>.+?)\s*$", stripped)
+            match = _NUMBERED_ROW.match(stripped)
             if match is not None:
                 number = int(match.group("number"))
                 if number != last_number + 1:
@@ -108,9 +136,150 @@ class _QuestionAdapterBase(AdapterBase):
             hint=footer,
         )
 
+    def _multiselect(
+        self, texts: List[str], footer: str
+    ) -> Optional[StructuredDialog]:
+        """The tabbed multi-select list, pinned to the versions the
+        reference product measured (opencode 1.18.33/34 and 2.1.1).
+
+        Everything here is fail-closed to the unread umbrella (the
+        caller) unless the screen is EXACTLY the pinned shape: the
+        four-hint footer, a checkbox on every numbered row, the
+        question-chip tab strip (ending ``Confirm``/``Submit``) above
+        the question, and — at most, LAST — the free-text row whose
+        digit opens an input and is therefore never an option.
+
+        The recipe facts are the reference's own measurements: a digit
+        TOGGLES its own box whatever the pointer is on (each option's
+        ``keys``), and the commit is the Confirm tab's own ``tab`` +
+        ``enter`` — no row on this screen carries it, so the model
+        offers NO submit row rather than synthesize one, and the
+        choices choreography refuses before sending a key. The pointer
+        is painted STYLE (a colour chip), invisible in text: no walk
+        is claimed. The fingerprint erases the box glyphs — the
+        choreography flips them on purpose.
+        """
+        flat = " ".join(footer.split())
+        if not _MULTI_PINNED_FOOTER.search(flat):
+            return None
+
+        footer_index = next(
+            (
+                index
+                for index in range(len(texts) - 1, -1, -1)
+                if texts[index].strip()
+                and strip_gutter(texts[index]).strip() == footer
+            ),
+            len(texts),
+        )
+        boxes: List[DialogOption] = []
+        free_text = False
+        last_number = 0
+        first_option: Optional[int] = None
+        for index in range(footer_index):
+            text = texts[index]
+            stripped = strip_gutter(text).strip()
+            if not stripped:
+                continue
+            match = _NUMBERED_ROW.match(stripped)
+            if match is not None:
+                if first_option is None:
+                    first_option = index
+                number = int(match.group("number"))
+                if number != last_number + 1:
+                    return None
+                last_number = number
+                raw_label = match.group("label")
+                if not raw_label.startswith("["):
+                    return None  # a checkbox step's row carries a box
+                label, checked = split_checked(raw_label)
+                if checked is None:
+                    return None
+                if _is_free_text(label):
+                    if free_text:
+                        return None  # the label may name only one row
+                    free_text = True
+                    continue
+                if free_text:
+                    return None  # nothing numbered rides below the row
+                boxes.append(
+                    DialogOption(
+                        label=label, keys=(match.group("number"),), checked=checked
+                    )
+                )
+            elif first_option is None:
+                continue  # above the list: read by the frame walk below
+            elif free_text:
+                continue  # committed free text rides under its own row
+            elif _DESCRIPTION_INDENT.match(text.lstrip("┃│")):
+                _append_description(boxes, stripped)
+            else:
+                return None  # a foreign row inside the list is not this grammar
+        if first_option is None or len(boxes) < 2:
+            return None
+
+        # The frame above the list: the question paragraph, then the
+        # tab strip. A numbered row above is another widget's list; a
+        # row outside the bar run is foreign chrome.
+        question_rows: List[str] = []
+        tab_chips: Optional[List[str]] = None
+        index = first_option - 1
+        while index >= 0 and first_option - index <= 12:
+            if _BAR not in texts[index]:
+                return None
+            stripped = strip_gutter(texts[index]).strip()
+            if not stripped:
+                index -= 1
+                continue
+            if _NUMBERED_ROW.match(stripped) is not None:
+                return None
+            chips = _tab_chips(stripped)
+            if chips is not None:
+                tab_chips = chips
+                break
+            question_rows.insert(0, stripped)
+            index -= 1
+        if tab_chips is None or not question_rows:
+            return None
+
+        return StructuredDialog(
+            agent=self.agent,
+            kind="multiselect",
+            question=" ".join(question_rows).strip(),
+            options=tuple(boxes),
+            fingerprint=fingerprint_region(
+                _boxes_normalized(dialog_region(texts, first_option))
+            ),
+            hint=footer,
+        )
+
 
 def _is_free_text(label: str) -> bool:
     return label.strip().lower().startswith("type your own answer")
+
+
+def _tab_chips(row: str) -> Optional[List[str]]:
+    """The question-chip tab strip, or ``None`` when the row is not
+    one: at least two chips of words one space apart, separated by
+    two-or-more spaces, ending in opencode's own last chip —
+    ``Confirm`` (1.18.x) or ``Submit`` (2.1). Which chip is ACTIVE is
+    painted style, invisible in text, and correctly not modelled."""
+    chips = [chip.strip() for chip in re.split(r"\s{2,}", row.strip())]
+    if len(chips) < 2 or chips[-1] not in _LAST_TAB_CHIP:
+        return None
+    if any(not chip for chip in chips) or len(set(chips)) != len(chips):
+        return None
+    return chips
+
+
+def _boxes_normalized(region: List[str]) -> List[str]:
+    """The region with the checkbox glyphs erased — the answer
+    choreography flips them on purpose, so the raw digest would
+    falsify the race guard with the screen's own toggles (state
+    transitions are verified by re-reading). The pointer is painted
+    STYLE in opencode, invisible in text, so the boxes are the only
+    state that moves."""
+    return [re.sub(r"\[[xX✔✓]\]", "[ ]", line).rstrip() for line in region]
 
 
 def _append_description(options: List[DialogOption], row: str) -> None:

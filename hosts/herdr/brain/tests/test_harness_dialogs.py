@@ -45,8 +45,8 @@ CORPUS = {
     "codex": ("codex-trust.txt", "codex-approval.txt", "codex-ask.txt"),
     "grok": ("grok-ask.txt", "grok-permission.txt"),
     "pi": ("pi-ask.txt",),
-    "opencode": ("opencode-question.txt",),
-    "opencode2": ("opencode2-question.txt",),
+    "opencode": ("opencode-question.txt", "opencode-multi.txt"),
+    "opencode2": ("opencode2-question.txt", "opencode2-multi.txt"),
     "antigravity": ("antigravity-select.txt",),
     "kiro": ("kiro-approval.txt", "kiro-trust.txt"),
     "muse": (
@@ -422,6 +422,16 @@ class TestPi:
 
         assert model is not None and model.unread
 
+    def test_the_real_stock_multi_capture_stays_unclaimed(self):
+        """The REAL stock pi 1.1.0 multi-select (rule-framed, footer
+        ``Space to tick • Enter to confirm``, boxes ``[ ]``/``[x]``
+        before the numbers — derived from the reference product's
+        capture pi--v110-multi.txt) is NOT brain's pinned Ask-box
+        corpus: its only named toggle is Space, which is outside the
+        verified key dialect, and its frame was never pinned. Nothing
+        may claim it — the fail-closed answer, exactly as today."""
+        assert detect("pi", fixture("pi-multi.txt")) is None
+
 
 class TestOpencode:
     def test_question_reads_digit_alone_options(self):
@@ -453,6 +463,117 @@ class TestOpencode:
         assert labels(model) == ["Allow once", "Allow always", "Reject"]
         assert model.nav_keys == ("left", "right")
         assert model.commit_keys == ("enter",)
+
+
+class TestOpencodeMulti:
+    """S2: the tabbed multi-select list, pinned by the reference
+    product's REAL captures (opencode 1.18.33 measured keystroke by
+    keystroke: a digit TOGGLES its own box; Space does nothing; the
+    commit is the Confirm tab's own ``tab`` then ``enter``).
+
+    ``opencode-multi.txt`` derives from the reference capture
+    ``oc--question--multi--toggled.txt`` (page gutter trimmed to the
+    corpus convention); ``opencode2-multi.txt`` from
+    ``oc--v211-question--multi--toggled.txt`` (opencode 2.1.1: a
+    ``Questions`` title, a ``Submit`` last chip, deeper descriptions).
+    """
+
+    def test_multi_reads_box_states_and_digit_toggle_recipes(self):
+        model = detect("opencode", fixture("opencode-multi.txt"))
+
+        assert model.kind == "multiselect"
+        assert "Which colours?" in model.question
+        # The free-text row's digit opens an input: never an option.
+        assert labels(model) == ["Red", "Green", "Blue", "Yellow"]
+        assert [o.description for o in model.options] == [
+            "warm", "calm", "cool", "bright",
+        ]
+        assert [o.checked for o in model.options] == [True, False, False, False]
+        # Measured: the digit alone toggles ITS OWN box, pointer or not.
+        assert recipes(model) == [("1",), ("2",), ("3",), ("4",)]
+        # No submit row exists on this screen and none is synthesized:
+        # the commit (tab to Confirm, enter there) is not a row recipe.
+        assert [o.checked for o in model.options].count(None) == 0
+        assert model.nav_keys == () and model.commit_keys == ()
+
+    def test_opencode2_multi_with_the_submit_chip_reads_the_same(self):
+        model = detect("opencode2", fixture("opencode2-multi.txt"))
+
+        assert model.kind == "multiselect"
+        assert model.question == "Which toppings?"
+        assert labels(model) == ["Ham", "Olives", "Cheese", "Mushroom"]
+        assert [o.checked for o in model.options] == [True, False, False, False]
+        assert recipes(model) == [("1",), ("2",), ("3",), ("4",)]
+
+    def test_multi_fingerprint_ignores_its_own_box_flips(self):
+        """The answer choreography flips boxes ON PURPOSE: the digest is
+        taken over the region with the box glyphs normalized, so the
+        screen's own toggles never falsify the race guard."""
+        screen = fixture("opencode-multi.txt")
+        model = detect("opencode", screen)
+        flipped = screen.replace("1. [✓] Red", "1. [ ] Red").replace(
+            "2. [ ] Green", "2. [✓] Green"
+        )
+
+        other = detect("opencode", flipped)
+
+        assert other is not None and not other.unread
+        assert other.fingerprint == model.fingerprint
+        assert [o.checked for o in other.options] == [False, True, False, False]
+
+    def test_rows_without_boxes_under_the_multi_footer_stay_unread(self):
+        screen = fixture("opencode-multi.txt").replace("[✓] ", "").replace(
+            "[ ] ", ""
+        )
+
+        model = detect("opencode", screen)
+
+        assert model is not None and model.unread
+
+    def test_broken_numbering_under_the_multi_footer_stays_unread(self):
+        screen = fixture("opencode-multi.txt").replace(
+            "3. [ ] Blue", "4. [ ] Blue"
+        )
+
+        model = detect("opencode", screen)
+
+        assert model is not None and model.unread
+
+    def test_a_free_text_row_above_the_last_row_stays_unread(self):
+        """Only the LAST numbered row may be the free-text row: a digit
+        on any other row must be a box toggle, and two rows whose digit
+        opens inputs cannot be told apart."""
+        screen = fixture("opencode-multi.txt").replace(
+            "4. [ ] Yellow", "4. [ ] Type your own answer"
+        )
+
+        model = detect("opencode", screen)
+
+        assert model is not None and model.unread
+
+    def test_no_tab_strip_above_the_question_stays_unread(self):
+        """The tab strip (question chips ending Confirm/Submit) is part
+        of the pinned frame: without it the screen is another version's
+        shape, and it stays unread."""
+        screen = fixture("opencode-multi.txt").replace(
+            "┃   Colour   Confirm", "┃   Colour   Finish"
+        )
+
+        model = detect("opencode", screen)
+
+        assert model is not None and model.unread
+
+    def test_a_foreign_multi_footer_verb_stays_unread(self):
+        """The open-input footer of another generation (``enter done``
+        instead of ``enter toggle``) never upgrades: only the exactly
+        pinned four-hint footer does."""
+        screen = fixture("opencode-multi.txt").replace(
+            "enter toggle  esc dismiss", "enter done  esc close"
+        )
+
+        model = detect("opencode", screen)
+
+        assert model is None or model.unread
 
 
 class TestAntigravity:
