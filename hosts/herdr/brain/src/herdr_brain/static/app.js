@@ -2925,6 +2925,10 @@
   var dialogBusy = false;
   var lastStructured = null;
   var lastDialogIdentity = null;
+  /* Multiselect only: the LOCAL checkbox selection (dialogs.js's
+   * selectionModel). An option tap mutates this and NEVER posts; only
+   * the explicit submit button turns it into one POST. */
+  var dialogMultiSelection = null;
 
   function setDialogButtonsBusy(busy) {
     if (!dialogButtonsBox) return;
@@ -2956,10 +2960,19 @@
         lastDialogIdentity = identity;
         setDialogStatus("");
         dialogButtonsBox.textContent = "";
+        dialogMultiSelection = window.Dialogs.isMultiselect(structured)
+          ? window.Dialogs.selectionModel(structured.options)
+          : null;
         buttons.forEach(function (option) {
           var button = document.createElement("button");
           button.type = "button";
           button.setAttribute("data-index", String(option.index));
+          if (dialogMultiSelection) {
+            /* The checkbox rows carry their terminal state; the toggle
+             * is local and posts nothing. */
+            button.setAttribute(
+              "aria-pressed", String(option.checked === true));
+          }
           var label = document.createElement("span");
           label.textContent = option.label;
           button.appendChild(label);
@@ -2971,6 +2984,16 @@
           }
           dialogButtonsBox.appendChild(button);
         });
+        if (dialogMultiSelection) {
+          /* ONE explicit submit for the whole selection — no checkbox
+           * tap can send anything by itself. */
+          var submit = document.createElement("button");
+          submit.type = "button";
+          submit.setAttribute("data-submit", "1");
+          submit.className = "dlg-submit";
+          submit.textContent = window.Dialogs.submitLabel();
+          dialogButtonsBox.appendChild(submit);
+        }
       }
       dialogButtonsBox.classList.remove("hidden");
       if (dialogUnreadCard) dialogUnreadCard.classList.add("hidden");
@@ -3039,11 +3062,87 @@
       });
   }
 
+  function toggleDialogChoice(button) {
+    /* A checkbox tap is LOCAL state only — it never posts. The server
+     * sees the whole selection in one explicit submit. */
+    if (!lastStructured || !dialogMultiSelection || dialogBusy) return;
+    var index = parseInt(button.getAttribute("data-index"), 10);
+    if (isNaN(index)) return;
+    var option = (lastStructured.options || [])[index];
+    if (!option || option.checked == null) return;  // not a checkbox row
+    dialogMultiSelection.toggle(index);
+    button.setAttribute(
+      "aria-pressed", String(dialogMultiSelection.isSelected(index)));
+  }
+
+  function submitDialogChoices() {
+    if (!lastStructured || !window.Dialogs || !dialogMultiSelection || dialogBusy) {
+      return;
+    }
+    var paneId = replyKeys.getAttribute("data-pane");
+    if (!paneId) return;
+    var chosen = dialogMultiSelection.choices();
+    if (!chosen.length) {
+      /* The submit row does nothing with an empty selection — same as
+       * the harness's own TUI. */
+      setDialogStatus(t("dialogs.none_selected"));
+      return;
+    }
+    dialogBusy = true;
+    setDialogButtonsBusy(true);
+    setDialogStatus(t("reply.sending"));
+    var labels = (lastStructured.options || []).map(function (option) {
+      return option.label;
+    });
+    var payload = window.Dialogs.choicesPayload(
+      paneId, lastStructured.fingerprint, chosen);
+    fetch("/pane/dialog/answer", withDeviceAuth({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    }))
+      .then(function (resp) {
+        if (!resp.ok) maybeOfferPairing(resp);
+        return resp.json().catch(function () { return null; }).then(function (body) {
+          return { ok: resp.ok, status: resp.status, body: body };
+        });
+      })
+      .then(function (result) {
+        if (result.ok) {
+          setDialogStatus(window.Dialogs.statusFor({ ok: true }, labels));
+          /* The dialog usually closes or advances here: refresh now
+           * instead of waiting a whole poll beat. */
+          refreshState();
+          return null;
+        }
+        setDialogStatus(window.Dialogs.statusFor({ status: result.status }, labels));
+        return null;
+      })
+      .catch(function () {
+        setDialogStatus(window.Dialogs.statusFor(null, labels));
+      })
+      .then(function () {
+        dialogBusy = false;
+        setDialogButtonsBusy(false);
+      });
+  }
+
   if (dialogButtonsBox) {
     dialogButtonsBox.addEventListener("click", function (event) {
       var node = event.target;
+      var submit = node && node.closest
+        ? node.closest("button[data-submit]") : null;
+      if (submit) {
+        submitDialogChoices();
+        return;
+      }
       var button = node && node.closest ? node.closest("button[data-index]") : null;
-      if (button) answerDialogButton(button);
+      if (!button) return;
+      if (window.Dialogs && window.Dialogs.isMultiselect(lastStructured)) {
+        toggleDialogChoice(button);
+        return;
+      }
+      answerDialogButton(button);
     });
   }
 

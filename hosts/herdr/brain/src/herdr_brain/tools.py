@@ -769,7 +769,11 @@ class BrainTools:
         return dialog
 
     def answer_structured_dialog(
-        self, pane_id: str, fingerprint: str, option: int
+        self,
+        pane_id: str,
+        fingerprint: str,
+        option: Optional[int] = None,
+        choices: Optional[list] = None,
     ) -> dict:
         """Answers a RECOGNIZED dialog option a button was tapped for (S2).
 
@@ -788,6 +792,11 @@ class BrainTools:
         - a multiplexer that cannot send logical keys refuses with the
           adapter's own explanation (graceful, never a crash).
 
+        ``choices`` (S1) answers a multi-select instead: one digit per
+        box, a re-read after every key, an exact match of the requested
+        state, then the guard's walk to the submit row — see
+        :meth:`_answer_multiselect`.
+
         The outcome is ``answered`` or ``refused`` with a reason, so
         the PWA can say exactly what happened.
         """
@@ -800,6 +809,7 @@ class BrainTools:
                 "detail": detail,
                 "pane_id": pane_id,
                 "option": option,
+                "choices": choices,
             }
 
         try:
@@ -829,8 +839,6 @@ class BrainTools:
             return refused(
                 "changed", "the dialog changed before the answer; nothing was sent"
             )
-        if not 0 <= option < len(model.options):
-            return refused("invalid_target", "that option is not on this dialog")
 
         def sender(target_pane: str, keys: list) -> None:
             result = self.send_keys_to_pane(target_pane, keys)
@@ -838,6 +846,13 @@ class BrainTools:
                 raise HerdrError(
                     result.get("detail") or result["outcome"] or "send-keys failed"
                 )
+
+        if choices is not None:
+            return self._answer_multiselect(
+                pane_id, choices, model, target, reader, sender, detect, refused
+            )
+        if option is None or not 0 <= option < len(model.options):
+            return refused("invalid_target", "that option is not on this dialog")
 
         chosen = model.options[option]
         if chosen.keys:
@@ -888,6 +903,126 @@ class BrainTools:
                 "label": chosen.label,
             }
         return refused(outcome.reason or "changed", outcome.detail)
+
+    def _answer_multiselect(
+        self, pane_id, choices, model, target, reader, sender, detect, refused
+    ) -> dict:
+        """The multi-select choreography (S1): the terminal is the only
+        truth.
+
+        Every box is toggled with its own digit and a re-read after
+        every key; the final state must match the requested set EXACTLY
+        (pre-checked boxes outside the request are turned OFF); only
+        then does the guard's walk take the pointer to the submit row
+        and commit with Enter. Anything unexpected — the dialog left,
+        its identity changed, a box never flipped — stops the answer
+        with ``changed`` and sends NOTHING further: half a selection is
+        never submitted blindly.
+        """
+        from . import dialog as dialog_guard
+
+        if model.kind != "multiselect":
+            return refused(
+                "invalid_target", "choices only answers a multi-select dialog"
+            )
+        boxes = {
+            index
+            for index, option in enumerate(model.options)
+            if option.checked is not None
+        }
+        submit_rows = [
+            index
+            for index, option in enumerate(model.options)
+            if option.checked is None
+        ]
+        if not boxes or len(submit_rows) != 1:
+            return refused("invalid_target", "this dialog has no single submit row")
+        wanted = sorted(set(choices))
+        for index in wanted:
+            if index not in boxes:
+                return refused(
+                    "invalid_target", "a requested choice is not a checkbox row"
+                )
+
+        def readd():
+            text = reader(pane_id, DIALOG_SCREEN_LINES)
+            fresh = recognize_dialog(target.agent, text or "")
+            if fresh is None or fresh.unread or fresh.kind != "multiselect":
+                return None
+            return fresh
+
+        current = model
+        requested = set(wanted)
+        for index, option in enumerate(model.options):
+            if option.checked is None or option.checked == (index in requested):
+                continue
+            if not option.keys or option.keys[0] not in SEND_KEY_ALLOWLIST:
+                return refused("invalid_target", "the toggle recipe left the key dialect")
+            try:
+                sender(pane_id, [option.keys[0]])
+            except HerdrError as exc:
+                return refused("send-failed", str(exc))
+            current = self._await_box(pane_id, index, index in requested, current, readd)
+            if current is None:
+                return refused(
+                    "changed",
+                    "the dialog changed while toggling; nothing further was sent",
+                )
+
+        # The EXACT contract, read fresh — never assumed: every
+        # requested box checked, every other box unchecked.
+        for index, option in enumerate(current.options):
+            if option.checked is not None and option.checked != (index in requested):
+                return refused(
+                    "changed", "the checked boxes do not match the requested selection"
+                )
+
+        try:
+            outcome = dialog_guard.answer_dialog(
+                reader,
+                sender,
+                pane_id,
+                DIALOG_SCREEN_LINES,
+                current.as_guard_model(),
+                submit_rows[0],
+                detect,
+                sleep=self._sleeper,
+            )
+        except HerdrError as exc:
+            return refused("send-failed", str(exc))
+        if outcome.sent:
+            return {
+                "outcome": "answered",
+                "pane_id": pane_id,
+                "choices": wanted,
+                "label": current.options[submit_rows[0]].label,
+            }
+        return refused(outcome.reason or "changed", outcome.detail)
+
+    def _await_box(self, pane_id, index, want, tapped, readd):
+        """Waits, bounded, for the toggled box to show ``want``.
+
+        The dialog's own redraw is the only evidence a toggle took. A
+        read that shows a DIFFERENT dialog is drift: ``None``, and the
+        caller sends nothing further.
+        """
+        from . import dialog as dialog_guard
+
+        pause = self._sleeper or time.sleep
+        for _ in range(dialog_guard.POLL_ATTEMPTS):
+            pause(dialog_guard.POLL_DELAY_MS / 1000)
+            fresh = readd()
+            if fresh is None:
+                # A redraw can briefly hide the dialog's tail: keep
+                # polling; only an all-null run means it went away.
+                continue
+            if not dialog_guard.same_dialog_identity(
+                fresh.as_guard_model(), tapped.as_guard_model()
+            ):
+                return None
+            if fresh.options[index].checked == want:
+                return fresh
+        return None
 
     def _dialog_reader(self, pane_id: str):
         """The guard's reader: a styled read of one pane's tail."""

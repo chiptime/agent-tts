@@ -122,6 +122,8 @@
     "dialogs.unread_body": "The agent {agent} is waiting for an answer I can't read with confidence. Use the keypad below — nothing is ever sent blind.",
     "dialogs.answered": "Answered: {label}",
     "dialogs.answered_plain": "Answered.",
+    "dialogs.submit_selection": "Send selection",
+    "dialogs.none_selected": "Check at least one option before sending.",
     "dialogs.changed": "The dialog changed before answering; nothing was sent. Look at the screen and answer the new dialog, or use the keypad.",
     "dialogs.option_gone": "That option is no longer in the dialog; use the keypad.",
     "dialogs.fail": "Could not answer the dialog; use the keypad.",

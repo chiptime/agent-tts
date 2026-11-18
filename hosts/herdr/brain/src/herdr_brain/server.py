@@ -33,7 +33,7 @@ from urllib.parse import parse_qs, unquote_plus
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Path as PathParam, Query, Request, UploadFile, WebSocket
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from . import __version__
 from .approval import (
@@ -660,12 +660,24 @@ class PaneDialogAnswerRequest(BaseModel):
     ``fingerprint`` is the dialog identity the /view render carried:
     the server re-reads the pane and refuses (409) when the screen
     moved under the tap, so a stale render can never fire keys.
-    ``option`` is the tapped option's index in that render.
+    ``option`` is the tapped option's index in that render; ``choices``
+    (S1) is the multi-select form — the indices of the boxes that must
+    end up checked, submitted through one explicit send. Exactly one of
+    the two travels per request.
     """
 
     pane_id: str = Field(min_length=1, max_length=MAX_SESSION_ID_CHARS)
     fingerprint: str = Field(min_length=1, max_length=64)
-    option: int = Field(ge=0, le=99)
+    option: Optional[int] = Field(default=None, ge=0, le=99)
+    choices: Optional[list[int]] = Field(default=None, min_length=1, max_length=8)
+
+    @model_validator(mode="after")
+    def _exactly_one_answer(self) -> "PaneDialogAnswerRequest":
+        if (self.option is None) == (self.choices is None):
+            raise ValueError("provide exactly one of option or choices")
+        if self.choices is not None and len(set(self.choices)) != len(self.choices):
+            raise ValueError("choices must not repeat an option")
+        return self
 
 
 class PairRequest(BaseModel):
@@ -2894,25 +2906,32 @@ def create_app(
         crew_peer = crew_remote_peer(body.pane_id)
         if crew_peer is not None:
             _, remote_id = split_pane_id(body.pane_id)
+            answer_payload = (
+                {"fingerprint": body.fingerprint, "choices": body.choices}
+                if body.choices is not None
+                else {"fingerprint": body.fingerprint, "option": body.option}
+            )
             result = crew_call(
                 crew_peer,
-                lambda client: client.dialog_answer(
-                    remote_id,
-                    {"fingerprint": body.fingerprint, "option": body.option},
-                ),
+                lambda client: client.dialog_answer(remote_id, answer_payload),
             )
             audit_log.record({
                 "action": "pane.dialog.answer",
                 "pane_id": body.pane_id,
                 "device": audit_device(request),
                 "detail": {
-                    "outcome": "answered", "option": body.option,
+                    "outcome": "answered",
+                    "option": body.option,
+                    "choices": body.choices,
                     "fingerprint": body.fingerprint, "crew": True,
                 },
             })
             return result if isinstance(result, dict) else {"ok": True}
         result = tools.answer_structured_dialog(
-            body.pane_id, body.fingerprint, body.option
+            body.pane_id,
+            body.fingerprint,
+            option=body.option,
+            choices=body.choices,
         )
         outcome = result["outcome"]
         # The fingerprint names the answered dialog and the option index
@@ -2925,6 +2944,7 @@ def create_app(
                 "outcome": outcome,
                 "reason": result.get("reason", ""),
                 "option": body.option,
+                "choices": body.choices,
                 "fingerprint": body.fingerprint,
             },
         })
@@ -2933,6 +2953,7 @@ def create_app(
                 "ok": True,
                 "pane_id": body.pane_id,
                 "option": body.option,
+                "choices": body.choices,
                 "label": result.get("label", ""),
             }
         reason = result.get("reason", "")
@@ -3919,13 +3940,17 @@ def create_app(
 
         def _h_dialog_answer(pane_id, **payload):
             result = tools.answer_structured_dialog(
-                pane_id, payload.get("fingerprint"), payload.get("option")
+                pane_id,
+                payload.get("fingerprint"),
+                option=payload.get("option"),
+                choices=payload.get("choices"),
             )
             outcome = result["outcome"]
             if outcome == "answered":
                 return {
                     "ok": True, "pane_id": pane_id,
                     "option": payload.get("option"),
+                    "choices": payload.get("choices"),
                     "label": result.get("label", ""),
                 }
             reason = result.get("reason", "")

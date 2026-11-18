@@ -122,6 +122,8 @@
     "dialogs.unread_body": "El agente {agent} espera una respuesta que no sé leer con seguridad. Usa el teclado de abajo, nunca se envía nada a ciegas.",
     "dialogs.answered": "Respondido: {label}",
     "dialogs.answered_plain": "Respondido.",
+    "dialogs.submit_selection": "Enviar selección",
+    "dialogs.none_selected": "Marca al menos una opción antes de enviar.",
     "dialogs.changed": "El diálogo cambió antes de responder; nada se envió. Mira la pantalla y responde al diálogo nuevo, o usa el teclado.",
     "dialogs.option_gone": "Esa opción ya no está en el diálogo; usa el teclado.",
     "dialogs.fail": "No se pudo responder el diálogo; usa el teclado.",

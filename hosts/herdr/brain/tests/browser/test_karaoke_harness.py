@@ -54,11 +54,14 @@ EXPECTED_DIGESTS = {
     # Re-pinned on the merged main bytes for the formatted call-drawer
     # reader (/call-history/rendered: index.html, app.js, reader.js).
     # app.js re-pinned for the pane model in the herd row sub-line (parity F7a S3).
+    # app.js, dialogs.js and both i18n re-pinned for parity F7b S1: the
+    # multiselect checkbox toggles above the keypad (local selection
+    # state, one explicit submit button posting {choices}).
     "/": "006f3b98dddc95f468029e74b9738ccb0c0635d875a7932e3468842cd3d6e8d5",
-    "/app.js": "9a8d46ff773d1332504cc439f22954cb7dc3c8546f5528d49d31e39d311bd8c3",
+    "/app.js": "a6544a582b43cbbef3adec4a4426dee9a232644a700dfc2f8cb942071d81ee11",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "ca7b22c52c8160a3ac577f694eb65ec0798b77cd6ac179a5c567dffdc1fb2ba9",
-    "/dialogs.js": "0e5b6afde7ef662591f66fc69891e3b1ec343fafe0d2c5be8fbef0c5a124a4c0",
+    "/dialogs.js": "9f58c4794b7dd5f74e810f93cdbf10bc0be354d2127e7a1cfb6ffdcbe6bef5b5",
     "/herd-group.js": "de284c825e3c99aef07db2dd53198484ec8b7ceba94dd97dbbae0303560df399",
     "/toast.js": "cbccb72b22530ff8f83250bebd8d498ca20977db9536aa094aa759bb9632357e",
     "/reader.js": "b99edccdba5adb1c407ebc3064f7045214c0152677a1da2cfa2c388393792989",
@@ -76,8 +79,8 @@ EXPECTED_DIGESTS = {
     # update notice, operator dock, offline-shell sw.js.
     "/dock.js": "4a5dc20d575c3c9e5f098116fc9314f24297b2934cb3142bc885b6e1d0155adb",
     "/i18n.js": "8bcd2ceb9f56109afaa0ec158e1a6f002799c4a983261b9d58cd38723c06719f",
-    "/i18n/en.js": "7a99b1cb00720be63d67e1a7c8a04920909966ac4ac0c6d212d84cb35f3be646",
-    "/i18n/es.js": "9dd6e6a703361cea95062710b511a4d2661b510db002d47d107b38c274d8bb58",
+    "/i18n/en.js": "307107367f6ef4708a130c852b10a01f26b9bc170694b574405c8b0413f29de8",
+    "/i18n/es.js": "14335d2f12700745dc7ce060729ff7a0e38bcb71a1523e885a4916a45e1895a2",
     "/settings.js": "1c2cf3ed92bf959c19ecde0107618b8d1ff0690d2c6fa7c842a2fdc551e05f72",
     "/updates.js": "7f87250cf6cd9c2b8944da632fe036d0c18a87a90f48f70b84e18bcd338cfa84",
     "/calls.js": "9b9ec591709d282c6e673770b2ffc1ed1562650104d8e8393126d186aa764165",

@@ -83,8 +83,8 @@ class DialogTapStub:
 
 @pytest.fixture
 def make_client(settings, tmp_path, monkeypatch):
-    def build(agents, screen, sleeper=None):
-        stub = DialogTapStub(agents, screen)
+    def build(agents, screen, sleeper=None, stub=None):
+        stub = stub or DialogTapStub(agents, screen)
         state_dir = tmp_path / "state"
 
         def factory(cfg, **kwargs):
@@ -122,6 +122,85 @@ def _fingerprint(agent: str, screen: str) -> str:
     model = recognize(agent, screen)
     assert model is not None and not model.unread
     return model.fingerprint
+
+
+def multi_screen(checked, pointer) -> str:
+    """The claude multi-select shape with the given checked boxes (a
+    set of 0-based row indexes) and the pointer on ``pointer``."""
+    names = ("Cheese", "Pepperoni", "Mushrooms")
+    rows = []
+    for index, name in enumerate(names):
+        marker = "Filled checkbox" if index in checked else "Empty checkbox"
+        arrow = "❯" if index == pointer else " "
+        rows.append(f"│ {arrow} {index + 1}. {marker} {name}")
+    arrow = "❯" if pointer == 3 else " "
+    rows.append(f"│ {arrow} 4. Submit")
+    return (
+        "│ Which toppings do you want?\n"
+        "│ Pick every one you like.\n"
+        "│\n"
+        + "\n".join(rows)
+        + "\n│\n"
+        + "  Space to select · Enter to submit · ↑/↓ to navigate · Esc to cancel\n"
+    )
+
+
+class MultiSelectStub(DialogTapStub):
+    """Drives the synthesized multi-select screen: a digit flips its box
+    and moves the pointer there, the arrows walk the pointer, Enter
+    closes the dialog."""
+
+    def __init__(self, agents, checked, pointer=0):
+        super().__init__(agents, "")
+        self.checked = set(checked)
+        self.pointer = pointer
+        self.closed = False
+
+    def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+        if self.closed:
+            return "$ pytest -q\n..........\n10 passed in 0.02s\n$ _"
+        return multi_screen(self.checked, self.pointer)
+
+    def send_keys(self, pane_id, keys):
+        super().send_keys(pane_id, keys)
+        for key in keys:
+            if key in ("1", "2", "3"):
+                index = int(key) - 1
+                if index in self.checked:
+                    self.checked.discard(index)
+                else:
+                    self.checked.add(index)
+                self.pointer = index
+            elif key == "4":
+                self.pointer = 3
+            elif key == "down":
+                self.pointer = min(3, self.pointer + 1)
+            elif key == "up":
+                self.pointer = max(0, self.pointer - 1)
+            elif key == "enter":
+                self.closed = True
+        return {"ok": True, "error": ""}
+
+
+class HijackedMultiSelectStub(MultiSelectStub):
+    """After the FIRST key the agent redraws a different question: the
+    dialog identity changed mid-answer and nothing further may leave."""
+
+    def __init__(self, agents, checked, pointer=0):
+        super().__init__(agents, checked, pointer)
+        self.hijacked = False
+
+    def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+        if self.hijacked:
+            return multi_screen(self.checked, self.pointer).replace(
+                "Which toppings", "Which sauces"
+            )
+        return super().read_screen(pane_id, n_lines, source, as_ansi)
+
+    def send_keys(self, pane_id, keys):
+        result = super().send_keys(pane_id, keys)
+        self.hijacked = True
+        return result
 
 
 class TestAnswerByRecipe:
@@ -429,3 +508,138 @@ class TestVoicePathReadsStructuredDialogs:
         assert outcome["outcome"] == "refused"
         assert outcome["reason"] == "just-appeared"
         assert stub.key_calls == []
+
+
+class TestMultiSelectAnswer:
+    """``choices`` answers a multiselect: every box is toggled with a
+    re-read after each key, the final state must match the request
+    EXACTLY, and only then does the pointer walk to the submit row and
+    Enter commit. Any surprise is a 409 ``changed`` with nothing further
+    sent — the same discipline as a single-option tap."""
+
+    def _post(self, client, choices, fingerprint):
+        return client.post(
+            "/pane/dialog/answer",
+            json={
+                "pane_id": "w1:p3",
+                "fingerprint": fingerprint,
+                "choices": choices,
+            },
+        )
+
+    def test_choices_set_exactly_the_requested_boxes_then_submit(self, make_client):
+        stub = MultiSelectStub([BLOCKED_CLAUDE], checked={1})
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        fingerprint = _fingerprint("claude", stub.read_screen("w1:p3"))
+
+        response = self._post(client, [0, 2], fingerprint)
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["ok"] is True
+        assert body["choices"] == [0, 2]
+        # One digit per box in row order — Pepperoni's pre-checked box
+        # is turned OFF — then the pointer walks to Submit and Enter.
+        assert stub.key_calls == [
+            {"pane_id": "w1:p3", "keys": ["1"]},
+            {"pane_id": "w1:p3", "keys": ["2"]},
+            {"pane_id": "w1:p3", "keys": ["3"]},
+            {"pane_id": "w1:p3", "keys": ["down"]},
+            {"pane_id": "w1:p3", "keys": ["enter"]},
+        ]
+        assert stub.checked == {0, 2}
+        entries = audit_entries(client)
+        answer = next(e for e in entries if e["action"] == "pane.dialog.answer")
+        assert answer["detail"]["outcome"] == "answered"
+        assert answer["detail"]["choices"] == [0, 2]
+        assert answer["detail"]["fingerprint"] == fingerprint
+
+    def test_choices_with_nothing_to_toggle_walk_straight_to_submit(
+        self, make_client
+    ):
+        stub = MultiSelectStub([BLOCKED_CLAUDE], checked={0, 2}, pointer=3)
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        fingerprint = _fingerprint("claude", stub.read_screen("w1:p3"))
+
+        response = self._post(client, [0, 2], fingerprint)
+
+        assert response.status_code == 200
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
+
+    def test_a_midway_screen_change_is_a_409_and_nothing_further_leaves(
+        self, make_client
+    ):
+        stub = HijackedMultiSelectStub([BLOCKED_CLAUDE], checked=set())
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        fingerprint = _fingerprint("claude", stub.read_screen("w1:p3"))
+
+        response = self._post(client, [0, 2], fingerprint)
+
+        assert response.status_code == 409
+        assert "cambió" in response.json()["detail"]
+        # The first toggle left; the hijacked dialog got NOTHING further.
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["1"]}]
+        entries = audit_entries(client)
+        assert entries[-1]["detail"]["reason"] == "changed"
+        assert entries[-1]["detail"]["choices"] == [0, 2]
+
+    def test_a_changed_dialog_before_any_key_is_a_409(self, make_client):
+        stub = MultiSelectStub([BLOCKED_CLAUDE], checked={1})
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        stale = _fingerprint(
+            "claude", stub.read_screen("w1:p3").replace("Mushrooms", "Anchovies")
+        )
+
+        response = self._post(client, [0], stale)
+
+        assert response.status_code == 409
+        assert stub.key_calls == []
+
+    def test_choices_against_a_single_select_dialog_is_a_422(self, make_client):
+        client, stub = make_client(
+            [BLOCKED_CLAUDE], CLAUDE_SELECT, sleeper=lambda _s: None
+        )
+        fingerprint = _fingerprint("claude", CLAUDE_SELECT)
+
+        response = self._post(client, [0], fingerprint)
+
+        assert response.status_code == 422
+        assert stub.key_calls == []
+
+    def test_a_choice_naming_the_submit_row_is_a_422(self, make_client):
+        stub = MultiSelectStub([BLOCKED_CLAUDE], checked={1})
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        fingerprint = _fingerprint("claude", stub.read_screen("w1:p3"))
+
+        response = self._post(client, [3], fingerprint)
+
+        assert response.status_code == 422
+        assert stub.key_calls == []
+
+    def test_choices_and_option_together_is_a_422(self, make_client):
+        client, _ = make_client(
+            [BLOCKED_CLAUDE], CLAUDE_SELECT, sleeper=lambda _s: None
+        )
+
+        response = client.post(
+            "/pane/dialog/answer",
+            json={
+                "pane_id": "w1:p3",
+                "fingerprint": "x",
+                "option": 0,
+                "choices": [0],
+            },
+        )
+
+        assert response.status_code == 422
+
+    def test_an_empty_or_repeated_choices_list_is_a_422(self, make_client):
+        client, _ = make_client(
+            [BLOCKED_CLAUDE], CLAUDE_SELECT, sleeper=lambda _s: None
+        )
+
+        empty = self._post(client, [], "x")
+        repeated = self._post(client, [0, 0], "x")
+
+        assert empty.status_code == 422
+        assert repeated.status_code == 422

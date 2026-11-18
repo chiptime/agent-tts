@@ -74,6 +74,55 @@
     return { pane_id: paneId, fingerprint: fingerprint, option: option };
   }
 
+  /* Multiselect (kind: "multiselect"): the option rows are checkbox
+   * TOGGLES held in local state — no option tap ever posts — and one
+   * explicit submit button sends the whole selection at once. */
+  function isMultiselect(structured) {
+    return !!(
+      structured && !structured.unread && structured.kind === "multiselect"
+    );
+  }
+
+  /* The local selection state, seeded from the terminal's own checked
+   * glyphs. Rows without a checkbox (the submit row, checked == null)
+   * are never selectable. Owns no payload or network surface of its
+   * own: only choicesPayload below turns a selection into a POST. */
+  function selectionModel(options) {
+    var state = (options || []).map(function (option) {
+      return option && option.checked === true;
+    });
+    return {
+      toggle: function (index) {
+        if (index >= 0 && index < state.length &&
+            options[index] && options[index].checked != null) {
+          state[index] = !state[index];
+        }
+      },
+      isSelected: function (index) {
+        return state[index] === true;
+      },
+      choices: function () {
+        var out = [];
+        for (var i = 0; i < state.length; i++) {
+          if (state[i] && options[i] && options[i].checked != null) out.push(i);
+        }
+        return out;
+      },
+    };
+  }
+
+  /* The exact body a multiselect submit sends — the whole selection,
+   * one explicit POST. */
+  function choicesPayload(paneId, fingerprint, choices) {
+    return { pane_id: paneId, fingerprint: fingerprint, choices: choices };
+  }
+
+  /* The explicit submit button's own chrome (agent labels ride
+   * verbatim above it; only this button is ours). */
+  function submitLabel() {
+    return tr("dialogs.submit_selection", "Enviar selección");
+  }
+
   /* The Spanish status line for a tap's outcome. `labels` are the
    * rendered button labels, so the answered line can name the choice. */
   function statusFor(result, labels) {
@@ -106,6 +155,10 @@
     answerPayload: answerPayload,
     statusFor: statusFor,
     useTranslator: useTranslator,
+    isMultiselect: isMultiselect,
+    selectionModel: selectionModel,
+    choicesPayload: choicesPayload,
+    submitLabel: submitLabel,
   };
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

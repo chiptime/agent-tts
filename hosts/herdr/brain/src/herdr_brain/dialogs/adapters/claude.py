@@ -6,6 +6,16 @@ fixture in the same layout Claude draws):
 - ``select`` — AskUserQuestion: options ``❯ 1. Label``, footer
   ``Enter to select · ↑/↓ to navigate · Esc to cancel``. The digit
   moves the pointer; Enter commits. Recipe: ``(digit, enter)``.
+- ``multiselect`` — AskUserQuestion with multiple selections allowed:
+  checkbox rows (``Empty checkbox``/``Filled checkbox``, or the
+  ``[ ]``/``[✔]`` glyph pair) plus the numbered ``Submit`` row, footer
+  ``Space to select · Enter to submit · … · Esc to cancel``. The digit
+  ALONE toggles its box; the pointer walks to the submit row with the
+  footer's arrows and Enter commits there. The fingerprint is taken
+  over the region with pointer and checkbox state NORMALIZED: the
+  answer choreography flips boxes and moves the pointer on purpose, so
+  the raw digest would falsify the race guard with the screen's own
+  movements (state transitions are verified by re-reading).
 - ``permission`` — the tool permission dialog: footer
   ``Tab to amend …`` (or a bare ``Esc to cancel`` under a
   "Do you want to" question). The digit alone commits.
@@ -23,12 +33,13 @@ buttons with a lying recipe.
 from __future__ import annotations
 
 import re
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from ..model import DialogOption, StructuredDialog, fingerprint_region, unread
 from ..numbered import (
     collect_numbered_block,
     question_above,
+    split_checked,
     step_marker_above,
 )
 from . import AdapterBase, dialog_region, footer_line
@@ -44,6 +55,27 @@ _TRUST_FOOTER = re.compile(r"\benter to confirm\b", re.IGNORECASE)
 _PERMISSION_QUESTION = re.compile(r"\bdo you want to\b", re.IGNORECASE)
 _TRUST_QUESTION = re.compile(r"\bdo you trust\b", re.IGNORECASE)
 
+#: The multi-select footer: the SAME family rhythm as select but naming
+#: space (the toggle key) and ``enter to submit`` — both phrases the
+#: single-select footer never carries, so the two footers cannot be
+#: confused in either direction.
+_MULTI_FOOTER = re.compile(
+    r"\bspace to select\b.*\benter to submit\b.*\besc to cancel\b", re.IGNORECASE
+)
+
+#: The word-form checkbox glyphs Claude's TUI draws between the number
+#: and the label (the ``[ ]``/``[✔]`` glyph pair is read by
+#: :func:`~herdr_brain.dialogs.numbered.split_checked`).
+_CHECKED_WORD = "filled checkbox"
+_UNCHECKED_WORD = "empty checkbox"
+
+#: The one row that submits a multi-select (muse draws the same tail
+#: row: ``N. Submit answer (M checked)``).
+_SUBMIT_ROW = re.compile(r"^submit$", re.IGNORECASE)
+
+#: Pointer glyphs the family draws on the highlighted row.
+_POINTER_GLYPHS = "❯›>→►▸"
+
 
 class ClaudeAdapter(AdapterBase):
     agent = "claude"
@@ -55,6 +87,8 @@ class ClaudeAdapter(AdapterBase):
             return None
         first, last, rows = block
 
+        if _MULTI_FOOTER.search(footer):
+            return self._multiselect(footer, lines, first, rows)
         if _SELECT_FOOTER.search(footer):
             kind = "select"
             suffix = ("enter",)
@@ -94,3 +128,87 @@ class ClaudeAdapter(AdapterBase):
                 (position for position, row in enumerate(rows) if row[3]), None
             ),
         )
+
+    def _multiselect(
+        self, footer, lines, first, rows
+    ) -> Optional[StructuredDialog]:
+        """The checkbox shape — fail-closed unless EVERY row is a
+        checkbox or the one trailing Submit row."""
+        question = question_above(lines, first)
+        if not question:
+            return None
+
+        options: List[DialogOption] = []
+        boxes = 0
+        submit = False
+        for number, label, description, _pointed in rows:
+            # A wide gap after the glyph would split the label from its
+            # own description: the checkbox state belongs to the whole
+            # row, so the parts are read as one.
+            text = f"{label} {description}".strip() if description else label
+            clean, checked = _checkbox_state(text)
+            if checked is None:
+                if submit or not options or not _SUBMIT_ROW.match(clean):
+                    # Neither a checkbox nor the single trailing submit
+                    # row: another widget's shape, never a guess.
+                    return None
+                submit = True
+                options.append(DialogOption(label=clean, keys=()))
+            else:
+                if submit:
+                    return None  # nothing rides below the submit row
+                boxes += 1
+                options.append(
+                    DialogOption(label=clean, keys=(number,), checked=checked)
+                )
+        if boxes < 2 or not submit:
+            return None
+
+        return StructuredDialog(
+            agent=self.agent,
+            kind="multiselect",
+            question=question,
+            options=tuple(options),
+            fingerprint=fingerprint_region(
+                _state_normalized(dialog_region(lines, first))
+            ),
+            hint=footer,
+            nav_keys=("up", "down"),
+            commit_keys=("enter",),
+            selected=next(
+                (position for position, row in enumerate(rows) if row[3]), None
+            ),
+        )
+
+
+def _checkbox_state(text: str) -> Tuple[str, Optional[bool]]:
+    """One option row → ``(clean label, checked)``.
+
+    ``checked`` is ``None`` when the row carries no box at all (the
+    submit row, or a row this shape does not own).
+    """
+    low = text.lower()
+    if _CHECKED_WORD in low:
+        return re.sub(_CHECKED_WORD, "", text, flags=re.IGNORECASE).strip(), True
+    if _UNCHECKED_WORD in low:
+        return re.sub(_UNCHECKED_WORD, "", text, flags=re.IGNORECASE).strip(), False
+    return split_checked(text)
+
+
+def _state_normalized(lines: List[str]) -> List[str]:
+    """The region with pointer and checkbox state erased.
+
+    Only the multiselect fingerprint uses this: its answer flips boxes
+    and walks the pointer BY DESIGN, so the raw digest would report the
+    screen's own choreography as drift. Everything else in the region
+    — question, labels, footer — still feeds the digest.
+    """
+    normalized = []
+    for line in lines:
+        text = re.sub(
+            rf"\b(?:{_CHECKED_WORD}|{_UNCHECKED_WORD})\b", "#", line, flags=re.IGNORECASE
+        )
+        text = re.sub(r"\[[ xX✔✓]?\]", "#", text)
+        text = re.sub(f"[{re.escape(_POINTER_GLYPHS)}]", "", text)
+        normalized.append(re.sub(r"\s{2,}", " ", text).rstrip())
+    return normalized

@@ -37,6 +37,7 @@ CORPUS = {
         "claude-permission.txt",
         "claude-trust.txt",
         "claude-wizard.txt",
+        "claude-multi.txt",
     ),
     "codex": ("codex-trust.txt", "codex-approval.txt", "codex-ask.txt"),
     "grok": ("grok-ask.txt", "grok-permission.txt"),
@@ -140,6 +141,69 @@ class TestClaude:
         assert model.kind == "wizard_step"
         assert model.step == "1/2"
         assert recipes(model) == [("1", "enter"), ("2", "enter")]
+
+    def test_multi_select_reads_checkbox_states_and_a_walk_class_submit_row(
+        self,
+    ):
+        model = detect("claude", fixture("claude-multi.txt"))
+
+        assert model.kind == "multiselect"
+        assert "Which toppings" in model.question
+        assert labels(model) == ["Cheese", "Pepperoni", "Mushrooms", "Submit"]
+        assert [option.checked for option in model.options] == [
+            False, True, False, None,
+        ]
+        # The digit toggles its box without submitting; the submit row
+        # is walk-class: the pointer walks there with the footer's own
+        # arrows and Enter commits.
+        assert recipes(model) == [("1",), ("2",), ("3",), ()]
+        assert model.nav_keys == ("up", "down")
+        assert model.commit_keys == ("enter",)
+        assert model.selected == 0
+
+    def test_multi_select_fingerprint_ignores_its_own_pointer_and_boxes(self):
+        """The answer choreography flips boxes and moves the pointer ON
+        PURPOSE: the fingerprint must not falsify the race guard with
+        the screen's own movements (state transitions are verified by
+        re-reading, not by the fingerprint)."""
+        screen = fixture("claude-multi.txt")
+        model = detect("claude", screen)
+        moved = screen.replace("❯ 1. Empty checkbox", "  1. Filled checkbox")
+
+        other = detect("claude", moved)
+
+        assert other is not None
+        assert other.fingerprint == model.fingerprint
+        assert [option.checked for option in other.options] == [
+            True, True, False, None,
+        ]
+
+    def test_a_multiselect_footer_without_checkbox_rows_declines(self):
+        screen = fixture("claude-multi.txt")
+        stripped = screen.replace("Empty checkbox ", "").replace(
+            "Filled checkbox ", ""
+        )
+
+        assert detect("claude", stripped) is None
+
+    def test_checkbox_rows_without_a_submit_row_decline(self):
+        """Without the submit row there is no verified way to commit the
+        selection: fail closed rather than guessing Enter's meaning."""
+        screen = fixture("claude-multi.txt").replace(
+            "4. Submit", "4. Filled checkbox Confirm"
+        )
+
+        assert detect("claude", screen) is None
+
+    def test_word_glyphs_behind_a_wide_gap_still_read_as_one_label(self):
+        screen = fixture("claude-multi.txt").replace(
+            "1. Empty checkbox Cheese", "1. Empty checkbox  Cheese"
+        )
+
+        model = detect("claude", screen)
+
+        assert model is not None
+        assert model.options[0].label == "Cheese"
 
 
 class TestCodex:
