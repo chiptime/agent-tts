@@ -189,8 +189,9 @@ case "${1:-}" in
   doctor|--doctor)
     mode="$1"
     shift
-    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$REPO_DIR/src${PYTHONPATH:+:$PYTHONPATH}" herdr_first_run brain "$REPO_DIR/.venv/bin/python" "$mode" "$@"
-    doctor_rc=$?
+    # `|| doctor_rc=$?` keeps errexit from aborting before the ops stage.
+    doctor_rc=0
+    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$REPO_DIR/src${PYTHONPATH:+:$PYTHONPATH}" herdr_first_run brain "$REPO_DIR/.venv/bin/python" "$mode" "$@" || doctor_rc=$?
     if [[ -x "$REPO_DIR/.venv/bin/python" ]]; then
       ops_args=(doctor "$@")
       if [[ " $* " == *" --json "* ]]; then
