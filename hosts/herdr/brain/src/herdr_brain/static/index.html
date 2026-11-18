@@ -188,7 +188,8 @@
      * backdrop rules and the z-index band. */
     #conv-backdrop,
     #pending-backdrop,
-    #calls-backdrop {
+    #calls-backdrop,
+    #new-backdrop {
       position: fixed;
       inset: 0;
       z-index: 19;            /* dims drawer (15) and settings (17); sheet is 20 */
@@ -199,13 +200,15 @@
     }
     #conv-backdrop.open,
     #pending-backdrop.open,
-    #calls-backdrop.open {
+    #calls-backdrop.open,
+    #new-backdrop.open {
       opacity: 1;
       visibility: visible;
       transition: opacity 0.28s ease;
     }
     #conv-sheet,
-    #pending-sheet {
+    #pending-sheet,
+    #new-sheet {
       position: fixed;
       left: 0; right: 0;
       bottom: calc(env(safe-area-inset-bottom, 0px) + 96px);
@@ -227,7 +230,8 @@
       transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1), visibility 0s 0.28s;
     }
     #conv-sheet.open,
-    #pending-sheet.open {
+    #pending-sheet.open,
+    #new-sheet.open {
       transform: translateY(0);
       visibility: visible;
       transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
@@ -333,6 +337,100 @@
       color: var(--muted);
       font-style: italic;
       text-align: center;
+    }
+    /* ── NEW SESSION SHEET (parity-f7c S1) ──────────
+     * The ✚ in the header opens the launch sheet: harness (the
+     * server's closed list), folder (roots + recents), optional title
+     * and task, then Launch — plus the launchers.toml rows as
+     * shortcuts riding the SAME POST /operator/launch flow. Same sheet
+     * band as Conversaciones; the body is the one scroll surface. */
+    #new-sheet-body {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      padding: var(--sp-3) var(--sp-3) calc(env(safe-area-inset-bottom, 0px) + var(--sp-4));
+    }
+    .ns-field {
+      margin: 0 0 var(--sp-3);
+    }
+    .ns-label {
+      display: block;
+      font-size: var(--fs-sm);
+      color: var(--muted);
+      margin: 0 0 6px;
+    }
+    #new-harness,
+    #new-title,
+    #new-task {
+      width: 100%;
+      min-height: 48px;       /* touch target >= 48px */
+      padding: 10px 12px;
+      font: inherit;
+      font-size: 15px;
+      color: var(--text);
+      background: var(--chip-bg);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+    }
+    #new-task {
+      min-height: 84px;
+      resize: vertical;
+    }
+    #new-folders {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .ns-group {
+      font-size: var(--fs-sm);
+      color: var(--muted);
+      margin: 4px 0 0;
+    }
+    .ns-folder {
+      width: 100%;
+      min-height: 48px;
+      padding: 10px 12px;
+      text-align: left;
+      font: inherit;
+      font-size: 14px;
+      color: var(--text);
+      background: var(--chip-bg);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow-wrap: anywhere;
+    }
+    .ns-folder[aria-pressed="true"] {
+      border-color: var(--accent);
+      color: var(--accent);
+      font-weight: 700;
+    }
+    #new-roots-empty {
+      padding: var(--sp-3);
+      font-size: var(--fs-sm);
+      color: var(--muted);
+      font-style: italic;
+      text-align: center;
+    }
+    #new-launch {
+      width: 100%;
+      min-height: 48px;
+      margin-top: var(--sp-2);
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--accent);
+      background: var(--chip-bg);
+      border: 1px dashed var(--line);
+      border-radius: 12px;
+    }
+    #new-launch:disabled {
+      opacity: 0.5;
+    }
+    #new-launchers .ns-folder.dock-armed {
+      border-style: solid;
+      border-color: var(--accent);
+      color: var(--accent);
+      font-weight: 700;
     }
     .conv-row {
       display: flex;
@@ -2418,6 +2516,7 @@
       #settings-sheet, #settings-sheet.open { transition: none; }
       #conv-sheet, #conv-sheet.open { transition: none; }
       #pending-sheet, #pending-sheet.open { transition: none; }
+      #new-sheet, #new-sheet.open { transition: none; }
       #conv-backdrop, #conv-backdrop.open,
       #calls-backdrop, #calls-section, #calls-section.open { transition: none; }
       #pending-backdrop, #pending-backdrop.open { transition: none; }
@@ -2575,6 +2674,10 @@
     <span id="status-chip" class="chip">…</span>
     <button id="pane-picker" type="button" aria-haspopup="dialog" aria-expanded="false" title="Cambiar de conversación" data-i18n-title="header.pane_picker_title"><span class="pp-caret" aria-hidden="true">▾</span><span id="pane-picker-label" data-i18n="header.connecting">conectando…</span><span id="pane-picker-sub" class="hidden"></span></button>
     <span id="header-version" class="chip">v<span id="app-version-header">?</span></span>
+    <!-- Nueva sesión (parity-f7c S1): the ✚ opens the launch sheet —
+         harness + folder + task through the same create_session the
+         voice path uses, plus the launchers.toml shortcuts. -->
+    <button id="new-open" class="head-btn" type="button" title="Nueva sesión" data-i18n-title="newsession.title" aria-label="Nueva sesión" data-i18n-aria-label="newsession.aria">✚</button>
     <button id="settings-btn" class="head-btn" title="Ajustes" data-i18n-title="header.settings_title">⚙</button>
     <button id="mute-btn" class="head-btn" title="Silenciar anuncios" data-i18n-title="header.mute_title">🔊</button>
   </header>
@@ -2812,6 +2915,43 @@
       <button id="calls-close" type="button" title="Cerrar" data-i18n-title="conv.close">✕</button>
     </div>
     <div id="calls-container"></div>
+  </section>
+
+  <!-- Nueva sesión sheet (parity-f7c S1, doc 03 §2): harness picker
+       (the server's closed list), folder picker (roots + recents),
+       optional title and initial task, Launch — and the launchers.toml
+       rows as shortcuts that POST the SAME /operator/launch. The task
+       text runs the destructive guard before posting (second tap, like
+       the composer). ✕ / backdrop / Escape / Android back close it. -->
+  <div id="new-backdrop" aria-hidden="true"></div>
+  <section id="new-sheet" role="dialog" aria-modal="true" aria-label="Nueva sesión" data-i18n-aria-label="newsession.aria" inert>
+    <div class="cs-head">
+      <span class="cs-title" data-i18n="newsession.title">Nueva sesión</span>
+      <button id="new-close" type="button" title="Cerrar" data-i18n-title="conv.close">✕</button>
+    </div>
+    <div id="new-sheet-body">
+      <div id="new-roots-empty" class="hidden" data-i18n="newsession.roots_empty"></div>
+      <div class="ns-field">
+        <label class="ns-label" for="new-harness" data-i18n="newsession.harness">Agente</label>
+        <select id="new-harness"></select>
+      </div>
+      <div class="ns-field">
+        <span class="ns-label" data-i18n="newsession.folder">Carpeta</span>
+        <div id="new-folders"></div>
+      </div>
+      <div class="ns-field">
+        <label class="ns-label" for="new-title" data-i18n="newsession.title_label">Título (opcional)</label>
+        <input id="new-title" type="text" maxlength="200" autocomplete="off">
+      </div>
+      <div class="ns-field">
+        <label class="ns-label" for="new-task" data-i18n="newsession.task">Tarea inicial (opcional)</label>
+        <textarea id="new-task" rows="3" maxlength="8000" data-i18n-placeholder="newsession.task_placeholder"></textarea>
+      </div>
+      <button id="new-launch" type="button" data-i18n="newsession.launch" disabled>🚀 Lanzar</button>
+      <div class="ns-field">
+        <div id="new-launchers"></div>
+      </div>
+    </div>
   </section>
 
   <!-- Pending announcements sheet (pending-notices-in-settings-sheet):

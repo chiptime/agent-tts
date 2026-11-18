@@ -64,8 +64,13 @@ EXPECTED_DIGESTS = {
     # F7b S4: the wizard stepper (step metadata from the N/M marker,
     # Next/Back over local captures, review with Confirm/Edit, abort
     # card on drift).
-    "/": "006f3b98dddc95f468029e74b9738ccb0c0635d875a7932e3468842cd3d6e8d5",
-    "/app.js": "02e4e3e20f145bdc2baee5e16707134cac562846010f7029bd3f2e52f2e3e6af",
+    # Re-pinned for parity-f7c S1 (the ✚ "Nueva sesión" sheet): the
+    # header entry + sheet markup (index.html), the pure model + wiring
+    # (app.js) and the newsession.* keys (both i18n). The sheet fetches
+    # /session/roots and /operator/config only when OPENED, so boot-time
+    # traffic is unchanged.
+    "/": "5fa87e94aec7e455b259bbf10f58141ec79b2c8ab20e8fc3eceda066bba22675",
+    "/app.js": "22ddec80f526fac31898d84a04f5b7cc24043257e65130383470bfea05d56718",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "ca7b22c52c8160a3ac577f694eb65ec0798b77cd6ac179a5c567dffdc1fb2ba9",
     "/dialogs.js": "04e7f198b51e05b4d73fcc7a07bb4d8dd8b25141258403449e04baf641141c67",
@@ -86,8 +91,8 @@ EXPECTED_DIGESTS = {
     # update notice, operator dock, offline-shell sw.js.
     "/dock.js": "4a5dc20d575c3c9e5f098116fc9314f24297b2934cb3142bc885b6e1d0155adb",
     "/i18n.js": "8bcd2ceb9f56109afaa0ec158e1a6f002799c4a983261b9d58cd38723c06719f",
-    "/i18n/en.js": "5045f560c77d1a95ae031d52622a10bfd6bc14d2d1a25b610720334d1bed4a21",
-    "/i18n/es.js": "761aef35915dfc278e95dc69a8bcabe297793a6aa47fc5cfcb804f46daf344ce",
+    "/i18n/en.js": "39c46e72989cde2fd1f58b09e8c39a8fa29ad271561e18fd1351980d07110de4",
+    "/i18n/es.js": "3b45a8a321b669c64fd3bebb86fa90be7f0328af917afb630507fd6dbfaf6f13",
     "/settings.js": "1c2cf3ed92bf959c19ecde0107618b8d1ff0690d2c6fa7c842a2fdc551e05f72",
     "/updates.js": "7f87250cf6cd9c2b8944da632fe036d0c18a87a90f48f70b84e18bcd338cfa84",
     "/calls.js": "9b9ec591709d282c6e673770b2ffc1ed1562650104d8e8393126d186aa764165",

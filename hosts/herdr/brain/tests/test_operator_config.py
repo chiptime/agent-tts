@@ -620,6 +620,82 @@ def test_check_reports_every_file_with_counts_and_issues(writer):
     assert reports["launchers.toml"].issues == ()
 
 
+# ── roots (parity-f7c S1): allowed cwds for the PWA "New" sheet ───────
+
+
+def test_roots_accept_absolute_paths_with_optional_labels(writer):
+    writer(
+        "roots.toml",
+        '[[roots]]\npath = "/srv/work"\n\n'
+        '[[roots]]\npath = "/srv/code"\nlabel = "Trabajo"\n',
+    )
+    cfg = oc.OperatorConfig()
+    assert cfg.roots() == (
+        oc.Root(path="/srv/work", label=""),
+        oc.Root(path="/srv/code", label="Trabajo"),
+    )
+    assert cfg.roots_issues() == ()
+
+
+def test_roots_rows_fail_row_by_row_and_survivors_keep_serving(writer):
+    writer(
+        "roots.toml",
+        '[[roots]]\npath = "/srv/ok"\n\n'
+        '[[roots]]\npath = "relative/path"\n\n'   # not absolute
+        '[[roots]]\nlabel = "sin path"\n\n'       # missing path
+        '[[roots]]\npath = 42\n\n'                # not a string
+        '[[roots]]\npath = "/srv/bad\\u0000"\n\n'  # control character
+        '[[roots]]\npath = "/srv/x"\nextra = 1\n',  # unknown field
+    )
+    cfg = oc.OperatorConfig()
+    assert [r.path for r in cfg.roots()] == ["/srv/ok"]
+    reasons = [i.reason for i in cfg.roots_issues()]
+    assert reasons == [
+        "path must be an absolute path",
+        "missing path",
+        "path must be a string",
+        "path must not contain control characters",
+        "unknown field 'extra'",
+    ]
+
+
+def test_roots_duplicates_after_resolve_are_discarded(writer, tmp_path):
+    real = tmp_path / "work"
+    real.mkdir()
+    link = tmp_path / "work-link"
+    link.symlink_to(real)
+    writer("roots.toml", f'[[roots]]\npath = "{real}"\n\n[[roots]]\npath = "{link}"\n')
+    cfg = oc.OperatorConfig()
+    # The symlink row resolves to the same directory: one root survives,
+    # spelled by its resolved path.
+    assert cfg.roots() == (oc.Root(path=str(real.resolve()), label=""),)
+    assert cfg.roots_issues()[0].reason == "duplicate root"
+
+
+def test_roots_missing_file_is_empty_and_reloads_by_mtime(writer):
+    cfg = oc.OperatorConfig()
+    assert cfg.roots() == ()
+    assert cfg.reload_counts()["roots"] == 1
+    assert cfg.roots() == ()  # still missing: the stat is the cache key
+    assert cfg.reload_counts()["roots"] == 1
+    writer("roots.toml", '[[roots]]\npath = "/srv/late"\n')
+    assert [r.path for r in cfg.roots()] == ["/srv/late"]
+    assert cfg.reload_counts()["roots"] == 2
+
+
+def test_roots_stay_out_of_the_config_check_report(writer):
+    writer("roots.toml", '[[roots]]\npath = "/srv/work"\n')
+    cfg = oc.OperatorConfig()
+    # check() keeps reporting the FOUR operator files (doctor.py's
+    # surface); roots is a launch-config surface, not a dock row file.
+    assert {r.file for r in cfg.check()} == {
+        "quick-replies.toml",
+        "commands.toml",
+        "keys.toml",
+        "launchers.toml",
+    }
+
+
 # ── concurrency ──────────────────────────────────────────────────────────
 
 

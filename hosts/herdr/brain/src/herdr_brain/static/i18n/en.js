@@ -202,6 +202,24 @@
     "conv.title": "Conversations",
     "conv.close": "Close",
 
+    /* ---- new session sheet (parity-f7c S1) ---- */
+    "newsession.aria": "New session",
+    "newsession.title": "New session",
+    "newsession.harness": "Agent",
+    "newsession.harness_pick": "— pick an agent —",
+    "newsession.folder": "Folder",
+    "newsession.folder_roots": "Roots",
+    "newsession.folder_recents": "Recent",
+    "newsession.title_label": "Title (optional)",
+    "newsession.task": "Initial task (optional)",
+    "newsession.task_placeholder": "What the agent should do on start…",
+    "newsession.launch": "🚀 Launch",
+    "newsession.launched": "Session launched",
+    "newsession.launch_failed": "Could not launch the session — try again",
+    "newsession.err_harness": "That agent is not on the server's list",
+    "newsession.err_cwd": "That folder is not inside the allowed roots",
+    "newsession.roots_empty": "No roots configured: create ~/.config/herdr-brain/roots.toml to enable launches",
+
     /* ---- pending sheet ---- */
     "pendsheet.aria": "Pending",
     "pendsheet.title": "Pending",

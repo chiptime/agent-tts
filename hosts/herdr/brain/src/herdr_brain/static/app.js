@@ -744,6 +744,11 @@
       settingsSheet.setAttribute("inert", "");
       try { settingsBtn.focus({ preventScroll: true }); } catch (err) { /* noop */ }
     }
+    if (newSheetOpen && !st.herdrNewSheet) {
+      newSheetOpen = false;
+      setNewSheet(false);
+      try { newOpenBtn.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
+    }
     if (convSheetOpen && !st.herdrConvSheet) {
       convSheetOpen = false;
       setConvSheet(false);
@@ -882,6 +887,7 @@
      * closes first. If no sheet is open and zen mode is active, escape
      * exits zen. */
     if (event.key !== "Escape") return;
+    if (newSheetOpen) { closeNewSheet(); return; }
     if (callsSheetOpen) { closeCallsSheet(); return; }
     if (pendingSheetOpen) { closePendingSheet(); return; }
     if (convSheetOpen && !settingsOpen) { closeConvSheet(); return; }
@@ -8207,6 +8213,377 @@
       showBanner(t("herd.new_failed"));
     });
     if (inCall && callState === "listening") startListening();
+  });
+
+  /* ---------------- Nueva sesión sheet (parity-f7c S1) ----------------
+   * The ✚ in the header opens the launch sheet (doc 03 §2): harness
+   * from the server's CLOSED list, folder from the operator's roots +
+   * live recents, optional title/task — then POST /session/new, which
+   * runs the SAME create_session the voice gate replays. The task text
+   * rides the composer's destructive second tap; the launchers.toml
+   * rows appear as shortcuts posting the unchanged /operator/launch
+   * (the dock's arm/send semantics, reused — never duplicated). */
+
+  /* @new-session-pure-start */
+  function newSessionModel() {
+    /* Folder list building: roots (label or basename fallback) plus
+     * recents (basename labels), malformed rows dropped, recents that
+     * repeat a root or each other kept once. Pure data shaping — the
+     * server re-validates everything at launch. */
+    function folderChoices(roots, recents) {
+      function basename(p) {
+        var parts = String(p).split("/");
+        return parts[parts.length - 1] || String(p);
+      }
+      var rootRows = [];
+      var rootPaths = {};
+      var validRoots = Array.isArray(roots) ? roots : [];
+      for (var i = 0; i < validRoots.length; i++) {
+        var row = validRoots[i];
+        if (!row || typeof row !== "object") continue;
+        if (typeof row.path !== "string" || !row.path) continue;
+        var label = typeof row.label === "string" && row.label ? row.label : basename(row.path);
+        rootPaths[row.path] = true;
+        rootRows.push({ path: row.path, label: label, kind: "root" });
+      }
+      var recentRows = [];
+      var seen = {};
+      var validRecents = Array.isArray(recents) ? recents : [];
+      for (var j = 0; j < validRecents.length; j++) {
+        var entry = validRecents[j];
+        if (!entry || typeof entry !== "object") continue;
+        var cwd = entry.cwd;
+        if (typeof cwd !== "string" || !cwd) continue;
+        if (rootPaths[cwd] || seen[cwd]) continue;
+        seen[cwd] = true;
+        recentRows.push({ path: cwd, label: basename(cwd), kind: "recent" });
+      }
+      return { roots: rootRows, recents: recentRows };
+    }
+
+    /* The Launch button gate: a harness AND a cwd are required; with no
+     * roots configured nothing can launch (the server refuses too —
+     * this gate only keeps the button honest). */
+    function formState(state) {
+      state = state || {};
+      var configured = state.rootsConfigured !== false;
+      return {
+        launchable: configured &&
+          !!state.harness &&
+          typeof state.cwd === "string" && !!state.cwd,
+      };
+    }
+
+    /* Destructive guard wiring: the analyzer decides, this only shapes
+     * the verdict. A missing analyzer NEVER blocks a launch (the
+     * server stays the authority); a match demands the second tap. */
+    function taskGuard(taskText, isDestructiveInput) {
+      var text = typeof taskText === "string" ? taskText.trim() : "";
+      if (!text || typeof isDestructiveInput !== "function") {
+        return { confirm: false };
+      }
+      var match = isDestructiveInput(text);
+      return match ? { confirm: true, match: match } : { confirm: false };
+    }
+
+    return { folderChoices: folderChoices, formState: formState, taskGuard: taskGuard };
+  }
+  /* @new-session-pure-end */
+
+  var newOpenBtn = $("new-open");
+  var newSheetEl = $("new-sheet");
+  var newBackdropEl = $("new-backdrop");
+  var newCloseBtn = $("new-close");
+  var newHarnessSel = $("new-harness");
+  var newFoldersEl = $("new-folders");
+  var newTitleInput = $("new-title");
+  var newTaskInput = $("new-task");
+  var newLaunchBtn = $("new-launch");
+  var newLaunchersEl = $("new-launchers");
+  var newRootsEmptyEl = $("new-roots-empty");
+  var newSheetOpen = false;
+  var newSessionState = { harness: "", cwd: "", rootsConfigured: false };
+  var newArmedLaunchers = {};
+  var NEW_ARM_TIMEOUT_MS = 3000;
+  var nsModel = newSessionModel();
+
+  function setNewSheet(open) {
+    newBackdropEl.classList.toggle("open", open);
+    newSheetEl.classList.toggle("open", open);
+    if (open) newSheetEl.removeAttribute("inert");
+    else newSheetEl.setAttribute("inert", "");
+  }
+
+  function openNewSheet() {
+    if (newSheetOpen) return;
+    if (convSheetOpen) closeConvSheet();  /* one sheet band: never stacked */
+    newSheetOpen = true;
+    setNewSheet(true);
+    refreshNewSheet();
+    try { history.pushState({ herdrNewSheet: true }, ""); } catch (err) { /* non-http */ }
+    try { newCloseBtn.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
+  }
+
+  function closeNewSheet() {
+    if (!newSheetOpen) return;
+    newSheetOpen = false;
+    setNewSheet(false);
+    if (history.state && history.state.herdrNewSheet) history.back();  // pop our entry
+    try { newOpenBtn.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
+  }
+
+  newOpenBtn.addEventListener("click", openNewSheet);
+  newCloseBtn.addEventListener("click", closeNewSheet);
+  newBackdropEl.addEventListener("click", closeNewSheet);
+
+  function updateNewLaunchGate() {
+    newLaunchBtn.disabled = !nsModel.formState(newSessionState).launchable;
+  }
+
+  function showNewRootsEmpty(show) {
+    newRootsEmptyEl.classList.toggle("hidden", !show);
+  }
+
+  /* The sheet answers to the operator LOOKING at it: every open
+   * refetches roots + recents + harnesses (one round-trip) and the
+   * launcher rows (the same /operator/config the dock reads). */
+  function refreshNewSheet() {
+    readFetch("/session/roots")
+      .then(function (resp) { return resp.json(); })
+      .then(function (body) {
+        body = body || {};
+        newSessionState.rootsConfigured =
+          Array.isArray(body.roots) && body.roots.length > 0;
+        renderNewHarnesses(body.harnesses || []);
+        renderNewFolders(body.roots || [], body.recents || []);
+        showNewRootsEmpty(!newSessionState.rootsConfigured);
+        updateNewLaunchGate();
+      })
+      .catch(function () {
+        newSessionState.rootsConfigured = false;
+        showNewRootsEmpty(true);
+        updateNewLaunchGate();
+      });
+    readFetch("/operator/config")
+      .then(function (resp) { return resp.json(); })
+      .then(function (body) { renderNewLaunchers((body && body.launchers) || []); })
+      .catch(function () { /* shortcuts are optional chrome */ });
+  }
+
+  function renderNewHarnesses(harnesses) {
+    while (newHarnessSel.firstChild) newHarnessSel.removeChild(newHarnessSel.firstChild);
+    var placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = t("newsession.harness_pick");
+    newHarnessSel.appendChild(placeholder);
+    for (var i = 0; i < harnesses.length; i++) {
+      var name = harnesses[i];
+      if (typeof name !== "string" || !name) continue;
+      var option = document.createElement("option");
+      option.value = name;
+      /* Text node only: harness names are server data, never markup. */
+      option.textContent = name;
+      newHarnessSel.appendChild(option);
+    }
+    newHarnessSel.value = newSessionState.harness || "";
+  }
+
+  function folderButton(entry) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "ns-folder";
+    btn.setAttribute("data-path", entry.path);
+    btn.setAttribute("aria-pressed", newSessionState.cwd === entry.path ? "true" : "false");
+    btn.title = entry.path;
+    btn.textContent = entry.label;
+    btn.addEventListener("click", function () {
+      newSessionState.cwd = entry.path;
+      var buttons = newFoldersEl.querySelectorAll("button");
+      for (var i = 0; i < buttons.length; i++) {
+        buttons[i].setAttribute("aria-pressed", buttons[i] === btn ? "true" : "false");
+      }
+      updateNewLaunchGate();
+    });
+    return btn;
+  }
+
+  function renderNewFolders(roots, recents) {
+    while (newFoldersEl.firstChild) newFoldersEl.removeChild(newFoldersEl.firstChild);
+    var choices = nsModel.folderChoices(roots, recents);
+    if (choices.roots.length) {
+      var rootsHead = document.createElement("span");
+      rootsHead.className = "ns-group";
+      rootsHead.textContent = t("newsession.folder_roots");
+      newFoldersEl.appendChild(rootsHead);
+      for (var i = 0; i < choices.roots.length; i++) {
+        newFoldersEl.appendChild(folderButton(choices.roots[i]));
+      }
+    }
+    if (choices.recents.length) {
+      var recentsHead = document.createElement("span");
+      recentsHead.className = "ns-group";
+      recentsHead.textContent = t("newsession.folder_recents");
+      newFoldersEl.appendChild(recentsHead);
+      for (var j = 0; j < choices.recents.length; j++) {
+        newFoldersEl.appendChild(folderButton(choices.recents[j]));
+      }
+    }
+    /* A cwd that disappeared from the offer (root removed, pane gone)
+     * must not survive as a stale selection. */
+    if (newSessionState.cwd) {
+      var stillOffered = choices.roots.concat(choices.recents).some(function (row) {
+        return row.path === newSessionState.cwd;
+      });
+      if (!stillOffered) newSessionState.cwd = "";
+    }
+    updateNewLaunchGate();
+  }
+
+  function shortcutButton(row) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "ns-folder";
+    btn.setAttribute("data-row", row.id);
+    btn.textContent = row.label;
+    btn.addEventListener("click", function () { onNewLauncherTap(row); });
+    return btn;
+  }
+
+  function renderNewLaunchers(rows) {
+    while (newLaunchersEl.firstChild) newLaunchersEl.removeChild(newLaunchersEl.firstChild);
+    var valid = [];
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      if (!row || typeof row.id !== "string" || !row.id) continue;
+      if (typeof row.label !== "string" || !row.label) continue;
+      valid.push({ id: row.id, label: row.label, no_prompts: row.no_prompts === true });
+    }
+    if (!valid.length) return;
+    var head = document.createElement("span");
+    head.className = "ns-group";
+    head.textContent = t("dock.launchers");
+    newLaunchersEl.appendChild(head);
+    for (var j = 0; j < valid.length; j++) {
+      newLaunchersEl.appendChild(shortcutButton(valid[j]));
+    }
+  }
+
+  function armNewLauncher(row) {
+    var btn = newLaunchersEl.querySelector('[data-row="' + row.id + '"]');
+    if (btn) {
+      btn.classList.add("dock-armed");
+      btn.title = t("dock.confirm_title");
+    }
+    if (newArmedLaunchers[row.id]) clearTimeout(newArmedLaunchers[row.id]);
+    newArmedLaunchers[row.id] = setTimeout(function () { disarmNewLauncher(row.id); }, NEW_ARM_TIMEOUT_MS);
+  }
+
+  function disarmNewLauncher(id) {
+    if (newArmedLaunchers[id]) {
+      clearTimeout(newArmedLaunchers[id]);
+      delete newArmedLaunchers[id];
+    }
+    var btn = newLaunchersEl.querySelector('[data-row="' + id + '"]');
+    if (btn) {
+      btn.classList.remove("dock-armed");
+      btn.title = "";
+    }
+  }
+
+  /* The dock's own arm/send decision and outcome mapping, REUSED: the
+   * shortcuts must behave exactly like the dock's launcher rows. */
+  function onNewLauncherTap(row) {
+    if (!window.OperatorDock) return;  /* no dock module: no duplicate flow */
+    var plan = OperatorDock.launcherTap(row, newArmedLaunchers[row.id] ? "armed" : "idle");
+    if (plan.next === "armed") {
+      armNewLauncher(row);
+      return;
+    }
+    disarmNewLauncher(row.id);
+    fetch("/operator/launch", withDeviceAuth({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: row.id, confirm: true }),
+    }))
+      .then(function (resp) {
+        return resp.json().then(function (body) { return { status: resp.status, body: body }; });
+      })
+      .then(function (outcome) {
+        var plan2 = OperatorDock.launchOutcome(outcome.status, outcome.body);
+        if (plan2.ok) return;
+        if (plan2.retry === "confirmation_required") {
+          armNewLauncher(row);
+          return;
+        }
+        if (plan2.error === "cwd_missing") {
+          showToast(t("dock.cwd_missing"), 4000);
+          return;
+        }
+        showToast(t("dock.launch_failed"), 4000);
+      })
+      .catch(function () { showToast(t("dock.launch_failed"), 4000); });
+  }
+
+  newHarnessSel.addEventListener("change", function () {
+    newSessionState.harness = newHarnessSel.value || "";
+    updateNewLaunchGate();
+  });
+
+  newLaunchBtn.addEventListener("click", function () {
+    if (newLaunchBtn.disabled) return;
+    var taskText = (newTaskInput.value || "").trim();
+    /* SAME guard the composer uses: a destructive task needs the
+     * second, explicit tap — the confirmed task IS delivered (the
+     * server never censors). */
+    var guard = nsModel.taskGuard(
+      taskText,
+      window.DestructiveGuard ? window.DestructiveGuard.isDestructiveInput : null
+    );
+    if (guard.confirm && !window.confirm(
+      t("reply.destructive_confirm", { match: guard.match, text: taskText })
+    )) return;
+    var title = (newTitleInput.value || "").trim();
+    newLaunchBtn.disabled = true;
+    fetch("/session/new", withDeviceAuth({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        harness: newSessionState.harness,
+        cwd: newSessionState.cwd,
+        title: title || null,
+        task: taskText || null,
+      }),
+    }))
+      .then(function (resp) {
+        if (resp.status === 200) return resp.json();
+        maybeOfferPairing(resp);
+        return resp.json().then(function (body) {
+          if (resp.status === 422 && body && body.detail === "roots_unconfigured") {
+            newSessionState.rootsConfigured = false;
+            newSessionState.cwd = "";
+            showNewRootsEmpty(true);
+            updateNewLaunchGate();
+            return null;
+          }
+          if (resp.status === 422 && body && body.detail === "unknown_harness") {
+            showToast(t("newsession.err_harness"), 4000);
+            return null;
+          }
+          showToast(t("newsession.launch_failed"), 4000);
+          return null;
+        }, function () {
+          showToast(t("newsession.launch_failed"), 4000);
+          return null;
+        });
+      })
+      .then(function (body) {
+        if (!body) return;
+        showToast(t("newsession.launched"), 4000);
+        closeNewSheet();
+        refreshHerd();  /* the new pane joins the conversation list */
+      })
+      .catch(function () { showToast(t("newsession.launch_failed"), 4000); })
+      .then(function () { if (newSheetOpen) updateNewLaunchGate(); });
   });
 
   /* ---------------- boot ---------------- */

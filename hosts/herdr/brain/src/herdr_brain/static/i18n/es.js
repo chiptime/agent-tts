@@ -202,6 +202,24 @@
     "conv.title": "Conversaciones",
     "conv.close": "Cerrar",
 
+    /* ---- new session sheet (parity-f7c S1) ---- */
+    "newsession.aria": "Nueva sesión",
+    "newsession.title": "Nueva sesión",
+    "newsession.harness": "Agente",
+    "newsession.harness_pick": "— elige un agente —",
+    "newsession.folder": "Carpeta",
+    "newsession.folder_roots": "Raíces",
+    "newsession.folder_recents": "Recientes",
+    "newsession.title_label": "Título (opcional)",
+    "newsession.task": "Tarea inicial (opcional)",
+    "newsession.task_placeholder": "Qué debe hacer el agente al arrancar…",
+    "newsession.launch": "🚀 Lanzar",
+    "newsession.launched": "Sesión lanzada",
+    "newsession.launch_failed": "No se pudo lanzar la sesión — prueba otra vez",
+    "newsession.err_harness": "Ese agente no está en la lista del servidor",
+    "newsession.err_cwd": "Esa carpeta no está dentro de las raíces permitidas",
+    "newsession.roots_empty": "Sin raíces configuradas: crea ~/.config/herdr-brain/roots.toml para habilitar los lanzamientos",
+
     /* ---- pending sheet ---- */
     "pendsheet.aria": "Pendientes",
     "pendsheet.title": "Pendientes",

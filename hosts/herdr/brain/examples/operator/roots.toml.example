@@ -1,0 +1,28 @@
+# Roots — the allowed working directories a PWA-launched session may
+# start in (the ✚ "Nueva sesión" sheet).
+#
+# Copy to ~/.config/herdr-brain/roots.toml (or the directory named by
+# HERDR_BRAIN_CONFIG_DIR). The file reloads by mtime on the next request.
+#
+# FAIL-CLOSED: with no roots configured the sheet shows no folders and
+# POST /session/new refuses every launch (422 roots_unconfigured). The
+# operator configures roots first; nothing is guessed by default.
+#
+# Rows are validated one by one and NOTHING is sanitized in place:
+#   - path is required and must be an ABSOLUTE path, stored resolved
+#     (symlinks and .. collapsed), so neither spelling can smuggle a
+#     cwd past the launch check;
+#   - any control character in a field rejects the row;
+#   - unknown fields are rejected; two rows that resolve to the same
+#     directory are a duplicate (the first survives).
+# The sheet also offers the cwds of live panes that fall INSIDE one of
+# these roots as "recent" folders — never anything outside them.
+
+# A bare root: the sheet offers it, and any directory inside it.
+[[roots]]
+path = "/home/you/projects"
+
+# A labelled root: the label replaces the folder name in the picker.
+[[roots]]
+path = "/home/you/work"
+label = "Trabajo"

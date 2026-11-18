@@ -14,6 +14,10 @@ turn the operator's own habits into panel surfaces:
   command line; rows carrying control characters are skipped, not
   sanitized — an embedded newline could type a second line the operator
   never reviewed.
+* ``roots.toml`` — the allowed cwd roots a PWA-launched session may
+  start in (doc 03 §2); path rows stored resolved, fail-closed at the
+  launch route when unconfigured. Not a dock surface: it stays out of
+  the ``config check`` report.
 
 Validation is row by row, pure and total: a malformed row is discarded
 with one reported reason (file, row, reason) while its healthy siblings
@@ -49,11 +53,13 @@ FILE_QUICK_REPLIES = "quick-replies.toml"
 FILE_COMMANDS = "commands.toml"
 FILE_KEYS = "keys.toml"
 FILE_LAUNCHERS = "launchers.toml"
+FILE_ROOTS = "roots.toml"
 
 TABLE_REPLIES = "replies"
 TABLE_COMMANDS = "commands"
 TABLE_KEYS = "keys"
 TABLE_LAUNCHERS = "launchers"
+TABLE_ROOTS = "roots"
 
 
 # ── rows and reports ─────────────────────────────────────────────────────
@@ -117,6 +123,19 @@ class Launcher:
     argv: Tuple[str, ...]
     cwd: Optional[str]
     no_prompts: bool
+
+
+@dataclass(frozen=True)
+class Root:
+    """One allowed working-directory root for the PWA "New" sheet.
+
+    ``path`` is stored RESOLVED (symlinks and ``..`` collapsed by
+    :func:`Path.resolve`) so the launch route's containment check
+    compares like with like; ``label`` is the operator's optional
+    display name (``""`` when absent)."""
+
+    path: str
+    label: str
 
 
 @dataclass(frozen=True)
@@ -405,6 +424,64 @@ def validate_launchers(
     )
 
 
+def validate_roots(
+    doc: object, file_name: str = FILE_ROOTS
+) -> Tuple[Tuple[Root, ...], Tuple[Issue, ...]]:
+    """``[[roots]]`` — the allowed cwd roots for a PWA-launched session.
+
+    Path-first rows (``label`` is optional, no id, no scope): a row
+    needs one ABSOLUTE, control-character-free string. Paths are stored
+    resolved so the same spelling cannot sneak past the launch check
+    through a symlink or ``..``; two rows that resolve to the same
+    directory are a duplicate (the first survives). Same row-by-row
+    discipline as the four dock files: a malformed row is discarded
+    with one reason while its healthy siblings keep serving."""
+
+    if not isinstance(doc, dict):
+        return (), (Issue(file_name, 0, "document must be a table"),)
+    raw = doc.get(TABLE_ROOTS)
+    if raw is None:
+        raw = []
+    if not isinstance(raw, list):
+        return (), (
+            Issue(file_name, 0, f"[[{TABLE_ROOTS}]] must be an array of tables"),
+        )
+
+    rows: list[Root] = []
+    issues: list[Issue] = []
+    seen: set[str] = set()
+    for ordinal, row in enumerate(raw, start=1):
+        if not isinstance(row, dict):
+            issues.append(Issue(file_name, ordinal, "row must be a table"))
+            continue
+        unknown = sorted(set(row) - {"path", "label"})
+        if unknown:
+            issues.append(Issue(file_name, ordinal, f"unknown field {unknown[0]!r}"))
+            continue
+        path_value, reason = _text_field(row, "path")
+        if reason:
+            issues.append(Issue(file_name, ordinal, reason))
+            continue
+        path_value = path_value.strip()
+        if not os.path.isabs(path_value):
+            issues.append(Issue(file_name, ordinal, "path must be an absolute path"))
+            continue
+        label = ""
+        if row.get("label") is not None:
+            label_value, reason = _text_field(row, "label")
+            if reason:
+                issues.append(Issue(file_name, ordinal, reason))
+                continue
+            label = label_value.strip()
+        resolved = str(Path(path_value).expanduser().resolve())
+        if resolved in seen:
+            issues.append(Issue(file_name, ordinal, "duplicate root"))
+            continue
+        seen.add(resolved)
+        rows.append(Root(path=resolved, label=label))
+    return tuple(rows), tuple(issues)
+
+
 # ── config directory ─────────────────────────────────────────────────────
 
 
@@ -468,6 +545,14 @@ _SURFACES = (
     ("launchers", FILE_LAUNCHERS, validate_launchers),
 )
 
+# The roots surface rides the same mtime cache but deliberately stays
+# OUT of _SURFACES: that tuple drives the ``config check`` /
+# doctor report, whose contract covers the four DOCK files (doc 06).
+# Roots is launch configuration (doc 03 §2), not a dock row file.
+_SURFACE_ROOTS = ("roots", FILE_ROOTS, validate_roots)
+
+_ALL_SURFACES = _SURFACES + (_SURFACE_ROOTS,)
+
 
 class OperatorConfig:
     """Thread-safe, mtime-cached view of the four operator files.
@@ -484,7 +569,7 @@ class OperatorConfig:
             self._dir = default_config_dir(environ)
         self._lock = threading.Lock()
         self._cache: Dict[str, _CacheEntry] = {}
-        self._reload_counts: Dict[str, int] = {name: 0 for name, _, _ in _SURFACES}
+        self._reload_counts: Dict[str, int] = {name: 0 for name, _, _ in _ALL_SURFACES}
 
     @property
     def config_dir(self) -> Path:
@@ -497,7 +582,9 @@ class OperatorConfig:
 
     def _surface(self, surface_name: str) -> Tuple[tuple, Tuple[Issue, ...]]:
         file_name, validate = next(
-            (name_file, fn) for name, name_file, fn in _SURFACES if name == surface_name
+            (name_file, fn)
+            for name, name_file, fn in _ALL_SURFACES
+            if name == surface_name
         )
         path = self._dir / file_name
         with self._lock:
@@ -525,6 +612,16 @@ class OperatorConfig:
 
     def launchers(self) -> Tuple[Launcher, ...]:
         return self._surface("launchers")[0]
+
+    def roots(self) -> Tuple[Root, ...]:
+        """The allowed cwd roots for the PWA "New" sheet (doc 03 §2)."""
+        return self._surface("roots")[0]
+
+    def roots_issues(self) -> Tuple[Issue, ...]:
+        """The roots surface's validation issues. ``config check`` keeps
+        reporting the four DOCK files (doctor's contract); roots is
+        launch configuration and surfaces its own issues here."""
+        return self._surface("roots")[1]
 
     # -- resolution for one pane -----------------------------------------
 

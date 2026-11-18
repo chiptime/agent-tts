@@ -777,6 +777,89 @@ class OperatorPresetRequest(BaseModel):
     id: str = Field(min_length=1, max_length=128)
 
 
+class SessionNewRequest(BaseModel):
+    """PWA session launch (parity-f7c S1, doc 03 §2): the client names a
+    harness from the server's CLOSED list and a cwd inside the
+    operator's roots; everything else is derived server-side. No
+    command line, no agent argv — the launch itself is
+    ``BrainTools.create_session``, byte-identical to the voice path."""
+
+    harness: str = Field(min_length=1, max_length=64)
+    cwd: str = Field(min_length=1, max_length=1024)
+    title: Optional[str] = Field(default=None, max_length=200)
+    task: Optional[str] = Field(default=None, max_length=8_000)
+
+
+#: Live-pane cwds the "New" sheet's folder picker offers, at most.
+SESSION_ROOTS_RECENTS_CAP = 8
+
+
+@lru_cache(maxsize=1)
+def launchable_harnesses() -> tuple:
+    """The CLOSED harness list a PWA launch may name: the
+    transcript-readers registry CANONICAL names (an alias never adds a
+    harness). Frozen per process — the registry is immutable."""
+    from .transcript_readers.registry import default_registry
+
+    return tuple(default_registry().harnesses())
+
+
+def _resolved_within_roots(cwd: str, roots) -> Optional[str]:
+    """The resolved cwd when it is a real directory inside (or equal to)
+    one configured root; None otherwise.
+
+    ``Path.resolve()`` collapses ``..`` and symlinks BEFORE the
+    containment comparison, so neither spelling can escape; a path that
+    does not exist on disk is not "a directory inside a root" and is
+    refused with the same word."""
+    try:
+        resolved = Path(cwd).expanduser().resolve()
+    except OSError:
+        return None
+    if not resolved.is_dir():
+        return None
+    for root in roots:
+        root_path = Path(root.path)
+        if resolved == root_path or root_path in resolved.parents:
+            return str(resolved)
+    return None
+
+
+def _recent_cwds(herd_entries, roots, cap: int = SESSION_ROOTS_RECENTS_CAP) -> list:
+    """Deduplicated live-pane cwds INSIDE a configured root, newest first.
+
+    "Newest" is the pane's smallest ``last_turn_age_s`` (a cwd several
+    panes share keeps its freshest age); an unknown age sorts last,
+    stable against the herd's listing order."""
+    root_paths = [Path(root.path) for root in roots]
+    newest: dict = {}
+    for entry in herd_entries or []:
+        cwd = str((entry or {}).get("cwd") or "").strip()
+        if not cwd:
+            continue
+        try:
+            resolved = Path(cwd).resolve()
+        except OSError:
+            continue
+        if not any(
+            resolved == root_path or root_path in resolved.parents
+            for root_path in root_paths
+        ):
+            continue
+        age = (entry or {}).get("last_turn_age_s")
+        if not isinstance(age, (int, float)):
+            age = None
+        key = str(resolved)
+        known = newest.get(key)
+        if key not in newest or (age is not None and (known is None or age < known)):
+            newest[key] = age
+    ordered = sorted(
+        newest.items(),
+        key=lambda item: (item[1] is None, item[1] if item[1] is not None else 0.0),
+    )
+    return [{"cwd": path} for path, _ in ordered[:cap]]
+
+
 def _opencode_http_error(exc: OpenCodeError) -> HTTPException:
     """Maps an opencode permission failure onto the phone's HTTP surface.
 
@@ -3423,6 +3506,86 @@ def create_app(
             "tab_id": created.get("tab_id"),
             "pane_id": created.get("pane_id"),
         }
+
+    # ── Session launch from the PWA (parity-f7c S1, doc 03 §1–§2) ──────
+
+    @app.get("/session/roots")
+    def session_roots() -> dict:
+        """The "New" sheet's pickers in one read: roots + recents + harnesses.
+
+        Roots come from the operator's validated ``roots.toml`` (row by
+        row, mtime reload); recents are the deduplicated cwds of live
+        panes that fall INSIDE a configured root, newest first, capped;
+        the harness list is the CLOSED registry list, folded here so
+        the sheet opens with a single round-trip. Unconfigured roots
+        degrade honestly to empty lists — the WRITE route is the one
+        that fails closed."""
+        roots = operator_config.roots()
+        recents = _recent_cwds(tools.herd(), roots) if roots else []
+        return {
+            "roots": [{"path": root.path, "label": root.label} for root in roots],
+            "recents": recents,
+            "harnesses": list(launchable_harnesses()),
+        }
+
+    @app.post("/session/new")
+    def session_new(request: Request, body: SessionNewRequest) -> dict:
+        """Launches a new session through the SAME create_session as voice.
+
+        The PWA never composes a launch: ``harness`` must be one of the
+        registry's canonical names (aliases are refused — the closed
+        list answers which connectors this build has), and ``cwd`` must
+        resolve to an existing directory inside a configured root, so
+        ``..`` and symlink escapes die at the resolve. With no roots
+        configured the route refuses EVERYTHING (fail-closed: the
+        operator configures roots first). ``task`` is free text — the
+        destructive guard is the PWA's second tap (doc 03), the server
+        does not censor. The route is PWA-only: voice already has its
+        own gated ``create_session`` tool, so nothing here joins
+        ``TOOLS_SCHEMA``. Audited as ``session.new`` with device
+        attribution and LENGTHS, never content."""
+        def refuse(reason: str) -> None:
+            audit_log.record({
+                "action": "session.new",
+                "device": audit_device(request),
+                "detail": {"outcome": reason},
+            })
+            raise HTTPException(status_code=422, detail=reason)
+
+        roots = operator_config.roots()
+        if not roots:
+            refuse("roots_unconfigured")
+        harness = (body.harness or "").strip().lower()
+        if harness not in launchable_harnesses():
+            refuse("unknown_harness")
+        resolved = _resolved_within_roots(body.cwd, roots)
+        if resolved is None:
+            refuse("root_not_allowed")
+        title = (body.title or "").strip() or f"{harness} · {Path(resolved).name}"
+        task = (body.task or "").strip()
+        result = tools.create_session(harness, title, task, resolved)
+        # The same pane handle the approve replay reads: the created
+        # AgentInfo, when the double kept the property.
+        created = getattr(tools, "last_created", None)
+        created = created() if callable(created) else None
+        pane_id = created.pane_id if created is not None else None
+        outcome = "error" if result.startswith("error") else "executed"
+        audit_log.record({
+            "action": "session.new",
+            "pane_id": pane_id,
+            "device": audit_device(request),
+            "detail": {
+                "outcome": outcome,
+                "harness": harness,
+                "cwd": resolved,
+                # Lengths only — the same discipline as /ask (doc 02 §3).
+                "chars": {"title": len(title), "task": len(task)},
+                "pane_id": pane_id,
+            },
+        })
+        if outcome == "error":
+            raise HTTPException(status_code=502, detail=result)
+        return {"ok": True, "result": result, "pane_id": pane_id}
 
     @app.post("/operator/preset")
     def operator_preset(request: Request, body: OperatorPresetRequest) -> dict:
