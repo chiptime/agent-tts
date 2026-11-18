@@ -1554,7 +1554,7 @@ def create_app(
         }
 
     @app.post("/transcribe")
-    async def transcribe(audio: UploadFile = File(...)) -> dict:
+    async def transcribe(request: Request, audio: UploadFile = File(...)) -> dict:
         """Server-side STT: multipart field 'audio' (webm/opus from
         MediaRecorder, or any media faster-whisper decodes via PyAV) ->
         ``{"text": "..."}``."""
@@ -1580,15 +1580,29 @@ def create_app(
             raise HTTPException(
                 status_code=503, detail=f"No se pudo transcribir el audio: {exc}"
             ) from exc
-        return {"text": text.strip()}
+        clean = text.strip()
+        # Sizes only — never the transcript or the audio (same rule as /ask).
+        audit_log.record({
+            "action": "stt.transcribe",
+            "device": audit_device(request),
+            "detail": {"bytes": len(data), "chars": len(clean)},
+        })
+        return {"text": clean}
 
     @app.post("/reset")
-    def reset(body: ResetRequest) -> dict:
+    def reset(request: Request, body: ResetRequest) -> dict:
         store.reset(body.session_id)
         # A new conversation drops the persisted call transcript too —
         # the history file is one global call, so the clear is global.
         history.clear()
-        return {"ok": True, "session_id": ConversationStore.normalize(body.session_id)}
+        session_id = ConversationStore.normalize(body.session_id)
+        audit_log.record({
+            "action": "session.reset",
+            "session_id": session_id,
+            "device": audit_device(request),
+            "detail": {},
+        })
+        return {"ok": True, "session_id": session_id}
 
     @app.get("/call-history")
     def call_history(before: Optional[str] = None, limit: int = 25) -> dict:
