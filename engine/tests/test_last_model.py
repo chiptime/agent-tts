@@ -178,6 +178,43 @@ def test_claude_last_event_model_wins(tmp_path):
     assert out == "claude-opus-4-8\n"
 
 
+def test_claude_synthetic_error_message_is_not_a_request(tmp_path):
+    # Claude Code logs API error messages (e.g. a usage-limit notice) as
+    # assistant lines with model "<synthetic>" and all-zero usage. No API
+    # request happened: the last REAL model is still the answer.
+    root = tmp_path / "projects"
+    events = [
+        _claude_assistant("2026-11-10T01:00:00.000Z", _claude_usage(500, 100),
+                          "msg_1", model="claude-opus-5-5"),
+        _claude_assistant("2026-11-10T01:01:00.000Z",
+                          _claude_usage(0, 0, input_tokens=0),
+                          "msg_2", model="<synthetic>",
+                          text="You've hit your 5-hour limit"),
+    ]
+    _write_jsonl(root / "-home-project" / f"{CLAUDE_SESSION}.jsonl", events)
+    rc, out, err = run_last_model(
+        ["--agent", "claude", "--session-id", CLAUDE_SESSION], claude_root=str(root)
+    )
+    assert rc == 0, err
+    assert out == "claude-opus-5-5\n"
+
+
+def test_claude_only_synthetic_lines_have_no_requests(tmp_path):
+    root = tmp_path / "projects"
+    events = [
+        _claude_assistant("2026-11-10T01:01:00.000Z",
+                          _claude_usage(0, 0, input_tokens=0),
+                          "msg_1", model="<synthetic>"),
+    ]
+    _write_jsonl(root / "-home-project" / f"{CLAUDE_SESSION}.jsonl", events)
+    rc, out, err = run_last_model(
+        ["--agent", "claude", "--session-id", CLAUDE_SESSION], claude_root=str(root)
+    )
+    assert rc == 1
+    assert out == ""
+    assert "<synthetic>" not in out
+
+
 def test_claude_chunk_group_fills_missing_model(tmp_path):
     # First kept line of the final response carries no model; a later chunk
     # of the same response does: the request's model must be recovered.
