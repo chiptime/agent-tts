@@ -51,14 +51,16 @@ EXPECTED_DIGESTS = {
     # drawer for a 🕘-launched sheet (index.html + app.js; calls.js rides
     # unchanged) — then the sheet anchored at the viewport floor covering
     # the footer (index.html only).
-    "/": "6b82d9f0cdd9c2f4f1b164135f8e1954df771f212a092e5ffcb5be7aa645df6b",
-    "/app.js": "23b0482ffae545f395b7fde98787d998d06b43a59e45dedde43a7e7392cc06ff",
+    # Re-pinned on the merged main bytes for the formatted call-drawer
+    # reader (/call-history/rendered: index.html, app.js, reader.js).
+    "/": "006f3b98dddc95f468029e74b9738ccb0c0635d875a7932e3468842cd3d6e8d5",
+    "/app.js": "6970847a90de63e3a938d83481d9fb70c8abd4a08161e71538655fbeac161fe3",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "ca7b22c52c8160a3ac577f694eb65ec0798b77cd6ac179a5c567dffdc1fb2ba9",
     "/dialogs.js": "0e5b6afde7ef662591f66fc69891e3b1ec343fafe0d2c5be8fbef0c5a124a4c0",
     "/herd-group.js": "de284c825e3c99aef07db2dd53198484ec8b7ceba94dd97dbbae0303560df399",
     "/toast.js": "cbccb72b22530ff8f83250bebd8d498ca20977db9536aa094aa759bb9632357e",
-    "/reader.js": "28daec6199b0e756e1285b40f20fc860c1d9b4d2169cb2433c1ccfb12db31a76",
+    "/reader.js": "b99edccdba5adb1c407ebc3064f7045214c0152677a1da2cfa2c388393792989",
     "/speech.js": "23b10e3ffe9b22c7480929cb33d12e4a0e3d378f49b841645ec670634a9fe709",
     "/announce.js": "e525a591e5268d2cbfc1d93956469b81da41fb3c87b17c43caccbc7ebd00e9df",
     # app.js and approval.js re-pinned for the T-07/T-08 spoken-dialog,

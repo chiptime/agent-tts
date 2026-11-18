@@ -106,6 +106,13 @@ class RealMediaApp:
                 {"role": "user", "text": "Synthetic question", "ts": "2026-01-01T00:00:00Z"},
                 {"role": "brain", "text": ANSWER, "ts": "2026-01-01T00:00:01Z"},
             ], "has_more": False}, {"before", "limit"}),
+            # Formatted call-drawer reader: fail-soft shape (raw text only).
+            "/call-history/rendered": ({"turns": [
+                {"turn_id": "t0", "role": "user", "text": "Synthetic question",
+                 "ts": "2026-01-01T00:00:00Z", "html": None, "map": None},
+                {"turn_id": "t1", "role": "brain", "text": ANSWER,
+                 "ts": "2026-01-01T00:00:01Z", "html": None, "map": None},
+            ], "has_more": False}, {"before", "limit"}),
             "/calls": ({"calls": [], "has_more": False}, {"before", "limit"}),
             "/herd": ([], set()),
             # Device pairing boot poll (F1): unpaired default keeps the

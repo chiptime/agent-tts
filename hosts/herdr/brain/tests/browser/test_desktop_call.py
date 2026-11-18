@@ -155,6 +155,11 @@ def make_route(
             )
         if method == "GET" and path == "/call-history" and set(query) <= {"before", "limit"}:
             return route.fulfill(json={"turns": service.turns, "has_more": False})
+        if method == "GET" and path == "/call-history/rendered" and set(query) <= {"before", "limit"}:
+            # Formatted call-drawer reader: fail-soft shape (raw text only).
+            return route.fulfill(json={"turns": [
+                dict(t, turn_id=f"t{i}", html=None, map=None) for i, t in enumerate(service.turns)
+            ], "has_more": False})
         if method == "GET" and path == "/calls" and set(query) <= {"before", "limit"}:
             return route.fulfill(json={"calls": [], "has_more": False})
         if method == "GET" and path == "/herd":

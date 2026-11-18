@@ -298,6 +298,14 @@ class KaraokeHarness:
                 {"role": "brain", "text": self.answer_text, "ts": "2026-01-01T00:00:01Z"},
             ]
         self.respond("/call-history", {"turns": history, "has_more": False}, query=("before", "limit"))
+        # The call drawer's formatted reader (call-chat-formatted) fetches
+        # the rendered page at boot; the default is the endpoint's fail-soft
+        # shape (html/map null, raw text present) so legacy tests keep the
+        # raw surface.
+        self.respond("/call-history/rendered", {
+            "turns": [dict(t, turn_id=f"t{i}", html=None, map=None) for i, t in enumerate(history)],
+            "has_more": False,
+        }, query=("before", "limit"))
         # Per-call history (S6/S7): the boot-mounted Llamadas section
         # fetches the list; the default keeps it empty for legacy tests.
         self.respond("/calls", {"calls": [], "has_more": False}, query=("before", "limit"))
