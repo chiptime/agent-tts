@@ -662,18 +662,35 @@ class PaneDialogAnswerRequest(BaseModel):
     moved under the tap, so a stale render can never fire keys.
     ``option`` is the tapped option's index in that render; ``choices``
     (S1) is the multi-select form — the indices of the boxes that must
-    end up checked, submitted through one explicit send. Exactly one of
-    the two travels per request.
+    end up checked, submitted through one explicit send; ``text`` (S3)
+    rides WITH ``option`` and answers that row's free-text field — the
+    server then types it through the verified recipe. Exactly one
+    answer form travels per request: ``option``, ``choices``, or
+    ``option`` + ``text``.
     """
 
     pane_id: str = Field(min_length=1, max_length=MAX_SESSION_ID_CHARS)
     fingerprint: str = Field(min_length=1, max_length=64)
     option: Optional[int] = Field(default=None, ge=0, le=99)
     choices: Optional[list[int]] = Field(default=None, min_length=1, max_length=8)
+    text: Optional[str] = Field(default=None, min_length=1, max_length=8_000)
+
+    @field_validator("text")
+    @classmethod
+    def _text_not_blank(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and not value.strip():
+            raise ValueError("text must not be blank")
+        return value
 
     @model_validator(mode="after")
     def _exactly_one_answer(self) -> "PaneDialogAnswerRequest":
-        if (self.option is None) == (self.choices is None):
+        if self.text is not None:
+            if self.choices is not None or self.option is None:
+                raise ValueError(
+                    "text answers one option: provide option with text, "
+                    "never choices"
+                )
+        elif (self.option is None) == (self.choices is None):
             raise ValueError("provide exactly one of option or choices")
         if self.choices is not None and len(set(self.choices)) != len(self.choices):
             raise ValueError("choices must not repeat an option")
@@ -2911,20 +2928,25 @@ def create_app(
                 if body.choices is not None
                 else {"fingerprint": body.fingerprint, "option": body.option}
             )
+            if body.text is not None:
+                answer_payload["text"] = body.text
             result = crew_call(
                 crew_peer,
                 lambda client: client.dialog_answer(remote_id, answer_payload),
             )
+            crew_detail = {
+                "outcome": "answered",
+                "option": body.option,
+                "choices": body.choices,
+                "fingerprint": body.fingerprint, "crew": True,
+            }
+            if body.text is not None:
+                crew_detail["text"] = body.text
             audit_log.record({
                 "action": "pane.dialog.answer",
                 "pane_id": body.pane_id,
                 "device": audit_device(request),
-                "detail": {
-                    "outcome": "answered",
-                    "option": body.option,
-                    "choices": body.choices,
-                    "fingerprint": body.fingerprint, "crew": True,
-                },
+                "detail": crew_detail,
             })
             return result if isinstance(result, dict) else {"ok": True}
         result = tools.answer_structured_dialog(
@@ -2932,21 +2954,28 @@ def create_app(
             body.fingerprint,
             option=body.option,
             choices=body.choices,
+            text=body.text,
         )
         outcome = result["outcome"]
         # The fingerprint names the answered dialog and the option index
-        # is metadata — neither carries terminal content.
+        # is metadata — neither carries terminal content. The free-text
+        # answer is user content and rides the same audit discipline as
+        # pane.reply's text: bounded preview by default, redacted in
+        # "none" mode.
+        detail = {
+            "outcome": outcome,
+            "reason": result.get("reason", ""),
+            "option": body.option,
+            "choices": body.choices,
+            "fingerprint": body.fingerprint,
+        }
+        if body.text is not None:
+            detail["text"] = body.text
         audit_log.record({
             "action": "pane.dialog.answer",
             "pane_id": body.pane_id,
             "device": audit_device(request),
-            "detail": {
-                "outcome": outcome,
-                "reason": result.get("reason", ""),
-                "option": body.option,
-                "choices": body.choices,
-                "fingerprint": body.fingerprint,
-            },
+            "detail": detail,
         })
         if outcome == "answered":
             return {
@@ -3944,6 +3973,7 @@ def create_app(
                 payload.get("fingerprint"),
                 option=payload.get("option"),
                 choices=payload.get("choices"),
+                text=payload.get("text"),
             )
             outcome = result["outcome"]
             if outcome == "answered":

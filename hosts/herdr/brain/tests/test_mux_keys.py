@@ -109,6 +109,25 @@ def test_digits_are_sendable_for_numbered_dialogs():
     assert [is_sendable_key(str(digit)) for digit in range(10)] == [True] * 10
 
 
+def test_free_text_clear_chords_are_sendable():
+    # S3: the free-text recipe clears the field it is about to type into
+    # with ctrl+u then ctrl+k, so exactly those two chords joined the
+    # closed allowlist — and the orthography carries them to tmux (C-u,
+    # C-k) like any other sendable key.
+    assert is_sendable_key("ctrl+u") is True
+    assert is_sendable_key("ctrl+k") is True
+    assert tmux_key("ctrl+u") == "C-u"
+    assert tmux_key("ctrl+k") == "C-k"
+
+
+def test_the_allowlist_grew_by_exactly_the_free_text_chords():
+    # No other chord snuck in: ctrl+u and ctrl+k are the only modified
+    # keys a dialog may be driven with (ctrl+c stays refused — a dialog
+    # is answered, never interrupted).
+    chords = sorted(key for key in SEND_KEY_ALLOWLIST if "+" in key)
+    assert chords == ["ctrl+k", "ctrl+u"]
+
+
 @pytest.mark.parametrize(
     "key",
     [

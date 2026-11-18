@@ -127,3 +127,71 @@ test("choicesPayload: the exact body the endpoint expects", () => {
 test("submitLabel: explicit submit chrome, translated when injected", () => {
   assert.equal(Dialogs.submitLabel(), "Enviar selección");
 });
+
+/* Free-text options (S3): a row with `free_text: true` does not post
+ * on tap — the tap OPENS an editor in the card, the typed text passes
+ * the composer's destructive guard (second tap on a match), and only
+ * the editor's send posts {option, text}. */
+
+const FREE_TEXT = {
+  agent: "claude",
+  kind: "select",
+  question: "Which fruit do you want?",
+  options: [
+    { label: "Manzana", description: "" },
+    { label: "Pera", description: "" },
+    { label: "Type something.", description: "", free_text: true },
+  ],
+  fingerprint: "ft123",
+  recipe: "keys",
+};
+
+test("isFreeTextOption: true only for the row the server marked", () => {
+  assert.equal(Dialogs.isFreeTextOption(FREE_TEXT, 2), true);
+  assert.equal(Dialogs.isFreeTextOption(FREE_TEXT, 0), false);
+  assert.equal(Dialogs.isFreeTextOption(FREE_TEXT, 9), false);
+  assert.equal(
+    Dialogs.isFreeTextOption({ unread: true, agent: "claude" }, 0), false);
+  assert.equal(Dialogs.isFreeTextOption(null, 0), false);
+});
+
+test("freeTextPayload: the exact body the editor's send posts", () => {
+  assert.deepEqual(
+    Dialogs.freeTextPayload("w1:p3", "ft123", 2, "usa la rama main"),
+    { pane_id: "w1:p3", fingerprint: "ft123", option: 2, text: "usa la rama main" });
+});
+
+test("editor chrome: placeholder and send label, translated when injected", () => {
+  assert.equal(Dialogs.editorPlaceholder(), "Escribe tu respuesta…");
+  assert.equal(Dialogs.editorSendLabel(), "Enviar respuesta");
+  Dialogs.useTranslator(function (key) {
+    return key === "dialogs.free_text_placeholder" ? "Type your answer…"
+      : key === "dialogs.free_text_send" ? "Send answer" : key;
+  });
+  assert.equal(Dialogs.editorPlaceholder(), "Type your answer…");
+  assert.equal(Dialogs.editorSendLabel(), "Send answer");
+  Dialogs.useTranslator(null);
+});
+
+test("confirmFreeText: null when safe, the composer's confirm wording when not", () => {
+  assert.equal(Dialogs.confirmFreeText("usa la rama main", null), null);
+  const question = Dialogs.confirmFreeText(
+    "sudo rm -rf /", "sudo (se ejecuta como root)");
+  assert.ok(/destructive/i.test(question) || /parece destructivo/.test(question));
+  assert.ok(question.indexOf("sudo (se ejecuta como root)") !== -1);
+  assert.ok(question.indexOf("sudo rm -rf /") !== -1);
+  assert.ok(/¿Enviar igualmente\?/.test(question));
+});
+
+test("confirmFreeText: reuses the injected reply.destructive_confirm wording", () => {
+  Dialogs.useTranslator(function (key) {
+    return key === "reply.destructive_confirm"
+      ? "This send looks destructive: {match}.\n\n{text}\n\nSend anyway?"
+      : key;
+  });
+  const question = Dialogs.confirmFreeText("git push --force", "git push --force");
+  assert.equal(
+    question,
+    "This send looks destructive: git push --force.\n\ngit push --force\n\nSend anyway?");
+  Dialogs.useTranslator(null);
+});

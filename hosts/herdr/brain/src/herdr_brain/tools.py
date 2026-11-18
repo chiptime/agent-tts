@@ -40,6 +40,7 @@ from .herdr import (
     HerdrClient,
     HerdrError,
     pick_active,
+    sanitize_prompt_text,
 )
 from .mux import create_mux
 from .mux.refusal import MuxRefusal
@@ -774,6 +775,7 @@ class BrainTools:
         fingerprint: str,
         option: Optional[int] = None,
         choices: Optional[list] = None,
+        text: Optional[str] = None,
     ) -> dict:
         """Answers a RECOGNIZED dialog option a button was tapped for (S2).
 
@@ -796,6 +798,12 @@ class BrainTools:
         box, a re-read after every key, an exact match of the requested
         state, then the guard's walk to the submit row — see
         :meth:`_answer_multiselect`.
+
+        ``text`` (S3) answers the option's free-text field (``option``
+        names the free-text row): the row's digit focuses the field,
+        the clears and the typing are one verified step each, and Enter
+        commits only once the typed text is ON SCREEN — see
+        :meth:`_answer_free_text`.
 
         The outcome is ``answered`` or ``refused`` with a reason, so
         the PWA can say exactly what happened.
@@ -822,8 +830,8 @@ class BrainTools:
 
         reader = self._dialog_reader(pane_id)
 
-        def detect(text: Optional[str]):
-            model = recognize_dialog(target.agent, text or "")
+        def detect(screen: Optional[str]):
+            model = recognize_dialog(target.agent, screen or "")
             if model is None or model.unread:
                 return None
             return model.as_guard_model()
@@ -855,6 +863,10 @@ class BrainTools:
             return refused("invalid_target", "that option is not on this dialog")
 
         chosen = model.options[option]
+        if text is not None:
+            return self._answer_free_text(
+                pane_id, text, option, model, target, reader, sender, refused
+            )
         if chosen.keys:
             guard = dialog_guard.entry_guard(
                 reader, pane_id, DIALOG_SCREEN_LINES, model.as_guard_model(), detect
@@ -1023,6 +1035,133 @@ class BrainTools:
             if fresh.options[index].checked == want:
                 return fresh
         return None
+
+    def _answer_free_text(
+        self, pane_id, text, option, model, target, reader, sender, refused
+    ) -> dict:
+        """The free-text choreography (S3): the terminal is the only truth.
+
+        The row's digit FOCUSES the field (never commits), the field is
+        cleared (``ctrl+u`` then ``ctrl+k``, one verified step each),
+        the sanitized text is typed on the literal-text surface, the
+        screen is RE-READ to show that exact text in the field, and
+        only then does Enter commit. Anything unexpected — the dialog
+        left, its identity changed, the text never showed — stops the
+        answer with ``changed`` and sends NOTHING further: a half-typed
+        field is never submitted blindly.
+        """
+        from . import dialog as dialog_guard
+
+        chosen = model.options[option]
+        if not chosen.free_text:
+            return refused(
+                "invalid_target", "text answers a free-text option only"
+            )
+        if not chosen.keys or chosen.keys[0] not in SEND_KEY_ALLOWLIST:
+            return refused("invalid_target", "the free-text row left the key dialect")
+        clean = sanitize_prompt_text(text or "")
+        if not clean:
+            return refused("invalid_target", "the free-text answer is blank")
+        typer = getattr(self._herdr, "send_text", None)
+        if typer is None:
+            return refused(
+                "send-failed",
+                "this pane surface cannot type literal text",
+            )
+
+        def readd():
+            raw = reader(pane_id, DIALOG_SCREEN_LINES)
+            return recognize_dialog(target.agent, raw or ""), raw or ""
+
+        def await_identity(baseline):
+            """One bounded wait for the dialog to still be ITSELF
+            (highlight moves excluded — same tolerance as the guard)."""
+            pause = self._sleeper or time.sleep
+            for _ in range(dialog_guard.POLL_ATTEMPTS):
+                pause(dialog_guard.POLL_DELAY_MS / 1000)
+                fresh, _raw = readd()
+                if fresh is None or fresh.unread:
+                    continue
+                if not dialog_guard.same_dialog_identity(
+                    fresh.as_guard_model(), baseline.as_guard_model()
+                ):
+                    return None
+                return fresh
+            return None
+
+        # 1) the digit focuses the free-text row's field.
+        try:
+            sender(pane_id, [chosen.keys[0]])
+        except HerdrError as exc:
+            return refused("send-failed", str(exc))
+        if await_identity(model) is None:
+            return refused(
+                "changed",
+                "the dialog changed while focusing the free-text row; "
+                "nothing further was sent",
+            )
+
+        # 2) clear the field: ctrl+u then ctrl+k, one verified step each.
+        for clear_key in ("ctrl+u", "ctrl+k"):
+            try:
+                sender(pane_id, [clear_key])
+            except HerdrError as exc:
+                return refused("send-failed", str(exc))
+            if await_identity(model) is None:
+                return refused(
+                    "changed",
+                    "the dialog changed while clearing the field; "
+                    "nothing further was sent",
+                )
+
+        # 3) type, then verify ON SCREEN that the exact text is in the
+        # field. The typed row's own label is EXPECTED to change — the
+        # identity check spares exactly that row and guards every other.
+        try:
+            typer(pane_id, clean)
+        except HerdrError as exc:
+            return refused("send-failed", str(exc))
+        pause = self._sleeper or time.sleep
+        for _ in range(dialog_guard.POLL_ATTEMPTS):
+            pause(dialog_guard.POLL_DELAY_MS / 1000)
+            fresh, raw = readd()
+            if fresh is None or fresh.unread:
+                continue
+            if (
+                fresh.question != model.question
+                or len(fresh.options) != len(model.options)
+                or any(
+                    other.label != base.label
+                    for index, (other, base) in enumerate(
+                        zip(fresh.options, model.options)
+                    )
+                    if index != option
+                )
+            ):
+                return refused(
+                    "changed",
+                    "the dialog changed while typing; nothing further was sent",
+                )
+            if clean in raw:
+                break
+        else:
+            return refused(
+                "changed",
+                "the typed text never showed on screen; nothing was submitted",
+            )
+
+        # 4) commit — the pre-Enter check above IS the guard's read.
+        try:
+            sender(pane_id, ["enter"])
+        except HerdrError as exc:
+            return refused("send-failed", str(exc))
+        return {
+            "outcome": "answered",
+            "pane_id": pane_id,
+            "option": option,
+            "text": text,
+            "label": chosen.label,
+        }
 
     def _dialog_reader(self, pane_id: str):
         """The guard's reader: a styled read of one pane's tail."""

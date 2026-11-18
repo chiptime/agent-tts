@@ -83,7 +83,7 @@ class DialogTapStub:
 
 @pytest.fixture
 def make_client(settings, tmp_path, monkeypatch):
-    def build(agents, screen, sleeper=None, stub=None):
+    def build(agents, screen, sleeper=None, stub=None, audit_content="preview"):
         stub = stub or DialogTapStub(agents, screen)
         state_dir = tmp_path / "state"
 
@@ -95,7 +95,8 @@ def make_client(settings, tmp_path, monkeypatch):
 
         monkeypatch.setattr(server_module, "BrainTools", factory)
         cfg = Settings(**{**settings.__dict__, "state_dir": str(state_dir),
-                          "audio_dir": str(tmp_path / "audio")})
+                          "audio_dir": str(tmp_path / "audio"),
+                          "audit_content": audit_content})
         client = TestClient(server_module.create_app(settings=cfg))
         client.state_dir = state_dir
         client.audit_path = state_dir / "audit.log"
@@ -643,3 +644,301 @@ class TestMultiSelectAnswer:
 
         assert empty.status_code == 422
         assert repeated.status_code == 422
+
+
+def free_text_screen(pointer: int, typed: str = "") -> str:
+    """The synthesized Claude select shape with a ``Type something.``
+    row; once text is typed the row shows it verbatim."""
+    row3 = typed if typed else "Type something."
+    return (
+        "│ Which fruit do you want?\n"
+        "│ Pick the one you like best.\n"
+        "│\n"
+        f"│ {'❯' if pointer == 0 else ' '} 1. Manzana\n"
+        f"│ {'❯' if pointer == 1 else ' '} 2. Pera\n"
+        f"│ {'❯' if pointer == 2 else ' '} 3. {row3}\n"
+        "│\n"
+        "  Enter to select · ↑/↓ to navigate · Esc to cancel\n"
+    )
+
+
+class FreeTextStub(DialogTapStub):
+    """Drives the synthesized free-text select: a digit moves the
+    pointer to its row (the field takes the keyboard), literal text
+    lands in the row verbatim, and Enter commits the typed answer."""
+
+    def __init__(self, agents):
+        super().__init__(agents, "")
+        self.pointer = 0
+        self.typed = ""
+        self.closed = False
+        self.text_calls: list = []
+
+    def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+        if self.closed:
+            return "$ pytest -q\n..........\n10 passed in 0.02s\n$ _"
+        return free_text_screen(self.pointer, self.typed)
+
+    def send_keys(self, pane_id, keys):
+        super().send_keys(pane_id, keys)
+        for key in keys:
+            if key in ("1", "2", "3"):
+                self.pointer = int(key) - 1
+            elif key == "enter" and self.typed:
+                self.closed = True
+        return {"ok": True, "error": ""}
+
+    def send_text(self, pane_id, text):
+        self.text_calls.append({"pane_id": pane_id, "text": text})
+        self.typed = text
+
+
+class HijackedFreeTextStub(FreeTextStub):
+    """After the Nth key the agent redraws a different question: the
+    dialog identity changed mid-recipe and nothing further — no more
+    clears, no text, no Enter — may leave."""
+
+    def __init__(self, agents, hijack_after=2):
+        super().__init__(agents)
+        self.hijack_after = hijack_after
+        self.key_sends = 0
+        self.hijacked = False
+
+    def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+        if self.hijacked:
+            return free_text_screen(self.pointer, self.typed).replace(
+                "Which fruit", "Which sauce"
+            )
+        return super().read_screen(pane_id, n_lines, source, as_ansi)
+
+    def send_keys(self, pane_id, keys):
+        result = super().send_keys(pane_id, keys)
+        self.key_sends += 1
+        if self.key_sends >= self.hijack_after:
+            self.hijacked = True
+        return result
+
+
+class TestFreeTextAnswer:
+    """``text`` answers a free-text option (S3): the recipe selects the
+    row with its digit, clears the field (ctrl+u then ctrl+k, one
+    verified step each), types the sanitized text, re-reads that the
+    text is on screen, and only then commits with Enter. Any surprise
+    mid-recipe is a 409 ``changed`` with nothing further sent."""
+
+    def _post(self, client, option, text, fingerprint):
+        return client.post(
+            "/pane/dialog/answer",
+            json={
+                "pane_id": "w1:p3",
+                "fingerprint": fingerprint,
+                "option": option,
+                "text": text,
+            },
+        )
+
+    def test_text_clears_types_verifies_then_commits(self, make_client):
+        stub = FreeTextStub([BLOCKED_CLAUDE])
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        fingerprint = _fingerprint("claude", stub.read_screen("w1:p3"))
+
+        response = self._post(client, 2, "usa la rama main", fingerprint)
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["ok"] is True
+        assert body["option"] == 2
+        # The digit focuses the field; the clears are one verified key
+        # each; the text rides the literal-text surface; Enter commits.
+        assert stub.key_calls == [
+            {"pane_id": "w1:p3", "keys": ["3"]},
+            {"pane_id": "w1:p3", "keys": ["ctrl+u"]},
+            {"pane_id": "w1:p3", "keys": ["ctrl+k"]},
+            {"pane_id": "w1:p3", "keys": ["enter"]},
+        ]
+        assert stub.text_calls == [
+            {"pane_id": "w1:p3", "text": "usa la rama main"}
+        ]
+        assert stub.closed is True
+        entries = audit_entries(client)
+        answer = next(e for e in entries if e["action"] == "pane.dialog.answer")
+        assert answer["detail"]["outcome"] == "answered"
+        assert answer["detail"]["option"] == 2
+        assert answer["detail"]["text"] == "usa la rama main"
+        assert answer["detail"]["fingerprint"] == fingerprint
+
+    def test_the_typed_text_is_sanitized_like_a_pane_reply(self, make_client):
+        """A literal newline in the answer would submit the field early:
+        the same collapse /pane/reply applies protects this surface
+        too."""
+        stub = FreeTextStub([BLOCKED_CLAUDE])
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        fingerprint = _fingerprint("claude", stub.read_screen("w1:p3"))
+
+        response = self._post(client, 2, "usa la\nrama   main", fingerprint)
+
+        assert response.status_code == 200
+        assert stub.text_calls == [
+            {"pane_id": "w1:p3", "text": "usa la rama main"}
+        ]
+
+    def test_drift_mid_recipe_is_a_409_and_nothing_further_leaves(
+        self, make_client
+    ):
+        stub = HijackedFreeTextStub([BLOCKED_CLAUDE])
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        fingerprint = _fingerprint("claude", stub.read_screen("w1:p3"))
+
+        response = self._post(client, 2, "usa la rama main", fingerprint)
+
+        assert response.status_code == 409
+        assert "cambió" in response.json()["detail"]
+        # The digit and the first clear left; the hijacked dialog got
+        # NOTHING further: no second clear, no text, no Enter.
+        assert stub.key_calls == [
+            {"pane_id": "w1:p3", "keys": ["3"]},
+            {"pane_id": "w1:p3", "keys": ["ctrl+u"]},
+        ]
+        assert stub.text_calls == []
+        assert stub.closed is False
+        entries = audit_entries(client)
+        assert entries[-1]["detail"]["reason"] == "changed"
+
+    def test_text_on_a_dialog_without_a_free_text_option_is_a_422(
+        self, make_client
+    ):
+        client, stub = make_client(
+            [BLOCKED_CLAUDE], CLAUDE_SELECT, sleeper=lambda _s: None
+        )
+        fingerprint = _fingerprint("claude", CLAUDE_SELECT)
+
+        response = self._post(client, 0, "hola", fingerprint)
+
+        assert response.status_code == 422
+        assert stub.key_calls == []
+
+    def test_destructive_text_is_delivered_the_guard_is_client_side(
+        self, make_client
+    ):
+        """The destructive analyzer runs in the PWA before posting; the
+        server does not censor a confirmed answer — it delivers the text
+        and audits it, exactly like /pane/reply."""
+        stub = FreeTextStub([BLOCKED_CLAUDE])
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        fingerprint = _fingerprint("claude", stub.read_screen("w1:p3"))
+
+        response = self._post(client, 2, "sudo rm -rf /tmp/demo", fingerprint)
+
+        assert response.status_code == 200
+        assert stub.text_calls == [
+            {"pane_id": "w1:p3", "text": "sudo rm -rf /tmp/demo"}
+        ]
+        assert stub.closed is True
+
+    def test_the_audit_line_carries_the_pane_reply_preview_discipline(
+        self, make_client
+    ):
+        from herdr_brain.audit import MAX_STR
+
+        stub = FreeTextStub([BLOCKED_CLAUDE])
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        fingerprint = _fingerprint("claude", stub.read_screen("w1:p3"))
+        long_text = "responde con " + "x" * (MAX_STR + 10)
+
+        assert self._post(client, 2, long_text, fingerprint).status_code == 200
+
+        entries = audit_entries(client)
+        answer = next(e for e in entries if e["action"] == "pane.dialog.answer")
+        # Preview mode: bounded, single-line — same cap as pane.reply.
+        assert answer["detail"]["text"] == long_text[:MAX_STR] + "…"
+
+    def test_none_audit_mode_redacts_the_free_text(self, make_client):
+        stub = FreeTextStub([BLOCKED_CLAUDE])
+        client, _ = make_client(
+            None, None, sleeper=lambda _s: None, stub=stub, audit_content="none"
+        )
+        fingerprint = _fingerprint("claude", stub.read_screen("w1:p3"))
+
+        response = self._post(client, 2, "purge the database", fingerprint)
+
+        assert response.status_code == 200
+        entries = audit_entries(client)
+        answer = next(e for e in entries if e["action"] == "pane.dialog.answer")
+        assert answer["detail"]["text"] == "⟨redacted⟩"
+        assert answer["detail"]["outcome"] == "answered"
+        assert "purge the database" not in audit_text(client)
+
+    def test_a_text_the_screen_never_shows_is_never_committed(self, make_client):
+        """The pre-Enter check is a re-read, not an assumption: a typed
+        text that does not show in the field stops the recipe before
+        Enter — half-typed state is never submitted blindly."""
+
+        class VanishingTextStub(FreeTextStub):
+            def send_text(self, pane_id, text):
+                super().send_text(pane_id, text)
+                self.typed = ""  # the terminal dropped the text
+
+        stub = VanishingTextStub([BLOCKED_CLAUDE])
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        fingerprint = _fingerprint("claude", stub.read_screen("w1:p3"))
+
+        response = self._post(client, 2, "usa la rama main", fingerprint)
+
+        assert response.status_code == 409
+        assert [call["keys"] for call in stub.key_calls] == [
+            ["3"], ["ctrl+u"], ["ctrl+k"],
+        ]
+        assert stub.closed is False
+
+
+class TestFreeTextValidation:
+    def test_text_without_an_option_is_a_422(self, make_client):
+        client, stub = make_client(
+            [BLOCKED_CLAUDE], CLAUDE_SELECT, sleeper=lambda _s: None
+        )
+
+        response = client.post(
+            "/pane/dialog/answer",
+            json={
+                "pane_id": "w1:p3",
+                "fingerprint": "x",
+                "text": "hola",
+            },
+        )
+
+        assert response.status_code == 422
+        assert stub.key_calls == []
+
+    def test_text_with_choices_is_a_422(self, make_client):
+        client, _ = make_client(
+            [BLOCKED_CLAUDE], CLAUDE_SELECT, sleeper=lambda _s: None
+        )
+
+        response = client.post(
+            "/pane/dialog/answer",
+            json={
+                "pane_id": "w1:p3",
+                "fingerprint": "x",
+                "choices": [0],
+                "text": "hola",
+            },
+        )
+
+        assert response.status_code == 422
+
+    def test_blank_text_is_a_422(self, make_client):
+        client, _ = make_client(
+            [BLOCKED_CLAUDE], CLAUDE_SELECT, sleeper=lambda _s: None
+        )
+
+        response = client.post(
+            "/pane/dialog/answer",
+            json={
+                "pane_id": "w1:p3",
+                "fingerprint": "x",
+                "option": 0,
+                "text": "   ",
+            },
+        )
+
+        assert response.status_code == 422

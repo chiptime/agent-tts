@@ -56,6 +56,12 @@ class DialogOption:
     #: Multiselect only: the checkbox state the terminal shows. ``None``
     #: on rows that are not checkboxes (e.g. the submit row).
     checked: Optional[bool] = None
+    #: True on the row whose digit FOCUSES a text field instead of
+    #: committing an answer (``Type something.``). Its ``keys`` are the
+    #: digit alone — Enter would submit before any text is typed — and
+    #: the answer travels as ``{option, text}`` through the typing
+    #: recipe, never as a plain digit commit.
+    free_text: bool = False
 
 
 @dataclass(frozen=True)
@@ -112,6 +118,10 @@ class StructuredDialog:
                     "label": option.label,
                     "description": option.description,
                     "checked": option.checked,
+                    # Additive on purpose (S3): the flag rides along
+                    # ONLY on the rows that carry it, so every payload
+                    # without a free-text row keeps its exact shape.
+                    **({"free_text": True} if option.free_text else {}),
                 }
                 for option in self.options
             ],

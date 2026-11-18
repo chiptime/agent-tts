@@ -124,6 +124,8 @@
     "dialogs.answered_plain": "Answered.",
     "dialogs.submit_selection": "Send selection",
     "dialogs.none_selected": "Check at least one option before sending.",
+    "dialogs.free_text_placeholder": "Type your answer…",
+    "dialogs.free_text_send": "Send answer",
     "dialogs.changed": "The dialog changed before answering; nothing was sent. Look at the screen and answer the new dialog, or use the keypad.",
     "dialogs.option_gone": "That option is no longer in the dialog; use the keypad.",
     "dialogs.fail": "Could not answer the dialog; use the keypad.",

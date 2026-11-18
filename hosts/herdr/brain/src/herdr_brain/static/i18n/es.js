@@ -124,6 +124,8 @@
     "dialogs.answered_plain": "Respondido.",
     "dialogs.submit_selection": "Enviar selección",
     "dialogs.none_selected": "Marca al menos una opción antes de enviar.",
+    "dialogs.free_text_placeholder": "Escribe tu respuesta…",
+    "dialogs.free_text_send": "Enviar respuesta",
     "dialogs.changed": "El diálogo cambió antes de responder; nada se envió. Mira la pantalla y responde al diálogo nuevo, o usa el teclado.",
     "dialogs.option_gone": "Esa opción ya no está en el diálogo; usa el teclado.",
     "dialogs.fail": "No se pudo responder el diálogo; usa el teclado.",

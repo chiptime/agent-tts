@@ -5,7 +5,13 @@ fixture in the same layout Claude draws):
 
 - ``select`` — AskUserQuestion: options ``❯ 1. Label``, footer
   ``Enter to select · ↑/↓ to navigate · Esc to cancel``. The digit
-  moves the pointer; Enter commits. Recipe: ``(digit, enter)``.
+  moves the pointer; Enter commits. Recipe: ``(digit, enter)``. A
+  free-text row (``Type something.``, S3) is KEPT as an option with
+  ``free_text=True`` whose digit alone focuses the field — the answer
+  is typed by the server's recipe, never committed on the digit. The
+  multiselect keeps its closed grammar (checkbox rows + one submit
+  row): with no real capture pinning the free-text glyph there, a
+  free-text row inside it still declines.
 - ``multiselect`` — AskUserQuestion with multiple selections allowed:
   checkbox rows (``Empty checkbox``/``Filled checkbox``, or the
   ``[ ]``/``[✔]`` glyph pair) plus the numbered ``Submit`` row, footer
@@ -26,8 +32,10 @@ fixture in the same layout Claude draws):
   same select shape a ``wizard_step`` (answering may advance).
 
 A pointer sitting on a free-text row (``Type something.``) means the
-field owns the keyboard and every digit becomes text: UNREAD, never
-buttons with a lying recipe.
+field owns the keyboard and every digit becomes text — which is exactly
+why the row is modelled ``free_text=True`` (S3): its digit recipe only
+FOCUSES the field, and the typed answer rides the server's verified
+typing recipe, never a digit commit.
 """
 
 from __future__ import annotations
@@ -38,6 +46,7 @@ from typing import List, Optional, Tuple
 from ..model import DialogOption, StructuredDialog, fingerprint_region, unread
 from ..numbered import (
     collect_numbered_block,
+    is_free_text_label,
     question_above,
     split_checked,
     step_marker_above,
@@ -110,6 +119,13 @@ class ClaudeAdapter(AdapterBase):
         if not question:
             return None
         step = step_marker_above(lines, first)
+        # S3: the select family keeps the free-text rows of the block —
+        # re-collect with them counted as rows instead of block-enders.
+        # The multiselect above keeps the default (its closed checkbox
+        # grammar pins nothing about a free-text row's glyph there).
+        free_block = collect_numbered_block(lines, keep_free_text=True)
+        if free_block is not None:
+            first, _last, rows = free_block
         return StructuredDialog(
             agent=self.agent,
             kind="wizard_step" if (step and kind == "select") else kind,
@@ -117,7 +133,8 @@ class ClaudeAdapter(AdapterBase):
             options=tuple(
                 DialogOption(
                     label=label,
-                    keys=(number, *suffix),
+                    keys=(number,) if is_free_text_label(label) else (number, *suffix),
+                    free_text=is_free_text_label(label),
                 )
                 for number, label, _description, _pointed in rows
             ),

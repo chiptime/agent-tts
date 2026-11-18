@@ -45,13 +45,17 @@ _PROMPT_OUTCOME_CODES = {
 #: The ONLY keys the brain will forward to an agent. A permission dialog is
 #: answered by navigating (arrows/tab), confirming (enter), dismissing
 #: (esc) or picking a NUMBERED option directly (digits 0-9: the dialogs
-#: that print numbers commit on them — everything else is still refused,
-#: and free text never reaches a pane). herdr validates keys server-side
-#: too; this list is the brain's own guard so nothing outside it can
-#: ever reach the CLI. Verified against herdr 0.9.1 (``esc`` is the
-#: canonical Escape name).
+#: that print numbers commit on them — everything else is still refused).
+#: The free-text recipe (S3) adds EXACTLY two chords, ``ctrl+u`` and
+#: ``ctrl+k``: they clear the field the recipe is about to type into
+#: (herdr accepts ctrl+letter spellings). Free TEXT itself never rides
+#: this surface — it goes through :meth:`HerdrClient.send_text` with its
+#: own sanitization. herdr validates keys server-side too; this list is
+#: the brain's own guard so nothing outside it can ever reach the CLI.
+#: Verified against herdr 0.9.1 (``esc`` is the canonical Escape name).
 SEND_KEY_ALLOWLIST = (
     "up", "down", "left", "right", "enter", "esc", "tab",
+    "ctrl+u", "ctrl+k",
     "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
 )
 
@@ -281,6 +285,24 @@ class HerdrClient:
         except HerdrError as exc:
             return {"ok": False, "error": str(exc)}
         return {"ok": True, "error": ""}
+
+    def send_text(self, pane_id: str, text: str) -> None:
+        """Types literal text into a pane, WITHOUT Enter.
+
+        Verified CLI shape: ``herdr pane send-text <PANE_ID> <TEXT>`` —
+        "Send literal text to a pane". This is the typing half of the
+        free-text dialog recipe (S3): the recipe selects the row with
+        its digit, clears the field with ``ctrl+u``/``ctrl+k`` and only
+        then types, re-reads the screen and commits with Enter itself —
+        so the text must arrive as literal keystrokes, never with a
+        trailing submit. The text is sanitized exactly like a prompt
+        (:func:`sanitize_prompt_text`): a literal newline would submit
+        the field early. Raises :class:`HerdrError` on any CLI failure.
+        """
+        clean = sanitize_prompt_text(text)
+        if not clean:
+            raise HerdrError("refusing to send empty text")
+        self._run_cli(["pane", "send-text", pane_id, clean], timeout_s=15)
 
     def create_tab(self, label: str, cwd: Optional[str] = None) -> dict:
         """Creates a new tab and returns ``{"tab_id", "pane_id"}``.

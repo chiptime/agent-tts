@@ -34,6 +34,7 @@ def fixture(name: str) -> str:
 CORPUS = {
     "claude": (
         "claude-select.txt",
+        "claude-select-freetext.txt",
         "claude-permission.txt",
         "claude-trust.txt",
         "claude-wizard.txt",
@@ -204,6 +205,54 @@ class TestClaude:
 
         assert model is not None
         assert model.options[0].label == "Cheese"
+
+
+class TestClaudeFreeText:
+    """S3: a ``Type something.`` row is an OPTION that opens an editor,
+    not a row to drop. Its digit FOCUSES the field — Enter would commit
+    before any text is typed — so its recipe is the digit alone."""
+
+    def test_a_free_text_row_is_kept_as_a_free_text_option(self):
+        model = detect("claude", fixture("claude-select-freetext.txt"))
+
+        assert model is not None and not model.unread
+        assert model.kind == "select"
+        assert labels(model) == ["Manzana", "Pera", "Type something."]
+        assert [option.free_text for option in model.options] == [
+            False, False, True,
+        ]
+        # The digit alone: an Enter in the recipe would submit the row
+        # before the server's text recipe could type into it.
+        assert model.options[2].keys == ("3",)
+        # The payload names the row for the PWA's editor, additively:
+        # rows without the field keep their exact previous shape.
+        payload = model.payload()
+        assert payload["options"][2]["free_text"] is True
+        assert "free_text" not in payload["options"][0]
+
+    def test_fixtures_without_a_free_text_row_change_nothing(self):
+        model = detect("claude", fixture("claude-select.txt"))
+
+        assert labels(model) == ["Manzana", "Pera", "Naranja"]
+        assert [option.free_text for option in model.options] == [
+            False, False, False,
+        ]
+        assert "free_text" not in model.payload()["options"][0]
+
+    def test_a_neutral_buffer_still_declines(self):
+        assert detect("claude", fixture("neutral-terminal.txt")) is None
+
+    def test_the_free_text_row_stays_out_of_the_multiselect_shape(self):
+        """The multiselect grammar is checkbox rows plus one trailing
+        submit row; whether Claude draws the free-text row there (and
+        with which glyph) is pinned by no real capture, so S3 keeps the
+        closed shape: a free-text row inside it still declines."""
+        screen = fixture("claude-multi.txt").replace(
+            "│   4. Submit",
+            "│   4. Type something.\n│   5. Submit",
+        )
+
+        assert detect("claude", screen) is None
 
 
 class TestCodex:

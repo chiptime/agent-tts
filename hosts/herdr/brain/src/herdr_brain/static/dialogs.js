@@ -123,6 +123,46 @@
     return tr("dialogs.submit_selection", "Enviar selección");
   }
 
+  /* Free-text options (S3): the row the server marked free_text does
+   * not post on tap — the tap OPENS the editor in the card. These are
+   * the editor's own chrome and payload; app.js owns the DOM, the
+   * destructive guard and the fetch. */
+  function isFreeTextOption(structured, index) {
+    var option = structured && !structured.unread
+      ? (structured.options || [])[index] : null;
+    return !!option && option.free_text === true;
+  }
+
+  function freeTextPayload(paneId, fingerprint, option, text) {
+    return {
+      pane_id: paneId,
+      fingerprint: fingerprint,
+      option: option,
+      text: text,
+    };
+  }
+
+  function editorPlaceholder() {
+    return tr("dialogs.free_text_placeholder", "Escribe tu respuesta…");
+  }
+
+  function editorSendLabel() {
+    return tr("dialogs.free_text_send", "Enviar respuesta");
+  }
+
+  /* The second-tap confirm for destructive text: the SAME wording and
+   * mechanism the composer uses (doc 03) — the guard is client-side,
+   * the server never censors a confirmed answer. Null when the text
+   * matched no destructive rule. */
+  function confirmFreeText(text, match) {
+    if (!match) return null;
+    var line = tr(
+      "reply.destructive_confirm",
+      "Este envío parece destructivo: {match}.\n\n{text}\n\n¿Enviar igualmente?"
+    );
+    return line.replace("{match}", match).replace("{text}", text);
+  }
+
   /* The Spanish status line for a tap's outcome. `labels` are the
    * rendered button labels, so the answered line can name the choice. */
   function statusFor(result, labels) {
@@ -159,6 +199,11 @@
     selectionModel: selectionModel,
     choicesPayload: choicesPayload,
     submitLabel: submitLabel,
+    isFreeTextOption: isFreeTextOption,
+    freeTextPayload: freeTextPayload,
+    editorPlaceholder: editorPlaceholder,
+    editorSendLabel: editorSendLabel,
+    confirmFreeText: confirmFreeText,
   };
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

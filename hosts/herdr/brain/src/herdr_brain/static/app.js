@@ -2973,6 +2973,13 @@
             button.setAttribute(
               "aria-pressed", String(option.checked === true));
           }
+          /* A free-text row opens the card's editor on tap (S3): it
+           * never posts by itself — the typed answer goes out as
+           * {option, text} from the editor's explicit send. */
+          var structuredOption = (structured.options || [])[option.index];
+          if (structuredOption && structuredOption.free_text === true) {
+            button.setAttribute("data-free-text", "1");
+          }
           var label = document.createElement("span");
           label.textContent = option.label;
           button.appendChild(label);
@@ -3142,7 +3149,125 @@
         toggleDialogChoice(button);
         return;
       }
+      if (button.getAttribute("data-free-text") === "1") {
+        openFreeTextEditor(button);
+        return;
+      }
       answerDialogButton(button);
+    });
+  }
+
+  /* ---------------- free-text editor (S3) --------------------------------
+   * Tapping the dialog's free-text row opens an inline editor in the
+   * card: an input plus one explicit send. The typed text passes the
+   * SAME destructive guard the composer uses (a match needs the second
+   * tap), and only then does {option, text} leave to the answer
+   * endpoint — the server re-reads the pane, clears the field, types,
+   * verifies the text on screen and commits. */
+  function closeFreeTextEditor() {
+    if (!dialogButtonsBox) return;
+    var editor = dialogButtonsBox.querySelector(".dlg-free-row");
+    if (editor) editor.remove();
+  }
+
+  function openFreeTextEditor(button) {
+    if (!lastStructured || !window.Dialogs || dialogBusy) return;
+    closeFreeTextEditor();
+    var index = parseInt(button.getAttribute("data-index"), 10);
+    if (isNaN(index)) return;
+    var row = document.createElement("div");
+    row.className = "dlg-free-row";
+    row.style.display = "flex";
+    row.style.gap = "6px";
+    row.style.marginTop = "2px";
+    var input = document.createElement("input");
+    input.type = "text";
+    input.setAttribute("data-free-text-input", "1");
+    input.placeholder = window.Dialogs.editorPlaceholder();
+    input.setAttribute("aria-label", window.Dialogs.editorPlaceholder());
+    input.autocomplete = "off";
+    input.enterKeyHint = "send";
+    input.style.flex = "1";
+    input.style.minWidth = "0";
+    input.style.padding = "8px 10px";
+    input.style.fontSize = "14px";
+    input.style.border = "1px solid var(--line)";
+    input.style.borderRadius = "10px";
+    input.style.background = "var(--bg)";
+    input.style.color = "var(--text)";
+    input.addEventListener("keydown", function (event) {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        sendFreeText(index, input);
+      }
+    });
+    var send = document.createElement("button");
+    send.type = "button";
+    send.setAttribute("data-free-text-send", "1");
+    send.textContent = window.Dialogs.editorSendLabel();
+    send.addEventListener("click", function () {
+      sendFreeText(index, input);
+    });
+    row.appendChild(input);
+    row.appendChild(send);
+    button.after(row);
+    input.focus();
+  }
+
+  function sendFreeText(index, input) {
+    if (!lastStructured || !window.Dialogs || dialogBusy) return;
+    var paneId = replyKeys.getAttribute("data-pane");
+    var text = (input.value || "").trim();
+    if (!paneId || !text) return;
+    /* Destructive-command guard, the composer's own: a matching send
+     * needs a second, explicit tap. The guard is client-side only —
+     * the server delivers a confirmed answer uncensored and audits
+     * it. */
+    var destructive = window.DestructiveGuard
+      ? window.DestructiveGuard.isDestructiveInput(text) : null;
+    if (destructive && !window.confirm(
+      window.Dialogs.confirmFreeText(text, destructive)
+    )) return;
+    dialogBusy = true;
+    setDialogButtonsBusy(true);
+    setDialogStatus(t("reply.sending"));
+    var payload = window.Dialogs.freeTextPayload(
+      paneId, lastStructured.fingerprint, index, text);
+    fetch("/pane/dialog/answer", withDeviceAuth({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    }))
+      .then(function (resp) {
+        if (!resp.ok) maybeOfferPairing(resp);
+        return resp.json().catch(function () { return null; }).then(function (body) {
+          return { ok: resp.ok, status: resp.status, body: body };
+        });
+      })
+      .then(function (result) {
+        if (result.ok) {
+          closeFreeTextEditor();
+          setDialogStatus(window.Dialogs.statusFor({ ok: true, option: index }, labelsOfCurrentDialog()));
+          /* The dialog usually closes or advances here: refresh now
+           * instead of waiting a whole poll beat. */
+          refreshState();
+          return null;
+        }
+        setDialogStatus(window.Dialogs.statusFor({ status: result.status }, labelsOfCurrentDialog()));
+        return null;
+      })
+      .catch(function () {
+        setDialogStatus(window.Dialogs.statusFor(null, labelsOfCurrentDialog()));
+      })
+      .then(function () {
+        dialogBusy = false;
+        setDialogButtonsBusy(false);
+      });
+  }
+
+  function labelsOfCurrentDialog() {
+    return (lastStructured && lastStructured.options || []).map(function (option) {
+      return option.label;
     });
   }
 
