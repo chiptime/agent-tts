@@ -756,6 +756,8 @@ class TestDispatch:
             "get_followup_context", "end_followup",
             # S5/S7: voice switching of the call's target pane.
             "switch_session",
+            # parity-f7c S3: the gated resume of a past conversation.
+            "resume_session",
         }
 
     def test_stop_agent_schema_is_gated_and_argument_free(self):

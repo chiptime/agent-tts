@@ -219,6 +219,13 @@
     "newsession.err_harness": "That agent is not on the server's list",
     "newsession.err_cwd": "That folder is not inside the allowed roots",
     "newsession.roots_empty": "No roots configured: create ~/.config/herdr-brain/roots.toml to enable launches",
+    "newsession.resume": "Resume a session",
+    "newsession.resume_pick": "— resume with… —",
+    "newsession.resume_empty": "No recent sessions to resume",
+    "newsession.resumed": "Session resumed",
+    "newsession.resume_failed": "Could not resume the session — try again",
+    "newsession.err_resume_harness": "That agent has no verified resume form",
+    "newsession.err_resume_cwd": "That session has no known folder to reopen",
 
     /* ---- pending sheet ---- */
     "pendsheet.aria": "Pending",

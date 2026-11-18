@@ -241,6 +241,9 @@ _WRITE_RULES = (
     # /session/roots stays a read (labels and paths the operator
     # authored themselves).
     ("POST", re.compile(r"^/session/new$")),
+    # parity-f7c S3: resuming a past conversation types a verified
+    # resume argv into a real terminal tab — the same write treatment.
+    ("POST", re.compile(r"^/session/resume$")),
     ("POST", re.compile(r"^/ask$")),
     ("POST", re.compile(r"^/transcribe$")),
     ("POST", re.compile(r"^/reset$")),

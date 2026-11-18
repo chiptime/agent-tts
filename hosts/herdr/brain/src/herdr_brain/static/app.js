@@ -8303,11 +8303,38 @@
       return "ns-" + (nowMs || 0).toString(36) + "-" + (random || 0).toString(36).slice(2, 10);
     }
 
+    /* Resume display rows (parity-f7c S3): the server already filtered
+     * to in-root, resumable conversations and masked the titles; this
+     * only shapes what renders — malformed entries are dropped, the
+     * label prefers the (masked) title and falls back to the folder
+     * name plus a short id so every row stays recognizable. */
+    function resumeRows(sessions) {
+      var rows = [];
+      var valid = Array.isArray(sessions) ? sessions : [];
+      for (var i = 0; i < valid.length; i++) {
+        var row = valid[i];
+        if (!row || typeof row !== "object") continue;
+        var sid = row.session_id;
+        if (typeof sid !== "string" || !sid) continue;
+        var title = typeof row.title === "string" ? row.title.trim() : "";
+        var cwd = typeof row.cwd === "string" ? row.cwd : "";
+        var parts = cwd.split("/").filter(Boolean);
+        var base = parts[parts.length - 1] || cwd;
+        rows.push({
+          session_id: sid,
+          label: title || (base ? base + " · " + sid.slice(0, 8) : sid),
+          cwd: cwd,
+        });
+      }
+      return rows;
+    }
+
     return {
       folderChoices: folderChoices,
       formState: formState,
       taskGuard: taskGuard,
       mintRequestId: mintRequestId,
+      resumeRows: resumeRows,
     };
   }
   /* @new-session-pure-end */
@@ -8323,8 +8350,10 @@
   var newLaunchBtn = $("new-launch");
   var newLaunchersEl = $("new-launchers");
   var newRootsEmptyEl = $("new-roots-empty");
+  var newResumeHarnessSel = $("new-resume-harness");
+  var newResumeListEl = $("new-resume-list");
   var newSheetOpen = false;
-  var newSessionState = { harness: "", cwd: "", rootsConfigured: false };
+  var newSessionState = { harness: "", cwd: "", rootsConfigured: false, resumeHarness: "" };
   var newArmedLaunchers = {};
   var NEW_ARM_TIMEOUT_MS = 3000;
   var nsModel = newSessionModel();
@@ -8368,7 +8397,8 @@
 
   /* The sheet answers to the operator LOOKING at it: every open
    * refetches roots + recents + harnesses (one round-trip) and the
-   * launcher rows (the same /operator/config the dock reads). */
+   * launcher rows (the same /operator/config the dock reads). The
+   * resume picker rides /sessions/recent's enabled-harness list. */
   function refreshNewSheet() {
     readFetch("/session/roots")
       .then(function (resp) { return resp.json(); })
@@ -8390,6 +8420,7 @@
       .then(function (resp) { return resp.json(); })
       .then(function (body) { renderNewLaunchers((body && body.launchers) || []); })
       .catch(function () { /* shortcuts are optional chrome */ });
+    refreshResumeSheet();
   }
 
   function renderNewHarnesses(harnesses) {
@@ -8544,6 +8575,153 @@
         showToast(t("dock.launch_failed"), 4000);
       })
       .catch(function () { showToast(t("dock.launch_failed"), 4000); });
+  }
+
+  /* ---------------- Retomar (parity-f7c S3) ----------------
+   * The same sheet's resume half: the harness picker renders exactly
+   * the server's ENABLED list (a harness without a verified resume
+   * form never appears — criterion 3), the recent list comes from
+   * GET /sessions/recent?harness=, and one tap posts /session/resume
+   * with a fresh request_id per tap (S2 receipts, same as Launch). */
+
+  function refreshResumeSheet() {
+    readFetch("/sessions/recent")
+      .then(function (resp) { return resp.json(); })
+      .then(function (body) {
+        body = body || {};
+        renderNewResumeHarnesses(body.harnesses || []);
+        renderNewResumeSessions(body.sessions || []);
+      })
+      .catch(function () {
+        renderNewResumeHarnesses([]);
+        renderNewResumeSessions([]);
+      });
+  }
+
+  function renderNewResumeHarnesses(harnesses) {
+    while (newResumeHarnessSel.firstChild) {
+      newResumeHarnessSel.removeChild(newResumeHarnessSel.firstChild);
+    }
+    var placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = t("newsession.resume_pick");
+    newResumeHarnessSel.appendChild(placeholder);
+    for (var i = 0; i < harnesses.length; i++) {
+      var name = harnesses[i];
+      if (typeof name !== "string" || !name) continue;
+      var option = document.createElement("option");
+      option.value = name;
+      /* Text node only: harness names are server data, never markup. */
+      option.textContent = name;
+      newResumeHarnessSel.appendChild(option);
+    }
+    /* A selection that disappeared (harness lost its verified form)
+     * must not survive as a stale choice. */
+    var still = false;
+    for (var j = 0; j < newResumeHarnessSel.options.length; j++) {
+      if (newResumeHarnessSel.options[j].value === newSessionState.resumeHarness) {
+        still = true;
+        break;
+      }
+    }
+    if (!still) newSessionState.resumeHarness = "";
+    newResumeHarnessSel.value = newSessionState.resumeHarness || "";
+  }
+
+  function resumeRowButton(row) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "ns-resume";
+    btn.setAttribute("data-session", row.session_id);
+    if (row.cwd) btn.title = row.cwd;
+    /* Text node only: the label is masked server-side, never markup. */
+    btn.textContent = row.label;
+    btn.addEventListener("click", function () { onResumeTap(row); });
+    return btn;
+  }
+
+  function renderNewResumeSessions(sessions) {
+    while (newResumeListEl.firstChild) newResumeListEl.removeChild(newResumeListEl.firstChild);
+    var rows = nsModel.resumeRows(sessions);
+    if (!newSessionState.resumeHarness) return;
+    if (!rows.length) {
+      var empty = document.createElement("span");
+      empty.className = "ns-group";
+      empty.textContent = t("newsession.resume_empty");
+      newResumeListEl.appendChild(empty);
+      return;
+    }
+    for (var i = 0; i < rows.length; i++) {
+      newResumeListEl.appendChild(resumeRowButton(rows[i]));
+    }
+  }
+
+  function loadResumeSessions() {
+    if (!newSessionState.resumeHarness) {
+      renderNewResumeSessions([]);
+      return;
+    }
+    readFetch("/sessions/recent?harness=" + encodeURIComponent(newSessionState.resumeHarness))
+      .then(function (resp) { return resp.json(); })
+      .then(function (body) {
+        renderNewResumeSessions((body && body.sessions) || []);
+      })
+      .catch(function () { renderNewResumeSessions([]); });
+  }
+
+  newResumeHarnessSel.addEventListener("change", function () {
+    newSessionState.resumeHarness = newResumeHarnessSel.value || "";
+    loadResumeSessions();
+  });
+
+  function onResumeTap(row) {
+    fetch("/session/resume", withDeviceAuth({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        harness: newSessionState.resumeHarness,
+        session_id: row.session_id,
+        /* Fresh per tap (S2): a repeat of this same request_id replays
+         * the first response server-side; see mintRequestId above. */
+        request_id: nsModel.mintRequestId(
+          function () {
+            return window.crypto && window.crypto.randomUUID
+              ? window.crypto.randomUUID() : null;
+          },
+          Date.now(),
+          Math.random()
+        ),
+      }),
+    }))
+      .then(function (resp) {
+        if (resp.status === 200) return resp.json();
+        maybeOfferPairing(resp);
+        return resp.json().then(function (body) {
+          var detail = body && body.detail;
+          if (resp.status === 422 && detail === "cwd_unknown") {
+            showToast(t("newsession.err_resume_cwd"), 4000);
+            return null;
+          }
+          if (resp.status === 422 &&
+              (detail === "resume_not_enabled" || detail === "unknown_harness")) {
+            showToast(t("newsession.err_resume_harness"), 4000);
+            refreshResumeSheet();
+            return null;
+          }
+          showToast(t("newsession.resume_failed"), 4000);
+          return null;
+        }, function () {
+          showToast(t("newsession.resume_failed"), 4000);
+          return null;
+        });
+      })
+      .then(function (body) {
+        if (!body) return;
+        showToast(t("newsession.resumed"), 4000);
+        closeNewSheet();
+        refreshHerd();  /* the reopened pane joins the conversation list */
+      })
+      .catch(function () { showToast(t("newsession.resume_failed"), 4000); });
   }
 
   newHarnessSel.addEventListener("change", function () {

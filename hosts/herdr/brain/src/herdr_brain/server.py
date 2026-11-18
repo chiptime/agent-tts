@@ -78,6 +78,7 @@ from .pairing import (
     to_device_wire,
 )
 from .reader import ReaderCache, turn_id
+from .secrets_mask import mask_text
 from .send_receipts import SendReceiptStore
 from .spoken_lexicon import (
     DEFAULT_LOCALE,
@@ -116,8 +117,9 @@ from .permissions import (
 )
 from .stt import STATE_READY, STATE_UNAVAILABLE, UNAVAILABLE_HINT, LiveTranscriber, Transcriber
 from .stt_engine import EngineTranscriber
-from .tools import BrainTools
+from .tools import RESUME_COMMANDS, RESUME_SESSION, BrainTools
 from .tools import status_payload as _status_payload
+from .transcripts import recent_sessions, resume_target
 from .tts import (
     TTS_BACKEND_MISSING,
     TTS_BACKEND_OK,
@@ -351,6 +353,20 @@ def approval_payload(gate: ApprovalGate, timeout_s: int, now: Optional[float] = 
             "tool": gate.tool,
             "agent": gate.action.agent_kind,
             "title": gate.action.title,
+            "task": gate.action.task,
+            "cwd": gate.action.cwd,
+            "timeout_ms": gate.action.timeout_ms,
+            "expires_in_s": max(0, math.ceil(remaining)),
+        }
+    if gate.tool == RESUME_SESSION:
+        # The resume gate (parity-f7c S3) rides the CREATE card shape:
+        # the harness in ``agent``, the frozen session id in ``task`` —
+        # no pane exists yet, and the folder is re-derived at replay.
+        return {
+            "gate_id": gate.gate_id,
+            "tool": gate.tool,
+            "agent": gate.action.agent_kind,
+            "title": gate.action.title or "",
             "task": gate.action.task,
             "cwd": gate.action.cwd,
             "timeout_ms": gate.action.timeout_ms,
@@ -794,8 +810,27 @@ class SessionNewRequest(BaseModel):
     request_id: Optional[str] = Field(default=None, max_length=128)
 
 
+class SessionResumeRequest(BaseModel):
+    """PWA session resume (parity-f7c S3, doc 03 §3): the client names a
+    harness whose resume form is VERIFIED (``RESUME_COMMANDS``) and one
+    of its own session ids. The folder is NEVER client input — it is
+    read from the transcript store and must fall inside the operator's
+    roots, or the resume is refused rather than guessed.
+    ``request_id`` is the same S2 idempotency key as /session/new."""
+
+    harness: str = Field(min_length=1, max_length=64)
+    session_id: str = Field(min_length=1, max_length=256)
+    request_id: Optional[str] = Field(default=None, max_length=128)
+
+
 #: Live-pane cwds the "New" sheet's folder picker offers, at most.
 SESSION_ROOTS_RECENTS_CAP = 8
+
+#: Conversations /sessions/recent serves per harness, at most (S3).
+SESSIONS_RECENT_CAP = 10
+
+#: Masked title budget for a /sessions/recent row (mask BEFORE clip).
+SESSIONS_TITLE_CHARS = 80
 
 
 @lru_cache(maxsize=1)
@@ -2198,6 +2233,8 @@ def create_app(
         """
         if gate.tool == CREATE_SESSION:
             return _replay_create_and_report(gate, speak)
+        if gate.tool == RESUME_SESSION:
+            return _replay_resume_and_report(gate, speak)
         if gate.tool == STOP_AGENT:
             return _replay_stop_and_report(gate, speak)
         target = tools.resolve_target(gate.action.pane_id)
@@ -2278,6 +2315,47 @@ def create_app(
             "Report the outcome to the user in one or two short spoken sentences. "
             "The tool result names the created tab/pane ids and whether the task "
             "was delivered."
+        )
+        try:
+            result = get_llm().ask(
+                report_prompt,
+                session_id=gate.session_id,
+                pane_id=created.pane_id if created is not None else None,
+            )
+        except BrainLLMError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        response = shape_ask_response(result, speak=speak)
+        if created is not None:
+            response["switch_pane"] = {
+                "pane_id": created.pane_id,
+                "agent": created.agent,
+                "title": created.title or "",
+            }
+        return response
+
+    def _replay_resume_and_report(gate: ApprovalGate, speak: bool = True) -> dict:
+        """Approve execution for resume gates (parity-f7c S3): dispatch
+        the frozen (harness, session_id) — the pane's cwd is re-derived
+        from the transcript store at dispatch, never trusted from the
+        frozen gate — then report and switch the call to the reopened
+        panel, exactly like a create gate."""
+        tool_result = tools.dispatch(
+            RESUME_SESSION,
+            {
+                "harness": gate.action.agent_kind or "",
+                "session_id": gate.action.task or "",
+            },
+        )
+        created = getattr(tools, "last_created", None)
+        created = created() if callable(created) else None
+        if created is not None:
+            call_context_store.select(created.pane_id)
+        report_prompt = (
+            f"The approved session resume ran: harness "
+            f"{gate.action.agent_kind or 'unknown'}, session id "
+            f"{gate.action.task or 'unknown'}. Tool result:\n\n{tool_result}\n\n"
+            "Report the outcome to the user in one or two short spoken sentences. "
+            "The tool result names the reopened tab/pane ids and the folder."
         )
         try:
             result = get_llm().ask(
@@ -3608,6 +3686,108 @@ def create_app(
         if request_id is None:
             return do_launch()
         return launch_receipts.launch_once(request_id, do_launch)
+
+    @app.get("/sessions/recent")
+    def sessions_recent(harness: Optional[str] = None) -> dict:
+        """The "Retomar" picker's data (parity-f7c S3, doc 03 §3): the
+        resume-ENABLED harness list (evidence-backed argv forms only —
+        criterion 3: don't offer what you can't resume) plus that
+        harness's recent conversations from the EXISTING transcript
+        readers. Every row carries a cwd the store itself recorded AND
+        that resolves inside a configured root (a conversation you
+        cannot reopen in an allowed folder is not offered), the title
+        masked then clipped, newest first, capped. Unknown, disabled or
+        unconfigured all degrade to an EMPTY list — a read never
+        errors."""
+        name = (harness or "").strip().lower()
+        roots = operator_config.roots()
+        sessions: list = []
+        if name and name in RESUME_COMMANDS and roots:
+            for row in recent_sessions(name, cap=SESSIONS_RECENT_CAP):
+                resolved = _resolved_within_roots(str(row.get("cwd") or ""), roots)
+                if resolved is None:
+                    continue
+                sessions.append({
+                    "session_id": row.get("session_id") or "",
+                    # Mask BEFORE clipping (S14): a secret spanning the
+                    # cut must not leak its surviving half.
+                    "title": mask_text(str(row.get("title") or ""))[:SESSIONS_TITLE_CHARS],
+                    "cwd": resolved,
+                    "last_ts": row.get("last_ts"),
+                })
+                if len(sessions) >= SESSIONS_RECENT_CAP:
+                    break
+        return {"harnesses": sorted(RESUME_COMMANDS), "sessions": sessions}
+
+    @app.post("/session/resume")
+    def session_resume(request: Request, body: SessionResumeRequest) -> dict:
+        """Reopens one past conversation in its own folder (S3, doc 03 §3).
+
+        The PWA names a harness from the VERIFIED resume table and one
+        of its own session ids; the server alone resolves the folder —
+        ``resume_target`` reads it from the transcript store, and a cwd
+        the store cannot name (or one outside the operator's roots) is
+        a 422, never a guess. The launch itself rides the SAME seams
+        ``create_session`` rides (``BrainTools.resume_session``:
+        ``create_tab`` + the typed verified argv), under the SAME
+        receipt idempotency as /session/new. Audited as
+        ``session.resume`` with device attribution; the detail carries
+        the harness, the session id and the outcome — ids, never
+        conversation content."""
+        def refuse(reason: str) -> None:
+            audit_log.record({
+                "action": "session.resume",
+                "device": audit_device(request),
+                "detail": {"outcome": reason},
+            })
+            raise HTTPException(status_code=422, detail=reason)
+
+        roots = operator_config.roots()
+        if not roots:
+            refuse("roots_unconfigured")
+        harness = (body.harness or "").strip().lower()
+        session_id = (body.session_id or "").strip()
+        if harness not in launchable_harnesses():
+            refuse("unknown_harness")
+        if harness not in RESUME_COMMANDS:
+            refuse("resume_not_enabled")
+        target = resume_target(harness, session_id)
+        if target is None:
+            refuse("unknown_session")
+        raw_cwd = str(target.get("cwd") or "").strip()
+        resolved = _resolved_within_roots(raw_cwd, roots) if raw_cwd else None
+        if resolved is None:
+            # A folder the store does not name, or one outside the
+            # operator's roots: both refused — the session's folder is
+            # never guessed and never client input.
+            refuse("cwd_unknown" if not raw_cwd else "root_not_allowed")
+        title = str(target.get("title") or "")
+        request_id = (body.request_id or "").strip() or None
+
+        def do_resume() -> dict:
+            result = tools.resume_session(harness, session_id, resolved, title)
+            created = getattr(tools, "last_created", None)
+            created = created() if callable(created) else None
+            pane_id = created.pane_id if created is not None else None
+            outcome = "error" if result.startswith("error") else "executed"
+            audit_log.record({
+                "action": "session.resume",
+                "pane_id": pane_id,
+                "device": audit_device(request),
+                "detail": {
+                    "outcome": outcome,
+                    "harness": harness,
+                    "session_id": session_id,
+                    "pane_id": pane_id,
+                },
+            })
+            if outcome == "error":
+                raise HTTPException(status_code=502, detail=result)
+            return {"ok": True, "result": result, "pane_id": pane_id}
+
+        if request_id is None:
+            return do_resume()
+        return launch_receipts.launch_once(request_id, do_resume)
 
     @app.post("/operator/preset")
     def operator_preset(request: Request, body: OperatorPresetRequest) -> dict:

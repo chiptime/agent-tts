@@ -233,6 +233,8 @@ class TestRoutingPolicy:
             "stop_agent",
             # S5/S7: voice switching of the call's target pane.
             "switch_session",
+            # parity-f7c S3: the gated resume of a past conversation.
+            "resume_session",
         }
         system = first["messages"][0]["content"]
         assert system.startswith(SYSTEM_PROMPT)

@@ -219,6 +219,13 @@
     "newsession.err_harness": "Ese agente no está en la lista del servidor",
     "newsession.err_cwd": "Esa carpeta no está dentro de las raíces permitidas",
     "newsession.roots_empty": "Sin raíces configuradas: crea ~/.config/herdr-brain/roots.toml para habilitar los lanzamientos",
+    "newsession.resume": "Retomar una sesión",
+    "newsession.resume_pick": "— retomar con… —",
+    "newsession.resume_empty": "Sin sesiones recientes para retomar",
+    "newsession.resumed": "Sesión reanudada",
+    "newsession.resume_failed": "No se pudo reanudar la sesión — prueba otra vez",
+    "newsession.err_resume_harness": "Ese agente no tiene forma de retomar verificada",
+    "newsession.err_resume_cwd": "Esa sesión no tiene una carpeta conocida para reabrirla",
 
     /* ---- pending sheet ---- */
     "pendsheet.aria": "Pendientes",

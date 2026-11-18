@@ -41,16 +41,23 @@ from tests.conftest import SETTINGS_KWARGS
 
 
 class SessionTools:
-    """BrainTools double: ``create_session`` recorded, herd scripted.
+    """BrainTools double: ``create_session``/``resume_session`` recorded,
+    herd scripted.
 
     ``last_created`` mirrors the real property so the route's pane_id
-    extraction runs the same code path production does."""
+    extraction runs the same code path production does. ``dispatch``
+    mirrors the replay seam the approve path rides."""
 
     def __init__(self, cfg=None, herd_entries=()):
         self.calls: list[dict] = []
+        self.resume_calls: list[dict] = []
+        self.dispatches: list[dict] = []
         self.herd_entries = list(herd_entries)
         self.create_result = (
             "Panel creado: tab=t-1 pane=w3:p1 agente=x (claude). Tarea entregada."
+        )
+        self.resume_result = (
+            "Panel reanudado: tab=t-1 pane=w3:p1 claude sesión abc en /repo."
         )
         # S2 concurrency probe: keep create_session in flight long enough
         # for two overlapping requests to actually overlap.
@@ -69,6 +76,28 @@ class SessionTools:
         if self.slow_s:
             time.sleep(self.slow_s)
         return self.create_result
+
+    def resume_session(self, harness, session_id, cwd="", title=""):
+        self.resume_calls.append(
+            {"harness": harness, "session_id": session_id, "cwd": cwd, "title": title}
+        )
+        return self.resume_result
+
+    def dispatch(self, name, arguments, target=None, **_kwargs):
+        self.dispatches.append({"name": name, "arguments": dict(arguments), "target": target})
+        if name == "create_session":
+            return self.create_session(
+                str(arguments.get("agent_kind", "")),
+                str(arguments.get("title", "")),
+                str(arguments.get("task", "")),
+                str(arguments.get("cwd", "")),
+            )
+        if name == "resume_session":
+            return self.resume_session(
+                str(arguments.get("harness", "")),
+                str(arguments.get("session_id", "")),
+            )
+        return f"error: unknown tool {name}"
 
     def last_created(self):
         """A METHOD, like the real BrainTools surface the route reads."""
@@ -590,7 +619,7 @@ class TestLaunchReceiptStore:
         (tmp_path / LAUNCH_RECEIPTS_FILENAME).write_text("{ not json")
         store = LaunchReceiptStore(tmp_path)
         launches: list = []
-        response = {"ok": True, "pane_id": "w3:p1"}
+        response = {"ok": True, "result": "Panel creado", "pane_id": "w3:p1"}
         first = store.launch_once("rq-heal", self._launch_recorder(launches, response))
         replayed = store.launch_once("rq-heal", self._launch_recorder(launches, response))
         assert first == replayed == response
@@ -598,3 +627,646 @@ class TestLaunchReceiptStore:
         # The next successful save rewrote a VALID file over the junk.
         raw = json.loads((tmp_path / LAUNCH_RECEIPTS_FILENAME).read_text())
         assert "rq-heal" in raw["receipts"]
+
+
+# ── S3: GET /sessions/recent — resumable conversations, masked ───────
+
+
+def seed_recent_rows(cwd: str, count: int = 12, secret: str = "SECRETOKEN") -> list:
+    # A real token shape so mask_text actually detects it (sk-/ghp-
+    # style with a long tail — see secrets_mask's patterns).
+    return [
+        {
+            "session_id": f"ses_x{i:02d}",
+            "cwd": cwd,
+            "title": f"Fix the API sk-{secret.lower()}{i:02d}abcdefghij",
+            "last_ts": "2026-11-18T10:00:00Z",
+        }
+        for i in range(count)
+    ]
+
+
+class TestSessionsRecentRoute:
+    def test_lists_masked_and_capped_rows_for_an_enabled_harness(self, tmp_path, monkeypatch):
+        root = (tmp_path / "work").resolve()
+        rows = seed_recent_rows(str(root))
+        monkeypatch.setattr(server_module, "recent_sessions", lambda h, cap=10: rows)
+        client, _ = make_client(tmp_path, monkeypatch)
+        resp = client.get("/sessions/recent", params={"harness": "opencode"})
+        assert resp.status_code == 200
+        body = resp.json()
+        # Only the evidence-backed harnesses are offered resume.
+        assert body["harnesses"] == ["claude", "codex", "opencode", "pi"]
+        assert len(body["sessions"]) == 10  # capped at 10 of 12
+        first = body["sessions"][0]
+        assert first["session_id"] == "ses_x00"
+        assert first["cwd"] == str(root)
+        assert first["last_ts"] == "2026-11-18T10:00:00Z"
+        # Titles leave masked — a secret in the label never survives.
+        assert "secretoken" not in json.dumps(body).lower()
+
+    def test_out_of_root_cwds_are_not_offered(self, tmp_path, monkeypatch):
+        root = tmp_path / "work"
+        rows = [
+            {"session_id": "in", "cwd": str(root), "title": "t", "last_ts": None},
+            {"session_id": "out", "cwd": str(tmp_path / "elsewhere"), "title": "t", "last_ts": None},
+        ]
+        monkeypatch.setattr(server_module, "recent_sessions", lambda h, cap=10: rows)
+        client, _ = make_client(tmp_path, monkeypatch)
+        sessions = client.get("/sessions/recent", params={"harness": "claude"}).json()["sessions"]
+        assert [row["session_id"] for row in sessions] == ["in"]
+
+    def test_unknown_harness_lists_empty_not_an_error(self, tmp_path, monkeypatch):
+        seen: list = []
+
+        def boom(harness, cap=10):
+            seen.append(harness)
+            raise AssertionError("unknown harness must not touch the store")
+
+        monkeypatch.setattr(server_module, "recent_sessions", boom)
+        client, _ = make_client(tmp_path, monkeypatch)
+        resp = client.get("/sessions/recent", params={"harness": "not-a-harness"})
+        assert resp.status_code == 200
+        assert resp.json()["sessions"] == []
+        assert seen == []
+
+    def test_disabled_harness_lists_empty(self, tmp_path, monkeypatch):
+        # "grok" IS a registry harness but has NO verified resume form:
+        # not offered, and its store is never read.
+        seen: list = []
+
+        def boom(harness, cap=10):
+            seen.append(harness)
+            raise AssertionError("a disabled harness must not touch the store")
+
+        monkeypatch.setattr(server_module, "recent_sessions", boom)
+        client, _ = make_client(tmp_path, monkeypatch)
+        resp = client.get("/sessions/recent", params={"harness": "grok"})
+        assert resp.status_code == 200
+        assert resp.json()["sessions"] == []
+        assert seen == []
+
+    def test_unconfigured_roots_degrade_to_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            server_module, "recent_sessions",
+            lambda h, cap=10: seed_recent_rows("/anywhere", count=2),
+        )
+        client, _ = make_client(tmp_path, monkeypatch, with_roots=False)
+        body = client.get("/sessions/recent", params={"harness": "claude"}).json()
+        assert body["sessions"] == []
+        # The enabled harness list stays published (the picker needs it).
+        assert body["harnesses"] == ["claude", "codex", "opencode", "pi"]
+
+    def test_recent_route_is_a_read(self):
+        assert access.classify("GET", "/sessions/recent") == "read"
+
+
+# ── S3: POST /session/resume — the 422 fail-closed matrix ────────────
+
+
+class TestSessionResumeRefusals:
+    def test_unknown_harness_resumes_nothing(self, tmp_path, monkeypatch):
+        root = tmp_path / "work"
+        client, tools = make_client(tmp_path, monkeypatch)
+        resp = client.post("/session/resume", json={
+            "harness": "definitely-not-a-harness", "session_id": "abc",
+        })
+        assert resp.status_code == 422
+        assert resp.json() == {"detail": "unknown_harness"}
+        assert tools.resume_calls == []
+
+    def test_registry_harness_without_verified_resume_is_refused(self, tmp_path, monkeypatch):
+        # "grok" is launchable but has no verified resume form.
+        root = tmp_path / "work"
+        client, tools = make_client(tmp_path, monkeypatch)
+        resp = client.post("/session/resume", json={
+            "harness": "grok", "session_id": "abc",
+        })
+        assert resp.status_code == 422
+        assert resp.json() == {"detail": "resume_not_enabled"}
+        assert tools.resume_calls == []
+
+    def test_unknown_session_is_refused(self, tmp_path, monkeypatch):
+        root = tmp_path / "work"
+        monkeypatch.setattr(server_module, "resume_target", lambda h, s: None)
+        client, tools = make_client(tmp_path, monkeypatch)
+        resp = client.post("/session/resume", json={
+            "harness": "claude", "session_id": "missing",
+        })
+        assert resp.status_code == 422
+        assert resp.json() == {"detail": "unknown_session"}
+        assert tools.resume_calls == []
+
+    def test_store_without_a_cwd_is_cwd_unknown_never_a_guess(self, tmp_path, monkeypatch):
+        root = tmp_path / "work"
+        monkeypatch.setattr(
+            server_module, "resume_target",
+            lambda h, s: {"cwd": None, "title": "T"},
+        )
+        client, tools = make_client(tmp_path, monkeypatch)
+        resp = client.post("/session/resume", json={
+            "harness": "claude", "session_id": "abc",
+        })
+        assert resp.status_code == 422
+        assert resp.json() == {"detail": "cwd_unknown"}
+        assert tools.resume_calls == []
+
+    def test_session_cwd_outside_roots_is_refused(self, tmp_path, monkeypatch):
+        root = tmp_path / "work"
+        monkeypatch.setattr(
+            server_module, "resume_target",
+            lambda h, s: {"cwd": str(tmp_path / "elsewhere"), "title": "T"},
+        )
+        client, tools = make_client(tmp_path, monkeypatch)
+        resp = client.post("/session/resume", json={
+            "harness": "claude", "session_id": "abc",
+        })
+        assert resp.status_code == 422
+        assert resp.json() == {"detail": "root_not_allowed"}
+        assert tools.resume_calls == []
+
+    def test_unconfigured_roots_refuse_every_resume(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            server_module, "resume_target",
+            lambda h, s: {"cwd": "/repo", "title": "T"},
+        )
+        client, tools = make_client(tmp_path, monkeypatch, with_roots=False)
+        resp = client.post("/session/resume", json={
+            "harness": "claude", "session_id": "abc",
+        })
+        assert resp.status_code == 422
+        assert resp.json() == {"detail": "roots_unconfigured"}
+        assert tools.resume_calls == []
+
+    def test_refusals_audit_the_outcome_only(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(server_module, "resume_target", lambda h, s: None)
+        client, _ = make_client(tmp_path, monkeypatch)
+        client.post("/session/resume", json={"harness": "claude", "session_id": "x"})
+        lines = [l for l in audit_lines(tmp_path) if l["action"] == "session.resume"]
+        assert len(lines) == 1
+        assert lines[0]["detail"] == {"outcome": "unknown_session"}
+
+    def test_resume_route_is_a_classified_write(self):
+        # A resume launches a real agent in a real tab: it must sit
+        # behind the SAME device gate as /session/new.
+        assert access.classify("POST", "/session/resume") == "write"
+
+
+# ── S3: POST /session/resume — the success path ──────────────────────
+
+
+class TestSessionResumeSuccess:
+    def _seed(self, tmp_path, monkeypatch, cwd=None, title="Fix the login SECRETOKEN"):
+        root = (tmp_path / "work").resolve()
+        target_cwd = cwd if cwd is not None else str(root)
+        monkeypatch.setattr(
+            server_module, "resume_target",
+            lambda h, s: {"cwd": target_cwd, "title": title},
+        )
+        return root
+
+    def test_resumes_through_the_tools_seam_with_exact_args(self, tmp_path, monkeypatch):
+        root = self._seed(tmp_path, monkeypatch)
+        client, tools = make_client(tmp_path, monkeypatch)
+        resp = client.post("/session/resume", json={
+            "harness": "claude", "session_id": "abc-123",
+        })
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["pane_id"] == "w3:p1"
+        assert body["result"] == tools.resume_result
+        assert tools.resume_calls == [{
+            "harness": "claude",
+            "session_id": "abc-123",
+            "cwd": str(root),
+            "title": "Fix the login SECRETOKEN",
+        }]
+        assert tools.calls == []  # never the create path
+
+    def test_harness_is_normalized_and_id_stripped(self, tmp_path, monkeypatch):
+        self._seed(tmp_path, monkeypatch)
+        client, tools = make_client(tmp_path, monkeypatch)
+        resp = client.post("/session/resume", json={
+            "harness": "  Claude ", "session_id": "  abc-123  ",
+        })
+        assert resp.status_code == 200
+        assert tools.resume_calls[0]["harness"] == "claude"
+        assert tools.resume_calls[0]["session_id"] == "abc-123"
+
+    def test_audit_line_carries_device_and_no_content(self, tmp_path, monkeypatch):
+        self._seed(tmp_path, monkeypatch)
+        client, _ = make_client(tmp_path, monkeypatch)
+        token = pair_device(client, tmp_path / "state")
+        resp = client.post("/session/resume", json={
+            "harness": "claude", "session_id": "abc-123",
+        }, headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 200
+        lines = [l for l in audit_lines(tmp_path) if l["action"] == "session.resume"]
+        assert len(lines) == 1
+        line = lines[0]
+        assert line["device"] == "phone"
+        assert line["detail"]["outcome"] == "executed"
+        assert line["detail"]["harness"] == "claude"
+        assert line["detail"]["session_id"] == "abc-123"
+        assert line["detail"]["pane_id"] == "w3:p1"
+        # Content discipline: the session title never reaches the line.
+        assert "SECRETOKEN" not in json.dumps(line)
+        assert "Fix the login" not in json.dumps(line)
+
+    def test_a_resume_error_string_maps_to_a_502(self, tmp_path, monkeypatch):
+        self._seed(tmp_path, monkeypatch)
+        tools = SessionTools()
+        tools.resume_result = "error typing the resume command for claude: run boom"
+        client, _ = make_client(tmp_path, monkeypatch, tools=tools)
+        resp = client.post("/session/resume", json={
+            "harness": "claude", "session_id": "abc",
+        })
+        assert resp.status_code == 502
+        lines = [l for l in audit_lines(tmp_path) if l["action"] == "session.resume"]
+        assert lines[-1]["detail"]["outcome"] == "error"
+
+    def test_same_request_id_replays_one_resume(self, tmp_path, monkeypatch):
+        self._seed(tmp_path, monkeypatch)
+        client, tools = make_client(tmp_path, monkeypatch)
+        body = {"harness": "claude", "session_id": "abc", "request_id": "rq-r"}
+        first = client.post("/session/resume", json=body)
+        second = client.post("/session/resume", json=body)
+        assert first.status_code == second.status_code == 200
+        assert first.json() == second.json()
+        assert len(tools.resume_calls) == 1
+        # One launch, one audit line — the replay writes nothing.
+        lines = [l for l in audit_lines(tmp_path) if l["action"] == "session.resume"]
+        assert len(lines) == 1
+
+    def test_refusal_leaves_no_receipt_and_the_id_retries_clean(self, tmp_path, monkeypatch):
+        root = self._seed(tmp_path, monkeypatch)
+        client, tools = make_client(tmp_path, monkeypatch)
+        refused = client.post("/session/resume", json={
+            "harness": "grok", "session_id": "abc", "request_id": "rq-rv",
+        })
+        assert refused.status_code == 422
+        assert not receipts_path(tmp_path).exists()
+        ok = client.post("/session/resume", json={
+            "harness": "claude", "session_id": "abc", "request_id": "rq-rv",
+        })
+        assert ok.status_code == 200
+        assert len(tools.resume_calls) == 1
+
+
+# ── S3: the voice gate — resume_session mirrors create_session ───────
+
+
+class TestResumeVoiceGate:
+    @staticmethod
+    def _make_llm(settings, stub, responses):
+        from tests.test_llm import make_brain
+
+        return make_brain(settings, stub, responses=responses)
+
+    def test_resume_call_freezes_a_gate_and_launches_nothing(
+        self, settings, make_stub
+    ):
+        from tests.test_llm import text_response, tool_call_response
+        from tests.test_tools_create_session import CreateStub
+
+        stub = CreateStub(agents=make_stub()._agents)
+        llm, _ = self._make_llm(settings, stub, responses=[
+            tool_call_response(
+                "r1", "resume_session",
+                {"harness": "claude", "session_id": "abc-123"},
+            ),
+            text_response("Voy a retomar esa conversación."),
+        ])
+        result = llm.ask("retoma la conversación de claude")
+        gate = llm._approval_store.current(None)
+        assert gate is not None and gate.state == "proposed"
+        assert gate.tool == "resume_session"
+        assert gate.action.agent_kind == "claude"
+        assert gate.action.task == "abc-123"
+        assert result["approval"] is not None
+        # Nothing launched: the gate IS the freeze.
+        assert stub.tab_calls == [] and stub.pane_run_calls == []
+
+    def test_the_tool_message_says_pending_not_resumed(self, settings, make_stub):
+        from tests.test_llm import text_response, tool_call_response
+        from tests.test_tools_create_session import CreateStub
+
+        stub = CreateStub(agents=make_stub()._agents)
+        llm, _ = self._make_llm(settings, stub, responses=[
+            tool_call_response(
+                "r1", "resume_session", {"harness": "pi", "session_id": "01a1"},
+            ),
+            text_response("Pendiente tu aprobación."),
+        ])
+        llm.ask("retoma la sesión de pi")
+        tool_messages = [
+            m for m in llm._client.create_kwargs[-1]["messages"]
+            if m.get("role") == "tool"
+        ]
+        content = tool_messages[0]["content"]
+        assert "pending user approval" in content
+        assert "NOT" in content and "resumed" in content
+
+    def test_unverified_harness_opens_no_gate(self, settings, make_stub):
+        from tests.test_llm import text_response, tool_call_response
+        from tests.test_tools_create_session import CreateStub
+
+        stub = CreateStub(agents=make_stub()._agents)
+        llm, _ = self._make_llm(settings, stub, responses=[
+            tool_call_response(
+                "r1", "resume_session", {"harness": "grok", "session_id": "abc"},
+            ),
+            text_response("Ese no se puede retomar."),
+        ])
+        result = llm.ask("retoma la de grok")
+        assert result["approval"] is None
+        tool_messages = [
+            m for m in llm._client.create_kwargs[-1]["messages"]
+            if m.get("role") == "tool"
+        ]
+        assert tool_messages[0]["content"].startswith(
+            "error: resume is not verified for grok"
+        )
+
+    def test_no_store_blocks_fail_safe(self, settings, make_stub):
+        from herdr_brain.llm import BrainLLM
+        from herdr_brain.tools import BrainTools
+        from tests.test_llm import ScriptedLLM, text_response, tool_call_response
+        from tests.test_tools_create_session import CreateStub
+
+        stub = CreateStub(agents=make_stub()._agents)
+        tools = BrainTools(settings, herdr=stub)
+        llm = BrainLLM(
+            settings,
+            tools,
+            client=ScriptedLLM([
+                tool_call_response(
+                    "r1", "resume_session", {"harness": "claude", "session_id": "x"},
+                ),
+                text_response("No pude retomarla."),
+            ]),
+        )
+        result = llm.ask("retoma")
+        assert stub.tab_calls == []
+        assert result["approval"] is None
+        tool_messages = [
+            m for m in llm._client.create_kwargs[-1]["messages"]
+            if m.get("role") == "tool"
+        ]
+        assert tool_messages[0]["content"].startswith("error: resume_session is blocked")
+
+    def test_missing_args_mirror_the_tool_error(self, settings, make_stub):
+        from tests.test_llm import text_response, tool_call_response
+        from tests.test_tools_create_session import CreateStub
+
+        stub = CreateStub(agents=make_stub()._agents)
+        llm, _ = self._make_llm(settings, stub, responses=[
+            tool_call_response("r1", "resume_session", {"harness": "claude"}),
+            text_response("Falta la sesión."),
+        ])
+        result = llm.ask("retoma")
+        assert result["approval"] is None
+        tool_messages = [
+            m for m in llm._client.create_kwargs[-1]["messages"]
+            if m.get("role") == "tool"
+        ]
+        assert tool_messages[0]["content"] == "error: harness and session_id are required"
+
+
+# ── S3: the approve replay dispatches the frozen resume ───────────────
+
+
+class TestResumeServerReplay:
+    def test_approve_dispatches_resume_and_switches_the_call(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        from tests.test_server import FakeLLM, FakeTTS
+
+        tools = SessionTools()
+        monkeypatch.setattr(server_module, "BrainTools", lambda cfg: tools)
+        cfg_dir = tmp_path / "operator"
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        settings = Settings(**{
+            **SETTINGS_KWARGS,
+            "state_dir": str(tmp_path / "state"),
+            "audio_dir": str(tmp_path / "audio"),
+        })
+        app = create_app(
+            settings=settings,
+            operator_config=OperatorConfig(config_dir=cfg_dir),
+            llm_factory=lambda c, t: FakeLLM(result={
+                "answer": "Conversación reanudada.",
+                "pane_id": None, "agent": None, "session_id": "s1",
+            }),
+            tts_renderer=FakeTTS(),
+        )
+        gate = app.state.approval_store.propose(
+            "s1", text="", agent="claude", tool="resume_session",
+            agent_kind="claude", title="", task="abc-123",
+        )
+        resp = TestClient(app).post(f"/approval/{gate.gate_id}/approve")
+        assert resp.status_code == 200
+        assert len(tools.dispatches) == 1
+        sent = tools.dispatches[0]
+        assert sent["name"] == "resume_session"
+        assert sent["arguments"] == {"harness": "claude", "session_id": "abc-123"}
+        assert sent["target"] is None  # no pane re-resolution on resume gates
+        assert tools.resume_calls == [{
+            "harness": "claude", "session_id": "abc-123", "cwd": "", "title": "",
+        }]
+        body = resp.json()
+        assert body["answer"] == "Conversación reanudada."
+        # The reopened panel becomes the call's target, like a create.
+        assert body["switch_pane"]["pane_id"] == "w3:p1"
+        assert app.state.approval_store.get(gate.gate_id).state == "approved"
+
+    def test_resume_gate_payload_rides_the_create_card_shape(self):
+        from herdr_brain.approval import ApprovalGateStore
+        from herdr_brain.server import approval_payload
+
+        store = ApprovalGateStore()
+        gate = store.propose(
+            "s1", text="", agent="claude", tool="resume_session",
+            agent_kind="claude", title="", task="abc-123",
+        )
+        payload = approval_payload(gate, 60, now=gate.created_at)
+        assert payload == {
+            "gate_id": gate.gate_id,
+            "tool": "resume_session",
+            "agent": "claude",
+            "title": "",
+            "task": "abc-123",
+            "cwd": "",
+            "timeout_ms": None,
+            "expires_in_s": 60,
+        }
+        assert "pane_id" not in payload and "text" not in payload
+
+
+# ── S3: BrainTools.resume_session — the launch seam itself ───────────
+
+
+class TestToolsResumeSession:
+    @staticmethod
+    def _tools(settings, stub):
+        from herdr_brain.tools import BrainTools
+
+        return BrainTools(settings, herdr=stub)
+
+    def test_claude_resume_creates_one_tab_and_types_the_verified_argv(
+        self, settings, make_stub
+    ):
+        from tests.test_tools_create_session import NEW_PANE, NEW_TAB, CreateStub
+
+        stub = CreateStub(agents=make_stub()._agents)
+        tools = self._tools(settings, stub)
+        result = tools.resume_session("claude", "abc-123", cwd="/repo", title="Fix login")
+        assert result.startswith("Panel reanudado")
+        assert f"tab={NEW_TAB}" in result and f"pane={NEW_PANE}" in result
+        # ONE tab, scoped to the session's folder.
+        assert stub.tab_calls == [{"label": "Fix login", "cwd": "/repo"}]
+        # The VERIFIED argv, typed verbatim into the pane's shell.
+        assert stub.pane_run_calls == [
+            {"pane_id": NEW_PANE, "command": "claude --resume abc-123"}
+        ]
+        assert stub.start_calls == []
+        created = tools.last_created()
+        assert created.pane_id == NEW_PANE
+        assert created.session_value == "abc-123"
+
+    def test_opencode_resume_types_oa_with_the_session_flag(
+        self, settings, make_stub
+    ):
+        from tests.test_tools_create_session import NEW_PANE, CreateStub
+
+        stub = CreateStub(agents=make_stub()._agents)
+        tools = self._tools(settings, stub)
+        result = tools.resume_session("opencode", "ses_abc123XYZ", cwd="/repo")
+        assert result.startswith("Panel reanudado")
+        assert stub.pane_run_calls == [
+            {"pane_id": NEW_PANE, "command": "oa -s ses_abc123XYZ"}
+        ]
+        # The same readiness discipline as a created opencode panel.
+        assert stub.agent_wait_calls and stub.agent_wait_calls[0]["pane_id"] == NEW_PANE
+
+    def test_pi_and_codex_argv_come_from_the_table(self, settings, make_stub):
+        from tests.test_tools_create_session import CreateStub
+
+        stub = CreateStub(agents=make_stub()._agents)
+        tools = self._tools(settings, stub)
+        tools.resume_session("pi", "01a1135f-d580-73a9-9f65-dfac5f4c88fd", cwd="/repo")
+        tools.resume_session(
+            "codex", "0b9edffe-2e2e-4ef8-a56f-f5c21621a972", cwd="/repo"
+        )
+        commands = [call["command"] for call in stub.pane_run_calls]
+        assert commands == [
+            "pi --session 01a1135f-d580-73a9-9f65-dfac5f4c88fd",
+            "codex resume 0b9edffe-2e2e-4ef8-a56f-f5c21621a972",
+        ]
+
+    def test_a_sid_with_shell_metacharacters_is_quoted_not_interpreted(
+        self, settings, make_stub
+    ):
+        from tests.test_tools_create_session import CreateStub
+
+        stub = CreateStub(agents=make_stub()._agents)
+        tools = self._tools(settings, stub)
+        result = tools.resume_session("claude", "abc; rm -rf /", cwd="/repo")
+        # Quoted for the shell: the typed line can never run a second command.
+        assert stub.pane_run_calls == [
+            {"pane_id": stub.tab_calls[0] and "w2:p3", "command": "claude --resume 'abc; rm -rf /'"}
+        ]
+        assert result.startswith("Panel reanudado")
+
+    def test_cwd_derived_from_the_store_when_not_given(self, settings, make_stub, monkeypatch):
+        import herdr_brain.tools as tools_module
+        from tests.test_tools_create_session import CreateStub
+
+        stub = CreateStub(agents=make_stub()._agents)
+        monkeypatch.setattr(
+            tools_module, "resume_target",
+            lambda h, s: {"cwd": "/from/store", "title": "Store title"},
+        )
+        tools = self._tools(settings, stub)
+        result = tools.resume_session("claude", "abc")
+        assert result.startswith("Panel reanudado")
+        assert stub.tab_calls == [{"label": "Store title", "cwd": "/from/store"}]
+
+    def test_unknown_cwd_refuses_before_any_tab_exists(self, settings, make_stub, monkeypatch):
+        import herdr_brain.tools as tools_module
+        from tests.test_tools_create_session import CreateStub
+
+        stub = CreateStub(agents=make_stub()._agents)
+        monkeypatch.setattr(
+            tools_module, "resume_target", lambda h, s: {"cwd": None, "title": "T"},
+        )
+        tools = self._tools(settings, stub)
+        result = tools.resume_session("claude", "abc")
+        assert result.startswith("error")
+        assert "cwd_unknown" in result
+        assert stub.tab_calls == [] and stub.pane_run_calls == []
+
+    def test_unverified_harness_never_opens_a_tab(self, settings, make_stub):
+        from tests.test_tools_create_session import CreateStub
+
+        stub = CreateStub(agents=make_stub()._agents)
+        tools = self._tools(settings, stub)
+        result = tools.resume_session("cursor", "abc", cwd="/repo")
+        assert result.startswith("error: resume is not verified for cursor")
+        assert stub.tab_calls == []
+
+    def test_a_failed_command_type_is_an_honest_error_never_a_bare_shell(
+        self, settings, make_stub
+    ):
+        from tests.test_tools_create_session import NEW_PANE, NEW_TAB, CreateStub
+
+        stub = CreateStub(fail_run=True, agents=make_stub()._agents)
+        tools = self._tools(settings, stub)
+        result = tools.resume_session("claude", "abc", cwd="/repo")
+        assert result.startswith("error typing the resume command")
+        # The ids ride the error: the tab exists, the agent does not.
+        assert NEW_TAB in result and NEW_PANE in result
+        assert stub.tab_calls  # the tab WAS created
+        assert "run boom" in result
+
+    def test_the_tab_label_is_masked_and_the_title_falls_back(
+        self, settings, make_stub
+    ):
+        from tests.test_tools_create_session import CreateStub
+
+        stub = CreateStub(agents=make_stub()._agents)
+        tools = self._tools(settings, stub)
+        tools.resume_session(
+            "claude", "abc", cwd="/repo", title="con sk-1234567890abcdefghij0 dentro"
+        )
+        label = stub.tab_calls[0]["label"]
+        assert "sk-1234567890abcdefghij0" not in label
+        tools.resume_session("claude", "def", cwd="/repo")
+        assert stub.tab_calls[1]["label"]  # non-empty fallback label
+
+
+# ── S3: the verified resume table is evidence-annotated ──────────────
+
+
+class TestResumeTable:
+    def test_every_entry_carries_an_evidence_string(self):
+        from herdr_brain.tools import RESUME_COMMANDS
+
+        assert set(RESUME_COMMANDS) == {"claude", "codex", "opencode", "pi"}
+        for harness, entry in RESUME_COMMANDS.items():
+            argv, evidence = entry
+            assert "{" in argv and "}" in argv, "argv is a template"
+            assert harness in argv.split()[0] or argv.startswith(harness) or argv.startswith("oa"), argv
+            assert isinstance(evidence, str) and "--help" in evidence, (
+                "evidence must name its source"
+            )
+
+    def test_the_schema_offers_resume_session_with_both_args(self):
+        names = {tool["function"]["name"] for tool in TOOLS_SCHEMA}
+        assert "resume_session" in names
+        entry = next(
+            tool for tool in TOOLS_SCHEMA
+            if tool["function"]["name"] == "resume_session"
+        )
+        params = entry["function"]["parameters"]
+        assert set(params["required"]) == {"harness", "session_id"}

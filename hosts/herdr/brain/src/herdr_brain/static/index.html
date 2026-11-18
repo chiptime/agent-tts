@@ -432,6 +432,25 @@
       color: var(--accent);
       font-weight: 700;
     }
+    /* Retomar rows (parity-f7c S3): the folder chip shape, read as a
+     * one-tap action — the full label wraps, the cwd rides title. */
+    .ns-resume {
+      width: 100%;
+      min-height: 48px;
+      padding: 10px 12px;
+      text-align: left;
+      font: inherit;
+      font-size: 14px;
+      color: var(--text);
+      background: var(--chip-bg);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow-wrap: anywhere;
+    }
+    .ns-resume:active {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
     .conv-row {
       display: flex;
       align-items: center;
@@ -2948,6 +2967,17 @@
         <textarea id="new-task" rows="3" maxlength="8000" data-i18n-placeholder="newsession.task_placeholder"></textarea>
       </div>
       <button id="new-launch" type="button" data-i18n="newsession.launch" disabled>🚀 Lanzar</button>
+      <!-- Retomar (parity-f7c S3): the harness picker renders only the
+           server's resume-ENABLED list; the recent list loads per
+           harness; one tap POSTs /session/resume with a fresh
+           request_id (S2 receipts). -->
+      <div class="ns-field">
+        <label class="ns-label" for="new-resume-harness" data-i18n="newsession.resume">Retomar</label>
+        <select id="new-resume-harness"></select>
+      </div>
+      <div class="ns-field">
+        <div id="new-resume-list"></div>
+      </div>
       <div class="ns-field">
         <div id="new-launchers"></div>
       </div>

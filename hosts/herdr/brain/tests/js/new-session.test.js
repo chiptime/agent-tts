@@ -142,6 +142,40 @@ test("a missing or throwing randomUUID falls back to time+random", () => {
   );
 });
 
+/* ---- resumeRows: the "Retomar" list (parity-f7c S3) ---- */
+
+test("resume rows keep well-formed sessions and drop malformed ones", () => {
+  const rows = model.resumeRows([
+    { session_id: "abc-123", title: "Fix login", cwd: "/srv/work/api" },
+    { session_id: "def-456", title: "", cwd: "/srv/other" },  // label falls back
+    { session_id: "", title: "x", cwd: "/srv" },              // no id: dropped
+    { title: "no id", cwd: "/srv" },                          // dropped
+    null, "junk", 7,                                           // dropped
+    { session_id: "ghi-789" },                                 // no cwd: kept, empty cwd
+  ]);
+  assert.deepEqual(rows, [
+    { session_id: "abc-123", label: "Fix login", cwd: "/srv/work/api" },
+    { session_id: "def-456", label: "other · def-456", cwd: "/srv/other" },
+    { session_id: "ghi-789", label: "ghi-789", cwd: "" },
+  ]);
+});
+
+test("the fallback label uses the folder name and a short id", () => {
+  const rows = model.resumeRows([
+    { session_id: "0123456789abcdef", cwd: "/srv/work/deep/proj" },
+  ]);
+  assert.equal(rows[0].label, "proj · 01234567");
+});
+
+test("a title is trimmed before it wins over the fallback", () => {
+  const rows = model.resumeRows([
+    { session_id: "abc", title: "   ", cwd: "/srv/x" },
+    { session_id: "def", title: "  Kept  ", cwd: "/srv/x" },
+  ]);
+  assert.equal(rows[0].label, "x · abc");
+  assert.equal(rows[1].label, "Kept");
+});
+
 /* ---- wiring pins (shape, the pending-wiring discipline) ---- */
 
 test("the sheet and its entry exist in the shell", () => {
@@ -149,6 +183,7 @@ test("the sheet and its entry exist in the shell", () => {
     "new-open", "new-sheet", "new-backdrop", "new-close",
     "new-harness", "new-folders", "new-title", "new-task", "new-launch",
     "new-launchers", "new-roots-empty",
+    "new-resume-harness", "new-resume-list",
   ]) {
     assert.ok(htmlSrc.includes(`id="${id}"`), `index.html must carry #${id}`);
   }
@@ -183,6 +218,32 @@ test("launcher shortcuts ride the dock functions, never a duplicate flow", () =>
   assert.ok(appSrc.includes('"/operator/launch"'));
 });
 
+/* ---- resume wiring pins (parity-f7c S3) ---- */
+
+test("the resume list fetches /sessions/recent through the read path", () => {
+  assert.ok(/readFetch\("\/sessions\/recent\?harness="\s*\+/.test(appSrc),
+    "the recent list must ride readFetch like every read");
+});
+
+test("a resume tap posts /session/resume through withDeviceAuth", () => {
+  assert.ok(/fetch\("\/session\/resume",\s*withDeviceAuth\(/.test(appSrc),
+    "the resume must ride withDeviceAuth like every write");
+});
+
+test("each resume tap mints its own request id", () => {
+  assert.ok(/request_id:\s*nsModel\.mintRequestId\(/.test(appSrc) ||
+    /resumeRequestId|mintRequestId/.test(appSrc),
+    "every resume tap must mint a fresh request_id (S2 receipts)");
+});
+
+test("only server-offered resume harnesses become options", () => {
+  /* The harness picker renders exactly what /sessions/recent's
+   * `harnesses` array said — a disabled harness has no code path that
+   * could add it locally. */
+  assert.ok(/renderNewResumeHarnesses\(body\.harnesses \|\| \[\]\)/.test(appSrc),
+    "the picker must render the server's enabled list verbatim");
+});
+
 /* ---- i18n: every new key exists in both locales ---- */
 
 const NEW_KEYS = [
@@ -192,6 +253,9 @@ const NEW_KEYS = [
   "newsession.task_placeholder", "newsession.launch", "newsession.launched",
   "newsession.launch_failed", "newsession.err_harness", "newsession.err_cwd",
   "newsession.roots_empty",
+  "newsession.resume", "newsession.resume_pick", "newsession.resume_empty",
+  "newsession.resumed", "newsession.resume_failed",
+  "newsession.err_resume_harness", "newsession.err_resume_cwd",
 ];
 
 test("es and en carry the full newsession key set", () => {

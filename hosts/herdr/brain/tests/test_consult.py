@@ -1189,6 +1189,8 @@ class TestApprovalRegression:
             "answer_dialog",
             "stop_agent",
             "switch_session",
+            # parity-f7c S3: the gated resume of a past conversation.
+            "resume_session",
         } | CONSULT_TOOL_NAMES
 
 

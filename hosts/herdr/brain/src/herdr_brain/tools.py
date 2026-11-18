@@ -72,6 +72,7 @@ from .transcripts import (
     read_session_error,
     read_turns,
     read_title,
+    resume_target,
     turn_age_seconds,
 )
 from .tts import render_mp3  # noqa: F401  (re-exported for server wiring)
@@ -149,6 +150,52 @@ def sanitize_agent_name(title: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
     slug = slug[:MAX_AGENT_NAME_LEN].rstrip("-")
     return slug or _AGENT_NAME_FALLBACK
+
+
+# ── the VERIFIED resume table (parity-f7c S3, doc 03 §3) ─────────────
+#
+# One row per harness whose resume command was derived from its OWN
+# --help on this machine (evidence strings below, probed 2026-11-18)
+# AND whose transcript store records the session's cwd (the readers'
+# enumeration in transcripts.py). A harness without BOTH is simply not
+# offered — never an assumed `--resume`.
+RESUME_SESSION = "resume_session"
+RESUME_COMMANDS = {
+    "claude": (
+        "claude --resume {}",
+        "claude --help: '--resume <session-id>' ('with --continue or "
+        "--resume <id> to pick the session'); cwd from the transcript's "
+        "own event `cwd` field",
+    ),
+    "codex": (
+        "codex resume {}",
+        "codex resume --help: '[SESSION_ID] Session id (UUID) or session "
+        "name. UUIDs take precedence if it parses'; cwd from the rollout's "
+        "session_meta payload",
+    ),
+    "opencode": (
+        "oa -s {}",
+        "opencode attach --help: '-s, --session <session id to continue "
+        "[string]'; the zshrc 'oa' function passes extra args through to "
+        "'opencode attach'; cwd from opencode.db session.directory",
+    ),
+    "pi": (
+        "pi --session {}",
+        "pi --help: '--session <path|id> Open a session by file path or "
+        "full/partial ID'; cwd from the session file's `session` header",
+    ),
+}
+# Refused on purpose (same probe day): cursor, grok, hermes, kiro, muse —
+# no CLI installed here (absence is a verdict); antigravity — agy --help
+# does offer '--conversation <id>' but its store records NO cwd, so the
+# session's folder would be a guess; opencode2 — no live session_v2 store
+# to verify the resume shape against; gemini — not a registry harness
+# (its --resume takes an index, not an id, and no reader exists).
+
+
+def resume_enabled_harnesses() -> tuple:
+    """The harnesses whose resume form is evidence-backed, sorted."""
+    return tuple(sorted(RESUME_COMMANDS))
 
 
 def status_payload(active: Optional[AgentInfo], model: Optional[str] = None) -> dict:
@@ -2197,6 +2244,86 @@ class BrainTools:
             f"agente={name} ({clean_kind}). Tarea entregada."
         )
 
+    def resume_session(
+        self, harness: str, session_id: str, cwd: str = "", title: str = ""
+    ) -> str:
+        """Reopens a PAST conversation in its own folder (S3, doc 03 §3).
+
+        A small variant of the :meth:`create_session` seam — never a
+        second launch framework: the SAME :meth:`HerdrClient.create_tab`
+        opens the tab (scoped to the session's recorded cwd), then the
+        harness's VERIFIED resume argv (:data:`RESUME_COMMANDS`) is
+        typed into the pane's interactive shell via the SAME
+        :meth:`HerdrClient.pane_run` the ``oa`` launch rides. The cwd
+        and label come from the transcript store (:func:`resume_target`)
+        when the caller does not supply them; a session whose folder the
+        store cannot name is refused BEFORE any tab exists — guessing a
+        folder is never an option. A command that fails to type returns
+        an honest error naming the failure (with the created ids), never
+        a silently bare shell. The reopened pane becomes
+        ``last_active``/``last_created`` so reads and the approve replay
+        retarget to it.
+        """
+        clean_harness = (harness or "").strip().lower()
+        clean_sid = (session_id or "").strip()
+        if not clean_harness or not clean_sid:
+            return "error: harness and session_id are required"
+        entry = RESUME_COMMANDS.get(clean_harness)
+        if entry is None:
+            return (
+                f"error: resume is not verified for {clean_harness}; "
+                "nothing was opened"
+            )
+        target = None
+        clean_cwd = (cwd or "").strip()
+        if not clean_cwd:
+            target = resume_target(clean_harness, clean_sid)
+            clean_cwd = str((target or {}).get("cwd") or "").strip()
+        if not clean_cwd:
+            return (
+                f"error: cannot resume {clean_harness} session {clean_sid}: "
+                "its folder is unknown (cwd_unknown); nothing was opened"
+            )
+        label_src = (title or "").strip() or str((target or {}).get("title") or "")
+        # The tab label is outbound display text: masked, then bounded.
+        label = truncate_text(mask_text(label_src), 60) if label_src else ""
+        label = label or f"{clean_harness} · resume"
+        command = entry[0].format(shlex.quote(clean_sid))
+        try:
+            created = self._herdr.create_tab(label, cwd=clean_cwd or None)
+        except HerdrError as exc:
+            return f"error creating tab: {exc}"
+        tab_id, pane_id = created["tab_id"], created["pane_id"]
+        try:
+            self._herdr.pane_run(pane_id, command)
+        except HerdrError as exc:
+            return (
+                f"error typing the resume command for {clean_harness}: {exc} "
+                f"(tab {tab_id} pane {pane_id} were created — the tab holds "
+                "a plain shell, the conversation was NOT resumed)"
+            )
+        if clean_harness == "opencode":
+            # The same readiness discipline a created opencode panel gets.
+            failure = self._await_agent_on_pane(pane_id, tab_id, "opencode")
+            if failure is not None:
+                return failure
+        created_info = AgentInfo(
+            pane_id=pane_id,
+            agent=sanitize_agent_name(label),
+            status="idle",
+            session_kind="id",
+            session_value=clean_sid,
+            cwd=clean_cwd,
+            title=label,
+            focused=True,
+        )
+        self._track(created_info)
+        self._last_created = created_info
+        return (
+            f"Panel reanudado: tab={tab_id} pane={pane_id} "
+            f"{clean_harness} sesión {clean_sid} en {clean_cwd}."
+        )
+
     # -- on-demand consultation (read-only; T9) ---------------------------
 
     def consult_work_status(
@@ -2356,6 +2483,7 @@ class BrainTools:
             "read_screen": self.read_screen,
             "send_to_session": self.send_to_session,
             "create_session": self.create_session,
+            "resume_session": self.resume_session,
             "answer_dialog": self.answer_dialog,
             "stop_agent": self.stop_pane,
             "switch_session": self.switch_session,
@@ -2381,6 +2509,13 @@ class BrainTools:
                     str(arguments.get("title", "")),
                     str(arguments.get("task", "")),
                     str(arguments.get("cwd", "")),
+                )
+            if name == "resume_session":
+                # cwd/label are derived from the transcript store inside
+                # the tool — the ONLY source for the session's folder.
+                return handler(
+                    str(arguments.get("harness", "")),
+                    str(arguments.get("session_id", "")),
                 )
             if name == "answer_dialog":
                 spoken_choices = arguments.get("choices")
@@ -2496,6 +2631,20 @@ class BrainTools:
                 f"error launching opencode: {exc} "
                 f"(tab {tab_id} pane {pane_id} were created)"
             )
+        return self._await_agent_on_pane(pane_id, tab_id, "opencode")
+
+    def _await_agent_on_pane(
+        self, pane_id: str, tab_id: str, what: str
+    ) -> Optional[str]:
+        """Waits until the pane reports an agent (the typed-launch loop).
+
+        ``pane run`` returns as soon as the line is submitted, so
+        readiness is DETECTED by polling :meth:`HerdrClient.list_agents`
+        until the pane reports an agent, followed by one best-effort
+        ``agent wait --until idle``. Returns None on success, else a
+        failure text carrying the created tab/pane ids (they exist on
+        screen and must never be raised away).
+        """
         deadline = self._clock() + OPENCODE_READY_BUDGET_S
         detected = False
         while True:
@@ -2511,7 +2660,7 @@ class BrainTools:
             self._sleeper(OPENCODE_POLL_INTERVAL_S)
         if not detected:
             return (
-                f"error launching opencode: no agent appeared on pane {pane_id} "
+                f"error launching {what}: no agent appeared on pane {pane_id} "
                 f"within {OPENCODE_READY_BUDGET_S:.0f}s "
                 f"(tab {tab_id} pane {pane_id} were created)"
             )
@@ -2795,6 +2944,48 @@ TOOLS_SCHEMA = [
                     },
                 },
                 "required": ["agent_kind", "title"],
+            },
+        },
+    },
+    # parity-f7c S3: resume a past conversation. GATED exactly like
+    # create_session (llm.py freezes harness+session_id into a gate);
+    # the verified per-harness argv table is RESUME_COMMANDS above.
+    {
+        "type": "function",
+        "function": {
+            "name": "resume_session",
+            "description": (
+                "GATED (never runs on the spot): reopens a PAST "
+                "conversation in its own folder — a new tab in the "
+                "session's recorded cwd with the harness's verified "
+                "resume command typed in. Offered ONLY for harnesses "
+                "with a live-verified resume form ("
+                + ", ".join(sorted(RESUME_COMMANDS))
+                + "); for any other harness say resume is not available "
+                "instead of calling. The session id is the harness's own "
+                "(the herd/list_open_sessions metadata or the PWA's "
+                "recent list); the folder is derived from the transcript "
+                "store, never guessed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "harness": {
+                        "type": "string",
+                        "description": (
+                            "Canonical harness name (resume-verified ones "
+                            "only)."
+                        ),
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": (
+                            "The harness's own session/conversation id to "
+                            "reopen."
+                        ),
+                    },
+                },
+                "required": ["harness", "session_id"],
             },
         },
     },

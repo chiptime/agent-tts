@@ -30,7 +30,12 @@ from .config import Settings
 from .herdr import AgentInfo, HerdrError
 from .memory import ConversationStore, clip_content
 from .secrets_mask import mask_text
-from .tools import BrainTools, TOOLS_SCHEMA
+from .tools import (
+    RESUME_COMMANDS,
+    RESUME_SESSION,
+    BrainTools,
+    TOOLS_SCHEMA,
+)
 from .view import (
     PendingAction,
     SCREEN_TAIL_LINES,
@@ -629,7 +634,8 @@ class BrainLLM:
     ) -> tuple[str, Optional[ApprovalGate]]:
         """Dispatches one tool call, turning every failure into a string.
 
-        Mutating tools (``send_to_session``, ``create_session``) are NEVER
+        Mutating tools (``send_to_session``, ``create_session``,
+        ``resume_session``) are NEVER
         dispatched: each is frozen into an approval gate instead (AC1 —
         no path executes them without an approved gate). Returns
         ``(tool_message, gate_or_None)``. ``turn_text`` is the CURRENT
@@ -648,6 +654,8 @@ class BrainLLM:
             return self._gate_send(arguments, session_key)
         if call.function.name == CREATE_SESSION:
             return self._gate_create(arguments, session_key)
+        if call.function.name == RESUME_SESSION:
+            return self._gate_resume(arguments, session_key)
         if call.function.name == STOP_AGENT:
             return self._gate_stop(arguments, session_key)
         return (
@@ -790,5 +798,61 @@ class BrainLLM:
             f"pending user approval (gate {gate.gate_id}): the panel was NOT "
             "created. State the agent kind and the title, then wait for the "
             "user's decision; never say it was created.",
+            gate,
+        )
+
+    def _gate_resume(
+        self, arguments: Dict[str, Any], session_key: str
+    ) -> tuple[str, Optional[ApprovalGate]]:
+        """Freezes the EXACT resume_session args into a gate instead of
+        reopening the conversation (parity-f7c S3).
+
+        Mirrors :meth:`_gate_create` line for line: the frozen
+        ``harness``/``session_id`` ride the create fields of
+        :class:`GateAction` (``agent_kind``/``task``) so approval.py's
+        frozen storage is reused as-is — never a second gate framework —
+        and an approval replays the identical call. The session's cwd is
+        deliberately NOT frozen: it is re-derived from the transcript
+        store at replay time, so a stale folder can never win. The only
+        failure modes are missing args, a harness without a verified
+        resume form (mirroring the tool's own table), and a missing
+        store, where the resume is still blocked: fail safe, never
+        execute."""
+        harness = str(arguments.get("harness", "")).strip().lower()
+        session_id = str(arguments.get("session_id", "")).strip()
+        if not harness or not session_id:
+            return "error: harness and session_id are required", None
+        if harness not in RESUME_COMMANDS:
+            return (
+                f"error: resume is not verified for {harness}; tell the user "
+                "this harness cannot be resumed here",
+                None,
+            )
+        if self._approval_store is None:
+            return (
+                "error: resume_session is blocked pending user approval, but "
+                "no approval gate store is wired; nothing was opened",
+                None,
+            )
+        gate = self._approval_store.propose(
+            session_key,
+            text="",
+            agent=harness,
+            tool=RESUME_SESSION,
+            agent_kind=harness,
+            title="",
+            task=session_id,
+        )
+        LOGGER.info(
+            "approval gate opened gate_id=%s tool=resume_session harness=%s "
+            "session_id=%s",
+            gate.gate_id,
+            harness,
+            session_id,
+        )
+        return (
+            f"pending user approval (gate {gate.gate_id}): the conversation was NOT "
+            "resumed. State the harness and which conversation, then wait for "
+            "the user's decision; never say it was resumed.",
             gate,
         )

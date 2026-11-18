@@ -72,8 +72,15 @@ EXPECTED_DIGESTS = {
     # app.js re-pinned for parity-f7c S2 (idempotent launch): the sheet
     # mints a fresh request_id per Launch tap (mintRequestId in the pure
     # model + the field in the POST /session/new body). No other bytes.
-    "/": "5fa87e94aec7e455b259bbf10f58141ec79b2c8ab20e8fc3eceda066bba22675",
-    "/app.js": "f1d432100d1fe4be649aff90b3c4a1ef8e2ce7e473978e4dfc3ce6e4b7efb1a7",
+    # Re-pinned for parity-f7c S3 (resume): the sheet's "Retomar" half —
+    # harness picker from /sessions/recent's enabled list, per-harness
+    # recent rows, one tap POSTing /session/resume with a fresh
+    # request_id (resumeRows in the pure model + the wiring), the
+    # .ns-resume chip style (index.html) and the newsession.resume*
+    # keys (both i18n). The resume fetches ride readFetch on OPEN, so
+    # boot-time traffic is unchanged.
+    "/": "330ba355720a0ac8409ba76039b7955b6fba57838fa2a54d885ba0dad65c85da",
+    "/app.js": "2d9eae273055eefe45963974c30299b3890b57efe3df6850a2ec2f481df2abac",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "ca7b22c52c8160a3ac577f694eb65ec0798b77cd6ac179a5c567dffdc1fb2ba9",
     "/dialogs.js": "04e7f198b51e05b4d73fcc7a07bb4d8dd8b25141258403449e04baf641141c67",
@@ -94,8 +101,8 @@ EXPECTED_DIGESTS = {
     # update notice, operator dock, offline-shell sw.js.
     "/dock.js": "4a5dc20d575c3c9e5f098116fc9314f24297b2934cb3142bc885b6e1d0155adb",
     "/i18n.js": "8bcd2ceb9f56109afaa0ec158e1a6f002799c4a983261b9d58cd38723c06719f",
-    "/i18n/en.js": "39c46e72989cde2fd1f58b09e8c39a8fa29ad271561e18fd1351980d07110de4",
-    "/i18n/es.js": "3b45a8a321b669c64fd3bebb86fa90be7f0328af917afb630507fd6dbfaf6f13",
+    "/i18n/en.js": "bc637c2413c8a9529061e355431345f5b156d45132340da05bc46c602bb73003",
+    "/i18n/es.js": "91fd59a4785a3dd4e4342a5c77a043426c7859e24827f803803c2a3f65376941",
     "/settings.js": "1c2cf3ed92bf959c19ecde0107618b8d1ff0690d2c6fa7c842a2fdc551e05f72",
     "/updates.js": "7f87250cf6cd9c2b8944da632fe036d0c18a87a90f48f70b84e18bcd338cfa84",
     "/calls.js": "9b9ec591709d282c6e673770b2ffc1ed1562650104d8e8393126d186aa764165",
