@@ -5,7 +5,9 @@
  * The pins hold the payload contract: the payload's own tag/title/body
  * ride showNotification, gate actions ride the notification options,
  * and — the deliberate gate-button decision — EVERY click plan is a
- * focus/open, never an approving POST. */
+ * focus/open, never an approving POST. A body tap deep-links to the
+ * chat the notification is about (/?pane_id=<id>) and carries the
+ * pane id on the plan so the focus path can switch chats by message. */
 
 const test = require("node:test");
 const assert = require("node:assert");
@@ -115,10 +117,20 @@ test("an action without a gate id lands on the app root", () => {
   assert.deepEqual(plan, { focus: true, url: "/" });
 });
 
-test("a plain click focuses the app root", () => {
+test("a plain click opens the chat the notification is about", () => {
   const plan = clickPlan({
     action: "",
     notification: { data: { paneId: "w2:p1", gate: "g_abc123" } },
+  });
+  /* The gate rides along in the data but a BODY tap targets the chat:
+   * the pane deep link, encoded (":" becomes %3A in a query value). */
+  assert.deepEqual(plan, { focus: true, url: "/?pane_id=w2%3Ap1", paneId: "w2:p1" });
+});
+
+test("a plain click without a pane still lands on the app root", () => {
+  const plan = clickPlan({
+    action: "",
+    notification: { data: { paneId: null, gate: null } },
   });
   assert.deepEqual(plan, { focus: true, url: "/" });
 });

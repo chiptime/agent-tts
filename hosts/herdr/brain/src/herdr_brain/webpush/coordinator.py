@@ -17,6 +17,8 @@ Copy is Spanish and lives here, next to the decisions that use it.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional
@@ -24,8 +26,6 @@ from typing import Callable, Dict, List, Optional
 #: Collapse key for the herd slot (10 chars: base64url-safe, and a
 #: length Apple's base64 decoding accepts — see sender.topic_sendable).
 HERD_TAG = "brain-herd"
-#: Collapse key for cache warnings: latest warning replaces the last.
-CACHE_TAG = "brain-cache"
 #: Collapse key for transport tests.
 TEST_TAG = "brain-test"
 
@@ -116,6 +116,36 @@ def _cleared_payload(transition: _Transition) -> dict:
 
 
 Sink = Callable[[dict, str], None]
+
+
+def cache_tag(pane_id: str) -> str:
+    """One collapse key per pane: parallel cold panes must not
+    overwrite each other in the phone's drawer. ``bc-`` + 5 chars of
+    base64url digest = 8 chars, a length ``topic_sendable`` accepts."""
+    digest = hashlib.sha256(str(pane_id).encode("utf-8")).digest()
+    return "bc-" + base64.urlsafe_b64encode(digest).decode("ascii")[:5]
+
+
+def cache_warn_payload(label: str, idle_s: float, expires_in_s: float) -> dict:
+    """The cache warning's payload, wording pinned by tests: an honest
+    countdown inside the margin; COLD wording instead of the absurd
+    "caduca en menos de 0 s" when the cliff is already behind."""
+    minutes = int(idle_s // 60)
+    if expires_in_s > 0:
+        body = (
+            f"{label} lleva {minutes} min sin actividad; su contexto "
+            f"caduca en menos de {int(expires_in_s)} s."
+        )
+    else:
+        body = f"{label} lleva {minutes} min sin actividad; su contexto ya está frío."
+    return {
+        "v": 1,
+        "kind": "cache-warn",
+        "pane_id": None,
+        "title": "Contexto caliente a punto de caducar",
+        "body": body,
+        "tag": None,  # the caller stamps its per-pane tag
+    }
 
 
 class NotificationCoordinator:

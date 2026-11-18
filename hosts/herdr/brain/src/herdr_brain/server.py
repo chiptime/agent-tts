@@ -1187,7 +1187,11 @@ def create_app(
         push_service_ = push_service
     else:
         try:
-            push_service_ = WebPushService(cfg.state_dir, audit_log=audit_log)
+            push_service_ = WebPushService(
+                cfg.state_dir,
+                audit_log=audit_log,
+                cachewarn_ttl_s=cfg.cachewarn_ttl_s,
+            )
         except VapidError as exc:
             logger.error("web push misconfigured — routes answer 503: %s", exc)
             push_service_ = None
@@ -1602,6 +1606,39 @@ def create_app(
         has_more = bool(turns) and bool(history.load_before(turns[0]["ts"], 1))
         return {"turns": turns, "has_more": has_more}
 
+    @app.get("/call-history/rendered")
+    def call_history_rendered(
+        before: Optional[str] = None, limit: int = 25
+    ) -> dict:
+        """Rendered page of the call transcript (call-chat-formatted).
+
+        The call drawer paints /call-history; this endpoint serves the
+        SAME page (same pagination contract, masked S14 text) with the
+        reader html/map rendered by the shared ReaderCache. Fail-soft:
+        html/map null TOGETHER with text always present, so the drawer
+        never loses its raw surface.
+        """
+        capped = max(1, min(limit, CALL_HISTORY_TURNS))
+        turns = history.load_before(before, capped)
+        has_more = bool(turns) and bool(history.load_before(turns[0]["ts"], 1))
+        rendered = reader_cache.render_snapshot(
+            [{"role": t["role"], "text": t["text"]} for t in turns]
+        )
+        return {
+            "turns": [
+                {
+                    "turn_id": turn_id(None, index, turn.get("role", ""), turn.get("text", "")),
+                    "role": turn.get("role"),
+                    "text": turn.get("text"),
+                    "ts": turns[index].get("ts"),
+                    "html": turn.get("html"),
+                    "map": turn.get("map"),
+                }
+                for index, turn in enumerate(rendered)
+            ],
+            "has_more": has_more,
+        }
+
     @app.websocket("/call/stream")
     async def call_stream_endpoint(websocket: WebSocket) -> None:
         """PRD-03 streaming uplink carrying PCM16 mono frames from an AudioWorklet."""
@@ -1614,7 +1651,14 @@ def create_app(
             transcriber=live_transcriber if live_transcriber is not None else transcriber,
             active_call=active_call,
             vad_engine=vad_engine,
-            local_models_allowed=cfg.stt_backend == "builtin",
+            # 2026-11-17: an explicitly enabled Smart Turn detector is an
+            # explicit local-model opt-in — the CPU ONNX auxiliaries
+            # (Silero framing, Smart Turn) must not stay gated off for a
+            # hub-backend deployment that asked for them (the device
+            # regression: st=off, no deferral, mid-phrase cuts).
+            local_models_allowed=(
+                cfg.stt_backend == "builtin" or cfg.smart_turn_enabled
+            ),
         )
 
     @app.post("/call/start")

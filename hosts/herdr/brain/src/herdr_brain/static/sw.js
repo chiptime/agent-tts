@@ -40,6 +40,11 @@
  * runs with the device bearer behind the access gate. The buttons exist
  * to say what to do, and to get the operator one tap away from doing
  * it.
+ *
+ * A body tap carries one more thing: the chat it is about. The pane id
+ * rides the click plan — a NEW window opens on /?pane_id=<id>, and an
+ * already-open window gets a brain-open-pane message so it switches
+ * chats without a reload (a reload would drop the live call state).
  */
 
 /* ── pure helpers (exported for tests/js) ───────────────────────────── */
@@ -185,6 +190,16 @@ function clickPlan(event) {
   var action = (event && event.action) || "";
   if (action === "approve" || action === "reject") {
     return { focus: true, url: data.gate ? "/?gate=" + encodeURIComponent(data.gate) : "/" };
+  }
+  /* A body tap opens the chat the notification is about: the pane id
+   * rides the notification data, so the deep link lands the PWA on
+   * that conversation — and the focus path carries it as a message. */
+  if (data.paneId) {
+    return {
+      focus: true,
+      url: "/?pane_id=" + encodeURIComponent(String(data.paneId)),
+      paneId: String(data.paneId),
+    };
   }
   return { focus: true, url: "/" };
 }
@@ -333,16 +348,25 @@ self.addEventListener("push", function (event) {
 self.addEventListener("notificationclick", function (event) {
   var plan = clickPlan(event);
   event.notification.close();
-  event.waitUntil(focusOrOpen(plan.url));
+  event.waitUntil(focusOrOpen(plan.url, plan.paneId || null));
 });
 
-function focusOrOpen(url) {
+/* Focus wins; a focused window keeps its URL — the pane switch rides a
+ * brain-open-pane message instead (a navigate here would reload the
+ * app and drop the live call state for a mere chat switch). Only a NEW
+ * window navigates to the deep link the plan carries. */
+function focusOrOpen(url, paneId) {
   return self.clients.matchAll({ type: "window", includeUncontrolled: true })
     .then(function (windows) {
       for (var i = 0; i < windows.length; i++) {
         var client = windows[i];
         if ("focus" in client) {
           if (client.url && client.url.indexOf("/?gate=") !== -1) continue;
+          if (paneId && client.postMessage) {
+            try {
+              client.postMessage({ type: "brain-open-pane", paneId: paneId });
+            } catch (err) { /* best effort: the focus still happens */ }
+          }
           return client.focus();
         }
       }

@@ -39,8 +39,20 @@ EXPECTED_DIGESTS = {
     # the live call engine (stream-uplink.js script tag, the En vivo engine
     # and its fallback notices in app.js + both i18n).
     # Re-pinned after the agent-error UI and session-picker refresh changes.
-    "/": "04042a4abd9538d2791c13555759bec3766d1953f0e9fb10769437027b1528b1",
-    "/app.js": "6fbd2d5d31e30364631a537423e0ffd232b15a171803da1615a2a6579b9f23d9",
+    # app.js re-pinned for the push deep link (S5): a notification tap
+    # opens the chat it is about (?pane_id= boot deep link consumed once
+    # + the brain-open-pane worker message); sw.js rides the same change
+    # but is not served (nor requested) in this harness. Includes the
+    # concurrent live-engine app.js hunks on this tree.
+    # Re-pinned again for the live-call drawer work (2026-11-17): the
+    # stacked interim strip + the ✚ new-call button (index.html, app.js,
+    # both i18n) and the 80dvh sheet diving behind the footer (index.html).
+    # Re-pinned once more for the Llamadas popup: the history left the
+    # drawer for a 🕘-launched sheet (index.html + app.js; calls.js rides
+    # unchanged) — then the sheet anchored at the viewport floor covering
+    # the footer (index.html only).
+    "/": "6b82d9f0cdd9c2f4f1b164135f8e1954df771f212a092e5ffcb5be7aa645df6b",
+    "/app.js": "23b0482ffae545f395b7fde98787d998d06b43a59e45dedde43a7e7392cc06ff",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "ca7b22c52c8160a3ac577f694eb65ec0798b77cd6ac179a5c567dffdc1fb2ba9",
     "/dialogs.js": "0e5b6afde7ef662591f66fc69891e3b1ec343fafe0d2c5be8fbef0c5a124a4c0",
@@ -61,8 +73,8 @@ EXPECTED_DIGESTS = {
     # update notice, operator dock, offline-shell sw.js.
     "/dock.js": "4a5dc20d575c3c9e5f098116fc9314f24297b2934cb3142bc885b6e1d0155adb",
     "/i18n.js": "8bcd2ceb9f56109afaa0ec158e1a6f002799c4a983261b9d58cd38723c06719f",
-    "/i18n/en.js": "8309dc144af1946a92656cb6f4b823b779c15854a142f4a043bd76e00af2ed1d",
-    "/i18n/es.js": "796ef54a9026b8103493e21bb8006653e56bd5bf3f68d456a189bd78ff63e0be",
+    "/i18n/en.js": "7a99b1cb00720be63d67e1a7c8a04920909966ac4ac0c6d212d84cb35f3be646",
+    "/i18n/es.js": "9dd6e6a703361cea95062710b511a4d2661b510db002d47d107b38c274d8bb58",
     "/settings.js": "1c2cf3ed92bf959c19ecde0107618b8d1ff0690d2c6fa7c842a2fdc551e05f72",
     "/updates.js": "7f87250cf6cd9c2b8944da632fe036d0c18a87a90f48f70b84e18bcd338cfa84",
     "/calls.js": "9b9ec591709d282c6e673770b2ffc1ed1562650104d8e8393126d186aa764165",

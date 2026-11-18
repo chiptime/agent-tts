@@ -106,6 +106,17 @@ SILENCE_FRAME_RMS_THRESHOLD = 100.0
 # already use): a sliver cannot carry a transcribable word.
 MIN_INFERENCE_AUDIO_MS = MIN_PASS_AUDIO_MS
 
+# Server-owned turns (PRD-05 core, 2026-11-17): after Silero's own
+# speech_end, this much EXTRA silence closes the turn (the neural engine
+# already consumed its end-of-speech window); an `incomplete` Smart Turn
+# verdict retries once after the extender delay. 1.6 s (2026-11-17
+# device tuning): the operator's natural mid-phrase pauses run ~2 s and
+# a 0.9 s window split a question at every one of them — with the ask
+# budget at tens of seconds, +0.7 s of close is free; never-cut (D3)
+# beats snappiness here.
+SERVER_TURNS_CLOSE_S = 1.6
+SERVER_TURNS_EXTENDER_RETRY_S = 0.4
+
 # L13: the ONLY wording a transcription failure ever sends to the client.
 # A fixed generic constant — exception text can carry paths, model names
 # or configuration values and must never reach the client.
@@ -177,6 +188,64 @@ class AudioRingBuffer:
 
     def __len__(self) -> int:
         return len(self._buffer)
+
+
+def _norm_tokens(text: str) -> list:
+    """Lowercased alphanumeric tokens (unicode-aware, no regex import)."""
+    tokens: list = []
+    for raw in text.split():
+        tok = "".join(ch for ch in raw if ch.isalnum())
+        if tok:
+            tokens.append(tok.lower())
+    return tokens
+
+
+def transcript_is_hint_capture(
+    text: Optional[str], initial_prompt: Optional[str]
+) -> bool:
+    """True when EVERY token of a live final transcript is a vocabulary-
+    hint term: Whisper echoing its ``initial_prompt``.
+
+    Two device classes proved this (L52: silence windows echoed the hint;
+    2026-11-17: a quiet mid-phrase-cut fragment returned exactly
+    "PR rama herdr opencode" — three default hint terms, no real word).
+    A legitimate utterance about PRs also carries non-hint words, so this
+    never drops real speech; a capture degrades to the empty-transcript
+    path ("no te entendí") instead of dispatching garbage to the model.
+    """
+    if not text or not initial_prompt:
+        return False
+    spoken = _norm_tokens(text)
+    if not spoken:
+        return False
+    hint = set(_norm_tokens(initial_prompt))
+    return bool(hint) and all(tok in hint for tok in spoken)
+
+
+def resolve_turn_transcript(
+    full_text: Optional[str], finals_text: Optional[str], initial_prompt: Optional[str]
+) -> str:
+    """The turn-end transcript decision.
+
+    2026-11-17 operator decision ("que se vea tanto en transcripcion
+    como en el chat lo mismo"): the text the user WATCHED converge on
+    the live strip is the text that gets dispatched — strip and chat
+    bubble must read the same. The streaming finals are that text
+    (PRD-04 consecutive-pass agreement, and the server-owned close
+    waits for the turn-end flush, so the finals cover the whole
+    utteration by dispatch time — the old L18 unstable-tail risk is
+    gone). The full-window one-shot stays only as the fallback when no
+    finals ever stabilized, and a pure hint capture never wins.
+    """
+    finals = (finals_text or "").strip()
+    if transcript_is_hint_capture(finals, initial_prompt):
+        finals = ""  # the agreed text itself is an echo: no truth to keep
+    if finals:
+        return finals
+    full = (full_text or "").strip()
+    if transcript_is_hint_capture(full, initial_prompt):
+        full = ""
+    return full
 
 
 def pcm16_to_wav_bytes(pcm16_data: bytes, sample_rate: int = SAMPLE_RATE) -> bytes:
@@ -349,6 +418,10 @@ class StreamingTranscriptionSession:
         self._active = False
         self._task: Optional[asyncio.Task] = None
         self._origin_ms = 0.0
+        self._utterance_start_ms = 0.0  # fixed at start_utterance; the
+        # pass loop's origin slides forward as it commits finals — this
+        # anchor does NOT, so the turn-end window can still reach the
+        # utterance's true (possibly Silero-back-dated) head.
         self._boundary_ms = 0.0  # position of the last known turn boundary
         self._last_pass_ms = 0.0
         self._prev_tokens: list[str] = []
@@ -381,13 +454,49 @@ class StreamingTranscriptionSession:
         self._covered_ms = 0.0
         self._parity_failed = False
 
+    @property
+    def is_active(self) -> bool:
+        """An utterance is open (streaming passes may run)."""
+        return self._active
+
+    @property
+    def finals_text(self) -> str:
+        """The accumulated, locally-agreed final fragments of the current
+        utterance — the trust anchor resolve_turn_transcript falls back to
+        when the full-window one-shot regresses."""
+        return self._finals_text
+
+    @property
+    def origin_ms(self) -> float:
+        """The current utterance's window origin on the ring timeline
+        (Silero-anchored when the client's start trailed the neural
+        onset — see start_utterance)."""
+        return self._origin_ms
+
+    @property
+    def utterance_start_ms(self) -> float:
+        """The utterance's TRUE start anchor (Silero-back-dated when the
+        client's stream start trailed the neural onset). Unlike
+        :attr:`origin_ms`, the pass loop's commits never slide it — the
+        turn-end window uses it so a long phrase keeps its head."""
+        return self._utterance_start_ms
+
     # ── client control messages ──
 
-    def start_utterance(self) -> None:
+    def start_utterance(self, origin_hint_ms: Optional[float] = None) -> None:
         """``stream start``: a new utterance begins at the VAD onset. The
         window origin keeps ~500 ms of pre-onset audio — except after a
         known turn boundary, where the boundary wins (no preroll into a
-        finished turn)."""
+        finished turn).
+
+        ``origin_hint_ms`` is the SERVER-side Silero speech onset for
+        this utterance when the framer saw one. A late client ``stream
+        start`` — quiet mics open the energy gate mid-phrase — must not
+        amputate the head of the phrase (2026-11-17 device failure:
+        "solo me toma las últimas palabras"; the audio sits in the ring,
+        only the origin excluded it): when the neural onset precedes the
+        client's start, the origin back-dates to it (minus the same
+        preroll, never before the turn boundary)."""
         self._generation += 1
         self._active = True
         self._error_latched = False
@@ -400,9 +509,16 @@ class StreamingTranscriptionSession:
         self._flushing = False
         self._flush_remaining = 0
         self._parity_failed = False
-        self._origin_ms = max(
+        origin = max(
             self._boundary_ms, self._ring.total_ms() - STREAM_PREROLL_MS
         )
+        if origin_hint_ms is not None and origin_hint_ms >= self._boundary_ms:
+            hinted = max(
+                self._boundary_ms, float(origin_hint_ms) - STREAM_PREROLL_MS
+            )
+            origin = min(origin, hinted)
+        self._origin_ms = origin
+        self._utterance_start_ms = origin
         self._last_pass_ms = self._origin_ms
         self._schedule_pass()
 
@@ -869,6 +985,10 @@ async def handle_call_stream(
     token = None
     locale: Optional[str] = None
     wants_vad = False
+    # The server-side Silero onset of the CURRENT speech burst (ring
+    # timeline), cleared at speech_end — the late-onset anchor for
+    # start_utterance (see its docstring).
+    vad_speech_onset_ms: Optional[float] = None
     is_auth_shape = False
     if "text" in first_msg and first_msg["text"]:
         try:
@@ -948,6 +1068,10 @@ async def handle_call_stream(
     # advertises whether the extender-only Smart Turn probe exists: a
     # false capability keeps the client on today's zero-round-trip path.
     framer = None
+    # Server-owned turns are active exactly when the neural framer is:
+    # without it there is no speech framing to trust, and the legacy
+    # client-controlled stream/transcribe path stays the owner.
+    server_turns = False
     if wants_vad:
         engine = vad_engine if vad_engine is not None else (
             SileroVadEngine() if local_models_allowed else None
@@ -956,12 +1080,14 @@ async def handle_call_stream(
         available = engine is not None and await loop.run_in_executor(None, engine.ensure_loaded)
         if available:
             framer = engine.new_framer()
+            server_turns = True
             await websocket.send_json(
                 {
                     "type": "vad_status",
                     "engine": "silero",
                     "reason": None,
                     "smart_turn": advisory_available,
+                    "server_turns": True,
                 }
             )
         else:
@@ -970,6 +1096,7 @@ async def handle_call_stream(
                 "engine": "energy",
                 "reason": getattr(engine, "unavailable_reason", None) or "local_models_disabled",
                 "smart_turn": advisory_available,
+                "server_turns": False,
             })
 
     # Enabled but unavailable: one bounded event and the call continues
@@ -993,14 +1120,167 @@ async def handle_call_stream(
     # produces two verdicts; non-probing clients keep the old behavior.
     probed_this_turn = False
     # D8: the vocabulary hint is read once per connection (operators edit
-    # the env between runs, not mid-call).
+    # the env between runs, not mid-call). Kept in scope: the turn-end
+    # transcript filter needs the same terms Whisper was biased with.
+    live_hint = live_vocabulary_hint()
     session = StreamingTranscriptionSession(
         websocket,
         transcriber,
         ring_buffer,
         language=locale,
-        initial_prompt=live_vocabulary_hint(),
+        initial_prompt=live_hint,
     )
+
+    # ── server-owned turns (PRD-05 core; 2026-11-17 operator call) ──
+    # "es en streaming no tiene sentido meterle ese capado, deberia
+    # escuchar todo": with Silero framing live, the SERVER owns the
+    # utterance boundaries. The client's energy gate was the batched
+    # design's vestige and kept amputating quiet onsets. speech_start
+    # opens the turn at the neural onset; speech_end plus a silence
+    # window (and the Smart Turn extender, server-side now) closes it
+    # and finalizes the transcript. Clients that still send stream /
+    # transcribe controls get them honoured ONLY in the legacy
+    # (framer-less) mode — the controls are no-ops here.
+    server_close_task: Optional[asyncio.Task] = None
+
+    def cancel_server_close() -> None:
+        nonlocal server_close_task
+        if server_close_task is not None:
+            server_close_task.cancel()
+            server_close_task = None
+
+    async def finalize_utterance(
+        duration_ms: float, pre_roll_ms: float
+    ) -> None:
+        """The turn-end transcript flow shared by the legacy client
+        ``transcribe`` command and the server-owned close."""
+        # Late-onset anchor (2026-11-17): the window must cover the
+        # session's true utterance start — a client duration measured
+        # from a late energy onset, or a span shorter than the neural
+        # anchor, would amputate the head the partials already showed.
+        client_start_ms = ring_buffer.total_ms() - (
+            max(duration_ms, 0.0) + max(pre_roll_ms, 0.0)
+        )
+        start_ms = min(client_start_ms, session.utterance_start_ms)
+        pcm16 = ring_buffer.get_range(max(0.0, start_ms))
+        # Diagnostics (level only): connection audio volume vs the turn
+        # window's peak sample, so a silent uplink is distinguishable
+        # from a transcription failure.
+        if pcm16:
+            samples = np.frombuffer(
+                pcm16[: len(pcm16) - (len(pcm16) % 2)], dtype=np.int16
+            )
+            peak = int(np.abs(samples).max()) if samples.size else 0
+        else:
+            peak = 0
+        logger.info(
+            "live transcribe diag: conn_bytes=%d window_bytes=%d peak=%d",
+            stream_bytes, len(pcm16), peak,
+        )
+        wav_data = pcm16_to_wav_bytes(pcm16)
+        text = ""
+        failure: Optional[Exception] = None
+        if transcriber is not None and window_has_no_speech(pcm16):
+            # Silent (or sliver) turn: no inference — the client keeps
+            # its existing not-understood path on an empty successful
+            # transcript.
+            logger.debug(
+                "live turn-end window has no speech; inference skipped"
+            )
+        elif transcriber is not None:
+            try:
+                # One inference per call (FR-05): the turn-end transcribe
+                # shares the streaming session's inference lock — a
+                # partial pass already in flight finishes first, and
+                # this full-window pass runs alone.
+                async with session.inference_lock:
+                    text = await session.run_inference(wav_data)
+            except Exception as exc:  # noqa: BLE001 — fails closed
+                failure = exc
+        if failure is not None:
+            # L13 fail-closed: a transcription exception is an error,
+            # never an empty successful transcript the UI would read as
+            # "not understood". Class name only — its message can carry
+            # paths, model names or configuration values.
+            logger.warning(
+                "live transcription failed on /call/stream (%s)",
+                type(failure).__name__,
+            )
+            await websocket.send_json({
+                "type": "error",
+                "message": STT_FAILURE_MESSAGE,
+            })
+            return
+        await send_stt_notice_once()
+        raw_str = (text or "").strip()
+        text_str = resolve_turn_transcript(raw_str, session.finals_text, live_hint)
+        if text_str != raw_str:
+            # Bounded, text-free: says the decision fired, never what
+            # was said.
+            logger.info(
+                "live transcript adjusted: hint capture or "
+                "full-window regression to agreed finals"
+            )
+        await websocket.send_json({
+            "type": "transcript",
+            "text": text_str,
+            "duration_ms": duration_ms,
+            "pre_roll_ms": pre_roll_ms,
+        })
+        # Prefix-overlap protection: the finished turn's audio is behind
+        # us — the next utterance's partials start a fresh window.
+        session.reset_after_transcript()
+
+    async def server_close_turn() -> None:
+        """The server-owned close: wait out the silence window, run the
+        Smart Turn extender (same extender-only policy as the client's
+        L60 gate — `incomplete` may defer, `complete` never shortens),
+        then finalize the turn."""
+        nonlocal probed_this_turn
+        await asyncio.sleep(SERVER_TURNS_CLOSE_S)
+        for _ in range(2):
+            if advisory_detector is None or probed_this_turn:
+                break
+            probed_this_turn = True
+            total_ms = ring_buffer.total_ms()
+            start_ms = max(0.0, total_ms - TURN_DETECTOR_WINDOW_MS)
+            audio = pcm16_to_audio(
+                ring_buffer.get_range(start_ms, total_ms)
+            )
+            verdict = VERDICT_COMPLETE
+            if audio.size:
+                try:
+                    loop = asyncio.get_running_loop()
+                    _, verdict, _ = await loop.run_in_executor(
+                        None, advisory_detector.classify, audio
+                    )
+                except Exception:  # noqa: BLE001 — advisory only
+                    verdict = VERDICT_UNAVAILABLE
+            logger.info(
+                "live turn probe diag: verdict=%s prob=? (server close)",
+                verdict,
+            )
+            if verdict == VERDICT_INCOMPLETE:
+                await asyncio.sleep(SERVER_TURNS_EXTENDER_RETRY_S)
+            else:
+                break
+        session.stop_utterance()
+        await session.finish_flush()
+        if session.parity_failed:
+            await websocket.send_json({
+                "type": "error",
+                "message": STT_FAILURE_MESSAGE,
+            })
+            return
+        span_ms = max(0.0, ring_buffer.total_ms() - session.utterance_start_ms)
+        await finalize_utterance(span_ms, 0.0)
+
+    def arm_server_close() -> None:
+        nonlocal server_close_task
+        cancel_server_close()
+        server_close_task = asyncio.get_running_loop().create_task(
+            server_close_turn()
+        )
 
     # 2. Frame streaming and transcription loop
     try:
@@ -1019,9 +1299,46 @@ async def handle_call_stream(
                     # socket and the turn path must never notice.
                     try:
                         for event in framer.feed(msg["bytes"]):
+                            ev = event.get("event")
+                            if ev == "speech_start":
+                                at = event.get("at_ms")
+                                vad_speech_onset_ms = (
+                                    float(at)
+                                    if isinstance(at, (int, float))
+                                    else ring_buffer.total_ms()
+                                )
+                                cancel_server_close()
+                                if server_turns and not session.is_active:
+                                    # The server opens the turn at the
+                                    # neural onset — no client gate.
+                                    session.start_utterance(
+                                        origin_hint_ms=vad_speech_onset_ms
+                                    )
+                                    probed_this_turn = False
+                            elif ev == "speech_end":
+                                # The next utterance earns a fresh onset.
+                                vad_speech_onset_ms = None
+                                if server_turns and session.is_active:
+                                    arm_server_close()
+                            elif ev == "unavailable":
+                                # The framer failed CLOSED on its own
+                                # (stream_vad latches and RETURNS the
+                                # event instead of raising): the server
+                                # no longer owns turns — degrade to the
+                                # client-controlled path so an open turn
+                                # can still close via the client's gate.
+                                server_turns = False
+                                cancel_server_close()
                             await websocket.send_json({"type": "vad", **event})
                     except Exception as exc:  # noqa: BLE001 — framing is advisory
                         framer = None
+                        # The server no longer owns turns: degrade to the
+                        # client-controlled path so a turn already open
+                        # can still be closed by the client's energy gate
+                        # (a stale server_turns no-op would swallow its
+                        # transcribe and hang the turn).
+                        server_turns = False
+                        cancel_server_close()
                         logger.warning(
                             "live vad framing failed on /call/stream (%s)",
                             type(exc).__name__,
@@ -1071,6 +1388,38 @@ async def handle_call_stream(
                         _token("build", 24), _token("reason", 24),
                         _token("state", 14), _token("st", 12),
                         int(_n("ext")), int(_n("probes")),
+                    )
+                    continue
+                if cmd == "turn_timing":
+                    # PRD-02 latency baseline: the LIVE client's per-turn
+                    # stage breakdown (numbers and one bounded reason token
+                    # only — same policy as the diag line, never audio or
+                    # transcript text). Two reports may arrive per turn:
+                    # reason=ask rides the still-open capture socket at ask
+                    # resolution; reason=audio is the stashed playback
+                    # report delivered by the next re-armed socket (the S7
+                    # echo rule closes the capture before answer audio).
+                    # -1 marks a stage the turn never reached.
+                    def _ms(key: str) -> int:
+                        value = payload.get(key)
+                        if isinstance(value, bool) or not isinstance(value, (int, float)):
+                            return -1
+                        return int(value)
+
+                    def _tok(key: str, limit: int) -> str:
+                        value = payload.get(key)
+                        if not isinstance(value, str):
+                            return "?"
+                        return "".join(
+                            ch for ch in value if ch >= " " and ch != "\x7f"
+                        )[:limit] or "?"
+
+                    logger.info(
+                        "live turn timing: reason=%s close_dispatch_ms=%d "
+                        "dispatch_ask_ms=%d ask_audio_ms=%d total_ms=%d",
+                        _tok("reason", 8),
+                        _ms("close_dispatch_ms"), _ms("dispatch_ask_ms"),
+                        _ms("ask_audio_ms"), _ms("total_ms"),
                     )
                     continue
                 if cmd == "turn_probe":
@@ -1148,6 +1497,11 @@ async def handle_call_stream(
                         pass
                     continue
                 if cmd == "transcribe":
+                    # Server-owned turns: the legacy client command is a
+                    # no-op — the server's own close already finalized
+                    # (or will finalize) this turn.
+                    if server_turns:
+                        continue
                     # L20 fail-closed parity: a turn whose words could not
                     # stabilize within the bounds answers the generic
                     # error — never a successful transcript its finals
@@ -1172,78 +1526,23 @@ async def handle_call_stream(
                         continue
                     duration_ms = float(payload.get("duration_ms", 0))
                     pre_roll_ms = float(payload.get("pre_roll_ms", DEFAULT_PREROLL_MS))
-                    pcm16 = ring_buffer.get_window(duration_ms=duration_ms, pre_roll_ms=pre_roll_ms)
-                    # Diagnostics (level only): connection audio volume vs
-                    # the turn window's peak sample, so a silent uplink is
-                    # distinguishable from a transcription failure.
-                    if pcm16:
-                        samples = np.frombuffer(
-                            pcm16[: len(pcm16) - (len(pcm16) % 2)], dtype=np.int16
-                        )
-                        peak = int(np.abs(samples).max()) if samples.size else 0
-                    else:
-                        peak = 0
-                    logger.info(
-                        "live transcribe diag: conn_bytes=%d window_bytes=%d peak=%d",
-                        stream_bytes, len(pcm16), peak,
-                    )
-                    wav_data = pcm16_to_wav_bytes(pcm16)
-                    text = ""
-                    failure: Optional[Exception] = None
-                    if transcriber is not None and window_has_no_speech(pcm16):
-                        # Silent (or sliver) turn: no inference — the
-                        # client keeps its existing not-understood path
-                        # on an empty successful transcript.
-                        logger.debug(
-                            "live turn-end window has no speech; inference skipped"
-                        )
-                    elif transcriber is not None:
-                        try:
-                            # One inference per call (FR-05): the
-                            # turn-end transcribe shares the streaming
-                            # session's inference lock — a partial pass
-                            # already in flight finishes first, and this
-                            # full-window pass runs alone.
-                            async with session.inference_lock:
-                                text = await session.run_inference(wav_data)
-                        except Exception as exc:  # noqa: BLE001 — every failure fails closed
-                            failure = exc
-                    if failure is not None:
-                        # L13 fail-closed: a transcription exception is an
-                        # error, never an empty successful transcript the UI
-                        # would read as "not understood" (the client then
-                        # recovers via its PRD-03 fallback). Only the
-                        # exception's class name is logged — its message can
-                        # carry paths, model names or configuration values.
-                        logger.warning(
-                            "live transcription failed on /call/stream (%s)",
-                            type(failure).__name__,
-                        )
-                        await websocket.send_json({
-                            "type": "error",
-                            "message": STT_FAILURE_MESSAGE,
-                        })
-                    else:
-                        await send_stt_notice_once()
-                        text_str = (text or "").strip()
-                        await websocket.send_json({
-                            "type": "transcript",
-                            "text": text_str,
-                            "duration_ms": duration_ms,
-                            "pre_roll_ms": pre_roll_ms,
-                        })
-                        # Prefix-overlap protection: the finished turn's
-                        # audio is behind us — the next utterance's
-                        # partials start a fresh window.
-                        session.reset_after_transcript()
+                    await finalize_utterance(duration_ms, pre_roll_ms)
                     probed_this_turn = False
                 elif cmd == "stream":
                     # T3 utterance gating: the client's VAD onset opens
                     # the partial loop, its silence close ends it. This
                     # keeps idle silence and the agent's own playback off
                     # the GPU (S5: partials run WHILE SPEAKING).
+                    if server_turns:
+                        # Server-owned turns: the framer already opened
+                        # the turn at the neural onset and owns the
+                        # close — legacy controls are advisory no-ops.
+                        continue
                     if payload.get("action") == "start":
-                        session.start_utterance()
+                        # Late-onset anchor: a client start that trails
+                        # the neural onset back-dates the window to the
+                        # true speech start (start_utterance docstring).
+                        session.start_utterance(origin_hint_ms=vad_speech_onset_ms)
                         probed_this_turn = False
                     elif payload.get("action") == "stop":
                         session.stop_utterance()
@@ -1311,4 +1610,6 @@ async def handle_call_stream(
     except Exception as exc:
         logger.debug("call_stream connection ended: %s", exc)
     finally:
+        cancel_server_close()  # a pending server-owned close dies with
+        # the socket — its transcript was never promised.
         await session.aclose()

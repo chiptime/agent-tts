@@ -42,3 +42,20 @@ class TestLiveSttSettings:
         assert DEFAULT_LIVE_STT_MODEL == "large-v3"
         assert "/" not in DEFAULT_LIVE_STT_MODEL
         assert "llm-hub" not in DEFAULT_LIVE_STT_MODEL
+
+
+class TestCachewarnSettings:
+    """Cache-warn TTL knob (S5 improvement): 300 s stays the default;
+    agents with longer-lived caches (1 h prompt caches) stop being
+    warned twelve times an hour."""
+
+    def test_default_ttl(self):
+        s = load_settings(dict(_BASE_ENV))
+        assert s.cachewarn_ttl_s == 300.0
+
+    def test_env_override(self):
+        s = load_settings({
+            **_BASE_ENV,
+            "HERDR_BRAIN_CACHEWARN_TTL_S": "1800",
+        })
+        assert s.cachewarn_ttl_s == 1800.0

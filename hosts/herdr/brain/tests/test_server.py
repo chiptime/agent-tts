@@ -1973,7 +1973,6 @@ class TestRenderedConversation:
         )
         resp = client.get("/conversation/w9:p9/rendered")
         assert resp.status_code == 404
-        assert "turns" not in resp.json()  # never a reader fallback body
 
     def test_no_map_url_field(self, settings, audio_dir, monkeypatch):
         client = self._client(
@@ -2012,6 +2011,79 @@ class TestRenderedConversation:
         # The length ceiling applies like every addressed id.
         oversized = client.get(f"/conversation/{'x' * 200}/rendered")
         assert oversized.status_code == 422
+
+
+class TestRenderedCallHistory:
+    """GET /call-history/rendered — the call drawer's own rendered page.
+
+    The drawer renders the CALL transcript (HistoryStore), not the pane
+    transcript: /conversation/{pane}/rendered never contains call texts,
+    so the reader content keys cannot match. This endpoint serves the
+    same (role, text) records the drawer already paints through
+    /call-history, plus the reader html/map rendered by the SAME
+    ReaderCache (cache-key is text-based, so any overlap with the pane
+    transcript is a hit, not a re-render).
+    """
+
+    CALL_TEXTS = [
+        ("user", "Hola, ¿qué tal estás?"),
+        ("assistant", "¡Hola!\n\n## Estado\n- todo **bien**\n- con `código`"),
+    ]
+
+    def _client(self, settings, audio_dir, reader=None, calls=1):
+        import herdr_brain.server as server_module
+        from herdr_brain.history import HistoryStore, default_history_path
+
+        cfg = Settings(**{**settings.__dict__, "audio_dir": str(audio_dir)})
+        store = HistoryStore(default_history_path(cfg))
+        for _ in range(calls):
+            call_id = store.start_call()
+            for role, text in self.CALL_TEXTS:
+                store.append(role, text, call_id=call_id)
+            store.end_call(call_id)
+        client = TestClient(
+            server_module.create_app(settings=cfg, reader_renderer=reader)
+        )
+        return client, store
+
+    def test_rendered_call_history_shape(self, settings, audio_dir):
+        reader = FakeReaderRenderer()
+        client, _ = self._client(settings, audio_dir, reader=reader)
+        resp = client.get("/call-history/rendered")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert set(body) == {"turns", "has_more"}
+        assert body["has_more"] is False
+        assert len(body["turns"]) == len(self.CALL_TEXTS)
+        for turn, (role, text) in zip(body["turns"], self.CALL_TEXTS):
+            assert set(turn) == {"turn_id", "role", "text", "ts", "html", "map"}
+            assert turn["role"] == role
+            assert turn["text"] == text   # fallback always present
+            assert turn["html"] is not None and turn["map"] == READER_MAP
+        assert len(reader.calls) == 2
+
+    def test_renderer_failure_serves_null_pair_keeps_text(
+        self, settings, audio_dir
+    ):
+        client, _ = self._client(
+            settings, audio_dir, reader=FakeReaderRenderer(fail=True)
+        )
+        resp = client.get("/call-history/rendered")
+        assert resp.status_code == 200
+        for turn in resp.json()["turns"]:
+            assert turn["html"] is None and turn["map"] is None
+            assert turn["text"]   # the drawer never loses its raw surface
+
+    def test_pagination_mirrors_call_history(self, settings, audio_dir):
+        client, store = self._client(settings, audio_dir, calls=2)
+        plain = store.load_before(None, 2)   # the same newest-page page shape
+        rendered = client.get("/call-history/rendered?limit=2").json()
+        assert rendered["has_more"] is True
+        assert [t["ts"] for t in rendered["turns"]] == [
+            t["ts"] for t in plain[:2]
+        ]
+        resp = client.get("/call-history/rendered")
+        assert resp.json()["has_more"] is False  # newest page by default
 
 
 class TestReaderFailSoft:

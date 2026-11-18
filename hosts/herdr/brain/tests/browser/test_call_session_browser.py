@@ -50,12 +50,13 @@ def test_call_toggle_reports_start_and_end_and_mounts_calls(karaoke_app):
 
     page.locator("#call-btn").click()
 
-    # The call start opens the drawer, which mounts and refreshes the
-    # Llamadas section: the record from GET /calls renders.
-    section = page.locator("#calls-section")
-    expect(section).to_be_visible()
-    expect(page.locator("#calls-container .call-item")).to_have_count(1)
+    # This harness blocks getUserMedia, so the call enters text-mode and
+    # closes its drawer within milliseconds — assert the STABLE contract
+    # only: the toggle POSTs its records, and the Llamadas module (now a
+    # popup opened on demand from the drawer head) mounted at boot and
+    # rendered the record from GET /calls.
     assert posted(harness, "/call/start")
+    expect(page.locator("#calls-container .call-item")).to_have_count(1)
 
     page.locator("#call-btn").click()
     page.wait_for_function("() => true")  # let the end POST land

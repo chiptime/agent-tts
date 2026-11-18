@@ -10,11 +10,13 @@ server keeps running, nothing sends), per doc 08.
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
 from herdr_brain.audit import AuditLog
 from herdr_brain.webpush import WebPushService
+from herdr_brain.webpush.coordinator import cache_tag
 
 
 class FakeTransport:
@@ -225,17 +227,46 @@ def test_test_notification_round_trip(tmp_path, clock, keys_env):
     assert payload["tag"] == "brain-test"
 
 
-def test_tick_emits_cache_warnings(tmp_path, clock, keys_env):
+def test_tick_emits_cache_warnings_with_a_per_pane_tag(tmp_path, clock, keys_env):
     transport = FakeTransport()
     service = _service(tmp_path, transport, clock)
     _subscribe(service)
-    base = clock["now"]
-    last_activity = base - 300.0  # ttl default 300 → already expiring
-    panes = [("p1", "claude-1", last_activity)]
-    service.tick(panes=panes)
+    # The panes contract carries idle DELTAS — never absolute stamps
+    # (a monotonic watcher stamp against a wall-clock now once produced
+    # a ~1.79e9 s idle and an instant warning for every pane).
+    service.tick(panes=[("p1", "claude-1", 300.0)])  # default ttl: cold
     assert len(transport.requests) == 1
-    topic = transport.requests[0]["headers"]["Topic"]
-    assert topic == "brain-cache"
-    # Same idle period: no second warning.
-    service.tick(panes=panes)
+    assert transport.requests[0]["headers"]["Topic"] == cache_tag("p1")
+    # Same idle period (the clock advances WITH the idle): no second warning.
+    clock["now"] += 10.0
+    service.tick(panes=[("p1", "claude-1", 310.0)])
+    assert len(transport.requests) == 1
+
+
+def test_tick_cache_warnings_do_not_collapse_across_panes(tmp_path, clock, keys_env):
+    transport = FakeTransport()
+    service = _service(tmp_path, transport, clock)
+    _subscribe(service)
+    # Two panes going cold in the same beat: separate collapse keys,
+    # or the phone's drawer keeps only the last one.
+    service.tick(panes=[("p1", "claude-1", 300.0), ("p2", "opencode repo", 300.0)])
+    topics = {r["headers"]["Topic"] for r in transport.requests}
+    assert topics == {cache_tag("p1"), cache_tag("p2")}
+
+
+def test_tick_honors_a_configured_longer_ttl(tmp_path, clock, keys_env):
+    transport = FakeTransport()
+    service = WebPushService(
+        state_dir=tmp_path,
+        transport=transport,
+        clock=lambda: clock["now"],
+        _environ=dict(os.environ),
+        coalesce_window_s=0.0,
+        cachewarn_ttl_s=1800.0,
+    )
+    _subscribe(service)
+    # 300 s idle is nothing under a 30-minute cache window.
+    service.tick(panes=[("p1", "claude-1", 300.0)])
+    assert transport.requests == []
+    service.tick(panes=[("p1", "claude-1", 1740.0)])  # inside the margin
     assert len(transport.requests) == 1

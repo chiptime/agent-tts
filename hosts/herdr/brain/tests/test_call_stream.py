@@ -62,6 +62,25 @@ def make_spy_transcriber(settings: Settings) -> Transcriber:
     return t
 
 
+class _FixedTextModel:
+    """Live-spy variant returning a FIXED text (hint-capture tests)."""
+
+    text = "PR rama herdr opencode"
+
+    def transcribe(self, path, language=None, initial_prompt=None):
+        return (
+            iter([type("Seg", (), {"text": type(self).text})]),
+            type("Info", (), {"language": "es"}),
+        )
+
+
+def make_fixed_text_transcriber(settings: Settings, text: str) -> Transcriber:
+    _FixedTextModel.text = text
+    t = Transcriber(settings, loader=lambda: _FixedTextModel(), cached=lambda: True)
+    t.state = STATE_READY
+    return t
+
+
 class ServerSpyModel:
     """Shared /transcribe double — distinct text from the live SpyModel."""
 
@@ -148,6 +167,54 @@ def test_websocket_accepts_valid_device_token(tmp_path):
         ws.send_json({"type": "auth", "token": valid_token})
         resp = ws.receive_json()
         assert resp["type"] == "auth_ok"
+
+
+def test_turn_timing_logs_stage_breakdown(tmp_path, caplog):
+    """PRD-02: the live client's per-turn latency report must reach the
+    journal as ONE structured line (numbers + a bounded reason token,
+    never audio or transcript text), with -1 for stages the turn never
+    reached. Both reports (ask on the open socket, the stashed audio one
+    from the next re-arm) share this handler."""
+    store = PairingStore(tmp_path)
+    minted = store.mint()
+    app = build_app(tmp_path)
+    client = TestClient(app)
+    token = client.post(
+        "/pair", json={"code": minted["code"], "label": "test-phone"}
+    ).json()["token"]
+
+    with caplog.at_level(logging.INFO, logger="herdr_brain.call_stream"):
+        with client.websocket_connect("/call/stream") as ws:
+            ws.send_json({"type": "auth", "token": token})
+            assert ws.receive_json()["type"] == "auth_ok"
+            ws.send_json({
+                "type": "turn_timing",
+                "reason": "ask",
+                "close_dispatch_ms": 412,
+                "dispatch_ask_ms": 2871,
+                "ask_audio_ms": -1,
+                "total_ms": 3283,
+            })
+            ws.send_json({
+                "type": "turn_timing",
+                "reason": "audio",
+                "ask_audio_ms": 640,
+                "total_ms": 3923,
+                "close_dispatch_ms": "not-a-number",  # rejected -> -1
+            })
+            time.sleep(0.15)
+
+    text = caplog.text
+    assert "live turn timing:" in text
+    assert "reason=ask" in text
+    assert "close_dispatch_ms=412" in text
+    assert "dispatch_ask_ms=2871" in text
+    assert "ask_audio_ms=-1" in text
+    assert "total_ms=3283" in text
+    assert "reason=audio" in text
+    assert "ask_audio_ms=640" in text
+    # A non-numeric field degrades to -1, never crashes the socket.
+    assert "close_dispatch_ms=-1" in text
 
 
 def test_client_diag_logs_audio_context_state_build_and_reason(tmp_path, caplog):
@@ -268,6 +335,169 @@ def test_websocket_buffers_frames_and_transcribes_with_preroll(tmp_path):
         # 1000 ms utterance + 500 ms pre-roll = 1500 ms = 24,000 samples
         assert SpyModel.transcribe_calls == 1
         assert SpyModel.last_sample_count == 24000
+
+
+def test_transcript_is_hint_capture_unit():
+    """2026-11-17 device regression (unit): a transcript composed ENTIRELY
+    of vocabulary-hint terms is a Whisper initial_prompt echo; anything
+    carrying a real word passes."""
+    from herdr_brain.call_stream import transcript_is_hint_capture
+
+    hint = "commit, push, PR, rama, herdr, opencode"
+    assert transcript_is_hint_capture("PR rama herdr opencode", hint)
+    assert transcript_is_hint_capture("pr, RAMA herdr!", hint)  # case/punct
+    assert not transcript_is_hint_capture("abrí el PR de herdr", hint)
+    assert not transcript_is_hint_capture("", hint)
+    assert not transcript_is_hint_capture("PR rama", None)  # no hint in play
+    assert not transcript_is_hint_capture("hola buenos días", hint)
+
+
+def test_resolve_turn_transcript_unit():
+    """2026-11-17 operator decision: the dispatched turn must read EXACTLY
+    like the live strip the user watched — the agreed finals win whenever
+    they exist (the server close waits for the flush, so they cover the
+    whole utteration); the full-window one-shot is only the fallback, and
+    a hint capture never wins."""
+    from herdr_brain.call_stream import resolve_turn_transcript
+
+    hint = "commit, push, PR, rama, herdr, opencode"
+    finals = "podrías decirme si le ves sentido a este chat"
+    # THE rule: finals are the dispatched truth, full window never
+    # overrides them (no wording surprises in the bubble).
+    assert resolve_turn_transcript("en este caso", finals, hint) == finals
+    assert resolve_turn_transcript(finals + " completo", finals, hint) == finals
+    assert resolve_turn_transcript("Podrías decirme si le ves sentido a este chat.", finals, hint) == finals
+    # No finals at all: the full window stands (hint-filtered).
+    assert resolve_turn_transcript("hola buenos días", "", hint) == "hola buenos días"
+    assert resolve_turn_transcript("PR rama herdr opencode", "", hint) == ""
+    # Echo finals: degrade to the hint-filtered full window.
+    assert resolve_turn_transcript("abrí el PR de herdr", "PR rama", hint) == "abrí el PR de herdr"
+    assert resolve_turn_transcript("PR rama herdr opencode", "PR rama", hint) == ""
+
+
+def test_hint_capture_transcript_degrades_to_empty(tmp_path):
+    """2026-11-17 device regression: the echo 'PR rama herdr opencode'
+    must reach the client as an EMPTY transcript (the existing
+    not-understood path), never dispatch garbage to the model."""
+    store = PairingStore(tmp_path)
+    minted = store.mint()
+    app = build_app(
+        tmp_path,
+        transcriber=make_fixed_text_transcriber(
+            _stream_cfg(tmp_path), "PR rama herdr opencode"
+        ),
+    )
+    client = TestClient(app)
+    pair_resp = client.post("/pair", json={"code": minted["code"], "label": "test-phone"})
+    assert pair_resp.status_code == 200
+    token = pair_resp.json()["token"]
+
+    with client.websocket_connect("/call/stream") as ws:
+        ws.send_json({"type": "auth", "token": token})
+        assert ws.receive_json()["type"] == "auth_ok"
+        for _ in range(15):
+            ws.send_bytes(SPEECH_100MS)
+        ws.send_json({"type": "transcribe", "duration_ms": 1000, "pre_roll_ms": 500})
+        reply = ws.receive_json()
+        assert reply["type"] in ("transcript", "final")
+        assert reply["text"] == ""
+
+
+def test_real_speech_mentioning_hint_terms_passes(tmp_path):
+    """The filter never drops legitimate speech that happens to mention
+    hint terms — only pure-hint captures degrade."""
+    store = PairingStore(tmp_path)
+    minted = store.mint()
+    app = build_app(
+        tmp_path,
+        transcriber=make_fixed_text_transcriber(
+            _stream_cfg(tmp_path), "abrí el PR de herdr"
+        ),
+    )
+    client = TestClient(app)
+    pair_resp = client.post("/pair", json={"code": minted["code"], "label": "test-phone"})
+    assert pair_resp.status_code == 200
+    token = pair_resp.json()["token"]
+
+    with client.websocket_connect("/call/stream") as ws:
+        ws.send_json({"type": "auth", "token": token})
+        assert ws.receive_json()["type"] == "auth_ok"
+        for _ in range(15):
+            ws.send_bytes(SPEECH_100MS)
+        ws.send_json({"type": "transcribe", "duration_ms": 1000, "pre_roll_ms": 500})
+        reply = ws.receive_json()
+        assert reply["type"] in ("transcript", "final")
+        assert reply["text"] == "abrí el PR de herdr"
+
+
+def test_hub_backend_with_smart_turn_enabled_advertises_it(tmp_path, monkeypatch):
+    """2026-11-17 gate regression: stt_backend='hub' + Smart Turn
+    explicitly enabled must let the socket build its LOCAL aux models —
+    vad_status advertises smart_turn — instead of the builtin-only gate
+    that silently disabled the detector AND Silero deferral. The detector
+    is faked (fast): this pins the GATE, not the model."""
+    import herdr_brain.call_stream as call_stream_module
+
+    class _FakeDetector:
+        unavailable_reason = None
+
+        def ensure_loaded(self) -> bool:
+            return True
+
+    monkeypatch.setattr(
+        call_stream_module, "default_turn_detector", lambda: _FakeDetector()
+    )
+
+    store = PairingStore(tmp_path)
+    minted = store.mint()
+    app = build_app(tmp_path, stt_backend="hub", smart_turn_enabled=True)
+    client = TestClient(app)
+    pair_resp = client.post("/pair", json={"code": minted["code"], "label": "test-phone"})
+    assert pair_resp.status_code == 200
+    token = pair_resp.json()["token"]
+
+    with client.websocket_connect("/call/stream") as ws:
+        ws.send_json({"type": "auth", "token": token, "vad": True})
+        assert ws.receive_json()["type"] == "auth_ok"
+        status = None
+        for _ in range(4):
+            msg = ws.receive_json()
+            if msg.get("type") == "vad_status":
+                status = msg
+                break
+        assert status is not None, "vad_status never arrived"
+        assert status["smart_turn"] is True
+
+
+def test_hub_backend_without_smart_turn_stays_energy_gated(tmp_path, monkeypatch):
+    """The other side of the gate: a hub deployment that did NOT opt into
+    local models keeps today's energy-only behavior (no detector build)."""
+    import herdr_brain.call_stream as call_stream_module
+
+    def _boom():  # must never be consulted
+        raise AssertionError("default_turn_detector consulted while gated off")
+
+    monkeypatch.setattr(call_stream_module, "default_turn_detector", _boom)
+
+    store = PairingStore(tmp_path)
+    minted = store.mint()
+    app = build_app(tmp_path, stt_backend="hub", smart_turn_enabled=False)
+    client = TestClient(app)
+    pair_resp = client.post("/pair", json={"code": minted["code"], "label": "test-phone"})
+    assert pair_resp.status_code == 200
+    token = pair_resp.json()["token"]
+
+    with client.websocket_connect("/call/stream") as ws:
+        ws.send_json({"type": "auth", "token": token, "vad": True})
+        assert ws.receive_json()["type"] == "auth_ok"
+        status = None
+        for _ in range(4):
+            msg = ws.receive_json()
+            if msg.get("type") == "vad_status":
+                status = msg
+                break
+        assert status is not None, "vad_status never arrived"
+        assert status["smart_turn"] is False
 
 
 def test_websocket_rejects_unallowed_host(tmp_path):
@@ -1859,10 +2089,13 @@ def _auth_vad(ws):
 
 
 def test_vad_opt_in_negotiates_silero_and_streams_framing_events(tmp_path):
-    """FR-01: an opted-in connection gets vad_status naming silero, then
-    per-connection vad events: speech_start on speech, speech_end with the
-    measured silence — and the turn-end transcribe keeps working exactly
-    as before on the same socket."""
+    """FR-01 + server_turns (2026-11-17): an opted-in connection gets
+    vad_status naming silero (and server_turns), then per-connection vad
+    events: speech_start on speech, speech_end with the measured silence
+    — and the SERVER now owns the turn: the same framing opens the
+    utterance at speech_start (partials flow with no client controls)
+    and closes it after the silence window, answering the ordinary
+    transcript shape. A legacy client transcribe is a no-op."""
     engine = FakeContentVadEngine()
     client = _vad_app(tmp_path, engine)
 
@@ -1874,6 +2107,7 @@ def test_vad_opt_in_negotiates_silero_and_streams_framing_events(tmp_path):
             "engine": "silero",
             "reason": None,
             "smart_turn": False,
+            "server_turns": True,
         }
 
         # 3 chunks of loud speech: onset (2-chunk debounce) -> speech_start
@@ -1889,12 +2123,25 @@ def test_vad_opt_in_negotiates_silero_and_streams_framing_events(tmp_path):
         assert ev["type"] == "vad" and ev["event"] == "speech_end", ev
         assert ev["silence_ms"] >= 500
 
-        # The turn-end path is untouched by framing: transcribe still
-        # answers the ordinary transcript shape.
-        ws.send_json({"type": "transcribe", "duration_ms": 1000, "pre_roll_ms": 0})
-        reply = ws.receive_json()
-        assert reply["type"] in ("transcript", "final")
+        # Server-owned close: after the silence window the transcript
+        # arrives with NO client transcribe command. (The turn's audio is
+        # the loud chunks; the SpyModel answers the ordinary shape.)
+        deadline = time.monotonic() + 15
+        reply = None
+        while time.monotonic() < deadline:
+            msg = ws.receive_json()
+            if msg.get("type") in ("transcript", "error"):
+                reply = msg
+                break
+        assert reply is not None, "server-owned transcript never arrived"
+        assert reply["type"] == "transcript", reply
         assert reply["text"] == "primera palabra detectada"
+
+        # A legacy transcribe afterwards is a no-op (no second turn, no
+        # error): the very next message is the pong.
+        ws.send_json({"type": "transcribe", "duration_ms": 1000, "pre_roll_ms": 0})
+        ws.send_json({"type": "ping"})
+        assert ws.receive_json() == {"type": "pong"}
 
     assert engine.framers_minted == 1  # one framer per connection
 
@@ -2349,6 +2596,7 @@ def test_smart_turn_disabled_sends_no_advisory_and_leaves_framing_unchanged(
         "engine": "silero",
         "reason": None,
         "smart_turn": False,
+        "server_turns": True,
     }
     events = [m for m in sock.sent if m.get("type") == "vad"]
     assert any(m.get("event") == "speech_start" for m in events), events
@@ -2467,6 +2715,7 @@ def test_vad_status_advertises_smart_turn_only_when_the_detector_is_ready():
         "engine": "silero",
         "reason": None,
         "smart_turn": True,
+        "server_turns": True,
     }
 
     # Disabled: the same message, capability false.
@@ -2481,6 +2730,7 @@ def test_vad_status_advertises_smart_turn_only_when_the_detector_is_ready():
         "engine": "silero",
         "reason": None,
         "smart_turn": False,
+        "server_turns": True,
     }
 
 
@@ -2509,6 +2759,7 @@ def test_vad_status_smart_turn_false_when_the_detector_cannot_load():
         "engine": "silero",
         "reason": None,
         "smart_turn": False,
+        "server_turns": True,
     }
     assert any(
         m.get("event") == "unavailable" for m in sock.sent
@@ -2679,3 +2930,102 @@ def test_diag_logs_bounded_smart_turn_outcome_and_extension(caplog):
     assert "st=deferred" in line
     assert "ext=900" in line
     assert "probes=2" in line
+
+
+def test_server_owned_turns_transcribe_without_client_controls(tmp_path):
+    """PRD-05 core (2026-11-17 operator call: 'deberia escuchar todo'):
+    with Silero framing live the SERVER owns the utterance — the client
+    streams ONLY audio (no stream/transcribe controls) and still receives
+    the transcript: the framer's speech_start opens the turn at the
+    neural onset, and speech_end plus the silence window closes it."""
+    from pathlib import Path
+
+    speech = (
+        Path(__file__).parent / "fixtures" / "live_speech_2s.pcm"
+    ).read_bytes()
+    frames = [speech[i:i + 3200] for i in range(0, len(speech) - 3200 + 1, 3200)]
+
+    store = PairingStore(tmp_path)
+    minted = store.mint()
+    app = build_app(tmp_path, smart_turn_enabled=True)
+    client = TestClient(app)
+    pair_resp = client.post("/pair", json={"code": minted["code"], "label": "test-phone"})
+    assert pair_resp.status_code == 200
+    token = pair_resp.json()["token"]
+
+    with client.websocket_connect("/call/stream") as ws:
+        ws.send_json({"type": "auth", "token": token, "locale": "es", "vad": True})
+        assert ws.receive_json()["type"] == "auth_ok"
+        status = None
+        for _ in range(4):
+            msg = ws.receive_json()
+            if msg.get("type") == "vad_status":
+                status = msg
+                break
+        assert status is not None, "vad_status never arrived"
+        assert status["server_turns"] is True, status
+
+        # ONLY audio: the speech, then enough digital silence for Silero's
+        # speech_end plus the server's close window.
+        for f in frames:
+            ws.send_bytes(f)
+        for _ in range(35):  # 3.5 s of silence (close 1.6 s + extender margin)
+            ws.send_bytes(b"\x00" * 3200)
+
+        deadline = time.monotonic() + 15
+        reply = None
+        while time.monotonic() < deadline:
+            msg = ws.receive_json()
+            if msg.get("type") in ("transcript", "error"):
+                reply = msg
+                break
+        assert reply is not None, "no transcript ever arrived"
+        assert reply["type"] == "transcript", reply
+        assert reply["text"] == "primera palabra detectada"
+
+
+def test_legacy_controls_are_noops_in_server_turns_mode(tmp_path):
+    """An old shell (cached app.js) still sends stream start/stop and
+    transcribe; with server-owned turns those commands must be no-ops —
+    they neither open a second turn nor finalize a stale window."""
+    from pathlib import Path
+
+    speech = (
+        Path(__file__).parent / "fixtures" / "live_speech_2s.pcm"
+    ).read_bytes()
+    frames = [speech[i:i + 3200] for i in range(0, len(speech) - 3200 + 1, 3200)]
+
+    store = PairingStore(tmp_path)
+    minted = store.mint()
+    app = build_app(tmp_path, smart_turn_enabled=True)
+    client = TestClient(app)
+    pair_resp = client.post("/pair", json={"code": minted["code"], "label": "test-phone"})
+    assert pair_resp.status_code == 200
+    token = pair_resp.json()["token"]
+
+    with client.websocket_connect("/call/stream") as ws:
+        ws.send_json({"type": "auth", "token": token, "locale": "es", "vad": True})
+        assert ws.receive_json()["type"] == "auth_ok"
+        for _ in range(4):
+            if ws.receive_json().get("type") == "vad_status":
+                break
+        # Legacy controls BEFORE any speech: ignored, no error reply.
+        ws.send_json({"type": "stream", "action": "start"})
+        ws.send_json({"type": "stream", "action": "stop"})
+        ws.send_json({"type": "transcribe", "duration_ms": 1000, "pre_roll_ms": 500})
+        # The real flow: speech + silence; exactly ONE transcript arrives.
+        for f in frames:
+            ws.send_bytes(f)
+        for _ in range(35):
+            ws.send_bytes(b"\x00" * 3200)
+        deadline = time.monotonic() + 15
+        transcripts = 0
+        while time.monotonic() < deadline:
+            msg = ws.receive_json()
+            if msg.get("type") == "transcript":
+                transcripts += 1
+                assert msg["text"] == "primera palabra detectada"
+                break
+            if msg.get("type") == "error":
+                pytest.fail(f"legacy control produced an error: {msg}")
+        assert transcripts == 1, "the server-owned transcript never arrived"

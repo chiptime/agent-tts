@@ -1,6 +1,7 @@
 """Browser tests for Dictado: En vivo engine and fallback (PRD-03 Task T1)."""
 
 import json
+import time
 from urllib.parse import urlsplit
 
 import pytest
@@ -409,16 +410,21 @@ def _live_resume_boot(karaoke_app, resume_status=200):
     page.evaluate("() => localStorage.setItem('herdr-brain-voice-engine','live')")
     page.reload()
     page.wait_for_timeout(800)
-    # Reveal the boot-mounted Llamadas UI: the section is hidden and the
-    # drawer closed until a call starts — the calls module is already live.
+    # Reveal the boot-mounted Llamadas UI through the real path: force
+    # the drawer open (no call yet), then open the history POPUP from
+    # the 🕘 head button — the calls module is already live.
     page.evaluate("""
         () => {
             const drawer = document.getElementById("call-drawer");
             if (drawer) { drawer.classList.add("open"); drawer.removeAttribute("inert"); }
-            const section = document.getElementById("calls-section");
-            if (section) section.classList.remove("hidden");
         }
     """)
+    page.locator("#calls-open").click()
+    page.wait_for_function(
+        "() => document.getElementById('calls-section').classList.contains('open')",
+        timeout=5000,
+    )
+    page.wait_for_timeout(300)
     return harness, page
 
 
@@ -948,6 +954,72 @@ def test_live_capture_stays_armed_through_thinking(karaoke_app):
     page.wait_for_function(
         "() => document.body.textContent.indexOf('primera respuesta') >= 0", timeout=10000
     )
+
+
+def test_live_engine_closes_on_its_own_short_silence_window(karaoke_app):
+    """RC1 (2026-11-17 gap analysis): the live engine must not inherit the
+    shared 3200->4500 ms silence window — that +2 s is the Navegador
+    recognizer-restart workaround baked into VOICE_SILENCE_MS, a problem
+    the live engine does not have (Silero deferral, the speech-energy gate
+    and the Smart Turn extender guard its closes). Turn taking must stay
+    sub-second-class: the transcribe control leaves near the live window,
+    not after 3.2 s of dead air."""
+    harness, page = _rejoin_boot(karaoke_app)
+    page.on("pageerror", lambda e: print("PAGEERROR:", e))
+    page.evaluate("""() => {
+        window.__askReplies.push({status: 200, body: {answer: 'respuesta corta', audio_url: null}});
+    }""")
+    page.locator("#call-btn").click()
+    _tone_on(page)
+    _wait_sent_count(page, '"start"', 1)
+    started = time.monotonic()
+    _tone_off(page)
+    _wait_sent_count(page, '"transcribe"', 1, timeout=6000)
+    elapsed_ms = (time.monotonic() - started) * 1000.0
+    assert elapsed_ms < 2500.0, (
+        f"live silence close took {elapsed_ms:.0f} ms — still waiting the "
+        "shared 3.2 s Navegador workaround window (RC1)"
+    )
+
+
+def test_live_turn_sends_stage_timing_report(karaoke_app):
+    """PRD-02: every live turn reports its latency stages over the live
+    socket as {"type":"turn_timing"} messages — the baseline the
+    PRD-06/PRD-07 work will be measured against. The S7 lifecycle closes
+    the capture socket before answer audio may play, so the ask-resolution
+    report ("ask": close -> dispatch -> ask resolved) rides the still-open
+    socket, and the playback report ("audio") is stashed for the next
+    socket. This turn has no audio: exactly one "ask" report, no stash."""
+    harness, page = _rejoin_boot(karaoke_app)
+    page.evaluate("""() => {
+        window.__askReplies.push({status: 200, body: {answer: 'respuesta corta', audio_url: null}});
+    }""")
+    page.locator("#call-btn").click()
+    _speak_close(page)
+    # The fake socket has no server behind it: deliver the final
+    # transcript by hand so the client dispatches the (faked) ask.
+    page.evaluate("() => window.__wsList[0].emit({type: 'transcript', text: 'hola buenos dia'})")
+    page.wait_for_function(
+        "() => window.__sent.some(s => typeof s === 'string' && s.indexOf('turn_timing') >= 0)",
+        timeout=10000,
+    )
+    timing = page.evaluate("""() => {
+        const raw = window.__sent
+            .filter(s => typeof s === 'string' && s.indexOf('turn_timing') >= 0)
+            .pop();
+        return JSON.parse(raw);
+    }""")
+    assert timing["reason"] == "ask", f"unexpected reason: {timing}"
+    assert timing["close_dispatch_ms"] >= 0, f"missing close->dispatch: {timing}"
+    assert timing["dispatch_ask_ms"] >= 0, f"missing dispatch->ask: {timing}"
+    assert timing["ask_audio_ms"] == -1, f"no-audio turn must not report audio: {timing}"
+    assert timing["total_ms"] >= timing["close_dispatch_ms"], f"bad total: {timing}"
+    # No stash pending: nothing flushed on the re-armed socket either.
+    stashed = page.evaluate(
+        "() => window.__sent.filter(s => typeof s === 'string'"
+        " && s.indexOf('\\\"audio\\\"') >= 0).length"
+    )
+    assert stashed == 0, "a no-audio turn must not stash an audio report"
 
 
 def test_resumed_speech_rejoins_the_turn_and_cancels_the_inflight_ask(karaoke_app):
@@ -1928,3 +2000,275 @@ def test_smart_turn_never_probes_past_the_utterance_cap(karaoke_app):
     page.wait_for_function(_sent_has(page, "transcribe"), timeout=5000)
     assert _turn_probe_count(page) == 0, "a cap close spent a Smart Turn probe"
     page.evaluate("() => { Date.now = window.__realNow; }")
+
+
+def test_server_turns_client_never_sends_controls_and_dispatches(karaoke_app):
+    """server_turns (PRD-05 core): when vad_status advertises it, the
+    client's energy gate sends NO stream controls — the server owns the
+    turn — and a server-sent transcript dispatches the ask as usual."""
+    harness, page = _rejoin_boot(karaoke_app)
+    page.evaluate("""() => {
+        window.__askReplies.push({status: 200, body: {answer: 'respuesta del servidor', audio_url: null}});
+    }""")
+    page.locator("#call-btn").click()
+    # The socket must exist (and the capability land) BEFORE any speech
+    # onset can fire — under suite load the connect races the emit.
+    page.wait_for_function("() => window.__wsList.length === 1", timeout=10000)
+    page.evaluate(
+        "() => window.__wsList[0].emit({type: 'vad_status', engine: 'silero',"
+        " smart_turn: false, server_turns: true})"
+    )
+    _tone_on(page)
+    page.wait_for_timeout(1200)  # the energy gate opens; no control may leave
+    sent = page.evaluate(
+        "() => window.__sent.filter(s => typeof s === 'string'"
+        " && s.indexOf('stream') >= 0).length"
+    )
+    assert sent == 0, "client sent stream controls in server_turns mode"
+    page.evaluate(
+        "() => window.__wsList[0].emit({type: 'transcript', text: 'hola desde el servidor'})"
+    )
+    page.wait_for_function("() => window.__askLog.length === 1", timeout=10000)
+    page.wait_for_function(
+        "() => document.body.textContent.indexOf('respuesta del servidor') >= 0",
+        timeout=10000,
+    )
+
+
+def test_interim_strip_follows_long_transcriptions(karaoke_app):
+    """2026-11-17 device report ('no deja escribir más'): the interim strip
+    is capped at ~2 lines by design — a long phrase must keep the NEWEST
+    text visible (glued to the bottom, rolling subtitles) instead of
+    writing invisibly below the fold and looking frozen."""
+    harness, page = _rejoin_boot(karaoke_app)
+    page.evaluate("""() => {
+        window.__askReplies.push({status: 200, body: {answer: 'ok', audio_url: null}});
+    }""")
+    page.locator("#call-btn").click()
+    _tone_on(page)
+    _wait_sent_count(page, '"start"', 1)
+    long_text = "esta es una frase muy larga que sigue y sigue " * 6
+    page.evaluate(
+        "t => window.__wsList[0].emit({type: 'partial', text: t})", long_text
+    )
+    page.wait_for_function(
+        "() => document.getElementById('interim-text').textContent.length > 100",
+        timeout=5000,
+    )
+    overflowed = page.evaluate(
+        "() => { const el = document.getElementById('interim-text');"
+        " return el.scrollHeight > el.clientHeight + 2; }"
+    )
+    glued = page.evaluate(
+        "() => { const el = document.getElementById('interim-text');"
+        " return el.scrollTop + el.clientHeight >= el.scrollHeight - 2; }"
+    )
+    assert overflowed, "the fixture should overflow the ~2-line cap"
+    assert glued, "the strip must stay glued to the newest text"
+
+
+def test_interim_meter_owns_top_row_above_transcription(karaoke_app):
+    """2026-11-17 layout: the voice meter owns the TOP row of the interim
+    strip (dot + elapsed + cells, with the state label beside it) and the
+    transcription rolls on its OWN row right below it — keeping the ~2-line
+    cap and the glue to the newest text."""
+    harness, page = _rejoin_boot(karaoke_app)
+    page.locator("#call-btn").click()
+    _tone_on(page)
+    _wait_sent_count(page, '"start"', 1)
+    page.evaluate(
+        "t => window.__wsList[0].emit({type: 'partial', text: t})",
+        "el medidor queda arriba y la tira debajo " * 6,
+    )
+    page.wait_for_function(
+        "() => document.getElementById('interim-text').textContent.length > 100",
+        timeout=5000,
+    )
+    layout = page.evaluate(
+        """() => {
+            const meter = document.getElementById('rec-meter');
+            const status = document.getElementById('strip-status');
+            const text = document.getElementById('interim-text');
+            const m = meter.getBoundingClientRect();
+            const s = status.getBoundingClientRect();
+            const t = text.getBoundingClientRect();
+            return {
+                meterShown: !meter.classList.contains('hidden'),
+                textShown: !text.classList.contains('hidden'),
+                meterAboveText: m.bottom <= t.top + 1,
+                statusWithMeter: s.height === 0 ||
+                    (s.top >= m.top - 1 && s.bottom <= m.bottom + 1),
+                overflowed: text.scrollHeight > text.clientHeight + 2,
+                glued: text.scrollTop + text.clientHeight >= text.scrollHeight - 2,
+            };
+        }"""
+    )
+    assert layout["meterShown"] and layout["textShown"]
+    assert layout["meterAboveText"], "the meter must render above the transcription"
+    assert layout["statusWithMeter"], "the state label must share the meter row"
+    assert layout["overflowed"], "the fixture should overflow the ~2-line cap"
+    assert layout["glued"], "the strip must stay glued to the newest text"
+
+
+def test_drawer_new_call_hangs_up_resets_and_redials(karaoke_app):
+    """2026-11-17 unified new-call: ONE tap on the drawer-head ✚ hangs up
+    the live call (POST /call/end closes the record — it stays in the
+    history), wipes the agent session (POST /reset, same as #conv-new),
+    clears the chat and dials a FRESH call (second POST /call/start) —
+    without leaving the drawer, and the fresh mic streams again."""
+    harness, page = _rejoin_boot(karaoke_app)
+    page.locator("#call-btn").click()
+    _tone_on(page)
+    _wait_sent_count(page, '"start"', 1)
+
+    # Boot history painted turns; the new call must wipe them.
+    page.wait_for_function(
+        "() => document.querySelectorAll('#conversation .turn').length > 0",
+        timeout=5000,
+    )
+    page.locator("#call-new").click(timeout=5000)
+
+    page.wait_for_function(
+        "() => window.__karaokeHarness.fetchCalls.includes('/reset')", timeout=10000
+    )
+    ends = _posts(harness, "/call/end")
+    starts = _posts(harness, "/call/start")
+    resets = _posts(harness, "/reset")
+    assert len(ends) == 1, "the new call must close the previous record"
+    assert len(starts) == 2, "the new call must dial a fresh record"
+    assert len(resets) == 1, "the new call must wipe the session context"
+    # The old record closed BEFORE the fresh one opened.
+    paths = [
+        urlsplit(r.url).path for r in harness.requests if r.method == "POST"
+    ]
+    assert paths.index("/call/end") < len(paths) - 1 - paths[::-1].index("/call/start"), \
+        "/call/end must precede the fresh /call/start"
+    # The chat cleared (the ghost placeholder is NOT a turn) and the
+    # drawer reopened on the fresh call.
+    assert page.locator("#conversation .turn").count() == 0, \
+        "the new call must start with a clean chat"
+    assert page.locator("#call-drawer").evaluate(
+        "el => el.classList.contains('open')"
+    ), "the drawer must stay open on the fresh call"
+    # The fresh mic really streams: a second tone onset opens the turn.
+    page.wait_for_function("() => window.__gumCount >= 2", timeout=15000)
+    _tone_on(page)
+    _wait_sent_count(page, '"start"', 2)
+
+
+def test_open_drawer_spans_80pct_and_dives_behind_the_footer(karaoke_app):
+    """2026-11-17 device report: a transparent slit opened between the
+    open drawer and the footer, and the drawer felt short. The open
+    drawer must span ~80% of the viewport, reach DOWN behind the footer
+    (the footer's opaque panel is the seam — the cockpit can never show
+    through between them) and keep the footer's buttons on top of it."""
+    harness, page = _live_boot(karaoke_app)
+    page.locator("#call-btn").click()
+    page.wait_for_function(
+        "() => document.getElementById('call-drawer').classList.contains('open')",
+        timeout=15000,
+    )
+    page.wait_for_timeout(400)  # let the 0.3s slide settle
+    geo = page.evaluate(
+        """() => {
+            const drawer = document.getElementById('call-drawer');
+            const footer = document.querySelector('footer');
+            const btn = document.getElementById('call-btn');
+            const d = drawer.getBoundingClientRect();
+            const f = footer.getBoundingClientRect();
+            const b = btn.getBoundingClientRect();
+            const hit = document.elementFromPoint(
+                b.left + b.width / 2, b.top + b.height / 2);
+            return {
+                vh: window.innerHeight,
+                drawerH: d.height,
+                drawerBottom: d.bottom,
+                footerTop: f.top,
+                footerOnTop: !!hit && (footer.contains(hit) || hit === footer),
+            };
+        }"""
+    )
+    assert geo["drawerH"] >= 0.78 * geo["vh"], \
+        f"drawer spans {geo['drawerH']}px of {geo['vh']}px — expected ~80%"
+    assert geo["drawerBottom"] >= geo["vh"] - 2, \
+        "the drawer must reach the viewport floor (bottom: 0)"
+    assert geo["drawerBottom"] >= geo["footerTop"] - 1, \
+        "no slit: the drawer must dive behind the footer"
+    assert geo["footerOnTop"], \
+        "the footer's buttons must stay visible on top of the drawer"
+
+
+def test_calls_history_lives_in_a_popup_launched_from_the_drawer_head(karaoke_app):
+    """2026-11-17: the Llamadas history is NOT the main thing mid-call —
+    it left the drawer. The 🕘 button beside the ✚ opens it as a sheet
+    OVER the drawer (same band as Conversaciones), the list renders
+    current, and closing the popup leaves the call untouched."""
+    harness, page = _live_boot(karaoke_app)
+    harness.respond(
+        "/calls", {"calls": [RESUME_CALL], "has_more": False}, query=("before", "limit")
+    )
+
+    # In a live call the drawer auto-opens (AC1).
+    page.locator("#call-btn").click()
+    page.wait_for_function(
+        "() => document.getElementById('call-drawer').classList.contains('open')",
+        timeout=15000,
+    )
+    # The section left the drawer's DOM.
+    assert not page.evaluate(
+        "() => document.getElementById('call-drawer')"
+        ".contains(document.getElementById('calls-section'))"
+    ), "the calls history must not live inside the drawer"
+    # The 🕘 launcher opens the popup over the drawer; refresh() makes
+    # the list current (the boot fetch predates the /calls response).
+    page.locator("#calls-open").click()
+    page.wait_for_function(
+        "() => document.getElementById('calls-section').classList.contains('open')",
+        timeout=5000,
+    )
+    page.wait_for_function(
+        "() => document.querySelectorAll('#calls-container .call-item').length > 0",
+        timeout=5000,
+    )
+    page.wait_for_timeout(400)  # let the 0.28s sheet slide settle
+    over = page.evaluate(
+        """() => {
+            const item = document.querySelector('#calls-container .call-item');
+            const r = item.getBoundingClientRect();
+            const hit = document.elementFromPoint(
+                r.left + r.width / 2, r.top + r.height / 2);
+            const sheet = document.getElementById('calls-section');
+            return !!hit && sheet.contains(hit);
+        }"""
+    )
+    assert over, "the popup must render OVER the open drawer"
+    # 2026-11-17 (2nd pass): the popup anchors at the viewport FLOOR and
+    # COVERS the footer — no reserved strip for the hang-up button, no
+    # transparent slit above it (the gap the drawer itself once had).
+    geo = page.evaluate(
+        """() => {
+            const sheet = document.getElementById('calls-section');
+            const s = sheet.getBoundingClientRect();
+            const b = document.getElementById('call-btn').getBoundingClientRect();
+            const hit = document.elementFromPoint(
+                b.left + b.width / 2, b.top + b.height / 2);
+            return {
+                vh: window.innerHeight,
+                sheetBottom: s.bottom,
+                coversFooter: !!hit && sheet.contains(hit),
+            };
+        }"""
+    )
+    assert geo["sheetBottom"] >= geo["vh"] - 2, \
+        "the popup must reach the viewport floor (bottom: 0)"
+    assert geo["coversFooter"], \
+        "the popup must cover the footer — no reserved hang-up strip"
+    # ✕ closes the popup; the call (drawer) keeps running untouched.
+    page.locator("#calls-close").click()
+    page.wait_for_function(
+        "() => !document.getElementById('calls-section').classList.contains('open')",
+        timeout=5000,
+    )
+    assert page.evaluate(
+        "() => document.getElementById('call-drawer').classList.contains('open')"
+    ), "closing the history popup must NOT close the call drawer"

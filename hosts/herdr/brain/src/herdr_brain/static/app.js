@@ -118,11 +118,17 @@
   var callConsultIndicator = $("call-consult-indicator");
   var drawer = $("call-drawer");
   var drawerCloseBtn = $("drawer-close");
+  var callNewBtn = $("call-new");
   var settingsSheet = $("settings-sheet");
   var settingsBtn = $("settings-btn");
   var settingsCloseBtn = $("settings-close");
   var convSheet = $("conv-sheet");
   var convBackdrop = $("conv-backdrop");
+  var callsBackdrop = $("calls-backdrop");
+  var callsOpenBtn = $("calls-open");
+  var callsCloseBtn = $("calls-close");
+  var callsSheetEl = $("calls-section");
+  var callsSheetOpen = false;
   var convCloseBtn = $("conv-close");
   var convNewBtn = $("conv-new");
   var callTimerEl = $("call-timer");
@@ -251,6 +257,12 @@
   var SMART_TURN_PROBE_LIMIT = 2;          // probes per turn
   var SMART_TURN_RETRY_MS = 400;           // wait before re-probing a deferral
   var liveSmartTurn = false;               // capability from vad_status
+  /* PRD-05 core (2026-11-17): with server_turns the SERVER owns the
+   * utterance boundaries (Silero onset open, silence+extender close).
+   * The client's energy gate stops sending stream controls and never
+   * closes on its own — it renders partials/finals and dispatches the
+   * transcript the server sends. */
+  var liveServerTurns = false;
   var liveProbe = null;                    // { pending, sentAt, spoke }
   var liveProbeTimer = null;               // result deadline (~300 ms)
   var liveProbeRetryTimer = null;          // deferred re-probe after incomplete
@@ -291,6 +303,11 @@
   var liveTurn = null;
   var liveMicBusy = false;
   var liveDispatchRouted = false;  // the live dispatch reached routeUtterance (B1)
+  /* PRD-02 (live-call latency baseline): one timing record per LIVE turn,
+   * anchored at the "transcribe" close and reported once over the socket
+   * by sendLiveTurnTiming(). Null outside a live turn — every other
+   * engine's path is untouched. */
+  var liveTiming = null;
   /* S7 (PRD-05/D10, T4): speech resuming after the turn closed but
    * BEFORE the answer starts rejoins the SAME turn. Null = no rejoin
    * window. "watch": the turn closed (transcribe requested or its /ask
@@ -357,6 +374,22 @@
     silenceMs: VOICE_SILENCE_MS,
     silenceGrowthPerS: VOICE_SILENCE_GROWTH_PER_S_MS,
     maxSilenceMs: VOICE_MAX_SILENCE_MS,
+    utteranceCapMs: VOICE_UTTERANCE_CAP_MS
+  };
+  /* Live-engine window (2026-11-17 gap analysis, RC1): the shared values
+   * above carry the Navegador recognizer-restart workaround — dead air the
+   * live engine pays for a problem it does not have. Its closes are
+   * already guarded three ways (Silero deferral, the speech-energy gate,
+   * the Smart Turn extender), so it takes a sub-second-class window:
+   * base 900 ms, +100 ms per second of speech, capped at 1600 ms. S9
+   * device acceptance may tune these; keep them easy to find. */
+  var LIVE_VOICE_SILENCE_MS = 900;
+  var LIVE_VOICE_SILENCE_GROWTH_PER_S_MS = 100;
+  var LIVE_MAX_SILENCE_MS = 1600;
+  var LIVE_VOICE_OPTIONS = {
+    silenceMs: LIVE_VOICE_SILENCE_MS,
+    silenceGrowthPerS: LIVE_VOICE_SILENCE_GROWTH_PER_S_MS,
+    maxSilenceMs: LIVE_MAX_SILENCE_MS,
     utteranceCapMs: VOICE_UTTERANCE_CAP_MS
   };
 
@@ -458,6 +491,18 @@
       selectedPane = data.pane_id;
       try { localStorage.setItem(PANE_KEY, selectedPane); } catch (err) { /* private mode */ }
     }
+  }
+
+  /* Push deep link (S5): a notification tap that OPENED this window
+   * carries its chat as ?pane_id=. The boot applies it AFTER the
+   * shared context (the tap is the operator's latest intent, so it
+   * beats the last shared pane) and consumes it once — the URL is
+   * cleaned whether or not the pane still exists. */
+  function deepLinkPane() {
+    try {
+      var m = window.location.search.match(/[?&]pane_id=([^&]+)/);
+      return m ? decodeURIComponent(m[1]) : null;
+    } catch (err) { return null; }
   }
 
   function adoptCallContext() {
@@ -616,6 +661,12 @@
     var liveText = voiceEngine === "live" && !!interimTextEl.textContent &&
       (micOn || st === "recording");
     interimTextEl.classList.toggle("hidden", !(active && ((browser && micOn) || liveText)));
+    /* The strip is capped at ~2 lines by design — a long phrase keeps
+     * writing below the fold, so GLUE the view to the newest text
+     * (subtitles that roll) instead of looking frozen mid-phrase. */
+    if (liveText || (browser && micOn)) {
+      interimTextEl.scrollTop = interimTextEl.scrollHeight;
+    }
     var meterOn = active && !browser && (micOn || st === "recording");
     recMeterEl.classList.toggle("hidden", !meterOn);
     var status = "";
@@ -703,7 +754,12 @@
       setPendingSheet(false);
       try { settingsBtn.focus({ preventScroll: true }); } catch (err) { /* noop */ }
     }
-    if (drawerOpen && !st.herdrDrawer && !st.herdrConvSheet && !st.herdrSettings) {
+    if (callsSheetOpen && !st.herdrCallsSheet) {
+      callsSheetOpen = false;
+      setCallsSheet(false);
+      try { callsOpenBtn.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
+    }
+    if (drawerOpen && !st.herdrDrawer && !st.herdrConvSheet && !st.herdrSettings && !st.herdrCallsSheet) {
       drawerOpen = false;
       drawer.classList.remove("open");
       drawer.setAttribute("inert", "");
@@ -785,10 +841,48 @@
   });
   convCloseBtn.addEventListener("click", closeConvSheet);
   convBackdrop.addEventListener("click", closeConvSheet);
+
+  /* ---------------- Llamadas popup (2026-11-17) ----------------
+   * The call history LEFT the drawer (it is not the main thing
+   * mid-call): the 🕘 button beside the ✚ opens it as a sheet over
+   * the drawer. Same contract as Conversaciones — ✕ / backdrop /
+   * Escape / Android back all close it; focus returns to the trigger. */
+  function setCallsSheet(open) {
+    callsBackdrop.classList.toggle("open", open);
+    callsSheetEl.classList.toggle("open", open);
+    if (open) callsSheetEl.removeAttribute("inert");
+    else callsSheetEl.setAttribute("inert", "");
+  }
+
+  function openCallsSheet() {
+    if (callsSheetOpen) return;
+    callsSheetOpen = true;
+    setCallsSheet(true);
+    if (callsUI) callsUI.refresh();  // the list opens current
+    try { history.pushState({ herdrCallsSheet: true }, ""); } catch (err) { /* non-http */ }
+    try { callsCloseBtn.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
+  }
+
+  function closeCallsSheet() {
+    if (!callsSheetOpen) return;
+    callsSheetOpen = false;
+    setCallsSheet(false);
+    if (history.state && history.state.herdrCallsSheet) history.back();  // pop our entry; popstate no-ops
+    try { callsOpenBtn.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
+  }
+
+  callsOpenBtn.addEventListener("click", openCallsSheet);
+  callsCloseBtn.addEventListener("click", closeCallsSheet);
+  callsBackdrop.addEventListener("click", closeCallsSheet);
+
   document.addEventListener("keydown", function (event) {
     /* Escape closes the topmost sheet — never from under the settings
-     * sheet. If no sheet is open and zen mode is active, escape exits zen. */
+     * sheet. The Llamadas popup can only sit on TOP (its sole trigger
+     * lives in the drawer head, which every other sheet covers), so it
+     * closes first. If no sheet is open and zen mode is active, escape
+     * exits zen. */
     if (event.key !== "Escape") return;
+    if (callsSheetOpen) { closeCallsSheet(); return; }
     if (pendingSheetOpen) { closePendingSheet(); return; }
     if (convSheetOpen && !settingsOpen) { closeConvSheet(); return; }
     if (settingsOpen) { closeSettings(); return; }
@@ -952,6 +1046,17 @@
    * HTML by the same role+text content key renderGlance reconciles on. */
 
   var reader = Reader.createReader({ doc: document, http: fetch });
+  /* The call drawer renders the CALL transcript, not the pane transcript:
+   * a second reader instance mounts /call-history/rendered — the same
+   * mount/neutralize/harden contracts, content-keyed by role+text (the
+   * ReaderCache is text-hash-based, so pane-transcript overlap stays a
+   * cache hit). Identity is stable ("call-history"); the snapshot is
+   * replaced wholesale per fetch. */
+  var callReader = Reader.createReader({
+    doc: document,
+    http: fetch,
+    renderedUrl: function () { return "/call-history/rendered"; },
+  });
   var mermaidViewer = typeof MermaidViewer !== "undefined"
     ? MermaidViewer.createMermaidViewer({
         doc: document,
@@ -1281,7 +1386,76 @@
     turn.appendChild(who);
     turn.appendChild(body);
     if (role === "brain") mountMainKaraoke(turn, body, text);
+    /* Formatted reader mount (call-chat-formatted): the drawer renders the
+     * same server-rendered HTML the glance does. rawRole/rawText pin the
+     * content key the snapshot repaint re-uses; at build time the html is
+     * usually still absent, so the raw surface shows and the next snapshot
+     * upgrades it (progressive fill). */
+    turn.rawRole = role;
+    turn.rawText = text;
+    mountCallReader(turn, role, text);
+    scheduleCallReaderSnapshot();
     return turn;
+  }
+
+  /* Mount (or unmount) the reader surface on ONE call-drawer turn. All
+   * construction is delegated to reader.mountTurn: innerHTML stays a
+   * reader.js contract, never re-implemented here. The raw body span is
+   * never touched — only hidden by CSS while .has-rendered. */
+  function mountCallReader(turn, role, text) {
+    var state = karaokeCtl.state();
+    if (turn.karaokePlan && state.plan === turn.karaokePlan) return;
+    /* The drawer speaks user/brain; the history payload speaks
+     * user/assistant — one role hop keeps the snapshot content key. */
+    var html = callReader.htmlFor(role === "brain" ? "assistant" : role, text);
+    var content = turn.querySelector(".reader-content");
+    if (!html) {
+      if (content) content.remove();
+      if (turn.readerHtml) {
+        turn.readerHtml = null;
+        turn.classList.remove("has-rendered");
+      }
+      return;
+    }
+    if (turn.readerHtml === html && content) return;   /* already mounted */
+    if (!content) {
+      content = document.createElement("div");
+      content.className = "reader-content";
+      turn.appendChild(content);
+    }
+    turn.classList.add("has-rendered");
+    callReader.mountTurn(content, { text: text, html: html });
+    turn.readerHtml = html;
+    if (mermaidViewer && content) mermaidViewer.renderIn(content);
+  }
+
+  /* Snapshot repaint for the WHOLE drawer: re-run the mount decision for
+   * every real turn (skips the ghost bubble and announce/system rows by
+   * the rawText marker). Cheap: htmlFor is a held-snapshot lookup. */
+  function paintCallTurnsReader() {
+    var turns = conv.querySelectorAll(".turn");
+    for (var i = 0; i < turns.length; i++) {
+      if (typeof turns[i].rawText !== "string") continue;
+      mountCallReader(turns[i], turns[i].rawRole || "brain", turns[i].rawText);
+    }
+  }
+
+  /* Call-transcript snapshot fetch, burst-collapsed: buildTurnEl fires on
+   * every turn (boot repaint adds 25 in a tight loop) and one trailing
+   * timer turns each burst into ONE fetch. The new call-history/rendered
+   * page answers from the warm ReaderCache whenever it can; a turn that
+   * misses the render budget keeps its raw text and formats on a later
+   * cycle (progressive fill). */
+  var callReaderTimer = null;
+  function scheduleCallReaderSnapshot() {
+    if (callReaderTimer) return;
+    callReaderTimer = setTimeout(function () {
+      callReaderTimer = null;
+      callReader.loadRendered("call-history", null).then(function (turns) {
+        if (!turns) return;   /* stale or failed: raw text stays */
+        paintCallTurnsReader();
+      });
+    }, 60);
   }
 
   var karaokeTurnSequence = 0;
@@ -1373,6 +1547,9 @@
     var body = last.children.length > 1 ? last.children[1] : null;
     if (!body) return false;
     body.textContent = text;
+    last.rawText = text;
+    mountCallReader(last, "user", text);
+    scheduleCallReaderSnapshot();
     conv.scrollTop = conv.scrollHeight;
     return true;
   }
@@ -1644,8 +1821,12 @@
   function enterTextMode(reason) {
     if (textMode) return;
     textMode = true;
-    if (inCall) endCall();  // endCall closes the drawer (AC4/AC11)
-    else closeDrawer();     // FR11: the drawer and the soft keyboard never coexist
+    /* PRD-02: name the call-ender in the diag timeline — a call that
+     * "ends itself" on the device must be attributable from one look. */
+    if (inCall) {
+      voiceTimelinePush("call_end", "text-mode");
+      endCall();  // endCall closes the drawer (AC4/AC11)
+    } else closeDrawer();     // FR11: the drawer and the soft keyboard never coexist
     fallbackForm.classList.remove("hidden");
     showMicNote(reason);
     renderPill();
@@ -3375,6 +3556,7 @@
         renderGlanceLabel();
         safeRender("glance", renderGlance, data);
         requestReaderSnapshot();  // always-formatted: rendered fetch on load AND every refresh
+        scheduleCallReaderSnapshot();  // the call drawer's own snapshot poll
         markPollOk();
       })
       .catch(function (err) {
@@ -4736,22 +4918,24 @@
     onSwitchPane: applyVoiceSwitch
   });
 
-  /* Call history (S6/S7): the drawer's "Llamadas" section is the
-   * dependency-injected calls module — mounted once, refreshed every
-   * time the drawer opens so the list is current without a poll. */
+  /* Call history (S6/S7): the calls module is dependency-injected and
+   * mounted ONCE into the Llamadas POPUP (#calls-section sheet, opened
+   * with the 🕘 drawer-head button); refresh() runs every time the
+   * sheet opens, so the list is current without a poll. */
   var callsUI = null;
   if (window.Calls) {
     var callsContainer = document.getElementById("calls-container");
-    var callsSection = document.getElementById("calls-section");
     if (callsContainer) {
       callsUI = window.Calls.createCallsUI({
         doc: document,
         http: function (url) { return readFetch(url); },
         t: t,
-        onResume: function (call) { resumeCall(call.call_id); }
+        onResume: function (call) {
+          closeCallsSheet();  // resuming redials: the popup goes with the call
+          resumeCall(call.call_id);
+        }
       });
       callsUI.mount(callsContainer);
-      if (callsSection) callsSection.classList.remove("hidden");
     }
   }
 
@@ -5150,6 +5334,11 @@
      * hear the answer. */
     var keepLiveCapture = !!(opts.liveRejoin && voiceEngine === "live" &&
       inCall && liveWs);
+    /* PRD-02: the dispatch mark for this live turn (a re-dispatched
+     * rejoined utterance re-anchored its close already). */
+    if (liveTiming && liveTiming.dispatchedAt == null && keepLiveCapture) {
+      liveTiming.dispatchedAt = performance.now();
+    }
     /* S7: a rejoined re-dispatch replaces its first segment's user
      * bubble — the whole utterance renders as ONE turn. */
     if (opts.replaceUserTurn && replaceLastUserTurn(text)) {
@@ -5203,6 +5392,13 @@
           speechCtl.release(speech.speech_request_id);
           return;
         }
+        /* PRD-02: the ask resolved (any status counts — the turn's LLM
+         * work is done at this point) and the capture socket is still
+         * open here, before endRejoin() closes it for the answer. */
+        if (liveTiming && liveTiming.askDoneAt == null) {
+          liveTiming.askDoneAt = performance.now();
+        }
+        sendLiveTurnTimingAsk();
         if (resp.status === 503) {
           endRejoin();
           removeThinkingBubble();
@@ -5240,8 +5436,10 @@
                 first: data.audio_url && data.speech.first_seq === 0 ? {
                   seq: 0, audio_url: data.audio_url, is_final: !!data.speech.first_is_final
                 } : null });
+              stashLiveTurnTimingAudio();  // PRD-02: playback initiated
             } else if (data.audio_url) {
               enqueueAudio(data.audio_url, null, speech.speech_request_id);
+              stashLiveTurnTimingAudio();  // PRD-02: playback initiated
             } else {
               speechCtl.release(speech.speech_request_id);
               if (!data.approval) afterAnswer();
@@ -6364,6 +6562,7 @@
     liveQuietSince = null;
     clearLiveProbeTimers();
     liveSmartTurn = false;
+    liveServerTurns = false;
     resetLiveSmartTurnTurn();
   }
 
@@ -6379,6 +6578,7 @@
        * true enables the probe. Anything else keeps today's path. */
       liveSmartTurn = data.smart_turn === true;
       liveSmartTurnDiag = liveSmartTurn ? "ready" : "off";
+      liveServerTurns = data.server_turns === true;
       voiceTimelinePush("vad:" + liveVadOpinion.engine, "");
       return;
     }
@@ -6391,6 +6591,9 @@
       liveVadOpinion.at = Date.now();
     } else if (data.event === "unavailable") {
       liveVadOpinion = { engine: "energy", reason: "runtime_failed", speech: false, at: Date.now() };
+      /* The framer died: the server stopped owning turns — the energy
+       * gate (start/stop/transcribe) is the owner again. */
+      liveServerTurns = false;
       voiceTimelinePush("vad:energy", "runtime");
     }
   }
@@ -6436,6 +6639,57 @@
     if (!liveWs || liveWs.readyState !== WebSocket.OPEN) return;
     try { liveWs.send(JSON.stringify({ type: "stream", action: action })); }
     catch (err) { /* socket died mid-send */ }
+  }
+
+  /* PRD-02: report this live turn's latency stages as numbers-only JSON
+   * on the live socket (same policy as the diag line — no text, no
+   * audio). TWO reports, forced by the S7 lifecycle: the capture socket
+   * is CLOSED before answer audio may play (echo), so the ask-resolution
+   * report ("ask": close -> dispatch -> ask resolved) goes out on the
+   * still-open socket, while the playback-initiated report ("audio":
+   * ask -> first playback, close -> first playback) is STASHED and
+   * delivered when the next live socket opens (the re-arm after the
+   * answer — deferred delivery, timestamps measured at the right
+   * moments). Stages a turn never reached report -1. */
+  function liveTimingDelta(from, to) {
+    return (from != null && to != null) ? Math.round(to - from) : -1;
+  }
+
+  function sendLiveTurnTimingAsk() {
+    if (!liveTiming || liveTiming.askSent) return;
+    liveTiming.askSent = true;
+    if (!liveWs || liveWs.readyState !== WebSocket.OPEN) return;
+    try {
+      liveWs.send(JSON.stringify({
+        type: "turn_timing",
+        reason: "ask",
+        close_dispatch_ms: liveTimingDelta(liveTiming.closeAt, liveTiming.dispatchedAt),
+        dispatch_ask_ms: liveTimingDelta(liveTiming.dispatchedAt, liveTiming.askDoneAt),
+        ask_audio_ms: -1,
+        total_ms: liveTimingDelta(liveTiming.closeAt, liveTiming.askDoneAt)
+      }));
+    } catch (err) { /* socket died mid-send */ }
+  }
+
+  function stashLiveTurnTimingAudio() {
+    if (!liveTiming || liveTiming.audioSent) return;
+    liveTiming.audioSent = true;
+    var at = performance.now();
+    liveTiming.pending = {
+      reason: "audio",
+      ask_audio_ms: liveTimingDelta(liveTiming.askDoneAt, at),
+      total_ms: liveTimingDelta(liveTiming.closeAt, at)
+    };
+  }
+
+  /* Delivered on the NEXT live socket (see the lifecycle note above). */
+  function flushLiveTurnTiming() {
+    if (!liveTiming || !liveTiming.pending) return;
+    var report = liveTiming.pending;
+    liveTiming.pending = null;
+    try {
+      liveWs.send(JSON.stringify(Object.assign({ type: "turn_timing" }, report)));
+    } catch (err) { /* socket died mid-send */ }
   }
 
   /* A1 (PRD-03 FR-03): while the socket is OPEN, ws.bufferedAmount is
@@ -6521,6 +6775,10 @@
         fallbackToServidor();
         return;
       }
+      /* PRD-02: deliver a stashed playback-timing report from the
+       * previous turn — its socket was closed before the answer audio
+       * could play (S7 echo rule), so this re-arm carries it. */
+      flushLiveTurnTiming();
       if (liveSendBuf && liveSendBuf.length() > 0) {
         var flushed = liveSendBuf.flush();
         for (var f = 0; f < flushed.length; f++) {
@@ -6593,6 +6851,10 @@
       }
       if (data && data.type === "transcript") {
         var text = (data.text || "").trim();
+        /* PRD-02 in server_turns mode: the server's close arrives WITH
+         * the transcript — anchor the timing record here (dispatch and
+         * ask markers follow in ask()). */
+        if (liveServerTurns) liveTiming = { closeAt: performance.now() };
         /* T3: the turn is over — drop the streaming display state so a
          * late message of the finished utterance can never bleed into
          * the next one. */
@@ -6685,7 +6947,9 @@
     }
 
     var armLiveUtterance = function () {
-      if (!vad) vad = window.Vad.createVad(SERVER_VOICE_OPTIONS);
+      /* RC1: the live engine's own window — NOT SERVER_VOICE_OPTIONS
+       * (the 3.2 s Navegador workaround; see LIVE_VOICE_OPTIONS above). */
+      if (!vad) vad = window.Vad.createVad(LIVE_VOICE_OPTIONS);
       else vad.reset();
       liveTurn = { onsetAt: null, speaking: false };
       resetLiveSmartTurnTurn();  // L59: fresh probe budget for this utterance
@@ -6832,9 +7096,11 @@
               /* T3 (PRD-04/S5): speech onset opens the server-side
                * partial loop — partials run WHILE SPEAKING; idle silence
                * and the agent's playback never reach the GPU. A fresh
-               * utterance also resets the display tracker. */
+               * utterance also resets the display tracker. With
+               * server_turns the framer already opened the turn at the
+               * NEURAL onset — strictly earlier than this gate. */
               if (liveTracker) liveTracker.reset();
-              sendLiveStreamControl("start");
+              if (!liveServerTurns) sendLiveStreamControl("start");
             }
             setCallState("recording");
           }
@@ -6843,8 +7109,9 @@
         }
         /* S6 (D3): Silero may only DEFER the silence close — shouldFinalize
          * latches, so it is simply not consulted while the bounded hold
-         * stands. */
-        if (!sileroDefersClose() && vad.shouldFinalize()) {
+         * stands. With server_turns the server owns the close entirely:
+         * this gate only feeds the rec meter and the cap. */
+        if (!liveServerTurns && !sileroDefersClose() && vad.shouldFinalize()) {
           var why = vad.lastFinalizeReason && vad.lastFinalizeReason();
           /* L59: a bounded Smart Turn probe may DEFER this close. It can
            * never shorten the turn: `complete` proceeds, `incomplete`
@@ -7012,15 +7279,21 @@
       liveDispatchRouted = false;  // B1: awaiting the transcript again
       var durationMs = liveTurn && liveTurn.onsetAt ? (Date.now() - liveTurn.onsetAt) : 1000;
       if (liveWs && liveWs.readyState === WebSocket.OPEN) {
+        /* PRD-02: a fresh timing record per close — the rejoined
+         * re-dispatch of a resumed turn re-anchors here. (server_turns
+         * mode: the close anchor moves to the transcript arrival.) */
+        if (!liveServerTurns) liveTiming = { closeAt: performance.now() };
         /* T3: stop the partial loop BEFORE the turn-end transcribe —
          * the server serializes both behind its one-inference lock and
          * drops whatever the last pass was still computing. */
-        sendLiveStreamControl("stop");
-        liveWs.send(JSON.stringify({
-          type: "transcribe",
-          duration_ms: durationMs,
-          pre_roll_ms: 500
-        }));
+        if (!liveServerTurns) {
+          sendLiveStreamControl("stop");
+          liveWs.send(JSON.stringify({
+            type: "transcribe",
+            duration_ms: durationMs,
+            pre_roll_ms: 500
+          }));
+        }
       } else {
         fallbackToServidor();
       }
@@ -7246,7 +7519,10 @@
 
   callBtn.addEventListener("click", function () {
     if (longPressFired) { longPressFired = false; return; }  // diag opened: swallow
-    if (inCall) endCall();
+    if (inCall) {
+      voiceTimelinePush("call_end", "hang-up");
+      endCall();
+    }
     else startCall();
   });
 
@@ -7254,9 +7530,37 @@
    * call hangs up first, then the chosen record reopens server-side
    * (turns reseed the agent context) and the mic starts on it. */
   function resumeCall(callId) {
-    if (inCall) endCall();
+    if (inCall) {
+      voiceTimelinePush("call_end", "resume");
+      endCall();
+    }
     startCall(callId);
   }
+
+  /* "Nueva llamada" from the drawer head (2026-11-17): ONE gesture = hang
+   * up (the record closes in the history), wipe the agent session context
+   * (same POST /reset as #conv-new) and dial a FRESH call. startCall runs
+   * synchronously inside the tap so the live AudioContext primes within
+   * the gesture window (L53); the reset lands while the new mic arms. */
+  callNewBtn.addEventListener("click", function () {
+    if (!inCall) return;  // drawer-scoped: only meaningful mid-call
+    voiceTimelinePush("call_end", "new");
+    endCall();  // closes the record (POST /call/end) + full teardown
+    conv.textContent = "";  // fresh call, clean chat
+    updateGhost();
+    hideBanner();
+    fetch("/reset", withDeviceAuth({
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId })
+    })).then(function (resp) {
+      if (resp.ok) showToast(t("call.new_started"), 4000);
+      else maybeOfferPairing(resp);
+    }).catch(function () {
+      showBanner(t("call.new_failed"));
+    });
+    startCall();  // fresh record — no resume id
+  });
 
   pauseBtn.addEventListener("click", function () {
     if (callState === "listening" || callState === "recording" || callState === "confirming") {
@@ -7387,6 +7691,16 @@
    * (the shared pane selection included). Offline, the local identity
    * from SESSION_KEY keeps the boot identical to the baseline. */
   adoptCallContext().then(function () {
+    /* The notification tap's chat, applied before the first render so
+     * the PWA boots straight into the conversation. Consumed once: a
+     * later reload or chip tap never jumps back to the notification's
+     * pane, and a stale pane id degrades through the effective-pane
+     * fallback. */
+    var linked = deepLinkPane();
+    if (linked) {
+      try { history.replaceState(null, "", "/"); } catch (err) { /* offline origin */ }
+      if (linked !== selectedPane) selectAgent(linked);
+    }
     refreshState();
     /* T7 reload recovery (PRD §5): ask the server whether the session
      * still has a live gate (mid-gate reload — or a handover from the
@@ -7623,6 +7937,17 @@
   }
 
   if ("serviceWorker" in navigator) {
+    /* A notification tap on an ALREADY-OPEN window: the worker focuses
+     * it and sends the chat here (it never reloads a live window). A
+     * pane the herd no longer knows (stale notification) is ignored so
+     * it cannot hijack the shared selection; an unloaded herd applies
+     * anyway and degrades through the effective-pane fallback. */
+    navigator.serviceWorker.addEventListener("message", function (event) {
+      var data = event && event.data;
+      if (!data || data.type !== "brain-open-pane" || !data.paneId) return;
+      var target = String(data.paneId);
+      if (!lastHerd.length || herdEntry(target)) selectAgent(target);
+    });
     navigator.serviceWorker.register("/sw.js").then(function (reg) {
       /* Tell the worker which shell build THIS page booted with, so
        * runtime cache fills land in the right brain-shell cache even

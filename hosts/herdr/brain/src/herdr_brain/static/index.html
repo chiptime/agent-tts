@@ -187,7 +187,8 @@
      * sheet: the two sheets are mutually exclusive, so they share the
      * backdrop rules and the z-index band. */
     #conv-backdrop,
-    #pending-backdrop {
+    #pending-backdrop,
+    #calls-backdrop {
       position: fixed;
       inset: 0;
       z-index: 19;            /* dims drawer (15) and settings (17); sheet is 20 */
@@ -197,7 +198,8 @@
       transition: opacity 0.28s ease, visibility 0s 0.28s;
     }
     #conv-backdrop.open,
-    #pending-backdrop.open {
+    #pending-backdrop.open,
+    #calls-backdrop.open {
       opacity: 1;
       visibility: visible;
       transition: opacity 0.28s ease;
@@ -230,6 +232,36 @@
       visibility: visible;
       transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
     }
+    /* Llamadas popup (2026-11-17, 2nd pass): anchored at the viewport
+     * FLOOR — bottom: 0, no reserved strip for the footer's hang-up
+     * button (z 20 covers z 16 while open), no slit can open above it.
+     * The bottom padding only clears the gesture bar's safe area. */
+    #calls-section {
+      position: fixed;
+      left: 0; right: 0;
+      bottom: 0;
+      max-width: 760px;
+      margin-inline: auto;
+      max-height: 60dvh;
+      padding-bottom: env(safe-area-inset-bottom, 0px);
+      display: flex;
+      flex-direction: column;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-bottom: 0;
+      border-radius: 18px 18px 0 0;
+      box-shadow: 0 -12px 40px #0006;
+      z-index: 20;            /* above drawer (15) AND footer (16); below toast (25), diag (30) */
+      overflow: hidden;
+      transform: translateY(calc(100% + 32px));
+      visibility: hidden;
+      transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1), visibility 0s 0.28s;
+    }
+    #calls-section.open {
+      transform: translateY(0);
+      visibility: visible;
+      transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
     .cs-head {
       flex: 0 0 auto;
       display: flex;
@@ -239,7 +271,8 @@
       border-bottom: 1px solid var(--line);
     }
     .cs-title { flex: 1; min-width: 0; font-size: 15px; font-weight: 700; }
-    #conv-close {
+    #conv-close,
+    #calls-close {
       flex: 0 0 auto;
       width: 48px;
       height: 48px;
@@ -863,40 +896,50 @@
       font-style: italic;
       text-align: center;
     }
-    /* ---- formatted reader surface (reader-html-integration) ---- *
-     * Every rule is scoped under #glance-turns .reader-content so the
-     * reader styling can never leak into the chat drawer or the call
-     * UI. When a formatted mount exists, the plain .gt-text view hides
-     * (the reader payload replaces it); without one, .gt-text remains
-     * the surface exactly as before. */
+    /* ---- formatted reader surface (reader-html-integration + call-
+     * chat-formatted) ---- * The glance keeps its exact scope; the call
+     * drawer joins it DELIBERATELY: :is() widens every rule to both
+     * #glance-turns and #conversation, so the drawer renders the same
+     * server payload with the same styling and nothing leaks anywhere
+     * else. When a formatted mount exists, the plain view hides (the
+     * reader payload replaces it); without one, the raw surface remains
+     * exactly as before. The drawer's raw body is its span:not(.who)
+     * (karaoke chunk spans included): hiding it must neither detach nor
+     * recreate them — the controller still owns those nodes for live and
+     * replay audio. */
     #glance-turns .gturn.has-rendered .gt-text { display: none; }
-    #glance-turns .reader-content {
+    /* DIRECT child only: a descendant span would also hide the
+     * .reader-content's own tts-sent spans and collapse the bubble to
+     * nothing (the plain body span is a direct child; the reader
+     * content's spans are not). */
+    #conversation .turn.has-rendered > span:not(.who) { display: none; }
+    :is(#glance-turns, #conversation) .reader-content {
       white-space: normal;
       word-break: break-word;
       overflow-x: auto;
     }
-    #glance-turns .reader-content h1,
-    #glance-turns .reader-content h2,
-    #glance-turns .reader-content h3,
-    #glance-turns .reader-content h4 {
+    :is(#glance-turns, #conversation) .reader-content h1,
+    :is(#glance-turns, #conversation) .reader-content h2,
+    :is(#glance-turns, #conversation) .reader-content h3,
+    :is(#glance-turns, #conversation) .reader-content h4 {
       margin: 8px 0 4px;
       line-height: 1.3;
     }
-    #glance-turns .reader-content h1 { font-size: 1.25em; }
-    #glance-turns .reader-content h2 { font-size: 1.15em; }
-    #glance-turns .reader-content h3,
-    #glance-turns .reader-content h4 { font-size: 1.05em; }
-    #glance-turns .reader-content p { margin: 4px 0; }
-    #glance-turns .reader-content strong { font-weight: 800; }
-    #glance-turns .reader-content em { font-style: italic; }
-    #glance-turns .reader-content code {
+    :is(#glance-turns, #conversation) .reader-content h1 { font-size: 1.25em; }
+    :is(#glance-turns, #conversation) .reader-content h2 { font-size: 1.15em; }
+    :is(#glance-turns, #conversation) .reader-content h3,
+    :is(#glance-turns, #conversation) .reader-content h4 { font-size: 1.05em; }
+    :is(#glance-turns, #conversation) .reader-content p { margin: 4px 0; }
+    :is(#glance-turns, #conversation) .reader-content strong { font-weight: 800; }
+    :is(#glance-turns, #conversation) .reader-content em { font-style: italic; }
+    :is(#glance-turns, #conversation) .reader-content code {
       font-family: ui-monospace, monospace;
       font-size: 0.92em;
       background: var(--oc-panel);
       border-radius: 4px;
       padding: 1px 4px;
     }
-    #glance-turns .reader-content pre {
+    :is(#glance-turns, #conversation) .reader-content pre {
       background: var(--oc-bg);
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -904,51 +947,56 @@
       overflow-x: auto;
       margin: 6px 0;
     }
-    #glance-turns .reader-content pre code { background: none; padding: 0; }
-    #glance-turns .reader-content ul,
-    #glance-turns .reader-content ol {
+    :is(#glance-turns, #conversation) .reader-content pre code { background: none; padding: 0; }
+    :is(#glance-turns, #conversation) .reader-content ul,
+    :is(#glance-turns, #conversation) .reader-content ol {
       margin: 4px 0;
       padding-left: 20px;
     }
-    #glance-turns .reader-content table {
+    :is(#glance-turns, #conversation) .reader-content table {
       border-collapse: collapse;
       margin: 6px 0;
       max-width: 100%;
       display: block;           /* horizontally scrollable tables */
       overflow-x: auto;
     }
-    #glance-turns .reader-content th,
-    #glance-turns .reader-content td {
+    :is(#glance-turns, #conversation) .reader-content th,
+    :is(#glance-turns, #conversation) .reader-content td {
       border: 1px solid var(--line);
       padding: 4px 8px;
       text-align: left;
     }
     /* Markdown colours (opencode TUI palette): headers and table headers
      * purple, bold amber, code green, links blue. */
-    #glance-turns .reader-content h1,
-    #glance-turns .reader-content h2,
-    #glance-turns .reader-content h3,
-    #glance-turns .reader-content h4 { color: var(--oc-purple); }
-    #glance-turns .reader-content strong { color: var(--oc-amber); }
-    #glance-turns .reader-content code { color: var(--oc-green); }
-    #glance-turns .reader-content pre,
-    #glance-turns .reader-content pre code { color: var(--oc-green); }
-    #glance-turns .reader-content th {
+    :is(#glance-turns, #conversation) .reader-content h1,
+    :is(#glance-turns, #conversation) .reader-content h2,
+    :is(#glance-turns, #conversation) .reader-content h3,
+    :is(#glance-turns, #conversation) .reader-content h4 { color: var(--oc-purple); }
+    :is(#glance-turns, #conversation) .reader-content strong { color: var(--oc-amber); }
+    :is(#glance-turns, #conversation) .reader-content code { color: var(--oc-green); }
+    :is(#glance-turns, #conversation) .reader-content pre,
+    :is(#glance-turns, #conversation) .reader-content pre code { color: var(--oc-green); }
+    :is(#glance-turns, #conversation) .reader-content th {
       color: var(--oc-purple);
       font-weight: 700;
       background: color-mix(in srgb, var(--oc-purple) 12%, transparent);
     }
-    #glance-turns .reader-content a { color: var(--oc-blue); font-weight: 700; }
-    #glance-turns .reader-content .tts-sent,
-    #glance-turns .reader-content .tts-sent-cont {
+    :is(#glance-turns, #conversation) .reader-content a { color: var(--oc-blue); font-weight: 700; }
+    :is(#glance-turns, #conversation) .reader-content .tts-sent,
+    :is(#glance-turns, #conversation) .reader-content .tts-sent-cont {
       border-radius: 4px;
-      cursor: pointer;          /* manual sentence selection */
+      cursor: pointer;          /* manual sentence selection (glance) */
     }
-    #glance-turns .reader-content .tts-selected {
+    :is(#glance-turns, #conversation) .reader-content .tts-selected {
       background: var(--accent);
       color: var(--panel);
     }
-    #glance-turns .reader-content a { color: var(--accent); font-weight: 700; }
+    :is(#glance-turns, #conversation) .reader-content a { color: var(--accent); font-weight: 700; }
+    /* The drawer mounts the payload read-only: its sentence anchors are
+     * not card controls there (the glance owns the click/keyboard TTS
+     * path), so they keep the default cursor and never pose as buttons. */
+    #conversation .reader-content .tts-sent,
+    #conversation .reader-content .tts-sent-cont { cursor: default; }
 
     /* ---- Karaoke Interactivo (RFC-02: Client-Side Web Speech) ---- */
     .tts-sentence {
@@ -1614,11 +1662,14 @@
     }
     :root[data-theme="dark"] #banner { background: #3a1414; color: #fecaca; }
 
-    /* Bottom call bar: always visible and tappable. */
+    /* Bottom call bar: always visible and tappable. z 16 keeps it ON TOP
+     * of the call drawer (15): the drawer dives behind it to the floor,
+     * so the bar's opaque panel is the seam — a transparent slit can
+     * never open between them (2026-11-17 device report). */
     footer {
       position: fixed;
       left: 0; right: 0; bottom: 0;
-      z-index: 9;
+      z-index: 16;
       padding: var(--sp-2) var(--sp-3) calc(env(safe-area-inset-bottom, 0px) + var(--sp-3));
       background: var(--panel);
       border-top: 1px solid var(--line);
@@ -1666,19 +1717,23 @@
     #mic-note { font-size: var(--fs-xs); color: var(--muted); text-align: center; }
 
     /* ── CALL DRAWER ──────────────────────────────────────────────────
-     * The voice call lives in a drawer anchored ABOVE the footer: it
-     * slides over the cockpit, closes without hanging up, and never
-     * covers the footer or the toast. */
+     * The voice call lives in a bottom sheet that spans ~80% of the
+     * viewport and slides over the cockpit: it closes without hanging
+     * up, and it DIVES BEHIND the footer (z 16) down to the floor — the
+     * footer's opaque panel is the seam, so no transparent slit can open
+     * between them whatever the footer's real height. The bottom padding
+     * keeps the sheet's content above the footer's buttons. */
     #call-drawer {
       position: fixed;
       left: 0; right: 0;
       /* Wide viewports: same centered 760px column as the cockpit. */
       max-width: 760px;
       margin-inline: auto;
-      bottom: calc(env(safe-area-inset-bottom, 0px) + 96px);
-      height: min(58vh, calc(100vh - 260px));
-      height: min(58%, calc(100dvh - 260px));
+      bottom: 0;
+      height: 80vh;
+      height: 80dvh;
       min-height: 140px;
+      padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 96px);
       background: var(--panel);
       border: 1px solid var(--line);
       border-bottom: 0;
@@ -1769,6 +1824,34 @@
       border: 1px solid var(--line);
       border-radius: 10px;
     }
+    /* "Nueva llamada" (2026-11-17): same header-button language as the
+     * minimize ▼ — ONE tap = hang up + wipe the session context + redial. */
+    #call-new {
+      flex: 0 0 auto;
+      width: 48px;
+      height: 48px;
+      font-size: 18px;
+      font-weight: 700;
+      background: var(--chip-bg);
+      color: var(--accent);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+    }
+    #call-new:active { transform: scale(0.96); }
+    /* 🕘 Llamadas launcher (2026-11-17): same header-button language as
+     * the ✚ — opens the history popup over the drawer. */
+    #calls-open {
+      flex: 0 0 auto;
+      width: 48px;
+      height: 48px;
+      font-size: 16px;
+      font-weight: 700;
+      background: var(--chip-bg);
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+    }
+    #calls-open:active { transform: scale(0.96); }
     /* Compact pending strip: on short/landscape screens the base banner
      * would be covered by the drawer, so pending info repeats in the
      * drawer header area (AC12). */
@@ -1789,26 +1872,35 @@
     }
     /* Interim strip — engine-dependent (FR8):
      *  navegador -> live interim text + caret
-     *  servidor  -> recording dot + elapsed utterance time + level meter */
+     *  servidor  -> recording dot + elapsed utterance time + level meter
+     * Layout (2026-11-17): the meter owns the TOP row (dot + elapsed +
+     * cells, state label beside it); the transcription rolls on its OWN
+     * row right below it. Visibility stays governed by renderInterimStrip
+     * (app.js) — this CSS only stacks the rows. */
     #interim {
       flex: 0 0 auto;
       min-height: 42px;
       display: flex;
-      align-items: center;
-      gap: 10px;
+      flex-direction: column;
+      justify-content: center;
+      gap: 4px;
       padding: 8px 14px;
       border-bottom: 1px dashed var(--line);
       font-size: var(--fs-md);
     }
+    #interim-top { display: flex; align-items: center; gap: 10px; }
     #interim-text {
-      flex: 1;
       min-height: 1.4em;
       max-height: 2.9em;
-      overflow: hidden;
+      /* Long phrases keep writing below the fold — follow the newest
+         text instead of looking frozen ("no deja escribir más"). */
+      overflow-y: auto;
+      scrollbar-width: none;
       font-weight: 700;
       font-style: italic;
       color: var(--text);
     }
+    #interim-text::-webkit-scrollbar { display: none; }
     #interim-text::after { content: "▌"; animation: caret-blink 1s steps(1) infinite; }
     @keyframes caret-blink { 50% { opacity: 0; } }
     #rec-meter { display: flex; align-items: center; gap: 8px; flex: 1; }
@@ -1840,7 +1932,10 @@
       gap: 10px;
     }
     /* ── CALLS DRAWER SECTION (T5) ────────────────────────── */
-    #calls-section {
+    /* Llamadas popup body: the sheet frame comes from the shared band
+     * above; the container is the scrollable list body (#conv-list's
+     * role) under the .cs-head bar. */
+    #calls-section #calls-container {
       flex: 1;
       min-height: 0;
       overflow-y: auto;
@@ -2323,7 +2418,8 @@
       #settings-sheet, #settings-sheet.open { transition: none; }
       #conv-sheet, #conv-sheet.open { transition: none; }
       #pending-sheet, #pending-sheet.open { transition: none; }
-      #conv-backdrop, #conv-backdrop.open { transition: none; }
+      #conv-backdrop, #conv-backdrop.open,
+      #calls-backdrop, #calls-section, #calls-section.open { transition: none; }
       #pending-backdrop, #pending-backdrop.open { transition: none; }
     }
 
@@ -2624,23 +2720,23 @@
     <div class="d-head">
       <span class="d-title"><span class="live-dot" aria-hidden="true">●</span> <span data-i18n="call.title">Llamada con brain</span></span>
       <span id="call-timer" aria-hidden="true">00:00</span>
+      <button id="call-new" type="button" title="Nueva llamada (cuelga la actual y empieza de cero)" data-i18n-title="call.new_title" aria-label="Nueva llamada" data-i18n-aria-label="call.new_title">✚</button>
+      <button id="calls-open" type="button" title="Llamadas" data-i18n-title="calls.title" aria-label="Llamadas" data-i18n-aria-label="calls.title">🕘</button>
       <button id="drawer-close" type="button" title="Minimizar la llamada (sigue en marcha)" data-i18n-title="call.minimize_title">▼</button>
     </div>
     <div id="d-pending"></div>
     <div id="interim" aria-live="off">
+      <div id="interim-top">
+        <span id="rec-meter" class="hidden"><span class="rec-dot" aria-hidden="true">●</span><span id="rec-elapsed">0:00</span><span class="meter" id="meter-cells" aria-hidden="true"></span></span>
+        <span id="strip-status" class="hidden"></span>
+      </div>
       <span id="interim-text" class="hidden"></span>
-      <span id="rec-meter" class="hidden"><span class="rec-dot" aria-hidden="true">●</span><span id="rec-elapsed">0:00</span><span class="meter" id="meter-cells" aria-hidden="true"></span></span>
-      <span id="strip-status" class="hidden"></span>
     </div>
     <main id="conversation" aria-live="polite"></main>
     <!-- Transient consult status pill (FR-18/D06): consult.js mounts
-         the "Consultando…" indicator here as a floating overlay —
-         never a conversation row, never chat height. -->
+          the "Consultando…" indicator here as a floating overlay —
+          never a conversation row, never chat height. -->
     <div id="call-consult-indicator" class="hidden" aria-live="polite"></div>
-    <!-- Llamadas section (T5): per-call history list and transcript detail -->
-    <section id="calls-section" class="calls-section hidden" aria-label="Llamadas" data-i18n-aria-label="calls.title">
-      <div id="calls-container"></div>
-    </section>
   </section>
 
   <section id="settings-sheet" role="dialog" aria-modal="false" aria-label="Ajustes" data-i18n-aria-label="settings.aria" inert>
@@ -2702,6 +2798,20 @@
       <button id="conv-new" type="button" data-i18n="herd.new_conversation">＋ Nueva conversación</button>
     </div>
     <div id="conv-list"></div>
+  </section>
+
+  <div id="calls-backdrop" aria-hidden="true"></div>
+  <!-- Llamadas popup (2026-11-17): the call history LEFT the drawer — it
+       is not the main thing mid-call. Launched from the 🕘 button beside
+       the ✚ in the drawer head; rides the same sheet band as
+       Conversaciones (backdrop 19 / sheet 20). ✕ / backdrop / Escape /
+       Android back all close it. -->
+  <section id="calls-section" role="dialog" aria-modal="true" aria-label="Llamadas" data-i18n-aria-label="calls.title" inert>
+    <div class="cs-head">
+      <span class="cs-title" data-i18n="calls.title">Llamadas</span>
+      <button id="calls-close" type="button" title="Cerrar" data-i18n-title="conv.close">✕</button>
+    </div>
+    <div id="calls-container"></div>
   </section>
 
   <!-- Pending announcements sheet (pending-notices-in-settings-sheet):
