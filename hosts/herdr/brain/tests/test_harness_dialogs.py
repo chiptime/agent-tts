@@ -67,6 +67,15 @@ CORPUS = {
     ),
     "antigravity": ("antigravity-select.txt",),
     "kiro": ("kiro-approval.txt", "kiro-trust.txt"),
+    # parity-f7e S2: the dangerous-command approval panel, derived from
+    # the reference product's REAL captures (Hermes Agent v0.22.2 classic
+    # CLI; see fixtures/dialogs/provenance.md).
+    "hermes": (
+        "hermes-approval.txt",
+        "hermes-approval-moved.txt",
+        "hermes-approval-long.txt",
+        "hermes-approval-long-full.txt",
+    ),
     "muse": (
         "muse-approval.txt",
         "muse-select.txt",
@@ -82,11 +91,13 @@ UNREAD_CORPUS = {
     "grok": ("grok-ask-parked.txt",),
     "pi": ("pi-ask-multi.txt",),
     "muse": ("muse-notes-open.txt",),
+    # parity-f7e S2: Cursor's two REAL captured dialogs — claimed as the
+    # harness's own, but never made tappable (see TestCursor).
+    "cursor": ("cursor-permission-shell.txt", "cursor-ask-question.txt"),
 }
 
-# The Cursor CLI replaces its input box with dialogs nobody has a
-# verified recipe for: its adapter claims nothing (the PWA keeps the
-# manual keypad) rather than guessing keys.
+# A hand-drawn shape Cursor never drew (numbered Yes/No rows): not the
+# pinned grammar, so it keeps declining.
 CURSOR_SCREEN = "cursor-approval.txt"
 
 
@@ -110,8 +121,8 @@ class TestRegistry:
         from herdr_brain.dialogs.registry import adapter_for
 
         expected = {
-            "antigravity", "claude", "codex", "cursor", "grok", "kiro",
-            "muse", "opencode", "opencode2", "pi",
+            "antigravity", "claude", "codex", "cursor", "grok", "hermes",
+            "kiro", "muse", "opencode", "opencode2", "pi",
         }
         assert set(registered_agents()) == expected
         for agent in expected:
@@ -649,6 +660,118 @@ class TestKiro:
         assert model.selected == 0
 
 
+class TestHermes:
+    """The dangerous-command approval panel, pinned by the reference
+    product's REAL captures (Hermes Agent v0.22.2 classic CLI, 2026-10-16;
+    fixtures/dialogs/provenance.md).
+
+    The measured recipe (ref:web/src/lib/harness/hermes/APPROVAL_NOTES.md,
+    "Live-probed" table at lines 35-46): the digit ALONE confirms its own
+    row regardless of where `❯` stands — `4` confirmed Deny with the
+    pointer on Allow once (line 40), `5` only redrew the panel with the
+    command whole (line 41), and `1` (Allow once) was the live end-to-end
+    check from the phone (lines 44-45). `2` and `3` are never sent: they
+    change Hermes's standing policy for the session or for good.
+    """
+
+    def test_approval_reads_buttons_with_digit_alone(self):
+        model = detect("hermes", fixture("hermes-approval.txt"))
+
+        assert model.kind == "permission"
+        assert labels(model) == ["Allow once", "Deny"]
+        assert recipes(model) == [("1",), ("4",)]
+        assert "Dangerous Command" in model.question
+        assert "rm -rf /tmp/refcap-hermes-lab/scratch-dir" in model.question
+        assert "delete in root path" in model.question
+        assert model.selected == 0
+        assert "Enter to confirm" in model.hint
+
+    def test_session_and_permanent_rows_are_never_buttons(self):
+        """APPROVAL_NOTES.md:45,51-54: the session and permanent allowlist
+        rows change standing policy, so no recipe is offered for them —
+        the same rule codex's persistent "don't ask again" row follows."""
+        for name in ("hermes-approval.txt", "hermes-approval-long.txt"):
+            model = detect("hermes", fixture(name))
+
+            assert "Allow for this session" not in labels(model)
+            assert "Add to permanent allowlist" not in labels(model)
+
+    def test_pointer_on_a_policy_row_leaves_no_button_selected(self):
+        model = detect("hermes", fixture("hermes-approval-moved.txt"))
+
+        assert labels(model) == ["Allow once", "Deny"]
+        assert recipes(model) == [("1",), ("4",)]
+        # The pointer stands on the excluded session row: no BUTTON row
+        # is pointed at. The pointer move itself still changes the
+        # dialog's identity (a stale tap refreshes, never answers).
+        assert model.selected is None
+        assert model.fingerprint != detect(
+            "hermes", fixture("hermes-approval.txt")
+        ).fingerprint
+
+    def test_show_full_command_is_a_button_that_only_redraws(self):
+        """APPROVAL_NOTES.md:41,51-52: `5` redraws the panel whole and
+        confirms nothing, so it is a safe button on the long-command
+        panel."""
+        model = detect("hermes", fixture("hermes-approval-long.txt"))
+
+        assert labels(model) == ["Allow once", "Deny", "Show full command"]
+        assert recipes(model) == [("1",), ("4",), ("5",)]
+        # The wrapped 120-character command reads as ONE joined subject.
+        assert "rm -rf /tmp/refcap-hermes-lab/scratch-dir/one" in model.question
+        assert "scratch-dir/three" in model.question
+
+    def test_after_show_full_command_the_fifth_row_is_gone(self):
+        model = detect("hermes", fixture("hermes-approval-long-full.txt"))
+
+        assert labels(model) == ["Allow once", "Deny"]
+        assert recipes(model) == [("1",), ("4",)]
+        assert model.selected == 1  # the pointer moved to Deny
+
+    def test_a_foreign_choice_label_refuses_the_whole_panel(self):
+        """APPROVAL_NOTES.md:53-54: any label outside the pinned set
+        refuses the panel — an unclassified row is never offered."""
+        screen = fixture("hermes-approval.txt").replace(
+            "4. Deny", "4. Deny and remember"
+        )
+
+        assert detect("hermes", screen) is None
+
+    def test_the_clarify_footer_is_not_the_approval_footer(self):
+        """The clarify panel's hint says ``Enter to lock, Tab next
+        question`` — a different Hermes dialog this corpus does not pin:
+        swapping the footers must decline, not half-claim."""
+        screen = fixture("hermes-approval.txt").replace(
+            "to select, Enter to confirm",
+            "to select, Enter to lock, Tab next question",
+        )
+
+        assert detect("hermes", screen) is None
+
+    def test_a_truncated_panel_declines(self):
+        screen = "\n".join(
+            line
+            for line in fixture("hermes-approval.txt").splitlines()
+            if not line.lstrip().startswith("╰")
+        )
+
+        assert detect("hermes", screen) is None
+
+    def test_the_fingerprint_ignores_the_ticking_rows_below_the_panel(self):
+        """Every row under the panel ticks about once a second (spinner
+        timers, the hint's countdown, the status bar's clocks): the
+        fingerprint covers the panel ALONE, or every guarded tap would
+        answer "changed" a second after the card rendered."""
+        screen = fixture("hermes-approval.txt")
+        model = detect("hermes", screen)
+
+        ticked = screen.replace("(295s)", "(001s)").replace("(  5.0s", "(  0.1s")
+        other = detect("hermes", ticked)
+
+        assert other is not None
+        assert other.fingerprint == model.fingerprint
+
+
 class TestMuse:
     def test_command_approval_reads_digit_alone(self):
         model = detect("muse", fixture("muse-approval.txt"))
@@ -704,13 +827,63 @@ class TestMuse:
 
 
 class TestCursor:
-    def test_cursor_dialogs_are_never_claimed(self):
-        """The Cursor CLI replaces its input box with dialogs whose keys
-        nobody has verified here: the recognizer claims NOTHING (the
-        unknown-dialog card keeps the keypad) rather than guessing."""
-        model = detect("cursor", fixture(CURSOR_SCREEN))
+    """parity-f7e S2: Cursor's two REAL captured dialogs (Cursor Agent
+    2026.10.14; fixtures/dialogs/provenance.md) are CLAIMED as the
+    harness's own — and answered with the explicit unread state, never
+    with buttons.
 
-        assert model is None
+    No answer recipe was ever measured on them: the reference product's
+    lab found a probe character and a Backspace inert on the permission
+    shell (ref:web/src/lib/surface/profiles/cursor.json, probe note;
+    ref:web/src/fixtures/panes/README.md, the cursor corpus rows), and
+    its own handling reads the dialogs as unreadable
+    (ref:CHANGELOG.md:275). The shell's only printed hints — y, tab,
+    shift+tab — sit outside brain's verified key dialect, and the
+    question box's Enter is "next/submit" by its own footer, semantics
+    no capture pinned. The honest cannot-read card plus the manual
+    keypad is the fail-closed answer.
+    """
+
+    def test_the_permission_shell_is_claimed_unread(self):
+        model = detect("cursor", fixture("cursor-permission-shell.txt"))
+
+        assert model is not None and model.unread
+        assert model.agent == "cursor"
+        assert model.detail
+        assert model.fingerprint
+
+    def test_the_ask_question_box_is_claimed_unread(self):
+        model = detect("cursor", fixture("cursor-ask-question.txt"))
+
+        assert model is not None and model.unread
+        assert model.detail
+
+    def test_the_hand_drawn_approval_shape_stays_outside_the_corpus(self):
+        """The old synthesized shape (numbered Yes/No rows Cursor never
+        drew) is not the pinned grammar: it keeps declining."""
+        assert detect("cursor", fixture(CURSOR_SCREEN)) is None
+
+    def test_a_footer_word_changed_declines_instead_of_unread(self):
+        screen = fixture("cursor-ask-question.txt").replace(
+            "Space select", "Space toggle"
+        )
+
+        assert detect("cursor", screen) is None
+
+    def test_a_permission_row_changed_declines_instead_of_unread(self):
+        screen = fixture("cursor-permission-shell.txt").replace(
+            "Run Everything (shift+tab)", "Run Everything (always)"
+        )
+
+        assert detect("cursor", screen) is None
+
+    @pytest.mark.parametrize("agent", sorted(CORPUS))
+    def test_every_other_adapter_declines_the_cursor_dialogs(self, agent):
+        """The cursor captures are not in CORPUS (they answer unread, not
+        a structured model), so the shared decline pool never sees them:
+        pin here that every registered adapter declines them."""
+        for name in UNREAD_CORPUS["cursor"]:
+            assert detect(agent, fixture(name)) is None
 
 
 class TestModelPickerKind:
@@ -1134,9 +1307,9 @@ class TestConformance:
         return any(
             {agent, other_agent} <= group for group in cls.FAMILY_OVERLAP
         )
-
     @pytest.mark.parametrize(
-        "agent", sorted(CORPUS) + ["cursor"],
+        "agent",
+        sorted(CORPUS) + ["cursor"],
     )
     def test_foreign_and_neutral_buffers_decline(self, agent):
         others = sorted(
@@ -1152,6 +1325,22 @@ class TestConformance:
                 declined = False
         assert declined, f"{agent} claimed a foreign dialog"
         assert detect(agent, fixture("neutral-terminal.txt")) is None
+
+    @pytest.mark.parametrize(
+        "agent,fixture_name",
+        [(a, n) for a, names in UNREAD_CORPUS.items() for n in names],
+    )
+    def test_the_unread_corpus_answers_the_explicit_unread_state(
+        self, agent, fixture_name
+    ):
+        """Every (adapter, fixture) pair UNREAD_CORPUS declares is a
+        positive claim — the harness's own dialog, unreadable — never a
+        decline and never buttons."""
+        model = detect(agent, fixture(fixture_name))
+
+        assert model is not None and model.unread
+        assert model.fingerprint
+        assert model.options == ()
 
     @pytest.mark.parametrize(
         "agent,fixture_name",

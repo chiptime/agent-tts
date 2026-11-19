@@ -19,11 +19,23 @@ the picker's own region, interior bytes untouched).
 | `opencode-models-picker-over-chat.txt` | LIVE capture 2026-11-19, opencode 1.19.5 (this machine, real pane WITH a running chat): the same `/models` modal floating MID-SCREEN over existing conversation text — chat bleeds LEFT of every modal column and the MCP status list bleeds RIGHT of it, so the grammar must anchor by COLUMN (the title/footer column window), never by clean rows. Same derivation, kept from the `Select model` title row. |
 | `opencode-models-search-wide.ansi` | LIVE capture 2026-11-19, opencode 1.19.5 (scratch tmux pane, 160x50, the operator's own config; `tmux capture-pane -p -e` after typing `GLM 5.3` into Search, no Enter sent): the FILTERED wide shape — no group headers, the provider in its own right-hand column, and the POINTER as paint (`48;2;250;178;131` on the first row, `GLM 5.3 Flash`, ahead of the exact `GLM-5.3` rows: opencode ranks free models and favourites first). The scratch path in the status row is replaced by `~/project`. |
 | `opencode-variant-picker.ansi` | LIVE capture 2026-11-19, opencode 1.19.5 (same scratch pane; `tmux capture-pane -p -e` after ctrl+p → "Switch model variant" on `GLM-5.3 Highspeed`, no Enter sent): the `Select variant` list opencode also opens right after a model switch whose variants do not hold the current one. Title + `esc` hint, `Search`, `Default/low/high/max`, the pointer as paint on `Default`, NO footer; the composer under it already names the new model. Scratch path replaced by `~/project`. |
+| `hermes-approval.txt` | `web/src/fixtures/panes/hermes--approval.txt` (Hermes Agent v0.22.2 classic CLI dangerous-command approval, `❯` on Allow once) |
+| `hermes-approval-moved.txt` | `web/src/fixtures/panes/hermes--approval-moved.txt` (the same panel after Down, `❯` on Allow for this session) |
+| `hermes-approval-long.txt` | `web/src/fixtures/panes/hermes--approval-long.txt` (a 120-character command wrapped to three rows; `5. Show full command` present) |
+| `hermes-approval-long-full.txt` | `web/src/fixtures/panes/hermes--approval-long-full.txt` (after `5`: the Show-full row gone, `❯` on Deny) |
+| `cursor-permission-shell.txt` | `web/src/fixtures/panes/cursor--permission-shell.txt` (Cursor Agent 2026.10.14 shell-command approval) |
+| `cursor-ask-question.txt` | `web/src/fixtures/panes/cursor--ask-question.txt` (Cursor Agent 2026.10.14 agent question box, `›` on the first option) |
 
 Derivation: `re.sub(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\r", "", raw)`
 then keep from the picker's first own row (the `▔` modal edge, the
 `─N─` count rule, the `╭─ Switch Model` box top, or the `Select
-model` title) to the end, with the trailing blank run dropped. This
+model` title) to the end, with the trailing blank run dropped. The
+hermes approval panels keep from the panel's own `╭` box top (the
+transcript above is cut); the cursor dialogs keep from the dialog's
+own first row (the full-width rule over the statusline row, or the
+`┌` box top). The hermes captures' lab path token is renamed to a
+same-length neutral one (`refcap`), so every wrap position inside the
+wide command rows is unchanged. This
 mirrors what brain's styled wide read hands the adapters
 (escape-stripped text).
 

@@ -1,0 +1,13 @@
+ ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ Clarify queued note                                                                                                                                                                │
+ │                                                                                                                                                                                    │
+ │ Question 1 of 1                                                                                                                                                                    │
+ │                                                                                                                                                                                    │
+ │ 1. Your message was just "queued note". What should I do with it? (notes.txt currently contains "hello".)                                                                          │
+ │                                                                                                                                                                                    │
+ │   › [ ] Append "queued note" to notes.txt                                                                                                                                          │
+ │     [ ] Just acknowledge it, no file changes                                                                                                                                       │
+ │     [ ] Other: (type to answer)                                                                                                                                                    │
+ │                                                                                                                                                                                    │
+ │ ↑/↓ option · ←/→ question · Space select · Enter next/submit · Esc to skip                                                                                                         │
+ └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
