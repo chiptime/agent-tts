@@ -244,13 +244,29 @@ class TestVanishedPaneWithTracker:
         watcher = make_watcher(settings, stub, tracker=tracker, notifier=notifier)
         watcher.poll_once()
 
-        tracker.start("rct-1", "w1:p1", "sent")
+        # The send lands while the pane works; the pane reaches done
+        # between polls. The send-time status (the watcher's baseline)
+        # rides along, so the reached done is a real transition.
+        tracker.start(
+            "rct-1", "w1:p1", "sent",
+            pane_status=watcher.last_known_status("w1:p1"),
+        )
         stub._agents = [make_agent(status="done")]
         watcher.poll_once()  # tracker ends done (terminal)
         stub._agents = []
         watcher.poll_once()
         assert tracker.snapshot("rct-1")["state"] == "done"
         assert notifier.handled_panes == ["w1:p1"]
+
+    def test_last_known_status_reads_the_watcher_baseline(
+        self, settings, make_stub
+    ):
+        stub = make_stub(agents=[make_agent(status="done")])
+        watcher = make_watcher(settings, stub)
+        assert watcher.last_known_status("w1:p1") is None  # pre-baseline
+        watcher.poll_once()
+        assert watcher.last_known_status("w1:p1") == "done"
+        assert watcher.last_known_status("w1:p9") is None
 
 
 # ── S4: the fast cadence while a send is in flight ────────────────────────────
@@ -270,12 +286,29 @@ class TestFastCadence:
 
     def test_the_cadence_relaxes_again_once_terminal(self, settings, make_stub):
         tracker = make_tracker()
-        stub = make_stub(agents=[make_agent(status="done")])
+        stub = make_stub(agents=[make_agent(status="idle")])
         watcher = make_watcher(settings, stub, tracker=tracker)
         watcher.poll_once()
         tracker.start("rct-1", "w1:p1", "sent")
-        watcher.poll_once()  # observes done → terminal
+        stub._agents = [make_agent(status="working")]
+        watcher.poll_once()  # observes working → started
+        stub._agents = [make_agent(status="done")]
+        watcher.poll_once()  # work was seen → done (terminal)
         assert watcher.next_interval_s() == POLL_INTERVAL_S
+
+    def test_a_pre_existing_done_keeps_the_fast_cadence(self, settings,
+                                                        make_stub):
+        """S1 correction on the cadence seam: a pane still reporting its
+        PRE-EXISTING `done` after the send has not completed anything —
+        the tracker stays in flight and the fast cadence holds."""
+        tracker = make_tracker()
+        stub = make_stub(agents=[make_agent(status="done")])
+        watcher = make_watcher(settings, stub, tracker=tracker)
+        watcher.poll_once()  # baseline: done
+        tracker.start("rct-1", "w1:p1", "sent")
+        watcher.poll_once()  # still the pre-existing done
+        assert tracker.snapshot("rct-1")["state"] == "sent"
+        assert watcher.next_interval_s() == FAST_POLL_INTERVAL_S
 
 
 # ── S6(c): opencode errors while Herdr says working reach the tracker ─────────

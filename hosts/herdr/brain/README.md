@@ -588,6 +588,16 @@ after **3 min** of `working` with no new store activity; every
 tracker ends after a hard cap of **30 min** as `expired` — nothing
 leaks.
 
+A status the pane **already had when the send started is not
+completion evidence** (herdr keeps `done` until the pane is viewed, so
+a pane that never picked the send up still reports its pre-existing
+`done` on the next poll). The tracker pins the pane's send-time status
+— the watcher's last-known baseline when `/pane/reply` has it, else
+its own first observation — and `done` requires one of: work seen
+after the send, a status the pane **reached after leaving** its start
+status, or harness evidence. A pane stuck at its pre-existing
+`done`/`idle` therefore surfaces `no_start` at 15 s.
+
 For **opencode** panes the tracker also reads the local store
 (read-only SQLite, `mode=ro`, never raises): activity is the newest
 `time_updated` of the session's rows after the send; an assistant
@@ -603,8 +613,9 @@ SSE event on the existing hub:
 
 ```json
 {"type": "send.track", "receipt_id": "rct-…", "pane_id": "w1:p2",
- "state": "working", "elapsed_s": 12.3, "last_activity_at": 1732000012.4,
- "stalled": true, "error": {"name": "APIError", "message": "…"}}
+ "seq": 4, "state": "working", "elapsed_s": 12.3,
+ "last_activity_at": 1732000012.4, "stalled": true,
+ "error": {"name": "APIError", "message": "…"}}
 ```
 
 (`last_activity_at` only when known, `stalled` only when true, `error`
@@ -614,12 +625,21 @@ listing, which every receipt gains **additively**:
 
 ```json
 GET /pane/receipts?pane_id=w1:p2  →  {"receipts": [{"id": "rct-…", …,
-  "track": {"state": "working", "sent_at": 1732000000.0, "elapsed_s": 12.3,
-            "stalled": false}}]}
+  "track": {"state": "working", "seq": 4, "sent_at": 1732000000.0,
+            "elapsed_s": 12.3, "stalled": false}}]}
 ```
 
-Receipts without trackers (everything pre-f7g, and legacy tool
-doubles) serialize exactly as before — no `track` key at all.
+Every payload and the `track` snapshot carry `seq`, a per-receipt
+monotonically increasing counter bumped on each state/flag change.
+Delivery is order-preserving server-side (events are computed under
+the tracker lock and delivered through a single emitter condition, so
+a later `seq` is never published before an earlier one — a blocking
+publish callback parks the chain, bounded, but never the state
+machine), and the PWA ignores any update whose `seq` is lower than the
+one it already holds for that receipt, so a late poll response can
+never roll the card back. Receipts without trackers (everything
+pre-f7g, and legacy tool doubles) serialize exactly as before — no
+`track` key at all.
 
 **Push.** `no_start`, `stalled` episodes and opencode errors caught
 while herdr says `working` dispatch a WebPush through the push
@@ -647,7 +667,12 @@ en 15 s — revisa el agente», «El pane se cerró», «Reemplazado por un
 envío nuevo», «Sin noticias tras 30 min») with a ✕ dismiss. State
 arrives from BOTH feeds — `send.track` SSE events and the `track`
 object on `GET /pane/receipts` — whichever lands first wins, so the
-card converges even with the event stream down. For the first ~12 s
+card converges even with the event stream down. The card never
+regresses: a terminal state is final, a start for a receipt the map
+already knows never regresses it (the terminal event may beat the POST
+response), a lower `seq` than the one held is ignored, and a dismissed
+receipt id stays dismissed (bounded per-pane memory) — only a NEW
+receipt id can show a card again. For the first ~12 s
 after a send the receipts poll rides a 1.5 s hot cadence (gated inside
 the app's existing 1 s tick — no second interval), then returns to the
 normal 5 s. A new send to the pane replaces the card; switching panes

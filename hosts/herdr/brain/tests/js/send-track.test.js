@@ -315,6 +315,54 @@ test("dismiss removes the pane's card state", () => {
   assert.equal(store.dismiss("w1:p2"), false);
 });
 
+/* ---- correction batch: no regressions, no resurrection, seq ---------- */
+
+test("terminal event arriving before POST response remains terminal", () => {
+  const tracks = SendTrack.createPaneTracks(() => 100000);
+  tracks.applyEvent({pane_id: "p", receipt_id: "r", state: "done", elapsed_s: 1});
+  tracks.start("p", {id: "r", outcome: "sent"});
+  assert.equal(tracks.get("p").state, "done");
+});
+
+test("a late receipts response cannot resurrect a dismissed card", () => {
+  const tracks = SendTrack.createPaneTracks(() => 100000);
+  tracks.applyEvent({pane_id: "p", receipt_id: "r", state: "done", elapsed_s: 1});
+  tracks.dismiss("p");
+  tracks.applyReceipts("p", [{id: "r", track: {state: "done", sent_at: 99}}]);
+  assert.equal(tracks.get("p"), null);
+});
+
+test("a dismissed receipt id stays dismissed; only a new id shows again", () => {
+  const tracks = SendTrack.createPaneTracks(() => 100000);
+  tracks.applyEvent({pane_id: "p", receipt_id: "r", state: "done", elapsed_s: 1});
+  tracks.dismiss("p");
+  tracks.applyEvent({pane_id: "p", receipt_id: "r", state: "done", elapsed_s: 3});
+  assert.equal(tracks.get("p"), null);
+  tracks.applyEvent({pane_id: "p", receipt_id: "r2", state: "sent", elapsed_s: 0});
+  assert.equal(tracks.get("p").receipt_id, "r2");
+});
+
+test("a lower-seq update is ignored, from SSE and from receipts", () => {
+  const tracks = SendTrack.createPaneTracks(() => 100000);
+  tracks.applyEvent({
+    pane_id: "p", receipt_id: "r", state: "done", elapsed_s: 1, seq: 4,
+  });
+  tracks.applyEvent({
+    pane_id: "p", receipt_id: "r", state: "working", elapsed_s: 2, seq: 2,
+  });
+  assert.equal(tracks.get("p").state, "done");
+
+  // Receipts ride the same rule — isolated from the terminal rule by a
+  // non-terminal held state whose stalled flag a stale poll would clear.
+  tracks.applyEvent({
+    pane_id: "q", receipt_id: "rq", state: "working", stalled: true, seq: 7,
+  });
+  tracks.applyReceipts("q", [
+    {id: "rq", track: {state: "working", sent_at: 5, stalled: false, seq: 3}},
+  ]);
+  assert.equal(tracks.get("q").stalled, true);
+});
+
 /* ---- the hot-poll cadence ---------------------------------------------- */
 
 test("the first fetch is always due", () => {

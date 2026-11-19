@@ -3131,12 +3131,20 @@ def create_app(
         if receipt is not None and receipt["outcome"] in TRACKED_OUTCOMES:
             # parity-f7g S1: one tracker per receipt follows the send to
             # its outcome. ``effective`` is born terminal (done); the
-            # watcher's poll drives everything in flight.
+            # watcher's poll drives everything in flight. The pane's
+            # last-known status rides along as the SEND-TIME status the
+            # S1 evidence rule measures transitions from (a pre-existing
+            # ``done`` Herdr keeps until the pane is viewed is not
+            # completion evidence).
             send_tracker.start(
                 receipt["id"],
                 body.pane_id,
                 receipt["outcome"],
                 sent_at=receipt["created_at"],
+                pane_status=(
+                    watcher.last_known_status(body.pane_id)
+                    if hasattr(watcher, "last_known_status") else None
+                ),
             )
         # The pane.reply audit line keeps its pinned shape for the plain
         # reply ({"outcome", "text"}); the S12 additions ride along only

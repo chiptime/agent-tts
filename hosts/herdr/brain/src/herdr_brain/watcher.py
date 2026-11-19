@@ -213,6 +213,17 @@ class AgentWatcher:
         """Wires the send tracker onto this poll cycle (f7g seam)."""
         self._send_tracker = tracker
 
+    def last_known_status(self, pane_id: str) -> Optional[str]:
+        """The pane's status as of the LAST poll (f7g S1 evidence rule).
+
+        The status a send starts from, best-effort: ``None`` before the
+        first poll has seen the pane (the tracker then pins the status
+        at its own first observation instead).
+        """
+        if self._baseline is None:
+            return None
+        return self._baseline.get(pane_id)
+
     def start(self) -> None:
         if self._thread is not None:
             return

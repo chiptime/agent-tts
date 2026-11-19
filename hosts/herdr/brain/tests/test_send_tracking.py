@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+import time
 
 import pytest
 
@@ -95,6 +97,7 @@ class TestStart:
             "type": SSE_EVENT_TYPE,
             "receipt_id": "rct-1",
             "pane_id": "w1:p1",
+            "seq": 1,
             "state": "sent",
             "elapsed_s": 0.0,
         }]
@@ -169,9 +172,10 @@ class TestStateMachine:
         tracker.observe({"w1:p1": make_agent(status="working")}, {})
         assert [e["state"] for e in tracker.events] == ["sent", "started", "working"]
 
-    def test_herdr_done_ends_the_tracker_done(self):
+    def test_herdr_done_ends_the_tracker_done_once_work_was_seen(self):
         tracker = make_tracker()
         tracker.start("rct-1", "w1:p1", "sent")
+        tracker.observe({"w1:p1": make_agent(status="working")}, {})
         tracker.observe({"w1:p1": make_agent(status="done")}, {})
         assert tracker.snapshot("rct-1")["state"] == "done"
         assert not tracker.has_active()
@@ -237,6 +241,77 @@ class TestStateMachine:
             "done", "blocked", "error", "no_start", "pane_gone",
             "superseded", "expired",
         })
+
+
+class TestPreExistingStatus:
+    """S1 correction: a status the pane ALREADY had when the send
+    started is not completion evidence.
+
+    Herdr keeps ``done`` until the pane is viewed, so a pane that never
+    picked the send up still reports its pre-existing ``done`` on the
+    watcher's next poll — the tracker must not complete on it. The
+    pane's status is pinned at the tracker's first observation;
+    completion needs work seen after the send, a status the pane
+    REACHED after leaving its start status, or harness evidence.
+    """
+
+    def test_pre_existing_done_is_not_completion_then_no_start_fires(self):
+        clock = FakeClock()
+        tracker = make_tracker(clock=clock)
+        tracker.start("rct-1", "w1:p1", "sent")
+        tracker.observe({"w1:p1": make_agent(status="done")}, {})
+        assert tracker.snapshot("rct-1")["state"] == "sent"
+        clock.advance(NO_START_S)
+        tracker.observe({"w1:p1": make_agent(status="done")}, {})
+        assert tracker.snapshot("rct-1")["state"] == "no_start"
+        assert [p["state"] for p in tracker.pushes] == ["no_start"]
+
+    def test_pre_existing_idle_is_not_completion_either(self):
+        clock = FakeClock()
+        tracker = make_tracker(clock=clock)
+        tracker.start("rct-1", "w1:p1", "sent")
+        tracker.observe({"w1:p1": make_agent(status="idle")}, {})
+        clock.advance(NO_START_S)
+        tracker.observe({"w1:p1": make_agent(status="idle")}, {})
+        assert tracker.snapshot("rct-1")["state"] == "no_start"
+
+    def test_pre_existing_done_then_working_then_done_completes(self):
+        tracker = make_tracker()
+        tracker.start("rct-1", "w1:p1", "sent")
+        tracker.observe({"w1:p1": make_agent(status="done")}, {})
+        assert tracker.snapshot("rct-1")["state"] == "sent"
+        tracker.observe({"w1:p1": make_agent(status="working")}, {})
+        assert tracker.snapshot("rct-1")["state"] == "started"
+        tracker.observe({"w1:p1": make_agent(status="done")}, {})
+        assert tracker.snapshot("rct-1")["state"] == "done"
+        assert not tracker.has_active()
+
+    def test_pre_existing_idle_with_harness_evidence_completes(self):
+        signals = FakeSignals(assistant_after=True)
+        tracker = make_tracker(signals=signals)
+        tracker.start("rct-1", "w1:p1", "sent")
+        tracker.observe({"w1:p1": make_agent(status="idle")}, {})
+        assert tracker.snapshot("rct-1")["state"] == "done"
+
+    def test_a_status_reached_after_leaving_the_start_completes(self):
+        """A fast turn can skip every working poll: a pane that LEFT
+        its start status and rests at done/idle completed a turn after
+        the send (guards the correction against over-blocking)."""
+        tracker = make_tracker()
+        tracker.start("rct-1", "w1:p1", "sent")
+        tracker.observe({"w1:p1": make_agent(status="idle")}, {})
+        tracker.observe({"w1:p1": make_agent(status="done")}, {})
+        assert tracker.snapshot("rct-1")["state"] == "done"
+
+    def test_the_send_time_status_passed_in_at_start_measures_transitions(self):
+        """The watcher's baseline — the status the send interrupted —
+        is the accurate start status when the caller has it: a pane
+        that was working at send time and done by the tracker's first
+        poll completed a turn."""
+        tracker = make_tracker()
+        tracker.start("rct-1", "w1:p1", "sent", pane_status="working")
+        tracker.observe({"w1:p1": make_agent(status="done")}, {})
+        assert tracker.snapshot("rct-1")["state"] == "done"
 
 
 # ── S3: thresholds ────────────────────────────────────────────────────────────
@@ -555,6 +630,7 @@ class TestSSEPayload:
             "type": "send.track",
             "receipt_id": "rct-1",
             "pane_id": "w1:p1",
+            "seq": 1,
             "state": "sent",
             "elapsed_s": 2.5,
         }
@@ -587,6 +663,64 @@ class TestSSEPayload:
         assert event["last_activity_at"] == pytest.approx(
             (BASE_MS + 8_000) / 1000.0
         )
+
+
+class TestEventOrdering:
+    """S4 correction: consumers can never end on a stale state.
+
+    Events are computed under the registry lock in seq order, but the
+    publish callback runs after it is released — a callback that blocks
+    must not let a LATER state publish first (the phone would end on a
+    stale card). Every payload and the receipt snapshot carry a
+    per-receipt monotonically increasing ``seq``; delivery is
+    order-preserving on the server and the PWA ignores lower seqs.
+    """
+
+    def test_seq_is_present_and_increasing_across_events_and_snapshots(self):
+        tracker = make_tracker()
+        tracker.start("rct-1", "w1:p1", "sent")
+        tracker.observe({"w1:p1": make_agent(status="working")}, {})
+        tracker.observe({"w1:p1": make_agent(status="working")}, {})
+        seqs = [e["seq"] for e in tracker.events]
+        assert seqs == [1, 2, 3]
+        # The receipt track snapshot carries the same monotonic seq.
+        assert tracker.snapshot("rct-1")["seq"] == seqs[-1]
+
+    def test_a_blocked_publish_callback_cannot_reorder_events(self):
+        entered = threading.Event()  # the 'sent' publish is inside its callback
+        gate = threading.Event()     # ...and parked there
+        published: list = []
+
+        def publish(event):
+            if event["state"] == "sent":
+                entered.set()
+                gate.wait(10)
+            published.append(event)
+
+        tracker = SendTracker(
+            clock=FakeClock(), publish=publish,
+            harness_signals=lambda kind: None,
+        )
+        starter = threading.Thread(
+            target=lambda: tracker.start("rct-1", "w1:p1", "sent"))
+        starter.start()
+        assert entered.wait(5)  # the initial event is parked in publish
+
+        observer = threading.Thread(target=lambda: tracker.observe(
+            {"w1:p1": make_agent(status="working")}, {}))
+        observer.start()
+        time.sleep(0.3)  # the observer computed 'started'; it must queue behind
+        gate.set()
+        starter.join(5)
+        observer.join(5)
+        assert not starter.is_alive() and not observer.is_alive()
+
+        seqs = [e["seq"] for e in published]
+        assert seqs == sorted(seqs)
+        assert len(set(seqs)) == len(seqs)  # strictly increasing
+        assert [e["state"] for e in published] == ["sent", "started"]
+        # The last published state equals the snapshot: no stale end.
+        assert published[-1]["state"] == tracker.snapshot("rct-1")["state"]
 
 
 # ── S7: push rules ────────────────────────────────────────────────────────────
@@ -664,5 +798,6 @@ class TestPushRules:
             harness_signals=lambda kind: None,
         )
         tracker.start("rct-1", "w1:p1", "sent")
+        tracker.observe({"w1:p1": make_agent(status="working")}, {})
         tracker.observe({"w1:p1": make_agent(status="done")}, {})
         assert tracker.snapshot("rct-1")["state"] == "done"

@@ -103,7 +103,12 @@ EXPECTED_DIGESTS = {
     # and the new send-track.js module itself. app.js and both i18n
     # re-pinned in place below (tracker wiring, track.* keys).
     "/": "813e5df2c6e2f503ede9d4a29ce0c1268cea4ddb69d68613596110c3ad7d40b1",
-    "/send-track.js": "7fdb0b14b93cc8695d06f7a93d99bc26f5b83c8c5aee9c31240dd0a81b3f03d9",
+    # send-track.js re-pinned for the correction batch (f7g): the
+    # per-receipt seq guard (a lower seq is a stale delivery, ignored),
+    # a start for an already-known receipt never regresses it, and a
+    # bounded per-pane memory of dismissed receipt ids (a dismissed
+    # receipt stays dismissed; only a new id shows a card again).
+    "/send-track.js": "21b8fba1b449b14e66cc295ddfe5f829b4b7786a0cf4d86ee1fc9270a247050b",
     # app.js re-pinned for the held-card visibility fix (F7d phone
     # report): renderPermission no longer re-hides the #pane-reply-keys
     # wrapper an idle pane's held picker card just opened (modalKeysPane

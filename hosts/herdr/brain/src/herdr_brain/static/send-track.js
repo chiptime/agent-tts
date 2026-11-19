@@ -11,7 +11,14 @@
  * pane's card; a superseded event about an older receipt never
  * overwrites the newer one) and the hot-poll cadence (1.5 s for the
  * first ~12 s after a send, then the normal 5 s). app.js owns the
- * fetching (readFetch) and the DOM painting (text nodes only). */
+ * fetching (readFetch) and the DOM painting (text nodes only).
+ *
+ * The map never regresses (correction batch): a terminal state is
+ * final and a start for a receipt the map already knows never
+ * regresses it; every update carries the server's per-receipt `seq`
+ * and a lower seq than the one held is a stale delivery, ignored; a
+ * dismissed receipt id stays dismissed (bounded per-pane memory) —
+ * only a NEW receipt id can show a card again. */
 (function (global) {
   "use strict";
 
@@ -164,6 +171,9 @@
       receipt_id: event.receipt_id,
       pane_id: event.pane_id,
       state: event.state,
+      seq: typeof event.seq === "number" && isFinite(event.seq)
+        ? event.seq
+        : null,
       sent_at: sentAt,
       stalled: !!event.stalled,
       last_activity_at: typeof event.last_activity_at === "number"
@@ -178,10 +188,29 @@
   /* The per-pane map. One visible tracker per pane: the newest receipt
    * owns the card; a superseded event about an OLDER receipt (one the
    * map already replaced) never overwrites the newer entry. Terminal
-   * entries never regress. */
+   * entries never regress; a lower seq than the one held for the
+   * receipt is a stale delivery, ignored; a dismissed receipt id stays
+   * dismissed — only a NEW receipt id can show a card again. */
+
+  /* Bounded memory of dismissed receipt ids per pane (FIFO). */
+  var DISMISSED_KEEP = 16;
+
   function createPaneTracks(clockMs) {
     var clock = clockMs || function () { return Date.now(); };
     var byPane = {};
+    var dismissedByPane = {};
+
+    function dismissed(paneId, receiptId) {
+      var ids = dismissedByPane[paneId];
+      return !!ids && ids.indexOf(String(receiptId)) !== -1;
+    }
+
+    function rememberDismissed(paneId, receiptId) {
+      var ids = dismissedByPane[paneId] || (dismissedByPane[paneId] = []);
+      var id = String(receiptId);
+      if (ids.indexOf(id) === -1) ids.push(id);
+      while (ids.length > DISMISSED_KEEP) ids.shift();
+    }
 
     function get(paneId) {
       return byPane[paneId] || null;
@@ -189,12 +218,20 @@
 
     function start(paneId, receipt) {
       if (!receipt || !receipt.id) return byPane[paneId] || null;
+      var existing = byPane[paneId];
+      if (existing && existing.receipt_id === String(receipt.id)) {
+        /* The receipt is already known — its terminal SSE event may
+         * have beaten this POST response here. Never regress it. */
+        return existing;
+      }
+      if (dismissed(paneId, receipt.id)) return byPane[paneId] || null;
       var init = initialTrack(receipt.outcome, clock() / 1000);
       if (!init) return byPane[paneId] || null;
       byPane[paneId] = {
         receipt_id: String(receipt.id),
         pane_id: paneId,
         state: init.state,
+        seq: 0,  /* any server event (seq ≥ 1) outranks the synthesis */
         sent_at: init.sent_at,
         stalled: false,
         last_activity_at: null,
@@ -205,6 +242,9 @@
 
     function applyEvent(event) {
       if (!event || !event.pane_id || !isKnownState(event.state)) return null;
+      if (dismissed(event.pane_id, event.receipt_id)) {
+        return byPane[event.pane_id] || null;
+      }
       var stored = byPane[event.pane_id];
       if (stored && stored.state !== "superseded" &&
           stored.receipt_id !== event.receipt_id &&
@@ -219,6 +259,10 @@
         byPane[event.pane_id] = entryFromEvent(
           event, null, clock() / 1000);
         return byPane[event.pane_id];
+      }
+      if (typeof event.seq === "number" && typeof stored.seq === "number" &&
+          event.seq < stored.seq) {
+        return stored;  // stale delivery: a lower seq never wins
       }
       var next = entryFromEvent(event, stored.sent_at, clock() / 1000);
       if (isTerminal(stored.state) && !isTerminal(next.state)) {
@@ -239,6 +283,7 @@
         receipt_id: newest.id,
         pane_id: paneId,
         state: newest.track.state,
+        seq: newest.track.seq,
         sent_at: newest.track.sent_at,
         elapsed_s: newest.track.elapsed_s,
         stalled: newest.track.stalled,
@@ -248,7 +293,9 @@
     }
 
     function dismiss(paneId) {
-      if (!byPane[paneId]) return false;
+      var entry = byPane[paneId];
+      if (!entry) return false;
+      rememberDismissed(paneId, entry.receipt_id);
       delete byPane[paneId];
       return true;
     }

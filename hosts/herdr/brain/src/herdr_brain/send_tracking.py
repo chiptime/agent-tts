@@ -35,11 +35,26 @@ only domain comparable with the opencode store's epoch stamps and the
 receipt store's ``created_at``. The watcher keeps its own monotonic
 clock; it only forwards agent observations.
 
+Completion evidence (S1 correction): a status the pane ALREADY had
+when the send started is not completion — Herdr keeps ``done`` until
+the pane is viewed, so a pane that never picked the send up still
+reports its pre-existing ``done``. The pane's status is pinned at the
+tracker's first observation; ``done`` requires work seen after the
+send, a status the pane REACHED after leaving its start status, or
+harness evidence (``assistant_after``, S2).
+
 Transport (S4): every state change publishes ONE SSE event
 (:data:`SSE_EVENT_TYPE`) on the announcement hub and ``GET
 /pane/receipts`` items gain a ``track`` object — additively: receipts
-without trackers serialize exactly as before. Error text is masked
-before it leaves this module.
+without trackers serialize exactly as before. Every payload and the
+snapshot carry ``seq``, a per-receipt monotonically increasing counter
+bumped on each state/flag change. Events are computed under the
+registry lock in seq order but delivered through a single emitter
+condition (:meth:`SendTracker._publish_ordered`) so a later seq is
+never published before an earlier one — while the registry lock itself
+is never held during a publish. Consumers ignore updates whose seq is
+lower than the one they already hold for the receipt. Error text is
+masked before it leaves this module.
 """
 
 from __future__ import annotations
@@ -87,6 +102,12 @@ STALLED_S = 180.0
 #: 30 minutes. Trackers never leak.
 TRACK_CAP_S = 1800.0
 
+#: How long a computed event waits for its predecessor's DELIVERY
+#: before publishing anyway (S4 correction): liveness over ordering
+#: after a grace period — a publish callback stuck forever must not
+#: freeze the receipt's whole emission chain.
+EMIT_WAIT_S = 5.0
+
 #: Defensive bound for the registry itself. One tracker per receipt and
 #: the receipt store already caps at 64; this catches orphans whose
 #: receipt was evicted (oldest dropped first).
@@ -101,7 +122,7 @@ class _Track:
 
     __slots__ = (
         "receipt_id", "pane_id", "state", "sent_at", "last_activity_at",
-        "stalled", "error", "ever_working", "label",
+        "stalled", "error", "ever_working", "label", "seq", "start_status",
     )
 
     def __init__(self, receipt_id: str, pane_id: str, state: str, sent_at: float):
@@ -114,15 +135,25 @@ class _Track:
         self.error: Optional[dict] = None
         self.ever_working = False
         self.label = pane_id  # replaced by the speakable agent label
+        # Monotonic per-receipt counter, bumped on every state/flag
+        # change (S4 correction): consumers drop lower seqs.
+        self.seq = 0
+        # The pane's status pinned at the FIRST observation after the
+        # send (S1 correction): a status equal to it is not completion
+        # evidence — Herdr keeps ``done`` until the pane is viewed.
+        self.start_status: Optional[str] = None
 
 
 class SendTracker:
     """Bounded registry of send trackers, keyed by receipt id.
 
     Thread-safe by one lock: :meth:`start` runs on HTTP threads,
-    :meth:`observe` on the watcher's poll thread. Hooks (``publish``,
-    ``notify``) are invoked OUTSIDE the lock and can never break the
-    state machine — a raising hook is swallowed like the watcher
+    :meth:`observe` on the watcher's poll thread. Events are COMPUTED
+    under that lock (in seq order) and delivered through a single
+    emitter condition (:meth:`_publish_ordered`) that re-establishes
+    the order at delivery time — the registry lock is never held
+    during a publish. Hooks (``publish``, ``notify``) can never break
+    the state machine — a raising hook is swallowed like the watcher
     swallows a raising notifier.
     """
 
@@ -140,6 +171,12 @@ class SendTracker:
         self._lock = threading.Lock()
         self._tracks: Dict[str, _Track] = {}  # receipt_id -> track
         self._by_pane: Dict[str, str] = {}  # pane_id -> newest receipt id
+        # Delivery ledger (S4 correction): receipt_id -> last delivered
+        # seq. Guarded by its own condition, never by the registry
+        # lock, so a blocking publish parks the chain without parking
+        # the state machine.
+        self._order = threading.Condition()
+        self._delivered: Dict[str, int] = {}
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -149,10 +186,19 @@ class SendTracker:
         pane_id: str,
         outcome: str,
         sent_at: Optional[float] = None,
+        pane_status: Optional[str] = None,
     ) -> dict:
         """One tracker per receipt; a newer send to the pane supersedes
-        the older non-terminal one. Returns the initial snapshot."""
+        the older non-terminal one. Returns the initial snapshot.
+
+        ``pane_status`` is the pane's last-known status AT send time
+        (the watcher's baseline) when the caller has it: the S1
+        evidence rule then measures transitions from the status the
+        send actually interrupted. Without it the tracker pins the
+        pane's status at its first observation instead.
+        """
         now = self._clock()
+        evicted: list = []
         with self._lock:
             events = []
             previous_id = self._by_pane.get(pane_id)
@@ -166,10 +212,13 @@ class SendTracker:
                 receipt_id, pane_id, state,
                 float(now if sent_at is None else sent_at),
             )
+            if pane_status:
+                track.start_status = pane_status
             self._tracks[receipt_id] = track
             self._by_pane[pane_id] = receipt_id
-            self._evict_locked()
+            evicted = self._evict_locked()
             events.append((self._event(track, now), None))
+        self._prune_delivered(evicted)
         self._emit(events)
         return self._snapshot_unlocked(track)
 
@@ -238,6 +287,7 @@ class SendTracker:
             pass
 
         read = self._read_signals(agent, track.sent_at)
+        completed = bool(read is not None and read.get("assistant_after"))
 
         if read is not None:
             activity = read.get("activity_at")
@@ -261,6 +311,12 @@ class SendTracker:
                 return
 
         status = getattr(agent, "status", "")
+        # S1 correction: pin the pane's status at the FIRST observation.
+        # A status equal to it later is something the pane already had
+        # when the send started — not completion evidence.
+        if track.start_status is None:
+            track.start_status = status
+
         if status == "error":
             track.state = "error"
             track.error = _masked_error(errors.get(track.pane_id) or {})
@@ -272,19 +328,19 @@ class SendTracker:
             track.state = "blocked"
             events.append((self._event(track, now), None))
             return
-        if status == "done":
-            track.state = "done"
-            events.append((self._event(track, now), None))
-            return
-
-        completed = bool(read is not None and read.get("assistant_after"))
-        if status == "idle" and (track.ever_working or completed):
-            # The pane went back to rest after work, or the harness
-            # store shows the completed assistant message (S2).
-            track.state = "done"
-            events.append((self._event(track, now), None))
-            return
-        if status == "working":
+        if status in ("done", "idle"):
+            # Completion evidence, one of three (S1 correction): work
+            # seen after the send; a status the pane REACHED after
+            # leaving its pinned start status (a fast turn can skip
+            # every working poll); or harness evidence (S2). A pane
+            # still sitting at its pre-existing done/idle falls through
+            # to the thresholds — no_start surfaces at 15 s.
+            left_start = status != track.start_status
+            if track.ever_working or left_start or completed:
+                track.state = "done"
+                events.append((self._event(track, now), None))
+                return
+        elif status == "working":
             track.ever_working = True
             if track.state == "sent":
                 track.state = "started"
@@ -339,17 +395,31 @@ class SendTracker:
         except Exception:  # noqa: BLE001
             return None
 
-    def _evict_locked(self) -> None:
+    def _evict_locked(self) -> list:
+        evicted_ids: list = []
         while len(self._tracks) > MAX_TRACKERS:
             oldest = next(iter(self._tracks))
             evicted = self._tracks.pop(oldest)
+            evicted_ids.append(oldest)
             if self._by_pane.get(evicted.pane_id) == oldest:
                 del self._by_pane[evicted.pane_id]
+        return evicted_ids
+
+    def _prune_delivered(self, receipt_ids: list) -> None:
+        """Drops the delivery ledger of evicted receipts (bounded
+        memory). Called with the registry lock RELEASED — the emitter
+        condition is always the innermost lock."""
+        if not receipt_ids:
+            return
+        with self._order:
+            for receipt_id in receipt_ids:
+                self._delivered.pop(receipt_id, None)
 
     def _snapshot_unlocked(self, track: _Track) -> dict:
         now = self._clock()
         snap = {
             "state": track.state,
+            "seq": track.seq,
             "sent_at": track.sent_at,
             "elapsed_s": round(max(0.0, now - track.sent_at), 1),
             "stalled": track.stalled,
@@ -361,10 +431,14 @@ class SendTracker:
         return snap
 
     def _event(self, track: _Track, now: float) -> dict:
+        # Every event IS a state/flag change: bumping here is exactly
+        # the monotonic seq contract (S4 correction).
+        track.seq += 1
         event = {
             "type": SSE_EVENT_TYPE,
             "receipt_id": track.receipt_id,
             "pane_id": track.pane_id,
+            "seq": track.seq,
             "state": track.state,
             "elapsed_s": round(max(0.0, now - track.sent_at), 1),
         }
@@ -378,17 +452,44 @@ class SendTracker:
 
     def _emit(self, events) -> None:
         for event, push in events:
-            if self._publish is not None:
-                try:
-                    self._publish(event)
-                except Exception:  # noqa: BLE001 — the hub never breaks tracking
-                    pass
+            self._publish_ordered(event)
             if push is not None and self._notify is not None:
                 pane_id, label, state, error = push
                 try:
                     self._notify(pane_id, label, state, error=error)
                 except Exception:  # noqa: BLE001 — push is advisory
                     pass
+
+    def _publish_ordered(self, event: dict) -> None:
+        """Delivers ONE event so a later seq is never published before
+        an earlier one (S4 correction).
+
+        Events leave the registry lock as an ordered list, but two
+        threads can still race between lock release and delivery. This
+        method re-establishes the order: an event waits (bounded by
+        :data:`EMIT_WAIT_S`) until its receipt's predecessor has been
+        delivered, then publishes under the condition and advances the
+        ledger. The registry lock is never held here, so a blocking
+        publish callback parks only the emission chain, never the
+        state machine.
+        """
+        key = event["receipt_id"]
+        seq = event["seq"]
+        with self._order:
+            deadline = time.monotonic() + EMIT_WAIT_S
+            while self._delivered.get(key, 0) < seq - 1:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break  # predecessor lost: deliver rather than freeze
+                self._order.wait(remaining)
+            if self._publish is not None:
+                try:
+                    self._publish(event)
+                except Exception:  # noqa: BLE001 — the hub never breaks tracking
+                    pass
+            if seq > self._delivered.get(key, 0):
+                self._delivered[key] = seq
+            self._order.notify_all()
 
 
 def _masked_error(error: Mapping) -> dict:
