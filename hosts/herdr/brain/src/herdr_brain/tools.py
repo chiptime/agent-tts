@@ -1557,11 +1557,13 @@ class BrainTools:
         keypress: ADR 0009's never-a-digit is about KEYS, and digits
         ride only inside the name), the screen is re-read until two
         reads agree, and Enter leaves ONLY when the search box echoes
-        the query AND the filtered list shows EXACTLY ONE row naming
-        the target — with one selectable row on screen the pointer is
-        on it wherever it started. Zero or several matches refuse with
-        nothing further sent, and the answer is confirmed only by the
-        picker actually closing.
+        the query AND the filtered list names ONE distinct target:
+        duplicate catalog rows carrying the SAME label are equivalent
+        (same model, same outcome — the first is taken, and with every
+        selectable row naming that one label the pointer is on it
+        wherever it started). Zero rows or more than one DISTINCT label
+        refuse with nothing further sent, and the answer is confirmed
+        only by the picker actually closing.
 
         Returns ``(matched_label, None)`` or ``(None, (reason, detail))``.
         """
@@ -1611,8 +1613,19 @@ class BrainTools:
         ]
         if not hits:
             return None, ("no-match", _name_candidates(query, []))
-        if len(hits) > 1:
-            return None, ("ambiguous", _name_candidates(query, hits))
+        # Rows whose label is IDENTICAL to the target are equivalent
+        # (same model, same outcome — the live catalog lists the same
+        # model once per provider entry): collapse them, keep the
+        # first, and refuse only on more than one DISTINCT label.
+        distinct: list = []
+        seen = set()
+        for label in hits:
+            key = _lex_flat(label)
+            if key not in seen:
+                seen.add(key)
+                distinct.append(label)
+        if len(distinct) > 1:
+            return None, ("ambiguous", _name_candidates(query, distinct))
 
         sent = self.send_keys_to_pane(pane_id, ["enter"])
         if sent.get("outcome") != "sent":

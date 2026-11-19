@@ -534,8 +534,9 @@ class TestModelPickerSearchFirst:
     """The opencode ``/models`` picker is answered SEARCH-FIRST: its
     pointer exists only as ANSI paint, so the walk could never verify
     where Enter lands. A tap TYPES the row's own name into the picker's
-    Search box and presses Enter only once the filtered list shows
-    exactly one row naming it — never a digit, never an arrow."""
+    Search box and presses Enter only once the filtered list names ONE
+    DISTINCT target — duplicate rows carrying the same label are one
+    outcome (the first is taken) — never a digit, never an arrow."""
 
     def _filtered(self, query, keep):
         lines = OPENCODE_PICKER.split("\n")
@@ -546,10 +547,10 @@ class TestModelPickerSearchFirst:
         rows = [" " * column + label for label in keep]
         return "\n".join([title, blank, query_row, blank, *rows, blank, footer])
 
-    def _stub(self, keep, close=True):
+    def _stub(self, keep, close=True, query="GLM-5.3 Highspeed"):
         screens = {
             "picker": OPENCODE_PICKER,
-            "filtered": self._filtered("GLM-5.3 Highspeed", keep),
+            "filtered": self._filtered(query, keep),
         }
         state = {"stage": "picker"}
 
@@ -599,6 +600,54 @@ class TestModelPickerSearchFirst:
         from herdr_brain.tools import BrainTools
 
         stub = self._stub(["GLM-5.3", "GLM-5.3-Flash", "GLM-5.3 Highspeed"])
+        tools = BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
+        fingerprint = _fingerprint("opencode", OPENCODE_PICKER)
+        glm = next(
+            index
+            for index, option
+            in enumerate(recognize("opencode", OPENCODE_PICKER).options)
+            if option.label == "GLM-5.3"
+        )
+
+        result = tools.answer_structured_dialog("w1:p3", fingerprint, glm)
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "ambiguous"
+        assert [call["text"] for call in stub.text_calls] == ["GLM-5.3"]
+        assert stub.key_calls == []
+
+    def test_identical_duplicate_rows_answer_once(self, settings):
+        """Live parity finding: the opencode catalog lists the SAME
+        model several times (duplicate provider entries — three
+        identical GLM-5.3 rows). Rows whose label is IDENTICAL to the
+        target are equivalent: same model, same outcome. The first is
+        taken with a single Enter, no matter how many carry it."""
+        from herdr_brain.tools import BrainTools
+
+        stub = self._stub(["GLM-5.3", "GLM-5.3", "GLM-5.3"], query="GLM-5.3")
+        tools = BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
+        fingerprint = _fingerprint("opencode", OPENCODE_PICKER)
+        glm = next(
+            index
+            for index, option
+            in enumerate(recognize("opencode", OPENCODE_PICKER).options)
+            if option.label == "GLM-5.3"
+        )
+
+        result = tools.answer_structured_dialog("w1:p3", fingerprint, glm)
+
+        assert result["outcome"] == "answered"
+        assert result["label"] == "GLM-5.3"
+        assert [call["text"] for call in stub.text_calls] == ["GLM-5.3"]
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
+
+    def test_two_distinct_labels_still_refuse_ambiguous(self, settings):
+        """The refinement keeps the guard: a filtered set naming TWO
+        DIFFERENT models (GLM-5.3 and GLM-5.3-Flash) is a real
+        ambiguity — refuse, press nothing."""
+        from herdr_brain.tools import BrainTools
+
+        stub = self._stub(["GLM-5.3", "GLM-5.3-Flash"], query="GLM-5.3")
         tools = BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
         fingerprint = _fingerprint("opencode", OPENCODE_PICKER)
         glm = next(
