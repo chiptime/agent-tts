@@ -37,6 +37,9 @@ OPENCODE_MULTI = (FIXTURES / "opencode-multi.txt").read_text(encoding="utf-8")
 OPENCODE_MULTI_CONFIRM = (FIXTURES / "opencode-multi-confirm.txt").read_text(
     encoding="utf-8"
 )
+OPENCODE_PICKER = (FIXTURES / "opencode-models-picker.txt").read_text(
+    encoding="utf-8"
+)
 
 BLOCKED_CLAUDE = AgentInfo(
     pane_id="w1:p3",
@@ -444,6 +447,111 @@ class TestWalkRecipe:
         assert result["outcome"] == "refused"
         assert result["reason"] == "send-failed"
         assert "zellij" in result["detail"]
+
+
+class TestModelPickerSearchFirst:
+    """The opencode ``/models`` picker is answered SEARCH-FIRST: its
+    pointer exists only as ANSI paint, so the walk could never verify
+    where Enter lands. A tap TYPES the row's own name into the picker's
+    Search box and presses Enter only once the filtered list shows
+    exactly one row naming it — never a digit, never an arrow."""
+
+    def _filtered(self, query, keep):
+        lines = OPENCODE_PICKER.split("\n")
+        title, blank = lines[0], lines[1]
+        column = title.index("Select model")
+        query_row = lines[2].replace("Search", query, 1)
+        footer = next(line for line in lines if "Connect provider" in line)
+        rows = [" " * column + label for label in keep]
+        return "\n".join([title, blank, query_row, blank, *rows, blank, footer])
+
+    def _stub(self, keep, close=True):
+        screens = {
+            "picker": OPENCODE_PICKER,
+            "filtered": self._filtered("GLM-5.3 Highspeed", keep),
+        }
+        state = {"stage": "picker"}
+
+        class SearchStub(DialogTapStub):
+            def __init__(self):
+                super().__init__([BLOCKED_OPENCODE], OPENCODE_PICKER)
+                self.text_calls: list = []
+
+            def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+                if state["stage"] == "done":
+                    return "$ opencode\n✓ GLM-5.3 Highspeed set ❯ _"
+                return screens[state["stage"]]
+
+            def send_text(self, pane_id, text):
+                self.text_calls.append({"pane_id": pane_id, "text": text})
+                state["stage"] = "filtered"
+
+            def send_keys(self, pane_id, keys):
+                result = super().send_keys(pane_id, keys)
+                if close and "enter" in keys:
+                    state["stage"] = "done"
+                return result
+
+        return SearchStub()
+
+    def test_a_tap_types_the_name_and_enters_once(self, settings):
+        from herdr_brain.tools import BrainTools
+
+        stub = self._stub(["GLM-5.3 Highspeed"])
+        tools = BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
+        fingerprint = _fingerprint("opencode", OPENCODE_PICKER)
+        highspeed = next(
+            index
+            for index, option
+            in enumerate(recognize("opencode", OPENCODE_PICKER).options)
+            if option.label == "GLM-5.3 Highspeed"
+        )
+
+        result = tools.answer_structured_dialog("w1:p3", fingerprint, highspeed)
+
+        assert result["outcome"] == "answered"
+        assert result["label"] == "GLM-5.3 Highspeed"
+        assert [call["text"] for call in stub.text_calls] == ["GLM-5.3 Highspeed"]
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
+
+    def test_an_ambiguous_filter_refuses_and_presses_nothing(self, settings):
+        from herdr_brain.tools import BrainTools
+
+        stub = self._stub(["GLM-5.3", "GLM-5.3-Flash", "GLM-5.3 Highspeed"])
+        tools = BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
+        fingerprint = _fingerprint("opencode", OPENCODE_PICKER)
+        glm = next(
+            index
+            for index, option
+            in enumerate(recognize("opencode", OPENCODE_PICKER).options)
+            if option.label == "GLM-5.3"
+        )
+
+        result = tools.answer_structured_dialog("w1:p3", fingerprint, glm)
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "ambiguous"
+        assert [call["text"] for call in stub.text_calls] == ["GLM-5.3"]
+        assert stub.key_calls == []
+
+    def test_a_filter_that_never_settles_refuses(self, settings):
+        from herdr_brain.tools import BrainTools
+
+        stub = self._stub(["GLM-5.3 Highspeed"], close=False)
+        tools = BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
+        fingerprint = _fingerprint("opencode", OPENCODE_PICKER)
+        highspeed = next(
+            index
+            for index, option
+            in enumerate(recognize("opencode", OPENCODE_PICKER).options)
+            if option.label == "GLM-5.3 Highspeed"
+        )
+
+        result = tools.answer_structured_dialog("w1:p3", fingerprint, highspeed)
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "no-progress"
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
 
 
 class TestVoicePathReadsStructuredDialogs:

@@ -625,11 +625,17 @@
   /* The "Cambiar modelo" affordance (S2): which command opens THIS
    * harness's picker. The server owns the verified table; this mirror
    * only decides whether the button is offered — the switch itself is
-   * the guarded answer path. Null for a harness without one. */
+   * the guarded answer path. Null for a harness without one.
+   * pi draws omp's Switch Model box (same TUI): /switch opens it
+   * (PWA-only for now — the voice table verifies it later). opencode
+   * is live-verified on 1.19.5: the composer command is /models. */
   var MODEL_SWITCH_COMMANDS = {
     claude: "/model",
     grok: "/model",
     omp: "/switch",
+    pi: "/switch",
+    opencode: "/models",
+    opencode2: "/models",
   };
 
   function modelSwitchOffer(harness) {

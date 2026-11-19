@@ -65,6 +65,11 @@ class DialogOption:
     #: the answer travels as ``{option, text}`` through the typing
     #: recipe, never as a plain digit commit.
     free_text: bool = False
+    #: model_picker only (opencode): the row the picker itself marks
+    #: with a ``●`` prefix — the CURRENT model. Additive on purpose:
+    #: rows of every other kind (and picker rows without a mark) keep
+    #: today's shape; the PWA may badge it, nothing may tap it.
+    current: bool = False
 
 
 @dataclass(frozen=True)
@@ -145,6 +150,9 @@ class StructuredDialog:
                     # ONLY on the rows that carry it, so every payload
                     # without a free-text row keeps its exact shape.
                     **({"free_text": True} if option.free_text else {}),
+                    # Additive on purpose (opencode picker): the ● row
+                    # rides along ONLY when the picker marked it.
+                    **({"current": True} if option.current else {}),
                 }
                 for option in self.options
             ],

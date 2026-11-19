@@ -1,0 +1,33 @@
+                                                              Select model                                     esc                                                              
+                                                                                                                                                                                
+                                                              Search                                                                                                            
+                                                                                                                                                                                
+                                                              GLM-5.3-Flash                                                                                                     
+                                                              Qwen3.8 Flash                                                                                                     
+                                                              GLM-5.3                                                                                                           
+                                                   ┃ /mode    Muse Spark 1.2 Contributor                                     ┃                                                  
+                                                   ┃ /impr    Hy3                                                     a IA ( ┃                                                  
+                                                   ┃          LongCat-2.0                                                                                                       
+                                                   ┃  /mod    GLM-5.2                                                                                                           
+                                                   ┃          Kimi K2.7 Code                                                                                                    
+                                                   ┃  Gent    Qwen3.7 Plus                                                                                                      
+                                                   ╹▀▀▀▀▀▀    MiniMax-M3                                              ▀▀▀▀▀▀▀▀                                                  
+                                                              DeepSeek V4 Pro                                         commands                                                  
+                                                              MiMo V2.5                                                                                                         
+                                                              MiMo V2.5 Pro                                                                                                     
+                                                                                                                                                                                
+                                                              Z.AI Coding Plan                                                                                                  
+                                                            ● GLM-5.3-Flash                                           ON                                                        
+                                                              GLM-5.3 Highspeed                                                                                                 
+                                                                                                                                                                                
+                                                              Connect provider ctrl+a  Favorite ctrl+f                                                                          
+                                                                                                                                                                                
+                                                                                                                                                                                
+                                                                                                                                                                                
+                                                                                                                                                                                
+                                                                                                                                                                                
+                                                                                                                                                                                
+                                                                                                                                                                                
+                                                                                                                                                                                
+                                                                                                                                                                                
+  /tmp/oc-probe  ⊙ 6 MCP /status                                                                                                                                        1.19.5  

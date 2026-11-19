@@ -1062,6 +1062,9 @@ CLAUDE_SWITCH_CONFIRM = (SWITCH_FIXTURES / "claude-switch-model-yes.txt").read_t
 OMP_SWITCH_BOX = (SWITCH_FIXTURES / "omp-switch-model.txt").read_text(
     encoding="utf-8"
 )
+OPENCODE_MODELS_PICKER = (
+    SWITCH_FIXTURES / "opencode-models-picker.txt"
+).read_text(encoding="utf-8")
 
 IDLE_CLAUDE = AgentInfo(
     pane_id="w1:p5",
@@ -1082,6 +1085,17 @@ IDLE_OMP = AgentInfo(
     session_value="sid-2",
     cwd="/repo",
     title="Omp",
+    focused=False,
+)
+
+IDLE_OPENCODE = AgentInfo(
+    pane_id="w3:p2",
+    agent="opencode",
+    status="idle",
+    session_kind="id",
+    session_value="sid-3",
+    cwd="/repo",
+    title="OpenCode",
     focused=False,
 )
 
@@ -1217,6 +1231,72 @@ class OmpSwitchStub(SwitchModelStub):
         return {"ok": True, "error": ""}
 
 
+class OpencodeModelsStub(SwitchModelStub):
+    """The opencode /models picker: the command opens the modal, typing
+    filters it (the placeholder Search row becomes the query), Enter on
+    the single remaining row commits and the modal closes."""
+
+    def __init__(self, agents):
+        super().__init__(agents)
+        self.text_calls: list = []
+        self.query = ""
+        # Which row labels the filter keeps, by flat containment (the
+        # honest stand-in for opencode's own filter).
+        self.filter = lambda query: [
+            label
+            for label in (
+                "GLM-5.3-Flash",
+                "Qwen3.8 Flash",
+                "GLM-5.3",
+                "Z.AI Coding Plan",
+                "GLM-5.3 Highspeed",
+            )
+            if " ".join(query.lower().split())
+            in " ".join(label.lower().split())
+        ]
+        self.close_on_enter = True
+
+    def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+        if self.stage == "picker":
+            return OPENCODE_MODELS_PICKER
+        if self.stage == "filtered":
+            return self._filtered_screen()
+        if self.stage == "shell":
+            return "$ opencode\n❯ _"
+        return "$ opencode\n✓ GLM-5.3 Highspeed set ❯ _"
+
+    def send_prompt(self, pane_id, text, timeout_ms=None):
+        self.prompt_calls.append({"pane_id": pane_id, "text": text})
+        if text == "/models":
+            self.stage = "picker"
+        return {"ok": True, "status": "done", "output": ""}
+
+    def send_text(self, pane_id, text):
+        self.text_calls.append({"pane_id": pane_id, "text": text})
+        self.query = text
+        self.stage = "filtered"
+
+    def send_keys(self, pane_id, keys):
+        self.key_calls.append({"pane_id": pane_id, "keys": list(keys)})
+        if self.stage == "filtered" and "enter" in keys and self.close_on_enter:
+            self.stage = "done"
+        return {"ok": True, "error": ""}
+
+    def _filtered_screen(self):
+        fixture_lines = OPENCODE_MODELS_PICKER.split("\n")
+        title = fixture_lines[0]
+        blank = fixture_lines[1]
+        column = title.index("Select model")
+        query_row = fixture_lines[2].replace("Search", self.query, 1)
+        footer = next(
+            line
+            for line in fixture_lines
+            if "Connect provider" in line
+        )
+        rows = [" " * column + label for label in self.filter(self.query)]
+        return "\n".join([title, blank, query_row, blank, *rows, blank, footer])
+
+
 class NotingPaneModel:
     """PaneModelResolver double that records note_switched calls."""
 
@@ -1293,15 +1373,90 @@ class TestSwitchModel:
         assert stub.key_calls == []
 
     def test_an_unsupported_harness_refuses_before_sending(self):
-        opencode = AgentInfo(**{**IDLE_CLAUDE.__dict__, "agent": "opencode"})
-        stub = SwitchModelStub([opencode])
+        codex = AgentInfo(**{**IDLE_CLAUDE.__dict__, "agent": "codex"})
+        stub = SwitchModelStub([codex])
         tools = self._tools(stub)
 
-        result = tools.switch_model(opencode.pane_id, "glm-5.3")
+        result = tools.switch_model(codex.pane_id, "o4-high")
 
         assert result["outcome"] == "refused"
         assert result["reason"] == "unsupported"
         assert stub.prompt_calls == []
+        assert stub.key_calls == []
+
+    def test_opencode_searches_the_picker_and_never_presses_a_digit(self):
+        """The opencode flow is SEARCH-FIRST: the name is TYPED into
+        the picker's own Search box, and Enter goes out only once the
+        filtered list shows exactly one row naming the target."""
+        stub = OpencodeModelsStub([IDLE_OPENCODE])
+        noted = NotingPaneModel()
+        tools = self._tools(stub, pane_model=noted)
+
+        result = tools.switch_model(IDLE_OPENCODE.pane_id, "GLM-5.3 Highspeed")
+
+        assert result["outcome"] == "switched"
+        assert result["model"] == "GLM-5.3 Highspeed"
+        assert [call["text"] for call in stub.prompt_calls] == ["/models"]
+        assert [call["text"] for call in stub.text_calls] == ["GLM-5.3 Highspeed"]
+        # Exactly one key — Enter. The typed name is literal text into
+        # the Search box, never a keypress: the never-digit rule holds
+        # by construction (digits ride only inside the name).
+        keys = [key for call in stub.key_calls for key in call["keys"]]
+        assert keys == ["enter"]
+        assert all(key not in "0123456789" for key in keys)
+        # The pane's model cache was invalidated for the next /view.
+        assert noted.noted == [("opencode", "sid-3")]
+
+    def test_opencode_refuses_an_ambiguous_filter_and_presses_nothing(self):
+        stub = OpencodeModelsStub([IDLE_OPENCODE])
+        stub.filter = lambda query: ["GLM-5.3", "GLM-5.3-Flash", "GLM-5.3 Highspeed"]
+        tools = self._tools(stub)
+
+        result = tools.switch_model(IDLE_OPENCODE.pane_id, "GLM-5.3")
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "ambiguous"
+        assert "GLM-5.3" in result["detail"]
+        # The surprise stops everything: Enter never left.
+        assert stub.key_calls == []
+
+    def test_opencode_refuses_a_name_the_filter_empties(self):
+        stub = OpencodeModelsStub([IDLE_OPENCODE])
+        stub.filter = lambda query: []
+        tools = self._tools(stub)
+
+        result = tools.switch_model(IDLE_OPENCODE.pane_id, "Kimi K2.7 Code")
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "no-match"
+        assert stub.key_calls == []
+
+    def test_opencode_refuses_when_enter_does_not_close_the_picker(self):
+        stub = OpencodeModelsStub([IDLE_OPENCODE])
+        stub.close_on_enter = False
+        tools = self._tools(stub)
+
+        result = tools.switch_model(IDLE_OPENCODE.pane_id, "GLM-5.3 Highspeed")
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "no-progress"
+        keys = [key for call in stub.key_calls for key in call["keys"]]
+        assert keys == ["enter"]
+        assert all(key not in "0123456789" for key in keys)
+
+    def test_opencode_refuses_when_the_picker_never_appears(self):
+        stub = OpencodeModelsStub([IDLE_OPENCODE])
+        stub.send_prompt = lambda pane_id, text, timeout_ms=None: (
+            stub.prompt_calls.append({"pane_id": pane_id, "text": text}),
+            {"ok": True, "status": "done", "output": ""},
+        )[-1]
+        tools = self._tools(stub)
+
+        result = tools.switch_model(IDLE_OPENCODE.pane_id, "GLM-5.3 Highspeed")
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "no-picker"
+        assert stub.text_calls == []
         assert stub.key_calls == []
 
     def test_a_picker_that_never_appears_refuses(self):

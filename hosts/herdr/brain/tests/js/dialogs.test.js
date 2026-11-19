@@ -520,8 +520,18 @@ test("modelSwitchOffer: only harnesses with a verified picker command", () => {
   assert.deepEqual(Dialogs.modelSwitchOffer("omp"), {
     command: "/switch", label: "Cambiar modelo",
   });
-  assert.equal(Dialogs.modelSwitchOffer("opencode"), null);
-  assert.equal(Dialogs.modelSwitchOffer("pi"), null);
+  // pi draws omp's Switch Model box (same TUI): /switch opens it.
+  assert.deepEqual(Dialogs.modelSwitchOffer("pi"), {
+    command: "/switch", label: "Cambiar modelo",
+  });
+  // opencode 1.19.5, live-verified: the composer command is /models
+  // (/model only filters the command palette).
+  assert.deepEqual(Dialogs.modelSwitchOffer("opencode"), {
+    command: "/models", label: "Cambiar modelo",
+  });
+  assert.deepEqual(Dialogs.modelSwitchOffer("opencode2"), {
+    command: "/models", label: "Cambiar modelo",
+  });
   assert.equal(Dialogs.modelSwitchOffer("codex"), null);
   assert.equal(Dialogs.modelSwitchOffer(""), null);
   assert.equal(Dialogs.modelSwitchOffer(null), null);

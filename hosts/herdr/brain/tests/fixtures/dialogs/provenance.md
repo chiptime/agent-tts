@@ -15,12 +15,14 @@ the picker's own region, interior bytes untouched).
 | `grok-model-picker.txt` | `web/src/fixtures/panes/grok--model-picker.txt` |
 | `grok-model-picker-moved.txt` | `web/src/fixtures/panes/grok--model-picker-moved.txt` |
 | `omp-switch-model.txt` | `web/src/fixtures/panes/omp--v18-4-switch.txt` (omp 18.4 `/switch` compact model picker) |
+| `opencode-models-picker.txt` | LIVE capture 2026-11-19, opencode 1.19.5 (this machine, real pane): the `/models` composer command opens the `Select model` modal. Same derivation, kept from the `Select model` title row. The modal has no box borders: the underlying TUI's text bleeds at both margins (``┃ /mode``, ``commands``) and the `ON` default-model badge sits outside it — interior bytes untouched. The `●` row is the CURRENT model; the pointer is ANSI paint, invisible here. |
 
 Derivation: `re.sub(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\r", "", raw)`
 then keep from the picker's first own row (the `▔` modal edge, the
-`─N─` count rule, or the `╭─ Switch Model` box top) to the end, with
-the trailing blank run dropped. This mirrors what brain's styled wide
-read hands the adapters (escape-stripped text).
+`─N─` count rule, the `╭─ Switch Model` box top, or the `Select
+model` title) to the end, with the trailing blank run dropped. This
+mirrors what brain's styled wide read hands the adapters
+(escape-stripped text).
 
 The interaction contract these fixtures pin (ADR 0009): a model
 picker is answered with ARROWS + Enter, NEVER with a digit — in these

@@ -64,7 +64,7 @@ from .history_view import (
 from .memory import clip_content
 from .mirror import clamp_lines, mirror_payload
 from .secrets_mask import mask_runs, mask_text
-from .dialogs import recognize as recognize_dialog
+from .dialogs import StructuredDialog, recognize as recognize_dialog
 from .transcripts import (
     Turn,
     connector_for,
@@ -110,11 +110,21 @@ DIALOG_SCREEN_LINES = 30
 #: parity-f7d S3: the harness's own command that opens its model picker,
 #: VERIFIED per harness (the picker detector must be able to read what
 #: the command opens). A harness absent here is honestly unsupported.
+#: opencode is live-verified on 1.19.5: the composer command is
+#: ``/models`` (``/model`` only filters the command palette); the
+#: opencode2 entry is safe because everything downstream fail-closes
+#: on the picker grammar.
 MODEL_COMMANDS = {
     "claude": "/model",
     "grok": "/model",
     "omp": "/switch",
+    "opencode": "/models",
+    "opencode2": "/models",
 }
+#: The pickers answered SEARCH-FIRST (their pointer is ANSI paint —
+#: invisible in text — so an arrow walk could never verify where Enter
+#: lands). Every other model_picker keeps the arrow walk.
+OPENCODE_SEARCH_PICKERS = frozenset({"opencode", "opencode2"})
 #: How long switch_model waits for the picker (and, after the commit,
 #: for the "Switch model?" confirmation) to appear.
 SWITCH_WAIT_ATTEMPTS = 20
@@ -1044,6 +1054,26 @@ class BrainTools:
             return self._answer_free_text(
                 pane_id, text, option, model, target, reader, sender, refused
             )
+        # The opencode model pickers are answered SEARCH-FIRST (their
+        # pointer is ANSI paint — invisible in text — so the walk could
+        # never verify where Enter lands); every other dialog keeps
+        # today's choreographies byte-for-byte.
+        if (
+            model.kind == "model_picker"
+            and (target.agent or "").strip().lower() in OPENCODE_SEARCH_PICKERS
+        ):
+            matched, failure = self._search_first_picker_answer(
+                pane_id, target.agent, chosen.label
+            )
+            if failure is not None:
+                return refused(*failure)
+            return {
+                "outcome": "answered",
+                "pane_id": pane_id,
+                "option": option,
+                "keys": ["enter"],
+                "label": matched,
+            }
         if chosen.keys:
             guard = dialog_guard.entry_guard(
                 reader, pane_id, DIALOG_SCREEN_LINES, model.as_guard_model(), detect
@@ -1421,6 +1451,112 @@ class BrainTools:
 
     # -- model switching (parity-f7d S3) ---------------------------------
 
+    def _read_opencode_picker(
+        self, pane_id: str, agent: str, filled: bool = False, query: str = ""
+    ) -> Optional[StructuredDialog]:
+        """One full-window read of the opencode ``/models`` picker.
+
+        The modal floats mid-screen with the blank run and the status
+        line under it, so the 30-line dialog read can cut its title —
+        the picker reads use the full verified window instead.
+        ``None`` on a failed read or when the grammar claims nothing.
+        """
+        from .dialogs.adapters.opencode import detect_models_picker
+
+        reader = self._dialog_reader(pane_id)
+        try:
+            raw = reader(pane_id, SCREEN_FULL_LINES)
+        except HerdrError:
+            return None
+        return detect_models_picker(
+            agent, (raw or "").splitlines(), filled_search=filled, query=query
+        )
+
+    def _search_first_picker_answer(
+        self, pane_id: str, agent: str, wanted: str
+    ) -> tuple[Optional[str], Optional[tuple]]:
+        """Answers an opencode ``/models`` picker by SEARCH, never arrows.
+
+        The picker's pointer exists only as ANSI paint — invisible in
+        the text every recognizer reads — so no walk could verify where
+        Enter lands. Instead the wanted name is TYPED into the picker's
+        own Search box (literal text through :meth:`send_text`, never a
+        keypress: ADR 0009's never-a-digit is about KEYS, and digits
+        ride only inside the name), the screen is re-read until two
+        reads agree, and Enter leaves ONLY when the search box echoes
+        the query AND the filtered list shows EXACTLY ONE row naming
+        the target — with one selectable row on screen the pointer is
+        on it wherever it started. Zero or several matches refuse with
+        nothing further sent, and the answer is confirmed only by the
+        picker actually closing.
+
+        Returns ``(matched_label, None)`` or ``(None, (reason, detail))``.
+        """
+        query = sanitize_prompt_text(wanted or "")
+        if not query:
+            return None, ("invalid_target", "the picker row has no name to search")
+        typer = getattr(self._herdr, "send_text", None)
+        if typer is None:
+            return None, ("send-failed", "this pane surface cannot type literal text")
+        pause = self._sleeper or time.sleep
+
+        def read_picker(filled: bool):
+            return self._read_opencode_picker(pane_id, agent, filled=filled, query=query)
+
+        try:
+            typer(pane_id, query)
+        except HerdrError as exc:
+            return None, ("send-failed", str(exc))
+
+        # The filter must SETTLE: two consecutive reads of the same row
+        # labels, with the search box echoing the query (the verifiable
+        # signal that the filter on screen is ours).
+        settled: Optional[tuple] = None
+        filtered = None
+        for _ in range(SWITCH_WAIT_ATTEMPTS):
+            pause(SWITCH_POLL_S)
+            fresh = read_picker(filled=True)
+            if fresh is None:
+                settled = None
+                continue
+            rows = tuple(option.label for option in fresh.options)
+            if rows == settled:
+                filtered = fresh
+                break
+            settled = rows
+        if filtered is None:
+            return None, (
+                "changed",
+                "the picker left (or never echoed the filter) "
+                "while the search settled; nothing was pressed",
+            )
+        flat = _lex_flat(query)
+        hits = [
+            option.label
+            for option in filtered.options
+            if flat in _lex_flat(option.label)
+        ]
+        if not hits:
+            return None, ("no-match", _name_candidates(query, []))
+        if len(hits) > 1:
+            return None, ("ambiguous", _name_candidates(query, hits))
+
+        sent = self.send_keys_to_pane(pane_id, ["enter"])
+        if sent.get("outcome") != "sent":
+            return None, (
+                "send-failed",
+                sent.get("detail") or "could not press enter",
+            )
+        for _ in range(SWITCH_WAIT_ATTEMPTS):
+            pause(SWITCH_POLL_S)
+            if read_picker(filled=True) is None and read_picker(filled=False) is None:
+                return hits[0], None
+        return None, (
+            "no-progress",
+            "the picker did not close after enter; "
+            "the model was not verified switched",
+        )
+
     def switch_model(self, pane_id: str, model: str) -> dict:
         """Switches one pane's model through its OWN /model picker.
 
@@ -1471,6 +1607,42 @@ class BrainTools:
             self._herdr.send_prompt(pane_id, command, REPLY_WAIT_MS)
         except HerdrError as exc:
             return refused("send-failed", f"could not send {command}: {exc}")
+
+        # The opencode pickers are answered SEARCH-FIRST: their pointer
+        # is ANSI paint, so the walk could never be verified.
+        if harness in OPENCODE_SEARCH_PICKERS:
+            picker = None
+            pause = self._sleeper or time.sleep
+            for attempt in range(SWITCH_WAIT_ATTEMPTS):
+                if attempt:
+                    pause(SWITCH_POLL_S)
+                picker = self._read_opencode_picker(pane_id, harness)
+                if picker is not None:
+                    break
+            if picker is None:
+                return refused(
+                    "no-picker",
+                    f"the model picker did not appear after {command}; "
+                    "nothing was pressed",
+                )
+            matched, failure = self._search_first_picker_answer(
+                pane_id, harness, clean_model
+            )
+            if failure is not None:
+                return refused(*failure)
+            # The pane's cached model is now stale: drop it so the next
+            # /view re-probes (the status line names the new model).
+            note = getattr(self._pane_model, "note_switched", None)
+            if note is not None:
+                try:
+                    note(target.agent, target.session_value)
+                except Exception:  # noqa: BLE001 — cache hygiene never breaks a switch
+                    pass
+            return {
+                "outcome": "switched",
+                "model": matched,
+                "pane_id": pane_id,
+            }
 
         picker = self._wait_for_dialog(pane_id, harness, ("model_picker",))
         if picker is None:

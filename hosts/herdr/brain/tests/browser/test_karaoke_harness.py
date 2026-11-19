@@ -93,7 +93,11 @@ EXPECTED_DIGESTS = {
     "/app.js": "571fd52ba4b9d4bb707290355427bfb21848846ea076076e31967b738ee71a98",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "ca7b22c52c8160a3ac577f694eb65ec0798b77cd6ac179a5c567dffdc1fb2ba9",
-    "/dialogs.js": "7a6a11a83c4f83d0feb4c96bc2b414691ff1d07b8a48b5495e91f9240be53757",
+    # dialogs.js re-pinned for the parity-f7d follow-up: MODEL_SWITCH_COMMANDS
+    # gains pi (/switch, omp's own box on the same TUI) and opencode +
+    # opencode2 (/models, live-verified on opencode 1.19.5) so the
+    # "Cambiar modelo" affordance reaches those panes too.
+    "/dialogs.js": "9e35018414d7fe146040b81f3cd01f846b4deced20c28c6af742f2c79e333a68",
     "/herd-group.js": "de284c825e3c99aef07db2dd53198484ec8b7ceba94dd97dbbae0303560df399",
     "/toast.js": "cbccb72b22530ff8f83250bebd8d498ca20977db9536aa094aa759bb9632357e",
     "/reader.js": "b99edccdba5adb1c407ebc3064f7045214c0152677a1da2cfa2c388393792989",

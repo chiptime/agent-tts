@@ -354,6 +354,148 @@ def _append_description(options: List[DialogOption], row: str) -> None:
     )
 
 
+# ── the /models picker (LIVE capture 2026-11-19, opencode 1.19.5) ────
+#
+# The composer command ``/models`` floats a borderless modal over the
+# TUI: a ``Select model`` title (an ``esc`` hint at its right edge), a
+# ``Search`` input, the model rows, provider group headers among them,
+# and the ``Connect provider ctrl+a  Favorite ctrl+f`` footer. The
+# underlying screen's own text bleeds at both margins of every row, so
+# the grammar reads each row as a COLUMN SLICE at the title's own
+# column and cuts the label at the first wide gap. Fail-closed on the
+# full evidence set: title + Search + rows + the exact footer — any
+# other shape is somebody else's screen.
+#
+# Two facts shape the recipe:
+#
+# - the CURRENT model is the row prefixed ``●`` (two cells left of the
+#   label column); it is carried as the additive ``current`` mark;
+# - the POINTER is ANSI paint — invisible in the text every
+#   recognizer reads — so ``selected`` is NEVER claimed, ``nav_keys``
+#   stay empty (this footer names no arrows), and the only honest
+#   recipe is SEARCH-FIRST: typing into the Search box filters the
+#   list, and Enter commits it only once exactly one row names the
+#   target. Never a digit key (ADR 0009); the typed name is literal
+#   text, not a keypress.
+
+_MODELS_TITLE = re.compile(r"(?:^|(?<=  ))Select model(?:\s|$)")
+_MODELS_FOOTER = re.compile(r"Connect provider +ctrl\+a {2,}Favorite +ctrl\+f")
+_MODELS_SEARCH_ROW = "Search"
+#: The picker's own rows: enough to be a list, few enough to be one
+#: modal and not the whole screen.
+_MODELS_MAX_ROWS = 40
+_MODELS_SEARCH_LOOKAHEAD = 4
+_MODELS_CURRENT = "●"
+_MODELS_LABEL_GAP = re.compile(r" {2,}")
+
+
+def _models_label(line: str, column: int) -> str:
+    """One picker row's label: the leading text of the row's slice at
+    the title's column, cut at the first wide gap (the margin noise
+    and the right-edge badges live behind that gap)."""
+    segment = line[column:].strip()
+    if not segment:
+        return ""
+    return _MODELS_LABEL_GAP.split(segment, 1)[0].strip()
+
+
+def detect_models_picker(
+    agent: str,
+    lines: List[str],
+    filled_search: bool = False,
+    query: str = "",
+) -> Optional[StructuredDialog]:
+    """The opencode ``/models`` picker as a ``model_picker`` dialog.
+
+    ``filled_search`` reads the state AFTER the choreography typed into
+    the Search box: the ``Search`` placeholder is then the query, and
+    with ``query`` given the search row must ECHO it — the verifiable
+    signal that the filter is ours and live. The filtered list may be
+    empty (the strict adapter never claims that state; the search-first
+    choreography reads it to refuse with ``no-match`` instead of a
+    silent ``changed``).
+
+    Fail-closed: the full evidence set (title, search row, rows, the
+    ctrl+a/ctrl+f footer, at most one ``●`` row) or ``None``.
+    """
+    texts = [line.rstrip() for line in lines]
+
+    footer_at = next(
+        (
+            index
+            for index in range(len(texts) - 1, -1, -1)
+            if _MODELS_FOOTER.search(texts[index])
+        ),
+        None,
+    )
+    if footer_at is None:
+        return None
+
+    title_at = None
+    for index in range(footer_at - 1, -1, -1):
+        if "Select model" in texts[index] and _MODELS_TITLE.search(texts[index]):
+            title_at = index
+            break
+    if title_at is None:
+        return None
+    column = texts[title_at].index("Select model")
+
+    # The search input: the first non-blank row below the title. The
+    # strict read requires the placeholder; a filled box may hold the
+    # query, which must then be echoed back.
+    search_at = next(
+        (
+            index
+            for index in range(
+                title_at + 1,
+                min(title_at + 1 + _MODELS_SEARCH_LOOKAHEAD, footer_at),
+            )
+            if _models_label(texts[index], column)
+        ),
+        None,
+    )
+    if search_at is None:
+        return None
+    search_row = _models_label(texts[search_at], column)
+    if not filled_search and search_row != _MODELS_SEARCH_ROW:
+        return None
+    if filled_search and query:
+        echo = " ".join(query.split()).lower()
+        if echo not in " ".join(texts[search_at][column:].split()).lower():
+            return None
+
+    options: List[DialogOption] = []
+    current = 0
+    for index in range(search_at + 1, footer_at):
+        label = _models_label(texts[index], column)
+        if not label:
+            continue
+        marked = (
+            column >= 2
+            and texts[index][column - 2 : column] == _MODELS_CURRENT + " "
+        )
+        current += 1 if marked else 0
+        options.append(DialogOption(label=label, current=marked))
+    if current > 1:
+        return None
+    if not options and not filled_search:
+        return None
+    if len(options) > _MODELS_MAX_ROWS:
+        return None
+
+    return StructuredDialog(
+        agent=agent,
+        kind="model_picker",
+        question="Select model",
+        options=tuple(options),
+        fingerprint=fingerprint_region(texts[title_at : footer_at + 1]),
+        hint=" ".join(_MODELS_FOOTER.search(texts[footer_at]).group(0).split()),
+        nav_keys=(),
+        commit_keys=("enter",),
+        selected=None,
+    )
+
+
 def _question_above(texts: List[str], options, footer: str) -> str:
     """The bar rows above the first numbered option: the question."""
     first_number = next(
@@ -378,7 +520,8 @@ def _question_above(texts: List[str], options, footer: str) -> str:
 
 
 class OpencodeAdapter(_QuestionAdapterBase):
-    """The 1.x question tool, plus the permission pill dialog."""
+    """The 1.x question tool, plus the permission pill dialog and the
+    ``/models`` picker."""
 
     agent = "opencode"
 
@@ -386,6 +529,9 @@ class OpencodeAdapter(_QuestionAdapterBase):
         question = self.detect_question(lines)
         if question is not None:
             return question
+        picker = detect_models_picker(self.agent, lines)
+        if picker is not None:
+            return picker
         return self._detect_permission_pill(lines, styled)
 
     def _detect_permission_pill(
@@ -400,9 +546,14 @@ class OpencodeAdapter(_QuestionAdapterBase):
 
 
 class Opencode2Adapter(_QuestionAdapterBase):
-    """The 2.x session_v2 generation draws the same question bar."""
+    """The 2.x session_v2 generation draws the same question bar — and
+    the same ``/models`` picker (fail-closed: a 2.x layout the grammar
+    does not know claims nothing)."""
 
     agent = "opencode2"
 
     def detect(self, lines: List[str], styled) -> Optional[StructuredDialog]:
-        return self.detect_question(lines)
+        question = self.detect_question(lines)
+        if question is not None:
+            return question
+        return detect_models_picker(self.agent, lines)

@@ -50,8 +50,18 @@ CORPUS = {
     "codex": ("codex-trust.txt", "codex-approval.txt", "codex-ask.txt"),
     "grok": ("grok-ask.txt", "grok-permission.txt", "grok-model-picker.txt"),
     "pi": ("pi-ask.txt", "omp-switch-model.txt"),
-    "opencode": ("opencode-question.txt", "opencode-multi.txt"),
-    "opencode2": ("opencode2-question.txt", "opencode2-multi.txt"),
+    "opencode": (
+        "opencode-question.txt",
+        "opencode-multi.txt",
+        # the /models picker, LIVE capture (opencode 1.19.5, see
+        # fixtures/dialogs/provenance.md).
+        "opencode-models-picker.txt",
+    ),
+    "opencode2": (
+        "opencode2-question.txt",
+        "opencode2-multi.txt",
+        "opencode-models-picker.txt",
+    ),
     "antigravity": ("antigravity-select.txt",),
     "kiro": ("kiro-approval.txt", "kiro-trust.txt"),
     "muse": (
@@ -850,6 +860,136 @@ class TestOmpSwitchModel:
         )
 
         assert detect("omp", screen) is None
+
+
+class TestOpencodeModelsPicker:
+    """The opencode ``/models`` picker — a LIVE capture (1.19.5, real
+    pane, 2026-11-19; provenance.md). The modal floats over the TUI:
+    the surrounding screen's text bleeds at both margins, the ``●``
+    prefix marks the CURRENT model, and the pointer is ANSI paint —
+    invisible in text, so no ``selected`` is ever claimed and the
+    recipe is SEARCH-FIRST (typing into the picker's own Search box),
+    never an arrow walk that could not be verified. Still never a
+    digit key (ADR 0009)."""
+
+    def test_the_models_picker_yields_model_picker(self):
+        model = detect("opencode", fixture("opencode-models-picker.txt"))
+
+        assert model.kind == "model_picker"
+        assert labels(model) == [
+            "GLM-5.3-Flash",
+            "Qwen3.8 Flash",
+            "GLM-5.3",
+            "Muse Spark 1.2 Contributor",
+            "Hy3",
+            "LongCat-2.0",
+            "GLM-5.2",
+            "Kimi K2.7 Code",
+            "Qwen3.7 Plus",
+            "MiniMax-M3",
+            "DeepSeek V4 Pro",
+            "MiMo V2.5",
+            "MiMo V2.5 Pro",
+            # A provider group header is plain text in this TUI —
+            # indistinguishable from a model row once escapes are
+            # stripped, so it stays a row (the search-first verifier
+            # and the name matcher keep it honest).
+            "Z.AI Coding Plan",
+            "GLM-5.3-Flash",
+            "GLM-5.3 Highspeed",
+        ]
+        # Never a digit key, and no walk either: the pointer is paint.
+        assert recipes(model) == [()] * len(model.options)
+        assert model.nav_keys == ()
+        assert model.commit_keys == ("enter",)
+        assert model.selected is None
+
+    def test_the_current_model_row_is_marked(self):
+        model = detect("opencode", fixture("opencode-models-picker.txt"))
+
+        current = [
+            (index, option.label)
+            for index, option in enumerate(model.options)
+            if option.current
+        ]
+        # The ● row: the default model, duplicated as the first row of
+        # its provider group. Exactly one row carries the mark.
+        assert current == [(14, "GLM-5.3-Flash")]
+
+    def test_the_payload_marks_the_current_row_additively(self):
+        payload = detect(
+            "opencode", fixture("opencode-models-picker.txt")
+        ).payload()
+
+        assert payload["recipe"] == "walk"
+        marked = [
+            option for option in payload["options"] if option.get("current")
+        ]
+        assert [option["label"] for option in marked] == ["GLM-5.3-Flash"]
+
+    def test_the_opencode2_agent_reads_the_same_picker(self):
+        model = detect("opencode2", fixture("opencode-models-picker.txt"))
+
+        assert model.kind == "model_picker"
+        assert model.agent == "opencode2"
+
+    def test_a_footer_word_changed_declines(self):
+        screen = fixture("opencode-models-picker.txt").replace(
+            "Favorite", "Starred"
+        )
+
+        assert detect("opencode", screen) is None
+
+    def test_a_renamed_title_declines(self):
+        screen = fixture("opencode-models-picker.txt").replace(
+            "Select model", "Pick a model", 1
+        )
+
+        assert detect("opencode", screen) is None
+
+    def test_a_renamed_search_row_declines(self):
+        screen = fixture("opencode-models-picker.txt").replace(
+            "Search", "Filter", 1
+        )
+
+        assert detect("opencode", screen) is None
+
+    def test_two_current_rows_decline(self):
+        fixture_text = fixture("opencode-models-picker.txt")
+        column = fixture_text.split("\n")[0].index("Select model")
+        row = " " * column + "GLM-5.3 Highspeed"
+        screen = fixture_text.replace(
+            row, " " * (column - 2) + "● GLM-5.3 Highspeed"
+        )
+
+        assert detect("opencode", screen) is None
+
+    def test_the_filled_search_box_still_reads_with_the_query(self):
+        """After the choreography types into Search, the placeholder is
+        gone: the strict adapter declines, but the filled-search read
+        the choreography itself uses still recognizes the picker —
+        only when the search row carries the typed query."""
+        from herdr_brain.dialogs.adapters.opencode import detect_models_picker
+
+        screen = fixture("opencode-models-picker.txt")
+        filled = screen.replace("Search", "GLM-5.3 Highspeed", 1)
+
+        assert detect("opencode", filled) is None
+        lines = filled.splitlines()
+        assert detect_models_picker("opencode", lines, filled_search=True) is not None
+        assert (
+            detect_models_picker(
+                "opencode", lines, filled_search=True, query="GLM-5.3 Highspeed"
+            ).kind
+            == "model_picker"
+        )
+        # A query the search box does NOT echo is not our filter.
+        assert (
+            detect_models_picker(
+                "opencode", lines, filled_search=True, query="Kimi"
+            )
+            is None
+        )
 
 
 class TestConformance:
