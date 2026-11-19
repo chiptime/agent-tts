@@ -600,6 +600,8 @@ def run_hook(
         if not line:
             return deny("herdr-brain closed the socket without a decision")
         reply = json.loads(line)
+        if not isinstance(reply, dict):
+            return deny("herdr-brain replied with a non-object decision")
         decision = reply.get("decision")
         if decision not in (DECISION_ALLOW, DECISION_DENY):
             return deny(f"herdr-brain replied with an unusable decision: {decision!r}")
@@ -624,7 +626,15 @@ def hook_main(argv: Optional[List[str]] = None) -> int:
         stdin_text = sys.stdin.read(MAX_WIRE_BYTES + 1)
     except OSError:
         stdin_text = ""
-    code, payload = run_hook(stdin_text)
+    try:
+        code, payload = run_hook(stdin_text)
+    except Exception as exc:  # noqa: BLE001 — the gate must never fail open
+        # Claude treats a hook that exits without valid decision JSON as
+        # NON-blocking (the tool would run), so ANY unexpected failure
+        # (a recursion limit on hostile input, a bug) still prints deny.
+        code, payload = 0, _hook_output(
+            DECISION_DENY, f"herdr-brain hook failed: {type(exc).__name__}"
+        )
     sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
     sys.stdout.flush()
     return code

@@ -550,3 +550,60 @@ def test_holds_are_audited_when_held(route_client):
     broker.hold(tool_name="Bash", tool_input={"command": "echo hi"}, session_id="s", cwd="/")
     audit = (tmp / "audit.log").read_text()
     assert "hook.hold" in audit
+
+
+# -- the hook never fails open (feature-end verifier, parity-f7e) ----------
+
+
+def _hook_with_fake_brain(tmp_path, reply: bytes, stdin_text: str):
+    """Runs the real hook entrypoint against a one-shot fake brain socket
+    that answers ``reply``; returns the CompletedProcess."""
+    import os
+    import subprocess
+    import sys
+
+    path = str(tmp_path / "hook.sock")
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(path)
+    server.listen(1)
+
+    def answer():
+        try:
+            conn, _ = server.accept()
+        except OSError:
+            return
+        with conn:
+            conn.recv(65536)
+            conn.sendall(reply)
+
+    thread = threading.Thread(target=answer, daemon=True)
+    thread.start()
+    try:
+        return subprocess.run(
+            [sys.executable, "-m", "herdr_brain.hook_permissions"],
+            input=stdin_text,
+            text=True,
+            capture_output=True,
+            timeout=10,
+            env={**os.environ, "HERDR_BRAIN_HOOK_SOCKET": path},
+        )
+    finally:
+        server.close()
+        thread.join(timeout=5)
+
+
+@pytest.mark.parametrize("reply", [b"[]\n", b'"allow"\n', b"42\n", b"null\n"])
+def test_a_non_object_brain_reply_denies(tmp_path, reply):
+    result = _hook_with_fake_brain(tmp_path, reply, '{"tool_name":"Bash"}')
+
+    assert result.returncode == 0
+    decision = json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"]
+    assert decision == "deny"
+
+
+def test_a_pathologically_nested_request_still_denies(tmp_path):
+    result = _hook_with_fake_brain(tmp_path, b"{}\n", "[" * 5000 + "]" * 5000)
+
+    assert result.returncode == 0
+    decision = json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"]
+    assert decision == "deny"
