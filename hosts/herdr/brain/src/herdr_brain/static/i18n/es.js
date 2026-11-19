@@ -200,8 +200,6 @@
     "herd.g_idle": "Inactivo",
     "herd.g_other": "Otros",
     "herd.new_conversation": "＋ Nueva conversación",
-    "herd.new_started": "Conversación nueva iniciada",
-    "herd.new_failed": "No se pudo reiniciar la conversación en el servidor.",
     "conv.aria": "Conversaciones",
     "conv.title": "Conversaciones",
     "conv.close": "Cerrar",

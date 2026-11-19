@@ -179,14 +179,18 @@ test("a title is trimmed before it wins over the fallback", () => {
 /* ---- wiring pins (shape, the pending-wiring discipline) ---- */
 
 test("the sheet and its entry exist in the shell", () => {
+  /* Header ✚ dedup (2026-11-19): #new-open left the header — the
+   * conversation sheet's "Nueva conversación" row is the sheet's ONE
+   * entry (see header-new-dedup.test.js). */
   for (const id of [
-    "new-open", "new-sheet", "new-backdrop", "new-close",
+    "conv-new", "new-sheet", "new-backdrop", "new-close",
     "new-harness", "new-folders", "new-title", "new-task", "new-launch",
     "new-launchers", "new-roots-empty",
     "new-resume-harness", "new-resume-list",
   ]) {
     assert.ok(htmlSrc.includes(`id="${id}"`), `index.html must carry #${id}`);
   }
+  assert.ok(!htmlSrc.includes('id="new-open"'), "the header ✚ is gone");
 });
 
 test("the launch posts /session/new through withDeviceAuth", () => {

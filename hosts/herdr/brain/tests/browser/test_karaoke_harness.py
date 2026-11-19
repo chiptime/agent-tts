@@ -89,8 +89,13 @@ EXPECTED_DIGESTS = {
     # the newsession.folder_spaces / space_* keys (app.js + both i18n).
     # The spaces ride the same /session/roots OPEN fetch, so boot-time
     # traffic is unchanged.
-    "/": "330ba355720a0ac8409ba76039b7955b6fba57838fa2a54d885ba0dad65c85da",
-    "/app.js": "7eeace4a711ab6c1de300a5e10cec629f6df43afc995c4a02647673a122f38a0",
+    # Re-pinned for the header ✚ dedup (2026-11-19): #new-open left
+    # the header and the conversation sheet's "Nueva conversación"
+    # (#conv-new) became the launch-sheet opener — the mid-call
+    # POST /reset survives on #call-new (index.html, app.js, and both
+    # i18n for the now-dead herd.new_started/new_failed keys).
+    "/": "e5a6af2a027071f8a064ddb30c1ab392b3775dc37a883cec4d397f387705c38b",
+    "/app.js": "199314b7126ba13fda0cb54d681b3f33745af6e631dfc5844a5b545630926094",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "ca7b22c52c8160a3ac577f694eb65ec0798b77cd6ac179a5c567dffdc1fb2ba9",
     # dialogs.js re-pinned for the parity-f7d follow-up: MODEL_SWITCH_COMMANDS
@@ -118,8 +123,8 @@ EXPECTED_DIGESTS = {
     # update notice, operator dock, offline-shell sw.js.
     "/dock.js": "4a5dc20d575c3c9e5f098116fc9314f24297b2934cb3142bc885b6e1d0155adb",
     "/i18n.js": "8bcd2ceb9f56109afaa0ec158e1a6f002799c4a983261b9d58cd38723c06719f",
-    "/i18n/en.js": "cd2145773f3e3bbd4e22732f45784d0bf85afd3ebf375189c22a17ba2cf2c931",
-    "/i18n/es.js": "2261348804bdb244eb40cbeaac6be0c22fc0705f80d18ed368604b4675b2b591",
+    "/i18n/en.js": "8ac224ef314ecf9829b84065c91c4e39c359e03d858dad778dc6c27759f3f20a",
+    "/i18n/es.js": "58f4ff3d3ab5057faea5db6f43dcc7d0e3115b8d24b26287611bc77b27978554",
     "/settings.js": "1c2cf3ed92bf959c19ecde0107618b8d1ff0690d2c6fa7c842a2fdc551e05f72",
     "/updates.js": "7f87250cf6cd9c2b8944da632fe036d0c18a87a90f48f70b84e18bcd338cfa84",
     "/calls.js": "9b9ec591709d282c6e673770b2ffc1ed1562650104d8e8393126d186aa764165",

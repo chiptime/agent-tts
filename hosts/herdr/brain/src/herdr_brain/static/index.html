@@ -339,7 +339,8 @@
       text-align: center;
     }
     /* ── NEW SESSION SHEET (parity-f7c S1) ──────────
-     * The ✚ in the header opens the launch sheet: harness (the
+     * Opened from the conversation sheet's "＋ Nueva conversación"
+     * (the header ✚ left as its duplicate, 2026-11-19): harness (the
      * server's closed list), folder (roots + recents), optional title
      * and task, then Launch — plus the launchers.toml rows as
      * shortcuts riding the SAME POST /operator/launch flow. Same sheet
@@ -2693,10 +2694,6 @@
     <span id="status-chip" class="chip">…</span>
     <button id="pane-picker" type="button" aria-haspopup="dialog" aria-expanded="false" title="Cambiar de conversación" data-i18n-title="header.pane_picker_title"><span class="pp-caret" aria-hidden="true">▾</span><span id="pane-picker-label" data-i18n="header.connecting">conectando…</span><span id="pane-picker-sub" class="hidden"></span></button>
     <span id="header-version" class="chip">v<span id="app-version-header">?</span></span>
-    <!-- Nueva sesión (parity-f7c S1): the ✚ opens the launch sheet —
-         harness + folder + task through the same create_session the
-         voice path uses, plus the launchers.toml shortcuts. -->
-    <button id="new-open" class="head-btn" type="button" title="Nueva sesión" data-i18n-title="newsession.title" aria-label="Nueva sesión" data-i18n-aria-label="newsession.aria">✚</button>
     <button id="settings-btn" class="head-btn" title="Ajustes" data-i18n-title="header.settings_title">⚙</button>
     <button id="mute-btn" class="head-btn" title="Silenciar anuncios" data-i18n-title="header.mute_title">🔊</button>
   </header>
@@ -2917,6 +2914,9 @@
       <button id="conv-close" type="button" title="Cerrar" data-i18n-title="conv.close">✕</button>
     </div>
     <div class="cs-actions">
+      <!-- Header ✚ dedup (2026-11-19): ONE new-session entry — this
+           row OPENS the launch sheet (#new-sheet). The mid-call
+           reset/fresh-call flow lives on #call-new in the drawer. -->
       <button id="conv-new" type="button" data-i18n="herd.new_conversation">＋ Nueva conversación</button>
     </div>
     <div id="conv-list"></div>

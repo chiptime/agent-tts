@@ -360,11 +360,17 @@ def _append_description(options: List[DialogOption], row: str) -> None:
 # TUI: a ``Select model`` title (an ``esc`` hint at its right edge), a
 # ``Search`` input, the model rows, provider group headers among them,
 # and the ``Connect provider ctrl+a  Favorite ctrl+f`` footer. The
-# underlying screen's own text bleeds at both margins of every row, so
-# the grammar reads each row as a COLUMN SLICE at the title's own
-# column and cuts the label at the first wide gap. Fail-closed on the
-# full evidence set: title + Search + rows + the exact footer — any
-# other shape is somebody else's screen.
+# modal has no box borders, so the underlying screen's own text bleeds
+# at both margins of every row — over a LIVE chat the conversation
+# text sits LEFT of every modal column and the TUI's status lists sit
+# RIGHT of it (see ``opencode-models-picker-over-chat.txt``). The
+# grammar therefore anchors the modal by COLUMN: the title and the
+# footer pin a consistent column window, every row is read as the
+# SUBSTRING inside that window, and whatever rides outside the window
+# — left or right — is not the modal's. The label is the slice's
+# leading text, cut at the first wide gap. Fail-closed on the full
+# evidence set: title + Search + rows + the exact footer, all inside
+# one column window — any other shape is somebody else's screen.
 #
 # Two facts shape the recipe:
 #
@@ -389,11 +395,13 @@ _MODELS_CURRENT = "●"
 _MODELS_LABEL_GAP = re.compile(r" {2,}")
 
 
-def _models_label(line: str, column: int) -> str:
+def _models_label(line: str, column: int, end: int) -> str:
     """One picker row's label: the leading text of the row's slice at
     the title's column, cut at the first wide gap (the margin noise
-    and the right-edge badges live behind that gap)."""
-    segment = line[column:].strip()
+    and the right-edge badges live behind that gap). ``end`` bounds
+    the slice at the modal's column window — the screen's own text
+    bleeding right of the box is not the modal's."""
+    segment = line[column:end].strip()
     if not segment:
         return ""
     return _MODELS_LABEL_GAP.split(segment, 1)[0].strip()
@@ -416,7 +424,9 @@ def detect_models_picker(
     silent ``changed``).
 
     Fail-closed: the full evidence set (title, search row, rows, the
-    ctrl+a/ctrl+f footer, at most one ``●`` row) or ``None``.
+    ctrl+a/ctrl+f footer, at most one ``●`` row) — all inside ONE
+    column window, the title and the footer pinned at the same column
+    — or ``None``.
     """
     texts = [line.rstrip() for line in lines]
 
@@ -440,6 +450,15 @@ def detect_models_picker(
         return None
     column = texts[title_at].index("Select model")
 
+    # The modal's column window: the box is centered, its title and
+    # its footer pad to the SAME left column (both live captures pin
+    # them equal). A footer floating at another column is not this
+    # modal's — the screen behind it may be anything.
+    footer_match = _MODELS_FOOTER.search(texts[footer_at])
+    if footer_match.start() != column:
+        return None
+    span_end = footer_match.end()
+
     # The search input: the first non-blank row below the title. The
     # strict read requires the placeholder; a filled box may hold the
     # query, which must then be echoed back.
@@ -450,24 +469,26 @@ def detect_models_picker(
                 title_at + 1,
                 min(title_at + 1 + _MODELS_SEARCH_LOOKAHEAD, footer_at),
             )
-            if _models_label(texts[index], column)
+            if _models_label(texts[index], column, span_end)
         ),
         None,
     )
     if search_at is None:
         return None
-    search_row = _models_label(texts[search_at], column)
+    search_row = _models_label(texts[search_at], column, span_end)
     if not filled_search and search_row != _MODELS_SEARCH_ROW:
         return None
     if filled_search and query:
         echo = " ".join(query.split()).lower()
-        if echo not in " ".join(texts[search_at][column:].split()).lower():
+        if echo not in " ".join(
+            texts[search_at][column:span_end].split()
+        ).lower():
             return None
 
     options: List[DialogOption] = []
     current = 0
     for index in range(search_at + 1, footer_at):
-        label = _models_label(texts[index], column)
+        label = _models_label(texts[index], column, span_end)
         if not label:
             continue
         marked = (

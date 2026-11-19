@@ -747,7 +747,7 @@
     if (newSheetOpen && !st.herdrNewSheet) {
       newSheetOpen = false;
       setNewSheet(false);
-      try { newOpenBtn.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
+      try { panePicker.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
     }
     if (convSheetOpen && !st.herdrConvSheet) {
       convSheetOpen = false;
@@ -8135,9 +8135,11 @@
 
   /* "Nueva llamada" from the drawer head (2026-11-17): ONE gesture = hang
    * up (the record closes in the history), wipe the agent session context
-   * (same POST /reset as #conv-new) and dial a FRESH call. startCall runs
-   * synchronously inside the tap so the live AudioContext primes within
-   * the gesture window (L53); the reset lands while the new mic arms. */
+   * (the POST /reset that used to live on #conv-new — this button is its
+   * ONLY trigger since the header ✚ dedup) and dial a FRESH call.
+   * startCall runs synchronously inside the tap so the live AudioContext
+   * primes within the gesture window (L53); the reset lands while the new
+   * mic arms. */
   callNewBtn.addEventListener("click", function () {
     if (!inCall) return;  // drawer-scoped: only meaningful mid-call
     voiceTimelinePush("call_end", "new");
@@ -8345,37 +8347,21 @@
     });
   });
 
-  /* ---------------- new conversation (sheet action row) ---------------- */
+  /* ---------------- new conversation (sheet action row) ----------------
+   * Header ✚ dedup (2026-11-19): ONE new-session entry — this row now
+   * OPENS the launch sheet (the old #new-open ✚ left the header as
+   * its duplicate). openNewSheet closes the conversation sheet itself
+   * (one sheet band, never stacked). The mid-call reset/fresh-call
+   * flow lives on #call-new in the drawer head. */
 
-  convNewBtn.addEventListener("click", function () {    stopAudio();
-    stopListening();
-    removeThinkingBubble();
-    approvalFlow.cancel();  // a fresh conversation retires the live gate
-    renderApprovalCard();
-    if (endpointer) endpointer.reset();  // fresh conversation, fresh utterance
-    conv.textContent = "";
-    resetInterimContent();
-    updateGhost();
-    hideBanner();
-    closeConvSheet();
-    fetch("/reset", withDeviceAuth({
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ session_id: sessionId })
-    })).then(function (resp) {
-      if (resp.ok) showToast(t("herd.new_started"), 4000);
-      else maybeOfferPairing(resp);
-    }).catch(function () {
-      showBanner(t("herd.new_failed"));
-    });
-    if (inCall && callState === "listening") startListening();
-  });
+  convNewBtn.addEventListener("click", openNewSheet);
 
   /* ---------------- Nueva sesión sheet (parity-f7c S1) ----------------
-   * The ✚ in the header opens the launch sheet (doc 03 §2): harness
-   * from the server's CLOSED list, folder from the operator's roots +
-   * live recents, optional title/task — then POST /session/new, which
-   * runs the SAME create_session the voice gate replays. The task text
+   * Opened from the conversation sheet's "＋ Nueva conversación" (the
+   * header ✚ left as its duplicate, 2026-11-19): harness from the
+   * server's CLOSED list, folder from the operator's roots + live
+   * recents, optional title/task — then POST /session/new, which runs
+   * the SAME create_session the voice gate replays. The task text
    * rides the composer's destructive second tap; the launchers.toml
    * rows appear as shortcuts posting the unchanged /operator/launch
    * (the dock's arm/send semantics, reused — never duplicated). */
@@ -8527,7 +8513,6 @@
   }
   /* @new-session-pure-end */
 
-  var newOpenBtn = $("new-open");
   var newSheetEl = $("new-sheet");
   var newBackdropEl = $("new-backdrop");
   var newCloseBtn = $("new-close");
@@ -8570,10 +8555,11 @@
     newSheetOpen = false;
     setNewSheet(false);
     if (history.state && history.state.herdrNewSheet) history.back();  // pop our entry
-    try { newOpenBtn.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
+    /* The ✚ opener left the header (2026-11-19): focus returns to the
+     * conversation-sheet opener — the sheet's surviving entry point. */
+    try { panePicker.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
   }
 
-  newOpenBtn.addEventListener("click", openNewSheet);
   newCloseBtn.addEventListener("click", closeNewSheet);
   newBackdropEl.addEventListener("click", closeNewSheet);
 

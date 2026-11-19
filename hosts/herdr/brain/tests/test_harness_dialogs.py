@@ -54,13 +54,16 @@ CORPUS = {
         "opencode-question.txt",
         "opencode-multi.txt",
         # the /models picker, LIVE capture (opencode 1.19.5, see
-        # fixtures/dialogs/provenance.md).
+        # fixtures/dialogs/provenance.md) — over a blank pane and
+        # floating mid-screen over live chat content.
         "opencode-models-picker.txt",
+        "opencode-models-picker-over-chat.txt",
     ),
     "opencode2": (
         "opencode2-question.txt",
         "opencode2-multi.txt",
         "opencode-models-picker.txt",
+        "opencode-models-picker-over-chat.txt",
     ),
     "antigravity": ("antigravity-select.txt",),
     "kiro": ("kiro-approval.txt", "kiro-trust.txt"),
@@ -932,6 +935,63 @@ class TestOpencodeModelsPicker:
 
         assert model.kind == "model_picker"
         assert model.agent == "opencode2"
+
+    def test_the_picker_over_live_chat_yields_the_same_rows(self):
+        """LIVE regression (2026-11-19): the modal floats MID-SCREEN over
+        a running chat — conversation text LEFT of every modal column,
+        the MCP status list RIGHT of it. The grammar must anchor by the
+        title/footer COLUMN window and read each row's slice inside it;
+        the blank-background parse and this one are the same grammar."""
+        model = detect("opencode", fixture("opencode-models-picker-over-chat.txt"))
+
+        assert model.kind == "model_picker"
+        assert model.question == "Select model"
+        assert labels(model) == [
+            "Qwen3.8 Max OpenCode Go",
+            "GPT-5.6 Terra OpenAI",
+            "GPT-5.6 Sol OpenAI",
+            "DeepSeek V4 Pro DeepSeek",
+            "Claude Opus 5 Anthropic",
+            "Big Pickle OpenCode",
+            # A provider group header — plain text, stays a row exactly
+            # as in the blank-background fixture.
+            "Recent",
+            "Claude Opus 5.5 Anthropic",
+            "GPT-6.2 Sol OpenAI",
+            "GLM-5.3 Z.AI Coding Plan",
+            "GPT-6 Astra OpenAI",
+            "Gemini 4 Argon OpenCode Go",
+            "GPT-6.1 Terra OpenAI",
+            "GLM 5.3 Flash NaN",
+            "DeepSeek V4 Flash NaN",
+            "DeepSeek V4.1 Flash 1017 OpenCode Go",
+        ]
+        assert recipes(model) == [()] * len(model.options)
+        assert model.nav_keys == ()
+        assert model.commit_keys == ("enter",)
+        assert model.selected is None
+
+    def test_the_current_row_is_marked_over_live_chat(self):
+        model = detect("opencode", fixture("opencode-models-picker-over-chat.txt"))
+
+        current = [
+            (index, option.label)
+            for index, option in enumerate(model.options)
+            if option.current
+        ]
+        assert current == [(7, "Claude Opus 5.5 Anthropic")]
+
+    def test_chat_columns_never_become_rows(self):
+        """The chat text bleeding left of the modal and the MCP status
+        list bleeding right of it are NOT part of the modal: none of
+        their words may appear as a row label or the question."""
+        model = detect("opencode", fixture("opencode-models-picker-over-chat.txt"))
+        screen = fixture("opencode-models-picker-over-chat.txt")
+
+        for foreign in ("esperando", "whisper_clien", "engram Connected", "LSP"):
+            assert foreign in screen  # it IS on screen, beside the modal
+            assert all(foreign not in option.label for option in model.options)
+
 
     def test_a_footer_word_changed_declines(self):
         screen = fixture("opencode-models-picker.txt").replace(

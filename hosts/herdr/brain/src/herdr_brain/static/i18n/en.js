@@ -200,8 +200,6 @@
     "herd.g_idle": "Idle",
     "herd.g_other": "Others",
     "herd.new_conversation": "＋ New conversation",
-    "herd.new_started": "New conversation started",
-    "herd.new_failed": "Could not restart the conversation on the server.",
     "conv.aria": "Conversations",
     "conv.title": "Conversations",
     "conv.close": "Close",
