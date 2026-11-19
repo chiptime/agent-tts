@@ -1943,10 +1943,12 @@ stop_audio() {
   # Runs BEFORE the engine stop so the queue cannot dispatch the next item.
   radio_cancel && stopped=true
 
-  if [[ -S "$IPC_SOCKET" ]]; then
-    "$VENV_PYTHON" "$ENGINE_SCRIPT" --ipc-cmd stop >/dev/null 2>&1 || true
-    stopped=true
-  fi
+  for sock in "$IPC_SOCKET" /tmp/agent-tts-player.sock; do
+    if [[ -S "$sock" ]]; then
+      AGENT_TTS_SOCKET="$sock" "$VENV_PYTHON" "$ENGINE_SCRIPT" --ipc-cmd stop >/dev/null 2>&1 || true
+      stopped=true
+    fi
+  done
 
   if [[ -f "$PID_FILE" ]]; then
     local pid
@@ -1965,7 +1967,7 @@ stop_audio() {
   pkill -u "$EUID" -TERM -f "herdr agent wait" 2>/dev/null || true
   rm -f /tmp/herdr-tts-watcher-*.lock 2>/dev/null || true
 
-  rm -f "$LOCK_FILE" "$PID_FILE" "$IPC_SOCKET"
+  rm -f "$LOCK_FILE" "$PID_FILE" "$IPC_SOCKET" /tmp/agent-tts-player.sock /tmp/agent-tts-playing.lock /tmp/agent-tts-current.pid
 
   if [[ "$stopped" == true ]]; then
     echo "$(tt player.stopped)"
