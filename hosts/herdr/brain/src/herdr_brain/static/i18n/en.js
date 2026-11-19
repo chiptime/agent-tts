@@ -424,6 +424,23 @@
     "receipts.speech_refused": "The agent did not accept the text.",
     "receipts.speech_unknown": "I can't confirm whether it was sent.",
 
+    /* ---- send tracking (parity-f7g S5) — the tracker card's lines.
+     * Spanish is the product copy; English rides the locale switch.
+     * The m:ss elapsed and the masked error message append at render. */
+    "track.state_sent": "Sent",
+    "track.state_started": "Started",
+    "track.state_working": "Working",
+    "track.state_done": "Finished",
+    "track.state_blocked": "Waiting for you at a dialog",
+    "track.state_error": "Error",
+    "track.state_no_start": "Never started within 15 s — check the agent",
+    "track.state_pane_gone": "The pane closed",
+    "track.state_superseded": "Replaced by a newer send",
+    "track.state_expired": "No news after 30 min",
+    "track.state_unknown": "In progress",
+    "track.stalled": "Looks stuck (3 min without activity)",
+    "track.dismiss": "Close",
+
     /* ---- diagnostics ---- */
     "diag.title": "Voice diagnostics",
     "diag.close": "✕ Close",

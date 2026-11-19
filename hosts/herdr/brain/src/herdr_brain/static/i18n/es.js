@@ -424,6 +424,23 @@
     "receipts.speech_refused": "El agente no aceptó el texto.",
     "receipts.speech_unknown": "No puedo confirmar si se envió.",
 
+    /* ---- seguimiento de envíos (parity-f7g S5) — las líneas de la
+     * tarjeta que sigue cada envío hasta su desenlace. El m:ss y el
+     * mensaje de error enmascarado se añaden al render. */
+    "track.state_sent": "Enviado",
+    "track.state_started": "Empezó",
+    "track.state_working": "Trabajando",
+    "track.state_done": "Terminó",
+    "track.state_blocked": "Te espera en un diálogo",
+    "track.state_error": "Error",
+    "track.state_no_start": "No arrancó en 15 s — revisa el agente",
+    "track.state_pane_gone": "El pane se cerró",
+    "track.state_superseded": "Reemplazado por un envío nuevo",
+    "track.state_expired": "Sin noticias tras 30 min",
+    "track.state_unknown": "En marcha",
+    "track.stalled": "Parece colgado (3 min sin actividad)",
+    "track.dismiss": "Cerrar",
+
     /* ---- diagnostics ---- */
     "diag.title": "Diagnóstico de voz",
     "diag.close": "✕ Cerrar",

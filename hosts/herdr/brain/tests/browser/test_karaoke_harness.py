@@ -98,7 +98,12 @@ EXPECTED_DIGESTS = {
     # (#conv-new) became the launch-sheet opener — the mid-call
     # POST /reset survives on #call-new (index.html, app.js, and both
     # i18n for the now-dead herd.new_started/new_failed keys).
-    "/": "0fc8dfd1a4520e0b0c54431311a16789753efb728a384556aba84082a516de3b",
+    # Re-pinned for parity-f7g S5 (the send tracker card): the card
+    # markup + sheet styles + the send-track.js script tag (index.html)
+    # and the new send-track.js module itself. app.js and both i18n
+    # re-pinned in place below (tracker wiring, track.* keys).
+    "/": "813e5df2c6e2f503ede9d4a29ce0c1268cea4ddb69d68613596110c3ad7d40b1",
+    "/send-track.js": "7fdb0b14b93cc8695d06f7a93d99bc26f5b83c8c5aee9c31240dd0a81b3f03d9",
     # app.js re-pinned for the held-card visibility fix (F7d phone
     # report): renderPermission no longer re-hides the #pane-reply-keys
     # wrapper an idle pane's held picker card just opened (modalKeysPane
@@ -109,7 +114,10 @@ EXPECTED_DIGESTS = {
     # Re-pinned for the verified opencode switch: a 502 model-picker
     # answer shows the server's detail, and a success carrying
     # ``next`` restarts the modal poll (opencode's Select variant).
-    "/app.js": "22f4bb6c35768a540dcd28eef91130774e5b4cfdc2b3b0d44f607b058c87416d",
+    # Re-pinned for parity-f7g S5 (the send tracker card): the SSE
+    # send.track feed, the receipts-poll convergence, the 1s tick
+    # cadence and the per-pane map in the composer area.
+    "/app.js": "a94e0252b2db27c3f099a4c4e2f9ea2ac48620201ceb9404d07565f26c307095",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "ca7b22c52c8160a3ac577f694eb65ec0798b77cd6ac179a5c567dffdc1fb2ba9",
     # dialogs.js re-pinned for the parity-f7d follow-up: MODEL_SWITCH_COMMANDS
@@ -137,8 +145,10 @@ EXPECTED_DIGESTS = {
     # update notice, operator dock, offline-shell sw.js.
     "/dock.js": "4a5dc20d575c3c9e5f098116fc9314f24297b2934cb3142bc885b6e1d0155adb",
     "/i18n.js": "8bcd2ceb9f56109afaa0ec158e1a6f002799c4a983261b9d58cd38723c06719f",
-    "/i18n/en.js": "a98a98bc0b6c963f4a27371767c9fdc6c93483c8bdb5e378f7468f79bd2b4032",
-    "/i18n/es.js": "510077e068a35a6a11df40a9ea2fff34ef98b072dd6781de87a92df3561fbdc8",
+    # Both i18n re-pinned for parity-f7g S5: the track.* keys (the
+    # tracker card's Spanish lines and their English locale ride).
+    "/i18n/en.js": "bee02708cab828f39ca43e60c74a06b6ae483365072ca1687b309e35aac02065",
+    "/i18n/es.js": "785766b0769dd0d08fbf99e70428bea58fc0bb3bddf9f6bc8cebdbd8faf82fdc",
     "/settings.js": "1c2cf3ed92bf959c19ecde0107618b8d1ff0690d2c6fa7c842a2fdc551e05f72",
     "/updates.js": "7f87250cf6cd9c2b8944da632fe036d0c18a87a90f48f70b84e18bcd338cfa84",
     "/calls.js": "9b9ec591709d282c6e673770b2ffc1ed1562650104d8e8393126d186aa764165",

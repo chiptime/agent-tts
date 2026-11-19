@@ -99,6 +99,11 @@
   var receiptSubmitBtn = $("pane-receipt-submit");
   var receiptDiscardBtn = $("pane-receipt-discard");
   var paneStopBtn = $("pane-stop");
+  /* Send tracking (parity-f7g S5): the tracker card + its dismiss. */
+  var trackCard = $("pane-track");
+  var trackStateEl = $("pane-track-state");
+  var trackElapsedEl = $("pane-track-elapsed");
+  var trackDismissBtn = $("pane-track-dismiss");
   /* Brain message (S13): the small operator composer for the viewed pane. */
   var paneMsgBtn = $("pane-msg");
   var paneMsgForm = $("pane-msg-form");
@@ -2312,6 +2317,13 @@
     }
     if (paneStopBtn) paneStopBtn.classList.toggle("hidden", !replyTarget);
 
+    /* The tracker card follows the VIEWED pane (parity-f7g S5): a pane
+     * switch repaints that pane's own tracker — or hides the card when
+     * it has none. It survives every poll repaint by design; only the
+     * viewed pane, a dismiss or a newer send move it. */
+    trackViewedPane = viewed;
+    paintTrackCard();
+
     /* Brain message (S13): addressable whenever the viewed pane has a
      * live agent session (the walky address pins that session — a
      * replaced agent refuses the message instead of receiving it).
@@ -2390,6 +2402,10 @@
               hideReceipt();
               showToast(t("reply.sent"), 3000);
             }
+            /* parity-f7g S5: a tracked outcome (sent/effective/unknown)
+             * starts the tracker card that follows this send to its
+             * outcome; untracked outcomes leave any older tracker be. */
+            startSendTracking(paneId, receipt);
             return null;
           }, function () { return null; });
         }
@@ -2457,6 +2473,90 @@
   function hideReceipt() {
     if (!receiptCard) return;
     receiptCard.classList.add("hidden");
+  }
+
+  /* ---------------- send tracking (parity-f7g S5) ----------------
+   * The tracker card follows the pane's send to its OUTCOME — the
+   * receipt above says what the terminal did at send time; this card
+   * says what happened after. Pure model in send-track.js
+   * (window.SendTrack): labels, m:ss elapsed, terminal detection, the
+   * per-pane map, the hot-poll cadence. This block owns the DOM (text
+   * nodes only), the SSE feed and the receipts-poll convergence —
+   * whichever arrives first wins, so the card converges even with the
+   * event stream down. */
+  var paneTracks = window.SendTrack ? window.SendTrack.createPaneTracks() : null;
+  var trackViewedPane = null;   /* the pane whose tracker the card shows */
+  var trackHotUntilMs = 0;      /* hot-poll window (S5): ~12 s after a send */
+  var trackLastFetchMs = null;  /* last /pane/receipts fetch (cadence gate) */
+
+  function startSendTracking(paneId, receipt) {
+    if (!paneTracks || !paneId || !receipt || !receipt.id) return;
+    var entry = paneTracks.start(paneId, receipt);
+    if (!entry) return;  /* untracked outcome: nothing is in flight */
+    trackHotUntilMs = Date.now() + window.SendTrack.HOT_WINDOW_MS;
+    trackLastFetchMs = null;  /* the next 1s tick fetches immediately */
+    if (trackViewedPane === paneId) paintTrackCard();
+  }
+
+  /* One SSE send.track event: converge the map, repaint the visible
+   * card. Display-only — no herd repaint, no fetch (the event IS the
+   * state; the elapsed keeps ticking locally). */
+  function handleSendTrackEvent(event) {
+    if (!paneTracks) return;
+    var entry = paneTracks.applyEvent(event);
+    if (entry && trackViewedPane === entry.pane_id) paintTrackCard();
+  }
+
+  function paintTrackCard() {
+    if (!trackCard || !paneTracks) return;
+    var entry = trackViewedPane ? paneTracks.get(trackViewedPane) : null;
+    var model = entry ? window.SendTrack.cardModel(entry, Date.now() / 1000) : null;
+    if (!model) {
+      trackCard.classList.add("hidden");
+      return;
+    }
+    trackStateEl.textContent = model.stateText;
+    trackElapsedEl.textContent = model.elapsedText;
+    trackDismissBtn.classList.toggle("hidden", !model.dismissible);
+    trackCard.classList.toggle("terminal", model.terminal);
+    trackCard.classList.remove("hidden");
+  }
+
+  /* Convergence without SSE: refresh the VIEWED pane's trackers from
+   * the receipts listing (the track object rides it additively). */
+  function refreshTracks(paneId) {
+    trackLastFetchMs = Date.now();
+    readFetch("/pane/receipts?pane_id=" + encodeURIComponent(paneId))
+      .then(function (resp) { return resp.ok ? resp.json() : null; })
+      .then(function (body) {
+        if (!body || !paneTracks) return;
+        paneTracks.applyReceipts(paneId, body.receipts || []);
+        if (trackViewedPane === paneId) paintTrackCard();
+      })
+      .catch(function () { /* offline: SSE and the next tick retry */ });
+  }
+
+  /* Rides the always-on 1s tick (no second interval): repaints the
+   * elapsed second and, when a fetch is due — 1.5 s inside the hot
+   * window, then the normal 5 s, only while the viewed pane's tracker
+   * is non-terminal — polls the receipts listing. */
+  function tickSendTracking() {
+    if (!paneTracks) return;
+    var nowMs = Date.now();
+    if (trackViewedPane &&
+        paneTracks.hasNonTerminal(trackViewedPane) &&
+        window.SendTrack.fetchDue(nowMs, trackLastFetchMs, trackHotUntilMs)) {
+      refreshTracks(trackViewedPane);
+    }
+    if (trackCard && !trackCard.classList.contains("hidden")) paintTrackCard();
+  }
+
+  if (trackDismissBtn) {
+    trackDismissBtn.addEventListener("click", function () {
+      if (!paneTracks || !trackViewedPane) return;
+      paneTracks.dismiss(trackViewedPane);
+      paintTrackCard();
+    });
   }
 
   function sendReceiptFollowup(button, kind) {
@@ -5533,6 +5633,12 @@
       if (consultUI) safeRender("consult", consultUI.handleEvent, ann);
       return;
     }
+    if (ann && ann.type === "send.track") {
+      // parity-f7g S4: one tracker state change per send rides the same
+      // stream — display-only, the local clock keeps the elapsed fresh.
+      handleSendTrackEvent(ann);
+      return;
+    }
     if (!ann || ann.type !== "transition") return;
     // VS3.6: the pending ledger records the transition (bookkeeping +
     // recovery only); the announcement itself keeps flowing through
@@ -5800,6 +5906,7 @@
     approvalFlow.tick();
     renderApprovalCard();
     pumpAudio();  // retry deferred announcements only after the busy-state guard permits them.
+    tickSendTracking();  // parity-f7g S5: tracker elapsed + cadence-gated receipts poll.
     // Mic watchdog: Android can kill SpeechRecognition (audio focus,
     // silent SR crash) without a usable onend restart, leaving a live
     // call micless while the state expects listening. Re-arm when
@@ -9318,6 +9425,7 @@
    * the data-driven surfaces on its own). */
   if (window.I18N) {
     if (window.Receipts && window.Receipts.useTranslator) window.Receipts.useTranslator(I18N.t);
+    if (window.SendTrack && window.SendTrack.useTranslator) window.SendTrack.useTranslator(I18N.t);
     if (window.Dialogs && window.Dialogs.useTranslator) window.Dialogs.useTranslator(I18N.t);
     if (window.HerdGroup && window.HerdGroup.useTranslator) window.HerdGroup.useTranslator(I18N.t);
     I18N.subscribe(function () {

@@ -634,6 +634,26 @@ announces again; idle-flapping stays debounced), and a pane that
 vanishes while a send is still in flight ends its tracker `pane_gone`
 instead of being retracted as «Resuelto: ya no necesita tu atención».
 
+**The PWA tracker card (S5).** The phone does not stop at the receipt:
+a tracked outcome paints a persistent card under the composer — one
+per pane, in `send-track.js` (pure model) + `app.js` (DOM, text nodes
+only) — that follows the send to its outcome: «Enviado», «Empezó»,
+«Trabajando · 1:23» (the elapsed ticks locally every second from
+`sent_at`, in an `aria-hidden` span so the card's `aria-live` region
+announces state changes, not seconds), «Parece colgado (3 min sin
+actividad)» while `stalled`, and one terminal line («Terminó», «Te
+espera en un diálogo», «Error: …» with the masked message, «No arrancó
+en 15 s — revisa el agente», «El pane se cerró», «Reemplazado por un
+envío nuevo», «Sin noticias tras 30 min») with a ✕ dismiss. State
+arrives from BOTH feeds — `send.track` SSE events and the `track`
+object on `GET /pane/receipts` — whichever lands first wins, so the
+card converges even with the event stream down. For the first ~12 s
+after a send the receipts poll rides a 1.5 s hot cadence (gated inside
+the app's existing 1 s tick — no second interval), then returns to the
+normal 5 s. A new send to the pane replaces the card; switching panes
+repaints that pane's own tracker from the per-pane map; the submit/
+discard follow-ups (untracked outcomes server-side) never start one.
+
 ### Key pad: answering a blocked agent's dialog
 
 That dialog is answered with **keys** instead, through `POST /pane/keys`

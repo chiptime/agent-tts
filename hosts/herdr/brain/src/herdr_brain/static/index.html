@@ -632,6 +632,42 @@
     }
     #pane-receipt .receipt-actions button:disabled { opacity: 0.55; }
     #pane-receipt .receipt-actions button.receipt-submit { border-color: var(--accent); }
+    /* Send tracker (parity-f7g S5): the card that follows the send to
+     * its outcome. Same visual language as the receipt card; the state
+     * line is a live region (aria-live on the card) and the ticking
+     * elapsed rides an aria-hidden span so a screen reader hears state
+     * changes, not seconds. The ✕ dismiss appears only on a terminal
+     * state. */
+    #pane-track {
+      margin: 0 10px var(--sp-2);
+      padding: var(--sp-2) var(--sp-3);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel-2);
+      color: var(--text);
+      font-size: var(--fs-sm);
+      line-height: 1.45;
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+    }
+    #pane-track.hidden { display: none; }
+    #pane-track .track-state { font-weight: 700; flex: 1; min-width: 0; }
+    #pane-track .track-elapsed { color: var(--muted); white-space: nowrap; }
+    #pane-track .track-dismiss {
+      flex: none;
+      min-width: 36px;
+      min-height: 36px;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      background: var(--bg);
+      color: var(--muted);
+      font: inherit;
+      font-weight: 700;
+      line-height: 1;
+    }
+    #pane-track.terminal { border-color: var(--accent); }
+    #pane-track .track-dismiss.hidden { display: none; }
     /* Stop (S12): double-tap arming — the first tap arms (the button says
      * so), only the second tap inside the window sends the interrupt. */
     #pane-stop {
@@ -2768,6 +2804,17 @@
         <button id="pane-receipt-discard" type="button" data-i18n="common.discard">Descartar</button>
       </div>
     </div>
+    <!-- Send tracker (parity-f7g S5): follows THIS pane's send to its
+         outcome — Enviado → Empezó → Trabajando → Terminó/…, with a
+         locally ticking elapsed while non-terminal. One card per pane;
+         a new send replaces it; the ✕ appears once terminal. app.js
+         paints it with text nodes only (the error message is masked
+         server-side and is never markup). -->
+    <div id="pane-track" class="hidden" aria-live="polite">
+      <span id="pane-track-state" class="track-state"></span>
+      <span id="pane-track-elapsed" class="track-elapsed" aria-hidden="true"></span>
+      <button id="pane-track-dismiss" type="button" class="track-dismiss hidden" aria-label="Cerrar" data-i18n-aria-label="track.dismiss">✕</button>
+    </div>
     <!-- Stop (S12): interrupt the running turn. Double-tap arming: the
          first tap arms for ~3 s, the second sends POST /pane/stop. -->
     <button id="pane-stop" class="hidden" type="button" data-i18n="call.stop">■ Detener</button>
@@ -3081,6 +3128,7 @@
     <script src="/history.js"></script>
     <script src="/dialogs.js"></script>
     <script src="/receipts.js"></script>
+    <script src="/send-track.js"></script>
     <script src="/push.js"></script>
     <script src="/reader.js"></script>
     <script src="/toast.js"></script>
