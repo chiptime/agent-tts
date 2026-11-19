@@ -695,9 +695,13 @@ class PaneDialogAnswerRequest(BaseModel):
     (S1) is the multi-select form — the indices of the boxes that must
     end up checked, submitted through one explicit send; ``text`` (S3)
     rides WITH ``option`` and answers that row's free-text field — the
-    server then types it through the verified recipe. Exactly one
-    answer form travels per request: ``option``, ``choices``, or
-    ``option`` + ``text``.
+    server then types it through the verified recipe. ``model_name``
+    (+ ``provider_name``) answers an opencode model picker by NAME —
+    the PWA's full catalog lists models the picker never painted —
+    through the same search-first flow, Enter only when the first
+    filtered row on the real screen is that model. Exactly one answer
+    form travels per request: ``option``, ``choices``, ``option`` +
+    ``text``, or ``model_name`` (+ ``provider_name``).
     """
 
     pane_id: str = Field(min_length=1, max_length=MAX_SESSION_ID_CHARS)
@@ -705,8 +709,10 @@ class PaneDialogAnswerRequest(BaseModel):
     option: Optional[int] = Field(default=None, ge=0, le=99)
     choices: Optional[list[int]] = Field(default=None, min_length=1, max_length=8)
     text: Optional[str] = Field(default=None, min_length=1, max_length=8_000)
+    model_name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    provider_name: Optional[str] = Field(default=None, min_length=1, max_length=200)
 
-    @field_validator("text")
+    @field_validator("text", "model_name", "provider_name")
     @classmethod
     def _text_not_blank(cls, value: Optional[str]) -> Optional[str]:
         if value is not None and not value.strip():
@@ -715,6 +721,19 @@ class PaneDialogAnswerRequest(BaseModel):
 
     @model_validator(mode="after")
     def _exactly_one_answer(self) -> "PaneDialogAnswerRequest":
+        if self.model_name is not None:
+            if (
+                self.option is not None
+                or self.choices is not None
+                or self.text is not None
+            ):
+                raise ValueError(
+                    "model_name answers a model picker by name: never "
+                    "together with option, choices or text"
+                )
+            return self
+        if self.provider_name is not None:
+            raise ValueError("provider_name rides only with model_name")
         if self.text is not None:
             if self.choices is not None or self.option is None:
                 raise ValueError(
@@ -3308,11 +3327,21 @@ def create_app(
         crew_peer = crew_remote_peer(body.pane_id)
         if crew_peer is not None:
             _, remote_id = split_pane_id(body.pane_id)
-            answer_payload = (
-                {"fingerprint": body.fingerprint, "choices": body.choices}
-                if body.choices is not None
-                else {"fingerprint": body.fingerprint, "option": body.option}
-            )
+            if body.model_name is not None:
+                answer_payload = {
+                    "fingerprint": body.fingerprint,
+                    "model_name": body.model_name,
+                }
+                if body.provider_name is not None:
+                    answer_payload["provider_name"] = body.provider_name
+            elif body.choices is not None:
+                answer_payload = {
+                    "fingerprint": body.fingerprint, "choices": body.choices
+                }
+            else:
+                answer_payload = {
+                    "fingerprint": body.fingerprint, "option": body.option
+                }
             if body.text is not None:
                 answer_payload["text"] = body.text
             result = crew_call(
@@ -3327,6 +3356,8 @@ def create_app(
             }
             if body.text is not None:
                 crew_detail["text"] = body.text
+            if body.model_name is not None:
+                crew_detail["model_name"] = body.model_name
             audit_log.record({
                 "action": "pane.dialog.answer",
                 "pane_id": body.pane_id,
@@ -3340,6 +3371,8 @@ def create_app(
             option=body.option,
             choices=body.choices,
             text=body.text,
+            model_name=body.model_name,
+            provider_name=body.provider_name,
         )
         outcome = result["outcome"]
         # The fingerprint names the answered dialog and the option index
@@ -3356,6 +3389,12 @@ def create_app(
         }
         if body.text is not None:
             detail["text"] = body.text
+        if body.model_name is not None:
+            # A model's display name is catalog metadata, not terminal
+            # content: it rides the audit like the option index does.
+            detail["model_name"] = body.model_name
+            if body.provider_name is not None:
+                detail["provider_name"] = body.provider_name
         audit_log.record({
             "action": "pane.dialog.answer",
             "pane_id": body.pane_id,
@@ -3363,13 +3402,16 @@ def create_app(
             "detail": detail,
         })
         if outcome == "answered":
-            return {
+            answered = {
                 "ok": True,
                 "pane_id": body.pane_id,
                 "option": body.option,
                 "choices": body.choices,
                 "label": result.get("label", ""),
             }
+            if body.model_name is not None:
+                answered["model_name"] = body.model_name
+            return answered
         reason = result.get("reason", "")
         if reason == "unknown_pane":
             raise HTTPException(status_code=404, detail="pane no encontrado")
@@ -3389,6 +3431,28 @@ def create_app(
             status_code=502,
             detail=result.get("detail") or "No se pudo responder el diálogo.",
         )
+
+    @app.get("/pane/models")
+    def pane_models(
+        pane_id: str = Query(..., max_length=MAX_SESSION_ID_CHARS),
+    ) -> dict:
+        """Every model the viewed opencode pane could switch to.
+
+        Read-only and PWA-only (never an LLM tool): the on-screen model
+        picker paints a window of its list, so the PWA card asks for the
+        FULL connected catalog here (``opencode models`` + opencode's own
+        display names, cached for minutes) and answers a tap by NAME
+        through POST /pane/dialog/answer. An unknown pane is a 404, never
+        the focused fallback; a missing CLI or any failure is an empty
+        list with a ``reason`` — the card then keeps the picker's own
+        options. A crew pane's catalog is its owner's, not ours.
+        """
+        if crew_remote_peer(pane_id) is not None:
+            return {"models": [], "reason": "remote-pane"}
+        result = tools.pane_models(pane_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail="pane no encontrado")
+        return result
 
     @app.get("/pane/permission")
     def pane_permission(

@@ -120,6 +120,12 @@ def _load(karaoke_app):
     harness.respond("/herd", OPENCODE_HERD)
     harness.respond("/view", IDLE_VIEW, query=("pane_id",))
     harness.respond("/pane/reply", {"ok": True}, method="POST")
+    # The full-catalog read the opencode card makes on demand: an EMPTY
+    # catalog (the CLI is unavailable) keeps the picker's own options,
+    # which is what every screen-option test below exercises.
+    harness.respond(
+        "/pane/models", {"models": [], "reason": "cli-failed"}, query=("pane_id",)
+    )
     return harness
 
 
@@ -297,3 +303,170 @@ def test_the_current_model_is_highlighted_and_shows_provider_apart(karaoke_app):
     # The label shows the clean model name; the provider is secondary.
     expect(rows.nth(1).locator("span").nth(0)).to_have_text("claude-opus-4-1")
     expect(rows.nth(1).locator(".dlg-opt-desc")).to_have_text("anthropic")
+
+
+# ── the FULL catalog: every connected model, not the painted window ────
+
+CATALOG_PROVIDERS = [
+    ("opencode-go", "OpenCode Go"),
+    ("zai-coding-plan", "Z.AI Coding Plan"),
+    ("anthropic", "Anthropic"),
+    ("openai", "OpenAI"),
+    ("openrouter", "OpenRouter"),
+]
+
+
+def _catalog():
+    """230+ entries: far more than the 16-row window the screen painted,
+    with models the picker NEVER listed (Kimi K2.7 Code)."""
+    models = []
+    for index in range(228):
+        provider, provider_name = CATALOG_PROVIDERS[index % len(CATALOG_PROVIDERS)]
+        models.append(
+            {
+                "id": f"{provider}/model-{index}",
+                "name": f"Model {index}",
+                "provider": provider,
+                "provider_name": provider_name,
+                "current": False,
+            }
+        )
+    models.append(
+        {
+            "id": "opencode-go/kimi-k2.7-code",
+            "name": "Kimi K2.7 Code",
+            "provider": "opencode-go",
+            "provider_name": "OpenCode Go",
+            "current": False,
+        }
+    )
+    models.append(
+        {
+            "id": "anthropic/claude-opus-5-5",
+            "name": "Claude Opus 5.5",
+            "provider": "anthropic",
+            "provider_name": "Anthropic",
+            "current": True,
+        }
+    )
+    return models
+
+
+def _open_catalog_picker(karaoke_app, catalog):
+    harness = _load(karaoke_app)
+    harness.respond(
+        "/pane/models", {"models": catalog, "reason": ""}, query=("pane_id",)
+    )
+    harness.respond("/pane/dialog/answer", {"ok": True, "option": None}, method="POST")
+    _modal_route(harness, PICKER_VIEW)
+    page = harness.load().page
+    page.locator("#pane-picker").click()
+    expect(page.locator("#conv-model")).to_be_visible()
+    page.locator("#conv-model").click()
+    # The card first paints the picker's own options; the catalog then
+    # REPLACES them with every connected model.
+    expect(page.locator("#dialog-buttons .dlg-model-list button[data-catalog]")).to_have_count(
+        len(catalog)
+    )
+    return harness, page
+
+
+def test_the_full_catalog_replaces_the_painted_window(karaoke_app):
+    catalog = _catalog()
+    harness, page = _open_catalog_picker(karaoke_app, catalog)
+
+    rows = page.locator("#dialog-buttons .dlg-model-list button")
+    expect(rows).to_have_count(len(catalog))
+    assert len(catalog) > 200 > len(MODELS)
+    # No screen-option button survives next to the catalog.
+    expect(page.locator("#dialog-buttons button[data-index]")).to_have_count(0)
+    # The read asked for THIS pane, once.
+    reads = [r for r in harness.requests if "/pane/models" in r.url]
+    assert len(reads) == 1 and "pane_id=" in reads[0].url
+    # The server's current model is highlighted.
+    current = page.locator("#dialog-buttons .dlg-model-list button.dlg-current")
+    expect(current).to_have_count(1)
+    expect(current).to_contain_text("Claude Opus 5.5")
+    # Provider rides as the secondary line.
+    expect(rows.nth(0).locator(".dlg-opt-desc")).to_have_text("OpenCode Go")
+    # The 230-row list scrolls inside the bounded card.
+    metrics = page.evaluate(
+        """() => {
+          const list = document.querySelector('#dialog-buttons .dlg-model-list');
+          list.scrollTop = list.scrollHeight;
+          return {
+            overflowY: getComputedStyle(list).overflowY,
+            scrollHeight: list.scrollHeight,
+            clientHeight: list.clientHeight,
+            scrolled: list.scrollTop,
+            viewport: window.innerHeight,
+          };
+        }"""
+    )
+    assert metrics["overflowY"] == "auto"
+    assert metrics["scrollHeight"] > metrics["clientHeight"] * 5, metrics
+    assert metrics["scrolled"] > 0
+    assert metrics["clientHeight"] < metrics["viewport"]
+
+
+def test_filtering_the_catalog_and_tapping_sends_the_model_name(karaoke_app):
+    _harness, page = _open_catalog_picker(karaoke_app, _catalog())
+    search = page.locator("#dialog-buttons .dlg-model-search")
+    visible = page.locator("#dialog-buttons .dlg-model-list button:visible")
+
+    # A model the picker window NEVER listed is reachable by search.
+    search.fill("kimi k2.7")
+    expect(visible).to_have_count(1)
+    expect(visible.nth(0)).to_contain_text("Kimi K2.7 Code")
+    expect(visible.nth(0)).to_contain_text("OpenCode Go")
+
+    # The tap answers by NAME (+ provider), never an option index, with
+    # the picker render's own fingerprint.
+    with page.expect_request(
+        lambda request: request.url.endswith("/pane/dialog/answer")
+        and request.method == "POST"
+    ) as captured:
+        visible.nth(0).click()
+    assert json.loads(captured.value.post_data) == {
+        "pane_id": PANE,
+        "fingerprint": PICKER_STRUCTURED["fingerprint"],
+        "model_name": "Kimi K2.7 Code",
+        "provider_name": "OpenCode Go",
+    }
+    expect(page.locator("#dialog-status")).to_contain_text("Respondido: Kimi K2.7 Code")
+
+
+def test_a_provider_search_narrows_the_catalog_and_clearing_restores_it(karaoke_app):
+    catalog = _catalog()
+    _harness, page = _open_catalog_picker(karaoke_app, catalog)
+    search = page.locator("#dialog-buttons .dlg-model-search")
+    visible = page.locator("#dialog-buttons .dlg-model-list button:visible")
+
+    search.fill("z.ai coding")
+    expected = sum(1 for m in catalog if m["provider_name"] == "Z.AI Coding Plan")
+    expect(visible).to_have_count(expected)
+    search.fill("zzz-no-such-model")
+    expect(visible).to_have_count(0)
+    expect(page.locator("#dialog-buttons .dlg-model-none")).to_be_visible()
+    search.fill("")
+    expect(visible).to_have_count(len(catalog))
+
+
+def test_a_refused_catalog_answer_says_the_dialog_changed(karaoke_app):
+    harness = _load(karaoke_app)
+    harness.respond(
+        "/pane/models", {"models": _catalog(), "reason": ""}, query=("pane_id",)
+    )
+    harness.respond(
+        "/pane/dialog/answer", {"detail": "changed"}, method="POST", status=409
+    )
+    _modal_route(harness, PICKER_VIEW)
+    page = harness.load().page
+    page.locator("#pane-picker").click()
+    page.locator("#conv-model").click()
+    expect(page.locator("#dialog-buttons .dlg-model-list button[data-catalog]")).to_have_count(
+        len(_catalog())
+    )
+    page.locator("#dialog-buttons .dlg-model-search").fill("model 7")
+    page.locator("#dialog-buttons .dlg-model-list button:visible").first.click()
+    expect(page.locator("#dialog-status")).to_contain_text("cambió")

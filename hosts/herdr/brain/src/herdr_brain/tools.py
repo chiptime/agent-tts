@@ -47,7 +47,7 @@ from .herdr import (
 )
 from .mux import create_mux
 from .mux.refusal import MuxRefusal
-from .pane_model import PaneModelResolver
+from .pane_model import OpencodeModelCatalog, PaneModelResolver
 from .send_receipts import (
     classify_followup,
     classify_send,
@@ -358,11 +358,15 @@ class BrainTools:
         sleeper: Optional[Callable[[float], None]] = None,
         consult: Optional[ConsultService] = None,
         pane_model: Optional[PaneModelResolver] = None,
+        model_catalog: Optional[OpencodeModelCatalog] = None,
     ):
         self._settings = settings
         self._herdr = herdr or create_mux(settings)
         # Model per pane (parity F7a S3): background lookups, never blocking.
         self._pane_model = pane_model or PaneModelResolver()
+        # Every connected opencode model (GET /pane/models): lazy — the
+        # CLI only runs when a card asks.
+        self._model_catalog = model_catalog or OpencodeModelCatalog()
         # Injectable readiness-loop primitives (tests drive them without
         # real 40 s waits); production uses monotonic time and real sleep.
         self._clock = clock or time.monotonic
@@ -1006,6 +1010,8 @@ class BrainTools:
         option: Optional[int] = None,
         choices: Optional[list] = None,
         text: Optional[str] = None,
+        model_name: Optional[str] = None,
+        provider_name: Optional[str] = None,
     ) -> dict:
         """Answers a RECOGNIZED dialog option a button was tapped for (S2).
 
@@ -1034,6 +1040,13 @@ class BrainTools:
         the clears and the typing are one verified step each, and Enter
         commits only once the typed text is ON SCREEN — see
         :meth:`_answer_free_text`.
+
+        ``model_name`` (+ optional ``provider_name``) answers an opencode
+        model picker by NAME instead of by an on-screen option: the PWA's
+        full catalog lists models the picker's painted window never
+        showed. It runs the same search-first flow — the name is typed,
+        and Enter leaves only when the FIRST filtered row on the real
+        screen is that model — and never answers any other dialog.
 
         The outcome is ``answered`` or ``refused`` with a reason, so
         the PWA can say exactly what happened.
@@ -1099,6 +1112,32 @@ class BrainTools:
                 pane_id, choices, model, target, reader, sender, detect, refused,
                 answer_lines,
             )
+        if model_name is not None:
+            if not (
+                model.kind == "model_picker"
+                and (target.agent or "").strip().lower() in OPENCODE_SEARCH_PICKERS
+            ):
+                return refused(
+                    "invalid_target",
+                    "a model name answers only an opencode model picker",
+                )
+            matched, failure = self._search_first_picker_answer(
+                pane_id,
+                target.agent,
+                model_name,
+                model_name=model_name,
+                provider_name=provider_name,
+            )
+            if failure is not None:
+                return refused(*failure)
+            return {
+                "outcome": "answered",
+                "pane_id": pane_id,
+                "option": None,
+                "model_name": model_name,
+                "keys": ["enter"],
+                "label": matched,
+            }
         if option is None or not 0 <= option < len(model.options):
             return refused("invalid_target", "that option is not on this dialog")
 
@@ -1546,7 +1585,13 @@ class BrainTools:
         )
 
     def _search_first_picker_answer(
-        self, pane_id: str, agent: str, wanted: str, option=None
+        self,
+        pane_id: str,
+        agent: str,
+        wanted: str,
+        option=None,
+        model_name: Optional[str] = None,
+        provider_name: Optional[str] = None,
     ) -> tuple[Optional[str], Optional[tuple]]:
         """Answers an opencode ``/models`` picker by SEARCH, never arrows.
 
@@ -1557,25 +1602,30 @@ class BrainTools:
         keypress: ADR 0009's never-a-digit is about KEYS, and digits
         ride only inside the name), the screen is re-read until two
         reads agree, and Enter leaves ONLY when the search box echoes
-        the query AND the FIRST filtered row (where the pointer lands
-        after a filter) is the target.
+        the query AND the FIRST filtered row is the target. A filter
+        resets the pointer to row 0, so that first row IS where Enter
+        lands: other distinct rows below it are irrelevant.
 
-        A tapped ``option`` types its clean MODEL name — the screen's
+        A tapped ``option`` (or a catalog ``model_name`` +
+        ``provider_name``) types its clean MODEL name — the screen's
         label also carries the provider, which opencode's Search does
-        not match — and is recognized among the filtered rows by its
-        full label first, then by model name (normalized equality);
-        identical duplicate rows are one answer (the first is taken).
-        Without an ``option`` (the voice path) the spoken text is typed
-        and matched by containment. Zero rows, more than one DISTINCT
-        row, or a target that is not first refuse with no Enter — and
-        the typed text is CLEARED (``ctrl+u``, while the picker is still
-        on screen) so the picker returns unfiltered, never half-typed.
-        The answer is confirmed only by the picker actually closing.
+        not match — and the first row is the target when its model name
+        matches (normalized) and its provider, when both are known,
+        agrees. Without either (the voice path) the spoken text is
+        typed and matched by containment, and a spoken name that lists
+        more than one DISTINCT row stays ambiguous.
+
+        Every refusal sends NOTHING further: the typed text stays in the
+        box so the operator can finish by hand (no clear chord —
+        stop-on-drift). The answer is confirmed only by the picker
+        actually closing.
 
         Returns ``(matched_label, None)`` or ``(None, (reason, detail))``.
         """
         if option is not None:
             query = sanitize_prompt_text(option.model or option.label or "")
+        elif model_name is not None:
+            query = sanitize_prompt_text(model_name)
         else:
             query = sanitize_prompt_text(wanted or "")
         if not query:
@@ -1588,22 +1638,7 @@ class BrainTools:
         def read_picker(filled: bool):
             return self._read_opencode_picker(pane_id, agent, filled=filled, query=query)
 
-        def clear_search():
-            """Best-effort: empty the Search box — only while the picker
-            is still on screen, because ``ctrl+u`` anywhere else would
-            wipe the chat prompt."""
-            still_open = self._read_opencode_picker(
-                pane_id, agent, filled=True
-            ) or self._read_opencode_picker(pane_id, agent, filled=False)
-            if still_open is None:
-                return
-            try:
-                self.send_keys_to_pane(pane_id, ["ctrl+u"])
-            except Exception:  # noqa: BLE001 — a failed clear never masks the refusal
-                pass
-
         def refuse(reason: str, detail: str):
-            clear_search()
             return None, (reason, detail)
 
         try:
@@ -1634,41 +1669,72 @@ class BrainTools:
                 "while the search settled; nothing was pressed",
             )
         rows = list(filtered.options)
-        if option is not None:
-            target_key = _lex_flat(option.label)
-            hits = [row for row in rows if _lex_flat(row.label) == target_key]
-            if not hits:
-                name_key = _lex_flat(option.model or option.label)
-                hits = [
-                    row
-                    for row in rows
-                    if _lex_flat(row.model or row.label) == name_key
-                ]
+        if not rows:
+            return refuse("no-match", _name_candidates(query, []))
+
+        if option is not None or model_name is not None:
+            name_key = _lex_flat(
+                (option.model or option.label) if option is not None else model_name
+            )
+            label_key = _lex_flat(option.label) if option is not None else ""
+            provider_key = _lex_flat(
+                option.provider if option is not None else (provider_name or "")
+            )
+
+            def is_target(row) -> bool:
+                row_label = _lex_flat(row.label)
+                if label_key and row_label == label_key:
+                    return True
+                row_model = _lex_flat(row.model or row.label)
+                if provider_key:
+                    # A provider the picker's grammar does not know stays
+                    # inside the row's text: the whole label names it.
+                    if row_label == f"{name_key} {provider_key}":
+                        return True
+                    if row_model != name_key:
+                        return False
+                    row_provider = _lex_flat(row.provider)
+                    return not row_provider or row_provider == provider_key
+                return row_model == name_key or row_label == name_key
+
+            if is_target(rows[0]):
+                matched = rows[0].label
+            elif any(is_target(row) for row in rows):
+                return refuse(
+                    "ambiguous",
+                    "the target is not the first filtered row; nothing was pressed",
+                )
+            else:
+                return refuse(
+                    "no-match", _name_candidates(query, [row.label for row in rows])
+                )
         else:
             flat = _lex_flat(query)
             hits = [row for row in rows if flat in _lex_flat(row.label)]
-        if not hits:
-            return refuse("no-match", _name_candidates(query, []))
-        # Rows whose label is IDENTICAL are equivalent (same model, same
-        # outcome — the live catalog lists the same model once per
-        # provider entry): collapse them, keep the first, and refuse
-        # only on more than one DISTINCT label.
-        distinct: list = []
-        seen = set()
-        for row in hits:
-            key = _lex_flat(row.label)
-            if key not in seen:
-                seen.add(key)
-                distinct.append(row.label)
-        if len(distinct) > 1:
-            return refuse("ambiguous", _name_candidates(query, distinct))
-        # Enter commits the pointer, which a filter resets to the FIRST
-        # row: unless that row IS the target, Enter would pick another.
-        if _lex_flat(rows[0].label) not in seen:
-            return refuse(
-                "ambiguous",
-                "the target is not the first filtered row; nothing was pressed",
-            )
+            if not hits:
+                return refuse("no-match", _name_candidates(query, []))
+            # Rows whose label is IDENTICAL are equivalent (same model,
+            # same outcome — the live catalog lists the same model once
+            # per provider entry): collapse them, keep the first, and
+            # refuse only on more than one DISTINCT label.
+            distinct: list = []
+            seen = set()
+            for row in hits:
+                key = _lex_flat(row.label)
+                if key not in seen:
+                    seen.add(key)
+                    distinct.append(row.label)
+            if len(distinct) > 1:
+                return refuse("ambiguous", _name_candidates(query, distinct))
+            # Enter commits the pointer, which a filter resets to the
+            # FIRST row: unless that row IS the target, Enter would pick
+            # another.
+            if _lex_flat(rows[0].label) not in seen:
+                return refuse(
+                    "ambiguous",
+                    "the target is not the first filtered row; nothing was pressed",
+                )
+            matched = hits[0].label
 
         sent = self.send_keys_to_pane(pane_id, ["enter"])
         if sent.get("outcome") != "sent":
@@ -1679,7 +1745,7 @@ class BrainTools:
         for _ in range(SWITCH_WAIT_ATTEMPTS):
             pause(SWITCH_POLL_S)
             if read_picker(filled=True) is None and read_picker(filled=False) is None:
-                return hits[0].label, None
+                return matched, None
         return None, (
             "no-progress",
             "the picker did not close after enter; "
@@ -2472,6 +2538,46 @@ class BrainTools:
                     "cwd": agent.cwd or None,
                 }
         return None
+
+    def pane_models(self, pane_id: str) -> Optional[dict]:
+        """The FULL connected-model catalog for one opencode pane.
+
+        Read-only and PWA-only (never an LLM tool). ``None`` for an
+        unknown pane (never the focused fallback); any other harness
+        answers ``unsupported`` without running anything. Each entry
+        carries ``current`` — true only for the model the pane's last
+        request used, when that is known.
+        """
+        info = self.pane_info(pane_id)
+        if info is None:
+            return None
+        harness = (info.get("agent") or "").strip().lower()
+        if harness not in OPENCODE_SEARCH_PICKERS:
+            return {"models": [], "reason": "unsupported"}
+        listing = self._model_catalog.list_models()
+        current = None
+        session_id = info.get("session_id")
+        if session_id:
+            try:
+                current = self._pane_model.model(info.get("agent"), session_id)
+            except Exception:  # noqa: BLE001 — display metadata never breaks the card
+                current = None
+        entries = listing["models"]
+        flags = [bool(current) and entry["id"] == current for entry in entries]
+        if current and "/" not in current and not any(flags):
+            # A bare id names no provider: mark it only when ONE entry
+            # carries it — a guess between providers would be wrong.
+            bare = [
+                index
+                for index, entry in enumerate(entries)
+                if entry["id"].split("/", 1)[-1] == current
+            ]
+            if len(bare) == 1:
+                flags[bare[0]] = True
+        models = [
+            {**entry, "current": flag} for entry, flag in zip(entries, flags)
+        ]
+        return {"models": models, "reason": listing["reason"]}
 
     def reply_to_pane(self, pane_id: str, text: str) -> dict:
         """Delivers a user-TYPED reply to one exact pane (no LLM, no gate).

@@ -668,6 +668,76 @@
     });
   }
 
+  /* ── the FULL catalog (GET /pane/models, opencode only) ────────────
+   * The picker on screen paints a window of its list (recents,
+   * favourites, a few more), so a card built from it can never offer
+   * every model. The server lists the operator's connected models and
+   * a tap answers by NAME: the server types it into the real picker's
+   * Search and presses Enter only when the first filtered row on the
+   * real screen is that model. */
+  var CATALOG_HARNESSES = { opencode: true, opencode2: true };
+
+  function wantsModelCatalog(structured) {
+    return isModelPicker(structured) &&
+      CATALOG_HARNESSES[String(structured.agent || "").toLowerCase()] === true;
+  }
+
+  function modelCatalogUrl(paneId) {
+    return "/pane/models?pane_id=" + encodeURIComponent(String(paneId));
+  }
+
+  /* Catalog entries → the rows the search card paints (the SAME shape
+   * as modelPickerRows, so filterModelRows serves both). `index` is the
+   * entry's position in the catalog. Malformed entries are skipped,
+   * never thrown on. When the server knew no current model, the row the
+   * SCREEN's picker marks current (name + provider) is marked instead —
+   * only when exactly one row matches. */
+  function modelCatalogRows(models, structured) {
+    var rows = [];
+    (Array.isArray(models) ? models : []).forEach(function (entry) {
+      if (!entry || typeof entry !== "object") return;
+      var name = typeof entry.name === "string" ? entry.name.trim() : "";
+      if (!name) return;
+      var provider = typeof entry.provider_name === "string" && entry.provider_name.trim()
+        ? entry.provider_name.trim()
+        : (typeof entry.provider === "string" ? entry.provider : "");
+      rows.push({
+        index: rows.length,
+        model: name,
+        provider: provider,
+        current: entry.current === true,
+      });
+    });
+    if (!rows.some(function (row) { return row.current; }) && structured) {
+      var onScreen = (structured.options || []).filter(function (option) {
+        return option && option.current === true;
+      })[0];
+      if (onScreen) {
+        var wantedModel = foldSearchText(onScreen.model || onScreen.label);
+        var wantedProvider = foldSearchText(onScreen.provider || "");
+        var hits = rows.filter(function (row) {
+          return foldSearchText(row.model) === wantedModel &&
+            (!wantedProvider || foldSearchText(row.provider) === wantedProvider);
+        });
+        if (hits.length === 1) hits[0].current = true;
+      }
+    }
+    return rows;
+  }
+
+  /* The catalog tap's wire shape: a NAME (+ provider when known), never
+   * an option index — the picker may not list the model at all. The
+   * fingerprint guard is the same one every dialog answer carries. */
+  function catalogAnswerPayload(paneId, fingerprint, row) {
+    var payload = {
+      pane_id: paneId,
+      fingerprint: fingerprint,
+      model_name: row.model,
+    };
+    if (row.provider) payload.provider_name = row.provider;
+    return payload;
+  }
+
   function modelSearchPlaceholder() {
     return tr("dialogs.model_search_placeholder", "Buscar modelo…");
   }
@@ -841,6 +911,10 @@
     filterModelRows: filterModelRows,
     modelSearchPlaceholder: modelSearchPlaceholder,
     modelSearchNone: modelSearchNone,
+    wantsModelCatalog: wantsModelCatalog,
+    modelCatalogUrl: modelCatalogUrl,
+    modelCatalogRows: modelCatalogRows,
+    catalogAnswerPayload: catalogAnswerPayload,
     modelSwitchOffer: modelSwitchOffer,
     modelSwitchPayload: modelSwitchPayload,
     modelSwitchOpenedToast: modelSwitchOpenedToast,

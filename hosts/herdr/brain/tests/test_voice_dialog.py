@@ -1458,9 +1458,10 @@ class TestSwitchModel:
         assert result["outcome"] == "refused"
         assert result["reason"] == "ambiguous"
         assert "GLM-5.3" in result["detail"]
-        # The surprise stops everything: Enter never left, and the typed
-        # filter is cleared (ctrl+u) so the picker is not left half-typed.
-        assert stub.key_calls == [{"pane_id": IDLE_OPENCODE.pane_id, "keys": ["ctrl+u"]}]
+        # The surprise stops everything: Enter never left, and nothing
+        # else is sent either — the typed filter stays in the box (no
+        # ctrl+u) so the operator can finish by hand.
+        assert stub.key_calls == []
 
     def test_opencode_refuses_a_name_the_filter_empties(self):
         stub = OpencodeModelsStub([IDLE_OPENCODE])
@@ -1471,7 +1472,7 @@ class TestSwitchModel:
 
         assert result["outcome"] == "refused"
         assert result["reason"] == "no-match"
-        assert stub.key_calls == [{"pane_id": IDLE_OPENCODE.pane_id, "keys": ["ctrl+u"]}]
+        assert stub.key_calls == []
 
     def test_opencode_refuses_when_enter_does_not_close_the_picker(self):
         stub = OpencodeModelsStub([IDLE_OPENCODE])

@@ -640,3 +640,105 @@ test("model picker search chrome is translatable text", () => {
   assert.equal(Dialogs.modelSearchPlaceholder(), "Buscar modelo…");
   assert.equal(Dialogs.modelSearchNone(), "Ningún modelo coincide.");
 });
+
+/* ── the full opencode catalog (GET /pane/models) ─────────────────────
+ * The on-screen picker paints only a window of its list; the PWA card
+ * lists the FULL connected catalog and answers a tap by NAME. */
+
+const CATALOG = [
+  { id: "opencode-go/glm-5.3", name: "GLM-5.3", provider: "opencode-go",
+    provider_name: "OpenCode Go", current: false },
+  { id: "zai-coding-plan/glm-5.3", name: "GLM-5.3", provider: "zai-coding-plan",
+    provider_name: "Z.AI Coding Plan", current: false },
+  { id: "anthropic/claude-opus-5-5", name: "Claude Opus 5.5", provider: "anthropic",
+    provider_name: "Anthropic", current: true },
+];
+
+test("wantsModelCatalog: only an opencode model picker asks for the catalog", () => {
+  assert.equal(Dialogs.wantsModelCatalog(OPENCODE_PICKER), true);
+  assert.equal(
+    Dialogs.wantsModelCatalog({ ...OPENCODE_PICKER, agent: "opencode2" }), true);
+  assert.equal(Dialogs.wantsModelCatalog({ ...OPENCODE_PICKER, agent: "claude" }), false);
+  assert.equal(Dialogs.wantsModelCatalog(STRUCTURED), false);
+  assert.equal(Dialogs.wantsModelCatalog({ ...OPENCODE_PICKER, unread: true }), false);
+  assert.equal(Dialogs.wantsModelCatalog(null), false);
+});
+
+test("modelCatalogRows: display name, provider name, current — catalog order kept", () => {
+  const rows = Dialogs.modelCatalogRows(CATALOG);
+  assert.deepEqual(
+    rows.map((r) => [r.index, r.model, r.provider, r.current]),
+    [
+      [0, "GLM-5.3", "OpenCode Go", false],
+      [1, "GLM-5.3", "Z.AI Coding Plan", false],
+      [2, "Claude Opus 5.5", "Anthropic", true],
+    ]);
+});
+
+test("modelCatalogRows: garbage in, nothing out (never a throw)", () => {
+  assert.deepEqual(Dialogs.modelCatalogRows(null), []);
+  assert.deepEqual(Dialogs.modelCatalogRows({}), []);
+  assert.deepEqual(
+    Dialogs.modelCatalogRows([null, 3, { id: "x" }, { name: "" }, CATALOG[0]])
+      .map((r) => r.model),
+    ["GLM-5.3"]);
+});
+
+test("modelCatalogRows: an unnamed provider falls back to its id", () => {
+  const rows = Dialogs.modelCatalogRows([
+    { id: "mystery/unnamed", name: "unnamed", provider: "mystery", current: false },
+  ]);
+  assert.equal(rows[0].provider, "mystery");
+});
+
+test("modelCatalogRows: with no catalog current, the screen's current row marks it", () => {
+  const noCurrent = CATALOG.map((m) => ({ ...m, current: false }));
+  const rows = Dialogs.modelCatalogRows(noCurrent, OPENCODE_PICKER);
+  // OPENCODE_PICKER's current is "Claude Opus 5.5" / "Anthropic".
+  assert.deepEqual(rows.map((r) => r.current), [false, false, true]);
+  // An ambiguous screen current (same name, no provider) marks nothing.
+  const ambiguous = {
+    ...OPENCODE_PICKER,
+    options: [{ label: "GLM-5.3", model: "GLM-5.3", provider: "", current: true }],
+  };
+  assert.deepEqual(
+    Dialogs.modelCatalogRows(noCurrent, ambiguous).map((r) => r.current),
+    [false, false, false]);
+});
+
+test("filterModelRows works over a 264-entry catalog (name, provider, tokens)", () => {
+  const many = [];
+  for (let i = 0; i < 264; i++) {
+    many.push({
+      id: `p${i % 12}/model-${i}`, name: `Model ${i}`, provider: `p${i % 12}`,
+      provider_name: `Provider ${i % 12}`, current: false,
+    });
+  }
+  many.push({ id: "opencode-go/glm-5.3", name: "GLM-5.3", provider: "opencode-go",
+              provider_name: "OpenCode Go", current: false });
+  const rows = Dialogs.modelCatalogRows(many);
+  assert.equal(rows.length, 265);
+  assert.equal(Dialogs.filterModelRows(rows, "").length, 265);
+  assert.deepEqual(
+    Dialogs.filterModelRows(rows, "glm opencode").map((r) => r.model), ["GLM-5.3"]);
+  assert.deepEqual(
+    Dialogs.filterModelRows(rows, "opencode go").map((r) => r.model), ["GLM-5.3"]);
+  assert.equal(Dialogs.filterModelRows(rows, "model 263").length, 1);
+  assert.equal(Dialogs.filterModelRows(rows, "zzz").length, 0);
+});
+
+test("catalogAnswerPayload: the guarded endpoint's model_name form, no option", () => {
+  const row = Dialogs.modelCatalogRows(CATALOG)[1];
+  assert.deepEqual(
+    Dialogs.catalogAnswerPayload("w1:p4", "fp1", row),
+    { pane_id: "w1:p4", fingerprint: "fp1", model_name: "GLM-5.3",
+      provider_name: "Z.AI Coding Plan" });
+  const bare = { index: 0, model: "Solo", provider: "", current: false };
+  const payload = Dialogs.catalogAnswerPayload("w1:p4", "fp1", bare);
+  assert.deepEqual(payload, { pane_id: "w1:p4", fingerprint: "fp1", model_name: "Solo" });
+  assert.ok(!("option" in payload) && !("provider_name" in payload));
+});
+
+test("modelCatalogUrl: the read route for one exact pane", () => {
+  assert.equal(Dialogs.modelCatalogUrl("w1:p4"), "/pane/models?pane_id=w1%3Ap4");
+});

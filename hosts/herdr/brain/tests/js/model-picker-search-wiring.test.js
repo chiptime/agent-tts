@@ -16,7 +16,11 @@ const htmlSrc = read("index.html");
 const es = require("../../src/herdr_brain/static/i18n/es.js");
 const en = require("../../src/herdr_brain/static/i18n/en.js");
 
-const start = appSrc.indexOf("function paintStructuredDialog");
+/* The search card is built by ONE shared helper (screen options AND the
+ * full catalog), so the slice spans the helper, the catalog swap and
+ * the structured painter. */
+const start = appSrc.indexOf("function mountModelSearch");
+assert.ok(start !== -1, "the shared search-card builder must exist");
 const slice = appSrc.slice(start, appSrc.indexOf("function paintWizardStepper"));
 
 test("the structured card builds the picker rows through the pure model", () => {
@@ -55,4 +59,44 @@ test("both dictionaries carry the search chrome", () => {
     assert.ok(dict["dialogs.model_search_placeholder"]);
     assert.ok(dict["dialogs.model_search_none"]);
   }
+});
+
+/* ── the full catalog (GET /pane/models) ─────────────────────────── */
+
+const catalogStart = appSrc.indexOf("var MODEL_CATALOG_TTL_MS");
+assert.ok(catalogStart !== -1, "the catalog loader must exist");
+const catalogSlice = appSrc.slice(catalogStart, appSrc.indexOf("function paintWizardStepper"));
+assert.ok(catalogSlice.includes("function requestModelCatalog"));
+
+test("an opencode picker card asks for the full catalog, on demand", () => {
+  assert.ok(slice.includes("Dialogs.wantsModelCatalog("),
+    "only an opencode model picker may ask for the catalog");
+  assert.ok(catalogSlice.includes("Dialogs.modelCatalogUrl("),
+    "the read route comes from the pure module");
+  assert.ok(catalogSlice.includes("readFetch("),
+    "the catalog read carries the device credential and the pairing recovery");
+  assert.ok(!/\bfetch\(\s*["']\/pane\/models/.test(appSrc),
+    "no boot-time fetch: the catalog loads only when the card paints");
+});
+
+test("the catalog REPLACES the screen options and keeps them as the fallback", () => {
+  assert.ok(catalogSlice.includes("Dialogs.modelCatalogRows("));
+  assert.match(catalogSlice, /rows\.length/,
+    "an empty catalog must leave the picker's own options painted");
+  assert.ok(catalogSlice.includes("mountModelSearch("),
+    "the catalog list reuses the search + scrolling card");
+});
+
+test("a catalog tap sends the model name, never an option index", () => {
+  assert.ok(appSrc.includes("Dialogs.catalogAnswerPayload("));
+  assert.ok(appSrc.includes('button[data-catalog]'),
+    "catalog rows are their own tap target (no data-index to misread)");
+  const catalogButtons = catalogSlice.slice(catalogSlice.indexOf("data-catalog"));
+  assert.ok(!/data-index/.test(catalogButtons.slice(0, 500)),
+    "a catalog button must not carry an option index");
+});
+
+test("typed filter text survives the catalog swap", () => {
+  assert.match(catalogSlice, /\.value/,
+    "what the operator typed before the list arrived is kept");
 });

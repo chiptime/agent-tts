@@ -247,6 +247,9 @@ def test_device_header_gate_matrix():
         ("POST", "/pane/receipt/rct-abc123/submit", "write"),
         ("POST", "/pane/receipt/rct-abc123/discard", "write"),
         ("GET", "/pane/receipts", "read"),
+        # The opencode model catalog: a read (the answer that USES a
+        # name is the write, POST /pane/dialog/answer).
+        ("GET", "/pane/models", "read"),
         # S5 web push: subscription changes and a transport test are
         # writes behind the device gate; the public key is a read.
         ("POST", "/push/subscribe", "write"),

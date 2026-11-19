@@ -540,3 +540,182 @@ class TestContextWiring:
             pane_model=FixedContext({}, {}),
         )
         assert "context" not in tools.status_payload()
+
+
+# ── the full connected-model catalog (opencode) ───────────────────────
+#
+# The on-screen picker paints only a window of its list (recents,
+# favourites, a few more), so a screen-derived card can never offer
+# every model. ``opencode models`` lists ALL the models of the
+# operator's connected providers (``provider/model-id`` per line);
+# opencode's local models.json cache names them for people (the picker
+# Search filters by that display name). Read-only, cached, and a
+# failure is an honest empty list with a reason — never a guess.
+
+from herdr_brain.pane_model import OpencodeModelCatalog
+
+CLI_LINES = (
+    "opencode-go/glm-5.3\n"
+    "opencode-go/qwen3.8-max\n"
+    "anthropic/claude-opus-5-5\n"
+    "openrouter/anthropic/claude-opus-5-5\n"
+    "mystery/unnamed-model\n"
+    "anthropic/claude-opus-5-5\n"  # duplicate line: one entry
+)
+
+DISPLAY_CATALOG = {
+    "opencode-go": {
+        "name": "OpenCode Go",
+        "models": {
+            "glm-5.3": {"name": "GLM-5.3"},
+            "qwen3.8-max": {"name": "Qwen3.8 Max"},
+        },
+    },
+    "anthropic": {
+        "name": "Anthropic",
+        "models": {"claude-opus-5-5": {"name": "Claude Opus 5.5"}},
+    },
+    "openrouter": {
+        "name": "OpenRouter",
+        "models": {"anthropic/claude-opus-5-5": {"name": "Claude Opus 5.5"}},
+    },
+}
+
+
+def model_catalog(runner, tmp_path, clock=None, catalog=DISPLAY_CATALOG, **kwargs):
+    path = tmp_path / "models.json"
+    if catalog is not None:
+        write_opencode_catalog(path, catalog)
+    return OpencodeModelCatalog(
+        runner=runner, clock=clock or Clock(), catalog_path=str(path),
+        binary="/bin/opencode", **kwargs,
+    )
+
+
+class TestOpencodeModelCatalog:
+    def test_lists_every_cli_model_joined_with_display_names(self, tmp_path):
+        runner = FakeRunner(stdout=CLI_LINES)
+        result = model_catalog(runner, tmp_path).list_models()
+
+        assert runner.calls == [["/bin/opencode", "models"]]
+        assert result["reason"] == ""
+        by_id = {entry["id"]: entry for entry in result["models"]}
+        assert len(result["models"]) == 5  # the duplicate line collapsed
+        assert by_id["opencode-go/glm-5.3"] == {
+            "id": "opencode-go/glm-5.3",
+            "name": "GLM-5.3",
+            "provider": "opencode-go",
+            "provider_name": "OpenCode Go",
+        }
+        # An id with a slash keeps the whole tail as the model id.
+        assert by_id["openrouter/anthropic/claude-opus-5-5"]["provider"] == "openrouter"
+        assert by_id["openrouter/anthropic/claude-opus-5-5"]["name"] == "Claude Opus 5.5"
+
+    def test_unknown_names_fall_back_to_the_ids(self, tmp_path):
+        result = model_catalog(FakeRunner(stdout=CLI_LINES), tmp_path).list_models()
+        mystery = next(e for e in result["models"] if e["provider"] == "mystery")
+        assert mystery["name"] == "unnamed-model"
+        assert mystery["provider_name"] == "mystery"
+
+    def test_a_missing_models_json_still_lists_by_id(self, tmp_path):
+        result = model_catalog(
+            FakeRunner(stdout=CLI_LINES), tmp_path, catalog=None
+        ).list_models()
+        assert len(result["models"]) == 5
+        glm = next(e for e in result["models"] if e["id"] == "opencode-go/glm-5.3")
+        assert glm["name"] == "glm-5.3" and glm["provider_name"] == "opencode-go"
+
+    def test_noise_lines_are_not_models(self, tmp_path):
+        runner = FakeRunner(stdout="warning: update available\n\nanthropic/claude-opus-5-5\n")
+        result = model_catalog(runner, tmp_path).list_models()
+        assert [e["id"] for e in result["models"]] == ["anthropic/claude-opus-5-5"]
+
+    def test_the_result_is_cached_until_the_ttl_expires(self, tmp_path):
+        runner = FakeRunner(stdout=CLI_LINES)
+        clock = Clock()
+        catalog = model_catalog(runner, tmp_path, clock=clock, ttl_s=300)
+        catalog.list_models()
+        clock.now += 299
+        catalog.list_models()
+        assert len(runner.calls) == 1
+        clock.now += 2
+        catalog.list_models()
+        assert len(runner.calls) == 2
+
+    @pytest.mark.parametrize(
+        "runner",
+        [
+            FakeRunner(returncode=1, stdout=""),
+            FakeRunner(exc=subprocess.TimeoutExpired("opencode", 8)),
+            FakeRunner(exc=OSError("no such file")),
+            FakeRunner(stdout="\n\n"),
+        ],
+    )
+    def test_a_failure_is_an_empty_list_with_a_reason(self, runner, tmp_path):
+        result = model_catalog(runner, tmp_path).list_models()
+        assert result["models"] == []
+        assert result["reason"]
+
+    def test_a_failure_is_retried_soon_not_cached_like_a_success(self, tmp_path):
+        clock = Clock()
+        runner = FakeRunner(returncode=1, stdout="")
+        catalog = model_catalog(runner, tmp_path, clock=clock)
+        catalog.list_models()
+        catalog.list_models()
+        assert len(runner.calls) == 1  # a short negative cache, no hammering
+        clock.now += 60
+        runner.returncode, runner.stdout = 0, CLI_LINES
+        assert len(catalog.list_models()["models"]) == 5
+
+    def test_a_missing_binary_is_an_empty_list_without_running(self, tmp_path, monkeypatch):
+        runner = FakeRunner(stdout=CLI_LINES)
+        monkeypatch.setattr("herdr_brain.pane_model.shutil.which", lambda _n: None)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        catalog = OpencodeModelCatalog(
+            runner=runner, clock=Clock(), catalog_path=str(tmp_path / "models.json")
+        )
+        result = catalog.list_models()
+        assert result == {"models": [], "reason": "opencode-not-found"}
+        assert runner.calls == []
+
+
+class TestPaneModelsWiring:
+    OPENCODE = AgentInfo(
+        pane_id="w1:p9", agent="opencode", status="idle", session_kind="id",
+        session_value="sid-9", cwd="/repo", title="OC", focused=False,
+    )
+
+    def tools(self, make_stub, settings, tmp_path, runner, models=None):
+        stub = make_stub(agents=[CLAUDE, self.OPENCODE])
+        return BrainTools(
+            settings, herdr=stub,
+            pane_model=FixedModels(models or {}),
+            model_catalog=model_catalog(runner, tmp_path),
+        )
+
+    def test_the_current_model_is_marked_from_the_pane_model(
+        self, make_stub, settings, tmp_path
+    ):
+        tools = self.tools(
+            make_stub, settings, tmp_path, FakeRunner(stdout=CLI_LINES),
+            models={("opencode", "sid-9"): "opencode-go/glm-5.3"},
+        )
+        result = tools.pane_models("w1:p9")
+        current = [e["id"] for e in result["models"] if e["current"]]
+        assert current == ["opencode-go/glm-5.3"]
+        assert all("current" in e for e in result["models"])
+
+    def test_no_current_when_the_pane_model_is_unknown(
+        self, make_stub, settings, tmp_path
+    ):
+        tools = self.tools(make_stub, settings, tmp_path, FakeRunner(stdout=CLI_LINES))
+        assert not any(e["current"] for e in tools.pane_models("w1:p9")["models"])
+
+    def test_an_unknown_pane_is_none_and_another_harness_is_unsupported(
+        self, make_stub, settings, tmp_path
+    ):
+        runner = FakeRunner(stdout=CLI_LINES)
+        tools = self.tools(make_stub, settings, tmp_path, runner)
+        assert tools.pane_models("w9:p9") is None
+        assert tools.pane_models("w1:p1") == {"models": [], "reason": "unsupported"}
+        assert runner.calls == []

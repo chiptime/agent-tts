@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import sqlite3
 import subprocess
 import threading
@@ -464,3 +466,133 @@ class PaneModelResolver:
             return None
         first = (proc.stdout or "").strip().splitlines()
         return first[0].strip() if first and first[0].strip() else None
+
+
+# ── the full connected-model catalog (opencode) ───────────────────────
+
+#: How long a successful ``opencode models`` listing is trusted. The
+#: connected providers change rarely; a phone opening the model card
+#: repeatedly must not spawn the CLI each time.
+CATALOG_TTL_S = 300.0
+#: A failed listing is retried soon (the operator may have just fixed
+#: it) but not on every card open.
+CATALOG_FAILURE_TTL_S = 15.0
+CATALOG_CLI_TIMEOUT_S = 10.0
+#: One ``provider/model-id`` line — the id may itself contain slashes.
+_MODEL_LINE = re.compile(r"^[A-Za-z0-9][\w.\-]*/\S+$")
+
+
+def _opencode_binary() -> Optional[str]:
+    """The opencode CLI: PATH first, then the per-user install the
+    brain's service PATH often lacks."""
+    found = shutil.which("opencode")
+    if found:
+        return found
+    fallback = os.path.expanduser("~/.local/bin/opencode")
+    return fallback if os.access(fallback, os.X_OK) else None
+
+
+class OpencodeModelCatalog:
+    """Every model the operator's connected opencode providers offer.
+
+    The picker on screen paints only a window of its list, so a card
+    derived from the screen can never show them all. ``opencode models``
+    prints ALL of them (``provider/model-id`` per line); opencode's own
+    ``models.json`` cache names them for people — the display name the
+    picker's Search filters by. Read-only: a subprocess with a timeout
+    and a file read, cached for ``ttl_s``. Any failure is an empty list
+    with a ``reason`` — never a guess, never a raise.
+    """
+
+    def __init__(
+        self,
+        runner: Optional[_Runner] = None,
+        clock: Optional[Callable[[], float]] = None,
+        ttl_s: float = CATALOG_TTL_S,
+        failure_ttl_s: float = CATALOG_FAILURE_TTL_S,
+        timeout_s: float = CATALOG_CLI_TIMEOUT_S,
+        catalog_path: Optional[str] = None,
+        binary: Optional[str] = None,
+    ):
+        self._run = runner or default_runner
+        self._clock = clock or time.monotonic
+        self._ttl_s = ttl_s
+        self._failure_ttl_s = failure_ttl_s
+        self._timeout_s = timeout_s
+        self._catalog_path = catalog_path
+        self._binary = binary
+        self._lock = threading.Lock()
+        self._cached: Optional[Tuple[float, dict]] = None
+
+    def list_models(self) -> dict:
+        """``{"models": [{id, name, provider, provider_name}], "reason"}``
+        (``reason`` is empty on success). Never raises."""
+        with self._lock:
+            now = self._now()
+            if self._cached is not None and self._cached[0] > now:
+                return self._copy(self._cached[1])
+            try:
+                result = self._load()
+            except Exception:  # noqa: BLE001 — a catalog read never breaks the card
+                result = {"models": [], "reason": "error"}
+            ttl = self._ttl_s if result["models"] else self._failure_ttl_s
+            self._cached = (now + ttl, result)
+            return self._copy(result)
+
+    @staticmethod
+    def _copy(result: dict) -> dict:
+        return {
+            "models": [dict(entry) for entry in result["models"]],
+            "reason": result["reason"],
+        }
+
+    def _now(self) -> float:
+        try:
+            return self._clock()
+        except Exception:  # noqa: BLE001 — a broken clock only costs the cache
+            return 0.0
+
+    def _load(self) -> dict:
+        binary = self._binary or _opencode_binary()
+        if not binary:
+            return {"models": [], "reason": "opencode-not-found"}
+        try:
+            proc = self._run([binary, "models"], self._timeout_s)
+        except subprocess.TimeoutExpired:
+            return {"models": [], "reason": "timeout"}
+        except OSError:
+            return {"models": [], "reason": "unavailable"}
+        if proc.returncode != 0:
+            return {"models": [], "reason": "cli-failed"}
+        ids: List[str] = []
+        seen: Set[str] = set()
+        for raw in (proc.stdout or "").splitlines():
+            line = raw.strip()
+            if _MODEL_LINE.match(line) and line not in seen:
+                seen.add(line)
+                ids.append(line)
+        if not ids:
+            return {"models": [], "reason": "empty"}
+        path = self._catalog_path or _default_opencode_catalog()
+        data = _catalog_data(path)
+        names = data if isinstance(data, dict) else {}
+        models = []
+        for model_id in ids:
+            provider, ident = _model_parts(model_id)
+            block = _own(names, provider)
+            entry = _own(_own(block, "models"), ident)
+            name = _own(entry, "name")
+            provider_name = _own(block, "name")
+            models.append(
+                {
+                    "id": model_id,
+                    "name": name if isinstance(name, str) and name.strip() else ident,
+                    "provider": provider,
+                    "provider_name": (
+                        provider_name
+                        if isinstance(provider_name, str) and provider_name.strip()
+                        else provider
+                    ),
+                }
+            )
+        return {"models": models, "reason": ""}

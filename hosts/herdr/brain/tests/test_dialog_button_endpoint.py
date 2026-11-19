@@ -619,8 +619,9 @@ class TestModelPickerSearchFirst:
         assert result["outcome"] == "refused"
         assert result["reason"] == "ambiguous"
         assert [call["text"] for call in stub.text_calls] == ["GLM-5.3"]
-        # Nothing committed; the typed text is cleared, never left behind.
-        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["ctrl+u"]}]
+        # Nothing committed, and NOTHING else sent: the typed text stays
+        # in the box so the operator can finish by hand.
+        assert stub.key_calls == []
 
     def test_identical_duplicate_rows_answer_once(self, settings):
         """Live parity finding: the opencode catalog lists the SAME
@@ -867,7 +868,7 @@ class TestModelPickerOverChatSearchFirst:
         assert "Recent" not in [o.label for o in model.options]
         assert model.options[0].label == "Qwen3.8 Max OpenCode Go"
 
-    def test_no_match_clears_the_search_box_instead_of_leaving_it_typed(
+    def test_no_match_leaves_the_typed_text_and_sends_nothing_more(
         self, settings
     ):
         stub, _state = self._stub([])
@@ -880,10 +881,12 @@ class TestModelPickerOverChatSearchFirst:
         assert result["outcome"] == "refused"
         assert result["reason"] == "no-match"
         assert [c["text"] for c in stub.text_calls] == ["Qwen3.8 Max"]
-        # Search is cleared (ctrl+u); Enter never left; never a digit.
-        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["ctrl+u"]}]
+        # Enter never left, no clear (ctrl+u) either, never a digit.
+        assert stub.key_calls == []
 
-    def test_an_ambiguous_filter_clears_the_search_box(self, settings):
+    def test_a_target_listed_second_is_refused_and_nothing_is_cleared(
+        self, settings
+    ):
         stub, _state = self._stub(
             ["GLM-5.3 OpenCode Go", "GLM-5.3 Z.AI Coding Plan"], query="GLM-5.3"
         )
@@ -896,7 +899,32 @@ class TestModelPickerOverChatSearchFirst:
         assert result["outcome"] == "refused"
         assert result["reason"] == "ambiguous"
         assert [c["text"] for c in stub.text_calls] == ["GLM-5.3"]
-        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["ctrl+u"]}]
+        assert stub.key_calls == []
+
+    def test_a_first_row_target_commits_despite_other_distinct_rows(
+        self, settings
+    ):
+        """LIVE regression (operator, 3 taps refused ``ambiguous`` and
+        cleared): the filter left other DISTINCT rows under the target,
+        but the pointer sits on row 0 after a filter — that is the real
+        safety. First row is the tapped model: one Enter."""
+        stub, _state = self._stub(
+            [
+                "GLM-5.3 Z.AI Coding Plan",
+                "GLM-5.3 OpenCode Go",
+                "GLM-5.3 Highspeed OpenCode Go",
+            ],
+            query="GLM-5.3",
+        )
+        model, index = self._option("GLM-5.3 Z.AI Coding Plan")
+
+        result = self._tools(settings, stub).answer_structured_dialog(
+            "w1:p3", model.fingerprint, index
+        )
+
+        assert result["outcome"] == "answered"
+        assert result["label"] == "GLM-5.3 Z.AI Coding Plan"
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
 
     def test_a_target_that_is_not_the_first_filtered_row_is_refused(
         self, settings
@@ -913,7 +941,7 @@ class TestModelPickerOverChatSearchFirst:
         )
 
         assert result["outcome"] == "refused"
-        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["ctrl+u"]}]
+        assert stub.key_calls == []
 
     def test_the_first_row_is_taken_among_identical_duplicates(self, settings):
         stub, _state = self._stub(
@@ -948,6 +976,334 @@ class TestModelPickerOverChatSearchFirst:
         assert result["outcome"] == "refused"
         assert result["reason"] == "changed"
         assert stub.key_calls == []
+
+
+class TestModelPickerAnswerByModelName:
+    """The PWA's full catalog answers by NAME (``model_name`` +
+    optional ``provider_name``): the model may not be on the screen's
+    window at all, so there is no option index — the SAME search-first
+    flow types the name and Enter leaves only when the FIRST filtered
+    row on the real screen is that model (and provider when known)."""
+
+    # The over-chat screen doubles are shared, not re-inherited (a
+    # subclass would re-run every sibling test).
+    _filtered = TestModelPickerOverChatSearchFirst._filtered
+    _stub = TestModelPickerOverChatSearchFirst._stub
+    _tools = TestModelPickerOverChatSearchFirst._tools
+
+    def _answer(self, settings, stub, name, provider=None):
+        model = recognize("opencode", OPENCODE_OVER_CHAT)
+        return self._tools(settings, stub).answer_structured_dialog(
+            "w1:p3", model.fingerprint, model_name=name, provider_name=provider
+        )
+
+    def test_the_first_row_matching_name_and_provider_commits(self, settings):
+        stub, _state = self._stub(
+            [
+                "Qwen3.8 Max OpenCode Go",
+                "Qwen3.8 Max Preview OpenAI",
+                "Qwen3.8 Max Z.AI Coding Plan",
+            ],
+        )
+
+        result = self._answer(settings, stub, "Qwen3.8 Max", "OpenCode Go")
+
+        assert result["outcome"] == "answered"
+        assert result["label"] == "Qwen3.8 Max OpenCode Go"
+        assert [c["text"] for c in stub.text_calls] == ["Qwen3.8 Max"]
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
+
+    def test_a_model_the_screen_never_listed_is_answerable(self, settings):
+        """The catalog's whole point: a model absent from the painted
+        window is typed, filtered, and verified on the real screen."""
+        stub, _state = self._stub(["Kimi K2.7 Code OpenCode Go"], query="Kimi K2.7 Code")
+
+        result = self._answer(settings, stub, "Kimi K2.7 Code", "OpenCode Go")
+
+        assert result["outcome"] == "answered"
+        assert [c["text"] for c in stub.text_calls] == ["Kimi K2.7 Code"]
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
+
+    def test_without_a_provider_the_first_row_model_name_is_enough(self, settings):
+        stub, _state = self._stub(["Qwen3.8 Max OpenCode Go"])
+
+        result = self._answer(settings, stub, "Qwen3.8 Max")
+
+        assert result["outcome"] == "answered"
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
+
+    def test_the_target_listed_second_is_refused_with_nothing_cleared(
+        self, settings
+    ):
+        stub, _state = self._stub(
+            ["Qwen3.8 Max Preview OpenAI", "Qwen3.8 Max OpenCode Go"]
+        )
+
+        result = self._answer(settings, stub, "Qwen3.8 Max", "OpenCode Go")
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "ambiguous"
+        assert [c["text"] for c in stub.text_calls] == ["Qwen3.8 Max"]
+        assert stub.key_calls == []
+
+    def test_the_right_name_under_the_wrong_provider_is_refused(self, settings):
+        stub, _state = self._stub(["Qwen3.8 Max Z.AI Coding Plan"])
+
+        result = self._answer(settings, stub, "Qwen3.8 Max", "OpenCode Go")
+
+        assert result["outcome"] == "refused"
+        assert stub.key_calls == []
+
+    def test_a_filter_with_no_rows_is_a_no_match_and_sends_nothing(self, settings):
+        stub, _state = self._stub([])
+
+        result = self._answer(settings, stub, "Qwen3.8 Max", "OpenCode Go")
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "no-match"
+        assert stub.key_calls == []
+
+    def test_a_model_name_never_answers_a_non_picker_dialog(self, settings):
+        stub = DialogTapStub([BLOCKED_CLAUDE], CLAUDE_SELECT)
+        tools = self._tools(settings, stub)
+
+        result = tools.answer_structured_dialog(
+            "w1:p3", _fingerprint("claude", CLAUDE_SELECT), model_name="Opus"
+        )
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "invalid_target"
+        assert stub.key_calls == [] and not getattr(stub, "text_calls", [])
+
+    def test_a_changed_fingerprint_still_refuses_before_typing(self, settings):
+        stub, _state = self._stub(["Qwen3.8 Max OpenCode Go"])
+
+        result = self._tools(settings, stub).answer_structured_dialog(
+            "w1:p3", "0" * 16, model_name="Qwen3.8 Max"
+        )
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "changed"
+        assert stub.text_calls == [] and stub.key_calls == []
+
+
+class TestPaneDialogAnswerModelNameRoute:
+    """The wire shape: ``model_name`` (+ ``provider_name``) is a FOURTH
+    exclusive answer form next to option / choices / option+text."""
+
+    def _client(self, make_client, keep):
+        helper = TestModelPickerOverChatSearchFirst()
+        stub, _state = helper._stub(keep)
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        return client, stub
+
+    def test_a_model_name_answer_is_200_and_audited_without_a_clear(
+        self, make_client
+    ):
+        client, stub = self._client(make_client, ["Qwen3.8 Max OpenCode Go"])
+        fingerprint = recognize("opencode", OPENCODE_OVER_CHAT).fingerprint
+
+        response = client.post(
+            "/pane/dialog/answer",
+            json={
+                "pane_id": "w1:p3",
+                "fingerprint": fingerprint,
+                "model_name": "Qwen3.8 Max",
+                "provider_name": "OpenCode Go",
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["ok"] is True
+        assert body["label"] == "Qwen3.8 Max OpenCode Go"
+        assert body["model_name"] == "Qwen3.8 Max"
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
+        entry = next(
+            e for e in audit_entries(client) if e["action"] == "pane.dialog.answer"
+        )
+        assert entry["detail"]["model_name"] == "Qwen3.8 Max"
+
+    def test_a_refused_model_name_is_a_502_with_nothing_cleared(self, make_client):
+        client, stub = self._client(
+            make_client, ["Qwen3.8 Max Preview OpenAI", "Qwen3.8 Max OpenCode Go"]
+        )
+        fingerprint = recognize("opencode", OPENCODE_OVER_CHAT).fingerprint
+
+        response = client.post(
+            "/pane/dialog/answer",
+            json={
+                "pane_id": "w1:p3",
+                "fingerprint": fingerprint,
+                "model_name": "Qwen3.8 Max",
+                "provider_name": "OpenCode Go",
+            },
+        )
+
+        assert response.status_code == 502
+        assert stub.key_calls == []
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            {"option": 0},
+            {"choices": [0]},
+            {"option": 0, "text": "x"},
+            {},  # provider_name with no model_name below
+        ],
+    )
+    def test_model_name_excludes_every_other_answer_form(self, make_client, extra):
+        client, _stub = self._client(make_client, ["Qwen3.8 Max OpenCode Go"])
+        fingerprint = recognize("opencode", OPENCODE_OVER_CHAT).fingerprint
+        body = {"pane_id": "w1:p3", "fingerprint": fingerprint, **extra}
+        if extra:
+            body["model_name"] = "Qwen3.8 Max"
+        else:
+            body["provider_name"] = "OpenCode Go"
+
+        assert client.post("/pane/dialog/answer", json=body).status_code == 422
+
+    def test_a_blank_model_name_is_a_422(self, make_client):
+        client, _stub = self._client(make_client, ["Qwen3.8 Max OpenCode Go"])
+        fingerprint = recognize("opencode", OPENCODE_OVER_CHAT).fingerprint
+
+        response = client.post(
+            "/pane/dialog/answer",
+            json={"pane_id": "w1:p3", "fingerprint": fingerprint, "model_name": "  "},
+        )
+
+        assert response.status_code == 422
+
+
+class TestPaneModelsRoute:
+    """GET /pane/models: the full connected catalog, read-only."""
+
+    CLI = "opencode-go/glm-5.3\nopencode-go/qwen3.8-max\nanthropic/claude-opus-5-5\n"
+
+    def _runner(self, stdout=None, calls=None, returncode=0):
+        import subprocess
+
+        calls = calls if calls is not None else []
+
+        def run(argv, timeout):
+            calls.append(list(argv))
+            return subprocess.CompletedProcess(
+                argv, returncode, self.CLI if stdout is None else stdout, ""
+            )
+
+        return run, calls
+
+    def _app(self, settings, tmp_path, monkeypatch, runner, agents=None):
+        from herdr_brain.pane_model import OpencodeModelCatalog
+        from herdr_brain.tools import BrainTools
+
+        catalog_file = tmp_path / "models.json"
+        catalog_file.write_text(
+            json.dumps(
+                {
+                    "opencode-go": {
+                        "name": "OpenCode Go",
+                        "models": {
+                            "glm-5.3": {"name": "GLM-5.3"},
+                            "qwen3.8-max": {"name": "Qwen3.8 Max"},
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        catalog = OpencodeModelCatalog(
+            runner=runner, catalog_path=str(catalog_file), binary="/bin/opencode"
+        )
+        stub = DialogTapStub(agents or [IDLE_OPENCODE], OPENCODE_OVER_CHAT)
+        monkeypatch.setattr(
+            server_module,
+            "BrainTools",
+            lambda cfg, **kw: BrainTools(cfg, herdr=stub, model_catalog=catalog),
+        )
+        cfg = Settings(
+            **{**settings.__dict__, "state_dir": str(tmp_path / "state"),
+               "audio_dir": str(tmp_path / "audio")}
+        )
+        return TestClient(server_module.create_app(settings=cfg))
+
+    def test_lists_every_connected_model_for_an_opencode_pane(
+        self, settings, tmp_path, monkeypatch
+    ):
+        run, calls = self._runner()
+        client = self._app(settings, tmp_path, monkeypatch, run)
+
+        response = client.get("/pane/models", params={"pane_id": "w1:p3"})
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["reason"] == ""
+        assert [m["id"] for m in body["models"]] == [
+            "opencode-go/glm-5.3",
+            "opencode-go/qwen3.8-max",
+            "anthropic/claude-opus-5-5",
+        ]
+        assert body["models"][0] == {
+            "id": "opencode-go/glm-5.3",
+            "name": "GLM-5.3",
+            "provider": "opencode-go",
+            "provider_name": "OpenCode Go",
+            "current": False,
+        }
+        # Unknown names fall back to the id's own parts.
+        assert body["models"][2]["name"] == "claude-opus-5-5"
+        assert body["models"][2]["provider_name"] == "anthropic"
+        assert calls == [["/bin/opencode", "models"]]
+
+    def test_the_listing_is_cached_across_requests(
+        self, settings, tmp_path, monkeypatch
+    ):
+        run, calls = self._runner()
+        client = self._app(settings, tmp_path, monkeypatch, run)
+
+        client.get("/pane/models", params={"pane_id": "w1:p3"})
+        client.get("/pane/models", params={"pane_id": "w1:p3"})
+
+        assert len(calls) == 1
+
+    def test_a_cli_failure_is_an_empty_list_with_a_reason_not_an_error(
+        self, settings, tmp_path, monkeypatch
+    ):
+        run, _calls = self._runner(returncode=1, stdout="")
+        client = self._app(settings, tmp_path, monkeypatch, run)
+
+        response = client.get("/pane/models", params={"pane_id": "w1:p3"})
+
+        assert response.status_code == 200
+        assert response.json() == {"models": [], "reason": "cli-failed"}
+
+    def test_an_unknown_pane_is_404_never_the_focused_fallback(
+        self, settings, tmp_path, monkeypatch
+    ):
+        run, calls = self._runner()
+        client = self._app(settings, tmp_path, monkeypatch, run)
+
+        assert client.get("/pane/models", params={"pane_id": "w9:p9"}).status_code == 404
+        assert calls == []
+
+    def test_another_harness_is_unsupported_without_running_the_cli(
+        self, settings, tmp_path, monkeypatch
+    ):
+        run, calls = self._runner()
+        client = self._app(
+            settings, tmp_path, monkeypatch, run, agents=[BLOCKED_CLAUDE]
+        )
+
+        response = client.get("/pane/models", params={"pane_id": "w1:p3"})
+
+        assert response.json() == {"models": [], "reason": "unsupported"}
+        assert calls == []
+
+    def test_the_pane_id_is_required(self, settings, tmp_path, monkeypatch):
+        run, _calls = self._runner()
+        client = self._app(settings, tmp_path, monkeypatch, run)
+
+        assert client.get("/pane/models").status_code == 422
 
 
 class TestVoicePathReadsStructuredDialogs:

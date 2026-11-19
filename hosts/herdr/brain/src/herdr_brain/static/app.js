@@ -3033,6 +3033,121 @@
     }
   }
 
+  /* A model picker is a LONG list: a search input on top and a
+   * bounded, scrollable list below. The filter only hides rows (every
+   * button keeps its ORIGINAL key under `keyAttr`), so a tap on a
+   * filtered row answers exactly like an unfiltered one. ONE builder
+   * serves the picker's own options (data-index) and the full catalog
+   * (data-catalog). Returns the list host, the input and the filter. */
+  function mountModelSearch(rows, keyAttr) {
+    var searchInput = document.createElement("input");
+    searchInput.type = "search";
+    searchInput.className = "dlg-model-search";
+    searchInput.placeholder = window.Dialogs.modelSearchPlaceholder();
+    searchInput.setAttribute("aria-label", window.Dialogs.modelSearchPlaceholder());
+    searchInput.setAttribute("autocomplete", "off");
+    searchInput.setAttribute("autocapitalize", "off");
+    searchInput.setAttribute("autocorrect", "off");
+    searchInput.setAttribute("spellcheck", "false");
+    searchInput.setAttribute("enterkeyhint", "search");
+    dialogButtonsBox.appendChild(searchInput);
+    var listHost = document.createElement("div");
+    listHost.className = "dlg-model-list";
+    dialogButtonsBox.appendChild(listHost);
+    var noMatch = document.createElement("div");
+    noMatch.className = "dlg-model-none hidden";
+    noMatch.textContent = window.Dialogs.modelSearchNone();
+    dialogButtonsBox.appendChild(noMatch);
+    function refilter() {
+      var keep = {};
+      window.Dialogs.filterModelRows(rows, searchInput.value)
+        .forEach(function (row) { keep[row.index] = true; });
+      var rowButtons = listHost.querySelectorAll("button[" + keyAttr + "]");
+      var shown = 0;
+      for (var r = 0; r < rowButtons.length; r++) {
+        var visible = keep[rowButtons[r].getAttribute(keyAttr)] === true;
+        rowButtons[r].hidden = !visible;
+        if (visible) shown += 1;
+      }
+      noMatch.classList.toggle("hidden", shown > 0);
+      listHost.scrollTop = 0;
+    }
+    searchInput.addEventListener("input", refilter);
+    return { host: listHost, input: searchInput, refilter: refilter };
+  }
+
+  /* The FULL connected-model catalog for an opencode picker (GET
+   * /pane/models). The picker on screen paints only a window of its
+   * list, so the card first shows those options (the fallback) and,
+   * once the catalog arrives, REPLACES them with every model. A tap on
+   * a catalog row sends its NAME: the server types it into the real
+   * picker and presses Enter only when the first filtered row on the
+   * real screen is that model. The read is on demand (never at boot)
+   * and cached per pane for a few minutes; an empty or failed catalog
+   * leaves the picker's own options untouched. */
+  var MODEL_CATALOG_TTL_MS = 5 * 60 * 1000;
+  var modelCatalogCache = {};
+  var modelCatalogInflight = {};
+  var catalogRowsShown = null;
+
+  function applyModelCatalog(paneId, models) {
+    if (!dialogButtonsBox || !window.Dialogs || dialogBusy) return;
+    if (!window.Dialogs.wantsModelCatalog(lastStructured)) return;
+    if (replyKeys.getAttribute("data-pane") !== paneId) return;
+    var rows = window.Dialogs.modelCatalogRows(models, lastStructured);
+    if (!rows.length) return;  /* keep the picker's own options */
+    var previous = dialogButtonsBox.querySelector(".dlg-model-search");
+    var typed = previous ? previous.value : "";
+    dialogButtonsBox.textContent = "";
+    var mount = mountModelSearch(rows, "data-catalog");
+    rows.forEach(function (row) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.setAttribute("data-catalog", String(row.index));
+      var label = document.createElement("span");
+      label.textContent = row.model;
+      button.appendChild(label);
+      if (row.provider) {
+        var description = document.createElement("span");
+        description.className = "dlg-opt-desc";
+        description.textContent = row.provider;
+        button.appendChild(description);
+      }
+      if (row.current) {
+        button.className = "dlg-current";
+        button.setAttribute("aria-current", "true");
+      }
+      mount.host.appendChild(button);
+    });
+    catalogRowsShown = rows;
+    if (typed) {
+      /* What was typed before the list arrived survives the swap. */
+      mount.input.value = typed;
+      mount.refilter();
+    }
+  }
+
+  function requestModelCatalog(paneId) {
+    var cached = modelCatalogCache[paneId];
+    if (cached && Date.now() - cached.at < MODEL_CATALOG_TTL_MS) {
+      applyModelCatalog(paneId, cached.models);
+      return;
+    }
+    if (modelCatalogInflight[paneId]) return;
+    modelCatalogInflight[paneId] = true;
+    readFetch(window.Dialogs.modelCatalogUrl(paneId))
+      .then(function (resp) { return resp.ok ? resp.json() : null; })
+      .then(function (body) {
+        var models = body && Array.isArray(body.models) ? body.models : [];
+        if (models.length) {
+          modelCatalogCache[paneId] = { at: Date.now(), models: models };
+        }
+        applyModelCatalog(paneId, models);
+      })
+      .catch(function () { /* the picker's own options stay */ })
+      .then(function () { delete modelCatalogInflight[paneId]; });
+  }
+
   function paintStructuredDialog(structured) {
     if (!dialogButtonsBox || !window.Dialogs) return false;
     lastStructured = structured;
@@ -3062,46 +3177,12 @@
         dialogMultiSelection = window.Dialogs.isMultiselect(structured)
           ? window.Dialogs.selectionModel(structured.options)
           : null;
-        /* A model picker is a LONG list: a search input on top and a
-         * bounded, scrollable list below. The filter only hides rows
-         * (the buttons keep their ORIGINAL data-index), so a tap on a
-         * filtered row answers exactly like an unfiltered one. */
+        catalogRowsShown = null;
         var pickerRows = window.Dialogs.modelPickerRows
           ? window.Dialogs.modelPickerRows(structured) : null;
         var buttonHost = dialogButtonsBox;
         if (pickerRows && pickerRows.length) {
-          var searchInput = document.createElement("input");
-          searchInput.type = "search";
-          searchInput.className = "dlg-model-search";
-          searchInput.placeholder = window.Dialogs.modelSearchPlaceholder();
-          searchInput.setAttribute("aria-label", window.Dialogs.modelSearchPlaceholder());
-          searchInput.setAttribute("autocomplete", "off");
-          searchInput.setAttribute("autocapitalize", "off");
-          searchInput.setAttribute("autocorrect", "off");
-          searchInput.setAttribute("spellcheck", "false");
-          searchInput.setAttribute("enterkeyhint", "search");
-          dialogButtonsBox.appendChild(searchInput);
-          buttonHost = document.createElement("div");
-          buttonHost.className = "dlg-model-list";
-          dialogButtonsBox.appendChild(buttonHost);
-          var noMatch = document.createElement("div");
-          noMatch.className = "dlg-model-none hidden";
-          noMatch.textContent = window.Dialogs.modelSearchNone();
-          dialogButtonsBox.appendChild(noMatch);
-          searchInput.addEventListener("input", function () {
-            var keep = {};
-            window.Dialogs.filterModelRows(pickerRows, searchInput.value)
-              .forEach(function (row) { keep[row.index] = true; });
-            var rowButtons = buttonHost.querySelectorAll("button[data-index]");
-            var shown = 0;
-            for (var r = 0; r < rowButtons.length; r++) {
-              var visible = keep[rowButtons[r].getAttribute("data-index")] === true;
-              rowButtons[r].hidden = !visible;
-              if (visible) shown += 1;
-            }
-            noMatch.classList.toggle("hidden", shown > 0);
-            buttonHost.scrollTop = 0;
-          });
+          buttonHost = mountModelSearch(pickerRows, "data-index").host;
         }
         buttons.forEach(function (option) {
           var button = document.createElement("button");
@@ -3138,6 +3219,10 @@
           }
           buttonHost.appendChild(button);
         });
+        if (pickerRows && pickerRows.length &&
+            window.Dialogs.wantsModelCatalog(structured)) {
+          requestModelCatalog(paneId);
+        }
         if (dialogMultiSelection) {
           /* ONE explicit submit for the whole selection — no checkbox
            * tap can send anything by itself. */
@@ -3404,14 +3489,35 @@
     var index = parseInt(button.getAttribute("data-index"), 10);
     var paneId = replyKeys.getAttribute("data-pane");
     if (!lastStructured || !window.Dialogs || isNaN(index) || !paneId || dialogBusy) return;
-    dialogBusy = true;
-    setDialogButtonsBusy(true);
-    setDialogStatus(t("reply.sending"));
     var labels = (lastStructured.options || []).map(function (option) {
       return option.label;
     });
-    var payload = window.Dialogs.answerPayload(
-      paneId, lastStructured.fingerprint, index);
+    postDialogTap(
+      paneId,
+      window.Dialogs.answerPayload(paneId, lastStructured.fingerprint, index),
+      labels,
+      index);
+  }
+
+  /* A catalog row answers by NAME (+ provider): the model may not be on
+   * the picker's painted window at all, so there is no option index. The
+   * fingerprint guard is the same one every dialog answer carries. */
+  function answerCatalogButton(button) {
+    var index = parseInt(button.getAttribute("data-catalog"), 10);
+    var paneId = replyKeys.getAttribute("data-pane");
+    var row = catalogRowsShown && !isNaN(index) ? catalogRowsShown[index] : null;
+    if (!lastStructured || !window.Dialogs || !row || !paneId || dialogBusy) return;
+    postDialogTap(
+      paneId,
+      window.Dialogs.catalogAnswerPayload(paneId, lastStructured.fingerprint, row),
+      [row.model],
+      0);
+  }
+
+  function postDialogTap(paneId, payload, labels, index) {
+    dialogBusy = true;
+    setDialogButtonsBusy(true);
+    setDialogStatus(t("reply.sending"));
     fetch("/pane/dialog/answer", withDeviceAuth({
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -3554,6 +3660,12 @@
         ? node.closest("button[data-submit]") : null;
       if (submit) {
         submitDialogChoices();
+        return;
+      }
+      var catalogButton = node && node.closest
+        ? node.closest("button[data-catalog]") : null;
+      if (catalogButton) {
+        answerCatalogButton(catalogButton);
         return;
       }
       var button = node && node.closest ? node.closest("button[data-index]") : null;
