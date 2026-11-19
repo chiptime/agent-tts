@@ -3081,8 +3081,8 @@
    * list, so the card first shows those options (the fallback) and,
    * once the catalog arrives, REPLACES them with every model. A tap on
    * a catalog row sends its NAME: the server types it into the real
-   * picker and presses Enter only when the first filtered row on the
-   * real screen is that model. The read is on demand (never at boot)
+   * picker, walks the screen's pointer to that model and presses Enter
+   * only once a fresh read shows it there. The read is on demand (never at boot)
    * and cached per pane for a few minutes; an empty or failed catalog
    * leaves the picker's own options untouched. */
   var MODEL_CATALOG_TTL_MS = 5 * 60 * 1000;
@@ -3537,9 +3537,22 @@
           /* F7d fix: a verified answer consumed the picker — the held
            * modal card must not outlive it. */
           dropModalCard(paneId);
+          /* A switched model may open a follow-up list on an IDLE pane
+           * (opencode's Select variant): watch the modal read again so
+           * its card appears instead of a silent open dialog. */
+          if (result.body && result.body.next && modelSwitchPoll) {
+            modelSwitchPoll.start(paneId);
+          }
           /* The dialog usually closes or advances here: refresh now
            * instead of waiting a whole poll beat. */
           refreshState();
+          return null;
+        }
+        /* A model switch the server could not confirm names what the
+         * screen shows instead (e.g. another model stayed selected). */
+        if (result.status === 502 && window.Dialogs.isModelPicker(lastStructured) &&
+            result.body && typeof result.body.detail === "string" && result.body.detail) {
+          setDialogStatus(result.body.detail);
           return null;
         }
         setDialogStatus(window.Dialogs.statusFor({ status: result.status }, labels));

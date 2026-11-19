@@ -1304,7 +1304,7 @@ class OpencodeModelsStub(SwitchModelStub):
             return self._filtered_screen()
         if self.stage == "shell":
             return "$ opencode\n❯ _"
-        return "$ opencode\n✓ GLM-5.3 Highspeed set ❯ _"
+        return "$ opencode\n   ┃  Build · " + getattr(self, "committed", "") + "\n"
 
     def send_prompt(self, pane_id, text, timeout_ms=None):
         self.prompt_calls.append({"pane_id": pane_id, "text": text})
@@ -1334,7 +1334,15 @@ class OpencodeModelsStub(SwitchModelStub):
             for line in fixture_lines
             if "Connect provider" in line
         )
-        rows = [" " * column + label for label in self.filter(self.query)]
+        kept = self.filter(self.query)
+        # opencode paints the pointer (row 0 after a filter) as a
+        # background from the label column on.
+        rows = [
+            " " * column
+            + ("\x1b[48;2;250;178;131m" + label + "\x1b[0m" if at == 0 else label)
+            for at, label in enumerate(kept)
+        ]
+        self.committed = kept[0] if kept else ""
         return "\n".join([title, blank, query_row, blank, *rows, blank, footer])
 
 

@@ -533,13 +533,63 @@ class TestWalkRecipe:
         assert "zellij" in result["detail"]
 
 
+#: The pointed row's paint in opencode 1.19.5's /models picker (live
+#: capture ``opencode-models-search-wide.ansi``).
+POINTER_PAINT = "\x1b[48;2;250;178;131m"
+
+
+def paint_pointer(text: str, pointer: int) -> str:
+    """Paints the ``pointer``-th model row of a FILTERED picker screen
+    the way opencode does: a background from the label column on. The
+    plain text is unchanged, so every fingerprint stays the same."""
+    lines = text.split("\n")
+    title_at = next(i for i, line in enumerate(lines) if "Select model" in line)
+    column = lines[title_at].index("Select model")
+    footer_at = next(i for i, line in enumerate(lines) if "Connect provider" in line)
+    end = lines[footer_at].index("ctrl+f") + len("ctrl+f")
+    search_at = next(
+        i for i in range(title_at + 1, footer_at) if lines[i][column:end].strip()
+    )
+    rows = [
+        i for i in range(search_at + 1, footer_at) if lines[i][column:end].strip()
+    ]
+    if 0 <= pointer < len(rows):
+        at = rows[pointer]
+        line = lines[at]
+        lines[at] = line[:column] + POINTER_PAINT + line[column:] + "\x1b[0m"
+    return "\n".join(lines)
+
+
+def composer_screen(model_text: str) -> str:
+    """The idle opencode screen after a switch: the composer's model row."""
+    return (
+        "$ opencode\n"
+        "   ┃\n"
+        '   ┃  Ask anything… "Fix a TODO in the codebase"\n'
+        "   ┃\n"
+        f"   ┃  Build · {model_text}\n"
+    )
+
+
+def move_pointer(state: dict, keys, keep) -> None:
+    """Applies a walk to the stub's pointer (opencode wraps; the recipe
+    never walks past an end, so clamping is enough here)."""
+    for key in keys:
+        if key == "down":
+            state["pointer"] = min(state["pointer"] + 1, max(len(keep) - 1, 0))
+        elif key == "up":
+            state["pointer"] = max(state["pointer"] - 1, 0)
+
+
 class TestModelPickerSearchFirst:
-    """The opencode ``/models`` picker is answered SEARCH-FIRST: its
-    pointer exists only as ANSI paint, so the walk could never verify
-    where Enter lands. A tap TYPES the row's own name into the picker's
-    Search box and presses Enter only once the filtered list names ONE
-    DISTINCT target — duplicate rows carrying the same label are one
-    outcome (the first is taken) — never a digit, never an arrow."""
+    """The opencode ``/models`` picker: a tap TYPES the row's model name
+    into the picker's Search box, reads the POINTER from the screen's
+    paint, walks the arrows to the target when it is not pointed, and
+    presses Enter only once a fresh read shows the pointer on it — then
+    confirms the switch from the composer's model row. Duplicate rows
+    carrying the same label are one outcome (the first is taken);
+    several DISTINCT rows naming the model are ambiguous. Never a
+    digit."""
 
     def _filtered(self, query, keep):
         lines = OPENCODE_PICKER.split("\n")
@@ -550,29 +600,36 @@ class TestModelPickerSearchFirst:
         rows = [" " * column + label for label in keep]
         return "\n".join([title, blank, query_row, blank, *rows, blank, footer])
 
-    def _stub(self, keep, close=True, query="GLM-5.3 Highspeed"):
+    def _stub(self, keep, close=True, query="GLM-5.3 Highspeed", painted=True,
+              committed=None):
         screens = {
             "picker": OPENCODE_PICKER,
             "filtered": self._filtered(query, keep),
         }
-        state = {"stage": "picker"}
+        state = {"stage": "picker", "pointer": 0}
 
         class SearchStub(DialogTapStub):
             def __init__(self):
                 super().__init__([BLOCKED_OPENCODE], OPENCODE_PICKER)
                 self.text_calls: list = []
+                self.state = state
 
             def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
                 if state["stage"] == "done":
-                    return "$ opencode\n✓ GLM-5.3 Highspeed set ❯ _"
-                return screens[state["stage"]]
+                    return composer_screen(committed or keep[state["pointer"]])
+                screen = screens[state["stage"]]
+                if state["stage"] == "filtered" and painted:
+                    screen = paint_pointer(screen, state["pointer"])
+                return screen
 
             def send_text(self, pane_id, text):
                 self.text_calls.append({"pane_id": pane_id, "text": text})
                 state["stage"] = "filtered"
+                state["pointer"] = 0
 
             def send_keys(self, pane_id, keys):
                 result = super().send_keys(pane_id, keys)
+                move_pointer(state, keys, keep)
                 if close and "enter" in keys:
                     state["stage"] = "done"
                 return result
@@ -599,28 +656,110 @@ class TestModelPickerSearchFirst:
         assert [call["text"] for call in stub.text_calls] == ["GLM-5.3 Highspeed"]
         assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
 
-    def test_an_ambiguous_filter_refuses_and_presses_nothing(self, settings):
-        from herdr_brain.tools import BrainTools
-
-        # The exact name is listed, but NOT first: Enter would commit
-        # the first row (the pointer after a filter) — refuse.
-        stub = self._stub(["GLM-5.3-Flash", "GLM-5.3", "GLM-5.3 Highspeed"])
-        tools = BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
-        fingerprint = _fingerprint("opencode", OPENCODE_PICKER)
-        glm = next(
+    def _glm(self):
+        return next(
             index
             for index, option
             in enumerate(recognize("opencode", OPENCODE_PICKER).options)
             if option.label == "GLM-5.3"
         )
 
-        result = tools.answer_structured_dialog("w1:p3", fingerprint, glm)
+    def test_a_target_under_another_row_is_walked_to_then_committed(
+        self, settings
+    ):
+        """LIVE regression (operator, 2026-11-19): searching ``GLM-5.3``
+        listed ``GLM-5.3-Flash`` FIRST (opencode puts free models and
+        favourites first) and the pointer sat on it. The tap must walk
+        to the exact row, prove the pointer there, and only then Enter."""
+        from herdr_brain.tools import BrainTools
+
+        stub = self._stub(
+            ["GLM-5.3-Flash", "GLM-5.3", "GLM-5.3 Highspeed"], query="GLM-5.3"
+        )
+        tools = BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
+
+        result = tools.answer_structured_dialog(
+            "w1:p3", _fingerprint("opencode", OPENCODE_PICKER), self._glm()
+        )
+
+        assert result["outcome"] == "answered"
+        assert result["label"] == "GLM-5.3"
+        assert [call["text"] for call in stub.text_calls] == ["GLM-5.3"]
+        assert stub.key_calls == [
+            {"pane_id": "w1:p3", "keys": ["down"]},
+            {"pane_id": "w1:p3", "keys": ["enter"]},
+        ]
+
+    def test_an_unreadable_pointer_presses_nothing(self, settings):
+        from herdr_brain.tools import BrainTools
+
+        stub = self._stub(["GLM-5.3"], query="GLM-5.3", painted=False)
+        tools = BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
+
+        result = tools.answer_structured_dialog(
+            "w1:p3", _fingerprint("opencode", OPENCODE_PICKER), self._glm()
+        )
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "changed"
+        assert stub.key_calls == []
+
+    def test_a_walk_that_does_not_land_never_presses_enter(self, settings):
+        """A desk key (or a stuck pointer) between the walk and the
+        proof: the fresh read does not show the pointer on the target,
+        so Enter never leaves."""
+        from herdr_brain.tools import BrainTools
+
+        stub = self._stub(["GLM-5.3-Flash", "GLM-5.3"], query="GLM-5.3")
+        original = stub.send_keys
+
+        def stuck(pane_id, keys):
+            result = original(pane_id, keys)
+            stub.state["pointer"] = 0
+            return result
+
+        stub.send_keys = stuck
+        tools = BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
+
+        result = tools.answer_structured_dialog(
+            "w1:p3", _fingerprint("opencode", OPENCODE_PICKER), self._glm()
+        )
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "changed"
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["down"]}]
+
+    def test_a_composer_showing_another_model_is_not_success(self, settings):
+        from herdr_brain.tools import BrainTools
+
+        stub = self._stub(
+            ["GLM-5.3"], query="GLM-5.3", committed="GLM-5.3-Flash Z.AI Coding Plan"
+        )
+        tools = BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
+
+        result = tools.answer_structured_dialog(
+            "w1:p3", _fingerprint("opencode", OPENCODE_PICKER), self._glm()
+        )
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "wrong-model"
+        assert "GLM-5.3-Flash" in result["detail"]
+
+    def test_two_distinct_rows_naming_the_model_are_ambiguous(self, settings):
+        from herdr_brain.tools import BrainTools
+
+        stub = self._stub(
+            ["GLM-5.3 OpenCode Go", "GLM-5.3 Z.AI Coding Plan"], query="GLM-5.3"
+        )
+        tools = BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
+
+        result = tools.answer_structured_dialog(
+            "w1:p3", _fingerprint("opencode", OPENCODE_PICKER), self._glm()
+        )
 
         assert result["outcome"] == "refused"
         assert result["reason"] == "ambiguous"
-        assert [call["text"] for call in stub.text_calls] == ["GLM-5.3"]
-        # Nothing committed, and NOTHING else sent: the typed text stays
-        # in the box so the operator can finish by hand.
+        # Nothing committed, nothing else sent: the typed text stays.
         assert stub.key_calls == []
 
     def test_identical_duplicate_rows_answer_once(self, settings):
@@ -695,7 +834,7 @@ class TestModelPickerSearchFirst:
         window like a real tail read: the picker fixture is 33 lines,
         so a 30-line request cannot see its title/Search rows — only a
         window of 33 lines or more can read the dialog at all."""
-        filtered = self._filtered("GLM-5.3 Highspeed", keep)
+        filtered = paint_pointer(self._filtered("GLM-5.3 Highspeed", keep), 0)
         state = {"stage": "picker"}
 
         class TailSearchStub(DialogTapStub):
@@ -710,7 +849,7 @@ class TestModelPickerSearchFirst:
                 if n_lines:
                     self.requested_lines.append(n_lines)
                 if state["stage"] == "done":
-                    return "$ opencode\n✓ GLM-5.3 Highspeed set ❯ _"
+                    return composer_screen(keep[0])
                 text = OPENCODE_PICKER if state["stage"] == "picker" else filtered
                 lines = text.splitlines()
                 if n_lines and n_lines > 0:
@@ -806,7 +945,7 @@ class TestModelPickerOverChatSearchFirst:
             "picker": OPENCODE_OVER_CHAT,
             "filtered": self._filtered(query, keep),
         }
-        state = {"stage": "picker"}
+        state = {"stage": "picker", "pointer": 0}
 
         class OverChatStub(DialogTapStub):
             def __init__(self):
@@ -815,15 +954,20 @@ class TestModelPickerOverChatSearchFirst:
 
             def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
                 if state["stage"] == "done":
-                    return "$ opencode\n✓ model set ❯ _"
-                return screens[state["stage"]]
+                    return composer_screen(keep[state["pointer"]])
+                screen = screens[state["stage"]]
+                if state["stage"] == "filtered":
+                    screen = paint_pointer(screen, state["pointer"])
+                return screen
 
             def send_text(self, pane_id, text):
                 self.text_calls.append({"pane_id": pane_id, "text": text})
                 state["stage"] = "filtered"
+                state["pointer"] = 0
 
             def send_keys(self, pane_id, keys):
                 result = super().send_keys(pane_id, keys)
+                move_pointer(state, keys, keep)
                 if "ctrl+u" in keys:
                     state["stage"] = "picker"
                 if close and "enter" in keys:
@@ -884,9 +1028,11 @@ class TestModelPickerOverChatSearchFirst:
         # Enter never left, no clear (ctrl+u) either, never a digit.
         assert stub.key_calls == []
 
-    def test_a_target_listed_second_is_refused_and_nothing_is_cleared(
+    def test_a_target_listed_second_is_walked_to_by_its_provider(
         self, settings
     ):
+        """Same model name under two providers: the tapped row's
+        provider picks the target, the walk reaches it, Enter commits."""
         stub, _state = self._stub(
             ["GLM-5.3 OpenCode Go", "GLM-5.3 Z.AI Coding Plan"], query="GLM-5.3"
         )
@@ -896,10 +1042,13 @@ class TestModelPickerOverChatSearchFirst:
             "w1:p3", model.fingerprint, index
         )
 
-        assert result["outcome"] == "refused"
-        assert result["reason"] == "ambiguous"
+        assert result["outcome"] == "answered"
+        assert result["label"] == "GLM-5.3 Z.AI Coding Plan"
         assert [c["text"] for c in stub.text_calls] == ["GLM-5.3"]
-        assert stub.key_calls == []
+        assert stub.key_calls == [
+            {"pane_id": "w1:p3", "keys": ["down"]},
+            {"pane_id": "w1:p3", "keys": ["enter"]},
+        ]
 
     def test_a_first_row_target_commits_despite_other_distinct_rows(
         self, settings
@@ -926,11 +1075,11 @@ class TestModelPickerOverChatSearchFirst:
         assert result["label"] == "GLM-5.3 Z.AI Coding Plan"
         assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
 
-    def test_a_target_that_is_not_the_first_filtered_row_is_refused(
+    def test_a_target_that_is_not_the_first_filtered_row_is_walked_to(
         self, settings
     ):
-        """Enter commits the FIRST filtered row: a filter that lists the
-        target under another row never gets an Enter."""
+        """The pointer sits on the first filtered row: a target listed
+        under it is reached by the walk, never by an unproven Enter."""
         stub, _state = self._stub(
             ["Qwen3.8 Max Preview OpenAI", "Qwen3.8 Max OpenCode Go"]
         )
@@ -940,8 +1089,11 @@ class TestModelPickerOverChatSearchFirst:
             "w1:p3", model.fingerprint, index
         )
 
-        assert result["outcome"] == "refused"
-        assert stub.key_calls == []
+        assert result["outcome"] == "answered"
+        assert stub.key_calls == [
+            {"pane_id": "w1:p3", "keys": ["down"]},
+            {"pane_id": "w1:p3", "keys": ["enter"]},
+        ]
 
     def test_the_first_row_is_taken_among_identical_duplicates(self, settings):
         stub, _state = self._stub(
@@ -1032,7 +1184,7 @@ class TestModelPickerAnswerByModelName:
         assert result["outcome"] == "answered"
         assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
 
-    def test_the_target_listed_second_is_refused_with_nothing_cleared(
+    def test_the_target_listed_second_is_walked_to_and_committed(
         self, settings
     ):
         stub, _state = self._stub(
@@ -1041,9 +1193,25 @@ class TestModelPickerAnswerByModelName:
 
         result = self._answer(settings, stub, "Qwen3.8 Max", "OpenCode Go")
 
+        assert result["outcome"] == "answered"
+        assert result["label"] == "Qwen3.8 Max OpenCode Go"
+        assert [c["text"] for c in stub.text_calls] == ["Qwen3.8 Max"]
+        assert stub.key_calls == [
+            {"pane_id": "w1:p3", "keys": ["down"]},
+            {"pane_id": "w1:p3", "keys": ["enter"]},
+        ]
+
+    def test_a_catalog_name_with_two_providers_on_screen_needs_the_provider(
+        self, settings
+    ):
+        stub, _state = self._stub(
+            ["Qwen3.8 Max OpenCode Go", "Qwen3.8 Max Z.AI Coding Plan"]
+        )
+
+        result = self._answer(settings, stub, "Qwen3.8 Max")
+
         assert result["outcome"] == "refused"
         assert result["reason"] == "ambiguous"
-        assert [c["text"] for c in stub.text_calls] == ["Qwen3.8 Max"]
         assert stub.key_calls == []
 
     def test_the_right_name_under_the_wrong_provider_is_refused(self, settings):
@@ -1126,7 +1294,7 @@ class TestPaneDialogAnswerModelNameRoute:
 
     def test_a_refused_model_name_is_a_502_with_nothing_cleared(self, make_client):
         client, stub = self._client(
-            make_client, ["Qwen3.8 Max Preview OpenAI", "Qwen3.8 Max OpenCode Go"]
+            make_client, ["Qwen3.8 Max Z.AI Coding Plan"]
         )
         fingerprint = recognize("opencode", OPENCODE_OVER_CHAT).fingerprint
 
@@ -2333,3 +2501,128 @@ class TestStyledReadParity:
 
         assert response.status_code == 409
         assert stub.key_calls == []
+
+
+def _variant_plain() -> str:
+    from herdr_brain.tools import _runs_plain_text
+    from herdr_brain.view import ansi_runs
+
+    return _runs_plain_text(
+        ansi_runs((FIXTURES / "opencode-variant-picker.ansi").read_text(encoding="utf-8"))
+    )
+
+
+VARIANT_PLAIN = _variant_plain()
+
+
+def paint_variant(text: str, pointer: int) -> str:
+    """Paints the ``pointer``-th row of the Select variant list."""
+    lines = text.split("\n")
+    title_at = next(i for i, line in enumerate(lines) if "Select variant" in line)
+    column = lines[title_at].index("Select variant")
+    search_at = next(i for i in range(title_at + 1, len(lines)) if lines[i][column:].strip())
+    first = next(i for i in range(search_at + 1, len(lines)) if lines[i][column:].strip())
+    at = first + pointer
+    lines[at] = lines[at][:column] + POINTER_PAINT + lines[at][column:] + "\x1b[0m"
+    return "\n".join(lines)
+
+
+class TestOpencodeVariantPickerAnswer:
+    """A tap on opencode's Select variant list walks the painted pointer,
+    proves it on the row, and presses Enter; the list leaving the screen
+    confirms it. Never a digit, never typed text."""
+
+    def _stub(self, stuck=False):
+        state = {"stage": "variant", "pointer": 0}
+        keep = ["Default", "low", "high", "max"]
+
+        class VariantStub(DialogTapStub):
+            def __init__(self):
+                super().__init__([IDLE_OPENCODE], VARIANT_PLAIN)
+
+            def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+                if state["stage"] == "done":
+                    return composer_screen("GLM-5.3 Highspeed Z.AI Coding Plan · high")
+                return paint_variant(VARIANT_PLAIN, state["pointer"])
+
+            def send_keys(self, pane_id, keys):
+                result = super().send_keys(pane_id, keys)
+                if not stuck:
+                    move_pointer(state, keys, keep)
+                if "enter" in keys:
+                    state["stage"] = "done"
+                return result
+
+        return VariantStub()
+
+    def _answer(self, settings, stub, label):
+        from herdr_brain.tools import BrainTools
+
+        model = recognize("opencode", VARIANT_PLAIN)
+        index = [o.label for o in model.options].index(label)
+        tools = BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
+        return tools.answer_structured_dialog("w1:p3", model.fingerprint, index)
+
+    def test_a_tap_walks_to_the_variant_and_commits(self, settings):
+        stub = self._stub()
+
+        result = self._answer(settings, stub, "high")
+
+        assert result["outcome"] == "answered"
+        assert result["label"] == "high"
+        assert stub.key_calls == [
+            {"pane_id": "w1:p3", "keys": ["down", "down"]},
+            {"pane_id": "w1:p3", "keys": ["enter"]},
+        ]
+
+    def test_the_pointed_variant_commits_with_enter_alone(self, settings):
+        stub = self._stub()
+
+        result = self._answer(settings, stub, "Default")
+
+        assert result["outcome"] == "answered"
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
+
+    def test_a_pointer_that_does_not_move_never_commits(self, settings):
+        stub = self._stub(stuck=True)
+
+        result = self._answer(settings, stub, "max")
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "changed"
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["down", "down", "down"]}]
+
+
+class TestModelSwitchOpensTheVariantList:
+    """After Enter on a model whose variants do not hold the current one,
+    opencode replaces the picker with Select variant: the switch is
+    confirmed (the composer names the model) and the answer says the
+    list is next, so the PWA keeps watching for its card."""
+
+    def test_the_answer_carries_next_variant_picker(self, settings):
+        from herdr_brain.tools import BrainTools
+
+        flow = TestModelPickerSearchFirst()
+        stub = flow._stub(["GLM-5.3 Highspeed"])
+        original = stub.read_screen
+
+        def read_screen(pane_id, n_lines=None, source="visible", as_ansi=False):
+            if stub.state["stage"] == "done":
+                return VARIANT_PLAIN
+            return original(pane_id, n_lines, source, as_ansi)
+
+        stub.read_screen = read_screen
+        tools = BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
+        highspeed = next(
+            index
+            for index, option
+            in enumerate(recognize("opencode", OPENCODE_PICKER).options)
+            if option.label == "GLM-5.3 Highspeed"
+        )
+
+        result = tools.answer_structured_dialog(
+            "w1:p3", _fingerprint("opencode", OPENCODE_PICKER), highspeed
+        )
+
+        assert result["outcome"] == "answered"
+        assert result["next"] == "variant_picker"

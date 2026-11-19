@@ -128,9 +128,10 @@ MODEL_COMMANDS = {
     "opencode": "/models",
     "opencode2": "/models",
 }
-#: The pickers answered SEARCH-FIRST (their pointer is ANSI paint —
-#: invisible in text — so an arrow walk could never verify where Enter
-#: lands). Every other model_picker keeps the arrow walk.
+#: The pickers answered SEARCH-FIRST: the name is typed into their own
+#: Search box, the pointer is read from the screen's paint, walked and
+#: verified before Enter (``_search_first_picker_answer``). Every other
+#: model_picker keeps the plain arrow walk.
 OPENCODE_SEARCH_PICKERS = frozenset({"opencode", "opencode2"})
 #: How long switch_model waits for the picker (and, after the commit,
 #: for the "Switch model?" confirmation) to appear.
@@ -231,6 +232,23 @@ def resume_enabled_harnesses() -> tuple:
 def _lex_flat(text: str) -> str:
     """Case- and whitespace-flat form of a label for fuzzy matching."""
     return " ".join((text or "").lower().split())
+
+
+def _composer_names(shown: str, model: str, provider: str) -> bool:
+    """Whether the composer's model text names ``model`` (and
+    ``provider`` when known): the model is a whole-word prefix, and the
+    provider, when known, follows it. ``nan`` is opencode's rendering of
+    a missing provider name: unknown, never compared."""
+    flat = _lex_flat(shown)
+    if not model or not flat.startswith(model):
+        return False
+    rest = flat[len(model):]
+    if rest and not rest.startswith(" "):
+        return False
+    rest = rest.strip()
+    if not provider or provider == "nan":
+        return True
+    return rest.startswith(provider)
 
 
 def _match_picker_option(options, wanted: str):
@@ -1130,14 +1148,14 @@ class BrainTools:
             )
             if failure is not None:
                 return refused(*failure)
-            return {
+            return self._with_variant_next(pane_id, target.agent, {
                 "outcome": "answered",
                 "pane_id": pane_id,
                 "option": None,
                 "model_name": model_name,
                 "keys": ["enter"],
                 "label": matched,
-            }
+            })
         if option is None or not 0 <= option < len(model.options):
             return refused("invalid_target", "that option is not on this dialog")
 
@@ -1147,16 +1165,33 @@ class BrainTools:
                 pane_id, text, option, model, target, reader, sender, refused,
                 answer_lines,
             )
-        # The opencode model pickers are answered SEARCH-FIRST (their
-        # pointer is ANSI paint — invisible in text — so the walk could
-        # never verify where Enter lands); every other dialog keeps
-        # today's choreographies byte-for-byte.
+        # The opencode model pickers are answered SEARCH-FIRST (type the
+        # name, read the painted pointer, walk, verify, commit, confirm);
+        # every other dialog keeps today's choreographies byte-for-byte.
         if (
             model.kind == "model_picker"
             and (target.agent or "").strip().lower() in OPENCODE_SEARCH_PICKERS
         ):
             matched, failure = self._search_first_picker_answer(
                 pane_id, target.agent, chosen.label, option=chosen
+            )
+            if failure is not None:
+                return refused(*failure)
+            return self._with_variant_next(pane_id, target.agent, {
+                "outcome": "answered",
+                "pane_id": pane_id,
+                "option": option,
+                "keys": ["enter"],
+                "label": matched,
+            })
+        # opencode's Select variant list (shown after a model switch):
+        # the same painted-pointer walk, verify, commit.
+        if (
+            model.kind == "variant_picker"
+            and (target.agent or "").strip().lower() in OPENCODE_SEARCH_PICKERS
+        ):
+            matched, failure = self._variant_picker_answer(
+                pane_id, target.agent, option, chosen.label
             )
             if failure is not None:
                 return refused(*failure)
@@ -1575,13 +1610,115 @@ class BrainTools:
         """
         from .dialogs.adapters.opencode import detect_models_picker
 
-        reader = self._dialog_reader(pane_id)
-        try:
-            raw = reader(pane_id, SCREEN_FULL_LINES)
-        except HerdrError:
+        lines, runs = self._styled_screen(pane_id)
+        if lines is None:
             return None
         return detect_models_picker(
-            agent, (raw or "").splitlines(), filled_search=filled, query=query
+            agent, lines, filled_search=filled, query=query, runs=runs
+        )
+
+    def _styled_screen(self, pane_id: str) -> tuple:
+        """One full-window STYLED read: ``(plain lines, ansi runs)``,
+        aligned line for line, or ``(None, None)`` on a failed read. The
+        plain text is the same join every recognizer reads."""
+        try:
+            styled = self._herdr.read_screen(pane_id, SCREEN_FULL_LINES, as_ansi=True)
+        except HerdrError:
+            return None, None
+        runs = ansi_runs(styled or "")
+        return _runs_plain_text(runs).splitlines(), runs
+
+    def _with_variant_next(self, pane_id: str, agent: str, answered: dict) -> dict:
+        """Marks a model switch whose follow-up ``Select variant`` list
+        is on screen (``next: "variant_picker"``): the model IS switched,
+        and that list now holds the keyboard until it is answered."""
+        from .dialogs.adapters.opencode import detect_variant_picker
+
+        lines, _runs = self._styled_screen(pane_id)
+        if lines is not None and detect_variant_picker(agent, lines) is not None:
+            answered["next"] = "variant_picker"
+        return answered
+
+    def _walk_painted_pointer(
+        self, pane_id: str, read, expected: tuple, pointer: int, target: int
+    ) -> Optional[tuple]:
+        """Walk, verify, commit on an opencode list whose pointer is
+        paint (ADR-0080-style). Both rows are on screen, so the walk
+        never scrolls or wraps; the arrows go out in herdr-sized chunks
+        and the proof is ONE fresh read after the whole walk: the SAME
+        rows with the pointer ON the target. Only then Enter. A drift,
+        a vanished list or a timeout sends nothing more.
+
+        ``None`` once Enter left, else ``(reason, detail)``."""
+        pause = self._sleeper or time.sleep
+        if pointer != target:
+            step = "down" if target > pointer else "up"
+            walk = [step] * abs(target - pointer)
+            for start in range(0, len(walk), MAX_SEND_KEYS):
+                sent = self.send_keys_to_pane(pane_id, walk[start : start + MAX_SEND_KEYS])
+                if sent.get("outcome") != "sent":
+                    return ("send-failed", sent.get("detail") or "could not move the pointer")
+            proven = False
+            for _ in range(SWITCH_WAIT_ATTEMPTS):
+                pause(SWITCH_POLL_S)
+                fresh = read()
+                if fresh is None:
+                    break
+                if tuple(row.label for row in fresh.options) != expected:
+                    break
+                if fresh.selected == target:
+                    proven = True
+                    break
+            if not proven:
+                return (
+                    "changed",
+                    "the pointer did not reach the chosen row; Enter was not pressed",
+                )
+        sent = self.send_keys_to_pane(pane_id, ["enter"])
+        if sent.get("outcome") != "sent":
+            return ("send-failed", sent.get("detail") or "could not press enter")
+        return None
+
+    def _variant_picker_answer(
+        self, pane_id: str, agent: str, option: int, label: str
+    ) -> tuple:
+        """Answers opencode's ``Select variant`` list by its painted
+        pointer: walk, verify, commit (no typing — the list is short),
+        confirmed by the list leaving the screen.
+
+        Returns ``(label, None)`` or ``(None, (reason, detail))``."""
+        from .dialogs.adapters.opencode import detect_variant_picker
+
+        def read():
+            lines, runs = self._styled_screen(pane_id)
+            if lines is None:
+                return None
+            return detect_variant_picker(agent, lines, runs=runs)
+
+        fresh = read()
+        if fresh is None or not 0 <= option < len(fresh.options):
+            return None, ("changed", "the variant list left the screen; nothing was pressed")
+        if fresh.options[option].label != label:
+            return None, ("changed", "the variant list changed; nothing was pressed")
+        if fresh.selected is None:
+            return None, (
+                "changed",
+                "could not see which row the list points at; nothing was pressed",
+            )
+        failure = self._walk_painted_pointer(
+            pane_id, read, tuple(row.label for row in fresh.options),
+            fresh.selected, option,
+        )
+        if failure is not None:
+            return None, failure
+        pause = self._sleeper or time.sleep
+        for _ in range(SWITCH_WAIT_ATTEMPTS):
+            pause(SWITCH_POLL_S)
+            if read() is None:
+                return label, None
+        return None, (
+            "no-progress",
+            "the variant list did not close after enter; not verified",
         )
 
     def _search_first_picker_answer(
@@ -1593,35 +1730,37 @@ class BrainTools:
         model_name: Optional[str] = None,
         provider_name: Optional[str] = None,
     ) -> tuple[Optional[str], Optional[tuple]]:
-        """Answers an opencode ``/models`` picker by SEARCH, never arrows.
+        """Answers an opencode ``/models`` picker: search, walk, verify,
+        commit, confirm.
 
-        The picker's pointer exists only as ANSI paint — invisible in
-        the text every recognizer reads — so no walk could verify where
-        Enter lands. Instead the wanted name is TYPED into the picker's
-        own Search box (literal text through :meth:`send_text`, never a
-        keypress: ADR 0009's never-a-digit is about KEYS, and digits
-        ride only inside the name), the screen is re-read until two
-        reads agree, and Enter leaves ONLY when the search box echoes
-        the query AND the FIRST filtered row is the target. A filter
-        resets the pointer to row 0, so that first row IS where Enter
-        lands: other distinct rows below it are irrelevant.
+        1. The wanted MODEL name is TYPED into the picker's own Search
+           box (literal text through :meth:`send_text`, never a keypress:
+           ADR 0009's never-a-digit is about KEYS). The screen is re-read
+           until two STYLED reads agree on the rows and the pointer, with
+           the search box echoing the query.
+        2. The target is the filtered row whose model name matches
+           (normalized) and whose provider agrees when both are known.
+           opencode orders search results by its own rules (free models
+           and favourites first), so the target need not be the first
+           row: rows naming the same model under several DISTINCT labels
+           are ambiguous; identical labels collapse to the first.
+        3. The pointer is read from the screen's paint (the pointed row's
+           background). Unknown paint refuses with nothing pressed. When
+           the pointer is elsewhere, the arrows walk to the target and a
+           fresh read must show the SAME rows with the pointer ON the
+           target — only then does Enter leave (walk, verify, commit).
+        4. The answer is confirmed by its RESULT: the picker closed and
+           the composer's model row names the target. A composer that
+           shows another model is reported as such, never as success.
 
-        A tapped ``option`` (or a catalog ``model_name`` +
-        ``provider_name``) types its clean MODEL name — the screen's
-        label also carries the provider, which opencode's Search does
-        not match — and the first row is the target when its model name
-        matches (normalized) and its provider, when both are known,
-        agrees. Without either (the voice path) the spoken text is
-        typed and matched by containment, and a spoken name that lists
-        more than one DISTINCT row stays ambiguous.
-
-        Every refusal sends NOTHING further: the typed text stays in the
-        box so the operator can finish by hand (no clear chord —
-        stop-on-drift). The answer is confirmed only by the picker
-        actually closing.
+        Every refusal before Enter sends nothing further: the typed text
+        stays in the box so the operator can finish by hand (no clear
+        chord — stop-on-drift).
 
         Returns ``(matched_label, None)`` or ``(None, (reason, detail))``.
         """
+        from .dialogs.adapters.opencode import opencode_composer_model
+
         if option is not None:
             query = sanitize_prompt_text(option.model or option.label or "")
         elif model_name is not None:
@@ -1646,9 +1785,9 @@ class BrainTools:
         except HerdrError as exc:
             return None, ("send-failed", str(exc))
 
-        # The filter must SETTLE: two consecutive reads of the same row
-        # labels, with the search box echoing the query (the verifiable
-        # signal that the filter on screen is ours).
+        # The filter must SETTLE: two consecutive reads of the same rows
+        # and the same pointer, with the search box echoing the query
+        # (the verifiable signal that the filter on screen is ours).
         settled: Optional[tuple] = None
         filtered = None
         for _ in range(SWITCH_WAIT_ATTEMPTS):
@@ -1657,11 +1796,11 @@ class BrainTools:
             if fresh is None:
                 settled = None
                 continue
-            rows = tuple(row.label for row in fresh.options)
-            if rows == settled:
+            state = (tuple(row.label for row in fresh.options), fresh.selected)
+            if state == settled:
                 filtered = fresh
                 break
-            settled = rows
+            settled = state
         if filtered is None:
             return refuse(
                 "changed",
@@ -1697,59 +1836,73 @@ class BrainTools:
                     return not row_provider or row_provider == provider_key
                 return row_model == name_key or row_label == name_key
 
-            if is_target(rows[0]):
-                matched = rows[0].label
-            elif any(is_target(row) for row in rows):
-                return refuse(
-                    "ambiguous",
-                    "the target is not the first filtered row; nothing was pressed",
-                )
-            else:
+            hits = [index for index, row in enumerate(rows) if is_target(row)]
+            if not hits:
                 return refuse(
                     "no-match", _name_candidates(query, [row.label for row in rows])
                 )
         else:
             flat = _lex_flat(query)
-            hits = [row for row in rows if flat in _lex_flat(row.label)]
+            hits = [
+                index for index, row in enumerate(rows) if flat in _lex_flat(row.label)
+            ]
             if not hits:
                 return refuse("no-match", _name_candidates(query, []))
-            # Rows whose label is IDENTICAL are equivalent (same model,
-            # same outcome — the live catalog lists the same model once
-            # per provider entry): collapse them, keep the first, and
-            # refuse only on more than one DISTINCT label.
-            distinct: list = []
-            seen = set()
-            for row in hits:
-                key = _lex_flat(row.label)
-                if key not in seen:
-                    seen.add(key)
-                    distinct.append(row.label)
-            if len(distinct) > 1:
-                return refuse("ambiguous", _name_candidates(query, distinct))
-            # Enter commits the pointer, which a filter resets to the
-            # FIRST row: unless that row IS the target, Enter would pick
-            # another.
-            if _lex_flat(rows[0].label) not in seen:
-                return refuse(
-                    "ambiguous",
-                    "the target is not the first filtered row; nothing was pressed",
-                )
-            matched = hits[0].label
+        # Rows whose label is IDENTICAL are equivalent (same model, same
+        # outcome): collapse them, keep the first, and refuse only on
+        # more than one DISTINCT label.
+        distinct: list = []
+        for index in hits:
+            if _lex_flat(rows[index].label) not in [_lex_flat(d) for d in distinct]:
+                distinct.append(rows[index].label)
+        if len(distinct) > 1:
+            return refuse("ambiguous", _name_candidates(query, distinct))
+        target = hits[0]
+        matched = rows[target].label
 
-        sent = self.send_keys_to_pane(pane_id, ["enter"])
-        if sent.get("outcome") != "sent":
+        pointer = filtered.selected
+        if pointer is None:
             return refuse(
-                "send-failed",
-                sent.get("detail") or "could not press enter",
+                "changed",
+                "could not see which row the picker points at; nothing was pressed",
             )
+        failure = self._walk_painted_pointer(
+            pane_id,
+            lambda: read_picker(filled=True),
+            tuple(row.label for row in rows),
+            pointer,
+            target,
+        )
+        if failure is not None:
+            return None, failure
+        want_model = _lex_flat(rows[target].model or rows[target].label)
+        want_provider = _lex_flat(rows[target].provider)
+        shown = None
+        closed = False
         for _ in range(SWITCH_WAIT_ATTEMPTS):
             pause(SWITCH_POLL_S)
-            if read_picker(filled=True) is None and read_picker(filled=False) is None:
-                return matched, None
+            if read_picker(filled=True) is not None or read_picker(filled=False) is not None:
+                continue
+            closed = True
+            lines, _runs = self._styled_screen(pane_id)
+            shown = opencode_composer_model(lines or [])
+            if shown is not None:
+                break
+        if not closed:
+            return None, (
+                "no-progress",
+                "the picker did not close after enter; "
+                "the model was not verified switched",
+            )
+        if shown is None:
+            # Closed, but no composer row to read (a narrow or busy
+            # screen): the switch happened as far as the screen shows.
+            return matched, None
+        if _composer_names(shown, want_model, want_provider):
+            return matched, None
         return None, (
-            "no-progress",
-            "the picker did not close after enter; "
-            "the model was not verified switched",
+            "wrong-model",
+            f"opencode now shows {shown!r}, not {matched!r}",
         )
 
     def switch_model(self, pane_id: str, model: str) -> dict:
@@ -1833,11 +1986,13 @@ class BrainTools:
                     note(target.agent, target.session_value)
                 except Exception:  # noqa: BLE001 — cache hygiene never breaks a switch
                     pass
-            return {
+            # opencode may follow with its Select variant list: the model
+            # IS switched, but that list holds the keyboard — say so.
+            return self._with_variant_next(pane_id, harness, {
                 "outcome": "switched",
                 "model": matched,
                 "pane_id": pane_id,
-            }
+            })
 
         picker = self._wait_for_dialog(pane_id, harness, ("model_picker",))
         if picker is None:

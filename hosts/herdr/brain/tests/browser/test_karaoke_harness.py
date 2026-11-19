@@ -106,7 +106,10 @@ EXPECTED_DIGESTS = {
     # Re-pinned again for the full opencode catalog card (2026-11-19):
     # GET /pane/models on demand, the shared mountModelSearch builder,
     # catalog rows answering by model_name (+ provider_name).
-    "/app.js": "a9077b2ce6f9bb590a2c0f3ac1e8a5e01a801d650cb8ef55edb1f942b38ecdc9",
+    # Re-pinned for the verified opencode switch: a 502 model-picker
+    # answer shows the server's detail, and a success carrying
+    # ``next`` restarts the modal poll (opencode's Select variant).
+    "/app.js": "22f4bb6c35768a540dcd28eef91130774e5b4cfdc2b3b0d44f607b058c87416d",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "ca7b22c52c8160a3ac577f694eb65ec0798b77cd6ac179a5c567dffdc1fb2ba9",
     # dialogs.js re-pinned for the parity-f7d follow-up: MODEL_SWITCH_COMMANDS
@@ -116,7 +119,7 @@ EXPECTED_DIGESTS = {
     # again for the modal poll (F7d fix): createModelSwitchPoller +
     # modalViewUrl here, the /view?modal=1 watch and the held picker
     # card in app.js.
-    "/dialogs.js": "e675ab290fe036d9d2940cdc449a8059fccc64c9ce19be1dc187867959bfa7b7",
+    "/dialogs.js": "c7c0b15e783d9c2cb10dcd5fcc07eb3029536303a4bb4158f9e93ce111e3fb26",
     "/herd-group.js": "de284c825e3c99aef07db2dd53198484ec8b7ceba94dd97dbbae0303560df399",
     "/toast.js": "cbccb72b22530ff8f83250bebd8d498ca20977db9536aa094aa759bb9632357e",
     "/reader.js": "b99edccdba5adb1c407ebc3064f7045214c0152677a1da2cfa2c388393792989",

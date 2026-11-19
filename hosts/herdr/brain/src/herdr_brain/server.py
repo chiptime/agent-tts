@@ -3411,6 +3411,10 @@ def create_app(
             }
             if body.model_name is not None:
                 answered["model_name"] = body.model_name
+            if result.get("next"):
+                # The switch opened a follow-up list (opencode's Select
+                # variant): the client keeps watching the modal read.
+                answered["next"] = result["next"]
             return answered
         reason = result.get("reason", "")
         if reason == "unknown_pane":
@@ -3425,6 +3429,16 @@ def create_app(
                 detail=(
                     "El diálogo cambió antes de responder; nada se envió. "
                     "Mira la pantalla de nuevo y responde al diálogo nuevo."
+                ),
+            )
+        if reason == "wrong-model":
+            # Enter left and the picker closed, but the composer names
+            # another model: never reported as success.
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "El modelo no quedó como elegiste: "
+                    f"{result.get('detail') or 'opencode muestra otro'}."
                 ),
             )
         raise HTTPException(

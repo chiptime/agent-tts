@@ -673,8 +673,8 @@
    * favourites, a few more), so a card built from it can never offer
    * every model. The server lists the operator's connected models and
    * a tap answers by NAME: the server types it into the real picker's
-   * Search and presses Enter only when the first filtered row on the
-   * real screen is that model. */
+   * Search, walks the screen's pointer to that model and presses Enter
+   * only once a fresh read shows the pointer on it. */
   var CATALOG_HARNESSES = { opencode: true, opencode2: true };
 
   function wantsModelCatalog(structured) {

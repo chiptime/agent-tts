@@ -1188,3 +1188,126 @@ class TestConformance:
                     )
                 for key in (*model.nav_keys, *model.commit_keys):
                     assert is_valid_key(key), (agent, name, key)
+
+
+class TestOpencodeModelsSearchWide:
+    """The FILTERED opencode ``/models`` picker on a wide pane — a LIVE
+    capture with its ANSI paint (1.19.5, 2026-11-19; provenance.md).
+    Searching ``GLM 5.3`` lists ``GLM 5.3 Flash`` first (opencode ranks
+    free models and favourites first) and paints the pointer on it."""
+
+    def _read(self, runs=True):
+        from herdr_brain.dialogs.adapters.opencode import detect_models_picker
+        from herdr_brain.tools import _runs_plain_text
+        from herdr_brain.view import ansi_runs
+
+        styled = ansi_runs(fixture("opencode-models-search-wide.ansi"))
+        lines = _runs_plain_text(styled).splitlines()
+        return detect_models_picker(
+            "opencode",
+            lines,
+            filled_search=True,
+            query="GLM 5.3",
+            runs=styled if runs else None,
+        )
+
+    def test_the_provider_column_joins_the_label(self):
+        model = self._read()
+
+        assert model.kind == "model_picker"
+        assert [(o.model, o.provider) for o in model.options] == [
+            ("GLM 5.3 Flash", "NaN"),
+            ("GLM-5.3-Flash", "Z.AI Coding Plan"),
+            ("GLM-5.3-Flash", "OpenCode Go"),
+            ("GLM-5.3-Flash", "OpenCode"),
+            ("GLM-5.3", "OpenCode Go"),
+            ("GLM-5.3", "OpenCode"),
+            ("GLM-5.3", "NaN"),
+            ("GLM-5.3", "Z.AI Coding Plan"),
+            ("GLM-5.3 Highspeed", "Z.AI Coding Plan"),
+        ]
+        assert model.options[1].label == "GLM-5.3-Flash Z.AI Coding Plan"
+        assert [o.current for o in model.options].count(True) == 1
+
+    def test_the_painted_row_is_the_pointer(self):
+        assert self._read().selected == 0
+
+    def test_a_plain_read_never_claims_the_pointer(self):
+        assert self._read(runs=False).selected is None
+
+
+class TestOpencodeComposerModel:
+    def test_the_composer_row_names_the_model_and_provider(self):
+        from herdr_brain.dialogs.adapters.opencode import opencode_composer_model
+
+        lines = [
+            "   ┃",
+            '   ┃  Ask anything… "Fix a TODO in the codebase"',
+            "   ┃",
+            "   ┃  Gentle-Orchestrator · GLM-5.3-Flash Z.AI Coding Plan      ~/x",
+        ]
+
+        assert opencode_composer_model(lines) == "GLM-5.3-Flash Z.AI Coding Plan"
+
+    def test_no_composer_row_is_none(self):
+        from herdr_brain.dialogs.adapters.opencode import opencode_composer_model
+
+        assert opencode_composer_model(["$ opencode", "✓ done"]) is None
+
+
+@pytest.mark.parametrize(
+    "shown,model,provider,expected",
+    [
+        ("GLM-5.3 Z.AI Coding Plan", "glm-5.3", "z.ai coding plan", True),
+        ("GLM-5.3-Flash Z.AI Coding Plan", "glm-5.3", "z.ai coding plan", False),
+        ("GLM-5.3 OpenCode Go", "glm-5.3", "z.ai coding plan", False),
+        ("GLM-5.3 NaN", "glm-5.3", "nan", True),
+        ("GLM-5.3 · high", "glm-5.3", "", True),
+    ],
+)
+def test_composer_names_the_target(shown, model, provider, expected):
+    from herdr_brain.tools import _composer_names
+
+    assert _composer_names(shown, model, provider) is expected
+
+
+class TestOpencodeVariantPicker:
+    """opencode's ``Select variant`` list, opened by a model switch whose
+    variants do not hold the current one — a LIVE capture with its ANSI
+    paint (1.19.5, 2026-11-19; provenance.md)."""
+
+    def _read(self, runs=True):
+        from herdr_brain.dialogs.adapters.opencode import detect_variant_picker
+        from herdr_brain.tools import _runs_plain_text
+        from herdr_brain.view import ansi_runs
+
+        styled = ansi_runs(fixture("opencode-variant-picker.ansi"))
+        lines = _runs_plain_text(styled).splitlines()
+        return detect_variant_picker("opencode", lines, runs=styled if runs else None)
+
+    def test_the_variant_list_is_a_variant_picker(self):
+        model = self._read()
+
+        assert model.kind == "variant_picker"
+        assert model.question == "Select variant"
+        assert labels(model) == ["Default", "low", "high", "max"]
+        assert model.selected == 0
+
+    def test_a_plain_read_never_claims_the_pointer(self):
+        assert self._read(runs=False).selected is None
+
+    def test_the_adapter_recognizes_it_on_a_plain_screen(self):
+        from herdr_brain.tools import _runs_plain_text
+        from herdr_brain.view import ansi_runs
+
+        plain = _runs_plain_text(ansi_runs(fixture("opencode-variant-picker.ansi")))
+
+        assert detect("opencode", plain).kind == "variant_picker"
+        assert detect("opencode2", plain).kind == "variant_picker"
+
+    def test_the_models_picker_is_never_read_as_a_variant_list(self):
+        from herdr_brain.dialogs.adapters.opencode import detect_variant_picker
+
+        lines = fixture("opencode-models-picker.txt").splitlines()
+
+        assert detect_variant_picker("opencode", lines) is None

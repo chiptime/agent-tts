@@ -376,13 +376,17 @@ def _append_description(options: List[DialogOption], row: str) -> None:
 #
 # - the CURRENT model is the row prefixed ``●`` (two cells left of the
 #   label column); it is carried as the additive ``current`` mark;
-# - the POINTER is ANSI paint — invisible in the text every
-#   recognizer reads — so ``selected`` is NEVER claimed, ``nav_keys``
-#   stay empty (this footer names no arrows), and the only honest
-#   recipe is SEARCH-FIRST: typing into the Search box filters the
-#   list, and Enter commits it only once exactly one row names the
-#   target. Never a digit key (ADR 0009); the typed name is literal
-#   text, not a keypress.
+# - the POINTER is ANSI paint: the pointed row's label cell carries a
+#   non-default background (live 1.19.5: ``48;2;250;178;131`` on the
+#   ``20;20;20`` modal). The plain-text read never claims ``selected``;
+#   a STYLED read (``runs``) claims it only when exactly one option row
+#   is painted at the label column. The recipe types the model name
+#   into Search, walks the arrows to the target, re-reads the paint and
+#   commits Enter only when the pointer stands on the target — never a
+#   digit key (ADR 0009); the typed name is literal text.
+# - a FILTERED list drops the group headers and prints the provider in
+#   its own right-hand column (wide panes) — or in the same text run
+#   (narrow panes); both shapes read as ``<model> <provider>``.
 
 _MODELS_TITLE = re.compile(r"(?:^|(?<=  ))Select model(?:\s|$)")
 _MODELS_FOOTER = re.compile(r"Connect provider +ctrl\+a {2,}Favorite +ctrl\+f")
@@ -445,11 +449,45 @@ def _models_label(line: str, column: int, end: int) -> str:
     return _MODELS_LABEL_GAP.split(segment, 1)[0].strip()
 
 
+#: Right-column marks that are never a provider name.
+_MODELS_BADGES = frozenset({"*", "free", "(favorite)"})
+
+
+def _models_provider_column(line: str, column: int, end: int) -> str:
+    """The row's right-hand provider column, or ``""``: the first
+    segment after the label's wide gap that is not a badge."""
+    segment = line[column:end].strip()
+    for part in _MODELS_LABEL_GAP.split(segment)[1:]:
+        part = part.strip()
+        if part and part.lower() not in _MODELS_BADGES:
+            return part
+    return ""
+
+
+def _bg_at(runs_line, cell: int) -> Optional[str]:
+    """The background colour painted at one character cell of a styled
+    line (``ansi_runs`` output), or None past its end."""
+    position = 0
+    for run in runs_line or ():
+        text = run.get("t", "")
+        if position <= cell < position + len(text):
+            return run.get("bg")
+        position += len(text)
+    return None
+
+
+def _painted(bg: Optional[str]) -> bool:
+    from ...view import _is_default_bg
+
+    return not _is_default_bg(bg)
+
+
 def detect_models_picker(
     agent: str,
     lines: List[str],
     filled_search: bool = False,
     query: str = "",
+    runs: Optional[list] = None,
 ) -> Optional[StructuredDialog]:
     """The opencode ``/models`` picker as a ``model_picker`` dialog.
 
@@ -496,6 +534,12 @@ def detect_models_picker(
     if footer_match.start() != column:
         return None
     span_end = footer_match.end()
+    # The modal's RIGHT edge is the title's own ``esc`` hint: the
+    # filtered list right-aligns its provider column to it (live wide
+    # capture), past the footer's end. Screen text bleeding right of
+    # the modal sits beyond it.
+    esc_at = texts[title_at].find("esc", column + len("Select model"))
+    right_edge = max(span_end, esc_at + len("esc")) if esc_at >= 0 else span_end
 
     # The search input: the first non-blank row below the title. The
     # strict read requires the placeholder; a filled box may hold the
@@ -523,7 +567,7 @@ def detect_models_picker(
         ).lower():
             return None
 
-    rows: List[tuple] = []  # (label, marked, blank_above)
+    rows: List[tuple] = []  # (label, marked, blank_above, line, provider)
     blank_above = True  # the spacing row under Search
     for index in range(search_at + 1, footer_at):
         label = _models_label(texts[index], column, span_end)
@@ -534,7 +578,8 @@ def detect_models_picker(
             column >= 2
             and texts[index][column - 2 : column] == _MODELS_CURRENT + " "
         )
-        rows.append((label, marked, blank_above))
+        provider_column = _models_provider_column(texts[index], column, right_edge)
+        rows.append((label, marked, blank_above, index, provider_column))
         blank_above = False
 
     # Group headers ("Recent", "Favorites", a provider name) are plain
@@ -542,8 +587,8 @@ def detect_models_picker(
     # row that may follow a blank without being a header is the first
     # one under Search. They label sections; they are not models.
     headers = set()
-    for position, (label, marked, blank_above) in enumerate(rows):
-        if marked:
+    for position, (label, marked, blank_above, _line, provider_column) in enumerate(rows):
+        if marked or provider_column:
             continue
         flat = label.lower()
         if (
@@ -556,13 +601,20 @@ def detect_models_picker(
     providers.update(rows[position][0].lower() for position in headers)
 
     options: List[DialogOption] = []
+    option_lines: List[int] = []
     current = 0
     section = ""
-    for position, (label, marked, _blank_above) in enumerate(rows):
+    for position, (label, marked, _blank_above, line_at, provider_column) in enumerate(rows):
         if position in headers:
             section = "" if label.lower() in _MODELS_GROUP_LABELS else label
             continue
-        model_name, provider = _split_provider(label, providers)
+        if provider_column:
+            # The wide filtered shape: the provider sits in its own
+            # column. The label reads as the narrow shape's single run.
+            model_name, provider = label, provider_column
+            label = f"{label} {provider_column}"
+        else:
+            model_name, provider = _split_provider(label, providers)
         current += 1 if marked else 0
         options.append(
             DialogOption(
@@ -572,12 +624,32 @@ def detect_models_picker(
                 provider=provider or section,
             )
         )
+        option_lines.append(line_at)
     if current > 1:
         return None
     if not options and not filled_search:
         return None
     if len(options) > _MODELS_MAX_ROWS:
         return None
+
+    # The pointer: exactly one option row painted at the label column.
+    # Headers are never pointed; a painted header or several painted
+    # rows leave it unknown (the caller then refuses to commit).
+    selected = None
+    if runs is not None:
+        painted = [
+            position
+            for position, line_at in enumerate(option_lines)
+            if line_at < len(runs) and _painted(_bg_at(runs[line_at], column))
+        ]
+        painted_headers = [
+            rows[position][3]
+            for position in headers
+            if rows[position][3] < len(runs)
+            and _painted(_bg_at(runs[rows[position][3]], column))
+        ]
+        if len(painted) == 1 and not painted_headers:
+            selected = painted[0]
 
     return StructuredDialog(
         agent=agent,
@@ -588,8 +660,121 @@ def detect_models_picker(
         hint=" ".join(_MODELS_FOOTER.search(texts[footer_at]).group(0).split()),
         nav_keys=(),
         commit_keys=("enter",),
-        selected=None,
+        selected=selected,
     )
+
+
+# ── the variant picker (LIVE capture 2026-11-19, opencode 1.19.5) ────
+#
+# Choosing a model whose reasoning variants do not include the current
+# one REPLACES the /models picker with ``Select variant`` (opencode's
+# ``DialogVariant``): the model is ALREADY switched, the composer under
+# the modal names it, and this list still holds the keyboard. Same
+# modal chrome as /models — title + ``esc`` hint, a Search row, the
+# pointer as paint — but NO footer: the rows end at the first blank row
+# inside the modal's column window.
+
+_VARIANT_TITLE = "Select variant"
+_VARIANT_MAX_ROWS = 12
+
+
+def detect_variant_picker(
+    agent: str, lines: List[str], runs: Optional[list] = None
+) -> Optional[StructuredDialog]:
+    """The opencode ``Select variant`` list as a ``variant_picker``.
+
+    Fail-closed: the title with its ``esc`` hint at the right edge, the
+    ``Search`` placeholder as the next row, then 1–12 single-word rows
+    (``Default`` first, as opencode always lists it) — else ``None``.
+    ``selected`` comes only from a styled read (``runs``)."""
+    texts = [line.rstrip() for line in lines]
+    title_at = next(
+        (
+            index
+            for index in range(len(texts) - 1, -1, -1)
+            if _VARIANT_TITLE in texts[index]
+        ),
+        None,
+    )
+    if title_at is None:
+        return None
+    column = texts[title_at].index(_VARIANT_TITLE)
+    esc_at = texts[title_at].find("esc", column + len(_VARIANT_TITLE))
+    if esc_at < 0 or texts[title_at][column + len(_VARIANT_TITLE) : esc_at].strip():
+        return None
+    right_edge = esc_at + len("esc")
+
+    def cell(index: int) -> str:
+        return texts[index][column:right_edge].strip() if index < len(texts) else ""
+
+    search_at = next(
+        (
+            index
+            for index in range(title_at + 1, min(title_at + 1 + _MODELS_SEARCH_LOOKAHEAD, len(texts)))
+            if cell(index)
+        ),
+        None,
+    )
+    if search_at is None or cell(search_at) != _MODELS_SEARCH_ROW:
+        return None
+    first = next(
+        (index for index in range(search_at + 1, min(search_at + 3, len(texts))) if cell(index)),
+        None,
+    )
+    if first is None:
+        return None
+    row_lines: List[int] = []
+    index = first
+    while index < len(texts) and cell(index):
+        row_lines.append(index)
+        index += 1
+    labels = [cell(index) for index in row_lines]
+    if not labels or len(labels) > _VARIANT_MAX_ROWS or labels[0] != "Default":
+        return None
+    if any(_MODELS_LABEL_GAP.search(label) or " " in label for label in labels):
+        return None
+
+    selected = None
+    if runs is not None:
+        painted = [
+            position
+            for position, line_at in enumerate(row_lines)
+            if line_at < len(runs) and _painted(_bg_at(runs[line_at], column))
+        ]
+        if len(painted) == 1:
+            selected = painted[0]
+
+    return StructuredDialog(
+        agent=agent,
+        kind="variant_picker",
+        question=_VARIANT_TITLE,
+        options=tuple(DialogOption(label=label) for label in labels),
+        fingerprint=fingerprint_region(texts[title_at : row_lines[-1] + 1]),
+        hint="esc",
+        nav_keys=(),
+        commit_keys=("enter",),
+        selected=selected,
+    )
+
+
+#: The composer's model row: ``┃  <Agent> · <model> <provider>[ · …]``
+#: (live 1.19.5: ``┃  Gentle-Orchestrator · GLM-5.3-Flash Z.AI Coding
+#: Plan``; narrow panes squeeze the spaces around the dot).
+_COMPOSER_MODEL_ROW = re.compile(r"^[┃│]\s+\S+\s*·\s*(?P<model>\S.*?)\s*$")
+
+
+def opencode_composer_model(lines: List[str]) -> Optional[str]:
+    """The model text the composer shows (``<model> <provider>``, a
+    trailing ``· variant`` kept), or None when no composer model row is
+    on screen. The LAST matching bar row wins: the composer is at the
+    tail, the transcript above it never draws a bar row with a dot."""
+    found = None
+    for line in lines:
+        stripped = line.strip()
+        match = _COMPOSER_MODEL_ROW.match(stripped)
+        if match is not None:
+            found = _MODELS_LABEL_GAP.split(match.group("model"), 1)[0].strip()
+    return found or None
 
 
 def _question_above(texts: List[str], options, footer: str) -> str:
@@ -628,6 +813,9 @@ class OpencodeAdapter(_QuestionAdapterBase):
         picker = detect_models_picker(self.agent, lines)
         if picker is not None:
             return picker
+        variant = detect_variant_picker(self.agent, lines)
+        if variant is not None:
+            return variant
         return self._detect_permission_pill(lines, styled)
 
     def _detect_permission_pill(
@@ -652,4 +840,7 @@ class Opencode2Adapter(_QuestionAdapterBase):
         question = self.detect_question(lines)
         if question is not None:
             return question
-        return detect_models_picker(self.agent, lines)
+        picker = detect_models_picker(self.agent, lines)
+        if picker is not None:
+            return picker
+        return detect_variant_picker(self.agent, lines)
