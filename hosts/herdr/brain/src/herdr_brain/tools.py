@@ -272,6 +272,20 @@ def _name_candidates(wanted: str, labels) -> str:
     return f"{wanted} is ambiguous between: {shown}"
 
 
+def _runs_plain_text(runs: list) -> str:
+    """The escape-stripped flat text of ``ansi_runs`` output.
+
+    The ONE transformation every recognizer input shares: the /view
+    detection (``_dialog_runs``) and the guarded answer path's reader
+    (``_dialog_reader``) both derive their text through this join, so
+    the fingerprint one publishes is the one the other reproduces —
+    recognizers read PLAIN text, never raw ANSI.
+    """
+    return "\n".join(
+        "".join(run.get("t", "") for run in line) for line in runs
+    )
+
+
 def _switch_confirmation_yes(options):
     """The ``Yes, switch to <model>`` row of the confirmation, if the
     screen carries one. Returns ``(index, label)`` or ``(None, "")``."""
@@ -935,10 +949,7 @@ class BrainTools:
         if not styled:
             return None, None
         runs = ansi_runs(styled)
-        wide_text = "\n".join(
-            "".join(run.get("t", "") for run in line) for line in runs
-        )
-        return runs, wide_text
+        return runs, _runs_plain_text(runs)
 
     def read_dialog(
         self, target: Optional[AgentInfo], fallback_text: Optional[str] = None
@@ -1493,10 +1504,21 @@ class BrainTools:
         }
 
     def _dialog_reader(self, pane_id: str):
-        """The guard's reader: a styled read of one pane's tail."""
+        """The guard's reader: one pane's tail as the SAME escape-stripped
+        plain text the /view recognition derives.
+
+        The styled read carries SGR paint; every recognizer and guard
+        consuming this reader reads plain text, so the read is flattened
+        through the one shared transformation (:func:`_runs_plain_text`).
+        Handing out the raw styled bytes instead would make every
+        recognizer claim nothing — no guarded answer could ever
+        reproduce a published fingerprint (the live parity bug: every
+        tap refused ``changed`` forever).
+        """
 
         def reader(target_pane: str, lines: int) -> str:
-            return self._herdr.read_screen(target_pane, lines, as_ansi=True)
+            styled = self._herdr.read_screen(target_pane, lines, as_ansi=True)
+            return _runs_plain_text(ansi_runs(styled))
 
         return reader
 

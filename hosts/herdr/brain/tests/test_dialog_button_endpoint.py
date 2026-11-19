@@ -1672,3 +1672,73 @@ class TestWizardTwoStepFlow:
         assert response.status_code == 409
         assert "cambió" in response.json()["detail"]
         assert stub.key_calls == []
+
+
+def ansi_paint(text: str) -> str:
+    """A real styled read's shape: every line painted and reset."""
+    return "\n".join(
+        f"\x1b[38;2;1;2;3m{line}\x1b[0m" for line in text.split("\n")
+    )
+
+
+class AnsiPaintedStub(DialogTapStub):
+    """The live-read shape herdr's ``--format ansi`` returns: the
+    STYLED (``as_ansi``) read carries SGR paint on every line. Every
+    recognizer consuming a styled read must see the escape-stripped
+    text, exactly as ``_dialog_runs`` strips for /view."""
+
+    def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+        text = super().read_screen(pane_id, n_lines, source, as_ansi)
+        return ansi_paint(text) if as_ansi else text
+
+
+class TestStyledReadParity:
+    """The live parity bug (f7d): the answer path's guard reader handed
+    recognizers the STYLED read raw, so every recognizer claimed
+    nothing and every tap 409'd ``changed`` while /view happily
+    published the fingerprint from the same pane. The answer must
+    recognize the SAME escape-stripped text the view path derives —
+    from the same styled bytes."""
+
+    def test_a_tap_answers_the_fingerprint_the_view_published_on_a_styled_read(
+        self, make_client
+    ):
+        stub = AnsiPaintedStub([BLOCKED_CLAUDE], CLAUDE_SELECT)
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+
+        published = client.get("/view", params={"pane_id": "w1:p3"}).json()[
+            "structured"
+        ]
+        assert published["kind"] == "select"
+        assert published["fingerprint"]
+
+        response = client.post(
+            "/pane/dialog/answer",
+            json={
+                "pane_id": "w1:p3",
+                "fingerprint": published["fingerprint"],
+                "option": 1,
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["ok"] is True
+        assert body["option"] == 1
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["2", "enter"]}]
+
+    def test_a_stale_fingerprint_on_a_styled_read_still_refuses(self, make_client):
+        """Stripping aligns the TEXT, never the discipline: a moved
+        screen under a styled read keeps refusing ``changed`` with
+        nothing sent."""
+        stub = AnsiPaintedStub([BLOCKED_CLAUDE], CLAUDE_SELECT)
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        stale = _fingerprint("claude", CLAUDE_SELECT.replace("Manzana", "Melón"))
+
+        response = client.post(
+            "/pane/dialog/answer",
+            json={"pane_id": "w1:p3", "fingerprint": stale, "option": 0},
+        )
+
+        assert response.status_code == 409
+        assert stub.key_calls == []

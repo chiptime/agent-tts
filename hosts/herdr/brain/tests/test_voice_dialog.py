@@ -531,6 +531,20 @@ class VoiceMultiStub(DialogStub):
         return self._keys
 
 
+class AnsiPaintedVoiceMultiStub(VoiceMultiStub):
+    """The live styled-read shape: SGR paint on every line of every
+    styled (``as_ansi``) read — the raw bytes recognizers must strip,
+    never trust."""
+
+    def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+        text = super().read_screen(pane_id, n_lines, source, as_ansi)
+        if not as_ansi:
+            return text
+        return "\n".join(
+            f"\x1b[38;2;1;2;3m{line}\x1b[0m" for line in text.split("\n")
+        )
+
+
 class VoiceFreeTextStub(DialogStub):
     """Drives the free-text select: a digit moves the pointer to its row
     (the field takes the keyboard), literal text lands in the row
@@ -761,6 +775,33 @@ class TestVoiceMultiSelectAnswer:
         assert result["outcome"] == "refused"
         assert result["reason"] == "not-explained"
         assert stub.key_calls == []
+
+    def test_a_styled_ansi_read_still_answers_the_spoken_set(self, settings):
+        """The live bug class (f7d): the styled read carries SGR paint
+        on every line, and the spoken structured path read it RAW — the
+        recognizer saw ANSI, claimed nothing, and every spoken set
+        answer refused ``unread-dialog``. The reader must hand the
+        recognizer the SAME escape-stripped text the view path
+        derives."""
+        stub = AnsiPaintedVoiceMultiStub(checked=set())
+        built = build_tools(settings, stub)
+        explain_claude_and_advance(built)
+
+        result = json.loads(
+            built.answer_dialog(
+                "marca la uno y la tres",
+                BLOCKED_CLAUDE,
+                choices=["la uno", "la tres"],
+            )
+        )
+
+        assert result["outcome"] == "answered"
+        assert result["choices"] == [1, 3]
+        assert result["titles"] == ["Cheese", "Mushrooms"]
+        assert [call["keys"] for call in stub.key_calls] == [
+            ["1"], ["3"], ["down"], ["enter"],
+        ]
+        assert stub.checked == {0, 2}
 
     def test_a_changed_dialog_refuses_before_any_key(self, settings):
         built, stub = self._tools(settings)
