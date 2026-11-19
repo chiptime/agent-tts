@@ -95,6 +95,11 @@ MAX_SEND_EXCERPT = 500
 REPLY_WAIT_MS = 3_000
 HERD_LAST_TURN_CHARS = 160
 CONVERSATION_WINDOW = 20
+#: The ONE dialog window: /view detection and the guarded answer flow
+#: both read (and re-read) this many styled lines, so a dialog's
+#: fingerprint is always computed over the same region the answer
+#: guard later compares it on. The mux clamps the request to its own
+#: caps, identically on both surfaces, which keeps them consistent.
 SCREEN_FULL_LINES = 120
 # Verified sends (S12): how many screen lines the before/after reads need
 # (the input box lives at the tail) and how the bounded after-poll behaves.
@@ -103,9 +108,11 @@ SCREEN_FULL_LINES = 120
 VERIFIED_SCREEN_LINES = 30
 VERIFIED_POLL_READS = 3
 VERIFIED_POLL_INTERVAL_S = 0.35
-#: Lines read WITH styling for a blocked pane, so the PWA can show which
-#: option of the dialog is highlighted. Only read while blocked: the styling
-#: is exactly what decides a permission, and nothing else needs it.
+#: Lines read WITH styling for the SPOKEN dialog explanation (the
+#: voice binding's own identity check). The /view payload and the
+#: guarded answer path read the full window instead
+#: (``SCREEN_FULL_LINES``), so every published fingerprint is computed
+#: — and re-read — over one and the same window.
 DIALOG_SCREEN_LINES = 30
 #: parity-f7d S3: the harness's own command that opens its model picker,
 #: VERIFIED per harness (the picker detector must be able to read what
@@ -806,11 +813,14 @@ class BrainTools:
         ``modal`` (GET /view?modal=1, the PWA model-switch flow) runs the
         dialog recognition REGARDLESS of pane status: a USER-opened model
         picker leaves the pane ``idle``, so the status gate alone would
-        never read it. The recognition read also widens to the full
-        window (``SCREEN_FULL_LINES``), because the picker floats
-        mid-screen and its title/Search rows fall outside the 30-line
-        dialog window. Without the flag the payload is byte-identical
-        to the pre-modal contract.
+        never read it. Both the blocked and the modal read use the FULL
+        window (``SCREEN_FULL_LINES``): a floating picker's title/Search
+        rows fall outside a 30-line tail, and every dialog fingerprint
+        must be computed over the same window the guarded answer path
+        re-reads — two windows would mean two fingerprints, and every
+        tap would refuse with ``changed``. Without the flag an idle or
+        working pane keeps the exact pre-modal payload shape (no dialog
+        read at all).
         """
         target = self.resolve_target(pane_id)
 
@@ -834,15 +844,15 @@ class BrainTools:
         # Faithful, never interpretive — it reproduces what the terminal
         # rendered and decides nothing about what a key would do.
         # The modal read (a USER-opened picker on an otherwise idle pane)
-        # enters the same discipline from any status, at full window.
+        # enters the same discipline from any status; BOTH reads use the
+        # full window so the published fingerprint always matches the
+        # answer guard's own full-window read.
         screen_runs: Optional[list] = None
         dialog = None
         structured = None
         blocked = (target.status or "").strip().lower() == "blocked" if target else False
         if target is not None and (blocked or modal):
-            raw_runs, wide_text = self._dialog_runs(
-                target, SCREEN_FULL_LINES if modal else DIALOG_SCREEN_LINES
-            )
+            raw_runs, wide_text = self._dialog_runs(target, SCREEN_FULL_LINES)
             screen_runs = mask_runs(raw_runs) if raw_runs else raw_runs
             # Parse from the WIDE read: the plain screen tail is only 12
             # lines and a tall question tool does not fit in it, so the
@@ -915,9 +925,11 @@ class BrainTools:
         """The pane's styled read, as ANSI runs plus flat text.
 
         Shared by the /view payload and the voice dialog path so both
-        parse the SAME wide, escape-stripped screen. ``lines`` widens
-        the window for the modal /view read (a floating picker's title
-        rows sit mid-screen, outside the 30-line dialog tail).
+        parse the SAME wide, escape-stripped screen. ``lines`` names the
+        window: /view always passes the full window
+        (``SCREEN_FULL_LINES``) so the fingerprint it publishes is the
+        one the guarded answer path re-reads; the spoken-explanation
+        path keeps the 30-line dialog tail default.
         """
         styled = self.screen_tail(target, lines, as_ansi=True)
         if not styled:
@@ -1037,6 +1049,15 @@ class BrainTools:
 
         reader = self._dialog_reader(pane_id)
 
+        # ONE window for the whole answer flow: the fresh detection
+        # read, every guard walk and every per-key re-read below read
+        # the SAME full window the /view detection published its
+        # fingerprint on. A shorter tail can cut a floating dialog's
+        # title rows; the recognizer then fail-closes and the guard
+        # refuses the very dialog it was handed — permanently, with a
+        # ``changed`` that no fresh read ever clears.
+        answer_lines = SCREEN_FULL_LINES
+
         def detect(screen: Optional[str]):
             model = recognize_dialog(target.agent, screen or "")
             if model is None or model.unread:
@@ -1044,7 +1065,7 @@ class BrainTools:
             return model.as_guard_model()
 
         try:
-            fresh_text = reader(pane_id, DIALOG_SCREEN_LINES)
+            fresh_text = reader(pane_id, answer_lines)
         except HerdrError as exc:
             return refused("error", f"cannot read the pane: {exc}")
         model = recognize_dialog(target.agent, fresh_text or "")
@@ -1064,7 +1085,8 @@ class BrainTools:
 
         if choices is not None:
             return self._answer_multiselect(
-                pane_id, choices, model, target, reader, sender, detect, refused
+                pane_id, choices, model, target, reader, sender, detect, refused,
+                answer_lines,
             )
         if option is None or not 0 <= option < len(model.options):
             return refused("invalid_target", "that option is not on this dialog")
@@ -1072,7 +1094,8 @@ class BrainTools:
         chosen = model.options[option]
         if text is not None:
             return self._answer_free_text(
-                pane_id, text, option, model, target, reader, sender, refused
+                pane_id, text, option, model, target, reader, sender, refused,
+                answer_lines,
             )
         # The opencode model pickers are answered SEARCH-FIRST (their
         # pointer is ANSI paint — invisible in text — so the walk could
@@ -1096,7 +1119,7 @@ class BrainTools:
             }
         if chosen.keys:
             guard = dialog_guard.entry_guard(
-                reader, pane_id, DIALOG_SCREEN_LINES, model.as_guard_model(), detect
+                reader, pane_id, answer_lines, model.as_guard_model(), detect
             )
             if not guard.ok:
                 return refused(guard.reason or "changed", guard.detail)
@@ -1122,7 +1145,7 @@ class BrainTools:
                 reader,
                 sender,
                 pane_id,
-                DIALOG_SCREEN_LINES,
+                answer_lines,
                 model.as_guard_model(),
                 option,
                 detect,
@@ -1144,7 +1167,8 @@ class BrainTools:
         return refused(outcome.reason or "changed", outcome.detail)
 
     def _answer_multiselect(
-        self, pane_id, choices, model, target, reader, sender, detect, refused
+        self, pane_id, choices, model, target, reader, sender, detect, refused,
+        answer_lines,
     ) -> dict:
         """The multi-select choreography (S1): the terminal is the only
         truth.
@@ -1157,6 +1181,10 @@ class BrainTools:
         its identity changed, a box never flipped — stops the answer
         with ``changed`` and sends NOTHING further: half a selection is
         never submitted blindly.
+
+        ``answer_lines`` is the window the answer was detected on: every
+        re-read here uses it, so the identity checks compare the same
+        region the fingerprint was published on.
 
         A dialog with NO submit row but a two-chip tab strip (the
         OpenCode multi the reference pinned, T4b) commits with the
@@ -1198,7 +1226,7 @@ class BrainTools:
                 )
 
         def readd():
-            text = reader(pane_id, DIALOG_SCREEN_LINES)
+            text = reader(pane_id, answer_lines)
             fresh = recognize_dialog(target.agent, text or "")
             if fresh is None or fresh.unread or fresh.kind != "multiselect":
                 return None
@@ -1232,7 +1260,7 @@ class BrainTools:
 
         if tab_commit:
             return self._commit_multiselect_tabs(
-                pane_id, current, wanted, reader, sender, refused
+                pane_id, current, wanted, reader, sender, refused, answer_lines
             )
 
         try:
@@ -1240,7 +1268,7 @@ class BrainTools:
                 reader,
                 sender,
                 pane_id,
-                DIALOG_SCREEN_LINES,
+                answer_lines,
                 current.as_guard_model(),
                 submit_rows[0],
                 detect,
@@ -1258,7 +1286,7 @@ class BrainTools:
         return refused(outcome.reason or "changed", outcome.detail)
 
     def _commit_multiselect_tabs(
-        self, pane_id, model, wanted, reader, sender, refused
+        self, pane_id, model, wanted, reader, sender, refused, answer_lines
     ) -> dict:
         """The tab-strip commit (T4b): the OpenCode pinned multi's own
         measured choreography — ``tab`` reaches the Confirm/Submit tab
@@ -1269,7 +1297,8 @@ class BrainTools:
         Every step is verified against the terminal, never assumed:
         the landing after ``tab`` must be THIS dialog's review — the
         same tab chips over the review footer — read back within the
-        guard's own poll bound. Anything else stops the answer with
+        guard's own poll bound, on the same ``answer_lines`` window the
+        dialog was detected on. Anything else stops the answer with
         ``changed`` and sends NOTHING further: ``enter`` on a checkbox
         step would toggle a box, so a selection is never submitted to
         a screen that was not read first.
@@ -1287,7 +1316,7 @@ class BrainTools:
         landed = False
         for _ in range(dialog_guard.POLL_ATTEMPTS):
             pause(dialog_guard.POLL_DELAY_MS / 1000)
-            text = reader(pane_id, DIALOG_SCREEN_LINES)
+            text = reader(pane_id, answer_lines)
             if tuple(confirm_review((text or "").splitlines()) or ()) == chips:
                 landed = True
                 break
@@ -1335,7 +1364,8 @@ class BrainTools:
         return None
 
     def _answer_free_text(
-        self, pane_id, text, option, model, target, reader, sender, refused
+        self, pane_id, text, option, model, target, reader, sender, refused,
+        answer_lines,
     ) -> dict:
         """The free-text choreography (S3): the terminal is the only truth.
 
@@ -1346,7 +1376,8 @@ class BrainTools:
         only then does Enter commit. Anything unexpected — the dialog
         left, its identity changed, the text never showed — stops the
         answer with ``changed`` and sends NOTHING further: a half-typed
-        field is never submitted blindly.
+        field is never submitted blindly. Every re-read uses the same
+        ``answer_lines`` window the dialog was detected on.
         """
         from . import dialog as dialog_guard
 
@@ -1368,7 +1399,7 @@ class BrainTools:
             )
 
         def readd():
-            raw = reader(pane_id, DIALOG_SCREEN_LINES)
+            raw = reader(pane_id, answer_lines)
             return recognize_dialog(target.agent, raw or ""), raw or ""
 
         def await_identity(baseline):
@@ -1733,14 +1764,16 @@ class BrainTools:
         """Waits, bounded, for a recognizable dialog of ``kinds`` on the
         pane — the picker after the command, the confirmation after the
         commit. Reads come styled through the same reader the guarded
-        answers use."""
+        answers use, at the same FULL window: the fingerprint handed to
+        :meth:`answer_structured_dialog` must be the one its own fresh
+        read reproduces, or the guarded answer would refuse it."""
         reader = self._dialog_reader(pane_id)
         pause = self._sleeper or time.sleep
         for attempt in range(attempts):
             if attempt:
                 pause(SWITCH_POLL_S)
             try:
-                text = reader(pane_id, DIALOG_SCREEN_LINES)
+                text = reader(pane_id, SCREEN_FULL_LINES)
             except HerdrError:
                 continue
             model = recognize_dialog(harness, text or "")
@@ -2013,13 +2046,14 @@ class BrainTools:
         recognizer's fingerprint (a digest of the region), not by the
         voice binding's view-level identity — so a spoken multi-select
         or free-text answer derives that fingerprint from a fresh read
-        through the SAME reader the structured path itself uses. The
-        verbal binding has ALREADY guarded the explanation's identity;
-        this read is what hands the answer to the button-tap discipline.
+        through the SAME reader — and the SAME full window — the
+        structured path itself uses. The verbal binding has ALREADY
+        guarded the explanation's identity; this read is what hands the
+        answer to the button-tap discipline.
         """
         reader = self._dialog_reader(active.pane_id)
         try:
-            fresh = reader(active.pane_id, DIALOG_SCREEN_LINES)
+            fresh = reader(active.pane_id, SCREEN_FULL_LINES)
         except HerdrError:
             return None
         model = recognize_dialog(active.agent, fresh or "")

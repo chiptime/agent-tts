@@ -634,6 +634,86 @@ class TestModelPickerSearchFirst:
         assert result["reason"] == "no-progress"
         assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
 
+    def _tail_stub(self, keep, close=True):
+        """The search flow behind a reader that honours the REQUESTED
+        window like a real tail read: the picker fixture is 33 lines,
+        so a 30-line request cannot see its title/Search rows — only a
+        window of 33 lines or more can read the dialog at all."""
+        filtered = self._filtered("GLM-5.3 Highspeed", keep)
+        state = {"stage": "picker"}
+
+        class TailSearchStub(DialogTapStub):
+            def __init__(self):
+                super().__init__([IDLE_OPENCODE], OPENCODE_PICKER)
+                self.text_calls: list = []
+                self.requested_lines: list = []
+
+            def read_screen(
+                self, pane_id, n_lines=None, source="visible", as_ansi=False
+            ):
+                if n_lines:
+                    self.requested_lines.append(n_lines)
+                if state["stage"] == "done":
+                    return "$ opencode\n✓ GLM-5.3 Highspeed set ❯ _"
+                text = OPENCODE_PICKER if state["stage"] == "picker" else filtered
+                lines = text.splitlines()
+                if n_lines and n_lines > 0:
+                    lines = lines[-n_lines:]
+                return "\n".join(lines)
+
+            def send_text(self, pane_id, text):
+                self.text_calls.append({"pane_id": pane_id, "text": text})
+                state["stage"] = "filtered"
+
+            def send_keys(self, pane_id, keys):
+                result = super().send_keys(pane_id, keys)
+                if close and "enter" in keys:
+                    state["stage"] = "done"
+                return result
+
+        return TailSearchStub()
+
+    def test_a_tap_answers_the_fingerprint_the_modal_view_published(
+        self, make_client
+    ):
+        """The /view↔answer window parity pin (the live parity bug).
+
+        The modal /view detects the 33-line picker on the FULL window
+        and publishes that fingerprint; the answer's fresh guard read
+        must use the SAME window. A 30-line guard read cannot see the
+        title row, the recognizer fail-closes, and the tap is refused
+        ``changed`` — forever, because no fresh read ever changes."""
+        stub = self._tail_stub(["GLM-5.3 Highspeed"])
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+
+        published = client.get(
+            "/view", params={"pane_id": "w1:p3", "modal": 1}
+        ).json()["structured"]
+        assert published["kind"] == "model_picker"
+        assert published["fingerprint"]
+
+        highspeed = next(
+            index
+            for index, option
+            in enumerate(recognize("opencode", OPENCODE_PICKER).options)
+            if option.label == "GLM-5.3 Highspeed"
+        )
+        response = client.post(
+            "/pane/dialog/answer",
+            json={
+                "pane_id": "w1:p3",
+                "fingerprint": published["fingerprint"],
+                "option": highspeed,
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["ok"] is True
+        assert body["label"] == "GLM-5.3 Highspeed"
+        assert [call["text"] for call in stub.text_calls] == ["GLM-5.3 Highspeed"]
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
+
 
 class TestVoicePathReadsStructuredDialogs:
     """The spoken path gains the harness reading (S2, spec wording:
