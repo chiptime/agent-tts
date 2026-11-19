@@ -122,9 +122,13 @@ EXPECTED_DIGESTS = {
     # Re-pinned for parity-f7g S5 (the send tracker card): the SSE
     # send.track feed, the receipts-poll convergence, the 1s tick
     # cadence and the per-pane map in the composer area.
-    "/app.js": "a94e0252b2db27c3f099a4c4e2f9ea2ac48620201ceb9404d07565f26c307095",
+    # Re-pinned for parity-f7e S1(2): the Stop capability — app.js
+    # disables #pane-stop per the pane's can_stop /herd key with the
+    # Spanish explanation, receipts.js gains stopButtonModel, and both
+    # i18n gain stop.unverified.
+    "/app.js": "1c44c63766efca0b0c58853810a0ac7fe20f3f43499a37feabe539d6fbbe1a19",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
-    "/receipts.js": "ca7b22c52c8160a3ac577f694eb65ec0798b77cd6ac179a5c567dffdc1fb2ba9",
+    "/receipts.js": "df01a313d8f6101bd9601d5a2a65eb420df7791c417a09e2d0d8c269a36742b0",
     # dialogs.js re-pinned for the parity-f7d follow-up: MODEL_SWITCH_COMMANDS
     # gains pi (/switch, omp's own box on the same TUI) and opencode +
     # opencode2 (/models, live-verified on opencode 1.19.5) so the
@@ -152,8 +156,8 @@ EXPECTED_DIGESTS = {
     "/i18n.js": "8bcd2ceb9f56109afaa0ec158e1a6f002799c4a983261b9d58cd38723c06719f",
     # Both i18n re-pinned for parity-f7g S5: the track.* keys (the
     # tracker card's Spanish lines and their English locale ride).
-    "/i18n/en.js": "bee02708cab828f39ca43e60c74a06b6ae483365072ca1687b309e35aac02065",
-    "/i18n/es.js": "785766b0769dd0d08fbf99e70428bea58fc0bb3bddf9f6bc8cebdbd8faf82fdc",
+    "/i18n/en.js": "66934b12738edb92e166f4ede9d6cf2bccf5870a56ca8c18c80ab0c2d25f0246",
+    "/i18n/es.js": "b95eb39f21900c867f6deefd4edde4cd4e0a3473161cf8cd91cd044e23434781",
     "/settings.js": "1c2cf3ed92bf959c19ecde0107618b8d1ff0690d2c6fa7c842a2fdc551e05f72",
     "/updates.js": "7f87250cf6cd9c2b8944da632fe036d0c18a87a90f48f70b84e18bcd338cfa84",
     "/calls.js": "9b9ec591709d282c6e673770b2ffc1ed1562650104d8e8393126d186aa764165",

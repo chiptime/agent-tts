@@ -231,7 +231,7 @@ def test_unreadable_followup_is_unknown():
 # ── per-harness tables ────────────────────────────────────────────────────────
 
 
-def test_steer_is_supported_by_chat_tuis_only():
+def test_steer_is_supported_by_the_chat_tui_family():
     assert steer_supported("claude")
     assert steer_supported("opencode")
     assert steer_supported("codex")
@@ -241,9 +241,12 @@ def test_steer_is_supported_by_chat_tuis_only():
 
 def test_interrupt_recipes_are_esc_for_known_tuis_and_refusal_otherwise():
     assert INTERRUPT_RECIPES
-    for agent in ("claude", "opencode", "codex"):
-        recipe = interrupt_recipe(agent)
-        assert recipe == ("esc",)
+    # claude/codex stay single-esc (live re-verified 2026-11-19);
+    # opencode is the live-verified DOUBLE esc (one esc only arms on
+    # 1.19.5 — its own footer says «esc again to interrupt»).
+    for agent in ("claude", "codex"):
+        assert interrupt_recipe(agent) == ("esc",)
+    assert interrupt_recipe("opencode") == ("esc", "esc")
     assert interrupt_recipe("shell") is None
     assert interrupt_recipe("") is None
 
@@ -473,6 +476,132 @@ def test_steer_harnesses_and_interrupt_table_agree_on_the_chat_tuis():
     # Steering injects into a running turn; the interrupt must reach the
     # same harnesses the steer table names.
     assert STEER_HARNESSES <= set(INTERRUPT_RECIPES)
+
+
+# ── parity-f7e S1: live-verified recipes per harness ─────────────────────────
+#
+# Every recipe below was probed live on 2026-11-19 in throwaway tmux
+# sessions (`tmux new-session -d -s f7e-<name> -x 160 -y 50 -c <mktemp
+# dir>`), driving a harmless long turn ("run the shell command echo
+# $RANDOM, wait one second, and repeat until you have run it N times"
+# or a long pure-generation prompt), sending the candidate key with
+# `tmux send-keys` and proving the turn stopped from `capture-pane`
+# before/after excerpts. The operator's panes were never touched.
+
+
+def test_claude_and_codex_keep_their_single_escape_recipes():
+    """PRESERVE: the two original single-esc rows are unchanged.
+
+    Live re-verified 2026-11-19 on claude 2.1.328 («⎿  Interrupted ·
+    What should Claude do instead?») and codex-cli 0.170.0 («■
+    Conversation interrupted»), each frozen several seconds after one
+    Escape with the composer back.
+    """
+    assert INTERRUPT_RECIPES["claude"] == ("esc",)
+    assert INTERRUPT_RECIPES["codex"] == ("esc",)
+
+
+def test_opencode_takes_the_live_verified_double_escape():
+    """opencode 1.19.5: ONE esc only ARMS the interrupt.
+
+    Probe evidence (2026-11-19, opencode 1.19.5): with a 40-iteration
+    echo loop running, one Escape left the loop streaming (runs 5-9
+    kept printing) while the progress footer switched to «esc again to
+    interrupt»; the SECOND Escape froze it at run 10 (stable 5 s later,
+    run list collapsed). Matches the reference product's verified
+    recipe (ref:web/src/lib/surface/profiles/opencode.json:78,
+    "interrupt": ["Escape", "Escape"]).
+    """
+    assert INTERRUPT_RECIPES["opencode"] == ("esc", "esc")
+
+
+def test_pi_joins_with_the_live_verified_escape():
+    """pi 1.5.2: one Escape aborts the running turn.
+
+    Probe evidence (2026-11-19): counting turn interrupted mid-stream
+    («Operation aborted», counter frozen, «✿ waiting for input» back,
+    stable 7 s later).
+    """
+    assert INTERRUPT_RECIPES["pi"] == ("esc",)
+
+
+def test_antigravity_joins_under_both_of_its_agent_names():
+    """Antigravity CLI 1.5.12: one Escape interrupts the running turn.
+
+    Probe evidence (2026-11-19): generation frozen mid-word («⎿
+    Interrupted · What should Antigravity CLI do instead?», composer
+    back, stable 6 s later). herdr reports the pane as agent "agy"
+    (source herdr:antigravity_cli) while the reference product's
+    contract also accepts "antigravity"
+    (ref:web/src/lib/surface/profiles/agy.json:67), so both names get
+    the recipe — the brain keys on whatever the mux says.
+    """
+    assert INTERRUPT_RECIPES["agy"] == ("esc",)
+    assert INTERRUPT_RECIPES["antigravity"] == ("esc",)
+
+
+def test_reference_verified_escape_harnesses_join_the_table():
+    """Not installed on this host — recipe provenance is the reference
+    product's verified profiles (esc-only rows; same key the live
+    probes above verified for the installed family):
+
+    - kiro:  ref:web/src/lib/surface/profiles/kiro.json:72
+    - muse:  ref:web/src/lib/surface/profiles/muse.json:81
+    - omp:   ref:web/src/lib/surface/profiles/omp.json:263
+    """
+    assert INTERRUPT_RECIPES["kiro"] == ("esc",)
+    assert INTERRUPT_RECIPES["muse"] == ("esc",)
+    assert INTERRUPT_RECIPES["omp"] == ("esc",)
+
+
+def test_ctrl_c_harnesses_stay_refused():
+    """cursor/grok/hermes interrupt with ctrl+c in the reference
+    (ref:profiles/cursor.json, grok.json, hermes.json), but ctrl+c is
+    outside the brain's closed SEND_KEY_ALLOWLIST (herdr.py) and that
+    file is deliberately not widened in this slice — so they keep the
+    honest 422 instead of a recipe that could never be sent."""
+    for agent in ("cursor", "grok", "hermes"):
+        assert interrupt_recipe(agent) is None
+
+
+def test_gemini_stays_unverified_and_refused():
+    """gemini CLI 0.70.0 is installed but stays out: the live probe hit
+    its OAuth wall (no cached auth), and herdr does not know gemini as
+    an agent at all (not in the reference contract's MUX_AGENT_NAMES —
+    a gemini pane reads as shell), so no keyed recipe could reach it."""
+    assert interrupt_recipe("gemini") is None
+
+
+def test_the_steer_table_gains_pi_and_the_reference_verified_rows():
+    """pi steer is LIVE-verified (2026-11-19, pi 1.5.2): text + Enter on
+    a working turn was accepted as a queued steering message («▸
+    Steering: Stop the loop now…» / «❁ queued») and answered the moment
+    the turn ended — the same mid-turn acceptance claude has. kiro,
+    muse and omp ride the reference product's verified profiles
+    (enterWhileRunning "steers": kiro.json:85, muse.json:95,
+    omp.json:280 with steer keys at omp.json:299). agy's steer is NOT
+    added: its mid-turn message was accepted but with unclear
+    semantics, and the reference ships no measured enterWhileRunning
+    for it either."""
+    for agent in ("claude", "opencode", "codex", "pi", "kiro", "muse", "omp"):
+        assert steer_supported(agent)
+    for agent in ("shell", "", "gemini", "agy", "antigravity"):
+        assert not steer_supported(agent)
+
+
+def test_voice_stop_dispatch_uses_the_same_interrupt_table():
+    """S1(3): the voice path (stop_agent) rides stop_pane — the SAME
+    table. Dispatching the tool for a covered harness sends the recipe;
+    for an uncovered one it refuses and touches no keys."""
+    pi_mux = ScriptedMux([_agent(agent="pi", status="working")], screens=["work"])
+    result = _tools(pi_mux).dispatch("stop_agent", {"pane_id": "w1:p2"})
+    assert result.startswith("stop stopped")
+    assert pi_mux.key_calls == [("w1:p2", ["esc"])]
+
+    grok_mux = ScriptedMux([_agent(agent="grok", status="working")], screens=["$ "])
+    result = _tools(grok_mux).dispatch("stop_agent", {"pane_id": "w1:p2"})
+    assert "unsupported_harness" in result
+    assert not grok_mux.key_calls
 
 
 # ── parity-f7g: trackers on the HTTP surface (S1/S4) ──────────────────────────

@@ -14,10 +14,11 @@ The receipt store is bounded and in-memory by design: a receipt is UI
 state for the phone, not a log (the audit trail owns who-did-what).
 
 Also here: the per-harness capability tables the stop/steer routes gate
-on. Chat-TUI harnesses get an ``esc`` interrupt recipe and steer
-support; everything else is refused — sending an interrupt key to a
-harness the brain cannot reason about is exactly the mistake the tables
-exist to prevent.
+on. Harnesses with a live-verified (or reference-product-verified)
+esc-based recipe get interrupt and — where the mid-turn acceptance was
+measured — steer support; everything else is refused — sending an
+interrupt key to a harness the brain cannot reason about is exactly
+the mistake the tables exist to prevent.
 """
 
 from __future__ import annotations
@@ -49,20 +50,58 @@ REFUSED_SEND_STATUSES = frozenset({"blocked"})
 #: tail is the stable part (TUIs may ellipsize the head of a long draft).
 ECHO_TAIL_CHARS = 40
 
-# ── per-harness capability tables (S12 stop/steer) ────────────────────────────
+# ── per-harness capability tables (S12 stop/steer; parity-f7e S1) ──────────────
 #
 # Chat-TUI harnesses queue a message typed while the agent works, and
-# answer Esc as "interrupt the running turn" — both verified behaviors
-# of the claude/codex/opencode family. A harness NOT in a table gets the
-# safe default: refusal for the interrupt (a stray key into an unknown
-# TUI is unguessable), steer refusal likewise.
+# answer Esc as "interrupt the running turn". A harness NOT in a table
+# gets the safe default: refusal for the interrupt (a stray key into an
+# unknown TUI is unguessable), steer refusal likewise.
+#
+# Every recipe below is EVIDENCE-BACKED, never assumed:
+#
+# - Live-verified on this host (2026-11-19, throwaway tmux sessions;
+#   probe excerpts in tests/test_send_receipts.py): claude 2.1.328 and
+#   codex-cli 0.170.0 (one Esc → "⎿  Interrupted" / "■ Conversation
+#   interrupted"), pi 1.5.2 (one Esc → "Operation aborted"), agy
+#   1.5.12 (one Esc → "⎿  Interrupted · What should Antigravity CLI do
+#   instead?") and opencode 1.19.5, where ONE Esc only arms (its footer
+#   says "esc again to interrupt") — the recipe is the DOUBLE Esc that
+#   verifiably froze a running turn.
+# - Reference-product-verified for harnesses not installed here
+#   (provenance: ref:web/src/lib/surface/profiles/<harness>.json):
+#   kiro.json:72, muse.json:81 and omp.json:263 all name ["Escape"].
+#
+# Deliberately still OUT: cursor, grok and hermes interrupt with ctrl+c
+# in the reference (their profiles), but ctrl+c is outside the brain's
+# closed SEND_KEY_ALLOWLIST — a recipe the mux would refuse is worse
+# than the honest 422. gemini (installed) is unverified: its live probe
+# hit the OAuth wall, and herdr reports no "gemini" agent kind anyway.
 
-STEER_HARNESSES = frozenset({"claude", "opencode", "codex"})
+STEER_HARNESSES = frozenset({
+    # Live-verified mid-turn acceptance (typed text is queued/steered,
+    # never refused): the claude/codex/opencode family plus pi (probe
+    # 2026-11-19: "▸ Steering: …" queued, answered at turn end).
+    "claude", "opencode", "codex", "pi",
+    # Reference-verified (enterWhileRunning "steers"): kiro.json:85,
+    # muse.json:95, omp.json:280 (steer keys at omp.json:299).
+    "kiro", "muse", "omp",
+})
 
 INTERRUPT_RECIPES: dict = {
+    # Live-verified 2026-11-19 on this host (versions above).
     "claude": ("esc",),
-    "opencode": ("esc",),
     "codex": ("esc",),
+    "opencode": ("esc", "esc"),
+    "pi": ("esc",),
+    # herdr reports the Antigravity CLI as "agy"; the reference
+    # contract also accepts "antigravity" (ref:agy.json:67).
+    "agy": ("esc",),
+    "antigravity": ("esc",),
+    # Reference-verified (not installed here): kiro.json:72,
+    # muse.json:81, omp.json:263.
+    "kiro": ("esc",),
+    "muse": ("esc",),
+    "omp": ("esc",),
 }
 
 #: Clearing a typed draft: Esc never types a character and never

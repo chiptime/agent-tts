@@ -542,21 +542,30 @@ only), and the spoken confirmation says «enviado» **only** for
 `effective`/`sent`; `unknown` says so out loud.
 
 **Stop** — interrupt a running turn with `POST /pane/stop {pane_id}`.
-The interrupt key comes from a per-harness table (`esc` for the
-claude/codex/opencode-style chat TUIs); a harness outside the table
-is refused with a `422` — the brain will not guess an interrupt into a
-terminal it cannot reason about. In the PWA the Stop button arms with a
+The interrupt key comes from a per-harness table of **verified
+recipes** (see `send_receipts.py`): `esc` ×1 for claude, codex, pi and
+agy/antigravity, `esc` ×2 for opencode (one `esc` only arms on 1.19.5
+— its own footer says "esc again to interrupt"), plus the reference
+product's verified `esc` rows for kiro, muse and omp. A harness
+outside the table is refused with a `422` — the brain will not guess
+an interrupt into a terminal it cannot reason about. Every `/herd`
+entry carries the additive `can_stop`/`can_steer` flags so the PWA
+knows the capability per pane: for a pane that cannot stop, the Stop
+button renders **disabled** with the explanation «Este agente no tiene
+un Stop verificado». In the PWA the Stop button arms with a
 **double tap**: the first tap arms for ~3 s (the button says so), only
 the second tap inside the window sends. **Stop also works by voice**
 («para al agente» / «stop»): the `stop_agent` tool is advertised to the
 model as a **gated** action — the spoken path proposes the SAME approval
 gate a send uses (never bypassing the verbal binding), and the user's
 confirmation executes the frozen interrupt through the approve replay.
+Voice and button read the SAME per-harness table.
 
 **Steer** — inject a message into a RUNNING turn with
 `POST /pane/reply` plus `steer: true`. Accepted only for harnesses the
-steer table names (the chat TUIs that queue a mid-turn message);
-anything else is a `422` with the alternative spelled out. The PWA
+steer table names (claude, opencode, codex, pi — live-verified mid-turn
+acceptance — plus the reference-verified kiro, muse, omp); anything
+else is a `422` with the alternative spelled out. The PWA
 exposes steer **only** as a deliberate secondary action — press and
 hold Enviar (~0.6 s); a normal tap never steers — and there is no
 visible steer control.

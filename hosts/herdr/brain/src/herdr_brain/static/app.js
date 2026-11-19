@@ -2315,7 +2315,26 @@
       hideReceipt();
       lastReplyTarget = replyTarget;
     }
-    if (paneStopBtn) paneStopBtn.classList.toggle("hidden", !replyTarget);
+    if (paneStopBtn) {
+      paneStopBtn.classList.toggle("hidden", !replyTarget);
+      /* Stop capability (parity-f7e S1(2)): the pane's own /herd row
+       * carries can_stop (same table the server gates on). A harness
+       * without a verified interrupt recipe gets the DISABLED button
+       * with the Spanish explanation; unknown capability (older
+       * payload) keeps the legacy enabled button and lets the
+       * server's 422 toast explain. */
+      var stopRow = replyTarget ? herdEntry(replyTarget) : null;
+      var stopModel = window.Receipts
+        ? window.Receipts.stopButtonModel(stopRow ? stopRow.can_stop : undefined)
+        : null;
+      if (stopModel) {
+        paneStopBtn.disabled = stopModel.disabled;
+        if (stopModel.title) paneStopBtn.setAttribute("title", stopModel.title);
+        else paneStopBtn.removeAttribute("title");
+        if (stopModel.ariaLabel) paneStopBtn.setAttribute("aria-label", stopModel.ariaLabel);
+        else paneStopBtn.removeAttribute("aria-label");
+      }
+    }
 
     /* The tracker card follows the VIEWED pane (parity-f7g S5): a pane
      * switch repaints that pane's own tracker — or hides the card when

@@ -79,6 +79,7 @@
     "receipt.submit": "Enviar ahora",
     "stop.fail": "No se pudo detener: {detail}",
     "stop.fail_offline": "No se pudo detener: sin conexión con el brain",
+    "stop.unverified": "Este agente no tiene un Stop verificado",
 
     /* ---- brain message (S13) ---- */
     "msg.button": "✉ Mensaje",

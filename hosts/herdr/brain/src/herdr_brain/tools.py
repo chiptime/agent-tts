@@ -588,6 +588,8 @@ class BrainTools:
         UI can keep those panes out of its "recent" bucket. ``last_turn``
         keeps its exact shape (the sibling carries the time). ``now`` is
         injectable for deterministic tests; production uses UTC.
+        ``can_stop``/``can_steer`` (parity-f7e S1(2)) are additive
+        capability flags from the send_receipts tables.
         """
         try:
             agents = self._herdr.list_agents()
@@ -631,6 +633,13 @@ class BrainTools:
                         else turn_age_seconds(turn.created_at, moment)
                     ),
                     "agent_error": self._agent_error(agent),
+                    # Additive (parity-f7e S1(2)): the SAME per-harness
+                    # tables the stop route and the voice interrupt gate
+                    # on, surfaced per pane so the PWA can explain why
+                    # Stop is unavailable instead of arming a button
+                    # that can only answer 422.
+                    "can_stop": interrupt_recipe(agent.agent) is not None,
+                    "can_steer": steer_supported(agent.agent),
                 }
             )
         # Declared triage ranking (doc 05): blocked first, unknown last.
