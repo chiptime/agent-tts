@@ -452,6 +452,7 @@ _VERSIONED_REFS = (
     ('src="/calls.js"', 'src="/calls.js?v={v}"'),
     ('src="/dialogs.js"', 'src="/dialogs.js?v={v}"'),
     ('src="/receipts.js"', 'src="/receipts.js?v={v}"'),
+    ('src="/send-track.js"', 'src="/send-track.js?v={v}"'),
     ('src="/reader.js"', 'src="/reader.js?v={v}"'),
     ('src="/toast.js"', 'src="/toast.js?v={v}"'),
     ('src="/push.js"', 'src="/push.js?v={v}"'),
@@ -1770,6 +1771,13 @@ def create_app(
     def receipts_js() -> FileResponse:
         return FileResponse(
             STATIC_DIR / "receipts.js", media_type="text/javascript",
+            headers=dict(_NO_CACHE_HEADERS),
+        )
+
+    @app.get("/send-track.js", include_in_schema=False)
+    def send_track_js() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "send-track.js", media_type="text/javascript",
             headers=dict(_NO_CACHE_HEADERS),
         )
 
