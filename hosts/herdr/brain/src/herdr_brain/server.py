@@ -2133,17 +2133,28 @@ def create_app(
             return local
 
     @app.get("/view")
-    def view(pane_id: Optional[str] = None) -> dict:
+    def view(pane_id: Optional[str] = None, modal: int = 0) -> dict:
         """Superset of /state for one pane (default: focused).
 
         A remote crew pane (``<host>:<pane>``) proxies to its owner's
         ``/crew/v1/view``; an unknown host prefix is a 422, never a
-        local fallback."""
+        local fallback.
+
+        ``modal=1`` (the PWA model-switch flow) is an additive read
+        flag: the structured dialog recognition runs REGARDLESS of pane
+        status — a USER-opened model picker leaves the pane ``idle`` —
+        and its read is the full window. Same route, same auth; absent
+        the flag the payload is byte-identical to the legacy contract.
+        """
         peer = crew_remote_peer(pane_id)
         if peer is not None:
             _, rest = split_pane_id(pane_id or "")
             return crew_call(peer, lambda client: client.view(rest))
         try:
+            if modal:
+                # The flag is additive: legacy calls pass one argument
+                # exactly as before.
+                return tools.agent_view(pane_id, modal=True)
             return tools.agent_view(pane_id)
         except Exception:  # noqa: BLE001 — the view endpoint never 500s
             # No `structured` key here: a recognizer's claim is the only

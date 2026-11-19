@@ -90,14 +90,17 @@ EXPECTED_DIGESTS = {
     # The spaces ride the same /session/roots OPEN fetch, so boot-time
     # traffic is unchanged.
     "/": "330ba355720a0ac8409ba76039b7955b6fba57838fa2a54d885ba0dad65c85da",
-    "/app.js": "571fd52ba4b9d4bb707290355427bfb21848846ea076076e31967b738ee71a98",
+    "/app.js": "7eeace4a711ab6c1de300a5e10cec629f6df43afc995c4a02647673a122f38a0",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "ca7b22c52c8160a3ac577f694eb65ec0798b77cd6ac179a5c567dffdc1fb2ba9",
     # dialogs.js re-pinned for the parity-f7d follow-up: MODEL_SWITCH_COMMANDS
     # gains pi (/switch, omp's own box on the same TUI) and opencode +
     # opencode2 (/models, live-verified on opencode 1.19.5) so the
-    # "Cambiar modelo" affordance reaches those panes too.
-    "/dialogs.js": "9e35018414d7fe146040b81f3cd01f846b4deced20c28c6af742f2c79e333a68",
+    # "Cambiar modelo" affordance reaches those panes too. Re-pinned
+    # again for the modal poll (F7d fix): createModelSwitchPoller +
+    # modalViewUrl here, the /view?modal=1 watch and the held picker
+    # card in app.js.
+    "/dialogs.js": "35696670a5643d160cba2ab4160e5a997111c0e2a58d7a5d84c7c50925da70ab",
     "/herd-group.js": "de284c825e3c99aef07db2dd53198484ec8b7ceba94dd97dbbae0303560df399",
     "/toast.js": "cbccb72b22530ff8f83250bebd8d498ca20977db9536aa094aa759bb9632357e",
     "/reader.js": "b99edccdba5adb1c407ebc3064f7045214c0152677a1da2cfa2c388393792989",

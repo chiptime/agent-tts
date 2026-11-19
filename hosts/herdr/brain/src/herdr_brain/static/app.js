@@ -836,6 +836,9 @@
     if (!convSheetOpen) return;
     convSheetOpen = false;
     setConvSheet(false);
+    /* F7d fix: closing the sheet retires the modal watch — the user
+     * walked away from the flow that started it. */
+    if (modelSwitchPoll) modelSwitchPoll.cancel();
     if (history.state && history.state.herdrConvSheet) history.back();  // pop our entry; popstate no-ops
     try { panePicker.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
   }
@@ -2269,7 +2272,22 @@
     for (i = 0; i < blocked.length; i++) {
       if (blocked[i].pane_id === viewed) { viewedBlocked = true; break; }
     }
-    var replyTarget = viewed && !viewedBlocked ? viewed : null;
+    /* Model-switch modal card (F7d fix): a USER-opened picker leaves
+     * the pane idle, so its card renders from the HELD modal payload
+     * (the /view?modal=1 poll's structured read) exactly as a blocked
+     * pane's renders from its own live payload. The hold is dropped
+     * the moment the pane blocks — its live payloads own the card
+     * again — or when an answer consumed the picker (below). */
+    if (modalCard && viewed === modalCard.pane &&
+        (viewedBlocked || (view && view.structured))) {
+      modalCard = null;
+    }
+    var modalHeld = !viewedBlocked && modalCard && modalCard.pane === viewed
+      ? modalCard : null;
+    /* The picker owns the keyboard while it is open (a typed reply
+     * would land in its Search box), so the held card gets the blocked
+     * shape: keypad instead of the composer. */
+    var replyTarget = viewed && !viewedBlocked && !modalHeld ? viewed : null;
     if (replyTarget && replyForm.getAttribute("data-pane") !== replyTarget) {
       replyInput.value = "";
     }
@@ -2297,7 +2315,7 @@
     var msgSession = (view && view.status && view.status.session_id) || null;
     updateMsgTarget(viewed && msgSession ? { pane: viewed, session: msgSession } : null);
 
-    var keysTarget = viewed && viewedBlocked ? viewed : null;
+    var keysTarget = viewed && (viewedBlocked || modalHeld) ? viewed : null;
     /* A NEW dialog (different pane, or the pad reappearing) starts from the
      * neutral hint; the acknowledgement of the last key must survive polls. */
     if (keysTarget !== lastKeysTarget) {
@@ -2307,7 +2325,14 @@
     if (keysTarget) replyKeys.setAttribute("data-pane", keysTarget);
     else replyKeys.removeAttribute("data-pane");
     replyKeys.classList.toggle("hidden", !keysTarget);
-    paintDialogPreview(keysTarget ? view : null);
+    /* The paint input: the live payload when it carries the dialog
+     * (every blocked render), else the held modal payload for the
+     * picker on an idle pane. */
+    var paintView = view;
+    if (!viewedBlocked && modalHeld && !(view && view.structured)) {
+      paintView = modalHeld.payload;
+    }
+    paintDialogPreview(keysTarget ? paintView : null);
     refreshPermission(viewed && viewedBlocked ? viewed : null);
   }
 
@@ -3346,6 +3371,9 @@
           var answered = result.body && result.body.option != null
             ? result.body.option : index;
           setDialogStatus(window.Dialogs.statusFor({ ok: true, option: answered }, labels));
+          /* F7d fix: a verified answer consumed the picker — the held
+           * modal card must not outlive it. */
+          dropModalCard(paneId);
           /* The dialog usually closes or advances here: refresh now
            * instead of waiting a whole poll beat. */
           refreshState();
@@ -3411,6 +3439,9 @@
       .then(function (result) {
         if (result.ok) {
           setDialogStatus(window.Dialogs.statusFor({ ok: true }, labels));
+          /* F7d fix: a verified answer consumed the picker — the held
+           * modal card must not outlive it. */
+          dropModalCard(paneId);
           /* The dialog usually closes or advances here: refresh now
            * instead of waiting a whole poll beat. */
           refreshState();
@@ -3584,6 +3615,9 @@
         if (result.ok) {
           closeFreeTextEditor();
           setDialogStatus(window.Dialogs.statusFor({ ok: true, option: index }, labelsOfCurrentDialog()));
+          /* F7d fix: a verified answer consumed the picker — the held
+           * modal card must not outlive it. */
+          dropModalCard(paneId);
           /* The dialog usually closes or advances here: refresh now
            * instead of waiting a whole poll beat. */
           refreshState();
@@ -8216,7 +8250,12 @@
    * table the server gates voice switches on). The tap sends that
    * command through the plain reply path — the user's own keyboard
    * surface, no gate — and the picker card appears by itself when the
-   * pane blocks on it; answering stays the guarded dialog path. */
+   * pane blocks on it; answering stays the guarded dialog path.
+   * F7d fix: harnesses whose picker leaves the pane IDLE (opencode's
+   * floating modal) never block, so the card would never appear. The
+   * modal poll below watches /view?pane_id=…&modal=1 — the structured
+   * read regardless of status — and holds the payload so the card
+   * renders exactly like the blocked-path card. */
   var convModelBtn = document.createElement("button");
   convModelBtn.type = "button";
   convModelBtn.id = "conv-model";
@@ -8231,6 +8270,39 @@
     convNewBtn.parentNode.style.display = "grid";
     convNewBtn.parentNode.style.gap = "8px";
   }
+
+  /* The HELD modal payload (F7d fix): renderPending paints the picker
+   * card from it for as long as the pane stays idle with the picker
+   * open. One hold at a time; dropped on block, on a consumed answer
+   * or when another pane takes the view. */
+  var modalCard = null;
+
+  function dropModalCard(paneId) {
+    if (modalCard && (!paneId || modalCard.pane === paneId)) modalCard = null;
+  }
+
+  var modelSwitchPoll = window.Dialogs && window.Dialogs.createModelSwitchPoller
+    ? window.Dialogs.createModelSwitchPoller({
+        fetchView: function (paneId) {
+          return readFetch(window.Dialogs.modalViewUrl(paneId))
+            .then(function (resp) {
+              if (!resp.ok) throw new Error("HTTP " + resp.status);
+              return resp.json();
+            });
+        },
+        onStructured: function (payload) {
+          var paneId = payload && payload.status && payload.status.pane_id;
+          if (!paneId || !payload.structured) return;
+          modalCard = { pane: paneId, payload: payload };
+          /* Paint now instead of waiting a poll beat: the picker is on
+           * screen, the pane idle. */
+          renderPending(lastView);
+        },
+        onNone: function () {
+          showToast(window.Dialogs.modelSwitchNoneToast(), 4000);
+        },
+      })
+    : null;
 
   function refreshModelSwitchOffer() {
     if (!convModelBtn || !convModelBtn.parentNode) return;
@@ -8261,6 +8333,9 @@
     })).then(function (resp) {
       if (resp.ok) {
         showToast(window.Dialogs.modelSwitchOpenedToast(agentDisplayName(entry)), 4000);
+        /* F7d fix: the pane may stay idle with the picker open —
+         * watch the modal read until the structured card appears. */
+        if (modelSwitchPoll) modelSwitchPoll.start(paneId);
         return null;
       }
       maybeOfferPairing(resp);

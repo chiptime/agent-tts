@@ -794,12 +794,23 @@ class BrainTools:
         return mirror_payload(target.pane_id, target.agent, target.status, styled)
 
 
-    def agent_view(self, pane_id: Optional[str] = None) -> dict:
+    def agent_view(
+        self, pane_id: Optional[str] = None, modal: bool = False
+    ) -> dict:
         """Composes everything GET /view needs, never raising.
 
         Superset of the status payload: recent transcript turns, the visible
         screen tail, and the heuristic pending-action detection — all for the
         requested pane (default: focused).
+
+        ``modal`` (GET /view?modal=1, the PWA model-switch flow) runs the
+        dialog recognition REGARDLESS of pane status: a USER-opened model
+        picker leaves the pane ``idle``, so the status gate alone would
+        never read it. The recognition read also widens to the full
+        window (``SCREEN_FULL_LINES``), because the picker floats
+        mid-screen and its title/Search rows fall outside the 30-line
+        dialog window. Without the flag the payload is byte-identical
+        to the pre-modal contract.
         """
         target = self.resolve_target(pane_id)
 
@@ -822,11 +833,16 @@ class BrainTools:
         # only as colour/attribute, and the plain-text screen throws it away.
         # Faithful, never interpretive — it reproduces what the terminal
         # rendered and decides nothing about what a key would do.
+        # The modal read (a USER-opened picker on an otherwise idle pane)
+        # enters the same discipline from any status, at full window.
         screen_runs: Optional[list] = None
         dialog = None
         structured = None
-        if target is not None and (target.status or "").strip().lower() == "blocked":
-            raw_runs, wide_text = self._dialog_runs(target)
+        blocked = (target.status or "").strip().lower() == "blocked" if target else False
+        if target is not None and (blocked or modal):
+            raw_runs, wide_text = self._dialog_runs(
+                target, SCREEN_FULL_LINES if modal else DIALOG_SCREEN_LINES
+            )
             screen_runs = mask_runs(raw_runs) if raw_runs else raw_runs
             # Parse from the WIDE read: the plain screen tail is only 12
             # lines and a tall question tool does not fit in it, so the
@@ -893,13 +909,17 @@ class BrainTools:
 
     # -- spoken terminal dialogs (S8/S9) ------------------------------------
 
-    def _dialog_runs(self, target: AgentInfo) -> tuple[Optional[list], Optional[str]]:
-        """The blocked pane's styled read, as ANSI runs plus flat text.
+    def _dialog_runs(
+        self, target: AgentInfo, lines: int = DIALOG_SCREEN_LINES
+    ) -> tuple[Optional[list], Optional[str]]:
+        """The pane's styled read, as ANSI runs plus flat text.
 
         Shared by the /view payload and the voice dialog path so both
-        parse the SAME wide, escape-stripped screen.
+        parse the SAME wide, escape-stripped screen. ``lines`` widens
+        the window for the modal /view read (a floating picker's title
+        rows sit mid-screen, outside the 30-line dialog tail).
         """
-        styled = self.screen_tail(target, DIALOG_SCREEN_LINES, as_ansi=True)
+        styled = self.screen_tail(target, lines, as_ansi=True)
         if not styled:
             return None, None
         runs = ansi_runs(styled)

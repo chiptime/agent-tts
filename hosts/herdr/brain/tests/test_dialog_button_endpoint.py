@@ -28,6 +28,7 @@ import herdr_brain.server as server_module
 from herdr_brain.config import Settings
 from herdr_brain.dialogs import recognize
 from herdr_brain.herdr import AgentInfo
+from herdr_brain.tools import SCREEN_FULL_LINES
 
 FIXTURES = Path(__file__).parent / "fixtures" / "dialogs"
 
@@ -385,6 +386,86 @@ class TestStructuredInView:
         body = client.get("/view", params={"pane_id": "w1:p3"}).json()
 
         assert "structured" not in body
+
+
+IDLE_OPENCODE = AgentInfo(**{**BLOCKED_OPENCODE.__dict__, "status": "idle"})
+
+
+class ModalTailStub(DialogTapStub):
+    """Reader double that serves only the LAST ``n_lines`` of the
+    screen, like a real tail read. The opencode picker modal floats
+    mid-screen, so a 30-line tail cuts its title/Search rows and the
+    strict detector refuses; a full-window read sees them."""
+
+    def __init__(self, agents, screen):
+        super().__init__(agents, screen)
+        self.requested_lines: list = []
+
+    def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+        if n_lines:
+            self.requested_lines.append(n_lines)
+        lines = self._screen.splitlines()
+        if n_lines and n_lines > 0:
+            lines = lines[-n_lines:]
+        return "\n".join(lines)
+
+
+class TestModalView:
+    """GET /view?modal=1 — the PWA model-switch flow (F7d fix).
+
+    A USER-opened opencode ``/models`` picker leaves the pane ``idle``,
+    so the status-gated /view never carries it. The flag runs the
+    structured recognition REGARDLESS of status, reading the FULL
+    window (the floating modal's title rows sit outside the 30-line
+    dialog window). Without the flag the payload keeps the exact
+    legacy shape."""
+
+    def test_modal_view_recognizes_the_idle_panes_picker(self, make_client):
+        stub = ModalTailStub([IDLE_OPENCODE], OPENCODE_PICKER)
+        client, _ = make_client([IDLE_OPENCODE], OPENCODE_PICKER, stub=stub)
+
+        body = client.get(
+            "/view", params={"pane_id": "w1:p3", "modal": 1}
+        ).json()
+
+        assert body["structured"]["kind"] == "model_picker"
+        assert body["structured"]["agent"] == "opencode"
+        assert body["structured"]["options"], "the picker rows ride along"
+        # The recognition read is the FULL window: the fixture's 33
+        # lines put the title/Search rows outside a 30-line tail.
+        assert SCREEN_FULL_LINES in stub.requested_lines
+
+    def test_plain_view_on_the_same_idle_pane_keeps_the_legacy_shape(
+        self, make_client
+    ):
+        stub = ModalTailStub([IDLE_OPENCODE], OPENCODE_PICKER)
+        client, _ = make_client([IDLE_OPENCODE], OPENCODE_PICKER, stub=stub)
+
+        body = client.get("/view", params={"pane_id": "w1:p3"}).json()
+
+        assert "structured" not in body
+        assert sorted(body) == [
+            "dialog", "pending", "screen", "screen_runs", "status", "transcript",
+        ]
+        # Idle without the flag: only the plain 12-line screen tail was
+        # read — no 30-line dialog read, no 120-line modal read.
+        from herdr_brain.tools import DIALOG_SCREEN_LINES
+
+        assert DIALOG_SCREEN_LINES not in stub.requested_lines
+        assert SCREEN_FULL_LINES not in stub.requested_lines
+
+    def test_modal_view_also_reads_a_blocked_pane_at_full_window(
+        self, make_client
+    ):
+        stub = ModalTailStub([BLOCKED_OPENCODE], OPENCODE_PICKER)
+        client, _ = make_client([BLOCKED_OPENCODE], OPENCODE_PICKER, stub=stub)
+
+        body = client.get(
+            "/view", params={"pane_id": "w1:p3", "modal": 1}
+        ).json()
+
+        assert body["structured"]["kind"] == "model_picker"
+        assert SCREEN_FULL_LINES in stub.requested_lines
 
 
 class TestWalkRecipe:

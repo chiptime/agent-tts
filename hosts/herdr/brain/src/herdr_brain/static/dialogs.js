@@ -663,6 +663,99 @@
     );
   }
 
+  /* The modal /view read (F7d fix): the poll URL the model-switch
+   * flow drives. `modal=1` asks the server to recognize the dialog
+   * REGARDLESS of pane status — a USER-opened opencode picker leaves
+   * the pane idle — reading the full window. */
+  function modalViewUrl(paneId) {
+    return "/view?pane_id=" + encodeURIComponent(paneId) + "&modal=1";
+  }
+
+  var MODEL_SWITCH_POLL_INTERVAL_MS = 700;
+  var MODEL_SWITCH_POLL_TIMEOUT_MS = 10000;
+
+  /* The model-switch poll, as a pure machine (F7d fix): after the
+   * "Cambiar modelo" tap sends the harness's picker command, the PWA
+   * polls /view?pane_id=…&modal=1 until a structured dialog appears.
+   * Timers and the fetch are injected, so the three exits are exact:
+   * the FIRST structured payload renders (onStructured) and stops the
+   * poll; a budget of payloads with no dialog ends in onNone (the
+   * none-toast) and stops; cancel() (the sheet closed) stops with no
+   * callback at all. A failed fetch counts as no-dialog — a transport
+   * hiccup must not eat the budget's purpose. Bounded: at most
+   * ceil(timeout/interval) fetches, one timer alive at any time. */
+  function createModelSwitchPoller(deps) {
+    var opts = deps || {};
+    var fetchView = opts.fetchView;
+    var onStructured = opts.onStructured || function () {};
+    var onNone = opts.onNone || function () {};
+    var intervalMs = opts.intervalMs || MODEL_SWITCH_POLL_INTERVAL_MS;
+    var timeoutMs = opts.timeoutMs || MODEL_SWITCH_POLL_TIMEOUT_MS;
+    var setTimeoutFn = opts.setTimeoutFn || function (fn, ms) {
+      return setTimeout(fn, ms);
+    };
+    var clearTimeoutFn = opts.clearTimeoutFn || clearTimeout;
+    var timer = null;
+    var pane = null;
+    var ticksLeft = 0;
+
+    function stopped() {
+      return pane === null;
+    }
+
+    function schedule() {
+      timer = setTimeoutFn(poll, intervalMs);
+    }
+
+    function poll() {
+      timer = null;
+      if (stopped()) return;
+      fetchView(pane).then(function (payload) {
+        settle(payload && payload.structured ? payload : null);
+      }, function () {
+        settle(null);
+      });
+    }
+
+    function settle(structuredPayload) {
+      if (stopped()) return;
+      if (structuredPayload) {
+        var done = pane;
+        stop();
+        onStructured(structuredPayload, done);
+        return;
+      }
+      ticksLeft -= 1;
+      if (ticksLeft <= 0) {
+        stop();
+        onNone();
+        return;
+      }
+      schedule();
+    }
+
+    function stop() {
+      if (timer !== null) clearTimeoutFn(timer);
+      timer = null;
+      pane = null;
+      ticksLeft = 0;
+    }
+
+    return {
+      start: function (paneId) {
+        if (!paneId) return;
+        stop();
+        pane = paneId;
+        ticksLeft = Math.max(1, Math.ceil(timeoutMs / intervalMs));
+        schedule();
+      },
+      cancel: stop,
+      active: function () {
+        return pane !== null;
+      },
+    };
+  }
+
   var api = {
     buttonsFor: buttonsFor,
     unreadCard: unreadCard,
@@ -694,6 +787,8 @@
     modelSwitchPayload: modelSwitchPayload,
     modelSwitchOpenedToast: modelSwitchOpenedToast,
     modelSwitchNoneToast: modelSwitchNoneToast,
+    modalViewUrl: modalViewUrl,
+    createModelSwitchPoller: createModelSwitchPoller,
   };
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
