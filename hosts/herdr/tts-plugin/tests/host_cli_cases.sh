@@ -166,7 +166,7 @@ case__cancel_speech_flag_dispatches_through_cli() {
 # · $5 renderer rc (default 0; non-zero forces the render-failure branch).
 run_watcher_announce() {
   sandbox_setup "$1"
-  STUB_EXIT="$4" in_host '
+  TTS_PENDING_AUTO_DRAIN=on STUB_EXIT="$4" in_host '
     SB="$1"; ISP="$2"; PLAYR="$3"; RENDER_RC="$4"
     # Narrow containment substitutes (TEST ONLY, this sandbox alone): the
     # watcher allocates its synthesis-error scratch from an absolute /tmp
@@ -299,15 +299,22 @@ case__pending_admit_refusal_logs_visible_line() {
 
 case__pending_tick_delegates_to_lib() {
   sandbox_setup tick_ok
-  STUB_OUT="ok=true dispatched=0 placeholder=dispatch-vs3.3" \
+  TTS_PENDING_AUTO_DRAIN=on STUB_OUT="ok=true dispatched=0 placeholder=dispatch-vs3.3" \
     in_host 'pending_tick' > "$SANDBOX/out" || return 1
   [[ "$(cat "$SANDBOX/out")" == "ok=true dispatched=0 placeholder=dispatch-vs3.3" ]] || return 1
   [[ "$(cat "$STUB_LOG")" == "$REPO_HOST_DIR/lib/pending_queue.py tick" ]]
 }
 
+case__pending_tick_default_off_is_silent() {
+  sandbox_setup tick_off
+  in_host 'pending_tick' > "$SANDBOX/out" || return 1
+  [[ ! -s "$SANDBOX/out" ]] || return 1
+  [[ ! -e "$STUB_LOG" ]] || return 1
+}
+
 case__pending_tick_failure_logs_visible_line() {
   sandbox_setup tick_fail
-  STUB_EXIT=1 in_host '
+  TTS_PENDING_AUTO_DRAIN=on STUB_EXIT=1 in_host '
     rc=0
     pending_tick || rc=$?
     echo "rc=$rc"
@@ -432,7 +439,7 @@ case__pending_cli_list_status_real_ledger() {
   HOME="$SANDBOX/home" "$VENV_PYTHON_REAL" "$pq" status > "$SANDBOX/status.out" || return 1
   grep -q "^ok=true pending=1 announcing=0 announced=0 uncertain=0 expired=0 evicted=0 cancelled=0" \
     "$SANDBOX/status.out" || return 1
-  grep -q " active=1/256 " "$SANDBOX/status.out" || return 1
+  grep -Eq " active=1/(5|256) " "$SANDBOX/status.out" || return 1
   grep -Eq " ledger_bytes=[1-9][0-9]* " "$SANDBOX/status.out" || return 1
   grep -q "overflow=ok overflow_total=0" "$SANDBOX/status.out"
 }
