@@ -23,7 +23,7 @@ from fastapi.testclient import TestClient
 import herdr_brain.server as server_module
 from herdr_brain import access, pairing
 from herdr_brain.config import Settings
-from herdr_brain.herdr import AgentInfo, WorkspaceInfo
+from herdr_brain.herdr import AgentInfo, HerdrError, PaneInfo, WorkspaceInfo
 from herdr_brain.launch_receipts import (
     LAUNCH_RECEIPTS_FILENAME,
     LAUNCH_RECEIPT_TTL_S,
@@ -40,6 +40,25 @@ from tests.conftest import SETTINGS_KWARGS
 # ── the stubbed tools double (hermetic: never a real herdr) ───────────
 
 
+class PaneListStub:
+    """HerdrClient double for the T5b pane-list seam (route tests).
+
+    Counts its calls so a test can pin "ONE pane-list call served ALL
+    workspaces". Raises the scripted error instead of answering when
+    one is set (the HerdrError → agent-pane fallback path)."""
+
+    def __init__(self, panes=(), error: Exception | None = None):
+        self.panes = list(panes)
+        self.error = error
+        self.calls = 0
+
+    def list_panes(self):
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        return list(self.panes)
+
+
 class SessionTools:
     """BrainTools double: ``create_session``/``resume_session`` recorded,
     herd scripted.
@@ -48,12 +67,27 @@ class SessionTools:
     extraction runs the same code path production does. ``dispatch``
     mirrors the replay seam the approve path rides."""
 
-    def __init__(self, cfg=None, herd_entries=(), workspaces=()):
+    def __init__(
+        self,
+        cfg=None,
+        herd_entries=(),
+        workspaces=(),
+        panes=(),
+        pane_error=None,
+    ):
         self.calls: list[dict] = []
         self.resume_calls: list[dict] = []
         self.dispatches: list[dict] = []
         self.herd_entries = list(herd_entries)
         self.workspaces = list(workspaces)
+        # T5b: the pane-list seam mirrors production's chain — the
+        # client behind the mux, reached as ``tools._herdr``. Unset by
+        # default: the existing T5 fixtures ride the agent-pane
+        # fallback exactly as before.
+        self.pane_client = None
+        if panes or pane_error is not None:
+            self.pane_client = PaneListStub(panes=panes, error=pane_error)
+        self._herdr = self.pane_client
         self.create_result = (
             "Panel creado: tab=t-1 pane=w3:p1 agente=x (claude). Tarea entregada."
         )
@@ -135,9 +169,14 @@ def make_client(
     with_roots: bool = True,
     extra_herd: list[dict] | None = None,
     workspaces: list | None = None,
+    panes: list | None = None,
+    pane_error: Exception | None = None,
 ) -> tuple[TestClient, SessionTools]:
     tools = tools or SessionTools(
-        herd_entries=extra_herd or [], workspaces=workspaces or []
+        herd_entries=extra_herd or [],
+        workspaces=workspaces or [],
+        panes=panes or [],
+        pane_error=pane_error,
     )
     monkeypatch.setattr(server_module, "BrainTools", lambda cfg: tools)
     cfg_dir = tmp_path / "operator"
@@ -1406,6 +1445,126 @@ class TestSessionRootsSpaces:
         body = client.get("/session/roots").json()
         assert body["spaces"] == []
         assert body["roots"]
+
+
+class TestSessionRootsPaneDerivedCwds:
+    """T5b (L11 follow-up): space cwds come from ``herdr pane list``.
+
+    Every pane carries a cwd — agent or not — so a workspace with NO
+    running agent still resolves its folder and becomes pickable; the
+    T5 agent-pane derivation stays as the failure fallback."""
+
+    def test_a_workspace_with_no_agent_pane_resolves_its_plain_pane_cwd(
+        self, tmp_path, monkeypatch
+    ):
+        # The L11 gap: w9 has no agent pane anywhere (empty herd), yet
+        # its one plain shell pane pins the folder.
+        root = tmp_path / "work"
+        plain = root / "plain"
+        plain.mkdir(parents=True)
+        panes = [PaneInfo(pane_id="w9:p1", cwd=str(plain), focused=False)]
+        client, tools = make_client(
+            tmp_path, monkeypatch, extra_herd=[], workspaces=SPACES, panes=panes
+        )
+        spaces = client.get("/session/roots").json()["spaces"]
+        assert spaces == [
+            {
+                "workspace_id": "w1", "label": "main",
+                "cwd": None, "inside_roots": False, "focused": True,
+            },
+            {
+                "workspace_id": "w9", "label": "vacía",
+                "cwd": str(plain.resolve()), "inside_roots": True,
+                "focused": False,
+            },
+        ]
+        # ONE pane-list call served BOTH workspaces — never per space.
+        assert tools.pane_client.calls == 1
+
+    def test_the_focused_pane_wins_the_pane_derivation(self, tmp_path, monkeypatch):
+        root = tmp_path / "work"
+        first_dir = root / "first"
+        focused_dir = root / "focused"
+        first_dir.mkdir(parents=True)
+        focused_dir.mkdir(parents=True)
+        panes = [
+            PaneInfo(pane_id="w1:p1", cwd=str(first_dir), focused=False),
+            PaneInfo(pane_id="w1:p2", cwd=str(focused_dir), focused=True),
+        ]
+        client, _ = make_client(
+            tmp_path, monkeypatch, workspaces=SPACES, panes=panes
+        )
+        spaces = client.get("/session/roots").json()["spaces"]
+        assert spaces[0]["cwd"] == str(focused_dir.resolve())
+
+    def test_without_a_focused_pane_the_first_listed_pane_wins(
+        self, tmp_path, monkeypatch
+    ):
+        root = tmp_path / "work"
+        first_dir = root / "first"
+        second_dir = root / "second"
+        first_dir.mkdir(parents=True)
+        second_dir.mkdir(parents=True)
+        panes = [
+            PaneInfo(pane_id="w1:p1", cwd=str(first_dir), focused=False),
+            PaneInfo(pane_id="w1:p2", cwd=str(second_dir), focused=False),
+        ]
+        client, _ = make_client(
+            tmp_path, monkeypatch, workspaces=SPACES, panes=panes
+        )
+        spaces = client.get("/session/roots").json()["spaces"]
+        assert spaces[0]["cwd"] == str(first_dir.resolve())
+
+    def test_a_pane_list_failure_falls_back_to_the_agent_pane_derivation(
+        self, tmp_path, monkeypatch
+    ):
+        # HerdrError on `pane list`: the sheet answers with the T5
+        # agent-pane ranking, never an error of its own.
+        root = tmp_path / "work"
+        agent_cwd = root / "agent"
+        agent_cwd.mkdir(parents=True)
+        herd = [
+            {"pane_id": "w1:p1", "cwd": str(agent_cwd),
+             "last_turn_age_s": 3.0, "focused": False},
+        ]
+        client, _ = make_client(
+            tmp_path, monkeypatch, extra_herd=herd, workspaces=SPACES,
+            pane_error=HerdrError("pane list boom"),
+        )
+        spaces = client.get("/session/roots").json()["spaces"]
+        assert spaces[0]["cwd"] == str(agent_cwd.resolve())
+
+    def test_pane_prefixes_match_their_own_workspace_only(
+        self, tmp_path, monkeypatch
+    ):
+        root = tmp_path / "work"
+        w1_cwd = root / "one"
+        w1_cwd.mkdir(parents=True)
+        panes = [
+            # w1's pane; w11 must NOT adopt it ("w1" is not "w11").
+            PaneInfo(pane_id="w1:p1", cwd=str(w1_cwd), focused=False),
+        ]
+        w11 = WorkspaceInfo(workspace_id="w11", label="once", number=1, focused=False)
+        client, _ = make_client(
+            tmp_path, monkeypatch, workspaces=[w11], panes=panes
+        )
+        spaces = client.get("/session/roots").json()["spaces"]
+        assert spaces == [{
+            "workspace_id": "w11", "label": "once", "cwd": None,
+            "inside_roots": False, "focused": False,
+        }]
+
+    def test_no_workspaces_skips_the_pane_listing_entirely(
+        self, tmp_path, monkeypatch
+    ):
+        # Nothing to decorate: the route must not spend a subprocess.
+        panes = [PaneInfo(pane_id="w1:p1", cwd="/anywhere", focused=False)]
+        client, tools = make_client(
+            tmp_path, monkeypatch, workspaces=[], panes=panes
+        )
+        body = client.get("/session/roots").json()
+        assert body["spaces"] == []
+        assert tools.pane_client.calls == 0
 
 
 class TestSessionNewWorkspace:

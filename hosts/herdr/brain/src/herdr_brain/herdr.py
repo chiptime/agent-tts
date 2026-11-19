@@ -118,6 +118,21 @@ class WorkspaceInfo:
     focused: bool
 
 
+@dataclass(frozen=True)
+class PaneInfo:
+    """One pane as reported by ``herdr pane list``.
+
+    Probed live (parity-f7c T5b): EVERY pane carries a cwd — plain
+    shell panes too, not just agent panes — which is what lets a
+    workspace with no running agent still resolve its folder. Only
+    the fields the cwd derivation needs are kept.
+    """
+
+    pane_id: str
+    cwd: str
+    focused: bool
+
+
 def parse_workspace_list(raw: str) -> List[WorkspaceInfo]:
     """Parses NDJSON output of ``herdr workspace list``.
 
@@ -155,6 +170,40 @@ def parse_workspace_list(raw: str) -> List[WorkspaceInfo]:
                 )
             )
     return workspaces
+
+
+def parse_pane_list(raw: str) -> List[PaneInfo]:
+    """Parses NDJSON output of ``herdr pane list``.
+
+    Same discipline as :func:`parse_agent_list`: returns every entry
+    whose ``result.panes`` array is present, tolerates leading noise
+    lines that are not JSON, and preserves the CLI's own order (the
+    caller owns any ranking).
+    """
+    panes: List[PaneInfo] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        result = payload.get("result") if isinstance(payload, dict) else None
+        entries = result.get("panes") if isinstance(result, dict) else None
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            panes.append(
+                PaneInfo(
+                    pane_id=str(entry.get("pane_id", "")),
+                    cwd=str(entry.get("cwd", "")),
+                    focused=bool(entry.get("focused", False)),
+                )
+            )
+    return panes
 
 
 def parse_agent_list(raw: str) -> List[AgentInfo]:
@@ -281,6 +330,17 @@ class HerdrClient:
         """
         proc = self._run_cli(["workspace", "list"], timeout_s=15)
         return sorted(parse_workspace_list(proc.stdout), key=lambda w: w.number)
+
+    def list_panes(self) -> List[PaneInfo]:
+        """Every live pane — agent or not (probed live, parity-f7c T5b).
+
+        ``herdr pane list`` answers one NDJSON success envelope whose
+        ``result`` is the ``pane_list`` variant; each pane row carries
+        its own cwd, so this is the folder source for workspaces with
+        no running agent.
+        """
+        proc = self._run_cli(["pane", "list"], timeout_s=15)
+        return parse_pane_list(proc.stdout)
 
     def active_agent(self) -> Optional[AgentInfo]:
         return pick_active(self.list_agents())

@@ -16,8 +16,10 @@ from herdr_brain.herdr import (
     AgentInfo,
     HerdrClient,
     HerdrError,
+    PaneInfo,
     WorkspaceInfo,
     parse_agent_list,
+    parse_pane_list,
     parse_workspace_list,
     pick_active,
     sanitize_prompt_text,
@@ -477,3 +479,64 @@ class TestHerdrMuxAdapterWorkspaceSurface:
         assert [w.workspace_id for w in adapter.list_workspaces()] == [
             "w1", "w9", "w11",
         ]
+
+
+# ── panes (parity-f7c T5b: EVERY pane carries a cwd, not just agents) ──
+
+PANE_NDJSON = json.dumps(
+    {
+        "id": "cli:pane:list",
+        "result": {
+            "type": "pane_list",
+            "panes": [
+                {
+                    # A plain shell pane — the L11 gap: workspaces whose
+                    # panes never started an agent still resolve a cwd.
+                    "pane_id": "w9:p1",
+                    "cwd": "/tmp/plain",
+                    "foreground_cwd": "/tmp/plain",
+                    "focused": False,
+                    "title": "shell",
+                },
+                {
+                    "pane_id": "w9:p2",
+                    "cwd": "/tmp/agent",
+                    "foreground_cwd": "/tmp/agent",
+                    "focused": True,
+                    "title": "claude",
+                },
+            ],
+        },
+    }
+)
+
+
+class TestParsePaneList:
+    def test_parses_ndjson_line(self):
+        panes = parse_pane_list(PANE_NDJSON + "\n")
+        assert panes == [
+            PaneInfo(pane_id="w9:p1", cwd="/tmp/plain", focused=False),
+            PaneInfo(pane_id="w9:p2", cwd="/tmp/agent", focused=True),
+        ]
+
+    def test_tolerates_noise_lines(self):
+        panes = parse_pane_list("garbage\n" + PANE_NDJSON + "\nnot json {\n")
+        assert len(panes) == 2
+
+    def test_empty_output(self):
+        assert parse_pane_list("") == []
+
+
+class TestListPanes:
+    def test_builds_expected_command(self):
+        runner = FakeRunner(results=[(0, PANE_NDJSON, "")])
+        client = HerdrClient(make_settings(), runner=runner)
+        panes = client.list_panes()
+        assert [p.pane_id for p in panes] == ["w9:p1", "w9:p2"]
+        assert runner.calls[0]["cmd"][:3] == ["herdr-fake", "pane", "list"]
+
+    def test_nonzero_exit_raises(self):
+        runner = FakeRunner(results=[(1, "", "pane boom")])
+        client = HerdrClient(make_settings(), runner=runner)
+        with pytest.raises(HerdrError, match="pane boom"):
+            client.list_panes()

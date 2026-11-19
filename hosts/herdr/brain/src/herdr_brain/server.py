@@ -937,29 +937,82 @@ def _space_cwd(candidates: list) -> Optional[str]:
         return None
 
 
-def _workspace_spaces(workspaces, herd_entries, roots) -> list:
+def _pane_cwd(panes) -> Optional[str]:
+    """The resolved cwd of a workspace's panes, or None (T5b).
+
+    Source is ``herdr pane list``, where EVERY pane carries a cwd —
+    agent or not. Ranking: the focused pane first, else the FIRST
+    pane with a usable cwd in the CLI's own listing order (a stable
+    sort keeps that order within each rank). An unresolvable or empty
+    cwd is skipped, never guessed."""
+    ranked = sorted(panes or [], key=lambda pane: not getattr(pane, "focused", False))
+    for pane in ranked:
+        cwd = str(getattr(pane, "cwd", "") or "").strip()
+        if not cwd:
+            continue
+        try:
+            return str(Path(cwd).resolve())
+        except OSError:
+            continue
+    return None
+
+
+def _listed_panes(tools) -> Optional[list]:
+    """Every live pane through ONE ``herdr pane list`` call, or None.
+
+    The pane surface lives on the herdr client; the mux adapter has no
+    delegation for it yet, so this reaches the client behind
+    ``tools._herdr`` (``_client`` when the adapter wraps one — an
+    injected client double IS the client). None — a non-herdr mux
+    without the surface, or a :class:`HerdrError` — falls the cwd
+    derivation back to the T5 agent-pane path; a read never 500s.
+    """
+    mux = getattr(tools, "_herdr", None)
+    client = getattr(mux, "_client", mux)
+    getter = getattr(client, "list_panes", None)
+    if getter is None:
+        return None
+    try:
+        return list(getter())
+    except HerdrError:
+        return None
+
+
+def _workspace_spaces(workspaces, panes, herd_entries, roots) -> list:
     """EVERY workspace as a picker space (parity-f7c S1b, L11).
 
-    The CLI's workspace listing carries no cwd, so each space's folder
-    is derived from its own live agent panes (the pane id's workspace
-    prefix, e.g. ``w11:p2`` ↔ workspace ``w11``). A workspace with NO
-    live pane is still listed — with ``cwd: null`` and
-    ``inside_roots: false`` (the flag is only meaningful when the cwd
-    is known); so is a workspace whose pane sits outside the roots:
-    hiding spaces is never this listing's job, pickability is the
-    PWA's. Order: the listing's own (sorted by workspace number).
+    T5b: each space's folder is derived from ``herdr pane list`` —
+    every pane carries a cwd, so a workspace with NO running agent
+    still resolves its folder (the pane id's workspace prefix, e.g.
+    ``w11:p2`` ↔ workspace ``w11``). When the pane listing is
+    unavailable (``panes is None``) the T5 agent-pane ranking derives
+    it instead. A workspace with no live pane at all is still listed —
+    with ``cwd: null`` and ``inside_roots: false`` (the flag is only
+    meaningful when the cwd is known); so is a workspace whose pane
+    sits outside the roots: hiding spaces is never this listing's
+    job, pickability is the PWA's. Order: the listing's own (sorted
+    by workspace number).
     """
     root_paths = [Path(root.path) for root in roots]
-    by_workspace: dict = {}
+    herd_by_workspace: dict = {}
     for entry in herd_entries or []:
         pane_id = str((entry or {}).get("pane_id") or "")
         cwd = str((entry or {}).get("cwd") or "").strip()
         if not pane_id or ":" not in pane_id or not cwd:
             continue
-        by_workspace.setdefault(pane_id.split(":", 1)[0], []).append(entry)
+        herd_by_workspace.setdefault(pane_id.split(":", 1)[0], []).append(entry)
+    panes_by_workspace: dict = {}
+    for pane in panes or []:
+        pane_id = str(getattr(pane, "pane_id", "") or "")
+        if not pane_id or ":" not in pane_id:
+            continue
+        panes_by_workspace.setdefault(pane_id.split(":", 1)[0], []).append(pane)
     spaces = []
     for workspace in workspaces or []:
-        cwd = _space_cwd(by_workspace.get(workspace.workspace_id, []))
+        if panes is None:
+            cwd = _space_cwd(herd_by_workspace.get(workspace.workspace_id, []))
+        else:
+            cwd = _pane_cwd(panes_by_workspace.get(workspace.workspace_id, []))
         inside = bool(
             cwd
             and any(cwd == root_path or root_path in Path(cwd).parents
@@ -3694,18 +3747,21 @@ def create_app(
 
         Roots come from the operator's validated ``roots.toml`` (row by
         row, mtime reload); spaces are EVERY herdr workspace (S1b, L11)
-        with a cwd derived from its own live panes — including the ones
-        with no live pane (``cwd: null``); recents are the deduplicated
-        cwds of live panes that fall INSIDE a configured root, newest
-        first, capped; the harness list is the CLOSED registry list,
-        folded here so the sheet opens with a single round-trip.
-        Unconfigured roots or a failed workspace listing degrade
-        honestly to empty lists — the WRITE route is the one that
-        fails closed."""
+        with a cwd derived from its own live panes — every pane carries
+        one (T5b), so a workspace with no running agent resolves too,
+        and the ones with no live pane at all keep ``cwd: null``;
+        recents are the deduplicated cwds of live panes that fall
+        INSIDE a configured root, newest first, capped; the harness
+        list is the CLOSED registry list, folded here so the sheet
+        opens with a single round-trip. Unconfigured roots or a failed
+        workspace listing degrade honestly to empty lists — the WRITE
+        route is the one that fails closed."""
         roots = operator_config.roots()
         herd = tools.herd()
+        workspaces = tools.list_workspaces()
+        panes = _listed_panes(tools) if workspaces else None
         recents = _recent_cwds(herd, roots) if roots else []
-        spaces = _workspace_spaces(tools.list_workspaces(), herd, roots)
+        spaces = _workspace_spaces(workspaces, panes, herd, roots)
         return {
             "roots": [{"path": root.path, "label": root.label} for root in roots],
             "spaces": spaces,
