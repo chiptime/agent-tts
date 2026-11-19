@@ -67,6 +67,10 @@ EXPECTED_DIGESTS = {
     # F7b S4: the wizard stepper (step metadata from the N/M marker,
     # Next/Back over local captures, review with Confirm/Edit, abort
     # card on drift).
+    # index.html, app.js, dialogs.js and both i18n re-pinned for the model
+    # picker card UX (2026-11-19): a search input over a bounded, scrolling
+    # list, rows keyed by their ORIGINAL option index, the current model
+    # highlighted (model/provider split riding the payload additively).
     # Re-pinned for parity-f7c S1 (the ✚ "Nueva sesión" sheet): the
     # header entry + sheet markup (index.html), the pure model + wiring
     # (app.js) and the newsession.* keys (both i18n). The sheet fetches
@@ -94,12 +98,12 @@ EXPECTED_DIGESTS = {
     # (#conv-new) became the launch-sheet opener — the mid-call
     # POST /reset survives on #call-new (index.html, app.js, and both
     # i18n for the now-dead herd.new_started/new_failed keys).
-    "/": "e5a6af2a027071f8a064ddb30c1ab392b3775dc37a883cec4d397f387705c38b",
+    "/": "0fc8dfd1a4520e0b0c54431311a16789753efb728a384556aba84082a516de3b",
     # app.js re-pinned for the held-card visibility fix (F7d phone
     # report): renderPermission no longer re-hides the #pane-reply-keys
     # wrapper an idle pane's held picker card just opened (modalKeysPane
     # rides renderPending into the wrapper's toggle).
-    "/app.js": "c27229649c8e7e208e18bda76fafdc83c6fcafe715c1bbc6ae4a0e1493af06cf",
+    "/app.js": "ff1883607e673ed5b96b2ffd382902bad3f18ed9b1513535606766032b3b2cb9",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "ca7b22c52c8160a3ac577f694eb65ec0798b77cd6ac179a5c567dffdc1fb2ba9",
     # dialogs.js re-pinned for the parity-f7d follow-up: MODEL_SWITCH_COMMANDS
@@ -109,7 +113,7 @@ EXPECTED_DIGESTS = {
     # again for the modal poll (F7d fix): createModelSwitchPoller +
     # modalViewUrl here, the /view?modal=1 watch and the held picker
     # card in app.js.
-    "/dialogs.js": "35696670a5643d160cba2ab4160e5a997111c0e2a58d7a5d84c7c50925da70ab",
+    "/dialogs.js": "c8feac6e42edfe9d01a5d58412fd7b5a85aca72ae6b2ed12302b586fd0b4913d",
     "/herd-group.js": "de284c825e3c99aef07db2dd53198484ec8b7ceba94dd97dbbae0303560df399",
     "/toast.js": "cbccb72b22530ff8f83250bebd8d498ca20977db9536aa094aa759bb9632357e",
     "/reader.js": "b99edccdba5adb1c407ebc3064f7045214c0152677a1da2cfa2c388393792989",
@@ -127,8 +131,8 @@ EXPECTED_DIGESTS = {
     # update notice, operator dock, offline-shell sw.js.
     "/dock.js": "4a5dc20d575c3c9e5f098116fc9314f24297b2934cb3142bc885b6e1d0155adb",
     "/i18n.js": "8bcd2ceb9f56109afaa0ec158e1a6f002799c4a983261b9d58cd38723c06719f",
-    "/i18n/en.js": "8ac224ef314ecf9829b84065c91c4e39c359e03d858dad778dc6c27759f3f20a",
-    "/i18n/es.js": "58f4ff3d3ab5057faea5db6f43dcc7d0e3115b8d24b26287611bc77b27978554",
+    "/i18n/en.js": "a98a98bc0b6c963f4a27371767c9fdc6c93483c8bdb5e378f7468f79bd2b4032",
+    "/i18n/es.js": "510077e068a35a6a11df40a9ea2fff34ef98b072dd6781de87a92df3561fbdc8",
     "/settings.js": "1c2cf3ed92bf959c19ecde0107618b8d1ff0690d2c6fa7c842a2fdc551e05f72",
     "/updates.js": "7f87250cf6cd9c2b8944da632fe036d0c18a87a90f48f70b84e18bcd338cfa84",
     "/calls.js": "9b9ec591709d282c6e673770b2ffc1ed1562650104d8e8393126d186aa764165",

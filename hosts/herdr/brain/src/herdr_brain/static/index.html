@@ -741,6 +741,44 @@
       font-size: 12px;
       color: var(--muted);
     }
+    /* Model picker card: a search input over a BOUNDED list that
+     * scrolls inside the card (a 16+ row picker used to overflow the
+     * pane area with no way to reach the last rows). */
+    .dialog-buttons .dlg-model-search {
+      width: 100%;
+      min-height: 44px;
+      padding: 8px 12px;
+      font: inherit;
+      font-size: 14px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--bg);
+      color: var(--text);
+      box-sizing: border-box;
+    }
+    .dialog-buttons .dlg-model-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-height: 0;
+      max-height: min(46vh, 360px);
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      -webkit-overflow-scrolling: touch;
+    }
+    .dialog-buttons .dlg-model-list button { flex: 0 0 auto; }
+    .dialog-buttons .dlg-model-list button[hidden] { display: none; }
+    .dialog-buttons .dlg-model-none {
+      padding: 8px 12px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .dialog-buttons .dlg-model-none.hidden { display: none; }
+    .dialog-buttons button.dlg-current {
+      border-color: var(--accent);
+      box-shadow: inset 3px 0 0 var(--accent);
+      font-weight: 600;
+    }
     /* The explicit "cannot read this dialog" card: honest about the
      * state, and the keypad below stays the way out. */
     .dialog-unread {

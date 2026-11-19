@@ -85,8 +85,10 @@ PICKER_STRUCTURED = {
     "recipe": "walk",
     "options": [
         {
-            "label": label,
-            "description": provider,
+            "label": f"{label} {provider}",
+            "model": label,
+            "provider": provider,
+            "description": "",
             "checked": None,
             **({"current": True} if index == 0 else {}),
         }
@@ -189,3 +191,109 @@ def test_a_modal_read_that_never_yields_structured_ends_in_the_none_toast(karaok
     stopped_at = len(modal_reads)
     page.wait_for_timeout(1600)
     assert len(modal_reads) == stopped_at, "the poll retired with the toast"
+
+
+def _open_picker(karaoke_app):
+    harness = _load(karaoke_app)
+    harness.respond("/pane/dialog/answer", {"ok": True, "option": 6}, method="POST")
+    _modal_route(harness, PICKER_VIEW)
+    page = harness.load().page
+    page.locator("#pane-picker").click()
+    expect(page.locator("#conv-model")).to_be_visible()
+    page.locator("#conv-model").click()
+    expect(page.locator("#dialog-buttons .dlg-model-list button")).to_have_count(
+        len(MODELS)
+    )
+    return page
+
+
+def test_the_picker_list_scrolls_inside_the_card(karaoke_app):
+    """Operator report: 'no me deja hacer scroll'. The 16 rows must live
+    in a bounded list that scrolls on its own (overflow-y auto)."""
+    page = _open_picker(karaoke_app)
+
+    metrics = page.evaluate(
+        """() => {
+          const list = document.querySelector('#dialog-buttons .dlg-model-list');
+          const box = list.getBoundingClientRect();
+          list.scrollTop = list.scrollHeight;
+          return {
+            overflowY: getComputedStyle(list).overflowY,
+            scrollHeight: list.scrollHeight,
+            clientHeight: list.clientHeight,
+            scrolled: list.scrollTop,
+            height: box.height,
+            viewport: window.innerHeight,
+          };
+        }"""
+    )
+
+    assert metrics["overflowY"] == "auto"
+    assert metrics["scrollHeight"] > metrics["clientHeight"], metrics
+    assert metrics["scrolled"] > 0, "the list must actually scroll"
+    assert metrics["height"] < metrics["viewport"], "the card stays bounded"
+    # The last row is reachable and tappable after scrolling.
+    last = page.locator("#dialog-buttons .dlg-model-list button").last
+    last.scroll_into_view_if_needed()
+    expect(last).to_be_visible()
+
+
+def test_typing_narrows_the_rows_and_a_tap_sends_the_original_index(karaoke_app):
+    page = _open_picker(karaoke_app)
+    search = page.locator("#dialog-buttons .dlg-model-search")
+    expect(search).to_be_visible()
+
+    # Case- and accent-insensitive substring over the model name.
+    search.fill("GLM")
+    visible = page.locator("#dialog-buttons .dlg-model-list button:visible")
+    expect(visible).to_have_count(2)
+    expect(visible.nth(0)).to_contain_text("glm-4.7")
+    expect(visible.nth(1)).to_contain_text("glm-4.7-air")
+
+    # The provider is secondary searchable text.
+    search.fill("moonshot")
+    expect(visible).to_have_count(1)
+    expect(visible.nth(0)).to_contain_text("kimi-k2")
+
+    # A tap on a FILTERED row sends the row's ORIGINAL option index.
+    search.fill("air")
+    expect(visible).to_have_count(1)
+    original = [model for model, _provider in MODELS].index("glm-4.7-air")
+    with page.expect_request(
+        lambda request: request.url.endswith("/pane/dialog/answer")
+        and request.method == "POST"
+    ) as captured:
+        visible.nth(0).click()
+    assert json.loads(captured.value.post_data) == {
+        "pane_id": PANE,
+        "fingerprint": PICKER_STRUCTURED["fingerprint"],
+        "option": original,
+    }
+    expect(page.locator("#dialog-status")).to_contain_text("Respondido:")
+
+
+def test_a_search_with_no_hits_says_so_and_clearing_restores_every_row(karaoke_app):
+    page = _open_picker(karaoke_app)
+    search = page.locator("#dialog-buttons .dlg-model-search")
+    visible = page.locator("#dialog-buttons .dlg-model-list button:visible")
+
+    search.fill("zzz-no-such-model")
+    expect(visible).to_have_count(0)
+    expect(page.locator("#dialog-buttons .dlg-model-none")).to_be_visible()
+
+    search.fill("")
+    expect(visible).to_have_count(len(MODELS))
+    expect(page.locator("#dialog-buttons .dlg-model-none")).to_be_hidden()
+
+
+def test_the_current_model_is_highlighted_and_shows_provider_apart(karaoke_app):
+    page = _open_picker(karaoke_app)
+    rows = page.locator("#dialog-buttons .dlg-model-list button")
+
+    current = page.locator("#dialog-buttons .dlg-model-list button.dlg-current")
+    expect(current).to_have_count(1)
+    expect(current).to_contain_text("claude-sonnet-4-5")
+    expect(current).to_have_attribute("aria-current", "true")
+    # The label shows the clean model name; the provider is secondary.
+    expect(rows.nth(1).locator("span").nth(0)).to_have_text("claude-opus-4-1")
+    expect(rows.nth(1).locator(".dlg-opt-desc")).to_have_text("anthropic")

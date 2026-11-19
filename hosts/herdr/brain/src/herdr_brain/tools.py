@@ -1117,7 +1117,7 @@ class BrainTools:
             and (target.agent or "").strip().lower() in OPENCODE_SEARCH_PICKERS
         ):
             matched, failure = self._search_first_picker_answer(
-                pane_id, target.agent, chosen.label
+                pane_id, target.agent, chosen.label, option=chosen
             )
             if failure is not None:
                 return refused(*failure)
@@ -1546,7 +1546,7 @@ class BrainTools:
         )
 
     def _search_first_picker_answer(
-        self, pane_id: str, agent: str, wanted: str
+        self, pane_id: str, agent: str, wanted: str, option=None
     ) -> tuple[Optional[str], Optional[tuple]]:
         """Answers an opencode ``/models`` picker by SEARCH, never arrows.
 
@@ -1557,17 +1557,27 @@ class BrainTools:
         keypress: ADR 0009's never-a-digit is about KEYS, and digits
         ride only inside the name), the screen is re-read until two
         reads agree, and Enter leaves ONLY when the search box echoes
-        the query AND the filtered list names ONE distinct target:
-        duplicate catalog rows carrying the SAME label are equivalent
-        (same model, same outcome — the first is taken, and with every
-        selectable row naming that one label the pointer is on it
-        wherever it started). Zero rows or more than one DISTINCT label
-        refuse with nothing further sent, and the answer is confirmed
-        only by the picker actually closing.
+        the query AND the FIRST filtered row (where the pointer lands
+        after a filter) is the target.
+
+        A tapped ``option`` types its clean MODEL name — the screen's
+        label also carries the provider, which opencode's Search does
+        not match — and is recognized among the filtered rows by its
+        full label first, then by model name (normalized equality);
+        identical duplicate rows are one answer (the first is taken).
+        Without an ``option`` (the voice path) the spoken text is typed
+        and matched by containment. Zero rows, more than one DISTINCT
+        row, or a target that is not first refuse with no Enter — and
+        the typed text is CLEARED (``ctrl+u``, while the picker is still
+        on screen) so the picker returns unfiltered, never half-typed.
+        The answer is confirmed only by the picker actually closing.
 
         Returns ``(matched_label, None)`` or ``(None, (reason, detail))``.
         """
-        query = sanitize_prompt_text(wanted or "")
+        if option is not None:
+            query = sanitize_prompt_text(option.model or option.label or "")
+        else:
+            query = sanitize_prompt_text(wanted or "")
         if not query:
             return None, ("invalid_target", "the picker row has no name to search")
         typer = getattr(self._herdr, "send_text", None)
@@ -1577,6 +1587,24 @@ class BrainTools:
 
         def read_picker(filled: bool):
             return self._read_opencode_picker(pane_id, agent, filled=filled, query=query)
+
+        def clear_search():
+            """Best-effort: empty the Search box — only while the picker
+            is still on screen, because ``ctrl+u`` anywhere else would
+            wipe the chat prompt."""
+            still_open = self._read_opencode_picker(
+                pane_id, agent, filled=True
+            ) or self._read_opencode_picker(pane_id, agent, filled=False)
+            if still_open is None:
+                return
+            try:
+                self.send_keys_to_pane(pane_id, ["ctrl+u"])
+            except Exception:  # noqa: BLE001 — a failed clear never masks the refusal
+                pass
+
+        def refuse(reason: str, detail: str):
+            clear_search()
+            return None, (reason, detail)
 
         try:
             typer(pane_id, query)
@@ -1594,49 +1622,64 @@ class BrainTools:
             if fresh is None:
                 settled = None
                 continue
-            rows = tuple(option.label for option in fresh.options)
+            rows = tuple(row.label for row in fresh.options)
             if rows == settled:
                 filtered = fresh
                 break
             settled = rows
         if filtered is None:
-            return None, (
+            return refuse(
                 "changed",
                 "the picker left (or never echoed the filter) "
                 "while the search settled; nothing was pressed",
             )
-        flat = _lex_flat(query)
-        hits = [
-            option.label
-            for option in filtered.options
-            if flat in _lex_flat(option.label)
-        ]
+        rows = list(filtered.options)
+        if option is not None:
+            target_key = _lex_flat(option.label)
+            hits = [row for row in rows if _lex_flat(row.label) == target_key]
+            if not hits:
+                name_key = _lex_flat(option.model or option.label)
+                hits = [
+                    row
+                    for row in rows
+                    if _lex_flat(row.model or row.label) == name_key
+                ]
+        else:
+            flat = _lex_flat(query)
+            hits = [row for row in rows if flat in _lex_flat(row.label)]
         if not hits:
-            return None, ("no-match", _name_candidates(query, []))
-        # Rows whose label is IDENTICAL to the target are equivalent
-        # (same model, same outcome — the live catalog lists the same
-        # model once per provider entry): collapse them, keep the
-        # first, and refuse only on more than one DISTINCT label.
+            return refuse("no-match", _name_candidates(query, []))
+        # Rows whose label is IDENTICAL are equivalent (same model, same
+        # outcome — the live catalog lists the same model once per
+        # provider entry): collapse them, keep the first, and refuse
+        # only on more than one DISTINCT label.
         distinct: list = []
         seen = set()
-        for label in hits:
-            key = _lex_flat(label)
+        for row in hits:
+            key = _lex_flat(row.label)
             if key not in seen:
                 seen.add(key)
-                distinct.append(label)
+                distinct.append(row.label)
         if len(distinct) > 1:
-            return None, ("ambiguous", _name_candidates(query, distinct))
+            return refuse("ambiguous", _name_candidates(query, distinct))
+        # Enter commits the pointer, which a filter resets to the FIRST
+        # row: unless that row IS the target, Enter would pick another.
+        if _lex_flat(rows[0].label) not in seen:
+            return refuse(
+                "ambiguous",
+                "the target is not the first filtered row; nothing was pressed",
+            )
 
         sent = self.send_keys_to_pane(pane_id, ["enter"])
         if sent.get("outcome") != "sent":
-            return None, (
+            return refuse(
                 "send-failed",
                 sent.get("detail") or "could not press enter",
             )
         for _ in range(SWITCH_WAIT_ATTEMPTS):
             pause(SWITCH_POLL_S)
             if read_picker(filled=True) is None and read_picker(filled=False) is None:
-                return hits[0], None
+                return hits[0].label, None
         return None, (
             "no-progress",
             "the picker did not close after enter; "

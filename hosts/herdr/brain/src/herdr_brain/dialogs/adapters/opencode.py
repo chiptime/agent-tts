@@ -393,6 +393,44 @@ _MODELS_MAX_ROWS = 40
 _MODELS_SEARCH_LOOKAHEAD = 4
 _MODELS_CURRENT = "●"
 _MODELS_LABEL_GAP = re.compile(r" {2,}")
+#: Section labels that are never a provider.
+_MODELS_GROUP_LABELS = frozenset({"recent", "favorites", "favorite"})
+#: Provider names the picker prints after a model name in the SAME text
+#: run (lowercase). ``nan`` is opencode's own rendering of a provider
+#: whose name is missing (seen live). Group headers on screen join this
+#: set per read; a provider outside it simply stays part of the model
+#: text — the search-first recipe then finds no row and refuses.
+_MODELS_PROVIDERS = frozenset(
+    {
+        "opencode go",
+        "opencode",
+        "openai",
+        "anthropic",
+        "deepseek",
+        "z.ai coding plan",
+        "google",
+        "github copilot",
+        "openrouter",
+        "xai",
+        "groq",
+        "mistral",
+        "moonshot ai",
+        "nan",
+    }
+)
+_MODELS_PROVIDER_MAX_TOKENS = 4
+
+
+def _split_provider(label: str, providers) -> tuple:
+    """``(model, provider)`` from one row's label: the longest trailing
+    run of tokens that names a known provider, when something precedes
+    it; otherwise the whole label is the model."""
+    tokens = label.split()
+    for size in range(min(_MODELS_PROVIDER_MAX_TOKENS, len(tokens) - 1), 0, -1):
+        suffix = " ".join(tokens[-size:])
+        if suffix.lower() in providers:
+            return " ".join(tokens[:-size]), suffix
+    return label, ""
 
 
 def _models_label(line: str, column: int, end: int) -> str:
@@ -485,18 +523,55 @@ def detect_models_picker(
         ).lower():
             return None
 
-    options: List[DialogOption] = []
-    current = 0
+    rows: List[tuple] = []  # (label, marked, blank_above)
+    blank_above = True  # the spacing row under Search
     for index in range(search_at + 1, footer_at):
         label = _models_label(texts[index], column, span_end)
         if not label:
+            blank_above = True
             continue
         marked = (
             column >= 2
             and texts[index][column - 2 : column] == _MODELS_CURRENT + " "
         )
+        rows.append((label, marked, blank_above))
+        blank_above = False
+
+    # Group headers ("Recent", "Favorites", a provider name) are plain
+    # text in this TUI, but they sit under a blank row — and the only
+    # row that may follow a blank without being a header is the first
+    # one under Search. They label sections; they are not models.
+    headers = set()
+    for position, (label, marked, blank_above) in enumerate(rows):
+        if marked:
+            continue
+        flat = label.lower()
+        if (
+            flat in _MODELS_GROUP_LABELS
+            or (blank_above and position > 0)
+            or (position == 0 and flat in _MODELS_PROVIDERS)
+        ):
+            headers.add(position)
+    providers = set(_MODELS_PROVIDERS)
+    providers.update(rows[position][0].lower() for position in headers)
+
+    options: List[DialogOption] = []
+    current = 0
+    section = ""
+    for position, (label, marked, _blank_above) in enumerate(rows):
+        if position in headers:
+            section = "" if label.lower() in _MODELS_GROUP_LABELS else label
+            continue
+        model_name, provider = _split_provider(label, providers)
         current += 1 if marked else 0
-        options.append(DialogOption(label=label, current=marked))
+        options.append(
+            DialogOption(
+                label=label,
+                current=marked,
+                model=model_name,
+                provider=provider or section,
+            )
+        )
     if current > 1:
         return None
     if not options and not filled_search:

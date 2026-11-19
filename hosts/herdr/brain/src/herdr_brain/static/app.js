@@ -3062,6 +3062,47 @@
         dialogMultiSelection = window.Dialogs.isMultiselect(structured)
           ? window.Dialogs.selectionModel(structured.options)
           : null;
+        /* A model picker is a LONG list: a search input on top and a
+         * bounded, scrollable list below. The filter only hides rows
+         * (the buttons keep their ORIGINAL data-index), so a tap on a
+         * filtered row answers exactly like an unfiltered one. */
+        var pickerRows = window.Dialogs.modelPickerRows
+          ? window.Dialogs.modelPickerRows(structured) : null;
+        var buttonHost = dialogButtonsBox;
+        if (pickerRows && pickerRows.length) {
+          var searchInput = document.createElement("input");
+          searchInput.type = "search";
+          searchInput.className = "dlg-model-search";
+          searchInput.placeholder = window.Dialogs.modelSearchPlaceholder();
+          searchInput.setAttribute("aria-label", window.Dialogs.modelSearchPlaceholder());
+          searchInput.setAttribute("autocomplete", "off");
+          searchInput.setAttribute("autocapitalize", "off");
+          searchInput.setAttribute("autocorrect", "off");
+          searchInput.setAttribute("spellcheck", "false");
+          searchInput.setAttribute("enterkeyhint", "search");
+          dialogButtonsBox.appendChild(searchInput);
+          buttonHost = document.createElement("div");
+          buttonHost.className = "dlg-model-list";
+          dialogButtonsBox.appendChild(buttonHost);
+          var noMatch = document.createElement("div");
+          noMatch.className = "dlg-model-none hidden";
+          noMatch.textContent = window.Dialogs.modelSearchNone();
+          dialogButtonsBox.appendChild(noMatch);
+          searchInput.addEventListener("input", function () {
+            var keep = {};
+            window.Dialogs.filterModelRows(pickerRows, searchInput.value)
+              .forEach(function (row) { keep[row.index] = true; });
+            var rowButtons = buttonHost.querySelectorAll("button[data-index]");
+            var shown = 0;
+            for (var r = 0; r < rowButtons.length; r++) {
+              var visible = keep[rowButtons[r].getAttribute("data-index")] === true;
+              rowButtons[r].hidden = !visible;
+              if (visible) shown += 1;
+            }
+            noMatch.classList.toggle("hidden", shown > 0);
+            buttonHost.scrollTop = 0;
+          });
+        }
         buttons.forEach(function (option) {
           var button = document.createElement("button");
           button.type = "button";
@@ -3079,16 +3120,23 @@
           if (structuredOption && structuredOption.free_text === true) {
             button.setAttribute("data-free-text", "1");
           }
+          var pickerRow = pickerRows ? pickerRows[option.index] : null;
           var label = document.createElement("span");
-          label.textContent = option.label;
+          label.textContent = pickerRow ? pickerRow.model : option.label;
           button.appendChild(label);
-          if (option.description) {
+          var secondary = pickerRow ? pickerRow.provider : option.description;
+          if (secondary) {
             var description = document.createElement("span");
             description.className = "dlg-opt-desc";
-            description.textContent = option.description;
+            description.textContent = secondary;
             button.appendChild(description);
           }
-          dialogButtonsBox.appendChild(button);
+          if (pickerRow && pickerRow.current) {
+            /* The model the agent runs now: highlighted, announced. */
+            button.className = "dlg-current";
+            button.setAttribute("aria-current", "true");
+          }
+          buttonHost.appendChild(button);
         });
         if (dialogMultiSelection) {
           /* ONE explicit submit for the whole selection — no checkbox

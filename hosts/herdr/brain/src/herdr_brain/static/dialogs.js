@@ -622,6 +622,60 @@
     return tr("dialogs.model_picker_title", "Cambiar modelo");
   }
 
+  /* The picker's rows, in the shape the search card paints: the clean
+   * MODEL name (primary), the provider (secondary text; a harness that
+   * sends only `description` keeps it as the secondary line) and the
+   * `current` mark. `index` is the ORIGINAL position in the payload —
+   * the only thing a tap ever sends — so filtering can never shift
+   * what an answer means. Null for anything that is not a model
+   * picker. */
+  function modelPickerRows(structured) {
+    if (!isModelPicker(structured)) return null;
+    return (structured.options || []).map(function (option, index) {
+      var model = option.model != null && option.model !== ""
+        ? option.model : option.label;
+      var provider = option.provider != null && option.provider !== ""
+        ? option.provider : option.description;
+      return {
+        index: index,
+        model: String(model == null ? "" : model),
+        provider: String(provider == null ? "" : provider),
+        current: option.current === true,
+      };
+    });
+  }
+
+  /* Case- and accent-insensitive folding: "ÑANDÚ" matches "nandu". */
+  function foldSearchText(text) {
+    var value = String(text == null ? "" : text);
+    if (value.normalize) value = value.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    return value.toLowerCase();
+  }
+
+  /* Autocomplete over the rows: every whitespace-separated token of the
+   * query must be a substring of the model name or of the provider (the
+   * secondary text). A blank query keeps every row, in order. Pure — no
+   * DOM, no network. */
+  function filterModelRows(rows, query) {
+    var list = rows || [];
+    var tokens = foldSearchText(query).split(/\s+/).filter(Boolean);
+    if (!tokens.length) return list.slice();
+    return list.filter(function (row) {
+      var haystack = foldSearchText(row.model) + " " + foldSearchText(row.provider);
+      return tokens.every(function (token) {
+        return haystack.indexOf(token) !== -1;
+      });
+    });
+  }
+
+  function modelSearchPlaceholder() {
+    return tr("dialogs.model_search_placeholder", "Buscar modelo…");
+  }
+
+  function modelSearchNone() {
+    return tr("dialogs.model_search_none", "Ningún modelo coincide.");
+  }
+
   /* The "Cambiar modelo" affordance (S2): which command opens THIS
    * harness's picker. The server owns the verified table; this mirror
    * only decides whether the button is offered — the switch itself is
@@ -783,6 +837,10 @@
     wizardChangedMessage: wizardChangedMessage,
     isModelPicker: isModelPicker,
     modelPickerTitle: modelPickerTitle,
+    modelPickerRows: modelPickerRows,
+    filterModelRows: filterModelRows,
+    modelSearchPlaceholder: modelSearchPlaceholder,
+    modelSearchNone: modelSearchNone,
     modelSwitchOffer: modelSwitchOffer,
     modelSwitchPayload: modelSwitchPayload,
     modelSwitchOpenedToast: modelSwitchOpenedToast,

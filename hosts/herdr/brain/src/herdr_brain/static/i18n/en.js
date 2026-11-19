@@ -138,6 +138,8 @@
     "dialogs.wizard_confirm": "Confirm and send",
     "dialogs.wizard_edit": "Edit",
     "dialogs.model_picker_title": "Switch model",
+    "dialogs.model_search_placeholder": "Search models…",
+    "dialogs.model_search_none": "No model matches.",
     "dialogs.model_switch": "Switch model",
     "dialogs.model_switch_open": "Opening the model picker…",
     "dialogs.model_switch_none": "This agent cannot switch models from here.",

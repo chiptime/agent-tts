@@ -41,6 +41,9 @@ OPENCODE_MULTI_CONFIRM = (FIXTURES / "opencode-multi-confirm.txt").read_text(
 OPENCODE_PICKER = (FIXTURES / "opencode-models-picker.txt").read_text(
     encoding="utf-8"
 )
+OPENCODE_OVER_CHAT = (FIXTURES / "opencode-models-picker-over-chat.txt").read_text(
+    encoding="utf-8"
+)
 
 BLOCKED_CLAUDE = AgentInfo(
     pane_id="w1:p3",
@@ -599,7 +602,9 @@ class TestModelPickerSearchFirst:
     def test_an_ambiguous_filter_refuses_and_presses_nothing(self, settings):
         from herdr_brain.tools import BrainTools
 
-        stub = self._stub(["GLM-5.3", "GLM-5.3-Flash", "GLM-5.3 Highspeed"])
+        # The exact name is listed, but NOT first: Enter would commit
+        # the first row (the pointer after a filter) — refuse.
+        stub = self._stub(["GLM-5.3-Flash", "GLM-5.3", "GLM-5.3 Highspeed"])
         tools = BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
         fingerprint = _fingerprint("opencode", OPENCODE_PICKER)
         glm = next(
@@ -614,7 +619,8 @@ class TestModelPickerSearchFirst:
         assert result["outcome"] == "refused"
         assert result["reason"] == "ambiguous"
         assert [call["text"] for call in stub.text_calls] == ["GLM-5.3"]
-        assert stub.key_calls == []
+        # Nothing committed; the typed text is cleared, never left behind.
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["ctrl+u"]}]
 
     def test_identical_duplicate_rows_answer_once(self, settings):
         """Live parity finding: the opencode catalog lists the SAME
@@ -641,10 +647,11 @@ class TestModelPickerSearchFirst:
         assert [call["text"] for call in stub.text_calls] == ["GLM-5.3"]
         assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
 
-    def test_two_distinct_labels_still_refuse_ambiguous(self, settings):
-        """The refinement keeps the guard: a filtered set naming TWO
-        DIFFERENT models (GLM-5.3 and GLM-5.3-Flash) is a real
-        ambiguity — refuse, press nothing."""
+    def test_the_exact_name_listed_first_wins_over_longer_names(self, settings):
+        """GLM-5.3 also prefixes GLM-5.3-Flash, but the row whose label
+        EQUALS the target is first: the pointer is on it, so one Enter
+        commits exactly the tapped model (prefix siblings do not make
+        it ambiguous)."""
         from herdr_brain.tools import BrainTools
 
         stub = self._stub(["GLM-5.3", "GLM-5.3-Flash"], query="GLM-5.3")
@@ -659,10 +666,9 @@ class TestModelPickerSearchFirst:
 
         result = tools.answer_structured_dialog("w1:p3", fingerprint, glm)
 
-        assert result["outcome"] == "refused"
-        assert result["reason"] == "ambiguous"
+        assert result["outcome"] == "answered"
         assert [call["text"] for call in stub.text_calls] == ["GLM-5.3"]
-        assert stub.key_calls == []
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
 
     def test_a_filter_that_never_settles_refuses(self, settings):
         from herdr_brain.tools import BrainTools
@@ -762,6 +768,186 @@ class TestModelPickerSearchFirst:
         assert body["label"] == "GLM-5.3 Highspeed"
         assert [call["text"] for call in stub.text_calls] == ["GLM-5.3 Highspeed"]
         assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
+
+
+class TestModelPickerOverChatSearchFirst:
+    """LIVE regression (2026-11-19, the operator's real tap): option 0 of
+    the over-chat picker was ``Qwen3.8 Max OpenCode Go`` — the SCREEN's
+    text run of ``<model> <provider>``. The recipe typed the whole run
+    into opencode's Search (which matches the model name only), found
+    nothing, refused ``no-match`` and LEFT the text in the box. The
+    answer must type the clean MODEL name, match the filtered rows by it,
+    and clear Search on every refusal."""
+
+    def _filtered(self, query, keep):
+        lines = OPENCODE_OVER_CHAT.split("\n")
+        title_at = next(i for i, line in enumerate(lines) if "Select model" in line)
+        column = lines[title_at].index("Select model")
+        footer_at = next(i for i, line in enumerate(lines) if "Connect provider" in line)
+        width = lines[footer_at].index("ctrl+f") + len("ctrl+f") - column
+        search_at = next(
+            i for i in range(title_at + 1, footer_at)
+            if lines[i][column:column + width].strip()
+        )
+
+        def paint(index, text, clear_mark=True):
+            line = lines[index].ljust(column + width)
+            left = line[: column - 2] + ("  " if clear_mark else line[column - 2 : column])
+            lines[index] = left + text.ljust(width)[:width] + line[column + width :]
+
+        paint(search_at, query)
+        for slot, index in enumerate(range(search_at + 1, footer_at)):
+            paint(index, keep[slot] if slot < len(keep) else "")
+        return "\n".join(lines)
+
+    def _stub(self, keep, query="Qwen3.8 Max", close=True):
+        screens = {
+            "picker": OPENCODE_OVER_CHAT,
+            "filtered": self._filtered(query, keep),
+        }
+        state = {"stage": "picker"}
+
+        class OverChatStub(DialogTapStub):
+            def __init__(self):
+                super().__init__([IDLE_OPENCODE], OPENCODE_OVER_CHAT)
+                self.text_calls: list = []
+
+            def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+                if state["stage"] == "done":
+                    return "$ opencode\n✓ model set ❯ _"
+                return screens[state["stage"]]
+
+            def send_text(self, pane_id, text):
+                self.text_calls.append({"pane_id": pane_id, "text": text})
+                state["stage"] = "filtered"
+
+            def send_keys(self, pane_id, keys):
+                result = super().send_keys(pane_id, keys)
+                if "ctrl+u" in keys:
+                    state["stage"] = "picker"
+                if close and "enter" in keys:
+                    state["stage"] = "done"
+                return result
+
+        return OverChatStub(), state
+
+    def _tools(self, settings, stub):
+        from herdr_brain.tools import BrainTools
+
+        return BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
+
+    def _option(self, label):
+        model = recognize("opencode", OPENCODE_OVER_CHAT)
+        index = next(i for i, o in enumerate(model.options) if o.label == label)
+        return model, index
+
+    def test_a_real_model_row_types_its_model_name_and_enters_once(self, settings):
+        stub, _state = self._stub(["Qwen3.8 Max OpenCode Go"])
+        model, index = self._option("Qwen3.8 Max OpenCode Go")
+
+        result = self._tools(settings, stub).answer_structured_dialog(
+            "w1:p3", model.fingerprint, index
+        )
+
+        assert result["outcome"] == "answered"
+        assert result["label"] == "Qwen3.8 Max OpenCode Go"
+        # The MODEL name, not the screen's model+provider run.
+        assert [c["text"] for c in stub.text_calls] == ["Qwen3.8 Max"]
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
+
+    def test_the_clear_chord_is_inside_the_key_dialect(self):
+        from herdr_brain.herdr import SEND_KEY_ALLOWLIST, is_valid_key
+
+        assert "ctrl+u" in SEND_KEY_ALLOWLIST
+        assert is_valid_key("ctrl+u")
+
+    def test_group_headers_are_not_offered(self, settings):
+        model, _index = self._option("Qwen3.8 Max OpenCode Go")
+
+        assert "Recent" not in [o.label for o in model.options]
+        assert model.options[0].label == "Qwen3.8 Max OpenCode Go"
+
+    def test_no_match_clears_the_search_box_instead_of_leaving_it_typed(
+        self, settings
+    ):
+        stub, _state = self._stub([])
+        model, index = self._option("Qwen3.8 Max OpenCode Go")
+
+        result = self._tools(settings, stub).answer_structured_dialog(
+            "w1:p3", model.fingerprint, index
+        )
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "no-match"
+        assert [c["text"] for c in stub.text_calls] == ["Qwen3.8 Max"]
+        # Search is cleared (ctrl+u); Enter never left; never a digit.
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["ctrl+u"]}]
+
+    def test_an_ambiguous_filter_clears_the_search_box(self, settings):
+        stub, _state = self._stub(
+            ["GLM-5.3 OpenCode Go", "GLM-5.3 Z.AI Coding Plan"], query="GLM-5.3"
+        )
+        model, index = self._option("GLM-5.3 Z.AI Coding Plan")
+
+        result = self._tools(settings, stub).answer_structured_dialog(
+            "w1:p3", model.fingerprint, index
+        )
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "ambiguous"
+        assert [c["text"] for c in stub.text_calls] == ["GLM-5.3"]
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["ctrl+u"]}]
+
+    def test_a_target_that_is_not_the_first_filtered_row_is_refused(
+        self, settings
+    ):
+        """Enter commits the FIRST filtered row: a filter that lists the
+        target under another row never gets an Enter."""
+        stub, _state = self._stub(
+            ["Qwen3.8 Max Preview OpenAI", "Qwen3.8 Max OpenCode Go"]
+        )
+        model, index = self._option("Qwen3.8 Max OpenCode Go")
+
+        result = self._tools(settings, stub).answer_structured_dialog(
+            "w1:p3", model.fingerprint, index
+        )
+
+        assert result["outcome"] == "refused"
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["ctrl+u"]}]
+
+    def test_the_first_row_is_taken_among_identical_duplicates(self, settings):
+        stub, _state = self._stub(
+            ["Qwen3.8 Max OpenCode Go", "Qwen3.8 Max OpenCode Go"]
+        )
+        model, index = self._option("Qwen3.8 Max OpenCode Go")
+
+        result = self._tools(settings, stub).answer_structured_dialog(
+            "w1:p3", model.fingerprint, index
+        )
+
+        assert result["outcome"] == "answered"
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
+
+    def test_a_picker_that_left_the_screen_is_never_sent_a_clear(self, settings):
+        """If the picker vanished, ctrl+u would land in the chat prompt:
+        nothing further may be sent."""
+        stub, state = self._stub(["Qwen3.8 Max OpenCode Go"])
+        model, index = self._option("Qwen3.8 Max OpenCode Go")
+        original = stub.send_text
+
+        def vanish(pane_id, text):
+            original(pane_id, text)
+            state["stage"] = "done"
+
+        stub.send_text = vanish
+
+        result = self._tools(settings, stub).answer_structured_dialog(
+            "w1:p3", model.fingerprint, index
+        )
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "changed"
+        assert stub.key_calls == []
 
 
 class TestVoicePathReadsStructuredDialogs:

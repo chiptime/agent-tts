@@ -893,11 +893,8 @@ class TestOpencodeModelsPicker:
             "DeepSeek V4 Pro",
             "MiMo V2.5",
             "MiMo V2.5 Pro",
-            # A provider group header is plain text in this TUI —
-            # indistinguishable from a model row once escapes are
-            # stripped, so it stays a row (the search-first verifier
-            # and the name matcher keep it honest).
-            "Z.AI Coding Plan",
+            # "Z.AI Coding Plan" is a provider GROUP HEADER (it follows
+            # a blank row): a section label, never a selectable row.
             "GLM-5.3-Flash",
             "GLM-5.3 Highspeed",
         ]
@@ -917,7 +914,7 @@ class TestOpencodeModelsPicker:
         ]
         # The ● row: the default model, duplicated as the first row of
         # its provider group. Exactly one row carries the mark.
-        assert current == [(14, "GLM-5.3-Flash")]
+        assert current == [(13, "GLM-5.3-Flash")]
 
     def test_the_payload_marks_the_current_row_additively(self):
         payload = detect(
@@ -953,9 +950,8 @@ class TestOpencodeModelsPicker:
             "DeepSeek V4 Pro DeepSeek",
             "Claude Opus 5 Anthropic",
             "Big Pickle OpenCode",
-            # A provider group header — plain text, stays a row exactly
-            # as in the blank-background fixture.
-            "Recent",
+            # "Recent" is a group header (blank row above it): never
+            # a selectable row.
             "Claude Opus 5.5 Anthropic",
             "GPT-6.2 Sol OpenAI",
             "GLM-5.3 Z.AI Coding Plan",
@@ -979,7 +975,72 @@ class TestOpencodeModelsPicker:
             for index, option in enumerate(model.options)
             if option.current
         ]
-        assert current == [(7, "Claude Opus 5.5 Anthropic")]
+        assert current == [(6, "Claude Opus 5.5 Anthropic")]
+
+    def test_group_headers_are_never_options(self):
+        """LIVE finding (2026-11-19): option 0 and the section labels
+        were all rows — a header ("Recent", a provider name) is not a
+        model and must not be offered for a tap."""
+        over_chat = detect(
+            "opencode", fixture("opencode-models-picker-over-chat.txt")
+        )
+        blank = detect("opencode", fixture("opencode-models-picker.txt"))
+
+        assert "Recent" not in labels(over_chat)
+        assert "Z.AI Coding Plan" not in labels(blank)
+        assert all(option.label for option in over_chat.options)
+
+    def test_each_row_keeps_a_clean_model_name_apart_from_its_provider(self):
+        """LIVE root cause: the screen prints ``<model> <provider>`` as
+        ONE text run, but opencode's Search matches the model name
+        only. Typing the whole label filters to nothing."""
+        model = detect(
+            "opencode", fixture("opencode-models-picker-over-chat.txt")
+        )
+
+        split = [(o.label, o.model, o.provider) for o in model.options]
+        assert split[0] == ("Qwen3.8 Max OpenCode Go", "Qwen3.8 Max", "OpenCode Go")
+        assert ("GPT-5.6 Terra OpenAI", "GPT-5.6 Terra", "OpenAI") in split
+        assert ("Big Pickle OpenCode", "Big Pickle", "OpenCode") in split
+        assert (
+            "GLM-5.3 Z.AI Coding Plan", "GLM-5.3", "Z.AI Coding Plan"
+        ) in split
+        assert (
+            "DeepSeek V4.1 Flash 1017 OpenCode Go",
+            "DeepSeek V4.1 Flash 1017",
+            "OpenCode Go",
+        ) in split
+        assert ("GLM 5.3 Flash NaN", "GLM 5.3 Flash", "NaN") in split
+
+    def test_rows_under_a_provider_header_take_it_as_their_provider(self):
+        model = detect("opencode", fixture("opencode-models-picker.txt"))
+
+        by_label = {}
+        for option in model.options:
+            by_label.setdefault(option.label, []).append(option)
+        assert by_label["GLM-5.3 Highspeed"][0].provider == "Z.AI Coding Plan"
+        assert by_label["GLM-5.3 Highspeed"][0].model == "GLM-5.3 Highspeed"
+        # Rows before any header carry no provider; the model is the label.
+        assert by_label["Hy3"][0].provider == ""
+        assert by_label["Hy3"][0].model == "Hy3"
+
+    def test_the_payload_carries_the_split_additively(self):
+        payload = detect(
+            "opencode", fixture("opencode-models-picker-over-chat.txt")
+        ).payload()
+
+        first = payload["options"][0]
+        assert first["label"] == "Qwen3.8 Max OpenCode Go"
+        assert first["model"] == "Qwen3.8 Max"
+        assert first["provider"] == "OpenCode Go"
+
+    def test_other_kinds_keep_their_payload_shape(self):
+        payload = detect("claude", fixture("claude-select.txt")).payload()
+
+        for option in payload["options"]:
+            assert "model" not in option
+            assert "provider" not in option
+
 
     def test_chat_columns_never_become_rows(self):
         """The chat text bleeding left of the modal and the MCP status

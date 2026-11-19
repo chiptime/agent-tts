@@ -70,6 +70,15 @@ class DialogOption:
     #: rows of every other kind (and picker rows without a mark) keep
     #: today's shape; the PWA may badge it, nothing may tap it.
     current: bool = False
+    #: model_picker only (opencode): the row's clean MODEL name, apart
+    #: from the provider the screen prints after it in the same text
+    #: run. opencode's own Search matches the model name only, so this
+    #: — never the whole label — is what the search-first recipe types.
+    model: str = ""
+    #: model_picker only (opencode): the provider (the label's trailing
+    #: provider name, or the group header the row sits under). Display
+    #: only; empty when unknown.
+    provider: str = ""
 
 
 @dataclass(frozen=True)
@@ -153,6 +162,11 @@ class StructuredDialog:
                     # Additive on purpose (opencode picker): the ● row
                     # rides along ONLY when the picker marked it.
                     **({"current": True} if option.current else {}),
+                    # Additive on purpose (opencode picker): the clean
+                    # model name and provider ride along ONLY on rows
+                    # that carry them.
+                    **({"model": option.model} if option.model else {}),
+                    **({"provider": option.provider} if option.provider else {}),
                 }
                 for option in self.options
             ],

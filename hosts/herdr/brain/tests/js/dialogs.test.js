@@ -548,3 +548,95 @@ test("model switch toasts", () => {
   assert.match(Dialogs.modelSwitchOpenedToast("Claude"), /selector/);
   assert.match(Dialogs.modelSwitchNoneToast(), /no puede cambiar/);
 });
+
+/* ── model picker search + scroll (2026-11-19 operator report: "no me
+ * deja hacer scroll… incluiría un buscador… un autocomplete… si clico
+ * tiene que seleccionarse"). The filter is PURE and client-side; a
+ * filtered row always answers with its ORIGINAL option index. */
+
+const OPENCODE_PICKER = {
+  agent: "opencode",
+  kind: "model_picker",
+  question: "Select model",
+  options: [
+    { label: "Qwen3.8 Max OpenCode Go", model: "Qwen3.8 Max", provider: "OpenCode Go" },
+    { label: "GPT-5.6 Terra OpenAI", model: "GPT-5.6 Terra", provider: "OpenAI" },
+    { label: "Claude Opus 5.5 Anthropic", model: "Claude Opus 5.5", provider: "Anthropic", current: true },
+    { label: "Ñandú Pro DeepSeek", model: "Ñandú Pro", provider: "DeepSeek" },
+    { label: "GLM-5.3 Z.AI Coding Plan", model: "GLM-5.3", provider: "Z.AI Coding Plan" },
+  ],
+  fingerprint: "oc1",
+  recipe: "walk",
+};
+
+test("modelPickerRows: clean model, provider, current — original indexes", () => {
+  const rows = Dialogs.modelPickerRows(OPENCODE_PICKER);
+  assert.deepEqual(
+    rows.map((r) => [r.index, r.model, r.provider, r.current]),
+    [
+      [0, "Qwen3.8 Max", "OpenCode Go", false],
+      [1, "GPT-5.6 Terra", "OpenAI", false],
+      [2, "Claude Opus 5.5", "Anthropic", true],
+      [3, "Ñandú Pro", "DeepSeek", false],
+      [4, "GLM-5.3", "Z.AI Coding Plan", false],
+    ]);
+});
+
+test("modelPickerRows: a harness without model/provider falls back to label + description", () => {
+  const rows = Dialogs.modelPickerRows(MODEL_PICKER);
+  assert.equal(rows[2].model, "Fable");
+  assert.equal(rows[2].provider, "Fable 5");
+  assert.equal(Dialogs.modelPickerRows(STRUCTURED), null);
+  assert.equal(Dialogs.modelPickerRows(null), null);
+});
+
+test("filterModelRows: case-insensitive substring over the model name", () => {
+  const rows = Dialogs.modelPickerRows(OPENCODE_PICKER);
+  assert.deepEqual(
+    Dialogs.filterModelRows(rows, "GPT").map((r) => r.index), [1]);
+  assert.deepEqual(
+    Dialogs.filterModelRows(rows, "opus").map((r) => r.index), [2]);
+});
+
+test("filterModelRows: accent-insensitive both ways", () => {
+  const rows = Dialogs.modelPickerRows(OPENCODE_PICKER);
+  assert.deepEqual(
+    Dialogs.filterModelRows(rows, "nandu").map((r) => r.index), [3]);
+  assert.deepEqual(
+    Dialogs.filterModelRows(rows, "ÑANDÚ").map((r) => r.index), [3]);
+});
+
+test("filterModelRows: provider is secondary searchable text", () => {
+  const rows = Dialogs.modelPickerRows(OPENCODE_PICKER);
+  assert.deepEqual(
+    Dialogs.filterModelRows(rows, "anthropic").map((r) => r.index), [2]);
+  // Every token must match somewhere (model or provider).
+  assert.deepEqual(
+    Dialogs.filterModelRows(rows, "terra openai").map((r) => r.index), [1]);
+  assert.deepEqual(
+    Dialogs.filterModelRows(rows, "terra anthropic").map((r) => r.index), []);
+});
+
+test("filterModelRows: empty / blank query keeps every row in order", () => {
+  const rows = Dialogs.modelPickerRows(OPENCODE_PICKER);
+  assert.deepEqual(
+    Dialogs.filterModelRows(rows, "").map((r) => r.index), [0, 1, 2, 3, 4]);
+  assert.deepEqual(
+    Dialogs.filterModelRows(rows, "   ").map((r) => r.index), [0, 1, 2, 3, 4]);
+  assert.deepEqual(
+    Dialogs.filterModelRows(rows, null).map((r) => r.index), [0, 1, 2, 3, 4]);
+});
+
+test("filterModelRows: a filtered row keeps the ORIGINAL index a tap sends", () => {
+  const rows = Dialogs.modelPickerRows(OPENCODE_PICKER);
+  const hit = Dialogs.filterModelRows(rows, "glm")[0];
+  assert.equal(hit.index, 4);
+  assert.deepEqual(
+    Dialogs.answerPayload("w1:p4", "oc1", hit.index),
+    { pane_id: "w1:p4", fingerprint: "oc1", option: 4 });
+});
+
+test("model picker search chrome is translatable text", () => {
+  assert.equal(Dialogs.modelSearchPlaceholder(), "Buscar modelo…");
+  assert.equal(Dialogs.modelSearchNone(), "Ningún modelo coincide.");
+});
