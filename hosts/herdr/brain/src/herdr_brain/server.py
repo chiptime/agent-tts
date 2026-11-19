@@ -79,6 +79,7 @@ from .pairing import (
 )
 from .reader import ReaderCache, turn_id
 from .secrets_mask import mask_text
+from .send_tracking import TRACKED_OUTCOMES, SendTracker
 from .send_receipts import SendReceiptStore
 from .spoken_lexicon import (
     DEFAULT_LOCALE,
@@ -1286,6 +1287,25 @@ class HerdNotifier:
             except Exception:  # noqa: BLE001
                 logger.warning("brain message delivery tick failed", exc_info=True)
 
+    def send_track(self, pane_id, label, state, error=None) -> None:
+        """A tracked send's no_start / stalled / store-error push (f7g S7).
+
+        The tracked-send contract (copy, tag rules, immediate dispatch)
+        lives on the coordinator next to the rest of the push copy; the
+        facade stays transport-only for it, so this is the one call site
+        that reaches through to the coordinator the facade composes.
+        """
+        if self._push is None:
+            return
+        coordinator = getattr(self._push, "_coordinator", None)
+        dispatch = getattr(coordinator, "send_track", None)
+        if dispatch is None:
+            return
+        try:
+            dispatch(pane_id, label, state, error=error)
+        except Exception:  # noqa: BLE001 — push is an advisory channel
+            logger.warning("web push send-track hook failed", exc_info=True)
+
 
 def create_app(
     settings: Optional[Settings] = None,
@@ -1545,14 +1565,31 @@ def create_app(
             logger.error("brain messages unavailable — routes answer 503: %s", exc)
             msg_service_ = None
 
+    # Send tracking (parity-f7g): one bounded in-memory tracker per
+    # receipt, fed by the watcher's EXISTING poll (never a second herdr
+    # timer). Wall clock by design — the only domain comparable with
+    # the opencode store's epochs and the receipts' created_at. The
+    # notify hook rides the same HerdrNotifier fan-out as the watcher.
+    herd_notifier = HerdNotifier(push_service_, msg_service_)
+    send_tracker = SendTracker(notify=herd_notifier.send_track)
+
     if watcher is None:
         watcher = AgentWatcher(
             cfg,
             tts_renderer=synth,
-            notifier=HerdNotifier(push_service_, msg_service_),
+            notifier=herd_notifier,
             locale_provider=locale_provider_from(call_context_store),
+            send_tracker=send_tracker,
         )
         watcher.start()
+
+    # Same attach-after-construction seam as the consult sink below:
+    # injected test watchers gain the feed when they offer it, and hub
+    # fakes without publish simply never receive tracker events.
+    if hasattr(watcher, "attach_send_tracker"):
+        watcher.attach_send_tracker(send_tracker)
+    if hasattr(watcher.hub, "publish"):
+        send_tracker.attach_event_sink(watcher.hub.publish)
 
     # Consulting-state events (FR-18 seam): consult start/end rides the
     # SAME SSE announcement hub as agent transitions; the PWA renders
@@ -1649,6 +1686,7 @@ def create_app(
     app = FastAPI(title="herdr-brain", version=__version__)
     app.add_middleware(AccessMiddleware, cfg=cfg, pairing=pairing_store)
     app.state.watcher = watcher
+    app.state.send_tracker = send_tracker
     app.state.daemon_watcher = daemon_watcher
     app.state.transcriber = transcriber
     app.state.live_transcriber = live_transcriber
@@ -3033,7 +3071,10 @@ def create_app(
         outside the steer table — the plain reply stays the only default.
         A remote crew pane (``<host>:<pane>``) proxies to its owner's
         /crew/v1/reply; the owner's outcome mapping travels back
-        verbatim and the write is audited here as the operator's.
+        verbatim and the write is audited here as the operator's (the
+        owner's own brain tracks that send — nothing starts twice).
+        parity-f7g: a receipt outcome of ``sent``/``effective``/
+        ``unknown`` starts one send tracker keyed by the receipt id.
         """
         crew_peer = crew_remote_peer(body.pane_id)
         if crew_peer is not None:
@@ -3078,6 +3119,16 @@ def create_app(
                 receipt_fields["outcome"],
                 detail=receipt_fields["detail"],
                 text_hint=receipt_fields["text_hint"],
+            )
+        if receipt is not None and receipt["outcome"] in TRACKED_OUTCOMES:
+            # parity-f7g S1: one tracker per receipt follows the send to
+            # its outcome. ``effective`` is born terminal (done); the
+            # watcher's poll drives everything in flight.
+            send_tracker.start(
+                receipt["id"],
+                body.pane_id,
+                receipt["outcome"],
+                sent_at=receipt["created_at"],
             )
         # The pane.reply audit line keeps its pinned shape for the plain
         # reply ({"outcome", "text"}); the S12 additions ride along only
@@ -3137,8 +3188,18 @@ def create_app(
         Read-only and bounded like every receipt surface: an optional
         ``pane_id`` filters, no parameter lists everything the in-memory
         store still holds. No text ever travels — the receipt carries
-        the outcome, a masked detail and a masked text tail."""
-        return {"pane_id": pane_id, "receipts": receipt_store.list(pane_id)}
+        the outcome, a masked detail and a masked text tail.
+
+        parity-f7g S4 (additive): a receipt whose send is/was tracked
+        gains a ``track`` object (state, elapsed, activity, error).
+        Receipts without trackers — the pre-f7g universe — serialize
+        exactly as before, byte for byte."""
+        receipts = receipt_store.list(pane_id)
+        for receipt in receipts:
+            track = send_tracker.snapshot(receipt["id"])
+            if track is not None:
+                receipt["track"] = track
+        return {"pane_id": pane_id, "receipts": receipts}
 
     def _live_typed_receipt_or_error(receipt_id: str) -> dict:
         """The receipt a submit/discard may act on, or its HTTP error.

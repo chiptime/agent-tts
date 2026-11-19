@@ -43,6 +43,36 @@ DEFAULT_CLAUDE_ROOT = "~/.claude/projects"
 DEFAULT_ANTIGRAVITY_ROOT = "~/.gemini/antigravity-cli/brain"
 ANTIGRAVITY_SESSION_RE = re.compile(r"^[\da-fA-F-]{16,}$")
 
+# Send-tracking reads (parity-f7g S2): newest store activity after the
+# send, the newest assistant error row after it (same filter as
+# OpencodeTranscript.read_error), and completion evidence. Read-only,
+# each query individually guarded — an older store shape degrades to
+# "no signals" instead of failing the read.
+_OPENCODE_ACTIVITY_MESSAGE_SQL = (
+    "SELECT MAX(time_updated) FROM message"
+    " WHERE session_id = ? AND time_updated > ?"
+)
+_OPENCODE_ACTIVITY_PART_SQL = (
+    "SELECT MAX(time_updated) FROM part"
+    " WHERE session_id = ? AND time_updated > ?"
+)
+_OPENCODE_ERROR_AFTER_SQL = """
+SELECT json_extract(data, '$.role'),
+       json_extract(data, '$.error.name'),
+       json_extract(data, '$.error.data.message')
+FROM message
+WHERE session_id = ? AND time_created > ?
+  AND json_extract(data, '$.error.name') IS NOT NULL
+ORDER BY time_created DESC, id DESC
+LIMIT 1
+"""
+_OPENCODE_ASSISTANT_AFTER_SQL = (
+    "SELECT 1 FROM message"
+    " WHERE session_id = ? AND time_created > ?"
+    " AND json_extract(data, '$.role') = 'assistant'"
+    " LIMIT 1"
+)
+
 # Safety caps matching the voice layer's connectors.
 _CLAUDE_SCAN_CAP_BYTES = 8 * 1024 * 1024
 MAX_TURNS = 50
@@ -202,6 +232,81 @@ class OpencodeTranscript:
         except (sqlite3.Error, OSError):
             return None
         return None
+
+    def read_send_signals(self, session_id: str, since_s: float) -> dict:
+        """Send-tracking signals for one session after ``since_s`` (S2).
+
+        Returns ``{activity_at, error, assistant_after}``:
+
+        - ``activity_at`` — the newest ``time_updated`` of the session's
+          message/part rows updated after the send (epoch seconds);
+        - ``error`` — the newest assistant error row created after the
+          send, with the SAME filter as :meth:`read_error`
+          (``MessageAbortedError`` excluded). Read regardless of what
+          the harness reports: opencode stops a failed turn as an error
+          row while the pane can still claim ``working``;
+        - ``assistant_after`` — whether any assistant message exists
+          after the send (completion evidence once the pane is at rest).
+
+        Never raises: an unreadable or older-shaped store (a missing
+        ``time_updated`` column) reads as no signals — tracking then
+        degrades to Herdr status only.
+        """
+        empty = {"activity_at": None, "error": None, "assistant_after": False}
+        if not session_id or not OPENCODE_SESSION_RE.match(session_id):
+            return dict(empty)
+        if not os.path.isfile(self.db_path):
+            return dict(empty)
+        since_ms = int(float(since_s) * 1000.0)
+        uri = f"{Path(self.db_path).resolve().as_uri()}?mode=ro"
+        try:
+            with sqlite3.connect(uri, uri=True) as conn:
+                activity_ms = None
+                for sql in (
+                    _OPENCODE_ACTIVITY_MESSAGE_SQL,
+                    _OPENCODE_ACTIVITY_PART_SQL,
+                ):
+                    try:
+                        row = conn.execute(sql, (session_id, since_ms)).fetchone()
+                    except sqlite3.Error:
+                        continue  # an older store shape lacks the column
+                    if row and isinstance(row[0], int) and row[0] > 0:
+                        activity_ms = row[0] if activity_ms is None else max(
+                            activity_ms, row[0]
+                        )
+                try:
+                    error_row = conn.execute(
+                        _OPENCODE_ERROR_AFTER_SQL, (session_id, since_ms)
+                    ).fetchone()
+                except sqlite3.Error:
+                    error_row = None
+                try:
+                    assistant_after = conn.execute(
+                        _OPENCODE_ASSISTANT_AFTER_SQL, (session_id, since_ms)
+                    ).fetchone() is not None
+                except sqlite3.Error:
+                    assistant_after = False
+        except (sqlite3.Error, OSError):
+            return dict(empty)
+        error = None
+        if (
+            error_row
+            and error_row[0] == "assistant"
+            and error_row[1]
+            and error_row[1] != "MessageAbortedError"
+        ):
+            name = str(error_row[1])
+            message = (
+                error_row[2]
+                if isinstance(error_row[2], str) and error_row[2].strip()
+                else name
+            )
+            error = {"name": name, "message": message.strip()}
+        return {
+            "activity_at": (activity_ms / 1000.0) if activity_ms else None,
+            "error": error,
+            "assistant_after": assistant_after,
+        }
 
 
 class ClaudeTranscript:

@@ -148,6 +148,41 @@ def cache_warn_payload(label: str, idle_s: float, expires_in_s: float) -> dict:
     }
 
 
+#: Tracked-send notifications (parity-f7g S7): one collapse key per
+#: pane, so a newer send's outcome replaces the older one in the phone's
+#: drawer. Same one-key-per-slot rule as :func:`cache_tag` — the herd
+#: slot (:data:`HERD_TAG`) stays reserved for watcher transitions.
+def send_tag(pane_id: str) -> str:
+    digest = hashlib.sha256(f"send:{pane_id}".encode("utf-8")).digest()
+    return "bs-" + base64.urlsafe_b64encode(digest).decode("ascii")[:5]
+
+
+def send_track_payload(pane_id: str, label: str, state: str, error: Optional[dict] = None) -> Optional[dict]:
+    """The tracked-send notification's payload, or None for states that
+    never push (done/blocked ride the watcher's announcements; unknown
+    words are not invented here). Copy follows the existing push style."""
+    if state == "error":
+        message = (error or {}).get("message") or (error or {}).get("name") or ""
+        title = f"El envío a {label} falló"
+        body = str(message).strip() or "El agente se detuvo con un error."
+    elif state == "no_start":
+        title = f"El envío a {label} no arrancó"
+        body = "El agente no empezó a trabajar en 15 s; revisa el pane."
+    elif state == "stalled":
+        title = f"El envío a {label} parece colgado"
+        body = "Lleva 3 min trabajando sin actividad nueva."
+    else:
+        return None
+    return {
+        "v": PAYLOAD_VERSION,
+        "kind": f"send-{state}",
+        "pane_id": pane_id,
+        "title": title,
+        "body": body,
+        "tag": None,  # stamped by send_track
+    }
+
+
 class NotificationCoordinator:
     """Owns the pending→outstanding lifecycle; emits (payload, topic)."""
 
@@ -217,6 +252,21 @@ class NotificationCoordinator:
             return
 
     # -- flushing -----------------------------------------------------------
+
+    def send_track(self, pane_id: str, label: str, state: str, error: Optional[dict] = None) -> None:
+        """One tracked-send fact (parity-f7g S7), dispatched IMMEDIATELY.
+
+        Deliberately outside the coalescing window: that window exists
+        to fold a flurry of HERD transitions into summaries, while a
+        tracked send is one per-pane fact per send. Tag rules stay the
+        coordinator's own: one collapse key per logical slot, here the
+        pane's latest tracked send (:func:`send_tag`).
+        """
+        payload = send_track_payload(pane_id, label, state, error=error)
+        if payload is None:
+            return
+        payload["tag"] = send_tag(pane_id)
+        self._sink(payload, payload["tag"])
 
     def tick(self, now: Optional[float] = None) -> List[dict]:
         """Sends every window that has elapsed; returns what went out."""

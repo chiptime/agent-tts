@@ -567,6 +567,73 @@ Compatibility: the pre-S12 mapping is unchanged — `delivered` stays
 draft the terminal never took now answers `ok: false` with its receipt
 instead of pretending it was delivered.
 
+### Send tracking: every send reaches a visible outcome (parity-f7g)
+
+A receipt says what the terminal did **at send time**; the tracker
+follows the turn **after** it. Every `POST /pane/reply` whose receipt
+outcome is `sent`, `effective` or `unknown` starts one bounded
+in-memory tracker keyed by the receipt id, fed by the watcher's
+EXISTING poll (no second herdr timer; while any tracker is
+non-terminal the watcher rides its fast 1.5 s cadence).
+
+States: `sent` → `started` (pane seen `working`) → `working` → one
+terminal `done` | `blocked` | `error` | `no_start` | `pane_gone` |
+`superseded` | `expired`. `effective` receipts (the turn completed
+inside the 3 s send window) are born terminal `done`. A newer send to
+the same pane supersedes the older tracker. `stalled` is a
+NON-terminal flag that clears when activity resumes. Thresholds
+(accepted defaults): `no_start` after **15 s** without the pane ever
+working and without completion evidence; `stalled` (opencode only)
+after **3 min** of `working` with no new store activity; every
+tracker ends after a hard cap of **30 min** as `expired` — nothing
+leaks.
+
+For **opencode** panes the tracker also reads the local store
+(read-only SQLite, `mode=ro`, never raises): activity is the newest
+`time_updated` of the session's rows after the send; an assistant
+error row after the send ends the tracker `error` **even while herdr
+still says `working`** (a deliberate exception to `read_session_error`
+— same `MessageAbortedError` filter); an assistant message completed
+after the send while the pane rests means `done`. Other harnesses
+track on herdr status alone. Error text is masked by the secret masker
+before it leaves the server.
+
+**Transport (the PWA contract).** Every state change publishes one
+SSE event on the existing hub:
+
+```json
+{"type": "send.track", "receipt_id": "rct-…", "pane_id": "w1:p2",
+ "state": "working", "elapsed_s": 12.3, "last_activity_at": 1732000012.4,
+ "stalled": true, "error": {"name": "APIError", "message": "…"}}
+```
+
+(`last_activity_at` only when known, `stalled` only when true, `error`
+only on `error` — epoch seconds, wall clock.) `working` is announced
+once; `elapsed_s`/`last_activity_at` keep advancing in the receipts
+listing, which every receipt gains **additively**:
+
+```json
+GET /pane/receipts?pane_id=w1:p2  →  {"receipts": [{"id": "rct-…", …,
+  "track": {"state": "working", "sent_at": 1732000000.0, "elapsed_s": 12.3,
+            "stalled": false}}]}
+```
+
+Receipts without trackers (everything pre-f7g, and legacy tool
+doubles) serialize exactly as before — no `track` key at all.
+
+**Push.** `no_start`, `stalled` episodes and opencode errors caught
+while herdr says `working` dispatch a WebPush through the push
+coordinator's tracked-send slot (one collapse key per pane, Spanish
+copy: «El envío a … falló / no arrancó / parece colgado»). `done`,
+`blocked` and herdr-derived errors never push from the tracker — the
+watcher's announcements already cover them; nothing double-notifies.
+
+**Watcher fixes that came with it (S6).** The 60 s debounce no longer
+swallows a NEW turn's done/error (a pane that went back to `working`
+announces again; idle-flapping stays debounced), and a pane that
+vanishes while a send is still in flight ends its tracker `pane_gone`
+instead of being retracted as «Resuelto: ya no necesita tu atención».
+
 ### Key pad: answering a blocked agent's dialog
 
 That dialog is answered with **keys** instead, through `POST /pane/keys`

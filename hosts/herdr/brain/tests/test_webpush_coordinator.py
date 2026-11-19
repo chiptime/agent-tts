@@ -15,6 +15,7 @@ from herdr_brain.webpush.coordinator import (
     NotificationCoordinator,
     cache_tag,
     cache_warn_payload,
+    send_tag,
 )
 from herdr_brain.webpush.sender import topic_sendable
 
@@ -211,3 +212,76 @@ class TestCacheTag:
         tag = cache_tag("w14:p2")
         assert tag == cache_tag("w14:p2")
         assert topic_sendable(tag)
+
+
+# ── parity-f7g S7: tracked-send notifications ────────────────────────────────
+
+
+class TestSendTrack:
+    """One tracked-send fact per dispatch: no coalescing window (the
+    window folds HERD flurries; a send is one per-pane fact), one
+    collapse key per pane so a newer send replaces the older one."""
+
+    def test_error_says_the_send_failed_with_the_message(self, captured):
+        events, sink = captured
+        coord = NotificationCoordinator(window_s=WINDOW, clock=lambda: 100.0, sink=sink)
+        coord.send_track(
+            "w1:p1", "opencode repo", "error",
+            error={"name": "APIError", "message": "usage limit reached"},
+        )
+        assert len(events) == 1  # immediate: no tick() needed
+        payload = events[0]["payload"]
+        assert payload["v"] == 1
+        assert payload["kind"] == "send-error"
+        assert payload["pane_id"] == "w1:p1"
+        assert payload["title"] == "El envío a opencode repo falló"
+        assert payload["body"] == "usage limit reached"
+        assert payload["tag"] == send_tag("w1:p1")
+        assert events[0]["topic"] == send_tag("w1:p1")
+
+    def test_error_without_a_message_still_says_something(self, captured):
+        events, sink = captured
+        coord = NotificationCoordinator(window_s=WINDOW, clock=lambda: 100.0, sink=sink)
+        coord.send_track("w1:p1", "opencode repo", "error", error=None)
+        assert events[0]["payload"]["body"]  # never an empty push body
+
+    def test_no_start_names_the_fifteen_second_rule(self, captured):
+        events, sink = captured
+        coord = NotificationCoordinator(window_s=WINDOW, clock=lambda: 100.0, sink=sink)
+        coord.send_track("w1:p1", "claude repo", "no_start")
+        payload = events[0]["payload"]
+        assert payload["kind"] == "send-no_start"
+        assert payload["title"] == "El envío a claude repo no arrancó"
+        assert "15 s" in payload["body"]
+
+    def test_stalled_names_the_three_minute_quiet(self, captured):
+        events, sink = captured
+        coord = NotificationCoordinator(window_s=WINDOW, clock=lambda: 100.0, sink=sink)
+        coord.send_track("w1:p1", "claude repo", "stalled")
+        payload = events[0]["payload"]
+        assert payload["kind"] == "send-stalled"
+        assert payload["title"] == "El envío a claude repo parece colgado"
+        assert "3 min" in payload["body"]
+
+    def test_unknown_states_never_push(self, captured):
+        events, sink = captured
+        coord = NotificationCoordinator(window_s=WINDOW, clock=lambda: 100.0, sink=sink)
+        coord.send_track("w1:p1", "claude repo", "done")
+        coord.send_track("w1:p1", "claude repo", "pane_gone")
+        assert events == []
+
+    def test_send_track_never_opens_the_herd_window(self, captured):
+        events, sink = captured
+        coord = NotificationCoordinator(window_s=WINDOW, clock=lambda: 100.0, sink=sink)
+        coord.send_track("w1:p1", "claude repo", "stalled")
+        # A later herd transition still coalesces on its own window.
+        coord.transition("w1:p1", "claude repo", "done", text="fin", now=100.0)
+        coord.tick(now=100.0 + WINDOW + 0.1)
+        kinds = [e["payload"]["kind"] for e in events]
+        assert kinds == ["send-stalled", "done"]
+
+    def test_send_tags_follow_the_coordinators_slot_rules(self):
+        assert send_tag("w1:p1") != send_tag("w2:p2")
+        assert send_tag("w1:p1") == send_tag("w1:p1")
+        assert send_tag("w1:p1") != cache_tag("w1:p1")  # its own slot
+        assert topic_sendable(send_tag("w9:p9"))
