@@ -801,13 +801,17 @@ class SessionNewRequest(BaseModel):
     command line, no agent argv — the launch itself is
     ``BrainTools.create_session``, byte-identical to the voice path.
     ``request_id`` (S2, doc 03 §4) is the client-minted idempotency
-    key: present, a repeat replays the first successful response."""
+    key: present, a repeat replays the first successful response.
+    ``workspace_id`` (S1b) optionally targets the tab INSIDE a listed
+    herdr workspace — the cwd-inside-roots gate stays the launch
+    authority; the workspace only says WHERE the tab lands."""
 
     harness: str = Field(min_length=1, max_length=64)
     cwd: str = Field(min_length=1, max_length=1024)
     title: Optional[str] = Field(default=None, max_length=200)
     task: Optional[str] = Field(default=None, max_length=8_000)
     request_id: Optional[str] = Field(default=None, max_length=128)
+    workspace_id: Optional[str] = Field(default=None, max_length=128)
 
 
 class SessionResumeRequest(BaseModel):
@@ -816,11 +820,14 @@ class SessionResumeRequest(BaseModel):
     of its own session ids. The folder is NEVER client input — it is
     read from the transcript store and must fall inside the operator's
     roots, or the resume is refused rather than guessed.
-    ``request_id`` is the same S2 idempotency key as /session/new."""
+    ``request_id`` is the same S2 idempotency key as /session/new;
+    ``workspace_id`` (S1b) optionally targets the tab inside a listed
+    herdr workspace."""
 
     harness: str = Field(min_length=1, max_length=64)
     session_id: str = Field(min_length=1, max_length=256)
     request_id: Optional[str] = Field(default=None, max_length=128)
+    workspace_id: Optional[str] = Field(default=None, max_length=128)
 
 
 #: Live-pane cwds the "New" sheet's folder picker offers, at most.
@@ -897,6 +904,90 @@ def _recent_cwds(herd_entries, roots, cap: int = SESSION_ROOTS_RECENTS_CAP) -> l
         key=lambda item: (item[1] is None, item[1] if item[1] is not None else 0.0),
     )
     return [{"cwd": path} for path, _ in ordered[:cap]]
+
+
+def _space_cwd(candidates: list) -> Optional[str]:
+    """The resolved cwd of a workspace's best live pane, or None.
+
+    Ranking (S1b): the focused pane first, then the freshest
+    ``last_turn_age_s`` (an unknown age sorts last), stable against the
+    herd's listing order. The cwd is resolved like :func:`_recent_cwds`
+    resolves one; an unresolvable path yields None — never a guess.
+    """
+    if not candidates:
+        return None
+
+    def rank(entry: dict) -> tuple:
+        age = (entry or {}).get("last_turn_age_s")
+        if not isinstance(age, (int, float)):
+            age = None
+        return (
+            0 if (entry or {}).get("focused") else 1,
+            age is None,
+            age if age is not None else 0.0,
+        )
+
+    best = min(candidates, key=rank)
+    cwd = str((best or {}).get("cwd") or "").strip()
+    if not cwd:
+        return None
+    try:
+        return str(Path(cwd).resolve())
+    except OSError:
+        return None
+
+
+def _workspace_spaces(workspaces, herd_entries, roots) -> list:
+    """EVERY workspace as a picker space (parity-f7c S1b, L11).
+
+    The CLI's workspace listing carries no cwd, so each space's folder
+    is derived from its own live agent panes (the pane id's workspace
+    prefix, e.g. ``w11:p2`` ↔ workspace ``w11``). A workspace with NO
+    live pane is still listed — with ``cwd: null`` and
+    ``inside_roots: false`` (the flag is only meaningful when the cwd
+    is known); so is a workspace whose pane sits outside the roots:
+    hiding spaces is never this listing's job, pickability is the
+    PWA's. Order: the listing's own (sorted by workspace number).
+    """
+    root_paths = [Path(root.path) for root in roots]
+    by_workspace: dict = {}
+    for entry in herd_entries or []:
+        pane_id = str((entry or {}).get("pane_id") or "")
+        cwd = str((entry or {}).get("cwd") or "").strip()
+        if not pane_id or ":" not in pane_id or not cwd:
+            continue
+        by_workspace.setdefault(pane_id.split(":", 1)[0], []).append(entry)
+    spaces = []
+    for workspace in workspaces or []:
+        cwd = _space_cwd(by_workspace.get(workspace.workspace_id, []))
+        inside = bool(
+            cwd
+            and any(cwd == root_path or root_path in Path(cwd).parents
+                    for root_path in root_paths)
+        )
+        spaces.append({
+            "workspace_id": workspace.workspace_id,
+            "label": workspace.label,
+            "cwd": cwd,
+            "inside_roots": inside,
+            "focused": workspace.focused,
+        })
+    return spaces
+
+
+def _known_workspace(tools, workspace_id: str) -> bool:
+    """Whether the workspace id is one the live listing named.
+
+    The listing itself degrades (:meth:`BrainTools.list_workspaces`
+    never raises); this guard only fail-closes the launch — a workspace
+    the server cannot vouch for targets nothing."""
+    try:
+        return any(
+            workspace.workspace_id == workspace_id
+            for workspace in (tools.list_workspaces() or [])
+        )
+    except Exception:  # noqa: BLE001 — a read never 500s the launch gate
+        return False
 
 
 def _opencode_http_error(exc: OpenCodeError) -> HTTPException:
@@ -3598,19 +3689,26 @@ def create_app(
 
     @app.get("/session/roots")
     def session_roots() -> dict:
-        """The "New" sheet's pickers in one read: roots + recents + harnesses.
+        """The "New" sheet's pickers in one read: roots + spaces +
+        recents + harnesses.
 
         Roots come from the operator's validated ``roots.toml`` (row by
-        row, mtime reload); recents are the deduplicated cwds of live
-        panes that fall INSIDE a configured root, newest first, capped;
-        the harness list is the CLOSED registry list, folded here so
-        the sheet opens with a single round-trip. Unconfigured roots
-        degrade honestly to empty lists — the WRITE route is the one
-        that fails closed."""
+        row, mtime reload); spaces are EVERY herdr workspace (S1b, L11)
+        with a cwd derived from its own live panes — including the ones
+        with no live pane (``cwd: null``); recents are the deduplicated
+        cwds of live panes that fall INSIDE a configured root, newest
+        first, capped; the harness list is the CLOSED registry list,
+        folded here so the sheet opens with a single round-trip.
+        Unconfigured roots or a failed workspace listing degrade
+        honestly to empty lists — the WRITE route is the one that
+        fails closed."""
         roots = operator_config.roots()
-        recents = _recent_cwds(tools.herd(), roots) if roots else []
+        herd = tools.herd()
+        recents = _recent_cwds(herd, roots) if roots else []
+        spaces = _workspace_spaces(tools.list_workspaces(), herd, roots)
         return {
             "roots": [{"path": root.path, "label": root.label} for root in roots],
+            "spaces": spaces,
             "recents": recents,
             "harnesses": list(launchable_harnesses()),
         }
@@ -3654,30 +3752,43 @@ def create_app(
         resolved = _resolved_within_roots(body.cwd, roots)
         if resolved is None:
             refuse("root_not_allowed")
+        workspace_id = (body.workspace_id or "").strip() or None
+        if workspace_id is not None and not _known_workspace(tools, workspace_id):
+            # S1b: after the unchanged cwd gate — a workspace the
+            # listing never named targets nothing.
+            refuse("unknown_workspace")
         title = (body.title or "").strip() or f"{harness} · {Path(resolved).name}"
         task = (body.task or "").strip()
         request_id = (body.request_id or "").strip() or None
 
         def do_launch() -> dict:
-            result = tools.create_session(harness, title, task, resolved)
+            if workspace_id:
+                result = tools.create_session(
+                    harness, title, task, resolved, workspace_id=workspace_id
+                )
+            else:
+                result = tools.create_session(harness, title, task, resolved)
             # The same pane handle the approve replay reads: the created
             # AgentInfo, when the double kept the property.
             created = getattr(tools, "last_created", None)
             created = created() if callable(created) else None
             pane_id = created.pane_id if created is not None else None
             outcome = "error" if result.startswith("error") else "executed"
+            detail = {
+                "outcome": outcome,
+                "harness": harness,
+                "cwd": resolved,
+                # Lengths only — the same discipline as /ask (doc 02 §3).
+                "chars": {"title": len(title), "task": len(task)},
+                "pane_id": pane_id,
+            }
+            if workspace_id:
+                detail["workspace_id"] = workspace_id
             audit_log.record({
                 "action": "session.new",
                 "pane_id": pane_id,
                 "device": audit_device(request),
-                "detail": {
-                    "outcome": outcome,
-                    "harness": harness,
-                    "cwd": resolved,
-                    # Lengths only — the same discipline as /ask (doc 02 §3).
-                    "chars": {"title": len(title), "task": len(task)},
-                    "pane_id": pane_id,
-                },
+                "detail": detail,
             })
             if outcome == "error":
                 raise HTTPException(status_code=502, detail=result)
@@ -3761,25 +3872,38 @@ def create_app(
             # operator's roots: both refused — the session's folder is
             # never guessed and never client input.
             refuse("cwd_unknown" if not raw_cwd else "root_not_allowed")
+        workspace_id = (body.workspace_id or "").strip() or None
+        if workspace_id is not None and not _known_workspace(tools, workspace_id):
+            # S1b, after the unchanged validation order: an unlisted
+            # workspace targets nothing.
+            refuse("unknown_workspace")
         title = str(target.get("title") or "")
         request_id = (body.request_id or "").strip() or None
 
         def do_resume() -> dict:
-            result = tools.resume_session(harness, session_id, resolved, title)
+            if workspace_id:
+                result = tools.resume_session(
+                    harness, session_id, resolved, title, workspace_id=workspace_id
+                )
+            else:
+                result = tools.resume_session(harness, session_id, resolved, title)
             created = getattr(tools, "last_created", None)
             created = created() if callable(created) else None
             pane_id = created.pane_id if created is not None else None
             outcome = "error" if result.startswith("error") else "executed"
+            detail = {
+                "outcome": outcome,
+                "harness": harness,
+                "session_id": session_id,
+                "pane_id": pane_id,
+            }
+            if workspace_id:
+                detail["workspace_id"] = workspace_id
             audit_log.record({
                 "action": "session.resume",
                 "pane_id": pane_id,
                 "device": audit_device(request),
-                "detail": {
-                    "outcome": outcome,
-                    "harness": harness,
-                    "session_id": session_id,
-                    "pane_id": pane_id,
-                },
+                "detail": detail,
             })
             if outcome == "error":
                 raise HTTPException(status_code=502, detail=result)

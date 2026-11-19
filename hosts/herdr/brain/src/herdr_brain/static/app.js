@@ -8261,6 +8261,37 @@
       return { roots: rootRows, recents: recentRows };
     }
 
+    /* Space rows (parity-f7c S1b, L11): EVERY workspace the server
+     * listed — including the ones with no live pane. The server
+     * derived each cwd from the space's own panes; a space without a
+     * known cwd, or one outside the roots, is still LISTED, only
+     * unpickable (pickability is this sheet's concern, the launch
+     * gate stays the server's cwd-inside-roots check). */
+    function spaceRows(spaces) {
+      var rows = [];
+      var valid = Array.isArray(spaces) ? spaces : [];
+      for (var i = 0; i < valid.length; i++) {
+        var row = valid[i];
+        if (!row || typeof row !== "object") continue;
+        var id = row.workspace_id;
+        if (typeof id !== "string" || !id) continue;
+        var label = typeof row.label === "string" && row.label ? row.label : id;
+        var cwd = typeof row.cwd === "string" && row.cwd ? row.cwd : null;
+        var reason = "";
+        if (!cwd) reason = "cwd_unknown";
+        else if (row.inside_roots !== true) reason = "outside_roots";
+        rows.push({
+          workspace_id: id,
+          label: label,
+          cwd: cwd,
+          pickable: !reason,
+          reason: reason,
+          kind: "space",
+        });
+      }
+      return rows;
+    }
+
     /* The Launch button gate: a harness AND a cwd are required; with no
      * roots configured nothing can launch (the server refuses too —
      * this gate only keeps the button honest). */
@@ -8331,6 +8362,7 @@
 
     return {
       folderChoices: folderChoices,
+      spaceRows: spaceRows,
       formState: formState,
       taskGuard: taskGuard,
       mintRequestId: mintRequestId,
@@ -8353,7 +8385,9 @@
   var newResumeHarnessSel = $("new-resume-harness");
   var newResumeListEl = $("new-resume-list");
   var newSheetOpen = false;
-  var newSessionState = { harness: "", cwd: "", rootsConfigured: false, resumeHarness: "" };
+  var newSessionState = {
+    harness: "", cwd: "", workspaceId: "", rootsConfigured: false, resumeHarness: "",
+  };
   var newArmedLaunchers = {};
   var NEW_ARM_TIMEOUT_MS = 3000;
   var nsModel = newSessionModel();
@@ -8396,9 +8430,9 @@
   }
 
   /* The sheet answers to the operator LOOKING at it: every open
-   * refetches roots + recents + harnesses (one round-trip) and the
-   * launcher rows (the same /operator/config the dock reads). The
-   * resume picker rides /sessions/recent's enabled-harness list. */
+   * refetches roots + spaces + recents + harnesses (one round-trip)
+   * and the launcher rows (the same /operator/config the dock reads).
+   * The resume picker rides /sessions/recent's enabled-harness list. */
   function refreshNewSheet() {
     readFetch("/session/roots")
       .then(function (resp) { return resp.json(); })
@@ -8407,7 +8441,7 @@
         newSessionState.rootsConfigured =
           Array.isArray(body.roots) && body.roots.length > 0;
         renderNewHarnesses(body.harnesses || []);
-        renderNewFolders(body.roots || [], body.recents || []);
+        renderNewFolders(body.roots || [], body.recents || [], body.spaces || []);
         showNewRootsEmpty(!newSessionState.rootsConfigured);
         updateNewLaunchGate();
       })
@@ -8442,15 +8476,36 @@
   }
 
   function folderButton(entry) {
+    var isSpace = entry.kind === "space";
     var btn = document.createElement("button");
     btn.type = "button";
     btn.className = "ns-folder";
-    btn.setAttribute("data-path", entry.path);
-    btn.setAttribute("aria-pressed", newSessionState.cwd === entry.path ? "true" : "false");
-    btn.title = entry.path;
+    if (isSpace) btn.setAttribute("data-space", entry.workspace_id);
+    else btn.setAttribute("data-path", entry.path);
+    var offeredCwd = isSpace ? entry.cwd : entry.path;
+    btn.setAttribute(
+      "aria-pressed", newSessionState.cwd && offeredCwd === newSessionState.cwd ? "true" : "false"
+    );
+    btn.title = offeredCwd || entry.label;
+    /* Text node only: labels are server data, never markup. */
     btn.textContent = entry.label;
+    if (isSpace && !entry.pickable) {
+      /* Listed but unpickable (L11): a short reason badge, and the
+       * button itself is disabled so it can never become the cwd. */
+      btn.disabled = true;
+      var badge = document.createElement("span");
+      badge.className = "ns-space-reason";
+      badge.textContent = t(entry.reason === "outside_roots"
+        ? "newsession.space_outside_roots" : "newsession.space_cwd_unknown");
+      btn.appendChild(badge);
+      return btn;
+    }
     btn.addEventListener("click", function () {
-      newSessionState.cwd = entry.path;
+      /* A space sets BOTH the cwd and the workspace targeting; a root
+       * or recent is a plain folder pick — it clears any workspace
+       * selection (the tab lands in the current workspace). */
+      newSessionState.cwd = offeredCwd;
+      newSessionState.workspaceId = isSpace ? entry.workspace_id : "";
       var buttons = newFoldersEl.querySelectorAll("button");
       for (var i = 0; i < buttons.length; i++) {
         buttons[i].setAttribute("aria-pressed", buttons[i] === btn ? "true" : "false");
@@ -8460,9 +8515,20 @@
     return btn;
   }
 
-  function renderNewFolders(roots, recents) {
+  function renderNewFolders(roots, recents, spaces) {
     while (newFoldersEl.firstChild) newFoldersEl.removeChild(newFoldersEl.firstChild);
     var choices = nsModel.folderChoices(roots, recents);
+    var spaceList = nsModel.spaceRows(spaces);
+    /* Espacios first (S1b): every workspace, pickable or not. */
+    if (spaceList.length) {
+      var spacesHead = document.createElement("span");
+      spacesHead.className = "ns-group";
+      spacesHead.textContent = t("newsession.folder_spaces");
+      newFoldersEl.appendChild(spacesHead);
+      for (var k = 0; k < spaceList.length; k++) {
+        newFoldersEl.appendChild(folderButton(spaceList[k]));
+      }
+    }
     if (choices.roots.length) {
       var rootsHead = document.createElement("span");
       rootsHead.className = "ns-group";
@@ -8486,8 +8552,21 @@
     if (newSessionState.cwd) {
       var stillOffered = choices.roots.concat(choices.recents).some(function (row) {
         return row.path === newSessionState.cwd;
+      }) || spaceList.some(function (row) {
+        return row.cwd === newSessionState.cwd;
       });
       if (!stillOffered) newSessionState.cwd = "";
+    }
+    /* The workspace targeting is stricter than the cwd: the picked
+     * space itself must still be offered WITH this cwd — the space
+     * vanishing (or its pane moving) drops the targeting and keeps
+     * the launch in the current workspace instead of 422ing. */
+    if (newSessionState.workspaceId) {
+      var spaceStill = spaceList.some(function (row) {
+        return row.workspace_id === newSessionState.workspaceId &&
+          row.cwd === newSessionState.cwd;
+      });
+      if (!spaceStill) newSessionState.workspaceId = "";
     }
     updateNewLaunchGate();
   }
@@ -8750,6 +8829,10 @@
       body: JSON.stringify({
         harness: newSessionState.harness,
         cwd: newSessionState.cwd,
+        /* S1b: only a picked space targets a workspace — a root or
+         * recent pick sends null and the tab lands in the current
+         * workspace, exactly as before. */
+        workspace_id: newSessionState.workspaceId || null,
         title: title || null,
         task: taskText || null,
         /* Fresh per tap (S2): a repeat of this same request_id replays

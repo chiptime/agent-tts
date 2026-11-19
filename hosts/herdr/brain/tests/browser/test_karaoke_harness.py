@@ -79,8 +79,15 @@ EXPECTED_DIGESTS = {
     # .ns-resume chip style (index.html) and the newsession.resume*
     # keys (both i18n). The resume fetches ride readFetch on OPEN, so
     # boot-time traffic is unchanged.
+    # Re-pinned for parity-f7c S1b (spaces): the folder picker's
+    # "Espacios" group — every workspace from /session/roots' new
+    # spaces array (spaceRows in the pure model, disabled entries with
+    # a reason badge, workspace_id in the POST /session/new body) and
+    # the newsession.folder_spaces / space_* keys (app.js + both i18n).
+    # The spaces ride the same /session/roots OPEN fetch, so boot-time
+    # traffic is unchanged.
     "/": "330ba355720a0ac8409ba76039b7955b6fba57838fa2a54d885ba0dad65c85da",
-    "/app.js": "2d9eae273055eefe45963974c30299b3890b57efe3df6850a2ec2f481df2abac",
+    "/app.js": "d1b86fbe21d8e3b5c211cd8c085f37d35bd91daa9c59234bcd2cf75a7f6c84ed",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "ca7b22c52c8160a3ac577f694eb65ec0798b77cd6ac179a5c567dffdc1fb2ba9",
     "/dialogs.js": "04e7f198b51e05b4d73fcc7a07bb4d8dd8b25141258403449e04baf641141c67",
@@ -101,8 +108,8 @@ EXPECTED_DIGESTS = {
     # update notice, operator dock, offline-shell sw.js.
     "/dock.js": "4a5dc20d575c3c9e5f098116fc9314f24297b2934cb3142bc885b6e1d0155adb",
     "/i18n.js": "8bcd2ceb9f56109afaa0ec158e1a6f002799c4a983261b9d58cd38723c06719f",
-    "/i18n/en.js": "bc637c2413c8a9529061e355431345f5b156d45132340da05bc46c602bb73003",
-    "/i18n/es.js": "91fd59a4785a3dd4e4342a5c77a043426c7859e24827f803803c2a3f65376941",
+    "/i18n/en.js": "b91d26c9afb320eb30047596c347d26bb909f5bd1991fd6debb38f38b6ef4a21",
+    "/i18n/es.js": "de72eb26f835baa936b9b6426b4c072822b2f772ef01771302609d666c839b1c",
     "/settings.js": "1c2cf3ed92bf959c19ecde0107618b8d1ff0690d2c6fa7c842a2fdc551e05f72",
     "/updates.js": "7f87250cf6cd9c2b8944da632fe036d0c18a87a90f48f70b84e18bcd338cfa84",
     "/calls.js": "9b9ec591709d282c6e673770b2ffc1ed1562650104d8e8393126d186aa764165",

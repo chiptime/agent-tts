@@ -244,6 +244,82 @@ test("only server-offered resume harnesses become options", () => {
     "the picker must render the server's enabled list verbatim");
 });
 
+/* ---- spaceRows: every workspace is offered (parity-f7c S1b, L11) ---- */
+
+test("space rows list EVERY workspace, panes or not", () => {
+  const rows = model.spaceRows([
+    { workspace_id: "w1", label: "main", cwd: "/srv/work", inside_roots: true },
+    { workspace_id: "w9", label: "vacía", cwd: null, inside_roots: false },
+  ]);
+  assert.deepEqual(rows, [
+    {
+      workspace_id: "w1", label: "main", cwd: "/srv/work",
+      pickable: true, reason: "", kind: "space",
+    },
+    {
+      workspace_id: "w9", label: "vacía", cwd: null,
+      pickable: false, reason: "cwd_unknown", kind: "space",
+    },
+  ]);
+});
+
+test("a known cwd outside the roots is listed but unpickable", () => {
+  const rows = model.spaceRows([
+    { workspace_id: "w2", label: "lab", cwd: "/srv/elsewhere", inside_roots: false },
+  ]);
+  assert.equal(rows[0].pickable, false);
+  assert.equal(rows[0].reason, "outside_roots");
+  assert.equal(rows[0].cwd, "/srv/elsewhere");
+});
+
+test("malformed space rows never become buttons", () => {
+  const rows = model.spaceRows([
+    null, "junk", 7,
+    { label: "no id" },
+    { workspace_id: "" , label: "empty id" },
+    { workspace_id: "w3", label: "", cwd: "/srv/work", inside_roots: true },
+  ]);
+  assert.deepEqual(rows, [{
+    workspace_id: "w3", label: "w3", cwd: "/srv/work",
+    pickable: true, reason: "", kind: "space",
+  }]);
+});
+
+test("an absent spaces array degrades to no rows", () => {
+  assert.deepEqual(model.spaceRows(undefined), []);
+  assert.deepEqual(model.spaceRows(null), []);
+});
+
+/* ---- space wiring pins (S1b) ---- */
+
+test("the sheet renders the server's spaces alongside roots and recents", () => {
+  assert.ok(
+    /renderNewFolders\(body\.roots \|\| \[\], body\.recents \|\| \[\], body\.spaces \|\| \[\]\)/.test(appSrc),
+    "renderNewFolders must receive the /session/roots spaces",
+  );
+  assert.ok(/t\("newsession\.folder_spaces"\)/.test(appSrc),
+    "the Espacios group must carry its own i18n key");
+});
+
+test("a space selection sets both cwd and workspace_id", () => {
+  assert.ok(/newSessionState\.workspaceId = /.test(appSrc),
+    "selecting a space must set newSessionState.workspaceId");
+  assert.ok(/newSessionState\.workspaceId = ""/.test(appSrc),
+    "selecting a root/recent must clear the workspace targeting");
+});
+
+test("an unpickable space renders disabled with its reason badge", () => {
+  assert.ok(/btn\.disabled = true/.test(appSrc),
+    "spaces without a pickable cwd must render disabled");
+  assert.ok(/newsession\.space_cwd_unknown|newsession\.space_outside_roots/.test(appSrc),
+    "the reason badge must ride the i18n keys");
+});
+
+test("the launch body carries the picked workspace_id", () => {
+  assert.ok(/workspace_id:\s*newSessionState\.workspaceId \|\| null/.test(appSrc),
+    "POST /session/new must send the picked space's workspace_id (null when none)");
+});
+
 /* ---- i18n: every new key exists in both locales ---- */
 
 const NEW_KEYS = [
@@ -256,6 +332,8 @@ const NEW_KEYS = [
   "newsession.resume", "newsession.resume_pick", "newsession.resume_empty",
   "newsession.resumed", "newsession.resume_failed",
   "newsession.err_resume_harness", "newsession.err_resume_cwd",
+  "newsession.folder_spaces", "newsession.space_cwd_unknown",
+  "newsession.space_outside_roots",
 ];
 
 test("es and en carry the full newsession key set", () => {

@@ -13,7 +13,7 @@ from __future__ import annotations
 import subprocess
 from typing import List, Optional
 
-from ...herdr import AgentInfo, HerdrClient
+from ...herdr import AgentInfo, HerdrClient, WorkspaceInfo
 from ..capabilities import Capabilities, MuxProbe
 
 #: Every cell herdr has, each backed by the verified CLI surface pinned
@@ -73,6 +73,12 @@ class HerdrMuxAdapter:
     def list_agents(self) -> List[AgentInfo]:
         return self._client.list_agents()
 
+    def list_workspaces(self) -> List[WorkspaceInfo]:
+        # herdr-only surface (parity-f7c S1b): deliberately NOT on the
+        # port protocol — tmux/zellij have no workspace listing to
+        # delegate, and callers probe with getattr before riding it.
+        return self._client.list_workspaces()
+
     def active_agent(self) -> Optional[AgentInfo]:
         return self._client.active_agent()
 
@@ -96,7 +102,16 @@ class HerdrMuxAdapter:
     def send_prompt(self, pane_id: str, text: str, timeout_ms: Optional[int] = None) -> dict:
         return self._client.send_prompt(pane_id, text, timeout_ms=timeout_ms)
 
-    def create_tab(self, label: str, cwd: Optional[str] = None) -> dict:
+    def create_tab(
+        self,
+        label: str,
+        cwd: Optional[str] = None,
+        workspace_id: Optional[str] = None,
+    ) -> dict:
+        # workspace_id rides ONLY when set: a client double with the
+        # pre-S1b two-argument signature keeps working verbatim.
+        if workspace_id:
+            return self._client.create_tab(label, cwd=cwd, workspace_id=workspace_id)
         return self._client.create_tab(label, cwd=cwd)
 
     def start_agent(

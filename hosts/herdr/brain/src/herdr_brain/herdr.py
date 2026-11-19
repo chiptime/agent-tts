@@ -102,6 +102,61 @@ class AgentInfo:
     focused: bool
 
 
+@dataclass(frozen=True)
+class WorkspaceInfo:
+    """One workspace as reported by ``herdr workspace list``.
+
+    The CLI's workspace_list carries NO cwd (probed live, parity-f7c
+    S1b): a space's folder is derived by the caller from its live
+    agent panes (``AgentInfo.pane_id`` prefixes with the workspace
+    id, e.g. pane ``w11:p2`` ↔ workspace ``w11``).
+    """
+
+    workspace_id: str
+    label: str
+    number: int
+    focused: bool
+
+
+def parse_workspace_list(raw: str) -> List[WorkspaceInfo]:
+    """Parses NDJSON output of ``herdr workspace list``.
+
+    Same discipline as :func:`parse_agent_list`: returns every entry
+    whose ``result.workspaces`` array is present, tolerates leading
+    noise lines that are not JSON, and preserves the CLI's own order
+    (the caller owns the sort).
+    """
+    workspaces: List[WorkspaceInfo] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        result = payload.get("result") if isinstance(payload, dict) else None
+        entries = result.get("workspaces") if isinstance(result, dict) else None
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                number = int(entry.get("number", 0) or 0)
+            except (TypeError, ValueError):
+                number = 0
+            workspaces.append(
+                WorkspaceInfo(
+                    workspace_id=str(entry.get("workspace_id", "")),
+                    label=str(entry.get("label", "")),
+                    number=number,
+                    focused=bool(entry.get("focused", False)),
+                )
+            )
+    return workspaces
+
+
 def parse_agent_list(raw: str) -> List[AgentInfo]:
     """Parses NDJSON output of ``herdr agent list`` into AgentInfo entries.
 
@@ -215,6 +270,18 @@ class HerdrClient:
         proc = self._run_cli(["agent", "list"], timeout_s=15)
         return parse_agent_list(proc.stdout)
 
+    def list_workspaces(self) -> List[WorkspaceInfo]:
+        """Every workspace, sorted by its ``number``.
+
+        Verified CLI shape (probed live, parity-f7c S1b):
+        ``herdr workspace list`` prints one NDJSON success envelope
+        whose ``result`` is the ``workspace_list`` variant. Includes
+        workspaces with NO live pane — hiding them is a caller
+        decision, never this listing's.
+        """
+        proc = self._run_cli(["workspace", "list"], timeout_s=15)
+        return sorted(parse_workspace_list(proc.stdout), key=lambda w: w.number)
+
     def active_agent(self) -> Optional[AgentInfo]:
         return pick_active(self.list_agents())
 
@@ -304,20 +371,31 @@ class HerdrClient:
             raise HerdrError("refusing to send empty text")
         self._run_cli(["pane", "send-text", pane_id, clean], timeout_s=15)
 
-    def create_tab(self, label: str, cwd: Optional[str] = None) -> dict:
+    def create_tab(
+        self,
+        label: str,
+        cwd: Optional[str] = None,
+        workspace_id: Optional[str] = None,
+    ) -> dict:
         """Creates a new tab and returns ``{"tab_id", "pane_id"}``.
 
-        Verified CLI shape: ``herdr tab create --label <TEXT> [--cwd <PATH>]``
-        prints the API success envelope whose ``result`` is the
-        ``tab_created`` variant (pinned via ``herdr api schema --json``):
+        Verified CLI shape: ``herdr tab create --label <TEXT>
+        [--cwd <PATH>] [--workspace <WORKSPACE_ID>]`` prints the API
+        success envelope whose ``result`` is the ``tab_created``
+        variant (pinned via ``herdr api schema --json``):
         ``result.tab.tab_id`` (TabInfo) and ``result.root_pane.pane_id``
-        (PaneInfo), both required keys of that variant. Should the CLI ever
-        print a different envelope, :func:`parse_success_result` raises
-        HerdrError instead of returning half-parsed ids.
+        (PaneInfo), both required keys of that variant. Should the CLI
+        ever print a different envelope, :func:`parse_success_result`
+        raises HerdrError instead of returning half-parsed ids.
+        ``--workspace`` targets the tab INSIDE that workspace (probed
+        live, parity-f7c S1b); without it the CLI keeps its current-
+        workspace behavior.
         """
         args = ["tab", "create", "--label", label]
         if cwd:
             args.extend(["--cwd", cwd])
+        if workspace_id:
+            args.extend(["--workspace", workspace_id])
         proc = self._run_cli(args, timeout_s=15)
         result = parse_success_result(proc.stdout)
         tab = result.get("tab") if isinstance(result.get("tab"), dict) else {}

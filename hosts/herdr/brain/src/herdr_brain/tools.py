@@ -480,6 +480,22 @@ class BrainTools:
         )
         return entries
 
+    def list_workspaces(self) -> list:
+        """Every herdr workspace, sorted by number (parity-f7c S1b).
+
+        Never raises: a multiplexer without the surface (tmux/zellij —
+        the method is deliberately off the port protocol) or a herdr
+        failure degrades to an empty list, exactly like :meth:`herd` —
+        a read must not take the sheet down with it.
+        """
+        getter = getattr(self._herdr, "list_workspaces", None)
+        if getter is None:
+            return []
+        try:
+            return list(getter())
+        except HerdrError:
+            return []
+
     def screen_tail(
         self,
         active: AgentInfo,
@@ -2165,7 +2181,14 @@ class BrainTools:
         self._note_dialog_keys(pane_id)
         return stop_result("stopped", "", keys)
 
-    def create_session(self, agent_kind: str, title: str, task: str = "", cwd: str = "") -> str:
+    def create_session(
+        self,
+        agent_kind: str,
+        title: str,
+        task: str = "",
+        cwd: str = "",
+        workspace_id: str = "",
+    ) -> str:
         """Opens a NEW dedicated panel: tab + fresh agent (+ first task).
 
         The second write path: instead of reusing the selected session it
@@ -2181,15 +2204,24 @@ class BrainTools:
         becomes ``last_active``. A task-delivery failure NEVER raises
         away the created ids: the caller still learns the tab/pane/agent
         so it can re-send.
+
+        ``workspace_id`` (parity-f7c S1b, PWA-only — the voice schema
+        does not carry it) targets the tab INSIDE that herdr workspace
+        via ``create_tab``; it rides the call only when set, so the
+        legacy two-argument tab seam keeps working verbatim.
         """
         clean_kind = (agent_kind or "").strip()
         clean_title = (title or "").strip()
         clean_cwd = (cwd or "").strip()
+        clean_workspace = (workspace_id or "").strip()
         if not clean_kind or not clean_title:
             return "error: agent_kind and title are required"
         name = sanitize_agent_name(clean_title)
+        tab_kwargs: dict = {"cwd": clean_cwd or None}
+        if clean_workspace:
+            tab_kwargs["workspace_id"] = clean_workspace
         try:
-            created = self._herdr.create_tab(clean_title, cwd=clean_cwd or None)
+            created = self._herdr.create_tab(clean_title, **tab_kwargs)
         except HerdrError as exc:
             return f"error creating tab: {exc}"
         tab_id, pane_id = created["tab_id"], created["pane_id"]
@@ -2245,7 +2277,12 @@ class BrainTools:
         )
 
     def resume_session(
-        self, harness: str, session_id: str, cwd: str = "", title: str = ""
+        self,
+        harness: str,
+        session_id: str,
+        cwd: str = "",
+        title: str = "",
+        workspace_id: str = "",
     ) -> str:
         """Reopens a PAST conversation in its own folder (S3, doc 03 §3).
 
@@ -2262,7 +2299,9 @@ class BrainTools:
         an honest error naming the failure (with the created ids), never
         a silently bare shell. The reopened pane becomes
         ``last_active``/``last_created`` so reads and the approve replay
-        retarget to it.
+        retarget to it. ``workspace_id`` (parity-f7c S1b, PWA-only)
+        targets the tab inside that herdr workspace, riding the tab call
+        only when set.
         """
         clean_harness = (harness or "").strip().lower()
         clean_sid = (session_id or "").strip()
@@ -2289,8 +2328,11 @@ class BrainTools:
         label = truncate_text(mask_text(label_src), 60) if label_src else ""
         label = label or f"{clean_harness} · resume"
         command = entry[0].format(shlex.quote(clean_sid))
+        tab_kwargs: dict = {"cwd": clean_cwd or None}
+        if (workspace_id or "").strip():
+            tab_kwargs["workspace_id"] = workspace_id.strip()
         try:
-            created = self._herdr.create_tab(label, cwd=clean_cwd or None)
+            created = self._herdr.create_tab(label, **tab_kwargs)
         except HerdrError as exc:
             return f"error creating tab: {exc}"
         tab_id, pane_id = created["tab_id"], created["pane_id"]

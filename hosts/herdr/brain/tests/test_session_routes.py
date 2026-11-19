@@ -23,7 +23,7 @@ from fastapi.testclient import TestClient
 import herdr_brain.server as server_module
 from herdr_brain import access, pairing
 from herdr_brain.config import Settings
-from herdr_brain.herdr import AgentInfo
+from herdr_brain.herdr import AgentInfo, WorkspaceInfo
 from herdr_brain.launch_receipts import (
     LAUNCH_RECEIPTS_FILENAME,
     LAUNCH_RECEIPT_TTL_S,
@@ -48,11 +48,12 @@ class SessionTools:
     extraction runs the same code path production does. ``dispatch``
     mirrors the replay seam the approve path rides."""
 
-    def __init__(self, cfg=None, herd_entries=()):
+    def __init__(self, cfg=None, herd_entries=(), workspaces=()):
         self.calls: list[dict] = []
         self.resume_calls: list[dict] = []
         self.dispatches: list[dict] = []
         self.herd_entries = list(herd_entries)
+        self.workspaces = list(workspaces)
         self.create_result = (
             "Panel creado: tab=t-1 pane=w3:p1 agente=x (claude). Tarea entregada."
         )
@@ -69,18 +70,30 @@ class SessionTools:
     def herd(self):
         return [dict(entry) for entry in self.herd_entries]
 
-    def create_session(self, agent_kind, title, task="", cwd=""):
-        self.calls.append(
-            {"agent_kind": agent_kind, "title": title, "task": task, "cwd": cwd}
-        )
+    def list_workspaces(self):
+        return list(self.workspaces)
+
+    def create_session(self, agent_kind, title, task="", cwd="", workspace_id=None):
+        row = {
+            "agent_kind": agent_kind, "title": title, "task": task, "cwd": cwd
+        }
+        # Recorded only when set: the pre-S1b call shape stays byte-equal.
+        if workspace_id:
+            row["workspace_id"] = workspace_id
+        self.calls.append(row)
         if self.slow_s:
             time.sleep(self.slow_s)
         return self.create_result
 
-    def resume_session(self, harness, session_id, cwd="", title=""):
-        self.resume_calls.append(
-            {"harness": harness, "session_id": session_id, "cwd": cwd, "title": title}
-        )
+    def resume_session(
+        self, harness, session_id, cwd="", title="", workspace_id=None
+    ):
+        row = {
+            "harness": harness, "session_id": session_id, "cwd": cwd, "title": title
+        }
+        if workspace_id:
+            row["workspace_id"] = workspace_id
+        self.resume_calls.append(row)
         return self.resume_result
 
     def dispatch(self, name, arguments, target=None, **_kwargs):
@@ -121,8 +134,11 @@ def make_client(
     tools: SessionTools | None = None,
     with_roots: bool = True,
     extra_herd: list[dict] | None = None,
+    workspaces: list | None = None,
 ) -> tuple[TestClient, SessionTools]:
-    tools = tools or SessionTools(herd_entries=extra_herd or [])
+    tools = tools or SessionTools(
+        herd_entries=extra_herd or [], workspaces=workspaces or []
+    )
     monkeypatch.setattr(server_module, "BrainTools", lambda cfg: tools)
     cfg_dir = tmp_path / "operator"
     cfg_dir.mkdir(parents=True, exist_ok=True)
@@ -1270,3 +1286,235 @@ class TestResumeTable:
         )
         params = entry["function"]["parameters"]
         assert set(params["required"]) == {"harness", "session_id"}
+
+
+# ── S1b (L11): every workspace is a space; launches can land inside one ─
+
+
+SPACES = [
+    WorkspaceInfo(workspace_id="w1", label="main", number=1, focused=True),
+    WorkspaceInfo(workspace_id="w9", label="vacía", number=2, focused=False),
+]
+
+
+class TestSessionRootsSpaces:
+    def test_lists_every_workspace_including_one_without_live_panes(
+        self, tmp_path, monkeypatch
+    ):
+        # L11: the picker must show ALL spaces, not only the live ones —
+        # a workspace with no agent pane is LISTED with a null cwd.
+        root = tmp_path / "work"
+        inside = root / "proj"
+        inside.mkdir(parents=True)
+        herd = [
+            {"pane_id": "w1:p2", "cwd": str(inside), "last_turn_age_s": 5.0,
+             "focused": False},
+        ]
+        client, _ = make_client(
+            tmp_path, monkeypatch, extra_herd=herd, workspaces=SPACES
+        )
+        spaces = client.get("/session/roots").json()["spaces"]
+        assert spaces == [
+            {
+                "workspace_id": "w1",
+                "label": "main",
+                "cwd": str(inside.resolve()),
+                "inside_roots": True,
+                "focused": True,
+            },
+            {
+                "workspace_id": "w9",
+                "label": "vacía",
+                "cwd": None,
+                "inside_roots": False,
+                "focused": False,
+            },
+        ]
+
+    def test_an_outside_roots_space_is_still_listed(self, tmp_path, monkeypatch):
+        herd = [
+            {"pane_id": "w1:p1", "cwd": str(tmp_path / "elsewhere"),
+             "last_turn_age_s": 1.0, "focused": False},
+        ]
+        client, _ = make_client(
+            tmp_path, monkeypatch, extra_herd=herd, workspaces=SPACES
+        )
+        spaces = client.get("/session/roots").json()["spaces"]
+        assert spaces[0]["cwd"] == str((tmp_path / "elsewhere").resolve())
+        assert spaces[0]["inside_roots"] is False  # listed, only unpickable
+
+    def test_the_focused_pane_wins_the_cwd_derivation(self, tmp_path, monkeypatch):
+        root = tmp_path / "work"
+        focused_dir = root / "focused"
+        stale_dir = root / "stale"
+        focused_dir.mkdir(parents=True)
+        stale_dir.mkdir(parents=True)
+        herd = [
+            {"pane_id": "w1:p1", "cwd": str(stale_dir), "last_turn_age_s": 1.0,
+             "focused": False},
+            # fresher by age but NOT focused: the focused pane wins.
+            {"pane_id": "w1:p2", "cwd": str(focused_dir), "last_turn_age_s": 90.0,
+             "focused": True},
+        ]
+        client, _ = make_client(
+            tmp_path, monkeypatch, extra_herd=herd, workspaces=SPACES
+        )
+        spaces = client.get("/session/roots").json()["spaces"]
+        assert spaces[0]["cwd"] == str(focused_dir.resolve())
+
+    def test_without_focus_the_freshest_pane_wins(self, tmp_path, monkeypatch):
+        root = tmp_path / "work"
+        stale = root / "stale"
+        fresh = root / "fresh"
+        stale.mkdir(parents=True)
+        fresh.mkdir(parents=True)
+        herd = [
+            {"pane_id": "w1:p1", "cwd": str(stale), "last_turn_age_s": 500.0,
+             "focused": False},
+            {"pane_id": "w1:p2", "cwd": str(fresh), "last_turn_age_s": 2.0,
+             "focused": False},
+        ]
+        client, _ = make_client(
+            tmp_path, monkeypatch, extra_herd=herd, workspaces=SPACES
+        )
+        spaces = client.get("/session/roots").json()["spaces"]
+        assert spaces[0]["cwd"] == str(fresh.resolve())
+
+    def test_pane_prefixes_match_their_own_workspace_only(self, tmp_path, monkeypatch):
+        root = tmp_path / "work"
+        w11_cwd = root / "eleven"
+        w11_cwd.mkdir(parents=True)
+        herd = [
+            # w1's pane; w11 must NOT adopt it ("w1" is not "w11").
+            {"pane_id": "w1:p1", "cwd": str(root), "last_turn_age_s": 1.0,
+             "focused": False},
+        ]
+        w11 = WorkspaceInfo(workspace_id="w11", label="once", number=1, focused=False)
+        client, _ = make_client(
+            tmp_path, monkeypatch, extra_herd=herd, workspaces=[w11]
+        )
+        spaces = client.get("/session/roots").json()["spaces"]
+        assert spaces == [{
+            "workspace_id": "w11", "label": "once", "cwd": None,
+            "inside_roots": False, "focused": False,
+        }]
+
+    def test_no_workspaces_degrades_to_no_spaces(self, tmp_path, monkeypatch):
+        # The workspace listing degraded (empty): the picker shows no
+        # spaces and the rest of the sheet keeps working.
+        client, _ = make_client(tmp_path, monkeypatch)
+        body = client.get("/session/roots").json()
+        assert body["spaces"] == []
+        assert body["roots"]
+
+
+class TestSessionNewWorkspace:
+    def test_unknown_workspace_creates_nothing(self, tmp_path, monkeypatch):
+        root = tmp_path / "work"
+        client, tools = make_client(tmp_path, monkeypatch, workspaces=SPACES)
+        resp = client.post("/session/new", json={
+            "harness": "claude", "cwd": str(root), "workspace_id": "w404",
+        })
+        assert resp.status_code == 422
+        assert resp.json() == {"detail": "unknown_workspace"}
+        assert tools.calls == []
+
+    def test_the_cwd_gate_still_decides_first(self, tmp_path, monkeypatch):
+        # Validation order unchanged (S1): an invalid cwd answers
+        # root_not_allowed even when the workspace is ALSO unknown.
+        client, tools = make_client(tmp_path, monkeypatch, workspaces=SPACES)
+        resp = client.post("/session/new", json={
+            "harness": "claude", "cwd": str(tmp_path / "elsewhere"),
+            "workspace_id": "w404",
+        })
+        assert resp.status_code == 422
+        assert resp.json() == {"detail": "root_not_allowed"}
+        assert tools.calls == []
+
+    def test_launch_passes_the_workspace_to_create_session(
+        self, tmp_path, monkeypatch
+    ):
+        root = (tmp_path / "work").resolve()
+        client, tools = make_client(tmp_path, monkeypatch, workspaces=SPACES)
+        resp = client.post("/session/new", json={
+            "harness": "claude", "cwd": str(root), "workspace_id": "w1",
+        })
+        assert resp.status_code == 200
+        assert tools.calls == [{
+            "agent_kind": "claude",
+            "title": "claude · work",
+            "task": "",
+            "cwd": str(root),
+            "workspace_id": "w1",
+        }]
+
+    def test_launch_without_workspace_keeps_the_legacy_call(
+        self, tmp_path, monkeypatch
+    ):
+        root = tmp_path / "work"
+        client, tools = make_client(tmp_path, monkeypatch, workspaces=SPACES)
+        resp = client.post("/session/new", json={
+            "harness": "claude", "cwd": str(root),
+        })
+        assert resp.status_code == 200
+        assert tools.calls == [{
+            "agent_kind": "claude", "title": "claude · work",
+            "task": "", "cwd": str(root),
+        }]
+
+    def test_the_audit_line_carries_the_workspace_id(self, tmp_path, monkeypatch):
+        root = tmp_path / "work"
+        client, _ = make_client(tmp_path, monkeypatch, workspaces=SPACES)
+        client.post("/session/new", json={
+            "harness": "claude", "cwd": str(root), "workspace_id": "w1",
+        })
+        lines = [l for l in audit_lines(tmp_path) if l["action"] == "session.new"]
+        assert lines[0]["detail"]["workspace_id"] == "w1"
+
+
+class TestSessionResumeWorkspace:
+    def _seed(self, tmp_path, monkeypatch):
+        root = (tmp_path / "work").resolve()
+        monkeypatch.setattr(
+            server_module, "resume_target",
+            lambda h, s: {"cwd": str(root), "title": "T"},
+        )
+        return root
+
+    def test_unknown_workspace_resumes_nothing(self, tmp_path, monkeypatch):
+        self._seed(tmp_path, monkeypatch)
+        client, tools = make_client(tmp_path, monkeypatch, workspaces=SPACES)
+        resp = client.post("/session/resume", json={
+            "harness": "claude", "session_id": "abc", "workspace_id": "w404",
+        })
+        assert resp.status_code == 422
+        assert resp.json() == {"detail": "unknown_workspace"}
+        assert tools.resume_calls == []
+
+    def test_resume_passes_the_workspace_to_resume_session(
+        self, tmp_path, monkeypatch
+    ):
+        root = self._seed(tmp_path, monkeypatch)
+        client, tools = make_client(tmp_path, monkeypatch, workspaces=SPACES)
+        resp = client.post("/session/resume", json={
+            "harness": "claude", "session_id": "abc", "workspace_id": "w9",
+        })
+        assert resp.status_code == 200
+        assert tools.resume_calls == [{
+            "harness": "claude", "session_id": "abc", "cwd": str(root),
+            "title": "T", "workspace_id": "w9",
+        }]
+
+    def test_resume_without_workspace_keeps_the_legacy_call(
+        self, tmp_path, monkeypatch
+    ):
+        root = self._seed(tmp_path, monkeypatch)
+        client, tools = make_client(tmp_path, monkeypatch, workspaces=SPACES)
+        resp = client.post("/session/resume", json={
+            "harness": "claude", "session_id": "abc",
+        })
+        assert resp.status_code == 200
+        assert tools.resume_calls == [{
+            "harness": "claude", "session_id": "abc", "cwd": str(root),
+            "title": "T",
+        }]
