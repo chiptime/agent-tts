@@ -51,6 +51,13 @@ class MuxAdapter(Protocol):
     def send_prompt(self, pane_id: str, text: str, timeout_ms: Optional[int] = None) -> dict:
         ...
 
+    def send_text(self, pane_id: str, text: str) -> None:
+        """Types literal text WITHOUT Enter — the typing half of the
+        free-text dialog recipe. herdr's ``pane send-text`` is the
+        verified shape; adapters without one refuse ``unsupported``
+        rather than approximating, exactly like any other surface."""
+        ...
+
     def create_tab(
         self,
         label: str,

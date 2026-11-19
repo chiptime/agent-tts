@@ -186,6 +186,13 @@ class ZellijAdapter:
             "surface cannot deliver one",
         )
 
+    def send_text(self, pane_id: str, text: str) -> None:
+        raise MuxRefusal(
+            "unsupported", "send_text",
+            "bare text typing needs a verified typing surface; zellij's "
+            "verified surface cannot deliver one",
+        )
+
     def create_tab(self, label: str, cwd: Optional[str] = None) -> dict:
         raise MuxRefusal(
             "unsupported", "tabs",

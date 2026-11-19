@@ -102,6 +102,9 @@ class HerdrMuxAdapter:
     def send_prompt(self, pane_id: str, text: str, timeout_ms: Optional[int] = None) -> dict:
         return self._client.send_prompt(pane_id, text, timeout_ms=timeout_ms)
 
+    def send_text(self, pane_id: str, text: str) -> None:
+        return self._client.send_text(pane_id, text)
+
     def create_tab(
         self,
         label: str,

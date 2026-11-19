@@ -210,6 +210,17 @@ class TestHerdrClient:
         with pytest.raises(HerdrError, match="empty"):
             client.send_prompt("p1", "   \n")
 
+    def test_send_text_types_the_sanitized_line_without_enter(self):
+        # The typing half of the free-text recipe: one literal argv, no
+        # submit flag and no Enter step — a newline in the text would
+        # commit the field early.
+        runner = FakeRunner(results=[(0, "", "")])
+        client = HerdrClient(make_settings(), runner=runner)
+        client.send_text("w1:p2", "usa la\nrama   main")
+        assert runner.calls[0]["cmd"] == [
+            "herdr-fake", "pane", "send-text", "w1:p2", "usa la rama main",
+        ]
+
     def test_send_prompt_reports_done_on_a_clean_exit(self):
         runner = FakeRunner(results=[(0, "submitted", "")])
         client = HerdrClient(make_settings(), runner=runner)

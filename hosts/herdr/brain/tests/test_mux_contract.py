@@ -82,6 +82,10 @@ class RecordingClient:
         self._record("send_prompt", (pane_id, text, timeout_ms))
         return PROMPT_RESULT
 
+    def send_text(self, pane_id, text):
+        self._record("send_text", (pane_id, text))
+        return None
+
     def create_tab(self, label, cwd=None):
         self._record("create_tab", (label, cwd))
         return TAB_RESULT
@@ -134,6 +138,12 @@ DELEGATION_CASES = [
         lambda a: a.send_prompt("w1:p9", "hi"),
         ("send_prompt", ("w1:p9", "hi", None)),
         PROMPT_RESULT,
+    ),
+    (
+        "send_text",
+        lambda a: a.send_text("w1:p9", "usa la rama main"),
+        ("send_text", ("w1:p9", "usa la rama main")),
+        None,
     ),
     (
         "create_tab with cwd",
@@ -204,6 +214,7 @@ API_METHODS = [
     "send_keys",
     "pane_run",
     "send_prompt",
+    "send_text",
     "create_tab",
     "start_agent",
     "agent_wait",
@@ -216,6 +227,40 @@ def test_signatures_match_herdr_client_exactly(method):
     assert inspect.signature(getattr(HerdrMuxAdapter, method)) == inspect.signature(
         getattr(HerdrClient, method)
     )
+
+
+def _no_spawn_runner():
+    """A runner that fails the test if ANY multiplexer CLI is spawned."""
+
+    def run(cmd, **kwargs):
+        raise AssertionError(
+            f"an unsupported send_text must refuse before any CLI call: {cmd}"
+        )
+
+    return run
+
+
+class TestSendTextSurface:
+    """Literal typing WITHOUT Enter is herdr's pinned dialog surface.
+
+    The free-text and search-first picker recipes ride it; tmux and
+    zellij have no verified shape for it in this port, so both refuse
+    with the same honest ``unsupported`` before spawning anything.
+    """
+
+    @pytest.mark.parametrize(
+        "factory",
+        [
+            lambda: TmuxAdapter(bin_path="tmux-test", runner=_no_spawn_runner()),
+            lambda: ZellijAdapter(bin_path="zellij-test", runner=_no_spawn_runner()),
+        ],
+        ids=["tmux", "zellij"],
+    )
+    def test_send_text_refuses_unsupported_without_spawning(self, factory):
+        with pytest.raises(MuxRefusal) as excinfo:
+            factory().send_text("w1:p9", "hi")
+        assert excinfo.value.reason == "unsupported"
+        assert excinfo.value.capability == "send_text"
 
 
 def _tmux() -> TmuxAdapter:
