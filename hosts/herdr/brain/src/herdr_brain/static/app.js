@@ -2284,6 +2284,12 @@
     }
     var modalHeld = !viewedBlocked && modalCard && modalCard.pane === viewed
       ? modalCard : null;
+    /* The pane whose keys area the held modal card owns: the permission
+     * renderer at the tail of this render must not re-hide the wrapper
+     * the picker just opened — an idle pane carries no permission state
+     * of its own, only the held card. Null on every blocked render, so
+     * the permission path below keeps its exact previous shape. */
+    modalKeysPane = modalHeld ? viewed : null;
     /* The picker owns the keyboard while it is open (a typed reply
      * would land in its Search box), so the held card gets the blocked
      * shape: keypad instead of the composer. */
@@ -2694,8 +2700,11 @@
     }
     permissionBox.classList.toggle("hidden", !show);
     /* The keys notice is the fallback for a dialog this path cannot answer:
-       another agent kind, or one already answered elsewhere. */
-    replyKeys.classList.toggle("hidden", !(permissionBlocked && !show));
+       another agent kind, or one already answered elsewhere. A HELD modal
+       card keeps the keys area too (F7d fix): the picker an idle pane
+       opened owns it exactly like a blocked pane's own dialog. */
+    replyKeys.classList.toggle(
+      "hidden", !((permissionBlocked && !show) || modalKeysPane));
   }
 
   var PERMISSION_TOAST = {
@@ -8278,6 +8287,11 @@
    * open. One hold at a time; dropped on block, on a consumed answer
    * or when another pane takes the view. */
   var modalCard = null;
+
+  /* The pane the held modal card renders for (F7d fix): the keys-area
+   * wrapper's visibility input, so renderPermission cannot hide the
+   * picker card an idle pane just painted. */
+  var modalKeysPane = null;
 
   function dropModalCard(paneId) {
     if (modalCard && (!paneId || modalCard.pane === paneId)) modalCard = null;

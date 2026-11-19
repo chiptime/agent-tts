@@ -95,7 +95,11 @@ EXPECTED_DIGESTS = {
     # POST /reset survives on #call-new (index.html, app.js, and both
     # i18n for the now-dead herd.new_started/new_failed keys).
     "/": "e5a6af2a027071f8a064ddb30c1ab392b3775dc37a883cec4d397f387705c38b",
-    "/app.js": "199314b7126ba13fda0cb54d681b3f33745af6e631dfc5844a5b545630926094",
+    # app.js re-pinned for the held-card visibility fix (F7d phone
+    # report): renderPermission no longer re-hides the #pane-reply-keys
+    # wrapper an idle pane's held picker card just opened (modalKeysPane
+    # rides renderPending into the wrapper's toggle).
+    "/app.js": "c27229649c8e7e208e18bda76fafdc83c6fcafe715c1bbc6ae4a0e1493af06cf",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "ca7b22c52c8160a3ac577f694eb65ec0798b77cd6ac179a5c567dffdc1fb2ba9",
     # dialogs.js re-pinned for the parity-f7d follow-up: MODEL_SWITCH_COMMANDS
