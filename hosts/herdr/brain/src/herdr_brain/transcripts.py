@@ -43,6 +43,36 @@ DEFAULT_CLAUDE_ROOT = "~/.claude/projects"
 DEFAULT_ANTIGRAVITY_ROOT = "~/.gemini/antigravity-cli/brain"
 ANTIGRAVITY_SESSION_RE = re.compile(r"^[\da-fA-F-]{16,}$")
 
+# Send-tracking reads (parity-f7g S2): newest store activity after the
+# send, the newest assistant error row after it (same filter as
+# OpencodeTranscript.read_error), and completion evidence. Read-only,
+# each query individually guarded — an older store shape degrades to
+# "no signals" instead of failing the read.
+_OPENCODE_ACTIVITY_MESSAGE_SQL = (
+    "SELECT MAX(time_updated) FROM message"
+    " WHERE session_id = ? AND time_updated > ?"
+)
+_OPENCODE_ACTIVITY_PART_SQL = (
+    "SELECT MAX(time_updated) FROM part"
+    " WHERE session_id = ? AND time_updated > ?"
+)
+_OPENCODE_ERROR_AFTER_SQL = """
+SELECT json_extract(data, '$.role'),
+       json_extract(data, '$.error.name'),
+       json_extract(data, '$.error.data.message')
+FROM message
+WHERE session_id = ? AND time_created > ?
+  AND json_extract(data, '$.error.name') IS NOT NULL
+ORDER BY time_created DESC, id DESC
+LIMIT 1
+"""
+_OPENCODE_ASSISTANT_AFTER_SQL = (
+    "SELECT 1 FROM message"
+    " WHERE session_id = ? AND time_created > ?"
+    " AND json_extract(data, '$.role') = 'assistant'"
+    " LIMIT 1"
+)
+
 # Safety caps matching the voice layer's connectors.
 _CLAUDE_SCAN_CAP_BYTES = 8 * 1024 * 1024
 MAX_TURNS = 50
@@ -202,6 +232,81 @@ class OpencodeTranscript:
         except (sqlite3.Error, OSError):
             return None
         return None
+
+    def read_send_signals(self, session_id: str, since_s: float) -> dict:
+        """Send-tracking signals for one session after ``since_s`` (S2).
+
+        Returns ``{activity_at, error, assistant_after}``:
+
+        - ``activity_at`` — the newest ``time_updated`` of the session's
+          message/part rows updated after the send (epoch seconds);
+        - ``error`` — the newest assistant error row created after the
+          send, with the SAME filter as :meth:`read_error`
+          (``MessageAbortedError`` excluded). Read regardless of what
+          the harness reports: opencode stops a failed turn as an error
+          row while the pane can still claim ``working``;
+        - ``assistant_after`` — whether any assistant message exists
+          after the send (completion evidence once the pane is at rest).
+
+        Never raises: an unreadable or older-shaped store (a missing
+        ``time_updated`` column) reads as no signals — tracking then
+        degrades to Herdr status only.
+        """
+        empty = {"activity_at": None, "error": None, "assistant_after": False}
+        if not session_id or not OPENCODE_SESSION_RE.match(session_id):
+            return dict(empty)
+        if not os.path.isfile(self.db_path):
+            return dict(empty)
+        since_ms = int(float(since_s) * 1000.0)
+        uri = f"{Path(self.db_path).resolve().as_uri()}?mode=ro"
+        try:
+            with sqlite3.connect(uri, uri=True) as conn:
+                activity_ms = None
+                for sql in (
+                    _OPENCODE_ACTIVITY_MESSAGE_SQL,
+                    _OPENCODE_ACTIVITY_PART_SQL,
+                ):
+                    try:
+                        row = conn.execute(sql, (session_id, since_ms)).fetchone()
+                    except sqlite3.Error:
+                        continue  # an older store shape lacks the column
+                    if row and isinstance(row[0], int) and row[0] > 0:
+                        activity_ms = row[0] if activity_ms is None else max(
+                            activity_ms, row[0]
+                        )
+                try:
+                    error_row = conn.execute(
+                        _OPENCODE_ERROR_AFTER_SQL, (session_id, since_ms)
+                    ).fetchone()
+                except sqlite3.Error:
+                    error_row = None
+                try:
+                    assistant_after = conn.execute(
+                        _OPENCODE_ASSISTANT_AFTER_SQL, (session_id, since_ms)
+                    ).fetchone() is not None
+                except sqlite3.Error:
+                    assistant_after = False
+        except (sqlite3.Error, OSError):
+            return dict(empty)
+        error = None
+        if (
+            error_row
+            and error_row[0] == "assistant"
+            and error_row[1]
+            and error_row[1] != "MessageAbortedError"
+        ):
+            name = str(error_row[1])
+            message = (
+                error_row[2]
+                if isinstance(error_row[2], str) and error_row[2].strip()
+                else name
+            )
+            error = {"name": name, "message": message.strip()}
+        return {
+            "activity_at": (activity_ms / 1000.0) if activity_ms else None,
+            "error": error,
+            "assistant_after": assistant_after,
+        }
 
 
 class ClaudeTranscript:
@@ -646,3 +751,380 @@ def _claude_event_text(event: dict) -> Optional[str]:
     ]
     text = "\n".join(block for block in blocks if block)
     return text or None
+
+
+# ── resume enumeration (parity-f7c S3, doc 03 §3) ────────────────────
+#
+# The resume sheet needs the conversations each transcript store can
+# name, WITH the folder they ran in — "reopen in its folder" is only
+# possible when the store records a cwd. Enumeration walks the SAME
+# roots/env vars the registry readers use (the reader instances carry
+# them), so overrides keep applying. Rows without a cwd are skipped:
+# never offer a conversation you cannot reopen.
+
+
+#: How many recent conversations /sessions/recent serves, at most.
+RESUME_SESSIONS_CAP = 10
+
+#: Raw label budget before the caller's mask-and-clip (bounded, not display).
+_RESUME_LABEL_CHARS = 200
+
+#: How much of a transcript head the cwd lookups scan (claude writes a
+#: ``cwd`` on every user event; codex/pi on their first header/meta line).
+_HEAD_SCAN_BYTES = 256 * 1024
+
+
+def _reader_for(harness: Optional[str], registry=None):
+    """The registry's canonical reader for ``harness`` (aliases resolve)."""
+    reg = registry or _build_registry()
+    return reg.resolve(harness)
+
+
+def _mtime_iso(path: str) -> Optional[str]:
+    try:
+        return datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+    except OSError:
+        return None
+
+
+def _newest_files(patterns, cap: int) -> List[str]:
+    """Up to ``cap`` existing files across glob patterns, newest first."""
+    matches: List[str] = []
+    for pattern in patterns:
+        # recursive so codex's dated ``**/rollout-*.jsonl`` tree matches.
+        matches.extend(
+            path for path in glob.glob(pattern, recursive=True) if os.path.isfile(path)
+        )
+    try:
+        matches.sort(key=os.path.getmtime, reverse=True)
+    except OSError:
+        return []
+    return matches[:cap]
+
+
+def _iter_head_json(path: str):
+    """Yields parsed JSON objects from the first head bytes of ``path``."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            head = fh.read(_HEAD_SCAN_BYTES)
+    except OSError:
+        return
+    for line in head.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(event, dict):
+            yield event
+
+
+def _session_label(reader, session_id: str) -> str:
+    """The session's title, or the newest turn's text as the label.
+
+    Raw text — masking is the caller's outbound duty; this only bounds
+    the size so a transcript turn cannot ride whole into a payload."""
+    try:
+        title = reader.read_title(session_id) if reader is not None else None
+    except Exception:  # noqa: BLE001 — a broken store is an empty label
+        title = None
+    if isinstance(title, str) and title.strip():
+        return title.strip()[:_RESUME_LABEL_CHARS]
+    try:
+        turns = reader.read(session_id, 1) if reader is not None else []
+    except Exception:  # noqa: BLE001
+        turns = []
+    if turns:
+        return (turns[-1].text or "").strip()[:_RESUME_LABEL_CHARS]
+    return ""
+
+
+def _rows_opencode(reader, cap: int) -> List[dict]:
+    rows: List[dict] = []
+    db_path = getattr(reader, "db_path", "")
+    if not db_path or not os.path.isfile(db_path):
+        return rows
+    sql = (
+        "SELECT id, title, directory, time_updated FROM session "
+        "WHERE directory IS NOT NULL AND directory != '' "
+        "ORDER BY time_updated DESC LIMIT ?"
+    )
+    uri = f"{Path(db_path).resolve().as_uri()}?mode=ro"
+    try:
+        with sqlite3.connect(uri, uri=True) as conn:
+            fetched = conn.execute(sql, (cap,)).fetchall()
+    except (sqlite3.Error, OSError):
+        return rows
+    for session_id, title, directory, _updated in fetched:
+        if not isinstance(session_id, str) or not OPENCODE_SESSION_RE.match(session_id):
+            continue
+        if not isinstance(directory, str) or not directory.strip():
+            continue
+        label = title.strip() if isinstance(title, str) and title.strip() else ""
+        rows.append({
+            "session_id": session_id,
+            "cwd": directory,
+            "title": label[:_RESUME_LABEL_CHARS],
+            "last_ts": None,  # time_updated types vary by build; no guessing
+        })
+    return rows
+
+
+def _claude_session_cwd(path: str) -> Optional[str]:
+    """The session's cwd, from its first event that carries one.
+
+    Verified live: every user event in a Claude Code JSONL transcript
+    records the ``cwd`` it ran in — the munged project dir name is NOT
+    decoded (lossy), the field is read instead."""
+    for event in _iter_head_json(path):
+        cwd = event.get("cwd")
+        if isinstance(cwd, str) and cwd.strip():
+            return cwd.strip()
+    return None
+
+
+def _rows_claude(reader, cap: int) -> List[dict]:
+    root = getattr(reader, "root", "")
+    if not root:
+        return []
+    rows: List[dict] = []
+    for path in _newest_files([os.path.join(root, "*", "*.jsonl")], cap * 3):
+        session_id = os.path.splitext(os.path.basename(path))[0]
+        if not CLAUDE_SESSION_RE.match(session_id):
+            continue
+        cwd = _claude_session_cwd(path)
+        if not cwd:
+            continue  # a session without a folder cannot be reopened
+        rows.append({
+            "session_id": session_id,
+            "cwd": cwd,
+            "title": _session_label(reader, session_id),
+            "last_ts": _mtime_iso(path),
+        })
+        if len(rows) >= cap:
+            break
+    return rows
+
+
+def _codex_session_meta(path: str) -> Optional[dict]:
+    """The rollout's ``session_meta`` payload, or None.
+
+    Verified live: the payload carries the session id (``session_id``)
+    and the ``cwd`` the rollout ran in."""
+    for event in _iter_head_json(path):
+        if event.get("type") != "session_meta":
+            continue
+        payload = event.get("payload")
+        return payload if isinstance(payload, dict) else None
+    return None
+
+
+def _rows_codex(reader, cap: int) -> List[dict]:
+    from .transcript_readers.codex import CODEX_SESSION_RE
+
+    root = getattr(reader, "root", "")
+    if not root:
+        return []
+    rows: List[dict] = []
+    pattern = os.path.join(root, "**", "rollout-*.jsonl")
+    for path in _newest_files([pattern], cap * 3):
+        meta = _codex_session_meta(path)
+        if meta is None:
+            continue
+        session_id = meta.get("session_id") or meta.get("id")
+        cwd = meta.get("cwd")
+        if not isinstance(session_id, str) or not CODEX_SESSION_RE.match(session_id):
+            continue
+        if not isinstance(cwd, str) or not cwd.strip():
+            continue
+        rows.append({
+            "session_id": session_id,
+            "cwd": cwd.strip(),
+            "title": _session_label(reader, session_id),
+            "last_ts": _mtime_iso(path),
+        })
+        if len(rows) >= cap:
+            break
+    return rows
+
+
+def _rows_pi(reader, cap: int) -> List[dict]:
+    from .transcript_readers.pi import PI_SESSION_RE
+
+    roots = getattr(reader, "roots", [])
+    if not roots:
+        return []
+    rows: List[dict] = []
+    for path in _newest_files(
+        [os.path.join(root, "*", "*.jsonl") for root in roots], cap * 3
+    ):
+        header = next(_iter_head_json(path), None)
+        if not isinstance(header, dict) or header.get("type") != "session":
+            continue
+        session_id = header.get("id")
+        cwd = header.get("cwd")
+        if not isinstance(session_id, str) or not PI_SESSION_RE.fullmatch(session_id):
+            continue
+        if not isinstance(cwd, str) or not cwd.strip():
+            continue
+        rows.append({
+            "session_id": session_id,
+            "cwd": cwd.strip(),
+            "title": _session_label(reader, session_id),
+            "last_ts": _mtime_iso(path),
+        })
+        if len(rows) >= cap:
+            break
+    return rows
+
+
+#: harness → its recent-session enumerator. Only the resume-ENABLED
+#: harnesses have one; a harness here is store-knowledge, NOT resume
+#: permission (the verified argv table lives in tools.py).
+_RESUME_ROW_READERS = {
+    "claude": _rows_claude,
+    "codex": _rows_codex,
+    "opencode": _rows_opencode,
+    "pi": _rows_pi,
+}
+
+
+def recent_sessions(
+    harness: Optional[str], cap: int = RESUME_SESSIONS_CAP, registry=None
+) -> List[dict]:
+    """Recent conversations of ``harness`` the stores can name and place.
+
+    Rows are ``{session_id, cwd, title, last_ts}`` — raw label text
+    (masking is the outbound caller's duty), a cwd the store itself
+    recorded (rows without one are skipped), newest first, capped. A
+    harness without an enumerator (or a broken store) answers ``[]``,
+    never an error: the sheet just shows nothing to resume."""
+    name = (harness or "").strip().lower()
+    enumerator = _RESUME_ROW_READERS.get(name)
+    if enumerator is None:
+        return []
+    reader = _reader_for(name, registry)
+    if reader is None:
+        return []
+    try:
+        return enumerator(reader, max(1, min(cap, 50)))
+    except Exception:  # noqa: BLE001 — a broken store is an empty list
+        return []
+
+
+def resume_target(
+    harness: Optional[str], session_id: str, registry=None
+) -> Optional[dict]:
+    """One session's ``{cwd, title}``, or None when the store names none.
+
+    The session id is shape-checked per harness BEFORE it ever touches a
+    path or query. The cwd comes from the store itself (claude's event
+    ``cwd``, codex's ``session_meta``, opencode's ``directory``, pi's
+    session header) — when the store does not record one, ``cwd`` is
+    None and the caller must refuse rather than guess a folder."""
+    name = (harness or "").strip().lower()
+    clean_sid = (session_id or "").strip()
+    if not name or not clean_sid:
+        return None
+    reader = _reader_for(name, registry)
+    if reader is None:
+        return None
+    try:
+        if name == "opencode":
+            if not OPENCODE_SESSION_RE.match(clean_sid):
+                return None
+            return _resume_target_opencode(reader, clean_sid)
+        if name == "claude":
+            if not CLAUDE_SESSION_RE.match(clean_sid):
+                return None
+            root = getattr(reader, "root", "")
+            matches = [
+                path
+                for path in glob.glob(os.path.join(root, "*", f"{clean_sid}.jsonl"))
+                if os.path.isfile(path)
+            ]
+            if not matches:
+                return None
+            path = max(matches, key=os.path.getmtime)
+            return {
+                "cwd": _claude_session_cwd(path),
+                "title": _session_label(reader, clean_sid),
+            }
+        if name == "codex":
+            from .transcript_readers.codex import CODEX_SESSION_RE
+
+            if not CODEX_SESSION_RE.match(clean_sid):
+                return None
+            root = getattr(reader, "root", "")
+            matches = [
+                path
+                for path in glob.glob(
+                    os.path.join(root, "**", f"rollout-*{clean_sid}*.jsonl"),
+                    recursive=True,
+                )
+                if os.path.isfile(path)
+            ]
+            if not matches:
+                return None
+            meta = _codex_session_meta(max(matches, key=os.path.getmtime))
+            if meta is None:
+                return None
+            session_id = meta.get("session_id") or meta.get("id")
+            if not isinstance(session_id, str):
+                return None
+            cwd = meta.get("cwd")
+            return {
+                "cwd": cwd.strip() if isinstance(cwd, str) and cwd.strip() else None,
+                "title": _session_label(reader, clean_sid),
+            }
+        if name == "pi":
+            from .transcript_readers.pi import PI_SESSION_RE
+
+            match = PI_SESSION_RE.search(clean_sid)
+            if not match:
+                return None
+            uuid_str = match.group(0)
+            for root in getattr(reader, "roots", []):
+                matches = sorted(
+                    glob.glob(os.path.join(root, "*", f"*_{uuid_str}.jsonl"))
+                )
+                for path in matches:
+                    if not os.path.isfile(path):
+                        continue
+                    header = next(_iter_head_json(path), None)
+                    if not isinstance(header, dict):
+                        continue
+                    cwd = header.get("cwd")
+                    return {
+                        "cwd": cwd.strip() if isinstance(cwd, str) else None,
+                        "title": _session_label(reader, uuid_str),
+                    }
+            return None
+    except Exception:  # noqa: BLE001 — a broken store answers "unknown"
+        return None
+    return None
+
+
+def _resume_target_opencode(reader, session_id: str) -> Optional[dict]:
+    db_path = getattr(reader, "db_path", "")
+    if not db_path or not os.path.isfile(db_path):
+        return None
+    uri = f"{Path(db_path).resolve().as_uri()}?mode=ro"
+    try:
+        with sqlite3.connect(uri, uri=True) as conn:
+            row = conn.execute(
+                "SELECT directory, title FROM session WHERE id = ?", (session_id,)
+            ).fetchone()
+    except (sqlite3.Error, OSError):
+        return None
+    if row is None:
+        return None
+    directory, title = row
+    return {
+        "cwd": directory.strip() if isinstance(directory, str) and directory.strip() else None,
+        "title": title.strip() if isinstance(title, str) and title.strip() else "",
+    }

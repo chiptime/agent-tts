@@ -1,0 +1,19 @@
+┃
+┃  Questions
+┃
+┃  Toppings  Submit
+┃
+┃  Which toppings?
+┃
+┃  1. [✓] Ham
+┃         Add ham
+┃  2. [ ] Olives
+┃         Add olives
+┃  3. [ ] Cheese
+┃         Add cheese
+┃  4. [ ] Mushroom
+┃         Add mushroom
+┃  5. [ ] Type your own answer
+┃
+┃  ⇆ tab  ↑↓ select  enter toggle  esc dismiss
+┃

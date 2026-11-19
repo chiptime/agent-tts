@@ -224,6 +224,14 @@ class TmuxAdapter:
         self._submit_line(pane_id, clean, "prompt_submit")
         return {"ok": True, "status": "unknown", "output": ""}
 
+    def send_text(self, pane_id: str, text: str) -> None:
+        raise MuxRefusal(
+            "unsupported", "send_text",
+            "bare text typing is herdr's pinned pane send-text surface; "
+            "tmux's verified writes always submit, so typing without "
+            "Enter is refused rather than approximated",
+        )
+
     def create_tab(self, label: str, cwd: Optional[str] = None) -> dict:
         args = [
             "new-window", "-P", "-F", "#{window_id} #{pane_id}", "-n", label,

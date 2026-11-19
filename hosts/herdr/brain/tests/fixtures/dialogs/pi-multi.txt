@@ -1,0 +1,17 @@
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Select code quality tools to enable:
+ Pick one or more options.
+
+> [ ] 1. ESLint
+         Pluggable JavaScript linter
+  [ ] 2. Prettier
+         Opinionated code formatter
+  [ ] 3. Vitest
+         Vite-native unit test framework
+  [ ] 4. Tailwind CSS
+         Utility-first CSS framework
+      5. Type something.
+
+ ↑↓ navigate • Space to tick • Enter to confirm • type numbers (1,3) or an answer • Esc to cancel
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+⎇ main                                                                                                                   unknown │ unknown

@@ -1,0 +1,33 @@
+     Ninguno de los dos terminó. Los dos se frenaron a mita    Select model                                     esc    aron              • engram Connected                      
+     esperando. Ya los reactivé y están trabajando de nuevo                                                                              • notion Disabled                       
+                                                               Search                                                                    • playwright Disabled                   
+     carousels: va por T6–T7 de 10                                                                                                       • playwright_teams Disabled             
+                                                               Qwen3.8 Max OpenCode Go                                                   • ssff Disabled                         
+     - Commiteado en su rama (7 commits):                      GPT-5.6 Terra OpenAI                                                      • ssff-http Connected                   
+       - plan;                                                 GPT-5.6 Sol OpenAI                                                        • zai-vision Disabled                   
+       - clasificación del tipo de post de Instagram;          DeepSeek V4 Pro DeepSeek                                                  • zai-web-reader Disabled               
+       - descarga de imágenes de Instagram por un camino co    Claude Opus 5 Anthropic                                                   • zai-web-search Connected              
+       - fotos de TikTok como audio + diapositivas;            Big Pickle OpenCode                             Free                      • zai-zread Connected                   
+       - carruseles mixtos, que combinan imágenes y video;                                                                                                                       
+       - selección de posts de fotos y retoma de los ya mar    Recent                                                                    LSP                                     
+     - Sin commitear: cambios en prepare.py y whisper_clien  ● Claude Opus 5.5 Anthropic                               , uno ya          LSPs are disabled                       
+       corregido (faltaba un import os).                       GPT-6.2 Sol OpenAI                                                                                                
+     - Le falta: cerrar T6–T7, después metadatos de la bibl    GLM-5.3 Z.AI Coding Plan                                 docs con la                                              
+       prueba en vivo preparada (T10).                         GPT-6 Astra OpenAI                                                                                                
+     - Riesgos que ya dejó anotados:                           Gemini 4 Argon OpenCode Go                                                                                        
+       - convertir URLs /photo/ en /video/ para el extracto    GPT-6.1 Terra OpenAI                                                                                              
+       - en los videos de los carruseles usa un muestreo un    GLM 5.3 Flash NaN                                                                                                 
+                                                               DeepSeek V4 Flash NaN                                                                                             
+     youtube: va por T3 de 8                                   DeepSeek V4.1 Flash 1017 OpenCode Go                                                                              
+                                                                                                                                                                                 
+     - Commiteado (2):                                         Connect provider ctrl+a  Favorite ctrl+f                                                                          
+       - T1, el adaptador de YouTube: acepta watch, youtu.b                                                                                                                      
+       - T2, los topes propios de YouTube aplicados en la descarga.                                                                                                              
+     - La suite le daba 1342 OK al cerrar T1.                                                                                                                                    
+                                                                                                                                                                                 
+  ┃                                                                                                                                                                              
+  ┃                                                                                                                                                                              
+  ┃                                                                                                                                                                              
+  ┃  Gentle-Orchestrator · Claude Opus 5.5 Anthropic                                                                                     ~/Code/personal/tiktok-ingest           
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀                                            
+   /home/bruno/Code/personal/tiktok-ingest                                                     667.5K (67%) · $99.51  ctrl+p commands    • OpenCode 1.19.5                       

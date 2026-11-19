@@ -253,7 +253,10 @@ class TestTransitions:
         stub._agents = [make_agent(status="idle")]
         assert watcher.poll_once() == []
 
-    def test_debounce_blocks_reannouncement_within_window(self, settings, make_stub):
+    def test_debounce_still_guards_flapping_without_new_work(self, settings, make_stub):
+        """The debounce window survives (S6a kept it for flaps): a pane
+        that flickers done → idle → done inside 60 s, WITHOUT going back
+        to work, is re-announced only after the window elapses."""
         clock = FakeClock()
         agent = make_agent(status="working")
         stub = make_stub(agents=[agent])
@@ -265,15 +268,37 @@ class TestTransitions:
         stub._agents = [make_agent(status="done")]
         assert len(watcher.poll_once()) == 1
 
-        # Flap back to working, then to done again within the window.
+        # Flicker back to idle, then to done again within the window.
         clock.advance(10)
-        stub._agents = [make_agent(status="working")]
+        stub._agents = [make_agent(status="idle")]
         watcher.poll_once()
         stub._agents = [make_agent(status="done")]
         assert watcher.poll_once() == []
 
         # After the debounce window the same transition announces again.
         clock.advance(61)
+        stub._agents = [make_agent(status="idle")]
+        watcher.poll_once()
+        stub._agents = [make_agent(status="done")]
+        assert len(watcher.poll_once()) == 1
+
+    def test_a_new_turns_done_announces_again_inside_the_window(
+        self, settings, make_stub
+    ):
+        """S6(a): the pane went back to WORK between the two dones, so
+        the second done is a NEW turn's outcome — the 60 s debounce must
+        not swallow it."""
+        clock = FakeClock()
+        stub = make_stub(agents=[make_agent(status="working")])
+        watcher = AgentWatcher(
+            settings, herdr=stub, tts_renderer=fake_tts(), clock=clock
+        )
+        watcher.poll_once()
+
+        stub._agents = [make_agent(status="done")]
+        assert len(watcher.poll_once()) == 1
+
+        clock.advance(10)
         stub._agents = [make_agent(status="working")]
         watcher.poll_once()
         stub._agents = [make_agent(status="done")]

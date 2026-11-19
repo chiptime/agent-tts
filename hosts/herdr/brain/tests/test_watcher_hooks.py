@@ -166,7 +166,7 @@ class TestTransitions:
         assert call["question"] is None
         assert call["text"]
 
-    def test_debounced_repeat_stays_silent(self, settings, make_stub, notifier):
+    def test_debounced_flap_without_work_stays_silent(self, settings, make_stub, notifier):
         clock = FakeClock()
         stub = make_stub(agents=[make_agent(status="working")])
         watcher = make_watcher(settings, stub, notifier, clock=clock)
@@ -176,13 +176,33 @@ class TestTransitions:
         watcher.poll_once()
         assert len(notifier.transitions) == 1
 
-        # leave and re-enter inside the debounce window: no new announce
-        stub._agents = [make_agent(status="working")]
+        # flicker through idle (no new work) and re-enter inside the
+        # debounce window: no new announce
+        stub._agents = [make_agent(status="idle")]
         watcher.poll_once()
         clock.advance(10.0)
         stub._agents = [make_agent(status="done")]
         watcher.poll_once()
         assert len(notifier.transitions) == 1
+
+    def test_a_new_turns_done_transition_notifies_again(self, settings, make_stub, notifier):
+        # S6(a): work between the two dones makes the second one a NEW
+        # turn's outcome — the debounce must not swallow it.
+        clock = FakeClock()
+        stub = make_stub(agents=[make_agent(status="working")])
+        watcher = make_watcher(settings, stub, notifier, clock=clock)
+        watcher.poll_once()
+
+        stub._agents = [make_agent(status="done")]
+        watcher.poll_once()
+        assert len(notifier.transitions) == 1
+
+        stub._agents = [make_agent(status="working")]
+        watcher.poll_once()
+        clock.advance(10.0)
+        stub._agents = [make_agent(status="done")]
+        watcher.poll_once()
+        assert len(notifier.transitions) == 2
 
     def test_handled_when_the_pane_leaves_blocked(self, settings, make_stub, notifier):
         stub = make_stub(agents=[make_agent(status="working")])

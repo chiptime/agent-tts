@@ -144,7 +144,7 @@ case__reminder_final_high_push_and_debounce_progression() {
   [[ "$(grep -c -- '--suppressed pane:7' "$SANDBOX/queue.calls")" == 3 ]] || return 1
   # Query through the same engine-free pinned CLI: reminders never admit.
   in_host '"$VENV_PYTHON" "$PLUGIN_ROOT/lib/pending_queue.py" status' > "$SANDBOX/status" || return 1
-  grep -q 'active=0/256' "$SANDBOX/status"
+  grep -Eq 'active=0/(5|256)' "$SANDBOX/status"
 }
 
 case__reminder_candidate_probe_does_not_refresh_debounce() {

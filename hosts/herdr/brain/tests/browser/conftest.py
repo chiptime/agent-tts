@@ -283,7 +283,7 @@ class KaraokeHarness:
             "manifest.webmanifest", "icon.svg", "karaoke.js",
             "mermaid.min.js", "mermaid-viewer.js", "tts-engine.js",
             "pairing.js", "destructive.js", "history.js", "dialogs.js",
-            "receipts.js", "push.js", "calls.js",
+            "receipts.js", "send-track.js", "push.js", "calls.js",
             # S4/S3 PWA unit: i18n runtime + dictionaries, settings,
             # update notice, operator dock.
             "i18n.js", "i18n/es.js", "i18n/en.js",

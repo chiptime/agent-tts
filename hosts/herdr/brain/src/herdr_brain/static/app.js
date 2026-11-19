@@ -99,6 +99,11 @@
   var receiptSubmitBtn = $("pane-receipt-submit");
   var receiptDiscardBtn = $("pane-receipt-discard");
   var paneStopBtn = $("pane-stop");
+  /* Send tracking (parity-f7g S5): the tracker card + its dismiss. */
+  var trackCard = $("pane-track");
+  var trackStateEl = $("pane-track-state");
+  var trackElapsedEl = $("pane-track-elapsed");
+  var trackDismissBtn = $("pane-track-dismiss");
   /* Brain message (S13): the small operator composer for the viewed pane. */
   var paneMsgBtn = $("pane-msg");
   var paneMsgForm = $("pane-msg-form");
@@ -744,6 +749,11 @@
       settingsSheet.setAttribute("inert", "");
       try { settingsBtn.focus({ preventScroll: true }); } catch (err) { /* noop */ }
     }
+    if (newSheetOpen && !st.herdrNewSheet) {
+      newSheetOpen = false;
+      setNewSheet(false);
+      try { panePicker.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
+    }
     if (convSheetOpen && !st.herdrConvSheet) {
       convSheetOpen = false;
       setConvSheet(false);
@@ -831,6 +841,9 @@
     if (!convSheetOpen) return;
     convSheetOpen = false;
     setConvSheet(false);
+    /* F7d fix: closing the sheet retires the modal watch — the user
+     * walked away from the flow that started it. */
+    if (modelSwitchPoll) modelSwitchPoll.cancel();
     if (history.state && history.state.herdrConvSheet) history.back();  // pop our entry; popstate no-ops
     try { panePicker.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
   }
@@ -882,6 +895,7 @@
      * closes first. If no sheet is open and zen mode is active, escape
      * exits zen. */
     if (event.key !== "Escape") return;
+    if (newSheetOpen) { closeNewSheet(); return; }
     if (callsSheetOpen) { closeCallsSheet(); return; }
     if (pendingSheetOpen) { closePendingSheet(); return; }
     if (convSheetOpen && !settingsOpen) { closeConvSheet(); return; }
@@ -1878,8 +1892,30 @@
   function agentWorkspaceSub(agent) {
     var name = agentDisplayName(agent);
     var ws = (agent.cwd || "").split("/").filter(Boolean).pop() || "";
-    if (!ws || ws === name) return "";
-    return ws;
+    if (ws === name) ws = "";
+    /* Parity F7a S3: the pane's last-request model, when /herd knows it. */
+    var model = agent.model || "";
+    /* Parity F7d S1: the context window rides next to it as a compact
+     * "used/limit" pair — only when a local catalog named the limit. */
+    var ctx = formatContextWindow(agent.context);
+    return [ws, model, ctx].filter(Boolean).join(" · ");
+  }
+
+  /* "24.3k/200k" from {used, limit}; null when the server sent no
+   * window (no catalog, unknown model) — never guessed client-side. */
+  function formatContextNumber(value) {
+    var n = Number(value);
+    if (!isFinite(n) || n <= 0) return null;
+    if (n >= 1000) return (n / 1000).toFixed(n >= 100000 ? 0 : 1).replace(/\.0$/, "") + "k";
+    return String(n);
+  }
+
+  function formatContextWindow(context) {
+    if (!context || !context.limit) return null;
+    var limit = formatContextNumber(context.limit);
+    if (!limit) return null;
+    var used = formatContextNumber(context.used);
+    return used ? used + "/" + limit : limit;
   }
 
   /* Small Spanish label for a sheet row's status pill (idle hides it). */
@@ -2084,6 +2120,7 @@
     panePickerSub.classList.toggle("hidden", !pickerSub);
     renderGlanceLabel();       // lastHerd just refreshed: recompute name
     renderPending(lastView);   // blocked-agent counts may have changed
+    refreshModelSwitchOffer(); // the sheet's model action tracks the pane
   }
 
   function selectAgent(paneId) {
@@ -2240,7 +2277,28 @@
     for (i = 0; i < blocked.length; i++) {
       if (blocked[i].pane_id === viewed) { viewedBlocked = true; break; }
     }
-    var replyTarget = viewed && !viewedBlocked ? viewed : null;
+    /* Model-switch modal card (F7d fix): a USER-opened picker leaves
+     * the pane idle, so its card renders from the HELD modal payload
+     * (the /view?modal=1 poll's structured read) exactly as a blocked
+     * pane's renders from its own live payload. The hold is dropped
+     * the moment the pane blocks — its live payloads own the card
+     * again — or when an answer consumed the picker (below). */
+    if (modalCard && viewed === modalCard.pane &&
+        (viewedBlocked || (view && view.structured))) {
+      modalCard = null;
+    }
+    var modalHeld = !viewedBlocked && modalCard && modalCard.pane === viewed
+      ? modalCard : null;
+    /* The pane whose keys area the held modal card owns: the permission
+     * renderer at the tail of this render must not re-hide the wrapper
+     * the picker just opened — an idle pane carries no permission state
+     * of its own, only the held card. Null on every blocked render, so
+     * the permission path below keeps its exact previous shape. */
+    modalKeysPane = modalHeld ? viewed : null;
+    /* The picker owns the keyboard while it is open (a typed reply
+     * would land in its Search box), so the held card gets the blocked
+     * shape: keypad instead of the composer. */
+    var replyTarget = viewed && !viewedBlocked && !modalHeld ? viewed : null;
     if (replyTarget && replyForm.getAttribute("data-pane") !== replyTarget) {
       replyInput.value = "";
     }
@@ -2259,6 +2317,13 @@
     }
     if (paneStopBtn) paneStopBtn.classList.toggle("hidden", !replyTarget);
 
+    /* The tracker card follows the VIEWED pane (parity-f7g S5): a pane
+     * switch repaints that pane's own tracker — or hides the card when
+     * it has none. It survives every poll repaint by design; only the
+     * viewed pane, a dismiss or a newer send move it. */
+    trackViewedPane = viewed;
+    paintTrackCard();
+
     /* Brain message (S13): addressable whenever the viewed pane has a
      * live agent session (the walky address pins that session — a
      * replaced agent refuses the message instead of receiving it).
@@ -2268,7 +2333,7 @@
     var msgSession = (view && view.status && view.status.session_id) || null;
     updateMsgTarget(viewed && msgSession ? { pane: viewed, session: msgSession } : null);
 
-    var keysTarget = viewed && viewedBlocked ? viewed : null;
+    var keysTarget = viewed && (viewedBlocked || modalHeld) ? viewed : null;
     /* A NEW dialog (different pane, or the pad reappearing) starts from the
      * neutral hint; the acknowledgement of the last key must survive polls. */
     if (keysTarget !== lastKeysTarget) {
@@ -2278,7 +2343,14 @@
     if (keysTarget) replyKeys.setAttribute("data-pane", keysTarget);
     else replyKeys.removeAttribute("data-pane");
     replyKeys.classList.toggle("hidden", !keysTarget);
-    paintDialogPreview(keysTarget ? view : null);
+    /* The paint input: the live payload when it carries the dialog
+     * (every blocked render), else the held modal payload for the
+     * picker on an idle pane. */
+    var paintView = view;
+    if (!viewedBlocked && modalHeld && !(view && view.structured)) {
+      paintView = modalHeld.payload;
+    }
+    paintDialogPreview(keysTarget ? paintView : null);
     refreshPermission(viewed && viewedBlocked ? viewed : null);
   }
 
@@ -2330,6 +2402,10 @@
               hideReceipt();
               showToast(t("reply.sent"), 3000);
             }
+            /* parity-f7g S5: a tracked outcome (sent/effective/unknown)
+             * starts the tracker card that follows this send to its
+             * outcome; untracked outcomes leave any older tracker be. */
+            startSendTracking(paneId, receipt);
             return null;
           }, function () { return null; });
         }
@@ -2397,6 +2473,90 @@
   function hideReceipt() {
     if (!receiptCard) return;
     receiptCard.classList.add("hidden");
+  }
+
+  /* ---------------- send tracking (parity-f7g S5) ----------------
+   * The tracker card follows the pane's send to its OUTCOME — the
+   * receipt above says what the terminal did at send time; this card
+   * says what happened after. Pure model in send-track.js
+   * (window.SendTrack): labels, m:ss elapsed, terminal detection, the
+   * per-pane map, the hot-poll cadence. This block owns the DOM (text
+   * nodes only), the SSE feed and the receipts-poll convergence —
+   * whichever arrives first wins, so the card converges even with the
+   * event stream down. */
+  var paneTracks = window.SendTrack ? window.SendTrack.createPaneTracks() : null;
+  var trackViewedPane = null;   /* the pane whose tracker the card shows */
+  var trackHotUntilMs = 0;      /* hot-poll window (S5): ~12 s after a send */
+  var trackLastFetchMs = null;  /* last /pane/receipts fetch (cadence gate) */
+
+  function startSendTracking(paneId, receipt) {
+    if (!paneTracks || !paneId || !receipt || !receipt.id) return;
+    var entry = paneTracks.start(paneId, receipt);
+    if (!entry) return;  /* untracked outcome: nothing is in flight */
+    trackHotUntilMs = Date.now() + window.SendTrack.HOT_WINDOW_MS;
+    trackLastFetchMs = null;  /* the next 1s tick fetches immediately */
+    if (trackViewedPane === paneId) paintTrackCard();
+  }
+
+  /* One SSE send.track event: converge the map, repaint the visible
+   * card. Display-only — no herd repaint, no fetch (the event IS the
+   * state; the elapsed keeps ticking locally). */
+  function handleSendTrackEvent(event) {
+    if (!paneTracks) return;
+    var entry = paneTracks.applyEvent(event);
+    if (entry && trackViewedPane === entry.pane_id) paintTrackCard();
+  }
+
+  function paintTrackCard() {
+    if (!trackCard || !paneTracks) return;
+    var entry = trackViewedPane ? paneTracks.get(trackViewedPane) : null;
+    var model = entry ? window.SendTrack.cardModel(entry, Date.now() / 1000) : null;
+    if (!model) {
+      trackCard.classList.add("hidden");
+      return;
+    }
+    trackStateEl.textContent = model.stateText;
+    trackElapsedEl.textContent = model.elapsedText;
+    trackDismissBtn.classList.toggle("hidden", !model.dismissible);
+    trackCard.classList.toggle("terminal", model.terminal);
+    trackCard.classList.remove("hidden");
+  }
+
+  /* Convergence without SSE: refresh the VIEWED pane's trackers from
+   * the receipts listing (the track object rides it additively). */
+  function refreshTracks(paneId) {
+    trackLastFetchMs = Date.now();
+    readFetch("/pane/receipts?pane_id=" + encodeURIComponent(paneId))
+      .then(function (resp) { return resp.ok ? resp.json() : null; })
+      .then(function (body) {
+        if (!body || !paneTracks) return;
+        paneTracks.applyReceipts(paneId, body.receipts || []);
+        if (trackViewedPane === paneId) paintTrackCard();
+      })
+      .catch(function () { /* offline: SSE and the next tick retry */ });
+  }
+
+  /* Rides the always-on 1s tick (no second interval): repaints the
+   * elapsed second and, when a fetch is due — 1.5 s inside the hot
+   * window, then the normal 5 s, only while the viewed pane's tracker
+   * is non-terminal — polls the receipts listing. */
+  function tickSendTracking() {
+    if (!paneTracks) return;
+    var nowMs = Date.now();
+    if (trackViewedPane &&
+        paneTracks.hasNonTerminal(trackViewedPane) &&
+        window.SendTrack.fetchDue(nowMs, trackLastFetchMs, trackHotUntilMs)) {
+      refreshTracks(trackViewedPane);
+    }
+    if (trackCard && !trackCard.classList.contains("hidden")) paintTrackCard();
+  }
+
+  if (trackDismissBtn) {
+    trackDismissBtn.addEventListener("click", function () {
+      if (!paneTracks || !trackViewedPane) return;
+      paneTracks.dismiss(trackViewedPane);
+      paintTrackCard();
+    });
   }
 
   function sendReceiptFollowup(button, kind) {
@@ -2640,8 +2800,11 @@
     }
     permissionBox.classList.toggle("hidden", !show);
     /* The keys notice is the fallback for a dialog this path cannot answer:
-       another agent kind, or one already answered elsewhere. */
-    replyKeys.classList.toggle("hidden", !(permissionBlocked && !show));
+       another agent kind, or one already answered elsewhere. A HELD modal
+       card keeps the keys area too (F7d fix): the picker an idle pane
+       opened owns it exactly like a blocked pane's own dialog. */
+    replyKeys.classList.toggle(
+      "hidden", !((permissionBlocked && !show) || modalKeysPane));
   }
 
   var PERMISSION_TOAST = {
@@ -2923,6 +3086,35 @@
   var dialogBusy = false;
   var lastStructured = null;
   var lastDialogIdentity = null;
+  /* Multiselect only: the LOCAL checkbox selection (dialogs.js's
+   * selectionModel). An option tap mutates this and NEVER posts; only
+   * the explicit submit button turns it into one POST. */
+  var dialogMultiSelection = null;
+  /* The wizard stepper (S4): dialogs.js's state machine, fed every
+   * render of the pane's dialog. While it holds the pane its stepper
+   * replaces the plain card; each step still answers through the SAME
+   * guarded endpoint, one step at a time, and drift aborts it — the
+   * machine never retries on its own. */
+  var dialogWizard = window.Dialogs && window.Dialogs.wizardSession
+    ? window.Dialogs.wizardSession(postDialogAnswer) : null;
+  var wizardPaintIdentity = "";
+
+  function postDialogAnswer(payload) {
+    /* The SAME endpoint, credential path and result shape every dialog
+     * tap already uses — the wizard only decides WHEN a payload leaves
+     * (one step per Next, the pending last step on Confirm). */
+    return fetch("/pane/dialog/answer", withDeviceAuth({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    }))
+      .then(function (resp) {
+        if (!resp.ok) maybeOfferPairing(resp);
+        return resp.json().catch(function () { return null; }).then(function (body) {
+          return { ok: resp.ok, status: resp.status, body: body };
+        });
+      });
+  }
 
   function setDialogButtonsBusy(busy) {
     if (!dialogButtonsBox) return;
@@ -2941,12 +3133,140 @@
     }
   }
 
+  /* A model picker is a LONG list: a search input on top and a
+   * bounded, scrollable list below. The filter only hides rows (every
+   * button keeps its ORIGINAL key under `keyAttr`), so a tap on a
+   * filtered row answers exactly like an unfiltered one. ONE builder
+   * serves the picker's own options (data-index) and the full catalog
+   * (data-catalog). Returns the list host, the input and the filter. */
+  function mountModelSearch(rows, keyAttr) {
+    var searchInput = document.createElement("input");
+    searchInput.type = "search";
+    searchInput.className = "dlg-model-search";
+    searchInput.placeholder = window.Dialogs.modelSearchPlaceholder();
+    searchInput.setAttribute("aria-label", window.Dialogs.modelSearchPlaceholder());
+    searchInput.setAttribute("autocomplete", "off");
+    searchInput.setAttribute("autocapitalize", "off");
+    searchInput.setAttribute("autocorrect", "off");
+    searchInput.setAttribute("spellcheck", "false");
+    searchInput.setAttribute("enterkeyhint", "search");
+    dialogButtonsBox.appendChild(searchInput);
+    var listHost = document.createElement("div");
+    listHost.className = "dlg-model-list";
+    dialogButtonsBox.appendChild(listHost);
+    var noMatch = document.createElement("div");
+    noMatch.className = "dlg-model-none hidden";
+    noMatch.textContent = window.Dialogs.modelSearchNone();
+    dialogButtonsBox.appendChild(noMatch);
+    function refilter() {
+      var keep = {};
+      window.Dialogs.filterModelRows(rows, searchInput.value)
+        .forEach(function (row) { keep[row.index] = true; });
+      var rowButtons = listHost.querySelectorAll("button[" + keyAttr + "]");
+      var shown = 0;
+      for (var r = 0; r < rowButtons.length; r++) {
+        var visible = keep[rowButtons[r].getAttribute(keyAttr)] === true;
+        rowButtons[r].hidden = !visible;
+        if (visible) shown += 1;
+      }
+      noMatch.classList.toggle("hidden", shown > 0);
+      listHost.scrollTop = 0;
+    }
+    searchInput.addEventListener("input", refilter);
+    return { host: listHost, input: searchInput, refilter: refilter };
+  }
+
+  /* The FULL connected-model catalog for an opencode picker (GET
+   * /pane/models). The picker on screen paints only a window of its
+   * list, so the card first shows those options (the fallback) and,
+   * once the catalog arrives, REPLACES them with every model. A tap on
+   * a catalog row sends its NAME: the server types it into the real
+   * picker, walks the screen's pointer to that model and presses Enter
+   * only once a fresh read shows it there. The read is on demand (never at boot)
+   * and cached per pane for a few minutes; an empty or failed catalog
+   * leaves the picker's own options untouched. */
+  var MODEL_CATALOG_TTL_MS = 5 * 60 * 1000;
+  var modelCatalogCache = {};
+  var modelCatalogInflight = {};
+  var catalogRowsShown = null;
+
+  function applyModelCatalog(paneId, models) {
+    if (!dialogButtonsBox || !window.Dialogs || dialogBusy) return;
+    if (!window.Dialogs.wantsModelCatalog(lastStructured)) return;
+    if (replyKeys.getAttribute("data-pane") !== paneId) return;
+    var rows = window.Dialogs.modelCatalogRows(models, lastStructured);
+    if (!rows.length) return;  /* keep the picker's own options */
+    var previous = dialogButtonsBox.querySelector(".dlg-model-search");
+    var typed = previous ? previous.value : "";
+    dialogButtonsBox.textContent = "";
+    var mount = mountModelSearch(rows, "data-catalog");
+    rows.forEach(function (row) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.setAttribute("data-catalog", String(row.index));
+      var label = document.createElement("span");
+      label.textContent = row.model;
+      button.appendChild(label);
+      if (row.provider) {
+        var description = document.createElement("span");
+        description.className = "dlg-opt-desc";
+        description.textContent = row.provider;
+        button.appendChild(description);
+      }
+      if (row.current) {
+        button.className = "dlg-current";
+        button.setAttribute("aria-current", "true");
+      }
+      mount.host.appendChild(button);
+    });
+    catalogRowsShown = rows;
+    if (typed) {
+      /* What was typed before the list arrived survives the swap. */
+      mount.input.value = typed;
+      mount.refilter();
+    }
+  }
+
+  function requestModelCatalog(paneId) {
+    var cached = modelCatalogCache[paneId];
+    if (cached && Date.now() - cached.at < MODEL_CATALOG_TTL_MS) {
+      applyModelCatalog(paneId, cached.models);
+      return;
+    }
+    if (modelCatalogInflight[paneId]) return;
+    modelCatalogInflight[paneId] = true;
+    readFetch(window.Dialogs.modelCatalogUrl(paneId))
+      .then(function (resp) { return resp.ok ? resp.json() : null; })
+      .then(function (body) {
+        var models = body && Array.isArray(body.models) ? body.models : [];
+        if (models.length) {
+          modelCatalogCache[paneId] = { at: Date.now(), models: models };
+        }
+        applyModelCatalog(paneId, models);
+      })
+      .catch(function () { /* the picker's own options stay */ })
+      .then(function () { delete modelCatalogInflight[paneId]; });
+  }
+
   function paintStructuredDialog(structured) {
     if (!dialogButtonsBox || !window.Dialogs) return false;
     lastStructured = structured;
+    var paneId = replyKeys.getAttribute("data-pane") || "";
+    /* Every render of the pane's dialog feeds the wizard machine: it
+     * advances on the dialogs the posts produce and aborts on drift.
+     * While it holds the pane (capturing / reviewing / waiting) the
+     * stepper IS the card; idle and aborted fall through to today's
+     * plain card below. */
+    if (dialogWizard) dialogWizard.feed(structured, paneId);
+    var wizardView = dialogWizard ? dialogWizard.view() : null;
+    if (wizardView && wizardView.mode !== "idle" &&
+        wizardView.mode !== "aborted") {
+      paintWizardStepper(wizardView);
+      if (dialogUnreadCard) dialogUnreadCard.classList.add("hidden");
+      return true;
+    }
     var buttons = window.Dialogs.buttonsFor(structured);
     if (buttons && structured && structured.fingerprint) {
-      var paneId = replyKeys.getAttribute("data-pane") || "";
       var identity = paneId + "|" + structured.fingerprint;
       if (identity !== lastDialogIdentity) {
         /* A NEW dialog clears the old outcome line: it belongs to the
@@ -2954,21 +3274,78 @@
         lastDialogIdentity = identity;
         setDialogStatus("");
         dialogButtonsBox.textContent = "";
+        dialogMultiSelection = window.Dialogs.isMultiselect(structured)
+          ? window.Dialogs.selectionModel(structured.options)
+          : null;
+        catalogRowsShown = null;
+        var pickerRows = window.Dialogs.modelPickerRows
+          ? window.Dialogs.modelPickerRows(structured) : null;
+        var buttonHost = dialogButtonsBox;
+        if (pickerRows && pickerRows.length) {
+          buttonHost = mountModelSearch(pickerRows, "data-index").host;
+        }
         buttons.forEach(function (option) {
           var button = document.createElement("button");
           button.type = "button";
           button.setAttribute("data-index", String(option.index));
+          if (dialogMultiSelection) {
+            /* The checkbox rows carry their terminal state; the toggle
+             * is local and posts nothing. */
+            button.setAttribute(
+              "aria-pressed", String(option.checked === true));
+          }
+          /* A free-text row opens the card's editor on tap (S3): it
+           * never posts by itself — the typed answer goes out as
+           * {option, text} from the editor's explicit send. */
+          var structuredOption = (structured.options || [])[option.index];
+          if (structuredOption && structuredOption.free_text === true) {
+            button.setAttribute("data-free-text", "1");
+          }
+          var pickerRow = pickerRows ? pickerRows[option.index] : null;
           var label = document.createElement("span");
-          label.textContent = option.label;
+          label.textContent = pickerRow ? pickerRow.model : option.label;
           button.appendChild(label);
-          if (option.description) {
+          var secondary = pickerRow ? pickerRow.provider : option.description;
+          if (secondary) {
             var description = document.createElement("span");
             description.className = "dlg-opt-desc";
-            description.textContent = option.description;
+            description.textContent = secondary;
             button.appendChild(description);
           }
-          dialogButtonsBox.appendChild(button);
+          if (pickerRow && pickerRow.current) {
+            /* The model the agent runs now: highlighted, announced. */
+            button.className = "dlg-current";
+            button.setAttribute("aria-current", "true");
+          }
+          buttonHost.appendChild(button);
         });
+        if (pickerRows && pickerRows.length &&
+            window.Dialogs.wantsModelCatalog(structured)) {
+          requestModelCatalog(paneId);
+        }
+        if (dialogMultiSelection) {
+          /* ONE explicit submit for the whole selection — no checkbox
+           * tap can send anything by itself. */
+          var submit = document.createElement("button");
+          submit.type = "button";
+          submit.setAttribute("data-submit", "1");
+          submit.className = "dlg-submit";
+          submit.textContent = window.Dialogs.submitLabel();
+          dialogButtonsBox.appendChild(submit);
+        }
+        /* An aborted wizard keeps the plain card (the dialog stays
+         * answerable exactly as before S4) and adds the drift notice:
+         * nothing is retried behind the user's back. */
+        if (wizardView && wizardView.mode === "aborted") {
+          var abortCard = document.createElement("div");
+          abortCard.className = "dlg-wizard-abort";
+          var abortTitle = document.createElement("strong");
+          abortTitle.textContent = window.Dialogs.wizardChangedMessage();
+          abortCard.appendChild(abortTitle);
+          dialogButtonsBox.insertBefore(
+            abortCard, dialogButtonsBox.firstChild);
+          setDialogStatus(window.Dialogs.wizardChangedMessage());
+        }
       }
       dialogButtonsBox.classList.remove("hidden");
       if (dialogUnreadCard) dialogUnreadCard.classList.add("hidden");
@@ -2992,18 +3369,255 @@
     return false;
   }
 
+  /* ---------------- wizard stepper (S4) ------------------------------------
+   * The stepper's DOM: a progress line, the current step's capture (the
+   * same option rows / checkbox toggles / free-text editor the plain
+   * card uses, but every tap is LOCAL until Next sends the step), and
+   * Next/Back; the last step swaps the capture for a review listing
+   * every captured answer with Confirm/Edit. All painting is
+   * createElement + textContent: a label is never markup. */
+  function repaintWizardCard() {
+    wizardPaintIdentity = "";
+    paintStructuredDialog(lastStructured);
+  }
+
+  function paintWizardStepper(view) {
+    if (!dialogButtonsBox) return;
+    var paneId = replyKeys.getAttribute("data-pane") || "";
+    var fingerprint = view.structured ? view.structured.fingerprint : "";
+    var identity = [
+      paneId, view.mode, view.current, view.steps, fingerprint,
+    ].join("|");
+    if (identity !== wizardPaintIdentity) {
+      wizardPaintIdentity = identity;
+      /* The plain card must fully rebuild whenever the wizard stops
+       * owning this pane's dialog. */
+      lastDialogIdentity = null;
+      setDialogStatus("");
+      dialogButtonsBox.textContent = "";
+      dialogMultiSelection = null;
+      var progress = document.createElement("div");
+      progress.className = "dlg-wizard-progress";
+      progress.textContent = window.Dialogs.wizardProgressLabel(
+        view.current, view.steps);
+      dialogButtonsBox.appendChild(progress);
+      if (view.mode === "capturing" && view.structured) {
+        paintWizardCapture(view);
+      } else if (view.mode === "reviewing") {
+        paintWizardReview(view);
+      }
+      /* waiting: the progress line alone — the next step's dialog (or
+       * the pane's resumption) repaints this box on the next read. */
+    }
+    dialogButtonsBox.classList.remove("hidden");
+  }
+
+  function paintWizardCapture(view) {
+    var options = view.structured.options || [];
+    options.forEach(function (option, index) {
+      var button = document.createElement("button");
+      button.type = "button";
+      /* data-wizard-index routes the tap to the wizard's LOCAL capture;
+       * data-index lets the shared free-text editor find its row. */
+      button.setAttribute("data-wizard-index", String(index));
+      button.setAttribute("data-index", String(index));
+      if (option.checked != null) {
+        button.setAttribute(
+          "aria-pressed", String(dialogWizard.isSelected(index)));
+      }
+      if (option.free_text === true) {
+        button.setAttribute("data-free-text", "1");
+      }
+      var label = document.createElement("span");
+      label.textContent = option.label == null ? "" : String(option.label);
+      button.appendChild(label);
+      if (option.description) {
+        var description = document.createElement("span");
+        description.className = "dlg-opt-desc";
+        description.textContent = option.description;
+        button.appendChild(description);
+      }
+      dialogButtonsBox.appendChild(button);
+    });
+    var back = document.createElement("button");
+    back.type = "button";
+    back.setAttribute("data-wizard-back", "1");
+    back.textContent = window.Dialogs.wizardBackLabel();
+    if (!view.canBack) {
+      /* Back rewinds LOCAL selections only: a step already sent cannot
+       * be un-sent, so the disabled button says why. */
+      back.disabled = true;
+      back.title = window.Dialogs.wizardBackDisabledReason(view.backReason);
+    }
+    dialogButtonsBox.appendChild(back);
+    var next = document.createElement("button");
+    next.type = "button";
+    next.setAttribute("data-wizard-next", "1");
+    next.className = "dlg-submit";
+    next.textContent = window.Dialogs.wizardNextLabel();
+    dialogButtonsBox.appendChild(next);
+  }
+
+  function paintWizardReview(view) {
+    var title = document.createElement("div");
+    title.className = "dlg-wizard-review";
+    var strong = document.createElement("strong");
+    strong.textContent = window.Dialogs.wizardReviewTitle();
+    title.appendChild(strong);
+    dialogButtonsBox.appendChild(title);
+    view.answers.forEach(function (answer) {
+      var row = document.createElement("div");
+      row.className = "dlg-wizard-answer";
+      var question = document.createElement("span");
+      question.textContent = window.Dialogs.wizardProgressLabel(
+        answer.step, view.steps) + " · " + answer.question;
+      row.appendChild(question);
+      var chosen = document.createElement("span");
+      chosen.className = "dlg-opt-desc";
+      var text = answer.labels.join(", ");
+      if (answer.text) {
+        text = (text ? text + " — " : "") + answer.text;
+      }
+      chosen.textContent = text;
+      row.appendChild(chosen);
+      /* Edit returns to that step's capture WITHOUT sending anything;
+       * re-sending an already-submitted step stays the server's call
+       * (its fingerprint guard), never the PWA's optimism. */
+      var edit = document.createElement("button");
+      edit.type = "button";
+      edit.setAttribute("data-wizard-edit", String(answer.step));
+      edit.textContent = window.Dialogs.wizardEditLabel();
+      row.appendChild(edit);
+      dialogButtonsBox.appendChild(row);
+    });
+    var confirm = document.createElement("button");
+    confirm.type = "button";
+    confirm.setAttribute("data-wizard-confirm", "1");
+    confirm.className = "dlg-submit";
+    confirm.textContent = window.Dialogs.wizardConfirmLabel();
+    dialogButtonsBox.appendChild(confirm);
+  }
+
+  function handleWizardOption(button) {
+    if (!dialogWizard || dialogBusy) return;
+    var index = parseInt(button.getAttribute("data-wizard-index"), 10);
+    if (isNaN(index)) return;
+    var view = dialogWizard.view();
+    if (view.mode !== "capturing" || !view.structured) return;
+    var option = (view.structured.options || [])[index];
+    if (!option) return;
+    if (option.checked != null) {
+      /* A checkbox tap is LOCAL state only — one explicit Next sends
+       * the whole step, exactly like the plain multiselect card. */
+      if (dialogWizard.toggle(index)) {
+        button.setAttribute(
+          "aria-pressed", String(dialogWizard.isSelected(index)));
+      }
+      return;
+    }
+    if (option.free_text === true) {
+      openFreeTextEditor(button);
+      return;
+    }
+    /* The pick is a radio: one row carries aria-current at a time. */
+    dialogWizard.pick(index);
+    var siblings = dialogButtonsBox.querySelectorAll(
+      "button[data-wizard-index]");
+    for (var i = 0; i < siblings.length; i++) {
+      siblings[i].removeAttribute("aria-current");
+    }
+    button.setAttribute("aria-current", "true");
+  }
+
+  function runWizardSend(action) {
+    if (!dialogWizard || dialogBusy) return;
+    dialogBusy = true;
+    setDialogButtonsBusy(true);
+    setDialogStatus(t("reply.sending"));
+    action().then(function (result) {
+      dialogBusy = false;
+      setDialogButtonsBusy(false);
+      if (result.ok) {
+        setDialogStatus("");
+        /* The review/abort repaint happens NOW (no server round-trip
+         * changed the dialog); the next step still needs a read. */
+        repaintWizardCard();
+        refreshState();
+        return;
+      }
+      if (result.reason === "empty") {
+        setDialogStatus(t("dialogs.none_selected"));
+        return;
+      }
+      if (dialogWizard.view().mode === "aborted") {
+        /* Drift the server refused (409 changed) or the stepper saw
+         * (unexpected step): surface it, never retry. */
+        setDialogStatus(window.Dialogs.wizardChangedMessage());
+        repaintWizardCard();
+      }
+    });
+  }
+
+  function sendWizardNext() {
+    runWizardSend(function () { return dialogWizard.next(); });
+  }
+
+  function sendWizardConfirm() {
+    runWizardSend(function () { return dialogWizard.confirm(); });
+  }
+
+  function sendWizardBack() {
+    if (!dialogWizard || dialogBusy) return;
+    var result = dialogWizard.back();
+    if (result.ok) {
+      setDialogStatus("");
+      repaintWizardCard();
+      return;
+    }
+    setDialogStatus(window.Dialogs.wizardBackDisabledReason(result.reason));
+  }
+
+  function doWizardEdit(step) {
+    if (!dialogWizard || dialogBusy) return;
+    if (dialogWizard.edit(Number(step))) {
+      setDialogStatus("");
+      repaintWizardCard();
+    }
+  }
+
   function answerDialogButton(button) {
     var index = parseInt(button.getAttribute("data-index"), 10);
     var paneId = replyKeys.getAttribute("data-pane");
     if (!lastStructured || !window.Dialogs || isNaN(index) || !paneId || dialogBusy) return;
-    dialogBusy = true;
-    setDialogButtonsBusy(true);
-    setDialogStatus(t("reply.sending"));
     var labels = (lastStructured.options || []).map(function (option) {
       return option.label;
     });
-    var payload = window.Dialogs.answerPayload(
-      paneId, lastStructured.fingerprint, index);
+    postDialogTap(
+      paneId,
+      window.Dialogs.answerPayload(paneId, lastStructured.fingerprint, index),
+      labels,
+      index);
+  }
+
+  /* A catalog row answers by NAME (+ provider): the model may not be on
+   * the picker's painted window at all, so there is no option index. The
+   * fingerprint guard is the same one every dialog answer carries. */
+  function answerCatalogButton(button) {
+    var index = parseInt(button.getAttribute("data-catalog"), 10);
+    var paneId = replyKeys.getAttribute("data-pane");
+    var row = catalogRowsShown && !isNaN(index) ? catalogRowsShown[index] : null;
+    if (!lastStructured || !window.Dialogs || !row || !paneId || dialogBusy) return;
+    postDialogTap(
+      paneId,
+      window.Dialogs.catalogAnswerPayload(paneId, lastStructured.fingerprint, row),
+      [row.model],
+      0);
+  }
+
+  function postDialogTap(paneId, payload, labels, index) {
+    dialogBusy = true;
+    setDialogButtonsBusy(true);
+    setDialogStatus(t("reply.sending"));
     fetch("/pane/dialog/answer", withDeviceAuth({
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -3020,6 +3634,90 @@
           var answered = result.body && result.body.option != null
             ? result.body.option : index;
           setDialogStatus(window.Dialogs.statusFor({ ok: true, option: answered }, labels));
+          /* F7d fix: a verified answer consumed the picker — the held
+           * modal card must not outlive it. */
+          dropModalCard(paneId);
+          /* A switched model may open a follow-up list on an IDLE pane
+           * (opencode's Select variant): watch the modal read again so
+           * its card appears instead of a silent open dialog. */
+          if (result.body && result.body.next && modelSwitchPoll) {
+            modelSwitchPoll.start(paneId);
+          }
+          /* The dialog usually closes or advances here: refresh now
+           * instead of waiting a whole poll beat. */
+          refreshState();
+          return null;
+        }
+        /* A model switch the server could not confirm names what the
+         * screen shows instead (e.g. another model stayed selected). */
+        if (result.status === 502 && window.Dialogs.isModelPicker(lastStructured) &&
+            result.body && typeof result.body.detail === "string" && result.body.detail) {
+          setDialogStatus(result.body.detail);
+          return null;
+        }
+        setDialogStatus(window.Dialogs.statusFor({ status: result.status }, labels));
+        return null;
+      })
+      .catch(function () {
+        setDialogStatus(window.Dialogs.statusFor(null, labels));
+      })
+      .then(function () {
+        dialogBusy = false;
+        setDialogButtonsBusy(false);
+      });
+  }
+
+  function toggleDialogChoice(button) {
+    /* A checkbox tap is LOCAL state only — it never posts. The server
+     * sees the whole selection in one explicit submit. */
+    if (!lastStructured || !dialogMultiSelection || dialogBusy) return;
+    var index = parseInt(button.getAttribute("data-index"), 10);
+    if (isNaN(index)) return;
+    var option = (lastStructured.options || [])[index];
+    if (!option || option.checked == null) return;  // not a checkbox row
+    dialogMultiSelection.toggle(index);
+    button.setAttribute(
+      "aria-pressed", String(dialogMultiSelection.isSelected(index)));
+  }
+
+  function submitDialogChoices() {
+    if (!lastStructured || !window.Dialogs || !dialogMultiSelection || dialogBusy) {
+      return;
+    }
+    var paneId = replyKeys.getAttribute("data-pane");
+    if (!paneId) return;
+    var chosen = dialogMultiSelection.choices();
+    if (!chosen.length) {
+      /* The submit row does nothing with an empty selection — same as
+       * the harness's own TUI. */
+      setDialogStatus(t("dialogs.none_selected"));
+      return;
+    }
+    dialogBusy = true;
+    setDialogButtonsBusy(true);
+    setDialogStatus(t("reply.sending"));
+    var labels = (lastStructured.options || []).map(function (option) {
+      return option.label;
+    });
+    var payload = window.Dialogs.choicesPayload(
+      paneId, lastStructured.fingerprint, chosen);
+    fetch("/pane/dialog/answer", withDeviceAuth({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    }))
+      .then(function (resp) {
+        if (!resp.ok) maybeOfferPairing(resp);
+        return resp.json().catch(function () { return null; }).then(function (body) {
+          return { ok: resp.ok, status: resp.status, body: body };
+        });
+      })
+      .then(function (result) {
+        if (result.ok) {
+          setDialogStatus(window.Dialogs.statusFor({ ok: true }, labels));
+          /* F7d fix: a verified answer consumed the picker — the held
+           * modal card must not outlive it. */
+          dropModalCard(paneId);
           /* The dialog usually closes or advances here: refresh now
            * instead of waiting a whole poll beat. */
           refreshState();
@@ -3040,8 +3738,188 @@
   if (dialogButtonsBox) {
     dialogButtonsBox.addEventListener("click", function (event) {
       var node = event.target;
+      var closest = node && node.closest ? node.closest.bind(node) : null;
+      if (closest) {
+        /* The wizard stepper's own controls route first: its option
+         * rows also carry data-index, but inside a wizard every tap is
+         * LOCAL until Next/Confirm sends the step. */
+        var wizardNext = closest("button[data-wizard-next]");
+        if (wizardNext) {
+          sendWizardNext();
+          return;
+        }
+        var wizardBack = closest("button[data-wizard-back]");
+        if (wizardBack) {
+          sendWizardBack();
+          return;
+        }
+        var wizardEdit = closest("button[data-wizard-edit]");
+        if (wizardEdit) {
+          doWizardEdit(wizardEdit.getAttribute("data-step"));
+          return;
+        }
+        var wizardConfirm = closest("button[data-wizard-confirm]");
+        if (wizardConfirm) {
+          sendWizardConfirm();
+          return;
+        }
+        var wizardOption = closest("button[data-wizard-index]");
+        if (wizardOption) {
+          handleWizardOption(wizardOption);
+          return;
+        }
+      }
+      var submit = node && node.closest
+        ? node.closest("button[data-submit]") : null;
+      if (submit) {
+        submitDialogChoices();
+        return;
+      }
+      var catalogButton = node && node.closest
+        ? node.closest("button[data-catalog]") : null;
+      if (catalogButton) {
+        answerCatalogButton(catalogButton);
+        return;
+      }
       var button = node && node.closest ? node.closest("button[data-index]") : null;
-      if (button) answerDialogButton(button);
+      if (!button) return;
+      if (window.Dialogs && window.Dialogs.isMultiselect(lastStructured)) {
+        toggleDialogChoice(button);
+        return;
+      }
+      if (button.getAttribute("data-free-text") === "1") {
+        openFreeTextEditor(button);
+        return;
+      }
+      answerDialogButton(button);
+    });
+  }
+
+  /* ---------------- free-text editor (S3) --------------------------------
+   * Tapping the dialog's free-text row opens an inline editor in the
+   * card: an input plus one explicit send. The typed text passes the
+   * SAME destructive guard the composer uses (a match needs the second
+   * tap), and only then does {option, text} leave to the answer
+   * endpoint — the server re-reads the pane, clears the field, types,
+   * verifies the text on screen and commits. */
+  function closeFreeTextEditor() {
+    if (!dialogButtonsBox) return;
+    var editor = dialogButtonsBox.querySelector(".dlg-free-row");
+    if (editor) editor.remove();
+  }
+
+  function openFreeTextEditor(button) {
+    if (!lastStructured || !window.Dialogs || dialogBusy) return;
+    closeFreeTextEditor();
+    var index = parseInt(button.getAttribute("data-index"), 10);
+    if (isNaN(index)) return;
+    var row = document.createElement("div");
+    row.className = "dlg-free-row";
+    row.style.display = "flex";
+    row.style.gap = "6px";
+    row.style.marginTop = "2px";
+    var input = document.createElement("input");
+    input.type = "text";
+    input.setAttribute("data-free-text-input", "1");
+    input.placeholder = window.Dialogs.editorPlaceholder();
+    input.setAttribute("aria-label", window.Dialogs.editorPlaceholder());
+    input.autocomplete = "off";
+    input.enterKeyHint = "send";
+    input.style.flex = "1";
+    input.style.minWidth = "0";
+    input.style.padding = "8px 10px";
+    input.style.fontSize = "14px";
+    input.style.border = "1px solid var(--line)";
+    input.style.borderRadius = "10px";
+    input.style.background = "var(--bg)";
+    input.style.color = "var(--text)";
+    input.addEventListener("keydown", function (event) {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        sendFreeText(index, input);
+      }
+    });
+    var send = document.createElement("button");
+    send.type = "button";
+    send.setAttribute("data-free-text-send", "1");
+    send.textContent = window.Dialogs.editorSendLabel();
+    send.addEventListener("click", function () {
+      sendFreeText(index, input);
+    });
+    row.appendChild(input);
+    row.appendChild(send);
+    button.after(row);
+    input.focus();
+  }
+
+  function sendFreeText(index, input) {
+    if (!lastStructured || !window.Dialogs || dialogBusy) return;
+    var paneId = replyKeys.getAttribute("data-pane");
+    var text = (input.value || "").trim();
+    if (!paneId || !text) return;
+    /* Destructive-command guard, the composer's own: a matching send
+     * needs a second, explicit tap. The guard is client-side only —
+     * the server delivers a confirmed answer uncensored and audits
+     * it. */
+    var destructive = window.DestructiveGuard
+      ? window.DestructiveGuard.isDestructiveInput(text) : null;
+    if (destructive && !window.confirm(
+      window.Dialogs.confirmFreeText(text, destructive)
+    )) return;
+    /* Inside a wizard the editor only CAPTURES the step's answer —
+     * the step's Next (or the review's Confirm) is what sends it. */
+    if (dialogWizard && dialogWizard.view().mode === "capturing" &&
+        dialogWizard.freeTextOption() === index) {
+      dialogWizard.setText(text);
+      closeFreeTextEditor();
+      setDialogStatus(window.Dialogs.statusFor(
+        { ok: true, option: index }, labelsOfCurrentDialog()));
+      repaintWizardCard();
+      return;
+    }
+    dialogBusy = true;
+    setDialogButtonsBusy(true);
+    setDialogStatus(t("reply.sending"));
+    var payload = window.Dialogs.freeTextPayload(
+      paneId, lastStructured.fingerprint, index, text);
+    fetch("/pane/dialog/answer", withDeviceAuth({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    }))
+      .then(function (resp) {
+        if (!resp.ok) maybeOfferPairing(resp);
+        return resp.json().catch(function () { return null; }).then(function (body) {
+          return { ok: resp.ok, status: resp.status, body: body };
+        });
+      })
+      .then(function (result) {
+        if (result.ok) {
+          closeFreeTextEditor();
+          setDialogStatus(window.Dialogs.statusFor({ ok: true, option: index }, labelsOfCurrentDialog()));
+          /* F7d fix: a verified answer consumed the picker — the held
+           * modal card must not outlive it. */
+          dropModalCard(paneId);
+          /* The dialog usually closes or advances here: refresh now
+           * instead of waiting a whole poll beat. */
+          refreshState();
+          return null;
+        }
+        setDialogStatus(window.Dialogs.statusFor({ status: result.status }, labelsOfCurrentDialog()));
+        return null;
+      })
+      .catch(function () {
+        setDialogStatus(window.Dialogs.statusFor(null, labelsOfCurrentDialog()));
+      })
+      .then(function () {
+        dialogBusy = false;
+        setDialogButtonsBusy(false);
+      });
+  }
+
+  function labelsOfCurrentDialog() {
+    return (lastStructured && lastStructured.options || []).map(function (option) {
+      return option.label;
     });
   }
 
@@ -4755,6 +5633,12 @@
       if (consultUI) safeRender("consult", consultUI.handleEvent, ann);
       return;
     }
+    if (ann && ann.type === "send.track") {
+      // parity-f7g S4: one tracker state change per send rides the same
+      // stream — display-only, the local clock keeps the elapsed fresh.
+      handleSendTrackEvent(ann);
+      return;
+    }
     if (!ann || ann.type !== "transition") return;
     // VS3.6: the pending ledger records the transition (bookkeeping +
     // recovery only); the announcement itself keeps flowing through
@@ -5022,6 +5906,7 @@
     approvalFlow.tick();
     renderApprovalCard();
     pumpAudio();  // retry deferred announcements only after the busy-state guard permits them.
+    tickSendTracking();  // parity-f7g S5: tracker elapsed + cadence-gated receipts poll.
     // Mic watchdog: Android can kill SpeechRecognition (audio focus,
     // silent SR crash) without a usable onend restart, leaving a live
     // call micless while the state expects listening. Re-arm when
@@ -7539,9 +8424,11 @@
 
   /* "Nueva llamada" from the drawer head (2026-11-17): ONE gesture = hang
    * up (the record closes in the history), wipe the agent session context
-   * (same POST /reset as #conv-new) and dial a FRESH call. startCall runs
-   * synchronously inside the tap so the live AudioContext primes within
-   * the gesture window (L53); the reset lands while the new mic arms. */
+   * (the POST /reset that used to live on #conv-new — this button is its
+   * ONLY trigger since the header ✚ dedup) and dial a FRESH call.
+   * startCall runs synchronously inside the tap so the live AudioContext
+   * primes within the gesture window (L53); the reset lands while the new
+   * mic arms. */
   callNewBtn.addEventListener("click", function () {
     if (!inCall) return;  // drawer-scoped: only meaningful mid-call
     voiceTimelinePush("call_end", "new");
@@ -7647,31 +8534,785 @@
     renderVoiceEngine();
   }
 
-  /* ---------------- new conversation (sheet action row) ---------------- */
+  /* ------------- cambiar modelo (sheet action row, F7d S2) -------------
+   * A second action in the conversation sheet's row, built from JS so
+   * index.html stays byte-stable: it is offered only while the
+   * EFFECTIVE pane's harness has a verified picker command (the same
+   * table the server gates voice switches on). The tap sends that
+   * command through the plain reply path — the user's own keyboard
+   * surface, no gate — and the picker card appears by itself when the
+   * pane blocks on it; answering stays the guarded dialog path.
+   * F7d fix: harnesses whose picker leaves the pane IDLE (opencode's
+   * floating modal) never block, so the card would never appear. The
+   * modal poll below watches /view?pane_id=…&modal=1 — the structured
+   * read regardless of status — and holds the payload so the card
+   * renders exactly like the blocked-path card. */
+  var convModelBtn = document.createElement("button");
+  convModelBtn.type = "button";
+  convModelBtn.id = "conv-model";
+  convModelBtn.textContent = window.Dialogs && window.Dialogs.modelSwitchOffer
+    ? (window.Dialogs.modelSwitchOffer("claude") || {}).label || "Cambiar modelo"
+    : "Cambiar modelo";
+  convModelBtn.classList.add("hidden");
+  if (convNewBtn.parentNode) {
+    convNewBtn.parentNode.insertBefore(convModelBtn, convNewBtn.nextSibling);
+    /* The two sheet actions stack vertically like the list rows; the
+     * .cs-actions row keeps its own padding and borders. */
+    convNewBtn.parentNode.style.display = "grid";
+    convNewBtn.parentNode.style.gap = "8px";
+  }
 
-  convNewBtn.addEventListener("click", function () {
-    stopAudio();
-    stopListening();
-    removeThinkingBubble();
-    approvalFlow.cancel();  // a fresh conversation retires the live gate
-    renderApprovalCard();
-    if (endpointer) endpointer.reset();  // fresh conversation, fresh utterance
-    conv.textContent = "";
-    resetInterimContent();
-    updateGhost();
-    hideBanner();
+  /* The HELD modal payload (F7d fix): renderPending paints the picker
+   * card from it for as long as the pane stays idle with the picker
+   * open. One hold at a time; dropped on block, on a consumed answer
+   * or when another pane takes the view. */
+  var modalCard = null;
+
+  /* The pane the held modal card renders for (F7d fix): the keys-area
+   * wrapper's visibility input, so renderPermission cannot hide the
+   * picker card an idle pane just painted. */
+  var modalKeysPane = null;
+
+  function dropModalCard(paneId) {
+    if (modalCard && (!paneId || modalCard.pane === paneId)) modalCard = null;
+  }
+
+  var modelSwitchPoll = window.Dialogs && window.Dialogs.createModelSwitchPoller
+    ? window.Dialogs.createModelSwitchPoller({
+        fetchView: function (paneId) {
+          return readFetch(window.Dialogs.modalViewUrl(paneId))
+            .then(function (resp) {
+              if (!resp.ok) throw new Error("HTTP " + resp.status);
+              return resp.json();
+            });
+        },
+        onStructured: function (payload) {
+          var paneId = payload && payload.status && payload.status.pane_id;
+          if (!paneId || !payload.structured) return;
+          modalCard = { pane: paneId, payload: payload };
+          /* Paint now instead of waiting a poll beat: the picker is on
+           * screen, the pane idle. */
+          renderPending(lastView);
+        },
+        onNone: function () {
+          showToast(window.Dialogs.modelSwitchNoneToast(), 4000);
+        },
+      })
+    : null;
+
+  function refreshModelSwitchOffer() {
+    if (!convModelBtn || !convModelBtn.parentNode) return;
+    var entry = herdEntry(lastEffectivePane || selectedPane);
+    var offer = entry && window.Dialogs && window.Dialogs.modelSwitchOffer
+      ? window.Dialogs.modelSwitchOffer(entry.agent)
+      : null;
+    convModelBtn.classList.toggle("hidden", !offer);
+  }
+
+  convModelBtn.addEventListener("click", function () {
+    var entry = herdEntry(lastEffectivePane || selectedPane);
+    var offer = entry && window.Dialogs && window.Dialogs.modelSwitchOffer
+      ? window.Dialogs.modelSwitchOffer(entry.agent)
+      : null;
+    if (!entry || !offer) {
+      showToast(window.Dialogs && window.Dialogs.modelSwitchNoneToast
+        ? window.Dialogs.modelSwitchNoneToast() : "", 4000);
+      return;
+    }
+    var paneId = entry.pane_id;
+    var payload = window.Dialogs.modelSwitchPayload(paneId, offer.command);
     closeConvSheet();
-    fetch("/reset", withDeviceAuth({
+    fetch("/pane/reply", withDeviceAuth({
       method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ session_id: sessionId })
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
     })).then(function (resp) {
-      if (resp.ok) showToast(t("herd.new_started"), 4000);
-      else maybeOfferPairing(resp);
+      if (resp.ok) {
+        showToast(window.Dialogs.modelSwitchOpenedToast(agentDisplayName(entry)), 4000);
+        /* F7d fix: the pane may stay idle with the picker open —
+         * watch the modal read until the structured card appears. */
+        if (modelSwitchPoll) modelSwitchPoll.start(paneId);
+        return null;
+      }
+      maybeOfferPairing(resp);
+      return resp.json().then(function () { return null; }, function () { return null; });
     }).catch(function () {
-      showBanner(t("herd.new_failed"));
+      showToast(t("reply.fail_offline"), 6000);
     });
-    if (inCall && callState === "listening") startListening();
+  });
+
+  /* ---------------- new conversation (sheet action row) ----------------
+   * Header ✚ dedup (2026-11-19): ONE new-session entry — this row now
+   * OPENS the launch sheet (the old #new-open ✚ left the header as
+   * its duplicate). openNewSheet closes the conversation sheet itself
+   * (one sheet band, never stacked). The mid-call reset/fresh-call
+   * flow lives on #call-new in the drawer head. */
+
+  convNewBtn.addEventListener("click", openNewSheet);
+
+  /* ---------------- Nueva sesión sheet (parity-f7c S1) ----------------
+   * Opened from the conversation sheet's "＋ Nueva conversación" (the
+   * header ✚ left as its duplicate, 2026-11-19): harness from the
+   * server's CLOSED list, folder from the operator's roots + live
+   * recents, optional title/task — then POST /session/new, which runs
+   * the SAME create_session the voice gate replays. The task text
+   * rides the composer's destructive second tap; the launchers.toml
+   * rows appear as shortcuts posting the unchanged /operator/launch
+   * (the dock's arm/send semantics, reused — never duplicated). */
+
+  /* @new-session-pure-start */
+  function newSessionModel() {
+    /* Folder list building: roots (label or basename fallback) plus
+     * recents (basename labels), malformed rows dropped, recents that
+     * repeat a root or each other kept once. Pure data shaping — the
+     * server re-validates everything at launch. */
+    function folderChoices(roots, recents) {
+      function basename(p) {
+        var parts = String(p).split("/");
+        return parts[parts.length - 1] || String(p);
+      }
+      var rootRows = [];
+      var rootPaths = {};
+      var validRoots = Array.isArray(roots) ? roots : [];
+      for (var i = 0; i < validRoots.length; i++) {
+        var row = validRoots[i];
+        if (!row || typeof row !== "object") continue;
+        if (typeof row.path !== "string" || !row.path) continue;
+        var label = typeof row.label === "string" && row.label ? row.label : basename(row.path);
+        rootPaths[row.path] = true;
+        rootRows.push({ path: row.path, label: label, kind: "root" });
+      }
+      var recentRows = [];
+      var seen = {};
+      var validRecents = Array.isArray(recents) ? recents : [];
+      for (var j = 0; j < validRecents.length; j++) {
+        var entry = validRecents[j];
+        if (!entry || typeof entry !== "object") continue;
+        var cwd = entry.cwd;
+        if (typeof cwd !== "string" || !cwd) continue;
+        if (rootPaths[cwd] || seen[cwd]) continue;
+        seen[cwd] = true;
+        recentRows.push({ path: cwd, label: basename(cwd), kind: "recent" });
+      }
+      return { roots: rootRows, recents: recentRows };
+    }
+
+    /* Space rows (parity-f7c S1b, L11): EVERY workspace the server
+     * listed — including the ones with no live pane. The server
+     * derived each cwd from the space's own panes; a space without a
+     * known cwd, or one outside the roots, is still LISTED, only
+     * unpickable (pickability is this sheet's concern, the launch
+     * gate stays the server's cwd-inside-roots check). */
+    function spaceRows(spaces) {
+      var rows = [];
+      var valid = Array.isArray(spaces) ? spaces : [];
+      for (var i = 0; i < valid.length; i++) {
+        var row = valid[i];
+        if (!row || typeof row !== "object") continue;
+        var id = row.workspace_id;
+        if (typeof id !== "string" || !id) continue;
+        var label = typeof row.label === "string" && row.label ? row.label : id;
+        var cwd = typeof row.cwd === "string" && row.cwd ? row.cwd : null;
+        var reason = "";
+        if (!cwd) reason = "cwd_unknown";
+        else if (row.inside_roots !== true) reason = "outside_roots";
+        rows.push({
+          workspace_id: id,
+          label: label,
+          cwd: cwd,
+          pickable: !reason,
+          reason: reason,
+          kind: "space",
+        });
+      }
+      return rows;
+    }
+
+    /* The Launch button gate: a harness AND a cwd are required; with no
+     * roots configured nothing can launch (the server refuses too —
+     * this gate only keeps the button honest). */
+    function formState(state) {
+      state = state || {};
+      var configured = state.rootsConfigured !== false;
+      return {
+        launchable: configured &&
+          !!state.harness &&
+          typeof state.cwd === "string" && !!state.cwd,
+      };
+    }
+
+    /* Destructive guard wiring: the analyzer decides, this only shapes
+     * the verdict. A missing analyzer NEVER blocks a launch (the
+     * server stays the authority); a match demands the second tap. */
+    function taskGuard(taskText, isDestructiveInput) {
+      var text = typeof taskText === "string" ? taskText.trim() : "";
+      if (!text || typeof isDestructiveInput !== "function") {
+        return { confirm: false };
+      }
+      var match = isDestructiveInput(text);
+      return match ? { confirm: true, match: match } : { confirm: false };
+    }
+
+    /* One client-minted request id per LAUNCH TAP (S2, doc 03 §4): the
+     * server registers it after every refusal passed and replays the
+     * cached response to a repeat, so a double-tap or a duplicated
+     * send of the same tap yields ONE tab. A network-failed tap mints
+     * a NEW id on the next tap — if the first attempt actually landed
+     * server-side, that retry may create a second tab; the receipt
+     * makes the common double-send case safe, not every retry. The
+     * uuid rides crypto.randomUUID when the context offers it and
+     * falls back to an ns-<time>-<rand> shape otherwise. */
+    function mintRequestId(uuidFn, nowMs, random) {
+      try {
+        var id = typeof uuidFn === "function" ? uuidFn() : null;
+        if (typeof id === "string" && id) return id;
+      } catch (err) { /* non-secure context or absent crypto */ }
+      return "ns-" + (nowMs || 0).toString(36) + "-" + (random || 0).toString(36).slice(2, 10);
+    }
+
+    /* Resume display rows (parity-f7c S3): the server already filtered
+     * to in-root, resumable conversations and masked the titles; this
+     * only shapes what renders — malformed entries are dropped, the
+     * label prefers the (masked) title and falls back to the folder
+     * name plus a short id so every row stays recognizable. */
+    function resumeRows(sessions) {
+      var rows = [];
+      var valid = Array.isArray(sessions) ? sessions : [];
+      for (var i = 0; i < valid.length; i++) {
+        var row = valid[i];
+        if (!row || typeof row !== "object") continue;
+        var sid = row.session_id;
+        if (typeof sid !== "string" || !sid) continue;
+        var title = typeof row.title === "string" ? row.title.trim() : "";
+        var cwd = typeof row.cwd === "string" ? row.cwd : "";
+        var parts = cwd.split("/").filter(Boolean);
+        var base = parts[parts.length - 1] || cwd;
+        rows.push({
+          session_id: sid,
+          label: title || (base ? base + " · " + sid.slice(0, 8) : sid),
+          cwd: cwd,
+        });
+      }
+      return rows;
+    }
+
+    return {
+      folderChoices: folderChoices,
+      spaceRows: spaceRows,
+      formState: formState,
+      taskGuard: taskGuard,
+      mintRequestId: mintRequestId,
+      resumeRows: resumeRows,
+    };
+  }
+  /* @new-session-pure-end */
+
+  var newSheetEl = $("new-sheet");
+  var newBackdropEl = $("new-backdrop");
+  var newCloseBtn = $("new-close");
+  var newHarnessSel = $("new-harness");
+  var newFoldersEl = $("new-folders");
+  var newTitleInput = $("new-title");
+  var newTaskInput = $("new-task");
+  var newLaunchBtn = $("new-launch");
+  var newLaunchersEl = $("new-launchers");
+  var newRootsEmptyEl = $("new-roots-empty");
+  var newResumeHarnessSel = $("new-resume-harness");
+  var newResumeListEl = $("new-resume-list");
+  var newSheetOpen = false;
+  var newSessionState = {
+    harness: "", cwd: "", workspaceId: "", rootsConfigured: false, resumeHarness: "",
+  };
+  var newArmedLaunchers = {};
+  var NEW_ARM_TIMEOUT_MS = 3000;
+  var nsModel = newSessionModel();
+
+  function setNewSheet(open) {
+    newBackdropEl.classList.toggle("open", open);
+    newSheetEl.classList.toggle("open", open);
+    if (open) newSheetEl.removeAttribute("inert");
+    else newSheetEl.setAttribute("inert", "");
+  }
+
+  function openNewSheet() {
+    if (newSheetOpen) return;
+    if (convSheetOpen) closeConvSheet();  /* one sheet band: never stacked */
+    newSheetOpen = true;
+    setNewSheet(true);
+    refreshNewSheet();
+    try { history.pushState({ herdrNewSheet: true }, ""); } catch (err) { /* non-http */ }
+    try { newCloseBtn.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
+  }
+
+  function closeNewSheet() {
+    if (!newSheetOpen) return;
+    newSheetOpen = false;
+    setNewSheet(false);
+    if (history.state && history.state.herdrNewSheet) history.back();  // pop our entry
+    /* The ✚ opener left the header (2026-11-19): focus returns to the
+     * conversation-sheet opener — the sheet's surviving entry point. */
+    try { panePicker.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
+  }
+
+  newCloseBtn.addEventListener("click", closeNewSheet);
+  newBackdropEl.addEventListener("click", closeNewSheet);
+
+  function updateNewLaunchGate() {
+    newLaunchBtn.disabled = !nsModel.formState(newSessionState).launchable;
+  }
+
+  function showNewRootsEmpty(show) {
+    newRootsEmptyEl.classList.toggle("hidden", !show);
+  }
+
+  /* The sheet answers to the operator LOOKING at it: every open
+   * refetches roots + spaces + recents + harnesses (one round-trip)
+   * and the launcher rows (the same /operator/config the dock reads).
+   * The resume picker rides /sessions/recent's enabled-harness list. */
+  function refreshNewSheet() {
+    readFetch("/session/roots")
+      .then(function (resp) { return resp.json(); })
+      .then(function (body) {
+        body = body || {};
+        newSessionState.rootsConfigured =
+          Array.isArray(body.roots) && body.roots.length > 0;
+        renderNewHarnesses(body.harnesses || []);
+        renderNewFolders(body.roots || [], body.recents || [], body.spaces || []);
+        showNewRootsEmpty(!newSessionState.rootsConfigured);
+        updateNewLaunchGate();
+      })
+      .catch(function () {
+        newSessionState.rootsConfigured = false;
+        showNewRootsEmpty(true);
+        updateNewLaunchGate();
+      });
+    readFetch("/operator/config")
+      .then(function (resp) { return resp.json(); })
+      .then(function (body) { renderNewLaunchers((body && body.launchers) || []); })
+      .catch(function () { /* shortcuts are optional chrome */ });
+    refreshResumeSheet();
+  }
+
+  function renderNewHarnesses(harnesses) {
+    while (newHarnessSel.firstChild) newHarnessSel.removeChild(newHarnessSel.firstChild);
+    var placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = t("newsession.harness_pick");
+    newHarnessSel.appendChild(placeholder);
+    for (var i = 0; i < harnesses.length; i++) {
+      var name = harnesses[i];
+      if (typeof name !== "string" || !name) continue;
+      var option = document.createElement("option");
+      option.value = name;
+      /* Text node only: harness names are server data, never markup. */
+      option.textContent = name;
+      newHarnessSel.appendChild(option);
+    }
+    newHarnessSel.value = newSessionState.harness || "";
+  }
+
+  function folderButton(entry) {
+    var isSpace = entry.kind === "space";
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "ns-folder";
+    if (isSpace) btn.setAttribute("data-space", entry.workspace_id);
+    else btn.setAttribute("data-path", entry.path);
+    var offeredCwd = isSpace ? entry.cwd : entry.path;
+    btn.setAttribute(
+      "aria-pressed", newSessionState.cwd && offeredCwd === newSessionState.cwd ? "true" : "false"
+    );
+    btn.title = offeredCwd || entry.label;
+    /* Text node only: labels are server data, never markup. */
+    btn.textContent = entry.label;
+    if (isSpace && !entry.pickable) {
+      /* Listed but unpickable (L11): a short reason badge, and the
+       * button itself is disabled so it can never become the cwd. */
+      btn.disabled = true;
+      var badge = document.createElement("span");
+      badge.className = "ns-space-reason";
+      badge.textContent = t(entry.reason === "outside_roots"
+        ? "newsession.space_outside_roots" : "newsession.space_cwd_unknown");
+      btn.appendChild(badge);
+      return btn;
+    }
+    btn.addEventListener("click", function () {
+      /* A space sets BOTH the cwd and the workspace targeting; a root
+       * or recent is a plain folder pick — it clears any workspace
+       * selection (the tab lands in the current workspace). */
+      newSessionState.cwd = offeredCwd;
+      newSessionState.workspaceId = isSpace ? entry.workspace_id : "";
+      var buttons = newFoldersEl.querySelectorAll("button");
+      for (var i = 0; i < buttons.length; i++) {
+        buttons[i].setAttribute("aria-pressed", buttons[i] === btn ? "true" : "false");
+      }
+      updateNewLaunchGate();
+    });
+    return btn;
+  }
+
+  function renderNewFolders(roots, recents, spaces) {
+    while (newFoldersEl.firstChild) newFoldersEl.removeChild(newFoldersEl.firstChild);
+    var choices = nsModel.folderChoices(roots, recents);
+    var spaceList = nsModel.spaceRows(spaces);
+    /* Espacios first (S1b): every workspace, pickable or not. */
+    if (spaceList.length) {
+      var spacesHead = document.createElement("span");
+      spacesHead.className = "ns-group";
+      spacesHead.textContent = t("newsession.folder_spaces");
+      newFoldersEl.appendChild(spacesHead);
+      for (var k = 0; k < spaceList.length; k++) {
+        newFoldersEl.appendChild(folderButton(spaceList[k]));
+      }
+    }
+    if (choices.roots.length) {
+      var rootsHead = document.createElement("span");
+      rootsHead.className = "ns-group";
+      rootsHead.textContent = t("newsession.folder_roots");
+      newFoldersEl.appendChild(rootsHead);
+      for (var i = 0; i < choices.roots.length; i++) {
+        newFoldersEl.appendChild(folderButton(choices.roots[i]));
+      }
+    }
+    if (choices.recents.length) {
+      var recentsHead = document.createElement("span");
+      recentsHead.className = "ns-group";
+      recentsHead.textContent = t("newsession.folder_recents");
+      newFoldersEl.appendChild(recentsHead);
+      for (var j = 0; j < choices.recents.length; j++) {
+        newFoldersEl.appendChild(folderButton(choices.recents[j]));
+      }
+    }
+    /* A cwd that disappeared from the offer (root removed, pane gone)
+     * must not survive as a stale selection. */
+    if (newSessionState.cwd) {
+      var stillOffered = choices.roots.concat(choices.recents).some(function (row) {
+        return row.path === newSessionState.cwd;
+      }) || spaceList.some(function (row) {
+        return row.cwd === newSessionState.cwd;
+      });
+      if (!stillOffered) newSessionState.cwd = "";
+    }
+    /* The workspace targeting is stricter than the cwd: the picked
+     * space itself must still be offered WITH this cwd — the space
+     * vanishing (or its pane moving) drops the targeting and keeps
+     * the launch in the current workspace instead of 422ing. */
+    if (newSessionState.workspaceId) {
+      var spaceStill = spaceList.some(function (row) {
+        return row.workspace_id === newSessionState.workspaceId &&
+          row.cwd === newSessionState.cwd;
+      });
+      if (!spaceStill) newSessionState.workspaceId = "";
+    }
+    updateNewLaunchGate();
+  }
+
+  function shortcutButton(row) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "ns-folder";
+    btn.setAttribute("data-row", row.id);
+    btn.textContent = row.label;
+    btn.addEventListener("click", function () { onNewLauncherTap(row); });
+    return btn;
+  }
+
+  function renderNewLaunchers(rows) {
+    while (newLaunchersEl.firstChild) newLaunchersEl.removeChild(newLaunchersEl.firstChild);
+    var valid = [];
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      if (!row || typeof row.id !== "string" || !row.id) continue;
+      if (typeof row.label !== "string" || !row.label) continue;
+      valid.push({ id: row.id, label: row.label, no_prompts: row.no_prompts === true });
+    }
+    if (!valid.length) return;
+    var head = document.createElement("span");
+    head.className = "ns-group";
+    head.textContent = t("dock.launchers");
+    newLaunchersEl.appendChild(head);
+    for (var j = 0; j < valid.length; j++) {
+      newLaunchersEl.appendChild(shortcutButton(valid[j]));
+    }
+  }
+
+  function armNewLauncher(row) {
+    var btn = newLaunchersEl.querySelector('[data-row="' + row.id + '"]');
+    if (btn) {
+      btn.classList.add("dock-armed");
+      btn.title = t("dock.confirm_title");
+    }
+    if (newArmedLaunchers[row.id]) clearTimeout(newArmedLaunchers[row.id]);
+    newArmedLaunchers[row.id] = setTimeout(function () { disarmNewLauncher(row.id); }, NEW_ARM_TIMEOUT_MS);
+  }
+
+  function disarmNewLauncher(id) {
+    if (newArmedLaunchers[id]) {
+      clearTimeout(newArmedLaunchers[id]);
+      delete newArmedLaunchers[id];
+    }
+    var btn = newLaunchersEl.querySelector('[data-row="' + id + '"]');
+    if (btn) {
+      btn.classList.remove("dock-armed");
+      btn.title = "";
+    }
+  }
+
+  /* The dock's own arm/send decision and outcome mapping, REUSED: the
+   * shortcuts must behave exactly like the dock's launcher rows. */
+  function onNewLauncherTap(row) {
+    if (!window.OperatorDock) return;  /* no dock module: no duplicate flow */
+    var plan = OperatorDock.launcherTap(row, newArmedLaunchers[row.id] ? "armed" : "idle");
+    if (plan.next === "armed") {
+      armNewLauncher(row);
+      return;
+    }
+    disarmNewLauncher(row.id);
+    fetch("/operator/launch", withDeviceAuth({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: row.id, confirm: true }),
+    }))
+      .then(function (resp) {
+        return resp.json().then(function (body) { return { status: resp.status, body: body }; });
+      })
+      .then(function (outcome) {
+        var plan2 = OperatorDock.launchOutcome(outcome.status, outcome.body);
+        if (plan2.ok) return;
+        if (plan2.retry === "confirmation_required") {
+          armNewLauncher(row);
+          return;
+        }
+        if (plan2.error === "cwd_missing") {
+          showToast(t("dock.cwd_missing"), 4000);
+          return;
+        }
+        showToast(t("dock.launch_failed"), 4000);
+      })
+      .catch(function () { showToast(t("dock.launch_failed"), 4000); });
+  }
+
+  /* ---------------- Retomar (parity-f7c S3) ----------------
+   * The same sheet's resume half: the harness picker renders exactly
+   * the server's ENABLED list (a harness without a verified resume
+   * form never appears — criterion 3), the recent list comes from
+   * GET /sessions/recent?harness=, and one tap posts /session/resume
+   * with a fresh request_id per tap (S2 receipts, same as Launch). */
+
+  function refreshResumeSheet() {
+    readFetch("/sessions/recent")
+      .then(function (resp) { return resp.json(); })
+      .then(function (body) {
+        body = body || {};
+        renderNewResumeHarnesses(body.harnesses || []);
+        renderNewResumeSessions(body.sessions || []);
+      })
+      .catch(function () {
+        renderNewResumeHarnesses([]);
+        renderNewResumeSessions([]);
+      });
+  }
+
+  function renderNewResumeHarnesses(harnesses) {
+    while (newResumeHarnessSel.firstChild) {
+      newResumeHarnessSel.removeChild(newResumeHarnessSel.firstChild);
+    }
+    var placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = t("newsession.resume_pick");
+    newResumeHarnessSel.appendChild(placeholder);
+    for (var i = 0; i < harnesses.length; i++) {
+      var name = harnesses[i];
+      if (typeof name !== "string" || !name) continue;
+      var option = document.createElement("option");
+      option.value = name;
+      /* Text node only: harness names are server data, never markup. */
+      option.textContent = name;
+      newResumeHarnessSel.appendChild(option);
+    }
+    /* A selection that disappeared (harness lost its verified form)
+     * must not survive as a stale choice. */
+    var still = false;
+    for (var j = 0; j < newResumeHarnessSel.options.length; j++) {
+      if (newResumeHarnessSel.options[j].value === newSessionState.resumeHarness) {
+        still = true;
+        break;
+      }
+    }
+    if (!still) newSessionState.resumeHarness = "";
+    newResumeHarnessSel.value = newSessionState.resumeHarness || "";
+  }
+
+  function resumeRowButton(row) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "ns-resume";
+    btn.setAttribute("data-session", row.session_id);
+    if (row.cwd) btn.title = row.cwd;
+    /* Text node only: the label is masked server-side, never markup. */
+    btn.textContent = row.label;
+    btn.addEventListener("click", function () { onResumeTap(row); });
+    return btn;
+  }
+
+  function renderNewResumeSessions(sessions) {
+    while (newResumeListEl.firstChild) newResumeListEl.removeChild(newResumeListEl.firstChild);
+    var rows = nsModel.resumeRows(sessions);
+    if (!newSessionState.resumeHarness) return;
+    if (!rows.length) {
+      var empty = document.createElement("span");
+      empty.className = "ns-group";
+      empty.textContent = t("newsession.resume_empty");
+      newResumeListEl.appendChild(empty);
+      return;
+    }
+    for (var i = 0; i < rows.length; i++) {
+      newResumeListEl.appendChild(resumeRowButton(rows[i]));
+    }
+  }
+
+  function loadResumeSessions() {
+    if (!newSessionState.resumeHarness) {
+      renderNewResumeSessions([]);
+      return;
+    }
+    readFetch("/sessions/recent?harness=" + encodeURIComponent(newSessionState.resumeHarness))
+      .then(function (resp) { return resp.json(); })
+      .then(function (body) {
+        renderNewResumeSessions((body && body.sessions) || []);
+      })
+      .catch(function () { renderNewResumeSessions([]); });
+  }
+
+  newResumeHarnessSel.addEventListener("change", function () {
+    newSessionState.resumeHarness = newResumeHarnessSel.value || "";
+    loadResumeSessions();
+  });
+
+  function onResumeTap(row) {
+    fetch("/session/resume", withDeviceAuth({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        harness: newSessionState.resumeHarness,
+        session_id: row.session_id,
+        /* Fresh per tap (S2): a repeat of this same request_id replays
+         * the first response server-side; see mintRequestId above. */
+        request_id: nsModel.mintRequestId(
+          function () {
+            return window.crypto && window.crypto.randomUUID
+              ? window.crypto.randomUUID() : null;
+          },
+          Date.now(),
+          Math.random()
+        ),
+      }),
+    }))
+      .then(function (resp) {
+        if (resp.status === 200) return resp.json();
+        maybeOfferPairing(resp);
+        return resp.json().then(function (body) {
+          var detail = body && body.detail;
+          if (resp.status === 422 && detail === "cwd_unknown") {
+            showToast(t("newsession.err_resume_cwd"), 4000);
+            return null;
+          }
+          if (resp.status === 422 &&
+              (detail === "resume_not_enabled" || detail === "unknown_harness")) {
+            showToast(t("newsession.err_resume_harness"), 4000);
+            refreshResumeSheet();
+            return null;
+          }
+          showToast(t("newsession.resume_failed"), 4000);
+          return null;
+        }, function () {
+          showToast(t("newsession.resume_failed"), 4000);
+          return null;
+        });
+      })
+      .then(function (body) {
+        if (!body) return;
+        showToast(t("newsession.resumed"), 4000);
+        closeNewSheet();
+        refreshHerd();  /* the reopened pane joins the conversation list */
+      })
+      .catch(function () { showToast(t("newsession.resume_failed"), 4000); });
+  }
+
+  newHarnessSel.addEventListener("change", function () {
+    newSessionState.harness = newHarnessSel.value || "";
+    updateNewLaunchGate();
+  });
+
+  newLaunchBtn.addEventListener("click", function () {
+    if (newLaunchBtn.disabled) return;
+    var taskText = (newTaskInput.value || "").trim();
+    /* SAME guard the composer uses: a destructive task needs the
+     * second, explicit tap — the confirmed task IS delivered (the
+     * server never censors). */
+    var guard = nsModel.taskGuard(
+      taskText,
+      window.DestructiveGuard ? window.DestructiveGuard.isDestructiveInput : null
+    );
+    if (guard.confirm && !window.confirm(
+      t("reply.destructive_confirm", { match: guard.match, text: taskText })
+    )) return;
+    var title = (newTitleInput.value || "").trim();
+    newLaunchBtn.disabled = true;
+    fetch("/session/new", withDeviceAuth({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        harness: newSessionState.harness,
+        cwd: newSessionState.cwd,
+        /* S1b: only a picked space targets a workspace — a root or
+         * recent pick sends null and the tab lands in the current
+         * workspace, exactly as before. */
+        workspace_id: newSessionState.workspaceId || null,
+        title: title || null,
+        task: taskText || null,
+        /* Fresh per tap (S2): a repeat of this same request_id replays
+         * the first response server-side; see mintRequestId above. */
+        request_id: nsModel.mintRequestId(
+          function () {
+            return window.crypto && window.crypto.randomUUID
+              ? window.crypto.randomUUID() : null;
+          },
+          Date.now(),
+          Math.random()
+        ),
+      }),
+    }))
+      .then(function (resp) {
+        if (resp.status === 200) return resp.json();
+        maybeOfferPairing(resp);
+        return resp.json().then(function (body) {
+          if (resp.status === 422 && body && body.detail === "roots_unconfigured") {
+            newSessionState.rootsConfigured = false;
+            newSessionState.cwd = "";
+            showNewRootsEmpty(true);
+            updateNewLaunchGate();
+            return null;
+          }
+          if (resp.status === 422 && body && body.detail === "unknown_harness") {
+            showToast(t("newsession.err_harness"), 4000);
+            return null;
+          }
+          showToast(t("newsession.launch_failed"), 4000);
+          return null;
+        }, function () {
+          showToast(t("newsession.launch_failed"), 4000);
+          return null;
+        });
+      })
+      .then(function (body) {
+        if (!body) return;
+        showToast(t("newsession.launched"), 4000);
+        closeNewSheet();
+        refreshHerd();  /* the new pane joins the conversation list */
+      })
+      .catch(function () { showToast(t("newsession.launch_failed"), 4000); })
+      .then(function () { if (newSheetOpen) updateNewLaunchGate(); });
   });
 
   /* ---------------- boot ---------------- */
@@ -7784,6 +9425,7 @@
    * the data-driven surfaces on its own). */
   if (window.I18N) {
     if (window.Receipts && window.Receipts.useTranslator) window.Receipts.useTranslator(I18N.t);
+    if (window.SendTrack && window.SendTrack.useTranslator) window.SendTrack.useTranslator(I18N.t);
     if (window.Dialogs && window.Dialogs.useTranslator) window.Dialogs.useTranslator(I18N.t);
     if (window.HerdGroup && window.HerdGroup.useTranslator) window.HerdGroup.useTranslator(I18N.t);
     I18N.subscribe(function () {

@@ -1,0 +1,17 @@
+┃
+┃   Colour   Confirm
+┃
+┃  Which colours? (select all that apply)
+┃
+┃  1. [✓] Red
+┃     warm
+┃  2. [ ] Green
+┃     calm
+┃  3. [ ] Blue
+┃     cool
+┃  4. [ ] Yellow
+┃     bright
+┃  5. [ ] Type your own answer
+┃
+┃  ⇆ tab  ↑↓ select  enter toggle  esc dismiss
+┃

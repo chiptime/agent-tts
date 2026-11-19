@@ -2164,3 +2164,21 @@ def test_cli_reminder_status_unavailable_does_not_create_or_migrate(tmp_path, mo
         assert not db.parent.exists()
     else:
         assert db.read_bytes() == before
+
+
+def test_default_max_records_and_tts_env_override(tmp_path, monkeypatch):
+    """Pending queue bounds default to 5 and honor TTS_PENDING_MAX_RECORDS."""
+    assert pq.DEFAULT_MAX_RECORDS == 5
+    q_default = pq.PendingQueue(tmp_path / "default.db")
+    assert q_default.max_records == 5
+
+    monkeypatch.setenv("TTS_PENDING_MAX_RECORDS", "10")
+    q_env = pq.PendingQueue(tmp_path / "env.db")
+    assert q_env.max_records == 10
+
+    # PENDING_MAX_RECORDS fallback still works when TTS_PENDING_MAX_RECORDS is unset
+    monkeypatch.delenv("TTS_PENDING_MAX_RECORDS")
+    monkeypatch.setenv("PENDING_MAX_RECORDS", "8")
+    q_legacy = pq.PendingQueue(tmp_path / "legacy.db")
+    assert q_legacy.max_records == 8
+

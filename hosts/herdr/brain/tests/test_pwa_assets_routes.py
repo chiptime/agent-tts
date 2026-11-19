@@ -11,7 +11,10 @@ import pytest
 
 from tests.test_cutover import client  # noqa: F401  (fixture)
 
-NEW_ASSETS = ("i18n.js", "i18n/es.js", "i18n/en.js", "settings.js", "updates.js", "dock.js")
+NEW_ASSETS = (
+    "i18n.js", "i18n/es.js", "i18n/en.js", "settings.js", "updates.js", "dock.js",
+    "send-track.js",
+)
 
 
 def test_build_reports_the_stamp_every_asset_ref_carries(client):  # noqa: F811

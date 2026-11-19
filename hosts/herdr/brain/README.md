@@ -99,6 +99,7 @@ daemons do not source them, so the env file is the single stable contract.
 | `HERDR_BRAIN_CREW_PORT` | `8747` | the crew listener's own TLS port (S7; bound only when the roster declares a crew — see [Crew federation](#crew-federation-s7-one-lead-peers-over-pinned-mtls)) |
 | `HERDR_BRAIN_CREW_HOST` | `127.0.0.1` | the crew listener's bind; set it to the tailnet interface on crew hosts |
 | `HERDR_BRAIN_CREW_SECRET` | *(empty)* | the crew secret for the DAEMON (the roster stores only its hash); alternatively write it once to `<state>/crew-secret` (mode 600) |
+| `HERDR_BRAIN_PANE_MODEL` | *(on)* | model per pane: `/state`, `/view` and `/herd` carry `model`, the model of the pane session's last assistant request, resolved in the background with the engine CLI `agent-tts last-model` (engine python as for STT: `HERDR_BRAIN_STT_PYTHON`, else the herdr-tts plugin venv) and cached 60 s. Claude, OpenCode, Codex and Antigravity only; every other harness, a missing session or an engine failure is `null`. The PWA shows it in the herd row sub-line. The same payloads carry `context: {used, limit}` (parity F7d, only when known) from the harness's OWN local catalog — OpenCode's `~/.cache/opencode/models.json`, pi's `models-store.json`, omp's `models.db`; `used` comes from the read-only `agent-tts cache-report --json` probe of the last request. No catalog ⇒ the key is absent (the null); a window is never guessed. Set to `off` to never run the CLI |
 | `HERDR_BRAIN_SECRET_MASKING` | *(on)* | secret masking on outgoing text (S14): provider API keys, JWTs, PEM private-key blocks, `Authorization: Bearer` tokens, URL credentials and secret-named `KEY=value` assignments are replaced with hint placeholders (`sk-ant-…[masked]`, `[masked:jwt]`; spoken as "clave oculta") in the pane mirror, history pages, reading views, SSE announcements, the LLM live context and speech renders. Set to `off` (also `0`/`false`/`no`) to serve text verbatim; stored data is never rewritten |
 
 ### Empty agent reader
@@ -566,6 +567,118 @@ Compatibility: the pre-S12 mapping is unchanged — `delivered` stays
 draft the terminal never took now answers `ok: false` with its receipt
 instead of pretending it was delivered.
 
+### Send tracking: every send reaches a visible outcome (parity-f7g)
+
+A receipt says what the terminal did **at send time**; the tracker
+follows the turn **after** it. Every `POST /pane/reply` whose receipt
+outcome is `sent`, `effective` or `unknown` starts one bounded
+in-memory tracker keyed by the receipt id, fed by the watcher's
+EXISTING poll (no second herdr timer; while any tracker is
+non-terminal the watcher rides its fast 1.5 s cadence).
+
+States: `sent` → `started` (pane seen `working`) → `working` → one
+terminal `done` | `blocked` | `error` | `no_start` | `pane_gone` |
+`superseded` | `expired`. `effective` receipts (the turn completed
+inside the 3 s send window) are born terminal `done`. A newer send to
+the same pane supersedes the older tracker. `stalled` is a
+NON-terminal flag that clears when activity resumes. Thresholds
+(accepted defaults): `no_start` after **15 s** without the pane ever
+working and without completion evidence; `stalled` (opencode only)
+after **3 min** of `working` with no new store activity; every
+tracker ends after a hard cap of **30 min** as `expired` — nothing
+leaks.
+
+A status the pane **already had when the send started is not
+completion evidence** (herdr keeps `done` until the pane is viewed, so
+a pane that never picked the send up still reports its pre-existing
+`done` on the next poll). The tracker pins the pane's send-time status
+— the watcher's last-known baseline when `/pane/reply` has it, else
+its own first observation — and `done` requires one of: work seen
+after the send, a status the pane **reached after leaving** its start
+status, or harness evidence. A pane stuck at its pre-existing
+`done`/`idle` therefore surfaces `no_start` at 15 s.
+
+For **opencode** panes the tracker also reads the local store
+(read-only SQLite, `mode=ro`, never raises): activity is the newest
+`time_updated` of the session's rows after the send; an assistant
+error row after the send ends the tracker `error` **even while herdr
+still says `working`** (a deliberate exception to `read_session_error`
+— same `MessageAbortedError` filter); an assistant message completed
+after the send while the pane rests means `done`. Other harnesses
+track on herdr status alone. Error text is masked by the secret masker
+before it leaves the server.
+
+**Transport (the PWA contract).** Every state change publishes one
+SSE event on the existing hub:
+
+```json
+{"type": "send.track", "receipt_id": "rct-…", "pane_id": "w1:p2",
+ "seq": 4, "state": "working", "elapsed_s": 12.3,
+ "last_activity_at": 1732000012.4, "stalled": true,
+ "error": {"name": "APIError", "message": "…"}}
+```
+
+(`last_activity_at` only when known, `stalled` only when true, `error`
+only on `error` — epoch seconds, wall clock.) `working` is announced
+once; `elapsed_s`/`last_activity_at` keep advancing in the receipts
+listing, which every receipt gains **additively**:
+
+```json
+GET /pane/receipts?pane_id=w1:p2  →  {"receipts": [{"id": "rct-…", …,
+  "track": {"state": "working", "seq": 4, "sent_at": 1732000000.0,
+            "elapsed_s": 12.3, "stalled": false}}]}
+```
+
+Every payload and the `track` snapshot carry `seq`, a per-receipt
+monotonically increasing counter bumped on each state/flag change.
+Delivery is order-preserving server-side (events are computed under
+the tracker lock and delivered through a single emitter condition, so
+a later `seq` is never published before an earlier one — a blocking
+publish callback parks the chain, bounded, but never the state
+machine), and the PWA ignores any update whose `seq` is lower than the
+one it already holds for that receipt, so a late poll response can
+never roll the card back. Receipts without trackers (everything
+pre-f7g, and legacy tool doubles) serialize exactly as before — no
+`track` key at all.
+
+**Push.** `no_start`, `stalled` episodes and opencode errors caught
+while herdr says `working` dispatch a WebPush through the push
+coordinator's tracked-send slot (one collapse key per pane, Spanish
+copy: «El envío a … falló / no arrancó / parece colgado»). `done`,
+`blocked` and herdr-derived errors never push from the tracker — the
+watcher's announcements already cover them; nothing double-notifies.
+
+**Watcher fixes that came with it (S6).** The 60 s debounce no longer
+swallows a NEW turn's done/error (a pane that went back to `working`
+announces again; idle-flapping stays debounced), and a pane that
+vanishes while a send is still in flight ends its tracker `pane_gone`
+instead of being retracted as «Resuelto: ya no necesita tu atención».
+
+**The PWA tracker card (S5).** The phone does not stop at the receipt:
+a tracked outcome paints a persistent card under the composer — one
+per pane, in `send-track.js` (pure model) + `app.js` (DOM, text nodes
+only) — that follows the send to its outcome: «Enviado», «Empezó»,
+«Trabajando · 1:23» (the elapsed ticks locally every second from
+`sent_at`, in an `aria-hidden` span so the card's `aria-live` region
+announces state changes, not seconds), «Parece colgado (3 min sin
+actividad)» while `stalled`, and one terminal line («Terminó», «Te
+espera en un diálogo», «Error: …» with the masked message, «No arrancó
+en 15 s — revisa el agente», «El pane se cerró», «Reemplazado por un
+envío nuevo», «Sin noticias tras 30 min») with a ✕ dismiss. State
+arrives from BOTH feeds — `send.track` SSE events and the `track`
+object on `GET /pane/receipts` — whichever lands first wins, so the
+card converges even with the event stream down. The card never
+regresses: a terminal state is final, a start for a receipt the map
+already knows never regresses it (the terminal event may beat the POST
+response), a lower `seq` than the one held is ignored, and a dismissed
+receipt id stays dismissed (bounded per-pane memory) — only a NEW
+receipt id can show a card again. For the first ~12 s
+after a send the receipts poll rides a 1.5 s hot cadence (gated inside
+the app's existing 1 s tick — no second interval), then returns to the
+normal 5 s. A new send to the pane replaces the card; switching panes
+repaints that pane's own tracker from the per-pane map; the submit/
+discard follow-ups (untracked outcomes server-side) never start one.
+
 ### Key pad: answering a blocked agent's dialog
 
 That dialog is answered with **keys** instead, through `POST /pane/keys`
@@ -653,7 +766,14 @@ parse a screen but the pane's harness has a recognizer, the structured
 options shape what the voice reads (labels, descriptions, selection).
 Answering by voice stays under the existing S8/S9 binding — the user's
 explicit words, the dialog's known selection, arrow-walked within the key
-budget, with every refusal pressing nothing.
+budget, with every refusal pressing nothing. Multi-select and free-text
+questions are answered by voice through the SAME guarded choreography a
+tap uses: a spoken set ("marca la uno y la tres" with the model's
+`choices`) resolves from the user's words into the verified
+toggle-and-submit recipe, and a spoken free-text answer ("responde: …"
+with the row's `option` and `text`) is typed through the verified
+clear-type-verify recipe — a text matching the destructive analyzer is
+refused outright, because voice has no second tap.
 
 ### Answering an opencode approval dialog
 
@@ -928,7 +1048,8 @@ the `0700` state dir — it may echo reply text — and a line looks like:
   endpoint is metadata; the delivery keys never leave the store), the
   operator message send (`msg.send`, with a masked preview), and one
   `ask` line per turn with `chars` (the utterance **length**, never the
-  transcript). The `device` field is the paired-device label from the
+  transcript), `stt.transcribe` with `bytes` and `chars` (sizes, never the
+  audio or the text) and `session.reset` with its `session_id`. The `device` field is the paired-device label from the
   access gate and is omitted on channels that carry no identity (ntfy).
   Reads, `/tts` (the PWA's local echo), the speech transport and SSE
   announcements produce no lines.
@@ -1188,6 +1309,7 @@ payloads).
 | `read_screen(n_lines)` | read | visible terminal text (fallback) |
 | `send_to_session(text, timeout_ms?)` | **write** | forward new work, wait for completion |
 | `stop_agent` | **write, gated** | interrupt the selected session's running turn; proposes the approval gate, executes on confirmation |
+| `switch_model(model, pane_id?)` | **write, gated** | switch a pane's model through its own `/model` picker (claude, grok, omp); sends the harness's command, picks the option by name walking arrows + Enter (never a digit), proposes the approval gate and executes on confirmation; ambiguous or unknown names refuse with nothing pressed |
 
 Every endpoint and tool is **target-aware**: pass `pane_id` (/view query
 param, /ask body field) to operate on any agent in the herd; the default is

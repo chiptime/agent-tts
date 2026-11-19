@@ -220,7 +220,11 @@ def _engine_enqueue(payload: dict) -> Optional[str]:
         from agent_tts.daemon import delegate_enqueue
     except (ImportError, SystemExit) as exc:
         raise EngineUnavailable(f"agent_tts unavailable: {exc}") from exc
-    return delegate_enqueue(payload)
+    sock = os.environ.get("AGENT_TTS_SOCKET", "/tmp/herdr-tts-player.sock")
+    try:
+        return delegate_enqueue(payload, socket_path=sock)
+    except TypeError:
+        return delegate_enqueue(payload)
 
 
 def _engine_send(command: str) -> Optional[str]:
@@ -229,7 +233,11 @@ def _engine_send(command: str) -> Optional[str]:
         from agent_tts import send_ipc_command
     except (ImportError, SystemExit) as exc:
         raise EngineUnavailable(f"agent_tts unavailable: {exc}") from exc
-    return send_ipc_command(command)
+    sock = os.environ.get("AGENT_TTS_SOCKET", "/tmp/herdr-tts-player.sock")
+    try:
+        return send_ipc_command(command, socket_path=sock)
+    except TypeError:
+        return send_ipc_command(command)
 
 
 def default_renderer(text: str, out_path: str) -> str:
@@ -402,7 +410,7 @@ _TRANSITIONS = {
 
 # Bounds are constructor parameters first (T11); the env vars tune production
 # deployments without code changes and never affect tests that pass values.
-DEFAULT_MAX_RECORDS = 256                    # PENDING_MAX_RECORDS
+DEFAULT_MAX_RECORDS = 5                      # PENDING_MAX_RECORDS / TTS_PENDING_MAX_RECORDS
 DEFAULT_MAX_DB_BYTES = 8 * 1024 * 1024       # PENDING_MAX_DB_BYTES (8 MiB)
 DEFAULT_CONSOLIDATION_WINDOW_S = 60.0        # CONSOLIDATION_WINDOW_S
 DEFAULT_DB_PATH = "~/.local/state/herdr-tts/pending.db"
@@ -471,16 +479,24 @@ CREATE TABLE IF NOT EXISTS reminder_state (
 """
 
 
-def _env_number(name: str, default, cast) -> float:
+def _env_number(name, default, cast) -> float:
     """Env-tunable bound with an honest fallback: garbage warns on stderr and
     keeps the documented default (a typo must not crash the watcher loop)."""
-    raw = os.environ.get(name)
-    if not raw:
+    names = (name,) if isinstance(name, str) else tuple(name)
+    raw = None
+    matched_name = names[0]
+    for n in names:
+        val = os.environ.get(n)
+        if val is not None and val != "":
+            raw = val
+            matched_name = n
+            break
+    if raw is None:
         return default
     try:
         return cast(raw)
     except (TypeError, ValueError):
-        print(f"pending_queue: invalid {name}={raw!r}, keeping default {default}", file=sys.stderr)
+        print(f"pending_queue: invalid {matched_name}={raw!r}, keeping default {default}", file=sys.stderr)
         return default
 
 
@@ -646,7 +662,7 @@ class PendingQueue:
         if db_path is None:
             db_path = os.path.expanduser(DEFAULT_DB_PATH)
         self._db_file = Path(os.path.expanduser(str(db_path)))
-        self._max_records = self._resolved(max_records, "max_records", DEFAULT_MAX_RECORDS, "PENDING_MAX_RECORDS", int)
+        self._max_records = self._resolved(max_records, "max_records", DEFAULT_MAX_RECORDS, ("TTS_PENDING_MAX_RECORDS", "PENDING_MAX_RECORDS"), int)
         self._max_db_bytes = self._resolved(max_db_bytes, "max_db_bytes", DEFAULT_MAX_DB_BYTES, "PENDING_MAX_DB_BYTES", int)
         self._consolidation_window_s = self._resolved(
             consolidation_window_s, "consolidation_window_s", DEFAULT_CONSOLIDATION_WINDOW_S,

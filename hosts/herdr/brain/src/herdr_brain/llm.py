@@ -30,7 +30,14 @@ from .config import Settings
 from .herdr import AgentInfo, HerdrError
 from .memory import ConversationStore, clip_content
 from .secrets_mask import mask_text
-from .tools import BrainTools, TOOLS_SCHEMA
+from .tools import (
+    MODEL_COMMANDS,
+    RESUME_COMMANDS,
+    RESUME_SESSION,
+    SWITCH_MODEL,
+    BrainTools,
+    TOOLS_SCHEMA,
+)
 from .view import (
     PendingAction,
     SCREEN_TAIL_LINES,
@@ -80,6 +87,7 @@ Routing policy:
 - Past work: use consult_history for historical work across development chats and Engram; recent history within the selected session stays on read_transcript. These read-only questions never send work to an agent.
 - New work or actions: forward them with send_to_session and wait for completion, then report the result. Do not do the agent's work yourself.
 - Stopping: when the user asks to stop or interrupt the running turn («para al agente», «stop»), call stop_agent — it can interrupt the running turn, but only as a gated proposal: state which agent will be stopped and wait for the user's confirmation; the interrupt executes when they approve, never before.
+- Models: the selected pane's current model (and context window) rides get_status and the herd views — answer «¿qué modelo usa X?» from it, never guess. When the user asks to switch («cambia el modelo a X»), call switch_model with the model exactly as the user named it — but only as a gated proposal: state the agent and the target model and wait; the switch executes when they approve. A refused or ambiguous name is relayed as-is, never retried with a guess.
 - Unsure whether it is a question or a task: read the transcript first, then decide.
 
 Approval gate:
@@ -629,7 +637,8 @@ class BrainLLM:
     ) -> tuple[str, Optional[ApprovalGate]]:
         """Dispatches one tool call, turning every failure into a string.
 
-        Mutating tools (``send_to_session``, ``create_session``) are NEVER
+        Mutating tools (``send_to_session``, ``create_session``,
+        ``resume_session``) are NEVER
         dispatched: each is frozen into an approval gate instead (AC1 —
         no path executes them without an approved gate). Returns
         ``(tool_message, gate_or_None)``. ``turn_text`` is the CURRENT
@@ -648,8 +657,12 @@ class BrainLLM:
             return self._gate_send(arguments, session_key)
         if call.function.name == CREATE_SESSION:
             return self._gate_create(arguments, session_key)
+        if call.function.name == RESUME_SESSION:
+            return self._gate_resume(arguments, session_key)
         if call.function.name == STOP_AGENT:
             return self._gate_stop(arguments, session_key)
+        if call.function.name == SWITCH_MODEL:
+            return self._gate_switch_model(arguments, session_key)
         return (
             self._tools.dispatch(
                 call.function.name,
@@ -792,3 +805,132 @@ class BrainLLM:
             "user's decision; never say it was created.",
             gate,
         )
+
+    def _gate_resume(
+        self, arguments: Dict[str, Any], session_key: str
+    ) -> tuple[str, Optional[ApprovalGate]]:
+        """Freezes the EXACT resume_session args into a gate instead of
+        reopening the conversation (parity-f7c S3).
+
+        Mirrors :meth:`_gate_create` line for line: the frozen
+        ``harness``/``session_id`` ride the create fields of
+        :class:`GateAction` (``agent_kind``/``task``) so approval.py's
+        frozen storage is reused as-is — never a second gate framework —
+        and an approval replays the identical call. The session's cwd is
+        deliberately NOT frozen: it is re-derived from the transcript
+        store at replay time, so a stale folder can never win. The only
+        failure modes are missing args, a harness without a verified
+        resume form (mirroring the tool's own table), and a missing
+        store, where the resume is still blocked: fail safe, never
+        execute."""
+        harness = str(arguments.get("harness", "")).strip().lower()
+        session_id = str(arguments.get("session_id", "")).strip()
+        if not harness or not session_id:
+            return "error: harness and session_id are required", None
+        if harness not in RESUME_COMMANDS:
+            return (
+                f"error: resume is not verified for {harness}; tell the user "
+                "this harness cannot be resumed here",
+                None,
+            )
+        if self._approval_store is None:
+            return (
+                "error: resume_session is blocked pending user approval, but "
+                "no approval gate store is wired; nothing was opened",
+                None,
+            )
+        gate = self._approval_store.propose(
+            session_key,
+            text="",
+            agent=harness,
+            tool=RESUME_SESSION,
+            agent_kind=harness,
+            title="",
+            task=session_id,
+        )
+        LOGGER.info(
+            "approval gate opened gate_id=%s tool=resume_session harness=%s "
+            "session_id=%s",
+            gate.gate_id,
+            harness,
+            session_id,
+        )
+        return (
+            f"pending user approval (gate {gate.gate_id}): the conversation was NOT "
+            "resumed. State the harness and which conversation, then wait for "
+            "the user's decision; never say it was resumed.",
+            gate,
+        )
+
+    def _gate_switch_model(
+        self, arguments: Dict[str, Any], session_key: str
+    ) -> tuple[str, Optional[ApprovalGate]]:
+        """Freezes the model switch into a gate instead of pressing
+        anything (parity-f7d S3).
+
+        Mirrors :meth:`_gate_stop`: the pane is the already-resolved
+        request target (or the pane_id the model named, resolved
+        EXACTLY against the open list — never a silent fallback), the
+        model name is the frozen ``task``, and the harness must be one
+        whose picker command is verified. With no target, no model, an
+        unknown pane or no store, the switch is still blocked: fail
+        safe, never execute.
+        """
+        model = str(arguments.get("model", "")).strip()
+        if not model:
+            return "error: model is required", None
+        target = self._request_target
+        named_pane = arguments.get("pane_id")
+        if named_pane is not None:
+            if not isinstance(named_pane, str) or not named_pane.strip():
+                return "error: pane_id must be a non-empty string", None
+            named_pane = named_pane.strip()
+            try:
+                agents = self._tools._herdr.list_agents()
+            except Exception:  # noqa: BLE001 — mirror the honest errors below
+                return "error: cannot list panes to resolve pane_id", None
+            target = next(
+                (agent for agent in agents if agent.pane_id == named_pane), None
+            )
+            if target is None:
+                return (
+                    f"error: no open pane {named_pane}; nothing was switched",
+                    None,
+                )
+        if target is None:
+            return "error: no active agent pane", None
+        if (target.agent or "").strip().lower() not in MODEL_COMMANDS:
+            return (
+                f"error: model switching is not verified for "
+                f"{target.agent or 'this harness'}; tell the user this "
+                "harness cannot switch models here",
+                None,
+            )
+        if self._approval_store is None:
+            return (
+                "error: switch_model is blocked pending user approval, but "
+                "no approval gate store is wired; nothing was switched",
+                None,
+            )
+        gate = self._approval_store.propose(
+            session_key,
+            text="",
+            pane_id=target.pane_id,
+            agent=target.agent,
+            tool=SWITCH_MODEL,
+            task=model,
+        )
+        LOGGER.info(
+            "approval gate opened gate_id=%s tool=switch_model pane_id=%s "
+            "model=%s",
+            gate.gate_id,
+            target.pane_id,
+            model,
+        )
+        return (
+            f"pending user approval (gate {gate.gate_id}): the model was NOT "
+            "switched. State the agent and the target model, then wait for "
+            "the user's decision; never say it was switched.",
+            gate,
+        )
+

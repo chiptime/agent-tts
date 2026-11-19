@@ -9,7 +9,7 @@ from unittest.mock import Mock
 import pytest
 
 from herdr_brain.config import Settings
-from herdr_brain.herdr import AgentInfo, HerdrError
+from herdr_brain.herdr import AgentInfo, HerdrError, WorkspaceInfo
 from herdr_brain.tools import TOOLS_SCHEMA, BrainTools
 
 
@@ -756,7 +756,19 @@ class TestDispatch:
             "get_followup_context", "end_followup",
             # S5/S7: voice switching of the call's target pane.
             "switch_session",
+            # parity-f7c S3: the gated resume of a past conversation.
+            "resume_session",
+            # parity-f7d S3: the gated model switch of a pane.
+            "switch_model",
         }
+
+    def test_switch_model_schema_is_gated_and_names_the_model(self):
+        by_name = {tool["function"]["name"]: tool["function"] for tool in TOOLS_SCHEMA}
+        switch = by_name["switch_model"]
+        assert "GATED" in switch["description"]
+        assert "approval" in switch["description"]
+        assert set(switch["parameters"]["properties"]) == {"model", "pane_id"}
+        assert switch["parameters"]["required"] == ["model"]
 
     def test_stop_agent_schema_is_gated_and_argument_free(self):
         by_name = {tool["function"]["name"]: tool["function"] for tool in TOOLS_SCHEMA}
@@ -815,3 +827,124 @@ class TestDialogParsedFromTheWideRead:
 
         assert view["dialog"]["question"] == "¿La PRD incluye corregirlos?"
         assert [opt["n"] for opt in view["dialog"]["options"]] == [1, 2, 3, 4]
+
+
+# ── S1b (L11): workspace-targeted launches + the workspace listing seam ─
+
+
+class WorkspaceStub:
+    """Herdr double with the workspace-aware create/read surfaces.
+
+    Records the create_tab kwargs verbatim (``workspace_id`` included,
+    even when None) so the pass-through is observable.
+    """
+
+    def __init__(self):
+        self.tab_calls: list = []
+        self.pane_run_calls: list = []
+        self.start_calls: list = []
+        self.workspaces = [
+            WorkspaceInfo("w1", "main", 1, True),
+            WorkspaceInfo("w9", "vacía", 2, False),
+        ]
+
+    def create_tab(self, label, cwd=None, workspace_id=None):
+        self.tab_calls.append(
+            {"label": label, "cwd": cwd, "workspace_id": workspace_id}
+        )
+        return {"tab_id": "w9:t1", "pane_id": "w9:p1"}
+
+    def start_agent(self, name, kind, pane_id, timeout_ms=None):
+        self.start_calls.append({"name": name, "kind": kind, "pane_id": pane_id})
+        return pane_id
+
+    def pane_run(self, pane_id, command):
+        self.pane_run_calls.append({"pane_id": pane_id, "command": command})
+
+    def list_workspaces(self):
+        return list(self.workspaces)
+
+
+class TestCreateSessionWorkspace:
+    def test_the_workspace_rides_the_tab_creation(self, settings):
+        stub = WorkspaceStub()
+        tools = BrainTools(settings, herdr=stub)
+        result = tools.create_session("claude", "Build", task="", cwd="/repo",
+                                      workspace_id="w1")
+        assert result.startswith("Panel creado")
+        assert stub.tab_calls == [
+            {"label": "Build", "cwd": "/repo", "workspace_id": "w1"}
+        ]
+        created = tools.last_created()
+        assert created.pane_id == "w9:p1"
+
+    def test_without_a_workspace_the_tab_call_keeps_the_legacy_shape(self, settings):
+        # The pre-S1b doubles (CreateStub) accept only (label, cwd): the
+        # no-workspace call must not grow a third keyword.
+        class LegacyTabStub(WorkspaceStub):
+            def create_tab(self, label, cwd=None):
+                self.tab_calls.append({"label": label, "cwd": cwd})
+                return {"tab_id": "w9:t1", "pane_id": "w9:p1"}
+
+        stub = LegacyTabStub()
+        tools = BrainTools(settings, herdr=stub)
+        result = tools.create_session("claude", "Build", cwd="/repo")
+        assert result.startswith("Panel creado")
+        assert stub.tab_calls == [{"label": "Build", "cwd": "/repo"}]
+
+    def test_the_voice_schema_does_not_gain_the_parameter(self):
+        entry = next(
+            tool for tool in TOOLS_SCHEMA
+            if tool["function"]["name"] == "create_session"
+        )
+        params = entry["function"]["parameters"]
+        assert "workspace_id" not in params.get("properties", {})
+        assert "workspace_id" not in params.get("required", [])
+
+
+class TestResumeSessionWorkspace:
+    def test_the_workspace_rides_the_tab_creation(self, settings):
+        stub = WorkspaceStub()
+        tools = BrainTools(settings, herdr=stub)
+        result = tools.resume_session("claude", "abc-123", cwd="/repo",
+                                      title="Fix", workspace_id="w1")
+        assert result.startswith("Panel reanudado")
+        assert stub.tab_calls == [
+            {"label": "Fix", "cwd": "/repo", "workspace_id": "w1"}
+        ]
+        assert stub.pane_run_calls == [
+            {"pane_id": "w9:p1", "command": "claude --resume abc-123"}
+        ]
+
+    def test_without_a_workspace_the_tab_call_keeps_the_legacy_shape(self, settings):
+        class LegacyTabStub(WorkspaceStub):
+            def create_tab(self, label, cwd=None):
+                self.tab_calls.append({"label": label, "cwd": cwd})
+                return {"tab_id": "w9:t1", "pane_id": "w9:p1"}
+
+        stub = LegacyTabStub()
+        tools = BrainTools(settings, herdr=stub)
+        result = tools.resume_session("claude", "abc", cwd="/repo")
+        assert result.startswith("Panel reanudado")
+        assert stub.tab_calls == [{"label": "claude · resume", "cwd": "/repo"}]
+
+
+class TestListWorkspaces:
+    def test_lists_through_the_herdr_seam(self, settings):
+        stub = WorkspaceStub()
+        tools = BrainTools(settings, herdr=stub)
+        assert tools.list_workspaces() == stub.workspaces
+
+    def test_a_mux_without_the_surface_degrades_to_empty(self, settings, make_stub):
+        # tmux/zellij adapters carry no list_workspaces: the sheet must
+        # show no spaces, never crash.
+        tools = BrainTools(settings, herdr=make_stub())
+        assert tools.list_workspaces() == []
+
+    def test_a_herdr_failure_degrades_to_empty(self, settings, make_stub):
+        class Boom(WorkspaceStub):
+            def list_workspaces(self):
+                raise HerdrError("cli down")
+
+        tools = BrainTools(settings, herdr=Boom())
+        assert tools.list_workspaces() == []

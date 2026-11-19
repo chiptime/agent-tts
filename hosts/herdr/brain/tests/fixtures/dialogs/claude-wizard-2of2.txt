@@ -1,0 +1,6 @@
+│ 2/2 Which drink?
+│
+│ ❯ 1. Agua
+│   2. Vino
+│
+  Enter to select · ↑/↓ to navigate · Esc to cancel

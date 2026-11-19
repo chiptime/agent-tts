@@ -1,0 +1,9 @@
+│ Which toppings do you want?
+│ Pick every one you like.
+│
+│ ❯ 1. Empty checkbox Cheese
+│   2. Filled checkbox Pepperoni
+│   3. Empty checkbox Mushrooms
+│   4. Submit
+│
+  Space to select · Enter to submit · ↑/↓ to navigate · Esc to cancel

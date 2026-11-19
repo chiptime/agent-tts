@@ -13,7 +13,10 @@ Behavioral guarantees:
 - Baseline snapshot on first poll: pre-existing states are never announced
   (booting with 8 running agents must stay silent).
 - Debounce: the same pane+status is not re-announced within the debounce
-  window (60 s by default).
+  window (60 s by default) — EXCEPT when the pane went back to ``working``
+  in between (S6a, parity-f7g): that is a NEW turn, and its done/error
+  must be heard. Flapping that never works again (done → idle → done)
+  stays debounced.
 - The hub is a bounded fan-out: events with zero subscribers are dropped;
   a full subscriber queue drops its oldest event. The watcher never blocks
   on consumers and survives with zero clients.
@@ -165,6 +168,7 @@ class AgentWatcher:
         debounce_s: float = DEBOUNCE_S,
         notifier=None,
         locale_provider: Optional[Callable[[], str]] = None,
+        send_tracker=None,
     ):
         self._settings = settings
         self._herdr = herdr or create_mux(settings)
@@ -183,6 +187,12 @@ class AgentWatcher:
         # handled / tick. Optional on purpose: the watcher's own tests
         # (and any embedding) construct it bare.
         self._notifier = notifier
+        # Send tracker (parity-f7g): rides THIS poll — the brain never
+        # grows a second herdr timer. Optional duck type (start/observe/
+        # has_active/active_panes); attached after construction through
+        # :meth:`attach_send_tracker` so injected test watchers and hub
+        # fakes keep working unchanged.
+        self._send_tracker = send_tracker
         # Last-activity estimate per pane, in the watcher's own clock
         # domain: refreshed while a pane works or changes state, frozen
         # while it idles. The notifier tick converts it to idle DELTAS
@@ -198,6 +208,21 @@ class AgentWatcher:
         self._thread: Optional[threading.Thread] = None
 
     # -- lifecycle -----------------------------------------------------------
+
+    def attach_send_tracker(self, tracker) -> None:
+        """Wires the send tracker onto this poll cycle (f7g seam)."""
+        self._send_tracker = tracker
+
+    def last_known_status(self, pane_id: str) -> Optional[str]:
+        """The pane's status as of the LAST poll (f7g S1 evidence rule).
+
+        The status a send starts from, best-effort: ``None`` before the
+        first poll has seen the pane (the tracker then pins the status
+        at its own first observation instead).
+        """
+        if self._baseline is None:
+            return None
+        return self._baseline.get(pane_id)
 
     def start(self) -> None:
         if self._thread is not None:
@@ -223,11 +248,23 @@ class AgentWatcher:
     def next_interval_s(self) -> float:
         """Interval to wait before the NEXT cycle.
 
-        Fast only while BOTH hold: attention is fresh (an SSE subscriber
-        was seen inside the attention window) and a pane is blocked. Any
-        other state — nobody watching, or nothing to watch closely —
-        rides the baseline cadence.
+        Fast while ANY holds:
+
+        - a non-terminal send tracker exists (parity-f7g S4): tracked
+          states must land within ~1.5 s, subscribers or not — the
+          phone's card and the pushes ride this cadence;
+        - attention is fresh (an SSE subscriber was seen inside the
+          attention window) AND a pane is blocked (doc 05).
+
+        Any other state — nobody watching, or nothing to watch closely
+        — rides the baseline cadence.
         """
+        if self._send_tracker is not None:
+            try:
+                if self._send_tracker.has_active():
+                    return FAST_POLL_INTERVAL_S
+            except Exception:  # noqa: BLE001 — a broken tracker idles
+                pass
         fresh = self._clock() - self._last_attention <= ATTENTION_WINDOW_S
         blocked = any(
             status == "blocked" for status in (self._baseline or {}).values()
@@ -268,8 +305,23 @@ class AgentWatcher:
                 or self._baseline.get(pane_id) != agent.status
             ):
                 self._last_activity[pane_id] = now_ts
+            if agent.status == "working":
+                # S6(a) (parity-f7g): the pane went back to WORK, so the
+                # next done/blocked/error is a NEW turn's outcome — its
+                # announcement must not be swallowed by the 60 s window.
+                # The debounce still guards flapping that never worked
+                # again (done → idle → done inside the window).
+                for announce_status in ANNOUNCE_STATUSES:
+                    self._last_announced.pop((pane_id, announce_status), None)
         for gone in self._last_activity.keys() - current.keys():
             self._last_activity.pop(gone, None)
+
+        # Send trackers ride this same poll (f7g): S6(b) needs the panes
+        # that STILL had a non-terminal tracker before this cycle —
+        # observe() below may end them as pane_gone — and the handled
+        # retract must stay silent for exactly those.
+        tracked_before = self._active_tracked_panes()
+        self._observe_send_trackers(current, errors)
 
         if self._baseline is None:
             self._baseline = {pid: agent.status for pid, agent in current.items()}
@@ -306,13 +358,17 @@ class AgentWatcher:
         # State-driven handled (S5 retraction): a pane that no longer
         # needs the operator closes its push slot — also when its
         # blocked transition was debounced, and also when the pane
-        # vanished entirely.
+        # vanished entirely. EXCEPT (S6b, parity-f7g) a pane that
+        # vanished while a send tracker was still in flight: the
+        # tracker's own pane_gone event covers it, and a "Resuelto"
+        # retract would lie about a send that died with the pane.
         for pane_id, status in self._baseline.items():
             if status not in ANNOUNCE_STATUSES:
                 continue
-            if current.get(pane_id, None) is None or (
-                current[pane_id].status != status
-            ):
+            vanished = current.get(pane_id, None) is None
+            if vanished and pane_id in tracked_before:
+                continue
+            if vanished or current[pane_id].status != status:
                 self._notify("handled", pane_id)
 
         self._baseline = {pid: agent.status for pid, agent in current.items()}
@@ -321,6 +377,29 @@ class AgentWatcher:
         return produced
 
     # -- notifier fan-out ---------------------------------------------------
+
+    def _active_tracked_panes(self) -> frozenset:
+        """Panes with a non-terminal send tracker right now, empty when
+        the seam is absent or broken (the poll never depends on it)."""
+        if self._send_tracker is None:
+            return frozenset()
+        try:
+            return self._send_tracker.active_panes()
+        except Exception:  # noqa: BLE001 — a broken tracker starves nothing
+            return frozenset()
+
+    def _observe_send_trackers(
+        self, current: Dict[str, AgentInfo], errors: Dict[str, dict]
+    ) -> None:
+        """One tracker feed from THIS poll's agent list (f7g): the
+        watcher stays the only herdr poller, and a tracker failure is
+        as survivable as a notifier failure."""
+        if self._send_tracker is None:
+            return
+        try:
+            self._send_tracker.observe(current, errors)
+        except Exception:  # noqa: BLE001 — the poll must never die
+            return
 
     def _notify(self, method: str, *args, **kwargs) -> None:
         """One notifier call that can never break the poll cycle."""

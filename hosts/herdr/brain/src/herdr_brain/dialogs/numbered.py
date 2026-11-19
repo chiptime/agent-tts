@@ -42,7 +42,9 @@ _CHECKED_GLYPHS = ("[x]", "[✔]", "[✓]", "(●)", "(*)", "◉", "☒")
 _UNCHECKED_GLYPHS = ("[ ]", "(○)", "( )", "○", "☐", "○")
 
 #: Free-text rows a digit cannot answer (it would focus/type into the
-#: field). An option row carrying one of these labels is NOT an option.
+#: field). By default an option row carrying one of these labels is NOT
+#: an option — the adapter that MODELLED it as a free-text option
+#: (Claude, S3) opts in with ``keep_free_text``.
 FREE_TEXT_LABELS = (
     "type your own answer",
     "type something.",
@@ -51,19 +53,30 @@ FREE_TEXT_LABELS = (
 )
 
 
+def is_free_text_label(label: str) -> bool:
+    """Whether an option row's label is one of the free-text fields."""
+    low = (label or "").strip().lower()
+    return any(
+        low.startswith(marker) or low == marker.rstrip(".")
+        for marker in FREE_TEXT_LABELS
+    )
+
+
 def strip_gutter(line: str) -> str:
     """Removes one dialog gutter (``┃``/``│`` and friends) and trims."""
     return re.sub(r"^[\u2503\u2502\u2506\u2507\u250a\u250b|\u2551]\s*", "", line.rstrip()).rstrip()
 
 
-def parse_option_row(line: str) -> Optional[Tuple[str, str, str, bool]]:
+def parse_option_row(
+    line: str, keep_free_text: bool = False
+) -> Optional[Tuple[str, str, str, bool]]:
     """One numbered option row → ``(number, label, description, pointed)``.
 
     The description is the same-row tail behind a 2+ space gap (Codex
     ask, Grok ask); adapters that read descriptions on their own rows
     ignore it. Returns ``None`` for anything that is not a numbered
-    row, and for the free-text rows above (their digit belongs to a
-    field, not an answer).
+    row, and — unless ``keep_free_text`` — for the free-text rows above
+    (their digit belongs to a field, not an answer).
     """
     text = strip_gutter(line)
     if not text:
@@ -73,9 +86,7 @@ def parse_option_row(line: str) -> Optional[Tuple[str, str, str, bool]]:
         return None
     number = match.group("number")
     rest = match.group("rest").strip()
-    low = rest.lower()
-    if any(low.startswith(marker) or low == marker.rstrip(".")
-           for marker in FREE_TEXT_LABELS):
+    if not keep_free_text and is_free_text_label(rest):
         return None
     label = rest
     description = ""
@@ -112,7 +123,7 @@ def split_checked(label: str) -> Tuple[str, Optional[bool]]:
 
 
 def collect_numbered_block(
-    lines: List[str],
+    lines: List[str], keep_free_text: bool = False
 ) -> Optional[Tuple[int, int, List[Tuple[str, str, str, bool]]]]:
     """The longest run of consecutive numbered rows anchored at the tail.
 
@@ -120,11 +131,13 @@ def collect_numbered_block(
     ``(number, label, description, pointed)`` per row, or ``None`` when
     fewer than two consecutive numbered rows exist. A gap in the
     numbering ends the block: menus renumber from 1, and a run that
-    does not is another widget's text.
+    does not is another widget's text. ``keep_free_text`` passes the
+    same flag to :func:`parse_option_row` so the free-text rows count
+    as rows of the run instead of ending it.
     """
     parsed: List[Tuple[int, Optional[Tuple[str, str, str, bool]]]] = []
     for index, line in enumerate(lines):
-        row = parse_option_row(line)
+        row = parse_option_row(line, keep_free_text)
         parsed.append((index, row))
 
     best: Optional[Tuple[int, int, List[Tuple[str, str, str, bool]]]] = None

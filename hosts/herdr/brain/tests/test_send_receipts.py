@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pytest
 
+from herdr_brain.config import Settings
 from herdr_brain.herdr import AgentInfo, HerdrError
 from herdr_brain.send_receipts import (
     DISCARD_RECIPES,
@@ -472,3 +473,146 @@ def test_steer_harnesses_and_interrupt_table_agree_on_the_chat_tuis():
     # Steering injects into a running turn; the interrupt must reach the
     # same harnesses the steer table names.
     assert STEER_HARNESSES <= set(INTERRUPT_RECIPES)
+
+
+# ── parity-f7g: trackers on the HTTP surface (S1/S4) ──────────────────────────
+
+
+def _http_receipt(outcome, detail="", text_hint=""):
+    return {"outcome": outcome, "detail": detail, "text_hint": text_hint}
+
+
+class TrackerFakeTools:
+    """The same FakeTools shape tests/test_server_reply.py uses: the
+    route only needs verified_reply_to_pane's envelope."""
+
+    outcome: dict = {
+        "outcome": "delivered", "pane_id": "w1:p2", "status": "stalled",
+        "detail": "", "receipt": _http_receipt("sent"),
+    }
+
+    def __init__(self, cfg):
+        type(self).outcome = dict(type(self).outcome, pane_id="w1:p2")
+
+    def verified_reply_to_pane(self, pane_id, text, steer=False):
+        return dict(type(self).outcome, pane_id=pane_id)
+
+
+@pytest.fixture
+def tracker_client(settings, tmp_path, monkeypatch):
+    import herdr_brain.server as server_module
+    from fastapi.testclient import TestClient
+
+    TrackerFakeTools.outcome = {
+        "outcome": "delivered", "pane_id": "w1:p2", "status": "stalled",
+        "detail": "", "receipt": _http_receipt("sent"),
+    }
+    monkeypatch.setattr(server_module, "BrainTools", TrackerFakeTools)
+    cfg = Settings(**{
+        **settings.__dict__,
+        "audio_dir": str(tmp_path / "audio"),
+        "state_dir": str(tmp_path / "state"),
+    })
+    app = server_module.create_app(settings=cfg)
+    client = TestClient(app)
+    client.app = app
+    return client
+
+
+def _post_sent(client, text="sigue"):
+    resp = client.post("/pane/reply", json={"pane_id": "w1:p2", "text": text})
+    assert resp.status_code == 200
+    return resp.json()
+
+
+class TestTrackerOnHTTP:
+    def test_a_sent_reply_exposes_its_tracker_on_the_receipts(self, tracker_client):
+        body = _post_sent(tracker_client)
+        assert body["receipt"]["outcome"] == "sent"
+        # The reply response itself stays byte-shaped as before (no
+        # track key on it — S4 puts tracking on GET /pane/receipts).
+        assert "track" not in body["receipt"]
+
+        listed = tracker_client.get("/pane/receipts", params={"pane_id": "w1:p2"})
+        receipt = listed.json()["receipts"][0]
+        assert receipt["track"]["state"] == "sent"
+        assert receipt["track"]["elapsed_s"] >= 0.0
+        assert receipt["track"]["stalled"] is False
+
+    def test_the_initial_state_rides_the_sse_hub(self, tracker_client):
+        hub = tracker_client.app.state.watcher.hub
+        sub_id, queue = hub.subscribe()
+        try:
+            _post_sent(tracker_client)
+            event = queue.get(timeout=2)
+        finally:
+            hub.unsubscribe(sub_id)
+        assert event["type"] == "send.track"
+        assert event["pane_id"] == "w1:p2"
+        assert event["state"] == "sent"
+        assert event["receipt_id"].startswith("rct-")
+
+    def test_effective_replies_start_done(self, tracker_client):
+        TrackerFakeTools.outcome = {
+            "outcome": "delivered", "pane_id": "w1:p2", "status": "done",
+            "detail": "", "receipt": _http_receipt("effective"),
+        }
+        _post_sent(tracker_client)
+        receipt = tracker_client.get("/pane/receipts").json()["receipts"][0]
+        assert receipt["outcome"] == "effective"
+        assert receipt["track"]["state"] == "done"
+
+    def test_untracked_receipts_keep_their_exact_shape(self, tracker_client):
+        """PRESERVE (S4 additive contract): a receipt with no tracker —
+        here a typed draft — serializes without any track key."""
+        TrackerFakeTools.outcome = {
+            "outcome": "delivered", "pane_id": "w1:p2", "status": "timeout",
+            "detail": "",
+            "receipt": _http_receipt("typed_not_submitted", text_hint="x"),
+        }
+        _post_sent(tracker_client)
+        receipt = tracker_client.get("/pane/receipts").json()["receipts"][0]
+        assert set(receipt) == {
+            "id", "pane_id", "outcome", "detail", "text_hint",
+            "created_at", "resolved_at",
+        }
+
+    def test_a_newer_send_supersedes_the_older_tracker(self, tracker_client):
+        _post_sent(tracker_client, text="one")
+        _post_sent(tracker_client, text="two")
+        receipts = tracker_client.get("/pane/receipts").json()["receipts"]
+        assert receipts[0]["track"]["state"] == "sent"      # newest
+        assert receipts[1]["track"]["state"] == "superseded"  # older send
+
+    def test_the_tracker_survives_polls_until_its_outcome(self, tracker_client):
+        _post_sent(tracker_client)
+        for _ in range(3):
+            listed = tracker_client.get("/pane/receipts", params={"pane_id": "w1:p2"})
+            assert listed.json()["receipts"][0]["track"]["state"] == "sent"
+
+    def test_legacy_doubles_without_verified_reply_stay_tracker_free(
+        self, settings, tmp_path, monkeypatch
+    ):
+        """PRESERVE (the hasattr seam): a pre-S12 tools double answers
+        with the legacy body — no receipt, no tracker, byte for byte."""
+        import herdr_brain.server as server_module
+        from fastapi.testclient import TestClient
+
+        class LegacyTools:
+            def __init__(self, cfg):
+                pass
+
+            def reply_to_pane(self, pane_id, text):
+                return {"outcome": "delivered", "pane_id": pane_id, "detail": ""}
+
+        monkeypatch.setattr(server_module, "BrainTools", LegacyTools)
+        cfg = Settings(**{
+            **settings.__dict__,
+            "audio_dir": str(tmp_path / "audio"),
+            "state_dir": str(tmp_path / "state"),
+        })
+        client = TestClient(server_module.create_app(settings=cfg))
+        resp = client.post("/pane/reply", json={"pane_id": "w1:p2", "text": "go"})
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "pane_id": "w1:p2"}
+        assert client.get("/pane/receipts").json()["receipts"] == []

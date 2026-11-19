@@ -285,6 +285,93 @@ def test_ask_records_chars_and_target_pane_never_the_transcript(tmp_path, monkey
     assert text not in audit_path(tmp_path).read_text(encoding="utf-8")
 
 
+class ReadyTranscriber:
+    """Transcriber double that is ready and always hears the same phrase."""
+
+    state = "ready"
+    unavailable_hint = ""
+
+    def __init__(self, text="borra la base de datos", fail=False):
+        self.text = text
+        self.fail = fail
+
+    def maybe_start_warmup(self):
+        return None
+
+    def transcribe_bytes(self, data):
+        if self.fail:
+            raise RuntimeError("decode failed")
+        return self.text
+
+
+def post_audio(client, payload=b"fake-webm-bytes"):
+    import io
+
+    return client.post(
+        "/transcribe", files={"audio": ("clip.webm", io.BytesIO(payload), "audio/webm")}
+    )
+
+
+def test_transcribe_records_sizes_never_the_text_or_audio(tmp_path, monkeypatch):
+    spoken = "borra la base de datos"
+    client = audit_app(tmp_path, monkeypatch, transcriber=ReadyTranscriber(spoken))
+    resp = post_audio(client, b"fake-webm-bytes")
+    assert resp.status_code == 200
+    assert resp.json() == {"text": spoken}
+    lines = audit_lines(tmp_path)
+    assert len(lines) == 1
+    line = lines[0]
+    assert line["action"] == "stt.transcribe"
+    assert line["detail"] == {"bytes": len(b"fake-webm-bytes"), "chars": len(spoken)}
+    raw = audit_path(tmp_path).read_text(encoding="utf-8")
+    assert spoken not in raw
+    assert "fake-webm-bytes" not in raw
+
+
+def test_failed_transcribe_writes_no_line(tmp_path, monkeypatch):
+    client = audit_app(tmp_path, monkeypatch, transcriber=ReadyTranscriber(fail=True))
+    assert post_audio(client).status_code == 503
+    assert audit_lines(tmp_path) == []
+
+
+def test_reset_records_the_normalized_session(tmp_path, monkeypatch):
+    client = audit_app(tmp_path, monkeypatch)
+    resp = client.post("/reset", json={"session_id": "s1"})
+    assert resp.status_code == 200
+    lines = audit_lines(tmp_path)
+    assert len(lines) == 1
+    line = lines[0]
+    assert line["action"] == "session.reset"
+    assert line["session_id"] == resp.json()["session_id"]
+
+
+def test_transcribe_and_reset_carry_the_paired_device(tmp_path, monkeypatch):
+    client = audit_app(tmp_path, monkeypatch, transcriber=ReadyTranscriber())
+    token = pair_device(client, tmp_path / STATE_KEY, label="phone")
+    headers = {"Authorization": f"Bearer {token}"}
+    import io
+
+    assert client.post(
+        "/transcribe",
+        files={"audio": ("clip.webm", io.BytesIO(b"x"), "audio/webm")},
+        headers=headers,
+    ).status_code == 200
+    assert client.post("/reset", json={"session_id": "s1"}, headers=headers).status_code == 200
+    lines = {l["action"]: l for l in audit_lines(tmp_path)}
+    assert lines["stt.transcribe"]["device"] == "phone"
+    assert lines["session.reset"]["device"] == "phone"
+
+
+def test_unwritable_audit_path_keeps_transcribe_and_reset_working(tmp_path, monkeypatch):
+    blocker = tmp_path / "blocker"
+    blocker.write_text("a file where the state dir should be")
+    client = audit_app(
+        tmp_path, monkeypatch, state_dir=blocker, transcriber=ReadyTranscriber("hola")
+    )
+    assert post_audio(client).json() == {"text": "hola"}
+    assert client.post("/reset", json={"session_id": "s1"}).status_code == 200
+
+
 def test_permission_reply_records_reply_and_request_id(tmp_path, monkeypatch):
     client = audit_app(tmp_path, monkeypatch, tools_cls=PaneInfoTools,
                        permissions=FakePermissions())

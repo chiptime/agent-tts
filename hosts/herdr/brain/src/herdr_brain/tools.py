@@ -31,7 +31,10 @@ from .approval_lexicon import (
     CHOICE_OPTION,
     CHOICE_YES,
     _normalize as _lex_normalize,
+    destructive_text_reason,
     resolve_dialog_choice,
+    resolve_dialog_choices,
+    resolve_dialog_free_text,
 )
 from .herdr import (
     MAX_SEND_KEYS,
@@ -40,9 +43,11 @@ from .herdr import (
     HerdrClient,
     HerdrError,
     pick_active,
+    sanitize_prompt_text,
 )
 from .mux import create_mux
 from .mux.refusal import MuxRefusal
+from .pane_model import OpencodeModelCatalog, PaneModelResolver
 from .send_receipts import (
     classify_followup,
     classify_send,
@@ -59,7 +64,7 @@ from .history_view import (
 from .memory import clip_content
 from .mirror import clamp_lines, mirror_payload
 from .secrets_mask import mask_runs, mask_text
-from .dialogs import recognize as recognize_dialog
+from .dialogs import StructuredDialog, recognize as recognize_dialog
 from .transcripts import (
     Turn,
     connector_for,
@@ -67,6 +72,7 @@ from .transcripts import (
     read_session_error,
     read_turns,
     read_title,
+    resume_target,
     turn_age_seconds,
 )
 from .tts import render_mp3  # noqa: F401  (re-exported for server wiring)
@@ -89,6 +95,11 @@ MAX_SEND_EXCERPT = 500
 REPLY_WAIT_MS = 3_000
 HERD_LAST_TURN_CHARS = 160
 CONVERSATION_WINDOW = 20
+#: The ONE dialog window: /view detection and the guarded answer flow
+#: both read (and re-read) this many styled lines, so a dialog's
+#: fingerprint is always computed over the same region the answer
+#: guard later compares it on. The mux clamps the request to its own
+#: caps, identically on both surfaces, which keeps them consistent.
 SCREEN_FULL_LINES = 120
 # Verified sends (S12): how many screen lines the before/after reads need
 # (the input box lives at the tail) and how the bounded after-poll behaves.
@@ -97,10 +108,36 @@ SCREEN_FULL_LINES = 120
 VERIFIED_SCREEN_LINES = 30
 VERIFIED_POLL_READS = 3
 VERIFIED_POLL_INTERVAL_S = 0.35
-#: Lines read WITH styling for a blocked pane, so the PWA can show which
-#: option of the dialog is highlighted. Only read while blocked: the styling
-#: is exactly what decides a permission, and nothing else needs it.
+#: Lines read WITH styling for the SPOKEN dialog explanation (the
+#: voice binding's own identity check). The /view payload and the
+#: guarded answer path read the full window instead
+#: (``SCREEN_FULL_LINES``), so every published fingerprint is computed
+#: — and re-read — over one and the same window.
 DIALOG_SCREEN_LINES = 30
+#: parity-f7d S3: the harness's own command that opens its model picker,
+#: VERIFIED per harness (the picker detector must be able to read what
+#: the command opens). A harness absent here is honestly unsupported.
+#: opencode is live-verified on 1.19.5: the composer command is
+#: ``/models`` (``/model`` only filters the command palette); the
+#: opencode2 entry is safe because everything downstream fail-closes
+#: on the picker grammar.
+MODEL_COMMANDS = {
+    "claude": "/model",
+    "grok": "/model",
+    "omp": "/switch",
+    "opencode": "/models",
+    "opencode2": "/models",
+}
+#: The pickers answered SEARCH-FIRST: the name is typed into their own
+#: Search box, the pointer is read from the screen's paint, walked and
+#: verified before Enter (``_search_first_picker_answer``). Every other
+#: model_picker keeps the plain arrow walk.
+OPENCODE_SEARCH_PICKERS = frozenset({"opencode", "opencode2"})
+#: How long switch_model waits for the picker (and, after the commit,
+#: for the "Switch model?" confirmation) to appear.
+SWITCH_WAIT_ATTEMPTS = 20
+SWITCH_POLL_S = 0.15
+SWITCH_MODEL = "switch_model"
 MAX_AGENT_NAME_LEN = 24
 #: Triage order of agent states in the herd (doc 05): a pane waiting for
 #: the human outranks one merely busy; an unknown state sorts last, never
@@ -146,12 +183,159 @@ def sanitize_agent_name(title: str) -> str:
     return slug or _AGENT_NAME_FALLBACK
 
 
-def status_payload(active: Optional[AgentInfo]) -> dict:
+# ── the VERIFIED resume table (parity-f7c S3, doc 03 §3) ─────────────
+#
+# One row per harness whose resume command was derived from its OWN
+# --help on this machine (evidence strings below, probed 2026-11-18)
+# AND whose transcript store records the session's cwd (the readers'
+# enumeration in transcripts.py). A harness without BOTH is simply not
+# offered — never an assumed `--resume`.
+RESUME_SESSION = "resume_session"
+RESUME_COMMANDS = {
+    "claude": (
+        "claude --resume {}",
+        "claude --help: '--resume <session-id>' ('with --continue or "
+        "--resume <id> to pick the session'); cwd from the transcript's "
+        "own event `cwd` field",
+    ),
+    "codex": (
+        "codex resume {}",
+        "codex resume --help: '[SESSION_ID] Session id (UUID) or session "
+        "name. UUIDs take precedence if it parses'; cwd from the rollout's "
+        "session_meta payload",
+    ),
+    "opencode": (
+        "oa -s {}",
+        "opencode attach --help: '-s, --session <session id to continue "
+        "[string]'; the zshrc 'oa' function passes extra args through to "
+        "'opencode attach'; cwd from opencode.db session.directory",
+    ),
+    "pi": (
+        "pi --session {}",
+        "pi --help: '--session <path|id> Open a session by file path or "
+        "full/partial ID'; cwd from the session file's `session` header",
+    ),
+}
+# Refused on purpose (same probe day): cursor, grok, hermes, kiro, muse —
+# no CLI installed here (absence is a verdict); antigravity — agy --help
+# does offer '--conversation <id>' but its store records NO cwd, so the
+# session's folder would be a guess; opencode2 — no live session_v2 store
+# to verify the resume shape against; gemini — not a registry harness
+# (its --resume takes an index, not an id, and no reader exists).
+
+
+def resume_enabled_harnesses() -> tuple:
+    """The harnesses whose resume form is evidence-backed, sorted."""
+    return tuple(sorted(RESUME_COMMANDS))
+
+
+def _lex_flat(text: str) -> str:
+    """Case- and whitespace-flat form of a label for fuzzy matching."""
+    return " ".join((text or "").lower().split())
+
+
+def _composer_names(shown: str, model: str, provider: str) -> bool:
+    """Whether the composer's model text names ``model`` (and
+    ``provider`` when known): the model is a whole-word prefix, and the
+    provider, when known, follows it. ``nan`` is opencode's rendering of
+    a missing provider name: unknown, never compared."""
+    flat = _lex_flat(shown)
+    if not model or not flat.startswith(model):
+        return False
+    rest = flat[len(model):]
+    if rest and not rest.startswith(" "):
+        return False
+    rest = rest.strip()
+    if not provider or provider == "nan":
+        return True
+    return rest.startswith(provider)
+
+
+def _match_picker_option(options, wanted: str):
+    """Locates the picker option a spoken model name names.
+
+    Fuzzy but UNAMBIGUOUS: an exact (normalized) label wins; else the
+    names that CONTAIN the request — exactly one commits, none or
+    several refuse. Returns ``(index, None, None)`` on a match and
+    ``(None, reason, candidate_labels)`` on a refusal.
+    """
+    query = _lex_flat(wanted)
+    if not query:
+        return None, "no-model", []
+    exact = [
+        index
+        for index, option in enumerate(options)
+        if _lex_flat(option.label) == query
+    ]
+    if len(exact) == 1:
+        return exact[0], None, None
+    hits = [
+        index
+        for index, option in enumerate(options)
+        if query in _lex_flat(option.label)
+    ]
+    if len(exact) > 1 or len(hits) > 1:
+        labels = [options[index].label for index in sorted(set(exact) | set(hits))]
+        return None, "ambiguous", labels
+    if not hits:
+        return None, "no-match", []
+    return hits[0], None, None
+
+
+def _name_candidates(wanted: str, labels) -> str:
+    """The refusal detail for a name that matched nothing or several."""
+    if not labels:
+        return f"{wanted}: no option of this picker names it"
+    shown = ", ".join(labels[:6]) + ("…" if len(labels) > 6 else "")
+    return f"{wanted} is ambiguous between: {shown}"
+
+
+def _runs_plain_text(runs: list) -> str:
+    """The escape-stripped flat text of ``ansi_runs`` output.
+
+    The ONE transformation every recognizer input shares: the /view
+    detection (``_dialog_runs``) and the guarded answer path's reader
+    (``_dialog_reader``) both derive their text through this join, so
+    the fingerprint one publishes is the one the other reproduces —
+    recognizers read PLAIN text, never raw ANSI.
+    """
+    return "\n".join(
+        "".join(run.get("t", "") for run in line) for line in runs
+    )
+
+
+def _switch_confirmation_yes(options):
+    """The ``Yes, switch to <model>`` row of the confirmation, if the
+    screen carries one. Returns ``(index, label)`` or ``(None, "")``."""
+    for index, option in enumerate(options):
+        flat = _lex_flat(option.label)
+        if flat.startswith("yes, switch to ") and len(flat) > len(
+            "yes, switch to "
+        ):
+            return index, option.label
+    return None, ""
+
+
+def _names_the_model(label: str, wanted: str) -> bool:
+    """Whether the confirmation's Yes row names the requested model:
+    containment in the same flat form the matcher uses."""
+    flat, query = _lex_flat(label), _lex_flat(wanted)
+    return bool(query) and (query in flat or flat in query)
+
+
+def status_payload(
+    active: Optional[AgentInfo],
+    model: Optional[str] = None,
+    context: Optional[dict] = None,
+) -> dict:
     """Shapes the active-pane status shared by /state and /view.
 
     Free-text metadata (title, cwd) is masked at this display seam
     (S14): a recognized secret inside either still renders as a hint
-    placeholder, while the lookup ids stay exact.
+    placeholder, while the lookup ids stay exact. ``model`` (parity F7a
+    S3) is the pane's last-request model, or None when unknown.
+    ``context`` (parity F7d S1) is ``{"used", "limit"}`` when a local
+    catalog named the model's window, else None — never a guess.
     """
     if active is None:
         return {
@@ -162,6 +346,7 @@ def status_payload(active: Optional[AgentInfo]) -> dict:
             "title": None,
             "cwd": None,
             "session_id": None,
+            "model": None,
         }
     return {
         "active": True,
@@ -171,6 +356,12 @@ def status_payload(active: Optional[AgentInfo]) -> dict:
         "title": mask_text(active.title) if active.title else active.title,
         "cwd": mask_text(active.cwd) if active.cwd else active.cwd,
         "session_id": active.session_value,
+        "model": model,
+        # Additive on purpose (parity F7d S1): the context window rides
+        # along ONLY when a local catalog named it, so every payload
+        # without one keeps its exact previous shape (absence IS the
+        # null — a window is never guessed).
+        **({"context": context} if context is not None else {}),
     }
 
 
@@ -184,9 +375,16 @@ class BrainTools:
         clock: Optional[Callable[[], float]] = None,
         sleeper: Optional[Callable[[float], None]] = None,
         consult: Optional[ConsultService] = None,
+        pane_model: Optional[PaneModelResolver] = None,
+        model_catalog: Optional[OpencodeModelCatalog] = None,
     ):
         self._settings = settings
         self._herdr = herdr or create_mux(settings)
+        # Model per pane (parity F7a S3): background lookups, never blocking.
+        self._pane_model = pane_model or PaneModelResolver()
+        # Every connected opencode model (GET /pane/models): lazy — the
+        # CLI only runs when a card asks.
+        self._model_catalog = model_catalog or OpencodeModelCatalog()
         # Injectable readiness-loop primitives (tests drive them without
         # real 40 s waits); production uses monotonic time and real sleep.
         self._clock = clock or time.monotonic
@@ -321,7 +519,31 @@ class BrainTools:
             active = self._track(self._herdr.active_agent())
         except HerdrError:
             active = None
-        return status_payload(active)
+        return status_payload(
+            active, self._model_of(active), self._context_of(active)
+        )
+
+    def _model_of(self, agent: Optional[AgentInfo]) -> Optional[str]:
+        """The pane's last-request model, or None (never raises)."""
+        if agent is None or agent.session_kind != "id":
+            return None
+        try:
+            return self._pane_model.model(agent.agent, agent.session_value)
+        except Exception:  # noqa: BLE001 — display metadata never breaks a poll
+            return None
+
+    def _context_of(self, agent: Optional[AgentInfo]) -> Optional[dict]:
+        """The pane's context window (parity F7d S1), or None (never
+        raises). Test doubles without the seam keep None."""
+        if agent is None or agent.session_kind != "id":
+            return None
+        context = getattr(self._pane_model, "context", None)
+        if context is None:
+            return None
+        try:
+            return context(agent.agent, agent.session_value)
+        except Exception:  # noqa: BLE001 — display metadata never breaks a poll
+            return None
 
     def _latest_turn(self, agent: AgentInfo) -> Optional[Turn]:
         """Newest transcript turn for one agent, or None on any failure."""
@@ -393,6 +615,14 @@ class BrainTools:
                     "title": mask_text(agent.title) if agent.title else agent.title,
                     "cwd": mask_text(agent.cwd) if agent.cwd else agent.cwd,
                     "session_id": agent.session_value if agent.session_kind == "id" else None,
+                    "model": self._model_of(agent),
+                    # Additive on purpose (parity F7d S1): absent when
+                    # no catalog named the window — absence is the null.
+                    **(
+                        {"context": context}
+                        if (context := self._context_of(agent)) is not None
+                        else {}
+                    ),
                     "focused": agent.focused,
                     "last_turn": last_turn,
                     "last_turn_age_s": (
@@ -411,6 +641,22 @@ class BrainTools:
             )
         )
         return entries
+
+    def list_workspaces(self) -> list:
+        """Every herdr workspace, sorted by number (parity-f7c S1b).
+
+        Never raises: a multiplexer without the surface (tmux/zellij —
+        the method is deliberately off the port protocol) or a herdr
+        failure degrades to an empty list, exactly like :meth:`herd` —
+        a read must not take the sheet down with it.
+        """
+        getter = getattr(self._herdr, "list_workspaces", None)
+        if getter is None:
+            return []
+        try:
+            return list(getter())
+        except HerdrError:
+            return []
 
     def screen_tail(
         self,
@@ -591,12 +837,26 @@ class BrainTools:
         return mirror_payload(target.pane_id, target.agent, target.status, styled)
 
 
-    def agent_view(self, pane_id: Optional[str] = None) -> dict:
+    def agent_view(
+        self, pane_id: Optional[str] = None, modal: bool = False
+    ) -> dict:
         """Composes everything GET /view needs, never raising.
 
         Superset of the status payload: recent transcript turns, the visible
         screen tail, and the heuristic pending-action detection — all for the
         requested pane (default: focused).
+
+        ``modal`` (GET /view?modal=1, the PWA model-switch flow) runs the
+        dialog recognition REGARDLESS of pane status: a USER-opened model
+        picker leaves the pane ``idle``, so the status gate alone would
+        never read it. Both the blocked and the modal read use the FULL
+        window (``SCREEN_FULL_LINES``): a floating picker's title/Search
+        rows fall outside a 30-line tail, and every dialog fingerprint
+        must be computed over the same window the guarded answer path
+        re-reads — two windows would mean two fingerprints, and every
+        tap would refuse with ``changed``. Without the flag an idle or
+        working pane keeps the exact pre-modal payload shape (no dialog
+        read at all).
         """
         target = self.resolve_target(pane_id)
 
@@ -619,11 +879,16 @@ class BrainTools:
         # only as colour/attribute, and the plain-text screen throws it away.
         # Faithful, never interpretive — it reproduces what the terminal
         # rendered and decides nothing about what a key would do.
+        # The modal read (a USER-opened picker on an otherwise idle pane)
+        # enters the same discipline from any status; BOTH reads use the
+        # full window so the published fingerprint always matches the
+        # answer guard's own full-window read.
         screen_runs: Optional[list] = None
         dialog = None
         structured = None
-        if target is not None and (target.status or "").strip().lower() == "blocked":
-            raw_runs, wide_text = self._dialog_runs(target)
+        blocked = (target.status or "").strip().lower() == "blocked" if target else False
+        if target is not None and (blocked or modal):
+            raw_runs, wide_text = self._dialog_runs(target, SCREEN_FULL_LINES)
             screen_runs = mask_runs(raw_runs) if raw_runs else raw_runs
             # Parse from the WIDE read: the plain screen tail is only 12
             # lines and a tall question tool does not fit in it, so the
@@ -640,7 +905,9 @@ class BrainTools:
             structured = self._structured_payload(target, wide_text)
 
         payload = {
-            "status": status_payload(target),
+            "status": status_payload(
+                target, self._model_of(target), self._context_of(target)
+            ),
             "transcript": transcript,
             "screen": safe_screen,
             "screen_runs": screen_runs,
@@ -688,20 +955,23 @@ class BrainTools:
 
     # -- spoken terminal dialogs (S8/S9) ------------------------------------
 
-    def _dialog_runs(self, target: AgentInfo) -> tuple[Optional[list], Optional[str]]:
-        """The blocked pane's styled read, as ANSI runs plus flat text.
+    def _dialog_runs(
+        self, target: AgentInfo, lines: int = DIALOG_SCREEN_LINES
+    ) -> tuple[Optional[list], Optional[str]]:
+        """The pane's styled read, as ANSI runs plus flat text.
 
         Shared by the /view payload and the voice dialog path so both
-        parse the SAME wide, escape-stripped screen.
+        parse the SAME wide, escape-stripped screen. ``lines`` names the
+        window: /view always passes the full window
+        (``SCREEN_FULL_LINES``) so the fingerprint it publishes is the
+        one the guarded answer path re-reads; the spoken-explanation
+        path keeps the 30-line dialog tail default.
         """
-        styled = self.screen_tail(target, DIALOG_SCREEN_LINES, as_ansi=True)
+        styled = self.screen_tail(target, lines, as_ansi=True)
         if not styled:
             return None, None
         runs = ansi_runs(styled)
-        wide_text = "\n".join(
-            "".join(run.get("t", "") for run in line) for line in runs
-        )
-        return runs, wide_text
+        return runs, _runs_plain_text(runs)
 
     def read_dialog(
         self, target: Optional[AgentInfo], fallback_text: Optional[str] = None
@@ -752,7 +1022,14 @@ class BrainTools:
         return dialog
 
     def answer_structured_dialog(
-        self, pane_id: str, fingerprint: str, option: int
+        self,
+        pane_id: str,
+        fingerprint: str,
+        option: Optional[int] = None,
+        choices: Optional[list] = None,
+        text: Optional[str] = None,
+        model_name: Optional[str] = None,
+        provider_name: Optional[str] = None,
     ) -> dict:
         """Answers a RECOGNIZED dialog option a button was tapped for (S2).
 
@@ -771,6 +1048,24 @@ class BrainTools:
         - a multiplexer that cannot send logical keys refuses with the
           adapter's own explanation (graceful, never a crash).
 
+        ``choices`` (S1) answers a multi-select instead: one digit per
+        box, a re-read after every key, an exact match of the requested
+        state, then the guard's walk to the submit row — see
+        :meth:`_answer_multiselect`.
+
+        ``text`` (S3) answers the option's free-text field (``option``
+        names the free-text row): the row's digit focuses the field,
+        the clears and the typing are one verified step each, and Enter
+        commits only once the typed text is ON SCREEN — see
+        :meth:`_answer_free_text`.
+
+        ``model_name`` (+ optional ``provider_name``) answers an opencode
+        model picker by NAME instead of by an on-screen option: the PWA's
+        full catalog lists models the picker's painted window never
+        showed. It runs the same search-first flow — the name is typed,
+        and Enter leaves only when the FIRST filtered row on the real
+        screen is that model — and never answers any other dialog.
+
         The outcome is ``answered`` or ``refused`` with a reason, so
         the PWA can say exactly what happened.
         """
@@ -783,6 +1078,7 @@ class BrainTools:
                 "detail": detail,
                 "pane_id": pane_id,
                 "option": option,
+                "choices": choices,
             }
 
         try:
@@ -795,14 +1091,23 @@ class BrainTools:
 
         reader = self._dialog_reader(pane_id)
 
-        def detect(text: Optional[str]):
-            model = recognize_dialog(target.agent, text or "")
+        # ONE window for the whole answer flow: the fresh detection
+        # read, every guard walk and every per-key re-read below read
+        # the SAME full window the /view detection published its
+        # fingerprint on. A shorter tail can cut a floating dialog's
+        # title rows; the recognizer then fail-closes and the guard
+        # refuses the very dialog it was handed — permanently, with a
+        # ``changed`` that no fresh read ever clears.
+        answer_lines = SCREEN_FULL_LINES
+
+        def detect(screen: Optional[str]):
+            model = recognize_dialog(target.agent, screen or "")
             if model is None or model.unread:
                 return None
             return model.as_guard_model()
 
         try:
-            fresh_text = reader(pane_id, DIALOG_SCREEN_LINES)
+            fresh_text = reader(pane_id, answer_lines)
         except HerdrError as exc:
             return refused("error", f"cannot read the pane: {exc}")
         model = recognize_dialog(target.agent, fresh_text or "")
@@ -812,8 +1117,6 @@ class BrainTools:
             return refused(
                 "changed", "the dialog changed before the answer; nothing was sent"
             )
-        if not 0 <= option < len(model.options):
-            return refused("invalid_target", "that option is not on this dialog")
 
         def sender(target_pane: str, keys: list) -> None:
             result = self.send_keys_to_pane(target_pane, keys)
@@ -822,10 +1125,86 @@ class BrainTools:
                     result.get("detail") or result["outcome"] or "send-keys failed"
                 )
 
+        if choices is not None:
+            return self._answer_multiselect(
+                pane_id, choices, model, target, reader, sender, detect, refused,
+                answer_lines,
+            )
+        if model_name is not None:
+            if not (
+                model.kind == "model_picker"
+                and (target.agent or "").strip().lower() in OPENCODE_SEARCH_PICKERS
+            ):
+                return refused(
+                    "invalid_target",
+                    "a model name answers only an opencode model picker",
+                )
+            matched, failure = self._search_first_picker_answer(
+                pane_id,
+                target.agent,
+                model_name,
+                model_name=model_name,
+                provider_name=provider_name,
+            )
+            if failure is not None:
+                return refused(*failure)
+            return self._with_variant_next(pane_id, target.agent, {
+                "outcome": "answered",
+                "pane_id": pane_id,
+                "option": None,
+                "model_name": model_name,
+                "keys": ["enter"],
+                "label": matched,
+            })
+        if option is None or not 0 <= option < len(model.options):
+            return refused("invalid_target", "that option is not on this dialog")
+
         chosen = model.options[option]
+        if text is not None:
+            return self._answer_free_text(
+                pane_id, text, option, model, target, reader, sender, refused,
+                answer_lines,
+            )
+        # The opencode model pickers are answered SEARCH-FIRST (type the
+        # name, read the painted pointer, walk, verify, commit, confirm);
+        # every other dialog keeps today's choreographies byte-for-byte.
+        if (
+            model.kind == "model_picker"
+            and (target.agent or "").strip().lower() in OPENCODE_SEARCH_PICKERS
+        ):
+            matched, failure = self._search_first_picker_answer(
+                pane_id, target.agent, chosen.label, option=chosen
+            )
+            if failure is not None:
+                return refused(*failure)
+            return self._with_variant_next(pane_id, target.agent, {
+                "outcome": "answered",
+                "pane_id": pane_id,
+                "option": option,
+                "keys": ["enter"],
+                "label": matched,
+            })
+        # opencode's Select variant list (shown after a model switch):
+        # the same painted-pointer walk, verify, commit.
+        if (
+            model.kind == "variant_picker"
+            and (target.agent or "").strip().lower() in OPENCODE_SEARCH_PICKERS
+        ):
+            matched, failure = self._variant_picker_answer(
+                pane_id, target.agent, option, chosen.label
+            )
+            if failure is not None:
+                return refused(*failure)
+            return {
+                "outcome": "answered",
+                "pane_id": pane_id,
+                "option": option,
+                "keys": ["enter"],
+                "label": matched,
+            }
         if chosen.keys:
             guard = dialog_guard.entry_guard(
-                reader, pane_id, DIALOG_SCREEN_LINES, model.as_guard_model(), detect
+                reader, pane_id, answer_lines, model.as_guard_model(), detect
             )
             if not guard.ok:
                 return refused(guard.reason or "changed", guard.detail)
@@ -851,7 +1230,7 @@ class BrainTools:
                 reader,
                 sender,
                 pane_id,
-                DIALOG_SCREEN_LINES,
+                answer_lines,
                 model.as_guard_model(),
                 option,
                 detect,
@@ -872,13 +1251,839 @@ class BrainTools:
             }
         return refused(outcome.reason or "changed", outcome.detail)
 
+    def _answer_multiselect(
+        self, pane_id, choices, model, target, reader, sender, detect, refused,
+        answer_lines,
+    ) -> dict:
+        """The multi-select choreography (S1): the terminal is the only
+        truth.
+
+        Every box is toggled with its own digit and a re-read after
+        every key; the final state must match the requested set EXACTLY
+        (pre-checked boxes outside the request are turned OFF); only
+        then does the guard's walk take the pointer to the submit row
+        and commit with Enter. Anything unexpected — the dialog left,
+        its identity changed, a box never flipped — stops the answer
+        with ``changed`` and sends NOTHING further: half a selection is
+        never submitted blindly.
+
+        ``answer_lines`` is the window the answer was detected on: every
+        re-read here uses it, so the identity checks compare the same
+        region the fingerprint was published on.
+
+        A dialog with NO submit row but a two-chip tab strip (the
+        OpenCode multi the reference pinned, T4b) commits with the
+        strip's own measured choreography instead — see
+        :meth:`_commit_multiselect_tabs`.
+        """
+        from . import dialog as dialog_guard
+
+        if model.kind != "multiselect":
+            return refused(
+                "invalid_target", "choices only answers a multi-select dialog"
+            )
+        boxes = {
+            index
+            for index, option in enumerate(model.options)
+            if option.checked is not None
+        }
+        submit_rows = [
+            index
+            for index, option in enumerate(model.options)
+            if option.checked is None
+        ]
+        if not boxes:
+            return refused("invalid_target", "this dialog has no checkbox rows")
+        # The tab-strip commit exists only when the strip's last chip is
+        # ONE tab away: two chips mean the active one is the question
+        # (the footer's ``enter toggle`` verb is the active tab's own),
+        # so ``tab`` lands on Confirm/Submit. A longer strip may hold
+        # another question between them and the active chip is painted
+        # style, invisible in text — no commit can be derived, refuse.
+        tab_commit = not submit_rows and len(model.tab_strip) == 2
+        if not tab_commit and len(submit_rows) != 1:
+            return refused("invalid_target", "this dialog has no single submit row")
+        wanted = sorted(set(choices))
+        for index in wanted:
+            if index not in boxes:
+                return refused(
+                    "invalid_target", "a requested choice is not a checkbox row"
+                )
+
+        def readd():
+            text = reader(pane_id, answer_lines)
+            fresh = recognize_dialog(target.agent, text or "")
+            if fresh is None or fresh.unread or fresh.kind != "multiselect":
+                return None
+            return fresh
+
+        current = model
+        requested = set(wanted)
+        for index, option in enumerate(model.options):
+            if option.checked is None or option.checked == (index in requested):
+                continue
+            if not option.keys or option.keys[0] not in SEND_KEY_ALLOWLIST:
+                return refused("invalid_target", "the toggle recipe left the key dialect")
+            try:
+                sender(pane_id, [option.keys[0]])
+            except HerdrError as exc:
+                return refused("send-failed", str(exc))
+            current = self._await_box(pane_id, index, index in requested, current, readd)
+            if current is None:
+                return refused(
+                    "changed",
+                    "the dialog changed while toggling; nothing further was sent",
+                )
+
+        # The EXACT contract, read fresh — never assumed: every
+        # requested box checked, every other box unchecked.
+        for index, option in enumerate(current.options):
+            if option.checked is not None and option.checked != (index in requested):
+                return refused(
+                    "changed", "the checked boxes do not match the requested selection"
+                )
+
+        if tab_commit:
+            return self._commit_multiselect_tabs(
+                pane_id, current, wanted, reader, sender, refused, answer_lines
+            )
+
+        try:
+            outcome = dialog_guard.answer_dialog(
+                reader,
+                sender,
+                pane_id,
+                answer_lines,
+                current.as_guard_model(),
+                submit_rows[0],
+                detect,
+                sleep=self._sleeper,
+            )
+        except HerdrError as exc:
+            return refused("send-failed", str(exc))
+        if outcome.sent:
+            return {
+                "outcome": "answered",
+                "pane_id": pane_id,
+                "choices": wanted,
+                "label": current.options[submit_rows[0]].label,
+            }
+        return refused(outcome.reason or "changed", outcome.detail)
+
+    def _commit_multiselect_tabs(
+        self, pane_id, model, wanted, reader, sender, refused, answer_lines
+    ) -> dict:
+        """The tab-strip commit (T4b): the OpenCode pinned multi's own
+        measured choreography — ``tab`` reaches the Confirm/Submit tab
+        and ``enter`` submits there (the reference's key plan; with two
+        chips the question tab is provably the active one, because the
+        footer's ``enter toggle`` verb follows the ACTIVE tab).
+
+        Every step is verified against the terminal, never assumed:
+        the landing after ``tab`` must be THIS dialog's review — the
+        same tab chips over the review footer — read back within the
+        guard's own poll bound, on the same ``answer_lines`` window the
+        dialog was detected on. Anything else stops the answer with
+        ``changed`` and sends NOTHING further: ``enter`` on a checkbox
+        step would toggle a box, so a selection is never submitted to
+        a screen that was not read first.
+        """
+        from . import dialog as dialog_guard
+        from .dialogs.adapters.opencode import confirm_review
+
+        chips = tuple(model.tab_strip)
+        try:
+            sender(pane_id, ["tab"])
+        except HerdrError as exc:
+            return refused("send-failed", str(exc))
+
+        pause = self._sleeper or time.sleep
+        landed = False
+        for _ in range(dialog_guard.POLL_ATTEMPTS):
+            pause(dialog_guard.POLL_DELAY_MS / 1000)
+            text = reader(pane_id, answer_lines)
+            if tuple(confirm_review((text or "").splitlines()) or ()) == chips:
+                landed = True
+                break
+        if not landed:
+            return refused(
+                "changed",
+                "the dialog never reached its Confirm tab; "
+                "nothing further was sent",
+            )
+
+        try:
+            sender(pane_id, ["enter"])
+        except HerdrError as exc:
+            return refused("send-failed", str(exc))
+        return {
+            "outcome": "answered",
+            "pane_id": pane_id,
+            "choices": wanted,
+            "label": chips[-1],
+        }
+
+    def _await_box(self, pane_id, index, want, tapped, readd):
+        """Waits, bounded, for the toggled box to show ``want``.
+
+        The dialog's own redraw is the only evidence a toggle took. A
+        read that shows a DIFFERENT dialog is drift: ``None``, and the
+        caller sends nothing further.
+        """
+        from . import dialog as dialog_guard
+
+        pause = self._sleeper or time.sleep
+        for _ in range(dialog_guard.POLL_ATTEMPTS):
+            pause(dialog_guard.POLL_DELAY_MS / 1000)
+            fresh = readd()
+            if fresh is None:
+                # A redraw can briefly hide the dialog's tail: keep
+                # polling; only an all-null run means it went away.
+                continue
+            if not dialog_guard.same_dialog_identity(
+                fresh.as_guard_model(), tapped.as_guard_model()
+            ):
+                return None
+            if fresh.options[index].checked == want:
+                return fresh
+        return None
+
+    def _answer_free_text(
+        self, pane_id, text, option, model, target, reader, sender, refused,
+        answer_lines,
+    ) -> dict:
+        """The free-text choreography (S3): the terminal is the only truth.
+
+        The row's digit FOCUSES the field (never commits), the field is
+        cleared (``ctrl+u`` then ``ctrl+k``, one verified step each),
+        the sanitized text is typed on the literal-text surface, the
+        screen is RE-READ to show that exact text in the field, and
+        only then does Enter commit. Anything unexpected — the dialog
+        left, its identity changed, the text never showed — stops the
+        answer with ``changed`` and sends NOTHING further: a half-typed
+        field is never submitted blindly. Every re-read uses the same
+        ``answer_lines`` window the dialog was detected on.
+        """
+        from . import dialog as dialog_guard
+
+        chosen = model.options[option]
+        if not chosen.free_text:
+            return refused(
+                "invalid_target", "text answers a free-text option only"
+            )
+        if not chosen.keys or chosen.keys[0] not in SEND_KEY_ALLOWLIST:
+            return refused("invalid_target", "the free-text row left the key dialect")
+        clean = sanitize_prompt_text(text or "")
+        if not clean:
+            return refused("invalid_target", "the free-text answer is blank")
+        typer = getattr(self._herdr, "send_text", None)
+        if typer is None:
+            return refused(
+                "send-failed",
+                "this pane surface cannot type literal text",
+            )
+
+        def readd():
+            raw = reader(pane_id, answer_lines)
+            return recognize_dialog(target.agent, raw or ""), raw or ""
+
+        def await_identity(baseline):
+            """One bounded wait for the dialog to still be ITSELF
+            (highlight moves excluded — same tolerance as the guard)."""
+            pause = self._sleeper or time.sleep
+            for _ in range(dialog_guard.POLL_ATTEMPTS):
+                pause(dialog_guard.POLL_DELAY_MS / 1000)
+                fresh, _raw = readd()
+                if fresh is None or fresh.unread:
+                    continue
+                if not dialog_guard.same_dialog_identity(
+                    fresh.as_guard_model(), baseline.as_guard_model()
+                ):
+                    return None
+                return fresh
+            return None
+
+        # 1) the digit focuses the free-text row's field.
+        try:
+            sender(pane_id, [chosen.keys[0]])
+        except HerdrError as exc:
+            return refused("send-failed", str(exc))
+        if await_identity(model) is None:
+            return refused(
+                "changed",
+                "the dialog changed while focusing the free-text row; "
+                "nothing further was sent",
+            )
+
+        # 2) clear the field: ctrl+u then ctrl+k, one verified step each.
+        for clear_key in ("ctrl+u", "ctrl+k"):
+            try:
+                sender(pane_id, [clear_key])
+            except HerdrError as exc:
+                return refused("send-failed", str(exc))
+            if await_identity(model) is None:
+                return refused(
+                    "changed",
+                    "the dialog changed while clearing the field; "
+                    "nothing further was sent",
+                )
+
+        # 3) type, then verify ON SCREEN that the exact text is in the
+        # field. The typed row's own label is EXPECTED to change — the
+        # identity check spares exactly that row and guards every other.
+        try:
+            typer(pane_id, clean)
+        except HerdrError as exc:
+            return refused("send-failed", str(exc))
+        pause = self._sleeper or time.sleep
+        for _ in range(dialog_guard.POLL_ATTEMPTS):
+            pause(dialog_guard.POLL_DELAY_MS / 1000)
+            fresh, raw = readd()
+            if fresh is None or fresh.unread:
+                continue
+            if (
+                fresh.question != model.question
+                or len(fresh.options) != len(model.options)
+                or any(
+                    other.label != base.label
+                    for index, (other, base) in enumerate(
+                        zip(fresh.options, model.options)
+                    )
+                    if index != option
+                )
+            ):
+                return refused(
+                    "changed",
+                    "the dialog changed while typing; nothing further was sent",
+                )
+            if clean in raw:
+                break
+        else:
+            return refused(
+                "changed",
+                "the typed text never showed on screen; nothing was submitted",
+            )
+
+        # 4) commit — the pre-Enter check above IS the guard's read.
+        try:
+            sender(pane_id, ["enter"])
+        except HerdrError as exc:
+            return refused("send-failed", str(exc))
+        return {
+            "outcome": "answered",
+            "pane_id": pane_id,
+            "option": option,
+            "text": text,
+            "label": chosen.label,
+        }
+
     def _dialog_reader(self, pane_id: str):
-        """The guard's reader: a styled read of one pane's tail."""
+        """The guard's reader: one pane's tail as the SAME escape-stripped
+        plain text the /view recognition derives.
+
+        The styled read carries SGR paint; every recognizer and guard
+        consuming this reader reads plain text, so the read is flattened
+        through the one shared transformation (:func:`_runs_plain_text`).
+        Handing out the raw styled bytes instead would make every
+        recognizer claim nothing — no guarded answer could ever
+        reproduce a published fingerprint (the live parity bug: every
+        tap refused ``changed`` forever).
+        """
 
         def reader(target_pane: str, lines: int) -> str:
-            return self._herdr.read_screen(target_pane, lines, as_ansi=True)
+            styled = self._herdr.read_screen(target_pane, lines, as_ansi=True)
+            return _runs_plain_text(ansi_runs(styled))
 
         return reader
+
+    # -- model switching (parity-f7d S3) ---------------------------------
+
+    def _read_opencode_picker(
+        self, pane_id: str, agent: str, filled: bool = False, query: str = ""
+    ) -> Optional[StructuredDialog]:
+        """One full-window read of the opencode ``/models`` picker.
+
+        The modal floats mid-screen with the blank run and the status
+        line under it, so the 30-line dialog read can cut its title —
+        the picker reads use the full verified window instead.
+        ``None`` on a failed read or when the grammar claims nothing.
+        """
+        from .dialogs.adapters.opencode import detect_models_picker
+
+        lines, runs = self._styled_screen(pane_id)
+        if lines is None:
+            return None
+        return detect_models_picker(
+            agent, lines, filled_search=filled, query=query, runs=runs
+        )
+
+    def _styled_screen(self, pane_id: str) -> tuple:
+        """One full-window STYLED read: ``(plain lines, ansi runs)``,
+        aligned line for line, or ``(None, None)`` on a failed read. The
+        plain text is the same join every recognizer reads."""
+        try:
+            styled = self._herdr.read_screen(pane_id, SCREEN_FULL_LINES, as_ansi=True)
+        except HerdrError:
+            return None, None
+        runs = ansi_runs(styled or "")
+        return _runs_plain_text(runs).splitlines(), runs
+
+    def _with_variant_next(self, pane_id: str, agent: str, answered: dict) -> dict:
+        """Marks a model switch whose follow-up ``Select variant`` list
+        is on screen (``next: "variant_picker"``): the model IS switched,
+        and that list now holds the keyboard until it is answered."""
+        from .dialogs.adapters.opencode import detect_variant_picker
+
+        lines, _runs = self._styled_screen(pane_id)
+        if lines is not None and detect_variant_picker(agent, lines) is not None:
+            answered["next"] = "variant_picker"
+        return answered
+
+    def _walk_painted_pointer(
+        self, pane_id: str, read, expected: tuple, pointer: int, target: int
+    ) -> Optional[tuple]:
+        """Walk, verify, commit on an opencode list whose pointer is
+        paint (ADR-0080-style). Both rows are on screen, so the walk
+        never scrolls or wraps; the arrows go out in herdr-sized chunks
+        and the proof is ONE fresh read after the whole walk: the SAME
+        rows with the pointer ON the target. Only then Enter. A drift,
+        a vanished list or a timeout sends nothing more.
+
+        ``None`` once Enter left, else ``(reason, detail)``."""
+        pause = self._sleeper or time.sleep
+        if pointer != target:
+            step = "down" if target > pointer else "up"
+            walk = [step] * abs(target - pointer)
+            for start in range(0, len(walk), MAX_SEND_KEYS):
+                sent = self.send_keys_to_pane(pane_id, walk[start : start + MAX_SEND_KEYS])
+                if sent.get("outcome") != "sent":
+                    return ("send-failed", sent.get("detail") or "could not move the pointer")
+            proven = False
+            for _ in range(SWITCH_WAIT_ATTEMPTS):
+                pause(SWITCH_POLL_S)
+                fresh = read()
+                if fresh is None:
+                    break
+                if tuple(row.label for row in fresh.options) != expected:
+                    break
+                if fresh.selected == target:
+                    proven = True
+                    break
+            if not proven:
+                return (
+                    "changed",
+                    "the pointer did not reach the chosen row; Enter was not pressed",
+                )
+        sent = self.send_keys_to_pane(pane_id, ["enter"])
+        if sent.get("outcome") != "sent":
+            return ("send-failed", sent.get("detail") or "could not press enter")
+        return None
+
+    def _variant_picker_answer(
+        self, pane_id: str, agent: str, option: int, label: str
+    ) -> tuple:
+        """Answers opencode's ``Select variant`` list by its painted
+        pointer: walk, verify, commit (no typing — the list is short),
+        confirmed by the list leaving the screen.
+
+        Returns ``(label, None)`` or ``(None, (reason, detail))``."""
+        from .dialogs.adapters.opencode import detect_variant_picker
+
+        def read():
+            lines, runs = self._styled_screen(pane_id)
+            if lines is None:
+                return None
+            return detect_variant_picker(agent, lines, runs=runs)
+
+        fresh = read()
+        if fresh is None or not 0 <= option < len(fresh.options):
+            return None, ("changed", "the variant list left the screen; nothing was pressed")
+        if fresh.options[option].label != label:
+            return None, ("changed", "the variant list changed; nothing was pressed")
+        if fresh.selected is None:
+            return None, (
+                "changed",
+                "could not see which row the list points at; nothing was pressed",
+            )
+        failure = self._walk_painted_pointer(
+            pane_id, read, tuple(row.label for row in fresh.options),
+            fresh.selected, option,
+        )
+        if failure is not None:
+            return None, failure
+        pause = self._sleeper or time.sleep
+        for _ in range(SWITCH_WAIT_ATTEMPTS):
+            pause(SWITCH_POLL_S)
+            if read() is None:
+                return label, None
+        return None, (
+            "no-progress",
+            "the variant list did not close after enter; not verified",
+        )
+
+    def _search_first_picker_answer(
+        self,
+        pane_id: str,
+        agent: str,
+        wanted: str,
+        option=None,
+        model_name: Optional[str] = None,
+        provider_name: Optional[str] = None,
+    ) -> tuple[Optional[str], Optional[tuple]]:
+        """Answers an opencode ``/models`` picker: search, walk, verify,
+        commit, confirm.
+
+        1. The wanted MODEL name is TYPED into the picker's own Search
+           box (literal text through :meth:`send_text`, never a keypress:
+           ADR 0009's never-a-digit is about KEYS). The screen is re-read
+           until two STYLED reads agree on the rows and the pointer, with
+           the search box echoing the query.
+        2. The target is the filtered row whose model name matches
+           (normalized) and whose provider agrees when both are known.
+           opencode orders search results by its own rules (free models
+           and favourites first), so the target need not be the first
+           row: rows naming the same model under several DISTINCT labels
+           are ambiguous; identical labels collapse to the first.
+        3. The pointer is read from the screen's paint (the pointed row's
+           background). Unknown paint refuses with nothing pressed. When
+           the pointer is elsewhere, the arrows walk to the target and a
+           fresh read must show the SAME rows with the pointer ON the
+           target — only then does Enter leave (walk, verify, commit).
+        4. The answer is confirmed by its RESULT: the picker closed and
+           the composer's model row names the target. A composer that
+           shows another model is reported as such, never as success.
+
+        Every refusal before Enter sends nothing further: the typed text
+        stays in the box so the operator can finish by hand (no clear
+        chord — stop-on-drift).
+
+        Returns ``(matched_label, None)`` or ``(None, (reason, detail))``.
+        """
+        from .dialogs.adapters.opencode import opencode_composer_model
+
+        if option is not None:
+            query = sanitize_prompt_text(option.model or option.label or "")
+        elif model_name is not None:
+            query = sanitize_prompt_text(model_name)
+        else:
+            query = sanitize_prompt_text(wanted or "")
+        if not query:
+            return None, ("invalid_target", "the picker row has no name to search")
+        typer = getattr(self._herdr, "send_text", None)
+        if typer is None:
+            return None, ("send-failed", "this pane surface cannot type literal text")
+        pause = self._sleeper or time.sleep
+
+        def read_picker(filled: bool):
+            return self._read_opencode_picker(pane_id, agent, filled=filled, query=query)
+
+        def refuse(reason: str, detail: str):
+            return None, (reason, detail)
+
+        try:
+            typer(pane_id, query)
+        except HerdrError as exc:
+            return None, ("send-failed", str(exc))
+
+        # The filter must SETTLE: two consecutive reads of the same rows
+        # and the same pointer, with the search box echoing the query
+        # (the verifiable signal that the filter on screen is ours).
+        settled: Optional[tuple] = None
+        filtered = None
+        for _ in range(SWITCH_WAIT_ATTEMPTS):
+            pause(SWITCH_POLL_S)
+            fresh = read_picker(filled=True)
+            if fresh is None:
+                settled = None
+                continue
+            state = (tuple(row.label for row in fresh.options), fresh.selected)
+            if state == settled:
+                filtered = fresh
+                break
+            settled = state
+        if filtered is None:
+            return refuse(
+                "changed",
+                "the picker left (or never echoed the filter) "
+                "while the search settled; nothing was pressed",
+            )
+        rows = list(filtered.options)
+        if not rows:
+            return refuse("no-match", _name_candidates(query, []))
+
+        if option is not None or model_name is not None:
+            name_key = _lex_flat(
+                (option.model or option.label) if option is not None else model_name
+            )
+            label_key = _lex_flat(option.label) if option is not None else ""
+            provider_key = _lex_flat(
+                option.provider if option is not None else (provider_name or "")
+            )
+
+            def is_target(row) -> bool:
+                row_label = _lex_flat(row.label)
+                if label_key and row_label == label_key:
+                    return True
+                row_model = _lex_flat(row.model or row.label)
+                if provider_key:
+                    # A provider the picker's grammar does not know stays
+                    # inside the row's text: the whole label names it.
+                    if row_label == f"{name_key} {provider_key}":
+                        return True
+                    if row_model != name_key:
+                        return False
+                    row_provider = _lex_flat(row.provider)
+                    return not row_provider or row_provider == provider_key
+                return row_model == name_key or row_label == name_key
+
+            hits = [index for index, row in enumerate(rows) if is_target(row)]
+            if not hits:
+                return refuse(
+                    "no-match", _name_candidates(query, [row.label for row in rows])
+                )
+        else:
+            flat = _lex_flat(query)
+            hits = [
+                index for index, row in enumerate(rows) if flat in _lex_flat(row.label)
+            ]
+            if not hits:
+                return refuse("no-match", _name_candidates(query, []))
+        # Rows whose label is IDENTICAL are equivalent (same model, same
+        # outcome): collapse them, keep the first, and refuse only on
+        # more than one DISTINCT label.
+        distinct: list = []
+        for index in hits:
+            if _lex_flat(rows[index].label) not in [_lex_flat(d) for d in distinct]:
+                distinct.append(rows[index].label)
+        if len(distinct) > 1:
+            return refuse("ambiguous", _name_candidates(query, distinct))
+        target = hits[0]
+        matched = rows[target].label
+
+        pointer = filtered.selected
+        if pointer is None:
+            return refuse(
+                "changed",
+                "could not see which row the picker points at; nothing was pressed",
+            )
+        failure = self._walk_painted_pointer(
+            pane_id,
+            lambda: read_picker(filled=True),
+            tuple(row.label for row in rows),
+            pointer,
+            target,
+        )
+        if failure is not None:
+            return None, failure
+        want_model = _lex_flat(rows[target].model or rows[target].label)
+        want_provider = _lex_flat(rows[target].provider)
+        shown = None
+        closed = False
+        for _ in range(SWITCH_WAIT_ATTEMPTS):
+            pause(SWITCH_POLL_S)
+            if read_picker(filled=True) is not None or read_picker(filled=False) is not None:
+                continue
+            closed = True
+            lines, _runs = self._styled_screen(pane_id)
+            shown = opencode_composer_model(lines or [])
+            if shown is not None:
+                break
+        if not closed:
+            return None, (
+                "no-progress",
+                "the picker did not close after enter; "
+                "the model was not verified switched",
+            )
+        if shown is None:
+            # Closed, but no composer row to read (a narrow or busy
+            # screen): the switch happened as far as the screen shows.
+            return matched, None
+        if _composer_names(shown, want_model, want_provider):
+            return matched, None
+        return None, (
+            "wrong-model",
+            f"opencode now shows {shown!r}, not {matched!r}",
+        )
+
+    def switch_model(self, pane_id: str, model: str) -> dict:
+        """Switches one pane's model through its OWN /model picker.
+
+        The voice write path (S3), replayed only from an approved gate:
+        sends the harness's verified command, waits for the picker the
+        detectors know, locates the option by name — fuzzy but
+        UNAMBIGUOUS, a name that matches nothing or several is refused
+        with nothing pressed — and answers it through the SAME guarded
+        choreography a PWA tap uses (arrows and Enter, one re-read per
+        key; NEVER a digit, which would confirm and rewrite the default
+        model, ADR 0009). On Claude a cached conversation raises the
+        ``Switch model?`` confirmation: its Yes row must name the SAME
+        model or the switch stops there, honestly reported. Every
+        outcome is a dict (``switched`` or ``refused`` + reason), so
+        the replay can audit and report it.
+        """
+        clean_model = (model or "").strip()
+
+        def refused(reason: str, detail: str = "") -> dict:
+            return {
+                "outcome": "refused",
+                "reason": reason,
+                "detail": detail,
+                "model": clean_model,
+                "pane_id": pane_id,
+            }
+
+        if not clean_model:
+            return refused("no-model", "a model name is required")
+        try:
+            agents = self._herdr.list_agents()
+        except HerdrError as exc:
+            return refused("error", f"cannot list panes: {exc}")
+        target = next((agent for agent in agents if agent.pane_id == pane_id), None)
+        if target is None:
+            return refused("unknown-pane", "pane not found")
+        harness = (target.agent or "").strip().lower()
+        command = MODEL_COMMANDS.get(harness)
+        if command is None:
+            return refused(
+                "unsupported",
+                f"model switching is not verified for {target.agent or 'this harness'}; "
+                "nothing was sent",
+            )
+        try:
+            # The reply path's own verified send: types the command and
+            # submits it, with its short bounded wait.
+            self._herdr.send_prompt(pane_id, command, REPLY_WAIT_MS)
+        except HerdrError as exc:
+            return refused("send-failed", f"could not send {command}: {exc}")
+
+        # The opencode pickers are answered SEARCH-FIRST: their pointer
+        # is ANSI paint, so the walk could never be verified.
+        if harness in OPENCODE_SEARCH_PICKERS:
+            picker = None
+            pause = self._sleeper or time.sleep
+            for attempt in range(SWITCH_WAIT_ATTEMPTS):
+                if attempt:
+                    pause(SWITCH_POLL_S)
+                picker = self._read_opencode_picker(pane_id, harness)
+                if picker is not None:
+                    break
+            if picker is None:
+                return refused(
+                    "no-picker",
+                    f"the model picker did not appear after {command}; "
+                    "nothing was pressed",
+                )
+            matched, failure = self._search_first_picker_answer(
+                pane_id, harness, clean_model
+            )
+            if failure is not None:
+                return refused(*failure)
+            # The pane's cached model is now stale: drop it so the next
+            # /view re-probes (the status line names the new model).
+            note = getattr(self._pane_model, "note_switched", None)
+            if note is not None:
+                try:
+                    note(target.agent, target.session_value)
+                except Exception:  # noqa: BLE001 — cache hygiene never breaks a switch
+                    pass
+            # opencode may follow with its Select variant list: the model
+            # IS switched, but that list holds the keyboard — say so.
+            return self._with_variant_next(pane_id, harness, {
+                "outcome": "switched",
+                "model": matched,
+                "pane_id": pane_id,
+            })
+
+        picker = self._wait_for_dialog(pane_id, harness, ("model_picker",))
+        if picker is None:
+            return refused(
+                "no-picker",
+                f"the model picker did not appear after {command}; "
+                "nothing was pressed",
+            )
+        index, reason, names = _match_picker_option(picker.options, clean_model)
+        if index is None:
+            return refused(reason, _name_candidates(clean_model, names))
+
+        answer = self.answer_structured_dialog(
+            pane_id, picker.fingerprint, option=index
+        )
+        if answer.get("outcome") != "answered":
+            return refused(
+                "walk-failed",
+                answer.get("detail") or answer.get("reason") or "the picker moved",
+            )
+
+        # Claude's cached-conversation confirmation: only a Yes row that
+        # names the SAME model is confirmed — anything else stops the
+        # switch with nothing further sent.
+        confirm = self._wait_for_dialog(
+            pane_id, harness, ("model_picker",), question_prefix="Switch model?"
+        )
+        if confirm is not None:
+            yes_index, label = _switch_confirmation_yes(confirm.options)
+            if yes_index is None or not _names_the_model(label, clean_model):
+                return refused(
+                    "confirm-mismatch",
+                    f"the confirmation names {label or 'another model'}; "
+                    "nothing further was sent",
+                )
+            confirmed = self.answer_structured_dialog(
+                pane_id, confirm.fingerprint, option=yes_index
+            )
+            if confirmed.get("outcome") != "answered":
+                return refused(
+                    "confirm-failed",
+                    confirmed.get("detail") or confirmed.get("reason") or "",
+                )
+
+        # The pane's cached model is now stale: drop it so the next
+        # /view re-probes (the NEXT assistant request records the new
+        # model in the transcript).
+        note = getattr(self._pane_model, "note_switched", None)
+        if note is not None:
+            try:
+                note(target.agent, target.session_value)
+            except Exception:  # noqa: BLE001 — cache hygiene never breaks a switch
+                pass
+        return {
+            "outcome": "switched",
+            "model": picker.options[index].label,
+            "pane_id": pane_id,
+        }
+
+    def _wait_for_dialog(
+        self,
+        pane_id: str,
+        harness: str,
+        kinds: tuple,
+        question_prefix: str = "",
+        attempts: int = SWITCH_WAIT_ATTEMPTS,
+    ):
+        """Waits, bounded, for a recognizable dialog of ``kinds`` on the
+        pane — the picker after the command, the confirmation after the
+        commit. Reads come styled through the same reader the guarded
+        answers use, at the same FULL window: the fingerprint handed to
+        :meth:`answer_structured_dialog` must be the one its own fresh
+        read reproduces, or the guarded answer would refuse it."""
+        reader = self._dialog_reader(pane_id)
+        pause = self._sleeper or time.sleep
+        for attempt in range(attempts):
+            if attempt:
+                pause(SWITCH_POLL_S)
+            try:
+                text = reader(pane_id, SCREEN_FULL_LINES)
+            except HerdrError:
+                continue
+            model = recognize_dialog(harness, text or "")
+            if model is None or model.unread or model.kind not in kinds:
+                continue
+            if question_prefix and not (model.question or "").startswith(
+                question_prefix
+            ):
+                continue
+            return model
+        return None
 
     def begin_turn(self) -> int:
         """Advances the ask-turn counter and returns the new turn id.
@@ -951,6 +2156,9 @@ class BrainTools:
         utterance: str,
         target: Optional[AgentInfo] = None,
         user_utterance: Optional[str] = None,
+        choices: Optional[list] = None,
+        option: Optional[int] = None,
+        text: Optional[str] = None,
     ) -> str:
         """Answers a SPOKEN terminal dialog with the USER'S own words (S9).
 
@@ -969,6 +2177,16 @@ class BrainTools:
         keys already sent, duplicate option numbers, an unknown
         selection, or an unknown/ambiguous/negated choice — presses
         NOTHING and says why.
+
+        Two additive spoken forms (S5) keep the same binding and route
+        through the SAME structured answering path a PWA tap uses
+        (:meth:`answer_structured_dialog` — never a second
+        choreography): ``choices`` (the user's spoken words per item)
+        answers a multi-select — the SET is resolved from the user's
+        words alone — and ``option`` + ``text`` answer that option's
+        free-text row, with the typed text likewise resolved from the
+        user's spoken words and refused when it matches the destructive
+        analyzer (voice has no second tap).
         """
         def refused(reason: str, detail: str) -> str:
             return json.dumps(
@@ -1028,6 +2246,11 @@ class BrainTools:
         # THE authorization source: the real user turn when the dispatch
         # layer provided it, never a model paraphrase.
         authorization = user_utterance if user_utterance is not None else utterance
+        if choices is not None or text is not None or option is not None:
+            return self._answer_dialog_spoken_form(
+                active, authorization,
+                choices=choices, option=option, text=text, refused=refused,
+            )
         choice = resolve_dialog_choice(authorization)
         if choice is None:
             return refused(
@@ -1110,6 +2333,200 @@ class BrainTools:
                 "note": (
                     "the user's choice was sent to the dialog; tell the user "
                     "exactly which option was pressed and nothing more"
+                ),
+            },
+            ensure_ascii=False,
+        )
+
+    def _spoken_structured_model(self, active: AgentInfo):
+        """The recognizer's CURRENT model of the pane, or None.
+
+        The structured answering path identifies dialogs by the
+        recognizer's fingerprint (a digest of the region), not by the
+        voice binding's view-level identity — so a spoken multi-select
+        or free-text answer derives that fingerprint from a fresh read
+        through the SAME reader — and the SAME full window — the
+        structured path itself uses. The verbal binding has ALREADY
+        guarded the explanation's identity; this read is what hands the
+        answer to the button-tap discipline.
+        """
+        reader = self._dialog_reader(active.pane_id)
+        try:
+            fresh = reader(active.pane_id, SCREEN_FULL_LINES)
+        except HerdrError:
+            return None
+        model = recognize_dialog(active.agent, fresh or "")
+        if model is None or model.unread:
+            return None
+        return model
+
+    def _answer_dialog_spoken_form(
+        self,
+        active: AgentInfo,
+        authorization: str,
+        choices: Optional[list],
+        option: Optional[int],
+        text: Optional[str],
+        refused,
+    ) -> str:
+        """The S5 spoken forms: multi-select sets and free-text answers.
+
+        Both resolve WHAT to send from the user's words alone (the
+        model's ``choices`` fragments and ``text`` only declare the
+        FORM — the same B4 rule that makes the user's single choice
+        win over forwarded words), and both delegate to
+        :meth:`answer_structured_dialog` — the exact code
+        ``POST /pane/dialog/answer`` calls — so the toggle/walk/type
+        choreography, drift guards and allowlist live in one place.
+        """
+        # Exactly one answer form, mirroring the endpoint's contract.
+        if text is not None:
+            if choices is not None:
+                return refused(
+                    "invalid-arguments",
+                    "text answers one option: pass option with text, never choices",
+                )
+            if option is None:
+                return refused(
+                    "invalid-arguments",
+                    "a free-text answer needs the option number of the "
+                    "free-text row it answers",
+                )
+        elif choices is not None:
+            if option is not None:
+                return refused(
+                    "invalid-arguments",
+                    "choices and option are two answer forms; pass exactly one",
+                )
+            if (
+                not isinstance(choices, list)
+                or not choices
+                or not all(
+                    isinstance(item, str) and item.strip() for item in choices
+                )
+            ):
+                return refused(
+                    "invalid-arguments",
+                    "choices must be the user's spoken words, one string per "
+                    "selected option",
+                )
+        else:
+            return refused(
+                "invalid-arguments",
+                "option without text is not a spoken answer; the choice "
+                "travels as the utterance",
+            )
+
+        model = self._spoken_structured_model(active)
+        if model is None:
+            return refused(
+                "unread-dialog",
+                "this dialog has no verified button path to answer through; "
+                "ask the user to use the keypad",
+            )
+
+        if choices is not None:
+            # The SET comes from the user's words alone; an ambiguous,
+            # negated or competing item refuses exactly as a single one
+            # does today.
+            spoken = resolve_dialog_choices(authorization)
+            if spoken is None:
+                return refused(
+                    "not-a-choice",
+                    "the user's words name no explicit selection set; ask "
+                    "them to list the option numbers",
+                )
+            indices = []
+            for wanted in spoken:
+                if not 1 <= wanted <= len(model.options):
+                    return refused(
+                        "unknown-option",
+                        f"there is no option {wanted} in this dialog; "
+                        "nothing was sent",
+                    )
+                indices.append(wanted - 1)
+            result = self.answer_structured_dialog(
+                active.pane_id, model.fingerprint, choices=indices
+            )
+            if result["outcome"] != "answered":
+                return refused(
+                    result.get("reason") or "changed",
+                    result.get("detail") or "",
+                )
+            picked = sorted(indices)
+            return json.dumps(
+                {
+                    "outcome": "answered",
+                    "pane_id": active.pane_id,
+                    "choices": [index + 1 for index in picked],
+                    "titles": [
+                        model.options[index].label for index in picked
+                    ],
+                    "note": (
+                        "the user's selection was sent to the dialog; tell "
+                        "the user exactly which options were marked and "
+                        "nothing more"
+                    ),
+                },
+                ensure_ascii=False,
+            )
+
+        # The free-text form: the typed words are the user's spoken
+        # answer, extracted verbatim — never the model's paraphrase.
+        if not isinstance(text, str) or not text.strip():
+            return refused(
+                "invalid-arguments",
+                "text must be the user's spoken answer for the free-text row",
+            )
+        if not isinstance(option, int) or isinstance(option, bool):
+            return refused(
+                "invalid-arguments",
+                "option must be the free-text option's number as explained",
+            )
+        if resolve_dialog_choice(authorization) is not None:
+            return refused(
+                "not-a-choice",
+                "the user's words name a choice, not a free-text answer; "
+                "answer it as a choice instead",
+            )
+        typed = resolve_dialog_free_text(authorization)
+        if typed is None:
+            return refused(
+                "not-a-choice",
+                "the user's words carry no declared free-text answer; ask "
+                "them to say 'responde: …' naming the text",
+            )
+        danger = destructive_text_reason(typed)
+        if danger is not None:
+            return refused(
+                "destructive-text",
+                f"the spoken answer looks destructive: {danger}. Voice "
+                "never types it — use the keypad or the phone's dialog "
+                "card, where the second tap confirms",
+            )
+        if not 1 <= option <= len(model.options):
+            return refused(
+                "unknown-option",
+                f"there is no option {option} in this dialog; nothing was sent",
+            )
+        result = self.answer_structured_dialog(
+            active.pane_id, model.fingerprint, option=option - 1, text=typed
+        )
+        if result["outcome"] != "answered":
+            return refused(
+                result.get("reason") or "changed",
+                result.get("detail") or "",
+            )
+        return json.dumps(
+            {
+                "outcome": "answered",
+                "pane_id": active.pane_id,
+                "option": option,
+                "title": model.options[option - 1].label,
+                "text": typed,
+                "note": (
+                    "the user's spoken answer was typed and submitted; tell "
+                    "the user exactly what was typed and nothing more"
                 ),
             },
             ensure_ascii=False,
@@ -1276,6 +2693,46 @@ class BrainTools:
                     "cwd": agent.cwd or None,
                 }
         return None
+
+    def pane_models(self, pane_id: str) -> Optional[dict]:
+        """The FULL connected-model catalog for one opencode pane.
+
+        Read-only and PWA-only (never an LLM tool). ``None`` for an
+        unknown pane (never the focused fallback); any other harness
+        answers ``unsupported`` without running anything. Each entry
+        carries ``current`` — true only for the model the pane's last
+        request used, when that is known.
+        """
+        info = self.pane_info(pane_id)
+        if info is None:
+            return None
+        harness = (info.get("agent") or "").strip().lower()
+        if harness not in OPENCODE_SEARCH_PICKERS:
+            return {"models": [], "reason": "unsupported"}
+        listing = self._model_catalog.list_models()
+        current = None
+        session_id = info.get("session_id")
+        if session_id:
+            try:
+                current = self._pane_model.model(info.get("agent"), session_id)
+            except Exception:  # noqa: BLE001 — display metadata never breaks the card
+                current = None
+        entries = listing["models"]
+        flags = [bool(current) and entry["id"] == current for entry in entries]
+        if current and "/" not in current and not any(flags):
+            # A bare id names no provider: mark it only when ONE entry
+            # carries it — a guess between providers would be wrong.
+            bare = [
+                index
+                for index, entry in enumerate(entries)
+                if entry["id"].split("/", 1)[-1] == current
+            ]
+            if len(bare) == 1:
+                flags[bare[0]] = True
+        models = [
+            {**entry, "current": flag} for entry, flag in zip(entries, flags)
+        ]
+        return {"models": models, "reason": listing["reason"]}
 
     def reply_to_pane(self, pane_id: str, text: str) -> dict:
         """Delivers a user-TYPED reply to one exact pane (no LLM, no gate).
@@ -1542,7 +2999,14 @@ class BrainTools:
         self._note_dialog_keys(pane_id)
         return stop_result("stopped", "", keys)
 
-    def create_session(self, agent_kind: str, title: str, task: str = "", cwd: str = "") -> str:
+    def create_session(
+        self,
+        agent_kind: str,
+        title: str,
+        task: str = "",
+        cwd: str = "",
+        workspace_id: str = "",
+    ) -> str:
         """Opens a NEW dedicated panel: tab + fresh agent (+ first task).
 
         The second write path: instead of reusing the selected session it
@@ -1558,15 +3022,24 @@ class BrainTools:
         becomes ``last_active``. A task-delivery failure NEVER raises
         away the created ids: the caller still learns the tab/pane/agent
         so it can re-send.
+
+        ``workspace_id`` (parity-f7c S1b, PWA-only — the voice schema
+        does not carry it) targets the tab INSIDE that herdr workspace
+        via ``create_tab``; it rides the call only when set, so the
+        legacy two-argument tab seam keeps working verbatim.
         """
         clean_kind = (agent_kind or "").strip()
         clean_title = (title or "").strip()
         clean_cwd = (cwd or "").strip()
+        clean_workspace = (workspace_id or "").strip()
         if not clean_kind or not clean_title:
             return "error: agent_kind and title are required"
         name = sanitize_agent_name(clean_title)
+        tab_kwargs: dict = {"cwd": clean_cwd or None}
+        if clean_workspace:
+            tab_kwargs["workspace_id"] = clean_workspace
         try:
-            created = self._herdr.create_tab(clean_title, cwd=clean_cwd or None)
+            created = self._herdr.create_tab(clean_title, **tab_kwargs)
         except HerdrError as exc:
             return f"error creating tab: {exc}"
         tab_id, pane_id = created["tab_id"], created["pane_id"]
@@ -1619,6 +3092,96 @@ class BrainTools:
         return (
             f"Panel creado: tab={tab_id} pane={pane_id} "
             f"agente={name} ({clean_kind}). Tarea entregada."
+        )
+
+    def resume_session(
+        self,
+        harness: str,
+        session_id: str,
+        cwd: str = "",
+        title: str = "",
+        workspace_id: str = "",
+    ) -> str:
+        """Reopens a PAST conversation in its own folder (S3, doc 03 §3).
+
+        A small variant of the :meth:`create_session` seam — never a
+        second launch framework: the SAME :meth:`HerdrClient.create_tab`
+        opens the tab (scoped to the session's recorded cwd), then the
+        harness's VERIFIED resume argv (:data:`RESUME_COMMANDS`) is
+        typed into the pane's interactive shell via the SAME
+        :meth:`HerdrClient.pane_run` the ``oa`` launch rides. The cwd
+        and label come from the transcript store (:func:`resume_target`)
+        when the caller does not supply them; a session whose folder the
+        store cannot name is refused BEFORE any tab exists — guessing a
+        folder is never an option. A command that fails to type returns
+        an honest error naming the failure (with the created ids), never
+        a silently bare shell. The reopened pane becomes
+        ``last_active``/``last_created`` so reads and the approve replay
+        retarget to it. ``workspace_id`` (parity-f7c S1b, PWA-only)
+        targets the tab inside that herdr workspace, riding the tab call
+        only when set.
+        """
+        clean_harness = (harness or "").strip().lower()
+        clean_sid = (session_id or "").strip()
+        if not clean_harness or not clean_sid:
+            return "error: harness and session_id are required"
+        entry = RESUME_COMMANDS.get(clean_harness)
+        if entry is None:
+            return (
+                f"error: resume is not verified for {clean_harness}; "
+                "nothing was opened"
+            )
+        target = None
+        clean_cwd = (cwd or "").strip()
+        if not clean_cwd:
+            target = resume_target(clean_harness, clean_sid)
+            clean_cwd = str((target or {}).get("cwd") or "").strip()
+        if not clean_cwd:
+            return (
+                f"error: cannot resume {clean_harness} session {clean_sid}: "
+                "its folder is unknown (cwd_unknown); nothing was opened"
+            )
+        label_src = (title or "").strip() or str((target or {}).get("title") or "")
+        # The tab label is outbound display text: masked, then bounded.
+        label = truncate_text(mask_text(label_src), 60) if label_src else ""
+        label = label or f"{clean_harness} · resume"
+        command = entry[0].format(shlex.quote(clean_sid))
+        tab_kwargs: dict = {"cwd": clean_cwd or None}
+        if (workspace_id or "").strip():
+            tab_kwargs["workspace_id"] = workspace_id.strip()
+        try:
+            created = self._herdr.create_tab(label, **tab_kwargs)
+        except HerdrError as exc:
+            return f"error creating tab: {exc}"
+        tab_id, pane_id = created["tab_id"], created["pane_id"]
+        try:
+            self._herdr.pane_run(pane_id, command)
+        except HerdrError as exc:
+            return (
+                f"error typing the resume command for {clean_harness}: {exc} "
+                f"(tab {tab_id} pane {pane_id} were created — the tab holds "
+                "a plain shell, the conversation was NOT resumed)"
+            )
+        if clean_harness == "opencode":
+            # The same readiness discipline a created opencode panel gets.
+            failure = self._await_agent_on_pane(pane_id, tab_id, "opencode")
+            if failure is not None:
+                return failure
+        created_info = AgentInfo(
+            pane_id=pane_id,
+            agent=sanitize_agent_name(label),
+            status="idle",
+            session_kind="id",
+            session_value=clean_sid,
+            cwd=clean_cwd,
+            title=label,
+            focused=True,
+        )
+        self._track(created_info)
+        self._last_created = created_info
+        return (
+            f"Panel reanudado: tab={tab_id} pane={pane_id} "
+            f"{clean_harness} sesión {clean_sid} en {clean_cwd}."
         )
 
     # -- on-demand consultation (read-only; T9) ---------------------------
@@ -1780,9 +3343,11 @@ class BrainTools:
             "read_screen": self.read_screen,
             "send_to_session": self.send_to_session,
             "create_session": self.create_session,
+            "resume_session": self.resume_session,
             "answer_dialog": self.answer_dialog,
             "stop_agent": self.stop_pane,
             "switch_session": self.switch_session,
+            "switch_model": self.switch_model,
             "consult_work_status": self.consult_work_status,
             "consult_history": self.consult_history,
             "get_followup_context": self.get_followup_context,
@@ -1806,9 +3371,41 @@ class BrainTools:
                     str(arguments.get("task", "")),
                     str(arguments.get("cwd", "")),
                 )
-            if name == "answer_dialog":
+            if name == "resume_session":
+                # cwd/label are derived from the transcript store inside
+                # the tool — the ONLY source for the session's folder.
                 return handler(
-                    str(arguments.get("utterance", "")), target, turn_text
+                    str(arguments.get("harness", "")),
+                    str(arguments.get("session_id", "")),
+                )
+            if name == "answer_dialog":
+                spoken_choices = arguments.get("choices")
+                if spoken_choices is not None and (
+                    not isinstance(spoken_choices, list)
+                    or not all(
+                        isinstance(item, str) and item.strip()
+                        for item in spoken_choices
+                    )
+                ):
+                    raise TypeError(
+                        "choices must be a list of non-empty strings"
+                    )
+                spoken_option = arguments.get("option")
+                if spoken_option is not None and (
+                    not isinstance(spoken_option, int)
+                    or isinstance(spoken_option, bool)
+                ):
+                    raise TypeError("option must be an integer")
+                spoken_text = arguments.get("text")
+                if spoken_text is not None and not isinstance(spoken_text, str):
+                    raise TypeError("text must be a string")
+                return handler(
+                    str(arguments.get("utterance", "")),
+                    target,
+                    turn_text,
+                    choices=spoken_choices,
+                    option=spoken_option,
+                    text=spoken_text,
                 )
             if name == "stop_agent":
                 # The approve replay drives stop_pane directly (it needs
@@ -1821,6 +3418,22 @@ class BrainTools:
                 )
                 return "stop " + stopped["outcome"] + (
                     ": " + stopped["detail"] if stopped["detail"] else ""
+                )
+            if name == "switch_model":
+                # The approve replay drives switch_model directly (it
+                # needs the structured result); the live loop never
+                # reaches here (the gate freezes it first). Same
+                # discipline as read_transcript's pane_id: strings only.
+                switch_pane = arguments.get("pane_id")
+                if switch_pane is not None and not isinstance(switch_pane, str):
+                    raise TypeError("pane_id must be a string")
+                return json.dumps(
+                    self.switch_model(
+                        (switch_pane or "").strip()
+                        or (target.pane_id if target else ""),
+                        str(arguments.get("model", "")),
+                    ),
+                    ensure_ascii=False,
                 )
             if name == "read_transcript":
                 # S2/S4 pane consult: a model-named pane_id retargets the
@@ -1895,6 +3508,20 @@ class BrainTools:
                 f"error launching opencode: {exc} "
                 f"(tab {tab_id} pane {pane_id} were created)"
             )
+        return self._await_agent_on_pane(pane_id, tab_id, "opencode")
+
+    def _await_agent_on_pane(
+        self, pane_id: str, tab_id: str, what: str
+    ) -> Optional[str]:
+        """Waits until the pane reports an agent (the typed-launch loop).
+
+        ``pane run`` returns as soon as the line is submitted, so
+        readiness is DETECTED by polling :meth:`HerdrClient.list_agents`
+        until the pane reports an agent, followed by one best-effort
+        ``agent wait --until idle``. Returns None on success, else a
+        failure text carrying the created tab/pane ids (they exist on
+        screen and must never be raised away).
+        """
         deadline = self._clock() + OPENCODE_READY_BUDGET_S
         detected = False
         while True:
@@ -1910,7 +3537,7 @@ class BrainTools:
             self._sleeper(OPENCODE_POLL_INTERVAL_S)
         if not detected:
             return (
-                f"error launching opencode: no agent appeared on pane {pane_id} "
+                f"error launching {what}: no agent appeared on pane {pane_id} "
                 f"within {OPENCODE_READY_BUDGET_S:.0f}s "
                 f"(tab {tab_id} pane {pane_id} were created)"
             )
@@ -2068,10 +3695,19 @@ TOOLS_SCHEMA = [
                 "one the live context told you to speak — with the USER'S "
                 "spoken choice. Pass the user's exact words VERBATIM as the "
                 "utterance (e.g. 'dile que sí', 'selecciona la opción 1'). "
-                "The choice is matched deterministically against the current "
+                "For a MULTI-select question pass the user's words per item "
+                "as choices (e.g. utterance 'marca la uno y la tres' with "
+                "choices ['la uno', 'la tres']); for a free-text row pass "
+                "option (its number as explained) with text set to the "
+                "user's spoken answer after their lead-in (e.g. utterance "
+                "'responde: usa la rama main' with option 3 and text 'usa "
+                "la rama main'). The selection and the typed words are "
+                "always resolved from the user's words, never yours. The "
+                "answer is matched deterministically against the current "
                 "dialog; if the tool refuses (changed dialog, unknown or "
-                "ambiguous choice), relay the reason to the user and ask — "
-                "never choose or press anything yourself."
+                "ambiguous choice, destructive text), relay the reason to "
+                "the user and ask — never choose, type or press anything "
+                "yourself."
             ),
             "parameters": {
                 "type": "object",
@@ -2080,8 +3716,68 @@ TOOLS_SCHEMA = [
                         "type": "string",
                         "description": "The user's exact words naming the choice.",
                     },
+                    "choices": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "The user's exact spoken words for EACH option "
+                            "they selected on a multi-select dialog."
+                        ),
+                    },
+                    "option": {
+                        "type": "integer",
+                        "description": (
+                            "The free-text row's option number as explained "
+                            "(only with text)."
+                        ),
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": (
+                            "The user's spoken answer for the free-text row "
+                            "(only with option)."
+                        ),
+                    },
                 },
                 "required": ["utterance"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "switch_model",
+            "description": (
+                "GATED write (parity-f7d): switches the SELECTED agent pane's "
+                "model. The switch NEVER executes on the spot: it is frozen "
+                "behind a user approval gate — state the agent and the target "
+                "model and wait; it runs only when the user approves. On "
+                "approval the pane's own model picker is opened and the "
+                "option is chosen by walking arrows and Enter, never a digit. "
+                "The model name must be one the picker offers (from the "
+                "user's words); an ambiguous or unknown name is refused with "
+                "nothing pressed. Ask which pane's model via the live context "
+                "when the user names another agent (pane_id)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "model": {
+                        "type": "string",
+                        "description": (
+                            "The model to switch to, as the picker names it "
+                            "(e.g. 'Fable', 'anthropic/claude-opus-5-5')."
+                        ),
+                    },
+                    "pane_id": {
+                        "type": "string",
+                        "description": (
+                            "Optional exact pane_id from list_open_sessions "
+                            "whose model to switch; omit for the selected pane."
+                        ),
+                    },
+                },
+                "required": ["model"],
             },
         },
     },
@@ -2163,6 +3859,48 @@ TOOLS_SCHEMA = [
                     },
                 },
                 "required": ["agent_kind", "title"],
+            },
+        },
+    },
+    # parity-f7c S3: resume a past conversation. GATED exactly like
+    # create_session (llm.py freezes harness+session_id into a gate);
+    # the verified per-harness argv table is RESUME_COMMANDS above.
+    {
+        "type": "function",
+        "function": {
+            "name": "resume_session",
+            "description": (
+                "GATED (never runs on the spot): reopens a PAST "
+                "conversation in its own folder — a new tab in the "
+                "session's recorded cwd with the harness's verified "
+                "resume command typed in. Offered ONLY for harnesses "
+                "with a live-verified resume form ("
+                + ", ".join(sorted(RESUME_COMMANDS))
+                + "); for any other harness say resume is not available "
+                "instead of calling. The session id is the harness's own "
+                "(the herd/list_open_sessions metadata or the PWA's "
+                "recent list); the folder is derived from the transcript "
+                "store, never guessed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "harness": {
+                        "type": "string",
+                        "description": (
+                            "Canonical harness name (resume-verified ones "
+                            "only)."
+                        ),
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": (
+                            "The harness's own session/conversation id to "
+                            "reopen."
+                        ),
+                    },
+                },
+                "required": ["harness", "session_id"],
             },
         },
     },

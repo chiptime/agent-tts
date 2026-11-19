@@ -33,7 +33,7 @@ from urllib.parse import parse_qs, unquote_plus
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Path as PathParam, Query, Request, UploadFile, WebSocket
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from . import __version__
 from .approval import (
@@ -63,6 +63,7 @@ from .herdr import MAX_SEND_KEYS, SEND_KEY_ALLOWLIST, HerdrError
 from .history import HistoryStore, default_history_path
 from .history_view import HISTORY_DEFAULT_LIMIT, clamp_limit
 from .llm import STOP_AGENT, BrainLLM, BrainLLMError, TurnCancelled
+from .launch_receipts import LaunchReceiptStore
 from .memory import DEFAULT_SESSION, MAX_MESSAGES, ConversationStore
 from .mux import create_mux
 from .operator_config import (
@@ -77,6 +78,8 @@ from .pairing import (
     to_device_wire,
 )
 from .reader import ReaderCache, turn_id
+from .secrets_mask import mask_text
+from .send_tracking import TRACKED_OUTCOMES, SendTracker
 from .send_receipts import SendReceiptStore
 from .spoken_lexicon import (
     DEFAULT_LOCALE,
@@ -115,8 +118,9 @@ from .permissions import (
 )
 from .stt import STATE_READY, STATE_UNAVAILABLE, UNAVAILABLE_HINT, LiveTranscriber, Transcriber
 from .stt_engine import EngineTranscriber
-from .tools import BrainTools
+from .tools import RESUME_COMMANDS, RESUME_SESSION, SWITCH_MODEL, BrainTools
 from .tools import status_payload as _status_payload
+from .transcripts import recent_sessions, resume_target
 from .tts import (
     TTS_BACKEND_MISSING,
     TTS_BACKEND_OK,
@@ -355,6 +359,20 @@ def approval_payload(gate: ApprovalGate, timeout_s: int, now: Optional[float] = 
             "timeout_ms": gate.action.timeout_ms,
             "expires_in_s": max(0, math.ceil(remaining)),
         }
+    if gate.tool == RESUME_SESSION:
+        # The resume gate (parity-f7c S3) rides the CREATE card shape:
+        # the harness in ``agent``, the frozen session id in ``task`` —
+        # no pane exists yet, and the folder is re-derived at replay.
+        return {
+            "gate_id": gate.gate_id,
+            "tool": gate.tool,
+            "agent": gate.action.agent_kind,
+            "title": gate.action.title or "",
+            "task": gate.action.task,
+            "cwd": gate.action.cwd,
+            "timeout_ms": gate.action.timeout_ms,
+            "expires_in_s": max(0, math.ceil(remaining)),
+        }
     if gate.tool == STOP_AGENT:
         # The stop gate rides the SEND card shape (the approval flow's
         # second variant): a fixed Spanish marker instead of the frozen
@@ -365,6 +383,20 @@ def approval_payload(gate: ApprovalGate, timeout_s: int, now: Optional[float] = 
             "pane_id": gate.action.pane_id,
             "agent": gate.action.agent,
             "text": "⏹ detener el turno en curso",
+            "timeout_ms": gate.action.timeout_ms,
+            "expires_in_s": max(0, math.ceil(remaining)),
+        }
+    if gate.tool == SWITCH_MODEL:
+        # The switch gate (parity-f7d S3) rides the same SEND card
+        # shape: a fixed Spanish marker naming the frozen model — the
+        # replay reads the model from the gate's frozen task, so an
+        # edited marker can never retarget the switch.
+        return {
+            "gate_id": gate.gate_id,
+            "tool": gate.tool,
+            "pane_id": gate.action.pane_id,
+            "agent": gate.action.agent,
+            "text": f"⚙ cambiar el modelo a {gate.action.task or '?'}",
             "timeout_ms": gate.action.timeout_ms,
             "expires_in_s": max(0, math.ceil(remaining)),
         }
@@ -420,6 +452,7 @@ _VERSIONED_REFS = (
     ('src="/calls.js"', 'src="/calls.js?v={v}"'),
     ('src="/dialogs.js"', 'src="/dialogs.js?v={v}"'),
     ('src="/receipts.js"', 'src="/receipts.js?v={v}"'),
+    ('src="/send-track.js"', 'src="/send-track.js?v={v}"'),
     ('src="/reader.js"', 'src="/reader.js?v={v}"'),
     ('src="/toast.js"', 'src="/toast.js?v={v}"'),
     ('src="/push.js"', 'src="/push.js?v={v}"'),
@@ -660,12 +693,60 @@ class PaneDialogAnswerRequest(BaseModel):
     ``fingerprint`` is the dialog identity the /view render carried:
     the server re-reads the pane and refuses (409) when the screen
     moved under the tap, so a stale render can never fire keys.
-    ``option`` is the tapped option's index in that render.
+    ``option`` is the tapped option's index in that render; ``choices``
+    (S1) is the multi-select form — the indices of the boxes that must
+    end up checked, submitted through one explicit send; ``text`` (S3)
+    rides WITH ``option`` and answers that row's free-text field — the
+    server then types it through the verified recipe. ``model_name``
+    (+ ``provider_name``) answers an opencode model picker by NAME —
+    the PWA's full catalog lists models the picker never painted —
+    through the same search-first flow, Enter only when the first
+    filtered row on the real screen is that model. Exactly one answer
+    form travels per request: ``option``, ``choices``, ``option`` +
+    ``text``, or ``model_name`` (+ ``provider_name``).
     """
 
     pane_id: str = Field(min_length=1, max_length=MAX_SESSION_ID_CHARS)
     fingerprint: str = Field(min_length=1, max_length=64)
-    option: int = Field(ge=0, le=99)
+    option: Optional[int] = Field(default=None, ge=0, le=99)
+    choices: Optional[list[int]] = Field(default=None, min_length=1, max_length=8)
+    text: Optional[str] = Field(default=None, min_length=1, max_length=8_000)
+    model_name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    provider_name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+
+    @field_validator("text", "model_name", "provider_name")
+    @classmethod
+    def _text_not_blank(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and not value.strip():
+            raise ValueError("text must not be blank")
+        return value
+
+    @model_validator(mode="after")
+    def _exactly_one_answer(self) -> "PaneDialogAnswerRequest":
+        if self.model_name is not None:
+            if (
+                self.option is not None
+                or self.choices is not None
+                or self.text is not None
+            ):
+                raise ValueError(
+                    "model_name answers a model picker by name: never "
+                    "together with option, choices or text"
+                )
+            return self
+        if self.provider_name is not None:
+            raise ValueError("provider_name rides only with model_name")
+        if self.text is not None:
+            if self.choices is not None or self.option is None:
+                raise ValueError(
+                    "text answers one option: provide option with text, "
+                    "never choices"
+                )
+        elif (self.option is None) == (self.choices is None):
+            raise ValueError("provide exactly one of option or choices")
+        if self.choices is not None and len(set(self.choices)) != len(self.choices):
+            raise ValueError("choices must not repeat an option")
+        return self
 
 
 class PairRequest(BaseModel):
@@ -746,6 +827,255 @@ class OperatorPresetRequest(BaseModel):
 
     pane_id: str = Field(min_length=1, max_length=MAX_SESSION_ID_CHARS)
     id: str = Field(min_length=1, max_length=128)
+
+
+class SessionNewRequest(BaseModel):
+    """PWA session launch (parity-f7c S1, doc 03 §2): the client names a
+    harness from the server's CLOSED list and a cwd inside the
+    operator's roots; everything else is derived server-side. No
+    command line, no agent argv — the launch itself is
+    ``BrainTools.create_session``, byte-identical to the voice path.
+    ``request_id`` (S2, doc 03 §4) is the client-minted idempotency
+    key: present, a repeat replays the first successful response.
+    ``workspace_id`` (S1b) optionally targets the tab INSIDE a listed
+    herdr workspace — the cwd-inside-roots gate stays the launch
+    authority; the workspace only says WHERE the tab lands."""
+
+    harness: str = Field(min_length=1, max_length=64)
+    cwd: str = Field(min_length=1, max_length=1024)
+    title: Optional[str] = Field(default=None, max_length=200)
+    task: Optional[str] = Field(default=None, max_length=8_000)
+    request_id: Optional[str] = Field(default=None, max_length=128)
+    workspace_id: Optional[str] = Field(default=None, max_length=128)
+
+
+class SessionResumeRequest(BaseModel):
+    """PWA session resume (parity-f7c S3, doc 03 §3): the client names a
+    harness whose resume form is VERIFIED (``RESUME_COMMANDS``) and one
+    of its own session ids. The folder is NEVER client input — it is
+    read from the transcript store and must fall inside the operator's
+    roots, or the resume is refused rather than guessed.
+    ``request_id`` is the same S2 idempotency key as /session/new;
+    ``workspace_id`` (S1b) optionally targets the tab inside a listed
+    herdr workspace."""
+
+    harness: str = Field(min_length=1, max_length=64)
+    session_id: str = Field(min_length=1, max_length=256)
+    request_id: Optional[str] = Field(default=None, max_length=128)
+    workspace_id: Optional[str] = Field(default=None, max_length=128)
+
+
+#: Live-pane cwds the "New" sheet's folder picker offers, at most.
+SESSION_ROOTS_RECENTS_CAP = 8
+
+#: Conversations /sessions/recent serves per harness, at most (S3).
+SESSIONS_RECENT_CAP = 10
+
+#: Masked title budget for a /sessions/recent row (mask BEFORE clip).
+SESSIONS_TITLE_CHARS = 80
+
+
+@lru_cache(maxsize=1)
+def launchable_harnesses() -> tuple:
+    """The CLOSED harness list a PWA launch may name: the
+    transcript-readers registry CANONICAL names (an alias never adds a
+    harness). Frozen per process — the registry is immutable."""
+    from .transcript_readers.registry import default_registry
+
+    return tuple(default_registry().harnesses())
+
+
+def _resolved_within_roots(cwd: str, roots) -> Optional[str]:
+    """The resolved cwd when it is a real directory inside (or equal to)
+    one configured root; None otherwise.
+
+    ``Path.resolve()`` collapses ``..`` and symlinks BEFORE the
+    containment comparison, so neither spelling can escape; a path that
+    does not exist on disk is not "a directory inside a root" and is
+    refused with the same word."""
+    try:
+        resolved = Path(cwd).expanduser().resolve()
+    except OSError:
+        return None
+    if not resolved.is_dir():
+        return None
+    for root in roots:
+        root_path = Path(root.path)
+        if resolved == root_path or root_path in resolved.parents:
+            return str(resolved)
+    return None
+
+
+def _recent_cwds(herd_entries, roots, cap: int = SESSION_ROOTS_RECENTS_CAP) -> list:
+    """Deduplicated live-pane cwds INSIDE a configured root, newest first.
+
+    "Newest" is the pane's smallest ``last_turn_age_s`` (a cwd several
+    panes share keeps its freshest age); an unknown age sorts last,
+    stable against the herd's listing order."""
+    root_paths = [Path(root.path) for root in roots]
+    newest: dict = {}
+    for entry in herd_entries or []:
+        cwd = str((entry or {}).get("cwd") or "").strip()
+        if not cwd:
+            continue
+        try:
+            resolved = Path(cwd).resolve()
+        except OSError:
+            continue
+        if not any(
+            resolved == root_path or root_path in resolved.parents
+            for root_path in root_paths
+        ):
+            continue
+        age = (entry or {}).get("last_turn_age_s")
+        if not isinstance(age, (int, float)):
+            age = None
+        key = str(resolved)
+        known = newest.get(key)
+        if key not in newest or (age is not None and (known is None or age < known)):
+            newest[key] = age
+    ordered = sorted(
+        newest.items(),
+        key=lambda item: (item[1] is None, item[1] if item[1] is not None else 0.0),
+    )
+    return [{"cwd": path} for path, _ in ordered[:cap]]
+
+
+def _space_cwd(candidates: list) -> Optional[str]:
+    """The resolved cwd of a workspace's best live pane, or None.
+
+    Ranking (S1b): the focused pane first, then the freshest
+    ``last_turn_age_s`` (an unknown age sorts last), stable against the
+    herd's listing order. The cwd is resolved like :func:`_recent_cwds`
+    resolves one; an unresolvable path yields None — never a guess.
+    """
+    if not candidates:
+        return None
+
+    def rank(entry: dict) -> tuple:
+        age = (entry or {}).get("last_turn_age_s")
+        if not isinstance(age, (int, float)):
+            age = None
+        return (
+            0 if (entry or {}).get("focused") else 1,
+            age is None,
+            age if age is not None else 0.0,
+        )
+
+    best = min(candidates, key=rank)
+    cwd = str((best or {}).get("cwd") or "").strip()
+    if not cwd:
+        return None
+    try:
+        return str(Path(cwd).resolve())
+    except OSError:
+        return None
+
+
+def _pane_cwd(panes) -> Optional[str]:
+    """The resolved cwd of a workspace's panes, or None (T5b).
+
+    Source is ``herdr pane list``, where EVERY pane carries a cwd —
+    agent or not. Ranking: the focused pane first, else the FIRST
+    pane with a usable cwd in the CLI's own listing order (a stable
+    sort keeps that order within each rank). An unresolvable or empty
+    cwd is skipped, never guessed."""
+    ranked = sorted(panes or [], key=lambda pane: not getattr(pane, "focused", False))
+    for pane in ranked:
+        cwd = str(getattr(pane, "cwd", "") or "").strip()
+        if not cwd:
+            continue
+        try:
+            return str(Path(cwd).resolve())
+        except OSError:
+            continue
+    return None
+
+
+def _listed_panes(tools) -> Optional[list]:
+    """Every live pane through ONE ``herdr pane list`` call, or None.
+
+    The pane surface lives on the herdr client; the mux adapter has no
+    delegation for it yet, so this reaches the client behind
+    ``tools._herdr`` (``_client`` when the adapter wraps one — an
+    injected client double IS the client). None — a non-herdr mux
+    without the surface, or a :class:`HerdrError` — falls the cwd
+    derivation back to the T5 agent-pane path; a read never 500s.
+    """
+    mux = getattr(tools, "_herdr", None)
+    client = getattr(mux, "_client", mux)
+    getter = getattr(client, "list_panes", None)
+    if getter is None:
+        return None
+    try:
+        return list(getter())
+    except HerdrError:
+        return None
+
+
+def _workspace_spaces(workspaces, panes, herd_entries, roots) -> list:
+    """EVERY workspace as a picker space (parity-f7c S1b, L11).
+
+    T5b: each space's folder is derived from ``herdr pane list`` —
+    every pane carries a cwd, so a workspace with NO running agent
+    still resolves its folder (the pane id's workspace prefix, e.g.
+    ``w11:p2`` ↔ workspace ``w11``). When the pane listing is
+    unavailable (``panes is None``) the T5 agent-pane ranking derives
+    it instead. A workspace with no live pane at all is still listed —
+    with ``cwd: null`` and ``inside_roots: false`` (the flag is only
+    meaningful when the cwd is known); so is a workspace whose pane
+    sits outside the roots: hiding spaces is never this listing's
+    job, pickability is the PWA's. Order: the listing's own (sorted
+    by workspace number).
+    """
+    root_paths = [Path(root.path) for root in roots]
+    herd_by_workspace: dict = {}
+    for entry in herd_entries or []:
+        pane_id = str((entry or {}).get("pane_id") or "")
+        cwd = str((entry or {}).get("cwd") or "").strip()
+        if not pane_id or ":" not in pane_id or not cwd:
+            continue
+        herd_by_workspace.setdefault(pane_id.split(":", 1)[0], []).append(entry)
+    panes_by_workspace: dict = {}
+    for pane in panes or []:
+        pane_id = str(getattr(pane, "pane_id", "") or "")
+        if not pane_id or ":" not in pane_id:
+            continue
+        panes_by_workspace.setdefault(pane_id.split(":", 1)[0], []).append(pane)
+    spaces = []
+    for workspace in workspaces or []:
+        if panes is None:
+            cwd = _space_cwd(herd_by_workspace.get(workspace.workspace_id, []))
+        else:
+            cwd = _pane_cwd(panes_by_workspace.get(workspace.workspace_id, []))
+        inside = bool(
+            cwd
+            and any(cwd == root_path or root_path in Path(cwd).parents
+                    for root_path in root_paths)
+        )
+        spaces.append({
+            "workspace_id": workspace.workspace_id,
+            "label": workspace.label,
+            "cwd": cwd,
+            "inside_roots": inside,
+            "focused": workspace.focused,
+        })
+    return spaces
+
+
+def _known_workspace(tools, workspace_id: str) -> bool:
+    """Whether the workspace id is one the live listing named.
+
+    The listing itself degrades (:meth:`BrainTools.list_workspaces`
+    never raises); this guard only fail-closes the launch — a workspace
+    the server cannot vouch for targets nothing."""
+    try:
+        return any(
+            workspace.workspace_id == workspace_id
+            for workspace in (tools.list_workspaces() or [])
+        )
+    except Exception:  # noqa: BLE001 — a read never 500s the launch gate
+        return False
 
 
 def _opencode_http_error(exc: OpenCodeError) -> HTTPException:
@@ -958,6 +1288,25 @@ class HerdNotifier:
             except Exception:  # noqa: BLE001
                 logger.warning("brain message delivery tick failed", exc_info=True)
 
+    def send_track(self, pane_id, label, state, error=None) -> None:
+        """A tracked send's no_start / stalled / store-error push (f7g S7).
+
+        The tracked-send contract (copy, tag rules, immediate dispatch)
+        lives on the coordinator next to the rest of the push copy; the
+        facade stays transport-only for it, so this is the one call site
+        that reaches through to the coordinator the facade composes.
+        """
+        if self._push is None:
+            return
+        coordinator = getattr(self._push, "_coordinator", None)
+        dispatch = getattr(coordinator, "send_track", None)
+        if dispatch is None:
+            return
+        try:
+            dispatch(pane_id, label, state, error=error)
+        except Exception:  # noqa: BLE001 — push is an advisory channel
+            logger.warning("web push send-track hook failed", exc_info=True)
+
 
 def create_app(
     settings: Optional[Settings] = None,
@@ -1067,6 +1416,11 @@ def create_app(
     # address (see pairing.ClaimRateLimiter). Lives with the app, never
     # in the pairing files.
     pair_limiter = ClaimRateLimiter()
+
+    # Idempotent launches (parity-f7c S2, doc 03 §4): on-disk receipts
+    # under <state_dir>/launch-receipts.json. Lazy like the pairing
+    # store — boot reads nothing; the first receipted launch loads.
+    launch_receipts = LaunchReceiptStore(cfg.state_dir)
 
     # Operator surfaces (S3): the four validated TOML files, reloaded by
     # mtime per request. Injectable like every seam; the default reads
@@ -1212,14 +1566,31 @@ def create_app(
             logger.error("brain messages unavailable — routes answer 503: %s", exc)
             msg_service_ = None
 
+    # Send tracking (parity-f7g): one bounded in-memory tracker per
+    # receipt, fed by the watcher's EXISTING poll (never a second herdr
+    # timer). Wall clock by design — the only domain comparable with
+    # the opencode store's epochs and the receipts' created_at. The
+    # notify hook rides the same HerdrNotifier fan-out as the watcher.
+    herd_notifier = HerdNotifier(push_service_, msg_service_)
+    send_tracker = SendTracker(notify=herd_notifier.send_track)
+
     if watcher is None:
         watcher = AgentWatcher(
             cfg,
             tts_renderer=synth,
-            notifier=HerdNotifier(push_service_, msg_service_),
+            notifier=herd_notifier,
             locale_provider=locale_provider_from(call_context_store),
+            send_tracker=send_tracker,
         )
         watcher.start()
+
+    # Same attach-after-construction seam as the consult sink below:
+    # injected test watchers gain the feed when they offer it, and hub
+    # fakes without publish simply never receive tracker events.
+    if hasattr(watcher, "attach_send_tracker"):
+        watcher.attach_send_tracker(send_tracker)
+    if hasattr(watcher.hub, "publish"):
+        send_tracker.attach_event_sink(watcher.hub.publish)
 
     # Consulting-state events (FR-18 seam): consult start/end rides the
     # SAME SSE announcement hub as agent transitions; the PWA renders
@@ -1316,6 +1687,7 @@ def create_app(
     app = FastAPI(title="herdr-brain", version=__version__)
     app.add_middleware(AccessMiddleware, cfg=cfg, pairing=pairing_store)
     app.state.watcher = watcher
+    app.state.send_tracker = send_tracker
     app.state.daemon_watcher = daemon_watcher
     app.state.transcriber = transcriber
     app.state.live_transcriber = live_transcriber
@@ -1399,6 +1771,13 @@ def create_app(
     def receipts_js() -> FileResponse:
         return FileResponse(
             STATIC_DIR / "receipts.js", media_type="text/javascript",
+            headers=dict(_NO_CACHE_HEADERS),
+        )
+
+    @app.get("/send-track.js", include_in_schema=False)
+    def send_track_js() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "send-track.js", media_type="text/javascript",
             headers=dict(_NO_CACHE_HEADERS),
         )
 
@@ -1554,7 +1933,7 @@ def create_app(
         }
 
     @app.post("/transcribe")
-    async def transcribe(audio: UploadFile = File(...)) -> dict:
+    async def transcribe(request: Request, audio: UploadFile = File(...)) -> dict:
         """Server-side STT: multipart field 'audio' (webm/opus from
         MediaRecorder, or any media faster-whisper decodes via PyAV) ->
         ``{"text": "..."}``."""
@@ -1580,15 +1959,29 @@ def create_app(
             raise HTTPException(
                 status_code=503, detail=f"No se pudo transcribir el audio: {exc}"
             ) from exc
-        return {"text": text.strip()}
+        clean = text.strip()
+        # Sizes only — never the transcript or the audio (same rule as /ask).
+        audit_log.record({
+            "action": "stt.transcribe",
+            "device": audit_device(request),
+            "detail": {"bytes": len(data), "chars": len(clean)},
+        })
+        return {"text": clean}
 
     @app.post("/reset")
-    def reset(body: ResetRequest) -> dict:
+    def reset(request: Request, body: ResetRequest) -> dict:
         store.reset(body.session_id)
         # A new conversation drops the persisted call transcript too —
         # the history file is one global call, so the clear is global.
         history.clear()
-        return {"ok": True, "session_id": ConversationStore.normalize(body.session_id)}
+        session_id = ConversationStore.normalize(body.session_id)
+        audit_log.record({
+            "action": "session.reset",
+            "session_id": session_id,
+            "device": audit_device(request),
+            "detail": {},
+        })
+        return {"ok": True, "session_id": session_id}
 
     @app.get("/call-history")
     def call_history(before: Optional[str] = None, limit: int = 25) -> dict:
@@ -1805,17 +2198,28 @@ def create_app(
             return local
 
     @app.get("/view")
-    def view(pane_id: Optional[str] = None) -> dict:
+    def view(pane_id: Optional[str] = None, modal: int = 0) -> dict:
         """Superset of /state for one pane (default: focused).
 
         A remote crew pane (``<host>:<pane>``) proxies to its owner's
         ``/crew/v1/view``; an unknown host prefix is a 422, never a
-        local fallback."""
+        local fallback.
+
+        ``modal=1`` (the PWA model-switch flow) is an additive read
+        flag: the structured dialog recognition runs REGARDLESS of pane
+        status — a USER-opened model picker leaves the pane ``idle`` —
+        and its read is the full window. Same route, same auth; absent
+        the flag the payload is byte-identical to the legacy contract.
+        """
         peer = crew_remote_peer(pane_id)
         if peer is not None:
             _, rest = split_pane_id(pane_id or "")
             return crew_call(peer, lambda client: client.view(rest))
         try:
+            if modal:
+                # The flag is additive: legacy calls pass one argument
+                # exactly as before.
+                return tools.agent_view(pane_id, modal=True)
             return tools.agent_view(pane_id)
         except Exception:  # noqa: BLE001 — the view endpoint never 500s
             # No `structured` key here: a recognizer's claim is the only
@@ -2051,7 +2455,9 @@ def create_app(
             raise gate_gone()
         return gate
 
-    def replay_and_report(gate: ApprovalGate, speak: bool = True) -> dict:
+    def replay_and_report(
+        gate: ApprovalGate, speak: bool = True, device: Optional[str] = None
+    ) -> dict:
         """Executes the frozen action and reports the outcome.
 
         This is THE approve execution (AC6 — exactly once, guaranteed by
@@ -2059,12 +2465,17 @@ def create_app(
         a live tool call would take — ``dispatch(gate.tool, ...)`` with the
         frozen args, so sanitization and error handling match the ungated
         flow; then the model reports the completion through the normal
-        loop entry and the answer is shaped like /ask.
+        loop entry and the answer is shaped like /ask. ``device`` rides
+        the switch replay's audit line (who approved is who switched).
         """
         if gate.tool == CREATE_SESSION:
             return _replay_create_and_report(gate, speak)
+        if gate.tool == RESUME_SESSION:
+            return _replay_resume_and_report(gate, speak)
         if gate.tool == STOP_AGENT:
             return _replay_stop_and_report(gate, speak)
+        if gate.tool == SWITCH_MODEL:
+            return _replay_switch_model_and_report(gate, speak, device)
         target = tools.resolve_target(gate.action.pane_id)
         tool_result = tools.dispatch(
             SEND_TO_SESSION,
@@ -2160,6 +2571,88 @@ def create_app(
                 "title": created.title or "",
             }
         return response
+
+    def _replay_resume_and_report(gate: ApprovalGate, speak: bool = True) -> dict:
+        """Approve execution for resume gates (parity-f7c S3): dispatch
+        the frozen (harness, session_id) — the pane's cwd is re-derived
+        from the transcript store at dispatch, never trusted from the
+        frozen gate — then report and switch the call to the reopened
+        panel, exactly like a create gate."""
+        tool_result = tools.dispatch(
+            RESUME_SESSION,
+            {
+                "harness": gate.action.agent_kind or "",
+                "session_id": gate.action.task or "",
+            },
+        )
+        created = getattr(tools, "last_created", None)
+        created = created() if callable(created) else None
+        if created is not None:
+            call_context_store.select(created.pane_id)
+        report_prompt = (
+            f"The approved session resume ran: harness "
+            f"{gate.action.agent_kind or 'unknown'}, session id "
+            f"{gate.action.task or 'unknown'}. Tool result:\n\n{tool_result}\n\n"
+            "Report the outcome to the user in one or two short spoken sentences. "
+            "The tool result names the reopened tab/pane ids and the folder."
+        )
+        try:
+            result = get_llm().ask(
+                report_prompt,
+                session_id=gate.session_id,
+                pane_id=created.pane_id if created is not None else None,
+            )
+        except BrainLLMError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        response = shape_ask_response(result, speak=speak)
+        if created is not None:
+            response["switch_pane"] = {
+                "pane_id": created.pane_id,
+                "agent": created.agent,
+                "title": created.title or "",
+            }
+        return response
+
+    def _replay_switch_model_and_report(
+        gate: ApprovalGate, speak: bool = True, device: Optional[str] = None
+    ) -> dict:
+        """Approve execution for switch gates (parity-f7d S3): the frozen
+        (pane, model) runs through the guarded picker choreography, the
+        outcome is audited as ``model.switch`` — the model NAME is
+        metadata, not content; nothing beyond it rides the line — and
+        the model reports. A refused outcome (ambiguous name, picker
+        that never appeared, drift) is reported as what it is: the
+        model was NOT switched."""
+        result = tools.switch_model(gate.action.pane_id or "", gate.action.task or "")
+        audit_log.record({
+            "action": "model.switch",
+            "pane_id": gate.action.pane_id,
+            "device": device,
+            "detail": {
+                "model": gate.action.task or "",
+                "outcome": result.get("outcome", ""),
+                "reason": result.get("reason", ""),
+            },
+        })
+        outcome = result.get("outcome", "")
+        report_prompt = (
+            f"The approved model switch ran on {gate.action.agent or 'the agent'} "
+            f"(pane {gate.action.pane_id or 'unknown'}) targeting "
+            f"{gate.action.task or 'unknown'}. Result:\n\n{outcome}"
+            + (f" ({result.get('reason', '')})" if result.get("reason") else "")
+            + ".\n\nReport the outcome to the user in one or two short spoken "
+            "sentences. Only 'switched' means the model changed; anything "
+            "else means it did NOT — say that."
+        )
+        try:
+            reported = get_llm().ask(
+                report_prompt,
+                session_id=gate.session_id,
+                pane_id=gate.action.pane_id,
+            )
+        except BrainLLMError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return shape_ask_response(reported, speak=speak)
 
     @app.get("/approval/current")
     def approval_current(session_id: Optional[str] = None) -> dict:
@@ -2586,7 +3079,10 @@ def create_app(
         outside the steer table — the plain reply stays the only default.
         A remote crew pane (``<host>:<pane>``) proxies to its owner's
         /crew/v1/reply; the owner's outcome mapping travels back
-        verbatim and the write is audited here as the operator's.
+        verbatim and the write is audited here as the operator's (the
+        owner's own brain tracks that send — nothing starts twice).
+        parity-f7g: a receipt outcome of ``sent``/``effective``/
+        ``unknown`` starts one send tracker keyed by the receipt id.
         """
         crew_peer = crew_remote_peer(body.pane_id)
         if crew_peer is not None:
@@ -2631,6 +3127,24 @@ def create_app(
                 receipt_fields["outcome"],
                 detail=receipt_fields["detail"],
                 text_hint=receipt_fields["text_hint"],
+            )
+        if receipt is not None and receipt["outcome"] in TRACKED_OUTCOMES:
+            # parity-f7g S1: one tracker per receipt follows the send to
+            # its outcome. ``effective`` is born terminal (done); the
+            # watcher's poll drives everything in flight. The pane's
+            # last-known status rides along as the SEND-TIME status the
+            # S1 evidence rule measures transitions from (a pre-existing
+            # ``done`` Herdr keeps until the pane is viewed is not
+            # completion evidence).
+            send_tracker.start(
+                receipt["id"],
+                body.pane_id,
+                receipt["outcome"],
+                sent_at=receipt["created_at"],
+                pane_status=(
+                    watcher.last_known_status(body.pane_id)
+                    if hasattr(watcher, "last_known_status") else None
+                ),
             )
         # The pane.reply audit line keeps its pinned shape for the plain
         # reply ({"outcome", "text"}); the S12 additions ride along only
@@ -2690,8 +3204,18 @@ def create_app(
         Read-only and bounded like every receipt surface: an optional
         ``pane_id`` filters, no parameter lists everything the in-memory
         store still holds. No text ever travels — the receipt carries
-        the outcome, a masked detail and a masked text tail."""
-        return {"pane_id": pane_id, "receipts": receipt_store.list(pane_id)}
+        the outcome, a masked detail and a masked text tail.
+
+        parity-f7g S4 (additive): a receipt whose send is/was tracked
+        gains a ``track`` object (state, elapsed, activity, error).
+        Receipts without trackers — the pre-f7g universe — serialize
+        exactly as before, byte for byte."""
+        receipts = receipt_store.list(pane_id)
+        for receipt in receipts:
+            track = send_tracker.snapshot(receipt["id"])
+            if track is not None:
+                receipt["track"] = track
+        return {"pane_id": pane_id, "receipts": receipts}
 
     def _live_typed_receipt_or_error(receipt_id: str) -> dict:
         """The receipt a submit/discard may act on, or its HTTP error.
@@ -2880,47 +3404,95 @@ def create_app(
         crew_peer = crew_remote_peer(body.pane_id)
         if crew_peer is not None:
             _, remote_id = split_pane_id(body.pane_id)
+            if body.model_name is not None:
+                answer_payload = {
+                    "fingerprint": body.fingerprint,
+                    "model_name": body.model_name,
+                }
+                if body.provider_name is not None:
+                    answer_payload["provider_name"] = body.provider_name
+            elif body.choices is not None:
+                answer_payload = {
+                    "fingerprint": body.fingerprint, "choices": body.choices
+                }
+            else:
+                answer_payload = {
+                    "fingerprint": body.fingerprint, "option": body.option
+                }
+            if body.text is not None:
+                answer_payload["text"] = body.text
             result = crew_call(
                 crew_peer,
-                lambda client: client.dialog_answer(
-                    remote_id,
-                    {"fingerprint": body.fingerprint, "option": body.option},
-                ),
+                lambda client: client.dialog_answer(remote_id, answer_payload),
             )
+            crew_detail = {
+                "outcome": "answered",
+                "option": body.option,
+                "choices": body.choices,
+                "fingerprint": body.fingerprint, "crew": True,
+            }
+            if body.text is not None:
+                crew_detail["text"] = body.text
+            if body.model_name is not None:
+                crew_detail["model_name"] = body.model_name
             audit_log.record({
                 "action": "pane.dialog.answer",
                 "pane_id": body.pane_id,
                 "device": audit_device(request),
-                "detail": {
-                    "outcome": "answered", "option": body.option,
-                    "fingerprint": body.fingerprint, "crew": True,
-                },
+                "detail": crew_detail,
             })
             return result if isinstance(result, dict) else {"ok": True}
         result = tools.answer_structured_dialog(
-            body.pane_id, body.fingerprint, body.option
+            body.pane_id,
+            body.fingerprint,
+            option=body.option,
+            choices=body.choices,
+            text=body.text,
+            model_name=body.model_name,
+            provider_name=body.provider_name,
         )
         outcome = result["outcome"]
         # The fingerprint names the answered dialog and the option index
-        # is metadata — neither carries terminal content.
+        # is metadata — neither carries terminal content. The free-text
+        # answer is user content and rides the same audit discipline as
+        # pane.reply's text: bounded preview by default, redacted in
+        # "none" mode.
+        detail = {
+            "outcome": outcome,
+            "reason": result.get("reason", ""),
+            "option": body.option,
+            "choices": body.choices,
+            "fingerprint": body.fingerprint,
+        }
+        if body.text is not None:
+            detail["text"] = body.text
+        if body.model_name is not None:
+            # A model's display name is catalog metadata, not terminal
+            # content: it rides the audit like the option index does.
+            detail["model_name"] = body.model_name
+            if body.provider_name is not None:
+                detail["provider_name"] = body.provider_name
         audit_log.record({
             "action": "pane.dialog.answer",
             "pane_id": body.pane_id,
             "device": audit_device(request),
-            "detail": {
-                "outcome": outcome,
-                "reason": result.get("reason", ""),
-                "option": body.option,
-                "fingerprint": body.fingerprint,
-            },
+            "detail": detail,
         })
         if outcome == "answered":
-            return {
+            answered = {
                 "ok": True,
                 "pane_id": body.pane_id,
                 "option": body.option,
+                "choices": body.choices,
                 "label": result.get("label", ""),
             }
+            if body.model_name is not None:
+                answered["model_name"] = body.model_name
+            if result.get("next"):
+                # The switch opened a follow-up list (opencode's Select
+                # variant): the client keeps watching the modal read.
+                answered["next"] = result["next"]
+            return answered
         reason = result.get("reason", "")
         if reason == "unknown_pane":
             raise HTTPException(status_code=404, detail="pane no encontrado")
@@ -2936,10 +3508,42 @@ def create_app(
                     "Mira la pantalla de nuevo y responde al diálogo nuevo."
                 ),
             )
+        if reason == "wrong-model":
+            # Enter left and the picker closed, but the composer names
+            # another model: never reported as success.
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "El modelo no quedó como elegiste: "
+                    f"{result.get('detail') or 'opencode muestra otro'}."
+                ),
+            )
         raise HTTPException(
             status_code=502,
             detail=result.get("detail") or "No se pudo responder el diálogo.",
         )
+
+    @app.get("/pane/models")
+    def pane_models(
+        pane_id: str = Query(..., max_length=MAX_SESSION_ID_CHARS),
+    ) -> dict:
+        """Every model the viewed opencode pane could switch to.
+
+        Read-only and PWA-only (never an LLM tool): the on-screen model
+        picker paints a window of its list, so the PWA card asks for the
+        FULL connected catalog here (``opencode models`` + opencode's own
+        display names, cached for minutes) and answers a tap by NAME
+        through POST /pane/dialog/answer. An unknown pane is a 404, never
+        the focused fallback; a missing CLI or any failure is an empty
+        list with a ``reason`` — the card then keeps the picker's own
+        options. A crew pane's catalog is its owner's, not ours.
+        """
+        if crew_remote_peer(pane_id) is not None:
+            return {"models": [], "reason": "remote-pane"}
+        result = tools.pane_models(pane_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail="pane no encontrado")
+        return result
 
     @app.get("/pane/permission")
     def pane_permission(
@@ -3360,6 +3964,237 @@ def create_app(
             "pane_id": created.get("pane_id"),
         }
 
+    # ── Session launch from the PWA (parity-f7c S1, doc 03 §1–§2) ──────
+
+    @app.get("/session/roots")
+    def session_roots() -> dict:
+        """The "New" sheet's pickers in one read: roots + spaces +
+        recents + harnesses.
+
+        Roots come from the operator's validated ``roots.toml`` (row by
+        row, mtime reload); spaces are EVERY herdr workspace (S1b, L11)
+        with a cwd derived from its own live panes — every pane carries
+        one (T5b), so a workspace with no running agent resolves too,
+        and the ones with no live pane at all keep ``cwd: null``;
+        recents are the deduplicated cwds of live panes that fall
+        INSIDE a configured root, newest first, capped; the harness
+        list is the CLOSED registry list, folded here so the sheet
+        opens with a single round-trip. Unconfigured roots or a failed
+        workspace listing degrade honestly to empty lists — the WRITE
+        route is the one that fails closed."""
+        roots = operator_config.roots()
+        herd = tools.herd()
+        workspaces = tools.list_workspaces()
+        panes = _listed_panes(tools) if workspaces else None
+        recents = _recent_cwds(herd, roots) if roots else []
+        spaces = _workspace_spaces(workspaces, panes, herd, roots)
+        return {
+            "roots": [{"path": root.path, "label": root.label} for root in roots],
+            "spaces": spaces,
+            "recents": recents,
+            "harnesses": list(launchable_harnesses()),
+        }
+
+    @app.post("/session/new")
+    def session_new(request: Request, body: SessionNewRequest) -> dict:
+        """Launches a new session through the SAME create_session as voice.
+
+        The PWA never composes a launch: ``harness`` must be one of the
+        registry's canonical names (aliases are refused — the closed
+        list answers which connectors this build has), and ``cwd`` must
+        resolve to an existing directory inside a configured root, so
+        ``..`` and symlink escapes die at the resolve. With no roots
+        configured the route refuses EVERYTHING (fail-closed: the
+        operator configures roots first). ``task`` is free text — the
+        destructive guard is the PWA's second tap (doc 03), the server
+        does not censor. The route is PWA-only: voice already has its
+        own gated ``create_session`` tool, so nothing here joins
+        ``TOOLS_SCHEMA``. Audited as ``session.new`` with device
+        attribution and LENGTHS, never content.
+
+        Idempotent when ``request_id`` is present (S2, doc 03 §4): the
+        receipt store registers the id only AFTER every refusal passed
+        and only on SUCCESS, so a repeated (or concurrent) request
+        replays the cached first response — one tab, one audit line —
+        while a failed launch stays retryable under the same id."""
+        def refuse(reason: str) -> None:
+            audit_log.record({
+                "action": "session.new",
+                "device": audit_device(request),
+                "detail": {"outcome": reason},
+            })
+            raise HTTPException(status_code=422, detail=reason)
+
+        roots = operator_config.roots()
+        if not roots:
+            refuse("roots_unconfigured")
+        harness = (body.harness or "").strip().lower()
+        if harness not in launchable_harnesses():
+            refuse("unknown_harness")
+        resolved = _resolved_within_roots(body.cwd, roots)
+        if resolved is None:
+            refuse("root_not_allowed")
+        workspace_id = (body.workspace_id or "").strip() or None
+        if workspace_id is not None and not _known_workspace(tools, workspace_id):
+            # S1b: after the unchanged cwd gate — a workspace the
+            # listing never named targets nothing.
+            refuse("unknown_workspace")
+        title = (body.title or "").strip() or f"{harness} · {Path(resolved).name}"
+        task = (body.task or "").strip()
+        request_id = (body.request_id or "").strip() or None
+
+        def do_launch() -> dict:
+            if workspace_id:
+                result = tools.create_session(
+                    harness, title, task, resolved, workspace_id=workspace_id
+                )
+            else:
+                result = tools.create_session(harness, title, task, resolved)
+            # The same pane handle the approve replay reads: the created
+            # AgentInfo, when the double kept the property.
+            created = getattr(tools, "last_created", None)
+            created = created() if callable(created) else None
+            pane_id = created.pane_id if created is not None else None
+            outcome = "error" if result.startswith("error") else "executed"
+            detail = {
+                "outcome": outcome,
+                "harness": harness,
+                "cwd": resolved,
+                # Lengths only — the same discipline as /ask (doc 02 §3).
+                "chars": {"title": len(title), "task": len(task)},
+                "pane_id": pane_id,
+            }
+            if workspace_id:
+                detail["workspace_id"] = workspace_id
+            audit_log.record({
+                "action": "session.new",
+                "pane_id": pane_id,
+                "device": audit_device(request),
+                "detail": detail,
+            })
+            if outcome == "error":
+                raise HTTPException(status_code=502, detail=result)
+            return {"ok": True, "result": result, "pane_id": pane_id}
+
+        if request_id is None:
+            return do_launch()
+        return launch_receipts.launch_once(request_id, do_launch)
+
+    @app.get("/sessions/recent")
+    def sessions_recent(harness: Optional[str] = None) -> dict:
+        """The "Retomar" picker's data (parity-f7c S3, doc 03 §3): the
+        resume-ENABLED harness list (evidence-backed argv forms only —
+        criterion 3: don't offer what you can't resume) plus that
+        harness's recent conversations from the EXISTING transcript
+        readers. Every row carries a cwd the store itself recorded AND
+        that resolves inside a configured root (a conversation you
+        cannot reopen in an allowed folder is not offered), the title
+        masked then clipped, newest first, capped. Unknown, disabled or
+        unconfigured all degrade to an EMPTY list — a read never
+        errors."""
+        name = (harness or "").strip().lower()
+        roots = operator_config.roots()
+        sessions: list = []
+        if name and name in RESUME_COMMANDS and roots:
+            for row in recent_sessions(name, cap=SESSIONS_RECENT_CAP):
+                resolved = _resolved_within_roots(str(row.get("cwd") or ""), roots)
+                if resolved is None:
+                    continue
+                sessions.append({
+                    "session_id": row.get("session_id") or "",
+                    # Mask BEFORE clipping (S14): a secret spanning the
+                    # cut must not leak its surviving half.
+                    "title": mask_text(str(row.get("title") or ""))[:SESSIONS_TITLE_CHARS],
+                    "cwd": resolved,
+                    "last_ts": row.get("last_ts"),
+                })
+                if len(sessions) >= SESSIONS_RECENT_CAP:
+                    break
+        return {"harnesses": sorted(RESUME_COMMANDS), "sessions": sessions}
+
+    @app.post("/session/resume")
+    def session_resume(request: Request, body: SessionResumeRequest) -> dict:
+        """Reopens one past conversation in its own folder (S3, doc 03 §3).
+
+        The PWA names a harness from the VERIFIED resume table and one
+        of its own session ids; the server alone resolves the folder —
+        ``resume_target`` reads it from the transcript store, and a cwd
+        the store cannot name (or one outside the operator's roots) is
+        a 422, never a guess. The launch itself rides the SAME seams
+        ``create_session`` rides (``BrainTools.resume_session``:
+        ``create_tab`` + the typed verified argv), under the SAME
+        receipt idempotency as /session/new. Audited as
+        ``session.resume`` with device attribution; the detail carries
+        the harness, the session id and the outcome — ids, never
+        conversation content."""
+        def refuse(reason: str) -> None:
+            audit_log.record({
+                "action": "session.resume",
+                "device": audit_device(request),
+                "detail": {"outcome": reason},
+            })
+            raise HTTPException(status_code=422, detail=reason)
+
+        roots = operator_config.roots()
+        if not roots:
+            refuse("roots_unconfigured")
+        harness = (body.harness or "").strip().lower()
+        session_id = (body.session_id or "").strip()
+        if harness not in launchable_harnesses():
+            refuse("unknown_harness")
+        if harness not in RESUME_COMMANDS:
+            refuse("resume_not_enabled")
+        target = resume_target(harness, session_id)
+        if target is None:
+            refuse("unknown_session")
+        raw_cwd = str(target.get("cwd") or "").strip()
+        resolved = _resolved_within_roots(raw_cwd, roots) if raw_cwd else None
+        if resolved is None:
+            # A folder the store does not name, or one outside the
+            # operator's roots: both refused — the session's folder is
+            # never guessed and never client input.
+            refuse("cwd_unknown" if not raw_cwd else "root_not_allowed")
+        workspace_id = (body.workspace_id or "").strip() or None
+        if workspace_id is not None and not _known_workspace(tools, workspace_id):
+            # S1b, after the unchanged validation order: an unlisted
+            # workspace targets nothing.
+            refuse("unknown_workspace")
+        title = str(target.get("title") or "")
+        request_id = (body.request_id or "").strip() or None
+
+        def do_resume() -> dict:
+            if workspace_id:
+                result = tools.resume_session(
+                    harness, session_id, resolved, title, workspace_id=workspace_id
+                )
+            else:
+                result = tools.resume_session(harness, session_id, resolved, title)
+            created = getattr(tools, "last_created", None)
+            created = created() if callable(created) else None
+            pane_id = created.pane_id if created is not None else None
+            outcome = "error" if result.startswith("error") else "executed"
+            detail = {
+                "outcome": outcome,
+                "harness": harness,
+                "session_id": session_id,
+                "pane_id": pane_id,
+            }
+            if workspace_id:
+                detail["workspace_id"] = workspace_id
+            audit_log.record({
+                "action": "session.resume",
+                "pane_id": pane_id,
+                "device": audit_device(request),
+                "detail": detail,
+            })
+            if outcome == "error":
+                raise HTTPException(status_code=502, detail=result)
+            return {"ok": True, "result": result, "pane_id": pane_id}
+
+        if request_id is None:
+            return do_resume()
+        return launch_receipts.launch_once(request_id, do_resume)
+
     @app.post("/operator/preset")
     def operator_preset(request: Request, body: OperatorPresetRequest) -> dict:
         """Sends one labelled key preset to one exact pane.
@@ -3455,7 +4290,7 @@ def create_app(
         if not applied:
             raise gate_gone()
         audit_gate_decision("approval.approve", resolved, audit_device(request))
-        return replay_and_report(resolved)
+        return replay_and_report(resolved, device=audit_device(request))
 
     @app.post("/approval/{gate_id}/reject")
     def approval_reject(gate_id: str, request: Request) -> dict:
@@ -3738,7 +4573,7 @@ def create_app(
                 "approval.resolve", resolved, audit_device(request),
                 extra={"decision": "approve", "spoken": True},
             )
-            turn = replay_and_report(resolved)
+            turn = replay_and_report(resolved, device=audit_device(request))
             return {
                 "decision": "approve",
                 "answer": turn["answer"],
@@ -3905,13 +4740,18 @@ def create_app(
 
         def _h_dialog_answer(pane_id, **payload):
             result = tools.answer_structured_dialog(
-                pane_id, payload.get("fingerprint"), payload.get("option")
+                pane_id,
+                payload.get("fingerprint"),
+                option=payload.get("option"),
+                choices=payload.get("choices"),
+                text=payload.get("text"),
             )
             outcome = result["outcome"]
             if outcome == "answered":
                 return {
                     "ok": True, "pane_id": pane_id,
                     "option": payload.get("option"),
+                    "choices": payload.get("choices"),
                     "label": result.get("label", ""),
                 }
             reason = result.get("reason", "")

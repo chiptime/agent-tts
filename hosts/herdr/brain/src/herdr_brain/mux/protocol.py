@@ -51,7 +51,24 @@ class MuxAdapter(Protocol):
     def send_prompt(self, pane_id: str, text: str, timeout_ms: Optional[int] = None) -> dict:
         ...
 
-    def create_tab(self, label: str, cwd: Optional[str] = None) -> dict:
+    def send_text(self, pane_id: str, text: str) -> None:
+        """Types literal text WITHOUT Enter — the typing half of the
+        free-text dialog recipe. herdr's ``pane send-text`` is the
+        verified shape; adapters without one refuse ``unsupported``
+        rather than approximating, exactly like any other surface."""
+        ...
+
+    def create_tab(
+        self,
+        label: str,
+        cwd: Optional[str] = None,
+        workspace_id: Optional[str] = None,
+    ) -> dict:
+        """``workspace_id`` is the herdr-only workspace targeting
+        (parity-f7c S1b): adapters whose multiplexer has no workspaces
+        keep the two-argument shape and are never called with it — the
+        parameter has a default exactly so the contract stays
+        additive."""
         ...
 
     def start_agent(

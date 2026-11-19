@@ -45,13 +45,17 @@ _PROMPT_OUTCOME_CODES = {
 #: The ONLY keys the brain will forward to an agent. A permission dialog is
 #: answered by navigating (arrows/tab), confirming (enter), dismissing
 #: (esc) or picking a NUMBERED option directly (digits 0-9: the dialogs
-#: that print numbers commit on them — everything else is still refused,
-#: and free text never reaches a pane). herdr validates keys server-side
-#: too; this list is the brain's own guard so nothing outside it can
-#: ever reach the CLI. Verified against herdr 0.9.1 (``esc`` is the
-#: canonical Escape name).
+#: that print numbers commit on them — everything else is still refused).
+#: The free-text recipe (S3) adds EXACTLY two chords, ``ctrl+u`` and
+#: ``ctrl+k``: they clear the field the recipe is about to type into
+#: (herdr accepts ctrl+letter spellings). Free TEXT itself never rides
+#: this surface — it goes through :meth:`HerdrClient.send_text` with its
+#: own sanitization. herdr validates keys server-side too; this list is
+#: the brain's own guard so nothing outside it can ever reach the CLI.
+#: Verified against herdr 0.9.1 (``esc`` is the canonical Escape name).
 SEND_KEY_ALLOWLIST = (
     "up", "down", "left", "right", "enter", "esc", "tab",
+    "ctrl+u", "ctrl+k",
     "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
 )
 
@@ -96,6 +100,110 @@ class AgentInfo:
     cwd: str
     title: str
     focused: bool
+
+
+@dataclass(frozen=True)
+class WorkspaceInfo:
+    """One workspace as reported by ``herdr workspace list``.
+
+    The CLI's workspace_list carries NO cwd (probed live, parity-f7c
+    S1b): a space's folder is derived by the caller from its live
+    agent panes (``AgentInfo.pane_id`` prefixes with the workspace
+    id, e.g. pane ``w11:p2`` ↔ workspace ``w11``).
+    """
+
+    workspace_id: str
+    label: str
+    number: int
+    focused: bool
+
+
+@dataclass(frozen=True)
+class PaneInfo:
+    """One pane as reported by ``herdr pane list``.
+
+    Probed live (parity-f7c T5b): EVERY pane carries a cwd — plain
+    shell panes too, not just agent panes — which is what lets a
+    workspace with no running agent still resolve its folder. Only
+    the fields the cwd derivation needs are kept.
+    """
+
+    pane_id: str
+    cwd: str
+    focused: bool
+
+
+def parse_workspace_list(raw: str) -> List[WorkspaceInfo]:
+    """Parses NDJSON output of ``herdr workspace list``.
+
+    Same discipline as :func:`parse_agent_list`: returns every entry
+    whose ``result.workspaces`` array is present, tolerates leading
+    noise lines that are not JSON, and preserves the CLI's own order
+    (the caller owns the sort).
+    """
+    workspaces: List[WorkspaceInfo] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        result = payload.get("result") if isinstance(payload, dict) else None
+        entries = result.get("workspaces") if isinstance(result, dict) else None
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                number = int(entry.get("number", 0) or 0)
+            except (TypeError, ValueError):
+                number = 0
+            workspaces.append(
+                WorkspaceInfo(
+                    workspace_id=str(entry.get("workspace_id", "")),
+                    label=str(entry.get("label", "")),
+                    number=number,
+                    focused=bool(entry.get("focused", False)),
+                )
+            )
+    return workspaces
+
+
+def parse_pane_list(raw: str) -> List[PaneInfo]:
+    """Parses NDJSON output of ``herdr pane list``.
+
+    Same discipline as :func:`parse_agent_list`: returns every entry
+    whose ``result.panes`` array is present, tolerates leading noise
+    lines that are not JSON, and preserves the CLI's own order (the
+    caller owns any ranking).
+    """
+    panes: List[PaneInfo] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        result = payload.get("result") if isinstance(payload, dict) else None
+        entries = result.get("panes") if isinstance(result, dict) else None
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            panes.append(
+                PaneInfo(
+                    pane_id=str(entry.get("pane_id", "")),
+                    cwd=str(entry.get("cwd", "")),
+                    focused=bool(entry.get("focused", False)),
+                )
+            )
+    return panes
 
 
 def parse_agent_list(raw: str) -> List[AgentInfo]:
@@ -211,6 +319,29 @@ class HerdrClient:
         proc = self._run_cli(["agent", "list"], timeout_s=15)
         return parse_agent_list(proc.stdout)
 
+    def list_workspaces(self) -> List[WorkspaceInfo]:
+        """Every workspace, sorted by its ``number``.
+
+        Verified CLI shape (probed live, parity-f7c S1b):
+        ``herdr workspace list`` prints one NDJSON success envelope
+        whose ``result`` is the ``workspace_list`` variant. Includes
+        workspaces with NO live pane — hiding them is a caller
+        decision, never this listing's.
+        """
+        proc = self._run_cli(["workspace", "list"], timeout_s=15)
+        return sorted(parse_workspace_list(proc.stdout), key=lambda w: w.number)
+
+    def list_panes(self) -> List[PaneInfo]:
+        """Every live pane — agent or not (probed live, parity-f7c T5b).
+
+        ``herdr pane list`` answers one NDJSON success envelope whose
+        ``result`` is the ``pane_list`` variant; each pane row carries
+        its own cwd, so this is the folder source for workspaces with
+        no running agent.
+        """
+        proc = self._run_cli(["pane", "list"], timeout_s=15)
+        return parse_pane_list(proc.stdout)
+
     def active_agent(self) -> Optional[AgentInfo]:
         return pick_active(self.list_agents())
 
@@ -282,20 +413,49 @@ class HerdrClient:
             return {"ok": False, "error": str(exc)}
         return {"ok": True, "error": ""}
 
-    def create_tab(self, label: str, cwd: Optional[str] = None) -> dict:
+    def send_text(self, pane_id: str, text: str) -> None:
+        """Types literal text into a pane, WITHOUT Enter.
+
+        Verified CLI shape: ``herdr pane send-text <PANE_ID> <TEXT>`` —
+        "Send literal text to a pane". This is the typing half of the
+        free-text dialog recipe (S3): the recipe selects the row with
+        its digit, clears the field with ``ctrl+u``/``ctrl+k`` and only
+        then types, re-reads the screen and commits with Enter itself —
+        so the text must arrive as literal keystrokes, never with a
+        trailing submit. The text is sanitized exactly like a prompt
+        (:func:`sanitize_prompt_text`): a literal newline would submit
+        the field early. Raises :class:`HerdrError` on any CLI failure.
+        """
+        clean = sanitize_prompt_text(text)
+        if not clean:
+            raise HerdrError("refusing to send empty text")
+        self._run_cli(["pane", "send-text", pane_id, clean], timeout_s=15)
+
+    def create_tab(
+        self,
+        label: str,
+        cwd: Optional[str] = None,
+        workspace_id: Optional[str] = None,
+    ) -> dict:
         """Creates a new tab and returns ``{"tab_id", "pane_id"}``.
 
-        Verified CLI shape: ``herdr tab create --label <TEXT> [--cwd <PATH>]``
-        prints the API success envelope whose ``result`` is the
-        ``tab_created`` variant (pinned via ``herdr api schema --json``):
+        Verified CLI shape: ``herdr tab create --label <TEXT>
+        [--cwd <PATH>] [--workspace <WORKSPACE_ID>]`` prints the API
+        success envelope whose ``result`` is the ``tab_created``
+        variant (pinned via ``herdr api schema --json``):
         ``result.tab.tab_id`` (TabInfo) and ``result.root_pane.pane_id``
-        (PaneInfo), both required keys of that variant. Should the CLI ever
-        print a different envelope, :func:`parse_success_result` raises
-        HerdrError instead of returning half-parsed ids.
+        (PaneInfo), both required keys of that variant. Should the CLI
+        ever print a different envelope, :func:`parse_success_result`
+        raises HerdrError instead of returning half-parsed ids.
+        ``--workspace`` targets the tab INSIDE that workspace (probed
+        live, parity-f7c S1b); without it the CLI keeps its current-
+        workspace behavior.
         """
         args = ["tab", "create", "--label", label]
         if cwd:
             args.extend(["--cwd", cwd])
+        if workspace_id:
+            args.extend(["--workspace", workspace_id])
         proc = self._run_cli(args, timeout_s=15)
         result = parse_success_result(proc.stdout)
         tab = result.get("tab") if isinstance(result.get("tab"), dict) else {}

@@ -18,6 +18,7 @@ terminal, so it earns the same discipline as every other key route:
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -27,11 +28,22 @@ import herdr_brain.server as server_module
 from herdr_brain.config import Settings
 from herdr_brain.dialogs import recognize
 from herdr_brain.herdr import AgentInfo
+from herdr_brain.tools import SCREEN_FULL_LINES
 
 FIXTURES = Path(__file__).parent / "fixtures" / "dialogs"
 
 CLAUDE_SELECT = (FIXTURES / "claude-select.txt").read_text(encoding="utf-8")
 GROK_PERMISSION = (FIXTURES / "grok-permission.txt").read_text(encoding="utf-8")
+OPENCODE_MULTI = (FIXTURES / "opencode-multi.txt").read_text(encoding="utf-8")
+OPENCODE_MULTI_CONFIRM = (FIXTURES / "opencode-multi-confirm.txt").read_text(
+    encoding="utf-8"
+)
+OPENCODE_PICKER = (FIXTURES / "opencode-models-picker.txt").read_text(
+    encoding="utf-8"
+)
+OPENCODE_OVER_CHAT = (FIXTURES / "opencode-models-picker-over-chat.txt").read_text(
+    encoding="utf-8"
+)
 
 BLOCKED_CLAUDE = AgentInfo(
     pane_id="w1:p3",
@@ -52,6 +64,17 @@ BLOCKED_GROK = AgentInfo(
     session_value="bbbbbbbb-1111-2222-3333-444444444444",
     cwd="/repo",
     title="Grok",
+    focused=True,
+)
+
+BLOCKED_OPENCODE = AgentInfo(
+    pane_id="w1:p3",
+    agent="opencode",
+    status="blocked",
+    session_kind="id",
+    session_value="00000000-1111-2222-3333-444444444444",
+    cwd="/repo",
+    title="OpenCode",
     focused=True,
 )
 
@@ -83,8 +106,8 @@ class DialogTapStub:
 
 @pytest.fixture
 def make_client(settings, tmp_path, monkeypatch):
-    def build(agents, screen, sleeper=None):
-        stub = DialogTapStub(agents, screen)
+    def build(agents, screen, sleeper=None, stub=None, audit_content="preview"):
+        stub = stub or DialogTapStub(agents, screen)
         state_dir = tmp_path / "state"
 
         def factory(cfg, **kwargs):
@@ -95,7 +118,8 @@ def make_client(settings, tmp_path, monkeypatch):
 
         monkeypatch.setattr(server_module, "BrainTools", factory)
         cfg = Settings(**{**settings.__dict__, "state_dir": str(state_dir),
-                          "audio_dir": str(tmp_path / "audio")})
+                          "audio_dir": str(tmp_path / "audio"),
+                          "audit_content": audit_content})
         client = TestClient(server_module.create_app(settings=cfg))
         client.state_dir = state_dir
         client.audit_path = state_dir / "audit.log"
@@ -122,6 +146,85 @@ def _fingerprint(agent: str, screen: str) -> str:
     model = recognize(agent, screen)
     assert model is not None and not model.unread
     return model.fingerprint
+
+
+def multi_screen(checked, pointer) -> str:
+    """The claude multi-select shape with the given checked boxes (a
+    set of 0-based row indexes) and the pointer on ``pointer``."""
+    names = ("Cheese", "Pepperoni", "Mushrooms")
+    rows = []
+    for index, name in enumerate(names):
+        marker = "Filled checkbox" if index in checked else "Empty checkbox"
+        arrow = "❯" if index == pointer else " "
+        rows.append(f"│ {arrow} {index + 1}. {marker} {name}")
+    arrow = "❯" if pointer == 3 else " "
+    rows.append(f"│ {arrow} 4. Submit")
+    return (
+        "│ Which toppings do you want?\n"
+        "│ Pick every one you like.\n"
+        "│\n"
+        + "\n".join(rows)
+        + "\n│\n"
+        + "  Space to select · Enter to submit · ↑/↓ to navigate · Esc to cancel\n"
+    )
+
+
+class MultiSelectStub(DialogTapStub):
+    """Drives the synthesized multi-select screen: a digit flips its box
+    and moves the pointer there, the arrows walk the pointer, Enter
+    closes the dialog."""
+
+    def __init__(self, agents, checked, pointer=0):
+        super().__init__(agents, "")
+        self.checked = set(checked)
+        self.pointer = pointer
+        self.closed = False
+
+    def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+        if self.closed:
+            return "$ pytest -q\n..........\n10 passed in 0.02s\n$ _"
+        return multi_screen(self.checked, self.pointer)
+
+    def send_keys(self, pane_id, keys):
+        super().send_keys(pane_id, keys)
+        for key in keys:
+            if key in ("1", "2", "3"):
+                index = int(key) - 1
+                if index in self.checked:
+                    self.checked.discard(index)
+                else:
+                    self.checked.add(index)
+                self.pointer = index
+            elif key == "4":
+                self.pointer = 3
+            elif key == "down":
+                self.pointer = min(3, self.pointer + 1)
+            elif key == "up":
+                self.pointer = max(0, self.pointer - 1)
+            elif key == "enter":
+                self.closed = True
+        return {"ok": True, "error": ""}
+
+
+class HijackedMultiSelectStub(MultiSelectStub):
+    """After the FIRST key the agent redraws a different question: the
+    dialog identity changed mid-answer and nothing further may leave."""
+
+    def __init__(self, agents, checked, pointer=0):
+        super().__init__(agents, checked, pointer)
+        self.hijacked = False
+
+    def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+        if self.hijacked:
+            return multi_screen(self.checked, self.pointer).replace(
+                "Which toppings", "Which sauces"
+            )
+        return super().read_screen(pane_id, n_lines, source, as_ansi)
+
+    def send_keys(self, pane_id, keys):
+        result = super().send_keys(pane_id, keys)
+        self.hijacked = True
+        return result
 
 
 class TestAnswerByRecipe:
@@ -288,6 +391,86 @@ class TestStructuredInView:
         assert "structured" not in body
 
 
+IDLE_OPENCODE = AgentInfo(**{**BLOCKED_OPENCODE.__dict__, "status": "idle"})
+
+
+class ModalTailStub(DialogTapStub):
+    """Reader double that serves only the LAST ``n_lines`` of the
+    screen, like a real tail read. The opencode picker modal floats
+    mid-screen, so a 30-line tail cuts its title/Search rows and the
+    strict detector refuses; a full-window read sees them."""
+
+    def __init__(self, agents, screen):
+        super().__init__(agents, screen)
+        self.requested_lines: list = []
+
+    def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+        if n_lines:
+            self.requested_lines.append(n_lines)
+        lines = self._screen.splitlines()
+        if n_lines and n_lines > 0:
+            lines = lines[-n_lines:]
+        return "\n".join(lines)
+
+
+class TestModalView:
+    """GET /view?modal=1 — the PWA model-switch flow (F7d fix).
+
+    A USER-opened opencode ``/models`` picker leaves the pane ``idle``,
+    so the status-gated /view never carries it. The flag runs the
+    structured recognition REGARDLESS of status, reading the FULL
+    window (the floating modal's title rows sit outside the 30-line
+    dialog window). Without the flag the payload keeps the exact
+    legacy shape."""
+
+    def test_modal_view_recognizes_the_idle_panes_picker(self, make_client):
+        stub = ModalTailStub([IDLE_OPENCODE], OPENCODE_PICKER)
+        client, _ = make_client([IDLE_OPENCODE], OPENCODE_PICKER, stub=stub)
+
+        body = client.get(
+            "/view", params={"pane_id": "w1:p3", "modal": 1}
+        ).json()
+
+        assert body["structured"]["kind"] == "model_picker"
+        assert body["structured"]["agent"] == "opencode"
+        assert body["structured"]["options"], "the picker rows ride along"
+        # The recognition read is the FULL window: the fixture's 33
+        # lines put the title/Search rows outside a 30-line tail.
+        assert SCREEN_FULL_LINES in stub.requested_lines
+
+    def test_plain_view_on_the_same_idle_pane_keeps_the_legacy_shape(
+        self, make_client
+    ):
+        stub = ModalTailStub([IDLE_OPENCODE], OPENCODE_PICKER)
+        client, _ = make_client([IDLE_OPENCODE], OPENCODE_PICKER, stub=stub)
+
+        body = client.get("/view", params={"pane_id": "w1:p3"}).json()
+
+        assert "structured" not in body
+        assert sorted(body) == [
+            "dialog", "pending", "screen", "screen_runs", "status", "transcript",
+        ]
+        # Idle without the flag: only the plain 12-line screen tail was
+        # read — no 30-line dialog read, no 120-line modal read.
+        from herdr_brain.tools import DIALOG_SCREEN_LINES
+
+        assert DIALOG_SCREEN_LINES not in stub.requested_lines
+        assert SCREEN_FULL_LINES not in stub.requested_lines
+
+    def test_modal_view_also_reads_a_blocked_pane_at_full_window(
+        self, make_client
+    ):
+        stub = ModalTailStub([BLOCKED_OPENCODE], OPENCODE_PICKER)
+        client, _ = make_client([BLOCKED_OPENCODE], OPENCODE_PICKER, stub=stub)
+
+        body = client.get(
+            "/view", params={"pane_id": "w1:p3", "modal": 1}
+        ).json()
+
+        assert body["structured"]["kind"] == "model_picker"
+        assert SCREEN_FULL_LINES in stub.requested_lines
+
+
 class TestWalkRecipe:
     """A dialog whose screen prints no digit is answered by the guard's
     pointer walk: one arrow, a re-read, and only then Enter."""
@@ -348,6 +531,947 @@ class TestWalkRecipe:
         assert result["outcome"] == "refused"
         assert result["reason"] == "send-failed"
         assert "zellij" in result["detail"]
+
+
+#: The pointed row's paint in opencode 1.19.5's /models picker (live
+#: capture ``opencode-models-search-wide.ansi``).
+POINTER_PAINT = "\x1b[48;2;250;178;131m"
+
+
+def paint_pointer(text: str, pointer: int) -> str:
+    """Paints the ``pointer``-th model row of a FILTERED picker screen
+    the way opencode does: a background from the label column on. The
+    plain text is unchanged, so every fingerprint stays the same."""
+    lines = text.split("\n")
+    title_at = next(i for i, line in enumerate(lines) if "Select model" in line)
+    column = lines[title_at].index("Select model")
+    footer_at = next(i for i, line in enumerate(lines) if "Connect provider" in line)
+    end = lines[footer_at].index("ctrl+f") + len("ctrl+f")
+    search_at = next(
+        i for i in range(title_at + 1, footer_at) if lines[i][column:end].strip()
+    )
+    rows = [
+        i for i in range(search_at + 1, footer_at) if lines[i][column:end].strip()
+    ]
+    if 0 <= pointer < len(rows):
+        at = rows[pointer]
+        line = lines[at]
+        lines[at] = line[:column] + POINTER_PAINT + line[column:] + "\x1b[0m"
+    return "\n".join(lines)
+
+
+def composer_screen(model_text: str) -> str:
+    """The idle opencode screen after a switch: the composer's model row."""
+    return (
+        "$ opencode\n"
+        "   ┃\n"
+        '   ┃  Ask anything… "Fix a TODO in the codebase"\n'
+        "   ┃\n"
+        f"   ┃  Build · {model_text}\n"
+    )
+
+
+def move_pointer(state: dict, keys, keep) -> None:
+    """Applies a walk to the stub's pointer (opencode wraps; the recipe
+    never walks past an end, so clamping is enough here)."""
+    for key in keys:
+        if key == "down":
+            state["pointer"] = min(state["pointer"] + 1, max(len(keep) - 1, 0))
+        elif key == "up":
+            state["pointer"] = max(state["pointer"] - 1, 0)
+
+
+class TestModelPickerSearchFirst:
+    """The opencode ``/models`` picker: a tap TYPES the row's model name
+    into the picker's Search box, reads the POINTER from the screen's
+    paint, walks the arrows to the target when it is not pointed, and
+    presses Enter only once a fresh read shows the pointer on it — then
+    confirms the switch from the composer's model row. Duplicate rows
+    carrying the same label are one outcome (the first is taken);
+    several DISTINCT rows naming the model are ambiguous. Never a
+    digit."""
+
+    def _filtered(self, query, keep):
+        lines = OPENCODE_PICKER.split("\n")
+        title, blank = lines[0], lines[1]
+        column = title.index("Select model")
+        query_row = lines[2].replace("Search", query, 1)
+        footer = next(line for line in lines if "Connect provider" in line)
+        rows = [" " * column + label for label in keep]
+        return "\n".join([title, blank, query_row, blank, *rows, blank, footer])
+
+    def _stub(self, keep, close=True, query="GLM-5.3 Highspeed", painted=True,
+              committed=None):
+        screens = {
+            "picker": OPENCODE_PICKER,
+            "filtered": self._filtered(query, keep),
+        }
+        state = {"stage": "picker", "pointer": 0}
+
+        class SearchStub(DialogTapStub):
+            def __init__(self):
+                super().__init__([BLOCKED_OPENCODE], OPENCODE_PICKER)
+                self.text_calls: list = []
+                self.state = state
+
+            def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+                if state["stage"] == "done":
+                    return composer_screen(committed or keep[state["pointer"]])
+                screen = screens[state["stage"]]
+                if state["stage"] == "filtered" and painted:
+                    screen = paint_pointer(screen, state["pointer"])
+                return screen
+
+            def send_text(self, pane_id, text):
+                self.text_calls.append({"pane_id": pane_id, "text": text})
+                state["stage"] = "filtered"
+                state["pointer"] = 0
+
+            def send_keys(self, pane_id, keys):
+                result = super().send_keys(pane_id, keys)
+                move_pointer(state, keys, keep)
+                if close and "enter" in keys:
+                    state["stage"] = "done"
+                return result
+
+        return SearchStub()
+
+    def test_a_tap_types_the_name_and_enters_once(self, settings):
+        from herdr_brain.tools import BrainTools
+
+        stub = self._stub(["GLM-5.3 Highspeed"])
+        tools = BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
+        fingerprint = _fingerprint("opencode", OPENCODE_PICKER)
+        highspeed = next(
+            index
+            for index, option
+            in enumerate(recognize("opencode", OPENCODE_PICKER).options)
+            if option.label == "GLM-5.3 Highspeed"
+        )
+
+        result = tools.answer_structured_dialog("w1:p3", fingerprint, highspeed)
+
+        assert result["outcome"] == "answered"
+        assert result["label"] == "GLM-5.3 Highspeed"
+        assert [call["text"] for call in stub.text_calls] == ["GLM-5.3 Highspeed"]
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
+
+    def _glm(self):
+        return next(
+            index
+            for index, option
+            in enumerate(recognize("opencode", OPENCODE_PICKER).options)
+            if option.label == "GLM-5.3"
+        )
+
+    def test_a_target_under_another_row_is_walked_to_then_committed(
+        self, settings
+    ):
+        """LIVE regression (operator, 2026-11-19): searching ``GLM-5.3``
+        listed ``GLM-5.3-Flash`` FIRST (opencode puts free models and
+        favourites first) and the pointer sat on it. The tap must walk
+        to the exact row, prove the pointer there, and only then Enter."""
+        from herdr_brain.tools import BrainTools
+
+        stub = self._stub(
+            ["GLM-5.3-Flash", "GLM-5.3", "GLM-5.3 Highspeed"], query="GLM-5.3"
+        )
+        tools = BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
+
+        result = tools.answer_structured_dialog(
+            "w1:p3", _fingerprint("opencode", OPENCODE_PICKER), self._glm()
+        )
+
+        assert result["outcome"] == "answered"
+        assert result["label"] == "GLM-5.3"
+        assert [call["text"] for call in stub.text_calls] == ["GLM-5.3"]
+        assert stub.key_calls == [
+            {"pane_id": "w1:p3", "keys": ["down"]},
+            {"pane_id": "w1:p3", "keys": ["enter"]},
+        ]
+
+    def test_an_unreadable_pointer_presses_nothing(self, settings):
+        from herdr_brain.tools import BrainTools
+
+        stub = self._stub(["GLM-5.3"], query="GLM-5.3", painted=False)
+        tools = BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
+
+        result = tools.answer_structured_dialog(
+            "w1:p3", _fingerprint("opencode", OPENCODE_PICKER), self._glm()
+        )
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "changed"
+        assert stub.key_calls == []
+
+    def test_a_walk_that_does_not_land_never_presses_enter(self, settings):
+        """A desk key (or a stuck pointer) between the walk and the
+        proof: the fresh read does not show the pointer on the target,
+        so Enter never leaves."""
+        from herdr_brain.tools import BrainTools
+
+        stub = self._stub(["GLM-5.3-Flash", "GLM-5.3"], query="GLM-5.3")
+        original = stub.send_keys
+
+        def stuck(pane_id, keys):
+            result = original(pane_id, keys)
+            stub.state["pointer"] = 0
+            return result
+
+        stub.send_keys = stuck
+        tools = BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
+
+        result = tools.answer_structured_dialog(
+            "w1:p3", _fingerprint("opencode", OPENCODE_PICKER), self._glm()
+        )
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "changed"
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["down"]}]
+
+    def test_a_composer_showing_another_model_is_not_success(self, settings):
+        from herdr_brain.tools import BrainTools
+
+        stub = self._stub(
+            ["GLM-5.3"], query="GLM-5.3", committed="GLM-5.3-Flash Z.AI Coding Plan"
+        )
+        tools = BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
+
+        result = tools.answer_structured_dialog(
+            "w1:p3", _fingerprint("opencode", OPENCODE_PICKER), self._glm()
+        )
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "wrong-model"
+        assert "GLM-5.3-Flash" in result["detail"]
+
+    def test_two_distinct_rows_naming_the_model_are_ambiguous(self, settings):
+        from herdr_brain.tools import BrainTools
+
+        stub = self._stub(
+            ["GLM-5.3 OpenCode Go", "GLM-5.3 Z.AI Coding Plan"], query="GLM-5.3"
+        )
+        tools = BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
+
+        result = tools.answer_structured_dialog(
+            "w1:p3", _fingerprint("opencode", OPENCODE_PICKER), self._glm()
+        )
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "ambiguous"
+        # Nothing committed, nothing else sent: the typed text stays.
+        assert stub.key_calls == []
+
+    def test_identical_duplicate_rows_answer_once(self, settings):
+        """Live parity finding: the opencode catalog lists the SAME
+        model several times (duplicate provider entries — three
+        identical GLM-5.3 rows). Rows whose label is IDENTICAL to the
+        target are equivalent: same model, same outcome. The first is
+        taken with a single Enter, no matter how many carry it."""
+        from herdr_brain.tools import BrainTools
+
+        stub = self._stub(["GLM-5.3", "GLM-5.3", "GLM-5.3"], query="GLM-5.3")
+        tools = BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
+        fingerprint = _fingerprint("opencode", OPENCODE_PICKER)
+        glm = next(
+            index
+            for index, option
+            in enumerate(recognize("opencode", OPENCODE_PICKER).options)
+            if option.label == "GLM-5.3"
+        )
+
+        result = tools.answer_structured_dialog("w1:p3", fingerprint, glm)
+
+        assert result["outcome"] == "answered"
+        assert result["label"] == "GLM-5.3"
+        assert [call["text"] for call in stub.text_calls] == ["GLM-5.3"]
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
+
+    def test_the_exact_name_listed_first_wins_over_longer_names(self, settings):
+        """GLM-5.3 also prefixes GLM-5.3-Flash, but the row whose label
+        EQUALS the target is first: the pointer is on it, so one Enter
+        commits exactly the tapped model (prefix siblings do not make
+        it ambiguous)."""
+        from herdr_brain.tools import BrainTools
+
+        stub = self._stub(["GLM-5.3", "GLM-5.3-Flash"], query="GLM-5.3")
+        tools = BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
+        fingerprint = _fingerprint("opencode", OPENCODE_PICKER)
+        glm = next(
+            index
+            for index, option
+            in enumerate(recognize("opencode", OPENCODE_PICKER).options)
+            if option.label == "GLM-5.3"
+        )
+
+        result = tools.answer_structured_dialog("w1:p3", fingerprint, glm)
+
+        assert result["outcome"] == "answered"
+        assert [call["text"] for call in stub.text_calls] == ["GLM-5.3"]
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
+
+    def test_a_filter_that_never_settles_refuses(self, settings):
+        from herdr_brain.tools import BrainTools
+
+        stub = self._stub(["GLM-5.3 Highspeed"], close=False)
+        tools = BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
+        fingerprint = _fingerprint("opencode", OPENCODE_PICKER)
+        highspeed = next(
+            index
+            for index, option
+            in enumerate(recognize("opencode", OPENCODE_PICKER).options)
+            if option.label == "GLM-5.3 Highspeed"
+        )
+
+        result = tools.answer_structured_dialog("w1:p3", fingerprint, highspeed)
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "no-progress"
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
+
+    def _tail_stub(self, keep, close=True):
+        """The search flow behind a reader that honours the REQUESTED
+        window like a real tail read: the picker fixture is 33 lines,
+        so a 30-line request cannot see its title/Search rows — only a
+        window of 33 lines or more can read the dialog at all."""
+        filtered = paint_pointer(self._filtered("GLM-5.3 Highspeed", keep), 0)
+        state = {"stage": "picker"}
+
+        class TailSearchStub(DialogTapStub):
+            def __init__(self):
+                super().__init__([IDLE_OPENCODE], OPENCODE_PICKER)
+                self.text_calls: list = []
+                self.requested_lines: list = []
+
+            def read_screen(
+                self, pane_id, n_lines=None, source="visible", as_ansi=False
+            ):
+                if n_lines:
+                    self.requested_lines.append(n_lines)
+                if state["stage"] == "done":
+                    return composer_screen(keep[0])
+                text = OPENCODE_PICKER if state["stage"] == "picker" else filtered
+                lines = text.splitlines()
+                if n_lines and n_lines > 0:
+                    lines = lines[-n_lines:]
+                return "\n".join(lines)
+
+            def send_text(self, pane_id, text):
+                self.text_calls.append({"pane_id": pane_id, "text": text})
+                state["stage"] = "filtered"
+
+            def send_keys(self, pane_id, keys):
+                result = super().send_keys(pane_id, keys)
+                if close and "enter" in keys:
+                    state["stage"] = "done"
+                return result
+
+        return TailSearchStub()
+
+    def test_a_tap_answers_the_fingerprint_the_modal_view_published(
+        self, make_client
+    ):
+        """The /view↔answer window parity pin (the live parity bug).
+
+        The modal /view detects the 33-line picker on the FULL window
+        and publishes that fingerprint; the answer's fresh guard read
+        must use the SAME window. A 30-line guard read cannot see the
+        title row, the recognizer fail-closes, and the tap is refused
+        ``changed`` — forever, because no fresh read ever changes."""
+        stub = self._tail_stub(["GLM-5.3 Highspeed"])
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+
+        published = client.get(
+            "/view", params={"pane_id": "w1:p3", "modal": 1}
+        ).json()["structured"]
+        assert published["kind"] == "model_picker"
+        assert published["fingerprint"]
+
+        highspeed = next(
+            index
+            for index, option
+            in enumerate(recognize("opencode", OPENCODE_PICKER).options)
+            if option.label == "GLM-5.3 Highspeed"
+        )
+        response = client.post(
+            "/pane/dialog/answer",
+            json={
+                "pane_id": "w1:p3",
+                "fingerprint": published["fingerprint"],
+                "option": highspeed,
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["ok"] is True
+        assert body["label"] == "GLM-5.3 Highspeed"
+        assert [call["text"] for call in stub.text_calls] == ["GLM-5.3 Highspeed"]
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
+
+
+class TestModelPickerOverChatSearchFirst:
+    """LIVE regression (2026-11-19, the operator's real tap): option 0 of
+    the over-chat picker was ``Qwen3.8 Max OpenCode Go`` — the SCREEN's
+    text run of ``<model> <provider>``. The recipe typed the whole run
+    into opencode's Search (which matches the model name only), found
+    nothing, refused ``no-match`` and LEFT the text in the box. The
+    answer must type the clean MODEL name, match the filtered rows by it,
+    and clear Search on every refusal."""
+
+    def _filtered(self, query, keep):
+        lines = OPENCODE_OVER_CHAT.split("\n")
+        title_at = next(i for i, line in enumerate(lines) if "Select model" in line)
+        column = lines[title_at].index("Select model")
+        footer_at = next(i for i, line in enumerate(lines) if "Connect provider" in line)
+        width = lines[footer_at].index("ctrl+f") + len("ctrl+f") - column
+        search_at = next(
+            i for i in range(title_at + 1, footer_at)
+            if lines[i][column:column + width].strip()
+        )
+
+        def paint(index, text, clear_mark=True):
+            line = lines[index].ljust(column + width)
+            left = line[: column - 2] + ("  " if clear_mark else line[column - 2 : column])
+            lines[index] = left + text.ljust(width)[:width] + line[column + width :]
+
+        paint(search_at, query)
+        for slot, index in enumerate(range(search_at + 1, footer_at)):
+            paint(index, keep[slot] if slot < len(keep) else "")
+        return "\n".join(lines)
+
+    def _stub(self, keep, query="Qwen3.8 Max", close=True):
+        screens = {
+            "picker": OPENCODE_OVER_CHAT,
+            "filtered": self._filtered(query, keep),
+        }
+        state = {"stage": "picker", "pointer": 0}
+
+        class OverChatStub(DialogTapStub):
+            def __init__(self):
+                super().__init__([IDLE_OPENCODE], OPENCODE_OVER_CHAT)
+                self.text_calls: list = []
+
+            def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+                if state["stage"] == "done":
+                    return composer_screen(keep[state["pointer"]])
+                screen = screens[state["stage"]]
+                if state["stage"] == "filtered":
+                    screen = paint_pointer(screen, state["pointer"])
+                return screen
+
+            def send_text(self, pane_id, text):
+                self.text_calls.append({"pane_id": pane_id, "text": text})
+                state["stage"] = "filtered"
+                state["pointer"] = 0
+
+            def send_keys(self, pane_id, keys):
+                result = super().send_keys(pane_id, keys)
+                move_pointer(state, keys, keep)
+                if "ctrl+u" in keys:
+                    state["stage"] = "picker"
+                if close and "enter" in keys:
+                    state["stage"] = "done"
+                return result
+
+        return OverChatStub(), state
+
+    def _tools(self, settings, stub):
+        from herdr_brain.tools import BrainTools
+
+        return BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
+
+    def _option(self, label):
+        model = recognize("opencode", OPENCODE_OVER_CHAT)
+        index = next(i for i, o in enumerate(model.options) if o.label == label)
+        return model, index
+
+    def test_a_real_model_row_types_its_model_name_and_enters_once(self, settings):
+        stub, _state = self._stub(["Qwen3.8 Max OpenCode Go"])
+        model, index = self._option("Qwen3.8 Max OpenCode Go")
+
+        result = self._tools(settings, stub).answer_structured_dialog(
+            "w1:p3", model.fingerprint, index
+        )
+
+        assert result["outcome"] == "answered"
+        assert result["label"] == "Qwen3.8 Max OpenCode Go"
+        # The MODEL name, not the screen's model+provider run.
+        assert [c["text"] for c in stub.text_calls] == ["Qwen3.8 Max"]
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
+
+    def test_the_clear_chord_is_inside_the_key_dialect(self):
+        from herdr_brain.herdr import SEND_KEY_ALLOWLIST, is_valid_key
+
+        assert "ctrl+u" in SEND_KEY_ALLOWLIST
+        assert is_valid_key("ctrl+u")
+
+    def test_group_headers_are_not_offered(self, settings):
+        model, _index = self._option("Qwen3.8 Max OpenCode Go")
+
+        assert "Recent" not in [o.label for o in model.options]
+        assert model.options[0].label == "Qwen3.8 Max OpenCode Go"
+
+    def test_no_match_leaves_the_typed_text_and_sends_nothing_more(
+        self, settings
+    ):
+        stub, _state = self._stub([])
+        model, index = self._option("Qwen3.8 Max OpenCode Go")
+
+        result = self._tools(settings, stub).answer_structured_dialog(
+            "w1:p3", model.fingerprint, index
+        )
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "no-match"
+        assert [c["text"] for c in stub.text_calls] == ["Qwen3.8 Max"]
+        # Enter never left, no clear (ctrl+u) either, never a digit.
+        assert stub.key_calls == []
+
+    def test_a_target_listed_second_is_walked_to_by_its_provider(
+        self, settings
+    ):
+        """Same model name under two providers: the tapped row's
+        provider picks the target, the walk reaches it, Enter commits."""
+        stub, _state = self._stub(
+            ["GLM-5.3 OpenCode Go", "GLM-5.3 Z.AI Coding Plan"], query="GLM-5.3"
+        )
+        model, index = self._option("GLM-5.3 Z.AI Coding Plan")
+
+        result = self._tools(settings, stub).answer_structured_dialog(
+            "w1:p3", model.fingerprint, index
+        )
+
+        assert result["outcome"] == "answered"
+        assert result["label"] == "GLM-5.3 Z.AI Coding Plan"
+        assert [c["text"] for c in stub.text_calls] == ["GLM-5.3"]
+        assert stub.key_calls == [
+            {"pane_id": "w1:p3", "keys": ["down"]},
+            {"pane_id": "w1:p3", "keys": ["enter"]},
+        ]
+
+    def test_a_first_row_target_commits_despite_other_distinct_rows(
+        self, settings
+    ):
+        """LIVE regression (operator, 3 taps refused ``ambiguous`` and
+        cleared): the filter left other DISTINCT rows under the target,
+        but the pointer sits on row 0 after a filter — that is the real
+        safety. First row is the tapped model: one Enter."""
+        stub, _state = self._stub(
+            [
+                "GLM-5.3 Z.AI Coding Plan",
+                "GLM-5.3 OpenCode Go",
+                "GLM-5.3 Highspeed OpenCode Go",
+            ],
+            query="GLM-5.3",
+        )
+        model, index = self._option("GLM-5.3 Z.AI Coding Plan")
+
+        result = self._tools(settings, stub).answer_structured_dialog(
+            "w1:p3", model.fingerprint, index
+        )
+
+        assert result["outcome"] == "answered"
+        assert result["label"] == "GLM-5.3 Z.AI Coding Plan"
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
+
+    def test_a_target_that_is_not_the_first_filtered_row_is_walked_to(
+        self, settings
+    ):
+        """The pointer sits on the first filtered row: a target listed
+        under it is reached by the walk, never by an unproven Enter."""
+        stub, _state = self._stub(
+            ["Qwen3.8 Max Preview OpenAI", "Qwen3.8 Max OpenCode Go"]
+        )
+        model, index = self._option("Qwen3.8 Max OpenCode Go")
+
+        result = self._tools(settings, stub).answer_structured_dialog(
+            "w1:p3", model.fingerprint, index
+        )
+
+        assert result["outcome"] == "answered"
+        assert stub.key_calls == [
+            {"pane_id": "w1:p3", "keys": ["down"]},
+            {"pane_id": "w1:p3", "keys": ["enter"]},
+        ]
+
+    def test_the_first_row_is_taken_among_identical_duplicates(self, settings):
+        stub, _state = self._stub(
+            ["Qwen3.8 Max OpenCode Go", "Qwen3.8 Max OpenCode Go"]
+        )
+        model, index = self._option("Qwen3.8 Max OpenCode Go")
+
+        result = self._tools(settings, stub).answer_structured_dialog(
+            "w1:p3", model.fingerprint, index
+        )
+
+        assert result["outcome"] == "answered"
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
+
+    def test_a_picker_that_left_the_screen_is_never_sent_a_clear(self, settings):
+        """If the picker vanished, ctrl+u would land in the chat prompt:
+        nothing further may be sent."""
+        stub, state = self._stub(["Qwen3.8 Max OpenCode Go"])
+        model, index = self._option("Qwen3.8 Max OpenCode Go")
+        original = stub.send_text
+
+        def vanish(pane_id, text):
+            original(pane_id, text)
+            state["stage"] = "done"
+
+        stub.send_text = vanish
+
+        result = self._tools(settings, stub).answer_structured_dialog(
+            "w1:p3", model.fingerprint, index
+        )
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "changed"
+        assert stub.key_calls == []
+
+
+class TestModelPickerAnswerByModelName:
+    """The PWA's full catalog answers by NAME (``model_name`` +
+    optional ``provider_name``): the model may not be on the screen's
+    window at all, so there is no option index — the SAME search-first
+    flow types the name and Enter leaves only when the FIRST filtered
+    row on the real screen is that model (and provider when known)."""
+
+    # The over-chat screen doubles are shared, not re-inherited (a
+    # subclass would re-run every sibling test).
+    _filtered = TestModelPickerOverChatSearchFirst._filtered
+    _stub = TestModelPickerOverChatSearchFirst._stub
+    _tools = TestModelPickerOverChatSearchFirst._tools
+
+    def _answer(self, settings, stub, name, provider=None):
+        model = recognize("opencode", OPENCODE_OVER_CHAT)
+        return self._tools(settings, stub).answer_structured_dialog(
+            "w1:p3", model.fingerprint, model_name=name, provider_name=provider
+        )
+
+    def test_the_first_row_matching_name_and_provider_commits(self, settings):
+        stub, _state = self._stub(
+            [
+                "Qwen3.8 Max OpenCode Go",
+                "Qwen3.8 Max Preview OpenAI",
+                "Qwen3.8 Max Z.AI Coding Plan",
+            ],
+        )
+
+        result = self._answer(settings, stub, "Qwen3.8 Max", "OpenCode Go")
+
+        assert result["outcome"] == "answered"
+        assert result["label"] == "Qwen3.8 Max OpenCode Go"
+        assert [c["text"] for c in stub.text_calls] == ["Qwen3.8 Max"]
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
+
+    def test_a_model_the_screen_never_listed_is_answerable(self, settings):
+        """The catalog's whole point: a model absent from the painted
+        window is typed, filtered, and verified on the real screen."""
+        stub, _state = self._stub(["Kimi K2.7 Code OpenCode Go"], query="Kimi K2.7 Code")
+
+        result = self._answer(settings, stub, "Kimi K2.7 Code", "OpenCode Go")
+
+        assert result["outcome"] == "answered"
+        assert [c["text"] for c in stub.text_calls] == ["Kimi K2.7 Code"]
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
+
+    def test_without_a_provider_the_first_row_model_name_is_enough(self, settings):
+        stub, _state = self._stub(["Qwen3.8 Max OpenCode Go"])
+
+        result = self._answer(settings, stub, "Qwen3.8 Max")
+
+        assert result["outcome"] == "answered"
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
+
+    def test_the_target_listed_second_is_walked_to_and_committed(
+        self, settings
+    ):
+        stub, _state = self._stub(
+            ["Qwen3.8 Max Preview OpenAI", "Qwen3.8 Max OpenCode Go"]
+        )
+
+        result = self._answer(settings, stub, "Qwen3.8 Max", "OpenCode Go")
+
+        assert result["outcome"] == "answered"
+        assert result["label"] == "Qwen3.8 Max OpenCode Go"
+        assert [c["text"] for c in stub.text_calls] == ["Qwen3.8 Max"]
+        assert stub.key_calls == [
+            {"pane_id": "w1:p3", "keys": ["down"]},
+            {"pane_id": "w1:p3", "keys": ["enter"]},
+        ]
+
+    def test_a_catalog_name_with_two_providers_on_screen_needs_the_provider(
+        self, settings
+    ):
+        stub, _state = self._stub(
+            ["Qwen3.8 Max OpenCode Go", "Qwen3.8 Max Z.AI Coding Plan"]
+        )
+
+        result = self._answer(settings, stub, "Qwen3.8 Max")
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "ambiguous"
+        assert stub.key_calls == []
+
+    def test_the_right_name_under_the_wrong_provider_is_refused(self, settings):
+        stub, _state = self._stub(["Qwen3.8 Max Z.AI Coding Plan"])
+
+        result = self._answer(settings, stub, "Qwen3.8 Max", "OpenCode Go")
+
+        assert result["outcome"] == "refused"
+        assert stub.key_calls == []
+
+    def test_a_filter_with_no_rows_is_a_no_match_and_sends_nothing(self, settings):
+        stub, _state = self._stub([])
+
+        result = self._answer(settings, stub, "Qwen3.8 Max", "OpenCode Go")
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "no-match"
+        assert stub.key_calls == []
+
+    def test_a_model_name_never_answers_a_non_picker_dialog(self, settings):
+        stub = DialogTapStub([BLOCKED_CLAUDE], CLAUDE_SELECT)
+        tools = self._tools(settings, stub)
+
+        result = tools.answer_structured_dialog(
+            "w1:p3", _fingerprint("claude", CLAUDE_SELECT), model_name="Opus"
+        )
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "invalid_target"
+        assert stub.key_calls == [] and not getattr(stub, "text_calls", [])
+
+    def test_a_changed_fingerprint_still_refuses_before_typing(self, settings):
+        stub, _state = self._stub(["Qwen3.8 Max OpenCode Go"])
+
+        result = self._tools(settings, stub).answer_structured_dialog(
+            "w1:p3", "0" * 16, model_name="Qwen3.8 Max"
+        )
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "changed"
+        assert stub.text_calls == [] and stub.key_calls == []
+
+
+class TestPaneDialogAnswerModelNameRoute:
+    """The wire shape: ``model_name`` (+ ``provider_name``) is a FOURTH
+    exclusive answer form next to option / choices / option+text."""
+
+    def _client(self, make_client, keep):
+        helper = TestModelPickerOverChatSearchFirst()
+        stub, _state = helper._stub(keep)
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        return client, stub
+
+    def test_a_model_name_answer_is_200_and_audited_without_a_clear(
+        self, make_client
+    ):
+        client, stub = self._client(make_client, ["Qwen3.8 Max OpenCode Go"])
+        fingerprint = recognize("opencode", OPENCODE_OVER_CHAT).fingerprint
+
+        response = client.post(
+            "/pane/dialog/answer",
+            json={
+                "pane_id": "w1:p3",
+                "fingerprint": fingerprint,
+                "model_name": "Qwen3.8 Max",
+                "provider_name": "OpenCode Go",
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["ok"] is True
+        assert body["label"] == "Qwen3.8 Max OpenCode Go"
+        assert body["model_name"] == "Qwen3.8 Max"
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
+        entry = next(
+            e for e in audit_entries(client) if e["action"] == "pane.dialog.answer"
+        )
+        assert entry["detail"]["model_name"] == "Qwen3.8 Max"
+
+    def test_a_refused_model_name_is_a_502_with_nothing_cleared(self, make_client):
+        client, stub = self._client(
+            make_client, ["Qwen3.8 Max Z.AI Coding Plan"]
+        )
+        fingerprint = recognize("opencode", OPENCODE_OVER_CHAT).fingerprint
+
+        response = client.post(
+            "/pane/dialog/answer",
+            json={
+                "pane_id": "w1:p3",
+                "fingerprint": fingerprint,
+                "model_name": "Qwen3.8 Max",
+                "provider_name": "OpenCode Go",
+            },
+        )
+
+        assert response.status_code == 502
+        assert stub.key_calls == []
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            {"option": 0},
+            {"choices": [0]},
+            {"option": 0, "text": "x"},
+            {},  # provider_name with no model_name below
+        ],
+    )
+    def test_model_name_excludes_every_other_answer_form(self, make_client, extra):
+        client, _stub = self._client(make_client, ["Qwen3.8 Max OpenCode Go"])
+        fingerprint = recognize("opencode", OPENCODE_OVER_CHAT).fingerprint
+        body = {"pane_id": "w1:p3", "fingerprint": fingerprint, **extra}
+        if extra:
+            body["model_name"] = "Qwen3.8 Max"
+        else:
+            body["provider_name"] = "OpenCode Go"
+
+        assert client.post("/pane/dialog/answer", json=body).status_code == 422
+
+    def test_a_blank_model_name_is_a_422(self, make_client):
+        client, _stub = self._client(make_client, ["Qwen3.8 Max OpenCode Go"])
+        fingerprint = recognize("opencode", OPENCODE_OVER_CHAT).fingerprint
+
+        response = client.post(
+            "/pane/dialog/answer",
+            json={"pane_id": "w1:p3", "fingerprint": fingerprint, "model_name": "  "},
+        )
+
+        assert response.status_code == 422
+
+
+class TestPaneModelsRoute:
+    """GET /pane/models: the full connected catalog, read-only."""
+
+    CLI = "opencode-go/glm-5.3\nopencode-go/qwen3.8-max\nanthropic/claude-opus-5-5\n"
+
+    def _runner(self, stdout=None, calls=None, returncode=0):
+        import subprocess
+
+        calls = calls if calls is not None else []
+
+        def run(argv, timeout):
+            calls.append(list(argv))
+            return subprocess.CompletedProcess(
+                argv, returncode, self.CLI if stdout is None else stdout, ""
+            )
+
+        return run, calls
+
+    def _app(self, settings, tmp_path, monkeypatch, runner, agents=None):
+        from herdr_brain.pane_model import OpencodeModelCatalog
+        from herdr_brain.tools import BrainTools
+
+        catalog_file = tmp_path / "models.json"
+        catalog_file.write_text(
+            json.dumps(
+                {
+                    "opencode-go": {
+                        "name": "OpenCode Go",
+                        "models": {
+                            "glm-5.3": {"name": "GLM-5.3"},
+                            "qwen3.8-max": {"name": "Qwen3.8 Max"},
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        catalog = OpencodeModelCatalog(
+            runner=runner, catalog_path=str(catalog_file), binary="/bin/opencode"
+        )
+        stub = DialogTapStub(agents or [IDLE_OPENCODE], OPENCODE_OVER_CHAT)
+        monkeypatch.setattr(
+            server_module,
+            "BrainTools",
+            lambda cfg, **kw: BrainTools(cfg, herdr=stub, model_catalog=catalog),
+        )
+        cfg = Settings(
+            **{**settings.__dict__, "state_dir": str(tmp_path / "state"),
+               "audio_dir": str(tmp_path / "audio")}
+        )
+        return TestClient(server_module.create_app(settings=cfg))
+
+    def test_lists_every_connected_model_for_an_opencode_pane(
+        self, settings, tmp_path, monkeypatch
+    ):
+        run, calls = self._runner()
+        client = self._app(settings, tmp_path, monkeypatch, run)
+
+        response = client.get("/pane/models", params={"pane_id": "w1:p3"})
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["reason"] == ""
+        assert [m["id"] for m in body["models"]] == [
+            "opencode-go/glm-5.3",
+            "opencode-go/qwen3.8-max",
+            "anthropic/claude-opus-5-5",
+        ]
+        assert body["models"][0] == {
+            "id": "opencode-go/glm-5.3",
+            "name": "GLM-5.3",
+            "provider": "opencode-go",
+            "provider_name": "OpenCode Go",
+            "current": False,
+        }
+        # Unknown names fall back to the id's own parts.
+        assert body["models"][2]["name"] == "claude-opus-5-5"
+        assert body["models"][2]["provider_name"] == "anthropic"
+        assert calls == [["/bin/opencode", "models"]]
+
+    def test_the_listing_is_cached_across_requests(
+        self, settings, tmp_path, monkeypatch
+    ):
+        run, calls = self._runner()
+        client = self._app(settings, tmp_path, monkeypatch, run)
+
+        client.get("/pane/models", params={"pane_id": "w1:p3"})
+        client.get("/pane/models", params={"pane_id": "w1:p3"})
+
+        assert len(calls) == 1
+
+    def test_a_cli_failure_is_an_empty_list_with_a_reason_not_an_error(
+        self, settings, tmp_path, monkeypatch
+    ):
+        run, _calls = self._runner(returncode=1, stdout="")
+        client = self._app(settings, tmp_path, monkeypatch, run)
+
+        response = client.get("/pane/models", params={"pane_id": "w1:p3"})
+
+        assert response.status_code == 200
+        assert response.json() == {"models": [], "reason": "cli-failed"}
+
+    def test_an_unknown_pane_is_404_never_the_focused_fallback(
+        self, settings, tmp_path, monkeypatch
+    ):
+        run, calls = self._runner()
+        client = self._app(settings, tmp_path, monkeypatch, run)
+
+        assert client.get("/pane/models", params={"pane_id": "w9:p9"}).status_code == 404
+        assert calls == []
+
+    def test_another_harness_is_unsupported_without_running_the_cli(
+        self, settings, tmp_path, monkeypatch
+    ):
+        run, calls = self._runner()
+        client = self._app(
+            settings, tmp_path, monkeypatch, run, agents=[BLOCKED_CLAUDE]
+        )
+
+        response = client.get("/pane/models", params={"pane_id": "w1:p3"})
+
+        assert response.json() == {"models": [], "reason": "unsupported"}
+        assert calls == []
+
+    def test_the_pane_id_is_required(self, settings, tmp_path, monkeypatch):
+        run, _calls = self._runner()
+        client = self._app(settings, tmp_path, monkeypatch, run)
+
+        assert client.get("/pane/models").status_code == 422
 
 
 class TestVoicePathReadsStructuredDialogs:
@@ -429,3 +1553,1076 @@ class TestVoicePathReadsStructuredDialogs:
         assert outcome["outcome"] == "refused"
         assert outcome["reason"] == "just-appeared"
         assert stub.key_calls == []
+
+
+class TestMultiSelectAnswer:
+    """``choices`` answers a multiselect: every box is toggled with a
+    re-read after each key, the final state must match the request
+    EXACTLY, and only then does the pointer walk to the submit row and
+    Enter commit. Any surprise is a 409 ``changed`` with nothing further
+    sent — the same discipline as a single-option tap."""
+
+    def _post(self, client, choices, fingerprint):
+        return client.post(
+            "/pane/dialog/answer",
+            json={
+                "pane_id": "w1:p3",
+                "fingerprint": fingerprint,
+                "choices": choices,
+            },
+        )
+
+    def test_choices_set_exactly_the_requested_boxes_then_submit(self, make_client):
+        stub = MultiSelectStub([BLOCKED_CLAUDE], checked={1})
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        fingerprint = _fingerprint("claude", stub.read_screen("w1:p3"))
+
+        response = self._post(client, [0, 2], fingerprint)
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["ok"] is True
+        assert body["choices"] == [0, 2]
+        # One digit per box in row order — Pepperoni's pre-checked box
+        # is turned OFF — then the pointer walks to Submit and Enter.
+        assert stub.key_calls == [
+            {"pane_id": "w1:p3", "keys": ["1"]},
+            {"pane_id": "w1:p3", "keys": ["2"]},
+            {"pane_id": "w1:p3", "keys": ["3"]},
+            {"pane_id": "w1:p3", "keys": ["down"]},
+            {"pane_id": "w1:p3", "keys": ["enter"]},
+        ]
+        assert stub.checked == {0, 2}
+        entries = audit_entries(client)
+        answer = next(e for e in entries if e["action"] == "pane.dialog.answer")
+        assert answer["detail"]["outcome"] == "answered"
+        assert answer["detail"]["choices"] == [0, 2]
+        assert answer["detail"]["fingerprint"] == fingerprint
+
+    def test_choices_with_nothing_to_toggle_walk_straight_to_submit(
+        self, make_client
+    ):
+        stub = MultiSelectStub([BLOCKED_CLAUDE], checked={0, 2}, pointer=3)
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        fingerprint = _fingerprint("claude", stub.read_screen("w1:p3"))
+
+        response = self._post(client, [0, 2], fingerprint)
+
+        assert response.status_code == 200
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
+
+    def test_a_midway_screen_change_is_a_409_and_nothing_further_leaves(
+        self, make_client
+    ):
+        stub = HijackedMultiSelectStub([BLOCKED_CLAUDE], checked=set())
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        fingerprint = _fingerprint("claude", stub.read_screen("w1:p3"))
+
+        response = self._post(client, [0, 2], fingerprint)
+
+        assert response.status_code == 409
+        assert "cambió" in response.json()["detail"]
+        # The first toggle left; the hijacked dialog got NOTHING further.
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["1"]}]
+        entries = audit_entries(client)
+        assert entries[-1]["detail"]["reason"] == "changed"
+        assert entries[-1]["detail"]["choices"] == [0, 2]
+
+    def test_a_changed_dialog_before_any_key_is_a_409(self, make_client):
+        stub = MultiSelectStub([BLOCKED_CLAUDE], checked={1})
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        stale = _fingerprint(
+            "claude", stub.read_screen("w1:p3").replace("Mushrooms", "Anchovies")
+        )
+
+        response = self._post(client, [0], stale)
+
+        assert response.status_code == 409
+        assert stub.key_calls == []
+
+    def test_choices_against_a_single_select_dialog_is_a_422(self, make_client):
+        client, stub = make_client(
+            [BLOCKED_CLAUDE], CLAUDE_SELECT, sleeper=lambda _s: None
+        )
+        fingerprint = _fingerprint("claude", CLAUDE_SELECT)
+
+        response = self._post(client, [0], fingerprint)
+
+        assert response.status_code == 422
+        assert stub.key_calls == []
+
+    def test_a_choice_naming_the_submit_row_is_a_422(self, make_client):
+        stub = MultiSelectStub([BLOCKED_CLAUDE], checked={1})
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        fingerprint = _fingerprint("claude", stub.read_screen("w1:p3"))
+
+        response = self._post(client, [3], fingerprint)
+
+        assert response.status_code == 422
+        assert stub.key_calls == []
+
+    def test_choices_and_option_together_is_a_422(self, make_client):
+        client, _ = make_client(
+            [BLOCKED_CLAUDE], CLAUDE_SELECT, sleeper=lambda _s: None
+        )
+
+        response = client.post(
+            "/pane/dialog/answer",
+            json={
+                "pane_id": "w1:p3",
+                "fingerprint": "x",
+                "option": 0,
+                "choices": [0],
+            },
+        )
+
+        assert response.status_code == 422
+
+    def test_an_empty_or_repeated_choices_list_is_a_422(self, make_client):
+        client, _ = make_client(
+            [BLOCKED_CLAUDE], CLAUDE_SELECT, sleeper=lambda _s: None
+        )
+
+        empty = self._post(client, [], "x")
+        repeated = self._post(client, [0, 0], "x")
+
+        assert empty.status_code == 422
+        assert repeated.status_code == 422
+
+
+def opencode_multi_screen(checked) -> str:
+    """The pinned ``opencode-multi.txt`` list with the given 0-based
+    boxes checked — the redraw the toggle choreography reads back."""
+    screen = OPENCODE_MULTI
+    for index, name in enumerate(("Red", "Green", "Blue", "Yellow")):
+        glyph = "✓" if index in checked else " "
+        screen = re.sub(
+            rf"{index + 1}\. \[[xX✔✓ ]\] {re.escape(name)}",
+            f"{index + 1}. [{glyph}] {name}",
+            screen,
+        )
+    return screen
+
+
+def opencode_confirm_screen(answer: str) -> str:
+    """The pinned Confirm-tab review (``opencode-multi-confirm.txt``)
+    with the given answer line."""
+    return OPENCODE_MULTI_CONFIRM.replace("Colour: Red", f"Colour: {answer}")
+
+
+class OpenCodeMultiStub(DialogTapStub):
+    """Drives the pinned OpenCode multi-select exactly as the reference
+    measured it (QUESTION_NOTES.md): a digit flips its own box,
+    ``tab`` moves to the Confirm tab — and back, for with two tabs
+    every move goes the other way — and ``enter`` submits only from
+    the Confirm tab."""
+
+    LABELS = ("Red", "Green", "Blue", "Yellow")
+
+    def __init__(self, agents, checked):
+        super().__init__(agents, "")
+        self.checked = set(checked)
+        self.on_confirm = False
+        self.closed = False
+
+    def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+        if self.closed:
+            return "$ pytest -q\n..........\n10 passed in 0.02s\n$ _"
+        if self.on_confirm:
+            picked = [
+                name
+                for index, name in enumerate(self.LABELS)
+                if index in self.checked
+            ]
+            return opencode_confirm_screen(", ".join(picked) or "(not answered)")
+        return opencode_multi_screen(self.checked)
+
+    def send_keys(self, pane_id, keys):
+        super().send_keys(pane_id, keys)
+        for key in keys:
+            if key in ("1", "2", "3", "4"):
+                index = int(key) - 1
+                if index in self.checked:
+                    self.checked.discard(index)
+                else:
+                    self.checked.add(index)
+            elif key == "tab":
+                self.on_confirm = not self.on_confirm
+            elif key == "enter" and self.on_confirm:
+                self.closed = True
+        return {"ok": True, "error": ""}
+
+
+class HijackedOpenCodeTabStub(OpenCodeMultiStub):
+    """After ``tab`` the redraw is ANOTHER dialog's list — never this
+    dialog's Confirm review: the commit must stop with nothing further
+    sent (no ``enter``)."""
+
+    def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+        if self.on_confirm:
+            return opencode_multi_screen(self.checked).replace(
+                "Which colours?", "Which sauces?"
+            ).replace("Colour   Confirm", "Sauce   Confirm")
+        return super().read_screen(pane_id, n_lines, source, as_ansi)
+
+
+class WizardStripOpenCodeStub(OpenCodeMultiStub):
+    """The same list under a THREE-chip strip (a many-question call's
+    step): the active chip is painted style, so no commit can be
+    derived from text alone."""
+
+    def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+        return super().read_screen(
+            pane_id, n_lines, source, as_ansi
+        ).replace("Colour   Confirm", "Colour   Size   Confirm")
+
+
+class TestOpenCodeMultiTabCommit:
+    """T4b: the pinned OpenCode multi-select carries NO submit row —
+    the reference measured the commit as the Confirm tab's own
+    choreography (a digit toggles its own box, ``tab`` reaches
+    Confirm, ``enter`` submits there). The boxes are toggled and
+    verified exactly as on Claude; then ``tab`` must land THIS dialog's
+    Confirm review — the same tab chips, the review footer — before
+    ``enter``. Anything else is a 409 with nothing further sent."""
+
+    def _post(self, client, choices, fingerprint):
+        return client.post(
+            "/pane/dialog/answer",
+            json={
+                "pane_id": "w1:p3",
+                "fingerprint": fingerprint,
+                "choices": choices,
+            },
+        )
+
+    def test_choices_toggle_then_tab_to_confirm_and_enter(self, make_client):
+        stub = OpenCodeMultiStub([BLOCKED_OPENCODE], checked={0})
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        fingerprint = _fingerprint("opencode", stub.read_screen("w1:p3"))
+
+        response = self._post(client, [1, 2], fingerprint)
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["ok"] is True
+        assert body["choices"] == [1, 2]
+        # Red's pre-checked box turns OFF and Green and Blue turn ON —
+        # one digit each, re-read between — then the measured commit:
+        # tab reaches the Confirm tab, enter submits on it.
+        assert stub.key_calls == [
+            {"pane_id": "w1:p3", "keys": ["1"]},
+            {"pane_id": "w1:p3", "keys": ["2"]},
+            {"pane_id": "w1:p3", "keys": ["3"]},
+            {"pane_id": "w1:p3", "keys": ["tab"]},
+            {"pane_id": "w1:p3", "keys": ["enter"]},
+        ]
+        assert stub.closed is True
+        entries = audit_entries(client)
+        answer = next(e for e in entries if e["action"] == "pane.dialog.answer")
+        assert answer["detail"]["outcome"] == "answered"
+        assert answer["detail"]["choices"] == [1, 2]
+
+    def test_a_wizard_step_strip_refuses_before_any_key(self, make_client):
+        """A three-chip strip has another question's tab between the
+        active one and Confirm (the wrap was measured), and Enter on a
+        checkbox step would TOGGLE a box: no commit is derivable from
+        text, so the answer refuses before sending a key."""
+        stub = WizardStripOpenCodeStub([BLOCKED_OPENCODE], checked=set())
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        fingerprint = _fingerprint("opencode", stub.read_screen("w1:p3"))
+
+        response = self._post(client, [0], fingerprint)
+
+        assert response.status_code == 422
+        assert stub.key_calls == []
+
+    def test_drift_after_tab_is_a_409_and_no_enter_leaves(self, make_client):
+        stub = HijackedOpenCodeTabStub([BLOCKED_OPENCODE], checked=set())
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        fingerprint = _fingerprint("opencode", stub.read_screen("w1:p3"))
+
+        response = self._post(client, [0], fingerprint)
+
+        assert response.status_code == 409
+        assert "cambió" in response.json()["detail"]
+        # The toggle and the tab left; the hijacked redraw — not this
+        # dialog's Confirm review — got NOTHING further.
+        assert stub.key_calls == [
+            {"pane_id": "w1:p3", "keys": ["1"]},
+            {"pane_id": "w1:p3", "keys": ["tab"]},
+        ]
+        assert stub.closed is False
+        entries = audit_entries(client)
+        assert entries[-1]["detail"]["reason"] == "changed"
+        assert entries[-1]["detail"]["choices"] == [0]
+
+
+def free_text_screen(pointer: int, typed: str = "") -> str:
+    """The synthesized Claude select shape with a ``Type something.``
+    row; once text is typed the row shows it verbatim."""
+    row3 = typed if typed else "Type something."
+    return (
+        "│ Which fruit do you want?\n"
+        "│ Pick the one you like best.\n"
+        "│\n"
+        f"│ {'❯' if pointer == 0 else ' '} 1. Manzana\n"
+        f"│ {'❯' if pointer == 1 else ' '} 2. Pera\n"
+        f"│ {'❯' if pointer == 2 else ' '} 3. {row3}\n"
+        "│\n"
+        "  Enter to select · ↑/↓ to navigate · Esc to cancel\n"
+    )
+
+
+class FreeTextStub(DialogTapStub):
+    """Drives the synthesized free-text select: a digit moves the
+    pointer to its row (the field takes the keyboard), literal text
+    lands in the row verbatim, and Enter commits the typed answer."""
+
+    def __init__(self, agents):
+        super().__init__(agents, "")
+        self.pointer = 0
+        self.typed = ""
+        self.closed = False
+        self.text_calls: list = []
+
+    def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+        if self.closed:
+            return "$ pytest -q\n..........\n10 passed in 0.02s\n$ _"
+        return free_text_screen(self.pointer, self.typed)
+
+    def send_keys(self, pane_id, keys):
+        super().send_keys(pane_id, keys)
+        for key in keys:
+            if key in ("1", "2", "3"):
+                self.pointer = int(key) - 1
+            elif key == "enter" and self.typed:
+                self.closed = True
+        return {"ok": True, "error": ""}
+
+    def send_text(self, pane_id, text):
+        self.text_calls.append({"pane_id": pane_id, "text": text})
+        self.typed = text
+
+
+class HijackedFreeTextStub(FreeTextStub):
+    """After the Nth key the agent redraws a different question: the
+    dialog identity changed mid-recipe and nothing further — no more
+    clears, no text, no Enter — may leave."""
+
+    def __init__(self, agents, hijack_after=2):
+        super().__init__(agents)
+        self.hijack_after = hijack_after
+        self.key_sends = 0
+        self.hijacked = False
+
+    def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+        if self.hijacked:
+            return free_text_screen(self.pointer, self.typed).replace(
+                "Which fruit", "Which sauce"
+            )
+        return super().read_screen(pane_id, n_lines, source, as_ansi)
+
+    def send_keys(self, pane_id, keys):
+        result = super().send_keys(pane_id, keys)
+        self.key_sends += 1
+        if self.key_sends >= self.hijack_after:
+            self.hijacked = True
+        return result
+
+
+class TestFreeTextAnswer:
+    """``text`` answers a free-text option (S3): the recipe selects the
+    row with its digit, clears the field (ctrl+u then ctrl+k, one
+    verified step each), types the sanitized text, re-reads that the
+    text is on screen, and only then commits with Enter. Any surprise
+    mid-recipe is a 409 ``changed`` with nothing further sent."""
+
+    def _post(self, client, option, text, fingerprint):
+        return client.post(
+            "/pane/dialog/answer",
+            json={
+                "pane_id": "w1:p3",
+                "fingerprint": fingerprint,
+                "option": option,
+                "text": text,
+            },
+        )
+
+    def test_text_clears_types_verifies_then_commits(self, make_client):
+        stub = FreeTextStub([BLOCKED_CLAUDE])
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        fingerprint = _fingerprint("claude", stub.read_screen("w1:p3"))
+
+        response = self._post(client, 2, "usa la rama main", fingerprint)
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["ok"] is True
+        assert body["option"] == 2
+        # The digit focuses the field; the clears are one verified key
+        # each; the text rides the literal-text surface; Enter commits.
+        assert stub.key_calls == [
+            {"pane_id": "w1:p3", "keys": ["3"]},
+            {"pane_id": "w1:p3", "keys": ["ctrl+u"]},
+            {"pane_id": "w1:p3", "keys": ["ctrl+k"]},
+            {"pane_id": "w1:p3", "keys": ["enter"]},
+        ]
+        assert stub.text_calls == [
+            {"pane_id": "w1:p3", "text": "usa la rama main"}
+        ]
+        assert stub.closed is True
+        entries = audit_entries(client)
+        answer = next(e for e in entries if e["action"] == "pane.dialog.answer")
+        assert answer["detail"]["outcome"] == "answered"
+        assert answer["detail"]["option"] == 2
+        assert answer["detail"]["text"] == "usa la rama main"
+        assert answer["detail"]["fingerprint"] == fingerprint
+
+    def test_the_typed_text_is_sanitized_like_a_pane_reply(self, make_client):
+        """A literal newline in the answer would submit the field early:
+        the same collapse /pane/reply applies protects this surface
+        too."""
+        stub = FreeTextStub([BLOCKED_CLAUDE])
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        fingerprint = _fingerprint("claude", stub.read_screen("w1:p3"))
+
+        response = self._post(client, 2, "usa la\nrama   main", fingerprint)
+
+        assert response.status_code == 200
+        assert stub.text_calls == [
+            {"pane_id": "w1:p3", "text": "usa la rama main"}
+        ]
+
+    def test_drift_mid_recipe_is_a_409_and_nothing_further_leaves(
+        self, make_client
+    ):
+        stub = HijackedFreeTextStub([BLOCKED_CLAUDE])
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        fingerprint = _fingerprint("claude", stub.read_screen("w1:p3"))
+
+        response = self._post(client, 2, "usa la rama main", fingerprint)
+
+        assert response.status_code == 409
+        assert "cambió" in response.json()["detail"]
+        # The digit and the first clear left; the hijacked dialog got
+        # NOTHING further: no second clear, no text, no Enter.
+        assert stub.key_calls == [
+            {"pane_id": "w1:p3", "keys": ["3"]},
+            {"pane_id": "w1:p3", "keys": ["ctrl+u"]},
+        ]
+        assert stub.text_calls == []
+        assert stub.closed is False
+        entries = audit_entries(client)
+        assert entries[-1]["detail"]["reason"] == "changed"
+
+    def test_text_on_a_dialog_without_a_free_text_option_is_a_422(
+        self, make_client
+    ):
+        client, stub = make_client(
+            [BLOCKED_CLAUDE], CLAUDE_SELECT, sleeper=lambda _s: None
+        )
+        fingerprint = _fingerprint("claude", CLAUDE_SELECT)
+
+        response = self._post(client, 0, "hola", fingerprint)
+
+        assert response.status_code == 422
+        assert stub.key_calls == []
+
+    def test_destructive_text_is_delivered_the_guard_is_client_side(
+        self, make_client
+    ):
+        """The destructive analyzer runs in the PWA before posting; the
+        server does not censor a confirmed answer — it delivers the text
+        and audits it, exactly like /pane/reply."""
+        stub = FreeTextStub([BLOCKED_CLAUDE])
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        fingerprint = _fingerprint("claude", stub.read_screen("w1:p3"))
+
+        response = self._post(client, 2, "sudo rm -rf /tmp/demo", fingerprint)
+
+        assert response.status_code == 200
+        assert stub.text_calls == [
+            {"pane_id": "w1:p3", "text": "sudo rm -rf /tmp/demo"}
+        ]
+        assert stub.closed is True
+
+    def test_the_audit_line_carries_the_pane_reply_preview_discipline(
+        self, make_client
+    ):
+        from herdr_brain.audit import MAX_STR
+
+        stub = FreeTextStub([BLOCKED_CLAUDE])
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        fingerprint = _fingerprint("claude", stub.read_screen("w1:p3"))
+        long_text = "responde con " + "x" * (MAX_STR + 10)
+
+        assert self._post(client, 2, long_text, fingerprint).status_code == 200
+
+        entries = audit_entries(client)
+        answer = next(e for e in entries if e["action"] == "pane.dialog.answer")
+        # Preview mode: bounded, single-line — same cap as pane.reply.
+        assert answer["detail"]["text"] == long_text[:MAX_STR] + "…"
+
+    def test_none_audit_mode_redacts_the_free_text(self, make_client):
+        stub = FreeTextStub([BLOCKED_CLAUDE])
+        client, _ = make_client(
+            None, None, sleeper=lambda _s: None, stub=stub, audit_content="none"
+        )
+        fingerprint = _fingerprint("claude", stub.read_screen("w1:p3"))
+
+        response = self._post(client, 2, "purge the database", fingerprint)
+
+        assert response.status_code == 200
+        entries = audit_entries(client)
+        answer = next(e for e in entries if e["action"] == "pane.dialog.answer")
+        assert answer["detail"]["text"] == "⟨redacted⟩"
+        assert answer["detail"]["outcome"] == "answered"
+        assert "purge the database" not in audit_text(client)
+
+    def test_a_text_the_screen_never_shows_is_never_committed(self, make_client):
+        """The pre-Enter check is a re-read, not an assumption: a typed
+        text that does not show in the field stops the recipe before
+        Enter — half-typed state is never submitted blindly."""
+
+        class VanishingTextStub(FreeTextStub):
+            def send_text(self, pane_id, text):
+                super().send_text(pane_id, text)
+                self.typed = ""  # the terminal dropped the text
+
+        stub = VanishingTextStub([BLOCKED_CLAUDE])
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        fingerprint = _fingerprint("claude", stub.read_screen("w1:p3"))
+
+        response = self._post(client, 2, "usa la rama main", fingerprint)
+
+        assert response.status_code == 409
+        assert [call["keys"] for call in stub.key_calls] == [
+            ["3"], ["ctrl+u"], ["ctrl+k"],
+        ]
+        assert stub.closed is False
+
+
+class TestFreeTextValidation:
+    def test_text_without_an_option_is_a_422(self, make_client):
+        client, stub = make_client(
+            [BLOCKED_CLAUDE], CLAUDE_SELECT, sleeper=lambda _s: None
+        )
+
+        response = client.post(
+            "/pane/dialog/answer",
+            json={
+                "pane_id": "w1:p3",
+                "fingerprint": "x",
+                "text": "hola",
+            },
+        )
+
+        assert response.status_code == 422
+        assert stub.key_calls == []
+
+    def test_text_with_choices_is_a_422(self, make_client):
+        client, _ = make_client(
+            [BLOCKED_CLAUDE], CLAUDE_SELECT, sleeper=lambda _s: None
+        )
+
+        response = client.post(
+            "/pane/dialog/answer",
+            json={
+                "pane_id": "w1:p3",
+                "fingerprint": "x",
+                "choices": [0],
+                "text": "hola",
+            },
+        )
+
+        assert response.status_code == 422
+
+    def test_blank_text_is_a_422(self, make_client):
+        client, _ = make_client(
+            [BLOCKED_CLAUDE], CLAUDE_SELECT, sleeper=lambda _s: None
+        )
+
+        response = client.post(
+            "/pane/dialog/answer",
+            json={
+                "pane_id": "w1:p3",
+                "fingerprint": "x",
+                "option": 0,
+                "text": "   ",
+            },
+        )
+
+        assert response.status_code == 422
+
+
+WIZARD_STEP1 = (FIXTURES / "claude-wizard.txt").read_text(encoding="utf-8")
+
+
+class WizardTwoStepStub(DialogTapStub):
+    """Drives a two-question wizard with the S4 fixtures: step 1 is the
+    select screen (``1/2``), step 2 the multi-select screen (``2/2``).
+    A digit+Enter on step 1 advances to step 2; the multi-select keys
+    behave like MultiSelectStub; the submit's Enter closes the wizard."""
+
+    def __init__(self, agents):
+        super().__init__(agents, "")
+        self.phase = 1
+        self.checked = set()
+        self.pointer = 0
+
+    def _render(self):
+        if self.phase == 1:
+            return WIZARD_STEP1
+        if self.phase == 2:
+            # The marker must sit directly above the block (with only a
+            # blank between), exactly like the wizard fixtures.
+            return multi_screen(self.checked, self.pointer).replace(
+                "│ Which toppings do you want?\n│ Pick every one you like.\n",
+                "│ 2/2 Which toppings?\n",
+            )
+        return "$ pytest -q\n..........\n10 passed in 0.02s\n$ _"
+
+    def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+        return self._render()
+
+    def send_keys(self, pane_id, keys):
+        super().send_keys(pane_id, keys)
+        for key in keys:
+            if self.phase == 1:
+                if key == "enter":
+                    self.phase = 2
+            elif self.phase == 2:
+                if key in ("1", "2", "3"):
+                    index = int(key) - 1
+                    if index in self.checked:
+                        self.checked.discard(index)
+                    else:
+                        self.checked.add(index)
+                    self.pointer = index
+                elif key == "4":
+                    self.pointer = 3
+                elif key == "down":
+                    self.pointer = min(3, self.pointer + 1)
+                elif key == "up":
+                    self.pointer = max(0, self.pointer - 1)
+                elif key == "enter":
+                    self.phase = 3
+        return {"ok": True, "error": ""}
+
+
+CLAUDE_MODEL_PICKER = (FIXTURES / "claude-model-picker.txt").read_text(
+    encoding="utf-8"
+)
+CLAUDE_SWITCH_MODEL = (FIXTURES / "claude-switch-model-yes.txt").read_text(
+    encoding="utf-8"
+)
+
+
+def picker_screen(pointer: int) -> str:
+    """The pinned Claude /model list with the pointer moved to
+    ``pointer`` (0-based over the five rows)."""
+    screen = CLAUDE_MODEL_PICKER
+    rows = ["Default (recommended) ✔", "Opus (1M context)", "Fable", "Sonnet", "Haiku"]
+    for index, label in enumerate(rows):
+        glyph = "❯" if index == pointer else " "
+        screen = re.sub(
+            rf"^(\s*)[❯ ] {index + 1}\. {re.escape(label)}",
+            rf"\1{glyph} {index + 1}. {label}",
+            screen,
+            flags=re.MULTILINE,
+        )
+    return screen
+
+
+def confirm_screen(pointer: int) -> str:
+    """The pinned "Switch model?" confirmation with the pointer on
+    ``pointer`` (0 = Yes row, 1 = No row)."""
+    yes = "❯ 1. Yes, switch to Fable 5.1"
+    no = "❯ 2. No, go back"
+    plain_yes = "  1. Yes, switch to Fable 5.1"
+    plain_no = "  2. No, go back"
+    if pointer == 0:
+        return CLAUDE_SWITCH_MODEL.replace(no, plain_no)
+    return CLAUDE_SWITCH_MODEL.replace(yes, plain_yes).replace(plain_no, no)
+
+
+class ModelPickerStub(DialogTapStub):
+    """Drives the pinned /model picker exactly as Claude Code does: the
+    arrows move the pointer over the list, Enter on a row closes the
+    list, and — because the conversation is cached — the "Switch
+    model?" confirmation appears; Enter on its pointed row closes it
+    too. A DIGIT would confirm and rewrite the default model: the
+    choreography under test must never send one."""
+
+    def __init__(self, agents):
+        super().__init__(agents, "")
+        self.pointer = 0
+        self.confirm_pointer = 0
+        self.stage = "list"
+
+    def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+        if self.stage == "list":
+            return picker_screen(self.pointer)
+        if self.stage == "confirm":
+            return confirm_screen(self.confirm_pointer)
+        return "$ claude\n❯ _"
+
+    def send_keys(self, pane_id, keys):
+        super().send_keys(pane_id, keys)
+        for key in keys:
+            if self.stage == "list":
+                if key == "down":
+                    self.pointer = min(4, self.pointer + 1)
+                elif key == "up":
+                    self.pointer = max(0, self.pointer - 1)
+                elif key == "enter":
+                    self.stage = "confirm"
+            elif self.stage == "confirm":
+                if key == "down":
+                    self.confirm_pointer = min(1, self.confirm_pointer + 1)
+                elif key == "up":
+                    self.confirm_pointer = max(0, self.confirm_pointer - 1)
+                elif key == "enter":
+                    self.stage = "done"
+        return {"ok": True, "error": ""}
+
+
+class TestModelPickerAnswer:
+    """parity-f7d S2: a model picker is answered by the guard's pointer
+    walk — one arrow, a re-read, only then Enter — and NEVER by a digit
+    (in these lists a digit confirms and rewrites the default model,
+    ADR 0009)."""
+
+    def _post(self, client, option, fingerprint):
+        return client.post(
+            "/pane/dialog/answer",
+            json={"pane_id": "w1:p3", "fingerprint": fingerprint, "option": option},
+        )
+
+    def test_a_tap_walks_with_arrows_and_enter_never_a_digit(self, make_client):
+        stub = ModelPickerStub([BLOCKED_CLAUDE])
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        fingerprint = _fingerprint("claude", stub.read_screen("w1:p3"))
+
+        # Option 2 is Fable; the pointer stands on row 0.
+        response = self._post(client, 2, fingerprint)
+
+        assert response.status_code == 200
+        assert response.json()["option"] == 2
+        assert stub.key_calls == [
+            {"pane_id": "w1:p3", "keys": ["down"]},
+            {"pane_id": "w1:p3", "keys": ["down"]},
+            {"pane_id": "w1:p3", "keys": ["enter"]},
+        ]
+        # THE invariant (ADR 0009): no digit ever reaches a model
+        # picker, even though the rows are numbered.
+        sent = [key for call in stub.key_calls for key in call["keys"]]
+        assert all(key not in "0123456789" for key in sent)
+        assert stub.stage == "confirm"
+
+    def test_the_pointed_row_commits_with_enter_alone(self, make_client):
+        stub = ModelPickerStub([BLOCKED_CLAUDE])
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        fingerprint = _fingerprint("claude", stub.read_screen("w1:p3"))
+
+        response = self._post(client, 0, fingerprint)
+
+        assert response.status_code == 200
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
+
+    def test_drift_under_the_tap_is_a_409_and_presses_nothing(self, make_client):
+        stub = ModelPickerStub([BLOCKED_CLAUDE])
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        stale = _fingerprint("claude", picker_screen(3))
+
+        response = self._post(client, 2, stale)
+
+        assert response.status_code == 409
+        assert stub.key_calls == []
+
+    def test_the_confirmation_stage_walks_and_never_digits_either(
+        self, make_client
+    ):
+        stub = ModelPickerStub([BLOCKED_CLAUDE])
+        stub.stage = "confirm"
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        fingerprint = _fingerprint("claude", stub.read_screen("w1:p3"))
+
+        # "No, go back" (option 1): the pointer sits on row 0 (Yes).
+        response = self._post(client, 1, fingerprint)
+
+        assert response.status_code == 200
+        assert stub.key_calls == [
+            {"pane_id": "w1:p3", "keys": ["down"]},
+            {"pane_id": "w1:p3", "keys": ["enter"]},
+        ]
+        sent = [key for call in stub.key_calls for key in call["keys"]]
+        assert all(key not in "0123456789" for key in sent)
+
+
+class TestWizardTwoStepFlow:
+    """S4 proof: the wizard needs NO endpoint fields. Step 1 answers
+    with ``option`` and the screen advances to step 2; step 2 answers
+    with ``choices`` and the pane resumes. A step-1 answer that arrives
+    when the screen is already at step 2 is the 409 ``changed`` the PWA
+    surfaces as its abort card — the guard, not the client, decides."""
+
+    def test_both_steps_flow_through_option_then_choices(self, make_client):
+        stub = WizardTwoStepStub([BLOCKED_CLAUDE])
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+
+        step1 = recognize("claude", WIZARD_STEP1)
+        assert step1.payload()["wizard"] == {"step": 1, "steps": 2}
+        first = client.post(
+            "/pane/dialog/answer",
+            json={
+                "pane_id": "w1:p3",
+                "fingerprint": step1.fingerprint,
+                "option": 1,
+            },
+        )
+        assert first.status_code == 200
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["2", "enter"]}]
+
+        step2 = recognize("claude", stub.read_screen("w1:p3"))
+        assert step2.kind == "multiselect"
+        assert step2.payload()["wizard"] == {"step": 2, "steps": 2}
+        second = client.post(
+            "/pane/dialog/answer",
+            json={
+                "pane_id": "w1:p3",
+                "fingerprint": step2.fingerprint,
+                "choices": [0, 2],
+            },
+        )
+        assert second.status_code == 200
+        assert second.json()["choices"] == [0, 2]
+        assert [call["keys"] for call in stub.key_calls[1:]] == [
+            ["1"], ["3"], ["down"], ["enter"],
+        ]
+        assert stub.phase == 3
+
+        entries = audit_entries(client)
+        answers = [e for e in entries if e["action"] == "pane.dialog.answer"]
+        assert [a["detail"].get("option") for a in answers] == [1, None]
+        assert [a["detail"].get("choices") for a in answers] == [None, [0, 2]]
+
+    def test_a_stale_step_fingerprint_against_the_next_screen_is_a_409(
+        self, make_client
+    ):
+        """The server-side stop: a step answered against a screen that
+        already moved to another step sends NOTHING — the drift the PWA
+        must surface, never retry around."""
+        stub = WizardTwoStepStub([BLOCKED_CLAUDE])
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        step1 = recognize("claude", WIZARD_STEP1)
+        stub.phase = 2  # the screen already advanced
+
+        response = client.post(
+            "/pane/dialog/answer",
+            json={
+                "pane_id": "w1:p3",
+                "fingerprint": step1.fingerprint,
+                "option": 0,
+            },
+        )
+
+        assert response.status_code == 409
+        assert "cambió" in response.json()["detail"]
+        assert stub.key_calls == []
+
+
+def ansi_paint(text: str) -> str:
+    """A real styled read's shape: every line painted and reset."""
+    return "\n".join(
+        f"\x1b[38;2;1;2;3m{line}\x1b[0m" for line in text.split("\n")
+    )
+
+
+class AnsiPaintedStub(DialogTapStub):
+    """The live-read shape herdr's ``--format ansi`` returns: the
+    STYLED (``as_ansi``) read carries SGR paint on every line. Every
+    recognizer consuming a styled read must see the escape-stripped
+    text, exactly as ``_dialog_runs`` strips for /view."""
+
+    def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+        text = super().read_screen(pane_id, n_lines, source, as_ansi)
+        return ansi_paint(text) if as_ansi else text
+
+
+class TestStyledReadParity:
+    """The live parity bug (f7d): the answer path's guard reader handed
+    recognizers the STYLED read raw, so every recognizer claimed
+    nothing and every tap 409'd ``changed`` while /view happily
+    published the fingerprint from the same pane. The answer must
+    recognize the SAME escape-stripped text the view path derives —
+    from the same styled bytes."""
+
+    def test_a_tap_answers_the_fingerprint_the_view_published_on_a_styled_read(
+        self, make_client
+    ):
+        stub = AnsiPaintedStub([BLOCKED_CLAUDE], CLAUDE_SELECT)
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+
+        published = client.get("/view", params={"pane_id": "w1:p3"}).json()[
+            "structured"
+        ]
+        assert published["kind"] == "select"
+        assert published["fingerprint"]
+
+        response = client.post(
+            "/pane/dialog/answer",
+            json={
+                "pane_id": "w1:p3",
+                "fingerprint": published["fingerprint"],
+                "option": 1,
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["ok"] is True
+        assert body["option"] == 1
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["2", "enter"]}]
+
+    def test_a_stale_fingerprint_on_a_styled_read_still_refuses(self, make_client):
+        """Stripping aligns the TEXT, never the discipline: a moved
+        screen under a styled read keeps refusing ``changed`` with
+        nothing sent."""
+        stub = AnsiPaintedStub([BLOCKED_CLAUDE], CLAUDE_SELECT)
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        stale = _fingerprint("claude", CLAUDE_SELECT.replace("Manzana", "Melón"))
+
+        response = client.post(
+            "/pane/dialog/answer",
+            json={"pane_id": "w1:p3", "fingerprint": stale, "option": 0},
+        )
+
+        assert response.status_code == 409
+        assert stub.key_calls == []
+
+
+def _variant_plain() -> str:
+    from herdr_brain.tools import _runs_plain_text
+    from herdr_brain.view import ansi_runs
+
+    return _runs_plain_text(
+        ansi_runs((FIXTURES / "opencode-variant-picker.ansi").read_text(encoding="utf-8"))
+    )
+
+
+VARIANT_PLAIN = _variant_plain()
+
+
+def paint_variant(text: str, pointer: int) -> str:
+    """Paints the ``pointer``-th row of the Select variant list."""
+    lines = text.split("\n")
+    title_at = next(i for i, line in enumerate(lines) if "Select variant" in line)
+    column = lines[title_at].index("Select variant")
+    search_at = next(i for i in range(title_at + 1, len(lines)) if lines[i][column:].strip())
+    first = next(i for i in range(search_at + 1, len(lines)) if lines[i][column:].strip())
+    at = first + pointer
+    lines[at] = lines[at][:column] + POINTER_PAINT + lines[at][column:] + "\x1b[0m"
+    return "\n".join(lines)
+
+
+class TestOpencodeVariantPickerAnswer:
+    """A tap on opencode's Select variant list walks the painted pointer,
+    proves it on the row, and presses Enter; the list leaving the screen
+    confirms it. Never a digit, never typed text."""
+
+    def _stub(self, stuck=False):
+        state = {"stage": "variant", "pointer": 0}
+        keep = ["Default", "low", "high", "max"]
+
+        class VariantStub(DialogTapStub):
+            def __init__(self):
+                super().__init__([IDLE_OPENCODE], VARIANT_PLAIN)
+
+            def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+                if state["stage"] == "done":
+                    return composer_screen("GLM-5.3 Highspeed Z.AI Coding Plan · high")
+                return paint_variant(VARIANT_PLAIN, state["pointer"])
+
+            def send_keys(self, pane_id, keys):
+                result = super().send_keys(pane_id, keys)
+                if not stuck:
+                    move_pointer(state, keys, keep)
+                if "enter" in keys:
+                    state["stage"] = "done"
+                return result
+
+        return VariantStub()
+
+    def _answer(self, settings, stub, label):
+        from herdr_brain.tools import BrainTools
+
+        model = recognize("opencode", VARIANT_PLAIN)
+        index = [o.label for o in model.options].index(label)
+        tools = BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
+        return tools.answer_structured_dialog("w1:p3", model.fingerprint, index)
+
+    def test_a_tap_walks_to_the_variant_and_commits(self, settings):
+        stub = self._stub()
+
+        result = self._answer(settings, stub, "high")
+
+        assert result["outcome"] == "answered"
+        assert result["label"] == "high"
+        assert stub.key_calls == [
+            {"pane_id": "w1:p3", "keys": ["down", "down"]},
+            {"pane_id": "w1:p3", "keys": ["enter"]},
+        ]
+
+    def test_the_pointed_variant_commits_with_enter_alone(self, settings):
+        stub = self._stub()
+
+        result = self._answer(settings, stub, "Default")
+
+        assert result["outcome"] == "answered"
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
+
+    def test_a_pointer_that_does_not_move_never_commits(self, settings):
+        stub = self._stub(stuck=True)
+
+        result = self._answer(settings, stub, "max")
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "changed"
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["down", "down", "down"]}]
+
+
+class TestModelSwitchOpensTheVariantList:
+    """After Enter on a model whose variants do not hold the current one,
+    opencode replaces the picker with Select variant: the switch is
+    confirmed (the composer names the model) and the answer says the
+    list is next, so the PWA keeps watching for its card."""
+
+    def test_the_answer_carries_next_variant_picker(self, settings):
+        from herdr_brain.tools import BrainTools
+
+        flow = TestModelPickerSearchFirst()
+        stub = flow._stub(["GLM-5.3 Highspeed"])
+        original = stub.read_screen
+
+        def read_screen(pane_id, n_lines=None, source="visible", as_ansi=False):
+            if stub.state["stage"] == "done":
+                return VARIANT_PLAIN
+            return original(pane_id, n_lines, source, as_ansi)
+
+        stub.read_screen = read_screen
+        tools = BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
+        highspeed = next(
+            index
+            for index, option
+            in enumerate(recognize("opencode", OPENCODE_PICKER).options)
+            if option.label == "GLM-5.3 Highspeed"
+        )
+
+        result = tools.answer_structured_dialog(
+            "w1:p3", _fingerprint("opencode", OPENCODE_PICKER), highspeed
+        )
+
+        assert result["outcome"] == "answered"
+        assert result["next"] == "variant_picker"

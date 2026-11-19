@@ -235,6 +235,15 @@ _WRITE_RULES = (
     # manual reply/keys routes they ride. GET /operator/config stays a
     # read (labels, never secrets — the operator authored them).
     ("POST", re.compile(r"^/operator/(launch|preset)$")),
+    # parity-f7c S1: a PWA session launch runs the same create_session
+    # the voice gate replays — it types a task into a real terminal, so
+    # it is a write behind the device gate and the audit log. GET
+    # /session/roots stays a read (labels and paths the operator
+    # authored themselves).
+    ("POST", re.compile(r"^/session/new$")),
+    # parity-f7c S3: resuming a past conversation types a verified
+    # resume argv into a real terminal tab — the same write treatment.
+    ("POST", re.compile(r"^/session/resume$")),
     ("POST", re.compile(r"^/ask$")),
     ("POST", re.compile(r"^/transcribe$")),
     ("POST", re.compile(r"^/reset$")),

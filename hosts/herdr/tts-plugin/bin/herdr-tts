@@ -338,6 +338,11 @@ DEFAULT_TTS_REMINDERS="off"
 DEFAULT_TTS_REMINDER_START_MIN="5"
 DEFAULT_TTS_REMINDER_BACKOFF="2,5,15"
 DEFAULT_TTS_REMINDER_MAX="3"
+# Pending queue: bounded backlog for busy-PC announcements (max 5 by default,
+# user-configurable). Auto-drain is OFF by default so pending announcements
+# only play ON DEMAND (herdr-tts --drain) and never speak unexpectedly.
+DEFAULT_TTS_PENDING_MAX_RECORDS="5"
+DEFAULT_TTS_PENDING_AUTO_DRAIN="off"
 
 notify_herdr() {
   local title="$1"
@@ -405,6 +410,12 @@ TTS_REMINDERS="${TTS_REMINDERS:-$DEFAULT_TTS_REMINDERS}"
 TTS_REMINDER_START_MIN="${TTS_REMINDER_START_MIN:-$DEFAULT_TTS_REMINDER_START_MIN}"
 TTS_REMINDER_BACKOFF="${TTS_REMINDER_BACKOFF:-$DEFAULT_TTS_REMINDER_BACKOFF}"
 TTS_REMINDER_MAX="${TTS_REMINDER_MAX:-$DEFAULT_TTS_REMINDER_MAX}"
+TTS_PENDING_MAX_RECORDS="${TTS_PENDING_MAX_RECORDS:-${PENDING_MAX_RECORDS:-$DEFAULT_TTS_PENDING_MAX_RECORDS}}"
+[[ "$TTS_PENDING_MAX_RECORDS" =~ ^[0-9]+$ ]] || TTS_PENDING_MAX_RECORDS="$DEFAULT_TTS_PENDING_MAX_RECORDS"
+export PENDING_MAX_RECORDS="$TTS_PENDING_MAX_RECORDS"
+export TTS_PENDING_MAX_RECORDS="$TTS_PENDING_MAX_RECORDS"
+TTS_PENDING_AUTO_DRAIN="${TTS_PENDING_AUTO_DRAIN:-$DEFAULT_TTS_PENDING_AUTO_DRAIN}"
+[[ "$TTS_PENDING_AUTO_DRAIN" == "on" ]] || TTS_PENDING_AUTO_DRAIN="off"
 # HT-16: auto-open the reader popup on live reads. Only an exact "on"
 # triggers it; any hand-edited junk normalizes to off (same validation
 # style as TTS_THEME), so a typo can never half-enable the popup.
@@ -1699,6 +1710,8 @@ NTFY_SEQUENCE="${NTFY_SEQUENCE}"
 WEB_URL="${WEB_URL}"
 WEB_LABEL="${WEB_LABEL}"
 CLICK_REDIRECT="${CLICK_REDIRECT}"
+TTS_PENDING_MAX_RECORDS="${TTS_PENDING_MAX_RECORDS}"
+TTS_PENDING_AUTO_DRAIN="${TTS_PENDING_AUTO_DRAIN}"
 EOF
 }
 
@@ -1930,10 +1943,12 @@ stop_audio() {
   # Runs BEFORE the engine stop so the queue cannot dispatch the next item.
   radio_cancel && stopped=true
 
-  if [[ -S "$IPC_SOCKET" ]]; then
-    "$VENV_PYTHON" "$ENGINE_SCRIPT" --ipc-cmd stop >/dev/null 2>&1 || true
-    stopped=true
-  fi
+  for sock in "$IPC_SOCKET" /tmp/agent-tts-player.sock; do
+    if [[ -S "$sock" ]]; then
+      AGENT_TTS_SOCKET="$sock" "$VENV_PYTHON" "$ENGINE_SCRIPT" --ipc-cmd stop >/dev/null 2>&1 || true
+      stopped=true
+    fi
+  done
 
   if [[ -f "$PID_FILE" ]]; then
     local pid
@@ -1948,7 +1963,11 @@ stop_audio() {
   # (miniaudio) by contract; external players (paplay/afplay/mpv) are not
   # part of any playback path, so there is nothing legitimate to pkill.
 
-  rm -f "$LOCK_FILE" "$PID_FILE" "$IPC_SOCKET"
+  # Orphan watcher sweep: clean up any lingering herdr agent wait processes and locks
+  pkill -u "$EUID" -TERM -f "herdr agent wait" 2>/dev/null || true
+  rm -f /tmp/herdr-tts-watcher-*.lock 2>/dev/null || true
+
+  rm -f "$LOCK_FILE" "$PID_FILE" "$IPC_SOCKET" /tmp/agent-tts-player.sock /tmp/agent-tts-playing.lock /tmp/agent-tts-current.pid
 
   if [[ "$stopped" == true ]]; then
     echo "$(tt player.stopped)"
@@ -2329,15 +2348,66 @@ pending_admit() {
   fi
 }
 
-# One cheap queue tick per watcher-loop wake-up. Placeholder: the dispatch
-# itself arrives with VS3.3; today the tick only proves the wiring is alive.
+# One cheap queue tick per watcher-loop wake-up.
+# The pending queue plays ONLY on demand unless auto-drain is explicitly enabled ("on").
 pending_tick() {
+  if [[ "${TTS_PENDING_AUTO_DRAIN:-off}" != "on" ]]; then
+    return 0
+  fi
+  if is_auto_muted; then
+    return 0
+  fi
   local rc=0
   "$VENV_PYTHON" "${PLUGIN_ROOT}/lib/pending_queue.py" tick || rc=$?
   if [[ "$rc" -ne 0 ]]; then
     echo "[$(date +%H:%M:%S)] $(tt pending.tick_failed)"
     return "$rc"
   fi
+}
+
+pending_play_on_demand() {
+  if is_auto_muted; then
+    echo "🔇 Auto-read is currently muted. Unmute with 'herdr-tts --auto-on' first." >&2
+    return 1
+  fi
+  local count=0
+  local status_out
+  status_out=$("$VENV_PYTHON" "${PLUGIN_ROOT}/lib/pending_queue.py" status 2>/dev/null || true)
+  local pending_count
+  pending_count=$(echo "$status_out" | grep -o 'pending=[0-9]*' | cut -d= -f2)
+  if [[ -z "$pending_count" || "$pending_count" -eq 0 ]]; then
+    echo "📻 No pending announcements in queue."
+    return 0
+  fi
+
+  echo "📻 Playing $pending_count pending announcement(s) on demand..."
+  while true; do
+    local out
+    out=$("$VENV_PYTHON" "${PLUGIN_ROOT}/lib/pending_queue.py" tick 2>&1 || true)
+    if [[ "$out" == *"dispatched=1"* ]]; then
+      (( count++ )) || true
+      sleep 0.5
+      while is_playing; do
+        sleep 0.3
+      done
+    else
+      break
+    fi
+  done
+  echo "📻 Finished playing $count pending announcement(s)."
+}
+
+pending_clear() {
+  "$VENV_PYTHON" -c "
+import sqlite3, os
+db = os.path.expanduser('${HERDR_TTS_PENDING_DB:-$STATE_DIR/pending.db}')
+if os.path.isfile(db):
+    con = sqlite3.connect(db)
+    cur = con.cursor()
+    cur.execute(\"UPDATE pending_records SET state = 'cancelled' WHERE state IN ('pending', 'announcing')\")
+    con.commit()
+    print(f'Cleared {cur.rowcount} pending announcement(s).')
+" 2>/dev/null || true
 }
 
 # Report the outcome of an announced playback (announce id + played|failed).
@@ -4146,9 +4216,7 @@ watch_agent_pane() {
   local prev_state="working"
 
   while true; do
-    # VS3.2 (T7): one cheap pending-queue tick per wake-up. Dispatch
-    # semantics arrive with VS3.3; a tick failure is logged by the wrapper
-    # and never breaks the loop.
+    # VS3.2 (T7): one cheap pending-queue tick per wake-up (only dispatches if auto-drain enabled)
     pending_tick || true
     herdr agent wait "$pane_id" --until done --until blocked --until idle 2>/dev/null || {
       sleep 3
@@ -4473,6 +4541,8 @@ daemon_stop_running() { # [out-var]
   # kill so the supervisor consumes it and exits instead of relaunching a
   # daemon this stop (restart paths) meant to end.
   { : > "$SUPERVISOR_STOP_FLAG"; } 2>/dev/null || true
+  pkill -u "$EUID" -TERM -f "herdr agent wait" 2>/dev/null || true
+  rm -f /tmp/herdr-tts-watcher-*.lock 2>/dev/null || true
   pid=$(daemon_pid)
   if [[ -n "$pid" ]]; then
     kill "$pid" 2>/dev/null || true
@@ -4525,6 +4595,10 @@ daemon_restart() {
 }
 
 run_daemon() {
+  # Sweep any stale watcher locks and orphan wait processes from previous crashed sessions
+  pkill -u "$EUID" -TERM -f "herdr agent wait" 2>/dev/null || true
+  rm -f /tmp/herdr-tts-watcher-*.lock 2>/dev/null || true
+
   # Startup line lands in daemon.log even when stdout is /dev/null (a
   # --restart-daemon relaunch): a silent start or death can never happen.
   daemon_log "$(tt daemon.started_log "$$" "$TTS_AUTO_SCOPE")"
@@ -4541,8 +4615,9 @@ run_daemon() {
   DAEMON_EXIT_REASON="$(tt daemon.exit_clean)"
   cleanup() {
     for pid in "${CHILD_PIDS[@]:-}"; do
-      kill "$pid" 2>/dev/null || true
+      kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
     done
+    pkill -u "$EUID" -TERM -f "herdr agent wait" 2>/dev/null || true
     rm -f /tmp/herdr-tts-watcher-*.lock 2>/dev/null || true
     rm -f "$DAEMON_PID_FILE" 2>/dev/null || true
     stop_audio
@@ -8514,8 +8589,37 @@ case "${1:-}" in
   --zen)
     read_current_pane_visual "$@"
     ;;
-  --stop|-s)
+  stop|--stop|-s)
     stop_audio
+    ;;
+  drain|--drain|--pending-play|pending-play)
+    pending_play_on_demand
+    ;;
+  --pending-status|pending-status)
+    "$VENV_PYTHON" "${PLUGIN_ROOT}/lib/pending_queue.py" status
+    ;;
+  --pending-clear|pending-clear)
+    pending_clear
+    ;;
+  --pending-max)
+    if [[ "${2:-}" =~ ^[0-9]+$ ]] && (( 10#$2 >= 1 )); then
+      TTS_PENDING_MAX_RECORDS="$2"
+      save_config
+      echo "Pending queue max records set to $TTS_PENDING_MAX_RECORDS"
+    else
+      echo "Invalid max records: must be a positive integer" >&2
+      exit 1
+    fi
+    ;;
+  --pending-auto-drain)
+    if [[ "${2:-}" == "on" || "${2:-}" == "off" ]]; then
+      TTS_PENDING_AUTO_DRAIN="$2"
+      save_config
+      echo "Pending auto-drain set to $TTS_PENDING_AUTO_DRAIN"
+    else
+      echo "Invalid value: must be 'on' or 'off'" >&2
+      exit 1
+    fi
     ;;
   --toggle-play|-r)
     shift
@@ -8863,7 +8967,7 @@ run_podcast_server(port=int(sys.argv[1]), podcast_dir=sys.argv[2])
   --podcast-publish)
     publish_current_pane_podcast
     ;;
-  --status)
+  status|--status)
     show_status
     ;;
   --dashboard)

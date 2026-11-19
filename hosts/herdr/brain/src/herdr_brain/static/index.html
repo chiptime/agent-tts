@@ -188,7 +188,8 @@
      * backdrop rules and the z-index band. */
     #conv-backdrop,
     #pending-backdrop,
-    #calls-backdrop {
+    #calls-backdrop,
+    #new-backdrop {
       position: fixed;
       inset: 0;
       z-index: 19;            /* dims drawer (15) and settings (17); sheet is 20 */
@@ -199,13 +200,15 @@
     }
     #conv-backdrop.open,
     #pending-backdrop.open,
-    #calls-backdrop.open {
+    #calls-backdrop.open,
+    #new-backdrop.open {
       opacity: 1;
       visibility: visible;
       transition: opacity 0.28s ease;
     }
     #conv-sheet,
-    #pending-sheet {
+    #pending-sheet,
+    #new-sheet {
       position: fixed;
       left: 0; right: 0;
       bottom: calc(env(safe-area-inset-bottom, 0px) + 96px);
@@ -227,7 +230,8 @@
       transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1), visibility 0s 0.28s;
     }
     #conv-sheet.open,
-    #pending-sheet.open {
+    #pending-sheet.open,
+    #new-sheet.open {
       transform: translateY(0);
       visibility: visible;
       transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
@@ -333,6 +337,120 @@
       color: var(--muted);
       font-style: italic;
       text-align: center;
+    }
+    /* ── NEW SESSION SHEET (parity-f7c S1) ──────────
+     * Opened from the conversation sheet's "＋ Nueva conversación"
+     * (the header ✚ left as its duplicate, 2026-11-19): harness (the
+     * server's closed list), folder (roots + recents), optional title
+     * and task, then Launch — plus the launchers.toml rows as
+     * shortcuts riding the SAME POST /operator/launch flow. Same sheet
+     * band as Conversaciones; the body is the one scroll surface. */
+    #new-sheet-body {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      padding: var(--sp-3) var(--sp-3) calc(env(safe-area-inset-bottom, 0px) + var(--sp-4));
+    }
+    .ns-field {
+      margin: 0 0 var(--sp-3);
+    }
+    .ns-label {
+      display: block;
+      font-size: var(--fs-sm);
+      color: var(--muted);
+      margin: 0 0 6px;
+    }
+    #new-harness,
+    #new-title,
+    #new-task {
+      width: 100%;
+      min-height: 48px;       /* touch target >= 48px */
+      padding: 10px 12px;
+      font: inherit;
+      font-size: 15px;
+      color: var(--text);
+      background: var(--chip-bg);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+    }
+    #new-task {
+      min-height: 84px;
+      resize: vertical;
+    }
+    #new-folders {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .ns-group {
+      font-size: var(--fs-sm);
+      color: var(--muted);
+      margin: 4px 0 0;
+    }
+    .ns-folder {
+      width: 100%;
+      min-height: 48px;
+      padding: 10px 12px;
+      text-align: left;
+      font: inherit;
+      font-size: 14px;
+      color: var(--text);
+      background: var(--chip-bg);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow-wrap: anywhere;
+    }
+    .ns-folder[aria-pressed="true"] {
+      border-color: var(--accent);
+      color: var(--accent);
+      font-weight: 700;
+    }
+    #new-roots-empty {
+      padding: var(--sp-3);
+      font-size: var(--fs-sm);
+      color: var(--muted);
+      font-style: italic;
+      text-align: center;
+    }
+    #new-launch {
+      width: 100%;
+      min-height: 48px;
+      margin-top: var(--sp-2);
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--accent);
+      background: var(--chip-bg);
+      border: 1px dashed var(--line);
+      border-radius: 12px;
+    }
+    #new-launch:disabled {
+      opacity: 0.5;
+    }
+    #new-launchers .ns-folder.dock-armed {
+      border-style: solid;
+      border-color: var(--accent);
+      color: var(--accent);
+      font-weight: 700;
+    }
+    /* Retomar rows (parity-f7c S3): the folder chip shape, read as a
+     * one-tap action — the full label wraps, the cwd rides title. */
+    .ns-resume {
+      width: 100%;
+      min-height: 48px;
+      padding: 10px 12px;
+      text-align: left;
+      font: inherit;
+      font-size: 14px;
+      color: var(--text);
+      background: var(--chip-bg);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow-wrap: anywhere;
+    }
+    .ns-resume:active {
+      border-color: var(--accent);
+      color: var(--accent);
     }
     .conv-row {
       display: flex;
@@ -514,6 +632,42 @@
     }
     #pane-receipt .receipt-actions button:disabled { opacity: 0.55; }
     #pane-receipt .receipt-actions button.receipt-submit { border-color: var(--accent); }
+    /* Send tracker (parity-f7g S5): the card that follows the send to
+     * its outcome. Same visual language as the receipt card; the state
+     * line is a live region (aria-live on the card) and the ticking
+     * elapsed rides an aria-hidden span so a screen reader hears state
+     * changes, not seconds. The ✕ dismiss appears only on a terminal
+     * state. */
+    #pane-track {
+      margin: 0 10px var(--sp-2);
+      padding: var(--sp-2) var(--sp-3);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel-2);
+      color: var(--text);
+      font-size: var(--fs-sm);
+      line-height: 1.45;
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+    }
+    #pane-track.hidden { display: none; }
+    #pane-track .track-state { font-weight: 700; flex: 1; min-width: 0; }
+    #pane-track .track-elapsed { color: var(--muted); white-space: nowrap; }
+    #pane-track .track-dismiss {
+      flex: none;
+      min-width: 36px;
+      min-height: 36px;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      background: var(--bg);
+      color: var(--muted);
+      font: inherit;
+      font-weight: 700;
+      line-height: 1;
+    }
+    #pane-track.terminal { border-color: var(--accent); }
+    #pane-track .track-dismiss.hidden { display: none; }
     /* Stop (S12): double-tap arming — the first tap arms (the button says
      * so), only the second tap inside the window sends the interrupt. */
     #pane-stop {
@@ -622,6 +776,44 @@
       margin-top: 2px;
       font-size: 12px;
       color: var(--muted);
+    }
+    /* Model picker card: a search input over a BOUNDED list that
+     * scrolls inside the card (a 16+ row picker used to overflow the
+     * pane area with no way to reach the last rows). */
+    .dialog-buttons .dlg-model-search {
+      width: 100%;
+      min-height: 44px;
+      padding: 8px 12px;
+      font: inherit;
+      font-size: 14px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--bg);
+      color: var(--text);
+      box-sizing: border-box;
+    }
+    .dialog-buttons .dlg-model-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-height: 0;
+      max-height: min(46vh, 360px);
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      -webkit-overflow-scrolling: touch;
+    }
+    .dialog-buttons .dlg-model-list button { flex: 0 0 auto; }
+    .dialog-buttons .dlg-model-list button[hidden] { display: none; }
+    .dialog-buttons .dlg-model-none {
+      padding: 8px 12px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .dialog-buttons .dlg-model-none.hidden { display: none; }
+    .dialog-buttons button.dlg-current {
+      border-color: var(--accent);
+      box-shadow: inset 3px 0 0 var(--accent);
+      font-weight: 600;
     }
     /* The explicit "cannot read this dialog" card: honest about the
      * state, and the keypad below stays the way out. */
@@ -2418,6 +2610,7 @@
       #settings-sheet, #settings-sheet.open { transition: none; }
       #conv-sheet, #conv-sheet.open { transition: none; }
       #pending-sheet, #pending-sheet.open { transition: none; }
+      #new-sheet, #new-sheet.open { transition: none; }
       #conv-backdrop, #conv-backdrop.open,
       #calls-backdrop, #calls-section, #calls-section.open { transition: none; }
       #pending-backdrop, #pending-backdrop.open { transition: none; }
@@ -2611,6 +2804,17 @@
         <button id="pane-receipt-discard" type="button" data-i18n="common.discard">Descartar</button>
       </div>
     </div>
+    <!-- Send tracker (parity-f7g S5): follows THIS pane's send to its
+         outcome — Enviado → Empezó → Trabajando → Terminó/…, with a
+         locally ticking elapsed while non-terminal. One card per pane;
+         a new send replaces it; the ✕ appears once terminal. app.js
+         paints it with text nodes only (the error message is masked
+         server-side and is never markup). -->
+    <div id="pane-track" class="hidden" aria-live="polite">
+      <span id="pane-track-state" class="track-state"></span>
+      <span id="pane-track-elapsed" class="track-elapsed" aria-hidden="true"></span>
+      <button id="pane-track-dismiss" type="button" class="track-dismiss hidden" aria-label="Cerrar" data-i18n-aria-label="track.dismiss">✕</button>
+    </div>
     <!-- Stop (S12): interrupt the running turn. Double-tap arming: the
          first tap arms for ~3 s, the second sends POST /pane/stop. -->
     <button id="pane-stop" class="hidden" type="button" data-i18n="call.stop">■ Detener</button>
@@ -2795,6 +2999,9 @@
       <button id="conv-close" type="button" title="Cerrar" data-i18n-title="conv.close">✕</button>
     </div>
     <div class="cs-actions">
+      <!-- Header ✚ dedup (2026-11-19): ONE new-session entry — this
+           row OPENS the launch sheet (#new-sheet). The mid-call
+           reset/fresh-call flow lives on #call-new in the drawer. -->
       <button id="conv-new" type="button" data-i18n="herd.new_conversation">＋ Nueva conversación</button>
     </div>
     <div id="conv-list"></div>
@@ -2812,6 +3019,54 @@
       <button id="calls-close" type="button" title="Cerrar" data-i18n-title="conv.close">✕</button>
     </div>
     <div id="calls-container"></div>
+  </section>
+
+  <!-- Nueva sesión sheet (parity-f7c S1, doc 03 §2): harness picker
+       (the server's closed list), folder picker (roots + recents),
+       optional title and initial task, Launch — and the launchers.toml
+       rows as shortcuts that POST the SAME /operator/launch. The task
+       text runs the destructive guard before posting (second tap, like
+       the composer). ✕ / backdrop / Escape / Android back close it. -->
+  <div id="new-backdrop" aria-hidden="true"></div>
+  <section id="new-sheet" role="dialog" aria-modal="true" aria-label="Nueva sesión" data-i18n-aria-label="newsession.aria" inert>
+    <div class="cs-head">
+      <span class="cs-title" data-i18n="newsession.title">Nueva sesión</span>
+      <button id="new-close" type="button" title="Cerrar" data-i18n-title="conv.close">✕</button>
+    </div>
+    <div id="new-sheet-body">
+      <div id="new-roots-empty" class="hidden" data-i18n="newsession.roots_empty"></div>
+      <div class="ns-field">
+        <label class="ns-label" for="new-harness" data-i18n="newsession.harness">Agente</label>
+        <select id="new-harness"></select>
+      </div>
+      <div class="ns-field">
+        <span class="ns-label" data-i18n="newsession.folder">Carpeta</span>
+        <div id="new-folders"></div>
+      </div>
+      <div class="ns-field">
+        <label class="ns-label" for="new-title" data-i18n="newsession.title_label">Título (opcional)</label>
+        <input id="new-title" type="text" maxlength="200" autocomplete="off">
+      </div>
+      <div class="ns-field">
+        <label class="ns-label" for="new-task" data-i18n="newsession.task">Tarea inicial (opcional)</label>
+        <textarea id="new-task" rows="3" maxlength="8000" data-i18n-placeholder="newsession.task_placeholder"></textarea>
+      </div>
+      <button id="new-launch" type="button" data-i18n="newsession.launch" disabled>🚀 Lanzar</button>
+      <!-- Retomar (parity-f7c S3): the harness picker renders only the
+           server's resume-ENABLED list; the recent list loads per
+           harness; one tap POSTs /session/resume with a fresh
+           request_id (S2 receipts). -->
+      <div class="ns-field">
+        <label class="ns-label" for="new-resume-harness" data-i18n="newsession.resume">Retomar</label>
+        <select id="new-resume-harness"></select>
+      </div>
+      <div class="ns-field">
+        <div id="new-resume-list"></div>
+      </div>
+      <div class="ns-field">
+        <div id="new-launchers"></div>
+      </div>
+    </div>
   </section>
 
   <!-- Pending announcements sheet (pending-notices-in-settings-sheet):
@@ -2873,6 +3128,7 @@
     <script src="/history.js"></script>
     <script src="/dialogs.js"></script>
     <script src="/receipts.js"></script>
+    <script src="/send-track.js"></script>
     <script src="/push.js"></script>
     <script src="/reader.js"></script>
     <script src="/toast.js"></script>

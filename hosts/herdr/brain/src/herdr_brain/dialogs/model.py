@@ -36,8 +36,11 @@ from typing import Optional, Tuple
 #: option; ``multiselect`` toggles several and then submits;
 #: ``confirm`` and ``permission`` are one-question dialogs whose answer
 #: is a yes/no/trust decision; ``wizard_step`` is one question of a
-#: multi-question call (answering may advance to the next step).
-KINDS = ("select", "multiselect", "confirm", "permission", "wizard_step")
+#: multi-question call (answering may advance to the next step);
+#: ``model_picker`` is a /model selector — walk-class ALWAYS, because
+#: in these lists a digit confirms and rewrites the default model
+#: (ADR 0009): the only recipe is the arrows plus Enter.
+KINDS = ("select", "multiselect", "confirm", "permission", "wizard_step", "model_picker")
 
 
 @dataclass(frozen=True)
@@ -56,6 +59,26 @@ class DialogOption:
     #: Multiselect only: the checkbox state the terminal shows. ``None``
     #: on rows that are not checkboxes (e.g. the submit row).
     checked: Optional[bool] = None
+    #: True on the row whose digit FOCUSES a text field instead of
+    #: committing an answer (``Type something.``). Its ``keys`` are the
+    #: digit alone — Enter would submit before any text is typed — and
+    #: the answer travels as ``{option, text}`` through the typing
+    #: recipe, never as a plain digit commit.
+    free_text: bool = False
+    #: model_picker only (opencode): the row the picker itself marks
+    #: with a ``●`` prefix — the CURRENT model. Additive on purpose:
+    #: rows of every other kind (and picker rows without a mark) keep
+    #: today's shape; the PWA may badge it, nothing may tap it.
+    current: bool = False
+    #: model_picker only (opencode): the row's clean MODEL name, apart
+    #: from the provider the screen prints after it in the same text
+    #: run. opencode's own Search matches the model name only, so this
+    #: — never the whole label — is what the search-first recipe types.
+    model: str = ""
+    #: model_picker only (opencode): the provider (the label's trailing
+    #: provider name, or the group header the row sits under). Display
+    #: only; empty when unknown.
+    provider: str = ""
 
 
 @dataclass(frozen=True)
@@ -74,11 +97,23 @@ class StructuredDialog:
     hint: str = ""
     #: Wizard/wizard-step marker as the screen prints it ("1/2").
     step: str = ""
+    #: The SAME marker parsed for the PWA stepper (S4): current step
+    #: (1-based) and total. ``None`` unless ``step`` is a well-formed
+    #: ``N/M`` — anything unparsable keeps today's payload (no
+    #: ``wizard`` key) and renders as a plain dialog.
+    step_number: Optional[int] = None
+    step_total: Optional[int] = None
     #: Walk-class facts: the screen's own arrows, its commit key, and
     #: which option carries the pointer.
     nav_keys: Tuple[str, ...] = ()
     commit_keys: Tuple[str, ...] = ()
     selected: Optional[int] = None
+    #: OpenCode tab-strip metadata (T4b): the question-chip labels the
+    #: pinned grammar read, ending in the ``Confirm``/``Submit`` chip.
+    #: The choices choreography derives its commit from them (``tab``
+    #: reaches the last chip only when it is one tab away); empty on
+    #: every other dialog, and never sent to the PWA.
+    tab_strip: Tuple[str, ...] = ()
     #: The explicit cannot-read state (no options, no keys, ever).
     unread: bool = False
     #: Why it cannot be read, when it cannot.
@@ -104,6 +139,14 @@ class StructuredDialog:
             "kind": self.kind,
             "question": self.question,
             "step": self.step,
+            # Additive on purpose (S4): the stepper metadata rides along
+            # ONLY when the marker parsed, so every payload without it
+            # keeps its exact previous shape.
+            **(
+                {"wizard": {"step": self.step_number, "steps": self.step_total}}
+                if self.step_number is not None and self.step_total is not None
+                else {}
+            ),
             "hint": self.hint,
             "fingerprint": self.fingerprint,
             "recipe": "keys" if any(option.keys for option in self.options) else "walk",
@@ -112,6 +155,18 @@ class StructuredDialog:
                     "label": option.label,
                     "description": option.description,
                     "checked": option.checked,
+                    # Additive on purpose (S3): the flag rides along
+                    # ONLY on the rows that carry it, so every payload
+                    # without a free-text row keeps its exact shape.
+                    **({"free_text": True} if option.free_text else {}),
+                    # Additive on purpose (opencode picker): the ● row
+                    # rides along ONLY when the picker marked it.
+                    **({"current": True} if option.current else {}),
+                    # Additive on purpose (opencode picker): the clean
+                    # model name and provider ride along ONLY on rows
+                    # that carry them.
+                    **({"model": option.model} if option.model else {}),
+                    **({"provider": option.provider} if option.provider else {}),
                 }
                 for option in self.options
             ],

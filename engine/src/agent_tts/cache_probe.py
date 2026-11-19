@@ -73,6 +73,9 @@ STATUS_NOT_MEASURABLE = "not_measurable"
 STATUS_NO_REQUESTS = "no_requests"
 STATUS_MISSING = "missing"
 
+# Model id Claude Code writes on assistant lines that were never API requests.
+CLAUDE_SYNTHETIC_MODEL = "<synthetic>"
+
 
 @dataclass
 class TurnUsage:
@@ -154,6 +157,10 @@ def probe_claude(session_id: str, root: str) -> ProbeResult:
             usage = message.get("usage") if isinstance(message, dict) else None
             model = message.get("model") if isinstance(message, dict) else None
             if ts is None or not isinstance(usage, dict):
+                continue
+            # Claude Code logs local/API-error notices (e.g. usage limits) as
+            # assistant lines with model "<synthetic>": no request happened.
+            if model == CLAUDE_SYNTHETIC_MODEL:
                 continue
             key = message.get("id") or event.get("requestId") or id(event)
             raw.append((key, ts, usage, _clean_model(model)))

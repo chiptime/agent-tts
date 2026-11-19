@@ -16,10 +16,15 @@ from herdr_brain.herdr import (
     AgentInfo,
     HerdrClient,
     HerdrError,
+    PaneInfo,
+    WorkspaceInfo,
     parse_agent_list,
+    parse_pane_list,
+    parse_workspace_list,
     pick_active,
     sanitize_prompt_text,
 )
+from herdr_brain.mux import HerdrMuxAdapter
 
 NDJSON_LINE = json.dumps(
     {
@@ -205,6 +210,17 @@ class TestHerdrClient:
         with pytest.raises(HerdrError, match="empty"):
             client.send_prompt("p1", "   \n")
 
+    def test_send_text_types_the_sanitized_line_without_enter(self):
+        # The typing half of the free-text recipe: one literal argv, no
+        # submit flag and no Enter step — a newline in the text would
+        # commit the field early.
+        runner = FakeRunner(results=[(0, "", "")])
+        client = HerdrClient(make_settings(), runner=runner)
+        client.send_text("w1:p2", "usa la\nrama   main")
+        assert runner.calls[0]["cmd"] == [
+            "herdr-fake", "pane", "send-text", "w1:p2", "usa la rama main",
+        ]
+
     def test_send_prompt_reports_done_on_a_clean_exit(self):
         runner = FakeRunner(results=[(0, "submitted", "")])
         client = HerdrClient(make_settings(), runner=runner)
@@ -322,3 +338,216 @@ class TestSendKeys:
 
         assert result["ok"] is False
         assert "agent_not_found" in result["error"]
+
+
+# ── workspaces (parity-f7c S1b: the folder picker lists EVERY space) ──
+
+WORKSPACE_NDJSON = json.dumps(
+    {
+        "id": "cli:workspace:list",
+        "result": {
+            "type": "workspace_list",
+            "workspaces": [
+                # Deliberately unsorted: the CLI's own order must not
+                # leak through list_workspaces (sorted by number).
+                {
+                    "workspace_id": "w11",
+                    "label": "minibuch",
+                    "number": 3,
+                    "pane_count": 2,
+                    "tab_count": 2,
+                    "focused": False,
+                    "agent_status": "idle",
+                    "active_tab_id": "w11:t1",
+                },
+                {
+                    "workspace_id": "w1",
+                    "label": "main",
+                    "number": 1,
+                    "pane_count": 4,
+                    "tab_count": 4,
+                    "focused": True,
+                    "agent_status": "working",
+                    "active_tab_id": "w1:t2",
+                },
+                {
+                    # A workspace with NO live pane: still listed (L11).
+                    "workspace_id": "w9",
+                    "label": "scratch",
+                    "number": 2,
+                    "pane_count": 0,
+                    "tab_count": 1,
+                    "focused": False,
+                    "agent_status": "unknown",
+                    "active_tab_id": None,
+                },
+            ],
+        },
+    }
+)
+
+
+def tab_created_envelope(tab_id: str = "w2:t1", pane_id: str = "w2:p1") -> str:
+    """A success envelope shaped like the pinned tab_created variant."""
+    return json.dumps(
+        {
+            "id": "cli:tab:create",
+            "result": {
+                "type": "tab_created",
+                "tab": {"tab_id": tab_id, "workspace_id": "w2"},
+                "root_pane": {"pane_id": pane_id},
+            },
+        }
+    )
+
+
+class TestParseWorkspaceList:
+    def test_parses_ndjson_line(self):
+        workspaces = parse_workspace_list(WORKSPACE_NDJSON + "\n")
+        assert len(workspaces) == 3
+        assert workspaces[1] == WorkspaceInfo(
+            workspace_id="w1",
+            label="main",
+            number=1,
+            focused=True,
+        )
+        # The CLI order is preserved by the parser (like parse_agent_list);
+        # the SORT lives in list_workspaces.
+        assert [w.workspace_id for w in workspaces] == ["w11", "w1", "w9"]
+
+    def test_tolerates_noise_lines(self):
+        workspaces = parse_workspace_list("garbage\n" + WORKSPACE_NDJSON + "\nnot json {\n")
+        assert len(workspaces) == 3
+
+    def test_empty_output(self):
+        assert parse_workspace_list("") == []
+
+
+class TestListWorkspaces:
+    def test_builds_expected_command_sorted_by_number(self):
+        runner = FakeRunner(results=[(0, WORKSPACE_NDJSON, "")])
+        client = HerdrClient(make_settings(), runner=runner)
+        workspaces = client.list_workspaces()
+        assert [w.workspace_id for w in workspaces] == ["w1", "w9", "w11"]
+        assert runner.calls[0]["cmd"][:3] == ["herdr-fake", "workspace", "list"]
+
+    def test_nonzero_exit_raises(self):
+        runner = FakeRunner(results=[(1, "", "workspace boom")])
+        client = HerdrClient(make_settings(), runner=runner)
+        with pytest.raises(HerdrError, match="workspace boom"):
+            client.list_workspaces()
+
+
+class TestCreateTabWorkspace:
+    def test_workspace_flag_appended_when_given(self):
+        runner = FakeRunner(results=[(0, tab_created_envelope(), "")])
+        client = HerdrClient(make_settings(), runner=runner)
+        created = client.create_tab("Build", cwd="/repo", workspace_id="w2")
+        assert created == {"tab_id": "w2:t1", "pane_id": "w2:p1"}
+        assert runner.calls[0]["cmd"] == [
+            "herdr-fake", "tab", "create", "--label", "Build",
+            "--cwd", "/repo", "--workspace", "w2",
+        ]
+
+    def test_no_workspace_flag_without_the_argument(self):
+        runner = FakeRunner(results=[(0, tab_created_envelope(), "")])
+        client = HerdrClient(make_settings(), runner=runner)
+        client.create_tab("Build")
+        assert runner.calls[0]["cmd"] == [
+            "herdr-fake", "tab", "create", "--label", "Build",
+        ]
+
+
+class TestHerdrMuxAdapterWorkspaceSurface:
+    """The adapter delegation for the S1b workspace surface.
+
+    Lives here (not in test_mux_contract.py) because the mux-contract
+    suite is outside this task's edit surfaces; the signature sync
+    adapter↔client stays pinned by its existing
+    test_signatures_match_herdr_client_exactly.
+    """
+
+    def test_create_tab_passes_the_workspace_through_to_the_cli(self):
+        runner = FakeRunner(results=[(0, tab_created_envelope(), "")])
+        adapter = HerdrMuxAdapter(HerdrClient(make_settings(), runner=runner))
+        created = adapter.create_tab("Build", cwd="/repo", workspace_id="w2")
+        assert created == {"tab_id": "w2:t1", "pane_id": "w2:p1"}
+        assert runner.calls[0]["cmd"][-2:] == ["--workspace", "w2"]
+
+    def test_without_a_workspace_the_delegation_keeps_the_legacy_shape(self):
+        # The pre-S1b call shape: a client double with the two-argument
+        # signature must keep working (the RecordingClient discipline).
+        runner = FakeRunner(results=[(0, tab_created_envelope(), "")])
+        adapter = HerdrMuxAdapter(HerdrClient(make_settings(), runner=runner))
+        adapter.create_tab("Build")
+        assert runner.calls[0]["cmd"] == [
+            "herdr-fake", "tab", "create", "--label", "Build",
+        ]
+
+    def test_list_workspaces_delegates(self):
+        runner = FakeRunner(results=[(0, WORKSPACE_NDJSON, "")])
+        adapter = HerdrMuxAdapter(HerdrClient(make_settings(), runner=runner))
+        assert [w.workspace_id for w in adapter.list_workspaces()] == [
+            "w1", "w9", "w11",
+        ]
+
+
+# ── panes (parity-f7c T5b: EVERY pane carries a cwd, not just agents) ──
+
+PANE_NDJSON = json.dumps(
+    {
+        "id": "cli:pane:list",
+        "result": {
+            "type": "pane_list",
+            "panes": [
+                {
+                    # A plain shell pane — the L11 gap: workspaces whose
+                    # panes never started an agent still resolve a cwd.
+                    "pane_id": "w9:p1",
+                    "cwd": "/tmp/plain",
+                    "foreground_cwd": "/tmp/plain",
+                    "focused": False,
+                    "title": "shell",
+                },
+                {
+                    "pane_id": "w9:p2",
+                    "cwd": "/tmp/agent",
+                    "foreground_cwd": "/tmp/agent",
+                    "focused": True,
+                    "title": "claude",
+                },
+            ],
+        },
+    }
+)
+
+
+class TestParsePaneList:
+    def test_parses_ndjson_line(self):
+        panes = parse_pane_list(PANE_NDJSON + "\n")
+        assert panes == [
+            PaneInfo(pane_id="w9:p1", cwd="/tmp/plain", focused=False),
+            PaneInfo(pane_id="w9:p2", cwd="/tmp/agent", focused=True),
+        ]
+
+    def test_tolerates_noise_lines(self):
+        panes = parse_pane_list("garbage\n" + PANE_NDJSON + "\nnot json {\n")
+        assert len(panes) == 2
+
+    def test_empty_output(self):
+        assert parse_pane_list("") == []
+
+
+class TestListPanes:
+    def test_builds_expected_command(self):
+        runner = FakeRunner(results=[(0, PANE_NDJSON, "")])
+        client = HerdrClient(make_settings(), runner=runner)
+        panes = client.list_panes()
+        assert [p.pane_id for p in panes] == ["w9:p1", "w9:p2"]
+        assert runner.calls[0]["cmd"][:3] == ["herdr-fake", "pane", "list"]
+
+    def test_nonzero_exit_raises(self):
+        runner = FakeRunner(results=[(1, "", "pane boom")])
+        client = HerdrClient(make_settings(), runner=runner)
+        with pytest.raises(HerdrError, match="pane boom"):
+            client.list_panes()

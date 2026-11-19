@@ -1,0 +1,9 @@
+┃
+┃   Colour   Confirm
+┃
+┃  Review
+┃
+┃  Colour: Red
+┃
+┃  ⇆ tab  enter submit  esc dismiss
+┃

@@ -46,18 +46,93 @@ EXPECTED_DIGESTS = {
     # concurrent live-engine app.js hunks on this tree.
     # Re-pinned again for the live-call drawer work (2026-11-17): the
     # stacked interim strip + the ✚ new-call button (index.html, app.js,
-    # both i18n) and the 80dvh sheet diving behind the footer (index.html).
+    # both i18n) and the 80dvh sheet diving behind the footer (index.html)
+    # Re-pinned for parity-f7d (2026-11-19): the Cambiar modelo sheet
+    # action and the context-window tail in app.js, the model-picker
+    # chrome in dialogs.js, and both i18n..
     # Re-pinned once more for the Llamadas popup: the history left the
     # drawer for a 🕘-launched sheet (index.html + app.js; calls.js rides
     # unchanged) — then the sheet anchored at the viewport floor covering
     # the footer (index.html only).
     # Re-pinned on the merged main bytes for the formatted call-drawer
     # reader (/call-history/rendered: index.html, app.js, reader.js).
-    "/": "006f3b98dddc95f468029e74b9738ccb0c0635d875a7932e3468842cd3d6e8d5",
-    "/app.js": "6970847a90de63e3a938d83481d9fb70c8abd4a08161e71538655fbeac161fe3",
+    # app.js re-pinned for the pane model in the herd row sub-line (parity F7a S3).
+    # app.js, dialogs.js and both i18n re-pinned for parity F7b S1: the
+    # multiselect checkbox toggles above the keypad (local selection
+    # state, one explicit submit button posting {choices}).
+    # app.js, dialogs.js and both i18n re-pinned again for parity F7b S3:
+    # the free-text row opens an inline editor in the card (input + one
+    # explicit send posting {option, text}, destructive second tap).
+    # app.js, dialogs.js and both i18n re-pinned once more for parity
+    # F7b S4: the wizard stepper (step metadata from the N/M marker,
+    # Next/Back over local captures, review with Confirm/Edit, abort
+    # card on drift).
+    # index.html, app.js, dialogs.js and both i18n re-pinned for the model
+    # picker card UX (2026-11-19): a search input over a bounded, scrolling
+    # list, rows keyed by their ORIGINAL option index, the current model
+    # highlighted (model/provider split riding the payload additively).
+    # Re-pinned for parity-f7c S1 (the ✚ "Nueva sesión" sheet): the
+    # header entry + sheet markup (index.html), the pure model + wiring
+    # (app.js) and the newsession.* keys (both i18n). The sheet fetches
+    # /session/roots and /operator/config only when OPENED, so boot-time
+    # traffic is unchanged.
+    # app.js re-pinned for parity-f7c S2 (idempotent launch): the sheet
+    # mints a fresh request_id per Launch tap (mintRequestId in the pure
+    # model + the field in the POST /session/new body). No other bytes.
+    # Re-pinned for parity-f7c S3 (resume): the sheet's "Retomar" half —
+    # harness picker from /sessions/recent's enabled list, per-harness
+    # recent rows, one tap POSTing /session/resume with a fresh
+    # request_id (resumeRows in the pure model + the wiring), the
+    # .ns-resume chip style (index.html) and the newsession.resume*
+    # keys (both i18n). The resume fetches ride readFetch on OPEN, so
+    # boot-time traffic is unchanged.
+    # Re-pinned for parity-f7c S1b (spaces): the folder picker's
+    # "Espacios" group — every workspace from /session/roots' new
+    # spaces array (spaceRows in the pure model, disabled entries with
+    # a reason badge, workspace_id in the POST /session/new body) and
+    # the newsession.folder_spaces / space_* keys (app.js + both i18n).
+    # The spaces ride the same /session/roots OPEN fetch, so boot-time
+    # traffic is unchanged.
+    # Re-pinned for the header ✚ dedup (2026-11-19): #new-open left
+    # the header and the conversation sheet's "Nueva conversación"
+    # (#conv-new) became the launch-sheet opener — the mid-call
+    # POST /reset survives on #call-new (index.html, app.js, and both
+    # i18n for the now-dead herd.new_started/new_failed keys).
+    # Re-pinned for parity-f7g S5 (the send tracker card): the card
+    # markup + sheet styles + the send-track.js script tag (index.html)
+    # and the new send-track.js module itself. app.js and both i18n
+    # re-pinned in place below (tracker wiring, track.* keys).
+    "/": "813e5df2c6e2f503ede9d4a29ce0c1268cea4ddb69d68613596110c3ad7d40b1",
+    # send-track.js re-pinned for the correction batch (f7g): the
+    # per-receipt seq guard (a lower seq is a stale delivery, ignored),
+    # a start for an already-known receipt never regresses it, and a
+    # bounded per-pane memory of dismissed receipt ids (a dismissed
+    # receipt stays dismissed; only a new id shows a card again).
+    "/send-track.js": "21b8fba1b449b14e66cc295ddfe5f829b4b7786a0cf4d86ee1fc9270a247050b",
+    # app.js re-pinned for the held-card visibility fix (F7d phone
+    # report): renderPermission no longer re-hides the #pane-reply-keys
+    # wrapper an idle pane's held picker card just opened (modalKeysPane
+    # rides renderPending into the wrapper's toggle).
+    # Re-pinned again for the full opencode catalog card (2026-11-19):
+    # GET /pane/models on demand, the shared mountModelSearch builder,
+    # catalog rows answering by model_name (+ provider_name).
+    # Re-pinned for the verified opencode switch: a 502 model-picker
+    # answer shows the server's detail, and a success carrying
+    # ``next`` restarts the modal poll (opencode's Select variant).
+    # Re-pinned for parity-f7g S5 (the send tracker card): the SSE
+    # send.track feed, the receipts-poll convergence, the 1s tick
+    # cadence and the per-pane map in the composer area.
+    "/app.js": "a94e0252b2db27c3f099a4c4e2f9ea2ac48620201ceb9404d07565f26c307095",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "ca7b22c52c8160a3ac577f694eb65ec0798b77cd6ac179a5c567dffdc1fb2ba9",
-    "/dialogs.js": "0e5b6afde7ef662591f66fc69891e3b1ec343fafe0d2c5be8fbef0c5a124a4c0",
+    # dialogs.js re-pinned for the parity-f7d follow-up: MODEL_SWITCH_COMMANDS
+    # gains pi (/switch, omp's own box on the same TUI) and opencode +
+    # opencode2 (/models, live-verified on opencode 1.19.5) so the
+    # "Cambiar modelo" affordance reaches those panes too. Re-pinned
+    # again for the modal poll (F7d fix): createModelSwitchPoller +
+    # modalViewUrl here, the /view?modal=1 watch and the held picker
+    # card in app.js.
+    "/dialogs.js": "c7c0b15e783d9c2cb10dcd5fcc07eb3029536303a4bb4158f9e93ce111e3fb26",
     "/herd-group.js": "de284c825e3c99aef07db2dd53198484ec8b7ceba94dd97dbbae0303560df399",
     "/toast.js": "cbccb72b22530ff8f83250bebd8d498ca20977db9536aa094aa759bb9632357e",
     "/reader.js": "b99edccdba5adb1c407ebc3064f7045214c0152677a1da2cfa2c388393792989",
@@ -75,8 +150,10 @@ EXPECTED_DIGESTS = {
     # update notice, operator dock, offline-shell sw.js.
     "/dock.js": "4a5dc20d575c3c9e5f098116fc9314f24297b2934cb3142bc885b6e1d0155adb",
     "/i18n.js": "8bcd2ceb9f56109afaa0ec158e1a6f002799c4a983261b9d58cd38723c06719f",
-    "/i18n/en.js": "7a99b1cb00720be63d67e1a7c8a04920909966ac4ac0c6d212d84cb35f3be646",
-    "/i18n/es.js": "9dd6e6a703361cea95062710b511a4d2661b510db002d47d107b38c274d8bb58",
+    # Both i18n re-pinned for parity-f7g S5: the track.* keys (the
+    # tracker card's Spanish lines and their English locale ride).
+    "/i18n/en.js": "bee02708cab828f39ca43e60c74a06b6ae483365072ca1687b309e35aac02065",
+    "/i18n/es.js": "785766b0769dd0d08fbf99e70428bea58fc0bb3bddf9f6bc8cebdbd8faf82fdc",
     "/settings.js": "1c2cf3ed92bf959c19ecde0107618b8d1ff0690d2c6fa7c842a2fdc551e05f72",
     "/updates.js": "7f87250cf6cd9c2b8944da632fe036d0c18a87a90f48f70b84e18bcd338cfa84",
     "/calls.js": "9b9ec591709d282c6e673770b2ffc1ed1562650104d8e8393126d186aa764165",
