@@ -115,6 +115,7 @@ def build_live_context(
     now: Optional[datetime] = None,
     pending: Optional[PendingAction] = None,
     dialog: Optional[dict] = None,
+    holds: Optional[List[str]] = None,
 ) -> str:
     """Renders the per-request live block appended to the system message."""
     # Naive datetimes are assumed local so %Z never renders empty.
@@ -140,6 +141,11 @@ def build_live_context(
             lines.append(_pending_hint_line(active, pending))
         if dialog is not None:
             lines.append(_dialog_hint_line(active, dialog))
+    # Held Claude hook permissions (parity-f7e S3): global, not tied to
+    # the selected pane — a held Claude pane blocks while the call may
+    # point anywhere. Lines arrive pre-masked from the tools seam.
+    if holds:
+        lines.extend(holds)
     # One pass over the finished block (S14): screen excerpts, dialog
     # labels, titles and cwd leave for the provider masked.
     return mask_text("\n".join(lines))
@@ -467,7 +473,7 @@ class BrainLLM:
                         # echoed call arguments. The working `messages` list
                         # and every store keep their raw bytes.
                         messages=self._masked_for_provider(messages),
-                        tools=TOOLS_SCHEMA,
+                        tools=self._tools_schema(),
                         tool_choice="auto",
                     )
                     choice = response.choices[0].message
@@ -616,6 +622,19 @@ class BrainLLM:
             out.append(masked)
         return out
 
+    def _tools_schema(self) -> list:
+        """The advertised tool surface for THIS brain instance.
+
+        parity-f7e S3: ``answer_hold`` exists only when the held-hook
+        broker is wired (the server attaches it at boot), so a bare
+        tools object — and every schema pin that rides one — keeps the
+        exact legacy surface."""
+        if getattr(self._tools, "_hook_broker", None) is None:
+            return TOOLS_SCHEMA
+        from .tools import ANSWER_HOLD_SCHEMA
+
+        return [*TOOLS_SCHEMA, ANSWER_HOLD_SCHEMA]
+
     def _live_context(self, target: Optional[AgentInfo]) -> str:
         """Builds the live block for the selected pane, best-effort."""
         pending = None
@@ -630,7 +649,13 @@ class BrainLLM:
             explain = getattr(self._tools, "explain_dialog", None)
             if explain is not None:
                 dialog = explain(target)
-        return build_live_context(target, pending=pending, dialog=dialog)
+        # Held hook permissions (parity-f7e S3): same hasattr convention;
+        # the seam marks the holds explained so answer_hold can decide.
+        holds = None
+        holds_seam = getattr(self._tools, "held_permissions_context", None)
+        if holds_seam is not None:
+            holds = holds_seam() or None
+        return build_live_context(target, pending=pending, dialog=dialog, holds=holds)
 
     def _invoke(
         self, call: Any, session_key: str, turn_text: Optional[str] = None

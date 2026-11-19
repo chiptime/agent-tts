@@ -102,7 +102,7 @@ EXPECTED_DIGESTS = {
     # markup + sheet styles + the send-track.js script tag (index.html)
     # and the new send-track.js module itself. app.js and both i18n
     # re-pinned in place below (tracker wiring, track.* keys).
-    "/": "813e5df2c6e2f503ede9d4a29ce0c1268cea4ddb69d68613596110c3ad7d40b1",
+    "/": "61a28b48da9b804dd95b5641d8c09985f80f26c6a1471fa9300fc0c5fcc3e2c9",
     # send-track.js re-pinned for the correction batch (f7g): the
     # per-receipt seq guard (a lower seq is a stale delivery, ignored),
     # a start for an already-known receipt never regresses it, and a
@@ -122,9 +122,17 @@ EXPECTED_DIGESTS = {
     # Re-pinned for parity-f7g S5 (the send tracker card): the SSE
     # send.track feed, the receipts-poll convergence, the 1s tick
     # cadence and the per-pane map in the composer area.
-    "/app.js": "a94e0252b2db27c3f099a4c4e2f9ea2ac48620201ceb9404d07565f26c307095",
+    # Re-pinned for parity-f7e S1(2): the Stop capability — app.js
+    # disables #pane-stop per the pane's can_stop /herd key with the
+    # Spanish explanation, receipts.js gains stopButtonModel, and both
+    # i18n gain stop.unverified.
+    # Re-pinned for parity-f7e S3 (held Claude hook permissions): the
+    # global #hook-permission card above the pane permission box
+    # (index.html), its 5s-beat /hook/permissions poll + answer wiring
+    # (app.js) and the holdpermission.* keys (both i18n).
+    "/app.js": "d1ae30d919d2cb03f9f838fd52441355ce18833ea8f6392951b3e98611fe2ca6",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
-    "/receipts.js": "ca7b22c52c8160a3ac577f694eb65ec0798b77cd6ac179a5c567dffdc1fb2ba9",
+    "/receipts.js": "df01a313d8f6101bd9601d5a2a65eb420df7791c417a09e2d0d8c269a36742b0",
     # dialogs.js re-pinned for the parity-f7d follow-up: MODEL_SWITCH_COMMANDS
     # gains pi (/switch, omp's own box on the same TUI) and opencode +
     # opencode2 (/models, live-verified on opencode 1.19.5) so the
@@ -152,8 +160,8 @@ EXPECTED_DIGESTS = {
     "/i18n.js": "8bcd2ceb9f56109afaa0ec158e1a6f002799c4a983261b9d58cd38723c06719f",
     # Both i18n re-pinned for parity-f7g S5: the track.* keys (the
     # tracker card's Spanish lines and their English locale ride).
-    "/i18n/en.js": "bee02708cab828f39ca43e60c74a06b6ae483365072ca1687b309e35aac02065",
-    "/i18n/es.js": "785766b0769dd0d08fbf99e70428bea58fc0bb3bddf9f6bc8cebdbd8faf82fdc",
+    "/i18n/en.js": "08dee465424cb7b9a84e19f66a18e3f2847936e314058f7a0b7b50ed2380afa6",
+    "/i18n/es.js": "cb85c3a549e80471f4ef0d0261c84e0d24cc31b0bf95069a3f371806f64bdd18",
     "/settings.js": "1c2cf3ed92bf959c19ecde0107618b8d1ff0690d2c6fa7c842a2fdc551e05f72",
     "/updates.js": "7f87250cf6cd9c2b8944da632fe036d0c18a87a90f48f70b84e18bcd338cfa84",
     "/calls.js": "9b9ec591709d282c6e673770b2ffc1ed1562650104d8e8393126d186aa764165",

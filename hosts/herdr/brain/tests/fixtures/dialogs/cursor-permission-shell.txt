@@ -1,0 +1,9 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ $  touch approved.txt in .
+
+ Run this command?
+ Not in allowlist: touch
+  → Run (once) (y)
+    Add Shell(touch) to allowlist? (tab)
+    Run Everything (shift+tab)
+    Skip & tell the agent what to do instead (esc or n)

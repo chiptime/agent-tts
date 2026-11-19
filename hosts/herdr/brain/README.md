@@ -542,21 +542,30 @@ only), and the spoken confirmation says «enviado» **only** for
 `effective`/`sent`; `unknown` says so out loud.
 
 **Stop** — interrupt a running turn with `POST /pane/stop {pane_id}`.
-The interrupt key comes from a per-harness table (`esc` for the
-claude/codex/opencode-style chat TUIs); a harness outside the table
-is refused with a `422` — the brain will not guess an interrupt into a
-terminal it cannot reason about. In the PWA the Stop button arms with a
+The interrupt key comes from a per-harness table of **verified
+recipes** (see `send_receipts.py`): `esc` ×1 for claude, codex, pi and
+agy/antigravity, `esc` ×2 for opencode (one `esc` only arms on 1.19.5
+— its own footer says "esc again to interrupt"), plus the reference
+product's verified `esc` rows for kiro, muse and omp. A harness
+outside the table is refused with a `422` — the brain will not guess
+an interrupt into a terminal it cannot reason about. Every `/herd`
+entry carries the additive `can_stop`/`can_steer` flags so the PWA
+knows the capability per pane: for a pane that cannot stop, the Stop
+button renders **disabled** with the explanation «Este agente no tiene
+un Stop verificado». In the PWA the Stop button arms with a
 **double tap**: the first tap arms for ~3 s (the button says so), only
 the second tap inside the window sends. **Stop also works by voice**
 («para al agente» / «stop»): the `stop_agent` tool is advertised to the
 model as a **gated** action — the spoken path proposes the SAME approval
 gate a send uses (never bypassing the verbal binding), and the user's
 confirmation executes the frozen interrupt through the approve replay.
+Voice and button read the SAME per-harness table.
 
 **Steer** — inject a message into a RUNNING turn with
 `POST /pane/reply` plus `steer: true`. Accepted only for harnesses the
-steer table names (the chat TUIs that queue a mid-turn message);
-anything else is a `422` with the alternative spelled out. The PWA
+steer table names (claude, opencode, codex, pi — live-verified mid-turn
+acceptance — plus the reference-verified kiro, muse, omp); anything
+else is a `422` with the alternative spelled out. The PWA
 exposes steer **only** as a deliberate secondary action — press and
 hold Enviar (~0.6 s); a normal tap never steers — and there is no
 visible steer control.
@@ -807,6 +816,54 @@ rules.
 A blocked pane whose dialog is **not** opencode's — claude, codex, agy —
 keeps the key pad above: those dialogs are answered with deliberate key
 presses, one tap at a time, never auto-answered.
+
+### Held Claude permissions (`herdr-brain hooks`, parity-f7e S3)
+
+Claude Code can hand its permission prompts to the brain instead of the
+terminal: a `PreToolUse` hook blocks on a local brain unix socket and the
+decision comes from the PWA card or your voice — no screen reading, no
+keys. Installing is explicit and reversible:
+
+```bash
+bin/herdr-brain hooks install    # adds ONE marked hook entry to ~/.claude/settings.json
+bin/herdr-brain hooks status     # read-only report
+bin/herdr-brain hooks uninstall  # removes exactly that entry
+```
+
+`install` defaults to the user's `~/.claude/settings.json` (`--settings
+<path>` overrides, `--matcher` and `--timeout-s` tune the tool pattern and
+the deny deadline). It is idempotent — never a duplicate entry — and
+preserves every other key and hook in the file as JSON. The installed
+command pins the venv python, the package `src` and the brain state dir, so
+it resolves identically from any cwd; it carries no credential.
+
+With the hook installed, Claude's gated tool calls surface as a global
+**Permiso de Claude pendiente** card in the PWA (any Claude pane, not just
+the viewed one) and as a web push. Answer from the PWA:
+
+```text
+GET  /hook/permissions                    -> {pending: [{request_id, tool_name, summary, …}]}
+POST /hook/permissions/{request_id}/answer -> {"decision": "allow" | "deny"} -> {ok}
+```
+
+…or by voice: the live context speaks the held request and `answer_hold`
+resolves your exact words through the approval lexicon («dale»/«sí» allows,
+«no»/«cancela» denies). A decision applies exactly once; a second answer is
+a `409`, an unknown id a `404`.
+
+**Deny by default, everywhere**: no answer before the timeout, the brain
+being down, a missing socket, malformed input or reply, or any error — the
+hook always prints Claude's decision contract with `permissionDecision:
+"deny"` (a hook that dies without JSON would be non-blocking in Claude
+Code, so the deny always lands first; Claude's own `timeout` is the deny
+deadline plus a margin). The socket is `0600` under the brain's state dir
+(same user only) and needs no device bearer. `tool_input` is masked before
+it is truncated for the card, the push and the spoken context, and push
+payloads never carry approval tokens — a tap only wakes the PWA. Every hold
+and every decision lands in the audit log (`hook.hold`,
+`hook.permission.answer`). The voice tool is advertised only when the broker
+is wired, and — like the opencode surface above — the PWA routes are never
+in the model's tool schema.
 
 ### Brain messages (`herdr-brain msg`, S13)
 

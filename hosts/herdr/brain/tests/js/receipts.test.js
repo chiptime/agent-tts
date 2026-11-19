@@ -92,3 +92,30 @@ test("steer is never the default: the composer body gains steer only on demand",
     pane_id: "w1:p2", text: "hola", steer: true,
   });
 });
+
+/* Stop capability (parity-f7e S1(2)): a pane whose harness has no
+ * verified interrupt recipe must never offer an armed Stop — the
+ * button renders disabled with the Spanish explanation. Unknown
+ * capability (an older brain's payload) keeps the legacy behavior:
+ * enabled, and the server's 422 toast stays the honest backstop. */
+test("stop button model: disabled with the explanation when can_stop is false", () => {
+  const model = Receipts.stopButtonModel(false);
+  assert.equal(model.disabled, true);
+  assert.ok(/Stop verificado/.test(model.title));
+  assert.ok(/Stop verificado/.test(model.ariaLabel));
+});
+
+test("stop button model: enabled and unexplained when can_stop is true", () => {
+  const model = Receipts.stopButtonModel(true);
+  assert.equal(model.disabled, false);
+  assert.equal(model.title, null);
+  assert.equal(model.ariaLabel, null);
+});
+
+test("stop button model: unknown capability keeps the legacy enabled button", () => {
+  for (const unknown of [undefined, null]) {
+    const model = Receipts.stopButtonModel(unknown);
+    assert.equal(model.disabled, false);
+    assert.equal(model.title, null);
+  }
+});

@@ -149,6 +149,26 @@
     return { tap: tap, disarm: disarm, isArmed: isArmed };
   }
 
+  /* Stop capability (parity-f7e S1(2)): `canStop` is the pane's
+   * can_stop flag from its /herd entry. `false` means the harness has
+   * no verified interrupt recipe — the button renders DISABLED with
+   * the Spanish explanation instead of arming a stop that could only
+   * ever answer 422. `true`, and anything unknown (an older brain's
+   * payload without the key), keeps the legacy enabled button: the
+   * server's 422 toast stays the honest backstop there. */
+  var STOP_UNVERIFIED = "Este agente no tiene un Stop verificado";
+
+  function stopButtonModel(canStop) {
+    if (canStop === false) {
+      return {
+        disabled: true,
+        title: tr("stop.unverified", STOP_UNVERIFIED),
+        ariaLabel: tr("stop.unverified", STOP_UNVERIFIED),
+      };
+    }
+    return { disabled: false, title: null, ariaLabel: null };
+  }
+
   var api = {
     OUTCOMES: OUTCOMES,
     OUTCOME_LABELS: OUTCOME_LABELS,
@@ -162,6 +182,7 @@
     replyPayload: replyPayload,
     cardModel: cardModel,
     createStopArming: createStopArming,
+    stopButtonModel: stopButtonModel,
   };
 
   if (typeof module !== "undefined" && module.exports) {

@@ -205,3 +205,63 @@ def test_steer_is_hidden_and_only_a_long_press_sends_it(karaoke_app):
         {"pane_id": "w1:p2", "text": "keep going"},
         {"pane_id": "w1:p2", "text": "keep going", "steer": True},
     ]
+
+
+def test_stop_is_disabled_with_an_explanation_for_unverified_harnesses(karaoke_app):
+    """parity-f7e S1(2): a pane whose harness has no verified interrupt
+    recipe (here a gemini pane — unverified, and herdr reports no such
+    agent kind) shows Stop DISABLED with the Spanish explanation, and no
+    arming or POST can start from it."""
+    unverified = [
+        dict(
+            WORKING_AGENT[0],
+            pane_id="w1:p5",
+            agent="grok",
+            title="Grok | sin receta",
+            can_stop=False,
+        )
+    ]
+    view = {
+        "status": {
+            "active": True, "pane_id": "w1:p5", "agent": "grok",
+            "agent_status": "working",
+        },
+        "screen": "$ build",
+        "transcript": None,
+        "pending": {"detected": False, "kind": None, "excerpt": None},
+    }
+    harness = karaoke_app()
+    harness.respond("/herd", unverified)
+    harness.respond("/view", view, query=("pane_id",))
+    page = harness.load().page
+    expect(page.locator("#pane-reply")).to_be_visible()
+
+    stop = page.locator("#pane-stop")
+    expect(stop).to_be_visible()
+    expect(stop).to_be_disabled()
+    # The explanation the spec asks for (Spanish UI copy).
+    expect(stop).to_have_attribute("title", "Este agente no tiene un Stop verificado")
+
+    # A disabled button can neither arm nor fire anything.
+    stop.click(force=True)
+    page.wait_for_timeout(300)
+    assert _posts(harness, "/pane/stop") == []
+
+
+def test_stop_still_arms_and_fires_for_verified_harnesses(karaoke_app):
+    """PRESERVE: with no capability data in the mocked payloads (the
+    legacy shape every installed PWA may still see) the Stop button
+    keeps its exact S12 behavior — enabled, double-tap armed."""
+    harness, page = _page(karaoke_app)
+    stop = page.locator("#pane-stop")
+    expect(stop).to_be_visible()
+    expect(stop).to_be_enabled()
+    assert stop.get_attribute("title") is None
+
+    # The arming still works exactly as S12 pinned it (the fire-on-
+    # second-tap path is the first test in this file): one tap arms,
+    # nothing leaves the phone.
+    stop.click()
+    expect(stop).to_contain_text("Toca otra vez")
+    page.wait_for_timeout(200)
+    assert _posts(harness, "/pane/stop") == []

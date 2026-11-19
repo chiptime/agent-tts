@@ -39,6 +39,7 @@ def _build() -> Dict[str, DialogAdapter]:
     from .adapters.codex import CodexAdapter
     from .adapters.cursor import CursorAdapter
     from .adapters.grok import GrokAdapter
+    from .adapters.hermes import HermesAdapter
     from .adapters.kiro import KiroAdapter
     from .adapters.muse import MuseAdapter
     from .adapters.opencode import OpencodeAdapter, Opencode2Adapter
@@ -50,6 +51,7 @@ def _build() -> Dict[str, DialogAdapter]:
         CodexAdapter(),
         CursorAdapter(),
         GrokAdapter(),
+        HermesAdapter(),
         KiroAdapter(),
         MuseAdapter(),
         OpencodeAdapter(),

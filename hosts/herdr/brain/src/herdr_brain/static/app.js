@@ -115,6 +115,10 @@
   var permissionOnce = $("pp-once");
   var permissionAlways = $("pp-always");
   var permissionReject = $("pp-reject");
+  var holdBox = $("hook-permission");
+  var holdWhat = $("hook-permission-what");
+  var holdAllow = $("hp-allow");
+  var holdDeny = $("hp-deny");
   var viewScreen = $("view-screen");
   var convList = $("conv-list");
   var herdNote = $("herd-note");
@@ -2315,7 +2319,26 @@
       hideReceipt();
       lastReplyTarget = replyTarget;
     }
-    if (paneStopBtn) paneStopBtn.classList.toggle("hidden", !replyTarget);
+    if (paneStopBtn) {
+      paneStopBtn.classList.toggle("hidden", !replyTarget);
+      /* Stop capability (parity-f7e S1(2)): the pane's own /herd row
+       * carries can_stop (same table the server gates on). A harness
+       * without a verified interrupt recipe gets the DISABLED button
+       * with the Spanish explanation; unknown capability (older
+       * payload) keeps the legacy enabled button and lets the
+       * server's 422 toast explain. */
+      var stopRow = replyTarget ? herdEntry(replyTarget) : null;
+      var stopModel = window.Receipts
+        ? window.Receipts.stopButtonModel(stopRow ? stopRow.can_stop : undefined)
+        : null;
+      if (stopModel) {
+        paneStopBtn.disabled = stopModel.disabled;
+        if (stopModel.title) paneStopBtn.setAttribute("title", stopModel.title);
+        else paneStopBtn.removeAttribute("title");
+        if (stopModel.ariaLabel) paneStopBtn.setAttribute("aria-label", stopModel.ariaLabel);
+        else paneStopBtn.removeAttribute("aria-label");
+      }
+    }
 
     /* The tracker card follows the VIEWED pane (parity-f7g S5): a pane
      * switch repaints that pane's own tracker — or hides the card when
@@ -2931,6 +2954,99 @@
   permissionOnce.addEventListener("click", function () { sendPermission("once"); });
   permissionAlways.addEventListener("click", function () { sendPermission("always"); });
   permissionReject.addEventListener("click", function () { sendPermission("reject"); });
+
+  /* ---------------- held Claude hook permissions (f7e S3) --------------
+   * A Claude pane whose PreToolUse hook is blocked on the brain socket.
+   * Global — unlike the pane permission box above, the held request can
+   * belong to any Claude pane, not just the viewed one — so it rides the
+   * 5s state beat. The card answers the OLDEST hold first (the broker
+   * lists oldest-first); more pending shows a count, answered cards
+   * refresh on the same beat. */
+  var holdsPending = [];
+  var holdsBusy = false;
+
+  function refreshHolds() {
+    readFetch("/hook/permissions")
+      .then(function (resp) {
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        return resp.json();
+      })
+      .then(function (data) {
+        holdsPending = (data && data.pending) || [];
+        renderHolds();
+      })
+      .catch(function () {
+        holdsPending = [];
+        renderHolds();
+      });
+  }
+
+  function renderHolds() {
+    var first = holdsPending[0] || null;
+    var show = !!first;
+    if (show) {
+      var where = first.pane_id || first.session_id || "";
+      var what = (first.tool_name || "?") + ": " + (first.summary || "");
+      if (where) what = where + " · " + what;
+      if (holdsPending.length > 1) {
+        what += "\n+" + (holdsPending.length - 1) + " " + t("holdpermission.more");
+      }
+      holdWhat.textContent = what;
+    }
+    holdBox.classList.toggle("hidden", !show);
+  }
+
+  function answerHold(decision) {
+    var current = holdsPending[0];
+    if (!current || holdsBusy) return;
+    holdsBusy = true;
+    [holdAllow, holdDeny].forEach(function (button) { button.disabled = true; });
+    fetch("/hook/permissions/" + encodeURIComponent(current.request_id) + "/answer",
+      withDeviceAuth({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision: decision })
+      }))
+      .then(function (resp) {
+        if (resp.ok) {
+          showToast(
+            decision === "allow"
+              ? t("permission.once_toast")
+              : t("permission.reject_toast"),
+            3000
+          );
+          holdsPending = [];
+          renderHolds();
+          refreshHolds();
+          return null;
+        }
+        // 404/409: the hold is gone — refresh instead of erroring.
+        if (resp.status === 404 || resp.status === 409) {
+          refreshHolds();
+          return null;
+        }
+        maybeOfferPairing(resp);
+        return resp.json().then(
+          function (body) { return body && body.detail; },
+          function () { return null; }
+        ).then(function (detail) {
+          showToast(
+            "No se pudo responder: " + (typeof detail === "string" ? detail : "error " + resp.status),
+            6000
+          );
+        });
+      })
+      .catch(function () {
+        showToast("No se pudo responder: sin conexión con el brain", 6000);
+      })
+      .then(function () {
+        holdsBusy = false;
+        [holdAllow, holdDeny].forEach(function (button) { button.disabled = false; });
+      });
+  }
+
+  holdAllow.addEventListener("click", function () { answerHold("allow"); });
+  holdDeny.addEventListener("click", function () { answerHold("deny"); });
 
   pendingBanner.addEventListener("click", function () {
     if (pendingBannerTapPane && pendingBannerTapPane !== selectedPane) {
@@ -4458,6 +4574,8 @@
     refreshHerd();
     refreshView();
     refreshConversation();
+    /* Held hook permissions (f7e S3): global card, same 5s beat. */
+    refreshHolds();
     /* The live mirror rides the same 5s beat — gated by its own tab
      * visibility inside refreshMirror, so a hidden terminal costs no
      * fetch at all. */

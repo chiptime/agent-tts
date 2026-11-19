@@ -1,0 +1,19 @@
+╭────────────────────────────────────────────────╮
+│ ⚠️  Dangerous Command                          │
+│                                                │
+│ rm -rf /tmp/refcap-hermes-lab/scratch-dir      │
+│                                                │
+│ ❯ 1. Allow once                                │
+│   2. Allow for this session                    │
+│   3. Add to permanent allowlist                │
+│   4. Deny                                      │
+│                                                │
+│ delete in root path                            │
+╰────────────────────────────────────────────────╯
+ 
+  💻 rm -rf /tmp/refcap-hermes-lab/scratch-dir  (  5.0s · ↓ 40 tok)
+  ↑/↓ to select, Enter to confirm  (295s)
+ ☤ lab-model │ 1.24K/128K pinned │ [░░░░░░░░░░] 1% │ ◷ 0.0s │ ↑ 4072 t/s │ 3m │ ⏱ 5s                      ─ Lab session 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+⚠ ❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
