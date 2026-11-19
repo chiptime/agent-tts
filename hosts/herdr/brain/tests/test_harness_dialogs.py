@@ -41,10 +41,15 @@ CORPUS = {
         "claude-wizard-2of2.txt",
         "claude-wizard-multi.txt",
         "claude-multi.txt",
+        # parity-f7d S2: the /model picker list and the "Switch model?"
+        # confirmation, both derived from real reference captures (see
+        # fixtures/dialogs/provenance.md).
+        "claude-model-picker.txt",
+        "claude-switch-model-yes.txt",
     ),
     "codex": ("codex-trust.txt", "codex-approval.txt", "codex-ask.txt"),
-    "grok": ("grok-ask.txt", "grok-permission.txt"),
-    "pi": ("pi-ask.txt",),
+    "grok": ("grok-ask.txt", "grok-permission.txt", "grok-model-picker.txt"),
+    "pi": ("pi-ask.txt", "omp-switch-model.txt"),
     "opencode": ("opencode-question.txt", "opencode-multi.txt"),
     "opencode2": ("opencode2-question.txt", "opencode2-multi.txt"),
     "antigravity": ("antigravity-select.txt",),
@@ -693,6 +698,158 @@ class TestCursor:
         model = detect("cursor", fixture(CURSOR_SCREEN))
 
         assert model is None
+
+
+class TestModelPickerKind:
+    """parity-f7d S2: the ``model_picker`` kind — the /model selectors.
+
+    A model picker is walk-class ALWAYS: the rows may be numbered, but a
+    digit CONFIRMS and rewrites the default model (ADR 0009), so no
+    option ever carries a key recipe. The only recipe is the screen's
+    own arrows plus Enter, walked from the pointer with a re-read after
+    every key.
+    """
+
+    def test_the_kind_is_registered(self):
+        from herdr_brain.dialogs.model import KINDS
+
+        assert "model_picker" in KINDS
+
+    def test_the_payload_rides_the_walk_recipe(self):
+        model = detect("claude", fixture("claude-model-picker.txt"))
+
+        assert model.payload()["recipe"] == "walk"
+
+
+class TestClaudeModelPicker:
+    def test_the_model_list_yields_model_picker(self):
+        model = detect("claude", fixture("claude-model-picker.txt"))
+
+        assert model.kind == "model_picker"
+        assert labels(model) == [
+            "Default (recommended) ✔",
+            "Opus (1M context)",
+            "Fable",
+            "Sonnet",
+            "Haiku",
+        ]
+        # NEVER a digit: the rows are numbered, but a digit confirms and
+        # rewrites the default model (ADR 0009).
+        assert recipes(model) == [(), (), (), (), ()]
+        assert model.nav_keys == ("up", "down")
+        assert model.commit_keys == ("enter",)
+        assert model.selected == 0
+
+    def test_the_pointer_row_selects_the_selection(self):
+        moved = detect("claude", fixture("claude-model-picker-moved.txt"))
+
+        assert moved.selected == 2
+        assert moved.fingerprint != detect(
+            "claude", fixture("claude-model-picker.txt")
+        ).fingerprint
+
+    def test_a_foreign_footer_word_declines(self):
+        screen = fixture("claude-model-picker.txt").replace(
+            "s to use this session only", "s for this chat only"
+        )
+
+        assert detect("claude", screen) is None
+
+    def test_the_switch_model_confirmation_is_a_model_picker(self):
+        model = detect("claude", fixture("claude-switch-model-yes.txt"))
+
+        assert model.kind == "model_picker"
+        assert labels(model) == ["Yes, switch to Fable 5.1", "No, go back"]
+        assert recipes(model) == [(), ()]
+        assert model.nav_keys == ("up", "down")
+        assert model.commit_keys == ("enter",)
+        assert model.selected == 0
+
+    def test_the_confirmation_pointer_on_row_two(self):
+        model = detect("claude", fixture("claude-switch-model-no.txt"))
+
+        assert model.selected == 1
+
+    def test_the_confirmation_without_the_modal_edge_declines(self):
+        screen = fixture("claude-switch-model-yes.txt").replace("▔", "─")
+
+        assert detect("claude", screen) is None
+
+
+class TestGrokModelPicker:
+    def test_the_completion_list_yields_model_picker(self):
+        model = detect("grok", fixture("grok-model-picker.txt"))
+
+        assert model.kind == "model_picker"
+        assert labels(model) == [
+            "Grok 4.7 (current)",
+            "Grok 4.7 Fast",
+            "Grok 4.6",
+            "Grok 4.5",
+        ]
+        assert recipes(model) == [(), (), (), ()]
+        assert model.nav_keys == ("up", "down")
+        assert model.commit_keys == ("enter",)
+        assert model.selected == 0
+
+    def test_the_moved_pointer_row_selects_the_selection(self):
+        model = detect("grok", fixture("grok-model-picker-moved.txt"))
+
+        assert model.selected == 1
+
+    def test_a_row_count_that_disagrees_with_the_rule_declines(self):
+        screen = fixture("grok-model-picker.txt").replace("────4─", "────9─")
+
+        assert detect("grok", screen) is None
+
+    def test_a_hint_row_without_enter_send_declines(self):
+        screen = fixture("grok-model-picker.txt").replace(
+            "Enter:send", "Enter:open"
+        )
+
+        assert detect("grok", screen) is None
+
+
+class TestOmpSwitchModel:
+    """The compact ``/switch`` box omp draws (pi-tui), pinned by the real
+    18.4 capture. Reaches the pi adapter through the ``omp`` alias."""
+
+    def test_the_switch_box_yields_model_picker(self):
+        model = detect("omp", fixture("omp-switch-model.txt"))
+
+        assert model.kind == "model_picker"
+        assert labels(model)[:4] == [
+            "openrouter/google/gemini-3.8-flash",
+            "openai/gpt-5.6-sol",
+            "anthropic/claude-sonnet-5-5",
+            "anthropic/claude-opus-5-5",
+        ]
+        assert recipes(model) == [()] * len(model.options)
+        assert model.nav_keys == ("up", "down")
+        assert model.commit_keys == ("enter",)
+        # The pointer sits on the CURRENT model's row (anthropic/claude-
+        # opus-5-5, fourth model row).
+        assert model.selected == 3
+
+    def test_the_pi_agent_reads_the_same_box(self):
+        assert detect("pi", fixture("omp-switch-model.txt")) is not None
+
+    def test_a_footer_word_changed_declines(self):
+        screen = fixture("omp-switch-model.txt").replace(
+            "type to search", "type to filter"
+        )
+
+        assert detect("omp", screen) is None
+
+    def test_a_truncated_row_declines_the_whole_screen(self):
+        """A row omp shortened with ``…`` has no full id on screen: the
+        walk could not verify where it lands, so the box is not
+        claimed."""
+        screen = fixture("omp-switch-model.txt").replace(
+            "anthropic/claude-sonnet-5-5", "anthropic/claude-sonnet-5-…"
+        )
+
+        assert detect("omp", screen) is None
 
 
 class TestConformance:

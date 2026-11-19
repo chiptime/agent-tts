@@ -235,10 +235,89 @@ class TestRoutingPolicy:
             "switch_session",
             # parity-f7c S3: the gated resume of a past conversation.
             "resume_session",
+            # parity-f7d S3: the gated model switch of a pane.
+            "switch_model",
         }
         system = first["messages"][0]["content"]
         assert system.startswith(SYSTEM_PROMPT)
         assert "LIVE CONTEXT" in system
+
+    def test_switch_model_is_advertised_in_the_static_prompt(self):
+        assert "switch_model" in SYSTEM_PROMPT
+
+
+class TestSwitchModelGate:
+    """parity-f7d S3: a spoken model switch is a gated write — the
+    model name and the pane freeze into an approval gate and NOTHING
+    reaches the terminal until the user confirms."""
+
+    def test_a_switch_call_freezes_a_gate_and_sends_nothing(
+        self, settings, make_stub, active_agent
+    ):
+        claude = AgentInfo(**{**active_agent.__dict__, "agent": "claude"})
+        llm, tools = make_brain(
+            settings,
+            make_stub(agents=[claude]),
+            responses=[
+                tool_call_response("c1", "switch_model", {"model": "Fable"}),
+                text_response("Propongo cambiar el modelo; ¿confirmas?"),
+            ],
+        )
+
+        result = llm.ask("cambia el modelo del agente a Fable")
+
+        gate = llm._approval_store.current("default")
+        assert gate is not None and gate.state == PROPOSED
+        assert gate.tool == "switch_model"
+        assert gate.action.task == "Fable"
+        assert gate.action.pane_id == claude.pane_id
+        # Nothing reached the pane: no command, no keys.
+        assert result["approval"] is not None
+        assert result["approval"].gate_id == gate.gate_id
+
+    def test_a_switch_without_a_model_name_is_an_error(self, settings, make_stub):
+        llm, _ = make_brain(
+            settings,
+            make_stub(),
+            responses=[
+                tool_call_response("c1", "switch_model", {"model": "  "}),
+                text_response("ok"),
+            ],
+        )
+
+        llm.ask("cambia el modelo")
+
+        assert llm._approval_store.current("default") is None
+        tool_messages = [
+            m
+            for m in llm._client.create_kwargs[1]["messages"]
+            if m.get("role") == "tool"
+        ]
+        assert tool_messages[0]["content"].startswith("error:")
+
+    def test_a_switch_on_an_unverified_harness_is_an_error(
+        self, settings, make_stub, active_agent
+    ):
+        muse = AgentInfo(**{**active_agent.__dict__, "agent": "muse"})
+        llm, _ = make_brain(
+            settings,
+            make_stub(agents=[muse]),
+            responses=[
+                tool_call_response("c1", "switch_model", {"model": "big"}),
+                text_response("ok"),
+            ],
+        )
+
+        llm.ask("cambia el modelo del agente muse a big")
+
+        assert llm._approval_store.current("default") is None
+        tool_messages = [
+            m
+            for m in llm._client.create_kwargs[1]["messages"]
+            if m.get("role") == "tool"
+        ]
+        assert tool_messages[0]["content"].startswith("error:")
+        assert "muse" in tool_messages[0]["content"]
 
 
 class TestLiveContext:

@@ -608,6 +608,55 @@
     );
   }
 
+  /* Model pickers (parity-f7d S2): a `kind: "model_picker"` payload
+   * renders through the SAME option buttons every select uses — the
+   * recipes stay server-side, so the card needs no new machinery, only
+   * its own chrome. */
+  function isModelPicker(structured) {
+    return !!(
+      structured && !structured.unread && structured.kind === "model_picker"
+    );
+  }
+
+  function modelPickerTitle() {
+    return tr("dialogs.model_picker_title", "Cambiar modelo");
+  }
+
+  /* The "Cambiar modelo" affordance (S2): which command opens THIS
+   * harness's picker. The server owns the verified table; this mirror
+   * only decides whether the button is offered — the switch itself is
+   * the guarded answer path. Null for a harness without one. */
+  var MODEL_SWITCH_COMMANDS = {
+    claude: "/model",
+    grok: "/model",
+    omp: "/switch",
+  };
+
+  function modelSwitchOffer(harness) {
+    var command = MODEL_SWITCH_COMMANDS[String(harness || "").toLowerCase()];
+    if (!command) return null;
+    return { command: command, label: tr("dialogs.model_switch", "Cambiar modelo") };
+  }
+
+  /* The exact /pane/reply body the affordance sends: the command is
+   * typed into the pane exactly like a user reply, and the picker card
+   * appears when the pane blocks on its own. */
+  function modelSwitchPayload(paneId, command) {
+    return { pane_id: paneId, text: command };
+  }
+
+  function modelSwitchOpenedToast(agentName) {
+    return tr("dialogs.model_switch_open", "Abriendo el selector de modelos…")
+      .replace("{agent}", agentName || "");
+  }
+
+  function modelSwitchNoneToast() {
+    return tr(
+      "dialogs.model_switch_none",
+      "Este agente no puede cambiar de modelo desde aquí."
+    );
+  }
+
   var api = {
     buttonsFor: buttonsFor,
     unreadCard: unreadCard,
@@ -633,6 +682,12 @@
     wizardConfirmLabel: wizardConfirmLabel,
     wizardEditLabel: wizardEditLabel,
     wizardChangedMessage: wizardChangedMessage,
+    isModelPicker: isModelPicker,
+    modelPickerTitle: modelPickerTitle,
+    modelSwitchOffer: modelSwitchOffer,
+    modelSwitchPayload: modelSwitchPayload,
+    modelSwitchOpenedToast: modelSwitchOpenedToast,
+    modelSwitchNoneToast: modelSwitchNoneToast,
   };
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

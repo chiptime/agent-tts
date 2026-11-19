@@ -1191,6 +1191,8 @@ class TestApprovalRegression:
             "switch_session",
             # parity-f7c S3: the gated resume of a past conversation.
             "resume_session",
+            # parity-f7d S3: the gated model switch of a pane.
+            "switch_model",
         } | CONSULT_TOOL_NAMES
 
 

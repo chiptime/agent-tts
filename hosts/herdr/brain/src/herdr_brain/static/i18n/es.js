@@ -137,6 +137,10 @@
     "dialogs.wizard_review_title": "Revisa tus respuestas",
     "dialogs.wizard_confirm": "Confirmar y enviar",
     "dialogs.wizard_edit": "Editar",
+    "dialogs.model_picker_title": "Cambiar modelo",
+    "dialogs.model_switch": "Cambiar modelo",
+    "dialogs.model_switch_open": "Abriendo el selector de modelos…",
+    "dialogs.model_switch_none": "Este agente no puede cambiar de modelo desde aquí.",
     "dialogs.wizard_changed": "El asistente cambió antes de terminar (la pantalla o los pasos difieren de lo revisado). No se envió nada más; mira la pantalla y responde al diálogo actual, o usa el teclado.",
 
     /* ---- permission dialog ---- */

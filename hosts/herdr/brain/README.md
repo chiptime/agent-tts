@@ -99,7 +99,7 @@ daemons do not source them, so the env file is the single stable contract.
 | `HERDR_BRAIN_CREW_PORT` | `8747` | the crew listener's own TLS port (S7; bound only when the roster declares a crew — see [Crew federation](#crew-federation-s7-one-lead-peers-over-pinned-mtls)) |
 | `HERDR_BRAIN_CREW_HOST` | `127.0.0.1` | the crew listener's bind; set it to the tailnet interface on crew hosts |
 | `HERDR_BRAIN_CREW_SECRET` | *(empty)* | the crew secret for the DAEMON (the roster stores only its hash); alternatively write it once to `<state>/crew-secret` (mode 600) |
-| `HERDR_BRAIN_PANE_MODEL` | *(on)* | model per pane: `/state`, `/view` and `/herd` carry `model`, the model of the pane session's last assistant request, resolved in the background with the engine CLI `agent-tts last-model` (engine python as for STT: `HERDR_BRAIN_STT_PYTHON`, else the herdr-tts plugin venv) and cached 60 s. Claude, OpenCode, Codex and Antigravity only; every other harness, a missing session or an engine failure is `null`. The PWA shows it in the herd row sub-line. Set to `off` to never run the CLI |
+| `HERDR_BRAIN_PANE_MODEL` | *(on)* | model per pane: `/state`, `/view` and `/herd` carry `model`, the model of the pane session's last assistant request, resolved in the background with the engine CLI `agent-tts last-model` (engine python as for STT: `HERDR_BRAIN_STT_PYTHON`, else the herdr-tts plugin venv) and cached 60 s. Claude, OpenCode, Codex and Antigravity only; every other harness, a missing session or an engine failure is `null`. The PWA shows it in the herd row sub-line. The same payloads carry `context: {used, limit}` (parity F7d, only when known) from the harness's OWN local catalog — OpenCode's `~/.cache/opencode/models.json`, pi's `models-store.json`, omp's `models.db`; `used` comes from the read-only `agent-tts cache-report --json` probe of the last request. No catalog ⇒ the key is absent (the null); a window is never guessed. Set to `off` to never run the CLI |
 | `HERDR_BRAIN_SECRET_MASKING` | *(on)* | secret masking on outgoing text (S14): provider API keys, JWTs, PEM private-key blocks, `Authorization: Bearer` tokens, URL credentials and secret-named `KEY=value` assignments are replaced with hint placeholders (`sk-ant-…[masked]`, `[masked:jwt]`; spoken as "clave oculta") in the pane mirror, history pages, reading views, SSE announcements, the LLM live context and speech renders. Set to `off` (also `0`/`false`/`no`) to serve text verbatim; stored data is never rewritten |
 
 ### Empty agent reader
@@ -1197,6 +1197,7 @@ payloads).
 | `read_screen(n_lines)` | read | visible terminal text (fallback) |
 | `send_to_session(text, timeout_ms?)` | **write** | forward new work, wait for completion |
 | `stop_agent` | **write, gated** | interrupt the selected session's running turn; proposes the approval gate, executes on confirmation |
+| `switch_model(model, pane_id?)` | **write, gated** | switch a pane's model through its own `/model` picker (claude, grok, omp); sends the harness's command, picks the option by name walking arrows + Enter (never a digit), proposes the approval gate and executes on confirmation; ambiguous or unknown names refuse with nothing pressed |
 
 Every endpoint and tool is **target-aware**: pass `pane_id` (/view query
 param, /ask body field) to operate on any agent in the herd; the default is

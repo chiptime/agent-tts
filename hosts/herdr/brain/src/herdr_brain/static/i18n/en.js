@@ -137,6 +137,10 @@
     "dialogs.wizard_review_title": "Review your answers",
     "dialogs.wizard_confirm": "Confirm and send",
     "dialogs.wizard_edit": "Edit",
+    "dialogs.model_picker_title": "Switch model",
+    "dialogs.model_switch": "Switch model",
+    "dialogs.model_switch_open": "Opening the model picker…",
+    "dialogs.model_switch_none": "This agent cannot switch models from here.",
     "dialogs.wizard_changed": "The wizard changed before finishing (the screen or steps differ from what you reviewed). Nothing further was sent; look at the screen and answer the current dialog, or use the keypad.",
 
     /* ---- permission dialog ---- */

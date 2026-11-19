@@ -30,6 +30,20 @@ fixture in the same layout Claude draws):
   alone commits.
 - wizard steps — a ``1/2`` step marker above the question makes the
   same select shape a ``wizard_step`` (answering may advance).
+- ``model_picker`` (parity-f7d S2) — the ``/model`` family, pinned by
+  real reference captures (fixtures/dialogs/provenance.md):
+
+  - the ``Select model`` list: numbered rows under the footer
+    ``Enter to set as default · s to use this session only · Esc to
+    cancel``. The rows ARE numbered, but a digit CONFIRMS and
+    rewrites the default model (ADR 0009), so the options carry NO
+    keys — the recipe is the footer's own arrows plus Enter, walked
+    from the ``❯`` pointer.
+  - the ``Switch model?`` confirmation Claude draws after the picker
+    when the conversation is cached: a modal under the ``▔`` edge
+    (NOT a ``─`` rule), rows ``1. Yes, switch to <model>`` /
+    ``2. No, go back`` and NO key-hint footer. Same walk recipe; the
+    list wraps, so both ends move.
 
 A pointer sitting on a free-text row (``Type something.``) means the
 field owns the keyboard and every digit becomes text — which is exactly
@@ -47,6 +61,7 @@ from ..model import DialogOption, StructuredDialog, fingerprint_region, unread
 from ..numbered import (
     collect_numbered_block,
     is_free_text_label,
+    parse_option_row,
     question_above,
     split_checked,
     step_marker_above,
@@ -102,6 +117,30 @@ def _step_meta(marker: str) -> Tuple[Optional[int], Optional[int]]:
     return step, total
 
 
+#: The ``/model`` list's own footer words (the real capture's, verbatim
+#: in the phrases that pin the family): ``Enter`` sets the DEFAULT and
+#: ``s`` is the session-only verb — neither word appears in any other
+#: Claude footer this recognizer knows.
+_MODEL_LIST_FOOTER = re.compile(
+    r"\benter to set as default\b.*\bs to use this session only\b"
+    r".*\besc to cancel\b",
+    re.IGNORECASE,
+)
+
+#: The confirmation's own title and row shapes. The list WRAPS, and the
+#: modal edge is ``▔`` — a ``─`` rule is another widget.
+_SWITCH_TITLE = "Switch model?"
+_SWITCH_YES_PREFIX = "Yes, switch to "
+_SWITCH_NO_LABEL = "No, go back"
+
+#: How many rows above row 1 the ``▔`` modal edge may sit (prose
+#: paragraphs plus wrapped label rows; a bound, not a measurement).
+_SWITCH_EDGE_LOOKBACK = 10
+
+#: How many continuation rows row 1's label may wrap onto.
+_MAX_WRAPPED_ROWS = 3
+
+
 class ClaudeAdapter(AdapterBase):
     agent = "claude"
 
@@ -111,6 +150,10 @@ class ClaudeAdapter(AdapterBase):
         if block is None:
             return None
         first, last, rows = block
+
+        picker = self._model_picker(lines, footer, block)
+        if picker is not None:
+            return picker
 
         if _MULTI_FOOTER.search(footer):
             return self._multiselect(footer, lines, first, rows)
@@ -222,6 +265,128 @@ class ClaudeAdapter(AdapterBase):
             selected=next(
                 (position for position, row in enumerate(rows) if row[3]), None
             ),
+        )
+
+
+    def _model_picker(self, lines, footer, block) -> Optional[StructuredDialog]:
+        """The ``/model`` family (parity-f7d S2): the ``Select model``
+        list and the ``Switch model?`` confirmation.
+
+        Both are walk-class ALWAYS: the rows may be numbered, but a
+        digit confirms and rewrites the default model (ADR 0009), so
+        the options carry no keys and the model carries the screen's
+        own arrows plus Enter.
+        """
+        if _MODEL_LIST_FOOTER.search(footer):
+            first, _last, rows = block
+            # The title row sits above the description paragraph and
+            # the block; anything else above the rows is not this list.
+            if not any(
+                line.strip() == "Select model"
+                for line in lines[max(0, first - 6) : first]
+            ):
+                return None
+            return StructuredDialog(
+                agent=self.agent,
+                kind="model_picker",
+                question="Select model",
+                options=tuple(
+                    DialogOption(label=label, description=description)
+                    for _number, label, description, _pointed in rows
+                ),
+                fingerprint=fingerprint_region(dialog_region(lines, first)),
+                hint=footer,
+                nav_keys=("up", "down"),
+                commit_keys=("enter",),
+                selected=next(
+                    (position for position, row in enumerate(rows) if row[3]), None
+                ),
+            )
+        return self._switch_confirmation(lines)
+
+    def _switch_confirmation(self, lines) -> Optional[StructuredDialog]:
+        """The ``Switch model?`` modal under the ``▔`` edge.
+
+        Plain-text port of the reference grammar: the tail is the
+        numbered run ``1. Yes, switch to <model>`` / ``2. No, go
+        back`` with nothing under it (no footer), the region's top is
+        the MODAL EDGE (``▔``, not ``─``), the first non-blank row
+        under it is exactly the title, and exactly one ``❯`` points at
+        one of the two rows. Row 1's label may wrap onto indented
+        continuation rows.
+        """
+        texts = [line.rstrip() for line in lines]
+
+        # 1. The tail: the last non-blank row is the plain row 2.
+        last = len(texts) - 1
+        while last >= 0 and not texts[last].strip():
+            last -= 1
+        if last < 0:
+            return None
+        two = parse_option_row(texts[last])
+        if two is None or two[0] != "2" or two[1] != _SWITCH_NO_LABEL:
+            return None
+
+        # 2. Row 1 above it, possibly wrapped onto continuation rows.
+        one_at = -1
+        for index in range(last - 1, max(-1, last - 1 - _MAX_WRAPPED_ROWS), -1):
+            text = texts[index]
+            if not text.strip():
+                return None
+            if parse_option_row(text) is not None:
+                one_at = index
+                break
+        if one_at < 0:
+            return None
+        one = parse_option_row(texts[one_at])
+        if one is None or one[0] != "1":
+            return None
+        wrapped = " ".join(
+            text.strip() for text in texts[one_at + 1 : last]
+        ).strip()
+        yes_label = " ".join(part for part in (one[1], wrapped) if part)
+        if not yes_label.startswith(_SWITCH_YES_PREFIX) or yes_label == _SWITCH_YES_PREFIX:
+            return None
+
+        # 3. The region's top is the MODAL EDGE, and the title is the
+        #    first non-blank row under it, exactly.
+        edge_at = -1
+        for index in range(one_at - 1, max(-1, one_at - 1 - _SWITCH_EDGE_LOOKBACK), -1):
+            text = texts[index].strip()
+            if not text:
+                continue
+            if text.startswith("▔"):
+                edge_at = index
+                break
+        if edge_at < 0:
+            return None
+        # The first non-blank row UNDER the edge is the title, exactly.
+        probe = edge_at + 1
+        while probe < one_at and not texts[probe].strip():
+            probe += 1
+        if probe >= one_at or texts[probe].strip() != _SWITCH_TITLE:
+            return None
+
+        # 4. Exactly one pointer, on row 1 or row 2.
+        pointers = sum(
+            text.count("❯") for text in texts[edge_at : last + 1]
+        )
+        if pointers != 1 or one[3] == two[3]:
+            return None
+
+        return StructuredDialog(
+            agent=self.agent,
+            kind="model_picker",
+            question=_SWITCH_TITLE,
+            options=(
+                DialogOption(label=yes_label),
+                DialogOption(label=_SWITCH_NO_LABEL),
+            ),
+            fingerprint=fingerprint_region(dialog_region(lines, one_at)),
+            hint="",
+            nav_keys=("up", "down"),
+            commit_keys=("enter",),
+            selected=0 if one[3] else 1,
         )
 
 

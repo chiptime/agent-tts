@@ -1183,6 +1183,156 @@ class WizardTwoStepStub(DialogTapStub):
         return {"ok": True, "error": ""}
 
 
+CLAUDE_MODEL_PICKER = (FIXTURES / "claude-model-picker.txt").read_text(
+    encoding="utf-8"
+)
+CLAUDE_SWITCH_MODEL = (FIXTURES / "claude-switch-model-yes.txt").read_text(
+    encoding="utf-8"
+)
+
+
+def picker_screen(pointer: int) -> str:
+    """The pinned Claude /model list with the pointer moved to
+    ``pointer`` (0-based over the five rows)."""
+    screen = CLAUDE_MODEL_PICKER
+    rows = ["Default (recommended) ✔", "Opus (1M context)", "Fable", "Sonnet", "Haiku"]
+    for index, label in enumerate(rows):
+        glyph = "❯" if index == pointer else " "
+        screen = re.sub(
+            rf"^(\s*)[❯ ] {index + 1}\. {re.escape(label)}",
+            rf"\1{glyph} {index + 1}. {label}",
+            screen,
+            flags=re.MULTILINE,
+        )
+    return screen
+
+
+def confirm_screen(pointer: int) -> str:
+    """The pinned "Switch model?" confirmation with the pointer on
+    ``pointer`` (0 = Yes row, 1 = No row)."""
+    yes = "❯ 1. Yes, switch to Fable 5.1"
+    no = "❯ 2. No, go back"
+    plain_yes = "  1. Yes, switch to Fable 5.1"
+    plain_no = "  2. No, go back"
+    if pointer == 0:
+        return CLAUDE_SWITCH_MODEL.replace(no, plain_no)
+    return CLAUDE_SWITCH_MODEL.replace(yes, plain_yes).replace(plain_no, no)
+
+
+class ModelPickerStub(DialogTapStub):
+    """Drives the pinned /model picker exactly as Claude Code does: the
+    arrows move the pointer over the list, Enter on a row closes the
+    list, and — because the conversation is cached — the "Switch
+    model?" confirmation appears; Enter on its pointed row closes it
+    too. A DIGIT would confirm and rewrite the default model: the
+    choreography under test must never send one."""
+
+    def __init__(self, agents):
+        super().__init__(agents, "")
+        self.pointer = 0
+        self.confirm_pointer = 0
+        self.stage = "list"
+
+    def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+        if self.stage == "list":
+            return picker_screen(self.pointer)
+        if self.stage == "confirm":
+            return confirm_screen(self.confirm_pointer)
+        return "$ claude\n❯ _"
+
+    def send_keys(self, pane_id, keys):
+        super().send_keys(pane_id, keys)
+        for key in keys:
+            if self.stage == "list":
+                if key == "down":
+                    self.pointer = min(4, self.pointer + 1)
+                elif key == "up":
+                    self.pointer = max(0, self.pointer - 1)
+                elif key == "enter":
+                    self.stage = "confirm"
+            elif self.stage == "confirm":
+                if key == "down":
+                    self.confirm_pointer = min(1, self.confirm_pointer + 1)
+                elif key == "up":
+                    self.confirm_pointer = max(0, self.confirm_pointer - 1)
+                elif key == "enter":
+                    self.stage = "done"
+        return {"ok": True, "error": ""}
+
+
+class TestModelPickerAnswer:
+    """parity-f7d S2: a model picker is answered by the guard's pointer
+    walk — one arrow, a re-read, only then Enter — and NEVER by a digit
+    (in these lists a digit confirms and rewrites the default model,
+    ADR 0009)."""
+
+    def _post(self, client, option, fingerprint):
+        return client.post(
+            "/pane/dialog/answer",
+            json={"pane_id": "w1:p3", "fingerprint": fingerprint, "option": option},
+        )
+
+    def test_a_tap_walks_with_arrows_and_enter_never_a_digit(self, make_client):
+        stub = ModelPickerStub([BLOCKED_CLAUDE])
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        fingerprint = _fingerprint("claude", stub.read_screen("w1:p3"))
+
+        # Option 2 is Fable; the pointer stands on row 0.
+        response = self._post(client, 2, fingerprint)
+
+        assert response.status_code == 200
+        assert response.json()["option"] == 2
+        assert stub.key_calls == [
+            {"pane_id": "w1:p3", "keys": ["down"]},
+            {"pane_id": "w1:p3", "keys": ["down"]},
+            {"pane_id": "w1:p3", "keys": ["enter"]},
+        ]
+        # THE invariant (ADR 0009): no digit ever reaches a model
+        # picker, even though the rows are numbered.
+        sent = [key for call in stub.key_calls for key in call["keys"]]
+        assert all(key not in "0123456789" for key in sent)
+        assert stub.stage == "confirm"
+
+    def test_the_pointed_row_commits_with_enter_alone(self, make_client):
+        stub = ModelPickerStub([BLOCKED_CLAUDE])
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        fingerprint = _fingerprint("claude", stub.read_screen("w1:p3"))
+
+        response = self._post(client, 0, fingerprint)
+
+        assert response.status_code == 200
+        assert stub.key_calls == [{"pane_id": "w1:p3", "keys": ["enter"]}]
+
+    def test_drift_under_the_tap_is_a_409_and_presses_nothing(self, make_client):
+        stub = ModelPickerStub([BLOCKED_CLAUDE])
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        stale = _fingerprint("claude", picker_screen(3))
+
+        response = self._post(client, 2, stale)
+
+        assert response.status_code == 409
+        assert stub.key_calls == []
+
+    def test_the_confirmation_stage_walks_and_never_digits_either(
+        self, make_client
+    ):
+        stub = ModelPickerStub([BLOCKED_CLAUDE])
+        stub.stage = "confirm"
+        client, _ = make_client(None, None, sleeper=lambda _s: None, stub=stub)
+        fingerprint = _fingerprint("claude", stub.read_screen("w1:p3"))
+
+        # "No, go back" (option 1): the pointer sits on row 0 (Yes).
+        response = self._post(client, 1, fingerprint)
+
+        assert response.status_code == 200
+        assert stub.key_calls == [
+            {"pane_id": "w1:p3", "keys": ["down"]},
+            {"pane_id": "w1:p3", "keys": ["enter"]},
+        ]
+        sent = [key for call in stub.key_calls for key in call["keys"]]
+        assert all(key not in "0123456789" for key in sent)
+
+
 class TestWizardTwoStepFlow:
     """S4 proof: the wizard needs NO endpoint fields. Step 1 answers
     with ``option`` and the screen advances to step 2; step 2 answers

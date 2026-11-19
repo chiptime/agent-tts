@@ -36,8 +36,11 @@ from typing import Optional, Tuple
 #: option; ``multiselect`` toggles several and then submits;
 #: ``confirm`` and ``permission`` are one-question dialogs whose answer
 #: is a yes/no/trust decision; ``wizard_step`` is one question of a
-#: multi-question call (answering may advance to the next step).
-KINDS = ("select", "multiselect", "confirm", "permission", "wizard_step")
+#: multi-question call (answering may advance to the next step);
+#: ``model_picker`` is a /model selector — walk-class ALWAYS, because
+#: in these lists a digit confirms and rewrites the default model
+#: (ADR 0009): the only recipe is the arrows plus Enter.
+KINDS = ("select", "multiselect", "confirm", "permission", "wizard_step", "model_picker")
 
 
 @dataclass(frozen=True)

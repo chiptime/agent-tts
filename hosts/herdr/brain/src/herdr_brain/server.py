@@ -117,7 +117,7 @@ from .permissions import (
 )
 from .stt import STATE_READY, STATE_UNAVAILABLE, UNAVAILABLE_HINT, LiveTranscriber, Transcriber
 from .stt_engine import EngineTranscriber
-from .tools import RESUME_COMMANDS, RESUME_SESSION, BrainTools
+from .tools import RESUME_COMMANDS, RESUME_SESSION, SWITCH_MODEL, BrainTools
 from .tools import status_payload as _status_payload
 from .transcripts import recent_sessions, resume_target
 from .tts import (
@@ -382,6 +382,20 @@ def approval_payload(gate: ApprovalGate, timeout_s: int, now: Optional[float] = 
             "pane_id": gate.action.pane_id,
             "agent": gate.action.agent,
             "text": "⏹ detener el turno en curso",
+            "timeout_ms": gate.action.timeout_ms,
+            "expires_in_s": max(0, math.ceil(remaining)),
+        }
+    if gate.tool == SWITCH_MODEL:
+        # The switch gate (parity-f7d S3) rides the same SEND card
+        # shape: a fixed Spanish marker naming the frozen model — the
+        # replay reads the model from the gate's frozen task, so an
+        # edited marker can never retarget the switch.
+        return {
+            "gate_id": gate.gate_id,
+            "tool": gate.tool,
+            "pane_id": gate.action.pane_id,
+            "agent": gate.action.agent,
+            "text": f"⚙ cambiar el modelo a {gate.action.task or '?'}",
             "timeout_ms": gate.action.timeout_ms,
             "expires_in_s": max(0, math.ceil(remaining)),
         }
@@ -2365,7 +2379,9 @@ def create_app(
             raise gate_gone()
         return gate
 
-    def replay_and_report(gate: ApprovalGate, speak: bool = True) -> dict:
+    def replay_and_report(
+        gate: ApprovalGate, speak: bool = True, device: Optional[str] = None
+    ) -> dict:
         """Executes the frozen action and reports the outcome.
 
         This is THE approve execution (AC6 — exactly once, guaranteed by
@@ -2373,7 +2389,8 @@ def create_app(
         a live tool call would take — ``dispatch(gate.tool, ...)`` with the
         frozen args, so sanitization and error handling match the ungated
         flow; then the model reports the completion through the normal
-        loop entry and the answer is shaped like /ask.
+        loop entry and the answer is shaped like /ask. ``device`` rides
+        the switch replay's audit line (who approved is who switched).
         """
         if gate.tool == CREATE_SESSION:
             return _replay_create_and_report(gate, speak)
@@ -2381,6 +2398,8 @@ def create_app(
             return _replay_resume_and_report(gate, speak)
         if gate.tool == STOP_AGENT:
             return _replay_stop_and_report(gate, speak)
+        if gate.tool == SWITCH_MODEL:
+            return _replay_switch_model_and_report(gate, speak, device)
         target = tools.resolve_target(gate.action.pane_id)
         tool_result = tools.dispatch(
             SEND_TO_SESSION,
@@ -2517,6 +2536,47 @@ def create_app(
                 "title": created.title or "",
             }
         return response
+
+    def _replay_switch_model_and_report(
+        gate: ApprovalGate, speak: bool = True, device: Optional[str] = None
+    ) -> dict:
+        """Approve execution for switch gates (parity-f7d S3): the frozen
+        (pane, model) runs through the guarded picker choreography, the
+        outcome is audited as ``model.switch`` — the model NAME is
+        metadata, not content; nothing beyond it rides the line — and
+        the model reports. A refused outcome (ambiguous name, picker
+        that never appeared, drift) is reported as what it is: the
+        model was NOT switched."""
+        result = tools.switch_model(gate.action.pane_id or "", gate.action.task or "")
+        audit_log.record({
+            "action": "model.switch",
+            "pane_id": gate.action.pane_id,
+            "device": device,
+            "detail": {
+                "model": gate.action.task or "",
+                "outcome": result.get("outcome", ""),
+                "reason": result.get("reason", ""),
+            },
+        })
+        outcome = result.get("outcome", "")
+        report_prompt = (
+            f"The approved model switch ran on {gate.action.agent or 'the agent'} "
+            f"(pane {gate.action.pane_id or 'unknown'}) targeting "
+            f"{gate.action.task or 'unknown'}. Result:\n\n{outcome}"
+            + (f" ({result.get('reason', '')})" if result.get("reason") else "")
+            + ".\n\nReport the outcome to the user in one or two short spoken "
+            "sentences. Only 'switched' means the model changed; anything "
+            "else means it did NOT — say that."
+        )
+        try:
+            reported = get_llm().ask(
+                report_prompt,
+                session_id=gate.session_id,
+                pane_id=gate.action.pane_id,
+            )
+        except BrainLLMError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return shape_ask_response(reported, speak=speak)
 
     @app.get("/approval/current")
     def approval_current(session_id: Optional[str] = None) -> dict:
@@ -4064,7 +4124,7 @@ def create_app(
         if not applied:
             raise gate_gone()
         audit_gate_decision("approval.approve", resolved, audit_device(request))
-        return replay_and_report(resolved)
+        return replay_and_report(resolved, device=audit_device(request))
 
     @app.post("/approval/{gate_id}/reject")
     def approval_reject(gate_id: str, request: Request) -> dict:
@@ -4347,7 +4407,7 @@ def create_app(
                 "approval.resolve", resolved, audit_device(request),
                 extra={"decision": "approve", "spoken": True},
             )
-            turn = replay_and_report(resolved)
+            turn = replay_and_report(resolved, device=audit_device(request))
             return {
                 "decision": "approve",
                 "answer": turn["answer"],

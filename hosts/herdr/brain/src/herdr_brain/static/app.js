@@ -1887,7 +1887,27 @@
     if (ws === name) ws = "";
     /* Parity F7a S3: the pane's last-request model, when /herd knows it. */
     var model = agent.model || "";
-    return [ws, model].filter(Boolean).join(" · ");
+    /* Parity F7d S1: the context window rides next to it as a compact
+     * "used/limit" pair — only when a local catalog named the limit. */
+    var ctx = formatContextWindow(agent.context);
+    return [ws, model, ctx].filter(Boolean).join(" · ");
+  }
+
+  /* "24.3k/200k" from {used, limit}; null when the server sent no
+   * window (no catalog, unknown model) — never guessed client-side. */
+  function formatContextNumber(value) {
+    var n = Number(value);
+    if (!isFinite(n) || n <= 0) return null;
+    if (n >= 1000) return (n / 1000).toFixed(n >= 100000 ? 0 : 1).replace(/\.0$/, "") + "k";
+    return String(n);
+  }
+
+  function formatContextWindow(context) {
+    if (!context || !context.limit) return null;
+    var limit = formatContextNumber(context.limit);
+    if (!limit) return null;
+    var used = formatContextNumber(context.used);
+    return used ? used + "/" + limit : limit;
   }
 
   /* Small Spanish label for a sheet row's status pill (idle hides it). */
@@ -2092,6 +2112,7 @@
     panePickerSub.classList.toggle("hidden", !pickerSub);
     renderGlanceLabel();       // lastHerd just refreshed: recompute name
     renderPending(lastView);   // blocked-agent counts may have changed
+    refreshModelSwitchOffer(); // the sheet's model action tracks the pane
   }
 
   function selectAgent(paneId) {
@@ -8188,10 +8209,70 @@
     renderVoiceEngine();
   }
 
+  /* ------------- cambiar modelo (sheet action row, F7d S2) -------------
+   * A second action in the conversation sheet's row, built from JS so
+   * index.html stays byte-stable: it is offered only while the
+   * EFFECTIVE pane's harness has a verified picker command (the same
+   * table the server gates voice switches on). The tap sends that
+   * command through the plain reply path — the user's own keyboard
+   * surface, no gate — and the picker card appears by itself when the
+   * pane blocks on it; answering stays the guarded dialog path. */
+  var convModelBtn = document.createElement("button");
+  convModelBtn.type = "button";
+  convModelBtn.id = "conv-model";
+  convModelBtn.textContent = window.Dialogs && window.Dialogs.modelSwitchOffer
+    ? (window.Dialogs.modelSwitchOffer("claude") || {}).label || "Cambiar modelo"
+    : "Cambiar modelo";
+  convModelBtn.classList.add("hidden");
+  if (convNewBtn.parentNode) {
+    convNewBtn.parentNode.insertBefore(convModelBtn, convNewBtn.nextSibling);
+    /* The two sheet actions stack vertically like the list rows; the
+     * .cs-actions row keeps its own padding and borders. */
+    convNewBtn.parentNode.style.display = "grid";
+    convNewBtn.parentNode.style.gap = "8px";
+  }
+
+  function refreshModelSwitchOffer() {
+    if (!convModelBtn || !convModelBtn.parentNode) return;
+    var entry = herdEntry(lastEffectivePane || selectedPane);
+    var offer = entry && window.Dialogs && window.Dialogs.modelSwitchOffer
+      ? window.Dialogs.modelSwitchOffer(entry.agent)
+      : null;
+    convModelBtn.classList.toggle("hidden", !offer);
+  }
+
+  convModelBtn.addEventListener("click", function () {
+    var entry = herdEntry(lastEffectivePane || selectedPane);
+    var offer = entry && window.Dialogs && window.Dialogs.modelSwitchOffer
+      ? window.Dialogs.modelSwitchOffer(entry.agent)
+      : null;
+    if (!entry || !offer) {
+      showToast(window.Dialogs && window.Dialogs.modelSwitchNoneToast
+        ? window.Dialogs.modelSwitchNoneToast() : "", 4000);
+      return;
+    }
+    var paneId = entry.pane_id;
+    var payload = window.Dialogs.modelSwitchPayload(paneId, offer.command);
+    closeConvSheet();
+    fetch("/pane/reply", withDeviceAuth({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    })).then(function (resp) {
+      if (resp.ok) {
+        showToast(window.Dialogs.modelSwitchOpenedToast(agentDisplayName(entry)), 4000);
+        return null;
+      }
+      maybeOfferPairing(resp);
+      return resp.json().then(function () { return null; }, function () { return null; });
+    }).catch(function () {
+      showToast(t("reply.fail_offline"), 6000);
+    });
+  });
+
   /* ---------------- new conversation (sheet action row) ---------------- */
 
-  convNewBtn.addEventListener("click", function () {
-    stopAudio();
+  convNewBtn.addEventListener("click", function () {    stopAudio();
     stopListening();
     removeThinkingBubble();
     approvalFlow.cancel();  // a fresh conversation retires the live gate

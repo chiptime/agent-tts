@@ -758,7 +758,17 @@ class TestDispatch:
             "switch_session",
             # parity-f7c S3: the gated resume of a past conversation.
             "resume_session",
+            # parity-f7d S3: the gated model switch of a pane.
+            "switch_model",
         }
+
+    def test_switch_model_schema_is_gated_and_names_the_model(self):
+        by_name = {tool["function"]["name"]: tool["function"] for tool in TOOLS_SCHEMA}
+        switch = by_name["switch_model"]
+        assert "GATED" in switch["description"]
+        assert "approval" in switch["description"]
+        assert set(switch["parameters"]["properties"]) == {"model", "pane_id"}
+        assert switch["parameters"]["required"] == ["model"]
 
     def test_stop_agent_schema_is_gated_and_argument_free(self):
         by_name = {tool["function"]["name"]: tool["function"] for tool in TOOLS_SCHEMA}

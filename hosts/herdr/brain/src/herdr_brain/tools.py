@@ -107,6 +107,19 @@ VERIFIED_POLL_INTERVAL_S = 0.35
 #: option of the dialog is highlighted. Only read while blocked: the styling
 #: is exactly what decides a permission, and nothing else needs it.
 DIALOG_SCREEN_LINES = 30
+#: parity-f7d S3: the harness's own command that opens its model picker,
+#: VERIFIED per harness (the picker detector must be able to read what
+#: the command opens). A harness absent here is honestly unsupported.
+MODEL_COMMANDS = {
+    "claude": "/model",
+    "grok": "/model",
+    "omp": "/switch",
+}
+#: How long switch_model waits for the picker (and, after the commit,
+#: for the "Switch model?" confirmation) to appear.
+SWITCH_WAIT_ATTEMPTS = 20
+SWITCH_POLL_S = 0.15
+SWITCH_MODEL = "switch_model"
 MAX_AGENT_NAME_LEN = 24
 #: Triage order of agent states in the herd (doc 05): a pane waiting for
 #: the human outranks one merely busy; an unknown state sorts last, never
@@ -198,13 +211,82 @@ def resume_enabled_harnesses() -> tuple:
     return tuple(sorted(RESUME_COMMANDS))
 
 
-def status_payload(active: Optional[AgentInfo], model: Optional[str] = None) -> dict:
+def _lex_flat(text: str) -> str:
+    """Case- and whitespace-flat form of a label for fuzzy matching."""
+    return " ".join((text or "").lower().split())
+
+
+def _match_picker_option(options, wanted: str):
+    """Locates the picker option a spoken model name names.
+
+    Fuzzy but UNAMBIGUOUS: an exact (normalized) label wins; else the
+    names that CONTAIN the request — exactly one commits, none or
+    several refuse. Returns ``(index, None, None)`` on a match and
+    ``(None, reason, candidate_labels)`` on a refusal.
+    """
+    query = _lex_flat(wanted)
+    if not query:
+        return None, "no-model", []
+    exact = [
+        index
+        for index, option in enumerate(options)
+        if _lex_flat(option.label) == query
+    ]
+    if len(exact) == 1:
+        return exact[0], None, None
+    hits = [
+        index
+        for index, option in enumerate(options)
+        if query in _lex_flat(option.label)
+    ]
+    if len(exact) > 1 or len(hits) > 1:
+        labels = [options[index].label for index in sorted(set(exact) | set(hits))]
+        return None, "ambiguous", labels
+    if not hits:
+        return None, "no-match", []
+    return hits[0], None, None
+
+
+def _name_candidates(wanted: str, labels) -> str:
+    """The refusal detail for a name that matched nothing or several."""
+    if not labels:
+        return f"{wanted}: no option of this picker names it"
+    shown = ", ".join(labels[:6]) + ("…" if len(labels) > 6 else "")
+    return f"{wanted} is ambiguous between: {shown}"
+
+
+def _switch_confirmation_yes(options):
+    """The ``Yes, switch to <model>`` row of the confirmation, if the
+    screen carries one. Returns ``(index, label)`` or ``(None, "")``."""
+    for index, option in enumerate(options):
+        flat = _lex_flat(option.label)
+        if flat.startswith("yes, switch to ") and len(flat) > len(
+            "yes, switch to "
+        ):
+            return index, option.label
+    return None, ""
+
+
+def _names_the_model(label: str, wanted: str) -> bool:
+    """Whether the confirmation's Yes row names the requested model:
+    containment in the same flat form the matcher uses."""
+    flat, query = _lex_flat(label), _lex_flat(wanted)
+    return bool(query) and (query in flat or flat in query)
+
+
+def status_payload(
+    active: Optional[AgentInfo],
+    model: Optional[str] = None,
+    context: Optional[dict] = None,
+) -> dict:
     """Shapes the active-pane status shared by /state and /view.
 
     Free-text metadata (title, cwd) is masked at this display seam
     (S14): a recognized secret inside either still renders as a hint
     placeholder, while the lookup ids stay exact. ``model`` (parity F7a
     S3) is the pane's last-request model, or None when unknown.
+    ``context`` (parity F7d S1) is ``{"used", "limit"}`` when a local
+    catalog named the model's window, else None — never a guess.
     """
     if active is None:
         return {
@@ -226,6 +308,11 @@ def status_payload(active: Optional[AgentInfo], model: Optional[str] = None) -> 
         "cwd": mask_text(active.cwd) if active.cwd else active.cwd,
         "session_id": active.session_value,
         "model": model,
+        # Additive on purpose (parity F7d S1): the context window rides
+        # along ONLY when a local catalog named it, so every payload
+        # without one keeps its exact previous shape (absence IS the
+        # null — a window is never guessed).
+        **({"context": context} if context is not None else {}),
     }
 
 
@@ -379,7 +466,9 @@ class BrainTools:
             active = self._track(self._herdr.active_agent())
         except HerdrError:
             active = None
-        return status_payload(active, self._model_of(active))
+        return status_payload(
+            active, self._model_of(active), self._context_of(active)
+        )
 
     def _model_of(self, agent: Optional[AgentInfo]) -> Optional[str]:
         """The pane's last-request model, or None (never raises)."""
@@ -387,6 +476,19 @@ class BrainTools:
             return None
         try:
             return self._pane_model.model(agent.agent, agent.session_value)
+        except Exception:  # noqa: BLE001 — display metadata never breaks a poll
+            return None
+
+    def _context_of(self, agent: Optional[AgentInfo]) -> Optional[dict]:
+        """The pane's context window (parity F7d S1), or None (never
+        raises). Test doubles without the seam keep None."""
+        if agent is None or agent.session_kind != "id":
+            return None
+        context = getattr(self._pane_model, "context", None)
+        if context is None:
+            return None
+        try:
+            return context(agent.agent, agent.session_value)
         except Exception:  # noqa: BLE001 — display metadata never breaks a poll
             return None
 
@@ -461,6 +563,13 @@ class BrainTools:
                     "cwd": mask_text(agent.cwd) if agent.cwd else agent.cwd,
                     "session_id": agent.session_value if agent.session_kind == "id" else None,
                     "model": self._model_of(agent),
+                    # Additive on purpose (parity F7d S1): absent when
+                    # no catalog named the window — absence is the null.
+                    **(
+                        {"context": context}
+                        if (context := self._context_of(agent)) is not None
+                        else {}
+                    ),
                     "focused": agent.focused,
                     "last_turn": last_turn,
                     "last_turn_age_s": (
@@ -724,7 +833,9 @@ class BrainTools:
             structured = self._structured_payload(target, wide_text)
 
         payload = {
-            "status": status_payload(target, self._model_of(target)),
+            "status": status_payload(
+                target, self._model_of(target), self._context_of(target)
+            ),
             "transcript": transcript,
             "screen": safe_screen,
             "screen_runs": screen_runs,
@@ -1307,6 +1418,148 @@ class BrainTools:
             return self._herdr.read_screen(target_pane, lines, as_ansi=True)
 
         return reader
+
+    # -- model switching (parity-f7d S3) ---------------------------------
+
+    def switch_model(self, pane_id: str, model: str) -> dict:
+        """Switches one pane's model through its OWN /model picker.
+
+        The voice write path (S3), replayed only from an approved gate:
+        sends the harness's verified command, waits for the picker the
+        detectors know, locates the option by name — fuzzy but
+        UNAMBIGUOUS, a name that matches nothing or several is refused
+        with nothing pressed — and answers it through the SAME guarded
+        choreography a PWA tap uses (arrows and Enter, one re-read per
+        key; NEVER a digit, which would confirm and rewrite the default
+        model, ADR 0009). On Claude a cached conversation raises the
+        ``Switch model?`` confirmation: its Yes row must name the SAME
+        model or the switch stops there, honestly reported. Every
+        outcome is a dict (``switched`` or ``refused`` + reason), so
+        the replay can audit and report it.
+        """
+        clean_model = (model or "").strip()
+
+        def refused(reason: str, detail: str = "") -> dict:
+            return {
+                "outcome": "refused",
+                "reason": reason,
+                "detail": detail,
+                "model": clean_model,
+                "pane_id": pane_id,
+            }
+
+        if not clean_model:
+            return refused("no-model", "a model name is required")
+        try:
+            agents = self._herdr.list_agents()
+        except HerdrError as exc:
+            return refused("error", f"cannot list panes: {exc}")
+        target = next((agent for agent in agents if agent.pane_id == pane_id), None)
+        if target is None:
+            return refused("unknown-pane", "pane not found")
+        harness = (target.agent or "").strip().lower()
+        command = MODEL_COMMANDS.get(harness)
+        if command is None:
+            return refused(
+                "unsupported",
+                f"model switching is not verified for {target.agent or 'this harness'}; "
+                "nothing was sent",
+            )
+        try:
+            # The reply path's own verified send: types the command and
+            # submits it, with its short bounded wait.
+            self._herdr.send_prompt(pane_id, command, REPLY_WAIT_MS)
+        except HerdrError as exc:
+            return refused("send-failed", f"could not send {command}: {exc}")
+
+        picker = self._wait_for_dialog(pane_id, harness, ("model_picker",))
+        if picker is None:
+            return refused(
+                "no-picker",
+                f"the model picker did not appear after {command}; "
+                "nothing was pressed",
+            )
+        index, reason, names = _match_picker_option(picker.options, clean_model)
+        if index is None:
+            return refused(reason, _name_candidates(clean_model, names))
+
+        answer = self.answer_structured_dialog(
+            pane_id, picker.fingerprint, option=index
+        )
+        if answer.get("outcome") != "answered":
+            return refused(
+                "walk-failed",
+                answer.get("detail") or answer.get("reason") or "the picker moved",
+            )
+
+        # Claude's cached-conversation confirmation: only a Yes row that
+        # names the SAME model is confirmed — anything else stops the
+        # switch with nothing further sent.
+        confirm = self._wait_for_dialog(
+            pane_id, harness, ("model_picker",), question_prefix="Switch model?"
+        )
+        if confirm is not None:
+            yes_index, label = _switch_confirmation_yes(confirm.options)
+            if yes_index is None or not _names_the_model(label, clean_model):
+                return refused(
+                    "confirm-mismatch",
+                    f"the confirmation names {label or 'another model'}; "
+                    "nothing further was sent",
+                )
+            confirmed = self.answer_structured_dialog(
+                pane_id, confirm.fingerprint, option=yes_index
+            )
+            if confirmed.get("outcome") != "answered":
+                return refused(
+                    "confirm-failed",
+                    confirmed.get("detail") or confirmed.get("reason") or "",
+                )
+
+        # The pane's cached model is now stale: drop it so the next
+        # /view re-probes (the NEXT assistant request records the new
+        # model in the transcript).
+        note = getattr(self._pane_model, "note_switched", None)
+        if note is not None:
+            try:
+                note(target.agent, target.session_value)
+            except Exception:  # noqa: BLE001 — cache hygiene never breaks a switch
+                pass
+        return {
+            "outcome": "switched",
+            "model": picker.options[index].label,
+            "pane_id": pane_id,
+        }
+
+    def _wait_for_dialog(
+        self,
+        pane_id: str,
+        harness: str,
+        kinds: tuple,
+        question_prefix: str = "",
+        attempts: int = SWITCH_WAIT_ATTEMPTS,
+    ):
+        """Waits, bounded, for a recognizable dialog of ``kinds`` on the
+        pane — the picker after the command, the confirmation after the
+        commit. Reads come styled through the same reader the guarded
+        answers use."""
+        reader = self._dialog_reader(pane_id)
+        pause = self._sleeper or time.sleep
+        for attempt in range(attempts):
+            if attempt:
+                pause(SWITCH_POLL_S)
+            try:
+                text = reader(pane_id, DIALOG_SCREEN_LINES)
+            except HerdrError:
+                continue
+            model = recognize_dialog(harness, text or "")
+            if model is None or model.unread or model.kind not in kinds:
+                continue
+            if question_prefix and not (model.question or "").startswith(
+                question_prefix
+            ):
+                continue
+            return model
+        return None
 
     def begin_turn(self) -> int:
         """Advances the ask-turn counter and returns the new turn id.
@@ -2529,6 +2782,7 @@ class BrainTools:
             "answer_dialog": self.answer_dialog,
             "stop_agent": self.stop_pane,
             "switch_session": self.switch_session,
+            "switch_model": self.switch_model,
             "consult_work_status": self.consult_work_status,
             "consult_history": self.consult_history,
             "get_followup_context": self.get_followup_context,
@@ -2599,6 +2853,22 @@ class BrainTools:
                 )
                 return "stop " + stopped["outcome"] + (
                     ": " + stopped["detail"] if stopped["detail"] else ""
+                )
+            if name == "switch_model":
+                # The approve replay drives switch_model directly (it
+                # needs the structured result); the live loop never
+                # reaches here (the gate freezes it first). Same
+                # discipline as read_transcript's pane_id: strings only.
+                switch_pane = arguments.get("pane_id")
+                if switch_pane is not None and not isinstance(switch_pane, str):
+                    raise TypeError("pane_id must be a string")
+                return json.dumps(
+                    self.switch_model(
+                        (switch_pane or "").strip()
+                        or (target.pane_id if target else ""),
+                        str(arguments.get("model", "")),
+                    ),
+                    ensure_ascii=False,
                 )
             if name == "read_transcript":
                 # S2/S4 pane consult: a model-named pane_id retargets the
@@ -2905,6 +3175,44 @@ TOOLS_SCHEMA = [
                     },
                 },
                 "required": ["utterance"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "switch_model",
+            "description": (
+                "GATED write (parity-f7d): switches the SELECTED agent pane's "
+                "model. The switch NEVER executes on the spot: it is frozen "
+                "behind a user approval gate — state the agent and the target "
+                "model and wait; it runs only when the user approves. On "
+                "approval the pane's own model picker is opened and the "
+                "option is chosen by walking arrows and Enter, never a digit. "
+                "The model name must be one the picker offers (from the "
+                "user's words); an ambiguous or unknown name is refused with "
+                "nothing pressed. Ask which pane's model via the live context "
+                "when the user names another agent (pane_id)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "model": {
+                        "type": "string",
+                        "description": (
+                            "The model to switch to, as the picker names it "
+                            "(e.g. 'Fable', 'anthropic/claude-opus-5-5')."
+                        ),
+                    },
+                    "pane_id": {
+                        "type": "string",
+                        "description": (
+                            "Optional exact pane_id from list_open_sessions "
+                            "whose model to switch; omit for the selected pane."
+                        ),
+                    },
+                },
+                "required": ["model"],
             },
         },
     },

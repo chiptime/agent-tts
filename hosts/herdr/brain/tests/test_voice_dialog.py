@@ -12,6 +12,7 @@ Every refusal must leave the pane untouched (no keys sent).
 from __future__ import annotations
 
 import json
+import re
 from typing import Optional
 
 import pytest
@@ -1035,3 +1036,429 @@ class TestVoiceFreeTextAnswer:
         assert result["reason"] == "not-a-choice"
         assert stub.key_calls == []
         assert stub.text_calls == []
+
+
+# ── parity-f7d S3: switch_model (voice) ─────────────────────────────
+#
+# A model switch is a WRITE against a live terminal, so it rides the
+# same approval-gate discipline as create_session: the spoken «cambia
+# el modelo a X» PROPOSES (frozen pane + model), the user's
+# confirmation disposes. On approve the tool sends the harness's own
+# command (/model, or /switch on omp), waits for the picker, locates
+# the option by name (fuzzy but UNAMBIGUOUS) and walks it with arrows
+# and Enter — NEVER a digit, because in these lists a digit confirms
+# and rewrites the default model (ADR 0009).
+
+from pathlib import Path
+
+
+SWITCH_FIXTURES = Path(__file__).parent / "fixtures" / "dialogs"
+CLAUDE_MODEL_PICKER = (SWITCH_FIXTURES / "claude-model-picker.txt").read_text(
+    encoding="utf-8"
+)
+CLAUDE_SWITCH_CONFIRM = (SWITCH_FIXTURES / "claude-switch-model-yes.txt").read_text(
+    encoding="utf-8"
+)
+OMP_SWITCH_BOX = (SWITCH_FIXTURES / "omp-switch-model.txt").read_text(
+    encoding="utf-8"
+)
+
+IDLE_CLAUDE = AgentInfo(
+    pane_id="w1:p5",
+    agent="claude",
+    status="idle",
+    session_kind="id",
+    session_value="sid-1",
+    cwd="/repo",
+    title="Claude",
+    focused=True,
+)
+
+IDLE_OMP = AgentInfo(
+    pane_id="w2:p1",
+    agent="omp",
+    status="idle",
+    session_kind="id",
+    session_value="sid-2",
+    cwd="/repo",
+    title="Omp",
+    focused=False,
+)
+
+
+def switch_picker_screen(pointer: int) -> str:
+    """The pinned /model list with the pointer on ``pointer``."""
+    screen = CLAUDE_MODEL_PICKER
+    rows = ["Default (recommended) ✔", "Opus (1M context)", "Fable", "Sonnet", "Haiku"]
+    for index, label in enumerate(rows):
+        glyph = "❯" if index == pointer else " "
+        screen = re.sub(
+            rf"^(\s*)[❯ ] {index + 1}\. {re.escape(label)}",
+            rf"\1{glyph} {index + 1}. {label}",
+            screen,
+            flags=re.MULTILINE,
+        )
+    return screen
+
+
+def switch_confirm_screen(pointer: int) -> str:
+    """The pinned "Switch model?" confirmation with the pointer moved."""
+    yes = "❯ 1. Yes, switch to Fable 5.1"
+    no = "❯ 2. No, go back"
+    if pointer == 0:
+        return CLAUDE_SWITCH_CONFIRM.replace("❯ 2. No, go back", "  2. No, go back")
+    return CLAUDE_SWITCH_CONFIRM.replace(yes, "  1. Yes, switch to Fable 5.1").replace(
+        "  2. No, go back", no
+    )
+
+
+class SwitchModelStub:
+    """Herdr double driving a claude pane through the /model flow:
+    sending the command opens the picker; arrows move its pointer;
+    Enter commits the list and — the conversation being cached — the
+    "Switch model?" confirmation appears; Enter on it finishes."""
+
+    def __init__(self, agents, first_screen=None):
+        self._agents = agents
+        self.stage = "shell"
+        self.pointer = 0
+        self.confirm_pointer = 0
+        self.first_screen = first_screen
+        self.prompt_calls: list = []
+        self.key_calls: list = []
+
+    def list_agents(self):
+        return list(self._agents)
+
+    def active_agent(self):
+        from herdr_brain.herdr import pick_active
+
+        return pick_active(self._agents)
+
+    def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+        if self.stage == "shell":
+            return self.first_screen if self.first_screen is not None else "$ claude\n❯ _"
+        if self.stage == "list":
+            return switch_picker_screen(self.pointer)
+        if self.stage == "confirm":
+            return switch_confirm_screen(self.confirm_pointer)
+        return "$ claude\nModel set. ❯ _"
+
+    def send_prompt(self, pane_id, text, timeout_ms=None):
+        self.prompt_calls.append({"pane_id": pane_id, "text": text})
+        if text in ("/model", "/switch"):
+            self.stage = "list"
+        return {"ok": True, "status": "done", "output": ""}
+
+    def send_keys(self, pane_id, keys):
+        self.key_calls.append({"pane_id": pane_id, "keys": list(keys)})
+        for key in keys:
+            if self.stage == "list":
+                if key == "down":
+                    self.pointer = min(4, self.pointer + 1)
+                elif key == "up":
+                    self.pointer = max(0, self.pointer - 1)
+                elif key == "enter":
+                    self.stage = "confirm"
+            elif self.stage == "confirm":
+                if key == "down":
+                    self.confirm_pointer = min(1, self.confirm_pointer + 1)
+                elif key == "up":
+                    self.confirm_pointer = max(0, self.confirm_pointer - 1)
+                elif key == "enter":
+                    self.stage = "done"
+        return {"ok": True, "error": ""}
+
+
+class OmpSwitchStub(SwitchModelStub):
+    """The omp /switch box: Enter on a row switches and the box closes
+    (no confirmation stage)."""
+
+    def __init__(self, agents):
+        super().__init__(agents)
+        self.omp_pointer = 3  # the current model's row, as captured
+
+    def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
+        if self.stage == "list":
+            return self._omp_screen()
+        return super().read_screen(pane_id, n_lines, source, as_ansi)
+
+    def _omp_screen(self):
+        # Simplest faithful drive: move the ❯ glyph between model rows,
+        # and let the detail rows follow the pointer as omp does — the
+        # chips row claims "● current" only while the CURRENT model
+        # (opus-5-5) is pointed, else it is blank.
+        screen = OMP_SWITCH_BOX
+        screen = screen.replace("│ ❯ anthropic/claude-opus-5-5", "│ @ anthropic/claude-opus-5-5")
+        screen = screen.replace("│   anthropic/claude-fable-5-1", "│ ! anthropic/claude-fable-5-1")
+        if self.omp_pointer == 3:
+            screen = screen.replace("│ @ anthropic/claude-opus-5-5", "│ ❯ anthropic/claude-opus-5-5")
+            screen = screen.replace("│ ! anthropic/claude-fable-5-1", "│   anthropic/claude-fable-5-1")
+            return screen
+        screen = screen.replace("│ @ anthropic/claude-opus-5-5", "│   anthropic/claude-opus-5-5")
+        screen = screen.replace("│ ! anthropic/claude-fable-5-1", "│ ❯ anthropic/claude-fable-5-1")
+        rows = []
+        for line in screen.split("\n"):
+            if line.startswith("│   ● current"):
+                line = "│" + " " * (len(line) - 2) + "│"
+            rows.append(line)
+        return "\n".join(rows)
+
+    def send_keys(self, pane_id, keys):
+        self.key_calls.append({"pane_id": pane_id, "keys": list(keys)})
+        for key in keys:
+            if self.stage == "list":
+                if key == "down":
+                    self.omp_pointer = min(5, self.omp_pointer + 1)
+                elif key == "up":
+                    self.omp_pointer = max(0, self.omp_pointer - 1)
+                elif key == "enter":
+                    self.stage = "done"
+        return {"ok": True, "error": ""}
+
+
+class NotingPaneModel:
+    """PaneModelResolver double that records note_switched calls."""
+
+    def __init__(self):
+        self.noted = []
+
+    def model(self, agent, session_id):
+        return None
+
+    def context(self, agent, session_id):
+        return None
+
+    def note_switched(self, agent, session_id):
+        self.noted.append((agent, session_id))
+
+
+class TestSwitchModel:
+    def _tools(self, stub, pane_model=None):
+        return BrainTools(
+            _settings(), herdr=stub, sleeper=lambda _s: None, pane_model=pane_model
+        )
+
+    def test_sends_the_command_walks_and_confirms_never_a_digit(self):
+        stub = SwitchModelStub([IDLE_CLAUDE])
+        noted = NotingPaneModel()
+        tools = self._tools(stub, pane_model=noted)
+
+        result = tools.switch_model("w1:p5", "Fable")
+
+        assert result["outcome"] == "switched"
+        assert result["model"] == "Fable"
+        assert [call["text"] for call in stub.prompt_calls] == ["/model"]
+        # Walk to Fable (row 2) with re-reads, Enter; the cached
+        # conversation raises the confirmation, whose Yes row is
+        # already pointed: Enter alone commits it.
+        keys = [key for call in stub.key_calls for key in call["keys"]]
+        assert keys == ["down", "down", "enter", "enter"]
+        # THE invariant (ADR 0009): no digit ever reaches the picker.
+        assert all(key not in "0123456789" for key in keys)
+        # The pane's model cache was invalidated for the next /view.
+        assert noted.noted == [("claude", "sid-1")]
+
+    def test_the_omp_switch_box_walks_by_id(self):
+        stub = OmpSwitchStub([IDLE_OMP])
+        tools = self._tools(stub)
+
+        result = tools.switch_model("w2:p1", "anthropic/claude-fable-5-1")
+
+        assert result["outcome"] == "switched"
+        assert [call["text"] for call in stub.prompt_calls] == ["/switch"]
+        keys = [key for call in stub.key_calls for key in call["keys"]]
+        assert keys == ["down", "enter"]
+        assert all(key not in "0123456789" for key in keys)
+
+    def test_an_ambiguous_name_refuses_and_presses_nothing(self):
+        stub = OmpSwitchStub([IDLE_OMP])
+        tools = self._tools(stub)
+
+        result = tools.switch_model("w2:p1", "opus")
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "ambiguous"
+        # The command opened the picker; the refusal pressed NOTHING.
+        assert stub.key_calls == []
+
+    def test_an_unknown_name_refuses_and_presses_nothing(self):
+        stub = SwitchModelStub([IDLE_CLAUDE])
+        tools = self._tools(stub)
+
+        result = tools.switch_model("w1:p5", "gpt-99")
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "no-match"
+        assert stub.key_calls == []
+
+    def test_an_unsupported_harness_refuses_before_sending(self):
+        opencode = AgentInfo(**{**IDLE_CLAUDE.__dict__, "agent": "opencode"})
+        stub = SwitchModelStub([opencode])
+        tools = self._tools(stub)
+
+        result = tools.switch_model(opencode.pane_id, "glm-5.3")
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "unsupported"
+        assert stub.prompt_calls == []
+        assert stub.key_calls == []
+
+    def test_a_picker_that_never_appears_refuses(self):
+        stub = SwitchModelStub([IDLE_CLAUDE])
+        # The command lands but the pane stays a plain shell: no
+        # picker ever opens (a foreign /model handler, a slow startup).
+        stub.stage = "shell"
+        stub.prompt_calls = []
+        original_prompt = stub.send_prompt
+
+        def prompt_without_picker(pane_id, text, timeout_ms=None):
+            call = original_prompt(pane_id, text, timeout_ms)
+            stub.stage = "shell"  # the picker never appears
+            return call
+
+        stub.send_prompt = prompt_without_picker
+        tools = self._tools(stub)
+
+        result = tools.switch_model("w1:p5", "Fable")
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "no-picker"
+        assert stub.key_calls == []
+
+    def test_an_unknown_pane_refuses(self):
+        stub = SwitchModelStub([IDLE_CLAUDE])
+        tools = self._tools(stub)
+
+        result = tools.switch_model("w9:p9", "Fable")
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "unknown-pane"
+        assert stub.prompt_calls == []
+
+
+def _settings():
+    from tests.conftest import SETTINGS_KWARGS
+    from herdr_brain.config import Settings
+    import tempfile, pathlib
+
+    return Settings(
+        **{**SETTINGS_KWARGS, "state_dir": str(pathlib.Path(tempfile.mkdtemp()) / "s")}
+    )
+
+
+class TestSwitchModelApproveReplay:
+    """The approve execution (server layer): the frozen (pane, model)
+    replays through switch_model, the outcome is audited as
+    ``model.switch`` — the model NAME is metadata, nothing beyond it
+    rides the line — and the report rides the normal loop."""
+
+    def test_approve_replays_the_frozen_switch_and_audits_it(
+        self, settings, tmp_path, monkeypatch
+    ):
+        import herdr_brain.server as server_module
+        from fastapi.testclient import TestClient
+        from tests.test_server import FakeLLM, FakeTTS
+
+        calls = []
+
+        class ReplayTools:
+            def __init__(self, cfg, **kwargs):
+                pass
+
+            def switch_model(self, pane_id, model):
+                calls.append({"pane_id": pane_id, "model": model})
+                return {"outcome": "switched", "model": model, "pane_id": pane_id}
+
+        monkeypatch.setattr(server_module, "BrainTools", ReplayTools)
+        cfg = settings.__class__(
+            **{
+                **settings.__dict__,
+                "state_dir": str(tmp_path / "state"),
+                "audio_dir": str(tmp_path / "audio"),
+                "audit_content": "preview",
+            }
+        )
+        llm = FakeLLM(result={
+            "answer": "Modelo cambiado a Fable.",
+            "pane_id": "w1:p5", "agent": "claude", "session_id": "s1",
+        })
+        app = server_module.create_app(
+            settings=cfg, llm_factory=lambda c, t: llm, tts_renderer=FakeTTS()
+        )
+        gate = app.state.approval_store.propose(
+            "s1", text="", pane_id="w1:p5", agent="claude",
+            tool="switch_model", task="Fable",
+        )
+
+        response = TestClient(app).post(f"/approval/{gate.gate_id}/approve")
+
+        assert response.status_code == 200
+        assert response.json()["answer"] == "Modelo cambiado a Fable."
+        assert calls == [{"pane_id": "w1:p5", "model": "Fable"}]
+        audit = (tmp_path / "state" / "audit.log").read_text(encoding="utf-8")
+        entry = json.loads(
+            next(line for line in audit.splitlines() if "model.switch" in line)
+        )
+        assert entry["action"] == "model.switch"
+        assert entry["pane_id"] == "w1:p5"
+        # No browser device on a bare TestClient post: the key is
+        # omitted, which reads back as None.
+        assert entry.get("device") is None
+        # The model name is metadata, not content: exactly the frozen
+        # name and the outcome ride the detail.
+        assert entry["detail"] == {
+            "model": "Fable", "outcome": "switched", "reason": "",
+        }
+
+    def test_a_refused_replay_is_audited_as_what_it_is(
+        self, settings, tmp_path, monkeypatch
+    ):
+        import herdr_brain.server as server_module
+        from fastapi.testclient import TestClient
+        from tests.test_server import FakeLLM, FakeTTS
+
+        class RefusingTools:
+            def __init__(self, cfg, **kwargs):
+                pass
+
+            def switch_model(self, pane_id, model):
+                return {
+                    "outcome": "refused", "reason": "ambiguous",
+                    "detail": "opus is ambiguous", "model": model,
+                    "pane_id": pane_id,
+                }
+
+        monkeypatch.setattr(server_module, "BrainTools", RefusingTools)
+        cfg = settings.__class__(
+            **{
+                **settings.__dict__,
+                "state_dir": str(tmp_path / "state"),
+                "audio_dir": str(tmp_path / "audio"),
+                "audit_content": "preview",
+            }
+        )
+        llm = FakeLLM(result={
+            "answer": "No cambié el modelo: nombre ambiguo.",
+            "pane_id": None, "agent": None, "session_id": "s1",
+        })
+        app = server_module.create_app(
+            settings=cfg, llm_factory=lambda c, t: llm, tts_renderer=FakeTTS()
+        )
+        gate = app.state.approval_store.propose(
+            "s1", text="", pane_id="w1:p5", agent="claude",
+            tool="switch_model", task="opus",
+        )
+
+        response = TestClient(app).post(f"/approval/{gate.gate_id}/approve")
+
+        assert response.status_code == 200
+        audit = (tmp_path / "state" / "audit.log").read_text(encoding="utf-8")
+        entry = json.loads(
+            next(line for line in audit.splitlines() if "model.switch" in line)
+        )
+        assert entry["detail"]["outcome"] == "refused"
+        assert entry["detail"]["reason"] == "ambiguous"
+        # The refusal detail (candidate names) never rides the audit
+        # line: the model name alone is metadata.
+        assert "opus is ambiguous" not in audit

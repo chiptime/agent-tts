@@ -468,3 +468,73 @@ test("wizard chrome: translated labels with Spanish fallbacks", () => {
   assert.ok(/changed/.test(Dialogs.wizardChangedMessage()));
   Dialogs.useTranslator(null);
 });
+
+/* ── parity-f7d S2: the model picker card + the "Cambiar modelo"
+ * affordance. The card is the SAME generic option surface (recipes
+ * stay server-side); the affordance decides whether the sheet offers
+ * the switch and which command the reply path sends. */
+
+const MODEL_PICKER = {
+  agent: "claude",
+  kind: "model_picker",
+  question: "Select model",
+  options: [
+    { label: "Default (recommended) ✔", description: "Opus 5 with 1M context" },
+    { label: "Opus (1M context)", description: "Opus 5 with 1M context" },
+    { label: "Fable", description: "Fable 5" },
+    { label: "Sonnet", description: "Sonnet 5" },
+    { label: "Haiku", description: "Haiku 4.5" },
+  ],
+  fingerprint: "mp1",
+  recipe: "walk",
+};
+
+test("isModelPicker: only a claimed, non-unread model_picker payload", () => {
+  assert.equal(Dialogs.isModelPicker(MODEL_PICKER), true);
+  assert.equal(Dialogs.isModelPicker(STRUCTURED), false);
+  assert.equal(Dialogs.isModelPicker(null), false);
+  assert.equal(Dialogs.isModelPicker({ unread: true, kind: "model_picker" }), false);
+});
+
+test("model picker card: the generic buttons render every option", () => {
+  const buttons = Dialogs.buttonsFor(MODEL_PICKER);
+  assert.equal(buttons.length, 5);
+  assert.deepEqual(
+    buttons.map((b) => b.label),
+    ["Default (recommended) ✔", "Opus (1M context)", "Fable", "Sonnet", "Haiku"]);
+  // No executable material rides the payload — a tap names an index.
+  assert.ok(buttons.every((b) => !("keys" in b)));
+});
+
+test("modelPickerTitle: the card's own chrome", () => {
+  assert.equal(Dialogs.modelPickerTitle(), "Cambiar modelo");
+});
+
+test("modelSwitchOffer: only harnesses with a verified picker command", () => {
+  assert.deepEqual(Dialogs.modelSwitchOffer("claude"), {
+    command: "/model", label: "Cambiar modelo",
+  });
+  assert.deepEqual(Dialogs.modelSwitchOffer("grok"), {
+    command: "/model", label: "Cambiar modelo",
+  });
+  assert.deepEqual(Dialogs.modelSwitchOffer("omp"), {
+    command: "/switch", label: "Cambiar modelo",
+  });
+  assert.equal(Dialogs.modelSwitchOffer("opencode"), null);
+  assert.equal(Dialogs.modelSwitchOffer("pi"), null);
+  assert.equal(Dialogs.modelSwitchOffer("codex"), null);
+  assert.equal(Dialogs.modelSwitchOffer(""), null);
+  assert.equal(Dialogs.modelSwitchOffer(null), null);
+});
+
+test("modelSwitchPayload: the plain reply body, command verbatim", () => {
+  assert.deepEqual(Dialogs.modelSwitchPayload("w1:p3", "/model"), {
+    pane_id: "w1:p3",
+    text: "/model",
+  });
+});
+
+test("model switch toasts", () => {
+  assert.match(Dialogs.modelSwitchOpenedToast("Claude"), /selector/);
+  assert.match(Dialogs.modelSwitchNoneToast(), /no puede cambiar/);
+});
