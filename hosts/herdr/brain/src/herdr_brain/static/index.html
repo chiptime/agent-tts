@@ -886,6 +886,29 @@
     #pp-always { opacity: 0.85; }
     #pp-reject { color: var(--danger); }
     #pane-permission button:disabled { opacity: 0.55; }
+    /* Held Claude hook permissions (f7e S3): same card language as the
+     * pane permission box; the Deny button carries the danger color. */
+    #hook-permission {
+      margin: 0 var(--sp-3) var(--sp-2);
+      padding: var(--sp-2) var(--sp-3);
+      border-radius: 10px;
+      background: var(--chip-bg);
+    }
+    #hook-permission-title {
+      color: var(--text);
+      font-weight: 600;
+      font-size: var(--fs-sm);
+      margin-bottom: 4px;
+    }
+    #hook-permission-what {
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-size: var(--fs-xs);
+      line-height: 1.35;
+      word-break: break-word;
+    }
+    #hp-deny { color: var(--danger); }
+    #hook-permission button:disabled { opacity: 0.55; }
     .dlg-q { font-weight: 700; margin: 2px 0 6px; font-size: 15.5px; white-space: normal; }
     .dlg-detail { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; color: var(--accent); background: var(--hover); padding: 4px 8px; border-radius: 4px; margin: 4px 0 8px; word-break: break-all; }
     .dlg-opt { margin: 6px 0; padding: 4px 6px; border-radius: 6px; transition: background 0.12s ease; white-space: normal; }
@@ -2863,6 +2886,17 @@
         <button id="pp-once" type="button" data-i18n="permission.once">Permitir una vez</button>
         <button id="pp-always" type="button" data-i18n="permission.always">Permitir siempre</button>
         <button id="pp-reject" type="button" data-i18n="permission.reject">Rechazar</button>
+      </div>
+    </div>
+    <!-- Held Claude hook permissions (f7e S3): a Claude pane blocked on
+         its PreToolUse hook. Global — not tied to the viewed pane — so
+         it sits above the pane permission box and polls on the 5s beat. -->
+    <div id="hook-permission" class="hidden">
+      <div id="hook-permission-title" data-i18n="holdpermission.title">Permiso de Claude pendiente</div>
+      <div id="hook-permission-what"></div>
+      <div class="pp-actions">
+        <button id="hp-allow" type="button" data-i18n="holdpermission.allow">Permitir</button>
+        <button id="hp-deny" type="button" data-i18n="holdpermission.deny">Denegar</button>
       </div>
     </div>
     <div id="agent-tabs" class="agent-tabs" role="tablist" aria-label="Vistas del agente" data-i18n-aria-label="tabs.aria">

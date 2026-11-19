@@ -140,6 +140,7 @@ from .walky import (
 from .watcher import AgentWatcher
 from .webpush import StoreError as PushStoreError, WebPushService
 from .webpush.vapid import VapidError
+from .hook_permissions import HookPermissionBroker, HookPermissionSocketServer
 
 _TTSRenderer = Callable[[Settings, str, Path], Path]
 _ReaderRenderer = Callable[[Settings, str, Path], "tuple[str, dict]"]
@@ -685,6 +686,16 @@ class PermissionReplyRequest(BaseModel):
     pane_id: str = Field(min_length=1, max_length=MAX_SESSION_ID_CHARS)
     request_id: str = Field(min_length=1, max_length=MAX_SESSION_ID_CHARS)
     reply: Literal["once", "always", "reject"]
+
+
+class HookPermissionAnswerRequest(BaseModel):
+    """Answer to one held Claude hook permission (parity-f7e S3).
+
+    ``decision`` is the closed enum the socket protocol speaks; an
+    invented word is a 422 at the edge and never decides anything.
+    """
+
+    decision: Literal["allow", "deny"]
 
 
 class PaneDialogAnswerRequest(BaseModel):
@@ -1324,6 +1335,7 @@ def create_app(
     speech_registry: Optional[SpeechRegistry] = None,
     permissions: Optional[OpenCodePermissions] = None,
     push_service: Optional[WebPushService] = None,
+    hook_broker: Optional[HookPermissionBroker] = None,
     msg_service: Optional[WalkyService] = None,
     operator_config: Optional[OperatorConfig] = None,
     crew: Optional[CrewGateway] = None,
@@ -1574,6 +1586,78 @@ def create_app(
     herd_notifier = HerdNotifier(push_service_, msg_service_)
     send_tracker = SendTracker(notify=herd_notifier.send_track)
 
+    # Held Claude hook permissions (parity-f7e S3): the broker the
+    # socket server, these routes and the voice tools all share. An
+    # injected broker (tests) carries NO socket server here — the socket
+    # tests build their own against a tmp state dir.
+    def _audit_hook_hold(held) -> None:
+        audit_log.record({
+            "action": "hook.hold",
+            "pane_id": held.pane_id,
+            "session_id": held.session_id or None,
+            "detail": {
+                "request_id": held.request_id,
+                "tool_name": held.tool_name,
+                "summary": held.summary,  # masked at the broker, pre-cut
+                "cwd": held.cwd,
+            },
+        })
+        if push_service_ is not None:
+            try:
+                push_service_.notify_held_permission(
+                    held.tool_name,
+                    held.summary,
+                    pane_id=held.pane_id,
+                    agent=held.agent,
+                    expires_in_s=max(0.0, held.deadline_at - time.time()),
+                )
+            except Exception:  # noqa: BLE001 — push is advisory
+                logger.warning("held-permission push failed", exc_info=True)
+
+    def _audit_hook_resolved(held, decision: str) -> None:
+        audit_log.record({
+            "action": "hook.permission.answer",
+            "pane_id": held.pane_id,
+            "session_id": held.session_id or None,
+            "detail": {
+                "request_id": held.request_id,
+                "tool_name": held.tool_name,
+                "decision": decision,
+                "by": held.decided_by,
+            },
+        })
+
+    if hook_broker is not None:
+        hook_broker_ = hook_broker
+        # Adopted brokers gain the app's audit/push wiring unless they
+        # carry their own listeners already.
+        hook_broker_.attach_listeners(
+            on_hold=_audit_hook_hold, on_resolved=_audit_hook_resolved
+        )
+        hook_socket = None
+    else:
+        hook_broker_ = HookPermissionBroker(
+            on_hold=_audit_hook_hold, on_resolved=_audit_hook_resolved
+        )
+        # Same hasattr convention as every other tools seam: injected
+        # test doubles keep the old behavior (no pane attribution).
+        hook_socket = HookPermissionSocketServer(
+            cfg.state_dir,
+            hook_broker_,
+            pane_resolver=getattr(tools, "find_pane_by_session", None),
+        )
+        try:
+            hook_socket.start()
+        except OSError as exc:
+            logger.error(
+                "held-permission socket unavailable — hooks will deny: %s", exc
+            )
+            hook_socket = None
+    # Same attach-after-construction seam as the consult sink: test tool
+    # doubles without the seam simply keep the old behavior.
+    if hasattr(tools, "attach_hook_broker"):
+        tools.attach_hook_broker(hook_broker_)
+
     if watcher is None:
         watcher = AgentWatcher(
             cfg,
@@ -1688,6 +1772,9 @@ def create_app(
     app.add_middleware(AccessMiddleware, cfg=cfg, pairing=pairing_store)
     app.state.watcher = watcher
     app.state.send_tracker = send_tracker
+    app.state.hook_broker = hook_broker_
+    if hook_socket is not None and hasattr(app, "add_event_handler"):
+        app.add_event_handler("shutdown", hook_socket.stop)
     app.state.daemon_watcher = daemon_watcher
     app.state.transcriber = transcriber
     app.state.live_transcriber = live_transcriber
@@ -3611,6 +3698,41 @@ def create_app(
             "detail": {"reply": body.reply, "request_id": body.request_id},
         })
         return {"ok": True}
+
+    # ── Held Claude hook permissions (parity-f7e S3) ─────────────────────
+    #
+    # The PreToolUse hook blocks on the brain socket; these routes are
+    # the PWA half of the decision. PWA-only by construction, like the
+    # opencode permission surface above: the same capability as an LLM
+    # tool would let an agent approve its own held request (the voice
+    # path is separately bound to the operator's spoken words).
+
+    @app.get("/hook/permissions")
+    def hook_permissions_list() -> dict:
+        """The undecided holds, oldest first (masked previews only)."""
+        return {"pending": hook_broker_.pending()}
+
+    @app.post("/hook/permissions/{request_id}/answer")
+    def hook_permission_answer(
+        request_id: str, body: HookPermissionAnswerRequest, request: Request
+    ) -> dict:
+        """Applies the operator's decision to one held request, once.
+
+        404 names a request this brain never held (or long retired);
+        409 means it was already decided or expired — the PWA treats
+        both as "the card is gone", never as success.
+        """
+        held, applied = hook_broker_.answer(
+            request_id, body.decision, by=audit_device(request) or "pwa"
+        )
+        if held is None:
+            raise HTTPException(status_code=404, detail="esa solicitud no existe")
+        if not applied:
+            raise HTTPException(
+                status_code=409,
+                detail="esa solicitud ya fue respondida o caducó",
+            )
+        return {"ok": True, "decision": body.decision}
 
         # ── Device pairing (F1 security; access.py classifies the
     # levels: /pair takes the write Host/Origin gate but no device

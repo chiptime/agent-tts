@@ -817,6 +817,54 @@ A blocked pane whose dialog is **not** opencode's — claude, codex, agy —
 keeps the key pad above: those dialogs are answered with deliberate key
 presses, one tap at a time, never auto-answered.
 
+### Held Claude permissions (`herdr-brain hooks`, parity-f7e S3)
+
+Claude Code can hand its permission prompts to the brain instead of the
+terminal: a `PreToolUse` hook blocks on a local brain unix socket and the
+decision comes from the PWA card or your voice — no screen reading, no
+keys. Installing is explicit and reversible:
+
+```bash
+bin/herdr-brain hooks install    # adds ONE marked hook entry to ~/.claude/settings.json
+bin/herdr-brain hooks status     # read-only report
+bin/herdr-brain hooks uninstall  # removes exactly that entry
+```
+
+`install` defaults to the user's `~/.claude/settings.json` (`--settings
+<path>` overrides, `--matcher` and `--timeout-s` tune the tool pattern and
+the deny deadline). It is idempotent — never a duplicate entry — and
+preserves every other key and hook in the file as JSON. The installed
+command pins the venv python, the package `src` and the brain state dir, so
+it resolves identically from any cwd; it carries no credential.
+
+With the hook installed, Claude's gated tool calls surface as a global
+**Permiso de Claude pendiente** card in the PWA (any Claude pane, not just
+the viewed one) and as a web push. Answer from the PWA:
+
+```text
+GET  /hook/permissions                    -> {pending: [{request_id, tool_name, summary, …}]}
+POST /hook/permissions/{request_id}/answer -> {"decision": "allow" | "deny"} -> {ok}
+```
+
+…or by voice: the live context speaks the held request and `answer_hold`
+resolves your exact words through the approval lexicon («dale»/«sí» allows,
+«no»/«cancela» denies). A decision applies exactly once; a second answer is
+a `409`, an unknown id a `404`.
+
+**Deny by default, everywhere**: no answer before the timeout, the brain
+being down, a missing socket, malformed input or reply, or any error — the
+hook always prints Claude's decision contract with `permissionDecision:
+"deny"` (a hook that dies without JSON would be non-blocking in Claude
+Code, so the deny always lands first; Claude's own `timeout` is the deny
+deadline plus a margin). The socket is `0600` under the brain's state dir
+(same user only) and needs no device bearer. `tool_input` is masked before
+it is truncated for the card, the push and the spoken context, and push
+payloads never carry approval tokens — a tap only wakes the PWA. Every hold
+and every decision lands in the audit log (`hook.hold`,
+`hook.permission.answer`). The voice tool is advertised only when the broker
+is wired, and — like the opencode surface above — the PWA routes are never
+in the model's tool schema.
+
 ### Brain messages (`herdr-brain msg`, S13)
 
 Short messages between agent panes, and from the operator, delivered by

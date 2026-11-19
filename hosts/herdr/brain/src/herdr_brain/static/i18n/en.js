@@ -155,6 +155,12 @@
     "permission.reject_toast": "Permission denied",
     "permission.sent_toast": "Permission sent",
 
+    /* ---- held Claude hook permission (f7e S3) ---- */
+    "holdpermission.title": "Claude permission waiting",
+    "holdpermission.allow": "Allow",
+    "holdpermission.deny": "Deny",
+    "holdpermission.more": "more waiting",
+
     /* ---- cockpit tabs ---- */
     "tabs.aria": "Agent views",
     "tabs.agent": "Agent view",

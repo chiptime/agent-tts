@@ -34,6 +34,10 @@ from .vapid import VapidKeys, load_or_create_keys
 
 logger = logging.getLogger(__name__)
 
+#: Collapse tag for held-permission pushes (f7e S3): sendable shape
+#: (base64url, <=32 chars, length not ≡ 1 mod 4 — see topic_sendable).
+HELD_PERMISSION_TAG = "hookperm"
+
 #: What a caller may pass as ``panes`` to :meth:`WebPushService.tick`.
 #: The third element is an idle DELTA in seconds — never an absolute
 #: stamp: a monotonic watcher and this service's wall clock cannot be
@@ -168,6 +172,36 @@ class WebPushService:
     ) -> None:
         """The pane no longer needs the operator: cancel or retract."""
         self._coordinator.handled(pane_id, label or agent)
+
+    def notify_held_permission(
+        self,
+        tool_name: str,
+        summary: str,
+        pane_id: Optional[str] = None,
+        agent: Optional[str] = None,
+        expires_in_s: Optional[float] = None,
+    ) -> None:
+        """One advisory push per held Claude hook permission (f7e S3).
+
+        The payload carries NO approval token and NO request id: the
+        Service Worker holds no credentials, so a tap only wakes the PWA,
+        which then lists and answers through its own device-gated routes.
+        ``summary`` arrives already masked and bounded from the broker;
+        the sender masks again on the wire as defence in depth."""
+        body = f"{agent or 'claude'} · {tool_name}"
+        if summary:
+            body += f": {summary}"
+        if expires_in_s is not None:
+            body += f" ({int(expires_in_s)}s)"
+        payload = {
+            "v": 1,
+            "kind": "hook_permission",
+            "pane_id": pane_id,
+            "title": "Permiso de Claude pendiente",
+            "body": body,
+            "tag": HELD_PERMISSION_TAG,
+        }
+        self._dispatch(payload, HELD_PERMISSION_TAG)
 
     def test_notification(self) -> dict:
         """One round-trip notification per device (``push-test``)."""

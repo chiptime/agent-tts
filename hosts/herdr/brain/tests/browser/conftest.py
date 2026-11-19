@@ -330,6 +330,9 @@ class KaraokeHarness:
         # pairing card runs. Default keeps every legacy test on the
         # unpaired (unenforced) stance — exactly the pre-F1 behavior.
         self.respond("/devices", {"enforced": False, "current": None, "devices": []})
+        # Held Claude hook permissions (f7e S3): the 5s-beat poll the
+        # global hold card runs. Default keeps it hidden (nothing held).
+        self.respond("/hook/permissions", {"pending": []})
         # Web Push (S5): the boot /push/key poll the Avisos card runs.
         # Default keeps every legacy test on the soft-off stance (no
         # VAPID keys) — the card renders its operator hint and nothing

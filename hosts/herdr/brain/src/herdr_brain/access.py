@@ -213,6 +213,12 @@ _WRITE_RULES = (
     ("POST", re.compile(r"^/pane/keys$")),
     ("POST", re.compile(r"^/pane/dialog/answer$")),
     ("POST", re.compile(r"^/pane/permission/reply$")),
+    # parity-f7e S3: answering a held Claude hook permission decides a
+    # gated tool call — a write behind the device gate and the audit
+    # log, exactly like the pane permission replies it rides with. GET
+    # /hook/permissions stays a read (masked previews, device-gated
+    # once pairing is enforced, never exempt).
+    ("POST", re.compile(r"^/hook/permissions/[^/]+/answer$")),
     # S12 verified sends: the submit/discard follow-ups type keys into a
     # real terminal, and the interrupt stops a live turn — writes, gated
     # and audited like the replies they finish. GET /pane/receipts stays

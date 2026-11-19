@@ -30,11 +30,14 @@ from .approval_lexicon import (
     CHOICE_BOOLEAN,
     CHOICE_OPTION,
     CHOICE_YES,
+    OUTCOME_APPROVE,
+    OUTCOME_REJECT,
     _normalize as _lex_normalize,
     destructive_text_reason,
     resolve_dialog_choice,
     resolve_dialog_choices,
     resolve_dialog_free_text,
+    resolve_utterance,
 )
 from .herdr import (
     MAX_SEND_KEYS,
@@ -408,6 +411,11 @@ class BrainTools:
         self._turn_switch: Optional[AgentInfo] = None
         self._last_created: Optional[AgentInfo] = None
         self._call_context = None
+        # Held Claude hook permissions (parity-f7e S3): the broker the
+        # server binds after construction; the ids already handed to the
+        # model for speaking (the verbal binding answer_hold requires).
+        self._hook_broker = None
+        self._explained_holds: set = set()
 
     def attach_consult(self, consult: ConsultService) -> None:
         """Binds the consult service after construction.
@@ -2153,6 +2161,149 @@ class BrainTools:
         if binding is not None:
             binding["keys_sent"] = True
 
+    # -- held Claude hook permissions (parity-f7e S3) ------------------------
+
+    def attach_hook_broker(self, broker) -> None:
+        """Binds the held-permission broker after construction.
+
+        Same attach-after-construction seam as ``attach_consult``: the
+        server owns the broker (shared with the HTTP routes and the
+        socket server), and injected test doubles skip it entirely."""
+        self._hook_broker = broker
+
+    def find_pane_by_session(self, session_id: str) -> Optional[tuple]:
+        """The Claude pane running a session id, as ``(pane_id, agent)``.
+
+        The Claude Code hook payload names its own ``session_id``; the
+        herdr agent list maps panes to their harness sessions, so the
+        exact-match here is the session/pane binding the hold displays.
+        Best-effort by design: an unknown id keeps the hold answerable,
+        just without pane attribution."""
+        session_id = (session_id or "").strip()
+        if not session_id:
+            return None
+        try:
+            agents = self._herdr.list_agents()
+        except (HerdrError, MuxRefusal):
+            return None
+        for agent in agents:
+            if agent.session_value == session_id:
+                return agent.pane_id, agent.agent
+        return None
+
+    def held_permissions_context(self) -> list:
+        """The speakable lines for the live context, marking them explained.
+
+        Numbering is 1-based in the order spoken; ``answer_hold`` refers
+        back to that number. Every line is already masked (the broker
+        masks before it truncates), and the ids handed over here are the
+        ONLY ids a verbal answer may decide."""
+        broker = getattr(self, "_hook_broker", None)
+        if broker is None:
+            return []
+        pending = broker.pending()
+        if not pending:
+            self._explained_holds = set()
+            return []
+        self._explained_holds = {item["request_id"] for item in pending}
+        lines = []
+        for position, item in enumerate(pending, start=1):
+            where = item.get("pane_id") or item.get("session_id") or "unknown pane"
+            agent = item.get("agent") or "claude"
+            lines.append(
+                f"HOLD {position}: {agent} ({where}) is HELD at a permission "
+                f"gate waiting for the operator's decision — it wants to run "
+                f"{item.get('tool_name', '?')}: {item.get('summary', '')} "
+                f"(expires in ~{int(item.get('expires_in_s', 0))}s)."
+            )
+        lines.append(
+            "Speak the held request(s) to the user NOW, then use answer_hold "
+            "with the USER'S exact words: a confirmation ('dale', 'sí', "
+            "'adelante') allows; a rejection ('no', 'cancela', 'para') "
+            "denies. Never decide yourself."
+        )
+        return lines
+
+    def answer_hold(
+        self,
+        utterance: str,
+        target: Optional[AgentInfo] = None,
+        turn_text: Optional[str] = None,
+        hold: Optional[int] = None,
+    ) -> str:
+        """Answers a held Claude hook permission with the user's spoken words.
+
+        Same discipline as ``answer_dialog``: the decision resolves from
+        the USER'S words (``turn_text``, the real ask utterance) through
+        the approval lexicon — never from model-chosen arguments — and
+        only for a hold the live context already spoke (the verbal
+        binding). A hold is decided exactly once; anything ambiguous is
+        refused with nothing applied."""
+        import json as _json
+
+        def refused(reason: str, detail: str) -> str:
+            return _json.dumps(
+                {"outcome": "refused", "reason": reason, "detail": detail},
+                ensure_ascii=False,
+            )
+
+        broker = getattr(self, "_hook_broker", None)
+        if broker is None:
+            return refused("no-broker", "held permissions are not wired")
+        pending = broker.pending()
+        if not pending:
+            return refused("none", "no held permission is waiting")
+        words = (turn_text or "").strip() or (utterance or "").strip()
+        outcome = resolve_utterance(words)
+        if outcome == OUTCOME_APPROVE:
+            from .hook_permissions import DECISION_ALLOW as decision
+        elif outcome == OUTCOME_REJECT:
+            from .hook_permissions import DECISION_DENY as decision
+        else:
+            return refused(
+                "not-a-decision",
+                "the user's words are not a clear allow or deny; "
+                "nothing was decided",
+            )
+        if hold is not None:
+            if not isinstance(hold, int) or hold < 1 or hold > len(pending):
+                return refused(
+                    "unknown-hold",
+                    f"there is no held request number {hold} "
+                    f"(1 to {len(pending)})",
+                )
+            chosen = pending[hold - 1]
+        elif len(pending) == 1:
+            chosen = pending[0]
+        else:
+            return refused(
+                "ambiguous",
+                "several held permissions are waiting; ask which one "
+                "and answer with its spoken number",
+            )
+        if chosen["request_id"] not in getattr(self, "_explained_holds", set()):
+            return refused(
+                "not-explained",
+                "that held request has not been spoken to the user yet; "
+                "nothing was decided",
+            )
+        resolved, applied = broker.answer(
+            chosen["request_id"], decision, by="voice"
+        )
+        if not applied:
+            return refused(
+                "gone", "the held request was already decided or expired"
+            )
+        return _json.dumps(
+            {
+                "outcome": "answered",
+                "decision": decision,
+                "tool_name": chosen.get("tool_name"),
+                "request_id": chosen["request_id"],
+            },
+            ensure_ascii=False,
+        )
+
     @staticmethod
     def _title_is_choice(title: str, words: tuple) -> bool:
         """A yes/no option is one whose FIRST word is the yes/no word
@@ -3354,6 +3505,7 @@ class BrainTools:
             "create_session": self.create_session,
             "resume_session": self.resume_session,
             "answer_dialog": self.answer_dialog,
+            "answer_hold": self.answer_hold,
             "stop_agent": self.stop_pane,
             "switch_session": self.switch_session,
             "switch_model": self.switch_model,
@@ -3415,6 +3567,20 @@ class BrainTools:
                     choices=spoken_choices,
                     option=spoken_option,
                     text=spoken_text,
+                )
+            if name == "answer_hold":
+                spoken_hold = arguments.get("hold")
+                if spoken_hold is not None and (
+                    not isinstance(spoken_hold, int) or isinstance(spoken_hold, bool)
+                ):
+                    raise TypeError("hold must be an integer")
+                # Same authorization shape as answer_dialog: the USER'S
+                # turn words decide, the model only relays them.
+                return handler(
+                    str(arguments.get("utterance", "")),
+                    target,
+                    turn_text,
+                    hold=spoken_hold,
                 )
             if name == "stop_agent":
                 # The approve replay drives stop_pane directly (it needs
@@ -4040,3 +4206,43 @@ TOOLS_SCHEMA = [
         },
     },
 ]
+
+#: The held Claude hook gate answer (parity-f7e S3). Deliberately NOT in
+#: TOOLS_SCHEMA: the surface only grows when the broker is wired (the
+#: server attaches it at boot; BrainLLM._tools_schema appends this then),
+#: so the default tool surface — and every pin over it — stays exact.
+ANSWER_HOLD_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "answer_hold",
+        "description": (
+            "Answers a HELD Claude gate the live context told you to "
+            "speak — the agent is blocked on a tool call waiting for "
+            "the operator. Pass the USER'S exact words VERBATIM as the "
+            "utterance: a confirmation ('dale', 'sí', 'go ahead') "
+            "allows the tool call; a rejection ('no', 'cancela', "
+            "'para') denies it. With several holds waiting, pass the "
+            "spoken hold number. The decision always resolves from "
+            "the user's words, never yours; if the tool refuses "
+            "(unclear words, unspoken hold, already decided), relay "
+            "the reason and ask — never decide yourself."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "utterance": {
+                    "type": "string",
+                    "description": "The user's exact deciding words.",
+                },
+                "hold": {
+                    "type": "integer",
+                    "description": (
+                        "Which held request to answer, by the number "
+                        "the live context spoke (only with several)."
+                    ),
+                },
+            },
+            "required": ["utterance"],
+        },
+    },
+}

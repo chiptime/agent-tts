@@ -155,6 +155,12 @@
     "permission.reject_toast": "Permiso rechazado",
     "permission.sent_toast": "Permiso enviado",
 
+    /* ---- held Claude hook permission (f7e S3) ---- */
+    "holdpermission.title": "Permiso de Claude pendiente",
+    "holdpermission.allow": "Permitir",
+    "holdpermission.deny": "Denegar",
+    "holdpermission.more": "más pendientes",
+
     /* ---- cockpit tabs ---- */
     "tabs.aria": "Vistas del agente",
     "tabs.agent": "Vista del agente",
