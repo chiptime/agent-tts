@@ -201,6 +201,7 @@
 
     /* ---- herd / conversation sheet ---- */
     "herd.disappeared": "The selected agent vanished — falling back to the focused one.",
+    "herd.peer_unreachable": "unreachable",
     "herd.recent": "Last 30 min",
     "herd.g_blocked": "Blocked",
     "herd.g_error": "Error",
