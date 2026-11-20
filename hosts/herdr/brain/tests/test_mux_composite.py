@@ -123,6 +123,9 @@ class FakeMux:
             [WorkspaceInfo(workspace_id="w1", label="Main", number=1, focused=True)],
         )
 
+    def focus_workspace(self, workspace_id):
+        return self._hit("focus_workspace", (workspace_id,), "")
+
 
 def three_children() -> dict:
     return {
@@ -514,3 +517,55 @@ class TestContract:
     def test_unknown_child_name_fails_loudly(self):
         with pytest.raises(ValueError, match="unknown multiplexer"):
             CompositeMux({"screen": FakeMux()})
+
+
+class TestFocusWorkspace:
+    """f7f S4: the herdr-only workspace focus, delegated like
+    list_workspaces — never on the port protocol, refused with the
+    same vocabulary when no herdr child exists."""
+
+    def test_focus_delegates_to_the_herdr_child_surface(self):
+        herdr = FakeMux()
+        mux = CompositeMux({"herdr": herdr, "tmux": FakeMux()})
+        mux.focus_workspace("w2")
+        assert herdr.calls == [("focus_workspace", ("w2",))]
+
+    def test_focus_reaches_the_client_behind_the_herdr_child(self):
+        # Production shape: the herdr child is a HerdrMuxAdapter whose
+        # adapter class carries no focus delegation yet — the call must
+        # reach the CLIENT behind it (the server's pane-list seam
+        # precedent: an injected client double IS the client).
+        from herdr_brain.mux import HerdrMuxAdapter
+
+        class FocusClient:
+            def __init__(self):
+                self.calls = []
+
+            def focus_workspace(self, workspace_id):
+                self.calls.append(workspace_id)
+                return ""
+
+        client = FocusClient()
+        mux = CompositeMux({"herdr": HerdrMuxAdapter(client), "tmux": FakeMux()})
+        mux.focus_workspace("w3")
+        assert client.calls == ["w3"]
+
+    def test_focus_refuses_without_a_herdr_child(self):
+        mux = CompositeMux({"tmux": FakeMux(), "zellij": FakeMux()})
+        with pytest.raises(MuxRefusal) as excinfo:
+            mux.focus_workspace("w1")
+        assert excinfo.value.reason == "unsupported"
+        assert excinfo.value.capability == "focus_workspace"
+        assert "herdr-only" in excinfo.value.detail
+
+    def test_focus_refuses_when_the_herdr_child_has_no_surface(self):
+        # A herdr child with neither a focus surface nor a client
+        # behind it refuses unsupported instead of AttributeError.
+        class BareChild:
+            pass
+
+        mux = CompositeMux({"herdr": BareChild()})
+        with pytest.raises(MuxRefusal) as excinfo:
+            mux.focus_workspace("w1")
+        assert excinfo.value.reason == "unsupported"
+        assert "herdr child" in excinfo.value.detail

@@ -250,6 +250,12 @@ _WRITE_RULES = (
     # parity-f7c S3: resuming a past conversation types a verified
     # resume argv into a real terminal tab — the same write treatment.
     ("POST", re.compile(r"^/session/resume$")),
+    # parity-f7f S4: focusing a herdr workspace changes the operator's
+    # REAL active workspace — a write behind the device gate and the
+    # audit log, exactly like the launches whose workspace targeting it
+    # complements. GET /session/roots (which publishes the spaces and
+    # the mux summary) stays a read.
+    ("POST", re.compile(r"^/workspace/focus$")),
     ("POST", re.compile(r"^/ask$")),
     ("POST", re.compile(r"^/transcribe$")),
     ("POST", re.compile(r"^/reset$")),

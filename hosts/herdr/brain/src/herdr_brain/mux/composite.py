@@ -183,6 +183,30 @@ class CompositeMux:
             )
         return child.list_workspaces()
 
+    def focus_workspace(self, workspace_id: str) -> str:
+        # herdr-only surface like list_workspaces (f7f S4), also off the
+        # port protocol. The herdr ADAPTER carries no focus delegation
+        # yet, so — exactly like the server's pane-list seam — the call
+        # reaches the client behind the child (an injected client double
+        # IS the client); a child that offers the surface directly is
+        # served the same way. Alternates never get the method.
+        child = self._children.get("herdr")
+        if child is None:
+            raise MuxRefusal(
+                "unsupported", "focus_workspace",
+                "workspaces are herdr-only; this composite has no herdr "
+                f"child ({', '.join(self._children)})",
+            )
+        client = getattr(child, "_client", child)
+        focuser = getattr(client, "focus_workspace", None)
+        if focuser is None:
+            raise MuxRefusal(
+                "unsupported", "focus_workspace",
+                "workspaces are herdr-only; the herdr child carries no "
+                "focus surface",
+            )
+        return focuser(workspace_id)
+
     # -- pane-scoped surfaces (pure routing) -------------------------------------
 
     def read_screen(

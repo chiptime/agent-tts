@@ -130,7 +130,12 @@ EXPECTED_DIGESTS = {
     # global #hook-permission card above the pane permission box
     # (index.html), its 5s-beat /hook/permissions poll + answer wiring
     # (app.js) and the holdpermission.* keys (both i18n).
-    "/app.js": "d1ae30d919d2cb03f9f838fd52441355ce18833ea8f6392951b3e98611fe2ca6",
+    "/app.js": "978fbcd6d9bd93611daa22a888fc5b97d2781cabaa63ac237b8e96c1fce31bfc",
+    # app.js re-pinned for parity-f7f S4 (the Espacios switcher in the
+    # conversation sheet): the spaces pure model + the JS-built section
+    # that fetches /session/roots on OPEN (boot traffic unchanged) and
+    # POSTs /workspace/focus through withDeviceAuth; both i18n gain the
+    # spaces.* keys.
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "df01a313d8f6101bd9601d5a2a65eb420df7791c417a09e2d0d8c269a36742b0",
     # dialogs.js re-pinned for the parity-f7d follow-up: MODEL_SWITCH_COMMANDS
@@ -160,8 +165,8 @@ EXPECTED_DIGESTS = {
     "/i18n.js": "8bcd2ceb9f56109afaa0ec158e1a6f002799c4a983261b9d58cd38723c06719f",
     # Both i18n re-pinned for parity-f7g S5: the track.* keys (the
     # tracker card's Spanish lines and their English locale ride).
-    "/i18n/en.js": "08dee465424cb7b9a84e19f66a18e3f2847936e314058f7a0b7b50ed2380afa6",
-    "/i18n/es.js": "cb85c3a549e80471f4ef0d0261c84e0d24cc31b0bf95069a3f371806f64bdd18",
+    "/i18n/en.js": "38d5682c8bd7566fce4135c3d0ef45b733502d9fd0c4c301ef6779511186a6e4",
+    "/i18n/es.js": "e2360db0ba4baedb55c69857957cce438dad256fc2091477273b1f1afb32ba46",
     "/settings.js": "1c2cf3ed92bf959c19ecde0107618b8d1ff0690d2c6fa7c842a2fdc551e05f72",
     "/updates.js": "7f87250cf6cd9c2b8944da632fe036d0c18a87a90f48f70b84e18bcd338cfa84",
     "/calls.js": "9b9ec591709d282c6e673770b2ffc1ed1562650104d8e8393126d186aa764165",

@@ -213,6 +213,14 @@
     "conv.title": "Conversations",
     "conv.close": "Close",
 
+    /* ---- spaces (f7f S4: space switcher in the conv sheet) ---- */
+    "spaces.title": "Spaces",
+    "spaces.current": "current",
+    "spaces.empty": "No spaces",
+    "spaces.focused": "Active space: {name}",
+    "spaces.focus_failed": "Could not switch space — try again",
+    "spaces.unsupported": "The active multiplexer ({names}) does not handle herdr spaces",
+
     /* ---- new session sheet (parity-f7c S1) ---- */
     "newsession.aria": "New session",
     "newsession.title": "New session",

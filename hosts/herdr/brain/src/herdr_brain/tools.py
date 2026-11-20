@@ -675,6 +675,41 @@ class BrainTools:
         except HerdrError:
             return []
 
+    def focus_workspace(self, workspace_id: str) -> dict:
+        """Focuses a herdr workspace (f7f S4) — PWA-only, never a tool.
+
+        Same degraded seam :meth:`list_workspaces` rides (the method is
+        off the port protocol; tmux/zellij never get it), but a WRITE
+        may not degrade silently: the outcome dict
+        (:meth:`send_keys_to_pane`'s shape) tells the route whether the
+        workspace focused (``focused``), the multiplexer has no herdr
+        surface at all (``unsupported`` — explain, do not report as an
+        error), or the CLI failed (``error`` with the detail).
+        """
+        focuser = getattr(self._herdr, "focus_workspace", None)
+        if focuser is None:
+            # The pane-list precedent: the surface lives on the herdr
+            # client and the adapter has no delegation yet, so reach
+            # the client behind the mux (an injected client double IS
+            # the client).
+            client = getattr(self._herdr, "_client", self._herdr)
+            focuser = getattr(client, "focus_workspace", None)
+        if focuser is None:
+            return {
+                "outcome": "unsupported",
+                "detail": (
+                    "workspaces are herdr-only; this multiplexer has no "
+                    "workspace surface"
+                ),
+            }
+        try:
+            focuser(workspace_id)
+        except HerdrError as exc:
+            if getattr(exc, "reason", None) == "unsupported":
+                return {"outcome": "unsupported", "detail": str(exc)}
+            return {"outcome": "error", "detail": str(exc)}
+        return {"outcome": "focused", "detail": ""}
+
     def screen_tail(
         self,
         active: AgentInfo,

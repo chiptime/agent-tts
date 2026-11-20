@@ -847,6 +847,7 @@ class WorkspaceStub:
             WorkspaceInfo("w1", "main", 1, True),
             WorkspaceInfo("w9", "vacía", 2, False),
         ]
+        self.focus_calls: list = []
 
     def create_tab(self, label, cwd=None, workspace_id=None):
         self.tab_calls.append(
@@ -863,6 +864,10 @@ class WorkspaceStub:
 
     def list_workspaces(self):
         return list(self.workspaces)
+
+    def focus_workspace(self, workspace_id):
+        self.focus_calls.append(workspace_id)
+        return ""
 
 
 class TestCreateSessionWorkspace:
@@ -948,3 +953,61 @@ class TestListWorkspaces:
 
         tools = BrainTools(settings, herdr=Boom())
         assert tools.list_workspaces() == []
+
+
+class TestFocusWorkspace:
+    """f7f S4: the PWA space switch behind the same degraded seam
+    list_workspaces uses — but a WRITE may not degrade silently, so the
+    outcome dict (send_keys_to_pane's shape) carries the refusal."""
+
+    def test_focuses_through_the_herdr_seam(self, settings):
+        stub = WorkspaceStub()
+        tools = BrainTools(settings, herdr=stub)
+        result = tools.focus_workspace("w1")
+        assert result["outcome"] == "focused"
+        assert stub.focus_calls == ["w1"]
+
+    def test_focuses_through_the_client_behind_the_adapter(self, settings):
+        # The herdr adapter class carries no focus delegation yet: the
+        # seam reaches the CLIENT behind the mux (the pane-list
+        # precedent — an injected client double IS the client).
+        class AdapterLike:
+            def __init__(self, client):
+                self._client = client
+
+        client = WorkspaceStub()
+        tools = BrainTools(settings, herdr=AdapterLike(client))
+        result = tools.focus_workspace("w2")
+        assert result["outcome"] == "focused"
+        assert client.focus_calls == ["w2"]
+
+    def test_a_mux_without_the_surface_reports_unsupported(self, settings, make_stub):
+        # tmux/zellij adapters carry no focus_workspace and no client:
+        # the route must learn the surface is missing, not that it failed.
+        tools = BrainTools(settings, herdr=make_stub())
+        result = tools.focus_workspace("w1")
+        assert result["outcome"] == "unsupported"
+        assert "herdr-only" in result["detail"]
+
+    def test_a_mux_refusal_maps_to_unsupported(self, settings):
+        from herdr_brain.mux import MuxRefusal
+
+        class Refusing(WorkspaceStub):
+            def focus_workspace(self, workspace_id):
+                raise MuxRefusal(
+                    "unsupported", "focus_workspace", "workspaces are herdr-only"
+                )
+
+        tools = BrainTools(settings, herdr=Refusing())
+        result = tools.focus_workspace("w1")
+        assert result["outcome"] == "unsupported"
+
+    def test_a_herdr_failure_maps_to_error(self, settings):
+        class Boom(WorkspaceStub):
+            def focus_workspace(self, workspace_id):
+                raise HerdrError("cli down")
+
+        tools = BrainTools(settings, herdr=Boom())
+        result = tools.focus_workspace("w1")
+        assert result["outcome"] == "error"
+        assert "cli down" in result["detail"]
