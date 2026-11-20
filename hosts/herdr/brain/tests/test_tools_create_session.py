@@ -57,7 +57,6 @@ class CreateStub(StubHerdr):
         fail_wait=False,
         detect_after=None,
         fail_list=False,
-        fail_exit=False,
         extra_agents=None,
         **kwargs,
     ):
@@ -69,13 +68,14 @@ class CreateStub(StubHerdr):
         self._fail_wait = fail_wait
         self._detect_after = detect_after
         self._fail_list = fail_list
-        self._fail_exit = fail_exit
         self._extra_agents = list(extra_agents or [])
         self._list_calls = 0
         self.list_calls_total = 0
         # S4 stub realism: only a SUCCESSFULLY typed launch command can
         # ever surface an agent on the new pane; a failed `pane run`
-        # typed nothing, so probes see an empty pane.
+        # typed nothing, so probes see an empty pane. (A real CLI
+        # timeout could still have submitted the line — the production
+        # code must never treat that failure as proof either way.)
         self.pane_run_ok = False
         self.tab_calls: list = []
         self.start_calls: list = []
@@ -98,12 +98,6 @@ class CreateStub(StubHerdr):
 
     def pane_run(self, pane_id, command):
         self.pane_run_calls.append({"pane_id": pane_id, "command": command})
-        if command == "exit":
-            # The S4 cleanup typing fails only on its own switch: a
-            # failed launch command must not doom the cleanup attempt.
-            if self._fail_exit:
-                raise HerdrError("exit boom")
-            return
         if self._fail_run:
             raise HerdrError("run boom")
         self.pane_run_ok = True
@@ -256,8 +250,8 @@ class TestCreateSession:
         assert out == (
             f"error launching opencode: no agent appeared on pane {NEW_PANE} "
             f"within {OPENCODE_READY_BUDGET_S:.0f}s "
-            f"(tab {NEW_TAB} pane {NEW_PANE} were created and kept: the launch "
-            "had been typed on this pane and could still come up)"
+            f"(tab {NEW_TAB} pane {NEW_PANE} were created and kept: a failed "
+            "launch may still come up — close the tab manually if no agent appears)"
         )
         assert stub.prompt_calls == []
         assert stub.agent_wait_calls == []
@@ -314,19 +308,20 @@ class TestCreateSession:
         assert stub.pane_run_calls == []
         assert stub.start_calls == []
 
-    def test_start_failure_closes_the_provably_empty_orphan(self, settings, stub, fake_clock):
+    def test_start_failure_keeps_the_tab_named(self, settings, stub, fake_clock):
         stub._fail_start = True
         tools = make_tools(settings, stub, fake_clock)
         out = tools.create_session("claude", "Build")
-        # S4: start_agent never ran and the probe sees no agent, so the
-        # pane provably holds nothing but the shell this operation opened.
+        # S4: a failed start cannot be ruled out (the CLI may have
+        # spawned the agent and lost the ack), so the tab is KEPT and
+        # NAMED — never auto-closed.
         assert out == (
             "error starting agent: start boom "
-            f"(tab {NEW_TAB} pane {NEW_PANE} were created and closed: "
-            "no agent was ever on the pane; exit was typed to close the orphan)"
+            f"(tab {NEW_TAB} pane {NEW_PANE} were created and kept: a failed "
+            "launch may still come up — close the tab manually if no agent appears)"
         )
-        assert stub.list_calls_total >= 1  # the evidence probe ran
-        assert stub.pane_run_calls == [{"pane_id": NEW_PANE, "command": "exit"}]
+        assert stub.list_calls_total >= 1  # the probe refined the reason
+        assert stub.pane_run_calls == []   # nothing is typed into a kept pane
 
     def test_requires_kind_and_title(self, settings, stub, fake_clock):
         tools = make_tools(settings, stub, fake_clock)
@@ -336,15 +331,15 @@ class TestCreateSession:
 
 
 class TestLaunchFailureCleanup:
-    """S4: the tab a FAILED launch leaves behind is resolved, not abandoned.
+    """S4: a failed launch NEVER abandons — or kills — the tab it created.
 
-    Cleanup happens only on unequivocal evidence that the pane — which
-    THIS operation's own ``create_tab`` created — holds no agent work:
-    the launch never typed anything into it AND one fresh ``list_agents``
-    probe reports no agent on it. Anything else (probe unreachable, an
-    agent already live, a launch command already typed) keeps the tab and
-    NAMES it in the returned error, so the operator is never left with a
-    silent orphan and never loses foreign work.
+    The pane came from this operation's own ``create_tab``, so the error
+    always names its identity. It is never auto-closed: a CLI failure
+    (a timeout in particular) does not prove the command was never
+    typed, an agent can register after any listing, and a malformed
+    listing can look empty — so a fresh :meth:`list_agents` probe only
+    refines the REPORTED reason (agent live / unverified / nothing
+    verifiable yet) and closing stays the operator's named decision.
     """
 
     AGENT_ON_NEW_PANE = AgentInfo(
@@ -389,36 +384,20 @@ class TestLaunchFailureCleanup:
         )
         assert stub.pane_run_calls == []
 
-    def test_a_failed_exit_attempt_keeps_the_tab_named(
-        self, settings, make_stub, fake_clock
-    ):
-        stub = CreateStub(
-            fail_start=True, fail_exit=True, agents=make_stub()._agents
-        )
-        tools = make_tools(settings, stub, fake_clock)
-        out = tools.create_session("claude", "Build")
-        assert out == (
-            "error starting agent: start boom "
-            f"(tab {NEW_TAB} pane {NEW_PANE} were created and kept: "
-            "closing failed: exit boom)"
-        )
-        # The cleanup WAS attempted (and honestly reported as kept).
-        assert stub.pane_run_calls == [{"pane_id": NEW_PANE, "command": "exit"}]
-
-    def test_undelivered_oa_closes_the_orphan(self, settings, make_stub, fake_clock):
+    def test_a_failed_oa_never_closes_the_tab(self, settings, make_stub, fake_clock):
+        # Covers ANY `pane run` failure — including a timeout that may
+        # have submitted the command: the tab is kept, `exit` is never
+        # typed, and the error names the identity and the reason.
         stub = CreateStub(fail_run=True, agents=make_stub()._agents)
         tools = make_tools(settings, stub, fake_clock)
         out = tools.create_session("opencode", "Build")
         assert out == (
             "error launching opencode: run boom "
-            f"(tab {NEW_TAB} pane {NEW_PANE} were created and closed: "
-            "no agent was ever on the pane; exit was typed to close the orphan)"
+            f"(tab {NEW_TAB} pane {NEW_PANE} were created and kept: a failed "
+            "launch may still come up — close the tab manually if no agent appears)"
         )
-        # The failed `oa` attempt, then the cleanup: nothing else.
-        assert stub.pane_run_calls == [
-            {"pane_id": NEW_PANE, "command": "oa"},
-            {"pane_id": NEW_PANE, "command": "exit"},
-        ]
+        # The failed `oa` attempt, and NOTHING else (no cleanup typing).
+        assert stub.pane_run_calls == [{"pane_id": NEW_PANE, "command": "oa"}]
 
     def test_undelivered_oa_with_a_failed_probe_keeps_the_tab(
         self, settings, make_stub, fake_clock

@@ -3182,10 +3182,10 @@ class BrainTools:
         becomes ``last_active``. A task-delivery failure NEVER raises
         away the created ids: the caller still learns the tab/pane/agent
         so it can re-send. A LAUNCH failure resolves the panel per
-        parity S4: a pane provably empty of agent work (this operation
-        typed nothing on it, a fresh listing names no agent) has its
-        shell exited to close the orphan tab; anything unverifiable is
-        kept and NAMED in the returned error.
+        parity S4: the tab is kept and NAMED in the returned error
+        (never auto-closed — a failed launch cannot be ruled out on
+        this surface, so typing ``exit`` could reach work in flight);
+        a fresh agent listing only refines the reported reason.
 
         ``workspace_id`` (parity-f7c S1b, PWA-only — the voice schema
         does not carry it) targets the tab INSIDE that herdr workspace
@@ -3208,15 +3208,15 @@ class BrainTools:
             return f"error creating tab: {exc}"
         tab_id, pane_id = created["tab_id"], created["pane_id"]
         if clean_kind in ("opencode", "oa"):
-            failure, command_typed = self._launch_opencode_via_oa(name, clean_cwd, pane_id)
+            failure = self._launch_opencode_via_oa(name, clean_cwd, pane_id)
             if failure is not None:
-                return self._resolve_failed_tab(failure, tab_id, pane_id, command_typed)
+                return self._resolve_failed_tab(failure, tab_id, pane_id)
         else:
             try:
                 self._herdr.start_agent(name, clean_kind, pane_id)
             except HerdrError as exc:
                 failure = f"error starting agent: {exc}"
-                return self._resolve_failed_tab(failure, tab_id, pane_id, False)
+                return self._resolve_failed_tab(failure, tab_id, pane_id)
         # The new pane is now the conversation's focus: track it the same
         # way every resolve does, so subsequent reads target the new panel.
         created_info = AgentInfo(
@@ -3323,12 +3323,12 @@ class BrainTools:
             self._herdr.pane_run(pane_id, command)
         except HerdrError as exc:
             failure = f"error typing the resume command for {clean_harness}: {exc}"
-            return self._resolve_failed_tab(failure, tab_id, pane_id, False)
+            return self._resolve_failed_tab(failure, tab_id, pane_id)
         if clean_harness == "opencode":
             # The same readiness discipline a created opencode panel gets.
             failure = self._await_agent_on_pane(pane_id, "opencode")
             if failure is not None:
-                return self._resolve_failed_tab(failure, tab_id, pane_id, True)
+                return self._resolve_failed_tab(failure, tab_id, pane_id)
         created_info = AgentInfo(
             pane_id=pane_id,
             agent=sanitize_agent_name(label),
@@ -3662,7 +3662,7 @@ class BrainTools:
 
     def _launch_opencode_via_oa(
         self, name: str, clean_cwd: str, pane_id: str
-    ) -> tuple[Optional[str], bool]:
+    ) -> Optional[str]:
         """Launches the opencode panel through the user's ``oa`` entry.
 
         The pane shell is the user's interactive zsh, where the dotfiles
@@ -3673,16 +3673,16 @@ class BrainTools:
         :meth:`HerdrClient.list_agents` until the new pane reports an
         agent, followed by one best-effort ``agent wait --until idle``.
 
-        Returns ``(None, True)`` once the agent is up; ``(failure_text,
-        command_typed)`` otherwise — the tab/pane ids and the kept/closed
-        resolution ride :meth:`_resolve_failed_tab`, never dropped.
+        Returns None on success, else a failure text — the tab/pane ids
+        and the kept reason ride :meth:`_resolve_failed_tab`, never
+        dropped.
         """
         command = "oa" if not clean_cwd else f"oa {shlex.quote(clean_cwd)}"
         try:
             self._herdr.pane_run(pane_id, command)
         except HerdrError as exc:
-            return f"error launching opencode: {exc}", False
-        return self._await_agent_on_pane(pane_id, "opencode"), True
+            return f"error launching opencode: {exc}"
+        return self._await_agent_on_pane(pane_id, "opencode")
 
     def _await_agent_on_pane(self, pane_id: str, what: str) -> Optional[str]:
         """Waits until the pane reports an agent (the typed-launch loop).
@@ -3736,53 +3736,32 @@ class BrainTools:
             return None
         return any(agent.pane_id == pane_id for agent in agents)
 
-    def _resolve_failed_tab(
-        self, base: str, tab_id: str, pane_id: str, command_typed: bool
-    ) -> str:
+    def _resolve_failed_tab(self, base: str, tab_id: str, pane_id: str) -> str:
         """Resolves the tab an operation created when its launch fails (S4).
 
-        The pane came from THIS call's ``create_tab``: between creation
-        and failure nothing but this operation's launch can have touched
-        it. Closing it is therefore allowed only when both hold — the
-        launch never typed a command on it (``command_typed=False``) and
-        one fresh :meth:`_pane_has_agent` probe proves no agent is live
-        there, so the pane can hold nothing but the shell it opened
-        with. Then ``exit`` (this client's one teardown seam — the mux
-        closes a tab whose root shell exits) asked the orphan to close.
-        A launch whose command WAS typed may still come up right at the
-        failure boundary: that tab is KEPT and NAMED. The same is true
-        when the probe fails or an agent turns out to be live. Every
-        outcome is stated in the returned error with the tab/pane ids,
-        so a kept tab is never a silent orphan and a closed one is
-        never a surprise.
+        The pane came from THIS call's ``create_tab`` — it is never a
+        silent orphan: the returned error names its tab/pane ids and WHY
+        it was kept. It is NEVER auto-closed: a failed launch cannot be
+        ruled out on this surface, because a CLI failure (a timeout in
+        particular) does not prove the command was never typed, an
+        agent can register after any listing, and a malformed listing
+        can look empty — so typing ``exit`` could reach work in flight.
+        A fresh :meth:`_pane_has_agent` probe only refines the REPORTED
+        reason (an agent is live / unverified / nothing verifiable yet);
+        closing the tab stays the operator's decision, named in the
+        error so it can be taken knowingly.
         """
         on_pane = self._pane_has_agent(pane_id)
         if on_pane:
-            return (
-                f"{base} (tab {tab_id} pane {pane_id} were created and kept: "
-                "an agent is live on the pane)"
+            suffix = "were created and kept: an agent is live on the pane"
+        elif on_pane is None:
+            suffix = "were created and kept: the pane could not be verified empty"
+        else:
+            suffix = (
+                "were created and kept: a failed launch may still come up "
+                "— close the tab manually if no agent appears"
             )
-        if on_pane is None:
-            return (
-                f"{base} (tab {tab_id} pane {pane_id} were created and kept: "
-                "the pane could not be verified empty)"
-            )
-        if command_typed:
-            return (
-                f"{base} (tab {tab_id} pane {pane_id} were created and kept: "
-                "the launch had been typed on this pane and could still come up)"
-            )
-        try:
-            self._herdr.pane_run(pane_id, "exit")
-        except HerdrError as exc:
-            return (
-                f"{base} (tab {tab_id} pane {pane_id} were created and kept: "
-                f"closing failed: {exc})"
-            )
-        return (
-            f"{base} (tab {tab_id} pane {pane_id} were created and closed: "
-            "no agent was ever on the pane; exit was typed to close the orphan)"
-        )
+        return f"{base} (tab {tab_id} pane {pane_id} {suffix})"
 
     def _enrich(self, agent: Optional[AgentInfo]) -> Optional[AgentInfo]:
         """Enriches an AgentInfo with its resolved session title if available."""
