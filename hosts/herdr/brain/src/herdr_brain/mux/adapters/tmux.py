@@ -225,8 +225,10 @@ class TmuxAdapter:
         """Best-effort delete of a buffer THIS call created; never raises.
 
         A paste that already succeeded deleted its buffer via ``-d``; the
-        delete then fails harmlessly for the same uuid name. A failure
-        path must not leak the payload into the server's buffer list.
+        delete then fails harmlessly for the same uuid name. If the
+        delete itself fails, the payload may persist under this private
+        uuid-named buffer until the server exits — never under a tmux
+        default (``0``..``9``) or a foreign actor's named buffer.
         """
         try:
             self._run_cli(["delete-buffer", "-b", buffer_name], capability)
