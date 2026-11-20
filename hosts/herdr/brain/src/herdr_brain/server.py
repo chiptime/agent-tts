@@ -1454,6 +1454,14 @@ def create_app(
         if roster_probe is not None and roster_probe.has_crew:
             crew_gateway = CrewGateway(cfg.state_dir)
 
+    # Crew voice targeting (S1): the tools refuse a crew-shaped remote
+    # pane explicitly instead of the focused-pane fallback. The router
+    # binds only when a crew gateway exists — solo keeps the legacy
+    # fallback (zero-tax solo, S6). Same hasattr attach convention as
+    # the consult/call-context seams above, so test doubles stay free.
+    if crew_gateway is not None and hasattr(tools, "attach_crew_router"):
+        tools.attach_crew_router(crew_gateway.route_pane)
+
     # Audit trail (F1 security): one JSONL line per write
     # action at <state_dir>/audit.log. Lazy like the pairing store —
     # boot touches no disk — and record() never raises, so the audited

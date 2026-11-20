@@ -36,6 +36,7 @@ from .tools import (
     RESUME_SESSION,
     SWITCH_MODEL,
     BrainTools,
+    CrewTargetRefused,
     TOOLS_SCHEMA,
 )
 from .view import (
@@ -432,7 +433,22 @@ class BrainLLM:
         """
         store = self._store or ConversationStore()
         key = ConversationStore.normalize(session_id)
-        target = self._tools.resolve_target(pane_id)
+        try:
+            target = self._tools.resolve_target(pane_id)
+        except CrewTargetRefused as exc:
+            # Crew voice targeting (S1): a turn aimed at another host's
+            # pane refuses EXPLICITLY — the refusal text is the spoken
+            # answer, and NOTHING else runs: no provider round, no tool
+            # dispatch, no gate (a gate frozen against the focused local
+            # pane was the silent mis-target), and no ring pair lands
+            # (a rejected turn never evicts, L34).
+            return {
+                "answer": mask_text(str(exc)),
+                "pane_id": None,
+                "agent": None,
+                "session_id": key,
+                "approval": None,
+            }
         self._request_target = target
         # Every ask is one turn for the spoken-dialog bindings (S9): a
         # dialog explained in THIS turn may only be answered in a later
