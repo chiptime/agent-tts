@@ -1844,3 +1844,60 @@ class TestVoiceAnswerAudit:
         explain_and_advance_turn(built)
         result = json.loads(built.answer_dialog("dile que sí", BLOCKED_AGENT))
         assert result["outcome"] == "answered"
+
+
+class TestVoiceAnswerDeviceAttribution:
+    """T3-fu/U5: the authenticated /ask device rides the turn's voice
+    audit line. The device travels as a STRUCTURAL dispatch parameter
+    from the server boundary — never from model arguments — so the trail
+    says who spoke, and an unpaired turn keeps omitting the field."""
+
+    def _tools(self, settings, tmp_path, stub=None):
+        stub = stub if stub is not None else DialogStub()
+        built = BrainTools(settings, herdr=stub, sleeper=lambda _s: None)
+        path = tmp_path / "audit.log"
+        built.attach_audit(AuditLog(path))
+        return built, stub, path
+
+    def test_dispatched_answer_carries_the_device(self, settings, tmp_path):
+        built, stub, path = self._tools(settings, tmp_path)
+        explain_and_advance_turn(built)
+
+        result = json.loads(built.dispatch(
+            "answer_dialog", {"utterance": "dile que sí"},
+            target=BLOCKED_AGENT, device="phone",
+        ))
+
+        assert result["outcome"] == "answered"
+        lines = [json.loads(x) for x in path.read_text().splitlines()]
+        assert len(lines) == 1
+        assert lines[0]["device"] == "phone"   # envelope attribution field
+        assert lines[0]["detail"]["spoken"] is True
+
+    def test_dispatched_refusal_carries_the_device(self, settings, tmp_path):
+        built, stub, path = self._tools(settings, tmp_path)
+        explain_and_advance_turn(built)
+
+        result = json.loads(built.dispatch(
+            "answer_dialog", {"utterance": "selecciona la opción 5"},
+            target=BLOCKED_AGENT, device="phone",
+        ))
+
+        assert result["outcome"] == "refused"
+        lines = [json.loads(x) for x in path.read_text().splitlines()]
+        assert len(lines) == 1
+        assert lines[0]["device"] == "phone"
+        assert lines[0]["detail"]["reason"] == "unknown-option"
+
+    def test_turn_without_device_omits_the_field(self, settings, tmp_path):
+        built, stub, path = self._tools(settings, tmp_path)
+        explain_and_advance_turn(built)
+
+        result = json.loads(built.dispatch(
+            "answer_dialog", {"utterance": "dile que sí"}, target=BLOCKED_AGENT,
+        ))
+
+        assert result["outcome"] == "answered"
+        lines = [json.loads(x) for x in path.read_text().splitlines()]
+        assert len(lines) == 1
+        assert "device" not in lines[0]  # omitted, never null

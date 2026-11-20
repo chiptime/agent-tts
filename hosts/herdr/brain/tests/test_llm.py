@@ -1327,3 +1327,65 @@ class TestProviderTransportCancellation:
         assert outcome.get("result", {}).get("answer") == "fine"
         assert not probe.cancelled.is_set()
         assert probe.request_count == 1
+
+
+class TestTurnDeviceAttribution:
+    """T3-fu/U5: BrainLLM threads the authenticated /ask device into the
+    turn's tool dispatches as a STRUCTURAL parameter (never from model
+    arguments), so voice audit lines attribute the device that spoke."""
+
+    def test_ask_threads_the_device_to_voice_dispatch(self, settings, tmp_path):
+        from herdr_brain.audit import AuditLog
+        from tests.test_voice_dialog import (
+            BLOCKED_AGENT, DialogStub, explain_and_advance_turn,
+        )
+
+        stub = DialogStub()
+        tools = BrainTools(settings, herdr=stub)
+        audit_path = tmp_path / "audit.log"
+        tools.attach_audit(AuditLog(audit_path))
+        explain_and_advance_turn(tools)
+        llm = BrainLLM(
+            settings, tools,
+            client=ScriptedLLM(responses=[
+                tool_call_response("c1", "answer_dialog", {"utterance": "dile que sí"}),
+                text_response("Hecho."),
+            ]),
+        )
+
+        result = llm.ask("dile que sí", device="phone")
+
+        assert result["answer"] == "Hecho."
+        assert [["enter"]] == [
+            call["keys"] for call in stub.key_calls if call["pane_id"] == "w1:p9"
+        ]
+        lines = [json.loads(x) for x in audit_path.read_text().splitlines()]
+        assert len(lines) == 1
+        assert lines[0]["action"] == "pane.dialog.answer"
+        assert lines[0]["device"] == "phone"
+
+    def test_ask_without_device_omits_the_attribution(self, settings, tmp_path):
+        from herdr_brain.audit import AuditLog
+        from tests.test_voice_dialog import (
+            BLOCKED_AGENT, DialogStub, explain_and_advance_turn,
+        )
+
+        stub = DialogStub()
+        tools = BrainTools(settings, herdr=stub)
+        audit_path = tmp_path / "audit.log"
+        tools.attach_audit(AuditLog(audit_path))
+        explain_and_advance_turn(tools)
+        llm = BrainLLM(
+            settings, tools,
+            client=ScriptedLLM(responses=[
+                tool_call_response("c1", "answer_dialog", {"utterance": "dile que sí"}),
+                text_response("Hecho."),
+            ]),
+        )
+
+        result = llm.ask("dile que sí")
+
+        assert result["answer"] == "Hecho."
+        lines = [json.loads(x) for x in audit_path.read_text().splitlines()]
+        assert len(lines) == 1
+        assert "device" not in lines[0]

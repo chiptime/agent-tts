@@ -445,3 +445,48 @@ def test_voice_resolve_records_spoken_proof_and_voice_reject(tmp_path, monkeypat
     assert spoken["detail"]["decision"] == "approve"
     assert rejected["detail"]["decision"] == "reject"
     assert "spoken" not in rejected["detail"]  # a voice «no» needs no proof
+
+
+def test_ask_turn_threads_the_paired_device_into_the_llm(tmp_path, monkeypatch):
+    """T3-fu/U5: the /ask route passes the authenticated device label into
+    llm.ask so the turn's voice audit lines can attribute it; a turn
+    with no device keeps the legacy call shape (kwarg absent)."""
+    captured: dict = {}
+
+    class CaptureLLM:
+        takes_cancel_event = False
+
+        def __init__(self, client=None, tools=None):
+            pass
+
+        def attach_store(self, store):
+            pass
+
+        def attach_approval_store(self, store):
+            pass
+
+        def ask(self, text, session_id=None, pane_id=None, **kwargs):
+            captured.update(kwargs)
+            return {
+                "answer": "listo",
+                "pane_id": pane_id or "w1:p9",
+                "agent": "opencode",
+                "session_id": session_id or "default",
+            }
+
+    client = audit_app(tmp_path, monkeypatch, llm_factory=lambda c, t: CaptureLLM())
+    token = pair_device(client, tmp_path / STATE_KEY, label="phone")
+
+    paired = client.post(
+        "/ask", json={"text": "dime el estado"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert paired.status_code == 200
+    assert captured.get("device") == "phone"
+
+    # Once pairing material exists, an unauthenticated write ask is
+    # refused by the access gate (the turn never starts, so no device
+    # is threaded).
+    unpaired = client.post("/ask", json={"text": "dime el estado"})
+    assert unpaired.status_code == 403
+    assert captured.get("device") == "phone"

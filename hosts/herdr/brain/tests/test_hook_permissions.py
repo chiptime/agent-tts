@@ -636,3 +636,34 @@ def test_post_answer_keeps_attribution_in_none_mode(tmp_path):
     assert entry["detail"]["by"] == "pwa"       # unresolved device falls back
     assert entry["detail"]["decision"] == "allow"
     assert entry["detail"]["tool_name"] == "⟨redacted⟩"
+
+
+def test_voice_hold_decision_attributes_the_turn_device():
+    """T3-fu/U5: a voice hold decision carries the authenticated device
+    as its `by` attribution (mirrors the PWA route's device label); a
+    turn without device keeps the `voice` fallback."""
+    from herdr_brain.tools import BrainTools
+
+    broker = make_broker()
+    tools = BrainTools.__new__(BrainTools)
+    tools.attach_hook_broker(broker)
+    held = broker.hold(tool_name="Bash", tool_input={}, session_id="s", cwd="/")
+    tools.held_permissions_context()
+
+    outcome = json.loads(tools.answer_hold("dale", turn_text="dale", device="phone"))
+    assert outcome["outcome"] == "answered"
+    assert broker.get(held.request_id).decided_by == "phone"
+
+
+def test_voice_hold_without_device_keeps_the_voice_fallback():
+    from herdr_brain.tools import BrainTools
+
+    broker = make_broker()
+    tools = BrainTools.__new__(BrainTools)
+    tools.attach_hook_broker(broker)
+    held = broker.hold(tool_name="Bash", tool_input={}, session_id="s", cwd="/")
+    tools.held_permissions_context()
+
+    outcome = json.loads(tools.answer_hold("dale", turn_text="dale"))
+    assert outcome["outcome"] == "answered"
+    assert broker.get(held.request_id).decided_by == "voice"

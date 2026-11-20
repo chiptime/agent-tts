@@ -2243,6 +2243,7 @@ class BrainTools:
         target: Optional[AgentInfo] = None,
         turn_text: Optional[str] = None,
         hold: Optional[int] = None,
+        device: Optional[str] = None,
     ) -> str:
         """Answers a held Claude hook permission with the user's spoken words.
 
@@ -2301,7 +2302,7 @@ class BrainTools:
                 "nothing was decided",
             )
         resolved, applied = broker.answer(
-            chosen["request_id"], decision, by="voice"
+            chosen["request_id"], decision, by=device or "voice"
         )
         if not applied:
             return refused(
@@ -2332,6 +2333,7 @@ class BrainTools:
         choices: Optional[list] = None,
         option: Optional[int] = None,
         text: Optional[str] = None,
+        device: Optional[str] = None,
     ) -> str:
         """Answers a SPOKEN terminal dialog with the USER'S own words (S9).
 
@@ -2388,6 +2390,7 @@ class BrainTools:
             self._audit_log.record({
                 "action": "pane.dialog.answer",
                 "pane_id": attempt["pane_id"],
+                "device": device,  # the authenticated /ask device (T3-fu)
                 "detail": detail,
             })
 
@@ -3548,6 +3551,7 @@ class BrainTools:
         target: Optional[AgentInfo] = None,
         context_id: Optional[str] = None,
         turn_text: Optional[str] = None,
+        device: Optional[str] = None,
     ) -> str:
         """Calls a tool by name with JSON-ish arguments, returning a string.
 
@@ -3556,7 +3560,11 @@ class BrainTools:
         pane tools ignore it. ``turn_text`` is the CURRENT ask turn's
         real user text — the authorization source for answer_dialog, so
         model-provided arguments can never stand in for the user's words
-        (S9/B4); tools that do not need it ignore it."""
+        (S9/B4); tools that do not need it ignore it. ``device`` is the
+        authenticated device label the /ask boundary resolved (T3-fu):
+        a STRUCTURAL parameter like ``turn_text``, never read from the
+        model's ``arguments`` — the voice audit lines attribute it and
+        the hold decisions credit it."""
         handler: Optional[Callable] = {
             "get_status": self.get_status,
             "list_open_sessions": self.list_open_sessions,
@@ -3628,6 +3636,7 @@ class BrainTools:
                     choices=spoken_choices,
                     option=spoken_option,
                     text=spoken_text,
+                    device=device,
                 )
             if name == "answer_hold":
                 spoken_hold = arguments.get("hold")
@@ -3642,6 +3651,7 @@ class BrainTools:
                     target,
                     turn_text,
                     hold=spoken_hold,
+                    device=device,
                 )
             if name == "stop_agent":
                 # The approve replay drives stop_pane directly (it needs

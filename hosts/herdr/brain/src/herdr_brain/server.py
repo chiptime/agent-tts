@@ -1521,12 +1521,53 @@ def create_app(
             ),
         )
 
-    def crew_call(peer: str, call):
+    def _audit_crew_call_failure(
+        peer: str,
+        op: Optional[str],
+        outcome: str,
+        status: Optional[int],
+        detail_message: Optional[str],
+    ) -> None:
+        """One trail line for a failed proxied WRITE attempt (T3-fu/U6).
+
+        Write ops only (reply/keys/dialog_answer); the refusal detail is
+        the peer's own HTTP error detail — the same string the route
+        already surfaces — and unreachable failures carry the FACT, not
+        the transport text (the 503 response and the ops logger do).
+        record() is fire-and-forget, never altering the failure path."""
+        if op is None:
+            return
+        detail: dict = {"peer": peer, "op": op, "outcome": outcome}
+        if status is not None:
+            detail["status"] = status
+        if detail_message:
+            detail["detail"] = detail_message
+        audit_log.record({"action": "crew.call", "detail": detail})
+        # One bounded, metadata-only ops line for every failed WRITE
+        # attempt — no transport text, no tokens (the 503 response
+        # already owns the full diagnostic for the caller).
+        logger.warning(
+            "crew call failed: peer=%s op=%s outcome=%s status=%s",
+            peer, op, outcome, status,
+        )
+
+    def crew_call(peer: str, call, op: Optional[str] = None):
         """Runs one ``CrewClient`` call with uniform failure mapping:
         the peer's refusal status travels back as-is, an unreachable
-        peer is a 503 that names it."""
+        peer is a 503 that names it.
+
+        T3-fu: a FAILED proxied WRITE attempt (``op`` set) records one
+        ``crew.call`` audit line so the lead's trail answers what was
+        attempted across the link — refused (the peer's own status and
+        error detail, exactly what the route surfaces in its 4xx), or
+        unreachable (no transport text in the trail; the 503 and the
+        ops logger carry it). Read proxies pass no ``op``: reads are
+        not write actions and record nothing. Successes record nothing
+        here — the routes' own ``crew: True`` lines already own them.
+        """
         client = crew_gateway.client_for(peer) if crew_gateway else None
         if client is None:
+            _audit_crew_call_failure(peer, op, "unavailable", None, None)
             raise HTTPException(
                 status_code=503,
                 detail=f"el peer del crew '{peer}' no está disponible",
@@ -1537,8 +1578,10 @@ def create_app(
             detail = (
                 exc.body.get("detail") if isinstance(exc.body, dict) else None
             ) or f"el peer del crew '{peer}' rechazó la operación"
+            _audit_crew_call_failure(peer, op, "refused", int(exc.status), detail)
             raise HTTPException(status_code=int(exc.status), detail=detail) from exc
         except CrewUnreachable as exc:
+            _audit_crew_call_failure(peer, op, "unreachable", None, None)
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
@@ -2849,6 +2892,13 @@ def create_app(
                     if getattr(llm, "takes_cancel_event", False)
                     else {}
                 )
+                # T3-fu: the authenticated device rides the turn as a
+                # structural parameter so voice audit lines attribute it.
+                # Passed only when it resolved — legacy ask doubles keep
+                # their exact call shape on unpaired channels.
+                turn_device = audit_device(request)
+                if turn_device:
+                    ask_kwargs["device"] = turn_device
                 result = llm.ask(
                     body.text,
                     session_id=body.session_id,
@@ -3182,7 +3232,8 @@ def create_app(
         if crew_peer is not None:
             _, remote_id = split_pane_id(body.pane_id)
             result = crew_call(
-                crew_peer, lambda client: client.reply(remote_id, body.text)
+                crew_peer, lambda client: client.reply(remote_id, body.text),
+                op="reply",
             )
             audit_log.record({
                 "action": "pane.reply",
@@ -3451,7 +3502,8 @@ def create_app(
         if crew_peer is not None:
             _, remote_id = split_pane_id(body.pane_id)
             result = crew_call(
-                crew_peer, lambda client: client.keys(remote_id, body.keys)
+                crew_peer, lambda client: client.keys(remote_id, body.keys),
+                op="keys",
             )
             audit_log.record({
                 "action": "pane.keys",
@@ -3518,6 +3570,7 @@ def create_app(
             result = crew_call(
                 crew_peer,
                 lambda client: client.dialog_answer(remote_id, answer_payload),
+                op="dialog_answer",
             )
             crew_detail = {
                 "outcome": "answered",

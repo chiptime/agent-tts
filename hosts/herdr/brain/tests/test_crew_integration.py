@@ -700,3 +700,183 @@ class TestPeerAuditTrail:
         assert len(lines) == 1
         assert lines[0]["detail"]["outcome"] == "refused"
         assert lines[0]["detail"]["reason"] == "changed"
+
+
+class TestLeadCrewCallFailureAudit:
+    """T3-fu/U6: a failed proxied WRITE attempt records one `crew.call`
+    line on the lead (S3's failed-attempt policy), while successes keep
+    belonging to the routes' own crew:true lines and READ proxies record
+    nothing. The refusal detail is the peer's own HTTP error detail —
+    the same string the route already surfaces; unreachable failures
+    carry no transport text in the trail."""
+
+    def _lead_client(self, tmp_path, monkeypatch, transport):
+        state = tmp_path / "state"
+        write_lead_roster(state)
+        return make_client(
+            tmp_path, monkeypatch, crew=make_gateway(state, {"host-b": transport})
+        )
+
+    def _lines(self, tmp_path) -> list:
+        path = tmp_path / "state" / "audit.log"
+        if not path.exists():
+            return []
+        return [
+            json.loads(line)
+            for line in path.read_text().splitlines()
+            if line.strip()
+        ]
+
+    def test_unreachable_reply_records_one_crew_call_line(
+        self, tmp_path, monkeypatch,
+    ):
+        client = self._lead_client(tmp_path, monkeypatch, StubTransport(fail_all=True))
+        resp = client.post(
+            "/pane/reply", json={"pane_id": "host-b:w1:p1", "text": "sigue"}
+        )
+
+        assert resp.status_code == 503
+        lines = self._lines(tmp_path)
+        assert len(lines) == 1
+        line = lines[0]
+        assert line["action"] == "crew.call"
+        assert line["detail"]["peer"] == "host-b"
+        assert line["detail"]["op"] == "reply"
+        assert line["detail"]["outcome"] == "unreachable"
+        # No transport error text in the trail; no pane.reply line either.
+        assert "detail" not in line["detail"]
+
+    def test_refused_reply_records_the_peer_status_and_detail(
+        self, tmp_path, monkeypatch,
+    ):
+        client = self._lead_client(
+            tmp_path, monkeypatch,
+            StubTransport(responses={"/reply": (404, {"detail": "pane not found"})}),
+        )
+        resp = client.post(
+            "/pane/reply", json={"pane_id": "host-b:w1:p1", "text": "sigue"}
+        )
+
+        assert resp.status_code == 404
+        lines = self._lines(tmp_path)
+        assert len(lines) == 1
+        detail = lines[0]["detail"]
+        assert detail["peer"] == "host-b"
+        assert detail["op"] == "reply"
+        assert detail["outcome"] == "refused"
+        assert detail["status"] == 404
+        assert detail["detail"] == "pane not found"
+
+    def test_failed_keys_and_dialog_proxies_record_their_op(
+        self, tmp_path, monkeypatch,
+    ):
+        client = self._lead_client(tmp_path, monkeypatch, StubTransport(fail_all=True))
+        keys = client.post(
+            "/pane/keys", json={"pane_id": "host-b:w1:p1", "keys": ["enter"]}
+        )
+        dialog = client.post(
+            "/pane/dialog/answer",
+            json={"pane_id": "host-b:w1:p1", "fingerprint": "fp1", "option": 0},
+        )
+        assert keys.status_code == 503
+        assert dialog.status_code == 503
+
+        lines = self._lines(tmp_path)
+        assert [line["detail"]["op"] for line in lines] == ["keys", "dialog_answer"]
+        assert all(line["action"] == "crew.call" for line in lines)
+        assert all(line["detail"]["outcome"] == "unreachable" for line in lines)
+
+    def test_failed_read_proxies_record_nothing(self, tmp_path, monkeypatch):
+        client = self._lead_client(tmp_path, monkeypatch, StubTransport(fail_all=True))
+        resp = client.get("/view", params={"pane_id": "host-b:w1:p1"})
+
+        assert resp.status_code == 503
+        assert self._lines(tmp_path) == []  # reads are not write actions
+
+    def test_none_mode_keeps_peer_and_op_but_redacts_the_peer_detail(
+        self, tmp_path, monkeypatch,
+    ):
+        state = tmp_path / "state"
+        write_lead_roster(state)
+        monkeypatch.setattr(server_module, "BrainTools", lambda cfg: CrewTools())
+        settings = Settings(**{
+            **SETTINGS_KWARGS, "state_dir": str(state),
+            "audio_dir": str(tmp_path / "audio"), "audit_content": "none",
+        })
+        gateway = make_gateway(state, {"host-b": StubTransport(
+            responses={"/reply": (404, {"detail": "pane not found"})}
+        )})
+        app = create_app(settings=settings, crew=gateway)
+        client = TestClient(app)
+
+        assert client.post(
+            "/pane/reply", json={"pane_id": "host-b:w1:p1", "text": "sigue"}
+        ).status_code == 404
+        lines = self._lines(tmp_path)
+        assert len(lines) == 1
+        detail = lines[0]["detail"]
+        assert detail["peer"] == "host-b"        # attribution metadata
+        assert detail["op"] == "reply"           # operation enum metadata
+        assert detail["outcome"] == "refused"
+        assert detail["detail"] == "⟨redacted⟩"  # the peer message is content
+
+
+class TestCrewCallFailureOpsWarning:
+    """T3-fu/U6 (verification fix): the ops logger line is bounded and
+    metadata-only for EVERY failed write attempt — no transport text,
+    no tokens. The 503 response body already owns the full diagnostic."""
+
+    def _lead_client(self, tmp_path, monkeypatch, transport):
+        state = tmp_path / "state"
+        write_lead_roster(state)
+        return make_client(
+            tmp_path, monkeypatch, crew=make_gateway(state, {"host-b": transport})
+        )
+
+    def _warnings(self, caplog) -> list:
+        return [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == "herdr_brain.server"
+            and record.getMessage().startswith("crew call failed:")
+        ]
+
+    def test_unreachable_warning_excludes_transport_text(
+        self, tmp_path, monkeypatch, caplog,
+    ):
+        client = self._lead_client(tmp_path, monkeypatch, StubTransport(fail_all=True))
+        with caplog.at_level("WARNING", logger="herdr_brain.server"):
+            response = client.post(
+                "/pane/reply", json={"pane_id": "host-b:w1:p1", "text": "sigue"}
+            )
+        assert response.status_code == 503
+        assert self._warnings(caplog) == [
+            "crew call failed: peer=host-b op=reply outcome=unreachable status=None"
+        ]
+        assert "peer is down" not in self._warnings(caplog)[0]
+
+    def test_refused_warning_is_metadata_only(
+        self, tmp_path, monkeypatch, caplog,
+    ):
+        client = self._lead_client(
+            tmp_path, monkeypatch,
+            StubTransport(responses={"/reply": (404, {"detail": "pane not found"})}),
+        )
+        with caplog.at_level("WARNING", logger="herdr_brain.server"):
+            response = client.post(
+                "/pane/reply", json={"pane_id": "host-b:w1:p1", "text": "sigue"}
+            )
+        assert response.status_code == 404
+        assert self._warnings(caplog) == [
+            "crew call failed: peer=host-b op=reply outcome=refused status=404"
+        ]
+
+    def test_failed_reads_never_warn_or_record(
+        self, tmp_path, monkeypatch, caplog,
+    ):
+        client = self._lead_client(tmp_path, monkeypatch, StubTransport(fail_all=True))
+        with caplog.at_level("WARNING", logger="herdr_brain.server"):
+            response = client.get("/view", params={"pane_id": "host-b:w1:p1"})
+        assert response.status_code == 503
+        assert self._warnings(caplog) == []
+        assert not (tmp_path / "state" / "audit.log").exists()
