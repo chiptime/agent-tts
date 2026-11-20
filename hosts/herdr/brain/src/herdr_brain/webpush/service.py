@@ -224,9 +224,8 @@ class WebPushService:
         self._coordinator.tick(now)
         if panes is None:
             return
-        current = self._clock() if now is None else now
         for pane_id, label, idle_s in panes:
-            due = self._cache_engine.observe(pane_id, float(idle_s), current)
+            due = self._cache_engine.observe(pane_id, float(idle_s))
             if due is None:
                 continue
             tag = cache_tag(pane_id)
