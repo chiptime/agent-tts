@@ -8888,6 +8888,27 @@
       return "ns-" + (nowMs || 0).toString(36) + "-" + (random || 0).toString(36).slice(2, 10);
     }
 
+    /* S4 (doc 14): a repeat of the SAME resume operation rides the
+     * SAME request id — a lost response or a second tap while the
+     * first is still in flight must reach the server's receipt, not
+     * mint a second launch. A successful resume, a closed sheet or a
+     * different session row makes the next tap a NEW explicit
+     * operation with a fresh id (minted exactly like a launch tap).
+     * `retry` is the held { session_id, request_id } of the last
+     * unfinished attempt; anything malformed mints fresh. */
+    function resumeRequestId(retry, sessionId, uuidFn, nowMs, random) {
+      if (retry && retry.session_id === sessionId &&
+          typeof retry.request_id === "string" && retry.request_id) {
+        return { request_id: retry.request_id, retry: retry, reused: true };
+      }
+      var id = mintRequestId(uuidFn, nowMs, random);
+      return {
+        request_id: id,
+        retry: { session_id: sessionId, request_id: id },
+        reused: false,
+      };
+    }
+
     /* Resume display rows (parity-f7c S3): the server already filtered
      * to in-root, resumable conversations and masked the titles; this
      * only shapes what renders — malformed entries are dropped, the
@@ -8920,6 +8941,7 @@
       formState: formState,
       taskGuard: taskGuard,
       mintRequestId: mintRequestId,
+      resumeRequestId: resumeRequestId,
       resumeRows: resumeRows,
     };
   }
@@ -8941,6 +8963,11 @@
   var newSessionState = {
     harness: "", cwd: "", workspaceId: "", rootsConfigured: false, resumeHarness: "",
   };
+  /* S4: the held { session_id, request_id } of the last UNFINISHED
+   * resume attempt. A same-operation retry (lost response, re-tap in
+   * flight) reuses it so the server's receipt answers instead of a
+   * second launch; success, a sheet close or another row retires it. */
+  var newResumeRetry = null;
   var newArmedLaunchers = {};
   var NEW_ARM_TIMEOUT_MS = 3000;
   var nsModel = newSessionModel();
@@ -8966,6 +8993,9 @@
     if (!newSheetOpen) return;
     newSheetOpen = false;
     setNewSheet(false);
+    /* A closed sheet ends any resume operation: the next open+tap is a
+     * NEW explicit operation with a fresh request id (S4). */
+    newResumeRetry = null;
     if (history.state && history.state.herdrNewSheet) history.back();  // pop our entry
     /* The ✚ opener left the header (2026-11-19): focus returns to the
      * conversation-sheet opener — the sheet's surviving entry point. */
@@ -9308,22 +9338,31 @@
   });
 
   function onResumeTap(row) {
+    /* S4: a retry of THIS operation reuses its request id (the server
+     * receipt then answers the repeat); a new explicit operation mints
+     * a fresh one. */
+    var op = nsModel.resumeRequestId(
+      newResumeRetry,
+      row.session_id,
+      function () {
+        return window.crypto && window.crypto.randomUUID
+          ? window.crypto.randomUUID() : null;
+      },
+      Date.now(),
+      Math.random()
+    );
+    newResumeRetry = op.retry;
     fetch("/session/resume", withDeviceAuth({
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         harness: newSessionState.resumeHarness,
         session_id: row.session_id,
-        /* Fresh per tap (S2): a repeat of this same request_id replays
-         * the first response server-side; see mintRequestId above. */
-        request_id: nsModel.mintRequestId(
-          function () {
-            return window.crypto && window.crypto.randomUUID
-              ? window.crypto.randomUUID() : null;
-          },
-          Date.now(),
-          Math.random()
-        ),
+        /* S4: the sheet's picked space targets the resumed tab too —
+         * the server validates it (unknown_workspace refuses); null
+         * keeps the current-workspace destination, exactly as before. */
+        workspace_id: newSessionState.workspaceId || null,
+        request_id: op.request_id,
       }),
     }))
       .then(function (resp) {
@@ -9333,6 +9372,14 @@
           var detail = body && body.detail;
           if (resp.status === 422 && detail === "cwd_unknown") {
             showToast(t("newsession.err_resume_cwd"), 4000);
+            return null;
+          }
+          if (resp.status === 422 && detail === "unknown_workspace") {
+            /* The picked space is no longer offered server-side: say
+             * so and re-render the picker (a vanished space drops its
+             * stale targeting instead of failing every resume). */
+            showToast(t("newsession.err_resume_workspace"), 4000);
+            refreshNewSheet();
             return null;
           }
           if (resp.status === 422 &&
@@ -9350,6 +9397,7 @@
       })
       .then(function (body) {
         if (!body) return;
+        newResumeRetry = null;  /* success ends the operation (S4) */
         showToast(t("newsession.resumed"), 4000);
         closeNewSheet();
         refreshHerd();  /* the reopened pane joins the conversation list */
