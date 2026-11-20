@@ -197,6 +197,25 @@ class TestRouting:
         mux.agent_wait("zellij:17", until="done", timeout_ms=5000)
         assert zellij.calls == [("agent_wait", ("17", "done", 5000))]
 
+    def test_a_colon_form_that_is_no_alternate_prefix_is_a_herdr_bare_id(self):
+        # PIN, not a fix: herdr pane ids legitimately contain colons
+        # (workspace:pane forms like w11:p2), so ONLY the known alternate
+        # prefixes (tmux:, zellij:) and the explicit herdr: scheme are
+        # special — any other colon-form IS a herdr bare id by contract,
+        # routed verbatim and unchanged. Refusing them as "unknown
+        # prefix" would break every herdr reply. (Verifier finding,
+        # adjudicated: the code is correct; the mission doc's
+        # "unknown-prefix refuses" line read too literally.)
+        herdr, tmux = FakeMux(), FakeMux()
+        mux = CompositeMux({"herdr": herdr, "tmux": tmux})
+        mux.send_prompt("other:abc", "x")
+        mux.send_prompt("14:p2", "y")
+        assert herdr.calls == [
+            ("send_prompt", ("other:abc", "x", None)),
+            ("send_prompt", ("14:p2", "y", None)),
+        ]
+        assert tmux.calls == []
+
     @pytest.mark.parametrize(
         "call",
         [
