@@ -39,7 +39,7 @@ class FakeTools:
         type(self).replies.append((pane_id, text, steer))
         return dict(type(self).outcome, pane_id=pane_id)
 
-    def stop_pane(self, pane_id):
+    def stop_pane(self, pane_id, text_hint=""):
         type(self).stop_results.append(pane_id)
         result = type(self).stop_outcome
         return dict(result, pane_id=pane_id)

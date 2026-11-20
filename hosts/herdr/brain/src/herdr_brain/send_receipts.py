@@ -130,6 +130,65 @@ def discard_recipe(agent_kind: str) -> Tuple[str, ...]:
     return DISCARD_RECIPES.get(agent_kind or "", ("esc",))
 
 
+# ── stop truthfulness (S2) ────────────────────────────────────────────────────
+#
+# A stop attempt reports the CLOSED set below. ``stopped`` is claimed ONLY on
+# evidence that the pane left its running state — the keys having been sent
+# is never evidence (the audited defect this table exists to fix: the old
+# path returned ``stopped`` straight after ``send_keys``). The pane state is
+# the mux's own report, the same authority the reply route trusts for its
+# dialog contract; what the state values mean lives in herdr
+# (``herdr agent wait``: idle|working|blocked|done|unknown).
+
+STOP_OUTCOMES = (
+    "stopped",
+    "dialog_open",
+    "idle",
+    "unverified",
+    "unknown",
+    "error",
+    "unknown_pane",
+    "unsupported_harness",
+)
+
+#: State values that mean a turn is running — the only state the interrupt
+#: recipes are evidence-backed for.
+STOP_RUNNING_STATUSES = frozenset({"working"})
+
+#: State values that mean no turn is running. ``blocked`` (waiting at a
+#: dialog) is refused BEFORE the running check: an interrupt recipe is for a
+#: turn, never for a dialog question.
+STOP_ENDED_STATUSES = frozenset({"idle", "done", "blocked"})
+
+#: How long a confirmed stop may take to show in the pane state (the same
+#: envelope a verified reply waits).
+VERIFIED_STOP_WAIT_MS = 3_000
+
+
+def classify_stop(
+    status_before: str, status_after: Optional[str]
+) -> Tuple[str, str]:
+    """One stop outcome from state evidence, fail-closed (S2).
+
+    ``stopped`` needs the pane to have LEFT its running state after the
+    interrupt keys — herdr's own state report is the evidence, the sent
+    keys alone never are. Everything else tells the truth about what is
+    known: still running after the wait → ``unverified``; the state
+    unreadable or unrecognized → ``unknown``. Nothing here can return
+    ``stopped`` without the transition.
+    """
+    if status_after is None:
+        return ("unknown", "no se pudo leer el estado del agente tras la interrupción")
+    if status_before in STOP_RUNNING_STATUSES and status_after in STOP_ENDED_STATUSES:
+        return ("stopped", "el agente dejó su turno en curso tras la interrupción")
+    if status_after in STOP_RUNNING_STATUSES or status_after in STOP_ENDED_STATUSES:
+        return (
+            "unverified",
+            "el agente siguió en su turno tras la interrupción; no se confirmó la parada",
+        )
+    return ("unknown", "estado del agente no reconocido tras la interrupción")
+
+
 # ── input-line evidence ───────────────────────────────────────────────────────
 
 

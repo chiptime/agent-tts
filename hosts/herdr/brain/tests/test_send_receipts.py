@@ -9,6 +9,8 @@ scripted mux double through the same public methods the routes call.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from herdr_brain.config import Settings
@@ -18,9 +20,14 @@ from herdr_brain.send_receipts import (
     INTERRUPT_RECIPES,
     OUTCOMES,
     STEER_HARNESSES,
+    STOP_ENDED_STATUSES,
+    STOP_OUTCOMES,
+    STOP_RUNNING_STATUSES,
     SendReceiptStore,
+    VERIFIED_STOP_WAIT_MS,
     classify_followup,
     classify_send,
+    classify_stop,
     discard_recipe,
     echo_tail,
     input_line,
@@ -50,20 +57,44 @@ class ScriptedMux:
     ``screens`` are returned one per read_screen call; the last one
     repeats once the sequence is exhausted, so a poll's final read is the
     stable evidence the classifier reasons about.
+
+    Stop additions (S2): ``statuses`` scripts the pane state reported per
+    ``list_agents`` call (the last one repeats, like the screens);
+    ``wait_ok=False`` makes ``agent_wait`` raise the HerdrError timeout
+    herdr uses when the state is not reached; ``fail_list`` makes
+    ``list_agents`` itself unreadable. Defaults keep the pre-S2 shape.
     """
 
-    def __init__(self, agents, screens, prompt=None, keys=None, fail_read=False):
+    def __init__(self, agents, screens, prompt=None, keys=None, fail_read=False,
+                 statuses=None, wait_ok=True, fail_list=False):
         self._agents = agents
         self._screens = list(screens)
         self._prompt = prompt or {"ok": True, "status": "done", "output": "ok"}
         self._keys = keys or {"ok": True, "error": ""}
         self._fail_read = fail_read
+        self._statuses = list(statuses) if statuses is not None else None
+        self._status_idx = 0
+        self._wait_ok = wait_ok
+        self._fail_list = fail_list
         self.read_calls: list[str] = []
         self.prompt_calls: list[dict] = []
         self.key_calls: list[str] = []
+        self.wait_calls: list[tuple] = []
 
     def list_agents(self):
+        if self._fail_list:
+            raise HerdrError("list failed")
+        if self._statuses and self._agents:
+            head, *rest = self._agents
+            self._agents = [replace(head, status=self._statuses[self._status_idx]), *rest]
+            if self._status_idx < len(self._statuses) - 1:
+                self._status_idx += 1
         return list(self._agents)
+
+    def agent_wait(self, pane_id, until="idle", timeout_ms=None):
+        self.wait_calls.append((pane_id, until, timeout_ms))
+        if not self._wait_ok:
+            raise HerdrError("the state was not reached in time")
 
     def read_screen(self, pane_id, n_lines=None, source="visible", as_ansi=False):
         self.read_calls.append(pane_id)
@@ -226,6 +257,63 @@ def test_discard_followup_names_the_discarded_outcome():
 def test_unreadable_followup_is_unknown():
     outcome, _ = classify_followup([], "text", "sent")
     assert outcome == "unknown"
+
+
+# ── classify_stop: the stop truth table (S2) ─────────────────────────────────
+
+
+def test_the_stop_outcome_set_is_closed_and_ordered_for_docs():
+    assert STOP_OUTCOMES == (
+        "stopped",
+        "dialog_open",
+        "idle",
+        "unverified",
+        "unknown",
+        "error",
+        "unknown_pane",
+        "unsupported_harness",
+    )
+
+
+@pytest.mark.parametrize("after", ["idle", "done", "blocked"])
+def test_a_turn_that_left_its_running_state_is_stopped(after):
+    outcome, detail = classify_stop("working", after)
+    assert outcome == "stopped"
+    assert detail
+
+
+def test_a_turn_that_keep_running_is_never_stopped():
+    outcome, detail = classify_stop("working", "working")
+    assert outcome == "unverified"
+    assert "no se confirmó" in detail
+
+
+def test_an_unreadable_post_state_is_unknown_not_stopped():
+    outcome, detail = classify_stop("working", None)
+    assert outcome == "unknown"
+    assert detail
+
+
+def test_an_unrecognized_post_state_is_unknown_not_stopped():
+    outcome, _ = classify_stop("working", "something-else")
+    assert outcome == "unknown"
+
+
+def test_a_stopped_claim_never_grows_without_the_transition():
+    # The classifier cannot invent the stopped verdict: before and after
+    # both ended (no running turn was ever interrupted) is NOT a stop.
+    outcome, _ = classify_stop("idle", "idle")
+    assert outcome != "stopped"
+
+
+def test_the_stop_state_tables_split_dialog_from_ended():
+    # S2: a dialog IS an ended state for the classifier, but the status
+    # gate refuses a dialog pane before any key is chosen — the tables
+    # carry both sides of that distinction.
+    assert "blocked" in STOP_ENDED_STATUSES
+    assert "blocked" not in STOP_RUNNING_STATUSES
+    assert STOP_RUNNING_STATUSES == frozenset({"working"})
+    assert VERIFIED_STOP_WAIT_MS > 0
 
 
 # ── per-harness tables ────────────────────────────────────────────────────────
@@ -404,14 +492,44 @@ def test_verified_reply_masks_the_receipt_detail():
 # ── submit / discard through tools ────────────────────────────────────────────
 
 
-def test_submit_typed_text_sends_enter_and_requires_the_echo_gone():
+def test_submit_sends_enter_only_after_the_echo_is_verified():
+    """S2 borrador: Enter rides a read that SAW the receipt's echo on
+    the input line — the audit's «Enter antes de releer» defect, fixed.
+    The echo leaving the line still decides «sent»."""
     mux = ScriptedMux(
         [_agent()],
-        screens=["user: sigue adelante\nworking"],
+        screens=[
+            "❯ 1) Yes\n│ > sigue adelante",   # before: the draft is there
+            "user: sigue adelante\nworking",  # after: the echo left
+        ],
     )
     result = _tools(mux).submit_typed_text("w1:p2", "sigue adelante")
     assert result["outcome"] == "sent"
+    assert result["detail"]
     assert mux.key_calls == [("w1:p2", ["enter"])]
+    assert len(mux.read_calls) >= 2
+
+
+def test_submit_refuses_enter_when_the_echo_is_not_on_the_line():
+    """The screen no longer shows the receipt's draft — the user may
+    have sent or cleared it already. Enter could act on a NEW draft, so
+    nothing is keyed and the outcome says exactly why."""
+    mux = ScriptedMux([_agent()], screens=["user: something else\nworking"])
+    result = _tools(mux).submit_typed_text("w1:p2", "sigue adelante")
+    assert result["outcome"] == "unknown"
+    assert "borrador" in result["detail"]
+    assert not mux.key_calls
+
+
+def test_submit_refuses_enter_when_the_screen_is_unreadable():
+    """Fail-closed before the key: without a readable line there is no
+    bound evidence the receipt's draft is still there — and a blind
+    Enter is exactly what the audit found. Nothing was sent."""
+    mux = ScriptedMux([_agent()], screens=[], fail_read=True)
+    result = _tools(mux).submit_typed_text("w1:p2", "sigue adelante")
+    assert result["outcome"] == "error"
+    assert not mux.key_calls
+    assert "no se envió" in result["detail"]
 
 
 def test_submit_keeps_typed_when_the_echo_survives():
@@ -420,11 +538,26 @@ def test_submit_keeps_typed_when_the_echo_survives():
     assert result["outcome"] == "typed_not_submitted"
 
 
-def test_discard_typed_text_sends_the_recipe_and_confirms():
-    mux = ScriptedMux([_agent(agent="claude")], screens=["❯ 1) Yes"])
+def test_discard_sends_the_recipe_only_on_a_verified_echo():
+    mux = ScriptedMux(
+        [_agent(agent="claude")],
+        screens=[
+            "❯ 1) Yes\n│ > sigue adelante",  # before
+            "❯ 1) Yes",                      # after: clean
+        ],
+    )
     result = _tools(mux).discard_typed_text("w1:p2", "claude", "sigue adelante")
     assert result["outcome"] == "discarded"
     assert mux.key_calls == [("w1:p2", ["esc"])]
+
+
+def test_discard_refuses_esc_when_the_echo_is_absent():
+    """The draft is gone with no read proving who took it: Esc into
+    whatever replaced it could interrupt a running turn — refused."""
+    mux = ScriptedMux([_agent(agent="claude")], screens=["❯ 1) Yes"])
+    result = _tools(mux).discard_typed_text("w1:p2", "claude", "sigue adelante")
+    assert result["outcome"] == "unknown"
+    assert not mux.key_calls
 
 
 def test_discard_keeps_typed_when_the_text_survives():
@@ -440,12 +573,134 @@ def test_discard_keeps_typed_when_the_text_survives():
 # ── stop ──────────────────────────────────────────────────────────────────────
 
 
-def test_stop_sends_the_interrupt_recipe_for_known_harnesses():
-    mux = ScriptedMux([_agent(agent="claude", status="working")], screens=["work"])
+def test_stop_sends_the_recipe_and_verifies_the_turn_ended():
+    """S2: the sent keys alone are never the verdict — ``stopped`` rides
+    the pane leaving its running state (herdr ``agent wait``), which the
+    route waits for within VERIFIED_STOP_WAIT_MS."""
+    mux = ScriptedMux(
+        [_agent(agent="claude", status="working")],
+        screens=["work"],
+        statuses=("working", "idle"),
+    )
     result = _tools(mux).stop_pane("w1:p2")
     assert result["outcome"] == "stopped"
     assert result["keys"] == ["esc"]
+    assert result["detail"]
     assert mux.key_calls == [("w1:p2", ["esc"])]
+    assert mux.wait_calls == [("w1:p2", "idle", VERIFIED_STOP_WAIT_MS)]
+
+
+def test_stop_dialog_open_refuses_without_keys():
+    """S2 diálogo abierto: a pane waiting at a dialog gets NO interrupt
+    key — the recipes are evidence-backed for running turns, and keys
+    into a dialog would move its own selection. The refusal says so."""
+    mux = ScriptedMux([_agent(agent="claude", status="blocked")], screens=[])
+    result = _tools(mux).stop_pane("w1:p2")
+    assert result["outcome"] == "dialog_open"
+    assert result["detail"]
+    assert not mux.key_calls
+    assert not mux.wait_calls
+    assert not mux.read_calls
+
+
+def test_stop_idle_agent_refuses_without_keys():
+    """S2 agente inactivo: nothing is running, nothing may be claimed
+    stopped, and no key may fly (Esc into an idle TUI clears whatever
+    draft sits in the composer)."""
+    mux = ScriptedMux([_agent(agent="claude", status="idle")], screens=[])
+    result = _tools(mux).stop_pane("w1:p2")
+    assert result["outcome"] == "idle"
+    assert result["detail"]
+    assert not mux.key_calls
+    assert not mux.wait_calls
+
+
+def test_stop_unreadable_state_refuses_without_keys():
+    """S2 resultado no verificable, before the keys: when the mux cannot
+    say what state the pane is in, the brain cannot reason about where
+    its key would land — nothing is sent and nothing is claimed."""
+    for status in ("unknown", ""):
+        mux = ScriptedMux([_agent(agent="claude", status=status)], screens=[])
+        result = _tools(mux).stop_pane("w1:p2")
+        assert result["outcome"] == "unknown", status
+        assert result["detail"]
+        assert not mux.key_calls
+        assert not mux.read_calls
+
+
+def test_stop_surviving_turn_reports_unverified_never_stopped():
+    """S2 resultado no verificable, after the keys: the wait expired and
+    the pane is still on its turn — the outcome says the stop was NOT
+    confirmed (the keys were sent; that is a fact, not a verdict)."""
+    mux = ScriptedMux(
+        [_agent(agent="claude", status="working")],
+        screens=["work"],
+        statuses=("working", "working"),
+        wait_ok=False,
+    )
+    result = _tools(mux).stop_pane("w1:p2")
+    assert result["outcome"] == "unverified"
+    assert result["outcome"] != "stopped"
+    assert "no se confirmó" in result["detail"]
+    assert mux.key_calls == [("w1:p2", ["esc"])]
+
+
+def test_stop_with_unreadable_post_state_stays_fail_closed():
+    """The wait timed out AND the fallback state read failed: the turn
+    may or may not have ended — ``unknown``, never a claim."""
+    mux = ScriptedMux(
+        [_agent(agent="claude", status="working")],
+        screens=["work"],
+        statuses=("working", "unknown"),
+        wait_ok=False,
+    )
+    result = _tools(mux).stop_pane("w1:p2")
+    assert result["outcome"] == "unknown"
+    assert "no se confirmó la parada" not in result["detail"]
+
+
+def test_stop_reports_whether_the_draft_survived():
+    """S2 borrador: with the route's receipt hint the stop names the
+    draft's fate from screen evidence — gone or still on the input
+    line — while the verdict itself stays the state evidence."""
+    hint = "sigue adelante"
+    gone = ScriptedMux(
+        [_agent(agent="claude", status="working")],
+        screens=[
+            "❯ 1) Yes\n│ > sigue adelante",   # before: the draft is there
+            "❯ 1) Yes",                       # after: the echo left
+        ],
+        statuses=("working", "idle"),
+    )
+    result = _tools(gone).stop_pane("w1:p2", hint)
+    assert result["outcome"] == "stopped"
+    assert "borrador ya no está" in result["detail"]
+
+    kept = ScriptedMux(
+        [_agent(agent="claude", status="working")],
+        screens=[
+            "❯ 1) Yes\n│ > sigue adelante",
+            "❯ 1) Yes\n│ > sigue adelante",
+        ],
+        statuses=("working", "idle"),
+    )
+    kept_result = _tools(kept).stop_pane("w1:p2", hint)
+    assert kept_result["outcome"] == "stopped"
+    assert "borrador queda en la línea" in kept_result["detail"]
+
+
+def test_stop_draft_evidence_never_invents_a_verdict():
+    """With a hint but no readable screen, the stop still classifies from
+    state evidence and simply says nothing about the draft."""
+    mux = ScriptedMux(
+        [_agent(agent="claude", status="working")],
+        screens=[],
+        fail_read=True,
+        statuses=("working", "idle"),
+    )
+    result = _tools(mux).stop_pane("w1:p2", "sigue adelante")
+    assert result["outcome"] == "stopped"
+    assert "borrador" not in result["detail"]
 
 
 def test_stop_refuses_unknown_harnesses_without_sending_keys():

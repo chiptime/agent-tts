@@ -52,8 +52,11 @@ from .mux import create_mux
 from .mux.refusal import MuxRefusal
 from .pane_model import OpencodeModelCatalog, PaneModelResolver
 from .send_receipts import (
+    STOP_ENDED_STATUSES,
+    VERIFIED_STOP_WAIT_MS,
     classify_followup,
     classify_send,
+    classify_stop,
     discard_recipe,
     echo_tail,
     interrupt_recipe,
@@ -3072,23 +3075,29 @@ class BrainTools:
         }
 
     def submit_typed_text(self, pane_id: str, text_hint: str) -> dict:
-        """Presses Enter on a typed-but-not-submitted draft (S12).
+        """Presses Enter on a typed-but-not-submitted draft (S12, S2).
 
         The one follow-up the receipt protocol allows: no text is ever
         re-sent (that would duplicate the draft), only the commit key —
-        then the same read-back decides whether the echo left the input
-        line. Outcome: ``sent`` | ``typed_not_submitted`` | ``unknown`` |
-        ``error``.
+        pressed only AFTER a fresh read that still shows the receipt's
+        echo on the input line (S2: Enter never flies blind; see
+        :meth:`_followup_typed`), then the same read-back decides
+        whether it landed. Outcome: ``sent`` |
+        ``typed_not_submitted`` | ``unknown`` | ``error``.
         """
         return self._followup_typed(pane_id, ["enter"], text_hint, "sent")
 
     def discard_typed_text(self, pane_id: str, agent_kind: str, text_hint: str) -> dict:
-        """Clears a typed draft with the safe per-harness recipe (S12).
+        """Clears a typed draft with the safe per-harness recipe (S12, S2).
 
         ``esc`` for every harness (see :func:`discard_recipe`): it never
         types a character and never executes anything — on chat TUIs it
-        drops the draft, on a plain shell it is a no-op. Outcome:
-        ``discarded`` | ``typed_not_submitted`` | ``unknown`` | ``error``.
+        drops the draft, on a plain shell it is a no-op. The key is
+        pressed only after a fresh read still shows the receipt's echo
+        (an echo that is gone could have been already submitted by the
+        user — Esc could then interrupt a RUNNING turn; see
+        :meth:`_followup_typed`). Outcome: ``discarded`` |
+        ``typed_not_submitted`` | ``unknown`` | ``error``.
         """
         return self._followup_typed(
             pane_id, list(discard_recipe(agent_kind)), text_hint, "discarded"
@@ -3100,12 +3109,28 @@ class BrainTools:
         def follow(outcome: str, detail: str) -> dict:
             return {"outcome": outcome, "detail": mask_text(detail), "pane_id": pane_id}
 
+        from .send_receipts import text_echoed_on_input
+
+        # Revalidate the draft BEFORE touching the pane (S2): the key
+        # only ever rides on a screen the receipt's own echo describes.
+        # Without that bound read the commit key could act on a NEW
+        # draft (Enter) and the discard key could interrupt a RUNNING
+        # turn (Esc) — both are refused with nothing sent.
+        before = self._verified_read(pane_id)
+        if before is None:
+            return follow(
+                "error", "la pantalla no se pudo leer; no se envió ninguna tecla"
+            )
+        if not text_echoed_on_input(before, text_hint):
+            return follow(
+                "unknown",
+                "el borrador ya no está en la línea de entrada; no se envió ninguna tecla",
+            )
+
         key_result = self.send_keys_to_pane(pane_id, keys)
         if key_result["outcome"] != "sent":
             return follow("error", key_result.get("detail") or "send-keys failed")
         afters: list = []
-        from .send_receipts import text_echoed_on_input
-
         for _ in range(VERIFIED_POLL_READS):
             after = self._verified_read(pane_id)
             afters.append(after)
@@ -3115,14 +3140,43 @@ class BrainTools:
         outcome, detail = classify_followup(afters, text_hint, resolved)
         return follow(outcome, detail)
 
-    def stop_pane(self, pane_id: str) -> dict:
-        """Interrupts one pane's RUNNING turn with its harness recipe (S12).
+    def _pane_status(self, pane_id: str) -> Optional[str]:
+        """One fresh mux state read for the stop's post-key evidence;
+        ``None`` when even that failed (the classifier stays
+        fail-closed)."""
+        try:
+            agents = self._herdr.list_agents()
+        except HerdrError:
+            return None
+        target = next((agent for agent in agents if agent.pane_id == pane_id), None)
+        if target is None:
+            return None
+        return target.status or ""
+
+    def stop_pane(self, pane_id: str, text_hint: str = "") -> dict:
+        """Interrupts one pane's RUNNING turn with its harness recipe (S12, S2).
 
         The recipe comes from the per-harness interrupt table; a harness
         outside it is a REFUSAL (``unsupported_harness``) — guessing an
         interrupt key into an unknown TUI is exactly the mistake the
         table exists to prevent. Exact pane as everywhere (never the
         focused fallback); keys ride the same closed allowlist.
+
+        S2 makes the whole attempt fail-closed: the pane STATE is checked
+        BEFORE any key (the mux's own report — the same authority the
+        reply route trusts for its dialog contract). A pane waiting at a
+        dialog gets no keys (the recipes are evidence-backed for RUNNING
+        turns; keys into a dialog would move its own selection), a pane
+        with no turn running gets no keys (nothing to stop, and Esc into
+        an idle TUI only clears the composer), and an unreadable state
+        means the brain cannot reason about where a key would land. When
+        the keys DO go, herdr's own ``agent wait`` is the evidence that
+        the turn actually ended: ``stopped`` is claimed ONLY when the
+        pane left its running state; a wait that expires or an
+        unreadable post-state reports ``unverified``/``unknown`` and the
+        server treats both as NOT stopped. ``text_hint`` — when the
+        caller hands a receipt's masked draft tail — adds the draft's
+        observed fate (screen evidence, never part of the verdict).
         """
         def stop_result(outcome: str, detail: str = "", keys: Optional[list] = None) -> dict:
             return {
@@ -3145,11 +3199,38 @@ class BrainTools:
                 "unsupported_harness",
                 f"no interrupt recipe for harness {target.agent or 'unknown'!r}",
             )
+
+        # ── the state gate (S2): no blind keys into dialogs or idle TUIs
+        status = target.status or ""
+        if status in ("", "unknown"):
+            return stop_result(
+                "unknown",
+                "estado del agente desconocido; no se envió la interrupción",
+            )
+        if status == "blocked":
+            return stop_result(
+                "dialog_open",
+                "el agente espera en un diálogo; respóndelo con teclas "
+                "desde la terminal, no admite una interrupción segura",
+            )
+        if status in STOP_ENDED_STATUSES:
+            return stop_result(
+                "idle", "no hay turno en curso que interrumpir"
+            )
+        # status == "working": a running turn is what the recipe interrupts.
+
+        before = self._verified_read(pane_id) if text_hint else None
+        draft_on_line: Optional[bool] = None
+        if text_hint and before is not None:
+            from .send_receipts import text_echoed_on_input
+
+            draft_on_line = text_echoed_on_input(before, text_hint)
+
         keys = list(recipe)
         try:
             key_result = self._herdr.send_keys(pane_id, keys)
         except HerdrError as exc:
-            return stop_result("error", f"cannot send interrupt: {exc}")
+            return stop_result("error", f"cannot send interrupt: {exc}", keys)
         if not key_result.get("ok"):
             return stop_result(
                 "error", key_result.get("error") or "send-keys failed", keys
@@ -3157,7 +3238,30 @@ class BrainTools:
         # An interrupt key on a pane with a spoken dialog binding ends
         # that binding's authority (S9), exactly like a manual key.
         self._note_dialog_keys(pane_id)
-        return stop_result("stopped", "", keys)
+
+        # ── the evidence (S2): the mux's own state ends the claim chain
+        status_after: Optional[str] = "idle"
+        try:
+            self._herdr.agent_wait(pane_id, "idle", VERIFIED_STOP_WAIT_MS)
+        except HerdrError:
+            # The state was not reached in time — one fresh read decides
+            # between «still running» and «unreadable».
+            status_after = self._pane_status(pane_id)
+        outcome, detail = classify_stop(status, status_after)
+
+        # Honest draft note (screen evidence; never part of the verdict).
+        if text_hint and draft_on_line:
+            from .send_receipts import text_echoed_on_input
+
+            after = self._verified_read(pane_id)
+            if after is not None:
+                draft_note = (
+                    "el borrador queda en la línea de entrada"
+                    if text_echoed_on_input(after, text_hint)
+                    else "el borrador ya no está en la línea de entrada"
+                )
+                detail = f"{detail}; {draft_note}"
+        return stop_result(outcome, detail, keys)
 
     def create_session(
         self,

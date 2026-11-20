@@ -2601,7 +2601,11 @@ def create_app(
             + (f" ({stopped['detail']})" if stopped.get("detail") else "")
             + ".\n\nReport the outcome to the user in one or two short "
             "spoken sentences. Only 'stopped' means the turn was "
-            "interrupted; anything else means it was NOT — say that."
+            "interrupted; anything else means it was NOT — say that. "
+            "'dialog_open' says the agent was waiting at a dialog, "
+            "'idle' says there was no running turn at all, and "
+            "'unverified'/'unknown' say the stop was not confirmed — "
+            "report exactly what the outcome says."
         )
         try:
             result = get_llm().ask(
@@ -3393,7 +3397,7 @@ def create_app(
 
     @app.post("/pane/stop")
     def pane_stop(request: Request, body: PaneStopRequest) -> dict:
-        """Interrupts one pane's RUNNING turn (S12).
+        """Interrupts one pane's RUNNING turn (S12, S2).
 
         The interrupt key comes from the per-harness table (``esc`` for
         the claude/codex/opencode chat TUIs); a harness outside it is a
@@ -3401,8 +3405,22 @@ def create_app(
         cannot reason about. Exact pane as everywhere (unknown = 404,
         never the focused fallback), keys ride the closed allowlist, and
         every attempt is audited.
+
+        S2: the outcome is evidence, not the sent keys — the tools
+        verdict checks the pane's state before the keys and the pane
+        leaving its running state after them, so only a verified stop
+        answers ``stopped``; every other outcome (dialog open, nothing
+        running, unverified, unknown) rides the fail-closed branch below
+        with its own truthful detail. When the store holds an
+        actionable draft receipt for the pane, its masked text hint
+        rides along so the stop can report whether that draft survived.
         """
-        result = tools.stop_pane(body.pane_id)
+        drafts = [
+            r for r in receipt_store.list(body.pane_id)
+            if r["outcome"] == "typed_not_submitted"
+        ]
+        draft_hint = drafts[0]["text_hint"] if drafts else ""
+        result = tools.stop_pane(body.pane_id, draft_hint)
         outcome = result["outcome"]
         audit_log.record({
             "action": "pane.stop",
