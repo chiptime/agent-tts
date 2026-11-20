@@ -1714,6 +1714,32 @@ class TestVoiceAnswerAudit:
             "outcome": "answered", "option": 1, "keys": ["enter"], "spoken": True,
         }
 
+    def test_voice_send_failure_audits_only_the_specified_refusal_fields(
+        self, settings, tmp_path,
+    ):
+        """A refused mux send records the refusal FACT, never the mux's
+        error text: no existing record site persists tool failure detail,
+        and the refusal shape stays exactly {outcome, reason, spoken}."""
+        stub = DialogStub()
+        stub._keys = {"ok": False, "error": "terminal send failed"}
+        built, _, path = self._tools(settings, tmp_path, stub)
+        explain_and_advance_turn(built)
+
+        result = json.loads(built.answer_dialog("dile que sí", BLOCKED_AGENT))
+
+        assert result["outcome"] == "refused"
+        assert result["reason"] == "send-failed"
+        # The tool's JSON keeps its existing shape (the mux error rides
+        # the tool detail); the AUDIT line never does.
+        assert result["detail"] == "terminal send failed"
+        lines = self._lines(path)
+        assert len(lines) == 1
+        assert lines[0]["detail"] == {
+            "outcome": "refused", "reason": "send-failed", "spoken": True,
+        }
+        # The mux error text leaks nowhere on the trail.
+        assert "terminal send failed" not in path.read_text()
+
     def test_refusal_inside_a_live_dialog_records_the_reason(
         self, settings, tmp_path,
     ):

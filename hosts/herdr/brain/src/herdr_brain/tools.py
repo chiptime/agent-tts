@@ -2522,10 +2522,10 @@ class BrainTools:
             )
         result = self.send_keys_to_pane(active.pane_id, keys)
         if result["outcome"] != "sent":
-            audit_attempt(
-                "refused", reason="send-failed",
-                extra={"detail": result.get("detail") or result["outcome"]},
-            )
+            # No mux error text rides the line: no existing record site
+            # persists tool failure detail, and the refusal's reason is
+            # the whole fact the trail needs.
+            audit_attempt("refused", reason="send-failed")
             return json.dumps(
                 {
                     "outcome": "refused",
