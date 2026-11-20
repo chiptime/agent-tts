@@ -411,6 +411,11 @@ class BrainTools:
         self._turn_switch: Optional[AgentInfo] = None
         self._last_created: Optional[AgentInfo] = None
         self._call_context = None
+        # Audit trail of write actions (T3/S3): the server binds the
+        # app's AuditLog here after construction (the same test-double
+        # convention as the consult sink and the hook broker); absent →
+        # the verbal tools record nothing and behave exactly as before.
+        self._audit_log = None
         # Held Claude hook permissions (parity-f7e S3): the broker the
         # server binds after construction; the ids already handed to the
         # model for speaking (the verbal binding answer_hold requires).
@@ -432,6 +437,14 @@ class BrainTools:
         switch publishes the call's selection exactly like a chip tap;
         doubles without the seam switch without publishing."""
         self._call_context = context
+
+    def attach_audit(self, audit_log) -> None:
+        """Binds the app's AuditLog after construction (T3/S3).
+
+        The verbal dialog path records its own host-local trail line per
+        verified-live-dialog answer, the way the HTTP dialog route
+        records a tap; doubles without the seam keep the old behavior."""
+        self._audit_log = audit_log
 
     # -- tools --------------------------------------------------------------
 
@@ -2347,8 +2360,39 @@ class BrainTools:
         free-text row, with the typed text likewise resolved from the
         user's spoken words and refused when it matches the destructive
         analyzer (voice has no second tap).
+
+        An audit line (T3/S3) rides every call that reaches a verified
+        live dialog: answered or refused, exactly one line, mirroring
+        what the HTTP dialog route records for a tap.
         """
+        # The audit boundary (T3/S3): a call records exactly one line
+        # once the spoken binding's fingerprint check has verified a
+        # live dialog — answered or any refusal after that point, the
+        # refusal's reason naming what happened. Terminations before
+        # that point (no pane, nothing spoken yet, dialog gone or
+        # changed under the binding) are admission failures and record
+        # nothing, the same convention as the HTTP routes' body
+        # validation. Fire-and-forget: the audit never alters the tool.
+        attempt = {"live": False, "pane_id": None}
+
+        def audit_attempt(
+            outcome: str, *, reason: str = "", extra: Optional[dict] = None
+        ) -> None:
+            if self._audit_log is None or not attempt["live"]:
+                return
+            detail = {"outcome": outcome, "spoken": True}
+            if reason:
+                detail["reason"] = reason
+            if extra:
+                detail.update(extra)
+            self._audit_log.record({
+                "action": "pane.dialog.answer",
+                "pane_id": attempt["pane_id"],
+                "detail": detail,
+            })
+
         def refused(reason: str, detail: str) -> str:
+            audit_attempt("refused", reason=reason)
             return json.dumps(
                 {"outcome": "refused", "reason": reason, "detail": detail},
                 ensure_ascii=False,
@@ -2389,6 +2433,10 @@ class BrainTools:
                 "the question on the pane changed since it was spoken; it "
                 "will be spoken again before anything is pressed",
             )
+        # From here the dialog is verified live against what was spoken:
+        # every outcome (answered or refused) records one audit line.
+        attempt["live"] = True
+        attempt["pane_id"] = active.pane_id
         if binding["keys_sent"]:
             return refused(
                 "keys-sent",
@@ -2410,6 +2458,7 @@ class BrainTools:
             return self._answer_dialog_spoken_form(
                 active, authorization,
                 choices=choices, option=option, text=text, refused=refused,
+                audit_attempt=audit_attempt,
             )
         choice = resolve_dialog_choice(authorization)
         if choice is None:
@@ -2473,6 +2522,10 @@ class BrainTools:
             )
         result = self.send_keys_to_pane(active.pane_id, keys)
         if result["outcome"] != "sent":
+            audit_attempt(
+                "refused", reason="send-failed",
+                extra={"detail": result.get("detail") or result["outcome"]},
+            )
             return json.dumps(
                 {
                     "outcome": "refused",
@@ -2483,6 +2536,9 @@ class BrainTools:
                 ensure_ascii=False,
             )
         chosen = options[index]
+        audit_attempt(
+            "answered", extra={"option": chosen.get("n"), "keys": keys}
+        )
         return json.dumps(
             {
                 "outcome": "answered",
@@ -2528,6 +2584,7 @@ class BrainTools:
         option: Optional[int],
         text: Optional[str],
         refused,
+        audit_attempt,
     ) -> str:
         """The S5 spoken forms: multi-select sets and free-text answers.
 
@@ -2614,6 +2671,9 @@ class BrainTools:
                     result.get("detail") or "",
                 )
             picked = sorted(indices)
+            audit_attempt(
+                "answered", extra={"choices": [index + 1 for index in picked]}
+            )
             return json.dumps(
                 {
                     "outcome": "answered",
@@ -2677,6 +2737,7 @@ class BrainTools:
                 result.get("reason") or "changed",
                 result.get("detail") or "",
             )
+        audit_attempt("answered", extra={"option": option, "text": typed})
         return json.dumps(
             {
                 "outcome": "answered",

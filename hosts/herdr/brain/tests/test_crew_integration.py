@@ -519,3 +519,184 @@ class TestOutgoingClientCertificate:
         CrewGateway(state, secret_provider=lambda: "crew-secret-1").client_for("host-b")
 
         assert calls == [(None, None)]  # honest: the peer answers the uniform 401
+
+
+# ── peer audit trail (T3/S3): the owner brain records its own writes ────────
+
+
+class PeerAuditTools(CrewTools):
+    """CrewTools with the dialog surface and switchable write outcomes, so
+    the handler-level audit policy can be pinned for every tool outcome
+    the (status, payload) mapping knows."""
+
+    def __init__(self, reply_outcome="delivered", keys_outcome="sent",
+                 dialog_answer=None):
+        super().__init__()
+        self.reply_outcome = reply_outcome
+        self.keys_outcome = keys_outcome
+        self.dialog_answer = dialog_answer
+        self.dialog_calls: list = []
+
+    def reply_to_pane(self, pane_id, text):
+        self.replies.append((pane_id, text))
+        return {"outcome": self.reply_outcome, "pane_id": pane_id, "detail": ""}
+
+    def verified_reply_to_pane(self, pane_id, text, steer=False):
+        return self.reply_to_pane(pane_id, text)
+
+    def send_keys_to_pane(self, pane_id, keys):
+        self.key_sends.append((pane_id, keys))
+        return {"outcome": self.keys_outcome, "pane_id": pane_id, "detail": ""}
+
+    def answer_structured_dialog(self, pane_id, fingerprint, option=None,
+                                 choices=None, text=None, model_name=None,
+                                 provider_name=None):
+        self.dialog_calls.append({
+            "pane_id": pane_id, "fingerprint": fingerprint, "option": option,
+            "choices": choices, "text": text,
+        })
+        # Mirrors tools.answer_structured_dialog: refusals carry a reason,
+        # answers carry the resolved label.
+        result = dict(self.dialog_answer) if self.dialog_answer else {
+            "outcome": "answered", "label": "Sí",
+        }
+        result.update({"pane_id": pane_id, "option": option, "choices": choices})
+        return result
+
+
+class TestPeerAuditTrail:
+    """S3 on the peer surface: every crew write handler records exactly one
+    host-local audit line, refusals included, with `crew` marking the
+    channel and no `device` attribute (the crew link carries no paired
+    device bearer — the same convention _h_approval_action already uses).
+    Handler-level admission validation (blank text, empty keys) mirrors the
+    HTTP routes' pydantic body validation and records nothing."""
+
+    def _peer_app(self, tmp_path, monkeypatch, tools):
+        state = tmp_path / "state"
+        roster = CrewRoster.load(state, now=lambda: 1_000.0)
+        roster.join_as_peer(
+            "host-b", "host-a", "https://a.example:8747", LEAD_PEM,
+            "crew-secret-1", now=1.0,
+        )
+        roster.persist()
+        monkeypatch.setattr(server_module, "BrainTools", lambda cfg: tools)
+        settings = Settings(**{
+            **SETTINGS_KWARGS,
+            "state_dir": str(state), "audio_dir": str(tmp_path / "audio"),
+        })
+        gateway = CrewGateway(
+            state, secret_provider=lambda: "crew-secret-1",
+            transport_factory=lambda *a: StubTransport(), now=lambda: 1_000.0,
+        )
+        return create_app(settings=settings, crew=gateway), state
+
+    def _lines(self, state: Path) -> list:
+        path = state / "audit.log"
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+    def test_reply_records_one_crew_line_without_device(self, tmp_path, monkeypatch):
+        app, state = self._peer_app(tmp_path, monkeypatch, PeerAuditTools())
+        outcome = app.state.crew_handlers["reply"]("w1:p9", "sigue")
+
+        assert outcome == (200, {"ok": True, "pane_id": "w1:p9"})
+        lines = self._lines(state)
+        assert len(lines) == 1
+        line = lines[0]
+        assert line["action"] == "pane.reply"
+        assert line["pane_id"] == "w1:p9"
+        assert "device" not in line  # crew link carries no device identity
+        assert line["detail"] == {"outcome": "delivered", "text": "sigue", "crew": True}
+
+    @pytest.mark.parametrize("outcome,status", [
+        ("unknown_pane", 404), ("blocked", 409), ("error", 502),
+    ])
+    def test_reply_refusals_record_their_outcome(
+        self, tmp_path, monkeypatch, outcome, status
+    ):
+        app, state = self._peer_app(
+            tmp_path, monkeypatch, PeerAuditTools(reply_outcome=outcome)
+        )
+        result = app.state.crew_handlers["reply"]("w1:p9", "intenta igual")
+
+        assert result == (status, {"detail": result[1]["detail"]})
+        lines = self._lines(state)
+        assert len(lines) == 1
+        assert lines[0]["action"] == "pane.reply"
+        assert lines[0]["detail"] == {
+            "outcome": outcome, "text": "intenta igual", "crew": True,
+        }
+
+    def test_blank_reply_records_nothing(self, tmp_path, monkeypatch):
+        """Admission failure: mirrors the HTTP route's body validation, which
+        is unaudited today — the failed-attempt policy starts at the tool."""
+        app, state = self._peer_app(tmp_path, monkeypatch, PeerAuditTools())
+        assert app.state.crew_handlers["reply"]("w1:p9", "   ") == (
+            400, {"detail": "text is required"},
+        )
+        assert self._lines(state) == []
+
+    def test_keys_records_one_crew_line(self, tmp_path, monkeypatch):
+        app, state = self._peer_app(tmp_path, monkeypatch, PeerAuditTools())
+        result = app.state.crew_handlers["keys"]("w1:p9", ["enter"])
+
+        assert result == {"ok": True, "pane_id": "w1:p9"}
+        lines = self._lines(state)
+        assert len(lines) == 1
+        assert lines[0]["action"] == "pane.keys"
+        assert lines[0]["detail"] == {
+            "outcome": "sent", "keys": ["enter"], "crew": True,
+        }
+
+    def test_keys_failure_records_its_outcome(self, tmp_path, monkeypatch):
+        app, state = self._peer_app(
+            tmp_path, monkeypatch, PeerAuditTools(keys_outcome="error")
+        )
+        result = app.state.crew_handlers["keys"]("w1:p9", ["enter"])
+
+        assert result == (502, {"detail": "send-keys failed"})
+        lines = self._lines(state)
+        assert len(lines) == 1
+        assert lines[0]["detail"]["outcome"] == "error"
+
+    def test_empty_keys_record_nothing(self, tmp_path, monkeypatch):
+        app, state = self._peer_app(tmp_path, monkeypatch, PeerAuditTools())
+        assert app.state.crew_handlers["keys"]("w1:p9", []) == (
+            400, {"detail": "keys must be a non-empty array"},
+        )
+        assert self._lines(state) == []
+
+    def test_dialog_answer_records_the_answered_shape(self, tmp_path, monkeypatch):
+        app, state = self._peer_app(tmp_path, monkeypatch, PeerAuditTools())
+        result = app.state.crew_handlers["dialog_answer"](
+            "w1:p9", fingerprint="fp1", option=0,
+        )
+
+        assert result["ok"] is True
+        assert result["label"] == "Sí"
+        lines = self._lines(state)
+        assert len(lines) == 1
+        assert lines[0]["action"] == "pane.dialog.answer"
+        assert lines[0]["detail"] == {
+            "outcome": "answered", "reason": "", "option": 0,
+            "choices": None, "fingerprint": "fp1", "crew": True,
+        }
+
+    def test_dialog_answer_refusal_records_its_reason(
+        self, tmp_path, monkeypatch,
+    ):
+        app, state = self._peer_app(
+            tmp_path, monkeypatch,
+            PeerAuditTools(dialog_answer={"outcome": "refused", "reason": "changed"}),
+        )
+        result = app.state.crew_handlers["dialog_answer"](
+            "w1:p9", fingerprint="fp1", option=0,
+        )
+
+        assert result == (409, {"detail": "changed"})
+        lines = self._lines(state)
+        assert len(lines) == 1
+        assert lines[0]["detail"]["outcome"] == "refused"
+        assert lines[0]["detail"]["reason"] == "changed"

@@ -1460,6 +1460,13 @@ def create_app(
     # action can never be failed by it.
     audit_log = AuditLog(cfg.state_dir / "audit.log", content=cfg.audit_content)
 
+    # The verbal dialog tools share the same trail (T3/S3): the voice
+    # answer_dialog records its own line per verified-live-dialog call.
+    # Same attach-after-construction seam as attach_hook_broker —
+    # injected doubles without it simply keep the old behavior.
+    if hasattr(tools, "attach_audit"):
+        tools.attach_audit(audit_log)
+
     def audit_device(request: Optional[Request]) -> Optional[str]:
         """The paired-device label the access middleware resolved for
         this request, or None on channels that carry no device identity
@@ -4847,13 +4854,35 @@ def create_app(
                 if verified is not None
                 else tools.reply_to_pane(pane_id, text)
             )
-            return _crew_reply_outcome(result, pane_id)
+            response = _crew_reply_outcome(result, pane_id)
+            # Host-local trail of the write this peer just executed
+            # (T3/S3, doc 10's host-local audit). Same line the HTTP
+            # route records for a tap, plus `crew` marking the channel;
+            # no `device` — the crew link carries no paired device
+            # bearer (the _h_approval_action convention). The lead's
+            # own trail records the proxied send; duplicates never
+            # happen on one machine.
+            audit_log.record({
+                "action": "pane.reply",
+                "pane_id": pane_id,
+                "detail": {
+                    "outcome": result["outcome"], "text": text, "crew": True,
+                },
+            })
+            return response
 
         def _h_keys(pane_id, keys):
             if not isinstance(keys, list) or not keys:
                 return 400, {"detail": "keys must be a non-empty array"}
             result = tools.send_keys_to_pane(pane_id, keys)
             outcome = result["outcome"]
+            # Refusals and errors record the same way: the explicit
+            # failed-attempt policy starts where the tool runs.
+            audit_log.record({
+                "action": "pane.keys",
+                "pane_id": pane_id,
+                "detail": {"outcome": outcome, "keys": keys, "crew": True},
+            })
             if outcome == "sent":
                 return {"ok": True, "pane_id": pane_id}
             return (404 if outcome == "unknown_pane" else 502), {
@@ -4869,6 +4898,23 @@ def create_app(
                 text=payload.get("text"),
             )
             outcome = result["outcome"]
+            # One line per answer attempt, refusals included (T3/S3):
+            # the route-level shape plus the crew channel marker.
+            detail = {
+                "outcome": outcome,
+                "reason": result.get("reason", ""),
+                "option": payload.get("option"),
+                "choices": payload.get("choices"),
+                "fingerprint": payload.get("fingerprint"),
+                "crew": True,
+            }
+            if payload.get("text") is not None:
+                detail["text"] = payload.get("text")
+            audit_log.record({
+                "action": "pane.dialog.answer",
+                "pane_id": pane_id,
+                "detail": detail,
+            })
             if outcome == "answered":
                 return {
                     "ok": True, "pane_id": pane_id,

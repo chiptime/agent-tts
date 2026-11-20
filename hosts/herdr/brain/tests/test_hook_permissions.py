@@ -607,3 +607,32 @@ def test_a_pathologically_nested_request_still_denies(tmp_path):
     assert result.returncode == 0
     decision = json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"]
     assert decision == "deny"
+
+
+def test_post_answer_keeps_attribution_in_none_mode(tmp_path):
+    """T3/S3: the hook answer's `by` field is attribution — it must survive
+    HERDR_BRAIN_AUDIT_CONTENT=none exactly like the envelope `device` does
+    (the auditor's redaction-gap finding)."""
+    import json
+
+    broker = make_broker(timeout_s=10)
+    app = server_module.create_app(
+        settings=Settings(**{
+            **_route_settings_kwargs(), "state_dir": str(tmp_path),
+            "audit_content": "none",
+        }),
+        hook_broker=broker,
+    )
+    client = TestClient(app)
+    held = broker.hold(
+        tool_name="Bash", tool_input={"command": "echo hi"}, session_id="s", cwd="/"
+    )
+    response = client.post(
+        f"/hook/permissions/{held.request_id}/answer", json={"decision": "allow"}
+    )
+    assert response.status_code == 200
+    lines = (tmp_path / "audit.log").read_text().splitlines()
+    entry = json.loads(next(line for line in lines if "hook.permission.answer" in line))
+    assert entry["detail"]["by"] == "pwa"       # unresolved device falls back
+    assert entry["detail"]["decision"] == "allow"
+    assert entry["detail"]["tool_name"] == "⟨redacted⟩"
