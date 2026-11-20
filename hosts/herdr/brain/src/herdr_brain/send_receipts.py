@@ -160,6 +160,12 @@ STOP_RUNNING_STATUSES = frozenset({"working"})
 #: turn, never for a dialog question.
 STOP_ENDED_STATUSES = frozenset({"idle", "done", "blocked"})
 
+#: Post-interrupt states that EVIDENCE the turn ended (S2, correction):
+#: the running turn is gone for good. ``blocked`` is deliberately NOT
+#: here — a dialog can be a mid-turn permission pause the agent RESUMES
+#: once answered, so opening a dialog never proves the turn finalized.
+STOP_CONFIRMED_AFTER = frozenset({"idle", "done"})
+
 #: How long a confirmed stop may take to show in the pane state (the same
 #: envelope a verified reply waits).
 VERIFIED_STOP_WAIT_MS = 3_000
@@ -170,17 +176,26 @@ def classify_stop(
 ) -> Tuple[str, str]:
     """One stop outcome from state evidence, fail-closed (S2).
 
-    ``stopped`` needs the pane to have LEFT its running state after the
-    interrupt keys — herdr's own state report is the evidence, the sent
-    keys alone never are. Everything else tells the truth about what is
-    known: still running after the wait → ``unverified``; the state
-    unreadable or unrecognized → ``unknown``. Nothing here can return
-    ``stopped`` without the transition.
+    ``stopped`` needs the pane to have LEFT its running state for a
+    state that evidences the turn ENDED (idle/done) after the interrupt
+    keys — the sent keys alone never are evidence, and neither is a
+    dialog opening (it may pause the turn instead of ending it). A
+    post-interrupt ``blocked`` is therefore ``unknown``: the dialog may
+    be the stop flow or a mid-turn permission the agent will resume.
+    Still running → ``unverified``; unreadable or unrecognized →
+    ``unknown``. Nothing here can return ``stopped`` without the
+    transition to a turn-ending state.
     """
     if status_after is None:
         return ("unknown", "no se pudo leer el estado del agente tras la interrupción")
-    if status_before in STOP_RUNNING_STATUSES and status_after in STOP_ENDED_STATUSES:
+    if status_before in STOP_RUNNING_STATUSES and status_after in STOP_CONFIRMED_AFTER:
         return ("stopped", "el agente dejó su turno en curso tras la interrupción")
+    if status_after == "blocked":
+        return (
+            "unknown",
+            "el agente quedó en un diálogo tras la interrupción; no se confirmó "
+            "que el turno terminará",
+        )
     if status_after in STOP_RUNNING_STATUSES or status_after in STOP_ENDED_STATUSES:
         return (
             "unverified",
@@ -320,14 +335,25 @@ class SendReceiptStore:
         outcome: str,
         detail: str = "",
         text_hint: str = "",
+        line_hint: str = "",
     ) -> dict:
-        """Appends one receipt (masked: a detail may echo screen text)."""
+        """Appends one receipt (masked: a detail or line hint may echo
+        screen text).
+
+        ``line_hint`` (S2, correction): the EXACT masked input line the
+        classifier saw when the text stayed typed — the unambiguous
+        binding every submit/discard/stop follow-up revalidates before
+        its key. A substring tail alone matches dialog options and
+        replaced drafts; the exact line does not. Empty when the
+        outcome never saw an input line.
+        """
         receipt = {
             "id": self._ids(),
             "pane_id": pane_id,
             "outcome": outcome,
             "detail": mask_text(detail or ""),
             "text_hint": mask_text((text_hint or "")[-ECHO_TAIL_CHARS:]),
+            "line_hint": mask_text(line_hint or ""),
             "created_at": self._clock(),
             "resolved_at": None,
         }

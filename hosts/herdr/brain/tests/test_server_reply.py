@@ -39,18 +39,18 @@ class FakeTools:
         type(self).replies.append((pane_id, text, steer))
         return dict(type(self).outcome, pane_id=pane_id)
 
-    def stop_pane(self, pane_id, text_hint=""):
+    def stop_pane(self, pane_id, text_hint="", line_hint=""):
         type(self).stop_results.append(pane_id)
         result = type(self).stop_outcome
         return dict(result, pane_id=pane_id)
 
     stop_outcome = {"outcome": "stopped", "keys": ["esc"], "detail": ""}
 
-    def submit_typed_text(self, pane_id, text_hint):
+    def submit_typed_text(self, pane_id, text_hint, line_hint=""):
         type(self).follow_results.append(("submit", pane_id, text_hint))
         return dict(type(self).follow_outcome)
 
-    def discard_typed_text(self, pane_id, agent_kind, text_hint):
+    def discard_typed_text(self, pane_id, agent_kind, text_hint, line_hint=""):
         type(self).follow_results.append(("discard", pane_id, text_hint))
         return dict(type(self).follow_outcome)
 

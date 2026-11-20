@@ -59,6 +59,7 @@ from .send_receipts import (
     classify_stop,
     discard_recipe,
     echo_tail,
+    input_line,
     interrupt_recipe,
     steer_supported,
 )
@@ -3069,62 +3070,86 @@ class BrainTools:
             }
         afters = self._verified_poll(pane_id, before, text)
         outcome, detail = classify_send(before, afters, text, status)
+        receipt = receipt_fields(outcome, detail)
+        if outcome == "typed_not_submitted":
+            # S2 (correction): the receipt binds the EXACT masked input
+            # line the classifier saw — a substring tail alone also
+            # matches dialog options and replaced drafts, and the
+            # follow-up may only key that unambiguous line.
+            last = afters[-1] if afters else None
+            if last is not None:
+                receipt["line_hint"] = mask_text(input_line(last))
         return {
             **_reply_result("delivered", pane_id, status=status),
-            "receipt": receipt_fields(outcome, detail),
+            "receipt": receipt,
         }
 
-    def submit_typed_text(self, pane_id: str, text_hint: str) -> dict:
+    def submit_typed_text(self, pane_id: str, text_hint: str, line_hint: str = "") -> dict:
         """Presses Enter on a typed-but-not-submitted draft (S12, S2).
 
         The one follow-up the receipt protocol allows: no text is ever
         re-sent (that would duplicate the draft), only the commit key —
-        pressed only AFTER a fresh read that still shows the receipt's
-        echo on the input line (S2: Enter never flies blind; see
-        :meth:`_followup_typed`), then the same read-back decides
-        whether it landed. Outcome: ``sent`` |
+        pressed only AFTER the receipt's recorded input line is bound
+        again on a fresh read. ``line_hint`` is that exact masked line;
+        without it (or against a CURRENT line that differs — a dialog
+        opened, the user replaced the draft) nothing is keyed (S2
+        correction: a substring tail also matches a dialog option like
+        «do not delete files»). Outcome: ``sent`` |
         ``typed_not_submitted`` | ``unknown`` | ``error``.
         """
-        return self._followup_typed(pane_id, ["enter"], text_hint, "sent")
+        return self._followup_typed(pane_id, ["enter"], text_hint, "sent", line_hint)
 
-    def discard_typed_text(self, pane_id: str, agent_kind: str, text_hint: str) -> dict:
+    def discard_typed_text(
+        self, pane_id: str, agent_kind: str, text_hint: str, line_hint: str = ""
+    ) -> dict:
         """Clears a typed draft with the safe per-harness recipe (S12, S2).
 
         ``esc`` for every harness (see :func:`discard_recipe`): it never
         types a character and never executes anything — on chat TUIs it
         drops the draft, on a plain shell it is a no-op. The key is
-        pressed only after a fresh read still shows the receipt's echo
-        (an echo that is gone could have been already submitted by the
-        user — Esc could then interrupt a RUNNING turn; see
+        pressed only against the receipt's exact recorded line (an
+        unbound Esc could interrupt a RUNNING turn or a dialog; see
         :meth:`_followup_typed`). Outcome: ``discarded`` |
         ``typed_not_submitted`` | ``unknown`` | ``error``.
         """
         return self._followup_typed(
-            pane_id, list(discard_recipe(agent_kind)), text_hint, "discarded"
+            pane_id, list(discard_recipe(agent_kind)), text_hint, "discarded",
+            line_hint,
         )
 
     def _followup_typed(
-        self, pane_id: str, keys: list, text_hint: str, resolved: str
+        self, pane_id: str, keys: list, text_hint: str, resolved: str,
+        line_hint: str = "",
     ) -> dict:
         def follow(outcome: str, detail: str) -> dict:
             return {"outcome": outcome, "detail": mask_text(detail), "pane_id": pane_id}
 
-        from .send_receipts import text_echoed_on_input
+        from .send_receipts import text_echoed_on_input, input_line
 
         # Revalidate the draft BEFORE touching the pane (S2): the key
-        # only ever rides on a screen the receipt's own echo describes.
-        # Without that bound read the commit key could act on a NEW
+        # only ever rides on an UNAMBIGUOUS binding of the receipt's own
+        # draft line — the exact masked line recorded at classification
+        # time must still be the input line. Without that binding (or
+        # against a changed line — a dialog opened, the user replaced
+        # or extended the draft) the commit key could act on a NEW
         # draft (Enter) and the discard key could interrupt a RUNNING
-        # turn (Esc) — both are refused with nothing sent.
+        # turn (Esc): nothing is keyed, fail-closed.
         before = self._verified_read(pane_id)
         if before is None:
             return follow(
                 "error", "la pantalla no se pudo leer; no se envió ninguna tecla"
             )
-        if not text_echoed_on_input(before, text_hint):
+        if not line_hint:
+            return follow(
+                "error",
+                "el recibo no puede vincularse de forma inequívoca a un "
+                "borrador; no se envió ninguna tecla",
+            )
+        if mask_text(input_line(before)) != line_hint:
             return follow(
                 "unknown",
-                "el borrador ya no está en la línea de entrada; no se envió ninguna tecla",
+                "la línea de entrada ya no es el borrador registrado; "
+                "no se envió ninguna tecla",
             )
 
         key_result = self.send_keys_to_pane(pane_id, keys)
@@ -3153,7 +3178,7 @@ class BrainTools:
             return None
         return target.status or ""
 
-    def stop_pane(self, pane_id: str, text_hint: str = "") -> dict:
+    def stop_pane(self, pane_id: str, text_hint: str = "", line_hint: str = "") -> dict:
         """Interrupts one pane's RUNNING turn with its harness recipe (S12, S2).
 
         The recipe comes from the per-harness interrupt table; a harness
@@ -3172,11 +3197,16 @@ class BrainTools:
         means the brain cannot reason about where a key would land. When
         the keys DO go, herdr's own ``agent wait`` is the evidence that
         the turn actually ended: ``stopped`` is claimed ONLY when the
-        pane left its running state; a wait that expires or an
-        unreadable post-state reports ``unverified``/``unknown`` and the
-        server treats both as NOT stopped. ``text_hint`` — when the
-        caller hands a receipt's masked draft tail — adds the draft's
-        observed fate (screen evidence, never part of the verdict).
+        pane left its running state for a turn-ENDING state (idle/done);
+        a post-interrupt dialog is NOT that evidence — it may be a
+        mid-turn permission pause the agent will resume — so it reports
+        ``unknown``; a wait that expires or an unreadable post-state
+        reports ``unverified``/``unknown`` and the server treats both
+        as NOT stopped. ``text_hint``/``line_hint`` — when the caller
+        hands a receipt's masked draft tail and its exact recorded input
+        line — add the draft's observed fate (screen evidence, never
+        part of the verdict), bound the same unambiguous way the
+        follow-ups bind it.
         """
         def stop_result(outcome: str, detail: str = "", keys: Optional[list] = None) -> dict:
             return {
@@ -3224,7 +3254,13 @@ class BrainTools:
         if text_hint and before is not None:
             from .send_receipts import text_echoed_on_input
 
-            draft_on_line = text_echoed_on_input(before, text_hint)
+            if line_hint:
+                # Unambiguous binding only (S2 correction): the exact
+                # recorded line, never a substring that dialog options
+                # or replaced drafts also match.
+                draft_on_line = mask_text(input_line(before)) == line_hint
+            else:
+                draft_on_line = text_echoed_on_input(before, text_hint)
 
         keys = list(recipe)
         try:
@@ -3255,11 +3291,18 @@ class BrainTools:
 
             after = self._verified_read(pane_id)
             if after is not None:
-                draft_note = (
-                    "el borrador queda en la línea de entrada"
-                    if text_echoed_on_input(after, text_hint)
-                    else "el borrador ya no está en la línea de entrada"
-                )
+                if line_hint:
+                    draft_note = (
+                        "el borrador sigue en su línea registrada"
+                        if mask_text(input_line(after)) == line_hint
+                        else "el borrador ya no está en su línea registrada"
+                    )
+                else:
+                    draft_note = (
+                        "el borrador queda en la línea de entrada"
+                        if text_echoed_on_input(after, text_hint)
+                        else "el borrador ya no está en la línea de entrada"
+                    )
                 detail = f"{detail}; {draft_note}"
         return stop_result(outcome, detail, keys)
 

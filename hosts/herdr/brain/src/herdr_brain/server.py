@@ -3218,6 +3218,7 @@ def create_app(
                 receipt_fields["outcome"],
                 detail=receipt_fields["detail"],
                 text_hint=receipt_fields["text_hint"],
+                line_hint=receipt_fields.get("line_hint", ""),
             )
         if receipt is not None and receipt["outcome"] in TRACKED_OUTCOMES:
             # parity-f7g S1: one tracker per receipt follows the send to
@@ -3379,7 +3380,9 @@ def create_app(
         ``typed_not_submitted`` (re-offerable) when it did not.
         """
         receipt = _live_typed_receipt_or_error(receipt_id)
-        result = tools.submit_typed_text(receipt["pane_id"], receipt["text_hint"])
+        result = tools.submit_typed_text(
+            receipt["pane_id"], receipt["text_hint"], receipt.get("line_hint", "")
+        )
         return _resolve_receipt_and_audit(request, "pane.receipt.submit", receipt, result)
 
     @app.post("/pane/receipt/{receipt_id}/discard")
@@ -3392,7 +3395,9 @@ def create_app(
         clean; a surviving echo keeps it ``typed_not_submitted``.
         """
         receipt = _live_typed_receipt_or_error(receipt_id)
-        result = tools.discard_typed_text(receipt["pane_id"], "", receipt["text_hint"])
+        result = tools.discard_typed_text(
+            receipt["pane_id"], "", receipt["text_hint"], receipt.get("line_hint", "")
+        )
         return _resolve_receipt_and_audit(request, "pane.receipt.discard", receipt, result)
 
     @app.post("/pane/stop")
@@ -3420,7 +3425,8 @@ def create_app(
             if r["outcome"] == "typed_not_submitted"
         ]
         draft_hint = drafts[0]["text_hint"] if drafts else ""
-        result = tools.stop_pane(body.pane_id, draft_hint)
+        draft_line = drafts[0].get("line_hint", "") if drafts else ""
+        result = tools.stop_pane(body.pane_id, draft_hint, draft_line)
         outcome = result["outcome"]
         audit_log.record({
             "action": "pane.stop",

@@ -20,6 +20,7 @@ from herdr_brain.send_receipts import (
     INTERRUPT_RECIPES,
     OUTCOMES,
     STEER_HARNESSES,
+    STOP_CONFIRMED_AFTER,
     STOP_ENDED_STATUSES,
     STOP_OUTCOMES,
     STOP_RUNNING_STATUSES,
@@ -275,7 +276,7 @@ def test_the_stop_outcome_set_is_closed_and_ordered_for_docs():
     )
 
 
-@pytest.mark.parametrize("after", ["idle", "done", "blocked"])
+@pytest.mark.parametrize("after", ["idle", "done"])
 def test_a_turn_that_left_its_running_state_is_stopped(after):
     outcome, detail = classify_stop("working", after)
     assert outcome == "stopped"
@@ -307,11 +308,14 @@ def test_a_stopped_claim_never_grows_without_the_transition():
 
 
 def test_the_stop_state_tables_split_dialog_from_ended():
-    # S2: a dialog IS an ended state for the classifier, but the status
-    # gate refuses a dialog pane before any key is chosen — the tables
-    # carry both sides of that distinction.
+    # S2: a dialog IS an ended state for the pre-key gate, but it is
+    # NOT stop evidence after the keys (a mid-turn permission dialog
+    # pauses — and resumes), so the post-evidence table carries only
+    # the turn-ENDING states.
     assert "blocked" in STOP_ENDED_STATUSES
     assert "blocked" not in STOP_RUNNING_STATUSES
+    assert "blocked" not in STOP_CONFIRMED_AFTER
+    assert STOP_CONFIRMED_AFTER == frozenset({"idle", "done"})
     assert STOP_RUNNING_STATUSES == frozenset({"working"})
     assert VERIFIED_STOP_WAIT_MS > 0
 
@@ -385,6 +389,22 @@ def test_store_resolve_flips_the_outcome_once():
     assert resolved["resolved_at"] is not None
     assert store.get("rct-a")["outcome"] == "discarded"
     assert store.get("rct-missing") is None
+
+
+def test_store_records_the_line_hint_masked():
+    store = SendReceiptStore(
+        clock=lambda: 0.0, id_factory=iter(["rct-a", "rct-b"]).__next__
+    )
+    receipt = store.record(
+        "w1:p2", "typed_not_submitted", "still typed",
+        text_hint="delete files", line_hint="│ > delete files",
+    )
+    assert receipt["line_hint"] == "│ > delete files"
+    plain = store.record(
+        "w1:p2", "sent", "ok",
+        line_hint="│ > sk-ant-api03-abcdef123456 run",
+    )
+    assert "sk-ant-api03" not in plain["line_hint"]
 
 
 def test_store_masks_detail_and_text_hint_before_keeping_them():
@@ -503,21 +523,25 @@ def test_submit_sends_enter_only_after_the_echo_is_verified():
             "user: sigue adelante\nworking",  # after: the echo left
         ],
     )
-    result = _tools(mux).submit_typed_text("w1:p2", "sigue adelante")
+    result = _tools(mux).submit_typed_text(
+        "w1:p2", "sigue adelante", line_hint="│ > sigue adelante"
+    )
     assert result["outcome"] == "sent"
     assert result["detail"]
     assert mux.key_calls == [("w1:p2", ["enter"])]
     assert len(mux.read_calls) >= 2
 
 
-def test_submit_refuses_enter_when_the_echo_is_not_on_the_line():
-    """The screen no longer shows the receipt's draft — the user may
-    have sent or cleared it already. Enter could act on a NEW draft, so
-    nothing is keyed and the outcome says exactly why."""
+def test_submit_refuses_enter_when_the_line_is_no_longer_the_draft():
+    """The bound line changed (cleared or replaced): Enter could act on
+    a NEW draft, so nothing is keyed and the outcome says exactly why.
+    (The unbindable no-line_hint case is pinned by the REG tests.)"""
     mux = ScriptedMux([_agent()], screens=["user: something else\nworking"])
-    result = _tools(mux).submit_typed_text("w1:p2", "sigue adelante")
+    result = _tools(mux).submit_typed_text(
+        "w1:p2", "sigue adelante", line_hint="│ > sigue adelante"
+    )
     assert result["outcome"] == "unknown"
-    assert "borrador" in result["detail"]
+    assert "no se envió" in result["detail"]
     assert not mux.key_calls
 
 
@@ -534,7 +558,9 @@ def test_submit_refuses_enter_when_the_screen_is_unreadable():
 
 def test_submit_keeps_typed_when_the_echo_survives():
     mux = ScriptedMux([_agent()], screens=["❯ 1) Yes\n│ > sigue adelante"])
-    result = _tools(mux).submit_typed_text("w1:p2", "sigue adelante")
+    result = _tools(mux).submit_typed_text(
+        "w1:p2", "sigue adelante", line_hint="│ > sigue adelante"
+    )
     assert result["outcome"] == "typed_not_submitted"
 
 
@@ -546,16 +572,20 @@ def test_discard_sends_the_recipe_only_on_a_verified_echo():
             "❯ 1) Yes",                      # after: clean
         ],
     )
-    result = _tools(mux).discard_typed_text("w1:p2", "claude", "sigue adelante")
+    result = _tools(mux).discard_typed_text(
+        "w1:p2", "claude", "sigue adelante", line_hint="│ > sigue adelante"
+    )
     assert result["outcome"] == "discarded"
     assert mux.key_calls == [("w1:p2", ["esc"])]
 
 
-def test_discard_refuses_esc_when_the_echo_is_absent():
-    """The draft is gone with no read proving who took it: Esc into
-    whatever replaced it could interrupt a running turn — refused."""
+def test_discard_refuses_esc_when_the_line_is_no_longer_the_draft():
+    """The bound line changed: whatever took the draft's place must not
+    receive an Esc (it could be a running turn or a dialog)."""
     mux = ScriptedMux([_agent(agent="claude")], screens=["❯ 1) Yes"])
-    result = _tools(mux).discard_typed_text("w1:p2", "claude", "sigue adelante")
+    result = _tools(mux).discard_typed_text(
+        "w1:p2", "claude", "sigue adelante", line_hint="│ > sigue adelante"
+    )
     assert result["outcome"] == "unknown"
     assert not mux.key_calls
 
@@ -565,7 +595,9 @@ def test_discard_keeps_typed_when_the_text_survives():
         [_agent(agent="claude")],
         screens=["❯ 1) Yes\n│ > sigue adelante"],
     )
-    result = _tools(mux).discard_typed_text("w1:p2", "claude", "sigue adelante")
+    result = _tools(mux).discard_typed_text(
+        "w1:p2", "claude", "sigue adelante", line_hint="│ > sigue adelante"
+    )
     assert result["outcome"] == "typed_not_submitted"
     assert result["detail"]
 
@@ -701,6 +733,184 @@ def test_stop_draft_evidence_never_invents_a_verdict():
     result = _tools(mux).stop_pane("w1:p2", "sigue adelante")
     assert result["outcome"] == "stopped"
     assert "borrador" not in result["detail"]
+
+
+# ── S2 correction round: the two verifier blockers (RED first) ────────────────
+
+
+def test_regression_blocker1_a_dialog_after_the_interrupt_is_never_a_stopped_claim():
+    """REG1 (independent verification of e4b93e5): the pane was working,
+    ``agent wait`` expired and the fallback state read says ``blocked``.
+    A dialog opening does NOT prove the turn ended — a mid-turn
+    permission dialog PAUSES the turn and the agent resumes when
+    answered. Nothing may claim ``stopped`` on that evidence."""
+    mux = ScriptedMux(
+        [_agent(agent="claude", status="working")],
+        screens=["work"],
+        statuses=("working", "blocked"),
+        wait_ok=False,
+    )
+    result = _tools(mux).stop_pane("w1:p2")
+    assert result["outcome"] != "stopped"
+    assert result["outcome"] == "unknown"
+    assert "diálogo" in result["detail"]
+
+
+def test_regression_blocker1_the_classifier_alone_refuses_a_dialog_as_stop_evidence():
+    """The pure classifier carries the same rule: working → blocked is
+    NOT a stopped verdict, whatever the keys did."""
+    outcome, detail = classify_stop("working", "blocked")
+    assert outcome != "stopped"
+    assert outcome == "unknown"
+    assert "diálogo" in detail
+
+
+def _recorded_draft_receipt():
+    """A typed_not_submitted receipt as the real flow records it — its
+    ``line_hint`` binds the EXACT input line the classifier saw."""
+    mux = ScriptedMux(
+        [_agent(agent="claude", status="idle")],
+        screens=[
+            "❯ 1) Yes  2) No\n│ >",                    # before
+            "❯ 1) Yes  2) No\n│ > delete files",        # the draft landed
+        ],
+        prompt={"ok": False, "status": "timeout", "output": ""},
+    )
+    result = _tools(mux).verified_reply_to_pane("w1:p2", "delete files")
+    assert result["receipt"]["outcome"] == "typed_not_submitted"
+    return result["receipt"]
+
+
+def test_regression_blocker2_the_flow_records_an_unambiguous_line_hint():
+    """The receipt must carry the exact observed input line, not just a
+    substring tail — that line is what the follow-up binds against."""
+    receipt = _recorded_draft_receipt()
+    assert receipt["line_hint"] == "│ > delete files"
+
+
+def test_regression_blocker2_submit_refuses_when_the_line_is_not_the_draft():
+    """REG2: tail ``delete files`` ALSO matches the dialog option
+    «do not delete files». Substring matching let Enter fly over
+    different content; the follow-up must fail CLOSED when the current
+    input line is not exactly the line the receipt recorded."""
+    receipt = _recorded_draft_receipt()
+    dialog_screen = "❯ 1) Yes  2) No\n  1) do not delete files"
+    mux = ScriptedMux([_agent(agent="claude", status="idle")],
+                      screens=[dialog_screen])
+    result = _tools(mux).submit_typed_text(
+        "w1:p2", "delete files", line_hint=receipt["line_hint"]
+    )
+    assert result["outcome"] == "unknown"
+    assert "borrador" in result["detail"] or "línea" in result["detail"]
+    assert not mux.key_calls
+
+
+def test_regression_blocker2_a_different_draft_is_never_entered():
+    """«Contenido distinto»: the user replaced the draft. The old
+    substring check still saw the tail inside the new line — the exact
+    binding refuses instead."""
+    receipt = _recorded_draft_receipt()
+    mux = ScriptedMux(
+        [_agent(agent="claude", status="idle")],
+        screens=["❯ 1) Yes\n│ > delete files and wipe disks"],
+    )
+    result = _tools(mux).submit_typed_text(
+        "w1:p2", "delete files", line_hint=receipt["line_hint"]
+    )
+    assert result["outcome"] == "unknown"
+    assert not mux.key_calls
+
+
+def test_regression_blocker2_followup_without_a_line_hint_sends_nothing():
+    """Fail-closed: a caller that cannot hand the exact recorded line
+    cannot bind the receipt at all — no key, whatever the screen shows."""
+    mux = ScriptedMux([_agent(agent="claude", status="idle")],
+                      screens=["│ > delete files"])
+    result = _tools(mux).submit_typed_text("w1:p2", "delete files")
+    assert result["outcome"] == "error"
+    assert not mux.key_calls
+    discard = _tools(mux).discard_typed_text("w1:p2", "claude", "delete files")
+    assert discard["outcome"] == "error"
+    assert not mux.key_calls
+
+
+def test_regression_blocker2_submit_still_works_on_the_exact_bound_line():
+    """The exact binding keeps the legitimate path working: the same
+    line the receipt recorded, the echo gone after Enter."""
+    receipt = _recorded_draft_receipt()
+    mux = ScriptedMux(
+        [_agent(agent="claude", status="idle")],
+        screens=[
+            "❯ 1) Yes  2) No\n│ > delete files",   # the recorded line
+            "user: delete files\nworking",          # taken
+        ],
+    )
+    result = _tools(mux).submit_typed_text(
+        "w1:p2", "delete files", line_hint=receipt["line_hint"]
+    )
+    assert result["outcome"] == "sent"
+    assert mux.key_calls == [("w1:p2", ["enter"])]
+
+
+def test_regression_blocker2_discard_binds_the_exact_line_too():
+    receipt = _recorded_draft_receipt()
+    kept = ScriptedMux(
+        [_agent(agent="claude", status="idle")],
+        screens=["❯ 1) Yes  2) No\n│ > delete files"],  # unchanged line
+    )
+    result = _tools(kept).discard_typed_text(
+        "w1:p2", "claude", "delete files", line_hint=receipt["line_hint"]
+    )
+    assert result["outcome"] == "typed_not_submitted"
+    assert kept.key_calls == [("w1:p2", ["esc"])]
+
+    dialog = ScriptedMux(
+        [_agent(agent="claude", status="idle")],
+        screens=["❯ 1) Yes  2) No\n  1) do not delete files"],
+    )
+    refused = _tools(dialog).discard_typed_text(
+        "w1:p2", "claude", "delete files", line_hint=receipt["line_hint"]
+    )
+    assert refused["outcome"] == "unknown"
+    assert not dialog.key_calls
+
+
+def test_regression_blocker2_the_stop_draft_note_binds_the_exact_line():
+    """The stop's draft note rides the same unambiguous binding: against
+    a dialog option that merely CONTAINS the tail it stays silent, and
+    on the recorded line it speaks in the recorded-line wording."""
+    hint = "delete files"
+    bound = ScriptedMux(
+        [_agent(agent="claude", status="working")],
+        screens=[
+            "❯ 1) Yes  2) No\n│ > delete files",   # the recorded line
+            "❯ 1) Yes  2) No",                      # gone after interrupt
+        ],
+        statuses=("working", "idle"),
+    )
+    result = _tools(bound).stop_pane(
+        "w1:p2", hint, line_hint="│ > delete files"
+    )
+    assert result["outcome"] == "stopped"
+    assert "el borrador ya no está en su línea registrada" in result["detail"]
+
+    ambiguous = ScriptedMux(
+        [_agent(agent="claude", status="working")],
+        screens=[
+            "❯ 1) Yes  2) No\n│ > delete files",
+            "❯ 1) Yes  2) No\n│ > delete files and wipe disks",
+        ],
+        statuses=("working", "idle"),
+    )
+    murky = _tools(ambiguous).stop_pane(
+        "w1:p2", hint, line_hint="│ > delete files"
+    )
+    assert murky["outcome"] == "stopped"
+    # The tail also sits inside the REPLACED line; the exact binding
+    # still reports the recorded draft as gone — never presence from a
+    # substring.
+    assert "ya no está en su línea registrada" in murky["detail"]
+    assert "queda en" not in murky["detail"]
 
 
 def test_stop_refuses_unknown_harnesses_without_sending_keys():
@@ -948,7 +1158,9 @@ class TestTrackerOnHTTP:
 
     def test_untracked_receipts_keep_their_exact_shape(self, tracker_client):
         """PRESERVE (S4 additive contract): a receipt with no tracker —
-        here a typed draft — serializes without any track key."""
+        here a typed draft — serializes without any track key. S2
+        correction added ``line_hint`` additively (the exact masked
+        input line the follow-ups bind against)."""
         TrackerFakeTools.outcome = {
             "outcome": "delivered", "pane_id": "w1:p2", "status": "timeout",
             "detail": "",
@@ -957,7 +1169,7 @@ class TestTrackerOnHTTP:
         _post_sent(tracker_client)
         receipt = tracker_client.get("/pane/receipts").json()["receipts"][0]
         assert set(receipt) == {
-            "id", "pane_id", "outcome", "detail", "text_hint",
+            "id", "pane_id", "outcome", "detail", "text_hint", "line_hint",
             "created_at", "resolved_at",
         }
 

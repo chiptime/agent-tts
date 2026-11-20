@@ -48,7 +48,7 @@ class FakeStopTools(FakeTools):
             "receipt": {"outcome": "effective", "detail": "", "text_hint": ""},
         }
 
-    def stop_pane(self, pane_id, text_hint=""):
+    def stop_pane(self, pane_id, text_hint="", line_hint=""):
         type(self).stops.append(pane_id)
         return dict(type(self).stop_outcome, pane_id=pane_id)
 
