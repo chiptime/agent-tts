@@ -72,6 +72,13 @@ def _page(karaoke_app, reply_body=None, receipts=None, herd=None):
     harness = karaoke_app()
     harness.respond("/herd", herd or [WORKING_AGENT])
     harness.respond("/view", _view("w1:p2"), query=("pane_id",))
+    # f7f S4: _select_pane opens the conversation sheet, which fetches
+    # /session/roots on open — declared with an empty herdr-backed
+    # payload (the tracker assertions never touch the spaces section).
+    harness.respond("/session/roots", {
+        "roots": [], "recents": [], "spaces": [], "harnesses": [],
+        "mux": {"name": "herdr", "children": ["herdr"]},
+    })
     if reply_body is not None:
         harness.respond("/pane/reply", reply_body, method="POST")
     if receipts is not None:
