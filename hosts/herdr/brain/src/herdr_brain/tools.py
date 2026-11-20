@@ -481,9 +481,23 @@ class BrainTools:
         steering the ask at the focused pane. That refusal covers every
         downstream voice surface at once (gates freeze the resolved target,
         the loop dispatches to it), so an ask about another machine can never
-        silently read or write a local pane. Solo builds keep the exact
-        legacy fallback: no router attached means no crew rule here.
+        silently read or write a local pane.
+
+        The routing check runs BEFORE pane enumeration (S1): an id an
+        enrolled host owns is remote even when enumeration FAILS — a dead
+        mux must degrade the local path exactly like it always did (None),
+        never resurrect an explicit remote target as the focused local pane.
+        Solo builds keep the exact legacy fallback: no router attached means
+        no crew rule here.
         """
+        if pane_id and self._crew_router is not None:
+            routed = self._crew_router(pane_id)
+            if routed is not None:
+                raise CrewTargetRefused(
+                    f"El pane '{pane_id}' pertenece al peer '{routed}' del "
+                    "crew: la voz no actúa sobre panes remotos; nada se "
+                    "envió."
+                )
         try:
             agents = self._herdr.list_agents()
         except HerdrError:
@@ -494,13 +508,6 @@ class BrainTools:
                     return self._track(agent)
             host, _rest = split_pane_id(pane_id)
             if host is not None and self._crew_router is not None:
-                peer = self._crew_router(pane_id)
-                if peer is not None:
-                    raise CrewTargetRefused(
-                        f"El pane '{pane_id}' pertenece al peer '{peer}' del "
-                        "crew: la voz no actúa sobre panes remotos; nada se "
-                        "envió."
-                    )
                 raise CrewTargetRefused(
                     f"'{host}' no es un host del crew y '{pane_id}' no es un "
                     "pane local: nada se envió."

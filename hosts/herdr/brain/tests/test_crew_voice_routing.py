@@ -21,7 +21,7 @@ import pytest
 
 from herdr_brain.approval import ApprovalGateStore
 from herdr_brain.config import Settings
-from herdr_brain.herdr import AgentInfo
+from herdr_brain.herdr import AgentInfo, HerdrError
 from herdr_brain.llm import BrainLLM
 from herdr_brain.memory import ConversationStore
 from herdr_brain.tools import BrainTools, CrewTargetRefused
@@ -121,6 +121,66 @@ def test_resolve_target_plain_unknown_id_keeps_legacy_fallback(settings, make_st
     target = tools.resolve_target("plainly-unknown")
     assert target is not None
     assert target.pane_id == ACTIVE_AGENT.pane_id
+
+
+class _BrokenInventory:
+    """Stub whose enumeration fails exactly like a dead mux does."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def list_agents(self):
+        raise HerdrError("agent list unavailable")
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+def test_resolve_target_refuses_routed_remote_even_when_enumeration_fails(
+    settings, make_stub
+):
+    """S1 blocker (verifier): a HerdrError in list_agents must never let
+    an explicit crew target degrade into None -> the focused local pane.
+    The refusal runs BEFORE enumeration; nothing is read or written."""
+    stub = make_stub(agents=[ACTIVE_AGENT])
+    tools = crew_tools(settings, stub)
+    tools._herdr = _BrokenInventory(stub)
+    with pytest.raises(CrewTargetRefused) as excinfo:
+        tools.resolve_target("peer-alpha:p3")
+    assert "peer-alpha:p3" in str(excinfo.value)
+    assert stub.prompt_calls == []
+
+
+def test_ask_refuses_remote_pane_when_enumeration_fails(settings, make_stub):
+    """The ask turn keeps the explicit refusal story without enumeration:
+    spoken refusal, no provider round, no gate, no ring write."""
+    stub = make_stub(agents=[ACTIVE_AGENT])
+    tools = crew_tools(settings, stub)
+    tools._herdr = _BrokenInventory(stub)
+    client = RefusingProviderClient()
+    llm = BrainLLM(settings, tools, client=client, store=ConversationStore())
+    result = llm.ask("estado del agente", pane_id="peer-alpha:p3")
+    assert "peer-alpha:p3" in result["answer"]
+    assert "nada se envió" in result["answer"]
+    assert result["pane_id"] is None and result["approval"] is None
+    assert client.rounds == 0
+    assert stub.prompt_calls == []
+
+
+def test_enumeration_failure_keeps_local_paths_unchanged(settings, make_stub):
+    """Preservation pin: with enumeration failing, BARE/None targets keep
+    the exact legacy degraded behavior (None, no refusal) — solo and crew
+    alike. Only crew-shaped explicit targets fail closed."""
+    stub = make_stub(agents=[ACTIVE_AGENT])
+    broken = _BrokenInventory(stub)
+    solo = BrainTools(settings, herdr=broken)
+    crewed = crew_tools(settings, stub)
+    crewed._herdr = broken
+    assert solo.resolve_target("w1:p9") is None
+    assert solo.resolve_target(None) is None
+    assert crewed.resolve_target("w1:p9") is None
+    assert crewed.resolve_target(None) is None
+    assert stub.prompt_calls == []
 
 
 # ── the ask turn: explicit refusal, no gate, no write, no provider round ────

@@ -114,3 +114,20 @@ test("the i18n dictionaries ship the unreachable-peer key in both locales", () =
       locale + " locale must define herd.peer_unreachable");
   }
 });
+
+test("herd matching is host-aware: a bare id never matches a host-tagged row", () => {
+  const body = fnBody(appSrc, "herdRowMatches");
+  assert.ok(
+    body.includes("if (agent.host)"),
+    "the matcher must branch on the host tag"
+  );
+  assert.ok(
+    body.includes("paneRowId(agent) === id"),
+    "qualified ids match only their host-tagged row"
+  );
+  assert.ok(
+    !/agent\.pane_id === id \s*\|\|/.test(body) &&
+      !body.includes("agent.pane_id === id ||"),
+    "a bare id must never fall through to a host-tagged row"
+  );
+});

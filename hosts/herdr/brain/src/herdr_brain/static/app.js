@@ -1947,10 +1947,15 @@
     return agent.host ? agent.host + ":" + agent.pane_id : agent.pane_id;
   }
 
-  /* Whether a herd row IS the pane an id names: bare ids match local
-   * panes, qualified ids match their host-tagged row. */
+  /* Whether a herd row IS the pane an id names — host-aware (T1/S1):
+   * a bare id matches only a LOCAL row, a qualified "<host>:<pane>" id
+   * matches only its host-tagged row. Two hosts may share a bare pane
+   * id; matching across that boundary would let a remote pane stand in
+   * for a vanished local one (or the reverse) — identities never mix. */
   function herdRowMatches(agent, id) {
-    return !!agent && (agent.pane_id === id || paneRowId(agent) === id);
+    if (!agent || id == null) return false;
+    if (agent.host) return paneRowId(agent) === id;
+    return agent.pane_id === id;
   }
 
   function herdEntry(paneId) {

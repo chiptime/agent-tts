@@ -136,7 +136,7 @@ EXPECTED_DIGESTS = {
     # global #hook-permission card above the pane permission box
     # (index.html), its 5s-beat /hook/permissions poll + answer wiring
     # (app.js) and the holdpermission.* keys (both i18n).
-    "/app.js": "a99efb1ffb162e64751eed18bd3eb626547aee08ef2ac7eed8bd9184bbae0d95",
+    "/app.js": "1a4eb86eafb21974f912127c30d300ddf1dca33dd7be756a5f4d91193d60829f",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "df01a313d8f6101bd9601d5a2a65eb420df7791c417a09e2d0d8c269a36742b0",
     # dialogs.js re-pinned for the parity-f7d follow-up: MODEL_SWITCH_COMMANDS
