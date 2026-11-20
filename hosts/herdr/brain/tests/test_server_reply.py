@@ -517,12 +517,15 @@ def zellij_client(settings, tmp_path, monkeypatch):
 def tmux_client(settings, tmp_path, monkeypatch):
     """Composite herd (herdr + tmux) with the REAL tmux adapter behind
     a recorded runner — the same CLI order as the zellij fixture, with
-    capture-pane reads and the send-keys submit."""
+    capture-pane reads and the private-buffer write pipeline (text
+    rides stdin; argv only ever carries the uuid buffer name)."""
     runner = RecordedRunner(
         (("list-panes",), 0, _fixture("tmux/list-panes.txt"), ""),
         (("capture-pane",), 0, _fixture("tmux/capture-visible.txt"), ""),
         (("capture-pane",), 0, _fixture("tmux/capture-visible.txt"), ""),
-        (("send-keys", "-t", "%3", "-l"), 0, "", ""),
+        (("load-buffer",), 0, "", ""),
+        (("paste-buffer",), 0, "", ""),
+        (("delete-buffer",), 0, "", ""),
         (("send-keys",), 0, "", ""),
         (("capture-pane",), 0, _fixture("tmux/prompt-after-sent.txt"), ""),
         (("capture-pane",), 0, _fixture("tmux/prompt-after-sent.txt"), ""),
@@ -624,10 +627,19 @@ class TestMultiplexerReplyParity:
         receipt = resp.json()["receipt"]
         assert receipt["outcome"] == "sent"
         assert receipt["pane_id"] == "tmux:%3"
-        # The submit itself rode send-keys with the literal text.
+        # The exact text rode the private-buffer pipeline: stdin in, pasted
+        # by pane id, buffer deleted — its bytes appear in NO argv.
         commands = [call["cmd"] for call in runner.calls]
-        assert ["tmux-test", "send-keys", "-t", "%3", "-l",
-                "run the probes"] in commands
+        assert not any("run the probes" in " ".join(c) for c in commands)
+        load = next(c for c in runner.calls if c["cmd"][1] == "load-buffer")
+        name = load["cmd"][3]
+        assert name.startswith("herdr-paste-")
+        assert load["input"] == "run the probes"
+        paste = next(c for c in runner.calls if c["cmd"][1] == "paste-buffer")
+        assert paste["cmd"][:6] == [
+            "tmux-test", "paste-buffer", "-d", "-S", "-b", name,
+        ]
+        assert "%3" in paste["cmd"]
 
     @pytest.mark.parametrize("pane_id", ["w1:p2", "zellij:1", "tmux:%3"])
     def test_body_guards_apply_identically_to_multiplexer_panes(

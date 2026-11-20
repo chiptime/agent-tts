@@ -29,6 +29,28 @@ the whole grid, not a tail slice (fixed in `51d50f7`).
 | `send_text` (refusal) | refused `unsupported` as designed (no typing-without-Enter surface) |
 | `probe()` | reachable=True with "tmux server answered list-sessions (tmux 3.8)"; dead socket → reachable=False, version still reported |
 
+## tmux — 2026-11-20, tmux 3.8 (rev 2, parity T7 `tmuxfix`)
+
+Supersedes the `prompt_submit` and `tabs` rows above by re-probing on the
+same-day scratch methodology (unique `-L` socket, `-f /dev/null`,
+HOME/TMPDIR/TMUX_TMPDIR in scratch, `cat` target pane so nothing executes,
+`kill-server` teardown asserted gone). New evidence channel:
+`tests/test_mux_tmux_live.py` — the adapter runs behind a wrapper binary that
+logs its argv, so the probes additionally prove the sent text never rides
+argv and no `herdr-paste-*` buffer survives. Recorded first as failures
+against `6d33868` (RED: trailing `;` vanished on screen with rc 0 and a
+`sent` receipt; active window moved from `@0` to the new window), then as
+passes after the fix.
+
+| Cell | Live result (tmux 3.8) |
+|---|---|
+| `prompt_submit` | exact bytes delivered for `echo hi;`, shell-metachar payloads (`'$(whoami)' "q" \`calc\` && true;`), accented/symbol text (`ñ é ç ✓ «» ¿¡ —;`) and wide Unicode (`日本語 😀;`) — text rides stdin into a private `herdr-paste-<uuid>` buffer (`load-buffer`), is pasted byte-exact by pane id (`paste-buffer -d -S`) and the buffer is deleted (`-d` plus a best-effort `delete-buffer`); `send-keys` reduced to `Enter`; `list-buffers` shows no `herdr-paste` leftovers |
+| `tabs` | `new-window -d -P -F` returned ids and left the session's current window untouched (`window_active` stayed on the original window, the new window inactive) |
+| `failures` | a failed `load-buffer`/`paste-buffer` propagates the typed refusal (`refused`/`gone`) and still cleans up its own buffer; Enter is never pressed after an unpasted write |
+
+The `send_text` refusal, `pane_grid`, `ansi_screen`, `scrollback`, `keys` and
+`probe()` rows stand as recorded above (untouched by T7).
+
 ## zellij — NOT VERIFIED LIVE
 
 zellij is not installed on this host and the operator authorized no
