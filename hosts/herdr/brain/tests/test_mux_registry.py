@@ -115,18 +115,34 @@ class TestProbe:
             assert isinstance(mux, MuxAdapter)
 
     def test_probe_reports_tmux_version(self):
-        runner = InlineRunner((0, "tmux 3.6b\n", ""))
+        # Finding A: -V is the version source only — reachability needs
+        # the server roundtrip (list-sessions) as the second call.
+        runner = InlineRunner(
+            (0, "tmux 3.6b\n", ""),
+            (0, "scratch: 1 windows (created Tue Nov 18 10:00:00 2026)\n", ""),
+        )
         probe = probe_mux(TmuxAdapter(bin_path="tmux-test", runner=runner))
-        assert probe == MuxProbe(reachable=True, detail="tmux CLI answered -V",
-                                 version="3.6b")
+        assert probe == MuxProbe(
+            reachable=True,
+            detail="tmux server answered list-sessions (tmux 3.6b)",
+            version="3.6b",
+        )
         assert runner.calls[0]["cmd"] == ["tmux-test", "-V"]
+        assert runner.calls[1]["cmd"] == ["tmux-test", "list-sessions"]
 
     def test_probe_reports_zellij_version(self):
-        runner = InlineRunner((0, "zellij 0.44.2\n", ""))
+        # Fifth old-probe pin (finding A extended to zellij by the
+        # parent): --version is the version source only — reachability
+        # needs one session-state roundtrip on the adapter's own verb.
+        runner = InlineRunner(
+            (0, "zellij 0.44.2\n", ""),
+            (0, "[]\n", ""),
+        )
         probe = probe_mux(ZellijAdapter(bin_path="zellij-test", runner=runner))
         assert probe.reachable is True
         assert probe.version == "0.44.2"
         assert runner.calls[0]["cmd"] == ["zellij-test", "--version"]
+        assert runner.calls[1]["cmd"] == ["zellij-test", "list-panes", "--all", "--json"]
 
     def test_probe_herdr_via_help(self, settings):
         runner = InlineRunner((0, "usage: herdr ...\n", ""))
@@ -147,7 +163,12 @@ class TestProbe:
         assert probe.reachable is False
 
     def test_probe_never_enlarges_capability_claims(self):
-        runner = InlineRunner((0, "tmux 3.6b\n", ""))
+        # Finding A: the probe's second call (list-sessions) adds facts,
+        # never capability cells.
+        runner = InlineRunner(
+            (0, "tmux 3.6b\n", ""),
+            (0, "scratch: 1 windows (created Tue Nov 18 10:00:00 2026)\n", ""),
+        )
         mux = TmuxAdapter(bin_path="tmux-test", runner=runner)
         before = mux.capabilities()
         probe = probe_mux(mux)
@@ -223,17 +244,21 @@ class TestCompositeSelection:
         runner = InlineRunner(
             (0, "usage: herdr ...\n", ""),
             (0, "tmux 3.6b\n", ""),
+            (0, "scratch: 1 windows (created Tue Nov 18 10:00:00 2026)\n", ""),
         )
         mux = create_mux({"HERDR_BRAIN_MUX": "herdr,tmux"}, runner=runner)
         probe = mux.probe()
         assert probe.reachable is True
         assert runner.calls[0]["cmd"] == ["herdr", "--help"]
         assert runner.calls[1]["cmd"] == ["tmux", "-V"]
+        assert runner.calls[2]["cmd"] == ["tmux", "list-sessions"]
 
     def test_binary_overrides_apply_per_child(self):
         runner = InlineRunner(
             (0, "tmux 3.6b\n", ""),
+            (0, "scratch: 1 windows (created Tue Nov 18 10:00:00 2026)\n", ""),
             (0, "zellij 0.44.2\n", ""),
+            (0, "[]\n", ""),
         )
         mux = create_mux(
             {
@@ -245,7 +270,9 @@ class TestCompositeSelection:
         )
         mux.probe()
         assert runner.calls[0]["cmd"][:2] == ["/opt/tmux", "-V"]
-        assert runner.calls[1]["cmd"][:2] == ["/opt/zellij", "--version"]
+        assert runner.calls[1]["cmd"][:2] == ["/opt/tmux", "list-sessions"]
+        assert runner.calls[2]["cmd"][:2] == ["/opt/zellij", "--version"]
+        assert runner.calls[3]["cmd"][:2] == ["/opt/zellij", "list-panes"]
 
 
 class TestCompositeListingIntegration:

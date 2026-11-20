@@ -105,6 +105,16 @@ class TmuxAdapter:
         )
 
     def probe(self) -> MuxProbe:
+        """Reachability = the SERVER answers; ``-V`` is the version source only.
+
+        Finding A (live, tmux 3.8): ``tmux -V`` is a client-side flag —
+        a wrapper pointed at a nonexistent socket still prints the
+        version, so a probe built on it claims reachable with no server
+        at all. The reachability fact comes from one server roundtrip
+        (``list-sessions``, the cheapest command that needs the server
+        to exist); ``-V`` keeps answering the version field, and an
+        unreachable probe may still carry that version.
+        """
         try:
             proc = self._run(
                 [self._bin_path, "-V"], capture_output=True, text=True, timeout=10
@@ -115,7 +125,16 @@ class TmuxAdapter:
             detail = (proc.stderr or proc.stdout or "").strip()
             return MuxProbe(False, f"tmux -V exited with {proc.returncode}: {detail}")
         version = (proc.stdout or "").strip().split()[-1] if proc.stdout.strip() else ""
-        return MuxProbe(True, "tmux CLI answered -V", version)
+        try:
+            self._run_cli(["list-sessions"], "pane_grid", timeout_s=10)
+        except HerdrError as exc:
+            # The failure text rides along: "no server running" and
+            # "error connecting" name the socket that refused us.
+            return MuxProbe(False, f"tmux server did not answer: {exc}", version)
+        detail = "tmux server answered list-sessions"
+        if version:
+            detail = f"{detail} (tmux {version})"
+        return MuxProbe(True, detail, version)
 
     # -- internals -----------------------------------------------------------
 
@@ -146,9 +165,23 @@ class TmuxAdapter:
         self._run_cli(["send-keys", "-t", pane_id, "Enter"], capability)
 
     def _verified_read(self, pane_id: str) -> Optional[str]:
-        """One plain-text screen read; None on failure (evidence, not truth)."""
+        """One FULL plain-text grid read; None on failure (evidence, not truth).
+
+        Finding B (live, tmux 3.8): ``read_screen`` serves the display
+        budget — the last ``screen_lines`` rows — and a pane taller than
+        that budget holds its prompt/echo rows at the TOP with blank
+        rows below, so the tail slice saw only blanks and the receipt
+        degraded to an honest-but-wrong ``unknown``. The classification
+        path therefore skips the budget clamp and compares WHOLE grids;
+        ``read_screen``'s public tail semantics stay the display budget
+        for consumers. Plain text (no ``-e``): the classifier matches
+        echo tails on unstyled lines.
+        """
         try:
-            return self.read_screen(pane_id)
+            proc = self._run_cli(
+                ["capture-pane", "-p", "-t", pane_id], "ansi_screen"
+            )
+            return "\n".join(proc.stdout.splitlines())
         except HerdrError:
             return None
 

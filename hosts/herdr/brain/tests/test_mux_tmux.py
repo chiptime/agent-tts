@@ -327,6 +327,79 @@ class TestSendPrompt:
             adapter(runner).send_prompt("%3", "  ")
         assert runner.calls == []
 
+    def test_a_pane_taller_than_the_screen_budget_still_classifies(self):
+        # Finding B (live, tmux 3.8 scratch server): a fresh pane taller
+        # than the display budget holds its prompt rows at the TOP with
+        # blank rows below, so the budgeted TAIL read saw only blanks
+        # and classified an honest-but-wrong `unknown`. The
+        # classification path reads the FULL grid; read_screen's public
+        # tail semantics stay the display budget.
+        runner = RecordedRunner(
+            (("capture-pane",), 0, fixture("tmux/capture-tall-before.txt"), ""),
+            (("send-keys", "-t", "%3", "-l"), 0, "", ""),
+            (("send-keys",), 0, "", ""),
+            (("capture-pane",), 0, fixture("tmux/capture-tall-after-sent.txt"), ""),
+        )
+        result = adapter(runner, screen_lines=4).send_prompt("%3", "run the probes")
+        assert result["status"] == "sent"
+        assert result["ok"] is True
+
+
+class TestProbe:
+    """Finding A (live, tmux 3.8 scratch server): ``-V`` answers with NO
+    server — a wrapper pointed at a nonexistent socket still prints the
+    version. A probe must add reachability facts: the SERVER roundtrip
+    (``list-sessions``, the cheapest command that needs the server)
+    decides ``reachable``; ``-V`` stays the version source only, and an
+    unreachable probe may still carry the version."""
+
+    def test_version_without_a_server_is_not_reachable(self):
+        runner = RecordedRunner(
+            (("-V",), 0, "tmux 3.8\n", ""),
+            (("list-sessions",), 1, "",
+             "error connecting to /tmp/tmux-1000/no-such (No such file or directory)"),
+        )
+        probe = adapter(runner).probe()
+        assert probe.reachable is False
+        assert "error connecting" in probe.detail
+        # The client still names its version: -V is the version source.
+        assert probe.version == "3.8"
+
+    def test_reachable_when_the_server_answers_list_sessions(self):
+        runner = RecordedRunner(
+            (("-V",), 0, "tmux 3.8\n", ""),
+            (("list-sessions",), 0,
+             "scratch: 1 windows (created Tue Nov 18 10:00:00 2026)\n", ""),
+        )
+        probe = adapter(runner).probe()
+        assert probe.reachable is True
+        assert probe.version == "3.8"
+        assert "list-sessions" in probe.detail
+        assert runner.calls[0]["cmd"] == ["tmux-test", "-V"]
+        assert runner.calls[1]["cmd"] == ["tmux-test", "list-sessions"]
+
+    def test_no_server_running_stderr_is_also_unreachable(self):
+        # The other no-server shape: the socket exists but no server is
+        # listening on it.
+        runner = RecordedRunner(
+            (("-V",), 0, "tmux 3.8\n", ""),
+            (("list-sessions",), 1, "",
+             "no server running on /tmp/tmux-1000/default"),
+        )
+        probe = adapter(runner).probe()
+        assert probe.reachable is False
+
+    def test_missing_binary_is_not_reachable(self):
+        runner = RecordedRunner(FileNotFoundError("tmux-test"))
+        probe = adapter(runner).probe()
+        assert probe.reachable is False
+        assert "tmux-test" in probe.detail
+
+    def test_nonzero_version_exit_is_not_reachable(self):
+        runner = RecordedRunner((("-V",), 1, "", "boom"))
+        probe = adapter(runner).probe()
+        assert probe.reachable is False
+
 
 class TestCreateTab:
     def test_parses_window_and_pane_ids(self):

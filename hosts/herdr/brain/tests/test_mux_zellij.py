@@ -269,6 +269,25 @@ class TestSendPrompt:
             adapter(runner).send_prompt("1", "  ")
         assert runner.calls == []
 
+    def test_a_pane_taller_than_the_screen_budget_still_classifies(self):
+        # Finding B (live on tmux 3.8, mirrored here because both
+        # adapters share the budgeted-tail read pattern): a pane taller
+        # than the display budget holds its prompt rows at the TOP with
+        # blank rows below, so the budgeted TAIL read saw only blanks
+        # and classified an honest-but-wrong `unknown`. The
+        # classification path reads the FULL grid; read_screen's public
+        # tail semantics stay the display budget. UNVERIFIED live
+        # (zellij not installed, f7f D2).
+        runner = RecordedRunner(
+            (("action", "dump-screen"), 0, fixture("zellij/dump-tall-before.txt"), ""),
+            (("action", "write-chars"), 0, "", ""),
+            (("action", "write"), 0, "", ""),
+            (("action", "dump-screen"), 0, fixture("zellij/dump-tall-after-sent.txt"), ""),
+        )
+        result = adapter(runner, screen_lines=4).send_prompt("1", "run the probes")
+        assert result["status"] == "sent"
+        assert result["ok"] is True
+
 
 class TestRefusedSurfaces:
     """No other zellij write path is verified: each surface refuses."""
@@ -303,6 +322,55 @@ class TestRefusedSurfaces:
         assert excinfo.value.reason == "unsupported"
         assert excinfo.value.capability == "send_text"
         assert runner.calls == []
+
+
+class TestProbe:
+    """Finding A extended to zellij (parent decision): ``--version`` is
+    a client-side flag and answers with no session, so reachability
+    comes from one session-state roundtrip on the adapter's OWN pinned
+    verb — ``list-panes --all --json``, the same call ``list_agents``
+    rides; ``--version`` stays the version source, and an unreachable
+    probe may still carry the version. UNVERIFIED live (zellij not
+    installed, f7f D2): the state-touch shape is CLI-shape derived like
+    the rest of this adapter's surface."""
+
+    def test_version_without_a_session_is_not_reachable(self):
+        runner = RecordedRunner(
+            (("--version",), 0, "zellij 0.44.2\n", ""),
+            (("list-panes",), 1, "",
+             "error connecting to session executor socket"),
+        )
+        probe = adapter(runner).probe()
+        assert probe.reachable is False
+        assert "error connecting" in probe.detail
+        # The client still names its version: --version is the version
+        # source.
+        assert probe.version == "0.44.2"
+
+    def test_reachable_when_the_session_state_answers(self):
+        runner = RecordedRunner(
+            (("--version",), 0, "zellij 0.44.2\n", ""),
+            (("list-panes",), 0, fixture("zellij/list-panes.json"), ""),
+        )
+        probe = adapter(runner).probe()
+        assert probe.reachable is True
+        assert probe.version == "0.44.2"
+        assert "list-panes" in probe.detail
+        assert runner.calls[0]["cmd"] == ["zellij-test", "--version"]
+        assert runner.calls[1]["cmd"] == [
+            "zellij-test", "list-panes", "--all", "--json",
+        ]
+
+    def test_missing_binary_is_not_reachable(self):
+        runner = RecordedRunner(FileNotFoundError("zellij-test"))
+        probe = adapter(runner).probe()
+        assert probe.reachable is False
+        assert "zellij-test" in probe.detail
+
+    def test_nonzero_version_exit_is_not_reachable(self):
+        runner = RecordedRunner((("--version",), 1, "", "boom"))
+        probe = adapter(runner).probe()
+        assert probe.reachable is False
 
 
 class TestFailureMapping:

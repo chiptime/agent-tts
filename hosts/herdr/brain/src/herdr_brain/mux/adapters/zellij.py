@@ -8,8 +8,10 @@ both targeting the pane exactly like ``dump-screen`` does. The submit
 is verified by re-reading with ``dump-screen`` before and after and
 classifying with the SAME receipt rules herdr rides. UNVERIFIED live:
 zellij is not installed on this host (f7f D2) — the write-path CLI
-shapes are derived and pinned by fixtures; re-pin against a live
-session before trusting them.
+shapes AND the probe's session-state touch (``list-panes --all --json``
+deciding reachability, ``--version`` deciding only the version) are
+derived and pinned by fixtures; re-pin against a live session before
+trusting them.
 
 Logical keys, bare text typing, tab creation and every agent surface
 still have no shape this port could pin through that surface, so the
@@ -89,17 +91,43 @@ class ZellijAdapter:
         )
 
     def probe(self) -> MuxProbe:
+        """Reachability = live session state answers; ``--version`` is
+        the version source only.
+
+        Finding A, extended to zellij by the parent (the live evidence
+        is tmux 3.8's, the dishonesty shape is identical):
+        ``zellij --version`` is a client-side flag and says nothing
+        about any session. The reachability fact comes from one
+        session-state roundtrip on the adapter's OWN pinned verb —
+        ``list-panes --all --json``, the same call ``list_agents``
+        rides; ``--version`` keeps answering the version field, and an
+        unreachable probe may still carry that version. UNVERIFIED live
+        (zellij not installed, f7f D2): the state-touch shape is
+        CLI-shape derived like the rest of this adapter's surface.
+        """
         try:
             proc = self._run(
-                [self._bin_path, "--version"], capture_output=True, text=True, timeout=10
+                [self._bin_path, "--version"], capture_output=True, text=True,
+                timeout=10,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             return MuxProbe(False, f"zellij did not answer: {exc}")
         if proc.returncode != 0:
             detail = (proc.stderr or proc.stdout or "").strip()
-            return MuxProbe(False, f"zellij --version exited with {proc.returncode}: {detail}")
+            return MuxProbe(
+                False, f"zellij --version exited with {proc.returncode}: {detail}"
+            )
         version = (proc.stdout or "").strip().split()[-1] if proc.stdout.strip() else ""
-        return MuxProbe(True, "zellij CLI answered --version", version)
+        try:
+            self._run_cli(["list-panes", "--all", "--json"], "pane_grid", timeout_s=10)
+        except HerdrError as exc:
+            return MuxProbe(
+                False, f"zellij session state did not answer: {exc}", version
+            )
+        detail = "zellij session state answered list-panes"
+        if version:
+            detail = f"{detail} (zellij {version})"
+        return MuxProbe(True, detail, version)
 
     # -- internals -----------------------------------------------------------
 
@@ -127,9 +155,23 @@ class ZellijAdapter:
     # -- the verified surface --------------------------------------------------
 
     def _verified_read(self, pane_id: str) -> Optional[str]:
-        """One plain-text screen read; None on failure (evidence, not truth)."""
+        """One FULL plain-text grid read; None on failure (evidence, not truth).
+
+        Finding B (live on tmux 3.8, mirrored here because both adapters
+        share the budgeted-tail pattern): ``read_screen`` serves the
+        display budget — the last ``screen_lines`` rows — and a pane
+        taller than that budget holds its prompt/echo rows at the TOP
+        with blank rows below, so the tail slice saw only blanks and the
+        receipt degraded to an honest-but-wrong ``unknown``. The
+        classification path therefore skips the budget clamp and
+        compares WHOLE grids; ``read_screen``'s public tail semantics
+        stay the display budget for consumers.
+        """
         try:
-            return self.read_screen(pane_id)
+            proc = self._run_cli(
+                ["action", "dump-screen", "--pane-id", pane_id], "ansi_screen"
+            )
+            return "\n".join(proc.stdout.splitlines())
         except HerdrError:
             return None
 
