@@ -1527,14 +1527,16 @@ def create_app(
         outcome: str,
         status: Optional[int],
         detail_message: Optional[str],
+        extra: Optional[dict] = None,
     ) -> None:
         """One trail line for a failed proxied WRITE attempt (T3-fu/U6).
 
-        Write ops only (reply/keys/dialog_answer); the refusal detail is
-        the peer's own HTTP error detail — the same string the route
-        already surfaces — and unreachable failures carry the FACT, not
-        the transport text (the 503 response and the ops logger do).
-        record() is fire-and-forget, never altering the failure path."""
+        Write ops only (reply/keys/dialog_answer/gate_forward); the
+        refusal detail is the peer's own HTTP error detail — the same
+        string the route already surfaces — and unreachable failures
+        carry the FACT, not the transport text (the 503 response and
+        the ops logger do). record() is fire-and-forget, never altering
+        the failure path."""
         if op is None:
             return
         detail: dict = {"peer": peer, "op": op, "outcome": outcome}
@@ -1542,6 +1544,8 @@ def create_app(
             detail["status"] = status
         if detail_message:
             detail["detail"] = detail_message
+        if extra:
+            detail.update(extra)
         audit_log.record({"action": "crew.call", "detail": detail})
         # One bounded, metadata-only ops line for every failed WRITE
         # attempt — no transport text, no tokens (the 503 response
@@ -4428,7 +4432,20 @@ def create_app(
         verbatim — its 404 for a dead gate is the answer."""
         if crew_gateway is None:
             return None
-        forwarded = crew_gateway.forward_gate(gate_id, decision)
+        try:
+            forwarded = crew_gateway.forward_gate(gate_id, decision)
+        except CrewUnreachable as exc:
+            # T3-fu2: the ONE forward failure mode that returns no
+            # answer — the client raises on transport. Same
+            # failed-attempt line and metadata-only ops warning as
+            # every crew write (crew_call's policy), mapped to the same
+            # 503. Returned outcomes (applied, the owner's refusal, the
+            # dead-gate 404) keep their single approval.forward line.
+            _audit_crew_call_failure(
+                exc.peer, "gate_forward", "unreachable", None, None,
+                extra={"gate_id": gate_id, "decision": decision},
+            )
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         if forwarded is None:
             return None
         audit_log.record({

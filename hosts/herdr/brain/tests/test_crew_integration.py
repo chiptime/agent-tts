@@ -880,3 +880,172 @@ class TestCrewCallFailureOpsWarning:
         assert response.status_code == 503
         assert self._warnings(caplog) == []
         assert not (tmp_path / "state" / "audit.log").exists()
+
+
+class TestRemoteGateForwardFailureAudit:
+    """T3-fu2/U7: the ONE forward failure mode that returns no answer —
+    a transport raise from the owner — records the same failed-attempt
+    line every crew write uses (crew.call, op=gate_forward) and maps to
+    the same 503 crew_call does. Refusals that RETURN (the raw
+    approval_resolve contract: a 404 for a dead gate is an ANSWER) keep
+    their single existing approval.forward line — recording crew.call
+    for them would duplicate on the same trail."""
+
+    def _lead_with_gate(self, tmp_path, monkeypatch, transport):
+        state = tmp_path / "state"
+        write_lead_roster(state)
+        client = make_client(
+            tmp_path, monkeypatch, crew=make_gateway(state, {"host-b": transport})
+        )
+        return client, transport
+
+    def _lines(self, tmp_path) -> list:
+        path = tmp_path / "state" / "audit.log"
+        if not path.exists():
+            return []
+        return [
+            json.loads(line)
+            for line in path.read_text().splitlines()
+            if line.strip()
+        ]
+
+    def _learn_remote_gate(self, client):
+        # The herd/approval-current probe teaches the index the owner.
+        approval = client.get("/approval/current").json()["approval"]
+        assert approval is not None and approval["host"] == "host-b"
+
+    def test_unreachable_forward_records_one_crew_call_line(
+        self, tmp_path, monkeypatch,
+    ):
+        class FailAction(StubTransport):
+            def request(self, method, url, **kwargs):
+                if method == "POST" and "/action" in url:
+                    raise OSError("peer is down")
+                return super().request(method, url, **kwargs)
+
+        client, _ = self._lead_with_gate(
+            tmp_path, monkeypatch,
+            FailAction(responses={
+                "/crew/v1/approval/current": (200, {"approval": {
+                    "gate_id": "g-remote-1", "state": "proposed",
+                    "question": "¿Envío?",
+                }}),
+            }),
+        )
+        self._learn_remote_gate(client)
+
+        resp = client.post("/approval/g-remote-1/approve")
+
+        assert resp.status_code == 503
+        lines = self._lines(tmp_path)
+        assert len(lines) == 1
+        line = lines[0]
+        assert line["action"] == "crew.call"
+        assert line["detail"] == {
+            "peer": "host-b", "op": "gate_forward", "outcome": "unreachable",
+            "gate_id": "g-remote-1", "decision": "approve",
+        }
+        # No transport text; no approval.forward line for this attempt.
+        assert "peer is down" not in json.dumps(line)
+
+    def test_unreachable_reject_route_records_the_decision(
+        self, tmp_path, monkeypatch,
+    ):
+        class FailAction(StubTransport):
+            def request(self, method, url, **kwargs):
+                if method == "POST" and "/action" in url:
+                    raise OSError("peer is down")
+                return super().request(method, url, **kwargs)
+
+        client, _ = self._lead_with_gate(
+            tmp_path, monkeypatch,
+            FailAction(responses={
+                "/crew/v1/approval/current": (200, {"approval": {
+                    "gate_id": "g-remote-2", "state": "proposed",
+                    "question": "¿Envío?",
+                }}),
+            }),
+        )
+        self._learn_remote_gate(client)
+
+        resp = client.post("/approval/g-remote-2/reject")
+
+        assert resp.status_code == 503
+        lines = self._lines(tmp_path)
+        assert len(lines) == 1
+        assert lines[0]["detail"]["decision"] == "reject"
+
+    def test_refused_forward_keeps_its_single_existing_line(
+        self, tmp_path, monkeypatch,
+    ):
+        client, _ = self._lead_with_gate(
+            tmp_path, monkeypatch,
+            StubTransport(responses={
+                "/crew/v1/approval/current": (200, {"approval": {
+                    "gate_id": "g-remote-3", "state": "proposed",
+                    "question": "¿Envío?",
+                }}),
+                "/crew/v1/approval/g-remote-3/action": (
+                    404, {"detail": "gate dead"}
+                ),
+            }),
+        )
+        self._learn_remote_gate(client)
+
+        resp = client.post("/approval/g-remote-3/approve")
+
+        assert resp.status_code == 404
+        lines = self._lines(tmp_path)
+        # Exactly ONE line: the route's own approval.forward. A crew.call
+        # line here would duplicate the same trail entry.
+        assert len(lines) == 1
+        assert lines[0]["action"] == "approval.forward"
+        assert "crew.call" not in json.dumps(lines)
+
+
+def test_ntfy_forward_failure_is_audited_and_warns_without_transport_text(
+    tmp_path, monkeypatch, caplog,
+):
+    class FailAction(StubTransport):
+        def request(self, method, url, **kwargs):
+            if method == "POST" and "/action" in url:
+                raise OSError("peer is down SECRET_TRANSPORT")
+            return super().request(method, url, **kwargs)
+
+    state = tmp_path / "state"
+    write_lead_roster(state)
+    transport = FailAction(responses={
+        "/crew/v1/approval/current": (200, {"approval": {
+            "gate_id": "g-probe", "state": "proposed", "question": "hello",
+        }}),
+    })
+    client = make_client(
+        tmp_path, monkeypatch, crew=make_gateway(state, {"host-b": transport})
+    )
+    assert client.get("/approval/current").json()["approval"]["host"] == "host-b"
+    caplog.clear()
+
+    response = client.post("/approval/g-probe/action", content="approve")
+
+    assert response.status_code == 503
+    lines = [
+        json.loads(line)
+        for line in (state / "audit.log").read_text().splitlines()
+    ]
+    assert len(lines) == 1
+    assert lines[0]["action"] == "crew.call"
+    assert "device" not in lines[0]
+    assert lines[0]["detail"] == {
+        "peer": "host-b", "op": "gate_forward", "outcome": "unreachable",
+        "gate_id": "g-probe", "decision": "approve",
+    }
+    assert "SECRET_TRANSPORT" not in json.dumps(lines)
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("crew call failed:")
+    ]
+    assert warnings == [
+        "crew call failed: peer=host-b op=gate_forward "
+        "outcome=unreachable status=None"
+    ]
