@@ -35,6 +35,7 @@ shapes stay pinned by the recorded-fixture unit tests.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -120,9 +121,22 @@ def scratch_server(tmp_path_factory):
         pytest.fail("scratch tmux server never answered list-sessions")
     panes = tmux("list-panes", "-F", "#{pane_id}", "-t", "scr")
     pane_id = panes.stdout.strip().splitlines()[0]
+    # Byte-level instrument: a tiny stdin->hex filter the byte probe runs
+    # as its own pane command; it flushes per line, so short payloads are
+    # visible immediately (od would buffer reads under 16 bytes).
+    hexline = scratch / "hexline.py"
+    hexline.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "for line in sys.stdin.buffer:\n"
+        "    sys.stdout.write(line.hex())\n"
+        "    sys.stdout.flush()\n"
+    )
+    hexline.chmod(0o755)
     try:
         yield SimpleNamespace(
-            wrapper=wrapper, pane=pane_id, argv_log=argv_log, tmux=tmux
+            wrapper=wrapper, pane=pane_id, argv_log=argv_log, tmux=tmux,
+            hexline=hexline,
         )
     finally:
         killed = tmux("kill-server")
@@ -169,6 +183,56 @@ class TestPromptExactText:
         # server's shared buffer list.
         buffers = scratch_server.tmux("list-buffers", "-F", "#{buffer_name}")
         assert BUFFER_PREFIX not in (buffers.stdout or "")
+
+
+class TestPromptExactBytes:
+    """Byte-level delivery proof (verification finding): `cat` echoes the
+    text onto the GRID, where cell width and padding can blur what is
+    asserted. Here the pane runs `od -An -v -tx1`, which prints the exact
+    bytes it received as hex — the assertion compares BYTES, not pixels,
+    for every battery payload including wide Unicode.
+
+    The Enter the adapter presses arrives as NL (the tty line discipline
+    maps CR to NL), so the expected hex ends in `0a`.
+    """
+
+    # Hex rows may be contiguous (the panes' python hex filter) or
+    # space-separated (an od-based instrument); accept both spellings.
+    _HEX_ROW = "^[0-9a-f]{2}(?:[ \t]*[0-9a-f]{2})*$"
+
+    @pytest.mark.parametrize("payload,_exact", PAYLOADS)
+    def test_bytes_received_match_text_sent(self, scratch_server, payload, _exact):
+        adapter = _live_adapter(scratch_server)
+        session = f"bytes{abs(hash(payload)) % 10000}"
+        made = scratch_server.tmux(
+            "new-session", "-d", "-s", session, str(scratch_server.hexline)
+        )
+        assert made.returncode == 0, made.stderr
+        panes = scratch_server.tmux("list-panes", "-F", "#{pane_id}", "-t", session)
+        pane_id = panes.stdout.strip().splitlines()[0]
+        try:
+            result = adapter.send_prompt(pane_id, payload)
+            assert result["status"] in ("sent", "typed_not_submitted")
+            expected_hex = (payload + "\n").encode("utf-8").hex()
+            received = ""
+            for _ in range(50):
+                grid = adapter.read_screen(pane_id)
+                rows = [
+                    row.strip()
+                    for row in grid.splitlines()
+                    if re.match(self._HEX_ROW, row.strip())
+                ]
+                received = "".join("".join(rows).split())
+                if received.endswith(expected_hex):
+                    break
+                time.sleep(0.1)
+            # The exact byte sequence arrived, including the trailing `;`
+            # tmux 3.8 used to swallow and the UTF-8 encodings of accents
+            # and wide characters.
+            assert received.endswith(expected_hex), received
+        finally:
+            # Only a session this test itself created.
+            scratch_server.tmux("kill-session", "-t", session)
 
 
 class TestCreateTabKeepsFocus:

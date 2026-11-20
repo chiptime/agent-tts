@@ -190,10 +190,9 @@ class TestPaneRun:
             (("load-buffer",), 0, "", ""),
             (("paste-buffer",), 0, "", ""),
             (("delete-buffer",), 0, "", ""),
-            (("send-keys",), 0, "", ""),
         )
         adapter(runner).pane_run("%3", payload)
-        load, paste, delete, enter = runner.calls
+        load, paste, delete = runner.calls
         buffer_name = load["cmd"][3]
         # Private buffer name: never a tmux default buffer, never another
         # actor's named buffer.
@@ -201,13 +200,16 @@ class TestPaneRun:
         assert load["cmd"] == ["tmux-test", "load-buffer", "-b", buffer_name, "-"]
         # The exact bytes ride STDIN, not argv: `ps` never sees them.
         assert load["input"] == payload
+        # Paste and its Enter submit ride ONE client invocation (`;` is
+        # tmux's own command separator): another client's command cannot
+        # slot between the paste and the submit inside one round-trip.
         assert paste["cmd"] == [
-            "tmux-test", "paste-buffer", "-d", "-S", "-b", buffer_name, "-t", "%3",
+            "tmux-test", "paste-buffer", "-d", "-S", "-b", buffer_name,
+            "-t", "%3", ";", "send-keys", "-t", "%3", "Enter",
         ]
-        # Deleted in the same operation: no sensitive-text lifetime on
-        # the server's shared buffer list.
+        # Deleted afterwards: no sensitive-text lifetime on the server's
+        # shared buffer list.
         assert delete["cmd"] == ["tmux-test", "delete-buffer", "-b", buffer_name]
-        assert enter["cmd"] == ["tmux-test", "send-keys", "-t", "%3", "Enter"]
         # No call carries the payload inside argv.
         assert not any(payload in " ".join(c["cmd"]) for c in runner.calls)
 
@@ -218,7 +220,6 @@ class TestPaneRun:
                 (("load-buffer",), 0, "", ""),
                 (("paste-buffer",), 0, "", ""),
                 (("delete-buffer",), 0, "", ""),
-                (("send-keys",), 0, "", ""),
             )
             adapter(runner).pane_run("%3", "echo hi;")
             names.append(runner.calls[0]["cmd"][3])
@@ -226,7 +227,7 @@ class TestPaneRun:
         assert names[0].startswith("herdr-paste-")
         assert names[0] != names[1]
 
-    def test_paste_failure_deletes_its_buffer_and_never_presses_enter(self):
+    def test_paste_failure_deletes_its_buffer_and_never_submits(self):
         runner = RecordedRunner(
             (("load-buffer",), 0, "", ""),
             (("paste-buffer",), 1, "", "can't find pane: %9"),
@@ -240,8 +241,11 @@ class TestPaneRun:
         assert runner.calls[2]["cmd"] == [
             "tmux-test", "delete-buffer", "-b", buffer_name,
         ]
-        # Nothing was pasted, so nothing is submitted.
-        assert not any(c["cmd"][1] == "send-keys" for c in runner.calls)
+        # Nothing was pasted, so nothing is submitted: the paste-and-Enter
+        # invocation failed as a whole and no other write happened.
+        assert [c["cmd"][1] for c in runner.calls] == [
+            "load-buffer", "paste-buffer", "delete-buffer",
+        ]
 
     def test_load_failure_attempts_cleanup_and_propagates(self):
         runner = RecordedRunner(
@@ -282,7 +286,6 @@ class TestSendPrompt:
             (("load-buffer",), 0, "", ""),
             (("paste-buffer",), 0, "", ""),
             (("delete-buffer",), 0, "", ""),
-            (("send-keys",), 0, "", ""),
             (("capture-pane",), 0, fixture("tmux/prompt-after-sent.txt"), ""),
         )
         result = adapter(runner).send_prompt("%3", "run the probes")
@@ -295,7 +298,7 @@ class TestSendPrompt:
         }
         # The body moved and the echo is gone: the poll stops after one
         # re-read (immediate evidence, no completion wait).
-        assert len(runner.calls) == 6
+        assert len(runner.calls) == 5
 
     def test_surviving_echo_receipts_typed_not_submitted(self):
         runner = RecordedRunner(
@@ -303,7 +306,6 @@ class TestSendPrompt:
             (("load-buffer",), 0, "", ""),
             (("paste-buffer",), 0, "", ""),
             (("delete-buffer",), 0, "", ""),
-            (("send-keys",), 0, "", ""),
             (("capture-pane",), 0, fixture("tmux/prompt-after-typed.txt"), ""),
             (("capture-pane",), 0, fixture("tmux/prompt-after-typed.txt"), ""),
         )
@@ -323,7 +325,6 @@ class TestSendPrompt:
             (("load-buffer",), 0, "", ""),
             (("paste-buffer",), 0, "", ""),
             (("delete-buffer",), 0, "", ""),
-            (("send-keys",), 0, "", ""),
             (("capture-pane",), 1, "", "can't find pane: %3"),
             (("capture-pane",), 1, "", "can't find pane: %3"),
         )
@@ -343,7 +344,6 @@ class TestSendPrompt:
             (("load-buffer",), 0, "", ""),
             (("paste-buffer",), 0, "", ""),
             (("delete-buffer",), 0, "", ""),
-            (("send-keys",), 0, "", ""),
             (("capture-pane",), 0, fixture("tmux/prompt-after-sent.txt"), ""),
         )
         result = adapter(runner).send_prompt("%3", "run the probes")
@@ -356,15 +356,13 @@ class TestSendPrompt:
             (("load-buffer",), 0, "", ""),
             (("paste-buffer",), 0, "", ""),
             (("delete-buffer",), 0, "", ""),
-            (("send-keys",), 0, "", ""),
             (("capture-pane",), 0, fixture("tmux/prompt-after-sent.txt"), ""),
         )
         adapter(runner).send_prompt("%3", "run the probes")
         # The uuid makes exact argv pinning name-dependent: pin the read
         # and submit calls exactly, and the buffer plumbing as prefix rules.
         assert runner.calls[0]["cmd"] == ["tmux-test", "capture-pane", "-p", "-t", "%3"]
-        assert runner.calls[4]["cmd"] == ["tmux-test", "send-keys", "-t", "%3", "Enter"]
-        assert runner.calls[5]["cmd"] == ["tmux-test", "capture-pane", "-p", "-t", "%3"]
+        assert runner.calls[4]["cmd"] == ["tmux-test", "capture-pane", "-p", "-t", "%3"]
         load, paste, delete = runner.calls[1], runner.calls[2], runner.calls[3]
         name = load["cmd"][3]
         assert name.startswith("herdr-paste-")
@@ -372,6 +370,7 @@ class TestSendPrompt:
         assert load["input"] == "run the probes"
         assert paste["cmd"] == [
             "tmux-test", "paste-buffer", "-d", "-S", "-b", name, "-t", "%3",
+            ";", "send-keys", "-t", "%3", "Enter",
         ]
         assert delete["cmd"] == ["tmux-test", "delete-buffer", "-b", name]
 
@@ -381,7 +380,6 @@ class TestSendPrompt:
             (("load-buffer",), 0, "", ""),
             (("paste-buffer",), 0, "", ""),
             (("delete-buffer",), 0, "", ""),
-            (("send-keys",), 0, "", ""),
             (("capture-pane",), 0, fixture("tmux/prompt-after-sent.txt"), ""),
         )
         adapter(runner).send_prompt("%3", "línea uno\nlínea dos")
@@ -396,7 +394,6 @@ class TestSendPrompt:
             (("load-buffer",), 0, "", ""),
             (("paste-buffer",), 0, "", ""),
             (("delete-buffer",), 0, "", ""),
-            (("send-keys",), 0, "", ""),
             (("capture-pane",), 0, fixture("tmux/prompt-after-typed.txt"), ""),
             (("capture-pane",), 0, fixture("tmux/prompt-after-typed.txt"), ""),
         )
@@ -425,7 +422,6 @@ class TestSendPrompt:
             (("load-buffer",), 0, "", ""),
             (("paste-buffer",), 0, "", ""),
             (("delete-buffer",), 0, "", ""),
-            (("send-keys",), 0, "", ""),
             (("capture-pane",), 0, fixture("tmux/capture-tall-after-sent.txt"), ""),
         )
         result = adapter(runner, screen_lines=4).send_prompt("%3", "run the probes")

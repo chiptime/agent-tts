@@ -526,7 +526,6 @@ def tmux_client(settings, tmp_path, monkeypatch):
         (("load-buffer",), 0, "", ""),
         (("paste-buffer",), 0, "", ""),
         (("delete-buffer",), 0, "", ""),
-        (("send-keys",), 0, "", ""),
         (("capture-pane",), 0, _fixture("tmux/prompt-after-sent.txt"), ""),
         (("capture-pane",), 0, _fixture("tmux/prompt-after-sent.txt"), ""),
     )
@@ -636,10 +635,44 @@ class TestMultiplexerReplyParity:
         assert name.startswith("herdr-paste-")
         assert load["input"] == "run the probes"
         paste = next(c for c in runner.calls if c["cmd"][1] == "paste-buffer")
+        # Paste and its Enter submit ride ONE client invocation.
         assert paste["cmd"][:6] == [
             "tmux-test", "paste-buffer", "-d", "-S", "-b", name,
         ]
+        assert paste["cmd"][6:] == ["-t", "%3", ";", "send-keys", "-t", "%3", "Enter"]
         assert "%3" in paste["cmd"]
+
+    def test_tmux_pane_reply_write_refusal_propagates(self, settings, tmp_path,
+                                                       monkeypatch):
+        # A failed buffer transfer surfaces as the typed refusal the
+        # route already maps — the write is never claimed as sent, and
+        # the paste-and-Enter invocation is the only write attempted.
+        runner = RecordedRunner(
+            (("list-panes",), 0, _fixture("tmux/list-panes.txt"), ""),
+            (("capture-pane",), 0, _fixture("tmux/capture-visible.txt"), ""),
+            (("capture-pane",), 0, _fixture("tmux/capture-visible.txt"), ""),
+            (("load-buffer",), 0, "", ""),
+            (("paste-buffer",), 1, "", "can't find pane: %3"),
+            (("delete-buffer",), 0, "", ""),
+        )
+        client = _mux_client(
+            monkeypatch, settings, tmp_path, "tmux",
+            TmuxAdapter(bin_path="tmux-test", runner=runner),
+        )
+        resp = client.post(
+            "/pane/reply", json={"pane_id": "tmux:%3", "text": "run the probes"}
+        )
+        # The route maps the refusal to 502 and records the honest
+        # receipt; nothing ever claims the write was verified.
+        assert resp.status_code == 502
+        assert "cannot send reply" in resp.json()["detail"]
+        listed = client.get("/pane/receipts", params={"pane_id": "tmux:%3"}).json()
+        assert [r["outcome"] for r in listed["receipts"]] == ["refused"]
+        # The paste-and-Enter invocation was the only write attempted.
+        assert [c["cmd"][1] for c in runner.calls] == [
+            "list-panes", "capture-pane", "capture-pane",
+            "load-buffer", "paste-buffer", "delete-buffer",
+        ]
 
     @pytest.mark.parametrize("pane_id", ["w1:p2", "zellij:1", "tmux:%3"])
     def test_body_guards_apply_identically_to_multiplexer_panes(

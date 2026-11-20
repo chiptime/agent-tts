@@ -192,16 +192,20 @@ class TmuxAdapter:
         silently dropped a trailing ``;`` while still exiting 0, and the
         receipt even read ``sent`` on the altered write. The exact bytes
         therefore never ride argv — argv is a surface tmux 3.8 can alter;
-        stdin is not. ``load-buffer`` pulls the text from stdin into a
-        PRIVATE uniquely named buffer (never a default ``0``..``9``
-        buffer, never a foreign name), ``paste-buffer -d -S`` inserts it
-        byte-exact into the TARGET pane by id (``-S`` keeps tmux from
-        vis-escaping control characters, matching the raw bytes
-        ``send-keys -l`` used to deliver) and ``-d`` deletes the buffer
-        in the same operation — sensitive text spends no visible lifetime
-        on the server's shared buffer list, and the best-effort
-        ``delete-buffer`` in ``finally`` guarantees no leftover on ANY
-        path. Only buffers this operation created are ever touched.
+        stdin is not.         ``load-buffer`` pulls the text from stdin into a PRIVATE uniquely
+        named buffer (never a default ``0``..``9`` buffer, never a foreign
+        name), ``paste-buffer -d -S`` inserts it byte-exact into the
+        TARGET pane by id (``-S`` keeps tmux from vis-escaping control
+        characters, matching the raw bytes ``send-keys -l`` used to
+        deliver) and ``-d`` deletes the buffer in the same operation, and
+        the submit rides the SAME client invocation as tmux's ``;``
+        separator — the payload text only ever rides stdin, and one
+        invocation narrows the window in which another client's command
+        could run between the paste and the Enter. A best-effort
+        ``delete-buffer`` runs on EVERY path; honestly, if that delete
+        itself fails, the payload survives under this private uuid name
+        until the server exits — never under a default or foreign name.
+        Only buffers this operation created are ever touched.
         """
         buffer_name = f"{self.PASTE_BUFFER_PREFIX}{uuid.uuid4().hex}"
         try:
@@ -210,12 +214,12 @@ class TmuxAdapter:
                 input_text=text,
             )
             self._run_cli(
-                ["paste-buffer", "-d", "-S", "-b", buffer_name, "-t", pane_id],
+                ["paste-buffer", "-d", "-S", "-b", buffer_name, "-t", pane_id,
+                 ";", "send-keys", "-t", pane_id, "Enter"],
                 capability,
             )
         finally:
             self._delete_paste_buffer(buffer_name, capability)
-        self._run_cli(["send-keys", "-t", pane_id, "Enter"], capability)
 
     def _delete_paste_buffer(self, buffer_name: str, capability: str) -> None:
         """Best-effort delete of a buffer THIS call created; never raises.

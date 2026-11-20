@@ -44,9 +44,9 @@ passes after the fix.
 
 | Cell | Live result (tmux 3.8) |
 |---|---|
-| `prompt_submit` | exact bytes delivered for `echo hi;`, shell-metachar payloads (`'$(whoami)' "q" \`calc\` && true;`), accented/symbol text (`ñ é ç ✓ «» ¿¡ —;`) and wide Unicode (`日本語 😀;`) — text rides stdin into a private `herdr-paste-<uuid>` buffer (`load-buffer`), is pasted byte-exact by pane id (`paste-buffer -d -S`) and the buffer is deleted (`-d` plus a best-effort `delete-buffer`); `send-keys` reduced to `Enter`; `list-buffers` shows no `herdr-paste` leftovers |
+| `prompt_submit` | exact bytes delivered for `echo hi;`, shell-metachar payloads (`'$(whoami)' "q" \`calc\` && true;`), accented/symbol text (`ñ é ç ✓ «» ¿¡ —;`) and wide Unicode (`日本語 😀;`) — text rides stdin into a private `herdr-paste-<uuid>` buffer (`load-buffer`), then `paste-buffer -d -S` pastes byte-exact by pane id and the Enter submit rides the SAME tmux invocation across tmux's own `;` command separator (one round-trip narrows the window another client's command could exploit between paste and submit); `-d` deletes the buffer with the paste plus a best-effort `delete-buffer` on every path. BYTE-LEVEL proof: the panes print the exact received bytes as hex; every battery payload's UTF-8 byte sequence (trailing `;` included) matches what was sent (tests/test_mux_tmux_live.py) |
 | `tabs` | `new-window -d -P -F` returned ids and left the session's current window untouched (`window_active` stayed on the original window, the new window inactive) |
-| `failures` | a failed `load-buffer`/`paste-buffer` propagates the typed refusal (`refused`/`gone`) and still cleans up its own buffer; Enter is never pressed after an unpasted write |
+| `failures` | a failed `load-buffer`/`paste-buffer` propagates the typed refusal (`refused`/`gone`, mapped by `/pane/reply` to 502 with a recorded `refused` receipt) and still deletes its own buffer; the failed invocation is the only write attempted |
 
 The `send_text` refusal, `pane_grid`, `ansi_screen`, `scrollback`, `keys` and
 `probe()` rows stand as recorded above (untouched by T7).
