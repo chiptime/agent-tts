@@ -200,16 +200,126 @@ class TestPaneRun:
 
 
 class TestSendPrompt:
-    def test_submits_sanitized_line_and_reports_unknown(self):
+    """f7f S2: the fire-and-forget submit gains its verified read-back.
+
+    capture-pane is read BEFORE and immediately AFTER the submission
+    (plain text — the receipt classifier matches echo tails on unstyled
+    lines, so ``-e`` would corrupt the match), and the SAME classifier
+    herdr rides decides the outcome. tmux vouches the WRITE only, so the
+    claim handed to the classifier is neutral: a moved body is ``sent``,
+    a surviving echo ``typed_not_submitted``, an unreadable screen
+    ``unknown`` — and ``effective`` (turn completion) is never claimed
+    because tmux exposes no agent state.
+    """
+
+    def test_body_movement_receipts_sent(self):
         runner = RecordedRunner(
+            (("capture-pane",), 0, fixture("tmux/capture-visible.txt"), ""),
             (("send-keys", "-t", "%3", "-l"), 0, "", ""),
             (("send-keys",), 0, "", ""),
+            (("capture-pane",), 0, fixture("tmux/prompt-after-sent.txt"), ""),
         )
-        result = adapter(runner).send_prompt("%3", "línea uno\nlínea dos")
-        assert result == {"ok": True, "status": "unknown", "output": ""}
-        assert runner.calls[0]["cmd"][-1] == "línea uno línea dos"
-        assert runner.calls[1]["cmd"] == ["tmux-test", "send-keys", "-t", "%3", "Enter"]
-        assert len(runner.calls) == 2  # fire-and-forget: no completion wait
+        result = adapter(runner).send_prompt("%3", "run the probes")
+        # classify_send's own detail, verbatim: the same classifier, not
+        # a second one.
+        assert result == {
+            "ok": True,
+            "status": "sent",
+            "output": "enviado; la pantalla del agente avanzó",
+        }
+        # The body moved and the echo is gone: the poll stops after one
+        # re-read (immediate evidence, no completion wait).
+        assert len(runner.calls) == 4
+
+    def test_surviving_echo_receipts_typed_not_submitted(self):
+        runner = RecordedRunner(
+            (("capture-pane",), 0, fixture("tmux/capture-visible.txt"), ""),
+            (("send-keys", "-t", "%3", "-l"), 0, "", ""),
+            (("send-keys",), 0, "", ""),
+            (("capture-pane",), 0, fixture("tmux/prompt-after-typed.txt"), ""),
+            (("capture-pane",), 0, fixture("tmux/prompt-after-typed.txt"), ""),
+        )
+        result = adapter(runner).send_prompt("%3", "run the probes")
+        assert result == {
+            "ok": False,
+            "status": "typed_not_submitted",
+            "output": "el texto quedó escrito en la línea de entrada sin enviarse",
+        }
+
+    def test_unreadable_screen_receipts_unknown_with_detail(self):
+        # A pane that cannot be read (here: the pane vanishes between
+        # listing and send) must stay honest: `unknown` with a detail,
+        # never a fabricated positive.
+        runner = RecordedRunner(
+            (("capture-pane",), 1, "", "can't find pane: %3"),
+            (("send-keys", "-t", "%3", "-l"), 0, "", ""),
+            (("send-keys",), 0, "", ""),
+            (("capture-pane",), 1, "", "can't find pane: %3"),
+            (("capture-pane",), 1, "", "can't find pane: %3"),
+        )
+        result = adapter(runner).send_prompt("%3", "run the probes")
+        assert result == {
+            "ok": False,
+            "status": "unknown",
+            "output": "no se pudo leer la pantalla del agente",
+        }
+
+    def test_a_finished_looking_pane_never_claims_effective(self):
+        # The after screen shows a completed round-trip ("probes ok: 3
+        # passed" plus a fresh prompt), but tmux exposes no agent-turn
+        # state: the receipt is `sent`, never `effective`.
+        runner = RecordedRunner(
+            (("capture-pane",), 0, fixture("tmux/capture-visible.txt"), ""),
+            (("send-keys", "-t", "%3", "-l"), 0, "", ""),
+            (("send-keys",), 0, "", ""),
+            (("capture-pane",), 0, fixture("tmux/prompt-after-sent.txt"), ""),
+        )
+        result = adapter(runner).send_prompt("%3", "run the probes")
+        assert result["status"] in ("sent", "typed_not_submitted", "unknown")
+        assert result["status"] == "sent"
+
+    def test_pins_the_exact_command_sequence_with_plain_reads(self):
+        runner = RecordedRunner(
+            (("capture-pane",), 0, fixture("tmux/capture-visible.txt"), ""),
+            (("send-keys", "-t", "%3", "-l"), 0, "", ""),
+            (("send-keys",), 0, "", ""),
+            (("capture-pane",), 0, fixture("tmux/prompt-after-sent.txt"), ""),
+        )
+        adapter(runner).send_prompt("%3", "run the probes")
+        assert [call["cmd"] for call in runner.calls] == [
+            # Plain capture (no -e): classification reads unstyled lines.
+            ["tmux-test", "capture-pane", "-p", "-t", "%3"],
+            ["tmux-test", "send-keys", "-t", "%3", "-l", "run the probes"],
+            ["tmux-test", "send-keys", "-t", "%3", "Enter"],
+            ["tmux-test", "capture-pane", "-p", "-t", "%3"],
+        ]
+
+    def test_multiline_text_is_sanitized_before_the_write(self):
+        runner = RecordedRunner(
+            (("capture-pane",), 0, fixture("tmux/capture-visible.txt"), ""),
+            (("send-keys", "-t", "%3", "-l"), 0, "", ""),
+            (("send-keys",), 0, "", ""),
+            (("capture-pane",), 0, fixture("tmux/prompt-after-sent.txt"), ""),
+        )
+        adapter(runner).send_prompt("%3", "línea uno\nlínea dos")
+        # A literal newline is a real Enter in the pane: sanitized to
+        # ONE line before it reaches send-keys.
+        assert runner.calls[1]["cmd"][-1] == "línea uno línea dos"
+
+    def test_quote_breaker_payload_stays_one_literal_argv_element(self):
+        payload = "rm -rf '$(whoami)' \"keep\" `id`"
+        runner = RecordedRunner(
+            (("capture-pane",), 0, fixture("tmux/capture-visible.txt"), ""),
+            (("send-keys", "-t", "%3", "-l"), 0, "", ""),
+            (("send-keys",), 0, "", ""),
+            (("capture-pane",), 0, fixture("tmux/prompt-after-typed.txt"), ""),
+            (("capture-pane",), 0, fixture("tmux/prompt-after-typed.txt"), ""),
+        )
+        adapter(runner).send_prompt("%3", payload)
+        write = runner.calls[1]["cmd"]
+        # ONE argv element behind -l: no shell sits between the brain
+        # and tmux, so quotes, $() and backticks stay literal text.
+        assert write == ["tmux-test", "send-keys", "-t", "%3", "-l", payload]
 
     def test_empty_prompt_refused_without_invoking(self):
         runner = RecordedRunner()

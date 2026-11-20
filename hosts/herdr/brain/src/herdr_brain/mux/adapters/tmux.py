@@ -1,4 +1,4 @@
-"""tmux adapter: grid, screen reads, keys and tabs — no agent surface.
+"""tmux adapter: grid, screen reads, keys, tabs and verified prompts.
 
 tmux exposes panes, windows and sessions, but no agent identity: every
 pane is reported as a plain shell with status ``unknown``, and the agent
@@ -9,9 +9,14 @@ and the wrong journal downstream.
 Reads ride ``capture-pane`` (styled with ``-e``, history with
 ``-S -<n>``); writes ride ``send-keys`` with text passed as ONE argv
 element behind ``-l``, so no shell ever sits between the brain and the
-pane and metacharacters stay literal. Prompts are submitted
-fire-and-forget: tmux cannot report completion, so the prompt outcome is
-``unknown`` immediately after Enter.
+pane and metacharacters stay literal. Prompt submission is verified by
+re-reading the pane with ``capture-pane`` BEFORE and immediately AFTER
+the send and classifying with the SAME receipt rules herdr rides
+(:func:`herdr_brain.send_receipts.classify_send`). tmux vouches the
+WRITE only (``send-keys`` exited 0), never completion, so the claim
+handed to the classifier stays neutral: the screens decide ``sent`` /
+``typed_not_submitted`` / ``unknown``, and ``effective`` (turn
+completion) is never claimed — tmux exposes no agent-turn state.
 """
 
 from __future__ import annotations
@@ -28,17 +33,23 @@ from ...herdr import (
     pick_active,
     sanitize_prompt_text,
 )
+from ...send_receipts import classify_send, text_echoed_on_input
 from ..capabilities import Capabilities, MuxProbe
 from ..keys import is_sendable_key, normalize_key, tmux_key
 from ..refusal import MuxRefusal
 
 Runner = Callable[..., subprocess.CompletedProcess]
 
+#: How many immediate re-reads back the receipt after a submit. No
+#: sleeps here: the route's own verified poll adds the time-spaced
+#: evidence; these reads are the first snapshot.
+RECEIPT_AFTER_READS = 2
+
 _EVIDENCE = {
     "pane_grid": "list-panes -a -F grid pinned by tests/fixtures/mux/tmux/list-panes.txt",
     "ansi_screen": "capture-pane -p [-e] pinned by tests/fixtures/mux/tmux/capture-visible.*",
     "scrollback": "capture-pane -S -<n> history capture (tests/fixtures/mux/tmux/capture-recent.txt)",
-    "prompt_submit": "send-keys -l text + Enter, fire-and-forget (tests/test_mux_tmux.py)",
+    "prompt_submit": "send-keys -l text + Enter verified by capture-pane re-reads (tests/test_mux_tmux.py)",
     "keys": "send-keys argv translated from the neutral orthography (tests/test_mux_tmux.py)",
     "tabs": "new-window -P -F '#{window_id} #{pane_id}' (tests/fixtures/mux/tmux/new-window.txt)",
 }
@@ -134,6 +145,34 @@ class TmuxAdapter:
         self._run_cli(["send-keys", "-t", pane_id, "-l", text], capability)
         self._run_cli(["send-keys", "-t", pane_id, "Enter"], capability)
 
+    def _verified_read(self, pane_id: str) -> Optional[str]:
+        """One plain-text screen read; None on failure (evidence, not truth)."""
+        try:
+            return self.read_screen(pane_id)
+        except HerdrError:
+            return None
+
+    def _verified_poll_reads(
+        self, pane_id: str, before: Optional[str], sent_text: str
+    ) -> List[Optional[str]]:
+        """Immediate bounded re-reads after a submit (no sleeps).
+
+        Stops early once the evidence is decisive — the body moved and
+        the text left the input line — mirroring the tools layer's poll
+        rule on the adapter's first snapshot.
+        """
+        afters: List[Optional[str]] = []
+        for _ in range(RECEIPT_AFTER_READS):
+            after = self._verified_read(pane_id)
+            afters.append(after)
+            if (
+                after is not None
+                and after != before
+                and not text_echoed_on_input(after, sent_text)
+            ):
+                break  # the body moved and the text left the input line
+        return afters
+
     # -- reads ----------------------------------------------------------------
 
     def list_agents(self) -> List[AgentInfo]:
@@ -219,10 +258,17 @@ class TmuxAdapter:
         clean = sanitize_prompt_text(text)
         if not clean:
             raise HerdrError("refusing to send an empty prompt")
-        # Fire-and-forget: tmux has no completion signal, so the honest
-        # outcome is `unknown` right after Enter.
+        # f7f S2: the fire-and-forget write gains its verified read-back.
+        # Plain-text capture (the classifier matches echo tails on
+        # unstyled lines), the SAME classifier herdr rides, and a
+        # neutral claim: tmux vouches the WRITE only, so an unreadable
+        # screen stays honestly `unknown` instead of upgrading to
+        # `sent`, and `effective` is never claimed.
+        before = self._verified_read(pane_id)
         self._submit_line(pane_id, clean, "prompt_submit")
-        return {"ok": True, "status": "unknown", "output": ""}
+        afters = self._verified_poll_reads(pane_id, before, clean)
+        outcome, detail = classify_send(before, afters, clean, "unknown")
+        return {"ok": outcome in ("effective", "sent"), "status": outcome, "output": detail}
 
     def send_text(self, pane_id: str, text: str) -> None:
         raise MuxRefusal(
