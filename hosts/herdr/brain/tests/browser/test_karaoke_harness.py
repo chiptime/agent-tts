@@ -134,7 +134,11 @@ EXPECTED_DIGESTS = {
     # (nsModel.resumeRequestId + held newResumeRetry), the picked
     # workspace_id on POST /session/resume and the
     # newsession.err_resume_workspace key (both i18n).
-    "/app.js": "6918e747d7badf9c509551b0c0dea29e19e2729b27b05433b55eb3b3693e04ca",
+    # Re-pinned for parity T8/S8 (sheetfix): the launch sheet opened from
+    # the conversation sheet reuses that sheet's history entry
+    # (replaceState handover) — the pending history.back() traversal
+    # used to close the just-opened sheet.
+    "/app.js": "f3457048bd5b1fd6224a299bed9b1e10c1bc54f5eac20ad044801b7d161c7f6d",
     "/push.js": "e1acadd98d95420cf9924ea633b32d9ec5b51c8654c5e7df923c2bbc5547f52c",
     "/receipts.js": "df01a313d8f6101bd9601d5a2a65eb420df7791c417a09e2d0d8c269a36742b0",
     # dialogs.js re-pinned for the parity-f7d follow-up: MODEL_SWITCH_COMMANDS

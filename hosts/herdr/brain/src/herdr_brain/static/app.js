@@ -8981,11 +8981,33 @@
 
   function openNewSheet() {
     if (newSheetOpen) return;
-    if (convSheetOpen) closeConvSheet();  /* one sheet band: never stacked */
+    /* S8: the conversation sheet opened us over its OWN history entry,
+     * so that entry is handed over — hide the sheet without its own
+     * history.back() and replace the entry in place. A pending
+     * history.back() here used to race this sheet's pushState: the
+     * traversal's popstate landed after the push and closed the sheet
+     * that had JUST opened. Same entry-reuse shape openPendingSheet
+     * uses when it takes over Ajustes. */
+    var handedOver = false;
+    if (convSheetOpen) {
+      convSheetOpen = false;
+      setConvSheet(false);
+      /* Closing the sheet retires the modal watch (F7d): the user
+       * walked away from the flow that started it. */
+      if (modelSwitchPoll) modelSwitchPoll.cancel();
+      if (history.state && history.state.herdrConvSheet) {
+        try {
+          history.replaceState({ herdrNewSheet: true }, "");
+          handedOver = true;
+        } catch (err) { /* non-http origins */ }
+      }
+    }
     newSheetOpen = true;
     setNewSheet(true);
     refreshNewSheet();
-    try { history.pushState({ herdrNewSheet: true }, ""); } catch (err) { /* non-http */ }
+    if (!handedOver) {
+      try { history.pushState({ herdrNewSheet: true }, ""); } catch (err) { /* non-http */ }
+    }
     try { newCloseBtn.focus({ preventScroll: true }); } catch (err) { /* no focus API */ }
   }
 

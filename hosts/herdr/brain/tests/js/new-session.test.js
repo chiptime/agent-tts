@@ -232,6 +232,27 @@ test("the sheet and its entry exist in the shell", () => {
   assert.ok(!htmlSrc.includes('id="new-open"'), "the header ✚ is gone");
 });
 
+test("opening the sheet from the conversation sheet reuses its history entry (S8)", () => {
+  /* parity T8/S8: the conv->new tap used to run closeConvSheet()'s
+   * history.back() and the launch sheet's pushState inside one gesture;
+   * the pending traversal's popstate closed the just-opened sheet. The
+   * open path must hand the entry over with replaceState and skip the
+   * extra push — the same shape openPendingSheet uses taking over
+   * Ajustes. */
+  const openWindow = appSrc.slice(
+    appSrc.indexOf("function openNewSheet()"),
+    appSrc.indexOf("function closeNewSheet()")
+  );
+  assert.ok(openWindow.length > 0, "openNewSheet must exist");
+  assert.ok(!/\bcloseConvSheet\(\)/.test(openWindow),
+    "openNewSheet must not close the conversation sheet via its own " +
+    "history.back() — the pending traversal races the sheet's open");
+  assert.match(openWindow, /history\.replaceState\(\{\s*herdrNewSheet:\s*true\s*\}/,
+    "the conversation sheet's history entry must be handed over in place");
+  assert.match(openWindow, /if \(!handedOver\)\s*\{[\s\S]*?history\.pushState\(\{\s*herdrNewSheet/,
+    "the pushState must ride only when no entry was handed over");
+});
+
 test("the launch posts /session/new through withDeviceAuth", () => {
   assert.ok(appSrc.includes('"/session/new"'));
   assert.ok(/fetch\("\/session\/new",\s*withDeviceAuth\(/.test(appSrc),
